@@ -224,6 +224,5 @@ def _warmup_numba_functions() -> None:
     _tabulate_Legendre_basis_1D_core(np.int32(1), t_dummy, out_dummy)
 
 
-# Precompile numba functions on module import (skip during type checking)
-if not TYPE_CHECKING:
-    _warmup_numba_functions()
+# Precompile numba functions on module import
+# (Moved to central thread in __init__.py)

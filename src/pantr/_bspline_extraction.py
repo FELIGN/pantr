@@ -348,9 +348,8 @@ def _warmup_numba_functions() -> None:
     _tabulate_Bspline_Bezier_1D_extraction_core(knots_dummy, degree_dummy, tol_dummy, out_dummy)
 
 
-# Precompile numba functions on module import (skip during type checking)
-if not TYPE_CHECKING:
-    _warmup_numba_functions()
+# Precompile numba functions on module import
+# (Moved to central thread in __init__.py)
 
 
 __all__ = [

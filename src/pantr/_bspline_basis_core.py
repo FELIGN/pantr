@@ -300,9 +300,8 @@ def _warmup_numba_functions() -> None:
     )
 
 
-# Precompile numba functions on module import (skip during type checking)
-if not TYPE_CHECKING:
-    _warmup_numba_functions()
+# Precompile numba functions on module import
+# (Moved to central thread in __init__.py)
 
 
 __all__ = [
