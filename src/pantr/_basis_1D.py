@@ -24,6 +24,7 @@ from ._basis_utils import (
     _normalize_points_1D,
     _validate_out_array_1D,
 )
+from ._numba_compat import wait_for_jit_warmup
 
 if TYPE_CHECKING:
     from .basis import LagrangeVariant
@@ -62,6 +63,10 @@ def _tabulate_basis_1D_impl_helper(
         ValueError: If degree is negative, or if `out` is provided and has incorrect
             shape or dtype.
     """
+    # Ensure background JIT compilation is complete before calling Numba
+    # kernels that use parallel=True (avoids concurrent-compilation crash).
+    wait_for_jit_warmup()
+
     if n < 0:
         raise ValueError("degree must be non-negative")
 
