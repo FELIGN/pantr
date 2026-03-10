@@ -23,18 +23,18 @@ from pantr._bspline_knots import (
     _get_unique_knots_and_multiplicity_impl,
     _is_in_domain_impl,
 )
+from pantr._bspline_space_factory import (
+    create_cardinal_Bspline_knot_vector,
+    create_uniform_open_knot_vector,
+    create_uniform_periodic_knot_vector,
+)
 from pantr.basis import (
     LagrangeVariant,
     tabulate_Bernstein_basis_1D,
     tabulate_cardinal_Bspline_basis_1D,
     tabulate_Lagrange_basis_1D,
 )
-from pantr.bspline_space import (
-    BsplineSpace1D,
-    create_cardinal_Bspline_knot_vector,
-    create_uniform_open_knot_vector,
-    create_uniform_periodic_knot_vector,
-)
+from pantr.bspline_space_1D import BsplineSpace1D
 from pantr.tolerance import get_strict_tolerance
 
 

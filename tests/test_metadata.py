@@ -29,6 +29,7 @@ def test_package_all_exports() -> None:
         "tabulate_Lagrange_basis_1D",
         "tabulate_Legendre_basis_1D",
         # B-spline space
+        "BsplineSpace",
         "BsplineSpace1D",
         "create_cardinal_Bspline_knot_vector",
         "create_uniform_open_knot_vector",
