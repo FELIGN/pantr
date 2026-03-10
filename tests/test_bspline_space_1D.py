@@ -34,7 +34,7 @@ from pantr.basis import (
     tabulate_cardinal_Bspline_basis_1D,
     tabulate_Lagrange_basis_1D,
 )
-from pantr.bspline_space_1D import BsplineSpace1D
+from pantr.bspline_space_1D import BsplineSpace1D, _cached_unique_knots_and_multiplicity
 from pantr.tolerance import get_strict_tolerance
 
 
@@ -140,6 +140,21 @@ class TestBsplineSpace1DProperties:
         assert not spline.knots.flags.writeable
         with pytest.raises(ValueError):
             spline.knots[0] = 99.0
+
+    def test_unique_knots_cache_is_bounded(self) -> None:
+        """Test that the knot-multiplicity cache has a finite maxsize.
+
+        An unbounded cache (functools.cache) would leak memory in long-running
+        applications that construct many distinct spline spaces.  Switching to
+        lru_cache(maxsize=N) ensures old entries are evicted when the cache is
+        full.
+        """
+        info = _cached_unique_knots_and_multiplicity.cache_info()
+        assert info.maxsize is not None, (
+            "_cached_unique_knots_and_multiplicity must use lru_cache with a "
+            "finite maxsize, not functools.cache, to avoid unbounded memory growth."
+        )
+        assert info.maxsize > 0
 
     def test_periodic_property(self) -> None:
         """Test periodic property."""
