@@ -1,9 +1,17 @@
 """Bspline class and  utilities."""
 
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
+
 import numpy as np
 from numpy import typing as npt
 
-from .bspline_space import BsplineSpace
+from ._bspline_eval import _evaluate_Bspline
+
+if TYPE_CHECKING:
+    from .bspline_space import BsplineSpace
+    from .quad import PointsLattice
 
 
 class Bspline:
@@ -78,3 +86,25 @@ class Bspline:
         """The rank of the B-spline."""
         rk = self._control_points.ndim - self.dim
         return rk - 1 if self.is_rational else rk
+
+    @property
+    def dtype(self) -> npt.DTypeLike:
+        """The dtype of the B-spline."""
+        return self._control_points.dtype
+
+    def evaluate(
+        self,
+        pts: npt.NDArray[np.float32 | np.float64] | PointsLattice,
+        out: npt.NDArray[np.float32 | np.float64] | None = None,
+    ) -> npt.NDArray[np.float32 | np.float64]:
+        """Tabulate the B-spline at the given points.
+
+        Args:
+            pts (npt.NDArray[np.float32 | np.float64] | PointsLattice): The points at
+                which to tabulate the B-spline.
+            out (npt.NDArray[np.float32 | np.float64] | None): The output array.
+
+        Returns:
+            npt.NDArray[np.float32 | np.float64]: The B-spline values at the given points.
+        """
+        return _evaluate_Bspline(self, pts, out)
