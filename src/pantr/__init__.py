@@ -8,9 +8,7 @@ from typing import Final
 # Private API imports (accessible but not in __all__)
 # Users can access private functions via: pantr._basis_impl._function_name, etc.
 from . import (
-    _basis_impl,  # noqa: F401
     _basis_utils,  # noqa: F401
-    _bspline_space_impl,  # noqa: F401
 )
 from ._bspline_space_factory import (
     create_cardinal_Bspline_knot_vector,
