@@ -6,25 +6,10 @@ Bernstein, cardinal B-spline, and Legendre basis polynomials.
 
 from __future__ import annotations
 
-from collections.abc import Callable
-from typing import TYPE_CHECKING, Any, TypeVar
-
-import numba as nb
 import numpy as np
 import numpy.typing as npt
 
-F = TypeVar("F", bound=Callable[..., Any])
-
-if TYPE_CHECKING:
-    # During type-checking, make the decorator a no-op that preserves types.
-    def nb_jit(*args: object, **kwargs: object) -> Callable[[F], F]:
-        def decorator(func: F) -> F:
-            return func
-
-        return decorator
-else:
-    # At runtime, use the real Numba decorator.
-    nb_jit = nb.jit  # type: ignore[attr-defined]
+from ._numba_compat import nb_jit
 
 
 @nb_jit(

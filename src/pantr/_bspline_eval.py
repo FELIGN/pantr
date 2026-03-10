@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-import numba as nb
 import numpy as np
 from numpy import typing as npt
 
@@ -13,25 +12,12 @@ from ._bspline_knots import (
     _get_Bspline_num_basis_1D_impl,
     _get_last_knot_smaller_equal_impl,
 )
+from ._numba_compat import nb_jit
 from .quad import PointsLattice
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
-    from typing import Any, TypeVar
-
-    F = TypeVar("F", bound=Callable[..., Any])
     from .bspline import Bspline
     from .quad import PointsLattice
-
-    # During type-checking, make the decorator a no-op that preserves types.
-    def nb_jit(*args: object, **kwargs: object) -> Callable[[F], F]:
-        def decorator(func: F) -> F:
-            return func
-
-        return decorator
-else:
-    # At runtime, use the real Numba decorator.
-    nb_jit = nb.jit  # type: ignore[attr-defined]
 
 
 @nb_jit(

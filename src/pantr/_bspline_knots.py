@@ -7,27 +7,13 @@ cardinal interval identification, and knot vector generation utilities.
 
 from __future__ import annotations
 
-from collections.abc import Callable
-from typing import TYPE_CHECKING, Any, TypeVar, cast
+from typing import Any, cast
 
-import numba as nb
 import numpy as np
 import numpy.typing as npt
 
 from ._basis_utils import _validate_out_array_bool
-
-F = TypeVar("F", bound=Callable[..., Any])
-
-if TYPE_CHECKING:
-    # During type-checking, make the decorator a no-op that preserves types.
-    def nb_jit(*args: object, **kwargs: object) -> Callable[[F], F]:
-        def decorator(func: F) -> F:
-            return func
-
-        return decorator
-else:
-    # At runtime, use the real Numba decorator.
-    nb_jit = nb.jit  # type: ignore[attr-defined]
+from ._numba_compat import nb_jit
 
 
 @nb_jit(
