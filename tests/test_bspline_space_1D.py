@@ -134,6 +134,13 @@ class TestBsplineSpace1DProperties:
         spline = BsplineSpace1D(knots, degree)
         np.testing.assert_array_equal(spline.knots, np.array(knots))
 
+    def test_knots_immutable(self) -> None:
+        """Test that the knots array is read-only to prevent silent cache corruption."""
+        spline = BsplineSpace1D([0.0, 0.0, 0.0, 1.0, 1.0, 1.0], 2)
+        assert not spline.knots.flags.writeable
+        with pytest.raises(ValueError):
+            spline.knots[0] = 99.0
+
     def test_periodic_property(self) -> None:
         """Test periodic property."""
         knots = [0.0, 0.0, 0.0, 1.0, 1.0, 1.0]

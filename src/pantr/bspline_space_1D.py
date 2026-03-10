@@ -106,6 +106,8 @@ class BsplineSpace1D:
         if snap_knots:
             self._snap_knots()
 
+        self._knots.flags.writeable = False
+
     @staticmethod
     def _validate_input(
         knots: npt.ArrayLike,
