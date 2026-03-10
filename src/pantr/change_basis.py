@@ -1,9 +1,14 @@
-"""Change of basis operators for various polynomial bases in 1D.
+r"""Change of basis operators for various polynomial bases in 1D.
 
-# This module provides functions to create transformation matrices between different
-# polynomial bases including Lagrange, Bernstein, cardinal B-spline, and monomial
-# bases, as well as B-splines.
-#
+This module provides functions to create transformation matrices between different
+polynomial bases including Lagrange, Bernstein, cardinal B-spline, and monomial
+bases.
+
+Architecturally, this module serves as the **bridge between different basis types**,
+providing pure mathematical functions to compute the exact $(degree+1, degree+1)$
+transformation matrices (e.g., $M$ such that $new\\_basis(x) = M @ old\\_basis(x)$)
+without tying the dense numerical quadrature logic directly into the core Spline
+space objects.
 """
 
 from collections.abc import Callable
