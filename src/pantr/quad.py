@@ -272,7 +272,10 @@ class PointsLattice:
         else:  # if order == "F": # First index varies fastest
             tp_coords = np.meshgrid(*self._pts_per_dir, indexing="xy")
 
-        return np.array(tp_coords).reshape(self.dim, -1).T  # (n_pts, dim)
+        return cast(
+            npt.NDArray[np.float32 | np.float64],
+            np.array(tp_coords).reshape(self.dim, -1).T,  # (n_pts, dim)
+        )
 
 
 def create_Lagrange_points_lattice(

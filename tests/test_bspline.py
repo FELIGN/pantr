@@ -281,23 +281,11 @@ class TestBsplineProperties:
         knots = [0.0, 0.0, 0.0, 1.0, 1.0, 1.0]
         space_1d = BsplineSpace1D(knots, 2)
         space = BsplineSpace([space_1d])
-        # Shape: (3, 1) -> ndim=2, dim=1, rank = 2-1 = 1, but wait...
-        # Actually: control_points.reshape([*space.num_basis, -1]) = (3, 1)
-        # rank = ndim - dim = 2 - 1 = 1, but for scalar it should be 0
-        # Let me check the code again: rank = rk - 1 if is_rational else rk, where rk = ndim - dim
-        # So for (3, 1): rk = 2 - 1 = 1, rank = 1 (non-rational)
-        # But wait, for scalar values, we want rank 0. Let me check the actual behavior.
         control_points = np.array([1.0, 2.0, 3.0], dtype=np.float64)
         bspline = Bspline(space, control_points)
 
         # control_points reshaped to (3, 1), so ndim=2, dim=1, rank=2-1=1
-        # But this doesn't match the expected behavior. Let me test what actually happens.
         assert bspline.control_points.shape == (3, 1)
-        # rank = ndim - dim = 2 - 1 = 1, but we want 0 for scalar
-        # Actually, looking at the code: rank = rk - 1 if is_rational else rk
-        # where rk = self._control_points.ndim - self.dim
-        # So for (3, 1): rk = 2 - 1 = 1, rank = 1 (non-rational)
-        # This seems wrong for scalar. But let me test what the code actually does.
         assert bspline.rank == 1  # This is what the code computes
 
     def test_rank_property_non_rational_vector(self) -> None:
@@ -314,9 +302,6 @@ class TestBsplineProperties:
 
     def test_rank_property_non_rational_higher_rank(self) -> None:
         """Test rank property for non-rational with higher rank values."""
-        # With reshape([*space.num_basis, -1]), ndim = len(space.num_basis) + 1
-        # For 3D space: ndim=4, dim=3, so rank=1 for scalar (trailing dim=1)
-        # For rank 2, need trailing dim > 1
         knots1 = [0.0, 0.0, 0.0, 1.0, 1.0, 1.0]
         knots2 = [0.0, 0.0, 1.0, 1.0]
         knots3 = [0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0]
@@ -324,10 +309,7 @@ class TestBsplineProperties:
         space_1d_2 = BsplineSpace1D(knots2, 1)
         space_1d_3 = BsplineSpace1D(knots3, 3)
         space_3d = BsplineSpace([space_1d_1, space_1d_2, space_1d_3])
-        # For rank 2: need ndim=5, so (3, 2, 4, 2) = 48 elements
-        # But reshape([3, 2, 4, -1]) with 48 -> (3, 2, 4, 2), ndim=4, rank=1
-        # Actually, with this reshape pattern, max rank is always 1
-        # Let's test rank 1 with different trailing dimensions
+
         control_points_rank1 = np.arange(24, dtype=np.float64)
         bspline_rank1 = Bspline(space_3d, control_points_rank1)
         assert bspline_rank1.control_points.shape == (3, 2, 4, 1)
@@ -478,3 +460,46 @@ class TestBsplineEdgeCases:
         bspline_vec = Bspline(space, cp_vec)
         assert bspline_vec.control_points.shape == (3, 2, 4, 2)
         assert bspline_vec.rank == 1  # ndim=4, dim=3, rank=1
+
+
+class TestBsplineEvaluation:
+    """Test Bspline evaluation."""
+
+    def test_evaluate_1D_linear(self) -> None:
+        """Test evaluation of a 1D linear B-spline."""
+        knots = np.array([0.0, 0.0, 1.0, 1.0], dtype=np.float64)
+        space_1d = BsplineSpace1D(knots, 1)
+        space = BsplineSpace([space_1d])
+        control_points = np.array([0.0, 1.0], dtype=np.float64)
+        bspline = Bspline(space, control_points)
+
+        pts = np.array([0.0, 0.5, 1.0], dtype=np.float64)
+        values = bspline.evaluate(pts)
+
+        expected = np.array([0.0, 0.5, 1.0], dtype=np.float64)
+        np.testing.assert_allclose(values, expected, atol=1e-14)
+
+    def test_evaluate_1D_quadratic(self) -> None:
+        """Test evaluation of a 1D quadratic B-spline."""
+        # Basis functions on [0,1] for open knot vector [0,0,0,1,1,1] are Bernstein polynomials
+        knots = np.array([0.0, 0.0, 0.0, 1.0, 1.0, 1.0], dtype=np.float64)
+        space_1d = BsplineSpace1D(knots, 2)
+        space = BsplineSpace([space_1d])
+        control_points = np.array([0.0, 0.5, 1.0], dtype=np.float64)
+        bspline = Bspline(space, control_points)
+
+        pts = np.array([0.0, 0.5, 1.0], dtype=np.float64)
+        values = bspline.evaluate(pts)
+
+        # At 0.5, B2(t) = (1-t)^2 P0 + 2t(1-t) P1 + t^2 P2
+        # = 0.25*0 + 0.5*0.5 + 0.25*1 = 0.25 + 0.25 = 0.5
+        expected = np.array([0.0, 0.5, 1.0], dtype=np.float64)
+        np.testing.assert_allclose(values, expected, atol=1e-14)
+
+        # Non-linear
+        control_points = np.array([0.0, 1.0, 0.0], dtype=np.float64)
+        bspline = Bspline(space, control_points)
+        values = bspline.evaluate(pts)
+        # At 0.5: 0.25*0 + 0.5*1 + 0.25*0 = 0.5
+        expected = np.array([0.0, 0.5, 0.0], dtype=np.float64)
+        np.testing.assert_allclose(values, expected, atol=1e-14)

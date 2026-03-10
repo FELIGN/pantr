@@ -1131,12 +1131,14 @@ class TestExtractionOperatorCorrectness:
             lambda d: create_uniform_open_knot_vector(num_intervals=2, degree=d),  # 2 intervals
             lambda d: create_uniform_open_knot_vector(num_intervals=3, degree=d),  # 3 intervals
             lambda d: [0.0] * (d + 1) + [0.5, 1.0] + [2.0] * (d + 1),  # 2 intervals, different end
-            lambda d: [0.0] * (d + 1)
-            + [0.5] * (d - 1)
-            + [1.3, 2.7]
-            + [3.5] * (d - 1)
-            + [4.0, 5.0]
-            + [6.0] * (d + 1),  # 5 intervals with different continuities
+            lambda d: (
+                [0.0] * (d + 1)
+                + [0.5] * (d - 1)
+                + [1.3, 2.7]
+                + [3.5] * (d - 1)
+                + [4.0, 5.0]
+                + [6.0] * (d + 1)
+            ),  # 5 intervals with different continuities
             lambda d: create_cardinal_Bspline_knot_vector(
                 num_intervals=4, degree=d
             ),  # cardinal intervals
