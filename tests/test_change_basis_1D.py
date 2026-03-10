@@ -11,6 +11,8 @@ from pantr.basis import (
     tabulate_Lagrange_basis_1D,
 )
 from pantr.change_basis import (
+    _cached_cardinal_to_Bernstein_matrix,
+    _cached_Lagrange_to_Bernstein_matrix,
     _compute_change_basis_1D,
     compute_Bernstein_to_cardinal_change_basis_1D,
     compute_Bernstein_to_Lagrange_change_basis_1D,
@@ -402,3 +404,71 @@ class TestCreateChangeBasis:
         out_readonly.setflags(write=False)
         with pytest.raises(ValueError, match="Output array is not writeable"):
             _compute_change_basis_1D(bernstein, cardinal, n_quad_pts=degree + 1, out=out_readonly)
+
+
+class TestCachedChangeBasisMatrices:
+    """Tests for the LRU-cached change-of-basis helpers."""
+
+    def test_lagrange_cached_values_match_uncached(self) -> None:
+        """Cached matrix must be numerically identical to the uncached reference."""
+        degree = 3
+        variant = LagrangeVariant.GAUSS_LOBATTO_LEGENDRE
+        dtype = np.dtype(np.float64)
+        expected = compute_Lagrange_to_Bernstein_change_basis_1D(degree, variant, dtype)
+        cached = _cached_Lagrange_to_Bernstein_matrix(degree, variant, dtype)
+        np.testing.assert_array_equal(cached, expected)
+
+    def test_cardinal_cached_values_match_uncached(self) -> None:
+        """Cached matrix must be numerically identical to the uncached reference."""
+        degree = 3
+        dtype = np.dtype(np.float64)
+        expected = compute_cardinal_to_Bernstein_change_basis_1D(degree, dtype)
+        cached = _cached_cardinal_to_Bernstein_matrix(degree, dtype)
+        np.testing.assert_array_equal(cached, expected)
+
+    def test_lagrange_cached_array_is_readonly(self) -> None:
+        """The cached array must be read-only to prevent mutation of the shared copy."""
+        degree = 2
+        dtype = np.dtype(np.float32)
+        mat = _cached_Lagrange_to_Bernstein_matrix(degree, LagrangeVariant.EQUISPACES, dtype)
+        assert not mat.flags.writeable
+        with pytest.raises((ValueError, TypeError)):
+            mat[0, 0] = 0.0
+
+    def test_cardinal_cached_array_is_readonly(self) -> None:
+        """The cached array must be read-only to prevent mutation of the shared copy."""
+        degree = 2
+        dtype = np.dtype(np.float64)
+        mat = _cached_cardinal_to_Bernstein_matrix(degree, dtype)
+        assert not mat.flags.writeable
+        with pytest.raises((ValueError, TypeError)):
+            mat[0, 0] = 0.0
+
+    def test_lagrange_cache_returns_same_object(self) -> None:
+        """Repeated calls with identical arguments must return the exact same object."""
+        degree = 2
+        variant = LagrangeVariant.EQUISPACES
+        dtype = np.dtype(np.float64)
+        mat1 = _cached_Lagrange_to_Bernstein_matrix(degree, variant, dtype)
+        mat2 = _cached_Lagrange_to_Bernstein_matrix(degree, variant, dtype)
+        assert mat1 is mat2
+
+    def test_cardinal_cache_returns_same_object(self) -> None:
+        """Repeated calls with identical arguments must return the exact same object."""
+        degree = 3
+        dtype = np.dtype(np.float64)
+        mat1 = _cached_cardinal_to_Bernstein_matrix(degree, dtype)
+        mat2 = _cached_cardinal_to_Bernstein_matrix(degree, dtype)
+        assert mat1 is mat2
+
+    def test_lagrange_cache_is_bounded(self) -> None:
+        """The Lagrange cache must have a finite maxsize."""
+        info = _cached_Lagrange_to_Bernstein_matrix.cache_info()
+        assert info.maxsize is not None
+        assert info.maxsize > 0
+
+    def test_cardinal_cache_is_bounded(self) -> None:
+        """The cardinal cache must have a finite maxsize."""
+        info = _cached_cardinal_to_Bernstein_matrix.cache_info()
+        assert info.maxsize is not None
+        assert info.maxsize > 0

@@ -11,6 +11,7 @@ without tying the dense numerical quadrature logic directly into the core Spline
 space objects.
 """
 
+import functools
 from collections.abc import Callable
 
 import numpy as np
@@ -314,3 +315,68 @@ def compute_cardinal_to_Bernstein_change_basis_1D(
         dtype=dtype,
         out=out,
     )
+
+
+@functools.lru_cache(maxsize=64)
+def _cached_Lagrange_to_Bernstein_matrix(
+    degree: int,
+    lagrange_variant: LagrangeVariant,
+    dtype: np.dtype[np.float32 | np.float64],
+) -> npt.NDArray[np.float32 | np.float64]:
+    """Return a cached, read-only Lagrange-to-Bernstein change-of-basis matrix.
+
+    This is the hot-path counterpart of
+    :func:`compute_Lagrange_to_Bernstein_change_basis_1D` used internally by
+    the extraction-operator routines.  Because the matrix depends only on
+    ``(degree, lagrange_variant, dtype)`` — never on the knot vector — it is
+    safe to share a single immutable copy across all calls with matching
+    arguments.
+
+    The returned array has ``writeable=False`` to guard the cached copy against
+    accidental in-place mutation.  NumPy's ``matmul`` and ``@`` operator accept
+    read-only arrays as non-output arguments, so callers can use the matrix
+    directly with :func:`numpy.matmul`.
+
+    Args:
+        degree (int): Polynomial degree.
+        lagrange_variant (LagrangeVariant): Lagrange node distribution.
+        dtype (np.dtype): Floating-point dtype (``float32`` or ``float64``).
+
+    Returns:
+        npt.NDArray[np.float32 | np.float64]: Read-only ``(degree+1, degree+1)``
+            transformation matrix such that ``C @ lagrange_values = bernstein_values``.
+    """
+    mat = compute_Lagrange_to_Bernstein_change_basis_1D(degree, lagrange_variant, dtype)
+    mat.flags.writeable = False
+    return mat
+
+
+@functools.lru_cache(maxsize=64)
+def _cached_cardinal_to_Bernstein_matrix(
+    degree: int,
+    dtype: np.dtype[np.float32 | np.float64],
+) -> npt.NDArray[np.float32 | np.float64]:
+    """Return a cached, read-only cardinal-B-spline-to-Bernstein change-of-basis matrix.
+
+    This is the hot-path counterpart of
+    :func:`compute_cardinal_to_Bernstein_change_basis_1D` used internally by
+    the extraction-operator routines.  Because the matrix depends only on
+    ``(degree, dtype)`` — never on the knot vector — it is safe to share a
+    single immutable copy across all calls with matching arguments.
+
+    The returned array has ``writeable=False`` to guard the cached copy against
+    accidental in-place mutation.  NumPy's ``matmul`` and ``@`` operator accept
+    read-only arrays as non-output arguments, so callers can use the matrix
+    directly with :func:`numpy.matmul`.
+
+    Args:
+        degree (int): Polynomial degree.
+        dtype (np.dtype): Floating-point dtype (``float32`` or ``float64``).
+
+    Returns:
+        npt.NDArray[np.float32 | np.float64]: Read-only ``(degree+1, degree+1)``
+            transformation matrix such that ``C @ cardinal_values = bernstein_values``.
+    """
+    mat = compute_cardinal_to_Bernstein_change_basis_1D(degree, dtype)
+    mat.flags.writeable = False
+    return mat
