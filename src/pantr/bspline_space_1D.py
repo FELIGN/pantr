@@ -25,7 +25,7 @@ if TYPE_CHECKING:
     pass
 
 
-@functools.cache
+@functools.lru_cache(maxsize=128)
 def _cached_unique_knots_and_multiplicity(
     knots_repr: tuple[bytes, str, int],
     degree: int,
@@ -33,6 +33,12 @@ def _cached_unique_knots_and_multiplicity(
     in_domain: bool = False,
 ) -> tuple[npt.NDArray[np.float32 | np.float64], npt.NDArray[np.int_]]:
     """Compute unique knots and multiplicities with memoization.
+
+    The cache is bounded to prevent unbounded memory growth in long-running
+    applications that construct many distinct spline spaces.  128 entries is
+    generous for real-world use (an adaptive simulation rarely needs more than
+    a few dozen distinct knot vectors) while still eliminating the risk of a
+    memory leak.
 
     Args:
         knots_repr (tuple[bytes, str, int]): Serialized knot vector bytes, dtype string, and size.
