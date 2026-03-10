@@ -29,7 +29,7 @@ from ._bspline_knots import (
 F = TypeVar("F", bound=Callable[..., Any])
 
 if TYPE_CHECKING:
-    from .bspline_space import BsplineSpace1D
+    from .bspline_space_1D import BsplineSpace1D
 
     # During type-checking, make the decorator a no-op that preserves types.
     def nb_jit(*args: object, **kwargs: object) -> Callable[[F], F]:
