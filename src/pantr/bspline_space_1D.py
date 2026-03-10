@@ -19,6 +19,13 @@ from ._bspline_knots import (
     _get_Bspline_num_basis_1D_impl,
     _get_unique_knots_and_multiplicity_impl,
 )
+from .basis import LagrangeVariant
+from .change_basis import (
+    compute_Bernstein_to_cardinal_change_basis_1D,
+    compute_Bernstein_to_Lagrange_change_basis_1D,
+    compute_cardinal_to_Bernstein_change_basis_1D,
+    compute_Lagrange_to_Bernstein_change_basis_1D,
+)
 from .tolerance import get_strict_tolerance
 
 if TYPE_CHECKING:
@@ -533,3 +540,81 @@ class BsplineSpace1D:
         return _tabulate_Bspline_cardinal_1D_extraction_impl(
             self.knots, self.degree, self.tolerance, out=out
         )
+
+    def compute_Lagrange_to_Bernstein_change_basis(
+        self,
+        lagrange_variant: LagrangeVariant = LagrangeVariant.EQUISPACES,
+        out: npt.NDArray[np.float32 | np.float64] | None = None,
+    ) -> npt.NDArray[np.float32 | np.float64]:
+        """Construct the matrix mapping Lagrange basis evaluations to Bernstein basis evaluations.
+
+        This delegates to `pantr.change_basis.compute_Lagrange_to_Bernstein_change_basis_1D`.
+
+        Args:
+            lagrange_variant (LagrangeVariant): Lagrange point distribution.
+                Defaults to LagrangeVariant.EQUISPACES.
+            out (npt.NDArray[np.float32 | np.float64] | None): Optional output array.
+                If None, a new array is allocated.
+
+        Returns:
+            npt.NDArray[np.float32 | np.float64]: (degree+1, degree+1) transformation matrix.
+        """
+        return compute_Lagrange_to_Bernstein_change_basis_1D(
+            self.degree, lagrange_variant, self.dtype, out=out
+        )
+
+    def compute_Bernstein_to_Lagrange_change_basis(
+        self,
+        lagrange_variant: LagrangeVariant = LagrangeVariant.EQUISPACES,
+        out: npt.NDArray[np.float32 | np.float64] | None = None,
+    ) -> npt.NDArray[np.float32 | np.float64]:
+        """Construct the matrix mapping Bernstein basis evaluations to Lagrange basis evaluations.
+
+        This delegates to `pantr.change_basis.compute_Bernstein_to_Lagrange_change_basis_1D`.
+
+        Args:
+            lagrange_variant (LagrangeVariant): Lagrange point distribution.
+                Defaults to LagrangeVariant.EQUISPACES.
+            out (npt.NDArray[np.float32 | np.float64] | None): Optional output array.
+                If None, a new array is allocated.
+
+        Returns:
+            npt.NDArray[np.float32 | np.float64]: (degree+1, degree+1) transformation matrix.
+        """
+        return compute_Bernstein_to_Lagrange_change_basis_1D(
+            self.degree, lagrange_variant, self.dtype, out=out
+        )
+
+    def compute_Bernstein_to_cardinal_change_basis(
+        self,
+        out: npt.NDArray[np.float32 | np.float64] | None = None,
+    ) -> npt.NDArray[np.float32 | np.float64]:
+        """Create transformation matrix from Bernstein to cardinal B-spline basis.
+
+        This delegates to `pantr.change_basis.compute_Bernstein_to_cardinal_change_basis_1D`.
+
+        Args:
+            out (npt.NDArray[np.float32 | np.float64] | None): Optional output array.
+                If None, a new array is allocated.
+
+        Returns:
+            npt.NDArray[np.float32 | np.float64]: (degree+1, degree+1) transformation matrix.
+        """
+        return compute_Bernstein_to_cardinal_change_basis_1D(self.degree, self.dtype, out=out)
+
+    def compute_cardinal_to_Bernstein_change_basis(
+        self,
+        out: npt.NDArray[np.float32 | np.float64] | None = None,
+    ) -> npt.NDArray[np.float32 | np.float64]:
+        """Create transformation matrix from cardinal B-spline to Bernstein basis.
+
+        This delegates to `pantr.change_basis.compute_cardinal_to_Bernstein_change_basis_1D`.
+
+        Args:
+            out (npt.NDArray[np.float32 | np.float64] | None): Optional output array.
+                If None, a new array is allocated.
+
+        Returns:
+            npt.NDArray[np.float32 | np.float64]: (degree+1, degree+1) transformation matrix.
+        """
+        return compute_cardinal_to_Bernstein_change_basis_1D(self.degree, self.dtype, out=out)

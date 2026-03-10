@@ -35,6 +35,12 @@ from pantr.basis import (
     tabulate_Lagrange_basis_1D,
 )
 from pantr.bspline_space_1D import BsplineSpace1D
+from pantr.change_basis import (
+    compute_Bernstein_to_cardinal_change_basis_1D,
+    compute_Bernstein_to_Lagrange_change_basis_1D,
+    compute_cardinal_to_Bernstein_change_basis_1D,
+    compute_Lagrange_to_Bernstein_change_basis_1D,
+)
 from pantr.tolerance import get_strict_tolerance
 
 
@@ -1496,3 +1502,37 @@ class TestOutParameter:
 
         with pytest.raises(ValueError, match="Output array is not writeable"):
             spline.tabulate_cardinal_extraction_operators(out=out)
+
+
+class TestBsplineSpace1DChangeBasis:
+    """Test change of basis wrappers on BsplineSpace1D."""
+
+    @pytest.mark.parametrize("degree", [1, 2, 3, 4])
+    def test_compute_change_basis_wrappers(self, degree: int) -> None:
+        """Test that the change of basis methods delegate correctly."""
+        knots = create_uniform_open_knot_vector(num_intervals=5, degree=degree, domain=(0.0, 1.0))
+        spline = BsplineSpace1D(knots, degree)
+
+        # 1. Lagrange to Bernstein
+        res1 = spline.compute_Lagrange_to_Bernstein_change_basis(LagrangeVariant.EQUISPACES)
+        exp1 = compute_Lagrange_to_Bernstein_change_basis_1D(
+            degree, LagrangeVariant.EQUISPACES, spline.dtype
+        )
+        np.testing.assert_allclose(res1, exp1)
+
+        # 2. Bernstein to Lagrange
+        res2 = spline.compute_Bernstein_to_Lagrange_change_basis(LagrangeVariant.EQUISPACES)
+        exp2 = compute_Bernstein_to_Lagrange_change_basis_1D(
+            degree, LagrangeVariant.EQUISPACES, spline.dtype
+        )
+        np.testing.assert_allclose(res2, exp2)
+
+        # 3. Bernstein to Cardinal
+        res3 = spline.compute_Bernstein_to_cardinal_change_basis()
+        exp3 = compute_Bernstein_to_cardinal_change_basis_1D(degree, spline.dtype)
+        np.testing.assert_allclose(res3, exp3)
+
+        # 4. Cardinal to Bernstein
+        res4 = spline.compute_cardinal_to_Bernstein_change_basis()
+        exp4 = compute_cardinal_to_Bernstein_change_basis_1D(degree, spline.dtype)
+        np.testing.assert_allclose(res4, exp4)
