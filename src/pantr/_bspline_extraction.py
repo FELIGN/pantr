@@ -7,10 +7,6 @@ and B-spline basis functions.
 
 from __future__ import annotations
 
-from collections.abc import Callable
-from typing import TYPE_CHECKING, Any, TypeVar
-
-import numba as nb
 import numpy as np
 import numpy.typing as npt
 
@@ -21,24 +17,12 @@ from ._bspline_knots import (
     _get_multiplicity_of_first_knot_in_domain_impl,
     _get_unique_knots_and_multiplicity_impl,
 )
+from ._numba_compat import nb_jit
 from .basis import LagrangeVariant
 from .change_basis import (
     compute_cardinal_to_Bernstein_change_basis_1D,
     compute_Lagrange_to_Bernstein_change_basis_1D,
 )
-
-F = TypeVar("F", bound=Callable[..., Any])
-
-if TYPE_CHECKING:
-    # During type-checking, make the decorator a no-op that preserves types.
-    def nb_jit(*args: object, **kwargs: object) -> Callable[[F], F]:
-        def decorator(func: F) -> F:
-            return func
-
-        return decorator
-else:
-    # At runtime, use the real Numba decorator.
-    nb_jit = nb.jit  # type: ignore[attr-defined]
 
 
 @nb_jit(

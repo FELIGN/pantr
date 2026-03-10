@@ -6,10 +6,8 @@ using Cox-de Boor recursion and Bernstein-like evaluation.
 
 from __future__ import annotations
 
-from collections.abc import Callable
-from typing import TYPE_CHECKING, Any, TypeVar
+from typing import TYPE_CHECKING
 
-import numba as nb
 import numpy as np
 import numpy.typing as npt
 
@@ -25,21 +23,10 @@ from ._bspline_knots import (
     _get_last_knot_smaller_equal_impl,
     _is_in_domain_impl,
 )
-
-F = TypeVar("F", bound=Callable[..., Any])
+from ._numba_compat import nb_jit
 
 if TYPE_CHECKING:
     from .bspline_space_1D import BsplineSpace1D
-
-    # During type-checking, make the decorator a no-op that preserves types.
-    def nb_jit(*args: object, **kwargs: object) -> Callable[[F], F]:
-        def decorator(func: F) -> F:
-            return func
-
-        return decorator
-else:
-    # At runtime, use the real Numba decorator.
-    nb_jit = nb.jit  # type: ignore[attr-defined]
 
 
 @nb_jit(
