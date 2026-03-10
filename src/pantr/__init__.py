@@ -94,3 +94,37 @@ __all__ = [
     "tabulate_cardinal_Bspline_basis",
     "tabulate_cardinal_Bspline_basis_1D",
 ]
+
+# Defer numba JIT compilation warmups to a background thread to prevent
+# blocking module import, allowing immediate interaction unless Numba 
+# functions are called right away.
+import logging
+import threading
+from typing import TYPE_CHECKING
+
+if not TYPE_CHECKING:
+    def _async_warmup() -> None:
+        try:
+            logger = logging.getLogger(__name__)
+            logger.debug("Starting Numba JIT warmup...")
+            from . import (  # noqa: PLC0415
+                _basis_core,
+                _bspline_basis_core,
+                _bspline_eval,
+                _bspline_extraction,
+                _bspline_knots,
+            )
+
+            _basis_core._warmup_numba_functions()
+            _bspline_basis_core._warmup_numba_functions()
+            _bspline_eval._warmup_numba_functions()
+            _bspline_extraction._warmup_numba_functions()
+            _bspline_knots._warmup_numba_functions()
+            logger.debug("Finished Numba JIT warmup.")
+        except Exception:
+            # During process teardown (e.g. short scripts), background Numba caching 
+            # might fail due to unavailable module locators. We silently ignore this.
+            pass
+
+    threading.Thread(target=_async_warmup, daemon=True).start()
+
