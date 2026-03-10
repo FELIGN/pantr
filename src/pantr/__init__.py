@@ -105,18 +105,24 @@ from typing import TYPE_CHECKING
 if not TYPE_CHECKING:
 
     def _async_warmup() -> None:
+        from ._numba_compat import _warmup_complete  # noqa: PLC0415
+
         try:
             logger = logging.getLogger(__name__)
             logger.debug("Starting Numba JIT warmup...")
             from . import (  # noqa: PLC0415
-                _basis_core,
                 _bspline_basis_core,
                 _bspline_eval,
                 _bspline_extraction,
                 _bspline_knots,
             )
 
-            _basis_core._warmup_numba_functions()
+            # _basis_core kernels use parallel=True. Numba's default threading
+            # layer (workqueue) is not safe for concurrent parallel calls from
+            # multiple Python threads.  Compiling them here (from a background
+            # thread) while the main thread may also call them leads to a crash.
+            # Instead they compile lazily on first user call (always from the
+            # main / caller thread) and are cached to disk by Numba's cache=True.
             _bspline_basis_core._warmup_numba_functions()
             _bspline_eval._warmup_numba_functions()
             _bspline_extraction._warmup_numba_functions()
@@ -126,5 +132,8 @@ if not TYPE_CHECKING:
             # During process teardown (e.g. short scripts), background Numba caching
             # might fail due to unavailable module locators. We silently ignore this.
             pass
+        finally:
+            # Always signal completion so callers are never blocked indefinitely.
+            _warmup_complete.set()
 
     threading.Thread(target=_async_warmup, daemon=True).start()

@@ -9,13 +9,13 @@ from __future__ import annotations
 import numpy as np
 import numpy.typing as npt
 
-from ._numba_compat import nb_jit
+from ._numba_compat import nb_jit, nb_prange
 
 
 @nb_jit(
     nopython=True,
     cache=True,
-    parallel=False,
+    parallel=True,
 )
 def _tabulate_Bernstein_basis_1D_core(
     n: np.int32,
@@ -36,6 +36,9 @@ def _tabulate_Bernstein_basis_1D_core(
     relation would produce NaN values. At t=1.0, only the last basis function
     B_n,n(1) = 1, while all others are 0.
 
+    Each evaluation point is independent, so the outer loop over points is
+    parallelised with ``numba.prange`` for better throughput on large arrays.
+
     Args:
         n (np.int32): Degree of the Bernstein polynomials. Must be non-negative.
         t (npt.NDArray[np.float32 | np.float64]): 1D array of
@@ -55,12 +58,12 @@ def _tabulate_Bernstein_basis_1D_core(
     """
     if n == 0:
         # The basis is just B_0,0(pts) = 1
-        for j in range(out.shape[0]):
+        for j in nb_prange(out.shape[0]):
             out[j, 0] = 1.0
         return
 
-    # Process each point
-    for j in range(t.shape[0]):
+    # Process each point — rows are independent, so use prange.
+    for j in nb_prange(t.shape[0]):
         u = t[j]
         if u == 1.0:
             # At t=1.0: only B_n,n(1) = 1, all others are 0
@@ -81,7 +84,7 @@ def _tabulate_Bernstein_basis_1D_core(
 @nb_jit(
     nopython=True,
     cache=True,
-    parallel=False,
+    parallel=True,
 )
 def _tabulate_cardinal_Bspline_basis_1D_core(
     n: np.int32,
@@ -95,6 +98,9 @@ def _tabulate_cardinal_Bspline_basis_1D_core(
     evaluation point in t. Values are zero outside [0, 1]. Uses the stable
     Cox-de Boor (BasisFuns) recursion specialized to span index i=0.
 
+    Each evaluation point is independent, so the outer loop over points is
+    parallelised with ``numba.prange`` for better throughput on large arrays.
+
     Args:
         n (np.int32): Degree of the B-spline basis (>= 0).
         t (npt.NDArray[np.float32 | np.float64]): 1D array of
@@ -105,14 +111,16 @@ def _tabulate_cardinal_Bspline_basis_1D_core(
             shape and dtype (no validation performed inside this numba-compiled function).
     """
     num_pts = t.shape[0]
-    # Initialize first column to 1.0
-    for j in range(num_pts):
-        out[j, 0] = 1.0
 
-    if n == 0:  # Degree-0: basis function is constant.
+    if n == 0:
+        # Degree-0: basis function is constant.
+        for j in nb_prange(num_pts):
+            out[j, 0] = 1.0
         return
 
-    for j in range(num_pts):
+    # Each row is independent — parallelise over points.
+    for j in nb_prange(num_pts):
+        out[j, 0] = 1.0
         u = t[j]
         one_minus_u = 1.0 - u
 
@@ -130,7 +138,7 @@ def _tabulate_cardinal_Bspline_basis_1D_core(
 @nb_jit(
     nopython=True,
     cache=True,
-    parallel=False,
+    parallel=True,
 )
 def _tabulate_Legendre_basis_1D_core(
     n: np.int32,
@@ -149,6 +157,9 @@ def _tabulate_Legendre_basis_1D_core(
     p_i(x) = (sqrt(2i-1)sqrt(2i+1)/i) * (2x-1) * p_{i-1}(x)
              - ((i-1)/i) * sqrt((2i+1)/(2i-3)) * p_{i-2}(x)
 
+    The recurrence coefficients are precomputed once, and the outer loop over
+    evaluation points is parallelised with ``numba.prange``.
+
     Args:
         n (np.int32): Degree of the Legendre polynomials. Must be non-negative.
         t (npt.NDArray[np.float32 | np.float64]): 1D array of
@@ -160,37 +171,32 @@ def _tabulate_Legendre_basis_1D_core(
     """
     num_pts = t.shape[0]
 
-    # p_0(x) = 1
-    for j in range(num_pts):
-        out[j, 0] = 1.0
-
     if n == 0:
+        for j in nb_prange(num_pts):
+            out[j, 0] = 1.0
         return
 
-    # p_1(x) = sqrt(3)(2x-1)
-    sqrt3 = np.sqrt(3.0)
-
-    # Compute 2x - 1 for all points and p_1
-    for j in range(num_pts):
-        two_x_minus_1 = 2.0 * t[j] - 1.0
-        out[j, 1] = sqrt3 * two_x_minus_1
-
+    # Precompute recurrence coefficients a_i, b_i for i = 2..n.
+    # This is O(n) work shared across all points.
+    a_coeffs = np.empty(n + 1)
+    b_coeffs = np.empty(n + 1)
     for i in range(2, n + 1):
-        # Coefficients
-        # a_i = (sqrt(2i-1)sqrt(2i+1)/i)
-        # b_i = ((i-1)/i) * sqrt((2i+1)/(2i-3))
-
         i_float = float(i)
         sqrt_2i_minus_1 = np.sqrt(2.0 * i_float - 1.0)
         sqrt_2i_plus_1 = np.sqrt(2.0 * i_float + 1.0)
         sqrt_2i_minus_3 = np.sqrt(2.0 * i_float - 3.0)
+        a_coeffs[i] = (sqrt_2i_minus_1 * sqrt_2i_plus_1) / i_float
+        b_coeffs[i] = ((i_float - 1.0) / i_float) * (sqrt_2i_plus_1 / sqrt_2i_minus_3)
 
-        a_i = (sqrt_2i_minus_1 * sqrt_2i_plus_1) / i_float
-        b_i = ((i_float - 1.0) / i_float) * (sqrt_2i_plus_1 / sqrt_2i_minus_3)
+    sqrt3 = np.sqrt(3.0)
 
-        for j in range(num_pts):
-            two_x_minus_1 = 2.0 * t[j] - 1.0
-            out[j, i] = a_i * two_x_minus_1 * out[j, i - 1] - b_i * out[j, i - 2]
+    # Each row is independent — parallelise over points.
+    for j in nb_prange(num_pts):
+        two_x_minus_1 = 2.0 * t[j] - 1.0
+        out[j, 0] = 1.0
+        out[j, 1] = sqrt3 * two_x_minus_1
+        for i in range(2, n + 1):
+            out[j, i] = a_coeffs[i] * two_x_minus_1 * out[j, i - 1] - b_coeffs[i] * out[j, i - 2]
 
 
 def _warmup_numba_functions() -> None:
