@@ -4,7 +4,8 @@ import numpy as np
 import pytest
 
 from pantr.bspline import Bspline
-from pantr.bspline_space import BsplineSpace, BsplineSpace1D
+from pantr.bspline_space_1D import BsplineSpace1D
+from pantr.bspline_space_nd import BsplineSpace
 
 
 class TestBsplineInit:

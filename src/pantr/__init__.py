@@ -12,6 +12,11 @@ from . import (
     _basis_utils,  # noqa: F401
     _bspline_space_impl,  # noqa: F401
 )
+from ._bspline_space_factory import (
+    create_cardinal_Bspline_knot_vector,
+    create_uniform_open_knot_vector,
+    create_uniform_periodic_knot_vector,
+)
 
 # Public API imports
 from .basis import (
@@ -24,12 +29,8 @@ from .basis import (
     tabulate_Lagrange_basis_1D,
     tabulate_Legendre_basis_1D,
 )
-from .bspline_space import (
-    BsplineSpace1D,
-    create_cardinal_Bspline_knot_vector,
-    create_uniform_open_knot_vector,
-    create_uniform_periodic_knot_vector,
-)
+from .bspline_space_1D import BsplineSpace1D
+from .bspline_space_nd import BsplineSpace
 from .change_basis import (
     compute_Bernstein_to_cardinal_change_basis_1D,
     compute_Bernstein_to_Lagrange_change_basis_1D,
@@ -61,6 +62,7 @@ __author__: Final[str] = "Pablo Antolin <pablo.antolin@epfl.ch>"
 
 # Public interface: only functions/classes that don't start with _
 __all__ = [
+    "BsplineSpace",
     "BsplineSpace1D",
     "LagrangeVariant",
     "PointsLattice",

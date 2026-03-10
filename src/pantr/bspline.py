@@ -10,7 +10,7 @@ from numpy import typing as npt
 from ._bspline_eval import _evaluate_Bspline
 
 if TYPE_CHECKING:
-    from .bspline_space import BsplineSpace
+    from .bspline_space_nd import BsplineSpace
     from .quad import PointsLattice
 
 
