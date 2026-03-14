@@ -37,12 +37,10 @@ extensions = [
     "sphinx.ext.viewcode",
     "sphinx.ext.intersphinx",
     "myst_parser",
-    "jupytext.sphinx",
     "sphinx_rtd_dark_mode",
 ]
 
 OPTIONAL_EXTENSIONS: Final[list[str]] = [
-    "jupytext.sphinx",
     "sphinx_rtd_dark_mode",
 ]
 
