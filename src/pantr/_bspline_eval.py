@@ -1,4 +1,10 @@
-"""Core B-spline evaluation implementations."""
+"""Core B-spline evaluation implementations using the de Boor algorithm.
+
+This module provides low-level routines for evaluating a :class:`Bspline`
+at arbitrary parametric points. The main entry point is
+:func:`_evaluate_Bspline`, which dispatches to the 1D de Boor kernel for
+1D splines. Multi-dimensional evaluation is currently not implemented.
+"""
 
 from __future__ import annotations
 
@@ -98,7 +104,32 @@ def _evaluate_Bspline_1D(
     pts: npt.NDArray[np.float32 | np.float64] | PointsLattice,
     out: npt.NDArray[np.float32 | np.float64] | None = None,
 ) -> npt.NDArray[np.float32 | np.float64]:
-    """Evaluate the B-spline basis functions at the given points."""
+    """Evaluate the 1D B-spline at the given points.
+
+    Dispatches to the de Boor algorithm for general B-splines and handles
+    rational B-splines by dividing the numerator by the weight coordinate.
+
+    Args:
+        spline (Bspline): A 1D B-spline object containing space, control points,
+            and rational flag.
+        pts (npt.NDArray[np.float32 | np.float64] | PointsLattice): Evaluation
+            points. If a PointsLattice, must be 1D. Otherwise must be a 1D array
+            of shape (n_pts,) matching the B-spline's dtype.
+        out (npt.NDArray[np.float32 | np.float64] | None): Optional output array
+            where the result will be stored. If None, a new array is allocated.
+            Must have shape (n_pts, rank) and dtype matching the B-spline.
+            This follows NumPy's style for output arrays. Defaults to None.
+
+    Returns:
+        npt.NDArray[np.float32 | np.float64]: B-spline values at the given
+        points. Shape is (n_pts,) for scalar fields or (n_pts, rank) for
+        vector-valued B-splines. For rational B-splines the weight column is
+        divided out and not included in the output.
+
+    Raises:
+        ValueError: If the B-spline is not 1D, if the points lattice is not 1D,
+            or if the points dtype does not match the B-spline dtype.
+    """
     if spline.dim != 1:
         raise ValueError("B-spline must be 1D")
 
@@ -154,7 +185,19 @@ def _evaluate_Bspline_multi_dim(
     pts: npt.NDArray[np.float32 | np.float64] | PointsLattice,
     out: npt.NDArray[np.float32 | np.float64] | None = None,
 ) -> npt.NDArray[np.float32 | np.float64]:
-    """Evaluate the B-spline basis functions at the given points."""
+    """Evaluate the multi-dimensional B-spline at the given points.
+
+    Args:
+        spline (Bspline): A multi-dimensional B-spline object.
+        pts (npt.NDArray[np.float32 | np.float64] | PointsLattice): Evaluation
+            points.
+        out (npt.NDArray[np.float32 | np.float64] | None): Optional output
+            array. Defaults to None.
+
+    Raises:
+        NotImplementedError: Always raised; multi-dimensional evaluation is not
+            yet implemented.
+    """
     raise NotImplementedError("Not implemented")
 
 
@@ -181,7 +224,12 @@ def _evaluate_Bspline(
 
 
 def _warmup_numba_functions() -> None:
-    """Precompile numba functions with float64 signatures for faster first call."""
+    """Precompile Numba functions with float64 signatures for faster first call.
+
+    Triggers compilation of the de Boor evaluation kernel with representative
+    float64 arrays. The compiled code is cached by Numba (``cache=True``) so
+    subsequent cold-start calls do not pay JIT overhead.
+    """
     knots_dummy = np.array([0.0, 0.0, 0.0, 1.0, 1.0, 1.0], dtype=np.float64)
     pts_dummy = np.array([0.5], dtype=np.float64)
     cp_dummy = np.array([[0.0], [1.0], [0.0]], dtype=np.float64)

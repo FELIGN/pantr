@@ -72,3 +72,87 @@ Public functions and Layer 2 helpers accept an optional `out` argument for the r
 - Ruff with Google-style docstrings, line length 100, target Python 3.10
 - Warnings are treated as errors in pytest
 - Layer 3 kernels run under Numba `nopython=True`: only use NumPy operations supported in that mode; unsupported calls cause a hard compile error or silent object-mode fallback
+
+## Documentation guidelines
+
+All code must use **Google-style docstrings** (enforced by Ruff's `pydocstyle` rule set).
+
+### What to document
+
+| Symbol | Required |
+|---|---|
+| Module / package `__init__.py` | Yes — multi-line summary + bullet list of main exports |
+| Class | Yes — summary + `Attributes:` for every instance variable |
+| Public function / method | Yes — full `Args:`, `Returns:`, `Raises:` |
+| Private function / method (`_foo`) | Yes — same as public; private doesn't mean undocumented |
+| Property | Yes — one-line summary + `Returns:` with type and description |
+| Class attribute annotation | Yes — inline docstring (`"""…"""` on the line below) or in class `Attributes:` |
+| Type alias | Yes — one-line docstring describing the alias |
+| Numba kernel (Layer 3) | Yes — full docstring; add a `Note:` stating "No input validation is performed" |
+
+### Required sections per symbol
+
+**Modules** — opening summary paragraph; bullet list of key exports when helpful.
+
+**Classes**:
+```
+"""Short summary.
+
+Longer description if needed.
+
+Attributes:
+    attr_name (type): Description.
+"""
+```
+
+**Functions / methods**:
+```
+"""Short summary (imperative mood, ≤ 1 line).
+
+Optional extended description.
+
+Args:
+    param_name (type): Description. Defaults to X.
+
+Returns:
+    type: Description. Omit if return type is None.
+
+Raises:
+    ExceptionType: When/why it is raised.
+
+Example:
+    >>> call_example()
+    expected_output
+"""
+```
+
+**Properties** — include `Returns:` even though there are no `Args:`:
+```python
+@property
+def foo(self) -> int:
+    """Get the foo value.
+
+    Returns:
+        int: Description.
+    """
+```
+
+### Layer-specific rules
+
+- **Layer 1 (public API)**: Full docstrings with examples where useful. Docstring is the user-facing contract.
+- **Layer 2 (implementation helpers)**: Full docstrings. Note any shape/dtype assumptions not enforced by the function itself.
+- **Layer 3 (Numba kernels)**: Full docstrings. Always include a `Note:` section:
+
+  ```
+  Note:
+      Inputs are assumed to be correct (no validation performed).
+      For general use, call <Layer2Counterpart> instead.
+  ```
+
+### Style rules
+
+- First line: imperative mood, ≤ 100 characters, no trailing period.
+- Wrap long lines at 100 characters (matching `line-length` in `ruff.toml`).
+- Use backticks for code references: `` `out` ``, `` `np.float64` ``, `` :class:`BsplineSpace1D` ``.
+- Do not repeat the function signature in the docstring body.
+- Type annotations in `Args:` / `Returns:` should match the function signature exactly.

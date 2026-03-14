@@ -29,7 +29,19 @@ def _ensure_float_dtype_by_name(name: str) -> np.dtype[np.floating[Any]]:
 
 
 def _ensure_float_dtype(dtype: npt.DTypeLike) -> np.dtype[np.floating[Any]]:
-    """Normalize and validate a dtype-like into a floating dtype."""
+    """Normalize and validate a dtype-like value into a supported floating dtype.
+
+    Args:
+        dtype (npt.DTypeLike): Any dtype-like value (e.g., ``np.float32``,
+            ``"float64"``, or a ``np.dtype`` instance).
+
+    Returns:
+        np.dtype[np.floating[Any]]: Validated floating-point dtype.
+
+    Raises:
+        ValueError: If ``dtype`` is not one of the supported floating-point
+            types (float16, float32, float64, longdouble).
+    """
     dtype_obj = np.dtype(dtype)
     return _ensure_float_dtype_by_name(dtype_obj.name)
 

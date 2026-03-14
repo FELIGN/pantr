@@ -1,4 +1,10 @@
-"""Numba compatibility shim for type-checker-friendly JIT decoration."""
+"""Numba compatibility shim for type-checker-friendly JIT decoration.
+
+Provides decorators and utilities to handle Numba's runtime behavior
+while remaining friendly to static type analysts (mypy). It also manages
+the synchronization for asynchronous JIT warmup to prevent concurrent-compilation
+crashes in parallel kernels.
+"""
 
 from __future__ import annotations
 

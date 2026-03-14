@@ -1,6 +1,16 @@
 """Public API surface for PaNTr.
 
-Defines package metadata and exported interfaces.
+Defines package metadata and exported interfaces for polynomial and NURBS
+geometric modeling.
+
+The main modules are:
+- :mod:`pantr.basis`: 1D polynomial basis evaluation (Bernstein, Lagrange, etc.).
+- :mod:`pantr.bspline_space_1D`: 1D B-spline space definition and extraction.
+- :mod:`pantr.bspline_space_nd`: Multi-dimensional tensor-product B-spline spaces.
+- :mod:`pantr.bspline`: B-spline geometric objects (curves, surfaces, etc.).
+- :mod:`pantr.change_basis`: Transformation matrices between different bases.
+- :mod:`pantr.quad`: Quadrature rules and evaluation grid helpers.
+- :mod:`pantr.tolerance`: Uniform floating-point tolerance utilities.
 """
 
 from typing import Final

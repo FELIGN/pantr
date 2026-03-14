@@ -1,4 +1,12 @@
-"""Quadrature rules for 1D integration."""
+"""Quadrature rules and evaluation grid helpers for 1D integration.
+
+This module provides:
+
+- 1D quadrature rules on ``[0, 1]``: trapezoidal (equispaced), Gauss-Legendre,
+  Gauss-Lobatto-Legendre, Chebyshev-Gauss (1st and 2nd kind).
+- :class:`PointsLattice`: a multi-dimensional tensor-product evaluation grid.
+- :func:`create_Lagrange_points_lattice`: factory for Lagrange-node lattices.
+"""
 
 from __future__ import annotations
 
@@ -212,7 +220,17 @@ def get_chebyshev_gauss_2nd_kind_quadrature_1D(
 
 
 class PointsLattice:
-    """Points lattice for evaluation."""
+    """A tensor-product grid of evaluation points in multiple dimensions.
+
+    Stores one 1D array of coordinates per spatial direction and provides
+    helpers for constructing the full set of grid points or querying grid
+    metadata.
+
+    Attributes:
+        _pts_per_dir (tuple[npt.NDArray[np.float32 | np.float64], ...]): One
+            1D coordinate array per spatial dimension. All arrays share the same
+            dtype.
+    """
 
     def __init__(self, pts_per_dir: Iterable[npt.NDArray[np.float32 | np.float64]]) -> None:
         """Initialize the points lattice.
@@ -228,7 +246,13 @@ class PointsLattice:
         self._validate_pts_per_dir()
 
     def _validate_pts_per_dir(self) -> None:
-        """Validate the points per dimension."""
+        """Validate the per-direction coordinate arrays.
+
+        Raises:
+            ValueError: If the number of dimensions is less than 1, if arrays
+                have differing dtypes, if any array is not 1D, or if any array
+                is empty.
+        """
         if self.dim < 1:
             raise ValueError("Points lattice must have at least 1 dimension")
         if not all(pts.dtype == self.dtype for pts in self._pts_per_dir):
@@ -241,17 +265,31 @@ class PointsLattice:
 
     @property
     def dim(self) -> int:
-        """Get the dimension of the points lattice."""
+        """Get the dimension of the points lattice.
+
+        Returns:
+            int: Number of spatial dimensions.
+        """
         return len(self._pts_per_dir)
 
     @property
     def dtype(self) -> npt.DTypeLike:
-        """Get the dtype of the points lattice."""
+        """Get the dtype of the points lattice.
+
+        Returns:
+            npt.DTypeLike: The numpy floating-point dtype shared by all
+            coordinate arrays.
+        """
         return self._pts_per_dir[0].dtype
 
     @property
     def pts_per_dir(self) -> tuple[npt.NDArray[np.float32 | np.float64], ...]:
-        """Get the points per dimension."""
+        """Get the points per dimension.
+
+        Returns:
+            tuple[npt.NDArray[np.float32 | np.float64], ...]: One 1D coordinate
+            array for each spatial dimension.
+        """
         return self._pts_per_dir
 
     def get_all_points(
@@ -283,12 +321,25 @@ def create_Lagrange_points_lattice(
     n_pts_per_dir: Iterable[int],
     dtype: npt.DTypeLike = np.float64,
 ) -> PointsLattice:
-    """Create a points lattice for evaluation.
+    """Create a Lagrange points lattice for tensor-product evaluation.
+
+    Builds a :class:`PointsLattice` whose per-direction coordinate arrays are
+    the Lagrange nodes of the specified variant on ``[0, 1]``.
 
     Args:
-        lagrange_variant (LagrangeVariant): The variant of the Lagrange basis.
-        n_pts_per_dir (Iterable[int]): The number of points per dimension.
-        dtype (npt.DTypeLike): The dtype of the points. Defaults to float64.
+        lagrange_variant (LagrangeVariant): The variant of the Lagrange basis
+            (e.g., equispaced, Gauss-Legendre, Gauss-Lobatto-Legendre, etc.).
+        n_pts_per_dir (Iterable[int]): Number of points per spatial dimension.
+            Each value must be at least 1.
+        dtype (npt.DTypeLike): Floating-point dtype for the coordinates.
+            Must be float32 or float64. Defaults to np.float64.
+
+    Returns:
+        PointsLattice: A lattice whose per-direction coordinate arrays are the
+        Lagrange nodes for the given variant and point counts.
+
+    Raises:
+        ValueError: If any value in ``n_pts_per_dir`` is less than 1.
     """
     # Lazy import to avoid circular dependency
     from ._basis_lagrange import _get_lagrange_points  # noqa: PLC0415

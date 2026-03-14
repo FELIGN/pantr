@@ -6,11 +6,17 @@ Initializes metadata, extensions, and build parameters.
 from __future__ import annotations
 
 import importlib.util
+import os
 import sys
 import warnings
 from datetime import date
 from pathlib import Path
 from typing import Final
+
+# Disable Numba JIT during documentation build. This avoids issues with
+# JIT caching and potential concurrent-compilation crashes while Sphinx
+# imports the package.
+os.environ["NUMBA_DISABLE_JIT"] = "1"
 
 PROJECT_ROOT: Final[Path] = Path(__file__).resolve().parent.parent
 SRC_PATH: Final[Path] = PROJECT_ROOT / "src"
@@ -37,12 +43,10 @@ extensions = [
     "sphinx.ext.viewcode",
     "sphinx.ext.intersphinx",
     "myst_parser",
-    "jupytext.sphinx",
     "sphinx_rtd_dark_mode",
 ]
 
 OPTIONAL_EXTENSIONS: Final[list[str]] = [
-    "jupytext.sphinx",
     "sphinx_rtd_dark_mode",
 ]
 
@@ -156,15 +160,6 @@ nitpick_ignore_regex = [
     ("py:class", r"numpy\.\w+"),
 ]
 
-suppress_warnings = [
-    # Napoleon renders type aliases like np.int_ / np.bool_ as plain RST
-    # text. In RST, a bare word ending in _ is a hyperlink reference, so
-    # np.int_ becomes a reference to "np.int" with no target defined.
-    # Until the docstrings are updated to use canonical names, suppress these.
-    "ref.ref",
-    # autosummary and autodoc both document LagrangeVariant enum members,
-    # triggering duplicate-object-description warnings.
-    "autodoc",
-]
+suppress_warnings: list[str] = []
 
 intersphinx_timeout = 15
