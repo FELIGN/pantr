@@ -262,7 +262,7 @@ class BsplineSpace1D:
                 Defaults to False.
 
         Returns:
-            tuple[npt.NDArray[np.float32 | np.float64], npt.NDArray[np.int_]]: Tuple of
+            tuple[npt.NDArray[np.float32 | np.float64], npt.NDArray[numpy.intp]]: Tuple of
             (unique_knots, multiplicities) where unique_knots contains the distinct knot values
             and multiplicities contains the corresponding multiplicity counts.
         """
@@ -379,12 +379,12 @@ class BsplineSpace1D:
         discards the first degree-1 and the last degree-1 intervals.
 
         Args:
-            out (npt.NDArray[np.bool_] | None): Optional output array where the result will be
+            out (npt.NDArray[bool] | None): Optional output array where the result will be
                 stored. If None, a new array is allocated. Must have the correct shape and dtype
                 if provided. This follows NumPy's style for output arrays. Defaults to None.
 
         Returns:
-            npt.NDArray[np.bool_]: Boolean array where True indicates cardinal intervals.
+            npt.NDArray[bool]: Boolean array where True indicates cardinal intervals.
                 It has length equal to the number of intervals. If `out` was provided,
                 returns the same array.
 
@@ -422,21 +422,21 @@ class BsplineSpace1D:
                 basis values will be stored. If None, a new array is allocated. Must have the
                 correct shape and dtype if provided. This follows NumPy's style for output arrays.
                 Defaults to None.
-            out_first_basis (npt.NDArray[np.int_] | None): Optional output array where the
+            out_first_basis (npt.NDArray[numpy.intp] | None): Optional output array where the
                 first basis indices will be stored. If None, a new array is allocated. Must have
-                the correct shape and dtype np.int_ if provided. This follows NumPy's style for
+                the correct shape and dtype numpy.intp if provided. This follows NumPy's style for
                 output arrays. Defaults to None.
 
         Returns:
             tuple[
                 npt.NDArray[np.float32] | npt.NDArray[np.float64],
-                npt.NDArray[np.int_]
+                npt.NDArray[numpy.intp]
             ]: Tuple containing:
                 - basis_values: (npt.NDArray[np.float32] | npt.NDArray[np.float64])
                   Array of shape matching `pts` with the last dimension length (degree+1),
                   containing the basis function values evaluated at each point.
                   If `out_basis` was provided, returns the same array.
-                - first_basis_indices: (npt.NDArray[np.int_])
+                - first_basis_indices: (npt.NDArray[numpy.intp])
                   1D integer array indicating the index of the first nonzero basis function
                   for each evaluation point. The length is the same as the number
                   of evaluation points. If `out_first_basis` was provided, returns the same array.

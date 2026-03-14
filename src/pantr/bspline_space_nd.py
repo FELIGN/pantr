@@ -178,13 +178,13 @@ class BsplineSpace:
                 basis values will be stored. If None, a new array is allocated. Must have the
                 correct shape and dtype if provided. This follows NumPy's style for output arrays.
                 Defaults to None.
-            out_first_basis (npt.NDArray[np.int_] | None): Optional output array where the
+            out_first_basis (npt.NDArray[numpy.intp] | None): Optional output array where the
                 first basis indices will be stored. If None, a new array is allocated. Must have
-                the correct shape and dtype np.int_ if provided. This follows NumPy's style for
+                the correct shape and dtype numpy.intp if provided. This follows NumPy's style for
                 output arrays. Defaults to None.
 
         Returns:
-            tuple[npt.NDArray[np.float32 | np.float64], npt.NDArray[np.int_]]: The basis
+            tuple[npt.NDArray[np.float32 | np.float64], npt.NDArray[numpy.intp]]: The basis
             function values and the first basis function indices.
 
             In the case pts is a 2D array, the shape of the basis function values array

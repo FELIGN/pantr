@@ -156,15 +156,6 @@ nitpick_ignore_regex = [
     ("py:class", r"numpy\.\w+"),
 ]
 
-suppress_warnings = [
-    # Napoleon renders type aliases like np.int_ / np.bool_ as plain RST
-    # text. In RST, a bare word ending in _ is a hyperlink reference, so
-    # np.int_ becomes a reference to "np.int" with no target defined.
-    # Until the docstrings are updated to use canonical names, suppress these.
-    "ref.ref",
-    # autosummary and autodoc both document LagrangeVariant enum members,
-    # triggering duplicate-object-description warnings.
-    "autodoc",
-]
+suppress_warnings: list[str] = []
 
 intersphinx_timeout = 15

@@ -22,23 +22,18 @@ if TYPE_CHECKING:
 
 
 class LagrangeVariant(Enum):
-    """Enumeration for Lagrange polynomial variants.
-
-    Attributes:
-        EQUISPACES (LagrangeVariant): Equispaced points.
-        GAUSS_LEGENDRE (LagrangeVariant): Gauss-Legendre points (roots of Legendre polynomial).
-        GAUSS_LOBATTO_LEGENDRE (LagrangeVariant): Gauss-Lobatto-Legendre points.
-        CHEBYSHEV_1ST (LagrangeVariant): Chebyshev 1st kind points
-            (x = [pi*(k + 0.5)/npts for k in range(npts)]).
-        CHEBYSHEV_2ND (LagrangeVariant): Chebyshev 2nd kind points
-            (x = [pi*k/(npts - 1) for k in range(npts)]).
-    """
+    """Enumeration for Lagrange polynomial variants."""
 
     EQUISPACES = "equispaces"
+    """Equispaced points."""
     GAUSS_LEGENDRE = "gauss_legendre"
+    """Gauss-Legendre points (roots of Legendre polynomial)."""
     GAUSS_LOBATTO_LEGENDRE = "gauss_lobatto_legendre"
+    """Gauss-Lobatto-Legendre points."""
     CHEBYSHEV_1ST = "chebyshev_1st"
+    """Chebyshev 1st kind points (x = [pi*(k + 0.5)/npts for k in range(npts)])."""
     CHEBYSHEV_2ND = "chebyshev_2nd"
+    """Chebyshev 2nd kind points (x = [pi*k/(npts - 1) for k in range(npts)])."""
 
 
 def tabulate_Bernstein_basis_1D(
