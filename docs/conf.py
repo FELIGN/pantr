@@ -58,11 +58,20 @@ for ext in OPTIONAL_EXTENSIONS:
             )
             extensions = [e for e in extensions if e != ext]
 
+_INTERSPHINX_DIR: Final[Path] = PROJECT_ROOT / "docs" / "_intersphinx"
+
+
+def _local_inv(name: str) -> str | None:
+    """Return path to a locally cached intersphinx inventory, or None to download."""
+    path = _INTERSPHINX_DIR / f"{name}.inv"
+    return str(path) if path.exists() else None
+
+
 intersphinx_mapping = {
-    "python": ("https://docs.python.org/3", None),
-    "numpy": ("https://numpy.org/doc/stable", None),
-    "scipy": ("https://docs.scipy.org/doc/scipy/", None),
-    "matplotlib": ("https://matplotlib.org/stable", None),
+    "python": ("https://docs.python.org/3", _local_inv("python")),
+    "numpy": ("https://numpy.org/doc/stable", _local_inv("numpy")),
+    "scipy": ("https://docs.scipy.org/doc/scipy/", _local_inv("scipy")),
+    "matplotlib": ("https://matplotlib.org/stable", _local_inv("matplotlib")),
 }
 
 templates_path = ["_templates"]
@@ -129,3 +138,11 @@ version = pantr.__version__
 release = pantr.__version__
 
 nitpicky = True
+
+# Private NumPy typing internals are not exposed in the public inventory.
+nitpick_ignore = [
+    ("py:class", "numpy._typing._dtype_like._SupportsDType"),
+    ("py:class", "numpy._typing._dtype_like._DTypeDict"),
+]
+
+intersphinx_timeout = 15

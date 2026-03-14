@@ -179,6 +179,15 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-sphinx-
 
+      - name: Cache intersphinx inventories
+        id: cache-intersphinx
+        uses: actions/cache@v4
+        with:
+          path: docs/_intersphinx
+          key: ${{ runner.os }}-intersphinx-${{ hashFiles('docs/conf.py') }}
+          restore-keys: |
+            ${{ runner.os }}-intersphinx-
+
       - name: Set up Python
         id: setup-python
         uses: actions/setup-python@v5
@@ -204,6 +213,19 @@ jobs:
           . .venv/bin/activate
           python -m pip install --upgrade pip
           pip install -e ".[docs]"
+
+      - name: Download intersphinx inventories (on cache miss)
+        if: steps.cache-intersphinx.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p docs/_intersphinx
+          curl -fsSL --retry 3 --retry-delay 2 https://docs.python.org/3/objects.inv \
+            -o docs/_intersphinx/python.inv || rm -f docs/_intersphinx/python.inv
+          curl -fsSL --retry 3 --retry-delay 2 https://numpy.org/doc/stable/objects.inv \
+            -o docs/_intersphinx/numpy.inv || rm -f docs/_intersphinx/numpy.inv
+          curl -fsSL --retry 3 --retry-delay 2 https://docs.scipy.org/doc/scipy/objects.inv \
+            -o docs/_intersphinx/scipy.inv || rm -f docs/_intersphinx/scipy.inv
+          curl -fsSL --retry 3 --retry-delay 2 https://matplotlib.org/stable/objects.inv \
+            -o docs/_intersphinx/matplotlib.inv || rm -f docs/_intersphinx/matplotlib.inv
 
       - name: Build docs
         run: |
