@@ -145,4 +145,26 @@ nitpick_ignore = [
     ("py:class", "numpy._typing._dtype_like._DTypeDict"),
 ]
 
+# Short-form NumPy aliases used in type annotations (np.*, npt.*, numpy.*)
+# are not resolvable via intersphinx: np/npt are local import aliases, and
+# even numpy.float32 etc. may be listed as py:data rather than py:class in
+# numpy's inventory. Suppress the cross-reference lookup failures for all of
+# them; canonical types like numpy.typing.NDArray are not used in the source.
+nitpick_ignore_regex = [
+    ("py:class", r"np\.\w+"),
+    ("py:class", r"npt\.\w+"),
+    ("py:class", r"numpy\.\w+"),
+]
+
+suppress_warnings = [
+    # Napoleon renders type aliases like np.int_ / np.bool_ as plain RST
+    # text. In RST, a bare word ending in _ is a hyperlink reference, so
+    # np.int_ becomes a reference to "np.int" with no target defined.
+    # Until the docstrings are updated to use canonical names, suppress these.
+    "ref.ref",
+    # autosummary and autodoc both document LagrangeVariant enum members,
+    # triggering duplicate-object-description warnings.
+    "autodoc",
+]
+
 intersphinx_timeout = 15
