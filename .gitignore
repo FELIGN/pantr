@@ -41,6 +41,7 @@ env/
 .idea/
 .vscode/
 *.code-workspace
+.claude/
 
 # Jupyter and notebooks
 .ipynb_checkpoints/
@@ -62,4 +63,3 @@ Thumbs.db
 
 # Hatch build artifacts
 .hatch/
-
