@@ -1,4 +1,10 @@
-"""Basis function evaluation for various polynomial bases."""
+"""Basis function evaluation for various polynomial bases in 1D.
+
+This module provides high-level functions for tabulating basis functions
+(Bernstein, Lagrange, cardinal B-spline, Legendre) over a grid of points.
+It handles input normalization and dispatches to specialized Layer 2 and
+Layer 3 implementations.
+"""
 
 from __future__ import annotations
 

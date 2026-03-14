@@ -47,7 +47,14 @@ def _ensure_float_dtype(dtype: npt.DTypeLike) -> np.dtype[np.floating[Any]]:
 
 
 class _TolerancePreset(NamedTuple):
-    """A named tuple to hold tolerance values for different floating-point types."""
+    """A named tuple to hold tolerance values for different floating-point types.
+
+    Attributes:
+        float16 (float): Tolerance for 16-bit half precision.
+        float32 (float): Tolerance for 32-bit single precision.
+        float64 (float): Tolerance for 64-bit double precision.
+        longdouble (float): Tolerance for platform-dependent extended precision.
+    """
 
     float16: float
     float32: float
@@ -182,7 +189,20 @@ def get_machine_epsilon(dtype: npt.DTypeLike) -> float:
 
 
 class ToleranceInfo(TypedDict):
-    """A TypedDict holding comprehensive tolerance and precision information."""
+    """A TypedDict holding comprehensive tolerance and precision information.
+
+    Attributes:
+        dtype (npt.DTypeLike): The original data type.
+        machine_epsilon (float): Smallest relative error in arithmetic.
+        default_tolerance (float): Recommended default tolerance.
+        strict_tolerance (float): High-precision strict tolerance (parametric).
+        conservative_tolerance (float): Robust conservative tolerance.
+        precision_bits (int): Number of bits in the significand.
+        precision_decimals (int): Approximate number of decimal digits of precision.
+        resolution (float): Minimum positive value that can be represented.
+        max_value (float): Largest representable value.
+        min_value (float): Smallest representable positive normalized value.
+    """
 
     dtype: npt.DTypeLike
     machine_epsilon: float
