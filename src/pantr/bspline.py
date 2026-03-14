@@ -1,9 +1,9 @@
 """B-spline geometric objects: the Bspline class and evaluation helpers.
 
-This module provides :class:`Bspline`, which pairs a :class:`BsplineSpace`
-with control points to represent a parametric B-spline curve, surface, or
-volume. Evaluation at arbitrary points is dispatched to the de Boor algorithm
-implemented in :mod:`_bspline_eval`.
+This module provides :class:`Bspline`, which pairs a
+:class:`~pantr.bspline_space_nd.BsplineSpace` with control points to represent a
+parametric B-spline curve, surface, or volume. Evaluation at arbitrary points
+is dispatched to the de Boor algorithm implemented in ``_bspline_eval``.
 """
 
 from __future__ import annotations
@@ -23,11 +23,12 @@ if TYPE_CHECKING:
 class Bspline:
     """A parametric B-spline curve/surface defined by a space and control points.
 
-    Combines a :class:`BsplineSpace` (knot vectors, degrees) with a set of
-    control points to represent a B-spline mapping.
+    Combines a :class:`~pantr.bspline_space_nd.BsplineSpace` (knot vectors, degrees)
+    with a set of control points to represent a B-spline mapping.
 
     Attributes:
-        _space (BsplineSpace): The multi-dimensional B-spline space.
+        _space (pantr.bspline_space_nd.BsplineSpace): The multi-dimensional
+            B-spline space.
         _control_points (npt.NDArray[np.float32 | np.float64]): Control point
             array reshaped to ``(*num_basis, rank)``.
         _is_rational (bool): Whether the B-spline is rational (NURBS).
@@ -39,13 +40,13 @@ class Bspline:
         """Initialize a B-spline.
 
         Args:
-            space (BsplineSpace): The B-spline space.
+            space (~pantr.bspline_space_nd.BsplineSpace): The B-spline space.
             control_points (npt.ArrayLike): The control points.
             is_rational (bool): Whether the B-spline is rational.
 
         Raises:
             ValueError: If the number of control points is not a multiple
-            of the number of basis functions.
+                of the number of basis functions.
             ValueError: If the B-spline has rank smaller than 1.
         """
         self._space = space
@@ -96,8 +97,8 @@ class Bspline:
         """Get the underlying B-spline space.
 
         Returns:
-            BsplineSpace: The multi-dimensional B-spline space defining the
-            knot vectors and polynomial degrees.
+            ~pantr.bspline_space_nd.BsplineSpace: The multi-dimensional
+            B-spline space defining the knot vectors and polynomial degrees.
         """
         return self._space
 

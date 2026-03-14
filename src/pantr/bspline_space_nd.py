@@ -1,9 +1,9 @@
 """Multi-dimensional B-spline spaces using tensor products.
 
 This module defines :class:`BsplineSpace`, which aggregates multiple
-:class:`BsplineSpace1D` objects to represent multi-dimensional parameter
-domains. It handles tensor-product basis evaluation by combining the 1D
-components.
+:class:`~pantr.bspline_space_1D.BsplineSpace1D` objects to represent
+multi-dimensional parameter domains. It handles tensor-product basis evaluation
+by combining the 1D components.
 """
 
 from __future__ import annotations

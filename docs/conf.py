@@ -6,11 +6,17 @@ Initializes metadata, extensions, and build parameters.
 from __future__ import annotations
 
 import importlib.util
+import os
 import sys
 import warnings
 from datetime import date
 from pathlib import Path
 from typing import Final
+
+# Disable Numba JIT during documentation build. This avoids issues with
+# JIT caching and potential concurrent-compilation crashes while Sphinx
+# imports the package.
+os.environ["NUMBA_DISABLE_JIT"] = "1"
 
 PROJECT_ROOT: Final[Path] = Path(__file__).resolve().parent.parent
 SRC_PATH: Final[Path] = PROJECT_ROOT / "src"
