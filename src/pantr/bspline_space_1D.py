@@ -476,7 +476,9 @@ class BsplineSpace1D:
 
                 Each matrix C[i, :, :] transforms Bernstein basis functions
                 to B-spline basis functions for the i-th interval as
+
                     C[i, :, :] @ [Bernstein values] = [B-spline values in interval].
+
                 If `out` was provided, returns the same array.
 
         Raises:
@@ -504,7 +506,9 @@ class BsplineSpace1D:
 
                 Each matrix C[i, :, :] transforms Lagrange basis functions
                 to B-spline basis functions for the i-th interval as
+
                     C[i, :, :] @ [Lagrange values] = [B-spline values in interval].
+
                 If `out` was provided, returns the same array.
 
         Raises:
@@ -532,7 +536,9 @@ class BsplineSpace1D:
 
                 Each matrix C[i, :, :] transforms cardinal spline basis functions
                 to B-spline basis functions for the i-th interval as
+
                     C[i, :, :] @ [cardinal values] = [B-spline values in interval].
+
                 If `out` was provided, returns the same array.
 
         Raises:

@@ -52,6 +52,9 @@ docs/_build/
 # Sphinx cache
 docs/.doctrees/
 
+# Intersphinx cached inventories (downloaded by CI)
+docs/_intersphinx/
+
 # Temporary files
 *.swp
 *.swo

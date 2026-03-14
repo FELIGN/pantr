@@ -95,7 +95,7 @@ def tabulate_cardinal_Bspline_basis_1D(
     B_{n,i}(t) = (1/n!) * sum_{j=0}^{n-i} binom(n+1, j) * (-1)^j * (t + n - i - j)^n
     \]
     where \( B_{n,i}(t) \) is the B-spline basis function of degree \( n \) and index \( i \)
-     at point \( t \), and \( binom(a, b) \) is the binomial coefficient.
+    at point \( t \), and \( binom(a, b) \) is the binomial coefficient.
 
     Its actual implementation is based on the Cox-de Boor recursion formula for the
     central cardinal B-spline basis.

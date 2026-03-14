@@ -58,11 +58,20 @@ for ext in OPTIONAL_EXTENSIONS:
             )
             extensions = [e for e in extensions if e != ext]
 
+_INTERSPHINX_DIR: Final[Path] = PROJECT_ROOT / "docs" / "_intersphinx"
+
+
+def _local_inv(name: str) -> str | None:
+    """Return path to a locally cached intersphinx inventory, or None to download."""
+    path = _INTERSPHINX_DIR / f"{name}.inv"
+    return str(path) if path.exists() else None
+
+
 intersphinx_mapping = {
-    "python": ("https://docs.python.org/3", None),
-    "numpy": ("https://numpy.org/doc/stable", None),
-    "scipy": ("https://docs.scipy.org/doc/scipy/", None),
-    "matplotlib": ("https://matplotlib.org/stable", None),
+    "python": ("https://docs.python.org/3", _local_inv("python")),
+    "numpy": ("https://numpy.org/doc/stable", _local_inv("numpy")),
+    "scipy": ("https://docs.scipy.org/doc/scipy/", _local_inv("scipy")),
+    "matplotlib": ("https://matplotlib.org/stable", _local_inv("matplotlib")),
 }
 
 templates_path = ["_templates"]
@@ -129,3 +138,33 @@ version = pantr.__version__
 release = pantr.__version__
 
 nitpicky = True
+
+# Private NumPy typing internals are not exposed in the public inventory.
+nitpick_ignore = [
+    ("py:class", "numpy._typing._dtype_like._SupportsDType"),
+    ("py:class", "numpy._typing._dtype_like._DTypeDict"),
+]
+
+# Short-form NumPy aliases used in type annotations (np.*, npt.*, numpy.*)
+# are not resolvable via intersphinx: np/npt are local import aliases, and
+# even numpy.float32 etc. may be listed as py:data rather than py:class in
+# numpy's inventory. Suppress the cross-reference lookup failures for all of
+# them; canonical types like numpy.typing.NDArray are not used in the source.
+nitpick_ignore_regex = [
+    ("py:class", r"np\.\w+"),
+    ("py:class", r"npt\.\w+"),
+    ("py:class", r"numpy\.\w+"),
+]
+
+suppress_warnings = [
+    # Napoleon renders type aliases like np.int_ / np.bool_ as plain RST
+    # text. In RST, a bare word ending in _ is a hyperlink reference, so
+    # np.int_ becomes a reference to "np.int" with no target defined.
+    # Until the docstrings are updated to use canonical names, suppress these.
+    "ref.ref",
+    # autosummary and autodoc both document LagrangeVariant enum members,
+    # triggering duplicate-object-description warnings.
+    "autodoc",
+]
+
+intersphinx_timeout = 15

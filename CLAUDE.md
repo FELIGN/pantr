@@ -2,6 +2,11 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## Environment
+
+- Always run commands in the `pantr` conda environment: `conda activate pantr`
+- Always use git worktrees for implementing changes (via the `EnterWorktree` tool or `git worktree add`)
+
 ## Commands
 
 ```bash
