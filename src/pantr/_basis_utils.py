@@ -1,4 +1,14 @@
-"""Utility functions for basis function evaluation."""
+"""Utility functions for basis function evaluation.
+
+This module provides shared helpers used across Layer 2 (implementation
+helpers) of PaNTr:
+
+- Point normalization: convert arbitrary array-likes to 1D float arrays.
+- Output shape computation: determine the expected array shape given input
+  dimensions and the number of basis functions.
+- Output array validation: check shape, dtype, and writability of pre-allocated
+  ``out`` arrays before calling Layer 3 kernels.
+"""
 
 import numpy as np
 from numpy import typing as npt
@@ -11,13 +21,17 @@ def _normalize_points_1D(pts: npt.ArrayLike) -> npt.NDArray[np.float32 | np.floa
     with floating point dtype. Types different from float32 or float64 are
     automatically converted to float64.
     Zero-dimensional arrays (scalars) are converted to 1D arrays with a single
-    element. Multi-dimensional arrays will be flattened to 1D,
+    element. Multi-dimensional arrays will be flattened to 1D.
+
+    Args:
+        pts (npt.ArrayLike): Evaluation points. Can be a scalar, list, or numpy
+            array of any floating-point or integer dtype.
 
     Returns:
-        A 1D numpy array with floating point dtype (np.float32 or np.float64).
-        The dtype is preserved from the input if it's already a floating point
-        type, otherwise converted to np.float64. The array is guaranteed to have
-        exactly one dimension (ndim == 1).
+        npt.NDArray[np.float32 | np.float64]: A 1D numpy array with floating
+        point dtype. The dtype is preserved from the input if it's already a
+        floating point type (float32/float64), otherwise converted to np.float64.
+        The array is guaranteed to have exactly one dimension (ndim == 1).
     """
     if not isinstance(pts, np.ndarray):
         pts = np.array(pts)

@@ -1,4 +1,10 @@
-"""BsplineSpace1D class for 1D B-spline spaces."""
+"""1D B-spline space: knot vector, degree, and basis evaluation.
+
+This module exposes :class:`BsplineSpace1D`, which combines a knot vector and
+polynomial degree to define a 1D B-spline space. It provides methods for
+basis evaluation, Bézier/Lagrange/cardinal extraction operators, and several
+geometric properties (domain, intervals, cardinality).
+"""
 
 from __future__ import annotations
 
