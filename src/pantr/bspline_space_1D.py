@@ -14,7 +14,10 @@ from typing import TYPE_CHECKING
 import numpy as np
 from numpy import typing as npt
 
-from ._bspline_basis_core import _tabulate_Bspline_basis_1D_impl
+from ._bspline_basis_core import (
+    _tabulate_Bspline_basis_1D_impl,
+    _tabulate_Bspline_basis_deriv_1D_impl,
+)
 from ._bspline_extraction import (
     _tabulate_Bspline_Bezier_1D_extraction_impl,
     _tabulate_Bspline_cardinal_1D_extraction_impl,
@@ -462,6 +465,60 @@ class BsplineSpace1D:
         """
         return _tabulate_Bspline_basis_1D_impl(
             self, pts, out_basis=out_basis, out_first_basis=out_first_basis
+        )
+
+    def tabulate_basis_derivatives(
+        self,
+        pts: npt.ArrayLike,
+        n_deriv: int,
+        out_deriv: npt.NDArray[np.float32 | np.float64] | None = None,
+        out_first_basis: npt.NDArray[np.int_] | None = None,
+    ) -> tuple[npt.NDArray[np.float32 | np.float64], npt.NDArray[np.int_]]:
+        """Evaluate B-spline basis function derivatives at the given points.
+
+        Implements Algorithm A2.3 (DerBasisFuncs) from Piegl & Tiller.
+        The 0th slice ``deriv_values[..., 0, :]`` is identical to the result
+        of :meth:`tabulate_basis`.  For ``n_deriv > degree`` all rows beyond
+        ``degree`` are identically zero.
+
+        Args:
+            pts (npt.ArrayLike): Evaluation points.
+            n_deriv (int): Maximum derivative order to compute (>= 0).
+            out_deriv (npt.NDArray[np.float32 | np.float64] | None): Optional output
+                array for derivative values. If None, a new array is allocated. Must
+                have shape ``(*pts_shape, n_deriv+1, degree+1)`` and dtype matching
+                ``pts`` if provided. Defaults to None.
+            out_first_basis (npt.NDArray[numpy.intp] | None): Optional output array
+                for first basis indices. If None, a new array is allocated. Must have
+                shape ``pts_shape`` and dtype ``numpy.intp`` if provided.
+                Defaults to None.
+
+        Returns:
+            tuple[
+                npt.NDArray[np.float32] | npt.NDArray[np.float64],
+                npt.NDArray[numpy.intp]
+            ]: Tuple containing:
+                - deriv_values: Array of shape ``(*pts_shape, n_deriv+1, degree+1)``.
+                  ``deriv_values[..., k, i]`` is the k-th derivative of the i-th
+                  local B-spline basis function at each point.
+                - first_basis_indices: Integer array of shape ``pts_shape`` giving the
+                  global index of the first nonzero basis function for each point.
+
+        Raises:
+            ValueError: If ``n_deriv < 0``, any evaluation point is outside the
+                domain, or ``out_deriv`` / ``out_first_basis`` has incorrect shape
+                or dtype.
+
+        Example:
+            >>> bspline = BsplineSpace1D([0, 0, 0, 1, 1, 1], 2)
+            >>> d, first = bspline.tabulate_basis_derivatives([0.5], n_deriv=1)
+            >>> d.shape
+            (1, 2, 3)
+            >>> d[0, 1, :]   # first derivatives at x=0.5: B0'=-1, B1'=0, B2'=1
+            array([-1.,  0.,  1.])
+        """
+        return _tabulate_Bspline_basis_deriv_1D_impl(
+            self, pts, n_deriv, out_deriv=out_deriv, out_first_basis=out_first_basis
         )
 
     def tabulate_Bezier_extraction_operators(
