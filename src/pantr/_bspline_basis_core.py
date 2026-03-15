@@ -12,6 +12,7 @@ import numpy as np
 import numpy.typing as npt
 
 from ._basis_1D import _tabulate_Bernstein_basis_1D_impl
+from ._basis_core import _tabulate_Bernstein_basis_deriv_1D_core
 from ._basis_utils import (
     _compute_final_output_shape_1D,
     _compute_final_output_shape_1D_deriv,
@@ -298,6 +299,52 @@ def _tabulate_Bspline_basis_Bernstein_like_1D(
     return B, out_first_basis
 
 
+def _tabulate_Bspline_basis_Bernstein_like_deriv_1D(
+    spline: BsplineSpace1D,
+    pts: npt.NDArray[np.float32 | np.float64],
+    n_deriv: int,
+    out_deriv: npt.NDArray[np.float32 | np.float64],
+    out_first_basis: npt.NDArray[np.int_],
+) -> None:
+    """Evaluate B-spline basis derivatives for Bézier-like knots via Bernstein polynomials.
+
+    Maps the evaluation points to the reference interval [0, 1], delegates to the
+    parallel Bernstein derivative kernel, then applies the chain-rule correction
+    ``(1/(b-a))^k`` to each k-th derivative slice.
+
+    Args:
+        spline (BsplineSpace1D): B-spline with Bézier-like knots.
+        pts (npt.NDArray[np.float32 | np.float64]): Evaluation points (1D, already
+            normalized by :func:`_normalize_points_1D`).
+        n_deriv (int): Maximum derivative order to compute (>= 0).
+        out_deriv (npt.NDArray[np.float32 | np.float64]): Pre-allocated output array
+            of shape ``(n_pts, n_deriv+1, degree+1)`` and dtype matching ``pts``.
+        out_first_basis (npt.NDArray[np.int_]): Pre-allocated output array of shape
+            ``(n_pts,)`` and dtype int.
+
+    Raises:
+        ValueError: If the B-spline does not have Bézier-like knots.
+    """
+    if not spline.has_Bezier_like_knots():
+        raise ValueError("B-spline does not have Bézier-like knots.")
+
+    k0, k1 = spline.domain
+    pts_normalized = (pts - k0) / (k1 - k0)  # map to [0, 1]
+
+    _tabulate_Bernstein_basis_deriv_1D_core(
+        np.int32(spline.degree), pts_normalized, n_deriv, out_deriv
+    )
+
+    # Chain-rule: d^k/dx^k f(x) = d^k/ds^k f(s) * (ds/dx)^k = d^k/ds^k f(s) * (1/(k1-k0))^k
+    inv_span: float = 1.0 / float(k1 - k0)
+    scale: float = inv_span
+    for k in range(1, n_deriv + 1):
+        out_deriv[:, k, :] = out_deriv[:, k, :] * scale
+        scale *= inv_span
+
+    out_first_basis.fill(0)
+
+
 def _tabulate_Bspline_basis_1D_impl(
     spline: BsplineSpace1D,
     pts: npt.ArrayLike,
@@ -402,8 +449,10 @@ def _tabulate_Bspline_basis_deriv_1D_impl(
 ) -> tuple[npt.NDArray[np.float32 | np.float64], npt.NDArray[np.int_]]:
     """Evaluate B-spline basis function derivatives at given points.
 
-    Implements Algorithm A2.3 (DerBasisFuncs) from Piegl & Tiller.  The 0th
-    slice of the result is identical to the output of
+    Implements Algorithm A2.3 (DerBasisFuncs) from Piegl & Tiller.  Uses a
+    fast Bernstein path for Bézier-like knots (parallel kernel + chain-rule
+    scaling) and falls back to the general DerBasisFuncs kernel otherwise.
+    The 0th slice of the result is identical to the output of
     :func:`_tabulate_Bspline_basis_1D_impl`.  For ``n_deriv > degree`` all
     rows beyond ``degree`` are identically zero.
 
@@ -462,17 +511,21 @@ def _tabulate_Bspline_basis_deriv_1D_impl(
     _validate_out_array_first_basis(out_first_basis, expected_first_basis_shape)
     first_indices_normalized = out_first_basis.reshape(num_pts)
 
-    # TODO: fast path for Bézier-like knots (requires chain-rule scaling per derivative order)
-    _compute_basis_deriv_nurbs_book_impl(
-        spline.knots,
-        spline.degree,
-        spline.periodic,
-        spline.tolerance,
-        n_deriv,
-        pts,
-        deriv_normalized,
-        first_indices_normalized,
-    )
+    if spline.has_Bezier_like_knots():
+        _tabulate_Bspline_basis_Bernstein_like_deriv_1D(
+            spline, pts, n_deriv, deriv_normalized, first_indices_normalized
+        )
+    else:
+        _compute_basis_deriv_nurbs_book_impl(
+            spline.knots,
+            spline.degree,
+            spline.periodic,
+            spline.tolerance,
+            n_deriv,
+            pts,
+            deriv_normalized,
+            first_indices_normalized,
+        )
 
     return out_deriv, out_first_basis
 
@@ -511,6 +564,12 @@ def _warmup_numba_functions() -> None:
         first_basis_dummy,
     )
 
+    # Warmup Bernstein derivative core (Bézier fast path) with float64
+    pts_norm_dummy = pts_dummy  # knots_dummy already has [0,1] domain
+    _tabulate_Bernstein_basis_deriv_1D_core(
+        np.int32(degree_dummy), pts_norm_dummy, n_deriv_dummy, deriv_dummy
+    )
+
 
 # Precompile numba functions on module import
 # (Moved to central thread in __init__.py)
@@ -521,5 +580,6 @@ __all__ = [
     "_compute_basis_nurbs_book_impl",
     "_tabulate_Bspline_basis_1D_impl",
     "_tabulate_Bspline_basis_Bernstein_like_1D",
+    "_tabulate_Bspline_basis_Bernstein_like_deriv_1D",
     "_tabulate_Bspline_basis_deriv_1D_impl",
 ]

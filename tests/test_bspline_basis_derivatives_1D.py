@@ -6,9 +6,14 @@ import numpy as np
 import numpy.typing as npt
 import pytest
 
+from pantr._basis_core import (
+    _tabulate_Bernstein_basis_1D_core,
+    _tabulate_Bernstein_basis_deriv_1D_core,
+)
 from pantr._bspline_basis_core import (
     _compute_basis_deriv_nurbs_book_impl,
     _compute_basis_nurbs_book_impl,
+    _tabulate_Bspline_basis_Bernstein_like_deriv_1D,
     _tabulate_Bspline_basis_deriv_1D_impl,
 )
 from pantr.bspline_space_1D import BsplineSpace1D
@@ -377,3 +382,163 @@ class TestMathematicalPropertiesDeriv:
         d, _ = cubic_two_span.tabulate_basis_derivatives(pts, n_deriv=3)
         for k in range(1, 4):
             np.testing.assert_allclose(d[:, k, :].sum(axis=1), 0.0, atol=1e-10, err_msg=f"k={k}")
+
+
+# ---------------------------------------------------------------------------
+# Bézier fast path: _tabulate_Bernstein_basis_deriv_1D_core
+# and _tabulate_Bspline_basis_Bernstein_like_deriv_1D
+# ---------------------------------------------------------------------------
+
+
+class TestBernsteinDerivCore:
+    """Direct tests of the parallel Bernstein derivative kernel."""
+
+    def _call(
+        self,
+        n: int,
+        t: npt.NDArray[np.float32 | np.float64],
+        n_deriv: int,
+    ) -> npt.NDArray[np.float32 | np.float64]:
+        out = np.empty((t.size, n_deriv + 1, n + 1), dtype=t.dtype)
+        _tabulate_Bernstein_basis_deriv_1D_core(np.int32(n), t, n_deriv, out)
+        return out
+
+    def test_0th_matches_bernstein_basis(self) -> None:
+        """0th row equals the standard Bernstein basis."""
+        t = np.linspace(0.0, 1.0, 11)
+        n = 3
+        out_deriv = self._call(n, t, n_deriv=2)
+
+        ref = np.empty((t.size, n + 1), dtype=np.float64)
+        _tabulate_Bernstein_basis_1D_core(np.int32(n), t, ref)
+
+        np.testing.assert_array_almost_equal(out_deriv[:, 0, :], ref)
+
+    def test_partition_of_unity_0th(self) -> None:
+        """0th row sums to 1 for all points."""
+        t = np.linspace(0.0, 1.0, 20)
+        out = self._call(3, t, n_deriv=2)
+        np.testing.assert_allclose(out[:, 0, :].sum(axis=1), 1.0, atol=1e-14)
+
+    def test_sum_of_kth_deriv_is_zero(self) -> None:
+        """Sum of k-th derivative row equals 0 for k >= 1 (interior points)."""
+        t = np.linspace(0.05, 0.95, 15)
+        out = self._call(3, t, n_deriv=3)
+        for k in range(1, 4):
+            np.testing.assert_allclose(out[:, k, :].sum(axis=1), 0.0, atol=1e-12)
+
+    def test_exact_quadratic_first_derivative(self) -> None:
+        """Exact first derivatives for quadratic Bernstein on [0,1]."""
+        t = np.array([0.0, 0.25, 0.5, 0.75])
+        out = self._call(2, t, n_deriv=1)
+        for i, x in enumerate(t):
+            expected = np.array([-2 * (1 - x), 2 - 4 * x, 2 * x])
+            np.testing.assert_allclose(out[i, 1, :], expected, atol=1e-13)
+
+    def test_exact_quadratic_second_derivative(self) -> None:
+        """Second derivatives for quadratic Bernstein are [2, -4, 2] everywhere."""
+        t = np.array([0.1, 0.4, 0.7])
+        out = self._call(2, t, n_deriv=2)
+        np.testing.assert_allclose(out[:, 2, :], [[2.0, -4.0, 2.0]] * 3, atol=1e-12)
+
+    def test_boundary_t_equals_1(self) -> None:
+        """At t=1: 0th row is last-function=1; all derivative rows are zero."""
+        t = np.array([1.0])
+        out = self._call(2, t, n_deriv=2)
+        np.testing.assert_array_equal(out[0, 0, :], [0.0, 0.0, 1.0])
+        np.testing.assert_array_almost_equal(out[0, 1, :], [0.0, 0.0, 0.0])
+        np.testing.assert_array_almost_equal(out[0, 2, :], [0.0, 0.0, 0.0])
+
+    def test_n_deriv_exceeds_degree_gives_zeros(self) -> None:
+        """Derivative rows beyond degree are identically zero."""
+        t = np.array([0.3, 0.6])
+        out = self._call(2, t, n_deriv=4)
+        np.testing.assert_array_almost_equal(out[:, 3, :], 0.0)
+        np.testing.assert_array_almost_equal(out[:, 4, :], 0.0)
+
+    def test_float32_support(self) -> None:
+        """Kernel produces float32 output from float32 input."""
+        t = np.array([0.5], dtype=np.float32)
+        out = self._call(2, t, n_deriv=1)
+        assert out.dtype == np.float32
+        np.testing.assert_allclose(float(out[0, 0, :].sum()), 1.0, atol=1e-6)
+
+    def test_degree_0_all_derivatives_zero(self) -> None:
+        """For n=0, all derivatives are zero and the single basis value is 1."""
+        t = np.array([0.2, 0.5, 0.8])
+        out = self._call(0, t, n_deriv=2)
+        np.testing.assert_array_equal(out[:, 0, :], [[1.0], [1.0], [1.0]])
+        np.testing.assert_array_almost_equal(out[:, 1, :], 0.0)
+        np.testing.assert_array_almost_equal(out[:, 2, :], 0.0)
+
+
+class TestBezierFastPath:
+    """Tests verifying the Bézier fast path matches the general A2.3 kernel."""
+
+    @pytest.mark.parametrize("degree", [1, 2, 3, 4])
+    def test_bezier_matches_general_kernel(self, degree: int) -> None:
+        """Fast path and general kernel agree for Bézier-like knots on [0,1]."""
+        knots = np.array([0.0] * (degree + 1) + [1.0] * (degree + 1), dtype=np.float64)
+        spline = BsplineSpace1D(knots, degree)
+        pts = np.linspace(0.02, 0.98, 20)
+        n_deriv = min(degree, 3)
+
+        d_fast, first_fast = spline.tabulate_basis_derivatives(pts, n_deriv=n_deriv)
+
+        # Force the general path by using a non-Bézier spline with the same knot structure
+        # (we compare against the A2.3 kernel called directly with the same knot vector)
+        n_pts = pts.size
+        order = degree + 1
+        d_general = np.empty((n_pts, n_deriv + 1, order), dtype=np.float64)
+        first_general = np.empty(n_pts, dtype=np.int_)
+        _compute_basis_deriv_nurbs_book_impl(
+            knots, degree, False, 1e-10, n_deriv, pts, d_general, first_general
+        )
+
+        np.testing.assert_allclose(d_fast, d_general, atol=1e-13)
+        np.testing.assert_array_equal(first_fast, first_general)
+
+    def test_bezier_non_unit_domain(self) -> None:
+        """Chain-rule scaling is applied correctly for domain [2, 5]."""
+        spline = BsplineSpace1D([2.0, 2.0, 2.0, 5.0, 5.0, 5.0], 2)
+        pts = np.array([2.5, 3.0, 3.5, 4.0, 4.5])
+
+        d, _ = spline.tabulate_basis_derivatives(pts, n_deriv=2)
+
+        # Verify against finite differences
+        h = 1e-5
+        b_fwd, _ = spline.tabulate_basis(pts + h)
+        b_bwd, _ = spline.tabulate_basis(pts - h)
+        d_fd = (b_fwd - b_bwd) / (2 * h)
+        np.testing.assert_allclose(d[:, 1, :], d_fd, atol=1e-8)
+
+    def test_bezier_like_deriv_sets_first_basis_to_zero(self) -> None:
+        """first_basis_indices are all zero for Bézier-like knots."""
+        spline = BsplineSpace1D([0.0, 0.0, 0.0, 1.0, 1.0, 1.0], 2)
+        pts = np.linspace(0.0, 1.0, 15)
+        _, first = spline.tabulate_basis_derivatives(pts, n_deriv=1)
+        np.testing.assert_array_equal(first, 0)
+
+    def test_bezier_like_deriv_helper_raises_for_non_bezier(self) -> None:
+        """_tabulate_Bspline_basis_Bernstein_like_deriv_1D raises for non-Bézier splines."""
+        spline = BsplineSpace1D([0.0, 0.0, 0.0, 0.5, 1.0, 1.0, 1.0], 2)
+        pts = np.array([0.25, 0.75])
+        out_deriv = np.empty((2, 2, 3), dtype=np.float64)
+        out_first = np.empty(2, dtype=np.int_)
+        with pytest.raises(ValueError, match="Bézier-like"):
+            _tabulate_Bspline_basis_Bernstein_like_deriv_1D(spline, pts, 1, out_deriv, out_first)
+
+    def test_bezier_0th_matches_tabulate_basis(self) -> None:
+        """With n_deriv=0, fast path matches tabulate_basis output."""
+        spline = BsplineSpace1D([0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0], 3)
+        pts = np.linspace(0.0, 1.0, 20)
+        basis, _ = spline.tabulate_basis(pts)
+        d, _ = spline.tabulate_basis_derivatives(pts, n_deriv=0)
+        np.testing.assert_allclose(d[:, 0, :], basis, atol=1e-14)
+
+    def test_bezier_second_derivative_exact_quadratic(self) -> None:
+        """Second derivatives on [0,1] match analytical values (quadratic Bézier)."""
+        spline = BsplineSpace1D([0.0, 0.0, 0.0, 1.0, 1.0, 1.0], 2)
+        pts = np.array([0.1, 0.4, 0.7])
+        d, _ = spline.tabulate_basis_derivatives(pts, n_deriv=2)
+        np.testing.assert_allclose(d[:, 2, :], [[2.0, -4.0, 2.0]] * 3, atol=1e-12)
