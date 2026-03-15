@@ -40,10 +40,10 @@ def _evaluate_Bspline_basis_combine_1D(  # noqa: PLR0913
     """Evaluate a B-spline by computing basis functions then combining with control points.
 
     For each evaluation point, computes the (degree+1) non-zero B-spline basis
-    functions via the Cox–de Boor recurrence (Algorithm A2.2 from Piegl & Tiller),
+    functions via the Cox-de Boor recurrence (Algorithm A2.2 from Piegl & Tiller),
     then forms the result as a linear combination of the corresponding control points.
-    This separates the O(p²) scalar recurrence from the rank dimension, reducing
-    the work per point from O(p² × rank) to O(p² + p × rank).
+    This separates the O(p^2) scalar recurrence from the rank dimension, reducing
+    the work per point from O(p^2 * rank) to O(p^2 + p * rank).
 
     Args:
         control_points (npt.NDArray[np.float32 | np.float64]): Control-point array of
@@ -76,14 +76,17 @@ def _evaluate_Bspline_basis_combine_1D(  # noqa: PLR0913
 
     _compute_basis_nurbs_book_impl(knots, degree, periodic, tol, pts, basis, first_basis)
 
+    rank = control_points.shape[1]
     for i in range(n_pts):
         s = first_basis[i]
-        out[i, :] = zero
-        for j in range(order):
-            idx = s + j
-            if periodic:
-                idx = idx % num_cp
-            out[i, :] += basis[i, j] * control_points[idx, :]
+        for k in range(rank):
+            total = zero
+            for j in range(order):
+                idx = s + j
+                if periodic:
+                    idx = idx % num_cp
+                total = total + basis[i, j] * control_points[idx, k]
+            out[i, k] = total
 
     return out
 
