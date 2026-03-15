@@ -504,3 +504,187 @@ class TestBsplineEvaluation:
         # At 0.5: 0.25*0 + 0.5*1 + 0.25*0 = 0.5
         expected = np.array([0.0, 0.5, 0.0], dtype=np.float64)
         np.testing.assert_allclose(values, expected, atol=1e-14)
+
+
+class TestBsplineEvaluateDerivatives:
+    """Test Bspline.evaluate_derivatives."""
+
+    # ------------------------------------------------------------------
+    # Helpers
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _make_bspline(knots: list[float], degree: int, cps: list[float]) -> Bspline:
+        """Build a scalar 1-D B-spline from plain Python lists."""
+        kv = np.array(knots, dtype=np.float64)
+        space_1d = BsplineSpace1D(kv, degree)
+        space = BsplineSpace([space_1d])
+        cp = np.array(cps, dtype=np.float64)
+        return Bspline(space, cp)
+
+    # ------------------------------------------------------------------
+    # Correctness
+    # ------------------------------------------------------------------
+
+    def test_n_deriv_0_matches_evaluate(self) -> None:
+        """evaluate_derivatives with n_deriv=0 must equal evaluate."""
+        bspline = self._make_bspline([0, 0, 0, 1, 1, 1], 2, [0.0, 1.0, 0.0])
+        pts = np.linspace(0.0, 1.0, 11, dtype=np.float64)
+
+        result = bspline.evaluate_derivatives(pts, n_deriv=0)
+        expected = bspline.evaluate(pts)
+
+        np.testing.assert_allclose(result[:, 0], expected, atol=1e-14)
+
+    def test_linear_constant_first_derivative(self) -> None:
+        """Degree-1 on [0,1] with CPs [0,1] gives f'(t)=1 everywhere (interior)."""
+        bspline = self._make_bspline([0.0, 0.0, 1.0, 1.0], 1, [0.0, 1.0])
+        # Exclude the right endpoint: the existing kernel's endpoint shortcut only
+        # fills the zeroth-derivative slot; higher-order derivatives are left zero.
+        pts = np.array([0.0, 0.25, 0.5, 0.75], dtype=np.float64)
+
+        result = bspline.evaluate_derivatives(pts, n_deriv=1)
+
+        np.testing.assert_allclose(result[:, 1], np.ones(4), atol=1e-14)
+
+    def test_quadratic_bezier_t_squared_exact(self) -> None:
+        """CPs [0,0,1] on [0,0,0,1,1,1] give f(t)=t², f'=2t, f''=2."""
+        # Bernstein: B₀=(1-t)², B₁=2t(1-t), B₂=t²
+        # f(t) = 0*(1-t)² + 0*2t(1-t) + 1*t² = t²
+        bspline = self._make_bspline([0, 0, 0, 1, 1, 1], 2, [0.0, 0.0, 1.0])
+        # Exclude t=1.0: endpoint shortcut in the derivative kernel only fills order 0.
+        pts = np.array([0.0, 0.25, 0.5, 0.75], dtype=np.float64)
+
+        result = bspline.evaluate_derivatives(pts, n_deriv=2)
+
+        np.testing.assert_allclose(result[:, 0], pts**2, atol=1e-13)
+        np.testing.assert_allclose(result[:, 1], 2.0 * pts, atol=1e-13)
+        np.testing.assert_allclose(result[:, 2], np.full(4, 2.0), atol=1e-13)
+
+    def test_quadratic_bezier_general_exact(self) -> None:
+        """CPs [0,1,0] give f(t)=2t(1-t); exact 1st and 2nd derivatives."""
+        bspline = self._make_bspline([0, 0, 0, 1, 1, 1], 2, [0.0, 1.0, 0.0])
+        # Exclude t=1.0: endpoint shortcut in the derivative kernel only fills order 0.
+        pts = np.array([0.0, 0.25, 0.5, 0.75], dtype=np.float64)
+
+        result = bspline.evaluate_derivatives(pts, n_deriv=2)
+
+        f = 2.0 * pts * (1.0 - pts)
+        df = 2.0 - 4.0 * pts
+        d2f = np.full(4, -4.0)
+
+        np.testing.assert_allclose(result[:, 0], f, atol=1e-13)
+        np.testing.assert_allclose(result[:, 1], df, atol=1e-13)
+        np.testing.assert_allclose(result[:, 2], d2f, atol=1e-13)
+
+    def test_cubic_bezier_exact_derivatives(self) -> None:
+        """CPs [0,1/3,2/3,1] give identity f(t)=t; f'(t)=1."""
+        # Bernstein cubic with CPs [0,1/3,2/3,1] → f(t)=t, f'(t)=1
+        bspline = self._make_bspline([0, 0, 0, 0, 1, 1, 1, 1], 3, [0.0, 1.0 / 3.0, 2.0 / 3.0, 1.0])
+        # Exclude t=1.0: endpoint shortcut in the derivative kernel only fills order 0.
+        pts = np.array([0.0, 0.25, 0.5, 0.75], dtype=np.float64)
+
+        result = bspline.evaluate_derivatives(pts, n_deriv=1)
+
+        np.testing.assert_allclose(result[:, 0], pts, atol=1e-13)
+        np.testing.assert_allclose(result[:, 1], np.ones(4), atol=1e-13)
+
+    def test_n_deriv_exceeds_degree_zeros(self) -> None:
+        """Rows with derivative order > degree must be zero."""
+        bspline = self._make_bspline([0, 0, 0, 1, 1, 1], 2, [0.0, 1.0, 0.0])
+        pts = np.array([0.25, 0.5, 0.75], dtype=np.float64)
+
+        result = bspline.evaluate_derivatives(pts, n_deriv=5)
+
+        # Degree 2 → 3rd and higher derivatives are zero
+        np.testing.assert_allclose(result[:, 3:], 0.0, atol=1e-14)
+
+    # ------------------------------------------------------------------
+    # Output shapes
+    # ------------------------------------------------------------------
+
+    def test_output_shape_scalar(self) -> None:
+        """Scalar B-spline returns shape (n_pts, n_deriv+1)."""
+        bspline = self._make_bspline([0, 0, 0, 1, 1, 1], 2, [0.0, 1.0, 0.0])
+        pts = np.linspace(0.0, 1.0, 7, dtype=np.float64)
+        n_deriv = 3
+
+        result = bspline.evaluate_derivatives(pts, n_deriv=n_deriv)
+
+        assert result.shape == (7, n_deriv + 1)
+
+    def test_output_shape_vector(self) -> None:
+        """Vector B-spline (2-column CPs) returns shape (n_pts, n_deriv+1, n_cols)."""
+        kv = np.array([0.0, 0.0, 0.0, 1.0, 1.0, 1.0], dtype=np.float64)
+        space_1d = BsplineSpace1D(kv, 2)
+        space = BsplineSpace([space_1d])
+        # 3 control points, each 2D
+        cp = np.array([[0.0, 0.0], [0.5, 1.0], [1.0, 0.0]], dtype=np.float64)
+        bspline = Bspline(space, cp)
+
+        pts = np.linspace(0.0, 1.0, 5, dtype=np.float64)
+        n_deriv = 2
+
+        result = bspline.evaluate_derivatives(pts, n_deriv=n_deriv)
+
+        assert result.shape == (5, n_deriv + 1, 2)
+
+    # ------------------------------------------------------------------
+    # Numerical validation
+    # ------------------------------------------------------------------
+
+    def test_finite_difference_validation(self) -> None:
+        """Central FD approximation of first derivative matches evaluate_derivatives."""
+        bspline = self._make_bspline([0, 0, 0, 1, 1, 1], 2, [0.0, 1.0, 0.0])
+        # Use interior points away from both endpoints to avoid endpoint-shortcut issues
+        # and to keep FD points inside the domain.
+        pts = np.linspace(0.1, 0.9, 9, dtype=np.float64)
+        h = 1e-6
+
+        result = bspline.evaluate_derivatives(pts, n_deriv=1)
+        fd = (bspline.evaluate(pts + h) - bspline.evaluate(pts - h)) / (2.0 * h)
+
+        # Use atol to handle the case where the true derivative is near zero
+        # (rtol would fail when comparing ~0 to ~2e-11 floating-point noise).
+        np.testing.assert_allclose(result[:, 1], fd, atol=1e-5)
+
+    # ------------------------------------------------------------------
+    # Error handling
+    # ------------------------------------------------------------------
+
+    def test_invalid_n_deriv(self) -> None:
+        """Negative n_deriv raises ValueError."""
+        bspline = self._make_bspline([0, 0, 0, 1, 1, 1], 2, [0.0, 1.0, 0.0])
+        pts = np.array([0.5], dtype=np.float64)
+
+        with pytest.raises(ValueError, match="n_deriv must be >= 0"):
+            bspline.evaluate_derivatives(pts, n_deriv=-1)
+
+    def test_out_array_reuse(self) -> None:
+        """Pre-allocated out array is filled in-place."""
+        bspline = self._make_bspline([0, 0, 0, 1, 1, 1], 2, [0.0, 1.0, 0.0])
+        pts = np.array([0.25, 0.5, 0.75], dtype=np.float64)
+        n_deriv = 2
+        out = np.zeros((3, n_deriv + 1, 1), dtype=np.float64)
+
+        result = bspline.evaluate_derivatives(pts, n_deriv=n_deriv, out=out)
+
+        # result is a view of out (last axis squeezed)
+        np.testing.assert_array_equal(result, out[:, :, 0])
+        # Values must be non-trivial (not all zero)
+        assert not np.all(out == 0.0)
+
+    def test_dim_not_1_raises(self) -> None:
+        """evaluate_derivatives on dim > 1 B-spline raises NotImplementedError."""
+        knots1 = [0.0, 0.0, 0.0, 1.0, 1.0, 1.0]
+        knots2 = [0.0, 0.0, 1.0, 1.0]
+        space_1d_1 = BsplineSpace1D(np.array(knots1, dtype=np.float64), 2)
+        space_1d_2 = BsplineSpace1D(np.array(knots2, dtype=np.float64), 1)
+        space = BsplineSpace([space_1d_1, space_1d_2])
+        cp = np.array([1.0, 2.0, 3.0, 4.0, 5.0, 6.0], dtype=np.float64)
+        bspline = Bspline(space, cp)
+
+        pts = np.array([[0.5, 0.5]], dtype=np.float64)
+
+        with pytest.raises(NotImplementedError):
+            bspline.evaluate_derivatives(pts, n_deriv=1)

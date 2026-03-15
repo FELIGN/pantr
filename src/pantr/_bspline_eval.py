@@ -8,13 +8,17 @@ at arbitrary parametric points. The main entry point is
 
 from __future__ import annotations
 
+import math
 from typing import TYPE_CHECKING
 
 import numpy as np
 from numpy import typing as npt
 
-from ._basis_utils import _validate_out_array_1D
-from ._bspline_basis_core import _compute_basis_nurbs_book_impl
+from ._basis_utils import _validate_out_array_1D, _validate_out_array_3d_float
+from ._bspline_basis_core import (
+    _compute_basis_deriv_nurbs_book_impl,
+    _compute_basis_nurbs_book_impl,
+)
 from ._numba_compat import nb_jit
 from .quad import PointsLattice
 
@@ -172,6 +176,204 @@ def _evaluate_Bspline_1D(
     return out_array.squeeze()
 
 
+@nb_jit(
+    nopython=True,
+    cache=True,
+    parallel=False,
+)
+def _evaluate_Bspline_basis_combine_deriv_1D(  # noqa: PLR0913
+    control_points: npt.NDArray[np.float32 | np.float64],
+    knots: npt.NDArray[np.float32 | np.float64],
+    degree: int,
+    periodic: bool,
+    tol: float,
+    n_deriv: int,
+    pts: npt.NDArray[np.float32 | np.float64],
+    out: npt.NDArray[np.float32 | np.float64],
+) -> None:
+    """Evaluate B-spline derivatives by computing derivative basis functions and combining.
+
+    For each evaluation point, computes the (degree+1) non-zero B-spline basis
+    derivatives up to order ``n_deriv`` via Algorithm A2.3 from Piegl & Tiller,
+    then forms each derivative as a linear combination of the corresponding
+    control points.
+
+    Args:
+        control_points (npt.NDArray[np.float32 | np.float64]): Control-point array of
+            shape ``(n_basis, rank)``.
+        knots (npt.NDArray[np.float32 | np.float64]): B-spline knot vector.
+        degree (int): B-spline degree.
+        periodic (bool): Whether the B-spline is periodic.
+        tol (float): Tolerance for numerical comparisons.
+        n_deriv (int): Maximum derivative order to compute (>= 0).
+        pts (npt.NDArray[np.float32 | np.float64]): 1-D array of evaluation points,
+            shape ``(n_pts,)``.
+        out (npt.NDArray[np.float32 | np.float64]): Pre-allocated output array of shape
+            ``(n_pts, n_deriv+1, rank)`` and matching dtype. Written in-place.
+
+    Note:
+        Inputs are assumed to be correct (no validation performed).
+        For general use, call :func:`_evaluate_Bspline_deriv_1D` instead.
+    """
+    order = degree + 1
+    n_pts = pts.size
+    dtype = knots.dtype
+    zero = dtype.type(0.0)
+    num_cp = control_points.shape[0]
+    rank = control_points.shape[1]
+
+    basis_deriv = np.empty((n_pts, n_deriv + 1, order), dtype=dtype)
+    first_basis = np.empty(n_pts, dtype=np.int64)
+
+    _compute_basis_deriv_nurbs_book_impl(
+        knots, degree, periodic, tol, n_deriv, pts, basis_deriv, first_basis
+    )
+
+    for i in range(n_pts):
+        s = first_basis[i]
+        for k in range(n_deriv + 1):
+            for r in range(rank):
+                total = zero
+                for j in range(order):
+                    idx = s + j
+                    if periodic:
+                        idx = idx % num_cp
+                    total = total + basis_deriv[i, k, j] * control_points[idx, r]
+                out[i, k, r] = total
+
+
+def _evaluate_Bspline_deriv_1D(  # noqa: PLR0912
+    spline: Bspline,
+    pts: npt.NDArray[np.float32 | np.float64] | PointsLattice,
+    n_deriv: int,
+    out: npt.NDArray[np.float32 | np.float64] | None = None,
+) -> npt.NDArray[np.float32 | np.float64]:
+    """Evaluate derivatives of a 1D B-spline at the given points.
+
+    Dispatches to the basis-combine derivative kernel and applies the rational
+    quotient rule (Algorithm A4.2) when ``spline.is_rational`` is True.
+
+    Args:
+        spline (Bspline): A 1D B-spline object containing space, control points,
+            and rational flag.
+        pts (npt.NDArray[np.float32 | np.float64] | PointsLattice): Evaluation
+            points. If a :class:`~pantr.quad.PointsLattice`, must be 1D. Otherwise
+            must be a 1D array of shape ``(n_pts,)`` matching the B-spline's dtype.
+        n_deriv (int): Maximum derivative order to compute. Must be >= 0.
+        out (npt.NDArray[np.float32 | np.float64] | None): Optional pre-allocated
+            output array with the same shape and dtype as the returned array (see
+            below). Filled in-place and returned. Defaults to None.
+
+    Returns:
+        npt.NDArray[np.float32 | np.float64]: Derivative values of shape
+        ``(n_pts, n_deriv+1)`` for scalar output or ``(n_pts, n_deriv+1, rank)``
+        for vector-valued output. Axis 1 indexes derivative order
+        (0 = value, 1 = first derivative, …). For rational B-splines the weight
+        column is divided out and not included in the output.
+
+    Raises:
+        ValueError: If the B-spline is not 1D, if ``n_deriv < 0``, if the
+            points lattice is not 1D, or if the points dtype does not match the
+            B-spline dtype.
+    """
+    if spline.dim != 1:
+        raise ValueError("B-spline must be 1D")
+
+    if n_deriv < 0:
+        raise ValueError(f"n_deriv must be >= 0, got {n_deriv}")
+
+    pts_array: npt.NDArray[np.float32 | np.float64]
+    if isinstance(pts, PointsLattice):
+        if pts.dim != 1:
+            raise ValueError("Points lattice must be 1D")
+        pts_array = pts._pts_per_dir[0]
+    else:
+        pts_array = pts
+
+    if pts_array.dtype != spline.dtype:
+        raise ValueError("Points dtype must match B-spline dtype")
+
+    n_pts = pts_array.shape[0]
+    n_cols = spline.control_points.shape[-1]
+    spline_1D = spline.space.spaces[0]
+
+    if spline.is_rational:
+        # Internal homogeneous buffer — always allocated fresh so `out` maps to the result
+        hom_array = np.empty((n_pts, n_deriv + 1, n_cols), dtype=spline.dtype)
+        _evaluate_Bspline_basis_combine_deriv_1D(
+            spline.control_points,
+            spline_1D.knots,
+            spline_1D.degree,
+            spline_1D.periodic,
+            spline_1D.tolerance,
+            n_deriv,
+            pts_array,
+            hom_array,
+        )
+        # Algorithm A4.2 (Piegl & Tiller): hom_array[:, k, :-1] = k-th derivative
+        # of the weighted numerator; hom_array[:, k, -1] = k-th derivative of weight.
+        result_shape = (n_pts, n_deriv + 1, n_cols - 1)
+        result: npt.NDArray[np.float32 | np.float64]
+        if out is None:
+            result = np.empty(result_shape, dtype=spline.dtype)
+        else:
+            _validate_out_array_3d_float(out, result_shape, spline.dtype)
+            result = out
+        for k in range(n_deriv + 1):
+            v = hom_array[:, k, :-1].copy()
+            for i in range(1, k + 1):
+                v -= math.comb(k, i) * hom_array[:, i, -1:] * result[:, k - i, :]
+            result[:, k, :] = v / hom_array[:, 0, -1:]
+        return result[:, :, 0] if n_cols - 1 == 1 else result
+
+    # Non-rational: out is the computation buffer directly
+    out_array: npt.NDArray[np.float32 | np.float64]
+    if out is None:
+        out_array = np.empty((n_pts, n_deriv + 1, n_cols), dtype=spline.dtype)
+    else:
+        _validate_out_array_3d_float(out, (n_pts, n_deriv + 1, n_cols), spline.dtype)
+        out_array = out
+    _evaluate_Bspline_basis_combine_deriv_1D(
+        spline.control_points,
+        spline_1D.knots,
+        spline_1D.degree,
+        spline_1D.periodic,
+        spline_1D.tolerance,
+        n_deriv,
+        pts_array,
+        out_array,
+    )
+    return out_array[:, :, 0] if n_cols == 1 else out_array
+
+
+def _evaluate_Bspline_deriv(
+    spline: Bspline,
+    pts: npt.NDArray[np.float32 | np.float64] | PointsLattice,
+    n_deriv: int,
+    out: npt.NDArray[np.float32 | np.float64] | None = None,
+) -> npt.NDArray[np.float32 | np.float64]:
+    """Evaluate B-spline derivatives, dispatching on parametric dimension.
+
+    Args:
+        spline (Bspline): The B-spline object.
+        pts (npt.NDArray[np.float32 | np.float64] | PointsLattice): Evaluation
+            points.
+        n_deriv (int): Maximum derivative order to compute (>= 0).
+        out (npt.NDArray[np.float32 | np.float64] | None): Optional pre-allocated
+            output array. Defaults to None.
+
+    Returns:
+        npt.NDArray[np.float32 | np.float64]: Derivative values at the given points.
+
+    Raises:
+        NotImplementedError: If the B-spline dimension is not 1.
+    """
+    if spline.dim == 1:
+        return _evaluate_Bspline_deriv_1D(spline, pts, n_deriv, out)
+    else:
+        raise NotImplementedError("evaluate_derivatives is not implemented for dim > 1")
+
+
 def _evaluate_Bspline_multi_dim(
     spline: Bspline,
     pts: npt.NDArray[np.float32 | np.float64] | PointsLattice,
@@ -231,6 +433,19 @@ def _warmup_numba_functions() -> None:
 
     _evaluate_Bspline_basis_combine_1D(
         cp_dummy, knots_dummy, degree_dummy, False, tol_dummy, pts_dummy, out_dummy
+    )
+
+    n_deriv_dummy = 1
+    out_deriv_dummy = np.empty((1, n_deriv_dummy + 1, 1), dtype=np.float64)
+    _evaluate_Bspline_basis_combine_deriv_1D(
+        cp_dummy,
+        knots_dummy,
+        degree_dummy,
+        False,
+        tol_dummy,
+        n_deriv_dummy,
+        pts_dummy,
+        out_deriv_dummy,
     )
 
 
