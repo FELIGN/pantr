@@ -570,12 +570,12 @@ class TestBsplineEvaluateDerivatives:
         result = bspline.evaluate_derivatives(pts, n_deriv=2)
 
         f = 2.0 * pts * (1.0 - pts)
-        df = 2.0 - 4.0 * pts
-        d2f = np.full(4, -4.0)
+        f1 = 2.0 - 4.0 * pts
+        f2 = np.full(4, -4.0)
 
         np.testing.assert_allclose(result[:, 0], f, atol=1e-13)
-        np.testing.assert_allclose(result[:, 1], df, atol=1e-13)
-        np.testing.assert_allclose(result[:, 2], d2f, atol=1e-13)
+        np.testing.assert_allclose(result[:, 1], f1, atol=1e-13)
+        np.testing.assert_allclose(result[:, 2], f2, atol=1e-13)
 
     def test_cubic_bezier_exact_derivatives(self) -> None:
         """CPs [0,1/3,2/3,1] give identity f(t)=t; f'(t)=1."""
