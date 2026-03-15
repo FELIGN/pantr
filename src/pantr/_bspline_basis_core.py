@@ -167,7 +167,7 @@ def _compute_basis_deriv_nurbs_book_impl(  # noqa: PLR0913, PLR0915
     ndu = np.zeros((order, order), dtype=dtype)  # basis values and knot differences
     left = np.zeros(order, dtype=dtype)
     right = np.zeros(order, dtype=dtype)
-    a = np.zeros((2, order), dtype=dtype)  # rolling two-row buffer for derivative recursion
+    a = np.zeros((2, n_deriv + 1), dtype=dtype)  # rolling two-row buffer for derivative recursion
 
     for pt_id in range(n_pts):
         knot_id = knot_ids[pt_id]

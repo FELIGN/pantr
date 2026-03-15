@@ -255,7 +255,7 @@ def _tabulate_Bernstein_basis_deriv_1D_core(  # noqa: PLR0912
         # Upper triangle / diagonal: ndu[r, j] = B_{r, j}(s)  (r <= j)
         # Lower triangle:            ndu[j, r] = 1             (r <  j)  ← knot differences
         ndu = np.zeros((order, order), dtype=dtype)
-        a_arr = np.zeros((2, order), dtype=dtype)
+        a_arr = np.zeros((2, n_deriv + 1), dtype=dtype)
 
         ndu[0, 0] = one
         for j in range(1, order):
