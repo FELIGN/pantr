@@ -65,6 +65,26 @@ def _compute_final_output_shape_1D(input_shape: tuple[int, ...], n_basis: int) -
         return (*input_shape, n_basis)
 
 
+def _compute_final_output_shape_1D_deriv(
+    input_shape: tuple[int, ...],
+    n_deriv: int,
+    n_basis: int,
+) -> tuple[int, ...]:
+    """Compute the final output shape for 1D B-spline derivative arrays.
+
+    Args:
+        input_shape (tuple[int, ...]): The shape of the input points (before normalization).
+        n_deriv (int): Maximum derivative order.
+        n_basis (int): The number of local basis functions (degree + 1).
+
+    Returns:
+        tuple[int, ...]: Output shape with two trailing axes (n_deriv+1, n_basis).
+    """
+    if len(input_shape) == 0:
+        return (n_deriv + 1, n_basis)
+    return (*input_shape, n_deriv + 1, n_basis)
+
+
 def _validate_out_array_1D(
     out: npt.NDArray[np.float32 | np.float64],
     expected_shape: tuple[int, ...],
@@ -175,6 +195,31 @@ def _validate_out_array_3d_float(
 
     Raises:
         ValueError: If the array shape or dtype does not match expectations.
+    """
+    if out.shape != expected_shape:
+        raise ValueError(f"Output array has shape {out.shape}, but expected shape {expected_shape}")
+    if out.dtype != expected_dtype:
+        raise ValueError(f"Output array has dtype {out.dtype}, but expected dtype {expected_dtype}")
+    if not out.flags.writeable:
+        raise ValueError("Output array is not writeable")
+
+
+def _validate_out_array_deriv_1D(
+    out: npt.NDArray[np.float32 | np.float64],
+    expected_shape: tuple[int, ...],
+    expected_dtype: npt.DTypeLike,
+) -> None:
+    """Validate output array shape and dtype for 1D B-spline derivative results.
+
+    The expected shape is ``(*pts_shape, n_deriv+1, degree+1)``.
+
+    Args:
+        out (npt.NDArray[np.float32 | np.float64]): The output array to validate.
+        expected_shape (tuple[int, ...]): The expected shape of the output array.
+        expected_dtype (npt.DTypeLike): The expected dtype (should be np.float32 or np.float64).
+
+    Raises:
+        ValueError: If the array shape, dtype, or writability does not match expectations.
     """
     if out.shape != expected_shape:
         raise ValueError(f"Output array has shape {out.shape}, but expected shape {expected_shape}")
