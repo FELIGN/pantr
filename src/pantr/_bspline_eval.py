@@ -3,7 +3,8 @@
 This module provides low-level routines for evaluating a :class:`Bspline`
 at arbitrary parametric points. The main entry point is
 :func:`_evaluate_Bspline`, which dispatches to the 1D basis-combine kernel for
-1D splines. Multi-dimensional evaluation is currently not implemented.
+1D splines and to the sequential-contraction implementation for multi-dimensional
+splines.
 """
 
 from __future__ import annotations
@@ -24,6 +25,7 @@ from .quad import PointsLattice
 
 if TYPE_CHECKING:
     from .bspline import Bspline
+    from .bspline_space_1D import BsplineSpace1D
     from .quad import PointsLattice
 
 
@@ -142,9 +144,7 @@ def _evaluate_Bspline_1D(
         raise ValueError("Points dtype must match B-spline dtype")
 
     n_pts = pts_array.shape[0]
-    # For rational splines, we need an extra column for the weight
-    n_cols = spline.control_points.shape[-1]
-    expected_shape = (n_pts, n_cols)
+    expected_shape = (n_pts, spline.control_points.shape[-1])
     expected_dtype = spline.dtype
 
     # Allocate output array if not provided
@@ -294,12 +294,12 @@ def _evaluate_Bspline_deriv_1D(  # noqa: PLR0912
         raise ValueError("Points dtype must match B-spline dtype")
 
     n_pts = pts_array.shape[0]
-    n_cols = spline.control_points.shape[-1]
+    cp_size = spline.control_points.shape[-1]
     spline_1D = spline.space.spaces[0]
 
     if spline.is_rational:
         # Internal homogeneous buffer — always allocated fresh so `out` maps to the result
-        hom_array = np.empty((n_pts, n_deriv + 1, n_cols), dtype=spline.dtype)
+        hom_array = np.empty((n_pts, n_deriv + 1, cp_size), dtype=spline.dtype)
         _evaluate_Bspline_basis_combine_deriv_1D(
             spline.control_points,
             spline_1D.knots,
@@ -312,7 +312,7 @@ def _evaluate_Bspline_deriv_1D(  # noqa: PLR0912
         )
         # Algorithm A4.2 (Piegl & Tiller): hom_array[:, k, :-1] = k-th derivative
         # of the weighted numerator; hom_array[:, k, -1] = k-th derivative of weight.
-        result_shape = (n_pts, n_deriv + 1, n_cols - 1)
+        result_shape = (n_pts, n_deriv + 1, cp_size - 1)
         result: npt.NDArray[np.float32 | np.float64]
         if out is None:
             result = np.empty(result_shape, dtype=spline.dtype)
@@ -324,14 +324,14 @@ def _evaluate_Bspline_deriv_1D(  # noqa: PLR0912
             for i in range(1, k + 1):
                 v -= math.comb(k, i) * hom_array[:, i, -1:] * result[:, k - i, :]
             result[:, k, :] = v / hom_array[:, 0, -1:]
-        return result[:, :, 0] if n_cols - 1 == 1 else result
+        return result[:, :, 0] if cp_size - 1 == 1 else result
 
     # Non-rational: out is the computation buffer directly
     out_array: npt.NDArray[np.float32 | np.float64]
     if out is None:
-        out_array = np.empty((n_pts, n_deriv + 1, n_cols), dtype=spline.dtype)
+        out_array = np.empty((n_pts, n_deriv + 1, cp_size), dtype=spline.dtype)
     else:
-        _validate_out_array_3d_float(out, (n_pts, n_deriv + 1, n_cols), spline.dtype)
+        _validate_out_array_3d_float(out, (n_pts, n_deriv + 1, cp_size), spline.dtype)
         out_array = out
     _evaluate_Bspline_basis_combine_deriv_1D(
         spline.control_points,
@@ -343,7 +343,7 @@ def _evaluate_Bspline_deriv_1D(  # noqa: PLR0912
         pts_array,
         out_array,
     )
-    return out_array[:, :, 0] if n_cols == 1 else out_array
+    return out_array[:, :, 0] if cp_size == 1 else out_array
 
 
 def _evaluate_Bspline_deriv(
@@ -374,25 +374,224 @@ def _evaluate_Bspline_deriv(
         raise NotImplementedError("evaluate_derivatives is not implemented for dim > 1")
 
 
+def _evaluate_Bspline_multi_dim_lattice(
+    cp: npt.NDArray[np.float32 | np.float64],
+    spaces_1D: tuple[BsplineSpace1D, ...],
+    pts: PointsLattice,
+    out: npt.NDArray[np.float32 | np.float64],
+) -> None:
+    """Evaluate a multi-dimensional B-spline on a point lattice via sequential contraction.
+
+    For each parametric direction ``d``, the current tensor is reduced by moving
+    axis ``d`` to position 0, gathering ``order_d`` support entries per evaluation
+    point, contracting with the 1D basis values, and moving the result back to
+    axis ``d``. After all directions are processed, ``out`` is filled with the
+    result of shape ``(*pts_grid_shape, cp.shape[-1])``.
+
+    Args:
+        cp (npt.NDArray[np.float32 | np.float64]): Control-point array of shape
+            ``(*num_basis, k)`` where ``k`` is the number of values per control point.
+        spaces_1D (tuple[BsplineSpace1D, ...]): 1D B-spline spaces, one per direction.
+        pts (PointsLattice): Evaluation lattice. ``pts.dim`` must equal ``len(spaces_1D)``.
+        out (npt.NDArray[np.float32 | np.float64]): Pre-allocated output array of shape
+            ``(*pts_grid_shape, k)`` and matching dtype. Filled in-place.
+
+    Note:
+        Inputs are assumed to be correct (no validation performed).
+        For general use, call :func:`_evaluate_Bspline_multi_dim` instead.
+    """
+    Bs: list[npt.NDArray[np.float32 | np.float64]] = []
+    first_idxs: list[npt.NDArray[np.int_]] = []
+    for space_d, pts_d in zip(spaces_1D, pts.pts_per_dir, strict=True):
+        B_d, first_d = space_d.tabulate_basis(pts_d)
+        Bs.append(B_d)
+        first_idxs.append(first_d)
+
+    # Sequential contraction over parametric directions.
+    # After processing direction d, 'current' has shape
+    # (m_0, ..., m_d, n_{d+1}, ..., n_{D-1}, k).
+    current: npt.NDArray[np.float32 | np.float64] = cp
+    for d, (B_d, first_d, space_d) in enumerate(zip(Bs, first_idxs, spaces_1D, strict=True)):
+        m_d = int(B_d.shape[0])
+        order_d = int(B_d.shape[1])
+
+        idx_d = (
+            first_d[:, np.newaxis] + np.arange(order_d, dtype=np.intp)[np.newaxis, :]
+        )  # (m_d, order_d)
+        if space_d.periodic:
+            idx_d = idx_d % space_d.num_basis
+
+        # Move axis d to position 0, gather order_d entries per evaluation
+        # point, contract with B_d, then move the result back to axis d.
+        current_moved = np.moveaxis(current, d, 0)
+        gathered_moved: npt.NDArray[np.float32 | np.float64] = current_moved[idx_d]
+        # shape: (m_d, order_d, m_0, ..., m_{d-1}, n_{d+1}, ..., n_{D-1}, k)
+
+        n_trail = gathered_moved.ndim - 2
+        B_exp = B_d.reshape((m_d, order_d) + (1,) * n_trail)
+        contracted: npt.NDArray[np.float32 | np.float64] = (gathered_moved * B_exp).sum(axis=1)
+
+        current = np.moveaxis(contracted, 0, d)
+
+    np.copyto(out, current)
+
+
+def _evaluate_Bspline_multi_dim_pts_array(
+    cp: npt.NDArray[np.float32 | np.float64],
+    spaces_1D: tuple[BsplineSpace1D, ...],
+    pts: npt.NDArray[np.float32 | np.float64],
+    out: npt.NDArray[np.float32 | np.float64],
+) -> None:
+    """Evaluate a multi-dimensional B-spline at an array of points via gather-and-contract.
+
+    For each evaluation point, the local control-point patch is gathered from
+    ``cp`` using broadcasting advanced indexing, then contracted with the
+    outer-product of the 1D basis values. The result is written into ``out``.
+
+    Args:
+        cp (npt.NDArray[np.float32 | np.float64]): Control-point array of shape
+            ``(*num_basis, k)`` where ``k`` is the number of values per control point.
+        spaces_1D (tuple[BsplineSpace1D, ...]): 1D B-spline spaces, one per direction.
+        pts (npt.NDArray[np.float32 | np.float64]): Evaluation points of shape
+            ``(n_pts, dim)``.
+        out (npt.NDArray[np.float32 | np.float64]): Pre-allocated output array of shape
+            ``(n_pts, k)`` and matching dtype. Filled in-place.
+
+    Note:
+        Inputs are assumed to be correct (no validation performed).
+        For general use, call :func:`_evaluate_Bspline_multi_dim` instead.
+    """
+    dim = len(spaces_1D)
+    n_pts = pts.shape[0]
+
+    Bs: list[npt.NDArray[np.float32 | np.float64]] = []
+    first_idxs: list[npt.NDArray[np.int_]] = []
+    for d, space_d in enumerate(spaces_1D):
+        B_d, first_d = space_d.tabulate_basis(np.ascontiguousarray(pts[:, d]))
+        Bs.append(B_d)
+        first_idxs.append(first_d)
+
+    orders = tuple(int(B.shape[1]) for B in Bs)
+
+    # Build advanced index arrays.
+    # idx_d[i, j] = first_idxs[d][i] + j, reshaped for broadcasting to
+    # (n_pts, order_0, ..., order_{D-1}).
+    index_list: list[npt.NDArray[np.intp]] = []
+    for d, (first_d, space_d) in enumerate(zip(first_idxs, spaces_1D, strict=True)):
+        order_d = orders[d]
+        idx_d = (
+            first_d[:, np.newaxis].astype(np.intp)
+            + np.arange(order_d, dtype=np.intp)[np.newaxis, :]
+        )  # (n_pts, order_d)
+        if space_d.periodic:
+            idx_d = idx_d % space_d.num_basis
+        shape: tuple[int, ...] = (n_pts,) + (1,) * d + (order_d,) + (1,) * (dim - d - 1)
+        index_list.append(idx_d.reshape(shape))
+
+    # Gather local control-point patch via broadcasting advanced indexing.
+    # cp_local[i, j_0, ..., j_{D-1}, r] = cp[idx_0[i,j_0], ..., idx_{D-1}[i,j_{D-1}], r]
+    # mypy cannot model a tuple of integer ndarrays followed by a slice;
+    # the numpy operation is correct and the result dtype is preserved.
+    idx_with_last: tuple[npt.NDArray[np.intp] | slice, ...] = (*tuple(index_list), slice(None))
+    cp_local: npt.NDArray[np.float32 | np.float64] = cp[idx_with_last]
+    # shape: (n_pts, order_0, ..., order_{D-1}, k)
+
+    # Build outer-product weights: weights[i, j_0, ..., j_{D-1}] = prod_d B_d[i, j_d]
+    weights: npt.NDArray[np.float32 | np.float64] = Bs[0].reshape(
+        (n_pts, orders[0]) + (1,) * (dim - 1)
+    )
+    for d in range(1, dim):
+        w_shape: tuple[int, ...] = (n_pts,) + (1,) * d + (orders[d],) + (1,) * (dim - d - 1)
+        weights = weights * Bs[d].reshape(w_shape)
+    # shape: (n_pts, order_0, ..., order_{D-1})
+
+    total_local = int(np.prod(orders))
+    out[:] = (
+        (cp_local * weights[..., np.newaxis]).reshape(n_pts, total_local, cp.shape[-1]).sum(axis=1)
+    )
+
+
 def _evaluate_Bspline_multi_dim(
     spline: Bspline,
     pts: npt.NDArray[np.float32 | np.float64] | PointsLattice,
     out: npt.NDArray[np.float32 | np.float64] | None = None,
 ) -> npt.NDArray[np.float32 | np.float64]:
-    """Evaluate the multi-dimensional B-spline at the given points.
+    """Evaluate a multi-dimensional B-spline at the given points.
+
+    Evaluates 1D basis functions for each parametric direction and combines
+    them with the control points through sequential contractions, avoiding the
+    O(prod(order_d)) memory cost of assembling the full tensor-product basis.
 
     Args:
-        spline (Bspline): A multi-dimensional B-spline object.
+        spline (Bspline): A multi-dimensional B-spline object (``dim >= 2``).
         pts (npt.NDArray[np.float32 | np.float64] | PointsLattice): Evaluation
-            points.
-        out (npt.NDArray[np.float32 | np.float64] | None): Optional output
-            array. Defaults to None.
+            points. Either a :class:`~pantr.quad.PointsLattice` (one 1D array
+            per parametric direction) or a 2D array of shape
+            ``(n_pts, spline.dim)`` containing row-wise parameter coordinates.
+        out (npt.NDArray[np.float32 | np.float64] | None): Optional
+            pre-allocated output buffer. Must have shape ``(*pts_shape, rank)``
+            and dtype matching the B-spline, where ``pts_shape`` is
+            ``(m_0, ..., m_{D-1})`` for a :class:`~pantr.quad.PointsLattice`
+            or ``(n_pts,)`` for a points array. Defaults to None.
+
+    Returns:
+        npt.NDArray[np.float32 | np.float64]: B-spline values at the given
+        points. Shape is ``(m_0, ..., m_{D-1})`` for scalar fields or
+        ``(m_0, ..., m_{D-1}, rank)`` for vector-valued B-splines when
+        ``pts`` is a :class:`~pantr.quad.PointsLattice`, and ``(n_pts,)``
+        or ``(n_pts, rank)`` when ``pts`` is a points array. For rational
+        B-splines the weight column is divided out and not included in
+        the output.
 
     Raises:
-        NotImplementedError: Always raised; multi-dimensional evaluation is not
-            yet implemented.
+        ValueError: If the pts dimension does not match the B-spline dimension,
+            if the pts dtype does not match the B-spline dtype, or if ``out``
+            has an incorrect shape or dtype.
     """
-    raise NotImplementedError("Not implemented")
+    dim = spline.dim
+    dtype = spline.dtype
+    cp = spline.control_points
+
+    out_array: npt.NDArray[np.float32 | np.float64]
+
+    if isinstance(pts, PointsLattice):
+        if pts.dim != dim:
+            raise ValueError(
+                f"Points lattice dimension {pts.dim} does not match B-spline dimension {dim}"
+            )
+        if pts.dtype != dtype:
+            raise ValueError("Points dtype must match B-spline dtype")
+
+        pts_grid_shape = tuple(int(p.shape[0]) for p in pts.pts_per_dir)
+        expected_shape = (*pts_grid_shape, cp.shape[-1])
+        if out is None:
+            out_array = np.empty(expected_shape, dtype=dtype)
+        else:
+            _validate_out_array_1D(out, expected_shape, dtype)
+            out_array = out
+
+        _evaluate_Bspline_multi_dim_lattice(cp, spline.space.spaces, pts, out_array)
+
+    else:
+        if pts.ndim != 2 or pts.shape[1] != dim:  # noqa: PLR2004
+            raise ValueError(f"pts must be a 2D array with {dim} columns")
+        if pts.dtype != dtype:
+            raise ValueError("Points dtype must match B-spline dtype")
+
+        expected_shape = (pts.shape[0], cp.shape[-1])
+        if out is None:
+            out_array = np.empty(expected_shape, dtype=dtype)
+        else:
+            _validate_out_array_1D(out, expected_shape, dtype)
+            out_array = out
+
+        _evaluate_Bspline_multi_dim_pts_array(cp, spline.space.spaces, pts, out_array)
+
+    if spline.is_rational:
+        out_array[..., :-1] = out_array[..., :-1] / out_array[..., -1:]
+        return out_array[..., :-1].squeeze()
+
+    return out_array.squeeze()
 
 
 def _evaluate_Bspline(
@@ -400,13 +599,14 @@ def _evaluate_Bspline(
     pts: npt.NDArray[np.float32 | np.float64] | PointsLattice,
     out: npt.NDArray[np.float32 | np.float64] | None = None,
 ) -> npt.NDArray[np.float32 | np.float64]:
-    """Evaluate the B-spline basis functions at the given points.
+    """Evaluate the B-spline at the given points, dispatching on parametric dimension.
 
     Args:
-        spline (BsplineSpace1D): The B-spline space.
-        pts (npt.NDArray[np.float32 | np.float64]): The points at which to evaluate the
-            B-spline basis functions.
-        out (npt.NDArray[np.float32 | np.float64] | None): The output array.
+        spline (Bspline): The B-spline object.
+        pts (npt.NDArray[np.float32 | np.float64] | PointsLattice): The points at which
+            to evaluate the B-spline.
+        out (npt.NDArray[np.float32 | np.float64] | None): Optional pre-allocated output
+            array. Defaults to None.
 
     Returns:
         npt.NDArray[np.float32 | np.float64]: The B-spline values at the given points.
