@@ -1,7 +1,7 @@
 """Core B-spline basis function evaluation implementations.
 
 This module provides core functions for evaluating B-spline basis functions
-using Cox-de Boor recursion and Bernstein-like evaluation.
+using the BasisFuncs algorithm (Piegl & Tiller) and Bernstein-like evaluation.
 """
 
 from __future__ import annotations
@@ -34,7 +34,7 @@ if TYPE_CHECKING:
     cache=True,
     parallel=False,
 )
-def _compute_basis_Cox_de_Boor_impl(  # noqa: PLR0913
+def _compute_basis_nurbs_book_impl(  # noqa: PLR0913
     knots: npt.NDArray[np.float32 | np.float64],
     degree: int,
     periodic: bool,
@@ -43,9 +43,9 @@ def _compute_basis_Cox_de_Boor_impl(  # noqa: PLR0913
     out_basis: npt.NDArray[np.float32 | np.float64],
     out_first_basis: npt.NDArray[np.int_],
 ) -> None:
-    """Evaluate B-spline basis functions using Cox-de Boor recursion.
+    """Evaluate B-spline basis functions using BasisFuncs (Piegl & Tiller A2.2).
 
-    This function implements Algorithm 2.23 from "Spline Methods Draft" by Tom Lyche.
+    This function implements Algorithm A2.2 from "The NURBS Book" by Piegl & Tiller.
     Results are written directly to the output arrays (C-style).
 
     Args:
@@ -63,51 +63,48 @@ def _compute_basis_Cox_de_Boor_impl(  # noqa: PLR0913
     Note:
         Inputs are assumed to be correct (no validation performed).
     """
-    # See Spline Methods Draft, by Tom Lychee. Algorithm 2.23
+    # See The NURBS Book, by Piegl & Tiller. Algorithm A2.2 (BasisFuncs)
 
     order = degree + 1
     n_pts = pts.size
-
-    knot_ids = _get_last_knot_smaller_equal_impl(knots, pts)
-
     dtype = knots.dtype
     zero = dtype.type(0.0)
     one = dtype.type(1.0)
 
-    # Initialize basis array
-    out_basis.fill(zero)
-    out_basis[:, -1] = one
-
-    # Here we account for the case where the evaluation point
-    # coincides with the last knot.
+    knot_ids = _get_last_knot_smaller_equal_impl(knots, pts)
     num_basis = _get_Bspline_num_basis_1D_impl(knots, degree, periodic, tol)
     out_first_basis[:] = np.minimum(knot_ids - degree, num_basis - order)
+
+    out_basis.fill(zero)
+
+    # Allocate helper arrays once, reused across points
+    left = np.zeros(order, dtype=dtype)
+    right = np.zeros(order, dtype=dtype)
 
     for pt_id in range(n_pts):
         knot_id = knot_ids[pt_id]
 
+        # Boundary: point coincides with the last knot
         if knot_id == (knots.size - 1):
+            out_basis[pt_id, -1] = one
             continue
 
         pt = pts[pt_id]
-        basis_i = out_basis[pt_id, :]
-        local_knots = knots[knot_id - degree + 1 : knot_id + order]
+        N = out_basis[pt_id, :]
+        N[0] = one
 
-        for sub_degree in range(1, order):
-            k0, k1 = local_knots[0], local_knots[sub_degree]
-            diff = k1 - k0
-            inv_diff = zero if diff < tol else one / diff
+        for j in range(1, order):
+            left[j] = pt - knots[knot_id + 1 - j]
+            right[j] = knots[knot_id + j] - pt
+            saved = zero
 
-            for bs_id in range(degree - sub_degree, degree):
-                basis_i[bs_id] *= (pt - k0) * inv_diff
+            for r in range(j):
+                denom = right[r + 1] + left[j - r]  # always >= 0 (non-decreasing knots)
+                temp = zero if denom < tol else N[r] / denom
+                N[r] = saved + right[r + 1] * temp
+                saved = left[j - r] * temp
 
-                k0, k1 = local_knots[bs_id], local_knots[bs_id + sub_degree]
-                diff = k1 - k0
-                inv_diff = zero if diff < tol else one / diff
-
-                basis_i[bs_id] += (k1 - pt) * inv_diff * basis_i[bs_id + 1]
-
-            basis_i[-1] *= (pt - k0) * inv_diff
+            N[j] = saved
 
 
 def _tabulate_Bspline_basis_Bernstein_like_1D(
@@ -181,7 +178,7 @@ def _tabulate_Bspline_basis_1D_impl(
 
     This function automatically selects the most efficient evaluation method:
     - For Bézier-like knots: direct Bernstein evaluation
-    - For general knots: Cox-de Boor recursion
+    - For general knots: BasisFuncs (Piegl & Tiller A2.2)
 
     In both cases it calls vectorized or numba implementations.
 
@@ -253,7 +250,7 @@ def _tabulate_Bspline_basis_1D_impl(
             spline, pts, basis_normalized, first_indices_normalized
         )
     else:
-        _compute_basis_Cox_de_Boor_impl(
+        _compute_basis_nurbs_book_impl(
             spline.knots,
             spline.degree,
             spline.periodic,
@@ -281,8 +278,8 @@ def _warmup_numba_functions() -> None:
     basis_dummy = np.empty((n_pts_dummy, degree_dummy + 1), dtype=np.float64)
     first_basis_dummy = np.empty(n_pts_dummy, dtype=np.int_)
 
-    # Warmup Cox-de Boor implementation with float64
-    _compute_basis_Cox_de_Boor_impl(
+    # Warmup BasisFuncs implementation with float64
+    _compute_basis_nurbs_book_impl(
         knots_dummy, degree_dummy, False, tol_dummy, pts_dummy, basis_dummy, first_basis_dummy
     )
 
@@ -292,7 +289,7 @@ def _warmup_numba_functions() -> None:
 
 
 __all__ = [
-    "_compute_basis_Cox_de_Boor_impl",
+    "_compute_basis_nurbs_book_impl",
     "_tabulate_Bspline_basis_1D_impl",
     "_tabulate_Bspline_basis_Bernstein_like_1D",
 ]

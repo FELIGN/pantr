@@ -6,7 +6,7 @@ import numpy as np
 import pytest
 
 from pantr._bspline_basis_core import (
-    _compute_basis_Cox_de_Boor_impl,
+    _compute_basis_nurbs_book_impl,
     _tabulate_Bspline_basis_Bernstein_like_1D,
 )
 from pantr._bspline_extraction import (
@@ -636,8 +636,8 @@ class TestGetLastKnotSmallerEqual:
         np.testing.assert_array_equal(result, expected)
 
 
-class TestEvaluateBasisCoxDeBoor:
-    """Test the _compute_basis_Cox_de_Boor_impl function."""
+class TestEvaluateBasisBasisFuncs:
+    """Test the _compute_basis_nurbs_book_impl function."""
 
     def test_bezier_like_evaluation(self) -> None:
         """Test evaluation for Bézier-like knot vector."""
@@ -649,7 +649,7 @@ class TestEvaluateBasisCoxDeBoor:
 
         basis = np.empty((3, 3), dtype=np.float64)
         first_basis = np.empty(3, dtype=np.int_)
-        _compute_basis_Cox_de_Boor_impl(knots, degree, periodic, tol, pts, basis, first_basis)
+        _compute_basis_nurbs_book_impl(knots, degree, periodic, tol, pts, basis, first_basis)
 
         # Check shape
         assert basis.shape == (3, 3)
@@ -669,7 +669,7 @@ class TestEvaluateBasisCoxDeBoor:
 
         basis = np.empty((2, 3), dtype=np.float64)
         first_basis = np.empty(2, dtype=np.int_)
-        _compute_basis_Cox_de_Boor_impl(knots, degree, periodic, tol, pts, basis, first_basis)
+        _compute_basis_nurbs_book_impl(knots, degree, periodic, tol, pts, basis, first_basis)
 
         # Check shape
         assert basis.shape == (2, 3)
@@ -689,7 +689,7 @@ class TestEvaluateBasisCoxDeBoor:
 
         basis = np.empty((3, 3), dtype=np.float64)
         first_basis = np.empty(3, dtype=np.int_)
-        _compute_basis_Cox_de_Boor_impl(knots, degree, periodic, tol, pts, basis, first_basis)
+        _compute_basis_nurbs_book_impl(knots, degree, periodic, tol, pts, basis, first_basis)
 
         # Check shape
         assert basis.shape == (3, 3)
@@ -710,7 +710,7 @@ class TestEvaluateBasisCoxDeBoor:
         # Test with float64
         basis1 = np.empty((3, 3), dtype=np.float64)
         first_basis1 = np.empty(3, dtype=np.int_)
-        _compute_basis_Cox_de_Boor_impl(knots, degree, periodic, tol, pts, basis1, first_basis1)
+        _compute_basis_nurbs_book_impl(knots, degree, periodic, tol, pts, basis1, first_basis1)
         assert basis1.shape == (3, 3)
         assert basis1.dtype == np.float64
         assert first_basis1.shape == (3,)
@@ -720,7 +720,7 @@ class TestEvaluateBasisCoxDeBoor:
         pts_f32 = pts.astype(np.float32)
         basis2 = np.empty((3, 3), dtype=np.float32)
         first_basis2 = np.empty(3, dtype=np.int_)
-        _compute_basis_Cox_de_Boor_impl(
+        _compute_basis_nurbs_book_impl(
             knots_f32, degree, periodic, tol, pts_f32, basis2, first_basis2
         )
         assert basis2.dtype == np.float32
