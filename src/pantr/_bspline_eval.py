@@ -1,8 +1,8 @@
-"""Core B-spline evaluation implementations using the de Boor algorithm.
+"""Core B-spline evaluation implementations.
 
 This module provides low-level routines for evaluating a :class:`Bspline`
 at arbitrary parametric points. The main entry point is
-:func:`_evaluate_Bspline`, which dispatches to the 1D de Boor kernel for
+:func:`_evaluate_Bspline`, which dispatches to the 1D basis-combine kernel for
 1D splines. Multi-dimensional evaluation is currently not implemented.
 """
 
@@ -14,10 +14,7 @@ import numpy as np
 from numpy import typing as npt
 
 from ._basis_utils import _validate_out_array_1D
-from ._bspline_knots import (
-    _get_Bspline_num_basis_1D_impl,
-    _get_last_knot_smaller_equal_impl,
-)
+from ._bspline_basis_core import _compute_basis_nurbs_book_impl
 from ._numba_compat import nb_jit
 from .quad import PointsLattice
 
@@ -31,7 +28,7 @@ if TYPE_CHECKING:
     cache=True,
     parallel=False,
 )
-def _evaluate_Bspline_de_Boor_1D(  # noqa: PLR0913
+def _evaluate_Bspline_basis_combine_1D(  # noqa: PLR0913
     control_points: npt.NDArray[np.float32 | np.float64],
     knots: npt.NDArray[np.float32 | np.float64],
     degree: int,
@@ -40,61 +37,56 @@ def _evaluate_Bspline_de_Boor_1D(  # noqa: PLR0913
     pts: npt.NDArray[np.float32 | np.float64],
     out: npt.NDArray[np.float32 | np.float64],
 ) -> npt.NDArray[np.float32 | np.float64]:
-    """Evaluate the B-spline at the given points using de Boor's algorithm.
+    """Evaluate a B-spline by computing basis functions then combining with control points.
+
+    For each evaluation point, computes the (degree+1) non-zero B-spline basis
+    functions via the Cox-de Boor recurrence (Algorithm A2.2 from Piegl & Tiller),
+    then forms the result as a linear combination of the corresponding control points.
+    This separates the O(p^2) scalar recurrence from the rank dimension, reducing
+    the work per point from O(p^2 * rank) to O(p^2 + p * rank).
 
     Args:
-        control_points (npt.NDArray[np.float32 | np.float64]): Control points.
+        control_points (npt.NDArray[np.float32 | np.float64]): Control-point array of
+            shape (n_basis, rank).
         knots (npt.NDArray[np.float32 | np.float64]): B-spline knot vector.
         degree (int): B-spline degree.
         periodic (bool): Whether the B-spline is periodic.
         tol (float): Tolerance for numerical comparisons.
-        pts (npt.NDArray[np.float32 | np.float64]): Points to evaluate at.
-        out (npt.NDArray[np.float32 | np.float64] | None): Optional output array.
+        pts (npt.NDArray[np.float32 | np.float64]): 1-D array of evaluation points,
+            shape (n_pts,).
+        out (npt.NDArray[np.float32 | np.float64]): Pre-allocated output array of shape
+            (n_pts, rank) and matching dtype.
 
     Returns:
-        npt.NDArray[np.float32 | np.float64]: Evaluated values at points.
+        npt.NDArray[np.float32 | np.float64]: The `out` array filled with evaluated
+        values, shape (n_pts, rank).
+
+    Note:
+        Inputs are assumed to be correct (no validation performed).
+        For general use, call :func:`_evaluate_Bspline_1D` instead.
     """
+    order = degree + 1
     n_pts = pts.size
     dtype = knots.dtype
     zero = dtype.type(0.0)
-    one = dtype.type(1.0)
+    num_cp = control_points.shape[0]
 
-    knot_ids = _get_last_knot_smaller_equal_impl(knots, pts)
-    num_basis = _get_Bspline_num_basis_1D_impl(knots, degree, periodic, tol)
-    order = degree + 1
+    basis = np.empty((n_pts, order), dtype=dtype)
+    first_basis = np.empty(n_pts, dtype=np.int64)
 
-    d = np.empty((order, control_points.shape[1]), dtype=dtype)
+    _compute_basis_nurbs_book_impl(knots, degree, periodic, tol, pts, basis, first_basis)
 
+    rank = control_points.shape[1]
     for i in range(n_pts):
-        pt = pts[i]
-        k = knot_ids[i]
-
-        # Determine the index of the first control point
-        # We clamp to ensure we don't go out of bounds (e.g. at the end of the domain)
-        s = np.minimum(k - degree, num_basis - order)
-
-        # Initialize working array d with control points
-        for j in range(order):
-            idx = s + j
-            if periodic:
-                idx = idx % num_basis
-            d[j, :] = control_points[idx, :]
-
-        # De Boor recursion
-        for r in range(1, order):
-            for j in range(degree, r - 1, -1):
-                # Calculate alpha
-                denom_idx1 = s + j + order - r
-                denom_idx0 = s + j
-
-                denom = knots[denom_idx1] - knots[denom_idx0]
-                numer = pt - knots[denom_idx0]
-
-                alpha = zero if denom < tol else numer / denom
-
-                d[j, :] = (one - alpha) * d[j - 1, :] + alpha * d[j, :]
-
-        out[i, :] = d[degree, :]
+        s = first_basis[i]
+        for k in range(rank):
+            total = zero
+            for j in range(order):
+                idx = s + j
+                if periodic:
+                    idx = idx % num_cp
+                total = total + basis[i, j] * control_points[idx, k]
+            out[i, k] = total
 
     return out
 
@@ -161,7 +153,7 @@ def _evaluate_Bspline_1D(
 
     spline_1D = spline.space.spaces[0]
 
-    _evaluate_Bspline_de_Boor_1D(
+    _evaluate_Bspline_basis_combine_1D(
         spline.control_points,
         spline_1D.knots,
         spline_1D.degree,
@@ -226,7 +218,7 @@ def _evaluate_Bspline(
 def _warmup_numba_functions() -> None:
     """Precompile Numba functions with float64 signatures for faster first call.
 
-    Triggers compilation of the de Boor evaluation kernel with representative
+    Triggers compilation of the basis-combine evaluation kernel with representative
     float64 arrays. The compiled code is cached by Numba (``cache=True``) so
     subsequent cold-start calls do not pay JIT overhead.
     """
@@ -237,7 +229,7 @@ def _warmup_numba_functions() -> None:
     degree_dummy = 2
     out_dummy = np.empty((1, 1), dtype=np.float64)
 
-    _evaluate_Bspline_de_Boor_1D(
+    _evaluate_Bspline_basis_combine_1D(
         cp_dummy, knots_dummy, degree_dummy, False, tol_dummy, pts_dummy, out_dummy
     )
 
