@@ -23,6 +23,10 @@ from ._bspline_extraction import (
     _tabulate_Bspline_cardinal_1D_extraction_impl,
     _tabulate_Bspline_Lagrange_1D_extraction_impl,
 )
+from ._bspline_knot_insertion import (
+    _compute_inserted_knot_vector_1d,
+    _compute_uniform_subdivision_knots,
+)
 from ._bspline_knots import (
     _get_Bspline_cardinal_intervals_1D_impl,
     _get_Bspline_num_basis_1D_impl,
@@ -610,3 +614,52 @@ class BsplineSpace1D:
         return _tabulate_Bspline_cardinal_1D_extraction_impl(
             self.knots, self.degree, self.tolerance, out=out
         )
+
+    def insert_knots(self, new_knots: npt.ArrayLike) -> BsplineSpace1D:
+        """Return a new BsplineSpace1D with additional knots inserted.
+
+        Args:
+            new_knots (npt.ArrayLike): 1D array-like of knot values to insert.
+                Values must lie in ``[knots[degree], knots[-degree-1]]``.
+                Inserting a value already present increases its multiplicity;
+                multiplicity cannot exceed ``degree + 1``.
+
+        Returns:
+            BsplineSpace1D: New space with the inserted knots.
+
+        Raises:
+            ValueError: If ``new_knots`` is not 1D.
+            ValueError: If any new knot lies outside the domain.
+            ValueError: If inserting a knot would exceed maximum multiplicity
+                ``degree + 1``.
+        """
+        arr = np.asarray(new_knots, dtype=self.dtype)
+        merged = _compute_inserted_knot_vector_1d(self._knots, self._degree, arr, self._tol)
+        return BsplineSpace1D(merged, self._degree)
+
+    def subdivide(self, n_subdivisions: int) -> BsplineSpace1D:
+        """Return a new BsplineSpace1D with each knot span split into equal sub-spans.
+
+        For every non-zero knot interval ``[t_i, t_{i+1})``, inserts
+        ``n_subdivisions - 1`` uniformly spaced knots to produce
+        ``n_subdivisions`` equal sub-spans per interval.
+
+        Args:
+            n_subdivisions (int): Number of equal sub-spans per existing knot
+                interval.  Must be >= 1.  A value of 1 is a no-op (returns
+                ``self``).
+
+        Returns:
+            BsplineSpace1D: New space with uniformly refined knot vector.
+
+        Raises:
+            ValueError: If ``n_subdivisions < 1``.
+        """
+        if n_subdivisions < 1:
+            raise ValueError(f"n_subdivisions must be >= 1, got {n_subdivisions}")
+        if n_subdivisions == 1:
+            return self
+        new_knots = _compute_uniform_subdivision_knots(
+            self._knots, self._degree, self._tol, n_subdivisions
+        )
+        return self.insert_knots(new_knots)
