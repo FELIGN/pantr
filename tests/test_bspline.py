@@ -36,7 +36,7 @@ class TestBsplineInit:
         bspline = Bspline(space, control_points)
 
         assert bspline.dim == 1
-        assert bspline.rank == 1
+        assert bspline.rank == 2  # noqa: PLR2004
         assert bspline.control_points.shape == (3, 2)
         np.testing.assert_array_equal(bspline.control_points, control_points)
 
@@ -70,7 +70,7 @@ class TestBsplineInit:
         bspline = Bspline(space, control_points)
 
         assert bspline.dim == 2  # noqa: PLR2004
-        assert bspline.rank == 1
+        assert bspline.rank == 2  # noqa: PLR2004
         assert bspline.control_points.shape == (3, 2, 2)
         np.testing.assert_array_equal(bspline.control_points, control_points.reshape(3, 2, 2))
 
@@ -92,28 +92,28 @@ class TestBsplineInit:
         assert bspline.control_points.shape == (3, 2, 4, 1)
 
     def test_valid_initialization_rational(self) -> None:
-        """Test that rational B-spline with rank 0 raises ValueError."""
+        """Test valid rational B-spline initialization."""
         knots = [0.0, 0.0, 0.0, 1.0, 1.0, 1.0]
         space_1d = BsplineSpace1D(knots, 2)
         space = BsplineSpace([space_1d])
-        # For 1D space, reshape([3, -1]) gives ndim=2, so rank=(2-1)-1=0 -> INVALID
-        # With this reshape pattern, rational B-splines always have rank 0
+        # shape[-1]=2, rational rank = 2-1 = 1 -> valid
         control_points = np.array([[1.0, 1.0], [2.0, 1.0], [3.0, 1.0]], dtype=np.float64)
+        bspline = Bspline(space, control_points, is_rational=True)
 
-        with pytest.raises(ValueError, match="The B-spline must have at least rank one"):
-            Bspline(space, control_points, is_rational=True)
+        assert bspline.is_rational is True
+        assert bspline.rank == 1
 
     def test_valid_initialization_rational_rank_1(self) -> None:
-        """Test that rational B-spline with 1D space always has rank 0 (invalid)."""
+        """Test valid rational B-spline with rank 1 (scalar field)."""
         knots = [0.0, 0.0, 0.0, 1.0, 1.0, 1.0]
         space_1d = BsplineSpace1D(knots, 2)
         space = BsplineSpace([space_1d])
-        # With reshape([3, -1]), ndim is always 2, so rank=(2-1)-1=0 -> INVALID
-        # Rational B-splines with this reshape pattern cannot have rank >= 1
+        # 12 / 3 basis = 4 columns -> shape[-1]=4, rational rank = 4-1 = 3
         control_points = np.arange(12, dtype=np.float64)
+        bspline = Bspline(space, control_points, is_rational=True)
 
-        with pytest.raises(ValueError, match="The B-spline must have at least rank one"):
-            Bspline(space, control_points, is_rational=True)
+        assert bspline.is_rational is True
+        assert bspline.rank == 3  # noqa: PLR2004
 
     def test_valid_initialization_float32(self) -> None:
         """Test valid Bspline initialization with float32 dtype."""
@@ -151,8 +151,8 @@ class TestBsplineInit:
         knots = [0.0, 0.0, 0.0, 1.0, 1.0, 1.0]
         space_1d = BsplineSpace1D(knots, 2)
         space = BsplineSpace([space_1d])
-        # For rational scalar: shape (3, 2), ndim=2, dim=1, rank=(2-1)-1=0 -> INVALID
-        control_points = np.array([[1.0, 1.0], [2.0, 1.0], [3.0, 1.0]], dtype=np.float64)
+        # For rational: shape[-1]=1 -> rank = 1-1 = 0 -> INVALID
+        control_points = np.array([1.0, 2.0, 3.0], dtype=np.float64)
 
         with pytest.raises(ValueError, match="The B-spline must have at least rank one"):
             Bspline(space, control_points, is_rational=True)
@@ -272,10 +272,10 @@ class TestBsplineProperties:
         bspline_non_rational = Bspline(space, control_points)
         assert bspline_non_rational.is_rational is False
 
-        # For rational, with reshape([3, -1]), ndim=2, rank=(2-1)-1=0 -> INVALID
+        # shape[-1]=2 -> rational rank = 1 -> valid
         control_points_rational = np.array([[1.0, 1.0], [2.0, 1.0], [3.0, 1.0]], dtype=np.float64)
-        with pytest.raises(ValueError, match="The B-spline must have at least rank one"):
-            Bspline(space, control_points_rational, is_rational=True)
+        bspline_rational = Bspline(space, control_points_rational, is_rational=True)
+        assert bspline_rational.is_rational is True
 
     def test_rank_property_non_rational_scalar(self) -> None:
         """Test rank property for non-rational scalar B-spline."""
@@ -297,9 +297,9 @@ class TestBsplineProperties:
         control_points = np.array([[1.0, 2.0], [3.0, 4.0], [5.0, 6.0]], dtype=np.float64)
         bspline = Bspline(space, control_points)
 
-        # control_points reshaped to (3, 2), so ndim=2, dim=1, rank=2-1=1
+        # control_points reshaped to (3, 2), so shape[-1]=2, rank=2
         assert bspline.control_points.shape == (3, 2)
-        assert bspline.rank == 1
+        assert bspline.rank == 2  # noqa: PLR2004
 
     def test_rank_property_non_rational_higher_rank(self) -> None:
         """Test rank property for non-rational with higher rank values."""
@@ -317,28 +317,28 @@ class TestBsplineProperties:
         assert bspline_rank1.rank == 1  # ndim=4, dim=3, rank=1
 
     def test_rank_property_rational_scalar(self) -> None:
-        """Test that rational scalar B-spline raises ValueError (rank 0 not allowed)."""
+        """Test rank property for rational scalar B-spline (rank 1)."""
         knots = [0.0, 0.0, 0.0, 1.0, 1.0, 1.0]
         space_1d = BsplineSpace1D(knots, 2)
         space = BsplineSpace([space_1d])
-        # For rational scalar, shape (3, 2) -> rank = (2-1)-1 = 0 -> INVALID
+        # shape[-1]=2 -> rational rank = 2-1 = 1
         control_points = np.array([[1.0, 1.0], [2.0, 1.0], [3.0, 1.0]], dtype=np.float64)
+        bspline = Bspline(space, control_points, is_rational=True)
 
-        with pytest.raises(ValueError, match="The B-spline must have at least rank one"):
-            Bspline(space, control_points, is_rational=True)
+        assert bspline.rank == 1
 
     def test_rank_property_rational_vector(self) -> None:
-        """Test that rational B-spline with 2D space also has rank 0 (invalid)."""
-        # With reshape([3, 2, -1]), ndim is always 3, so rank=(3-2)-1=0 -> INVALID
+        """Test rank property for rational 2D vector B-spline."""
         knots1 = [0.0, 0.0, 0.0, 1.0, 1.0, 1.0]
         knots2 = [0.0, 0.0, 1.0, 1.0]
         space_1d_1 = BsplineSpace1D(knots1, 2)
         space_1d_2 = BsplineSpace1D(knots2, 1)
         space_2d = BsplineSpace([space_1d_1, space_1d_2])
+        # 24 / (3*2=6 basis) = 4 columns -> shape (3, 2, 4), shape[-1]=4, rank=4-1=3
         control_points = np.arange(24, dtype=np.float64)
+        bspline = Bspline(space_2d, control_points, is_rational=True)
 
-        with pytest.raises(ValueError, match="The B-spline must have at least rank one"):
-            Bspline(space_2d, control_points, is_rational=True)
+        assert bspline.rank == 3  # noqa: PLR2004
 
     def test_rank_property_2D_non_rational_scalar(self) -> None:
         """Test rank property for 2D non-rational scalar B-spline."""
@@ -364,23 +364,22 @@ class TestBsplineProperties:
         control_points = np.arange(12, dtype=np.float64).reshape(6, 2)
         bspline = Bspline(space, control_points)
 
-        # control_points reshaped to (3, 2, 2), so ndim=3, dim=2, rank=3-2=1
+        # control_points reshaped to (3, 2, 2), so shape[-1]=2, rank=2
         assert bspline.control_points.shape == (3, 2, 2)
-        assert bspline.rank == 1
+        assert bspline.rank == 2  # noqa: PLR2004
 
     def test_rank_property_2D_rational_scalar(self) -> None:
-        """Test that 2D rational scalar B-spline raises ValueError (rank 0 not allowed)."""
+        """Test rank property for 2D rational B-spline."""
         knots1 = [0.0, 0.0, 0.0, 1.0, 1.0, 1.0]
         knots2 = [0.0, 0.0, 1.0, 1.0]
         space_1d_1 = BsplineSpace1D(knots1, 2)
         space_1d_2 = BsplineSpace1D(knots2, 1)
         space = BsplineSpace([space_1d_1, space_1d_2])
-        # For rational scalar in 2D: 18 elements -> (3, 2, 3)
-        # rank = (3-2)-1 = 0 -> INVALID
+        # 18 / (3*2=6 basis) = 3 columns -> shape (3, 2, 3), shape[-1]=3, rank=3-1=2
         control_points = np.arange(18, dtype=np.float64)
+        bspline = Bspline(space, control_points, is_rational=True)
 
-        with pytest.raises(ValueError, match="The B-spline must have at least rank one"):
-            Bspline(space, control_points, is_rational=True)
+        assert bspline.rank == 2  # noqa: PLR2004
 
 
 class TestBsplineEdgeCases:
@@ -406,21 +405,20 @@ class TestBsplineEdgeCases:
         space_1d_2 = BsplineSpace1D(knots2, 1)
         space = BsplineSpace([space_1d_1, space_1d_2])
 
-        # Rank 1 (scalar - always has trailing dimension)
+        # Rank 1 (scalar - trailing dim is 1)
         cp0 = np.array([1.0, 2.0, 3.0, 4.0, 5.0, 6.0], dtype=np.float64)
         bspline0 = Bspline(space, cp0)
-        assert bspline0.rank == 1  # shape (3, 2, 1): ndim=3, dim=2, rank=1
+        assert bspline0.rank == 1  # shape (3, 2, 1): shape[-1]=1, rank=1
 
-        # Rank 1 (vector)
+        # Rank 2 (vector, 2 columns)
         cp1 = np.arange(12, dtype=np.float64)
         bspline1 = Bspline(space, cp1)
-        assert bspline1.rank == 1  # shape (3, 2, 2): ndim=3, dim=2, rank=1
+        assert bspline1.rank == 2  # shape (3, 2, 2): shape[-1]=2, rank=2  # noqa: PLR2004
 
-        # With reshape([3, 2, -1]), ndim is always 3, so rank is always 1
-        # Can't get rank 2 with this reshape pattern
+        # Rank 4 (vector, 4 columns)
         cp2 = np.arange(24, dtype=np.float64)
         bspline2 = Bspline(space, cp2)
-        assert bspline2.rank == 1  # shape (3, 2, 4): ndim=3, dim=2, rank=1
+        assert bspline2.rank == 4  # shape (3, 2, 4): shape[-1]=4, rank=4  # noqa: PLR2004
 
     def test_control_points_flat_input(self) -> None:
         """Test that flat input is correctly reshaped."""
@@ -460,7 +458,7 @@ class TestBsplineEdgeCases:
         cp_vec = np.arange(48, dtype=np.float64)
         bspline_vec = Bspline(space, cp_vec)
         assert bspline_vec.control_points.shape == (3, 2, 4, 2)
-        assert bspline_vec.rank == 1  # ndim=4, dim=3, rank=1
+        assert bspline_vec.rank == 2  # shape[-1]=2, rank=2  # noqa: PLR2004
 
 
 class TestBsplineEvaluation:
