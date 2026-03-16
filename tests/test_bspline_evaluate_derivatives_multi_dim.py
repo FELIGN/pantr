@@ -1,4 +1,4 @@
-"""Tests for multi-dimensional B-spline derivative evaluation."""
+"""Tests for multi-dimensional B-spline derivative evaluation with per-direction orders."""
 
 import numpy as np
 import pytest
@@ -26,31 +26,42 @@ def _make_2d_space(
 class TestMultiDimDerivOutputShape:
     """Verify output shapes for all combinations of input type and rank."""
 
-    def test_pts_array_scalar_non_rational(self) -> None:
-        """Shape (n_pts, n_deriv+1, dim) for scalar non-rational."""
+    def test_pts_array_scalar_non_rational_zeroth(self) -> None:
+        """orders=[0,0] for scalar non-rational returns shape (n_pts,)."""
         space = _make_2d_space([0, 0, 0, 1, 1, 1], 2, [0, 0, 1, 1], 1)
         cp = np.ones(6, dtype=np.float64)
         bspline = Bspline(space, cp)
 
         pts = np.array([[0.25, 0.5], [0.75, 0.5]], dtype=np.float64)
-        result = bspline.evaluate_derivatives(pts, n_deriv=2)
+        result = bspline.evaluate_derivatives(pts, [0, 0])
 
-        assert result.shape == (2, 3, 2)
+        assert result.shape == (2,)
+
+    def test_pts_array_scalar_non_rational_mixed(self) -> None:
+        """orders=[1,1] for scalar non-rational returns shape (n_pts,)."""
+        space = _make_2d_space([0, 0, 0, 1, 1, 1], 2, [0, 0, 1, 1], 1)
+        cp = np.ones(6, dtype=np.float64)
+        bspline = Bspline(space, cp)
+
+        pts = np.array([[0.25, 0.5], [0.75, 0.5]], dtype=np.float64)
+        result = bspline.evaluate_derivatives(pts, [1, 1])
+
+        assert result.shape == (2,)
 
     def test_pts_array_vector_non_rational(self) -> None:
-        """Shape (n_pts, n_deriv+1, dim, rank) for vector non-rational."""
+        """orders=[1,0] for vector non-rational returns shape (n_pts, rank)."""
         space = _make_2d_space([0, 0, 0, 1, 1, 1], 2, [0, 0, 1, 1], 1)
         # 6 basis x 3 columns → rank 3
         cp = np.arange(18, dtype=np.float64)
         bspline = Bspline(space, cp)
 
         pts = np.array([[0.5, 0.5]], dtype=np.float64)
-        result = bspline.evaluate_derivatives(pts, n_deriv=1)
+        result = bspline.evaluate_derivatives(pts, [1, 0])
 
-        assert result.shape == (1, 2, 2, 3)
+        assert result.shape == (1, 3)
 
     def test_lattice_scalar_non_rational(self) -> None:
-        """Shape (*pts_grid_shape, n_deriv+1, dim) for lattice scalar non-rational."""
+        """orders=[1,0] for lattice scalar non-rational returns (*grid_shape,)."""
         space = _make_2d_space([0, 0, 0, 1, 1, 1], 2, [0, 0, 1, 1], 1)
         cp = np.ones(6, dtype=np.float64)
         bspline = Bspline(space, cp)
@@ -58,51 +69,64 @@ class TestMultiDimDerivOutputShape:
         pts1 = np.linspace(0.0, 1.0, 4, dtype=np.float64)
         pts2 = np.linspace(0.0, 1.0, 3, dtype=np.float64)
         lattice = PointsLattice([pts1, pts2])
-        result = bspline.evaluate_derivatives(lattice, n_deriv=1)
+        result = bspline.evaluate_derivatives(lattice, [1, 0])
 
-        assert result.shape == (4, 3, 2, 2)
+        assert result.shape == (4, 3)
+
+    def test_lattice_vector_non_rational(self) -> None:
+        """orders=[0,1] for lattice vector non-rational returns (*grid_shape, rank)."""
+        space = _make_2d_space([0, 0, 0, 1, 1, 1], 2, [0, 0, 1, 1], 1)
+        cp = np.arange(12, dtype=np.float64)
+        bspline = Bspline(space, cp)
+
+        pts1 = np.linspace(0.0, 1.0, 3, dtype=np.float64)
+        pts2 = np.linspace(0.0, 1.0, 5, dtype=np.float64)
+        lattice = PointsLattice([pts1, pts2])
+        result = bspline.evaluate_derivatives(lattice, [0, 1])
+
+        assert result.shape == (3, 5, 2)
 
     def test_pts_array_rational_scalar(self) -> None:
-        """Shape (n_pts, n_deriv+1, dim) for rational scalar (rank_value=1)."""
+        """orders=[1,0] for rational scalar (rank=1) returns shape (n_pts,)."""
         space = _make_2d_space([0, 0, 0, 1, 1, 1], 2, [0, 0, 1, 1], 1)
-        # 6 basis x 2 columns → cp_size=2, rational rank_value=1
+        # 6 basis x 2 columns → cp_size=2, rational rank=1
         cp = np.tile([1.0, 1.0], (6, 1)).astype(np.float64)
         bspline = Bspline(space, cp.ravel(), is_rational=True)
 
         pts = np.array([[0.5, 0.5]], dtype=np.float64)
-        result = bspline.evaluate_derivatives(pts, n_deriv=1)
+        result = bspline.evaluate_derivatives(pts, [1, 0])
 
-        assert result.shape == (1, 2, 2)
+        assert result.shape == (1,)
 
     def test_pts_array_rational_vector(self) -> None:
-        """Shape (n_pts, n_deriv+1, dim, rank_value) for rational vector."""
+        """orders=[1,0] for rational vector returns shape (n_pts, rank_value)."""
         space = _make_2d_space([0, 0, 0, 1, 1, 1], 2, [0, 0, 1, 1], 1)
         # 6 basis x 3 columns → cp_size=3, rational rank_value=2
         cp = np.tile([1.0, 0.0, 1.0], (6, 1)).astype(np.float64)
         bspline = Bspline(space, cp.ravel(), is_rational=True)
 
         pts = np.array([[0.5, 0.5]], dtype=np.float64)
-        result = bspline.evaluate_derivatives(pts, n_deriv=1)
+        result = bspline.evaluate_derivatives(pts, [1, 0])
 
-        assert result.shape == (1, 2, 2, 2)
+        assert result.shape == (1, 2)
 
-    def test_n_deriv_0_shape(self) -> None:
-        """n_deriv=0 produces shape (*pts_shape, 1, dim)."""
+    def test_orders_zero_shape(self) -> None:
+        """orders=[0,0] produces shape (n_pts,) for scalar."""
         space = _make_2d_space([0, 0, 0, 1, 1, 1], 2, [0, 0, 1, 1], 1)
         cp = np.ones(6, dtype=np.float64)
         bspline = Bspline(space, cp)
 
         pts = np.array([[0.5, 0.5]], dtype=np.float64)
-        result = bspline.evaluate_derivatives(pts, n_deriv=0)
+        result = bspline.evaluate_derivatives(pts, [0, 0])
 
-        assert result.shape == (1, 1, 2)
+        assert result.shape == (1,)
 
 
 class TestMultiDimDerivCorrectness:
     """Verify correctness of multi-dimensional derivative values."""
 
-    def test_n_deriv_0_matches_evaluate_scalar(self) -> None:
-        """k=0 slice of derivative output must equal evaluate() for scalar."""
+    def test_orders_zero_matches_evaluate_scalar(self) -> None:
+        """orders=[0,0] must equal evaluate() for scalar."""
         space = _make_2d_space([0, 0, 0, 1, 1, 1], 2, [0, 0, 1, 1], 1)
         cp = np.array([1.0, 2.0, 3.0, 4.0, 5.0, 6.0], dtype=np.float64)
         bspline = Bspline(space, cp)
@@ -110,15 +134,13 @@ class TestMultiDimDerivCorrectness:
         rng = np.random.default_rng(0)
         pts = rng.uniform(0, 1, (20, 2)).astype(np.float64)
 
-        result_d = bspline.evaluate_derivatives(pts, n_deriv=0)  # (20, 1, 2)
+        result_d = bspline.evaluate_derivatives(pts, [0, 0])  # (20,)
         result_v = bspline.evaluate(pts)  # (20,)
 
-        # All directions must give the same value (k=0 is the function value)
-        np.testing.assert_allclose(result_d[:, 0, 0], result_v, atol=1e-13)
-        np.testing.assert_allclose(result_d[:, 0, 1], result_v, atol=1e-13)
+        np.testing.assert_allclose(result_d, result_v, atol=1e-13)
 
-    def test_n_deriv_0_matches_evaluate_vector(self) -> None:
-        """k=0 slice matches evaluate() for vector-valued spline."""
+    def test_orders_zero_matches_evaluate_vector(self) -> None:
+        """orders=[0,0] matches evaluate() for vector-valued spline."""
         space = _make_2d_space([0, 0, 0, 1, 1, 1], 2, [0, 0, 1, 1], 1)
         cp = np.arange(12, dtype=np.float64)
         bspline = Bspline(space, cp)
@@ -126,55 +148,58 @@ class TestMultiDimDerivCorrectness:
         rng = np.random.default_rng(1)
         pts = rng.uniform(0, 1, (15, 2)).astype(np.float64)
 
-        result_d = bspline.evaluate_derivatives(pts, n_deriv=0)  # (15, 1, 2, 2)
+        result_d = bspline.evaluate_derivatives(pts, [0, 0])  # (15, 2)
         result_v = bspline.evaluate(pts)  # (15, 2)
 
-        np.testing.assert_allclose(result_d[:, 0, 0, :], result_v, atol=1e-13)
-        np.testing.assert_allclose(result_d[:, 0, 1, :], result_v, atol=1e-13)
+        np.testing.assert_allclose(result_d, result_v, atol=1e-13)
 
     def test_linear_spline_constant_first_derivative(self) -> None:
         """Degree-(1,1) bilinear spline f(u,v)=u+v: df/du=1, df/dv=1 everywhere."""
-        # f(u, v) = u + v encoded as linear CPs: (0,0)->0, (1,0)->1, (0,1)->1, (1,1)->2
-        # Knots: degree 1 in each direction
         s1 = BsplineSpace1D(np.array([0.0, 0.0, 1.0, 1.0], dtype=np.float64), 1)
         s2 = BsplineSpace1D(np.array([0.0, 0.0, 1.0, 1.0], dtype=np.float64), 1)
         space = BsplineSpace([s1, s2])
-        # CP layout (num_basis_0=2, num_basis_1=2): [f(0,0), f(0,1), f(1,0), f(1,1)]
         cp = np.array([0.0, 1.0, 1.0, 2.0], dtype=np.float64)
         bspline = Bspline(space, cp)
 
-        # Exclude the domain endpoints: the kernel's endpoint shortcut only fills
-        # the zeroth-derivative slot; higher-order derivatives are left zero there.
         pts = np.array([[0.0, 0.0], [0.5, 0.5], [0.75, 0.25]], dtype=np.float64)
-        result = bspline.evaluate_derivatives(pts, n_deriv=1)
-        # shape (3, 2, 2): [pts, k=0..1, dir=0..1]
 
-        # k=0 should be f(u,v) = u + v
-        np.testing.assert_allclose(result[:, 0, 0], [0.0, 1.0, 1.0], atol=1e-13)
-        # k=1, dir=0: df/du = 1.0
-        np.testing.assert_allclose(result[:, 1, 0], [1.0, 1.0, 1.0], atol=1e-13)
-        # k=1, dir=1: df/dv = 1.0
-        np.testing.assert_allclose(result[:, 1, 1], [1.0, 1.0, 1.0], atol=1e-13)
+        # f(u,v) = u + v
+        np.testing.assert_allclose(
+            bspline.evaluate_derivatives(pts, [0, 0]),
+            pts[:, 0] + pts[:, 1],
+            atol=1e-13,
+        )
+        # df/du = 1
+        np.testing.assert_allclose(
+            bspline.evaluate_derivatives(pts, [1, 0]),
+            np.ones(3),
+            atol=1e-13,
+        )
+        # df/dv = 1
+        np.testing.assert_allclose(
+            bspline.evaluate_derivatives(pts, [0, 1]),
+            np.ones(3),
+            atol=1e-13,
+        )
 
     def test_bilinear_separable_derivative(self) -> None:
-        """f(u,v)=u*v (separable): df/du=v, df/dv=u."""
+        """f(u,v)=u*v (separable): df/du=v, df/dv=u, d²f/dudv=1."""
         s1 = BsplineSpace1D(np.array([0.0, 0.0, 1.0, 1.0], dtype=np.float64), 1)
         s2 = BsplineSpace1D(np.array([0.0, 0.0, 1.0, 1.0], dtype=np.float64), 1)
         space = BsplineSpace([s1, s2])
-        # CP layout: f(0,0)=0, f(0,1)=0, f(1,0)=0, f(1,1)=1
         cp = np.array([0.0, 0.0, 0.0, 1.0], dtype=np.float64)
         bspline = Bspline(space, cp)
 
-        # Exclude domain endpoints (derivative not computed there).
         pts = np.array([[0.25, 0.75], [0.5, 0.5]], dtype=np.float64)
-        result = bspline.evaluate_derivatives(pts, n_deriv=1)
-
         us = pts[:, 0]
         vs = pts[:, 1]
-        # k=1, dir=0: df/du = v
-        np.testing.assert_allclose(result[:, 1, 0], vs, atol=1e-13)
-        # k=1, dir=1: df/dv = u
-        np.testing.assert_allclose(result[:, 1, 1], us, atol=1e-13)
+
+        np.testing.assert_allclose(bspline.evaluate_derivatives(pts, [1, 0]), vs, atol=1e-13)
+        np.testing.assert_allclose(bspline.evaluate_derivatives(pts, [0, 1]), us, atol=1e-13)
+        # Mixed derivative d²f/dudv = 1
+        np.testing.assert_allclose(
+            bspline.evaluate_derivatives(pts, [1, 1]), np.ones(2), atol=1e-13
+        )
 
     def test_finite_difference_2d_scalar(self) -> None:
         """Finite-difference validation of first derivatives for 2D scalar spline."""
@@ -190,12 +215,11 @@ class TestMultiDimDerivCorrectness:
         pts_du = np.array([[0.3 + h, 0.4]], dtype=np.float64)
         pts_dv = np.array([[0.3, 0.4 + h]], dtype=np.float64)
 
-        result = bspline.evaluate_derivatives(pts, n_deriv=1)
         fd_u = (bspline.evaluate(pts_du) - bspline.evaluate(pts)) / h
         fd_v = (bspline.evaluate(pts_dv) - bspline.evaluate(pts)) / h
 
-        np.testing.assert_allclose(result[0, 1, 0], fd_u, rtol=1e-3)
-        np.testing.assert_allclose(result[0, 1, 1], fd_v, rtol=1e-3)
+        np.testing.assert_allclose(bspline.evaluate_derivatives(pts, [1, 0]), fd_u, rtol=1e-3)
+        np.testing.assert_allclose(bspline.evaluate_derivatives(pts, [0, 1]), fd_v, rtol=1e-3)
 
     def test_finite_difference_2d_vector(self) -> None:
         """Finite-difference validation for 2D vector-valued spline."""
@@ -212,12 +236,38 @@ class TestMultiDimDerivCorrectness:
         pts_du = pts + np.array([[h, 0.0]])
         pts_dv = pts + np.array([[0.0, h]])
 
-        result = bspline.evaluate_derivatives(pts, n_deriv=1)
         fd_u = (bspline.evaluate(pts_du) - bspline.evaluate(pts)) / h
         fd_v = (bspline.evaluate(pts_dv) - bspline.evaluate(pts)) / h
 
-        np.testing.assert_allclose(result[0, 1, 0, :], fd_u, atol=1e-4)
-        np.testing.assert_allclose(result[0, 1, 1, :], fd_v, atol=1e-4)
+        # evaluate() squeezes (1, 3) → (3,); derivatives return (1, 3) for n_pts=1
+        np.testing.assert_allclose(bspline.evaluate_derivatives(pts, [1, 0])[0], fd_u, atol=1e-4)
+        np.testing.assert_allclose(bspline.evaluate_derivatives(pts, [0, 1])[0], fd_v, atol=1e-4)
+
+    def test_finite_difference_2d_second_mixed(self) -> None:
+        """Finite-difference validation of d²f/dudv for a 2D quadratic spline."""
+        s1 = BsplineSpace1D(np.array([0.0, 0.0, 0.0, 1.0, 1.0, 1.0], dtype=np.float64), 2)
+        s2 = BsplineSpace1D(np.array([0.0, 0.0, 0.0, 1.0, 1.0, 1.0], dtype=np.float64), 2)
+        space = BsplineSpace([s1, s2])
+        rng = np.random.default_rng(99)
+        cp = rng.standard_normal(space.num_total_basis).astype(np.float64)
+        bspline = Bspline(space, cp)
+
+        h = 1e-4
+        pts = np.array([[0.3, 0.4]], dtype=np.float64)
+
+        # Central FD for d²f/dudv
+        pp = np.array([[0.3 + h, 0.4 + h]])
+        pm = np.array([[0.3 + h, 0.4 - h]])
+        mp = np.array([[0.3 - h, 0.4 + h]])
+        mm = np.array([[0.3 - h, 0.4 - h]])
+        fd_mixed = (
+            bspline.evaluate(pp)
+            - bspline.evaluate(pm)
+            - bspline.evaluate(mp)
+            + bspline.evaluate(mm)
+        ) / (4.0 * h**2)
+
+        np.testing.assert_allclose(bspline.evaluate_derivatives(pts, [1, 1]), fd_mixed, rtol=1e-3)
 
     def test_lattice_matches_pts_array(self) -> None:
         """Lattice and pts-array evaluation give the same results on a grid."""
@@ -229,31 +279,48 @@ class TestMultiDimDerivCorrectness:
         pts1 = np.linspace(0.0, 1.0, 5, dtype=np.float64)
         pts2 = np.linspace(0.0, 1.0, 4, dtype=np.float64)
 
-        # Build pts array from grid
         g0, g1 = np.meshgrid(pts1, pts2, indexing="ij")
         pts_arr = np.stack([g0.ravel(), g1.ravel()], axis=1)
 
-        result_arr = bspline.evaluate_derivatives(pts_arr, n_deriv=1)
-        # shape (20, 2, 2) → reshape to (5, 4, 2, 2)
-        result_arr_grid = result_arr.reshape(5, 4, 2, 2)
+        for ords in ([0, 0], [1, 0], [0, 1], [1, 1]):
+            result_arr = bspline.evaluate_derivatives(pts_arr, ords)  # (20,)
+            result_arr_grid = result_arr.reshape(5, 4)
 
-        lattice = PointsLattice([pts1, pts2])
-        result_lat = bspline.evaluate_derivatives(lattice, n_deriv=1)
-        # shape (5, 4, 2, 2)
+            lattice = PointsLattice([pts1, pts2])
+            result_lat = bspline.evaluate_derivatives(lattice, ords)  # (5, 4)
 
-        np.testing.assert_allclose(result_lat, result_arr_grid, atol=1e-13)
+            np.testing.assert_allclose(result_lat, result_arr_grid, atol=1e-13)
+
+    def test_3d_bspline_derivatives(self) -> None:
+        """evaluate_derivatives works for dim=3 B-splines."""
+        s1 = BsplineSpace1D(np.array([0.0, 0.0, 1.0, 1.0], dtype=np.float64), 1)
+        s2 = BsplineSpace1D(np.array([0.0, 0.0, 1.0, 1.0], dtype=np.float64), 1)
+        s3 = BsplineSpace1D(np.array([0.0, 0.0, 1.0, 1.0], dtype=np.float64), 1)
+        space = BsplineSpace([s1, s2, s3])
+        rng = np.random.default_rng(3)
+        cp = rng.standard_normal(space.num_total_basis).astype(np.float64)
+        bspline = Bspline(space, cp)
+
+        pts = np.array([[0.5, 0.5, 0.5]], dtype=np.float64)
+
+        # scalar 3D: mixed partial (1,0,1)
+        result = bspline.evaluate_derivatives(pts, [1, 0, 1])
+        assert result.shape == (1,)
+
+        # zeroth order matches evaluate
+        result0 = bspline.evaluate_derivatives(pts, [0, 0, 0])
+        np.testing.assert_allclose(result0, bspline.evaluate(pts), atol=1e-13)
 
 
 class TestMultiDimDerivRational:
     """Verify rational B-spline derivative evaluation."""
 
-    def test_rational_n_deriv_0_matches_evaluate(self) -> None:
-        """k=0 slice of rational derivatives matches evaluate()."""
+    def test_rational_orders_zero_matches_evaluate(self) -> None:
+        """orders=[0,0] of rational derivatives matches evaluate()."""
         s1 = BsplineSpace1D(np.array([0.0, 0.0, 0.0, 1.0, 1.0, 1.0], dtype=np.float64), 2)
         s2 = BsplineSpace1D(np.array([0.0, 0.0, 1.0, 1.0], dtype=np.float64), 1)
         space = BsplineSpace([s1, s2])
         rng = np.random.default_rng(5)
-        # cp_size=2: [numerator, weight], all weights=1 so rational == non-rational
         n = space.num_total_basis
         cp = np.column_stack([rng.standard_normal(n), np.ones(n)]).astype(np.float64)
         bspline = Bspline(space, cp.ravel(), is_rational=True)
@@ -261,14 +328,13 @@ class TestMultiDimDerivRational:
         rng2 = np.random.default_rng(6)
         pts = rng2.uniform(0, 1, (10, 2)).astype(np.float64)
 
-        result_d = bspline.evaluate_derivatives(pts, n_deriv=0)  # (10, 1, 2)
-        result_v = bspline.evaluate(pts)  # (10,) scalar because rank_value=1
+        result_d = bspline.evaluate_derivatives(pts, [0, 0])  # (10,)
+        result_v = bspline.evaluate(pts)
 
-        np.testing.assert_allclose(result_d[:, 0, 0], result_v, atol=1e-13)
-        np.testing.assert_allclose(result_d[:, 0, 1], result_v, atol=1e-13)
+        np.testing.assert_allclose(result_d, result_v, atol=1e-13)
 
     def test_rational_unit_weights_matches_non_rational(self) -> None:
-        """Rational with unit weights gives same derivatives as non-rational."""
+        """Rational with unit weights gives same first derivatives as non-rational."""
         s1 = BsplineSpace1D(np.array([0.0, 0.0, 0.0, 1.0, 1.0, 1.0], dtype=np.float64), 2)
         s2 = BsplineSpace1D(np.array([0.0, 0.0, 1.0, 1.0], dtype=np.float64), 1)
         space = BsplineSpace([s1, s2])
@@ -281,13 +347,13 @@ class TestMultiDimDerivRational:
         bspline_r = Bspline(space, cp_rational.ravel(), is_rational=True)
 
         pts = np.array([[0.3, 0.7], [0.6, 0.2]], dtype=np.float64)
-        result_nr = bspline_nr.evaluate_derivatives(pts, n_deriv=2)
-        result_r = bspline_r.evaluate_derivatives(pts, n_deriv=2)
-
-        np.testing.assert_allclose(result_r, result_nr, atol=1e-11)
+        for ords in ([0, 0], [1, 0], [0, 1]):
+            result_nr = bspline_nr.evaluate_derivatives(pts, ords)
+            result_r = bspline_r.evaluate_derivatives(pts, ords)
+            np.testing.assert_allclose(result_r, result_nr, atol=1e-11)
 
     def test_rational_finite_difference(self) -> None:
-        """Finite-difference validation of rational 2D derivative."""
+        """Finite-difference validation of rational 2D first derivative."""
         s1 = BsplineSpace1D(np.array([0.0, 0.0, 0.0, 1.0, 1.0, 1.0], dtype=np.float64), 2)
         s2 = BsplineSpace1D(np.array([0.0, 0.0, 1.0, 1.0], dtype=np.float64), 1)
         space = BsplineSpace([s1, s2])
@@ -303,26 +369,35 @@ class TestMultiDimDerivRational:
         pts_du = pts + np.array([[h, 0.0]])
         pts_dv = pts + np.array([[0.0, h]])
 
-        result = bspline.evaluate_derivatives(pts, n_deriv=1)  # (1, 2, 2)
         fd_u = (bspline.evaluate(pts_du) - bspline.evaluate(pts)) / h
         fd_v = (bspline.evaluate(pts_dv) - bspline.evaluate(pts)) / h
 
-        np.testing.assert_allclose(result[0, 1, 0], fd_u, atol=1e-5)
-        np.testing.assert_allclose(result[0, 1, 1], fd_v, atol=1e-5)
+        np.testing.assert_allclose(bspline.evaluate_derivatives(pts, [1, 0]), fd_u, atol=1e-5)
+        np.testing.assert_allclose(bspline.evaluate_derivatives(pts, [0, 1]), fd_v, atol=1e-5)
 
 
 class TestMultiDimDerivValidation:
     """Test input validation for multi-dimensional derivatives."""
 
-    def test_invalid_n_deriv(self) -> None:
-        """n_deriv < 0 raises ValueError."""
+    def test_wrong_orders_length(self) -> None:
+        """len(orders) != dim raises ValueError."""
         space = _make_2d_space([0, 0, 0, 1, 1, 1], 2, [0, 0, 1, 1], 1)
         cp = np.ones(6, dtype=np.float64)
         bspline = Bspline(space, cp)
         pts = np.array([[0.5, 0.5]], dtype=np.float64)
 
-        with pytest.raises(ValueError, match="n_deriv"):
-            bspline.evaluate_derivatives(pts, n_deriv=-1)
+        with pytest.raises(ValueError, match="len\\(orders\\)"):
+            bspline.evaluate_derivatives(pts, [1])
+
+    def test_negative_order(self) -> None:
+        """Negative order raises ValueError."""
+        space = _make_2d_space([0, 0, 0, 1, 1, 1], 2, [0, 0, 1, 1], 1)
+        cp = np.ones(6, dtype=np.float64)
+        bspline = Bspline(space, cp)
+        pts = np.array([[0.5, 0.5]], dtype=np.float64)
+
+        with pytest.raises(ValueError, match="orders\\["):
+            bspline.evaluate_derivatives(pts, [-1, 0])
 
     def test_wrong_pts_shape(self) -> None:
         """Pts array with wrong number of columns raises ValueError."""
@@ -332,7 +407,7 @@ class TestMultiDimDerivValidation:
         pts = np.array([[0.5, 0.5, 0.5]], dtype=np.float64)  # 3 cols, need 2
 
         with pytest.raises(ValueError):
-            bspline.evaluate_derivatives(pts, n_deriv=1)
+            bspline.evaluate_derivatives(pts, [1, 0])
 
     def test_wrong_pts_dtype(self) -> None:
         """Pts array with wrong dtype raises ValueError."""
@@ -342,7 +417,7 @@ class TestMultiDimDerivValidation:
         pts = np.array([[0.5, 0.5]], dtype=np.float32)
 
         with pytest.raises(ValueError):
-            bspline.evaluate_derivatives(pts, n_deriv=1)
+            bspline.evaluate_derivatives(pts, [1, 0])
 
     def test_wrong_lattice_dim(self) -> None:
         """PointsLattice with wrong dimension raises ValueError."""
@@ -352,35 +427,30 @@ class TestMultiDimDerivValidation:
         lattice = PointsLattice([np.linspace(0, 1, 5, dtype=np.float64)])  # 1D lattice
 
         with pytest.raises(ValueError):
-            bspline.evaluate_derivatives(lattice, n_deriv=1)
+            bspline.evaluate_derivatives(lattice, [1, 0])
 
-    def test_out_array_reuse(self) -> None:
-        """Pre-allocated out array is filled in-place and result is a view of it."""
+    def test_out_array_reuse_scalar(self) -> None:
+        """Pre-allocated out (scalar, shape (n_pts,)) is filled in-place."""
         space = _make_2d_space([0, 0, 0, 1, 1, 1], 2, [0, 0, 1, 1], 1)
         cp = np.ones(6, dtype=np.float64)
         bspline = Bspline(space, cp)
+        pts = np.array([[0.5, 0.5], [0.3, 0.7]], dtype=np.float64)
+
+        out = np.zeros(2, dtype=np.float64)
+        result = bspline.evaluate_derivatives(pts, [1, 0], out=out)
+
+        np.testing.assert_array_equal(result, out)
+        assert result is out
+
+    def test_out_array_reuse_vector(self) -> None:
+        """Pre-allocated out (vector, shape (n_pts, rank)) is filled in-place."""
+        space = _make_2d_space([0, 0, 0, 1, 1, 1], 2, [0, 0, 1, 1], 1)
+        cp = np.arange(12, dtype=np.float64)
+        bspline = Bspline(space, cp)
         pts = np.array([[0.5, 0.5]], dtype=np.float64)
 
-        # For scalar non-rational, out must include the trailing cp_size=1 dimension.
-        out = np.zeros((1, 2, 2, 1), dtype=np.float64)
-        result = bspline.evaluate_derivatives(pts, n_deriv=1, out=out)
+        out = np.zeros((1, 2), dtype=np.float64)
+        result = bspline.evaluate_derivatives(pts, [1, 0], out=out)
 
-        # result is out[..., 0] (squeezed view)
-        np.testing.assert_array_equal(result, out[..., 0])
-        assert not np.all(out == 0.0)
-
-    def test_3d_bspline_derivatives(self) -> None:
-        """evaluate_derivatives works for dim=3 B-splines."""
-        s1 = BsplineSpace1D(np.array([0.0, 0.0, 1.0, 1.0], dtype=np.float64), 1)
-        s2 = BsplineSpace1D(np.array([0.0, 0.0, 1.0, 1.0], dtype=np.float64), 1)
-        s3 = BsplineSpace1D(np.array([0.0, 0.0, 1.0, 1.0], dtype=np.float64), 1)
-        space = BsplineSpace([s1, s2, s3])
-        rng = np.random.default_rng(3)
-        cp = rng.standard_normal(space.num_total_basis).astype(np.float64)
-        bspline = Bspline(space, cp)
-
-        pts = np.array([[0.5, 0.5, 0.5]], dtype=np.float64)
-        result = bspline.evaluate_derivatives(pts, n_deriv=1)
-
-        # scalar 3D: (1, 2, 3)
-        assert result.shape == (1, 2, 3)
+        np.testing.assert_array_equal(result, out)
+        assert result is out

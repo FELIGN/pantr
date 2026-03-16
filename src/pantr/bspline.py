@@ -8,6 +8,7 @@ is dispatched to the de Boor algorithm implemented in ``_bspline_eval``.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -174,19 +175,15 @@ class Bspline:
     def evaluate_derivatives(
         self,
         pts: npt.NDArray[np.float32 | np.float64] | PointsLattice,
-        n_deriv: int,
+        orders: Sequence[int],
         out: npt.NDArray[np.float32 | np.float64] | None = None,
     ) -> npt.NDArray[np.float32 | np.float64]:
-        """Evaluate B-spline derivatives up to order ``n_deriv`` at the given points.
+        """Evaluate a specific mixed partial derivative of the B-spline.
 
-        Computes all derivatives from order 0 (the value itself) through order
-        ``n_deriv`` at each evaluation point. Derivatives of order higher than
-        the polynomial degree are identically zero.
-
-        For rational B-splines the quotient rule (Algorithm A4.2 from Piegl &
-        Tiller, *The NURBS Book*) is applied so that the returned values are
-        derivatives of the geometrically projected curve, not of the homogeneous
-        representation.
+        Computes the single mixed partial derivative specified by ``orders``,
+        where ``orders[d]`` is the derivative order in parametric direction ``d``.
+        For rational B-splines the generalised quotient rule is applied so that
+        the returned values are derivatives of the projected mapping.
 
         Args:
             pts (npt.NDArray[np.float32 | np.float64] | PointsLattice): The
@@ -196,8 +193,9 @@ class Bspline:
                 B-splines, must be a 2D array of shape ``(n_pts, dim)`` or a
                 :class:`~pantr.quad.PointsLattice` with matching dimension.
                 The dtype must match the B-spline dtype.
-            n_deriv (int): Maximum derivative order to compute. Must be >= 0.
-                Pass 0 to obtain just the values (equivalent to
+            orders (Sequence[int]): One non-negative integer per parametric
+                direction. ``len(orders)`` must equal ``self.dim``. Pass
+                ``[0, ..., 0]`` to obtain the function value (equivalent to
                 :meth:`evaluate`).
             out (npt.NDArray[np.float32 | np.float64] | None): Optional
                 pre-allocated output array with the same shape and dtype as the
@@ -205,22 +203,23 @@ class Bspline:
                 Defaults to None.
 
         Returns:
-            npt.NDArray[np.float32 | np.float64]: For 1D B-splines, shape
-            ``(n_pts, n_deriv+1)`` for scalar output or
-            ``(n_pts, n_deriv+1, rank)`` for vector-valued output. For
-            multi-dimensional B-splines, shape
-            ``(*pts_shape, n_deriv+1, dim)`` for scalar output or
-            ``(*pts_shape, n_deriv+1, dim, rank)`` for vector-valued output,
-            where ``pts_shape`` is ``(n_pts,)`` for a points array or
+            npt.NDArray[np.float32 | np.float64]: Mixed partial derivative
+            values. Shape is ``(*pts_base_shape,)`` for scalar output or
+            ``(*pts_base_shape, rank)`` for vector-valued output, where
+            ``pts_base_shape`` is ``(n_pts,)`` for a points array or
             ``(*pts_grid_shape,)`` for a :class:`~pantr.quad.PointsLattice`.
-            Axis ``-2`` indexes derivative order (0 = value, 1 = first
-            derivative, …) and for multi-dimensional B-splines axis ``-1``
-            (before the optional rank axis) indexes parametric direction.
             For rational B-splines the weight column is divided out and not
             included in the output.
 
         Raises:
-            ValueError: If ``n_deriv < 0``, if the points dtype does not match
-                the B-spline dtype, or if ``out`` has incorrect shape or dtype.
+            ValueError: If ``len(orders) != self.dim``, if any order is
+                negative, if the points dtype does not match the B-spline dtype,
+                or if ``out`` has incorrect shape or dtype.
+
+        Example:
+            >>> # 1D: second derivative
+            >>> result = spline.evaluate_derivatives(pts, [2])
+            >>> # 2D: mixed derivative ∂²f/∂u ∂v²
+            >>> result = spline.evaluate_derivatives(pts, [1, 2])
         """
-        return _evaluate_Bspline_deriv(self, pts, n_deriv, out)
+        return _evaluate_Bspline_deriv(self, pts, orders, out)
