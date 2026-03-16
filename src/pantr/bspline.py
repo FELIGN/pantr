@@ -175,7 +175,7 @@ class Bspline:
     def evaluate_derivatives(
         self,
         pts: npt.NDArray[np.float32 | np.float64] | PointsLattice,
-        orders: Sequence[int],
+        orders: int | Sequence[int],
         out: npt.NDArray[np.float32 | np.float64] | None = None,
     ) -> npt.NDArray[np.float32 | np.float64]:
         """Evaluate a specific partial derivative of the B-spline.
@@ -193,10 +193,11 @@ class Bspline:
                 B-splines, must be a 2D array of shape ``(n_pts, dim)`` or a
                 :class:`~pantr.quad.PointsLattice` with matching dimension.
                 The dtype must match the B-spline dtype.
-            orders (Sequence[int]): One non-negative integer per parametric
-                direction. ``len(orders)`` must equal ``self.dim``. Pass
-                ``[0, ..., 0]`` to obtain the function value (equivalent to
-                :meth:`evaluate`).
+            orders (int | Sequence[int]): Derivative order(s). A single
+                ``int`` is broadcast to all ``self.dim`` directions. A sequence
+                must contain one non-negative integer per parametric direction
+                (``len(orders) == self.dim``). Pass ``0`` (or ``[0, ..., 0]``)
+                to obtain the function value (equivalent to :meth:`evaluate`).
             out (npt.NDArray[np.float32 | np.float64] | None): Optional
                 pre-allocated output array with the same shape and dtype as the
                 returned array (see below). Filled in-place and returned.
@@ -217,9 +218,12 @@ class Bspline:
                 or if ``out`` has incorrect shape or dtype.
 
         Example:
-            >>> # 1D: second derivative
+            >>> # 1D: second derivative (int shorthand)
+            >>> result = spline.evaluate_derivatives(pts, 2)
+            >>> # 1D: second derivative (sequence form)
             >>> result = spline.evaluate_derivatives(pts, [2])
             >>> # 2D: partial derivative ∂³f/∂u ∂v²
             >>> result = spline.evaluate_derivatives(pts, [1, 2])
         """
-        return _evaluate_Bspline_deriv(self, pts, orders, out)
+        orders_seq: Sequence[int] = [orders] * self.dim if isinstance(orders, int) else orders
+        return _evaluate_Bspline_deriv(self, pts, orders_seq, out)
