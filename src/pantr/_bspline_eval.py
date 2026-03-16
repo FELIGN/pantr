@@ -742,37 +742,45 @@ def _apply_quotient_rule_multi_dim(
     orders_tuple: tuple[int, ...],
     pts_base_shape: tuple[int, ...],
     dtype: npt.DTypeLike,
+    final_out: npt.NDArray[np.float32 | np.float64] | None = None,
 ) -> npt.NDArray[np.float32 | np.float64]:
-    """Apply the generalised quotient rule to produce rational B-spline derivatives.
+    """Apply the generalised quotient rule to produce the target rational B-spline derivative.
 
     Given the homogeneous derivative tensor ``hom_all`` (built by
     :func:`_build_hom_all_multi_dim`), iterates all multi-indices in ascending
     total-order and applies Algorithm A4.2 generalised to multiple parametric
-    directions.
+    directions. Only the result for multi-index ``orders_tuple`` is returned;
+    intermediate results are discarded once no longer needed.
 
     Args:
         hom_all (npt.NDArray[np.float32 | np.float64]): Homogeneous derivatives,
             shape ``(*pts_base_shape, orders_tuple[0]+1, ..., orders_tuple[D-1]+1, cp_size)``.
-        orders_tuple (tuple[int, ...]): Maximum derivative order per direction.
+        orders_tuple (tuple[int, ...]): Target derivative order per direction.
         pts_base_shape (tuple[int, ...]): Leading shape of ``hom_all``
             (``(n_pts,)`` or ``(*grid_shape,)``).
-        dtype (npt.DTypeLike): Floating-point dtype of the output array.
+        dtype (npt.DTypeLike): Floating-point dtype of intermediate arrays.
+        final_out (npt.NDArray[np.float32 | np.float64] | None): Optional pre-allocated
+            buffer of shape ``(*pts_base_shape, rank)`` where ``rank = cp_size - 1``.
+            When provided the target result is written directly into it, avoiding an
+            extra allocation. Defaults to None.
 
     Returns:
-        npt.NDArray[np.float32 | np.float64]: Projected derivative tensor of shape
-        ``(*pts_base_shape, orders_tuple[0]+1, ..., orders_tuple[D-1]+1, rank)``,
-        where ``rank = cp_size - 1``.
+        npt.NDArray[np.float32 | np.float64]: Target partial derivative values of shape
+        ``(*pts_base_shape, rank)``, where ``rank = cp_size - 1``.
+        Returns ``final_out`` when it is provided.
     """
     dim = len(orders_tuple)
     cp_size = hom_all.shape[-1]
     rank_value = cp_size - 1
-    result_shape = (*pts_base_shape, *(od + 1 for od in orders_tuple), rank_value)
-    result_all: npt.NDArray[np.float32 | np.float64] = np.empty(result_shape, dtype=dtype)
 
     zero_idx = (0,) * dim
     W = hom_all[(Ellipsis,) + zero_idx + (-1,)]  # noqa: RUF005  # (*pts_base_shape,)
     all_multi_indices = sorted(iproduct(*[range(od + 1) for od in orders_tuple]), key=sum)
 
+    # Each multi-index gets its own contiguous (pts_base_shape, rank) buffer.
+    # For the target index (orders_tuple) we reuse final_out when provided,
+    # avoiding both the large result_all tensor and the final copy.
+    results: dict[tuple[int, ...], npt.NDArray[np.float32 | np.float64]] = {}
     for k_idx in all_multi_indices:
         hom_N_k = hom_all[(Ellipsis,) + k_idx + (slice(None),)][..., :-1]  # noqa: RUF005
         v: npt.NDArray[np.float32 | np.float64] = hom_N_k.copy()
@@ -788,11 +796,16 @@ def _apply_quotient_rule_multi_dim(
                 coeff *= math.comb(k_idx[d], i_idx[d])
             hom_W_i = hom_all[(Ellipsis,) + i_idx + (-1,)]  # noqa: RUF005
             k_minus_i = tuple(k_idx[d] - i_idx[d] for d in range(dim))
-            res_km_i = result_all[(Ellipsis,) + k_minus_i + (slice(None),)]  # noqa: RUF005
-            v = v - coeff * hom_W_i[..., np.newaxis] * res_km_i
-        result_all[(Ellipsis,) + k_idx + (slice(None),)] = v / W[..., np.newaxis]  # noqa: RUF005
+            v = v - coeff * hom_W_i[..., np.newaxis] * results[k_minus_i]
+        buf: npt.NDArray[np.float32 | np.float64]
+        if k_idx == orders_tuple and final_out is not None:
+            buf = final_out
+        else:
+            buf = np.empty((*pts_base_shape, rank_value), dtype=dtype)
+        buf[:] = v / W[..., np.newaxis]
+        results[k_idx] = buf
 
-    return result_all
+    return results[orders_tuple]
 
 
 def _evaluate_Bspline_deriv_multi_dim_rational(
@@ -822,11 +835,9 @@ def _evaluate_Bspline_deriv_multi_dim_rational(
     """
     dtype = spline.dtype
     hom_all = _build_hom_all_multi_dim(spline, pts, orders_tuple, pts_base_shape)
-    result_all = _apply_quotient_rule_multi_dim(hom_all, orders_tuple, pts_base_shape, dtype)
-
-    final: npt.NDArray[np.float32 | np.float64] = result_all[
-        (Ellipsis,) + orders_tuple + (slice(None),)  # noqa: RUF005
-    ]
+    final: npt.NDArray[np.float32 | np.float64] = _apply_quotient_rule_multi_dim(
+        hom_all, orders_tuple, pts_base_shape, dtype
+    )
     rank_value = spline.control_points.shape[-1] - 1
     if rank_value == 1:
         final = final[..., 0]
