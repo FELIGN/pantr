@@ -19,7 +19,7 @@ test:
 
 # Generate an XML coverage report with Numba JIT disabled
 coverage:
-	NUMBA_DISABLE_JIT=1 pytest --cov=src/pantr --cov-report=xml
+	COVERAGE_FILE=/tmp/.coverage NUMBA_DISABLE_JIT=1 pytest --cov=src/pantr --cov-report=xml
 
 # Remove build artifacts
 clean:
