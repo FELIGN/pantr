@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import numpy as np
+import numpy.typing as npt
 import pytest
 
 from pantr.bspline import Bspline
@@ -26,7 +27,9 @@ def _make_1d_bspline(
     return Bspline(space, np.array(ctrl, dtype=np.float64), is_rational=is_rational)
 
 
-def _eval_pts_1d(bspline: Bspline, n: int = 50) -> tuple[np.ndarray, np.ndarray]:
+def _eval_pts_1d(
+    bspline: Bspline, n: int = 50
+) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float32 | np.float64]]:
     """Return (pts, values) on a dense grid for a 1D Bspline."""
     lo, hi = bspline.space.spaces[0].domain
     pts = np.linspace(float(lo), float(hi), n, dtype=np.float64)
@@ -34,7 +37,9 @@ def _eval_pts_1d(bspline: Bspline, n: int = 50) -> tuple[np.ndarray, np.ndarray]
     return pts, vals
 
 
-def _eval_pts_2d(bspline: Bspline, nu: int = 15, nv: int = 15) -> tuple[np.ndarray, np.ndarray]:
+def _eval_pts_2d(
+    bspline: Bspline, nu: int = 15, nv: int = 15
+) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float32 | np.float64]]:
     """Return (pts, values) on a grid for a 2D Bspline."""
     lo_u, hi_u = bspline.space.spaces[0].domain
     lo_v, hi_v = bspline.space.spaces[1].domain
