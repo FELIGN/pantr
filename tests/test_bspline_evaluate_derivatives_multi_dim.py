@@ -212,8 +212,10 @@ class TestMultiDimDerivCorrectness:
 
         h = 1e-5
         pts = np.array([[0.3, 0.4]], dtype=np.float64)
-        fd_u = (bspline.evaluate(pts + [[h, 0]]) - bspline.evaluate(pts - [[h, 0]])) / (2 * h)
-        fd_v = (bspline.evaluate(pts + [[0, h]]) - bspline.evaluate(pts - [[0, h]])) / (2 * h)
+        du = np.array([[h, 0.0]], dtype=np.float64)
+        dv = np.array([[0.0, h]], dtype=np.float64)
+        fd_u = (bspline.evaluate(pts + du) - bspline.evaluate(pts - du)) / (2 * h)
+        fd_v = (bspline.evaluate(pts + dv) - bspline.evaluate(pts - dv)) / (2 * h)
 
         np.testing.assert_allclose(bspline.evaluate_derivatives(pts, [1, 0]), fd_u, atol=1e-9)
         np.testing.assert_allclose(bspline.evaluate_derivatives(pts, [0, 1]), fd_v, atol=1e-9)
@@ -230,8 +232,10 @@ class TestMultiDimDerivCorrectness:
 
         h = 1e-5
         pts = np.array([[0.2, 0.6]], dtype=np.float64)
-        fd_u = (bspline.evaluate(pts + [[h, 0]]) - bspline.evaluate(pts - [[h, 0]])) / (2 * h)
-        fd_v = (bspline.evaluate(pts + [[0, h]]) - bspline.evaluate(pts - [[0, h]])) / (2 * h)
+        du = np.array([[h, 0.0]], dtype=np.float64)
+        dv = np.array([[0.0, h]], dtype=np.float64)
+        fd_u = (bspline.evaluate(pts + du) - bspline.evaluate(pts - du)) / (2 * h)
+        fd_v = (bspline.evaluate(pts + dv) - bspline.evaluate(pts - dv)) / (2 * h)
 
         # evaluate() squeezes (1, 3) → (3,); derivatives return (1, 3) for n_pts=1
         np.testing.assert_allclose(bspline.evaluate_derivatives(pts, [1, 0])[0], fd_u, atol=1e-9)
@@ -250,10 +254,10 @@ class TestMultiDimDerivCorrectness:
         pts = np.array([[0.3, 0.4]], dtype=np.float64)
 
         # 4-point central FD stencil for ∂²f/∂u∂v, truncation error O(h²)
-        pp = pts + [[+h, +h]]
-        pm = pts + [[+h, -h]]
-        mp = pts + [[-h, +h]]
-        mm = pts + [[-h, -h]]
+        pp = pts + np.array([[+h, +h]])
+        pm = pts + np.array([[+h, -h]])
+        mp = pts + np.array([[-h, +h]])
+        mm = pts + np.array([[-h, -h]])
         fd = (
             bspline.evaluate(pp)
             - bspline.evaluate(pm)
@@ -360,8 +364,10 @@ class TestMultiDimDerivRational:
 
         h = 1e-5
         pts = np.array([[0.4, 0.6]], dtype=np.float64)
-        fd_u = (bspline.evaluate(pts + [[h, 0]]) - bspline.evaluate(pts - [[h, 0]])) / (2 * h)
-        fd_v = (bspline.evaluate(pts + [[0, h]]) - bspline.evaluate(pts - [[0, h]])) / (2 * h)
+        du = np.array([[h, 0.0]], dtype=np.float64)
+        dv = np.array([[0.0, h]], dtype=np.float64)
+        fd_u = (bspline.evaluate(pts + du) - bspline.evaluate(pts - du)) / (2 * h)
+        fd_v = (bspline.evaluate(pts + dv) - bspline.evaluate(pts - dv)) / (2 * h)
 
         np.testing.assert_allclose(bspline.evaluate_derivatives(pts, [1, 0]), fd_u, atol=1e-9)
         np.testing.assert_allclose(bspline.evaluate_derivatives(pts, [0, 1]), fd_v, atol=1e-9)
