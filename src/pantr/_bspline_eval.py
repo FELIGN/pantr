@@ -247,12 +247,12 @@ def _evaluate_Bspline_basis_combine_deriv_1D(  # noqa: PLR0913
 def _evaluate_Bspline_deriv_1D(  # noqa: PLR0912
     spline: Bspline,
     pts: npt.NDArray[np.float32 | np.float64] | PointsLattice,
-    orders: Sequence[int],
+    n_deriv: int,
     out: npt.NDArray[np.float32 | np.float64] | None = None,
 ) -> npt.NDArray[np.float32 | np.float64]:
     """Evaluate a specific derivative of a 1D B-spline at the given points.
 
-    Computes the derivative of order ``orders[0]`` at each evaluation point.
+    Computes the derivative of order ``n_deriv`` at each evaluation point.
     For rational B-splines the quotient rule (Algorithm A4.2 from Piegl & Tiller)
     is applied to return the derivative of the projected mapping.
 
@@ -262,8 +262,7 @@ def _evaluate_Bspline_deriv_1D(  # noqa: PLR0912
         pts (npt.NDArray[np.float32 | np.float64] | PointsLattice): Evaluation
             points. If a :class:`~pantr.quad.PointsLattice`, must be 1D. Otherwise
             must be a 1D array of shape ``(n_pts,)`` matching the B-spline's dtype.
-        orders (Sequence[int]): Must have length 1. ``orders[0]`` is the derivative
-            order to return. Must be >= 0.
+        n_deriv (int): The derivative order to return. Must be >= 0.
         out (npt.NDArray[np.float32 | np.float64] | None): Optional pre-allocated
             output array with shape ``(n_pts,)`` for scalar or ``(n_pts, rank)``
             for vector output. Filled in-place and returned. Defaults to None.
@@ -275,16 +274,15 @@ def _evaluate_Bspline_deriv_1D(  # noqa: PLR0912
         included in the output.
 
     Raises:
-        ValueError: If the B-spline is not 1D, if ``orders[0] < 0``, if the
+        ValueError: If the B-spline is not 1D, if ``n_deriv < 0``, if the
             points lattice is not 1D, or if the points dtype does not match the
             B-spline dtype.
     """
     if spline.dim != 1:
         raise ValueError("B-spline must be 1D")
 
-    n_deriv = orders[0]
     if n_deriv < 0:
-        raise ValueError(f"orders[0] must be >= 0, got {n_deriv}")
+        raise ValueError(f"n_deriv must be >= 0, got {n_deriv}")
 
     pts_array: npt.NDArray[np.float32 | np.float64]
     if isinstance(pts, PointsLattice):
@@ -739,7 +737,7 @@ def _evaluate_Bspline_deriv(
         npt.NDArray[np.float32 | np.float64]: Derivative values at the given points.
     """
     if spline.dim == 1:
-        return _evaluate_Bspline_deriv_1D(spline, pts, orders, out)
+        return _evaluate_Bspline_deriv_1D(spline, pts, orders[0], out)
     else:
         return _evaluate_Bspline_deriv_multi_dim(spline, pts, orders, out)
 
