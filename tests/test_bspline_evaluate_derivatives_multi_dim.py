@@ -202,7 +202,7 @@ class TestMultiDimDerivCorrectness:
         )
 
     def test_finite_difference_2d_scalar(self) -> None:
-        """Finite-difference validation of first derivatives for 2D scalar spline."""
+        """Central-difference validation of first derivatives for 2D scalar spline."""
         s1 = BsplineSpace1D(np.array([0.0, 0.0, 0.0, 0.5, 1.0, 1.0, 1.0], dtype=np.float64), 2)
         s2 = BsplineSpace1D(np.array([0.0, 0.0, 0.5, 1.0, 1.0], dtype=np.float64), 1)
         space = BsplineSpace([s1, s2])
@@ -212,17 +212,14 @@ class TestMultiDimDerivCorrectness:
 
         h = 1e-5
         pts = np.array([[0.3, 0.4]], dtype=np.float64)
-        pts_du = np.array([[0.3 + h, 0.4]], dtype=np.float64)
-        pts_dv = np.array([[0.3, 0.4 + h]], dtype=np.float64)
+        fd_u = (bspline.evaluate(pts + [[h, 0]]) - bspline.evaluate(pts - [[h, 0]])) / (2 * h)
+        fd_v = (bspline.evaluate(pts + [[0, h]]) - bspline.evaluate(pts - [[0, h]])) / (2 * h)
 
-        fd_u = (bspline.evaluate(pts_du) - bspline.evaluate(pts)) / h
-        fd_v = (bspline.evaluate(pts_dv) - bspline.evaluate(pts)) / h
-
-        np.testing.assert_allclose(bspline.evaluate_derivatives(pts, [1, 0]), fd_u, rtol=1e-3)
-        np.testing.assert_allclose(bspline.evaluate_derivatives(pts, [0, 1]), fd_v, rtol=1e-3)
+        np.testing.assert_allclose(bspline.evaluate_derivatives(pts, [1, 0]), fd_u, atol=1e-9)
+        np.testing.assert_allclose(bspline.evaluate_derivatives(pts, [0, 1]), fd_v, atol=1e-9)
 
     def test_finite_difference_2d_vector(self) -> None:
-        """Finite-difference validation for 2D vector-valued spline."""
+        """Central-difference validation for 2D vector-valued spline."""
         s1 = BsplineSpace1D(np.array([0.0, 0.0, 0.0, 0.5, 1.0, 1.0, 1.0], dtype=np.float64), 2)
         s2 = BsplineSpace1D(np.array([0.0, 0.0, 0.5, 1.0, 1.0], dtype=np.float64), 1)
         space = BsplineSpace([s1, s2])
@@ -233,18 +230,15 @@ class TestMultiDimDerivCorrectness:
 
         h = 1e-5
         pts = np.array([[0.2, 0.6]], dtype=np.float64)
-        pts_du = pts + np.array([[h, 0.0]])
-        pts_dv = pts + np.array([[0.0, h]])
-
-        fd_u = (bspline.evaluate(pts_du) - bspline.evaluate(pts)) / h
-        fd_v = (bspline.evaluate(pts_dv) - bspline.evaluate(pts)) / h
+        fd_u = (bspline.evaluate(pts + [[h, 0]]) - bspline.evaluate(pts - [[h, 0]])) / (2 * h)
+        fd_v = (bspline.evaluate(pts + [[0, h]]) - bspline.evaluate(pts - [[0, h]])) / (2 * h)
 
         # evaluate() squeezes (1, 3) → (3,); derivatives return (1, 3) for n_pts=1
-        np.testing.assert_allclose(bspline.evaluate_derivatives(pts, [1, 0])[0], fd_u, atol=1e-4)
-        np.testing.assert_allclose(bspline.evaluate_derivatives(pts, [0, 1])[0], fd_v, atol=1e-4)
+        np.testing.assert_allclose(bspline.evaluate_derivatives(pts, [1, 0])[0], fd_u, atol=1e-9)
+        np.testing.assert_allclose(bspline.evaluate_derivatives(pts, [0, 1])[0], fd_v, atol=1e-9)
 
     def test_finite_difference_2d_second_mixed(self) -> None:
-        """Finite-difference validation of d²f/dudv for a 2D quadratic spline."""
+        """Central-difference validation of ∂²f/∂u∂v for a 2D quadratic spline."""
         s1 = BsplineSpace1D(np.array([0.0, 0.0, 0.0, 1.0, 1.0, 1.0], dtype=np.float64), 2)
         s2 = BsplineSpace1D(np.array([0.0, 0.0, 0.0, 1.0, 1.0, 1.0], dtype=np.float64), 2)
         space = BsplineSpace([s1, s2])
@@ -255,19 +249,19 @@ class TestMultiDimDerivCorrectness:
         h = 1e-4
         pts = np.array([[0.3, 0.4]], dtype=np.float64)
 
-        # Central FD for d²f/dudv
-        pp = np.array([[0.3 + h, 0.4 + h]])
-        pm = np.array([[0.3 + h, 0.4 - h]])
-        mp = np.array([[0.3 - h, 0.4 + h]])
-        mm = np.array([[0.3 - h, 0.4 - h]])
-        fd_mixed = (
+        # 4-point central FD stencil for ∂²f/∂u∂v, truncation error O(h²)
+        pp = pts + [[+h, +h]]
+        pm = pts + [[+h, -h]]
+        mp = pts + [[-h, +h]]
+        mm = pts + [[-h, -h]]
+        fd = (
             bspline.evaluate(pp)
             - bspline.evaluate(pm)
             - bspline.evaluate(mp)
             + bspline.evaluate(mm)
         ) / (4.0 * h**2)
 
-        np.testing.assert_allclose(bspline.evaluate_derivatives(pts, [1, 1]), fd_mixed, rtol=1e-3)
+        np.testing.assert_allclose(bspline.evaluate_derivatives(pts, [1, 1]), fd, atol=1e-7)
 
     def test_lattice_matches_pts_array(self) -> None:
         """Lattice and pts-array evaluation give the same results on a grid."""
@@ -353,7 +347,7 @@ class TestMultiDimDerivRational:
             np.testing.assert_allclose(result_r, result_nr, atol=1e-11)
 
     def test_rational_finite_difference(self) -> None:
-        """Finite-difference validation of rational 2D first derivative."""
+        """Central-difference validation of rational 2D first derivative."""
         s1 = BsplineSpace1D(np.array([0.0, 0.0, 0.0, 1.0, 1.0, 1.0], dtype=np.float64), 2)
         s2 = BsplineSpace1D(np.array([0.0, 0.0, 1.0, 1.0], dtype=np.float64), 1)
         space = BsplineSpace([s1, s2])
@@ -366,14 +360,11 @@ class TestMultiDimDerivRational:
 
         h = 1e-5
         pts = np.array([[0.4, 0.6]], dtype=np.float64)
-        pts_du = pts + np.array([[h, 0.0]])
-        pts_dv = pts + np.array([[0.0, h]])
+        fd_u = (bspline.evaluate(pts + [[h, 0]]) - bspline.evaluate(pts - [[h, 0]])) / (2 * h)
+        fd_v = (bspline.evaluate(pts + [[0, h]]) - bspline.evaluate(pts - [[0, h]])) / (2 * h)
 
-        fd_u = (bspline.evaluate(pts_du) - bspline.evaluate(pts)) / h
-        fd_v = (bspline.evaluate(pts_dv) - bspline.evaluate(pts)) / h
-
-        np.testing.assert_allclose(bspline.evaluate_derivatives(pts, [1, 0]), fd_u, atol=1e-5)
-        np.testing.assert_allclose(bspline.evaluate_derivatives(pts, [0, 1]), fd_v, atol=1e-5)
+        np.testing.assert_allclose(bspline.evaluate_derivatives(pts, [1, 0]), fd_u, atol=1e-9)
+        np.testing.assert_allclose(bspline.evaluate_derivatives(pts, [0, 1]), fd_v, atol=1e-9)
 
 
 class TestMultiDimDerivValidation:
