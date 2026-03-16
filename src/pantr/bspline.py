@@ -219,7 +219,7 @@ class Bspline:
         Example:
             >>> # 1D: second derivative
             >>> result = spline.evaluate_derivatives(pts, [2])
-            >>> # 2D: partial derivative ∂²f/∂u ∂v²
+            >>> # 2D: partial derivative ∂³f/∂u ∂v²
             >>> result = spline.evaluate_derivatives(pts, [1, 2])
         """
         return _evaluate_Bspline_deriv(self, pts, orders, out)
