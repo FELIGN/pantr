@@ -133,7 +133,7 @@ class Bspline:
         Returns:
             int: Output rank of the B-spline.
         """
-        rk = int(self._control_points.ndim - self.dim)
+        rk = int(self._control_points.shape[-1])
         return rk - 1 if self.is_rational else rk
 
     @property
