@@ -178,9 +178,9 @@ class Bspline:
         orders: Sequence[int],
         out: npt.NDArray[np.float32 | np.float64] | None = None,
     ) -> npt.NDArray[np.float32 | np.float64]:
-        """Evaluate a specific mixed partial derivative of the B-spline.
+        """Evaluate a specific partial derivative of the B-spline.
 
-        Computes the single mixed partial derivative specified by ``orders``,
+        Computes the single partial derivative specified by ``orders``,
         where ``orders[d]`` is the derivative order in parametric direction ``d``.
         For rational B-splines the generalised quotient rule is applied so that
         the returned values are derivatives of the projected mapping.
@@ -219,7 +219,7 @@ class Bspline:
         Example:
             >>> # 1D: second derivative
             >>> result = spline.evaluate_derivatives(pts, [2])
-            >>> # 2D: mixed derivative ∂²f/∂u ∂v²
+            >>> # 2D: partial derivative ∂²f/∂u ∂v²
             >>> result = spline.evaluate_derivatives(pts, [1, 2])
         """
         return _evaluate_Bspline_deriv(self, pts, orders, out)

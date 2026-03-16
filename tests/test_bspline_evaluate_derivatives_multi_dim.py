@@ -303,7 +303,7 @@ class TestMultiDimDerivCorrectness:
 
         pts = np.array([[0.5, 0.5, 0.5]], dtype=np.float64)
 
-        # scalar 3D: mixed partial (1,0,1)
+        # scalar 3D: partial (1,0,1)
         result = bspline.evaluate_derivatives(pts, [1, 0, 1])
         assert result.shape == (1,)
 

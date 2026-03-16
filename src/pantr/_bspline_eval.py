@@ -365,9 +365,9 @@ def _evaluate_Bspline_deriv_multi_dim_pts_array(
     orders: tuple[int, ...],
     out: npt.NDArray[np.float32 | np.float64],
 ) -> None:
-    """Evaluate a mixed partial derivative of a multi-dimensional B-spline at points.
+    """Evaluate a partial derivative of a multi-dimensional B-spline at points.
 
-    Computes the mixed partial derivative of orders ``orders[d]`` in each direction
+    Computes the partial derivative of orders ``orders[d]`` in each direction
     ``d`` for all evaluation points simultaneously. Uses outer-product contraction
     with the appropriate derivative basis row for each direction.
 
@@ -439,9 +439,9 @@ def _evaluate_Bspline_deriv_multi_dim_lattice(
     orders: tuple[int, ...],
     out: npt.NDArray[np.float32 | np.float64],
 ) -> None:
-    """Evaluate a mixed partial derivative of a multi-dimensional B-spline on a lattice.
+    """Evaluate a partial derivative of a multi-dimensional B-spline on a lattice.
 
-    Computes the mixed partial derivative of orders ``orders[d]`` in each direction
+    Computes the partial derivative of orders ``orders[d]`` in each direction
     ``d`` via sequential contraction, using the appropriate derivative basis row for
     each direction.
 
@@ -496,9 +496,9 @@ def _evaluate_Bspline_deriv_multi_dim(  # noqa: PLR0912, PLR0915
     orders: Sequence[int],
     out: npt.NDArray[np.float32 | np.float64] | None = None,
 ) -> npt.NDArray[np.float32 | np.float64]:
-    """Evaluate a mixed partial derivative of a multi-dimensional B-spline.
+    """Evaluate a partial derivative of a multi-dimensional B-spline.
 
-    Computes the single mixed partial derivative specified by ``orders``, where
+    Computes the single partial derivative specified by ``orders``, where
     ``orders[d]`` is the derivative order in parametric direction ``d``. For
     rational B-splines the generalised quotient rule is applied so that the
     result is the derivative of the projected (inhomogeneous) mapping.
@@ -558,7 +558,7 @@ def _evaluate_Bspline_deriv_multi_dim(  # noqa: PLR0912, PLR0915
     out_shape = (*pts_base_shape, cp_size)
 
     if spline.is_rational:
-        # For the generalised quotient rule we need all mixed derivatives
+        # For the generalised quotient rule we need all partial derivatives
         # hom[i] for multi-indices 0 <= i[d] <= orders[d].
         # hom_all shape: (*pts_base_shape, orders[0]+1, ..., orders[D-1]+1, cp_size)
         hom_shape = (*pts_base_shape, *(od + 1 for od in orders_tuple), cp_size)
