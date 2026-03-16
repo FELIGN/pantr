@@ -190,10 +190,12 @@ class Bspline:
 
         Args:
             pts (npt.NDArray[np.float32 | np.float64] | PointsLattice): The
-                parametric points at which to evaluate. If a
-                :class:`~pantr.quad.PointsLattice`, must be 1D. Otherwise must
-                be a 1D array of shape ``(n_pts,)`` with dtype matching the
-                B-spline.
+                parametric points at which to evaluate. For 1D B-splines, must
+                be a 1D array of shape ``(n_pts,)`` or a 1D
+                :class:`~pantr.quad.PointsLattice`. For multi-dimensional
+                B-splines, must be a 2D array of shape ``(n_pts, dim)`` or a
+                :class:`~pantr.quad.PointsLattice` with matching dimension.
+                The dtype must match the B-spline dtype.
             n_deriv (int): Maximum derivative order to compute. Must be >= 0.
                 Pass 0 to obtain just the values (equivalent to
                 :meth:`evaluate`).
@@ -203,15 +205,22 @@ class Bspline:
                 Defaults to None.
 
         Returns:
-            npt.NDArray[np.float32 | np.float64]: Shape ``(n_pts, n_deriv+1)``
-            for scalar output or ``(n_pts, n_deriv+1, rank)`` for vector-valued
-            output, where axis 1 indexes derivative order (0 = value, 1 = first
-            derivative, …). For rational B-splines the weight column is divided
-            out and not included in the output.
+            npt.NDArray[np.float32 | np.float64]: For 1D B-splines, shape
+            ``(n_pts, n_deriv+1)`` for scalar output or
+            ``(n_pts, n_deriv+1, rank)`` for vector-valued output. For
+            multi-dimensional B-splines, shape
+            ``(*pts_shape, n_deriv+1, dim)`` for scalar output or
+            ``(*pts_shape, n_deriv+1, dim, rank)`` for vector-valued output,
+            where ``pts_shape`` is ``(n_pts,)`` for a points array or
+            ``(*pts_grid_shape,)`` for a :class:`~pantr.quad.PointsLattice`.
+            Axis ``-2`` indexes derivative order (0 = value, 1 = first
+            derivative, …) and for multi-dimensional B-splines axis ``-1``
+            (before the optional rank axis) indexes parametric direction.
+            For rational B-splines the weight column is divided out and not
+            included in the output.
 
         Raises:
             ValueError: If ``n_deriv < 0``, if the points dtype does not match
                 the B-spline dtype, or if ``out`` has incorrect shape or dtype.
-            NotImplementedError: If the B-spline dimension is greater than 1.
         """
         return _evaluate_Bspline_deriv(self, pts, n_deriv, out)

@@ -672,8 +672,8 @@ class TestBsplineEvaluateDerivatives:
         # Values must be non-trivial (not all zero)
         assert not np.all(out == 0.0)
 
-    def test_dim_not_1_raises(self) -> None:
-        """evaluate_derivatives on dim > 1 B-spline raises NotImplementedError."""
+    def test_dim_not_1_returns_result(self) -> None:
+        """evaluate_derivatives on dim > 1 B-spline returns a valid array."""
         knots1 = [0.0, 0.0, 0.0, 1.0, 1.0, 1.0]
         knots2 = [0.0, 0.0, 1.0, 1.0]
         space_1d_1 = BsplineSpace1D(np.array(knots1, dtype=np.float64), 2)
@@ -683,6 +683,7 @@ class TestBsplineEvaluateDerivatives:
         bspline = Bspline(space, cp)
 
         pts = np.array([[0.5, 0.5]], dtype=np.float64)
+        result = bspline.evaluate_derivatives(pts, n_deriv=1)
 
-        with pytest.raises(NotImplementedError):
-            bspline.evaluate_derivatives(pts, n_deriv=1)
+        # scalar 2D spline: shape (n_pts, n_deriv+1, dim) = (1, 2, 2)
+        assert result.shape == (1, 2, 2)

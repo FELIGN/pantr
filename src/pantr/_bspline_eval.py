@@ -346,6 +346,267 @@ def _evaluate_Bspline_deriv_1D(  # noqa: PLR0912
     return out_array[:, :, 0] if cp_size == 1 else out_array
 
 
+def _evaluate_Bspline_deriv_multi_dim_pts_array(
+    cp: npt.NDArray[np.float32 | np.float64],
+    spaces_1D: tuple[BsplineSpace1D, ...],
+    pts: npt.NDArray[np.float32 | np.float64],
+    n_deriv: int,
+    out: npt.NDArray[np.float32 | np.float64],
+) -> None:
+    """Evaluate multi-dimensional B-spline partial derivatives at an array of points.
+
+    For each combination of derivative order ``k`` and parametric direction
+    ``d``, the outer-product weights are formed using the ``k``-th derivative
+    basis row for direction ``d`` and the 0th (value) row for every other
+    direction.  The gathered local control-point patch is then contracted with
+    these weights and stored in ``out[:, k, d, :]``.
+
+    Args:
+        cp (npt.NDArray[np.float32 | np.float64]): Control-point array of shape
+            ``(*num_basis, cp_size)``.
+        spaces_1D (tuple[BsplineSpace1D, ...]): 1D B-spline spaces, one per direction.
+        pts (npt.NDArray[np.float32 | np.float64]): Evaluation points of shape
+            ``(n_pts, dim)``.
+        n_deriv (int): Maximum derivative order to compute (>= 0).
+        out (npt.NDArray[np.float32 | np.float64]): Pre-allocated output array of
+            shape ``(n_pts, n_deriv+1, dim, cp_size)`` and matching dtype.
+            Filled in-place.
+
+    Note:
+        Inputs are assumed to be correct (no validation performed).
+        For general use, call :func:`_evaluate_Bspline_deriv_multi_dim` instead.
+    """
+    dim = len(spaces_1D)
+    n_pts = pts.shape[0]
+
+    dBs: list[npt.NDArray[np.float32 | np.float64]] = []
+    first_idxs: list[npt.NDArray[np.int_]] = []
+    for d, space_d in enumerate(spaces_1D):
+        dB_d, first_d = space_d.tabulate_basis_derivatives(np.ascontiguousarray(pts[:, d]), n_deriv)
+        dBs.append(dB_d)  # (n_pts, n_deriv+1, order_d)
+        first_idxs.append(first_d)
+
+    orders = tuple(int(dB.shape[2]) for dB in dBs)
+
+    # Build advanced index arrays (identical to _evaluate_Bspline_multi_dim_pts_array).
+    index_list: list[npt.NDArray[np.intp]] = []
+    for d, (first_d, space_d) in enumerate(zip(first_idxs, spaces_1D, strict=True)):
+        order_d = orders[d]
+        idx_d = (
+            first_d[:, np.newaxis].astype(np.intp)
+            + np.arange(order_d, dtype=np.intp)[np.newaxis, :]
+        )  # (n_pts, order_d)
+        if space_d.periodic:
+            idx_d = idx_d % space_d.num_basis
+        shape: tuple[int, ...] = (n_pts,) + (1,) * d + (order_d,) + (1,) * (dim - d - 1)
+        index_list.append(idx_d.reshape(shape))
+
+    # Gather local control-point patch.
+    idx_with_last: tuple[npt.NDArray[np.intp] | slice, ...] = (*tuple(index_list), slice(None))
+    cp_local: npt.NDArray[np.float32 | np.float64] = cp[idx_with_last]
+    # shape: (n_pts, order_0, ..., order_{D-1}, cp_size)
+
+    total_local = int(np.prod(orders))
+    cp_flat = cp_local.reshape(n_pts, total_local, cp.shape[-1])
+
+    for k in range(n_deriv + 1):
+        for d_deriv in range(dim):
+            # Direction d_deriv uses its k-th derivative row; all others use row 0.
+            weights: npt.NDArray[np.float32 | np.float64] = dBs[0][
+                :, k if d_deriv == 0 else 0, :
+            ].reshape((n_pts, orders[0]) + (1,) * (dim - 1))
+            for d in range(1, dim):
+                k_d = k if d == d_deriv else 0
+                w_shape: tuple[int, ...] = (n_pts,) + (1,) * d + (orders[d],) + (1,) * (dim - d - 1)
+                weights = weights * dBs[d][:, k_d, :].reshape(w_shape)
+            weights_flat = weights.reshape(n_pts, total_local)
+            out[:, k, d_deriv, :] = (cp_flat * weights_flat[..., np.newaxis]).sum(axis=1)
+
+
+def _evaluate_Bspline_deriv_multi_dim_lattice(
+    cp: npt.NDArray[np.float32 | np.float64],
+    spaces_1D: tuple[BsplineSpace1D, ...],
+    pts: PointsLattice,
+    n_deriv: int,
+    out: npt.NDArray[np.float32 | np.float64],
+) -> None:
+    """Evaluate multi-dimensional B-spline partial derivatives on a point lattice.
+
+    For each combination of derivative order ``k`` and parametric direction
+    ``d_deriv``, performs one sequential contraction of the control-point tensor
+    using the ``k``-th derivative basis row for direction ``d_deriv`` and the
+    0th (value) row for all other directions.  The result is stored in
+    ``out[..., k, d_deriv, :]``.
+
+    Args:
+        cp (npt.NDArray[np.float32 | np.float64]): Control-point array of shape
+            ``(*num_basis, cp_size)``.
+        spaces_1D (tuple[BsplineSpace1D, ...]): 1D B-spline spaces, one per direction.
+        pts (PointsLattice): Evaluation lattice. ``pts.dim`` must equal
+            ``len(spaces_1D)``.
+        n_deriv (int): Maximum derivative order to compute (>= 0).
+        out (npt.NDArray[np.float32 | np.float64]): Pre-allocated output array of
+            shape ``(*pts_grid_shape, n_deriv+1, dim, cp_size)`` and matching
+            dtype.  Filled in-place.
+
+    Note:
+        Inputs are assumed to be correct (no validation performed).
+        For general use, call :func:`_evaluate_Bspline_deriv_multi_dim` instead.
+    """
+    dBs: list[npt.NDArray[np.float32 | np.float64]] = []
+    first_idxs: list[npt.NDArray[np.int_]] = []
+    for space_d, pts_d in zip(spaces_1D, pts.pts_per_dir, strict=True):
+        dB_d, first_d = space_d.tabulate_basis_derivatives(pts_d, n_deriv)
+        dBs.append(dB_d)  # (m_d, n_deriv+1, order_d)
+        first_idxs.append(first_d)
+
+    dim = len(spaces_1D)
+
+    for k in range(n_deriv + 1):
+        for d_deriv in range(dim):
+            current: npt.NDArray[np.float32 | np.float64] = cp
+            for d, (dB_d, first_d, space_d) in enumerate(
+                zip(dBs, first_idxs, spaces_1D, strict=True)
+            ):
+                k_d = k if d == d_deriv else 0
+                B_d = dB_d[:, k_d, :]  # (m_d, order_d)
+                m_d = int(B_d.shape[0])
+                order_d = int(B_d.shape[1])
+
+                idx_d = (
+                    first_d[:, np.newaxis] + np.arange(order_d, dtype=np.intp)[np.newaxis, :]
+                )  # (m_d, order_d)
+                if space_d.periodic:
+                    idx_d = idx_d % space_d.num_basis
+
+                current_moved = np.moveaxis(current, d, 0)
+                gathered_moved: npt.NDArray[np.float32 | np.float64] = current_moved[idx_d]
+
+                n_trail = gathered_moved.ndim - 2
+                B_exp = B_d.reshape((m_d, order_d) + (1,) * n_trail)
+                contracted: npt.NDArray[np.float32 | np.float64] = (gathered_moved * B_exp).sum(
+                    axis=1
+                )
+                current = np.moveaxis(contracted, 0, d)
+
+            out[..., k, d_deriv, :] = current
+
+
+def _evaluate_Bspline_deriv_multi_dim(  # noqa: PLR0912
+    spline: Bspline,
+    pts: npt.NDArray[np.float32 | np.float64] | PointsLattice,
+    n_deriv: int,
+    out: npt.NDArray[np.float32 | np.float64] | None = None,
+) -> npt.NDArray[np.float32 | np.float64]:
+    """Evaluate partial derivatives of a multi-dimensional B-spline.
+
+    Computes all partial derivatives up to order ``n_deriv`` in each parametric
+    direction.  For rational B-splines the quotient rule (Algorithm A4.2 from
+    Piegl & Tiller) is applied independently per direction so that the result
+    is the derivative of the projected (inhomogeneous) mapping.
+
+    Args:
+        spline (Bspline): A multi-dimensional B-spline (``dim >= 2``).
+        pts (npt.NDArray[np.float32 | np.float64] | PointsLattice): Evaluation
+            points.  Either a 2-D array of shape ``(n_pts, dim)`` or a
+            :class:`~pantr.quad.PointsLattice`.
+        n_deriv (int): Maximum derivative order to compute.  Must be >= 0.
+        out (npt.NDArray[np.float32 | np.float64] | None): Optional pre-allocated
+            output array whose shape matches the return value described below.
+            Defaults to None.
+
+    Returns:
+        npt.NDArray[np.float32 | np.float64]: Shape
+        ``(*pts_shape, n_deriv+1, dim)`` for scalar output or
+        ``(*pts_shape, n_deriv+1, dim, rank)`` for vector-valued output, where
+        ``pts_shape`` is ``(n_pts,)`` for a points array or
+        ``(*pts_grid_shape,)`` for a :class:`~pantr.quad.PointsLattice`.
+        Axis ``-2`` indexes derivative order (0 = value, 1 = first, …) and
+        axis ``-1`` (before the optional rank axis) indexes parametric
+        direction. For rational B-splines the weight column is divided out
+        and not included in the output.
+
+    Raises:
+        ValueError: If ``n_deriv < 0``, if the pts dimension or dtype does not
+            match the B-spline, or if ``out`` has an incorrect shape or dtype.
+    """
+    if n_deriv < 0:
+        raise ValueError(f"n_deriv must be >= 0, got {n_deriv}")
+
+    dim = spline.dim
+    dtype = spline.dtype
+    cp = spline.control_points
+    cp_size = cp.shape[-1]
+
+    pts_base_shape: tuple[int, ...]
+    if isinstance(pts, PointsLattice):
+        if pts.dim != dim:
+            raise ValueError(
+                f"Points lattice dimension {pts.dim} does not match B-spline dimension {dim}"
+            )
+        if pts.dtype != dtype:
+            raise ValueError("Points dtype must match B-spline dtype")
+        pts_base_shape = tuple(int(p.shape[0]) for p in pts.pts_per_dir)
+    else:
+        if pts.ndim != 2 or pts.shape[1] != dim:  # noqa: PLR2004
+            raise ValueError(f"pts must be a 2D array with {dim} columns")
+        if pts.dtype != dtype:
+            raise ValueError("Points dtype must match B-spline dtype")
+        pts_base_shape = (pts.shape[0],)
+
+    hom_shape = (*pts_base_shape, n_deriv + 1, dim, cp_size)
+
+    if spline.is_rational:
+        hom_array = np.empty(hom_shape, dtype=dtype)
+        if isinstance(pts, PointsLattice):
+            _evaluate_Bspline_deriv_multi_dim_lattice(
+                cp, spline.space.spaces, pts, n_deriv, hom_array
+            )
+        else:
+            _evaluate_Bspline_deriv_multi_dim_pts_array(
+                cp, spline.space.spaces, pts, n_deriv, hom_array
+            )
+
+        rank_value = cp_size - 1
+        result_shape = (*pts_base_shape, n_deriv + 1, dim, rank_value)
+        result: npt.NDArray[np.float32 | np.float64]
+        if out is None:
+            result = np.empty(result_shape, dtype=dtype)
+        else:
+            _validate_out_array_1D(out, result_shape, dtype)
+            result = out
+
+        for d_deriv in range(dim):
+            for k in range(n_deriv + 1):
+                v = hom_array[..., k, d_deriv, :-1].copy()
+                for i in range(1, k + 1):
+                    v -= (
+                        math.comb(k, i)
+                        * hom_array[..., i, d_deriv, -1:]
+                        * result[..., k - i, d_deriv, :]
+                    )
+                result[..., k, d_deriv, :] = v / hom_array[..., 0, d_deriv, -1:]
+
+        return result[..., 0] if rank_value == 1 else result
+
+    # Non-rational
+    out_array: npt.NDArray[np.float32 | np.float64]
+    if out is None:
+        out_array = np.empty(hom_shape, dtype=dtype)
+    else:
+        _validate_out_array_1D(out, hom_shape, dtype)
+        out_array = out
+
+    if isinstance(pts, PointsLattice):
+        _evaluate_Bspline_deriv_multi_dim_lattice(cp, spline.space.spaces, pts, n_deriv, out_array)
+    else:
+        _evaluate_Bspline_deriv_multi_dim_pts_array(
+            cp, spline.space.spaces, pts, n_deriv, out_array
+        )
+
+    return out_array[..., 0] if cp_size == 1 else out_array
+
+
 def _evaluate_Bspline_deriv(
     spline: Bspline,
     pts: npt.NDArray[np.float32 | np.float64] | PointsLattice,
@@ -364,14 +625,11 @@ def _evaluate_Bspline_deriv(
 
     Returns:
         npt.NDArray[np.float32 | np.float64]: Derivative values at the given points.
-
-    Raises:
-        NotImplementedError: If the B-spline dimension is not 1.
     """
     if spline.dim == 1:
         return _evaluate_Bspline_deriv_1D(spline, pts, n_deriv, out)
     else:
-        raise NotImplementedError("evaluate_derivatives is not implemented for dim > 1")
+        return _evaluate_Bspline_deriv_multi_dim(spline, pts, n_deriv, out)
 
 
 def _evaluate_Bspline_multi_dim_lattice(
