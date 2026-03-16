@@ -8,11 +8,13 @@ is dispatched to the de Boor algorithm implemented in ``_bspline_eval``.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from typing import TYPE_CHECKING
 
 import numpy as np
 from numpy import typing as npt
 
+from ._bspline_degree import _degree_elevate_bspline
 from ._bspline_eval import _evaluate_Bspline, _evaluate_Bspline_deriv
 
 if TYPE_CHECKING:
@@ -215,3 +217,44 @@ class Bspline:
             NotImplementedError: If the B-spline dimension is greater than 1.
         """
         return _evaluate_Bspline_deriv(self, pts, n_deriv, out)
+
+    def elevate_degree(self, degree_increments: int | Sequence[int]) -> Bspline:
+        """Elevate the polynomial degree of the B-spline.
+
+        Creates a new B-spline that represents the same mapping as the original
+        one but with higher-order polynomial basis functions. This is achieved
+        by increasing the degree in each parametric direction and adjusting the
+        control points and knot vectors accordingly.
+
+        Args:
+            degree_increments (int | Sequence[int]): Number of degrees to
+                increase. If an integer, the same increment is applied to all
+                parametric directions. If a sequence, must have length equal
+                to the B-spline dimension.
+
+        Returns:
+            Bspline: A new B-spline with elevated degrees.
+
+        Raises:
+            ValueError: If any degree increment is negative.
+            ValueError: If the number of increments does not match the dimension.
+        """
+        if isinstance(degree_increments, int):
+            increments = (degree_increments,) * self.dim
+        else:
+            increments = tuple(degree_increments)
+
+        if len(increments) != self.dim:
+            raise ValueError(
+                f"Number of degree increments ({len(increments)}) "
+                f"must match dimension ({self.dim})."
+            )
+
+        if any(inc < 0 for inc in increments):
+            raise ValueError("Degree increments must be non-negative.")
+
+        # If all increments are zero, return self
+        if all(inc == 0 for inc in increments):
+            return self
+
+        return _degree_elevate_bspline(self, increments)
