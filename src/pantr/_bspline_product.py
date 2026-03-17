@@ -127,6 +127,8 @@ def _lookup_mults_in_space(
     absent from that space.
 
     Both ``all_bp`` and ``bp_space`` must be sorted in ascending order.
+    Uses ``np.searchsorted`` for efficient binary search (same pattern as
+    :func:`~pantr._bspline_knots._get_last_knot_smaller_equal_impl`).
 
     Args:
         all_bp (npt.NDArray[np.float32 | np.float64]): Merged (union) interior
@@ -141,14 +143,13 @@ def _lookup_mults_in_space(
         multiplicity in the given space for each entry of ``all_bp`` (0 if absent).
     """
     result = np.zeros(len(all_bp), dtype=np.int_)
-    j = 0
-    for i in range(len(all_bp)):
-        xi = float(all_bp[i])
-        while j < len(bp_space) and float(bp_space[j]) < xi - tol:
-            j += 1
-        if j < len(bp_space) and abs(float(bp_space[j]) - xi) <= tol:
-            result[i] = mult_space[j]
-            j += 1
+    if bp_space.size == 0 or all_bp.size == 0:
+        return result
+    indices = np.searchsorted(bp_space, all_bp)
+    safe_idx = np.minimum(indices, bp_space.size - 1)
+    in_range = indices < bp_space.size
+    matched = in_range & (np.abs(bp_space[safe_idx] - all_bp) <= tol)
+    result[matched] = mult_space[safe_idx[matched]]
     return result
 
 
