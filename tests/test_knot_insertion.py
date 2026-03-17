@@ -91,6 +91,13 @@ class TestBsplineSpace1DInsertKnots:
         new_space = space.insert_knots([0.5])
         assert np.sum(np.isclose(new_space.knots, 0.5)) == 2  # noqa: PLR2004
 
+    def test_insert_repeated_knots_in_one_call(self) -> None:
+        """Inserting [0.5, 0.5] in one call raises multiplicity from 1 to degree+1=3."""
+        # degree=2, so max multiplicity = 3; starting from 1, insert [0.5, 0.5] → 3
+        space = BsplineSpace1D([0, 0, 0, 0.5, 1, 1, 1], 2)
+        new_space = space.insert_knots([0.5, 0.5])
+        assert np.sum(np.isclose(new_space.knots, 0.5)) == 3  # noqa: PLR2004
+
     def test_insert_out_of_domain_raises(self) -> None:
         """Values outside the domain raise ValueError."""
         space = BsplineSpace1D([0, 0, 0, 1, 1, 1], 2)
@@ -99,11 +106,11 @@ class TestBsplineSpace1DInsertKnots:
         with pytest.raises(ValueError, match="domain"):
             space.insert_knots([1.5])
 
-    def test_insert_empty_is_noop(self) -> None:
-        """Inserting an empty array returns a space with the same knots."""
+    def test_insert_empty_raises(self) -> None:
+        """Inserting an empty array raises ValueError."""
         space = BsplineSpace1D([0, 0, 0, 1, 1, 1], 2)
-        new_space = space.insert_knots([])
-        np.testing.assert_array_equal(new_space.knots, space.knots)
+        with pytest.raises(ValueError, match="empty"):
+            space.insert_knots([])
 
     def test_degree_preserved(self) -> None:
         """Degree is preserved after knot insertion."""
@@ -120,16 +127,19 @@ class TestBsplineSpace1DInsertKnots:
 class TestBsplineSpace1DSubdivide:
     """Test BsplineSpace1D.subdivide."""
 
-    def test_subdivide_n1_returns_self(self) -> None:
-        """subdivide(1) returns the same object (no-op)."""
+    def test_subdivide_n1_raises(self) -> None:
+        """subdivide(1) raises ValueError."""
         space = BsplineSpace1D([0, 0, 0, 1, 1, 1], 2)
-        assert space.subdivide(1) is space
+        with pytest.raises(ValueError, match="n_subdivisions"):
+            space.subdivide(1)
 
-    def test_subdivide_n_less_than_1_raises(self) -> None:
-        """Subdivide with n < 1 raises ValueError."""
+    def test_subdivide_n_less_than_2_raises(self) -> None:
+        """Subdivide with n < 2 raises ValueError."""
         space = BsplineSpace1D([0, 0, 0, 1, 1, 1], 2)
         with pytest.raises(ValueError, match="n_subdivisions"):
             space.subdivide(0)
+        with pytest.raises(ValueError, match="n_subdivisions"):
+            space.subdivide(1)
 
     def test_subdivide_2_single_span(self) -> None:
         """subdivide(2) on a single-span knot vector inserts the midpoint."""
@@ -152,6 +162,34 @@ class TestBsplineSpace1DSubdivide:
         # Unique domain knots were [0, 1, 2]; midpoints 0.5 and 1.5 should appear.
         assert any(np.isclose(new_space.knots, 0.5))
         assert any(np.isclose(new_space.knots, 1.5))
+
+    def test_subdivide_regularity_default_gives_multiplicity_1(self) -> None:
+        """Default regularity=degree-1 inserts each knot once (multiplicity 1)."""
+        space = BsplineSpace1D([0, 0, 0, 1, 1, 1], 2)
+        new_space = space.subdivide(2)  # regularity defaults to degree-1=1
+        assert np.sum(np.isclose(new_space.knots, 0.5)) == 1
+
+    def test_subdivide_regularity_0_gives_multiplicity_degree(self) -> None:
+        """regularity=0 inserts each knot degree times (C^0 continuity)."""
+        # degree=2, regularity=0 → repeat=2
+        space = BsplineSpace1D([0, 0, 0, 1, 1, 1], 2)
+        new_space = space.subdivide(2, regularity=0)
+        assert np.sum(np.isclose(new_space.knots, 0.5)) == 2  # noqa: PLR2004
+
+    def test_subdivide_regularity_minus1_gives_multiplicity_degree_plus1(self) -> None:
+        """regularity=-1 inserts each knot degree+1 times (discontinuous, C^{-1})."""
+        # degree=2, regularity=-1 → repeat=3
+        space = BsplineSpace1D([0, 0, 0, 1, 1, 1], 2)
+        new_space = space.subdivide(2, regularity=-1)
+        assert np.sum(np.isclose(new_space.knots, 0.5)) == 3  # noqa: PLR2004
+
+    def test_subdivide_regularity_out_of_range_raises(self) -> None:
+        """Regularity outside [-1, degree-1] raises ValueError."""
+        space = BsplineSpace1D([0, 0, 0, 1, 1, 1], 2)
+        with pytest.raises(ValueError, match="regularity"):
+            space.subdivide(2, regularity=2)  # degree-1=1, so 2 is out of range
+        with pytest.raises(ValueError, match="regularity"):
+            space.subdivide(2, regularity=-2)
 
 
 # ---------------------------------------------------------------------------
@@ -188,10 +226,11 @@ class TestBsplineInsertKnots1DNonRational:
         new_bs = bspline.insert_knots([0.25, 0.75])
         assert new_bs.space.spaces[0].num_basis == bspline.space.spaces[0].num_basis + 2
 
-    def test_1d_empty_insertion_returns_self(self) -> None:
-        """Inserting an empty array returns self."""
+    def test_1d_empty_insertion_raises(self) -> None:
+        """Inserting an empty array in 1D raises ValueError."""
         bspline = _make_1d_bspline([0, 0, 0, 1, 1, 1], 2, [[0, 0], [0.5, 1], [1, 0]])
-        assert bspline.insert_knots([]) is bspline
+        with pytest.raises(ValueError):
+            bspline.insert_knots([])
 
     def test_1d_out_of_domain_raises(self) -> None:
         """Knots outside the domain raise ValueError."""
@@ -215,6 +254,17 @@ class TestBsplineInsertKnots1DNonRational:
         new_bs = bspline.insert_knots([0.5])
         knots = new_bs.space.spaces[0].knots
         assert np.sum(np.isclose(knots, 0.5)) == 2  # noqa: PLR2004
+
+    def test_1d_repeated_knots_in_one_call_reaches_max_multiplicity(self) -> None:
+        """Inserting [0.5, 0.5] in one call raises multiplicity from 1 to degree+1=3."""
+        bspline = _make_1d_bspline(
+            [0, 0, 0, 0.5, 1, 1, 1],
+            2,
+            [[0, 0], [0.25, 1], [0.75, 1], [1, 0]],
+        )
+        new_bs = bspline.insert_knots([0.5, 0.5])
+        knots = new_bs.space.spaces[0].knots
+        assert np.sum(np.isclose(knots, 0.5)) == 3  # noqa: PLR2004
 
 
 # ---------------------------------------------------------------------------
@@ -296,10 +346,17 @@ class TestBsplineInsertKnotsMultiDim:
         with pytest.raises(ValueError, match="dim"):
             bspline.insert_knots([np.array([0.5])])  # need length 2
 
-    def test_2d_all_none_returns_self(self) -> None:
-        """A sequence of all-None returns self."""
+    def test_2d_all_none_raises(self) -> None:
+        """A sequence of all-None raises ValueError."""
         bspline = self._make_bilinear_surface()
-        assert bspline.insert_knots([None, None]) is bspline
+        with pytest.raises(ValueError):
+            bspline.insert_knots([None, None])
+
+    def test_2d_all_empty_raises(self) -> None:
+        """A sequence of all-empty arrays raises ValueError."""
+        bspline = self._make_bilinear_surface()
+        with pytest.raises(ValueError):
+            bspline.insert_knots([[], []])
 
 
 # ---------------------------------------------------------------------------
@@ -310,10 +367,11 @@ class TestBsplineInsertKnotsMultiDim:
 class TestBsplineSubdivide1D:
     """Test Bspline.subdivide for 1D B-splines."""
 
-    def test_subdivide_n1_returns_self(self) -> None:
-        """subdivide(1) returns self."""
+    def test_subdivide_n1_raises(self) -> None:
+        """subdivide(1) raises ValueError."""
         bspline = _make_1d_bspline([0, 0, 0, 1, 1, 1], 2, [[0, 0], [0.5, 1], [1, 0]])
-        assert bspline.subdivide(1) is bspline
+        with pytest.raises(ValueError):
+            bspline.subdivide(1)
 
     def test_subdivide_n_less_than_1_raises(self) -> None:
         """Subdivide with n < 1 raises ValueError."""
@@ -348,6 +406,30 @@ class TestBsplineSubdivide1D:
         old_vals = bspline.evaluate(pts)
         new_vals = new_bs.evaluate(pts)
         np.testing.assert_allclose(new_vals, old_vals, atol=1e-12)
+
+    def test_subdivide_regularity_0_gives_multiplicity_degree(self) -> None:
+        """regularity=0 inserts each new knot degree times (C^0 continuity)."""
+        # degree=2, regularity=0 → repeat=2; midpoint 0.5 inserted twice
+        bspline = _make_1d_bspline([0, 0, 0, 1, 1, 1], 2, [[0, 0], [0.5, 1], [1, 0]])
+        new_bs = bspline.subdivide(2, regularity=0)
+        knots = new_bs.space.spaces[0].knots
+        assert np.sum(np.isclose(knots, 0.5)) == 2  # noqa: PLR2004
+
+    def test_subdivide_regularity_minus1_gives_discontinuous(self) -> None:
+        """regularity=-1 inserts each new knot degree+1 times (C^{-1}, discontinuous)."""
+        # degree=2, regularity=-1 → repeat=3; midpoint 0.5 inserted three times
+        bspline = _make_1d_bspline([0, 0, 0, 1, 1, 1], 2, [[0, 0], [0.5, 1], [1, 0]])
+        new_bs = bspline.subdivide(2, regularity=-1)
+        knots = new_bs.space.spaces[0].knots
+        assert np.sum(np.isclose(knots, 0.5)) == 3  # noqa: PLR2004
+
+    def test_subdivide_regularity_out_of_range_raises(self) -> None:
+        """Regularity outside valid range raises ValueError."""
+        bspline = _make_1d_bspline([0, 0, 0, 1, 1, 1], 2, [[0, 0], [0.5, 1], [1, 0]])
+        with pytest.raises(ValueError, match="regularity"):
+            bspline.subdivide(2, regularity=2)
+        with pytest.raises(ValueError, match="regularity"):
+            bspline.subdivide(2, regularity=-2)
 
 
 # ---------------------------------------------------------------------------
@@ -395,7 +477,37 @@ class TestBsplineSubdivideMultiDim:
         with pytest.raises(ValueError, match="dim"):
             bspline.subdivide([2])  # dim == 2, need length 2
 
-    def test_subdivide_n1_sequence_returns_self(self) -> None:
-        """[1, 1] is a no-op and returns self."""
+    def test_subdivide_all_n1_raises(self) -> None:
+        """[1, 1] raises ValueError (at least one direction must be >= 2)."""
         bspline = self._make_biquadratic_surface()
-        assert bspline.subdivide([1, 1]) is bspline
+        with pytest.raises(ValueError):
+            bspline.subdivide([1, 1])
+
+    def test_subdivide_one_direction_n1_ok(self) -> None:
+        """[2, 1] is valid — only u is refined, geometry preserved."""
+        bspline = self._make_biquadratic_surface()
+        new_bs = bspline.subdivide([2, 1])
+
+        assert new_bs.space.spaces[0].num_basis > bspline.space.spaces[0].num_basis
+        assert new_bs.space.spaces[1].num_basis == bspline.space.spaces[1].num_basis
+
+        _, old_vals = _eval_pts_2d(bspline)
+        _, new_vals = _eval_pts_2d(new_bs)
+        np.testing.assert_allclose(new_vals, old_vals, atol=1e-12)
+
+    def test_subdivide_regularity_multi_dim(self) -> None:
+        """Regularity parameter is respected for each active direction."""
+        bspline = self._make_biquadratic_surface()
+        # degree=2 in both directions; regularity=0 → each knot inserted twice
+        new_bs = bspline.subdivide(2, regularity=0)
+
+        knots_u = new_bs.space.spaces[0].knots
+        knots_v = new_bs.space.spaces[1].knots
+        # u: domain [0,2], midpoint 0.5 and 1.5 should appear twice each
+        assert np.sum(np.isclose(knots_u, 0.5)) == 2  # noqa: PLR2004
+        # v: domain [0,1], midpoint 0.5 should appear twice
+        assert np.sum(np.isclose(knots_v, 0.5)) == 2  # noqa: PLR2004
+
+        _, old_vals = _eval_pts_2d(bspline)
+        _, new_vals = _eval_pts_2d(new_bs)
+        np.testing.assert_allclose(new_vals, old_vals, atol=1e-12)

@@ -183,11 +183,13 @@ def _compute_uniform_subdivision_knots(
     degree: int,
     tol: float,
     n_subdivisions: int,
+    regularity: int | None = None,
 ) -> npt.NDArray[np.float32 | np.float64]:
     """Compute the new knots required to subdivide every knot span uniformly.
 
     For each non-zero span ``[u_i, u_{i+1})`` of the knot vector, generates
-    ``n_subdivisions - 1`` uniformly-spaced interior knots.
+    ``n_subdivisions - 1`` uniformly-spaced interior knot values, each repeated
+    ``degree - regularity`` times to achieve the requested continuity.
 
     Args:
         knots (npt.NDArray[np.float32 | np.float64]): B-spline knot vector.
@@ -195,11 +197,17 @@ def _compute_uniform_subdivision_knots(
         tol (float): Tolerance for uniqueness detection.
         n_subdivisions (int): Number of equal sub-spans per existing interval.
             Must be >= 2 (callers have already validated this).
+        regularity (int | None): Desired continuity order at inserted knots.
+            Must be in ``[-1, degree - 1]``.  ``None`` defaults to
+            ``degree - 1`` (minimum multiplicity = 1, maximum continuity).
 
     Returns:
         npt.NDArray[np.float32 | np.float64]: 1D array of new knot values to insert.
             May be empty if the knot vector has only one unique span.
     """
+    eff_regularity = degree - 1 if regularity is None else regularity
+    repeat = degree - eff_regularity  # multiplicity of each inserted knot
+
     unique_knots, _ = _get_unique_knots_and_multiplicity_impl(knots, degree, tol, in_domain=True)
 
     dtype = knots.dtype
@@ -210,7 +218,9 @@ def _compute_uniform_subdivision_knots(
         hi = float(unique_knots[k + 1])
         # Generate n_subdivisions-1 equally-spaced interior points.
         interior = np.linspace(lo, hi, n_subdivisions + 1, dtype=np.float64)[1:-1]
-        parts.append(interior.astype(dtype, copy=False))
+        # Repeat each value `repeat` times to achieve the requested regularity.
+        repeated = np.repeat(interior, repeat)
+        parts.append(repeated.astype(dtype, copy=False))
 
     if not parts:
         return np.empty(0, dtype=dtype)
