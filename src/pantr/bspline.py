@@ -319,6 +319,43 @@ class Bspline:
 
         return _insert_knots_bspline(self, new_knots_per_dim)
 
+    def multiply(self, other: Bspline) -> Bspline:
+        """Return the exact pointwise product of this B-spline and another.
+
+        Given B-splines ``self`` and ``other`` over the same 1D parametric
+        domain, returns a new B-spline ``h`` such that ``h(t) = self(t) *
+        other(t)`` for all ``t`` in the domain.  The result lives in the product
+        space of degree ``p + q`` where ``p`` and ``q`` are the degrees of the
+        two operands.
+
+        Both non-rational and rational (NURBS) operands are supported.  A
+        non-rational operand is promoted to rational (unit weights) when the
+        other is rational.
+
+        Args:
+            other (Bspline): The second B-spline operand. Must be 1D with the
+                same dtype, rank, and parametric domain as ``self``.
+
+        Returns:
+            Bspline: A new B-spline representing ``self * other``.
+
+        Raises:
+            ValueError: If either operand has ``dim != 1``.
+            ValueError: If the operands have different dtypes.
+            ValueError: If the operands have different ranks.
+            ValueError: If the operands have different parametric domains.
+            NotImplementedError: If either operand is periodic.
+
+        Example:
+            >>> h = f.multiply(g)
+            >>> h2 = f * g  # equivalent via __mul__
+        """
+        from ._bspline_product import _multiply_bspline_1d  # noqa: PLC0415
+
+        return _multiply_bspline_1d(self, other)
+
+    __mul__ = multiply
+
     def subdivide(
         self,
         n_subdivisions: int | Sequence[int | None],
