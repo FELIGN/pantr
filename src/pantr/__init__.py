@@ -124,6 +124,7 @@ if not TYPE_CHECKING:
                 _bspline_basis_core,
                 _bspline_eval,
                 _bspline_extraction,
+                _bspline_knot_insertion_core,
                 _bspline_knots,
             )
 
@@ -136,6 +137,7 @@ if not TYPE_CHECKING:
             _bspline_basis_core._warmup_numba_functions()
             _bspline_eval._warmup_numba_functions()
             _bspline_extraction._warmup_numba_functions()
+            _bspline_knot_insertion_core._warmup_numba_functions()
             _bspline_knots._warmup_numba_functions()
             logger.debug("Finished Numba JIT warmup.")
         except Exception:

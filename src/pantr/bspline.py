@@ -16,6 +16,10 @@ from numpy import typing as npt
 
 from ._bspline_degree import _degree_elevate_bspline
 from ._bspline_eval import _evaluate_Bspline, _evaluate_Bspline_deriv
+from ._bspline_knot_insertion import (
+    _compute_uniform_subdivision_knots,
+    _insert_knots_bspline,
+)
 
 if TYPE_CHECKING:
     from .bspline_space_nd import BsplineSpace
@@ -269,3 +273,121 @@ class Bspline:
             return self
 
         return _degree_elevate_bspline(self, increments)
+
+    def insert_knots(
+        self,
+        new_knots: npt.ArrayLike | Sequence[npt.ArrayLike | None],
+    ) -> Bspline:
+        """Return a geometrically equivalent B-spline with additional knots inserted.
+
+        Args:
+            new_knots (npt.ArrayLike | Sequence[npt.ArrayLike | None]):
+                For a 1D B-spline, a flat non-empty 1D array-like of knot values
+                to insert.  For multi-dimensional B-splines, a sequence of length
+                ``dim`` where each element is a 1D array-like of knots to insert
+                in that direction, or ``None`` to skip that direction.  At least
+                one direction must have a non-empty array of knots to insert.
+                Repeated values in an array insert the same knot multiple times.
+
+        Returns:
+            Bspline: New B-spline with the same geometry and refined knot vectors.
+
+        Raises:
+            ValueError: If the sequence length does not match ``dim`` (multi-dim case).
+            ValueError: If all directions have empty or ``None`` knot arrays.
+            ValueError: If any knot lies outside its direction's domain.
+            ValueError: If any insertion would exceed maximum multiplicity.
+        """
+        dtype = self.dtype
+
+        if self.dim == 1:
+            arr = np.asarray(new_knots, dtype=dtype)
+            new_knots_per_dim: list[npt.NDArray[np.float32 | np.float64] | None] = [arr]
+        else:
+            seq = list(new_knots)  # type: ignore[arg-type]
+            if len(seq) != self.dim:
+                raise ValueError(
+                    f"new_knots sequence length ({len(seq)}) must match dim ({self.dim})."
+                )
+            new_knots_per_dim = [None if nk is None else np.asarray(nk, dtype=dtype) for nk in seq]
+
+        # Require at least one non-empty direction.
+        if all(nk is None or nk.size == 0 for nk in new_knots_per_dim):
+            raise ValueError(
+                "At least one direction must have a non-empty array of knots to insert."
+            )
+
+        return _insert_knots_bspline(self, new_knots_per_dim)
+
+    def subdivide(
+        self,
+        n_subdivisions: int | Sequence[int | None],
+        regularity: int | None = None,
+    ) -> Bspline:
+        """Return a geometrically equivalent B-spline with uniformly refined knot vectors.
+
+        For every non-zero knot span in each active parametric direction,
+        inserts ``n_subdivisions - 1`` uniformly spaced knot values.  Each
+        value is repeated ``degree - regularity`` times so that the B-spline
+        has ``C^regularity`` continuity at every inserted knot.
+
+        Args:
+            n_subdivisions (int | Sequence[int | None]): Number of equal
+                sub-spans per existing interval.  A single ``int`` is applied
+                to all directions; must be >= 2.  A sequence of length ``dim``
+                provides per-direction counts; use ``None`` to skip a direction.
+                At least one direction must have a count >= 2.
+            regularity (int | None): Continuity order at every inserted knot.
+                Applied uniformly across all active directions.  Must be in
+                ``[-1, degree - 1]`` for each active direction.  ``None``
+                (default) uses ``degree - 1`` per direction.
+
+        Returns:
+            Bspline: New B-spline with refined knot vectors and same geometry.
+
+        Raises:
+            ValueError: If the sequence length does not match ``dim``.
+            ValueError: If any subdivision count is < 1.
+            ValueError: If no direction has a count >= 2.
+            ValueError: If ``regularity`` is outside the valid range for any
+                active direction.
+        """
+        if isinstance(n_subdivisions, int):
+            counts: list[int | None] = [n_subdivisions] * self.dim
+        else:
+            counts = list(n_subdivisions)
+            if len(counts) != self.dim:
+                raise ValueError(
+                    f"n_subdivisions sequence length ({len(counts)}) must match dim ({self.dim})."
+                )
+
+        # Validate counts.
+        for c in counts:
+            if c is not None and c < 1:
+                raise ValueError(f"n_subdivisions must be >= 1, got {c}")
+
+        # Require at least one active direction with count >= 2.
+        if all(c is None or c == 1 for c in counts):
+            raise ValueError("At least one direction must have n_subdivisions >= 2.")
+
+        # Validate regularity per active direction and compute per-direction new knots.
+        dtype = self.dtype
+        new_knots_per_dim: list[npt.NDArray[np.float32 | np.float64] | None] = []
+        for i, c in enumerate(counts):
+            if c is None or c == 1:
+                new_knots_per_dim.append(None)
+            else:
+                space_1d = self.space.spaces[i]
+                deg = space_1d.degree
+                eff_regularity = deg - 1 if regularity is None else regularity
+                if eff_regularity < -1 or eff_regularity > deg - 1:
+                    raise ValueError(
+                        f"regularity must be in [-1, degree - 1] = [-1, {deg - 1}] "
+                        f"for direction {i}, got {eff_regularity}"
+                    )
+                nk = _compute_uniform_subdivision_knots(
+                    space_1d.knots, space_1d.degree, space_1d.tolerance, c, eff_regularity
+                ).astype(dtype, copy=False)
+                new_knots_per_dim.append(nk)
+
+        return _insert_knots_bspline(self, new_knots_per_dim)
