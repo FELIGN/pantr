@@ -39,6 +39,7 @@ def _compute_inserted_knot_vector_1d(
 
     Raises:
         ValueError: If ``new_knots_to_insert`` is not 1D.
+        ValueError: If ``new_knots_to_insert`` is empty.
         ValueError: If any value lies outside the B-spline domain.
         ValueError: If any knot's resulting multiplicity would exceed ``degree + 1``.
     """
@@ -48,7 +49,7 @@ def _compute_inserted_knot_vector_1d(
         )
 
     if new_knots_to_insert.size == 0:
-        return knots.copy()
+        raise ValueError("new_knots_to_insert must not be empty.")
 
     # Domain check.
     in_domain = _is_in_domain_impl(knots, degree, new_knots_to_insert, tol)
