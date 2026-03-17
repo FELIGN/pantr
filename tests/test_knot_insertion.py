@@ -90,6 +90,9 @@ class TestBsplineSpace1DInsertKnots:
         space = BsplineSpace1D([0, 0, 0, 0.5, 1, 1, 1], 2)
         new_space = space.insert_knots([0.5])
         assert np.sum(np.isclose(new_space.knots, 0.5)) == 2  # noqa: PLR2004
+        # Inserting 0.5 once more reaches the maximum multiplicity degree+1=3.
+        new_space2 = new_space.insert_knots([0.5])
+        assert np.sum(np.isclose(new_space2.knots, 0.5)) == 3  # noqa: PLR2004
 
     def test_insert_repeated_knots_in_one_call(self) -> None:
         """Inserting [0.5, 0.5] in one call raises multiplicity from 1 to degree+1=3."""
@@ -127,19 +130,12 @@ class TestBsplineSpace1DInsertKnots:
 class TestBsplineSpace1DSubdivide:
     """Test BsplineSpace1D.subdivide."""
 
-    def test_subdivide_n1_raises(self) -> None:
-        """subdivide(1) raises ValueError."""
-        space = BsplineSpace1D([0, 0, 0, 1, 1, 1], 2)
-        with pytest.raises(ValueError, match="n_subdivisions"):
-            space.subdivide(1)
-
     def test_subdivide_n_less_than_2_raises(self) -> None:
-        """Subdivide with n < 2 raises ValueError."""
+        """Subdivide with n < 2 (including 1, 0, and negative values) raises ValueError."""
         space = BsplineSpace1D([0, 0, 0, 1, 1, 1], 2)
-        with pytest.raises(ValueError, match="n_subdivisions"):
-            space.subdivide(0)
-        with pytest.raises(ValueError, match="n_subdivisions"):
-            space.subdivide(1)
+        for bad in (1, 0, -1, -5):
+            with pytest.raises(ValueError, match="n_subdivisions"):
+                space.subdivide(bad)
 
     def test_subdivide_2_single_span(self) -> None:
         """subdivide(2) on a single-span knot vector inserts the midpoint."""
