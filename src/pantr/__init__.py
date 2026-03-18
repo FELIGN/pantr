@@ -139,6 +139,9 @@ if not TYPE_CHECKING:
             _bspline_extraction._warmup_numba_functions()
             _bspline_knot_insertion_core._warmup_numba_functions()
             _bspline_knots._warmup_numba_functions()
+            from . import _bspline_blossom_core  # noqa: PLC0415
+
+            _bspline_blossom_core._warmup_numba_functions()
             logger.debug("Finished Numba JIT warmup.")
         except Exception:
             # During process teardown (e.g. short scripts), background Numba caching
