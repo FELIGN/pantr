@@ -6,6 +6,7 @@ import numpy as np
 import numpy.typing as npt
 import pytest
 
+from pantr._bspline_knots import _get_unique_knots_and_multiplicity_impl
 from pantr.bspline import Bspline
 from pantr.bspline_space_1D import BsplineSpace1D
 from pantr.bspline_space_nd import BsplineSpace
@@ -29,7 +30,7 @@ def make_bspline(
     return Bspline(space, cp, is_rational=is_rational)
 
 
-def eval_pts(a: float = 0.0, b: float = 1.0, n: int = 201) -> np.ndarray:  # type: ignore[type-arg]
+def eval_pts(a: float = 0.0, b: float = 1.0, n: int = 201) -> npt.NDArray[np.float64]:
     """Return n evenly-spaced evaluation points in [a, b]."""
     return np.linspace(a, b, n, dtype=np.float64)
 
@@ -93,7 +94,7 @@ class TestNonRationalProduct:
 
         h = f.multiply(g)
 
-        # Product degree = 4, interior mult = 2+1 = 3
+        # Product degree = 4, interior mult = max(2+2, 1+2) = 4
         assert h.degree == (4,)
         pts = eval_pts()
         np.testing.assert_allclose(h.evaluate(pts), f.evaluate(pts) * g.evaluate(pts), atol=1e-11)
@@ -270,3 +271,78 @@ class TestEdgeCases:
         g_p = Bspline(space_p, np.ones(n_basis, dtype=np.float64))
         with pytest.raises(NotImplementedError):
             f.multiply(g_p)
+
+
+# ---------------------------------------------------------------------------
+# Optimal continuity tests
+# ---------------------------------------------------------------------------
+
+
+class TestOptimalContinuity:
+    """Tests verifying that the product has optimal continuity in the knot vector."""
+
+    def test_optimal_multiplicity_at_shared_knot(self) -> None:
+        """Interior multiplicity equals max(m_f+q, m_g+p).
+
+        f: degree 2, interior knot 0.5 with mult 2 → C^0
+        g: degree 2, interior knot 0.5 with mult 1 → C^1
+        Product continuity = C^{min(p-m_f, q-m_g)} = C^{min(0,1)} = C^0.
+        Product degree 4, interior mult = max(2+2, 1+2) = 4 = full-Bezier.
+        """
+        knots_f = [0.0, 0.0, 0.0, 0.5, 0.5, 1.0, 1.0, 1.0]
+        knots_g = [0.0, 0.0, 0.0, 0.5, 1.0, 1.0, 1.0]
+        f = make_bspline(knots_f, 2, [1.0, 2.0, 3.0, 1.5, 2.0])
+        g = make_bspline(knots_g, 2, [0.5, 1.5, 2.5, 1.0])
+
+        h = f.multiply(g)
+
+        # Product degree must be 4.
+        assert h.degree == (4,)
+
+        # Interior multiplicity of 0.5 in the product: max(2+2, 1+2) = 4.
+        h_space = h.space.spaces[0]
+        unique, mults = _get_unique_knots_and_multiplicity_impl(
+            h_space.knots, 4, float(h_space.tolerance), in_domain=True
+        )
+        # unique[0]=0.0, unique[1]=0.5, unique[2]=1.0
+        assert unique.shape[0] == 3  # noqa: PLR2004
+        np.testing.assert_allclose(unique[1], 0.5, atol=1e-12)
+        assert int(mults[1]) == 4  # noqa: PLR2004
+
+        # Correctness check.
+        pts = eval_pts()
+        np.testing.assert_allclose(h.evaluate(pts), f.evaluate(pts) * g.evaluate(pts), atol=1e-11)
+
+    def test_fewer_basis_than_full_bezier(self) -> None:
+        """Product has fewer basis functions than full-Bezier when interior mults < p+q.
+
+        Both f and g have degree 2 with interior knot 0.5 at mult 1 (C^1).
+        Full-Bezier would give interior mult 4 → 9 basis functions.
+        Optimal: interior mult = max(1+2, 1+2) = 3 → 5+3+5 = 13 knots → 8 basis.
+        """
+        knots = [0.0, 0.0, 0.0, 0.5, 1.0, 1.0, 1.0]
+        f = make_bspline(knots, 2, [1.0, 2.0, 0.5, 3.0])
+        g = make_bspline(knots, 2, [0.5, 1.5, 2.5, 1.0])
+
+        h = f.multiply(g)
+
+        # Full-Bezier product: degree 4, 2 elements → 4*2+1 = 9 basis functions.
+        # Optimal: interior mult = max(1+2, 1+2) = 3 → [0]*5+[0.5]*3+[1]*5 = 13 knots → 8 basis.
+        n_h = h.space.num_total_basis
+        assert n_h == 8  # noqa: PLR2004
+
+        pts = eval_pts()
+        np.testing.assert_allclose(h.evaluate(pts), f.evaluate(pts) * g.evaluate(pts), atol=1e-11)
+
+    def test_single_element_no_interior_knots(self) -> None:
+        """Single Bezier element: optimal and full-Bezier coincide (no interior knots)."""
+        knots = [0.0, 0.0, 0.0, 1.0, 1.0, 1.0]
+        f = make_bspline(knots, 2, [1.0, 2.0, 3.0])
+        g = make_bspline(knots, 2, [3.0, 1.0, 2.0])
+
+        h = f.multiply(g)
+
+        # Single element, degree 4: 5 basis functions.
+        assert h.space.num_total_basis == 5  # noqa: PLR2004
+        pts = eval_pts()
+        np.testing.assert_allclose(h.evaluate(pts), f.evaluate(pts) * g.evaluate(pts), atol=1e-11)
