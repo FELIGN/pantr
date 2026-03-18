@@ -432,7 +432,7 @@ class TestBernsteinDerivCore:
 
     def test_exact_quadratic_first_derivative(self) -> None:
         """Exact first derivatives for quadratic Bernstein on [0,1]."""
-        t = np.array([0.0, 0.25, 0.5, 0.75])
+        t = np.array([0.0, 0.25, 0.5, 0.75, 1.0])
         out = self._call(2, t, n_deriv=1)
         for i, x in enumerate(t):
             expected = np.array([-2 * (1 - x), 2 - 4 * x, 2 * x])
@@ -440,17 +440,21 @@ class TestBernsteinDerivCore:
 
     def test_exact_quadratic_second_derivative(self) -> None:
         """Second derivatives for quadratic Bernstein are [2, -4, 2] everywhere."""
-        t = np.array([0.1, 0.4, 0.7])
+        t = np.array([0.1, 0.4, 0.7, 1.0])
         out = self._call(2, t, n_deriv=2)
-        np.testing.assert_allclose(out[:, 2, :], [[2.0, -4.0, 2.0]] * 3, atol=1e-12)
+        np.testing.assert_allclose(out[:, 2, :], [[2.0, -4.0, 2.0]] * 4, atol=1e-12)
 
     def test_boundary_t_equals_1(self) -> None:
-        """At t=1: 0th row is last-function=1; all derivative rows are zero."""
+        """At t=1: basis=[0,0,1], first derivative=[0,-2,2], second=[2,-4,2].
+
+        For degree-2 Bernstein: B0=(1-t)^2, B1=2t(1-t), B2=t^2.
+        At t=1: B=[0,0,1], B'=[-2*(1-t), 2-4t, 2t]|_{t=1}=[0,-2,2], B''=[2,-4,2].
+        """
         t = np.array([1.0])
         out = self._call(2, t, n_deriv=2)
         np.testing.assert_array_equal(out[0, 0, :], [0.0, 0.0, 1.0])
-        np.testing.assert_array_almost_equal(out[0, 1, :], [0.0, 0.0, 0.0])
-        np.testing.assert_array_almost_equal(out[0, 2, :], [0.0, 0.0, 0.0])
+        np.testing.assert_array_almost_equal(out[0, 1, :], [0.0, -2.0, 2.0])
+        np.testing.assert_array_almost_equal(out[0, 2, :], [2.0, -4.0, 2.0])
 
     def test_n_deriv_exceeds_degree_gives_zeros(self) -> None:
         """Derivative rows beyond degree are identically zero."""
