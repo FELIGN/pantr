@@ -730,6 +730,104 @@ class TestEvaluateBasisBasisFuncs:
         np.testing.assert_array_equal(first_basis1, first_basis2)
 
 
+class TestNonOpenKnotSpanBoundary:
+    """Test basis evaluation at domain endpoints for non-open knot vectors.
+
+    For non-open knot vectors the right domain endpoint knots[-degree-1] is
+    not the last knot in the vector.  This class verifies that basis values
+    and derivatives are continuous at the right domain endpoint, i.e. that
+    evaluation at the boundary matches the left-limit.
+    """
+
+    @pytest.mark.parametrize("degree", [1, 2, 3, 4])
+    def test_non_open_basis_continuity_at_right_endpoint(self, degree: int) -> None:
+        """Test basis continuity at right endpoint for non-open knot vectors."""
+        n_intervals = degree + 2
+        n_knots = n_intervals + degree + 1
+        knots = np.linspace(0.0, 1.0, n_knots, dtype=np.float64)
+        space = BsplineSpace1D(knots=knots, degree=degree, periodic=False)
+        assert not space.has_open_knots()
+
+        t_end = space.domain[1]
+        eps = 1e-12
+        pts = np.array([t_end - eps, t_end], dtype=np.float64)
+        basis, fb = space.tabulate_basis(pts)
+
+        # first_basis should be the same for both points
+        assert fb[0] == fb[1]
+        # basis values should be continuous (within tolerance)
+        np.testing.assert_allclose(basis[0], basis[1], atol=1e-8)
+
+    @pytest.mark.parametrize("degree", [1, 2, 3, 4])
+    def test_non_open_basis_continuity_at_left_endpoint(self, degree: int) -> None:
+        """Test basis continuity at left endpoint for non-open knot vectors."""
+        n_intervals = degree + 2
+        n_knots = n_intervals + degree + 1
+        knots = np.linspace(0.0, 1.0, n_knots, dtype=np.float64)
+        space = BsplineSpace1D(knots=knots, degree=degree, periodic=False)
+        assert not space.has_open_knots()
+
+        t_start = space.domain[0]
+        eps = 1e-12
+        pts = np.array([t_start, t_start + eps], dtype=np.float64)
+        basis, fb = space.tabulate_basis(pts)
+
+        assert fb[0] == fb[1]
+        np.testing.assert_allclose(basis[0], basis[1], atol=1e-8)
+
+    @pytest.mark.parametrize("degree", [1, 2, 3, 4])
+    def test_periodic_basis_continuity_at_right_endpoint(self, degree: int) -> None:
+        """Test basis continuity at right endpoint for periodic knot vectors."""
+        knots = create_uniform_periodic_knot_vector(num_intervals=degree + 1, degree=degree)
+        space = BsplineSpace1D(knots=knots, degree=degree, periodic=True)
+
+        t_end = space.domain[1]
+        eps = 1e-12
+        pts = np.array([t_end - eps, t_end], dtype=np.float64)
+        basis, fb = space.tabulate_basis(pts)
+
+        assert fb[0] == fb[1]
+        np.testing.assert_allclose(basis[0], basis[1], atol=1e-8)
+
+    @pytest.mark.parametrize("degree", [1, 2, 3])
+    def test_non_open_derivative_continuity_at_right_endpoint(self, degree: int) -> None:
+        """Test derivative continuity at right endpoint for non-open knot vectors."""
+        n_intervals = degree + 2
+        n_knots = n_intervals + degree + 1
+        knots = np.linspace(0.0, 1.0, n_knots, dtype=np.float64)
+        space = BsplineSpace1D(knots=knots, degree=degree, periodic=False)
+
+        t_end = space.domain[1]
+        eps = 1e-12
+        pts = np.array([t_end - eps, t_end], dtype=np.float64)
+        deriv, fb = space.tabulate_basis_derivatives(pts, n_deriv=1)
+
+        assert fb[0] == fb[1]
+        # 0th derivative (basis values) should be continuous
+        np.testing.assert_allclose(deriv[0, 0, :], deriv[1, 0, :], atol=1e-8)
+
+    @pytest.mark.parametrize("degree", [1, 2, 3])
+    def test_open_knots_still_correct_at_endpoints(self, degree: int) -> None:
+        """Test that open knot vectors still produce correct endpoint values."""
+        knots = create_uniform_open_knot_vector(num_intervals=3, degree=degree)
+        space = BsplineSpace1D(knots=knots, degree=degree, periodic=False)
+        assert space.has_open_knots()
+
+        t_start, t_end = space.domain
+        pts = np.array([t_start, t_end], dtype=np.float64)
+        basis, fb = space.tabulate_basis(pts)
+
+        # At left endpoint: first basis function = 1, rest = 0
+        expected_left = np.zeros(degree + 1)
+        expected_left[0] = 1.0
+        np.testing.assert_allclose(basis[0], expected_left, atol=1e-14)
+
+        # At right endpoint: last basis function = 1, rest = 0
+        expected_right = np.zeros(degree + 1)
+        expected_right[-1] = 1.0
+        np.testing.assert_allclose(basis[1], expected_right, atol=1e-14)
+
+
 class TestGetCardinalIntervals:
     """Test the _get_Bspline_cardinal_intervals_1D_impl function."""
 

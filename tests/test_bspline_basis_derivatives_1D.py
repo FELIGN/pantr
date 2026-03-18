@@ -108,14 +108,17 @@ class TestComputeBasisDerivNurbsBook:
             np.testing.assert_allclose(sums, 0.0, atol=1e-12, err_msg=f"k={k}")
 
     def test_boundary_last_knot(self) -> None:
-        """Point at the last knot: 0th row has last entry=1, all derivatives=0."""
+        """Point at the last knot: derivatives match the analytical Bernstein values.
+
+        For degree-2 Bernstein basis on [0,1]: B0=(1-t)^2, B1=2t(1-t), B2=t^2.
+        At t=1: B=[0,0,1], B'=[0,-2,2], B''=[2,-4,2].
+        """
         knots = np.array([0.0, 0.0, 0.0, 1.0, 1.0, 1.0], dtype=np.float64)
         pts = np.array([1.0], dtype=np.float64)
         out_deriv, _ = self._call(knots, 2, pts, n_deriv=2)
-        expected_basis = np.array([0.0, 0.0, 1.0])
-        np.testing.assert_array_almost_equal(out_deriv[0, 0, :], expected_basis)
-        np.testing.assert_array_almost_equal(out_deriv[0, 1, :], np.zeros(3))
-        np.testing.assert_array_almost_equal(out_deriv[0, 2, :], np.zeros(3))
+        np.testing.assert_array_almost_equal(out_deriv[0, 0, :], [0.0, 0.0, 1.0])
+        np.testing.assert_array_almost_equal(out_deriv[0, 1, :], [0.0, -2.0, 2.0])
+        np.testing.assert_array_almost_equal(out_deriv[0, 2, :], [2.0, -4.0, 2.0])
 
     def test_n_deriv_exceeds_degree_gives_zeros(self) -> None:
         """Derivatives of order > degree are identically zero."""
@@ -294,9 +297,8 @@ class TestMathematicalPropertiesDeriv:
     ) -> None:
         """First derivatives of the quadratic Bézier match analytical values.
 
-        Note: x=1.0 is excluded because the algorithm's boundary-case handler
-        (last-knot special case) only fills the 0th-order value; higher-order
-        derivatives at that endpoint are covered by test_boundary_last_knot.
+        Note: x=1.0 is excluded because the Bernstein fast path has a
+        separate boundary issue (zero derivatives at t=1).
         """
         d, _ = quadratic_single_span.tabulate_basis_derivatives([x], n_deriv=1)
         expected = np.array([-2 * (1 - x), 2 - 4 * x, 2 * x])
@@ -308,7 +310,8 @@ class TestMathematicalPropertiesDeriv:
     ) -> None:
         """Second derivatives of the quadratic Bézier match analytical values.
 
-        Note: x=1.0 excluded for the same reason as test_exact_quadratic_bezier_first_derivative.
+        Note: x=1.0 is excluded because the Bernstein fast path has a
+        separate boundary issue (zero derivatives at t=1).
         """
         d, _ = quadratic_single_span.tabulate_basis_derivatives([x], n_deriv=2)
         expected = np.array([2.0, -4.0, 2.0])

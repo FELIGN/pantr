@@ -75,6 +75,16 @@ def _compute_basis_nurbs_book_impl(  # noqa: PLR0913
     one = dtype.type(1.0)
 
     knot_ids = _get_last_knot_smaller_equal_impl(knots, pts)
+
+    # Clamp knot span indices to the last in-domain span.  For non-open knot
+    # vectors the right domain endpoint knots[-degree-1] is not the last knot
+    # in the vector, so searchsorted can place a point in an out-of-domain
+    # span.  Clamping to knots.size - degree - 2 ensures the Cox-de Boor
+    # recurrence always uses an in-domain span.  For open knot vectors this
+    # subsumes the former ``knot_id == knots.size - 1`` special case.
+    max_knot_id = knots.size - degree - 2
+    knot_ids = np.minimum(knot_ids, max_knot_id)
+
     num_basis = _get_Bspline_num_basis_1D_impl(knots, degree, periodic, tol)
     out_first_basis[:] = np.minimum(knot_ids - degree, num_basis - order)
 
@@ -86,12 +96,6 @@ def _compute_basis_nurbs_book_impl(  # noqa: PLR0913
 
     for pt_id in range(n_pts):
         knot_id = knot_ids[pt_id]
-
-        # Boundary: point coincides with the last knot
-        if knot_id == (knots.size - 1):
-            out_basis[pt_id, -1] = one
-            continue
-
         pt = pts[pt_id]
         N = out_basis[pt_id, :]
         N[0] = one
@@ -158,6 +162,12 @@ def _compute_basis_deriv_nurbs_book_impl(  # noqa: PLR0913, PLR0915
     one = dtype.type(1.0)
 
     knot_ids = _get_last_knot_smaller_equal_impl(knots, pts)
+
+    # Clamp knot span indices to the last in-domain span (see comment in
+    # _compute_basis_nurbs_book_impl for rationale).
+    max_knot_id = knots.size - degree - 2
+    knot_ids = np.minimum(knot_ids, max_knot_id)
+
     num_basis = _get_Bspline_num_basis_1D_impl(knots, degree, periodic, tol)
     out_first_basis[:] = np.minimum(knot_ids - degree, num_basis - order)
 
@@ -171,12 +181,6 @@ def _compute_basis_deriv_nurbs_book_impl(  # noqa: PLR0913, PLR0915
 
     for pt_id in range(n_pts):
         knot_id = knot_ids[pt_id]
-
-        # Boundary: point coincides with the last knot
-        if knot_id == (knots.size - 1):
-            out_deriv[pt_id, 0, -1] = one
-            continue
-
         pt = pts[pt_id]
 
         # --- Step 1: build ndu table (A2.2 extended to retain intermediate values) ---
