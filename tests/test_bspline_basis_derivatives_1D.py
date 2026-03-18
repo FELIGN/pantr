@@ -291,28 +291,20 @@ class TestMathematicalPropertiesDeriv:
     # B0'(x) = -2(1-x), B1'(x) = 2-4x,    B2'(x) = 2x
     # B0''(x) = 2,       B1''(x) = -4,      B2''(x) = 2
 
-    @pytest.mark.parametrize("x", [0.0, 0.25, 0.5, 0.75])
+    @pytest.mark.parametrize("x", [0.0, 0.25, 0.5, 0.75, 1.0])
     def test_exact_quadratic_bezier_first_derivative(
         self, quadratic_single_span: BsplineSpace1D, x: float
     ) -> None:
-        """First derivatives of the quadratic Bézier match analytical values.
-
-        Note: x=1.0 is excluded because the Bernstein fast path has a
-        separate boundary issue (zero derivatives at t=1).
-        """
+        """First derivatives of the quadratic Bézier match analytical values."""
         d, _ = quadratic_single_span.tabulate_basis_derivatives([x], n_deriv=1)
         expected = np.array([-2 * (1 - x), 2 - 4 * x, 2 * x])
         np.testing.assert_allclose(d[0, 1, :], expected, atol=1e-13)
 
-    @pytest.mark.parametrize("x", [0.0, 0.25, 0.5, 0.75])
+    @pytest.mark.parametrize("x", [0.0, 0.25, 0.5, 0.75, 1.0])
     def test_exact_quadratic_bezier_second_derivative(
         self, quadratic_single_span: BsplineSpace1D, x: float
     ) -> None:
-        """Second derivatives of the quadratic Bézier match analytical values.
-
-        Note: x=1.0 is excluded because the Bernstein fast path has a
-        separate boundary issue (zero derivatives at t=1).
-        """
+        """Second derivatives of the quadratic Bézier match analytical values."""
         d, _ = quadratic_single_span.tabulate_basis_derivatives([x], n_deriv=2)
         expected = np.array([2.0, -4.0, 2.0])
         np.testing.assert_allclose(d[0, 2, :], expected, atol=1e-12)
