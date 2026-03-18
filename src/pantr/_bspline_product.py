@@ -1,8 +1,13 @@
 """B-spline pointwise product for 1D splines.
 
 This module provides :func:`_multiply_bspline_1d`, which computes the exact
-pointwise product of two 1D B-splines via full-Bézier extraction and the
-Bernstein product formula. Works for both non-rational and rational (NURBS) splines.
+pointwise product of two 1D B-splines via Bézier extraction and the Bernstein
+product formula.  The result lives in the product space of degree ``p + q``
+with **optimal continuity**: each interior knot's multiplicity equals
+``max(m1 + q, m2 + p)`` where ``m1``, ``m2`` are the individual multiplicities
+and ``p``, ``q`` are the respective degrees.
+
+Works for both non-rational and rational (NURBS) splines.
 """
 
 from __future__ import annotations
@@ -47,73 +52,6 @@ def _get_interior_breakpoints_and_mults(
     return unique[1:-1], mults[1:-1]
 
 
-def _merge_interior_breakpoints(
-    bp1: npt.NDArray[np.float32 | np.float64],
-    mult1: npt.NDArray[np.int_],
-    bp2: npt.NDArray[np.float32 | np.float64],
-    mult2: npt.NDArray[np.int_],
-    tol: float,
-) -> tuple[npt.NDArray[np.float32 | np.float64], npt.NDArray[np.int_]]:
-    """Merge two sorted interior breakpoint arrays with additive multiplicities.
-
-    Uses a two-pointer scan.  When two breakpoints are within ``tol`` of each
-    other they are considered the same knot; their position is averaged and
-    their multiplicities are summed.  A breakpoint absent from one side
-    contributes 0 to the sum (i.e. the other side's multiplicity is taken
-    as-is).
-
-    Args:
-        bp1 (npt.NDArray[np.float32 | np.float64]): Sorted interior breakpoints
-            of the first space.
-        mult1 (npt.NDArray[np.int_]): Multiplicities corresponding to ``bp1``.
-        bp2 (npt.NDArray[np.float32 | np.float64]): Sorted interior breakpoints
-            of the second space.
-        mult2 (npt.NDArray[np.int_]): Multiplicities corresponding to ``bp2``.
-        tol (float): Tolerance for coincidence tests.
-
-    Returns:
-        tuple[npt.NDArray[np.float32 | np.float64], npt.NDArray[np.int_]]: Merged
-        ``(all_bp, sum_mults)`` arrays in ascending order.
-    """
-    n1, n2 = len(bp1), len(bp2)
-    i, j = 0, 0
-    all_bp_list: list[float] = []
-    sum_mults_list: list[int] = []
-
-    while i < n1 and j < n2:
-        if abs(float(bp1[i]) - float(bp2[j])) <= tol:
-            all_bp_list.append(float(bp1[i] + bp2[j]) / 2.0)
-            sum_mults_list.append(int(mult1[i]) + int(mult2[j]))
-            i += 1
-            j += 1
-        elif float(bp1[i]) < float(bp2[j]):
-            all_bp_list.append(float(bp1[i]))
-            sum_mults_list.append(int(mult1[i]))
-            i += 1
-        else:
-            all_bp_list.append(float(bp2[j]))
-            sum_mults_list.append(int(mult2[j]))
-            j += 1
-
-    while i < n1:
-        all_bp_list.append(float(bp1[i]))
-        sum_mults_list.append(int(mult1[i]))
-        i += 1
-
-    while j < n2:
-        all_bp_list.append(float(bp2[j]))
-        sum_mults_list.append(int(mult2[j]))
-        j += 1
-
-    dtype = bp1.dtype
-    if len(all_bp_list) == 0:
-        return np.empty(0, dtype=dtype), np.empty(0, dtype=np.int_)
-    return (
-        np.array(all_bp_list, dtype=dtype),
-        np.array(sum_mults_list, dtype=np.int_),
-    )
-
-
 def _lookup_mults_in_space(
     all_bp: npt.NDArray[np.float32 | np.float64],
     bp_space: npt.NDArray[np.float32 | np.float64],
@@ -127,8 +65,7 @@ def _lookup_mults_in_space(
     absent from that space.
 
     Both ``all_bp`` and ``bp_space`` must be sorted in ascending order.
-    Uses ``np.searchsorted`` for efficient binary search (same pattern as
-    :func:`~pantr._bspline_knots._get_last_knot_smaller_equal_impl`).
+    Uses ``np.searchsorted`` for efficient binary search.
 
     Args:
         all_bp (npt.NDArray[np.float32 | np.float64]): Merged (union) interior
@@ -151,6 +88,83 @@ def _lookup_mults_in_space(
     matched = in_range & (np.abs(bp_space[safe_idx] - all_bp) <= tol)
     result[matched] = mult_space[safe_idx[matched]]
     return result
+
+
+def _merge_interior_breakpoints(  # noqa: PLR0913
+    bp_f: npt.NDArray[np.float32 | np.float64],
+    mf: npt.NDArray[np.int_],
+    bp_g: npt.NDArray[np.float32 | np.float64],
+    mg: npt.NDArray[np.int_],
+    p: int,
+    q: int,
+    tol: float,
+) -> tuple[npt.NDArray[np.float32 | np.float64], npt.NDArray[np.int_]]:
+    """Merge two sorted interior breakpoint arrays with optimal product multiplicities.
+
+    Uses a two-pointer scan to compute the union of interior breakpoints from
+    both spaces and assigns each breakpoint the correct multiplicity in the
+    product space of degree ``p + q``.
+
+    The product multiplicity at a shared breakpoint follows the formula::
+
+        m_h(ξ) = max(m_f(ξ) + q, m_g(ξ) + p)
+
+    This ensures the product spline has continuity ``C^{min(p-m_f, q-m_g)}`` at
+    ``ξ``, which is the correct smoothness of the pointwise product of two splines.
+    A breakpoint absent from one operand contributes ``m=0`` for that operand.
+
+    Args:
+        bp_f (npt.NDArray[np.float32 | np.float64]): Sorted interior breakpoints
+            of the first space (degree ``p``).
+        mf (npt.NDArray[np.int_]): Multiplicities corresponding to ``bp_f``.
+        bp_g (npt.NDArray[np.float32 | np.float64]): Sorted interior breakpoints
+            of the second space (degree ``q``).
+        mg (npt.NDArray[np.int_]): Multiplicities corresponding to ``bp_g``.
+        p (int): Degree of the first operand.
+        q (int): Degree of the second operand.
+        tol (float): Tolerance for coincidence tests.
+
+    Returns:
+        tuple[npt.NDArray[np.float32 | np.float64], npt.NDArray[np.int_]]: Merged
+        ``(all_bp, product_mults)`` arrays in ascending order.
+    """
+    n1, n2 = len(bp_f), len(bp_g)
+    i, j = 0, 0
+    all_bp_list: list[float] = []
+    mults_list: list[int] = []
+
+    while i < n1 and j < n2:
+        if abs(float(bp_f[i]) - float(bp_g[j])) <= tol:
+            all_bp_list.append(float(bp_f[i] + bp_g[j]) / 2.0)
+            mults_list.append(max(int(mf[i]) + q, int(mg[j]) + p))
+            i += 1
+            j += 1
+        elif float(bp_f[i]) < float(bp_g[j]):
+            all_bp_list.append(float(bp_f[i]))
+            mults_list.append(max(int(mf[i]) + q, q + p))  # m_g=0 → max(mf+q, p+q)=p+q
+            i += 1
+        else:
+            all_bp_list.append(float(bp_g[j]))
+            mults_list.append(max(p + q, int(mg[j]) + p))  # m_f=0 → max(p+q, mg+p)=p+q
+            j += 1
+
+    while i < n1:
+        all_bp_list.append(float(bp_f[i]))
+        mults_list.append(p + q)  # absent from g → C^0 in product
+        i += 1
+
+    while j < n2:
+        all_bp_list.append(float(bp_g[j]))
+        mults_list.append(p + q)  # absent from f → C^0 in product
+        j += 1
+
+    dtype = bp_f.dtype if bp_f.size > 0 else bp_g.dtype
+    if len(all_bp_list) == 0:
+        return np.empty(0, dtype=dtype), np.empty(0, dtype=np.int_)
+    return (
+        np.array(all_bp_list, dtype=dtype),
+        np.array(mults_list, dtype=np.int_),
+    )
 
 
 def _knots_for_full_bezier(
@@ -237,37 +251,39 @@ def _bernstein_product_coefficients(
 def _build_product_knot_vector(
     domain: tuple[np.float32 | np.float64, np.float32 | np.float64],
     all_bp: npt.NDArray[np.float32 | np.float64],
+    product_mults: npt.NDArray[np.int_],
     degree_sum: int,
     dtype: npt.DTypeLike,
 ) -> npt.NDArray[np.float32 | np.float64]:
-    """Build the full-Bézier knot vector for the product B-spline space.
+    """Build the product B-spline knot vector with optimal continuity.
 
-    Assembles a clamped full-Bézier knot vector with:
+    Assembles a clamped knot vector with:
+
     - ``degree_sum + 1`` copies of the left endpoint ``a``
-    - For each interior breakpoint ``ξ``: ``degree_sum`` copies (C^0)
+    - For each interior breakpoint ``ξ``: ``product_mults[k]`` copies
     - ``degree_sum + 1`` copies of the right endpoint ``b``
 
-    The resulting space has exactly ``n_elements * degree_sum + 1`` basis
-    functions, matching the number of control points assembled by the
-    Bernstein product formula.
+    The interior multiplicities from ``product_mults`` encode the optimal
+    continuity: ``C^{degree_sum - product_mults[k]}`` at breakpoint ``ξ_k``.
 
     Args:
         domain (tuple[np.float32 | np.float64, np.float32 | np.float64]): Domain
             endpoints ``(a, b)`` of the parametric interval.
-        all_bp (npt.NDArray[np.float32 | np.float64]): Interior breakpoints of the
-            union mesh, sorted ascending.
-        degree_sum (int): Total polynomial degree ``p + q`` of the product space;
-            also the interior knot multiplicity (full-Bézier).
+        all_bp (npt.NDArray[np.float32 | np.float64]): Interior breakpoints of
+            the union mesh, sorted ascending.
+        product_mults (npt.NDArray[np.int_]): Product-space multiplicity for
+            each entry of ``all_bp``.
+        degree_sum (int): Total polynomial degree ``p + q`` of the product space.
         dtype (npt.DTypeLike): Floating-point dtype for the output knot vector.
 
     Returns:
-        npt.NDArray[np.float32 | np.float64]: Full-Bézier clamped knot vector for
-        the product space.
+        npt.NDArray[np.float32 | np.float64]: Clamped knot vector for the
+        product space.
     """
     a, b = domain
     parts: list[npt.NDArray[np.float32 | np.float64]] = [np.full(degree_sum + 1, a, dtype=dtype)]
-    for xi in all_bp:
-        parts.append(np.full(degree_sum, xi, dtype=dtype))
+    for xi, m in zip(all_bp, product_mults, strict=True):
+        parts.append(np.full(int(m), xi, dtype=dtype))
     parts.append(np.full(degree_sum + 1, b, dtype=dtype))
     result: npt.NDArray[np.float32 | np.float64] = np.concatenate(parts)
     return result
@@ -297,11 +313,17 @@ def _to_rational(f: Bspline) -> Bspline:
 
 
 def _multiply_nonrational_1d(f: Bspline, g: Bspline) -> Bspline:
-    """Multiply two non-rational 1D B-splines using the full-Bézier approach.
+    """Multiply two non-rational 1D B-splines with optimal-continuity output.
 
-    Refines both operands to full-Bézier form (C^0 at every interior breakpoint),
-    then applies the Bernstein product formula element by element, and assembles
-    the result in the product space.
+    Refines both operands to full-Bézier form (C^0 at every interior
+    breakpoint), applies the Bernstein product formula element by element to
+    obtain control points in a full-Bézier representation, then assembles the
+    result using an optimal-continuity knot vector.
+
+    The product knot vector uses interior multiplicities
+    ``max(m_f(ξ) + q, m_g(ξ) + p)`` at each breakpoint ``ξ``, which is the
+    minimum multiplicity required to represent the product exactly while
+    achieving the maximum possible continuity.
 
     This function does not perform input validation; use :func:`_multiply_bspline_1d`
     for the validated public entry point.
@@ -312,7 +334,7 @@ def _multiply_nonrational_1d(f: Bspline, g: Bspline) -> Bspline:
 
     Returns:
         ~pantr.bspline.Bspline: Non-rational B-spline ``h`` such that
-        ``h(t) ≈ f(t) * g(t)`` for all ``t`` in the shared domain.
+        ``h(t) = f(t) * g(t)`` for all ``t`` in the shared domain.
 
     Note:
         Inputs are assumed to be correct (no validation performed).
@@ -326,41 +348,81 @@ def _multiply_nonrational_1d(f: Bspline, g: Bspline) -> Bspline:
     q = space_g.degree
     tol = max(float(space_f.tolerance), float(space_g.tolerance))
 
-    # --- Step 1: gather interior breakpoints ---
+    # --- Step 1: gather interior breakpoints from both operands ---
     bp_f, mf = _get_interior_breakpoints_and_mults(space_f, tol)
     bp_g, mg = _get_interior_breakpoints_and_mults(space_g, tol)
 
-    # --- Step 2: merge union of interior breakpoints ---
-    all_bp, _ = _merge_interior_breakpoints(bp_f, mf, bp_g, mg, tol)
+    # --- Step 2: compute union of breakpoints with optimal product multiplicities ---
+    all_bp, product_mults = _merge_interior_breakpoints(bp_f, mf, bp_g, mg, p, q, tol)
     n_elements = int(all_bp.size) + 1
 
     # --- Step 3: compute per-space multiplicities at union breakpoints ---
     mults_in_f = _lookup_mults_in_space(all_bp, bp_f, mf, tol)
     mults_in_g = _lookup_mults_in_space(all_bp, bp_g, mg, tol)
 
-    # --- Step 4: refine to full-Bézier ---
+    # --- Step 4: refine both operands to full-Bézier ---
     knots_f_ins = _knots_for_full_bezier(space_f, all_bp, mults_in_f, tol)
     knots_g_ins = _knots_for_full_bezier(space_g, all_bp, mults_in_g, tol)
 
     f_bezier: Bspline = f.insert_knots(knots_f_ins) if knots_f_ins.size > 0 else f
     g_bezier: Bspline = g.insert_knots(knots_g_ins) if knots_g_ins.size > 0 else g
 
-    # --- Step 5: assemble product control points ---
+    # --- Step 5: assemble product control points (full-Bézier representation) ---
     rank = int(f.control_points.shape[-1])
-    ctrl_h = np.empty((n_elements * (p + q) + 1, rank), dtype=f.control_points.dtype)
+    ctrl_h_bezier = np.empty((n_elements * (p + q) + 1, rank), dtype=f.control_points.dtype)
 
     for e in range(n_elements):
         b_f_e = f_bezier.control_points[e * p : e * p + p + 1]
         b_g_e = g_bezier.control_points[e * q : e * q + q + 1]
-        ctrl_h[e * (p + q) : e * (p + q) + p + q + 1] = _bernstein_product_coefficients(
+        ctrl_h_bezier[e * (p + q) : e * (p + q) + p + q + 1] = _bernstein_product_coefficients(
             b_f_e, b_g_e
         )
 
-    # --- Step 6: build product knot vector (full-Bézier, interior mult = p+q) ---
+    # --- Step 6: build product knot vector with optimal continuity ---
+    # The control points are in full-Bézier form; the product knot vector uses
+    # optimal multiplicities (max(m_f+q, m_g+p)), which may be less than p+q.
+    # To transition from the full-Bézier representation to the optimal one, we
+    # apply knot removal: a knot at ξ can be removed (product_mults[k]) times
+    # from its full-Bézier multiplicity (p+q).  The control points are updated
+    # accordingly via the Oslo algorithm in reverse (knot removal).
     domain = space_f.domain
-    T_h = _build_product_knot_vector(domain, all_bp, p + q, f.control_points.dtype)
-    space_h = BsplineSpace([BsplineSpace1D(T_h, p + q)])
-    return Bspline(space_h, ctrl_h, is_rational=False)
+    dtype = f.control_points.dtype
+
+    # Build the full-Bézier product B-spline first.
+    all_bp_arr = all_bp  # already ndarray
+    full_mults = np.full(all_bp.size, p + q, dtype=np.int_)
+    T_full = _build_product_knot_vector(domain, all_bp_arr, full_mults, p + q, dtype)
+    space_full = BsplineSpace([BsplineSpace1D(T_full, p + q)])
+    h_full = Bspline(space_full, ctrl_h_bezier, is_rational=False)
+
+    # If all product multiplicities equal p+q (e.g. all breakpoints are C^0),
+    # return the full-Bézier spline directly.
+    if all_bp.size == 0 or np.all(product_mults == p + q):
+        return h_full
+
+    # Determine how many knots to remove at each breakpoint.
+    # At each breakpoint ξ_k with full-Bezier mult (p+q), we want to reduce to
+    # product_mults[k].  Use knot removal via inverse Oslo: project the
+    # full-Bézier control points onto the subspace with reduced knots.
+    # The simplest approach: use the Oslo matrix to re-express the full-Bézier
+    # control points in the optimal knot vector space.
+    T_opt = _build_product_knot_vector(domain, all_bp_arr, product_mults, p + q, dtype)
+
+    # Compute the Oslo matrix mapping optimal → full-Bézier, then solve for
+    # optimal control points.  Since the product B-spline lives exactly in the
+    # optimal space, the Oslo matrix should have a (numerically) unique
+    # least-squares solution that recovers the optimal control points.
+    from ._bspline_knot_insertion_core import _compute_oslo_matrix_1d_core  # noqa: PLC0415
+
+    # oslo[i,j]: coefficient of old CP j in new CP i (old=optimal, new=full-Bezier)
+    oslo = _compute_oslo_matrix_1d_core(p + q, T_opt, T_full)
+
+    # Solve oslo @ ctrl_opt = ctrl_h_bezier (least-squares, should be exact).
+    ctrl_opt, _res, _rank_ls, _sv = np.linalg.lstsq(oslo, ctrl_h_bezier, rcond=None)
+    ctrl_opt = ctrl_opt.astype(dtype)
+
+    space_opt = BsplineSpace([BsplineSpace1D(T_opt, p + q)])
+    return Bspline(space_opt, ctrl_opt, is_rational=False)
 
 
 def _multiply_rational_1d(f: Bspline, g: Bspline) -> Bspline:
@@ -404,7 +466,9 @@ def _multiply_bspline_1d(f: Bspline, g: Bspline) -> Bspline:
 
     Given B-splines ``f`` and ``g`` over the same 1D parametric domain, returns
     a new B-spline ``h`` such that ``h(t) = f(t) * g(t)`` for all ``t`` in the
-    domain.  The result lives in the product space of degree ``p + q``.
+    domain.  The result lives in the product space of degree ``p + q`` with
+    optimal continuity: interior knot multiplicities equal
+    ``max(m_f(ξ) + q, m_g(ξ) + p)``.
 
     Rational operands are handled via homogeneous-coordinate decomposition.  A
     non-rational operand is silently promoted to rational (unit weights) when the
