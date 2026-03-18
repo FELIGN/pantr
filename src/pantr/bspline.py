@@ -319,6 +319,86 @@ class Bspline:
 
         return _insert_knots_bspline(self, new_knots_per_dim)
 
+    def to_open_bspline(self) -> Bspline:
+        """Return an open (clamped) non-periodic B-spline equivalent to this one.
+
+        Converts the spline to an open representation by inserting knots at the domain
+        boundaries until each has multiplicity ``degree + 1``, then trimming any ghost
+        knots outside the domain. For already-open non-periodic splines, returns ``self``
+        unchanged.
+
+        For periodic splines the ``n_full = len(knots) - degree - 1`` control points are
+        reconstructed by modulo-wrapping the ``n_periodic`` stored control points
+        (``ctrl_full[i] = ctrl[i % n_periodic]``), and the Oslo algorithm is applied to
+        this full set. The resulting open B-spline represents the mathematical periodic
+        function defined by the periodic knot vector and the wrapped control points.
+
+        Works for periodic, non-open non-periodic, and already-open B-splines.
+
+        Returns:
+            Bspline: Open, non-periodic B-spline with clamped knot vector representing
+            the same function over the same domain.
+
+        Raises:
+            ValueError: If this B-spline is not 1D.
+        """
+        from ._bspline_knot_insertion import _insert_knots_bspline_1d_impl  # noqa: PLC0415
+        from .bspline_space_nd import BsplineSpace  # noqa: PLC0415
+
+        if self.dim != 1:
+            raise ValueError(f"to_open_bspline requires a 1D B-spline, got dim={self.dim}")
+
+        space_1d = self.space.spaces[0]
+        periodic = space_1d.periodic
+
+        if space_1d.has_open_knots() and not periodic:
+            return self
+
+        knots = space_1d.knots
+        p = space_1d.degree
+        tol = float(space_1d.tolerance)
+        a = float(knots[p])
+        b = float(knots[-p - 1])
+        dtype = self.dtype
+
+        # Determine how many knots to insert at each boundary to reach multiplicity p+1.
+        m_left = int(np.sum(np.isclose(knots[: p + 1], a, atol=tol)))
+        m_right = int(np.sum(np.isclose(knots[-p - 1 :], b, atol=tol)))
+        knots_to_insert = np.array([a] * (p + 1 - m_left) + [b] * (p + 1 - m_right), dtype=dtype)
+
+        # Build the full (non-periodic) control point array for Oslo.
+        # For periodic splines, ctrl_full is the modulo-wrapped control point set:
+        #   ctrl_full[i] = ctrl[i % n_periodic]  for i in 0..n_full-1.
+        # For non-periodic unclamped splines, ctrl_full is just the stored ctrl.
+        rank = self.rank
+        n_stored = self.space.num_total_basis
+        ctrl_2d = self._control_points.reshape(n_stored, -1)
+        if periodic:
+            n_full = len(knots) - p - 1
+            indices = np.arange(n_full) % n_stored
+            ctrl_2d = ctrl_2d[indices]
+
+        # Apply Oslo (knot insertion) to add boundary knots.
+        new_knots: npt.NDArray[np.float32 | np.float64]
+        new_ctrl: npt.NDArray[np.float32 | np.float64]
+        if knots_to_insert.size > 0:
+            new_knots, new_ctrl = _insert_knots_bspline_1d_impl(
+                knots, p, ctrl_2d, knots_to_insert, tol
+            )
+        else:
+            new_knots, new_ctrl = knots, ctrl_2d
+
+        # Trim ghost knots and the corresponding control points.
+        # After insertion the first p entries of new_knots are the ghost knots before a,
+        # and the last p entries are the ghost knots after b.
+        open_knots = new_knots[p : len(new_knots) - p]
+        n_open = len(open_knots) - p - 1
+        open_ctrl = new_ctrl[p : p + n_open]
+
+        new_space_1d = space_1d.__class__(open_knots, p, periodic=False)
+        new_space = BsplineSpace([new_space_1d])
+        return Bspline(new_space, open_ctrl.reshape(-1, rank), is_rational=self.is_rational)
+
     def multiply(self, other: Bspline) -> Bspline:
         """Return the exact pointwise product of this B-spline and another.
 
@@ -344,7 +424,10 @@ class Bspline:
             ValueError: If the operands have different dtypes.
             ValueError: If the operands have different ranks.
             ValueError: If the operands have different parametric domains.
-            NotImplementedError: If either operand is periodic.
+
+        Note:
+            Periodic operands are automatically converted to open (clamped) form before
+            multiplication via :meth:`to_open_bspline`. The result is always non-periodic.
 
         Example:
             >>> h = f.multiply(g)

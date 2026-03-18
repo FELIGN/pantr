@@ -6,7 +6,9 @@ import numpy as np
 import numpy.typing as npt
 import pytest
 
+from pantr._bspline_basis_core import _compute_basis_nurbs_book_impl
 from pantr._bspline_knots import _get_unique_knots_and_multiplicity_impl
+from pantr._bspline_space_factory import create_uniform_periodic_knot_vector
 from pantr.bspline import Bspline
 from pantr.bspline_space_1D import BsplineSpace1D
 from pantr.bspline_space_nd import BsplineSpace
@@ -260,17 +262,18 @@ class TestEdgeCases:
         with pytest.raises(ValueError, match="domain"):
             f.multiply(g)
 
-    def test_error_periodic(self) -> None:
-        """Raises NotImplementedError for periodic B-splines."""
-        knots = [0.0, 0.0, 0.5, 1.0, 1.0]
-        f = make_bspline(knots, 1, [1.0, 2.0, 3.0])
-        knots_p = np.array([0.0, 0.5, 1.0, 1.5, 2.0], dtype=np.float64)
+    def test_error_periodic_was_removed(self) -> None:
+        """Periodic B-splines no longer raise NotImplementedError; they are converted."""
+        # Periodic degree-1 spline over domain [0, 1]: knots [-0.5, 0, 0.5, 1, 1.5].
+        knots_p = create_uniform_periodic_knot_vector(2, 1, domain=(0.0, 1.0))
         space_p_1d = BsplineSpace1D(knots_p, 1, periodic=True)
         space_p = BsplineSpace([space_p_1d])
         n_basis = space_p.num_total_basis
         g_p = Bspline(space_p, np.ones(n_basis, dtype=np.float64))
-        with pytest.raises(NotImplementedError):
-            f.multiply(g_p)
+        f = make_bspline([0.0, 0.0, 0.5, 1.0, 1.0], 1, [1.0, 2.0, 3.0])
+        # Should not raise — periodic operand is converted to open form.
+        h = f.multiply(g_p)
+        assert not h.space.spaces[0].periodic
 
 
 # ---------------------------------------------------------------------------
@@ -346,3 +349,121 @@ class TestOptimalContinuity:
         assert h.space.num_total_basis == 5  # noqa: PLR2004
         pts = eval_pts()
         np.testing.assert_allclose(h.evaluate(pts), f.evaluate(pts) * g.evaluate(pts), atol=1e-11)
+
+
+# ---------------------------------------------------------------------------
+# Periodic product tests
+# ---------------------------------------------------------------------------
+
+
+def _make_periodic(
+    num_intervals: int, degree: int, domain: tuple[float, float] = (0.0, 1.0)
+) -> Bspline:
+    """Create a periodic B-spline with simple linear control points."""
+    knots = create_uniform_periodic_knot_vector(num_intervals, degree, domain=domain)
+    space_1d = BsplineSpace1D(knots, degree, periodic=True)
+    space = BsplineSpace([space_1d])
+    n = space.num_total_basis
+    ctrl = np.linspace(1.0, 2.0, n, dtype=np.float64)
+    return Bspline(space, ctrl)
+
+
+def _eval_periodic_correct(f: Bspline, pts: npt.NDArray[np.float64]) -> npt.NDArray[np.float64]:
+    """Evaluate a periodic B-spline using the mathematically correct algorithm.
+
+    Uses the unclamped ``first_basis = knot_id - degree`` index with modulo-wrapped
+    control point lookup, which is the standard mathematical definition of a periodic
+    B-spline. This differs from ``f.evaluate()`` which uses a clamped first_basis.
+
+    Args:
+        f (Bspline): A 1D periodic B-spline.
+        pts (npt.NDArray[np.float64]): Interior evaluation points (must lie strictly inside
+            domain).
+
+    Returns:
+        npt.NDArray[np.float64]: Evaluated values at the given points.
+    """
+    space_1d = f.space.spaces[0]
+    knots = space_1d.knots
+    p = space_1d.degree
+    tol = float(space_1d.tolerance)
+    n_stored = f.space.num_total_basis
+    ctrl = f._control_points  # shape (n_stored, rank)
+
+    basis_out = np.zeros((len(pts), p + 1), dtype=np.float64)
+    first_basis_arr = np.zeros(len(pts), dtype=np.int64)
+    _compute_basis_nurbs_book_impl(knots, p, False, tol, pts, basis_out, first_basis_arr)
+
+    rank = ctrl.shape[1]
+    result = np.zeros((len(pts), rank), dtype=np.float64)
+    for i in range(len(pts)):
+        s = int(first_basis_arr[i])
+        for j in range(p + 1):
+            idx = (s + j) % n_stored
+            result[i] += basis_out[i, j] * ctrl[idx]
+
+    return result.squeeze()
+
+
+class TestPeriodicProduct:
+    """Correctness tests for multiplication involving periodic B-splines."""
+
+    def test_periodic_times_open_correctness(self) -> None:
+        """Product of periodic and open B-splines equals pointwise product at interior pts."""
+        f_per = _make_periodic(4, 2)
+        g_open = make_bspline(
+            [0.0, 0.0, 0.0, 0.25, 0.5, 0.75, 1.0, 1.0, 1.0],
+            2,
+            [1.0, 1.5, 2.0, 1.5, 1.0, 1.5],
+        )
+        h = f_per.multiply(g_open)
+
+        pts = eval_pts()[1:-1]  # interior only
+        expected = _eval_periodic_correct(f_per, pts) * g_open.evaluate(pts)
+        np.testing.assert_allclose(h.evaluate(pts), expected, atol=1e-11)
+
+    def test_open_times_periodic_correctness(self) -> None:
+        """Commutativity: open * periodic gives same values as periodic * open."""
+        f_per = _make_periodic(4, 2)
+        g_open = make_bspline(
+            [0.0, 0.0, 0.0, 0.25, 0.5, 0.75, 1.0, 1.0, 1.0],
+            2,
+            [1.0, 1.5, 2.0, 1.5, 1.0, 1.5],
+        )
+        h1 = f_per.multiply(g_open)
+        h2 = g_open.multiply(f_per)
+
+        pts = eval_pts()[1:-1]
+        np.testing.assert_allclose(h1.evaluate(pts), h2.evaluate(pts), atol=1e-11)
+
+    def test_periodic_times_periodic_correctness(self) -> None:
+        """Product of two periodic B-splines equals pointwise product at interior pts."""
+        f_per = _make_periodic(3, 2)
+        g_per = _make_periodic(4, 2)
+        h = f_per.multiply(g_per)
+
+        pts = eval_pts()[1:-1]
+        expected = _eval_periodic_correct(f_per, pts) * _eval_periodic_correct(g_per, pts)
+        np.testing.assert_allclose(h.evaluate(pts), expected, atol=1e-11)
+
+    def test_result_is_non_periodic(self) -> None:
+        """Product of periodic operands is always non-periodic."""
+        f_per = _make_periodic(3, 2)
+        g_per = _make_periodic(3, 1)
+        h = f_per.multiply(g_per)
+        assert not h.space.spaces[0].periodic
+        assert h.space.spaces[0].has_open_knots()
+
+    def test_periodic_degree3_correctness(self) -> None:
+        """Works for degree-3 periodic splines."""
+        f_per = _make_periodic(4, 3)
+        g_open = make_bspline(
+            [0.0, 0.0, 0.0, 0.0, 0.5, 1.0, 1.0, 1.0, 1.0],
+            3,
+            [1.0, 1.2, 0.8, 1.5, 1.0],
+        )
+        h = f_per.multiply(g_open)
+
+        pts = eval_pts()[1:-1]
+        expected = _eval_periodic_correct(f_per, pts) * g_open.evaluate(pts)
+        np.testing.assert_allclose(h.evaluate(pts), expected, atol=1e-11)

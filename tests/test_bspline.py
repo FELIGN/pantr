@@ -1,8 +1,11 @@
 """Tests for bspline module."""
 
 import numpy as np
+import numpy.typing as npt
 import pytest
 
+from pantr._bspline_basis_core import _compute_basis_nurbs_book_impl
+from pantr._bspline_space_factory import create_uniform_periodic_knot_vector
 from pantr.bspline import Bspline
 from pantr.bspline_space_1D import BsplineSpace1D
 from pantr.bspline_space_nd import BsplineSpace
@@ -678,3 +681,167 @@ class TestBsplineEvaluateDerivatives:
 
         # scalar 2D spline, mixed first derivative: shape (n_pts,)
         assert result.shape == (1,)
+
+
+# ---------------------------------------------------------------------------
+# TestToOpenBspline
+# ---------------------------------------------------------------------------
+
+
+def _make_periodic_bspline(num_intervals: int, degree: int, dtype: type = np.float64) -> Bspline:
+    """Create a simple periodic B-spline with random-ish control points."""
+    knots = create_uniform_periodic_knot_vector(num_intervals, degree, dtype=dtype)
+    space_1d = BsplineSpace1D(knots, degree, periodic=True)
+    space = BsplineSpace([space_1d])
+    n = space.num_total_basis
+    ctrl: npt.NDArray[np.float64] = np.arange(1, n + 1, dtype=dtype)
+    return Bspline(space, ctrl)
+
+
+def _eval_periodic_correct(f: Bspline, pts: npt.NDArray[np.float64]) -> npt.NDArray[np.float64]:
+    """Evaluate a periodic B-spline using the mathematically correct algorithm.
+
+    Uses the unclamped ``first_basis = knot_id - degree`` index with modulo-wrapped
+    control point lookup, which is the standard mathematical definition of a periodic
+    B-spline. This differs from ``f.evaluate()`` which uses a clamped first_basis.
+
+    Args:
+        f (Bspline): A 1D periodic B-spline.
+        pts (np.ndarray): Interior evaluation points (must lie strictly inside domain).
+
+    Returns:
+        np.ndarray: Evaluated values at the given points.
+    """
+    space_1d = f.space.spaces[0]
+    knots = space_1d.knots
+    p = space_1d.degree
+    tol = float(space_1d.tolerance)
+    n_stored = f.space.num_total_basis
+    ctrl = f._control_points  # shape (n_stored, rank)
+
+    # Compute knot spans using the non-periodic (unclamped) algorithm
+    basis_out = np.zeros((len(pts), p + 1), dtype=np.float64)
+    first_basis_arr = np.zeros(len(pts), dtype=np.int64)
+    _compute_basis_nurbs_book_impl(knots, p, False, tol, pts, basis_out, first_basis_arr)
+
+    rank = ctrl.shape[1]
+    result = np.zeros((len(pts), rank), dtype=np.float64)
+    for i in range(len(pts)):
+        s = int(first_basis_arr[i])
+        for j in range(p + 1):
+            idx = (s + j) % n_stored
+            result[i] += basis_out[i, j] * ctrl[idx]
+
+    return result.squeeze()
+
+
+def _make_unclamped_bspline(dtype: type = np.float64) -> Bspline:
+    """Create a non-open non-periodic B-spline (uniform, no repeated boundary knots)."""
+    # Cardinal-style knot vector: no repeated boundary knots, uniform spacing.
+    # Degree 2, domain [2, 5] (interior of a larger uniform grid).
+    knots: npt.NDArray[np.float64] = np.array([0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0], dtype=dtype)
+    space_1d = BsplineSpace1D(knots, 2)
+    space = BsplineSpace([space_1d])
+    n = space.num_total_basis
+    ctrl: npt.NDArray[np.float64] = np.arange(1, n + 1, dtype=dtype)
+    return Bspline(space, ctrl)
+
+
+class TestToOpenBspline:
+    """Tests for Bspline.to_open_bspline()."""
+
+    def test_periodic_to_open_is_non_periodic(self) -> None:
+        """to_open_bspline on a periodic spline returns a non-periodic spline."""
+        f = _make_periodic_bspline(3, 2)
+        f_open = f.to_open_bspline()
+
+        assert not f_open.space.spaces[0].periodic
+        assert f_open.space.spaces[0].has_open_knots()
+
+    def test_periodic_to_open_correctness(self) -> None:
+        """Open B-spline agrees with the correct mathematical periodic evaluation."""
+        f = _make_periodic_bspline(4, 2)
+        f_open = f.to_open_bspline()
+
+        a, b = f_open.space.spaces[0].domain
+        # Exclude endpoints to avoid boundary-matching edge cases.
+        pts = np.linspace(float(a), float(b), 51, dtype=np.float64)[1:-1]
+
+        vals_correct = _eval_periodic_correct(f, pts)
+        vals_open = f_open.evaluate(pts)
+
+        np.testing.assert_allclose(vals_open, vals_correct, atol=1e-12)
+
+    def test_periodic_to_open_degree3(self) -> None:
+        """Works for degree-3 periodic splines."""
+        f = _make_periodic_bspline(4, 3)
+        f_open = f.to_open_bspline()
+
+        assert f_open.space.spaces[0].has_open_knots()
+        assert f_open.space.spaces[0].degree == 3  # noqa: PLR2004
+
+        a, b = f_open.space.spaces[0].domain
+        pts = np.linspace(float(a), float(b), 51, dtype=np.float64)[1:-1]
+        np.testing.assert_allclose(f_open.evaluate(pts), _eval_periodic_correct(f, pts), atol=1e-12)
+
+    def test_non_open_non_periodic_to_open(self) -> None:
+        """to_open_bspline on an unclamped non-periodic spline clamps it correctly."""
+        f = _make_unclamped_bspline()
+        assert not f.space.spaces[0].has_open_knots()
+        assert not f.space.spaces[0].periodic
+
+        f_open = f.to_open_bspline()
+
+        assert f_open.space.spaces[0].has_open_knots()
+        assert not f_open.space.spaces[0].periodic
+
+        a, b = f.space.spaces[0].domain
+        pts = np.linspace(float(a), float(b), 51, dtype=np.float64)[1:-1]
+        np.testing.assert_allclose(f_open.evaluate(pts), f.evaluate(pts), atol=1e-12)
+
+    def test_already_open_returns_self(self) -> None:
+        """to_open_bspline on an already-open spline returns self."""
+        knots = np.array([0.0, 0.0, 0.0, 0.5, 1.0, 1.0, 1.0], dtype=np.float64)
+        space_1d = BsplineSpace1D(knots, 2)
+        space = BsplineSpace([space_1d])
+        f = Bspline(space, np.array([1.0, 2.0, 3.0, 4.0], dtype=np.float64))
+
+        assert f.to_open_bspline() is f
+
+    def test_dim_not_1_raises(self) -> None:
+        """to_open_bspline raises ValueError for dim != 1."""
+        knots1 = [0.0, 0.0, 0.0, 1.0, 1.0, 1.0]
+        knots2 = [0.0, 0.0, 1.0, 1.0]
+        space_1d_1 = BsplineSpace1D(np.array(knots1, dtype=np.float64), 2)
+        space_1d_2 = BsplineSpace1D(np.array(knots2, dtype=np.float64), 1)
+        space = BsplineSpace([space_1d_1, space_1d_2])
+        f = Bspline(space, np.ones(6, dtype=np.float64))
+
+        with pytest.raises(ValueError, match="1D"):
+            f.to_open_bspline()
+
+    def test_rational_periodic_to_open(self) -> None:
+        """to_open_bspline works on rational periodic B-splines."""
+        knots = create_uniform_periodic_knot_vector(3, 2, dtype=np.float64)
+        space_1d = BsplineSpace1D(knots, 2, periodic=True)
+        space = BsplineSpace([space_1d])
+        n = space.num_total_basis
+        # rational: last coordinate is homogeneous weight (all weights = 1, so NURBS == B-spline)
+        ctrl = np.column_stack(
+            [np.arange(1, n + 1, dtype=np.float64), np.ones(n, dtype=np.float64)]
+        )
+        f = Bspline(space, ctrl, is_rational=True)
+        f_open = f.to_open_bspline()
+
+        assert f_open.is_rational
+        assert not f_open.space.spaces[0].periodic
+        assert f_open.space.spaces[0].has_open_knots()
+
+        # With all weights = 1, NURBS reduces to polynomial B-spline.
+        # Evaluate the scalar component (x*w / w = x) and compare against correct periodic eval.
+        # Build a non-rational version of f with only the x-coordinates for comparison.
+        f_scalar = Bspline(space, ctrl[:, 0], is_rational=False)
+        a, b = f_open.space.spaces[0].domain
+        pts = np.linspace(float(a), float(b), 51, dtype=np.float64)[1:-1]
+        vals_correct = _eval_periodic_correct(f_scalar, pts)
+        np.testing.assert_allclose(f_open.evaluate(pts), vals_correct, atol=1e-12)
