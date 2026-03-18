@@ -229,8 +229,11 @@ def _tabulate_Bernstein_basis_deriv_1D_core(  # noqa: PLR0912
     Note:
         ``out_deriv[pt, k, i]`` is the k-th derivative of the i-th Bernstein
         basis polynomial of degree n evaluated at ``t[pt]``.  For k > n all
-        entries are identically zero.  At ``t=1.0`` only the 0th-order slice
-        receives the standard boundary value; higher-order derivatives are zero.
+        entries are identically zero.  The ``ndu``-table recurrence is
+        well-defined at ``t=1.0``; no special-case handling is required.
+
+        Inputs are assumed to be correct (no validation performed).
+        For general use, call :func:`_tabulate_Bspline_basis_deriv_1D_impl` instead.
     """
     order = int(n) + 1
     n_pts = t.shape[0]
@@ -245,11 +248,6 @@ def _tabulate_Bernstein_basis_deriv_1D_core(  # noqa: PLR0912
         for k in range(n_deriv + 1):
             for i in range(order):
                 out_deriv[pt_id, k, i] = zero
-
-        # Boundary: s = 1.0 → only last basis function = 1; all derivatives = 0
-        if s == one:
-            out_deriv[pt_id, 0, order - 1] = one
-            continue
 
         # --- Build ndu table for uniform knots on [0, 1] ---
         # Upper triangle / diagonal: ndu[r, j] = B_{r, j}(s)  (r <= j)
