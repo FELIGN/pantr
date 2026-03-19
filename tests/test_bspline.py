@@ -799,25 +799,46 @@ class TestToOpenBspline:
         pts = np.linspace(float(a), float(b), 51, dtype=np.float64)[1:-1]
         np.testing.assert_allclose(f_open.evaluate(pts), f.evaluate(pts), atol=1e-12)
 
-    def test_already_open_returns_self(self) -> None:
-        """to_open_bspline on an already-open spline returns self."""
+    def test_already_open_raises(self) -> None:
+        """to_open_bspline on an already-open spline raises ValueError."""
         knots = np.array([0.0, 0.0, 0.0, 0.5, 1.0, 1.0, 1.0], dtype=np.float64)
         space_1d = BsplineSpace1D(knots, 2)
         space = BsplineSpace([space_1d])
         f = Bspline(space, np.array([1.0, 2.0, 3.0, 4.0], dtype=np.float64))
 
-        assert f.to_open_bspline() is f
+        with pytest.raises(ValueError, match="already open"):
+            f.to_open_bspline()
 
-    def test_dim_not_1_raises(self) -> None:
-        """to_open_bspline raises ValueError for dim != 1."""
-        knots1 = [0.0, 0.0, 0.0, 1.0, 1.0, 1.0]
-        knots2 = [0.0, 0.0, 1.0, 1.0]
-        space_1d_1 = BsplineSpace1D(np.array(knots1, dtype=np.float64), 2)
-        space_1d_2 = BsplineSpace1D(np.array(knots2, dtype=np.float64), 1)
-        space = BsplineSpace([space_1d_1, space_1d_2])
-        f = Bspline(space, np.ones(6, dtype=np.float64))
+    def test_multidim_periodic_to_open(self) -> None:
+        """to_open_bspline on a 2D spline with one periodic and one open direction."""
+        # Direction 0: periodic degree-2, Direction 1: open degree-1
+        knots_per = create_uniform_periodic_knot_vector(4, 2, dtype=np.float64)
+        knots_open = np.array([0.0, 0.0, 0.5, 1.0, 1.0], dtype=np.float64)
+        space_per = BsplineSpace1D(knots_per, 2, periodic=True)
+        space_open = BsplineSpace1D(knots_open, 1)
+        space = BsplineSpace([space_per, space_open])
 
-        with pytest.raises(ValueError, match="1D"):
+        n0 = space_per.num_basis
+        n1 = space_open.num_basis
+        rng = np.random.default_rng(0)
+        ctrl = rng.random((n0 * n1,), dtype=np.float64)
+        f = Bspline(space, ctrl)
+        f_open = f.to_open_bspline()
+
+        # Direction 0 must become open; direction 1 must remain unchanged.
+        assert f_open.space.spaces[0].has_open_knots()
+        assert not f_open.space.spaces[0].periodic
+        assert f_open.space.spaces[1].has_open_knots()
+        assert not f_open.space.spaces[1].periodic
+
+    def test_multidim_already_open_raises(self) -> None:
+        """to_open_bspline raises ValueError when all directions are already open."""
+        knots1 = np.array([0.0, 0.0, 0.0, 1.0, 1.0, 1.0], dtype=np.float64)
+        knots2 = np.array([0.0, 0.0, 1.0, 1.0], dtype=np.float64)
+        space = BsplineSpace([BsplineSpace1D(knots1, 2), BsplineSpace1D(knots2, 1)])
+        f = Bspline(space, np.ones((3 * 2,), dtype=np.float64))
+
+        with pytest.raises(ValueError, match="already open"):
             f.to_open_bspline()
 
     def test_rational_periodic_to_open(self) -> None:
