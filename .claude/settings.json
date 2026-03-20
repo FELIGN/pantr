@@ -1,0 +1,12 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(ls tests/test_bs*)",
+      "Bash(ls -la src/pantr/_*.py)",
+      "Bash(conda activate pantr)",
+      "Bash(python3 -c \":*)",
+      "Bash(source activate pantr)",
+      "Bash(/Users/antolin/miniconda3/envs/pantr/bin/python -c \":*)"
+    ]
+  }
+}

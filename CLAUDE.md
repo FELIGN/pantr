@@ -22,6 +22,20 @@ mypy --config-file mypy.ini src tests                               # type check
 
 > Default pytest (via `pytest.ini`) adds `--cov`, which slows things down and requires ≥85% coverage. Always pass `--no-cov` during development.
 
+## Commit conventions
+
+Use **conventional commits** with the format:
+
+```
+<type>(<scope>): <imperative summary>
+```
+
+- **Types**: `feat`, `fix`, `refactor`, `test`, `docs`, `style`, `perf`, `chore`
+- **Scope**: the module or area affected (e.g., `bspline`, `basis`, `quad`, `docs`)
+- First line: imperative mood, lowercase, no trailing period
+- One logical change per commit — do not bundle unrelated changes
+- Branch names follow the same convention: `<type>/<short-kebab-description>`
+
 ## Architecture
 
 **PaNTr** is a polynomial and NURBS toolkit for geometric modeling and numerical analysis (Python 3.10–3.12).
