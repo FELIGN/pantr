@@ -48,10 +48,10 @@ docs = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/pablodroca/pantr"
+Homepage = "https://github.com/pantolin/pantr"
 Documentation = "https://pantr.readthedocs.io"
-Source = "https://github.com/pablodroca/pantr"
-Issues = "https://github.com/pablodroca/pantr/issues"
+Source = "https://github.com/pantolin/pantr"
+Issues = "https://github.com/pantolin/pantr/issues"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/pantr"]
