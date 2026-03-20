@@ -828,6 +828,104 @@ class TestNonOpenKnotSpanBoundary:
         np.testing.assert_allclose(basis[1], expected_right, atol=1e-14)
 
 
+class TestNonOpenBoundaryMultiplicityTabulation:
+    """Test tabulate_basis and tabulate_basis_derivatives for non-open knot vectors.
+
+    Non-open non-periodic knot vectors have boundary multiplicity < degree+1, which
+    controls the continuity at the domain endpoints.  We parametrize over
+    boundary_mult ∈ {1, 2, degree} to cover maximum, intermediate, and minimum
+    (C^0) continuity at the endpoints.
+    """
+
+    @staticmethod
+    def _make_knots(degree: int, boundary_mult: int) -> np.ndarray:
+        """Construct a uniform non-open knot vector with given boundary multiplicity.
+
+        Args:
+            degree (int): B-spline degree.
+            boundary_mult (int): Knot multiplicity at domain endpoints (< degree + 1).
+
+        Returns:
+            np.ndarray: Knot vector of dtype float64.
+        """
+        n_int = max(3, 2 * degree - 2 * boundary_mult + 3)
+        interior = np.linspace(0.0, 1.0, n_int + 1)[1:-1]
+        return np.concatenate([[0.0] * boundary_mult, interior, [1.0] * boundary_mult])
+
+    @pytest.mark.parametrize(
+        "degree,boundary_mult",
+        [
+            (1, 1),
+            (2, 1),
+            (2, 2),
+            (3, 1),
+            (3, 2),
+            (3, 3),
+            (4, 1),
+            (4, 2),
+            (4, 4),
+        ],
+    )
+    def test_partition_of_unity(self, degree: int, boundary_mult: int) -> None:
+        """Non-open B-spline basis values sum to 1.0 at all interior points."""
+        knots = self._make_knots(degree, boundary_mult)
+        space = BsplineSpace1D(knots, degree)
+        a, b = space.domain
+        pts = np.linspace(float(a), float(b), 21, dtype=np.float64)[1:-1]
+        basis, _ = space.tabulate_basis(pts)
+        np.testing.assert_allclose(basis.sum(axis=-1), np.ones(len(pts)), atol=1e-13)
+
+    @pytest.mark.parametrize(
+        "degree,boundary_mult",
+        [
+            (2, 1),
+            (2, 2),
+            (3, 1),
+            (3, 2),
+            (3, 3),
+            (4, 2),
+            (4, 4),
+        ],
+    )
+    def test_tabulate_basis_derivatives_sum(self, degree: int, boundary_mult: int) -> None:
+        """0th derivative sums to 1; higher-order derivatives sum to 0 at interior points."""
+        knots = self._make_knots(degree, boundary_mult)
+        space = BsplineSpace1D(knots, degree)
+        a, b = space.domain
+        pts = np.linspace(float(a), float(b), 15, dtype=np.float64)[1:-1]
+        deriv, _ = space.tabulate_basis_derivatives(pts, n_deriv=2)
+        np.testing.assert_allclose(deriv[:, 0, :].sum(axis=-1), np.ones(len(pts)), atol=1e-12)
+        np.testing.assert_allclose(deriv[:, 1, :].sum(axis=-1), np.zeros(len(pts)), atol=1e-12)
+        np.testing.assert_allclose(deriv[:, 2, :].sum(axis=-1), np.zeros(len(pts)), atol=1e-12)
+
+    @pytest.mark.parametrize(
+        "degree,boundary_mult",
+        [
+            (2, 1),
+            (2, 2),
+            (3, 1),
+            (3, 2),
+            (3, 3),
+            (4, 2),
+            (4, 4),
+        ],
+    )
+    def test_basis_continuity_at_endpoints(self, degree: int, boundary_mult: int) -> None:
+        """Basis values are continuous at both domain endpoints."""
+        knots = self._make_knots(degree, boundary_mult)
+        space = BsplineSpace1D(knots, degree)
+        a, b = space.domain
+        eps = 1e-12
+        # Right endpoint
+        pts_r = np.array([b - eps, b], dtype=np.float64)
+        basis_r, _ = space.tabulate_basis(pts_r)
+        np.testing.assert_allclose(basis_r[0], basis_r[1], atol=1e-8)
+        # Left endpoint
+        pts_l = np.array([a, a + eps], dtype=np.float64)
+        basis_l, _ = space.tabulate_basis(pts_l)
+        np.testing.assert_allclose(basis_l[0], basis_l[1], atol=1e-8)
+
+
 class TestPeriodicBasisTabulation:
     """Test tabulate_basis and tabulate_basis_derivatives for periodic B-spline spaces.
 
@@ -1455,6 +1553,12 @@ class TestExtractionOperatorCorrectness:
                 num_intervals=d + 3, degree=d, continuity=0
             ),  # periodic, C^0 continuity
             lambda d: np.linspace(0.0, 1.0, 2 * d + 4, dtype=np.float64),  # non-open non-periodic
+            lambda d: np.concatenate(  # non-open, boundary multiplicity 2
+                [[0.0] * 2, np.linspace(0.0, 1.0, 2 * d + 3)[1:-1], [1.0] * 2]
+            ),
+            lambda d: np.concatenate(  # non-open, boundary multiplicity = degree (C^0 at endpoints)
+                [[0.0] * d, np.linspace(0.0, 1.0, 2 * d + 3)[1:-1], [1.0] * d]
+            ),
         ],
         ids=[
             "two_intervals",
@@ -1465,6 +1569,8 @@ class TestExtractionOperatorCorrectness:
             "periodic_max_continuity",
             "periodic_C0_continuity",
             "non_open_uniform",
+            "non_open_bdry_mult2",
+            "non_open_bdry_mult_degree",
         ],
     )
     def test_extraction_operator_correctness(

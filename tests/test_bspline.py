@@ -874,6 +874,26 @@ def _make_unclamped_bspline(dtype: type = np.float64) -> Bspline:
     return Bspline(space, ctrl)
 
 
+def _make_non_open_bspline_varying_bdry(degree: int, boundary_mult: int) -> Bspline:
+    """Create a non-open non-periodic B-spline with given boundary multiplicity.
+
+    Args:
+        degree (int): B-spline degree.
+        boundary_mult (int): Knot multiplicity at domain endpoints (< degree + 1).
+
+    Returns:
+        Bspline: A 1D non-open scalar B-spline with sequential integer control points.
+    """
+    n_int = max(3, 2 * degree - 2 * boundary_mult + 3)
+    interior = np.linspace(0.0, 1.0, n_int + 1)[1:-1]
+    knots = np.concatenate([[0.0] * boundary_mult, interior, [1.0] * boundary_mult])
+    space_1d = BsplineSpace1D(knots, degree)
+    space = BsplineSpace([space_1d])
+    n = space.num_total_basis
+    ctrl: npt.NDArray[np.float64] = np.arange(1, n + 1, dtype=np.float64)
+    return Bspline(space, ctrl)
+
+
 class TestToOpenBspline:
     """Tests for Bspline.to_open_bspline()."""
 
@@ -993,3 +1013,51 @@ class TestToOpenBspline:
         pts = np.linspace(float(a), float(b), 51, dtype=np.float64)[1:-1]
         vals_correct = _eval_periodic_correct(f_scalar, pts)
         np.testing.assert_allclose(f_open.evaluate(pts), vals_correct, atol=1e-12)
+
+    @pytest.mark.parametrize(
+        "degree,boundary_mult",
+        [
+            (2, 1),
+            (2, 2),
+            (3, 1),
+            (3, 2),
+            (3, 3),
+            (4, 2),
+            (4, 4),
+        ],
+    )
+    def test_non_open_varying_bdry_to_open_correctness(
+        self, degree: int, boundary_mult: int
+    ) -> None:
+        """to_open_bspline().evaluate() matches evaluate() for non-open varying boundary mult."""
+        f = _make_non_open_bspline_varying_bdry(degree, boundary_mult)
+        assert not f.space.spaces[0].has_open_knots()
+        f_open = f.to_open_bspline()
+        assert f_open.space.spaces[0].has_open_knots()
+
+        a, b = f.space.spaces[0].domain
+        pts = np.linspace(float(a), float(b), 31, dtype=np.float64)[1:-1]
+        np.testing.assert_allclose(f_open.evaluate(pts), f.evaluate(pts), atol=1e-12)
+
+    @pytest.mark.parametrize(
+        "degree,boundary_mult",
+        [
+            (2, 1),
+            (2, 2),
+            (3, 1),
+            (3, 2),
+            (3, 3),
+            (4, 2),
+            (4, 4),
+        ],
+    )
+    def test_non_open_varying_bdry_evaluate_derivatives_order_0(
+        self, degree: int, boundary_mult: int
+    ) -> None:
+        """evaluate_derivatives(pts, [0]) matches evaluate(pts) for non-open varying bdry mult."""
+        f = _make_non_open_bspline_varying_bdry(degree, boundary_mult)
+        a, b = f.space.spaces[0].domain
+        pts = np.linspace(float(a), float(b), 21, dtype=np.float64)[1:-1]
+        vals = f.evaluate(pts)
+        derivs = f.evaluate_derivatives(pts, [0])
+        np.testing.assert_allclose(derivs, vals, atol=1e-14)
