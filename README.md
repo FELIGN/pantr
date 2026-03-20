@@ -12,11 +12,13 @@ Polynomial and NURBS Toolkit (**PaNTr**) is a pure Python 3.10–3.12 library fo
 ## Installation
 
 ```bash
-# Install from local source
-pip install .
+# Install directly from GitHub
+pip install git+https://github.com/pantolin/pantr.git
 
-# Or install directly from GitHub
-pip install git+https://github.com/pablodroca/pantr.git
+# Or clone and install locally
+git clone https://github.com/pantolin/pantr.git
+cd pantr
+pip install .
 ```
 
 ## Development
