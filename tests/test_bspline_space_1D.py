@@ -828,6 +828,167 @@ class TestNonOpenKnotSpanBoundary:
         np.testing.assert_allclose(basis[1], expected_right, atol=1e-14)
 
 
+class TestPeriodicBasisTabulation:
+    """Test tabulate_basis and tabulate_basis_derivatives for periodic B-spline spaces.
+
+    Covers both maximum continuity (C^{degree-1}) and reduced continuity (e.g., C^0, C^1)
+    cases created via create_uniform_periodic_knot_vector with the ``continuity`` parameter.
+    """
+
+    @pytest.mark.parametrize(
+        "degree,continuity",
+        [
+            (1, None),  # degree 1, max continuity (C^0)
+            (2, None),  # degree 2, max continuity (C^1)
+            (2, 0),  # degree 2, C^0
+            (3, None),  # degree 3, max continuity (C^2)
+            (3, 1),  # degree 3, C^1
+            (3, 0),  # degree 3, C^0
+            (4, None),  # degree 4, max continuity (C^3)
+        ],
+    )
+    def test_periodic_tabulate_basis_partition_of_unity(
+        self, degree: int, continuity: int | None
+    ) -> None:
+        """Periodic B-spline basis values sum to 1.0 at all interior points."""
+        num_intervals = degree + 3
+        knots = create_uniform_periodic_knot_vector(
+            num_intervals=num_intervals, degree=degree, continuity=continuity
+        )
+        space = BsplineSpace1D(knots, degree, periodic=True)
+
+        a, b = space.domain
+        pts = np.linspace(float(a), float(b), 21, dtype=np.float64)[1:-1]  # interior only
+        basis, _ = space.tabulate_basis(pts)
+
+        np.testing.assert_allclose(
+            basis.sum(axis=-1),
+            np.ones(len(pts), dtype=np.float64),
+            atol=1e-13,
+        )
+
+    @pytest.mark.parametrize("degree", [1, 2, 3, 4])
+    def test_periodic_tabulate_basis_continuity_at_left_endpoint(self, degree: int) -> None:
+        """Periodic basis is continuous at the left domain endpoint."""
+        knots = create_uniform_periodic_knot_vector(num_intervals=degree + 3, degree=degree)
+        space = BsplineSpace1D(knots=knots, degree=degree, periodic=True)
+
+        t_start = space.domain[0]
+        eps = 1e-12
+        pts = np.array([t_start, t_start + eps], dtype=np.float64)
+        basis, fb = space.tabulate_basis(pts)
+
+        assert fb[0] == fb[1]
+        np.testing.assert_allclose(basis[0], basis[1], atol=1e-8)
+
+    @pytest.mark.parametrize("degree", [1, 2, 3, 4])
+    def test_periodic_C0_basis_continuity_at_right_endpoint(self, degree: int) -> None:
+        """Periodic C^0 basis is continuous at the right domain endpoint."""
+        knots = create_uniform_periodic_knot_vector(
+            num_intervals=degree + 3, degree=degree, continuity=0
+        )
+        space = BsplineSpace1D(knots=knots, degree=degree, periodic=True)
+
+        t_end = space.domain[1]
+        eps = 1e-12
+        pts = np.array([t_end - eps, t_end], dtype=np.float64)
+        basis, fb = space.tabulate_basis(pts)
+
+        assert fb[0] == fb[1]
+        np.testing.assert_allclose(basis[0], basis[1], atol=1e-8)
+
+    @pytest.mark.parametrize("degree", [1, 2, 3, 4])
+    def test_periodic_C0_basis_continuity_at_left_endpoint(self, degree: int) -> None:
+        """Periodic C^0 basis is continuous at the left domain endpoint."""
+        knots = create_uniform_periodic_knot_vector(
+            num_intervals=degree + 3, degree=degree, continuity=0
+        )
+        space = BsplineSpace1D(knots=knots, degree=degree, periodic=True)
+
+        t_start = space.domain[0]
+        eps = 1e-12
+        pts = np.array([t_start, t_start + eps], dtype=np.float64)
+        basis, fb = space.tabulate_basis(pts)
+
+        assert fb[0] == fb[1]
+        np.testing.assert_allclose(basis[0], basis[1], atol=1e-8)
+
+    @pytest.mark.parametrize(
+        "degree,continuity",
+        [
+            (1, None),
+            (2, None),
+            (2, 0),
+            (3, None),
+            (3, 1),
+            (3, 0),
+        ],
+    )
+    def test_periodic_tabulate_basis_derivatives_sum(
+        self, degree: int, continuity: int | None
+    ) -> None:
+        """Periodic basis derivatives satisfy: 0th order sums to 1, higher orders sum to 0."""
+        num_intervals = degree + 3
+        knots = create_uniform_periodic_knot_vector(
+            num_intervals=num_intervals, degree=degree, continuity=continuity
+        )
+        space = BsplineSpace1D(knots, degree, periodic=True)
+
+        a, b = space.domain
+        pts = np.linspace(float(a), float(b), 15, dtype=np.float64)[1:-1]  # interior only
+        deriv, _ = space.tabulate_basis_derivatives(pts, n_deriv=2)
+
+        # 0th derivative: partition of unity
+        np.testing.assert_allclose(
+            deriv[..., 0, :].sum(axis=-1),
+            np.ones(len(pts), dtype=np.float64),
+            atol=1e-13,
+        )
+        # 1st and 2nd derivatives: sum to zero
+        np.testing.assert_allclose(
+            deriv[..., 1, :].sum(axis=-1),
+            np.zeros(len(pts), dtype=np.float64),
+            atol=1e-10,
+        )
+        np.testing.assert_allclose(
+            deriv[..., 2, :].sum(axis=-1),
+            np.zeros(len(pts), dtype=np.float64),
+            atol=1e-8,
+        )
+
+    @pytest.mark.parametrize("degree", [2, 3])
+    def test_periodic_derivative_continuity_at_right_endpoint(self, degree: int) -> None:
+        """Periodic basis derivatives are continuous at the right domain endpoint."""
+        knots = create_uniform_periodic_knot_vector(num_intervals=degree + 3, degree=degree)
+        space = BsplineSpace1D(knots=knots, degree=degree, periodic=True)
+
+        t_end = space.domain[1]
+        eps = 1e-12
+        pts = np.array([t_end - eps, t_end], dtype=np.float64)
+        deriv, fb = space.tabulate_basis_derivatives(pts, n_deriv=1)
+
+        assert fb[0] == fb[1]
+        # 0th derivative (basis values) should be continuous
+        np.testing.assert_allclose(deriv[0, 0, :], deriv[1, 0, :], atol=1e-8)
+        # 1st derivative should be continuous for C^{degree-1} periodic splines
+        np.testing.assert_allclose(deriv[0, 1, :], deriv[1, 1, :], atol=1e-6)
+
+    @pytest.mark.parametrize("degree", [2, 3])
+    def test_periodic_derivative_continuity_at_left_endpoint(self, degree: int) -> None:
+        """Periodic basis derivatives are continuous at the left domain endpoint."""
+        knots = create_uniform_periodic_knot_vector(num_intervals=degree + 3, degree=degree)
+        space = BsplineSpace1D(knots=knots, degree=degree, periodic=True)
+
+        t_start = space.domain[0]
+        eps = 1e-12
+        pts = np.array([t_start, t_start + eps], dtype=np.float64)
+        deriv, fb = space.tabulate_basis_derivatives(pts, n_deriv=1)
+
+        assert fb[0] == fb[1]
+        np.testing.assert_allclose(deriv[0, 0, :], deriv[1, 0, :], atol=1e-8)
+        np.testing.assert_allclose(deriv[0, 1, :], deriv[1, 1, :], atol=1e-6)
+
+
 class TestGetCardinalIntervals:
     """Test the _get_Bspline_cardinal_intervals_1D_impl function."""
 
@@ -863,6 +1024,31 @@ class TestGetCardinalIntervals:
         # Should return all False
         expected = np.array([False])
         np.testing.assert_array_equal(result, expected)
+
+    def test_periodic_uniform_all_cardinal(self) -> None:
+        """Uniform periodic knot vector (max continuity) has all-cardinal intervals."""
+        degree = 2
+        knots = create_uniform_periodic_knot_vector(num_intervals=4, degree=degree)
+        tol = 1e-10
+        result = _get_Bspline_cardinal_intervals_1D_impl(knots, degree, tol)
+
+        # All intervals in a uniform periodic knot vector are cardinal since the ghost
+        # knots maintain equal spacing throughout.
+        assert result.all(), f"Expected all cardinal, got {result}"
+
+    def test_periodic_uniform_C0_none_cardinal(self) -> None:
+        """Uniform periodic C^0 knot vector (multiplicity=degree) has no cardinal intervals.
+
+        With multiplicity=degree at every interior knot, the repeated knots break
+        the cardinal condition (same length as degree-1 previous and next intervals),
+        so no intervals are cardinal.
+        """
+        degree = 2
+        knots = create_uniform_periodic_knot_vector(num_intervals=4, degree=degree, continuity=0)
+        tol = 1e-10
+        result = _get_Bspline_cardinal_intervals_1D_impl(knots, degree, tol)
+
+        assert not result.any(), f"Expected no cardinal intervals, got {result}"
 
 
 class TestCreateBsplineBezierExtractionOperators:
@@ -1262,6 +1448,13 @@ class TestExtractionOperatorCorrectness:
             lambda d: create_cardinal_Bspline_knot_vector(
                 num_intervals=4, degree=d
             ),  # cardinal intervals
+            lambda d: create_uniform_periodic_knot_vector(
+                num_intervals=d + 3, degree=d
+            ),  # periodic, max continuity
+            lambda d: create_uniform_periodic_knot_vector(
+                num_intervals=d + 3, degree=d, continuity=0
+            ),  # periodic, C^0 continuity
+            lambda d: np.linspace(0.0, 1.0, 2 * d + 4, dtype=np.float64),  # non-open non-periodic
         ],
         ids=[
             "two_intervals",
@@ -1269,6 +1462,9 @@ class TestExtractionOperatorCorrectness:
             "two_intervals_different_end",
             "five_intervals",
             "four_cardinal_intervals",
+            "periodic_max_continuity",
+            "periodic_C0_continuity",
+            "non_open_uniform",
         ],
     )
     def test_extraction_operator_correctness(
