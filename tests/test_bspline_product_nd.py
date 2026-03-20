@@ -6,6 +6,7 @@ import numpy as np
 import numpy.typing as npt
 import pytest
 
+from pantr._bspline_knots import _get_unique_knots_and_multiplicity_impl
 from pantr._bspline_product import _bernstein_product_coefficients
 from pantr._bspline_product_nd import _bernstein_product_coefficients_nd
 from pantr._bspline_space_factory import create_uniform_periodic_knot_vector
@@ -307,6 +308,178 @@ class TestNonRationalProduct3D:
         h = f * g
         assert h.degree == (3, 3, 5)
         _eval_3d_product(f, g, h)
+
+
+# ---------------------------------------------------------------------------
+# Optimal continuity tests
+# ---------------------------------------------------------------------------
+
+
+def _get_interior_mults(
+    space_1d: BsplineSpace1D,
+) -> tuple[npt.NDArray[np.float32 | np.float64], npt.NDArray[np.int_]]:
+    """Return interior breakpoints and their multiplicities for a 1D space."""
+    unique, mults = _get_unique_knots_and_multiplicity_impl(
+        space_1d.knots, space_1d.degree, float(space_1d.tolerance), in_domain=True
+    )
+    return unique[1:-1], mults[1:-1]
+
+
+class TestOptimalContinuity2D:
+    """Verify that the 2D product has optimal interior multiplicities per direction."""
+
+    def test_same_mesh_c1_both_directions(self) -> None:
+        """Both operands C^1 at 0.5 in both dirs -> product interior mult = max(1+2,1+2) = 3.
+
+        Full-Bezier would give mult 4. Optimal gives mult 3 (C^1).
+        """
+        knots = [0.0, 0.0, 0.0, 0.5, 1.0, 1.0, 1.0]
+        s = _make_space_1d(knots, 2)
+        n = s.num_basis
+
+        rng = np.random.default_rng(50)
+        f = _make_2d_bspline(s, s, rng.random((n, n, 1)))
+        g = _make_2d_bspline(s, s, rng.random((n, n, 1)))
+
+        h = f * g
+        assert h.degree == (4, 4)
+
+        for d in range(2):
+            bp, mults = _get_interior_mults(h.space.spaces[d])
+            assert len(bp) == 1
+            assert int(mults[0]) == 3  # noqa: PLR2004
+            np.testing.assert_allclose(bp[0], 0.5, atol=1e-12)
+
+        # Fewer basis than full-Bezier: optimal has 8 per dir, full-Bezier has 9.
+        assert h.space.num_basis == (8, 8)
+        _eval_2d_product(f, g, h)
+
+    def test_c0_in_one_direction(self) -> None:
+        """C^0 in u (mult=2) and C^1 in v (mult=1) -> different optimal mults per dir.
+
+        u-direction: max(2+2, 1+2) = 4 (full-Bezier = C^0)
+        v-direction: max(1+2, 1+2) = 3 (C^1)
+        """
+        knots_u_f = [0.0, 0.0, 0.0, 0.5, 0.5, 1.0, 1.0, 1.0]  # mult 2 at 0.5
+        knots_u_g = [0.0, 0.0, 0.0, 0.5, 1.0, 1.0, 1.0]  # mult 1 at 0.5
+        knots_v = [0.0, 0.0, 0.0, 0.5, 1.0, 1.0, 1.0]  # mult 1 at 0.5
+
+        s_u_f = _make_space_1d(knots_u_f, 2)
+        s_u_g = _make_space_1d(knots_u_g, 2)
+        s_v = _make_space_1d(knots_v, 2)
+
+        rng = np.random.default_rng(51)
+        f = _make_2d_bspline(s_u_f, s_v, rng.random((5, 4, 1)))
+        g = _make_2d_bspline(s_u_g, s_v, rng.random((4, 4, 1)))
+
+        h = f * g
+        assert h.degree == (4, 4)
+
+        # u-direction: mult = max(2+2, 1+2) = 4 (C^0)
+        bp_u, mults_u = _get_interior_mults(h.space.spaces[0])
+        assert len(bp_u) == 1
+        assert int(mults_u[0]) == 4  # noqa: PLR2004
+
+        # v-direction: mult = max(1+2, 1+2) = 3 (C^1)
+        bp_v, mults_v = _get_interior_mults(h.space.spaces[1])
+        assert len(bp_v) == 1
+        assert int(mults_v[0]) == 3  # noqa: PLR2004
+
+        _eval_2d_product(f, g, h)
+
+    def test_different_degrees_shared_breakpoint(self) -> None:
+        """Mixed degrees with shared breakpoint: p=(2,3), q=(3,2), product=(5,5).
+
+        Both operands share breakpoint 0.5 in both directions.
+        u-direction: f mult 1 (deg 2), g mult 1 (deg 3) -> max(1+3, 1+2) = 4
+        v-direction: f mult 1 (deg 3), g mult 1 (deg 2) -> max(1+2, 1+3) = 4
+        Both are less than full-Bezier (5).
+        """
+        knots_u_f = [0.0, 0.0, 0.0, 0.5, 1.0, 1.0, 1.0]  # degree 2, mult 1
+        knots_v_f = [0.0, 0.0, 0.0, 0.0, 0.5, 1.0, 1.0, 1.0, 1.0]  # degree 3, mult 1
+        knots_u_g = [0.0, 0.0, 0.0, 0.0, 0.5, 1.0, 1.0, 1.0, 1.0]  # degree 3, mult 1
+        knots_v_g = [0.0, 0.0, 0.0, 0.5, 1.0, 1.0, 1.0]  # degree 2, mult 1
+
+        s_u_f = _make_space_1d(knots_u_f, 2)
+        s_v_f = _make_space_1d(knots_v_f, 3)
+        s_u_g = _make_space_1d(knots_u_g, 3)
+        s_v_g = _make_space_1d(knots_v_g, 2)
+
+        rng = np.random.default_rng(52)
+        f = _make_2d_bspline(s_u_f, s_v_f, rng.random((4, 5, 1)))
+        g = _make_2d_bspline(s_u_g, s_v_g, rng.random((5, 4, 1)))
+
+        h = f * g
+        assert h.degree == (5, 5)
+
+        # u-direction: max(1+3, 1+2) = 4, less than full-Bezier = 5
+        bp_u, mults_u = _get_interior_mults(h.space.spaces[0])
+        assert len(bp_u) == 1
+        assert int(mults_u[0]) == 4  # noqa: PLR2004
+
+        # v-direction: max(1+2, 1+3) = 4, less than full-Bezier = 5
+        bp_v, mults_v = _get_interior_mults(h.space.spaces[1])
+        assert len(bp_v) == 1
+        assert int(mults_v[0]) == 4  # noqa: PLR2004
+
+        _eval_2d_product(f, g, h)
+
+    def test_multiple_shared_breakpoints(self) -> None:
+        """Multiple shared breakpoints with different multiplicities per direction.
+
+        u-direction: shared breakpoints at 1/3 and 2/3, both mult 1.
+           max(1+2, 1+2) = 3.
+        v-direction: shared breakpoints at 0.25, 0.5, 0.75 with mult 1.
+           max(1+2, 1+2) = 3.
+        """
+        knots_u = [0.0, 0.0, 0.0, 1.0 / 3.0, 2.0 / 3.0, 1.0, 1.0, 1.0]
+        knots_v = [0.0, 0.0, 0.0, 0.25, 0.5, 0.75, 1.0, 1.0, 1.0]
+
+        s_u = _make_space_1d(knots_u, 2)
+        s_v = _make_space_1d(knots_v, 2)
+
+        rng = np.random.default_rng(53)
+        f = _make_2d_bspline(s_u, s_v, rng.random((5, 6, 1)))
+        g = _make_2d_bspline(s_u, s_v, rng.random((5, 6, 1)))
+
+        h = f * g
+        assert h.degree == (4, 4)
+
+        # u-direction: 2 breakpoints, each with optimal mult 3 < full-Bezier 4.
+        bp_u, mults_u = _get_interior_mults(h.space.spaces[0])
+        assert len(bp_u) == 2  # noqa: PLR2004
+        np.testing.assert_array_equal(mults_u, [3, 3])
+
+        # v-direction: 3 breakpoints, each with optimal mult 3 < full-Bezier 4.
+        bp_v, mults_v = _get_interior_mults(h.space.spaces[1])
+        assert len(bp_v) == 3  # noqa: PLR2004
+        np.testing.assert_array_equal(mults_v, [3, 3, 3])
+
+        _eval_2d_product(f, g, h)
+
+    def test_fewer_basis_than_full_bezier_2d(self) -> None:
+        """Product has fewer total basis functions than full-Bezier in 2D.
+
+        Both operands: degree 2, interior knot 0.5 with mult 1, same in both dirs.
+        Full-Bezier: 9 x 9 = 81 basis.
+        Optimal: 8 x 8 = 64 basis.
+        """
+        knots = [0.0, 0.0, 0.0, 0.5, 1.0, 1.0, 1.0]
+        s = _make_space_1d(knots, 2)
+        n = s.num_basis
+
+        rng = np.random.default_rng(54)
+        f = _make_2d_bspline(s, s, rng.random((n, n, 1)))
+        g = _make_2d_bspline(s, s, rng.random((n, n, 1)))
+
+        h = f * g
+
+        # Full-Bezier: degree 4, 2 elements per dir -> 9 basis per dir.
+        # Optimal: interior mult 3 -> 8 basis per dir.
+        assert h.space.num_total_basis == 64  # noqa: PLR2004
+        assert h.space.num_basis == (8, 8)
+
+        _eval_2d_product(f, g, h)
 
 
 # ---------------------------------------------------------------------------
