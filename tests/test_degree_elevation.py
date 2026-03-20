@@ -105,10 +105,10 @@ def test_degree_elevation_zero_increment_raises() -> None:
     space = BsplineSpace([BsplineSpace1D(knots, 1)])
     bspline = Bspline(space, ctrl)
 
-    with pytest.raises(ValueError, match="positive"):
+    with pytest.raises(ValueError, match="(?i)at least one.*positive"):
         bspline.elevate_degree(0)
 
-    with pytest.raises(ValueError, match="positive"):
+    with pytest.raises(ValueError, match="(?i)at least one.*positive"):
         bspline.elevate_degree((0,))
 
 
@@ -122,5 +122,5 @@ def test_degree_elevation_invalid_inputs() -> None:
     with pytest.raises(ValueError, match="match dimension"):
         bspline.elevate_degree((1, 1))
 
-    with pytest.raises(ValueError, match="positive"):
+    with pytest.raises(ValueError, match="non-negative"):
         bspline.elevate_degree(-1)

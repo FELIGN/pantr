@@ -292,7 +292,8 @@ class Bspline:
             Bspline: A new B-spline with elevated degrees.
 
         Raises:
-            ValueError: If any degree increment is not positive.
+            ValueError: If any degree increment is negative.
+            ValueError: If all degree increments are zero.
             ValueError: If the number of increments does not match the dimension.
         """
         if isinstance(degree_increments, int):
@@ -306,8 +307,11 @@ class Bspline:
                 f"must match dimension ({self.dim})."
             )
 
-        if any(inc <= 0 for inc in increments):
-            raise ValueError("Degree increments must be positive.")
+        if any(inc < 0 for inc in increments):
+            raise ValueError("Degree increments must be non-negative.")
+
+        if all(inc == 0 for inc in increments):
+            raise ValueError("At least one degree increment must be positive.")
 
         return _degree_elevate_bspline(self, increments)
 

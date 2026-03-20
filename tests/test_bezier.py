@@ -439,13 +439,13 @@ class TestBezierElevateDegree:
     def test_zero_increment_raises(self) -> None:
         """Test that zero increment raises."""
         b = _make_bezier_1d([1.0, 2.0, 3.0])
-        with pytest.raises(ValueError, match="positive"):
+        with pytest.raises(ValueError, match="(?i)at least one.*positive"):
             b.elevate_degree(0)
 
     def test_negative_increment_raises(self) -> None:
         """Test that negative increment raises."""
         b = _make_bezier_1d([1.0, 2.0])
-        with pytest.raises(ValueError, match="positive"):
+        with pytest.raises(ValueError, match="non-negative"):
             b.elevate_degree(-1)
 
     def test_wrong_length_raises(self) -> None:
