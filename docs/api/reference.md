@@ -11,12 +11,7 @@ For transformations between these domains, the `pantr.change_basis` utilities ac
    :undoc-members:
    :show-inheritance:
 
-.. automodule:: pantr.bspline_space_1D
-   :members:
-   :undoc-members:
-   :show-inheritance:
-
-.. automodule:: pantr.bspline_space_nd
+.. automodule:: pantr.bezier
    :members:
    :undoc-members:
    :show-inheritance:
