@@ -6,6 +6,7 @@ import numpy as np
 import numpy.typing as npt
 import pytest
 
+from pantr._bspline_space_factory import create_uniform_periodic_knot_vector
 from pantr.bspline import Bspline
 from pantr.bspline_space_1D import BsplineSpace1D
 from pantr.bspline_space_nd import BsplineSpace
@@ -507,3 +508,51 @@ class TestBsplineSubdivideMultiDim:
         _, old_vals = _eval_pts_2d(bspline)
         _, new_vals = _eval_pts_2d(new_bs)
         np.testing.assert_allclose(new_vals, old_vals, atol=1e-12)
+
+
+# ---------------------------------------------------------------------------
+# Periodic flag behaviour after insert_knots / subdivide
+# ---------------------------------------------------------------------------
+
+
+class TestPeriodicInsertKnotsFlag:
+    """Document and verify the periodic-flag semantics of insert_knots and subdivide.
+
+    insert_knots and subdivide return a new BsplineSpace1D that is always
+    non-periodic (periodic=False).  This is intentional: once interior knots
+    are inserted the underlying space is no longer a genuine periodic B-spline
+    — the ghost-knot structure that enforces periodicity is broken.
+    """
+
+    def test_insert_knots_periodic_loses_periodicity(self) -> None:
+        """insert_knots on a periodic space returns a non-periodic space."""
+        degree = 2
+        knots = create_uniform_periodic_knot_vector(num_intervals=4, degree=degree)
+        space = BsplineSpace1D(knots, degree, periodic=True)
+        assert space.periodic
+
+        new_space = space.insert_knots([0.125])
+
+        assert not new_space.periodic
+
+    def test_insert_knots_C0_periodic_loses_periodicity(self) -> None:
+        """insert_knots on a C^0 periodic space returns a non-periodic space."""
+        degree = 2
+        knots = create_uniform_periodic_knot_vector(num_intervals=4, degree=degree, continuity=0)
+        space = BsplineSpace1D(knots, degree, periodic=True)
+        assert space.periodic
+
+        new_space = space.insert_knots([0.125])
+
+        assert not new_space.periodic
+
+    def test_subdivide_periodic_loses_periodicity(self) -> None:
+        """Subdivide on a periodic space returns a non-periodic space."""
+        degree = 2
+        knots = create_uniform_periodic_knot_vector(num_intervals=4, degree=degree)
+        space = BsplineSpace1D(knots, degree, periodic=True)
+        assert space.periodic
+
+        new_space = space.subdivide(2)
+
+        assert not new_space.periodic

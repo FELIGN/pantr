@@ -3,6 +3,7 @@
 import numpy as np
 import pytest
 
+from pantr._bspline_space_factory import create_uniform_periodic_knot_vector
 from pantr.bspline import Bspline
 from pantr.bspline_space_1D import BsplineSpace1D
 from pantr.bspline_space_nd import BsplineSpace
@@ -451,3 +452,111 @@ class TestMultiDimDerivValidation:
 
         np.testing.assert_array_equal(result, out)
         assert result is out
+
+
+# ---------------------------------------------------------------------------
+# Periodic multi-dimensional derivative evaluation
+# ---------------------------------------------------------------------------
+
+
+class TestPeriodicMultiDimDerivEvaluation:
+    """Test multi-dimensional evaluate_derivatives with periodic directions.
+
+    Direct comparison of ``f.evaluate_derivatives()`` vs ``f_open.evaluate_derivatives()``
+    is only performed for reduced-continuity (C^0, C^1) periodic directions.
+    Max-continuity periodic correctness is covered via ``to_open_bspline()`` constant-field
+    tests in test_bspline_evaluate_multi_dim.py.
+    """
+
+    @pytest.mark.parametrize(
+        "orders",
+        [
+            [0, 0],
+            [1, 0],
+            [0, 1],
+        ],
+    )
+    def test_2d_one_periodic_C0_derivatives_match_open(self, orders: list[int]) -> None:
+        """2-D (periodic C^0 x open) evaluate_derivatives agrees with open form."""
+        knots_per = create_uniform_periodic_knot_vector(4, 2, continuity=0, dtype=np.float64)
+        knots_open = np.array([0.0, 0.0, 0.0, 0.5, 1.0, 1.0, 1.0], dtype=np.float64)
+        s_per = BsplineSpace1D(knots_per, 2, periodic=True)
+        s_open = BsplineSpace1D(knots_open, 2)
+        space = BsplineSpace([s_per, s_open])
+        n = space.num_total_basis
+        ctrl = np.arange(1.0, n + 1.0, dtype=np.float64)
+        f = Bspline(space, ctrl)
+        f_open = f.to_open_bspline()
+
+        a0, b0 = f_open.space.spaces[0].domain
+        a1, b1 = f_open.space.spaces[1].domain
+        us = np.linspace(float(a0), float(b0), 6, dtype=np.float64)[1:-1]
+        vs = np.linspace(float(a1), float(b1), 6, dtype=np.float64)[1:-1]
+        uu, vv = np.meshgrid(us, vs, indexing="ij")
+        pts = np.column_stack([uu.ravel(), vv.ravel()])
+
+        np.testing.assert_allclose(
+            f.evaluate_derivatives(pts, orders),
+            f_open.evaluate_derivatives(pts, orders),
+            atol=1e-9,
+        )
+
+    @pytest.mark.parametrize(
+        "orders",
+        [
+            [0, 0],
+            [1, 0],
+            [0, 1],
+        ],
+    )
+    def test_2d_both_periodic_C0_derivatives_match_open(self, orders: list[int]) -> None:
+        """2-D (periodic C^0 x periodic C^0) evaluate_derivatives agrees with open form."""
+        knots0 = create_uniform_periodic_knot_vector(4, 2, continuity=0, dtype=np.float64)
+        knots1 = create_uniform_periodic_knot_vector(4, 2, continuity=0, dtype=np.float64)
+        s0 = BsplineSpace1D(knots0, 2, periodic=True)
+        s1 = BsplineSpace1D(knots1, 2, periodic=True)
+        space = BsplineSpace([s0, s1])
+        n = space.num_total_basis
+        ctrl = np.arange(1.0, n + 1.0, dtype=np.float64)
+        f = Bspline(space, ctrl)
+        f_open = f.to_open_bspline()
+
+        a0, b0 = f_open.space.spaces[0].domain
+        a1, b1 = f_open.space.spaces[1].domain
+        us = np.linspace(float(a0), float(b0), 5, dtype=np.float64)[1:-1]
+        vs = np.linspace(float(a1), float(b1), 5, dtype=np.float64)[1:-1]
+        uu, vv = np.meshgrid(us, vs, indexing="ij")
+        pts = np.column_stack([uu.ravel(), vv.ravel()])
+
+        np.testing.assert_allclose(
+            f.evaluate_derivatives(pts, orders),
+            f_open.evaluate_derivatives(pts, orders),
+            atol=1e-9,
+        )
+
+    def test_2d_periodic_degree3_C1_derivatives_match_open(self) -> None:
+        """2-D (periodic degree-3 C^1 x open) evaluate_derivatives agrees with open form."""
+        knots_per = create_uniform_periodic_knot_vector(5, 3, continuity=1, dtype=np.float64)
+        knots_open = np.array([0.0, 0.0, 0.0, 0.5, 1.0, 1.0, 1.0], dtype=np.float64)
+        s_per = BsplineSpace1D(knots_per, 3, periodic=True)
+        s_open = BsplineSpace1D(knots_open, 2)
+        space = BsplineSpace([s_per, s_open])
+        n = space.num_total_basis
+        ctrl = np.arange(1.0, n + 1.0, dtype=np.float64)
+        f = Bspline(space, ctrl)
+        f_open = f.to_open_bspline()
+
+        a0, b0 = f_open.space.spaces[0].domain
+        a1, b1 = f_open.space.spaces[1].domain
+        us = np.linspace(float(a0), float(b0), 6, dtype=np.float64)[1:-1]
+        vs = np.linspace(float(a1), float(b1), 6, dtype=np.float64)[1:-1]
+        uu, vv = np.meshgrid(us, vs, indexing="ij")
+        pts = np.column_stack([uu.ravel(), vv.ravel()])
+
+        for orders in [[0, 0], [1, 0], [0, 1]]:
+            np.testing.assert_allclose(
+                f.evaluate_derivatives(pts, orders),
+                f_open.evaluate_derivatives(pts, orders),
+                atol=1e-9,
+                err_msg=f"Mismatch at orders={orders}",
+            )
