@@ -14,12 +14,12 @@ dimension, and correctly preserves per-direction boundary structure
 from __future__ import annotations
 
 import itertools
-import math
 from typing import TYPE_CHECKING
 
 import numpy as np
 import numpy.typing as npt
 
+from ._bezier_product import _bernstein_product_coefficients_nd
 from ._bspline_knots import _get_Bspline_num_basis_1D_impl, _get_unique_knots_and_multiplicity_impl
 from ._bspline_product import (
     _build_product_knot_vector,
@@ -34,89 +34,6 @@ from .bspline_space_nd import BsplineSpace
 
 if TYPE_CHECKING:
     from .bspline import Bspline
-
-
-def _bernstein_product_coefficients_nd(
-    b_f: npt.NDArray[np.float32 | np.float64],
-    b_g: npt.NDArray[np.float32 | np.float64],
-) -> npt.NDArray[np.float32 | np.float64]:
-    r"""Compute nD Bézier control points of the product of two Bézier patches.
-
-    Applies the tensor-product Bernstein product formula element-wise over the
-    rank axis.  For each multi-index :math:`\gamma`:
-
-    .. math::
-
-        h_\gamma = \frac{1}{\prod_d \binom{r_d}{\gamma_d}}
-                   \sum_{\alpha} \prod_d \binom{p_d}{\alpha_d}
-                   \binom{q_d}{\gamma_d - \alpha_d}\,
-                   b_f[\alpha]\, b_g[\gamma - \alpha]
-
-    where :math:`r_d = p_d + q_d`.
-
-    The nD convolution is computed via the accumulation strategy: for each
-    multi-index :math:`\alpha` of ``b_f``, the weighted product is accumulated
-    into the output at the offset :math:`[\alpha : \alpha + q + 1]`.
-
-    Args:
-        b_f (npt.NDArray[np.float32 | np.float64]): Control points of the first
-            Bézier patch, shape ``(p_0+1, ..., p_{D-1}+1, rank)``.
-        b_g (npt.NDArray[np.float32 | np.float64]): Control points of the second
-            Bézier patch, shape ``(q_0+1, ..., q_{D-1}+1, rank)``.
-
-    Returns:
-        npt.NDArray[np.float32 | np.float64]: Product Bézier control points
-        of shape ``(p_0+q_0+1, ..., p_{D-1}+q_{D-1}+1, rank)``.
-
-    Note:
-        Inputs are assumed to be correct (no validation performed).
-        For general use, call :func:`_multiply_bspline_nd` instead.
-    """
-    ndim = b_f.ndim - 1
-    p = tuple(s - 1 for s in b_f.shape[:ndim])
-    q = tuple(s - 1 for s in b_g.shape[:ndim])
-    r = tuple(pi + qi for pi, qi in zip(p, q, strict=True))
-    dtype = b_f.dtype
-    rank = b_f.shape[-1]
-
-    # Precompute per-direction binomial coefficients.
-    binom_p = [
-        np.array([math.comb(p[d], i) for i in range(p[d] + 1)], dtype=dtype) for d in range(ndim)
-    ]
-    binom_q = [
-        np.array([math.comb(q[d], j) for j in range(q[d] + 1)], dtype=dtype) for d in range(ndim)
-    ]
-    inv_binom_r = [
-        np.array([1.0 / math.comb(r[d], k) for k in range(r[d] + 1)], dtype=dtype)
-        for d in range(ndim)
-    ]
-
-    # Build weight arrays: W_f[alpha] = prod_d C(p_d, alpha_d).
-    # Construct via outer product of per-direction binomial vectors.
-    w_f = binom_p[0]
-    for d in range(1, ndim):
-        w_f = np.multiply.outer(w_f, binom_p[d])
-    w_g = binom_q[0]
-    for d in range(1, ndim):
-        w_g = np.multiply.outer(w_g, binom_q[d])
-    inv_w_r = inv_binom_r[0]
-    for d in range(1, ndim):
-        inv_w_r = np.multiply.outer(inv_w_r, inv_binom_r[d])
-
-    # Weight the control points.
-    weighted_f = w_f[..., np.newaxis] * b_f
-    weighted_g = w_g[..., np.newaxis] * b_g
-
-    # nD convolution via accumulation.
-    result_shape = (*tuple(ri + 1 for ri in r), rank)
-    h_conv = np.zeros(result_shape, dtype=dtype)
-
-    for alpha in itertools.product(*(range(pi + 1) for pi in p)):
-        slices = tuple(slice(a, a + qi + 1) for a, qi in zip(alpha, q, strict=True))
-        h_conv[slices] = h_conv[slices] + weighted_f[alpha] * weighted_g
-
-    # Normalize by inverse product binomial coefficients.
-    return inv_w_r[..., np.newaxis] * h_conv
 
 
 def _extract_bezier_patch(
