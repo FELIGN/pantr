@@ -5,7 +5,7 @@ This module provides:
 - 1D quadrature rules on ``[0, 1]``: trapezoidal (equispaced), Gauss-Legendre,
   Gauss-Lobatto-Legendre, Chebyshev-Gauss (1st and 2nd kind).
 - :class:`PointsLattice`: a multi-dimensional tensor-product evaluation grid.
-- :func:`create_Lagrange_points_lattice`: factory for Lagrange-node lattices.
+- :func:`create_lagrange_points_lattice`: factory for Lagrange-node lattices.
 """
 
 from __future__ import annotations
@@ -62,7 +62,7 @@ def _validate_n_pts_and_dtype(n_pts: int, dtype: npt.DTypeLike) -> None:
         raise ValueError("dtype must be float32 or float64")
 
 
-def get_trapezoidal_quadrature_1D(
+def get_trapezoidal_1d(
     n_pts: int, dtype: npt.DTypeLike = np.float64
 ) -> tuple[npt.NDArray[np.float32 | np.float64], npt.NDArray[np.float32 | np.float64]]:
     """Get trapezoidal quadrature nodes on [0, 1] for the given number of points.
@@ -95,7 +95,7 @@ def get_trapezoidal_quadrature_1D(
     return nodes, weights
 
 
-def get_gauss_legendre_quadrature_1D(
+def get_gauss_legendre_1d(
     n_pts: int, dtype: npt.DTypeLike = np.float64
 ) -> tuple[npt.NDArray[np.float32 | np.float64], npt.NDArray[np.float32 | np.float64]]:
     """Get Gauss-Legendre quadrature nodes on [0, 1] for the given number of points.
@@ -123,7 +123,7 @@ def get_gauss_legendre_quadrature_1D(
     return _scale_and_cast_nodes_and_weights(nodes, weights, dtype)
 
 
-def get_gauss_lobatto_legendre_quadrature_1D(
+def get_gauss_lobatto_legendre_1d(
     n_pts: int, dtype: npt.DTypeLike = np.float64
 ) -> tuple[npt.NDArray[np.float32 | np.float64], npt.NDArray[np.float32 | np.float64]]:
     """Get Gauss-Lobatto-Legendre quadrature nodes on [0, 1] for the given number of points.
@@ -161,7 +161,7 @@ def get_gauss_lobatto_legendre_quadrature_1D(
     return _scale_and_cast_nodes_and_weights(nodes, weights, dtype)
 
 
-def get_chebyshev_gauss_1st_kind_quadrature_1D(
+def get_chebyshev_gauss_1st_kind_1d(
     n_pts: int, dtype: npt.DTypeLike = np.float64
 ) -> tuple[npt.NDArray[np.float32 | np.float64], npt.NDArray[np.float32 | np.float64]]:
     """Get Chebyshev-Gauss quadrature of the first kind on [0, 1] for the given number of points.
@@ -189,7 +189,7 @@ def get_chebyshev_gauss_1st_kind_quadrature_1D(
     return _scale_and_cast_nodes_and_weights(nodes, weights, dtype)
 
 
-def get_chebyshev_gauss_2nd_kind_quadrature_1D(
+def get_chebyshev_gauss_2nd_kind_1d(
     n_pts: int, dtype: npt.DTypeLike = np.float64
 ) -> tuple[npt.NDArray[np.float32 | np.float64], npt.NDArray[np.float32 | np.float64]]:
     """Get Chebyshev-Gauss quadrature of the second kind on [0, 1] for the given number of points.
@@ -316,7 +316,7 @@ class PointsLattice:
         )
 
 
-def create_Lagrange_points_lattice(
+def create_lagrange_points_lattice(
     lagrange_variant: LagrangeVariant,
     n_pts_per_dir: Iterable[int],
     dtype: npt.DTypeLike = np.float64,

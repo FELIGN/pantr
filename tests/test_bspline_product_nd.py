@@ -11,7 +11,7 @@ from pantr._bezier_product import (
     _bernstein_product_coefficients_nd,
 )
 from pantr._bspline_knots import _get_unique_knots_and_multiplicity_impl
-from pantr._bspline_space_factory import create_uniform_periodic_knot_vector
+from pantr._bspline_space_factory import create_uniform_periodic
 from pantr.bspline import Bspline
 from pantr.bspline_space_1D import BsplineSpace1D
 from pantr.bspline_space_nd import BsplineSpace
@@ -560,7 +560,7 @@ class TestBoundaryTypes2D:
         """
         for degree in [1, 2, 3]:
             n_spans = 4
-            knots = create_uniform_periodic_knot_vector(degree, n_spans)
+            knots = create_uniform_periodic(degree, n_spans)
             s = BsplineSpace1D(knots, degree, periodic=True)
             n_per = s.num_basis
 
@@ -589,7 +589,7 @@ class TestBoundaryTypes2D:
     def test_mixed_periodic_open(self) -> None:
         """One direction periodic, one open -> periodic in u, open in v."""
         degree = 2
-        knots_per = create_uniform_periodic_knot_vector(degree, 4)
+        knots_per = create_uniform_periodic(degree, 4)
         s_per = BsplineSpace1D(knots_per, degree, periodic=True)
         knots_open = [0.0, 0.0, 0.0, 0.5, 1.0, 1.0, 1.0]
         s_open = _make_space_1d(knots_open, 2)

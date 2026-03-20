@@ -32,7 +32,7 @@ from ._bspline_knots import (
     _get_Bspline_num_basis_1D_impl,
     _get_unique_knots_and_multiplicity_impl,
 )
-from .tolerance import get_strict_tolerance
+from .tolerance import get_strict
 
 if TYPE_CHECKING:
     pass
@@ -187,7 +187,7 @@ class BsplineSpace1D:
         Returns:
             float: Tolerance value appropriate for the given data type.
         """
-        return float(get_strict_tolerance(dtype))
+        return float(get_strict(dtype))
 
     def _snap_knots(self) -> None:
         """Snap knots within tolerance to avoid numerical precision issues.

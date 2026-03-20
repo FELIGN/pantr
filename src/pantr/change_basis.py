@@ -19,11 +19,11 @@ import numpy.typing as npt
 
 from ._basis_lagrange import _get_lagrange_points
 from ._basis_utils import _validate_out_array_multidimensional
-from .basis import LagrangeVariant, tabulate_Bernstein_basis_1D, tabulate_cardinal_Bspline_basis_1D
-from .quad import get_gauss_legendre_quadrature_1D
+from .basis import LagrangeVariant, tabulate_bernstein_1d, tabulate_cardinal_bspline_1d
+from .quad import get_gauss_legendre_1d
 
 
-def compute_Lagrange_to_Bernstein_change_basis_1D(
+def compute_lagrange_to_bernstein_1d(
     degree: int,
     lagrange_variant: LagrangeVariant = LagrangeVariant.EQUISPACES,
     dtype: npt.DTypeLike = np.float64,
@@ -70,12 +70,12 @@ def compute_Lagrange_to_Bernstein_change_basis_1D(
     points = _get_lagrange_points(lagrange_variant, degree + 1, dtype)
 
     result = out.T
-    tabulate_Bernstein_basis_1D(degree, points, out=result)
+    tabulate_bernstein_1d(degree, points, out=result)
 
     return out
 
 
-def compute_Bernstein_to_Lagrange_change_basis_1D(
+def compute_bernstein_to_lagrange_1d(
     degree: int,
     lagrange_variant: LagrangeVariant = LagrangeVariant.EQUISPACES,
     dtype: npt.DTypeLike = np.float64,
@@ -121,7 +121,7 @@ def compute_Bernstein_to_Lagrange_change_basis_1D(
     else:
         _validate_out_array_multidimensional(out, expected_shape, expected_dtype)
 
-    C = compute_Lagrange_to_Bernstein_change_basis_1D(degree, lagrange_variant, dtype)
+    C = compute_lagrange_to_bernstein_1d(degree, lagrange_variant, dtype)
     out[:] = np.linalg.inv(C)
     return out
 
@@ -175,7 +175,7 @@ def _compute_change_basis_1D(
         raise ValueError("dtype must be float32 or float64")
 
     # 1. Get Gauss-Legendre quadrature points and weights for the inner product on [0, 1]
-    points, weights = get_gauss_legendre_quadrature_1D(n_quad_pts, dtype)
+    points, weights = get_gauss_legendre_1d(n_quad_pts, dtype)
 
     # 2. Pre-evaluate all basis functions at all quadrature points for efficiency
     new_basis = new_basis_eval(points)
@@ -205,7 +205,7 @@ def _compute_change_basis_1D(
     return out
 
 
-def compute_Bernstein_to_cardinal_change_basis_1D(
+def compute_bernstein_to_cardinal_1d(
     degree: int,
     dtype: npt.DTypeLike = np.float64,
     out: npt.NDArray[np.float32 | np.float64] | None = None,
@@ -247,10 +247,10 @@ def compute_Bernstein_to_cardinal_change_basis_1D(
     def bernstein(
         pts: npt.NDArray[np.float32 | np.float64],
     ) -> npt.NDArray[np.float32 | np.float64]:
-        return tabulate_Bernstein_basis_1D(degree, pts)
+        return tabulate_bernstein_1d(degree, pts)
 
     def cardinal(pts: npt.NDArray[np.float32 | np.float64]) -> npt.NDArray[np.float32 | np.float64]:
-        return tabulate_cardinal_Bspline_basis_1D(degree, pts)
+        return tabulate_cardinal_bspline_1d(degree, pts)
 
     return _compute_change_basis_1D(
         new_basis_eval=bernstein,
@@ -261,7 +261,7 @@ def compute_Bernstein_to_cardinal_change_basis_1D(
     )
 
 
-def compute_cardinal_to_Bernstein_change_basis_1D(
+def compute_cardinal_to_bernstein_1d(
     degree: int,
     dtype: npt.DTypeLike = np.float64,
     out: npt.NDArray[np.float32 | np.float64] | None = None,
@@ -303,10 +303,10 @@ def compute_cardinal_to_Bernstein_change_basis_1D(
     def bernstein(
         pts: npt.NDArray[np.float32 | np.float64],
     ) -> npt.NDArray[np.float32 | np.float64]:
-        return tabulate_Bernstein_basis_1D(degree, pts)
+        return tabulate_bernstein_1d(degree, pts)
 
     def cardinal(pts: npt.NDArray[np.float32 | np.float64]) -> npt.NDArray[np.float32 | np.float64]:
-        return tabulate_cardinal_Bspline_basis_1D(degree, pts)
+        return tabulate_cardinal_bspline_1d(degree, pts)
 
     return _compute_change_basis_1D(
         new_basis_eval=cardinal,
@@ -318,7 +318,7 @@ def compute_cardinal_to_Bernstein_change_basis_1D(
 
 
 @functools.lru_cache(maxsize=64)
-def _cached_Lagrange_to_Bernstein_matrix(
+def _cached_lagrange_to_bernstein_matrix(
     degree: int,
     lagrange_variant: LagrangeVariant,
     dtype: np.dtype[np.float32 | np.float64],
@@ -326,7 +326,7 @@ def _cached_Lagrange_to_Bernstein_matrix(
     """Return a cached, read-only Lagrange-to-Bernstein change-of-basis matrix.
 
     This is the hot-path counterpart of
-    :func:`compute_Lagrange_to_Bernstein_change_basis_1D` used internally by
+    :func:`compute_lagrange_to_bernstein_1d` used internally by
     the extraction-operator routines.  Because the matrix depends only on
     ``(degree, lagrange_variant, dtype)`` — never on the knot vector — it is
     safe to share a single immutable copy across all calls with matching
@@ -346,20 +346,20 @@ def _cached_Lagrange_to_Bernstein_matrix(
         npt.NDArray[np.float32 | np.float64]: Read-only ``(degree+1, degree+1)``
             transformation matrix such that ``C @ lagrange_values = bernstein_values``.
     """
-    mat = compute_Lagrange_to_Bernstein_change_basis_1D(degree, lagrange_variant, dtype)
+    mat = compute_lagrange_to_bernstein_1d(degree, lagrange_variant, dtype)
     mat.flags.writeable = False
     return mat
 
 
 @functools.lru_cache(maxsize=64)
-def _cached_cardinal_to_Bernstein_matrix(
+def _cached_cardinal_to_bernstein_matrix(
     degree: int,
     dtype: np.dtype[np.float32 | np.float64],
 ) -> npt.NDArray[np.float32 | np.float64]:
     """Return a cached, read-only cardinal-B-spline-to-Bernstein change-of-basis matrix.
 
     This is the hot-path counterpart of
-    :func:`compute_cardinal_to_Bernstein_change_basis_1D` used internally by
+    :func:`compute_cardinal_to_bernstein_1d` used internally by
     the extraction-operator routines.  Because the matrix depends only on
     ``(degree, dtype)`` — never on the knot vector — it is safe to share a
     single immutable copy across all calls with matching arguments.
@@ -377,6 +377,6 @@ def _cached_cardinal_to_Bernstein_matrix(
         npt.NDArray[np.float32 | np.float64]: Read-only ``(degree+1, degree+1)``
             transformation matrix such that ``C @ cardinal_values = bernstein_values``.
     """
-    mat = compute_cardinal_to_Bernstein_change_basis_1D(degree, dtype)
+    mat = compute_cardinal_to_bernstein_1d(degree, dtype)
     mat.flags.writeable = False
     return mat

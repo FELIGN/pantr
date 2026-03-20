@@ -15,11 +15,11 @@ from scipy.interpolate import BarycentricInterpolator
 if TYPE_CHECKING:
     from .basis import LagrangeVariant
 from .quad import (
-    get_chebyshev_gauss_1st_kind_quadrature_1D,
-    get_chebyshev_gauss_2nd_kind_quadrature_1D,
-    get_gauss_legendre_quadrature_1D,
-    get_gauss_lobatto_legendre_quadrature_1D,
-    get_trapezoidal_quadrature_1D,
+    get_chebyshev_gauss_1st_kind_1d,
+    get_chebyshev_gauss_2nd_kind_1d,
+    get_gauss_legendre_1d,
+    get_gauss_lobatto_legendre_1d,
+    get_trapezoidal_1d,
 )
 
 
@@ -47,15 +47,15 @@ def _get_lagrange_points(
 
     variant_value = getattr(variant, "value", variant)
     if variant_value == "equispaces":
-        return get_trapezoidal_quadrature_1D(n_pts, dtype)[0]
+        return get_trapezoidal_1d(n_pts, dtype)[0]
     elif variant_value == "gauss_legendre":
-        return get_gauss_legendre_quadrature_1D(n_pts, dtype)[0]
+        return get_gauss_legendre_1d(n_pts, dtype)[0]
     elif variant_value == "gauss_lobatto_legendre":
-        return get_gauss_lobatto_legendre_quadrature_1D(n_pts, dtype)[0]
+        return get_gauss_lobatto_legendre_1d(n_pts, dtype)[0]
     elif variant_value == "chebyshev_1st":
-        return get_chebyshev_gauss_1st_kind_quadrature_1D(n_pts, dtype)[0]
+        return get_chebyshev_gauss_1st_kind_1d(n_pts, dtype)[0]
     else:  # "chebyshev_2nd"
-        return get_chebyshev_gauss_2nd_kind_quadrature_1D(n_pts, dtype)[0]
+        return get_chebyshev_gauss_2nd_kind_1d(n_pts, dtype)[0]
 
 
 def _tabulate_lagrange_basis_1D_core(

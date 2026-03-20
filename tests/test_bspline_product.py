@@ -8,7 +8,7 @@ import pytest
 
 from pantr._bspline_basis_core import _compute_basis_nurbs_book_impl
 from pantr._bspline_knots import _get_unique_knots_and_multiplicity_impl
-from pantr._bspline_space_factory import create_uniform_periodic_knot_vector
+from pantr._bspline_space_factory import create_uniform_periodic
 from pantr.bspline import Bspline
 from pantr.bspline_space_1D import BsplineSpace1D
 from pantr.bspline_space_nd import BsplineSpace
@@ -265,7 +265,7 @@ class TestEdgeCases:
     def test_error_periodic_was_removed(self) -> None:
         """Periodic B-splines no longer raise NotImplementedError; they are converted."""
         # Periodic degree-1 spline over domain [0, 1]: knots [-0.5, 0, 0.5, 1, 1.5].
-        knots_p = create_uniform_periodic_knot_vector(2, 1, domain=(0.0, 1.0))
+        knots_p = create_uniform_periodic(2, 1, domain=(0.0, 1.0))
         space_p_1d = BsplineSpace1D(knots_p, 1, periodic=True)
         space_p = BsplineSpace([space_p_1d])
         n_basis = space_p.num_total_basis
@@ -360,7 +360,7 @@ def _make_periodic(
     num_intervals: int, degree: int, domain: tuple[float, float] = (0.0, 1.0)
 ) -> Bspline:
     """Create a periodic B-spline with simple linear control points."""
-    knots = create_uniform_periodic_knot_vector(num_intervals, degree, domain=domain)
+    knots = create_uniform_periodic(num_intervals, degree, domain=domain)
     space_1d = BsplineSpace1D(knots, degree, periodic=True)
     space = BsplineSpace([space_1d])
     n = space.num_total_basis
@@ -528,7 +528,7 @@ def _make_nonopen(
     Uses a periodic knot vector but with ``periodic=False``, giving an unclamped
     spline with boundary multiplicity < degree + 1.
     """
-    knots = create_uniform_periodic_knot_vector(num_intervals, degree, domain=domain)
+    knots = create_uniform_periodic(num_intervals, degree, domain=domain)
     space_1d = BsplineSpace1D(knots, degree, periodic=False)
     space = BsplineSpace([space_1d])
     n = space.num_total_basis

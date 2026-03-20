@@ -106,7 +106,7 @@ def _get_tolerance(
         return preset.longdouble
 
 
-def get_default_tolerance(dtype: npt.DTypeLike) -> float:
+def get_default(dtype: npt.DTypeLike) -> float:
     """Get a reasonable default tolerance for floating-point comparisons.
 
     Args:
@@ -120,15 +120,15 @@ def get_default_tolerance(dtype: npt.DTypeLike) -> float:
         ValueError: If dtype is not a supported floating-point type.
 
     Example:
-        >>> get_default_tolerance(np.float32)
+        >>> get_default(np.float32)
         1e-06
-        >>> get_default_tolerance("float64")
+        >>> get_default("float64")
         1e-12
     """
     return _get_tolerance(dtype, _TOLERANCE_PRESETS["default"])
 
 
-def get_strict_tolerance(dtype: npt.DTypeLike) -> float:
+def get_strict(dtype: npt.DTypeLike) -> float:
     """Get a strict tolerance for high-precision floating-point comparisons.
 
     Args:
@@ -144,7 +144,7 @@ def get_strict_tolerance(dtype: npt.DTypeLike) -> float:
     return _get_tolerance(dtype, _TOLERANCE_PRESETS["strict"])
 
 
-def get_conservative_tolerance(dtype: npt.DTypeLike) -> float:
+def get_conservative(dtype: npt.DTypeLike) -> float:
     """Get a conservative tolerance for robust floating-point comparisons.
 
     Args:
@@ -196,7 +196,7 @@ class ToleranceInfo(TypedDict):
     min_value: float
 
 
-def get_tolerance_info(
+def get_info(
     dtype: npt.DTypeLike,
 ) -> ToleranceInfo:
     """Get comprehensive tolerance information for a dtype.
@@ -218,9 +218,9 @@ def get_tolerance_info(
     return {
         "dtype": dtype,  # preserve original representation
         "machine_epsilon": get_machine_epsilon(dt),
-        "default_tolerance": get_default_tolerance(dt),
-        "strict_tolerance": get_strict_tolerance(dt),
-        "conservative_tolerance": get_conservative_tolerance(dt),
+        "default_tolerance": get_default(dt),
+        "strict_tolerance": get_strict(dt),
+        "conservative_tolerance": get_conservative(dt),
         "precision_bits": finfo.precision,
         "precision_decimals": finfo.precision,
         "resolution": float(finfo.resolution),

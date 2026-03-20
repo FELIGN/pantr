@@ -12,11 +12,11 @@ import pytest
 from numpy import typing as npt
 
 from pantr.tolerance import (
-    get_conservative_tolerance,
-    get_default_tolerance,
+    get_conservative,
+    get_default,
+    get_info,
     get_machine_epsilon,
-    get_strict_tolerance,
-    get_tolerance_info,
+    get_strict,
 )
 
 tol_mod = sys.modules["pantr.tolerance"]
@@ -49,8 +49,8 @@ class TestTolerance:
     def test_get_default_tolerance(
         self, dtype: np.dtype[np.floating[Any]] | type[np.floating[Any]], expected: float
     ) -> None:
-        """Test get_default_tolerance with various dtypes."""
-        assert get_default_tolerance(dtype) == expected
+        """Test get_default with various dtypes."""
+        assert get_default(dtype) == expected
 
     @pytest.mark.parametrize(
         ("dtype", "expected"),
@@ -64,8 +64,8 @@ class TestTolerance:
     def test_get_strict_tolerance(
         self, dtype: np.dtype[np.floating[Any]] | type[np.floating[Any]], expected: float
     ) -> None:
-        """Test get_strict_tolerance with various dtypes."""
-        assert get_strict_tolerance(dtype) == expected
+        """Test get_strict with various dtypes."""
+        assert get_strict(dtype) == expected
 
     @pytest.mark.parametrize(
         ("dtype", "expected"),
@@ -79,8 +79,8 @@ class TestTolerance:
     def test_get_conservative_tolerance(
         self, dtype: np.dtype[np.floating[Any]] | type[np.floating[Any]], expected: float
     ) -> None:
-        """Test get_conservative_tolerance with various dtypes."""
-        assert get_conservative_tolerance(dtype) == expected
+        """Test get_conservative with various dtypes."""
+        assert get_conservative(dtype) == expected
 
     @pytest.mark.parametrize(
         "dtype",
@@ -95,18 +95,18 @@ class TestTolerance:
     def test_invalid_dtype_raises_error(self) -> None:
         """Test that an unsupported dtype raises a ValueError."""
         with pytest.raises(ValueError, match="Unsupported dtype"):
-            get_default_tolerance(np.int32)
+            get_default(np.int32)
         with pytest.raises(ValueError, match="Unsupported dtype"):
-            get_strict_tolerance("int64")
+            get_strict("int64")
         with pytest.raises(ValueError, match="Unsupported dtype"):
-            get_conservative_tolerance(np.complex64)
+            get_conservative(np.complex64)
         with pytest.raises(ValueError, match="Unsupported dtype"):
             get_machine_epsilon(np.uint8)
 
     def test_get_tolerance_info(self) -> None:
-        """Test the get_tolerance_info dictionary."""
+        """Test the get_info dictionary."""
         dtype = np.float64
-        info = get_tolerance_info(dtype)
+        info = get_info(dtype)
 
         assert info["dtype"] == dtype
         assert info["machine_epsilon"] == np.finfo(dtype).eps
@@ -120,9 +120,9 @@ class TestTolerance:
         assert info["min_value"] == np.finfo(dtype).tiny
 
     def test_get_tolerance_info_string_dtype(self) -> None:
-        """Test get_tolerance_info with a string dtype."""
+        """Test get_info with a string dtype."""
         dtype_str = "float32"
-        info = get_tolerance_info(dtype_str)
+        info = get_info(dtype_str)
         finfo = np.finfo(dtype_str)
 
         assert info["dtype"] == dtype_str
@@ -130,8 +130,8 @@ class TestTolerance:
         assert info["default_tolerance"] == DEFAULT_TOL_F32
 
     def test_tolerance_info_keys(self) -> None:
-        """Test that get_tolerance_info returns all expected keys."""
-        info = get_tolerance_info(np.float32)
+        """Test that get_info returns all expected keys."""
+        info = get_info(np.float32)
         expected_keys = {
             "dtype",
             "machine_epsilon",
@@ -149,9 +149,9 @@ class TestTolerance:
     def test_longdouble_else_branch_with_dtype_object(self) -> None:
         """Ensure the np.dtype(np.longdouble) path hits the else-branch."""
         dt = np.dtype(np.longdouble)
-        assert get_default_tolerance(dt) == DEFAULT_TOL_LD
-        assert get_strict_tolerance(dt) == STRICT_TOL_LD
-        assert get_conservative_tolerance(dt) == CONSERVATIVE_TOL_LD
+        assert get_default(dt) == DEFAULT_TOL_LD
+        assert get_strict(dt) == STRICT_TOL_LD
+        assert get_conservative(dt) == CONSERVATIVE_TOL_LD
 
     def test_import_non_alias_longdouble_branch_executes(
         self, monkeypatch: pytest.MonkeyPatch
@@ -233,7 +233,7 @@ class TestTolerance:
 
         # Pass a non-string, non-longdouble sentinel so special-casing is skipped
         sentinel = cast(npt.DTypeLike, object())
-        result = get_default_tolerance(sentinel)
+        result = get_default(sentinel)
         # Should equal the longdouble tolerance for the default preset
         expected = DEFAULT_TOL_LD
         assert result == expected

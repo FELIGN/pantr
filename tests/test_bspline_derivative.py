@@ -7,8 +7,8 @@ import numpy.typing as npt
 import pytest
 
 from pantr._bspline_space_factory import (
-    create_uniform_open_knot_vector,
-    create_uniform_periodic_knot_vector,
+    create_uniform_open,
+    create_uniform_periodic,
 )
 from pantr.bspline import Bspline
 from pantr.bspline_space_1D import BsplineSpace1D
@@ -42,7 +42,7 @@ def _make_open(
     num_intervals: int, degree: int, domain: tuple[float, float] = (0.0, 1.0)
 ) -> Bspline:
     """Create an open 1D B-spline with random-ish CPs."""
-    knots = create_uniform_open_knot_vector(num_intervals, degree, domain=domain)
+    knots = create_uniform_open(num_intervals, degree, domain=domain)
     space_1d = BsplineSpace1D(knots, degree)
     space = BsplineSpace([space_1d])
     n = space.num_total_basis
@@ -55,7 +55,7 @@ def _make_periodic(
     num_intervals: int, degree: int, domain: tuple[float, float] = (0.0, 1.0)
 ) -> Bspline:
     """Create a periodic 1D B-spline."""
-    knots = create_uniform_periodic_knot_vector(num_intervals, degree, domain=domain)
+    knots = create_uniform_periodic(num_intervals, degree, domain=domain)
     space_1d = BsplineSpace1D(knots, degree, periodic=True)
     space = BsplineSpace([space_1d])
     n = space.num_total_basis
@@ -68,7 +68,7 @@ def _make_nonopen(
     num_intervals: int, degree: int, domain: tuple[float, float] = (0.0, 1.0)
 ) -> Bspline:
     """Create a non-open, non-periodic B-spline (unclamped boundary knots)."""
-    knots = create_uniform_periodic_knot_vector(num_intervals, degree, domain=domain)
+    knots = create_uniform_periodic(num_intervals, degree, domain=domain)
     space_1d = BsplineSpace1D(knots, degree, periodic=False)
     space = BsplineSpace([space_1d])
     n = space.num_total_basis
@@ -262,8 +262,8 @@ class TestNonRationalND:
 
     def _make_2d_surface(self) -> Bspline:
         """Create a 2D B-spline surface."""
-        knots0 = create_uniform_open_knot_vector(3, 2, domain=(0.0, 1.0))
-        knots1 = create_uniform_open_knot_vector(2, 3, domain=(0.0, 1.0))
+        knots0 = create_uniform_open(3, 2, domain=(0.0, 1.0))
+        knots1 = create_uniform_open(2, 3, domain=(0.0, 1.0))
         s0 = BsplineSpace1D(knots0, 2)
         s1 = BsplineSpace1D(knots1, 3)
         space = BsplineSpace([s0, s1])
@@ -290,8 +290,8 @@ class TestNonRationalND:
 
     def test_periodic_direction(self) -> None:
         """Periodic in one direction, open in another."""
-        knots0 = create_uniform_open_knot_vector(3, 2, domain=(0.0, 1.0))
-        knots1 = create_uniform_periodic_knot_vector(4, 2, domain=(0.0, 1.0))
+        knots0 = create_uniform_open(3, 2, domain=(0.0, 1.0))
+        knots1 = create_uniform_periodic(4, 2, domain=(0.0, 1.0))
         s0 = BsplineSpace1D(knots0, 2)
         s1 = BsplineSpace1D(knots1, 2, periodic=True)
         space = BsplineSpace([s0, s1])
@@ -371,8 +371,8 @@ class TestRationalND:
 
     def test_rational_2d_surface(self) -> None:
         """Rational 2D surface derivative matches evaluate_derivatives."""
-        knots0 = create_uniform_open_knot_vector(2, 2, domain=(0.0, 1.0))
-        knots1 = create_uniform_open_knot_vector(2, 2, domain=(0.0, 1.0))
+        knots0 = create_uniform_open(2, 2, domain=(0.0, 1.0))
+        knots1 = create_uniform_open(2, 2, domain=(0.0, 1.0))
         s0 = BsplineSpace1D(knots0, 2)
         s1 = BsplineSpace1D(knots1, 2)
         space = BsplineSpace([s0, s1])

@@ -173,7 +173,7 @@ def _tabulate_cardinal_Bspline_basis_1D_impl(
             shape or dtype.
 
     Example:
-        >>> tabulate_cardinal_Bspline_basis_1D(2, [0.0, 0.5, 1.0])
+        >>> tabulate_cardinal_bspline_1d(2, [0.0, 0.5, 1.0])
         array([[0.5    , 0.5    , 0.     ],
                [0.125  , 0.75   , 0.125  ],
                [0.03125, 0.6875 , 0.28125],
