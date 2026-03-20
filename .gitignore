@@ -41,7 +41,8 @@ env/
 .idea/
 .vscode/
 *.code-workspace
-.claude/
+.claude/worktrees/
+.claude/settings.local.json
 
 # Jupyter and notebooks
 .ipynb_checkpoints/
