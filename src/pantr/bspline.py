@@ -369,8 +369,8 @@ class Bspline:
             ValueError: If the operands have different parametric domains.
 
         Note:
-            Periodic operands are automatically converted to open (clamped) form before
-            multiplication via :meth:`to_open_bspline`. The result is always non-periodic.
+            The boundary structure of the operands is preserved in the result:
+            both periodic → periodic, both non-open → non-open, either open → open.
 
         Example:
             >>> h = f.multiply(g)

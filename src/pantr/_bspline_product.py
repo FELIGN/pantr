@@ -18,7 +18,10 @@ from typing import TYPE_CHECKING
 import numpy as np
 import numpy.typing as npt
 
-from ._bspline_knots import _get_unique_knots_and_multiplicity_impl
+from ._bspline_knots import (
+    _get_Bspline_num_basis_1D_impl,
+    _get_unique_knots_and_multiplicity_impl,
+)
 from .bspline_space_1D import BsplineSpace1D
 from .bspline_space_nd import BsplineSpace
 
@@ -289,6 +292,280 @@ def _build_product_knot_vector(
     return result
 
 
+def _get_boundary_mults(
+    space_1d: BsplineSpace1D,
+    tol: float,
+) -> tuple[int, int]:
+    """Return left and right boundary multiplicities of a 1D B-spline space.
+
+    Args:
+        space_1d (BsplineSpace1D): The 1D B-spline space to query.
+        tol (float): Tolerance for grouping nearby knots.
+
+    Returns:
+        tuple[int, int]: ``(m_left, m_right)`` boundary multiplicities.
+    """
+    knots = space_1d.knots
+    p = space_1d.degree
+    a = float(knots[p])
+    b = float(knots[-p - 1])
+    m_left = int(np.sum(np.isclose(knots[: p + 1], a, atol=tol)))
+    m_right = int(np.sum(np.isclose(knots[-p - 1 :], b, atol=tol)))
+    return m_left, m_right
+
+
+def _build_periodic_product_knot_vector(  # noqa: PLR0913
+    domain: tuple[np.float32 | np.float64, np.float32 | np.float64],
+    all_bp: npt.NDArray[np.float32 | np.float64],
+    product_mults: npt.NDArray[np.int_],
+    m_bdy: int,
+    degree_sum: int,
+    dtype: npt.DTypeLike,
+) -> npt.NDArray[np.float32 | np.float64]:
+    """Build a periodic product knot vector with ghost knots.
+
+    Assembles a periodic knot vector with in-domain breakpoints and ghost knots
+    extending the breakpoint pattern periodically beyond the domain boundaries.
+
+    Args:
+        domain (tuple[np.float32 | np.float64, np.float32 | np.float64]): Domain
+            endpoints ``(a, b)``.
+        all_bp (npt.NDArray[np.float32 | np.float64]): Interior breakpoints of
+            the union mesh, sorted ascending.
+        product_mults (npt.NDArray[np.int_]): Product-space multiplicity for
+            each entry of ``all_bp``.
+        m_bdy (int): Boundary multiplicity at both endpoints (same by periodicity).
+        degree_sum (int): Total polynomial degree ``p + q`` of the product space.
+        dtype (npt.DTypeLike): Floating-point dtype for the output knot vector.
+
+    Returns:
+        npt.NDArray[np.float32 | np.float64]: Periodic knot vector with ghost knots.
+    """
+    a, b = domain
+    period = float(b) - float(a)
+
+    # Circular breakpoint list: one period [a, xi_1, ..., xi_{N-1}] with mults.
+    circle_bp = np.concatenate([[a], all_bp]).astype(dtype)
+    circle_mults = np.concatenate([[m_bdy], product_mults]).astype(np.int_)
+    n_circle = len(circle_bp)
+
+    n_ghost = degree_sum + 1 - m_bdy  # ghost knot entries needed on each side
+
+    # Right ghosts: breakpoints from the periodic extension after b.
+    # Pattern after b: xi_1+L, xi_2+L, ..., xi_{N-1}+L, a+2L, xi_1+2L, ...
+    # Start from first interior breakpoint at shift=1; skip a+L(=b) boundary.
+    right_parts: list[npt.NDArray[np.float32 | np.float64]] = []
+    remaining = n_ghost
+    shift = 1
+    idx = 1  # start from first interior (skip boundary a at index 0)
+    while remaining > 0:
+        if idx >= n_circle:
+            idx = 0
+            shift += 1
+        bp_val = float(circle_bp[idx]) + shift * period
+        m = min(int(circle_mults[idx]), remaining)
+        right_parts.append(np.full(m, bp_val, dtype=dtype))
+        remaining -= m
+        idx += 1
+
+    # Left ghosts: breakpoints from the periodic extension before a.
+    # Pattern before a (right to left): xi_{N-1}-L, ..., xi_1-L, a-L, xi_{N-1}-2L, ...
+    left_parts: list[npt.NDArray[np.float32 | np.float64]] = []
+    remaining = n_ghost
+    shift = -1
+    idx = n_circle - 1  # start from last entry in circle (last interior or a)
+    while remaining > 0:
+        bp_val = float(circle_bp[idx]) + shift * period
+        m = min(int(circle_mults[idx]), remaining)
+        left_parts.append(np.full(m, bp_val, dtype=dtype))
+        remaining -= m
+        idx -= 1
+        if idx < 0:
+            idx = n_circle - 1
+            shift -= 1
+    left_parts.reverse()
+
+    # In-domain: [a^{m_bdy}, xi_1^{m_1}, ..., xi_{N-1}^{m_{N-1}}, b^{m_bdy}]
+    in_domain_parts: list[npt.NDArray[np.float32 | np.float64]] = [
+        np.full(m_bdy, a, dtype=dtype),
+    ]
+    for xi, m in zip(all_bp, product_mults, strict=True):
+        in_domain_parts.append(np.full(int(m), xi, dtype=dtype))
+    in_domain_parts.append(np.full(m_bdy, b, dtype=dtype))
+
+    all_parts = left_parts + in_domain_parts + right_parts
+    result: npt.NDArray[np.float32 | np.float64] = np.concatenate(all_parts)
+    return result
+
+
+def _open_to_nonopen_product(
+    h_open: Bspline,
+    space_f_orig: BsplineSpace1D,
+    space_g_orig: BsplineSpace1D,
+) -> Bspline:
+    """Convert an open product B-spline to non-open (unclamped) form.
+
+    Builds a non-open knot vector with ghost extension (same pattern as periodic
+    but without modulo wrapping), then uses the Oslo chain to convert from open CPs
+    to non-open CPs via least-squares.
+
+    Args:
+        h_open (~pantr.bspline.Bspline): The product B-spline in open form.
+        space_f_orig (BsplineSpace1D): Original 1D space of the first operand.
+        space_g_orig (BsplineSpace1D): Original 1D space of the second operand.
+
+    Returns:
+        ~pantr.bspline.Bspline: Product B-spline in non-open form.
+    """
+    from ._bspline_knot_insertion_core import _compute_oslo_matrix_1d_core  # noqa: PLC0415
+    from .bspline import Bspline  # noqa: PLC0415
+
+    h_space = h_open.space.spaces[0]
+    r = h_space.degree
+    p = space_f_orig.degree
+    q = space_g_orig.degree
+    tol = max(float(space_f_orig.tolerance), float(space_g_orig.tolerance))
+    dtype = h_open.control_points.dtype
+
+    # Extract interior breakpoints and mults from the open product.
+    unique, mults = _get_unique_knots_and_multiplicity_impl(
+        h_space.knots, r, float(h_space.tolerance), in_domain=True
+    )
+    interior_bp = unique[1:-1]
+    interior_mults = mults[1:-1]
+
+    # Compute product boundary multiplicities.
+    mf_left, mf_right = _get_boundary_mults(space_f_orig, tol)
+    mg_left, mg_right = _get_boundary_mults(space_g_orig, tol)
+    m_left = max(mf_left + q, mg_left + p)
+    m_right = max(mf_right + q, mg_right + p)
+
+    # For non-open, use the periodic ghost extension pattern.
+    # The boundary multiplicity must be the same at both ends for the
+    # periodic ghost pattern. Use the minimum for a symmetric extension.
+    m_bdy = min(m_left, m_right)
+
+    # Build non-open knot vector with ghost extension (same structure as periodic).
+    domain = h_space.domain
+    T_nonopen = _build_periodic_product_knot_vector(
+        domain, interior_bp, interior_mults, m_bdy, r, dtype
+    )
+
+    # --- Stage 1: non-open → intermediate (insert boundary knots) ---
+    a = float(T_nonopen[r])
+    b = float(T_nonopen[-r - 1])
+    knots_to_insert = np.array([a] * (r + 1 - m_bdy) + [b] * (r + 1 - m_bdy), dtype=dtype)
+    T_intermediate = np.sort(np.concatenate([T_nonopen, knots_to_insert]))
+    oslo_insert = _compute_oslo_matrix_1d_core(r, T_nonopen, T_intermediate)
+
+    # --- Stage 2: trim ghost rows ---
+    n_ghost = r + 1 - m_bdy
+    T_per_open = T_intermediate[n_ghost : len(T_intermediate) - n_ghost]
+    n_per_open = len(T_per_open) - r - 1
+    oslo_trimmed = oslo_insert[n_ghost : n_ghost + n_per_open, :]
+
+    # --- Stage 3: per_open → open (insert boundary knots to match h_open) ---
+    T_open = h_space.knots
+    oslo_per_open_to_open = _compute_oslo_matrix_1d_core(r, T_per_open, T_open)
+
+    # Compose: M = oslo2 @ oslo1_trimmed, shape (n_open, n_nonopen).
+    M = oslo_per_open_to_open @ oslo_trimmed
+
+    # Solve for non-open CPs.
+    ctrl_nonopen, _res, _rank_ls, _sv = np.linalg.lstsq(M, h_open.control_points, rcond=None)
+    ctrl_nonopen = ctrl_nonopen.astype(dtype)
+
+    space_nonopen = BsplineSpace([BsplineSpace1D(T_nonopen, r)])
+    return Bspline(space_nonopen, ctrl_nonopen, is_rational=h_open.is_rational)
+
+
+def _open_to_periodic_product(
+    h_open: Bspline,
+    space_f_orig: BsplineSpace1D,
+    space_g_orig: BsplineSpace1D,
+) -> Bspline:
+    """Convert an open product B-spline to periodic form.
+
+    Builds the periodic product knot vector with ghost knots, then computes
+    the transformation matrix from periodic CPs (with modulo wrapping) to
+    open CPs, and solves for the periodic CPs via least-squares.
+
+    Args:
+        h_open (~pantr.bspline.Bspline): The product B-spline in open form.
+        space_f_orig (BsplineSpace1D): Original periodic 1D space of the first operand.
+        space_g_orig (BsplineSpace1D): Original periodic 1D space of the second operand.
+
+    Returns:
+        ~pantr.bspline.Bspline: Product B-spline in periodic form.
+    """
+    from ._bspline_knot_insertion_core import _compute_oslo_matrix_1d_core  # noqa: PLC0415
+    from .bspline import Bspline  # noqa: PLC0415
+
+    h_space = h_open.space.spaces[0]
+    r = h_space.degree
+    p = space_f_orig.degree
+    q = space_g_orig.degree
+    tol = max(float(space_f_orig.tolerance), float(space_g_orig.tolerance))
+    dtype = h_open.control_points.dtype
+
+    # Extract interior breakpoints and mults from the open product.
+    unique, mults = _get_unique_knots_and_multiplicity_impl(
+        h_space.knots, r, float(h_space.tolerance), in_domain=True
+    )
+    interior_bp = unique[1:-1]
+    interior_mults = mults[1:-1]
+
+    # Compute product boundary multiplicity (same at both ends for periodic).
+    mf_bdy = _get_boundary_mults(space_f_orig, tol)[0]
+    mg_bdy = _get_boundary_mults(space_g_orig, tol)[0]
+    m_bdy = max(mf_bdy + q, mg_bdy + p)
+
+    # Build periodic product knot vector.
+    domain = h_space.domain
+    T_per = _build_periodic_product_knot_vector(
+        domain, interior_bp, interior_mults, m_bdy, r, dtype
+    )
+
+    # Compute dimensions.
+    n_full = len(T_per) - r - 1
+    n_periodic = int(
+        _get_Bspline_num_basis_1D_impl(T_per, r, True, float(np.dtype(dtype).type(tol)))
+    )
+    # Build wrapping matrix W: (n_full, n_periodic).
+    W = np.zeros((n_full, n_periodic), dtype=dtype)
+    for i in range(n_full):
+        W[i, i % n_periodic] = np.dtype(dtype).type(1.0)
+
+    # --- Stage 1: periodic → per_open (insert boundary knots + trim ghosts) ---
+    a = float(T_per[r])
+    b = float(T_per[-r - 1])
+    knots_to_insert_per = np.array([a] * (r + 1 - m_bdy) + [b] * (r + 1 - m_bdy), dtype=dtype)
+    T_intermediate = np.sort(np.concatenate([T_per, knots_to_insert_per]))
+
+    # Oslo from periodic → intermediate.
+    oslo_insert = _compute_oslo_matrix_1d_core(r, T_per, T_intermediate)
+
+    # Trim ghost rows/knots to get per_open representation.
+    n_ghost = r + 1 - m_bdy  # ghost knot entries on each side
+    T_per_open = T_intermediate[n_ghost : len(T_intermediate) - n_ghost]
+    n_per_open = len(T_per_open) - r - 1
+    oslo_per_to_per_open = oslo_insert[n_ghost : n_ghost + n_per_open, :]
+
+    # --- Stage 2: per_open → open (insert boundary knots to match h_open) ---
+    T_open = h_space.knots
+    oslo_per_open_to_open = _compute_oslo_matrix_1d_core(r, T_per_open, T_open)
+
+    # --- Compose: open_CPs = oslo2 @ oslo1_trimmed @ W @ periodic_CPs ---
+    M = oslo_per_open_to_open @ oslo_per_to_per_open @ W
+
+    # Solve for periodic CPs.
+    ctrl_per, _res, _rank_ls, _sv = np.linalg.lstsq(M, h_open.control_points, rcond=None)
+    ctrl_per = ctrl_per.astype(dtype)
+
+    space_per = BsplineSpace([BsplineSpace1D(T_per, r, periodic=True)])
+    return Bspline(space_per, ctrl_per, is_rational=h_open.is_rational)
+
+
 def _to_rational(f: Bspline) -> Bspline:
     """Convert a B-spline to rational form by appending a column of unit weights.
 
@@ -461,7 +738,7 @@ def _multiply_rational_1d(f: Bspline, g: Bspline) -> Bspline:
     return Bspline(H_N.space, ctrl_h, is_rational=True)
 
 
-def _multiply_bspline_1d(f: Bspline, g: Bspline) -> Bspline:
+def _multiply_bspline_1d(f: Bspline, g: Bspline) -> Bspline:  # noqa: PLR0912
     """Compute the exact pointwise product of two 1D B-splines.
 
     Given B-splines ``f`` and ``g`` over the same 1D parametric domain, returns
@@ -489,9 +766,13 @@ def _multiply_bspline_1d(f: Bspline, g: Bspline) -> Bspline:
             the shared tolerance).
 
     Note:
-        Periodic operands are automatically converted to open (clamped) form via
-        :meth:`~pantr.bspline.Bspline.to_open_bspline` before multiplication. The result
-        is always non-periodic.
+        The boundary structure of the operands is preserved in the result:
+
+        - If both operands are open (clamped), the result is open.
+        - If both operands are periodic, the result is periodic.
+        - If one operand is periodic and the other is non-open (unclamped),
+          or both are non-open, the result is non-open.
+        - If either operand is open, the result is open.
     """
     if f.dim != 1:
         raise ValueError(f"f must be a 1D B-spline, got dim={f.dim}")
@@ -507,10 +788,27 @@ def _multiply_bspline_1d(f: Bspline, g: Bspline) -> Bspline:
     space_f = f.space.spaces[0]
     space_g = g.space.spaces[0]
 
-    if space_f.periodic:
+    # Determine the target boundary type.
+    f_is_open = space_f.has_open_knots() and not space_f.periodic
+    g_is_open = space_g.has_open_knots() and not space_g.periodic
+    both_periodic = space_f.periodic and space_g.periodic
+
+    if f_is_open or g_is_open:
+        target_type = "open"
+    elif both_periodic:
+        target_type = "periodic"
+    else:
+        target_type = "nonopen"
+
+    # Save original spaces for boundary multiplicity extraction.
+    space_f_orig = space_f
+    space_g_orig = space_g
+
+    # Convert non-open operands to open form for multiplication.
+    if not f_is_open:
         f = f.to_open_bspline()
         space_f = f.space.spaces[0]
-    if space_g.periodic:
+    if not g_is_open:
         g = g.to_open_bspline()
         space_g = g.space.spaces[0]
 
@@ -525,7 +823,15 @@ def _multiply_bspline_1d(f: Bspline, g: Bspline) -> Bspline:
             f"f and g must share the same parametric domain. Got {domain_f} and {domain_g}."
         )
 
+    # Compute the product in open form.
     if not f.is_rational and not g.is_rational:
-        return _multiply_nonrational_1d(f, g)
+        h_open = _multiply_nonrational_1d(f, g)
     else:
-        return _multiply_rational_1d(_to_rational(f), _to_rational(g))
+        h_open = _multiply_rational_1d(_to_rational(f), _to_rational(g))
+
+    # Convert to the target boundary type.
+    if target_type == "periodic":
+        return _open_to_periodic_product(h_open, space_f_orig, space_g_orig)
+    elif target_type == "nonopen":
+        return _open_to_nonopen_product(h_open, space_f_orig, space_g_orig)
+    return h_open

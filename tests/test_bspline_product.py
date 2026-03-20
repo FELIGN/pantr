@@ -444,15 +444,15 @@ class TestPeriodicProduct:
 
         pts = eval_pts()[1:-1]
         expected = _eval_periodic_correct(f_per, pts) * _eval_periodic_correct(g_per, pts)
-        np.testing.assert_allclose(h.evaluate(pts), expected, atol=1e-11)
+        np.testing.assert_allclose(_eval_periodic_correct(h, pts), expected, atol=1e-11)
 
-    def test_result_is_non_periodic(self) -> None:
-        """Product of periodic operands is always non-periodic."""
+    def test_periodic_times_periodic_is_periodic(self) -> None:
+        """Product of two periodic operands is periodic."""
         f_per = _make_periodic(3, 2)
         g_per = _make_periodic(3, 1)
         h = f_per.multiply(g_per)
-        assert not h.space.spaces[0].periodic
-        assert h.space.spaces[0].has_open_knots()
+        assert h.space.spaces[0].periodic
+        assert not h.space.spaces[0].has_open_knots()
 
     def test_periodic_degree3_correctness(self) -> None:
         """Works for degree-3 periodic splines."""
@@ -466,4 +466,126 @@ class TestPeriodicProduct:
 
         pts = eval_pts()[1:-1]
         expected = _eval_periodic_correct(f_per, pts) * g_open.evaluate(pts)
+        np.testing.assert_allclose(h.evaluate(pts), expected, atol=1e-11)
+
+    def test_periodic_product_different_degrees(self) -> None:
+        """Product of periodic splines with different degrees is periodic and correct."""
+        f_per = _make_periodic(3, 2)
+        g_per = _make_periodic(4, 3)
+        h = f_per.multiply(g_per)
+
+        assert h.space.spaces[0].periodic
+        assert h.degree == (5,)
+        pts = eval_pts()[1:-1]
+        expected = _eval_periodic_correct(f_per, pts) * _eval_periodic_correct(g_per, pts)
+        np.testing.assert_allclose(_eval_periodic_correct(h, pts), expected, atol=1e-11)
+
+    def test_periodic_product_few_elements(self) -> None:
+        """Periodic product with minimal number of elements."""
+        f_per = _make_periodic(3, 2)
+        g_per = _make_periodic(3, 2)
+        h = f_per.multiply(g_per)
+
+        assert h.space.spaces[0].periodic
+        pts = eval_pts()[1:-1]
+        expected = _eval_periodic_correct(f_per, pts) * _eval_periodic_correct(g_per, pts)
+        np.testing.assert_allclose(_eval_periodic_correct(h, pts), expected, atol=1e-11)
+
+    def test_periodic_product_different_meshes(self) -> None:
+        """Product of periodic splines on different meshes is periodic and correct."""
+        f_per = _make_periodic(3, 2)
+        g_per = _make_periodic(5, 2)
+        h = f_per.multiply(g_per)
+
+        assert h.space.spaces[0].periodic
+        pts = eval_pts()[1:-1]
+        expected = _eval_periodic_correct(f_per, pts) * _eval_periodic_correct(g_per, pts)
+        np.testing.assert_allclose(_eval_periodic_correct(h, pts), expected, atol=1e-11)
+
+    def test_periodic_times_open_stays_open(self) -> None:
+        """When only one operand is periodic, result is open."""
+        f_per = _make_periodic(3, 2)
+        g_open = make_bspline(
+            [0.0, 0.0, 0.0, 0.5, 1.0, 1.0, 1.0],
+            2,
+            [1.0, 2.0, 1.5, 3.0],
+        )
+        h = f_per.multiply(g_open)
+        assert not h.space.spaces[0].periodic
+        assert h.space.spaces[0].has_open_knots()
+
+
+# ---------------------------------------------------------------------------
+# Non-open product tests
+# ---------------------------------------------------------------------------
+
+
+def _make_nonopen(
+    num_intervals: int, degree: int, domain: tuple[float, float] = (0.0, 1.0)
+) -> Bspline:
+    """Create a non-open, non-periodic B-spline (unclamped boundary knots).
+
+    Uses a periodic knot vector but with ``periodic=False``, giving an unclamped
+    spline with boundary multiplicity < degree + 1.
+    """
+    knots = create_uniform_periodic_knot_vector(num_intervals, degree, domain=domain)
+    space_1d = BsplineSpace1D(knots, degree, periodic=False)
+    space = BsplineSpace([space_1d])
+    n = space.num_total_basis
+    ctrl = np.linspace(1.0, 3.0, n, dtype=np.float64)
+    return Bspline(space, ctrl)
+
+
+class TestNonOpenProduct:
+    """Correctness tests for multiplication involving non-open B-splines."""
+
+    def test_nonopen_times_nonopen_correctness(self) -> None:
+        """Product of two non-open splines is non-open and correct."""
+        f = _make_nonopen(3, 2)
+        g = _make_nonopen(4, 2)
+        h = f.multiply(g)
+
+        assert not h.space.spaces[0].has_open_knots()
+        assert not h.space.spaces[0].periodic
+
+        pts = eval_pts()[1:-1]
+        expected = f.evaluate(pts) * g.evaluate(pts)
+        np.testing.assert_allclose(h.evaluate(pts), expected, atol=1e-11)
+
+    def test_nonopen_times_periodic_is_nonopen(self) -> None:
+        """Product of non-open and periodic is non-open (not periodic)."""
+        f_no = _make_nonopen(3, 2)
+        g_per = _make_periodic(3, 2)
+        h = f_no.multiply(g_per)
+
+        assert not h.space.spaces[0].periodic
+        assert not h.space.spaces[0].has_open_knots()
+
+        pts = eval_pts()[1:-1]
+        expected = f_no.evaluate(pts) * _eval_periodic_correct(g_per, pts)
+        np.testing.assert_allclose(h.evaluate(pts), expected, atol=1e-11)
+
+    def test_nonopen_times_open_stays_open(self) -> None:
+        """When one operand is open and the other non-open, result is open."""
+        f_no = _make_nonopen(3, 2)
+        g_open = make_bspline(
+            [0.0, 0.0, 0.0, 0.5, 1.0, 1.0, 1.0],
+            2,
+            [1.0, 2.0, 1.5, 3.0],
+        )
+        h = f_no.multiply(g_open)
+        assert h.space.spaces[0].has_open_knots()
+        assert not h.space.spaces[0].periodic
+
+    def test_nonopen_different_degrees(self) -> None:
+        """Product of non-open splines with different degrees."""
+        f = _make_nonopen(3, 2)
+        g = _make_nonopen(3, 3)
+        h = f.multiply(g)
+
+        assert not h.space.spaces[0].has_open_knots()
+        assert h.degree == (5,)
+
+        pts = eval_pts()[1:-1]
+        expected = f.evaluate(pts) * g.evaluate(pts)
         np.testing.assert_allclose(h.evaluate(pts), expected, atol=1e-11)
