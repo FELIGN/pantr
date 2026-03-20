@@ -98,18 +98,18 @@ def test_degree_elevation_rational() -> None:
     np.testing.assert_allclose(vals_orig, vals_elev, atol=1e-14)
 
 
-def test_degree_elevation_zero_increment() -> None:
-    """Test that zero increment returns self or identical bspline."""
+def test_degree_elevation_zero_increment_raises() -> None:
+    """Test that zero increment raises ValueError."""
     knots = np.array([0.0, 0.0, 1.0, 1.0])
     ctrl = np.array([[0.0], [1.0]])
     space = BsplineSpace([BsplineSpace1D(knots, 1)])
     bspline = Bspline(space, ctrl)
 
-    elevated = bspline.elevate_degree(0)
-    assert elevated is bspline
+    with pytest.raises(ValueError, match="(?i)at least one.*positive"):
+        bspline.elevate_degree(0)
 
-    elevated2 = bspline.elevate_degree((0,))
-    assert elevated2 is bspline
+    with pytest.raises(ValueError, match="(?i)at least one.*positive"):
+        bspline.elevate_degree((0,))
 
 
 def test_degree_elevation_invalid_inputs() -> None:

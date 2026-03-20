@@ -272,6 +272,7 @@ class Bezier:
 
         Raises:
             ValueError: If any degree increment is negative.
+            ValueError: If all degree increments are zero.
             ValueError: If the number of increments does not match the dimension.
         """
         if isinstance(degree_increments, int):
@@ -289,7 +290,7 @@ class Bezier:
             raise ValueError("Degree increments must be non-negative.")
 
         if all(inc == 0 for inc in increments):
-            return self
+            raise ValueError("At least one degree increment must be positive.")
 
         return _degree_elevate_bezier(self, increments)
 

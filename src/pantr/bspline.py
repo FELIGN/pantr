@@ -293,6 +293,7 @@ class Bspline:
 
         Raises:
             ValueError: If any degree increment is negative.
+            ValueError: If all degree increments are zero.
             ValueError: If the number of increments does not match the dimension.
         """
         if isinstance(degree_increments, int):
@@ -309,9 +310,8 @@ class Bspline:
         if any(inc < 0 for inc in increments):
             raise ValueError("Degree increments must be non-negative.")
 
-        # If all increments are zero, return self
         if all(inc == 0 for inc in increments):
-            return self
+            raise ValueError("At least one degree increment must be positive.")
 
         return _degree_elevate_bspline(self, increments)
 
