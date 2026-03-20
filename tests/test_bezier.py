@@ -436,15 +436,16 @@ class TestBezierElevateDegree:
         b_elev = b.elevate_degree([1, 2])
         assert b_elev.degree == (3, 3)
 
-    def test_zero_increment_returns_self(self) -> None:
-        """Test that zero increment returns self."""
+    def test_zero_increment_raises(self) -> None:
+        """Test that zero increment raises."""
         b = _make_bezier_1d([1.0, 2.0, 3.0])
-        assert b.elevate_degree(0) is b
+        with pytest.raises(ValueError, match="positive"):
+            b.elevate_degree(0)
 
     def test_negative_increment_raises(self) -> None:
         """Test that negative increment raises."""
         b = _make_bezier_1d([1.0, 2.0])
-        with pytest.raises(ValueError, match="non-negative"):
+        with pytest.raises(ValueError, match="positive"):
             b.elevate_degree(-1)
 
     def test_wrong_length_raises(self) -> None:
