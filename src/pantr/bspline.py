@@ -345,40 +345,44 @@ class Bspline:
     def multiply(self, other: Bspline) -> Bspline:
         """Return the exact pointwise product of this B-spline and another.
 
-        Given B-splines ``self`` and ``other`` over the same 1D parametric
+        Given B-splines ``self`` and ``other`` over the same parametric
         domain, returns a new B-spline ``h`` such that ``h(t) = self(t) *
         other(t)`` for all ``t`` in the domain.  The result lives in the product
-        space of degree ``p + q`` where ``p`` and ``q`` are the degrees of the
-        two operands.
+        space of degree ``p_d + q_d`` per direction where ``p_d`` and ``q_d``
+        are the degrees of the two operands in direction *d*.
 
         Both non-rational and rational (NURBS) operands are supported.  A
         non-rational operand is promoted to rational (unit weights) when the
         other is rational.
 
         Args:
-            other (Bspline): The second B-spline operand. Must be 1D with the
-                same dtype, rank, and parametric domain as ``self``.
+            other (Bspline): The second B-spline operand. Must have the
+                same dimension, dtype, rank, and parametric domain as ``self``.
 
         Returns:
             Bspline: A new B-spline representing ``self * other``.
 
         Raises:
-            ValueError: If either operand has ``dim != 1``.
+            ValueError: If the operands have different dimensions.
             ValueError: If the operands have different dtypes.
             ValueError: If the operands have different ranks.
             ValueError: If the operands have different parametric domains.
 
         Note:
-            The boundary structure of the operands is preserved in the result:
+            The boundary structure of the operands is preserved per direction:
             both periodic → periodic, both non-open → non-open, either open → open.
 
         Example:
             >>> h = f.multiply(g)
             >>> h2 = f * g  # equivalent via __mul__
         """
-        from ._bspline_product import _multiply_bspline_1d  # noqa: PLC0415
+        if self.dim == 1:
+            from ._bspline_product import _multiply_bspline_1d  # noqa: PLC0415
 
-        return _multiply_bspline_1d(self, other)
+            return _multiply_bspline_1d(self, other)
+        from ._bspline_product_nd import _multiply_bspline_nd  # noqa: PLC0415
+
+        return _multiply_bspline_nd(self, other)
 
     __mul__ = multiply
 
