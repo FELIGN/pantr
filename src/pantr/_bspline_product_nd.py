@@ -29,8 +29,8 @@ from ._bspline_product import (
     _lookup_mults_in_space,
     _merge_interior_breakpoints,
 )
-from .bspline_space_1D import BsplineSpace1D
-from .bspline_space_nd import BsplineSpace
+from .bspline._bspline_space_1d import BsplineSpace1D
+from .bspline._bspline_space_nd import BsplineSpace
 
 if TYPE_CHECKING:
     from .bspline import Bspline

@@ -6,10 +6,7 @@ import numpy as np
 import numpy.typing as npt
 import pytest
 
-from pantr._bspline_space_factory import create_uniform_periodic_knot_vector
-from pantr.bspline import Bspline
-from pantr.bspline_space_1D import BsplineSpace1D
-from pantr.bspline_space_nd import BsplineSpace
+from pantr.bspline import Bspline, BsplineSpace, BsplineSpace1D, create_uniform_periodic
 from pantr.quad import PointsLattice
 
 # ---------------------------------------------------------------------------
@@ -360,9 +357,7 @@ class TestPeriodicMultiDimEvaluation:
         Returns:
             tuple[Bspline, Bspline]: (periodic spline, open spline).
         """
-        knots_per = create_uniform_periodic_knot_vector(
-            n_per, deg_per, continuity=continuity, dtype=np.float64
-        )
+        knots_per = create_uniform_periodic(n_per, deg_per, continuity=continuity, dtype=np.float64)
         knots_open = np.array(
             [0.0] * (deg_open + 1)
             + list(np.linspace(0, 1, n_open + 1)[1:-1])
@@ -406,8 +401,8 @@ class TestPeriodicMultiDimEvaluation:
 
     def test_2d_both_periodic_C0_matches_open(self) -> None:
         """2-D (periodic C^0 x periodic C^0) evaluate agrees with open form."""
-        knots0 = create_uniform_periodic_knot_vector(4, 2, continuity=0, dtype=np.float64)
-        knots1 = create_uniform_periodic_knot_vector(4, 2, continuity=0, dtype=np.float64)
+        knots0 = create_uniform_periodic(4, 2, continuity=0, dtype=np.float64)
+        knots1 = create_uniform_periodic(4, 2, continuity=0, dtype=np.float64)
         s0 = BsplineSpace1D(knots0, 2, periodic=True)
         s1 = BsplineSpace1D(knots1, 2, periodic=True)
         space = BsplineSpace([s0, s1])
@@ -427,7 +422,7 @@ class TestPeriodicMultiDimEvaluation:
 
     def test_2d_one_periodic_max_continuity_open_form_constant_field(self) -> None:
         """to_open_bspline() of a periodic x open spline with all-ones ctrl gives f=1."""
-        knots_per = create_uniform_periodic_knot_vector(4, 2, dtype=np.float64)
+        knots_per = create_uniform_periodic(4, 2, dtype=np.float64)
         knots_open = np.array([0.0, 0.0, 0.0, 0.5, 1.0, 1.0, 1.0], dtype=np.float64)
         s_per = BsplineSpace1D(knots_per, 2, periodic=True)
         s_open = BsplineSpace1D(knots_open, 2)
@@ -448,8 +443,8 @@ class TestPeriodicMultiDimEvaluation:
 
     def test_2d_both_periodic_max_continuity_open_form_constant_field(self) -> None:
         """to_open_bspline() of a periodic x periodic spline with all-ones ctrl gives f=1."""
-        knots0 = create_uniform_periodic_knot_vector(4, 2, dtype=np.float64)
-        knots1 = create_uniform_periodic_knot_vector(4, 2, dtype=np.float64)
+        knots0 = create_uniform_periodic(4, 2, dtype=np.float64)
+        knots1 = create_uniform_periodic(4, 2, dtype=np.float64)
         s0 = BsplineSpace1D(knots0, 2, periodic=True)
         s1 = BsplineSpace1D(knots1, 2, periodic=True)
         space = BsplineSpace([s0, s1])

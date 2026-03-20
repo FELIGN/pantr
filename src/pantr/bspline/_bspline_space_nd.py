@@ -1,7 +1,7 @@
 """Multi-dimensional B-spline spaces using tensor products.
 
 This module defines :class:`BsplineSpace`, which aggregates multiple
-:class:`~pantr.bspline_space_1D.BsplineSpace1D` objects to represent
+:class:`~pantr.bspline.BsplineSpace1D` objects to represent
 multi-dimensional parameter domains. It handles tensor-product basis evaluation
 by combining the 1D components.
 """
@@ -15,11 +15,11 @@ from typing import TYPE_CHECKING
 import numpy as np
 from numpy import typing as npt
 
-from ._bspline_basis_multidim import _tabulate_Bspline_basis_impl
+from .._bspline_basis_multidim import _tabulate_Bspline_basis_impl
 
 if TYPE_CHECKING:
-    from .bspline_space_1D import BsplineSpace1D
-    from .quad import PointsLattice
+    from ..quad import PointsLattice
+    from ._bspline_space_1d import BsplineSpace1D
 
 
 class BsplineSpace:

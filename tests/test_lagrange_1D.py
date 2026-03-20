@@ -11,8 +11,8 @@ import numpy.typing as npt
 import pytest
 from numpy.polynomial import chebyshev, legendre
 
-from pantr.basis import LagrangeVariant, tabulate_Lagrange_basis_1D
-from pantr.tolerance import get_default_tolerance
+from pantr.basis import LagrangeVariant, tabulate_lagrange_1d
+from pantr.tolerance import get_default
 
 
 def _lagrange_nodes(
@@ -70,7 +70,7 @@ def _lagrange_nodes(
 def test_degree_zero_all_variants(variant: LagrangeVariant, dtype: npt.DTypeLike) -> None:
     """Degree-0 Lagrange basis is constant 1 for all t in [0, 1]."""
     pts = np.linspace(0.0, 1.0, 5, dtype=dtype)
-    res = tabulate_Lagrange_basis_1D(0, variant, pts)
+    res = tabulate_lagrange_1d(0, variant, pts)
     assert res.dtype == np.dtype(dtype)
     nptest.assert_allclose(res, np.ones((pts.shape[0], 1), dtype=dtype))
 
@@ -93,9 +93,9 @@ def test_kronecker_delta_at_nodes(
     """Evaluate at interpolation nodes and verify identity matrix (delta property)."""
     n_pts = degree + 1
     nodes = _lagrange_nodes(variant, n_pts, dtype)
-    res = tabulate_Lagrange_basis_1D(degree, variant, nodes)
+    res = tabulate_lagrange_1d(degree, variant, nodes)
     eye = np.eye(n_pts, dtype=dtype)
-    rtol = get_default_tolerance(dtype)
+    rtol = get_default(dtype)
     nptest.assert_allclose(res, eye, rtol=rtol, atol=0.0)
 
 
@@ -114,24 +114,24 @@ def test_partition_of_unity(variant: LagrangeVariant, dtype: npt.DTypeLike) -> N
     """Sum over basis functions equals 1 for all t."""
     rng = np.random.default_rng(42)
     pts = rng.random(50).astype(dtype)
-    res = tabulate_Lagrange_basis_1D(6, variant, pts)
+    res = tabulate_lagrange_1d(6, variant, pts)
     sums = np.sum(res, axis=-1)
-    rtol = get_default_tolerance(dtype)
+    rtol = get_default(dtype)
     nptest.assert_allclose(sums, 1.0, rtol=rtol, atol=0.0)
 
 
 def test_scalar_and_nd_shape_preservation() -> None:
     """Scalar, 2D, and 3D inputs preserve shape with trailing basis dimension."""
     # Scalar
-    vec = tabulate_Lagrange_basis_1D(3, LagrangeVariant.EQUISPACES, 0.3)
+    vec = tabulate_lagrange_1d(3, LagrangeVariant.EQUISPACES, 0.3)
     assert vec.shape == (4,)
     # 2D
     pts2 = np.array([[0.0, 0.25], [0.5, 0.75]], dtype=np.float64)
-    res2 = tabulate_Lagrange_basis_1D(2, LagrangeVariant.GAUSS_LEGENDRE, pts2)
+    res2 = tabulate_lagrange_1d(2, LagrangeVariant.GAUSS_LEGENDRE, pts2)
     assert res2.shape == (2, 2, 3)
     # 3D
     pts3 = np.array([[[0.0], [0.33]], [[0.66], [1.0]]], dtype=np.float32)
-    res3 = tabulate_Lagrange_basis_1D(1, LagrangeVariant.CHEBYSHEV_2ND, pts3)
+    res3 = tabulate_lagrange_1d(1, LagrangeVariant.CHEBYSHEV_2ND, pts3)
     assert res3.dtype == np.float32
     assert res3.shape == (2, 2, 1, 2)
 
@@ -139,10 +139,10 @@ def test_scalar_and_nd_shape_preservation() -> None:
 def test_list_and_tuple_inputs_promote_and_preserve() -> None:
     """List/tuple inputs handled and output shape matches input container."""
     # List of lists → shape (2, 2, n+1)
-    res_list = tabulate_Lagrange_basis_1D(3, LagrangeVariant.EQUISPACES, [[0.0, 0.25], [0.5, 0.75]])
+    res_list = tabulate_lagrange_1d(3, LagrangeVariant.EQUISPACES, [[0.0, 0.25], [0.5, 0.75]])
     assert res_list.shape == (2, 2, 4)
     # Tuple → shape (3, n+1)
-    res_tuple = tabulate_Lagrange_basis_1D(2, LagrangeVariant.CHEBYSHEV_1ST, (0.0, 0.5, 1.0))
+    res_tuple = tabulate_lagrange_1d(2, LagrangeVariant.CHEBYSHEV_1ST, (0.0, 0.5, 1.0))
     assert res_tuple.shape == (3, 3)
 
 
@@ -150,8 +150,8 @@ def test_dtype_preservation_float32_float64() -> None:
     """Input dtype float32/float64 preserved in outputs."""
     pts32 = np.linspace(0.0, 1.0, 7, dtype=np.float32)
     pts64 = np.linspace(0.0, 1.0, 7, dtype=np.float64)
-    out32 = tabulate_Lagrange_basis_1D(4, LagrangeVariant.GAUSS_LOBATTO_LEGENDRE, pts32)
-    out64 = tabulate_Lagrange_basis_1D(4, LagrangeVariant.GAUSS_LOBATTO_LEGENDRE, pts64)
+    out32 = tabulate_lagrange_1d(4, LagrangeVariant.GAUSS_LOBATTO_LEGENDRE, pts32)
+    out64 = tabulate_lagrange_1d(4, LagrangeVariant.GAUSS_LOBATTO_LEGENDRE, pts64)
     assert out32.dtype == np.float32
     assert out64.dtype == np.float64
 
@@ -159,4 +159,4 @@ def test_dtype_preservation_float32_float64() -> None:
 def test_negative_degree_raises_value_error() -> None:
     """Negative degree should raise ValueError."""
     with pytest.raises(ValueError, match="degree must be non-negative"):
-        tabulate_Lagrange_basis_1D(-1, LagrangeVariant.EQUISPACES, [0.0, 0.5])
+        tabulate_lagrange_1d(-1, LagrangeVariant.EQUISPACES, [0.0, 0.5])

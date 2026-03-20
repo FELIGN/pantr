@@ -339,8 +339,7 @@ class Bezier:
             ~pantr.bspline.Bspline: Equivalent B-spline representation.
         """
         from .bspline import Bspline as BsplineCls  # noqa: PLC0415
-        from .bspline_space_1D import BsplineSpace1D  # noqa: PLC0415
-        from .bspline_space_nd import BsplineSpace  # noqa: PLC0415
+        from .bspline import BsplineSpace, BsplineSpace1D  # noqa: PLC0415
 
         dtype = self.dtype
         spaces: list[BsplineSpace1D] = []
@@ -372,3 +371,6 @@ class Bezier:
         if not bspline.space.has_Bezier_like_knots():
             raise ValueError("B-spline does not have Bézier-like knots. Cannot convert to Bézier.")
         return cls(bspline.control_points, is_rational=bspline.is_rational)
+
+
+__all__ = ["Bezier"]

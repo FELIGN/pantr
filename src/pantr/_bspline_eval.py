@@ -26,8 +26,7 @@ from ._numba_compat import nb_jit
 from .quad import PointsLattice
 
 if TYPE_CHECKING:
-    from .bspline import Bspline
-    from .bspline_space_1D import BsplineSpace1D
+    from .bspline import Bspline, BsplineSpace1D
     from .quad import PointsLattice
 
 

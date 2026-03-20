@@ -1,6 +1,6 @@
 # API Reference
 
-The PaNTr API is built around core representations like `BsplineSpace` and mathematical basis functions like `tabulate_cardinal_Bspline_basis`. 
+The PaNTr API is built around core representations like `BsplineSpace` and mathematical basis functions like `tabulate_cardinal_bspline`.
 For transformations between these domains, the `pantr.change_basis` utilities act as the **bridge between different basis types**, establishing exact matrix equivalences independent of the core geometric objects.
 
 ```{eval-rst}
@@ -11,12 +11,7 @@ For transformations between these domains, the `pantr.change_basis` utilities ac
    :undoc-members:
    :show-inheritance:
 
-.. automodule:: pantr.bspline_space_1D
-   :members:
-   :undoc-members:
-   :show-inheritance:
-
-.. automodule:: pantr.bspline_space_nd
+.. automodule:: pantr.bezier
    :members:
    :undoc-members:
    :show-inheritance:
@@ -41,4 +36,3 @@ For transformations between these domains, the `pantr.change_basis` utilities ac
    :undoc-members:
    :show-inheritance:
 ```
-

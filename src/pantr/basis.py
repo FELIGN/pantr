@@ -42,7 +42,7 @@ class LagrangeVariant(Enum):
     """Chebyshev 2nd kind points (x = [pi*k/(npts - 1) for k in range(npts)])."""
 
 
-def tabulate_Bernstein_basis_1D(
+def tabulate_bernstein_1d(
     degree: int,
     pts: npt.ArrayLike,
     out: npt.NDArray[np.float32 | np.float64] | None = None,
@@ -69,7 +69,7 @@ def tabulate_Bernstein_basis_1D(
             shape or dtype.
 
     Example:
-        >>> tabulate_Bernstein_basis_1D(2, [0.0, 0.5, 0.75, 1.0])
+        >>> tabulate_bernstein_1d(2, [0.0, 0.5, 0.75, 1.0])
         array([[1.    , 0.    , 0.    ],
                [0.25  , 0.5   , 0.25  ],
                [0.0625, 0.375 , 0.5625],
@@ -78,7 +78,7 @@ def tabulate_Bernstein_basis_1D(
     return _tabulate_Bernstein_basis_1D_impl(degree, pts, out=out)
 
 
-def tabulate_cardinal_Bspline_basis_1D(
+def tabulate_cardinal_bspline_1d(
     degree: int,
     pts: npt.ArrayLike,
     out: npt.NDArray[np.float32 | np.float64] | None = None,
@@ -120,7 +120,7 @@ def tabulate_cardinal_Bspline_basis_1D(
             shape or dtype.
 
     Example:
-        >>> tabulate_cardinal_Bspline_basis_1D(2, [0.0, 0.5, 1.0])
+        >>> tabulate_cardinal_bspline_1d(2, [0.0, 0.5, 1.0])
         array([[0.5    , 0.5    , 0.     ],
                [0.125  , 0.75   , 0.125  ],
                [0.03125, 0.6875 , 0.28125],
@@ -130,7 +130,7 @@ def tabulate_cardinal_Bspline_basis_1D(
     return _tabulate_cardinal_Bspline_basis_1D_impl(degree, pts, out=out)
 
 
-def tabulate_Lagrange_basis_1D(
+def tabulate_lagrange_1d(
     degree: int,
     variant: LagrangeVariant,
     pts: npt.ArrayLike,
@@ -169,7 +169,7 @@ def tabulate_Lagrange_basis_1D(
     return _tabulate_Lagrange_basis_1D_impl(degree, variant, pts, out=out)
 
 
-def tabulate_Legendre_basis_1D(
+def tabulate_legendre_1d(
     degree: int,
     pts: npt.ArrayLike,
     out: npt.NDArray[np.float32 | np.float64] | None = None,
@@ -202,7 +202,7 @@ def tabulate_Legendre_basis_1D(
     return _tabulate_Legendre_basis_1D_impl(degree, pts, out=out)
 
 
-def tabulate_Bernstein_basis(
+def tabulate_bernstein(
     degrees: Iterable[int],
     pts: npt.ArrayLike | PointsLattice,
     funcs_order: Literal["C", "F"] = "C",
@@ -241,12 +241,12 @@ def tabulate_Bernstein_basis(
         raise ValueError("All degrees must be non-negative integers")
     evaluators_1D = cast(
         tuple[Callable[[npt.ArrayLike], npt.NDArray[np.float32 | np.float64]]],
-        tuple(lambda pts, d=degree: tabulate_Bernstein_basis_1D(d, pts) for degree in degrees),
+        tuple(lambda pts, d=degree: tabulate_bernstein_1d(d, pts) for degree in degrees),
     )
     return _compute_basis_1D_combinator_matrix(evaluators_1D, pts, funcs_order, out)
 
 
-def tabulate_cardinal_Bspline_basis(
+def tabulate_cardinal_bspline(
     degrees: Iterable[int],
     pts: npt.ArrayLike | PointsLattice,
     funcs_order: Literal["C", "F"] = "C",
@@ -285,14 +285,12 @@ def tabulate_cardinal_Bspline_basis(
         raise ValueError("All degrees must be non-negative integers")
     evaluators_1D = cast(
         tuple[Callable[[npt.ArrayLike], npt.NDArray[np.float32 | np.float64]]],
-        tuple(
-            lambda pts, d=degree: tabulate_cardinal_Bspline_basis_1D(d, pts) for degree in degrees
-        ),
+        tuple(lambda pts, d=degree: tabulate_cardinal_bspline_1d(d, pts) for degree in degrees),
     )
     return _compute_basis_1D_combinator_matrix(evaluators_1D, pts, funcs_order, out)
 
 
-def tabulate_Lagrange_basis(
+def tabulate_lagrange(
     degrees: Iterable[int],
     variant: LagrangeVariant,
     pts: npt.ArrayLike | PointsLattice,
@@ -333,8 +331,18 @@ def tabulate_Lagrange_basis(
         raise ValueError("All degrees must be non-negative integers")
     evaluators_1D = cast(
         tuple[Callable[[npt.ArrayLike], npt.NDArray[np.float32 | np.float64]]],
-        tuple(
-            lambda pts, d=degree: tabulate_Lagrange_basis_1D(d, variant, pts) for degree in degrees
-        ),
+        tuple(lambda pts, d=degree: tabulate_lagrange_1d(d, variant, pts) for degree in degrees),
     )
     return _compute_basis_1D_combinator_matrix(evaluators_1D, pts, funcs_order, out)
+
+
+__all__ = [
+    "LagrangeVariant",
+    "tabulate_bernstein",
+    "tabulate_bernstein_1d",
+    "tabulate_cardinal_bspline",
+    "tabulate_cardinal_bspline_1d",
+    "tabulate_lagrange",
+    "tabulate_lagrange_1d",
+    "tabulate_legendre_1d",
+]

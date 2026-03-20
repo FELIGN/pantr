@@ -16,7 +16,7 @@ from pantr._bspline_basis_core import (
     _tabulate_Bspline_basis_Bernstein_like_deriv_1D,
     _tabulate_Bspline_basis_deriv_1D_impl,
 )
-from pantr.bspline_space_1D import BsplineSpace1D
+from pantr.bspline import BsplineSpace1D
 
 # ---------------------------------------------------------------------------
 # Shared fixtures

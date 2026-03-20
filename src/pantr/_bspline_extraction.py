@@ -20,8 +20,8 @@ from ._bspline_knots import (
 from ._numba_compat import nb_jit
 from .basis import LagrangeVariant
 from .change_basis import (
-    _cached_cardinal_to_Bernstein_matrix,
-    _cached_Lagrange_to_Bernstein_matrix,
+    _cached_cardinal_to_bernstein_matrix,
+    _cached_lagrange_to_bernstein_matrix,
 )
 
 
@@ -241,7 +241,7 @@ def _tabulate_Bspline_Lagrange_1D_extraction_impl(
 
     # Transform to Lagrange extraction in-place to avoid extra copy
     # For every interval, right-multiply the Bezier-to-B-spline extraction by lagr_to_bzr in-place.
-    lagr_to_bzr = _cached_Lagrange_to_Bernstein_matrix(degree, lagrange_variant, dtype)
+    lagr_to_bzr = _cached_lagrange_to_bernstein_matrix(degree, lagrange_variant, dtype)
     for i in range(out.shape[0]):
         # Use out[i, :, :] = out[i, :, :] @ lagr_to_bzr, but perform in-place via np.matmul
         # to avoid extra allocation.
@@ -301,7 +301,7 @@ def _tabulate_Bspline_cardinal_1D_extraction_impl(
     _tabulate_Bspline_Bezier_1D_extraction_impl(knots, degree, tol, out=out)
 
     # Transform to cardinal extraction
-    card_to_bzr = _cached_cardinal_to_Bernstein_matrix(degree, dtype)
+    card_to_bzr = _cached_cardinal_to_bernstein_matrix(degree, dtype)
     # Transform to cardinal extraction in-place to avoid unnecessary copy
     # out[...] = out @ card_to_bzr is not strictly in-place (it creates a new array then assigns)
     # To perform an in-place transformation, use np.matmul (or @) with out as the output

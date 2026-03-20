@@ -5,9 +5,7 @@ import numpy.typing as npt
 import pytest
 
 from pantr.bezier import Bezier
-from pantr.bspline import Bspline
-from pantr.bspline_space_1D import BsplineSpace1D
-from pantr.bspline_space_nd import BsplineSpace
+from pantr.bspline import Bspline, BsplineSpace, BsplineSpace1D
 from pantr.quad import PointsLattice
 
 # ---------------------------------------------------------------------------

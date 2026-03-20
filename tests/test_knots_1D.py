@@ -13,12 +13,12 @@ from pantr._bspline_knots import (
     _get_knots_ends_and_dtype,
     _validate_knot_input,
 )
-from pantr._bspline_space_factory import (
-    create_cardinal_Bspline_knot_vector,
-    create_uniform_open_knot_vector,
-    create_uniform_periodic_knot_vector,
+from pantr.bspline import (
+    create_cardinal,
+    create_uniform_open,
+    create_uniform_periodic,
 )
-from pantr.tolerance import get_strict_tolerance
+from pantr.tolerance import get_strict
 
 
 class TestValidateKnotInput:
@@ -171,11 +171,11 @@ class TestGetEndsAndType:
 
 
 class TestCreateUniformOpenKnotVector:
-    """Tests for `create_uniform_open_knot_vector`."""
+    """Tests for `create_uniform_open`."""
 
     def test_basic_functionality(self) -> None:
         """Create uniform open knot vector with default continuity."""
-        result = create_uniform_open_knot_vector(2, 2, domain=(0.0, 1.0))
+        result = create_uniform_open(2, 2, domain=(0.0, 1.0))
         expected: npt.NDArray[np.float64] = np.array(
             [0.0, 0.0, 0.0, 0.5, 1.0, 1.0, 1.0],
             dtype=np.float64,
@@ -185,13 +185,13 @@ class TestCreateUniformOpenKnotVector:
 
     def test_degree_zero(self) -> None:
         """Handle degree 0 splines."""
-        result = create_uniform_open_knot_vector(2, 0, domain=(0.0, 1.0))
+        result = create_uniform_open(2, 0, domain=(0.0, 1.0))
         expected: npt.NDArray[np.float64] = np.array([0.0, 0.5, 1.0], dtype=np.float64)
         nptest.assert_allclose(result, expected)
 
     def test_degree_one(self) -> None:
         """Handle degree 1 splines."""
-        result = create_uniform_open_knot_vector(2, 1, domain=(0.0, 1.0))
+        result = create_uniform_open(2, 1, domain=(0.0, 1.0))
         expected: npt.NDArray[np.float64] = np.array(
             [0.0, 0.0, 0.5, 1.0, 1.0],
             dtype=np.float64,
@@ -200,7 +200,7 @@ class TestCreateUniformOpenKnotVector:
 
     def test_single_interval(self) -> None:
         """Handle the single-interval case."""
-        result = create_uniform_open_knot_vector(1, 2, domain=(0.0, 1.0))
+        result = create_uniform_open(1, 2, domain=(0.0, 1.0))
         expected: npt.NDArray[np.float64] = np.array(
             [0.0, 0.0, 0.0, 1.0, 1.0, 1.0],
             dtype=np.float64,
@@ -209,7 +209,7 @@ class TestCreateUniformOpenKnotVector:
 
     def test_custom_continuity(self) -> None:
         """Increase interior knot multiplicity when continuity decreases."""
-        result = create_uniform_open_knot_vector(2, 2, continuity=0, domain=(0.0, 1.0))
+        result = create_uniform_open(2, 2, continuity=0, domain=(0.0, 1.0))
         expected: npt.NDArray[np.float64] = np.array(
             [0.0, 0.0, 0.0, 0.5, 0.5, 1.0, 1.0, 1.0],
             dtype=np.float64,
@@ -218,7 +218,7 @@ class TestCreateUniformOpenKnotVector:
 
     def test_custom_domain(self) -> None:
         """Respect non-default domain."""
-        result = create_uniform_open_knot_vector(2, 2, domain=(1.0, 3.0))
+        result = create_uniform_open(2, 2, domain=(1.0, 3.0))
         expected: npt.NDArray[np.float64] = np.array(
             [1.0, 1.0, 1.0, 2.0, 3.0, 3.0, 3.0],
             dtype=np.float64,
@@ -227,7 +227,7 @@ class TestCreateUniformOpenKnotVector:
 
     def test_float32_dtype(self) -> None:
         """Preserve float32 dtype requests."""
-        result = create_uniform_open_knot_vector(2, 2, dtype=np.float32)
+        result = create_uniform_open(2, 2, dtype=np.float32)
         expected: npt.NDArray[np.float32] = np.array(
             [0.0, 0.0, 0.0, 0.5, 1.0, 1.0, 1.0],
             dtype=np.float32,
@@ -238,25 +238,25 @@ class TestCreateUniformOpenKnotVector:
     def test_negative_num_intervals_error(self) -> None:
         """Reject negative interval counts."""
         with pytest.raises(ValueError, match="num_intervals must be non-negative"):
-            create_uniform_open_knot_vector(-1, 2)
+            create_uniform_open(-1, 2)
 
     def test_negative_degree_error(self) -> None:
         """Reject negative degrees."""
         with pytest.raises(ValueError, match="degree must be non-negative"):
-            create_uniform_open_knot_vector(2, -1)
+            create_uniform_open(2, -1)
 
     def test_invalid_continuity_error(self) -> None:
         """Reject continuity outside valid range."""
         with pytest.raises(ValueError, match="Continuity must be between"):
-            create_uniform_open_knot_vector(2, 2, continuity=2)
+            create_uniform_open(2, 2, continuity=2)
 
 
 class TestCreateUniformPeriodicKnotVector:
-    """Tests for `create_uniform_periodic_knot_vector`."""
+    """Tests for `create_uniform_periodic`."""
 
     def test_basic_functionality(self) -> None:
         """Create periodic knot vector extending beyond the domain."""
-        result = create_uniform_periodic_knot_vector(2, 2, domain=(0.0, 1.0))
+        result = create_uniform_periodic(2, 2, domain=(0.0, 1.0))
         expected: npt.NDArray[np.float64] = np.array(
             [-1.0, -0.5, 0.0, 0.5, 1.0, 1.5, 2.0],
             dtype=np.float64,
@@ -265,13 +265,13 @@ class TestCreateUniformPeriodicKnotVector:
 
     def test_degree_zero(self) -> None:
         """Handle degree 0 periodic splines."""
-        result = create_uniform_periodic_knot_vector(2, 0, domain=(0.0, 1.0))
+        result = create_uniform_periodic(2, 0, domain=(0.0, 1.0))
         expected: npt.NDArray[np.float64] = np.array([0.0, 0.5, 1.0], dtype=np.float64)
         nptest.assert_allclose(result, expected)
 
     def test_degree_one(self) -> None:
         """Handle degree 1 periodic splines."""
-        result = create_uniform_periodic_knot_vector(2, 1, domain=(0.0, 1.0))
+        result = create_uniform_periodic(2, 1, domain=(0.0, 1.0))
         expected: npt.NDArray[np.float64] = np.array(
             [-0.5, 0.0, 0.5, 1.0, 1.5],
             dtype=np.float64,
@@ -280,7 +280,7 @@ class TestCreateUniformPeriodicKnotVector:
 
     def test_single_interval(self) -> None:
         """Handle periodic construction with a single interval."""
-        result = create_uniform_periodic_knot_vector(1, 2, domain=(0.0, 1.0))
+        result = create_uniform_periodic(1, 2, domain=(0.0, 1.0))
         expected: npt.NDArray[np.float64] = np.array(
             [-2.0, -1.0, 0.0, 1.0, 2.0, 3.0],
             dtype=np.float64,
@@ -289,7 +289,7 @@ class TestCreateUniformPeriodicKnotVector:
 
     def test_custom_continuity(self) -> None:
         """Respect reduced continuity via increased multiplicity."""
-        result = create_uniform_periodic_knot_vector(2, 2, continuity=0, domain=(0.0, 1.0))
+        result = create_uniform_periodic(2, 2, continuity=0, domain=(0.0, 1.0))
         expected: npt.NDArray[np.float64] = np.array(
             [-0.5, 0.0, 0.0, 0.5, 0.5, 1.0, 1.0, 1.5],
             dtype=np.float64,
@@ -298,7 +298,7 @@ class TestCreateUniformPeriodicKnotVector:
 
     def test_custom_domain(self) -> None:
         """Respect non-default domains."""
-        result = create_uniform_periodic_knot_vector(2, 2, domain=(1.0, 3.0))
+        result = create_uniform_periodic(2, 2, domain=(1.0, 3.0))
         expected: npt.NDArray[np.float64] = np.array(
             [-1.0, 0.0, 1.0, 2.0, 3.0, 4.0, 5.0],
             dtype=np.float64,
@@ -307,7 +307,7 @@ class TestCreateUniformPeriodicKnotVector:
 
     def test_float32_dtype(self) -> None:
         """Preserve float32 dtype requests."""
-        result = create_uniform_periodic_knot_vector(2, 2, dtype=np.float32)
+        result = create_uniform_periodic(2, 2, dtype=np.float32)
         expected: npt.NDArray[np.float32] = np.array(
             [-1.0, -0.5, 0.0, 0.5, 1.0, 1.5, 2.0],
             dtype=np.float32,
@@ -318,25 +318,25 @@ class TestCreateUniformPeriodicKnotVector:
     def test_negative_num_intervals_error(self) -> None:
         """Reject negative interval counts."""
         with pytest.raises(ValueError, match="num_intervals must be non-negative"):
-            create_uniform_periodic_knot_vector(-1, 2)
+            create_uniform_periodic(-1, 2)
 
     def test_negative_degree_error(self) -> None:
         """Reject negative degrees."""
         with pytest.raises(ValueError, match="degree must be non-negative"):
-            create_uniform_periodic_knot_vector(2, -1)
+            create_uniform_periodic(2, -1)
 
     def test_invalid_continuity_error(self) -> None:
         """Reject continuity outside valid range."""
         with pytest.raises(ValueError, match="Continuity must be between"):
-            create_uniform_periodic_knot_vector(2, 2, continuity=2)
+            create_uniform_periodic(2, 2, continuity=2)
 
 
 class TestCreateCardinalBsplineKnotVector:
-    """Tests for `create_cardinal_Bspline_knot_vector`."""
+    """Tests for `create_cardinal`."""
 
     def test_basic_functionality(self) -> None:
         """Create cardinal knot vector with default dtype."""
-        result = create_cardinal_Bspline_knot_vector(2, 2)
+        result = create_cardinal(2, 2)
         expected: npt.NDArray[np.float64] = np.array(
             [-2.0, -1.0, 0.0, 1.0, 2.0, 3.0, 4.0],
             dtype=np.float64,
@@ -345,13 +345,13 @@ class TestCreateCardinalBsplineKnotVector:
 
     def test_degree_zero(self) -> None:
         """Handle degree 0."""
-        result = create_cardinal_Bspline_knot_vector(2, 0)
+        result = create_cardinal(2, 0)
         expected: npt.NDArray[np.float64] = np.array([0.0, 1.0, 2.0], dtype=np.float64)
         nptest.assert_allclose(result, expected)
 
     def test_degree_one(self) -> None:
         """Handle degree 1."""
-        result = create_cardinal_Bspline_knot_vector(2, 1)
+        result = create_cardinal(2, 1)
         expected: npt.NDArray[np.float64] = np.array(
             [-1.0, 0.0, 1.0, 2.0, 3.0],
             dtype=np.float64,
@@ -360,7 +360,7 @@ class TestCreateCardinalBsplineKnotVector:
 
     def test_single_interval(self) -> None:
         """Handle single interval."""
-        result = create_cardinal_Bspline_knot_vector(1, 2)
+        result = create_cardinal(1, 2)
         expected: npt.NDArray[np.float64] = np.array(
             [-2.0, -1.0, 0.0, 1.0, 2.0, 3.0],
             dtype=np.float64,
@@ -369,7 +369,7 @@ class TestCreateCardinalBsplineKnotVector:
 
     def test_high_degree(self) -> None:
         """Handle higher degrees."""
-        result = create_cardinal_Bspline_knot_vector(2, 5)
+        result = create_cardinal(2, 5)
         expected: npt.NDArray[np.float64] = np.array(
             [-5.0, -4.0, -3.0, -2.0, -1.0, 0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0],
             dtype=np.float64,
@@ -378,7 +378,7 @@ class TestCreateCardinalBsplineKnotVector:
 
     def test_float32_dtype(self) -> None:
         """Preserve float32 dtype requests."""
-        result = create_cardinal_Bspline_knot_vector(2, 2, dtype=np.float32)
+        result = create_cardinal(2, 2, dtype=np.float32)
         expected: npt.NDArray[np.float32] = np.array(
             [-2.0, -1.0, 0.0, 1.0, 2.0, 3.0, 4.0],
             dtype=np.float32,
@@ -389,17 +389,17 @@ class TestCreateCardinalBsplineKnotVector:
     def test_invalid_num_intervals_error(self) -> None:
         """Reject interval counts less than one."""
         with pytest.raises(ValueError, match="num_intervals must be at least 1"):
-            create_cardinal_Bspline_knot_vector(0, 2)
+            create_cardinal(0, 2)
 
     def test_negative_degree_error(self) -> None:
         """Reject negative degrees."""
         with pytest.raises(ValueError, match="degree must be non-negative"):
-            create_cardinal_Bspline_knot_vector(2, -1)
+            create_cardinal(2, -1)
 
     def test_invalid_dtype_error(self) -> None:
         """Reject non-floating dtype requests."""
         with pytest.raises(ValueError, match="dtype must be float32 or float64"):
-            create_cardinal_Bspline_knot_vector(2, 2, dtype=np.int32)
+            create_cardinal(2, 2, dtype=np.int32)
 
 
 class TestKnotVectorIntegration:
@@ -407,9 +407,9 @@ class TestKnotVectorIntegration:
 
     def test_consistency_across_functions(self) -> None:
         """Ensure outputs are non-decreasing and float64 by default."""
-        knots_open = create_uniform_open_knot_vector(3, 2, domain=(0.0, 1.0))
-        knots_periodic = create_uniform_periodic_knot_vector(3, 2, domain=(0.0, 1.0))
-        knots_cardinal = create_cardinal_Bspline_knot_vector(3, 2)
+        knots_open = create_uniform_open(3, 2, domain=(0.0, 1.0))
+        knots_periodic = create_uniform_periodic(3, 2, domain=(0.0, 1.0))
+        knots_cardinal = create_cardinal(3, 2)
         for knots in (knots_open, knots_periodic, knots_cardinal):
             diffs = np.diff(knots.astype(np.float64))
             assert np.all(diffs >= 0.0)
@@ -421,8 +421,8 @@ class TestKnotVectorIntegration:
         end = np.float64(2.5)
         degree = 2
         domain = (start, end)
-        knots_open = create_uniform_open_knot_vector(2, degree, domain=domain)
-        knots_periodic = create_uniform_periodic_knot_vector(2, degree, domain=domain)
+        knots_open = create_uniform_open(2, degree, domain=domain)
+        knots_periodic = create_uniform_periodic(2, degree, domain=domain)
         assert knots_open[degree] == start
         assert knots_open[-degree - 1] == end
         assert knots_periodic[degree] == start
@@ -433,15 +433,11 @@ class TestKnotVectorIntegration:
         degree = 3
         continuity = 1
         domain = (0.0, 1.0)
-        knots_open = create_uniform_open_knot_vector(
-            2, degree, continuity=continuity, domain=domain
-        )
-        knots_periodic = create_uniform_periodic_knot_vector(
-            2, degree, continuity=continuity, domain=domain
-        )
+        knots_open = create_uniform_open(2, degree, continuity=continuity, domain=domain)
+        knots_periodic = create_uniform_periodic(2, degree, continuity=continuity, domain=domain)
         multiplicity = degree - continuity
         for knots in (knots_open, knots_periodic):
-            tol = get_strict_tolerance(knots.dtype)
+            tol = get_strict(knots.dtype)
             domain_start = knots[degree]
             domain_end = knots[-degree - 1]
             mask = (knots > domain_start + tol) & (knots < domain_end - tol)
@@ -459,9 +455,9 @@ class TestKnotVectorIntegration:
         degree = 2
         continuity = degree - 1
         multiplicity = degree - continuity
-        knots_open = create_uniform_open_knot_vector(num_intervals, degree)
-        knots_periodic = create_uniform_periodic_knot_vector(num_intervals, degree)
-        knots_cardinal = create_cardinal_Bspline_knot_vector(num_intervals, degree)
+        knots_open = create_uniform_open(num_intervals, degree)
+        knots_periodic = create_uniform_periodic(num_intervals, degree)
+        knots_cardinal = create_cardinal(num_intervals, degree)
         expected_open = 2 * (degree + 1) + (num_intervals - 1) * multiplicity
         expected_periodic = 2 * (degree + 1 - multiplicity) + (num_intervals + 1) * multiplicity
         expected_cardinal = expected_periodic
@@ -472,9 +468,9 @@ class TestKnotVectorIntegration:
     def test_dtype_consistency(self) -> None:
         """Respect dtype arguments across generators."""
         dtype = np.dtype(np.float32)
-        knots_open = create_uniform_open_knot_vector(2, 2, dtype=dtype)
-        knots_periodic = create_uniform_periodic_knot_vector(2, 2, dtype=dtype)
-        knots_cardinal = create_cardinal_Bspline_knot_vector(2, 2, dtype=dtype)
+        knots_open = create_uniform_open(2, 2, dtype=dtype)
+        knots_periodic = create_uniform_periodic(2, 2, dtype=dtype)
+        knots_cardinal = create_cardinal(2, 2, dtype=dtype)
         assert knots_open.dtype == dtype
         assert knots_periodic.dtype == dtype
         assert knots_cardinal.dtype == dtype

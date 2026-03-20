@@ -11,7 +11,7 @@ from ._bspline_knots import (
 )
 
 
-def create_uniform_open_knot_vector(
+def create_uniform_open(
     num_intervals: int,
     degree: int,
     continuity: int | None = None,
@@ -40,7 +40,7 @@ def create_uniform_open_knot_vector(
         ValueError: If any parameter is invalid.
 
     Example:
-        >>> create_uniform_open_knot_vector(2, 2, domain=(0.0, 1.0))
+        >>> create_uniform_open(2, 2, domain=(0.0, 1.0))
         array([0., 0., 0., 0.5, 1., 1., 1.])
     """
     start_value: np.float32 | np.float64 | None
@@ -77,7 +77,7 @@ def create_uniform_open_knot_vector(
     return knots
 
 
-def create_uniform_periodic_knot_vector(
+def create_uniform_periodic(
     num_intervals: int,
     degree: int,
     continuity: int | None = None,
@@ -106,7 +106,7 @@ def create_uniform_periodic_knot_vector(
         ValueError: If any parameter is invalid.
 
     Example:
-        >>> create_uniform_periodic_knot_vector(2, 2, domain=(0.0, 1.0))
+        >>> create_uniform_periodic(2, 2, domain=(0.0, 1.0))
         array([-1. , -0.5,  0. ,  0.5,  1. ,  1.5,  2. ])
     """
     start_value: np.float32 | np.float64 | None
@@ -165,7 +165,7 @@ def create_uniform_periodic_knot_vector(
     return knots
 
 
-def create_cardinal_Bspline_knot_vector(
+def create_cardinal(
     num_intervals: int,
     degree: int,
     dtype: npt.DTypeLike = np.float64,
@@ -190,7 +190,7 @@ def create_cardinal_Bspline_knot_vector(
         ValueError: If num_intervals < 1, degree < 0, or dtype is not float32/float64.
 
     Example:
-        >>> create_cardinal_Bspline_knot_vector(2, 2)
+        >>> create_cardinal(2, 2)
         array([-2., -1.,  0.,  1.,  2.,  3., 4.])
     """
     if num_intervals < 1:
@@ -212,7 +212,7 @@ def create_cardinal_Bspline_knot_vector(
         start_value = np.float32(0)
         end_value = np.float32(num_intervals)
 
-    return create_uniform_periodic_knot_vector(
+    return create_uniform_periodic(
         num_intervals,
         degree,
         continuity=degree - 1,
