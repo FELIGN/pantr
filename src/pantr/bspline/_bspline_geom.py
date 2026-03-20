@@ -1,7 +1,7 @@
 """B-spline geometric objects: the Bspline class and evaluation helpers.
 
 This module provides :class:`Bspline`, which pairs a
-:class:`~pantr.bspline_space_nd.BsplineSpace` with control points to represent a
+:class:`~pantr.bspline.BsplineSpace` with control points to represent a
 parametric B-spline curve, surface, or volume. Evaluation at arbitrary points
 is dispatched to the de Boor algorithm implemented in ``_bspline_eval``.
 """
@@ -14,28 +14,28 @@ from typing import TYPE_CHECKING
 import numpy as np
 from numpy import typing as npt
 
-from ._bspline_degree import _degree_elevate_bspline
-from ._bspline_derivative import _derivative_bspline
-from ._bspline_eval import _evaluate_Bspline, _evaluate_Bspline_deriv
-from ._bspline_knot_insertion import (
+from .._bspline_degree import _degree_elevate_bspline
+from .._bspline_derivative import _derivative_bspline
+from .._bspline_eval import _evaluate_Bspline, _evaluate_Bspline_deriv
+from .._bspline_knot_insertion import (
     _compute_uniform_subdivision_knots,
     _insert_knots_bspline,
     _to_open_bspline_impl,
 )
 
 if TYPE_CHECKING:
-    from .bspline_space_nd import BsplineSpace
-    from .quad import PointsLattice
+    from ..quad import PointsLattice
+    from ._bspline_space_nd import BsplineSpace
 
 
 class Bspline:
     """A parametric B-spline curve/surface defined by a space and control points.
 
-    Combines a :class:`~pantr.bspline_space_nd.BsplineSpace` (knot vectors, degrees)
+    Combines a :class:`~pantr.bspline.BsplineSpace` (knot vectors, degrees)
     with a set of control points to represent a B-spline mapping.
 
     Attributes:
-        _space (pantr.bspline_space_nd.BsplineSpace): The multi-dimensional
+        _space (pantr.bspline.BsplineSpace): The multi-dimensional
             B-spline space.
         _control_points (npt.NDArray[np.float32 | np.float64]): Control point
             array reshaped to ``(*num_basis, rank)``.
@@ -48,7 +48,7 @@ class Bspline:
         """Initialize a B-spline.
 
         Args:
-            space (~pantr.bspline_space_nd.BsplineSpace): The B-spline space.
+            space (~pantr.bspline.BsplineSpace): The B-spline space.
             control_points (npt.ArrayLike): The control points.
             is_rational (bool): Whether the B-spline is rational.
 
@@ -105,7 +105,7 @@ class Bspline:
         """Get the underlying B-spline space.
 
         Returns:
-            ~pantr.bspline_space_nd.BsplineSpace: The multi-dimensional
+            ~pantr.bspline.BsplineSpace: The multi-dimensional
             B-spline space defining the knot vectors and polynomial degrees.
         """
         return self._space
@@ -417,10 +417,10 @@ class Bspline:
             >>> h2 = f * g  # equivalent via __mul__
         """
         if self.dim == 1:
-            from ._bspline_product import _multiply_bspline_1d  # noqa: PLC0415
+            from .._bspline_product import _multiply_bspline_1d  # noqa: PLC0415
 
             return _multiply_bspline_1d(self, other)
-        from ._bspline_product_nd import _multiply_bspline_nd  # noqa: PLC0415
+        from .._bspline_product_nd import _multiply_bspline_nd  # noqa: PLC0415
 
         return _multiply_bspline_nd(self, other)
 

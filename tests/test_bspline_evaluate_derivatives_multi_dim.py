@@ -3,10 +3,7 @@
 import numpy as np
 import pytest
 
-from pantr._bspline_space_factory import create_uniform_periodic
-from pantr.bspline import Bspline
-from pantr.bspline_space_1D import BsplineSpace1D
-from pantr.bspline_space_nd import BsplineSpace
+from pantr.bspline import Bspline, BsplineSpace, BsplineSpace1D, create_uniform_periodic
 from pantr.quad import PointsLattice
 
 

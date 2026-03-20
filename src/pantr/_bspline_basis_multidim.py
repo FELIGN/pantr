@@ -19,7 +19,7 @@ from ._bspline_knots import _is_in_domain_impl
 from .quad import PointsLattice
 
 if TYPE_CHECKING:
-    from .bspline_space_nd import BsplineSpace
+    from .bspline._bspline_space_nd import BsplineSpace
 
 
 def _validate_and_check_points_in_domain(

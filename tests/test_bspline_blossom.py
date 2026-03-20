@@ -6,9 +6,7 @@ import numpy as np
 import pytest
 
 from pantr._bspline_blossom import _evaluate_blossom_1d
-from pantr.bspline import Bspline
-from pantr.bspline_space_1D import BsplineSpace1D
-from pantr.bspline_space_nd import BsplineSpace
+from pantr.bspline import Bspline, BsplineSpace, BsplineSpace1D
 
 # ---------------------------------------------------------------------------
 # Helpers

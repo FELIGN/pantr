@@ -18,8 +18,8 @@ import numpy as np
 import numpy.typing as npt
 
 from ._bspline_knots import _get_Bspline_num_basis_1D_impl
-from .bspline_space_1D import BsplineSpace1D
-from .bspline_space_nd import BsplineSpace
+from .bspline._bspline_space_1d import BsplineSpace1D
+from .bspline._bspline_space_nd import BsplineSpace
 
 if TYPE_CHECKING:
     from .bspline import Bspline

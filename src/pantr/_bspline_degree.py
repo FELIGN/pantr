@@ -12,8 +12,8 @@ from typing import TYPE_CHECKING
 import numpy as np
 
 from ._bspline_degree_core import _degree_elevate_1d_core
-from .bspline_space_1D import BsplineSpace1D
-from .bspline_space_nd import BsplineSpace
+from .bspline._bspline_space_1d import BsplineSpace1D
+from .bspline._bspline_space_nd import BsplineSpace
 
 if TYPE_CHECKING:
     from .bspline import Bspline

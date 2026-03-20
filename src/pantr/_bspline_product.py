@@ -23,8 +23,8 @@ from ._bspline_knots import (
     _get_Bspline_num_basis_1D_impl,
     _get_unique_knots_and_multiplicity_impl,
 )
-from .bspline_space_1D import BsplineSpace1D
-from .bspline_space_nd import BsplineSpace
+from .bspline._bspline_space_1d import BsplineSpace1D
+from .bspline._bspline_space_nd import BsplineSpace
 
 if TYPE_CHECKING:
     from .bspline import Bspline

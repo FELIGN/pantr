@@ -3,9 +3,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from pantr.bspline import Bspline
-from pantr.bspline_space_1D import BsplineSpace1D
-from pantr.bspline_space_nd import BsplineSpace
+from pantr.bspline import Bspline, BsplineSpace, BsplineSpace1D
 
 
 def test_degree_elevation_1d_linear_to_quadratic() -> None:

@@ -339,8 +339,7 @@ class Bezier:
             ~pantr.bspline.Bspline: Equivalent B-spline representation.
         """
         from .bspline import Bspline as BsplineCls  # noqa: PLC0415
-        from .bspline_space_1D import BsplineSpace1D  # noqa: PLC0415
-        from .bspline_space_nd import BsplineSpace  # noqa: PLC0415
+        from .bspline import BsplineSpace, BsplineSpace1D  # noqa: PLC0415
 
         dtype = self.dtype
         spaces: list[BsplineSpace1D] = []

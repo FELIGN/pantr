@@ -29,7 +29,7 @@ from ._bspline_knots import (
 from ._numba_compat import nb_jit
 
 if TYPE_CHECKING:
-    from .bspline_space_1D import BsplineSpace1D
+    from .bspline._bspline_space_1d import BsplineSpace1D
 
 
 @nb_jit(
