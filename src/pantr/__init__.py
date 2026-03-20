@@ -25,8 +25,6 @@ from ._bspline_space_factory import (
     create_uniform_open_knot_vector,
     create_uniform_periodic_knot_vector,
 )
-
-# Public API imports
 from .basis import (
     LagrangeVariant,
     tabulate_Bernstein_basis,
@@ -37,6 +35,7 @@ from .basis import (
     tabulate_Lagrange_basis_1D,
     tabulate_Legendre_basis_1D,
 )
+from .bezier import Bezier
 from .bspline_space_1D import BsplineSpace1D
 from .bspline_space_nd import BsplineSpace
 from .change_basis import (
@@ -70,6 +69,7 @@ __author__: Final[str] = "Pablo Antolin <pablo.antolin@epfl.ch>"
 
 # Public interface: only functions/classes that don't start with _
 __all__ = [
+    "Bezier",
     "BsplineSpace",
     "BsplineSpace1D",
     "LagrangeVariant",

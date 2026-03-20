@@ -18,6 +18,7 @@ from typing import TYPE_CHECKING
 import numpy as np
 import numpy.typing as npt
 
+from ._bezier_product import _bernstein_product_coefficients
 from ._bspline_knots import (
     _get_Bspline_num_basis_1D_impl,
     _get_unique_knots_and_multiplicity_impl,
@@ -201,52 +202,6 @@ def _knots_for_full_bezier(
     if len(knots_to_insert) == 0:
         return np.empty(0, dtype=dtype)
     return np.array(knots_to_insert, dtype=dtype)
-
-
-def _bernstein_product_coefficients(
-    b_f: npt.NDArray[np.float32 | np.float64],
-    b_g: npt.NDArray[np.float32 | np.float64],
-) -> npt.NDArray[np.float32 | np.float64]:
-    r"""Compute Bézier control points of the product of two Bézier segments.
-
-    Applies the Bernstein product formula element-wise over the rank axis:
-
-    .. math::
-
-        d_k = \frac{1}{\binom{p+q}{k}} \sum_{i=\max(0,k-q)}^{\min(p,k)}
-              \binom{p}{i} \binom{q}{k-i}\, b_f[i] \cdot b_g[k-i]
-
-    Args:
-        b_f (npt.NDArray[np.float32 | np.float64]): Control points of the first
-            Bézier segment, shape ``(p+1, rank)``.
-        b_g (npt.NDArray[np.float32 | np.float64]): Control points of the second
-            Bézier segment, shape ``(q+1, rank)``.
-
-    Returns:
-        npt.NDArray[np.float32 | np.float64]: Product Bézier control points of
-        shape ``(p+q+1, rank)``.
-
-    Note:
-        Inputs are assumed to be correct (no validation performed).
-    """
-    p, q = b_f.shape[0] - 1, b_g.shape[0] - 1
-    r = p + q
-    dtype = b_f.dtype
-
-    cp = np.array([math.comb(p, i) for i in range(p + 1)], dtype=dtype)
-    cq = np.array([math.comb(q, j) for j in range(q + 1)], dtype=dtype)
-    inv_cr = np.array([1.0 / math.comb(r, k) for k in range(r + 1)], dtype=dtype)
-
-    i_idx = np.arange(p + 1)
-    j_idx = np.arange(q + 1)
-    k_mat = i_idx[:, None] + j_idx[None, :]  # (p+1, q+1)
-    coeff = cp[:, None] * cq[None, :] * inv_cr[k_mat]  # (p+1, q+1)
-
-    products = coeff[:, :, None] * b_f[:, None, :] * b_g[None, :, :]
-
-    d = np.zeros((r + 1, b_f.shape[1]), dtype=dtype)
-    np.add.at(d, k_mat.ravel(), products.reshape(-1, b_f.shape[1]))
-    return d
 
 
 def _build_product_knot_vector(
