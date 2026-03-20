@@ -6,9 +6,11 @@ import numpy as np
 import numpy.typing as npt
 import pytest
 
+from pantr._bezier_product import (
+    _bernstein_product_coefficients,
+    _bernstein_product_coefficients_nd,
+)
 from pantr._bspline_knots import _get_unique_knots_and_multiplicity_impl
-from pantr._bspline_product import _bernstein_product_coefficients
-from pantr._bspline_product_nd import _bernstein_product_coefficients_nd
 from pantr._bspline_space_factory import create_uniform_periodic_knot_vector
 from pantr.bspline import Bspline
 from pantr.bspline_space_1D import BsplineSpace1D

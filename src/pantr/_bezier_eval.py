@@ -85,7 +85,7 @@ def _evaluate_bezier_1d(
     if isinstance(pts, PL):
         if pts.dim != 1:
             raise ValueError("PointsLattice must be 1D for a 1D Bézier.")
-        pts_array = pts.points_1D[0]
+        pts_array = pts.pts_per_dir[0]
     else:
         pts_array = np.asarray(pts)
     if pts_array.ndim != 1:
@@ -246,7 +246,7 @@ def _evaluate_bezier_nd_lattice(  # noqa: PLR0913
     # Evaluate Bernstein basis per direction on lattice points
     bases: list[npt.NDArray[np.float32 | np.float64]] = []
     for d in range(dim):
-        pts_d = pts.points_1D[d]
+        pts_d = pts.pts_per_dir[d]
         if pts_d.dtype != dtype:
             raise ValueError(
                 f"PointsLattice dtype ({pts_d.dtype}) must match Bézier dtype ({dtype})."
@@ -373,7 +373,7 @@ def _evaluate_bezier_deriv_1d(
     if isinstance(pts, PL):
         if pts.dim != 1:
             raise ValueError("PointsLattice must be 1D for a 1D Bézier.")
-        pts_array = pts.points_1D[0]
+        pts_array = pts.pts_per_dir[0]
     else:
         pts_array = np.asarray(pts)
     if pts_array.ndim != 1:
@@ -520,9 +520,10 @@ def _evaluate_bezier_deriv_nd(
     # --- Resolve points ---
     is_lattice = isinstance(pts, PL)
     if is_lattice:
+        assert isinstance(pts, PL)
         if pts.dim != dim:
             raise ValueError(f"PointsLattice dim ({pts.dim}) must match Bézier dim ({dim}).")
-        pts_per_dir: list[npt.NDArray[np.float32 | np.float64]] = list(pts.points_1D)
+        pts_per_dir: list[npt.NDArray[np.float32 | np.float64]] = list(pts.pts_per_dir)
         for d in range(dim):
             if pts_per_dir[d].dtype != dtype:
                 raise ValueError(

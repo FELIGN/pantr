@@ -19,6 +19,8 @@ def test_package_all_exports() -> None:
 
     # Expected public API symbols (functions/classes that don't start with _)
     expected_public_api: Final[set[str]] = {
+        # Bezier
+        "Bezier",
         # Basis functions
         "LagrangeVariant",
         "tabulate_Bernstein_basis",

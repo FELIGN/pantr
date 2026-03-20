@@ -41,7 +41,7 @@ def _derivative_ctrl_1d(
         Inputs are assumed to be correct (no validation performed).
         For general use, call :func:`_derivative_bezier` instead.
     """
-    return degree * (ctrl[1:] - ctrl[:-1])
+    return np.asarray(degree * (ctrl[1:] - ctrl[:-1]), dtype=ctrl.dtype)
 
 
 def _derivative_nonrational_1d(bezier: Bezier) -> Bezier:
