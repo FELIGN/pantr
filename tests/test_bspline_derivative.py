@@ -24,11 +24,10 @@ def make_bspline_1d(
     degree: int,
     ctrl: list[float] | list[list[float]],
     is_rational: bool = False,
-    periodic: bool = False,
     dtype: type = np.float64,
 ) -> Bspline:
     """Create a 1D B-spline from plain Python lists."""
-    space_1d = BsplineSpace1D(np.array(knots, dtype=dtype), degree, periodic=periodic)
+    space_1d = BsplineSpace1D(np.array(knots, dtype=dtype), degree)
     space = BsplineSpace([space_1d])
     cp: npt.NDArray[np.float32 | np.float64] = np.array(ctrl, dtype=dtype)
     return Bspline(space, cp, is_rational=is_rational)
@@ -209,7 +208,7 @@ class TestNonRationalNonOpen1D:
         """Degree decreases by 1."""
         f = _make_nonopen(5, 3)
         f_prime = f.derivative()
-        assert f_prime.space.spaces[0].degree == 2
+        assert f_prime.space.spaces[0].degree == 2  # noqa: PLR2004
 
 
 # ---------------------------------------------------------------------------
@@ -243,14 +242,14 @@ class TestNonRationalPeriodic1D:
         """Degree decreases by 1."""
         f = _make_periodic(5, 3)
         f_prime = f.derivative()
-        assert f_prime.space.spaces[0].degree == 2
+        assert f_prime.space.spaces[0].degree == 2  # noqa: PLR2004
 
     def test_periodic_second_derivative(self) -> None:
         """Composable second derivative of periodic B-spline."""
         f = _make_periodic(5, 3)
         f_pp = f.derivative().derivative()
         assert f_pp.space.spaces[0].periodic
-        assert f_pp.space.spaces[0].degree == 1
+        assert f_pp.space.spaces[0].degree == 1  # p=3 -> p=2 -> p=1
 
 
 # ---------------------------------------------------------------------------
@@ -287,7 +286,7 @@ class TestNonRationalND:
         f = self._make_2d_surface()
         f_prime = f.derivative(direction=0)
         assert f_prime.space.spaces[0].degree == 1  # was 2
-        assert f_prime.space.spaces[1].degree == 3  # unchanged
+        assert f_prime.space.spaces[1].degree == 3  # unchanged  # noqa: PLR2004
 
     def test_periodic_direction(self) -> None:
         """Periodic in one direction, open in another."""
@@ -303,8 +302,8 @@ class TestNonRationalND:
         # Derivative in periodic direction.
         f_prime = f.derivative(direction=1)
         assert f_prime.space.spaces[1].periodic
-        assert f_prime.space.spaces[1].degree == 1
-        assert f_prime.space.spaces[0].degree == 2  # unchanged
+        assert f_prime.space.spaces[1].degree == 1  # p=2 -> p=1
+        assert f_prime.space.spaces[0].degree == 2  # unchanged  # noqa: PLR2004
 
 
 # ---------------------------------------------------------------------------
@@ -359,7 +358,7 @@ class TestRational1D:
         ctrl = [[1.0, 0.0, 1.0], [2.0, 4.0, 2.0], [1.5, 3.0, 1.0], [3.0, 1.5, 1.5]]
         f = make_bspline_1d(knots, 2, ctrl, is_rational=True)
         f_prime = f.derivative()
-        assert f_prime.space.spaces[0].degree == 4  # 2 * 2 = 4
+        assert f_prime.space.spaces[0].degree == 4  # 2 * 2 = 4  # noqa: PLR2004
 
 
 # ---------------------------------------------------------------------------
@@ -438,9 +437,9 @@ class TestEdgeCases:
 
         # Derivative has degree 2, same interior knot at 0.5 with mult 2.
         space_d = f_prime.space.spaces[0]
-        assert space_d.degree == 2
+        assert space_d.degree == 2  # noqa: PLR2004
         unique, mults = space_d.get_unique_knots_and_multiplicity(in_domain=True)
         # Interior knots (exclude boundaries).
         interior_mask = (unique > 0.0 + 1e-10) & (unique < 1.0 - 1e-10)
         assert np.sum(interior_mask) == 1
-        assert mults[interior_mask][0] == 2
+        assert mults[interior_mask][0] == 2  # noqa: PLR2004

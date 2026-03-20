@@ -261,7 +261,7 @@ def _refine_to_common_space_1d(
     return a, b
 
 
-def _compute_missing_knots(
+def _compute_missing_knots(  # noqa: PLR0913
     unique_self: npt.NDArray[np.float32 | np.float64],
     mults_self: npt.NDArray[np.int_],
     unique_other: npt.NDArray[np.float32 | np.float64],
