@@ -487,7 +487,11 @@ def _multiply_bspline_1d(f: Bspline, g: Bspline) -> Bspline:
         ValueError: If ``f`` and ``g`` have different ranks.
         ValueError: If ``f`` and ``g`` have different parametric domains (beyond
             the shared tolerance).
-        NotImplementedError: If either ``f`` or ``g`` has ``periodic=True``.
+
+    Note:
+        Periodic operands are automatically converted to open (clamped) form via
+        :meth:`~pantr.bspline.Bspline.to_open_bspline` before multiplication. The result
+        is always non-periodic.
     """
     if f.dim != 1:
         raise ValueError(f"f must be a 1D B-spline, got dim={f.dim}")
@@ -503,8 +507,12 @@ def _multiply_bspline_1d(f: Bspline, g: Bspline) -> Bspline:
     space_f = f.space.spaces[0]
     space_g = g.space.spaces[0]
 
-    if space_f.periodic or space_g.periodic:
-        raise NotImplementedError("Multiplication of periodic B-splines is not supported.")
+    if space_f.periodic:
+        f = f.to_open_bspline()
+        space_f = f.space.spaces[0]
+    if space_g.periodic:
+        g = g.to_open_bspline()
+        space_g = g.space.spaces[0]
 
     tol = max(float(space_f.tolerance), float(space_g.tolerance))
     domain_f = space_f.domain

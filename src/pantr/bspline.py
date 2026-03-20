@@ -19,6 +19,7 @@ from ._bspline_eval import _evaluate_Bspline, _evaluate_Bspline_deriv
 from ._bspline_knot_insertion import (
     _compute_uniform_subdivision_knots,
     _insert_knots_bspline,
+    _to_open_bspline_impl,
 )
 
 if TYPE_CHECKING:
@@ -319,6 +320,28 @@ class Bspline:
 
         return _insert_knots_bspline(self, new_knots_per_dim)
 
+    def to_open_bspline(self) -> Bspline:
+        """Return an open (clamped) non-periodic B-spline equivalent to this one.
+
+        Converts each parametric direction to an open representation by inserting knots
+        at the domain boundaries until each has multiplicity ``degree + 1``, then
+        trimming any ghost knots outside the domain.  Works for 1D and multi-dimensional
+        B-splines, and handles periodic, unclamped non-periodic, and mixed cases.
+
+        For periodic splines the ``n_full = len(knots) - degree - 1`` control points are
+        reconstructed by modulo-wrapping the ``n_periodic`` stored control points
+        (``ctrl_full[i] = ctrl[i % n_periodic]``), and the Oslo algorithm is applied to
+        this full set. The resulting open B-spline represents the mathematical periodic
+        function defined by the periodic knot vector and the wrapped control points.
+
+        Returns:
+            Bspline: Open, non-periodic B-spline with clamped knot vectors.
+
+        Raises:
+            ValueError: If the B-spline is already open in every direction.
+        """
+        return _to_open_bspline_impl(self)
+
     def multiply(self, other: Bspline) -> Bspline:
         """Return the exact pointwise product of this B-spline and another.
 
@@ -344,7 +367,10 @@ class Bspline:
             ValueError: If the operands have different dtypes.
             ValueError: If the operands have different ranks.
             ValueError: If the operands have different parametric domains.
-            NotImplementedError: If either operand is periodic.
+
+        Note:
+            Periodic operands are automatically converted to open (clamped) form before
+            multiplication via :meth:`to_open_bspline`. The result is always non-periodic.
 
         Example:
             >>> h = f.multiply(g)
