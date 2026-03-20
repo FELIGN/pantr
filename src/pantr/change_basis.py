@@ -380,3 +380,11 @@ def _cached_cardinal_to_bernstein_matrix(
     mat = compute_cardinal_to_bernstein_1d(degree, dtype)
     mat.flags.writeable = False
     return mat
+
+
+__all__ = [
+    "compute_bernstein_to_cardinal_1d",
+    "compute_bernstein_to_lagrange_1d",
+    "compute_cardinal_to_bernstein_1d",
+    "compute_lagrange_to_bernstein_1d",
+]

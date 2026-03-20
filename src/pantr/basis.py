@@ -334,3 +334,15 @@ def tabulate_lagrange(
         tuple(lambda pts, d=degree: tabulate_lagrange_1d(d, variant, pts) for degree in degrees),
     )
     return _compute_basis_1D_combinator_matrix(evaluators_1D, pts, funcs_order, out)
+
+
+__all__ = [
+    "LagrangeVariant",
+    "tabulate_bernstein",
+    "tabulate_bernstein_1d",
+    "tabulate_cardinal_bspline",
+    "tabulate_cardinal_bspline_1d",
+    "tabulate_lagrange",
+    "tabulate_lagrange_1d",
+    "tabulate_legendre_1d",
+]

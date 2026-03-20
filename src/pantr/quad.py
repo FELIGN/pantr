@@ -351,3 +351,14 @@ def create_lagrange_points_lattice(
         _get_lagrange_points(lagrange_variant, n_pts, dtype) for n_pts in n_pts_per_dir
     )
     return PointsLattice(pts_per_dir)
+
+
+__all__ = [
+    "PointsLattice",
+    "create_lagrange_points_lattice",
+    "get_chebyshev_gauss_1st_kind_1d",
+    "get_chebyshev_gauss_2nd_kind_1d",
+    "get_gauss_legendre_1d",
+    "get_gauss_lobatto_legendre_1d",
+    "get_trapezoidal_1d",
+]

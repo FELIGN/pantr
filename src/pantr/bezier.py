@@ -371,3 +371,6 @@ class Bezier:
         if not bspline.space.has_Bezier_like_knots():
             raise ValueError("B-spline does not have Bézier-like knots. Cannot convert to Bézier.")
         return cls(bspline.control_points, is_rational=bspline.is_rational)
+
+
+__all__ = ["Bezier"]
