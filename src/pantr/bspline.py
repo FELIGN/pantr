@@ -15,6 +15,7 @@ import numpy as np
 from numpy import typing as npt
 
 from ._bspline_degree import _degree_elevate_bspline
+from ._bspline_derivative import _derivative_bspline
 from ._bspline_eval import _evaluate_Bspline, _evaluate_Bspline_deriv
 from ._bspline_knot_insertion import (
     _compute_uniform_subdivision_knots,
@@ -233,6 +234,45 @@ class Bspline:
         """
         orders_seq: Sequence[int] = [orders] * self.dim if isinstance(orders, int) else orders
         return _evaluate_Bspline_deriv(self, pts, orders_seq, out)
+
+    def derivative(self, direction: int = 0) -> Bspline:
+        """Return a B-spline representing the first derivative in the given direction.
+
+        Computes the hodograph: a new B-spline whose value at every parametric
+        point equals the partial derivative of this B-spline with respect to
+        parametric direction ``direction``.
+
+        For non-rational B-splines of degree ``p`` in direction ``d``, the
+        result has degree ``p - 1`` in direction ``d`` and the same degree in
+        all other directions.
+
+        For rational B-splines (NURBS), the quotient rule is applied, producing
+        a rational B-spline of degree ``2p`` in direction ``d``.
+
+        Args:
+            direction (int): Parametric direction for differentiation.
+                Must be in ``[0, dim)``. Defaults to 0.
+
+        Returns:
+            Bspline: A new B-spline representing the derivative.
+
+        Raises:
+            ValueError: If ``direction`` is out of range ``[0, dim)``.
+            ValueError: If the degree in the given direction is 0.
+
+        Example:
+            >>> # First derivative of a 1D curve
+            >>> f_prime = f.derivative()
+            >>> # Partial derivative of a surface with respect to direction 1
+            >>> df_dv = surface.derivative(direction=1)
+            >>> # Second derivative (composable)
+            >>> f_double_prime = f.derivative().derivative()
+        """
+        if direction < 0 or direction >= self.dim:
+            raise ValueError(f"direction must be in [0, {self.dim}), got {direction}.")
+        if self.space.spaces[direction].degree < 1:
+            raise ValueError("Derivative of a degree-0 B-spline is not defined.")
+        return _derivative_bspline(self, direction)
 
     def elevate_degree(self, degree_increments: int | Sequence[int]) -> Bspline:
         """Elevate the polynomial degree of the B-spline.
