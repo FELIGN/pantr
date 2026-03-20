@@ -3,6 +3,7 @@
 from collections.abc import Callable
 
 import numpy as np
+import numpy.typing as npt
 import pytest
 
 from pantr._bspline_basis_core import (
@@ -838,7 +839,7 @@ class TestNonOpenBoundaryMultiplicityTabulation:
     """
 
     @staticmethod
-    def _make_knots(degree: int, boundary_mult: int) -> np.ndarray:
+    def _make_knots(degree: int, boundary_mult: int) -> npt.NDArray[np.float64]:
         """Construct a uniform non-open knot vector with given boundary multiplicity.
 
         Args:
