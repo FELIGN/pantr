@@ -15,7 +15,7 @@ from ._bspline_knot_insertion_core import _insert_knots_1d_core
 from ._bspline_knots import _get_unique_knots_and_multiplicity_impl, _is_in_domain_impl
 
 if TYPE_CHECKING:
-    from .bspline import Bspline, BsplineSpace1D
+    from . import Bspline, BsplineSpace1D
 
 
 def _compute_inserted_knot_vector_1d(
@@ -136,7 +136,7 @@ def _insert_knots_bspline(
     dim = bspline.dim
     ctrl = bspline.control_points
 
-    from .bspline._bspline_space_1d import BsplineSpace1D  # noqa: PLC0415
+    from ._bspline_space_1d import BsplineSpace1D  # noqa: PLC0415
 
     new_spaces_1d: list[BsplineSpace1D] = []
 
@@ -171,7 +171,7 @@ def _insert_knots_bspline(
         new_spaces_1d.append(BsplineSpace1D(refined_knots, space_1d.degree))
 
     # Assemble the new B-spline.
-    from .bspline import (  # noqa: PLC0415
+    from . import (  # noqa: PLC0415
         Bspline,
         BsplineSpace,
     )
@@ -278,7 +278,7 @@ def _to_open_bspline_impl(bspline: Bspline) -> Bspline:
     Raises:
         ValueError: If the B-spline is already open in every direction.
     """
-    from .bspline import (  # noqa: PLC0415
+    from . import (  # noqa: PLC0415
         Bspline,
         BsplineSpace,
         BsplineSpace1D,

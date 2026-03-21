@@ -12,11 +12,11 @@ from typing import TYPE_CHECKING
 import numpy as np
 
 from ._bspline_degree_core import _degree_elevate_1d_core
-from .bspline._bspline_space_1d import BsplineSpace1D
-from .bspline._bspline_space_nd import BsplineSpace
+from ._bspline_space_1d import BsplineSpace1D
+from ._bspline_space_nd import BsplineSpace
 
 if TYPE_CHECKING:
-    from .bspline import Bspline
+    from . import Bspline
 
 
 def _degree_elevate_bspline(bspline: Bspline, degree_increments: tuple[int, ...]) -> Bspline:
@@ -71,7 +71,7 @@ def _degree_elevate_bspline(bspline: Bspline, degree_increments: tuple[int, ...]
             new_spaces_1d.append(space_1d)
 
     # Assemble the new B-spline
-    from .bspline import Bspline  # noqa: PLC0415
+    from . import Bspline  # noqa: PLC0415
 
     new_space = BsplineSpace(new_spaces_1d)
 

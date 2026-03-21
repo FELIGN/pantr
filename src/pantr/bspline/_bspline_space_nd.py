@@ -15,7 +15,7 @@ from typing import TYPE_CHECKING
 import numpy as np
 from numpy import typing as npt
 
-from .._bspline_basis_multidim import _tabulate_Bspline_basis_impl
+from ._bspline_basis_multidim import _tabulate_Bspline_basis_impl
 
 if TYPE_CHECKING:
     from ..quad import PointsLattice

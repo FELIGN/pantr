@@ -14,10 +14,10 @@ from typing import TYPE_CHECKING
 import numpy as np
 from numpy import typing as npt
 
-from .._bspline_degree import _degree_elevate_bspline
-from .._bspline_derivative import _derivative_bspline
-from .._bspline_eval import _evaluate_Bspline, _evaluate_Bspline_deriv
-from .._bspline_knot_insertion import (
+from ._bspline_degree import _degree_elevate_bspline
+from ._bspline_derivative import _derivative_bspline
+from ._bspline_eval import _evaluate_Bspline, _evaluate_Bspline_deriv
+from ._bspline_knot_insertion import (
     _compute_uniform_subdivision_knots,
     _insert_knots_bspline,
     _to_open_bspline_impl,
@@ -417,10 +417,10 @@ class Bspline:
             >>> h2 = f * g  # equivalent via __mul__
         """
         if self.dim == 1:
-            from .._bspline_product import _multiply_bspline_1d  # noqa: PLC0415
+            from ._bspline_product import _multiply_bspline_1d  # noqa: PLC0415
 
             return _multiply_bspline_1d(self, other)
-        from .._bspline_product_nd import _multiply_bspline_nd  # noqa: PLC0415
+        from ._bspline_product_nd import _multiply_bspline_nd  # noqa: PLC0415
 
         return _multiply_bspline_nd(self, other)
 

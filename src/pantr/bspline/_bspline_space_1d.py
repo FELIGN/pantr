@@ -14,25 +14,25 @@ from typing import TYPE_CHECKING
 import numpy as np
 from numpy import typing as npt
 
-from .._bspline_basis_core import (
+from ..tolerance import get_strict
+from ._bspline_basis_core import (
     _tabulate_Bspline_basis_1D_impl,
     _tabulate_Bspline_basis_deriv_1D_impl,
 )
-from .._bspline_extraction import (
+from ._bspline_extraction import (
     _tabulate_Bspline_Bezier_1D_extraction_impl,
     _tabulate_Bspline_cardinal_1D_extraction_impl,
     _tabulate_Bspline_Lagrange_1D_extraction_impl,
 )
-from .._bspline_knot_insertion import (
+from ._bspline_knot_insertion import (
     _compute_inserted_knot_vector_1d,
     _compute_uniform_subdivision_knots,
 )
-from .._bspline_knots import (
+from ._bspline_knots import (
     _get_Bspline_cardinal_intervals_1D_impl,
     _get_Bspline_num_basis_1D_impl,
     _get_unique_knots_and_multiplicity_impl,
 )
-from ..tolerance import get_strict
 
 if TYPE_CHECKING:
     pass

@@ -18,11 +18,11 @@ import numpy as np
 import numpy.typing as npt
 
 from ._bspline_knots import _get_Bspline_num_basis_1D_impl
-from .bspline._bspline_space_1d import BsplineSpace1D
-from .bspline._bspline_space_nd import BsplineSpace
+from ._bspline_space_1d import BsplineSpace1D
+from ._bspline_space_nd import BsplineSpace
 
 if TYPE_CHECKING:
-    from .bspline import Bspline
+    from . import Bspline
 
 
 def _derivative_ctrl_1d(
@@ -76,7 +76,7 @@ def _derivative_nonrational_1d(bspline: Bspline) -> Bspline:
         Inputs are assumed to be correct (no validation performed).
         For general use, call :func:`_derivative_bspline` instead.
     """
-    from .bspline import Bspline as BsplineCls  # noqa: PLC0415
+    from . import Bspline as BsplineCls  # noqa: PLC0415
 
     space_1d = bspline.space.spaces[0]
     knots = space_1d.knots
@@ -109,7 +109,7 @@ def _derivative_periodic_1d(bspline: Bspline) -> Bspline:
         Inputs are assumed to be correct (no validation performed).
         For general use, call :func:`_derivative_bspline` instead.
     """
-    from .bspline import Bspline as BsplineCls  # noqa: PLC0415
+    from . import Bspline as BsplineCls  # noqa: PLC0415
 
     space_1d = bspline.space.spaces[0]
     knots = space_1d.knots
@@ -153,7 +153,7 @@ def _derivative_nonrational_nd(bspline: Bspline, direction: int) -> Bspline:
         Inputs are assumed to be correct (no validation performed).
         For general use, call :func:`_derivative_bspline` instead.
     """
-    from .bspline import Bspline as BsplineCls  # noqa: PLC0415
+    from . import Bspline as BsplineCls  # noqa: PLC0415
 
     space_d = bspline.space.spaces[direction]
     knots = space_d.knots
@@ -325,7 +325,7 @@ def _tile_scalar_bspline(w: Bspline, target_rank: int) -> Bspline:
     Note:
         Inputs are assumed to be correct (no validation performed).
     """
-    from .bspline import Bspline as BsplineCls  # noqa: PLC0415
+    from . import Bspline as BsplineCls  # noqa: PLC0415
 
     ctrl = np.repeat(w.control_points, target_rank, axis=-1)
     return BsplineCls(w.space, ctrl, is_rational=False)
@@ -355,7 +355,7 @@ def _derivative_rational(bspline: Bspline, direction: int) -> Bspline:
         Inputs are assumed to be correct (no validation performed).
         For general use, call :func:`_derivative_bspline` instead.
     """
-    from .bspline import Bspline as BsplineCls  # noqa: PLC0415
+    from . import Bspline as BsplineCls  # noqa: PLC0415
 
     ctrl = bspline.control_points
     vec_rank = ctrl.shape[-1] - 1  # number of non-weight components
