@@ -17,17 +17,17 @@ from typing import TYPE_CHECKING
 import numpy as np
 from numpy import typing as npt
 
-from ._basis_utils import _validate_out_array_1D
+from .._basis_utils import _validate_out_array_1D
+from .._numba_compat import nb_jit
+from ..quad import PointsLattice
 from ._bspline_basis_core import (
     _compute_basis_deriv_nurbs_book_impl,
     _compute_basis_nurbs_book_impl,
 )
-from ._numba_compat import nb_jit
-from .quad import PointsLattice
 
 if TYPE_CHECKING:
-    from .bspline import Bspline, BsplineSpace1D
-    from .quad import PointsLattice
+    from ..quad import PointsLattice
+    from . import Bspline, BsplineSpace1D
 
 
 @nb_jit(

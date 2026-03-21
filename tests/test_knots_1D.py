@@ -9,14 +9,14 @@ import numpy.testing as nptest
 import numpy.typing as npt
 import pytest
 
-from pantr._bspline_knots import (
-    _get_knots_ends_and_dtype,
-    _validate_knot_input,
-)
 from pantr.bspline import (
     create_cardinal,
     create_uniform_open,
     create_uniform_periodic,
+)
+from pantr.bspline._bspline_knots import (
+    _get_knots_ends_and_dtype,
+    _validate_knot_input,
 )
 from pantr.tolerance import get_strict
 

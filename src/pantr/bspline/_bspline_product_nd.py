@@ -19,7 +19,7 @@ from typing import TYPE_CHECKING
 import numpy as np
 import numpy.typing as npt
 
-from ._bezier_product import _bernstein_product_coefficients_nd
+from .._bezier_product import _bernstein_product_coefficients_nd
 from ._bspline_knots import _get_Bspline_num_basis_1D_impl, _get_unique_knots_and_multiplicity_impl
 from ._bspline_product import (
     _build_product_knot_vector,
@@ -29,11 +29,11 @@ from ._bspline_product import (
     _lookup_mults_in_space,
     _merge_interior_breakpoints,
 )
-from .bspline._bspline_space_1d import BsplineSpace1D
-from .bspline._bspline_space_nd import BsplineSpace
+from ._bspline_space_1d import BsplineSpace1D
+from ._bspline_space_nd import BsplineSpace
 
 if TYPE_CHECKING:
-    from .bspline import Bspline
+    from . import Bspline
 
 
 def _extract_bezier_patch(
@@ -162,7 +162,7 @@ def _multiply_nonrational_nd(f: Bspline, g: Bspline) -> Bspline:  # noqa: PLR091
         Inputs are assumed to be correct (no validation performed).
         For general use, call :func:`_multiply_bspline_nd` instead.
     """
-    from .bspline import Bspline as BsplineCls  # noqa: PLC0415
+    from . import Bspline as BsplineCls  # noqa: PLC0415
 
     ndim = f.dim
     dtype = f.control_points.dtype
@@ -266,7 +266,7 @@ def _to_rational_nd(f: Bspline) -> Bspline:
     """
     if f.is_rational:
         return f
-    from .bspline import Bspline as BsplineCls  # noqa: PLC0415
+    from . import Bspline as BsplineCls  # noqa: PLC0415
 
     cp = f.control_points
     weights = np.ones((*cp.shape[:-1], 1), dtype=cp.dtype)
@@ -295,7 +295,7 @@ def _multiply_rational_nd(f: Bspline, g: Bspline) -> Bspline:
         Inputs are assumed to be correct (no validation performed).
         For general use, call :func:`_multiply_bspline_nd` instead.
     """
-    from .bspline import Bspline as BsplineCls  # noqa: PLC0415
+    from . import Bspline as BsplineCls  # noqa: PLC0415
 
     # Split into numerator and denominator non-rational B-splines.
     n_f = BsplineCls(f.space, f.control_points[..., :-1])
@@ -444,7 +444,7 @@ def _multiply_bspline_nd(f: Bspline, g: Bspline) -> Bspline:  # noqa: PLR0912, P
         ValueError: If ``f`` and ``g`` have different parametric domains in
             any direction (beyond the shared tolerance).
     """
-    from .bspline import Bspline as BsplineCls  # noqa: PLC0415
+    from . import Bspline as BsplineCls  # noqa: PLC0415
 
     ndim = f.dim
 

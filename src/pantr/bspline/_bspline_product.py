@@ -18,16 +18,16 @@ from typing import TYPE_CHECKING
 import numpy as np
 import numpy.typing as npt
 
-from ._bezier_product import _bernstein_product_coefficients
+from .._bezier_product import _bernstein_product_coefficients
 from ._bspline_knots import (
     _get_Bspline_num_basis_1D_impl,
     _get_unique_knots_and_multiplicity_impl,
 )
-from .bspline._bspline_space_1d import BsplineSpace1D
-from .bspline._bspline_space_nd import BsplineSpace
+from ._bspline_space_1d import BsplineSpace1D
+from ._bspline_space_nd import BsplineSpace
 
 if TYPE_CHECKING:
-    from .bspline import Bspline
+    from . import Bspline
 
 
 def _get_interior_breakpoints_and_mults(
@@ -399,7 +399,7 @@ def _open_to_nonopen_product(
     Returns:
         ~pantr.bspline.Bspline: Product B-spline in non-open form.
     """
-    from .bspline import Bspline  # noqa: PLC0415
+    from . import Bspline  # noqa: PLC0415
 
     p, q = space_f_orig.degree, space_g_orig.degree
     tol = max(float(space_f_orig.tolerance), float(space_g_orig.tolerance))
@@ -435,7 +435,7 @@ def _open_to_periodic_product(
     Returns:
         ~pantr.bspline.Bspline: Product B-spline in periodic form.
     """
-    from .bspline import Bspline  # noqa: PLC0415
+    from . import Bspline  # noqa: PLC0415
 
     p, q = space_f_orig.degree, space_g_orig.degree
     tol = max(float(space_f_orig.tolerance), float(space_g_orig.tolerance))
@@ -474,7 +474,7 @@ def _to_rational(f: Bspline) -> Bspline:
     """
     if f.is_rational:
         return f
-    from .bspline import Bspline  # noqa: PLC0415
+    from . import Bspline  # noqa: PLC0415
 
     n = f.control_points.shape[0]
     weights = np.ones((n, 1), dtype=f.control_points.dtype)
@@ -510,7 +510,7 @@ def _multiply_nonrational_1d(f: Bspline, g: Bspline) -> Bspline:
         Inputs are assumed to be correct (no validation performed).
         For general use, call :func:`_multiply_bspline_1d` instead.
     """
-    from .bspline import Bspline  # noqa: PLC0415
+    from . import Bspline  # noqa: PLC0415
 
     space_f = f.space.spaces[0]
     space_g = g.space.spaces[0]
@@ -616,7 +616,7 @@ def _multiply_rational_1d(f: Bspline, g: Bspline) -> Bspline:
         Inputs are assumed to be correct (no validation performed).
         For general use, call :func:`_multiply_bspline_1d` instead.
     """
-    from .bspline import Bspline  # noqa: PLC0415
+    from . import Bspline  # noqa: PLC0415
 
     # Split into numerator and denominator non-rational B-splines.
     N_f = Bspline(f.space, f.control_points[:, :-1])
