@@ -5,8 +5,8 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from pantr._bspline_blossom import _evaluate_blossom_1d
 from pantr.bspline import Bspline, BsplineSpace, BsplineSpace1D
+from pantr.bspline._bspline_blossom import _evaluate_blossom_1d
 
 # ---------------------------------------------------------------------------
 # Helpers

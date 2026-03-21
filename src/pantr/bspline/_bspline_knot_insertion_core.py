@@ -16,7 +16,7 @@ from typing import Any
 import numpy as np
 import numpy.typing as npt
 
-from ._numba_compat import nb_jit
+from .._numba_compat import nb_jit
 
 
 @nb_jit(nopython=True, cache=True)

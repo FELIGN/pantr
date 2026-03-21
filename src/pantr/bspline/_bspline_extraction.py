@@ -10,18 +10,18 @@ from __future__ import annotations
 import numpy as np
 import numpy.typing as npt
 
-from ._basis_utils import _validate_out_array_3d_float
+from .._basis_utils import _validate_out_array_3d_float
+from .._numba_compat import nb_jit
+from ..basis import LagrangeVariant
+from ..change_basis import (
+    _cached_cardinal_to_bernstein_matrix,
+    _cached_lagrange_to_bernstein_matrix,
+)
 from ._bspline_knots import (
     _check_spline_info,
     _get_Bspline_cardinal_intervals_1D_impl,
     _get_multiplicity_of_first_knot_in_domain_impl,
     _get_unique_knots_and_multiplicity_impl,
-)
-from ._numba_compat import nb_jit
-from .basis import LagrangeVariant
-from .change_basis import (
-    _cached_cardinal_to_bernstein_matrix,
-    _cached_lagrange_to_bernstein_matrix,
 )
 
 

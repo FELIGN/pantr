@@ -11,15 +11,15 @@ from typing import TYPE_CHECKING, cast
 import numpy as np
 import numpy.typing as npt
 
-from ._basis_utils import (
+from .._basis_utils import (
     _validate_out_array_1D,
     _validate_out_array_first_basis,
 )
+from ..quad import PointsLattice
 from ._bspline_knots import _is_in_domain_impl
-from .quad import PointsLattice
 
 if TYPE_CHECKING:
-    from .bspline._bspline_space_nd import BsplineSpace
+    from ._bspline_space_nd import BsplineSpace
 
 
 def _validate_and_check_points_in_domain(

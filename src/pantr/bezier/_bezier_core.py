@@ -15,8 +15,8 @@ from __future__ import annotations
 import numpy as np
 import numpy.typing as npt
 
-from .._bspline_degree_core import _bincoeff
 from .._numba_compat import nb_jit, nb_prange
+from ..bspline._bspline_degree_core import _bincoeff
 
 
 @nb_jit(

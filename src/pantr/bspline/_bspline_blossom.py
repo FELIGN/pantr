@@ -1,7 +1,7 @@
 """Layer 2 helper for B-spline blossom (polar form) evaluation.
 
 Provides :func:`_evaluate_blossom_1d`, a validated entry point that delegates
-to the Numba kernel in :mod:`pantr._bspline_blossom_core`.
+to the Numba kernel in :mod:`pantr.bspline._bspline_blossom_core`.
 """
 
 from __future__ import annotations

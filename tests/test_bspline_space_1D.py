@@ -6,24 +6,6 @@ import numpy as np
 import numpy.typing as npt
 import pytest
 
-from pantr._bspline_basis_core import (
-    _compute_basis_nurbs_book_impl,
-    _tabulate_Bspline_basis_Bernstein_like_1D,
-)
-from pantr._bspline_extraction import (
-    _tabulate_Bspline_Bezier_1D_extraction_impl,
-    _tabulate_Bspline_cardinal_1D_extraction_impl,
-    _tabulate_Bspline_Lagrange_1D_extraction_impl,
-)
-from pantr._bspline_knots import (
-    _check_spline_info,
-    _get_Bspline_cardinal_intervals_1D_impl,
-    _get_Bspline_num_basis_1D_impl,
-    _get_last_knot_smaller_equal_impl,
-    _get_multiplicity_of_first_knot_in_domain_impl,
-    _get_unique_knots_and_multiplicity_impl,
-    _is_in_domain_impl,
-)
 from pantr.basis import (
     LagrangeVariant,
     tabulate_bernstein_1d,
@@ -35,6 +17,24 @@ from pantr.bspline import (
     create_cardinal,
     create_uniform_open,
     create_uniform_periodic,
+)
+from pantr.bspline._bspline_basis_core import (
+    _compute_basis_nurbs_book_impl,
+    _tabulate_Bspline_basis_Bernstein_like_1D,
+)
+from pantr.bspline._bspline_extraction import (
+    _tabulate_Bspline_Bezier_1D_extraction_impl,
+    _tabulate_Bspline_cardinal_1D_extraction_impl,
+    _tabulate_Bspline_Lagrange_1D_extraction_impl,
+)
+from pantr.bspline._bspline_knots import (
+    _check_spline_info,
+    _get_Bspline_cardinal_intervals_1D_impl,
+    _get_Bspline_num_basis_1D_impl,
+    _get_last_knot_smaller_equal_impl,
+    _get_multiplicity_of_first_knot_in_domain_impl,
+    _get_unique_knots_and_multiplicity_impl,
+    _is_in_domain_impl,
 )
 from pantr.bspline._bspline_space_1d import _cached_unique_knots_and_multiplicity
 from pantr.tolerance import get_strict
