@@ -16,7 +16,7 @@ import numpy as np
 import numpy.typing as npt
 
 if TYPE_CHECKING:
-    from .bezier import Bezier
+    from . import Bezier
 
 
 def _derivative_ctrl_1d(
@@ -57,7 +57,7 @@ def _derivative_nonrational_1d(bezier: Bezier) -> Bezier:
         Inputs are assumed to be correct (no validation performed).
         For general use, call :func:`_derivative_bezier` instead.
     """
-    from .bezier import Bezier as BezierCls  # noqa: PLC0415
+    from . import Bezier as BezierCls  # noqa: PLC0415
 
     p = bezier.degree[0]
     ctrl = bezier.control_points
@@ -83,7 +83,7 @@ def _derivative_nonrational_nd(bezier: Bezier, direction: int) -> Bezier:
         Inputs are assumed to be correct (no validation performed).
         For general use, call :func:`_derivative_bezier` instead.
     """
-    from .bezier import Bezier as BezierCls  # noqa: PLC0415
+    from . import Bezier as BezierCls  # noqa: PLC0415
 
     p = bezier.degree[direction]
     ctrl = bezier.control_points
@@ -144,7 +144,7 @@ def _tile_scalar_bezier(w: Bezier, target_rank: int) -> Bezier:
     Note:
         Inputs are assumed to be correct (no validation performed).
     """
-    from .bezier import Bezier as BezierCls  # noqa: PLC0415
+    from . import Bezier as BezierCls  # noqa: PLC0415
 
     ctrl = np.repeat(w.control_points, target_rank, axis=-1)
     return BezierCls(ctrl, is_rational=False)
@@ -170,9 +170,9 @@ def _derivative_rational(bezier: Bezier, direction: int) -> Bezier:
         Inputs are assumed to be correct (no validation performed).
         For general use, call :func:`_derivative_bezier` instead.
     """
+    from . import Bezier as BezierCls  # noqa: PLC0415
     from ._bezier_degree import _degree_elevate_bezier  # noqa: PLC0415
     from ._bezier_product import _multiply_bezier  # noqa: PLC0415
-    from .bezier import Bezier as BezierCls  # noqa: PLC0415
 
     ctrl = bezier.control_points
     vec_rank = ctrl.shape[-1] - 1  # number of non-weight components

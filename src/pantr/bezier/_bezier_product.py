@@ -19,7 +19,7 @@ import numpy as np
 import numpy.typing as npt
 
 if TYPE_CHECKING:
-    from .bezier import Bezier
+    from . import Bezier
 
 
 def _bernstein_product_coefficients(
@@ -196,7 +196,7 @@ def _multiply_nonrational(a: Bezier, b: Bezier) -> Bezier:
     Note:
         Inputs are assumed to be correct (no validation performed).
     """
-    from .bezier import Bezier as BezierCls  # noqa: PLC0415
+    from . import Bezier as BezierCls  # noqa: PLC0415
 
     if a.dim == 1:
         new_ctrl = _bernstein_product_coefficients(a.control_points, b.control_points)
@@ -221,7 +221,7 @@ def _multiply_rational(a: Bezier, b: Bezier) -> Bezier:
     Note:
         Inputs are assumed to be correct (no validation performed).
     """
-    from .bezier import Bezier as BezierCls  # noqa: PLC0415
+    from . import Bezier as BezierCls  # noqa: PLC0415
 
     # Promote non-rational to rational with unit weights.
     a_ctrl = _ensure_rational_ctrl(a)

@@ -15,7 +15,7 @@ import numpy.typing as npt
 from ._bezier_core import _degree_elevate_bezier_1d_core
 
 if TYPE_CHECKING:
-    from .bezier import Bezier
+    from . import Bezier
 
 
 def _degree_elevate_bezier(
@@ -39,7 +39,7 @@ def _degree_elevate_bezier(
     Note:
         Inputs are assumed to be validated by the caller (Layer 1).
     """
-    from .bezier import Bezier as BezierCls  # noqa: PLC0415
+    from . import Bezier as BezierCls  # noqa: PLC0415
 
     ctrl: npt.NDArray[np.float32 | np.float64] = bezier.control_points
     degrees = bezier.degree

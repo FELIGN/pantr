@@ -6,7 +6,7 @@ import numpy as np
 import numpy.typing as npt
 import pytest
 
-from pantr._bezier_product import (
+from pantr.bezier._bezier_product import (
     _bernstein_product_coefficients,
     _bernstein_product_coefficients_nd,
 )

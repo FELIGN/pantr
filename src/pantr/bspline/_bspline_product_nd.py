@@ -19,7 +19,7 @@ from typing import TYPE_CHECKING
 import numpy as np
 import numpy.typing as npt
 
-from .._bezier_product import _bernstein_product_coefficients_nd
+from ..bezier._bezier_product import _bernstein_product_coefficients_nd
 from ._bspline_knots import _get_Bspline_num_basis_1D_impl, _get_unique_knots_and_multiplicity_impl
 from ._bspline_product import (
     _build_product_knot_vector,

@@ -21,8 +21,8 @@ from ._bezier_eval import _evaluate_bezier, _evaluate_bezier_deriv
 from ._bezier_product import _multiply_bezier
 
 if TYPE_CHECKING:
-    from .bspline import Bspline
-    from .quad import PointsLattice
+    from ..bspline import Bspline
+    from ..quad import PointsLattice
 
 
 class Bezier:
@@ -338,8 +338,8 @@ class Bezier:
         Returns:
             ~pantr.bspline.Bspline: Equivalent B-spline representation.
         """
-        from .bspline import Bspline as BsplineCls  # noqa: PLC0415
-        from .bspline import BsplineSpace, BsplineSpace1D  # noqa: PLC0415
+        from ..bspline import Bspline as BsplineCls  # noqa: PLC0415
+        from ..bspline import BsplineSpace, BsplineSpace1D  # noqa: PLC0415
 
         dtype = self.dtype
         spaces: list[BsplineSpace1D] = []

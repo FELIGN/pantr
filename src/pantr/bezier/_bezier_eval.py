@@ -15,13 +15,13 @@ from typing import TYPE_CHECKING
 import numpy as np
 import numpy.typing as npt
 
-from ._basis_core import _tabulate_Bernstein_basis_1D_core
-from ._basis_utils import _validate_out_array_1D
+from .._basis_core import _tabulate_Bernstein_basis_1D_core
+from .._basis_utils import _validate_out_array_1D
 from ._bezier_core import _evaluate_bezier_1d_core, _evaluate_bezier_deriv_1d_core
 
 if TYPE_CHECKING:
-    from .bezier import Bezier
-    from .quad import PointsLattice
+    from ..quad import PointsLattice
+    from . import Bezier
 
 
 # ---------------------------------------------------------------------------
@@ -77,7 +77,7 @@ def _evaluate_bezier_1d(
     Raises:
         ValueError: If the points dtype does not match the Bézier dtype.
     """
-    from .quad import PointsLattice as PL  # noqa: PLC0415
+    from ..quad import PointsLattice as PL  # noqa: PLC0415
 
     dtype = bezier.dtype
     ctrl = bezier.control_points
@@ -141,7 +141,7 @@ def _evaluate_bezier_nd(
     Raises:
         ValueError: If the points shape or dtype does not match the Bézier.
     """
-    from .quad import PointsLattice as PL  # noqa: PLC0415
+    from ..quad import PointsLattice as PL  # noqa: PLC0415
 
     dim = bezier.dim
     dtype = bezier.dtype
@@ -365,7 +365,7 @@ def _evaluate_bezier_deriv_1d(
         npt.NDArray[np.float32 | np.float64]: Derivative values of shape
         ``(n_pts,)`` or ``(n_pts, rank)``.
     """
-    from .quad import PointsLattice as PL  # noqa: PLC0415
+    from ..quad import PointsLattice as PL  # noqa: PLC0415
 
     dtype = bezier.dtype
     ctrl = bezier.control_points
@@ -510,7 +510,7 @@ def _evaluate_bezier_deriv_nd(
     Returns:
         npt.NDArray[np.float32 | np.float64]: Partial derivative values.
     """
-    from .quad import PointsLattice as PL  # noqa: PLC0415
+    from ..quad import PointsLattice as PL  # noqa: PLC0415
 
     dim = bezier.dim
     dtype = bezier.dtype
@@ -579,7 +579,7 @@ def _evaluate_bezier_deriv_nd_non_rational(  # noqa: PLR0913
     Returns:
         npt.NDArray[np.float32 | np.float64]: Partial derivative values.
     """
-    from ._basis_core import (  # noqa: PLC0415
+    from .._basis_core import (  # noqa: PLC0415
         _tabulate_Bernstein_basis_deriv_1D_core,
     )
 
@@ -658,7 +658,7 @@ def _evaluate_bezier_deriv_nd_rational(  # noqa: PLR0913, PLR0912
     """
     import itertools  # noqa: PLC0415
 
-    from ._basis_core import (  # noqa: PLC0415
+    from .._basis_core import (  # noqa: PLC0415
         _tabulate_Bernstein_basis_deriv_1D_core,
     )
 
