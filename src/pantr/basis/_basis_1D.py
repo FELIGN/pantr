@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING, cast
 import numpy as np
 import numpy.typing as npt
 
+from .._numba_compat import wait_for_jit_warmup
 from ._basis_core import (
     _tabulate_Bernstein_basis_1D_core,
     _tabulate_cardinal_Bspline_basis_1D_core,
@@ -24,10 +25,9 @@ from ._basis_utils import (
     _normalize_points_1D,
     _validate_out_array_1D,
 )
-from ._numba_compat import wait_for_jit_warmup
 
 if TYPE_CHECKING:
-    from .basis import LagrangeVariant
+    from . import LagrangeVariant
 
 
 def _tabulate_basis_1D_impl_helper(

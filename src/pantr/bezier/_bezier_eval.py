@@ -15,8 +15,8 @@ from typing import TYPE_CHECKING
 import numpy as np
 import numpy.typing as npt
 
-from .._basis_core import _tabulate_Bernstein_basis_1D_core
-from .._basis_utils import _validate_out_array_1D
+from ..basis._basis_core import _tabulate_Bernstein_basis_1D_core
+from ..basis._basis_utils import _validate_out_array_1D
 from ._bezier_core import _evaluate_bezier_1d_core, _evaluate_bezier_deriv_1d_core
 
 if TYPE_CHECKING:
@@ -579,7 +579,7 @@ def _evaluate_bezier_deriv_nd_non_rational(  # noqa: PLR0913
     Returns:
         npt.NDArray[np.float32 | np.float64]: Partial derivative values.
     """
-    from .._basis_core import (  # noqa: PLC0415
+    from ..basis._basis_core import (  # noqa: PLC0415
         _tabulate_Bernstein_basis_deriv_1D_core,
     )
 
@@ -658,7 +658,7 @@ def _evaluate_bezier_deriv_nd_rational(  # noqa: PLR0913, PLR0912
     """
     import itertools  # noqa: PLC0415
 
-    from .._basis_core import (  # noqa: PLC0415
+    from ..basis._basis_core import (  # noqa: PLC0415
         _tabulate_Bernstein_basis_deriv_1D_core,
     )
 

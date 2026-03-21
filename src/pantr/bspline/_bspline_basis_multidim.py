@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING, cast
 import numpy as np
 import numpy.typing as npt
 
-from .._basis_utils import (
+from ..basis._basis_utils import (
     _validate_out_array_1D,
     _validate_out_array_first_basis,
 )

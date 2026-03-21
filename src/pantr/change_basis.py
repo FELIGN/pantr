@@ -17,9 +17,9 @@ from collections.abc import Callable
 import numpy as np
 import numpy.typing as npt
 
-from ._basis_lagrange import _get_lagrange_points
-from ._basis_utils import _validate_out_array_multidimensional
 from .basis import LagrangeVariant, tabulate_bernstein_1d, tabulate_cardinal_bspline_1d
+from .basis._basis_lagrange import _get_lagrange_points
+from .basis._basis_utils import _validate_out_array_multidimensional
 from .quad import get_gauss_legendre_1d
 
 

@@ -11,9 +11,10 @@ from typing import TYPE_CHECKING
 import numpy as np
 import numpy.typing as npt
 
-from .._basis_1D import _tabulate_Bernstein_basis_1D_impl
-from .._basis_core import _tabulate_Bernstein_basis_deriv_1D_core
-from .._basis_utils import (
+from .._numba_compat import nb_jit
+from ..basis._basis_1D import _tabulate_Bernstein_basis_1D_impl
+from ..basis._basis_core import _tabulate_Bernstein_basis_deriv_1D_core
+from ..basis._basis_utils import (
     _compute_final_output_shape_1D,
     _compute_final_output_shape_1D_deriv,
     _normalize_points_1D,
@@ -21,7 +22,6 @@ from .._basis_utils import (
     _validate_out_array_deriv_1D,
     _validate_out_array_first_basis,
 )
-from .._numba_compat import nb_jit
 from ._bspline_knots import (
     _get_Bspline_num_basis_1D_impl,
     _get_last_knot_smaller_equal_impl,

@@ -13,8 +13,8 @@ import numpy.typing as npt
 from scipy.interpolate import BarycentricInterpolator
 
 if TYPE_CHECKING:
-    from .basis import LagrangeVariant
-from .quad import (
+    from . import LagrangeVariant
+from ..quad import (
     get_chebyshev_gauss_1st_kind_1d,
     get_chebyshev_gauss_2nd_kind_1d,
     get_gauss_legendre_1d,

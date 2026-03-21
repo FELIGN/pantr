@@ -6,7 +6,7 @@ import numpy as np
 import numpy.typing as npt
 import pytest
 
-from pantr._basis_core import (
+from pantr.basis._basis_core import (
     _tabulate_Bernstein_basis_1D_core,
     _tabulate_Bernstein_basis_deriv_1D_core,
 )

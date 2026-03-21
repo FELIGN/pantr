@@ -12,11 +12,11 @@ from typing import Literal
 import numpy as np
 import numpy.typing as npt
 
+from ..quad import PointsLattice
 from ._basis_utils import (
     _compute_output_shape_multidimensional,
     _validate_out_array_multidimensional,
 )
-from .quad import PointsLattice
 
 
 def _compute_basis_combinator_matrix_for_points_lattice(
