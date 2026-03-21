@@ -18,11 +18,11 @@ from typing import TYPE_CHECKING
 import numpy as np
 import numpy.typing as npt
 
-from ._bezier_product import _bernstein_product_coefficients
 from ._bspline_knots import (
     _get_Bspline_num_basis_1D_impl,
     _get_unique_knots_and_multiplicity_impl,
 )
+from .bezier._bezier_product import _bernstein_product_coefficients
 from .bspline._bspline_space_1d import BsplineSpace1D
 from .bspline._bspline_space_nd import BsplineSpace
 
