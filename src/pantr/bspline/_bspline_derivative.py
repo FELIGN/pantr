@@ -421,7 +421,7 @@ def _derivative_nonrational(bspline: Bspline, direction: int) -> Bspline:
     return _derivative_nonrational_nd(bspline, direction)
 
 
-def _derivative_bspline(bspline: Bspline, direction: int) -> Bspline:
+def _derivative_bspline(bspline: Bspline, direction: int, *, keep_degree: bool = False) -> Bspline:
     """Compute the first partial derivative of a B-spline.
 
     This is the main entry point for derivative computation. It dispatches
@@ -432,6 +432,9 @@ def _derivative_bspline(bspline: Bspline, direction: int) -> Bspline:
         bspline (~pantr.bspline.Bspline): The B-spline to differentiate.
         direction (int): Parametric direction for differentiation. Must be
             in ``[0, dim)``.
+        keep_degree (bool): If ``True``, the result has the same degree as the
+            input by applying degree elevation after differentiation. Defaults
+            to ``False``.
 
     Returns:
         ~pantr.bspline.Bspline: A new B-spline representing the derivative.
@@ -440,6 +443,28 @@ def _derivative_bspline(bspline: Bspline, direction: int) -> Bspline:
         Inputs are assumed to be correct (no validation performed).
         For general use, call :meth:`~pantr.bspline.Bspline.derivative` instead.
     """
+    if not keep_degree:
+        if bspline.is_rational:
+            return _derivative_rational(bspline, direction)
+        return _derivative_nonrational(bspline, direction)
+
+    # keep_degree=True: compute derivative, then elevate to restore degree.
     if bspline.is_rational:
-        return _derivative_rational(bspline, direction)
-    return _derivative_nonrational(bspline, direction)
+        deriv = _derivative_rational(bspline, direction)
+    else:
+        deriv = _derivative_nonrational(bspline, direction)
+
+    orig_degree = bspline.space.spaces[direction].degree
+    deriv_degree = deriv.space.spaces[direction].degree
+    inc = orig_degree - deriv_degree
+    if inc > 0:
+        from ._bspline_degree import _degree_elevate_bspline  # noqa: PLC0415
+
+        # Degree elevation does not support periodic knot vectors, so
+        # convert periodic directions to open representation first.
+        if deriv.space.spaces[direction].periodic:
+            deriv = deriv.to_open_bspline()
+
+        increments = tuple(0 if d != direction else inc for d in range(bspline.dim))
+        deriv = _degree_elevate_bspline(deriv, increments)
+    return deriv

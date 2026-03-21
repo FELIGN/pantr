@@ -217,7 +217,7 @@ class Bezier:
     # Derivative (returns new Bezier)
     # ------------------------------------------------------------------
 
-    def derivative(self, direction: int = 0) -> Bezier:
+    def derivative(self, direction: int = 0, *, keep_degree: bool = False) -> Bezier:
         """Return a Bézier representing the first derivative in the given direction.
 
         Computes the hodograph: a new Bézier whose value at every parametric
@@ -225,14 +225,20 @@ class Bezier:
         parametric direction ``direction``.
 
         For non-rational Bézier of degree ``p`` in direction ``d``, the
-        result has degree ``p - 1``.
+        result has degree ``p - 1`` (or ``p`` when ``keep_degree=True``).
 
         For rational Bézier, the quotient rule is applied, producing a
-        rational Bézier of degree ``2p`` in direction ``d``.
+        rational Bézier of degree ``2p`` in direction ``d`` (or the original
+        degree when ``keep_degree=True``).
 
         Args:
             direction (int): Parametric direction for differentiation.
                 Must be in ``[0, dim)``. Defaults to 0.
+            keep_degree (bool): If ``True``, the result preserves the same
+                degree as the original Bézier by fusing derivative and degree
+                elevation. This is useful, for instance, when computing
+                derivatives of rational polynomials (in the numerator).
+                Defaults to ``False``.
 
         Returns:
             Bezier: A new Bézier representing the derivative.
@@ -244,12 +250,13 @@ class Bezier:
         Example:
             >>> f_prime = f.derivative()
             >>> df_dv = surface.derivative(direction=1)
+            >>> f_prime_same_deg = f.derivative(keep_degree=True)
         """
         if direction < 0 or direction >= self.dim:
             raise ValueError(f"direction must be in [0, {self.dim}), got {direction}.")
         if self.degree[direction] < 1:
             raise ValueError("Derivative of a degree-0 Bézier is not defined.")
-        return _derivative_bezier(self, direction)
+        return _derivative_bezier(self, direction, keep_degree=keep_degree)
 
     # ------------------------------------------------------------------
     # Degree elevation

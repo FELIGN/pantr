@@ -44,6 +44,46 @@ def _derivative_ctrl_1d(
     return np.asarray(degree * (ctrl[1:] - ctrl[:-1]), dtype=ctrl.dtype)
 
 
+def _derivative_keep_degree_ctrl_1d(
+    degree: int,
+    ctrl: npt.NDArray[np.float32 | np.float64],
+) -> npt.NDArray[np.float32 | np.float64]:
+    """Compute derivative control points with degree preservation for a 1D non-rational Bézier.
+
+    Fuses the derivative formula ``Q[i] = p * (P[i+1] - P[i])`` with a
+    single degree elevation, so the result has the same degree ``p`` as the
+    input. The combined formula is:
+
+    ``R[j] = (p - j) * (P[j+1] - P[j]) + j * (P[j] - P[j-1])``
+
+    for ``j = 0, ..., p``.
+
+    Args:
+        degree (int): Polynomial degree of the original Bézier (``p >= 1``).
+        ctrl (npt.NDArray[np.float32 | np.float64]): Control points of shape
+            ``(p+1, ...)``.
+
+    Returns:
+        npt.NDArray[np.float32 | np.float64]: Derivative control points of
+        shape ``(p+1, ...)``, representing a degree-``p`` Bézier.
+
+    Note:
+        Inputs are assumed to be correct (no validation performed).
+        For general use, call :func:`_derivative_bezier` instead.
+    """
+    p = degree
+    n = p + 1  # number of output CPs = same as input
+    result = np.empty_like(ctrl[:n])
+    # j = 0: R[0] = p * (P[1] - P[0])
+    result[0] = p * (ctrl[1] - ctrl[0])
+    # j = 1, ..., p-1
+    for j in range(1, p):
+        result[j] = (p - j) * (ctrl[j + 1] - ctrl[j]) + j * (ctrl[j] - ctrl[j - 1])
+    # j = p: R[p] = p * (P[p] - P[p-1])
+    result[p] = p * (ctrl[p] - ctrl[p - 1])
+    return result
+
+
 def _derivative_nonrational_1d(bezier: Bezier) -> Bezier:
     """Compute the derivative of a non-rational 1D Bézier.
 
@@ -125,6 +165,92 @@ def _derivative_nonrational(bezier: Bezier, direction: int) -> Bezier:
     if bezier.dim == 1:
         return _derivative_nonrational_1d(bezier)
     return _derivative_nonrational_nd(bezier, direction)
+
+
+def _derivative_keep_degree_nonrational_1d(bezier: Bezier) -> Bezier:
+    """Compute the derivative of a non-rational 1D Bézier, preserving degree.
+
+    Fuses the derivative and degree elevation into a single operation,
+    avoiding allocation of an intermediate Bézier.
+
+    Args:
+        bezier (~pantr.bezier.Bezier): A 1D non-rational Bézier with degree >= 1.
+
+    Returns:
+        ~pantr.bezier.Bezier: Derivative Bézier of degree ``p`` (same as input).
+
+    Note:
+        Inputs are assumed to be correct (no validation performed).
+        For general use, call :func:`_derivative_bezier` instead.
+    """
+    from . import Bezier as BezierCls  # noqa: PLC0415
+
+    p = bezier.degree[0]
+    ctrl = bezier.control_points
+    new_ctrl = _derivative_keep_degree_ctrl_1d(p, ctrl)
+    return BezierCls(new_ctrl, is_rational=False)
+
+
+def _derivative_keep_degree_nonrational_nd(bezier: Bezier, direction: int) -> Bezier:
+    """Compute the partial derivative of a non-rational nD Bézier, preserving degree.
+
+    Fuses the derivative and degree elevation into a single operation along
+    the given direction using the moveaxis/reshape/restore pattern.
+
+    Args:
+        bezier (~pantr.bezier.Bezier): A non-rational nD Bézier.
+        direction (int): Parametric direction for differentiation.
+
+    Returns:
+        ~pantr.bezier.Bezier: Derivative Bézier with the same degree as the
+        input in direction ``d`` and unchanged degrees in other directions.
+
+    Note:
+        Inputs are assumed to be correct (no validation performed).
+        For general use, call :func:`_derivative_bezier` instead.
+    """
+    from . import Bezier as BezierCls  # noqa: PLC0415
+
+    p = bezier.degree[direction]
+    ctrl = bezier.control_points
+
+    # Move target direction to axis 0, flatten the rest.
+    moved = np.moveaxis(ctrl, direction, 0)
+    orig_shape = moved.shape
+    pts_2d = moved.reshape(orig_shape[0], -1)
+
+    if not pts_2d.flags.c_contiguous:
+        pts_2d = np.ascontiguousarray(pts_2d)
+
+    new_pts_2d = _derivative_keep_degree_ctrl_1d(p, pts_2d)
+
+    # Restore shape and move axis back.
+    new_shape = (new_pts_2d.shape[0], *orig_shape[1:])
+    new_moved = new_pts_2d.reshape(new_shape)
+    new_ctrl = np.moveaxis(new_moved, 0, direction)
+
+    return BezierCls(new_ctrl, is_rational=False)
+
+
+def _derivative_keep_degree_nonrational(bezier: Bezier, direction: int) -> Bezier:
+    """Compute the partial derivative of a non-rational Bézier, preserving degree.
+
+    Dispatches to the 1D or nD keep-degree implementation.
+
+    Args:
+        bezier (~pantr.bezier.Bezier): A non-rational Bézier.
+        direction (int): Parametric direction for differentiation.
+
+    Returns:
+        ~pantr.bezier.Bezier: Derivative Bézier with same degree as input.
+
+    Note:
+        Inputs are assumed to be correct (no validation performed).
+        For general use, call :func:`_derivative_bezier` instead.
+    """
+    if bezier.dim == 1:
+        return _derivative_keep_degree_nonrational_1d(bezier)
+    return _derivative_keep_degree_nonrational_nd(bezier, direction)
 
 
 def _tile_scalar_bezier(w: Bezier, target_rank: int) -> Bezier:
@@ -210,7 +336,7 @@ def _derivative_rational(bezier: Bezier, direction: int) -> Bezier:
     return BezierCls(result_ctrl, is_rational=True)
 
 
-def _derivative_bezier(bezier: Bezier, direction: int) -> Bezier:
+def _derivative_bezier(bezier: Bezier, direction: int, *, keep_degree: bool = False) -> Bezier:
     """Compute the first partial derivative of a Bézier.
 
     This is the main entry point for derivative computation. Dispatches
@@ -220,6 +346,9 @@ def _derivative_bezier(bezier: Bezier, direction: int) -> Bezier:
         bezier (~pantr.bezier.Bezier): The Bézier to differentiate.
         direction (int): Parametric direction for differentiation. Must be
             in ``[0, dim)``.
+        keep_degree (bool): If ``True``, the result has the same degree as the
+            input by fusing derivative and degree elevation. Defaults to
+            ``False``.
 
     Returns:
         ~pantr.bezier.Bezier: A new Bézier representing the derivative.
@@ -228,6 +357,23 @@ def _derivative_bezier(bezier: Bezier, direction: int) -> Bezier:
         Inputs are assumed to be correct (no validation performed).
         For general use, call :meth:`~pantr.bezier.Bezier.derivative` instead.
     """
-    if bezier.is_rational:
-        return _derivative_rational(bezier, direction)
-    return _derivative_nonrational(bezier, direction)
+    if not keep_degree:
+        if bezier.is_rational:
+            return _derivative_rational(bezier, direction)
+        return _derivative_nonrational(bezier, direction)
+
+    # keep_degree=True: non-rational uses fused kernel, rational uses fallback.
+    if not bezier.is_rational:
+        return _derivative_keep_degree_nonrational(bezier, direction)
+
+    # Rational fallback: compute derivative, then elevate degree.
+    from ._bezier_degree import _degree_elevate_bezier  # noqa: PLC0415
+
+    deriv = _derivative_rational(bezier, direction)
+    orig_degree = bezier.degree[direction]
+    deriv_degree = deriv.degree[direction]
+    inc = orig_degree - deriv_degree
+    if inc > 0:
+        increments = tuple(0 if d != direction else inc for d in range(bezier.dim))
+        deriv = _degree_elevate_bezier(deriv, increments)
+    return deriv
