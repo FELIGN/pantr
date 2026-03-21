@@ -539,8 +539,7 @@ class TestKeepDegreeRational:
 
     For rational B-splines of degree ``p``, the derivative has degree ``2p``,
     which is already higher than the original degree. In this case,
-    ``keep_degree`` has no effect (degree elevation is not applied since
-    the derivative degree exceeds the original).
+    ``keep_degree`` does not further elevate the result.
     """
 
     def test_rational_1d_same_as_without_keep_degree(self) -> None:

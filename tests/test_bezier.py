@@ -464,7 +464,7 @@ class TestBezierDerivativeKeepDegree:
         """Rational derivative with keep_degree matches without it.
 
         For rational Bézier of degree p, the derivative has degree 2p > p,
-        so keep_degree has no effect.
+        so keep_degree does not further elevate the result.
         """
         w = 1.0 / np.sqrt(2.0)
         ctrl = np.array([[1.0, 0.0, 1.0], [w, w, w], [0.0, 1.0, 1.0]])

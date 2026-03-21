@@ -282,8 +282,9 @@ def _derivative_rational(bezier: Bezier, direction: int) -> Bezier:
     Applies the quotient rule: for ``f = A/w``,
     ``f' = (A'w - Aw') / w^2``.
 
-    The numerator and denominator are computed via Bézier products and
-    combined into a rational Bézier of degree ``2p`` in the given direction.
+    Uses degree-preserving derivatives for ``A'`` and ``w'`` so that the
+    products ``A'w`` and ``Aw'`` are degree ``2p`` (matching ``w^2``),
+    eliminating the need for a separate numerator degree elevation.
 
     Args:
         bezier (~pantr.bezier.Bezier): A rational Bézier.
@@ -297,7 +298,6 @@ def _derivative_rational(bezier: Bezier, direction: int) -> Bezier:
         For general use, call :func:`_derivative_bezier` instead.
     """
     from . import Bezier as BezierCls  # noqa: PLC0415
-    from ._bezier_degree import _degree_elevate_bezier  # noqa: PLC0415
     from ._bezier_product import _multiply_bezier  # noqa: PLC0415
 
     ctrl = bezier.control_points
@@ -307,32 +307,26 @@ def _derivative_rational(bezier: Bezier, direction: int) -> Bezier:
     a_bezier = BezierCls(ctrl[..., :-1], is_rational=False)
     w_bezier = BezierCls(ctrl[..., -1:], is_rational=False)
 
-    # Compute non-rational derivatives.
-    a_prime = _derivative_nonrational(a_bezier, direction)
-    w_prime = _derivative_nonrational(w_bezier, direction)
+    # Degree-preserving derivatives: A' and w' remain degree p.
+    a_prime = _derivative_keep_degree_nonrational(a_bezier, direction)
+    w_prime = _derivative_keep_degree_nonrational(w_bezier, direction)
 
     # Tile scalar Béziers to match vector rank for multiply().
     w_tiled = _tile_scalar_bezier(w_bezier, vec_rank)
     w_prime_tiled = _tile_scalar_bezier(w_prime, vec_rank)
 
-    # Compute products: A'*w and A*w' (degree 2p-1 each).
+    # Products are degree p + p = 2p (same as w^2).
     num1 = _multiply_bezier(a_prime, w_tiled)
     num2 = _multiply_bezier(a_bezier, w_prime_tiled)
 
     # Subtract CPs (same degree guaranteed).
     numerator_ctrl = num1.control_points - num2.control_points
-    numerator = BezierCls(numerator_ctrl, is_rational=False)
 
     # Compute denominator: w^2 (degree 2p).
     denom = _multiply_bezier(w_bezier, w_bezier)
 
-    # Elevate numerator degree by 1 in the target direction.
-    increments = [0] * bezier.dim
-    increments[direction] = 1
-    numerator = _degree_elevate_bezier(numerator, tuple(increments))
-
-    # Assemble rational Bézier.
-    result_ctrl = np.concatenate([numerator.control_points, denom.control_points], axis=-1)
+    # Assemble rational Bézier (numerator and denom are both degree 2p).
+    result_ctrl = np.concatenate([numerator_ctrl, denom.control_points], axis=-1)
     return BezierCls(result_ctrl, is_rational=True)
 
 
@@ -362,18 +356,10 @@ def _derivative_bezier(bezier: Bezier, direction: int, *, keep_degree: bool = Fa
             return _derivative_rational(bezier, direction)
         return _derivative_nonrational(bezier, direction)
 
-    # keep_degree=True: non-rational uses fused kernel, rational uses fallback.
+    # keep_degree=True: non-rational uses fused kernel.
     if not bezier.is_rational:
         return _derivative_keep_degree_nonrational(bezier, direction)
 
-    # Rational fallback: compute derivative, then elevate degree.
-    from ._bezier_degree import _degree_elevate_bezier  # noqa: PLC0415
-
-    deriv = _derivative_rational(bezier, direction)
-    orig_degree = bezier.degree[direction]
-    deriv_degree = deriv.degree[direction]
-    inc = orig_degree - deriv_degree
-    if inc > 0:
-        increments = tuple(0 if d != direction else inc for d in range(bezier.dim))
-        deriv = _degree_elevate_bezier(deriv, increments)
-    return deriv
+    # Rational: derivative already uses degree-preserving A'/w', producing
+    # degree 2p which exceeds the original degree p — no elevation needed.
+    return _derivative_rational(bezier, direction)

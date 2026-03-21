@@ -307,6 +307,68 @@ def _compute_missing_knots(  # noqa: PLR0913
     return np.array(knots_list, dtype=dtype)
 
 
+def _derivative_keep_degree_nonrational(bspline: Bspline, direction: int) -> Bspline:
+    """Compute derivative with degree preservation for a non-rational B-spline.
+
+    Computes the derivative (degree ``p - 1``) and degree-elevates by 1 to
+    restore the original degree ``p``.  Works directly with arrays and the
+    degree-elevation kernel to avoid creating an intermediate
+    :class:`~pantr.bspline.Bspline` object.
+
+    Args:
+        bspline (~pantr.bspline.Bspline): A non-rational B-spline.
+        direction (int): Parametric direction for differentiation.
+
+    Returns:
+        ~pantr.bspline.Bspline: Derivative B-spline of the same degree as the
+        input.  Periodic directions in the differentiated axis are converted
+        to open representation (degree elevation does not support periodic).
+
+    Note:
+        Inputs are assumed to be correct (no validation performed).
+        For general use, call :func:`_derivative_bspline` instead.
+    """
+    from . import Bspline as BsplineCls  # noqa: PLC0415
+    from ._bspline_degree_core import _degree_elevate_1d_core  # noqa: PLC0415
+
+    space_d = bspline.space.spaces[direction]
+    p = space_d.degree
+
+    # Degree elevation requires open knot vectors. For periodic B-splines,
+    # convert to open representation first, then recurse.
+    if space_d.periodic:
+        return _derivative_keep_degree_nonrational(bspline.to_open_bspline(), direction)
+
+    knots = space_d.knots
+    ctrl = bspline.control_points
+
+    # Move target direction to axis 0, flatten the rest.
+    moved = np.moveaxis(ctrl, direction, 0)
+    orig_shape = moved.shape
+    pts_2d = moved.reshape(orig_shape[0], -1)
+
+    if not pts_2d.flags.c_contiguous:
+        pts_2d = np.ascontiguousarray(pts_2d)
+
+    # Derivative (degree p → p-1) + degree elevation (p-1 → p) on arrays.
+    deriv_pts = _derivative_ctrl_1d(knots, p, pts_2d)
+    deriv_knots = knots[1:-1]
+    elevated_pts, elevated_knots = _degree_elevate_1d_core(p - 1, deriv_pts, deriv_knots, 1)
+
+    # Restore shape and move axis back.
+    new_shape = (elevated_pts.shape[0], *orig_shape[1:])
+    new_moved = elevated_pts.reshape(new_shape)
+    new_ctrl = np.moveaxis(new_moved, 0, direction)
+
+    # Build new spaces: replace direction d, keep others unchanged.
+    # Result is open in the differentiated direction.
+    new_spaces = list(bspline.space.spaces)
+    new_spaces[direction] = BsplineSpace1D(elevated_knots, p)
+    new_space = BsplineSpace(new_spaces)
+
+    return BsplineCls(new_space, new_ctrl, is_rational=False)
+
+
 def _tile_scalar_bspline(w: Bspline, target_rank: int) -> Bspline:
     """Tile a rank-1 B-spline to match a target rank.
 
@@ -337,8 +399,9 @@ def _derivative_rational(bspline: Bspline, direction: int) -> Bspline:
     Applies the quotient rule: for ``f = A/w``,
     ``f' = (A'w - Aw') / w^2``.
 
-    The numerator and denominator are computed via B-spline products and
-    combined into a rational B-spline of degree ``2p`` in the given direction.
+    Uses degree-preserving derivatives for ``A'`` and ``w'`` so that the
+    products ``A'w`` and ``Aw'`` are degree ``2p`` (matching ``w^2``),
+    eliminating the need for a separate numerator degree elevation.
 
     Since ``multiply()`` requires operands to have the same rank, the scalar
     weight B-splines (rank 1) are tiled to match the vector rank before
@@ -364,15 +427,15 @@ def _derivative_rational(bspline: Bspline, direction: int) -> Bspline:
     a_bspline = BsplineCls(bspline.space, ctrl[..., :-1], is_rational=False)
     w_bspline = BsplineCls(bspline.space, ctrl[..., -1:], is_rational=False)
 
-    # Compute non-rational derivatives.
-    a_prime = _derivative_nonrational(a_bspline, direction)
-    w_prime = _derivative_nonrational(w_bspline, direction)
+    # Degree-preserving derivatives: A' and w' remain degree p.
+    a_prime = _derivative_keep_degree_nonrational(a_bspline, direction)
+    w_prime = _derivative_keep_degree_nonrational(w_bspline, direction)
 
     # Tile scalar B-splines to match vector rank for multiply().
     w_tiled = _tile_scalar_bspline(w_bspline, vec_rank)
     w_prime_tiled = _tile_scalar_bspline(w_prime, vec_rank)
 
-    # Compute products: A'*w and A*w' (degree 2p-1 each).
+    # Products are degree p + p = 2p (same as w^2).
     num1 = a_prime.multiply(w_tiled)
     num2 = a_bspline.multiply(w_prime_tiled)
 
@@ -382,11 +445,6 @@ def _derivative_rational(bspline: Bspline, direction: int) -> Bspline:
 
     # Compute denominator: w^2 (degree 2p).
     denom = w_bspline.multiply(w_bspline)
-
-    # Elevate numerator degree by 1 in the target direction.
-    increments = [0] * bspline.dim
-    increments[direction] = 1
-    numerator = numerator.elevate_degree(increments)
 
     # Refine both to a common knot vector in the target direction.
     numerator, denom = _refine_to_common_space_1d(numerator, denom, direction)
@@ -448,23 +506,10 @@ def _derivative_bspline(bspline: Bspline, direction: int, *, keep_degree: bool =
             return _derivative_rational(bspline, direction)
         return _derivative_nonrational(bspline, direction)
 
-    # keep_degree=True: compute derivative, then elevate to restore degree.
-    if bspline.is_rational:
-        deriv = _derivative_rational(bspline, direction)
-    else:
-        deriv = _derivative_nonrational(bspline, direction)
+    # keep_degree=True: non-rational uses array-level derivative + elevation.
+    if not bspline.is_rational:
+        return _derivative_keep_degree_nonrational(bspline, direction)
 
-    orig_degree = bspline.space.spaces[direction].degree
-    deriv_degree = deriv.space.spaces[direction].degree
-    inc = orig_degree - deriv_degree
-    if inc > 0:
-        from ._bspline_degree import _degree_elevate_bspline  # noqa: PLC0415
-
-        # Degree elevation does not support periodic knot vectors, so
-        # convert periodic directions to open representation first.
-        if deriv.space.spaces[direction].periodic:
-            deriv = deriv.to_open_bspline()
-
-        increments = tuple(0 if d != direction else inc for d in range(bspline.dim))
-        deriv = _degree_elevate_bspline(deriv, increments)
-    return deriv
+    # Rational: derivative already uses degree-preserving A'/w', producing
+    # degree 2p which exceeds the original degree p — no elevation needed.
+    return _derivative_rational(bspline, direction)
