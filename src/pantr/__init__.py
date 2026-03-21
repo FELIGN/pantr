@@ -14,7 +14,6 @@ The main modules are:
 from typing import Final
 
 from . import (
-    _basis_utils,  # noqa: F401
     basis,
     bezier,
     bspline,
@@ -22,6 +21,7 @@ from . import (
     quad,
     tolerance,
 )
+from .basis import _basis_utils  # noqa: F401
 
 # Package metadata
 __version__: Final[str] = "0.1.0"

@@ -12,8 +12,8 @@ from typing import Any, cast
 import numpy as np
 import numpy.typing as npt
 
-from .._basis_utils import _validate_out_array_bool
 from .._numba_compat import nb_jit
+from ..basis._basis_utils import _validate_out_array_bool
 
 
 @nb_jit(

@@ -24,7 +24,7 @@ from ._basis_1D import (
 from ._basis_multidim import _compute_basis_1D_combinator_matrix
 
 if TYPE_CHECKING:
-    from .quad import PointsLattice
+    from ..quad import PointsLattice
 
 
 class LagrangeVariant(Enum):

@@ -10,9 +10,9 @@ from __future__ import annotations
 import numpy as np
 import numpy.typing as npt
 
-from .._basis_utils import _validate_out_array_3d_float
 from .._numba_compat import nb_jit
 from ..basis import LagrangeVariant
+from ..basis._basis_utils import _validate_out_array_3d_float
 from ..change_basis import (
     _cached_cardinal_to_bernstein_matrix,
     _cached_lagrange_to_bernstein_matrix,

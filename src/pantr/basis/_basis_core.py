@@ -9,7 +9,7 @@ from __future__ import annotations
 import numpy as np
 import numpy.typing as npt
 
-from ._numba_compat import nb_jit, nb_prange
+from .._numba_compat import nb_jit, nb_prange
 
 
 @nb_jit(
