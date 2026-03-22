@@ -351,15 +351,8 @@ def _derivative_bezier(bezier: Bezier, direction: int, *, keep_degree: bool = Fa
         Inputs are assumed to be correct (no validation performed).
         For general use, call :meth:`~pantr.bezier.Bezier.derivative` instead.
     """
-    if not keep_degree:
-        if bezier.is_rational:
-            return _derivative_rational(bezier, direction)
-        return _derivative_nonrational(bezier, direction)
-
-    # keep_degree=True: non-rational uses fused kernel.
-    if not bezier.is_rational:
+    if bezier.is_rational:
+        return _derivative_rational(bezier, direction)
+    if keep_degree:
         return _derivative_keep_degree_nonrational(bezier, direction)
-
-    # Rational: derivative already uses degree-preserving A'/w', producing
-    # degree 2p which exceeds the original degree p — no elevation needed.
-    return _derivative_rational(bezier, direction)
+    return _derivative_nonrational(bezier, direction)
