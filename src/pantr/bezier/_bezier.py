@@ -474,6 +474,45 @@ class Bezier:
         return Bezier(new_cp, is_rational=self._is_rational)
 
     # ------------------------------------------------------------------
+    # Restrict
+    # ------------------------------------------------------------------
+
+    def restrict(
+        self,
+        bounds: tuple[float, float] | Sequence[tuple[float, float] | None],
+    ) -> Bezier:
+        """Return a Bézier restricted to a sub-region of ``[0, 1]^dim``.
+
+        Extracts the portion of the Bézier defined on the given sub-interval
+        and reparametrizes the result back to ``[0, 1]^dim``.  The returned
+        Bézier has the same degree but different control points that encode
+        the restricted mapping.
+
+        Internally converts to a B-spline, restricts, and converts back.
+
+        Args:
+            bounds (tuple[float, float] | Sequence[tuple[float, float] | None]):
+                For a 1D Bézier, a ``(lower, upper)`` tuple within ``[0, 1]``.
+                For multi-dimensional Bézier, a sequence of length ``dim``
+                where each element is a ``(lower, upper)`` tuple for that
+                direction, or ``None`` to keep the full ``[0, 1]`` range.
+                At least one direction must have non-``None`` bounds that
+                restrict the domain.
+
+        Returns:
+            Bezier: New Bézier on ``[0, 1]^dim`` representing the restriction.
+
+        Raises:
+            ValueError: If the sequence length does not match ``dim``.
+            ValueError: If all directions are ``None`` or match the full domain.
+            ValueError: If any bound lies outside ``[0, 1]``.
+            ValueError: If ``lower >= upper`` in any direction.
+        """
+        bspline = self.to_bspline()
+        restricted = bspline.restrict(bounds)
+        return Bezier.from_bspline(restricted)
+
+    # ------------------------------------------------------------------
     # Conversion
     # ------------------------------------------------------------------
 
