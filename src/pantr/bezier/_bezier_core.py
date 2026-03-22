@@ -259,3 +259,61 @@ def _degree_elevate_bezier_1d_core(
                 new_ctrl[i, r] += coeff * ctrl[j, r]
 
     return new_ctrl
+
+
+@nb_jit(
+    nopython=True,
+    cache=True,
+    parallel=True,
+)
+def _slice_bezier_1d_core(
+    ctrl: npt.NDArray[np.float32 | np.float64],
+    value: float,
+    out: npt.NDArray[np.float32 | np.float64],
+) -> None:
+    """Evaluate a 1D Bézier at a single parameter value via de Casteljau.
+
+    Performs the de Casteljau triangular reduction on each column of the
+    control point array independently, parallelized across columns with
+    ``prange``.  At the boundary values ``0`` and ``1``, the first or
+    last control point is returned directly without iteration.
+
+    Args:
+        ctrl (npt.NDArray[np.float32 | np.float64]): Control points of
+            shape ``(p + 1, n_cols)``, where ``p`` is the polynomial
+            degree and ``n_cols`` is the number of independent columns.
+        value (float): Parameter value in ``[0, 1]``.
+        out (npt.NDArray[np.float32 | np.float64]): Pre-allocated output
+            array of shape ``(n_cols,)``.
+
+    Note:
+        Inputs are assumed to be correct (no validation performed).
+        For general use, call :func:`_slice_bezier` in ``_bezier_slice``
+        instead.
+    """
+    p = ctrl.shape[0] - 1
+    n_cols = ctrl.shape[1]
+    u = value
+    one_minus_u = 1.0 - u
+
+    # Boundary shortcuts: O(1) for endpoints.
+    if u == 0.0:
+        for col in nb_prange(n_cols):
+            out[col] = ctrl[0, col]
+        return
+    if u == 1.0:
+        for col in nb_prange(n_cols):
+            out[col] = ctrl[p, col]
+        return
+
+    for col in nb_prange(n_cols):
+        # Local workspace for de Casteljau on this column.
+        d = np.empty(p + 1, dtype=ctrl.dtype)
+        for i in range(p + 1):
+            d[i] = ctrl[i, col]
+
+        for r in range(1, p + 1):
+            for i in range(p - r + 1):
+                d[i] = one_minus_u * d[i] + u * d[i + 1]
+
+        out[col] = d[0]
