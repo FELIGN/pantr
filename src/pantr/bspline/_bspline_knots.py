@@ -504,6 +504,49 @@ def _get_knots_ends_and_dtype(
     return start_value, end_value, dtype_obj
 
 
+def _find_knot_index_and_multiplicity(
+    knots: npt.NDArray[np.float32 | np.float64],
+    degree: int,
+    knot_value: float,
+    tol: float,
+) -> tuple[int, int]:
+    """Find the last index and multiplicity of a knot value in the knot vector.
+
+    Searches the knot vector for the last occurrence of *knot_value* (within
+    tolerance) and returns its index *r* together with the multiplicity *s*.
+
+    Args:
+        knots (npt.NDArray[np.float32 | np.float64]): B-spline knot vector.
+        degree (int): Polynomial degree.
+        knot_value (float): The knot value to locate.
+        tol (float): Tolerance for numerical comparisons.
+
+    Returns:
+        tuple[int, int]: ``(r, s)`` where *r* is the index of the last
+        occurrence and *s* is the multiplicity.
+
+    Raises:
+        ValueError: If *knot_value* is not found in the knot vector.
+    """
+    unique_knots, mults = _get_unique_knots_and_multiplicity_impl(
+        knots, degree, tol, in_domain=False
+    )
+
+    # Find the matching unique knot.
+    matches = np.where(np.isclose(unique_knots, knot_value, atol=tol))[0]
+    if len(matches) == 0:
+        raise ValueError(f"Knot value {knot_value} not found in knot vector (tolerance={tol}).")
+
+    idx = int(matches[0])
+    s = int(mults[idx])
+
+    # Compute the last index r of this knot value in the full knot vector.
+    # Sum multiplicities up to and including this knot.
+    r = int(np.sum(mults[: idx + 1])) - 1
+
+    return r, s
+
+
 def _warmup_numba_functions() -> None:
     """Precompile numba functions with float64 signatures for faster first call.
 
@@ -536,6 +579,7 @@ def _warmup_numba_functions() -> None:
 
 __all__ = [
     "_check_spline_info",
+    "_find_knot_index_and_multiplicity",
     "_get_Bspline_cardinal_intervals_1D_impl",
     "_get_Bspline_num_basis_1D_impl",
     "_get_knots_ends_and_dtype",
