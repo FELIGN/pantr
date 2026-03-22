@@ -22,6 +22,7 @@ from ._bspline_knot_insertion import (
     _insert_knots_bspline,
     _to_open_bspline_impl,
 )
+from ._bspline_knot_removal import _remove_knots_bspline
 
 if TYPE_CHECKING:
     from ..quad import PointsLattice
@@ -367,6 +368,76 @@ class Bspline:
             )
 
         return _insert_knots_bspline(self, new_knots_per_dim)
+
+    def remove_knots(
+        self,
+        knot_values: float | npt.ArrayLike | Sequence[npt.ArrayLike | None],
+        *,
+        num: int | None = None,
+        tol: float | None = None,
+    ) -> Bspline:
+        """Return a B-spline with specified interior knots removed.
+
+        Each listed knot value is removed up to *num* times (or as many as
+        possible when ``num=None``), provided the geometric deviation stays
+        within *tol*.
+
+        Args:
+            knot_values (float | npt.ArrayLike | Sequence[npt.ArrayLike | None]):
+                For a 1D B-spline, a single float or a 1D array-like of
+                distinct interior knot values to remove. For multi-dimensional
+                B-splines, a sequence of length ``dim`` where each element is a
+                1D array-like of knot values to remove in that direction, or
+                ``None`` to skip that direction. At least one direction must
+                have a non-empty array of knot values.
+            num (int | None): Maximum number of removals per distinct knot
+                value. ``None`` (default) removes as many as possible (up to
+                the current multiplicity, capped at the degree).
+            tol (float | None): Maximum allowed geometric deviation for each
+                removal step. ``None`` (default) uses ``1e-10``.
+
+        Returns:
+            Bspline: New B-spline with the same geometry (within tolerance)
+            and reduced knot vectors.
+
+        Raises:
+            ValueError: If the B-spline is periodic in any direction.
+            ValueError: If the sequence length does not match ``dim``
+                (multi-dim case).
+            ValueError: If all directions have empty or ``None`` knot arrays.
+            ValueError: If any knot value is not found or is a boundary knot.
+        """
+        # Periodic splines are not supported.
+        for i, sp in enumerate(self._space.spaces):
+            if sp.periodic:
+                raise ValueError(
+                    f"Knot removal is not supported for periodic B-splines "
+                    f"(direction {i} is periodic)."
+                )
+
+        dtype = self.dtype
+
+        if self.dim == 1:
+            arr = np.atleast_1d(np.asarray(knot_values, dtype=dtype)).ravel()
+            kv_per_dim: list[npt.NDArray[np.float32 | np.float64] | None] = [arr]
+        else:
+            seq = list(knot_values)  # type: ignore[arg-type]
+            if len(seq) != self.dim:
+                raise ValueError(
+                    f"knot_values sequence length ({len(seq)}) must match dim ({self.dim})."
+                )
+            kv_per_dim = [
+                None if kv is None else np.atleast_1d(np.asarray(kv, dtype=dtype)).ravel()
+                for kv in seq
+            ]
+
+        # Require at least one non-empty direction.
+        if all(kv is None or kv.size == 0 for kv in kv_per_dim):
+            raise ValueError(
+                "At least one direction must have a non-empty array of knot values to remove."
+            )
+
+        return _remove_knots_bspline(self, kv_per_dim, num, tol)
 
     def to_open_bspline(self) -> Bspline:
         """Return an open (clamped) non-periodic B-spline equivalent to this one.
