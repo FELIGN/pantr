@@ -404,6 +404,78 @@ class TestBezierDerivative:
 
 
 # ---------------------------------------------------------------------------
+# Derivative with keep_degree
+# ---------------------------------------------------------------------------
+
+
+class TestBezierDerivativeKeepDegree:
+    """Test Bezier derivative with keep_degree=True."""
+
+    def test_nonrational_1d_degree_preserved(self) -> None:
+        """Degree is preserved when keep_degree=True."""
+        b = _make_bezier_1d([[0.0, 0.0], [0.5, 1.0], [1.0, 0.0]])
+        d = b.derivative(keep_degree=True)
+        assert d.degree == b.degree
+
+    def test_nonrational_1d_matches_derivative_then_elevate(self) -> None:
+        """Fused result matches derivative + elevate_degree."""
+        b = _make_bezier_1d([[0.0, 0.0], [0.5, 1.0], [1.0, 0.0]])
+        d_fused = b.derivative(keep_degree=True)
+        d_ref = b.derivative().elevate_degree(1)
+        pts = np.linspace(0.0, 1.0, 30, dtype=np.float64)
+        np.testing.assert_allclose(d_fused.evaluate(pts), d_ref.evaluate(pts), atol=1e-13)
+
+    def test_nonrational_1d_matches_evaluate_derivatives(self) -> None:
+        """Derivative values match evaluate_derivatives."""
+        ctrl = np.array([[0.0, 0.0], [1.0, 2.0], [3.0, 1.0], [4.0, 0.0]], dtype=np.float64)
+        b = Bezier(ctrl)
+        d = b.derivative(keep_degree=True)
+        pts = np.linspace(0.0, 1.0, 30, dtype=np.float64)
+        np.testing.assert_allclose(d.evaluate(pts), b.evaluate_derivatives(pts, 1), atol=1e-12)
+
+    def test_nonrational_2d_direction0(self) -> None:
+        """2D partial derivative in direction 0 preserves degree."""
+        ctrl = np.random.default_rng(42).standard_normal((4, 3, 2))
+        b = Bezier(ctrl)
+        d = b.derivative(direction=0, keep_degree=True)
+        assert d.degree == b.degree
+
+    def test_nonrational_2d_direction1(self) -> None:
+        """2D partial derivative in direction 1 preserves degree."""
+        ctrl = np.random.default_rng(42).standard_normal((4, 3, 2))
+        b = Bezier(ctrl)
+        d = b.derivative(direction=1, keep_degree=True)
+        assert d.degree == b.degree
+
+    def test_nonrational_2d_matches_evaluate_derivatives(self) -> None:
+        """2D keep_degree derivative matches evaluate_derivatives."""
+        ctrl = np.random.default_rng(42).standard_normal((4, 3, 2))
+        b = Bezier(ctrl)
+        pts = np.random.default_rng(99).uniform(0.0, 1.0, (20, 2))
+        for direction in range(2):
+            d = b.derivative(direction=direction, keep_degree=True)
+            orders = [0, 0]
+            orders[direction] = 1
+            np.testing.assert_allclose(
+                d.evaluate(pts), b.evaluate_derivatives(pts, orders), atol=1e-11
+            )
+
+    def test_rational_1d_same_as_without_keep_degree(self) -> None:
+        """Rational derivative with keep_degree matches without it.
+
+        For rational Bézier of degree p, the derivative has degree 2p > p,
+        so keep_degree does not further elevate the result.
+        """
+        w = 1.0 / np.sqrt(2.0)
+        ctrl = np.array([[1.0, 0.0, 1.0], [w, w, w], [0.0, 1.0, 1.0]])
+        b = Bezier(ctrl, is_rational=True)
+        d_normal = b.derivative()
+        d_keep = b.derivative(keep_degree=True)
+        pts = np.linspace(0.01, 0.99, 20, dtype=np.float64)
+        np.testing.assert_allclose(d_keep.evaluate(pts), d_normal.evaluate(pts), atol=1e-14)
+
+
+# ---------------------------------------------------------------------------
 # Degree elevation
 # ---------------------------------------------------------------------------
 

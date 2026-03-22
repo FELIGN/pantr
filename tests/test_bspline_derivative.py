@@ -392,6 +392,168 @@ class TestRationalND:
 
 
 # ---------------------------------------------------------------------------
+# keep_degree tests
+# ---------------------------------------------------------------------------
+
+
+def _assert_keep_degree_matches_evaluate(
+    f: Bspline,
+    direction: int = 0,
+    atol: float = 1e-9,
+) -> Bspline:
+    """Assert that derivative(keep_degree=True) matches evaluate_derivatives.
+
+    Returns the derivative B-spline for further checks.
+    """
+    space_d = f.space.spaces[direction]
+    a, b = float(space_d.domain[0]), float(space_d.domain[1])
+
+    f_prime = f.derivative(direction=direction, keep_degree=True)
+
+    # Degree must be preserved.
+    assert f_prime.space.spaces[direction].degree == space_d.degree
+
+    if f.dim == 1:
+        pts = eval_pts(a, b, 201)
+        expected = f.evaluate_derivatives(pts, 1)
+        actual = f_prime.evaluate(pts)
+    else:
+        n_pts = 51
+        dim = f.dim
+        coords = np.empty((n_pts, dim), dtype=np.float64)
+        rng = np.random.default_rng(99)
+        for d in range(dim):
+            ad, bd = float(f.space.spaces[d].domain[0]), float(f.space.spaces[d].domain[1])
+            coords[:, d] = rng.uniform(ad, bd, n_pts)
+        orders = [0] * dim
+        orders[direction] = 1
+        expected = f.evaluate_derivatives(coords, orders)
+        actual = f_prime.evaluate(coords)
+
+    np.testing.assert_allclose(actual, expected, atol=atol)
+    return f_prime
+
+
+class TestKeepDegreeNonRational:
+    """Derivative with keep_degree=True for non-rational B-splines."""
+
+    def test_1d_degree_preserved(self) -> None:
+        """Degree is preserved in 1D case."""
+        f = _make_open(3, 2)
+        f_prime = f.derivative(keep_degree=True)
+        assert f_prime.space.spaces[0].degree == 2  # noqa: PLR2004
+
+    def test_1d_matches_evaluate_derivatives(self) -> None:
+        """Values match evaluate_derivatives for 1D open B-spline."""
+        f = _make_open(4, 3)
+        _assert_keep_degree_matches_evaluate(f)
+
+    def test_1d_cubic(self) -> None:
+        """Cubic keep_degree derivative."""
+        f = _make_open(3, 3)
+        _assert_keep_degree_matches_evaluate(f)
+
+    def test_1d_high_degree(self) -> None:
+        """Degree-5 keep_degree derivative."""
+        f = _make_open(3, 5)
+        _assert_keep_degree_matches_evaluate(f)
+
+    def test_1d_matches_derivative_then_elevate(self) -> None:
+        """Result matches derivative() followed by elevate_degree()."""
+        f = _make_open(4, 3)
+        d_keep = f.derivative(keep_degree=True)
+        d_ref = f.derivative().elevate_degree(1)
+        pts = eval_pts()
+        np.testing.assert_allclose(d_keep.evaluate(pts), d_ref.evaluate(pts), atol=1e-12)
+
+    def test_vector_valued(self) -> None:
+        """Vector-valued B-spline with keep_degree."""
+        knots = [0.0, 0.0, 0.0, 0.5, 1.0, 1.0, 1.0]
+        ctrl = [[0.0, 0.0], [1.0, 2.0], [2.0, 1.0], [3.0, 3.0]]
+        f = make_bspline_1d(knots, 2, ctrl)
+        f_prime = f.derivative(keep_degree=True)
+        assert f_prime.space.spaces[0].degree == 2  # noqa: PLR2004
+        pts = eval_pts()
+        expected = f.evaluate_derivatives(pts, 1)
+        actual = f_prime.evaluate(pts)
+        np.testing.assert_allclose(actual, expected, atol=1e-10)
+
+    def test_periodic(self) -> None:
+        """Periodic B-spline with keep_degree (converts to open)."""
+        f = _make_periodic(4, 3)
+        f_prime = f.derivative(keep_degree=True)
+        # Degree elevation doesn't support periodic, so result is open.
+        assert f_prime.space.spaces[0].degree == 3  # noqa: PLR2004
+        assert not f_prime.space.spaces[0].periodic
+
+        # Values must still match.
+        f_open = f.to_open_bspline()
+        a, b = float(f_open.space.spaces[0].domain[0]), float(f_open.space.spaces[0].domain[1])
+        pts = eval_pts(a, b, 201)
+        expected = f_open.evaluate_derivatives(pts, 1)
+        actual = f_prime.evaluate(pts)
+        np.testing.assert_allclose(actual, expected, atol=1e-9)
+
+    def test_2d_direction0(self) -> None:
+        """2D surface keep_degree in direction 0."""
+        knots0 = create_uniform_open(3, 2, domain=(0.0, 1.0))
+        knots1 = create_uniform_open(2, 3, domain=(0.0, 1.0))
+        s0 = BsplineSpace1D(knots0, 2)
+        s1 = BsplineSpace1D(knots1, 3)
+        space = BsplineSpace([s0, s1])
+        rng = np.random.default_rng(55)
+        ctrl = rng.standard_normal((*space.num_basis, 2))
+        f = Bspline(space, ctrl)
+        _assert_keep_degree_matches_evaluate(f, direction=0, atol=1e-8)
+
+    def test_2d_direction1(self) -> None:
+        """2D surface keep_degree in direction 1."""
+        knots0 = create_uniform_open(3, 2, domain=(0.0, 1.0))
+        knots1 = create_uniform_open(2, 3, domain=(0.0, 1.0))
+        s0 = BsplineSpace1D(knots0, 2)
+        s1 = BsplineSpace1D(knots1, 3)
+        space = BsplineSpace([s0, s1])
+        rng = np.random.default_rng(55)
+        ctrl = rng.standard_normal((*space.num_basis, 2))
+        f = Bspline(space, ctrl)
+        _assert_keep_degree_matches_evaluate(f, direction=1, atol=1e-8)
+
+    def test_2d_other_directions_unchanged(self) -> None:
+        """Degrees in non-differentiated directions remain unchanged."""
+        knots0 = create_uniform_open(3, 2, domain=(0.0, 1.0))
+        knots1 = create_uniform_open(2, 3, domain=(0.0, 1.0))
+        s0 = BsplineSpace1D(knots0, 2)
+        s1 = BsplineSpace1D(knots1, 3)
+        space = BsplineSpace([s0, s1])
+        rng = np.random.default_rng(55)
+        ctrl = rng.standard_normal((*space.num_basis, 2))
+        f = Bspline(space, ctrl)
+
+        f_prime = f.derivative(direction=0, keep_degree=True)
+        assert f_prime.space.spaces[0].degree == 2  # noqa: PLR2004
+        assert f_prime.space.spaces[1].degree == 3  # unchanged  # noqa: PLR2004
+
+
+class TestKeepDegreeRational:
+    """Derivative with keep_degree=True for rational (NURBS) B-splines.
+
+    For rational B-splines of degree ``p``, the derivative has degree ``2p``,
+    which is already higher than the original degree. In this case,
+    ``keep_degree`` does not further elevate the result.
+    """
+
+    def test_rational_1d_same_as_without_keep_degree(self) -> None:
+        """Rational derivative with keep_degree matches without it."""
+        knots = [0.0, 0.0, 0.0, 0.5, 1.0, 1.0, 1.0]
+        ctrl = [[1.0, 0.0, 1.0], [2.0, 4.0, 2.0], [1.5, 3.0, 1.0], [3.0, 1.5, 1.5]]
+        f = make_bspline_1d(knots, 2, ctrl, is_rational=True)
+        d_normal = f.derivative()
+        d_keep = f.derivative(keep_degree=True)
+        pts = eval_pts()
+        np.testing.assert_allclose(d_keep.evaluate(pts), d_normal.evaluate(pts), atol=1e-14)
+
+
+# ---------------------------------------------------------------------------
 # Edge cases
 # ---------------------------------------------------------------------------
 
