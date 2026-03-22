@@ -60,14 +60,15 @@ def _derivative_ctrl_1d(
 
 
 def _derivative_nonrational_1d(bspline: Bspline) -> Bspline:
-    """Compute the derivative of a non-rational, non-periodic 1D B-spline.
+    """Compute the derivative of a non-rational 1D B-spline.
 
-    Applies the standard B-spline derivative formula to produce a new B-spline
-    of degree ``p - 1``.
+    Handles both open and periodic knot vectors. For periodic B-splines,
+    expands the control points to full representation before applying the
+    derivative formula, then trims back to the periodic count.
 
     Args:
-        bspline (~pantr.bspline.Bspline): A 1D non-rational, non-periodic
-            B-spline with degree >= 1.
+        bspline (~pantr.bspline.Bspline): A 1D non-rational B-spline with
+            degree >= 1.
 
     Returns:
         ~pantr.bspline.Bspline: Derivative B-spline of degree ``p - 1``.
@@ -82,56 +83,26 @@ def _derivative_nonrational_1d(bspline: Bspline) -> Bspline:
     knots = space_1d.knots
     p = space_1d.degree
     ctrl = bspline.control_points
+    is_periodic = space_1d.periodic
+
+    # For periodic: expand CPs to full representation.
+    if is_periodic:
+        n_periodic = space_1d.num_basis
+        n_full = len(knots) - p - 1
+        indices = np.arange(n_full) % n_periodic
+        ctrl = ctrl[indices]
 
     new_knots = knots[1:-1]
     new_degree = p - 1
     new_ctrl = _derivative_ctrl_1d(knots, p, ctrl)
 
-    new_space = BsplineSpace([BsplineSpace1D(new_knots, new_degree)])
-    return BsplineCls(new_space, new_ctrl, is_rational=False)
+    # For periodic: trim to periodic CP count.
+    if is_periodic:
+        tol = float(space_1d.tolerance)
+        n_periodic_new = _get_Bspline_num_basis_1D_impl(new_knots, new_degree, True, tol)
+        new_ctrl = new_ctrl[:n_periodic_new]
 
-
-def _derivative_periodic_1d(bspline: Bspline) -> Bspline:
-    """Compute the derivative of a periodic 1D B-spline.
-
-    Expands the periodic control points to full representation, applies the
-    derivative formula, then determines the periodic control points of the
-    result.
-
-    Args:
-        bspline (~pantr.bspline.Bspline): A 1D non-rational, periodic
-            B-spline with degree >= 1.
-
-    Returns:
-        ~pantr.bspline.Bspline: Periodic derivative B-spline of degree ``p - 1``.
-
-    Note:
-        Inputs are assumed to be correct (no validation performed).
-        For general use, call :func:`_derivative_bspline` instead.
-    """
-    from . import Bspline as BsplineCls  # noqa: PLC0415
-
-    space_1d = bspline.space.spaces[0]
-    knots = space_1d.knots
-    p = space_1d.degree
-    ctrl = bspline.control_points
-    n_periodic = space_1d.num_basis
-    n_full = len(knots) - p - 1
-
-    # Expand periodic CPs to full representation.
-    indices = np.arange(n_full) % n_periodic
-    ctrl_full = ctrl[indices]
-
-    new_knots = knots[1:-1]
-    new_degree = p - 1
-    new_ctrl_full = _derivative_ctrl_1d(knots, p, ctrl_full)
-
-    # Determine periodic CP count for the derivative space.
-    tol = float(space_1d.tolerance)
-    n_periodic_new = _get_Bspline_num_basis_1D_impl(new_knots, new_degree, True, tol)
-    new_ctrl = new_ctrl_full[:n_periodic_new]
-
-    new_space = BsplineSpace([BsplineSpace1D(new_knots, new_degree, periodic=True)])
+    new_space = BsplineSpace([BsplineSpace1D(new_knots, new_degree, periodic=is_periodic)])
     return BsplineCls(new_space, new_ctrl, is_rational=False)
 
 
@@ -457,8 +428,8 @@ def _derivative_rational(bspline: Bspline, direction: int) -> Bspline:
 def _derivative_nonrational(bspline: Bspline, direction: int) -> Bspline:
     """Compute the partial derivative of a non-rational B-spline.
 
-    Dispatches to the appropriate 1D or nD implementation based on the
-    B-spline's dimension and periodicity.
+    Dispatches to the 1D or nD implementation based on the B-spline's
+    dimension.
 
     Args:
         bspline (~pantr.bspline.Bspline): A non-rational B-spline.
@@ -472,9 +443,6 @@ def _derivative_nonrational(bspline: Bspline, direction: int) -> Bspline:
         For general use, call :func:`_derivative_bspline` instead.
     """
     if bspline.dim == 1:
-        space_1d = bspline.space.spaces[0]
-        if space_1d.periodic:
-            return _derivative_periodic_1d(bspline)
         return _derivative_nonrational_1d(bspline)
     return _derivative_nonrational_nd(bspline, direction)
 
