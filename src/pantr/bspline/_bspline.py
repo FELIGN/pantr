@@ -25,6 +25,7 @@ from ._bspline_knot_insertion import (
 )
 from ._bspline_knot_removal import _remove_knots_bspline
 from ._bspline_restrict import _restrict_bspline_impl
+from ._bspline_slice import _slice_bspline
 
 if TYPE_CHECKING:
     from ..quad import PointsLattice
@@ -793,3 +794,92 @@ class Bspline:
                 new_knots_per_dim.append(nk)
 
         return _insert_knots_bspline(self, new_knots_per_dim)
+
+    def slice(self, axis: int, value: float) -> Bspline | npt.NDArray[np.float32 | np.float64]:
+        """Slice the B-spline by fixing one parametric direction at a given value.
+
+        Reduces the parametric dimension by one using de Boor corner cutting
+        on the control points.  A volume becomes a surface, a surface becomes
+        a curve, and a curve becomes a point (returned as a NumPy array).
+
+        When the parameter value coincides with a knot of multiplicity ``s``,
+        only ``p - s`` de Boor iterations are needed.  At a C0 knot
+        (``s >= p``) the result is obtained in O(1) by direct control point
+        lookup.
+
+        Args:
+            axis (int): Parametric direction to fix (0-indexed).
+                Must be in ``[0, dim)``.
+            value (float): Parameter value at which to slice.  Must lie
+                within the domain of the specified direction.
+
+        Returns:
+            Bspline | npt.NDArray[np.float32 | np.float64]:
+            A B-spline with ``dim - 1`` dimensions when ``dim >= 2``,
+            or a NumPy array of shape ``(rank,)`` when ``dim == 1``.
+            Rational B-splines preserve the NURBS structure when ``dim >= 2``;
+            for ``dim == 1`` the result is projected to physical coordinates.
+
+        Raises:
+            ValueError: If ``axis`` is out of range ``[0, dim)``.
+            ValueError: If ``value`` is outside the domain of the specified
+                direction.
+
+        Example:
+            >>> # Slice a surface at v=0.5 to get a curve
+            >>> curve = surface.slice(1, 0.5)
+            >>> # Slice a volume at w=0.3 to get a surface
+            >>> srf = volume.slice(2, 0.3)
+            >>> # Composable: volume -> surface -> curve -> point
+            >>> pt = volume.slice(2, 0.3).slice(1, 0.5).slice(0, 0.2)
+        """
+        if axis < 0 or axis >= self.dim:
+            raise ValueError(f"axis must be in [0, {self.dim}), got {axis}.")
+
+        space_d = self.space.spaces[axis]
+        domain = space_d.domain
+        tol = float(space_d.tolerance)
+        if value < float(domain[0]) - tol or value > float(domain[1]) + tol:
+            raise ValueError(
+                f"value {value} is outside the domain [{domain[0]}, {domain[1]}] "
+                f"of direction {axis}."
+            )
+
+        return _slice_bspline(self, axis, value)
+
+    def boundary(self, axis: int, side: int) -> Bspline | npt.NDArray[np.float32 | np.float64]:
+        """Extract the boundary of the B-spline along one parametric direction.
+
+        Returns the restriction of the B-spline to one end of the domain
+        in the given direction.
+
+        Args:
+            axis (int): Parametric direction (0-indexed).
+                Must be in ``[0, dim)``.
+            side (int): Which end of the domain: ``0`` for the start,
+                ``1`` for the end.
+
+        Returns:
+            Bspline | npt.NDArray[np.float32 | np.float64]:
+            A B-spline with ``dim - 1`` dimensions when ``dim >= 2``,
+            or a NumPy array of shape ``(rank,)`` when ``dim == 1``.
+
+        Raises:
+            ValueError: If ``axis`` is out of range ``[0, dim)``.
+            ValueError: If ``side`` is not 0 or 1.
+
+        Example:
+            >>> # Extract left boundary of a surface along direction 0
+            >>> left_curve = surface.boundary(0, 0)
+            >>> # Extract right boundary along direction 1
+            >>> right_curve = surface.boundary(1, 1)
+        """
+        if side not in (0, 1):
+            raise ValueError(f"side must be 0 or 1, got {side}.")
+        if axis < 0 or axis >= self.dim:
+            raise ValueError(f"axis must be in [0, {self.dim}), got {axis}.")
+
+        space_d = self.space.spaces[axis]
+        domain = space_d.domain
+        value = float(domain[0]) if side == 0 else float(domain[1])
+        return self.slice(axis, value)
