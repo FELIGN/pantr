@@ -9,7 +9,7 @@ This package consolidates the B-spline API:
   :func:`create_cardinal`: knot vector construction helpers.
 """
 
-from ._bspline_geom import Bspline
+from ._bspline import Bspline
 from ._bspline_space_1d import BsplineSpace1D
 from ._bspline_space_factory import (
     create_cardinal,
