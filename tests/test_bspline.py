@@ -1056,3 +1056,125 @@ class TestToOpenBspline:
         vals = f.evaluate(pts)
         derivs = f.evaluate_derivatives(pts, [0])
         np.testing.assert_allclose(derivs, vals, atol=1e-14)
+
+
+# ---------------------------------------------------------------------------
+# to_periodic tests
+# ---------------------------------------------------------------------------
+
+
+class TestToPeriodic:
+    """Tests for Bspline.to_periodic()."""
+
+    @pytest.mark.parametrize(
+        "num_intervals, degree, continuity",
+        [
+            (2, 1, None),
+            (3, 2, None),
+            (4, 3, None),
+            (5, 3, None),
+            (4, 2, 1),
+            (5, 3, 2),
+        ],
+    )
+    def test_round_trip_max_and_high_regularity(
+        self, num_intervals: int, degree: int, continuity: int | None
+    ) -> None:
+        """Periodic -> open -> periodic round-trip preserves evaluation."""
+        f = _make_periodic_bspline(num_intervals, degree, continuity=continuity)
+        f_open = f.to_open_bspline()
+        c = continuity if continuity is not None else degree - 1
+        f_per = f_open.to_periodic(continuity=c)
+
+        assert f_per.space.spaces[0].periodic
+        assert f_per.space.spaces[0].num_basis == f.space.spaces[0].num_basis
+
+        a, b = f.space.spaces[0].domain
+        pts = np.linspace(float(a), float(b), 51, dtype=np.float64)[1:-1]
+        np.testing.assert_allclose(f_per.evaluate(pts), f.evaluate(pts), atol=1e-11)
+
+    def test_round_trip_default_continuity(self) -> None:
+        """to_periodic() with no continuity arg uses max regularity."""
+        f = _make_periodic_bspline(4, 3)
+        f_open = f.to_open_bspline()
+        f_per = f_open.to_periodic()
+
+        assert f_per.space.spaces[0].periodic
+        a, b = f.space.spaces[0].domain
+        pts = np.linspace(float(a), float(b), 51, dtype=np.float64)[1:-1]
+        np.testing.assert_allclose(f_per.evaluate(pts), f.evaluate(pts), atol=1e-11)
+
+    def test_non_periodic_raises(self) -> None:
+        """to_periodic on a non-periodic open B-spline raises ValueError."""
+        knots = np.array([0.0, 0.0, 0.0, 0.5, 1.0, 1.0, 1.0])
+        space = BsplineSpace([BsplineSpace1D(knots, 2)])
+        ctrl = np.array([1.0, 2.0, 5.0, 3.0])  # P_0 != P_{n-1}
+        f = Bspline(space, ctrl)
+        with pytest.raises(ValueError, match="not periodic"):
+            f.to_periodic()
+
+    def test_already_periodic_raises(self) -> None:
+        """to_periodic on an already-periodic B-spline raises ValueError."""
+        f = _make_periodic_bspline(3, 2)
+        with pytest.raises(ValueError, match="already periodic"):
+            f.to_periodic()
+
+    def test_continuity_out_of_range_raises(self) -> None:
+        """to_periodic with invalid continuity raises ValueError."""
+        f = _make_periodic_bspline(3, 2)
+        f_open = f.to_open_bspline()
+        with pytest.raises(ValueError, match="continuity"):
+            f_open.to_periodic(continuity=2)  # degree=2, max cont=1
+
+    def test_rational_round_trip(self) -> None:
+        """Rational periodic -> open -> periodic preserves evaluation."""
+        knots = create_uniform_periodic(3, 2)
+        space = BsplineSpace([BsplineSpace1D(knots, 2, periodic=True)])
+        # 2D rational control points (x, y, w)
+        n = space.spaces[0].num_basis
+        ctrl = np.column_stack(
+            [
+                np.cos(np.linspace(0, 2 * np.pi, n, endpoint=False)),
+                np.sin(np.linspace(0, 2 * np.pi, n, endpoint=False)),
+                np.ones(n),
+            ]
+        )
+        f = Bspline(space, ctrl, is_rational=True)
+        f_open = f.to_open_bspline()
+        f_per = f_open.to_periodic()
+
+        assert f_per.is_rational
+        assert f_per.space.spaces[0].periodic
+        a, b = f.space.spaces[0].domain
+        pts = np.linspace(float(a), float(b), 41, dtype=np.float64)[1:-1]
+        np.testing.assert_allclose(f_per.evaluate(pts), f.evaluate(pts), atol=1e-11)
+
+    def test_multidim_round_trip(self) -> None:
+        """2D B-spline with both directions periodic round-trips correctly."""
+        from pantr.quad import PointsLattice  # noqa: PLC0415
+
+        knots_u = create_uniform_periodic(3, 2)
+        knots_v = create_uniform_periodic(4, 2)
+        space = BsplineSpace(
+            [
+                BsplineSpace1D(knots_u, 2, periodic=True),
+                BsplineSpace1D(knots_v, 2, periodic=True),
+            ]
+        )
+        nu = space.spaces[0].num_basis
+        nv = space.spaces[1].num_basis
+        ctrl = np.arange(1, nu * nv + 1, dtype=np.float64).reshape(nu, nv, 1)
+        f = Bspline(space, ctrl)
+        f_open = f.to_open_bspline()
+        f_per = f_open.to_periodic()
+
+        assert all(s.periodic for s in f_per.space.spaces)
+        assert f_per.space.spaces[0].num_basis == nu
+        assert f_per.space.spaces[1].num_basis == nv
+
+        au, bu = f.space.spaces[0].domain
+        av, bv = f.space.spaces[1].domain
+        pts_u = np.linspace(float(au), float(bu), 11, dtype=np.float64)[1:-1]
+        pts_v = np.linspace(float(av), float(bv), 11, dtype=np.float64)[1:-1]
+        lattice = PointsLattice([pts_u, pts_v])
+        np.testing.assert_allclose(f_per.evaluate(lattice), f.evaluate(lattice), atol=1e-10)
