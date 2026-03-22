@@ -23,6 +23,7 @@ def test_package_all_exports() -> None:
         "change_basis",
         "quad",
         "tolerance",
+        "transform",
     }
     assert set(pantr.__all__) == expected_all
 
