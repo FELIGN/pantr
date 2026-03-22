@@ -59,61 +59,15 @@ def _derivative_ctrl_1d(
     return np.where(denom == 0.0, 0.0, degree * diff / denom)
 
 
-def _derivative_nonrational_1d(bspline: Bspline) -> Bspline:
-    """Compute the derivative of a non-rational 1D B-spline.
-
-    Handles both open and periodic knot vectors. For periodic B-splines,
-    expands the control points to full representation before applying the
-    derivative formula, then trims back to the periodic count.
-
-    Args:
-        bspline (~pantr.bspline.Bspline): A 1D non-rational B-spline with
-            degree >= 1.
-
-    Returns:
-        ~pantr.bspline.Bspline: Derivative B-spline of degree ``p - 1``.
-
-    Note:
-        Inputs are assumed to be correct (no validation performed).
-        For general use, call :func:`_derivative_bspline` instead.
-    """
-    from . import Bspline as BsplineCls  # noqa: PLC0415
-
-    space_1d = bspline.space.spaces[0]
-    knots = space_1d.knots
-    p = space_1d.degree
-    ctrl = bspline.control_points
-    is_periodic = space_1d.periodic
-
-    # For periodic: expand CPs to full representation.
-    if is_periodic:
-        n_periodic = space_1d.num_basis
-        n_full = len(knots) - p - 1
-        indices = np.arange(n_full) % n_periodic
-        ctrl = ctrl[indices]
-
-    new_knots = knots[1:-1]
-    new_degree = p - 1
-    new_ctrl = _derivative_ctrl_1d(knots, p, ctrl)
-
-    # For periodic: trim to periodic CP count.
-    if is_periodic:
-        tol = float(space_1d.tolerance)
-        n_periodic_new = _get_Bspline_num_basis_1D_impl(new_knots, new_degree, True, tol)
-        new_ctrl = new_ctrl[:n_periodic_new]
-
-    new_space = BsplineSpace([BsplineSpace1D(new_knots, new_degree, periodic=is_periodic)])
-    return BsplineCls(new_space, new_ctrl, is_rational=False)
-
-
-def _derivative_nonrational_nd(bspline: Bspline, direction: int) -> Bspline:
-    """Compute the partial derivative of a non-rational nD B-spline.
+def _derivative_nonrational_impl(bspline: Bspline, direction: int) -> Bspline:
+    """Compute the partial derivative of a non-rational B-spline.
 
     Applies the 1D derivative formula along the given parametric direction
-    using the moveaxis/reshape/restore pattern. Other directions are unchanged.
+    using the moveaxis/reshape/restore pattern. Handles both open and periodic
+    knot vectors in any direction.
 
     Args:
-        bspline (~pantr.bspline.Bspline): A non-rational nD B-spline.
+        bspline (~pantr.bspline.Bspline): A non-rational B-spline.
         direction (int): Parametric direction for differentiation.
 
     Returns:
@@ -428,9 +382,6 @@ def _derivative_rational(bspline: Bspline, direction: int) -> Bspline:
 def _derivative_nonrational(bspline: Bspline, direction: int) -> Bspline:
     """Compute the partial derivative of a non-rational B-spline.
 
-    Dispatches to the 1D or nD implementation based on the B-spline's
-    dimension.
-
     Args:
         bspline (~pantr.bspline.Bspline): A non-rational B-spline.
         direction (int): Parametric direction for differentiation.
@@ -442,9 +393,7 @@ def _derivative_nonrational(bspline: Bspline, direction: int) -> Bspline:
         Inputs are assumed to be correct (no validation performed).
         For general use, call :func:`_derivative_bspline` instead.
     """
-    if bspline.dim == 1:
-        return _derivative_nonrational_1d(bspline)
-    return _derivative_nonrational_nd(bspline, direction)
+    return _derivative_nonrational_impl(bspline, direction)
 
 
 def _derivative_bspline(bspline: Bspline, direction: int, *, keep_degree: bool = False) -> Bspline:
