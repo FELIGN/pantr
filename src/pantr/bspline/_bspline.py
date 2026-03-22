@@ -500,7 +500,7 @@ class Bspline:
                 bounds  # type: ignore[list-item]
             ]
         else:
-            seq = list(bounds)  # type: ignore[arg-type]
+            seq = list(bounds)  # type: ignore[arg-type,unused-ignore]
             if len(seq) != self.dim:
                 raise ValueError(
                     f"bounds sequence length ({len(seq)}) must match dim ({self.dim})."

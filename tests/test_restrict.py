@@ -1,6 +1,7 @@
 """Tests for Bspline.restrict() and Bezier.restrict()."""
 
 import numpy as np
+import numpy.typing as npt
 import pytest
 
 from pantr.bezier import Bezier
@@ -19,12 +20,14 @@ def _make_open_bspline_1d(
     dtype: type = np.float64,
 ) -> Bspline:
     """Create a 1D open B-spline with random control points."""
-    interior = np.linspace(0.0, 1.0, n_intervals + 1, dtype=dtype)[1:-1]
-    knots = np.concatenate([[0.0] * (degree + 1), interior, [1.0] * (degree + 1)]).astype(dtype)
+    interior: npt.NDArray[np.float64] = np.linspace(0.0, 1.0, n_intervals + 1, dtype=dtype)[1:-1]
+    knots: npt.NDArray[np.float64] = np.concatenate(
+        [[0.0] * (degree + 1), interior, [1.0] * (degree + 1)]
+    ).astype(dtype)
     space_1d = BsplineSpace1D(knots, degree)
     space = BsplineSpace([space_1d])
     rng = np.random.default_rng(42)
-    ctrl = rng.random((space.num_total_basis, rank)).astype(dtype)
+    ctrl: npt.NDArray[np.float64] = rng.random((space.num_total_basis, rank)).astype(dtype)
     return Bspline(space, ctrl)
 
 
@@ -37,12 +40,14 @@ def _make_open_bspline_2d(
     """Create a 2D open tensor-product B-spline with random control points."""
     spaces: list[BsplineSpace1D] = []
     for p, n_int in zip(degrees, n_intervals, strict=True):
-        interior = np.linspace(0.0, 1.0, n_int + 1, dtype=dtype)[1:-1]
-        knots = np.concatenate([[0.0] * (p + 1), interior, [1.0] * (p + 1)]).astype(dtype)
+        interior: npt.NDArray[np.float64] = np.linspace(0.0, 1.0, n_int + 1, dtype=dtype)[1:-1]
+        knots: npt.NDArray[np.float64] = np.concatenate(
+            [[0.0] * (p + 1), interior, [1.0] * (p + 1)]
+        ).astype(dtype)
         spaces.append(BsplineSpace1D(knots, p))
     space = BsplineSpace(spaces)
     rng = np.random.default_rng(42)
-    ctrl = rng.random((space.num_total_basis, rank)).astype(dtype)
+    ctrl: npt.NDArray[np.float64] = rng.random((space.num_total_basis, rank)).astype(dtype)
     return Bspline(space, ctrl)
 
 
@@ -57,7 +62,7 @@ def _make_periodic_bspline(
     space_1d = BsplineSpace1D(knots, degree, periodic=True)
     space = BsplineSpace([space_1d])
     rng = np.random.default_rng(42)
-    ctrl = rng.random((space.num_total_basis, rank)).astype(dtype)
+    ctrl: npt.NDArray[np.float64] = rng.random((space.num_total_basis, rank)).astype(dtype)
     return Bspline(space, ctrl)
 
 
@@ -67,14 +72,16 @@ def _make_rational_bspline_1d(
     dtype: type = np.float64,
 ) -> Bspline:
     """Create a 1D rational B-spline (NURBS) with random control points and weights."""
-    interior = np.linspace(0.0, 1.0, n_intervals + 1, dtype=dtype)[1:-1]
-    knots = np.concatenate([[0.0] * (degree + 1), interior, [1.0] * (degree + 1)]).astype(dtype)
+    interior: npt.NDArray[np.float64] = np.linspace(0.0, 1.0, n_intervals + 1, dtype=dtype)[1:-1]
+    knots: npt.NDArray[np.float64] = np.concatenate(
+        [[0.0] * (degree + 1), interior, [1.0] * (degree + 1)]
+    ).astype(dtype)
     space_1d = BsplineSpace1D(knots, degree)
     space = BsplineSpace([space_1d])
     rng = np.random.default_rng(42)
     n = space.num_total_basis
     # rank 3: (x, y, w) in homogeneous coordinates
-    ctrl = rng.random((n, 3)).astype(dtype)
+    ctrl: npt.NDArray[np.float64] = rng.random((n, 3)).astype(dtype)
     ctrl[:, 2] = rng.uniform(0.5, 2.0, size=n).astype(dtype)  # positive weights
     return Bspline(space, ctrl, is_rational=True)
 
