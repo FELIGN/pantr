@@ -542,6 +542,7 @@ class Bspline:
         if direction < 0 or direction >= self.dim:
             raise ValueError(f"direction must be in [0, {self.dim}), got {direction}.")
 
+        from .._control_points_utils import _reverse_control_points  # noqa: PLC0415
         from ._bspline_space_1d import BsplineSpace1D  # noqa: PLC0415
         from ._bspline_space_nd import BsplineSpace  # noqa: PLC0415
 
@@ -556,15 +557,11 @@ class Bspline:
         new_spaces[direction] = new_space_1d
         new_space = BsplineSpace(new_spaces)
 
+        new_cp = _reverse_control_points(self._control_points, direction, in_place=in_place)
+
         if in_place:
-            # In-place reversal along the given axis using slice assignment.
-            idx = [slice(None)] * self._control_points.ndim
-            idx[direction] = slice(None, None, -1)
-            self._control_points[:] = self._control_points[tuple(idx)]
             self._space = new_space
             return None
-
-        new_cp = np.flip(self._control_points, axis=direction)
         return Bspline(new_space, new_cp, is_rational=self._is_rational)
 
     @overload
@@ -602,15 +599,14 @@ class Bspline:
         Example:
             >>> surface.permute_directions([1, 0])  # swap u ↔ v
         """
+        from .._control_points_utils import _permute_control_points  # noqa: PLC0415
         from ._bspline_space_nd import BsplineSpace  # noqa: PLC0415
 
         perm = list(permutation)
         if sorted(perm) != list(range(self.dim)):
             raise ValueError(f"permutation must be a permutation of range({self.dim}), got {perm}.")
 
-        # Transpose parametric axes; keep the rank axis last.
-        axes = [*perm, self.dim]
-        new_cp = np.ascontiguousarray(np.transpose(self._control_points, axes))
+        new_cp = _permute_control_points(self._control_points, perm, self.dim, in_place=in_place)
 
         # Reorder 1D spaces.
         old_spaces = self._space.spaces

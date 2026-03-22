@@ -361,14 +361,12 @@ class Bezier:
         if direction < 0 or direction >= self.dim:
             raise ValueError(f"direction must be in [0, {self.dim}), got {direction}.")
 
-        if in_place:
-            # In-place reversal along the given axis using slice assignment.
-            idx = [slice(None)] * self._control_points.ndim
-            idx[direction] = slice(None, None, -1)
-            self._control_points[:] = self._control_points[tuple(idx)]
-            return None
+        from .._control_points_utils import _reverse_control_points  # noqa: PLC0415
 
-        new_cp = np.flip(self._control_points, axis=direction)
+        new_cp = _reverse_control_points(self._control_points, direction, in_place=in_place)
+
+        if in_place:
+            return None
         return Bezier(new_cp, is_rational=self._is_rational)
 
     @overload
@@ -410,9 +408,9 @@ class Bezier:
         if sorted(perm) != list(range(self.dim)):
             raise ValueError(f"permutation must be a permutation of range({self.dim}), got {perm}.")
 
-        # Transpose parametric axes; keep the rank axis last.
-        axes = [*perm, self.dim]
-        new_cp = np.ascontiguousarray(np.transpose(self._control_points, axes))
+        from .._control_points_utils import _permute_control_points  # noqa: PLC0415
+
+        new_cp = _permute_control_points(self._control_points, perm, self.dim, in_place=in_place)
 
         if in_place:
             self._control_points = new_cp
