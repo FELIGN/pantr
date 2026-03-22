@@ -24,6 +24,7 @@ from ._bspline_knot_insertion import (
     _to_open_bspline_impl,
 )
 from ._bspline_knot_removal import _remove_knots_bspline
+from ._bspline_restrict import _restrict_bspline_impl
 
 if TYPE_CHECKING:
     from ..quad import PointsLattice
@@ -462,6 +463,51 @@ class Bspline:
             ValueError: If the B-spline is already open in every direction.
         """
         return _to_open_bspline_impl(self)
+
+    def restrict(
+        self,
+        bounds: tuple[float, float] | Sequence[tuple[float, float] | None],
+    ) -> Bspline:
+        """Return a B-spline restricted to a sub-region of the parametric domain.
+
+        Extracts the portion of the B-spline defined on the given sub-domain by
+        inserting knots at the new boundaries until they reach multiplicity
+        ``degree + 1``, then extracting the relevant knot sub-vector and control
+        points.  Skips insertion when a bound already coincides with a clamped
+        domain endpoint.  Periodic directions are automatically converted to
+        open form before restricting.
+
+        Args:
+            bounds (tuple[float, float] | Sequence[tuple[float, float] | None]):
+                For a 1D B-spline, a ``(lower, upper)`` tuple defining the new
+                domain.  For multi-dimensional B-splines, a sequence of length
+                ``dim`` where each element is a ``(lower, upper)`` tuple for
+                that direction, or ``None`` to keep the full domain in that
+                direction.  At least one direction must have non-``None`` bounds
+                that actually restrict the domain.
+
+        Returns:
+            Bspline: New B-spline defined on the restricted domain.
+
+        Raises:
+            ValueError: If the sequence length does not match ``dim`` (multi-dim).
+            ValueError: If all directions are ``None`` or match the full domain.
+            ValueError: If any bound lies outside its direction's domain.
+            ValueError: If ``lower >= upper`` in any direction.
+        """
+        if self.dim == 1:
+            bounds_per_dim: list[tuple[float, float] | None] = [
+                bounds  # type: ignore[list-item]
+            ]
+        else:
+            seq = list(bounds)  # type: ignore[arg-type]
+            if len(seq) != self.dim:
+                raise ValueError(
+                    f"bounds sequence length ({len(seq)}) must match dim ({self.dim})."
+                )
+            bounds_per_dim = seq  # type: ignore[assignment]
+
+        return _restrict_bspline_impl(self, bounds_per_dim)
 
     def multiply(self, other: Bspline) -> Bspline:
         """Return the exact pointwise product of this B-spline and another.
