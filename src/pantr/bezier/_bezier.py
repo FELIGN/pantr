@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, Literal, overload
 import numpy as np
 from numpy import typing as npt
 
+from .._transform_control_points import _apply_affine_to_control_points
 from ._bezier_degree import _degree_elevate_bezier
 from ._bezier_derivative import _derivative_bezier
 from ._bezier_eval import _evaluate_bezier, _evaluate_bezier_deriv
@@ -16,6 +17,7 @@ from ._bezier_product import _multiply_bezier
 if TYPE_CHECKING:
     from ..bspline import Bspline
     from ..quad import PointsLattice
+    from ..transform import AffineTransform
 
 
 class Bezier:
@@ -414,6 +416,60 @@ class Bezier:
 
         if in_place:
             self._control_points = new_cp
+            return None
+        return Bezier(new_cp, is_rational=self._is_rational)
+
+    # ------------------------------------------------------------------
+    # Affine transformation
+    # ------------------------------------------------------------------
+
+    @overload
+    def transform(self, affine: AffineTransform, *, in_place: Literal[False] = ...) -> Bezier: ...
+
+    @overload
+    def transform(self, affine: AffineTransform, *, in_place: Literal[True]) -> None: ...
+
+    def transform(
+        self,
+        affine: AffineTransform,
+        *,
+        in_place: bool = False,
+    ) -> Bezier | None:
+        """Apply an affine transformation to the control points.
+
+        For non-rational Bézier, every control point ``P`` is mapped to
+        ``A @ P + b``.  For rational Bézier the weighted homogeneous
+        coordinates are updated so that the projected geometry undergoes the
+        same affine map while the weights are preserved.
+
+        Args:
+            affine (~pantr.transform.AffineTransform): The affine
+                transformation to apply.
+            in_place (bool): If ``True``, the control points are modified in
+                place and ``None`` is returned.  If ``False`` (default), a
+                new :class:`Bezier` is returned.
+
+        Returns:
+            Bezier | None: The transformed Bézier, or ``None`` when
+            ``in_place=True``.
+
+        Raises:
+            ValueError: If the transform dimension does not match the
+                geometric rank of the Bézier.
+
+        Example:
+            >>> from pantr.transform import AffineTransform
+            >>> T = AffineTransform.translation([1.0, 2.0])
+            >>> shifted = bezier.transform(T)
+        """
+        new_cp = _apply_affine_to_control_points(
+            self._control_points,
+            self._is_rational,
+            affine.matrix,
+            affine.offset,
+            in_place=in_place,
+        )
+        if in_place:
             return None
         return Bezier(new_cp, is_rational=self._is_rational)
 

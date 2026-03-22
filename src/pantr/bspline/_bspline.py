@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING, Literal, overload
 import numpy as np
 from numpy import typing as npt
 
+from .._transform_control_points import _apply_affine_to_control_points
 from ._bspline_degree import _degree_elevate_bspline
 from ._bspline_derivative import _derivative_bspline
 from ._bspline_eval import _evaluate_Bspline, _evaluate_Bspline_deriv
@@ -26,6 +27,7 @@ from ._bspline_knot_removal import _remove_knots_bspline
 
 if TYPE_CHECKING:
     from ..quad import PointsLattice
+    from ..transform import AffineTransform
     from ._bspline_space_nd import BsplineSpace
 
 
@@ -618,6 +620,60 @@ class Bspline:
             self._space = new_space
             return None
         return Bspline(new_space, new_cp, is_rational=self._is_rational)
+
+    # ------------------------------------------------------------------
+    # Affine transformation
+    # ------------------------------------------------------------------
+
+    @overload
+    def transform(self, affine: AffineTransform, *, in_place: Literal[False] = ...) -> Bspline: ...
+
+    @overload
+    def transform(self, affine: AffineTransform, *, in_place: Literal[True]) -> None: ...
+
+    def transform(
+        self,
+        affine: AffineTransform,
+        *,
+        in_place: bool = False,
+    ) -> Bspline | None:
+        """Apply an affine transformation to the control points.
+
+        For non-rational B-splines, every control point ``P`` is mapped to
+        ``A @ P + b``.  For rational B-splines (NURBS) the weighted
+        homogeneous coordinates are updated so that the projected geometry
+        undergoes the same affine map while the weights are preserved.
+
+        Args:
+            affine (~pantr.transform.AffineTransform): The affine
+                transformation to apply.
+            in_place (bool): If ``True``, the control points are modified in
+                place and ``None`` is returned.  If ``False`` (default), a
+                new :class:`Bspline` is returned.
+
+        Returns:
+            Bspline | None: The transformed B-spline, or ``None`` when
+            ``in_place=True``.
+
+        Raises:
+            ValueError: If the transform dimension does not match the
+                geometric rank of the B-spline.
+
+        Example:
+            >>> from pantr.transform import AffineTransform
+            >>> T = AffineTransform.translation([1.0, 2.0])
+            >>> shifted = spline.transform(T)
+        """
+        new_cp = _apply_affine_to_control_points(
+            self._control_points,
+            self._is_rational,
+            affine.matrix,
+            affine.offset,
+            in_place=in_place,
+        )
+        if in_place:
+            return None
+        return Bspline(self._space, new_cp, is_rational=self._is_rational)
 
     def subdivide(
         self,
