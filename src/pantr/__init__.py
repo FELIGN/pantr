@@ -9,6 +9,7 @@ The main modules are:
 - :mod:`pantr.change_basis`: Transformation matrices between different bases.
 - :mod:`pantr.quad`: Quadrature rules and evaluation grid helpers.
 - :mod:`pantr.tolerance`: Uniform floating-point tolerance utilities.
+- :mod:`pantr.transform`: Affine transformations for geometric objects.
 """
 
 from typing import Final
@@ -20,6 +21,7 @@ from . import (
     change_basis,
     quad,
     tolerance,
+    transform,
 )
 from .basis import _basis_utils  # noqa: F401
 
@@ -38,6 +40,7 @@ __all__ = [
     "change_basis",
     "quad",
     "tolerance",
+    "transform",
 ]
 
 # Defer numba JIT compilation warmups to a background thread to prevent
