@@ -112,11 +112,11 @@ class TestBezierReverse:
         assert rev.is_rational is True
 
     def test_reverse_in_place(self) -> None:
-        """in_place=True modifies the original and returns self."""
+        """in_place=True modifies the original and returns None."""
         b = _make_bezier_2d_surface()
         original_cp = b.control_points.copy()
         result = b.reverse(direction=0, in_place=True)
-        assert result is b
+        assert result is None
         expected = np.flip(original_cp, axis=0)
         np.testing.assert_array_equal(b.control_points, expected)
 
@@ -186,11 +186,11 @@ class TestBezierPermuteDirections:
         assert perm.is_rational == b.is_rational
 
     def test_permute_in_place(self) -> None:
-        """in_place=True modifies the original and returns self."""
+        """in_place=True modifies the original and returns None."""
         b = _make_bezier_2d_surface()
         original_cp = b.control_points.copy()
         result = b.permute_directions([1, 0], in_place=True)
-        assert result is b
+        assert result is None
         expected = np.transpose(original_cp, (1, 0, 2))
         np.testing.assert_array_equal(b.control_points, expected)
 
@@ -279,11 +279,11 @@ class TestBsplineReverse:
         assert rev.is_rational == b.is_rational
 
     def test_reverse_in_place(self) -> None:
-        """in_place=True modifies original and returns self."""
+        """in_place=True modifies original and returns None."""
         b = _make_bspline_2d_surface()
         original_cp = b.control_points.copy()
         result = b.reverse(direction=0, in_place=True)
-        assert result is b
+        assert result is None
         expected = np.flip(original_cp, axis=0)
         np.testing.assert_array_equal(b.control_points, expected)
 
@@ -383,11 +383,11 @@ class TestBsplinePermuteDirections:
         assert perm.is_rational == b.is_rational
 
     def test_permute_in_place(self) -> None:
-        """in_place=True modifies original and returns self."""
+        """in_place=True modifies original and returns None."""
         b = _make_bspline_2d_surface()
         original_cp = b.control_points.copy()
         result = b.permute_directions([1, 0], in_place=True)
-        assert result is b
+        assert result is None
         expected = np.transpose(original_cp, (1, 0, 2))
         np.testing.assert_array_equal(b.control_points, expected)
 

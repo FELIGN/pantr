@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal, overload
 
 import numpy as np
 from numpy import typing as npt
@@ -329,7 +329,13 @@ class Bezier:
     # Reverse and permute
     # ------------------------------------------------------------------
 
-    def reverse(self, direction: int = 0, *, in_place: bool = False) -> Bezier:
+    @overload
+    def reverse(self, direction: int = ..., *, in_place: Literal[False] = ...) -> Bezier: ...
+
+    @overload
+    def reverse(self, direction: int = ..., *, in_place: Literal[True]) -> None: ...
+
+    def reverse(self, direction: int = 0, *, in_place: bool = False) -> Bezier | None:
         """Reverse the orientation of one parametric direction.
 
         Flips the control points along the given parametric axis so that the
@@ -339,10 +345,11 @@ class Bezier:
             direction (int): Parametric direction to reverse. Must be in
                 ``[0, dim)``. Defaults to 0.
             in_place (bool): If ``True``, modify this Bézier in place and
-                return it. If ``False`` (default), return a new Bézier.
+                return ``None``. If ``False`` (default), return a new Bézier.
 
         Returns:
-            Bezier: The reversed Bézier (``self`` when ``in_place=True``).
+            Bezier | None: The reversed Bézier, or ``None`` when
+            ``in_place=True``.
 
         Raises:
             ValueError: If ``direction`` is out of range ``[0, dim)``.
@@ -354,14 +361,29 @@ class Bezier:
         if direction < 0 or direction >= self.dim:
             raise ValueError(f"direction must be in [0, {self.dim}), got {direction}.")
 
-        new_cp = np.flip(self._control_points, axis=direction)
-
         if in_place:
-            self._control_points = np.ascontiguousarray(new_cp)
-            return self
+            # In-place reversal along the given axis using slice assignment.
+            idx = [slice(None)] * self._control_points.ndim
+            idx[direction] = slice(None, None, -1)
+            self._control_points[:] = self._control_points[tuple(idx)]
+            return None
+
+        new_cp = np.flip(self._control_points, axis=direction)
         return Bezier(new_cp, is_rational=self._is_rational)
 
-    def permute_directions(self, permutation: Sequence[int], *, in_place: bool = False) -> Bezier:
+    @overload
+    def permute_directions(
+        self, permutation: Sequence[int], *, in_place: Literal[False] = ...
+    ) -> Bezier: ...
+
+    @overload
+    def permute_directions(
+        self, permutation: Sequence[int], *, in_place: Literal[True]
+    ) -> None: ...
+
+    def permute_directions(
+        self, permutation: Sequence[int], *, in_place: bool = False
+    ) -> Bezier | None:
         """Reorder the parametric directions according to a permutation.
 
         Given a permutation ``[i_0, i_1, …]``, the new direction ``k`` is
@@ -371,10 +393,11 @@ class Bezier:
         Args:
             permutation (Sequence[int]): A permutation of ``range(dim)``.
             in_place (bool): If ``True``, modify this Bézier in place and
-                return it. If ``False`` (default), return a new Bézier.
+                return ``None``. If ``False`` (default), return a new Bézier.
 
         Returns:
-            Bezier: The permuted Bézier (``self`` when ``in_place=True``).
+            Bezier | None: The permuted Bézier, or ``None`` when
+            ``in_place=True``.
 
         Raises:
             ValueError: If ``permutation`` is not a valid permutation of
@@ -389,11 +412,11 @@ class Bezier:
 
         # Transpose parametric axes; keep the rank axis last.
         axes = [*perm, self.dim]
-        new_cp = np.transpose(self._control_points, axes)
+        new_cp = np.ascontiguousarray(np.transpose(self._control_points, axes))
 
         if in_place:
-            self._control_points = np.ascontiguousarray(new_cp)
-            return self
+            self._control_points = new_cp
+            return None
         return Bezier(new_cp, is_rational=self._is_rational)
 
     # ------------------------------------------------------------------

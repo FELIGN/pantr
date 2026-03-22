@@ -9,7 +9,7 @@ is dispatched to the de Boor algorithm implemented in ``_bspline_eval``.
 from __future__ import annotations
 
 from collections.abc import Sequence
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal, overload
 
 import numpy as np
 from numpy import typing as npt
@@ -509,7 +509,13 @@ class Bspline:
     # Reverse and permute
     # ------------------------------------------------------------------
 
-    def reverse(self, direction: int = 0, *, in_place: bool = False) -> Bspline:
+    @overload
+    def reverse(self, direction: int = ..., *, in_place: Literal[False] = ...) -> Bspline: ...
+
+    @overload
+    def reverse(self, direction: int = ..., *, in_place: Literal[True]) -> None: ...
+
+    def reverse(self, direction: int = 0, *, in_place: bool = False) -> Bspline | None:
         """Reverse the orientation of one parametric direction.
 
         Flips the control points along the given parametric axis and reflects
@@ -520,10 +526,11 @@ class Bspline:
             direction (int): Parametric direction to reverse. Must be in
                 ``[0, dim)``. Defaults to 0.
             in_place (bool): If ``True``, modify this B-spline in place and
-                return it. If ``False`` (default), return a new B-spline.
+                return ``None``. If ``False`` (default), return a new B-spline.
 
         Returns:
-            Bspline: The reversed B-spline (``self`` when ``in_place=True``).
+            Bspline | None: The reversed B-spline, or ``None`` when
+            ``in_place=True``.
 
         Raises:
             ValueError: If ``direction`` is out of range ``[0, dim)``.
@@ -538,8 +545,6 @@ class Bspline:
         from ._bspline_space_1d import BsplineSpace1D  # noqa: PLC0415
         from ._bspline_space_nd import BsplineSpace  # noqa: PLC0415
 
-        new_cp = np.flip(self._control_points, axis=direction)
-
         # Reflect the knot vector: knots_new = a + b - knots[::-1].
         old_space = self._space.spaces[direction]
         knots = old_space.knots
@@ -552,12 +557,29 @@ class Bspline:
         new_space = BsplineSpace(new_spaces)
 
         if in_place:
-            self._control_points = np.ascontiguousarray(new_cp)
+            # In-place reversal along the given axis using slice assignment.
+            idx = [slice(None)] * self._control_points.ndim
+            idx[direction] = slice(None, None, -1)
+            self._control_points[:] = self._control_points[tuple(idx)]
             self._space = new_space
-            return self
+            return None
+
+        new_cp = np.flip(self._control_points, axis=direction)
         return Bspline(new_space, new_cp, is_rational=self._is_rational)
 
-    def permute_directions(self, permutation: Sequence[int], *, in_place: bool = False) -> Bspline:
+    @overload
+    def permute_directions(
+        self, permutation: Sequence[int], *, in_place: Literal[False] = ...
+    ) -> Bspline: ...
+
+    @overload
+    def permute_directions(
+        self, permutation: Sequence[int], *, in_place: Literal[True]
+    ) -> None: ...
+
+    def permute_directions(
+        self, permutation: Sequence[int], *, in_place: bool = False
+    ) -> Bspline | None:
         """Reorder the parametric directions according to a permutation.
 
         Given a permutation ``[i_0, i_1, …]``, the new direction ``k`` is
@@ -567,10 +589,11 @@ class Bspline:
         Args:
             permutation (Sequence[int]): A permutation of ``range(dim)``.
             in_place (bool): If ``True``, modify this B-spline in place and
-                return it. If ``False`` (default), return a new B-spline.
+                return ``None``. If ``False`` (default), return a new B-spline.
 
         Returns:
-            Bspline: The permuted B-spline (``self`` when ``in_place=True``).
+            Bspline | None: The permuted B-spline, or ``None`` when
+            ``in_place=True``.
 
         Raises:
             ValueError: If ``permutation`` is not a valid permutation of
@@ -587,7 +610,7 @@ class Bspline:
 
         # Transpose parametric axes; keep the rank axis last.
         axes = [*perm, self.dim]
-        new_cp = np.transpose(self._control_points, axes)
+        new_cp = np.ascontiguousarray(np.transpose(self._control_points, axes))
 
         # Reorder 1D spaces.
         old_spaces = self._space.spaces
@@ -595,9 +618,9 @@ class Bspline:
         new_space = BsplineSpace(new_spaces)
 
         if in_place:
-            self._control_points = np.ascontiguousarray(new_cp)
+            self._control_points = new_cp
             self._space = new_space
-            return self
+            return None
         return Bspline(new_space, new_cp, is_rational=self._is_rational)
 
     def subdivide(
