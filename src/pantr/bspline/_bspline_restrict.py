@@ -23,50 +23,31 @@ if TYPE_CHECKING:
     from . import Bspline
 
 
-def _restrict_bspline_1d_impl(
+def _validate_restrict_bounds(
     knots: npt.NDArray[np.float32 | np.float64],
     degree: int,
-    ctrl_2d: npt.NDArray[np.float32 | np.float64],
-    periodic: bool,
     tol: float,
     a_new: float,
     b_new: float,
-) -> tuple[npt.NDArray[np.float32 | np.float64], npt.NDArray[np.float32 | np.float64]]:
-    """Restrict a 1D B-spline to a sub-interval of its parametric domain.
-
-    Inserts knots at ``a_new`` and ``b_new`` until each has multiplicity
-    ``degree + 1``, then extracts the knot sub-vector and control points
-    corresponding to the interval ``[a_new, b_new]``.  Skips insertion when
-    a bound coincides with an already-open domain endpoint.
-
-    For periodic splines, the direction is first converted to open form via
-    :func:`_to_open_bspline_1d_impl`.
+) -> tuple[float, float]:
+    """Validate and snap restriction bounds for a 1D B-spline.
 
     Args:
-        knots: Knot vector of shape ``(len(knots),)``.
+        knots: Knot vector.
         degree: Polynomial degree.
-        ctrl_2d: Control point matrix of shape ``(n, rank)``.
-        periodic: Whether the spline is periodic.
         tol: Knot comparison tolerance.
-        a_new: Left bound of the restricted domain.
-        b_new: Right bound of the restricted domain.
+        a_new: Requested left bound.
+        b_new: Requested right bound.
 
     Returns:
-        tuple[npt.NDArray, npt.NDArray]: ``(restricted_knots, restricted_ctrl)``
-        — the clamped knot vector on ``[a_new, b_new]`` and the corresponding
-        control points.
+        tuple[float, float]: Snapped ``(a_new, b_new)`` bounds.
 
     Raises:
-        ValueError: If ``a_new >= b_new``.
-        ValueError: If ``a_new`` or ``b_new`` lies outside the domain.
-        ValueError: If the bounds match the full domain and the direction is
-            already open (no-op).
+        ValueError: If ``a_new >= b_new`` or bounds lie outside the domain.
     """
-    p = degree
-    a = float(knots[p])
-    b = float(knots[-p - 1])
+    a = float(knots[degree])
+    b = float(knots[-degree - 1])
 
-    # Validate bounds.
     if a_new >= b_new:
         raise ValueError(f"Lower bound ({a_new}) must be strictly less than upper bound ({b_new}).")
 
@@ -81,47 +62,114 @@ def _restrict_bspline_1d_impl(
     if np.isclose(b_new, b, atol=tol):
         b_new = b
 
+    return a_new, b_new
+
+
+def _compute_boundary_knots_to_insert(
+    knots: npt.NDArray[np.float32 | np.float64],
+    degree: int,
+    tol: float,
+    a_new: float,
+    b_new: float,
+) -> npt.NDArray[np.float32 | np.float64]:
+    """Compute knots to insert at the restriction boundaries.
+
+    For each boundary, inserts enough copies to reach multiplicity ``degree + 1``.
+    Skips insertion when the boundary coincides with an already-open domain endpoint.
+
+    Args:
+        knots: Knot vector (must be non-periodic/open-compatible).
+        degree: Polynomial degree.
+        tol: Knot comparison tolerance.
+        a_new: Left bound of the restricted domain.
+        b_new: Right bound of the restricted domain.
+
+    Returns:
+        npt.NDArray: 1D array of knot values to insert (may be empty).
+
+    Raises:
+        ValueError: If the bounds match the full domain and the direction is
+            already open (no-op).
+    """
+    p = degree
+    a = float(knots[p])
+    b = float(knots[-p - 1])
+
+    left_at_domain = np.isclose(a_new, a, atol=tol)
+    right_at_domain = np.isclose(b_new, b, atol=tol)
+    left_open = bool(np.isclose(knots[0], knots[p], atol=tol))
+    right_open = bool(np.isclose(knots[-p - 1], knots[-1], atol=tol))
+
+    if left_at_domain and right_at_domain and left_open and right_open:
+        raise ValueError("Bounds match the full domain and the direction is already open.")
+
+    knots_list: list[float] = []
+
+    if not (left_at_domain and left_open):
+        m_left = int(np.sum(np.isclose(knots, a_new, atol=tol)))
+        deficit = p + 1 - m_left
+        if deficit > 0:
+            knots_list.extend([a_new] * deficit)
+
+    if not (right_at_domain and right_open):
+        m_right = int(np.sum(np.isclose(knots, b_new, atol=tol)))
+        deficit = p + 1 - m_right
+        if deficit > 0:
+            knots_list.extend([b_new] * deficit)
+
+    return np.array(knots_list, dtype=knots.dtype)
+
+
+def _restrict_bspline_1d_impl(  # noqa: PLR0913
+    knots: npt.NDArray[np.float32 | np.float64],
+    degree: int,
+    ctrl_2d: npt.NDArray[np.float32 | np.float64],
+    periodic: bool,
+    tol: float,
+    bounds: tuple[float, float],
+) -> tuple[npt.NDArray[np.float32 | np.float64], npt.NDArray[np.float32 | np.float64]]:
+    """Restrict a 1D B-spline to a sub-interval of its parametric domain.
+
+    Inserts knots at the boundaries until each has multiplicity ``degree + 1``,
+    then extracts the knot sub-vector and control points corresponding to the
+    restricted interval.  Skips insertion when a bound coincides with an
+    already-open domain endpoint.
+
+    For periodic splines, the direction is first converted to open form via
+    :func:`_to_open_bspline_1d_impl`.
+
+    Args:
+        knots: Knot vector of shape ``(len(knots),)``.
+        degree: Polynomial degree.
+        ctrl_2d: Control point matrix of shape ``(n, rank)``.
+        periodic: Whether the spline is periodic.
+        tol: Knot comparison tolerance.
+        bounds: ``(a_new, b_new)`` — left and right bounds of the restricted domain.
+
+    Returns:
+        tuple[npt.NDArray, npt.NDArray]: ``(restricted_knots, restricted_ctrl)``
+        — the clamped knot vector on ``[a_new, b_new]`` and the corresponding
+        control points.
+
+    Raises:
+        ValueError: If ``a_new >= b_new``.
+        ValueError: If ``a_new`` or ``b_new`` lies outside the domain.
+        ValueError: If the bounds match the full domain and the direction is
+            already open (no-op).
+    """
+    p = degree
+    a_new, b_new = _validate_restrict_bounds(knots, p, tol, bounds[0], bounds[1])
+
     # For periodic splines, convert to open form first.
     if periodic:
         knots, ctrl_2d = _to_open_bspline_1d_impl(knots, p, ctrl_2d, periodic, tol)
 
-    # Determine how many knots to insert at each boundary.
-    left_at_domain = np.isclose(a_new, a, atol=tol)
-    right_at_domain = np.isclose(b_new, b, atol=tol)
+    # Compute and insert boundary knots.
+    knots_to_insert = _compute_boundary_knots_to_insert(knots, p, tol, a_new, b_new)
 
-    # Check for no-op: both bounds match the full domain and already open.
-    left_open = bool(np.isclose(knots[0], knots[p], atol=tol))
-    right_open = bool(np.isclose(knots[-p - 1], knots[-1], atol=tol))
-    if left_at_domain and right_at_domain and left_open and right_open:
-        raise ValueError("Bounds match the full domain and the direction is already open.")
-
-    # Count existing multiplicity and compute knots to insert.
-    knots_to_insert_list: list[float] = []
-
-    if left_at_domain and left_open:
-        # Left end is already clamped — no insertion needed.
-        pass
-    else:
-        # Count how many times a_new appears in the knot vector.
-        m_left = int(np.sum(np.isclose(knots, a_new, atol=tol)))
-        deficit = p + 1 - m_left
-        if deficit > 0:
-            knots_to_insert_list.extend([a_new] * deficit)
-
-    if right_at_domain and right_open:
-        # Right end is already clamped — no insertion needed.
-        pass
-    else:
-        m_right = int(np.sum(np.isclose(knots, b_new, atol=tol)))
-        deficit = p + 1 - m_right
-        if deficit > 0:
-            knots_to_insert_list.extend([b_new] * deficit)
-
-    # Insert knots if needed.
     refined_knots: npt.NDArray[np.float32 | np.float64]
     refined_ctrl: npt.NDArray[np.float32 | np.float64]
-    if knots_to_insert_list:
-        knots_to_insert = np.array(knots_to_insert_list, dtype=knots.dtype)
+    if knots_to_insert.size > 0:
         refined_knots, refined_ctrl = _insert_knots_bspline_1d_impl(
             knots, p, ctrl_2d, knots_to_insert, tol
         )
@@ -129,10 +177,8 @@ def _restrict_bspline_1d_impl(
         refined_knots, refined_ctrl = knots, ctrl_2d
 
     # Extract the sub-region [a_new, b_new].
-    # After insertion, a_new has multiplicity p+1 starting at some index i_start,
-    # and b_new has multiplicity p+1 ending at some index i_end.
-    # The new knot vector is refined_knots[i_start : i_end + 1].
-    # The new control points are refined_ctrl[i_start : i_end - p].
+    # After insertion, a_new has multiplicity p+1 starting at index i_start,
+    # and b_new has multiplicity p+1 ending at index i_end.
     i_start = int(np.searchsorted(refined_knots, a_new - tol))
     i_end = int(np.searchsorted(refined_knots, b_new + tol)) - 1
 
@@ -183,8 +229,6 @@ def _restrict_bspline_impl(
             new_spaces_1d.append(space_1d)
             continue
 
-        a_new, b_new = bounds
-
         # Move dimension i to the 0th axis and flatten remaining axes.
         moved_ctrl = np.moveaxis(ctrl, i, 0)
         orig_shape = moved_ctrl.shape
@@ -198,8 +242,7 @@ def _restrict_bspline_impl(
             pts_2d,
             space_1d.periodic,
             float(space_1d.tolerance),
-            a_new,
-            b_new,
+            bounds,
         )
 
         any_restricted = True
@@ -209,7 +252,9 @@ def _restrict_bspline_impl(
         new_moved_ctrl = restricted_pts_2d.reshape(new_shape)
         ctrl = np.moveaxis(new_moved_ctrl, 0, i)
 
-        new_spaces_1d.append(BsplineSpace1D(restricted_knots, space_1d.degree, periodic=False))
+        new_spaces_1d.append(
+            BsplineSpace1D(restricted_knots, space_1d.degree, periodic=False, snap_knots=False)
+        )
 
     if not any_restricted:
         raise ValueError(
