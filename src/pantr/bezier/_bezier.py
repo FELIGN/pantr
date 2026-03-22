@@ -424,14 +424,10 @@ class Bezier:
     # ------------------------------------------------------------------
 
     @overload
-    def transform(
-        self, affine: AffineTransform, *, in_place: Literal[False] = ...
-    ) -> Bezier: ...
+    def transform(self, affine: AffineTransform, *, in_place: Literal[False] = ...) -> Bezier: ...
 
     @overload
-    def transform(
-        self, affine: AffineTransform, *, in_place: Literal[True]
-    ) -> None: ...
+    def transform(self, affine: AffineTransform, *, in_place: Literal[True]) -> None: ...
 
     def transform(
         self,

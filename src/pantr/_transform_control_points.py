@@ -60,7 +60,7 @@ def _apply_affine_to_control_points(
         )
 
     # Cast matrix and translation to control-point dtype for computation.
-    A = matrix.astype(dtype, copy=False)  # noqa: N806
+    A = matrix.astype(dtype, copy=False)
     b = translation.astype(dtype, copy=False)
 
     if is_rational:

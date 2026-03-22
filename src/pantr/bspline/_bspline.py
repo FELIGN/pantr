@@ -626,14 +626,10 @@ class Bspline:
     # ------------------------------------------------------------------
 
     @overload
-    def transform(
-        self, affine: AffineTransform, *, in_place: Literal[False] = ...
-    ) -> Bspline: ...
+    def transform(self, affine: AffineTransform, *, in_place: Literal[False] = ...) -> Bspline: ...
 
     @overload
-    def transform(
-        self, affine: AffineTransform, *, in_place: Literal[True]
-    ) -> None: ...
+    def transform(self, affine: AffineTransform, *, in_place: Literal[True]) -> None: ...
 
     def transform(
         self,
