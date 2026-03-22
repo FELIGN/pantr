@@ -9,7 +9,7 @@ is dispatched to the de Boor algorithm implemented in ``_bspline_eval``.
 from __future__ import annotations
 
 from collections.abc import Sequence
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal, overload
 
 import numpy as np
 from numpy import typing as npt
@@ -22,6 +22,7 @@ from ._bspline_knot_insertion import (
     _insert_knots_bspline,
     _to_open_bspline_impl,
 )
+from ._bspline_knot_removal import _remove_knots_bspline
 
 if TYPE_CHECKING:
     from ..quad import PointsLattice
@@ -368,6 +369,76 @@ class Bspline:
 
         return _insert_knots_bspline(self, new_knots_per_dim)
 
+    def remove_knots(
+        self,
+        knot_values: float | npt.ArrayLike | Sequence[npt.ArrayLike | None],
+        *,
+        num: int | None = None,
+        tol: float | None = None,
+    ) -> Bspline:
+        """Return a B-spline with specified interior knots removed.
+
+        Each listed knot value is removed up to *num* times (or as many as
+        possible when ``num=None``), provided the geometric deviation stays
+        within *tol*.
+
+        Args:
+            knot_values (float | npt.ArrayLike | Sequence[npt.ArrayLike | None]):
+                For a 1D B-spline, a single float or a 1D array-like of
+                distinct interior knot values to remove. For multi-dimensional
+                B-splines, a sequence of length ``dim`` where each element is a
+                1D array-like of knot values to remove in that direction, or
+                ``None`` to skip that direction. At least one direction must
+                have a non-empty array of knot values.
+            num (int | None): Maximum number of removals per distinct knot
+                value. ``None`` (default) removes as many as possible (up to
+                the current multiplicity, capped at the degree).
+            tol (float | None): Maximum allowed geometric deviation for each
+                removal step. ``None`` (default) uses ``1e-10``.
+
+        Returns:
+            Bspline: New B-spline with the same geometry (within tolerance)
+            and reduced knot vectors.
+
+        Raises:
+            ValueError: If the B-spline is periodic in any direction.
+            ValueError: If the sequence length does not match ``dim``
+                (multi-dim case).
+            ValueError: If all directions have empty or ``None`` knot arrays.
+            ValueError: If any knot value is not found or is a boundary knot.
+        """
+        # Periodic splines are not supported.
+        for i, sp in enumerate(self._space.spaces):
+            if sp.periodic:
+                raise ValueError(
+                    f"Knot removal is not supported for periodic B-splines "
+                    f"(direction {i} is periodic)."
+                )
+
+        dtype = self.dtype
+
+        if self.dim == 1:
+            arr = np.atleast_1d(np.asarray(knot_values, dtype=dtype)).ravel()
+            kv_per_dim: list[npt.NDArray[np.float32 | np.float64] | None] = [arr]
+        else:
+            seq = list(knot_values)  # type: ignore[arg-type]
+            if len(seq) != self.dim:
+                raise ValueError(
+                    f"knot_values sequence length ({len(seq)}) must match dim ({self.dim})."
+                )
+            kv_per_dim = [
+                None if kv is None else np.atleast_1d(np.asarray(kv, dtype=dtype)).ravel()
+                for kv in seq
+            ]
+
+        # Require at least one non-empty direction.
+        if all(kv is None or kv.size == 0 for kv in kv_per_dim):
+            raise ValueError(
+                "At least one direction must have a non-empty array of knot values to remove."
+            )
+
+        return _remove_knots_bspline(self, kv_per_dim, num, tol)
+
     def to_open_bspline(self) -> Bspline:
         """Return an open (clamped) non-periodic B-spline equivalent to this one.
 
@@ -433,6 +504,120 @@ class Bspline:
         return _multiply_bspline_nd(self, other)
 
     __mul__ = multiply
+
+    # ------------------------------------------------------------------
+    # Reverse and permute
+    # ------------------------------------------------------------------
+
+    @overload
+    def reverse(self, direction: int = ..., *, in_place: Literal[False] = ...) -> Bspline: ...
+
+    @overload
+    def reverse(self, direction: int = ..., *, in_place: Literal[True]) -> None: ...
+
+    def reverse(self, direction: int = 0, *, in_place: bool = False) -> Bspline | None:
+        """Reverse the orientation of one parametric direction.
+
+        Flips the control points along the given parametric axis and reflects
+        the corresponding knot vector so that the mapping is reparametrised in
+        the opposite sense along that direction.
+
+        Args:
+            direction (int): Parametric direction to reverse. Must be in
+                ``[0, dim)``. Defaults to 0.
+            in_place (bool): If ``True``, modify this B-spline in place and
+                return ``None``. If ``False`` (default), return a new B-spline.
+
+        Returns:
+            Bspline | None: The reversed B-spline, or ``None`` when
+            ``in_place=True``.
+
+        Raises:
+            ValueError: If ``direction`` is out of range ``[0, dim)``.
+
+        Example:
+            >>> rev = spline.reverse(direction=0)
+            >>> spline.reverse(direction=1, in_place=True)
+        """
+        if direction < 0 or direction >= self.dim:
+            raise ValueError(f"direction must be in [0, {self.dim}), got {direction}.")
+
+        from .._control_points_utils import _reverse_control_points  # noqa: PLC0415
+        from ._bspline_space_1d import BsplineSpace1D  # noqa: PLC0415
+        from ._bspline_space_nd import BsplineSpace  # noqa: PLC0415
+
+        # Reflect the knot vector: knots_new = a + b - knots[::-1].
+        old_space = self._space.spaces[direction]
+        knots = old_space.knots
+        a, b = old_space.domain
+        new_knots = (a + b) - knots[::-1]
+        new_space_1d = BsplineSpace1D(new_knots, old_space.degree, periodic=old_space.periodic)
+
+        new_spaces = list(self._space.spaces)
+        new_spaces[direction] = new_space_1d
+        new_space = BsplineSpace(new_spaces)
+
+        new_cp = _reverse_control_points(self._control_points, direction, in_place=in_place)
+
+        if in_place:
+            self._space = new_space
+            return None
+        return Bspline(new_space, new_cp, is_rational=self._is_rational)
+
+    @overload
+    def permute_directions(
+        self, permutation: Sequence[int], *, in_place: Literal[False] = ...
+    ) -> Bspline: ...
+
+    @overload
+    def permute_directions(
+        self, permutation: Sequence[int], *, in_place: Literal[True]
+    ) -> None: ...
+
+    def permute_directions(
+        self, permutation: Sequence[int], *, in_place: bool = False
+    ) -> Bspline | None:
+        """Reorder the parametric directions according to a permutation.
+
+        Given a permutation ``[i_0, i_1, …]``, the new direction ``k`` is
+        the old direction ``permutation[k]``. For example, ``[1, 2, 0]`` on
+        a 3D volume maps old direction 1 → new 0, old 2 → new 1, old 0 → new 2.
+
+        Args:
+            permutation (Sequence[int]): A permutation of ``range(dim)``.
+            in_place (bool): If ``True``, modify this B-spline in place and
+                return ``None``. If ``False`` (default), return a new B-spline.
+
+        Returns:
+            Bspline | None: The permuted B-spline, or ``None`` when
+            ``in_place=True``.
+
+        Raises:
+            ValueError: If ``permutation`` is not a valid permutation of
+                ``range(dim)``.
+
+        Example:
+            >>> surface.permute_directions([1, 0])  # swap u ↔ v
+        """
+        from .._control_points_utils import _permute_control_points  # noqa: PLC0415
+        from ._bspline_space_nd import BsplineSpace  # noqa: PLC0415
+
+        perm = list(permutation)
+        if sorted(perm) != list(range(self.dim)):
+            raise ValueError(f"permutation must be a permutation of range({self.dim}), got {perm}.")
+
+        new_cp = _permute_control_points(self._control_points, perm, self.dim, in_place=in_place)
+
+        # Reorder 1D spaces.
+        old_spaces = self._space.spaces
+        new_spaces = tuple(old_spaces[i] for i in perm)
+        new_space = BsplineSpace(new_spaces)
+
+        if in_place:
+            self._control_points = new_cp
+            self._space = new_space
+            return None
+        return Bspline(new_space, new_cp, is_rational=self._is_rational)
 
     def subdivide(
         self,

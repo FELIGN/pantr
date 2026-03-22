@@ -60,6 +60,7 @@ if not TYPE_CHECKING:
                 _bspline_eval,
                 _bspline_extraction,
                 _bspline_knot_insertion_core,
+                _bspline_knot_removal_core,
                 _bspline_knots,
             )
 
@@ -73,6 +74,7 @@ if not TYPE_CHECKING:
             _bspline_eval._warmup_numba_functions()
             _bspline_extraction._warmup_numba_functions()
             _bspline_knot_insertion_core._warmup_numba_functions()
+            _bspline_knot_removal_core._warmup_numba_functions()
             _bspline_knots._warmup_numba_functions()
             from .bspline import _bspline_blossom_core  # noqa: PLC0415
 

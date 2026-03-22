@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal, overload
 
 import numpy as np
 from numpy import typing as npt
@@ -324,6 +324,98 @@ class Bezier:
         return _multiply_bezier(self, other)
 
     __mul__ = multiply
+
+    # ------------------------------------------------------------------
+    # Reverse and permute
+    # ------------------------------------------------------------------
+
+    @overload
+    def reverse(self, direction: int = ..., *, in_place: Literal[False] = ...) -> Bezier: ...
+
+    @overload
+    def reverse(self, direction: int = ..., *, in_place: Literal[True]) -> None: ...
+
+    def reverse(self, direction: int = 0, *, in_place: bool = False) -> Bezier | None:
+        """Reverse the orientation of one parametric direction.
+
+        Flips the control points along the given parametric axis so that the
+        mapping is reparametrised in the opposite sense along that direction.
+
+        Args:
+            direction (int): Parametric direction to reverse. Must be in
+                ``[0, dim)``. Defaults to 0.
+            in_place (bool): If ``True``, modify this Bézier in place and
+                return ``None``. If ``False`` (default), return a new Bézier.
+
+        Returns:
+            Bezier | None: The reversed Bézier, or ``None`` when
+            ``in_place=True``.
+
+        Raises:
+            ValueError: If ``direction`` is out of range ``[0, dim)``.
+
+        Example:
+            >>> rev = bezier.reverse(direction=0)
+            >>> bezier.reverse(direction=1, in_place=True)
+        """
+        if direction < 0 or direction >= self.dim:
+            raise ValueError(f"direction must be in [0, {self.dim}), got {direction}.")
+
+        from .._control_points_utils import _reverse_control_points  # noqa: PLC0415
+
+        new_cp = _reverse_control_points(self._control_points, direction, in_place=in_place)
+
+        if in_place:
+            return None
+        return Bezier(new_cp, is_rational=self._is_rational)
+
+    @overload
+    def permute_directions(
+        self, permutation: Sequence[int], *, in_place: Literal[False] = ...
+    ) -> Bezier: ...
+
+    @overload
+    def permute_directions(
+        self, permutation: Sequence[int], *, in_place: Literal[True]
+    ) -> None: ...
+
+    def permute_directions(
+        self, permutation: Sequence[int], *, in_place: bool = False
+    ) -> Bezier | None:
+        """Reorder the parametric directions according to a permutation.
+
+        Given a permutation ``[i_0, i_1, …]``, the new direction ``k`` is
+        the old direction ``permutation[k]``. For example, ``[1, 2, 0]`` on
+        a 3D volume maps old direction 1 → new 0, old 2 → new 1, old 0 → new 2.
+
+        Args:
+            permutation (Sequence[int]): A permutation of ``range(dim)``.
+            in_place (bool): If ``True``, modify this Bézier in place and
+                return ``None``. If ``False`` (default), return a new Bézier.
+
+        Returns:
+            Bezier | None: The permuted Bézier, or ``None`` when
+            ``in_place=True``.
+
+        Raises:
+            ValueError: If ``permutation`` is not a valid permutation of
+                ``range(dim)``.
+
+        Example:
+            >>> surface.permute_directions([1, 0])  # swap u ↔ v
+        """
+        perm = list(permutation)
+        if sorted(perm) != list(range(self.dim)):
+            raise ValueError(f"permutation must be a permutation of range({self.dim}), got {perm}.")
+
+        from .._control_points_utils import _permute_control_points  # noqa: PLC0415
+
+        new_cp = _permute_control_points(self._control_points, perm, self.dim, in_place=in_place)
+
+        if in_place:
+            self._control_points = new_cp
+            return None
+        return Bezier(new_cp, is_rational=self._is_rational)
 
     # ------------------------------------------------------------------
     # Conversion
