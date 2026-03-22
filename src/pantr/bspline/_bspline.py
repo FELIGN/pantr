@@ -434,6 +434,101 @@ class Bspline:
 
     __mul__ = multiply
 
+    # ------------------------------------------------------------------
+    # Reverse and permute
+    # ------------------------------------------------------------------
+
+    def reverse(self, direction: int = 0, *, in_place: bool = False) -> Bspline:
+        """Reverse the orientation of one parametric direction.
+
+        Flips the control points along the given parametric axis and reflects
+        the corresponding knot vector so that the mapping is reparametrised in
+        the opposite sense along that direction.
+
+        Args:
+            direction (int): Parametric direction to reverse. Must be in
+                ``[0, dim)``. Defaults to 0.
+            in_place (bool): If ``True``, modify this B-spline in place and
+                return it. If ``False`` (default), return a new B-spline.
+
+        Returns:
+            Bspline: The reversed B-spline (``self`` when ``in_place=True``).
+
+        Raises:
+            ValueError: If ``direction`` is out of range ``[0, dim)``.
+
+        Example:
+            >>> rev = spline.reverse(direction=0)
+            >>> spline.reverse(direction=1, in_place=True)
+        """
+        if direction < 0 or direction >= self.dim:
+            raise ValueError(f"direction must be in [0, {self.dim}), got {direction}.")
+
+        from ._bspline_space_1d import BsplineSpace1D  # noqa: PLC0415
+        from ._bspline_space_nd import BsplineSpace  # noqa: PLC0415
+
+        new_cp = np.flip(self._control_points, axis=direction)
+
+        # Reflect the knot vector: knots_new = a + b - knots[::-1].
+        old_space = self._space.spaces[direction]
+        knots = old_space.knots
+        a, b = old_space.domain
+        new_knots = (a + b) - knots[::-1]
+        new_space_1d = BsplineSpace1D(new_knots, old_space.degree, periodic=old_space.periodic)
+
+        new_spaces = list(self._space.spaces)
+        new_spaces[direction] = new_space_1d
+        new_space = BsplineSpace(new_spaces)
+
+        if in_place:
+            self._control_points = np.ascontiguousarray(new_cp)
+            self._space = new_space
+            return self
+        return Bspline(new_space, new_cp, is_rational=self._is_rational)
+
+    def permute_directions(self, permutation: Sequence[int], *, in_place: bool = False) -> Bspline:
+        """Reorder the parametric directions according to a permutation.
+
+        Given a permutation ``[i_0, i_1, …]``, the new direction ``k`` is
+        the old direction ``permutation[k]``. For example, ``[1, 2, 0]`` on
+        a 3D volume maps old direction 1 → new 0, old 2 → new 1, old 0 → new 2.
+
+        Args:
+            permutation (Sequence[int]): A permutation of ``range(dim)``.
+            in_place (bool): If ``True``, modify this B-spline in place and
+                return it. If ``False`` (default), return a new B-spline.
+
+        Returns:
+            Bspline: The permuted B-spline (``self`` when ``in_place=True``).
+
+        Raises:
+            ValueError: If ``permutation`` is not a valid permutation of
+                ``range(dim)``.
+
+        Example:
+            >>> surface.permute_directions([1, 0])  # swap u ↔ v
+        """
+        from ._bspline_space_nd import BsplineSpace  # noqa: PLC0415
+
+        perm = list(permutation)
+        if sorted(perm) != list(range(self.dim)):
+            raise ValueError(f"permutation must be a permutation of range({self.dim}), got {perm}.")
+
+        # Transpose parametric axes; keep the rank axis last.
+        axes = [*perm, self.dim]
+        new_cp = np.transpose(self._control_points, axes)
+
+        # Reorder 1D spaces.
+        old_spaces = self._space.spaces
+        new_spaces = tuple(old_spaces[i] for i in perm)
+        new_space = BsplineSpace(new_spaces)
+
+        if in_place:
+            self._control_points = np.ascontiguousarray(new_cp)
+            self._space = new_space
+            return self
+        return Bspline(new_space, new_cp, is_rational=self._is_rational)
+
     def subdivide(
         self,
         n_subdivisions: int | Sequence[int | None],
