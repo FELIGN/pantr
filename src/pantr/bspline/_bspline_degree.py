@@ -113,7 +113,7 @@ def _degree_elevate_bspline(bspline: Bspline, degree_increments: tuple[int, ...]
     return Bspline(new_space, ctrl, is_rational=orig_is_rational)
 
 
-def _coarsen_knots_after_reduction(
+def _coarsen_knots_after_reduction(  # noqa: PLR0913
     knots: npt.NDArray[np.float32 | np.float64],
     new_degree: int,
     ctrl: npt.NDArray[np.float32 | np.float64],

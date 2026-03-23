@@ -388,7 +388,7 @@ def _degree_reduce_1d_core(  # noqa: PLR0912, PLR0915
             b += 1
         mul = b - i + 1
         ub = knots[b]
-        oldr = r
+        oldr = r  # noqa: F841
         r = d - mul
 
         # Extract Bézier control points for the current span.
