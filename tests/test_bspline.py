@@ -1587,7 +1587,7 @@ class TestToBeziers:
 
     def test_cache_invalidation_transform(self) -> None:
         """Test that in-place transform invalidates the Bezier cache."""
-        from pantr.transform import AffineTransform
+        from pantr.transform import AffineTransform  # noqa: PLC0415
 
         knots = np.array([0.0, 0.0, 0.0, 0.5, 1.0, 1.0, 1.0], dtype=np.float64)
         space = BsplineSpace([BsplineSpace1D(knots, 2)])

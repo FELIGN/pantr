@@ -664,7 +664,7 @@ class Bspline:
             npt.NDArray[np.object_]: Array of :class:`~pantr.bezier.Bezier`
             objects with shape ``(*num_intervals)`` following the tensor-product
             interval structure.  For a 1D B-spline with 3 intervals the shape
-            is ``(3,)``.  For a 2D surface with 3×2 intervals the shape is
+            is ``(3,)``.  For a 2D surface with 3x2 intervals the shape is
             ``(3, 2)``.  The Bézier control points are read-only.
 
         Example:
