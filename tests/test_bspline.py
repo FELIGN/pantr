@@ -4,6 +4,7 @@ import numpy as np
 import numpy.typing as npt
 import pytest
 
+from pantr.bezier import Bezier
 from pantr.bspline import Bspline, BsplineSpace, BsplineSpace1D, create_uniform_periodic
 from pantr.bspline._bspline_basis_core import _compute_basis_nurbs_book_impl
 
@@ -1222,3 +1223,155 @@ class TestToPeriodic:
         f = Bspline(space, np.array([1.0, 2.0, 3.0, 4.0]))
         with pytest.raises(ValueError, match="No direction to convert"):
             f.to_periodic(continuity=(None,))
+
+
+# ---------------------------------------------------------------------------
+# To / from Bezier
+# ---------------------------------------------------------------------------
+
+
+class TestToBezier:
+    """Test Bspline.to_bezier conversion."""
+
+    def test_bezier_like_1d(self) -> None:
+        """Test to_bezier for a B-spline with Bézier-like knots."""
+        knots = np.array([0.0, 0.0, 0.0, 1.0, 1.0, 1.0], dtype=np.float64)
+        space = BsplineSpace([BsplineSpace1D(knots, 2)])
+        cp = np.array([[1.0], [2.0], [3.0]], dtype=np.float64)
+        bs = Bspline(space, cp)
+        bez = bs.to_bezier()
+        assert isinstance(bez, Bezier)
+        assert bez.degree == (2,)
+        np.testing.assert_array_equal(bez.control_points, cp)
+
+    def test_bezier_like_2d(self) -> None:
+        """Test to_bezier for a 2D B-spline with Bézier-like knots."""
+        s0 = BsplineSpace1D([0.0, 0.0, 0.0, 1.0, 1.0, 1.0], 2)
+        s1 = BsplineSpace1D([0.0, 0.0, 1.0, 1.0], 1)
+        space = BsplineSpace([s0, s1])
+        cp = np.ones((3, 2, 1), dtype=np.float64)
+        bs = Bspline(space, cp)
+        bez = bs.to_bezier()
+        assert isinstance(bez, Bezier)
+        assert bez.degree == (2, 1)
+        np.testing.assert_array_equal(bez.control_points, cp)
+
+    def test_non_open_single_element(self) -> None:
+        """Test to_bezier for a non-open (unclamped) B-spline with one element."""
+        # Degree 1, knots [0, 0.5, 1, 1.5] → 2 basis fns, domain [0.5, 1.0].
+        # Not open, but a single span — opening produces Bézier-like knots.
+        knots = np.array([0.0, 0.5, 1.0, 1.5], dtype=np.float64)
+        space = BsplineSpace([BsplineSpace1D(knots, 1)])
+        cp = np.array([[1.0], [3.0]], dtype=np.float64)
+        bs = Bspline(space, cp)
+        bez = bs.to_bezier()
+        # The open form has domain [0.5, 1.0] mapped to Bézier on [0, 1].
+        # Compare via the open B-spline intermediate.
+        bs_open = bs.to_open_bspline()
+        np.testing.assert_array_equal(bez.control_points, bs_open.control_points)
+
+    def test_periodic_multi_element_raises(self) -> None:
+        """Test that to_bezier raises for a periodic B-spline with multiple elements."""
+        f = _make_periodic_bspline(3, 2)
+        with pytest.raises(ValueError, match="more than one element"):
+            f.to_bezier()
+
+    def test_multi_element_raises(self) -> None:
+        """Test that to_bezier raises for multi-element B-splines."""
+        knots = np.array([0.0, 0.0, 0.0, 0.5, 1.0, 1.0, 1.0], dtype=np.float64)
+        space = BsplineSpace([BsplineSpace1D(knots, 2)])
+        cp = np.array([1.0, 2.0, 3.0, 4.0], dtype=np.float64)
+        bs = Bspline(space, cp)
+        with pytest.raises(ValueError, match="more than one element"):
+            bs.to_bezier()
+
+    def test_copy_true(self) -> None:
+        """Test that to_bezier with copy=True creates independent arrays."""
+        knots = np.array([0.0, 0.0, 0.0, 1.0, 1.0, 1.0], dtype=np.float64)
+        space = BsplineSpace([BsplineSpace1D(knots, 2)])
+        cp = np.array([[1.0], [2.0], [3.0]], dtype=np.float64)
+        bs = Bspline(space, cp)
+        bez = bs.to_bezier(copy=True)
+        assert not np.shares_memory(bs.control_points, bez.control_points)
+
+    def test_copy_false(self) -> None:
+        """Test that to_bezier with copy=False shares the control point array."""
+        knots = np.array([0.0, 0.0, 0.0, 1.0, 1.0, 1.0], dtype=np.float64)
+        space = BsplineSpace([BsplineSpace1D(knots, 2)])
+        cp = np.array([[1.0], [2.0], [3.0]], dtype=np.float64)
+        bs = Bspline(space, cp)
+        bez = bs.to_bezier(copy=False)
+        assert np.shares_memory(bs.control_points, bez.control_points)
+
+    def test_default_copies(self) -> None:
+        """Test that to_bezier copies by default."""
+        knots = np.array([0.0, 0.0, 0.0, 1.0, 1.0, 1.0], dtype=np.float64)
+        space = BsplineSpace([BsplineSpace1D(knots, 2)])
+        cp = np.array([[1.0], [2.0], [3.0]], dtype=np.float64)
+        bs = Bspline(space, cp)
+        bez = bs.to_bezier()
+        assert not np.shares_memory(bs.control_points, bez.control_points)
+
+    def test_rational(self) -> None:
+        """Test to_bezier preserves rationality."""
+        knots = np.array([0.0, 0.0, 0.0, 1.0, 1.0, 1.0], dtype=np.float64)
+        space = BsplineSpace([BsplineSpace1D(knots, 2)])
+        cp = np.array([[1.0, 0.5], [2.0, 1.0], [3.0, 0.5]], dtype=np.float64)
+        bs = Bspline(space, cp, is_rational=True)
+        bez = bs.to_bezier()
+        assert bez.is_rational
+        np.testing.assert_array_equal(bez.control_points, cp)
+
+    def test_roundtrip(self) -> None:
+        """Test to_bezier -> from_bezier roundtrip."""
+        knots = np.array([0.0, 0.0, 0.0, 1.0, 1.0, 1.0], dtype=np.float64)
+        space = BsplineSpace([BsplineSpace1D(knots, 2)])
+        cp = np.array([[1.0, 2.0], [3.0, 4.0], [5.0, 6.0]], dtype=np.float64)
+        bs = Bspline(space, cp)
+        bs2 = Bspline.from_bezier(bs.to_bezier())
+        np.testing.assert_array_equal(bs2.control_points, bs.control_points)
+        assert bs2.degree == bs.degree
+
+
+class TestFromBezier:
+    """Test Bspline.from_bezier conversion."""
+
+    def test_from_bezier_1d(self) -> None:
+        """Test from_bezier creates a B-spline with Bézier-like knots."""
+        cp = np.array([[1.0], [2.0], [3.0]], dtype=np.float64)
+        bez = Bezier(cp)
+        bs = Bspline.from_bezier(bez)
+        assert bs.space.has_Bezier_like_knots()
+        assert bs.degree == (2,)
+        np.testing.assert_array_equal(bs.control_points, cp)
+
+    def test_from_bezier_copy_true(self) -> None:
+        """Test that from_bezier with copy=True creates independent arrays."""
+        cp = np.array([[1.0], [2.0], [3.0]], dtype=np.float64)
+        bez = Bezier(cp)
+        bs = Bspline.from_bezier(bez, copy=True)
+        assert not np.shares_memory(bez.control_points, bs.control_points)
+
+    def test_from_bezier_copy_false(self) -> None:
+        """Test that from_bezier with copy=False shares the control point array."""
+        cp = np.array([[1.0], [2.0], [3.0]], dtype=np.float64)
+        bez = Bezier(cp)
+        bs = Bspline.from_bezier(bez, copy=False)
+        assert np.shares_memory(bez.control_points, bs.control_points)
+
+    def test_from_bezier_rational(self) -> None:
+        """Test from_bezier preserves rationality."""
+        cp = np.array([[1.0, 0.5], [2.0, 1.0], [3.0, 0.5]], dtype=np.float64)
+        bez = Bezier(cp, is_rational=True)
+        bs = Bspline.from_bezier(bez)
+        assert bs.is_rational
+        np.testing.assert_array_equal(bs.control_points, cp)
+
+    def test_from_bezier_2d(self) -> None:
+        """Test from_bezier for a 2D Bézier."""
+        cp = np.ones((3, 2, 1), dtype=np.float64)
+        bez = Bezier(cp)
+        bs = Bspline.from_bezier(bez)
+        assert bs.space.has_Bezier_like_knots()
+        assert bs.degree == (2, 1)
+        np.testing.assert_array_equal(bs.control_points, cp)
