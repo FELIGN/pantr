@@ -4,6 +4,7 @@ import numpy as np
 import numpy.typing as npt
 import pytest
 
+from pantr.bezier import Bezier
 from pantr.bspline import Bspline, BsplineSpace, BsplineSpace1D, create_uniform_periodic
 from pantr.bspline._bspline_basis_core import _compute_basis_nurbs_book_impl
 
@@ -1234,8 +1235,6 @@ class TestToBezier:
 
     def test_bezier_like_1d(self) -> None:
         """Test to_bezier for a B-spline with Bézier-like knots."""
-        from pantr.bezier import Bezier
-
         knots = np.array([0.0, 0.0, 0.0, 1.0, 1.0, 1.0], dtype=np.float64)
         space = BsplineSpace([BsplineSpace1D(knots, 2)])
         cp = np.array([[1.0], [2.0], [3.0]], dtype=np.float64)
@@ -1247,8 +1246,6 @@ class TestToBezier:
 
     def test_bezier_like_2d(self) -> None:
         """Test to_bezier for a 2D B-spline with Bézier-like knots."""
-        from pantr.bezier import Bezier
-
         s0 = BsplineSpace1D([0.0, 0.0, 0.0, 1.0, 1.0, 1.0], 2)
         s1 = BsplineSpace1D([0.0, 0.0, 1.0, 1.0], 1)
         space = BsplineSpace([s0, s1])
@@ -1341,8 +1338,6 @@ class TestFromBezier:
 
     def test_from_bezier_1d(self) -> None:
         """Test from_bezier creates a B-spline with Bézier-like knots."""
-        from pantr.bezier import Bezier
-
         cp = np.array([[1.0], [2.0], [3.0]], dtype=np.float64)
         bez = Bezier(cp)
         bs = Bspline.from_bezier(bez)
@@ -1352,8 +1347,6 @@ class TestFromBezier:
 
     def test_from_bezier_copy_true(self) -> None:
         """Test that from_bezier with copy=True creates independent arrays."""
-        from pantr.bezier import Bezier
-
         cp = np.array([[1.0], [2.0], [3.0]], dtype=np.float64)
         bez = Bezier(cp)
         bs = Bspline.from_bezier(bez, copy=True)
@@ -1361,8 +1354,6 @@ class TestFromBezier:
 
     def test_from_bezier_copy_false(self) -> None:
         """Test that from_bezier with copy=False shares the control point array."""
-        from pantr.bezier import Bezier
-
         cp = np.array([[1.0], [2.0], [3.0]], dtype=np.float64)
         bez = Bezier(cp)
         bs = Bspline.from_bezier(bez, copy=False)
@@ -1370,8 +1361,6 @@ class TestFromBezier:
 
     def test_from_bezier_rational(self) -> None:
         """Test from_bezier preserves rationality."""
-        from pantr.bezier import Bezier
-
         cp = np.array([[1.0, 0.5], [2.0, 1.0], [3.0, 0.5]], dtype=np.float64)
         bez = Bezier(cp, is_rational=True)
         bs = Bspline.from_bezier(bez)
@@ -1380,8 +1369,6 @@ class TestFromBezier:
 
     def test_from_bezier_2d(self) -> None:
         """Test from_bezier for a 2D Bézier."""
-        from pantr.bezier import Bezier
-
         cp = np.ones((3, 2, 1), dtype=np.float64)
         bez = Bezier(cp)
         bs = Bspline.from_bezier(bez)
