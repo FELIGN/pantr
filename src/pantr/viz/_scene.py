@@ -29,6 +29,26 @@ _DEFAULT_CP_SIZE = 8.0
 _DEFAULT_POLYGON_COLOR = "gray"
 _DEFAULT_KNOT_COLOR = "black"
 _DEFAULT_KNOT_WIDTH = 2.0
+_DEFAULT_TESSELLATION_LEVEL = 4
+
+
+def _effective_tessellation(geom: Bspline | Bezier, requested: int) -> int:
+    """Return the tessellation level to use for *geom*.
+
+    Degree-1 (linear) geometries are already exact — no subdivision is
+    meaningful, so the coarsest level (1) is always returned for them.
+    For all other geometries the caller-supplied *requested* level is used.
+
+    Args:
+        geom: B-spline or Bézier geometry.
+        requested: Tessellation level requested by the caller.
+
+    Returns:
+        int: 1 for linear geometries, *requested* otherwise.
+    """
+    if all(d == 1 for d in geom.degree):
+        return 1
+    return requested
 
 
 class _GeometryEntry:
@@ -50,6 +70,7 @@ class _GeometryEntry:
         scalar_name: str = "scalar",
         scalar_bar: bool = True,
         elevation: bool = False,
+        tessellation_level: int = _DEFAULT_TESSELLATION_LEVEL,
     ) -> None:
         """Initialize a geometry entry.
 
@@ -68,6 +89,10 @@ class _GeometryEntry:
             scalar_name: Name for scalar point data.
             scalar_bar: Show scalar bar for scalar fields.
             elevation: Use scalar as elevation coordinate.
+            tessellation_level: Number of VTK non-linear subdivisions used when
+                rendering curved cells. Higher values produce smoother output at
+                the cost of more triangles. Ignored for degree-1 geometries
+                (always coarsest). Defaults to ``4``.
         """
         self.geom = geom
         self.color = color
@@ -82,6 +107,7 @@ class _GeometryEntry:
         self.scalar_name = scalar_name
         self.scalar_bar = scalar_bar
         self.elevation = elevation
+        self.tessellation_level = tessellation_level
 
 
 class Scene:
@@ -117,6 +143,7 @@ class Scene:
         scalar_name: str = "scalar",
         scalar_bar: bool = True,
         elevation: bool = False,
+        tessellation_level: int = _DEFAULT_TESSELLATION_LEVEL,
     ) -> Scene:
         """Add a geometry to the scene.
 
@@ -135,6 +162,10 @@ class Scene:
             scalar_name: Name for scalar point data.
             scalar_bar: Show scalar bar for scalar fields.
             elevation: Use scalar as elevation coordinate.
+            tessellation_level: Number of VTK non-linear subdivisions used when
+                rendering curved cells. Higher values produce smoother output at
+                the cost of more triangles. Ignored for degree-1 geometries
+                (always coarsest). Defaults to ``4``.
 
         Returns:
             Scene: Self, for method chaining.
@@ -154,6 +185,7 @@ class Scene:
                 scalar_name=scalar_name,
                 scalar_bar=scalar_bar,
                 elevation=elevation,
+                tessellation_level=tessellation_level,
             )
         )
         return self
@@ -212,6 +244,10 @@ def _add_entry_to_plotter(plotter: pv.Plotter, entry: _GeometryEntry) -> None:
         elevation=entry.elevation,
     )
 
+    # Tessellate high-order cells into linear simplices for rendering.
+    tess = _effective_tessellation(entry.geom, entry.tessellation_level)
+    render_mesh = grid.tessellate(max_n_subdivide=tess) if tess > 1 else grid
+
     # Determine mesh_kwargs for the main geometry
     mesh_kwargs: dict[str, Any] = {
         "opacity": entry.opacity,
@@ -222,7 +258,7 @@ def _add_entry_to_plotter(plotter: pv.Plotter, entry: _GeometryEntry) -> None:
         mesh_kwargs["scalars"] = entry.scalar_name
         mesh_kwargs["show_scalar_bar"] = entry.scalar_bar
 
-    plotter.add_mesh(grid, **mesh_kwargs)
+    plotter.add_mesh(render_mesh, **mesh_kwargs)
 
     # Control polygon (points + wireframe)
     if entry.show_control_polygon:
@@ -256,6 +292,7 @@ def plot(  # noqa: PLR0913
     scalar_name: str = "scalar",
     scalar_bar: bool = True,
     elevation: bool = False,
+    tessellation_level: int = _DEFAULT_TESSELLATION_LEVEL,
     **plotter_kwargs: object,
 ) -> pv.Plotter:
     """Quick visualization of one or more geometries.
@@ -275,6 +312,10 @@ def plot(  # noqa: PLR0913
         scalar_name: Name for scalar point data.
         scalar_bar: Show scalar bar for scalar fields.
         elevation: Use scalar as elevation coordinate.
+        tessellation_level: Number of VTK non-linear subdivisions used when
+            rendering curved cells. Higher values produce smoother output at
+            the cost of more triangles. Ignored for degree-1 geometries
+            (always coarsest). Defaults to ``4``.
         **plotter_kwargs: Additional keyword arguments for ``pv.Plotter()``.
 
     Returns:
@@ -294,5 +335,6 @@ def plot(  # noqa: PLR0913
             scalar_name=scalar_name,
             scalar_bar=scalar_bar,
             elevation=elevation,
+            tessellation_level=tessellation_level,
         )
     return scene.show(**plotter_kwargs)
