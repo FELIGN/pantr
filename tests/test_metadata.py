@@ -20,6 +20,7 @@ def test_package_all_exports() -> None:
         "basis",
         "bezier",
         "bspline",
+        "cad",
         "change_basis",
         "quad",
         "tolerance",

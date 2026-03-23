@@ -145,8 +145,10 @@ nitpicky = True
 
 # Private NumPy typing internals are not exposed in the public inventory.
 nitpick_ignore = [
-    ("py:class", "numpy._typing._dtype_like._SupportsDType"),
+    ("py:class", "numpy._typing._array_like._SupportsArray"),
     ("py:class", "numpy._typing._dtype_like._DTypeDict"),
+    ("py:class", "numpy._typing._dtype_like._SupportsDType"),
+    ("py:class", "numpy._typing._nested_sequence._NestedSequence"),
 ]
 
 # Short-form NumPy aliases used in type annotations (np.*, npt.*, numpy.*)
