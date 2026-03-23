@@ -9,10 +9,12 @@ B-spline geometric objects:
 - **Operations**: :func:`extrude`, :func:`revolve`, :func:`ruled`,
   :func:`sweep`.
 - **Coons blending**: :func:`coons_surface`, :func:`coons_volume`.
+- **Assembly**: :func:`join`.
 """
 
 from ._compat import compat
 from ._coons import coons_surface, coons_volume
+from ._join import join
 from ._operations import extrude, revolve, ruled, sweep
 from ._primitives import bilinear, circle, line, trilinear
 from ._validation import _PHYSICAL_DIM, _pad_to_3d, _promote_to_rational
@@ -27,6 +29,7 @@ __all__ = [
     "coons_surface",
     "coons_volume",
     "extrude",
+    "join",
     "line",
     "revolve",
     "ruled",
