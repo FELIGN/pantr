@@ -13,7 +13,9 @@ from ._bezier_degree import _degree_elevate_bezier
 from ._bezier_derivative import _derivative_bezier
 from ._bezier_eval import _evaluate_bezier, _evaluate_bezier_deriv
 from ._bezier_product import _multiply_bezier
+from ._bezier_restrict import _restrict_bezier
 from ._bezier_slice import _slice_bezier
+from ._bezier_split import _split_bezier
 
 if TYPE_CHECKING:
     from ..bspline import Bspline
@@ -489,7 +491,9 @@ class Bezier:
         Bézier has the same degree but different control points that encode
         the restricted mapping.
 
-        Internally converts to a B-spline, restricts, and converts back.
+        Uses two de Casteljau passes per direction for direct Bernstein
+        coefficient computation without B-spline conversion. The order
+        of the passes is chosen for numerical stability.
 
         Args:
             bounds (tuple[float, float] | Sequence[tuple[float, float] | None]):
@@ -509,9 +513,71 @@ class Bezier:
             ValueError: If any bound lies outside ``[0, 1]``.
             ValueError: If ``lower >= upper`` in any direction.
         """
-        bspline = self.to_bspline(copy=False)
-        restricted = bspline.restrict(bounds)
-        return restricted.to_bezier(copy=False)
+        if self.dim == 1:
+            bounds_per_dim: list[tuple[float, float] | None] = [
+                bounds  # type: ignore[list-item]
+            ]
+        else:
+            seq = list(bounds)  # type: ignore[arg-type,unused-ignore]
+            if len(seq) != self.dim:
+                raise ValueError(
+                    f"bounds sequence length ({len(seq)}) must match dim ({self.dim})."
+                )
+            bounds_per_dim = seq  # type: ignore[assignment]
+
+        # Validate bounds.
+        for i, b in enumerate(bounds_per_dim):
+            if b is None:
+                continue
+            lower, upper = b
+            if lower >= upper:
+                raise ValueError(
+                    f"Lower bound ({lower}) must be strictly less than upper bound ({upper}) "
+                    f"in direction {i}."
+                )
+            if lower < 0.0 or upper > 1.0:
+                raise ValueError(
+                    f"Bounds ({lower}, {upper}) must lie within [0, 1] in direction {i}."
+                )
+
+        return _restrict_bezier(self, bounds_per_dim)
+
+    # ------------------------------------------------------------------
+    # Split
+    # ------------------------------------------------------------------
+
+    def split(self, direction: int, value: float) -> tuple[Bezier, Bezier]:
+        """Split the Bézier into two at a parameter value in one direction.
+
+        Uses the de Casteljau algorithm to subdivide the Bézier into a
+        left half (representing the original on ``[0, value]``) and a right
+        half (representing the original on ``[value, 1]``), both
+        reparametrized to ``[0, 1]``.
+
+        Args:
+            direction (int): Parametric direction along which to split.
+                Must be in ``[0, dim)``.
+            value (float): Parameter value at which to split.  Must lie
+                strictly inside ``(0, 1)``.
+
+        Returns:
+            tuple[Bezier, Bezier]: A pair ``(left, right)`` of Béziers on
+            ``[0, 1]^dim``.
+
+        Raises:
+            ValueError: If ``direction`` is out of range ``[0, dim)``.
+            ValueError: If ``value`` is not strictly inside ``(0, 1)``.
+
+        Example:
+            >>> left, right = curve.split(0, 0.5)
+            >>> left, right = surface.split(1, 0.3)
+        """
+        if direction < 0 or direction >= self.dim:
+            raise ValueError(f"direction must be in [0, {self.dim}), got {direction}.")
+        if value <= 0.0 or value >= 1.0:
+            raise ValueError(f"value must be strictly inside (0, 1), got {value}.")
+
+        return _split_bezier(self, direction, value)
 
     # ------------------------------------------------------------------
     # Slice and boundary
