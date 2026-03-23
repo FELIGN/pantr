@@ -1,4 +1,4 @@
-"""Tests for Bézier degree reduction."""
+"""Tests for Bézier and B-spline degree reduction."""
 
 from __future__ import annotations
 
@@ -6,6 +6,7 @@ import numpy as np
 import pytest
 
 from pantr.bezier import Bezier
+from pantr.bspline import Bspline, BsplineSpace, BsplineSpace1D, create_uniform_periodic
 
 
 def _make_bezier_1d(ctrl: list[list[float]], rational: bool = False) -> Bezier:
@@ -186,3 +187,156 @@ class TestBezierReduceDegreeFloat32:
         reduced = b.elevate_degree(2).reduce_degree(2)
         assert reduced.control_points.dtype == np.float32
         np.testing.assert_allclose(reduced.control_points, b.control_points, atol=1e-5)
+
+
+# ===========================================================================
+# B-spline degree reduction
+# ===========================================================================
+
+
+def _make_bspline_1d(knots: list[float], degree: int, ctrl: list[list[float]]) -> Bspline:
+    """Create a simple 1D open B-spline."""
+    space = BsplineSpace([BsplineSpace1D(np.array(knots), degree)])
+    return Bspline(space, np.array(ctrl))
+
+
+class TestBsplineReduceDegreeRoundTrip:
+    """Elevate by t then reduce by t should recover the original geometry."""
+
+    def test_single_segment_linear(self) -> None:
+        """Single-segment linear B-spline → elevate 2 → reduce 2."""
+        bsp = _make_bspline_1d([0, 0, 1, 1], 1, [[0.0], [1.0]])
+        reduced = bsp.elevate_degree(2).reduce_degree(2)
+        pts = np.linspace(0, 1, 20)
+        np.testing.assert_allclose(bsp.evaluate(pts), reduced.evaluate(pts), atol=1e-13)
+
+    def test_multi_segment_quadratic(self) -> None:
+        """Quadratic B-spline with interior knot → elevate 2 → reduce 2."""
+        bsp = _make_bspline_1d([0, 0, 0, 0.5, 1, 1, 1], 2, [[0.0], [1.0], [0.0], [1.0]])
+        reduced = bsp.elevate_degree(2).reduce_degree(2)
+        pts = np.linspace(0, 1, 30)
+        np.testing.assert_allclose(bsp.evaluate(pts), reduced.evaluate(pts), atol=1e-12)
+
+    def test_multi_segment_cubic(self) -> None:
+        """Cubic B-spline with multiple interior knots."""
+        knots = [0, 0, 0, 0, 0.25, 0.5, 0.75, 1, 1, 1, 1]
+        rng = np.random.default_rng(42)
+        ctrl = rng.random((7, 2))
+        bsp = _make_bspline_1d(knots, 3, ctrl.tolist())
+        reduced = bsp.elevate_degree(1).reduce_degree(1)
+        pts = np.linspace(0, 1, 50)
+        np.testing.assert_allclose(bsp.evaluate(pts), reduced.evaluate(pts), atol=1e-12)
+
+    def test_2d_surface(self) -> None:
+        """2D B-spline surface → elevate → reduce."""
+        knots1 = np.array([0.0, 0.0, 1.0, 1.0])
+        knots2 = np.array([0.0, 0.0, 0.0, 1.0, 1.0, 1.0])
+        space = BsplineSpace([BsplineSpace1D(knots1, 1), BsplineSpace1D(knots2, 2)])
+        rng = np.random.default_rng(42)
+        ctrl = rng.random((2, 3, 2))
+        bsp = Bspline(space, ctrl)
+
+        reduced = bsp.elevate_degree([1, 1]).reduce_degree([1, 1])
+
+        pts = rng.random((20, 2))
+        np.testing.assert_allclose(bsp.evaluate(pts), reduced.evaluate(pts), atol=1e-12)
+
+    def test_rational(self) -> None:
+        """Rational B-spline (NURBS): elevate then reduce."""
+        knots = np.array([0.0, 0.0, 0.0, 1.0, 1.0, 1.0])
+        ctrl_h = np.array([[1.0, 0.0, 1.0], [1.0, 1.0, 1.0 / np.sqrt(2)], [0.0, 1.0, 1.0]])
+        space = BsplineSpace([BsplineSpace1D(knots, 2)])
+        bsp = Bspline(space, ctrl_h, is_rational=True)
+
+        reduced = bsp.elevate_degree(1).reduce_degree(1)
+        assert reduced.is_rational
+
+        pts = np.linspace(0, 1, 20)
+        np.testing.assert_allclose(bsp.evaluate(pts), reduced.evaluate(pts), atol=1e-12)
+
+
+class TestBsplineReduceDegreePeriodic:
+    """Test degree reduction for periodic B-splines."""
+
+    @pytest.mark.parametrize(
+        "degree,continuity,dec",
+        [
+            (2, None, 1),
+            (3, None, 1),
+            (3, None, 2),
+            (3, 1, 1),
+        ],
+    )
+    def test_periodic_preserves_geometry(
+        self, degree: int, continuity: int | None, dec: int
+    ) -> None:
+        """Elevate then reduce a periodic B-spline preserves geometry."""
+        knots = create_uniform_periodic(num_intervals=4, degree=degree, continuity=continuity)
+        space = BsplineSpace([BsplineSpace1D(knots, degree, periodic=True)])
+        rng = np.random.default_rng(42)
+        ctrl = rng.random((space.num_total_basis, 2))
+        bsp = Bspline(space, ctrl)
+
+        reduced = bsp.elevate_degree(dec).reduce_degree(dec)
+
+        assert reduced.space.spaces[0].periodic
+        assert reduced.degree == (degree,)
+
+        pts = np.linspace(0.01, 0.99, 50)
+        orig = bsp.to_open_bspline().evaluate(pts)
+        red = reduced.to_open_bspline().evaluate(pts)
+        np.testing.assert_allclose(orig, red, atol=1e-11)
+
+    def test_mixed_periodic_open_2d(self) -> None:
+        """2D mixed periodic/open B-spline: elevate then reduce."""
+        knots_per = create_uniform_periodic(num_intervals=4, degree=2)
+        knots_open = np.array([0.0, 0.0, 0.0, 0.5, 1.0, 1.0, 1.0])
+        space = BsplineSpace(
+            [
+                BsplineSpace1D(knots_per, 2, periodic=True),
+                BsplineSpace1D(knots_open, 2),
+            ]
+        )
+        rng = np.random.default_rng(42)
+        ctrl = rng.random((*space.num_basis, 2))
+        bsp = Bspline(space, ctrl)
+
+        reduced = bsp.elevate_degree([1, 1]).reduce_degree([1, 1])
+
+        assert reduced.space.spaces[0].periodic
+        assert not reduced.space.spaces[1].periodic
+        assert reduced.degree == (2, 2)
+
+        pts = rng.random((30, 2))
+        pts[:, 0] = pts[:, 0] * 0.98 + 0.01
+        orig = bsp.to_open_bspline().evaluate(pts)
+        red = reduced.to_open_bspline().evaluate(pts)
+        np.testing.assert_allclose(orig, red, atol=1e-11)
+
+
+class TestBsplineReduceDegreeErrors:
+    """Test that invalid inputs raise appropriate errors."""
+
+    def test_decrement_exceeds_degree(self) -> None:
+        """Decrement > degree should raise ValueError."""
+        bsp = _make_bspline_1d([0, 0, 1, 1], 1, [[0.0], [1.0]])
+        with pytest.raises(ValueError, match=r"exceeds current degree"):
+            bsp.reduce_degree(2)
+
+    def test_negative_decrement(self) -> None:
+        """Negative decrement should raise ValueError."""
+        bsp = _make_bspline_1d([0, 0, 1, 1], 1, [[0.0], [1.0]])
+        with pytest.raises(ValueError, match=r"non-negative"):
+            bsp.reduce_degree(-1)
+
+    def test_all_zero_decrements(self) -> None:
+        """All-zero decrements should raise ValueError."""
+        bsp = _make_bspline_1d([0, 0, 1, 1], 1, [[0.0], [1.0]])
+        with pytest.raises(ValueError, match=r"(?i)at least one"):
+            bsp.reduce_degree(0)
+
+    def test_wrong_length(self) -> None:
+        """Wrong number of decrements should raise ValueError."""
+        bsp = _make_bspline_1d([0, 0, 1, 1], 1, [[0.0], [1.0]])
+        with pytest.raises(ValueError, match=r"must match dimension"):
+            bsp.reduce_degree((1, 1))

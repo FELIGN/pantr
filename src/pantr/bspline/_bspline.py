@@ -15,7 +15,7 @@ import numpy as np
 from numpy import typing as npt
 
 from .._transform_control_points import _apply_affine_to_control_points
-from ._bspline_degree import _degree_elevate_bspline
+from ._bspline_degree import _degree_elevate_bspline, _degree_reduce_bspline
 from ._bspline_derivative import _derivative_bspline
 from ._bspline_eval import _evaluate_Bspline, _evaluate_Bspline_deriv
 from ._bspline_knot_insertion import (
@@ -334,6 +334,58 @@ class Bspline:
             raise ValueError("At least one degree increment must be positive.")
 
         return _degree_elevate_bspline(self, increments)
+
+    def reduce_degree(self, degree_decrements: int | Sequence[int]) -> Bspline:
+        """Reduce the polynomial degree of the B-spline via least-squares approximation.
+
+        Decomposes to Bézier segments, reduces each segment using bidiagonal
+        least-squares (Givens QR), and coarsens the knot vector to restore
+        the original continuity structure.
+
+        Unlike :meth:`elevate_degree`, this operation is **not exact** in
+        general: the result is an approximation of the original mapping.
+
+        Args:
+            degree_decrements (int | Sequence[int]): Number of degrees to
+                reduce. If an integer, the same decrement is applied to all
+                parametric directions. If a sequence, must have length equal
+                to the B-spline dimension.
+
+        Returns:
+            Bspline: A new B-spline with reduced degrees.
+
+        Raises:
+            ValueError: If any degree decrement is negative.
+            ValueError: If all degree decrements are zero.
+            ValueError: If the number of decrements does not match the dimension.
+            ValueError: If any decrement exceeds the current degree in that
+                direction.
+        """
+        if isinstance(degree_decrements, int):
+            decrements = (degree_decrements,) * self.dim
+        else:
+            decrements = tuple(degree_decrements)
+
+        if len(decrements) != self.dim:
+            raise ValueError(
+                f"Number of degree decrements ({len(decrements)}) "
+                f"must match dimension ({self.dim})."
+            )
+
+        if any(dec < 0 for dec in decrements):
+            raise ValueError("Degree decrements must be non-negative.")
+
+        if all(dec == 0 for dec in decrements):
+            raise ValueError("At least one degree decrement must be positive.")
+
+        for d, dec in enumerate(decrements):
+            if dec > self.degree[d]:
+                raise ValueError(
+                    f"Degree decrement ({dec}) in direction {d} exceeds "
+                    f"current degree ({self.degree[d]})."
+                )
+
+        return _degree_reduce_bspline(self, decrements)
 
     def insert_knots(
         self,
