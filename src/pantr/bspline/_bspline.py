@@ -27,6 +27,7 @@ from ._bspline_knot_insertion import (
 from ._bspline_knot_removal import _remove_knots_bspline
 from ._bspline_restrict import _restrict_bspline_impl
 from ._bspline_slice import _slice_bspline
+from ._bspline_split import _split_bspline_impl
 
 if TYPE_CHECKING:
     from ..bezier import Bezier
@@ -511,6 +512,47 @@ class Bspline:
             bounds_per_dim = seq  # type: ignore[assignment]
 
         return _restrict_bspline_impl(self, bounds_per_dim)
+
+    def split(self, direction: int, value: float) -> tuple[Bspline, Bspline]:
+        """Split the B-spline into two at a parameter value in one direction.
+
+        Inserts knots at ``value`` until the multiplicity reaches
+        ``degree + 1``, then extracts the left and right sub-splines.
+        Periodic directions are automatically converted to open form before
+        splitting.
+
+        Args:
+            direction (int): Parametric direction along which to split.
+                Must be in ``[0, dim)``.
+            value (float): Parameter value at which to split.  Must lie
+                strictly inside the domain of the specified direction.
+
+        Returns:
+            tuple[Bspline, Bspline]: A pair ``(left, right)`` of B-splines.
+            The left sub-spline has domain ``[domain_start, value]`` and
+            the right has domain ``[value, domain_end]`` in the split
+            direction. Other directions are unchanged.
+
+        Raises:
+            ValueError: If ``direction`` is out of range ``[0, dim)``.
+            ValueError: If ``value`` is not strictly inside the domain.
+
+        Example:
+            >>> left, right = spline.split(0, 0.5)
+            >>> left, right = surface.split(1, 0.3)
+        """
+        if direction < 0 or direction >= self.dim:
+            raise ValueError(f"direction must be in [0, {self.dim}), got {direction}.")
+
+        space_1d = self.space.spaces[direction]
+        domain = space_1d.domain
+        a, b = float(domain[0]), float(domain[1])
+        tol = float(space_1d.tolerance)
+
+        if value <= a + tol or value >= b - tol:
+            raise ValueError(f"value must be strictly inside the domain ({a}, {b}), got {value}.")
+
+        return _split_bspline_impl(self, direction, value)
 
     def to_periodic(self, continuity: int | tuple[int | None, ...] | None = None) -> Bspline:
         """Return a periodic B-spline equivalent to this one.

@@ -319,6 +319,140 @@ def _slice_bezier_1d_core(
         out[col] = d[0]
 
 
+@nb_jit(
+    nopython=True,
+    cache=True,
+    parallel=True,
+)
+def _split_bezier_1d_core(
+    ctrl: npt.NDArray[np.float32 | np.float64],
+    value: float,
+    out_left: npt.NDArray[np.float32 | np.float64],
+    out_right: npt.NDArray[np.float32 | np.float64],
+) -> None:
+    """Split a 1D Bézier at a parameter value via de Casteljau.
+
+    Performs a single forward de Casteljau pass that simultaneously produces
+    the control points for both the left ``[0, value]`` and right
+    ``[value, 1]`` halves (reparametrized to ``[0, 1]``).
+
+    After level ``r`` of the forward iteration, the workspace naturally
+    contains ``[d_0^r, d_1^{r-1}, ..., d_p^0]``.  The left-half control
+    points are ``d[0]`` at each level; the right-half control points are
+    the final workspace state.
+
+    Args:
+        ctrl (npt.NDArray[np.float32 | np.float64]): Control points of
+            shape ``(p + 1, n_cols)``, where ``p`` is the polynomial
+            degree and ``n_cols`` is the number of independent columns.
+        value (float): Parameter value in ``(0, 1)`` at which to split.
+        out_left (npt.NDArray[np.float32 | np.float64]): Pre-allocated
+            output array of shape ``(p + 1, n_cols)`` for the left half.
+        out_right (npt.NDArray[np.float32 | np.float64]): Pre-allocated
+            output array of shape ``(p + 1, n_cols)`` for the right half.
+
+    Note:
+        Inputs are assumed to be correct (no validation performed).
+        For general use, call :func:`_split_bezier` in ``_bezier_split``
+        instead.
+    """
+    p = ctrl.shape[0] - 1
+    n_cols = ctrl.shape[1]
+    u = value
+    one_minus_u = 1.0 - u
+
+    for col in nb_prange(n_cols):
+        # Local workspace for de Casteljau on this column.
+        d = np.empty(p + 1, dtype=ctrl.dtype)
+        for i in range(p + 1):
+            d[i] = ctrl[i, col]
+
+        # First left control point is the original first control point.
+        out_left[0, col] = d[0]
+
+        for r in range(1, p + 1):
+            for i in range(p - r + 1):
+                d[i] = one_minus_u * d[i] + u * d[i + 1]
+            # After level r, d[0] = d_0^r → left-half control point.
+            out_left[r, col] = d[0]
+
+        # After all iterations, d = [d_0^p, d_1^{p-1}, ..., d_p^0] = right half.
+        for i in range(p + 1):
+            out_right[i, col] = d[i]
+
+
+@nb_jit(
+    nopython=True,
+    cache=True,
+    parallel=True,
+)
+def _restrict_bezier_1d_core(  # noqa: PLR0912
+    ctrl: npt.NDArray[np.float32 | np.float64],
+    lower: float,
+    upper: float,
+    out: npt.NDArray[np.float32 | np.float64],
+) -> None:
+    r"""Restrict a 1D Bézier to a sub-interval via two de Casteljau passes.
+
+    Computes the Bernstein coefficients of the polynomial restricted to
+    ``[lower, upper]`` and reparametrized to ``[0, 1]``.  Uses the
+    numerically stable two-pass strategy: the order of the left/right
+    passes is chosen to avoid dividing by a small number.
+
+    - If ``|upper| >= |lower - 1|``: left pass at ``upper``, then right
+      pass at ``lower / upper``.
+    - Otherwise: right pass at ``lower``, then left pass at
+      ``(upper - lower) / (1 - lower)``.
+
+    Args:
+        ctrl (npt.NDArray[np.float32 | np.float64]): Control points of
+            shape ``(p + 1, n_cols)``.
+        lower (float): Left bound of the sub-interval in ``[0, 1)``.
+        upper (float): Right bound of the sub-interval in ``(0, 1]``.
+        out (npt.NDArray[np.float32 | np.float64]): Pre-allocated output
+            array of shape ``(p + 1, n_cols)`` for the restricted
+            coefficients.
+
+    Note:
+        Inputs are assumed to be correct (no validation performed).
+        For general use, call :func:`_restrict_bezier` in
+        ``_bezier_restrict`` instead.
+    """
+    p = ctrl.shape[0] - 1
+    n_cols = ctrl.shape[1]
+
+    for col in nb_prange(n_cols):
+        d = np.empty(p + 1, dtype=ctrl.dtype)
+        for i in range(p + 1):
+            d[i] = ctrl[i, col]
+
+        if abs(upper) >= abs(lower - 1.0):
+            # deCasteljauLeft(upper), then deCasteljauRight(lower / upper)
+            tau = upper
+            for step in range(1, p + 1):
+                for j in range(p, step - 1, -1):
+                    d[j] = d[j] * tau + d[j - 1] * (1.0 - tau)
+
+            tau2 = lower / upper
+            for step in range(1, p + 1):
+                for j in range(p - step + 1):
+                    d[j] = d[j] * (1.0 - tau2) + d[j + 1] * tau2
+        else:
+            # deCasteljauRight(lower), then deCasteljauLeft((upper-lower)/(1-lower))
+            tau = lower
+            for step in range(1, p + 1):
+                for j in range(p - step + 1):
+                    d[j] = d[j] * (1.0 - tau) + d[j + 1] * tau
+
+            tau2 = (upper - lower) / (1.0 - lower)
+            for step in range(1, p + 1):
+                for j in range(p, step - 1, -1):
+                    d[j] = d[j] * tau2 + d[j - 1] * (1.0 - tau2)
+
+        for i in range(p + 1):
+            out[i, col] = d[i]
+
+
 def _warmup_numba_functions() -> None:
     """Precompile numba functions with float64 signatures for faster first call.
 
@@ -331,7 +465,11 @@ def _warmup_numba_functions() -> None:
     out_deriv_dummy = np.empty((1, 1, 2), dtype=np.float64)
     out_slice_dummy = np.empty(2, dtype=np.float64)
 
+    out_split_dummy = np.empty((3, 2), dtype=np.float64)
+
     _evaluate_bezier_1d_core(ctrl_dummy, pts_dummy, out_eval_dummy)
     _evaluate_bezier_deriv_1d_core(ctrl_dummy, pts_dummy, 0, out_deriv_dummy)
     _degree_elevate_bezier_1d_core(2, ctrl_dummy, 1)
     _slice_bezier_1d_core(ctrl_dummy, 0.5, out_slice_dummy)
+    _split_bezier_1d_core(ctrl_dummy, 0.5, out_split_dummy, out_split_dummy.copy())
+    _restrict_bezier_1d_core(ctrl_dummy, 0.2, 0.8, out_split_dummy)
