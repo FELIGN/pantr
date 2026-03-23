@@ -1,14 +1,9 @@
-"""Tests for bspline module."""
-
-from typing import Any
+"""Tests for Bspline initialization, properties, and edge cases."""
 
 import numpy as np
-import numpy.typing as npt
 import pytest
 
-from pantr.bezier import Bezier
-from pantr.bspline import Bspline, BsplineSpace, BsplineSpace1D, create_uniform_periodic
-from pantr.bspline._bspline_basis_core import _compute_basis_nurbs_book_impl
+from pantr.bspline import Bspline, BsplineSpace, BsplineSpace1D
 
 
 class TestBsplineInit:
@@ -198,153 +193,134 @@ class TestBsplineInit:
 
 
 class TestBsplineProperties:
-    """Test Bspline properties."""
+    """Test Bspline property accessors."""
 
     def test_dim_property(self) -> None:
-        """Test dim property."""
+        """Test the dim property for different dimensions."""
+        # 1D
         knots = [0.0, 0.0, 0.0, 1.0, 1.0, 1.0]
         space_1d = BsplineSpace1D(knots, 2)
         space = BsplineSpace([space_1d])
         control_points = np.array([1.0, 2.0, 3.0], dtype=np.float64)
         bspline = Bspline(space, control_points)
-
         assert bspline.dim == 1
-        assert bspline.dim == space.dim
 
-        # Test 2D
+        # 2D
         knots2 = [0.0, 0.0, 1.0, 1.0]
         space_1d_2 = BsplineSpace1D(knots2, 1)
-        space_2d = BsplineSpace([space_1d, space_1d_2])
-        control_points_2d = np.array([1.0, 2.0, 3.0, 4.0, 5.0, 6.0], dtype=np.float64)
-        bspline_2d = Bspline(space_2d, control_points_2d)
-
-        assert bspline_2d.dim == 2  # noqa: PLR2004
-        assert bspline_2d.dim == space_2d.dim
+        space2 = BsplineSpace([space_1d, space_1d_2])
+        control_points2 = np.array([1.0, 2.0, 3.0, 4.0, 5.0, 6.0], dtype=np.float64)
+        bspline2 = Bspline(space2, control_points2)
+        assert bspline2.dim == 2  # noqa: PLR2004
 
     def test_degree_property(self) -> None:
-        """Test degree property."""
+        """Test the degree property for different spaces."""
+        # 1D
         knots = [0.0, 0.0, 0.0, 1.0, 1.0, 1.0]
         space_1d = BsplineSpace1D(knots, 2)
         space = BsplineSpace([space_1d])
         control_points = np.array([1.0, 2.0, 3.0], dtype=np.float64)
         bspline = Bspline(space, control_points)
-
         assert bspline.degree == (2,)
-        assert bspline.degree == space.degrees
 
-        # Test 2D
+        # 2D
         knots2 = [0.0, 0.0, 1.0, 1.0]
         space_1d_2 = BsplineSpace1D(knots2, 1)
-        space_2d = BsplineSpace([space_1d, space_1d_2])
-        control_points_2d = np.array([1.0, 2.0, 3.0, 4.0, 5.0, 6.0], dtype=np.float64)
-        bspline_2d = Bspline(space_2d, control_points_2d)
-
-        assert bspline_2d.degree == (2, 1)
-        assert bspline_2d.degree == space_2d.degrees
+        space2 = BsplineSpace([space_1d, space_1d_2])
+        control_points2 = np.array([1.0, 2.0, 3.0, 4.0, 5.0, 6.0], dtype=np.float64)
+        bspline2 = Bspline(space2, control_points2)
+        assert bspline2.degree == (2, 1)
 
     def test_space_property(self) -> None:
-        """Test space property."""
+        """Test the space property returns the correct space."""
         knots = [0.0, 0.0, 0.0, 1.0, 1.0, 1.0]
         space_1d = BsplineSpace1D(knots, 2)
         space = BsplineSpace([space_1d])
         control_points = np.array([1.0, 2.0, 3.0], dtype=np.float64)
         bspline = Bspline(space, control_points)
-
         assert bspline.space is space
-        assert isinstance(bspline.space, BsplineSpace)
 
     def test_control_points_property(self) -> None:
-        """Test control_points property."""
+        """Test the control_points property returns the correct array."""
         knots = [0.0, 0.0, 0.0, 1.0, 1.0, 1.0]
         space_1d = BsplineSpace1D(knots, 2)
         space = BsplineSpace([space_1d])
-        control_points = np.array([1.0, 2.0, 3.0], dtype=np.float64)
+        control_points = np.array([[1.0, 2.0], [3.0, 4.0], [5.0, 6.0]], dtype=np.float64)
         bspline = Bspline(space, control_points)
-
-        assert isinstance(bspline.control_points, np.ndarray)
-        assert bspline.control_points.shape == (3, 1)
-        np.testing.assert_array_equal(bspline.control_points, control_points.reshape(3, 1))
+        np.testing.assert_array_equal(bspline.control_points, control_points)
 
     def test_is_rational_property(self) -> None:
-        """Test is_rational property."""
+        """Test the is_rational property."""
         knots = [0.0, 0.0, 0.0, 1.0, 1.0, 1.0]
         space_1d = BsplineSpace1D(knots, 2)
         space = BsplineSpace([space_1d])
-        control_points = np.array([1.0, 2.0, 3.0], dtype=np.float64)
+        control_points = np.array([[1.0, 1.0], [2.0, 1.0], [3.0, 1.0]], dtype=np.float64)
 
         bspline_non_rational = Bspline(space, control_points)
         assert bspline_non_rational.is_rational is False
 
-        # shape[-1]=2 -> rational rank = 1 -> valid
-        control_points_rational = np.array([[1.0, 1.0], [2.0, 1.0], [3.0, 1.0]], dtype=np.float64)
-        bspline_rational = Bspline(space, control_points_rational, is_rational=True)
+        bspline_rational = Bspline(space, control_points, is_rational=True)
         assert bspline_rational.is_rational is True
 
     def test_rank_property_non_rational_scalar(self) -> None:
-        """Test rank property for non-rational scalar B-spline."""
+        """Test rank for non-rational scalar B-spline."""
         knots = [0.0, 0.0, 0.0, 1.0, 1.0, 1.0]
         space_1d = BsplineSpace1D(knots, 2)
         space = BsplineSpace([space_1d])
         control_points = np.array([1.0, 2.0, 3.0], dtype=np.float64)
         bspline = Bspline(space, control_points)
 
-        # control_points reshaped to (3, 1), so ndim=2, dim=1, rank=2-1=1
-        assert bspline.control_points.shape == (3, 1)
-        assert bspline.rank == 1  # This is what the code computes
+        # shape (3, 1): ndim=2, dim=1, rank=ndim-dim=1
+        assert bspline.rank == 1
 
     def test_rank_property_non_rational_vector(self) -> None:
-        """Test rank property for non-rational vector B-spline."""
+        """Test rank for non-rational vector B-spline."""
         knots = [0.0, 0.0, 0.0, 1.0, 1.0, 1.0]
         space_1d = BsplineSpace1D(knots, 2)
         space = BsplineSpace([space_1d])
         control_points = np.array([[1.0, 2.0], [3.0, 4.0], [5.0, 6.0]], dtype=np.float64)
         bspline = Bspline(space, control_points)
 
-        # control_points reshaped to (3, 2), so shape[-1]=2, rank=2
-        assert bspline.control_points.shape == (3, 2)
+        # shape (3, 2): ndim=2, dim=1, rank=2
         assert bspline.rank == 2  # noqa: PLR2004
 
     def test_rank_property_non_rational_higher_rank(self) -> None:
-        """Test rank property for non-rational with higher rank values."""
-        knots1 = [0.0, 0.0, 0.0, 1.0, 1.0, 1.0]
-        knots2 = [0.0, 0.0, 1.0, 1.0]
-        knots3 = [0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0]
-        space_1d_1 = BsplineSpace1D(knots1, 2)
-        space_1d_2 = BsplineSpace1D(knots2, 1)
-        space_1d_3 = BsplineSpace1D(knots3, 3)
-        space_3d = BsplineSpace([space_1d_1, space_1d_2, space_1d_3])
-
-        control_points_rank1 = np.arange(24, dtype=np.float64)
-        bspline_rank1 = Bspline(space_3d, control_points_rank1)
-        assert bspline_rank1.control_points.shape == (3, 2, 4, 1)
-        assert bspline_rank1.rank == 1  # ndim=4, dim=3, rank=1
-
-    def test_rank_property_rational_scalar(self) -> None:
-        """Test rank property for rational scalar B-spline (rank 1)."""
+        """Test rank for non-rational B-spline with higher rank (e.g. matrix-valued)."""
         knots = [0.0, 0.0, 0.0, 1.0, 1.0, 1.0]
         space_1d = BsplineSpace1D(knots, 2)
         space = BsplineSpace([space_1d])
-        # shape[-1]=2 -> rational rank = 2-1 = 1
+        # 3 basis fns, 12/3=4 values -> shape (3, 4) -> rank = ndim - dim = 2-1 = 4
+        control_points = np.arange(12, dtype=np.float64)
+        bspline = Bspline(space, control_points)
+
+        # shape (3, 4): rank = shape[-1] = 4
+        assert bspline.rank == 4  # noqa: PLR2004
+
+    def test_rank_property_rational_scalar(self) -> None:
+        """Test rank for rational scalar B-spline."""
+        knots = [0.0, 0.0, 0.0, 1.0, 1.0, 1.0]
+        space_1d = BsplineSpace1D(knots, 2)
+        space = BsplineSpace([space_1d])
         control_points = np.array([[1.0, 1.0], [2.0, 1.0], [3.0, 1.0]], dtype=np.float64)
         bspline = Bspline(space, control_points, is_rational=True)
 
+        # shape (3, 2): rational rank = shape[-1] - 1 = 1
         assert bspline.rank == 1
 
     def test_rank_property_rational_vector(self) -> None:
-        """Test rank property for rational 2D vector B-spline."""
-        knots1 = [0.0, 0.0, 0.0, 1.0, 1.0, 1.0]
-        knots2 = [0.0, 0.0, 1.0, 1.0]
-        space_1d_1 = BsplineSpace1D(knots1, 2)
-        space_1d_2 = BsplineSpace1D(knots2, 1)
-        space_2d = BsplineSpace([space_1d_1, space_1d_2])
-        # 24 / (3*2=6 basis) = 4 columns -> shape (3, 2, 4), shape[-1]=4, rank=4-1=3
-        control_points = np.arange(24, dtype=np.float64)
-        bspline = Bspline(space_2d, control_points, is_rational=True)
+        """Test rank for rational vector B-spline."""
+        knots = [0.0, 0.0, 0.0, 1.0, 1.0, 1.0]
+        space_1d = BsplineSpace1D(knots, 2)
+        space = BsplineSpace([space_1d])
+        # 3 basis, 9/3=3 columns, rational rank = 3-1 = 2
+        control_points = np.arange(9, dtype=np.float64).reshape(3, 3)
+        bspline = Bspline(space, control_points, is_rational=True)
 
-        assert bspline.rank == 3  # noqa: PLR2004
+        # shape (3, 3): rational rank = 3-1 = 2
+        assert bspline.rank == 2  # noqa: PLR2004
 
     def test_rank_property_2D_non_rational_scalar(self) -> None:
-        """Test rank property for 2D non-rational scalar B-spline."""
+        """Test rank for 2D non-rational scalar B-spline."""
         knots1 = [0.0, 0.0, 0.0, 1.0, 1.0, 1.0]
         knots2 = [0.0, 0.0, 1.0, 1.0]
         space_1d_1 = BsplineSpace1D(knots1, 2)
@@ -353,36 +329,34 @@ class TestBsplineProperties:
         control_points = np.array([1.0, 2.0, 3.0, 4.0, 5.0, 6.0], dtype=np.float64)
         bspline = Bspline(space, control_points)
 
-        # control_points reshaped to (3, 2, 1), so ndim=3, dim=2, rank=3-2=1
-        assert bspline.control_points.shape == (3, 2, 1)
+        # shape (3, 2, 1): ndim=3, dim=2, rank=1
         assert bspline.rank == 1
 
     def test_rank_property_2D_non_rational_vector(self) -> None:
-        """Test rank property for 2D non-rational vector B-spline."""
+        """Test rank for 2D non-rational vector B-spline."""
         knots1 = [0.0, 0.0, 0.0, 1.0, 1.0, 1.0]
         knots2 = [0.0, 0.0, 1.0, 1.0]
         space_1d_1 = BsplineSpace1D(knots1, 2)
         space_1d_2 = BsplineSpace1D(knots2, 1)
         space = BsplineSpace([space_1d_1, space_1d_2])
-        control_points = np.arange(12, dtype=np.float64).reshape(6, 2)
+        # 6 basis, 12 values = 6*2, shape = (3, 2, 2), rank = 2
+        control_points = np.arange(12, dtype=np.float64)
         bspline = Bspline(space, control_points)
 
-        # control_points reshaped to (3, 2, 2), so shape[-1]=2, rank=2
-        assert bspline.control_points.shape == (3, 2, 2)
         assert bspline.rank == 2  # noqa: PLR2004
 
     def test_rank_property_2D_rational_scalar(self) -> None:
-        """Test rank property for 2D rational B-spline."""
+        """Test rank for 2D rational scalar B-spline."""
         knots1 = [0.0, 0.0, 0.0, 1.0, 1.0, 1.0]
         knots2 = [0.0, 0.0, 1.0, 1.0]
         space_1d_1 = BsplineSpace1D(knots1, 2)
         space_1d_2 = BsplineSpace1D(knots2, 1)
         space = BsplineSpace([space_1d_1, space_1d_2])
-        # 18 / (3*2=6 basis) = 3 columns -> shape (3, 2, 3), shape[-1]=3, rank=3-1=2
-        control_points = np.arange(18, dtype=np.float64)
+        # 6 basis, 12 values = 6*2, shape = (3, 2, 2), rational rank = 2-1 = 1
+        control_points = np.arange(12, dtype=np.float64)
         bspline = Bspline(space, control_points, is_rational=True)
 
-        assert bspline.rank == 2  # noqa: PLR2004
+        assert bspline.rank == 1
 
 
 class TestBsplineEdgeCases:
@@ -401,48 +375,45 @@ class TestBsplineEdgeCases:
         assert isinstance(cp, np.ndarray)
 
     def test_multiple_ranks_2D(self) -> None:
-        """Test Bspline with different ranks in 2D."""
+        """Test multiple rank values for 2D B-splines."""
         knots1 = [0.0, 0.0, 0.0, 1.0, 1.0, 1.0]
         knots2 = [0.0, 0.0, 1.0, 1.0]
         space_1d_1 = BsplineSpace1D(knots1, 2)
         space_1d_2 = BsplineSpace1D(knots2, 1)
         space = BsplineSpace([space_1d_1, space_1d_2])
 
-        # Rank 1 (scalar - trailing dim is 1)
-        cp0 = np.array([1.0, 2.0, 3.0, 4.0, 5.0, 6.0], dtype=np.float64)
-        bspline0 = Bspline(space, cp0)
-        assert bspline0.rank == 1  # shape (3, 2, 1): shape[-1]=1, rank=1
+        # num_basis = (3, 2), total = 6
+        # Scalar: 6 points -> reshapes to (3, 2, 1), rank=1
+        cp_scalar = np.arange(6, dtype=np.float64)
+        bspline_scalar = Bspline(space, cp_scalar)
+        assert bspline_scalar.control_points.shape == (3, 2, 1)
+        assert bspline_scalar.rank == 1
 
-        # Rank 2 (vector, 2 columns)
-        cp1 = np.arange(12, dtype=np.float64)
-        bspline1 = Bspline(space, cp1)
-        assert bspline1.rank == 2  # shape (3, 2, 2): shape[-1]=2, rank=2  # noqa: PLR2004
-
-        # Rank 4 (vector, 4 columns)
-        cp2 = np.arange(24, dtype=np.float64)
-        bspline2 = Bspline(space, cp2)
-        assert bspline2.rank == 4  # shape (3, 2, 4): shape[-1]=4, rank=4  # noqa: PLR2004
+        # Vector: 6 * 3 = 18 points -> reshapes to (3, 2, 3), rank=3
+        cp_vec = np.arange(18, dtype=np.float64)
+        bspline_vec = Bspline(space, cp_vec)
+        assert bspline_vec.control_points.shape == (3, 2, 3)
+        assert bspline_vec.rank == 3  # noqa: PLR2004
 
     def test_control_points_flat_input(self) -> None:
-        """Test that flat input is correctly reshaped."""
+        """Test that flat control_points are correctly reshaped for higher dimensions."""
         knots1 = [0.0, 0.0, 0.0, 1.0, 1.0, 1.0]
         knots2 = [0.0, 0.0, 1.0, 1.0]
         space_1d_1 = BsplineSpace1D(knots1, 2)
         space_1d_2 = BsplineSpace1D(knots2, 1)
         space = BsplineSpace([space_1d_1, space_1d_2])
 
-        # Flat array - reshapes to (3, 2, 1) for scalar
-        cp_flat = np.array([1.0, 2.0, 3.0, 4.0, 5.0, 6.0], dtype=np.float64)
-        bspline = Bspline(space, cp_flat)
-        assert bspline.control_points.shape == (3, 2, 1)
-
-        # Already shaped array - also reshapes to (3, 2, 1)
-        cp_shaped = np.array([[1.0, 2.0], [3.0, 4.0], [5.0, 6.0]], dtype=np.float64)
-        bspline2 = Bspline(space, cp_shaped)
-        assert bspline2.control_points.shape == (3, 2, 1)
+        # 6 basis, 12 values -> (3, 2, 2)
+        control_points = np.arange(12, dtype=np.float64)
+        bspline = Bspline(space, control_points)
+        assert bspline.control_points.shape == (3, 2, 2)
+        # Values should be sequential when flattened
+        np.testing.assert_array_equal(
+            bspline.control_points.ravel(), np.arange(12, dtype=np.float64)
+        )
 
     def test_control_points_3D_space(self) -> None:
-        """Test control_points reshaping for 3D space."""
+        """Test control_points for 3D B-spline space."""
         knots1 = [0.0, 0.0, 0.0, 1.0, 1.0, 1.0]
         knots2 = [0.0, 0.0, 1.0, 1.0]
         knots3 = [0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0]
@@ -451,1217 +422,15 @@ class TestBsplineEdgeCases:
         space_1d_3 = BsplineSpace1D(knots3, 3)
         space = BsplineSpace([space_1d_1, space_1d_2, space_1d_3])
 
-        # Scalar: 3 * 2 * 4 = 24 points -> reshapes to (3, 2, 4, 1)
-        cp = np.arange(24, dtype=np.float64)
-        bspline = Bspline(space, cp)
-        assert bspline.control_points.shape == (3, 2, 4, 1)
-        assert bspline.rank == 1  # ndim=4, dim=3, rank=1
+        # num_basis = (3, 2, 4), total = 24
+        # Scalar: 24 points -> reshapes to (3, 2, 4, 1)
+        cp_scalar = np.arange(24, dtype=np.float64)
+        bspline_scalar = Bspline(space, cp_scalar)
+        assert bspline_scalar.control_points.shape == (3, 2, 4, 1)
+        assert bspline_scalar.rank == 1
 
         # Vector: 24 * 2 = 48 points -> reshapes to (3, 2, 4, 2)
         cp_vec = np.arange(48, dtype=np.float64)
         bspline_vec = Bspline(space, cp_vec)
         assert bspline_vec.control_points.shape == (3, 2, 4, 2)
         assert bspline_vec.rank == 2  # shape[-1]=2, rank=2  # noqa: PLR2004
-
-
-class TestBsplineEvaluation:
-    """Test Bspline evaluation."""
-
-    def test_evaluate_1D_linear(self) -> None:
-        """Test evaluation of a 1D linear B-spline."""
-        knots = np.array([0.0, 0.0, 1.0, 1.0], dtype=np.float64)
-        space_1d = BsplineSpace1D(knots, 1)
-        space = BsplineSpace([space_1d])
-        control_points = np.array([0.0, 1.0], dtype=np.float64)
-        bspline = Bspline(space, control_points)
-
-        pts = np.array([0.0, 0.5, 1.0], dtype=np.float64)
-        values = bspline.evaluate(pts)
-
-        expected = np.array([0.0, 0.5, 1.0], dtype=np.float64)
-        np.testing.assert_allclose(values, expected, atol=1e-14)
-
-    def test_evaluate_1D_quadratic(self) -> None:
-        """Test evaluation of a 1D quadratic B-spline."""
-        # Basis functions on [0,1] for open knot vector [0,0,0,1,1,1] are Bernstein polynomials
-        knots = np.array([0.0, 0.0, 0.0, 1.0, 1.0, 1.0], dtype=np.float64)
-        space_1d = BsplineSpace1D(knots, 2)
-        space = BsplineSpace([space_1d])
-        control_points = np.array([0.0, 0.5, 1.0], dtype=np.float64)
-        bspline = Bspline(space, control_points)
-
-        pts = np.array([0.0, 0.5, 1.0], dtype=np.float64)
-        values = bspline.evaluate(pts)
-
-        # At 0.5, B2(t) = (1-t)^2 P0 + 2t(1-t) P1 + t^2 P2
-        # = 0.25*0 + 0.5*0.5 + 0.25*1 = 0.25 + 0.25 = 0.5
-        expected = np.array([0.0, 0.5, 1.0], dtype=np.float64)
-        np.testing.assert_allclose(values, expected, atol=1e-14)
-
-        # Non-linear
-        control_points = np.array([0.0, 1.0, 0.0], dtype=np.float64)
-        bspline = Bspline(space, control_points)
-        values = bspline.evaluate(pts)
-        # At 0.5: 0.25*0 + 0.5*1 + 0.25*0 = 0.5
-        expected = np.array([0.0, 0.5, 0.0], dtype=np.float64)
-        np.testing.assert_allclose(values, expected, atol=1e-14)
-
-
-class TestBsplineEvaluateDerivatives:
-    """Test Bspline.evaluate_derivatives."""
-
-    # ------------------------------------------------------------------
-    # Helpers
-    # ------------------------------------------------------------------
-
-    @staticmethod
-    def _make_bspline(knots: list[float], degree: int, cps: list[float]) -> Bspline:
-        """Build a scalar 1-D B-spline from plain Python lists."""
-        kv = np.array(knots, dtype=np.float64)
-        space_1d = BsplineSpace1D(kv, degree)
-        space = BsplineSpace([space_1d])
-        cp = np.array(cps, dtype=np.float64)
-        return Bspline(space, cp)
-
-    # ------------------------------------------------------------------
-    # Correctness
-    # ------------------------------------------------------------------
-
-    def test_n_deriv_0_matches_evaluate(self) -> None:
-        """evaluate_derivatives with orders=[0] must equal evaluate."""
-        bspline = self._make_bspline([0, 0, 0, 1, 1, 1], 2, [0.0, 1.0, 0.0])
-        pts = np.linspace(0.0, 1.0, 11, dtype=np.float64)
-
-        result = bspline.evaluate_derivatives(pts, [0])
-        expected = bspline.evaluate(pts)
-
-        np.testing.assert_allclose(result, expected, atol=1e-14)
-
-    def test_linear_constant_first_derivative(self) -> None:
-        """Degree-1 on [0,1] with CPs [0,1] gives f'(t)=1 everywhere (interior)."""
-        bspline = self._make_bspline([0.0, 0.0, 1.0, 1.0], 1, [0.0, 1.0])
-        # Exclude the right endpoint: the existing kernel's endpoint shortcut only
-        # fills the zeroth-derivative slot; higher-order derivatives are left zero.
-        pts = np.array([0.0, 0.25, 0.5, 0.75], dtype=np.float64)
-
-        result = bspline.evaluate_derivatives(pts, [1])
-
-        np.testing.assert_allclose(result, np.ones(4), atol=1e-14)
-
-    def test_quadratic_bezier_t_squared_exact(self) -> None:
-        """CPs [0,0,1] on [0,0,0,1,1,1] give f(t)=t², f'=2t, f''=2."""
-        # Bernstein: B₀=(1-t)², B₁=2t(1-t), B₂=t²
-        # f(t) = 0*(1-t)² + 0*2t(1-t) + 1*t² = t²
-        bspline = self._make_bspline([0, 0, 0, 1, 1, 1], 2, [0.0, 0.0, 1.0])
-        # Exclude t=1.0: endpoint shortcut in the derivative kernel only fills order 0.
-        pts = np.array([0.0, 0.25, 0.5, 0.75], dtype=np.float64)
-
-        np.testing.assert_allclose(bspline.evaluate_derivatives(pts, [0]), pts**2, atol=1e-13)
-        np.testing.assert_allclose(bspline.evaluate_derivatives(pts, [1]), 2.0 * pts, atol=1e-13)
-        np.testing.assert_allclose(
-            bspline.evaluate_derivatives(pts, [2]), np.full(4, 2.0), atol=1e-13
-        )
-
-    def test_quadratic_bezier_general_exact(self) -> None:
-        """CPs [0,1,0] give f(t)=2t(1-t); exact 1st and 2nd derivatives."""
-        bspline = self._make_bspline([0, 0, 0, 1, 1, 1], 2, [0.0, 1.0, 0.0])
-        # Exclude t=1.0: endpoint shortcut in the derivative kernel only fills order 0.
-        pts = np.array([0.0, 0.25, 0.5, 0.75], dtype=np.float64)
-
-        f = 2.0 * pts * (1.0 - pts)
-        f1 = 2.0 - 4.0 * pts
-        f2 = np.full(4, -4.0)
-
-        np.testing.assert_allclose(bspline.evaluate_derivatives(pts, [0]), f, atol=1e-13)
-        np.testing.assert_allclose(bspline.evaluate_derivatives(pts, [1]), f1, atol=1e-13)
-        np.testing.assert_allclose(bspline.evaluate_derivatives(pts, [2]), f2, atol=1e-13)
-
-    def test_cubic_bezier_exact_derivatives(self) -> None:
-        """CPs [0,1/3,2/3,1] give identity f(t)=t; f'(t)=1."""
-        # Bernstein cubic with CPs [0,1/3,2/3,1] → f(t)=t, f'(t)=1
-        bspline = self._make_bspline([0, 0, 0, 0, 1, 1, 1, 1], 3, [0.0, 1.0 / 3.0, 2.0 / 3.0, 1.0])
-        # Exclude t=1.0: endpoint shortcut in the derivative kernel only fills order 0.
-        pts = np.array([0.0, 0.25, 0.5, 0.75], dtype=np.float64)
-
-        np.testing.assert_allclose(bspline.evaluate_derivatives(pts, [0]), pts, atol=1e-13)
-        np.testing.assert_allclose(bspline.evaluate_derivatives(pts, [1]), np.ones(4), atol=1e-13)
-
-    def test_n_deriv_exceeds_degree_zeros(self) -> None:
-        """Derivative order > degree must be zero."""
-        bspline = self._make_bspline([0, 0, 0, 1, 1, 1], 2, [0.0, 1.0, 0.0])
-        pts = np.array([0.25, 0.5, 0.75], dtype=np.float64)
-
-        # Degree 2 → 3rd and higher derivatives are zero
-        for k in range(3, 6):
-            result = bspline.evaluate_derivatives(pts, [k])
-            np.testing.assert_allclose(result, 0.0, atol=1e-14)
-
-    # ------------------------------------------------------------------
-    # Output shapes
-    # ------------------------------------------------------------------
-
-    def test_output_shape_scalar(self) -> None:
-        """Scalar B-spline returns shape (n_pts,)."""
-        bspline = self._make_bspline([0, 0, 0, 1, 1, 1], 2, [0.0, 1.0, 0.0])
-        pts = np.linspace(0.0, 1.0, 7, dtype=np.float64)
-
-        result = bspline.evaluate_derivatives(pts, [3])
-
-        assert result.shape == (7,)
-
-    def test_output_shape_vector(self) -> None:
-        """Vector B-spline (2-column CPs) returns shape (n_pts, rank)."""
-        kv = np.array([0.0, 0.0, 0.0, 1.0, 1.0, 1.0], dtype=np.float64)
-        space_1d = BsplineSpace1D(kv, 2)
-        space = BsplineSpace([space_1d])
-        # 3 control points, each 2D
-        cp = np.array([[0.0, 0.0], [0.5, 1.0], [1.0, 0.0]], dtype=np.float64)
-        bspline = Bspline(space, cp)
-
-        pts = np.linspace(0.0, 1.0, 5, dtype=np.float64)
-
-        result = bspline.evaluate_derivatives(pts, [2])
-
-        assert result.shape == (5, 2)
-
-    # ------------------------------------------------------------------
-    # Numerical validation
-    # ------------------------------------------------------------------
-
-    def test_finite_difference_validation(self) -> None:
-        """Central FD approximation of first derivative matches evaluate_derivatives."""
-        bspline = self._make_bspline([0, 0, 0, 1, 1, 1], 2, [0.0, 1.0, 0.0])
-        # Use interior points away from both endpoints to avoid endpoint-shortcut issues
-        # and to keep FD points inside the domain.
-        pts = np.linspace(0.1, 0.9, 9, dtype=np.float64)
-        h = 1e-6
-
-        result = bspline.evaluate_derivatives(pts, [1])
-        fd = (bspline.evaluate(pts + h) - bspline.evaluate(pts - h)) / (2.0 * h)
-
-        # Use atol to handle the case where the true derivative is near zero
-        # (rtol would fail when comparing ~0 to ~2e-11 floating-point noise).
-        np.testing.assert_allclose(result, fd, atol=1e-5)
-
-    # ------------------------------------------------------------------
-    # Error handling
-    # ------------------------------------------------------------------
-
-    def test_invalid_n_deriv(self) -> None:
-        """Negative order raises ValueError."""
-        bspline = self._make_bspline([0, 0, 0, 1, 1, 1], 2, [0.0, 1.0, 0.0])
-        pts = np.array([0.5], dtype=np.float64)
-
-        with pytest.raises(ValueError):
-            bspline.evaluate_derivatives(pts, [-1])
-
-    def test_out_array_reuse(self) -> None:
-        """Pre-allocated out array is filled in-place."""
-        bspline = self._make_bspline([0, 0, 0, 1, 1, 1], 2, [0.0, 1.0, 0.0])
-        pts = np.array([0.25, 0.5, 0.75], dtype=np.float64)
-        out = np.zeros(3, dtype=np.float64)
-
-        result = bspline.evaluate_derivatives(pts, [2], out=out)
-
-        np.testing.assert_array_equal(result, out)
-        assert not np.all(out == 0.0)
-
-    def test_dim_not_1_returns_scalar_result(self) -> None:
-        """evaluate_derivatives on dim=2 scalar B-spline returns (n_pts,)."""
-        knots1 = [0.0, 0.0, 0.0, 1.0, 1.0, 1.0]
-        knots2 = [0.0, 0.0, 1.0, 1.0]
-        space_1d_1 = BsplineSpace1D(np.array(knots1, dtype=np.float64), 2)
-        space_1d_2 = BsplineSpace1D(np.array(knots2, dtype=np.float64), 1)
-        space = BsplineSpace([space_1d_1, space_1d_2])
-        cp = np.array([1.0, 2.0, 3.0, 4.0, 5.0, 6.0], dtype=np.float64)
-        bspline = Bspline(space, cp)
-
-        pts = np.array([[0.5, 0.5]], dtype=np.float64)
-        result = bspline.evaluate_derivatives(pts, [1, 1])
-
-        # scalar 2D spline, mixed first derivative: shape (n_pts,)
-        assert result.shape == (1,)
-
-
-# ---------------------------------------------------------------------------
-# TestToOpenBspline
-# ---------------------------------------------------------------------------
-
-
-def _make_periodic_bspline(
-    num_intervals: int,
-    degree: int,
-    dtype: type = np.float64,
-    continuity: int | None = None,
-) -> Bspline:
-    """Create a simple periodic B-spline with sequential integer control points.
-
-    Args:
-        num_intervals (int): Number of intervals.
-        degree (int): B-spline degree.
-        dtype (type): Data type. Defaults to np.float64.
-        continuity (int | None): Continuity level at interior knots. None uses degree-1
-            (maximum continuity). Defaults to None.
-
-    Returns:
-        Bspline: A 1D periodic scalar B-spline.
-    """
-    knots = create_uniform_periodic(num_intervals, degree, continuity=continuity, dtype=dtype)
-    space_1d = BsplineSpace1D(knots, degree, periodic=True)
-    space = BsplineSpace([space_1d])
-    n = space.num_total_basis
-    ctrl: npt.NDArray[np.float64] = np.arange(1, n + 1, dtype=dtype)
-    return Bspline(space, ctrl)
-
-
-def _eval_periodic_correct(f: Bspline, pts: npt.NDArray[np.float64]) -> npt.NDArray[np.float64]:
-    """Evaluate a periodic B-spline using the mathematically correct algorithm.
-
-    Uses the unclamped ``first_basis = knot_id - degree`` index with modulo-wrapped
-    control point lookup, which is the standard mathematical definition of a periodic
-    B-spline. This differs from ``f.evaluate()`` which uses a clamped first_basis.
-
-    Args:
-        f (Bspline): A 1D periodic B-spline.
-        pts (np.ndarray): Interior evaluation points (must lie strictly inside domain).
-
-    Returns:
-        np.ndarray: Evaluated values at the given points.
-    """
-    space_1d = f.space.spaces[0]
-    knots = space_1d.knots
-    p = space_1d.degree
-    tol = float(space_1d.tolerance)
-    n_stored = f.space.num_total_basis
-    ctrl = f._control_points  # shape (n_stored, rank)
-
-    # Compute knot spans using the non-periodic (unclamped) algorithm
-    basis_out = np.zeros((len(pts), p + 1), dtype=np.float64)
-    first_basis_arr = np.zeros(len(pts), dtype=np.int64)
-    _compute_basis_nurbs_book_impl(knots, p, False, tol, pts, basis_out, first_basis_arr)
-
-    rank = ctrl.shape[1]
-    result = np.zeros((len(pts), rank), dtype=np.float64)
-    for i in range(len(pts)):
-        s = int(first_basis_arr[i])
-        for j in range(p + 1):
-            idx = (s + j) % n_stored
-            result[i] += basis_out[i, j] * ctrl[idx]
-
-    return result.squeeze()
-
-
-class TestPeriodicBsplineEvaluation:
-    """Test Bspline.evaluate and evaluate_derivatives for periodic B-splines.
-
-    Covers both maximum continuity and reduced continuity (C^0, C^1) cases.
-    All comparisons use interior points only to avoid endpoint ambiguity.
-    """
-
-    @pytest.mark.parametrize(
-        "num_intervals,degree,continuity",
-        [
-            (3, 2, None),  # degree 2, max continuity
-            (4, 2, 0),  # degree 2, C^0
-            (4, 3, None),  # degree 3, max continuity
-            (4, 3, 1),  # degree 3, C^1
-            (5, 3, 0),  # degree 3, C^0
-        ],
-    )
-    def test_periodic_to_open_evaluate_matches_correct_algorithm(
-        self, num_intervals: int, degree: int, continuity: int | None
-    ) -> None:
-        """to_open_bspline().evaluate() agrees with modulo-wrapped reference algorithm.
-
-        This is the canonical correctness check for periodic B-spline evaluation:
-        converting to open form via knot insertion must reproduce the mathematically
-        correct unclamped periodic function at interior points.
-        """
-        f = _make_periodic_bspline(num_intervals, degree, continuity=continuity)
-        f_open = f.to_open_bspline()
-
-        a, b = f_open.space.spaces[0].domain
-        pts = np.linspace(float(a), float(b), 21, dtype=np.float64)[1:-1]
-
-        np.testing.assert_allclose(
-            f_open.evaluate(pts),
-            _eval_periodic_correct(f, pts),
-            atol=1e-11,
-        )
-
-    @pytest.mark.parametrize(
-        "num_intervals,degree,continuity",
-        [
-            (3, 2, None),  # degree 2, max continuity
-            (4, 2, 0),  # degree 2, C^0
-            (4, 3, None),  # degree 3, max continuity
-            (4, 3, 1),  # degree 3, C^1
-            (5, 3, 0),  # degree 3, C^0
-        ],
-    )
-    def test_periodic_evaluate_matches_correct_algorithm(
-        self, num_intervals: int, degree: int, continuity: int | None
-    ) -> None:
-        """evaluate() agrees with the modulo-wrapped reference algorithm.
-
-        Directly verifies that the periodic B-spline evaluation kernel produces
-        the mathematically correct result at interior points, without going
-        through ``to_open_bspline()``.
-        """
-        f = _make_periodic_bspline(num_intervals, degree, continuity=continuity)
-
-        a, b = f.space.spaces[0].domain
-        pts = np.linspace(float(a), float(b), 21, dtype=np.float64)[1:-1]
-
-        np.testing.assert_allclose(
-            f.evaluate(pts),
-            _eval_periodic_correct(f, pts),
-            atol=1e-13,
-        )
-
-    @pytest.mark.parametrize(
-        "num_intervals,degree,continuity",
-        [
-            (3, 2, None),
-            (4, 2, 0),
-            (4, 3, None),
-            (4, 3, 1),
-            (5, 3, 0),
-        ],
-    )
-    def test_periodic_evaluate_derivatives_order_0_matches_evaluate(
-        self, num_intervals: int, degree: int, continuity: int | None
-    ) -> None:
-        """evaluate_derivatives(pts, [0]) equals evaluate(pts) for periodic splines."""
-        f = _make_periodic_bspline(num_intervals, degree, continuity=continuity)
-
-        a, b = f.space.spaces[0].domain
-        pts = np.linspace(float(a), float(b), 21, dtype=np.float64)[1:-1]
-
-        np.testing.assert_allclose(
-            f.evaluate_derivatives(pts, [0]),
-            f.evaluate(pts),
-            atol=1e-13,
-        )
-
-    @pytest.mark.parametrize(
-        "num_intervals,degree,continuity",
-        [
-            (4, 2, 0),  # degree 2, C^0
-            (5, 3, 1),  # degree 3, C^1
-            (5, 3, 0),  # degree 3, C^0
-        ],
-    )
-    def test_periodic_evaluate_derivatives_matches_finite_diff(
-        self, num_intervals: int, degree: int, continuity: int | None
-    ) -> None:
-        """evaluate_derivatives() agrees with finite differences for periodic splines."""
-        f = _make_periodic_bspline(num_intervals, degree, continuity=continuity)
-
-        a, b = f.space.spaces[0].domain
-        # Avoid C^0 knot positions where the derivative is discontinuous.
-        pts = np.linspace(float(a), float(b), 21, dtype=np.float64)[1:-1]
-        unique_knots = np.unique(f.space.spaces[0].knots)
-        mask = np.ones(len(pts), dtype=bool)
-        for uk in unique_knots:
-            mask &= ~np.isclose(pts, uk, atol=1e-10)
-        pts = pts[mask]
-
-        # 0th order must match evaluate()
-        np.testing.assert_allclose(
-            f.evaluate_derivatives(pts, [0]),
-            f.evaluate(pts),
-            atol=1e-13,
-        )
-
-        # 1st order validated by central finite differences
-        h = 1e-6
-        fd = (f.evaluate(pts + h) - f.evaluate(pts - h)) / (2.0 * h)
-        np.testing.assert_allclose(
-            f.evaluate_derivatives(pts, [1]),
-            fd,
-            atol=1e-5,
-        )
-
-
-def _make_unclamped_bspline(dtype: type = np.float64) -> Bspline:
-    """Create a non-open non-periodic B-spline (uniform, no repeated boundary knots)."""
-    # Cardinal-style knot vector: no repeated boundary knots, uniform spacing.
-    # Degree 2, domain [2, 5] (interior of a larger uniform grid).
-    knots: npt.NDArray[np.float64] = np.array([0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0], dtype=dtype)
-    space_1d = BsplineSpace1D(knots, 2)
-    space = BsplineSpace([space_1d])
-    n = space.num_total_basis
-    ctrl: npt.NDArray[np.float64] = np.arange(1, n + 1, dtype=dtype)
-    return Bspline(space, ctrl)
-
-
-def _make_non_open_bspline_varying_bdry(degree: int, boundary_mult: int) -> Bspline:
-    """Create a non-open non-periodic B-spline with given boundary multiplicity.
-
-    Args:
-        degree (int): B-spline degree.
-        boundary_mult (int): Knot multiplicity at domain endpoints (< degree + 1).
-
-    Returns:
-        Bspline: A 1D non-open scalar B-spline with sequential integer control points.
-    """
-    n_int = max(3, 2 * degree - 2 * boundary_mult + 3)
-    interior = np.linspace(0.0, 1.0, n_int + 1)[1:-1]
-    knots = np.concatenate([[0.0] * boundary_mult, interior, [1.0] * boundary_mult])
-    space_1d = BsplineSpace1D(knots, degree)
-    space = BsplineSpace([space_1d])
-    n = space.num_total_basis
-    ctrl: npt.NDArray[np.float64] = np.arange(1, n + 1, dtype=np.float64)
-    return Bspline(space, ctrl)
-
-
-class TestToOpenBspline:
-    """Tests for Bspline.to_open_bspline()."""
-
-    def test_periodic_to_open_is_non_periodic(self) -> None:
-        """to_open_bspline on a periodic spline returns a non-periodic spline."""
-        f = _make_periodic_bspline(3, 2)
-        f_open = f.to_open_bspline()
-
-        assert not f_open.space.spaces[0].periodic
-        assert f_open.space.spaces[0].has_open_knots()
-
-    def test_periodic_to_open_correctness(self) -> None:
-        """Open B-spline agrees with the correct mathematical periodic evaluation."""
-        f = _make_periodic_bspline(4, 2)
-        f_open = f.to_open_bspline()
-
-        a, b = f_open.space.spaces[0].domain
-        # Exclude endpoints to avoid boundary-matching edge cases.
-        pts = np.linspace(float(a), float(b), 51, dtype=np.float64)[1:-1]
-
-        vals_correct = _eval_periodic_correct(f, pts)
-        vals_open = f_open.evaluate(pts)
-
-        np.testing.assert_allclose(vals_open, vals_correct, atol=1e-12)
-
-    def test_periodic_to_open_degree3(self) -> None:
-        """Works for degree-3 periodic splines."""
-        f = _make_periodic_bspline(4, 3)
-        f_open = f.to_open_bspline()
-
-        assert f_open.space.spaces[0].has_open_knots()
-        assert f_open.space.spaces[0].degree == 3  # noqa: PLR2004
-
-        a, b = f_open.space.spaces[0].domain
-        pts = np.linspace(float(a), float(b), 51, dtype=np.float64)[1:-1]
-        np.testing.assert_allclose(f_open.evaluate(pts), _eval_periodic_correct(f, pts), atol=1e-12)
-
-    def test_non_open_non_periodic_to_open(self) -> None:
-        """to_open_bspline on an unclamped non-periodic spline clamps it correctly."""
-        f = _make_unclamped_bspline()
-        assert not f.space.spaces[0].has_open_knots()
-        assert not f.space.spaces[0].periodic
-
-        f_open = f.to_open_bspline()
-
-        assert f_open.space.spaces[0].has_open_knots()
-        assert not f_open.space.spaces[0].periodic
-
-        a, b = f.space.spaces[0].domain
-        pts = np.linspace(float(a), float(b), 51, dtype=np.float64)[1:-1]
-        np.testing.assert_allclose(f_open.evaluate(pts), f.evaluate(pts), atol=1e-12)
-
-    def test_already_open_raises(self) -> None:
-        """to_open_bspline on an already-open spline raises ValueError."""
-        knots = np.array([0.0, 0.0, 0.0, 0.5, 1.0, 1.0, 1.0], dtype=np.float64)
-        space_1d = BsplineSpace1D(knots, 2)
-        space = BsplineSpace([space_1d])
-        f = Bspline(space, np.array([1.0, 2.0, 3.0, 4.0], dtype=np.float64))
-
-        with pytest.raises(ValueError, match="already open"):
-            f.to_open_bspline()
-
-    def test_multidim_periodic_to_open(self) -> None:
-        """to_open_bspline on a 2D spline with one periodic and one open direction."""
-        # Direction 0: periodic degree-2, Direction 1: open degree-1
-        knots_per = create_uniform_periodic(4, 2, dtype=np.float64)
-        knots_open = np.array([0.0, 0.0, 0.5, 1.0, 1.0], dtype=np.float64)
-        space_per = BsplineSpace1D(knots_per, 2, periodic=True)
-        space_open = BsplineSpace1D(knots_open, 1)
-        space = BsplineSpace([space_per, space_open])
-
-        n0 = space_per.num_basis
-        n1 = space_open.num_basis
-        rng = np.random.default_rng(0)
-        ctrl = rng.random((n0 * n1,), dtype=np.float64)
-        f = Bspline(space, ctrl)
-        f_open = f.to_open_bspline()
-
-        # Direction 0 must become open; direction 1 must remain unchanged.
-        assert f_open.space.spaces[0].has_open_knots()
-        assert not f_open.space.spaces[0].periodic
-        assert f_open.space.spaces[1].has_open_knots()
-        assert not f_open.space.spaces[1].periodic
-
-    def test_multidim_already_open_raises(self) -> None:
-        """to_open_bspline raises ValueError when all directions are already open."""
-        knots1 = np.array([0.0, 0.0, 0.0, 1.0, 1.0, 1.0], dtype=np.float64)
-        knots2 = np.array([0.0, 0.0, 1.0, 1.0], dtype=np.float64)
-        space = BsplineSpace([BsplineSpace1D(knots1, 2), BsplineSpace1D(knots2, 1)])
-        f = Bspline(space, np.ones((3 * 2,), dtype=np.float64))
-
-        with pytest.raises(ValueError, match="already open"):
-            f.to_open_bspline()
-
-    def test_rational_periodic_to_open(self) -> None:
-        """to_open_bspline works on rational periodic B-splines."""
-        knots = create_uniform_periodic(3, 2, dtype=np.float64)
-        space_1d = BsplineSpace1D(knots, 2, periodic=True)
-        space = BsplineSpace([space_1d])
-        n = space.num_total_basis
-        # rational: last coordinate is homogeneous weight (all weights = 1, so NURBS == B-spline)
-        ctrl = np.column_stack(
-            [np.arange(1, n + 1, dtype=np.float64), np.ones(n, dtype=np.float64)]
-        )
-        f = Bspline(space, ctrl, is_rational=True)
-        f_open = f.to_open_bspline()
-
-        assert f_open.is_rational
-        assert not f_open.space.spaces[0].periodic
-        assert f_open.space.spaces[0].has_open_knots()
-
-        # With all weights = 1, NURBS reduces to polynomial B-spline.
-        # Evaluate the scalar component (x*w / w = x) and compare against correct periodic eval.
-        # Build a non-rational version of f with only the x-coordinates for comparison.
-        f_scalar = Bspline(space, ctrl[:, 0], is_rational=False)
-        a, b = f_open.space.spaces[0].domain
-        pts = np.linspace(float(a), float(b), 51, dtype=np.float64)[1:-1]
-        vals_correct = _eval_periodic_correct(f_scalar, pts)
-        np.testing.assert_allclose(f_open.evaluate(pts), vals_correct, atol=1e-12)
-
-    @pytest.mark.parametrize(
-        "degree,boundary_mult",
-        [
-            (2, 1),
-            (2, 2),
-            (3, 1),
-            (3, 2),
-            (3, 3),
-            (4, 2),
-            (4, 4),
-        ],
-    )
-    def test_non_open_varying_bdry_to_open_correctness(
-        self, degree: int, boundary_mult: int
-    ) -> None:
-        """to_open_bspline().evaluate() matches evaluate() for non-open varying boundary mult."""
-        f = _make_non_open_bspline_varying_bdry(degree, boundary_mult)
-        assert not f.space.spaces[0].has_open_knots()
-        f_open = f.to_open_bspline()
-        assert f_open.space.spaces[0].has_open_knots()
-
-        a, b = f.space.spaces[0].domain
-        pts = np.linspace(float(a), float(b), 31, dtype=np.float64)[1:-1]
-        np.testing.assert_allclose(f_open.evaluate(pts), f.evaluate(pts), atol=1e-12)
-
-    @pytest.mark.parametrize(
-        "degree,boundary_mult",
-        [
-            (2, 1),
-            (2, 2),
-            (3, 1),
-            (3, 2),
-            (3, 3),
-            (4, 2),
-            (4, 4),
-        ],
-    )
-    def test_non_open_varying_bdry_evaluate_derivatives_order_0(
-        self, degree: int, boundary_mult: int
-    ) -> None:
-        """evaluate_derivatives(pts, [0]) matches evaluate(pts) for non-open varying bdry mult."""
-        f = _make_non_open_bspline_varying_bdry(degree, boundary_mult)
-        a, b = f.space.spaces[0].domain
-        pts = np.linspace(float(a), float(b), 21, dtype=np.float64)[1:-1]
-        vals = f.evaluate(pts)
-        derivs = f.evaluate_derivatives(pts, [0])
-        np.testing.assert_allclose(derivs, vals, atol=1e-14)
-
-
-# ---------------------------------------------------------------------------
-# to_periodic tests
-# ---------------------------------------------------------------------------
-
-
-class TestToPeriodic:
-    """Tests for Bspline.to_periodic()."""
-
-    @pytest.mark.parametrize(
-        "num_intervals, degree, continuity",
-        [
-            (2, 1, None),
-            (3, 2, None),
-            (4, 3, None),
-            (5, 3, None),
-            (4, 2, 1),
-            (5, 3, 2),
-        ],
-    )
-    def test_round_trip_max_and_high_regularity(
-        self, num_intervals: int, degree: int, continuity: int | None
-    ) -> None:
-        """Periodic -> open -> periodic round-trip preserves evaluation."""
-        f = _make_periodic_bspline(num_intervals, degree, continuity=continuity)
-        f_open = f.to_open_bspline()
-        c = continuity if continuity is not None else degree - 1
-        f_per = f_open.to_periodic(continuity=c)
-
-        assert f_per.space.spaces[0].periodic
-        assert f_per.space.spaces[0].num_basis == f.space.spaces[0].num_basis
-
-        a, b = f.space.spaces[0].domain
-        pts = np.linspace(float(a), float(b), 51, dtype=np.float64)[1:-1]
-        np.testing.assert_allclose(f_per.evaluate(pts), f.evaluate(pts), atol=1e-11)
-
-    def test_round_trip_default_continuity(self) -> None:
-        """to_periodic() with no continuity arg uses max regularity."""
-        f = _make_periodic_bspline(4, 3)
-        f_open = f.to_open_bspline()
-        f_per = f_open.to_periodic()
-
-        assert f_per.space.spaces[0].periodic
-        a, b = f.space.spaces[0].domain
-        pts = np.linspace(float(a), float(b), 51, dtype=np.float64)[1:-1]
-        np.testing.assert_allclose(f_per.evaluate(pts), f.evaluate(pts), atol=1e-11)
-
-    def test_non_periodic_raises(self) -> None:
-        """to_periodic on a non-periodic open B-spline raises ValueError."""
-        knots = np.array([0.0, 0.0, 0.0, 0.5, 1.0, 1.0, 1.0])
-        space = BsplineSpace([BsplineSpace1D(knots, 2)])
-        ctrl = np.array([1.0, 2.0, 5.0, 3.0])  # P_0 != P_{n-1}
-        f = Bspline(space, ctrl)
-        with pytest.raises(ValueError, match="not periodic"):
-            f.to_periodic()
-
-    def test_already_periodic_raises(self) -> None:
-        """to_periodic on an already-periodic B-spline raises ValueError."""
-        f = _make_periodic_bspline(3, 2)
-        with pytest.raises(ValueError, match="already periodic"):
-            f.to_periodic()
-
-    def test_continuity_out_of_range_raises(self) -> None:
-        """to_periodic with invalid continuity raises ValueError."""
-        f = _make_periodic_bspline(3, 2)
-        f_open = f.to_open_bspline()
-        with pytest.raises(ValueError, match="continuity"):
-            f_open.to_periodic(continuity=2)  # degree=2, max cont=1
-
-    def test_rational_round_trip(self) -> None:
-        """Rational periodic -> open -> periodic preserves evaluation."""
-        knots = create_uniform_periodic(3, 2)
-        space = BsplineSpace([BsplineSpace1D(knots, 2, periodic=True)])
-        # 2D rational control points (x, y, w)
-        n = space.spaces[0].num_basis
-        ctrl = np.column_stack(
-            [
-                np.cos(np.linspace(0, 2 * np.pi, n, endpoint=False)),
-                np.sin(np.linspace(0, 2 * np.pi, n, endpoint=False)),
-                np.ones(n),
-            ]
-        )
-        f = Bspline(space, ctrl, is_rational=True)
-        f_open = f.to_open_bspline()
-        f_per = f_open.to_periodic()
-
-        assert f_per.is_rational
-        assert f_per.space.spaces[0].periodic
-        a, b = f.space.spaces[0].domain
-        pts = np.linspace(float(a), float(b), 41, dtype=np.float64)[1:-1]
-        np.testing.assert_allclose(f_per.evaluate(pts), f.evaluate(pts), atol=1e-11)
-
-    def test_multidim_round_trip(self) -> None:
-        """2D B-spline with both directions periodic round-trips correctly."""
-        from pantr.quad import PointsLattice  # noqa: PLC0415
-
-        knots_u = create_uniform_periodic(3, 2)
-        knots_v = create_uniform_periodic(4, 2)
-        space = BsplineSpace(
-            [
-                BsplineSpace1D(knots_u, 2, periodic=True),
-                BsplineSpace1D(knots_v, 2, periodic=True),
-            ]
-        )
-        nu = space.spaces[0].num_basis
-        nv = space.spaces[1].num_basis
-        ctrl = np.arange(1, nu * nv + 1, dtype=np.float64).reshape(nu, nv, 1)
-        f = Bspline(space, ctrl)
-        f_open = f.to_open_bspline()
-        f_per = f_open.to_periodic()
-
-        assert all(s.periodic for s in f_per.space.spaces)
-        assert f_per.space.spaces[0].num_basis == nu
-        assert f_per.space.spaces[1].num_basis == nv
-
-        au, bu = f.space.spaces[0].domain
-        av, bv = f.space.spaces[1].domain
-        pts_u = np.linspace(float(au), float(bu), 11, dtype=np.float64)[1:-1]
-        pts_v = np.linspace(float(av), float(bv), 11, dtype=np.float64)[1:-1]
-        lattice = PointsLattice([pts_u, pts_v])
-        np.testing.assert_allclose(f_per.evaluate(lattice), f.evaluate(lattice), atol=1e-10)
-
-    def test_selective_direction_conversion(self) -> None:
-        """to_periodic with tuple continuity converts only selected directions."""
-        from pantr.quad import PointsLattice  # noqa: PLC0415
-
-        # 2D: direction 0 is periodic (open after to_open), direction 1 is open (non-periodic).
-        knots_per = create_uniform_periodic(3, 2)
-        knots_open = np.array([0.0, 0.0, 0.0, 0.5, 1.0, 1.0, 1.0], dtype=np.float64)
-        space = BsplineSpace(
-            [
-                BsplineSpace1D(knots_per, 2, periodic=True),
-                BsplineSpace1D(knots_open, 2),
-            ]
-        )
-        n0 = space.spaces[0].num_basis
-        n1 = space.spaces[1].num_basis
-        rng = np.random.default_rng(42)
-        ctrl = rng.random((n0, n1, 1))
-        f = Bspline(space, ctrl)
-
-        # Convert to open in all directions.
-        f_open = f.to_open_bspline()
-        assert not any(s.periodic for s in f_open.space.spaces)
-
-        # Convert only direction 0 back to periodic, skip direction 1.
-        f_mixed = f_open.to_periodic(continuity=(1, None))
-        assert f_mixed.space.spaces[0].periodic
-        assert not f_mixed.space.spaces[1].periodic
-
-        # Evaluation should match on the original domain.
-        a0, b0 = f.space.spaces[0].domain
-        a1, b1 = f.space.spaces[1].domain
-        pts_0 = np.linspace(float(a0), float(b0), 11, dtype=np.float64)[1:-1]
-        pts_1 = np.linspace(float(a1), float(b1), 11, dtype=np.float64)[1:-1]
-        lattice = PointsLattice([pts_0, pts_1])
-        np.testing.assert_allclose(f_mixed.evaluate(lattice), f.evaluate(lattice), atol=1e-10)
-
-    def test_all_skipped_raises(self) -> None:
-        """to_periodic raises when all directions are skipped or already periodic."""
-        knots = np.array([0.0, 0.0, 0.0, 0.5, 1.0, 1.0, 1.0], dtype=np.float64)
-        space = BsplineSpace([BsplineSpace1D(knots, 2)])
-        f = Bspline(space, np.array([1.0, 2.0, 3.0, 4.0]))
-        with pytest.raises(ValueError, match="No direction to convert"):
-            f.to_periodic(continuity=(None,))
-
-
-# ---------------------------------------------------------------------------
-# To / from Bezier
-# ---------------------------------------------------------------------------
-
-
-class TestToBezier:
-    """Test Bspline.to_bezier conversion."""
-
-    def test_bezier_like_1d(self) -> None:
-        """Test to_bezier for a B-spline with Bézier-like knots."""
-        knots = np.array([0.0, 0.0, 0.0, 1.0, 1.0, 1.0], dtype=np.float64)
-        space = BsplineSpace([BsplineSpace1D(knots, 2)])
-        cp = np.array([[1.0], [2.0], [3.0]], dtype=np.float64)
-        bs = Bspline(space, cp)
-        bez = bs.to_bezier()
-        assert isinstance(bez, Bezier)
-        assert bez.degree == (2,)
-        np.testing.assert_array_equal(bez.control_points, cp)
-
-    def test_bezier_like_2d(self) -> None:
-        """Test to_bezier for a 2D B-spline with Bézier-like knots."""
-        s0 = BsplineSpace1D([0.0, 0.0, 0.0, 1.0, 1.0, 1.0], 2)
-        s1 = BsplineSpace1D([0.0, 0.0, 1.0, 1.0], 1)
-        space = BsplineSpace([s0, s1])
-        cp = np.ones((3, 2, 1), dtype=np.float64)
-        bs = Bspline(space, cp)
-        bez = bs.to_bezier()
-        assert isinstance(bez, Bezier)
-        assert bez.degree == (2, 1)
-        np.testing.assert_array_equal(bez.control_points, cp)
-
-    def test_non_open_single_element(self) -> None:
-        """Test to_bezier for a non-open (unclamped) B-spline with one element."""
-        # Degree 1, knots [0, 0.5, 1, 1.5] → 2 basis fns, domain [0.5, 1.0].
-        # Not open, but a single span — opening produces Bézier-like knots.
-        knots = np.array([0.0, 0.5, 1.0, 1.5], dtype=np.float64)
-        space = BsplineSpace([BsplineSpace1D(knots, 1)])
-        cp = np.array([[1.0], [3.0]], dtype=np.float64)
-        bs = Bspline(space, cp)
-        bez = bs.to_bezier()
-        # The open form has domain [0.5, 1.0] mapped to Bézier on [0, 1].
-        # Compare via the open B-spline intermediate.
-        bs_open = bs.to_open_bspline()
-        np.testing.assert_array_equal(bez.control_points, bs_open.control_points)
-
-    def test_periodic_multi_element_raises(self) -> None:
-        """Test that to_bezier raises for a periodic B-spline with multiple elements."""
-        f = _make_periodic_bspline(3, 2)
-        with pytest.raises(ValueError, match="more than one element"):
-            f.to_bezier()
-
-    def test_multi_element_raises(self) -> None:
-        """Test that to_bezier raises for multi-element B-splines."""
-        knots = np.array([0.0, 0.0, 0.0, 0.5, 1.0, 1.0, 1.0], dtype=np.float64)
-        space = BsplineSpace([BsplineSpace1D(knots, 2)])
-        cp = np.array([1.0, 2.0, 3.0, 4.0], dtype=np.float64)
-        bs = Bspline(space, cp)
-        with pytest.raises(ValueError, match="more than one element"):
-            bs.to_bezier()
-
-    def test_copy_true(self) -> None:
-        """Test that to_bezier with copy=True creates independent arrays."""
-        knots = np.array([0.0, 0.0, 0.0, 1.0, 1.0, 1.0], dtype=np.float64)
-        space = BsplineSpace([BsplineSpace1D(knots, 2)])
-        cp = np.array([[1.0], [2.0], [3.0]], dtype=np.float64)
-        bs = Bspline(space, cp)
-        bez = bs.to_bezier(copy=True)
-        assert not np.shares_memory(bs.control_points, bez.control_points)
-
-    def test_copy_false(self) -> None:
-        """Test that to_bezier with copy=False shares the control point array."""
-        knots = np.array([0.0, 0.0, 0.0, 1.0, 1.0, 1.0], dtype=np.float64)
-        space = BsplineSpace([BsplineSpace1D(knots, 2)])
-        cp = np.array([[1.0], [2.0], [3.0]], dtype=np.float64)
-        bs = Bspline(space, cp)
-        bez = bs.to_bezier(copy=False)
-        assert np.shares_memory(bs.control_points, bez.control_points)
-
-    def test_default_copies(self) -> None:
-        """Test that to_bezier copies by default."""
-        knots = np.array([0.0, 0.0, 0.0, 1.0, 1.0, 1.0], dtype=np.float64)
-        space = BsplineSpace([BsplineSpace1D(knots, 2)])
-        cp = np.array([[1.0], [2.0], [3.0]], dtype=np.float64)
-        bs = Bspline(space, cp)
-        bez = bs.to_bezier()
-        assert not np.shares_memory(bs.control_points, bez.control_points)
-
-    def test_rational(self) -> None:
-        """Test to_bezier preserves rationality."""
-        knots = np.array([0.0, 0.0, 0.0, 1.0, 1.0, 1.0], dtype=np.float64)
-        space = BsplineSpace([BsplineSpace1D(knots, 2)])
-        cp = np.array([[1.0, 0.5], [2.0, 1.0], [3.0, 0.5]], dtype=np.float64)
-        bs = Bspline(space, cp, is_rational=True)
-        bez = bs.to_bezier()
-        assert bez.is_rational
-        np.testing.assert_array_equal(bez.control_points, cp)
-
-    def test_roundtrip(self) -> None:
-        """Test to_bezier -> from_bezier roundtrip."""
-        knots = np.array([0.0, 0.0, 0.0, 1.0, 1.0, 1.0], dtype=np.float64)
-        space = BsplineSpace([BsplineSpace1D(knots, 2)])
-        cp = np.array([[1.0, 2.0], [3.0, 4.0], [5.0, 6.0]], dtype=np.float64)
-        bs = Bspline(space, cp)
-        bs2 = Bspline.from_bezier(bs.to_bezier())
-        np.testing.assert_array_equal(bs2.control_points, bs.control_points)
-        assert bs2.degree == bs.degree
-
-
-class TestFromBezier:
-    """Test Bspline.from_bezier conversion."""
-
-    def test_from_bezier_1d(self) -> None:
-        """Test from_bezier creates a B-spline with Bézier-like knots."""
-        cp = np.array([[1.0], [2.0], [3.0]], dtype=np.float64)
-        bez = Bezier(cp)
-        bs = Bspline.from_bezier(bez)
-        assert bs.space.has_Bezier_like_knots()
-        assert bs.degree == (2,)
-        np.testing.assert_array_equal(bs.control_points, cp)
-
-    def test_from_bezier_copy_true(self) -> None:
-        """Test that from_bezier with copy=True creates independent arrays."""
-        cp = np.array([[1.0], [2.0], [3.0]], dtype=np.float64)
-        bez = Bezier(cp)
-        bs = Bspline.from_bezier(bez, copy=True)
-        assert not np.shares_memory(bez.control_points, bs.control_points)
-
-    def test_from_bezier_copy_false(self) -> None:
-        """Test that from_bezier with copy=False shares the control point array."""
-        cp = np.array([[1.0], [2.0], [3.0]], dtype=np.float64)
-        bez = Bezier(cp)
-        bs = Bspline.from_bezier(bez, copy=False)
-        assert np.shares_memory(bez.control_points, bs.control_points)
-
-    def test_from_bezier_rational(self) -> None:
-        """Test from_bezier preserves rationality."""
-        cp = np.array([[1.0, 0.5], [2.0, 1.0], [3.0, 0.5]], dtype=np.float64)
-        bez = Bezier(cp, is_rational=True)
-        bs = Bspline.from_bezier(bez)
-        assert bs.is_rational
-        np.testing.assert_array_equal(bs.control_points, cp)
-
-    def test_from_bezier_2d(self) -> None:
-        """Test from_bezier for a 2D Bézier."""
-        cp = np.ones((3, 2, 1), dtype=np.float64)
-        bez = Bezier(cp)
-        bs = Bspline.from_bezier(bez)
-        assert bs.space.has_Bezier_like_knots()
-        assert bs.degree == (2, 1)
-        np.testing.assert_array_equal(bs.control_points, cp)
-
-
-# ---------------------------------------------------------------------------
-# to_beziers (Bezier decomposition)
-# ---------------------------------------------------------------------------
-
-
-def _evaluate_bezier_on_subdomain(
-    bezier: Bezier,
-    domain: npt.NDArray[np.float64],
-    num_pts: int = 5,
-) -> tuple[npt.NDArray[np.floating[Any]], npt.NDArray[np.floating[Any]]]:
-    """Evaluate a Bezier on its original sub-domain by mapping to [0, 1].
-
-    Args:
-        bezier: Bezier patch.
-        domain: Array of shape (dim, 2) with sub-domain bounds.
-        num_pts: Number of evaluation points per direction.
-
-    Returns:
-        Tuple of (physical_pts, values) where physical_pts are in the original
-        domain and values are the Bezier evaluations.
-    """
-    dim = bezier.dim
-    if dim == 1:
-        xi = np.linspace(0.0, 1.0, num_pts, dtype=np.float64)
-        phys = domain[0, 0] + xi * (domain[0, 1] - domain[0, 0])
-        vals = bezier.evaluate(xi)
-        return phys, vals
-    else:
-        grids = []
-        phys_grids = []
-        for d in range(dim):
-            xi_d = np.linspace(0.0, 1.0, num_pts, dtype=np.float64)
-            phys_d = domain[d, 0] + xi_d * (domain[d, 1] - domain[d, 0])
-            grids.append(xi_d)
-            phys_grids.append(phys_d)
-        mesh_xi = np.array(np.meshgrid(*grids, indexing="ij")).reshape(dim, -1).T
-        mesh_phys = np.array(np.meshgrid(*phys_grids, indexing="ij")).reshape(dim, -1).T
-        vals = bezier.evaluate(mesh_xi)
-        return mesh_phys, vals
-
-
-class TestToBeziers:
-    """Test Bspline.to_beziers decomposition."""
-
-    def test_1d_single_element(self) -> None:
-        """Test to_beziers for a single-element 1D B-spline (Bezier-like)."""
-        knots = np.array([0.0, 0.0, 0.0, 1.0, 1.0, 1.0], dtype=np.float64)
-        space = BsplineSpace([BsplineSpace1D(knots, 2)])
-        cp = np.array([[1.0], [2.0], [3.0]], dtype=np.float64)
-        bs = Bspline(space, cp)
-
-        beziers = bs.to_beziers()
-        assert beziers.shape == (1,)
-        assert beziers[0].degree == (2,)
-        np.testing.assert_allclose(beziers[0].control_points, cp)
-
-    def test_1d_multi_element(self) -> None:
-        """Test to_beziers for a multi-element 1D B-spline."""
-        knots = np.array([0.0, 0.0, 0.0, 0.5, 1.0, 1.0, 1.0], dtype=np.float64)
-        space = BsplineSpace([BsplineSpace1D(knots, 2)])
-        cp = np.array([[0.0, 0.0], [0.5, 1.0], [0.5, 0.5], [1.0, 0.0]], dtype=np.float64)
-        bs = Bspline(space, cp)
-
-        beziers = bs.to_beziers()
-        assert beziers.shape == (2,)
-        for i in range(2):
-            assert beziers[i].degree == (2,)
-            assert isinstance(beziers[i], Bezier)
-
-    def test_1d_evaluation_consistency(self) -> None:
-        """Test that each 1D Bezier patch evaluates identically to the original B-spline."""
-        knots = np.array(
-            [0.0, 0.0, 0.0, 0.0, 0.25, 0.5, 0.75, 1.0, 1.0, 1.0, 1.0], dtype=np.float64
-        )
-        space = BsplineSpace([BsplineSpace1D(knots, 3)])
-        rng = np.random.default_rng(42)
-        cp = rng.standard_normal((7, 2))
-        bs = Bspline(space, cp)
-
-        beziers = bs.to_beziers()
-        assert beziers.shape == (4,)
-
-        unique_knots, _ = space.spaces[0].get_unique_knots_and_multiplicity(in_domain=True)
-        for i in range(4):
-            domain = np.array([[unique_knots[i], unique_knots[i + 1]]], dtype=np.float64)
-            phys_pts, bez_vals = _evaluate_bezier_on_subdomain(beziers[i], domain, num_pts=7)
-            bs_vals = bs.evaluate(phys_pts)
-            np.testing.assert_allclose(bez_vals, bs_vals, atol=1e-12)
-
-    def test_2d_tensor_product(self) -> None:
-        """Test to_beziers for a 2D tensor-product B-spline."""
-        s0 = BsplineSpace1D([0.0, 0.0, 0.0, 0.5, 1.0, 1.0, 1.0], 2)
-        s1 = BsplineSpace1D([0.0, 0.0, 0.5, 1.0, 1.0], 1)
-        space = BsplineSpace([s0, s1])
-        rng = np.random.default_rng(123)
-        cp = rng.standard_normal((*space.num_basis, 3))
-        bs = Bspline(space, cp)
-
-        beziers = bs.to_beziers()
-        assert beziers.shape == (2, 2)
-        for idx in np.ndindex(2, 2):
-            assert beziers[idx].degree == (2, 1)
-            assert isinstance(beziers[idx], Bezier)
-
-    def test_2d_evaluation_consistency(self) -> None:
-        """Test evaluation consistency for a 2D B-spline decomposition."""
-        s0 = BsplineSpace1D([0.0, 0.0, 0.0, 0.5, 1.0, 1.0, 1.0], 2)
-        s1 = BsplineSpace1D([0.0, 0.0, 0.5, 1.0, 1.0], 1)
-        space = BsplineSpace([s0, s1])
-        rng = np.random.default_rng(456)
-        cp = rng.standard_normal((*space.num_basis, 2))
-        bs = Bspline(space, cp)
-
-        beziers = bs.to_beziers()
-        uknots_0, _ = s0.get_unique_knots_and_multiplicity(in_domain=True)
-        uknots_1, _ = s1.get_unique_knots_and_multiplicity(in_domain=True)
-
-        for i0 in range(2):
-            for i1 in range(2):
-                domain = np.array(
-                    [
-                        [uknots_0[i0], uknots_0[i0 + 1]],
-                        [uknots_1[i1], uknots_1[i1 + 1]],
-                    ],
-                    dtype=np.float64,
-                )
-                phys_pts, bez_vals = _evaluate_bezier_on_subdomain(
-                    beziers[i0, i1], domain, num_pts=4
-                )
-                bs_vals = bs.evaluate(phys_pts)
-                np.testing.assert_allclose(bez_vals, bs_vals, atol=1e-12)
-
-    def test_3d_shape(self) -> None:
-        """Test to_beziers for a 3D trivariate B-spline."""
-        s0 = BsplineSpace1D([0.0, 0.0, 0.5, 1.0, 1.0], 1)
-        s1 = BsplineSpace1D([0.0, 0.0, 0.0, 0.5, 1.0, 1.0, 1.0], 2)
-        s2 = BsplineSpace1D([0.0, 0.0, 0.0, 1.0 / 3, 2.0 / 3, 1.0, 1.0, 1.0], 2)
-        space = BsplineSpace([s0, s1, s2])
-        rng = np.random.default_rng(789)
-        cp = rng.standard_normal((*space.num_basis, 1))
-        bs = Bspline(space, cp)
-
-        beziers = bs.to_beziers()
-        assert beziers.shape == (2, 2, 3)
-        for idx in np.ndindex(2, 2, 3):
-            assert beziers[idx].degree == (1, 2, 2)
-
-    def test_periodic(self) -> None:
-        """Test to_beziers for a periodic B-spline."""
-        bs_per = _make_periodic_bspline(3, 2)
-        beziers = bs_per.to_beziers()
-        assert beziers.shape == (3,)
-
-        # Compare to decomposition of the open equivalent.
-        bs_open = bs_per.to_open_bspline()
-        beziers_open = bs_open.to_beziers()
-        for i in range(3):
-            np.testing.assert_allclose(
-                beziers[i].control_points,
-                beziers_open[i].control_points,
-                atol=1e-12,
-            )
-
-    def test_rational(self) -> None:
-        """Test to_beziers preserves rationality on each Bezier."""
-        knots = np.array([0.0, 0.0, 0.0, 0.5, 1.0, 1.0, 1.0], dtype=np.float64)
-        space = BsplineSpace([BsplineSpace1D(knots, 2)])
-        cp = np.array(
-            [[0.0, 1.0], [0.5, 1.0], [0.5, 0.5], [1.0, 1.0]],
-            dtype=np.float64,
-        )
-        bs = Bspline(space, cp, is_rational=True)
-        beziers = bs.to_beziers()
-        assert beziers.shape == (2,)
-        for i in range(2):
-            assert beziers[i].is_rational
-
-    def test_caching(self) -> None:
-        """Test that to_beziers caches the result."""
-        knots = np.array([0.0, 0.0, 0.0, 0.5, 1.0, 1.0, 1.0], dtype=np.float64)
-        space = BsplineSpace([BsplineSpace1D(knots, 2)])
-        cp = np.array([[1.0], [2.0], [3.0], [4.0]], dtype=np.float64)
-        bs = Bspline(space, cp)
-
-        result1 = bs.to_beziers()
-        result2 = bs.to_beziers()
-        assert result1 is result2
-
-    def test_cache_invalidation_reverse(self) -> None:
-        """Test that in-place reverse invalidates the Bezier cache."""
-        knots = np.array([0.0, 0.0, 0.0, 0.5, 1.0, 1.0, 1.0], dtype=np.float64)
-        space = BsplineSpace([BsplineSpace1D(knots, 2)])
-        cp = np.array([[1.0], [2.0], [3.0], [4.0]], dtype=np.float64)
-        bs = Bspline(space, cp)
-
-        result_before = bs.to_beziers()
-        bs.reverse(in_place=True)
-        result_after = bs.to_beziers()
-        assert result_before is not result_after
-
-    def test_cache_invalidation_transform(self) -> None:
-        """Test that in-place transform invalidates the Bezier cache."""
-        from pantr.transform import AffineTransform  # noqa: PLC0415
-
-        knots = np.array([0.0, 0.0, 0.0, 0.5, 1.0, 1.0, 1.0], dtype=np.float64)
-        space = BsplineSpace([BsplineSpace1D(knots, 2)])
-        cp = np.array([[1.0], [2.0], [3.0], [4.0]], dtype=np.float64)
-        bs = Bspline(space, cp)
-
-        result_before = bs.to_beziers()
-        bs.transform(AffineTransform(np.eye(1), np.array([1.0])), in_place=True)
-        result_after = bs.to_beziers()
-        assert result_before is not result_after
-
-    def test_cache_invalidation_permute(self) -> None:
-        """Test that in-place permute_directions invalidates the Bezier cache."""
-        s0 = BsplineSpace1D([0.0, 0.0, 0.0, 0.5, 1.0, 1.0, 1.0], 2)
-        s1 = BsplineSpace1D([0.0, 0.0, 0.5, 1.0, 1.0], 1)
-        space = BsplineSpace([s0, s1])
-        rng = np.random.default_rng(99)
-        cp = rng.standard_normal((*space.num_basis, 2))
-        bs = Bspline(space, cp)
-
-        result_before = bs.to_beziers()
-        bs.permute_directions([1, 0], in_place=True)
-        result_after = bs.to_beziers()
-        assert result_before is not result_after
-
-    def test_read_only_control_points(self) -> None:
-        """Test that Bezier control points from to_beziers are read-only."""
-        knots = np.array([0.0, 0.0, 0.0, 0.5, 1.0, 1.0, 1.0], dtype=np.float64)
-        space = BsplineSpace([BsplineSpace1D(knots, 2)])
-        cp = np.array([[1.0], [2.0], [3.0], [4.0]], dtype=np.float64)
-        bs = Bspline(space, cp)
-
-        beziers = bs.to_beziers()
-        for i in range(2):
-            assert not beziers[i].control_points.flags.writeable
-
-    def test_degree_preserved(self) -> None:
-        """Test that each Bezier has the same degree as the original B-spline."""
-        s0 = BsplineSpace1D([0.0, 0.0, 0.0, 0.5, 1.0, 1.0, 1.0], 2)
-        s1 = BsplineSpace1D([0.0, 0.0, 0.0, 0.0, 0.5, 1.0, 1.0, 1.0, 1.0], 3)
-        space = BsplineSpace([s0, s1])
-        rng = np.random.default_rng(11)
-        cp = rng.standard_normal((*space.num_basis, 1))
-        bs = Bspline(space, cp)
-
-        beziers = bs.to_beziers()
-        for idx in np.ndindex(*beziers.shape):
-            assert beziers[idx].degree == bs.degree
-
-    def test_matches_to_bezier_single_element(self) -> None:
-        """Test that to_beziers matches to_bezier for single-element B-splines."""
-        knots = np.array([0.0, 0.0, 0.0, 1.0, 1.0, 1.0], dtype=np.float64)
-        space = BsplineSpace([BsplineSpace1D(knots, 2)])
-        cp = np.array([[1.0, 2.0], [3.0, 4.0], [5.0, 6.0]], dtype=np.float64)
-        bs = Bspline(space, cp)
-
-        single_bez = bs.to_bezier()
-        beziers = bs.to_beziers()
-        np.testing.assert_allclose(beziers[0].control_points, single_bez.control_points, atol=1e-14)
