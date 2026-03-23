@@ -1,5 +1,7 @@
 """Tests for bspline module."""
 
+from typing import Any
+
 import numpy as np
 import numpy.typing as npt
 import pytest
@@ -1394,7 +1396,7 @@ def _evaluate_bezier_on_subdomain(
     bezier: Bezier,
     domain: npt.NDArray[np.float64],
     num_pts: int = 5,
-) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64]]:
+) -> tuple[npt.NDArray[np.floating[Any]], npt.NDArray[np.floating[Any]]]:
     """Evaluate a Bezier on its original sub-domain by mapping to [0, 1].
 
     Args:
