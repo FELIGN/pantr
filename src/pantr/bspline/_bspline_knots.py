@@ -504,6 +504,82 @@ def _get_knots_ends_and_dtype(
     return start_value, end_value, dtype_obj
 
 
+def _find_span(
+    knots: npt.NDArray[np.float32 | np.float64],
+    degree: int,
+    n_basis: int,
+    value: float,
+    tol: float,
+) -> tuple[int, float]:
+    """Find the knot span index for a parameter value (Piegl-Tiller convention).
+
+    Returns the span index ``k`` such that ``knots[k] <= u < knots[k+1]``,
+    with the convention that at the right boundary ``k = n_basis - 1``.
+
+    Args:
+        knots (npt.NDArray[np.float32 | np.float64]): B-spline knot vector.
+        degree (int): Polynomial degree.
+        n_basis (int): Number of basis functions.
+        value (float): Parameter value (must be in the domain).
+        tol (float): Tolerance for boundary clamping.
+
+    Returns:
+        tuple[int, float]: ``(k, u)`` where ``k`` is the span index and
+        ``u`` is the (possibly clamped) parameter value.
+
+    Note:
+        Inputs are assumed to be correct (no validation performed).
+    """
+    u = float(value)
+    u_left = float(knots[degree])
+    u_right = float(knots[n_basis])
+
+    # Clamp to domain boundaries.
+    if u <= u_left + tol:
+        return degree, u_left
+    if u >= u_right - tol:
+        return n_basis - 1, u_right
+
+    # Interior: binary search via searchsorted.
+    k = int(np.searchsorted(knots, u, side="right")) - 1
+    return k, u
+
+
+def _count_multiplicity(
+    knots: npt.NDArray[np.float32 | np.float64],
+    k: int,
+    degree: int,
+    u: float,
+    tol: float,
+) -> int:
+    """Count the multiplicity of ``u`` among the local knots around span ``k``.
+
+    Scans knots ``k``, ``k-1``, ... going left while they match ``u``
+    (within tolerance).  This gives the number of consecutive knots equal
+    to ``u`` ending at position ``k``.
+
+    Args:
+        knots (npt.NDArray[np.float32 | np.float64]): B-spline knot vector.
+        k (int): Span index from :func:`_find_span`.
+        degree (int): Polynomial degree.
+        u (float): Parameter value.
+        tol (float): Tolerance for knot coincidence tests.
+
+    Returns:
+        int: Multiplicity of ``u`` in the local knot neighborhood.
+
+    Note:
+        Inputs are assumed to be correct (no validation performed).
+    """
+    s = 0
+    for i in range(k, max(k - degree - 1, -1), -1):
+        if abs(float(knots[i]) - u) <= tol:
+            s += 1
+        else:
+            break
+    return s
+
+
 def _find_knot_index_and_multiplicity(
     knots: npt.NDArray[np.float32 | np.float64],
     degree: int,
@@ -579,7 +655,9 @@ def _warmup_numba_functions() -> None:
 
 __all__ = [
     "_check_spline_info",
+    "_count_multiplicity",
     "_find_knot_index_and_multiplicity",
+    "_find_span",
     "_get_Bspline_cardinal_intervals_1D_impl",
     "_get_Bspline_num_basis_1D_impl",
     "_get_knots_ends_and_dtype",
