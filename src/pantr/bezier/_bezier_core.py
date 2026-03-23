@@ -1,8 +1,8 @@
-"""Numba-compiled kernels for Bézier evaluation and degree elevation.
+"""Numba-compiled kernels for Bézier evaluation, degree elevation, and degree reduction.
 
 Provides fused evaluation kernels that compute Bernstein basis values and
-contract them with control points in a single pass, plus a simplified
-single-element degree elevation kernel.
+contract them with control points in a single pass, plus degree elevation
+and degree reduction kernels.
 
 Note:
     Inputs are assumed to be correct (no validation performed).
@@ -261,6 +261,113 @@ def _degree_elevate_bezier_1d_core(
     return new_ctrl
 
 
+@nb_jit(nopython=True, cache=True)
+def _degree_reduce_bezier_1d_core(  # noqa: PLR0912
+    degree: int,
+    ctrl: npt.NDArray[np.float32 | np.float64],
+    degree_decrement: int,
+) -> npt.NDArray[np.float32 | np.float64]:
+    r"""Degree-reduce a single Bézier segment via least-squares approximation.
+
+    The degree elevation matrix from degree ``P-1`` to ``P`` is a
+    ``(P+1) \times P`` lower bidiagonal matrix with diagonal
+    ``a_k = 1 - k/P`` and sub-diagonal ``b_k = (k+1)/P``.  Degree reduction
+    solves the overdetermined system ``M x = c`` in the least-squares sense
+    using QR factorisation with Givens rotations (complexity ``O(P)`` per
+    rank component).
+
+    When ``degree_decrement > 1``, the single-step reduction is applied
+    iteratively.
+
+    Args:
+        degree (int): Current polynomial degree (``p >= 1``).
+        ctrl (npt.NDArray[np.float32 | np.float64]): Control points of shape
+            ``(p+1, rank)``.
+        degree_decrement (int): Number of degrees to remove (``1 <= t <= p``).
+
+    Returns:
+        npt.NDArray[np.float32 | np.float64]: Reduced control points of shape
+        ``(p - t + 1, rank)``.
+
+    Note:
+        Inputs are assumed to be correct (no validation performed).
+        For general use, call :func:`_bezier_degree._degree_reduce_bezier`
+        instead.
+    """
+    rank = ctrl.shape[1]
+    cur = np.empty((ctrl.shape[0], rank), dtype=ctrl.dtype)
+    for i in range(ctrl.shape[0]):
+        for r in range(rank):
+            cur[i, r] = ctrl[i, r]
+
+    cur_deg = degree
+
+    for _step in range(degree_decrement):
+        p = cur_deg
+        n_new = p  # reduced degree = p - 1, so p control points
+
+        nxt = np.empty((n_new, rank), dtype=ctrl.dtype)
+
+        # Build diagonal and sub-diagonal of the (P+1) x P elevation matrix.
+        # diagonal:     a[k] = 1 - k/P   for k = 0 .. P-1
+        # sub-diagonal: b[k] = (k+1)/P   for k = 0 .. P-1
+        #
+        # Givens QR: zero each sub-diagonal entry, producing an upper
+        # bidiagonal R and transforming the RHS.  Then back-substitute.
+        diag = np.empty(p, dtype=np.float64)
+        sup = np.empty(p, dtype=np.float64)  # super-diagonal created by Givens
+        rhs = np.empty(p + 1, dtype=np.float64)
+
+        for r in range(rank):
+            # Initialise diagonal entries and RHS for this rank component.
+            for k in range(p):
+                diag[k] = 1.0 - np.float64(k) / np.float64(p)
+            for k in range(p):
+                sup[k] = 0.0
+            for k in range(p + 1):
+                rhs[k] = np.float64(cur[k, r])
+
+            # Forward Givens pass
+            for k in range(p):
+                bk = np.float64(k + 1) / np.float64(p)  # sub-diagonal value
+                ak = diag[k]
+
+                # Givens rotation to zero bk
+                if bk == 0.0:
+                    cs = 1.0
+                    sn = 0.0
+                elif abs(bk) > abs(ak):
+                    tmp = ak / bk
+                    sn = 1.0 / np.sqrt(1.0 + tmp * tmp)
+                    cs = tmp * sn
+                else:
+                    tmp = bk / ak
+                    cs = 1.0 / np.sqrt(1.0 + tmp * tmp)
+                    sn = tmp * cs
+
+                diag[k] = cs * ak + sn * bk  # = hypot(ak, bk)
+
+                # Rotation creates a super-diagonal entry at (k, k+1)
+                if k + 1 < p:
+                    sup[k] = sn * diag[k + 1]
+                    diag[k + 1] = cs * diag[k + 1]
+
+                # Rotate RHS rows k and k+1
+                rk = rhs[k]
+                rhs[k] = cs * rk + sn * rhs[k + 1]
+                rhs[k + 1] = -sn * rk + cs * rhs[k + 1]
+
+            # Back-substitution on upper bidiagonal R
+            nxt[p - 1, r] = ctrl.dtype.type(rhs[p - 1] / diag[p - 1])
+            for k in range(p - 2, -1, -1):
+                nxt[k, r] = ctrl.dtype.type((rhs[k] - sup[k] * np.float64(nxt[k + 1, r])) / diag[k])
+
+        cur = nxt
+        cur_deg = p - 1
+
+    return cur
+
+
 @nb_jit(
     nopython=True,
     cache=True,
@@ -470,6 +577,7 @@ def _warmup_numba_functions() -> None:
     _evaluate_bezier_1d_core(ctrl_dummy, pts_dummy, out_eval_dummy)
     _evaluate_bezier_deriv_1d_core(ctrl_dummy, pts_dummy, 0, out_deriv_dummy)
     _degree_elevate_bezier_1d_core(2, ctrl_dummy, 1)
+    _degree_reduce_bezier_1d_core(2, ctrl_dummy, 1)
     _slice_bezier_1d_core(ctrl_dummy, 0.5, out_slice_dummy)
     _split_bezier_1d_core(ctrl_dummy, 0.5, out_split_dummy, out_split_dummy.copy())
     _restrict_bezier_1d_core(ctrl_dummy, 0.2, 0.8, out_split_dummy)
