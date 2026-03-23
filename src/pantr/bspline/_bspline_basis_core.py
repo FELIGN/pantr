@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING
 import numpy as np
 import numpy.typing as npt
 
-from .._numba_compat import nb_jit
+from .._numba_compat import nb_jit, nb_prange
 from ..basis._basis_1D import _tabulate_Bernstein_basis_1D_impl
 from ..basis._basis_core import _tabulate_Bernstein_basis_deriv_1D_core
 from ..basis._basis_utils import (
@@ -35,7 +35,7 @@ if TYPE_CHECKING:
 @nb_jit(
     nopython=True,
     cache=True,
-    parallel=False,
+    parallel=True,
 )
 def _compute_basis_nurbs_book_impl(  # noqa: PLR0913
     knots: npt.NDArray[np.float32 | np.float64],
@@ -49,7 +49,8 @@ def _compute_basis_nurbs_book_impl(  # noqa: PLR0913
     """Evaluate B-spline basis functions using BasisFuncs (Piegl & Tiller A2.2).
 
     This function implements Algorithm A2.2 from "The NURBS Book" by Piegl & Tiller.
-    Results are written directly to the output arrays (C-style).
+    Results are written directly to the output arrays (C-style).  The outer loop
+    over evaluation points is parallelized via ``prange``.
 
     Args:
         knots (npt.NDArray[np.float32 | np.float64]): B-spline knot vector.
@@ -95,13 +96,11 @@ def _compute_basis_nurbs_book_impl(  # noqa: PLR0913
         num_basis = _get_Bspline_num_basis_1D_impl(knots, degree, periodic, tol)
         out_first_basis[:] = np.minimum(knot_ids - degree, num_basis - order)
 
-    out_basis.fill(zero)
+    for pt_id in nb_prange(n_pts):
+        # Thread-local auxiliary arrays (allocated per iteration for safety).
+        left = np.zeros(order, dtype=dtype)
+        right = np.zeros(order, dtype=dtype)
 
-    # Allocate helper arrays once, reused across points
-    left = np.zeros(order, dtype=dtype)
-    right = np.zeros(order, dtype=dtype)
-
-    for pt_id in range(n_pts):
         knot_id = knot_ids[pt_id]
         pt = pts[pt_id]
         N = out_basis[pt_id, :]
@@ -124,7 +123,7 @@ def _compute_basis_nurbs_book_impl(  # noqa: PLR0913
 @nb_jit(
     nopython=True,
     cache=True,
-    parallel=False,
+    parallel=True,
 )
 def _compute_basis_deriv_nurbs_book_impl(  # noqa: PLR0912, PLR0913, PLR0915
     knots: npt.NDArray[np.float32 | np.float64],
@@ -139,7 +138,8 @@ def _compute_basis_deriv_nurbs_book_impl(  # noqa: PLR0912, PLR0913, PLR0915
     """Evaluate B-spline basis function derivatives using DerBasisFuncs (Piegl & Tiller A2.3).
 
     This function implements Algorithm A2.3 from "The NURBS Book" by Piegl & Tiller.
-    Results are written directly to the output arrays (C-style).
+    Results are written directly to the output arrays (C-style).  The outer loop
+    over evaluation points is parallelized via ``prange``.
 
     The 0th-order slice ``out_deriv[pt, 0, :]`` contains the plain basis values,
     identical to the output of ``_compute_basis_nurbs_book_impl``.  For
@@ -182,15 +182,13 @@ def _compute_basis_deriv_nurbs_book_impl(  # noqa: PLR0912, PLR0913, PLR0915
         num_basis = _get_Bspline_num_basis_1D_impl(knots, degree, periodic, tol)
         out_first_basis[:] = np.minimum(knot_ids - degree, num_basis - order)
 
-    out_deriv.fill(zero)
+    for pt_id in nb_prange(n_pts):
+        # Thread-local auxiliary arrays (allocated per iteration for safety).
+        ndu = np.zeros((order, order), dtype=dtype)
+        left = np.zeros(order, dtype=dtype)
+        right = np.zeros(order, dtype=dtype)
+        a = np.zeros((2, n_deriv + 1), dtype=dtype)
 
-    # Helper arrays allocated once and reused across points
-    ndu = np.zeros((order, order), dtype=dtype)  # basis values and knot differences
-    left = np.zeros(order, dtype=dtype)
-    right = np.zeros(order, dtype=dtype)
-    a = np.zeros((2, n_deriv + 1), dtype=dtype)  # rolling two-row buffer for derivative recursion
-
-    for pt_id in range(n_pts):
         knot_id = knot_ids[pt_id]
         pt = pts[pt_id]
 

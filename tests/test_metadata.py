@@ -20,8 +20,12 @@ def test_package_all_exports() -> None:
         "basis",
         "bezier",
         "bspline",
+        "cad",
         "change_basis",
+        "get_num_threads",
+        "num_threads",
         "quad",
+        "set_num_threads",
         "tolerance",
         "transform",
     }

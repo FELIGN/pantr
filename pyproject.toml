@@ -37,6 +37,9 @@ dev = [
   "ruff>=0.12.0,<0.13",
   "pre-commit>=3.6,<4",
 ]
+parallel = [
+  "threadpoolctl>=3.0",
+]
 viz = [
   "pyvista>=0.43,<1",
 ]

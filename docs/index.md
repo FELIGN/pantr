@@ -9,7 +9,7 @@
 :caption: Contents
 
 getting-started
+parallelism
 api/reference
 changelog
 ```
-

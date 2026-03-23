@@ -10,6 +10,7 @@ The main modules are:
 - :mod:`pantr.quad`: Quadrature rules and evaluation grid helpers.
 - :mod:`pantr.tolerance`: Uniform floating-point tolerance utilities.
 - :mod:`pantr.transform`: Affine transformations for geometric objects.
+- :mod:`pantr.cad`: Constructive geometry for B-spline curves, surfaces, and volumes.
 """
 
 from typing import Final
@@ -18,11 +19,13 @@ from . import (
     basis,
     bezier,
     bspline,
+    cad,
     change_basis,
     quad,
     tolerance,
     transform,
 )
+from ._parallel import get_num_threads, num_threads, set_num_threads
 from .basis import _basis_utils  # noqa: F401
 
 # Package metadata
@@ -37,8 +40,12 @@ __all__ = [
     "basis",
     "bezier",
     "bspline",
+    "cad",
     "change_basis",
+    "get_num_threads",
+    "num_threads",
     "quad",
+    "set_num_threads",
     "tolerance",
     "transform",
 ]

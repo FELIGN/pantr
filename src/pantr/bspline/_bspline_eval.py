@@ -17,7 +17,7 @@ from typing import TYPE_CHECKING
 import numpy as np
 from numpy import typing as npt
 
-from .._numba_compat import nb_jit
+from .._numba_compat import nb_jit, nb_prange
 from ..basis._basis_utils import _validate_out_array_1D
 from ..quad import PointsLattice
 from ._bspline_basis_core import (
@@ -33,7 +33,7 @@ if TYPE_CHECKING:
 @nb_jit(
     nopython=True,
     cache=True,
-    parallel=False,
+    parallel=True,
 )
 def _evaluate_Bspline_basis_combine_1D(  # noqa: PLR0913
     control_points: npt.NDArray[np.float32 | np.float64],
@@ -50,7 +50,8 @@ def _evaluate_Bspline_basis_combine_1D(  # noqa: PLR0913
     functions via the Cox-de Boor recurrence (Algorithm A2.2 from Piegl & Tiller),
     then forms the result as a linear combination of the corresponding control points.
     This separates the O(p^2) scalar recurrence from the rank dimension, reducing
-    the work per point from O(p^2 * rank) to O(p^2 + p * rank).
+    the work per point from O(p^2 * rank) to O(p^2 + p * rank).  The combination
+    loop is parallelized over evaluation points via ``prange``.
 
     Args:
         control_points (npt.NDArray[np.float32 | np.float64]): Control-point array of
@@ -84,7 +85,7 @@ def _evaluate_Bspline_basis_combine_1D(  # noqa: PLR0913
     _compute_basis_nurbs_book_impl(knots, degree, periodic, tol, pts, basis, first_basis)
 
     rank = control_points.shape[1]
-    for i in range(n_pts):
+    for i in nb_prange(n_pts):
         s = first_basis[i]
         for k in range(rank):
             total = zero
@@ -180,7 +181,7 @@ def _evaluate_Bspline_1D(
 @nb_jit(
     nopython=True,
     cache=True,
-    parallel=False,
+    parallel=True,
 )
 def _evaluate_Bspline_basis_combine_all_deriv_1D(  # noqa: PLR0913
     control_points: npt.NDArray[np.float32 | np.float64],
@@ -230,7 +231,7 @@ def _evaluate_Bspline_basis_combine_all_deriv_1D(  # noqa: PLR0913
         knots, degree, periodic, tol, n_deriv, pts, basis_deriv, first_basis
     )
 
-    for i in range(n_pts):
+    for i in nb_prange(n_pts):
         s = first_basis[i]
         for k in range(n_deriv + 1):
             for r in range(rank):
@@ -246,7 +247,7 @@ def _evaluate_Bspline_basis_combine_all_deriv_1D(  # noqa: PLR0913
 @nb_jit(
     nopython=True,
     cache=True,
-    parallel=False,
+    parallel=True,
 )
 def _evaluate_Bspline_basis_combine_deriv_1D(  # noqa: PLR0913
     control_points: npt.NDArray[np.float32 | np.float64],
@@ -296,7 +297,7 @@ def _evaluate_Bspline_basis_combine_deriv_1D(  # noqa: PLR0913
         knots, degree, periodic, tol, n_deriv, pts, basis_deriv, first_basis
     )
 
-    for i in range(n_pts):
+    for i in nb_prange(n_pts):
         s = first_basis[i]
         for r in range(rank):
             total = zero
