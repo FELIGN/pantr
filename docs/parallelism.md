@@ -65,7 +65,7 @@ with pantr.num_threads(4, limit_blas=True):
     result = bspline.evaluate(pts)
 ```
 
-If `threadpoolctl` is not installed, `limit_blas=True` is silently ignored.
+If `threadpoolctl` is not installed, `limit_blas=True` emits a warning.
 
 ## Usage patterns
 

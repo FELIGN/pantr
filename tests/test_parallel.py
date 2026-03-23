@@ -73,10 +73,9 @@ class TestNumThreadsContextManager:
         assert get_num_threads() == prev
 
     def test_limit_blas_without_threadpoolctl(self) -> None:
-        """limit_blas=True does not error when threadpoolctl is absent."""
+        """limit_blas=True warns when threadpoolctl is absent."""
         prev = get_num_threads()
-        # This should not raise even if threadpoolctl is not installed.
-        with num_threads(1, limit_blas=True):
+        with pytest.warns(UserWarning, match="threadpoolctl"), num_threads(1, limit_blas=True):
             assert get_num_threads() == 1
         assert get_num_threads() == prev
 

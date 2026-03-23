@@ -24,6 +24,7 @@ Typical usage::
 from __future__ import annotations
 
 import contextlib
+import warnings
 from collections.abc import Generator
 from typing import Any
 
@@ -70,7 +71,7 @@ def num_threads(n: int, *, limit_blas: bool = False) -> Generator[None, None, No
     Args:
         n (int): Desired thread count for the block.
         limit_blas (bool): If ``True``, also limit BLAS/LAPACK threads
-            via ``threadpoolctl``.  Ignored (with no error) when
+            via ``threadpoolctl``.  Emits a warning when
             ``threadpoolctl`` is not installed.  Defaults to ``False``.
 
     Yields:
@@ -92,7 +93,11 @@ def num_threads(n: int, *, limit_blas: bool = False) -> Generator[None, None, No
             blas_ctx = threadpool_limits(limits=n)
             blas_ctx.__enter__()
         except ImportError:
-            pass
+            warnings.warn(
+                "limit_blas=True requires the 'threadpoolctl' package. "
+                "Install it with: pip install threadpoolctl",
+                stacklevel=2,
+            )
 
     try:
         yield
