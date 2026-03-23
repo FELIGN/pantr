@@ -70,7 +70,7 @@ with pantr.num_threads(4, limit_blas=True):
 package.  If it is not installed, a `UserWarning` is emitted and BLAS threads are
 **not** limited.  Install it with:
 
-    pip install threadpoolctl
+    pip install pantr[parallel]
 ```
 
 ## Usage patterns
