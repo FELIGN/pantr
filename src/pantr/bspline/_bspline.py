@@ -29,6 +29,7 @@ from ._bspline_restrict import _restrict_bspline_impl
 from ._bspline_slice import _slice_bspline
 
 if TYPE_CHECKING:
+    from ..bezier import Bezier
     from ..quad import PointsLattice
     from ..transform import AffineTransform
     from ._bspline_space_nd import BsplineSpace
@@ -554,6 +555,71 @@ class Bspline:
             ValueError: If ``continuity`` is out of range.
         """
         return _to_periodic_bspline_impl(self, continuity)
+
+    def to_bezier(self, *, copy: bool = True) -> Bezier:
+        """Convert to an equivalent Bézier.
+
+        Extracts a :class:`~pantr.bezier.Bezier` from this B-spline when
+        it represents a single polynomial patch (one element per direction).
+        Periodic and non-open B-splines are automatically converted to open
+        form before the check.
+
+        Args:
+            copy (bool): If ``True`` (default), the control points are
+                deep-copied into the new Bézier.  If ``False``, the Bézier
+                shares the same underlying control point array when possible
+                (direct extraction) or owns the freshly allocated array
+                produced by the open-form conversion.
+
+        Returns:
+            ~pantr.bezier.Bezier: Equivalent Bézier representation.
+
+        Raises:
+            ValueError: If the B-spline has more than one element per
+                direction and cannot be represented as a single Bézier.
+        """
+        from ..bezier import Bezier as BezierCls  # noqa: PLC0415
+
+        if self._space.has_Bezier_like_knots():
+            cp = self._control_points.copy() if copy else self._control_points
+            return BezierCls(cp, is_rational=self._is_rational)
+
+        # Already open but not Bezier-like → multi-element, cannot convert.
+        spaces = self._space.spaces
+        if all(s.has_open_knots() and not s.periodic for s in spaces):
+            raise ValueError(
+                "B-spline has more than one element per direction "
+                "and cannot be represented as a single Bézier."
+            )
+
+        # Periodic / non-open: convert to open form first.
+        open_bspline = self.to_open_bspline()
+        if not open_bspline.space.has_Bezier_like_knots():
+            raise ValueError(
+                "B-spline has more than one element per direction "
+                "and cannot be represented as a single Bézier."
+            )
+        cp = open_bspline.control_points.copy() if copy else open_bspline.control_points
+        return BezierCls(cp, is_rational=self._is_rational)
+
+    @classmethod
+    def from_bezier(cls, bezier: Bezier, *, copy: bool = True) -> Bspline:
+        """Create a B-spline from a Bézier.
+
+        Builds a :class:`Bspline` with Bézier-like knot vectors
+        (``[0]*(p+1) + [1]*(p+1)`` per direction) whose control points
+        are taken from the given Bézier.
+
+        Args:
+            bezier (~pantr.bezier.Bezier): The source Bézier.
+            copy (bool): If ``True`` (default), the control points are
+                deep-copied into the new B-spline.  If ``False``, the
+                B-spline shares the same underlying control point array.
+
+        Returns:
+            Bspline: Equivalent B-spline with Bézier-like knots.
+        """
+        return bezier.to_bspline(copy=copy)
 
     def multiply(self, other: Bspline) -> Bspline:
         """Return the exact pointwise product of this B-spline and another.
