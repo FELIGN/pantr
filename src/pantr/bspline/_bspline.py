@@ -28,6 +28,7 @@ from ._bspline_knot_removal import _remove_knots_bspline
 from ._bspline_restrict import _restrict_bspline_impl
 from ._bspline_slice import _slice_bspline
 from ._bspline_split import _split_bspline_impl
+from ._bspline_to_beziers import _to_beziers_impl
 
 if TYPE_CHECKING:
     from ..bezier import Bezier
@@ -48,6 +49,8 @@ class Bspline:
         _control_points (npt.NDArray[np.float32 | np.float64]): Control point
             array reshaped to ``(*num_basis, rank)``.
         _is_rational (bool): Whether the B-spline is rational (NURBS).
+        _beziers_cache (npt.NDArray[np.object_] | None): Cached Bézier
+            decomposition, or ``None`` if not yet computed.
     """
 
     def __init__(
@@ -85,6 +88,7 @@ class Bspline:
             )
 
         self._is_rational = is_rational
+        self._beziers_cache: npt.NDArray[np.object_] | None = None
 
         if self.rank <= 0:
             raise ValueError(f"The B-spline must have at least rank one. Got rank {self.rank}")
@@ -644,6 +648,36 @@ class Bspline:
         cp = open_bspline.control_points.copy() if copy else open_bspline.control_points
         return BezierCls(cp, is_rational=self._is_rational)
 
+    def to_beziers(self) -> npt.NDArray[np.object_]:
+        """Decompose into Bézier patches.
+
+        Decomposes the B-spline into its constituent Bézier patches by applying
+        Bézier extraction operators direction by direction.  Periodic directions
+        are automatically converted to open form first.
+
+        The result is cached: the first call computes and stores the
+        decomposition; subsequent calls return the cached array.  In-place
+        mutations (``reverse``, ``permute_directions``, ``transform`` with
+        ``in_place=True``) invalidate the cache.
+
+        Returns:
+            npt.NDArray[np.object_]: Array of :class:`~pantr.bezier.Bezier`
+            objects with shape ``(*num_intervals)`` following the tensor-product
+            interval structure.  For a 1D B-spline with 3 intervals the shape
+            is ``(3,)``.  For a 2D surface with 3×2 intervals the shape is
+            ``(3, 2)``.  The Bézier control points are read-only.
+
+        Example:
+            >>> beziers = spline.to_beziers()
+            >>> beziers.shape
+            (3,)
+            >>> beziers[0].degree
+            (2,)
+        """
+        if self._beziers_cache is None:
+            self._beziers_cache = _to_beziers_impl(self)
+        return self._beziers_cache
+
     @classmethod
     def from_bezier(cls, bezier: Bezier, *, copy: bool = True) -> Bspline:
         """Create a B-spline from a Bézier.
@@ -763,6 +797,7 @@ class Bspline:
 
         if in_place:
             self._space = new_space
+            self._beziers_cache = None
             return None
         return Bspline(new_space, new_cp, is_rational=self._is_rational)
 
@@ -818,6 +853,7 @@ class Bspline:
         if in_place:
             self._control_points = new_cp
             self._space = new_space
+            self._beziers_cache = None
             return None
         return Bspline(new_space, new_cp, is_rational=self._is_rational)
 
@@ -872,6 +908,7 @@ class Bspline:
             in_place=in_place,
         )
         if in_place:
+            self._beziers_cache = None
             return None
         return Bspline(self._space, new_cp, is_rational=self._is_rational)
 
