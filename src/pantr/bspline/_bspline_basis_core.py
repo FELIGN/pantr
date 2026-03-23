@@ -126,7 +126,7 @@ def _compute_basis_nurbs_book_impl(  # noqa: PLR0913
     cache=True,
     parallel=False,
 )
-def _compute_basis_deriv_nurbs_book_impl(  # noqa: PLR0913, PLR0915
+def _compute_basis_deriv_nurbs_book_impl(  # noqa: PLR0912, PLR0913, PLR0915
     knots: npt.NDArray[np.float32 | np.float64],
     degree: int,
     periodic: bool,
