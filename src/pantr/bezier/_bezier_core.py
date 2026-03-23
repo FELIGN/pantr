@@ -317,3 +317,21 @@ def _slice_bezier_1d_core(
                 d[i] = one_minus_u * d[i] + u * d[i + 1]
 
         out[col] = d[0]
+
+
+def _warmup_numba_functions() -> None:
+    """Precompile numba functions with float64 signatures for faster first call.
+
+    This function triggers compilation of the numba-decorated functions
+    with float64 arrays, ensuring they are cached and ready for use.
+    """
+    ctrl_dummy = np.array([[0.0, 1.0], [1.0, 0.0], [2.0, 1.0]], dtype=np.float64)
+    pts_dummy = np.array([0.5], dtype=np.float64)
+    out_eval_dummy = np.empty((1, 2), dtype=np.float64)
+    out_deriv_dummy = np.empty((1, 1, 2), dtype=np.float64)
+    out_slice_dummy = np.empty(2, dtype=np.float64)
+
+    _evaluate_bezier_1d_core(ctrl_dummy, pts_dummy, out_eval_dummy)
+    _evaluate_bezier_deriv_1d_core(ctrl_dummy, pts_dummy, 0, out_deriv_dummy)
+    _degree_elevate_bezier_1d_core(2, ctrl_dummy, 1)
+    _slice_bezier_1d_core(ctrl_dummy, 0.5, out_slice_dummy)

@@ -17,7 +17,6 @@ from typing import TYPE_CHECKING, cast
 import numpy as np
 import numpy.typing as npt
 
-from .._numba_compat import wait_for_jit_warmup
 from ._bezier_core import _slice_bezier_1d_core
 
 if TYPE_CHECKING:
@@ -67,7 +66,6 @@ def _slice_bezier(
 
     # Apply 1D de Casteljau via Numba kernel.
     result_1d = np.empty(pts_2d.shape[1], dtype=pts_2d.dtype)
-    wait_for_jit_warmup()
     _slice_bezier_1d_core(pts_2d, value, result_1d)
 
     if bezier.dim == 1:
