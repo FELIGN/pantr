@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
-from typing import TYPE_CHECKING, Literal, overload
+from typing import TYPE_CHECKING, Any, Literal, overload
 
 import numpy as np
 from numpy import typing as npt
@@ -769,3 +769,38 @@ class Bezier:
             raise ValueError("B-spline does not have Bézier-like knots. Cannot convert to Bézier.")
         cp = bspline.control_points.copy() if copy else bspline.control_points
         return cls(cp, is_rational=bspline.is_rational)
+
+    # ------------------------------------------------------------------
+    # Visualization
+    # ------------------------------------------------------------------
+
+    def plot(
+        self,
+        *,
+        color: str | None = None,
+        show_control_polygon: bool = False,
+        **plotter_kwargs: Any,  # noqa: ANN401
+    ) -> object:
+        """Quick interactive visualization of this Bézier (requires pyvista).
+
+        For finer control, use ``pantr.viz.Scene`` directly.
+
+        Args:
+            color: Surface color.
+            show_control_polygon: Render control polygon (points and wireframe).
+            **plotter_kwargs: Additional keyword arguments for ``pv.Plotter()``.
+
+        Returns:
+            object: The pyvista ``Plotter`` after showing.
+
+        Raises:
+            ImportError: If pyvista is not installed.
+        """
+        from ..viz import plot as _plot  # noqa: PLC0415
+
+        return _plot(
+            self,
+            color=color,
+            show_control_polygon=show_control_polygon,
+            **plotter_kwargs,
+        )

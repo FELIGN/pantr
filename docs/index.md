@@ -9,6 +9,7 @@
 :caption: Contents
 
 getting-started
+visualization
 parallelism
 api/reference
 changelog
