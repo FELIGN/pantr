@@ -553,3 +553,128 @@ class TestPeriodicInsertKnotsFlag:
         new_space = space.subdivide(2)
 
         assert not new_space.periodic
+
+
+# ---------------------------------------------------------------------------
+# Periodic Bspline: insert_knots and subdivide preserve periodicity
+# ---------------------------------------------------------------------------
+
+
+def _make_periodic_bspline(
+    num_intervals: int,
+    degree: int,
+    continuity: int | None = None,
+    rank: int = 2,
+) -> Bspline:
+    """Create a 1D periodic B-spline with sequential control points."""
+    knots = create_uniform_periodic(num_intervals, degree, continuity=continuity)
+    space_1d = BsplineSpace1D(knots, degree, periodic=True)
+    space = BsplineSpace([space_1d])
+    rng = np.random.default_rng(42)
+    ctrl = rng.random((space.num_total_basis, rank))
+    return Bspline(space, ctrl)
+
+
+class TestPeriodicBsplineInsertKnots:
+    """Test that Bspline.insert_knots preserves periodicity and geometry."""
+
+    @pytest.mark.parametrize(
+        "degree,continuity",
+        [(2, None), (3, None), (3, 1), (3, 0), (2, 0)],
+    )
+    def test_insert_knots_preserves_periodic(self, degree: int, continuity: int | None) -> None:
+        """insert_knots on a periodic Bspline returns a periodic Bspline."""
+        bsp = _make_periodic_bspline(4, degree, continuity)
+        refined = bsp.insert_knots(np.array([0.125, 0.375]))
+
+        assert refined.space.spaces[0].periodic
+
+    @pytest.mark.parametrize(
+        "degree,continuity",
+        [(2, None), (3, None), (3, 1), (3, 0), (2, 0)],
+    )
+    def test_insert_knots_preserves_geometry(self, degree: int, continuity: int | None) -> None:
+        """insert_knots on a periodic Bspline preserves geometry."""
+        bsp = _make_periodic_bspline(4, degree, continuity)
+        refined = bsp.insert_knots(np.array([0.125, 0.375]))
+
+        pts = np.linspace(0.01, 0.99, 50)
+        orig = bsp.to_open_bspline().evaluate(pts)
+        ref = refined.to_open_bspline().evaluate(pts)
+        np.testing.assert_allclose(orig, ref, atol=1e-12)
+
+    def test_insert_knots_multidim_mixed_periodic_open(self) -> None:
+        """insert_knots preserves periodicity for mixed periodic/open 2D splines."""
+        # Direction 0: periodic, direction 1: open
+        knots_per = create_uniform_periodic(num_intervals=4, degree=2)
+        knots_open = np.array([0.0, 0.0, 0.0, 0.5, 1.0, 1.0, 1.0])
+        space = BsplineSpace(
+            [
+                BsplineSpace1D(knots_per, 2, periodic=True),
+                BsplineSpace1D(knots_open, 2),
+            ]
+        )
+        rng = np.random.default_rng(42)
+        ctrl = rng.random((*space.num_basis, 2))
+        bsp = Bspline(space, ctrl)
+
+        refined = bsp.insert_knots([np.array([0.125]), np.array([0.25])])
+
+        assert refined.space.spaces[0].periodic
+        assert not refined.space.spaces[1].periodic
+
+        pts = rng.random((30, 2))
+        pts[:, 0] = pts[:, 0] * 0.98 + 0.01
+        orig = bsp.to_open_bspline().evaluate(pts)
+        ref = refined.to_open_bspline().evaluate(pts)
+        np.testing.assert_allclose(orig, ref, atol=1e-12)
+
+    def test_insert_knots_rational_periodic(self) -> None:
+        """insert_knots preserves periodic NURBS geometry."""
+        knots = create_uniform_periodic(num_intervals=4, degree=3)
+        space_1d = BsplineSpace1D(knots, 3, periodic=True)
+        space = BsplineSpace([space_1d])
+        n = space.num_total_basis
+        rng = np.random.default_rng(42)
+        ctrl_h = rng.random((n, 3))  # (x, y, w) homogeneous
+        ctrl_h[:, -1] = np.abs(ctrl_h[:, -1]) + 0.5  # positive weights
+        bsp = Bspline(space, ctrl_h, is_rational=True)
+
+        refined = bsp.insert_knots(np.array([0.125]))
+
+        assert refined.space.spaces[0].periodic
+        assert refined.is_rational
+
+        pts = np.linspace(0.01, 0.99, 50)
+        orig = bsp.to_open_bspline().evaluate(pts)
+        ref = refined.to_open_bspline().evaluate(pts)
+        np.testing.assert_allclose(orig, ref, atol=1e-12)
+
+
+class TestPeriodicBsplineSubdivide:
+    """Test that Bspline.subdivide preserves periodicity and geometry."""
+
+    @pytest.mark.parametrize(
+        "degree,continuity",
+        [(2, None), (3, None), (3, 1), (2, 0)],
+    )
+    def test_subdivide_preserves_periodic(self, degree: int, continuity: int | None) -> None:
+        """Subdivide on a periodic Bspline returns a periodic Bspline."""
+        bsp = _make_periodic_bspline(4, degree, continuity)
+        subdivided = bsp.subdivide(2)
+
+        assert subdivided.space.spaces[0].periodic
+
+    @pytest.mark.parametrize(
+        "degree,continuity",
+        [(2, None), (3, None), (3, 1), (2, 0)],
+    )
+    def test_subdivide_preserves_geometry(self, degree: int, continuity: int | None) -> None:
+        """Subdivide on a periodic Bspline preserves geometry."""
+        bsp = _make_periodic_bspline(4, degree, continuity)
+        subdivided = bsp.subdivide(2)
+
+        pts = np.linspace(0.01, 0.99, 50)
+        orig = bsp.to_open_bspline().evaluate(pts)
+        sub = subdivided.to_open_bspline().evaluate(pts)
+        np.testing.assert_allclose(orig, sub, atol=1e-12)
