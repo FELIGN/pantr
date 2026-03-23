@@ -30,6 +30,7 @@ _DEFAULT_POLYGON_COLOR = "gray"
 _DEFAULT_KNOT_COLOR = "black"
 _DEFAULT_KNOT_WIDTH = 2.0
 _DEFAULT_TESSELLATION_LEVEL = 4
+_DEFAULT_LINE_WIDTH = 2.0
 
 
 def _effective_tessellation(geom: Bspline | Bezier, requested: int) -> int:
@@ -71,6 +72,7 @@ class _GeometryEntry:
         scalar_bar: bool = True,
         elevation: bool = False,
         tessellation_level: int = _DEFAULT_TESSELLATION_LEVEL,
+        line_width: float = _DEFAULT_LINE_WIDTH,
     ) -> None:
         """Initialize a geometry entry.
 
@@ -93,6 +95,8 @@ class _GeometryEntry:
                 rendering curved cells. Higher values produce smoother output at
                 the cost of more triangles. Ignored for degree-1 geometries
                 (always coarsest). Defaults to ``4``.
+            line_width: Width of lines when rendering curve geometries (dim=1).
+                Defaults to ``2.0``.
         """
         self.geom = geom
         self.color = color
@@ -108,6 +112,7 @@ class _GeometryEntry:
         self.scalar_bar = scalar_bar
         self.elevation = elevation
         self.tessellation_level = tessellation_level
+        self.line_width = line_width
 
 
 class Scene:
@@ -144,6 +149,7 @@ class Scene:
         scalar_bar: bool = True,
         elevation: bool = False,
         tessellation_level: int = _DEFAULT_TESSELLATION_LEVEL,
+        line_width: float = _DEFAULT_LINE_WIDTH,
     ) -> Scene:
         """Add a geometry to the scene.
 
@@ -166,6 +172,8 @@ class Scene:
                 rendering curved cells. Higher values produce smoother output at
                 the cost of more triangles. Ignored for degree-1 geometries
                 (always coarsest). Defaults to ``4``.
+            line_width: Width of lines when rendering curve geometries (dim=1).
+                Defaults to ``2.0``.
 
         Returns:
             Scene: Self, for method chaining.
@@ -186,6 +194,7 @@ class Scene:
                 scalar_bar=scalar_bar,
                 elevation=elevation,
                 tessellation_level=tessellation_level,
+                line_width=line_width,
             )
         )
         return self
@@ -251,6 +260,7 @@ def _add_entry_to_plotter(plotter: pv.Plotter, entry: _GeometryEntry) -> None:
     # Determine mesh_kwargs for the main geometry
     mesh_kwargs: dict[str, Any] = {
         "opacity": entry.opacity,
+        "line_width": entry.line_width,
     }
     if entry.color is not None:
         mesh_kwargs["color"] = entry.color
@@ -293,6 +303,7 @@ def plot(  # noqa: PLR0913
     scalar_bar: bool = True,
     elevation: bool = False,
     tessellation_level: int = _DEFAULT_TESSELLATION_LEVEL,
+    line_width: float = _DEFAULT_LINE_WIDTH,
     **plotter_kwargs: object,
 ) -> pv.Plotter:
     """Quick visualization of one or more geometries.
@@ -316,6 +327,8 @@ def plot(  # noqa: PLR0913
             rendering curved cells. Higher values produce smoother output at
             the cost of more triangles. Ignored for degree-1 geometries
             (always coarsest). Defaults to ``4``.
+        line_width: Width of lines when rendering curve geometries (dim=1).
+            Defaults to ``2.0``.
         **plotter_kwargs: Additional keyword arguments for ``pv.Plotter()``.
 
     Returns:
@@ -336,5 +349,6 @@ def plot(  # noqa: PLR0913
             scalar_bar=scalar_bar,
             elevation=elevation,
             tessellation_level=tessellation_level,
+            line_width=line_width,
         )
     return scene.show(**plotter_kwargs)
