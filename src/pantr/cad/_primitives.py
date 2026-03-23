@@ -21,7 +21,7 @@ _BILINEAR_SHAPE = (2, 2)
 _TRILINEAR_SHAPE = (2, 2, 2)
 
 
-def _linear_space_1d(dtype: type[np.float64] = np.float64) -> BsplineSpace1D:
+def _linear_space_1d(dtype: npt.DTypeLike = np.float64) -> BsplineSpace1D:
     """Create a degree-1 B-spline space on [0, 1].
 
     Args:
