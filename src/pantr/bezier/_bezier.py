@@ -784,7 +784,7 @@ class Bezier:
     ) -> object:
         """Quick interactive visualization of this Bézier (requires pyvista).
 
-        For finer control, use :func:`pantr.viz.Scene` directly.
+        For finer control, use ``pantr.viz.Scene`` directly.
 
         Args:
             color: Surface color.

@@ -1089,7 +1089,7 @@ class Bspline:
     ) -> object:
         """Quick interactive visualization of this B-spline (requires pyvista).
 
-        For finer control, use :func:`pantr.viz.Scene` directly.
+        For finer control, use ``pantr.viz.Scene`` directly.
 
         Args:
             color: Surface color.
