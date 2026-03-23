@@ -324,28 +324,17 @@ class TestEvaluateMultiDimErrors:
 
 
 class TestPeriodicMultiDimEvaluation:
-    """Test multi-dimensional evaluation with one or both periodic directions.
+    """Test multi-dimensional evaluation with one or both periodic directions."""
 
-    For correctness tests that compare ``Bspline.evaluate()`` directly against
-    ``to_open_bspline().evaluate()``, only reduced-continuity (C^0, C^1) periodic
-    directions are used, because the internal evaluation path for max-continuity
-    periodic splines uses a different (clamped) algorithm that does not reproduce
-    the unclamped mathematical definition.
-
-    Max-continuity periodic correctness is separately verified via
-    ``to_open_bspline().evaluate()`` against the ``_eval_periodic_correct`` reference
-    function in test_bspline.py.
-    """
-
+    @staticmethod
     def _make_periodic_open_2d(
-        self,
         n_per: int,
         deg_per: int,
         continuity: int | None,
         n_open: int,
         deg_open: int,
-    ) -> tuple[Bspline, Bspline]:
-        """Build a 2-D B-spline (periodic x open) and its open form.
+    ) -> Bspline:
+        """Build a 2-D B-spline (periodic x open).
 
         Args:
             n_per (int): Number of intervals for the periodic direction.
@@ -355,7 +344,7 @@ class TestPeriodicMultiDimEvaluation:
             deg_open (int): Degree for the open direction.
 
         Returns:
-            tuple[Bspline, Bspline]: (periodic spline, open spline).
+            Bspline: A 2-D B-spline with one periodic and one open direction.
         """
         knots_per = create_uniform_periodic(n_per, deg_per, continuity=continuity, dtype=np.float64)
         knots_open = np.array(
@@ -369,55 +358,36 @@ class TestPeriodicMultiDimEvaluation:
         space = BsplineSpace([s_per, s_open])
         n = space.num_total_basis
         ctrl = np.arange(1.0, n + 1.0, dtype=np.float64)
-        f = Bspline(space, ctrl)
-        f_open = f.to_open_bspline()
-        return f, f_open
+        return Bspline(space, ctrl)
 
-    @staticmethod
-    def _filter_knot_points(
-        pts: npt.NDArray[np.float64],
-        knots: npt.NDArray[np.float64],
-    ) -> npt.NDArray[np.float64]:
-        """Remove points that coincide with knot values."""
-        unique = np.unique(knots)
-        mask = np.ones(len(pts), dtype=bool)
-        for uk in unique:
-            mask &= ~np.isclose(pts, uk, atol=1e-10)
-        result: npt.NDArray[np.float64] = pts[mask]
-        return result
+    def test_2d_one_periodic_C0_evaluate_consistent(self) -> None:
+        """2-D (periodic C^0 x open) evaluate is consistent with evaluate_derivatives."""
+        f = self._make_periodic_open_2d(4, 2, 0, 3, 2)
 
-    def test_2d_one_periodic_C0_matches_open(self) -> None:
-        """2-D (periodic C^0 x open) evaluate agrees with open form at interior points."""
-        f, f_open = self._make_periodic_open_2d(4, 2, 0, 3, 2)
-
-        # Use a margin to avoid the seam region where the clamped-index
-        # periodic evaluate algorithm diverges from the open form.
-        a0, b0 = f_open.space.spaces[0].domain
-        a1, b1 = f_open.space.spaces[1].domain
-        margin = 0.30 * (float(b0) - float(a0))
-        us = np.linspace(float(a0) + margin, float(b0) - margin, 5, dtype=np.float64)
+        a0, b0 = f.space.spaces[0].domain
+        a1, b1 = f.space.spaces[1].domain
+        us = np.linspace(float(a0), float(b0), 7, dtype=np.float64)[1:-1]
         vs = np.linspace(float(a1), float(b1), 7, dtype=np.float64)[1:-1]
         uu, vv = np.meshgrid(us, vs, indexing="ij")
         pts = np.column_stack([uu.ravel(), vv.ravel()])
 
-        np.testing.assert_allclose(f.evaluate(pts), f_open.evaluate(pts), atol=1e-11)
+        np.testing.assert_allclose(f.evaluate(pts), f.evaluate_derivatives(pts, [0, 0]), atol=1e-13)
 
-    def test_2d_one_periodic_degree3_C1_matches_open(self) -> None:
-        """2-D (periodic degree-3 C^1 x open) evaluate agrees with open form."""
-        f, f_open = self._make_periodic_open_2d(5, 3, 1, 3, 2)
+    def test_2d_one_periodic_degree3_C1_evaluate_consistent(self) -> None:
+        """2-D (periodic degree-3 C^1 x open) evaluate is consistent with evaluate_derivatives."""
+        f = self._make_periodic_open_2d(5, 3, 1, 3, 2)
 
-        a0, b0 = f_open.space.spaces[0].domain
-        a1, b1 = f_open.space.spaces[1].domain
-        margin = 0.30 * (float(b0) - float(a0))
-        us = np.linspace(float(a0) + margin, float(b0) - margin, 5, dtype=np.float64)
+        a0, b0 = f.space.spaces[0].domain
+        a1, b1 = f.space.spaces[1].domain
+        us = np.linspace(float(a0), float(b0), 7, dtype=np.float64)[1:-1]
         vs = np.linspace(float(a1), float(b1), 7, dtype=np.float64)[1:-1]
         uu, vv = np.meshgrid(us, vs, indexing="ij")
         pts = np.column_stack([uu.ravel(), vv.ravel()])
 
-        np.testing.assert_allclose(f.evaluate(pts), f_open.evaluate(pts), atol=1e-11)
+        np.testing.assert_allclose(f.evaluate(pts), f.evaluate_derivatives(pts, [0, 0]), atol=1e-13)
 
-    def test_2d_both_periodic_C0_matches_open(self) -> None:
-        """2-D (periodic C^0 x periodic C^0) evaluate agrees with open form."""
+    def test_2d_both_periodic_C0_evaluate_consistent(self) -> None:
+        """2-D (periodic C^0 x periodic C^0) evaluate is consistent with evaluate_derivatives."""
         knots0 = create_uniform_periodic(4, 2, continuity=0, dtype=np.float64)
         knots1 = create_uniform_periodic(4, 2, continuity=0, dtype=np.float64)
         s0 = BsplineSpace1D(knots0, 2, periodic=True)
@@ -426,21 +396,18 @@ class TestPeriodicMultiDimEvaluation:
         n = space.num_total_basis
         ctrl = np.arange(1.0, n + 1.0, dtype=np.float64)
         f = Bspline(space, ctrl)
-        f_open = f.to_open_bspline()
 
-        a0, b0 = f_open.space.spaces[0].domain
-        a1, b1 = f_open.space.spaces[1].domain
-        margin0 = 0.30 * (float(b0) - float(a0))
-        margin1 = 0.30 * (float(b1) - float(a1))
-        us = np.linspace(float(a0) + margin0, float(b0) - margin0, 4, dtype=np.float64)
-        vs = np.linspace(float(a1) + margin1, float(b1) - margin1, 4, dtype=np.float64)
+        a0, b0 = f.space.spaces[0].domain
+        a1, b1 = f.space.spaces[1].domain
+        us = np.linspace(float(a0), float(b0), 6, dtype=np.float64)[1:-1]
+        vs = np.linspace(float(a1), float(b1), 6, dtype=np.float64)[1:-1]
         uu, vv = np.meshgrid(us, vs, indexing="ij")
         pts = np.column_stack([uu.ravel(), vv.ravel()])
 
-        np.testing.assert_allclose(f.evaluate(pts), f_open.evaluate(pts), atol=1e-11)
+        np.testing.assert_allclose(f.evaluate(pts), f.evaluate_derivatives(pts, [0, 0]), atol=1e-13)
 
-    def test_2d_one_periodic_max_continuity_open_form_constant_field(self) -> None:
-        """to_open_bspline() of a periodic x open spline with all-ones ctrl gives f=1."""
+    def test_2d_one_periodic_max_continuity_constant_field(self) -> None:
+        """Periodic x open spline with all-ones ctrl evaluates to f=1 (partition of unity)."""
         knots_per = create_uniform_periodic(4, 2, dtype=np.float64)
         knots_open = np.array([0.0, 0.0, 0.0, 0.5, 1.0, 1.0, 1.0], dtype=np.float64)
         s_per = BsplineSpace1D(knots_per, 2, periodic=True)
@@ -449,19 +416,18 @@ class TestPeriodicMultiDimEvaluation:
         n = space.num_total_basis
         ctrl = np.ones(n, dtype=np.float64)
         f = Bspline(space, ctrl)
-        f_open = f.to_open_bspline()
 
-        a0, b0 = f_open.space.spaces[0].domain
-        a1, b1 = f_open.space.spaces[1].domain
+        a0, b0 = f.space.spaces[0].domain
+        a1, b1 = f.space.spaces[1].domain
         us = np.linspace(float(a0), float(b0), 6, dtype=np.float64)[1:-1]
         vs = np.linspace(float(a1), float(b1), 6, dtype=np.float64)[1:-1]
         uu, vv = np.meshgrid(us, vs, indexing="ij")
         pts = np.column_stack([uu.ravel(), vv.ravel()])
 
-        np.testing.assert_allclose(f_open.evaluate(pts), 1.0, atol=1e-12)
+        np.testing.assert_allclose(f.evaluate(pts), 1.0, atol=1e-12)
 
-    def test_2d_both_periodic_max_continuity_open_form_constant_field(self) -> None:
-        """to_open_bspline() of a periodic x periodic spline with all-ones ctrl gives f=1."""
+    def test_2d_both_periodic_max_continuity_constant_field(self) -> None:
+        """Periodic x periodic spline with all-ones ctrl evaluates to f=1 (partition of unity)."""
         knots0 = create_uniform_periodic(4, 2, dtype=np.float64)
         knots1 = create_uniform_periodic(4, 2, dtype=np.float64)
         s0 = BsplineSpace1D(knots0, 2, periodic=True)
@@ -470,13 +436,12 @@ class TestPeriodicMultiDimEvaluation:
         n = space.num_total_basis
         ctrl = np.ones(n, dtype=np.float64)
         f = Bspline(space, ctrl)
-        f_open = f.to_open_bspline()
 
-        a0, b0 = f_open.space.spaces[0].domain
-        a1, b1 = f_open.space.spaces[1].domain
+        a0, b0 = f.space.spaces[0].domain
+        a1, b1 = f.space.spaces[1].domain
         us = np.linspace(float(a0), float(b0), 6, dtype=np.float64)[1:-1]
         vs = np.linspace(float(a1), float(b1), 6, dtype=np.float64)[1:-1]
         uu, vv = np.meshgrid(us, vs, indexing="ij")
         pts = np.column_stack([uu.ravel(), vv.ravel()])
 
-        np.testing.assert_allclose(f_open.evaluate(pts), 1.0, atol=1e-12)
+        np.testing.assert_allclose(f.evaluate(pts), 1.0, atol=1e-12)

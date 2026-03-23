@@ -248,14 +248,13 @@ class TestSliceRational:
 class TestSlicePeriodic:
     """Test slicing periodic B-splines."""
 
-    def test_periodic_1d_matches_open_evaluate(self) -> None:
-        """Slicing a periodic 1D curve matches the open-form evaluate."""
+    def test_periodic_1d_matches_evaluate(self) -> None:
+        """Slicing a periodic 1D curve matches evaluate."""
         crv = _make_periodic_curve()
-        crv_open = crv.to_open_bspline()
         domain = crv.space.spaces[0].domain
         for t in np.linspace(float(domain[0]), float(domain[1]), 7):
             pt_slice = crv.slice(0, t)
-            pt_eval = crv_open.evaluate(np.array([t]))
+            pt_eval = crv.evaluate(np.array([t]))
             assert isinstance(pt_slice, np.ndarray)
             np.testing.assert_allclose(pt_slice, pt_eval, atol=1e-13)
 
