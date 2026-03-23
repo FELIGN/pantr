@@ -594,11 +594,16 @@ class Bezier:
     # Conversion
     # ------------------------------------------------------------------
 
-    def to_bspline(self) -> Bspline:
+    def to_bspline(self, *, copy: bool = True) -> Bspline:
         """Convert to an equivalent B-spline with Bézier knot vectors.
 
         Creates a :class:`~pantr.bspline.Bspline` with open knot vectors
         ``[0]*(p+1) + [1]*(p+1)`` in each parametric direction.
+
+        Args:
+            copy (bool): If ``True`` (default), the control points are
+                deep-copied into the new B-spline. If ``False``, the
+                B-spline shares the same underlying control point array.
 
         Returns:
             ~pantr.bspline.Bspline: Equivalent B-spline representation.
@@ -613,10 +618,11 @@ class Bezier:
             knots[p + 1 :] = 1.0
             spaces.append(BsplineSpace1D(knots, p))
 
-        return BsplineCls(BsplineSpace(spaces), self._control_points, self._is_rational)
+        cp = self._control_points.copy() if copy else self._control_points
+        return BsplineCls(BsplineSpace(spaces), cp, self._is_rational)
 
     @classmethod
-    def from_bspline(cls, bspline: Bspline) -> Bezier:
+    def from_bspline(cls, bspline: Bspline, *, copy: bool = True) -> Bezier:
         """Create a Bézier from a B-spline with Bézier-like knot vectors.
 
         Validates that the B-spline has Bézier-like knots (open knots with
@@ -626,6 +632,9 @@ class Bezier:
         Args:
             bspline (~pantr.bspline.Bspline): A B-spline with Bézier-like
                 knot structure.
+            copy (bool): If ``True`` (default), the control points are
+                deep-copied into the new Bézier. If ``False``, the Bézier
+                shares the same underlying control point array.
 
         Returns:
             Bezier: The equivalent Bézier.
@@ -635,4 +644,5 @@ class Bezier:
         """
         if not bspline.space.has_Bezier_like_knots():
             raise ValueError("B-spline does not have Bézier-like knots. Cannot convert to Bézier.")
-        return cls(bspline.control_points, is_rational=bspline.is_rational)
+        cp = bspline.control_points.copy() if copy else bspline.control_points
+        return cls(cp, is_rational=bspline.is_rational)
