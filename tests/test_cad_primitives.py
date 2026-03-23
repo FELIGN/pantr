@@ -1,4 +1,4 @@
-"""Tests for CAD primitive functions: line, bilinear, trilinear."""
+"""Tests for CAD primitive functions: line, circle, bilinear, trilinear."""
 
 from __future__ import annotations
 
@@ -6,7 +6,7 @@ import numpy as np
 import pytest
 from numpy.testing import assert_allclose
 
-from pantr.cad import bilinear, line, trilinear
+from pantr.cad import bilinear, circle, line, trilinear
 
 _RANK_3D = 3
 
@@ -244,3 +244,119 @@ class TestTrilinear:
         vol = trilinear()
         for sp in vol.space.spaces:
             assert_allclose(sp.knots, [0.0, 0.0, 1.0, 1.0])
+
+
+class TestCircle:
+    """Test the circle / circular arc primitive."""
+
+    def test_full_circle_properties(self) -> None:
+        """Test that the default full circle has the expected structure."""
+        crv = circle()
+        assert crv.dim == 1
+        assert crv.degree == (_RANK_3D - 1,)  # degree 2
+        assert crv.rank == _RANK_3D
+        assert crv.is_rational
+
+    def test_full_circle_control_point_count(self) -> None:
+        """Test full circle has 9 control points (4 spans)."""
+        crv = circle()
+        assert crv.control_points.shape[0] == 9  # noqa: PLR2004
+
+    def test_full_circle_knot_structure(self) -> None:
+        """Test full circle knot vector: 4 spans, double interior knots."""
+        crv = circle()
+        sp = crv.space.spaces[0]
+        knots = sp.knots
+        # [0,0,0, 0.25,0.25, 0.5,0.5, 0.75,0.75, 1,1,1]
+        expected = np.array([0, 0, 0, 0.25, 0.25, 0.5, 0.5, 0.75, 0.75, 1, 1, 1])
+        assert_allclose(knots, expected)
+
+    def test_full_circle_evaluate_cardinal_points(self) -> None:
+        """Test full circle evaluates to correct cardinal points."""
+        crv = circle()
+        pts = crv.evaluate(np.array([0.0, 0.25, 0.5, 0.75, 1.0]))
+        assert_allclose(pts[0], [1, 0, 0], atol=1e-14)
+        assert_allclose(pts[1], [0, 1, 0], atol=1e-14)
+        assert_allclose(pts[2], [-1, 0, 0], atol=1e-14)
+        assert_allclose(pts[3], [0, -1, 0], atol=1e-14)
+        assert_allclose(pts[4], [1, 0, 0], atol=1e-14)
+
+    def test_full_circle_points_on_circle(self) -> None:
+        """Test that evaluated points lie on the unit circle."""
+        crv = circle()
+        t = np.linspace(0, 1, 50)
+        pts = crv.evaluate(t)
+        radii = np.sqrt(pts[:, 0] ** 2 + pts[:, 1] ** 2)
+        assert_allclose(radii, 1.0, atol=1e-14)
+        assert_allclose(pts[:, 2], 0.0, atol=1e-14)
+
+    def test_radius(self) -> None:
+        """Test circle with custom radius."""
+        r = 3.5
+        crv = circle(radius=r)
+        t = np.linspace(0, 1, 30)
+        pts = crv.evaluate(t)
+        radii = np.sqrt(pts[:, 0] ** 2 + pts[:, 1] ** 2)
+        assert_allclose(radii, r, atol=1e-14)
+
+    def test_quarter_arc_structure(self) -> None:
+        """Test arc <= 90 deg has 1 span, 3 control points, no interior knots."""
+        crv = circle(angle=np.pi / 2)
+        assert crv.control_points.shape[0] == _RANK_3D  # 3 control points
+        expected_knots = np.array([0, 0, 0, 1, 1, 1], dtype=np.float64)
+        assert_allclose(crv.space.spaces[0].knots, expected_knots)
+
+    def test_quarter_arc_endpoints(self) -> None:
+        """Test quarter arc from 0 to pi/2."""
+        crv = circle(angle=np.pi / 2)
+        pts = crv.evaluate(np.array([0.0, 1.0]))
+        assert_allclose(pts[0], [1, 0, 0], atol=1e-14)
+        assert_allclose(pts[1], [0, 1, 0], atol=1e-14)
+
+    def test_half_circle_structure(self) -> None:
+        """Test arc <= 180 deg has 2 spans, 5 control points, 1 double knot."""
+        crv = circle(angle=np.pi)
+        assert crv.control_points.shape[0] == 5  # noqa: PLR2004
+        expected_knots = np.array([0, 0, 0, 0.5, 0.5, 1, 1, 1])
+        assert_allclose(crv.space.spaces[0].knots, expected_knots)
+
+    def test_three_quarter_arc_structure(self) -> None:
+        """Test arc <= 270 deg has 3 spans, 7 control points, 2 double knots."""
+        crv = circle(angle=3 * np.pi / 2)
+        assert crv.control_points.shape[0] == 7  # noqa: PLR2004
+
+    def test_arc_points_on_circle(self) -> None:
+        """Test that arc points lie on the circle."""
+        crv = circle(radius=2.0, angle=np.pi)
+        t = np.linspace(0, 1, 30)
+        pts = crv.evaluate(t)
+        radii = np.sqrt(pts[:, 0] ** 2 + pts[:, 1] ** 2)
+        assert_allclose(radii, 2.0, atol=1e-13)
+
+    def test_angle_tuple(self) -> None:
+        """Test arc with (start, end) angle tuple."""
+        crv = circle(radius=2, angle=(np.pi / 2, -np.pi / 2))
+        pts = crv.evaluate(np.array([0.0, 0.5, 1.0]))
+        assert_allclose(pts[0], [0, 2, 0], atol=1e-14)
+        assert_allclose(pts[1], [2, 0, 0], atol=1e-14)
+        assert_allclose(pts[2], [0, -2, 0], atol=1e-14)
+
+    def test_center_translation(self) -> None:
+        """Test that center translates the circle."""
+        crv = circle(radius=1, center=(1, 2, 0))
+        pt = crv.evaluate(np.array([0.0]))
+        assert_allclose(pt, [2, 2, 0], atol=1e-14)
+
+    def test_center_2d(self) -> None:
+        """Test center with 2D coordinates (zero-padded to 3D)."""
+        crv = circle(radius=3, center=2, angle=np.pi / 2)
+        pts = crv.evaluate(np.array([0.0, 1.0]))
+        assert_allclose(pts[0], [5, 0, 0], atol=1e-14)
+        assert_allclose(pts[1], [2, 3, 0], atol=1e-14)
+
+    def test_negative_sweep(self) -> None:
+        """Test arc with negative sweep (clockwise)."""
+        crv = circle(angle=-np.pi / 2)
+        pts = crv.evaluate(np.array([0.0, 1.0]))
+        assert_allclose(pts[0], [1, 0, 0], atol=1e-14)
+        assert_allclose(pts[1], [0, -1, 0], atol=1e-14)
