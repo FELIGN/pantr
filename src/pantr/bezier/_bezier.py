@@ -9,7 +9,7 @@ import numpy as np
 from numpy import typing as npt
 
 from .._transform_control_points import _apply_affine_to_control_points
-from ._bezier_degree import _degree_elevate_bezier
+from ._bezier_degree import _degree_elevate_bezier, _degree_reduce_bezier
 from ._bezier_derivative import _derivative_bezier
 from ._bezier_eval import _evaluate_bezier, _evaluate_bezier_deriv
 from ._bezier_product import _multiply_bezier
@@ -298,6 +298,63 @@ class Bezier:
             raise ValueError("At least one degree increment must be positive.")
 
         return _degree_elevate_bezier(self, increments)
+
+    # ------------------------------------------------------------------
+    # Degree reduction
+    # ------------------------------------------------------------------
+
+    def reduce_degree(self, degree_decrements: int | Sequence[int]) -> Bezier:
+        """Reduce the polynomial degree of the Bézier via least-squares approximation.
+
+        Creates a new Bézier whose degree is lower by the requested amount in
+        each parametric direction.  The reduction minimises the squared error
+        under the Bernstein degree-elevation matrix using QR factorisation with
+        Givens rotations.
+
+        Unlike :meth:`elevate_degree`, this operation is **not exact** in
+        general: the result is an approximation of the original mapping.
+
+        Args:
+            degree_decrements (int | Sequence[int]): Number of degrees to
+                reduce. If an integer, the same decrement is applied to all
+                parametric directions. If a sequence, must have length equal
+                to ``self.dim``.
+
+        Returns:
+            Bezier: A new Bézier with reduced degrees.
+
+        Raises:
+            ValueError: If any degree decrement is negative.
+            ValueError: If all degree decrements are zero.
+            ValueError: If the number of decrements does not match the dimension.
+            ValueError: If any decrement exceeds the current degree in that
+                direction.
+        """
+        if isinstance(degree_decrements, int):
+            decrements = (degree_decrements,) * self.dim
+        else:
+            decrements = tuple(degree_decrements)
+
+        if len(decrements) != self.dim:
+            raise ValueError(
+                f"Number of degree decrements ({len(decrements)}) "
+                f"must match dimension ({self.dim})."
+            )
+
+        if any(dec < 0 for dec in decrements):
+            raise ValueError("Degree decrements must be non-negative.")
+
+        if all(dec == 0 for dec in decrements):
+            raise ValueError("At least one degree decrement must be positive.")
+
+        for d, dec in enumerate(decrements):
+            if dec > self.degree[d]:
+                raise ValueError(
+                    f"Degree decrement ({dec}) in direction {d} exceeds "
+                    f"current degree ({self.degree[d]})."
+                )
+
+        return _degree_reduce_bezier(self, decrements)
 
     # ------------------------------------------------------------------
     # Multiply
