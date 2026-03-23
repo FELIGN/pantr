@@ -85,8 +85,15 @@ def _compute_basis_nurbs_book_impl(  # noqa: PLR0913
     max_knot_id = knots.size - degree - 2
     knot_ids = np.minimum(knot_ids, max_knot_id)
 
-    num_basis = _get_Bspline_num_basis_1D_impl(knots, degree, periodic, tol)
-    out_first_basis[:] = np.minimum(knot_ids - degree, num_basis - order)
+    # For non-periodic splines, clamp first_basis so the last (degree+1) basis
+    # functions are addressed by the final evaluation point.  For periodic
+    # splines, the unclamped index is needed: the evaluation loop wraps it via
+    # modulo to cycle through the periodic control points.
+    if periodic:
+        out_first_basis[:] = knot_ids - degree
+    else:
+        num_basis = _get_Bspline_num_basis_1D_impl(knots, degree, periodic, tol)
+        out_first_basis[:] = np.minimum(knot_ids - degree, num_basis - order)
 
     out_basis.fill(zero)
 
@@ -168,8 +175,12 @@ def _compute_basis_deriv_nurbs_book_impl(  # noqa: PLR0913, PLR0915
     max_knot_id = knots.size - degree - 2
     knot_ids = np.minimum(knot_ids, max_knot_id)
 
-    num_basis = _get_Bspline_num_basis_1D_impl(knots, degree, periodic, tol)
-    out_first_basis[:] = np.minimum(knot_ids - degree, num_basis - order)
+    # See comment in _compute_basis_nurbs_book_impl for the periodic rationale.
+    if periodic:
+        out_first_basis[:] = knot_ids - degree
+    else:
+        num_basis = _get_Bspline_num_basis_1D_impl(knots, degree, periodic, tol)
+        out_first_basis[:] = np.minimum(knot_ids - degree, num_basis - order)
 
     out_deriv.fill(zero)
 
