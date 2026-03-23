@@ -12,6 +12,8 @@ from typing import TYPE_CHECKING
 import numpy as np
 
 from ._bspline_degree_core import _degree_elevate_1d_core
+from ._bspline_knot_insertion import _to_open_bspline_1d_impl, _to_periodic_bspline_1d_impl
+from ._bspline_knots import _get_unique_knots_and_multiplicity_impl
 from ._bspline_space_1d import BsplineSpace1D
 from ._bspline_space_nd import BsplineSpace
 
@@ -42,6 +44,8 @@ def _degree_elevate_bspline(bspline: Bspline, degree_increments: tuple[int, ...]
         space_1d = bspline.space.spaces[i]
 
         if inc > 0:
+            is_periodic = space_1d.periodic
+
             # Move dimension i to the 0th axis
             moved_ctrl = np.moveaxis(ctrl, i, 0)
             orig_shape = moved_ctrl.shape
@@ -53,10 +57,39 @@ def _degree_elevate_bspline(bspline: Bspline, degree_increments: tuple[int, ...]
             if not pts_2d.flags.c_contiguous:
                 pts_2d = np.ascontiguousarray(pts_2d)
 
-            # Numba kernel
-            new_pts_2d, new_knots = _degree_elevate_1d_core(
-                space_1d.degree, pts_2d, space_1d.knots, inc
-            )
+            if is_periodic:
+                # Round-trip through open form to preserve periodicity.
+                tol = float(space_1d.tolerance)
+                _, mults = _get_unique_knots_and_multiplicity_impl(
+                    space_1d.knots, space_1d.degree, tol, in_domain=True
+                )
+                m_bdy = int(mults[0])
+
+                # Convert to open form.
+                open_knots, open_pts_2d = _to_open_bspline_1d_impl(
+                    space_1d.knots, space_1d.degree, pts_2d, True, tol
+                )
+
+                # Degree elevate the open representation.
+                new_pts_2d, new_knots = _degree_elevate_1d_core(
+                    space_1d.degree, open_pts_2d, open_knots, inc
+                )
+
+                # Convert back to periodic. Degree elevation increases every
+                # knot multiplicity by inc, so m_bdy_new = m_bdy + inc.
+                new_degree = space_1d.degree + inc
+                m_bdy_new = m_bdy + inc
+                per_knots, new_pts_2d = _to_periodic_bspline_1d_impl(
+                    new_knots, new_degree, new_pts_2d, m_bdy_new, tol
+                )
+
+                new_space_1d = BsplineSpace1D(per_knots, new_degree, periodic=True)
+            else:
+                # Numba kernel
+                new_pts_2d, new_knots = _degree_elevate_1d_core(
+                    space_1d.degree, pts_2d, space_1d.knots, inc
+                )
+                new_space_1d = BsplineSpace1D(new_knots, space_1d.degree + inc)
 
             # Restore shape
             new_shape = (new_pts_2d.shape[0], *orig_shape[1:])
@@ -66,7 +99,7 @@ def _degree_elevate_bspline(bspline: Bspline, degree_increments: tuple[int, ...]
             ctrl = np.moveaxis(new_moved_ctrl, 0, i)
 
             # New BsplineSpace1D
-            new_spaces_1d.append(BsplineSpace1D(new_knots, space_1d.degree + inc))
+            new_spaces_1d.append(new_space_1d)
         else:
             new_spaces_1d.append(space_1d)
 

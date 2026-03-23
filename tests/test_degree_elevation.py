@@ -3,7 +3,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from pantr.bspline import Bspline, BsplineSpace, BsplineSpace1D
+from pantr.bspline import Bspline, BsplineSpace, BsplineSpace1D, create_uniform_periodic
 
 
 def test_degree_elevation_1d_linear_to_quadratic() -> None:
@@ -122,3 +122,120 @@ def test_degree_elevation_invalid_inputs() -> None:
 
     with pytest.raises(ValueError, match="non-negative"):
         bspline.elevate_degree(-1)
+
+
+# ---------------------------------------------------------------------------
+# Periodic Bspline: degree elevation preserves periodicity
+# ---------------------------------------------------------------------------
+
+
+def _make_periodic_bspline(
+    num_intervals: int,
+    degree: int,
+    continuity: int | None = None,
+    rank: int = 2,
+) -> Bspline:
+    """Create a 1D periodic B-spline with random control points."""
+    knots = create_uniform_periodic(num_intervals, degree, continuity=continuity)
+    space_1d = BsplineSpace1D(knots, degree, periodic=True)
+    space = BsplineSpace([space_1d])
+    rng = np.random.default_rng(42)
+    ctrl = rng.random((space.num_total_basis, rank))
+    return Bspline(space, ctrl)
+
+
+class TestPeriodicBsplineElevateDegree:
+    """Test that Bspline.elevate_degree preserves periodicity and geometry."""
+
+    @pytest.mark.parametrize(
+        "degree,continuity,inc",
+        [
+            (2, None, 1),
+            (3, None, 1),
+            (3, None, 2),
+            (3, 1, 1),
+            (3, 0, 1),
+            (2, 0, 1),
+        ],
+    )
+    def test_elevate_degree_preserves_periodic(
+        self, degree: int, continuity: int | None, inc: int
+    ) -> None:
+        """elevate_degree on a periodic Bspline returns a periodic Bspline."""
+        bsp = _make_periodic_bspline(4, degree, continuity)
+        elevated = bsp.elevate_degree((inc,))
+
+        assert elevated.space.spaces[0].periodic
+        assert elevated.space.spaces[0].degree == degree + inc
+
+    @pytest.mark.parametrize(
+        "degree,continuity,inc",
+        [
+            (2, None, 1),
+            (3, None, 1),
+            (3, None, 2),
+            (3, 1, 1),
+            (3, 0, 1),
+            (2, 0, 1),
+        ],
+    )
+    def test_elevate_degree_preserves_geometry(
+        self, degree: int, continuity: int | None, inc: int
+    ) -> None:
+        """elevate_degree on a periodic Bspline preserves geometry."""
+        bsp = _make_periodic_bspline(4, degree, continuity)
+        elevated = bsp.elevate_degree((inc,))
+
+        pts = np.linspace(0.01, 0.99, 50)
+        orig = bsp.to_open_bspline().evaluate(pts)
+        elev = elevated.to_open_bspline().evaluate(pts)
+        np.testing.assert_allclose(orig, elev, atol=1e-12)
+
+    def test_elevate_degree_multidim_mixed_periodic_open(self) -> None:
+        """elevate_degree preserves periodicity for mixed periodic/open 2D splines."""
+        knots_per = create_uniform_periodic(num_intervals=4, degree=2)
+        knots_open = np.array([0.0, 0.0, 0.0, 0.5, 1.0, 1.0, 1.0])
+        space = BsplineSpace(
+            [
+                BsplineSpace1D(knots_per, 2, periodic=True),
+                BsplineSpace1D(knots_open, 2),
+            ]
+        )
+        rng = np.random.default_rng(42)
+        ctrl = rng.random((*space.num_basis, 2))
+        bsp = Bspline(space, ctrl)
+
+        elevated = bsp.elevate_degree([1, 1])
+
+        assert elevated.space.spaces[0].periodic
+        assert not elevated.space.spaces[1].periodic
+        assert elevated.degree == (3, 3)
+
+        pts = rng.random((30, 2))
+        pts[:, 0] = pts[:, 0] * 0.98 + 0.01
+        orig = bsp.to_open_bspline().evaluate(pts)
+        elev = elevated.to_open_bspline().evaluate(pts)
+        np.testing.assert_allclose(orig, elev, atol=1e-12)
+
+    def test_elevate_degree_rational_periodic(self) -> None:
+        """elevate_degree preserves periodic NURBS geometry."""
+        knots = create_uniform_periodic(num_intervals=4, degree=3)
+        space_1d = BsplineSpace1D(knots, 3, periodic=True)
+        space = BsplineSpace([space_1d])
+        n = space.num_total_basis
+        rng = np.random.default_rng(42)
+        ctrl_h = rng.random((n, 3))  # (x, y, w) homogeneous
+        ctrl_h[:, -1] = np.abs(ctrl_h[:, -1]) + 0.5  # positive weights
+        bsp = Bspline(space, ctrl_h, is_rational=True)
+
+        elevated = bsp.elevate_degree(1)
+
+        assert elevated.space.spaces[0].periodic
+        assert elevated.is_rational
+        expected_degree = 3 + 1
+        assert elevated.space.spaces[0].degree == expected_degree
+
+        pts = np.linspace(0.01, 0.99, 50)
+        orig = bsp.to_open_bspline().evaluate(pts)
+        elev = elevated.to_open_bspline().evaluate(pts)
+        np.testing.assert_allclose(orig, elev, atol=1e-12)

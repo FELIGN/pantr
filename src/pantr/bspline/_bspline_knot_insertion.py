@@ -153,6 +153,8 @@ def _insert_knots_bspline(
             new_spaces_1d.append(space_1d)
             continue
 
+        is_periodic = space_1d.periodic
+
         # Move dimension i to the 0th axis.
         moved_ctrl = np.moveaxis(ctrl, i, 0)
         orig_shape = moved_ctrl.shape
@@ -162,9 +164,35 @@ def _insert_knots_bspline(
         if not pts_2d.flags.c_contiguous:
             pts_2d = np.ascontiguousarray(pts_2d)
 
-        refined_knots, new_pts_2d = _insert_knots_bspline_1d_impl(
-            space_1d.knots, space_1d.degree, pts_2d, nk, space_1d.tolerance
-        )
+        if is_periodic:
+            # Round-trip through open form to preserve periodicity.
+            tol = float(space_1d.tolerance)
+            _, mults = _get_unique_knots_and_multiplicity_impl(
+                space_1d.knots, space_1d.degree, tol, in_domain=True
+            )
+            m_bdy = int(mults[0])
+
+            # Convert to open form.
+            open_knots, open_pts_2d = _to_open_bspline_1d_impl(
+                space_1d.knots, space_1d.degree, pts_2d, True, tol
+            )
+
+            # Insert knots into the open representation.
+            refined_knots, new_pts_2d = _insert_knots_bspline_1d_impl(
+                open_knots, space_1d.degree, open_pts_2d, nk, tol
+            )
+
+            # Convert back to periodic.
+            per_knots, new_pts_2d = _to_periodic_bspline_1d_impl(
+                refined_knots, space_1d.degree, new_pts_2d, m_bdy, tol
+            )
+
+            new_space_1d = BsplineSpace1D(per_knots, space_1d.degree, periodic=True)
+        else:
+            refined_knots, new_pts_2d = _insert_knots_bspline_1d_impl(
+                space_1d.knots, space_1d.degree, pts_2d, nk, space_1d.tolerance
+            )
+            new_space_1d = BsplineSpace1D(refined_knots, space_1d.degree)
 
         # Restore multi-dimensional shape.
         new_shape = (new_pts_2d.shape[0], *orig_shape[1:])
@@ -173,7 +201,7 @@ def _insert_knots_bspline(
         # Move axis back to its original position.
         ctrl = np.moveaxis(new_moved_ctrl, 0, i)
 
-        new_spaces_1d.append(BsplineSpace1D(refined_knots, space_1d.degree))
+        new_spaces_1d.append(new_space_1d)
 
     # Assemble the new B-spline.
     from . import (  # noqa: PLC0415
@@ -253,10 +281,14 @@ def _to_open_bspline_1d_impl(
     else:
         new_knots, new_ctrl = knots, ctrl_full
 
-    # Trim ghost knots: the first p and last p entries of new_knots are ghost knots.
-    open_knots = new_knots[p : len(new_knots) - p]
+    # Trim external / ghost knots.  For both periodic (ghost knots) and
+    # non-periodic unclamped (external support knots), there are
+    # ``p + 1 - m_bdy`` entries on each side that lie outside the domain and
+    # must be removed to obtain a clamped (open) knot vector.
+    n_trim = p + 1 - m_left
+    open_knots = new_knots[n_trim : len(new_knots) - n_trim] if n_trim else new_knots
     n_open = len(open_knots) - p - 1
-    open_ctrl = new_ctrl[p : p + n_open]
+    open_ctrl = new_ctrl[n_trim : n_trim + n_open] if n_trim else new_ctrl[:n_open]
 
     return open_knots, open_ctrl
 

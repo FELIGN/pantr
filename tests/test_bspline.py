@@ -839,7 +839,15 @@ class TestPeriodicBsplineEvaluation:
         ).to_open_bspline()
 
         a, b = f_open.space.spaces[0].domain
+
+        # Avoid evaluation at C^0 knot positions where the derivative is
+        # discontinuous and finite differences are inaccurate.
         pts = np.linspace(float(a), float(b), 21, dtype=np.float64)[1:-1]
+        unique_knots = np.unique(f_open.space.spaces[0].knots)
+        mask = np.ones(len(pts), dtype=bool)
+        for uk in unique_knots:
+            mask &= ~np.isclose(pts, uk, atol=1e-10)
+        pts = pts[mask]
 
         # 0th order must match evaluate()
         np.testing.assert_allclose(
