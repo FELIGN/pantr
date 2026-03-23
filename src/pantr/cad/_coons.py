@@ -50,14 +50,14 @@ def coons_surface(
 
     The curve layout is::
 
-             C_u1
-         o-----------o
-         |  v        |
-         |  ^        |
-    C_v0 |  |        | C_v1
-         |  +---> u  |
-         o-----------o
-             C_u0
+               C_u1
+        o--------------o
+        |  v           |
+        |  ^           |
+        |  |     C_v1  |
+        |  +---> u     |
+        o--------------o
+        C_v0   C_u0
 
     Args:
         curves: ``((C_v0, C_v1), (C_u0, C_u1))`` -- two pairs of
