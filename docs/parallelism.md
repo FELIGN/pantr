@@ -65,7 +65,13 @@ with pantr.num_threads(4, limit_blas=True):
     result = bspline.evaluate(pts)
 ```
 
-If `threadpoolctl` is not installed, `limit_blas=True` emits a warning.
+```{warning}
+`limit_blas=True` requires the [threadpoolctl](https://github.com/joblib/threadpoolctl)
+package.  If it is not installed, a `UserWarning` is emitted and BLAS threads are
+**not** limited.  Install it with:
+
+    pip install threadpoolctl
+```
 
 ## Usage patterns
 
