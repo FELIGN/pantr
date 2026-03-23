@@ -49,7 +49,7 @@ class Bspline:
         _control_points (npt.NDArray[np.float32 | np.float64]): Control point
             array reshaped to ``(*num_basis, rank)``.
         _is_rational (bool): Whether the B-spline is rational (NURBS).
-        _beziers_cache (npt.NDArray[np.object_] | None): Cached Bézier
+        _beziers_cache (``npt.NDArray[np.object_] | None``): Cached Bézier
             decomposition, or ``None`` if not yet computed.
     """
 
@@ -661,7 +661,7 @@ class Bspline:
         ``in_place=True``) invalidate the cache.
 
         Returns:
-            npt.NDArray[np.object_]: Array of :class:`~pantr.bezier.Bezier`
+            ``npt.NDArray[np.object_]``: Array of :class:`~pantr.bezier.Bezier`
             objects with shape ``(*num_intervals)`` following the tensor-product
             interval structure.  For a 1D B-spline with 3 intervals the shape
             is ``(3,)``.  For a 2D surface with 3x2 intervals the shape is

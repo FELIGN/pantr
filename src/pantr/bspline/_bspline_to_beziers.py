@@ -75,7 +75,7 @@ def _to_beziers_impl(bspline: Bspline) -> npt.NDArray[np.object_]:
         bspline (Bspline): Input B-spline to decompose.
 
     Returns:
-        npt.NDArray[np.object_]: Array of :class:`~pantr.bezier.Bezier` objects
+        ``npt.NDArray[np.object_]``: Array of :class:`~pantr.bezier.Bezier` objects
         with shape ``(*num_intervals)`` following the tensor-product interval
         structure.
     """
