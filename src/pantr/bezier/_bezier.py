@@ -13,6 +13,7 @@ from ._bezier_degree import _degree_elevate_bezier
 from ._bezier_derivative import _derivative_bezier
 from ._bezier_eval import _evaluate_bezier, _evaluate_bezier_deriv
 from ._bezier_product import _multiply_bezier
+from ._bezier_slice import _slice_bezier
 
 if TYPE_CHECKING:
     from ..bspline import Bspline
@@ -511,6 +512,83 @@ class Bezier:
         bspline = self.to_bspline()
         restricted = bspline.restrict(bounds)
         return Bezier.from_bspline(restricted)
+
+    # ------------------------------------------------------------------
+    # Slice and boundary
+    # ------------------------------------------------------------------
+
+    def slice(self, axis: int, value: float) -> Bezier | npt.NDArray[np.float32 | np.float64]:
+        """Slice the Bézier by fixing one parametric direction at a given value.
+
+        Reduces the parametric dimension by one using the de Casteljau
+        algorithm on the control points.  A surface becomes a curve, a curve
+        becomes a point (returned as a NumPy array).
+
+        At the boundary values ``0`` and ``1`` the result is obtained in
+        O(1) by direct control point lookup.
+
+        Args:
+            axis (int): Parametric direction to fix (0-indexed).
+                Must be in ``[0, dim)``.
+            value (float): Parameter value at which to slice.  Must lie
+                within ``[0, 1]``.
+
+        Returns:
+            Bezier | npt.NDArray[np.float32 | np.float64]:
+            A Bézier with ``dim - 1`` dimensions when ``dim >= 2``,
+            or a NumPy array of shape ``(rank,)`` when ``dim == 1``.
+            Rational Béziers preserve the rational structure when ``dim >= 2``;
+            for ``dim == 1`` the result is projected to physical coordinates.
+
+        Raises:
+            ValueError: If ``axis`` is out of range ``[0, dim)``.
+            ValueError: If ``value`` is outside ``[0, 1]``.
+
+        Example:
+            >>> # Slice a surface at v=0.5 to get a curve
+            >>> curve = surface.slice(1, 0.5)
+            >>> # Composable: surface -> curve -> point
+            >>> pt = surface.slice(1, 0.5).slice(0, 0.2)
+        """
+        if axis < 0 or axis >= self.dim:
+            raise ValueError(f"axis must be in [0, {self.dim}), got {axis}.")
+        if value < 0.0 or value > 1.0:
+            raise ValueError(f"value must be in [0, 1], got {value}.")
+
+        return _slice_bezier(self, axis, value)
+
+    def boundary(self, axis: int, side: int) -> Bezier | npt.NDArray[np.float32 | np.float64]:
+        """Extract the boundary of the Bézier along one parametric direction.
+
+        Returns the restriction of the Bézier to one end of the ``[0, 1]``
+        domain in the given direction.
+
+        Args:
+            axis (int): Parametric direction (0-indexed).
+                Must be in ``[0, dim)``.
+            side (int): Which end of the domain: ``0`` for the start,
+                ``1`` for the end.
+
+        Returns:
+            Bezier | npt.NDArray[np.float32 | np.float64]:
+            A Bézier with ``dim - 1`` dimensions when ``dim >= 2``,
+            or a NumPy array of shape ``(rank,)`` when ``dim == 1``.
+
+        Raises:
+            ValueError: If ``axis`` is out of range ``[0, dim)``.
+            ValueError: If ``side`` is not 0 or 1.
+
+        Example:
+            >>> # Extract left boundary of a surface along direction 0
+            >>> left_curve = surface.boundary(0, 0)
+        """
+        if side not in (0, 1):
+            raise ValueError(f"side must be 0 or 1, got {side}.")
+        if axis < 0 or axis >= self.dim:
+            raise ValueError(f"axis must be in [0, {self.dim}), got {axis}.")
+
+        value = 0.0 if side == 0 else 1.0
+        return self.slice(axis, value)
 
     # ------------------------------------------------------------------
     # Conversion

@@ -259,3 +259,79 @@ def _degree_elevate_bezier_1d_core(
                 new_ctrl[i, r] += coeff * ctrl[j, r]
 
     return new_ctrl
+
+
+@nb_jit(
+    nopython=True,
+    cache=True,
+    parallel=True,
+)
+def _slice_bezier_1d_core(
+    ctrl: npt.NDArray[np.float32 | np.float64],
+    value: float,
+    out: npt.NDArray[np.float32 | np.float64],
+) -> None:
+    """Evaluate a 1D Bézier at a single parameter value via de Casteljau.
+
+    Performs the de Casteljau triangular reduction on each column of the
+    control point array independently, parallelized across columns with
+    ``prange``.  At the boundary values ``0`` and ``1``, the first or
+    last control point is returned directly without iteration.
+
+    Args:
+        ctrl (npt.NDArray[np.float32 | np.float64]): Control points of
+            shape ``(p + 1, n_cols)``, where ``p`` is the polynomial
+            degree and ``n_cols`` is the number of independent columns.
+        value (float): Parameter value in ``[0, 1]``.
+        out (npt.NDArray[np.float32 | np.float64]): Pre-allocated output
+            array of shape ``(n_cols,)``.
+
+    Note:
+        Inputs are assumed to be correct (no validation performed).
+        For general use, call :func:`_slice_bezier` in ``_bezier_slice``
+        instead.
+    """
+    p = ctrl.shape[0] - 1
+    n_cols = ctrl.shape[1]
+    u = value
+    one_minus_u = 1.0 - u
+
+    # Boundary shortcuts: O(1) for endpoints.
+    if u == 0.0:
+        for col in nb_prange(n_cols):
+            out[col] = ctrl[0, col]
+        return
+    if u == 1.0:
+        for col in nb_prange(n_cols):
+            out[col] = ctrl[p, col]
+        return
+
+    for col in nb_prange(n_cols):
+        # Local workspace for de Casteljau on this column.
+        d = np.empty(p + 1, dtype=ctrl.dtype)
+        for i in range(p + 1):
+            d[i] = ctrl[i, col]
+
+        for r in range(1, p + 1):
+            for i in range(p - r + 1):
+                d[i] = one_minus_u * d[i] + u * d[i + 1]
+
+        out[col] = d[0]
+
+
+def _warmup_numba_functions() -> None:
+    """Precompile numba functions with float64 signatures for faster first call.
+
+    This function triggers compilation of the numba-decorated functions
+    with float64 arrays, ensuring they are cached and ready for use.
+    """
+    ctrl_dummy = np.array([[0.0, 1.0], [1.0, 0.0], [2.0, 1.0]], dtype=np.float64)
+    pts_dummy = np.array([0.5], dtype=np.float64)
+    out_eval_dummy = np.empty((1, 2), dtype=np.float64)
+    out_deriv_dummy = np.empty((1, 1, 2), dtype=np.float64)
+    out_slice_dummy = np.empty(2, dtype=np.float64)
+
+    _evaluate_bezier_1d_core(ctrl_dummy, pts_dummy, out_eval_dummy)
+    _evaluate_bezier_deriv_1d_core(ctrl_dummy, pts_dummy, 0, out_deriv_dummy)
+    _degree_elevate_bezier_1d_core(2, ctrl_dummy, 1)
+    _slice_bezier_1d_core(ctrl_dummy, 0.5, out_slice_dummy)
