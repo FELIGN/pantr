@@ -511,7 +511,7 @@ class Bspline:
 
         return _restrict_bspline_impl(self, bounds_per_dim)
 
-    def to_periodic(self, continuity: int | tuple[int, ...] | None = None) -> Bspline:
+    def to_periodic(self, continuity: int | tuple[int | None, ...] | None = None) -> Bspline:
         """Return a periodic B-spline equivalent to this one.
 
         Converts each non-periodic parametric direction to a periodic
@@ -535,17 +535,20 @@ class Bspline:
             fidelity if in doubt.
 
         Args:
-            continuity (int | tuple[int, ...] | None): Target continuity at
-                the seam per direction.  ``None`` (default) requests maximum
-                regularity ``C^{p-1}``.  An integer applies to all directions;
-                a tuple specifies per-direction values.  Must satisfy
-                ``0 <= continuity <= degree - 1`` in each direction.
+            continuity (int | tuple[int | None, ...] | None): Target continuity
+                at the seam per direction.  ``None`` (default) requests maximum
+                regularity ``C^{p-1}`` in every non-periodic direction.  An
+                integer applies to all non-periodic directions; a tuple specifies
+                per-direction values where ``None`` entries skip that direction
+                (leave it unchanged).  Integer values must satisfy
+                ``0 <= continuity <= degree - 1``.
 
         Returns:
-            Bspline: Periodic B-spline with ghost-extended knot vectors.
+            Bspline: B-spline with the requested directions made periodic.
 
         Raises:
-            ValueError: If already periodic in every direction.
+            ValueError: If no direction would be converted (all already periodic
+                or all skipped via ``None`` in the tuple).
             ValueError: If the function is not periodic (endpoint mismatch
                 or residual exceeds tolerance).
             ValueError: If ``continuity`` is out of range.

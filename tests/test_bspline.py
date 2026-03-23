@@ -1178,3 +1178,47 @@ class TestToPeriodic:
         pts_v = np.linspace(float(av), float(bv), 11, dtype=np.float64)[1:-1]
         lattice = PointsLattice([pts_u, pts_v])
         np.testing.assert_allclose(f_per.evaluate(lattice), f.evaluate(lattice), atol=1e-10)
+
+    def test_selective_direction_conversion(self) -> None:
+        """to_periodic with tuple continuity converts only selected directions."""
+        from pantr.quad import PointsLattice  # noqa: PLC0415
+
+        # 2D: direction 0 is periodic (open after to_open), direction 1 is open (non-periodic).
+        knots_per = create_uniform_periodic(3, 2)
+        knots_open = np.array([0.0, 0.0, 0.0, 0.5, 1.0, 1.0, 1.0], dtype=np.float64)
+        space = BsplineSpace(
+            [
+                BsplineSpace1D(knots_per, 2, periodic=True),
+                BsplineSpace1D(knots_open, 2),
+            ]
+        )
+        n0 = space.spaces[0].num_basis
+        n1 = space.spaces[1].num_basis
+        rng = np.random.default_rng(42)
+        ctrl = rng.random((n0, n1, 1))
+        f = Bspline(space, ctrl)
+
+        # Convert to open in all directions.
+        f_open = f.to_open_bspline()
+        assert not any(s.periodic for s in f_open.space.spaces)
+
+        # Convert only direction 0 back to periodic, skip direction 1.
+        f_mixed = f_open.to_periodic(continuity=(1, None))
+        assert f_mixed.space.spaces[0].periodic
+        assert not f_mixed.space.spaces[1].periodic
+
+        # Evaluation should match on the original domain.
+        a0, b0 = f.space.spaces[0].domain
+        a1, b1 = f.space.spaces[1].domain
+        pts_0 = np.linspace(float(a0), float(b0), 11, dtype=np.float64)[1:-1]
+        pts_1 = np.linspace(float(a1), float(b1), 11, dtype=np.float64)[1:-1]
+        lattice = PointsLattice([pts_0, pts_1])
+        np.testing.assert_allclose(f_mixed.evaluate(lattice), f.evaluate(lattice), atol=1e-10)
+
+    def test_all_skipped_raises(self) -> None:
+        """to_periodic raises when all directions are skipped or already periodic."""
+        knots = np.array([0.0, 0.0, 0.0, 0.5, 1.0, 1.0, 1.0], dtype=np.float64)
+        space = BsplineSpace([BsplineSpace1D(knots, 2)])
+        f = Bspline(space, np.array([1.0, 2.0, 3.0, 4.0]))
+        with pytest.raises(ValueError, match="No direction to convert"):
+            f.to_periodic(continuity=(None,))

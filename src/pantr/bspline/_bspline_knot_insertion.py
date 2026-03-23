@@ -548,25 +548,27 @@ def _to_periodic_bspline_1d_impl(
 
 def _to_periodic_bspline_impl(
     bspline: Bspline,
-    continuity: int | tuple[int, ...] | None,
+    continuity: int | tuple[int | None, ...] | None,
 ) -> Bspline:
-    """Convert all parametric directions of a B-spline to periodic form.
+    """Convert selected parametric directions of a B-spline to periodic form.
 
-    For each direction that is not already periodic, computes an exact
-    change of basis from the open/non-open representation to a periodic one
-    with the requested continuity at the seam.
+    For each direction that is not already periodic and not explicitly skipped,
+    computes an exact change of basis from the open/non-open representation to
+    a periodic one with the requested continuity at the seam.
 
     Args:
         bspline (Bspline): Input B-spline.
-        continuity (int | tuple[int, ...] | None): Target continuity at the seam
-            per direction.  ``None`` means maximum regularity (``degree - 1``).
-            An integer applies to all directions; a tuple specifies per-direction.
+        continuity (int | tuple[int | None, ...] | None): Target continuity at
+            the seam per direction.  ``None`` means maximum regularity
+            (``degree - 1``) in every non-periodic direction.  An integer
+            applies to all non-periodic directions.  A tuple specifies
+            per-direction values; ``None`` entries skip that direction.
 
     Returns:
-        Bspline: New periodic B-spline.
+        Bspline: New B-spline with the requested directions made periodic.
 
     Raises:
-        ValueError: If already periodic in every direction.
+        ValueError: If no direction would be converted.
         ValueError: If the function is not periodic in some direction.
     """
     from . import Bspline as BsplineCls  # noqa: PLC0415
@@ -575,13 +577,16 @@ def _to_periodic_bspline_impl(
     dim = bspline.dim
     ctrl = bspline.control_points
 
-    # Check if every direction is already periodic.
-    if all(s.periodic for s in bspline.space.spaces):
-        raise ValueError("B-spline is already periodic in every direction.")
-
     # Normalize continuity to a per-direction tuple.
+    # A scalar applies to all non-periodic directions.
+    # A global None means "max regularity in all non-periodic directions."
+    # Per-direction None means "skip this direction (leave unchanged)."
+    # The sentinel _CONVERT_DEFAULT = -1 means "use max regularity."
+    _CONVERT_DEFAULT = -1
+    cont_per_dir: tuple[int | None, ...]
     if continuity is None:
-        cont_per_dir: tuple[int | None, ...] = tuple(None for _ in range(dim))
+        # Default: max regularity for every non-periodic direction.
+        cont_per_dir = tuple(_CONVERT_DEFAULT for _ in range(dim))
     elif isinstance(continuity, int):
         cont_per_dir = tuple(continuity for _ in range(dim))
     else:
@@ -589,16 +594,22 @@ def _to_periodic_bspline_impl(
             raise ValueError(f"continuity tuple length {len(continuity)} != dimension {dim}.")
         cont_per_dir = tuple(continuity)
 
-    # First, ensure we have an open representation (non-periodic directions
-    # that are not yet open need clamping before conversion).
-    # We process each direction: if periodic, skip; otherwise convert to open
-    # first (if needed), then convert to periodic.
+    # Determine which directions will be converted: non-periodic and not skipped.
+    will_convert = [
+        not bspline.space.spaces[i].periodic and cont_per_dir[i] is not None for i in range(dim)
+    ]
+    if not any(will_convert):
+        raise ValueError(
+            "No direction to convert: all directions are either already periodic "
+            "or explicitly skipped."
+        )
+
     new_spaces_1d: list[BsplineSpace1D] = []
 
     for i in range(dim):
         space_1d = bspline.space.spaces[i]
 
-        if space_1d.periodic:
+        if not will_convert[i]:
             new_spaces_1d.append(space_1d)
             continue
 
@@ -606,7 +617,7 @@ def _to_periodic_bspline_impl(
 
         # Resolve continuity for this direction.
         c = cont_per_dir[i]
-        if c is None:
+        if c is None or c == _CONVERT_DEFAULT:
             c = p - 1
         if not (0 <= c <= p - 1):
             raise ValueError(
@@ -614,7 +625,6 @@ def _to_periodic_bspline_impl(
             )
         m_bdy = p - c
 
-        # Ensure direction is open (clamped) before periodic conversion.
         knots_1d = space_1d.knots
         tol_1d = float(space_1d.tolerance)
         moved_ctrl = np.moveaxis(ctrl, i, 0)
