@@ -509,9 +509,9 @@ class Bezier:
             ValueError: If any bound lies outside ``[0, 1]``.
             ValueError: If ``lower >= upper`` in any direction.
         """
-        bspline = self.to_bspline()
+        bspline = self.to_bspline(copy=False)
         restricted = bspline.restrict(bounds)
-        return Bezier.from_bspline(restricted)
+        return restricted.to_bezier(copy=False)
 
     # ------------------------------------------------------------------
     # Slice and boundary
