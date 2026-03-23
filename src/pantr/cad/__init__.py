@@ -6,11 +6,12 @@ B-spline geometric objects:
 - **Primitives**: :func:`line`, :func:`circle`, :func:`bilinear`,
   :func:`trilinear`.
 - **Compatibility**: :func:`compat`.
-- **Operations**: :func:`extrude`, :func:`ruled`.
+- **Operations**: :func:`extrude`, :func:`revolve`, :func:`ruled`,
+  :func:`sweep`.
 """
 
 from ._compat import compat
-from ._operations import extrude, ruled
+from ._operations import extrude, revolve, ruled, sweep
 from ._primitives import bilinear, circle, line, trilinear
 from ._validation import _PHYSICAL_DIM, _pad_to_3d, _promote_to_rational
 
@@ -23,6 +24,8 @@ __all__ = [
     "compat",
     "extrude",
     "line",
+    "revolve",
     "ruled",
+    "sweep",
     "trilinear",
 ]
