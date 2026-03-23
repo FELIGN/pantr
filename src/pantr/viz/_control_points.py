@@ -1,10 +1,8 @@
-"""Control point and control polygon visualization helpers.
+"""Control polygon visualization helpers.
 
-Provides functions to create pyvista meshes for:
-
-- **Control points**: a point cloud rendered as small spheres.
-- **Control polygon**: a wireframe connecting adjacent control points along
-  each parametric direction.
+Provides a function to create the control polygon mesh: a wireframe connecting
+adjacent control points along each parametric direction, with the control
+points themselves included as vertices.
 
 Rational geometries always use projected (Euclidean) coordinates.
 """
@@ -62,41 +60,25 @@ def _get_euclidean_control_points(
     return pts_3d, grid_shape, rank
 
 
-def control_points_mesh(geom: Bspline | Bezier) -> pv.PolyData:
-    """Create a point cloud mesh of control points for visualization.
-
-    Control points are projected to Euclidean space for rational geometries
-    and padded to 3D.
-
-    Args:
-        geom: Input B-spline or Bézier geometry.
-
-    Returns:
-        pv.PolyData: Point cloud suitable for rendering as glyphs (spheres).
-
-    Raises:
-        ImportError: If pyvista is not installed.
-    """
-    pv = _import_pyvista()
-    pts_3d, _, _ = _get_euclidean_control_points(geom)
-    return pv.PolyData(pts_3d)  # type: ignore[no-any-return]
-
-
 def control_polygon_mesh(geom: Bspline | Bezier) -> pv.PolyData:
-    """Create a wireframe mesh of the control polygon.
+    """Create the control polygon mesh with points and connecting wireframe.
 
-    Connects adjacent control points along each parametric direction:
+    The mesh contains the control points as vertices and polylines connecting
+    adjacent control points along each parametric direction:
 
     - **dim=1**: a single polyline through all control points.
     - **dim=2**: a grid of lines along both parametric directions.
     - **dim=3**: edges of the 3D control point lattice along all three
       parametric directions.
 
+    Rational geometries use projected (Euclidean) coordinates.
+
     Args:
         geom: Input B-spline or Bézier geometry.
 
     Returns:
-        pv.PolyData: Wireframe mesh with line cells.
+        pv.PolyData: Mesh with control points as vertices and line cells
+        forming the polygon wireframe.
 
     Raises:
         ImportError: If pyvista is not installed.
@@ -109,7 +91,6 @@ def control_polygon_mesh(geom: Bspline | Bezier) -> pv.PolyData:
     if not lines:
         return pv.PolyData(pts_3d)  # type: ignore[no-any-return]
 
-    # pyvista line format: [n_pts_in_line, idx0, idx1, ..., n_pts_in_line, ...]
     line_cells = np.concatenate(lines)
     poly = pv.PolyData(pts_3d)
     poly.lines = line_cells

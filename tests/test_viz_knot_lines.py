@@ -14,7 +14,7 @@ from pantr.bspline import (  # noqa: E402
     BsplineSpace1D,
     create_uniform_open,
 )
-from pantr.viz import control_points_mesh, control_polygon_mesh, knot_lines_meshes  # noqa: E402
+from pantr.viz import control_polygon_mesh, knot_lines_meshes  # noqa: E402
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -117,20 +117,20 @@ class TestKnotLinesSurface:
 
 
 # ---------------------------------------------------------------------------
-# Control points
+# Control polygon
 # ---------------------------------------------------------------------------
 
 
-class TestControlPointsMesh:
-    """Tests for control point point cloud generation."""
+class TestControlPolygonMesh:
+    """Tests for control polygon (points + wireframe) generation."""
 
     def test_bezier_point_count(self, bezier_curve: Bezier) -> None:
-        mesh = control_points_mesh(bezier_curve)
+        mesh = control_polygon_mesh(bezier_curve)
         n_expected = 3
         assert mesh.n_points == n_expected
 
     def test_bspline_point_count(self, bspline_curve: Bspline) -> None:
-        mesh = control_points_mesh(bspline_curve)
+        mesh = control_polygon_mesh(bspline_curve)
         n_expected = 5
         assert mesh.n_points == n_expected
 
@@ -138,23 +138,14 @@ class TestControlPointsMesh:
         self,
         rational_bezier_curve: Bezier,
     ) -> None:
-        mesh = control_points_mesh(rational_bezier_curve)
-        # First control point is (1, 0) with weight 1 → projected (1, 0, 0)
+        mesh = control_polygon_mesh(rational_bezier_curve)
+        # First control point is (1, 0) with weight 1 -> projected (1, 0, 0)
         np.testing.assert_allclose(mesh.points[0], [1.0, 0.0, 0.0], atol=1e-12)
 
     def test_3d_points_padded(self, bezier_curve: Bezier) -> None:
-        mesh = control_points_mesh(bezier_curve)
+        mesh = control_polygon_mesh(bezier_curve)
         # z should be 0 for this planar curve
         np.testing.assert_array_equal(mesh.points[:, 2], 0.0)
-
-
-# ---------------------------------------------------------------------------
-# Control polygon
-# ---------------------------------------------------------------------------
-
-
-class TestControlPolygonMesh:
-    """Tests for control polygon wireframe generation."""
 
     def test_curve_has_lines(self, bezier_curve: Bezier) -> None:
         mesh = control_polygon_mesh(bezier_curve)

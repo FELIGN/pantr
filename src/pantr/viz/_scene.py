@@ -3,7 +3,7 @@
 Provides:
 
 - :class:`Scene`: a builder for adding multiple geometries with per-geometry
-  rendering options (color, opacity, control points, knot lines).
+  rendering options (color, opacity, control polygon, knot lines).
 - :func:`plot`: a convenience function for quick visualization of one or
   more geometries.
 """
@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
-from ._control_points import control_points_mesh, control_polygon_mesh
+from ._control_points import control_polygon_mesh
 from ._knot_lines import knot_lines_meshes
 from ._lazy_import import _import_pyvista
 from ._vtk_cells import to_pyvista
@@ -40,7 +40,6 @@ class _GeometryEntry:
         *,
         color: str | None = None,
         opacity: float = 1.0,
-        show_control_points: bool = False,
         show_control_polygon: bool = False,
         show_knot_lines: bool = False,
         control_point_color: str = _DEFAULT_CP_COLOR,
@@ -59,10 +58,9 @@ class _GeometryEntry:
             color: Surface color. ``None`` uses the default colormap for
                 scalar fields or pyvista's default for geometric objects.
             opacity: Surface opacity (0.0 to 1.0).
-            show_control_points: Render control points as spheres.
-            show_control_polygon: Render wireframe connecting control points.
+            show_control_polygon: Render control polygon (points and wireframe).
             show_knot_lines: Render knot lines (B-splines only).
-            control_point_color: Color for control point spheres.
+            control_point_color: Color for control points and polygon wireframe.
             control_point_size: Point size for control points.
             control_polygon_color: Color for control polygon wireframe.
             knot_line_color: Color for knot lines.
@@ -74,7 +72,6 @@ class _GeometryEntry:
         self.geom = geom
         self.color = color
         self.opacity = opacity
-        self.show_control_points = show_control_points
         self.show_control_polygon = show_control_polygon
         self.show_knot_lines = show_knot_lines
         self.control_point_color = control_point_color
@@ -96,7 +93,7 @@ class Scene:
     Example:
         >>> scene = Scene()
         >>> scene.add(surface, color="blue", show_knot_lines=True)
-        >>> scene.add(curve, color="red", show_control_points=True)
+        >>> scene.add(curve, color="red", show_control_polygon=True)
         >>> scene.show()
     """
 
@@ -110,7 +107,6 @@ class Scene:
         *,
         color: str | None = None,
         opacity: float = 1.0,
-        show_control_points: bool = False,
         show_control_polygon: bool = False,
         show_knot_lines: bool = False,
         control_point_color: str = _DEFAULT_CP_COLOR,
@@ -129,10 +125,9 @@ class Scene:
             color: Surface color. ``None`` uses the default colormap for
                 scalar fields or pyvista's default for geometric objects.
             opacity: Surface opacity (0.0 to 1.0).
-            show_control_points: Render control points as spheres.
-            show_control_polygon: Render wireframe connecting control points.
+            show_control_polygon: Render control polygon (points and wireframe).
             show_knot_lines: Render knot lines (B-splines only).
-            control_point_color: Color for control point spheres.
+            control_point_color: Color for control points and polygon wireframe.
             control_point_size: Point size for control points.
             control_polygon_color: Color for control polygon wireframe.
             knot_line_color: Color for knot lines.
@@ -149,7 +144,6 @@ class Scene:
                 geom,
                 color=color,
                 opacity=opacity,
-                show_control_points=show_control_points,
                 show_control_polygon=show_control_polygon,
                 show_knot_lines=show_knot_lines,
                 control_point_color=control_point_color,
@@ -230,23 +224,14 @@ def _add_entry_to_plotter(plotter: pv.Plotter, entry: _GeometryEntry) -> None:
 
     plotter.add_mesh(grid, **mesh_kwargs)
 
-    # Control points
-    if entry.show_control_points:
-        cp_mesh = control_points_mesh(entry.geom)
-        plotter.add_mesh(
-            cp_mesh,
-            color=entry.control_point_color,
-            point_size=entry.control_point_size,
-            render_points_as_spheres=True,
-        )
-
-    # Control polygon
+    # Control polygon (points + wireframe)
     if entry.show_control_polygon:
         poly_mesh = control_polygon_mesh(entry.geom)
         plotter.add_mesh(
             poly_mesh,
-            color=entry.control_polygon_color,
-            style="wireframe",
+            color=entry.control_point_color,
+            point_size=entry.control_point_size,
+            render_points_as_spheres=True,
             line_width=entry.knot_line_width,
         )
 
@@ -266,7 +251,6 @@ def plot(  # noqa: PLR0913
     *geoms: Bspline | Bezier,
     color: str | None = None,
     opacity: float = 1.0,
-    show_control_points: bool = False,
     show_control_polygon: bool = False,
     show_knot_lines: bool = False,
     scalar_name: str = "scalar",
@@ -286,8 +270,7 @@ def plot(  # noqa: PLR0913
         *geoms: One or more B-spline or Bézier geometries.
         color: Surface color for all geometries.
         opacity: Surface opacity for all geometries.
-        show_control_points: Render control points as spheres.
-        show_control_polygon: Render control polygon wireframe.
+        show_control_polygon: Render control polygon (points and wireframe).
         show_knot_lines: Render knot lines (B-splines only).
         scalar_name: Name for scalar point data.
         scalar_bar: Show scalar bar for scalar fields.
@@ -306,7 +289,6 @@ def plot(  # noqa: PLR0913
             geom,
             color=color,
             opacity=opacity,
-            show_control_points=show_control_points,
             show_control_polygon=show_control_polygon,
             show_knot_lines=show_knot_lines,
             scalar_name=scalar_name,

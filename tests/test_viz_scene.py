@@ -88,12 +88,6 @@ class TestScene:
         plotter = scene.to_plotter()
         assert plotter is not None
 
-    def test_with_control_points(self, bezier_curve: Bezier) -> None:
-        scene = Scene()
-        scene.add(bezier_curve, show_control_points=True)
-        plotter = scene.to_plotter()
-        assert plotter is not None
-
     def test_with_control_polygon(self, bezier_curve: Bezier) -> None:
         scene = Scene()
         scene.add(bezier_curve, show_control_polygon=True)

@@ -1082,7 +1082,6 @@ class Bspline:
         self,
         *,
         color: str | None = None,
-        show_control_points: bool = False,
         show_control_polygon: bool = False,
         show_knot_lines: bool = False,
         **plotter_kwargs: Any,  # noqa: ANN401
@@ -1093,8 +1092,7 @@ class Bspline:
 
         Args:
             color: Surface color.
-            show_control_points: Render control points as spheres.
-            show_control_polygon: Render control polygon wireframe.
+            show_control_polygon: Render control polygon (points and wireframe).
             show_knot_lines: Render knot lines.
             **plotter_kwargs: Additional keyword arguments for ``pv.Plotter()``.
 
@@ -1109,7 +1107,6 @@ class Bspline:
         return _plot(
             self,
             color=color,
-            show_control_points=show_control_points,
             show_control_polygon=show_control_polygon,
             show_knot_lines=show_knot_lines,
             **plotter_kwargs,

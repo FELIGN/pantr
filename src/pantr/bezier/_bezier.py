@@ -778,7 +778,6 @@ class Bezier:
         self,
         *,
         color: str | None = None,
-        show_control_points: bool = False,
         show_control_polygon: bool = False,
         **plotter_kwargs: Any,  # noqa: ANN401
     ) -> object:
@@ -788,8 +787,7 @@ class Bezier:
 
         Args:
             color: Surface color.
-            show_control_points: Render control points as spheres.
-            show_control_polygon: Render control polygon wireframe.
+            show_control_polygon: Render control polygon (points and wireframe).
             **plotter_kwargs: Additional keyword arguments for ``pv.Plotter()``.
 
         Returns:
@@ -803,7 +801,6 @@ class Bezier:
         return _plot(
             self,
             color=color,
-            show_control_points=show_control_points,
             show_control_polygon=show_control_polygon,
             **plotter_kwargs,
         )

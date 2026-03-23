@@ -34,7 +34,7 @@ cp = np.array([
 curve = Bspline(space, cp)
 
 # Interactive visualization
-curve.plot(show_control_points=True, show_knot_lines=True)
+curve.plot(show_control_polygon=True, show_knot_lines=True)
 ```
 
 For multiple geometries or finer control, use `pantr.viz` directly:
@@ -42,7 +42,7 @@ For multiple geometries or finer control, use `pantr.viz` directly:
 ```python
 from pantr.viz import plot
 
-plot(curve, surface, show_control_points=True)
+plot(curve, surface, show_control_polygon=True)
 ```
 
 ## Scene composition
@@ -55,7 +55,7 @@ from pantr.viz import Scene
 
 scene = Scene()
 scene.add(surface, color="lightblue", show_knot_lines=True)
-scene.add(curve, color="red", show_control_points=True, show_control_polygon=True)
+scene.add(curve, color="red", show_control_polygon=True)
 scene.add(boundary_curve, color="black")
 scene.show()
 ```
@@ -77,8 +77,7 @@ Method chaining is supported:
 |---|---|---|---|
 | `color` | `str` or `None` | `None` | Surface color (uses colormap for scalar fields if `None`) |
 | `opacity` | `float` | `1.0` | Surface opacity |
-| `show_control_points` | `bool` | `False` | Render control points as spheres |
-| `show_control_polygon` | `bool` | `False` | Render wireframe connecting control points |
+| `show_control_polygon` | `bool` | `False` | Render control polygon (points and wireframe) |
 | `show_knot_lines` | `bool` | `False` | Render knot lines (B-splines only) |
 | `control_point_color` | `str` | `"red"` | Color of control point spheres |
 | `control_point_size` | `float` | `8.0` | Size of control point spheres |
@@ -113,21 +112,20 @@ scalar_field.plot()
 scalar_field.plot(elevation=True)
 ```
 
-## Control points and polygon
+## Control polygon
 
-Control points are rendered as small spheres at their physical locations.
-For rational (NURBS) geometries, the **projected Euclidean coordinates** are
-used (i.e. divided by the homogeneous weight).
+The control polygon shows both the control points (as small spheres) and the
+wireframe connecting adjacent control points along each parametric direction:
 
-The control polygon connects adjacent control points along each parametric
-direction:
-
-- **Curves**: a single polyline.
+- **Curves**: a single polyline through all control points.
 - **Surfaces**: a grid of lines along both parametric directions.
 - **Volumes**: edges of the 3D control point lattice.
 
+For rational (NURBS) geometries, the **projected Euclidean coordinates** are
+used (i.e. divided by the homogeneous weight).
+
 ```python
-curve.plot(show_control_points=True, show_control_polygon=True)
+curve.plot(show_control_polygon=True)
 ```
 
 ## Knot lines
@@ -151,7 +149,7 @@ For advanced use cases, convert geometries to pyvista objects and use the
 full pyvista API:
 
 ```python
-from pantr.viz import to_pyvista, control_points_mesh, control_polygon_mesh
+from pantr.viz import to_pyvista, control_polygon_mesh
 
 # Get an UnstructuredGrid with VTK Bezier cells
 grid = to_pyvista(surface)
@@ -159,8 +157,7 @@ grid = to_pyvista(surface)
 # Manipulate with pyvista
 grid.plot(show_edges=True, cmap="viridis")
 
-# Access control points as pyvista PolyData
-cp_mesh = control_points_mesh(surface)
+# Get the control polygon as pyvista PolyData (points + wireframe)
 poly_mesh = control_polygon_mesh(surface)
 ```
 
