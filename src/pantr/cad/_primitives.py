@@ -129,18 +129,18 @@ def trilinear(corners: npt.ArrayLike | None = None) -> Bspline:
 
     The corner ordering follows the tensor-product convention::
 
-           corners[0,1,1]     corners[1,1,1]
-           o------------------o
-          /|                 /|
-         / |                / |          w
-        o------------------o  |          ^  v
-        | corners[0,0,1]   | corners[1,0,1]   | /
-        |  |               |  |          |/
-        |  o---------------|--o          +-------> u
-        | / corners[0,1,0] | / corners[1,1,0]
-        |/                 |/
-        o------------------o
-        corners[0,0,0]     corners[1,0,0]
+           corners[0,1,1]       corners[1,1,1]
+           o--------------------o
+          /|                   /|
+         / |                  / |            w
+        o--------------------o  |            ^  v
+        |  | corners[0,0,1]  |  | c[1,0,1]  | /
+        |  |                 |  |            |/
+        |  o-----------------|--o            +------> u
+        | / corners[0,1,0]   | / corners[1,1,0]
+        |/                   |/
+        o--------------------o
+        corners[0,0,0]       corners[1,0,0]
 
     Args:
         corners: Array of shape ``(2, 2, 2, rank)`` with ``rank <= 3``.
