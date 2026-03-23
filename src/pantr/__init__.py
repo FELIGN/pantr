@@ -23,6 +23,7 @@ from . import (
     tolerance,
     transform,
 )
+from ._parallel import get_num_threads, num_threads, set_num_threads
 from .basis import _basis_utils  # noqa: F401
 
 # Package metadata
@@ -38,7 +39,10 @@ __all__ = [
     "bezier",
     "bspline",
     "change_basis",
+    "get_num_threads",
+    "num_threads",
     "quad",
+    "set_num_threads",
     "tolerance",
     "transform",
 ]
