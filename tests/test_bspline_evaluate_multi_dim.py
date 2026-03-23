@@ -383,7 +383,8 @@ class TestPeriodicMultiDimEvaluation:
         mask = np.ones(len(pts), dtype=bool)
         for uk in unique:
             mask &= ~np.isclose(pts, uk, atol=1e-10)
-        return pts[mask]
+        result: npt.NDArray[np.float64] = pts[mask]
+        return result
 
     def test_2d_one_periodic_C0_matches_open(self) -> None:
         """2-D (periodic C^0 x open) evaluate agrees with open form at interior points."""

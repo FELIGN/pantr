@@ -1,6 +1,7 @@
 """Tests for multi-dimensional B-spline derivative evaluation with per-direction orders."""
 
 import numpy as np
+import numpy.typing as npt
 import pytest
 
 from pantr.bspline import Bspline, BsplineSpace, BsplineSpace1D, create_uniform_periodic
@@ -467,15 +468,16 @@ class TestPeriodicMultiDimDerivEvaluation:
 
     @staticmethod
     def _filter_knot_points(
-        pts: np.ndarray,
-        knots: np.ndarray,
-    ) -> np.ndarray:
+        pts: npt.NDArray[np.float64],
+        knots: npt.NDArray[np.float32 | np.float64],
+    ) -> npt.NDArray[np.float64]:
         """Remove points that coincide with knot values."""
         unique = np.unique(knots)
         mask = np.ones(len(pts), dtype=bool)
         for uk in unique:
             mask &= ~np.isclose(pts, uk, atol=1e-10)
-        return pts[mask]
+        result: npt.NDArray[np.float64] = pts[mask]
+        return result
 
     @pytest.mark.parametrize(
         "orders",
