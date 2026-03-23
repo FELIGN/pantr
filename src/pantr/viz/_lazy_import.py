@@ -20,4 +20,4 @@ def _import_pyvista() -> ModuleType:
         raise ImportError(
             "pyvista is required for visualization. Install it with: pip install pantr[viz]"
         ) from None
-    return pv
+    return pv  # type: ignore[return-value]

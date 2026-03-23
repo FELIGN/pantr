@@ -6,7 +6,7 @@ import numpy as np
 import pytest
 
 pv = pytest.importorskip("pyvista")
-pv.OFF_SCREEN = True  # type: ignore[attr-defined]
+pv.OFF_SCREEN = True
 
 from pantr.bezier import Bezier  # noqa: E402
 from pantr.bspline import (  # noqa: E402
