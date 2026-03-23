@@ -9,6 +9,7 @@
 :caption: Contents
 
 getting-started
+constructive-geometry
 visualization
 parallelism
 api/reference
