@@ -753,13 +753,7 @@ class TestPeriodicBsplineEvaluation:
     """Test Bspline.evaluate and evaluate_derivatives for periodic B-splines.
 
     Covers both maximum continuity and reduced continuity (C^0, C^1) cases.
-    All comparisons use interior points only to avoid endpoint/clamping differences.
-
-    Note: ``Bspline.evaluate()`` for periodic splines uses an internal clamped-index
-    algorithm that differs from the unclamped modulo-wrapped algorithm (used by
-    ``to_open_bspline().evaluate()``).  Correctness of the unclamped path is verified
-    via ``to_open_bspline()``; internal consistency of the clamped path is verified by
-    comparing ``evaluate_derivatives(pts, [0])`` against ``evaluate(pts)``.
+    All comparisons use interior points only to avoid endpoint ambiguity.
     """
 
     @pytest.mark.parametrize(
@@ -796,6 +790,36 @@ class TestPeriodicBsplineEvaluation:
     @pytest.mark.parametrize(
         "num_intervals,degree,continuity",
         [
+            (3, 2, None),  # degree 2, max continuity
+            (4, 2, 0),  # degree 2, C^0
+            (4, 3, None),  # degree 3, max continuity
+            (4, 3, 1),  # degree 3, C^1
+            (5, 3, 0),  # degree 3, C^0
+        ],
+    )
+    def test_periodic_evaluate_matches_correct_algorithm(
+        self, num_intervals: int, degree: int, continuity: int | None
+    ) -> None:
+        """evaluate() agrees with the modulo-wrapped reference algorithm.
+
+        Directly verifies that the periodic B-spline evaluation kernel produces
+        the mathematically correct result at interior points, without going
+        through ``to_open_bspline()``.
+        """
+        f = _make_periodic_bspline(num_intervals, degree, continuity=continuity)
+
+        a, b = f.space.spaces[0].domain
+        pts = np.linspace(float(a), float(b), 21, dtype=np.float64)[1:-1]
+
+        np.testing.assert_allclose(
+            f.evaluate(pts),
+            _eval_periodic_correct(f, pts),
+            atol=1e-13,
+        )
+
+    @pytest.mark.parametrize(
+        "num_intervals,degree,continuity",
+        [
             (3, 2, None),
             (4, 2, 0),
             (4, 3, None),
@@ -806,14 +830,10 @@ class TestPeriodicBsplineEvaluation:
     def test_periodic_evaluate_derivatives_order_0_matches_evaluate(
         self, num_intervals: int, degree: int, continuity: int | None
     ) -> None:
-        """evaluate_derivatives(pts, [0]) equals evaluate(pts) for periodic splines.
-
-        Tests internal consistency of the clamped evaluation path used by
-        Bspline.evaluate() and Bspline.evaluate_derivatives() for periodic spaces.
-        """
+        """evaluate_derivatives(pts, [0]) equals evaluate(pts) for periodic splines."""
         f = _make_periodic_bspline(num_intervals, degree, continuity=continuity)
 
-        a, b = f.to_open_bspline().space.spaces[0].domain
+        a, b = f.space.spaces[0].domain
         pts = np.linspace(float(a), float(b), 21, dtype=np.float64)[1:-1]
 
         np.testing.assert_allclose(
@@ -830,20 +850,16 @@ class TestPeriodicBsplineEvaluation:
             (5, 3, 0),  # degree 3, C^0
         ],
     )
-    def test_periodic_to_open_evaluate_derivatives_matches_open(
+    def test_periodic_evaluate_derivatives_matches_finite_diff(
         self, num_intervals: int, degree: int, continuity: int | None
     ) -> None:
-        """to_open_bspline().evaluate_derivatives() agrees with finite differences."""
-        f_open = _make_periodic_bspline(
-            num_intervals, degree, continuity=continuity
-        ).to_open_bspline()
+        """evaluate_derivatives() agrees with finite differences for periodic splines."""
+        f = _make_periodic_bspline(num_intervals, degree, continuity=continuity)
 
-        a, b = f_open.space.spaces[0].domain
-
-        # Avoid evaluation at C^0 knot positions where the derivative is
-        # discontinuous and finite differences are inaccurate.
+        a, b = f.space.spaces[0].domain
+        # Avoid C^0 knot positions where the derivative is discontinuous.
         pts = np.linspace(float(a), float(b), 21, dtype=np.float64)[1:-1]
-        unique_knots = np.unique(f_open.space.spaces[0].knots)
+        unique_knots = np.unique(f.space.spaces[0].knots)
         mask = np.ones(len(pts), dtype=bool)
         for uk in unique_knots:
             mask &= ~np.isclose(pts, uk, atol=1e-10)
@@ -851,16 +867,16 @@ class TestPeriodicBsplineEvaluation:
 
         # 0th order must match evaluate()
         np.testing.assert_allclose(
-            f_open.evaluate_derivatives(pts, [0]),
-            f_open.evaluate(pts),
+            f.evaluate_derivatives(pts, [0]),
+            f.evaluate(pts),
             atol=1e-13,
         )
 
         # 1st order validated by central finite differences
         h = 1e-6
-        fd = (f_open.evaluate(pts + h) - f_open.evaluate(pts - h)) / (2.0 * h)
+        fd = (f.evaluate(pts + h) - f.evaluate(pts - h)) / (2.0 * h)
         np.testing.assert_allclose(
-            f_open.evaluate_derivatives(pts, [1]),
+            f.evaluate_derivatives(pts, [1]),
             fd,
             atol=1e-5,
         )

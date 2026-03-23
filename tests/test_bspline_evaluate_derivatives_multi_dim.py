@@ -8,6 +8,26 @@ from pantr.bspline import Bspline, BsplineSpace, BsplineSpace1D, create_uniform_
 from pantr.quad import PointsLattice
 
 
+def _interior_pts_avoiding_knots(space_1d: BsplineSpace1D, n: int) -> npt.NDArray[np.float64]:
+    """Generate interior evaluation points that avoid knot positions.
+
+    Args:
+        space_1d (BsplineSpace1D): 1-D B-spline space.
+        n (int): Approximate number of points.
+
+    Returns:
+        np.ndarray: 1-D array of interior points.
+    """
+    a, b = space_1d.domain
+    pts = np.linspace(float(a), float(b), n + 2, dtype=np.float64)[1:-1]
+    unique_knots = np.unique(space_1d.knots)
+    mask = np.ones(len(pts), dtype=bool)
+    for uk in unique_knots:
+        mask &= ~np.isclose(pts, uk, atol=1e-10)
+    result: npt.NDArray[np.float64] = pts[mask]
+    return result
+
+
 def _make_2d_space(
     knots1: list[float],
     degree1: int,
@@ -458,37 +478,17 @@ class TestMultiDimDerivValidation:
 
 
 class TestPeriodicMultiDimDerivEvaluation:
-    """Test multi-dimensional evaluate_derivatives with periodic directions.
-
-    Direct comparison of ``f.evaluate_derivatives()`` vs ``f_open.evaluate_derivatives()``
-    is only performed for reduced-continuity (C^0, C^1) periodic directions.
-    Max-continuity periodic correctness is covered via ``to_open_bspline()`` constant-field
-    tests in test_bspline_evaluate_multi_dim.py.
-    """
-
-    @staticmethod
-    def _filter_knot_points(
-        pts: npt.NDArray[np.float64],
-        knots: npt.NDArray[np.float32 | np.float64],
-    ) -> npt.NDArray[np.float64]:
-        """Remove points that coincide with knot values."""
-        unique = np.unique(knots)
-        mask = np.ones(len(pts), dtype=bool)
-        for uk in unique:
-            mask &= ~np.isclose(pts, uk, atol=1e-10)
-        result: npt.NDArray[np.float64] = pts[mask]
-        return result
+    """Test multi-dimensional evaluate_derivatives with periodic directions."""
 
     @pytest.mark.parametrize(
         "orders",
         [
-            [0, 0],
             [1, 0],
             [0, 1],
         ],
     )
-    def test_2d_one_periodic_C0_derivatives_match_open(self, orders: list[int]) -> None:
-        """2-D (periodic C^0 x open) evaluate_derivatives agrees with open form."""
+    def test_2d_one_periodic_C0_derivatives_finite_diff(self, orders: list[int]) -> None:
+        """2-D (periodic C^0 x open) evaluate_derivatives agrees with finite differences."""
         knots_per = create_uniform_periodic(4, 2, continuity=0, dtype=np.float64)
         knots_open = np.array([0.0, 0.0, 0.0, 0.5, 1.0, 1.0, 1.0], dtype=np.float64)
         s_per = BsplineSpace1D(knots_per, 2, periodic=True)
@@ -497,35 +497,33 @@ class TestPeriodicMultiDimDerivEvaluation:
         n = space.num_total_basis
         ctrl = np.arange(1.0, n + 1.0, dtype=np.float64)
         f = Bspline(space, ctrl)
-        f_open = f.to_open_bspline()
 
-        # Use a margin to avoid the seam region where the clamped-index
-        # periodic evaluate algorithm diverges from the open form.
-        a0, b0 = f_open.space.spaces[0].domain
-        a1, b1 = f_open.space.spaces[1].domain
-        margin = 0.30 * (float(b0) - float(a0))
-        us = np.linspace(float(a0) + margin, float(b0) - margin, 4, dtype=np.float64)
-        us = self._filter_knot_points(us, f_open.space.spaces[0].knots)
-        vs = np.linspace(float(a1), float(b1), 6, dtype=np.float64)[1:-1]
+        # Avoid C^0 knot positions where the derivative is discontinuous
+        # and finite differences are inaccurate.
+        us = _interior_pts_avoiding_knots(f.space.spaces[0], 6)
+        vs = _interior_pts_avoiding_knots(f.space.spaces[1], 6)
         uu, vv = np.meshgrid(us, vs, indexing="ij")
         pts = np.column_stack([uu.ravel(), vv.ravel()])
 
-        np.testing.assert_allclose(
-            f.evaluate_derivatives(pts, orders),
-            f_open.evaluate_derivatives(pts, orders),
-            atol=1e-9,
-        )
+        # Validate with central finite differences.
+        h = 1e-7
+        d = orders.index(1)
+        pts_fwd = pts.copy()
+        pts_bwd = pts.copy()
+        pts_fwd[:, d] += h
+        pts_bwd[:, d] -= h
+        fd = (f.evaluate(pts_fwd) - f.evaluate(pts_bwd)) / (2.0 * h)
+        np.testing.assert_allclose(f.evaluate_derivatives(pts, orders), fd, atol=1e-5)
 
     @pytest.mark.parametrize(
         "orders",
         [
-            [0, 0],
             [1, 0],
             [0, 1],
         ],
     )
-    def test_2d_both_periodic_C0_derivatives_match_open(self, orders: list[int]) -> None:
-        """2-D (periodic C^0 x periodic C^0) evaluate_derivatives agrees with open form."""
+    def test_2d_both_periodic_C0_derivatives_finite_diff(self, orders: list[int]) -> None:
+        """2-D (periodic C^0 x periodic C^0) evaluate_derivatives agrees with finite diffs."""
         knots0 = create_uniform_periodic(4, 2, continuity=0, dtype=np.float64)
         knots1 = create_uniform_periodic(4, 2, continuity=0, dtype=np.float64)
         s0 = BsplineSpace1D(knots0, 2, periodic=True)
@@ -534,25 +532,23 @@ class TestPeriodicMultiDimDerivEvaluation:
         n = space.num_total_basis
         ctrl = np.arange(1.0, n + 1.0, dtype=np.float64)
         f = Bspline(space, ctrl)
-        f_open = f.to_open_bspline()
 
-        a0, b0 = f_open.space.spaces[0].domain
-        a1, b1 = f_open.space.spaces[1].domain
-        margin0 = 0.30 * (float(b0) - float(a0))
-        margin1 = 0.30 * (float(b1) - float(a1))
-        us = np.linspace(float(a0) + margin0, float(b0) - margin0, 3, dtype=np.float64)
-        vs = np.linspace(float(a1) + margin1, float(b1) - margin1, 3, dtype=np.float64)
+        us = _interior_pts_avoiding_knots(f.space.spaces[0], 5)
+        vs = _interior_pts_avoiding_knots(f.space.spaces[1], 5)
         uu, vv = np.meshgrid(us, vs, indexing="ij")
         pts = np.column_stack([uu.ravel(), vv.ravel()])
 
-        np.testing.assert_allclose(
-            f.evaluate_derivatives(pts, orders),
-            f_open.evaluate_derivatives(pts, orders),
-            atol=1e-9,
-        )
+        h = 1e-7
+        d = orders.index(1)
+        pts_fwd = pts.copy()
+        pts_bwd = pts.copy()
+        pts_fwd[:, d] += h
+        pts_bwd[:, d] -= h
+        fd = (f.evaluate(pts_fwd) - f.evaluate(pts_bwd)) / (2.0 * h)
+        np.testing.assert_allclose(f.evaluate_derivatives(pts, orders), fd, atol=1e-5)
 
-    def test_2d_periodic_degree3_C1_derivatives_match_open(self) -> None:
-        """2-D (periodic degree-3 C^1 x open) evaluate_derivatives agrees with open form."""
+    def test_2d_periodic_degree3_C1_derivatives_finite_diff(self) -> None:
+        """2-D (periodic degree-3 C^1 x open) evaluate_derivatives agrees with finite diffs."""
         knots_per = create_uniform_periodic(5, 3, continuity=1, dtype=np.float64)
         knots_open = np.array([0.0, 0.0, 0.0, 0.5, 1.0, 1.0, 1.0], dtype=np.float64)
         s_per = BsplineSpace1D(knots_per, 3, periodic=True)
@@ -561,21 +557,23 @@ class TestPeriodicMultiDimDerivEvaluation:
         n = space.num_total_basis
         ctrl = np.arange(1.0, n + 1.0, dtype=np.float64)
         f = Bspline(space, ctrl)
-        f_open = f.to_open_bspline()
 
-        a0, b0 = f_open.space.spaces[0].domain
-        a1, b1 = f_open.space.spaces[1].domain
-        margin = 0.30 * (float(b0) - float(a0))
-        us = np.linspace(float(a0) + margin, float(b0) - margin, 4, dtype=np.float64)
-        us = self._filter_knot_points(us, f_open.space.spaces[0].knots)
-        vs = np.linspace(float(a1), float(b1), 6, dtype=np.float64)[1:-1]
+        us = _interior_pts_avoiding_knots(f.space.spaces[0], 6)
+        vs = _interior_pts_avoiding_knots(f.space.spaces[1], 6)
         uu, vv = np.meshgrid(us, vs, indexing="ij")
         pts = np.column_stack([uu.ravel(), vv.ravel()])
 
-        for orders in [[0, 0], [1, 0], [0, 1]]:
+        h = 1e-7
+        for orders in [[1, 0], [0, 1]]:
+            d = orders.index(1)
+            pts_fwd = pts.copy()
+            pts_bwd = pts.copy()
+            pts_fwd[:, d] += h
+            pts_bwd[:, d] -= h
+            fd = (f.evaluate(pts_fwd) - f.evaluate(pts_bwd)) / (2.0 * h)
             np.testing.assert_allclose(
                 f.evaluate_derivatives(pts, orders),
-                f_open.evaluate_derivatives(pts, orders),
-                atol=1e-9,
+                fd,
+                atol=1e-5,
                 err_msg=f"Mismatch at orders={orders}",
             )

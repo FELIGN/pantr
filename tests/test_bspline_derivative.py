@@ -228,14 +228,12 @@ class TestNonRationalPeriodic1D:
     def test_periodic_matches_evaluate_derivatives(self) -> None:
         """Derivative evaluation matches evaluate_derivatives for periodic."""
         f = _make_periodic(4, 3)
-        f_open = f.to_open_bspline()
         f_prime = f.derivative()
-        f_prime_open = f_prime.to_open_bspline()
 
-        a, b = float(f_open.space.spaces[0].domain[0]), float(f_open.space.spaces[0].domain[1])
+        a, b = float(f.space.spaces[0].domain[0]), float(f.space.spaces[0].domain[1])
         pts = eval_pts(a, b, 201)
-        expected = f_open.evaluate_derivatives(pts, 1)
-        actual = f_prime_open.evaluate(pts)
+        expected = f.evaluate_derivatives(pts, 1)
+        actual = f_prime.evaluate(pts)
         np.testing.assert_allclose(actual, expected, atol=1e-9)
 
     def test_periodic_degree_reduced(self) -> None:
@@ -487,10 +485,9 @@ class TestKeepDegreeNonRational:
         assert not f_prime.space.spaces[0].periodic
 
         # Values must still match.
-        f_open = f.to_open_bspline()
-        a, b = float(f_open.space.spaces[0].domain[0]), float(f_open.space.spaces[0].domain[1])
+        a, b = float(f.space.spaces[0].domain[0]), float(f.space.spaces[0].domain[1])
         pts = eval_pts(a, b, 201)
-        expected = f_open.evaluate_derivatives(pts, 1)
+        expected = f.evaluate_derivatives(pts, 1)
         actual = f_prime.evaluate(pts)
         np.testing.assert_allclose(actual, expected, atol=1e-9)
 

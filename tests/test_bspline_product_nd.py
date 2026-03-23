@@ -569,19 +569,15 @@ class TestBoundaryTypes2D:
             for d in range(2):
                 assert h.space.spaces[d].periodic
 
-            # Verify correctness: open product of open operands should match.
-            f_o = f.to_open_bspline()
-            g_o = g.to_open_bspline()
-            h_ref = f_o * g_o  # open x open -> open product (trusted)
-            h_o = h.to_open_bspline()
-
-            # Use the intersection of the open domains for evaluation.
-            dom_u = h_o.space.spaces[0].domain
-            dom_v = h_o.space.spaces[1].domain
+            # Verify correctness: product must reproduce pointwise product.
+            dom_u = h.space.spaces[0].domain
+            dom_v = h.space.spaces[1].domain
             pts_u = _eval_lattice_pts(21, float(dom_u[0]), float(dom_u[1]))[1:-1]
             pts_v = _eval_lattice_pts(21, float(dom_v[0]), float(dom_v[1]))[1:-1]
             lattice = PointsLattice([pts_u, pts_v])
-            np.testing.assert_allclose(h_o.evaluate(lattice), h_ref.evaluate(lattice), atol=1e-10)
+            np.testing.assert_allclose(
+                h.evaluate(lattice), f.evaluate(lattice) * g.evaluate(lattice), atol=1e-10
+            )
 
     def test_mixed_periodic_open(self) -> None:
         """One direction periodic, one open -> periodic in u, open in v."""
@@ -604,18 +600,15 @@ class TestBoundaryTypes2D:
         assert h.space.spaces[1].has_open_knots()
         assert not h.space.spaces[1].periodic
 
-        # Verify correctness via open reference.
-        f_o = f.to_open_bspline()
-        g_o = g.to_open_bspline()
-        h_ref = f_o * g_o
-        h_o = h.to_open_bspline()
-
-        dom_u = h_o.space.spaces[0].domain
-        dom_v = h_o.space.spaces[1].domain
+        # Verify correctness: product must reproduce pointwise product.
+        dom_u = h.space.spaces[0].domain
+        dom_v = h.space.spaces[1].domain
         pts_u = _eval_lattice_pts(21, float(dom_u[0]), float(dom_u[1]))[1:-1]
         pts_v = _eval_lattice_pts(21, float(dom_v[0]), float(dom_v[1]))[1:-1]
         lattice = PointsLattice([pts_u, pts_v])
-        np.testing.assert_allclose(h_o.evaluate(lattice), h_ref.evaluate(lattice), atol=1e-10)
+        np.testing.assert_allclose(
+            h.evaluate(lattice), f.evaluate(lattice) * g.evaluate(lattice), atol=1e-10
+        )
 
     def test_nonopen_both_directions(self) -> None:
         """Both directions non-open should produce non-open result."""
