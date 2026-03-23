@@ -93,7 +93,8 @@ class TestBezierReduceDegreeApproximate:
         vals_orig = b.evaluate(pts)
         vals_red = reduced.evaluate(pts)
         # The error should be reasonably small (not exact)
-        assert np.max(np.abs(vals_orig - vals_red)) < 0.1
+        max_err_tol = 0.1
+        assert np.max(np.abs(vals_orig - vals_red)) < max_err_tol
 
     def test_endpoints_preserved(self) -> None:
         """After reduction, endpoints should be close to the original."""
