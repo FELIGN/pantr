@@ -22,6 +22,7 @@ from ._bspline_knot_insertion import (
     _compute_uniform_subdivision_knots,
     _insert_knots_bspline,
     _to_open_bspline_impl,
+    _to_periodic_bspline_impl,
 )
 from ._bspline_knot_removal import _remove_knots_bspline
 from ._bspline_restrict import _restrict_bspline_impl
@@ -509,6 +510,50 @@ class Bspline:
             bounds_per_dim = seq  # type: ignore[assignment]
 
         return _restrict_bspline_impl(self, bounds_per_dim)
+
+    def to_periodic(self, continuity: int | tuple[int | None, ...] | None = None) -> Bspline:
+        """Return a periodic B-spline equivalent to this one.
+
+        Converts each non-periodic parametric direction to a periodic
+        representation with the requested continuity at the seam (the domain
+        boundary where the periodic function wraps around).  Directions that
+        are already periodic are left unchanged.
+
+        The conversion performs an exact change of basis: the Oslo algorithm
+        defines the linear map from periodic control points (with modulo
+        wrapping) to open control points, and inverting this map via QR
+        factorization recovers the periodic representation.
+
+        Warning:
+            This method assumes the B-spline represents an inherently periodic
+            function — i.e., the function values and derivatives match at the
+            domain boundaries up to the requested continuity order.  If the
+            function is not periodic, the result will **not** represent the
+            same geometry.  Gross violations raise ``ValueError`` (via a
+            residual check), but small deviations may pass silently.  Use
+            :meth:`to_open_bspline` on the result to verify round-trip
+            fidelity if in doubt.
+
+        Args:
+            continuity (int | tuple[int | None, ...] | None): Target continuity
+                at the seam per direction.  ``None`` (default) requests maximum
+                regularity ``C^{p-1}`` in every non-periodic direction.  An
+                integer applies to all non-periodic directions; a tuple specifies
+                per-direction values where ``None`` entries skip that direction
+                (leave it unchanged).  Integer values must satisfy
+                ``0 <= continuity <= degree - 1``.
+
+        Returns:
+            Bspline: B-spline with the requested directions made periodic.
+
+        Raises:
+            ValueError: If no direction would be converted (all already periodic
+                or all skipped via ``None`` in the tuple).
+            ValueError: If the function is not periodic (endpoint mismatch
+                or residual exceeds tolerance).
+            ValueError: If ``continuity`` is out of range.
+        """
+        return _to_periodic_bspline_impl(self, continuity)
 
     def multiply(self, other: Bspline) -> Bspline:
         """Return the exact pointwise product of this B-spline and another.
