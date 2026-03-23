@@ -9,7 +9,7 @@ is dispatched to the de Boor algorithm implemented in ``_bspline_eval``.
 from __future__ import annotations
 
 from collections.abc import Sequence
-from typing import TYPE_CHECKING, Literal, overload
+from typing import TYPE_CHECKING, Any, Literal, overload
 
 import numpy as np
 from numpy import typing as npt
@@ -1073,3 +1073,44 @@ class Bspline:
         domain = space_d.domain
         value = float(domain[0]) if side == 0 else float(domain[1])
         return self.slice(axis, value)
+
+    # ------------------------------------------------------------------
+    # Visualization
+    # ------------------------------------------------------------------
+
+    def plot(
+        self,
+        *,
+        color: str | None = None,
+        show_control_points: bool = False,
+        show_control_polygon: bool = False,
+        show_knot_lines: bool = False,
+        **plotter_kwargs: Any,  # noqa: ANN401
+    ) -> object:
+        """Quick interactive visualization of this B-spline (requires pyvista).
+
+        For finer control, use :func:`pantr.viz.Scene` directly.
+
+        Args:
+            color: Surface color.
+            show_control_points: Render control points as spheres.
+            show_control_polygon: Render control polygon wireframe.
+            show_knot_lines: Render knot lines.
+            **plotter_kwargs: Additional keyword arguments for ``pv.Plotter()``.
+
+        Returns:
+            object: The pyvista ``Plotter`` after showing.
+
+        Raises:
+            ImportError: If pyvista is not installed.
+        """
+        from ..viz import plot as _plot  # noqa: PLC0415
+
+        return _plot(
+            self,
+            color=color,
+            show_control_points=show_control_points,
+            show_control_polygon=show_control_polygon,
+            show_knot_lines=show_knot_lines,
+            **plotter_kwargs,
+        )
