@@ -37,6 +37,7 @@ from pantr.bspline._bspline_knots import (
     _is_in_domain_impl,
 )
 from pantr.bspline._bspline_space_1d import _cached_unique_knots_and_multiplicity
+from pantr.change_basis import compute_lagrange_to_bernstein_1d
 from pantr.tolerance import get_strict
 
 
@@ -1280,6 +1281,81 @@ class TestCreateBsplineLagrangeExtractionOperators:
 
         assert result.dtype == np.float32
         assert result.shape == (1, 3, 3)
+
+
+class TestLagrangeExtractionVariants:
+    """Test Lagrange extraction operators with different LagrangeVariant values."""
+
+    @pytest.fixture()
+    def spline(self) -> BsplineSpace1D:
+        """Create a B-spline space with two intervals."""
+        return BsplineSpace1D([0.0, 0.0, 0.0, 0.5, 1.0, 1.0, 1.0], 2)
+
+    @pytest.mark.parametrize("variant", list(LagrangeVariant))
+    def test_public_method_matches_impl(
+        self, spline: BsplineSpace1D, variant: LagrangeVariant
+    ) -> None:
+        """Test that the public method delegates correctly for every variant."""
+        result = spline.tabulate_Lagrange_extraction_operators(lagrange_variant=variant)
+        expected = _tabulate_Bspline_Lagrange_1D_extraction_impl(
+            spline.knots, spline.degree, spline.tolerance, lagrange_variant=variant
+        )
+        np.testing.assert_allclose(result, expected)
+
+    @pytest.mark.parametrize("variant", list(LagrangeVariant))
+    def test_shape_and_dtype(self, spline: BsplineSpace1D, variant: LagrangeVariant) -> None:
+        """Test that all variants produce correct shape and dtype."""
+        result = spline.tabulate_Lagrange_extraction_operators(lagrange_variant=variant)
+        assert result.shape == (2, 3, 3)
+        assert result.dtype == np.float64
+
+    def test_variants_produce_different_results(self) -> None:
+        """Test that different variants produce different extraction operators."""
+        # Use degree 3 so equispaced and GLL points differ
+        spline_p3 = BsplineSpace1D([0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0], 3)
+        equi = spline_p3.tabulate_Lagrange_extraction_operators(
+            lagrange_variant=LagrangeVariant.EQUISPACES
+        )
+        gll = spline_p3.tabulate_Lagrange_extraction_operators(
+            lagrange_variant=LagrangeVariant.GAUSS_LOBATTO_LEGENDRE
+        )
+        assert not np.allclose(equi, gll)
+
+    def test_default_is_equispaces(self, spline: BsplineSpace1D) -> None:
+        """Test that the default variant is EQUISPACES."""
+        default_result = spline.tabulate_Lagrange_extraction_operators()
+        equi_result = spline.tabulate_Lagrange_extraction_operators(
+            lagrange_variant=LagrangeVariant.EQUISPACES
+        )
+        np.testing.assert_allclose(default_result, equi_result)
+
+    @pytest.mark.parametrize("variant", list(LagrangeVariant))
+    def test_out_parameter_with_variant(
+        self, spline: BsplineSpace1D, variant: LagrangeVariant
+    ) -> None:
+        """Test that the out parameter works correctly with all variants."""
+        result1 = spline.tabulate_Lagrange_extraction_operators(lagrange_variant=variant)
+        out = np.zeros_like(result1)
+        result2 = spline.tabulate_Lagrange_extraction_operators(lagrange_variant=variant, out=out)
+        np.testing.assert_allclose(result1, result2)
+        assert result2 is out
+
+    @pytest.mark.parametrize("variant", list(LagrangeVariant))
+    def test_lagrange_is_bezier_times_change_of_basis(self, variant: LagrangeVariant) -> None:
+        """Test that Lagrange extraction equals Bézier extraction times change-of-basis.
+
+        The Lagrange extraction operator C_L = C_B @ M, where C_B is the Bézier
+        extraction and M is the Lagrange-to-Bernstein change-of-basis matrix.
+        """
+        degree = 3
+        knots_list = [0.0] * (degree + 1) + [0.5] + [1.0] * (degree + 1)
+        spline = BsplineSpace1D(knots_list, degree)
+        lagr_extraction = spline.tabulate_Lagrange_extraction_operators(lagrange_variant=variant)
+        bezier_extraction = spline.tabulate_Bezier_extraction_operators()
+        lagr_to_bern = compute_lagrange_to_bernstein_1d(degree, variant, np.float64)
+        for i in range(lagr_extraction.shape[0]):
+            expected = bezier_extraction[i] @ lagr_to_bern
+            np.testing.assert_allclose(lagr_extraction[i], expected, atol=1e-14)
 
 
 class TestCreateBsplineCardinalExtractionOperators:
