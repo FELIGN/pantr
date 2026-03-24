@@ -15,7 +15,8 @@
       "Bash(python3 *)",
       "Bash(cd *)",
       "Bash(sphinx-build *)",
-      "Bash(make *)"
+      "Bash(make *)",
+      "Bash(conda activate *)"
     ]
   }
 }
