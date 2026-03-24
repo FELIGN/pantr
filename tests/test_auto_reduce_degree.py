@@ -63,6 +63,14 @@ class TestAutoReduceDegree1D:
         assert reduced.degree == (0,)
         np.testing.assert_array_equal(reduced.control_points, b.control_points)
 
+    def test_zero_polynomial_reduced_to_degree_0(self) -> None:
+        """A zero polynomial of arbitrary degree should reduce to degree 0."""
+        ctrl = np.zeros((4, 2))  # degree 3, rank 2, all zero
+        b = Bezier(ctrl)
+        reduced = b.auto_reduce_degree()
+        assert reduced.degree == (0,)
+        np.testing.assert_array_equal(reduced.control_points, np.zeros((1, 2)))
+
 
 # ---------------------------------------------------------------------------
 # Multi-dimensional tests
