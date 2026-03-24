@@ -61,21 +61,13 @@ def _make_rational_surface(dtype: type = np.float64) -> Bezier:
 
 
 class TestCollapse1D:
-    """Test collapse on a 1D Bézier (should be a no-op copy)."""
+    """Test that collapsing a 1D Bézier raises an error."""
 
-    def test_returns_copy(self) -> None:
-        """Collapsing a 1D Bézier returns a copy with same control points."""
+    def test_raises_on_1d(self) -> None:
+        """Collapsing a 1D Bézier raises ValueError."""
         crv = _make_1d_curve()
-        result = crv.collapse_along_axis(0, [])
-        assert isinstance(result, Bezier)
-        assert result.dim == 1
-        np.testing.assert_array_equal(result.control_points, crv.control_points)
-
-    def test_is_independent_copy(self) -> None:
-        """The returned Bézier does not share memory with the original."""
-        crv = _make_1d_curve()
-        result = crv.collapse_along_axis(0, [])
-        assert not np.shares_memory(result.control_points, crv.control_points)
+        with pytest.raises(ValueError, match="dim >= 2"):
+            crv.collapse_along_axis(0, [])
 
 
 # ---------------------------------------------------------------------------
@@ -229,12 +221,11 @@ class TestCollapse3DHigherDegree:
 class TestCollapseRational:
     """Test collapse on rational Béziers."""
 
-    def test_rational_1d_is_noop(self) -> None:
-        """Collapsing a rational 1D curve returns a rational copy."""
+    def test_rational_1d_raises(self) -> None:
+        """Collapsing a rational 1D curve raises ValueError."""
         crv = _make_rational_curve()
-        result = crv.collapse_along_axis(0, [])
-        assert result.is_rational
-        np.testing.assert_array_equal(result.control_points, crv.control_points)
+        with pytest.raises(ValueError, match="dim >= 2"):
+            crv.collapse_along_axis(0, [])
 
     def test_rational_2d_preserves_rationality(self) -> None:
         """Collapsing a rational 2D surface preserves is_rational."""

@@ -60,10 +60,6 @@ def _collapse_along_axis(
     from . import Bezier as BezierCls  # noqa: PLC0415
 
     dim = bezier.dim
-
-    if dim == 1:
-        return BezierCls(bezier.control_points.copy(), is_rational=bezier.is_rational)
-
     ctrl = bezier.control_points
     dtype = bezier.dtype
     degrees = bezier.degree

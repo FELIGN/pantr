@@ -745,6 +745,7 @@ class Bezier:
             the same rank and rationality as the input.
 
         Raises:
+            ValueError: If ``dim < 2`` (nothing to collapse).
             ValueError: If ``axis`` is out of range ``[0, dim)``.
             ValueError: If ``values`` does not have length ``dim - 1``.
             ValueError: If any value is outside ``[0, 1]``.
@@ -753,6 +754,8 @@ class Bezier:
             >>> # Collapse a 3D volume along axis 1 at (u=0.3, w=0.7)
             >>> curve = volume.collapse_along_axis(1, [0.3, 0.7])
         """
+        if self.dim < 2:  # noqa: PLR2004
+            raise ValueError("collapse_along_axis requires dim >= 2.")
         if axis < 0 or axis >= self.dim:
             raise ValueError(f"axis must be in [0, {self.dim}), got {axis}.")
 
