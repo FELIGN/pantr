@@ -108,10 +108,7 @@ def _compose_impl(outer: Bezier, inner: Bezier) -> Bezier:
 
     # Step 2: Compute result degree and accumulate.
     sum_deg_f = sum(deg_f)
-    if dim_g == 1:
-        result_shape = (sum_deg_f * inner.degree[0] + 1,)
-    else:
-        result_shape = tuple(sum_deg_f * n + 1 for n in inner.degree)
+    result_shape: tuple[int, ...] = tuple(sum_deg_f * n + 1 for n in inner.degree)
 
     result_ctrl = np.zeros((*result_shape, rank), dtype=dtype)
 
