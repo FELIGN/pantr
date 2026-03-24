@@ -12,6 +12,7 @@ from .._transform_control_points import _apply_affine_to_control_points
 from ._bezier_degree import _degree_elevate_bezier, _degree_reduce_bezier
 from ._bezier_derivative import _derivative_bezier
 from ._bezier_eval import _evaluate_bezier, _evaluate_bezier_deriv
+from ._bezier_norm import _l2_norm_bezier, _squared_l2_norm_bezier
 from ._bezier_product import _multiply_bezier
 from ._bezier_restrict import _restrict_bezier
 from ._bezier_slice import _slice_bezier
@@ -386,6 +387,54 @@ class Bezier:
         return _multiply_bezier(self, other)
 
     __mul__ = multiply
+
+    # ------------------------------------------------------------------
+    # Norms
+    # ------------------------------------------------------------------
+
+    def squared_l2_norm(self) -> np.floating[Any]:
+        r"""Compute the squared L2 norm over the unit hypercube.
+
+        .. math::
+
+            \|p\|^2 = \int_{[0,1]^D} \|p(x)\|^2 \, dx
+
+        For scalar Bézier this equals :math:`c^T M c` where :math:`M` is
+        the Bernstein mass matrix.  For vector-valued Bézier (rank > 1) it
+        equals the sum of component-wise squared norms.
+
+        Returns:
+            np.floating[Any]: The squared L2 norm.
+
+        Raises:
+            ValueError: If the Bézier is rational.
+
+        Example:
+            >>> b = Bezier([1.0, 1.0, 1.0])
+            >>> float(b.squared_l2_norm())
+            1.0
+        """
+        return _squared_l2_norm_bezier(self)
+
+    def l2_norm(self) -> np.floating[Any]:
+        r"""Compute the L2 norm over the unit hypercube.
+
+        .. math::
+
+            \|p\| = \sqrt{\int_{[0,1]^D} \|p(x)\|^2 \, dx}
+
+        Returns:
+            np.floating[Any]: The L2 norm (non-negative scalar).
+
+        Raises:
+            ValueError: If the Bézier is rational.
+
+        Example:
+            >>> b = Bezier([1.0, 1.0, 1.0])
+            >>> float(b.l2_norm())
+            1.0
+        """
+        return _l2_norm_bezier(self)
 
     # ------------------------------------------------------------------
     # Reverse and permute
