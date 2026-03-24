@@ -9,7 +9,11 @@ import numpy as np
 from numpy import typing as npt
 
 from .._transform_control_points import _apply_affine_to_control_points
-from ._bezier_degree import _degree_elevate_bezier, _degree_reduce_bezier
+from ._bezier_degree import (
+    _auto_reduce_degree_bezier,
+    _degree_elevate_bezier,
+    _degree_reduce_bezier,
+)
 from ._bezier_derivative import _derivative_bezier
 from ._bezier_eval import _evaluate_bezier, _evaluate_bezier_deriv
 from ._bezier_product import _multiply_bezier
@@ -355,6 +359,46 @@ class Bezier:
                 )
 
         return _degree_reduce_bezier(self, decrements)
+
+    def auto_reduce_degree(self, tol: float | None = None) -> Bezier:
+        """Automatically reduce polynomial degree where possible.
+
+        Iteratively tries to lower the degree by one in each parametric
+        direction, keeping the reduction only when the L2 norm of the
+        round-trip error (reduce then re-elevate) stays below ``tol`` times
+        the L2 norm of the current polynomial.  This follows the
+        *autoReduction* strategy from algoim (Saye, *J. Comput. Phys.* 448,
+        110720, 2022).
+
+        Args:
+            tol (float | None): Relative tolerance for accepting a degree
+                reduction.  If ``None`` (default), uses
+                ``1e3 * machine_epsilon`` for the control-point dtype.
+
+        Returns:
+            Bezier: A new Bézier with potentially reduced degrees, or the
+            original instance if no reduction was possible.
+
+        Raises:
+            TypeError: If the Bézier is rational.
+            ValueError: If *tol* is not positive.
+        """
+        if self.is_rational:
+            raise TypeError("auto_reduce_degree is only supported for non-rational Bézier.")
+
+        tol_value: float
+        if tol is None:
+            if self._control_points.dtype == np.float32:
+                tol_value = float(1e3 * np.finfo(np.float32).eps)
+            else:
+                tol_value = float(1e3 * np.finfo(np.float64).eps)
+        else:
+            tol_value = tol
+
+        if tol_value <= 0:
+            raise ValueError(f"Tolerance must be positive, got {tol_value}.")
+
+        return _auto_reduce_degree_bezier(self, tol_value)
 
     # ------------------------------------------------------------------
     # Multiply
