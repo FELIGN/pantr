@@ -179,8 +179,9 @@ def _compute_bernstein_bases(
         Inputs are assumed to be correct (no validation performed).
     """
     if degree == 0:
-        # B_0^0 = 1: constant Bézier with coefficient 1.
-        ones = np.ones_like(g_ctrl)
+        # B_0^0 = 1: constant (degree-0) Bézier with coefficient 1.
+        shape = (*tuple(1 for _ in g_ctrl.shape[:-1]), 1)
+        ones = np.ones(shape, dtype=g_ctrl.dtype)
         return [ones]
 
     # Compute (1 - g) control points (partition of unity property).
