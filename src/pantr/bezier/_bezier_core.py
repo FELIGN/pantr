@@ -1,13 +1,13 @@
-"""Numba-compiled kernels for Bézier evaluation, degree elevation, and degree reduction.
+"""Numba-compiled kernels for Bézier operations.
 
 Provides fused evaluation kernels that compute Bernstein basis values and
-contract them with control points in a single pass, plus degree elevation
-and degree reduction kernels.
+contract them with control points in a single pass, plus degree elevation,
+degree reduction, and uniform sign detection kernels.
 
 Note:
     Inputs are assumed to be correct (no validation performed).
-    For general use, call the Layer 2 helpers in ``_bezier_eval`` and
-    ``_bezier_degree`` instead.
+    For general use, call the Layer 2 helpers in ``_bezier_eval``,
+    ``_bezier_degree``, and ``_bezier_sign`` instead.
 """
 
 from __future__ import annotations
@@ -607,6 +607,48 @@ def _scalar_bernstein_product_1d_core(
     return out
 
 
+@nb_jit(nopython=True, cache=True)
+def _uniform_sign_core(
+    coeffs: npt.NDArray[np.float64],
+) -> np.intp:
+    """Check whether all Bernstein coefficients share the same strict sign.
+
+    Returns ``+1`` if every coefficient is strictly positive, ``-1`` if every
+    coefficient is strictly negative, and ``0`` otherwise (mixed signs or at
+    least one zero coefficient).
+
+    Args:
+        coeffs (npt.NDArray[np.float64]): Flattened Bernstein coefficients of a
+            scalar Bézier, shape ``(n,)``.
+
+    Returns:
+        np.intp: ``+1``, ``-1``, or ``0``.
+
+    Note:
+        Inputs are assumed to be correct (no validation performed).
+        For general use, call :func:`_bezier_sign._uniform_sign` instead.
+    """
+    n = coeffs.shape[0]
+    if n == 0:
+        return np.intp(0)
+
+    has_pos = False
+    has_neg = False
+    for i in range(n):
+        if coeffs[i] > 0.0:
+            has_pos = True
+        elif coeffs[i] < 0.0:
+            has_neg = True
+        else:
+            return np.intp(0)
+        if has_pos and has_neg:
+            return np.intp(0)
+
+    if has_pos:
+        return np.intp(1)
+    return np.intp(-1)
+
+
 def _warmup_numba_functions() -> None:
     """Precompile numba functions with float64 signatures for faster first call.
 
@@ -632,3 +674,6 @@ def _warmup_numba_functions() -> None:
     a_dummy = np.array([0.0, 1.0], dtype=np.float64)
     b_dummy = np.array([1.0, 0.0], dtype=np.float64)
     _scalar_bernstein_product_1d_core(a_dummy, b_dummy)
+
+    sign_dummy = np.array([1.0, 2.0, 3.0], dtype=np.float64)
+    _uniform_sign_core(sign_dummy)
