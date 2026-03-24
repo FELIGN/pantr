@@ -285,7 +285,7 @@ class TestComposeEdgeCases:
         _verify_composition(surface, curve, h)
 
     def test_float32(self) -> None:
-        """Test composition with float32 operands."""
+        """Test composition with float32 operands (1D → 1D)."""
         f_ctrl = np.array([[0.0, 0.0], [1.0, 1.0], [2.0, 0.0]], dtype=np.float32)
         g_ctrl = np.array([[0.2], [0.8]], dtype=np.float32)
         f = Bezier(f_ctrl)
@@ -294,6 +294,31 @@ class TestComposeEdgeCases:
 
         assert h.dtype == np.float32
         _verify_composition(f, g, h, atol=1e-5)
+
+    def test_float32_nd(self) -> None:
+        """Test composition with float32 operands (2D surface → 1D curve)."""
+        surface = _random_bezier((2, 3), 2, rng=np.random.default_rng(85))
+        curve = _random_bezier((2,), 2, rng=np.random.default_rng(86))
+        # Cast to float32
+        surface_f32 = Bezier(surface.control_points.astype(np.float32))
+        curve_f32 = Bezier(curve.control_points.astype(np.float32))
+        h = surface_f32.compose(curve_f32)
+
+        assert h.dtype == np.float32
+        assert h.dim == 1
+        _verify_composition(surface_f32, curve_f32, h, atol=1e-4)
+
+    def test_degree_zero_inner_one_direction(self) -> None:
+        """Test composing a 2D surface with an inner that is constant in one direction."""
+        surface = _random_bezier((2, 3), 2, rng=np.random.default_rng(87))
+        # Inner has degree (2, 0): linear in s, constant in t — maps to a curve
+        inner = Bezier(np.array([[[0.3, 0.5]], [[0.7, 0.5]]], dtype=np.float64))
+        assert inner.degree == (1, 0)
+        h = surface.compose(inner)
+
+        assert h.dim == 2  # noqa: PLR2004
+        assert h.degree == (5, 0)  # (2+3)*1, (2+3)*0
+        _verify_composition(surface, inner, h)
 
 
 # ---------------------------------------------------------------------------

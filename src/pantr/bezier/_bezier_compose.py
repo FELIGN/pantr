@@ -18,10 +18,7 @@ import numpy as np
 import numpy.typing as npt
 
 from ._bezier_core import _scalar_bernstein_product_1d_core
-from ._bezier_product import (
-    _bernstein_product_coefficients,
-    _bernstein_product_coefficients_nd,
-)
+from ._bezier_product import _bernstein_product_coefficients_nd
 
 if TYPE_CHECKING:
     from . import Bezier
@@ -85,8 +82,8 @@ def _compose_impl(outer: Bezier, inner: Bezier) -> Bezier:
         ~pantr.bezier.Bezier: The composed Bézier.
 
     Note:
-        Inputs are assumed to be correct (no validation performed).
-        For general use, call :func:`_compose_bezier` instead.
+        Validation is performed by :func:`_compose_bezier`; this function
+        assumes both operands have already been validated.
     """
     from . import Bezier as BezierCls  # noqa: PLC0415
 
@@ -188,15 +185,13 @@ def _compute_bernstein_bases(
     g_powers = _compute_scalar_powers(g_ctrl, degree, use_1d_kernel)
     one_minus_g_powers = _compute_scalar_powers(one_minus_g_ctrl, degree, use_1d_kernel)
 
-    # Build Bernstein bases.
-    bases: list[npt.NDArray[np.float32 | np.float64]] = [None] * (degree + 1)  # type: ignore[list-item]
-    bases[0] = one_minus_g_powers[degree - 1]  # (1-g)^m
-    bases[degree] = g_powers[degree - 1]  # g^m
-
+    # Build Bernstein bases in order: B_0^m, B_1^m, ..., B_m^m.
+    bases: list[npt.NDArray[np.float32 | np.float64]] = [one_minus_g_powers[degree - 1]]
     for i in range(1, degree):
         binom_coeff = math.comb(degree, i)
         prod = _product_fn(g_powers[i - 1], one_minus_g_powers[degree - i - 1], use_1d_kernel)
-        bases[i] = float(binom_coeff) * prod
+        bases.append(float(binom_coeff) * prod)
+    bases.append(g_powers[degree - 1])
 
     return bases
 
@@ -245,8 +240,9 @@ def _product_fn(
             scalar Bézier.
         b (npt.NDArray[np.float32 | np.float64]): Control points of the second
             scalar Bézier.
-        use_1d_kernel (bool): If True, use the 1D Numba kernel (expects shape
-            ``(n, 1)``). If False, use the nD NumPy implementation.
+        use_1d_kernel (bool): If True, use the 1D Numba kernel (shape ``(n, 1)``
+            arrays, set when the inner Bézier is 1D). If False, use the nD
+            NumPy implementation.
 
     Returns:
         npt.NDArray[np.float32 | np.float64]: Product Bézier control points.
@@ -257,6 +253,4 @@ def _product_fn(
     if use_1d_kernel:
         result_1d = _scalar_bernstein_product_1d_core(a[:, 0], b[:, 0])
         return result_1d[:, np.newaxis]
-    if a.ndim - 1 == 1:
-        return _bernstein_product_coefficients(a, b)
     return _bernstein_product_coefficients_nd(a, b)

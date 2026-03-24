@@ -560,7 +560,7 @@ def _restrict_bezier_1d_core(  # noqa: PLR0912
             out[i, col] = d[i]
 
 
-@nb_jit(nopython=True, cache=True)
+@nb_jit(nopython=True, cache=True, parallel=True)
 def _scalar_bernstein_product_1d_core(
     a: npt.NDArray[np.float32 | np.float64],
     b: npt.NDArray[np.float32 | np.float64],
@@ -601,7 +601,7 @@ def _scalar_bernstein_product_1d_core(
         for j in range(q + 1):
             out[i + j] += ai_scaled * b[j] * _bincoeff(q, j)
 
-    for k in range(r + 1):
+    for k in nb_prange(r + 1):
         out[k] /= _bincoeff(r, k)
 
     return out
