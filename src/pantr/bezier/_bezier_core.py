@@ -560,6 +560,53 @@ def _restrict_bezier_1d_core(  # noqa: PLR0912
             out[i, col] = d[i]
 
 
+@nb_jit(nopython=True, cache=True)
+def _scalar_bernstein_product_1d_core(
+    a: npt.NDArray[np.float32 | np.float64],
+    b: npt.NDArray[np.float32 | np.float64],
+) -> npt.NDArray[np.float32 | np.float64]:
+    r"""Compute the Bernstein product of two scalar 1D Bézier curves.
+
+    Given two scalar Bézier curves with control points ``a`` (degree ``p``)
+    and ``b`` (degree ``q``), computes the product curve of degree ``p + q``
+    using the binomial-scaled convolution formula:
+
+    .. math::
+
+        c_k = \frac{1}{\binom{p+q}{k}} \sum_{i=\max(0,k-q)}^{\min(p,k)}
+              \binom{p}{i}\,\binom{q}{k-i}\, a_i\, b_{k-i}
+
+    Args:
+        a (npt.NDArray[np.float32 | np.float64]): Control points of the first
+            scalar Bézier, shape ``(p + 1,)``.
+        b (npt.NDArray[np.float32 | np.float64]): Control points of the second
+            scalar Bézier, shape ``(q + 1,)``.
+
+    Returns:
+        npt.NDArray[np.float32 | np.float64]: Product control points of shape
+        ``(p + q + 1,)``.
+
+    Note:
+        Inputs are assumed to be correct (no validation performed).
+        For general use, call :func:`_bezier_compose._compose_bezier` instead.
+    """
+    p = a.shape[0] - 1
+    q = b.shape[0] - 1
+    r = p + q
+
+    out = np.zeros(r + 1, dtype=a.dtype)
+
+    for i in range(p + 1):
+        ai_scaled = a[i] * _bincoeff(p, i)
+        for j in range(q + 1):
+            out[i + j] += ai_scaled * b[j] * _bincoeff(q, j)
+
+    for k in range(r + 1):
+        out[k] /= _bincoeff(r, k)
+
+    return out
+
+
 def _warmup_numba_functions() -> None:
     """Precompile numba functions with float64 signatures for faster first call.
 
@@ -581,3 +628,7 @@ def _warmup_numba_functions() -> None:
     _slice_bezier_1d_core(ctrl_dummy, 0.5, out_slice_dummy)
     _split_bezier_1d_core(ctrl_dummy, 0.5, out_split_dummy, out_split_dummy.copy())
     _restrict_bezier_1d_core(ctrl_dummy, 0.2, 0.8, out_split_dummy)
+
+    a_dummy = np.array([0.0, 1.0], dtype=np.float64)
+    b_dummy = np.array([1.0, 0.0], dtype=np.float64)
+    _scalar_bernstein_product_1d_core(a_dummy, b_dummy)

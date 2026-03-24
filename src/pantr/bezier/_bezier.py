@@ -9,6 +9,7 @@ import numpy as np
 from numpy import typing as npt
 
 from .._transform_control_points import _apply_affine_to_control_points
+from ._bezier_compose import _compose_bezier
 from ._bezier_degree import _degree_elevate_bezier, _degree_reduce_bezier
 from ._bezier_derivative import _derivative_bezier
 from ._bezier_eval import _evaluate_bezier, _evaluate_bezier_deriv
@@ -386,6 +387,37 @@ class Bezier:
         return _multiply_bezier(self, other)
 
     __mul__ = multiply
+
+    # ------------------------------------------------------------------
+    # Compose
+    # ------------------------------------------------------------------
+
+    def compose(self, inner: Bezier) -> Bezier:
+        """Compose this Bézier with another: ``result(t) = self(inner(t))``.
+
+        Computes the exact composition of two non-rational Bézier objects.
+        The result is a new Bézier with parametric dimension equal to
+        ``inner.dim``, rank equal to ``self.rank``, and degree
+        ``sum(self.degree) * inner.degree[s]`` in each direction ``s``.
+
+        Args:
+            inner (Bezier): The inner Bézier (reparametrization). Must be
+                non-rational and satisfy ``inner.rank == self.dim``.
+
+        Returns:
+            Bezier: A new Bézier representing ``self(inner(t))``.
+
+        Raises:
+            TypeError: If either Bézier is rational.
+            ValueError: If ``inner.rank != self.dim``.
+            ValueError: If the operands have different dtypes.
+
+        Example:
+            >>> f = Bezier(np.array([[0.0, 0.0], [1.0, 1.0], [2.0, 0.0]]))
+            >>> g = Bezier(np.array([[0.2], [0.8]]))
+            >>> h = f.compose(g)
+        """
+        return _compose_bezier(self, inner)
 
     # ------------------------------------------------------------------
     # Reverse and permute
