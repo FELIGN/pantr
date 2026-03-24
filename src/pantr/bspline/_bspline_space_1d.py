@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING
 import numpy as np
 from numpy import typing as npt
 
+from ..basis import LagrangeVariant
 from ..tolerance import get_strict
 from ._bspline_basis_core import (
     _tabulate_Bspline_basis_1D_impl,
@@ -556,11 +557,16 @@ class BsplineSpace1D:
         )
 
     def tabulate_Lagrange_extraction_operators(
-        self, out: npt.NDArray[np.float32 | np.float64] | None = None
+        self,
+        lagrange_variant: LagrangeVariant = LagrangeVariant.EQUISPACES,
+        out: npt.NDArray[np.float32 | np.float64] | None = None,
     ) -> npt.NDArray[np.float32 | np.float64]:
         """Create Lagrange extraction operators of the B-spline.
 
         Args:
+            lagrange_variant (LagrangeVariant): Lagrange point distribution to use
+                (e.g., equispaced, Gauss-Lobatto-Legendre, etc).
+                Defaults to `LagrangeVariant.EQUISPACES`.
             out (npt.NDArray[np.float32 | np.float64] | None): Optional output array where the
                 result will be stored. If None, a new array is allocated. Must have the correct
                 shape and dtype if provided. This follows NumPy's style for output arrays.
@@ -582,7 +588,7 @@ class BsplineSpace1D:
             ValueError: If `out` is provided and has incorrect shape or dtype.
         """
         return _tabulate_Bspline_Lagrange_1D_extraction_impl(
-            self.knots, self.degree, self.tolerance, out=out
+            self.knots, self.degree, self.tolerance, lagrange_variant=lagrange_variant, out=out
         )
 
     def tabulate_cardinal_extraction_operators(
