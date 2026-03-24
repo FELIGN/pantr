@@ -9,6 +9,7 @@ import numpy as np
 from numpy import typing as npt
 
 from .._transform_control_points import _apply_affine_to_control_points
+from ._bezier_collapse import _collapse_along_axis
 from ._bezier_compose import _compose_bezier
 from ._bezier_degree import _degree_elevate_bezier, _degree_reduce_bezier
 from ._bezier_derivative import _derivative_bezier
@@ -744,6 +745,53 @@ class Bezier:
 
         value = 0.0 if side == 0 else 1.0
         return self.slice(axis, value)
+
+    # ------------------------------------------------------------------
+    # Collapse along axis
+    # ------------------------------------------------------------------
+
+    def collapse_along_axis(
+        self,
+        axis: int,
+        values: npt.ArrayLike,
+    ) -> Bezier:
+        """Collapse to a univariate Bézier along one parametric direction.
+
+        Fixes all parametric directions except ``axis`` at the given parameter
+        values, producing a 1D Bézier whose control points are the Bernstein
+        coefficients along ``axis``.  This is a tensor contraction: for each
+        collapsed direction, the Bernstein basis is evaluated at the given
+        value and contracted with the control point array.
+
+        Args:
+            axis (int): Parametric direction to keep (0-indexed).
+                Must be in ``[0, dim)``.
+            values (npt.ArrayLike): Parameter values for all directions
+                except ``axis``.  Must have length ``dim - 1`` with all
+                values in ``[0, 1]``.  ``values[i]`` corresponds to
+                direction ``i`` for ``i < axis``, and direction ``i + 1``
+                for ``i >= axis``.
+
+        Returns:
+            Bezier: A 1D Bézier with degree ``self.degree[axis]`` and
+            the same rank and rationality as the input.
+
+        Raises:
+            ValueError: If ``dim < 2`` (nothing to collapse).
+            ValueError: If ``axis`` is out of range ``[0, dim)``.
+            ValueError: If ``values`` does not have length ``dim - 1``.
+            ValueError: If any value is outside ``[0, 1]``.
+
+        Example:
+            >>> # Collapse a 3D volume along axis 1 at (u=0.3, w=0.7)
+            >>> curve = volume.collapse_along_axis(1, [0.3, 0.7])
+        """
+        if self.dim < 2:  # noqa: PLR2004
+            raise ValueError("collapse_along_axis requires dim >= 2.")
+        if axis < 0 or axis >= self.dim:
+            raise ValueError(f"axis must be in [0, {self.dim}), got {axis}.")
+
+        return _collapse_along_axis(self, axis, values)
 
     # ------------------------------------------------------------------
     # Conversion
