@@ -11,6 +11,7 @@ This is the ``uniformSign`` utility from the algoim library
 
 from __future__ import annotations
 
+import enum
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
@@ -22,19 +23,38 @@ if TYPE_CHECKING:
     from . import Bezier
 
 
-def _uniform_sign(bezier: Bezier) -> int:
+class UniformSign(enum.IntEnum):
+    """Result of a uniform sign test on Bernstein coefficients.
+
+    Attributes:
+        NEGATIVE: All coefficients are strictly negative.
+        MIXED: Coefficients have mixed signs or at least one is zero.
+        POSITIVE: All coefficients are strictly positive.
+    """
+
+    NEGATIVE = -1
+    """All coefficients are strictly negative."""
+
+    MIXED = 0
+    """Coefficients have mixed signs or at least one is zero."""
+
+    POSITIVE = 1
+    """All coefficients are strictly positive."""
+
+
+def _uniform_sign(bezier: Bezier) -> UniformSign:
     """Check whether a scalar non-rational Bézier has uniform sign.
 
-    Returns ``+1`` if every Bernstein coefficient is strictly positive,
-    ``-1`` if every coefficient is strictly negative, and ``0`` otherwise
-    (mixed signs or at least one zero coefficient).
+    Uses the convex hull property of Bernstein polynomials: if all coefficients
+    share the same strict sign, the polynomial cannot change sign over its
+    domain.
 
     Args:
         bezier (~pantr.bezier.Bezier): A scalar (``rank == 1``),
             non-rational Bézier of any parametric dimension.
 
     Returns:
-        int: ``+1``, ``-1``, or ``0``.
+        UniformSign: The uniform sign of the Bernstein coefficients.
 
     Raises:
         TypeError: If ``bezier`` is rational.
@@ -51,4 +71,4 @@ def _uniform_sign(bezier: Bezier) -> int:
     # Ensure contiguous for the kernel (int arrays are already cast in Bezier constructor).
     coeffs = np.ascontiguousarray(coeffs, dtype=bezier.dtype)
 
-    return int(_uniform_sign_core(coeffs))
+    return UniformSign(int(_uniform_sign_core(coeffs)))
