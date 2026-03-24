@@ -11,6 +11,7 @@ error remains below a relative tolerance.
 from __future__ import annotations
 
 import math
+from collections.abc import Callable
 from functools import lru_cache
 from typing import TYPE_CHECKING
 
@@ -203,6 +204,39 @@ def _squared_l2_norm_bernstein(
     return float(np.sum(ctrl_f64 * temp))
 
 
+def _apply_1d_kernel_along(
+    ctrl: npt.NDArray[np.float32 | np.float64],
+    direction: int,
+    kernel: Callable[..., npt.NDArray[np.float32 | np.float64]],
+    degree: int,
+    amount: int,
+) -> npt.NDArray[np.float32 | np.float64]:
+    """Apply a 1-D Bézier kernel along a single parametric direction.
+
+    Encapsulates the moveaxis/reshape -> kernel -> reshape/moveaxis pattern
+    shared by degree elevation and reduction along a single direction.
+
+    Args:
+        ctrl (npt.NDArray[np.float32 | np.float64]): Control-point array.
+        direction (int): Parametric direction to apply the kernel to.
+        kernel (Callable[..., npt.NDArray[np.float32 | np.float64]]): 1-D kernel
+            callable with signature ``(degree, pts_2d, amount)``.
+        degree (int): Current degree in *direction*, passed to *kernel*.
+        amount (int): Degree increment or decrement, passed to *kernel*.
+
+    Returns:
+        npt.NDArray[np.float32 | np.float64]: Updated control points after
+        applying the kernel along *direction*.
+    """
+    moved = np.moveaxis(ctrl, direction, 0)
+    orig_shape = moved.shape
+    pts_2d = moved.reshape(orig_shape[0], -1)
+    if not pts_2d.flags.c_contiguous:
+        pts_2d = np.ascontiguousarray(pts_2d)
+    new_2d = kernel(degree, pts_2d, amount)
+    return np.moveaxis(new_2d.reshape(new_2d.shape[0], *orig_shape[1:]), 0, direction)
+
+
 def _reduce_ctrl_along(
     ctrl: npt.NDArray[np.float32 | np.float64],
     degree: int,
@@ -210,8 +244,7 @@ def _reduce_ctrl_along(
 ) -> npt.NDArray[np.float32 | np.float64]:
     """Reduce degree by 1 along *direction*, returning the new control-point array.
 
-    Applies the moveaxis/reshape -> kernel -> reshape/moveaxis pattern for a
-    single direction with decrement 1.
+    Delegates to :func:`_apply_1d_kernel_along` with the degree-reduction kernel.
 
     Args:
         ctrl (npt.NDArray[np.float32 | np.float64]): Control-point array.
@@ -222,13 +255,7 @@ def _reduce_ctrl_along(
         npt.NDArray[np.float32 | np.float64]: Reduced control points (one
         fewer entry along *direction*).
     """
-    moved = np.moveaxis(ctrl, direction, 0)
-    orig_shape = moved.shape
-    pts_2d = moved.reshape(orig_shape[0], -1)
-    if not pts_2d.flags.c_contiguous:
-        pts_2d = np.ascontiguousarray(pts_2d)
-    new_2d = _degree_reduce_bezier_1d_core(degree, pts_2d, 1)
-    return np.moveaxis(new_2d.reshape(new_2d.shape[0], *orig_shape[1:]), 0, direction)
+    return _apply_1d_kernel_along(ctrl, direction, _degree_reduce_bezier_1d_core, degree, 1)
 
 
 def _elevate_ctrl_along(
@@ -237,6 +264,8 @@ def _elevate_ctrl_along(
     direction: int,
 ) -> npt.NDArray[np.float32 | np.float64]:
     """Elevate degree by 1 along *direction*, returning the new control-point array.
+
+    Delegates to :func:`_apply_1d_kernel_along` with the degree-elevation kernel.
 
     Args:
         ctrl (npt.NDArray[np.float32 | np.float64]): Control-point array.
@@ -247,13 +276,7 @@ def _elevate_ctrl_along(
         npt.NDArray[np.float32 | np.float64]: Elevated control points (one
         more entry along *direction*).
     """
-    moved = np.moveaxis(ctrl, direction, 0)
-    orig_shape = moved.shape
-    pts_2d = moved.reshape(orig_shape[0], -1)
-    if not pts_2d.flags.c_contiguous:
-        pts_2d = np.ascontiguousarray(pts_2d)
-    new_2d = _degree_elevate_bezier_1d_core(degree, pts_2d, 1)
-    return np.moveaxis(new_2d.reshape(new_2d.shape[0], *orig_shape[1:]), 0, direction)
+    return _apply_1d_kernel_along(ctrl, direction, _degree_elevate_bezier_1d_core, degree, 1)
 
 
 def _auto_reduce_degree_bezier(
@@ -306,7 +329,7 @@ def _auto_reduce_degree_bezier(
         error_norm_sq = _squared_l2_norm_bernstein(error, deg_tuple)
         orig_norm_sq = _squared_l2_norm_bernstein(ctrl, deg_tuple)
 
-        if abs(error_norm_sq) < tol_sq * abs(orig_norm_sq):
+        if orig_norm_sq == 0.0 or abs(error_norm_sq) < tol_sq * abs(orig_norm_sq):
             ctrl = reduced_ctrl
             degrees[d] = p - 1
             changed = True
