@@ -273,8 +273,8 @@ def _auto_reduce_degree_bezier(
         tol (float): Relative tolerance (must be positive).
 
     Returns:
-        ~pantr.bezier.Bezier: A new Bezier with (potentially) lower degrees,
-        or the original object if no reduction was possible.
+        ~pantr.bezier.Bezier: A new Bezier (always a copy) with potentially
+        lower degrees.
 
     Note:
         Inputs are assumed to be validated by the caller (Layer 1).
@@ -316,4 +316,4 @@ def _auto_reduce_degree_bezier(
 
     if changed:
         return BezierCls(ctrl, is_rational=False)
-    return bezier
+    return BezierCls(bezier.control_points.copy(), is_rational=False)

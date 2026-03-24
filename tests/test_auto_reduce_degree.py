@@ -45,20 +45,23 @@ class TestAutoReduceDegree1D:
         b = Bezier(np.array([[0.0, 0.0], [0.3, 1.0], [0.7, -1.0], [1.0, 0.0]]))
         reduced = b.auto_reduce_degree()
         assert reduced.degree == b.degree
-        assert reduced is b  # same object when no reduction
+        np.testing.assert_array_equal(reduced.control_points, b.control_points)
+        assert reduced is not b  # always returns a copy
 
-    def test_returns_original_when_no_reduction(self) -> None:
-        """When no reduction is possible, the original object is returned."""
+    def test_returns_copy_when_no_reduction(self) -> None:
+        """When no reduction is possible, a copy is returned."""
         b = Bezier(np.array([[0.0], [1.0]]))  # already linear
         reduced = b.auto_reduce_degree()
-        assert reduced is b
+        assert reduced is not b
+        np.testing.assert_array_equal(reduced.control_points, b.control_points)
 
     def test_degree_0_unchanged(self) -> None:
         """A degree-0 Bézier (constant) cannot be reduced further."""
         b = Bezier(np.array([[42.0]]))
         reduced = b.auto_reduce_degree()
-        assert reduced is b
+        assert reduced is not b
         assert reduced.degree == (0,)
+        np.testing.assert_array_equal(reduced.control_points, b.control_points)
 
 
 # ---------------------------------------------------------------------------
@@ -122,7 +125,8 @@ class TestAutoReduceDegreeMultiDim:
         b = Bezier(ctrl)
         reduced = b.auto_reduce_degree()
         assert reduced.degree == (2, 2)
-        assert reduced is b
+        assert reduced is not b
+        np.testing.assert_array_equal(reduced.control_points, b.control_points)
 
 
 # ---------------------------------------------------------------------------

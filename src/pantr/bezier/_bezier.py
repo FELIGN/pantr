@@ -376,8 +376,8 @@ class Bezier:
                 ``1e3 * machine_epsilon`` for the control-point dtype.
 
         Returns:
-            Bezier: A new Bézier with potentially reduced degrees, or the
-            original instance if no reduction was possible.
+            Bezier: A new Bézier (always a copy) with potentially reduced
+            degrees.
 
         Raises:
             TypeError: If the Bézier is rational.
