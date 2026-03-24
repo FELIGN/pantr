@@ -259,6 +259,18 @@ class TestCollapseDtype:
         crv = srf.collapse_along_axis(0, [0.5])
         assert crv.dtype == dtype
 
+    def test_float32_values_cast_and_correct(self) -> None:
+        """float64 values passed to a float32 Bézier produce correct float32 output."""
+        srf = _make_2d_surface(dtype=np.float32)
+        v = 0.3  # float64 literal
+        crv = srf.collapse_along_axis(0, [v])
+        assert crv.dtype == np.float32
+        # Evaluation should still match the surface within float32 tolerance.
+        for u in [0.0, 0.25, 0.5, 0.75, 1.0]:
+            pt_collapse = crv.evaluate(np.array([u], dtype=np.float32)).squeeze()
+            pt_direct = srf.evaluate(np.array([[u, v]], dtype=np.float32)).squeeze()
+            np.testing.assert_allclose(pt_collapse, pt_direct, atol=1e-5)
+
 
 # ---------------------------------------------------------------------------
 # Tests: error handling

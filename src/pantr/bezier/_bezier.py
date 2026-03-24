@@ -759,15 +759,7 @@ class Bezier:
         if axis < 0 or axis >= self.dim:
             raise ValueError(f"axis must be in [0, {self.dim}), got {axis}.")
 
-        values_arr = np.asarray(values, dtype=self.dtype)
-        if values_arr.ndim != 1 or values_arr.shape[0] != self.dim - 1:
-            raise ValueError(
-                f"values must have length dim - 1 = {self.dim - 1}, got shape {values_arr.shape}."
-            )
-        if np.any(values_arr < 0.0) or np.any(values_arr > 1.0):
-            raise ValueError("All values must be in [0, 1].")
-
-        return _collapse_along_axis(self, axis, values_arr)
+        return _collapse_along_axis(self, axis, values)
 
     # ------------------------------------------------------------------
     # Conversion
