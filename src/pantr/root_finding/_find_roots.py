@@ -1,0 +1,256 @@
+"""Layer 2 implementation for Bernstein polynomial root finding.
+
+Handles input validation, tolerance resolution, algorithm dispatch, and output
+formatting. Delegates all computation to Layer 3 Numba kernels in
+:mod:`_yuksel_core`, :mod:`_clipping_core`, and :mod:`_batch_core`.
+
+This module is not part of the public API. Users should call the functions
+exported from :mod:`pantr.root_finding`.
+"""
+
+from __future__ import annotations
+
+import numpy as np
+from numpy import typing as npt
+
+from pantr._numba_compat import wait_for_jit_warmup
+from pantr.root_finding._clipping_core import _clip_roots_core, _dedup_roots
+from pantr.root_finding._yuksel_core import (
+    _solve_monotone_root_kernel,
+    _yuksel_roots,
+)
+from pantr.tolerance import get_strict
+
+_CLIP_MIN_DEGREE: int = 6
+"""Minimum polynomial degree for which Bezier clipping is considered.
+
+For degree <= 5 the Yuksel derivative chain is at most 4 levels deep and has
+negligible rounding accumulation, while its per-call overhead is lower than
+clipping's convex hull construction and subdivision.
+"""
+
+_CLIP_COEFF_RANGE_LIMIT: float = 1e8
+"""Maximum coefficient dynamic range for which Bezier clipping is used.
+
+Empirically determined via a 27 000-trial sweep comparing clipping against
+Yuksel across coefficient ranges from 1e0 to 1e20.
+"""
+
+_SUPPORTED_DTYPES = (np.float32, np.float64)
+"""Floating-point dtypes accepted by the root-finding API."""
+
+
+def _resolve_tol(
+    coeff: npt.NDArray[np.float32 | np.float64],
+    tol: float | None,
+) -> float:
+    """Resolve tolerance from user input or dtype default.
+
+    Args:
+        coeff (npt.NDArray[np.float32 | np.float64]): Coefficient array
+            (used for dtype).
+        tol (float | None): User-provided tolerance, or ``None`` for default.
+
+    Returns:
+        float: Resolved tolerance value.
+
+    Raises:
+        ValueError: If ``tol`` is not positive.
+    """
+    if tol is None:
+        return get_strict(coeff.dtype)
+    if tol <= 0.0:
+        msg = f"tol must be positive, got {tol}"
+        raise ValueError(msg)
+    return tol
+
+
+def _validate_coeff_1d(
+    coeff: npt.NDArray[np.float32 | np.float64],
+) -> npt.NDArray[np.float32 | np.float64]:
+    """Validate a single coefficient array.
+
+    Args:
+        coeff (npt.NDArray[np.float32 | np.float64]): Bernstein coefficients.
+
+    Returns:
+        npt.NDArray[np.float32 | np.float64]: Contiguous 1-D array.
+
+    Raises:
+        TypeError: If ``coeff`` is not a float32/float64 ndarray.
+        ValueError: If the array has fewer than 1 element or is not 1-D.
+    """
+    if not isinstance(coeff, np.ndarray) or coeff.dtype not in _SUPPORTED_DTYPES:
+        dtype = getattr(coeff, "dtype", "N/A")
+        msg = (
+            f"coeff must be a float32 or float64 ndarray, "
+            f"got {type(coeff).__name__} with dtype {dtype}"
+        )
+        raise TypeError(msg)
+    if coeff.ndim != 1:
+        msg = f"coeff must be 1-D, got shape {coeff.shape}"
+        raise ValueError(msg)
+    if coeff.size < 1:
+        msg = "coeff must have at least 1 element"
+        raise ValueError(msg)
+    if not coeff.flags.c_contiguous:
+        return np.ascontiguousarray(coeff)
+    return coeff
+
+
+def _validate_coeffs_batch(
+    coeffs: npt.NDArray[np.float32 | np.float64],
+) -> npt.NDArray[np.float32 | np.float64]:
+    """Validate a batch of coefficient arrays.
+
+    Args:
+        coeffs (npt.NDArray[np.float32 | np.float64]): Batch of Bernstein
+            coefficients, shape ``(n_polys, degree + 1)``.
+
+    Returns:
+        npt.NDArray[np.float32 | np.float64]: Contiguous 2-D array.
+
+    Raises:
+        TypeError: If ``coeffs`` is not a float32/float64 ndarray.
+        ValueError: If the array is not 2-D or has fewer than 1 column.
+    """
+    if not isinstance(coeffs, np.ndarray) or coeffs.dtype not in _SUPPORTED_DTYPES:
+        dtype = getattr(coeffs, "dtype", "N/A")
+        msg = (
+            f"coeffs must be a float32 or float64 ndarray, "
+            f"got {type(coeffs).__name__} with dtype {dtype}"
+        )
+        raise TypeError(msg)
+    if coeffs.ndim != 2:  # noqa: PLR2004
+        msg = f"coeffs must be 2-D, got shape {coeffs.shape}"
+        raise ValueError(msg)
+    if coeffs.shape[1] < 1:
+        msg = "coeffs must have at least 1 column (degree + 1)"
+        raise ValueError(msg)
+    if not coeffs.flags.c_contiguous:
+        return np.ascontiguousarray(coeffs)
+    return coeffs
+
+
+def _dispatch_single(  # noqa: PLR0911
+    coeff: npt.NDArray[np.float32 | np.float64],
+    param_tol: float,
+    geom_tol: float,
+) -> npt.NDArray[np.float64]:
+    """Find roots of a single Bernstein polynomial with auto-dispatch.
+
+    Args:
+        coeff (npt.NDArray[np.float32 | np.float64]): Validated 1-D
+            coefficient array.
+        param_tol (float): Parametric tolerance.
+        geom_tol (float): Geometric tolerance.
+
+    Returns:
+        npt.NDArray[np.float64]: Sorted array of roots in [0, 1].
+    """
+    n = len(coeff) - 1
+    if n < 1:
+        return np.empty(0, dtype=np.float64)
+
+    # All-zero polynomial: every point is a root -- return empty.
+    if np.all(np.abs(coeff) <= geom_tol):
+        return np.empty(0, dtype=np.float64)
+
+    # Low degree: Yuksel is cheaper and equally robust.
+    if n < _CLIP_MIN_DEGREE:
+        roots_arr, n_roots = _yuksel_roots(coeff, param_tol)
+        if n_roots == 0:
+            return np.empty(0, dtype=np.float64)
+        result = np.sort(roots_arr[:n_roots])
+        return result
+
+    # High degree: check coefficient dynamic range.
+    abs_coeff = np.abs(coeff)
+    c_max = float(abs_coeff.max())
+    nonzero = abs_coeff[abs_coeff > 0.0]
+    c_min = float(nonzero.min()) if nonzero.size > 0 else 0.0
+    coeff_range = c_max / c_min if c_min > 0.0 else float("inf")
+
+    if coeff_range <= _CLIP_COEFF_RANGE_LIMIT:
+        # Well-conditioned: use Bezier clipping.
+        raw_roots, n_roots = _clip_roots_core(coeff, param_tol, geom_tol)
+        return _dedup_roots(raw_roots, n_roots, coeff, param_tol, geom_tol)
+
+    # Extreme range: fall back to Yuksel.
+    roots_arr, n_roots = _yuksel_roots(coeff, param_tol)
+    if n_roots == 0:
+        return np.empty(0, dtype=np.float64)
+    return np.sort(roots_arr[:n_roots])
+
+
+def _find_roots_impl(
+    coeff: npt.NDArray[np.float32 | np.float64],
+    *,
+    tol: float | None = None,
+) -> npt.NDArray[np.float64]:
+    """L2 implementation for :func:`pantr.root_finding.find_roots`."""
+    wait_for_jit_warmup()
+    arr = _validate_coeff_1d(coeff)
+    resolved_tol = _resolve_tol(arr, tol)
+    return _dispatch_single(arr, resolved_tol, resolved_tol)
+
+
+def _find_roots_batch_impl(
+    coeffs: npt.NDArray[np.float32 | np.float64],
+    *,
+    tol: float | None = None,
+) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.intp]]:
+    """L2 implementation for :func:`pantr.root_finding.find_roots_batch`."""
+    from pantr.root_finding._batch_core import (  # noqa: PLC0415
+        _find_roots_batch_core,
+    )
+
+    wait_for_jit_warmup()
+    arr = _validate_coeffs_batch(coeffs)
+    resolved_tol = _resolve_tol(arr[0], tol)
+
+    n_polys = arr.shape[0]
+    degree = arr.shape[1] - 1
+
+    out_roots = np.full((n_polys, max(degree, 1)), np.nan, dtype=np.float64)
+    out_counts = np.zeros(n_polys, dtype=np.intp)
+
+    if degree >= 1:
+        _find_roots_batch_core(arr, resolved_tol, resolved_tol, out_roots, out_counts)
+
+    return out_roots, out_counts
+
+
+def _solve_monotone_root_impl(
+    coeff: npt.NDArray[np.float32 | np.float64],
+    *,
+    tol: float | None = None,
+) -> float:
+    """L2 implementation for :func:`pantr.root_finding.solve_monotone_root`."""
+    wait_for_jit_warmup()
+    arr = _validate_coeff_1d(coeff)
+    resolved_tol = _resolve_tol(arr, tol)
+    return float(_solve_monotone_root_kernel(arr, resolved_tol))
+
+
+def _solve_monotone_root_batch_impl(
+    coeffs: npt.NDArray[np.float32 | np.float64],
+    *,
+    tol: float | None = None,
+) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.bool_]]:
+    """L2 implementation for :func:`pantr.root_finding.solve_monotone_root_batch`."""
+    from pantr.root_finding._batch_core import (  # noqa: PLC0415
+        _solve_monotone_root_batch_core,
+    )
+
+    wait_for_jit_warmup()
+    arr = _validate_coeffs_batch(coeffs)
+    resolved_tol = _resolve_tol(arr[0], tol)
+
+    n_polys = arr.shape[0]
+    out_roots = np.full(n_polys, np.nan, dtype=np.float64)
+    out_found = np.zeros(n_polys, dtype=np.bool_)
+
+    _solve_monotone_root_batch_core(arr, resolved_tol, out_roots, out_found)
+
+    return out_roots, out_found
