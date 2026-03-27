@@ -5,6 +5,7 @@ import numpy.typing as npt
 import pytest
 
 from pantr.bezier import Bezier
+from pantr.bezier._resultant_matrices import _bezout_matrix, _sylvester_matrix
 from pantr.bspline import Bspline, BsplineSpace, BsplineSpace1D
 from pantr.quad import PointsLattice
 
@@ -651,57 +652,38 @@ class TestBezierMultiply:
 # Resultant matrices
 # ---------------------------------------------------------------------------
 
+_DET_ATOL = 1e-12
+"""Absolute tolerance for determinant-is-zero checks."""
+
 
 class TestSylvesterMatrix:
     """Test _sylvester_matrix for Bernstein polynomials."""
 
     def test_two_linears(self) -> None:
-        """Resultant of two linear Bernstein polynomials.
-
-        a(t) = 1 - t  (coeffs [1, 0])
-        b(t) = t       (coeffs [0, 1])
-        They share a root at t in (0,1)? No — a(1)=0, b(0)=0, no common root.
-        Resultant should be nonzero.  For p=q=1 the Sylvester matrix is 2×2.
-        """
-        from pantr.bezier._resultant_matrices import _sylvester_matrix
-
+        """Resultant of two linear Bernstein polynomials is nonzero (no common root)."""
         a = np.array([1.0, 0.0])
         b = np.array([0.0, 1.0])
-        S = _sylvester_matrix(a, b)
-        assert S.shape == (2, 2)
-        # det != 0 means no common root.
-        assert np.abs(np.linalg.det(S)) > 1e-14
+        mat = _sylvester_matrix(a, b)
+        assert mat.shape == (2, 2)
+        assert np.abs(np.linalg.det(mat)) > _DET_ATOL
 
     def test_common_root_gives_zero_det(self) -> None:
-        """Two Bernstein polynomials sharing a root → singular Sylvester matrix.
-
-        a(t) = t(1-t) in Bernstein form of degree 2: coeffs [0, 0.5, 0]
-        Actually, t(1-t) = 2*B_{1,2}(t)*0.5... let's use a simpler approach.
-
-        a(t) = t,  b(t) = t  both vanish at t=0 → common root → det = 0.
-        Bernstein coeffs: a = [0, 1], b = [0, 1].
-        """
-        from pantr.bezier._resultant_matrices import _sylvester_matrix
-
+        """Two identical polynomials share a root, giving a singular matrix."""
         a = np.array([0.0, 1.0])
         b = np.array([0.0, 1.0])
-        S = _sylvester_matrix(a, b)
-        assert np.abs(np.linalg.det(S)) < 1e-14
+        mat = _sylvester_matrix(a, b)
+        np.testing.assert_allclose(np.linalg.det(mat), 0.0, atol=_DET_ATOL)
 
     def test_different_degrees(self) -> None:
         """Sylvester matrix for polynomials of different degrees."""
-        from pantr.bezier._resultant_matrices import _sylvester_matrix
-
         a = np.array([1.0, -1.0, 0.5])  # degree 2
         b = np.array([2.0, 3.0])  # degree 1
-        S = _sylvester_matrix(a, b)
-        assert S.shape == (3, 3)
-        assert S.dtype == np.float64
+        mat = _sylvester_matrix(a, b)
+        assert mat.shape == (3, 3)
+        assert mat.dtype == np.float64
 
     def test_out_parameter(self) -> None:
-        """Test that the out parameter works."""
-        from pantr.bezier._resultant_matrices import _sylvester_matrix
-
+        """Test that the out parameter is written to and returned."""
         a = np.array([1.0, 2.0, 3.0])
         b = np.array([4.0, 5.0])
         out = np.zeros((3, 3), dtype=np.float64)
@@ -711,8 +693,6 @@ class TestSylvesterMatrix:
 
     def test_out_wrong_shape_raises(self) -> None:
         """Test that wrong out shape raises."""
-        from pantr.bezier._resultant_matrices import _sylvester_matrix
-
         a = np.array([1.0, 2.0])
         b = np.array([3.0, 4.0])
         out = np.zeros((3, 3), dtype=np.float64)
@@ -721,8 +701,6 @@ class TestSylvesterMatrix:
 
     def test_non_1d_raises(self) -> None:
         """Test that 2-D input raises."""
-        from pantr.bezier._resultant_matrices import _sylvester_matrix
-
         a = np.array([[1.0, 2.0]])
         b = np.array([3.0, 4.0])
         with pytest.raises(ValueError, match="1-D"):
@@ -730,17 +708,13 @@ class TestSylvesterMatrix:
 
     def test_degree_zero_raises(self) -> None:
         """Test that a constant polynomial (degree 0) raises."""
-        from pantr.bezier._resultant_matrices import _sylvester_matrix
-
-        a = np.array([1.0])  # degree 0
+        a = np.array([1.0])
         b = np.array([2.0, 3.0])
         with pytest.raises(ValueError, match="at least 2"):
             _sylvester_matrix(a, b)
 
     def test_integer_input_raises(self) -> None:
         """Test that integer dtype raises."""
-        from pantr.bezier._resultant_matrices import _sylvester_matrix
-
         a = np.array([1, 2])
         b = np.array([3, 4])
         with pytest.raises(ValueError, match="floating"):
@@ -748,12 +722,10 @@ class TestSylvesterMatrix:
 
     def test_float32(self) -> None:
         """Test that float32 inputs produce float32 output."""
-        from pantr.bezier._resultant_matrices import _sylvester_matrix
-
         a = np.array([1.0, 2.0], dtype=np.float32)
         b = np.array([3.0, 4.0], dtype=np.float32)
-        S = _sylvester_matrix(a, b)
-        assert S.dtype == np.float32
+        mat = _sylvester_matrix(a, b)
+        assert mat.dtype == np.float32
 
 
 class TestBezoutMatrix:
@@ -761,87 +733,61 @@ class TestBezoutMatrix:
 
     def test_symmetry(self) -> None:
         """Bezout matrix must be symmetric."""
-        from pantr.bezier._resultant_matrices import _bezout_matrix
-
         rng = np.random.default_rng(42)
         a = rng.standard_normal(6)
         b = rng.standard_normal(6)
-        B = _bezout_matrix(a, b)
-        np.testing.assert_allclose(B, B.T, atol=1e-15)
+        mat = _bezout_matrix(a, b)
+        np.testing.assert_allclose(mat, mat.T, atol=1e-15)
 
     def test_degree_1(self) -> None:
-        """Bezout matrix for degree-1 polynomials is 1×1."""
-        from pantr.bezier._resultant_matrices import _bezout_matrix
-
+        """Bezout matrix for degree-1 polynomials is 1x1."""
         a = np.array([1.0, 2.0])
         b = np.array([3.0, 4.0])
-        B = _bezout_matrix(a, b)
-        assert B.shape == (1, 1)
+        mat = _bezout_matrix(a, b)
+        assert mat.shape == (1, 1)
         # B[0,0] = (a[1]*b[0] - a[0]*b[1]) * n/1 = (2*3 - 1*4) * 1 = 2
-        np.testing.assert_allclose(B[0, 0], 2.0, atol=1e-15)
+        np.testing.assert_allclose(mat[0, 0], 2.0, atol=1e-15)
 
     def test_common_root_gives_zero_det(self) -> None:
-        """Two polynomials sharing a root → singular Bezout matrix."""
-        from pantr.bezier._resultant_matrices import _bezout_matrix
-
-        # Both are t: coeffs [0, 1]
+        """Two identical polynomials share a root, giving a singular matrix."""
         a = np.array([0.0, 1.0])
         b = np.array([0.0, 1.0])
-        B = _bezout_matrix(a, b)
-        assert np.abs(np.linalg.det(B)) < 1e-14
+        mat = _bezout_matrix(a, b)
+        np.testing.assert_allclose(np.linalg.det(mat), 0.0, atol=_DET_ATOL)
 
     def test_sylvester_bezout_zero_det_agreement(self) -> None:
-        """Both matrices agree on whether the resultant is zero.
-
-        Construct polynomial pairs with and without a common root and verify
-        that both matrices give zero / nonzero determinant consistently.
-        """
-        from pantr.bezier._resultant_matrices import _bezout_matrix, _sylvester_matrix
-
-        # Pair with common root at t=0.5.
-        # f(t) = t - 0.5 → Bernstein coeffs [-0.5, 0.5]
-        # g(t) = 2t - 1  → Bernstein coeffs [-1.0, 1.0]  (same root, different scale)
+        """Both matrices agree on whether the resultant is zero."""
+        # Pair with common root at t=0.5: both det should be zero.
         a = np.array([-0.5, 0.5])
         b = np.array([-1.0, 1.0])
-        assert np.abs(np.linalg.det(_sylvester_matrix(a, b))) < 1e-14
-        assert np.abs(np.linalg.det(_bezout_matrix(a, b))) < 1e-14
+        np.testing.assert_allclose(np.linalg.det(_sylvester_matrix(a, b)), 0.0, atol=_DET_ATOL)
+        np.testing.assert_allclose(np.linalg.det(_bezout_matrix(a, b)), 0.0, atol=_DET_ATOL)
 
-        # Pair without common root.
+        # Pair without common root: both det should be nonzero.
         a = np.array([-0.3, 0.7])
         b = np.array([-0.8, 0.2])
-        assert np.abs(np.linalg.det(_sylvester_matrix(a, b))) > 1e-2
-        assert np.abs(np.linalg.det(_bezout_matrix(a, b))) > 1e-2
+        assert np.abs(np.linalg.det(_sylvester_matrix(a, b))) > _DET_ATOL
+        assert np.abs(np.linalg.det(_bezout_matrix(a, b))) > _DET_ATOL
 
     def test_bezout_det_equals_resultant(self) -> None:
-        """Bezout determinant matches the classical resultant for small degrees.
-
-        For two degree-1 Bernstein polynomials a(t)=a0(1-t)+a1·t and
-        b(t)=b0(1-t)+b1·t, the resultant is a0·b1 - a1·b0.  The 1×1
-        Bezout matrix entry is (a1·b0 - a0·b1)·n/1 = -(a0·b1-a1·b0).
-        """
-        from pantr.bezier._resultant_matrices import _bezout_matrix
-
+        """Bezout entry matches the classical resultant for degree-1 polynomials."""
         rng = np.random.default_rng(77)
         for _ in range(20):
             a = rng.standard_normal(2)
             b = rng.standard_normal(2)
-            B = _bezout_matrix(a, b)
+            mat = _bezout_matrix(a, b)
             expected = a[1] * b[0] - a[0] * b[1]
-            np.testing.assert_allclose(B[0, 0], expected, atol=1e-14)
+            np.testing.assert_allclose(mat[0, 0], expected, atol=1e-14)
 
     def test_unequal_lengths_raises(self) -> None:
         """Test that arrays of different lengths raise."""
-        from pantr.bezier._resultant_matrices import _bezout_matrix
-
         a = np.array([1.0, 2.0, 3.0])
         b = np.array([4.0, 5.0])
         with pytest.raises(ValueError, match="equal length"):
             _bezout_matrix(a, b)
 
     def test_out_parameter(self) -> None:
-        """Test that the out parameter works."""
-        from pantr.bezier._resultant_matrices import _bezout_matrix
-
+        """Test that the out parameter is written to and returned."""
         a = np.array([1.0, 2.0, 3.0])
         b = np.array([4.0, 5.0, 6.0])
         out = np.zeros((2, 2), dtype=np.float64)
@@ -851,55 +797,30 @@ class TestBezoutMatrix:
 
     def test_degree_zero_raises(self) -> None:
         """Test that a constant polynomial (degree 0) raises."""
-        from pantr.bezier._resultant_matrices import _bezout_matrix
-
         a = np.array([1.0])
         b = np.array([2.0])
         with pytest.raises(ValueError, match="at least 2"):
             _bezout_matrix(a, b)
 
     def test_resultant_via_power_basis(self) -> None:
-        """Cross-check: resultant of (t - 0.3) and (t - 0.7) via Bezout.
-
-        In Bernstein form on [0,1]:
-            f(t) = t - 0.3 = -0.3·B₀(t) + 0.7·B₁(t)  → coeffs [-0.3, 0.7]
-            g(t) = t - 0.7 = -0.7·B₀(t) + 0.3·B₁(t)  → coeffs [-0.7, 0.3]
-
-        Resultant of f and g (as degree-1 polys) = f(0.7) = 0.4 (or g(0.3) = -0.4).
-        The Bezout/Sylvester det captures this up to a binomial scaling factor.
-        For degree p=q=1, the Bezout matrix is 1×1 and the Sylvester is 2×2.
-        """
-        from pantr.bezier._resultant_matrices import _bezout_matrix, _sylvester_matrix
-
+        """Both Bezout and Sylvester detect no common root for (t-0.3) vs (t-0.7)."""
         a = np.array([-0.3, 0.7])
         b = np.array([-0.7, 0.3])
-        B = _bezout_matrix(a, b)
-        S = _sylvester_matrix(a, b)
-
-        # Both should give a nonzero determinant (no common root).
-        assert np.abs(np.linalg.det(B)) > 0.1
-        assert np.abs(np.linalg.det(S)) > 0.1
+        mat_b = _bezout_matrix(a, b)
+        mat_s = _sylvester_matrix(a, b)
+        assert np.abs(np.linalg.det(mat_b)) > _DET_ATOL
+        assert np.abs(np.linalg.det(mat_s)) > _DET_ATOL
 
     def test_quadratic_with_known_common_root(self) -> None:
-        """Two quadratics sharing root at t=0.5 → zero resultant.
+        """Two quadratics sharing root at t=0.5 give zero resultant.
 
-        f(t) = (t - 0.5)(t - 0.2) in Bernstein degree-2 form.
-        g(t) = (t - 0.5)(t - 0.8) in Bernstein degree-2 form.
-
-        Bernstein basis for degree 2: B₀ = (1-t)², B₁ = 2t(1-t), B₂ = t².
-        f(t) = t² - 0.7t + 0.1 = 0.1·B₀ + (0.5·(-0.7) + 0.1 + 0.5·1)·... easier to compute directly.
+        f(t) = (t-0.5)(t-0.2), g(t) = (t-0.5)(t-0.8) in Bernstein form.
         """
-        from pantr.bezier._resultant_matrices import _bezout_matrix
-
-        # Convert power basis coefficients to Bernstein via the known relation.
         # f(t) = t^2 - 0.7t + 0.1
-        # Bernstein coeffs: c0 = f(0) = 0.1, c2 = f(1) = 0.4, c1 = f(0) + f'(0)/(2) = 0.1 + (-0.7)/2 = -0.25
-        # Wait: for degree 2, c0=f(0), c1 = f(0) + f'(0)/2, c2=f(1)
+        # Bernstein: c0=f(0)=0.1, c1=f(0)+f'(0)/2=-0.25, c2=f(1)=0.4
         a = np.array([0.1, -0.25, 0.4])
-
         # g(t) = t^2 - 1.3t + 0.4
-        # c0 = 0.4, c1 = 0.4 + (-1.3)/2 = -0.25, c2 = g(1) = 0.1
+        # Bernstein: c0=0.4, c1=0.4+(-1.3)/2=-0.25, c2=g(1)=0.1
         b = np.array([0.4, -0.25, 0.1])
-
-        B = _bezout_matrix(a, b)
-        assert np.abs(np.linalg.det(B)) < 1e-12
+        mat = _bezout_matrix(a, b)
+        np.testing.assert_allclose(np.linalg.det(mat), 0.0, atol=_DET_ATOL)

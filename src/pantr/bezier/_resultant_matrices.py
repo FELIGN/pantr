@@ -7,29 +7,30 @@ in the algoim-style implicit quadrature pipeline (R. I. Saye, *J. Comput. Phys.*
 448, 110720, 2022).
 
 - The **Sylvester matrix** applies to polynomials of *arbitrary* degrees and has
-  size ``(p + q) × (p + q)``, where ``p`` and ``q`` are the polynomial degrees.
+  size ``(p + q) x (p + q)``, where ``p`` and ``q`` are the polynomial degrees.
 - The **Bezout matrix** applies to polynomials of *equal* degree ``n`` and has
-  size ``n × n``.  It is symmetric and generally better conditioned than the
+  size ``n x n``.  It is symmetric and generally better conditioned than the
   Sylvester matrix for same-degree pairs.
 """
 
 from __future__ import annotations
 
 import math
+from typing import Any
 
 import numpy as np
 import numpy.typing as npt
 
 
 def _sylvester_matrix(
-    a: npt.NDArray[np.floating],
-    b: npt.NDArray[np.floating],
-    out: npt.NDArray[np.floating] | None = None,
-) -> npt.NDArray[np.floating]:
+    a: npt.NDArray[np.floating[Any]],
+    b: npt.NDArray[np.floating[Any]],
+    out: npt.NDArray[np.floating[Any]] | None = None,
+) -> npt.NDArray[np.floating[Any]]:
     r"""Build the Sylvester matrix for two Bernstein polynomials.
 
     Given Bernstein coefficient vectors ``a`` (degree *p*) and ``b``
-    (degree *q*), the Sylvester matrix is the ``(p + q) × (p + q)`` matrix
+    (degree *q*), the Sylvester matrix is the ``(p + q) x (p + q)`` matrix
     whose determinant equals the resultant of the two polynomials (up to a
     known constant involving binomial coefficients).
 
@@ -48,16 +49,16 @@ def _sylvester_matrix(
     with all other entries zero.
 
     Args:
-        a (npt.NDArray[np.floating]): Bernstein coefficients of the first
+        a (npt.NDArray[np.floating[Any]]): Bernstein coefficients of the first
             polynomial, shape ``(p + 1,)``.  Must have ``p >= 1``.
-        b (npt.NDArray[np.floating]): Bernstein coefficients of the second
+        b (npt.NDArray[np.floating[Any]]): Bernstein coefficients of the second
             polynomial, shape ``(q + 1,)``.  Must have ``q >= 1``.
-        out (npt.NDArray[np.floating] | None): Optional pre-allocated output
+        out (npt.NDArray[np.floating[Any]] | None): Optional pre-allocated output
             array of shape ``(p + q, p + q)`` and matching dtype.  If *None*,
             a new array is allocated.
 
     Returns:
-        npt.NDArray[np.floating]: The Sylvester matrix, shape ``(p + q, p + q)``.
+        npt.NDArray[np.floating[Any]]: The Sylvester matrix, shape ``(p + q, p + q)``.
 
     Raises:
         ValueError: If input arrays are not 1-D, have non-floating dtype,
@@ -94,14 +95,14 @@ def _sylvester_matrix(
 
 
 def _bezout_matrix(
-    a: npt.NDArray[np.floating],
-    b: npt.NDArray[np.floating],
-    out: npt.NDArray[np.floating] | None = None,
-) -> npt.NDArray[np.floating]:
+    a: npt.NDArray[np.floating[Any]],
+    b: npt.NDArray[np.floating[Any]],
+    out: npt.NDArray[np.floating[Any]] | None = None,
+) -> npt.NDArray[np.floating[Any]]:
     r"""Build the Bezout matrix for two Bernstein polynomials of equal degree.
 
     Given Bernstein coefficient vectors ``a`` and ``b`` of equal degree *n*,
-    the Bezout matrix is the ``n × n`` symmetric matrix whose determinant
+    the Bezout matrix is the ``n x n`` symmetric matrix whose determinant
     equals the resultant of the two polynomials (up to a known constant).
 
     The matrix is built via the recurrence (Bini & Gemignani, 2004):
@@ -125,16 +126,16 @@ def _bezout_matrix(
     The result is then symmetrized: :math:`B_{i,j} = B_{j,i}` for ``j > i``.
 
     Args:
-        a (npt.NDArray[np.floating]): Bernstein coefficients of the first
+        a (npt.NDArray[np.floating[Any]]): Bernstein coefficients of the first
             polynomial, shape ``(n + 1,)``.  Must have ``n >= 1``.
-        b (npt.NDArray[np.floating]): Bernstein coefficients of the second
+        b (npt.NDArray[np.floating[Any]]): Bernstein coefficients of the second
             polynomial, shape ``(n + 1,)``.  Must have ``n >= 1``.
-        out (npt.NDArray[np.floating] | None): Optional pre-allocated output
+        out (npt.NDArray[np.floating[Any]] | None): Optional pre-allocated output
             array of shape ``(n, n)`` and matching dtype.  If *None*, a new
             array is allocated.
 
     Returns:
-        npt.NDArray[np.floating]: The symmetric Bezout matrix, shape ``(n, n)``.
+        npt.NDArray[np.floating[Any]]: The symmetric Bezout matrix, shape ``(n, n)``.
 
     Raises:
         ValueError: If input arrays are not 1-D, have non-floating dtype,
@@ -187,14 +188,14 @@ def _bezout_matrix(
 
 
 def _validate_coeff_array(
-    arr: npt.NDArray[np.floating],
+    arr: npt.NDArray[np.floating[Any]],
     name: str,
     min_len: int,
 ) -> None:
     """Validate a 1-D Bernstein coefficient array.
 
     Args:
-        arr (npt.NDArray[np.floating]): Array to validate.
+        arr (npt.NDArray[np.floating[Any]]): Array to validate.
         name (str): Parameter name for error messages.
         min_len (int): Minimum required length (degree + 1).
 
@@ -215,19 +216,19 @@ def _validate_coeff_array(
 
 
 def _prepare_out(
-    out: npt.NDArray[np.floating] | None,
+    out: npt.NDArray[np.floating[Any]] | None,
     shape: tuple[int, int],
-    dtype: np.dtype[np.floating],
-) -> npt.NDArray[np.floating]:
+    dtype: np.dtype[np.floating[Any]],
+) -> npt.NDArray[np.floating[Any]]:
     """Allocate or validate the output array.
 
     Args:
-        out (npt.NDArray[np.floating] | None): Caller-supplied array, or *None*.
+        out (npt.NDArray[np.floating[Any]] | None): Caller-supplied array, or *None*.
         shape (tuple[int, int]): Expected shape.
-        dtype (np.dtype[np.floating]): Expected dtype.
+        dtype (np.dtype[np.floating[Any]]): Expected dtype.
 
     Returns:
-        npt.NDArray[np.floating]: Ready-to-write output array.
+        npt.NDArray[np.floating[Any]]: Ready-to-write output array.
 
     Raises:
         ValueError: If ``out`` has wrong shape, dtype, or is not writeable.
