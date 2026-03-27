@@ -1,9 +1,14 @@
-"""Tests for Sylvester and Bezout matrix construction."""
+"""Tests for Sylvester and Bezout matrix construction, and QR determinant."""
 
 import numpy as np
 import pytest
 
-from pantr.bezier._resultant_matrices import _bezout_matrix, _sylvester_matrix
+from pantr.bezier._resultant_matrices import (
+    _bezout_matrix,
+    _det_qr,
+    _givens_rotation,
+    _sylvester_matrix,
+)
 
 _DET_ATOL = 1e-12
 """Absolute tolerance for determinant-is-zero checks."""
@@ -177,3 +182,125 @@ class TestBezoutMatrix:
         b = np.array([0.4, -0.25, 0.1])
         mat = _bezout_matrix(a, b)
         np.testing.assert_allclose(np.linalg.det(mat), 0.0, atol=_DET_ATOL)
+
+
+class TestGivensRotation:
+    """Test _givens_rotation helper."""
+
+    def test_zeroes_second_component(self) -> None:
+        """Applying the rotation to (a, b) gives (r, 0)."""
+        a, b = 3.0, 4.0
+        c, s = _givens_rotation(a, b)
+        r = c * a + s * b
+        zero = -s * a + c * b
+        np.testing.assert_allclose(zero, 0.0, atol=1e-15)
+        np.testing.assert_allclose(r, 5.0, atol=1e-15)
+
+    def test_identity_when_b_is_zero(self) -> None:
+        """When b == 0, the rotation is the identity."""
+        c, s = _givens_rotation(7.0, 0.0)
+        assert c == 1.0
+        assert s == 0.0
+
+    def test_abs_b_greater_than_abs_a(self) -> None:
+        """Branch where |b| > |a|."""
+        c, s = _givens_rotation(1.0, 10.0)
+        zero = -s * 1.0 + c * 10.0
+        np.testing.assert_allclose(zero, 0.0, atol=1e-15)
+        assert c * c + s * s == pytest.approx(1.0)
+
+    def test_negative_values(self) -> None:
+        """Works correctly with negative inputs."""
+        c, s = _givens_rotation(-3.0, 4.0)
+        zero = -s * (-3.0) + c * 4.0
+        np.testing.assert_allclose(zero, 0.0, atol=1e-15)
+
+
+class TestDetQr:
+    """Test _det_qr determinant and rank computation."""
+
+    def test_identity_matrix(self) -> None:
+        """Determinant of identity is 1, rank is n."""
+        n = 5
+        A = np.eye(n)
+        det, rank = _det_qr(A)
+        np.testing.assert_allclose(det, 1.0, atol=1e-12)
+        assert rank == n
+
+    def test_known_determinant(self) -> None:
+        """Compare with np.linalg.det on a random matrix."""
+        rng = np.random.default_rng(123)
+        for n in [2, 3, 5, 8]:
+            A = rng.standard_normal((n, n))
+            expected = np.linalg.det(A)
+            det, rank = _det_qr(A.copy())
+            np.testing.assert_allclose(det, expected, rtol=1e-10)
+            assert rank == n
+
+    def test_singular_matrix_zero_det(self) -> None:
+        """Singular matrix has det ~ 0 and rank < n."""
+        A = np.array([[1.0, 2.0], [2.0, 4.0]])
+        det, rank = _det_qr(A)
+        np.testing.assert_allclose(det, 0.0, atol=1e-12)
+        assert rank < 2
+
+    def test_rank_deficient_matrix(self) -> None:
+        """Matrix with known rank deficiency."""
+        # Rank-2 matrix of size 4x4.
+        rng = np.random.default_rng(42)
+        U = rng.standard_normal((4, 2))
+        V = rng.standard_normal((2, 4))
+        A = U @ V
+        det, rank = _det_qr(A.copy())
+        np.testing.assert_allclose(det, 0.0, atol=1e-10)
+        assert rank == 2
+
+    def test_diagonal_matrix(self) -> None:
+        """Determinant of a diagonal matrix is the product of diagonal entries."""
+        diag = np.array([2.0, -3.0, 0.5, 4.0])
+        A = np.diag(diag)
+        det, rank = _det_qr(A)
+        np.testing.assert_allclose(det, np.prod(diag), rtol=1e-12)
+        assert rank == 4
+
+    def test_overwrites_input(self) -> None:
+        """The input matrix is modified in place."""
+        A = np.array([[1.0, 2.0], [3.0, 4.0]])
+        original = A.copy()
+        _det_qr(A)
+        assert not np.array_equal(A, original)
+
+    def test_1x1_matrix(self) -> None:
+        """1x1 matrix determinant is the single entry."""
+        A = np.array([[42.0]])
+        det, rank = _det_qr(A)
+        np.testing.assert_allclose(det, 42.0, atol=1e-15)
+        assert rank == 1
+
+    def test_resultant_matrix_det(self) -> None:
+        """det_qr agrees with np.linalg.det on a Sylvester matrix."""
+        a = np.array([1.0, -1.0, 0.5])
+        b = np.array([0.0, 1.0])
+        mat = _sylvester_matrix(a, b)
+        expected = np.linalg.det(mat)
+        det, rank = _det_qr(mat.copy())
+        np.testing.assert_allclose(det, expected, rtol=1e-10)
+
+    def test_non_square_raises(self) -> None:
+        """Non-square input raises ValueError."""
+        A = np.ones((2, 3))
+        with pytest.raises(ValueError, match="square"):
+            _det_qr(A)
+
+    def test_integer_dtype_raises(self) -> None:
+        """Integer dtype raises ValueError."""
+        A = np.array([[1, 2], [3, 4]])
+        with pytest.raises(ValueError, match="floating"):
+            _det_qr(A)
+
+    def test_non_writeable_raises(self) -> None:
+        """Non-writeable array raises ValueError."""
+        A = np.eye(3)
+        A.flags.writeable = False
+        with pytest.raises(ValueError, match="writeable"):
+            _det_qr(A)
