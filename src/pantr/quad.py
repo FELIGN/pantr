@@ -189,6 +189,41 @@ def get_chebyshev_gauss_1st_kind_1d(
     return _scale_and_cast_nodes_and_weights(nodes, weights, dtype)
 
 
+def get_modified_chebyshev_nodes_1d(
+    n_pts: int, dtype: npt.DTypeLike = np.float64
+) -> npt.NDArray[np.float32 | np.float64]:
+    """Get modified Chebyshev nodes on [0, 1] for the given number of points.
+
+    Returns Chebyshev nodes of the second kind (Chebyshev-Lobatto points)
+    mapped to [0, 1].  These include both endpoints and are suitable for
+    polynomial interpolation into the Bernstein basis.
+
+    Unlike the quadrature functions in this module, this returns only nodes
+    (no weights) since it is intended for interpolation, not integration.
+
+    Args:
+        n_pts (int): Number of nodes.  Must be at least 2.
+        dtype (npt.DTypeLike): Floating dtype; float32 or float64.
+            Defaults to float64.
+
+    Returns:
+        npt.NDArray[np.float32 | np.float64]: Array of shape ``(n_pts,)`` with
+        nodes in [0, 1], starting at 0 and ending at 1.
+
+    Raises:
+        ValueError: If *n_pts* < 2 or *dtype* is not float32 or float64.
+    """
+    _validate_n_pts_and_dtype(n_pts, dtype)
+
+    if n_pts < 2:  # noqa: PLR2004
+        raise ValueError("n_pts must be at least 2")
+
+    dtype_obj = np.dtype(dtype)
+    i = np.arange(n_pts, dtype=dtype_obj)
+    nodes: npt.NDArray[np.float32 | np.float64] = 0.5 - 0.5 * np.cos(np.pi * i / (n_pts - 1))
+    return nodes
+
+
 def get_chebyshev_gauss_2nd_kind_1d(
     n_pts: int, dtype: npt.DTypeLike = np.float64
 ) -> tuple[npt.NDArray[np.float32 | np.float64], npt.NDArray[np.float32 | np.float64]]:
@@ -360,5 +395,6 @@ __all__ = [
     "get_chebyshev_gauss_2nd_kind_1d",
     "get_gauss_legendre_1d",
     "get_gauss_lobatto_legendre_1d",
+    "get_modified_chebyshev_nodes_1d",
     "get_trapezoidal_1d",
 ]

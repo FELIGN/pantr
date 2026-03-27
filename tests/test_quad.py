@@ -19,6 +19,7 @@ from pantr.quad import (
     get_chebyshev_gauss_2nd_kind_1d,
     get_gauss_legendre_1d,
     get_gauss_lobatto_legendre_1d,
+    get_modified_chebyshev_nodes_1d,
     get_trapezoidal_1d,
 )
 from pantr.tolerance import get_conservative, get_default, get_strict
@@ -399,3 +400,52 @@ class TestCreateLagrangePointsLattice:
         assert all_pts.shape == (6, 2)
         # Verify all points are in [0, 1]
         assert np.all((all_pts >= 0.0) & (all_pts <= 1.0))
+
+
+class TestModifiedChebyshevNodes:
+    """Tests for get_modified_chebyshev_nodes_1d."""
+
+    def test_invalid_n_pts_raises(self) -> None:
+        """n_pts < 2 must raise."""
+        with pytest.raises(ValueError, match="at least 2"):
+            get_modified_chebyshev_nodes_1d(1)
+
+    def test_invalid_dtype_raises(self) -> None:
+        """Non-floating dtype must raise."""
+        with pytest.raises(ValueError, match="float32 or float64"):
+            get_modified_chebyshev_nodes_1d(3, np.int32)
+
+    @pytest.mark.parametrize("dtype", [np.float32, np.float64])
+    def test_endpoints(self, dtype: npt.DTypeLike) -> None:
+        """First node is 0, last node is 1."""
+        nodes = get_modified_chebyshev_nodes_1d(5, dtype)
+        nptest.assert_allclose(nodes[0], 0.0, atol=1e-15)
+        nptest.assert_allclose(nodes[-1], 1.0, atol=1e-15)
+
+    @pytest.mark.parametrize("dtype", [np.float32, np.float64])
+    def test_shape_and_dtype(self, dtype: npt.DTypeLike) -> None:
+        """Output shape and dtype are correct."""
+        n = 7
+        nodes = get_modified_chebyshev_nodes_1d(n, dtype)
+        assert nodes.shape == (n,)
+        assert nodes.dtype == np.dtype(dtype)
+
+    def test_two_points(self) -> None:
+        """n_pts=2 gives [0, 1]."""
+        nodes = get_modified_chebyshev_nodes_1d(2)
+        nptest.assert_allclose(nodes, [0.0, 1.0], atol=1e-15)
+
+    def test_three_points(self) -> None:
+        """n_pts=3 gives [0, 0.5, 1]."""
+        nodes = get_modified_chebyshev_nodes_1d(3)
+        nptest.assert_allclose(nodes, [0.0, 0.5, 1.0], atol=1e-15)
+
+    def test_symmetry(self) -> None:
+        """Nodes are symmetric about 0.5: nodes[i] + nodes[n-1-i] == 1."""
+        nodes = get_modified_chebyshev_nodes_1d(8)
+        nptest.assert_allclose(nodes + nodes[::-1], 1.0, atol=1e-15)
+
+    def test_monotonicity(self) -> None:
+        """Nodes are strictly increasing."""
+        nodes = get_modified_chebyshev_nodes_1d(10)
+        assert np.all(np.diff(nodes) > 0)
