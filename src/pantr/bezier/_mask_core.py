@@ -19,8 +19,6 @@ Note:
 
 from __future__ import annotations
 
-import math
-
 import numpy as np
 import numpy.typing as npt
 
@@ -59,73 +57,6 @@ def _has_uniform_sign(coeffs: npt.NDArray[np.float64]) -> bool:
         if not all_pos and not all_neg:
             return False
     return all_pos or all_neg
-
-
-# ---------------------------------------------------------------------------
-# Point / line query kernels
-# ---------------------------------------------------------------------------
-
-
-@nb_jit(nopython=True, cache=True)
-def _line_intersects_mask_core(
-    mask_flat: npt.NDArray[np.bool_],
-    x: npt.NDArray[np.float64],
-    k: int,
-    M: int,
-    N: int,
-) -> bool:
-    """Test if line ``{x + alpha e_k : alpha in [0,1]}`` hits a True subcell.
-
-    The point ``x`` has ``N-1`` components (axis ``k`` excluded).  For each
-    of the ``M`` cells along axis ``k``, the full N-D cell index is assembled
-    and checked against the mask.
-
-    Args:
-        mask_flat (npt.NDArray[np.bool_]): Flattened mask of length ``M^N``.
-        x (npt.NDArray[np.float64]): Point in ``[0,1]^{N-1}``, shape
-            ``(N-1,)``.  Coordinate ``d < k`` maps to axis ``d``; coordinate
-            ``d >= k`` maps to axis ``d + 1``.
-        k (int): Axis along which to scan.
-        M (int): Grid resolution per axis.
-        N (int): Number of parametric dimensions of the *full* mask.
-
-    Returns:
-        bool: True if any subcell along the line is marked True.
-
-    Note:
-        Inputs are assumed to be correct (no validation performed).
-        For general use, call :func:`_mask._line_intersects_mask` instead.
-    """
-    if N == 1:
-        for i in range(M):  # noqa: SIM110
-            if mask_flat[i]:
-                return True
-        return False
-
-    # Precompute cell indices for the N-1 fixed dimensions.
-    cells = np.empty(N, dtype=np.int64)
-    for d in range(N):
-        if d < k:
-            cell = int(math.floor(x[d] * M))  # noqa: RUF046
-        elif d > k:
-            cell = int(math.floor(x[d - 1] * M))  # noqa: RUF046
-        else:
-            cell = 0  # placeholder for the scanning axis
-        if cell < 0:
-            cell = 0
-        elif cell >= M:
-            cell = M - 1
-        cells[d] = cell
-
-    # Scan along axis k.
-    for i in range(M):
-        cells[k] = i
-        idx = 0
-        for d in range(N):
-            idx = idx * M + cells[d]
-        if mask_flat[idx]:
-            return True
-    return False
 
 
 # ---------------------------------------------------------------------------
@@ -1550,14 +1481,6 @@ def _warmup_mask_numba_functions() -> None:
     This function triggers compilation of all mask-related Numba functions,
     ensuring they are cached and ready for use.
     """
-    # Line query kernels.
-    mask_1d = np.array([True, False], dtype=np.bool_)
-    _line_intersects_mask_core(mask_1d, np.empty(0, dtype=np.float64), 0, 2, 1)
-
-    mask_2d = np.array([True, False, False, True], dtype=np.bool_)
-    x_1d_for_line = np.array([0.25], dtype=np.float64)
-    _line_intersects_mask_core(mask_2d, x_1d_for_line, 0, 2, 2)
-
     # Uniform sign check.
     c1 = np.array([1.0, 2.0, 3.0], dtype=np.float64)
     _has_uniform_sign(c1)

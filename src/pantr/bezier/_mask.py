@@ -24,7 +24,6 @@ from .._numba_compat import wait_for_jit_warmup
 from ._mask_core import (
     _intersection_mask_2d_core,
     _intersection_mask_3d_core,
-    _line_intersects_mask_core,
     _nonzero_mask_1d_core,
     _nonzero_mask_2d_core,
     _nonzero_mask_3d_core,
@@ -180,9 +179,10 @@ def _line_intersects_mask(
         raise ValueError(
             f"Point has {x.shape[0]} components but expected {expected_len} (N-1 where N={N})."
         )
-    wait_for_jit_warmup()
-    x_f64 = np.asarray(x, dtype=np.float64).ravel()
-    return bool(_line_intersects_mask_core(mask.ravel(), x_f64, axis, M, N))
+    cells = np.clip(np.floor(np.asarray(x, dtype=np.float64) * M).astype(np.intp), 0, M - 1)
+    idx: list[int | slice] = [int(c) for c in cells]
+    idx.insert(axis, slice(None))
+    return bool(np.any(mask[tuple(idx)]))
 
 
 def _extract_scalar_coeffs(
