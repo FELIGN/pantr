@@ -21,6 +21,7 @@ import numpy as np
 import numpy.typing as npt
 
 from .._numba_compat import wait_for_jit_warmup
+from ._bezier_sign import UniformSign, _coeff_sign
 from ._mask_core import (
     _intersection_mask_2d_core,
     _intersection_mask_3d_core,
@@ -220,7 +221,7 @@ def _extract_scalar_coeffs(
 
     if bezier.is_rational:
         weights = bezier.control_points[..., -1]
-        if not (np.all(weights > 0.0) or np.all(weights < 0.0)):
+        if _coeff_sign(weights.ravel()) is UniformSign.MIXED:
             raise TypeError(
                 "Mask operations on rational Béziers require all weights to share "
                 "the same strict sign (all positive or all negative)."
