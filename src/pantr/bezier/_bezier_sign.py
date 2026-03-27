@@ -1,9 +1,12 @@
-"""Uniform sign detection for scalar non-rational Bézier polynomials.
+"""Uniform sign detection for scalar Bézier polynomials.
 
-Provides :func:`_uniform_sign`, which determines whether all Bernstein
-coefficients of a scalar Bézier share the same strict sign.  By the convex
-hull property of Bernstein polynomials, a uniform sign on the coefficients
-guarantees the polynomial does not change sign over its domain.
+Provides :func:`_uniform_sign`, which determines whether a scalar Bézier
+polynomial has a definite sign over its domain.
+
+For non-rational Béziers, this checks that all Bernstein coefficients share
+the same strict sign.  For rational Béziers, both the numerator and
+denominator (weight) coefficients must independently have uniform strict
+sign; the sign of the rational function is then the product of the two signs.
 
 This is the ``uniformSign`` utility from the algoim library
 (R. I. Saye, *J. Comput. Phys.* 448, 110720, 2022).
@@ -40,37 +43,62 @@ class UniformSign(enum.IntEnum):
     """All coefficients are strictly positive."""
 
 
-def _uniform_sign(bezier: Bezier) -> UniformSign:
-    """Check whether a scalar non-rational Bézier has uniform sign.
-
-    Uses the convex hull property of Bernstein polynomials: if all coefficients
-    share the same strict sign, the polynomial cannot change sign over its
-    domain.
+def _coeff_sign(coeffs: npt.NDArray[np.floating[Any]]) -> UniformSign:
+    """Return the uniform sign of a flat coefficient array.
 
     Args:
-        bezier (~pantr.bezier.Bezier): A scalar (``rank == 1``),
-            non-rational Bézier of any parametric dimension.
+        coeffs (npt.NDArray[np.floating]): Flat coefficient array.
 
     Returns:
-        UniformSign: The uniform sign of the Bernstein coefficients.
-
-    Raises:
-        TypeError: If ``bezier`` is rational.
-        ValueError: If ``bezier`` is not scalar (``rank != 1``).
+        UniformSign: ``POSITIVE`` if all > 0, ``NEGATIVE`` if all < 0,
+        ``MIXED`` otherwise.
     """
-    if bezier.is_rational:
-        raise TypeError("uniform_sign is only defined for non-rational Bézier polynomials.")
-    if bezier.rank != 1:
-        raise ValueError(
-            f"uniform_sign requires a scalar Bézier (rank == 1), got rank {bezier.rank}."
-        )
-
-    coeffs: npt.NDArray[np.floating[Any]] = bezier.control_points[..., 0].ravel()
-    # Ensure contiguous for the kernel (int arrays are already cast in Bezier constructor).
-    coeffs = np.ascontiguousarray(coeffs, dtype=bezier.dtype)
-
     if np.all(coeffs > 0):
         return UniformSign.POSITIVE
     if np.all(coeffs < 0):
         return UniformSign.NEGATIVE
     return UniformSign.MIXED
+
+
+def _uniform_sign(bezier: Bezier) -> UniformSign:
+    """Check whether a scalar Bézier has uniform sign.
+
+    For non-rational Béziers, checks that all Bernstein coefficients share
+    the same strict sign.  For rational Béziers, both the numerator
+    (``w_i * c_i``) and denominator (``w_i``) coefficients must independently
+    have uniform strict sign; the sign of the rational function is the
+    product of the two.
+
+    Args:
+        bezier (~pantr.bezier.Bezier): A scalar (``rank == 1``) Bézier of
+            any parametric dimension, rational or non-rational.
+
+    Returns:
+        UniformSign: The uniform sign of the polynomial.
+
+    Raises:
+        ValueError: If ``bezier`` is not scalar (``rank != 1``).
+    """
+    if bezier.rank != 1:
+        raise ValueError(
+            f"uniform_sign requires a scalar Bézier (rank == 1), got rank {bezier.rank}."
+        )
+
+    if bezier.is_rational:
+        numer: npt.NDArray[np.floating[Any]] = bezier.control_points[..., 0].ravel()
+        weights: npt.NDArray[np.floating[Any]] = bezier.control_points[..., -1].ravel()
+        numer = np.ascontiguousarray(numer, dtype=bezier.dtype)
+        weights = np.ascontiguousarray(weights, dtype=bezier.dtype)
+
+        sign_n = _coeff_sign(numer)
+        if sign_n is UniformSign.MIXED:
+            return UniformSign.MIXED
+        sign_w = _coeff_sign(weights)
+        if sign_w is UniformSign.MIXED:
+            return UniformSign.MIXED
+        # sign(n/w) = sign(n) * sign(w)
+        return UniformSign(sign_n * sign_w)
+
+    coeffs: npt.NDArray[np.floating[Any]] = bezier.control_points[..., 0].ravel()
+    coeffs = np.ascontiguousarray(coeffs, dtype=bezier.dtype)
+    return _coeff_sign(coeffs)

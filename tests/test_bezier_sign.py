@@ -1,4 +1,4 @@
-"""Tests for uniform sign detection of scalar non-rational Bézier polynomials."""
+"""Tests for uniform sign detection of scalar Bézier polynomials."""
 
 from __future__ import annotations
 
@@ -102,13 +102,52 @@ class TestUniformSignND:
 # ---------------------------------------------------------------------------
 
 
+class TestUniformSignRational:
+    """Uniform sign for rational scalar Béziers."""
+
+    def test_positive_numer_positive_weights(self) -> None:
+        """Positive numerator and positive weights → POSITIVE."""
+        b = Bezier(np.array([[1.0, 1.0], [2.0, 2.0], [3.0, 3.0]]), is_rational=True)
+        assert _uniform_sign(b) is UniformSign.POSITIVE
+
+    def test_negative_numer_positive_weights(self) -> None:
+        """Negative numerator and positive weights → NEGATIVE."""
+        b = Bezier(np.array([[-1.0, 1.0], [-2.0, 2.0], [-3.0, 3.0]]), is_rational=True)
+        assert _uniform_sign(b) is UniformSign.NEGATIVE
+
+    def test_positive_numer_negative_weights(self) -> None:
+        """Positive numerator and negative weights → NEGATIVE (pos/neg)."""
+        b = Bezier(np.array([[1.0, -1.0], [2.0, -2.0], [3.0, -3.0]]), is_rational=True)
+        assert _uniform_sign(b) is UniformSign.NEGATIVE
+
+    def test_negative_numer_negative_weights(self) -> None:
+        """Negative numerator and negative weights → POSITIVE (neg/neg)."""
+        b = Bezier(np.array([[-1.0, -1.0], [-2.0, -2.0], [-3.0, -3.0]]), is_rational=True)
+        assert _uniform_sign(b) is UniformSign.POSITIVE
+
+    def test_mixed_numer(self) -> None:
+        """Mixed numerator → MIXED regardless of weights."""
+        b = Bezier(np.array([[-1.0, 1.0], [2.0, 1.0], [3.0, 1.0]]), is_rational=True)
+        assert _uniform_sign(b) is UniformSign.MIXED
+
+    def test_mixed_weights(self) -> None:
+        """Uniform numerator but mixed weights → MIXED."""
+        b = Bezier(np.array([[1.0, 1.0], [2.0, -1.0], [3.0, 1.0]]), is_rational=True)
+        assert _uniform_sign(b) is UniformSign.MIXED
+
+    def test_zero_weight(self) -> None:
+        """A zero weight makes the denominator MIXED → MIXED."""
+        b = Bezier(np.array([[1.0, 1.0], [2.0, 0.0], [3.0, 1.0]]), is_rational=True)
+        assert _uniform_sign(b) is UniformSign.MIXED
+
+    def test_zero_numer(self) -> None:
+        """A zero numerator coefficient → MIXED."""
+        b = Bezier(np.array([[0.0, 1.0], [2.0, 1.0], [3.0, 1.0]]), is_rational=True)
+        assert _uniform_sign(b) is UniformSign.MIXED
+
+
 class TestUniformSignErrors:
     """Error handling for invalid Bézier inputs."""
-
-    def test_rational_raises(self) -> None:
-        b = Bezier(np.array([[1.0, 1.0], [2.0, 1.0], [3.0, 1.0]]), is_rational=True)
-        with pytest.raises(TypeError, match="non-rational"):
-            _uniform_sign(b)
 
     def test_vector_raises(self) -> None:
         b = Bezier(np.array([[1.0, 2.0], [3.0, 4.0], [5.0, 6.0]]))
