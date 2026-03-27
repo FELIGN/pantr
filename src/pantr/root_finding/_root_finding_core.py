@@ -114,7 +114,7 @@ def _split_scalar(
         t (float): Split parameter in ``(0, 1)``.
 
     Returns:
-        tuple[npt.NDArray[np.float32 | np.float64], npt.NDArray[np.float32 | np.float64]]:
+        tuple[npt.NDArray[np.float64], npt.NDArray[np.float64]]:
             ``(left, right)`` coefficient arrays, each of shape ``(n + 1,)``.
 
     Note:
@@ -143,7 +143,7 @@ def _subdivide_scalar(
     coeff: npt.NDArray[np.float32 | np.float64],
     t_min: float,
     t_max: float,
-) -> npt.NDArray[np.float32 | np.float64]:
+) -> npt.NDArray[np.float64]:
     """Extract Bernstein coefficients for the sub-interval ``[t_min, t_max]``.
 
     Always operates on the original coefficients via two composed de Casteljau
@@ -156,15 +156,14 @@ def _subdivide_scalar(
         t_max (float): Sub-interval end.
 
     Returns:
-        npt.NDArray[np.float32 | np.float64]: Bernstein coefficients reparametrized to
-            [0, 1].
+        npt.NDArray[np.float64]: Bernstein coefficients reparametrized to [0, 1].
 
     Note:
         Inputs are assumed to be correct (no validation performed).
         For general use, call the Layer 2 helpers in ``_find_roots`` instead.
     """
     if t_min <= 0.0 and t_max >= 1.0:
-        return coeff.copy()
+        return np.asarray(coeff, dtype=np.float64).copy()
 
     t_min = max(t_min, 0.0)
     t_min = min(t_min, 1.0)
@@ -183,7 +182,7 @@ def _subdivide_scalar(
         left, _ = _split_scalar(coeff, t_max)
         return left
 
-    return coeff.copy()
+    return np.asarray(coeff, dtype=np.float64).copy()
 
 
 @nb_jit(nopython=True, cache=True)

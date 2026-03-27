@@ -6,11 +6,11 @@ control polygon. Converges at a super-linear rate and avoids the derivative
 chain, making it more stable for high-degree polynomials (e.g. degree-26
 projection polynomials arising from rational curves with d=9).
 
-Main exports (all Numba-compiled):
+Main exports:
 
-- :func:`_clip_roots_core` -- stack-based iterative clipping loop.
+- :func:`_clip_roots_core` -- stack-based iterative clipping loop (Numba-compiled).
 - :func:`_dedup_roots` -- sort and deduplicate raw root candidates with
-  derivative-aware merge radius.
+  derivative-aware merge radius (plain Python).
 
 References:
     T. Nishita, T. W. Sederberg, M. Kakimoto (1990), *Ray Tracing Trimmed
@@ -61,7 +61,7 @@ def _clip_roots_core(  # noqa: PLR0912, PLR0915
         geom_tol (float): Geometric tolerance for near-zero detection.
 
     Returns:
-        tuple[npt.NDArray[np.float32 | np.float64], int]: ``(roots_array, count)`` where
+        tuple[npt.NDArray[np.float64], int]: ``(roots_array, count)`` where
             only the first ``count`` entries are valid. Roots are unsorted and
             may contain duplicates.
 
@@ -322,7 +322,7 @@ def _dedup_roots(
         geom_tol (float): Geometric tolerance.
 
     Returns:
-        npt.NDArray[np.float32 | np.float64]: Sorted, deduplicated array of unique roots.
+        npt.NDArray[np.float64]: Sorted, deduplicated array of unique roots.
     """
     if n_roots == 0:
         return np.empty(0, dtype=np.float64)

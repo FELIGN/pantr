@@ -27,6 +27,9 @@ _CLIP_MIN_DEGREE: int = 6
 For degree <= 5 the Yuksel derivative chain is at most 4 levels deep and has
 negligible rounding accumulation, while its per-call overhead is lower than
 clipping's convex hull construction and subdivision.
+
+Duplicated in ``_batch_core.py`` (Numba kernels cannot import Python-level
+module constants at call time) -- keep in sync.
 """
 
 _CLIP_COEFF_RANGE_LIMIT: float = 1e8
@@ -34,6 +37,8 @@ _CLIP_COEFF_RANGE_LIMIT: float = 1e8
 
 Empirically determined via a 27 000-trial sweep comparing clipping against
 Yuksel across coefficient ranges from 1e0 to 1e20.
+
+Duplicated in ``_batch_core.py`` -- keep in sync.
 """
 
 _SUPPORTED_DTYPES = (np.float32, np.float64)
@@ -207,10 +212,14 @@ def _find_roots_batch_impl(
 
     wait_for_jit_warmup()
     arr = _validate_coeffs_batch(coeffs)
-    resolved_tol = _resolve_tol(arr[0], tol)
 
     n_polys = arr.shape[0]
     degree = arr.shape[1] - 1
+
+    if n_polys == 0:
+        return np.empty((0, max(degree, 1)), dtype=np.float64), np.empty(0, dtype=np.intp)
+
+    resolved_tol = _resolve_tol(arr[0], tol)
 
     out_roots = np.full((n_polys, max(degree, 1)), np.nan, dtype=np.float64)
     out_counts = np.zeros(n_polys, dtype=np.intp)
@@ -245,9 +254,13 @@ def _solve_monotone_root_batch_impl(
 
     wait_for_jit_warmup()
     arr = _validate_coeffs_batch(coeffs)
-    resolved_tol = _resolve_tol(arr[0], tol)
 
     n_polys = arr.shape[0]
+
+    if n_polys == 0:
+        return np.empty(0, dtype=np.float64), np.empty(0, dtype=np.bool_)
+
+    resolved_tol = _resolve_tol(arr[0], tol)
     out_roots = np.full(n_polys, np.nan, dtype=np.float64)
     out_found = np.zeros(n_polys, dtype=np.bool_)
 

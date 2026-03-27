@@ -24,10 +24,17 @@ from pantr.root_finding._yuksel_core import (
 )
 
 _CLIP_MIN_DEGREE: int = 6
-"""Minimum polynomial degree for which Bezier clipping is considered."""
+"""Minimum polynomial degree for which Bezier clipping is considered.
+
+Duplicated from ``_find_roots.py`` (Numba kernels cannot import Python-level
+module constants at call time) -- keep in sync.
+"""
 
 _CLIP_COEFF_RANGE_LIMIT: float = 1e8
-"""Maximum coefficient dynamic range for which Bezier clipping is used."""
+"""Maximum coefficient dynamic range for which Bezier clipping is used.
+
+Duplicated from ``_find_roots.py`` -- keep in sync.
+"""
 
 
 @nb_jit(nopython=True, cache=True)
@@ -48,7 +55,7 @@ def _dispatch_and_find(  # noqa: PLR0912
         geom_tol (float): Geometric tolerance.
 
     Returns:
-        tuple[npt.NDArray[np.float32 | np.float64], int]: ``(roots_array, count)`` where
+        tuple[npt.NDArray[np.float64], int]: ``(roots_array, count)`` where
             only the first ``count`` entries are valid roots, sorted in
             ascending order.
 
@@ -195,10 +202,9 @@ def _solve_monotone_root_batch_core(
 
 
 def _warmup_numba_functions() -> None:
-    """Trigger Numba compilation of all batch kernels.
+    """Trigger Numba compilation of the batch kernels and their direct dependencies.
 
     Called from the background warmup thread in ``pantr.__init__``.
-    Transitively compiles all L3 helpers via Numba's dependency resolution.
     """
     coeffs = np.array([[1.0, -1.0, 0.5]], dtype=np.float64)
     out_roots = np.empty((1, 2), dtype=np.float64)

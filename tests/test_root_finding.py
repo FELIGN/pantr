@@ -414,7 +414,7 @@ class TestFindRoots(unittest.TestCase):
             self.assertAlmostEqual(val, 0.0, delta=1e-6)
 
     def test_extreme_range_falls_back_to_yuksel(self) -> None:
-        """High dynamic range: falls back to Yuksel."""
+        """High dynamic range: falls back to Yuksel with valid residuals."""
         rng = np.random.default_rng(55)
         c = rng.uniform(-1.0, 1.0, 9).astype(np.float64)
         c[0] = 1e-8
@@ -422,6 +422,9 @@ class TestFindRoots(unittest.TestCase):
         roots = find_roots(c, tol=1e-12)
         roots_yuk, n = _yuksel_roots(c, 1e-12)
         self.assertEqual(len(roots), n)
+        for r in roots:
+            val = _de_casteljau_eval_scalar(c, float(np.clip(r, 0.0, 1.0)))
+            self.assertAlmostEqual(val, 0.0, delta=1e-6)
 
     def test_custom_tolerance(self) -> None:
         """Custom tolerance is respected."""
@@ -550,6 +553,13 @@ class TestFindRootsBatch(unittest.TestCase):
         self.assertEqual(counts[0], 0)
         self.assertEqual(counts[1], 0)
 
+    def test_empty_batch(self) -> None:
+        """Empty batch (0 polynomials) returns empty arrays without error."""
+        coeffs = np.empty((0, 3), dtype=np.float64)
+        roots, counts = find_roots_batch(coeffs)
+        self.assertEqual(roots.shape, (0, 2))
+        self.assertEqual(counts.shape, (0,))
+
 
 class TestSolveMonotoneRootBatch(unittest.TestCase):
     """Tests for :func:`solve_monotone_root_batch` (public API)."""
@@ -588,6 +598,13 @@ class TestSolveMonotoneRootBatch(unittest.TestCase):
         self.assertFalse(found[1])
         self.assertTrue(np.isnan(roots[0]))
         self.assertTrue(np.isnan(roots[1]))
+
+    def test_empty_batch(self) -> None:
+        """Empty batch (0 polynomials) returns empty arrays without error."""
+        coeffs = np.empty((0, 3), dtype=np.float64)
+        roots, found = solve_monotone_root_batch(coeffs)
+        self.assertEqual(roots.shape, (0,))
+        self.assertEqual(found.shape, (0,))
 
 
 if __name__ == "__main__":

@@ -89,6 +89,12 @@ def find_roots_batch(
         TypeError: If ``coeffs`` is not a float32 or float64 ndarray.
         ValueError: If ``coeffs`` is not 2-D, has fewer than 1 column, or
             ``tol`` is not positive.
+
+    Note:
+        The batch path uses a simpler fixed-threshold dedup (no
+        derivative-aware merge radius) compared to :func:`find_roots`.
+        In rare edge cases involving near-duplicate roots, the two
+        functions may report different root counts.
     """
     return _find_roots_batch_impl(coeffs, tol=tol)
 

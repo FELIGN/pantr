@@ -193,7 +193,7 @@ def _find_roots_at_level(
         tol (float): Bracket-width tolerance.
 
     Returns:
-        tuple[npt.NDArray[np.float32 | np.float64], int]: ``(roots_array, count)`` where
+        tuple[npt.NDArray[np.float64], int]: ``(roots_array, count)`` where
             only the first ``count`` entries are valid.
 
     Note:
@@ -278,7 +278,7 @@ def _yuksel_roots(  # noqa: PLR0912, PLR0915
         tol (float): Parametric tolerance.
 
     Returns:
-        tuple[npt.NDArray[np.float32 | np.float64], int]: ``(roots_array, count)`` where
+        tuple[npt.NDArray[np.float64], int]: ``(roots_array, count)`` where
             only the first ``count`` entries are valid.
 
     Note:
