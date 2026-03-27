@@ -1,13 +1,13 @@
 """Numba-compiled kernels for Bézier operations.
 
 Provides fused evaluation kernels that compute Bernstein basis values and
-contract them with control points in a single pass, plus degree elevation,
-degree reduction, and uniform sign detection kernels.
+contract them with control points in a single pass, plus degree elevation
+and degree reduction kernels.
 
 Note:
     Inputs are assumed to be correct (no validation performed).
-    For general use, call the Layer 2 helpers in ``_bezier_eval``,
-    ``_bezier_degree``, and ``_bezier_sign`` instead.
+    For general use, call the Layer 2 helpers in ``_bezier_eval``
+    and ``_bezier_degree`` instead.
 """
 
 from __future__ import annotations
