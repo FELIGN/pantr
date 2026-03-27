@@ -192,27 +192,52 @@ def _extract_scalar_coeffs(
 ) -> npt.NDArray[np.float64]:
     """Extract scalar Bernstein coefficients from a Bezier as a contiguous N-D float64 array.
 
+    For non-rational Beziers, returns the scalar component ``control_points[..., 0]``.
+
+    For rational Beziers with all weights sharing the same strict sign (all
+    positive or all negative), returns the numerator coefficients
+    ``control_points[..., 0]`` (which are ``w_i * c_i`` in homogeneous form).
+    The zeros of the rational function coincide with the zeros of the
+    numerator when all weights have the same sign.
+
     Args:
-        bezier (~pantr.bezier.Bezier): A scalar (rank == 1), non-rational Bezier.
+        bezier (~pantr.bezier.Bezier): A scalar Bezier (``rank == 1``).
+            Rational Beziers are accepted when all weights share the same
+            strict sign.
 
     Returns:
         npt.NDArray[np.float64]: Contiguous coefficient array of shape
         ``(p0+1, p1+1, ...)``.
 
     Raises:
-        TypeError: If ``bezier`` is rational.
-        ValueError: If ``bezier`` is not scalar (rank != 1).
+        TypeError: If ``bezier`` is rational and the weights do not all share
+            the same strict sign (i.e., some are positive and some negative,
+            or any are zero).
+        ValueError: If ``bezier`` is not scalar (``rank != 1``).
     """
     if bezier.is_rational:
-        raise TypeError("Mask operations require non-rational Bézier polynomials.")
+        if bezier.rank != 1:
+            raise ValueError(
+                f"Mask operations require a scalar Bézier (rank == 1), got rank {bezier.rank}."
+            )
+        weights = bezier.control_points[..., -1]
+        if not (np.all(weights > 0.0) or np.all(weights < 0.0)):
+            raise TypeError(
+                "Mask operations on rational Béziers require all weights to share "
+                "the same strict sign (all positive or all negative)."
+            )
+        # Numerator coefficients w_i * c_i — zeros match the rational function.
+        coeffs: npt.NDArray[np.float64] = np.ascontiguousarray(
+            bezier.control_points[..., 0], dtype=np.float64
+        )
+        return coeffs
+
     if bezier.rank != 1:
         raise ValueError(
             f"Mask operations require a scalar Bézier (rank == 1), got rank {bezier.rank}."
         )
     # Remove the trailing rank-1 axis.
-    coeffs: npt.NDArray[np.float64] = np.ascontiguousarray(
-        bezier.control_points[..., 0], dtype=np.float64
-    )
+    coeffs = np.ascontiguousarray(bezier.control_points[..., 0], dtype=np.float64)
     return coeffs
 
 
@@ -227,9 +252,12 @@ def _nonzero_mask(
     could have a zero crossing there.  Uses recursive subdivision with
     de Casteljau restriction and uniform sign detection.
 
+    Supports rational Béziers when all weights share the same strict sign.
+
     Args:
-        bezier (~pantr.bezier.Bezier): A scalar (rank == 1), non-rational
-            Bézier of parametric dimension 1, 2, or 3.
+        bezier (~pantr.bezier.Bezier): A scalar Bézier of parametric
+            dimension 1, 2, or 3.  Non-rational with ``rank == 1`` or
+            rational with ``rank == 2`` and same-sign weights.
         mask (npt.NDArray[np.bool_] | None): Input mask to restrict the
             search.  If None, an all-True mask is used. Defaults to None.
         M (int): Grid resolution per axis. Defaults to 8.
@@ -238,7 +266,7 @@ def _nonzero_mask(
         npt.NDArray[np.bool_]: Boolean mask of shape ``(M,)*dim``.
 
     Raises:
-        TypeError: If ``bezier`` is rational.
+        TypeError: If ``bezier`` is rational with mixed-sign weights.
         ValueError: If ``bezier`` is not scalar, or ``dim > 3``.
     """
     coeffs = _extract_scalar_coeffs(bezier)
@@ -278,11 +306,13 @@ def _intersection_mask(
     Uses recursive subdivision with the orthant test to determine subcells
     where both polynomials could simultaneously vanish.
 
+    Supports rational Béziers when all weights share the same strict sign.
+
     Args:
-        bezier_f (~pantr.bezier.Bezier): First scalar non-rational Bézier.
+        bezier_f (~pantr.bezier.Bezier): First scalar Bézier.
         mask_f (npt.NDArray[np.bool_]): Nonzero mask of ``bezier_f``,
             shape ``(M,)*dim``.
-        bezier_g (~pantr.bezier.Bezier): Second scalar non-rational Bézier.
+        bezier_g (~pantr.bezier.Bezier): Second scalar Bézier.
         mask_g (npt.NDArray[np.bool_]): Nonzero mask of ``bezier_g``,
             shape ``(M,)*dim``.
         M (int): Grid resolution per axis. Defaults to 8.
@@ -291,7 +321,7 @@ def _intersection_mask(
         npt.NDArray[np.bool_]: Intersection mask of shape ``(M,)*dim``.
 
     Raises:
-        TypeError: If either Bézier is rational.
+        TypeError: If either Bézier is rational with mixed-sign weights.
         ValueError: If either is not scalar, dimensions don't match, or dim > 3.
     """
     coeffs_f = _extract_scalar_coeffs(bezier_f)

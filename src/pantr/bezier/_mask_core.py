@@ -25,7 +25,41 @@ import numpy as np
 import numpy.typing as npt
 
 from .._numba_compat import nb_jit
-from ._bezier_core import _uniform_sign_core
+
+# ---------------------------------------------------------------------------
+# Uniform sign helper
+# ---------------------------------------------------------------------------
+
+
+@nb_jit(nopython=True, cache=True)
+def _has_uniform_sign(coeffs: npt.NDArray[np.float64]) -> bool:
+    """Check if all Bernstein coefficients share the same strict sign.
+
+    Returns True if all entries are strictly positive or all are strictly
+    negative.  Equivalent to ``np.all(coeffs > 0) or np.all(coeffs < 0)``
+    but avoids temporary array allocation in Numba.
+
+    Args:
+        coeffs (npt.NDArray[np.float64]): Flat coefficient array.
+
+    Returns:
+        bool: True if all coefficients have the same strict sign.
+
+    Note:
+        Inputs are assumed to be correct (no validation performed).
+    """
+    n = coeffs.shape[0]
+    all_pos = True
+    all_neg = True
+    for i in range(n):
+        if coeffs[i] <= 0.0:
+            all_pos = False
+        if coeffs[i] >= 0.0:
+            all_neg = False
+        if not all_pos and not all_neg:
+            return False
+    return all_pos or all_neg
+
 
 # ---------------------------------------------------------------------------
 # Point / line query kernels
@@ -379,7 +413,7 @@ def _nz_mask_1d_recurse(  # noqa: PLR0913
     xa = float(a) / M - eps
     xb = float(b) / M + eps
     _restrict_scalar_1d(coeffs, xa, xb, work)
-    if _uniform_sign_core(work) != 0:
+    if _has_uniform_sign(work):
         return
 
     # Base case: single subcell.
@@ -568,7 +602,7 @@ def _nz_mask_2d_recurse(  # noqa: PLR0913
         for i1 in range(n1):
             flat_work[i0 * n1 + i1] = work1[i0, i1]
 
-    if _uniform_sign_core(flat_work) != 0:
+    if _has_uniform_sign(flat_work):
         return
 
     # Base case: single subcell.
@@ -813,7 +847,7 @@ def _nz_mask_3d_recurse(  # noqa: PLR0912, PLR0913
                 flat_work[idx] = res[i0, i1, i2]
                 idx += 1
 
-    if _uniform_sign_core(flat_work) != 0:
+    if _has_uniform_sign(flat_work):
         return
 
     # Base case.
@@ -1564,8 +1598,11 @@ def _warmup_mask_numba_functions() -> None:
     x_1d_for_line = np.array([0.25], dtype=np.float64)
     _line_intersects_mask_core(mask_2d, x_1d_for_line, 0, 2, 2)
 
-    # Scalar restriction.
+    # Uniform sign check.
     c1 = np.array([1.0, 2.0, 3.0], dtype=np.float64)
+    _has_uniform_sign(c1)
+
+    # Scalar restriction.
     out1 = np.empty(3, dtype=np.float64)
     _restrict_scalar_1d(c1, 0.2, 0.8, out1)
 

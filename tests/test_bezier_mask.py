@@ -292,10 +292,37 @@ class TestNonzeroMask:
         assert mask.shape == (4, 4, 4)
         assert _mask_empty(mask)
 
-    def test_rational_raises(self) -> None:
-        b = Bezier(np.array([[1.0, 1.0], [2.0, 1.0], [3.0, 1.0]]), is_rational=True)
-        with pytest.raises(TypeError, match="non-rational"):
+    def test_rational_mixed_sign_weights_raises(self) -> None:
+        """Rational Bezier with mixed-sign weights is rejected."""
+        b = Bezier(np.array([[1.0, 1.0], [2.0, -1.0], [3.0, 1.0]]), is_rational=True)
+        with pytest.raises(TypeError, match="same strict sign"):
             _nonzero_mask(b)
+
+    def test_rational_zero_weight_raises(self) -> None:
+        """Rational Bezier with a zero weight is rejected."""
+        b = Bezier(np.array([[1.0, 1.0], [2.0, 0.0], [3.0, 1.0]]), is_rational=True)
+        with pytest.raises(TypeError, match="same strict sign"):
+            _nonzero_mask(b)
+
+    def test_rational_positive_weights_all_positive(self) -> None:
+        """Rational Bezier with all-positive numerator and positive weights → empty mask."""
+        # Numerator coefficients (w_i * c_i) are [1, 4, 9], all positive → no zeros.
+        b = Bezier(np.array([[1.0, 1.0], [4.0, 2.0], [9.0, 3.0]]), is_rational=True)
+        mask = _nonzero_mask(b, M=8)
+        assert _mask_empty(mask)
+
+    def test_rational_negative_weights_all_positive(self) -> None:
+        """Rational Bezier with negative weights but all-positive numerator → empty mask."""
+        b = Bezier(np.array([[1.0, -1.0], [4.0, -2.0], [9.0, -3.0]]), is_rational=True)
+        mask = _nonzero_mask(b, M=8)
+        assert _mask_empty(mask)
+
+    def test_rational_with_zero_crossing(self) -> None:
+        """Rational Bezier whose numerator crosses zero → non-empty mask."""
+        # Numerator coefficients: [-1, 1], weights: [1, 1] → zero at x=0.5.
+        b = Bezier(np.array([[-1.0, 1.0], [1.0, 1.0]]), is_rational=True)
+        mask = _nonzero_mask(b, M=8)
+        assert not _mask_empty(mask)
 
     def test_vector_raises(self) -> None:
         b = Bezier(np.array([[1.0, 2.0], [3.0, 4.0], [5.0, 6.0]]))
