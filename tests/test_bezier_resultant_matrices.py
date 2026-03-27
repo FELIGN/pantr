@@ -242,7 +242,7 @@ class TestDetQr:
         A = np.array([[1.0, 2.0], [2.0, 4.0]])
         det, rank = _det_qr(A)
         np.testing.assert_allclose(det, 0.0, atol=1e-12)
-        assert rank < 2
+        assert rank < 2  # noqa: PLR2004
 
     def test_rank_deficient_matrix(self) -> None:
         """Matrix with known rank deficiency."""
@@ -253,7 +253,7 @@ class TestDetQr:
         A = U @ V
         det, rank = _det_qr(A.copy())
         np.testing.assert_allclose(det, 0.0, atol=1e-10)
-        assert rank == 2
+        assert rank == 2  # noqa: PLR2004
 
     def test_diagonal_matrix(self) -> None:
         """Determinant of a diagonal matrix is the product of diagonal entries."""
@@ -261,7 +261,7 @@ class TestDetQr:
         A = np.diag(diag)
         det, rank = _det_qr(A)
         np.testing.assert_allclose(det, np.prod(diag), rtol=1e-12)
-        assert rank == 4
+        assert rank == 4  # noqa: PLR2004
 
     def test_overwrites_input(self) -> None:
         """The input matrix is modified in place."""

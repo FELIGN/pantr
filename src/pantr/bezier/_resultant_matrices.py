@@ -265,7 +265,7 @@ def _det_qr(
     # --- validation ---
     if not isinstance(A, np.ndarray):
         raise ValueError(f"`A` must be a numpy array, got {type(A).__name__}.")
-    if A.ndim != 2 or A.shape[0] != A.shape[1]:
+    if A.ndim != 2 or A.shape[0] != A.shape[1]:  # noqa: PLR2004
         raise ValueError(f"`A` must be a 2-D square array, got shape {A.shape}.")
     if not np.issubdtype(A.dtype, np.floating):
         raise ValueError(f"`A` must have floating dtype, got {A.dtype}.")
