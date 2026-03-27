@@ -289,13 +289,8 @@ def _det_qr(
         # column-pivoting QR.  This matches algoim's det_qr implementation and
         # is intentional — for the small matrices used in implicit quadrature,
         # the difference in pivoting quality is negligible.
-        best_norm: float = -1.0
-        best_k = j
-        for k in range(j, n):
-            col_norm = float(np.dot(A[:, k], A[:, k]))
-            if col_norm > best_norm:
-                best_norm = col_norm
-                best_k = k
+        col_norms = np.einsum("ij,ij->j", A[:, j:], A[:, j:])
+        best_k = j + int(np.argmax(col_norms))
 
         # Swap columns j and best_k.
         if best_k != j:
@@ -303,14 +298,19 @@ def _det_qr(
             det *= -1.0
 
         # Apply Givens rotations from bottom to top to zero out entries below
-        # the diagonal in column j.
+        # the diagonal in column j.  The loop over i is inherently sequential
+        # (each rotation modifies A[i-1, j] which is read by the next one),
+        # but the row update itself is vectorised across all columns >= j.
         for i in range(n - 1, j, -1):
-            c, s = _givens_rotation(A[i - 1, j], A[i, j])
-            # Rotate rows i-1 and i for columns j..n-1.
-            for col in range(j, n):
-                x, y = A[i - 1, col], A[i, col]
-                A[i - 1, col] = c * x + s * y
-                A[i, col] = -s * x + c * y
+            b_val = float(A[i, j])
+            if b_val == 0.0:
+                continue
+            c, s = _givens_rotation(float(A[i - 1, j]), b_val)
+            # Save row i-1 before overwriting it; row i is updated second so
+            # its old values are still available from the original A[i, j:].
+            x = A[i - 1, j:].copy()
+            A[i - 1, j:] = c * x + s * A[i, j:]
+            A[i, j:] = -s * x + c * A[i, j:]
 
         det *= float(A[j, j])
         max_diag_r = max(max_diag_r, abs(float(A[j, j])))
