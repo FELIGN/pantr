@@ -81,20 +81,17 @@ def _sylvester_matrix(
     bq = np.array([math.comb(q, j) for j in range(q + 1)], dtype=dtype)
     inv_bpq = np.array([1.0 / math.comb(p + q - 1, k) for k in range(p + q)], dtype=dtype)
 
-    # Vectorised values: a[j] * binom(p,j) / binom(p+q-1, j+i) for each (i, j).
-    j_a = np.arange(p + 1)
-    vals_a = a * bp  # shape (p+1,)
+    # Upper block: out[i, j+i] = a[j]*binom(p,j) / binom(p+q-1, j+i)
+    # for i in 0..q-1, j in 0..p.
+    i_a = np.arange(q)[:, np.newaxis]  # (q, 1)
+    j_a = np.arange(p + 1)[np.newaxis, :]  # (1, p+1)
+    out[i_a, j_a + i_a] = (a * bp)[np.newaxis, :] * inv_bpq[j_a + i_a]
 
-    # Upper block: rows 0..q-1, each row i places p+1 values at columns i..i+p.
-    for i in range(q):
-        out[i, i : i + p + 1] = vals_a * inv_bpq[j_a + i]
-
-    # Lower block: rows q..q+p-1, each row i+q places q+1 values at columns i..i+q.
-    j_b = np.arange(q + 1)
-    vals_b = b * bq  # shape (q+1,)
-
-    for i in range(p):
-        out[i + q, i : i + q + 1] = vals_b * inv_bpq[j_b + i]
+    # Lower block: out[i+q, j+i] = b[j]*binom(q,j) / binom(p+q-1, j+i)
+    # for i in 0..p-1, j in 0..q.
+    i_b = np.arange(p)[:, np.newaxis]  # (p, 1)
+    j_b = np.arange(q + 1)[np.newaxis, :]  # (1, q+1)
+    out[i_b + q, j_b + i_b] = (b * bq)[np.newaxis, :] * inv_bpq[j_b + i_b]
 
     return out
 
