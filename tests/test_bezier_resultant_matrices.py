@@ -304,3 +304,26 @@ class TestDetQr:
         A.flags.writeable = False
         with pytest.raises(ValueError, match="writeable"):
             _det_qr(A)
+
+    def test_non_array_raises(self) -> None:
+        """Non-ndarray input raises ValueError."""
+        with pytest.raises(ValueError, match="numpy array"):
+            _det_qr([[1.0, 0.0], [0.0, 1.0]])  # type: ignore[arg-type]
+
+    def test_non_2d_raises(self) -> None:
+        """1-D array raises ValueError."""
+        with pytest.raises(ValueError, match="square"):
+            _det_qr(np.array([1.0, 2.0, 3.0]))
+
+    def test_empty_matrix_raises(self) -> None:
+        """0x0 matrix raises ValueError."""
+        with pytest.raises(ValueError, match="size >= 1"):
+            _det_qr(np.empty((0, 0)))
+
+    def test_non_positive_tol_raises(self) -> None:
+        """Non-positive tol raises ValueError."""
+        A = np.eye(2)
+        with pytest.raises(ValueError, match="tol"):
+            _det_qr(A, tol=0.0)
+        with pytest.raises(ValueError, match="tol"):
+            _det_qr(A.copy(), tol=-1.0)

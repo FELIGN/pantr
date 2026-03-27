@@ -250,9 +250,10 @@ def _det_qr(
     Args:
         A (npt.NDArray[np.floating[Any]]): Square matrix of shape ``(n, n)``
             with ``n >= 1``.  **Overwritten** on return.
-        tol (float): Tolerance multiplier for rank estimation.  A diagonal
-            entry of *R* is considered nonzero when
-            ``|R_{ii}| > tol * max|R_{jj}| * n * eps``.  Defaults to 10.0.
+        tol (float): Tolerance multiplier for rank estimation (must be > 0).
+            A diagonal entry of *R* is considered nonzero when
+            ``|R_{ii}| > tol * max|R_{jj}| * n * eps``.  Defaults to 10.0,
+            matching the algoim reference implementation.
 
     Returns:
         tuple[float, int]: ``(det, rank)`` where ``det`` is the determinant
@@ -260,7 +261,7 @@ def _det_qr(
 
     Raises:
         ValueError: If ``A`` is not a 2-D square array with floating dtype
-            and ``n >= 1``, or if it is not writeable.
+            and ``n >= 1``, or if it is not writeable, or if ``tol <= 0``.
     """
     # --- validation ---
     if not isinstance(A, np.ndarray):
@@ -274,6 +275,8 @@ def _det_qr(
         raise ValueError("`A` must have size >= 1.")
     if not A.flags.writeable:
         raise ValueError("`A` must be writeable (it is modified in place).")
+    if tol <= 0.0:
+        raise ValueError(f"`tol` must be positive, got {tol}.")
 
     # --- QR with column pivoting via Givens rotations ---
     det = 1.0
@@ -281,11 +284,16 @@ def _det_qr(
 
     for j in range(n):
         # Column pivoting: find column with largest squared norm among j..n-1.
+        # Note: the norm is computed over the *full* column (all n rows), not
+        # just the trailing sub-column (rows j..n-1) as in standard LAPACK
+        # column-pivoting QR.  This matches algoim's det_qr implementation and
+        # is intentional — for the small matrices used in implicit quadrature,
+        # the difference in pivoting quality is negligible.
         best_norm: float = -1.0
         best_k = j
         for k in range(j, n):
             col_norm = float(np.dot(A[:, k], A[:, k]))
-            if col_norm >= best_norm:
+            if col_norm > best_norm:
                 best_norm = col_norm
                 best_k = k
 
