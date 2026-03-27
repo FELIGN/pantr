@@ -21,7 +21,7 @@ import numpy as np
 import numpy.typing as npt
 
 from .._numba_compat import wait_for_jit_warmup
-from ._bezier_sign import UniformSign, _coeff_sign
+from ._bezier_sign import _extract_scalar_coeffs
 from ._mask_core import (
     _intersection_mask_2d_core,
     _intersection_mask_3d_core,
@@ -184,53 +184,6 @@ def _line_intersects_mask(
     idx: list[int | slice] = [int(c) for c in cells]
     idx.insert(axis, slice(None))
     return bool(np.any(mask[tuple(idx)]))
-
-
-def _extract_scalar_coeffs(
-    bezier: Bezier,
-) -> npt.NDArray[np.float64]:
-    """Extract scalar Bernstein coefficients from a Bezier as a contiguous N-D float64 array.
-
-    For non-rational Beziers, returns the scalar component ``control_points[..., 0]``.
-
-    For rational Beziers with all weights sharing the same strict sign (all
-    positive or all negative), returns the numerator coefficients
-    ``control_points[..., 0]`` (which are ``w_i * c_i`` in homogeneous form).
-    The zeros of the rational function coincide with the zeros of the
-    numerator when all weights have the same sign.
-
-    Args:
-        bezier (~pantr.bezier.Bezier): A scalar Bezier (``rank == 1``).
-            Rational Beziers are accepted when all weights share the same
-            strict sign.
-
-    Returns:
-        npt.NDArray[np.float64]: Contiguous coefficient array of shape
-        ``(p0+1, p1+1, ...)``.
-
-    Raises:
-        TypeError: If ``bezier`` is rational and the weights do not all share
-            the same strict sign (i.e., some are positive and some negative,
-            or any are zero).
-        ValueError: If ``bezier`` is not scalar (``rank != 1``).
-    """
-    if bezier.rank != 1:
-        raise ValueError(
-            f"Mask operations require a scalar Bézier (rank == 1), got rank {bezier.rank}."
-        )
-
-    if bezier.is_rational:
-        weights = bezier.control_points[..., -1]
-        if _coeff_sign(weights.ravel()) is UniformSign.MIXED:
-            raise TypeError(
-                "Mask operations on rational Béziers require all weights to share "
-                "the same strict sign (all positive or all negative)."
-            )
-
-    coeffs: npt.NDArray[np.float64] = np.ascontiguousarray(
-        bezier.control_points[..., 0], dtype=np.float64
-    )
-    return coeffs
 
 
 def _nonzero_mask(
