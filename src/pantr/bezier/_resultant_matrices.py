@@ -81,15 +81,20 @@ def _sylvester_matrix(
     bq = np.array([math.comb(q, j) for j in range(q + 1)], dtype=dtype)
     inv_bpq = np.array([1.0 / math.comb(p + q - 1, k) for k in range(p + q)], dtype=dtype)
 
-    # Upper block: Q-1 rows from polynomial a.
-    for i in range(q):
-        for j in range(p + 1):
-            out[i, j + i] = a[j] * bp[j] * inv_bpq[j + i]
+    # Vectorised values: a[j] * binom(p,j) / binom(p+q-1, j+i) for each (i, j).
+    j_a = np.arange(p + 1)
+    vals_a = a * bp  # shape (p+1,)
 
-    # Lower block: P-1 rows from polynomial b.
+    # Upper block: rows 0..q-1, each row i places p+1 values at columns i..i+p.
+    for i in range(q):
+        out[i, i : i + p + 1] = vals_a * inv_bpq[j_a + i]
+
+    # Lower block: rows q..q+p-1, each row i+q places q+1 values at columns i..i+q.
+    j_b = np.arange(q + 1)
+    vals_b = b * bq  # shape (q+1,)
+
     for i in range(p):
-        for j in range(q + 1):
-            out[i + q, j + i] = b[j] * bq[j] * inv_bpq[j + i]
+        out[i + q, i : i + q + 1] = vals_b * inv_bpq[j_b + i]
 
     return out
 
@@ -157,27 +162,42 @@ def _bezout_matrix(
     out = _prepare_out(out, (n, n), dtype)
     out[:] = 0.0
 
-    fn = float(n)
+    fn = dtype.type(n)
 
-    # First column: i = 1..n → row i-1.
-    for i in range(1, n + 1):
-        out[i - 1, 0] = (a[i] * b[0] - a[0] * b[i]) * fn / i
+    # Precompute the antisymmetric product: D[i,j] = a[i]*b[j] - a[j]*b[i].
+    ab = np.outer(a, b)
+    D = ab - ab.T  # shape (n+1, n+1)
 
-    # Last row: j = 1..n-1.
-    for j in range(1, n):
-        out[n - 1, j] = (a[n] * b[j] - a[j] * b[n]) * fn / (n - j)
+    # First column: out[i-1, 0] = D[i, 0] * n / i  for i = 1..n.
+    idx = np.arange(1, n + 1, dtype=dtype)
+    out[:, 0] = D[1 : n + 1, 0] * fn / idx
 
-    # Interior (backwards recurrence).
-    for i in range(n - 1, 0, -1):
-        for j in range(1, i):
-            out[i - 1, j] = (a[i] * b[j] - a[j] * b[i]) * fn * fn / (i * (n - j)) + out[
-                i, j - 1
-            ] * j * (n - i) / (i * (n - j))
+    # Last row: out[n-1, j] = D[n, j] * n / (n - j)  for j = 1..n-1.
+    jdx = np.arange(1, n, dtype=dtype)
+    out[n - 1, 1:n] = D[n, 1:n] * fn / (fn - jdx)
 
-    # Symmetrize upper triangle.
-    for i in range(n):
-        for j in range(i + 1, n):
-            out[i, j] = out[j, i]
+    # Interior (backwards recurrence over rows, vectorised over columns).
+    # out[i-1, j] = D[i,j] * n^2 / (i*(n-j)) + out[i, j-1] * j*(n-i) / (i*(n-j))
+    # The dependency out[i,j-1] means we cannot vectorise across j directly,
+    # but we can rewrite the row as a first-order linear scan.
+    for i in range(n - 1, 1, -1):
+        # j runs from 1 to i-1 (inclusive).
+        js = np.arange(1, i, dtype=dtype)
+        inv_denom = 1.0 / (dtype.type(i) * (fn - js))
+        src = D[i, 1:i] * fn * fn * inv_denom
+        mult = js * (fn - dtype.type(i)) * inv_denom
+        # Scan: out[i-1, j] = src[j-1] + mult[j-1] * out[i-1, j-1]
+        # (here j-1 because js starts at 1 but arrays are 0-indexed).
+        # out[i, 0] is already set (first column), used as the seed via out[i, j-1].
+        row = np.empty(i - 1, dtype=dtype)
+        row[0] = src[0] + mult[0] * out[i, 0]
+        for k in range(1, i - 1):
+            row[k] = src[k] + mult[k] * row[k - 1]
+        out[i - 1, 1:i] = row
+
+    # Symmetrise: copy lower triangle to upper triangle.
+    il = np.tril_indices(n, -1)
+    out[il[1], il[0]] = out[il[0], il[1]]
 
     return out
 
