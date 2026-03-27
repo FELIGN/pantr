@@ -213,29 +213,22 @@ def _extract_scalar_coeffs(
             or any are zero).
         ValueError: If ``bezier`` is not scalar (``rank != 1``).
     """
+    if bezier.rank != 1:
+        raise ValueError(
+            f"Mask operations require a scalar Bézier (rank == 1), got rank {bezier.rank}."
+        )
+
     if bezier.is_rational:
-        if bezier.rank != 1:
-            raise ValueError(
-                f"Mask operations require a scalar Bézier (rank == 1), got rank {bezier.rank}."
-            )
         weights = bezier.control_points[..., -1]
         if not (np.all(weights > 0.0) or np.all(weights < 0.0)):
             raise TypeError(
                 "Mask operations on rational Béziers require all weights to share "
                 "the same strict sign (all positive or all negative)."
             )
-        # Numerator coefficients w_i * c_i — zeros match the rational function.
-        coeffs: npt.NDArray[np.float64] = np.ascontiguousarray(
-            bezier.control_points[..., 0], dtype=np.float64
-        )
-        return coeffs
 
-    if bezier.rank != 1:
-        raise ValueError(
-            f"Mask operations require a scalar Bézier (rank == 1), got rank {bezier.rank}."
-        )
-    # Remove the trailing rank-1 axis.
-    coeffs = np.ascontiguousarray(bezier.control_points[..., 0], dtype=np.float64)
+    coeffs: npt.NDArray[np.float64] = np.ascontiguousarray(
+        bezier.control_points[..., 0], dtype=np.float64
+    )
     return coeffs
 
 
