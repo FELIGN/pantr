@@ -17,8 +17,6 @@ from typing import TYPE_CHECKING, Any
 import numpy as np
 import numpy.typing as npt
 
-from ._bezier_core import _uniform_sign_core
-
 if TYPE_CHECKING:
     from . import Bezier
 
@@ -71,4 +69,8 @@ def _uniform_sign(bezier: Bezier) -> UniformSign:
     # Ensure contiguous for the kernel (int arrays are already cast in Bezier constructor).
     coeffs = np.ascontiguousarray(coeffs, dtype=bezier.dtype)
 
-    return UniformSign(int(_uniform_sign_core(coeffs)))
+    if np.all(coeffs > 0):
+        return UniformSign.POSITIVE
+    if np.all(coeffs < 0):
+        return UniformSign.NEGATIVE
+    return UniformSign.MIXED
