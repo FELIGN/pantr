@@ -11,6 +11,10 @@ in the algoim-style implicit quadrature pipeline (R. I. Saye, *J. Comput. Phys.*
 - The **Bezout matrix** applies to polynomials of *equal* degree ``n`` and has
   size ``n x n``.  It is symmetric and generally better conditioned than the
   Sylvester matrix for same-degree pairs.
+
+Additionally, :func:`_det_qr` computes the determinant and approximate rank of
+a square matrix via QR factorisation with column pivoting using Givens rotations,
+following the implementation in algoim.
 """
 
 from __future__ import annotations
@@ -197,6 +201,118 @@ def _bezout_matrix(
     out[il[1], il[0]] = out[il[0], il[1]]
 
     return out
+
+
+# ---------------------------------------------------------------------------
+# QR-based determinant and rank
+# ---------------------------------------------------------------------------
+
+
+def _givens_rotation(a: float, b: float) -> tuple[float, float]:
+    """Compute the Givens rotation that zeroes the second component.
+
+    Finds ``(c, s)`` such that applying the rotation matrix
+    ``[[c, s], [-s, c]]`` to the vector ``(a, b)`` yields ``(r, 0)``.
+
+    Args:
+        a (float): First component.
+        b (float): Second component (to be zeroed).
+
+    Returns:
+        tuple[float, float]: The cosine ``c`` and sine ``s`` of the rotation.
+    """
+    if b == 0.0:
+        return 1.0, 0.0
+    if abs(b) > abs(a):
+        tmp = a / b
+        s = 1.0 / math.sqrt(1.0 + tmp * tmp)
+        c = tmp * s
+    else:
+        tmp = b / a
+        c = 1.0 / math.sqrt(1.0 + tmp * tmp)
+        s = tmp * c
+    return c, s
+
+
+def _det_qr(
+    A: npt.NDArray[np.floating[Any]],
+    tol: float = 10.0,
+) -> tuple[float, int]:
+    """Compute the determinant and approximate rank of a square matrix.
+
+    Uses QR factorisation with column pivoting via Givens rotations.  The
+    matrix ``A`` is overwritten with the upper-triangular factor *R* during
+    the computation.
+
+    The algorithm follows the ``det_qr`` routine from the algoim library
+    (R. I. Saye, *J. Comput. Phys.* 448, 110720, 2022).
+
+    Args:
+        A (npt.NDArray[np.floating[Any]]): Square matrix of shape ``(n, n)``
+            with ``n >= 1``.  **Overwritten** on return.
+        tol (float): Tolerance multiplier for rank estimation.  A diagonal
+            entry of *R* is considered nonzero when
+            ``|R_{ii}| > tol * max|R_{jj}| * n * eps``.  Defaults to 10.0.
+
+    Returns:
+        tuple[float, int]: ``(det, rank)`` where ``det`` is the determinant
+            and ``rank`` is the estimated rank.
+
+    Raises:
+        ValueError: If ``A`` is not a 2-D square array with floating dtype
+            and ``n >= 1``, or if it is not writeable.
+    """
+    # --- validation ---
+    if not isinstance(A, np.ndarray):
+        raise ValueError(f"`A` must be a numpy array, got {type(A).__name__}.")
+    if A.ndim != 2 or A.shape[0] != A.shape[1]:
+        raise ValueError(f"`A` must be a 2-D square array, got shape {A.shape}.")
+    if not np.issubdtype(A.dtype, np.floating):
+        raise ValueError(f"`A` must have floating dtype, got {A.dtype}.")
+    n = A.shape[0]
+    if n < 1:
+        raise ValueError("`A` must have size >= 1.")
+    if not A.flags.writeable:
+        raise ValueError("`A` must be writeable (it is modified in place).")
+
+    # --- QR with column pivoting via Givens rotations ---
+    det = 1.0
+    max_diag_r = 0.0
+
+    for j in range(n):
+        # Column pivoting: find column with largest squared norm among j..n-1.
+        best_norm: float = -1.0
+        best_k = j
+        for k in range(j, n):
+            col_norm = float(np.dot(A[:, k], A[:, k]))
+            if col_norm >= best_norm:
+                best_norm = col_norm
+                best_k = k
+
+        # Swap columns j and best_k.
+        if best_k != j:
+            A[:, [j, best_k]] = A[:, [best_k, j]]
+            det *= -1.0
+
+        # Apply Givens rotations from bottom to top to zero out entries below
+        # the diagonal in column j.
+        for i in range(n - 1, j, -1):
+            c, s = _givens_rotation(A[i - 1, j], A[i, j])
+            # Rotate rows i-1 and i for columns j..n-1.
+            for col in range(j, n):
+                x, y = A[i - 1, col], A[i, col]
+                A[i - 1, col] = c * x + s * y
+                A[i, col] = -s * x + c * y
+
+        det *= float(A[j, j])
+        max_diag_r = max(max_diag_r, abs(float(A[j, j])))
+
+    # --- rank estimation ---
+    eps = float(np.finfo(A.dtype).eps)
+    threshold = tol * max_diag_r * n * eps
+    rank = int(np.sum(np.abs(np.diag(A)) > threshold))
+
+    return det, rank
 
 
 # ---------------------------------------------------------------------------
