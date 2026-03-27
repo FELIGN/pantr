@@ -28,7 +28,6 @@ from ._mask_core import (
     _nonzero_mask_1d_core,
     _nonzero_mask_2d_core,
     _nonzero_mask_3d_core,
-    _point_within_mask_core,
 )
 
 if TYPE_CHECKING:
@@ -147,9 +146,8 @@ def _point_within_mask(
     N = mask.ndim
     if x.shape[0] != N:
         raise ValueError(f"Point has {x.shape[0]} components but mask has {N} dimensions.")
-    wait_for_jit_warmup()
-    x_f64 = np.asarray(x, dtype=np.float64).ravel()
-    return bool(_point_within_mask_core(mask.ravel(), x_f64, M, N))
+    idx = tuple(np.clip(np.floor(np.asarray(x, dtype=np.float64) * M).astype(np.intp), 0, M - 1))
+    return bool(mask[idx])
 
 
 def _line_intersects_mask(

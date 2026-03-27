@@ -67,42 +67,6 @@ def _has_uniform_sign(coeffs: npt.NDArray[np.float64]) -> bool:
 
 
 @nb_jit(nopython=True, cache=True)
-def _point_within_mask_core(
-    mask_flat: npt.NDArray[np.bool_],
-    x: npt.NDArray[np.float64],
-    M: int,
-    N: int,
-) -> bool:
-    """Test if point ``x`` falls in a True subcell of a flattened mask.
-
-    Discretizes each coordinate to a cell index via ``floor(x[d] * M)``,
-    clamped to ``[0, M-1]``, then furls the N-D index to a flat offset.
-
-    Args:
-        mask_flat (npt.NDArray[np.bool_]): Flattened mask of length ``M^N``.
-        x (npt.NDArray[np.float64]): Point in ``[0,1]^N``, shape ``(N,)``.
-        M (int): Grid resolution per axis.
-        N (int): Number of parametric dimensions.
-
-    Returns:
-        bool: True if the subcell containing ``x`` is marked True.
-
-    Note:
-        Inputs are assumed to be correct (no validation performed).
-        For general use, call :func:`_mask._point_within_mask` instead.
-    """
-    idx = 0
-    for d in range(N):
-        cell = int(math.floor(x[d] * M))  # noqa: RUF046
-        if cell < 0:
-            cell = 0
-        elif cell >= M:
-            cell = M - 1
-        idx = idx * M + cell
-    return bool(mask_flat[idx])
-
-
-@nb_jit(nopython=True, cache=True)
 def _line_intersects_mask_core(
     mask_flat: npt.NDArray[np.bool_],
     x: npt.NDArray[np.float64],
@@ -1586,15 +1550,11 @@ def _warmup_mask_numba_functions() -> None:
     This function triggers compilation of all mask-related Numba functions,
     ensuring they are cached and ready for use.
     """
-    # Point/line queries.
+    # Line query kernels.
     mask_1d = np.array([True, False], dtype=np.bool_)
-    x_1d = np.array([0.25], dtype=np.float64)
-    _point_within_mask_core(mask_1d, x_1d, 2, 1)
     _line_intersects_mask_core(mask_1d, np.empty(0, dtype=np.float64), 0, 2, 1)
 
     mask_2d = np.array([True, False, False, True], dtype=np.bool_)
-    x_2d = np.array([0.25, 0.75], dtype=np.float64)
-    _point_within_mask_core(mask_2d, x_2d, 2, 2)
     x_1d_for_line = np.array([0.25], dtype=np.float64)
     _line_intersects_mask_core(mask_2d, x_1d_for_line, 0, 2, 2)
 
