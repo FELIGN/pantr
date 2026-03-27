@@ -16,6 +16,11 @@ from pantr.bezier._mask import (
     _point_within_mask,
     _restrict_to_face,
 )
+from pantr.bezier._mask_core import (
+    _orthant_test_base_core,
+    _orthant_test_core,
+    _restrict_scalar_1d,
+)
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -395,3 +400,162 @@ class TestIntersectionMask:
                 g,
                 np.ones((4, 4, 4, 4), dtype=np.bool_),
             )
+
+    def test_3d_with_shared_zero(self) -> None:
+        """Two 3D planes that intersect along a line produce a non-empty mask."""
+        # f(x,y,z) = -1 + 2x: zero at x=0.5 for all y,z.
+        # g(x,y,z) = -1 + 2y: zero at y=0.5 for all x,z.
+        # They share a common zero on the line x=0.5, y=0.5 for all z.
+        ctrl_f = np.array([[[[-1.0], [-1.0]], [[-1.0], [-1.0]]], [[[1.0], [1.0]], [[1.0], [1.0]]]])
+        ctrl_g = np.array([[[[-1.0], [-1.0]], [[1.0], [1.0]]], [[[-1.0], [-1.0]], [[1.0], [1.0]]]])
+        f = Bezier(ctrl_f)
+        g = Bezier(ctrl_g)
+        fmask = _nonzero_mask(f, M=4)
+        gmask = _nonzero_mask(g, M=4)
+        result = _intersection_mask(f, fmask, g, gmask, M=4)
+        assert result.shape == (4, 4, 4)
+        assert not _mask_empty(result)
+
+    def test_non_default_M(self) -> None:
+        """Results are consistent when M differs from the default."""
+        f = _scalar_bezier_2d([[-1.0, -1.0], [1.0, 1.0]])
+        g = _scalar_bezier_2d([[-1.0, 1.0], [-1.0, 1.0]])
+        for M in (4, 6, 16):
+            fmask = _nonzero_mask(f, M=M)
+            gmask = _nonzero_mask(g, M=M)
+            result = _intersection_mask(f, fmask, g, gmask, M=M)
+            assert result.shape == (M, M)
+            assert not _mask_empty(result)
+
+
+# ===========================================================================
+# TestOrthantTest
+# ===========================================================================
+
+
+class TestOrthantTest:
+    """Direct tests for _orthant_test_core and _orthant_test_base_core."""
+
+    def test_all_positive_provably_disjoint(self) -> None:
+        """Both f and g positive everywhere: orthant test returns True (disjoint)."""
+        f = np.array([1.0, 2.0, 3.0], dtype=np.float64)
+        g = np.array([4.0, 5.0, 6.0], dtype=np.float64)
+        assert _orthant_test_core(f, g)
+
+    def test_opposite_signs_provably_disjoint(self) -> None:
+        """Positive f and negative g: their zeros cannot overlap."""
+        f = np.array([1.0, 2.0, 3.0], dtype=np.float64)
+        g = np.array([-1.0, -2.0, -3.0], dtype=np.float64)
+        assert _orthant_test_core(f, g)
+
+    def test_crossing_not_provably_disjoint(self) -> None:
+        """Both polynomials change sign: cannot prove disjointness."""
+        f = np.array([-1.0, 1.0], dtype=np.float64)
+        g = np.array([-1.0, 1.0], dtype=np.float64)
+        assert not _orthant_test_core(f, g)
+
+    def test_base_sign_plus_feasible(self) -> None:
+        """sign=+1 with all-positive x and y: alpha=0 satisfies x+0*y > 0."""
+        x = np.array([1.0, 2.0], dtype=np.float64)
+        y = np.array([0.5, 0.5], dtype=np.float64)
+        assert _orthant_test_base_core(x, y, 1)
+
+    def test_base_sign_impossible(self) -> None:
+        """y=0 and x*sign <= 0 makes the system infeasible."""
+        x = np.array([-1.0, 1.0], dtype=np.float64)
+        y = np.array([0.0, 1.0], dtype=np.float64)
+        # sign=+1: first constraint is x[0]*1 + alpha*0 > 0 → -1 > 0, impossible.
+        assert not _orthant_test_base_core(x, y, 1)
+
+    def test_single_element_positive(self) -> None:
+        """Single positive element: trivially disjoint."""
+        f = np.array([5.0], dtype=np.float64)
+        g = np.array([3.0], dtype=np.float64)
+        assert _orthant_test_core(f, g)
+
+
+# ===========================================================================
+# TestRestrictScalar1D
+# ===========================================================================
+
+
+class TestRestrictScalar1D:
+    """Direct tests for _restrict_scalar_1d covering both numeric branches."""
+
+    def test_full_interval_identity(self) -> None:
+        """Restricting to [0, 1] is the identity."""
+        coeffs = [1.0, 3.0, 2.0]
+        c = np.array(coeffs, dtype=np.float64)
+        out = np.empty(len(coeffs), dtype=np.float64)
+        _restrict_scalar_1d(c, 0.0, 1.0, out)
+        np.testing.assert_allclose(out, coeffs)
+
+    def test_upper_branch(self) -> None:
+        """abs(upper) >= abs(lower-1) branch: upper=0.9, lower=0.1."""
+        # Linear Bernstein p(t) = t (coeffs [0, 1]): restriction to [lo, hi]
+        # gives endpoint values [lo, hi].
+        # abs(0.9) >= abs(0.1 - 1) = 0.9 → upper branch taken.
+        lower, upper = 0.1, 0.9
+        c = np.array([0.0, 1.0], dtype=np.float64)
+        out = np.empty(2, dtype=np.float64)
+        _restrict_scalar_1d(c, lower, upper, out)
+        np.testing.assert_allclose(out[0], lower, atol=1e-14)
+        np.testing.assert_allclose(out[1], upper, atol=1e-14)
+
+    def test_lower_branch(self) -> None:
+        """abs(lower-1) > abs(upper) branch: upper=0.1, lower=0.01."""
+        # abs(0.1) < abs(0.01 - 1) = 0.99 → lower branch taken.
+        lower, upper = 0.01, 0.1
+        c = np.array([0.0, 1.0], dtype=np.float64)
+        out = np.empty(2, dtype=np.float64)
+        _restrict_scalar_1d(c, lower, upper, out)
+        np.testing.assert_allclose(out[0], lower, atol=1e-14)
+        np.testing.assert_allclose(out[1], upper, atol=1e-14)
+
+    def test_quadratic_endpoints(self) -> None:
+        """Restricted polynomial has correct endpoint values for a quadratic."""
+        # Bernstein degree-2 coefficients [0, 0.5, 1] represent p(t) = t.
+        # (p(t) = 0*(1-t)^2 + 0.5*2t(1-t) + 1*t^2 = t.)
+        # Restriction to [0.25, 0.75]: out[0] = p(0.25) = 0.25, out[2] = p(0.75) = 0.75.
+        c = np.array([0.0, 0.5, 1.0], dtype=np.float64)
+        out = np.empty(3, dtype=np.float64)
+        _restrict_scalar_1d(c, 0.25, 0.75, out)
+        np.testing.assert_allclose(out[0], 0.25, atol=1e-14)
+        np.testing.assert_allclose(out[2], 0.75, atol=1e-14)
+
+
+# ===========================================================================
+# TestNonzeroMaskMValues
+# ===========================================================================
+
+
+class TestNonzeroMaskMValues:
+    """Tests for _nonzero_mask with non-default M values."""
+
+    def test_m4_crossing(self) -> None:
+        """1D zero-crossing detected at M=4."""
+        b = _scalar_bezier_1d([-1.0, 1.0])
+        mask = _nonzero_mask(b, M=4)
+        assert mask.shape == (4,)
+        assert not _mask_empty(mask)
+
+    def test_m16_crossing(self) -> None:
+        """1D zero-crossing detected at M=16."""
+        b = _scalar_bezier_1d([-1.0, 1.0])
+        mask = _nonzero_mask(b, M=16)
+        assert mask.shape == (16,)
+        assert not _mask_empty(mask)
+        # With M=16 the mask is tighter: at most a handful of cells near x=0.5.
+        assert np.sum(mask) <= 4  # noqa: PLR2004
+
+    def test_m4_all_positive_empty(self) -> None:
+        """All-positive polynomial gives empty mask at M=4."""
+        b = _scalar_bezier_1d([1.0, 2.0, 3.0])
+        assert _mask_empty(_nonzero_mask(b, M=4))
+
+    def test_2d_m6(self) -> None:
+        """2D nonzero mask has correct shape at M=6."""
+        b = _scalar_bezier_2d([[1.0, 2.0], [3.0, 4.0]])
+        mask = _nonzero_mask(b, M=6)
+        assert mask.shape == (6, 6)
+        assert _mask_empty(mask)

@@ -225,7 +225,7 @@ def _orthant_test_base_core(
 
     if np.isinf(alpha_min) or np.isinf(alpha_max):
         return True
-    if alpha_max - alpha_min > 1.0e5 * 2.220446049250313e-16 * max(  # noqa: SIM103
+    if alpha_max - alpha_min > 1.0e5 * np.finfo(np.float64).eps * max(  # noqa: SIM103
         abs(alpha_min), abs(alpha_max)
     ):
         return True
@@ -291,7 +291,6 @@ def _elevate_scalar_1d(
     cur_deg = p
     while cur_deg < target_len - 1:
         n = cur_deg
-        new_deg = n + 1
         # Elevate by 1: new[k] = k/(n+1) * old[k-1] + (1 - k/(n+1)) * old[k]
         prev_val = cur[0]
         cur_last = cur[n]
@@ -299,8 +298,8 @@ def _elevate_scalar_1d(
             ratio = float(kk) / float(n + 1)
             cur[kk] = ratio * cur[kk - 1] + (1.0 - ratio) * cur[kk]
         cur[0] = prev_val  # k=0: ratio=0, so cur[0] stays
-        cur[new_deg] = cur_last  # endpoint
-        cur_deg = new_deg
+        cur[n + 1] = cur_last  # endpoint
+        cur_deg += 1
 
     for i in range(target_len):
         out[i] = cur[i]
@@ -1099,6 +1098,9 @@ def _int_mask_2d_recurse(  # noqa: PLR0913
         ``g_tmp``, ``g_res``, ``g_row``, ``f_flat``, ``g_flat``, and
         ``elev_work`` are mutated and shared across all recursive calls;
         the parent finishes consuming each workspace before recursing.
+        ``col_work`` and ``col_out_work`` are also shared between the f
+        and g restriction calls within the same frame; both calls are
+        sequential and non-overlapping.
     """
     # Check overlap with both input masks.
     overlap = False
@@ -1253,7 +1255,7 @@ def _intersection_mask_3d_core(  # noqa: PLR0913
 
 
 @nb_jit(nopython=True, cache=True)
-def _elevate_3d_to_common(  # noqa: PLR0912
+def _elevate_3d_to_common(  # noqa: PLR0912, PLR0915
     f: npt.NDArray[np.float64],
     g: npt.NDArray[np.float64],
     f_flat: npt.NDArray[np.float64],
@@ -1282,63 +1284,109 @@ def _elevate_3d_to_common(  # noqa: PLR0912
     cn2 = max(nf2, ng2)
     total = cn0 * cn1 * cn2
 
-    # Elevate f and g to common extent, flatten.
-    for src, ns, flat_out in ((f, (nf0, nf1, nf2), f_flat), (g, (ng0, ng1, ng2), g_flat)):
-        sn0, sn1, sn2 = ns[0], ns[1], ns[2]
+    # Elevate f: axis 0 → axis 1 → axis 2 → flatten.
+    f_mid0 = np.empty((cn0, nf1, nf2), dtype=np.float64)
+    if nf0 == cn0:
+        for i in range(nf0):
+            for j in range(nf1):
+                for kk in range(nf2):
+                    f_mid0[i, j, kk] = f[i, j, kk]
+    else:
+        col = np.empty(nf0, dtype=np.float64)
+        for j in range(nf1):
+            for kk in range(nf2):
+                for i in range(nf0):
+                    col[i] = f[i, j, kk]
+                _elevate_scalar_1d(col, cn0, elev_work)
+                for i in range(cn0):
+                    f_mid0[i, j, kk] = elev_work[i]
 
-        # Step 1: elevate axis 0.
-        mid0 = np.empty((cn0, sn1, sn2), dtype=np.float64)
-        if sn0 == cn0:
-            for i in range(sn0):
-                for j in range(sn1):
-                    for kk in range(sn2):
-                        mid0[i, j, kk] = src[i, j, kk]
-        else:
-            col = np.empty(sn0, dtype=np.float64)
-            for j in range(sn1):
-                for kk in range(sn2):
-                    for i in range(sn0):
-                        col[i] = src[i, j, kk]
-                    _elevate_scalar_1d(col, cn0, elev_work)
-                    for i in range(cn0):
-                        mid0[i, j, kk] = elev_work[i]
-
-        # Step 2: elevate axis 1.
-        mid1 = np.empty((cn0, cn1, sn2), dtype=np.float64)
-        if sn1 == cn1:
-            for i in range(cn0):
-                for j in range(sn1):
-                    for kk in range(sn2):
-                        mid1[i, j, kk] = mid0[i, j, kk]
-        else:
-            col = np.empty(sn1, dtype=np.float64)
-            for i in range(cn0):
-                for kk in range(sn2):
-                    for j in range(sn1):
-                        col[j] = mid0[i, j, kk]
-                    _elevate_scalar_1d(col, cn1, elev_work)
-                    for j in range(cn1):
-                        mid1[i, j, kk] = elev_work[j]
-
-        # Step 3: elevate axis 2 and flatten.
-        if sn2 == cn2:
-            idx = 0
-            for i in range(cn0):
+    f_mid1 = np.empty((cn0, cn1, nf2), dtype=np.float64)
+    if nf1 == cn1:
+        for i in range(cn0):
+            for j in range(nf1):
+                for kk in range(nf2):
+                    f_mid1[i, j, kk] = f_mid0[i, j, kk]
+    else:
+        col = np.empty(nf1, dtype=np.float64)
+        for i in range(cn0):
+            for kk in range(nf2):
+                for j in range(nf1):
+                    col[j] = f_mid0[i, j, kk]
+                _elevate_scalar_1d(col, cn1, elev_work)
                 for j in range(cn1):
-                    for kk in range(cn2):
-                        flat_out[idx] = mid1[i, j, kk]
-                        idx += 1
-        else:
-            col = np.empty(sn2, dtype=np.float64)
-            idx = 0
-            for i in range(cn0):
+                    f_mid1[i, j, kk] = elev_work[j]
+
+    if nf2 == cn2:
+        idx = 0
+        for i in range(cn0):
+            for j in range(cn1):
+                for kk in range(cn2):
+                    f_flat[idx] = f_mid1[i, j, kk]
+                    idx += 1
+    else:
+        col = np.empty(nf2, dtype=np.float64)
+        idx = 0
+        for i in range(cn0):
+            for j in range(cn1):
+                for kk in range(nf2):
+                    col[kk] = f_mid1[i, j, kk]
+                _elevate_scalar_1d(col, cn2, elev_work)
+                for kk in range(cn2):
+                    f_flat[idx] = elev_work[kk]
+                    idx += 1
+
+    # Elevate g: axis 0 → axis 1 → axis 2 → flatten.
+    g_mid0 = np.empty((cn0, ng1, ng2), dtype=np.float64)
+    if ng0 == cn0:
+        for i in range(ng0):
+            for j in range(ng1):
+                for kk in range(ng2):
+                    g_mid0[i, j, kk] = g[i, j, kk]
+    else:
+        col = np.empty(ng0, dtype=np.float64)
+        for j in range(ng1):
+            for kk in range(ng2):
+                for i in range(ng0):
+                    col[i] = g[i, j, kk]
+                _elevate_scalar_1d(col, cn0, elev_work)
+                for i in range(cn0):
+                    g_mid0[i, j, kk] = elev_work[i]
+
+    g_mid1 = np.empty((cn0, cn1, ng2), dtype=np.float64)
+    if ng1 == cn1:
+        for i in range(cn0):
+            for j in range(ng1):
+                for kk in range(ng2):
+                    g_mid1[i, j, kk] = g_mid0[i, j, kk]
+    else:
+        col = np.empty(ng1, dtype=np.float64)
+        for i in range(cn0):
+            for kk in range(ng2):
+                for j in range(ng1):
+                    col[j] = g_mid0[i, j, kk]
+                _elevate_scalar_1d(col, cn1, elev_work)
                 for j in range(cn1):
-                    for kk in range(sn2):
-                        col[kk] = mid1[i, j, kk]
-                    _elevate_scalar_1d(col, cn2, elev_work)
-                    for kk in range(cn2):
-                        flat_out[idx] = elev_work[kk]
-                        idx += 1
+                    g_mid1[i, j, kk] = elev_work[j]
+
+    if ng2 == cn2:
+        idx = 0
+        for i in range(cn0):
+            for j in range(cn1):
+                for kk in range(cn2):
+                    g_flat[idx] = g_mid1[i, j, kk]
+                    idx += 1
+    else:
+        col = np.empty(ng2, dtype=np.float64)
+        idx = 0
+        for i in range(cn0):
+            for j in range(cn1):
+                for kk in range(ng2):
+                    col[kk] = g_mid1[i, j, kk]
+                _elevate_scalar_1d(col, cn2, elev_work)
+                for kk in range(cn2):
+                    g_flat[idx] = elev_work[kk]
+                    idx += 1
 
     return total
 
