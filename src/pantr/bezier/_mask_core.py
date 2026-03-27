@@ -335,7 +335,7 @@ def _nonzero_mask_1d_core(
         For general use, call :func:`_mask._nonzero_mask` instead.
     """
     p = coeffs.shape[0] - 1
-    eps = 0.015625 / M
+    eps = 0.015625 / M  # padding = 1 / (64 * M)
     work = np.empty(p + 1, dtype=np.float64)
 
     _nz_mask_1d_recurse(coeffs, fmask, out, M, eps, work, 0, M)
@@ -422,11 +422,13 @@ def _nonzero_mask_2d_core(
     """
     n0 = coeffs.shape[0]
     n1 = coeffs.shape[1]
-    eps = 0.015625 / M
+    eps = 0.015625 / M  # padding = 1 / (64 * M)
     # Workspace for restriction.
     work0 = np.empty((n0, n1), dtype=np.float64)
     work1 = np.empty((n0, n1), dtype=np.float64)
     flat_work = np.empty(n0 * n1, dtype=np.float64)
+    col_work = np.empty(n0, dtype=np.float64)
+    col_out_work = np.empty(n0, dtype=np.float64)
     row_work = np.empty(n1, dtype=np.float64)
 
     _nz_mask_2d_recurse(
@@ -438,6 +440,8 @@ def _nonzero_mask_2d_core(
         work0,
         work1,
         flat_work,
+        col_work,
+        col_out_work,
         row_work,
         0,
         M,
@@ -455,6 +459,8 @@ def _restrict_scalar_2d(  # noqa: PLR0913
     xb1: float,
     tmp: npt.NDArray[np.float64],
     out: npt.NDArray[np.float64],
+    col_work: npt.NDArray[np.float64],
+    col_out_work: npt.NDArray[np.float64],
     row_work: npt.NDArray[np.float64],
 ) -> None:
     """Restrict 2D scalar Bernstein coefficients to a sub-rectangle.
@@ -469,6 +475,8 @@ def _restrict_scalar_2d(  # noqa: PLR0913
         xb1 (float): Upper bound for axis 1.
         tmp (npt.NDArray[np.float64]): Workspace, shape ``(n0, n1)``.
         out (npt.NDArray[np.float64]): Output, shape ``(n0, n1)``.
+        col_work (npt.NDArray[np.float64]): Workspace, shape ``(n0,)``.
+        col_out_work (npt.NDArray[np.float64]): Workspace, shape ``(n0,)``.
         row_work (npt.NDArray[np.float64]): Workspace, shape ``(n1,)``.
 
     Note:
@@ -479,13 +487,11 @@ def _restrict_scalar_2d(  # noqa: PLR0913
 
     # Restrict along axis 0: for each column j, restrict coeffs[:, j].
     for j in range(n1):
-        col = np.empty(n0, dtype=np.float64)
         for i in range(n0):
-            col[i] = coeffs[i, j]
-        col_out = np.empty(n0, dtype=np.float64)
-        _restrict_scalar_1d(col, xa0, xb0, col_out)
+            col_work[i] = coeffs[i, j]
+        _restrict_scalar_1d(col_work, xa0, xb0, col_out_work)
         for i in range(n0):
-            tmp[i, j] = col_out[i]
+            tmp[i, j] = col_out_work[i]
 
     # Restrict along axis 1: for each row i, restrict tmp[i, :].
     for i in range(n0):
@@ -504,6 +510,8 @@ def _nz_mask_2d_recurse(  # noqa: PLR0913
     work0: npt.NDArray[np.float64],
     work1: npt.NDArray[np.float64],
     flat_work: npt.NDArray[np.float64],
+    col_work: npt.NDArray[np.float64],
+    col_out_work: npt.NDArray[np.float64],
     row_work: npt.NDArray[np.float64],
     a0: int,
     b0: int,
@@ -522,6 +530,8 @@ def _nz_mask_2d_recurse(  # noqa: PLR0913
         work0 (npt.NDArray[np.float64]): Workspace, shape ``(n0, n1)``.
         work1 (npt.NDArray[np.float64]): Workspace, shape ``(n0, n1)``.
         flat_work (npt.NDArray[np.float64]): Workspace, shape ``(n0*n1,)``.
+        col_work (npt.NDArray[np.float64]): Workspace, shape ``(n0,)``.
+        col_out_work (npt.NDArray[np.float64]): Workspace, shape ``(n0,)``.
         row_work (npt.NDArray[np.float64]): Workspace, shape ``(n1,)``.
         a0 (int): Start of range along axis 0 (inclusive).
         b0 (int): End of range along axis 0 (exclusive).
@@ -530,6 +540,9 @@ def _nz_mask_2d_recurse(  # noqa: PLR0913
 
     Note:
         Inputs are assumed to be correct (no validation performed).
+        ``work0``, ``work1``, ``flat_work``, ``col_work``, ``col_out_work``,
+        and ``row_work`` are mutated and shared across all recursive calls;
+        the parent finishes consuming each workspace before recursing.
     """
     # Check overlap with input mask.
     overlap = False
@@ -548,7 +561,7 @@ def _nz_mask_2d_recurse(  # noqa: PLR0913
     xb0 = float(b0) / M + eps
     xa1 = float(a1) / M - eps
     xb1 = float(b1) / M + eps
-    _restrict_scalar_2d(coeffs, xa0, xb0, xa1, xb1, work0, work1, row_work)
+    _restrict_scalar_2d(coeffs, xa0, xb0, xa1, xb1, work0, work1, col_work, col_out_work, row_work)
 
     n0 = coeffs.shape[0]
     n1 = coeffs.shape[1]
@@ -567,66 +580,29 @@ def _nz_mask_2d_recurse(  # noqa: PLR0913
     # Recurse on 2x2 children.
     mid0 = (a0 + b0) // 2
     mid1 = (a1 + b1) // 2
-    _nz_mask_2d_recurse(
-        coeffs,
-        fmask,
-        out,
-        M,
-        eps,
-        work0,
-        work1,
-        flat_work,
-        row_work,
-        a0,
-        mid0,
-        a1,
-        mid1,
-    )
-    _nz_mask_2d_recurse(
-        coeffs,
-        fmask,
-        out,
-        M,
-        eps,
-        work0,
-        work1,
-        flat_work,
-        row_work,
-        a0,
-        mid0,
-        mid1,
-        b1,
-    )
-    _nz_mask_2d_recurse(
-        coeffs,
-        fmask,
-        out,
-        M,
-        eps,
-        work0,
-        work1,
-        flat_work,
-        row_work,
-        mid0,
-        b0,
-        a1,
-        mid1,
-    )
-    _nz_mask_2d_recurse(
-        coeffs,
-        fmask,
-        out,
-        M,
-        eps,
-        work0,
-        work1,
-        flat_work,
-        row_work,
-        mid0,
-        b0,
-        mid1,
-        b1,
-    )
+    for s0 in range(2):
+        lo0 = a0 if s0 == 0 else mid0
+        hi0 = mid0 if s0 == 0 else b0
+        for s1 in range(2):
+            lo1 = a1 if s1 == 0 else mid1
+            hi1 = mid1 if s1 == 0 else b1
+            _nz_mask_2d_recurse(
+                coeffs,
+                fmask,
+                out,
+                M,
+                eps,
+                work0,
+                work1,
+                flat_work,
+                col_work,
+                col_out_work,
+                row_work,
+                lo0,
+                hi0,
+                lo1,
+                hi1,
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -647,6 +623,7 @@ def _restrict_scalar_3d(  # noqa: PLR0913
     tmp2: npt.NDArray[np.float64],
     out: npt.NDArray[np.float64],
     work1d: npt.NDArray[np.float64],
+    work1d_b: npt.NDArray[np.float64],
 ) -> None:
     """Restrict 3D scalar Bernstein coefficients to a sub-box.
 
@@ -665,6 +642,7 @@ def _restrict_scalar_3d(  # noqa: PLR0913
         out (npt.NDArray[np.float64]): Output, shape ``(n0, n1, n2)``.
         work1d (npt.NDArray[np.float64]): 1D workspace, shape
             ``(max(n0, n1, n2),)``.
+        work1d_b (npt.NDArray[np.float64]): Workspace, shape ``(max(n0, n1, n2),)``.
 
     Note:
         Inputs are assumed to be correct (no validation performed).
@@ -674,37 +652,31 @@ def _restrict_scalar_3d(  # noqa: PLR0913
     n2 = coeffs.shape[2]
 
     # Restrict along axis 0.
-    col = np.empty(n0, dtype=np.float64)
-    col_out = np.empty(n0, dtype=np.float64)
     for j in range(n1):
         for kk in range(n2):
             for i in range(n0):
-                col[i] = coeffs[i, j, kk]
-            _restrict_scalar_1d(col, xa0, xb0, col_out)
+                work1d[i] = coeffs[i, j, kk]
+            _restrict_scalar_1d(work1d[:n0], xa0, xb0, work1d_b[:n0])
             for i in range(n0):
-                tmp1[i, j, kk] = col_out[i]
+                tmp1[i, j, kk] = work1d_b[i]
 
     # Restrict along axis 1.
-    col1 = np.empty(n1, dtype=np.float64)
-    col1_out = np.empty(n1, dtype=np.float64)
     for i in range(n0):
         for kk in range(n2):
             for j in range(n1):
-                col1[j] = tmp1[i, j, kk]
-            _restrict_scalar_1d(col1, xa1, xb1, col1_out)
+                work1d[j] = tmp1[i, j, kk]
+            _restrict_scalar_1d(work1d[:n1], xa1, xb1, work1d_b[:n1])
             for j in range(n1):
-                tmp2[i, j, kk] = col1_out[j]
+                tmp2[i, j, kk] = work1d_b[j]
 
     # Restrict along axis 2.
-    col2 = np.empty(n2, dtype=np.float64)
-    col2_out = np.empty(n2, dtype=np.float64)
     for i in range(n0):
         for j in range(n1):
             for kk in range(n2):
-                col2[kk] = tmp2[i, j, kk]
-            _restrict_scalar_1d(col2, xa2, xb2, col2_out)
+                work1d[kk] = tmp2[i, j, kk]
+            _restrict_scalar_1d(work1d[:n2], xa2, xb2, work1d_b[:n2])
             for kk in range(n2):
-                out[i, j, kk] = col2_out[kk]
+                out[i, j, kk] = work1d_b[kk]
 
 
 @nb_jit(nopython=True, cache=True)
@@ -731,13 +703,14 @@ def _nonzero_mask_3d_core(
     n0 = coeffs.shape[0]
     n1 = coeffs.shape[1]
     n2 = coeffs.shape[2]
-    eps = 0.015625 / M
+    eps = 0.015625 / M  # padding = 1 / (64 * M)
     tmp1 = np.empty((n0, n1, n2), dtype=np.float64)
     tmp2 = np.empty((n0, n1, n2), dtype=np.float64)
     res = np.empty((n0, n1, n2), dtype=np.float64)
     flat_work = np.empty(n0 * n1 * n2, dtype=np.float64)
     nmax = max(n0, max(n1, n2))  # noqa: PLW3301
     work1d = np.empty(nmax, dtype=np.float64)
+    work1d_b = np.empty(nmax, dtype=np.float64)
 
     _nz_mask_3d_recurse(
         coeffs,
@@ -750,6 +723,7 @@ def _nonzero_mask_3d_core(
         res,
         flat_work,
         work1d,
+        work1d_b,
         0,
         M,
         0,
@@ -771,6 +745,7 @@ def _nz_mask_3d_recurse(  # noqa: PLR0912, PLR0913
     res: npt.NDArray[np.float64],
     flat_work: npt.NDArray[np.float64],
     work1d: npt.NDArray[np.float64],
+    work1d_b: npt.NDArray[np.float64],
     a0: int,
     b0: int,
     a1: int,
@@ -791,6 +766,7 @@ def _nz_mask_3d_recurse(  # noqa: PLR0912, PLR0913
         res (npt.NDArray[np.float64]): Workspace for restricted coefficients.
         flat_work (npt.NDArray[np.float64]): Flat workspace for sign test.
         work1d (npt.NDArray[np.float64]): 1D workspace.
+        work1d_b (npt.NDArray[np.float64]): 1D workspace.
         a0 (int): Start of range along axis 0.
         b0 (int): End of range along axis 0.
         a1 (int): Start of range along axis 1.
@@ -800,6 +776,9 @@ def _nz_mask_3d_recurse(  # noqa: PLR0912, PLR0913
 
     Note:
         Inputs are assumed to be correct (no validation performed).
+        ``tmp1``, ``tmp2``, ``res``, ``flat_work``, ``work1d``, and
+        ``work1d_b`` are mutated and shared across all recursive calls;
+        the parent finishes consuming each workspace before recursing.
     """
     # Check overlap with input mask.
     overlap = False
@@ -823,7 +802,7 @@ def _nz_mask_3d_recurse(  # noqa: PLR0912, PLR0913
     xb1 = float(b1) / M + eps
     xa2 = float(a2) / M - eps
     xb2 = float(b2) / M + eps
-    _restrict_scalar_3d(coeffs, xa0, xb0, xa1, xb1, xa2, xb2, tmp1, tmp2, res, work1d)
+    _restrict_scalar_3d(coeffs, xa0, xb0, xa1, xb1, xa2, xb2, tmp1, tmp2, res, work1d, work1d_b)
 
     n0 = coeffs.shape[0]
     n1 = coeffs.shape[1]
@@ -867,6 +846,7 @@ def _nz_mask_3d_recurse(  # noqa: PLR0912, PLR0913
                     res,
                     flat_work,
                     work1d,
+                    work1d_b,
                     lo0,
                     hi0,
                     lo1,
@@ -912,7 +892,7 @@ def _intersection_mask_2d_core(  # noqa: PLR0913
     """
     nf0, nf1 = coeffs_f.shape[0], coeffs_f.shape[1]
     ng0, ng1 = coeffs_g.shape[0], coeffs_g.shape[1]
-    eps = 0.015625 / M
+    eps = 0.015625 / M  # padding = 1 / (64 * M)
 
     # Workspaces for f.
     f_tmp = np.empty((nf0, nf1), dtype=np.float64)
@@ -933,6 +913,11 @@ def _intersection_mask_2d_core(  # noqa: PLR0913
     max_n = max(max(nf0, ng0), max(nf1, ng1))  # noqa: PLW3301
     elev_work = np.empty(max_n, dtype=np.float64)
 
+    # Shared column workspace for f and g restriction (calls are sequential).
+    max_col = max(nf0, ng0)
+    col_work = np.empty(max_col, dtype=np.float64)
+    col_out_work = np.empty(max_col, dtype=np.float64)
+
     _int_mask_2d_recurse(
         coeffs_f,
         fmask,
@@ -943,6 +928,8 @@ def _intersection_mask_2d_core(  # noqa: PLR0913
         eps,
         f_tmp,
         f_res,
+        col_work,
+        col_out_work,
         f_row,
         g_tmp,
         g_res,
@@ -1066,6 +1053,8 @@ def _int_mask_2d_recurse(  # noqa: PLR0913
     eps: float,
     f_tmp: npt.NDArray[np.float64],
     f_res: npt.NDArray[np.float64],
+    col_work: npt.NDArray[np.float64],
+    col_out_work: npt.NDArray[np.float64],
     f_row: npt.NDArray[np.float64],
     g_tmp: npt.NDArray[np.float64],
     g_res: npt.NDArray[np.float64],
@@ -1090,6 +1079,8 @@ def _int_mask_2d_recurse(  # noqa: PLR0913
         eps (float): Padding.
         f_tmp (npt.NDArray[np.float64]): Workspace for f restriction.
         f_res (npt.NDArray[np.float64]): Workspace for f restriction result.
+        col_work (npt.NDArray[np.float64]): Shared column workspace for f and g.
+        col_out_work (npt.NDArray[np.float64]): Shared column output workspace for f and g.
         f_row (npt.NDArray[np.float64]): Row workspace for f.
         g_tmp (npt.NDArray[np.float64]): Workspace for g restriction.
         g_res (npt.NDArray[np.float64]): Workspace for g restriction result.
@@ -1104,6 +1095,10 @@ def _int_mask_2d_recurse(  # noqa: PLR0913
 
     Note:
         Inputs are assumed to be correct (no validation performed).
+        ``f_tmp``, ``f_res``, ``col_work``, ``col_out_work``, ``f_row``,
+        ``g_tmp``, ``g_res``, ``g_row``, ``f_flat``, ``g_flat``, and
+        ``elev_work`` are mutated and shared across all recursive calls;
+        the parent finishes consuming each workspace before recursing.
     """
     # Check overlap with both input masks.
     overlap = False
@@ -1123,8 +1118,8 @@ def _int_mask_2d_recurse(  # noqa: PLR0913
     xa1 = float(a1) / M - eps
     xb1 = float(b1) / M + eps
 
-    _restrict_scalar_2d(coeffs_f, xa0, xb0, xa1, xb1, f_tmp, f_res, f_row)
-    _restrict_scalar_2d(coeffs_g, xa0, xb0, xa1, xb1, g_tmp, g_res, g_row)
+    _restrict_scalar_2d(coeffs_f, xa0, xb0, xa1, xb1, f_tmp, f_res, col_work, col_out_work, f_row)
+    _restrict_scalar_2d(coeffs_g, xa0, xb0, xa1, xb1, g_tmp, g_res, col_work, col_out_work, g_row)
 
     # Degree-elevate to common extent and run orthant test.
     total = _elevate_2d_to_common(f_res, g_res, f_flat, g_flat, elev_work)
@@ -1139,94 +1134,36 @@ def _int_mask_2d_recurse(  # noqa: PLR0913
     # Recurse on 2x2 children.
     mid0 = (a0 + b0) // 2
     mid1 = (a1 + b1) // 2
-    _int_mask_2d_recurse(
-        coeffs_f,
-        fmask,
-        coeffs_g,
-        gmask,
-        out,
-        M,
-        eps,
-        f_tmp,
-        f_res,
-        f_row,
-        g_tmp,
-        g_res,
-        g_row,
-        f_flat,
-        g_flat,
-        elev_work,
-        a0,
-        mid0,
-        a1,
-        mid1,
-    )
-    _int_mask_2d_recurse(
-        coeffs_f,
-        fmask,
-        coeffs_g,
-        gmask,
-        out,
-        M,
-        eps,
-        f_tmp,
-        f_res,
-        f_row,
-        g_tmp,
-        g_res,
-        g_row,
-        f_flat,
-        g_flat,
-        elev_work,
-        a0,
-        mid0,
-        mid1,
-        b1,
-    )
-    _int_mask_2d_recurse(
-        coeffs_f,
-        fmask,
-        coeffs_g,
-        gmask,
-        out,
-        M,
-        eps,
-        f_tmp,
-        f_res,
-        f_row,
-        g_tmp,
-        g_res,
-        g_row,
-        f_flat,
-        g_flat,
-        elev_work,
-        mid0,
-        b0,
-        a1,
-        mid1,
-    )
-    _int_mask_2d_recurse(
-        coeffs_f,
-        fmask,
-        coeffs_g,
-        gmask,
-        out,
-        M,
-        eps,
-        f_tmp,
-        f_res,
-        f_row,
-        g_tmp,
-        g_res,
-        g_row,
-        f_flat,
-        g_flat,
-        elev_work,
-        mid0,
-        b0,
-        mid1,
-        b1,
-    )
+    for s0 in range(2):
+        lo0 = a0 if s0 == 0 else mid0
+        hi0 = mid0 if s0 == 0 else b0
+        for s1 in range(2):
+            lo1 = a1 if s1 == 0 else mid1
+            hi1 = mid1 if s1 == 0 else b1
+            _int_mask_2d_recurse(
+                coeffs_f,
+                fmask,
+                coeffs_g,
+                gmask,
+                out,
+                M,
+                eps,
+                f_tmp,
+                f_res,
+                col_work,
+                col_out_work,
+                f_row,
+                g_tmp,
+                g_res,
+                g_row,
+                f_flat,
+                g_flat,
+                elev_work,
+                lo0,
+                hi0,
+                lo1,
+                hi1,
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -1262,7 +1199,7 @@ def _intersection_mask_3d_core(  # noqa: PLR0913
     """
     nf0, nf1, nf2 = coeffs_f.shape[0], coeffs_f.shape[1], coeffs_f.shape[2]
     ng0, ng1, ng2 = coeffs_g.shape[0], coeffs_g.shape[1], coeffs_g.shape[2]
-    eps = 0.015625 / M
+    eps = 0.015625 / M  # padding = 1 / (64 * M)
 
     nmax_f = max(nf0, max(nf1, nf2))  # noqa: PLW3301
     nmax_g = max(ng0, max(ng1, ng2))  # noqa: PLW3301
@@ -1271,11 +1208,13 @@ def _intersection_mask_3d_core(  # noqa: PLR0913
     f_tmp2 = np.empty((nf0, nf1, nf2), dtype=np.float64)
     f_res = np.empty((nf0, nf1, nf2), dtype=np.float64)
     f_w1d = np.empty(nmax_f, dtype=np.float64)
+    f_w1d_b = np.empty(nmax_f, dtype=np.float64)
 
     g_tmp1 = np.empty((ng0, ng1, ng2), dtype=np.float64)
     g_tmp2 = np.empty((ng0, ng1, ng2), dtype=np.float64)
     g_res = np.empty((ng0, ng1, ng2), dtype=np.float64)
     g_w1d = np.empty(nmax_g, dtype=np.float64)
+    g_w1d_b = np.empty(nmax_g, dtype=np.float64)
 
     max_len = max(nf0, ng0) * max(nf1, ng1) * max(nf2, ng2)
     f_flat = np.empty(max_len, dtype=np.float64)
@@ -1295,10 +1234,12 @@ def _intersection_mask_3d_core(  # noqa: PLR0913
         f_tmp2,
         f_res,
         f_w1d,
+        f_w1d_b,
         g_tmp1,
         g_tmp2,
         g_res,
         g_w1d,
+        g_w1d_b,
         f_flat,
         g_flat,
         elev_work,
@@ -1415,10 +1356,12 @@ def _int_mask_3d_recurse(  # noqa: PLR0913
     f_tmp2: npt.NDArray[np.float64],
     f_res: npt.NDArray[np.float64],
     f_w1d: npt.NDArray[np.float64],
+    f_w1d_b: npt.NDArray[np.float64],
     g_tmp1: npt.NDArray[np.float64],
     g_tmp2: npt.NDArray[np.float64],
     g_res: npt.NDArray[np.float64],
     g_w1d: npt.NDArray[np.float64],
+    g_w1d_b: npt.NDArray[np.float64],
     f_flat: npt.NDArray[np.float64],
     g_flat: npt.NDArray[np.float64],
     elev_work: npt.NDArray[np.float64],
@@ -1443,10 +1386,12 @@ def _int_mask_3d_recurse(  # noqa: PLR0913
         f_tmp2 (npt.NDArray[np.float64]): Workspace for f restriction.
         f_res (npt.NDArray[np.float64]): Restricted f result.
         f_w1d (npt.NDArray[np.float64]): 1D workspace for f.
+        f_w1d_b (npt.NDArray[np.float64]): 1D output workspace for f.
         g_tmp1 (npt.NDArray[np.float64]): Workspace for g restriction.
         g_tmp2 (npt.NDArray[np.float64]): Workspace for g restriction.
         g_res (npt.NDArray[np.float64]): Restricted g result.
         g_w1d (npt.NDArray[np.float64]): 1D workspace for g.
+        g_w1d_b (npt.NDArray[np.float64]): 1D output workspace for g.
         f_flat (npt.NDArray[np.float64]): Flat workspace for elevated f.
         g_flat (npt.NDArray[np.float64]): Flat workspace for elevated g.
         elev_work (npt.NDArray[np.float64]): 1D elevation workspace.
@@ -1459,6 +1404,11 @@ def _int_mask_3d_recurse(  # noqa: PLR0913
 
     Note:
         Inputs are assumed to be correct (no validation performed).
+        ``f_tmp1``, ``f_tmp2``, ``f_res``, ``f_w1d``, ``f_w1d_b``,
+        ``g_tmp1``, ``g_tmp2``, ``g_res``, ``g_w1d``, ``g_w1d_b``,
+        ``f_flat``, ``g_flat``, and ``elev_work`` are mutated and shared
+        across all recursive calls; the parent finishes consuming each
+        workspace before recursing.
     """
     # Check overlap with both masks.
     overlap = False
@@ -1483,8 +1433,12 @@ def _int_mask_3d_recurse(  # noqa: PLR0913
     xa2 = float(a2) / M - eps
     xb2 = float(b2) / M + eps
 
-    _restrict_scalar_3d(coeffs_f, xa0, xb0, xa1, xb1, xa2, xb2, f_tmp1, f_tmp2, f_res, f_w1d)
-    _restrict_scalar_3d(coeffs_g, xa0, xb0, xa1, xb1, xa2, xb2, g_tmp1, g_tmp2, g_res, g_w1d)
+    _restrict_scalar_3d(
+        coeffs_f, xa0, xb0, xa1, xb1, xa2, xb2, f_tmp1, f_tmp2, f_res, f_w1d, f_w1d_b
+    )
+    _restrict_scalar_3d(
+        coeffs_g, xa0, xb0, xa1, xb1, xa2, xb2, g_tmp1, g_tmp2, g_res, g_w1d, g_w1d_b
+    )
 
     # Elevate to common extent and orthant test.
     total = _elevate_3d_to_common(f_res, g_res, f_flat, g_flat, elev_work)
@@ -1521,10 +1475,12 @@ def _int_mask_3d_recurse(  # noqa: PLR0913
                     f_tmp2,
                     f_res,
                     f_w1d,
+                    f_w1d_b,
                     g_tmp1,
                     g_tmp2,
                     g_res,
                     g_w1d,
+                    g_w1d_b,
                     f_flat,
                     g_flat,
                     elev_work,

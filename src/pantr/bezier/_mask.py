@@ -232,8 +232,7 @@ def _nonzero_mask(
             Bézier of parametric dimension 1, 2, or 3.
         mask (npt.NDArray[np.bool_] | None): Input mask to restrict the
             search.  If None, an all-True mask is used. Defaults to None.
-        M (int): Grid resolution per axis (must be a power of 2).
-            Defaults to 8.
+        M (int): Grid resolution per axis. Defaults to 8.
 
     Returns:
         npt.NDArray[np.bool_]: Boolean mask of shape ``(M,)*dim``.

@@ -297,6 +297,13 @@ class TestNonzeroMask:
         with pytest.raises(ValueError, match="rank == 1"):
             _nonzero_mask(b)
 
+    def test_dim_gt_3_raises(self) -> None:
+        """Dim > 3 is not supported."""
+        ctrl = np.ones((2, 2, 2, 2, 1), dtype=np.float64)
+        b = Bezier(ctrl)
+        with pytest.raises(ValueError, match="dim <= 3"):
+            _nonzero_mask(b)
+
 
 # ===========================================================================
 # TestIntersectionMask
@@ -375,3 +382,16 @@ class TestIntersectionMask:
         gmask = np.ones((4, 4, 4), dtype=np.bool_)
         result = _intersection_mask(f, fmask, g, gmask, M=4)
         assert _mask_empty(result)
+
+    def test_dim_gt_3_raises(self) -> None:
+        """Dim > 3 is not supported."""
+        ctrl = np.ones((2, 2, 2, 2, 1), dtype=np.float64)
+        f = Bezier(ctrl)
+        g = Bezier(ctrl)
+        with pytest.raises(ValueError, match="dim <= 3"):
+            _intersection_mask(
+                f,
+                np.ones((4, 4, 4, 4), dtype=np.bool_),
+                g,
+                np.ones((4, 4, 4, 4), dtype=np.bool_),
+            )
