@@ -200,9 +200,9 @@ def _nonzero_mask(
     Supports rational Béziers when all weights share the same strict sign.
 
     Args:
-        bezier (~pantr.bezier.Bezier): A scalar Bézier of parametric
-            dimension 1, 2, or 3.  Non-rational with ``rank == 1`` or
-            rational with ``rank == 2`` and same-sign weights.
+        bezier (~pantr.bezier.Bezier): A scalar (``rank == 1``) Bézier of
+            parametric dimension 1, 2, or 3.  Rational Béziers are accepted
+            when all weights share the same strict sign.
         mask (npt.NDArray[np.bool_] | None): Input mask to restrict the
             search.  If None, an all-True mask is used. Defaults to None.
         M (int): Grid resolution per axis. Defaults to 8.
