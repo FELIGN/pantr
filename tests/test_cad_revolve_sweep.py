@@ -153,12 +153,12 @@ class TestSweep:
         """Test that section dim > 2 raises ValueError."""
         vol = extrude(bilinear(), [0, 0, 1])
         traj = line([0, 0, 0], [1, 0, 0])
-        with pytest.raises(ValueError, match="section.dim"):
+        with pytest.raises(ValueError, match=r"section\.dim"):
             sweep(vol, traj)
 
     def test_sweep_trajectory_dim2_raises(self) -> None:
         """Test that trajectory dim != 1 raises ValueError."""
         sec = line([0, 0, 0], [1, 0, 0])
         traj = bilinear()
-        with pytest.raises(ValueError, match="trajectory.dim"):
+        with pytest.raises(ValueError, match=r"trajectory\.dim"):
             sweep(sec, traj)
