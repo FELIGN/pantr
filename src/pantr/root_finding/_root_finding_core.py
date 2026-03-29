@@ -1,15 +1,18 @@
 """Shared Numba-compiled helpers for Bernstein polynomial root finding.
 
-Provides scalar de Casteljau evaluation, splitting, subdivision, sign-change
-counting, convex-hull clipping, and Newton polishing -- all operating on 1-D
-Bernstein coefficient arrays. These are inner building blocks called from within
-the Yuksel and Bezier clipping algorithm kernels.
+Provides scalar evaluation, subdivision, sign-change counting, convex-hull
+clipping, and Newton polishing -- all operating on 1-D Bernstein coefficient
+arrays. These are inner building blocks called from within the Yuksel and
+Bezier clipping algorithm kernels.
+
+Scalar evaluation and subdivision delegate to the existing Bézier kernels in
+:mod:`pantr.bezier._bezier_core`, adapting the ``(n+1, 1)`` multi-column
+interface to bare ``(n+1,)`` coefficient arrays.
 
 Main exports (all Numba-compiled, no ``parallel=True``):
 
 - :func:`_de_casteljau_eval_scalar` -- evaluate at a single parameter.
 - :func:`_de_casteljau_eval_and_deriv_scalar` -- evaluate value and derivative.
-- :func:`_split_scalar` -- de Casteljau split into left/right halves.
 - :func:`_subdivide_scalar` -- extract coefficients for a sub-interval.
 - :func:`_count_sign_changes` -- Variation Diminishing Property sign-change count.
 - :func:`_clip_hull_to_zero` -- O(n) convex-hull clipping against y = 0.
@@ -22,39 +25,10 @@ import numpy as np
 from numpy import typing as npt
 
 from pantr._numba_compat import nb_jit
+from pantr.bezier._bezier_core import _de_casteljau_eval_scalar, _restrict_scalar
 
 _DBL_EPSILON: float = 2.2204460492503131e-16
 """Machine epsilon for IEEE 754 double precision."""
-
-
-@nb_jit(nopython=True, cache=True)
-def _de_casteljau_eval_scalar(
-    coeff: npt.NDArray[np.float32 | np.float64],
-    t: float,
-) -> float:
-    """Evaluate a scalar Bernstein polynomial at parameter *t*.
-
-    Computes B(t) = sum_i c_i * B_i^n(t) using the numerically stable
-    de Casteljau triangle.
-
-    Args:
-        coeff (npt.NDArray[np.float32 | np.float64]): 1-D Bernstein coefficients of length
-            ``n + 1``.
-        t (float): Parameter value in [0, 1].
-
-    Returns:
-        float: Polynomial value B(t).
-
-    Note:
-        Inputs are assumed to be correct (no validation performed).
-        For general use, call the Layer 2 helpers in ``_find_roots`` instead.
-    """
-    work = coeff.copy()
-    n = len(work) - 1
-    for k in range(1, n + 1):
-        for i in range(n - k + 1):
-            work[i] = (1.0 - t) * work[i] + t * work[i + 1]
-    return float(work[0])
 
 
 @nb_jit(nopython=True, cache=True)
@@ -96,46 +70,9 @@ def _de_casteljau_eval_and_deriv_scalar(
     d0 = row[0]
     d1 = row[1]
     f = s * d0 + t * d1
-    df = float(n) * (d1 - d0)  # noqa: PD901
+    df = float(n) * (d1 - d0)
 
     return f, df
-
-
-@nb_jit(nopython=True, cache=True)
-def _split_scalar(
-    coeff: npt.NDArray[np.float32 | np.float64],
-    t: float,
-) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64]]:
-    """Split a 1-D Bernstein polynomial at parameter *t* via de Casteljau.
-
-    Args:
-        coeff (npt.NDArray[np.float32 | np.float64]): Bernstein coefficients of shape
-            ``(n + 1,)``.
-        t (float): Split parameter in ``(0, 1)``.
-
-    Returns:
-        tuple[npt.NDArray[np.float64], npt.NDArray[np.float64]]:
-            ``(left, right)`` coefficient arrays, each of shape ``(n + 1,)``.
-
-    Note:
-        Inputs are assumed to be correct (no validation performed).
-        For general use, call the Layer 2 helpers in ``_find_roots`` instead.
-    """
-    n = len(coeff) - 1
-    work = coeff.copy()
-    left = np.empty(n + 1, dtype=np.float64)
-    right = np.empty(n + 1, dtype=np.float64)
-
-    left[0] = work[0]
-    right[n] = work[n]
-
-    for k in range(1, n + 1):
-        for i in range(n - k + 1):
-            work[i] = (1.0 - t) * work[i] + t * work[i + 1]
-        left[k] = work[0]
-        right[n - k] = work[n - k]
-
-    return left, right
 
 
 @nb_jit(nopython=True, cache=True)
@@ -146,8 +83,9 @@ def _subdivide_scalar(
 ) -> npt.NDArray[np.float64]:
     """Extract Bernstein coefficients for the sub-interval ``[t_min, t_max]``.
 
-    Always operates on the original coefficients via two composed de Casteljau
-    splits so that errors do not accumulate across repeated subdivisions.
+    Thin adapter around :func:`pantr.bezier._bezier_core._restrict_scalar`,
+    which uses a numerically stable two-pass de Casteljau strategy (pass
+    ordering chosen to avoid dividing by a small number).
 
     Args:
         coeff (npt.NDArray[np.float32 | np.float64]): Original 1-D Bernstein coefficients
@@ -170,19 +108,7 @@ def _subdivide_scalar(
     t_max = max(t_max, 0.0)
     t_max = min(t_max, 1.0)
 
-    if t_min > 0.0:
-        _, right = _split_scalar(coeff, t_min)
-        if t_max < 1.0:
-            rel = (t_max - t_min) / (1.0 - t_min)
-            left, _ = _split_scalar(right, rel)
-            return left
-        return right
-
-    if t_max < 1.0:
-        left, _ = _split_scalar(coeff, t_max)
-        return left
-
-    return np.asarray(coeff, dtype=np.float64).copy()
+    return _restrict_scalar(coeff, t_min, t_max)
 
 
 @nb_jit(nopython=True, cache=True)
@@ -392,7 +318,6 @@ def _warmup_numba_functions() -> None:
     dummy = np.array([1.0, -1.0, 0.5], dtype=np.float64)
     _de_casteljau_eval_scalar(dummy, 0.5)
     _de_casteljau_eval_and_deriv_scalar(dummy, 0.5)
-    _split_scalar(dummy, 0.5)
     _subdivide_scalar(dummy, 0.25, 0.75)
     _count_sign_changes(dummy)
     _clip_hull_to_zero(dummy)

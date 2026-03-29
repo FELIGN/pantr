@@ -33,7 +33,6 @@ from pantr.root_finding._root_finding_core import (
     _de_casteljau_eval_and_deriv_scalar,
     _de_casteljau_eval_scalar,
     _newton_polish_scalar,
-    _split_scalar,
     _subdivide_scalar,
 )
 from pantr.root_finding._yuksel_core import (
@@ -88,28 +87,6 @@ class TestDeCasteljauEvalAndDerivScalar(unittest.TestCase):
         f, df = _de_casteljau_eval_and_deriv_scalar(c, 0.5)
         self.assertAlmostEqual(f, 0.0, places=14)
         self.assertAlmostEqual(df, 2.0, places=14)
-
-
-class TestSplitScalar(unittest.TestCase):
-    """Tests for :func:`_split_scalar`."""
-
-    def test_midpoint_split(self) -> None:
-        """Split at t=0.5 and evaluate both halves."""
-        c = np.array([1.0, 3.0, 2.0], dtype=np.float64)
-        left, right = _split_scalar(c, 0.5)
-        # Left half at t=1 should equal original at t=0.5.
-        val_orig = _de_casteljau_eval_scalar(c, 0.5)
-        val_left = _de_casteljau_eval_scalar(left, 1.0)
-        val_right = _de_casteljau_eval_scalar(right, 0.0)
-        self.assertAlmostEqual(val_left, val_orig, places=14)
-        self.assertAlmostEqual(val_right, val_orig, places=14)
-
-    def test_preserves_endpoints(self) -> None:
-        """Left half starts at original start, right half ends at original end."""
-        c = np.array([2.0, 5.0, 1.0], dtype=np.float64)
-        left, right = _split_scalar(c, 0.3)
-        self.assertAlmostEqual(left[0], c[0])
-        self.assertAlmostEqual(right[-1], c[-1])
 
 
 class TestSubdivideScalar(unittest.TestCase):
