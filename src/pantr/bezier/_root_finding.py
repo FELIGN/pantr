@@ -149,7 +149,7 @@ def solve_monotone_root_batch(
             to ``tolerance.get_strict(coeffs.dtype)``.
 
     Returns:
-        tuple[npt.NDArray[np.float64], npt.NDArray[np.bool_]]:
+        tuple[npt.NDArray[np.float64], npt.NDArray[``np.bool_``]]:
             - ``roots``: 1-D array of shape ``(n_polys,)`` with root values.
               Contains ``NaN`` where no root exists. Always float64.
             - ``found``: boolean mask of shape ``(n_polys,)`` indicating

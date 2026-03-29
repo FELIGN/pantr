@@ -11,7 +11,7 @@ The main modules are:
 - :mod:`pantr.tolerance`: Uniform floating-point tolerance utilities.
 - :mod:`pantr.transform`: Affine transformations for geometric objects.
 - :mod:`pantr.cad`: Constructive geometry for B-spline curves, surfaces, and volumes.
-- :mod:`pantr.root_finding`: Root finding for polynomials in the Bernstein basis.
+- :mod:`pantr.bezier`: Bézier curves/surfaces and root finding for Bernstein polynomials.
 """
 
 from typing import Final
