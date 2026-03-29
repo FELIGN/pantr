@@ -95,7 +95,7 @@ if not TYPE_CHECKING:
             from .bezier import _bezier_core  # noqa: PLC0415
 
             _bezier_core._warmup_numba_functions()
-            from .root_finding import (  # noqa: PLC0415
+            from .bezier import (  # noqa: PLC0415
                 _batch_core,
                 _clipping_core,
                 _root_finding_core,

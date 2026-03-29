@@ -7,7 +7,7 @@ and degree reduction kernels.
 This module also exposes **non-parallel scalar helpers** for de Casteljau
 evaluation and restriction on 1-D coefficient arrays. These are the shared
 building blocks used by both the multi-column parallel kernels in this module
-and the scalar root-finding kernels in :mod:`pantr.root_finding`.
+and the scalar root-finding kernels in :mod:`pantr.bezier`.
 
 Note:
     Inputs are assumed to be correct (no validation performed).

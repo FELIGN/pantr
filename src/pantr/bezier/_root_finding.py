@@ -15,7 +15,7 @@ from __future__ import annotations
 import numpy as np
 from numpy import typing as npt
 
-from pantr.root_finding._find_roots import (
+from pantr.bezier._find_roots import (
     _find_roots_batch_impl,
     _find_roots_impl,
     _solve_monotone_root_batch_impl,
@@ -53,7 +53,7 @@ def find_roots(
 
     Example:
         >>> import numpy as np
-        >>> from pantr.root_finding import find_roots
+        >>> from pantr.bezier import find_roots
         >>> find_roots(np.array([1.0, -1.0]))
         array([0.5])
     """

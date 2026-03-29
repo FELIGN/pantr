@@ -5,7 +5,7 @@ formatting. Delegates all computation to Layer 3 Numba kernels in
 :mod:`_yuksel_core`, :mod:`_clipping_core`, and :mod:`_batch_core`.
 
 This module is not part of the public API. Users should call the functions
-exported from :mod:`pantr.root_finding`.
+exported from :mod:`pantr.bezier`.
 """
 
 from __future__ import annotations
@@ -14,8 +14,8 @@ import numpy as np
 from numpy import typing as npt
 
 from pantr._numba_compat import wait_for_jit_warmup
-from pantr.root_finding._clipping_core import _clip_roots_core, _dedup_roots
-from pantr.root_finding._yuksel_core import (
+from pantr.bezier._clipping_core import _clip_roots_core, _dedup_roots
+from pantr.bezier._yuksel_core import (
     _solve_monotone_root_kernel,
     _yuksel_roots,
 )
@@ -193,7 +193,7 @@ def _find_roots_impl(
     *,
     tol: float | None = None,
 ) -> npt.NDArray[np.float64]:
-    """L2 implementation for :func:`pantr.root_finding.find_roots`."""
+    """L2 implementation for :func:`pantr.bezier.find_roots`."""
     wait_for_jit_warmup()
     arr = _validate_coeff_1d(coeff)
     resolved_tol = _resolve_tol(arr, tol)
@@ -205,8 +205,8 @@ def _find_roots_batch_impl(
     *,
     tol: float | None = None,
 ) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.intp]]:
-    """L2 implementation for :func:`pantr.root_finding.find_roots_batch`."""
-    from pantr.root_finding._batch_core import (  # noqa: PLC0415
+    """L2 implementation for :func:`pantr.bezier.find_roots_batch`."""
+    from pantr.bezier._batch_core import (  # noqa: PLC0415
         _find_roots_batch_core,
     )
 
@@ -235,7 +235,7 @@ def _solve_monotone_root_impl(
     *,
     tol: float | None = None,
 ) -> float:
-    """L2 implementation for :func:`pantr.root_finding.solve_monotone_root`."""
+    """L2 implementation for :func:`pantr.bezier.solve_monotone_root`."""
     wait_for_jit_warmup()
     arr = _validate_coeff_1d(coeff)
     resolved_tol = _resolve_tol(arr, tol)
@@ -247,8 +247,8 @@ def _solve_monotone_root_batch_impl(
     *,
     tol: float | None = None,
 ) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.bool_]]:
-    """L2 implementation for :func:`pantr.root_finding.solve_monotone_root_batch`."""
-    from pantr.root_finding._batch_core import (  # noqa: PLC0415
+    """L2 implementation for :func:`pantr.bezier.solve_monotone_root_batch`."""
+    from pantr.bezier._batch_core import (  # noqa: PLC0415
         _solve_monotone_root_batch_core,
     )
 

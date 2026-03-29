@@ -23,7 +23,7 @@ import numpy as np
 from numpy import typing as npt
 
 from pantr._numba_compat import nb_jit
-from pantr.root_finding._root_finding_core import (
+from pantr.bezier._root_finding_core import (
     _DBL_EPSILON,
     _clip_hull_to_zero,
     _count_sign_changes,
@@ -67,7 +67,7 @@ def _clip_roots_core(  # noqa: PLR0912, PLR0915
 
     Note:
         Inputs are assumed to be correct (no validation performed).
-        For general use, call :func:`pantr.root_finding.find_roots` instead.
+        For general use, call :func:`pantr.bezier.find_roots` instead.
     """
     n = len(root_coeff) - 1
 

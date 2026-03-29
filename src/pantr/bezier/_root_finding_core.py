@@ -25,7 +25,12 @@ import numpy as np
 from numpy import typing as npt
 
 from pantr._numba_compat import nb_jit
-from pantr.bezier._bezier_core import _de_casteljau_eval_scalar, _restrict_scalar
+from pantr.bezier._bezier_core import (
+    _de_casteljau_eval_scalar as _de_casteljau_eval_scalar,  # noqa: PLC0414
+)
+from pantr.bezier._bezier_core import (
+    _restrict_scalar,
+)
 
 _DBL_EPSILON: float = 2.2204460492503131e-16
 """Machine epsilon for IEEE 754 double precision."""

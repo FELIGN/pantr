@@ -16,9 +16,9 @@ import numpy as np
 from numpy import typing as npt
 
 from pantr._numba_compat import nb_jit, nb_prange
-from pantr.root_finding._clipping_core import _clip_roots_core
-from pantr.root_finding._root_finding_core import _DBL_EPSILON
-from pantr.root_finding._yuksel_core import (
+from pantr.bezier._clipping_core import _clip_roots_core
+from pantr.bezier._root_finding_core import _DBL_EPSILON
+from pantr.bezier._yuksel_core import (
     _solve_monotone_root_kernel,
     _yuksel_roots,
 )
@@ -61,7 +61,7 @@ def _dispatch_and_find(  # noqa: PLR0912
 
     Note:
         Inputs are assumed to be correct (no validation performed).
-        For general use, call :func:`pantr.root_finding.find_roots_batch`
+        For general use, call :func:`pantr.bezier.find_roots_batch`
         instead.
     """
     n = len(coeff) - 1
@@ -151,7 +151,7 @@ def _find_roots_batch_core(
 
     Note:
         Inputs are assumed to be correct (no validation performed).
-        For general use, call :func:`pantr.root_finding.find_roots_batch`
+        For general use, call :func:`pantr.bezier.find_roots_batch`
         instead.
     """
     n_polys = coeffs.shape[0]
@@ -187,7 +187,7 @@ def _solve_monotone_root_batch_core(
     Note:
         Inputs are assumed to be correct (no validation performed).
         For general use, call
-        :func:`pantr.root_finding.solve_monotone_root_batch` instead.
+        :func:`pantr.bezier.solve_monotone_root_batch` instead.
     """
     n_polys = coeffs.shape[0]
     for i in nb_prange(n_polys):

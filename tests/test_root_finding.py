@@ -17,17 +17,17 @@ import numpy as np
 from numpy import typing as npt
 from numpy.testing import assert_allclose
 
-from pantr.root_finding import (
+from pantr.bezier import (
     find_roots,
     find_roots_batch,
     solve_monotone_root,
     solve_monotone_root_batch,
 )
-from pantr.root_finding._clipping_core import (
+from pantr.bezier._clipping_core import (
     _clip_roots_core,
     _dedup_roots,
 )
-from pantr.root_finding._root_finding_core import (
+from pantr.bezier._root_finding_core import (
     _clip_hull_to_zero,
     _count_sign_changes,
     _de_casteljau_eval_and_deriv_scalar,
@@ -35,7 +35,7 @@ from pantr.root_finding._root_finding_core import (
     _newton_polish_scalar,
     _subdivide_scalar,
 )
-from pantr.root_finding._yuksel_core import (
+from pantr.bezier._yuksel_core import (
     _solve_monotone_root_kernel,
     _yuksel_roots,
 )
