@@ -75,9 +75,9 @@ def _de_casteljau_eval_and_deriv_scalar(
     d0 = row[0]
     d1 = row[1]
     f = s * d0 + t * d1
-    df = float(n) * (d1 - d0)
+    deriv = float(n) * (d1 - d0)
 
-    return f, df
+    return f, deriv
 
 
 @nb_jit(nopython=True, cache=True)
