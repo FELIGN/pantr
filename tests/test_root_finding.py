@@ -397,7 +397,7 @@ class TestFindRoots(unittest.TestCase):
         c[0] = 1e-8
         c[4] = -1e7
         roots = find_roots(c, tol=1e-12)
-        roots_yuk, n = _yuksel_roots(c, 1e-12)
+        _roots_yuk, n = _yuksel_roots(c, 1e-12)
         self.assertEqual(len(roots), n)
         for r in roots:
             val = _de_casteljau_eval_scalar(c, float(np.clip(r, 0.0, 1.0)))
