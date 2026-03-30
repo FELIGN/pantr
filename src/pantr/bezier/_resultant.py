@@ -16,8 +16,8 @@ Supporting functions:
 - :func:`_normalise` — Scale polynomial by its largest coefficient.
 - :func:`_auto_reduction` — Automatically reduce polynomial degree in
   each direction when trailing coefficients are negligible.
-- :func:`_resultant_extent` — Compute the output extent of a resultant.
-- :func:`_discriminant_extent` — Compute the output extent of a discriminant.
+- :func:`_resultant_order` — Compute the output order of a resultant.
+- :func:`_discriminant_order` — Compute the output order of a discriminant.
 """
 
 from __future__ import annotations
@@ -214,8 +214,8 @@ def _bernstein_derivative_nd(
 ) -> npt.NDArray[np.floating[Any]]:
     """Compute the partial derivative of a multivariate Bernstein polynomial.
 
-    Differentiates along dimension ``dim``, reducing the extent in that
-    dimension by 1.  The result is in Bernstein form.
+    Differentiates along dimension ``dim``, reducing the order (degree + 1)
+    in that dimension by 1.  The result is in Bernstein form.
 
     Args:
         coeffs (npt.NDArray[np.floating[Any]]): Bernstein coefficients with
@@ -469,64 +469,70 @@ def _auto_reduction(
     return result, changed
 
 
-def _resultant_extent(
-    extent_p: tuple[int, ...],
-    extent_q: tuple[int, ...],
+def _resultant_order(
+    order_p: tuple[int, ...],
+    order_q: tuple[int, ...],
     dim: int,
 ) -> tuple[int, ...]:
-    r"""Compute the output extent of the resultant of two polynomials.
+    r"""Compute the output order of the resultant of two polynomials.
+
+    The order of a polynomial is its degree plus one, i.e. the number of
+    Bernstein coefficients per direction.
 
     The resultant of ``p`` and ``q`` along dimension ``dim`` is a polynomial
-    in all remaining dimensions.  Its extent in direction ``i``
+    in all remaining dimensions.  Its order in direction ``i``
     (skipping ``dim``) is:
 
     .. math::
 
         (P_{\mathrm{dim}} - 1)(Q_i - 1) + (Q_{\mathrm{dim}} - 1)(P_i - 1) + 1
 
-    where ``P_i`` and ``Q_i`` are the extents (degree + 1) of ``p`` and ``q``.
+    where ``P_i`` and ``Q_i`` are the orders (degree + 1) of ``p`` and ``q``.
 
     Args:
-        extent_p (tuple[int, ...]): Extents of polynomial ``p``.
-        extent_q (tuple[int, ...]): Extents of polynomial ``q``.
+        order_p (tuple[int, ...]): Orders of polynomial ``p`` per direction.
+        order_q (tuple[int, ...]): Orders of polynomial ``q`` per direction.
         dim (int): Elimination dimension.
 
     Returns:
-        tuple[int, ...]: Extents of the resultant (one dimension fewer).
+        tuple[int, ...]: Orders of the resultant (one dimension fewer).
     """
-    N = len(extent_p)
+    N = len(order_p)
     result = []
     for i in range(N):
         if i == dim:
             continue
-        ext = (extent_p[dim] - 1) * (extent_q[i] - 1) + (extent_q[dim] - 1) * (extent_p[i] - 1) + 1
-        result.append(max(ext, 1))
+        ord_i = (order_p[dim] - 1) * (order_q[i] - 1) + (order_q[dim] - 1) * (order_p[i] - 1) + 1
+        result.append(max(ord_i, 1))
     return tuple(result)
 
 
-def _discriminant_extent(
-    extent_p: tuple[int, ...],
+def _discriminant_order(
+    order_p: tuple[int, ...],
     dim: int,
 ) -> tuple[int, ...]:
-    """Compute the output extent of the discriminant of a polynomial.
+    """Compute the output order of the discriminant of a polynomial.
+
+    The order of a polynomial is its degree plus one, i.e. the number of
+    Bernstein coefficients per direction.
 
     The discriminant along ``dim`` is the resultant of ``p`` with its
     partial derivative in direction ``dim``.
 
     Args:
-        extent_p (tuple[int, ...]): Extents of polynomial ``p``.
+        order_p (tuple[int, ...]): Orders (degree + 1) of polynomial ``p``.
         dim (int): Elimination dimension.
 
     Returns:
-        tuple[int, ...]: Extents of the discriminant (one dimension fewer).
+        tuple[int, ...]: Orders of the discriminant (one dimension fewer).
     """
-    N = len(extent_p)
+    N = len(order_p)
     result = []
     for i in range(N):
         if i == dim:
             continue
-        ext = (2 * extent_p[dim] - 3) * (extent_p[i] - 1) + 1
-        result.append(max(ext, 1))
+        ord_i = (2 * order_p[dim] - 3) * (order_p[i] - 1) + 1
+        result.append(max(ord_i, 1))
     return tuple(result)
 
 
@@ -592,7 +598,7 @@ def _resultant(
 
     Args:
         p (npt.NDArray[np.floating[Any]]): Bernstein coefficients of the
-            first polynomial.  Extent in ``dim`` must be >= 2.
+            first polynomial.  Order (degree + 1) in ``dim`` must be >= 2.
         q (npt.NDArray[np.floating[Any]]): Bernstein coefficients of the
             second polynomial.  Must have the same number of dimensions as
             ``p``.
@@ -601,10 +607,10 @@ def _resultant(
     Returns:
         npt.NDArray[np.floating[Any]]: Resultant Bernstein coefficients with
         one fewer dimension.  Shape is determined by
-        :func:`_resultant_extent`.
+        :func:`_resultant_order`.
 
     Raises:
-        ValueError: If ``dim`` is out of range, extents are too small, or
+        ValueError: If ``dim`` is out of range, orders are too small, or
             arrays have different numbers of dimensions.
 
     Note:
@@ -627,8 +633,8 @@ def _discriminant(
     0-D array.
 
     Args:
-        p (npt.NDArray[np.floating[Any]]): Bernstein coefficients.  Extent
-            in ``dim`` must be >= 2.
+        p (npt.NDArray[np.floating[Any]]): Bernstein coefficients.  Order
+            (degree + 1) in ``dim`` must be >= 3.
         dim (int): Dimension to eliminate.
 
     Returns:
@@ -636,7 +642,7 @@ def _discriminant(
         with one fewer dimension.
 
     Raises:
-        ValueError: If ``dim`` is out of range or extent in ``dim`` < 2.
+        ValueError: If ``dim`` is out of range or order in ``dim`` < 3.
 
     Note:
         Implementation follows algoim (Saye, J. Comput. Phys. 448, 2022).
@@ -645,7 +651,7 @@ def _discriminant(
 
     if p.shape[dim] < 3:  # noqa: PLR2004
         raise ValueError(
-            f"Discriminant requires extent >= 3 in dimension {dim} "
+            f"Discriminant requires order >= 3 in dimension {dim} "
             f"(degree >= 2), got {p.shape[dim]}."
         )
 
@@ -681,9 +687,9 @@ def _validate_resultant_inputs(
     if dim < 0 or dim >= p.ndim:
         raise ValueError(f"dim must be in [0, {p.ndim}), got {dim}.")
     if p.shape[dim] < 2:  # noqa: PLR2004
-        raise ValueError(f"p must have extent >= 2 in dimension {dim}, got {p.shape[dim]}.")
+        raise ValueError(f"p must have order >= 2 in dimension {dim}, got {p.shape[dim]}.")
     if q.shape[dim] < 1:
-        raise ValueError(f"q must have extent >= 1 in dimension {dim}, got {q.shape[dim]}.")
+        raise ValueError(f"q must have order >= 1 in dimension {dim}, got {q.shape[dim]}.")
 
 
 def _validate_resultant_inputs_single(
@@ -704,7 +710,7 @@ def _validate_resultant_inputs_single(
     if dim < 0 or dim >= p.ndim:
         raise ValueError(f"dim must be in [0, {p.ndim}), got {dim}.")
     if p.shape[dim] < 2:  # noqa: PLR2004
-        raise ValueError(f"p must have extent >= 2 in dimension {dim}, got {p.shape[dim]}.")
+        raise ValueError(f"p must have order >= 2 in dimension {dim}, got {p.shape[dim]}.")
 
 
 def _resultant_core(
@@ -736,8 +742,8 @@ def _resultant_core(
     P = p.shape[dim]
     Q = q.shape[dim]
 
-    # Compute output extent
-    out_extent = _resultant_extent(p.shape, q.shape, dim)
+    # Compute output order
+    out_order = _resultant_order(p.shape, q.shape, dim)
 
     if ndim == 1:
         # 1D case: direct matrix determinant, no interpolation needed
@@ -747,12 +753,12 @@ def _resultant_core(
 
     # N-D case: interpolate determinant values at modified Chebyshev nodes
     # Allocate output for determinant values
-    f = np.empty(out_extent, dtype=dtype)
+    f = np.empty(out_order, dtype=dtype)
 
     # Generate modified Chebyshev nodes for each output dimension
     nodes_per_dim = []
-    for d in range(len(out_extent)):
-        n = out_extent[d]
+    for d in range(len(out_order)):
+        n = out_order[d]
         if n >= 2:  # noqa: PLR2004
             nodes_per_dim.append(get_modified_chebyshev_nodes_1d(n, dtype))
         else:
@@ -760,7 +766,7 @@ def _resultant_core(
 
     # Iterate over all multi-indices in the output grid
     for flat_idx in range(f.size):
-        multi_idx = np.unravel_index(flat_idx, out_extent)
+        multi_idx = np.unravel_index(flat_idx, out_order)
 
         # Build the evaluation point x0 (all dims except `dim`)
         x0 = np.empty(ndim - 1, dtype=dtype)

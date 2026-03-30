@@ -17,10 +17,10 @@ from pantr.bezier._resultant import (
     _bernstein_interpolate,
     _bernstein_interpolate_1d,
     _discriminant,
-    _discriminant_extent,
+    _discriminant_order,
     _normalise,
     _resultant,
-    _resultant_extent,
+    _resultant_order,
 )
 from pantr.quad import get_modified_chebyshev_nodes_1d
 
@@ -57,7 +57,7 @@ class TestBernsteinDerivativeND:
     """Tests for _bernstein_derivative_nd."""
 
     def test_2d_dim0(self) -> None:
-        """Derivative along dim=0 reduces extent in that direction."""
+        """Derivative along dim=0 reduces order in that direction."""
         coeffs = np.array([[1.0, 2.0], [3.0, 4.0], [7.0, 8.0]])
         result = _bernstein_derivative_nd(coeffs, 0)
         assert result.shape == (2, 2)
@@ -66,7 +66,7 @@ class TestBernsteinDerivativeND:
         nptest.assert_allclose(result, expected)
 
     def test_2d_dim1(self) -> None:
-        """Derivative along dim=1 reduces extent in that direction."""
+        """Derivative along dim=1 reduces order in that direction."""
         coeffs = np.array([[1.0, 2.0, 5.0], [3.0, 4.0, 9.0]])
         result = _bernstein_derivative_nd(coeffs, 1)
         assert result.shape == (2, 2)
@@ -204,42 +204,42 @@ class TestAutoReduction:
 # ---------------------------------------------------------------------------
 
 
-class TestResultantExtent:
-    """Tests for _resultant_extent."""
+class TestResultantOrder:
+    """Tests for _resultant_order."""
 
     def test_two_linears_2d(self) -> None:
         """Two (2,2) polynomials along dim=0."""
-        ext = _resultant_extent((2, 2), (2, 2), 0)
+        ord_ = _resultant_order((2, 2), (2, 2), 0)
         # (2-1)*(2-1) + (2-1)*(2-1) + 1 = 3
-        assert ext == (3,)
+        assert ord_ == (3,)
 
     def test_two_linears_2d_dim1(self) -> None:
         """Two (2,2) polynomials along dim=1."""
-        ext = _resultant_extent((2, 2), (2, 2), 1)
-        assert ext == (3,)
+        ord_ = _resultant_order((2, 2), (2, 2), 1)
+        assert ord_ == (3,)
 
-    def test_mixed_degrees(self) -> None:
-        """Different extents in each direction."""
-        ext = _resultant_extent((3, 2), (2, 3), 0)
+    def test_mixed_orders(self) -> None:
+        """Different orders in each direction."""
+        ord_ = _resultant_order((3, 2), (2, 3), 0)
         # dim=0 eliminated. Remaining: dim=1.
         # (3-1)*(3-1) + (2-1)*(2-1) + 1 = 4 + 1 + 1 = 6
-        assert ext == (6,)
+        assert ord_ == (6,)
 
 
-class TestDiscriminantExtent:
-    """Tests for _discriminant_extent."""
+class TestDiscriminantOrder:
+    """Tests for _discriminant_order."""
 
     def test_quadratic_2d(self) -> None:
         """Discriminant of a (3, 2) polynomial along dim=0."""
-        ext = _discriminant_extent((3, 2), 0)
+        ord_ = _discriminant_order((3, 2), 0)
         # (2*3 - 3)*(2-1) + 1 = 3*1 + 1 = 4
-        assert ext == (4,)
+        assert ord_ == (4,)
 
     def test_linear_2d(self) -> None:
         """Discriminant of a (2, 2) polynomial along dim=0."""
-        ext = _discriminant_extent((2, 2), 0)
+        ord_ = _discriminant_order((2, 2), 0)
         # (2*2-3)*(2-1) + 1 = 1*1 + 1 = 2
-        assert ext == (2,)
+        assert ord_ == (2,)
 
 
 # ---------------------------------------------------------------------------
@@ -318,8 +318,8 @@ class TestResultantValidation:
         with pytest.raises(ValueError, match="dim must be"):
             _resultant(np.array([1.0, 2.0]), np.array([1.0, 2.0]), 1)
 
-    def test_extent_too_small(self) -> None:
-        with pytest.raises(ValueError, match="extent >= 2"):
+    def test_order_too_small(self) -> None:
+        with pytest.raises(ValueError, match="order >= 2"):
             _resultant(np.array([1.0]), np.array([1.0, 2.0]), 0)
 
 
@@ -348,7 +348,7 @@ class TestDiscriminant1D:
     def test_linear_raises(self) -> None:
         """Discriminant of a linear raises because degree must be >= 2."""
         p = np.array([1.0, 3.0])
-        with pytest.raises(ValueError, match="extent >= 3"):
+        with pytest.raises(ValueError, match="order >= 3"):
             _discriminant(p, 0)
 
 
