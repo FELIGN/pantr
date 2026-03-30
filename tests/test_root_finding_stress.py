@@ -19,7 +19,7 @@ import numpy as np
 import pytest
 from numpy import typing as npt
 
-from pantr.bezier import Bezier, find_roots, find_roots_batch
+from pantr.bezier import Bezier, find_roots
 from pantr.bezier._clipping_core import _clip_roots_core, _dedup_roots
 from pantr.bezier._root_finding_core import _de_casteljau_eval_scalar
 from pantr.bezier._yuksel_core import _yuksel_roots
@@ -295,7 +295,7 @@ class TestBatchConsistency:
         coeffs = rng.uniform(-2.0, 2.0, (n_polys, degree + 1)).astype(np.float64)
 
         beziers = [Bezier(coeffs[i]) for i in range(n_polys)]
-        roots_batch, counts_batch = find_roots_batch(beziers, tol=1e-12)
+        roots_batch, counts_batch = find_roots(beziers, tol=1e-12)
 
         for i in range(n_polys):
             roots_single = find_roots(beziers[i], tol=1e-12)
