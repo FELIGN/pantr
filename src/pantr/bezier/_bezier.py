@@ -868,7 +868,7 @@ class Bezier:
                   Chebyshev-Lobatto nodes on [0, 1].
                 - ``"uniform"``: equispaced nodes on [0, 1].
                 - A 1D ``ndarray``: custom nodes broadcast to all directions.
-                - A sequence of 1D ``ndarray``s: per-direction custom nodes.
+                - A sequence of 1D ``ndarray`` values: per-direction custom nodes.
             dtype (npt.DTypeLike): Floating dtype. Defaults to ``float64``.
             tol (float | None): SVD truncation tolerance. If *None*, uses a
                 default based on machine epsilon.
