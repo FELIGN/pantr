@@ -237,3 +237,193 @@ class TestInterpolateValidation:
         """Function returning wrong shape raises ValueError."""
         with pytest.raises(ValueError, match="Function returned shape"):
             Bezier.interpolate(lambda x: np.ones((2, 3)), 3)
+
+
+# ---------------------------------------------------------------------------
+# Degree parameter (least-squares approximation)
+# ---------------------------------------------------------------------------
+
+
+class TestInterpolateDegree:
+    """Tests for the optional degree parameter on Bezier.interpolate."""
+
+    def test_exact_when_degree_equals_n_pts_minus_1(self) -> None:
+        """Explicit degree = n_pts - 1 gives the same result as default."""
+        b = Bezier.interpolate(lambda x: x**2, 5, degree=4)
+        assert b.degree == (4,)
+        pts = np.array([0.0, 0.25, 0.5, 0.75, 1.0])
+        nptest.assert_allclose(b.evaluate(pts), pts**2, atol=1e-13)
+
+    def test_least_squares_quadratic(self) -> None:
+        """Fitting x^2 with degree=2 from 5 sample points recovers it."""
+        b = Bezier.interpolate(lambda x: x**2, 5, degree=2)
+        assert b.degree == (2,)
+        pts = np.array([0.0, 0.25, 0.5, 0.75, 1.0])
+        nptest.assert_allclose(b.evaluate(pts), pts**2, atol=1e-12)
+
+    def test_least_squares_linear(self) -> None:
+        """Fitting a linear function with degree=1 from 10 points."""
+        b = Bezier.interpolate(lambda x: 3.0 * x + 1.0, 10, degree=1)
+        assert b.degree == (1,)
+        pts = np.array([0.0, 0.5, 1.0])
+        nptest.assert_allclose(b.evaluate(pts), [1.0, 2.5, 4.0], atol=1e-12)
+
+    def test_2d_least_squares(self) -> None:
+        """Fitting x+y with degree=(1,1) from (3,3) samples."""
+        b = Bezier.interpolate(lambda x, y: x + y, [3, 3], degree=[1, 1])
+        assert b.degree == (1, 1)
+        pts = np.array([[0.5, 0.5], [0.0, 1.0], [1.0, 0.0]])
+        expected = pts[:, 0] + pts[:, 1]
+        nptest.assert_allclose(b.evaluate(pts), expected, atol=1e-12)
+
+    def test_degree_too_large_raises(self) -> None:
+        """Degree >= n_pts raises ValueError."""
+        with pytest.raises(ValueError, match="must be < n_pts"):
+            Bezier.interpolate(lambda x: x, 3, degree=3)
+
+    def test_degree_negative_raises(self) -> None:
+        """Negative degree raises ValueError."""
+        with pytest.raises(ValueError, match="must be >= 0"):
+            Bezier.interpolate(lambda x: x, 3, degree=-1)
+
+    def test_degree_length_mismatch_raises(self) -> None:
+        """Degree sequence length != n_pts sequence length raises ValueError."""
+        with pytest.raises(ValueError, match="entries"):
+            Bezier.interpolate(lambda x, y: x + y, [3, 3], degree=[1])
+
+
+# ---------------------------------------------------------------------------
+# Bezier.fit — 1D scalar
+# ---------------------------------------------------------------------------
+
+
+class TestFit1DScalar:
+    """Tests for 1D scalar-valued fitting from pre-evaluated values."""
+
+    def test_exact_linear(self) -> None:
+        """Fitting 2 values at nodes recovers a linear Bezier."""
+        nodes = np.array([0.0, 1.0])
+        vals = 2.0 * nodes + 1.0
+        b = Bezier.fit(vals, nodes)
+        assert b.degree == (1,)
+        pts = np.array([0.0, 0.5, 1.0])
+        nptest.assert_allclose(b.evaluate(pts), [1.0, 2.0, 3.0], atol=1e-13)
+
+    def test_exact_quadratic(self) -> None:
+        """Fitting 3 values recovers a quadratic."""
+        nodes = np.array([0.0, 0.5, 1.0])
+        vals = nodes**2
+        b = Bezier.fit(vals, nodes)
+        assert b.degree == (2,)
+        pts = np.array([0.0, 0.25, 0.5, 0.75, 1.0])
+        nptest.assert_allclose(b.evaluate(pts), pts**2, atol=1e-12)
+
+    def test_single_value(self) -> None:
+        """Fitting a single value gives a degree-0 Bezier."""
+        b = Bezier.fit(np.array([7.0]), np.array([0.5]))
+        assert b.degree == (0,)
+        nptest.assert_allclose(b.evaluate(np.array([0.5])), [7.0], atol=1e-14)
+
+
+# ---------------------------------------------------------------------------
+# Bezier.fit — 1D vector
+# ---------------------------------------------------------------------------
+
+
+class TestFit1DVector:
+    """Tests for 1D vector-valued fitting."""
+
+    def test_linear_vector(self) -> None:
+        """Fitting a linear vector-valued function."""
+        nodes = np.array([0.0, 1.0])
+        vals = np.stack([nodes, 2.0 * nodes + 1.0], axis=-1)
+        b = Bezier.fit(vals, nodes)
+        assert b.degree == (1,)
+        nptest.assert_equal(b.rank, 2)
+        pts = np.array([0.0, 0.5, 1.0])
+        expected = np.array([[0.0, 1.0], [0.5, 2.0], [1.0, 3.0]])
+        nptest.assert_allclose(b.evaluate(pts), expected, atol=1e-13)
+
+
+# ---------------------------------------------------------------------------
+# Bezier.fit — 2D
+# ---------------------------------------------------------------------------
+
+
+class TestFit2D:
+    """Tests for 2D fitting from pre-evaluated values."""
+
+    def test_bilinear(self) -> None:
+        """Fitting bilinear values on a 2x2 grid."""
+        nodes_x = np.array([0.0, 1.0])
+        nodes_y = np.array([0.0, 1.0])
+        xx, yy = np.meshgrid(nodes_x, nodes_y, indexing="ij")
+        vals = xx + yy
+        b = Bezier.fit(vals, [nodes_x, nodes_y])
+        assert b.degree == (1, 1)
+        pts = np.array([[0.5, 0.5], [0.0, 1.0]])
+        expected = pts[:, 0] + pts[:, 1]
+        nptest.assert_allclose(b.evaluate(pts), expected, atol=1e-12)
+
+
+# ---------------------------------------------------------------------------
+# Bezier.fit — degree (least-squares)
+# ---------------------------------------------------------------------------
+
+
+class TestFitDegree:
+    """Tests for the degree parameter on Bezier.fit."""
+
+    def test_least_squares_quadratic(self) -> None:
+        """Fitting x^2 from 5 points with degree=2."""
+        nodes = np.linspace(0.0, 1.0, 5)
+        vals = nodes**2
+        b = Bezier.fit(vals, nodes, degree=2)
+        assert b.degree == (2,)
+        pts = np.array([0.0, 0.25, 0.5, 0.75, 1.0])
+        nptest.assert_allclose(b.evaluate(pts), pts**2, atol=1e-12)
+
+    def test_least_squares_constant(self) -> None:
+        """Fitting a constant from 5 points with degree=0."""
+        nodes = np.linspace(0.0, 1.0, 5)
+        vals = np.full(5, 3.14)
+        b = Bezier.fit(vals, nodes, degree=0)
+        assert b.degree == (0,)
+        nptest.assert_allclose(b.evaluate(np.array([0.5])), [3.14], atol=1e-12)
+
+
+# ---------------------------------------------------------------------------
+# Bezier.fit — validation
+# ---------------------------------------------------------------------------
+
+
+class TestFitValidation:
+    """Input validation tests for Bezier.fit."""
+
+    def test_mismatched_nodes_values(self) -> None:
+        """Node array length != values length raises ValueError."""
+        with pytest.raises(ValueError, match="does not match"):
+            Bezier.fit(np.array([1.0, 2.0, 3.0]), np.array([0.0, 1.0]))
+
+    def test_non_floating_dtype(self) -> None:
+        """Non-floating dtype raises ValueError."""
+        with pytest.raises(ValueError, match="floating"):
+            Bezier.fit(np.array([1.0, 2.0]), np.array([0.0, 1.0]), dtype=np.int32)
+
+    def test_degree_too_large(self) -> None:
+        """Degree >= n_pts raises ValueError."""
+        with pytest.raises(ValueError, match="must be < n_pts"):
+            Bezier.fit(np.array([1.0, 2.0]), np.array([0.0, 1.0]), degree=2)
+
+    def test_node_arrays_ndim_mismatch(self) -> None:
+        """Node arrays implying different ndim than values raises ValueError."""
+        vals = np.ones((3, 3))
+        nodes_1d = np.array([0.0, 0.5, 1.0])
+        # 3 node arrays implies 3D, but values is 2D
+        with pytest.raises(ValueError, match="dimensions"):
+            Bezier.fit(vals, [nodes_1d, nodes_1d, nodes_1d])
+
+    def test_values_wrong_ndim(self) -> None:
+        """Values with wrong number of dims raises ValueError."""
+        with pytest.raises(ValueError, match="dimensions"):
+            Bezier.fit(np.ones((2, 3, 4)), np.array([0.0, 1.0]))
