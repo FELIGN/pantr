@@ -730,25 +730,6 @@ class Bspline:
             self._beziers_cache = _to_beziers_impl(self)
         return self._beziers_cache
 
-    @classmethod
-    def from_bezier(cls, bezier: Bezier, *, copy: bool = True) -> Bspline:
-        """Create a B-spline from a Bézier.
-
-        Builds a :class:`Bspline` with Bézier-like knot vectors
-        (``[0]*(p+1) + [1]*(p+1)`` per direction) whose control points
-        are taken from the given Bézier.
-
-        Args:
-            bezier (~pantr.bezier.Bezier): The source Bézier.
-            copy (bool): If ``True`` (default), the control points are
-                deep-copied into the new B-spline.  If ``False``, the
-                B-spline shares the same underlying control point array.
-
-        Returns:
-            Bspline: Equivalent B-spline with Bézier-like knots.
-        """
-        return bezier.to_bspline(copy=copy)
-
     def multiply(self, other: Bspline) -> Bspline:
         """Return the exact pointwise product of this B-spline and another.
 
@@ -1163,3 +1144,22 @@ class Bspline:
             show_knot_lines=show_knot_lines,
             **plotter_kwargs,
         )
+
+
+def create_from_bezier(bezier: Bezier, *, copy: bool = True) -> Bspline:
+    """Create a B-spline from a Bézier.
+
+    Builds a :class:`Bspline` with Bézier-like knot vectors
+    (``[0]*(p+1) + [1]*(p+1)`` per direction) whose control points
+    are taken from the given Bézier.
+
+    Args:
+        bezier (~pantr.bezier.Bezier): The source Bézier.
+        copy (bool): If ``True`` (default), the control points are
+            deep-copied into the new B-spline.  If ``False``, the
+            B-spline shares the same underlying control point array.
+
+    Returns:
+        Bspline: Equivalent B-spline with Bézier-like knots.
+    """
+    return bezier.to_bspline(copy=copy)

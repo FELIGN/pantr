@@ -4,7 +4,7 @@ import numpy as np
 import numpy.typing as npt
 import pytest
 
-from pantr.bezier import Bezier
+from pantr.bezier import Bezier, create_from_bspline
 from pantr.bspline import Bspline, BsplineSpace, BsplineSpace1D
 from pantr.quad import PointsLattice
 
@@ -132,7 +132,7 @@ class TestBezierConversion:
         """Test conversion from Bezier-like B-spline."""
         b_orig = _make_bezier_1d([[1.0, 2.0], [3.0, 4.0], [5.0, 6.0]])
         bs = b_orig.to_bspline()
-        b_back = Bezier.from_bspline(bs)
+        b_back = create_from_bspline(bs)
         np.testing.assert_array_equal(b_back.control_points, b_orig.control_points)
 
     def test_from_bspline_invalid(self) -> None:
@@ -142,12 +142,12 @@ class TestBezierConversion:
         cp = np.array([1.0, 2.0, 3.0, 4.0], dtype=np.float64)
         bs = Bspline(space, cp)
         with pytest.raises(ValueError, match="Bézier-like"):
-            Bezier.from_bspline(bs)
+            create_from_bspline(bs)
 
     def test_roundtrip(self) -> None:
         """Test to_bspline -> from_bspline roundtrip."""
         b = _make_bezier_1d([[1.0, 0.0, 1.0], [1.0, 1.0, 1.0]], is_rational=True)
-        b2 = Bezier.from_bspline(b.to_bspline())
+        b2 = create_from_bspline(b.to_bspline())
         np.testing.assert_array_equal(b2.control_points, b.control_points)
         assert b2.is_rational == b.is_rational
 
@@ -167,14 +167,14 @@ class TestBezierConversion:
         """Test that from_bspline with copy=True creates independent arrays."""
         b_orig = _make_bezier_1d([1.0, 2.0, 3.0])
         bs = b_orig.to_bspline(copy=False)
-        b_back = Bezier.from_bspline(bs, copy=True)
+        b_back = create_from_bspline(bs, copy=True)
         assert not np.shares_memory(bs.control_points, b_back.control_points)
 
     def test_from_bspline_copy_false(self) -> None:
         """Test that from_bspline with copy=False shares the control point array."""
         b_orig = _make_bezier_1d([1.0, 2.0, 3.0])
         bs = b_orig.to_bspline(copy=False)
-        b_back = Bezier.from_bspline(bs, copy=False)
+        b_back = create_from_bspline(bs, copy=False)
         assert np.shares_memory(bs.control_points, b_back.control_points)
 
     def test_to_bspline_default_copies(self) -> None:
