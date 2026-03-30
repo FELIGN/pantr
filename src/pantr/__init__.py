@@ -11,6 +11,7 @@ The main modules are:
 - :mod:`pantr.tolerance`: Uniform floating-point tolerance utilities.
 - :mod:`pantr.transform`: Affine transformations for geometric objects.
 - :mod:`pantr.cad`: Constructive geometry for B-spline curves, surfaces, and volumes.
+- :mod:`pantr.bezier`: Bézier curves/surfaces and root finding for Bernstein polynomials.
 """
 
 from typing import Final
@@ -92,6 +93,17 @@ if not TYPE_CHECKING:
             from .bezier import _bezier_core  # noqa: PLC0415
 
             _bezier_core._warmup_numba_functions()
+            from .bezier import (  # noqa: PLC0415
+                _batch_core,
+                _clipping_core,
+                _root_finding_core,
+                _yuksel_core,
+            )
+
+            _root_finding_core._warmup_numba_functions()
+            _yuksel_core._warmup_numba_functions()
+            _clipping_core._warmup_numba_functions()
+            _batch_core._warmup_numba_functions()
             logger.debug("Finished Numba JIT warmup.")
         except Exception:
             # During process teardown (e.g. short scripts), background Numba caching
