@@ -254,6 +254,150 @@ def get_chebyshev_gauss_2nd_kind_1d(
     return _scale_and_cast_nodes_and_weights(nodes, weights, dtype)
 
 
+def _lambert_w(z: float) -> float:
+    """Compute the principal branch of the Lambert W function.
+
+    Solves ``w * exp(w) = z`` for ``w >= 0`` using Newton's method.
+
+    Args:
+        z (float): Input value. Must be non-negative.
+
+    Returns:
+        float: The Lambert W function value ``W(z)``.
+
+    Note:
+        Implementation follows algoim (Saye, J. Comput. Phys. 448, 2022).
+    """
+    import math  # noqa: PLC0415
+
+    w = z - 0.45 * z * z if z < 1.0 else 0.75 * math.log(z)
+    for _ in range(10):
+        ew = math.exp(w)
+        w -= (w * ew - z) / (ew + w * ew)
+    return w
+
+
+def _generate_tanh_sinh(n: int) -> tuple[npt.NDArray[np.float64], int]:
+    """Generate tanh-sinh quadrature nodes and weights on [-1, 1].
+
+    Computes an *n*-point tanh-sinh scheme.  Nodes near the endpoints that
+    are indistinguishable from -1 or 1 in floating-point arithmetic are
+    snapped to the boundary and their weights accumulated, so the effective
+    number of nodes *m* may be less than *n*.
+
+    Args:
+        n (int): Requested number of quadrature points (must be >= 1).
+
+    Returns:
+        tuple[npt.NDArray[np.float64], int]: A pair ``(data, m)`` where
+        *data* has shape ``(m, 2)`` with columns ``[node, weight]`` on
+        ``[-1, 1]``, and *m* is the effective node count.
+
+    Note:
+        Implementation follows algoim (Saye, J. Comput. Phys. 448, 2022).
+    """
+    if n == 1:
+        return np.array([[0.0, 2.0]]), 1
+
+    h_a = 0.6 * 0.5 * np.pi
+    h = 2.0 * _lambert_w(2.0 * h_a * (n - 1)) / n
+
+    # Pre-allocate for worst case: n pairs
+    buf = np.empty((n, 2), dtype=np.float64)
+    count = 0
+
+    # Central node for odd n
+    if n % 2:
+        buf[count] = [0.0, np.pi * 0.5]
+        count += 1
+
+    snapped_endpoint = False
+
+    for i in range(n // 2):
+        t = float(i + 1) * h if n % 2 else (float(i) + 0.5) * h
+        exp_t = np.exp(t)
+        exp_mt = 1.0 / exp_t
+        omega = 0.25 * np.pi * (exp_t - exp_mt)  # pi/2 * sinh(t)
+        exp_omega = np.exp(omega)
+        cosh_omega_2 = exp_omega + 1.0 / exp_omega  # 2 * cosh(omega)
+        cosh_t_2 = exp_t + exp_mt  # 2 * cosh(t)
+
+        w = np.pi * cosh_t_2 / (cosh_omega_2 * cosh_omega_2)
+        xc = 2.0 / (1.0 + exp_omega * exp_omega)  # 1 - x(t)
+
+        # Snap test: if 1 - xc rounds to 1 then xc is effectively 0
+        test = np.float64(1.0) - np.float64(xc)
+        if abs(float(test) - 1.0) <= 0.0:
+            if snapped_endpoint:
+                # Accumulate weights to existing -1 and +1 nodes
+                buf[count - 2, 1] += w
+                buf[count - 1, 1] += w
+            else:
+                buf[count] = [-1.0, w]
+                count += 1
+                buf[count] = [1.0, w]
+                count += 1
+                snapped_endpoint = True
+        else:
+            buf[count] = [-1.0 + xc, w]
+            count += 1
+            buf[count] = [1.0 - xc, w]
+            count += 1
+
+    data = buf[:count].copy()
+
+    # Normalize weights to sum to 2 (measure of [-1, 1])
+    weight_sum = np.sum(data[:, 1])
+    data[:, 1] *= 2.0 / weight_sum
+
+    return data, count
+
+
+def get_tanh_sinh_1d(
+    n_pts: int, dtype: npt.DTypeLike = np.float64
+) -> tuple[npt.NDArray[np.float32 | np.float64], npt.NDArray[np.float32 | np.float64]]:
+    """Get tanh-sinh quadrature nodes on [0, 1] for the given number of points.
+
+    Tanh-sinh (double-exponential) quadrature clusters nodes near the
+    endpoints of the interval, making it well suited for integrands with
+    endpoint singularities or steep boundary layers.  The scheme is
+    symmetric and nodes near the endpoints that are indistinguishable from
+    0 or 1 in floating-point arithmetic are snapped to the boundary, so
+    the effective number of returned nodes may be less than *n_pts*.
+
+    Args:
+        n_pts (int): Requested number of quadrature points.  Must be at
+            least 1.
+        dtype (npt.DTypeLike): Floating-point dtype for the output arrays.
+            Must be ``float32`` or ``float64``.  Defaults to ``float64``.
+
+    Returns:
+        tuple[npt.NDArray[np.float32 | np.float64], npt.NDArray[np.float32 | np.float64]]:
+            ``(nodes, weights)`` on ``[0, 1]``.  Both arrays have the same
+            length, which may be less than *n_pts* due to endpoint
+            snapping.  Weights sum to 1.
+
+    Raises:
+        ValueError: If *n_pts* < 1 or *dtype* is not ``float32``/``float64``.
+
+    Example:
+        >>> nodes, weights = get_tanh_sinh_1d(5)
+        >>> nodes.shape[0] <= 5
+        True
+        >>> abs(weights.sum() - 1.0) < 1e-14
+        True
+    """
+    _validate_n_pts_and_dtype(n_pts, dtype)
+
+    data, _ = _generate_tanh_sinh(n_pts)
+
+    # Transform from [-1, 1] to [0, 1]
+    nodes = ((data[:, 0] + 1.0) * 0.5).astype(dtype)
+    weights = (data[:, 1] * 0.5).astype(dtype)
+
+    return nodes, weights
+
+
 class PointsLattice:
     """A tensor-product grid of evaluation points in multiple dimensions.
 
@@ -396,5 +540,6 @@ __all__ = [
     "get_gauss_legendre_1d",
     "get_gauss_lobatto_legendre_1d",
     "get_modified_chebyshev_nodes_1d",
+    "get_tanh_sinh_1d",
     "get_trapezoidal_1d",
 ]
