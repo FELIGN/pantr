@@ -84,6 +84,38 @@ def _derivative_keep_degree_ctrl_1d(
     return result
 
 
+def _derivative_ctrl_nd(
+    coeffs: npt.NDArray[np.float32 | np.float64],
+    dim: int,
+) -> npt.NDArray[np.float32 | np.float64]:
+    """Compute the partial derivative of an N-D coefficient array along one axis.
+
+    Applies :func:`_derivative_ctrl_1d` along dimension ``dim`` using the
+    moveaxis/reshape/restore pattern, reducing the size in that dimension
+    by 1.
+
+    Args:
+        coeffs (npt.NDArray[np.float32 | np.float64]): Coefficient array with
+            shape ``(n_0, ..., n_{N-1})``.  ``n_dim >= 2``.
+        dim (int): Direction to differentiate.
+
+    Returns:
+        npt.NDArray[np.float32 | np.float64]: Derivative coefficients with shape
+        ``(n_0, ..., n_dim - 1, ..., n_{N-1})``.
+
+    Note:
+        Inputs are assumed to be correct (no validation performed).
+        For general use, call :func:`_derivative_bezier` instead.
+    """
+    degree = coeffs.shape[dim] - 1
+    moved = np.moveaxis(coeffs, dim, 0)
+    orig_shape = moved.shape
+    flat = moved.reshape(orig_shape[0], -1)
+    result = _derivative_ctrl_1d(degree, flat)
+    new_shape = (result.shape[0], *orig_shape[1:])
+    return np.moveaxis(result.reshape(new_shape), 0, dim)
+
+
 def _derivative_nonrational(bezier: Bezier, direction: int) -> Bezier:
     """Compute the partial derivative of a non-rational Bézier.
 
@@ -104,24 +136,7 @@ def _derivative_nonrational(bezier: Bezier, direction: int) -> Bezier:
     """
     from . import Bezier as BezierCls  # noqa: PLC0415
 
-    p = bezier.degree[direction]
-    ctrl = bezier.control_points
-
-    # Move target direction to axis 0, flatten the rest.
-    moved = np.moveaxis(ctrl, direction, 0)
-    orig_shape = moved.shape
-    pts_2d = moved.reshape(orig_shape[0], -1)
-
-    if not pts_2d.flags.c_contiguous:
-        pts_2d = np.ascontiguousarray(pts_2d)
-
-    new_pts_2d = _derivative_ctrl_1d(p, pts_2d)
-
-    # Restore shape and move axis back.
-    new_shape = (new_pts_2d.shape[0], *orig_shape[1:])
-    new_moved = new_pts_2d.reshape(new_shape)
-    new_ctrl = np.moveaxis(new_moved, 0, direction)
-
+    new_ctrl = _derivative_ctrl_nd(bezier.control_points, direction)
     return BezierCls(new_ctrl, is_rational=False)
 
 
