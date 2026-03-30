@@ -106,7 +106,7 @@ class TestRevolve:
 class TestSweep:
     """Test the translational sweep operation."""
 
-    def test_sweep_line_along_create_line(self) -> None:
+    def test_sweep_line_along_line(self) -> None:
         """Test sweeping a line along a line produces a bilinear surface."""
         section = create_line([0, 0, 0], [1, 0, 0])
         trajectory = create_line([0, 0, 0], [0, 1, 0])

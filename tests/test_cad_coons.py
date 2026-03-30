@@ -15,7 +15,7 @@ _RANK_3D = 3
 class TestCoonsSurface:
     """Test the coons_surface function."""
 
-    def test_four_straight_lines_gives_create_bilinear(self) -> None:
+    def test_four_straight_lines_gives_bilinear(self) -> None:
         """Test Coons from 4 straight lines matches bilinear."""
         c_u0 = create_line([0, 0, 0], [1, 0, 0])
         c_u1 = create_line([0, 1, 0], [1, 1, 0])

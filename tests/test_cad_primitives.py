@@ -14,7 +14,7 @@ _RANK_3D = 3
 class TestLine:
     """Test the line primitive."""
 
-    def test_default_create_line(self) -> None:
+    def test_default_line(self) -> None:
         """Test default line from origin to (1, 0, 0)."""
         crv = create_line()
         assert crv.dim == 1
@@ -70,7 +70,7 @@ class TestLine:
 class TestBilinear:
     """Test the bilinear surface primitive."""
 
-    def test_default_create_bilinear(self) -> None:
+    def test_default_bilinear(self) -> None:
         """Test default unit square surface."""
         srf = create_bilinear()
         assert srf.dim == 2  # noqa: PLR2004
@@ -163,7 +163,7 @@ class TestBilinear:
 class TestTrilinear:
     """Test the trilinear volume primitive."""
 
-    def test_default_create_trilinear(self) -> None:
+    def test_default_trilinear(self) -> None:
         """Test default unit cube volume."""
         vol = create_trilinear()
         assert vol.dim == _RANK_3D
@@ -281,7 +281,7 @@ class TestCircle:
         assert_allclose(pts[3], [0, -1, 0], atol=1e-14)
         assert_allclose(pts[4], [1, 0, 0], atol=1e-14)
 
-    def test_full_circle_points_on_create_circle(self) -> None:
+    def test_full_circle_points_on_circle(self) -> None:
         """Test that evaluated points lie on the unit circle."""
         crv = create_circle()
         t = np.linspace(0, 1, 50)
@@ -325,7 +325,7 @@ class TestCircle:
         crv = create_circle(angle=3 * np.pi / 2)
         assert crv.control_points.shape[0] == 7  # noqa: PLR2004
 
-    def test_arc_points_on_create_circle(self) -> None:
+    def test_arc_points_on_circle(self) -> None:
         """Test that arc points lie on the circle."""
         crv = create_circle(radius=2.0, angle=np.pi)
         t = np.linspace(0, 1, 30)

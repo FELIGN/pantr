@@ -13,7 +13,7 @@ _RANK_3D = 3
 class TestRectangle:
     """Test the rectangle primitive."""
 
-    def test_default_create_rectangle(self) -> None:
+    def test_default_rectangle(self) -> None:
         """Test default unit rectangle."""
         rect = create_rectangle()
         assert rect.dim == 1
@@ -29,7 +29,7 @@ class TestRectangle:
         pt_end = rect.evaluate(np.array([float(domain[1])]))
         assert_allclose(pt_start, pt_end, atol=1e-14)
 
-    def test_custom_create_rectangle(self) -> None:
+    def test_custom_rectangle(self) -> None:
         """Test rectangle with custom corner, width, height."""
         rect = create_rectangle(corner=[1, 2, 0], width=3, height=4)
         domain = rect.space.spaces[0].domain
@@ -57,7 +57,7 @@ class TestRectangle:
 class TestDisk:
     """Test the disk primitive."""
 
-    def test_full_create_disk(self) -> None:
+    def test_full_disk(self) -> None:
         """Test a full disk (inner radius = 0)."""
         d = create_disk(radius_outer=2.0)
         assert d.dim == 2  # noqa: PLR2004
@@ -113,7 +113,7 @@ class TestDisk:
 class TestCylinder:
     """Test the cylinder primitive."""
 
-    def test_default_create_cylinder(self) -> None:
+    def test_default_cylinder(self) -> None:
         """Test default cylinder."""
         cyl = create_cylinder()
         assert cyl.dim == 2  # noqa: PLR2004
