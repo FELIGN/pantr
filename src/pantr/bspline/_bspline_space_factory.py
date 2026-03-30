@@ -287,7 +287,7 @@ def get_greville_abscissae(
 def create_greville_lattice(
     space: BsplineSpace,
 ) -> PointsLattice:
-    """Compute the tensor-product Greville abscissae as a :class:`PointsLattice`.
+    """Compute the tensor-product Greville abscissae as a :class:`~pantr.quad.PointsLattice`.
 
     Returns a :class:`~pantr.quad.PointsLattice` whose per-direction arrays are
     the Greville abscissae of each 1D sub-space.
