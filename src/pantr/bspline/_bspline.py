@@ -8,7 +8,7 @@ is dispatched to the de Boor algorithm implemented in ``_bspline_eval``.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from typing import TYPE_CHECKING, Any, Literal, overload
 
 import numpy as np
@@ -748,6 +748,219 @@ class Bspline:
             Bspline: Equivalent B-spline with Bézier-like knots.
         """
         return bezier.to_bspline(copy=copy)
+
+    @classmethod
+    def interpolate(
+        cls,
+        func: Callable[..., npt.ArrayLike],
+        space: BsplineSpace,
+        *,
+        nodes: (
+            Literal["greville"]
+            | PointsLattice
+            | npt.NDArray[np.floating[Any]]
+            | Sequence[npt.NDArray[np.floating[Any]]]
+            | None
+        ) = None,
+        boundary_derivatives: Sequence[tuple[int, ...] | None] | None = None,
+        tol: float | None = None,
+    ) -> Bspline:
+        """Interpolate a callable function onto a B-spline space.
+
+        Evaluates ``func`` on a tensor-product grid of interpolation nodes
+        and recovers B-spline coefficients by solving per-direction
+        collocation systems (Kronecker structure).
+
+        The output dtype is inferred from the return value of ``func``.
+
+        Args:
+            func (Callable[..., npt.ArrayLike]): Function to interpolate.
+                Called as ``func(lattice)`` where ``lattice`` is a
+                :class:`~pantr.quad.PointsLattice` representing the
+                tensor-product sampling grid. Must return an array of shape
+                ``(n_total,)`` for scalar or ``(n_total, rank)`` for
+                vector-valued functions, where ``n_total = prod(n_pts)``.
+            space (~pantr.bspline.BsplineSpace): The target B-spline space.
+            nodes: Interpolation node selection.
+
+                - ``None`` or ``"greville"`` (default): Greville abscissae
+                  (one per basis function per direction).
+                - A :class:`~pantr.quad.PointsLattice`: custom
+                  tensor-product grid.
+                - A 1D ``ndarray``: custom nodes for a 1D space.
+                - A sequence of 1D ``ndarray`` values: per-direction custom
+                  nodes.
+            boundary_derivatives (Sequence[tuple[int, ...] | None] | None):
+                Per-direction boundary derivative constraints. Each entry is
+                ``(n_left, n_right)`` specifying how many derivative orders
+                to constrain at left/right boundaries. The corresponding
+                derivatives are set to zero. ``None`` entries skip that
+                direction. Ignored for periodic directions. Defaults to
+                ``None`` (no derivative constraints).
+            tol (float | None): SVD truncation tolerance for the
+                collocation solve. Singular values below
+                ``tol * sigma_max`` are treated as zero. If *None*,
+                defaults to ``100 * machine_epsilon``.
+
+        Returns:
+            Bspline: A non-rational B-spline whose evaluation approximates
+            ``func``.
+
+        Raises:
+            TypeError: If ``space`` is not a :class:`BsplineSpace`.
+            ValueError: If ``nodes`` is inconsistent with ``space``, or the
+                callable returns an unexpected shape.
+
+        Example:
+            >>> import numpy as np
+            >>> from pantr.bspline import create_uniform_space
+            >>> space = create_uniform_space(3, 4)
+            >>> b = Bspline.interpolate(
+            ...     lambda lat: lat.pts_per_dir[0] ** 2, space
+            ... )
+            >>> b.degree
+            (3,)
+        """
+        from ._bspline_interpolate import _interpolate_bspline  # noqa: PLC0415
+
+        return _interpolate_bspline(
+            func,
+            space,
+            nodes=nodes,
+            boundary_derivatives=boundary_derivatives,
+            tol=tol,
+        )
+
+    @classmethod
+    def l2_project(  # noqa: PLR0913
+        cls,
+        func: Callable[..., npt.ArrayLike],
+        space: BsplineSpace,
+        *,
+        n_quad: int | Sequence[int] | None = None,
+        quadrature: Literal["gauss-legendre", "gauss-lobatto"] = "gauss-legendre",
+        boundary_interpolation: bool | Sequence[tuple[bool, bool]] = False,
+        tol: float | None = None,
+    ) -> Bspline:
+        """L2-project a callable function onto a B-spline space.
+
+        Assembles per-direction mass matrices and load vectors using
+        per-element quadrature, then solves the normal equations via
+        sequential 1D solves (Kronecker structure).
+
+        The output dtype is inferred from the return value of ``func``.
+
+        Args:
+            func (Callable[..., npt.ArrayLike]): Function to project.
+                Called as ``func(lattice)`` where ``lattice`` is a
+                :class:`~pantr.quad.PointsLattice` of quadrature points.
+                Must return an array of shape ``(n_total,)`` for scalar or
+                ``(n_total, rank)`` for vector-valued functions.
+            space (~pantr.bspline.BsplineSpace): The target B-spline space.
+            n_quad (int | Sequence[int] | None): Quadrature points per
+                element per direction. Defaults to ``degree + 1``.
+            quadrature (Literal["gauss-legendre", "gauss-lobatto"]):
+                Quadrature rule type. Defaults to ``"gauss-legendre"``.
+            boundary_interpolation (bool | Sequence[tuple[bool, bool]]):
+                Replace boundary rows with interpolation conditions.
+
+                - ``False`` (default): pure L2 projection.
+                - ``True``: interpolate at all non-periodic boundaries.
+                - A sequence of ``(left, right)`` bool pairs: per-direction
+                  boundary flags.
+            tol (float | None): SVD truncation tolerance. If *None*,
+                defaults to ``100 * machine_epsilon``.
+
+        Returns:
+            Bspline: A non-rational B-spline whose evaluation is the L2
+            best approximation of ``func`` in the given space.
+
+        Raises:
+            TypeError: If ``space`` is not a :class:`BsplineSpace`.
+            ValueError: If ``n_quad`` or ``boundary_interpolation`` is
+                inconsistent with ``space``.
+
+        Example:
+            >>> import numpy as np
+            >>> from pantr.bspline import create_uniform_space
+            >>> space = create_uniform_space(3, 4)
+            >>> b = Bspline.l2_project(
+            ...     lambda lat: lat.pts_per_dir[0] ** 2, space
+            ... )
+        """
+        from ._bspline_interpolate import _l2_project_bspline  # noqa: PLC0415
+
+        return _l2_project_bspline(
+            func,
+            space,
+            n_quad=n_quad,
+            quadrature=quadrature,
+            boundary_interpolation=boundary_interpolation,
+            tol=tol,
+        )
+
+    @classmethod
+    def fit(
+        cls,
+        values: npt.ArrayLike,
+        nodes: (
+            PointsLattice | npt.NDArray[np.floating[Any]] | Sequence[npt.NDArray[np.floating[Any]]]
+        ),
+        space: BsplineSpace,
+        *,
+        tol: float | None = None,
+    ) -> Bspline:
+        """Construct a B-spline from pre-evaluated sample values at known nodes.
+
+        Recovers B-spline coefficients by solving the collocation system.
+        For tensor-product nodes, uses per-direction solves (Kronecker
+        structure). For scattered nodes, builds the full collocation matrix
+        and solves via SVD.
+
+        The output dtype is inferred from *values*.
+
+        Supports two point layouts:
+
+        - **Tensor-product** (a :class:`~pantr.quad.PointsLattice`, a single
+          1D array, or a sequence of 1D arrays): ``values`` must have shape
+          ``(*n_pts_per_dir)`` (scalar) or ``(*n_pts_per_dir, rank)``
+          (vector).
+        - **Scattered** (a 2D ``ndarray`` of shape ``(n_pts, dim)``):
+          ``values`` must have shape ``(n_pts,)`` (scalar) or
+          ``(n_pts, rank)`` (vector).
+
+        Args:
+            values (npt.ArrayLike): Sample values at the nodes.
+            nodes: Interpolation nodes.
+
+                - A :class:`~pantr.quad.PointsLattice`: tensor-product grid.
+                - A 1D ``ndarray``: 1D tensor-product (single direction).
+                - A sequence of 1D ``ndarray`` values: N-D tensor-product.
+                - A 2D ``ndarray`` of shape ``(n_pts, dim)``: scattered
+                  points.
+            space (~pantr.bspline.BsplineSpace): The target B-spline space.
+            tol (float | None): SVD truncation tolerance. If *None*,
+                defaults to ``100 * machine_epsilon``.
+
+        Returns:
+            Bspline: A non-rational B-spline.
+
+        Raises:
+            TypeError: If ``space`` is not a :class:`BsplineSpace`.
+            ValueError: If *nodes* are inconsistent with *space*, or the
+                system is underdetermined for scattered nodes.
+
+        Example:
+            >>> import numpy as np
+            >>> from pantr.bspline import create_uniform_space
+            >>> space = create_uniform_space(3, 4)
+            >>> nodes = np.linspace(0, 1, 20)
+            >>> vals = np.sin(nodes)
+            >>> b = Bspline.fit(vals, [nodes], space)
+        """
+        from ._bspline_interpolate import _fit_bspline  # noqa: PLC0415
+
+        return _fit_bspline(values, nodes, space, tol=tol)
 
     def multiply(self, other: Bspline) -> Bspline:
         """Return the exact pointwise product of this B-spline and another.
