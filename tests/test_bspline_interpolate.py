@@ -132,6 +132,14 @@ class TestCreateUniformSpace:
         assert space.spaces[0].periodic is True
         assert space.spaces[1].periodic is False
 
+    def test_tuple_degree_infers_ndim(self) -> None:
+        """A tuple degree=(3, 4) with scalar num_intervals infers ndim=2."""
+        space = create_uniform_space(degree=(3, 4), num_intervals=4)
+        assert space.dim == 2  # noqa: PLR2004
+        assert space.degrees == (3, 4)
+        assert space.spaces[0].degree == 3  # noqa: PLR2004
+        assert space.spaces[1].degree == 4  # noqa: PLR2004
+
     def test_inconsistent_lengths_raises(self) -> None:
         """Inconsistent sequence lengths raise ValueError."""
         with pytest.raises(ValueError, match="Inconsistent"):

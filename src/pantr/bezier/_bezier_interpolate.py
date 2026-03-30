@@ -32,13 +32,11 @@ from typing import TYPE_CHECKING, Any, Literal
 import numpy as np
 import numpy.typing as npt
 
+from .._interpolation_utils import SVD_TOL_FACTOR, split_components
 from ..quad import PointsLattice, get_modified_chebyshev_nodes_1d
 
 if TYPE_CHECKING:
     from . import Bezier
-
-_SVD_TOL_FACTOR: float = 100.0
-"""Factor multiplied by machine epsilon for SVD truncation tolerance."""
 
 
 def _bernstein_vandermonde_svd(
@@ -103,7 +101,7 @@ def _bernstein_interpolate_1d(
 
     eps = float(np.finfo(dtype).eps)
     if tol is None:
-        tol = 100.0 * eps
+        tol = SVD_TOL_FACTOR * eps
 
     U, sigma, Vt = _bernstein_vandermonde_svd(n, dtype)
 
@@ -154,7 +152,7 @@ def _bernstein_interpolate(
         U, sigma, Vt = _bernstein_vandermonde_svd(n, f.dtype)
 
         eps = float(np.finfo(f.dtype).eps)
-        actual_tol = tol if tol is not None else 100.0 * eps
+        actual_tol = tol if tol is not None else SVD_TOL_FACTOR * eps
         min_sigma = actual_tol * sigma[0]
         inv_sigma = np.where(sigma >= min_sigma, 1.0 / sigma, 0.0)
 
@@ -290,7 +288,7 @@ def _build_bernstein_pinv(
     U, sigma, Vt = np.linalg.svd(V, full_matrices=False)
 
     eps = float(np.finfo(dtype).eps)
-    actual_tol = tol if tol is not None else 100.0 * eps
+    actual_tol = tol if tol is not None else SVD_TOL_FACTOR * eps
     min_sigma = actual_tol * sigma[0]
     inv_sigma = np.where(sigma >= min_sigma, 1.0 / sigma, 0.0)
 
@@ -378,7 +376,7 @@ def _fit_from_scattered(
     # SVD pseudo-inverse with truncation
     U, sigma, Vt = np.linalg.svd(V, full_matrices=False)
     eps = float(np.finfo(dtype).eps)
-    actual_tol = tol if tol is not None else 100.0 * eps
+    actual_tol = tol if tol is not None else SVD_TOL_FACTOR * eps
     min_sigma = actual_tol * sigma[0]
     inv_sigma = np.where(sigma >= min_sigma, 1.0 / sigma, 0.0)
     pinv: npt.NDArray[np.floating[Any]] = (Vt.T * inv_sigma[np.newaxis, :]) @ U.T
@@ -450,32 +448,6 @@ def _validate_degree(
                 f"(need at least degree + 1 sample points)."
             )
     return deg_tuple
-
-
-def _split_components(
-    values: npt.NDArray[np.floating[Any]],
-    grid_shape: tuple[int, ...],
-) -> list[npt.NDArray[np.floating[Any]]]:
-    """Split function values into per-component arrays.
-
-    Args:
-        values (npt.NDArray[np.floating[Any]]): Function output array.
-        grid_shape (tuple[int, ...]): Expected grid shape.
-
-    Returns:
-        list[npt.NDArray[np.floating[Any]]]: One array per output component.
-
-    Raises:
-        ValueError: If values shape is incompatible with grid_shape.
-    """
-    if values.shape == grid_shape:
-        return [values]
-    if values.shape[: len(grid_shape)] == grid_shape and values.ndim == len(grid_shape) + 1:
-        return [values[..., r] for r in range(values.shape[-1])]
-    raise ValueError(
-        f"Function returned shape {values.shape}, expected {grid_shape} "
-        f"(scalar) or {(*grid_shape, 'rank')} (vector)."
-    )
 
 
 def _fit_from_values(
@@ -627,7 +599,7 @@ def interpolate_bezier(
             f"Function returned shape {raw.shape}, expected ({n_total},) or ({n_total}, rank)."
         )
 
-    components = _split_components(values, n_pts_tuple)
+    components = split_components(values, n_pts_tuple)
     ctrl = _fit_from_values(components, node_arrays, degree_tuple, tol)
     return BezierCls(ctrl, is_rational=False)
 
@@ -834,6 +806,6 @@ def fit_bezier(  # noqa: PLR0912
 
     degree_tuple_tp = _validate_degree(degree, n_pts_tuple)
     node_arrays = _resolve_nodes_from_user(nodes, n_pts_tuple, dtype_obj)
-    components = _split_components(values_arr, n_pts_tuple)
+    components = split_components(values_arr, n_pts_tuple)
     ctrl = _fit_from_values(components, node_arrays, degree_tuple_tp, tol)
     return BezierCls(ctrl, is_rational=False)

@@ -22,9 +22,10 @@ from typing import Any
 import numpy as np
 import numpy.typing as npt
 
+from .._interpolation_utils import SVD_TOL_FACTOR
 from ..quad import get_modified_chebyshev_nodes_1d
 from ._bezier_derivative import _derivative_ctrl_nd
-from ._bezier_interpolate import _SVD_TOL_FACTOR, _bernstein_interpolate
+from ._bezier_interpolate import _bernstein_interpolate
 from ._resultant_matrices import _bezout_matrix, _det_qr, _sylvester_matrix
 
 _RESULTANT_REDUCTION_TOL_FACTOR: float = 1.0e4
@@ -355,7 +356,7 @@ def _evaluate_det_on_grid(
         f[multi_idx] = det
 
     _normalise(f)
-    interp_tol = (_SVD_TOL_FACTOR * eps) ** (1.0 / max(ndim - 1, 1))
+    interp_tol = (SVD_TOL_FACTOR * eps) ** (1.0 / max(ndim - 1, 1))
     return _bernstein_interpolate(f, interp_tol)
 
 
