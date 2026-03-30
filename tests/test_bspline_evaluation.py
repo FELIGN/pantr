@@ -4,7 +4,7 @@ import numpy as np
 import numpy.typing as npt
 import pytest
 
-from pantr.bspline import Bspline, BsplineSpace, BsplineSpace1D, create_uniform_periodic
+from pantr.bspline import Bspline, BsplineSpace, BsplineSpace1D, create_uniform_periodic_knots
 from pantr.bspline._bspline_basis_core import _compute_basis_nurbs_book_impl
 
 
@@ -250,7 +250,7 @@ def _make_periodic_bspline(
     Returns:
         Bspline: A 1D periodic scalar B-spline.
     """
-    knots = create_uniform_periodic(num_intervals, degree, continuity=continuity, dtype=dtype)
+    knots = create_uniform_periodic_knots(num_intervals, degree, continuity=continuity, dtype=dtype)
     space_1d = BsplineSpace1D(knots, degree, periodic=True)
     space = BsplineSpace([space_1d])
     n = space.num_total_basis

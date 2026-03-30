@@ -5,7 +5,7 @@ scalar Bernstein polynomials on [0, 1]. Each function performs lightweight
 validation and delegates to Layer 2 implementations in :mod:`_find_roots`.
 
 - :func:`find_roots` -- find all roots (single or batch, auto-dispatch).
-- :func:`solve_monotone_root` -- fast solver for monotone Beziers (single or batch).
+- :func:`find_monotone_root` -- fast solver for monotone Beziers (single or batch).
 """
 
 from __future__ import annotations
@@ -104,7 +104,7 @@ def find_roots(
 
 
 @overload
-def solve_monotone_root(
+def find_monotone_root(
     bezier: Bezier,
     *,
     tol: float | None = ...,
@@ -112,14 +112,14 @@ def solve_monotone_root(
 
 
 @overload
-def solve_monotone_root(
+def find_monotone_root(
     bezier: Sequence[Bezier],
     *,
     tol: float | None = ...,
 ) -> npt.NDArray[np.float64]: ...
 
 
-def solve_monotone_root(
+def find_monotone_root(
     bezier: Bezier | Sequence[Bezier],
     *,
     tol: float | None = None,

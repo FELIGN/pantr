@@ -4,7 +4,7 @@ import numpy as np
 import numpy.typing as npt
 import pytest
 
-from pantr.bspline import Bspline, BsplineSpace, BsplineSpace1D, create_uniform_periodic
+from pantr.bspline import Bspline, BsplineSpace, BsplineSpace1D, create_uniform_periodic_knots
 from pantr.quad import PointsLattice
 
 
@@ -489,7 +489,7 @@ class TestPeriodicMultiDimDerivEvaluation:
     )
     def test_2d_one_periodic_C0_derivatives_finite_diff(self, orders: list[int]) -> None:
         """2-D (periodic C^0 x open) evaluate_derivatives agrees with finite differences."""
-        knots_per = create_uniform_periodic(4, 2, continuity=0, dtype=np.float64)
+        knots_per = create_uniform_periodic_knots(4, 2, continuity=0, dtype=np.float64)
         knots_open = np.array([0.0, 0.0, 0.0, 0.5, 1.0, 1.0, 1.0], dtype=np.float64)
         s_per = BsplineSpace1D(knots_per, 2, periodic=True)
         s_open = BsplineSpace1D(knots_open, 2)
@@ -524,8 +524,8 @@ class TestPeriodicMultiDimDerivEvaluation:
     )
     def test_2d_both_periodic_C0_derivatives_finite_diff(self, orders: list[int]) -> None:
         """2-D (periodic C^0 x periodic C^0) evaluate_derivatives agrees with finite diffs."""
-        knots0 = create_uniform_periodic(4, 2, continuity=0, dtype=np.float64)
-        knots1 = create_uniform_periodic(4, 2, continuity=0, dtype=np.float64)
+        knots0 = create_uniform_periodic_knots(4, 2, continuity=0, dtype=np.float64)
+        knots1 = create_uniform_periodic_knots(4, 2, continuity=0, dtype=np.float64)
         s0 = BsplineSpace1D(knots0, 2, periodic=True)
         s1 = BsplineSpace1D(knots1, 2, periodic=True)
         space = BsplineSpace([s0, s1])
@@ -549,7 +549,7 @@ class TestPeriodicMultiDimDerivEvaluation:
 
     def test_2d_periodic_degree3_C1_derivatives_finite_diff(self) -> None:
         """2-D (periodic degree-3 C^1 x open) evaluate_derivatives agrees with finite diffs."""
-        knots_per = create_uniform_periodic(5, 3, continuity=1, dtype=np.float64)
+        knots_per = create_uniform_periodic_knots(5, 3, continuity=1, dtype=np.float64)
         knots_open = np.array([0.0, 0.0, 0.0, 0.5, 1.0, 1.0, 1.0], dtype=np.float64)
         s_per = BsplineSpace1D(knots_per, 3, periodic=True)
         s_open = BsplineSpace1D(knots_open, 2)

@@ -7,7 +7,7 @@ import numpy.typing as npt
 import pytest
 
 from pantr.bezier import Bezier
-from pantr.bspline import Bspline, BsplineSpace, BsplineSpace1D, create_uniform_periodic
+from pantr.bspline import Bspline, BsplineSpace, BsplineSpace1D, create_uniform_periodic_knots
 from pantr.bspline._bspline_basis_core import _compute_basis_nurbs_book_impl
 
 # ---------------------------------------------------------------------------
@@ -33,7 +33,7 @@ def _make_periodic_bspline(
     Returns:
         Bspline: A 1D periodic scalar B-spline.
     """
-    knots = create_uniform_periodic(num_intervals, degree, continuity=continuity, dtype=dtype)
+    knots = create_uniform_periodic_knots(num_intervals, degree, continuity=continuity, dtype=dtype)
     space_1d = BsplineSpace1D(knots, degree, periodic=True)
     space = BsplineSpace([space_1d])
     n = space.num_total_basis
@@ -216,7 +216,7 @@ class TestToOpenBspline:
     def test_multidim_periodic_to_open(self) -> None:
         """to_open_bspline on a 2D spline with one periodic and one open direction."""
         # Direction 0: periodic degree-2, Direction 1: open degree-1
-        knots_per = create_uniform_periodic(4, 2, dtype=np.float64)
+        knots_per = create_uniform_periodic_knots(4, 2, dtype=np.float64)
         knots_open = np.array([0.0, 0.0, 0.5, 1.0, 1.0], dtype=np.float64)
         space_per = BsplineSpace1D(knots_per, 2, periodic=True)
         space_open = BsplineSpace1D(knots_open, 1)
@@ -247,7 +247,7 @@ class TestToOpenBspline:
 
     def test_rational_periodic_to_open(self) -> None:
         """to_open_bspline works on rational periodic B-splines."""
-        knots = create_uniform_periodic(3, 2, dtype=np.float64)
+        knots = create_uniform_periodic_knots(3, 2, dtype=np.float64)
         space_1d = BsplineSpace1D(knots, 2, periodic=True)
         space = BsplineSpace([space_1d])
         n = space.num_total_basis
@@ -390,7 +390,7 @@ class TestToPeriodic:
 
     def test_rational_round_trip(self) -> None:
         """Rational periodic -> open -> periodic preserves evaluation."""
-        knots = create_uniform_periodic(3, 2)
+        knots = create_uniform_periodic_knots(3, 2)
         space = BsplineSpace([BsplineSpace1D(knots, 2, periodic=True)])
         # 2D rational control points (x, y, w)
         n = space.spaces[0].num_basis
@@ -415,8 +415,8 @@ class TestToPeriodic:
         """2D B-spline with both directions periodic round-trips correctly."""
         from pantr.quad import PointsLattice  # noqa: PLC0415
 
-        knots_u = create_uniform_periodic(3, 2)
-        knots_v = create_uniform_periodic(4, 2)
+        knots_u = create_uniform_periodic_knots(3, 2)
+        knots_v = create_uniform_periodic_knots(4, 2)
         space = BsplineSpace(
             [
                 BsplineSpace1D(knots_u, 2, periodic=True),
@@ -446,7 +446,7 @@ class TestToPeriodic:
         from pantr.quad import PointsLattice  # noqa: PLC0415
 
         # 2D: direction 0 is periodic (open after to_open), direction 1 is open (non-periodic).
-        knots_per = create_uniform_periodic(3, 2)
+        knots_per = create_uniform_periodic_knots(3, 2)
         knots_open = np.array([0.0, 0.0, 0.0, 0.5, 1.0, 1.0, 1.0], dtype=np.float64)
         space = BsplineSpace(
             [

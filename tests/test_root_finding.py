@@ -3,7 +3,7 @@
 Covers:
 
 - :func:`find_roots` -- auto-dispatch root finder (single or batch).
-- :func:`solve_monotone_root` -- Newton/bisection on monotone Beziers (single or batch).
+- :func:`find_monotone_root` -- Newton/bisection on monotone Beziers (single or batch).
 - Internal helpers: de Casteljau scalar, split, subdivide, sign changes,
   convex hull clipping, Newton polish.
 """
@@ -17,8 +17,8 @@ from numpy.testing import assert_allclose
 
 from pantr.bezier import (
     Bezier,
+    find_monotone_root,
     find_roots,
-    solve_monotone_root,
 )
 from pantr.bezier._clipping_core import (
     _clip_roots_core,
@@ -473,32 +473,32 @@ class TestFindRoots(unittest.TestCase):
 
 
 class TestSolveMonotoneRoot(unittest.TestCase):
-    """Tests for :func:`solve_monotone_root` (public API)."""
+    """Tests for :func:`find_monotone_root` (public API)."""
 
     def test_linear_root(self) -> None:
         """Linear: root at t = 0.5."""
-        root = solve_monotone_root(Bezier([-1.0, 1.0]))
+        root = find_monotone_root(Bezier([-1.0, 1.0]))
         self.assertAlmostEqual(root, 0.5, places=13)
 
     def test_quadratic_root(self) -> None:
         """Quadratic [-1, 0, 1]: root at 0.5."""
-        root = solve_monotone_root(Bezier([-1.0, 0.0, 1.0]))
+        root = find_monotone_root(Bezier([-1.0, 0.0, 1.0]))
         self.assertAlmostEqual(root, 0.5, places=12)
 
     def test_no_root_returns_nan(self) -> None:
         """All-positive: returns NaN."""
-        root = solve_monotone_root(Bezier([1.0, 2.0, 3.0]))
+        root = find_monotone_root(Bezier([1.0, 2.0, 3.0]))
         self.assertTrue(np.isnan(root))
 
     def test_custom_tolerance(self) -> None:
         """Custom tolerance works."""
-        root = solve_monotone_root(Bezier([-1.0, 1.0]), tol=1e-6)
+        root = find_monotone_root(Bezier([-1.0, 1.0]), tol=1e-6)
         self.assertAlmostEqual(root, 0.5, places=5)
 
     def test_non_bezier_raises(self) -> None:
         """Non-Bezier input raises TypeError."""
         with self.assertRaises(TypeError):
-            solve_monotone_root(np.array([-1.0, 1.0]))  # type: ignore
+            find_monotone_root(np.array([-1.0, 1.0]))  # type: ignore
 
 
 class TestFindRootsBatch(unittest.TestCase):
@@ -554,7 +554,7 @@ class TestFindRootsBatch(unittest.TestCase):
 
 
 class TestSolveMonotoneRootBatch(unittest.TestCase):
-    """Tests for :func:`solve_monotone_root` batch mode (public API)."""
+    """Tests for :func:`find_monotone_root` batch mode (public API)."""
 
     def test_mixed_roots(self) -> None:
         """Batch with some roots and some NaN."""
@@ -563,7 +563,7 @@ class TestSolveMonotoneRootBatch(unittest.TestCase):
             Bezier([1.0, 2.0]),  # no root
             Bezier([0.0, 1.0]),  # root at 0.0
         ]
-        roots = solve_monotone_root(beziers)
+        roots = find_monotone_root(beziers)
         self.assertAlmostEqual(roots[0], 0.5, places=12)
         self.assertTrue(np.isnan(roots[1]))
         self.assertAlmostEqual(roots[2], 0.0, places=10)
@@ -571,20 +571,20 @@ class TestSolveMonotoneRootBatch(unittest.TestCase):
     def test_single_polynomial(self) -> None:
         """Batch of one matches single-poly result."""
         bez = Bezier([-1.0, 0.0, 1.0])
-        root_single = solve_monotone_root(bez)
-        roots_batch = solve_monotone_root([bez])
+        root_single = find_monotone_root(bez)
+        roots_batch = find_monotone_root([bez])
         self.assertAlmostEqual(roots_batch[0], root_single, places=12)
 
     def test_all_no_roots(self) -> None:
         """Batch where no Bezier has a root."""
         beziers = [Bezier([1.0, 2.0, 3.0]), Bezier([4.0, 5.0, 6.0])]
-        roots = solve_monotone_root(beziers)
+        roots = find_monotone_root(beziers)
         self.assertTrue(np.isnan(roots[0]))
         self.assertTrue(np.isnan(roots[1]))
 
     def test_empty_batch(self) -> None:
         """Empty batch returns empty array without error."""
-        roots = solve_monotone_root([])
+        roots = find_monotone_root([])
         self.assertEqual(roots.shape, (0,))
 
 

@@ -3,7 +3,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from pantr.bspline import Bspline, BsplineSpace, BsplineSpace1D, create_uniform_periodic
+from pantr.bspline import Bspline, BsplineSpace, BsplineSpace1D, create_uniform_periodic_knots
 
 
 def test_degree_elevation_1d_linear_to_quadratic() -> None:
@@ -136,7 +136,7 @@ def _make_periodic_bspline(
     rank: int = 2,
 ) -> Bspline:
     """Create a 1D periodic B-spline with random control points."""
-    knots = create_uniform_periodic(num_intervals, degree, continuity=continuity)
+    knots = create_uniform_periodic_knots(num_intervals, degree, continuity=continuity)
     space_1d = BsplineSpace1D(knots, degree, periodic=True)
     space = BsplineSpace([space_1d])
     rng = np.random.default_rng(42)
@@ -193,7 +193,7 @@ class TestPeriodicBsplineElevateDegree:
 
     def test_elevate_degree_multidim_mixed_periodic_open(self) -> None:
         """elevate_degree preserves periodicity for mixed periodic/open 2D splines."""
-        knots_per = create_uniform_periodic(num_intervals=4, degree=2)
+        knots_per = create_uniform_periodic_knots(num_intervals=4, degree=2)
         knots_open = np.array([0.0, 0.0, 0.0, 0.5, 1.0, 1.0, 1.0])
         space = BsplineSpace(
             [
@@ -219,7 +219,7 @@ class TestPeriodicBsplineElevateDegree:
 
     def test_elevate_degree_rational_periodic(self) -> None:
         """elevate_degree preserves periodic NURBS geometry."""
-        knots = create_uniform_periodic(num_intervals=4, degree=3)
+        knots = create_uniform_periodic_knots(num_intervals=4, degree=3)
         space_1d = BsplineSpace1D(knots, 3, periodic=True)
         space = BsplineSpace([space_1d])
         n = space.num_total_basis

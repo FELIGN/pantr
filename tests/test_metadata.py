@@ -57,7 +57,7 @@ def test_submodule_all_exports() -> None:
     assert "Bspline" in bspline.__all__
     assert "BsplineSpace1D" in bspline.__all__
     assert "BsplineSpace" in bspline.__all__
-    assert "create_uniform_open" in bspline.__all__
+    assert "create_uniform_open_knots" in bspline.__all__
 
     assert "compute_bernstein_to_lagrange_1d" in change_basis.__all__
 
