@@ -607,3 +607,81 @@ class TestFitValidation:
         """Values with wrong number of dims raises ValueError."""
         with pytest.raises(ValueError, match="dimensions"):
             Bezier.fit(np.ones((2, 3, 4)), np.array([0.0, 1.0]))
+
+    def test_points_lattice_dim_mismatch(self) -> None:
+        """PointsLattice with wrong dimension count raises ValueError."""
+        lattice = PointsLattice([np.array([0.0, 1.0]), np.array([0.0, 1.0])])
+        # 2D lattice but 1D values
+        with pytest.raises(ValueError, match="dimensions"):
+            Bezier.fit(np.array([1.0, 2.0]), lattice)
+
+
+# ---------------------------------------------------------------------------
+# SVD tolerance parameter
+# ---------------------------------------------------------------------------
+
+
+class TestTolParameter:
+    """Tests for the tol parameter on interpolate and fit."""
+
+    def test_tol_affects_interpolate_result(self) -> None:
+        """A very aggressive tol changes the interpolation result."""
+        func = lambda lat: lat.pts_per_dir[0] ** 10  # noqa: E731
+
+        b_default = Bezier.interpolate(func, 15)
+        # tol=0.5 is extremely aggressive — will zero out most singular values
+        b_aggressive = Bezier.interpolate(func, 15, tol=0.5)
+
+        pts = np.array([0.25, 0.5, 0.75])
+        result_default = b_default.evaluate(pts)
+        result_aggressive = b_aggressive.evaluate(pts)
+        # The aggressive tol should produce a noticeably different result
+        assert not np.allclose(result_default, result_aggressive, atol=1e-3)
+
+    def test_tol_affects_fit_result(self) -> None:
+        """A very aggressive tol changes the fit result."""
+        nodes = np.linspace(0.0, 1.0, 15)
+        vals = nodes**10
+
+        b_default = Bezier.fit(vals, nodes)
+        b_aggressive = Bezier.fit(vals, nodes, tol=0.5)
+
+        pts = np.array([0.25, 0.5, 0.75])
+        result_default = b_default.evaluate(pts)
+        result_aggressive = b_aggressive.evaluate(pts)
+        assert not np.allclose(result_default, result_aggressive, atol=1e-3)
+
+    def test_small_tol_preserves_accuracy(self) -> None:
+        """A small (but non-default) tol still produces accurate results."""
+        b = Bezier.interpolate(lambda lat: lat.pts_per_dir[0] ** 2, 5, tol=1e-14)
+        pts = np.array([0.0, 0.25, 0.5, 0.75, 1.0])
+        nptest.assert_allclose(b.evaluate(pts), pts**2, atol=1e-12)
+
+
+# ---------------------------------------------------------------------------
+# float32 through interpolate path
+# ---------------------------------------------------------------------------
+
+
+class TestInterpolateFloat32:
+    """Tests for float32 dtype through the interpolate path."""
+
+    def test_float32_func_promoted_to_float64(self) -> None:
+        """Float32 return from func is promoted to float64 by the float64 nodes."""
+
+        def func(lat: PointsLattice) -> npt.NDArray[np.floating[Any]]:
+            t = np.asarray(lat.pts_per_dir[0], dtype=np.float32)
+            return t**2
+
+        b = Bezier.interpolate(func, 3)
+        # Nodes are generated as float64, so SVD operations promote to float64
+        assert b.dtype == np.float64
+        pts = np.array([0.0, 0.5, 1.0])
+        nptest.assert_allclose(b.evaluate(pts), pts**2, atol=1e-13)
+
+    def test_float32_with_float32_custom_nodes(self) -> None:
+        """Float32 nodes + float32 func return preserves float32 through fit."""
+        nodes = np.array([0.0, 0.5, 1.0], dtype=np.float32)
+        vals = np.array([0.0, 0.25, 1.0], dtype=np.float32)
+        b = Bezier.fit(vals, nodes)
+        assert b.dtype == np.float32
