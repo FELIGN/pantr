@@ -1,4 +1,4 @@
-"""Tests for Bspline.interpolate, Bspline.fit, Bspline.l2_project, and support functions."""
+"""Tests for interpolate_bspline, fit_bspline, l2_project_bspline, and support functions."""
 
 from __future__ import annotations
 
@@ -10,13 +10,15 @@ import numpy.typing as npt
 import pytest
 
 from pantr.bspline import (
-    Bspline,
     BsplineSpace1D,
     create_uniform_open,
     create_uniform_periodic,
     create_uniform_space,
+    fit_bspline,
     greville_abscissae,
     greville_lattice,
+    interpolate_bspline,
+    l2_project_bspline,
 )
 from pantr.quad import PointsLattice
 
@@ -130,7 +132,7 @@ class TestCreateUniformSpace:
 
 
 # ---------------------------------------------------------------------------
-# Bspline.interpolate — 1D scalar
+# interpolate_bspline — 1D scalar
 # ---------------------------------------------------------------------------
 
 
@@ -140,7 +142,7 @@ class TestInterpolate1DScalar:
     def test_polynomial_reproduction_quadratic(self) -> None:
         """Degree-3 interpolation reproduces x^2 exactly."""
         space = create_uniform_space(3, 4)
-        b = Bspline.interpolate(
+        b = interpolate_bspline(
             lambda lat: lat.get_all_points()[:, 0] ** 2,
             space,
         )
@@ -150,7 +152,7 @@ class TestInterpolate1DScalar:
     def test_polynomial_reproduction_cubic(self) -> None:
         """Degree-3 interpolation reproduces x^3 exactly."""
         space = create_uniform_space(3, 4)
-        b = Bspline.interpolate(
+        b = interpolate_bspline(
             lambda lat: lat.get_all_points()[:, 0] ** 3,
             space,
         )
@@ -160,7 +162,7 @@ class TestInterpolate1DScalar:
     def test_custom_domain(self) -> None:
         """Interpolation on a non-unit domain."""
         space = create_uniform_space(3, 4, domain=(2.0, 5.0))
-        b = Bspline.interpolate(
+        b = interpolate_bspline(
             lambda lat: lat.get_all_points()[:, 0] ** 2,
             space,
         )
@@ -171,7 +173,7 @@ class TestInterpolate1DScalar:
         """Interpolation with user-provided nodes."""
         space = create_uniform_space(3, 4)
         nodes = np.linspace(0, 1, space.num_basis[0])
-        b = Bspline.interpolate(
+        b = interpolate_bspline(
             lambda lat: lat.get_all_points()[:, 0] ** 2,
             space,
             nodes=[nodes],
@@ -181,7 +183,7 @@ class TestInterpolate1DScalar:
 
 
 # ---------------------------------------------------------------------------
-# Bspline.interpolate — 1D vector-valued
+# interpolate_bspline — 1D vector-valued
 # ---------------------------------------------------------------------------
 
 
@@ -196,7 +198,7 @@ class TestInterpolate1DVector:
             t = lat.get_all_points()[:, 0]
             return np.stack([np.cos(t), np.sin(t)], axis=-1)
 
-        b = Bspline.interpolate(quarter_circle, space)
+        b = interpolate_bspline(quarter_circle, space)
         assert b.rank == 2  # noqa: PLR2004
 
         pts = np.linspace(0, np.pi / 2, 21)
@@ -206,7 +208,7 @@ class TestInterpolate1DVector:
 
 
 # ---------------------------------------------------------------------------
-# Bspline.interpolate — periodic
+# interpolate_bspline — periodic
 # ---------------------------------------------------------------------------
 
 
@@ -216,7 +218,7 @@ class TestInterpolatePeriodic:
     def test_sin_periodic(self) -> None:
         """Interpolate sin(x) on a periodic space over [0, 2pi]."""
         space = create_uniform_space(3, 16, periodic=True, domain=(0.0, 2 * np.pi))
-        b = Bspline.interpolate(
+        b = interpolate_bspline(
             lambda lat: np.sin(lat.get_all_points()[:, 0]),
             space,
         )
@@ -226,7 +228,7 @@ class TestInterpolatePeriodic:
 
 
 # ---------------------------------------------------------------------------
-# Bspline.interpolate — 2D
+# interpolate_bspline — 2D
 # ---------------------------------------------------------------------------
 
 
@@ -237,7 +239,7 @@ class TestInterpolate2D:
         """Interpolate x + y exactly with degree-2 space."""
         space = create_uniform_space([2, 2], [3, 3])
 
-        b = Bspline.interpolate(
+        b = interpolate_bspline(
             lambda lat: lat.get_all_points()[:, 0] + lat.get_all_points()[:, 1],
             space,
         )
@@ -253,7 +255,7 @@ class TestInterpolate2D:
         """Interpolate x^2 + y^2 exactly with degree-3 space."""
         space = create_uniform_space([3, 3], [4, 4])
 
-        b = Bspline.interpolate(
+        b = interpolate_bspline(
             lambda lat: lat.get_all_points()[:, 0] ** 2 + lat.get_all_points()[:, 1] ** 2,
             space,
         )
@@ -266,19 +268,19 @@ class TestInterpolate2D:
 
 
 # ---------------------------------------------------------------------------
-# Bspline.fit — tensor-product
+# fit_bspline — tensor-product
 # ---------------------------------------------------------------------------
 
 
 class TestFitTensorProduct:
-    """Tests for Bspline.fit with tensor-product nodes."""
+    """Tests for fit_bspline with tensor-product nodes."""
 
     def test_exact_fit_1d(self) -> None:
         """Exact fit with n_nodes = n_basis recovers polynomial."""
         space = create_uniform_space(3, 4)
         nodes = greville_abscissae(space.spaces[0])
         vals = nodes**2
-        b = Bspline.fit(vals, [nodes], space)
+        b = fit_bspline(vals, [nodes], space)
         pts = np.linspace(0, 1, 11)
         nptest.assert_allclose(b.evaluate(pts), pts**2, atol=1e-12)
 
@@ -287,7 +289,7 @@ class TestFitTensorProduct:
         space = create_uniform_space(3, 4)
         nodes = np.linspace(0, 1, 20)
         vals = nodes**2
-        b = Bspline.fit(vals, [nodes], space)
+        b = fit_bspline(vals, [nodes], space)
         pts = np.linspace(0, 1, 11)
         nptest.assert_allclose(b.evaluate(pts), pts**2, atol=1e-12)
 
@@ -299,7 +301,7 @@ class TestFitTensorProduct:
 
         xx, yy = np.meshgrid(nodes_x, nodes_y, indexing="ij")
         vals = xx + yy
-        b = Bspline.fit(vals, [nodes_x, nodes_y], space)
+        b = fit_bspline(vals, [nodes_x, nodes_y], space)
 
         lat = PointsLattice([np.linspace(0, 1, 5), np.linspace(0, 1, 5)])
         result = b.evaluate(lat)
@@ -312,7 +314,7 @@ class TestFitTensorProduct:
         space = create_uniform_space(3, 4)
         nodes = greville_abscissae(space.spaces[0])
         vals = np.stack([nodes**2, nodes**3], axis=-1)
-        b = Bspline.fit(vals, [nodes], space)
+        b = fit_bspline(vals, [nodes], space)
         assert b.rank == 2  # noqa: PLR2004
 
         pts = np.linspace(0, 1, 11)
@@ -322,19 +324,19 @@ class TestFitTensorProduct:
 
 
 # ---------------------------------------------------------------------------
-# Bspline.fit — scattered
+# fit_bspline — scattered
 # ---------------------------------------------------------------------------
 
 
 class TestFitScattered:
-    """Tests for Bspline.fit with scattered (non-tensor-product) nodes."""
+    """Tests for fit_bspline with scattered (non-tensor-product) nodes."""
 
     def test_scattered_1d(self) -> None:
         """Scattered fit in 1D."""
         space = create_uniform_space(3, 4)
         pts = np.linspace(0, 1, 20).reshape(-1, 1)
         vals = pts[:, 0] ** 2
-        b = Bspline.fit(vals, pts, space)
+        b = fit_bspline(vals, pts, space)
         test_pts = np.linspace(0, 1, 11)
         nptest.assert_allclose(b.evaluate(test_pts), test_pts**2, atol=1e-11)
 
@@ -344,11 +346,11 @@ class TestFitScattered:
         pts = np.linspace(0, 1, 3).reshape(-1, 1)
         vals = pts[:, 0] ** 2
         with pytest.raises(ValueError, match="Underdetermined"):
-            Bspline.fit(vals, pts, space)
+            fit_bspline(vals, pts, space)
 
 
 # ---------------------------------------------------------------------------
-# Bspline.l2_project
+# l2_project_bspline
 # ---------------------------------------------------------------------------
 
 
@@ -358,7 +360,7 @@ class TestL2Project:
     def test_polynomial_reproduction(self) -> None:
         """L2 projection of x^2 onto degree-3 space recovers it exactly."""
         space = create_uniform_space(3, 4)
-        b = Bspline.l2_project(
+        b = l2_project_bspline(
             lambda lat: lat.get_all_points()[:, 0] ** 2,
             space,
         )
@@ -372,7 +374,7 @@ class TestL2Project:
         def func(lat: PointsLattice) -> npt.NDArray[Any]:
             return np.sin(np.pi * lat.get_all_points()[:, 0])
 
-        b = Bspline.l2_project(func, space, boundary_interpolation=True)
+        b = l2_project_bspline(func, space, boundary_interpolation=True)
         # sin(0) = 0, sin(pi) ≈ 0 — check boundary values.
         endpoints = np.array([0.0, 1.0])
         vals = b.evaluate(endpoints)
@@ -382,7 +384,7 @@ class TestL2Project:
     def test_gauss_lobatto_quadrature(self) -> None:
         """L2 projection with Gauss-Lobatto quadrature."""
         space = create_uniform_space(3, 4)
-        b = Bspline.l2_project(
+        b = l2_project_bspline(
             lambda lat: lat.get_all_points()[:, 0] ** 2,
             space,
             quadrature="gauss-lobatto",
@@ -393,7 +395,7 @@ class TestL2Project:
     def test_2d_projection(self) -> None:
         """L2 projection in 2D."""
         space = create_uniform_space([2, 2], [3, 3])
-        b = Bspline.l2_project(
+        b = l2_project_bspline(
             lambda lat: lat.get_all_points()[:, 0] + lat.get_all_points()[:, 1],
             space,
         )
@@ -407,7 +409,7 @@ class TestL2Project:
     def test_periodic_projection(self) -> None:
         """L2 projection on a periodic space."""
         space = create_uniform_space(3, 8, periodic=True, domain=(0.0, 2 * np.pi))
-        b = Bspline.l2_project(
+        b = l2_project_bspline(
             lambda lat: np.sin(lat.get_all_points()[:, 0]),
             space,
         )
@@ -427,7 +429,7 @@ class TestBoundaryDerivatives:
     def test_zero_first_derivative(self) -> None:
         """Boundary derivative constraints set derivatives to zero at endpoints."""
         space = create_uniform_space(3, 8)
-        b = Bspline.interpolate(
+        b = interpolate_bspline(
             lambda lat: np.sin(np.pi * lat.get_all_points()[:, 0]),
             space,
             boundary_derivatives=[(1, 1)],
@@ -440,7 +442,7 @@ class TestBoundaryDerivatives:
         """Boundary derivatives are ignored for periodic directions."""
         space = create_uniform_space(3, 8, periodic=True, domain=(0.0, 2 * np.pi))
         # Should not raise even with boundary_derivatives set.
-        b = Bspline.interpolate(
+        b = interpolate_bspline(
             lambda lat: np.sin(lat.get_all_points()[:, 0]),
             space,
             boundary_derivatives=[(1, 1)],
@@ -459,20 +461,20 @@ class TestErrors:
     def test_interpolate_wrong_space_type(self) -> None:
         """Passing wrong type for space raises TypeError."""
         with pytest.raises(TypeError, match="Expected BsplineSpace"):
-            Bspline.interpolate(lambda lat: lat.get_all_points()[:, 0], "not a space")  # type: ignore[arg-type]
+            interpolate_bspline(lambda lat: lat.get_all_points()[:, 0], "not a space")  # type: ignore[arg-type]
 
     def test_fit_wrong_space_type(self) -> None:
         """Passing wrong type for space raises TypeError."""
         with pytest.raises(TypeError, match="Expected BsplineSpace"):
-            Bspline.fit(np.array([1.0]), [np.array([0.5])], "not a space")  # type: ignore[arg-type]
+            fit_bspline(np.array([1.0]), [np.array([0.5])], "not a space")  # type: ignore[arg-type]
 
     def test_l2_wrong_space_type(self) -> None:
         """Passing wrong type for space raises TypeError."""
         with pytest.raises(TypeError, match="Expected BsplineSpace"):
-            Bspline.l2_project(lambda lat: lat.get_all_points()[:, 0], "not a space")  # type: ignore[arg-type]
+            l2_project_bspline(lambda lat: lat.get_all_points()[:, 0], "not a space")  # type: ignore[arg-type]
 
     def test_wrong_func_shape(self) -> None:
         """Function returning wrong shape raises ValueError."""
         space = create_uniform_space(3, 4)
         with pytest.raises(ValueError, match="Function returned shape"):
-            Bspline.interpolate(lambda lat: np.array([1.0, 2.0]), space)
+            interpolate_bspline(lambda lat: np.array([1.0, 2.0]), space)

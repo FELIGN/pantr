@@ -1,6 +1,6 @@
 """Bernstein interpolation and fitting: construct a Bézier from function samples or values.
 
-Provides :func:`_interpolate_bezier` (callable-based) and :func:`_fit_bezier`
+Provides :func:`interpolate_bezier` (callable-based) and :func:`fit_bezier`
 (pre-evaluated values), which recover the Bernstein coefficients from the
 Bernstein Vandermonde system.
 
@@ -483,8 +483,8 @@ def _fit_from_values(
 ) -> npt.NDArray[np.floating[Any]]:
     """Fit Bernstein coefficients from per-component value arrays.
 
-    This is the shared core for both :func:`_interpolate_bezier` and
-    :func:`_fit_bezier`.
+    This is the shared core for both :func:`interpolate_bezier` and
+    :func:`fit_bezier`.
 
     Args:
         components (list[npt.NDArray[np.floating[Any]]]): Per-component value
@@ -525,7 +525,7 @@ def _fit_from_values(
     return np.stack(ctrl_components, axis=-1)
 
 
-def _interpolate_bezier(
+def interpolate_bezier(
     func: Callable[..., npt.ArrayLike],
     n_pts: int | Sequence[int],
     *,
@@ -587,7 +587,7 @@ def _interpolate_bezier(
     Example:
         >>> from pantr.bezier import Bezier
         >>> import numpy as np
-        >>> b = Bezier.interpolate(lambda lattice: lattice.get_all_points()[:, 0] ** 2, [5])
+        >>> b = interpolate_bezier(lambda lattice: lattice.get_all_points()[:, 0] ** 2, [5])
         >>> b.degree
         (4,)
     """
@@ -634,7 +634,7 @@ def _resolve_nodes_from_user(
     n_pts_tuple: tuple[int, ...],
     dtype: np.dtype[np.float32] | np.dtype[np.float64],
 ) -> list[npt.NDArray[np.floating[Any]]]:
-    """Resolve user-provided tensor-product nodes for :func:`_fit_bezier`.
+    """Resolve user-provided tensor-product nodes for :func:`fit_bezier`.
 
     Args:
         nodes: A :class:`~pantr.quad.PointsLattice`, a single 1D array
@@ -699,7 +699,7 @@ def _is_scattered_nodes(
     """Check whether *nodes* represents scattered (non-tensor-product) points.
 
     Args:
-        nodes: The nodes argument passed to :func:`_fit_bezier`.
+        nodes: The nodes argument passed to :func:`fit_bezier`.
 
     Returns:
         bool: ``True`` if *nodes* is a 2D array (scattered points),
@@ -711,7 +711,7 @@ def _is_scattered_nodes(
     return isinstance(nodes, np.ndarray) and nodes.ndim == 2  # noqa: PLR2004
 
 
-def _fit_bezier(  # noqa: PLR0912
+def fit_bezier(  # noqa: PLR0912
     values: npt.ArrayLike,
     nodes: (
         PointsLattice | npt.NDArray[np.floating[Any]] | Sequence[npt.NDArray[np.floating[Any]]]

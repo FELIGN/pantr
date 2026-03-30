@@ -10,9 +10,12 @@ This package consolidates the B-spline API:
 - :func:`create_uniform_space`: convenience factory for tensor-product spaces.
 - :func:`greville_abscissae`, :func:`greville_lattice`: Greville point
   utilities.
+- :func:`interpolate_bspline`, :func:`fit_bspline`,
+  :func:`l2_project_bspline`: approximation functions.
 """
 
 from ._bspline import Bspline
+from ._bspline_interpolate import fit_bspline, interpolate_bspline, l2_project_bspline
 from ._bspline_space_1d import BsplineSpace1D
 from ._bspline_space_factory import (
     create_cardinal,
@@ -32,6 +35,9 @@ __all__ = [
     "create_uniform_open",
     "create_uniform_periodic",
     "create_uniform_space",
+    "fit_bspline",
     "greville_abscissae",
     "greville_lattice",
+    "interpolate_bspline",
+    "l2_project_bspline",
 ]
