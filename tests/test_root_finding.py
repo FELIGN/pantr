@@ -417,7 +417,7 @@ class TestFindRoots(unittest.TestCase):
     def test_non_bezier_raises(self) -> None:
         """Non-Bezier input raises TypeError."""
         with self.assertRaises(TypeError):
-            find_roots(np.array([1.0, -1.0]))  # type: ignore[arg-type]
+            find_roots(np.array([1.0, -1.0]))  # type: ignore
 
     def test_dim_not_one_raises(self) -> None:
         """Bezier surface (dim=2) raises ValueError."""
@@ -498,7 +498,7 @@ class TestSolveMonotoneRoot(unittest.TestCase):
     def test_non_bezier_raises(self) -> None:
         """Non-Bezier input raises TypeError."""
         with self.assertRaises(TypeError):
-            solve_monotone_root(np.array([-1.0, 1.0]))  # type: ignore[arg-type]
+            solve_monotone_root(np.array([-1.0, 1.0]))  # type: ignore
 
 
 class TestFindRootsBatch(unittest.TestCase):
