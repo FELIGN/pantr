@@ -25,7 +25,6 @@ def test_package_all_exports() -> None:
         "get_num_threads",
         "num_threads",
         "quad",
-        "root_finding",
         "set_num_threads",
         "tolerance",
         "transform",

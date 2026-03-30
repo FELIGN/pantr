@@ -23,7 +23,6 @@ from . import (
     cad,
     change_basis,
     quad,
-    root_finding,
     tolerance,
     transform,
 )
@@ -47,7 +46,6 @@ __all__ = [
     "get_num_threads",
     "num_threads",
     "quad",
-    "root_finding",
     "set_num_threads",
     "tolerance",
     "transform",
