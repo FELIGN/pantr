@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING, Any, Literal
 import numpy as np
 from numpy import typing as npt
 
+from .._interpolation_utils import SVD_TOL_FACTOR, split_components
 from ..quad import PointsLattice
 from ._bspline_space_1d import BsplineSpace1D
 from ._bspline_space_factory import greville_abscissae, greville_lattice
@@ -51,14 +52,15 @@ def _build_collocation_matrix_1d(
     order = space.degree + 1
 
     mat = np.zeros((n_pts, n_basis), dtype=nodes.dtype)
-    for i in range(n_pts):
-        fb = first_basis[i]
-        if space.periodic:
-            for j in range(order):
-                col = (fb + j) % n_basis
-                mat[i, col] += basis_vals[i, j]
-        else:
-            mat[i, fb : fb + order] = basis_vals[i, :order]
+    row_idx = np.arange(n_pts)[:, np.newaxis]  # (n_pts, 1)
+    local_offsets = np.arange(order)[np.newaxis, :]  # (1, order)
+    col_idx = first_basis[:, np.newaxis] + local_offsets  # (n_pts, order)
+
+    if space.periodic:
+        col_idx = col_idx % n_basis
+        np.add.at(mat, (row_idx, col_idx), basis_vals[:, :order])
+    else:
+        mat[row_idx, col_idx] = basis_vals[:, :order]
 
     return mat
 
@@ -83,7 +85,7 @@ def _build_collocation_deriv_matrix_1d(
     Note:
         No input validation is performed.
     """
-    pts = np.array([node], dtype=type(node))
+    pts = np.array([node], dtype=node.dtype)
     deriv_vals, first_basis = space.tabulate_basis_derivatives(pts, n_derivs)
     # deriv_vals shape: (1, n_derivs+1, degree+1)
     n_basis = space.num_basis
@@ -100,8 +102,6 @@ def _build_collocation_deriv_matrix_1d(
 # ---------------------------------------------------------------------------
 # SVD pseudo-inverse solve
 # ---------------------------------------------------------------------------
-
-_DEFAULT_TOL_FACTOR: float = 100.0
 
 
 def _solve_1d(
@@ -134,7 +134,7 @@ def _solve_1d(
     # Truncated SVD pseudo-inverse for rectangular or singular systems.
     u, s, vt = np.linalg.svd(mat, full_matrices=False)
     eps = float(np.finfo(mat.dtype).eps)  # type: ignore[misc]
-    threshold = (tol if tol is not None else _DEFAULT_TOL_FACTOR * eps) * s[0]
+    threshold = (tol if tol is not None else SVD_TOL_FACTOR * eps) * s[0]
     s_inv = np.where(s > threshold, 1.0 / s, 0.0)
     # pinv @ rhs = Vt.T @ diag(s_inv) @ U.T @ rhs
     result: npt.NDArray[np.float32 | np.float64]
@@ -235,37 +235,11 @@ def _evaluate_func_on_lattice(
             f"Function returned shape {raw.shape}, expected ({n_total},) or ({n_total}, rank)."
         )
 
-    components = _split_components(values, grid_shape)
+    components = split_components(values, grid_shape)
     _f32: np.dtype[np.float32] = np.dtype(np.float32)
     _f64: np.dtype[np.float64] = np.dtype(np.float64)
     out_dtype = _f32 if raw.dtype == _f32 else _f64
     return components, out_dtype
-
-
-def _split_components(
-    values: npt.NDArray[np.floating[Any]],
-    grid_shape: tuple[int, ...],
-) -> list[npt.NDArray[np.floating[Any]]]:
-    """Split function values into per-component arrays.
-
-    Args:
-        values (npt.NDArray): Function output array.
-        grid_shape (tuple[int, ...]): Expected grid shape.
-
-    Returns:
-        list[npt.NDArray]: One array per output component.
-
-    Raises:
-        ValueError: If values shape is incompatible with *grid_shape*.
-    """
-    if values.shape == grid_shape:
-        return [values]
-    if values.shape[: len(grid_shape)] == grid_shape and values.ndim == len(grid_shape) + 1:
-        return [values[..., r] for r in range(values.shape[-1])]
-    raise ValueError(
-        f"Values have shape {values.shape}, expected {grid_shape} "
-        f"(scalar) or {(*grid_shape, 'rank')} (vector)."
-    )
 
 
 # ---------------------------------------------------------------------------
@@ -387,7 +361,9 @@ def interpolate_bspline(
         tol (float | None): SVD truncation tolerance for the
             collocation solve. Singular values below
             ``tol * sigma_max`` are treated as zero. If *None*,
-            defaults to ``100 * machine_epsilon``.
+            defaults to ``100 * machine_epsilon``. Only affects
+            overdetermined or near-singular systems; square
+            well-conditioned systems use a direct solve.
 
     Returns:
         Bspline: A non-rational B-spline whose evaluation approximates
@@ -425,9 +401,7 @@ def interpolate_bspline(
 
     # Modify RHS for boundary derivative constraints.
     if boundary_derivatives is not None:
-        components = _apply_boundary_deriv_rhs(
-            func, space, node_arrays, components, boundary_derivatives
-        )
+        components = _apply_boundary_deriv_rhs(space, components, boundary_derivatives)
 
     # Solve per-component via Kronecker structure.
     ctrl_components: list[npt.NDArray[np.floating[Any]]] = []
@@ -480,24 +454,18 @@ def _build_collocation_matrices(
 
 
 def _apply_boundary_deriv_rhs(
-    func: Callable[..., npt.ArrayLike],
     space: BsplineSpace,
-    node_arrays: list[npt.NDArray[np.float32 | np.float64]],
     components: list[npt.NDArray[np.floating[Any]]],
     boundary_derivatives: Sequence[tuple[int, ...] | None],
 ) -> list[npt.NDArray[np.floating[Any]]]:
     """Replace RHS entries corresponding to derivative rows with zero.
 
-    For boundary derivative constraints, the function values at the boundary
-    nodes adjacent to the endpoints are replaced by the derivative values.
-    Since we don't have derivative information from the callable (which only
-    provides values), the derivative RHS entries are set to zero — meaning
-    we constrain the derivatives to be zero at the boundaries.
+    Boundary derivative constraints force the specified derivative orders to
+    zero at the domain endpoints (the callable provides values only, not
+    derivatives).
 
     Args:
-        func (Callable): The original callable.
         space (BsplineSpace): Target B-spline space.
-        node_arrays (list[npt.NDArray]): Per-direction node arrays.
         components (list[npt.NDArray]): Per-component value arrays.
         boundary_derivatives: Per-direction ``(n_left, n_right)`` or ``None``.
 
@@ -568,7 +536,9 @@ def fit_bspline(
               points.
         space (~pantr.bspline.BsplineSpace): The target B-spline space.
         tol (float | None): SVD truncation tolerance. If *None*,
-            defaults to ``100 * machine_epsilon``.
+            defaults to ``100 * machine_epsilon``. Only affects
+            overdetermined or near-singular systems; square
+            well-conditioned systems use a direct solve.
 
     Returns:
         Bspline: A non-rational B-spline.
@@ -635,7 +605,7 @@ def _fit_from_tensor_product(
             raise ValueError(f"Expected {space.dim} node arrays, got {len(node_arrays)}.")
 
     grid_shape = tuple(a.shape[0] for a in node_arrays)
-    components = _split_components(values, grid_shape)
+    components = split_components(values, grid_shape)
 
     matrices = [
         _build_collocation_matrix_1d(s, n) for s, n in zip(space.spaces, node_arrays, strict=True)
