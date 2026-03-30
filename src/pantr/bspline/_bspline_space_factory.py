@@ -1,14 +1,26 @@
-"""Knot vector construction functions for B-splines."""
+"""Knot vector construction and space factory functions for B-splines.
+
+Provides knot vector constructors (:func:`create_uniform_open`,
+:func:`create_uniform_periodic`, :func:`create_cardinal`), a convenience
+space factory (:func:`create_uniform_space`), and Greville abscissa
+utilities (:func:`greville_abscissae`, :func:`greville_lattice`).
+"""
 
 from __future__ import annotations
+
+from collections.abc import Sequence
+from typing import Any
 
 import numpy as np
 from numpy import typing as npt
 
+from ..quad import PointsLattice
 from ._bspline_knots import (
     _get_knots_ends_and_dtype,
     _validate_knot_input,
 )
+from ._bspline_space_1d import BsplineSpace1D
+from ._bspline_space_nd import BsplineSpace
 
 
 def create_uniform_open(
@@ -219,3 +231,265 @@ def create_cardinal(
         domain=(start_value, end_value),
         dtype=dtype_obj,
     )
+
+
+def greville_abscissae(
+    space: BsplineSpace1D,
+) -> npt.NDArray[np.float32 | np.float64]:
+    """Compute the Greville abscissae (knot averages) of a 1D B-spline space.
+
+    Each Greville abscissa is the average of ``degree`` consecutive internal
+    knots: ``g_i = (1/p) * sum(knots[i+1 : i+p+1])`` for ``i = 0, ..., n-1``,
+    where ``n`` is the number of basis functions and ``p`` is the degree.
+
+    For periodic spaces, the Greville points are computed from the full knot
+    vector and then wrapped into the domain ``[a, b)``.
+
+    Args:
+        space (BsplineSpace1D): The 1D B-spline space.
+
+    Returns:
+        npt.NDArray[np.float32 | np.float64]: Array of shape ``(num_basis,)``
+            containing one Greville abscissa per basis function.
+
+    Example:
+        >>> from pantr.bspline import BsplineSpace1D, create_uniform_open
+        >>> knots = create_uniform_open(4, 3)
+        >>> space = BsplineSpace1D(knots, 3)
+        >>> greville_abscissae(space)
+        array([0.  , 0.08333333, 0.25, 0.5 , 0.75, 0.91666667, 1.  ])
+    """
+    if not isinstance(space, BsplineSpace1D):
+        raise TypeError(f"Expected BsplineSpace1D, got {type(space).__name__}")
+
+    knots = space.knots
+    degree = space.degree
+    n_basis = space.num_basis
+
+    if degree == 0:
+        # For degree 0, Greville points are midpoints of knot spans.
+        greville = (knots[:n_basis] + knots[1 : n_basis + 1]) / 2
+    else:
+        greville = np.array(
+            [np.mean(knots[i + 1 : i + degree + 1]) for i in range(n_basis)],
+            dtype=knots.dtype,
+        )
+
+    if space.periodic:
+        a, b = space.domain
+        period = b - a
+        greville = a + np.mod(greville - a, period)
+        greville.sort()
+
+    return greville
+
+
+def greville_lattice(
+    space: BsplineSpace,
+) -> PointsLattice:
+    """Compute the tensor-product Greville abscissae as a :class:`PointsLattice`.
+
+    Returns a :class:`~pantr.quad.PointsLattice` whose per-direction arrays are
+    the Greville abscissae of each 1D sub-space.
+
+    Args:
+        space (BsplineSpace): The multi-dimensional B-spline space.
+
+    Returns:
+        PointsLattice: Tensor-product grid of Greville abscissae.
+
+    Example:
+        >>> from pantr.bspline import BsplineSpace1D, BsplineSpace, create_uniform_open
+        >>> knots = create_uniform_open(2, 2)
+        >>> s1d = BsplineSpace1D(knots, 2)
+        >>> space = BsplineSpace([s1d, s1d])
+        >>> lattice = greville_lattice(space)
+        >>> lattice.pts_per_dir[0]
+        array([0. , 0.25, 0.75, 1.  ])
+    """
+    if not isinstance(space, BsplineSpace):
+        raise TypeError(f"Expected BsplineSpace, got {type(space).__name__}")
+
+    pts_per_dir = [greville_abscissae(s) for s in space.spaces]
+    return PointsLattice(pts_per_dir)
+
+
+def create_uniform_space(  # noqa: PLR0913
+    degree: int | Sequence[int],
+    num_intervals: int | Sequence[int],
+    *,
+    continuity: int | Sequence[int] | None = None,
+    periodic: bool | Sequence[bool] = False,
+    domain: (
+        tuple[np.float32 | np.float64 | float, np.float32 | np.float64 | float]
+        | Sequence[tuple[np.float32 | np.float64 | float, np.float32 | np.float64 | float]]
+        | None
+    ) = None,
+    dtype: npt.DTypeLike = np.float64,
+) -> BsplineSpace:
+    """Create a tensor-product B-spline space with uniform knot vectors.
+
+    Scalar arguments are broadcast to all parametric directions. The parametric
+    dimension is inferred from whichever argument is given as a sequence (they
+    must all agree in length when more than one is a sequence).
+
+    Uses :func:`create_uniform_open` for non-periodic directions and
+    :func:`create_uniform_periodic` for periodic ones.
+
+    Args:
+        degree (int | Sequence[int]): Polynomial degree per direction.
+        num_intervals (int | Sequence[int]): Number of elements per direction.
+        continuity (int | Sequence[int] | None): Interior knot continuity per
+            direction. Defaults to ``degree - 1`` (maximum continuity).
+        periodic (bool | Sequence[bool]): Whether each direction is periodic.
+            Defaults to ``False``.
+        domain: Domain boundaries per direction as ``(start, end)`` tuples.
+            A single tuple is broadcast. Defaults to ``(0.0, 1.0)``.
+        dtype (npt.DTypeLike): Data type for the knot vectors.
+            Defaults to ``np.float64``.
+
+    Returns:
+        BsplineSpace: A tensor-product B-spline space.
+
+    Raises:
+        ValueError: If sequence lengths are inconsistent.
+
+    Example:
+        >>> space = create_uniform_space(3, 4, periodic=True, domain=(0.0, 2.0))
+        >>> space.dim
+        1
+        >>> space.degrees
+        (3,)
+    """
+    # Determine parametric dimension from sequence arguments.
+    ndim = _infer_ndim(degree, num_intervals, continuity, periodic, domain)
+
+    degrees = _broadcast_to_tuple(degree, ndim, "degree")
+    n_intervals = _broadcast_to_tuple(num_intervals, ndim, "num_intervals")
+    periodicities = _broadcast_bool_to_tuple(periodic, ndim, "periodic")
+
+    if continuity is None:
+        continuities: tuple[int | None, ...] = tuple(None for _ in range(ndim))
+    elif isinstance(continuity, int):
+        continuities = tuple(continuity for _ in range(ndim))
+    else:
+        cont_seq = tuple(continuity)
+        if len(cont_seq) != ndim:
+            raise ValueError(f"continuity has length {len(cont_seq)}, expected {ndim}")
+        continuities = cont_seq
+
+    if domain is None:
+        domains: tuple[
+            tuple[np.float32 | np.float64 | float, np.float32 | np.float64 | float] | None, ...
+        ] = tuple(None for _ in range(ndim))
+    elif isinstance(domain, tuple) and len(domain) == 2 and not isinstance(domain[0], tuple):  # noqa: PLR2004
+        # Single (start, end) pair — broadcast.
+        domains = tuple(domain for _ in range(ndim))
+    else:
+        dom_seq = tuple(domain)
+        if len(dom_seq) != ndim:
+            raise ValueError(f"domain has length {len(dom_seq)}, expected {ndim}")
+        domains = dom_seq
+
+    spaces_1d: list[BsplineSpace1D] = []
+    for d in range(ndim):
+        if periodicities[d]:
+            knots = create_uniform_periodic(
+                n_intervals[d],
+                degrees[d],
+                continuity=continuities[d],
+                domain=domains[d],
+                dtype=dtype,
+            )
+        else:
+            knots = create_uniform_open(
+                n_intervals[d],
+                degrees[d],
+                continuity=continuities[d],
+                domain=domains[d],
+                dtype=dtype,
+            )
+        spaces_1d.append(BsplineSpace1D(knots, degrees[d], periodic=periodicities[d]))
+
+    return BsplineSpace(spaces_1d)
+
+
+# ---------------------------------------------------------------------------
+# Private helpers
+# ---------------------------------------------------------------------------
+
+
+def _infer_ndim(
+    *args: Any,  # noqa: ANN401
+) -> int:
+    """Infer parametric dimension from the first sequence-valued argument.
+
+    Scalars and ``None`` are ignored. All sequences must have the same length.
+
+    Args:
+        *args: Arguments that may be scalars or sequences.
+
+    Returns:
+        int: The inferred parametric dimension (at least 1).
+
+    Raises:
+        ValueError: If sequences have inconsistent lengths.
+    """
+    ndim: int | None = None
+    for arg in args:
+        if arg is None or isinstance(arg, int | float | bool | np.integer | np.floating):
+            continue
+        if isinstance(arg, tuple) and len(arg) == 2 and not isinstance(arg[0], tuple):  # noqa: PLR2004
+            continue  # single domain pair, treated as scalar
+        if not isinstance(arg, Sequence):
+            continue
+        length = len(arg)
+        if ndim is None:
+            ndim = length
+        elif length != ndim:
+            raise ValueError(f"Inconsistent sequence lengths: got {length} and {ndim}")
+    return ndim if ndim is not None else 1
+
+
+def _broadcast_to_tuple(val: int | Sequence[int], ndim: int, name: str) -> tuple[int, ...]:
+    """Broadcast a scalar int or sequence to a tuple of length *ndim*.
+
+    Args:
+        val (int | Sequence[int]): Value to broadcast.
+        ndim (int): Target length.
+        name (str): Parameter name for error messages.
+
+    Returns:
+        tuple[int, ...]: Tuple of length *ndim*.
+
+    Raises:
+        ValueError: If *val* is a sequence with wrong length.
+    """
+    if isinstance(val, int | np.integer):
+        return tuple(int(val) for _ in range(ndim))
+    seq = tuple(val)
+    if len(seq) != ndim:
+        raise ValueError(f"{name} has length {len(seq)}, expected {ndim}")
+    return seq
+
+
+def _broadcast_bool_to_tuple(val: bool | Sequence[bool], ndim: int, name: str) -> tuple[bool, ...]:
+    """Broadcast a scalar bool or sequence to a tuple of length *ndim*.
+
+    Args:
+        val (bool | Sequence[bool]): Value to broadcast.
+        ndim (int): Target length.
+        name (str): Parameter name for error messages.
+
+    Returns:
+        tuple[bool, ...]: Tuple of length *ndim*.
+
+    Raises:
+        ValueError: If *val* is a sequence with wrong length.
+    """
+    if isinstance(val, bool | np.bool_):
+        return tuple(bool(val) for _ in range(ndim))
+    seq = tuple(val)
+    if len(seq) != ndim:
+        raise ValueError(f"{name} has length {len(seq)}, expected {ndim}")
+    return seq
