@@ -12,9 +12,10 @@ This package consolidates the B-spline API:
   utilities.
 - :func:`interpolate_bspline`, :func:`fit_bspline`,
   :func:`l2_project_bspline`: approximation functions.
+- :func:`create_from_bezier`: create a B-spline from a Bézier.
 """
 
-from ._bspline import Bspline
+from ._bspline import Bspline, create_from_bezier
 from ._bspline_interpolate import fit_bspline, interpolate_bspline, l2_project_bspline
 from ._bspline_space_1d import BsplineSpace1D
 from ._bspline_space_factory import (
@@ -32,6 +33,7 @@ __all__ = [
     "BsplineSpace",
     "BsplineSpace1D",
     "create_cardinal_knots",
+    "create_from_bezier",
     "create_greville_lattice",
     "create_uniform_open_knots",
     "create_uniform_periodic_knots",

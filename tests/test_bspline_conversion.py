@@ -7,7 +7,13 @@ import numpy.typing as npt
 import pytest
 
 from pantr.bezier import Bezier
-from pantr.bspline import Bspline, BsplineSpace, BsplineSpace1D, create_uniform_periodic_knots
+from pantr.bspline import (
+    Bspline,
+    BsplineSpace,
+    BsplineSpace1D,
+    create_from_bezier,
+    create_uniform_periodic_knots,
+)
 from pantr.bspline._bspline_basis_core import _compute_basis_nurbs_book_impl
 
 # ---------------------------------------------------------------------------
@@ -589,19 +595,19 @@ class TestToBezier:
         space = BsplineSpace([BsplineSpace1D(knots, 2)])
         cp = np.array([[1.0, 2.0], [3.0, 4.0], [5.0, 6.0]], dtype=np.float64)
         bs = Bspline(space, cp)
-        bs2 = Bspline.from_bezier(bs.to_bezier())
+        bs2 = create_from_bezier(bs.to_bezier())
         np.testing.assert_array_equal(bs2.control_points, bs.control_points)
         assert bs2.degree == bs.degree
 
 
 class TestFromBezier:
-    """Test Bspline.from_bezier conversion."""
+    """Test create_from_bezier conversion."""
 
     def test_from_bezier_1d(self) -> None:
         """Test from_bezier creates a B-spline with Bézier-like knots."""
         cp = np.array([[1.0], [2.0], [3.0]], dtype=np.float64)
         bez = Bezier(cp)
-        bs = Bspline.from_bezier(bez)
+        bs = create_from_bezier(bez)
         assert bs.space.has_Bezier_like_knots()
         assert bs.degree == (2,)
         np.testing.assert_array_equal(bs.control_points, cp)
@@ -610,21 +616,21 @@ class TestFromBezier:
         """Test that from_bezier with copy=True creates independent arrays."""
         cp = np.array([[1.0], [2.0], [3.0]], dtype=np.float64)
         bez = Bezier(cp)
-        bs = Bspline.from_bezier(bez, copy=True)
+        bs = create_from_bezier(bez, copy=True)
         assert not np.shares_memory(bez.control_points, bs.control_points)
 
     def test_from_bezier_copy_false(self) -> None:
         """Test that from_bezier with copy=False shares the control point array."""
         cp = np.array([[1.0], [2.0], [3.0]], dtype=np.float64)
         bez = Bezier(cp)
-        bs = Bspline.from_bezier(bez, copy=False)
+        bs = create_from_bezier(bez, copy=False)
         assert np.shares_memory(bez.control_points, bs.control_points)
 
     def test_from_bezier_rational(self) -> None:
         """Test from_bezier preserves rationality."""
         cp = np.array([[1.0, 0.5], [2.0, 1.0], [3.0, 0.5]], dtype=np.float64)
         bez = Bezier(cp, is_rational=True)
-        bs = Bspline.from_bezier(bez)
+        bs = create_from_bezier(bez)
         assert bs.is_rational
         np.testing.assert_array_equal(bs.control_points, cp)
 
@@ -632,7 +638,7 @@ class TestFromBezier:
         """Test from_bezier for a 2D Bézier."""
         cp = np.ones((3, 2, 1), dtype=np.float64)
         bez = Bezier(cp)
-        bs = Bspline.from_bezier(bez)
+        bs = create_from_bezier(bez)
         assert bs.space.has_Bezier_like_knots()
         assert bs.degree == (2, 1)
         np.testing.assert_array_equal(bs.control_points, cp)

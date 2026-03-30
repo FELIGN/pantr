@@ -6,7 +6,7 @@ import numpy as np
 import numpy.typing as npt
 import pytest
 
-from pantr.bezier import Bezier
+from pantr.bezier import Bezier, create_from_bspline
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -294,7 +294,7 @@ class TestRestrictRefactored:
 
         # Reference via Bspline round-trip.
         bspl = crv.to_bspline()
-        ref = Bezier.from_bspline(bspl.restrict((0.2, 0.7)))
+        ref = create_from_bspline(bspl.restrict((0.2, 0.7)))
         np.testing.assert_allclose(restricted.control_points, ref.control_points, atol=1e-13)
 
     def test_restrict_2d_matches_bspline_roundtrip(self) -> None:
@@ -303,7 +303,7 @@ class TestRestrictRefactored:
         restricted = srf.restrict([(0.1, 0.8), (0.2, 0.9)])
 
         bspl = srf.to_bspline()
-        ref = Bezier.from_bspline(bspl.restrict([(0.1, 0.8), (0.2, 0.9)]))
+        ref = create_from_bspline(bspl.restrict([(0.1, 0.8), (0.2, 0.9)]))
         np.testing.assert_allclose(restricted.control_points, ref.control_points, atol=1e-12)
 
     def test_restrict_partial_direction(self) -> None:
@@ -312,7 +312,7 @@ class TestRestrictRefactored:
         restricted = srf.restrict([(0.3, 0.7), None])
 
         bspl = srf.to_bspline()
-        ref = Bezier.from_bspline(bspl.restrict([(0.3, 0.7), None]))
+        ref = create_from_bspline(bspl.restrict([(0.3, 0.7), None]))
         np.testing.assert_allclose(restricted.control_points, ref.control_points, atol=1e-13)
 
     def test_restrict_evaluations_match(self) -> None:

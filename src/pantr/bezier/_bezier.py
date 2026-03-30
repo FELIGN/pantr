@@ -855,32 +855,6 @@ class Bezier:
         cp = self._control_points.copy() if copy else self._control_points
         return BsplineCls(BsplineSpace(spaces), cp, self._is_rational)
 
-    @classmethod
-    def from_bspline(cls, bspline: Bspline, *, copy: bool = True) -> Bezier:
-        """Create a Bézier from a B-spline with Bézier-like knot vectors.
-
-        Validates that the B-spline has Bézier-like knots (open knots with
-        ``num_basis == degree + 1`` in each direction) and extracts the
-        control points.
-
-        Args:
-            bspline (~pantr.bspline.Bspline): A B-spline with Bézier-like
-                knot structure.
-            copy (bool): If ``True`` (default), the control points are
-                deep-copied into the new Bézier. If ``False``, the Bézier
-                shares the same underlying control point array.
-
-        Returns:
-            Bezier: The equivalent Bézier.
-
-        Raises:
-            ValueError: If the B-spline does not have Bézier-like knots.
-        """
-        if not bspline.space.has_Bezier_like_knots():
-            raise ValueError("B-spline does not have Bézier-like knots. Cannot convert to Bézier.")
-        cp = bspline.control_points.copy() if copy else bspline.control_points
-        return cls(cp, is_rational=bspline.is_rational)
-
     # ------------------------------------------------------------------
     # Visualization
     # ------------------------------------------------------------------
@@ -915,3 +889,29 @@ class Bezier:
             show_control_polygon=show_control_polygon,
             **plotter_kwargs,
         )
+
+
+def create_from_bspline(bspline: Bspline, *, copy: bool = True) -> Bezier:
+    """Create a Bézier from a B-spline with Bézier-like knot vectors.
+
+    Validates that the B-spline has Bézier-like knots (open knots with
+    ``num_basis == degree + 1`` in each direction) and extracts the
+    control points.
+
+    Args:
+        bspline (~pantr.bspline.Bspline): A B-spline with Bézier-like
+            knot structure.
+        copy (bool): If ``True`` (default), the control points are
+            deep-copied into the new Bézier. If ``False``, the Bézier
+            shares the same underlying control point array.
+
+    Returns:
+        Bezier: The equivalent Bézier.
+
+    Raises:
+        ValueError: If the B-spline does not have Bézier-like knots.
+    """
+    if not bspline.space.has_Bezier_like_knots():
+        raise ValueError("B-spline does not have Bézier-like knots. Cannot convert to Bézier.")
+    cp = bspline.control_points.copy() if copy else bspline.control_points
+    return Bezier(cp, is_rational=bspline.is_rational)
