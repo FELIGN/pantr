@@ -585,9 +585,6 @@ def fit_bspline(
         >>> nodes = np.linspace(0, 1, 20)
         >>> vals = np.sin(nodes)
         >>> b = fit_bspline(vals, [nodes], space)
-
-    Returns:
-        Bspline: The fitted B-spline.
     """
     if not isinstance(space, BsplineSpace):
         raise TypeError(f"Expected BsplineSpace, got {type(space).__name__}")
@@ -900,8 +897,9 @@ def _l2_solve_components(  # noqa: PLR0913
         list[npt.NDArray]: Per-component coefficient arrays.
     """
     ctrl_components: list[npt.NDArray[np.floating[Any]]] = []
+    n_components = len(components)
 
-    for comp in components:
+    for comp_idx, comp in enumerate(components):
         load_arr = comp.astype(out_dtype).copy()
         load: npt.NDArray[np.floating[Any]] = load_arr  # type: ignore[assignment]
         for d, s1d in enumerate(space.spaces):
@@ -914,7 +912,9 @@ def _l2_solve_components(  # noqa: PLR0913
             )
 
         # Apply boundary interpolation to load vector.
-        _apply_boundary_load(func, space, quad_nodes_per_dir, bi_flags, load)
+        _apply_boundary_load(
+            func, space, quad_nodes_per_dir, bi_flags, load, comp_idx, n_components
+        )
 
         # Solve mass system per direction.
         coeffs = _solve_kronecker(mass_matrices, load, tol)
@@ -923,12 +923,14 @@ def _l2_solve_components(  # noqa: PLR0913
     return ctrl_components
 
 
-def _apply_boundary_load(
+def _apply_boundary_load(  # noqa: PLR0913
     func: Callable[..., npt.ArrayLike],
     space: BsplineSpace,
     quad_nodes_per_dir: list[npt.NDArray[np.float32 | np.float64]],
     bi_flags: list[tuple[bool, bool]],
     load: npt.NDArray[np.floating[Any]],
+    comp_idx: int,
+    n_components: int,
 ) -> None:
     """Apply boundary interpolation values to the load tensor in-place.
 
@@ -938,18 +940,24 @@ def _apply_boundary_load(
         quad_nodes_per_dir (list[npt.NDArray]): Per-direction quadrature nodes.
         bi_flags (list[tuple[bool, bool]]): Per-direction boundary flags.
         load (npt.NDArray): Load tensor to modify in-place.
+        comp_idx (int): Which output component is being processed.
+        n_components (int): Total number of output components.
     """
     for d, s1d in enumerate(space.spaces):
         bi_left, bi_right = bi_flags[d]
         if bi_left and not s1d.periodic:
             a = s1d.domain[0]
-            boundary_val = _evaluate_func_at_boundary(func, space, quad_nodes_per_dir, d, a)
+            boundary_val = _evaluate_func_at_boundary(
+                func, space, quad_nodes_per_dir, d, a, comp_idx, n_components
+            )
             slices: list[int | slice] = [slice(None)] * load.ndim
             slices[d] = 0
             load[tuple(slices)] = boundary_val
         if bi_right and not s1d.periodic:
             b = s1d.domain[1]
-            boundary_val = _evaluate_func_at_boundary(func, space, quad_nodes_per_dir, d, b)
+            boundary_val = _evaluate_func_at_boundary(
+                func, space, quad_nodes_per_dir, d, b, comp_idx, n_components
+            )
             slices = [slice(None)] * load.ndim
             slices[d] = -1
             load[tuple(slices)] = boundary_val
@@ -982,11 +990,9 @@ def _assemble_mass_and_quad_1d(
     ref_nodes, ref_weights = quad_func(n_quad, dtype=space.dtype)
     unique_knots = space.get_unique_knots_and_multiplicity(in_domain=True)[0]
     n_intervals = len(unique_knots) - 1
-    n_basis = space.num_basis
 
     global_nodes_list: list[npt.NDArray[np.float32 | np.float64]] = []
     global_weights_list: list[npt.NDArray[np.float32 | np.float64]] = []
-    mass = np.zeros((n_basis, n_basis), dtype=space.dtype)
 
     for e in range(n_intervals):
         a_e = unique_knots[e]
@@ -994,32 +1000,16 @@ def _assemble_mass_and_quad_1d(
         h = b_e - a_e
         if h <= 0:
             continue
-
-        # Map reference nodes to element.
-        elem_nodes = a_e + h * ref_nodes
-        elem_weights = h * ref_weights
-
-        global_nodes_list.append(elem_nodes)
-        global_weights_list.append(elem_weights)
-
-        # Evaluate basis at element quadrature nodes.
-        basis_vals, first_basis = space.tabulate_basis(elem_nodes)
-        order = space.degree + 1
-
-        # Assemble element contribution to mass matrix.
-        for q in range(n_quad):
-            fb = first_basis[q]
-            w = elem_weights[q]
-            bv = basis_vals[q, :order]
-            # Outer product contribution.
-            for i in range(order):
-                gi = (fb + i) % n_basis if space.periodic else fb + i
-                for j in range(order):
-                    gj = (fb + j) % n_basis if space.periodic else fb + j
-                    mass[gi, gj] += w * bv[i] * bv[j]
+        global_nodes_list.append(a_e + h * ref_nodes)
+        global_weights_list.append(h * ref_weights)
 
     global_nodes = np.concatenate(global_nodes_list)
     global_weights = np.concatenate(global_weights_list)
+
+    # Build the full collocation matrix and assemble mass via B^T diag(w) B.
+    B = _build_collocation_matrix_1d(space, global_nodes)
+    mass = B.T @ (global_weights[:, np.newaxis] * B)
+
     return mass, global_nodes, global_weights
 
 
@@ -1055,13 +1045,18 @@ def _assemble_load_1d(
     basis_vals, first_basis = space.tabulate_basis(quad_nodes)
 
     # Build the full weighted-basis matrix: W[q, i] = w_q * N_i(x_q)
+    # Each row q has `order` nonzero entries starting at first_basis[q].
     weighted_basis = np.zeros((n_quad_total, n_basis), dtype=quad_nodes.dtype)
-    for q in range(n_quad_total):
-        fb = first_basis[q]
-        w = quad_weights[q]
-        for i in range(order):
-            gi = (fb + i) % n_basis if space.periodic else fb + i
-            weighted_basis[q, gi] += w * basis_vals[q, i]
+    local_offsets = np.arange(order)[np.newaxis, :]  # (1, order)
+    q_idx = np.arange(n_quad_total)[:, np.newaxis]  # (n_quad, 1)
+
+    if space.periodic:
+        col_idx = (first_basis[:, np.newaxis] + local_offsets) % n_basis
+    else:
+        col_idx = first_basis[:, np.newaxis] + local_offsets
+
+    weighted_vals = quad_weights[:, np.newaxis] * basis_vals[:, :order]
+    np.add.at(weighted_basis, (q_idx, col_idx), weighted_vals)
 
     # Contract: result[..., i, ...] = sum_q weighted_basis[q, i] * func_values[..., q, ...]
     result = np.tensordot(weighted_basis.T, func_values, axes=([1], [axis]))
@@ -1070,29 +1065,20 @@ def _assemble_load_1d(
     return result
 
 
-def _evaluate_func_at_boundary(
+def _evaluate_func_at_boundary(  # noqa: PLR0913
     func: Callable[..., npt.ArrayLike],
     space: BsplineSpace,
     quad_nodes_per_dir: list[npt.NDArray[np.float32 | np.float64]],
     direction: int,
     boundary_value: float | np.float32 | np.float64,
+    comp_idx: int,
+    n_components: int,
 ) -> npt.NDArray[np.floating[Any]] | np.floating[Any]:
-    """Evaluate the function at a boundary point (or hyperplane).
+    """Evaluate a single component of the function at a boundary point (or hyperplane).
 
     For the boundary interpolation row in the Kronecker L2 projection, we
     need the function value at the boundary. For 1D this is a scalar; for nD
-    it's a tensor over the other directions' basis nodes.
-
-    After the load contraction has already been applied for all directions,
-    the load tensor has shape ``(n_basis_0, ..., n_basis_{d-1})``. The
-    boundary interpolation replaces one slice along direction ``d`` with the
-    function value at the boundary. For the Kronecker solve, this value must
-    be the function evaluated at the boundary in direction ``d`` and at the
-    Greville nodes in all other directions, then contracted with those other
-    directions' load operators.
-
-    For simplicity and correctness in the 1D case, we evaluate at the single
-    boundary point using a minimal lattice.
+    it's a tensor over the other directions' Greville nodes.
 
     Args:
         func (Callable): Function to evaluate.
@@ -1100,6 +1086,8 @@ def _evaluate_func_at_boundary(
         quad_nodes_per_dir (list[npt.NDArray]): Quadrature nodes per direction.
         direction (int): The direction of the boundary.
         boundary_value: The boundary coordinate value.
+        comp_idx (int): Which output component to extract.
+        n_components (int): Total number of output components.
 
     Returns:
         Value(s) at the boundary for insertion into the load tensor.
@@ -1112,7 +1100,13 @@ def _evaluate_func_at_boundary(
         raw = np.asarray(func(lattice))
         if not np.issubdtype(raw.dtype, np.floating):
             raw = raw.astype(np.float64)
-        return raw.ravel()[0] if raw.size == 1 else raw.ravel()
+        flat = raw.ravel()
+        if n_components > 1:
+            # Vector-valued: extract the component.
+            val: np.floating[Any] = flat[comp_idx]
+            return val
+        val = flat[0]
+        return val
 
     # nD: create a lattice with a single point in the boundary direction
     # and Greville nodes in the other directions.
@@ -1128,8 +1122,12 @@ def _evaluate_func_at_boundary(
     if not np.issubdtype(raw.dtype, np.floating):
         raw = raw.astype(np.float64)
 
-    values = raw.reshape(grid_shape) if raw.ndim == 1 else raw.reshape(*grid_shape, -1)
-    # Squeeze out the single-point boundary direction.
+    if n_components > 1:
+        # Vector-valued: reshape to (*grid_shape, rank) and extract component.
+        values = raw.reshape(*grid_shape, n_components)
+        return values[..., comp_idx].squeeze(axis=direction)
+
+    values = raw.reshape(grid_shape)
     return values.squeeze(axis=direction)
 
 

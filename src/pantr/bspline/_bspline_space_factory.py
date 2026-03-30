@@ -439,8 +439,13 @@ def _infer_ndim(
     for arg in args:
         if arg is None or isinstance(arg, int | float | bool | np.integer | np.floating):
             continue
-        if isinstance(arg, tuple) and len(arg) == 2 and not isinstance(arg[0], tuple):  # noqa: PLR2004
-            continue  # single domain pair, treated as scalar
+        if (
+            isinstance(arg, tuple)
+            and len(arg) == 2  # noqa: PLR2004
+            and isinstance(arg[0], int | float | np.integer | np.floating)
+            and not isinstance(arg[0], bool | np.bool_)
+        ):
+            continue  # single domain pair like (0.0, 1.0), treated as scalar
         if not isinstance(arg, Sequence):
             continue
         length = len(arg)

@@ -125,6 +125,13 @@ class TestCreateUniformSpace:
         assert a == pytest.approx(0.0)
         assert b == pytest.approx(2.0)
 
+    def test_periodic_tuple_infers_ndim(self) -> None:
+        """A tuple periodic=(True, False) correctly infers ndim=2."""
+        space = create_uniform_space([2, 2], [3, 3], periodic=(True, False))
+        assert space.dim == 2  # noqa: PLR2004
+        assert space.spaces[0].periodic is True
+        assert space.spaces[1].periodic is False
+
     def test_inconsistent_lengths_raises(self) -> None:
         """Inconsistent sequence lengths raise ValueError."""
         with pytest.raises(ValueError, match="Inconsistent"):
@@ -381,6 +388,21 @@ class TestL2Project:
         expected = np.sin(np.pi * endpoints)
         nptest.assert_allclose(vals, expected, atol=1e-10)
 
+    def test_boundary_interpolation_vector_valued(self) -> None:
+        """L2 projection with boundary interpolation for vector-valued function."""
+        space = create_uniform_space(3, 4)
+
+        def func(lat: PointsLattice) -> npt.NDArray[Any]:
+            x = lat.get_all_points()[:, 0]
+            return np.stack([x**2, x**3], axis=-1)
+
+        b = l2_project_bspline(func, space, boundary_interpolation=True)
+        assert b.rank == 2  # noqa: PLR2004
+        endpoints = np.array([0.0, 1.0])
+        vals = b.evaluate(endpoints)
+        expected = np.array([[0.0, 0.0], [1.0, 1.0]])
+        nptest.assert_allclose(vals, expected, atol=1e-10)
+
     def test_gauss_lobatto_quadrature(self) -> None:
         """L2 projection with Gauss-Lobatto quadrature."""
         space = create_uniform_space(3, 4)
@@ -434,9 +456,12 @@ class TestBoundaryDerivatives:
             space,
             boundary_derivatives=[(1, 1)],
         )
-        # The interpolated function should have zero derivatives at boundaries.
-        # Check that the first two and last two control points enforce this.
         assert b.degree == (3,)
+        # Verify that the first derivative is close to zero at both endpoints.
+        d_left = b.evaluate_derivatives(np.array([0.0]), orders=1)
+        d_right = b.evaluate_derivatives(np.array([1.0]), orders=1)
+        nptest.assert_allclose(d_left, 0.0, atol=1e-10)
+        nptest.assert_allclose(d_right, 0.0, atol=1e-10)
 
     def test_periodic_ignores_boundary_derivs(self) -> None:
         """Boundary derivatives are ignored for periodic directions."""
