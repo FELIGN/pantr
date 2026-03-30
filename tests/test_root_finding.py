@@ -2,10 +2,8 @@
 
 Covers:
 
-- :func:`find_roots` -- auto-dispatch root finder (single Bezier).
-- :func:`find_roots_batch` -- batch-parallel root finder.
-- :func:`solve_monotone_root` -- Newton/bisection on monotone Beziers.
-- :func:`solve_monotone_root_batch` -- batch-parallel monotone solver.
+- :func:`find_roots` -- auto-dispatch root finder (single or batch).
+- :func:`solve_monotone_root` -- Newton/bisection on monotone Beziers (single or batch).
 - Internal helpers: de Casteljau scalar, split, subdivide, sign changes,
   convex hull clipping, Newton polish.
 """
@@ -20,9 +18,7 @@ from numpy.testing import assert_allclose
 from pantr.bezier import (
     Bezier,
     find_roots,
-    find_roots_batch,
     solve_monotone_root,
-    solve_monotone_root_batch,
 )
 from pantr.bezier._clipping_core import (
     _clip_roots_core,
@@ -421,7 +417,7 @@ class TestFindRoots(unittest.TestCase):
     def test_non_bezier_raises(self) -> None:
         """Non-Bezier input raises TypeError."""
         with self.assertRaises(TypeError):
-            find_roots(np.array([1.0, -1.0]))  # type: ignore[arg-type]
+            find_roots(np.array([1.0, -1.0]))  # type: ignore
 
     def test_dim_not_one_raises(self) -> None:
         """Bezier surface (dim=2) raises ValueError."""
@@ -502,17 +498,17 @@ class TestSolveMonotoneRoot(unittest.TestCase):
     def test_non_bezier_raises(self) -> None:
         """Non-Bezier input raises TypeError."""
         with self.assertRaises(TypeError):
-            solve_monotone_root(np.array([-1.0, 1.0]))  # type: ignore[arg-type]
+            solve_monotone_root(np.array([-1.0, 1.0]))  # type: ignore
 
 
 class TestFindRootsBatch(unittest.TestCase):
-    """Tests for :func:`find_roots_batch` (public API)."""
+    """Tests for :func:`find_roots` batch mode (public API)."""
 
     def test_single_polynomial(self) -> None:
         """Batch of one polynomial matches single-poly result."""
         bez = Bezier([0.1, -0.3, 0.1])
         roots_single = find_roots(bez, tol=1e-12)
-        roots_batch, counts = find_roots_batch([bez], tol=1e-12)
+        roots_batch, counts = find_roots([bez], tol=1e-12)
         self.assertEqual(counts[0], len(roots_single))
         assert_allclose(
             np.sort(roots_batch[0, : counts[0]]),
@@ -527,7 +523,7 @@ class TestFindRootsBatch(unittest.TestCase):
             Bezier([1.0, 2.0, 3.0]),  # no roots
             Bezier([0.1, -0.3, 0.1]),  # two roots
         ]
-        roots, counts = find_roots_batch(beziers, tol=1e-12)
+        roots, counts = find_roots(beziers, tol=1e-12)
         self.assertEqual(roots.shape[0], 3)
         self.assertGreaterEqual(counts[0], 1)
         self.assertEqual(counts[1], 0)
@@ -536,29 +532,29 @@ class TestFindRootsBatch(unittest.TestCase):
     def test_degree_zero_batch(self) -> None:
         """Batch of degree-0 Beziers: all return 0 roots."""
         beziers = [Bezier([5.0]), Bezier([3.0])]
-        _, counts = find_roots_batch(beziers)
+        _, counts = find_roots(beziers)
         self.assertEqual(counts[0], 0)
         self.assertEqual(counts[1], 0)
 
     def test_empty_batch(self) -> None:
         """Empty batch returns empty arrays without error."""
-        roots, counts = find_roots_batch([])
+        roots, counts = find_roots([])
         self.assertEqual(roots.shape, (0, 1))
         self.assertEqual(counts.shape, (0,))
 
     def test_mismatched_degree_raises(self) -> None:
         """Beziers with different degrees raise ValueError."""
         with self.assertRaises(ValueError, msg="same degree"):
-            find_roots_batch([Bezier([1.0, -1.0]), Bezier([1.0, 0.0, -1.0])])
+            find_roots([Bezier([1.0, -1.0]), Bezier([1.0, 0.0, -1.0])])
 
     def test_non_bezier_in_batch_raises(self) -> None:
         """Non-Bezier element in batch raises TypeError."""
         with self.assertRaises(TypeError):
-            find_roots_batch([Bezier([1.0, -1.0]), np.array([1.0, -1.0])])  # type: ignore[list-item]
+            find_roots([Bezier([1.0, -1.0]), np.array([1.0, -1.0])])  # type: ignore[list-item]
 
 
 class TestSolveMonotoneRootBatch(unittest.TestCase):
-    """Tests for :func:`solve_monotone_root_batch` (public API)."""
+    """Tests for :func:`solve_monotone_root` batch mode (public API)."""
 
     def test_mixed_roots(self) -> None:
         """Batch with some roots and some NaN."""
@@ -567,7 +563,7 @@ class TestSolveMonotoneRootBatch(unittest.TestCase):
             Bezier([1.0, 2.0]),  # no root
             Bezier([0.0, 1.0]),  # root at 0.0
         ]
-        roots = solve_monotone_root_batch(beziers)
+        roots = solve_monotone_root(beziers)
         self.assertAlmostEqual(roots[0], 0.5, places=12)
         self.assertTrue(np.isnan(roots[1]))
         self.assertAlmostEqual(roots[2], 0.0, places=10)
@@ -576,19 +572,19 @@ class TestSolveMonotoneRootBatch(unittest.TestCase):
         """Batch of one matches single-poly result."""
         bez = Bezier([-1.0, 0.0, 1.0])
         root_single = solve_monotone_root(bez)
-        roots_batch = solve_monotone_root_batch([bez])
+        roots_batch = solve_monotone_root([bez])
         self.assertAlmostEqual(roots_batch[0], root_single, places=12)
 
     def test_all_no_roots(self) -> None:
         """Batch where no Bezier has a root."""
         beziers = [Bezier([1.0, 2.0, 3.0]), Bezier([4.0, 5.0, 6.0])]
-        roots = solve_monotone_root_batch(beziers)
+        roots = solve_monotone_root(beziers)
         self.assertTrue(np.isnan(roots[0]))
         self.assertTrue(np.isnan(roots[1]))
 
     def test_empty_batch(self) -> None:
         """Empty batch returns empty array without error."""
-        roots = solve_monotone_root_batch([])
+        roots = solve_monotone_root([])
         self.assertEqual(roots.shape, (0,))
 
 

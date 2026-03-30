@@ -4,16 +4,14 @@ This module contains the Layer 1 public functions for finding roots of
 scalar Bernstein polynomials on [0, 1]. Each function performs lightweight
 validation and delegates to Layer 2 implementations in :mod:`_find_roots`.
 
-- :func:`find_roots` -- find all roots (single Bezier, auto-dispatch).
-- :func:`find_roots_batch` -- find roots of many same-degree Beziers.
-- :func:`solve_monotone_root` -- fast solver for a single monotone Bezier.
-- :func:`solve_monotone_root_batch` -- batch-parallel monotone solver.
+- :func:`find_roots` -- find all roots (single or batch, auto-dispatch).
+- :func:`solve_monotone_root` -- fast solver for monotone Beziers (single or batch).
 """
 
 from __future__ import annotations
 
 from collections.abc import Sequence
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, overload
 
 import numpy as np
 from numpy import typing as npt
@@ -29,59 +27,50 @@ if TYPE_CHECKING:
     from pantr.bezier._bezier import Bezier
 
 
+@overload
 def find_roots(
     bezier: Bezier,
     *,
+    tol: float | None = ...,
+) -> npt.NDArray[np.float64]: ...
+
+
+@overload
+def find_roots(
+    bezier: Sequence[Bezier],
+    *,
+    tol: float | None = ...,
+) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.intp]]: ...
+
+
+def find_roots(
+    bezier: Bezier | Sequence[Bezier],
+    *,
     tol: float | None = None,
-) -> npt.NDArray[np.float64]:
-    """Find all roots of a scalar Bezier curve in [0, 1].
+) -> npt.NDArray[np.float64] | tuple[npt.NDArray[np.float64], npt.NDArray[np.intp]]:
+    """Find all roots of one or more scalar Bezier curves in [0, 1].
 
     Auto-selects between Yuksel's monotone-decomposition algorithm and Bezier
     clipping based on polynomial degree and coefficient dynamic range.
 
+    When called with a single :class:`Bezier`, returns a sorted array of root
+    parameters. When called with a sequence of Beziers (batch mode), all curves
+    must have the same degree and the function returns a ``(roots, counts)``
+    tuple.
+
     Args:
-        bezier (Bezier): A 1-D (``dim == 1``) scalar (``rank == 1``) Bezier
-            curve. For rational Beziers, roots are found on the numerator
-            polynomial (first homogeneous component).
+        bezier (Bezier | Sequence[Bezier]): A single 1-D (``dim == 1``) scalar
+            (``rank == 1``) Bezier curve, or a sequence of such curves (all with
+            the same degree). For rational Beziers, roots are found on the
+            numerator polynomial (first homogeneous component).
         tol (float | None): Root-finding tolerance (bracket-width
             termination). Defaults to ``tolerance.get_strict(bezier.dtype)``.
 
     Returns:
-        npt.NDArray[np.float64]: Sorted array of root parameters in [0, 1].
-            Empty if no roots exist. Always float64 regardless of input dtype.
-
-    Raises:
-        TypeError: If ``bezier`` is not a :class:`Bezier` instance.
-        ValueError: If ``bezier.dim != 1``, ``bezier.rank != 1``, or ``tol``
-            is not positive.
-
-    Example:
-        >>> import numpy as np
-        >>> from pantr.bezier import Bezier, find_roots
-        >>> find_roots(Bezier([1.0, -1.0]))
-        array([0.5])
-    """
-    return _find_roots_impl(bezier, tol=tol)
-
-
-def find_roots_batch(
-    beziers: Sequence[Bezier],
-    *,
-    tol: float | None = None,
-) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.intp]]:
-    """Find roots of multiple same-degree scalar Bezier curves in parallel.
-
-    All Beziers in the batch must have the same degree.
-
-    Args:
-        beziers (Sequence[Bezier]): Sequence of 1-D (``dim == 1``) scalar
-            (``rank == 1``) Bezier curves, all with the same degree. For
-            rational Beziers, roots are found on the numerator polynomial.
-        tol (float | None): Root-finding tolerance. Defaults to
-            ``tolerance.get_strict(dtype)`` of the first Bezier.
-
-    Returns:
-        tuple[npt.NDArray[np.float64], npt.NDArray[np.intp]]:
+        npt.NDArray[np.float64]: *(single mode)* Sorted array of root
+            parameters in [0, 1]. Empty if no roots exist. Always float64
+            regardless of input dtype.
+        tuple[npt.NDArray[np.float64], npt.NDArray[np.intp]]: *(batch mode)*
             - ``roots``: padded array of shape ``(n_polys, degree)`` where
               only the first ``counts[i]`` entries per row are valid.
               Always float64.
@@ -89,73 +78,86 @@ def find_roots_batch(
               of valid roots per polynomial.
 
     Raises:
-        TypeError: If any element is not a :class:`Bezier` instance.
-        ValueError: If any Bezier has ``dim != 1`` or ``rank != 1``, or if
-            degrees are not uniform, or ``tol`` is not positive.
+        TypeError: If ``bezier`` is not a :class:`Bezier` instance (or sequence
+            thereof).
+        ValueError: If any Bezier has ``dim != 1`` or ``rank != 1``, or ``tol``
+            is not positive. In batch mode, also raised if degrees are not
+            uniform.
 
     Note:
-        The batch path uses a simpler fixed-threshold dedup (no
-        derivative-aware merge radius) compared to :func:`find_roots`.
-        In rare edge cases involving near-duplicate roots, the two
-        functions may report different root counts.
+        In batch mode, a simpler fixed-threshold dedup (no derivative-aware
+        merge radius) is used compared to single mode. In rare edge cases
+        involving near-duplicate roots, the two modes may report different
+        root counts.
+
+    Example:
+        >>> import numpy as np
+        >>> from pantr.bezier import Bezier, find_roots
+        >>> find_roots(Bezier([1.0, -1.0]))
+        array([0.5])
     """
-    return _find_roots_batch_impl(beziers, tol=tol)
+    from pantr.bezier._bezier import Bezier as BezierCls  # noqa: PLC0415
+
+    if isinstance(bezier, BezierCls):
+        return _find_roots_impl(bezier, tol=tol)
+    return _find_roots_batch_impl(bezier, tol=tol)
 
 
+@overload
 def solve_monotone_root(
     bezier: Bezier,
     *,
-    tol: float | None = None,
-) -> float:
-    """Find the unique root of a monotone scalar Bezier curve in [0, 1].
+    tol: float | None = ...,
+) -> float: ...
 
-    Uses a Newton/bisection hybrid with false-position initialization. The
-    Bezier must be monotone on [0, 1] (i.e. its derivative does not
-    change sign).
+
+@overload
+def solve_monotone_root(
+    bezier: Sequence[Bezier],
+    *,
+    tol: float | None = ...,
+) -> npt.NDArray[np.float64]: ...
+
+
+def solve_monotone_root(
+    bezier: Bezier | Sequence[Bezier],
+    *,
+    tol: float | None = None,
+) -> float | npt.NDArray[np.float64]:
+    """Find the unique root of one or more monotone scalar Bezier curves in [0, 1].
+
+    Uses a Newton/bisection hybrid with false-position initialization. Each
+    Bezier must be monotone on [0, 1] (i.e. its derivative does not change
+    sign).
+
+    When called with a single :class:`Bezier`, returns a float. When called
+    with a sequence of Beziers (batch mode), all curves must have the same
+    degree and the function returns an array.
 
     Args:
-        bezier (Bezier): A 1-D (``dim == 1``) scalar (``rank == 1``) Bezier
-            curve. For rational Beziers, roots are found on the numerator
-            polynomial.
+        bezier (Bezier | Sequence[Bezier]): A single 1-D (``dim == 1``) scalar
+            (``rank == 1``) Bezier curve, or a sequence of such curves (all with
+            the same degree). For rational Beziers, roots are found on the
+            numerator polynomial.
         tol (float | None): Parameter-space termination tolerance. Defaults
             to ``tolerance.get_strict(bezier.dtype)``.
 
     Returns:
-        float: Root parameter in [0, 1], or ``NaN`` if no root exists (no
-            sign change across the interval).
+        float: *(single mode)* Root parameter in [0, 1], or ``NaN`` if no root
+            exists (no sign change across the interval).
+        npt.NDArray[np.float64]: *(batch mode)* 1-D array of shape
+            ``(n_polys,)`` with root values. Contains ``NaN`` where no root
+            exists. Always float64.
 
     Raises:
-        TypeError: If ``bezier`` is not a :class:`Bezier` instance.
-        ValueError: If ``bezier.dim != 1``, ``bezier.rank != 1``, or ``tol``
-            is not positive.
+        TypeError: If ``bezier`` is not a :class:`Bezier` instance (or sequence
+            thereof).
+        ValueError: If any Bezier has ``dim != 1`` or ``rank != 1``, or ``tol``
+            is not positive. In batch mode, also raised if degrees are not
+            uniform.
     """
-    return _solve_monotone_root_impl(bezier, tol=tol)
+    from pantr.bezier._bezier import Bezier as BezierCls  # noqa: PLC0415
 
-
-def solve_monotone_root_batch(
-    beziers: Sequence[Bezier],
-    *,
-    tol: float | None = None,
-) -> npt.NDArray[np.float64]:
-    """Solve for roots on multiple monotone scalar Bezier curves in parallel.
-
-    Each Bezier must be monotone on [0, 1]. The batch must have uniform
-    degree.
-
-    Args:
-        beziers (Sequence[Bezier]): Sequence of 1-D (``dim == 1``) scalar
-            (``rank == 1``) Bezier curves, all with the same degree. For
-            rational Beziers, roots are found on the numerator polynomial.
-        tol (float | None): Parameter-space termination tolerance. Defaults
-            to ``tolerance.get_strict(dtype)`` of the first Bezier.
-
-    Returns:
-        npt.NDArray[np.float64]: 1-D array of shape ``(n_polys,)`` with root
-            values. Contains ``NaN`` where no root exists. Always float64.
-
-    Raises:
-        TypeError: If any element is not a :class:`Bezier` instance.
-        ValueError: If any Bezier has ``dim != 1`` or ``rank != 1``, or if
-            degrees are not uniform, or ``tol`` is not positive.
-    """
-    return _solve_monotone_root_batch_impl(beziers, tol=tol)
+    if isinstance(bezier, BezierCls):
+        return _solve_monotone_root_impl(bezier, tol=tol)
+    return _solve_monotone_root_batch_impl(bezier, tol=tol)
