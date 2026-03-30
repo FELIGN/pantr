@@ -379,7 +379,8 @@ class TestL2Project:
         space = create_uniform_space(3, 4)
 
         def func(lat: PointsLattice) -> npt.NDArray[Any]:
-            return np.sin(np.pi * lat.get_all_points()[:, 0])
+            result: npt.NDArray[Any] = np.sin(np.pi * lat.get_all_points()[:, 0])
+            return result
 
         b = l2_project_bspline(func, space, boundary_interpolation=True)
         # sin(0) = 0, sin(pi) ≈ 0 — check boundary values.

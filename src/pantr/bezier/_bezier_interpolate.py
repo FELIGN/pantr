@@ -37,6 +37,9 @@ from ..quad import PointsLattice, get_modified_chebyshev_nodes_1d
 if TYPE_CHECKING:
     from . import Bezier
 
+_SVD_TOL_FACTOR: float = 100.0
+"""Factor multiplied by machine epsilon for SVD truncation tolerance."""
+
 
 def _bernstein_vandermonde_svd(
     n: int,

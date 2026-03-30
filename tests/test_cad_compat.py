@@ -48,7 +48,7 @@ class TestCompatBasic:
     def test_identical_curves_unchanged(self) -> None:
         """Test that two identical curves come back with same structure."""
         crv = _make_curve([0, 0, 0, 1, 1, 1], degree=2)
-        r1, r2 = compat(crv, crv)
+        r1, _r2 = compat(crv, crv)
         assert r1.degree == crv.degree
         assert_allclose(r1.space.spaces[0].knots, crv.space.spaces[0].knots)
 

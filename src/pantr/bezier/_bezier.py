@@ -11,7 +11,11 @@ from numpy import typing as npt
 from .._transform_control_points import _apply_affine_to_control_points
 from ._bezier_collapse import _collapse_along_axis
 from ._bezier_compose import _compose_bezier
-from ._bezier_degree import _degree_elevate_bezier, _degree_reduce_bezier
+from ._bezier_degree import (
+    _degree_elevate_bezier,
+    _degree_reduce_bezier,
+    _minimize_degree_bezier,
+)
 from ._bezier_derivative import _derivative_bezier
 from ._bezier_eval import _evaluate_bezier, _evaluate_bezier_deriv
 from ._bezier_product import _multiply_bezier
@@ -357,6 +361,33 @@ class Bezier:
                 )
 
         return _degree_reduce_bezier(self, decrements)
+
+    def minimize_degree(self, tol: float | None = None) -> Bezier:
+        """Find the lowest degree that preserves accuracy within tolerance.
+
+        Iterates over each parametric direction and repeatedly tries to
+        reduce the degree by 1.  A reduction is accepted when the
+        round-trip (reduce then elevate) relative L2 error stays below
+        ``tol``.  For vector-valued Bézier, all rank components are
+        checked simultaneously.
+
+        Args:
+            tol (float | None): Relative tolerance for accepting a degree
+                reduction.  If *None*, uses a default based on machine
+                epsilon (``1e3 * eps``).
+
+        Returns:
+            Bezier: A new Bézier with the lowest degree that preserves
+            accuracy.  If no reduction is possible, returns a copy.
+
+        Example:
+            >>> import numpy as np
+            >>> b = Bezier(np.array([3.0, 3.0, 3.0, 1.0]).reshape(4, 1))
+            >>> b.degree
+            (3,)
+            >>> b_min = b.minimize_degree()
+        """
+        return _minimize_degree_bezier(self, tol)
 
     # ------------------------------------------------------------------
     # Multiply

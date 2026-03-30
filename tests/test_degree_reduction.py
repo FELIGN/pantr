@@ -173,6 +173,59 @@ class TestBezierReduceDegreeErrors:
 
 
 # ---------------------------------------------------------------------------
+# Minimize degree
+# ---------------------------------------------------------------------------
+
+
+class TestBezierMinimizeDegree:
+    """Test Bezier.minimize_degree."""
+
+    def test_constant_reduces_to_degree_0(self) -> None:
+        """A constant elevated to degree 2 should reduce back to degree 0."""
+        b = _make_bezier_1d([[3.0], [3.0], [3.0]])
+        b_min = b.minimize_degree()
+        assert b_min.degree[0] < b.degree[0]
+        pts = np.linspace(0.0, 1.0, 10, dtype=np.float64)
+        np.testing.assert_allclose(b_min.evaluate(pts), b.evaluate(pts), atol=1e-12)
+
+    def test_true_quadratic_not_reduced(self) -> None:
+        """A genuine quadratic should not be reduced."""
+        b = _make_bezier_1d([[0.0, 0.0], [0.5, 1.0], [1.0, 0.0]])
+        b_min = b.minimize_degree()
+        assert b_min.degree == b.degree
+
+    def test_linear_elevated_reduces(self) -> None:
+        """A linear elevated to degree 3 should reduce back."""
+        b = _make_bezier_1d([[1.0], [3.0]])
+        b_elev = b.elevate_degree(2)
+        assert b_elev.degree == (3,)
+        b_min = b_elev.minimize_degree()
+        assert b_min.degree[0] < b_elev.degree[0]
+        pts = np.linspace(0.0, 1.0, 10, dtype=np.float64)
+        np.testing.assert_allclose(b_min.evaluate(pts), b.evaluate(pts), atol=1e-12)
+
+    def test_2d_constant_in_one_direction(self) -> None:
+        """A 2D polynomial constant in one direction reduces along it."""
+        ctrl = np.array([[[0.0], [1.0], [0.0]], [[0.0], [1.0], [0.0]]])  # (2, 3, 1)
+        b = Bezier(ctrl)
+        assert b.degree == (1, 2)
+        b_min = b.minimize_degree()
+        assert b_min.degree[0] < b.degree[0]
+        assert b_min.degree[1] == b.degree[1]
+
+    def test_vector_valued(self) -> None:
+        """Vector-valued Bezier: all components checked together."""
+        # Linear in both components, elevated to degree 2
+        b = Bezier(np.array([[0.0, 0.0], [1.0, 2.0]]))
+        b_elev = b.elevate_degree(1)
+        assert b_elev.degree == (2,)
+        b_min = b_elev.minimize_degree()
+        assert b_min.degree[0] < b_elev.degree[0]
+        pts = np.linspace(0.0, 1.0, 10, dtype=np.float64)
+        np.testing.assert_allclose(b_min.evaluate(pts), b.evaluate(pts), atol=1e-12)
+
+
+# ---------------------------------------------------------------------------
 # Float32 support
 # ---------------------------------------------------------------------------
 

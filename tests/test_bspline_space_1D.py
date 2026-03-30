@@ -808,7 +808,7 @@ class TestNonOpenKnotSpanBoundary:
 
         t_start, t_end = space.domain
         pts = np.array([t_start, t_end], dtype=np.float64)
-        basis, fb = space.tabulate_basis(pts)
+        basis, _fb = space.tabulate_basis(pts)
 
         # At left endpoint: first basis function = 1, rest = 0
         expected_left = np.zeros(degree + 1)
