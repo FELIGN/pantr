@@ -2,9 +2,9 @@
 
 Covers:
 
-- :func:`find_roots` -- auto-dispatch root finder (single polynomial).
+- :func:`find_roots` -- auto-dispatch root finder (single Bezier).
 - :func:`find_roots_batch` -- batch-parallel root finder.
-- :func:`solve_monotone_root` -- Newton/bisection on monotone polynomials.
+- :func:`solve_monotone_root` -- Newton/bisection on monotone Beziers.
 - :func:`solve_monotone_root_batch` -- batch-parallel monotone solver.
 - Internal helpers: de Casteljau scalar, split, subdivide, sign changes,
   convex hull clipping, Newton polish.
@@ -18,6 +18,7 @@ from numpy import typing as npt
 from numpy.testing import assert_allclose
 
 from pantr.bezier import (
+    Bezier,
     find_roots,
     find_roots_batch,
     solve_monotone_root,
@@ -345,14 +346,14 @@ class TestFindRoots(unittest.TestCase):
 
     def test_linear_root(self) -> None:
         """Linear: root at t = 0.2."""
-        roots = find_roots(np.array([-0.2, 0.8]))
+        roots = find_roots(Bezier([-0.2, 0.8]))
         self.assertEqual(len(roots), 1)
         self.assertAlmostEqual(roots[0], 0.2, places=10)
 
     def test_quadratic_two_roots(self) -> None:
         """Quadratic with two roots."""
         c = np.array([0.1, -0.3, 0.1], dtype=np.float64)
-        roots = find_roots(c)
+        roots = find_roots(Bezier(c))
         self.assertEqual(len(roots), 2)
         for r in roots:
             val = _de_casteljau_eval_scalar(c, r)
@@ -360,23 +361,23 @@ class TestFindRoots(unittest.TestCase):
 
     def test_no_root_all_positive(self) -> None:
         """All-positive: no roots."""
-        roots = find_roots(np.array([1.0, 2.0, 3.0]))
+        roots = find_roots(Bezier([1.0, 2.0, 3.0]))
         self.assertEqual(len(roots), 0)
 
     def test_constant_zero_returns_empty(self) -> None:
         """All-zero: returns empty."""
-        roots = find_roots(np.array([0.0, 0.0, 0.0]))
+        roots = find_roots(Bezier([0.0, 0.0, 0.0]))
         self.assertEqual(len(roots), 0)
 
     def test_degree_zero(self) -> None:
         """Single element (degree 0): returns empty."""
-        roots = find_roots(np.array([5.0]))
+        roots = find_roots(Bezier([5.0]))
         self.assertEqual(len(roots), 0)
 
     def test_low_degree_uses_yuksel(self) -> None:
         """Degree <= 5 routes to Yuksel (same results)."""
         c = np.array([0.1, -0.3, 0.1], dtype=np.float64)
-        roots_auto = find_roots(c, tol=1e-12)
+        roots_auto = find_roots(Bezier(c), tol=1e-12)
         roots_yuk, n = _yuksel_roots(c, 1e-12)
         assert_allclose(roots_auto, np.sort(roots_yuk[:n]), atol=1e-14)
 
@@ -384,7 +385,7 @@ class TestFindRoots(unittest.TestCase):
         """Degree >= 6, well-conditioned: routes to clipping."""
         rng = np.random.default_rng(88)
         c = rng.uniform(-2.0, 2.0, 9).astype(np.float64)
-        roots = find_roots(c, tol=1e-12)
+        roots = find_roots(Bezier(c), tol=1e-12)
         # Verify all roots are actually roots.
         for r in roots:
             val = _de_casteljau_eval_scalar(c, r)
@@ -396,7 +397,7 @@ class TestFindRoots(unittest.TestCase):
         c = rng.uniform(-1.0, 1.0, 9).astype(np.float64)
         c[0] = 1e-8
         c[4] = -1e7
-        roots = find_roots(c, tol=1e-12)
+        roots = find_roots(Bezier(c), tol=1e-12)
         _roots_yuk, n = _yuksel_roots(c, 1e-12)
         self.assertEqual(len(roots), n)
         for r in roots:
@@ -405,61 +406,73 @@ class TestFindRoots(unittest.TestCase):
 
     def test_custom_tolerance(self) -> None:
         """Custom tolerance is respected."""
-        c = np.array([-1.0, 1.0], dtype=np.float64)
-        roots = find_roots(c, tol=1e-6)
+        roots = find_roots(Bezier([-1.0, 1.0]), tol=1e-6)
         self.assertEqual(len(roots), 1)
         self.assertAlmostEqual(roots[0], 0.5, places=5)
 
     def test_float32_accepted(self) -> None:
         """float32 input is accepted and produces correct results."""
-        c = np.array([-1.0, 1.0], dtype=np.float32)
-        roots = find_roots(c)
+        c = np.array([[-1.0], [1.0]], dtype=np.float32)
+        roots = find_roots(Bezier(c))
         self.assertEqual(roots.dtype, np.float64)
         self.assertEqual(len(roots), 1)
         self.assertAlmostEqual(roots[0], 0.5, places=5)
 
-    def test_unsupported_dtype_raises(self) -> None:
-        """Non-float input raises TypeError."""
+    def test_non_bezier_raises(self) -> None:
+        """Non-Bezier input raises TypeError."""
         with self.assertRaises(TypeError):
-            find_roots(np.array([1, -1], dtype=np.int64))
+            find_roots(np.array([1.0, -1.0]))  # type: ignore[arg-type]
 
-    def test_list_raises(self) -> None:
-        """Plain list raises TypeError (must be ndarray)."""
-        with self.assertRaises(TypeError):
-            find_roots([-1.0, 1.0])  # type: ignore[arg-type]
+    def test_dim_not_one_raises(self) -> None:
+        """Bezier surface (dim=2) raises ValueError."""
+        cp = np.ones((3, 3, 1), dtype=np.float64)
+        with self.assertRaises(ValueError, msg="dim == 1"):
+            find_roots(Bezier(cp))
+
+    def test_rank_not_one_raises(self) -> None:
+        """Multi-valued Bezier (rank=2) raises ValueError."""
+        cp = np.array([[1.0, 0.0], [-1.0, 0.0], [0.5, 0.0]], dtype=np.float64)
+        with self.assertRaises(ValueError, msg="rank == 1"):
+            find_roots(Bezier(cp))
 
     def test_invalid_tol_raises(self) -> None:
         """Negative tolerance raises ValueError."""
         with self.assertRaises(ValueError, msg="tol must be positive"):
-            find_roots(np.array([1.0, -1.0]), tol=-1.0)
+            find_roots(Bezier([1.0, -1.0]), tol=-1.0)
 
-    def test_invalid_shape_raises(self) -> None:
-        """2-D input raises ValueError."""
-        with self.assertRaises(ValueError):
-            find_roots(np.array([[1.0, -1.0]]))
+    # ---- Rational Bezier input ----
 
-    def test_empty_raises(self) -> None:
-        """Empty input raises ValueError."""
-        with self.assertRaises(ValueError):
-            find_roots(np.array([], dtype=np.float64))
-
-    # ---- Ray-curve intersection equivalents ----
+    def test_rational_bezier_numerator_extraction(self) -> None:
+        """Rational scalar Bezier: roots found on numerator (x*w)."""
+        # Construct a rational Bezier with rank=1.
+        # control_points[:, 0] = x*w (numerator), control_points[:, 1] = w.
+        # x*w = [-1, 0, 1], w = [1, 2, 1] => rational values = [-1, 0, 1].
+        cp = np.array([[-1.0, 1.0], [0.0, 2.0], [1.0, 1.0]], dtype=np.float64)
+        bez = Bezier(cp, is_rational=True)
+        self.assertEqual(bez.rank, 1)
+        roots = find_roots(bez)
+        # Numerator [-1, 0, 1] has root at 0.5.
+        self.assertEqual(len(roots), 1)
+        self.assertAlmostEqual(roots[0], 0.5, places=10)
 
     def test_rational_quarter_circle(self) -> None:
         """Rational quarter-circle intersection with y = 0.5."""
         ctrl = np.array([[1.0, 0.0], [1.0, 1.0], [0.0, 1.0]], dtype=np.float64)
         w = np.array([1.0, math.sqrt(0.5), 1.0], dtype=np.float64)
         w_ctrl = ctrl * w[:, None]
-        coeff = w_ctrl[:, 1] - 0.5 * w
-        roots = find_roots(coeff, tol=1e-14)
+        # Build scalar rational Bezier for (y*w - 0.5*w).
+        numerator = w_ctrl[:, 1] - 0.5 * w
+        cp_rational = np.column_stack([numerator, w])
+        roots = find_roots(Bezier(cp_rational, is_rational=True))
         self.assertEqual(len(roots), 1)
 
     def test_rational_no_intersection(self) -> None:
         """Quarter-circle with y=1.5 produces no roots."""
         w = np.array([1.0, math.sqrt(0.5), 1.0], dtype=np.float64)
         w_ctrl = np.array([[1.0, 0.0], [1.0, 1.0], [0.0, 1.0]], dtype=np.float64) * w[:, None]
-        coeff = w_ctrl[:, 1] - 1.5 * w
-        roots = find_roots(coeff, tol=1e-14)
+        numerator = w_ctrl[:, 1] - 1.5 * w
+        cp_rational = np.column_stack([numerator, w])
+        roots = find_roots(Bezier(cp_rational, is_rational=True))
         self.assertEqual(len(roots), 0)
 
 
@@ -468,23 +481,28 @@ class TestSolveMonotoneRoot(unittest.TestCase):
 
     def test_linear_root(self) -> None:
         """Linear: root at t = 0.5."""
-        root = solve_monotone_root(np.array([-1.0, 1.0]))
+        root = solve_monotone_root(Bezier([-1.0, 1.0]))
         self.assertAlmostEqual(root, 0.5, places=13)
 
     def test_quadratic_root(self) -> None:
         """Quadratic [-1, 0, 1]: root at 0.5."""
-        root = solve_monotone_root(np.array([-1.0, 0.0, 1.0]))
+        root = solve_monotone_root(Bezier([-1.0, 0.0, 1.0]))
         self.assertAlmostEqual(root, 0.5, places=12)
 
     def test_no_root_returns_nan(self) -> None:
         """All-positive: returns NaN."""
-        root = solve_monotone_root(np.array([1.0, 2.0, 3.0]))
+        root = solve_monotone_root(Bezier([1.0, 2.0, 3.0]))
         self.assertTrue(np.isnan(root))
 
     def test_custom_tolerance(self) -> None:
         """Custom tolerance works."""
-        root = solve_monotone_root(np.array([-1.0, 1.0]), tol=1e-6)
+        root = solve_monotone_root(Bezier([-1.0, 1.0]), tol=1e-6)
         self.assertAlmostEqual(root, 0.5, places=5)
+
+    def test_non_bezier_raises(self) -> None:
+        """Non-Bezier input raises TypeError."""
+        with self.assertRaises(TypeError):
+            solve_monotone_root(np.array([-1.0, 1.0]))  # type: ignore[arg-type]
 
 
 class TestFindRootsBatch(unittest.TestCase):
@@ -492,9 +510,9 @@ class TestFindRootsBatch(unittest.TestCase):
 
     def test_single_polynomial(self) -> None:
         """Batch of one polynomial matches single-poly result."""
-        c = np.array([0.1, -0.3, 0.1], dtype=np.float64)
-        roots_single = find_roots(c, tol=1e-12)
-        roots_batch, counts = find_roots_batch(c.reshape(1, -1), tol=1e-12)
+        bez = Bezier([0.1, -0.3, 0.1])
+        roots_single = find_roots(bez, tol=1e-12)
+        roots_batch, counts = find_roots_batch([bez], tol=1e-12)
         self.assertEqual(counts[0], len(roots_single))
         assert_allclose(
             np.sort(roots_batch[0, : counts[0]]),
@@ -503,39 +521,40 @@ class TestFindRootsBatch(unittest.TestCase):
         )
 
     def test_multiple_polynomials(self) -> None:
-        """Batch of multiple polynomials."""
-        coeffs = np.array(
-            [
-                [-0.2, 0.8, 0.0],  # has root(s)
-                [1.0, 2.0, 3.0],  # no roots
-                [0.1, -0.3, 0.1],  # two roots
-            ],
-            dtype=np.float64,
-        )
-        roots, counts = find_roots_batch(coeffs, tol=1e-12)
+        """Batch of multiple Beziers."""
+        beziers = [
+            Bezier([-0.2, 0.8, 0.0]),  # has root(s)
+            Bezier([1.0, 2.0, 3.0]),  # no roots
+            Bezier([0.1, -0.3, 0.1]),  # two roots
+        ]
+        roots, counts = find_roots_batch(beziers, tol=1e-12)
         self.assertEqual(roots.shape[0], 3)
         self.assertGreaterEqual(counts[0], 1)
         self.assertEqual(counts[1], 0)
         self.assertEqual(counts[2], 2)
 
-    def test_invalid_shape_raises(self) -> None:
-        """1-D input raises ValueError."""
-        with self.assertRaises(ValueError, msg="coeffs must be 2-D"):
-            find_roots_batch(np.array([1.0, -1.0]))
-
     def test_degree_zero_batch(self) -> None:
-        """Batch of degree-0 polynomials: all return 0 roots."""
-        coeffs = np.array([[5.0], [3.0]], dtype=np.float64)
-        _, counts = find_roots_batch(coeffs)
+        """Batch of degree-0 Beziers: all return 0 roots."""
+        beziers = [Bezier([5.0]), Bezier([3.0])]
+        _, counts = find_roots_batch(beziers)
         self.assertEqual(counts[0], 0)
         self.assertEqual(counts[1], 0)
 
     def test_empty_batch(self) -> None:
-        """Empty batch (0 polynomials) returns empty arrays without error."""
-        coeffs = np.empty((0, 3), dtype=np.float64)
-        roots, counts = find_roots_batch(coeffs)
-        self.assertEqual(roots.shape, (0, 2))
+        """Empty batch returns empty arrays without error."""
+        roots, counts = find_roots_batch([])
+        self.assertEqual(roots.shape, (0, 1))
         self.assertEqual(counts.shape, (0,))
+
+    def test_mismatched_degree_raises(self) -> None:
+        """Beziers with different degrees raise ValueError."""
+        with self.assertRaises(ValueError, msg="same degree"):
+            find_roots_batch([Bezier([1.0, -1.0]), Bezier([1.0, 0.0, -1.0])])
+
+    def test_non_bezier_in_batch_raises(self) -> None:
+        """Non-Bezier element in batch raises TypeError."""
+        with self.assertRaises(TypeError):
+            find_roots_batch([Bezier([1.0, -1.0]), np.array([1.0, -1.0])])  # type: ignore[list-item]
 
 
 class TestSolveMonotoneRootBatch(unittest.TestCase):
@@ -543,45 +562,34 @@ class TestSolveMonotoneRootBatch(unittest.TestCase):
 
     def test_mixed_roots(self) -> None:
         """Batch with some roots and some NaN."""
-        coeffs = np.array(
-            [
-                [-1.0, 1.0],  # root at 0.5
-                [1.0, 2.0],  # no root
-                [0.0, 1.0],  # root at 0.0
-            ],
-            dtype=np.float64,
-        )
-        roots, found = solve_monotone_root_batch(coeffs)
-        self.assertTrue(found[0])
-        self.assertFalse(found[1])
-        self.assertTrue(found[2])
+        beziers = [
+            Bezier([-1.0, 1.0]),  # root at 0.5
+            Bezier([1.0, 2.0]),  # no root
+            Bezier([0.0, 1.0]),  # root at 0.0
+        ]
+        roots = solve_monotone_root_batch(beziers)
         self.assertAlmostEqual(roots[0], 0.5, places=12)
         self.assertTrue(np.isnan(roots[1]))
         self.assertAlmostEqual(roots[2], 0.0, places=10)
 
     def test_single_polynomial(self) -> None:
         """Batch of one matches single-poly result."""
-        c = np.array([-1.0, 0.0, 1.0], dtype=np.float64)
-        root_single = solve_monotone_root(c)
-        roots_batch, found = solve_monotone_root_batch(c.reshape(1, -1))
-        self.assertTrue(found[0])
+        bez = Bezier([-1.0, 0.0, 1.0])
+        root_single = solve_monotone_root(bez)
+        roots_batch = solve_monotone_root_batch([bez])
         self.assertAlmostEqual(roots_batch[0], root_single, places=12)
 
     def test_all_no_roots(self) -> None:
-        """Batch where no polynomial has a root."""
-        coeffs = np.array([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]], dtype=np.float64)
-        roots, found = solve_monotone_root_batch(coeffs)
-        self.assertFalse(found[0])
-        self.assertFalse(found[1])
+        """Batch where no Bezier has a root."""
+        beziers = [Bezier([1.0, 2.0, 3.0]), Bezier([4.0, 5.0, 6.0])]
+        roots = solve_monotone_root_batch(beziers)
         self.assertTrue(np.isnan(roots[0]))
         self.assertTrue(np.isnan(roots[1]))
 
     def test_empty_batch(self) -> None:
-        """Empty batch (0 polynomials) returns empty arrays without error."""
-        coeffs = np.empty((0, 3), dtype=np.float64)
-        roots, found = solve_monotone_root_batch(coeffs)
+        """Empty batch returns empty array without error."""
+        roots = solve_monotone_root_batch([])
         self.assertEqual(roots.shape, (0,))
-        self.assertEqual(found.shape, (0,))
 
 
 if __name__ == "__main__":

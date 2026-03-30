@@ -10,10 +10,13 @@ exported from :mod:`pantr.bezier`.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
+
 import numpy as np
 from numpy import typing as npt
 
 from pantr._numba_compat import wait_for_jit_warmup
+from pantr.bezier._bezier import Bezier
 from pantr.bezier._clipping_core import _clip_roots_core, _dedup_roots
 from pantr.bezier._yuksel_core import (
     _solve_monotone_root_kernel,
@@ -43,6 +46,97 @@ Duplicated in ``_batch_core.py`` -- keep in sync.
 
 _SUPPORTED_DTYPES = (np.float32, np.float64)
 """Floating-point dtypes accepted by the root-finding API."""
+
+
+def _extract_coeff(bezier: Bezier) -> npt.NDArray[np.float32 | np.float64]:
+    """Extract a 1-D coefficient array from a scalar Bezier curve.
+
+    For non-rational Beziers, returns ``control_points[:, 0]``. For rational
+    Beziers, returns the first homogeneous component (numerator ``x * w``),
+    whose roots coincide with those of the rational function ``x`` since
+    weights are positive.
+
+    Args:
+        bezier (Bezier): A validated 1-D scalar Bezier curve.
+
+    Returns:
+        npt.NDArray[np.float32 | np.float64]: Contiguous 1-D coefficient
+            array of length ``degree + 1``.
+    """
+    coeff = bezier.control_points[:, 0]
+    if not coeff.flags.c_contiguous:
+        return np.ascontiguousarray(coeff)
+    return coeff
+
+
+def _validate_bezier_for_roots(bezier: object) -> Bezier:
+    """Validate that an object is a scalar 1-D Bezier suitable for root finding.
+
+    Args:
+        bezier (object): Input to validate.
+
+    Returns:
+        Bezier: The validated Bezier.
+
+    Raises:
+        TypeError: If ``bezier`` is not a :class:`Bezier`.
+        ValueError: If ``bezier.dim != 1`` or ``bezier.rank != 1``.
+    """
+    if not isinstance(bezier, Bezier):
+        msg = f"Expected a Bezier instance, got {type(bezier).__name__}"
+        raise TypeError(msg)
+    if bezier.dim != 1:
+        msg = f"Bezier must be 1-D (dim == 1), got dim={bezier.dim}"
+        raise ValueError(msg)
+    if bezier.rank != 1:
+        msg = f"Bezier must be scalar (rank == 1), got rank={bezier.rank}"
+        raise ValueError(msg)
+    return bezier
+
+
+def _extract_batch_coeffs(
+    beziers: Sequence[Bezier],
+) -> npt.NDArray[np.float32 | np.float64]:
+    """Validate a sequence of Beziers and assemble a 2-D coefficient array.
+
+    All Beziers must be 1-D, scalar, and have the same degree. The returned
+    array has shape ``(n_polys, degree + 1)`` with coefficients copied from
+    each Bezier's control points.
+
+    Args:
+        beziers (Sequence[Bezier]): Sequence of Bezier curves.
+
+    Returns:
+        npt.NDArray[np.float32 | np.float64]: Contiguous 2-D coefficient
+            array of shape ``(n_polys, degree + 1)``.
+
+    Raises:
+        TypeError: If any element is not a :class:`Bezier`.
+        ValueError: If any Bezier has ``dim != 1`` or ``rank != 1``, or if
+            degrees are not uniform.
+    """
+    n_polys = len(beziers)
+    if n_polys == 0:
+        return np.empty((0, 1), dtype=np.float64)
+
+    first = _validate_bezier_for_roots(beziers[0])
+    degree = first.degree[0]
+    dtype = first.dtype
+
+    coeffs = np.empty((n_polys, degree + 1), dtype=dtype)
+    coeffs[0] = _extract_coeff(first)
+
+    for i in range(1, n_polys):
+        bez = _validate_bezier_for_roots(beziers[i])
+        if bez.degree[0] != degree:
+            msg = (
+                f"All Beziers must have the same degree. "
+                f"Bezier 0 has degree {degree}, Bezier {i} has degree {bez.degree[0]}"
+            )
+            raise ValueError(msg)
+        coeffs[i] = _extract_coeff(bez)
+
+    return coeffs
 
 
 def _resolve_tol(
@@ -189,11 +283,13 @@ def _dispatch_single(  # noqa: PLR0911
 
 
 def _find_roots_impl(
-    coeff: npt.NDArray[np.float32 | np.float64],
+    bezier: Bezier,
     *,
     tol: float | None = None,
 ) -> npt.NDArray[np.float64]:
     """L2 implementation for :func:`pantr.bezier.find_roots`."""
+    _validate_bezier_for_roots(bezier)
+    coeff = _extract_coeff(bezier)
     wait_for_jit_warmup()
     arr = _validate_coeff_1d(coeff)
     resolved_tol = _resolve_tol(arr, tol)
@@ -201,7 +297,7 @@ def _find_roots_impl(
 
 
 def _find_roots_batch_impl(
-    coeffs: npt.NDArray[np.float32 | np.float64],
+    beziers: Sequence[Bezier],
     *,
     tol: float | None = None,
 ) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.intp]]:
@@ -210,6 +306,7 @@ def _find_roots_batch_impl(
         _find_roots_batch_core,
     )
 
+    coeffs = _extract_batch_coeffs(beziers)
     wait_for_jit_warmup()
     arr = _validate_coeffs_batch(coeffs)
 
@@ -231,11 +328,13 @@ def _find_roots_batch_impl(
 
 
 def _solve_monotone_root_impl(
-    coeff: npt.NDArray[np.float32 | np.float64],
+    bezier: Bezier,
     *,
     tol: float | None = None,
 ) -> float:
     """L2 implementation for :func:`pantr.bezier.solve_monotone_root`."""
+    _validate_bezier_for_roots(bezier)
+    coeff = _extract_coeff(bezier)
     wait_for_jit_warmup()
     arr = _validate_coeff_1d(coeff)
     resolved_tol = _resolve_tol(arr, tol)
@@ -243,27 +342,27 @@ def _solve_monotone_root_impl(
 
 
 def _solve_monotone_root_batch_impl(
-    coeffs: npt.NDArray[np.float32 | np.float64],
+    beziers: Sequence[Bezier],
     *,
     tol: float | None = None,
-) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.bool_]]:
+) -> npt.NDArray[np.float64]:
     """L2 implementation for :func:`pantr.bezier.solve_monotone_root_batch`."""
     from pantr.bezier._batch_core import (  # noqa: PLC0415
         _solve_monotone_root_batch_core,
     )
 
+    coeffs = _extract_batch_coeffs(beziers)
     wait_for_jit_warmup()
     arr = _validate_coeffs_batch(coeffs)
 
     n_polys = arr.shape[0]
 
     if n_polys == 0:
-        return np.empty(0, dtype=np.float64), np.empty(0, dtype=np.bool_)
+        return np.empty(0, dtype=np.float64)
 
     resolved_tol = _resolve_tol(arr[0], tol)
     out_roots = np.full(n_polys, np.nan, dtype=np.float64)
-    out_found = np.zeros(n_polys, dtype=np.bool_)
 
-    _solve_monotone_root_batch_core(arr, resolved_tol, out_roots, out_found)
+    _solve_monotone_root_batch_core(arr, resolved_tol, out_roots)
 
-    return out_roots, out_found
+    return out_roots

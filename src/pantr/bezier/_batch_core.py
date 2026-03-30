@@ -168,21 +168,20 @@ def _solve_monotone_root_batch_core(
     coeffs: npt.NDArray[np.float32 | np.float64],
     param_tol: float,
     out_roots: npt.NDArray[np.float32 | np.float64],
-    out_found: npt.NDArray[np.bool_],
 ) -> None:
     """Solve for monotone roots on multiple polynomials in parallel.
 
     Each polynomial is solved independently using the Newton/bisection hybrid.
-    Parallelized over polynomials with ``nb_prange``.
+    Parallelized over polynomials with ``nb_prange``. Entries where no root
+    exists are left as ``NaN`` (the caller pre-fills the array).
 
     Args:
-        coeffs (npt.NDArray[np.float32 | np.float64]): Batch of coefficients with shape
-            ``(n_polys, degree + 1)``.
+        coeffs (npt.NDArray[np.float32 | np.float64]): Batch of coefficients
+            with shape ``(n_polys, degree + 1)``.
         param_tol (float): Parameter-space termination tolerance.
-        out_roots (npt.NDArray[np.float32 | np.float64]): Pre-allocated output array of
-            shape ``(n_polys,)`` for root values.
-        out_found (npt.NDArray[np.bool_]): Pre-allocated output array of
-            shape ``(n_polys,)`` for found flags.
+        out_roots (npt.NDArray[np.float32 | np.float64]): Pre-allocated output
+            array of shape ``(n_polys,)`` for root values. Must be
+            pre-filled with ``NaN``.
 
     Note:
         Inputs are assumed to be correct (no validation performed).
@@ -193,11 +192,7 @@ def _solve_monotone_root_batch_core(
     for i in nb_prange(n_polys):
         coeff_i = coeffs[i].copy()
         root = _solve_monotone_root_kernel(coeff_i, param_tol)
-        if np.isnan(root):
-            out_found[i] = False
-            out_roots[i] = np.nan
-        else:
-            out_found[i] = True
+        if not np.isnan(root):
             out_roots[i] = root
 
 
@@ -211,6 +206,5 @@ def _warmup_numba_functions() -> None:
     out_counts = np.zeros(1, dtype=np.intp)
     _find_roots_batch_core(coeffs, 1e-12, 1e-12, out_roots, out_counts)
 
-    out_mono = np.empty(1, dtype=np.float64)
-    out_found = np.zeros(1, dtype=np.bool_)
-    _solve_monotone_root_batch_core(coeffs, 1e-12, out_mono, out_found)
+    out_mono = np.full(1, np.nan, dtype=np.float64)
+    _solve_monotone_root_batch_core(coeffs, 1e-12, out_mono)

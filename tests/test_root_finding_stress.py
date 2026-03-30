@@ -19,7 +19,7 @@ import numpy as np
 import pytest
 from numpy import typing as npt
 
-from pantr.bezier import find_roots, find_roots_batch
+from pantr.bezier import Bezier, find_roots, find_roots_batch
 from pantr.bezier._clipping_core import _clip_roots_core, _dedup_roots
 from pantr.bezier._root_finding_core import _de_casteljau_eval_scalar
 from pantr.bezier._yuksel_core import _yuksel_roots
@@ -269,7 +269,7 @@ class TestAlgorithmAgreement:
             coeff = _make_double_root_coeff(rng, degree)
             # Double roots: just verify that find_roots finds at least
             # one root near the known location with valid residual.
-            roots = find_roots(coeff, tol=1e-12)
+            roots = find_roots(Bezier(coeff), tol=1e-12)
             _assert_roots_valid(coeff, roots, f"double/s{seed}/i{i}")
             assert len(roots) >= 1, f"double/s{seed}/i{i}: expected at least 1 root, got 0"
 
@@ -294,10 +294,11 @@ class TestBatchConsistency:
         n_polys = 50
         coeffs = rng.uniform(-2.0, 2.0, (n_polys, degree + 1)).astype(np.float64)
 
-        roots_batch, counts_batch = find_roots_batch(coeffs, tol=1e-12)
+        beziers = [Bezier(coeffs[i]) for i in range(n_polys)]
+        roots_batch, counts_batch = find_roots_batch(beziers, tol=1e-12)
 
         for i in range(n_polys):
-            roots_single = find_roots(coeffs[i], tol=1e-12)
+            roots_single = find_roots(beziers[i], tol=1e-12)
             assert counts_batch[i] == len(roots_single), (
                 f"s{seed}/i{i}: count mismatch "
                 f"batch={counts_batch[i]} vs single={len(roots_single)}"
