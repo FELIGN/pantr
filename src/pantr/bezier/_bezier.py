@@ -851,10 +851,12 @@ class Bezier:
 
         Args:
             func (Callable[..., npt.ArrayLike]): Function to interpolate.
-                Called as ``func(x0, x1, ...)`` where each ``xi`` has shape
-                ``(*grid_shape)`` (meshgrid broadcasting).  Must return an
-                array of shape ``(*grid_shape)`` for a scalar-valued function
-                or ``(*grid_shape, rank)`` for a vector-valued function.
+                Called as ``func(pts)`` where ``pts`` is a NumPy array of
+                parametric coordinates: shape ``(n_total,)`` for 1D or
+                ``(n_total, dim)`` for multi-dimensional (matching the
+                convention of :meth:`evaluate`).  Must return an array of
+                shape ``(n_total,)`` for scalar or ``(n_total, rank)`` for
+                vector-valued functions.
             n_pts (int | Sequence[int]): Number of sample points per
                 parametric direction.  A single ``int`` gives a 1D Bézier.
             degree (int | Sequence[int] | None): Polynomial degree per

@@ -446,11 +446,12 @@ def _interpolate_bezier(  # noqa: PLR0913
 
     Args:
         func (Callable[..., npt.ArrayLike]): Function to interpolate.  Called
-            as ``func(x0, x1, ...)`` where each ``xi`` is a 1D array of
-            shape ``(n_pts_i,)`` broadcast over a meshgrid (i.e. arrays with
-            shape ``(*grid_shape)``).  Must return an array of shape
-            ``(*grid_shape)`` for a scalar-valued function or
-            ``(*grid_shape, rank)`` for a vector-valued function.
+            as ``func(pts)`` where ``pts`` is a NumPy array of parametric
+            coordinates: shape ``(n_total,)`` for 1D or
+            ``(n_total, dim)`` for multi-dimensional (matching the convention
+            of :meth:`~pantr.bezier.Bezier.evaluate`).  Must return an array
+            of shape ``(n_total,)`` for a scalar-valued function or
+            ``(n_total, rank)`` for a vector-valued function.
         n_pts (int | Sequence[int]): Number of sample points per parametric
             direction.  A single ``int`` gives a 1D Bézier.
         degree (int | Sequence[int] | None): Polynomial degree per direction.
@@ -463,7 +464,7 @@ def _interpolate_bezier(  # noqa: PLR0913
               nodes on [0, 1].
             - ``"uniform"``: equispaced nodes on [0, 1].
             - A 1D ``ndarray``: custom nodes broadcast to all directions.
-            - A sequence of 1D ``ndarray``s: per-direction custom nodes.
+            - A sequence of 1D ``ndarray`` values: per-direction custom nodes.
         dtype (npt.DTypeLike): Floating dtype for nodes and output.
             Defaults to ``float64``.
         tol (float | None): SVD truncation tolerance. If *None*, uses a
@@ -492,14 +493,36 @@ def _interpolate_bezier(  # noqa: PLR0913
     degree_tuple = _validate_degree(degree, n_pts_tuple)
     ndim = len(n_pts_tuple)
 
-    # Resolve nodes and build meshgrid
+    # Resolve nodes and build flat points array
     node_arrays = _resolve_nodes(n_pts_tuple, nodes, dtype_obj)
-    grids = [node_arrays[0]] if ndim == 1 else list(np.meshgrid(*node_arrays, indexing="ij"))
+    n_total = int(np.prod(n_pts_tuple))
 
-    # Evaluate function and split into per-component arrays
-    values: npt.NDArray[np.floating[Any]] = np.asarray(func(*grids), dtype=dtype_obj)
+    if ndim == 1:
+        pts_flat = node_arrays[0]
+    else:
+        grids = np.meshgrid(*node_arrays, indexing="ij")
+        pts_flat = np.column_stack([g.ravel() for g in grids])
+
+    # Evaluate function and reshape to grid
+    raw: npt.NDArray[np.floating[Any]] = np.asarray(func(pts_flat), dtype=dtype_obj)
+    if raw.ndim == 1:
+        if raw.shape[0] != n_total:
+            raise ValueError(
+                f"Function returned shape {raw.shape}, expected ({n_total},) or ({n_total}, rank)."
+            )
+        values = raw.reshape(n_pts_tuple)
+    elif raw.ndim == 2:  # noqa: PLR2004
+        if raw.shape[0] != n_total:
+            raise ValueError(
+                f"Function returned shape {raw.shape}, expected ({n_total},) or ({n_total}, rank)."
+            )
+        values = raw.reshape(*n_pts_tuple, raw.shape[1])
+    else:
+        raise ValueError(
+            f"Function returned shape {raw.shape}, expected ({n_total},) or ({n_total}, rank)."
+        )
+
     components = _split_components(values, n_pts_tuple)
-
     ctrl = _fit_from_values(components, node_arrays, degree_tuple, tol)
     return BezierCls(ctrl, is_rational=False)
 

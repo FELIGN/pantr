@@ -99,7 +99,7 @@ class TestInterpolate2DScalar:
 
     def test_bilinear(self) -> None:
         """Interpolating a bilinear function with (2,2) points recovers it."""
-        b = Bezier.interpolate(lambda x, y: x + y, [2, 2])
+        b = Bezier.interpolate(lambda pts: pts[:, 0] + pts[:, 1], [2, 2])
         assert b.degree == (1, 1)
         assert b.rank == 1
         pts = np.array([[0.0, 0.0], [1.0, 0.0], [0.0, 1.0], [1.0, 1.0], [0.5, 0.5]])
@@ -108,7 +108,7 @@ class TestInterpolate2DScalar:
 
     def test_biquadratic(self) -> None:
         """Interpolating x^2 + y^2 with (3,3) points."""
-        b = Bezier.interpolate(lambda x, y: x**2 + y**2, [3, 3])
+        b = Bezier.interpolate(lambda pts: pts[:, 0] ** 2 + pts[:, 1] ** 2, [3, 3])
         assert b.degree == (2, 2)
         pts = np.array([[0.0, 0.0], [1.0, 1.0], [0.5, 0.5]])
         expected = pts[:, 0] ** 2 + pts[:, 1] ** 2
@@ -126,9 +126,8 @@ class TestInterpolate2DVector:
     def test_planar_surface(self) -> None:
         """A linear vector-valued 2D function is recovered exactly."""
 
-        def plane(
-            x: npt.NDArray[np.floating[Any]], y: npt.NDArray[np.floating[Any]]
-        ) -> npt.NDArray[np.floating[Any]]:
+        def plane(pts: npt.NDArray[np.floating[Any]]) -> npt.NDArray[np.floating[Any]]:
+            x, y = pts[:, 0], pts[:, 1]
             return np.stack([x, y, x + y], axis=-1)
 
         b = Bezier.interpolate(plane, [2, 2])
@@ -176,7 +175,7 @@ class TestNodeSelection:
         """User-provided custom nodes as a sequence of arrays (2D)."""
         nodes_x = np.array([0.0, 0.5, 1.0])
         nodes_y = np.array([0.0, 1.0])
-        b = Bezier.interpolate(lambda x, y: x + y, [3, 2], nodes=[nodes_x, nodes_y])
+        b = Bezier.interpolate(lambda pts: pts[:, 0] + pts[:, 1], [3, 2], nodes=[nodes_x, nodes_y])
         assert b.degree == (2, 1)
         pts = np.array([[0.5, 0.5]])
         nptest.assert_allclose(b.evaluate(pts), [1.0], atol=1e-12)
@@ -228,7 +227,7 @@ class TestInterpolateValidation:
         """Wrong number of node arrays for 2D raises ValueError."""
         with pytest.raises(ValueError, match="Expected 2"):
             Bezier.interpolate(
-                lambda x, y: x + y,
+                lambda pts: pts[:, 0] + pts[:, 1],
                 [3, 3],
                 nodes=[np.array([0.0, 0.5, 1.0])],
             )
@@ -270,7 +269,7 @@ class TestInterpolateDegree:
 
     def test_2d_least_squares(self) -> None:
         """Fitting x+y with degree=(1,1) from (3,3) samples."""
-        b = Bezier.interpolate(lambda x, y: x + y, [3, 3], degree=[1, 1])
+        b = Bezier.interpolate(lambda pts: pts[:, 0] + pts[:, 1], [3, 3], degree=[1, 1])
         assert b.degree == (1, 1)
         pts = np.array([[0.5, 0.5], [0.0, 1.0], [1.0, 0.0]])
         expected = pts[:, 0] + pts[:, 1]
@@ -289,7 +288,7 @@ class TestInterpolateDegree:
     def test_degree_length_mismatch_raises(self) -> None:
         """Degree sequence length != n_pts sequence length raises ValueError."""
         with pytest.raises(ValueError, match="entries"):
-            Bezier.interpolate(lambda x, y: x + y, [3, 3], degree=[1])
+            Bezier.interpolate(lambda pts: pts[:, 0] + pts[:, 1], [3, 3], degree=[1])
 
 
 # ---------------------------------------------------------------------------
