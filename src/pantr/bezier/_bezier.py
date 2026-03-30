@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from typing import TYPE_CHECKING, Any, Literal, overload
 
 import numpy as np
@@ -14,6 +14,7 @@ from ._bezier_compose import _compose_bezier
 from ._bezier_degree import _degree_elevate_bezier, _degree_reduce_bezier
 from ._bezier_derivative import _derivative_bezier
 from ._bezier_eval import _evaluate_bezier, _evaluate_bezier_deriv
+from ._bezier_interpolate import _interpolate_bezier
 from ._bezier_product import _multiply_bezier
 from ._bezier_restrict import _restrict_bezier
 from ._bezier_slice import _slice_bezier
@@ -823,6 +824,66 @@ class Bezier:
 
         cp = self._control_points.copy() if copy else self._control_points
         return BsplineCls(BsplineSpace(spaces), cp, self._is_rational)
+
+    @classmethod
+    def interpolate(
+        cls,
+        func: Callable[..., npt.ArrayLike],
+        n_pts: int | Sequence[int],
+        *,
+        nodes: (
+            Literal["chebyshev", "uniform"]
+            | npt.NDArray[np.floating[Any]]
+            | Sequence[npt.NDArray[np.floating[Any]]]
+            | None
+        ) = None,
+        dtype: npt.DTypeLike = np.float64,
+        tol: float | None = None,
+    ) -> Bezier:
+        """Interpolate a callable function into a Bézier in Bernstein form.
+
+        Evaluates ``func`` on a tensor-product grid of interpolation nodes
+        and recovers the Bernstein coefficients via truncated SVD.
+
+        The parametric dimension is determined by the length of ``n_pts``
+        (when given as a sequence) or defaults to 1 (when a scalar ``int``).
+
+        Args:
+            func (Callable[..., npt.ArrayLike]): Function to interpolate.
+                Called as ``func(x0, x1, ...)`` where each ``xi`` has shape
+                ``(*grid_shape)`` (meshgrid broadcasting).  Must return an
+                array of shape ``(*grid_shape)`` for a scalar-valued function
+                or ``(*grid_shape, rank)`` for a vector-valued function.
+            n_pts (int | Sequence[int]): Number of sample points per
+                parametric direction.  Determines degree = ``n_pts - 1``.
+                A single ``int`` gives a 1D Bézier.
+            nodes: Interpolation node selection.
+
+                - ``None`` or ``"chebyshev"`` (default): modified
+                  Chebyshev-Lobatto nodes on [0, 1].
+                - ``"uniform"``: equispaced nodes on [0, 1].
+                - A 1D ``ndarray``: custom nodes broadcast to all directions.
+                - A sequence of 1D ``ndarray``s: per-direction custom nodes.
+            dtype (npt.DTypeLike): Floating dtype. Defaults to ``float64``.
+            tol (float | None): SVD truncation tolerance. If *None*, uses a
+                default based on machine epsilon.
+
+        Returns:
+            Bezier: A non-rational Bézier whose evaluation approximates
+            ``func``.  Degree is ``n_pts - 1`` per direction.
+
+        Raises:
+            ValueError: If ``n_pts`` values are < 1, or *nodes* is
+                inconsistent with *n_pts*.
+            ValueError: If the callable returns an unexpected shape.
+
+        Example:
+            >>> import numpy as np
+            >>> b = Bezier.interpolate(lambda x: x**2, 5)
+            >>> b.degree
+            (4,)
+        """
+        return _interpolate_bezier(func, n_pts, nodes=nodes, dtype=dtype, tol=tol)
 
     @classmethod
     def from_bspline(cls, bspline: Bspline, *, copy: bool = True) -> Bezier:

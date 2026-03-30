@@ -10,12 +10,11 @@ import numpy.typing as npt
 import pytest
 
 from pantr.basis._basis_core import _tabulate_Bernstein_basis_1D_core
+from pantr.bezier._bezier_interpolate import _bernstein_interpolate, _bernstein_interpolate_1d
 from pantr.bezier._resultant import (
     _auto_reduction,
     _bernstein_derivative_1d,
     _bernstein_derivative_nd,
-    _bernstein_interpolate,
-    _bernstein_interpolate_1d,
     _discriminant,
     _discriminant_order,
     _normalise,
