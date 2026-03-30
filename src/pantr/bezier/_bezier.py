@@ -828,7 +828,7 @@ class Bezier:
     @classmethod
     def interpolate(
         cls,
-        func: Callable[..., npt.ArrayLike],
+        func: Callable[[PointsLattice], npt.ArrayLike],
         n_pts: int | Sequence[int],
         *,
         degree: int | Sequence[int] | None = None,
@@ -856,11 +856,10 @@ class Bezier:
         The output dtype is inferred from the return value of ``func``.
 
         Args:
-            func (Callable[..., npt.ArrayLike]): Function to interpolate.
-                Called as ``func(lattice)`` where ``lattice`` is a
-                :class:`~pantr.quad.PointsLattice` representing the
-                tensor-product sampling grid.  The callable may also accept
-                a plain ``ndarray``.  Must return an array of shape
+            func (Callable[[PointsLattice], npt.ArrayLike]): Function to
+                interpolate.  Called as ``func(lattice)`` where ``lattice``
+                is a :class:`~pantr.quad.PointsLattice` representing the
+                tensor-product sampling grid.  Must return an array of shape
                 ``(n_total,)`` for scalar or ``(n_total, rank)`` for
                 vector-valued functions, where ``n_total = prod(n_pts)``.
             n_pts (int | Sequence[int]): Number of sample points per
@@ -899,7 +898,7 @@ class Bezier:
         Example:
             >>> import numpy as np
             >>> b = Bezier.interpolate(
-            ...     lambda lat: lat.pts_per_dir[0] ** 2, 5
+            ...     lambda lat: lat.get_all_points()[:, 0] ** 2, [5]
             ... )
             >>> b.degree
             (4,)
