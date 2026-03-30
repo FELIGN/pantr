@@ -12,8 +12,8 @@ from numpy import typing as npt
 
 from ..bspline import Bspline, BsplineSpace
 from ..transform import AffineTransform
-from ._compat import compat
-from ._primitives import _linear_space_1d, circle
+from ._compat import make_compat
+from ._primitives import _linear_space_1d, create_circle
 from ._validation import _PHYSICAL_DIM, _pad_to_3d, _promote_to_rational
 
 _MAX_DIM_FOR_OPERATIONS = 2
@@ -39,8 +39,8 @@ def extrude(bspline: Bspline, displacement: npt.ArrayLike) -> Bspline:
         ValueError: If ``bspline.dim > 2``.
 
     Example:
-        >>> from pantr.cad import circle, extrude
-        >>> cyl = extrude(circle(), [0, 0, 1])
+        >>> from pantr.cad import create_circle, extrude
+        >>> cyl = extrude(create_circle(), [0, 0, 1])
         >>> cyl.dim
         2
     """
@@ -69,14 +69,14 @@ def extrude(bspline: Bspline, displacement: npt.ArrayLike) -> Bspline:
     return Bspline(new_space, new_cp, is_rational=bspline.is_rational)
 
 
-def ruled(bspline1: Bspline, bspline2: Bspline) -> Bspline:
+def create_ruled(bspline1: Bspline, bspline2: Bspline) -> Bspline:
     """Construct a ruled surface or volume between two B-splines.
 
     Creates a new B-spline by linearly interpolating control points
     between *bspline1* (at parameter 0) and *bspline2* (at parameter 1)
     along a new last parametric axis with degree 1.
 
-    The two inputs are first made compatible via :func:`compat` so they
+    The two inputs are first made compatible via :func:`make_compat` so they
     share the same degree and knot vectors.  If one is rational and the
     other is not, the non-rational one is promoted.
 
@@ -92,8 +92,8 @@ def ruled(bspline1: Bspline, bspline2: Bspline) -> Bspline:
         ValueError: If either input has ``dim > 2``.
 
     Example:
-        >>> from pantr.cad import circle, ruled
-        >>> annulus = ruled(circle(radius=0.5), circle(radius=1.0))
+        >>> from pantr.cad import create_circle, create_ruled
+        >>> annulus = create_ruled(create_circle(radius=0.5), create_circle(radius=1.0))
         >>> annulus.dim
         2
     """
@@ -104,7 +104,7 @@ def ruled(bspline1: Bspline, bspline2: Bspline) -> Bspline:
     if bspline1.dim > _MAX_DIM_FOR_OPERATIONS:
         raise ValueError(f"ruled requires dim <= {_MAX_DIM_FOR_OPERATIONS}, got {bspline1.dim}.")
 
-    b1, b2 = compat(bspline1, bspline2)
+    b1, b2 = make_compat(bspline1, bspline2)
 
     # Promote to rational if needed
     is_rational = b1.is_rational or b2.is_rational
@@ -249,7 +249,7 @@ def revolve(
     arc construction, and transformed back.
 
     The angular direction inherits the same span/continuity structure
-    as :func:`circle`: one span per 90 degrees, C0 at arc junctions.
+    as :func:`create_circle`: one span per 90 degrees, C0 at arc junctions.
 
     Args:
         bspline: Input curve (dim=1) or surface (dim=2) with rank 3.
@@ -257,7 +257,7 @@ def revolve(
         axis: Rotation axis.  An ``int`` in ``{0, 1, 2}`` selects
             a coordinate axis.  An array-like of length 3 specifies
             an arbitrary axis direction (normalised internally).
-        angle: Sweep specification (same as :func:`circle`).
+        angle: Sweep specification (same as :func:`create_circle`).
 
     Returns:
         Bspline: A rational B-spline with ``dim + 1`` dimensions.
@@ -279,7 +279,7 @@ def revolve(
     nrb_transformed = nrb.transform(t)
     assert nrb_transformed is not None
 
-    arc = circle(angle=angle)
+    arc = create_circle(angle=angle)
     qw = _revolve_control_points(np.asarray(nrb_transformed.control_points, dtype=np.float64), arc)
 
     spaces = [*nrb_transformed.space.spaces, *arc.space.spaces]

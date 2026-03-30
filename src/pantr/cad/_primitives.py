@@ -1,4 +1,6 @@
-"""Constructive geometry primitives: line, circle, bilinear, and trilinear.
+"""Constructive geometry primitives.
+
+Defines create_line, create_circle, create_bilinear, and create_trilinear.
 
 Provides functions to create basic B-spline objects from geometric
 descriptions (points, corners, radii, angles).  All primitives produce
@@ -34,7 +36,7 @@ def _linear_space_1d(dtype: npt.DTypeLike = np.float64) -> BsplineSpace1D:
     return BsplineSpace1D(knots, degree=1)
 
 
-def line(
+def create_line(
     p0: npt.ArrayLike = (0.0, 0.0, 0.0),
     p1: npt.ArrayLike = (1.0, 0.0, 0.0),
 ) -> Bspline:
@@ -52,7 +54,7 @@ def line(
         Bspline: A 1D, degree-1, rank-3, non-rational B-spline curve.
 
     Example:
-        >>> crv = line([0, 0], [1, 1])
+        >>> crv = create_line([0, 0], [1, 1])
         >>> crv.degree
         (1,)
         >>> crv.rank
@@ -89,7 +91,7 @@ def _rotate_weighted(
     return out
 
 
-def circle(
+def create_circle(
     radius: float = 1.0,
     center: npt.ArrayLike | None = None,
     angle: float | tuple[float, float] | None = None,
@@ -123,7 +125,7 @@ def circle(
         Bspline: A 1D, degree-2, rank-3, rational B-spline curve.
 
     Example:
-        >>> crv = circle()
+        >>> crv = create_circle()
         >>> crv.degree
         (2,)
         >>> crv.is_rational
@@ -240,7 +242,7 @@ def _build_arc(
     return cw
 
 
-def bilinear(corners: npt.ArrayLike | None = None) -> Bspline:
+def create_bilinear(corners: npt.ArrayLike | None = None) -> Bspline:
     """Construct a bilinear B-spline surface from four corner points.
 
     Creates a degree (1, 1), non-rational B-spline surface with 2 x 2
@@ -271,7 +273,7 @@ def bilinear(corners: npt.ArrayLike | None = None) -> Bspline:
             with ``1 <= rank <= 3``.
 
     Example:
-        >>> srf = bilinear()
+        >>> srf = create_bilinear()
         >>> srf.degree
         (1, 1)
         >>> srf.dim
@@ -299,7 +301,7 @@ def bilinear(corners: npt.ArrayLike | None = None) -> Bspline:
     return Bspline(space, cp)
 
 
-def trilinear(corners: npt.ArrayLike | None = None) -> Bspline:
+def create_trilinear(corners: npt.ArrayLike | None = None) -> Bspline:
     """Construct a trilinear B-spline volume from eight corner points.
 
     Creates a degree (1, 1, 1), non-rational B-spline volume with
@@ -334,7 +336,7 @@ def trilinear(corners: npt.ArrayLike | None = None) -> Bspline:
             with ``1 <= rank <= 3``.
 
     Example:
-        >>> vol = trilinear()
+        >>> vol = create_trilinear()
         >>> vol.degree
         (1, 1, 1)
         >>> vol.dim

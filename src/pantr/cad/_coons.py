@@ -1,7 +1,7 @@
 """Coons patch and volume constructions.
 
-Provides :func:`coons_surface` (bilinear blending from 4 boundary curves)
-and :func:`coons_volume` (trilinear blending from 6 boundary faces).
+Provides :func:`create_coons_surface` (bilinear blending from 4 boundary curves)
+and :func:`create_coons_volume` (trilinear blending from 6 boundary faces).
 """
 
 from __future__ import annotations
@@ -10,9 +10,9 @@ import numpy as np
 from numpy import typing as npt
 
 from ..bspline import Bspline, BsplineSpace, BsplineSpace1D
-from ._compat import compat
-from ._operations import ruled
-from ._primitives import _linear_space_1d, bilinear, trilinear
+from ._compat import make_compat
+from ._operations import create_ruled
+from ._primitives import _linear_space_1d, create_bilinear, create_trilinear
 from ._validation import _promote_to_rational
 
 
@@ -39,7 +39,7 @@ def _combine_control_points(
     return cp, is_rational
 
 
-def coons_surface(
+def create_coons_surface(
     curves: tuple[tuple[Bspline, Bspline], tuple[Bspline, Bspline]],
 ) -> Bspline:
     """Construct a Coons patch from four boundary curves.
@@ -79,8 +79,8 @@ def coons_surface(
             raise ValueError(f"All curves must be 1D, got dim={c.dim}.")
 
     # Make opposite pairs compatible
-    c_u0, c_u1 = compat(c_u0, c_u1)
-    c_v0, c_v1 = compat(c_v0, c_v1)
+    c_u0, c_u1 = make_compat(c_u0, c_u1)
+    c_v0, c_v1 = make_compat(c_v0, c_v1)
 
     # Extract and verify corner points
     p00 = np.asarray(c_u0.boundary(0, 0), dtype=np.float64)
@@ -91,18 +91,18 @@ def coons_surface(
     _verify_corners_2d((p00, p10, p01, p11), c_v0, c_v1)
 
     # R0: ruled in v from C_v0 to C_v1, then transpose to (u, v)
-    r0 = ruled(c_v0, c_v1).permute_directions([1, 0])
+    r0 = create_ruled(c_v0, c_v1).permute_directions([1, 0])
     # R1: ruled in u from C_u0 to C_u1 (already in (u, v) order)
-    r1 = ruled(c_u0, c_u1)
+    r1 = create_ruled(c_u0, c_u1)
     # B: bilinear from corners
     corners = np.zeros((2, 2, p00.size), dtype=np.float64)
     corners[0, 0] = p00
     corners[1, 0] = p10
     corners[0, 1] = p01
     corners[1, 1] = p11
-    b = bilinear(corners)
+    b = create_bilinear(corners)
 
-    r0, r1, b = compat(r0, r1, b)
+    r0, r1, b = make_compat(r0, r1, b)
 
     cp, is_rational = _combine_control_points([r0, r1, b], [+1, +1, -1])
     return Bspline(r0.space, cp, is_rational=is_rational)
@@ -145,7 +145,7 @@ def _verify_corners_2d(
             raise ValueError(f"Corner {label} mismatch: u-curve gives {pu}, v-curve gives {qv}.")
 
 
-def coons_volume(
+def create_coons_volume(
     faces: tuple[
         tuple[Bspline, Bspline],
         tuple[Bspline, Bspline],
@@ -189,9 +189,9 @@ def coons_volume(
             raise ValueError(f"All faces must be 2D B-splines, got dim={f.dim}.")
 
     # Make opposite face pairs compatible
-    face_u0, face_u1 = compat(face_u0, face_u1)
-    face_v0, face_v1 = compat(face_v0, face_v1)
-    face_w0, face_w1 = compat(face_w0, face_w1)
+    face_u0, face_u1 = make_compat(face_u0, face_u1)
+    face_v0, face_v1 = make_compat(face_v0, face_v1)
+    face_w0, face_w1 = make_compat(face_w0, face_w1)
 
     # Extract edges from faces
     edges = _extract_edges((face_u0, face_u1), (face_v0, face_v1), (face_w0, face_w1))
@@ -200,9 +200,9 @@ def coons_volume(
     corners = _extract_corners(edges)
 
     # Build 3 ruled volumes
-    r_u = ruled(face_u0, face_u1).permute_directions([2, 0, 1])
-    r_v = ruled(face_v0, face_v1).permute_directions([0, 2, 1])
-    r_w = ruled(face_w0, face_w1)  # already (u, v, w)
+    r_u = create_ruled(face_u0, face_u1).permute_directions([2, 0, 1])
+    r_v = create_ruled(face_v0, face_v1).permute_directions([0, 2, 1])
+    r_w = create_ruled(face_w0, face_w1)  # already (u, v, w)
 
     # Build 3 bilinear blend volumes
     # B_uv: raw axes (u, v, w) → permute to (u, v, w) = identity
@@ -231,10 +231,10 @@ def coons_volume(
     )
 
     # Build trilinear volume
-    t = trilinear(corners)
+    t = create_trilinear(corners)
 
     # Make all 7 terms compatible and combine
-    r_u, r_v, r_w, b_uv, b_uw, b_vw, t = compat(r_u, r_v, r_w, b_uv, b_uw, b_vw, t)
+    r_u, r_v, r_w, b_uv, b_uw, b_vw, t = make_compat(r_u, r_v, r_w, b_uv, b_uw, b_vw, t)
 
     cp, is_rational = _combine_control_points(
         [r_u, r_v, r_w, b_uv, b_uw, b_vw, t],
@@ -340,7 +340,7 @@ def _build_bilinear_volume(
     Returns:
         Bspline: A 3D B-spline volume in (u, v, w) order.
     """
-    e_00, e_10, e_01, e_11 = compat(e_00, e_10, e_01, e_11)
+    e_00, e_10, e_01, e_11 = make_compat(e_00, e_10, e_01, e_11)
 
     is_rational = any(e.is_rational for e in (e_00, e_10, e_01, e_11))
     if is_rational:

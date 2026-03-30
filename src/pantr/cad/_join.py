@@ -9,7 +9,7 @@ import numpy as np
 from numpy import typing as npt
 
 from ..bspline import Bspline, BsplineSpace, BsplineSpace1D
-from ._compat import _remap_bspline, compat
+from ._compat import _remap_bspline, make_compat
 from ._validation import _promote_to_rational
 
 
@@ -37,7 +37,7 @@ def _prepare_for_join(
     # Make compatible on non-join axes
     non_join = [i for i in range(dim) if i != axis]
     if non_join:
-        b1, b2 = compat(bspline1, bspline2, axes=non_join)
+        b1, b2 = make_compat(bspline1, bspline2, axes=non_join)
     else:
         b1, b2 = bspline1, bspline2
 

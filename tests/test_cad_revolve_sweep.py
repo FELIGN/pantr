@@ -7,7 +7,7 @@ import pytest
 from numpy.testing import assert_allclose
 
 from pantr.bspline import Bspline, BsplineSpace, BsplineSpace1D
-from pantr.cad import bilinear, circle, extrude, line, revolve, sweep
+from pantr.cad import create_bilinear, create_circle, create_line, extrude, revolve, sweep
 
 _RANK_3D = 3
 
@@ -17,14 +17,14 @@ class TestRevolve:
 
     def test_line_to_annulus(self) -> None:
         """Test revolving a radial line produces a full annulus."""
-        crv = line([1, 0, 0], [2, 0, 0])
+        crv = create_line([1, 0, 0], [2, 0, 0])
         srf = revolve(crv, point=0, axis=2)
         assert srf.dim == 2  # noqa: PLR2004
         assert srf.is_rational
 
     def test_revolve_points_on_cylinder(self) -> None:
         """Test revolving a vertical line around Z produces a cylinder."""
-        crv = line([1, 0, 0], [1, 0, 3])
+        crv = create_line([1, 0, 0], [1, 0, 3])
         srf = revolve(crv, point=0, axis=2)
         # Evaluate on a grid
         u = np.linspace(0, 1, 10)
@@ -36,7 +36,7 @@ class TestRevolve:
 
     def test_revolve_quarter_turn(self) -> None:
         """Test revolving a line by pi/2 around Z."""
-        crv = line([1, 0, 0], [2, 0, 0])
+        crv = create_line([1, 0, 0], [2, 0, 0])
         srf = revolve(crv, point=0, axis=2, angle=np.pi / 2)
         # At v=0 should be on +X axis, at v=1 on +Y axis
         pt_start = srf.evaluate(np.array([[0.5, 0.0]]))
@@ -47,7 +47,7 @@ class TestRevolve:
 
     def test_revolve_around_y_axis(self) -> None:
         """Test revolving around the Y axis."""
-        crv = line([1, 0, 0], [1, 0, 1])
+        crv = create_line([1, 0, 0], [1, 0, 1])
         srf = revolve(crv, point=0, axis=1, angle=np.pi / 2)
         # At v=1, (x, z) should rotate to (z, -x) for Y-axis rotation
         pt = srf.evaluate(np.array([[0.0, 1.0]]))
@@ -55,7 +55,7 @@ class TestRevolve:
 
     def test_revolve_with_center(self) -> None:
         """Test revolving around an offset point."""
-        crv = line([3, 0, 0], [3, 0, 1])
+        crv = create_line([3, 0, 0], [3, 0, 1])
         srf = revolve(crv, point=[2, 0, 0], axis=2)
         # At v=0, should be at original position
         pt = srf.evaluate(np.array([[0.0, 0.0]]))
@@ -70,7 +70,7 @@ class TestRevolve:
 
     def test_revolve_negative_angle(self) -> None:
         """Test revolving with a negative angle (clockwise)."""
-        crv = line([1, 0, 0], [2, 0, 0])
+        crv = create_line([1, 0, 0], [2, 0, 0])
         srf = revolve(crv, point=0, axis=2, angle=-np.pi / 2)
         pt = srf.evaluate(np.array([[0.5, 1.0]]))
         r = 1.5
@@ -78,7 +78,7 @@ class TestRevolve:
 
     def test_revolve_angle_tuple(self) -> None:
         """Test revolving with (start, end) angle tuple."""
-        crv = line([1, 0, 0], [2, 0, 0])
+        crv = create_line([1, 0, 0], [2, 0, 0])
         srf = revolve(crv, point=0, axis=2, angle=(np.pi / 2, np.pi))
         # At v=0, should be at angle pi/2 (on +Y axis)
         pt0 = srf.evaluate(np.array([[0.5, 0.0]]))
@@ -90,7 +90,7 @@ class TestRevolve:
 
     def test_revolve_dim_too_large_raises(self) -> None:
         """Test that revolving a volume raises ValueError."""
-        vol = extrude(bilinear(), [0, 0, 1])
+        vol = extrude(create_bilinear(), [0, 0, 1])
         with pytest.raises(ValueError, match="dim"):
             revolve(vol, point=0, axis=2)
 
@@ -108,8 +108,8 @@ class TestSweep:
 
     def test_sweep_line_along_line(self) -> None:
         """Test sweeping a line along a line produces a bilinear surface."""
-        section = line([0, 0, 0], [1, 0, 0])
-        trajectory = line([0, 0, 0], [0, 1, 0])
+        section = create_line([0, 0, 0], [1, 0, 0])
+        trajectory = create_line([0, 0, 0], [0, 1, 0])
         srf = sweep(section, trajectory)
         assert srf.dim == 2  # noqa: PLR2004
         assert srf.rank == _RANK_3D
@@ -131,8 +131,8 @@ class TestSweep:
 
     def test_sweep_preserves_section_geometry(self) -> None:
         """Test that at trajectory start the section geometry is preserved."""
-        section = circle(radius=2.0, angle=np.pi / 2)
-        trajectory = line([0, 0, 0], [0, 0, 5])
+        section = create_circle(radius=2.0, angle=np.pi / 2)
+        trajectory = create_line([0, 0, 0], [0, 0, 5])
         srf = sweep(section, trajectory)
         # At v=0 (trajectory start), should match the section
         u = np.linspace(0, 1, 20)
@@ -143,22 +143,22 @@ class TestSweep:
 
     def test_sweep_trajectory_offset(self) -> None:
         """Test that the trajectory adds an offset."""
-        section = line([0, 0, 0], [1, 0, 0])
-        trajectory = line([0, 0, 0], [0, 0, 3])
+        section = create_line([0, 0, 0], [1, 0, 0])
+        trajectory = create_line([0, 0, 0], [0, 0, 3])
         srf = sweep(section, trajectory)
         pt = srf.evaluate(np.array([[0.5, 1.0]]))
         assert_allclose(pt, [0.5, 0, 3], atol=1e-14)
 
     def test_sweep_section_dim2_raises_for_dim3(self) -> None:
         """Test that section dim > 2 raises ValueError."""
-        vol = extrude(bilinear(), [0, 0, 1])
-        traj = line([0, 0, 0], [1, 0, 0])
+        vol = extrude(create_bilinear(), [0, 0, 1])
+        traj = create_line([0, 0, 0], [1, 0, 0])
         with pytest.raises(ValueError, match=r"section\.dim"):
             sweep(vol, traj)
 
     def test_sweep_trajectory_dim2_raises(self) -> None:
         """Test that trajectory dim != 1 raises ValueError."""
-        sec = line([0, 0, 0], [1, 0, 0])
-        traj = bilinear()
+        sec = create_line([0, 0, 0], [1, 0, 0])
+        traj = create_bilinear()
         with pytest.raises(ValueError, match=r"trajectory\.dim"):
             sweep(sec, traj)
