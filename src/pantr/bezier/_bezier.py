@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from typing import TYPE_CHECKING, Any, Literal, overload
 
 import numpy as np
@@ -14,6 +14,7 @@ from ._bezier_compose import _compose_bezier
 from ._bezier_degree import _degree_elevate_bezier, _degree_reduce_bezier
 from ._bezier_derivative import _derivative_bezier
 from ._bezier_eval import _evaluate_bezier, _evaluate_bezier_deriv
+from ._bezier_interpolate import _fit_bezier, _interpolate_bezier
 from ._bezier_product import _multiply_bezier
 from ._bezier_restrict import _restrict_bezier
 from ._bezier_slice import _slice_bezier
@@ -823,6 +824,153 @@ class Bezier:
 
         cp = self._control_points.copy() if copy else self._control_points
         return BsplineCls(BsplineSpace(spaces), cp, self._is_rational)
+
+    @classmethod
+    def interpolate(
+        cls,
+        func: Callable[..., npt.ArrayLike],
+        n_pts: int | Sequence[int],
+        *,
+        degree: int | Sequence[int] | None = None,
+        nodes: (
+            Literal["chebyshev", "uniform"]
+            | PointsLattice
+            | npt.NDArray[np.floating[Any]]
+            | Sequence[npt.NDArray[np.floating[Any]]]
+            | None
+        ) = None,
+        tol: float | None = None,
+    ) -> Bezier:
+        """Interpolate a callable function into a Bézier in Bernstein form.
+
+        Evaluates ``func`` on a tensor-product grid of interpolation nodes
+        and recovers the Bernstein coefficients by solving the Bernstein
+        Vandermonde system via truncated SVD pseudo-inverse.  The SVD
+        regularises the solve, which is important because the Bernstein
+        Vandermonde matrix becomes ill-conditioned at high polynomial
+        degree.
+
+        The parametric dimension is determined by the length of ``n_pts``
+        (when given as a sequence) or defaults to 1 (when a scalar ``int``).
+
+        The output dtype is inferred from the return value of ``func``.
+
+        Args:
+            func (Callable[..., npt.ArrayLike]): Function to interpolate.
+                Called as ``func(lattice)`` where ``lattice`` is a
+                :class:`~pantr.quad.PointsLattice` representing the
+                tensor-product sampling grid.  The callable may also accept
+                a plain ``ndarray``.  Must return an array of shape
+                ``(n_total,)`` for scalar or ``(n_total, rank)`` for
+                vector-valued functions, where ``n_total = prod(n_pts)``.
+            n_pts (int | Sequence[int]): Number of sample points per
+                parametric direction.  A single ``int`` gives a 1D Bézier.
+            degree (int | Sequence[int] | None): Polynomial degree per
+                direction.  If *None* (default), ``degree = n_pts - 1``
+                (exact interpolation).  If provided, must satisfy
+                ``degree < n_pts`` in each direction; the result is a
+                least-squares approximation.
+            nodes: Interpolation node selection.
+
+                - ``None`` or ``"chebyshev"`` (default): modified
+                  Chebyshev-Lobatto nodes on [0, 1].
+                - ``"uniform"``: equispaced nodes on [0, 1].
+                - A :class:`~pantr.quad.PointsLattice`: custom
+                  tensor-product grid.
+                - A 1D ``ndarray``: custom nodes broadcast to all directions.
+                - A sequence of 1D ``ndarray`` values: per-direction custom
+                  nodes.
+            tol (float | None): Truncation tolerance for the SVD
+                pseudo-inverse.  Singular values below
+                ``tol * sigma_max`` are treated as zero, which
+                regularises the ill-conditioned Bernstein Vandermonde
+                matrix at high degree.  If *None*, defaults to
+                ``100 * machine_epsilon``.
+
+        Returns:
+            Bezier: A non-rational Bézier whose evaluation approximates
+            ``func``.
+
+        Raises:
+            ValueError: If ``n_pts`` values are < 1, *degree* >= *n_pts*,
+                or *nodes* is inconsistent with *n_pts*.
+            ValueError: If the callable returns an unexpected shape.
+
+        Example:
+            >>> import numpy as np
+            >>> b = Bezier.interpolate(
+            ...     lambda lat: lat.pts_per_dir[0] ** 2, 5
+            ... )
+            >>> b.degree
+            (4,)
+        """
+        return _interpolate_bezier(func, n_pts, degree=degree, nodes=nodes, tol=tol)
+
+    @classmethod
+    def fit(
+        cls,
+        values: npt.ArrayLike,
+        nodes: (
+            PointsLattice | npt.NDArray[np.floating[Any]] | Sequence[npt.NDArray[np.floating[Any]]]
+        ),
+        *,
+        degree: int | Sequence[int] | None = None,
+        tol: float | None = None,
+    ) -> Bezier:
+        """Construct a Bézier from pre-evaluated sample values at known nodes.
+
+        Recovers the Bernstein coefficients by solving the Bernstein
+        Vandermonde system via truncated SVD pseudo-inverse, which
+        regularises the ill-conditioned Vandermonde at high degree.
+
+        The output dtype is inferred from *values*.
+
+        Supports two point layouts:
+
+        - **Tensor-product** (a :class:`~pantr.quad.PointsLattice`, a single
+          1D array, or a sequence of 1D arrays): ``values`` must have shape
+          ``(*n_pts_per_dir)`` (scalar) or ``(*n_pts_per_dir, rank)``
+          (vector).
+        - **Scattered** (a 2D ``ndarray`` of shape ``(n_pts, dim)``):
+          ``values`` must have shape ``(n_pts,)`` (scalar) or
+          ``(n_pts, rank)`` (vector).  ``degree`` is required.
+
+        Args:
+            values (npt.ArrayLike): Sample values at the nodes.
+            nodes: Interpolation nodes.
+
+                - A :class:`~pantr.quad.PointsLattice`: tensor-product grid.
+                - A 1D ``ndarray``: 1D tensor-product (single direction).
+                - A sequence of 1D ``ndarray`` values: N-D tensor-product.
+                - A 2D ``ndarray`` of shape ``(n_pts, dim)``: scattered
+                  points.
+            degree (int | Sequence[int] | None): Polynomial degree per
+                direction.  Required for scattered nodes.  If *None*
+                (default) for tensor-product nodes, ``degree = n_pts - 1``
+                (exact interpolation).
+            tol (float | None): Truncation tolerance for the SVD
+                pseudo-inverse.  Singular values below
+                ``tol * sigma_max`` are treated as zero, which
+                regularises the ill-conditioned Bernstein Vandermonde
+                matrix at high degree.  If *None*, defaults to
+                ``100 * machine_epsilon``.
+
+        Returns:
+            Bezier: A non-rational Bézier.
+
+        Raises:
+            ValueError: If *nodes* are inconsistent with *values*, *degree*
+                is invalid, or *degree* is missing for scattered nodes.
+
+        Example:
+            >>> import numpy as np
+            >>> nodes = np.array([0.0, 0.5, 1.0])
+            >>> vals = nodes**2
+            >>> b = Bezier.fit(vals, nodes)
+            >>> b.degree
+            (2,)
+        """
+        return _fit_bezier(values, nodes, degree=degree, tol=tol)
 
     @classmethod
     def from_bspline(cls, bspline: Bspline, *, copy: bool = True) -> Bezier:
