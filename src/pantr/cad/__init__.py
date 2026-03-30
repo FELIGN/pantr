@@ -3,42 +3,42 @@
 This package provides CAD-style functions for creating and combining
 B-spline geometric objects:
 
-- **Primitives**: :func:`line`, :func:`circle`, :func:`bilinear`,
-  :func:`trilinear`.
-- **Derived primitives**: :func:`rectangle`, :func:`disk`,
-  :func:`cylinder`.
-- **Compatibility**: :func:`compat`.
-- **Operations**: :func:`extrude`, :func:`revolve`, :func:`ruled`,
+- **Primitives**: :func:`create_line`, :func:`create_circle`,
+  :func:`create_bilinear`, :func:`create_trilinear`.
+- **Derived primitives**: :func:`create_rectangle`, :func:`create_disk`,
+  :func:`create_cylinder`.
+- **Compatibility**: :func:`make_compat`.
+- **Operations**: :func:`extrude`, :func:`revolve`, :func:`create_ruled`,
   :func:`sweep`.
-- **Coons blending**: :func:`coons_surface`, :func:`coons_volume`.
+- **Coons blending**: :func:`create_coons_surface`, :func:`create_coons_volume`.
 - **Assembly**: :func:`join`.
 """
 
-from ._compat import compat
-from ._coons import coons_surface, coons_volume
-from ._derived import cylinder, disk, rectangle
+from ._compat import make_compat
+from ._coons import create_coons_surface, create_coons_volume
+from ._derived import create_cylinder, create_disk, create_rectangle
 from ._join import join
-from ._operations import extrude, revolve, ruled, sweep
-from ._primitives import bilinear, circle, line, trilinear
+from ._operations import create_ruled, extrude, revolve, sweep
+from ._primitives import create_bilinear, create_circle, create_line, create_trilinear
 from ._validation import _PHYSICAL_DIM, _pad_to_3d, _promote_to_rational
 
 __all__ = [
     "_PHYSICAL_DIM",
     "_pad_to_3d",
     "_promote_to_rational",
-    "bilinear",
-    "circle",
-    "compat",
-    "coons_surface",
-    "coons_volume",
-    "cylinder",
-    "disk",
+    "create_bilinear",
+    "create_circle",
+    "create_coons_surface",
+    "create_coons_volume",
+    "create_cylinder",
+    "create_disk",
+    "create_line",
+    "create_rectangle",
+    "create_ruled",
+    "create_trilinear",
     "extrude",
     "join",
-    "line",
-    "rectangle",
+    "make_compat",
     "revolve",
-    "ruled",
     "sweep",
-    "trilinear",
 ]

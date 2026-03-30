@@ -1,8 +1,8 @@
 """B-spline compatibility: match degrees and knot vectors across objects.
 
-Provides :func:`compat`, which takes N B-splines and returns new objects
+Provides :func:`make_compat`, which takes N B-splines and returns new objects
 that share the same degree and knot vector along each specified axis.
-This is the prerequisite for operations like ``ruled``, ``coons``, and
+This is the prerequisite for operations like ``create_ruled``, ``coons``, and
 ``join`` that combine control points from different B-splines.
 """
 
@@ -97,7 +97,7 @@ def _merge_breakpoints_n_way(
     return union_bp, deficits
 
 
-def compat(
+def make_compat(
     *bsplines: Bspline,
     axes: int | Sequence[int] | None = None,
 ) -> list[Bspline]:
