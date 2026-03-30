@@ -11,20 +11,20 @@ Bernstein algorithms implemented in ``_bezier_core``, ``_bezier_eval``,
 Root-finding exports:
 
 - :func:`find_roots` -- find all roots (single or batch, auto-dispatch).
-- :func:`solve_monotone_root` -- fast solver for monotone polynomials (single or batch).
+- :func:`find_monotone_root` -- fast solver for monotone polynomials (single or batch).
 """
 
 from ._bezier import Bezier
 from ._bezier_interpolate import fit_bezier, interpolate_bezier
 from ._root_finding import (
+    find_monotone_root,
     find_roots,
-    solve_monotone_root,
 )
 
 __all__ = [
     "Bezier",
+    "find_monotone_root",
     "find_roots",
     "fit_bezier",
     "interpolate_bezier",
-    "solve_monotone_root",
 ]

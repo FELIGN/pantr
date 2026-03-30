@@ -6,7 +6,7 @@ import numpy as np
 import numpy.typing as npt
 import pytest
 
-from pantr.bspline import Bspline, BsplineSpace, BsplineSpace1D, create_uniform_periodic
+from pantr.bspline import Bspline, BsplineSpace, BsplineSpace1D, create_uniform_periodic_knots
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -70,7 +70,7 @@ def _make_rational_surface(dtype: type = np.float64) -> Bspline:
 
 def _make_periodic_curve(dtype: type = np.float64) -> Bspline:
     """Create a periodic cubic B-spline curve."""
-    knots = create_uniform_periodic(num_intervals=4, degree=3, continuity=2, dtype=dtype)
+    knots = create_uniform_periodic_knots(num_intervals=4, degree=3, continuity=2, dtype=dtype)
     space_1d = BsplineSpace1D(knots, 3, periodic=True)
     space = BsplineSpace([space_1d])
     rng = np.random.default_rng(55)
@@ -80,7 +80,7 @@ def _make_periodic_curve(dtype: type = np.float64) -> Bspline:
 
 def _make_periodic_surface(dtype: type = np.float64) -> Bspline:
     """Create a surface with one periodic direction."""
-    knots_u = create_uniform_periodic(num_intervals=3, degree=2, continuity=1, dtype=dtype)
+    knots_u = create_uniform_periodic_knots(num_intervals=3, degree=2, continuity=1, dtype=dtype)
     space_u = BsplineSpace1D(knots_u, 2, periodic=True)
     space_v = BsplineSpace1D([0.0, 0.0, 0.0, 1.0, 1.0, 1.0], 2)
     space = BsplineSpace([space_u, space_v])

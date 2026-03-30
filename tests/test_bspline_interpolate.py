@@ -11,12 +11,12 @@ import pytest
 
 from pantr.bspline import (
     BsplineSpace1D,
-    create_uniform_open,
-    create_uniform_periodic,
+    create_greville_lattice,
+    create_uniform_open_knots,
+    create_uniform_periodic_knots,
     create_uniform_space,
     fit_bspline,
-    greville_abscissae,
-    greville_lattice,
+    get_greville_abscissae,
     interpolate_bspline,
     l2_project_bspline,
 )
@@ -28,21 +28,21 @@ from pantr.quad import PointsLattice
 
 
 class TestGrevilleAbscissae:
-    """Tests for greville_abscissae."""
+    """Tests for get_greville_abscissae."""
 
     def test_open_degree2(self) -> None:
         """Greville points for open degree-2 space with 2 intervals."""
-        knots = create_uniform_open(2, 2)
+        knots = create_uniform_open_knots(2, 2)
         space = BsplineSpace1D(knots, 2)
-        g = greville_abscissae(space)
+        g = get_greville_abscissae(space)
         assert g.shape == (space.num_basis,)
         nptest.assert_allclose(g, [0.0, 0.25, 0.75, 1.0], atol=1e-14)
 
     def test_open_degree3(self) -> None:
         """Greville points for open degree-3 space with 4 intervals."""
-        knots = create_uniform_open(4, 3)
+        knots = create_uniform_open_knots(4, 3)
         space = BsplineSpace1D(knots, 3)
-        g = greville_abscissae(space)
+        g = get_greville_abscissae(space)
         assert g.shape == (space.num_basis,)
         # Endpoints should be exactly at domain boundaries.
         assert g[0] == pytest.approx(0.0, abs=1e-14)
@@ -50,9 +50,9 @@ class TestGrevilleAbscissae:
 
     def test_periodic(self) -> None:
         """Greville points for periodic space are sorted and inside domain."""
-        knots = create_uniform_periodic(4, 3)
+        knots = create_uniform_periodic_knots(4, 3)
         space = BsplineSpace1D(knots, 3, periodic=True)
-        g = greville_abscissae(space)
+        g = get_greville_abscissae(space)
         assert g.shape == (space.num_basis,)
         a, b = space.domain
         assert np.all(g >= a - 1e-14)
@@ -62,25 +62,25 @@ class TestGrevilleAbscissae:
 
     def test_degree0(self) -> None:
         """Greville points for degree-0 space are midpoints."""
-        knots = create_uniform_open(3, 0)
+        knots = create_uniform_open_knots(3, 0)
         space = BsplineSpace1D(knots, 0)
-        g = greville_abscissae(space)
+        g = get_greville_abscissae(space)
         expected = np.array([1.0 / 6, 0.5, 5.0 / 6])
         nptest.assert_allclose(g, expected, atol=1e-14)
 
     def test_type_error(self) -> None:
         """Passing wrong type raises TypeError."""
         with pytest.raises(TypeError, match="Expected BsplineSpace1D"):
-            greville_abscissae("not a space")  # type: ignore[arg-type]
+            get_greville_abscissae("not a space")  # type: ignore[arg-type]
 
 
 class TestGrevilleLattice:
-    """Tests for greville_lattice."""
+    """Tests for create_greville_lattice."""
 
     def test_2d(self) -> None:
         """Greville lattice for a 2D space has correct structure."""
         space = create_uniform_space([2, 3], [3, 4])
-        lat = greville_lattice(space)
+        lat = create_greville_lattice(space)
         assert isinstance(lat, PointsLattice)
         assert lat.dim == 2  # noqa: PLR2004
         assert lat.pts_per_dir[0].shape[0] == space.num_basis[0]
@@ -285,7 +285,7 @@ class TestFitTensorProduct:
     def test_exact_fit_1d(self) -> None:
         """Exact fit with n_nodes = n_basis recovers polynomial."""
         space = create_uniform_space(3, 4)
-        nodes = greville_abscissae(space.spaces[0])
+        nodes = get_greville_abscissae(space.spaces[0])
         vals = nodes**2
         b = fit_bspline(vals, [nodes], space)
         pts = np.linspace(0, 1, 11)
@@ -303,8 +303,8 @@ class TestFitTensorProduct:
     def test_2d_fit(self) -> None:
         """2D tensor-product fit."""
         space = create_uniform_space([2, 2], [3, 3])
-        nodes_x = greville_abscissae(space.spaces[0])
-        nodes_y = greville_abscissae(space.spaces[1])
+        nodes_x = get_greville_abscissae(space.spaces[0])
+        nodes_y = get_greville_abscissae(space.spaces[1])
 
         xx, yy = np.meshgrid(nodes_x, nodes_y, indexing="ij")
         vals = xx + yy
@@ -319,7 +319,7 @@ class TestFitTensorProduct:
     def test_vector_valued_fit(self) -> None:
         """Fit vector-valued function (rank > 1)."""
         space = create_uniform_space(3, 4)
-        nodes = greville_abscissae(space.spaces[0])
+        nodes = get_greville_abscissae(space.spaces[0])
         vals = np.stack([nodes**2, nodes**3], axis=-1)
         b = fit_bspline(vals, [nodes], space)
         assert b.rank == 2  # noqa: PLR2004

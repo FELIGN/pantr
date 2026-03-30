@@ -80,7 +80,7 @@ def _solve_monotone_root_kernel(
 
     Note:
         Inputs are assumed to be correct (no validation performed).
-        For general use, call :func:`pantr.bezier.solve_monotone_root`
+        For general use, call :func:`pantr.bezier.find_monotone_root`
         instead.
     """
     lo = 0.0

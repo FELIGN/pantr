@@ -12,7 +12,7 @@ from pantr.bspline import (  # noqa: E402
     Bspline,
     BsplineSpace,
     BsplineSpace1D,
-    create_uniform_open,
+    create_uniform_open_knots,
 )
 from pantr.viz import control_polygon_mesh, knot_lines_meshes  # noqa: E402
 
@@ -41,8 +41,8 @@ def bspline_curve() -> Bspline:
 @pytest.fixture()
 def bspline_surface() -> Bspline:
     """Biquadratic B-spline surface in 3D."""
-    knots_u = create_uniform_open(3, 2, domain=(0.0, 1.0))
-    knots_v = create_uniform_open(2, 2, domain=(0.0, 1.0))
+    knots_u = create_uniform_open_knots(3, 2, domain=(0.0, 1.0))
+    knots_v = create_uniform_open_knots(2, 2, domain=(0.0, 1.0))
     s_u = BsplineSpace1D(knots_u, 2)
     s_v = BsplineSpace1D(knots_v, 2)
     space = BsplineSpace([s_u, s_v])

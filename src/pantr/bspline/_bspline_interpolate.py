@@ -15,7 +15,7 @@ from numpy import typing as npt
 
 from ..quad import PointsLattice
 from ._bspline_space_1d import BsplineSpace1D
-from ._bspline_space_factory import greville_abscissae, greville_lattice
+from ._bspline_space_factory import create_greville_lattice, get_greville_abscissae
 from ._bspline_space_nd import BsplineSpace
 
 if TYPE_CHECKING:
@@ -296,7 +296,7 @@ def _resolve_nodes(
         ValueError: If nodes are inconsistent with the space.
     """
     if nodes is None or nodes == "greville":
-        lattice = greville_lattice(space)
+        lattice = create_greville_lattice(space)
         return list(lattice.pts_per_dir)
 
     if isinstance(nodes, PointsLattice):
@@ -1110,7 +1110,7 @@ def _evaluate_func_at_boundary(  # noqa: PLR0913
 
     # nD: create a lattice with a single point in the boundary direction
     # and Greville nodes in the other directions.
-    greville_nodes = [greville_abscissae(s) for s in space.spaces]
+    greville_nodes = [get_greville_abscissae(s) for s in space.spaces]
     boundary_nodes = [
         np.array([boundary_value], dtype=dtype) if d == direction else greville_nodes[d]
         for d in range(space.dim)

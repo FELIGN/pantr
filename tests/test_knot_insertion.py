@@ -6,7 +6,7 @@ import numpy as np
 import numpy.typing as npt
 import pytest
 
-from pantr.bspline import Bspline, BsplineSpace, BsplineSpace1D, create_uniform_periodic
+from pantr.bspline import Bspline, BsplineSpace, BsplineSpace1D, create_uniform_periodic_knots
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -524,7 +524,7 @@ class TestPeriodicInsertKnotsFlag:
     def test_insert_knots_periodic_loses_periodicity(self) -> None:
         """insert_knots on a periodic space returns a non-periodic space."""
         degree = 2
-        knots = create_uniform_periodic(num_intervals=4, degree=degree)
+        knots = create_uniform_periodic_knots(num_intervals=4, degree=degree)
         space = BsplineSpace1D(knots, degree, periodic=True)
         assert space.periodic
 
@@ -535,7 +535,7 @@ class TestPeriodicInsertKnotsFlag:
     def test_insert_knots_C0_periodic_loses_periodicity(self) -> None:
         """insert_knots on a C^0 periodic space returns a non-periodic space."""
         degree = 2
-        knots = create_uniform_periodic(num_intervals=4, degree=degree, continuity=0)
+        knots = create_uniform_periodic_knots(num_intervals=4, degree=degree, continuity=0)
         space = BsplineSpace1D(knots, degree, periodic=True)
         assert space.periodic
 
@@ -546,7 +546,7 @@ class TestPeriodicInsertKnotsFlag:
     def test_subdivide_periodic_loses_periodicity(self) -> None:
         """Subdivide on a periodic space returns a non-periodic space."""
         degree = 2
-        knots = create_uniform_periodic(num_intervals=4, degree=degree)
+        knots = create_uniform_periodic_knots(num_intervals=4, degree=degree)
         space = BsplineSpace1D(knots, degree, periodic=True)
         assert space.periodic
 
@@ -567,7 +567,7 @@ def _make_periodic_bspline(
     rank: int = 2,
 ) -> Bspline:
     """Create a 1D periodic B-spline with sequential control points."""
-    knots = create_uniform_periodic(num_intervals, degree, continuity=continuity)
+    knots = create_uniform_periodic_knots(num_intervals, degree, continuity=continuity)
     space_1d = BsplineSpace1D(knots, degree, periodic=True)
     space = BsplineSpace([space_1d])
     rng = np.random.default_rng(42)
@@ -606,7 +606,7 @@ class TestPeriodicBsplineInsertKnots:
     def test_insert_knots_multidim_mixed_periodic_open(self) -> None:
         """insert_knots preserves periodicity for mixed periodic/open 2D splines."""
         # Direction 0: periodic, direction 1: open
-        knots_per = create_uniform_periodic(num_intervals=4, degree=2)
+        knots_per = create_uniform_periodic_knots(num_intervals=4, degree=2)
         knots_open = np.array([0.0, 0.0, 0.0, 0.5, 1.0, 1.0, 1.0])
         space = BsplineSpace(
             [
@@ -631,7 +631,7 @@ class TestPeriodicBsplineInsertKnots:
 
     def test_insert_knots_rational_periodic(self) -> None:
         """insert_knots preserves periodic NURBS geometry."""
-        knots = create_uniform_periodic(num_intervals=4, degree=3)
+        knots = create_uniform_periodic_knots(num_intervals=4, degree=3)
         space_1d = BsplineSpace1D(knots, 3, periodic=True)
         space = BsplineSpace([space_1d])
         n = space.num_total_basis

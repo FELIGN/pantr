@@ -5,7 +5,7 @@ import numpy.typing as npt
 import pytest
 
 from pantr.bezier import Bezier
-from pantr.bspline import Bspline, BsplineSpace, BsplineSpace1D, create_uniform_periodic
+from pantr.bspline import Bspline, BsplineSpace, BsplineSpace1D, create_uniform_periodic_knots
 from pantr.quad import PointsLattice
 
 # ---------------------------------------------------------------------------
@@ -58,7 +58,7 @@ def _make_periodic_bspline(
     dtype: type = np.float64,
 ) -> Bspline:
     """Create a 1D periodic B-spline with random control points."""
-    knots = create_uniform_periodic(num_intervals, degree, dtype=dtype)
+    knots = create_uniform_periodic_knots(num_intervals, degree, dtype=dtype)
     space_1d = BsplineSpace1D(knots, degree, periodic=True)
     space = BsplineSpace([space_1d])
     rng = np.random.default_rng(42)

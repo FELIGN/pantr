@@ -1,9 +1,9 @@
 """Knot vector construction and space factory functions for B-splines.
 
-Provides knot vector constructors (:func:`create_uniform_open`,
-:func:`create_uniform_periodic`, :func:`create_cardinal`), a convenience
+Provides knot vector constructors (:func:`create_uniform_open_knots`,
+:func:`create_uniform_periodic_knots`, :func:`create_cardinal_knots`), a convenience
 space factory (:func:`create_uniform_space`), and Greville abscissa
-utilities (:func:`greville_abscissae`, :func:`greville_lattice`).
+utilities (:func:`get_greville_abscissae`, :func:`create_greville_lattice`).
 """
 
 from __future__ import annotations
@@ -23,7 +23,7 @@ from ._bspline_space_1d import BsplineSpace1D
 from ._bspline_space_nd import BsplineSpace
 
 
-def create_uniform_open(
+def create_uniform_open_knots(
     num_intervals: int,
     degree: int,
     continuity: int | None = None,
@@ -52,7 +52,7 @@ def create_uniform_open(
         ValueError: If any parameter is invalid.
 
     Example:
-        >>> create_uniform_open(2, 2, domain=(0.0, 1.0))
+        >>> create_uniform_open_knots(2, 2, domain=(0.0, 1.0))
         array([0., 0., 0., 0.5, 1., 1., 1.])
     """
     start_value: np.float32 | np.float64 | None
@@ -89,7 +89,7 @@ def create_uniform_open(
     return knots
 
 
-def create_uniform_periodic(
+def create_uniform_periodic_knots(
     num_intervals: int,
     degree: int,
     continuity: int | None = None,
@@ -118,7 +118,7 @@ def create_uniform_periodic(
         ValueError: If any parameter is invalid.
 
     Example:
-        >>> create_uniform_periodic(2, 2, domain=(0.0, 1.0))
+        >>> create_uniform_periodic_knots(2, 2, domain=(0.0, 1.0))
         array([-1. , -0.5,  0. ,  0.5,  1. ,  1.5,  2. ])
     """
     start_value: np.float32 | np.float64 | None
@@ -177,7 +177,7 @@ def create_uniform_periodic(
     return knots
 
 
-def create_cardinal(
+def create_cardinal_knots(
     num_intervals: int,
     degree: int,
     dtype: npt.DTypeLike = np.float64,
@@ -202,7 +202,7 @@ def create_cardinal(
         ValueError: If num_intervals < 1, degree < 0, or dtype is not float32/float64.
 
     Example:
-        >>> create_cardinal(2, 2)
+        >>> create_cardinal_knots(2, 2)
         array([-2., -1.,  0.,  1.,  2.,  3., 4.])
     """
     if num_intervals < 1:
@@ -224,7 +224,7 @@ def create_cardinal(
         start_value = np.float32(0)
         end_value = np.float32(num_intervals)
 
-    return create_uniform_periodic(
+    return create_uniform_periodic_knots(
         num_intervals,
         degree,
         continuity=degree - 1,
@@ -233,7 +233,7 @@ def create_cardinal(
     )
 
 
-def greville_abscissae(
+def get_greville_abscissae(
     space: BsplineSpace1D,
 ) -> npt.NDArray[np.float32 | np.float64]:
     """Compute the Greville abscissae (knot averages) of a 1D B-spline space.
@@ -253,10 +253,10 @@ def greville_abscissae(
             containing one Greville abscissa per basis function.
 
     Example:
-        >>> from pantr.bspline import BsplineSpace1D, create_uniform_open
-        >>> knots = create_uniform_open(4, 3)
+        >>> from pantr.bspline import BsplineSpace1D, create_uniform_open_knots
+        >>> knots = create_uniform_open_knots(4, 3)
         >>> space = BsplineSpace1D(knots, 3)
-        >>> greville_abscissae(space)
+        >>> get_greville_abscissae(space)
         array([0.  , 0.08333333, 0.25, 0.5 , 0.75, 0.91666667, 1.  ])
     """
     if not isinstance(space, BsplineSpace1D):
@@ -284,7 +284,7 @@ def greville_abscissae(
     return greville
 
 
-def greville_lattice(
+def create_greville_lattice(
     space: BsplineSpace,
 ) -> PointsLattice:
     """Compute the tensor-product Greville abscissae as a :class:`PointsLattice`.
@@ -299,18 +299,18 @@ def greville_lattice(
         PointsLattice: Tensor-product grid of Greville abscissae.
 
     Example:
-        >>> from pantr.bspline import BsplineSpace1D, BsplineSpace, create_uniform_open
-        >>> knots = create_uniform_open(2, 2)
+        >>> from pantr.bspline import BsplineSpace1D, BsplineSpace, create_uniform_open_knots
+        >>> knots = create_uniform_open_knots(2, 2)
         >>> s1d = BsplineSpace1D(knots, 2)
         >>> space = BsplineSpace([s1d, s1d])
-        >>> lattice = greville_lattice(space)
+        >>> lattice = create_greville_lattice(space)
         >>> lattice.pts_per_dir[0]
         array([0. , 0.25, 0.75, 1.  ])
     """
     if not isinstance(space, BsplineSpace):
         raise TypeError(f"Expected BsplineSpace, got {type(space).__name__}")
 
-    pts_per_dir = [greville_abscissae(s) for s in space.spaces]
+    pts_per_dir = [get_greville_abscissae(s) for s in space.spaces]
     return PointsLattice(pts_per_dir)
 
 
@@ -333,8 +333,8 @@ def create_uniform_space(  # noqa: PLR0913
     dimension is inferred from whichever argument is given as a sequence (they
     must all agree in length when more than one is a sequence).
 
-    Uses :func:`create_uniform_open` for non-periodic directions and
-    :func:`create_uniform_periodic` for periodic ones.
+    Uses :func:`create_uniform_open_knots` for non-periodic directions and
+    :func:`create_uniform_periodic_knots` for periodic ones.
 
     Args:
         degree (int | Sequence[int]): Polynomial degree per direction.
@@ -394,7 +394,7 @@ def create_uniform_space(  # noqa: PLR0913
     spaces_1d: list[BsplineSpace1D] = []
     for d in range(ndim):
         if periodicities[d]:
-            knots = create_uniform_periodic(
+            knots = create_uniform_periodic_knots(
                 n_intervals[d],
                 degrees[d],
                 continuity=continuities[d],
@@ -402,7 +402,7 @@ def create_uniform_space(  # noqa: PLR0913
                 dtype=dtype,
             )
         else:
-            knots = create_uniform_open(
+            knots = create_uniform_open_knots(
                 n_intervals[d],
                 degrees[d],
                 continuity=continuities[d],

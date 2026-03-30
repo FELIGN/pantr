@@ -14,7 +14,7 @@ from pantr.bspline import (  # noqa: E402
     Bspline,
     BsplineSpace,
     BsplineSpace1D,
-    create_uniform_periodic,
+    create_uniform_periodic_knots,
 )
 from pantr.viz import save, to_pyvista  # noqa: E402
 from pantr.viz._vtk_cells import (  # noqa: E402
@@ -169,7 +169,7 @@ class TestBsplineToPyvista:
 
     def test_periodic_bspline(self) -> None:
         """Periodic B-spline should convert without error."""
-        knots = create_uniform_periodic(4, 2, domain=(0.0, 1.0))
+        knots = create_uniform_periodic_knots(4, 2, domain=(0.0, 1.0))
         space1d = BsplineSpace1D(knots, 2, periodic=True)
         space = BsplineSpace([space1d])
         n_basis = space1d.num_basis

@@ -332,7 +332,7 @@ def _solve_monotone_root_impl(
     *,
     tol: float | None = None,
 ) -> float:
-    """L2 implementation for :func:`pantr.bezier.solve_monotone_root`."""
+    """L2 implementation for :func:`pantr.bezier.find_monotone_root`."""
     _validate_bezier_for_roots(bezier)
     coeff = _extract_coeff(bezier)
     wait_for_jit_warmup()

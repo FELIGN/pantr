@@ -6,7 +6,7 @@ import numpy as np
 import pytest
 
 from pantr.bezier import Bezier
-from pantr.bspline import Bspline, BsplineSpace, BsplineSpace1D, create_uniform_periodic
+from pantr.bspline import Bspline, BsplineSpace, BsplineSpace1D, create_uniform_periodic_knots
 
 
 def _make_bezier_1d(ctrl: list[list[float]], rational: bool = False) -> Bezier:
@@ -324,7 +324,7 @@ class TestBsplineReduceDegreePeriodic:
         self, degree: int, continuity: int | None, dec: int
     ) -> None:
         """Elevate then reduce a periodic B-spline preserves geometry."""
-        knots = create_uniform_periodic(num_intervals=4, degree=degree, continuity=continuity)
+        knots = create_uniform_periodic_knots(num_intervals=4, degree=degree, continuity=continuity)
         space = BsplineSpace([BsplineSpace1D(knots, degree, periodic=True)])
         rng = np.random.default_rng(42)
         ctrl = rng.random((space.num_total_basis, 2))
@@ -342,7 +342,7 @@ class TestBsplineReduceDegreePeriodic:
 
     def test_mixed_periodic_open_2d(self) -> None:
         """2D mixed periodic/open B-spline: elevate then reduce."""
-        knots_per = create_uniform_periodic(num_intervals=4, degree=2)
+        knots_per = create_uniform_periodic_knots(num_intervals=4, degree=2)
         knots_open = np.array([0.0, 0.0, 0.0, 0.5, 1.0, 1.0, 1.0])
         space = BsplineSpace(
             [
