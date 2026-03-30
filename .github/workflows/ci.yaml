@@ -176,8 +176,6 @@ jobs:
         with:
           path: docs/_build/doctrees
           key: ${{ runner.os }}-sphinx-${{ hashFiles('docs/**/*.md', 'docs/conf.py', 'pyproject.toml', 'src/**/*.py') }}
-          restore-keys: |
-            ${{ runner.os }}-sphinx-
 
       - name: Cache intersphinx inventories
         id: cache-intersphinx
