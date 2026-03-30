@@ -4,11 +4,6 @@ Provides fused evaluation kernels that compute Bernstein basis values and
 contract them with control points in a single pass, plus degree elevation
 and degree reduction kernels.
 
-This module also exposes **non-parallel scalar helpers** for de Casteljau
-evaluation and restriction on 1-D coefficient arrays. These are the shared
-building blocks used by both the multi-column parallel kernels in this module
-and the scalar root-finding kernels in :mod:`pantr.bezier`.
-
 Note:
     Inputs are assumed to be correct (no validation performed).
     For general use, call the Layer 2 helpers in ``_bezier_eval`` and
@@ -22,101 +17,6 @@ import numpy.typing as npt
 
 from .._numba_compat import nb_jit, nb_prange
 from ..bspline._bspline_degree_core import _bincoeff
-
-# ---------------------------------------------------------------------------
-# Non-parallel scalar helpers (shared by root_finding and the parallel kernels
-# below).  These must NOT use ``parallel=True`` so that they can be safely
-# called from within other ``prange`` loops and from the background warmup
-# thread.
-# ---------------------------------------------------------------------------
-
-
-@nb_jit(nopython=True, cache=True)
-def _de_casteljau_eval_scalar(
-    coeff: npt.NDArray[np.float32 | np.float64],
-    t: float,
-) -> float:
-    """Evaluate a scalar Bernstein polynomial at parameter *t* via de Casteljau.
-
-    Args:
-        coeff (npt.NDArray[np.float32 | np.float64]): 1-D Bernstein
-            coefficients of length ``n + 1``.
-        t (float): Parameter value in [0, 1].
-
-    Returns:
-        float: Polynomial value B(t).
-
-    Note:
-        Inputs are assumed to be correct (no validation performed).
-    """
-    p = len(coeff) - 1
-    if p == 0:
-        return float(coeff[0])
-    if t == 0.0:
-        return float(coeff[0])
-    if t == 1.0:
-        return float(coeff[p])
-
-    d = coeff.copy()
-    s = 1.0 - t
-    for r in range(1, p + 1):
-        for i in range(p - r + 1):
-            d[i] = s * d[i] + t * d[i + 1]
-    return float(d[0])
-
-
-@nb_jit(nopython=True, cache=True)
-def _restrict_scalar(
-    coeff: npt.NDArray[np.float32 | np.float64],
-    lower: float,
-    upper: float,
-) -> npt.NDArray[np.float64]:
-    r"""Restrict a scalar Bernstein polynomial to ``[lower, upper]``.
-
-    Uses the same numerically stable two-pass de Casteljau strategy as
-    :func:`_restrict_bezier_1d_core`, choosing the pass order to avoid
-    dividing by a small number.
-
-    Args:
-        coeff (npt.NDArray[np.float32 | np.float64]): 1-D Bernstein
-            coefficients of length ``n + 1``.
-        lower (float): Left bound of the sub-interval in ``[0, 1)``.
-        upper (float): Right bound of the sub-interval in ``(0, 1]``.
-
-    Returns:
-        npt.NDArray[np.float64]: Restricted Bernstein coefficients
-        reparametrized to [0, 1].
-
-    Note:
-        Inputs are assumed to be correct (no validation performed).
-    """
-    p = len(coeff) - 1
-    d = np.empty(p + 1, dtype=np.float64)
-    for i in range(p + 1):
-        d[i] = float(coeff[i])
-
-    if abs(upper) >= abs(lower - 1.0):
-        tau = upper
-        for _step in range(1, p + 1):
-            for j in range(p, _step - 1, -1):
-                d[j] = d[j] * tau + d[j - 1] * (1.0 - tau)
-
-        tau2 = lower / upper if upper != 0.0 else 0.0
-        for _step in range(1, p + 1):
-            for j in range(p - _step + 1):
-                d[j] = d[j] * (1.0 - tau2) + d[j + 1] * tau2
-    else:
-        tau = lower
-        for _step in range(1, p + 1):
-            for j in range(p - _step + 1):
-                d[j] = d[j] * (1.0 - tau) + d[j + 1] * tau
-
-        tau2 = (upper - lower) / (1.0 - lower) if lower != 1.0 else 0.0
-        for _step in range(1, p + 1):
-            for j in range(p, _step - 1, -1):
-                d[j] = d[j] * tau2 + d[j - 1] * (1.0 - tau2)
-
-    return d
 
 
 @nb_jit(
@@ -498,11 +398,32 @@ def _slice_bezier_1d_core(
         For general use, call :func:`_slice_bezier` in ``_bezier_slice``
         instead.
     """
+    p = ctrl.shape[0] - 1
     n_cols = ctrl.shape[1]
+    u = value
+    one_minus_u = 1.0 - u
+
+    # Boundary shortcuts: O(1) for endpoints.
+    if u == 0.0:
+        for col in nb_prange(n_cols):
+            out[col] = ctrl[0, col]
+        return
+    if u == 1.0:
+        for col in nb_prange(n_cols):
+            out[col] = ctrl[p, col]
+        return
 
     for col in nb_prange(n_cols):
-        col_vec = ctrl[:, col].copy()
-        out[col] = _de_casteljau_eval_scalar(col_vec, value)
+        # Local workspace for de Casteljau on this column.
+        d = np.empty(p + 1, dtype=ctrl.dtype)
+        for i in range(p + 1):
+            d[i] = ctrl[i, col]
+
+        for r in range(1, p + 1):
+            for i in range(p - r + 1):
+                d[i] = one_minus_u * d[i] + u * d[i + 1]
+
+        out[col] = d[0]
 
 
 @nb_jit(
@@ -572,7 +493,7 @@ def _split_bezier_1d_core(
     cache=True,
     parallel=True,
 )
-def _restrict_bezier_1d_core(
+def _restrict_bezier_1d_core(  # noqa: PLR0912
     ctrl: npt.NDArray[np.float32 | np.float64],
     lower: float,
     upper: float,
@@ -608,10 +529,35 @@ def _restrict_bezier_1d_core(
     n_cols = ctrl.shape[1]
 
     for col in nb_prange(n_cols):
-        col_vec = ctrl[:, col].copy()
-        restricted = _restrict_scalar(col_vec, lower, upper)
+        d = np.empty(p + 1, dtype=ctrl.dtype)
         for i in range(p + 1):
-            out[i, col] = restricted[i]
+            d[i] = ctrl[i, col]
+
+        if abs(upper) >= abs(lower - 1.0):
+            # deCasteljauLeft(upper), then deCasteljauRight(lower / upper)
+            tau = upper
+            for step in range(1, p + 1):
+                for j in range(p, step - 1, -1):
+                    d[j] = d[j] * tau + d[j - 1] * (1.0 - tau)
+
+            tau2 = lower / upper
+            for step in range(1, p + 1):
+                for j in range(p - step + 1):
+                    d[j] = d[j] * (1.0 - tau2) + d[j + 1] * tau2
+        else:
+            # deCasteljauRight(lower), then deCasteljauLeft((upper-lower)/(1-lower))
+            tau = lower
+            for step in range(1, p + 1):
+                for j in range(p - step + 1):
+                    d[j] = d[j] * (1.0 - tau) + d[j + 1] * tau
+
+            tau2 = (upper - lower) / (1.0 - lower)
+            for step in range(1, p + 1):
+                for j in range(p, step - 1, -1):
+                    d[j] = d[j] * tau2 + d[j - 1] * (1.0 - tau2)
+
+        for i in range(p + 1):
+            out[i, col] = d[i]
 
 
 @nb_jit(nopython=True, cache=True, parallel=True)
@@ -667,11 +613,6 @@ def _warmup_numba_functions() -> None:
     This function triggers compilation of the numba-decorated functions
     with float64 arrays, ensuring they are cached and ready for use.
     """
-    # Warm up scalar (non-parallel) helpers first.
-    scalar_dummy = np.array([0.0, 1.0, 2.0], dtype=np.float64)
-    _de_casteljau_eval_scalar(scalar_dummy, 0.5)
-    _restrict_scalar(scalar_dummy, 0.2, 0.8)
-
     ctrl_dummy = np.array([[0.0, 1.0], [1.0, 0.0], [2.0, 1.0]], dtype=np.float64)
     pts_dummy = np.array([0.5], dtype=np.float64)
     out_eval_dummy = np.empty((1, 2), dtype=np.float64)

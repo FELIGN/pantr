@@ -1,13 +1,9 @@
 """Shared Numba-compiled helpers for Bernstein polynomial root finding.
 
-Provides scalar evaluation, subdivision, sign-change counting, convex-hull
-clipping, and Newton polishing -- all operating on 1-D Bernstein coefficient
-arrays. These are inner building blocks called from within the Yuksel and
-Bezier clipping algorithm kernels.
-
-Scalar evaluation and subdivision delegate to the existing Bézier kernels in
-:mod:`pantr.bezier._bezier_core`, adapting the ``(n+1, 1)`` multi-column
-interface to bare ``(n+1,)`` coefficient arrays.
+Provides scalar de Casteljau evaluation, subdivision, sign-change counting,
+convex-hull clipping, and Newton polishing -- all operating on 1-D Bernstein
+coefficient arrays. These are inner building blocks called from within the
+Yuksel and Bezier clipping algorithm kernels.
 
 Main exports (all Numba-compiled, no ``parallel=True``):
 
@@ -25,15 +21,98 @@ import numpy as np
 from numpy import typing as npt
 
 from pantr._numba_compat import nb_jit
-from pantr.bezier._bezier_core import (
-    _de_casteljau_eval_scalar as _de_casteljau_eval_scalar,  # noqa: PLC0414
-)
-from pantr.bezier._bezier_core import (
-    _restrict_scalar,
-)
 
 _DBL_EPSILON: float = 2.2204460492503131e-16
 """Machine epsilon for IEEE 754 double precision."""
+
+
+@nb_jit(nopython=True, cache=True)
+def _de_casteljau_eval_scalar(
+    coeff: npt.NDArray[np.float32 | np.float64],
+    t: float,
+) -> float:
+    """Evaluate a scalar Bernstein polynomial at parameter *t*.
+
+    Computes B(t) = sum_i c_i * B_i^n(t) using the numerically stable
+    de Casteljau triangle.
+
+    Args:
+        coeff (npt.NDArray[np.float32 | np.float64]): 1-D Bernstein coefficients of length
+            ``n + 1``.
+        t (float): Parameter value in [0, 1].
+
+    Returns:
+        float: Polynomial value B(t).
+
+    Note:
+        Inputs are assumed to be correct (no validation performed).
+        For general use, call the Layer 2 helpers in ``_find_roots`` instead.
+    """
+    work = coeff.copy()
+    n = len(work) - 1
+    for k in range(1, n + 1):
+        for i in range(n - k + 1):
+            work[i] = (1.0 - t) * work[i] + t * work[i + 1]
+    return float(work[0])
+
+
+@nb_jit(nopython=True, cache=True)
+def _restrict_scalar(
+    coeff: npt.NDArray[np.float32 | np.float64],
+    lower: float,
+    upper: float,
+) -> npt.NDArray[np.float64]:
+    r"""Restrict a scalar Bernstein polynomial to ``[lower, upper]``.
+
+    Uses a numerically stable two-pass de Casteljau strategy, choosing
+    the pass order to avoid dividing by a small number.
+
+    - If ``|upper| >= |lower - 1|``: left pass at ``upper``, then right
+      pass at ``lower / upper``.
+    - Otherwise: right pass at ``lower``, then left pass at
+      ``(upper - lower) / (1 - lower)``.
+
+    Args:
+        coeff (npt.NDArray[np.float32 | np.float64]): 1-D Bernstein
+            coefficients of length ``n + 1``.
+        lower (float): Left bound of the sub-interval in ``[0, 1)``.
+        upper (float): Right bound of the sub-interval in ``(0, 1]``.
+
+    Returns:
+        npt.NDArray[np.float64]: Restricted Bernstein coefficients
+            reparametrized to [0, 1].
+
+    Note:
+        Inputs are assumed to be correct (no validation performed).
+        For general use, call the Layer 2 helpers in ``_find_roots`` instead.
+    """
+    p = len(coeff) - 1
+    d = np.empty(p + 1, dtype=np.float64)
+    for i in range(p + 1):
+        d[i] = float(coeff[i])
+
+    if abs(upper) >= abs(lower - 1.0):
+        tau = upper
+        for _step in range(1, p + 1):
+            for j in range(p, _step - 1, -1):
+                d[j] = d[j] * tau + d[j - 1] * (1.0 - tau)
+
+        tau2 = lower / upper if upper != 0.0 else 0.0
+        for _step in range(1, p + 1):
+            for j in range(p - _step + 1):
+                d[j] = d[j] * (1.0 - tau2) + d[j + 1] * tau2
+    else:
+        tau = lower
+        for _step in range(1, p + 1):
+            for j in range(p - _step + 1):
+                d[j] = d[j] * (1.0 - tau) + d[j + 1] * tau
+
+        tau2 = (upper - lower) / (1.0 - lower) if lower != 1.0 else 0.0
+        for _step in range(1, p + 1):
+            for j in range(p, _step - 1, -1):
+                d[j] = d[j] * tau2 + d[j - 1] * (1.0 - tau2)
+
+    return d
 
 
 @nb_jit(nopython=True, cache=True)
@@ -88,9 +167,9 @@ def _subdivide_scalar(
 ) -> npt.NDArray[np.float64]:
     """Extract Bernstein coefficients for the sub-interval ``[t_min, t_max]``.
 
-    Thin adapter around :func:`pantr.bezier._bezier_core._restrict_scalar`,
-    which uses a numerically stable two-pass de Casteljau strategy (pass
-    ordering chosen to avoid dividing by a small number).
+    Thin adapter around :func:`_restrict_scalar`, which uses a numerically
+    stable two-pass de Casteljau strategy (pass ordering chosen to avoid
+    dividing by a small number).
 
     Args:
         coeff (npt.NDArray[np.float32 | np.float64]): Original 1-D Bernstein coefficients
