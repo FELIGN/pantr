@@ -1,4 +1,4 @@
-"""Tests for Bezier.interpolate and the Bernstein interpolation pipeline."""
+"""Tests for Bezier.interpolate and Bezier.fit (including scattered fitting)."""
 
 from __future__ import annotations
 
@@ -10,6 +10,7 @@ import numpy.typing as npt
 import pytest
 
 from pantr.bezier import Bezier
+from pantr.quad import PointsLattice
 
 # ---------------------------------------------------------------------------
 # 1D scalar interpolation
@@ -21,7 +22,7 @@ class TestInterpolate1DScalar:
 
     def test_linear(self) -> None:
         """Interpolating a linear function with 2 points recovers it exactly."""
-        b = Bezier.interpolate(lambda x: 2.0 * x + 1.0, 2)
+        b = Bezier.interpolate(lambda lat: 2.0 * lat.pts_per_dir[0] + 1.0, 2)
         assert b.degree == (1,)
         assert b.rank == 1
         pts = np.array([0.0, 0.5, 1.0])
@@ -30,7 +31,7 @@ class TestInterpolate1DScalar:
 
     def test_quadratic(self) -> None:
         """Interpolating x^2 with 3 points recovers it exactly."""
-        b = Bezier.interpolate(lambda x: x**2, 3)
+        b = Bezier.interpolate(lambda lat: lat.pts_per_dir[0] ** 2, 3)
         assert b.degree == (2,)
         pts = np.array([0.0, 0.25, 0.5, 0.75, 1.0])
         expected = pts**2
@@ -38,14 +39,14 @@ class TestInterpolate1DScalar:
 
     def test_cubic(self) -> None:
         """Interpolating x^3 with 4 points recovers it exactly."""
-        b = Bezier.interpolate(lambda x: x**3, 4)
+        b = Bezier.interpolate(lambda lat: lat.pts_per_dir[0] ** 3, 4)
         assert b.degree == (3,)
         pts = np.linspace(0, 1, 10)
         nptest.assert_allclose(b.evaluate(pts), pts**3, atol=1e-12)
 
     def test_single_point(self) -> None:
         """A single interpolation point gives a degree-0 (constant) Bezier."""
-        b = Bezier.interpolate(lambda x: np.full_like(x, 7.0), 1)
+        b = Bezier.interpolate(lambda lat: np.full(1, 7.0), 1)
         assert b.degree == (0,)
         nptest.assert_allclose(b.evaluate(np.array([0.5])), [7.0], atol=1e-14)
 
@@ -61,7 +62,8 @@ class TestInterpolate1DVector:
     def test_circle_arc(self) -> None:
         """Interpolate a quarter-circle parametric curve."""
 
-        def quarter_circle(t: npt.NDArray[np.floating[Any]]) -> npt.NDArray[np.floating[Any]]:
+        def quarter_circle(lat: PointsLattice) -> npt.NDArray[np.floating[Any]]:
+            t = lat.pts_per_dir[0]
             theta = t * (np.pi / 2.0)
             return np.stack([np.cos(theta), np.sin(theta)], axis=-1)
 
@@ -78,7 +80,8 @@ class TestInterpolate1DVector:
     def test_linear_curve(self) -> None:
         """A linear vector-valued function is recovered exactly."""
 
-        def line(t: npt.NDArray[np.floating[Any]]) -> npt.NDArray[np.floating[Any]]:
+        def line(lat: PointsLattice) -> npt.NDArray[np.floating[Any]]:
+            t = lat.pts_per_dir[0]
             return np.stack([t, 2.0 * t + 1.0, -t + 3.0], axis=-1)
 
         b = Bezier.interpolate(line, 2)
@@ -99,7 +102,12 @@ class TestInterpolate2DScalar:
 
     def test_bilinear(self) -> None:
         """Interpolating a bilinear function with (2,2) points recovers it."""
-        b = Bezier.interpolate(lambda pts: pts[:, 0] + pts[:, 1], [2, 2])
+
+        def bilinear(lat: PointsLattice) -> npt.NDArray[np.floating[Any]]:
+            pts = lat.get_all_points()
+            return pts[:, 0] + pts[:, 1]
+
+        b = Bezier.interpolate(bilinear, [2, 2])
         assert b.degree == (1, 1)
         assert b.rank == 1
         pts = np.array([[0.0, 0.0], [1.0, 0.0], [0.0, 1.0], [1.0, 1.0], [0.5, 0.5]])
@@ -108,7 +116,12 @@ class TestInterpolate2DScalar:
 
     def test_biquadratic(self) -> None:
         """Interpolating x^2 + y^2 with (3,3) points."""
-        b = Bezier.interpolate(lambda pts: pts[:, 0] ** 2 + pts[:, 1] ** 2, [3, 3])
+
+        def biquad(lat: PointsLattice) -> npt.NDArray[np.floating[Any]]:
+            pts = lat.get_all_points()
+            return pts[:, 0] ** 2 + pts[:, 1] ** 2
+
+        b = Bezier.interpolate(biquad, [3, 3])
         assert b.degree == (2, 2)
         pts = np.array([[0.0, 0.0], [1.0, 1.0], [0.5, 0.5]])
         expected = pts[:, 0] ** 2 + pts[:, 1] ** 2
@@ -126,7 +139,8 @@ class TestInterpolate2DVector:
     def test_planar_surface(self) -> None:
         """A linear vector-valued 2D function is recovered exactly."""
 
-        def plane(pts: npt.NDArray[np.floating[Any]]) -> npt.NDArray[np.floating[Any]]:
+        def plane(lat: PointsLattice) -> npt.NDArray[np.floating[Any]]:
+            pts = lat.get_all_points()
             x, y = pts[:, 0], pts[:, 1]
             return np.stack([x, y, x + y], axis=-1)
 
@@ -148,26 +162,26 @@ class TestNodeSelection:
 
     def test_chebyshev_default(self) -> None:
         """Default (Chebyshev) nodes recover a quadratic exactly."""
-        b = Bezier.interpolate(lambda x: x**2, 3, nodes=None)
+        b = Bezier.interpolate(lambda lat: lat.pts_per_dir[0] ** 2, 3, nodes=None)
         pts = np.array([0.0, 0.5, 1.0])
         nptest.assert_allclose(b.evaluate(pts), pts**2, atol=1e-13)
 
     def test_chebyshev_explicit(self) -> None:
         """Explicitly requesting 'chebyshev' is the same as default."""
-        b = Bezier.interpolate(lambda x: x**2, 3, nodes="chebyshev")
+        b = Bezier.interpolate(lambda lat: lat.pts_per_dir[0] ** 2, 3, nodes="chebyshev")
         pts = np.array([0.0, 0.5, 1.0])
         nptest.assert_allclose(b.evaluate(pts), pts**2, atol=1e-13)
 
     def test_uniform_nodes(self) -> None:
         """Uniform nodes can also recover polynomials (less stable for high degree)."""
-        b = Bezier.interpolate(lambda x: x**2, 3, nodes="uniform")
+        b = Bezier.interpolate(lambda lat: lat.pts_per_dir[0] ** 2, 3, nodes="uniform")
         pts = np.array([0.0, 0.5, 1.0])
         nptest.assert_allclose(b.evaluate(pts), pts**2, atol=1e-12)
 
     def test_custom_nodes_array(self) -> None:
         """User-provided custom nodes as a single array."""
         custom = np.array([0.0, 0.5, 1.0])
-        b = Bezier.interpolate(lambda x: x**2, 3, nodes=custom)
+        b = Bezier.interpolate(lambda lat: lat.pts_per_dir[0] ** 2, 3, nodes=custom)
         pts = np.array([0.0, 0.5, 1.0])
         nptest.assert_allclose(b.evaluate(pts), pts**2, atol=1e-12)
 
@@ -175,7 +189,67 @@ class TestNodeSelection:
         """User-provided custom nodes as a sequence of arrays (2D)."""
         nodes_x = np.array([0.0, 0.5, 1.0])
         nodes_y = np.array([0.0, 1.0])
-        b = Bezier.interpolate(lambda pts: pts[:, 0] + pts[:, 1], [3, 2], nodes=[nodes_x, nodes_y])
+
+        def func(lat: PointsLattice) -> npt.NDArray[np.floating[Any]]:
+            pts = lat.get_all_points()
+            return pts[:, 0] + pts[:, 1]
+
+        b = Bezier.interpolate(func, [3, 2], nodes=[nodes_x, nodes_y])
+        assert b.degree == (2, 1)
+        pts = np.array([[0.5, 0.5]])
+        nptest.assert_allclose(b.evaluate(pts), [1.0], atol=1e-12)
+
+
+# ---------------------------------------------------------------------------
+# Callable receives PointsLattice
+# ---------------------------------------------------------------------------
+
+
+class TestInterpolateCallableLattice:
+    """Tests verifying that the callable receives a PointsLattice."""
+
+    def test_1d_receives_lattice(self) -> None:
+        """1D interpolation passes a PointsLattice to the callable."""
+
+        def func(lat: PointsLattice) -> npt.NDArray[np.floating[Any]]:
+            assert isinstance(lat, PointsLattice)
+            assert lat.dim == 1
+            return lat.pts_per_dir[0] ** 2
+
+        b = Bezier.interpolate(func, 3)
+        assert b.degree == (2,)
+
+    def test_2d_receives_lattice(self) -> None:
+        """2D interpolation passes a PointsLattice to the callable."""
+
+        def func(lat: PointsLattice) -> npt.NDArray[np.floating[Any]]:
+            assert isinstance(lat, PointsLattice)
+            assert lat.dim == 2  # noqa: PLR2004
+            pts = lat.get_all_points()
+            return pts[:, 0] + pts[:, 1]
+
+        b = Bezier.interpolate(func, [3, 3])
+        assert b.degree == (2, 2)
+
+    def test_lattice_has_correct_nodes(self) -> None:
+        """The PointsLattice contains the correct node arrays."""
+        custom_nodes = np.array([0.0, 0.5, 1.0])
+
+        def func(lat: PointsLattice) -> npt.NDArray[np.floating[Any]]:
+            nptest.assert_allclose(lat.pts_per_dir[0], custom_nodes)
+            return lat.pts_per_dir[0]
+
+        Bezier.interpolate(func, 3, nodes=custom_nodes)
+
+    def test_points_lattice_as_nodes(self) -> None:
+        """Passing a PointsLattice as the nodes parameter works."""
+        lattice = PointsLattice([np.array([0.0, 0.5, 1.0]), np.array([0.0, 1.0])])
+
+        def func(lat: PointsLattice) -> npt.NDArray[np.floating[Any]]:
+            pts = lat.get_all_points()
+            return pts[:, 0] + pts[:, 1]
+
+        b = Bezier.interpolate(func, [3, 2], nodes=lattice)
         assert b.degree == (2, 1)
         pts = np.array([[0.5, 0.5]])
         nptest.assert_allclose(b.evaluate(pts), [1.0], atol=1e-12)
@@ -187,16 +261,23 @@ class TestNodeSelection:
 
 
 class TestDtype:
-    """Tests for dtype propagation."""
+    """Tests for dtype inference."""
 
     def test_float64_default(self) -> None:
-        """Default dtype is float64."""
-        b = Bezier.interpolate(lambda x: x, 2)
+        """Default dtype is float64 when func returns float64."""
+        b = Bezier.interpolate(lambda lat: lat.pts_per_dir[0], 2)
         assert b.dtype == np.float64
 
-    def test_float32(self) -> None:
-        """Requesting float32 propagates through."""
-        b = Bezier.interpolate(lambda x: x, 2, dtype=np.float32)
+    def test_int_return_promoted_to_float64(self) -> None:
+        """Integer return from func is promoted to float64."""
+        b = Bezier.interpolate(lambda lat: np.ones(len(lat.pts_per_dir[0]), dtype=int), 2)
+        assert b.dtype == np.float64
+
+    def test_fit_infers_from_values(self) -> None:
+        """Bezier.fit infers dtype from the values array."""
+        nodes = np.array([0.0, 1.0], dtype=np.float32)
+        vals = np.array([1.0, 2.0], dtype=np.float32)
+        b = Bezier.fit(vals, nodes)
         assert b.dtype == np.float32
 
 
@@ -211,23 +292,18 @@ class TestInterpolateValidation:
     def test_n_pts_too_small(self) -> None:
         """n_pts < 1 raises ValueError."""
         with pytest.raises(ValueError, match="n_pts.*>= 1"):
-            Bezier.interpolate(lambda x: x, 0)
-
-    def test_non_floating_dtype(self) -> None:
-        """Non-floating dtype raises ValueError."""
-        with pytest.raises(ValueError, match="floating"):
-            Bezier.interpolate(lambda x: x, 3, dtype=np.int32)
+            Bezier.interpolate(lambda lat: lat.pts_per_dir[0], 0)
 
     def test_mismatched_nodes_n_pts(self) -> None:
         """Custom nodes with wrong length raises ValueError."""
         with pytest.raises(ValueError, match="does not match"):
-            Bezier.interpolate(lambda x: x, 3, nodes=np.array([0.0, 1.0]))
+            Bezier.interpolate(lambda lat: lat.pts_per_dir[0], 3, nodes=np.array([0.0, 1.0]))
 
     def test_wrong_number_of_node_arrays(self) -> None:
         """Wrong number of node arrays for 2D raises ValueError."""
         with pytest.raises(ValueError, match="Expected 2"):
             Bezier.interpolate(
-                lambda pts: pts[:, 0] + pts[:, 1],
+                lambda lat: lat.get_all_points()[:, 0],
                 [3, 3],
                 nodes=[np.array([0.0, 0.5, 1.0])],
             )
@@ -235,7 +311,7 @@ class TestInterpolateValidation:
     def test_bad_function_output_shape(self) -> None:
         """Function returning wrong shape raises ValueError."""
         with pytest.raises(ValueError, match="Function returned shape"):
-            Bezier.interpolate(lambda x: np.ones((2, 3)), 3)
+            Bezier.interpolate(lambda lat: np.ones((2, 3)), 3)
 
 
 # ---------------------------------------------------------------------------
@@ -248,28 +324,33 @@ class TestInterpolateDegree:
 
     def test_exact_when_degree_equals_n_pts_minus_1(self) -> None:
         """Explicit degree = n_pts - 1 gives the same result as default."""
-        b = Bezier.interpolate(lambda x: x**2, 5, degree=4)
+        b = Bezier.interpolate(lambda lat: lat.pts_per_dir[0] ** 2, 5, degree=4)
         assert b.degree == (4,)
         pts = np.array([0.0, 0.25, 0.5, 0.75, 1.0])
         nptest.assert_allclose(b.evaluate(pts), pts**2, atol=1e-13)
 
     def test_least_squares_quadratic(self) -> None:
         """Fitting x^2 with degree=2 from 5 sample points recovers it."""
-        b = Bezier.interpolate(lambda x: x**2, 5, degree=2)
+        b = Bezier.interpolate(lambda lat: lat.pts_per_dir[0] ** 2, 5, degree=2)
         assert b.degree == (2,)
         pts = np.array([0.0, 0.25, 0.5, 0.75, 1.0])
         nptest.assert_allclose(b.evaluate(pts), pts**2, atol=1e-12)
 
     def test_least_squares_linear(self) -> None:
         """Fitting a linear function with degree=1 from 10 points."""
-        b = Bezier.interpolate(lambda x: 3.0 * x + 1.0, 10, degree=1)
+        b = Bezier.interpolate(lambda lat: 3.0 * lat.pts_per_dir[0] + 1.0, 10, degree=1)
         assert b.degree == (1,)
         pts = np.array([0.0, 0.5, 1.0])
         nptest.assert_allclose(b.evaluate(pts), [1.0, 2.5, 4.0], atol=1e-12)
 
     def test_2d_least_squares(self) -> None:
         """Fitting x+y with degree=(1,1) from (3,3) samples."""
-        b = Bezier.interpolate(lambda pts: pts[:, 0] + pts[:, 1], [3, 3], degree=[1, 1])
+
+        def func(lat: PointsLattice) -> npt.NDArray[np.floating[Any]]:
+            pts = lat.get_all_points()
+            return pts[:, 0] + pts[:, 1]
+
+        b = Bezier.interpolate(func, [3, 3], degree=[1, 1])
         assert b.degree == (1, 1)
         pts = np.array([[0.5, 0.5], [0.0, 1.0], [1.0, 0.0]])
         expected = pts[:, 0] + pts[:, 1]
@@ -278,17 +359,17 @@ class TestInterpolateDegree:
     def test_degree_too_large_raises(self) -> None:
         """Degree >= n_pts raises ValueError."""
         with pytest.raises(ValueError, match="must be < n_pts"):
-            Bezier.interpolate(lambda x: x, 3, degree=3)
+            Bezier.interpolate(lambda lat: lat.pts_per_dir[0], 3, degree=3)
 
     def test_degree_negative_raises(self) -> None:
         """Negative degree raises ValueError."""
         with pytest.raises(ValueError, match="must be >= 0"):
-            Bezier.interpolate(lambda x: x, 3, degree=-1)
+            Bezier.interpolate(lambda lat: lat.pts_per_dir[0], 3, degree=-1)
 
     def test_degree_length_mismatch_raises(self) -> None:
         """Degree sequence length != n_pts sequence length raises ValueError."""
         with pytest.raises(ValueError, match="entries"):
-            Bezier.interpolate(lambda pts: pts[:, 0] + pts[:, 1], [3, 3], degree=[1])
+            Bezier.interpolate(lambda lat: lat.get_all_points()[:, 0], [3, 3], degree=[1])
 
 
 # ---------------------------------------------------------------------------
@@ -345,7 +426,7 @@ class TestFit1DVector:
 
 
 # ---------------------------------------------------------------------------
-# Bezier.fit — 2D
+# Bezier.fit — 2D tensor-product
 # ---------------------------------------------------------------------------
 
 
@@ -363,6 +444,18 @@ class TestFit2D:
         pts = np.array([[0.5, 0.5], [0.0, 1.0]])
         expected = pts[:, 0] + pts[:, 1]
         nptest.assert_allclose(b.evaluate(pts), expected, atol=1e-12)
+
+    def test_with_points_lattice(self) -> None:
+        """Fitting bilinear values using a PointsLattice for nodes."""
+        nodes_x = np.array([0.0, 1.0])
+        nodes_y = np.array([0.0, 1.0])
+        lattice = PointsLattice([nodes_x, nodes_y])
+        xx, yy = np.meshgrid(nodes_x, nodes_y, indexing="ij")
+        vals = xx + yy
+        b = Bezier.fit(vals, lattice)
+        assert b.degree == (1, 1)
+        pts = np.array([[0.5, 0.5]])
+        nptest.assert_allclose(b.evaluate(pts), [1.0], atol=1e-12)
 
 
 # ---------------------------------------------------------------------------
@@ -392,7 +485,100 @@ class TestFitDegree:
 
 
 # ---------------------------------------------------------------------------
-# Bezier.fit — validation
+# Bezier.fit — scattered (non-tensor-product) points
+# ---------------------------------------------------------------------------
+
+
+class TestFitScattered1D:
+    """Tests for 1D scattered fitting."""
+
+    def test_linear_scattered(self) -> None:
+        """Fit a linear from scattered 1D points (presented as 2D array)."""
+        pts = np.array([[0.0], [0.3], [0.7], [1.0]])
+        vals = 2.0 * pts[:, 0] + 1.0
+        b = Bezier.fit(vals, pts, degree=1)
+        assert b.degree == (1,)
+        eval_pts = np.array([0.0, 0.5, 1.0])
+        nptest.assert_allclose(b.evaluate(eval_pts), [1.0, 2.0, 3.0], atol=1e-12)
+
+    def test_quadratic_scattered(self) -> None:
+        """Fit x^2 from scattered 1D points."""
+        pts = np.array([[0.0], [0.2], [0.5], [0.8], [1.0]])
+        vals = pts[:, 0] ** 2
+        b = Bezier.fit(vals, pts, degree=2)
+        assert b.degree == (2,)
+        eval_pts = np.array([0.0, 0.25, 0.5, 0.75, 1.0])
+        nptest.assert_allclose(b.evaluate(eval_pts), eval_pts**2, atol=1e-12)
+
+
+class TestFitScattered2D:
+    """Tests for 2D scattered fitting."""
+
+    def test_bilinear_scattered(self) -> None:
+        """Fit x + y from scattered 2D points."""
+        rng = np.random.default_rng(42)
+        pts = rng.random((20, 2))
+        vals = pts[:, 0] + pts[:, 1]
+        b = Bezier.fit(vals, pts, degree=[1, 1])
+        assert b.degree == (1, 1)
+        eval_pts = np.array([[0.5, 0.5], [0.0, 1.0], [1.0, 0.0]])
+        expected = eval_pts[:, 0] + eval_pts[:, 1]
+        nptest.assert_allclose(b.evaluate(eval_pts), expected, atol=1e-10)
+
+    def test_biquadratic_scattered(self) -> None:
+        """Fit x^2 + y^2 from scattered 2D points."""
+        rng = np.random.default_rng(123)
+        pts = rng.random((30, 2))
+        vals = pts[:, 0] ** 2 + pts[:, 1] ** 2
+        b = Bezier.fit(vals, pts, degree=[2, 2])
+        assert b.degree == (2, 2)
+        eval_pts = np.array([[0.0, 0.0], [0.5, 0.5], [1.0, 1.0]])
+        expected = eval_pts[:, 0] ** 2 + eval_pts[:, 1] ** 2
+        nptest.assert_allclose(b.evaluate(eval_pts), expected, atol=1e-10)
+
+    def test_vector_scattered(self) -> None:
+        """Fit a vector-valued function from scattered 2D points."""
+        rng = np.random.default_rng(7)
+        pts = rng.random((20, 2))
+        vals = np.stack([pts[:, 0], pts[:, 1], pts[:, 0] + pts[:, 1]], axis=-1)
+        b = Bezier.fit(vals, pts, degree=[1, 1])
+        assert b.degree == (1, 1)
+        nptest.assert_equal(b.rank, 3)
+        eval_pts = np.array([[0.5, 0.5]])
+        expected = np.array([[0.5, 0.5, 1.0]])
+        nptest.assert_allclose(b.evaluate(eval_pts), expected, atol=1e-10)
+
+
+class TestFitScatteredValidation:
+    """Validation tests for scattered fitting."""
+
+    def test_degree_required(self) -> None:
+        """Scattered fitting without degree raises ValueError."""
+        pts = np.array([[0.0], [0.5], [1.0]])
+        with pytest.raises(ValueError, match="degree is required"):
+            Bezier.fit(np.array([1.0, 2.0, 3.0]), pts)
+
+    def test_underdetermined(self) -> None:
+        """Too few points for the requested degree raises ValueError."""
+        pts = np.array([[0.0, 0.0], [1.0, 1.0]])
+        with pytest.raises(ValueError, match="Underdetermined"):
+            Bezier.fit(np.array([1.0, 2.0]), pts, degree=[2, 2])
+
+    def test_values_pts_mismatch(self) -> None:
+        """Mismatched number of values and points raises ValueError."""
+        pts = np.array([[0.0], [0.5], [1.0]])
+        with pytest.raises(ValueError, match="entries"):
+            Bezier.fit(np.array([1.0, 2.0]), pts, degree=1)
+
+    def test_degree_dim_mismatch(self) -> None:
+        """Degree length != number of point columns raises ValueError."""
+        pts = np.array([[0.0, 0.0], [1.0, 1.0], [0.5, 0.5]])
+        with pytest.raises(ValueError, match="columns"):
+            Bezier.fit(np.array([1.0, 2.0, 3.0]), pts, degree=[1])
+
+
+# ---------------------------------------------------------------------------
+# Bezier.fit — validation (tensor-product)
 # ---------------------------------------------------------------------------
 
 
@@ -403,11 +589,6 @@ class TestFitValidation:
         """Node array length != values length raises ValueError."""
         with pytest.raises(ValueError, match="does not match"):
             Bezier.fit(np.array([1.0, 2.0, 3.0]), np.array([0.0, 1.0]))
-
-    def test_non_floating_dtype(self) -> None:
-        """Non-floating dtype raises ValueError."""
-        with pytest.raises(ValueError, match="floating"):
-            Bezier.fit(np.array([1.0, 2.0]), np.array([0.0, 1.0]), dtype=np.int32)
 
     def test_degree_too_large(self) -> None:
         """Degree >= n_pts raises ValueError."""
