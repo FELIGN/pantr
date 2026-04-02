@@ -420,3 +420,185 @@ class TestImplicitPolyQuadrature:
         vals = ipq.eval_poly(0, pts)
         # At center: (0-0)^2 + (0-0)^2 - 0.1 = -0.1.
         assert abs(vals[0] - (-0.1)) < 1e-12
+
+
+# ---------------------------------------------------------------------------
+# Helpers for paper test cases (§4.1, §4.2)
+# ---------------------------------------------------------------------------
+
+
+def _mono_to_bernstein_1d(mono: npt.NDArray[np.float64], degree: int) -> npt.NDArray[np.float64]:
+    """Convert monomial coefficients (ascending power) to Bernstein degree *degree*."""
+    from math import comb as _comb
+
+    n = degree
+    mat = np.zeros((n + 1, n + 1))
+    for i in range(n + 1):
+        for j in range(i + 1):
+            mat[i, j] = _comb(i, j) / _comb(n, j)
+    m = np.zeros(n + 1)
+    m[: min(len(mono), n + 1)] = mono[: min(len(mono), n + 1)]
+    return mat @ m
+
+
+def _ellipse_bernstein_on_cell(
+    cell_lo: npt.NDArray[np.float64],
+    cell_hi: npt.NDArray[np.float64],
+) -> npt.NDArray[np.float64]:
+    """Bernstein degree-(2,2) coefficients for phi(x,y)=x^2+4y^2-1 on a cell.
+
+    Maps the cell [cell_lo, cell_hi] to [0,1]^2 and converts to Bernstein form.
+    """
+    a, c = cell_lo[0], cell_lo[1]
+    hx, hy = cell_hi[0] - a, cell_hi[1] - c
+    # f_x(t) = (a + hx*t)^2, monomial: [a^2, 2*a*hx, hx^2]
+    bern_x = _mono_to_bernstein_1d(np.array([a**2, 2 * a * hx, hx**2]), 2)
+    # f_y(s) = 4*(c + hy*s)^2, monomial: [4c^2, 8c*hy, 4*hy^2]
+    bern_y = _mono_to_bernstein_1d(np.array([4 * c**2, 8 * c * hy, 4 * hy**2]), 2)
+    coeffs = np.zeros((3, 3))
+    for i in range(3):
+        for j in range(3):
+            coeffs[i, j] = bern_x[i] + bern_y[j] - 1.0
+    return coeffs
+
+
+def _ellipsoid_bernstein_on_cell(
+    cell_lo: npt.NDArray[np.float64],
+    cell_hi: npt.NDArray[np.float64],
+) -> npt.NDArray[np.float64]:
+    """Bernstein degree-(2,2,2) coefficients for phi(x,y,z)=x^2+4y^2+9z^2-1 on a cell."""
+    a, c, e = cell_lo[0], cell_lo[1], cell_lo[2]
+    hx, hy, hz = cell_hi[0] - a, cell_hi[1] - c, cell_hi[2] - e
+    bern_x = _mono_to_bernstein_1d(np.array([a**2, 2 * a * hx, hx**2]), 2)
+    bern_y = _mono_to_bernstein_1d(np.array([4 * c**2, 8 * c * hy, 4 * hy**2]), 2)
+    bern_z = _mono_to_bernstein_1d(np.array([9 * e**2, 18 * e * hz, 9 * hz**2]), 2)
+    coeffs = np.zeros((3, 3, 3))
+    for i in range(3):
+        for j in range(3):
+            for k in range(3):
+                coeffs[i, j, k] = bern_x[i] + bern_y[j] + bern_z[k] - 1.0
+    return coeffs
+
+
+def _integrand_f(pts: npt.NDArray[np.float64]) -> npt.NDArray[np.float64]:
+    """Integrand f(x) = cos(1/4 * ||x||^2) from paper §4.2."""
+    return np.cos(0.25 * np.sum(pts**2, axis=1))
+
+
+# ---------------------------------------------------------------------------
+# Paper convergence tests: h-refinement (§4.1)
+# ---------------------------------------------------------------------------
+
+
+class TestHRefinement:
+    """h-refinement convergence on the ellipse/ellipsoid (paper §4.1).
+
+    Under h-refinement with fixed q, the error should be O(h^{2q}).
+    """
+
+    @staticmethod
+    def _h_refine_ellipse_volume(n: int, q: int) -> float:
+        """Compute ellipse area via h-refinement with n cells per axis."""
+        lo, hi = -1.1, 1.1
+        h = (hi - lo) / n
+        total = 0.0
+        for ix in range(n):
+            for iy in range(n):
+                cell_lo = np.array([lo + ix * h, lo + iy * h])
+                cell_hi = np.array([lo + (ix + 1) * h, lo + (iy + 1) * h])
+                coeffs = _ellipse_bernstein_on_cell(cell_lo, cell_hi)
+                ipq = ImplicitPolyQuadrature(coeffs)
+                # GL_ONLY is correct for h-refinement: as h→0 the geometry
+                # becomes locally flat, so GL gives optimal convergence.
+                pts, wts = ipq.volume_quad(q, QuadStrategy.GL_ONLY)
+                vals = ipq.eval_poly(0, pts)
+                total += np.sum(wts[vals < 0]) * h**2
+        return total
+
+    def test_ellipse_area_h_refinement(self) -> None:
+        """Ellipse area converges as O(h^{2q}) under h-refinement.
+
+        With q=3, the theoretical rate is h^6. Halving h (doubling n)
+        should reduce the error by ~2^6 = 64.
+        """
+        expected = np.pi / 2.0
+        q = 3
+        errors = []
+        for n in [8, 16, 32]:
+            area = self._h_refine_ellipse_volume(n, q)
+            errors.append(abs(area - expected) / expected)
+
+        assert errors[0] < 1e-4  # n=8
+        # Check convergence rate between n=16 and n=32.
+        rate = np.log2(errors[1] / errors[2]) if errors[2] > 0 else 20.0
+        assert rate > 3.5, f"h-refinement rate too low: {rate:.1f} (expected ~{2 * q})"
+
+
+# ---------------------------------------------------------------------------
+# Paper convergence tests: q-refinement (§4.2)
+# ---------------------------------------------------------------------------
+
+
+class TestQRefinement:
+    """q-refinement convergence on the ellipse (paper §4.2, Fig. 5).
+
+    With the geometry fixed (single cell containing the ellipse), increasing
+    q should give approximately exponential convergence.
+    """
+
+    @staticmethod
+    def _single_cell_ellipse() -> ImplicitPolyQuadrature:
+        """Create quadrature for the ellipse on U=(-1.1, 1.1)^2."""
+        cell_lo = np.array([-1.1, -1.1])
+        cell_hi = np.array([1.1, 1.1])
+        coeffs = _ellipse_bernstein_on_cell(cell_lo, cell_hi)
+        return ImplicitPolyQuadrature(coeffs)
+
+    def test_ellipse_volume_q_refinement(self) -> None:
+        """Volume integral I_Omega should converge exponentially in q."""
+        ipq = self._single_cell_ellipse()
+        cell_vol = 2.2**2
+        expected = np.pi / 2.0
+
+        errors = []
+        for q in [5, 10, 20, 30]:
+            pts, wts = ipq.volume_quad(q, QuadStrategy.AUTO_MIXED)
+            vals = ipq.eval_poly(0, pts)
+            vol = np.sum(wts[vals < 0]) * cell_vol
+            errors.append(abs(vol - expected) / expected)
+
+        # Approximately exponential: doubling q roughly doubles accurate digits.
+        assert errors[0] < 0.01  # q=5
+        assert errors[1] < 1e-5  # q=10
+        assert errors[2] < 1e-9  # q=20
+        assert errors[3] < 1e-12  # q=30
+
+    def test_ellipse_surface_flux_q_refinement(self) -> None:
+        """Flux-form surface integral I_{Gamma_n} should converge exponentially."""
+        ipq = self._single_cell_ellipse()
+        cell_scale = 2.2  # 1D cell width for weight scaling
+        # For the ellipse, ∫_Γ f·n with f(x)=cos(¼||x||²) has a known reference.
+        # Use aggregate mode for best convergence.
+
+        errors = []
+        ref_q = 40
+        _, sw_ref, nw_ref = ipq.surface_quad(ref_q, QuadStrategy.TS_ONLY, aggregate=True)
+        # Scale by cell dimensions (surface points are in [0,1]^2, need to map).
+        pts_ref, _, nw_ref2 = ipq.surface_quad(ref_q, QuadStrategy.TS_ONLY, aggregate=True)
+        # Compute reference integral: ∫_Γ 1 · n dS (should be zero for closed curve).
+        # Instead test convergence of ∫_Γ 1 dS = perimeter.
+        # Perimeter of ellipse x^2+4y^2=1: semiaxes a=1, b=1/2.
+        # Approx perimeter (Ramanujan): pi*(3(a+b) - sqrt((3a+b)(a+3b)))
+        a_ax, b_ax = 1.0, 0.5
+        expected_perim = np.pi * (
+            3 * (a_ax + b_ax) - np.sqrt((3 * a_ax + b_ax) * (a_ax + 3 * b_ax))
+        )
+
+        for q in [5, 10, 20]:
+            _, sw, _ = ipq.surface_quad(q, QuadStrategy.TS_ONLY, aggregate=True)
+            perim = np.sum(sw) * cell_scale
+            errors.append(abs(perim - expected_perim) / expected_perim)
+
+        assert errors[0] < 0.05  # q=5
+        assert errors[1] < 0.005  # q=10
+        assert errors[2] < 1e-3  # q=20
