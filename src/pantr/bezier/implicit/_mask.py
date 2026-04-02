@@ -815,7 +815,7 @@ def _point_within_1d(
     if idx >= M:
         idx = M - 1
     idx = max(idx, 0)
-    return mask[idx]
+    return bool(mask[idx])
 
 
 @nb_jit(nopython=True, cache=True)
@@ -843,7 +843,7 @@ def _point_within_2d(
     if i1 >= M:
         i1 = M - 1
     i1 = max(i1, 0)
-    return mask[i0, i1]
+    return bool(mask[i0, i1])
 
 
 @nb_jit(nopython=True, cache=True)
@@ -875,7 +875,7 @@ def _point_within_3d(
     if i2 >= M:
         i2 = M - 1
     i2 = max(i2, 0)
-    return mask[i0, i1, i2]
+    return bool(mask[i0, i1, i2])
 
 
 @nb_jit(nopython=True, cache=True)

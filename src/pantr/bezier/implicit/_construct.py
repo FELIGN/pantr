@@ -48,8 +48,8 @@ _MERGE_TOL: float = 10.0 * 2.2204460492503131e-16
 
 @nb_jit(nopython=True, cache=True)
 def _collect_and_partition_1d(
-    coeffs_list: NumbaList,  # type: ignore[type-arg]
-    masks_list: NumbaList,  # type: ignore[type-arg]
+    coeffs_list: NumbaList,
+    masks_list: NumbaList,
 ) -> tuple[npt.NDArray[np.float64], int]:
     """Collect roots from all 1D polynomials and partition [0, 1].
 
@@ -105,8 +105,8 @@ def _collect_and_partition_1d(
 
 @nb_jit(nopython=True, cache=True)
 def _collect_and_partition_from_2d(
-    coeffs_list: NumbaList,  # type: ignore[type-arg]
-    masks_list: NumbaList,  # type: ignore[type-arg]
+    coeffs_list: NumbaList,
+    masks_list: NumbaList,
     k: int,
     x_base: float,
 ) -> tuple[npt.NDArray[np.float64], int]:
@@ -175,8 +175,8 @@ def _collect_and_partition_from_2d(
 
 @nb_jit(nopython=True, cache=True)
 def _collect_and_partition_from_3d(
-    coeffs_list: NumbaList,  # type: ignore[type-arg]
-    masks_list: NumbaList,  # type: ignore[type-arg]
+    coeffs_list: NumbaList,
+    masks_list: NumbaList,
     k: int,
     x_base: npt.NDArray[np.float64],
 ) -> tuple[npt.NDArray[np.float64], int]:
@@ -238,13 +238,13 @@ def _collect_and_partition_from_3d(
 
 @nb_jit(nopython=True, cache=True)
 def volume_quad_2d(
-    coeffs_1d: NumbaList,  # type: ignore[type-arg]
-    masks_1d: NumbaList,  # type: ignore[type-arg]
+    coeffs_1d: NumbaList,
+    masks_1d: NumbaList,
     k0: int,
     use_ts_0: bool,
     type_0: int,
-    coeffs_2d: NumbaList,  # type: ignore[type-arg]
-    masks_2d: NumbaList,  # type: ignore[type-arg]
+    coeffs_2d: NumbaList,
+    masks_2d: NumbaList,
     k1: int,
     use_ts_1: bool,
     type_1: int,
@@ -386,18 +386,18 @@ def volume_quad_2d(
 
 @nb_jit(nopython=True, cache=True)
 def volume_quad_3d(
-    coeffs_1d: NumbaList,  # type: ignore[type-arg]
-    masks_1d: NumbaList,  # type: ignore[type-arg]
+    coeffs_1d: NumbaList,
+    masks_1d: NumbaList,
     k0: int,
     use_ts_0: bool,
     type_0: int,
-    coeffs_2d: NumbaList,  # type: ignore[type-arg]
-    masks_2d: NumbaList,  # type: ignore[type-arg]
+    coeffs_2d: NumbaList,
+    masks_2d: NumbaList,
     k1: int,
     use_ts_1: bool,
     type_1: int,
-    coeffs_3d: NumbaList,  # type: ignore[type-arg]
-    masks_3d: NumbaList,  # type: ignore[type-arg]
+    coeffs_3d: NumbaList,
+    masks_3d: NumbaList,
     k2: int,
     use_ts_2: bool,
     type_2: int,
@@ -566,18 +566,18 @@ def volume_quad_3d(
 
 @nb_jit(nopython=True, cache=True)
 def surface_quad_2d(
-    coeffs_1d: NumbaList,  # type: ignore[type-arg]
-    masks_1d: NumbaList,  # type: ignore[type-arg]
+    coeffs_1d: NumbaList,
+    masks_1d: NumbaList,
     k0: int,
     use_ts_0: bool,
     type_0: int,
-    coeffs_2d: NumbaList,  # type: ignore[type-arg]
-    masks_2d: NumbaList,  # type: ignore[type-arg]
+    coeffs_2d: NumbaList,
+    masks_2d: NumbaList,
     k1: int,
     use_ts_1: bool,
     type_1: int,
     n_input_polys: int,
-    input_coeffs_2d: NumbaList,  # type: ignore[type-arg]
+    input_coeffs_2d: NumbaList,
     gl_nodes: npt.NDArray[np.float64],
     gl_weights: npt.NDArray[np.float64],
     ts_nodes: npt.NDArray[np.float64],

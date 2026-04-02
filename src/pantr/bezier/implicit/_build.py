@@ -64,10 +64,10 @@ INTEGRAL_OUTER_AGGREGATE: int = 2
 
 @nb_jit(nopython=True, cache=True)
 def _eliminate_axis_2d(
-    coeffs_list: NumbaList,  # type: ignore[type-arg]
-    masks_list: NumbaList,  # type: ignore[type-arg]
+    coeffs_list: NumbaList,
+    masks_list: NumbaList,
     k: int,
-) -> tuple[NumbaList, NumbaList]:  # type: ignore[type-arg]
+) -> tuple[NumbaList, NumbaList]:
     """Eliminate axis *k* from 2D polynomials, producing 1D polynomial set.
 
     For each input polynomial:
@@ -163,10 +163,10 @@ def _eliminate_axis_2d(
 
 @nb_jit(nopython=True, cache=True)
 def _eliminate_axis_3d(
-    coeffs_list: NumbaList,  # type: ignore[type-arg]
-    masks_list: NumbaList,  # type: ignore[type-arg]
+    coeffs_list: NumbaList,
+    masks_list: NumbaList,
     k: int,
-) -> tuple[NumbaList, NumbaList]:  # type: ignore[type-arg]
+) -> tuple[NumbaList, NumbaList]:
     """Eliminate axis *k* from 3D polynomials, producing 2D polynomial set.
 
     Args:
@@ -256,8 +256,8 @@ def _eliminate_axis_3d(
 
 @nb_jit(nopython=True, cache=True)
 def build_2d(
-    coeffs_list: NumbaList,  # type: ignore[type-arg]
-    masks_list: NumbaList,  # type: ignore[type-arg]
+    coeffs_list: NumbaList,
+    masks_list: NumbaList,
 ) -> tuple[
     NumbaList,  # coeffs_1d (level 0)
     NumbaList,  # masks_1d (level 0)
@@ -269,7 +269,7 @@ def build_2d(
     int,  # k1
     bool,  # use_ts_1
     int,  # type_1
-]:  # type: ignore[type-arg]
+]:
     """Build the dimension-reduction hierarchy for 2D polynomials.
 
     Implements Algorithm 1 from Saye (2022):
@@ -356,8 +356,8 @@ def build_2d(
 
 @nb_jit(nopython=True, cache=True)
 def build_3d(
-    coeffs_list: NumbaList,  # type: ignore[type-arg]
-    masks_list: NumbaList,  # type: ignore[type-arg]
+    coeffs_list: NumbaList,
+    masks_list: NumbaList,
 ) -> tuple[
     NumbaList,
     NumbaList,
@@ -374,7 +374,7 @@ def build_3d(
     int,
     bool,
     int,  # level 2 (3D)
-]:  # type: ignore[type-arg]
+]:
     """Build the dimension-reduction hierarchy for 3D polynomials.
 
     Implements Algorithm 1 from Saye (2022) for 3D:

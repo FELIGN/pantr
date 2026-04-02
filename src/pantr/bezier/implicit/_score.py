@@ -28,8 +28,8 @@ from pantr.bezier.implicit._mask import M
 
 @nb_jit(nopython=True, cache=True)
 def score_estimate_2d(
-    coeffs_list: NumbaList,  # type: ignore[type-arg]
-    masks_list: NumbaList,  # type: ignore[type-arg]
+    coeffs_list: NumbaList,
+    masks_list: NumbaList,
 ) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.bool_]]:
     """Estimate scores for each height direction in 2D.
 
@@ -77,8 +77,8 @@ def score_estimate_2d(
 
 @nb_jit(nopython=True, cache=True)
 def score_estimate_3d(
-    coeffs_list: NumbaList,  # type: ignore[type-arg]
-    masks_list: NumbaList,  # type: ignore[type-arg]
+    coeffs_list: NumbaList,
+    masks_list: NumbaList,
 ) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.bool_]]:
     """Estimate scores for each height direction in 3D.
 

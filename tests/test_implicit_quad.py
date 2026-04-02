@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import numpy as np
 import pytest
+from numpy import typing as npt
 
 from pantr.bezier.implicit import ImplicitPolyQuadrature, QuadStrategy
 from pantr.bezier.implicit._bernstein import (
@@ -35,7 +36,7 @@ from pantr.bezier.implicit._roots import find_roots
 # ---------------------------------------------------------------------------
 
 
-def _make_circle_coeffs(r_sq: float = 0.1) -> np.ndarray:
+def _make_circle_coeffs(r_sq: float = 0.1) -> npt.NDArray[np.float64]:
     """Bernstein degree-(2,2) coefficients for (x-0.5)^2 + (y-0.5)^2 - r_sq."""
     c_val = 0.5 - r_sq
     return np.array(
@@ -206,7 +207,7 @@ class TestRootFinding:
         from pantr.bezier.implicit._roots import _clip_roots_core, _dedup_roots
 
         roots_expected = [0.15, 0.35, 0.55, 0.75, 0.95]
-        mono = P.polyfromroots(roots_expected)
+        mono = P.polyfromroots(roots_expected)  # type: ignore[no-untyped-call]
         deg = len(mono) - 1
         M = np.zeros((deg + 1, deg + 1))
         for i in range(deg + 1):

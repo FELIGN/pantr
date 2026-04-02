@@ -288,10 +288,10 @@ def _resultant_1d(
 
     if n == m:
         B = _bezout_matrix(f, g)
-        return np.linalg.det(B)
+        return float(np.linalg.det(B))
     else:
         S = _sylvester_matrix(f, g)
-        return np.linalg.det(S)
+        return float(np.linalg.det(S))
 
 
 # ---------------------------------------------------------------------------

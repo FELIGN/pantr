@@ -23,7 +23,7 @@ Main exports:
 from __future__ import annotations
 
 from enum import IntEnum
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 from numba.typed import List as NumbaList
@@ -90,7 +90,7 @@ class ImplicitPolyQuadrature:
         for p in polynomials:
             if hasattr(p, "control_points"):
                 # Bezier object: extract scalar control points.
-                cp = np.asarray(p.control_points, dtype=np.float64)  # type: ignore[union-attr]
+                cp = np.asarray(p.control_points, dtype=np.float64)
                 if cp.ndim > p.dim:  # type: ignore[union-attr]
                     # Scalar Bezier: last axis is rank=1, squeeze it.
                     cp = cp[..., 0]
@@ -119,7 +119,7 @@ class ImplicitPolyQuadrature:
             for ca in coeffs_arrays:
                 coeffs_list.append(ca)
                 masks_list.append(compute_nonzero_mask_2d(ca))
-            self._build_result = build_2d(coeffs_list, masks_list)
+            self._build_result: tuple[Any, ...] = build_2d(coeffs_list, masks_list)
         else:
             coeffs_list_3d = NumbaList()
             masks_list_3d = NumbaList()
@@ -288,7 +288,7 @@ def _gauss_legendre_01(q: int) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.
     """
     from numpy.polynomial.legendre import leggauss  # noqa: PLC0415
 
-    pts, wts = leggauss(q)
+    pts, wts = leggauss(q)  # type: ignore[no-untyped-call]
     return np.ascontiguousarray(0.5 * (pts + 1.0)), np.ascontiguousarray(0.5 * wts)
 
 
