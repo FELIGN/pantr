@@ -23,6 +23,8 @@ from numpy import typing as npt
 
 from pantr._numba_compat import nb_jit
 from pantr.bezier.implicit._bernstein import (
+    _auto_reduce_1d,
+    _auto_reduce_2d,
     _collapse_2d,
     _collapse_3d,
     _degree_elevate_1d,
@@ -33,6 +35,12 @@ from pantr.bezier.implicit._bernstein import (
 
 _SVD_TOL_FACTOR: float = 100.0
 """Multiplier on machine epsilon for SVD truncation."""
+
+_AUTO_REDUCE_TOL: float = 1e4 * 2.2204460492503131e-16
+"""Tolerance for auto-reduction of resultant polynomial degree.
+
+Matches algoim's ``1e4 * eps`` used in ``resultant_core``.
+"""
 
 
 # ---------------------------------------------------------------------------
@@ -336,15 +344,50 @@ def resultant_2d(
 
     # Output degree in tangential direction.
     out_deg = nk_f * nt_g + nk_g * nt_f
+    result = _resultant_2d_at_degree(f, g, k, nk_f, nk_g, out_deg)
+
+    # Try auto-reduction: if the resultant is effectively lower degree,
+    # recompute at the reduced degree for better conditioning.
+    reduced = _auto_reduce_1d(result, _AUTO_REDUCE_TOL)
+    if len(reduced) < len(result):
+        new_deg = len(reduced) - 1
+        result = _resultant_2d_at_degree(f, g, k, nk_f, nk_g, new_deg)
+
+    return result
+
+
+@nb_jit(nopython=True, cache=True)
+def _resultant_2d_at_degree(  # noqa: PLR0913
+    f: npt.NDArray[np.float64],
+    g: npt.NDArray[np.float64],
+    k: int,
+    nk_f: int,
+    nk_g: int,
+    out_deg: int,
+) -> npt.NDArray[np.float64]:
+    """Compute resultant interpolated at a given output degree.
+
+    Args:
+        f (npt.NDArray[np.float64]): 2D coefficient array of f.
+        g (npt.NDArray[np.float64]): 2D coefficient array of g.
+        k (int): Elimination axis.
+        nk_f (int): Degree of f in direction k.
+        nk_g (int): Degree of g in direction k.
+        out_deg (int): Output Bernstein degree.
+
+    Returns:
+        npt.NDArray[np.float64]: 1D Bernstein coefficients.
+
+    Note:
+        Inputs are assumed to be correct (no validation performed).
+    """
     n_nodes = out_deg + 1
     nodes = _chebyshev_nodes(n_nodes)
 
-    # Evaluate resultant at each node.
     values = np.empty(n_nodes, dtype=np.float64)
     for i in range(n_nodes):
         f_1d = _collapse_2d(f, k, nodes[i])
         g_1d = _collapse_2d(g, k, nodes[i])
-        # Degree-elevate to common degree if needed.
         nf = len(f_1d) - 1
         ng = len(g_1d) - 1
         if nf < nk_f:
@@ -353,7 +396,6 @@ def resultant_2d(
             g_1d = _degree_elevate_1d(g_1d, nk_g - ng)
         values[i] = _resultant_1d(f_1d, g_1d)
 
-    # Interpolate to Bernstein form.
     return _bernstein_interpolate_1d(values, nodes, out_deg)
 
 
@@ -400,12 +442,50 @@ def resultant_3d(
     out_deg0 = nk_f * shape_g[t0] + nk_g * shape_f[t0]
     out_deg1 = nk_f * shape_g[t1] + nk_g * shape_f[t1]
 
+    result = _resultant_3d_at_degrees(f, g, k, nk_f, nk_g, out_deg0, out_deg1)
+
+    # Try auto-reduction.
+    reduced = _auto_reduce_2d(result, _AUTO_REDUCE_TOL)
+    if reduced.shape[0] < result.shape[0] or reduced.shape[1] < result.shape[1]:
+        new_deg0 = reduced.shape[0] - 1
+        new_deg1 = reduced.shape[1] - 1
+        result = _resultant_3d_at_degrees(f, g, k, nk_f, nk_g, new_deg0, new_deg1)
+
+    return result
+
+
+@nb_jit(nopython=True, cache=True)
+def _resultant_3d_at_degrees(  # noqa: PLR0913
+    f: npt.NDArray[np.float64],
+    g: npt.NDArray[np.float64],
+    k: int,
+    nk_f: int,
+    nk_g: int,
+    out_deg0: int,
+    out_deg1: int,
+) -> npt.NDArray[np.float64]:
+    """Compute 3D resultant interpolated at given output degrees.
+
+    Args:
+        f (npt.NDArray[np.float64]): 3D coefficient array of f.
+        g (npt.NDArray[np.float64]): 3D coefficient array of g.
+        k (int): Elimination axis.
+        nk_f (int): Degree of f in direction k.
+        nk_g (int): Degree of g in direction k.
+        out_deg0 (int): Output degree in first tangential direction.
+        out_deg1 (int): Output degree in second tangential direction.
+
+    Returns:
+        npt.NDArray[np.float64]: 2D Bernstein coefficients.
+
+    Note:
+        Inputs are assumed to be correct (no validation performed).
+    """
     n0 = out_deg0 + 1
     n1 = out_deg1 + 1
     nodes0 = _chebyshev_nodes(n0)
     nodes1 = _chebyshev_nodes(n1)
 
-    # Evaluate resultant on tensor-product grid.
     values = np.empty((n0, n1), dtype=np.float64)
     x_tang = np.empty(2, dtype=np.float64)
     for i0 in range(n0):
@@ -416,8 +496,7 @@ def resultant_3d(
             g_1d = _collapse_3d(g, k, x_tang)
             values[i0, i1] = _resultant_1d(f_1d, g_1d)
 
-    # Interpolate dimension by dimension: first along dir 0, then dir 1.
-    # Step 1: For each column i1, interpolate the n0 values to Bernstein in dir 0.
+    # Interpolate dimension by dimension.
     interp_step1 = np.empty((out_deg0 + 1, n1), dtype=np.float64)
     for i1 in range(n1):
         col_vals = np.empty(n0, dtype=np.float64)
@@ -427,7 +506,6 @@ def resultant_3d(
         for i0 in range(out_deg0 + 1):
             interp_step1[i0, i1] = coeffs_0[i0]
 
-    # Step 2: For each row i0, interpolate the n1 values to Bernstein in dir 1.
     result = np.empty((out_deg0 + 1, out_deg1 + 1), dtype=np.float64)
     for i0 in range(out_deg0 + 1):
         row_vals = np.empty(n1, dtype=np.float64)

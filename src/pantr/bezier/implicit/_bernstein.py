@@ -905,3 +905,249 @@ def _degree_elevate_axis_3d(  # noqa: PLR0912
                 for i2 in range(new_s2):
                     out[i0, i1, i2] = elev[i2]
         return out
+
+
+# ---------------------------------------------------------------------------
+# Section I: Squared L2 norm and degree auto-reduction
+# ---------------------------------------------------------------------------
+
+
+@nb_jit(nopython=True, cache=True)
+def _bincoeff(n: int, k: int) -> float:
+    """Compute binomial coefficient C(n, k) as a float.
+
+    Args:
+        n (int): Top argument.
+        k (int): Bottom argument.
+
+    Returns:
+        float: C(n, k).
+
+    Note:
+        Inputs are assumed to be correct (no validation performed).
+    """
+    if k < 0 or k > n:
+        return 0.0
+    if k == 0 or k == n:  # noqa: PLR1714
+        return 1.0
+    k = min(k, n - k)
+    result = 1.0
+    for i in range(k):
+        result = result * float(n - i) / float(i + 1)
+    return result
+
+
+@nb_jit(nopython=True, cache=True)
+def _squared_l2_norm_1d(coeffs: npt.NDArray[np.float64]) -> float:
+    """Compute the squared L2 norm of a 1D Bernstein polynomial on [0, 1].
+
+    Uses the Bernstein basis Gram matrix: ``<B^n_i, B^n_j> = C(n,i)*C(n,j) / ((2n+1)*C(2n,i+j))``.
+
+    Args:
+        coeffs (npt.NDArray[np.float64]): 1D Bernstein coefficients of length ``n+1``.
+
+    Returns:
+        float: Squared L2 norm ``integral_0^1 p(x)^2 dx``.
+
+    Note:
+        Inputs are assumed to be correct (no validation performed).
+    """
+    n = len(coeffs) - 1
+    result = 0.0
+    inv_2n1 = 1.0 / float(2 * n + 1)
+    for i in range(n + 1):
+        ci = coeffs[i]
+        bi = _bincoeff(n, i)
+        for j in range(n + 1):
+            cj = coeffs[j]
+            bj = _bincoeff(n, j)
+            bij = _bincoeff(2 * n, i + j)
+            if bij > 0.0:
+                result += ci * cj * bi * bj * inv_2n1 / bij
+    return result
+
+
+@nb_jit(nopython=True, cache=True)
+def _degree_reduce_1d(
+    coeffs: npt.NDArray[np.float64],
+) -> npt.NDArray[np.float64]:
+    """Reduce a 1D Bernstein polynomial by one degree via least-squares.
+
+    Uses the simple averaging formula: for a degree-n polynomial reduced to
+    degree n-1, the coefficients are approximately:
+    ``q[i] = ((n-i)*c[i] + (i+1)*c[i+1]) / (n)`` ... but a cleaner approach
+    is to use the pseudo-inverse of the degree elevation matrix.
+
+    For simplicity, uses the formula from Eck (1993): the best L2 approximation
+    of degree n by degree n-1 in Bernstein form.
+
+    Args:
+        coeffs (npt.NDArray[np.float64]): 1D Bernstein coefficients of length ``n+1``.
+
+    Returns:
+        npt.NDArray[np.float64]: Reduced coefficients of length ``n``.
+
+    Note:
+        Inputs are assumed to be correct (no validation performed).
+    """
+    n = len(coeffs) - 1
+    if n <= 0:
+        return coeffs.copy()
+
+    # The degree elevation matrix E maps degree-(n-1) to degree-n:
+    # E[i, j] = alpha if j == i, (1-alpha) if j == i-1, where alpha = i/n.
+    # The least-squares reduction is E^+ * coeffs.
+    # For the bidiagonal E, this can be solved efficiently.
+    # Forward sweep: q[0] = c[0], q[i] = (c[i] - (i/n)*q[i-1]) / (1 - i/n).
+    # Backward sweep: r[n-1] = c[n], r[i] = (c[i+1] - (1-(i+1)/n)*r[i+1]) / ((i+1)/n).
+    # Average: reduced[i] = (q[i] + r[i]) / 2.
+
+    fn = float(n)
+
+    # Forward sweep.
+    q = np.empty(n, dtype=np.float64)
+    q[0] = coeffs[0]
+    for i in range(1, n):
+        alpha = float(i) / fn
+        q[i] = (coeffs[i] - alpha * q[i - 1]) / (1.0 - alpha)
+
+    # Backward sweep.
+    r = np.empty(n, dtype=np.float64)
+    r[n - 1] = coeffs[n]
+    for i in range(n - 2, -1, -1):
+        alpha = float(i + 1) / fn
+        r[i] = (coeffs[i + 1] - (1.0 - alpha) * r[i + 1]) / alpha
+
+    # Average.
+    reduced = np.empty(n, dtype=np.float64)
+    for i in range(n):
+        reduced[i] = 0.5 * (q[i] + r[i])
+
+    return reduced
+
+
+@nb_jit(nopython=True, cache=True)
+def _auto_reduce_1d(
+    coeffs: npt.NDArray[np.float64],
+    tol: float = 1e-10,
+) -> npt.NDArray[np.float64]:
+    """Attempt to reduce the degree of a 1D Bernstein polynomial.
+
+    Iteratively reduces degree by 1 as long as the L2 residual (reduce then
+    re-elevate minus original) is below *tol* times the original L2 norm.
+    Matches algoim's ``autoReduction`` strategy.
+
+    Args:
+        coeffs (npt.NDArray[np.float64]): 1D Bernstein coefficients.
+        tol (float): Relative L2 tolerance for accepting reduction.
+
+    Returns:
+        npt.NDArray[np.float64]: Possibly degree-reduced coefficients.
+
+    Note:
+        Inputs are assumed to be correct (no validation performed).
+    """
+    current = coeffs.copy()
+    orig_norm_sq = _squared_l2_norm_1d(current)
+    if orig_norm_sq <= 0.0:
+        return current
+
+    orig_norm = np.sqrt(abs(orig_norm_sq))
+
+    while len(current) > 2:  # noqa: PLR2004
+        n = len(current) - 1
+        # Reduce by 1.
+        reduced = _degree_reduce_1d(current)
+        # Re-elevate to original degree.
+        re_elevated = _degree_elevate_1d(reduced, 1)
+        # Compute residual.
+        residual = np.empty(n + 1, dtype=np.float64)
+        for i in range(n + 1):
+            residual[i] = re_elevated[i] - current[i]
+        res_norm_sq = _squared_l2_norm_1d(residual)
+        res_norm = np.sqrt(abs(res_norm_sq))
+
+        if res_norm < tol * orig_norm:
+            current = reduced
+        else:
+            break
+
+    return current
+
+
+@nb_jit(nopython=True, cache=True)
+def _auto_reduce_2d(  # noqa: PLR0912
+    coeffs: npt.NDArray[np.float64],
+    tol: float = 1e-10,
+) -> npt.NDArray[np.float64]:
+    """Attempt to reduce the degree of a 2D TP Bernstein polynomial.
+
+    Tries reducing each axis independently, dimension by dimension.
+
+    Args:
+        coeffs (npt.NDArray[np.float64]): 2D Bernstein coefficient array.
+        tol (float): Relative L2 tolerance for accepting reduction.
+
+    Returns:
+        npt.NDArray[np.float64]: Possibly degree-reduced coefficients.
+
+    Note:
+        Inputs are assumed to be correct (no validation performed).
+    """
+    current = coeffs.copy()
+    changed = True
+    while changed:
+        changed = False
+        s0, s1 = current.shape
+
+        # Try reducing axis 0.
+        if s0 > 2:  # noqa: PLR2004
+            # Reduce each column along axis 0, then check residual.
+            reduced_0 = np.empty((s0 - 1, s1), dtype=np.float64)
+            for j in range(s1):
+                col = np.empty(s0, dtype=np.float64)
+                for i in range(s0):
+                    col[i] = current[i, j]
+                red = _degree_reduce_1d(col)
+                for i in range(s0 - 1):
+                    reduced_0[i, j] = red[i]
+            # Re-elevate.
+            re_elev_0 = _degree_elevate_axis_2d(reduced_0, 0, 1)
+            # Residual norm.
+            res_sq = 0.0
+            orig_sq = 0.0
+            for i in range(s0):
+                for j in range(s1):
+                    res_sq += (re_elev_0[i, j] - current[i, j]) ** 2
+                    orig_sq += current[i, j] ** 2
+            if orig_sq > 0.0 and np.sqrt(res_sq) < tol * np.sqrt(orig_sq):
+                current = reduced_0
+                changed = True
+                continue
+
+        s0, s1 = current.shape
+        # Try reducing axis 1.
+        if s1 > 2:  # noqa: PLR2004
+            reduced_1 = np.empty((s0, s1 - 1), dtype=np.float64)
+            for i in range(s0):
+                row = np.empty(s1, dtype=np.float64)
+                for j in range(s1):
+                    row[j] = current[i, j]
+                red = _degree_reduce_1d(row)
+                for j in range(s1 - 1):
+                    reduced_1[i, j] = red[j]
+            re_elev_1 = _degree_elevate_axis_2d(reduced_1, 1, 1)
+            res_sq = 0.0
+            orig_sq = 0.0
+            for i in range(s0):
+                for j in range(s1):
+                    res_sq += (re_elev_1[i, j] - current[i, j]) ** 2
+                    orig_sq += current[i, j] ** 2
+            if orig_sq > 0.0 and np.sqrt(res_sq) < tol * np.sqrt(orig_sq):
+                current = reduced_1
+                changed = True
+                continue
+
+        break
+
+    return current
