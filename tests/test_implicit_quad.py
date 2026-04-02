@@ -69,17 +69,17 @@ class TestBernstein:
     def test_eval_2d_linear(self) -> None:
         # phi(x,y) = x + y. Bernstein deg (1,1).
         c = np.array([[0.0, 1.0], [1.0, 2.0]])
-        assert abs(_eval_bernstein_2d(c, np.array([0.3, 0.7])) - 1.0) < 1e-14
+        assert abs(_eval_bernstein_2d(c, np.array([0.3, 0.7])) - 1.0) < 1e-14  # noqa: PLR2004
 
     def test_collapse_consistency(self) -> None:
         c = np.array([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0], [7.0, 8.0, 9.0]])
         x = np.array([0.3, 0.7])
         val_direct = _eval_bernstein_2d(c, x)
-        from pantr.bezier._root_finding_core import _de_casteljau_eval_scalar
+        from pantr.bezier._root_finding_core import _de_casteljau_eval_scalar  # noqa: PLC0415
 
         c1d = _collapse_2d(c, 0, 0.7)
         val_collapse = _de_casteljau_eval_scalar(c1d, 0.3)
-        assert abs(val_direct - val_collapse) < 1e-12
+        assert abs(val_direct - val_collapse) < 1e-12  # noqa: PLR2004
 
     def test_gradient_constant(self) -> None:
         # phi(x,y) = x + y → grad = (1, 1).
@@ -154,18 +154,18 @@ class TestRootFinding:
     def test_linear(self) -> None:
         r, c = find_roots(np.array([1.0, -1.0]))
         assert c == 1
-        assert abs(r[0] - 0.5) < 1e-12
+        assert abs(r[0] - 0.5) < 1e-12  # noqa: PLR2004
 
     def test_quadratic(self) -> None:
         # (t-0.3)(t-0.7) in Bernstein.
         r, c = find_roots(np.array([0.21, -0.29, 0.21]))
-        assert c == 2
-        assert abs(r[0] - 0.3) < 1e-10
-        assert abs(r[1] - 0.7) < 1e-10
+        assert c == 2  # noqa: PLR2004
+        assert abs(r[0] - 0.3) < 1e-10  # noqa: PLR2004
+        assert abs(r[1] - 0.7) < 1e-10  # noqa: PLR2004
 
     def test_higher_degree(self) -> None:
         """Test root finding on a degree-4 polynomial with well-separated roots."""
-        from math import comb
+        from math import comb  # noqa: PLC0415
 
         # Build (t-0.2)(t-0.8) in Bernstein degree 2.
         mono = np.array([0.16, -1.0, 1.0])  # 0.16 - t + t^2
@@ -176,13 +176,13 @@ class TestRootFinding:
                 M[i, j] = comb(i, j) / comb(deg, j)
         bern = M @ mono
         r, c = find_roots(bern)
-        assert c == 2
-        assert abs(r[0] - 0.2) < 1e-6
-        assert abs(r[1] - 0.8) < 1e-6
+        assert c == 2  # noqa: PLR2004
+        assert abs(r[0] - 0.2) < 1e-6  # noqa: PLR2004
+        assert abs(r[1] - 0.8) < 1e-6  # noqa: PLR2004
 
     def test_cubic_yuksel(self) -> None:
         """Yuksel should find 3 roots of a cubic with well-separated roots."""
-        from pantr.bezier.implicit._roots import _yuksel_roots
+        from pantr.bezier.implicit._roots import _yuksel_roots  # noqa: PLC0415
 
         # (t-0.1)(t-0.5)(t-0.9) in Bernstein degree 3.
         # f(0)=-0.045, f(1/3)~0.0296, f(2/3)~-0.0296, f(1)=0.045
@@ -191,20 +191,20 @@ class TestRootFinding:
         # c2 = c3 - f'(1)/3. f'(1)=3-3+0.59=0.59. c2=0.045-0.59/3≈-0.15167
         bern = np.array([-0.045, 0.15166666666, -0.15166666666, 0.045])
         r, c = _yuksel_roots(bern, 1e-15)
-        assert c == 3, f"Expected 3 roots, got {c}: {r[:c]}"
+        assert c == 3, f"Expected 3 roots, got {c}: {r[:c]}"  # noqa: PLR2004
         for exp in [0.1, 0.5, 0.9]:
-            assert any(abs(r[i] - exp) < 1e-4 for i in range(c)), f"Missing root {exp}: {r[:c]}"
+            assert any(abs(r[i] - exp) < 1e-4 for i in range(c)), f"Missing root {exp}: {r[:c]}"  # noqa: PLR2004
 
     def test_high_degree_clipping(self) -> None:
         """Bezier clipping should handle degree >= 6 polynomials."""
-        from math import comb
+        from math import comb  # noqa: PLC0415
 
-        import numpy.polynomial.polynomial as P
+        import numpy.polynomial.polynomial as P  # noqa: PLC0415
 
         # (t-0.15)(t-0.35)(t-0.55)(t-0.75)(t-0.95) in Bernstein degree 5.
         # This has degree < 6 so will use Yuksel via dispatch,
         # but let's test clipping directly.
-        from pantr.bezier.implicit._roots import _clip_roots_core, _dedup_roots
+        from pantr.bezier.implicit._roots import _clip_roots_core, _dedup_roots  # noqa: PLC0415
 
         roots_expected = [0.15, 0.35, 0.55, 0.75, 0.95]
         mono = P.polyfromroots(roots_expected)  # type: ignore[no-untyped-call]
@@ -216,9 +216,9 @@ class TestRootFinding:
         bern = M @ mono
         raw, n_raw = _clip_roots_core(bern, 1e-15, 1e-15)
         unique, n_unique = _dedup_roots(raw, n_raw, bern, 1e-15, 1e-15)
-        assert n_unique == 5, f"Expected 5 roots, got {n_unique}: {unique[:n_unique]}"
+        assert n_unique == 5, f"Expected 5 roots, got {n_unique}: {unique[:n_unique]}"  # noqa: PLR2004
         for exp in roots_expected:
-            assert any(abs(unique[i] - exp) < 1e-6 for i in range(n_unique)), (
+            assert any(abs(unique[i] - exp) < 1e-6 for i in range(n_unique)), (  # noqa: PLR2004
                 f"Missing root {exp}: {unique[:n_unique]}"
             )
 
@@ -229,9 +229,9 @@ class TestRootFinding:
     def test_circle_collapsed(self) -> None:
         # Circle collapsed at y=0.5: roots at 0.5 ± sqrt(0.1).
         r, c = find_roots(np.array([0.15, -0.35, 0.15]))
-        assert c == 2
-        assert abs(r[0] - 0.18377223) < 1e-6
-        assert abs(r[1] - 0.81622777) < 1e-6
+        assert c == 2  # noqa: PLR2004
+        assert abs(r[0] - 0.18377223) < 1e-6  # noqa: PLR2004
+        assert abs(r[1] - 0.81622777) < 1e-6  # noqa: PLR2004
 
 
 # ---------------------------------------------------------------------------
@@ -249,7 +249,7 @@ class TestVolumeQuad2D:
     def test_weight_sum(self, circle_ipq: ImplicitPolyQuadrature) -> None:
         """Total weights should sum to 1 (volume of [0,1]^2)."""
         _pts, wts = circle_ipq.volume_quad(5, QuadStrategy.TS_ONLY)
-        assert abs(np.sum(wts) - 1.0) < 1e-10
+        assert abs(np.sum(wts) - 1.0) < 1e-10  # noqa: PLR2004
 
     def test_area_convergence_ts(self, circle_ipq: ImplicitPolyQuadrature) -> None:
         """Area should converge exponentially with tanh-sinh."""
@@ -264,9 +264,9 @@ class TestVolumeQuad2D:
 
         # Check exponential convergence: each doubling of q should
         # roughly halve the number of accurate digits.
-        assert errors[0] < 0.01  # q=5: ~0.2%
-        assert errors[1] < 1e-5  # q=10: < 0.001%
-        assert errors[2] < 1e-8  # q=20: < 1e-8
+        assert errors[0] < 0.01  # q=5: ~0.2%  # noqa: PLR2004
+        assert errors[1] < 1e-5  # q=10: < 0.001%  # noqa: PLR2004
+        assert errors[2] < 1e-8  # q=20: < 1e-8  # noqa: PLR2004
 
     def test_area_convergence_auto(self, circle_ipq: ImplicitPolyQuadrature) -> None:
         """AUTO_MIXED should also give exponential convergence."""
@@ -276,7 +276,7 @@ class TestVolumeQuad2D:
         vals = circle_ipq.eval_poly(0, pts)
         area = np.sum(wts[vals < 0])
         err = abs(area - expected) / expected
-        assert err < 1e-8
+        assert err < 1e-8  # noqa: PLR2004
 
 
 # ---------------------------------------------------------------------------
@@ -301,9 +301,9 @@ class TestSurfaceQuad2D:
             perim = np.sum(s_wts)
             errors.append(abs(perim - expected) / expected)
 
-        assert errors[0] < 0.05  # q=5
-        assert errors[1] < 0.005  # q=10
-        assert errors[2] < 1e-4  # q=20
+        assert errors[0] < 0.05  # q=5  # noqa: PLR2004
+        assert errors[1] < 0.005  # q=10  # noqa: PLR2004
+        assert errors[2] < 1e-4  # q=20  # noqa: PLR2004
 
     def test_normal_weights_sum(self, circle_ipq: ImplicitPolyQuadrature) -> None:
         """Normal weights should approximately cancel (closed curve)."""
@@ -311,7 +311,7 @@ class TestSurfaceQuad2D:
         # For a closed curve, sum of normal flux should be close to zero.
         flux = np.sum(s_nwts, axis=0)
         # Not exactly zero due to quadrature error, but should be small.
-        assert np.linalg.norm(flux) < 0.1
+        assert np.linalg.norm(flux) < 0.1  # noqa: PLR2004
 
     def test_perimeter_aggregate(self, circle_ipq: ImplicitPolyQuadrature) -> None:
         """Aggregate perimeter should converge faster than single-direction."""
@@ -319,7 +319,7 @@ class TestSurfaceQuad2D:
         _, sw, _ = circle_ipq.surface_quad(20, QuadStrategy.TS_ONLY, aggregate=True)
         perim = np.sum(sw)
         err = abs(perim - expected) / expected
-        assert err < 1e-8
+        assert err < 1e-8  # noqa: PLR2004
 
 
 # ---------------------------------------------------------------------------
@@ -349,7 +349,7 @@ class TestVolumeQuad3D:
     def test_weight_sum(self, sphere_ipq: ImplicitPolyQuadrature) -> None:
         """Total weights should sum to 1 (volume of [0,1]^3)."""
         _pts, wts = sphere_ipq.volume_quad(3, QuadStrategy.TS_ONLY)
-        assert abs(np.sum(wts) - 1.0) < 1e-8
+        assert abs(np.sum(wts) - 1.0) < 1e-8  # noqa: PLR2004
 
     def test_volume_convergence(self, sphere_ipq: ImplicitPolyQuadrature) -> None:
         """Sphere volume should converge exponentially."""
@@ -362,9 +362,9 @@ class TestVolumeQuad3D:
             vol = np.sum(wts[vals < 0])
             errors.append(abs(vol - expected) / expected)
 
-        assert errors[0] < 0.01
-        assert errors[1] < 1e-4
-        assert errors[2] < 1e-6
+        assert errors[0] < 0.01  # noqa: PLR2004
+        assert errors[1] < 1e-4  # noqa: PLR2004
+        assert errors[2] < 1e-6  # noqa: PLR2004
 
 
 class TestSurfaceQuad3D:
@@ -384,15 +384,15 @@ class TestSurfaceQuad3D:
             area = np.sum(s_wts)
             errors.append(abs(area - expected) / expected)
 
-        assert errors[0] < 0.05
-        assert errors[1] < 0.005
-        assert errors[2] < 5e-4
+        assert errors[0] < 0.05  # noqa: PLR2004
+        assert errors[1] < 0.005  # noqa: PLR2004
+        assert errors[2] < 5e-4  # noqa: PLR2004
 
     def test_normal_flux_closed(self, sphere_ipq: ImplicitPolyQuadrature) -> None:
         """Normal flux sum should be near zero for a closed surface."""
         s_pts, s_wts, s_nwts = sphere_ipq.surface_quad(7, QuadStrategy.TS_ONLY)
         flux = np.sum(s_nwts, axis=0)
-        assert np.linalg.norm(flux) < 0.5
+        assert np.linalg.norm(flux) < 0.5  # noqa: PLR2004
 
 
 # ---------------------------------------------------------------------------
@@ -406,7 +406,7 @@ class TestImplicitPolyQuadrature:
     def test_init_with_array(self) -> None:
         c = _make_circle_coeffs()
         ipq = ImplicitPolyQuadrature(c)
-        assert ipq.dim == 2
+        assert ipq.dim == 2  # noqa: PLR2004
         assert ipq.n_polys == 1
 
     def test_init_validation(self) -> None:
@@ -419,7 +419,7 @@ class TestImplicitPolyQuadrature:
         pts = np.array([[0.5, 0.5]])
         vals = ipq.eval_poly(0, pts)
         # At center: (0-0)^2 + (0-0)^2 - 0.1 = -0.1.
-        assert abs(vals[0] - (-0.1)) < 1e-12
+        assert abs(vals[0] - (-0.1)) < 1e-12  # noqa: PLR2004
 
 
 # ---------------------------------------------------------------------------
@@ -429,7 +429,7 @@ class TestImplicitPolyQuadrature:
 
 def _mono_to_bernstein_1d(mono: npt.NDArray[np.float64], degree: int) -> npt.NDArray[np.float64]:
     """Convert monomial coefficients (ascending power) to Bernstein degree *degree*."""
-    from math import comb as _comb
+    from math import comb as _comb  # noqa: PLC0415
 
     n = degree
     mat = np.zeros((n + 1, n + 1))
@@ -482,7 +482,7 @@ def _ellipsoid_bernstein_on_cell(
 
 def _integrand_f(pts: npt.NDArray[np.float64]) -> npt.NDArray[np.float64]:
     """Integrand f(x) = cos(1/4 * ||x||^2) from paper §4.2."""
-    return np.cos(0.25 * np.sum(pts**2, axis=1))
+    return np.asarray(np.cos(0.25 * np.sum(pts**2, axis=1)), dtype=np.float64)
 
 
 # ---------------------------------------------------------------------------
@@ -528,10 +528,10 @@ class TestHRefinement:
             area = self._h_refine_ellipse_volume(n, q)
             errors.append(abs(area - expected) / expected)
 
-        assert errors[0] < 1e-4  # n=8
+        assert errors[0] < 1e-4  # n=8  # noqa: PLR2004
         # Check convergence rate between n=16 and n=32.
         rate = np.log2(errors[1] / errors[2]) if errors[2] > 0 else 20.0
-        assert rate > 3.5, f"h-refinement rate too low: {rate:.1f} (expected ~{2 * q})"
+        assert rate > 3.5, f"h-refinement rate too low: {rate:.1f} (expected ~{2 * q})"  # noqa: PLR2004
 
 
 # ---------------------------------------------------------------------------
@@ -568,10 +568,10 @@ class TestQRefinement:
             errors.append(abs(vol - expected) / expected)
 
         # Approximately exponential: doubling q roughly doubles accurate digits.
-        assert errors[0] < 0.01  # q=5
-        assert errors[1] < 1e-5  # q=10
-        assert errors[2] < 1e-9  # q=20
-        assert errors[3] < 1e-12  # q=30
+        assert errors[0] < 0.01  # q=5  # noqa: PLR2004
+        assert errors[1] < 1e-5  # q=10  # noqa: PLR2004
+        assert errors[2] < 1e-9  # q=20  # noqa: PLR2004
+        assert errors[3] < 1e-12  # q=30  # noqa: PLR2004
 
     def test_ellipse_surface_flux_q_refinement(self) -> None:
         """Flux-form surface integral I_{Gamma_n} should converge exponentially."""
@@ -599,6 +599,6 @@ class TestQRefinement:
             perim = np.sum(sw) * cell_scale
             errors.append(abs(perim - expected_perim) / expected_perim)
 
-        assert errors[0] < 0.05  # q=5
-        assert errors[1] < 0.005  # q=10
-        assert errors[2] < 1e-3  # q=20
+        assert errors[0] < 0.05  # q=5  # noqa: PLR2004
+        assert errors[1] < 0.005  # q=10  # noqa: PLR2004
+        assert errors[2] < 1e-3  # q=20  # noqa: PLR2004

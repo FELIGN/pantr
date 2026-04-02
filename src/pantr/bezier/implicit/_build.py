@@ -63,7 +63,7 @@ INTEGRAL_OUTER_AGGREGATE: int = 2
 
 
 @nb_jit(nopython=True, cache=True)
-def _eliminate_axis_2d(
+def _eliminate_axis_2d(  # noqa: PLR0912
     coeffs_list: NumbaList,
     masks_list: NumbaList,
     k: int,
@@ -121,7 +121,7 @@ def _eliminate_axis_2d(
         coeffs = coeffs_list[i]
         mask = masks_list[i]
         degree_k = coeffs.shape[k] - 1
-        if degree_k < 2:
+        if degree_k < 2:  # noqa: PLR2004
             continue
         disc = discriminant_2d(coeffs, k)
         disc = _normalize_1d(disc)
@@ -162,7 +162,7 @@ def _eliminate_axis_2d(
 
 
 @nb_jit(nopython=True, cache=True)
-def _eliminate_axis_3d(
+def _eliminate_axis_3d(  # noqa: PLR0912
     coeffs_list: NumbaList,
     masks_list: NumbaList,
     k: int,
@@ -214,7 +214,7 @@ def _eliminate_axis_3d(
         coeffs = coeffs_list[i]
         mask = masks_list[i]
         degree_k = coeffs.shape[k] - 1
-        if degree_k < 2:
+        if degree_k < 2:  # noqa: PLR2004
             continue
         disc = discriminant_3d(coeffs, k)
         disc = _normalize_2d(disc)
@@ -321,7 +321,7 @@ def build_2d(
 
     # Score estimation to choose height direction.
     scores, has_disc = score_estimate_2d(coeffs_list, masks_list)
-    if scores[0] >= scores[1]:
+    if scores[0] >= scores[1]:  # noqa: SIM108
         k1 = 0
     else:
         k1 = 1
@@ -568,7 +568,7 @@ def build_3d(
 
     # Score for 2D -> choose k1.
     scores_2d, has_disc_2d = score_estimate_2d(coeffs_2d, masks_2d)
-    if scores_2d[0] >= scores_2d[1]:
+    if scores_2d[0] >= scores_2d[1]:  # noqa: SIM108
         k1 = 0
     else:
         k1 = 1

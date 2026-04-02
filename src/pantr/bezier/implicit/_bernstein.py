@@ -348,7 +348,7 @@ def _derivative_along_axis_2d(
 
 
 @nb_jit(nopython=True, cache=True)
-def _derivative_along_axis_3d(
+def _derivative_along_axis_3d(  # noqa: PLR0912
     coeffs: npt.NDArray[np.float64],
     k: int,
 ) -> npt.NDArray[np.float64]:
@@ -502,7 +502,7 @@ def _elevated_derivative_along_axis_2d(
 
 
 @nb_jit(nopython=True, cache=True)
-def _elevated_derivative_along_axis_3d(
+def _elevated_derivative_along_axis_3d(  # noqa: PLR0912
     coeffs: npt.NDArray[np.float64],
     k: int,
 ) -> npt.NDArray[np.float64]:
@@ -846,7 +846,7 @@ def _degree_elevate_axis_2d(
 
 
 @nb_jit(nopython=True, cache=True)
-def _degree_elevate_axis_3d(
+def _degree_elevate_axis_3d(  # noqa: PLR0912
     coeffs: npt.NDArray[np.float64],
     k: int,
     increment: int,

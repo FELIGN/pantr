@@ -68,7 +68,7 @@ def score_estimate_2d(
                 x[1] = (i1 + 0.5) * inv_m
                 grad = _eval_gradient_2d(coeffs, x)
                 norm1 = abs(grad[0]) + abs(grad[1])
-                if norm1 > 1e-300:
+                if norm1 > 1e-300:  # noqa: PLR2004
                     for d in range(2):
                         scores[d] += abs(grad[d]) / norm1
 
@@ -112,7 +112,7 @@ def score_estimate_3d(
                     x[2] = (i2 + 0.5) * inv_m
                     grad = _eval_gradient_3d(coeffs, x)
                     norm1 = abs(grad[0]) + abs(grad[1]) + abs(grad[2])
-                    if norm1 > 1e-300:
+                    if norm1 > 1e-300:  # noqa: PLR2004
                         for d in range(3):
                             scores[d] += abs(grad[d]) / norm1
 

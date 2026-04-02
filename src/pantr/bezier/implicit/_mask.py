@@ -225,7 +225,7 @@ def compute_nonzero_mask_2d(
 
 
 @nb_jit(nopython=True, cache=True)
-def _restrict_3d_subcell(
+def _restrict_3d_subcell(  # noqa: PLR0913
     coeffs: npt.NDArray[np.float64],
     lo0: float,
     hi0: float,
@@ -414,7 +414,7 @@ def _degree_elevate_1d_inplace(
 
 
 @nb_jit(nopython=True, cache=True)
-def compute_intersection_mask_2d(
+def compute_intersection_mask_2d(  # noqa: PLR0912
     coeffs_f: npt.NDArray[np.float64],
     mask_f: npt.NDArray[np.bool_],
     coeffs_g: npt.NDArray[np.float64],
@@ -591,7 +591,7 @@ def _mask_is_empty_1d(mask: npt.NDArray[np.bool_]) -> bool:
     Note:
         Inputs are assumed to be correct (no validation performed).
     """
-    for i in range(mask.shape[0]):
+    for i in range(mask.shape[0]):  # noqa: SIM110
         if mask[i]:
             return False
     return True
@@ -677,7 +677,7 @@ def _collapse_mask_2d(
 
 
 @nb_jit(nopython=True, cache=True)
-def _collapse_mask_3d(
+def _collapse_mask_3d(  # noqa: PLR0912
     mask: npt.NDArray[np.bool_],
     axis: int,
 ) -> npt.NDArray[np.bool_]:

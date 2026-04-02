@@ -38,7 +38,9 @@ from pantr.bezier.implicit._build import (
 )
 from pantr.bezier.implicit._construct import (
     surface_quad_2d,
+    surface_quad_2d_aggregate,
     surface_quad_3d,
+    surface_quad_3d_aggregate,
     volume_quad_2d,
     volume_quad_3d,
 )
@@ -119,7 +121,7 @@ class ImplicitPolyQuadrature:
         self._coeffs = coeffs_arrays
 
         # Compute masks and build hierarchy.
-        if self.dim == 2:
+        if self.dim == 2:  # noqa: PLR2004
             coeffs_list = NumbaList()
             masks_list = NumbaList()
             for ca in coeffs_arrays:
@@ -158,7 +160,7 @@ class ImplicitPolyQuadrature:
         strat = int(strategy)
 
         r = self._build_result
-        if self.dim == 2:
+        if self.dim == 2:  # noqa: PLR2004
             return volume_quad_2d(
                 r[0],
                 r[1],
@@ -240,7 +242,7 @@ class ImplicitPolyQuadrature:
             )
 
         r = self._build_result
-        if self.dim == 2:
+        if self.dim == 2:  # noqa: PLR2004
             input_c = NumbaList()
             for ca in self._coeffs:
                 input_c.append(ca)
@@ -292,7 +294,7 @@ class ImplicitPolyQuadrature:
                 strat,
             )
 
-    def _surface_quad_aggregate(
+    def _surface_quad_aggregate(  # noqa: D417, PLR0913
         self,
         q: int,
         gl_nodes: npt.NDArray[np.float64],
@@ -328,7 +330,7 @@ class ImplicitPolyQuadrature:
         for ca in self._coeffs:
             input_c.append(ca)
 
-        if self.dim == 2:
+        if self.dim == 2:  # noqa: PLR2004
             coeffs_list = NumbaList()
             masks_list = NumbaList()
             for ca in self._coeffs:
@@ -337,7 +339,7 @@ class ImplicitPolyQuadrature:
 
             for k in range(2):
                 r: tuple[Any, ...] = build_2d_forced_k(coeffs_list, masks_list, k)
-                pts, sw, nw = surface_quad_2d(
+                pts, sw, nw = surface_quad_2d_aggregate(
                     r[0],
                     r[1],
                     r[2],
@@ -357,22 +359,9 @@ class ImplicitPolyQuadrature:
                     strat,
                 )
                 if len(sw) > 0:
-                    # Aggregate: keep only k-th component of normal weight.
-                    # Scalar weight for ∫_Γ f dS = Σ_k ∫_Γ f n_k^2 dS:
-                    # sw_agg[i] = nw[i,k]^2 / sw[i] (derivation from the
-                    # relation nw[i,k] = w*grad[k]/|∂_k φ| and
-                    # sw[i] = w*|∇φ|/|∂_k φ|).
-                    agg_nw = np.zeros_like(nw)
-                    agg_nw[:, k] = nw[:, k]
-                    agg_sw = np.empty(len(sw), dtype=np.float64)
-                    for pi in range(len(sw)):
-                        if sw[pi] > 1e-300:
-                            agg_sw[pi] = nw[pi, k] ** 2 / sw[pi]
-                        else:
-                            agg_sw[pi] = 0.0
                     all_pts_list.append(pts)
-                    all_sw_list.append(agg_sw)
-                    all_nw_list.append(agg_nw)
+                    all_sw_list.append(sw)
+                    all_nw_list.append(nw)
         else:
             coeffs_list_3d = NumbaList()
             masks_list_3d = NumbaList()
@@ -382,7 +371,7 @@ class ImplicitPolyQuadrature:
 
             for k in range(3):
                 r = build_3d_forced_k(coeffs_list_3d, masks_list_3d, k)
-                pts, sw, nw = surface_quad_3d(
+                pts, sw, nw = surface_quad_3d_aggregate(
                     r[0],
                     r[1],
                     r[2],
@@ -407,17 +396,9 @@ class ImplicitPolyQuadrature:
                     strat,
                 )
                 if len(sw) > 0:
-                    agg_nw = np.zeros_like(nw)
-                    agg_nw[:, k] = nw[:, k]
-                    agg_sw = np.empty(len(sw), dtype=np.float64)
-                    for pi in range(len(sw)):
-                        if sw[pi] > 1e-300:
-                            agg_sw[pi] = nw[pi, k] ** 2 / sw[pi]
-                        else:
-                            agg_sw[pi] = 0.0
                     all_pts_list.append(pts)
-                    all_sw_list.append(agg_sw)
-                    all_nw_list.append(agg_nw)
+                    all_sw_list.append(sw)
+                    all_nw_list.append(nw)
 
         if not all_pts_list:
             return (
@@ -445,7 +426,7 @@ class ImplicitPolyQuadrature:
         coeffs = self._coeffs[poly_idx]
         n = points.shape[0]
         values = np.empty(n, dtype=np.float64)
-        if self.dim == 2:
+        if self.dim == 2:  # noqa: PLR2004
             for i in range(n):
                 values[i] = _eval_bernstein_2d(coeffs, points[i])
         else:

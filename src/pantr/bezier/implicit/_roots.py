@@ -174,14 +174,14 @@ def _count_sign_changes(coeff: npt.NDArray[np.float64]) -> int:
             s = -1
         else:
             continue
-        if prev_sign != 0 and prev_sign != s:
+        if prev_sign != 0 and prev_sign != s:  # noqa: PLR1714
             changes += 1
         prev_sign = s
     return changes
 
 
 @nb_jit(nopython=True, cache=True)
-def _clip_hull_to_zero(  # noqa: PLR0912
+def _clip_hull_to_zero(  # noqa: PLR0912, PLR0915
     coeff: npt.NDArray[np.float64],
 ) -> tuple[float, float, bool]:
     """Clip parameter range using the convex hull of the control polygon vs y=0.
@@ -208,7 +208,7 @@ def _clip_hull_to_zero(  # noqa: PLR0912
     upper = np.empty(n + 1, dtype=np.int64)
     u_size = 0
     for i in range(n + 1):
-        while u_size >= 2:
+        while u_size >= 2:  # noqa: PLR2004
             j0 = upper[u_size - 2]
             j1 = upper[u_size - 1]
             cross = (j1 - j0) * (coeff[i] - coeff[j0]) - (coeff[j1] - coeff[j0]) * (i - j0)
@@ -245,7 +245,7 @@ def _clip_hull_to_zero(  # noqa: PLR0912
     lower = np.empty(n + 1, dtype=np.int64)
     l_size = 0
     for i in range(n + 1):
-        while l_size >= 2:
+        while l_size >= 2:  # noqa: PLR2004
             j0 = lower[l_size - 2]
             j1 = lower[l_size - 1]
             cross = (j1 - j0) * (coeff[i] - coeff[j0]) - (coeff[j1] - coeff[j0]) * (i - j0)
@@ -399,7 +399,7 @@ def _find_roots_at_level(
 
         f_curr = _eval_scalar(coeff, curr_t) if curr_t < 1.0 else float(coeff[n])
 
-        if abs(f_prev) <= boundary_eps:
+        if abs(f_prev) <= boundary_eps:  # noqa: SIM102
             if count == 0 or abs(roots[count - 1] - prev_t) > tol:
                 if count < n:
                     roots[count] = prev_t
@@ -417,7 +417,7 @@ def _find_roots_at_level(
         f_prev = f_curr
         prev_t = curr_t
 
-    if abs(f_prev) <= boundary_eps and (count == 0 or abs(roots[count - 1] - 1.0) > tol):
+    if abs(f_prev) <= boundary_eps and (count == 0 or abs(roots[count - 1] - 1.0) > tol):  # noqa: SIM102
         if count < n:
             roots[count] = 1.0
             count += 1

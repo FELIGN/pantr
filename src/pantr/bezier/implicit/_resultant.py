@@ -85,7 +85,7 @@ def _bincoeff(n: int, k: int) -> float:
     """
     if k < 0 or k > n:
         return 0.0
-    if k == 0 or k == n:
+    if k == 0 or k == n:  # noqa: PLR1714
         return 1.0
     k = min(k, n - k)
     result = 1.0

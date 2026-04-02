@@ -105,7 +105,7 @@ def _collect_and_partition_1d(
 
 
 @nb_jit(nopython=True, cache=True)
-def _collect_and_partition_from_2d(
+def _collect_and_partition_from_2d(  # noqa: PLR0912
     coeffs_list: NumbaList,
     masks_list: NumbaList,
     k: int,
@@ -238,7 +238,7 @@ def _collect_and_partition_from_3d(
 
 
 @nb_jit(nopython=True, cache=True)
-def volume_quad_2d(
+def volume_quad_2d(  # noqa: PLR0912, PLR0913, PLR0915
     coeffs_1d: NumbaList,
     masks_1d: NumbaList,
     k0: int,
@@ -289,7 +289,7 @@ def volume_quad_2d(
     q = len(gl_nodes)
 
     # If k1 >= 2, no interfaces -> tensor product quadrature on [0,1]^2.
-    if k1 >= 2:
+    if k1 >= 2:  # noqa: PLR2004
         n_total = q * q
         points = np.empty((n_total, 2), dtype=np.float64)
         weights = np.empty(n_total, dtype=np.float64)
@@ -312,7 +312,7 @@ def volume_quad_2d(
         wts_outer = ts_weights
         nodes_inner = ts_nodes
         wts_inner = ts_weights
-    elif strategy == 2:
+    elif strategy == 2:  # noqa: PLR2004
         if use_ts_1:
             nodes_outer = ts_nodes
             wts_outer = ts_weights
@@ -386,7 +386,7 @@ def volume_quad_2d(
 
 
 @nb_jit(nopython=True, cache=True)
-def volume_quad_3d(
+def volume_quad_3d(  # noqa: D417, PLR0912, PLR0913, PLR0915
     coeffs_1d: NumbaList,
     masks_1d: NumbaList,
     k0: int,
@@ -428,14 +428,14 @@ def volume_quad_3d(
     q = len(gl_nodes)
 
     # No interfaces: TP quadrature.
-    if k2 >= 3:
+    if k2 >= 3:  # noqa: PLR2004
         n_total = q * q * q
         points = np.empty((n_total, 3), dtype=np.float64)
         weights = np.empty(n_total, dtype=np.float64)
         idx = 0
         for i in range(q):
             for j in range(q):
-                for l in range(q):
+                for l in range(q):  # noqa: E741
                     points[idx, 0] = gl_nodes[i]
                     points[idx, 1] = gl_nodes[j]
                     points[idx, 2] = gl_nodes[l]
@@ -460,7 +460,7 @@ def volume_quad_3d(
         wts_1 = ts_weights
         nodes_2 = ts_nodes
         wts_2 = ts_weights
-    elif strategy == 2:
+    elif strategy == 2:  # noqa: PLR2004
         if use_ts_1:
             nodes_0 = ts_nodes
             wts_0 = ts_weights
@@ -588,7 +588,7 @@ def volume_quad_3d(
 
 
 @nb_jit(nopython=True, cache=True)
-def surface_quad_2d(
+def surface_quad_2d(  # noqa: D417, PLR0912, PLR0913, PLR0915
     coeffs_1d: NumbaList,
     masks_1d: NumbaList,
     k0: int,
@@ -637,7 +637,7 @@ def surface_quad_2d(
     q = len(gl_nodes)
     tang1 = 1 - k1
 
-    if k1 >= 2:
+    if k1 >= 2:  # noqa: PLR2004
         # No interface -> empty surface quad.
         return (
             np.empty((0, 2), dtype=np.float64),
@@ -647,7 +647,7 @@ def surface_quad_2d(
 
     nodes_outer = gl_nodes
     wts_outer = gl_weights
-    if strategy == 1 or (strategy == 2 and use_ts_1):
+    if strategy == 1 or (strategy == 2 and use_ts_1):  # noqa: PLR2004
         nodes_outer = ts_nodes
         wts_outer = ts_weights
 
@@ -697,7 +697,7 @@ def surface_quad_2d(
                     grad_norm = np.sqrt(grad[0] ** 2 + grad[1] ** 2)
                     dk_phi = grad[k1]
 
-                    if abs(dk_phi) < 1e-300:
+                    if abs(dk_phi) < 1e-300:  # noqa: PLR2004
                         continue
 
                     # Resize if needed.
@@ -722,7 +722,7 @@ def surface_quad_2d(
                     points[n_pts, 1] = pt[1]
                     scalar_wts[n_pts] = alpha
                     # Normal direction (unit normal * alpha).
-                    if grad_norm > 1e-300:
+                    if grad_norm > 1e-300:  # noqa: PLR2004
                         normal_wts[n_pts, 0] = w_tang * grad[0] / abs(dk_phi)
                         normal_wts[n_pts, 1] = w_tang * grad[1] / abs(dk_phi)
                     else:
@@ -738,7 +738,7 @@ def surface_quad_2d(
 
 
 @nb_jit(nopython=True, cache=True)
-def surface_quad_3d(  # noqa: PLR0912, PLR0915
+def surface_quad_3d(  # noqa: D417, PLR0912, PLR0913, PLR0915
     coeffs_1d: NumbaList,
     masks_1d: NumbaList,
     k0: int,
@@ -790,7 +790,7 @@ def surface_quad_3d(  # noqa: PLR0912, PLR0915
     """
     q = len(gl_nodes)
 
-    if k2 >= 3:
+    if k2 >= 3:  # noqa: PLR2004
         return (
             np.empty((0, 3), dtype=np.float64),
             np.empty(0, dtype=np.float64),
@@ -807,7 +807,7 @@ def surface_quad_3d(  # noqa: PLR0912, PLR0915
         wts_0 = ts_weights
         nodes_1 = ts_nodes
         wts_1 = ts_weights
-    elif strategy == 2:
+    elif strategy == 2:  # noqa: PLR2004
         if use_ts_1:
             nodes_0 = ts_nodes
             wts_0 = ts_weights
@@ -894,7 +894,7 @@ def surface_quad_3d(  # noqa: PLR0912, PLR0915
                             grad_norm = np.sqrt(grad[0] ** 2 + grad[1] ** 2 + grad[2] ** 2)
                             dk_phi = grad[k2]
 
-                            if abs(dk_phi) < 1e-300:
+                            if abs(dk_phi) < 1e-300:  # noqa: PLR2004
                                 continue
 
                             # Resize if needed.
@@ -917,12 +917,313 @@ def surface_quad_3d(  # noqa: PLR0912, PLR0915
                             for di in range(3):
                                 points[n_pts, di] = pt[di]
                             scalar_wts[n_pts] = alpha
-                            if grad_norm > 1e-300:
+                            if grad_norm > 1e-300:  # noqa: PLR2004
                                 for di in range(3):
                                     normal_wts[n_pts, di] = w_base * grad[di] / abs(dk_phi)
                             else:
                                 for di in range(3):
                                     normal_wts[n_pts, di] = 0.0
+                            n_pts += 1
+
+    return (
+        points[:n_pts].copy(),
+        scalar_wts[:n_pts].copy(),
+        normal_wts[:n_pts].copy(),
+    )
+
+
+# ---------------------------------------------------------------------------
+# Section D: Aggregate surface quadrature kernels
+# ---------------------------------------------------------------------------
+
+
+@nb_jit(nopython=True, cache=True)
+def surface_quad_2d_aggregate(  # noqa: D417, PLR0912, PLR0913, PLR0915
+    coeffs_1d: NumbaList,
+    masks_1d: NumbaList,
+    k0: int,
+    use_ts_0: bool,
+    type_0: int,
+    coeffs_2d: NumbaList,
+    masks_2d: NumbaList,
+    k1: int,
+    use_ts_1: bool,
+    type_1: int,
+    n_input_polys: int,
+    input_coeffs_2d: NumbaList,
+    gl_nodes: npt.NDArray[np.float64],
+    gl_weights: npt.NDArray[np.float64],
+    ts_nodes: npt.NDArray[np.float64],
+    ts_weights: npt.NDArray[np.float64],
+    strategy: int,
+) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64], npt.NDArray[np.float64]]:
+    """Aggregate flux-form surface quadrature for 2D (one height direction).
+
+    Computes the k1-th component of the flux-form surface integral directly
+    using ``w * sign(d_k1 phi)`` for the normal weight. The scalar weight is
+    ``w * |d_k1 phi| / |grad phi|``, giving the n_k^2 contribution needed for
+    ``integral_Gamma f dS = sum_k integral_Gamma f n_k^2 dS``.
+
+    Args:
+        coeffs_1d through type_1: Build result for this direction.
+        n_input_polys (int): Number of input polynomials.
+        input_coeffs_2d (NumbaList): Original 2D polynomial coefficients.
+        gl_nodes, gl_weights, ts_nodes, ts_weights: Quadrature nodes.
+        strategy (int): 0=GL, 1=TS, 2=auto.
+
+    Returns:
+        tuple[npt.NDArray, npt.NDArray, npt.NDArray]:
+            (points, scalar_weights, normal_weights) where normal_weights
+            has only the k1-th component nonzero.
+
+    Note:
+        Inputs are assumed to be correct (no validation performed).
+    """
+    q = len(gl_nodes)
+    tang1 = 1 - k1
+
+    if k1 >= 2:  # noqa: PLR2004
+        return (
+            np.empty((0, 2), dtype=np.float64),
+            np.empty(0, dtype=np.float64),
+            np.empty((0, 2), dtype=np.float64),
+        )
+
+    nodes_outer = gl_nodes
+    wts_outer = gl_weights
+    if strategy == 1 or (strategy == 2 and use_ts_1):  # noqa: PLR2004
+        nodes_outer = ts_nodes
+        wts_outer = ts_weights
+
+    boundaries, n_bounds = _collect_and_partition_1d(coeffs_1d, masks_1d)
+
+    max_total = q * 100
+    points = np.empty((max_total, 2), dtype=np.float64)
+    scalar_wts = np.empty(max_total, dtype=np.float64)
+    normal_wts = np.empty((max_total, 2), dtype=np.float64)
+    n_pts = 0
+
+    for b_idx in range(n_bounds - 1):
+        lo = boundaries[b_idx]
+        hi = boundaries[b_idx + 1]
+        if hi - lo < _MERGE_TOL:
+            continue
+        scale = hi - lo
+
+        for qi in range(q):
+            x_tang_val = lo + nodes_outer[qi] * scale
+            w_tang = wts_outer[qi] * scale
+
+            for p_idx in range(n_input_polys):
+                poly_2d = input_coeffs_2d[p_idx]
+                if not _line_intersects_2d(masks_2d[p_idx], x_tang_val, k1):
+                    continue
+
+                poly_1d = _collapse_2d(poly_2d, k1, x_tang_val)
+                roots, n_roots = find_roots(poly_1d)
+
+                for ri in range(n_roots):
+                    root = roots[ri]
+                    pt = np.empty(2, dtype=np.float64)
+                    pt[tang1] = x_tang_val
+                    pt[k1] = root
+
+                    if not _point_within_2d(masks_2d[p_idx], pt):
+                        continue
+
+                    grad = _eval_gradient_2d(poly_2d, pt)
+                    dk_phi = grad[k1]
+                    if abs(dk_phi) < 1e-300:  # noqa: PLR2004
+                        continue
+                    grad_norm = np.sqrt(grad[0] ** 2 + grad[1] ** 2)
+
+                    if n_pts >= len(scalar_wts):
+                        new_cap = len(scalar_wts) * 2
+                        new_p = np.empty((new_cap, 2), dtype=np.float64)
+                        new_s = np.empty(new_cap, dtype=np.float64)
+                        new_n = np.empty((new_cap, 2), dtype=np.float64)
+                        for ci in range(n_pts):
+                            new_p[ci, 0] = points[ci, 0]
+                            new_p[ci, 1] = points[ci, 1]
+                            new_s[ci] = scalar_wts[ci]
+                            new_n[ci, 0] = normal_wts[ci, 0]
+                            new_n[ci, 1] = normal_wts[ci, 1]
+                        points = new_p
+                        scalar_wts = new_s
+                        normal_wts = new_n
+
+                    sign_dk = 1.0 if dk_phi > 0.0 else -1.0
+                    points[n_pts, 0] = pt[0]
+                    points[n_pts, 1] = pt[1]
+                    normal_wts[n_pts, 0] = 0.0
+                    normal_wts[n_pts, 1] = 0.0
+                    normal_wts[n_pts, k1] = w_tang * sign_dk
+                    if grad_norm > 1e-300:  # noqa: PLR2004
+                        scalar_wts[n_pts] = w_tang * abs(dk_phi) / grad_norm
+                    else:
+                        scalar_wts[n_pts] = 0.0
+                    n_pts += 1
+
+    return (
+        points[:n_pts].copy(),
+        scalar_wts[:n_pts].copy(),
+        normal_wts[:n_pts].copy(),
+    )
+
+
+@nb_jit(nopython=True, cache=True)
+def surface_quad_3d_aggregate(  # noqa: PLR0912, PLR0913, PLR0915
+    coeffs_1d: NumbaList,
+    masks_1d: NumbaList,
+    k0: int,
+    use_ts_0: bool,
+    type_0: int,
+    coeffs_2d: NumbaList,
+    masks_2d: NumbaList,
+    k1: int,
+    use_ts_1: bool,
+    type_1: int,
+    coeffs_3d: NumbaList,
+    masks_3d: NumbaList,
+    k2: int,
+    use_ts_2: bool,
+    type_2: int,
+    n_input_polys: int,
+    input_coeffs_3d: NumbaList,
+    gl_nodes: npt.NDArray[np.float64],
+    gl_weights: npt.NDArray[np.float64],
+    ts_nodes: npt.NDArray[np.float64],
+    ts_weights: npt.NDArray[np.float64],
+    strategy: int,
+) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64], npt.NDArray[np.float64]]:
+    """Aggregate flux-form surface quadrature for 3D (one height direction).
+
+    Same as :func:`surface_quad_2d_aggregate` but for 3D.
+
+    Note:
+        Inputs are assumed to be correct (no validation performed).
+    """
+    q = len(gl_nodes)
+
+    if k2 >= 3:  # noqa: PLR2004
+        return (
+            np.empty((0, 3), dtype=np.float64),
+            np.empty(0, dtype=np.float64),
+            np.empty((0, 3), dtype=np.float64),
+        )
+
+    nodes_0 = gl_nodes
+    wts_0 = gl_weights
+    nodes_1 = gl_nodes
+    wts_1 = gl_weights
+    if strategy == 1:
+        nodes_0 = ts_nodes
+        wts_0 = ts_weights
+        nodes_1 = ts_nodes
+        wts_1 = ts_weights
+    elif strategy == 2:  # noqa: PLR2004
+        if use_ts_1:
+            nodes_0 = ts_nodes
+            wts_0 = ts_weights
+        if use_ts_2:
+            nodes_1 = ts_nodes
+            wts_1 = ts_weights
+
+    tang2 = np.empty(2, dtype=np.int64)
+    ti = 0
+    for d in range(3):
+        if d != k2:
+            tang2[ti] = d
+            ti += 1
+    tang1_2d = 1 - k1
+    axis_k1_3d = tang2[k1]
+    axis_tang1_3d = tang2[tang1_2d]
+
+    max_total = q * q * 50
+    points = np.empty((max_total, 3), dtype=np.float64)
+    scalar_wts = np.empty(max_total, dtype=np.float64)
+    normal_wts = np.empty((max_total, 3), dtype=np.float64)
+    n_pts = 0
+
+    bounds_0, nb_0 = _collect_and_partition_1d(coeffs_1d, masks_1d)
+
+    for b0 in range(nb_0 - 1):
+        lo0 = bounds_0[b0]
+        hi0 = bounds_0[b0 + 1]
+        if hi0 - lo0 < _MERGE_TOL:
+            continue
+        scale0 = hi0 - lo0
+
+        for q0 in range(q):
+            x_1d = lo0 + nodes_0[q0] * scale0
+            w_1d = wts_0[q0] * scale0
+
+            bounds_1, nb_1 = _collect_and_partition_from_2d(coeffs_2d, masks_2d, k1, x_1d)
+
+            for b1 in range(nb_1 - 1):
+                lo1 = bounds_1[b1]
+                hi1 = bounds_1[b1 + 1]
+                if hi1 - lo1 < _MERGE_TOL:
+                    continue
+                scale1 = hi1 - lo1
+
+                for q1 in range(q):
+                    x_2d = lo1 + nodes_1[q1] * scale1
+                    w_2d = wts_1[q1] * scale1
+                    w_base = w_1d * w_2d
+
+                    x_base_3d = np.empty(2, dtype=np.float64)
+                    if tang1_2d == 0:
+                        x_base_3d[0] = x_1d
+                        x_base_3d[1] = x_2d
+                    else:
+                        x_base_3d[0] = x_2d
+                        x_base_3d[1] = x_1d
+
+                    for p_idx in range(n_input_polys):
+                        poly_3d = input_coeffs_3d[p_idx]
+                        if not _line_intersects_3d(masks_3d[p_idx], x_base_3d, k2):
+                            continue
+
+                        poly_1d = _collapse_3d(poly_3d, k2, x_base_3d)
+                        roots, n_roots = find_roots(poly_1d)
+
+                        for ri in range(n_roots):
+                            root = roots[ri]
+                            pt = np.empty(3, dtype=np.float64)
+                            pt[axis_tang1_3d] = x_1d
+                            pt[axis_k1_3d] = x_2d
+                            pt[k2] = root
+
+                            grad = _eval_gradient_3d(poly_3d, pt)
+                            dk_phi = grad[k2]
+                            if abs(dk_phi) < 1e-300:  # noqa: PLR2004
+                                continue
+                            grad_norm = np.sqrt(grad[0] ** 2 + grad[1] ** 2 + grad[2] ** 2)
+
+                            if n_pts >= len(scalar_wts):
+                                new_cap = len(scalar_wts) * 2
+                                new_p = np.empty((new_cap, 3), dtype=np.float64)
+                                new_s = np.empty(new_cap, dtype=np.float64)
+                                new_n = np.empty((new_cap, 3), dtype=np.float64)
+                                for ci in range(n_pts):
+                                    for di in range(3):
+                                        new_p[ci, di] = points[ci, di]
+                                        new_n[ci, di] = normal_wts[ci, di]
+                                    new_s[ci] = scalar_wts[ci]
+                                points = new_p
+                                scalar_wts = new_s
+                                normal_wts = new_n
+
+                            sign_dk = 1.0 if dk_phi > 0.0 else -1.0
+                            for di in range(3):
+                                points[n_pts, di] = pt[di]
+                                normal_wts[n_pts, di] = 0.0
+                            normal_wts[n_pts, k2] = w_base * sign_dk
+                            if grad_norm > 1e-300:  # noqa: PLR2004
+                                scalar_wts[n_pts] = w_base * abs(dk_phi) / grad_norm
+                            else:
+                                scalar_wts[n_pts] = 0.0
                             n_pts += 1
 
     return (
