@@ -179,6 +179,48 @@ class TestRootFinding:
         assert abs(r[0] - 0.2) < 1e-6
         assert abs(r[1] - 0.8) < 1e-6
 
+    def test_cubic_yuksel(self) -> None:
+        """Yuksel should find 3 roots of a cubic with well-separated roots."""
+        from pantr.bezier.implicit._roots import _yuksel_roots
+
+        # (t-0.1)(t-0.5)(t-0.9) in Bernstein degree 3.
+        # f(0)=-0.045, f(1/3)~0.0296, f(2/3)~-0.0296, f(1)=0.045
+        # Bernstein: c0=f(0)=-0.045, c3=f(1)=0.045
+        # c1 = c0 + f'(0)/3. f'(t)=3t^2-3t+0.59, f'(0)=0.59. c1=-0.045+0.59/3≈0.15167
+        # c2 = c3 - f'(1)/3. f'(1)=3-3+0.59=0.59. c2=0.045-0.59/3≈-0.15167
+        bern = np.array([-0.045, 0.15166666666, -0.15166666666, 0.045])
+        r, c = _yuksel_roots(bern, 1e-15)
+        assert c == 3, f"Expected 3 roots, got {c}: {r[:c]}"
+        for exp in [0.1, 0.5, 0.9]:
+            assert any(abs(r[i] - exp) < 1e-4 for i in range(c)), f"Missing root {exp}: {r[:c]}"
+
+    def test_high_degree_clipping(self) -> None:
+        """Bezier clipping should handle degree >= 6 polynomials."""
+        from math import comb
+
+        import numpy.polynomial.polynomial as P
+
+        # (t-0.15)(t-0.35)(t-0.55)(t-0.75)(t-0.95) in Bernstein degree 5.
+        # This has degree < 6 so will use Yuksel via dispatch,
+        # but let's test clipping directly.
+        from pantr.bezier.implicit._roots import _clip_roots_core, _dedup_roots
+
+        roots_expected = [0.15, 0.35, 0.55, 0.75, 0.95]
+        mono = P.polyfromroots(roots_expected)
+        deg = len(mono) - 1
+        M = np.zeros((deg + 1, deg + 1))
+        for i in range(deg + 1):
+            for j in range(i + 1):
+                M[i, j] = comb(i, j) / comb(deg, j)
+        bern = M @ mono
+        raw, n_raw = _clip_roots_core(bern, 1e-15, 1e-15)
+        unique, n_unique = _dedup_roots(raw, n_raw, bern, 1e-15, 1e-15)
+        assert n_unique == 5, f"Expected 5 roots, got {n_unique}: {unique[:n_unique]}"
+        for exp in roots_expected:
+            assert any(abs(unique[i] - exp) < 1e-6 for i in range(n_unique)), (
+                f"Missing root {exp}: {unique[:n_unique]}"
+            )
+
     def test_no_roots(self) -> None:
         _r, c = find_roots(np.array([1.0, 2.0, 3.0]))
         assert c == 0

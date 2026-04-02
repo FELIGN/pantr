@@ -1,9 +1,15 @@
-"""1D Bernstein polynomial root finding for implicit quadrature.
+"""Self-contained 1D Bernstein polynomial root finding for implicit quadrature.
 
-Uses the fast subdivision + Newton method from algoim (Saye 2022,
-Supplementary material Section D): recursive de Casteljau subdivision
-with sign-change counting, followed by Newton's method (safeguarded by
-bisection) on monotone intervals.
+Duplicates the Yuksel monotone-decomposition and Bezier clipping algorithms
+from ``pantr.bezier`` as standalone Numba nopython functions, so the implicit
+quadrature module has no runtime dependency on the rest of pantr's root-finding
+infrastructure.
+
+Dispatch heuristic (same as ``pantr.bezier._batch_core._dispatch_and_find``):
+
+- Degree < 6: Yuksel (lower overhead for small polynomials).
+- Degree >= 6 with coefficient range <= 1e8: Bezier clipping (superlinear).
+- Otherwise: Yuksel.
 
 Main exports:
 
@@ -20,118 +26,148 @@ import numpy as np
 from numpy import typing as npt
 
 from pantr._numba_compat import nb_jit
-from pantr.bezier._root_finding_core import (
-    _de_casteljau_eval_and_deriv_scalar,
-    _de_casteljau_eval_scalar,
-    _restrict_scalar,
-)
 
-_ROOT_TOL: float = 1e-14
-"""Tolerance for root parameter convergence."""
+_DBL_EPSILON: float = 2.2204460492503131e-16
+"""Machine epsilon for IEEE 754 double precision."""
 
-_MAX_NEWTON: int = 50
-"""Maximum Newton iterations per root."""
+_MAX_NEWTON_ITER: int = 64
+"""Safety cap on Newton/bisection iterations."""
 
-_MAX_SUBDIV_DEPTH: int = 6
-"""Maximum recursion depth for subdivision (2^6 = 64 sub-intervals)."""
+_CLIP_REDUCTION_THRESHOLD: float = 0.2
+"""Minimum parameter reduction to accept a clip without subdivision."""
+
+_CLIP_MAX_DEPTH: int = 64
+"""Maximum recursion depth for the clipping stack."""
+
+_MAX_STACK_SIZE: int = 256
+"""Maximum stack size for the iterative clipping loop."""
+
+_CLIP_MIN_DEGREE: int = 6
+"""Minimum polynomial degree for Bezier clipping dispatch."""
+
+_CLIP_COEFF_RANGE_LIMIT: float = 1e8
+"""Maximum coefficient dynamic range for Bezier clipping dispatch."""
+
+_ROOT_TOL: float = 1e-15
+"""Default parametric tolerance for root finding."""
 
 
 # ---------------------------------------------------------------------------
-# Section A: Newton-bisection solver on a monotone interval
+# Section A: Scalar de Casteljau evaluation (self-contained)
 # ---------------------------------------------------------------------------
 
 
 @nb_jit(nopython=True, cache=True)
-def _newton_bisection(
-    coeffs: npt.NDArray[np.float64],
-    lo: float,
-    hi: float,
-) -> float:
-    """Find a root of a Bernstein polynomial on [lo, hi] via Newton + bisection.
-
-    Assumes there is exactly one root in the interval (sign change verified
-    by caller). Falls back to bisection if Newton steps leave the bracket.
+def _eval_scalar(coeff: npt.NDArray[np.float64], t: float) -> float:
+    """Evaluate a scalar Bernstein polynomial at *t* via de Casteljau.
 
     Args:
-        coeffs (npt.NDArray[np.float64]): Original Bernstein coefficients on [0, 1].
-        lo (float): Left bound.
-        hi (float): Right bound.
+        coeff (npt.NDArray[np.float64]): 1D Bernstein coefficients.
+        t (float): Parameter in [0, 1].
 
     Returns:
-        float: Root parameter, or NaN if convergence fails.
+        float: Polynomial value.
 
     Note:
         Inputs are assumed to be correct (no validation performed).
     """
-    f_lo = _de_casteljau_eval_scalar(coeffs, lo)
-    f_hi = _de_casteljau_eval_scalar(coeffs, hi)
-
-    if abs(f_lo) < _ROOT_TOL * 0.1:
-        return lo
-    if abs(f_hi) < _ROOT_TOL * 0.1:
-        return hi
-
-    # Track which side is negative: neg_side=lo means f(lo)<0.
-    # Keep lo < hi always.
-    if f_lo > 0.0:
-        # f is positive at lo, negative at hi. Track with a flag.
-        f_neg_at_lo = False
-    else:
-        f_neg_at_lo = True
-
-    # Initial guess by false position.
-    mid = lo + abs(f_lo) / (abs(f_lo) + abs(f_hi)) * (hi - lo)
-
-    for _ in range(_MAX_NEWTON):
-        f_mid, df_mid = _de_casteljau_eval_and_deriv_scalar(coeffs, mid)
-
-        if abs(f_mid) < _ROOT_TOL:
-            return mid
-
-        # Update bracket based on sign.
-        if (f_mid < 0.0) == f_neg_at_lo:
-            lo = mid
-        else:
-            hi = mid
-
-        if hi - lo < _ROOT_TOL:
-            return 0.5 * (lo + hi)
-
-        # Newton step.
-        if abs(df_mid) > 1e-300:
-            newton = mid - f_mid / df_mid
-            if lo < newton < hi:
-                mid = newton
-                continue
-
-        # Bisection fallback.
-        mid = 0.5 * (lo + hi)
-
-    return 0.5 * (lo + hi)
-
-
-# ---------------------------------------------------------------------------
-# Section B: Sign-change counting
-# ---------------------------------------------------------------------------
+    work = coeff.copy()
+    n = len(work) - 1
+    for k in range(1, n + 1):
+        for i in range(n - k + 1):
+            work[i] = (1.0 - t) * work[i] + t * work[i + 1]
+    return float(work[0])
 
 
 @nb_jit(nopython=True, cache=True)
-def _count_sign_changes(coeffs: npt.NDArray[np.float64]) -> int:
+def _eval_and_deriv(coeff: npt.NDArray[np.float64], t: float) -> tuple[float, float]:
+    """Evaluate a scalar Bernstein polynomial and its derivative at *t*.
+
+    Args:
+        coeff (npt.NDArray[np.float64]): 1D Bernstein coefficients.
+        t (float): Parameter in [0, 1].
+
+    Returns:
+        tuple[float, float]: (f(t), f'(t)).
+
+    Note:
+        Inputs are assumed to be correct (no validation performed).
+    """
+    n = len(coeff) - 1
+    if n == 0:
+        return float(coeff[0]), 0.0
+    s = 1.0 - t
+    row = coeff.copy()
+    for k in range(1, n):
+        for i in range(n - k + 1):
+            row[i] = s * row[i] + t * row[i + 1]
+    d0 = row[0]
+    d1 = row[1]
+    f = s * d0 + t * d1
+    deriv = float(n) * (d1 - d0)
+    return f, deriv
+
+
+@nb_jit(nopython=True, cache=True)
+def _restrict_scalar(
+    coeff: npt.NDArray[np.float64], lower: float, upper: float
+) -> npt.NDArray[np.float64]:
+    """Restrict a scalar Bernstein polynomial to [lower, upper].
+
+    Args:
+        coeff (npt.NDArray[np.float64]): 1D Bernstein coefficients.
+        lower (float): Left bound in [0, 1].
+        upper (float): Right bound in [0, 1].
+
+    Returns:
+        npt.NDArray[np.float64]: Restricted coefficients on [0, 1].
+
+    Note:
+        Inputs are assumed to be correct (no validation performed).
+    """
+    p = len(coeff) - 1
+    d = np.empty(p + 1, dtype=np.float64)
+    for i in range(p + 1):
+        d[i] = float(coeff[i])
+
+    if abs(upper) >= abs(lower - 1.0):
+        tau = upper
+        for _step in range(1, p + 1):
+            for j in range(p, _step - 1, -1):
+                d[j] = d[j] * tau + d[j - 1] * (1.0 - tau)
+        tau2 = lower / upper if upper != 0.0 else 0.0
+        for _step in range(1, p + 1):
+            for j in range(p - _step + 1):
+                d[j] = d[j] * (1.0 - tau2) + d[j + 1] * tau2
+    else:
+        tau = lower
+        for _step in range(1, p + 1):
+            for j in range(p - _step + 1):
+                d[j] = d[j] * (1.0 - tau) + d[j + 1] * tau
+        tau2 = (upper - lower) / (1.0 - lower) if lower != 1.0 else 0.0
+        for _step in range(1, p + 1):
+            for j in range(p, _step - 1, -1):
+                d[j] = d[j] * tau2 + d[j - 1] * (1.0 - tau2)
+    return d
+
+
+@nb_jit(nopython=True, cache=True)
+def _count_sign_changes(coeff: npt.NDArray[np.float64]) -> int:
     """Count sign changes in a Bernstein coefficient sequence.
 
     Args:
-        coeffs (npt.NDArray[np.float64]): 1D coefficient array.
+        coeff (npt.NDArray[np.float64]): 1D coefficient array.
 
     Returns:
-        int: Number of sign changes (ignoring zero coefficients).
+        int: Number of sign changes (ignoring zeros).
 
     Note:
         Inputs are assumed to be correct (no validation performed).
     """
     changes = 0
     prev_sign = 0
-    for i in range(len(coeffs)):
-        v = coeffs[i]
+    for i in range(len(coeff)):
+        v = coeff[i]
         if v > 0.0:
             s = 1
         elif v < 0.0:
@@ -144,8 +180,643 @@ def _count_sign_changes(coeffs: npt.NDArray[np.float64]) -> int:
     return changes
 
 
+@nb_jit(nopython=True, cache=True)
+def _clip_hull_to_zero(  # noqa: PLR0912
+    coeff: npt.NDArray[np.float64],
+) -> tuple[float, float, bool]:
+    """Clip parameter range using the convex hull of the control polygon vs y=0.
+
+    Args:
+        coeff (npt.NDArray[np.float64]): Bernstein coefficients of shape ``(n+1,)``.
+
+    Returns:
+        tuple[float, float, bool]: (t_lo, t_hi, found).
+
+    Note:
+        Inputs are assumed to be correct (no validation performed).
+    """
+    n = len(coeff) - 1
+    if n < 1:
+        return 0.0, 0.0, False
+
+    inv_n = 1.0 / n
+    t_lo = 1.0
+    t_hi = 0.0
+    found = False
+
+    # Upper hull.
+    upper = np.empty(n + 1, dtype=np.int64)
+    u_size = 0
+    for i in range(n + 1):
+        while u_size >= 2:
+            j0 = upper[u_size - 2]
+            j1 = upper[u_size - 1]
+            cross = (j1 - j0) * (coeff[i] - coeff[j0]) - (coeff[j1] - coeff[j0]) * (i - j0)
+            if cross >= 0.0:
+                u_size -= 1
+            else:
+                break
+        upper[u_size] = i
+        u_size += 1
+
+    for k in range(u_size - 1):
+        ia = upper[k]
+        ib = upper[k + 1]
+        da = coeff[ia]
+        db = coeff[ib]
+        if da * db < 0.0:
+            ta = ia * inv_n
+            tb = ib * inv_n
+            t_cross = ta + (-da) / (db - da) * (tb - ta)
+            t_lo = min(t_lo, t_cross)
+            t_hi = max(t_hi, t_cross)
+            found = True
+        if da == 0.0:
+            t_lo = min(t_lo, ia * inv_n)
+            t_hi = max(t_hi, ia * inv_n)
+            found = True
+    last_u = upper[u_size - 1]
+    if coeff[last_u] == 0.0:
+        t_lo = min(t_lo, last_u * inv_n)
+        t_hi = max(t_hi, last_u * inv_n)
+        found = True
+
+    # Lower hull.
+    lower = np.empty(n + 1, dtype=np.int64)
+    l_size = 0
+    for i in range(n + 1):
+        while l_size >= 2:
+            j0 = lower[l_size - 2]
+            j1 = lower[l_size - 1]
+            cross = (j1 - j0) * (coeff[i] - coeff[j0]) - (coeff[j1] - coeff[j0]) * (i - j0)
+            if cross <= 0.0:
+                l_size -= 1
+            else:
+                break
+        lower[l_size] = i
+        l_size += 1
+
+    for k in range(l_size - 1):
+        ia = lower[k]
+        ib = lower[k + 1]
+        da = coeff[ia]
+        db = coeff[ib]
+        if da * db < 0.0:
+            ta = ia * inv_n
+            tb = ib * inv_n
+            t_cross = ta + (-da) / (db - da) * (tb - ta)
+            t_lo = min(t_lo, t_cross)
+            t_hi = max(t_hi, t_cross)
+            found = True
+        if da == 0.0:
+            t_lo = min(t_lo, ia * inv_n)
+            t_hi = max(t_hi, ia * inv_n)
+            found = True
+    last_l = lower[l_size - 1]
+    if coeff[last_l] == 0.0:
+        t_lo = min(t_lo, last_l * inv_n)
+        t_hi = max(t_hi, last_l * inv_n)
+        found = True
+
+    return t_lo, t_hi, found
+
+
+@nb_jit(nopython=True, cache=True)
+def _newton_polish(
+    coeff: npt.NDArray[np.float64],
+    mid: float,
+    lo: float,
+    hi: float,
+    param_tol: float,
+) -> tuple[float, float, float]:
+    """Polish a root candidate with a single Newton step.
+
+    Args:
+        coeff (npt.NDArray[np.float64]): Bernstein coefficients on [0, 1].
+        mid (float): Initial root estimate.
+        lo (float): Left bound.
+        hi (float): Right bound.
+        param_tol (float): Acceptance tolerance.
+
+    Returns:
+        tuple[float, float, float]: (polished_t, f_value, df_value).
+
+    Note:
+        Inputs are assumed to be correct (no validation performed).
+    """
+    f_mid, df_mid = _eval_and_deriv(coeff, mid)
+    if abs(df_mid) > _DBL_EPSILON:
+        newton = mid - f_mid / df_mid
+        if lo - param_tol <= newton <= hi + param_tol:
+            newton = max(0.0, min(1.0, newton))
+            f_newton = _eval_scalar(coeff, newton)
+            if abs(f_newton) <= abs(f_mid):
+                return newton, f_newton, df_mid
+    return mid, f_mid, df_mid
+
+
 # ---------------------------------------------------------------------------
-# Section C: Recursive subdivision root finder
+# Section B: Yuksel monotone-decomposition root finder
+# ---------------------------------------------------------------------------
+
+
+@nb_jit(nopython=True, cache=True)
+def _solve_on_interval(
+    coeff: npt.NDArray[np.float64],
+    lo: float,
+    hi: float,
+    f_lo: float,
+    tol: float,
+) -> float:
+    """Find one root on [lo, hi] via Newton/bisection hybrid.
+
+    Args:
+        coeff (npt.NDArray[np.float64]): Bernstein coefficients on [0, 1].
+        lo (float): Left boundary.
+        hi (float): Right boundary.
+        f_lo (float): Pre-evaluated P(lo).
+        tol (float): Bracket-width tolerance.
+
+    Returns:
+        float: Approximate root.
+
+    Note:
+        Inputs are assumed to be correct (no validation performed).
+    """
+    x = 0.5 * (lo + hi)
+    for _ in range(_MAX_NEWTON_ITER):
+        fx, dfx = _eval_and_deriv(coeff, x)
+        if f_lo * fx <= 0.0:
+            hi = x
+        else:
+            lo = x
+        if (hi - lo) <= tol:
+            return 0.5 * (lo + hi)
+        x_new = x - fx / dfx if abs(dfx) > 0.0 else 0.5 * (lo + hi)
+        x = x_new if lo < x_new < hi else 0.5 * (lo + hi)
+    return 0.5 * (lo + hi)
+
+
+@nb_jit(nopython=True, cache=True)
+def _find_roots_at_level(
+    coeff: npt.NDArray[np.float64],
+    crit: npt.NDArray[np.float64],
+    n_crit: int,
+    tol: float,
+) -> tuple[npt.NDArray[np.float64], int]:
+    """Find all roots by walking monotone intervals defined by critical params.
+
+    Args:
+        coeff (npt.NDArray[np.float64]): Bernstein coefficients.
+        crit (npt.NDArray[np.float64]): Sorted critical parameters.
+        n_crit (int): Number of valid entries in *crit*.
+        tol (float): Bracket-width tolerance.
+
+    Returns:
+        tuple[npt.NDArray[np.float64], int]: (roots_array, count).
+
+    Note:
+        Inputs are assumed to be correct (no validation performed).
+    """
+    n = len(coeff) - 1
+    roots = np.empty(n, dtype=np.float64)
+    count = 0
+
+    d_min = float(np.min(coeff))
+    d_max = float(np.max(coeff))
+    scale = abs(d_max - d_min)
+    boundary_eps = max(scale * _DBL_EPSILON * 8.0, 1e-30)
+
+    prev_t = 0.0
+    f_prev = float(coeff[0])
+
+    for k in range(n_crit + 1):
+        curr_t = crit[k] if k < n_crit else 1.0
+        if curr_t - prev_t < tol:
+            f_prev = _eval_scalar(coeff, curr_t) if curr_t < 1.0 else float(coeff[n])
+            prev_t = curr_t
+            continue
+
+        f_curr = _eval_scalar(coeff, curr_t) if curr_t < 1.0 else float(coeff[n])
+
+        if abs(f_prev) <= boundary_eps:
+            if count == 0 or abs(roots[count - 1] - prev_t) > tol:
+                if count < n:
+                    roots[count] = prev_t
+                    count += 1
+                f_prev = f_curr
+                prev_t = curr_t
+                continue
+
+        if f_prev * f_curr < 0.0:
+            root = _solve_on_interval(coeff, prev_t, curr_t, f_prev, tol)
+            if count < n:
+                roots[count] = root
+                count += 1
+
+        f_prev = f_curr
+        prev_t = curr_t
+
+    if abs(f_prev) <= boundary_eps and (count == 0 or abs(roots[count - 1] - 1.0) > tol):
+        if count < n:
+            roots[count] = 1.0
+            count += 1
+
+    return roots, count
+
+
+@nb_jit(nopython=True, cache=True)
+def _yuksel_roots(  # noqa: PLR0912, PLR0915
+    coeff: npt.NDArray[np.float64],
+    tol: float,
+) -> tuple[npt.NDArray[np.float64], int]:
+    """Find all roots using Yuksel's monotone-decomposition algorithm.
+
+    Args:
+        coeff (npt.NDArray[np.float64]): Bernstein coefficients.
+        tol (float): Parametric tolerance.
+
+    Returns:
+        tuple[npt.NDArray[np.float64], int]: (roots_array, count).
+
+    Note:
+        Inputs are assumed to be correct (no validation performed).
+    """
+    n = len(coeff) - 1
+    if n <= 0:
+        return np.empty(0, dtype=np.float64), 0
+
+    d_min = coeff[0]
+    d_max = coeff[0]
+    for i in range(1, n + 1):
+        d_min = min(d_min, coeff[i])
+        d_max = max(d_max, coeff[i])
+    if d_min > 0.0 or d_max < 0.0:
+        return np.empty(n, dtype=np.float64), 0
+
+    if n == 1:
+        roots = np.empty(1, dtype=np.float64)
+        c0 = coeff[0]
+        c1 = coeff[1]
+        if c0 == c1:
+            return roots, 0
+        root = c0 / (c0 - c1)
+        if 0.0 <= root <= 1.0:
+            roots[0] = root
+            return roots, 1
+        return roots, 0
+
+    # Build derivative chain.
+    derivs = np.zeros((n - 1, n), dtype=np.float64)
+    for i in range(n):
+        derivs[0, i] = coeff[i + 1] - coeff[i]
+    for lev in range(1, n - 1):
+        sz_prev = n - lev
+        for i in range(sz_prev):
+            derivs[lev, i] = derivs[lev - 1, i + 1] - derivs[lev - 1, i]
+
+    # Bottom-up: solve degree-1 at the deepest level.
+    deepest = n - 2
+    c0 = derivs[deepest, 0]
+    c1 = derivs[deepest, 1]
+    crit = np.empty(1, dtype=np.float64)
+    n_crit = 0
+    if c0 != c1:
+        r = c0 / (c0 - c1)
+        if 0.0 <= r <= 1.0:
+            crit[0] = r
+            n_crit = 1
+
+    # Walk back up.
+    for lev in range(deepest - 1, -1, -1):
+        deg_lev = n - 1 - lev
+        coeff_lev = derivs[lev, : deg_lev + 1].copy()
+
+        lo_val = coeff_lev[0]
+        hi_val = coeff_lev[0]
+        for i in range(1, deg_lev + 1):
+            lo_val = min(lo_val, coeff_lev[i])
+            hi_val = max(hi_val, coeff_lev[i])
+        if lo_val > 0.0 or hi_val < 0.0:
+            crit = np.empty(deg_lev, dtype=np.float64)
+            n_crit = 0
+            continue
+
+        if n_crit == 0:
+            f_lo = coeff_lev[0]
+            f_hi = coeff_lev[deg_lev]
+            scale = abs(hi_val - lo_val)
+            boundary_eps = max(scale * _DBL_EPSILON * 8.0, 1e-30)
+
+            if abs(f_lo) <= boundary_eps:
+                crit = np.empty(1, dtype=np.float64)
+                crit[0] = 0.0
+                n_crit = 1
+            elif f_lo * f_hi < 0.0:
+                root = _solve_on_interval(coeff_lev, 0.0, 1.0, f_lo, tol)
+                crit = np.empty(1, dtype=np.float64)
+                crit[0] = root
+                n_crit = 1
+            elif abs(f_hi) <= boundary_eps:
+                crit = np.empty(1, dtype=np.float64)
+                crit[0] = 1.0
+                n_crit = 1
+            else:
+                crit = np.empty(deg_lev, dtype=np.float64)
+                n_crit = 0
+            continue
+
+        new_crit, new_n = _find_roots_at_level(coeff_lev, crit, n_crit, tol)
+        crit = new_crit
+        n_crit = new_n
+
+    return _find_roots_at_level(coeff, crit, n_crit, tol)
+
+
+# ---------------------------------------------------------------------------
+# Section C: Bezier clipping root finder
+# ---------------------------------------------------------------------------
+
+
+@nb_jit(nopython=True, cache=True)
+def _clip_roots_core(  # noqa: PLR0912, PLR0915
+    root_coeff: npt.NDArray[np.float64],
+    param_tol: float,
+    geom_tol: float,
+) -> tuple[npt.NDArray[np.float64], int]:
+    """Stack-based Bezier clipping root finder.
+
+    Args:
+        root_coeff (npt.NDArray[np.float64]): Bernstein coefficients on [0, 1].
+        param_tol (float): Parametric tolerance.
+        geom_tol (float): Geometric tolerance for near-zero detection.
+
+    Returns:
+        tuple[npt.NDArray[np.float64], int]: (roots_array, count).
+
+    Note:
+        Inputs are assumed to be correct (no validation performed).
+    """
+    n = len(root_coeff) - 1
+    max_roots = 3 * n + 4
+    roots = np.empty(max_roots, dtype=np.float64)
+    n_roots = 0
+
+    coeff_scale = 0.0
+    for i in range(n + 1):
+        coeff_scale = max(coeff_scale, abs(root_coeff[i]))
+    zero_tol = max(coeff_scale * (n + 1) * 4.0 * _DBL_EPSILON, geom_tol)
+
+    if abs(root_coeff[0]) <= zero_tol:
+        roots[n_roots] = 0.0
+        n_roots += 1
+    if abs(root_coeff[n]) <= zero_tol:
+        roots[n_roots] = 1.0
+        n_roots += 1
+
+    stack_lo = np.empty(_MAX_STACK_SIZE, dtype=np.float64)
+    stack_hi = np.empty(_MAX_STACK_SIZE, dtype=np.float64)
+    stack_depth = np.empty(_MAX_STACK_SIZE, dtype=np.int64)
+    stack_lo[0] = 0.0
+    stack_hi[0] = 1.0
+    stack_depth[0] = 0
+    stack_size = 1
+
+    while stack_size > 0:
+        stack_size -= 1
+        lo = stack_lo[stack_size]
+        hi = stack_hi[stack_size]
+        depth = stack_depth[stack_size]
+        span = hi - lo
+
+        if span <= param_tol or depth > _CLIP_MAX_DEPTH:
+            mid = 0.5 * (lo + hi)
+            if lo <= 0.0 and hi <= param_tol:
+                mid = 0.0
+            elif lo >= 1.0 - param_tol and hi >= 1.0:
+                mid = 1.0
+            mid, f_mid, df_mid = _newton_polish(root_coeff, mid, lo, hi, param_tol)
+            if abs(f_mid) <= zero_tol:
+                if abs(df_mid) <= _DBL_EPSILON:
+                    a, b = lo, hi
+                    fa = _eval_scalar(root_coeff, a)
+                    for _bi in range(10):
+                        m = 0.5 * (a + b)
+                        fm = _eval_scalar(root_coeff, m)
+                        if abs(fm) < abs(fa):
+                            if fa * fm <= 0.0:
+                                b = m
+                            else:
+                                a = m
+                                fa = fm
+                        elif fa * fm <= 0.0:
+                            b = m
+                        else:
+                            a = m
+                            fa = fm
+                        if b - a <= _DBL_EPSILON:
+                            break
+                    mid = 0.5 * (a + b)
+                f_final = _eval_scalar(root_coeff, mid)
+                if abs(f_final) <= zero_tol and n_roots < max_roots:
+                    roots[n_roots] = mid
+                    n_roots += 1
+            continue
+
+        local = _restrict_scalar(root_coeff, lo, hi)
+        local_scale = 0.0
+        for i in range(n + 1):
+            local_scale = max(local_scale, abs(local[i]))
+        local_zero_tol = max(local_scale * (n + 1) * 4.0 * _DBL_EPSILON, geom_tol)
+
+        c_min = local[0]
+        c_max = local[0]
+        for i in range(1, n + 1):
+            c_min = min(c_min, local[i])
+            c_max = max(c_max, local[i])
+
+        if c_min > local_zero_tol or c_max < -local_zero_tol:
+            rejection_margin = c_min if c_min > local_zero_tol else -c_max
+            if rejection_margin <= zero_tol:
+                mid = 0.5 * (lo + hi)
+                mid, f_mid, _ = _newton_polish(root_coeff, mid, lo, hi, 0.0)
+                if abs(f_mid) <= zero_tol and n_roots < max_roots:
+                    roots[n_roots] = mid
+                    n_roots += 1
+            continue
+
+        if c_max - c_min <= geom_tol:
+            if abs(c_min) <= local_zero_tol or abs(c_max) <= local_zero_tol or c_min * c_max < 0.0:
+                mid = 0.5 * (lo + hi)
+                f_mid = _eval_scalar(root_coeff, mid)
+                if abs(f_mid) <= zero_tol and n_roots < max_roots:
+                    roots[n_roots] = mid
+                    n_roots += 1
+            continue
+
+        if abs(local[0]) <= local_zero_tol and n_roots < max_roots:
+            roots[n_roots] = lo
+            n_roots += 1
+        if abs(local[n]) <= local_zero_tol and n_roots < max_roots:
+            roots[n_roots] = hi
+            n_roots += 1
+
+        n_sc = _count_sign_changes(local)
+        if n_sc == 0:
+            continue
+
+        if n == 1:
+            c0 = local[0]
+            c1 = local[1]
+            if c0 != c1:
+                r = c0 / (c0 - c1)
+                if 0.0 <= r <= 1.0 and n_roots < max_roots:
+                    roots[n_roots] = lo + r * span
+                    n_roots += 1
+            continue
+
+        t_lo_clip, t_hi_clip, clip_found = _clip_hull_to_zero(local)
+        if not clip_found:
+            if n_sc > 0 and stack_size + 1 < _MAX_STACK_SIZE:
+                mid_param = 0.5 * (lo + hi)
+                stack_lo[stack_size] = lo
+                stack_hi[stack_size] = mid_param
+                stack_depth[stack_size] = depth + 1
+                stack_size += 1
+                stack_lo[stack_size] = mid_param
+                stack_hi[stack_size] = hi
+                stack_depth[stack_size] = depth + 1
+                stack_size += 1
+            continue
+
+        margin = (n + 1) * 4.0 * _DBL_EPSILON
+        t_lo_safe = max(t_lo_clip - margin, 0.0)
+        t_hi_safe = min(t_hi_clip + margin, 1.0)
+        new_lo = lo + t_lo_safe * span
+        new_hi = lo + t_hi_safe * span
+        new_span = new_hi - new_lo
+
+        if new_span <= param_tol:
+            mid = 0.5 * (new_lo + new_hi)
+            mid, f_mid, _ = _newton_polish(root_coeff, mid, new_lo, new_hi, param_tol)
+            if abs(f_mid) <= zero_tol and n_roots < max_roots:
+                roots[n_roots] = mid
+                n_roots += 1
+            continue
+
+        reduction = 1.0 - (new_span / span) if span > 0.0 else 0.0
+
+        if n_sc == 1:
+            if reduction >= _CLIP_REDUCTION_THRESHOLD:
+                if stack_size < _MAX_STACK_SIZE:
+                    stack_lo[stack_size] = new_lo
+                    stack_hi[stack_size] = new_hi
+                    stack_depth[stack_size] = depth + 1
+                    stack_size += 1
+            else:
+                mid = 0.5 * (new_lo + new_hi)
+                if stack_size + 1 < _MAX_STACK_SIZE:
+                    stack_lo[stack_size] = new_lo
+                    stack_hi[stack_size] = mid
+                    stack_depth[stack_size] = depth + 1
+                    stack_size += 1
+                    stack_lo[stack_size] = mid
+                    stack_hi[stack_size] = new_hi
+                    stack_depth[stack_size] = depth + 1
+                    stack_size += 1
+        elif reduction >= _CLIP_REDUCTION_THRESHOLD:
+            mid = 0.5 * (new_lo + new_hi)
+            if stack_size + 1 < _MAX_STACK_SIZE:
+                stack_lo[stack_size] = new_lo
+                stack_hi[stack_size] = mid
+                stack_depth[stack_size] = depth + 1
+                stack_size += 1
+                stack_lo[stack_size] = mid
+                stack_hi[stack_size] = new_hi
+                stack_depth[stack_size] = depth + 1
+                stack_size += 1
+        else:
+            mid = 0.5 * (lo + hi)
+            if stack_size + 1 < _MAX_STACK_SIZE:
+                stack_lo[stack_size] = lo
+                stack_hi[stack_size] = mid
+                stack_depth[stack_size] = depth + 1
+                stack_size += 1
+                stack_lo[stack_size] = mid
+                stack_hi[stack_size] = hi
+                stack_depth[stack_size] = depth + 1
+                stack_size += 1
+
+    return roots, n_roots
+
+
+# ---------------------------------------------------------------------------
+# Section D: Deduplication (Numba-compiled)
+# ---------------------------------------------------------------------------
+
+
+@nb_jit(nopython=True, cache=True)
+def _dedup_roots(
+    raw_roots: npt.NDArray[np.float64],
+    n_roots: int,
+    coeff: npt.NDArray[np.float64],
+    param_tol: float,
+    geom_tol: float,
+) -> tuple[npt.NDArray[np.float64], int]:
+    """Sort and deduplicate raw root candidates.
+
+    Args:
+        raw_roots (npt.NDArray[np.float64]): Unsorted root candidates.
+        n_roots (int): Number of valid entries.
+        coeff (npt.NDArray[np.float64]): Original Bernstein coefficients.
+        param_tol (float): Parametric tolerance.
+        geom_tol (float): Geometric tolerance.
+
+    Returns:
+        tuple[npt.NDArray[np.float64], int]: (unique_roots, count).
+
+    Note:
+        Inputs are assumed to be correct (no validation performed).
+    """
+    if n_roots == 0:
+        return raw_roots, 0
+
+    # Insertion sort.
+    for i in range(1, n_roots):
+        key = raw_roots[i]
+        j = i - 1
+        while j >= 0 and raw_roots[j] > key:
+            raw_roots[j + 1] = raw_roots[j]
+            j -= 1
+        raw_roots[j + 1] = key
+
+    n = len(coeff) - 1
+    coeff_scale = 0.0
+    for i in range(n + 1):
+        coeff_scale = max(coeff_scale, abs(coeff[i]))
+    zero_tol = max(coeff_scale * (n + 1) * 4.0 * _DBL_EPSILON, geom_tol)
+    base_dedup = max(param_tol * 2.0, zero_tol * 4.0)
+
+    unique = np.empty(n_roots, dtype=np.float64)
+    unique[0] = raw_roots[0]
+    count = 1
+
+    for i in range(1, n_roots):
+        gap = raw_roots[i] - unique[count - 1]
+        if gap <= base_dedup:
+            continue
+        _, df_val = _eval_and_deriv(coeff, unique[count - 1])
+        local_tol = zero_tol / max(abs(df_val), _DBL_EPSILON)
+        if gap <= max(base_dedup, local_tol * 4.0):
+            continue
+        unique[count] = raw_roots[i]
+        count += 1
+
+    return unique, count
+
+
+# ---------------------------------------------------------------------------
+# Section E: Dispatch and main entry point
 # ---------------------------------------------------------------------------
 
 
@@ -155,9 +826,12 @@ def find_roots(
 ) -> tuple[npt.NDArray[np.float64], int]:
     """Find all real roots of a 1D Bernstein polynomial in (0, 1).
 
-    Uses iterative stack-based subdivision with sign-change counting,
-    followed by Newton-bisection on intervals with exactly one sign change.
-    Maximum subdivision depth is 4 (16 sub-intervals of [0,1]).
+    Dispatches between Yuksel and Bezier clipping based on degree and
+    coefficient conditioning:
+
+    - Degree < 6: Yuksel (lower overhead).
+    - Degree >= 6 with coefficient range <= 1e8: Bezier clipping.
+    - Otherwise: Yuksel.
 
     Args:
         coeffs (npt.NDArray[np.float64]): 1D Bernstein coefficients of
@@ -172,118 +846,39 @@ def find_roots(
         Inputs are assumed to be correct (no validation performed).
     """
     n = len(coeffs) - 1
-    max_roots = max(n, 1)
-    roots = np.empty(max_roots, dtype=np.float64)
-    count = 0
-
     if n <= 0:
-        return roots, 0
+        return np.empty(0, dtype=np.float64), 0
 
     # Quick rejection: uniform sign.
-    all_pos = True
-    all_neg = True
-    for i in range(len(coeffs)):
-        if coeffs[i] <= 0.0:
-            all_pos = False
-        if coeffs[i] >= 0.0:
-            all_neg = False
-    if all_pos or all_neg:
-        return roots, 0
+    d_min = coeffs[0]
+    d_max = coeffs[0]
+    for i in range(1, n + 1):
+        d_min = min(d_min, coeffs[i])
+        d_max = max(d_max, coeffs[i])
+    if d_min > 0.0 or d_max < 0.0:
+        return np.empty(0, dtype=np.float64), 0
 
-    # Degree 1: linear.
-    if n == 1:
-        c0, c1 = coeffs[0], coeffs[1]
-        denom = c1 - c0
-        if abs(denom) > 1e-300:
-            t = -c0 / denom
-            if _ROOT_TOL < t < 1.0 - _ROOT_TOL:
-                roots[0] = t
-                return roots, 1
-        return roots, 0
+    # All-zero check.
+    coeff_scale = max(abs(d_min), abs(d_max))
+    if coeff_scale <= _DBL_EPSILON:
+        return np.empty(0, dtype=np.float64), 0
 
-    # Stack-based subdivision.
-    # Stack entries: (lo, hi, depth)
-    stack_lo = np.empty(256, dtype=np.float64)
-    stack_hi = np.empty(256, dtype=np.float64)
-    stack_depth = np.empty(256, dtype=np.int64)
-    sp = 0
+    tol = _ROOT_TOL
 
-    # Push initial interval.
-    stack_lo[0] = 0.0
-    stack_hi[0] = 1.0
-    stack_depth[0] = 0
-    sp = 1
+    if n < _CLIP_MIN_DEGREE:
+        return _yuksel_roots(coeffs, tol)
 
-    while sp > 0:
-        sp -= 1
-        lo = stack_lo[sp]
-        hi = stack_hi[sp]
-        depth = stack_depth[sp]
+    # Check coefficient dynamic range for clipping dispatch.
+    c_min_nonzero = coeff_scale
+    for i in range(n + 1):
+        a = abs(coeffs[i])
+        if a > _DBL_EPSILON and a < c_min_nonzero:
+            c_min_nonzero = a
+    coeff_range = coeff_scale / c_min_nonzero
 
-        # Restrict polynomial to [lo, hi].
-        sub = _restrict_scalar(coeffs, lo, hi)
+    if coeff_range <= _CLIP_COEFF_RANGE_LIMIT:
+        raw, n_raw = _clip_roots_core(coeffs, tol, tol)
+        unique, n_unique = _dedup_roots(raw, n_raw, coeffs, tol, tol)
+        return unique, n_unique
 
-        # Check for near-zero coefficients.
-        max_abs = 0.0
-        for i in range(len(sub)):
-            a = abs(sub[i])
-            max_abs = max(max_abs, a)
-
-        # Very small polynomial: skip (no significant root).
-        if max_abs < _ROOT_TOL * 10.0:
-            continue
-
-        # Count sign changes.
-        sc = _count_sign_changes(sub)
-
-        if sc == 0:
-            # No roots in this interval.
-            continue
-
-        if sc == 1:
-            # Exactly one root: solve via Newton-bisection.
-            root = _newton_bisection(coeffs, lo, hi)
-            if _ROOT_TOL < root < 1.0 - _ROOT_TOL and count < max_roots:
-                # Check not duplicate.
-                is_dup = False
-                for j in range(count):
-                    if abs(root - roots[j]) < _ROOT_TOL * 100.0:
-                        is_dup = True
-                        break
-                if not is_dup:
-                    roots[count] = root
-                    count += 1
-            continue
-
-        # Multiple sign changes: subdivide if depth allows.
-        if depth < _MAX_SUBDIV_DEPTH:
-            mid = 0.5 * (lo + hi)
-            if sp + 2 <= 256:
-                stack_lo[sp] = lo
-                stack_hi[sp] = mid
-                stack_depth[sp] = depth + 1
-                sp += 1
-                stack_lo[sp] = mid
-                stack_hi[sp] = hi
-                stack_depth[sp] = depth + 1
-                sp += 1
-        else:
-            # Max depth reached: try Newton-bisection anyway.
-            root = _newton_bisection(coeffs, lo, hi)
-            if _ROOT_TOL < root < 1.0 - _ROOT_TOL and count < max_roots:
-                is_dup = False
-                for j in range(count):
-                    if abs(root - roots[j]) < _ROOT_TOL * 100.0:
-                        is_dup = True
-                        break
-                if not is_dup:
-                    roots[count] = root
-                    count += 1
-
-    # Sort roots.
-    for i in range(count - 1):
-        for j in range(i + 1, count):
-            if roots[j] < roots[i]:
-                roots[i], roots[j] = roots[j], roots[i]
-
-    return roots, count
+    return _yuksel_roots(coeffs, tol)

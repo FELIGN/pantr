@@ -29,7 +29,7 @@ import numpy as np
 from numpy import typing as npt
 
 from pantr._numba_compat import nb_jit
-from pantr.bezier._root_finding_core import _restrict_scalar
+from pantr.bezier.implicit._roots import _restrict_scalar
 
 M: int = 8
 """Mask grid resolution per axis."""
