@@ -67,7 +67,7 @@ def _eliminate_axis_2d(  # noqa: PLR0912
     coeffs_list: NumbaList,
     masks_list: NumbaList,
     k: int,
-) -> tuple[NumbaList, NumbaList]:
+) -> tuple[NumbaList, NumbaList, bool]:
     """Eliminate axis *k* from 2D polynomials, producing 1D polynomial set.
 
     For each input polynomial:
@@ -82,7 +82,10 @@ def _eliminate_axis_2d(  # noqa: PLR0912
         k (int): Axis to eliminate (0 or 1).
 
     Returns:
-        tuple[NumbaList, NumbaList]: (new_coeffs_1d, new_masks_1d).
+        tuple[NumbaList, NumbaList, bool]: (new_coeffs_1d, new_masks_1d,
+            has_discriminant) where *has_discriminant* is True if any
+            non-empty discriminant or resultant was added (indicating
+            branching points that require tanh-sinh quadrature).
 
     Note:
         Inputs are assumed to be correct (no validation performed).
@@ -99,6 +102,7 @@ def _eliminate_axis_2d(  # noqa: PLR0912
     out_masks.pop()
 
     n_polys = len(coeffs_list)
+    has_disc = False
 
     # --- Face restrictions ---
     for i in range(n_polys):
@@ -109,7 +113,6 @@ def _eliminate_axis_2d(  # noqa: PLR0912
             face_coeffs = _normalize_1d(face_coeffs)
             face_mask_raw = _face_restrict_mask_2d(mask, k, side)
             face_mask = compute_nonzero_mask_1d(face_coeffs)
-            # AND with the face restriction of the original mask.
             for j in range(len(face_mask)):
                 face_mask[j] = face_mask[j] and face_mask_raw[j]
             if not _mask_is_empty_1d(face_mask):
@@ -126,18 +129,17 @@ def _eliminate_axis_2d(  # noqa: PLR0912
         disc = discriminant_2d(coeffs, k)
         disc = _normalize_1d(disc)
         disc_mask = compute_nonzero_mask_1d(disc)
-        # Filter by collapsed mask.
         collapsed = _collapse_mask_2d(mask, k)
         for j in range(len(disc_mask)):
             disc_mask[j] = disc_mask[j] and collapsed[j]
         if not _mask_is_empty_1d(disc_mask):
             out_coeffs.append(disc)
             out_masks.append(disc_mask)
+            has_disc = True
 
     # --- Pairwise resultants ---
     for i in range(n_polys):
         for j_idx in range(i + 1, n_polys):
-            # Check intersection mask first.
             int_mask = compute_intersection_mask_2d(
                 coeffs_list[i], masks_list[i], coeffs_list[j_idx], masks_list[j_idx]
             )
@@ -152,8 +154,9 @@ def _eliminate_axis_2d(  # noqa: PLR0912
             if not _mask_is_empty_1d(res_mask):
                 out_coeffs.append(res)
                 out_masks.append(res_mask)
+                has_disc = True
 
-    return out_coeffs, out_masks
+    return out_coeffs, out_masks, has_disc
 
 
 # ---------------------------------------------------------------------------
@@ -166,7 +169,7 @@ def _eliminate_axis_3d(  # noqa: PLR0912
     coeffs_list: NumbaList,
     masks_list: NumbaList,
     k: int,
-) -> tuple[NumbaList, NumbaList]:
+) -> tuple[NumbaList, NumbaList, bool]:
     """Eliminate axis *k* from 3D polynomials, producing 2D polynomial set.
 
     Args:
@@ -175,7 +178,8 @@ def _eliminate_axis_3d(  # noqa: PLR0912
         k (int): Axis to eliminate (0, 1, or 2).
 
     Returns:
-        tuple[NumbaList, NumbaList]: (new_coeffs_2d, new_masks_2d).
+        tuple[NumbaList, NumbaList, bool]: (new_coeffs_2d, new_masks_2d,
+            has_discriminant).
 
     Note:
         Inputs are assumed to be correct (no validation performed).
@@ -183,7 +187,6 @@ def _eliminate_axis_3d(  # noqa: PLR0912
     out_coeffs = NumbaList()
     out_masks = NumbaList()
 
-    # Force type.
     _dummy_c = np.empty((1, 1), dtype=np.float64)
     _dummy_m = np.empty((1, 1), dtype=np.bool_)
     out_coeffs.append(_dummy_c)
@@ -192,6 +195,7 @@ def _eliminate_axis_3d(  # noqa: PLR0912
     out_masks.pop()
 
     n_polys = len(coeffs_list)
+    has_disc = False
 
     # --- Face restrictions ---
     for i in range(n_polys):
@@ -226,6 +230,7 @@ def _eliminate_axis_3d(  # noqa: PLR0912
         if not _mask_is_empty_2d(disc_mask):
             out_coeffs.append(disc)
             out_masks.append(disc_mask)
+            has_disc = True
 
     # --- Pairwise resultants ---
     for i in range(n_polys):
@@ -245,8 +250,9 @@ def _eliminate_axis_3d(  # noqa: PLR0912
             if not _mask_is_empty_2d(res_mask):
                 out_coeffs.append(res)
                 out_masks.append(res_mask)
+                has_disc = True
 
-    return out_coeffs, out_masks
+    return out_coeffs, out_masks, has_disc
 
 
 # ---------------------------------------------------------------------------
@@ -327,12 +333,10 @@ def build_2d(
         k1 = 1
 
     # Eliminate axis k1 to produce 1D polynomial set.
-    coeffs_1d, masks_1d = _eliminate_axis_2d(coeffs_list, masks_list, k1)
+    coeffs_1d, masks_1d, _has_disc_1d = _eliminate_axis_2d(coeffs_list, masks_list, k1)
 
-    # When the base polynomial set is non-empty, the height function has
-    # branching points that create endpoint singularities in the base integral.
-    # Tanh-sinh quadrature handles these effectively.
-    use_ts_1 = len(coeffs_1d) > 0
+    # Use tanh-sinh when discriminants detected (branching points in height function).
+    use_ts_1 = _has_disc_1d
     type_1 = INTEGRAL_OUTER_SINGLE
 
     # 1D base level.
@@ -387,8 +391,8 @@ def build_2d_forced_k(
     Note:
         Inputs are assumed to be correct (no validation performed).
     """
-    coeffs_1d, masks_1d = _eliminate_axis_2d(coeffs_list, masks_list, k1)
-    use_ts_1 = len(coeffs_1d) > 0
+    coeffs_1d, masks_1d, _has_disc_1d = _eliminate_axis_2d(coeffs_list, masks_list, k1)
+    use_ts_1 = _has_disc_1d
     type_1 = INTEGRAL_OUTER_SINGLE
 
     return (
@@ -440,15 +444,15 @@ def build_3d_forced_k(
     Note:
         Inputs are assumed to be correct (no validation performed).
     """
-    coeffs_2d, masks_2d = _eliminate_axis_3d(coeffs_list, masks_list, k2)
-    use_ts_2 = len(coeffs_2d) > 0
+    coeffs_2d, masks_2d, _has_disc_2d = _eliminate_axis_3d(coeffs_list, masks_list, k2)
+    use_ts_2 = _has_disc_2d
     type_2 = INTEGRAL_OUTER_SINGLE
 
     scores_2d, _hd = score_estimate_2d(coeffs_2d, masks_2d)
     k1 = 0 if scores_2d[0] >= scores_2d[1] else 1
 
-    coeffs_1d, masks_1d = _eliminate_axis_2d(coeffs_2d, masks_2d, k1)
-    use_ts_1 = len(coeffs_1d) > 0
+    coeffs_1d, masks_1d, _has_disc_1d = _eliminate_axis_2d(coeffs_2d, masks_2d, k1)
+    use_ts_1 = _has_disc_1d
     type_1 = INTEGRAL_INNER
 
     return (
@@ -562,8 +566,8 @@ def build_3d(
             k2 = d
 
     # Eliminate axis k2 to get 2D polynomial set.
-    coeffs_2d, masks_2d = _eliminate_axis_3d(coeffs_list, masks_list, k2)
-    use_ts_2 = len(coeffs_2d) > 0
+    coeffs_2d, masks_2d, _has_disc_2d = _eliminate_axis_3d(coeffs_list, masks_list, k2)
+    use_ts_2 = _has_disc_2d
     type_2 = INTEGRAL_OUTER_SINGLE
 
     # Score for 2D -> choose k1.
@@ -574,8 +578,8 @@ def build_3d(
         k1 = 1
 
     # Eliminate axis k1 to get 1D polynomial set.
-    coeffs_1d, masks_1d = _eliminate_axis_2d(coeffs_2d, masks_2d, k1)
-    use_ts_1 = len(coeffs_1d) > 0
+    coeffs_1d, masks_1d, _has_disc_1d = _eliminate_axis_2d(coeffs_2d, masks_2d, k1)
+    use_ts_1 = _has_disc_1d
     type_1 = INTEGRAL_INNER
 
     k0 = 0

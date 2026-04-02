@@ -423,6 +423,75 @@ class TestImplicitPolyQuadrature:
 
 
 # ---------------------------------------------------------------------------
+# Integration tests: Multiple polynomials
+# ---------------------------------------------------------------------------
+
+
+def _circle_bernstein(cx: float, cy: float, r_sq: float) -> npt.NDArray[np.float64]:
+    """Bernstein deg-(2,2) for (x-cx)^2 + (y-cy)^2 - r_sq on [0,1]^2."""
+    bx = _mono_to_bernstein_1d(np.array([cx**2, -2 * cx, 1.0]), 2)
+    by = _mono_to_bernstein_1d(np.array([cy**2, -2 * cy, 1.0]), 2)
+    c = np.zeros((3, 3))
+    for i in range(3):
+        for j in range(3):
+            c[i, j] = bx[i] + by[j] - r_sq
+    return c
+
+
+class TestMultiplePolynomials:
+    """Tests for quadrature with 2 intersecting polynomials."""
+
+    def test_two_circles_individual_areas(self) -> None:
+        """Each circle area should be accurate independently."""
+        c1 = _circle_bernstein(0.35, 0.5, 0.04)
+        c2 = _circle_bernstein(0.65, 0.5, 0.04)
+        ipq = ImplicitPolyQuadrature(c1, c2)
+        assert ipq.n_polys == 2  # noqa: PLR2004
+
+        pts, wts = ipq.volume_quad(15, QuadStrategy.AUTO_MIXED)
+        v1 = ipq.eval_poly(0, pts)
+        v2 = ipq.eval_poly(1, pts)
+
+        expected = np.pi * 0.04
+        assert abs(np.sum(wts[v1 < 0]) - expected) / expected < 1e-6  # noqa: PLR2004
+        assert abs(np.sum(wts[v2 < 0]) - expected) / expected < 1e-6  # noqa: PLR2004
+
+    def test_two_circles_boolean_ops(self) -> None:
+        """Intersection and union should satisfy A|B = A + B - A&B."""
+        c1 = _circle_bernstein(0.35, 0.5, 0.04)
+        c2 = _circle_bernstein(0.65, 0.5, 0.04)
+        ipq = ImplicitPolyQuadrature(c1, c2)
+
+        pts, wts = ipq.volume_quad(15, QuadStrategy.AUTO_MIXED)
+        v1 = ipq.eval_poly(0, pts)
+        v2 = ipq.eval_poly(1, pts)
+
+        a1 = np.sum(wts[v1 < 0])
+        a2 = np.sum(wts[v2 < 0])
+        a_inter = np.sum(wts[(v1 < 0) & (v2 < 0)])
+        a_union = np.sum(wts[(v1 < 0) | (v2 < 0)])
+
+        # A|B = A + B - A&B.
+        assert abs(a_union - (a1 + a2 - a_inter)) < 1e-14  # noqa: PLR2004
+
+    def test_two_circles_intersection_area(self) -> None:
+        """Intersection area should match the analytical formula."""
+        c1 = _circle_bernstein(0.35, 0.5, 0.04)
+        c2 = _circle_bernstein(0.65, 0.5, 0.04)
+        ipq = ImplicitPolyQuadrature(c1, c2)
+
+        pts, wts = ipq.volume_quad(15, QuadStrategy.AUTO_MIXED)
+        v1 = ipq.eval_poly(0, pts)
+        v2 = ipq.eval_poly(1, pts)
+        a_inter = np.sum(wts[(v1 < 0) & (v2 < 0)])
+
+        # Analytical: 2R^2*arccos(d/(2R)) - (d/2)*sqrt(4R^2-d^2).
+        d, r = 0.3, 0.2
+        expected = 2 * r**2 * np.arccos(d / (2 * r)) - (d / 2) * np.sqrt(4 * r**2 - d**2)
+        assert abs(a_inter - expected) / expected < 1e-6  # noqa: PLR2004
+
+
+# ---------------------------------------------------------------------------
 # Helpers for paper test cases (§4.1, §4.2)
 # ---------------------------------------------------------------------------
 
