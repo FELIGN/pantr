@@ -30,9 +30,15 @@ from numba.typed import List as NumbaList
 from numpy import typing as npt
 
 from pantr.bezier.implicit._bernstein import _eval_bernstein_2d, _eval_bernstein_3d
-from pantr.bezier.implicit._build import build_2d, build_3d
+from pantr.bezier.implicit._build import (
+    build_2d,
+    build_2d_forced_k,
+    build_3d,
+    build_3d_forced_k,
+)
 from pantr.bezier.implicit._construct import (
     surface_quad_2d,
+    surface_quad_3d,
     volume_quad_2d,
     volume_quad_3d,
 )
@@ -198,6 +204,7 @@ class ImplicitPolyQuadrature:
         self,
         q: int,
         strategy: QuadStrategy = QuadStrategy.AUTO_MIXED,
+        aggregate: bool = False,
     ) -> tuple[
         npt.NDArray[np.float64],
         npt.NDArray[np.float64],
@@ -209,9 +216,14 @@ class ImplicitPolyQuadrature:
         The scalar weights integrate |f| and the normal weights integrate
         f * n where n is the outward normal.
 
+        When *aggregate* is True, the algorithm runs for each possible height
+        direction and sums the flux-form contributions. This is more robust
+        when vertical tangents exist in every coordinate direction (paper §3.7).
+
         Args:
             q (int): Number of 1D quadrature points per sub-interval.
             strategy (QuadStrategy): Quadrature method selection.
+            aggregate (bool): Use aggregate mode (run all d directions).
 
         Returns:
             tuple[npt.NDArray, npt.NDArray, npt.NDArray]:
@@ -221,6 +233,11 @@ class ImplicitPolyQuadrature:
         gl_nodes, gl_weights = _gauss_legendre_01(q)
         ts_nodes, ts_weights = _tanh_sinh_01(q)
         strat = int(strategy)
+
+        if aggregate:
+            return self._surface_quad_aggregate(
+                q, gl_nodes, gl_weights, ts_nodes, ts_weights, strat
+            )
 
         r = self._build_result
         if self.dim == 2:
@@ -247,8 +264,173 @@ class ImplicitPolyQuadrature:
                 strat,
             )
         else:
-            msg = "3D surface quadrature not yet implemented."
-            raise NotImplementedError(msg)
+            input_c = NumbaList()
+            for ca in self._coeffs:
+                input_c.append(ca)
+            return surface_quad_3d(
+                r[0],
+                r[1],
+                r[2],
+                r[3],
+                r[4],
+                r[5],
+                r[6],
+                r[7],
+                r[8],
+                r[9],
+                r[10],
+                r[11],
+                r[12],
+                r[13],
+                r[14],
+                self.n_polys,
+                input_c,
+                gl_nodes,
+                gl_weights,
+                ts_nodes,
+                ts_weights,
+                strat,
+            )
+
+    def _surface_quad_aggregate(
+        self,
+        q: int,
+        gl_nodes: npt.NDArray[np.float64],
+        gl_weights: npt.NDArray[np.float64],
+        ts_nodes: npt.NDArray[np.float64],
+        ts_weights: npt.NDArray[np.float64],
+        strat: int,
+    ) -> tuple[
+        npt.NDArray[np.float64],
+        npt.NDArray[np.float64],
+        npt.NDArray[np.float64],
+    ]:
+        """Aggregate surface quadrature: run for each height direction, combine.
+
+        For each direction k, builds a hierarchy with forced k, computes the
+        flux-form surface integral ∫ f·n_k, and combines the results. The
+        k-th component of the normal weight comes from the k-th hierarchy.
+
+        Args:
+            q (int): Quadrature order.
+            gl_nodes, gl_weights: GL quadrature on [0, 1].
+            ts_nodes, ts_weights: Tanh-sinh quadrature on [0, 1].
+            strat (int): Strategy code.
+
+        Returns:
+            tuple: (points, scalar_weights, normal_weights).
+        """
+        all_pts_list: list[npt.NDArray[np.float64]] = []
+        all_sw_list: list[npt.NDArray[np.float64]] = []
+        all_nw_list: list[npt.NDArray[np.float64]] = []
+
+        input_c = NumbaList()
+        for ca in self._coeffs:
+            input_c.append(ca)
+
+        if self.dim == 2:
+            coeffs_list = NumbaList()
+            masks_list = NumbaList()
+            for ca in self._coeffs:
+                coeffs_list.append(ca)
+                masks_list.append(compute_nonzero_mask_2d(ca))
+
+            for k in range(2):
+                r: tuple[Any, ...] = build_2d_forced_k(coeffs_list, masks_list, k)
+                pts, sw, nw = surface_quad_2d(
+                    r[0],
+                    r[1],
+                    r[2],
+                    r[3],
+                    r[4],
+                    r[5],
+                    r[6],
+                    r[7],
+                    r[8],
+                    r[9],
+                    self.n_polys,
+                    input_c,
+                    gl_nodes,
+                    gl_weights,
+                    ts_nodes,
+                    ts_weights,
+                    strat,
+                )
+                if len(sw) > 0:
+                    # Aggregate: keep only k-th component of normal weight.
+                    # Scalar weight for ∫_Γ f dS = Σ_k ∫_Γ f n_k^2 dS:
+                    # sw_agg[i] = nw[i,k]^2 / sw[i] (derivation from the
+                    # relation nw[i,k] = w*grad[k]/|∂_k φ| and
+                    # sw[i] = w*|∇φ|/|∂_k φ|).
+                    agg_nw = np.zeros_like(nw)
+                    agg_nw[:, k] = nw[:, k]
+                    agg_sw = np.empty(len(sw), dtype=np.float64)
+                    for pi in range(len(sw)):
+                        if sw[pi] > 1e-300:
+                            agg_sw[pi] = nw[pi, k] ** 2 / sw[pi]
+                        else:
+                            agg_sw[pi] = 0.0
+                    all_pts_list.append(pts)
+                    all_sw_list.append(agg_sw)
+                    all_nw_list.append(agg_nw)
+        else:
+            coeffs_list_3d = NumbaList()
+            masks_list_3d = NumbaList()
+            for ca in self._coeffs:
+                coeffs_list_3d.append(ca)
+                masks_list_3d.append(compute_nonzero_mask_3d(ca))
+
+            for k in range(3):
+                r = build_3d_forced_k(coeffs_list_3d, masks_list_3d, k)
+                pts, sw, nw = surface_quad_3d(
+                    r[0],
+                    r[1],
+                    r[2],
+                    r[3],
+                    r[4],
+                    r[5],
+                    r[6],
+                    r[7],
+                    r[8],
+                    r[9],
+                    r[10],
+                    r[11],
+                    r[12],
+                    r[13],
+                    r[14],
+                    self.n_polys,
+                    input_c,
+                    gl_nodes,
+                    gl_weights,
+                    ts_nodes,
+                    ts_weights,
+                    strat,
+                )
+                if len(sw) > 0:
+                    agg_nw = np.zeros_like(nw)
+                    agg_nw[:, k] = nw[:, k]
+                    agg_sw = np.empty(len(sw), dtype=np.float64)
+                    for pi in range(len(sw)):
+                        if sw[pi] > 1e-300:
+                            agg_sw[pi] = nw[pi, k] ** 2 / sw[pi]
+                        else:
+                            agg_sw[pi] = 0.0
+                    all_pts_list.append(pts)
+                    all_sw_list.append(agg_sw)
+                    all_nw_list.append(agg_nw)
+
+        if not all_pts_list:
+            return (
+                np.empty((0, self.dim), dtype=np.float64),
+                np.empty(0, dtype=np.float64),
+                np.empty((0, self.dim), dtype=np.float64),
+            )
+
+        return (
+            np.concatenate(all_pts_list, axis=0),
+            np.concatenate(all_sw_list, axis=0),
+            np.concatenate(all_nw_list, axis=0),
+        )
 
     def eval_poly(self, poly_idx: int, points: npt.NDArray[np.float64]) -> npt.NDArray[np.float64]:
         """Evaluate a polynomial at the given points.

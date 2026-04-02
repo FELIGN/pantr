@@ -355,6 +355,122 @@ def build_2d(
 
 
 @nb_jit(nopython=True, cache=True)
+def build_2d_forced_k(
+    coeffs_list: NumbaList,
+    masks_list: NumbaList,
+    k1: int,
+) -> tuple[
+    NumbaList,
+    NumbaList,
+    int,
+    bool,
+    int,
+    NumbaList,
+    NumbaList,
+    int,
+    bool,
+    int,
+]:
+    """Build a 2D hierarchy with a forced height direction.
+
+    Same as :func:`build_2d` but skips score estimation and uses the
+    given *k1* directly. Used by the aggregate surface quadrature mode.
+
+    Args:
+        coeffs_list (NumbaList): List of 2D coefficient arrays.
+        masks_list (NumbaList): List of 2D boolean mask arrays.
+        k1 (int): Forced height direction (0 or 1).
+
+    Returns:
+        tuple: 10-element tuple (same format as :func:`build_2d`).
+
+    Note:
+        Inputs are assumed to be correct (no validation performed).
+    """
+    coeffs_1d, masks_1d = _eliminate_axis_2d(coeffs_list, masks_list, k1)
+    use_ts_1 = len(coeffs_1d) > 0
+    type_1 = INTEGRAL_OUTER_SINGLE
+
+    return (
+        coeffs_1d,
+        masks_1d,
+        0,
+        False,
+        INTEGRAL_INNER,
+        coeffs_list,
+        masks_list,
+        k1,
+        use_ts_1,
+        type_1,
+    )
+
+
+@nb_jit(nopython=True, cache=True)
+def build_3d_forced_k(
+    coeffs_list: NumbaList,
+    masks_list: NumbaList,
+    k2: int,
+) -> tuple[
+    NumbaList,
+    NumbaList,
+    int,
+    bool,
+    int,
+    NumbaList,
+    NumbaList,
+    int,
+    bool,
+    int,
+    NumbaList,
+    NumbaList,
+    int,
+    bool,
+    int,
+]:
+    """Build a 3D hierarchy with a forced outermost height direction.
+
+    Args:
+        coeffs_list (NumbaList): List of 3D coefficient arrays.
+        masks_list (NumbaList): List of 3D boolean mask arrays.
+        k2 (int): Forced outermost height direction (0, 1, or 2).
+
+    Returns:
+        tuple: 15-element tuple (same format as :func:`build_3d`).
+
+    Note:
+        Inputs are assumed to be correct (no validation performed).
+    """
+    coeffs_2d, masks_2d = _eliminate_axis_3d(coeffs_list, masks_list, k2)
+    use_ts_2 = len(coeffs_2d) > 0
+    type_2 = INTEGRAL_OUTER_SINGLE
+
+    scores_2d, _hd = score_estimate_2d(coeffs_2d, masks_2d)
+    k1 = 0 if scores_2d[0] >= scores_2d[1] else 1
+
+    coeffs_1d, masks_1d = _eliminate_axis_2d(coeffs_2d, masks_2d, k1)
+    use_ts_1 = len(coeffs_1d) > 0
+    type_1 = INTEGRAL_INNER
+
+    return (
+        coeffs_1d,
+        masks_1d,
+        0,
+        False,
+        INTEGRAL_INNER,
+        coeffs_2d,
+        masks_2d,
+        k1,
+        use_ts_1,
+        type_1,
+        coeffs_list,
+        masks_list,
+        k2,
+        use_ts_2,
+        type_2,
+    )
+
+
+@nb_jit(nopython=True, cache=True)
 def build_3d(
     coeffs_list: NumbaList,
     masks_list: NumbaList,
@@ -445,11 +561,10 @@ def build_3d(
             best = scores[d]
             k2 = d
 
-    use_ts_2 = False
-    type_2 = INTEGRAL_OUTER_SINGLE
-
     # Eliminate axis k2 to get 2D polynomial set.
     coeffs_2d, masks_2d = _eliminate_axis_3d(coeffs_list, masks_list, k2)
+    use_ts_2 = len(coeffs_2d) > 0
+    type_2 = INTEGRAL_OUTER_SINGLE
 
     # Score for 2D -> choose k1.
     scores_2d, has_disc_2d = score_estimate_2d(coeffs_2d, masks_2d)
@@ -458,11 +573,10 @@ def build_3d(
     else:
         k1 = 1
 
-    use_ts_1 = False
-    type_1 = INTEGRAL_INNER
-
     # Eliminate axis k1 to get 1D polynomial set.
     coeffs_1d, masks_1d = _eliminate_axis_2d(coeffs_2d, masks_2d, k1)
+    use_ts_1 = len(coeffs_1d) > 0
+    type_1 = INTEGRAL_INNER
 
     k0 = 0
     use_ts_0 = False

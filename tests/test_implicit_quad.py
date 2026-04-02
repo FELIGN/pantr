@@ -313,6 +313,87 @@ class TestSurfaceQuad2D:
         # Not exactly zero due to quadrature error, but should be small.
         assert np.linalg.norm(flux) < 0.1
 
+    def test_perimeter_aggregate(self, circle_ipq: ImplicitPolyQuadrature) -> None:
+        """Aggregate perimeter should converge faster than single-direction."""
+        expected = 2.0 * np.pi * np.sqrt(0.1)
+        _, sw, _ = circle_ipq.surface_quad(20, QuadStrategy.TS_ONLY, aggregate=True)
+        perim = np.sum(sw)
+        err = abs(perim - expected) / expected
+        assert err < 1e-8
+
+
+# ---------------------------------------------------------------------------
+# Integration tests: 3D quadrature
+# ---------------------------------------------------------------------------
+
+
+def _make_sphere_coeffs(r_sq: float = 0.09) -> npt.NDArray[np.float64]:
+    """Bernstein degree-(2,2,2) coefficients for (x-.5)^2+(y-.5)^2+(z-.5)^2-r_sq."""
+    const = 0.75 - r_sq
+    bx = np.array([0.0, -0.5, 0.0])
+    c = np.zeros((3, 3, 3))
+    for i in range(3):
+        for j in range(3):
+            for k in range(3):
+                c[i, j, k] = bx[i] + bx[j] + bx[k] + const
+    return c
+
+
+class TestVolumeQuad3D:
+    """Tests for 3D volume quadrature convergence."""
+
+    @pytest.fixture()
+    def sphere_ipq(self) -> ImplicitPolyQuadrature:
+        return ImplicitPolyQuadrature(_make_sphere_coeffs())
+
+    def test_weight_sum(self, sphere_ipq: ImplicitPolyQuadrature) -> None:
+        """Total weights should sum to 1 (volume of [0,1]^3)."""
+        _pts, wts = sphere_ipq.volume_quad(3, QuadStrategy.TS_ONLY)
+        assert abs(np.sum(wts) - 1.0) < 1e-8
+
+    def test_volume_convergence(self, sphere_ipq: ImplicitPolyQuadrature) -> None:
+        """Sphere volume should converge exponentially."""
+        expected = (4.0 / 3.0) * np.pi * 0.3**3
+
+        errors = []
+        for q in [5, 10, 15]:
+            pts, wts = sphere_ipq.volume_quad(q, QuadStrategy.TS_ONLY)
+            vals = sphere_ipq.eval_poly(0, pts)
+            vol = np.sum(wts[vals < 0])
+            errors.append(abs(vol - expected) / expected)
+
+        assert errors[0] < 0.01
+        assert errors[1] < 1e-4
+        assert errors[2] < 1e-6
+
+
+class TestSurfaceQuad3D:
+    """Tests for 3D surface quadrature convergence."""
+
+    @pytest.fixture()
+    def sphere_ipq(self) -> ImplicitPolyQuadrature:
+        return ImplicitPolyQuadrature(_make_sphere_coeffs())
+
+    def test_area_convergence(self, sphere_ipq: ImplicitPolyQuadrature) -> None:
+        """Sphere surface area should converge."""
+        expected = 4.0 * np.pi * 0.3**2
+
+        errors = []
+        for q in [5, 10, 15]:
+            s_pts, s_wts, _ = sphere_ipq.surface_quad(q, QuadStrategy.TS_ONLY)
+            area = np.sum(s_wts)
+            errors.append(abs(area - expected) / expected)
+
+        assert errors[0] < 0.05
+        assert errors[1] < 0.005
+        assert errors[2] < 5e-4
+
+    def test_normal_flux_closed(self, sphere_ipq: ImplicitPolyQuadrature) -> None:
+        """Normal flux sum should be near zero for a closed surface."""
+        s_pts, s_wts, s_nwts = sphere_ipq.surface_quad(7, QuadStrategy.TS_ONLY)
+        flux = np.sum(s_nwts, axis=0)
+        assert np.linalg.norm(flux) < 0.5
+
 
 # ---------------------------------------------------------------------------
 # Integration tests: Public API

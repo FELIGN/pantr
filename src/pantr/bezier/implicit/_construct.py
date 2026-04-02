@@ -28,6 +28,7 @@ from pantr.bezier.implicit._bernstein import (
     _collapse_2d,
     _collapse_3d,
     _eval_gradient_2d,
+    _eval_gradient_3d,
 )
 from pantr.bezier.implicit._mask import (
     _line_intersects_2d,
@@ -442,8 +443,30 @@ def volume_quad_3d(
                     idx += 1
         return points, weights
 
-    nodes_q = gl_nodes
-    wts_q = gl_weights
+    # Select quadrature rules per level.
+    # Level 0 (outermost/base): TS if branching detected (use_ts_1 from 2D level).
+    # Level 1 (middle): TS if branching detected (use_ts_2 from 3D level).
+    # Level 2 (innermost/height): GL (smooth on each sub-interval).
+    nodes_0 = gl_nodes
+    wts_0 = gl_weights
+    nodes_1 = gl_nodes
+    wts_1 = gl_weights
+    nodes_2 = gl_nodes
+    wts_2 = gl_weights
+    if strategy == 1:
+        nodes_0 = ts_nodes
+        wts_0 = ts_weights
+        nodes_1 = ts_nodes
+        wts_1 = ts_weights
+        nodes_2 = ts_nodes
+        wts_2 = ts_weights
+    elif strategy == 2:
+        if use_ts_1:
+            nodes_0 = ts_nodes
+            wts_0 = ts_weights
+        if use_ts_2:
+            nodes_1 = ts_nodes
+            wts_1 = ts_weights
 
     # Determine the 3D tangential directions (the two not equal to k2).
     tang2 = np.empty(2, dtype=np.int64)
@@ -481,8 +504,8 @@ def volume_quad_3d(
         scale0 = hi0 - lo0
 
         for q0 in range(q):
-            x_1d = lo0 + nodes_q[q0] * scale0
-            w_1d = wts_q[q0] * scale0
+            x_1d = lo0 + nodes_0[q0] * scale0
+            w_1d = wts_0[q0] * scale0
 
             # Level 1: Collapse 2D polys to 1D along k1 at x_1d.
             bounds_1, nb_1 = _collect_and_partition_from_2d(coeffs_2d, masks_2d, k1, x_1d)
@@ -495,8 +518,8 @@ def volume_quad_3d(
                 scale1 = hi1 - lo1
 
                 for q1 in range(q):
-                    x_2d = lo1 + nodes_q[q1] * scale1
-                    w_2d = wts_q[q1] * scale1
+                    x_2d = lo1 + nodes_1[q1] * scale1
+                    w_2d = wts_1[q1] * scale1
 
                     # Level 2: Collapse 3D polys to 1D along k2.
                     # The base point for 3D collapse is a 2D point in the
@@ -533,8 +556,8 @@ def volume_quad_3d(
                         scale2 = hi2 - lo2
 
                         for q2 in range(q):
-                            x_3d = lo2 + nodes_q[q2] * scale2
-                            w_3d = wts_q[q2] * scale2
+                            x_3d = lo2 + nodes_2[q2] * scale2
+                            w_3d = wts_2[q2] * scale2
 
                             # Resize if needed.
                             if n_pts >= len(weights):
@@ -706,6 +729,201 @@ def surface_quad_2d(
                         normal_wts[n_pts, 0] = 0.0
                         normal_wts[n_pts, 1] = 0.0
                     n_pts += 1
+
+    return (
+        points[:n_pts].copy(),
+        scalar_wts[:n_pts].copy(),
+        normal_wts[:n_pts].copy(),
+    )
+
+
+@nb_jit(nopython=True, cache=True)
+def surface_quad_3d(  # noqa: PLR0912, PLR0915
+    coeffs_1d: NumbaList,
+    masks_1d: NumbaList,
+    k0: int,
+    use_ts_0: bool,
+    type_0: int,
+    coeffs_2d: NumbaList,
+    masks_2d: NumbaList,
+    k1: int,
+    use_ts_1: bool,
+    type_1: int,
+    coeffs_3d: NumbaList,
+    masks_3d: NumbaList,
+    k2: int,
+    use_ts_2: bool,
+    type_2: int,
+    n_input_polys: int,
+    input_coeffs_3d: NumbaList,
+    gl_nodes: npt.NDArray[np.float64],
+    gl_weights: npt.NDArray[np.float64],
+    ts_nodes: npt.NDArray[np.float64],
+    ts_weights: npt.NDArray[np.float64],
+    strategy: int,
+) -> tuple[
+    npt.NDArray[np.float64],
+    npt.NDArray[np.float64],
+    npt.NDArray[np.float64],
+]:
+    """Generate surface (flux-form) quadrature for 3D.
+
+    Walks the hierarchy bottom-up (same as volume_quad_3d) but at the
+    innermost level evaluates at roots of the input polynomials along k2,
+    weighted by the surface Jacobian |grad phi| / |d_k2 phi|.
+
+    Args:
+        coeffs_1d through type_2: Build result (15 values, 5 per level).
+        n_input_polys (int): Number of original input polynomials.
+        input_coeffs_3d (NumbaList): Original 3D polynomial coefficients.
+        gl_nodes, gl_weights: GL quadrature on [0, 1].
+        ts_nodes, ts_weights: Tanh-sinh quadrature on [0, 1].
+        strategy (int): 0=GL only, 1=TS only, 2=auto mixed.
+
+    Returns:
+        tuple[npt.NDArray, npt.NDArray, npt.NDArray]:
+            (points, scalar_weights, normal_weights) with shapes
+            ``(n_pts, 3)``, ``(n_pts,)``, ``(n_pts, 3)``.
+
+    Note:
+        Inputs are assumed to be correct (no validation performed).
+    """
+    q = len(gl_nodes)
+
+    if k2 >= 3:
+        return (
+            np.empty((0, 3), dtype=np.float64),
+            np.empty(0, dtype=np.float64),
+            np.empty((0, 3), dtype=np.float64),
+        )
+
+    # Per-level quadrature selection.
+    nodes_0 = gl_nodes
+    wts_0 = gl_weights
+    nodes_1 = gl_nodes
+    wts_1 = gl_weights
+    if strategy == 1:
+        nodes_0 = ts_nodes
+        wts_0 = ts_weights
+        nodes_1 = ts_nodes
+        wts_1 = ts_weights
+    elif strategy == 2:
+        if use_ts_1:
+            nodes_0 = ts_nodes
+            wts_0 = ts_weights
+        if use_ts_2:
+            nodes_1 = ts_nodes
+            wts_1 = ts_weights
+
+    # 3D tangential directions (skipping k2).
+    tang2 = np.empty(2, dtype=np.int64)
+    ti = 0
+    for d in range(3):
+        if d != k2:
+            tang2[ti] = d
+            ti += 1
+    tang1_2d = 1 - k1
+    axis_k1_3d = tang2[k1]
+    axis_tang1_3d = tang2[tang1_2d]
+
+    max_total = q * q * 50
+    points = np.empty((max_total, 3), dtype=np.float64)
+    scalar_wts = np.empty(max_total, dtype=np.float64)
+    normal_wts = np.empty((max_total, 3), dtype=np.float64)
+    n_pts = 0
+
+    # Level 0: 1D base partition.
+    bounds_0, nb_0 = _collect_and_partition_1d(coeffs_1d, masks_1d)
+
+    for b0 in range(nb_0 - 1):
+        lo0 = bounds_0[b0]
+        hi0 = bounds_0[b0 + 1]
+        if hi0 - lo0 < _MERGE_TOL:
+            continue
+        scale0 = hi0 - lo0
+
+        for q0 in range(q):
+            x_1d = lo0 + nodes_0[q0] * scale0
+            w_1d = wts_0[q0] * scale0
+
+            # Level 1: partition along k1.
+            bounds_1, nb_1 = _collect_and_partition_from_2d(coeffs_2d, masks_2d, k1, x_1d)
+
+            for b1 in range(nb_1 - 1):
+                lo1 = bounds_1[b1]
+                hi1 = bounds_1[b1 + 1]
+                if hi1 - lo1 < _MERGE_TOL:
+                    continue
+                scale1 = hi1 - lo1
+
+                for q1 in range(q):
+                    x_2d = lo1 + nodes_1[q1] * scale1
+                    w_2d = wts_1[q1] * scale1
+                    w_base = w_1d * w_2d
+
+                    # Build 3D base point for collapse.
+                    x_base_3d = np.empty(2, dtype=np.float64)
+                    if tang1_2d == 0:
+                        x_base_3d[0] = x_1d
+                        x_base_3d[1] = x_2d
+                    else:
+                        x_base_3d[0] = x_2d
+                        x_base_3d[1] = x_1d
+
+                    # Level 2: find roots of input polynomials along k2.
+                    for p_idx in range(n_input_polys):
+                        poly_3d = input_coeffs_3d[p_idx]
+
+                        if not _line_intersects_3d(masks_3d[p_idx], x_base_3d, k2):
+                            continue
+
+                        poly_1d = _collapse_3d(poly_3d, k2, x_base_3d)
+                        roots, n_roots = find_roots(poly_1d)
+
+                        for ri in range(n_roots):
+                            root = roots[ri]
+
+                            # Build 3D point.
+                            pt = np.empty(3, dtype=np.float64)
+                            pt[axis_tang1_3d] = x_1d
+                            pt[axis_k1_3d] = x_2d
+                            pt[k2] = root
+
+                            # Compute gradient for surface Jacobian.
+                            grad = _eval_gradient_3d(poly_3d, pt)
+                            grad_norm = np.sqrt(grad[0] ** 2 + grad[1] ** 2 + grad[2] ** 2)
+                            dk_phi = grad[k2]
+
+                            if abs(dk_phi) < 1e-300:
+                                continue
+
+                            # Resize if needed.
+                            if n_pts >= len(scalar_wts):
+                                new_cap = len(scalar_wts) * 2
+                                new_p = np.empty((new_cap, 3), dtype=np.float64)
+                                new_s = np.empty(new_cap, dtype=np.float64)
+                                new_n = np.empty((new_cap, 3), dtype=np.float64)
+                                for ci in range(n_pts):
+                                    for di in range(3):
+                                        new_p[ci, di] = points[ci, di]
+                                        new_n[ci, di] = normal_wts[ci, di]
+                                    new_s[ci] = scalar_wts[ci]
+                                points = new_p
+                                scalar_wts = new_s
+                                normal_wts = new_n
+
+                            # Flux-form surface weight.
+                            alpha = w_base * grad_norm / abs(dk_phi)
+                            for di in range(3):
+                                points[n_pts, di] = pt[di]
+                            scalar_wts[n_pts] = alpha
+                            if grad_norm > 1e-300:
+                                for di in range(3):
+                                    normal_wts[n_pts, di] = w_base * grad[di] / abs(dk_phi)
+                            else:
+                                for di in range(3):
+                                    normal_wts[n_pts, di] = 0.0
+                            n_pts += 1
 
     return (
         points[:n_pts].copy(),
