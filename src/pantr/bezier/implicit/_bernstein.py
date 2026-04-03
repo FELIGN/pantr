@@ -1151,3 +1151,232 @@ def _auto_reduce_2d(  # noqa: PLR0912
         break
 
     return current
+
+
+# ---------------------------------------------------------------------------
+# Section J: Square-free factoring via monomial GCD
+# ---------------------------------------------------------------------------
+
+
+@nb_jit(nopython=True, cache=True)
+def _bernstein_to_monomial_1d(
+    coeffs: npt.NDArray[np.float64],
+) -> npt.NDArray[np.float64]:
+    """Convert 1D Bernstein coefficients to monomial (power) basis.
+
+    For degree n: ``p(x) = sum_i c_i B^n_i(x) = sum_j a_j x^j``.
+
+    Args:
+        coeffs (npt.NDArray[np.float64]): Bernstein coefficients of length ``n+1``.
+
+    Returns:
+        npt.NDArray[np.float64]: Monomial coefficients (ascending power) of length ``n+1``.
+
+    Note:
+        Inputs are assumed to be correct (no validation performed).
+    """
+    n = len(coeffs) - 1
+    # Build Bernstein-to-monomial matrix T.
+    # T[j, i] = C(n, i) * C(n-i, j-i) * (-1)^{j-i} for j >= i, else 0.
+    mono = np.zeros(n + 1, dtype=np.float64)
+    for j in range(n + 1):
+        for i in range(j + 1):
+            sign = 1.0 if (j - i) % 2 == 0 else -1.0
+            t_ji = _bincoeff(n, i) * _bincoeff(n - i, j - i) * sign
+            mono[j] += t_ji * coeffs[i]
+    return mono
+
+
+@nb_jit(nopython=True, cache=True)
+def _monomial_to_bernstein_1d(
+    mono: npt.NDArray[np.float64],
+    degree: int,
+) -> npt.NDArray[np.float64]:
+    """Convert monomial (power) coefficients to Bernstein of given degree.
+
+    Args:
+        mono (npt.NDArray[np.float64]): Monomial coefficients (ascending power).
+        degree (int): Target Bernstein degree (>= len(mono) - 1).
+
+    Returns:
+        npt.NDArray[np.float64]: Bernstein coefficients of length ``degree+1``.
+
+    Note:
+        Inputs are assumed to be correct (no validation performed).
+    """
+    n = degree
+    # M[i, j] = C(i, j) / C(n, j) for j <= i, else 0.
+    bern = np.zeros(n + 1, dtype=np.float64)
+    m = min(len(mono), n + 1)
+    for i in range(n + 1):
+        for j in range(min(i + 1, m)):
+            cn = _bincoeff(n, j)
+            if cn > 0.0:
+                bern[i] += (_bincoeff(i, j) / cn) * mono[j]
+    return bern
+
+
+@nb_jit(nopython=True, cache=True)
+def _monomial_gcd(
+    p: npt.NDArray[np.float64],
+    q: npt.NDArray[np.float64],
+    tol: float,
+) -> npt.NDArray[np.float64]:
+    """Compute approximate GCD of two monomial polynomials via Euclidean algorithm.
+
+    Uses a tolerance-based stopping criterion: stops when the remainder has
+    all coefficients below ``tol`` times the leading coefficient of the input.
+
+    Args:
+        p (npt.NDArray[np.float64]): Monomial coefficients of p (ascending power).
+        q (npt.NDArray[np.float64]): Monomial coefficients of q (ascending power).
+        tol (float): Relative tolerance for stopping.
+
+    Returns:
+        npt.NDArray[np.float64]: Monomial coefficients of GCD (ascending power),
+            normalized to monic.
+
+    Note:
+        Inputs are assumed to be correct (no validation performed).
+    """
+
+    # Trim trailing zeros (find actual degree).
+    def _trim(poly: npt.NDArray[np.float64]) -> npt.NDArray[np.float64]:
+        n = len(poly)
+        while n > 1 and abs(poly[n - 1]) < tol:
+            n -= 1
+        return poly[:n].copy()
+
+    a = _trim(p)
+    b = _trim(q)
+
+    # Ensure deg(a) >= deg(b).
+    if len(b) > len(a):
+        a, b = b, a
+
+    scale = 0.0
+    for i in range(len(a)):
+        scale = max(scale, abs(a[i]))
+    if scale < 1e-300:  # noqa: PLR2004
+        return np.ones(1, dtype=np.float64)
+
+    abs_tol = tol * scale
+
+    # Euclidean algorithm.
+    for _iter in range(len(a)):
+        b = _trim(b)
+
+        # Check if b is effectively zero (remainder vanished → a is the GCD).
+        b_max = 0.0
+        for i in range(len(b)):
+            b_max = max(b_max, abs(b[i]))
+        if b_max < abs_tol:
+            break
+
+        if len(b) <= 1:
+            # GCD is constant (degree 0) — polynomials are coprime.
+            return np.ones(1, dtype=np.float64)
+
+        # Polynomial long division remainder: a mod b.
+        rem = a.copy()
+        deg_a = len(rem) - 1
+        deg_b = len(b) - 1
+        for i in range(deg_a - deg_b, -1, -1):
+            if abs(b[deg_b]) < 1e-300:  # noqa: PLR2004
+                break
+            coeff = rem[i + deg_b] / b[deg_b]
+            for j in range(deg_b + 1):
+                rem[i + j] -= coeff * b[j]
+        a = b
+        b = _trim(rem)
+
+    # Normalize to monic.
+    result = a.copy()
+    lc = result[len(result) - 1]
+    if abs(lc) > 1e-300:  # noqa: PLR2004
+        for i in range(len(result)):
+            result[i] /= lc
+
+    return result
+
+
+@nb_jit(nopython=True, cache=True)
+def _monomial_div(
+    p: npt.NDArray[np.float64],
+    d: npt.NDArray[np.float64],
+) -> npt.NDArray[np.float64]:
+    """Divide monomial polynomial p by d (exact or approximate division).
+
+    Args:
+        p (npt.NDArray[np.float64]): Dividend (ascending power).
+        d (npt.NDArray[np.float64]): Divisor (ascending power).
+
+    Returns:
+        npt.NDArray[np.float64]: Quotient (ascending power).
+
+    Note:
+        Inputs are assumed to be correct (no validation performed).
+    """
+    deg_p = len(p) - 1
+    deg_d = len(d) - 1
+    if deg_d > deg_p:
+        return p.copy()
+    deg_q = deg_p - deg_d
+    q = np.zeros(deg_q + 1, dtype=np.float64)
+    rem = p.copy()
+    for i in range(deg_q, -1, -1):
+        if abs(d[deg_d]) < 1e-300:  # noqa: PLR2004
+            break
+        q[i] = rem[i + deg_d] / d[deg_d]
+        for j in range(deg_d + 1):
+            rem[i + j] -= q[i] * d[j]
+    return q
+
+
+@nb_jit(nopython=True, cache=True)
+def _make_square_free_1d(
+    coeffs: npt.NDArray[np.float64],
+    tol: float = 1e-8,
+) -> npt.NDArray[np.float64]:
+    """Remove repeated root factors from a 1D Bernstein polynomial.
+
+    Computes ``p / gcd(p, p')`` in monomial form, then converts back to
+    Bernstein. If the polynomial has no repeated roots, returns the original.
+
+    Args:
+        coeffs (npt.NDArray[np.float64]): 1D Bernstein coefficients.
+        tol (float): Tolerance for GCD computation.
+
+    Returns:
+        npt.NDArray[np.float64]: Square-free Bernstein coefficients (possibly
+            lower degree).
+
+    Note:
+        Inputs are assumed to be correct (no validation performed).
+    """
+    n = len(coeffs) - 1
+    if n <= 1:
+        return coeffs.copy()
+
+    # Convert to monomial form.
+    p_mono = _bernstein_to_monomial_1d(coeffs)
+
+    # Compute derivative in monomial form: a'[j] = (j+1) * a[j+1].
+    dp_mono = np.empty(n, dtype=np.float64)
+    for j in range(n):
+        dp_mono[j] = float(j + 1) * p_mono[j + 1]
+
+    # Compute GCD(p, p').
+    gcd = _monomial_gcd(p_mono, dp_mono, tol)
+
+    gcd_deg = len(gcd) - 1
+    if gcd_deg == 0:
+        # No repeated roots — return original.
+        return coeffs.copy()
+
+    # Divide p by GCD to get square-free part.
+    sf_mono = _monomial_div(p_mono, gcd)
+
+    # Convert back to Bernstein.
+    sf_deg = len(sf_mono) - 1
+    return _monomial_to_bernstein_1d(sf_mono, sf_deg)

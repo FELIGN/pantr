@@ -421,6 +421,21 @@ class TestImplicitPolyQuadrature:
         # At center: (0-0)^2 + (0-0)^2 - 0.1 = -0.1.
         assert abs(vals[0] - (-0.1)) < 1e-12  # noqa: PLR2004
 
+    def test_square_free_preprocessing(self) -> None:
+        """Square-free factoring removes repeated roots from 1D polynomials."""
+        from pantr.bezier.implicit._bernstein import _make_square_free_1d  # noqa: PLC0415
+
+        # p(x) = (x-0.3)^2 in Bernstein degree 2.
+        p = _mono_to_bernstein_1d(np.array([0.09, -0.6, 1.0]), 2)
+        sf = _make_square_free_1d(p)
+        # Should reduce to degree 1 (single root at 0.3).
+        assert len(sf) == 2  # noqa: PLR2004
+
+        # p with no repeated roots should be unchanged.
+        p2 = _mono_to_bernstein_1d(np.array([0.21, -1.0, 1.0]), 2)
+        sf2 = _make_square_free_1d(p2)
+        assert len(sf2) == len(p2)
+
 
 # ---------------------------------------------------------------------------
 # Integration tests: Multiple polynomials
