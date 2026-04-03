@@ -505,6 +505,74 @@ class TestMultiplePolynomials:
         expected = 2 * r**2 * np.arccos(d / (2 * r)) - (d / 2) * np.sqrt(4 * r**2 - d**2)
         assert abs(a_inter - expected) / expected < 1e-6  # noqa: PLR2004
 
+    def test_three_circles_inclusion_exclusion(self) -> None:
+        """Inclusion-exclusion identity holds for 3 intersecting circles."""
+        c1 = _circle_bernstein(0.35, 0.5, 0.04)
+        c2 = _circle_bernstein(0.65, 0.5, 0.04)
+        c3 = _circle_bernstein(0.5, 0.75, 0.04)
+        ipq = ImplicitPolyQuadrature(c1, c2, c3)
+        assert ipq.n_polys == 3  # noqa: PLR2004
+
+        pts, wts = ipq.volume_quad(15, QuadStrategy.AUTO_MIXED)
+        v1 = ipq.eval_poly(0, pts)
+        v2 = ipq.eval_poly(1, pts)
+        v3 = ipq.eval_poly(2, pts)
+
+        a1 = np.sum(wts[v1 < 0])
+        a2 = np.sum(wts[v2 < 0])
+        a3 = np.sum(wts[v3 < 0])
+        a12 = np.sum(wts[(v1 < 0) & (v2 < 0)])
+        a13 = np.sum(wts[(v1 < 0) & (v3 < 0)])
+        a23 = np.sum(wts[(v2 < 0) & (v3 < 0)])
+        a123 = np.sum(wts[(v1 < 0) & (v2 < 0) & (v3 < 0)])
+        a_union = np.sum(wts[(v1 < 0) | (v2 < 0) | (v3 < 0)])
+
+        # |A|B|C| = |A|+|B|+|C| - |A&B| - |A&C| - |B&C| + |A&B&C|.
+        ie = a1 + a2 + a3 - a12 - a13 - a23 + a123
+        assert abs(ie - a_union) < 1e-13  # noqa: PLR2004
+
+    def test_four_non_overlapping_circles(self) -> None:
+        """Four non-overlapping circles: union = sum of individual areas."""
+        c_tl = _circle_bernstein(0.3, 0.7, 0.02)
+        c_tr = _circle_bernstein(0.7, 0.7, 0.02)
+        c_bl = _circle_bernstein(0.3, 0.3, 0.02)
+        c_br = _circle_bernstein(0.7, 0.3, 0.02)
+        ipq = ImplicitPolyQuadrature(c_tl, c_tr, c_bl, c_br)
+        assert ipq.n_polys == 4  # noqa: PLR2004
+
+        pts, wts = ipq.volume_quad(10, QuadStrategy.AUTO_MIXED)
+        vs = [ipq.eval_poly(i, pts) for i in range(4)]
+
+        expected_each = np.pi * 0.02
+        for i in range(4):
+            a = np.sum(wts[vs[i] < 0])
+            assert abs(a - expected_each) / expected_each < 1e-5  # noqa: PLR2004
+
+        a_union = np.sum(wts[vs[0] < 0])
+        for i in range(1, 4):
+            a_union = np.sum(
+                wts[np.any(np.column_stack([vs[j] < 0 for j in range(i + 1)]), axis=1)]
+            )
+        assert abs(a_union - 4 * expected_each) / (4 * expected_each) < 1e-5  # noqa: PLR2004
+
+    def test_circles_plus_line(self) -> None:
+        """Two circles + a line: mixed polynomial degrees."""
+        c1 = _circle_bernstein(0.35, 0.5, 0.04)
+        c2 = _circle_bernstein(0.65, 0.5, 0.04)
+        c_line = np.array([[-0.5, 0.5], [-0.5, 0.5]])  # y - 0.5
+        ipq = ImplicitPolyQuadrature(c1, c2, c_line)
+        assert ipq.n_polys == 3  # noqa: PLR2004
+
+        pts, wts = ipq.volume_quad(10, QuadStrategy.AUTO_MIXED)
+        v1 = ipq.eval_poly(0, pts)
+        v3 = ipq.eval_poly(2, pts)
+
+        # Circle1 centered at (0.35, 0.5) with R=0.2, line y=0.5 through center.
+        # Half-circle below line = pi*R^2/2.
+        a_half = np.sum(wts[(v1 < 0) & (v3 < 0)])
+        expected_half = np.pi * 0.04 / 2
+        assert abs(a_half - expected_half) / expected_half < 1e-4  # noqa: PLR2004
+
 
 # ---------------------------------------------------------------------------
 # Helpers for paper test cases (§4.1, §4.2)
