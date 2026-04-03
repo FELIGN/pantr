@@ -1110,3 +1110,85 @@ class TestRandomGeometry2D:
         assert median_errors[15] < 0.01, (  # noqa: PLR2004
             f"Median error at q=15 too large: {median_errors[15]:.2e}"
         )
+
+
+# ---------------------------------------------------------------------------
+# Edge cases
+# ---------------------------------------------------------------------------
+
+
+class TestEdgeCases:
+    """Robustness tests for degenerate configurations."""
+
+    def test_phi_positive_everywhere(self) -> None:
+        """No interface: phi > 0 on all of [0,1]^2."""
+        c = np.ones((3, 3))
+        ipq = ImplicitPolyQuadrature(c)
+        pts, wts = ipq.volume_quad(5, QuadStrategy.GL_ONLY)
+        vals = ipq.eval_poly(0, pts)
+        assert np.sum(wts[vals < 0]) == 0.0
+
+    def test_phi_negative_everywhere(self) -> None:
+        """No interface: phi < 0 on all of [0,1]^2. Entire domain is inside."""
+        c = -np.ones((3, 3))
+        ipq = ImplicitPolyQuadrature(c)
+        pts, wts = ipq.volume_quad(5, QuadStrategy.GL_ONLY)
+        vals = ipq.eval_poly(0, pts)
+        assert abs(np.sum(wts[vals < 0]) - 1.0) < 1e-12  # noqa: PLR2004
+
+    def test_interface_through_corners(self) -> None:
+        """Circle passing exactly through all 4 corners of [0,1]^2.
+
+        phi(x,y) = (x-0.5)^2 + (y-0.5)^2 - 0.5. At corners: phi = 0.
+        The entire [0,1]^2 is inside or on the circle.
+        """
+        bx = _mono_to_bernstein_1d(np.array([0.25, -1.0, 1.0]), 2)
+        by = _mono_to_bernstein_1d(np.array([0.25, -1.0, 1.0]), 2)
+        c = np.zeros((3, 3))
+        for i in range(3):
+            for j in range(3):
+                c[i, j] = bx[i] + by[j] - 0.5
+        ipq = ImplicitPolyQuadrature(c)
+        pts, wts = ipq.volume_quad(10, QuadStrategy.AUTO_MIXED)
+        vals = ipq.eval_poly(0, pts)
+        # Domain is inside or on the circle → area ≈ 1.
+        assert abs(np.sum(wts[vals < 0]) - 1.0) < 0.01  # noqa: PLR2004
+
+    def test_straight_line(self) -> None:
+        """Linear phi = x - 0.5 splits domain exactly in half."""
+        c = np.array([[-0.5, -0.5], [0.5, 0.5]])
+        ipq = ImplicitPolyQuadrature(c)
+        pts, wts = ipq.volume_quad(5, QuadStrategy.GL_ONLY)
+        vals = ipq.eval_poly(0, pts)
+        assert abs(np.sum(wts[vals < 0]) - 0.5) < 1e-12  # noqa: PLR2004
+
+    def test_zero_polynomial(self) -> None:
+        """Phi = 0 everywhere: degenerate, no interior region."""
+        c = np.zeros((2, 2))
+        ipq = ImplicitPolyQuadrature(c)
+        pts, wts = ipq.volume_quad(5, QuadStrategy.GL_ONLY)
+        vals = ipq.eval_poly(0, pts)
+        # phi = 0, not < 0, so area_neg = 0.
+        assert np.sum(wts[vals < 0]) == 0.0
+
+    def test_surface_no_interface(self) -> None:
+        """Surface quad when phi > 0 everywhere: should return empty."""
+        c = np.ones((3, 3))
+        ipq = ImplicitPolyQuadrature(c)
+        s_pts, s_wts, s_nw = ipq.surface_quad(5, QuadStrategy.GL_ONLY)
+        assert len(s_wts) == 0
+
+    def test_weight_sum_straight_line(self) -> None:
+        """Total weights should sum to 1 even with a straight-line interface."""
+        c = np.array([[-0.5, -0.5], [0.5, 0.5]])
+        ipq = ImplicitPolyQuadrature(c)
+        pts, wts = ipq.volume_quad(5, QuadStrategy.GL_ONLY)
+        assert abs(np.sum(wts) - 1.0) < 1e-12  # noqa: PLR2004
+
+    def test_3d_no_interface(self) -> None:
+        """3D: phi > 0 everywhere."""
+        c = np.ones((2, 2, 2))
+        ipq = ImplicitPolyQuadrature(c)
+        pts, wts = ipq.volume_quad(3, QuadStrategy.GL_ONLY)
+        vals = ipq.eval_poly(0, pts)
+        assert np.sum(wts[vals < 0]) == 0.0
