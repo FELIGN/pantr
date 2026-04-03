@@ -421,6 +421,61 @@ class TestImplicitPolyQuadrature:
         # At center: (0-0)^2 + (0-0)^2 - 0.1 = -0.1.
         assert abs(vals[0] - (-0.1)) < 1e-12  # noqa: PLR2004
 
+    def test_init_with_bezier_object(self) -> None:
+        """Accept a pantr Bezier object with scalar rank."""
+        from pantr.bezier import Bezier  # noqa: PLC0415
+
+        c = _make_circle_coeffs()
+        cp = c[..., np.newaxis]  # rank=1
+        bez = Bezier(cp)
+        ipq = ImplicitPolyQuadrature(bez)
+        assert ipq.dim == 2  # noqa: PLR2004
+        pts, wts = ipq.volume_quad(10, QuadStrategy.AUTO_MIXED)
+        vals = ipq.eval_poly(0, pts)
+        area = np.sum(wts[vals < 0])
+        assert abs(area - np.pi * 0.1) / (np.pi * 0.1) < 1e-5  # noqa: PLR2004
+
+    def test_monomial_to_bernstein_utilities(self) -> None:
+        """Public conversion utilities produce correct Bernstein coefficients."""
+        from pantr.bezier.implicit import (  # noqa: PLC0415
+            monomial_to_bernstein_2d,
+            monomial_to_bernstein_3d,
+        )
+        from pantr.bezier.implicit._bernstein import (  # noqa: PLC0415
+            _eval_bernstein_2d,
+            _eval_bernstein_3d,
+        )
+
+        # 2D: phi(x,y) = x^2 + 4y^2 - 1 on (-1,1)^2.
+        mono_2d = np.zeros((3, 3))
+        mono_2d[2, 0] = 1.0
+        mono_2d[0, 2] = 4.0
+        mono_2d[0, 0] = -1.0
+        bern_2d = monomial_to_bernstein_2d(
+            mono_2d,
+            (2, 2),
+            np.array([-1.0, -1.0]),
+            np.array([1.0, 1.0]),
+        )
+        # phi(0,0) = -1.
+        t = np.array([0.5, 0.5])
+        assert abs(_eval_bernstein_2d(bern_2d, t) - (-1.0)) < 1e-12  # noqa: PLR2004
+
+        # 3D: phi(x,y,z) = x^2+y^2+z^2-1 on (-1,1)^3.
+        mono_3d = np.zeros((3, 3, 3))
+        mono_3d[2, 0, 0] = 1.0
+        mono_3d[0, 2, 0] = 1.0
+        mono_3d[0, 0, 2] = 1.0
+        mono_3d[0, 0, 0] = -1.0
+        bern_3d = monomial_to_bernstein_3d(
+            mono_3d,
+            (2, 2, 2),
+            np.array([-1.0, -1.0, -1.0]),
+            np.array([1.0, 1.0, 1.0]),
+        )
+        t3 = np.array([0.5, 0.5, 0.5])
+        assert abs(_eval_bernstein_3d(bern_3d, t3) - (-1.0)) < 1e-12  # noqa: PLR2004
+
     def test_square_free_preprocessing(self) -> None:
         """Square-free factoring removes repeated roots from 1D polynomials."""
         from pantr.bezier.implicit._bernstein import _make_square_free_1d  # noqa: PLC0415

@@ -44,6 +44,10 @@ from pantr.bezier.implicit._construct import (
     volume_quad_2d,
     volume_quad_3d,
 )
+from pantr.bezier.implicit._convert import (
+    monomial_to_bernstein_2d,
+    monomial_to_bernstein_3d,
+)
 from pantr.bezier.implicit._mask import (
     compute_nonzero_mask_2d,
     compute_nonzero_mask_3d,
@@ -51,6 +55,13 @@ from pantr.bezier.implicit._mask import (
 
 if TYPE_CHECKING:
     from pantr.bezier._bezier import Bezier
+
+__all__ = [
+    "ImplicitPolyQuadrature",
+    "QuadStrategy",
+    "monomial_to_bernstein_2d",
+    "monomial_to_bernstein_3d",
+]
 
 
 class QuadStrategy(IntEnum):
