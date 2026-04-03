@@ -857,6 +857,136 @@ class TestSingularities2D:
         assert errors[2] < 0.01, f"Deltoid q=20 error: {errors[2]:.2e}"  # noqa: PLR2004
 
 
+class TestSingularities3D:
+    """Test cases with singular 3D geometry from paper §A.1.2.
+
+    These stress-test the 3D quadrature near cusps and self-intersections.
+    """
+
+    @staticmethod
+    def _mono_to_bernstein_3d(
+        mono: npt.NDArray[np.float64],
+        degrees: tuple[int, int, int],
+        lo: npt.NDArray[np.float64],
+        hi: npt.NDArray[np.float64],
+    ) -> npt.NDArray[np.float64]:
+        """Convert 3D monomial polynomial to Bernstein on a given domain."""
+        from math import comb as _comb  # noqa: PLC0415
+
+        dx, dy, dz = degrees
+        lo_x, lo_y, lo_z = lo[0], lo[1], lo[2]
+        hx, hy, hz = hi[0] - lo_x, hi[1] - lo_y, hi[2] - lo_z
+
+        mapped = np.zeros((dx + 1, dy + 1, dz + 1))
+        for ix in range(mono.shape[0]):
+            for iy in range(mono.shape[1]):
+                for iz in range(mono.shape[2]):
+                    c = mono[ix, iy, iz]
+                    if c == 0.0:
+                        continue
+                    for p in range(min(ix, dx) + 1):
+                        cx = _comb(ix, p) * lo_x ** (ix - p) * hx**p
+                        for q in range(min(iy, dy) + 1):
+                            cy = _comb(iy, q) * lo_y ** (iy - q) * hy**q
+                            for r_idx in range(min(iz, dz) + 1):
+                                cz = _comb(iz, r_idx) * lo_z ** (iz - r_idx) * hz**r_idx
+                                mapped[p, q, r_idx] += c * cx * cy * cz
+
+        def _m2b_mat(n: int) -> npt.NDArray[np.float64]:
+            m = np.zeros((n + 1, n + 1))
+            for i in range(n + 1):
+                for j in range(i + 1):
+                    m[i, j] = _comb(i, j) / _comb(n, j)
+            return m
+
+        mx, my, mz = _m2b_mat(dx), _m2b_mat(dy), _m2b_mat(dz)
+        tmp1 = np.einsum("ip,pqr->iqr", mx, mapped)
+        tmp2 = np.einsum("jq,iqr->ijr", my, tmp1)
+        return np.asarray(np.einsum("kr,ijr->ijk", mz, tmp2), dtype=np.float64)
+
+    @staticmethod
+    def _compute_3d_volume_error(
+        bern: npt.NDArray[np.float64],
+        cell_vol: float,
+        q: int,
+        ref_q: int = 30,
+    ) -> float:
+        """Compute relative volume error vs a high-q reference."""
+        ipq = ImplicitPolyQuadrature(bern)
+        pts_r, wts_r = ipq.volume_quad(ref_q, QuadStrategy.TS_ONLY)
+        vals_r = ipq.eval_poly(0, pts_r)
+        vol_ref = np.sum(wts_r[vals_r < 0]) * cell_vol
+
+        pts, wts = ipq.volume_quad(q, QuadStrategy.TS_ONLY)
+        vals = ipq.eval_poly(0, pts)
+        vol = np.sum(wts[vals < 0]) * cell_vol
+
+        if abs(vol_ref) < 1e-300:  # noqa: PLR2004
+            return float(abs(vol))
+        return float(abs(vol - vol_ref) / abs(vol_ref))
+
+    def test_dingdong_volume(self) -> None:
+        """Ding-dong surface: cusp at origin.
+
+        phi(x,y,z) = x^2 + y^2 - (1-z)*z^2 = x^2 + y^2 - z^2 + z^3
+        U = (-1, 1)^3.
+        """
+        mono = np.zeros((3, 3, 4))
+        mono[2, 0, 0] = 1.0  # x^2
+        mono[0, 2, 0] = 1.0  # y^2
+        mono[0, 0, 2] = -1.0  # -z^2
+        mono[0, 0, 3] = 1.0  # z^3
+
+        lo = np.array([-1.0, -1.0, -1.0])
+        hi = np.array([1.0, 1.0, 1.0])
+        bern = self._mono_to_bernstein_3d(mono, (2, 2, 3), lo, hi)
+
+        err = self._compute_3d_volume_error(bern, 8.0, q=10)
+        assert err < 0.01, f"Ding-dong volume error: {err:.2e}"  # noqa: PLR2004
+
+    def test_oloid_volume(self) -> None:
+        """Oloid: cusp at origin.
+
+        phi(x,y,z) = x^2 + y^2 + z^3
+        U = (-1, 1)^3.
+        """
+        mono = np.zeros((3, 3, 4))
+        mono[2, 0, 0] = 1.0
+        mono[0, 2, 0] = 1.0
+        mono[0, 0, 3] = 1.0
+
+        lo = np.array([-1.0, -1.0, -1.0])
+        hi = np.array([1.0, 1.0, 1.0])
+        bern = self._mono_to_bernstein_3d(mono, (2, 2, 3), lo, hi)
+
+        # Cusp at origin causes slower convergence.
+        err = self._compute_3d_volume_error(bern, 8.0, q=10)
+        assert err < 0.05, f"Oloid volume error: {err:.2e}"  # noqa: PLR2004
+
+    def test_mobius_volume(self) -> None:
+        """Mobius surface: line of self-intersection.
+
+        phi(x,y,z) = -4y + x^2*y + y^3 + 4xz - 2x^2*z - 2y^2*z + yz^2
+        U = (-1.25, 2.75) x (-2, 2) x (-2, 2).
+        """
+        mono = np.zeros((3, 4, 3))
+        mono[0, 1, 0] = -4.0  # -4y
+        mono[2, 1, 0] = 1.0  # x^2*y
+        mono[0, 3, 0] = 1.0  # y^3
+        mono[1, 0, 1] = 4.0  # 4xz
+        mono[2, 0, 1] = -2.0  # -2x^2*z
+        mono[0, 2, 1] = -2.0  # -2y^2*z
+        mono[0, 1, 2] = 1.0  # yz^2
+
+        lo = np.array([-1.25, -2.0, -2.0])
+        hi = np.array([2.75, 2.0, 2.0])
+        cell_vol = float(np.prod(hi - lo))
+        bern = self._mono_to_bernstein_3d(mono, (2, 3, 2), lo, hi)
+
+        err = self._compute_3d_volume_error(bern, cell_vol, q=7)
+        assert err < 0.05, f"Mobius volume error: {err:.2e}"  # noqa: PLR2004
+
+
 # ---------------------------------------------------------------------------
 # Randomly generated geometry (paper §4.3)
 # ---------------------------------------------------------------------------
