@@ -671,3 +671,172 @@ class TestQRefinement:
         assert errors[0] < 0.05  # q=5  # noqa: PLR2004
         assert errors[1] < 0.005  # q=10  # noqa: PLR2004
         assert errors[2] < 1e-3  # q=20  # noqa: PLR2004
+
+
+# ---------------------------------------------------------------------------
+# Singularity test cases (paper §A.1, supplementary material)
+# ---------------------------------------------------------------------------
+
+
+def _mono_to_bernstein_2d(
+    mono: npt.NDArray[np.float64],
+    degrees: tuple[int, int],
+    domain_lo: npt.NDArray[np.float64],
+    domain_hi: npt.NDArray[np.float64],
+) -> npt.NDArray[np.float64]:
+    """Convert 2D monomial polynomial to Bernstein form on a given domain.
+
+    ``mono[i, j]`` is the coefficient of ``x^i * y^j``.
+    """
+    from math import comb as _comb  # noqa: PLC0415
+
+    dx, dy = degrees
+    lo_x, lo_y = domain_lo[0], domain_lo[1]
+    hx = domain_hi[0] - lo_x
+    hy = domain_hi[1] - lo_y
+
+    # Substitute x = lo_x + hx*t, y = lo_y + hy*s into monomial form.
+    mapped = np.zeros((dx + 1, dy + 1))
+    for ix in range(mono.shape[0]):
+        for iy in range(mono.shape[1]):
+            c = mono[ix, iy]
+            if c == 0.0:
+                continue
+            for p in range(min(ix, dx) + 1):
+                cx = _comb(ix, p) * lo_x ** (ix - p) * hx**p
+                for q in range(min(iy, dy) + 1):
+                    cy = _comb(iy, q) * lo_y ** (iy - q) * hy**q
+                    mapped[p, q] += c * cx * cy
+
+    # 1D monomial-to-Bernstein matrices.
+    def _m2b_mat(n: int) -> npt.NDArray[np.float64]:
+        m = np.zeros((n + 1, n + 1))
+        for i in range(n + 1):
+            for j in range(i + 1):
+                m[i, j] = _comb(i, j) / _comb(n, j)
+        return m
+
+    return _m2b_mat(dx) @ mapped @ _m2b_mat(dy).T
+
+
+class TestSingularities2D:
+    """Test cases with singular geometry from paper §A.1.1.
+
+    These polynomials have cusps or self-intersections where the gradient
+    vanishes. The volumetric integral should still converge, while surface
+    integrals may plateau at reduced precision.
+    """
+
+    @staticmethod
+    def _compute_volume_error(  # noqa: PLR0913
+        mono: npt.NDArray[np.float64],
+        degrees: tuple[int, int],
+        lo: npt.NDArray[np.float64],
+        hi: npt.NDArray[np.float64],
+        q: int,
+        ref_q: int = 40,
+    ) -> float:
+        """Compute relative volume error vs a high-q reference."""
+        bern = _mono_to_bernstein_2d(mono, degrees, lo, hi)
+        ipq = ImplicitPolyQuadrature(bern)
+        cell_vol = float(np.prod(hi - lo))
+
+        # Reference.
+        pts_ref, wts_ref = ipq.volume_quad(ref_q, QuadStrategy.TS_ONLY)
+        vals_ref = ipq.eval_poly(0, pts_ref)
+        vol_ref = np.sum(wts_ref[vals_ref < 0]) * cell_vol
+
+        # Test.
+        pts, wts = ipq.volume_quad(q, QuadStrategy.TS_ONLY)
+        vals = ipq.eval_poly(0, pts)
+        vol = np.sum(wts[vals < 0]) * cell_vol
+
+        if abs(vol_ref) < 1e-300:  # noqa: PLR2004
+            return float(abs(vol))
+        return float(abs(vol - vol_ref) / abs(vol_ref))
+
+    def test_deltoid_volume(self) -> None:
+        """Deltoid: 3 cusps. Volume integral should converge.
+
+        phi(x,y) = (x^2+y^2)^2 + 18(x^2+y^2) - 8(x^3-3xy^2) - 27
+        U = (-2.5, 3.5) x (-3, 3).
+        """
+        # Expand: x^4 + 2x^2y^2 + y^4 + 18x^2 + 18y^2 - 8x^3 + 24xy^2 - 27.
+        mono = np.zeros((5, 5))
+        mono[0, 0] = -27.0
+        mono[2, 0] = 18.0
+        mono[0, 2] = 18.0
+        mono[3, 0] = -8.0
+        mono[1, 2] = 24.0
+        mono[4, 0] = 1.0
+        mono[2, 2] = 2.0
+        mono[0, 4] = 1.0
+
+        lo = np.array([-2.5, -3.0])
+        hi = np.array([3.5, 3.0])
+
+        err = self._compute_volume_error(mono, (4, 4), lo, hi, q=15)
+        assert err < 0.01, f"Deltoid volume error too large: {err:.2e}"  # noqa: PLR2004
+
+    def test_folium_volume(self) -> None:
+        """Folium of Descartes: self-intersection at origin.
+
+        phi(x,y) = x^3 + y^3 - 3xy
+        U = (-1.4, 2.1) x (-1.5, 2).
+        """
+        mono = np.zeros((4, 4))
+        mono[3, 0] = 1.0
+        mono[0, 3] = 1.0
+        mono[1, 1] = -3.0
+
+        lo = np.array([-1.4, -1.5])
+        hi = np.array([2.1, 2.0])
+
+        err = self._compute_volume_error(mono, (3, 3), lo, hi, q=15)
+        assert err < 0.01, f"Folium volume error too large: {err:.2e}"  # noqa: PLR2004
+
+    def test_trifolium_volume(self) -> None:
+        """Trifolium: high-degree self-intersection at origin.
+
+        phi(x,y) = (x^2+y^2)^2 - x^3 + 3xy^2
+        U = (-1, 1.2) x (-1.1, 1.1).
+        """
+        # Expand: x^4 + 2x^2y^2 + y^4 - x^3 + 3xy^2.
+        mono = np.zeros((5, 5))
+        mono[4, 0] = 1.0
+        mono[2, 2] = 2.0
+        mono[0, 4] = 1.0
+        mono[3, 0] = -1.0
+        mono[1, 2] = 3.0
+
+        lo = np.array([-1.0, -1.1])
+        hi = np.array([1.2, 1.1])
+
+        err = self._compute_volume_error(mono, (4, 4), lo, hi, q=15)
+        assert err < 0.01, f"Trifolium volume error too large: {err:.2e}"  # noqa: PLR2004
+
+    def test_deltoid_convergence(self) -> None:
+        """Deltoid volume should show approximately exponential convergence."""
+        mono = np.zeros((5, 5))
+        mono[0, 0] = -27.0
+        mono[2, 0] = 18.0
+        mono[0, 2] = 18.0
+        mono[3, 0] = -8.0
+        mono[1, 2] = 24.0
+        mono[4, 0] = 1.0
+        mono[2, 2] = 2.0
+        mono[0, 4] = 1.0
+
+        lo = np.array([-2.5, -3.0])
+        hi = np.array([3.5, 3.0])
+
+        errors = []
+        for q in [5, 10, 20]:
+            err = self._compute_volume_error(mono, (4, 4), lo, hi, q=q)
+            errors.append(err)
+
+        # Volume should converge — each step should improve.
+        assert errors[0] > errors[1], "Not converging"
+        assert errors[1] > errors[2], "Not converging"
+        # Cusps cause slower convergence than smooth geometry.
+        assert errors[2] < 0.01, f"Deltoid q=20 error: {errors[2]:.2e}"  # noqa: PLR2004
