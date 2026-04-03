@@ -855,3 +855,128 @@ class TestSingularities2D:
         assert errors[1] > errors[2], "Not converging"
         # Cusps cause slower convergence than smooth geometry.
         assert errors[2] < 0.01, f"Deltoid q=20 error: {errors[2]:.2e}"  # noqa: PLR2004
+
+
+# ---------------------------------------------------------------------------
+# Randomly generated geometry (paper §4.3)
+# ---------------------------------------------------------------------------
+
+
+def _make_random_poly_2d(
+    rng: np.random.Generator,
+    alpha: float = 2.0,
+) -> npt.NDArray[np.float64]:
+    """Generate a random degree-(2,2) polynomial on (-1,1)^2 per paper eq (10).
+
+    Uses normalized Legendre basis with decay factor alpha.
+    Returns Bernstein coefficients on (-1,1)^2 mapped to [0,1]^2.
+    """
+    # Normalized Legendre polynomials on (-1,1) in monomial form (ascending power).
+    # p0(x) = sqrt(1/2)
+    # p1(x) = sqrt(3/2)*x
+    # p2(x) = sqrt(5/8)*(3x^2-1)
+    leg_mono = [
+        np.array([np.sqrt(0.5)]),
+        np.array([0.0, np.sqrt(1.5)]),
+        np.array([-np.sqrt(5.0 / 8.0), 0.0, 3.0 * np.sqrt(5.0 / 8.0)]),
+    ]
+
+    # Random coefficients c_i ~ U[-1, 1] with decay lambda(i).
+    raw_c = rng.uniform(-1, 1, size=(3, 3))
+
+    # Build monomial representation on (-1,1)^2.
+    # phi(x,y) = sum_{i0,i1} lambda(i)*c_i * p_{i0}(x) * p_{i1}(y)
+    mono = np.zeros((3, 3))
+    for i0 in range(3):
+        for i1 in range(3):
+            s = i0 + i1
+            lam = 1.0 if s == 0 else float(s) ** (-alpha)
+            c = raw_c[i0, i1] * lam
+            # Outer product of Legendre monomial coefficients.
+            lx = leg_mono[i0]
+            ly = leg_mono[i1]
+            for px in range(len(lx)):
+                for py in range(len(ly)):
+                    mono[px, py] += c * lx[px] * ly[py]
+
+    return _mono_to_bernstein_2d(mono, (2, 2), np.array([-1.0, -1.0]), np.array([1.0, 1.0]))
+
+
+def _volume_fraction_2d(
+    bern: npt.NDArray[np.float64],
+    n_sample: int = 50,
+) -> float:
+    """Estimate volume fraction of {phi<0} on [0,1]^2."""
+    from pantr.bezier.implicit._bernstein import _eval_bernstein_2d  # noqa: PLC0415
+
+    count = 0
+    pt = np.empty(2, dtype=np.float64)
+    for ix in range(n_sample):
+        for iy in range(n_sample):
+            pt[0] = (ix + 0.5) / n_sample
+            pt[1] = (iy + 0.5) / n_sample
+            if _eval_bernstein_2d(bern, pt) < 0:
+                count += 1
+    return count / (n_sample * n_sample)
+
+
+class TestRandomGeometry2D:
+    """Test convergence on randomly generated 2D geometry (paper §4.3).
+
+    Generates random degree-(2,2) polynomials on (-1,1)^2, filters by
+    volume fraction, and checks that the volume integral converges.
+    Uses a small sample (20 instances) for CI speed.
+    """
+
+    @staticmethod
+    def _generate_valid_polys(
+        rng: np.random.Generator,
+        n_target: int,
+        max_attempts: int = 500,
+    ) -> list[npt.NDArray[np.float64]]:
+        """Generate random polynomials with volume fraction in [10%, 90%]."""
+        polys: list[npt.NDArray[np.float64]] = []
+        for _ in range(max_attempts):
+            bern = _make_random_poly_2d(rng)
+            vf = _volume_fraction_2d(bern)
+            if 0.1 <= vf <= 0.9:  # noqa: PLR2004
+                polys.append(bern)
+                if len(polys) >= n_target:
+                    break
+        return polys
+
+    def test_random_volume_convergence(self) -> None:
+        """Median volume error should decrease with increasing q."""
+        rng = np.random.default_rng(12345)
+        polys = self._generate_valid_polys(rng, n_target=20)
+        assert len(polys) >= 10, f"Only generated {len(polys)} valid polynomials"  # noqa: PLR2004
+
+        cell_vol = 4.0  # (-1,1)^2 has area 4
+
+        median_errors: dict[int, float] = {}
+        for q in [5, 15]:
+            errors = []
+            for bern in polys:
+                ipq = ImplicitPolyQuadrature(bern)
+                # Reference.
+                pts_r, wts_r = ipq.volume_quad(30, QuadStrategy.TS_ONLY)
+                vals_r = ipq.eval_poly(0, pts_r)
+                vol_ref = np.sum(wts_r[vals_r < 0]) * cell_vol
+
+                # Test.
+                pts, wts = ipq.volume_quad(q, QuadStrategy.TS_ONLY)
+                vals = ipq.eval_poly(0, pts)
+                vol = np.sum(wts[vals < 0]) * cell_vol
+
+                if abs(vol_ref) > 1e-10:  # noqa: PLR2004
+                    errors.append(abs(vol - vol_ref) / abs(vol_ref))
+            median_errors[q] = float(np.median(errors))
+
+        # Median error should decrease significantly from q=5 to q=15.
+        assert median_errors[5] > median_errors[15], (
+            f"Not converging: median err q=5={median_errors[5]:.2e}, q=15={median_errors[15]:.2e}"
+        )
+        # At q=15, median error should be modest.
+        assert median_errors[15] < 0.01, (  # noqa: PLR2004
+            f"Median error at q=15 too large: {median_errors[15]:.2e}"
+        )
