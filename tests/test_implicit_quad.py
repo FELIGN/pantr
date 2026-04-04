@@ -810,6 +810,182 @@ class TestQRefinement:
         assert errors[1] < 0.005  # q=10  # noqa: PLR2004
         assert errors[2] < 1e-3  # q=20  # noqa: PLR2004
 
+    def test_ellipse_surface_nonflux_q_refinement(self) -> None:
+        """Non-flux surface integral I_Gamma should converge (slower than I_Gamma_n).
+
+        Paper Fig. 5 shows I_Gamma converges exponentially but at a slower rate
+        than the flux-form I_Gamma_n, due to the |grad phi|/|d_k phi| Jacobian
+        factor introducing a pole near the complex plane.
+        """
+        ipq = self._single_cell_ellipse()
+        cell_scale = 2.2
+        a_ax, b_ax = 1.0, 0.5
+        expected_perim = np.pi * (
+            3 * (a_ax + b_ax) - np.sqrt((3 * a_ax + b_ax) * (a_ax + 3 * b_ax))
+        )
+
+        errors = []
+        for q in [5, 10, 20, 30]:
+            s_pts, s_wts, _ = ipq.surface_quad(q, QuadStrategy.TS_ONLY, aggregate=False)
+            perim = np.sum(s_wts) * cell_scale
+            errors.append(abs(perim - expected_perim) / expected_perim)
+
+        # Should converge, though slower than flux-form.
+        assert errors[0] < 0.05  # noqa: PLR2004
+        assert errors[1] < 0.005  # noqa: PLR2004
+        assert errors[2] < 1e-4  # noqa: PLR2004
+        assert errors[3] < 1e-5  # noqa: PLR2004
+
+
+# ---------------------------------------------------------------------------
+# Paper §4.4: Bilinear example
+# ---------------------------------------------------------------------------
+
+
+class TestBilinear:
+    """Bilinear polynomial with varying curvature (paper §4.4).
+
+    phi(x,y) = (x - 1/2)(y - 1/2) - eps^2 on U = (0, 1)^2.
+    - eps = 0.1: smooth rounded corner
+    - eps = 0.01: high-curvature corner (R ~ 1% of cell)
+    - eps = 0: degenerate cross (sharp corner)
+    """
+
+    @staticmethod
+    def _bilinear_bernstein(eps: float) -> npt.NDArray[np.float64]:
+        """Bernstein coefficients for (x-0.5)(y-0.5) - eps^2 on [0,1]^2.
+
+        Degree (1,1): coefficients are corner values.
+        """
+        e2 = eps * eps
+        return np.array(
+            [
+                [0.25 - e2, -0.25 - e2],
+                [-0.25 - e2, 0.25 - e2],
+            ]
+        )
+
+    def test_bilinear_smooth(self) -> None:
+        """Eps = 0.1: smooth interface, should converge well with GL."""
+        bern = self._bilinear_bernstein(0.1)
+        ipq = ImplicitPolyQuadrature(bern)
+
+        # Reference.
+        pts_r, wts_r = ipq.volume_quad(30, QuadStrategy.GL_ONLY)
+        vals_r = ipq.eval_poly(0, pts_r)
+        vol_ref = float(np.sum(wts_r[vals_r < 0]))
+
+        errors = []
+        for q in [3, 7, 15]:
+            pts, wts = ipq.volume_quad(q, QuadStrategy.GL_ONLY)
+            vals = ipq.eval_poly(0, pts)
+            vol = float(np.sum(wts[vals < 0]))
+            errors.append(abs(vol - vol_ref) / max(abs(vol_ref), 1e-15))
+
+        assert errors[0] < 0.1  # noqa: PLR2004
+        assert errors[2] < 1e-5  # noqa: PLR2004
+
+    def test_bilinear_high_curvature(self) -> None:
+        """Eps = 0.01: high curvature, (TS,GL) should outperform (GL,GL)."""
+        bern = self._bilinear_bernstein(0.01)
+        ipq = ImplicitPolyQuadrature(bern)
+
+        pts_r, wts_r = ipq.volume_quad(30, QuadStrategy.TS_ONLY)
+        vals_r = ipq.eval_poly(0, pts_r)
+        vol_ref = float(np.sum(wts_r[vals_r < 0]))
+
+        # TS should converge.
+        pts, wts = ipq.volume_quad(15, QuadStrategy.TS_ONLY)
+        vals = ipq.eval_poly(0, pts)
+        vol = float(np.sum(wts[vals < 0]))
+        err = abs(vol - vol_ref) / max(abs(vol_ref), 1e-15)
+        assert err < 0.01, f"Bilinear eps=0.01 err: {err:.2e}"  # noqa: PLR2004
+
+    def test_bilinear_degenerate(self) -> None:
+        """Eps = 0: sharp cross, should still produce a valid quadrature."""
+        bern = self._bilinear_bernstein(0.0)
+        ipq = ImplicitPolyQuadrature(bern)
+        pts, wts = ipq.volume_quad(10, QuadStrategy.TS_ONLY)
+        vals = ipq.eval_poly(0, pts)
+        vol = float(np.sum(wts[vals < 0]))
+        # For the cross (x-0.5)(y-0.5) = 0: area of {phi < 0} is two
+        # opposite quadrants = 0.5.
+        assert abs(vol - 0.5) < 0.01  # noqa: PLR2004
+
+
+# ---------------------------------------------------------------------------
+# Paper §4.5: Trilinear tunnel
+# ---------------------------------------------------------------------------
+
+
+class TestTrilinearTunnel:
+    """Trilinear polynomial with tunnel topology (paper §4.5).
+
+    phi(x,y,z) = 0.5 - 1.4z + 2.9xy - 6.5xyz - 1.2x + 3.2xz + 3.3yz - 1.3y
+    on U = (0, 1)^3.
+    """
+
+    @staticmethod
+    def _tunnel_bernstein() -> npt.NDArray[np.float64]:
+        """Bernstein coefficients for the trilinear tunnel on [0,1]^3.
+
+        Degree (1,1,1): coefficients are the 8 corner values.
+        """
+        # phi(x,y,z) = 0.5 - 1.2x - 1.3y - 1.4z + 2.9xy + 3.2xz + 3.3yz - 6.5xyz
+        c = np.empty((2, 2, 2))
+        for ix in range(2):
+            for iy in range(2):
+                for iz in range(2):
+                    x, y, z = float(ix), float(iy), float(iz)
+                    c[ix, iy, iz] = (
+                        0.5
+                        - 1.2 * x
+                        - 1.3 * y
+                        - 1.4 * z
+                        + 2.9 * x * y
+                        + 3.2 * x * z
+                        + 3.3 * y * z
+                        - 6.5 * x * y * z
+                    )
+        return c
+
+    def test_tunnel_volume_convergence(self) -> None:
+        """Volume integral should converge on the tunnel geometry."""
+        bern = self._tunnel_bernstein()
+        ipq = ImplicitPolyQuadrature(bern)
+
+        # Reference.
+        pts_r, wts_r = ipq.volume_quad(20, QuadStrategy.TS_ONLY)
+        vals_r = ipq.eval_poly(0, pts_r)
+        vol_ref = float(np.sum(wts_r[vals_r < 0]))
+
+        errors = []
+        for q in [3, 7, 15]:
+            pts, wts = ipq.volume_quad(q, QuadStrategy.TS_ONLY)
+            vals = ipq.eval_poly(0, pts)
+            vol = float(np.sum(wts[vals < 0]))
+            if abs(vol_ref) > 1e-15:  # noqa: PLR2004
+                errors.append(abs(vol - vol_ref) / abs(vol_ref))
+
+        # Should converge.
+        assert len(errors) == 3  # noqa: PLR2004
+        assert errors[0] > errors[2], "Not converging"
+        assert errors[2] < 1e-6  # noqa: PLR2004
+
+    def test_tunnel_weight_sum(self) -> None:
+        """Total weights should sum to 1."""
+        bern = self._tunnel_bernstein()
+        ipq = ImplicitPolyQuadrature(bern)
+        _, wts = ipq.volume_quad(5, QuadStrategy.TS_ONLY)
+        assert abs(np.sum(wts) - 1.0) < 1e-10  # noqa: PLR2004
+
+    def test_tunnel_surface(self) -> None:
+        """Surface quadrature should produce points on the tunnel interface."""
+        bern = self._tunnel_bernstein()
+        ipq = ImplicitPolyQuadrature(bern)
+        s_pts, s_wts, _ = ipq.surface_quad(5, QuadStrategy.TS_ONLY)
+        assert len(s_wts) > 0, "No surface points generated"
+
 
 # ---------------------------------------------------------------------------
 # Singularity test cases (paper §A.1, supplementary material)
