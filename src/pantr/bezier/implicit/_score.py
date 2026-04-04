@@ -22,8 +22,19 @@ from numba.typed import List as NumbaList
 from numpy import typing as npt
 
 from pantr._numba_compat import nb_jit
-from pantr.bezier.implicit._bernstein import _eval_gradient_2d, _eval_gradient_3d
-from pantr.bezier.implicit._mask import M
+from pantr.bezier.implicit._bernstein import (
+    _elevated_derivative_along_axis_2d,
+    _elevated_derivative_along_axis_3d,
+    _eval_gradient_2d,
+    _eval_gradient_3d,
+)
+from pantr.bezier.implicit._mask import (
+    M,
+    _mask_is_empty_2d,
+    _mask_is_empty_3d,
+    compute_intersection_mask_2d,
+    compute_intersection_mask_3d,
+)
 
 
 @nb_jit(nopython=True, cache=True)
@@ -60,6 +71,8 @@ def score_estimate_2d(
     for p in range(n_polys):
         coeffs = coeffs_list[p]
         mask = masks_list[p]
+
+        # Accumulate gradient-based score at each active subcell midpoint.
         for i0 in range(M):
             for i1 in range(M):
                 if not mask[i0, i1]:
@@ -71,6 +84,17 @@ def score_estimate_2d(
                 if norm1 > 1e-300:  # noqa: PLR2004
                     for d in range(2):
                         scores[d] += abs(grad[d]) / norm1
+
+        # Check for discriminant features: does the intersection mask of
+        # phi and elevated_derivative(phi, k) contain any active subcells?
+        # This detects vertical tangents / branching points.
+        for k in range(2):
+            if has_disc[k]:
+                continue
+            ed = _elevated_derivative_along_axis_2d(coeffs, k)
+            int_mask = compute_intersection_mask_2d(coeffs, mask, ed, mask)
+            if not _mask_is_empty_2d(int_mask):
+                has_disc[k] = True
 
     return scores, has_disc
 
@@ -102,6 +126,8 @@ def score_estimate_3d(
     for p in range(n_polys):
         coeffs = coeffs_list[p]
         mask = masks_list[p]
+
+        # Accumulate gradient-based score.
         for i0 in range(M):
             for i1 in range(M):
                 for i2 in range(M):
@@ -115,5 +141,14 @@ def score_estimate_3d(
                     if norm1 > 1e-300:  # noqa: PLR2004
                         for d in range(3):
                             scores[d] += abs(grad[d]) / norm1
+
+        # Check for discriminant features.
+        for k in range(3):
+            if has_disc[k]:
+                continue
+            ed = _elevated_derivative_along_axis_3d(coeffs, k)
+            int_mask = compute_intersection_mask_3d(coeffs, mask, ed, mask)
+            if not _mask_is_empty_3d(int_mask):
+                has_disc[k] = True
 
     return scores, has_disc

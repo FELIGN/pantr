@@ -973,13 +973,12 @@ def _degree_reduce_1d(
 ) -> npt.NDArray[np.float64]:
     """Reduce a 1D Bernstein polynomial by one degree via least-squares.
 
-    Uses the simple averaging formula: for a degree-n polynomial reduced to
-    degree n-1, the coefficients are approximately:
-    ``q[i] = ((n-i)*c[i] + (i+1)*c[i+1]) / (n)`` ... but a cleaner approach
-    is to use the pseudo-inverse of the degree elevation matrix.
+    Solves the bidiagonal least-squares problem ``min ||E q - c||`` where
+    E is the degree elevation matrix mapping degree-(n-1) to degree-n.
+    Uses the normal equations ``E^T E q = E^T c`` which form a symmetric
+    tridiagonal system, solved by Cholesky (LDL^T) factorization.
 
-    For simplicity, uses the formula from Eck (1993): the best L2 approximation
-    of degree n by degree n-1 in Bernstein form.
+    This matches the approach in algoim's ``bernsteinReduction``.
 
     Args:
         coeffs (npt.NDArray[np.float64]): 1D Bernstein coefficients of length ``n+1``.
@@ -994,36 +993,50 @@ def _degree_reduce_1d(
     if n <= 0:
         return coeffs.copy()
 
-    # The degree elevation matrix E maps degree-(n-1) to degree-n:
-    # E[i, j] = alpha if j == i, (1-alpha) if j == i-1, where alpha = i/n.
-    # The least-squares reduction is E^+ * coeffs.
-    # For the bidiagonal E, this can be solved efficiently.
-    # Forward sweep: q[0] = c[0], q[i] = (c[i] - (i/n)*q[i-1]) / (1 - i/n).
-    # Backward sweep: r[n-1] = c[n], r[i] = (c[i+1] - (1-(i+1)/n)*r[i+1]) / ((i+1)/n).
-    # Average: reduced[i] = (q[i] + r[i]) / 2.
-
+    m = n  # output size = n (degree n-1)
     fn = float(n)
 
-    # Forward sweep.
-    q = np.empty(n, dtype=np.float64)
-    q[0] = coeffs[0]
-    for i in range(1, n):
-        alpha = float(i) / fn
-        q[i] = (coeffs[i] - alpha * q[i - 1]) / (1.0 - alpha)
+    # Build the symmetric tridiagonal normal equations A q = b
+    # where A = E^T E and b = E^T c.
+    #
+    # E is (n+1) x n bidiagonal: E[i,i] = 1-i/n, E[i,i-1] = i/n.
+    # A[i,i] = sum_j E[j,i]^2 = (1-i/n)^2 + ((i+1)/n)^2
+    # A[i,i+1] = A[i+1,i] = E[i+1,i]*E[i+1,i+1] = ((i+1)/n)*(1-(i+1)/n)
+    # b[i] = sum_j E[j,i]*c[j] = (1-i/n)*c[i] + ((i+1)/n)*c[i+1]
 
-    # Backward sweep.
-    r = np.empty(n, dtype=np.float64)
-    r[n - 1] = coeffs[n]
-    for i in range(n - 2, -1, -1):
-        alpha = float(i + 1) / fn
-        r[i] = (coeffs[i + 1] - (1.0 - alpha) * r[i + 1]) / alpha
+    diag = np.empty(m, dtype=np.float64)
+    off = np.empty(m - 1, dtype=np.float64)
+    rhs = np.empty(m, dtype=np.float64)
 
-    # Average.
-    reduced = np.empty(n, dtype=np.float64)
-    for i in range(n):
-        reduced[i] = 0.5 * (q[i] + r[i])
+    for i in range(m):
+        a0 = 1.0 - float(i) / fn  # E[i, i]
+        a1 = float(i + 1) / fn  # E[i+1, i]
+        diag[i] = a0 * a0 + a1 * a1
+        rhs[i] = a0 * coeffs[i] + a1 * coeffs[i + 1]
 
-    return reduced
+    for i in range(m - 1):
+        a1 = float(i + 1) / fn  # E[i+1, i]
+        b0 = 1.0 - float(i + 1) / fn  # E[i+1, i+1]
+        off[i] = a1 * b0
+
+    # Solve tridiagonal SPD system via Thomas algorithm (Cholesky).
+    # Forward elimination.
+    d = np.empty(m, dtype=np.float64)
+    y = np.empty(m, dtype=np.float64)
+    d[0] = diag[0]
+    y[0] = rhs[0]
+    for i in range(1, m):
+        w = off[i - 1] / d[i - 1]
+        d[i] = diag[i] - w * off[i - 1]
+        y[i] = rhs[i] - w * y[i - 1]
+
+    # Back substitution.
+    q = np.empty(m, dtype=np.float64)
+    q[m - 1] = y[m - 1] / d[m - 1]
+    for i in range(m - 2, -1, -1):
+        q[i] = (y[i] - off[i] * q[i + 1]) / d[i]
+
+    return q
 
 
 @nb_jit(nopython=True, cache=True)
@@ -1102,7 +1115,8 @@ def _auto_reduce_2d(  # noqa: PLR0912
 
         # Try reducing axis 0.
         if s0 > 2:  # noqa: PLR2004
-            # Reduce each column along axis 0, then check residual.
+            # Reduce each column along axis 0, then check residual
+            # using the Bernstein L2 norm (sum of column L2 norms).
             reduced_0 = np.empty((s0 - 1, s1), dtype=np.float64)
             for j in range(s1):
                 col = np.empty(s0, dtype=np.float64)
@@ -1111,16 +1125,19 @@ def _auto_reduce_2d(  # noqa: PLR0912
                 red = _degree_reduce_1d(col)
                 for i in range(s0 - 1):
                     reduced_0[i, j] = red[i]
-            # Re-elevate.
+            # Re-elevate and check with proper L2 norm.
             re_elev_0 = _degree_elevate_axis_2d(reduced_0, 0, 1)
-            # Residual norm.
             res_sq = 0.0
             orig_sq = 0.0
-            for i in range(s0):
-                for j in range(s1):
-                    res_sq += (re_elev_0[i, j] - current[i, j]) ** 2
-                    orig_sq += current[i, j] ** 2
-            if orig_sq > 0.0 and np.sqrt(res_sq) < tol * np.sqrt(orig_sq):
+            for j in range(s1):
+                res_col = np.empty(s0, dtype=np.float64)
+                orig_col = np.empty(s0, dtype=np.float64)
+                for i in range(s0):
+                    res_col[i] = re_elev_0[i, j] - current[i, j]
+                    orig_col[i] = current[i, j]
+                res_sq += _squared_l2_norm_1d(res_col)
+                orig_sq += _squared_l2_norm_1d(orig_col)
+            if orig_sq > 0.0 and np.sqrt(abs(res_sq)) < tol * np.sqrt(abs(orig_sq)):
                 current = reduced_0
                 changed = True
                 continue
@@ -1140,10 +1157,14 @@ def _auto_reduce_2d(  # noqa: PLR0912
             res_sq = 0.0
             orig_sq = 0.0
             for i in range(s0):
+                res_row = np.empty(s1, dtype=np.float64)
+                orig_row = np.empty(s1, dtype=np.float64)
                 for j in range(s1):
-                    res_sq += (re_elev_1[i, j] - current[i, j]) ** 2
-                    orig_sq += current[i, j] ** 2
-            if orig_sq > 0.0 and np.sqrt(res_sq) < tol * np.sqrt(orig_sq):
+                    res_row[j] = re_elev_1[i, j] - current[i, j]
+                    orig_row[j] = current[i, j]
+                res_sq += _squared_l2_norm_1d(res_row)
+                orig_sq += _squared_l2_norm_1d(orig_row)
+            if orig_sq > 0.0 and np.sqrt(abs(res_sq)) < tol * np.sqrt(abs(orig_sq)):
                 current = reduced_1
                 changed = True
                 continue

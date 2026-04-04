@@ -194,13 +194,14 @@ def _bezout_matrix(
     for j in range(1, n):
         B[n - 1, j] = (fn / float(n - j)) * (f[n] * g[j] - f[j] * g[n])
 
-    # Interior: traverse from bottom-right to top-left.
-    # b_{i,j+1} = n^2/(i*(n-j)) * (f_i*g_j - f_j*g_i) + (i*(n-i))/(i*(n-j)) * b_{i+1,j}
+    # Interior: traverse rows bottom-up, columns left-to-right.
+    # b_{i,j+1} = n^2/(i*(n-j)) * (f_i*g_j - f_j*g_i) + j*(n-i)/(i*(n-j)) * b_{i+1,j}
     # Note: need b_{i+1,j} which is already computed (we go bottom-up).
-    for j in range(1, n - 1):
-        for i in range(n - 1, 0, -1):
+    # Loop order matches algoim: outer i from n-1 down to 1, inner j from 1 to i-1.
+    for i in range(n - 1, 0, -1):
+        for j in range(1, i):
             coeff1 = fn * fn / (float(i) * float(n - j))
-            coeff2 = float(n - i) / float(n - j)
+            coeff2 = float(j) * float(n - i) / (float(i) * float(n - j))
             B[i - 1, j] = coeff1 * (f[i] * g[j] - f[j] * g[i]) + coeff2 * B[i, j - 1]
 
     # Copy lower triangular to upper (symmetric).
@@ -268,7 +269,84 @@ def _bernstein_interpolate_1d(
 
 
 # ---------------------------------------------------------------------------
-# Section D: 1D resultant (determinant of Sylvester/Bezout matrix)
+# Section D: QR-based determinant (Givens rotations with column pivoting)
+# ---------------------------------------------------------------------------
+
+
+@nb_jit(nopython=True, cache=True)
+def _det_qr(A: npt.NDArray[np.float64]) -> float:
+    """Compute the determinant of a square matrix via Givens QR with column pivoting.
+
+    Implements the same algorithm as algoim's ``det_qr`` (Saye, JCP 2022,
+    supplementary ``quadrature_multipoly.hpp``). At each step, the column
+    with largest Euclidean norm is pivoted into position, then Givens
+    rotations eliminate the sub-diagonal entries. The determinant is the
+    product of the R diagonal, with sign flips for each column swap.
+
+    This is more numerically stable than LU-based ``np.linalg.det`` for
+    the Sylvester/Bezout matrices arising in resultant computations.
+
+    Args:
+        A (npt.NDArray[np.float64]): Square matrix of shape ``(n, n)``.
+            **Overwritten** during computation.
+
+    Returns:
+        float: Determinant of the input matrix.
+
+    Note:
+        Inputs are assumed to be correct (no validation performed).
+    """
+    n = A.shape[0]
+    det = 1.0
+
+    for j in range(n):
+        # Column pivoting: find column k >= j with largest 2-norm.
+        best_norm = -1.0
+        best_k = j
+        for col in range(j, n):
+            col_norm = 0.0
+            for row in range(n):
+                col_norm += A[row, col] * A[row, col]
+            if col_norm > best_norm:
+                best_norm = col_norm
+                best_k = col
+
+        # Swap columns j and best_k.
+        if best_k != j:
+            for row in range(n):
+                A[row, j], A[row, best_k] = A[row, best_k], A[row, j]
+            det = -det
+
+        # Givens rotations to zero out sub-diagonal in column j.
+        for i in range(n - 1, j, -1):
+            a_val = A[i - 1, j]
+            b_val = A[i, j]
+            # Compute Givens rotation coefficients.
+            if b_val == 0.0:
+                c = 1.0
+                s = 0.0
+            elif abs(b_val) > abs(a_val):
+                tmp = a_val / b_val
+                s = 1.0 / np.sqrt(1.0 + tmp * tmp)
+                c = tmp * s
+            else:
+                tmp = b_val / a_val
+                c = 1.0 / np.sqrt(1.0 + tmp * tmp)
+                s = tmp * c
+            # Apply rotation to rows i-1 and i, columns j..n-1.
+            for col in range(j, n):
+                x = A[i - 1, col]
+                y = A[i, col]
+                A[i - 1, col] = c * x + s * y
+                A[i, col] = -s * x + c * y
+
+        det *= A[j, j]
+
+    return det
+
+
+# ---------------------------------------------------------------------------
+# Section D2: 1D resultant (determinant of Sylvester/Bezout matrix)
 # ---------------------------------------------------------------------------
 
 
@@ -280,6 +358,8 @@ def _resultant_1d(
     """Compute the resultant of two 1D Bernstein polynomials.
 
     Uses the Bezout matrix if degrees are equal, Sylvester otherwise.
+    The determinant is computed via QR with Givens rotations and column
+    pivoting for numerical stability.
 
     Args:
         f (npt.NDArray[np.float64]): Coefficients of f.
@@ -296,10 +376,12 @@ def _resultant_1d(
 
     if n == m:
         B = _bezout_matrix(f, g)
-        return float(np.linalg.det(B))
+        # return float(np.linalg.det(B))  # LU-based, less stable
+        return _det_qr(B)
     else:
         S = _sylvester_matrix(f, g)
-        return float(np.linalg.det(S))
+        # return float(np.linalg.det(S))  # LU-based, less stable
+        return _det_qr(S)
 
 
 # ---------------------------------------------------------------------------

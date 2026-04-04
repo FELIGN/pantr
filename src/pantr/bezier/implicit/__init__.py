@@ -349,7 +349,20 @@ class ImplicitPolyQuadrature:
                 masks_list.append(compute_nonzero_mask_2d(ca))
 
             for k in range(2):
-                r: tuple[Any, ...] = build_2d_forced_k(coeffs_list, masks_list, k)
+                r_raw: tuple[Any, ...] = build_2d_forced_k(coeffs_list, masks_list, k)
+                # In aggregate mode, force TS on all levels (matches algoim).
+                r: tuple[Any, ...] = (
+                    r_raw[0],
+                    r_raw[1],
+                    r_raw[2],
+                    True,
+                    r_raw[4],
+                    r_raw[5],
+                    r_raw[6],
+                    r_raw[7],
+                    True,
+                    r_raw[9],
+                )
                 pts, sw, nw = surface_quad_2d_aggregate(
                     r[0],
                     r[1],
@@ -382,22 +395,42 @@ class ImplicitPolyQuadrature:
 
             for k in range(3):
                 r = build_3d_forced_k(coeffs_list_3d, masks_list_3d, k)
-                pts, sw, nw = surface_quad_3d_aggregate(
+                # In aggregate mode, algoim forces TS on all base integrals
+                # (line 621: base.build(false, auto_apply_TS || true)).
+                # Override use_ts flags to True for all levels.
+                r_agg: tuple[Any, ...] = (
                     r[0],
                     r[1],
                     r[2],
-                    r[3],
-                    r[4],
+                    True,
+                    r[4],  # level 0: force use_ts
                     r[5],
                     r[6],
                     r[7],
-                    r[8],
-                    r[9],
+                    True,
+                    r[9],  # level 1: force use_ts
                     r[10],
                     r[11],
                     r[12],
-                    r[13],
-                    r[14],
+                    True,
+                    r[14],  # level 2: force use_ts
+                )
+                pts, sw, nw = surface_quad_3d_aggregate(
+                    r_agg[0],
+                    r_agg[1],
+                    r_agg[2],
+                    r_agg[3],
+                    r_agg[4],
+                    r_agg[5],
+                    r_agg[6],
+                    r_agg[7],
+                    r_agg[8],
+                    r_agg[9],
+                    r_agg[10],
+                    r_agg[11],
+                    r_agg[12],
+                    r_agg[13],
+                    r_agg[14],
                     self.n_polys,
                     input_c,
                     gl_nodes,

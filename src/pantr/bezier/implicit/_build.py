@@ -326,7 +326,16 @@ def build_2d(
         )
 
     # Score estimation to choose height direction.
+    # Directions WITHOUT discriminant features get a +1.0 bonus (prefer GL).
     scores, has_disc = score_estimate_2d(coeffs_list, masks_list)
+    max_s = max(abs(scores[0]), abs(scores[1]))
+    if max_s > 0:
+        scores[0] /= 2 * max_s
+        scores[1] /= 2 * max_s
+    for d in range(2):
+        if not has_disc[d]:
+            scores[d] += 1.0
+
     if scores[0] >= scores[1]:  # noqa: SIM108
         k1 = 0
     else:
@@ -335,8 +344,9 @@ def build_2d(
     # Eliminate axis k1 to produce 1D polynomial set.
     coeffs_1d, masks_1d, _has_disc_1d = _eliminate_axis_2d(coeffs_list, masks_list, k1)
 
-    # Use tanh-sinh when discriminants detected (branching points in height function).
-    use_ts_1 = _has_disc_1d
+    # Use tanh-sinh when discriminants detected at this level OR
+    # when the chosen direction has branching (propagate TS downward).
+    use_ts_1 = _has_disc_1d or has_disc[k1]
     type_1 = INTEGRAL_OUTER_SINGLE
 
     # 1D base level.
@@ -448,11 +458,18 @@ def build_3d_forced_k(
     use_ts_2 = _has_disc_2d
     type_2 = INTEGRAL_OUTER_SINGLE
 
-    scores_2d, _hd = score_estimate_2d(coeffs_2d, masks_2d)
+    scores_2d, has_disc_2d = score_estimate_2d(coeffs_2d, masks_2d)
+    max_s2 = max(abs(scores_2d[0]), abs(scores_2d[1]))
+    if max_s2 > 0:
+        scores_2d[0] /= 2 * max_s2
+        scores_2d[1] /= 2 * max_s2
+    for d in range(2):
+        if not has_disc_2d[d]:
+            scores_2d[d] += 1.0
     k1 = 0 if scores_2d[0] >= scores_2d[1] else 1
 
     coeffs_1d, masks_1d, _has_disc_1d = _eliminate_axis_2d(coeffs_2d, masks_2d, k1)
-    use_ts_1 = _has_disc_1d
+    use_ts_1 = _has_disc_1d or use_ts_2 or has_disc_2d[k1]
     type_1 = INTEGRAL_INNER
 
     return (
@@ -475,7 +492,7 @@ def build_3d_forced_k(
 
 
 @nb_jit(nopython=True, cache=True)
-def build_3d(
+def build_3d(  # noqa: PLR0912, PLR0915
     coeffs_list: NumbaList,
     masks_list: NumbaList,
 ) -> tuple[
@@ -557,7 +574,18 @@ def build_3d(
         )
 
     # Score for 3D -> choose k2.
-    scores, has_disc = score_estimate_3d(coeffs_list, masks_list)
+    # Directions WITHOUT discriminant features get a +1.0 bonus (prefer GL).
+    scores, has_disc_3d = score_estimate_3d(coeffs_list, masks_list)
+    max_s = 0.0
+    for d in range(3):
+        max_s = max(max_s, abs(scores[d]))
+    if max_s > 0:
+        for d in range(3):
+            scores[d] /= 2 * max_s
+    for d in range(3):
+        if not has_disc_3d[d]:
+            scores[d] += 1.0
+
     k2 = 0
     best = scores[0]
     for d in range(1, 3):
@@ -567,11 +595,22 @@ def build_3d(
 
     # Eliminate axis k2 to get 2D polynomial set.
     coeffs_2d, masks_2d, _has_disc_2d = _eliminate_axis_3d(coeffs_list, masks_list, k2)
-    use_ts_2 = _has_disc_2d
+
+    # TS is used at this level if branching detected at this level OR
+    # the chosen direction has discriminant features.
+    use_ts_2 = _has_disc_2d or has_disc_3d[k2]
     type_2 = INTEGRAL_OUTER_SINGLE
 
-    # Score for 2D -> choose k1.
+    # Score for 2D -> choose k1 (with the same bonus logic).
     scores_2d, has_disc_2d = score_estimate_2d(coeffs_2d, masks_2d)
+    max_s2 = max(abs(scores_2d[0]), abs(scores_2d[1]))
+    if max_s2 > 0:
+        scores_2d[0] /= 2 * max_s2
+        scores_2d[1] /= 2 * max_s2
+    for d in range(2):
+        if not has_disc_2d[d]:
+            scores_2d[d] += 1.0
+
     if scores_2d[0] >= scores_2d[1]:  # noqa: SIM108
         k1 = 0
     else:
@@ -579,7 +618,9 @@ def build_3d(
 
     # Eliminate axis k1 to get 1D polynomial set.
     coeffs_1d, masks_1d, _has_disc_1d = _eliminate_axis_2d(coeffs_2d, masks_2d, k1)
-    use_ts_1 = _has_disc_1d
+
+    # TS propagates: if the outer level uses TS, suggest it for inner levels too.
+    use_ts_1 = _has_disc_1d or use_ts_2 or has_disc_2d[k1]
     type_1 = INTEGRAL_INNER
 
     k0 = 0
