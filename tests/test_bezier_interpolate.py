@@ -291,7 +291,7 @@ class TestInterpolateValidation:
 
     def test_n_pts_too_small(self) -> None:
         """n_pts < 1 raises ValueError."""
-        with pytest.raises(ValueError, match="n_pts.*>= 1"):
+        with pytest.raises(ValueError, match=r"n_pts.*>= 1"):
             interpolate_bezier(lambda lat: lat.pts_per_dir[0], 0)
 
     def test_mismatched_nodes_n_pts(self) -> None:
