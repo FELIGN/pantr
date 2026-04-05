@@ -76,6 +76,8 @@ def _try_insert_node(
     for j in range(count):
         if abs(root - nodes[j]) < _MERGE_TOL:
             return count
+    if count >= len(nodes):
+        return count  # Buffer full; root is dropped.
     nodes[count] = root
     return count + 1
 
@@ -88,7 +90,7 @@ def _collect_and_partition_1d(
     """Collect roots from all 1D polynomials and partition [0, 1].
 
     For the 1D base case: finds roots of each polynomial, filters through
-    masks, merges with boundaries {0, 1}, sorts and deduplicates.
+    masks, merges nearby roots within ``_MERGE_TOL``, and sorts.
 
     Args:
         coeffs_list (NumbaList): List of 1D coefficient arrays.
@@ -101,10 +103,11 @@ def _collect_and_partition_1d(
     Note:
         Inputs are assumed to be correct (no validation performed).
     """
-    # Estimate max roots: sum of degrees + 2 for boundaries.
+    # Estimate max roots: 2x sum of degrees + 2 for boundaries (safety margin
+    # in case near-coincident roots from different polynomials survive merging).
     max_roots = 2
     for i in range(len(coeffs_list)):
-        max_roots += len(coeffs_list[i]) - 1
+        max_roots += 2 * (len(coeffs_list[i]) - 1)
 
     nodes = np.empty(max_roots, dtype=np.float64)
     nodes[0] = 0.0
@@ -112,7 +115,7 @@ def _collect_and_partition_1d(
     count = 2
 
     for i in range(len(coeffs_list)):
-        roots, n_roots = find_roots(coeffs_list[i])
+        roots, n_roots, _ = find_roots(coeffs_list[i])
         for r in range(n_roots):
             root = roots[r]
             # Filter through mask.
@@ -148,7 +151,7 @@ def _collect_and_partition_from_2d(
     """
     max_roots = 2
     for i in range(len(coeffs_list)):
-        max_roots += coeffs_list[i].shape[k] - 1
+        max_roots += 2 * (coeffs_list[i].shape[k] - 1)
 
     nodes = np.empty(max_roots, dtype=np.float64)
     nodes[0] = 0.0
@@ -162,7 +165,7 @@ def _collect_and_partition_from_2d(
 
         # Collapse to 1D along k.
         poly_1d = _collapse_2d(coeffs_list[i], k, x_base)
-        roots, n_roots = find_roots(poly_1d)
+        roots, n_roots, _ = find_roots(poly_1d)
 
         for r in range(n_roots):
             root = roots[r]
@@ -206,7 +209,7 @@ def _collect_and_partition_from_3d(
     """
     max_roots = 2
     for i in range(len(coeffs_list)):
-        max_roots += coeffs_list[i].shape[k] - 1
+        max_roots += 2 * (coeffs_list[i].shape[k] - 1)
 
     nodes = np.empty(max_roots, dtype=np.float64)
     nodes[0] = 0.0
@@ -218,7 +221,7 @@ def _collect_and_partition_from_3d(
             continue
 
         poly_1d = _collapse_3d(coeffs_list[i], k, x_base)
-        roots, n_roots = find_roots(poly_1d)
+        roots, n_roots, _ = find_roots(poly_1d)
 
         for r in range(n_roots):
             root = roots[r]
@@ -394,7 +397,7 @@ def volume_quad_2d(  # noqa: PLR0912, PLR0913, PLR0915
 
 
 @nb_jit(nopython=True, cache=True)
-def volume_quad_3d(  # noqa: D417, PLR0912, PLR0913, PLR0915
+def volume_quad_3d(  # noqa: PLR0912, PLR0913, PLR0915
     coeffs_1d: NumbaList,
     masks_1d: NumbaList,
     k0: int,
@@ -421,9 +424,25 @@ def volume_quad_3d(  # noqa: D417, PLR0912, PLR0913, PLR0915
     Three-level hierarchy walk: 1D base -> 2D -> 3D.
 
     Args:
-        coeffs_1d through type_2: Build result (15 values, 5 per level).
-        gl_nodes, gl_weights: GL quadrature on [0, 1].
-        ts_nodes, ts_weights: Tanh-sinh quadrature on [0, 1].
+        coeffs_1d (NumbaList): 1D polynomial coefficients (base level).
+        masks_1d (NumbaList): 1D masks (base level).
+        k0 (int): Height direction at base level.
+        use_ts_0 (bool): Use tanh-sinh at base level.
+        type_0 (int): Integral type at base level.
+        coeffs_2d (NumbaList): 2D polynomial coefficients (middle level).
+        masks_2d (NumbaList): 2D masks (middle level).
+        k1 (int): Height direction at middle level.
+        use_ts_1 (bool): Use tanh-sinh at middle level.
+        type_1 (int): Integral type at middle level.
+        coeffs_3d (NumbaList): 3D polynomial coefficients (top level).
+        masks_3d (NumbaList): 3D masks (top level).
+        k2 (int): Height direction at top level.
+        use_ts_2 (bool): Use tanh-sinh at top level.
+        type_2 (int): Integral type at top level.
+        gl_nodes (npt.NDArray[np.float64]): GL quadrature nodes on [0, 1].
+        gl_weights (npt.NDArray[np.float64]): GL quadrature weights on [0, 1].
+        ts_nodes (npt.NDArray[np.float64]): Tanh-sinh nodes on [0, 1].
+        ts_weights (npt.NDArray[np.float64]): Tanh-sinh weights on [0, 1].
         strategy (int): 0=GL only, 1=TS only, 2=auto mixed.
 
     Returns:
@@ -596,7 +615,7 @@ def volume_quad_3d(  # noqa: D417, PLR0912, PLR0913, PLR0915
 
 
 @nb_jit(nopython=True, cache=True)
-def surface_quad_2d(  # noqa: D417, PLR0912, PLR0913, PLR0915
+def surface_quad_2d(  # noqa: PLR0912, PLR0913, PLR0915
     coeffs_1d: NumbaList,
     masks_1d: NumbaList,
     k0: int,
@@ -627,11 +646,22 @@ def surface_quad_2d(  # noqa: D417, PLR0912, PLR0913, PLR0915
     ``f(x) * sign(d_k phi) * w`` at each root.
 
     Args:
-        coeffs_1d through type_1: Build result (10 values).
+        coeffs_1d (NumbaList): 1D polynomial coefficients (base level).
+        masks_1d (NumbaList): 1D masks (base level).
+        k0 (int): Height direction at base level.
+        use_ts_0 (bool): Use tanh-sinh at base level.
+        type_0 (int): Integral type at base level.
+        coeffs_2d (NumbaList): 2D polynomial coefficients (top level).
+        masks_2d (NumbaList): 2D masks (top level).
+        k1 (int): Height direction at top level.
+        use_ts_1 (bool): Use tanh-sinh at top level.
+        type_1 (int): Integral type at top level.
         n_input_polys (int): Number of original input polynomials.
         input_coeffs_2d (NumbaList): Original 2D polynomial coefficients.
-        gl_nodes, gl_weights: GL quadrature on [0, 1].
-        ts_nodes, ts_weights: Tanh-sinh quadrature on [0, 1].
+        gl_nodes (npt.NDArray[np.float64]): GL quadrature nodes on [0, 1].
+        gl_weights (npt.NDArray[np.float64]): GL quadrature weights on [0, 1].
+        ts_nodes (npt.NDArray[np.float64]): Tanh-sinh nodes on [0, 1].
+        ts_weights (npt.NDArray[np.float64]): Tanh-sinh weights on [0, 1].
         strategy (int): 0=GL only, 1=TS only, 2=auto mixed.
 
     Returns:
@@ -687,7 +717,7 @@ def surface_quad_2d(  # noqa: D417, PLR0912, PLR0913, PLR0915
                     continue
 
                 poly_1d = _collapse_2d(poly_2d, k1, x_tang_val)
-                roots, n_roots = find_roots(poly_1d)
+                roots, n_roots, _ = find_roots(poly_1d)
 
                 for ri in range(n_roots):
                     root = roots[ri]
@@ -744,7 +774,7 @@ def surface_quad_2d(  # noqa: D417, PLR0912, PLR0913, PLR0915
 
 
 @nb_jit(nopython=True, cache=True)
-def surface_quad_3d(  # noqa: D417, PLR0912, PLR0913, PLR0915
+def surface_quad_3d(  # noqa: PLR0912, PLR0913, PLR0915
     coeffs_1d: NumbaList,
     masks_1d: NumbaList,
     k0: int,
@@ -779,11 +809,27 @@ def surface_quad_3d(  # noqa: D417, PLR0912, PLR0913, PLR0915
     weighted by the surface Jacobian |grad phi| / |d_k2 phi|.
 
     Args:
-        coeffs_1d through type_2: Build result (15 values, 5 per level).
+        coeffs_1d (NumbaList): 1D polynomial coefficients (base level).
+        masks_1d (NumbaList): 1D masks (base level).
+        k0 (int): Height direction at base level.
+        use_ts_0 (bool): Use tanh-sinh at base level.
+        type_0 (int): Integral type at base level.
+        coeffs_2d (NumbaList): 2D polynomial coefficients (middle level).
+        masks_2d (NumbaList): 2D masks (middle level).
+        k1 (int): Height direction at middle level.
+        use_ts_1 (bool): Use tanh-sinh at middle level.
+        type_1 (int): Integral type at middle level.
+        coeffs_3d (NumbaList): 3D polynomial coefficients (top level).
+        masks_3d (NumbaList): 3D masks (top level).
+        k2 (int): Height direction at top level.
+        use_ts_2 (bool): Use tanh-sinh at top level.
+        type_2 (int): Integral type at top level.
         n_input_polys (int): Number of original input polynomials.
         input_coeffs_3d (NumbaList): Original 3D polynomial coefficients.
-        gl_nodes, gl_weights: GL quadrature on [0, 1].
-        ts_nodes, ts_weights: Tanh-sinh quadrature on [0, 1].
+        gl_nodes (npt.NDArray[np.float64]): GL quadrature nodes on [0, 1].
+        gl_weights (npt.NDArray[np.float64]): GL quadrature weights on [0, 1].
+        ts_nodes (npt.NDArray[np.float64]): Tanh-sinh nodes on [0, 1].
+        ts_weights (npt.NDArray[np.float64]): Tanh-sinh weights on [0, 1].
         strategy (int): 0=GL only, 1=TS only, 2=auto mixed.
 
     Returns:
@@ -882,7 +928,7 @@ def surface_quad_3d(  # noqa: D417, PLR0912, PLR0913, PLR0915
                             continue
 
                         poly_1d = _collapse_3d(poly_3d, k2, x_base_3d)
-                        roots, n_roots = find_roots(poly_1d)
+                        roots, n_roots, _ = find_roots(poly_1d)
 
                         for ri in range(n_roots):
                             root = roots[ri]
@@ -940,7 +986,7 @@ def surface_quad_3d(  # noqa: D417, PLR0912, PLR0913, PLR0915
 
 
 @nb_jit(nopython=True, cache=True)
-def surface_quad_2d_aggregate(  # noqa: D417, PLR0912, PLR0913, PLR0915
+def surface_quad_2d_aggregate(  # noqa: PLR0912, PLR0913, PLR0915
     coeffs_1d: NumbaList,
     masks_1d: NumbaList,
     k0: int,
@@ -963,15 +1009,29 @@ def surface_quad_2d_aggregate(  # noqa: D417, PLR0912, PLR0913, PLR0915
 
     Computes the k1-th component of the flux-form surface integral directly
     using ``w * sign(d_k1 phi)`` for the normal weight. The scalar weight is
-    ``w * |d_k1 phi| / |grad phi|``, giving the n_k^2 contribution needed for
-    ``integral_Gamma f dS = sum_k integral_Gamma f n_k^2 dS``.
+    ``w * |d_k1 phi| / |grad phi|``, giving the ``n_k^2`` contribution
+    (Saye aggregate formulation: scalar weights contribute
+    ``|d_k phi| / ||grad phi||`` per direction, summing to 1 across all k
+    at each point since ``sum_k n_k^2 = 1``).
 
     Args:
-        coeffs_1d through type_1: Build result for this direction.
+        coeffs_1d (NumbaList): 1D polynomial coefficients (base level).
+        masks_1d (NumbaList): 1D masks (base level).
+        k0 (int): Height direction at base level.
+        use_ts_0 (bool): Use tanh-sinh at base level.
+        type_0 (int): Integral type at base level.
+        coeffs_2d (NumbaList): 2D polynomial coefficients (top level).
+        masks_2d (NumbaList): 2D masks (top level).
+        k1 (int): Height direction at top level.
+        use_ts_1 (bool): Use tanh-sinh at top level.
+        type_1 (int): Integral type at top level.
         n_input_polys (int): Number of input polynomials.
         input_coeffs_2d (NumbaList): Original 2D polynomial coefficients.
-        gl_nodes, gl_weights, ts_nodes, ts_weights: Quadrature nodes.
-        strategy (int): 0=GL, 1=TS, 2=auto.
+        gl_nodes (npt.NDArray[np.float64]): GL quadrature nodes on [0, 1].
+        gl_weights (npt.NDArray[np.float64]): GL quadrature weights on [0, 1].
+        ts_nodes (npt.NDArray[np.float64]): Tanh-sinh nodes on [0, 1].
+        ts_weights (npt.NDArray[np.float64]): Tanh-sinh weights on [0, 1].
+        strategy (int): 0=GL only, 1=TS only, 2=auto mixed.
 
     Returns:
         tuple[npt.NDArray, npt.NDArray, npt.NDArray]:
@@ -1022,7 +1082,7 @@ def surface_quad_2d_aggregate(  # noqa: D417, PLR0912, PLR0913, PLR0915
                     continue
 
                 poly_1d = _collapse_2d(poly_2d, k1, x_tang_val)
-                roots, n_roots = find_roots(poly_1d)
+                roots, n_roots, _ = find_roots(poly_1d)
 
                 for ri in range(n_roots):
                     root = roots[ri]
@@ -1074,7 +1134,7 @@ def surface_quad_2d_aggregate(  # noqa: D417, PLR0912, PLR0913, PLR0915
 
 
 @nb_jit(nopython=True, cache=True)
-def surface_quad_3d_aggregate(  # noqa: D417, PLR0912, PLR0913, PLR0915
+def surface_quad_3d_aggregate(  # noqa: PLR0912, PLR0913, PLR0915
     coeffs_1d: NumbaList,
     masks_1d: NumbaList,
     k0: int,
@@ -1105,14 +1165,28 @@ def surface_quad_3d_aggregate(  # noqa: D417, PLR0912, PLR0913, PLR0915
     level set and computing flux-form normal weights.
 
     Args:
-        coeffs_1d through type_2: Build result (15 values, 5 per level).
+        coeffs_1d (NumbaList): 1D polynomial coefficients (base level).
+        masks_1d (NumbaList): 1D masks (base level).
+        k0 (int): Height direction at base level.
+        use_ts_0 (bool): Use tanh-sinh at base level.
+        type_0 (int): Integral type at base level.
+        coeffs_2d (NumbaList): 2D polynomial coefficients (middle level).
+        masks_2d (NumbaList): 2D masks (middle level).
+        k1 (int): Height direction at middle level.
+        use_ts_1 (bool): Use tanh-sinh at middle level.
+        type_1 (int): Integral type at middle level.
+        coeffs_3d (NumbaList): 3D polynomial coefficients (top level).
+        masks_3d (NumbaList): 3D masks (top level).
+        k2 (int): Height direction at top level.
+        use_ts_2 (bool): Use tanh-sinh at top level.
+        type_2 (int): Integral type at top level.
         n_input_polys (int): Number of original input polynomials.
         input_coeffs_3d (NumbaList): Original 3D coefficient arrays.
-        gl_nodes (npt.NDArray[np.float64]): GL nodes on [0, 1].
-        gl_weights (npt.NDArray[np.float64]): GL weights on [0, 1].
+        gl_nodes (npt.NDArray[np.float64]): GL quadrature nodes on [0, 1].
+        gl_weights (npt.NDArray[np.float64]): GL quadrature weights on [0, 1].
         ts_nodes (npt.NDArray[np.float64]): Tanh-sinh nodes on [0, 1].
         ts_weights (npt.NDArray[np.float64]): Tanh-sinh weights on [0, 1].
-        strategy (int): Quadrature strategy code.
+        strategy (int): 0=GL only, 1=TS only, 2=auto mixed.
 
     Returns:
         tuple[npt.NDArray[np.float64], npt.NDArray[np.float64], npt.NDArray[np.float64]]:
@@ -1205,7 +1279,7 @@ def surface_quad_3d_aggregate(  # noqa: D417, PLR0912, PLR0913, PLR0915
                             continue
 
                         poly_1d = _collapse_3d(poly_3d, k2, x_base_3d)
-                        roots, n_roots = find_roots(poly_1d)
+                        roots, n_roots, _ = find_roots(poly_1d)
 
                         for ri in range(n_roots):
                             root = roots[ri]

@@ -23,7 +23,7 @@ Main exports:
 from __future__ import annotations
 
 from enum import IntEnum
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, TypeAlias
 
 import numpy as np
 from numba.typed import List as NumbaList
@@ -56,9 +56,19 @@ from pantr.bezier.implicit._mask import (
 if TYPE_CHECKING:
     from pantr.bezier._bezier import Bezier
 
+VolQuadResult: TypeAlias = tuple[npt.NDArray[np.float64], npt.NDArray[np.float64]]
+"""Volume quadrature result: ``(points, weights)``."""
+
+SurfQuadResult: TypeAlias = tuple[
+    npt.NDArray[np.float64], npt.NDArray[np.float64], npt.NDArray[np.float64]
+]
+"""Surface quadrature result: ``(points, scalar_weights, normal_weights)``."""
+
 __all__ = [
     "ImplicitPolyQuadrature",
     "QuadStrategy",
+    "SurfQuadResult",
+    "VolQuadResult",
     "monomial_to_bernstein_2d",
     "monomial_to_bernstein_3d",
 ]
@@ -83,8 +93,8 @@ class ImplicitPolyQuadrature:
     and surface integrals.
 
     Attributes:
-        dim (int): Parametric dimension (2 or 3).
-        n_polys (int): Number of input polynomials.
+        dim (int): Parametric dimension (2 or 3). Read-only.
+        n_polys (int): Number of input polynomials. Read-only.
     """
 
     def __init__(self, *polynomials: Bezier | npt.NDArray[np.float64]) -> None:  # noqa: PLR0912
@@ -98,7 +108,8 @@ class ImplicitPolyQuadrature:
 
         Raises:
             ValueError: If no polynomials are given, dimensions are
-                inconsistent, or dimension is not 2 or 3.
+                inconsistent, dimension is not 2 or 3, or a polynomial
+                is identically zero.
         """
         if len(polynomials) == 0:
             msg = "At least one polynomial is required."
@@ -107,10 +118,12 @@ class ImplicitPolyQuadrature:
         # Extract coefficient arrays.
         coeffs_arrays: list[npt.NDArray[np.float64]] = []
         for p in polynomials:
-            if hasattr(p, "control_points"):
+            if isinstance(p, np.ndarray):
+                coeffs_arrays.append(np.asarray(p, dtype=np.float64))
+            elif hasattr(p, "control_points"):
                 # Bezier object: extract scalar control points.
                 cp = np.asarray(p.control_points, dtype=np.float64)
-                if cp.ndim > p.dim:  # type: ignore[union-attr]
+                if cp.ndim > p.dim:
                     if cp.shape[-1] != 1:
                         msg = (
                             f"Only scalar Bezier polynomials are supported, "
@@ -123,17 +136,24 @@ class ImplicitPolyQuadrature:
                 coeffs_arrays.append(np.asarray(p, dtype=np.float64))
 
         # Validate dimensions.
-        self.dim = coeffs_arrays[0].ndim
+        dim = coeffs_arrays[0].ndim
         for ca in coeffs_arrays:
-            if ca.ndim != self.dim:
-                msg = f"All polynomials must have the same dimension, got {ca.ndim} and {self.dim}."
+            if ca.ndim != dim:
+                msg = f"All polynomials must have the same dimension, got {ca.ndim} and {dim}."
                 raise ValueError(msg)
 
-        if self.dim not in (2, 3):
-            msg = f"Only 2D and 3D are supported, got {self.dim}D."
+        if dim not in (2, 3):
+            msg = f"Only 2D and 3D are supported, got {dim}D."
             raise ValueError(msg)
 
-        self.n_polys = len(coeffs_arrays)
+        # Reject identically-zero polynomials (undefined implicit domain).
+        for i, ca in enumerate(coeffs_arrays):
+            if np.all(ca == 0.0):
+                msg = f"Polynomial {i} is identically zero; the implicit domain is undefined."
+                raise ValueError(msg)
+
+        self._dim = dim
+        self._n_polys = len(coeffs_arrays)
         self._coeffs = coeffs_arrays
 
         # Build typed lists (cached for reuse across quad calls).
@@ -142,7 +162,7 @@ class ImplicitPolyQuadrature:
             self._coeffs_list.append(ca)
 
         # Compute masks and build hierarchy.
-        if self.dim == 2:  # noqa: PLR2004
+        if self._dim == 2:  # noqa: PLR2004
             self._masks_list = NumbaList()
             for ca in coeffs_arrays:
                 self._masks_list.append(compute_nonzero_mask_2d(ca))
@@ -153,11 +173,29 @@ class ImplicitPolyQuadrature:
                 self._masks_list.append(compute_nonzero_mask_3d(ca))
             self._build_result = build_3d(self._coeffs_list, self._masks_list)
 
+    @property
+    def dim(self) -> int:
+        """Get the parametric dimension.
+
+        Returns:
+            int: 2 or 3.
+        """
+        return self._dim
+
+    @property
+    def n_polys(self) -> int:
+        """Get the number of input polynomials.
+
+        Returns:
+            int: Number of polynomials.
+        """
+        return self._n_polys
+
     def volume_quad(
         self,
         q: int,
         strategy: QuadStrategy = QuadStrategy.AUTO_MIXED,
-    ) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64]]:
+    ) -> VolQuadResult:
         """Generate volume quadrature points and weights.
 
         The quadrature integrates over the full domain [0,1]^d. To compute
@@ -169,9 +207,10 @@ class ImplicitPolyQuadrature:
             strategy (QuadStrategy): Quadrature method selection.
 
         Returns:
-            tuple[npt.NDArray[np.float64], npt.NDArray[np.float64]]:
-                ``(points, weights)`` with shapes ``(n_pts, dim)`` and
-                ``(n_pts,)``. Weights sum to 1 (the volume of [0,1]^d).
+            VolQuadResult: ``(points, weights)`` with shapes
+                ``(n_pts, dim)`` and ``(n_pts,)``. When integrated against
+                the constant function 1, the weights recover the volume
+                of ``[0, 1]^d``.
 
         Raises:
             ValueError: If ``q < 1``.
@@ -181,7 +220,7 @@ class ImplicitPolyQuadrature:
         ts_nodes, ts_weights = _tanh_sinh_01(q)
         strat = int(strategy)
 
-        if self.dim == 2:  # noqa: PLR2004
+        if self._dim == 2:  # noqa: PLR2004
             return volume_quad_2d(  # type: ignore[call-arg]
                 *self._build_result, gl_nodes, gl_weights, ts_nodes, ts_weights, strat
             )
@@ -195,11 +234,7 @@ class ImplicitPolyQuadrature:
         q: int,
         strategy: QuadStrategy = QuadStrategy.AUTO_MIXED,
         aggregate: bool = False,
-    ) -> tuple[
-        npt.NDArray[np.float64],
-        npt.NDArray[np.float64],
-        npt.NDArray[np.float64],
-    ]:
+    ) -> SurfQuadResult:
         """Generate surface quadrature points and weights.
 
         Computes quadrature over the zero level set {phi = 0} in flux form.
@@ -224,9 +259,8 @@ class ImplicitPolyQuadrature:
             aggregate (bool): Use aggregate mode (run all d directions).
 
         Returns:
-            tuple[npt.NDArray[np.float64], npt.NDArray[np.float64], npt.NDArray[np.float64]]:
-                ``(points, scalar_weights, normal_weights)`` with shapes
-                ``(n_pts, dim)``, ``(n_pts,)``, ``(n_pts, dim)``.
+            SurfQuadResult: ``(points, scalar_weights, normal_weights)``
+                with shapes ``(n_pts, dim)``, ``(n_pts,)``, ``(n_pts, dim)``.
 
         Raises:
             ValueError: If ``q < 1``.
@@ -241,10 +275,10 @@ class ImplicitPolyQuadrature:
                 q, gl_nodes, gl_weights, ts_nodes, ts_weights, strat
             )
 
-        if self.dim == 2:  # noqa: PLR2004
+        if self._dim == 2:  # noqa: PLR2004
             return surface_quad_2d(  # type: ignore[call-arg]
                 *self._build_result,
-                self.n_polys,
+                self._n_polys,
                 self._coeffs_list,
                 gl_nodes,
                 gl_weights,
@@ -255,7 +289,7 @@ class ImplicitPolyQuadrature:
         else:
             return surface_quad_3d(  # type: ignore[call-arg]
                 *self._build_result,
-                self.n_polys,
+                self._n_polys,
                 self._coeffs_list,
                 gl_nodes,
                 gl_weights,
@@ -272,11 +306,7 @@ class ImplicitPolyQuadrature:
         ts_nodes: npt.NDArray[np.float64],
         ts_weights: npt.NDArray[np.float64],
         strat: int,
-    ) -> tuple[
-        npt.NDArray[np.float64],
-        npt.NDArray[np.float64],
-        npt.NDArray[np.float64],
-    ]:
+    ) -> SurfQuadResult:
         """Aggregate surface quadrature: run for each height direction, combine.
 
         For each direction k, builds a hierarchy with forced k, computes the
@@ -292,21 +322,20 @@ class ImplicitPolyQuadrature:
             strat (int): Strategy code (see :class:`QuadStrategy`).
 
         Returns:
-            tuple[npt.NDArray[np.float64], npt.NDArray[np.float64], npt.NDArray[np.float64]]:
-                ``(points, scalar_weights, normal_weights)``.
+            SurfQuadResult: ``(points, scalar_weights, normal_weights)``.
         """
         all_pts_list: list[npt.NDArray[np.float64]] = []
         all_sw_list: list[npt.NDArray[np.float64]] = []
         all_nw_list: list[npt.NDArray[np.float64]] = []
 
-        if self.dim == 2:  # noqa: PLR2004
+        if self._dim == 2:  # noqa: PLR2004
             for k in range(2):
                 r_raw = build_2d_forced_k(self._coeffs_list, self._masks_list, k)
-                # In aggregate mode, force TS on all levels (matches algoim).
+                # Aggregate mode always uses TS for robustness with vertical tangents.
                 r = _force_ts_flags(r_raw, 2)
                 pts, sw, nw = surface_quad_2d_aggregate(  # type: ignore[call-arg]
                     *r,
-                    self.n_polys,
+                    self._n_polys,
                     self._coeffs_list,
                     gl_nodes,
                     gl_weights,
@@ -321,11 +350,11 @@ class ImplicitPolyQuadrature:
         else:
             for k in range(3):
                 r_raw_3d = build_3d_forced_k(self._coeffs_list, self._masks_list, k)
-                # Force TS on all levels for robustness with vertical tangents.
+                # Aggregate mode always uses TS for robustness with vertical tangents.
                 r_3d = _force_ts_flags(r_raw_3d, 3)
                 pts, sw, nw = surface_quad_3d_aggregate(  # type: ignore[call-arg]
                     *r_3d,
-                    self.n_polys,
+                    self._n_polys,
                     self._coeffs_list,
                     gl_nodes,
                     gl_weights,
@@ -340,9 +369,9 @@ class ImplicitPolyQuadrature:
 
         if not all_pts_list:
             return (
-                np.empty((0, self.dim), dtype=np.float64),
+                np.empty((0, self._dim), dtype=np.float64),
                 np.empty(0, dtype=np.float64),
-                np.empty((0, self.dim), dtype=np.float64),
+                np.empty((0, self._dim), dtype=np.float64),
             )
 
         return (
@@ -363,14 +392,19 @@ class ImplicitPolyQuadrature:
 
         Raises:
             IndexError: If ``poly_idx`` is out of range ``[0, n_polys)``.
+            ValueError: If ``points`` does not have shape ``(n, dim)``.
         """
-        if poly_idx < 0 or poly_idx >= self.n_polys:
-            msg = f"poly_idx {poly_idx} out of range [0, {self.n_polys})."
+        if poly_idx < 0 or poly_idx >= self._n_polys:
+            msg = f"poly_idx {poly_idx} out of range [0, {self._n_polys})."
             raise IndexError(msg)
+        points = np.asarray(points, dtype=np.float64)
+        if points.ndim != 2 or points.shape[1] != self._dim:  # noqa: PLR2004
+            msg = f"points must have shape (n, {self._dim}), got {points.shape}."
+            raise ValueError(msg)
         coeffs = self._coeffs[poly_idx]
         n = points.shape[0]
         values = np.empty(n, dtype=np.float64)
-        if self.dim == 2:  # noqa: PLR2004
+        if self._dim == 2:  # noqa: PLR2004
             for i in range(n):
                 values[i] = _eval_bernstein_2d(coeffs, points[i])
         else:

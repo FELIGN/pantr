@@ -39,12 +39,11 @@ _CLIP_REDUCTION_THRESHOLD: float = 0.2
 _CLIP_MAX_DEPTH: int = 64
 """Maximum recursion depth for the clipping stack."""
 
-_MAX_STACK_SIZE: int = 512
+_MAX_STACK_SIZE: int = 4096
 """Maximum stack size for the iterative clipping loop.
 
-Intervals that cannot be pushed when the stack is full are silently dropped.
-This is extremely rare in practice (requires pathological polynomials with
-hundreds of roots in [0, 1]).
+Sized to handle all practical cases. If the stack is exhausted, the overflow
+is reported via the returned boolean flag so callers can warn the user.
 """
 
 _CLIP_MIN_DEGREE: int = 6
@@ -548,7 +547,7 @@ def _clip_roots_core(  # noqa: PLR0912, PLR0915
     root_coeff: npt.NDArray[np.float64],
     param_tol: float,
     geom_tol: float,
-) -> tuple[npt.NDArray[np.float64], int]:
+) -> tuple[npt.NDArray[np.float64], int, bool]:
     """Stack-based Bezier clipping root finder.
 
     Args:
@@ -557,7 +556,8 @@ def _clip_roots_core(  # noqa: PLR0912, PLR0915
         geom_tol (float): Geometric tolerance for near-zero detection.
 
     Returns:
-        tuple[npt.NDArray[np.float64], int]: (roots_array, count).
+        tuple[npt.NDArray[np.float64], int, bool]: (roots_array, count, overflowed)
+            where *overflowed* is True if the clipping stack was exhausted.
 
     Note:
         Inputs are assumed to be correct (no validation performed).
@@ -566,6 +566,7 @@ def _clip_roots_core(  # noqa: PLR0912, PLR0915
     max_roots = 3 * n + 4
     roots = np.empty(max_roots, dtype=np.float64)
     n_roots = 0
+    overflowed = False
 
     coeff_scale = 0.0
     for i in range(n + 1):
@@ -692,6 +693,8 @@ def _clip_roots_core(  # noqa: PLR0912, PLR0915
                 stack_hi[stack_size] = hi
                 stack_depth[stack_size] = depth + 1
                 stack_size += 1
+            elif n_sc > 0:
+                overflowed = True
             continue
 
         margin = (n + 1) * 4.0 * _DBL_EPSILON
@@ -718,6 +721,8 @@ def _clip_roots_core(  # noqa: PLR0912, PLR0915
                     stack_hi[stack_size] = new_hi
                     stack_depth[stack_size] = depth + 1
                     stack_size += 1
+                else:
+                    overflowed = True
             else:
                 mid = 0.5 * (new_lo + new_hi)
                 if stack_size + 1 < _MAX_STACK_SIZE:
@@ -729,6 +734,8 @@ def _clip_roots_core(  # noqa: PLR0912, PLR0915
                     stack_hi[stack_size] = new_hi
                     stack_depth[stack_size] = depth + 1
                     stack_size += 1
+                else:
+                    overflowed = True
         elif reduction >= _CLIP_REDUCTION_THRESHOLD:
             mid = 0.5 * (new_lo + new_hi)
             if stack_size + 1 < _MAX_STACK_SIZE:
@@ -740,6 +747,8 @@ def _clip_roots_core(  # noqa: PLR0912, PLR0915
                 stack_hi[stack_size] = new_hi
                 stack_depth[stack_size] = depth + 1
                 stack_size += 1
+            else:
+                overflowed = True
         else:
             mid = 0.5 * (lo + hi)
             if stack_size + 1 < _MAX_STACK_SIZE:
@@ -751,8 +760,10 @@ def _clip_roots_core(  # noqa: PLR0912, PLR0915
                 stack_hi[stack_size] = hi
                 stack_depth[stack_size] = depth + 1
                 stack_size += 1
+            else:
+                overflowed = True
 
-    return roots, n_roots
+    return roots, n_roots, overflowed
 
 
 # ---------------------------------------------------------------------------
@@ -828,7 +839,7 @@ def _dedup_roots(
 @nb_jit(nopython=True, cache=True)
 def find_roots(
     coeffs: npt.NDArray[np.float64],
-) -> tuple[npt.NDArray[np.float64], int]:
+) -> tuple[npt.NDArray[np.float64], int, bool]:
     """Find all real roots of a 1D Bernstein polynomial in (0, 1).
 
     Dispatches between Yuksel and Bezier clipping based on degree and
@@ -843,16 +854,17 @@ def find_roots(
             length ``n + 1`` (degree n >= 0).
 
     Returns:
-        tuple[npt.NDArray[np.float64], int]: (roots_buffer, count) where
-            only the first *count* entries are valid roots, sorted in
-            ascending order.
+        tuple[npt.NDArray[np.float64], int, bool]: (roots_buffer, count,
+            overflowed) where only the first *count* entries are valid
+            roots, sorted in ascending order, and *overflowed* indicates
+            whether the clipping stack was exhausted.
 
     Note:
         Inputs are assumed to be correct (no validation performed).
     """
     n = len(coeffs) - 1
     if n <= 0:
-        return np.empty(0, dtype=np.float64), 0
+        return np.empty(0, dtype=np.float64), 0, False
 
     # Quick rejection: uniform sign.
     d_min = coeffs[0]
@@ -861,29 +873,33 @@ def find_roots(
         d_min = min(d_min, coeffs[i])
         d_max = max(d_max, coeffs[i])
     if d_min > 0.0 or d_max < 0.0:
-        return np.empty(0, dtype=np.float64), 0
+        return np.empty(0, dtype=np.float64), 0, False
 
     # All-zero check.
     coeff_scale = max(abs(d_min), abs(d_max))
     if coeff_scale <= _DBL_EPSILON:
-        return np.empty(0, dtype=np.float64), 0
+        return np.empty(0, dtype=np.float64), 0, False
 
     tol = _ROOT_TOL
 
     if n < _CLIP_MIN_DEGREE:
-        return _yuksel_roots(coeffs, tol)
+        roots, count = _yuksel_roots(coeffs, tol)
+        return roots, count, False
 
     # Check coefficient dynamic range for clipping dispatch.
+    # Use relative threshold so mixed-scale polynomials are handled correctly.
+    threshold = coeff_scale * _DBL_EPSILON
     c_min_nonzero = coeff_scale
     for i in range(n + 1):
         a = abs(coeffs[i])
-        if a > _DBL_EPSILON and a < c_min_nonzero:
+        if a > threshold and a < c_min_nonzero:
             c_min_nonzero = a
     coeff_range = coeff_scale / c_min_nonzero
 
     if coeff_range <= _CLIP_COEFF_RANGE_LIMIT:
-        raw, n_raw = _clip_roots_core(coeffs, tol, tol)
+        raw, n_raw, clip_overflowed = _clip_roots_core(coeffs, tol, tol)
         unique, n_unique = _dedup_roots(raw, n_raw, coeffs, tol, tol)
-        return unique, n_unique
+        return unique, n_unique, clip_overflowed
 
-    return _yuksel_roots(coeffs, tol)
+    roots, count = _yuksel_roots(coeffs, tol)
+    return roots, count, False

@@ -118,8 +118,11 @@ def _sylvester_matrix(
             S[m + row, col] = g[j] * _bincoeff(m, j)
 
     # Apply diagonal scaling D^{-1}: D_i = C(n+m-1, i).
+    # Guard against overflow for high-degree inputs where bincoeff → inf.
+    _BINCOEFF_OVERFLOW: float = 1e300
     for col in range(size):
-        d_inv = 1.0 / _bincoeff(size - 1, col)
+        bc = _bincoeff(size - 1, col)
+        d_inv = 0.0 if bc == 0.0 or bc > _BINCOEFF_OVERFLOW else 1.0 / bc
         for row in range(size):
             S[row, col] *= d_inv
 
@@ -137,7 +140,7 @@ def _bezout_matrix(
     - b_{i,1} = (n/i)(f_i*g_0 - f_0*g_i) for 1 <= i <= n
     - b_{n,j+1} = (n/(n-j))(f_n*g_j - f_j*g_n) for 1 <= j <= n-1
     - b_{i,j+1} = (n^2/(i*(n-j)))(f_i*g_j - f_j*g_i)
-                  + (i*(n-i))/(i*(n-j)) * b_{i+1,j} for 1<=i, j<=n-1
+                  + (j*(n-i))/(i*(n-j)) * b_{i+1,j} for 1<=i, j<=n-1
 
     The matrix is symmetric: b_{i,j} = b_{j,i}.
 

@@ -13,13 +13,20 @@ from numpy import typing as npt
 from pantr.bezier.implicit import ImplicitPolyQuadrature, QuadStrategy
 from pantr.bezier.implicit._bernstein import (
     _collapse_2d,
+    _collapse_3d,
     _degree_elevate_1d,
     _derivative_along_axis_1d,
     _eval_bernstein_2d,
     _eval_bernstein_basis_1d,
     _eval_gradient_2d,
+    _eval_gradient_3d,
     _face_restrict_2d,
     _normalize_1d,
+)
+from pantr.bezier.implicit._convert import (
+    _validate_degrees,
+    monomial_to_bernstein_2d,
+    monomial_to_bernstein_3d,
 )
 from pantr.bezier.implicit._mask import (
     _collapse_mask_2d,
@@ -29,6 +36,7 @@ from pantr.bezier.implicit._mask import (
     compute_nonzero_mask_1d,
     compute_nonzero_mask_2d,
 )
+from pantr.bezier.implicit._resultant import resultant_2d
 from pantr.bezier.implicit._roots import find_roots
 
 # ---------------------------------------------------------------------------
@@ -152,13 +160,13 @@ class TestRootFinding:
     """Tests for _roots.py."""
 
     def test_linear(self) -> None:
-        r, c = find_roots(np.array([1.0, -1.0]))
+        r, c, _ = find_roots(np.array([1.0, -1.0]))
         assert c == 1
         assert abs(r[0] - 0.5) < 1e-12  # noqa: PLR2004
 
     def test_quadratic(self) -> None:
         # (t-0.3)(t-0.7) in Bernstein.
-        r, c = find_roots(np.array([0.21, -0.29, 0.21]))
+        r, c, _ = find_roots(np.array([0.21, -0.29, 0.21]))
         assert c == 2  # noqa: PLR2004
         assert abs(r[0] - 0.3) < 1e-10  # noqa: PLR2004
         assert abs(r[1] - 0.7) < 1e-10  # noqa: PLR2004
@@ -175,7 +183,7 @@ class TestRootFinding:
             for j in range(i + 1):
                 M[i, j] = comb(i, j) / comb(deg, j)
         bern = M @ mono
-        r, c = find_roots(bern)
+        r, c, _ = find_roots(bern)
         assert c == 2  # noqa: PLR2004
         assert abs(r[0] - 0.2) < 1e-6  # noqa: PLR2004
         assert abs(r[1] - 0.8) < 1e-6  # noqa: PLR2004
@@ -214,7 +222,7 @@ class TestRootFinding:
             for j in range(i + 1):
                 M[i, j] = comb(i, j) / comb(deg, j)
         bern = M @ mono
-        raw, n_raw = _clip_roots_core(bern, 1e-15, 1e-15)
+        raw, n_raw, _ = _clip_roots_core(bern, 1e-15, 1e-15)
         unique, n_unique = _dedup_roots(raw, n_raw, bern, 1e-15, 1e-15)
         assert n_unique == 5, f"Expected 5 roots, got {n_unique}: {unique[:n_unique]}"  # noqa: PLR2004
         for exp in roots_expected:
@@ -223,12 +231,12 @@ class TestRootFinding:
             )
 
     def test_no_roots(self) -> None:
-        _r, c = find_roots(np.array([1.0, 2.0, 3.0]))
+        _r, c, _ = find_roots(np.array([1.0, 2.0, 3.0]))
         assert c == 0
 
     def test_circle_collapsed(self) -> None:
         # Circle collapsed at y=0.5: roots at 0.5 ± sqrt(0.1).
-        r, c = find_roots(np.array([0.15, -0.35, 0.15]))
+        r, c, _ = find_roots(np.array([0.15, -0.35, 0.15]))
         assert c == 2  # noqa: PLR2004
         assert abs(r[0] - 0.18377223) < 1e-6  # noqa: PLR2004
         assert abs(r[1] - 0.81622777) < 1e-6  # noqa: PLR2004
@@ -1513,13 +1521,10 @@ class TestEdgeCases:
         assert abs(np.sum(wts[vals < 0]) - 0.5) < 1e-12  # noqa: PLR2004
 
     def test_zero_polynomial(self) -> None:
-        """Phi = 0 everywhere: degenerate, no interior region."""
+        """Phi = 0 everywhere: rejected as undefined domain."""
         c = np.zeros((2, 2))
-        ipq = ImplicitPolyQuadrature(c)
-        pts, wts = ipq.volume_quad(5, QuadStrategy.GL_ONLY)
-        vals = ipq.eval_poly(0, pts)
-        # phi = 0, not < 0, so area_neg = 0.
-        assert np.sum(wts[vals < 0]) == 0.0
+        with pytest.raises(ValueError, match="identically zero"):
+            ImplicitPolyQuadrature(c)
 
     def test_surface_no_interface(self) -> None:
         """Surface quad when phi > 0 everywhere: should return empty."""
@@ -1562,12 +1567,10 @@ class TestEdgeCases:
         assert abs(np.sum(wts[vals < 0]) - 0.5) < 1e-12  # noqa: PLR2004
 
     def test_3d_zero_polynomial(self) -> None:
-        """3D: phi = 0 everywhere."""
+        """3D: phi = 0 everywhere: rejected as undefined domain."""
         c = np.zeros((2, 2, 2))
-        ipq = ImplicitPolyQuadrature(c)
-        pts, wts = ipq.volume_quad(3, QuadStrategy.GL_ONLY)
-        vals = ipq.eval_poly(0, pts)
-        assert np.sum(wts[vals < 0]) == 0.0
+        with pytest.raises(ValueError, match="identically zero"):
+            ImplicitPolyQuadrature(c)
 
     def test_3d_surface_no_interface(self) -> None:
         """3D surface quad when phi > 0 everywhere: should return empty."""
@@ -1837,3 +1840,132 @@ class TestHRefinementExtended:
         if errors[32] > 0:
             rate = np.log2(errors[16] / errors[32])
             assert rate > 3.5, f"3D h-refine rate: {rate:.1f} (expected ~{2 * q})"  # noqa: PLR2004
+
+
+# ---------------------------------------------------------------------------
+# Additional unit tests
+# ---------------------------------------------------------------------------
+
+
+class TestResultant:
+    """Direct unit tests for resultant_2d from _resultant.py."""
+
+    def test_resultant_along_y(self) -> None:
+        """Resultant of (x-0.5) and (y-0.5) along axis 0 yields root at y=0.5."""
+        phi1 = np.array([[-0.5, -0.5], [0.5, 0.5]])  # x - 0.5
+        phi2 = np.array([[-0.5, 0.5], [-0.5, 0.5]])  # y - 0.5
+        res = resultant_2d(phi1, phi2, k=0)
+        roots_buf, count, _ = find_roots(res)
+        roots = roots_buf[:count]
+        assert count == 1, f"Expected 1 root, got {count}"
+        assert abs(roots[0] - 0.5) < 1e-12  # noqa: PLR2004
+
+    def test_resultant_along_x(self) -> None:
+        """Resultant of (x-0.5) and (y-0.5) along axis 1 yields root at x=0.5."""
+        phi1 = np.array([[-0.5, -0.5], [0.5, 0.5]])  # x - 0.5
+        phi2 = np.array([[-0.5, 0.5], [-0.5, 0.5]])  # y - 0.5
+        res = resultant_2d(phi1, phi2, k=1)
+        roots_buf, count, _ = find_roots(res)
+        roots = roots_buf[:count]
+        assert count == 1, f"Expected 1 root, got {count}"
+        assert abs(roots[0] - 0.5) < 1e-12  # noqa: PLR2004
+
+
+class TestSurfaceQuad3DAggregate:
+    """Tests for 3D aggregate surface quadrature convergence."""
+
+    def test_sphere_area_convergence(self) -> None:
+        """Sphere surface area converges with aggregate mode."""
+        r = 0.2
+        r_sq = r**2
+        coeffs = _make_sphere_coeffs(r_sq=r_sq)
+        ipq = ImplicitPolyQuadrature(coeffs)
+        expected = 4.0 * np.pi * r**2
+
+        errors = []
+        for q in [5, 10, 15]:
+            s_pts, s_wts, _ = ipq.surface_quad(q, QuadStrategy.TS_ONLY, aggregate=True)
+            area = np.sum(s_wts)
+            errors.append(abs(area - expected) / expected)
+
+        # Errors should decrease monotonically.
+        for i in range(len(errors) - 1):
+            assert errors[i + 1] < errors[i], f"Errors not monotonically decreasing: {errors}"
+
+        # Final error should be small.
+        assert errors[-1] < 1e-2, f"Final error {errors[-1]:.2e} exceeds 1e-2"  # noqa: PLR2004
+
+
+class TestBernstein3D:
+    """Unit tests for 3D Bernstein operations."""
+
+    def test_collapse_3d_linear(self) -> None:
+        """Collapse phi(x,y,z) = x + 2y + 3z at x=0.3, z=0.7 with k=1."""
+        # Bernstein coefficients for phi = x + 2y + 3z on [0,1]^3, degree (1,1,1).
+        # B[i,j,k] = phi(i, j, k) for linear polynomial.
+        coeffs = np.array([[[0.0, 3.0], [2.0, 5.0]], [[1.0, 4.0], [3.0, 6.0]]])
+
+        # k=1: keep y-axis, contract x (axis 0) and z (axis 2).
+        # x_tang = [0.3, 0.7] -> x_tang[0]=0.3 for axis 0, x_tang[1]=0.7 for axis 2.
+        result = _collapse_3d(coeffs, k=1, x_tang=np.array([0.3, 0.7]))
+
+        # phi(0.3, y, 0.7) = 0.3 + 2y + 2.1 = 2.4 + 2y
+        # Degree-1 Bernstein: [phi(0.3, 0, 0.7), phi(0.3, 1, 0.7)] = [2.4, 4.4]
+        expected = np.array([2.4, 4.4])
+        np.testing.assert_allclose(result, expected, atol=1e-14)
+
+    def test_eval_gradient_3d_linear(self) -> None:
+        """Gradient of phi = x + 2y + 3z should be [1, 2, 3] everywhere."""
+        coeffs = np.array([[[0.0, 3.0], [2.0, 5.0]], [[1.0, 4.0], [3.0, 6.0]]])
+        grad = _eval_gradient_3d(coeffs, np.array([0.5, 0.5, 0.5]))
+        np.testing.assert_allclose(grad, np.array([1.0, 2.0, 3.0]), atol=1e-14)
+
+
+class TestConvertValidation:
+    """Tests for _convert.py input validation."""
+
+    def test_monomial_to_bernstein_2d_bad_domain(self) -> None:
+        """Reject domain_hi <= domain_lo in 2D."""
+        mono = np.array([[1.0]])
+        with pytest.raises(ValueError, match="domain_hi"):
+            monomial_to_bernstein_2d(mono, (0, 0), np.array([1.0, 0.0]), np.array([0.0, 1.0]))
+        with pytest.raises(ValueError, match="domain_hi"):
+            monomial_to_bernstein_2d(mono, (0, 0), np.array([0.0, 1.0]), np.array([1.0, 0.0]))
+
+    def test_monomial_to_bernstein_3d_bad_domain(self) -> None:
+        """Reject domain_hi <= domain_lo in 3D."""
+        mono = np.array([[[1.0]]])
+        with pytest.raises(ValueError, match="domain_hi"):
+            monomial_to_bernstein_3d(
+                mono, (0, 0, 0), np.array([1.0, 0.0, 0.0]), np.array([0.0, 1.0, 1.0])
+            )
+
+    def test_validate_degrees_too_small(self) -> None:
+        """Reject target degree < monomial degree."""
+        with pytest.raises(ValueError, match="less than monomial degree"):
+            _validate_degrees((3, 2), (1, 2))
+
+
+class TestZeroPolyValidation:
+    """Tests for identically-zero polynomial rejection."""
+
+    def test_zero_polynomial_raises(self) -> None:
+        """ImplicitPolyQuadrature rejects identically-zero coefficients."""
+        with pytest.raises(ValueError, match="identically zero"):
+            ImplicitPolyQuadrature(np.zeros((3, 3)))
+
+
+class TestEvalPolyValidation:
+    """Tests for eval_poly input validation."""
+
+    def test_wrong_points_shape_1d(self) -> None:
+        """Reject 1D points array."""
+        ipq = ImplicitPolyQuadrature(_make_circle_coeffs())
+        with pytest.raises(ValueError, match="shape"):
+            ipq.eval_poly(0, np.array([0.5, 0.5]))
+
+    def test_wrong_points_dim(self) -> None:
+        """Reject points with wrong number of columns."""
+        ipq = ImplicitPolyQuadrature(_make_circle_coeffs())
+        with pytest.raises(ValueError, match="shape"):
+            ipq.eval_poly(0, np.array([[0.5, 0.5, 0.5]]))

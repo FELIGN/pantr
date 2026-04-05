@@ -45,6 +45,8 @@ def _eval_bernstein_basis_1d(
 
     Uses the numerically stable recurrence relation:
     ``B[0] = (1-x)^n``, ``B[i] = B[i-1] * (n-i+1)/i * x/(1-x)``.
+    Boundary cases ``x=0``, ``x=1``, and ``x`` near 1 are handled separately
+    to avoid division by zero or loss of precision.
 
     Args:
         degree (int): Polynomial degree (>= 0).
@@ -74,6 +76,12 @@ def _eval_bernstein_basis_1d(
         return basis
 
     s = 1.0 - x
+    # Near-boundary guard: when s is subnormally small, the ratio x/s
+    # overflows for high degree, producing NaN via 0*inf. Treat as x=1.
+    if s < _NEAR_ZERO:
+        basis[:] = 0.0
+        basis[n] = 1.0
+        return basis
     basis[0] = s**n
     ratio = x / s
     for i in range(1, n + 1):
@@ -293,7 +301,7 @@ def _derivative_along_axis_1d(
 
     Returns:
         npt.NDArray[np.float64]: Derivative coefficients of shape ``(n,)``.
-            Returns empty array if degree is 0.
+            Returns a single-element zero array if degree is 0.
 
     Note:
         Inputs are assumed to be correct (no validation performed).
@@ -1022,19 +1030,23 @@ def _degree_reduce_1d(
         b0 = 1.0 - float(i + 1) / fn  # E[i+1, i+1]
         off[i] = a1 * b0
 
-    # Solve tridiagonal SPD system via Thomas algorithm (Cholesky).
+    # Solve tridiagonal SPD system via Thomas algorithm (LDL^T factorization).
     # Forward elimination.
     d = np.empty(m, dtype=np.float64)
     y = np.empty(m, dtype=np.float64)
     d[0] = diag[0]
     y[0] = rhs[0]
     for i in range(1, m):
+        if abs(d[i - 1]) < _NEAR_ZERO:
+            return coeffs.copy()  # Numerically unsafe; keep original.
         w = off[i - 1] / d[i - 1]
         d[i] = diag[i] - w * off[i - 1]
         y[i] = rhs[i] - w * y[i - 1]
 
     # Back substitution.
     q = np.empty(m, dtype=np.float64)
+    if abs(d[m - 1]) < _NEAR_ZERO:
+        return coeffs.copy()  # Numerically unsafe; keep original.
     q[m - 1] = y[m - 1] / d[m - 1]
     for i in range(m - 2, -1, -1):
         q[i] = (y[i] - off[i] * q[i + 1]) / d[i]

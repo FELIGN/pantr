@@ -81,6 +81,9 @@ def monomial_to_bernstein_2d(
     """
     dx, dy = degrees
     _validate_degrees(mono.shape, degrees)
+    if domain_hi[0] <= domain_lo[0] or domain_hi[1] <= domain_lo[1]:
+        msg = "domain_hi must be strictly greater than domain_lo in every dimension."
+        raise ValueError(msg)
     lo_x, lo_y = float(domain_lo[0]), float(domain_lo[1])
     hx = float(domain_hi[0]) - lo_x
     hy = float(domain_hi[1]) - lo_y
@@ -129,6 +132,9 @@ def monomial_to_bernstein_3d(
     """
     dx, dy, dz = degrees
     _validate_degrees(mono.shape, degrees)
+    if domain_hi[0] <= domain_lo[0] or domain_hi[1] <= domain_lo[1] or domain_hi[2] <= domain_lo[2]:
+        msg = "domain_hi must be strictly greater than domain_lo in every dimension."
+        raise ValueError(msg)
     lo_x, lo_y, lo_z = float(domain_lo[0]), float(domain_lo[1]), float(domain_lo[2])
     hx = float(domain_hi[0]) - lo_x
     hy = float(domain_hi[1]) - lo_y
