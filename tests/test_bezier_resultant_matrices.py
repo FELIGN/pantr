@@ -283,7 +283,7 @@ class TestDetQr:
         b = np.array([0.0, 1.0])
         mat = _sylvester_matrix(a, b)
         expected = np.linalg.det(mat)
-        det, rank = _det_qr(mat.copy())
+        det, _rank = _det_qr(mat.copy())
         np.testing.assert_allclose(det, expected, rtol=1e-10)
 
     def test_non_square_raises(self) -> None:

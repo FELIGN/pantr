@@ -172,7 +172,7 @@ class TestTanhSinhIntegration:
     def test_constant_function(self) -> None:
         """Integral of 1 on [0,1] = 1, exact for any n."""
         for n in [1, 2, 5, 10]:
-            approx = self._integrate(n, lambda x: np.ones_like(x))
+            approx = self._integrate(n, np.ones_like)
             nptest.assert_allclose(approx, 1.0, rtol=1e-14)
 
     @pytest.mark.parametrize("dtype", [np.float32, np.float64])
