@@ -40,7 +40,7 @@ class TestGetSetNumThreads:
         """set_num_threads beyond NUMBA_NUM_THREADS raises ValueError."""
         import numba as nb  # noqa: PLC0415
 
-        max_threads: int = nb.config.NUMBA_NUM_THREADS
+        max_threads: int = nb.config.NUMBA_NUM_THREADS  # type: ignore[attr-defined]
         with pytest.raises(ValueError, match="NUMBA_NUM_THREADS"):
             set_num_threads(max_threads + 1)
 

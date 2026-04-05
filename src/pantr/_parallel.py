@@ -37,7 +37,7 @@ def get_num_threads() -> int:
     Returns:
         int: Active Numba thread-pool size.
     """
-    return int(nb.get_num_threads())
+    return int(nb.get_num_threads())  # type: ignore[attr-defined]
 
 
 def set_num_threads(n: int) -> None:
@@ -50,12 +50,12 @@ def set_num_threads(n: int) -> None:
     Raises:
         ValueError: If *n* is less than 1 or exceeds the maximum.
     """
-    max_threads: int = nb.config.NUMBA_NUM_THREADS
+    max_threads: int = nb.config.NUMBA_NUM_THREADS  # type: ignore[attr-defined]
     if n < 1:
         raise ValueError(f"n must be >= 1, got {n}")
     if n > max_threads:
         raise ValueError(f"n must be <= NUMBA_NUM_THREADS ({max_threads}), got {n}")
-    nb.set_num_threads(n)
+    nb.set_num_threads(n)  # type: ignore[attr-defined]
 
 
 @contextlib.contextmanager
