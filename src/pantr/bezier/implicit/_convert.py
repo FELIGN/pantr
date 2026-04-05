@@ -18,6 +18,27 @@ import numpy as np
 from numpy import typing as npt
 
 
+def _validate_degrees(
+    mono_shape: tuple[int, ...],
+    degrees: tuple[int, ...],
+) -> None:
+    """Validate that target degrees are >= monomial degrees.
+
+    Args:
+        mono_shape (tuple[int, ...]): Shape of the monomial coefficient array.
+        degrees (tuple[int, ...]): Target Bernstein degrees.
+
+    Raises:
+        ValueError: If any target degree is less than the corresponding
+            monomial degree.
+    """
+    for axis, (size, deg) in enumerate(zip(mono_shape, degrees, strict=True)):
+        mono_deg = size - 1
+        if deg < mono_deg:
+            msg = f"Target degree {deg} in axis {axis} is less than monomial degree {mono_deg}."
+            raise ValueError(msg)
+
+
 def monomial_to_bernstein_2d(
     mono: npt.NDArray[np.float64],
     degrees: tuple[int, int],
@@ -42,6 +63,10 @@ def monomial_to_bernstein_2d(
         npt.NDArray[np.float64]: Bernstein coefficient array of shape
             ``(deg_x + 1, deg_y + 1)``.
 
+    Raises:
+        ValueError: If any target degree is less than the corresponding
+            monomial degree.
+
     Example:
         >>> import numpy as np
         >>> from pantr.bezier.implicit._convert import monomial_to_bernstein_2d
@@ -55,6 +80,7 @@ def monomial_to_bernstein_2d(
         ... )
     """
     dx, dy = degrees
+    _validate_degrees(mono.shape, degrees)
     lo_x, lo_y = float(domain_lo[0]), float(domain_lo[1])
     hx = float(domain_hi[0]) - lo_x
     hy = float(domain_hi[1]) - lo_y
@@ -96,8 +122,13 @@ def monomial_to_bernstein_3d(
     Returns:
         npt.NDArray[np.float64]: Bernstein coefficient array of shape
             ``(deg_x + 1, deg_y + 1, deg_z + 1)``.
+
+    Raises:
+        ValueError: If any target degree is less than the corresponding
+            monomial degree.
     """
     dx, dy, dz = degrees
+    _validate_degrees(mono.shape, degrees)
     lo_x, lo_y, lo_z = float(domain_lo[0]), float(domain_lo[1]), float(domain_lo[2])
     hx = float(domain_hi[0]) - lo_x
     hy = float(domain_hi[1]) - lo_y

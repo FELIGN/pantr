@@ -13,8 +13,8 @@ Main exports:
 - :func:`_elevated_derivative_along_axis_2d` / ``_3d`` -- derivative in same-degree basis.
 - :func:`_eval_gradient_2d` / :func:`_eval_gradient_3d` -- evaluate gradient vector.
 - :func:`_eval_bernstein_2d` / :func:`_eval_bernstein_3d` -- evaluate polynomial at a point.
-- :func:`_normalize` -- scale coefficients to unit max-norm.
-- :func:`_degree_elevate_axis` -- degree elevation along one axis.
+- :func:`_normalize_1d` / ``_2d`` / ``_3d`` -- scale coefficients to unit max-norm.
+- :func:`_degree_elevate_axis_2d` / ``_3d`` -- degree elevation along one axis.
 
 Note:
     Inputs are assumed to be correct (no validation performed).
@@ -27,6 +27,9 @@ import numpy as np
 from numpy import typing as npt
 
 from pantr._numba_compat import nb_jit
+
+_NEAR_ZERO: float = 1e-300
+"""Guard against division by zero (well below subnormal range)."""
 
 # ---------------------------------------------------------------------------
 # Section A: 1D Bernstein basis evaluation
@@ -1278,7 +1281,7 @@ def _monomial_gcd(
     scale = 0.0
     for i in range(len(a)):
         scale = max(scale, abs(a[i]))
-    if scale < 1e-300:  # noqa: PLR2004
+    if scale < _NEAR_ZERO:
         return np.ones(1, dtype=np.float64)
 
     abs_tol = tol * scale
@@ -1303,7 +1306,7 @@ def _monomial_gcd(
         deg_a = len(rem) - 1
         deg_b = len(b) - 1
         for i in range(deg_a - deg_b, -1, -1):
-            if abs(b[deg_b]) < 1e-300:  # noqa: PLR2004
+            if abs(b[deg_b]) < _NEAR_ZERO:
                 break
             coeff = rem[i + deg_b] / b[deg_b]
             for j in range(deg_b + 1):
@@ -1314,7 +1317,7 @@ def _monomial_gcd(
     # Normalize to monic.
     result = a.copy()
     lc = result[len(result) - 1]
-    if abs(lc) > 1e-300:  # noqa: PLR2004
+    if abs(lc) > _NEAR_ZERO:
         for i in range(len(result)):
             result[i] /= lc
 
@@ -1346,7 +1349,7 @@ def _monomial_div(
     q = np.zeros(deg_q + 1, dtype=np.float64)
     rem = p.copy()
     for i in range(deg_q, -1, -1):
-        if abs(d[deg_d]) < 1e-300:  # noqa: PLR2004
+        if abs(d[deg_d]) < _NEAR_ZERO:
             break
         q[i] = rem[i + deg_d] / d[deg_d]
         for j in range(deg_d + 1):

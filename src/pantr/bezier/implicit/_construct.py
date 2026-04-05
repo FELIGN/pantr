@@ -11,6 +11,9 @@ Main exports:
 - :func:`volume_quad_2d` -- volume quadrature for 2D.
 - :func:`volume_quad_3d` -- volume quadrature for 3D.
 - :func:`surface_quad_2d` -- surface quadrature for 2D.
+- :func:`surface_quad_3d` -- surface quadrature for 3D.
+- :func:`surface_quad_2d_aggregate` -- aggregate surface quadrature for 2D.
+- :func:`surface_quad_3d_aggregate` -- aggregate surface quadrature for 3D.
 
 Note:
     Inputs are assumed to be correct (no validation performed).
@@ -35,16 +38,46 @@ from pantr.bezier.implicit._mask import (
     _line_intersects_3d,
     _point_within_1d,
     _point_within_2d,
+    _point_within_3d,
 )
 from pantr.bezier.implicit._roots import find_roots
 
 _MERGE_TOL: float = 10.0 * 2.2204460492503131e-16
 """Tolerance for merging nearby roots with interval boundaries."""
 
+_NEAR_ZERO: float = 1e-300
+"""Guard against division by zero (well below subnormal range)."""
+
 
 # ---------------------------------------------------------------------------
 # Section A: Root collection and interval partitioning
 # ---------------------------------------------------------------------------
+
+
+@nb_jit(nopython=True, cache=True)
+def _try_insert_node(
+    nodes: npt.NDArray[np.float64],
+    count: int,
+    root: float,
+) -> int:
+    """Insert *root* into *nodes* if not too close to any existing entry.
+
+    Args:
+        nodes (npt.NDArray[np.float64]): Boundary array (pre-allocated).
+        count (int): Current number of valid entries.
+        root (float): Root value to insert.
+
+    Returns:
+        int: Updated count (incremented by 1 if inserted, unchanged otherwise).
+
+    Note:
+        Inputs are assumed to be correct (no validation performed).
+    """
+    for j in range(count):
+        if abs(root - nodes[j]) < _MERGE_TOL:
+            return count
+    nodes[count] = root
+    return count + 1
 
 
 @nb_jit(nopython=True, cache=True)
@@ -85,27 +118,15 @@ def _collect_and_partition_1d(
             # Filter through mask.
             if not _point_within_1d(masks_list[i], root):
                 continue
-            # Check not too close to existing nodes.
-            too_close = False
-            for j in range(count):
-                if abs(root - nodes[j]) < _MERGE_TOL:
-                    too_close = True
-                    break
-            if not too_close:
-                nodes[count] = root
-                count += 1
+            count = _try_insert_node(nodes, count, root)
 
-    # Sort.
-    for i in range(count - 1):
-        for j in range(i + 1, count):
-            if nodes[j] < nodes[i]:
-                nodes[i], nodes[j] = nodes[j], nodes[i]
+    nodes[:count] = np.sort(nodes[:count])
 
     return nodes, count
 
 
 @nb_jit(nopython=True, cache=True)
-def _collect_and_partition_from_2d(  # noqa: PLR0912
+def _collect_and_partition_from_2d(
     coeffs_list: NumbaList,
     masks_list: NumbaList,
     k: int,
@@ -145,7 +166,6 @@ def _collect_and_partition_from_2d(  # noqa: PLR0912
 
         for r in range(n_roots):
             root = roots[r]
-            # Build 2D point for mask check.
             pt = np.empty(2, dtype=np.float64)
             if k == 0:
                 pt[0] = root
@@ -155,21 +175,9 @@ def _collect_and_partition_from_2d(  # noqa: PLR0912
                 pt[1] = root
             if not _point_within_2d(masks_list[i], pt):
                 continue
-            # Check not too close to existing nodes.
-            too_close = False
-            for j in range(count):
-                if abs(root - nodes[j]) < _MERGE_TOL:
-                    too_close = True
-                    break
-            if not too_close:
-                nodes[count] = root
-                count += 1
+            count = _try_insert_node(nodes, count, root)
 
-    # Sort.
-    for i in range(count - 1):
-        for j in range(i + 1, count):
-            if nodes[j] < nodes[i]:
-                nodes[i], nodes[j] = nodes[j], nodes[i]
+    nodes[:count] = np.sort(nodes[:count])
 
     return nodes, count
 
@@ -214,20 +222,20 @@ def _collect_and_partition_from_3d(
 
         for r in range(n_roots):
             root = roots[r]
-            too_close = False
-            for j in range(count):
-                if abs(root - nodes[j]) < _MERGE_TOL:
-                    too_close = True
-                    break
-            if not too_close:
-                nodes[count] = root
-                count += 1
+            # Build 3D point and filter through mask.
+            pt = np.empty(3, dtype=np.float64)
+            ti = 0
+            for d in range(3):
+                if d == k:
+                    pt[d] = root
+                else:
+                    pt[d] = x_base[ti]
+                    ti += 1
+            if not _point_within_3d(masks_list[i], pt):
+                continue
+            count = _try_insert_node(nodes, count, root)
 
-    # Sort.
-    for i in range(count - 1):
-        for j in range(i + 1, count):
-            if nodes[j] < nodes[i]:
-                nodes[i], nodes[j] = nodes[j], nodes[i]
+    nodes[:count] = np.sort(nodes[:count])
 
     return nodes, count
 
@@ -684,7 +692,6 @@ def surface_quad_2d(  # noqa: D417, PLR0912, PLR0913, PLR0915
                 for ri in range(n_roots):
                     root = roots[ri]
 
-                    # Build 2D point.
                     pt = np.empty(2, dtype=np.float64)
                     pt[tang1] = x_tang_val
                     pt[k1] = root
@@ -692,12 +699,11 @@ def surface_quad_2d(  # noqa: D417, PLR0912, PLR0913, PLR0915
                     if not _point_within_2d(masks_2d[p_idx], pt):
                         continue
 
-                    # Compute gradient for surface Jacobian.
                     grad = _eval_gradient_2d(poly_2d, pt)
                     grad_norm = np.sqrt(grad[0] ** 2 + grad[1] ** 2)
                     dk_phi = grad[k1]
 
-                    if abs(dk_phi) < 1e-300:  # noqa: PLR2004
+                    if abs(dk_phi) < _NEAR_ZERO:
                         continue
 
                     # Resize if needed.
@@ -722,7 +728,7 @@ def surface_quad_2d(  # noqa: D417, PLR0912, PLR0913, PLR0915
                     points[n_pts, 1] = pt[1]
                     scalar_wts[n_pts] = alpha
                     # Normal direction (unit normal * alpha).
-                    if grad_norm > 1e-300:  # noqa: PLR2004
+                    if grad_norm > _NEAR_ZERO:
                         normal_wts[n_pts, 0] = w_tang * grad[0] / abs(dk_phi)
                         normal_wts[n_pts, 1] = w_tang * grad[1] / abs(dk_phi)
                     else:
@@ -861,7 +867,6 @@ def surface_quad_3d(  # noqa: D417, PLR0912, PLR0913, PLR0915
                     w_2d = wts_1[q1] * scale1
                     w_base = w_1d * w_2d
 
-                    # Build 3D base point for collapse.
                     x_base_3d = np.empty(2, dtype=np.float64)
                     if tang1_2d == 0:
                         x_base_3d[0] = x_1d
@@ -870,7 +875,6 @@ def surface_quad_3d(  # noqa: D417, PLR0912, PLR0913, PLR0915
                         x_base_3d[0] = x_2d
                         x_base_3d[1] = x_1d
 
-                    # Level 2: find roots of input polynomials along k2.
                     for p_idx in range(n_input_polys):
                         poly_3d = input_coeffs_3d[p_idx]
 
@@ -883,18 +887,16 @@ def surface_quad_3d(  # noqa: D417, PLR0912, PLR0913, PLR0915
                         for ri in range(n_roots):
                             root = roots[ri]
 
-                            # Build 3D point.
                             pt = np.empty(3, dtype=np.float64)
                             pt[axis_tang1_3d] = x_1d
                             pt[axis_k1_3d] = x_2d
                             pt[k2] = root
 
-                            # Compute gradient for surface Jacobian.
                             grad = _eval_gradient_3d(poly_3d, pt)
                             grad_norm = np.sqrt(grad[0] ** 2 + grad[1] ** 2 + grad[2] ** 2)
                             dk_phi = grad[k2]
 
-                            if abs(dk_phi) < 1e-300:  # noqa: PLR2004
+                            if abs(dk_phi) < _NEAR_ZERO:
                                 continue
 
                             # Resize if needed.
@@ -917,7 +919,7 @@ def surface_quad_3d(  # noqa: D417, PLR0912, PLR0913, PLR0915
                             for di in range(3):
                                 points[n_pts, di] = pt[di]
                             scalar_wts[n_pts] = alpha
-                            if grad_norm > 1e-300:  # noqa: PLR2004
+                            if grad_norm > _NEAR_ZERO:
                                 for di in range(3):
                                     normal_wts[n_pts, di] = w_base * grad[di] / abs(dk_phi)
                             else:
@@ -1033,7 +1035,7 @@ def surface_quad_2d_aggregate(  # noqa: D417, PLR0912, PLR0913, PLR0915
 
                     grad = _eval_gradient_2d(poly_2d, pt)
                     dk_phi = grad[k1]
-                    if abs(dk_phi) < 1e-300:  # noqa: PLR2004
+                    if abs(dk_phi) < _NEAR_ZERO:
                         continue
                     grad_norm = np.sqrt(grad[0] ** 2 + grad[1] ** 2)
 
@@ -1058,7 +1060,7 @@ def surface_quad_2d_aggregate(  # noqa: D417, PLR0912, PLR0913, PLR0915
                     normal_wts[n_pts, 0] = 0.0
                     normal_wts[n_pts, 1] = 0.0
                     normal_wts[n_pts, k1] = w_tang * sign_dk
-                    if grad_norm > 1e-300:  # noqa: PLR2004
+                    if grad_norm > _NEAR_ZERO:
                         scalar_wts[n_pts] = w_tang * abs(dk_phi) / grad_norm
                     else:
                         scalar_wts[n_pts] = 0.0
@@ -1072,7 +1074,7 @@ def surface_quad_2d_aggregate(  # noqa: D417, PLR0912, PLR0913, PLR0915
 
 
 @nb_jit(nopython=True, cache=True)
-def surface_quad_3d_aggregate(  # noqa: PLR0912, PLR0913, PLR0915
+def surface_quad_3d_aggregate(  # noqa: D417, PLR0912, PLR0913, PLR0915
     coeffs_1d: NumbaList,
     masks_1d: NumbaList,
     k0: int,
@@ -1098,7 +1100,24 @@ def surface_quad_3d_aggregate(  # noqa: PLR0912, PLR0913, PLR0915
 ) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64], npt.NDArray[np.float64]]:
     """Aggregate flux-form surface quadrature for 3D (one height direction).
 
-    Same as :func:`surface_quad_2d_aggregate` but for 3D.
+    Same as :func:`surface_quad_2d_aggregate` but for 3D. Walks the 3-level
+    hierarchy (1D -> 2D -> 3D), collecting quadrature points on the zero
+    level set and computing flux-form normal weights.
+
+    Args:
+        coeffs_1d through type_2: Build result (15 values, 5 per level).
+        n_input_polys (int): Number of original input polynomials.
+        input_coeffs_3d (NumbaList): Original 3D coefficient arrays.
+        gl_nodes (npt.NDArray[np.float64]): GL nodes on [0, 1].
+        gl_weights (npt.NDArray[np.float64]): GL weights on [0, 1].
+        ts_nodes (npt.NDArray[np.float64]): Tanh-sinh nodes on [0, 1].
+        ts_weights (npt.NDArray[np.float64]): Tanh-sinh weights on [0, 1].
+        strategy (int): Quadrature strategy code.
+
+    Returns:
+        tuple[npt.NDArray[np.float64], npt.NDArray[np.float64], npt.NDArray[np.float64]]:
+            ``(points, scalar_weights, normal_weights)`` with shapes
+            ``(n_pts, 3)``, ``(n_pts,)``, ``(n_pts, 3)``.
 
     Note:
         Inputs are assumed to be correct (no validation performed).
@@ -1197,7 +1216,7 @@ def surface_quad_3d_aggregate(  # noqa: PLR0912, PLR0913, PLR0915
 
                             grad = _eval_gradient_3d(poly_3d, pt)
                             dk_phi = grad[k2]
-                            if abs(dk_phi) < 1e-300:  # noqa: PLR2004
+                            if abs(dk_phi) < _NEAR_ZERO:
                                 continue
                             grad_norm = np.sqrt(grad[0] ** 2 + grad[1] ** 2 + grad[2] ** 2)
 
@@ -1220,7 +1239,7 @@ def surface_quad_3d_aggregate(  # noqa: PLR0912, PLR0913, PLR0915
                                 points[n_pts, di] = pt[di]
                                 normal_wts[n_pts, di] = 0.0
                             normal_wts[n_pts, k2] = w_base * sign_dk
-                            if grad_norm > 1e-300:  # noqa: PLR2004
+                            if grad_norm > _NEAR_ZERO:
                                 scalar_wts[n_pts] = w_base * abs(dk_phi) / grad_norm
                             else:
                                 scalar_wts[n_pts] = 0.0

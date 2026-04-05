@@ -415,6 +415,51 @@ class TestImplicitPolyQuadrature:
         with pytest.raises(ValueError, match="At least one"):
             ImplicitPolyQuadrature()
 
+    def test_init_inconsistent_dims(self) -> None:
+        """Reject polynomials with inconsistent dimensions."""
+        with pytest.raises(ValueError, match="same dimension"):
+            ImplicitPolyQuadrature(np.ones((3, 3)), np.ones((2, 2, 2)))
+
+    def test_init_unsupported_dim_1d(self) -> None:
+        """Reject 1D polynomials."""
+        with pytest.raises(ValueError, match="Only 2D and 3D"):
+            ImplicitPolyQuadrature(np.array([1.0, 2.0, 3.0]))
+
+    def test_init_unsupported_dim_4d(self) -> None:
+        """Reject 4D polynomials."""
+        with pytest.raises(ValueError, match="Only 2D and 3D"):
+            ImplicitPolyQuadrature(np.ones((2, 2, 2, 2)))
+
+    def test_init_vector_bezier_rejected(self) -> None:
+        """Reject vector-valued Bezier (rank > 1)."""
+        from pantr.bezier import Bezier  # noqa: PLC0415
+
+        cp = np.ones((3, 3, 2))  # rank=2
+        bez = Bezier(cp)
+        with pytest.raises(ValueError, match="scalar Bezier"):
+            ImplicitPolyQuadrature(bez)
+
+    def test_volume_quad_q_validation(self) -> None:
+        """Reject q < 1."""
+        ipq = ImplicitPolyQuadrature(_make_circle_coeffs())
+        with pytest.raises(ValueError, match="q must be >= 1"):
+            ipq.volume_quad(0)
+
+    def test_surface_quad_q_validation(self) -> None:
+        """Reject q < 1 in surface_quad."""
+        ipq = ImplicitPolyQuadrature(_make_circle_coeffs())
+        with pytest.raises(ValueError, match="q must be >= 1"):
+            ipq.surface_quad(0)
+
+    def test_eval_poly_out_of_range(self) -> None:
+        """Reject poly_idx out of range."""
+        ipq = ImplicitPolyQuadrature(_make_circle_coeffs())
+        pts = np.array([[0.5, 0.5]])
+        with pytest.raises(IndexError, match="out of range"):
+            ipq.eval_poly(1, pts)
+        with pytest.raises(IndexError, match="out of range"):
+            ipq.eval_poly(-1, pts)
+
     def test_eval_poly(self) -> None:
         c = _make_circle_coeffs()
         ipq = ImplicitPolyQuadrature(c)
@@ -1498,6 +1543,64 @@ class TestEdgeCases:
         vals = ipq.eval_poly(0, pts)
         assert np.sum(wts[vals < 0]) == 0.0
 
+    def test_3d_phi_negative_everywhere(self) -> None:
+        """3D: phi < 0 everywhere. Entire domain is inside."""
+        c = -np.ones((2, 2, 2))
+        ipq = ImplicitPolyQuadrature(c)
+        pts, wts = ipq.volume_quad(3, QuadStrategy.GL_ONLY)
+        vals = ipq.eval_poly(0, pts)
+        assert abs(np.sum(wts[vals < 0]) - 1.0) < 1e-12  # noqa: PLR2004
+
+    def test_3d_straight_plane(self) -> None:
+        """3D: linear phi = z - 0.5 splits domain in half."""
+        c = np.zeros((2, 2, 2))
+        c[:, :, 0] = -0.5
+        c[:, :, 1] = 0.5
+        ipq = ImplicitPolyQuadrature(c)
+        pts, wts = ipq.volume_quad(3, QuadStrategy.GL_ONLY)
+        vals = ipq.eval_poly(0, pts)
+        assert abs(np.sum(wts[vals < 0]) - 0.5) < 1e-12  # noqa: PLR2004
+
+    def test_3d_zero_polynomial(self) -> None:
+        """3D: phi = 0 everywhere."""
+        c = np.zeros((2, 2, 2))
+        ipq = ImplicitPolyQuadrature(c)
+        pts, wts = ipq.volume_quad(3, QuadStrategy.GL_ONLY)
+        vals = ipq.eval_poly(0, pts)
+        assert np.sum(wts[vals < 0]) == 0.0
+
+    def test_3d_surface_no_interface(self) -> None:
+        """3D surface quad when phi > 0 everywhere: should return empty."""
+        c = np.ones((2, 2, 2))
+        ipq = ImplicitPolyQuadrature(c)
+        s_pts, s_wts, s_nw = ipq.surface_quad(3, QuadStrategy.GL_ONLY)
+        assert len(s_wts) == 0
+
+    def test_3d_surface_aggregate(self) -> None:
+        """3D aggregate surface quad for a sphere."""
+        from pantr.bezier.implicit import monomial_to_bernstein_3d  # noqa: PLC0415
+
+        # phi = x^2 + y^2 + z^2 - r^2, r=0.3, centered at (0.5,0.5,0.5).
+        r = 0.3
+        lo = np.array([0.0, 0.0, 0.0])
+        hi = np.array([1.0, 1.0, 1.0])
+        mono = np.zeros((3, 3, 3))
+        # (x-0.5)^2 + (y-0.5)^2 + (z-0.5)^2 - r^2
+        # = x^2 - x + 0.25 + y^2 - y + 0.25 + z^2 - z + 0.25 - r^2
+        mono[0, 0, 0] = 0.75 - r**2
+        mono[1, 0, 0] = -1.0
+        mono[2, 0, 0] = 1.0
+        mono[0, 1, 0] = -1.0
+        mono[0, 2, 0] = 1.0
+        mono[0, 0, 1] = -1.0
+        mono[0, 0, 2] = 1.0
+        bern = monomial_to_bernstein_3d(mono, (2, 2, 2), lo, hi)
+        ipq = ImplicitPolyQuadrature(bern)
+        _, sw, _ = ipq.surface_quad(8, QuadStrategy.TS_ONLY, aggregate=True)
+        expected = 4.0 * np.pi * r**2
+        err = abs(np.sum(sw) - expected) / expected
+        assert err < 0.01  # noqa: PLR2004
+
 
 # ---------------------------------------------------------------------------
 # Paper §A.1.2d: Deltoid3 (3D generalization of the 2D deltoid)
@@ -1601,8 +1704,8 @@ class TestBilinearTSGL:
         vol_ref = float(np.sum(wts_r[vals_r < 0]))
 
         # TS convergence.
-        ts_errors = []
-        gl_errors = []
+        ts_errors: list[float] = []
+        gl_errors: list[float] = []
         for q in [10, 20, 30]:
             for strat, errs in [
                 (QuadStrategy.TS_ONLY, ts_errors),

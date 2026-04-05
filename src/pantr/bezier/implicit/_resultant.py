@@ -25,6 +25,7 @@ from pantr._numba_compat import nb_jit
 from pantr.bezier.implicit._bernstein import (
     _auto_reduce_1d,
     _auto_reduce_2d,
+    _bincoeff,
     _collapse_2d,
     _collapse_3d,
     _degree_elevate_1d,
@@ -78,31 +79,6 @@ def _chebyshev_nodes(n: int) -> npt.NDArray[np.float64]:
 
 
 @nb_jit(nopython=True, cache=True)
-def _bincoeff(n: int, k: int) -> float:
-    """Compute binomial coefficient C(n, k) as a float.
-
-    Args:
-        n (int): Top argument.
-        k (int): Bottom argument.
-
-    Returns:
-        float: C(n, k).
-
-    Note:
-        Inputs are assumed to be correct (no validation performed).
-    """
-    if k < 0 or k > n:
-        return 0.0
-    if k == 0 or k == n:  # noqa: PLR1714
-        return 1.0
-    k = min(k, n - k)
-    result = 1.0
-    for i in range(k):
-        result = result * float(n - i) / float(i + 1)
-    return result
-
-
-@nb_jit(nopython=True, cache=True)
 def _sylvester_matrix(
     f: npt.NDArray[np.float64],
     g: npt.NDArray[np.float64],
@@ -134,7 +110,6 @@ def _sylvester_matrix(
         for j in range(n + 1):
             col = row + j
             S[row, col] = f[j] * _bincoeff(n, j)
-        # Scale row by 1/C(n+m-1, row) ... actually, apply D^{-1} scaling.
 
     # Next n rows from g.
     for row in range(n):
@@ -376,11 +351,9 @@ def _resultant_1d(
 
     if n == m:
         B = _bezout_matrix(f, g)
-        # return float(np.linalg.det(B))  # LU-based, less stable
         return _det_qr(B)
     else:
         S = _sylvester_matrix(f, g)
-        # return float(np.linalg.det(S))  # LU-based, less stable
         return _det_qr(S)
 
 

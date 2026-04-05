@@ -38,6 +38,25 @@ _MASK_EPS: float = 1.0 / (64.0 * M)
 """Overlap epsilon for subcell restriction (about 1% of subcell width)."""
 
 
+@nb_jit(nopython=True, cache=True)
+def _clamp_to_mask_index(x: float) -> int:
+    """Clamp a coordinate in [0, 1] to a mask subcell index in [0, M-1].
+
+    Args:
+        x (float): Coordinate value in [0, 1].
+
+    Returns:
+        int: Subcell index clamped to [0, M-1].
+
+    Note:
+        Inputs are assumed to be correct (no validation performed).
+    """
+    idx = int(x * M)
+    if idx >= M:
+        idx = M - 1
+    return max(idx, 0)
+
+
 # ---------------------------------------------------------------------------
 # Section A: Uniform sign detection
 # ---------------------------------------------------------------------------
@@ -111,8 +130,7 @@ def compute_nonzero_mask_1d(
     """Compute a conservative nonzero mask for a 1D scalar polynomial.
 
     Subdivides [0,1] into M subcells and checks each for uniform sign using
-    de Casteljau restriction. Uses recursive subdivision up to 3 levels
-    (M=8 = 2^3) for efficiency.
+    de Casteljau restriction.
 
     Args:
         coeffs (npt.NDArray[np.float64]): 1D Bernstein coefficients.
@@ -517,6 +535,63 @@ def compute_intersection_mask_2d(  # noqa: PLR0912
 
 
 @nb_jit(nopython=True, cache=True)
+def _elevate_3d_to_common(
+    sub: npt.NDArray[np.float64],
+    max0: int,
+    max1: int,
+    max2: int,
+) -> npt.NDArray[np.float64]:
+    """Degree-elevate a 3D subcell polynomial to a common shape.
+
+    Applies 1D degree elevation sequentially along each axis.
+
+    Args:
+        sub (npt.NDArray[np.float64]): Input 3D subcell coefficients.
+        max0 (int): Target size along axis 0.
+        max1 (int): Target size along axis 1.
+        max2 (int): Target size along axis 2.
+
+    Returns:
+        npt.NDArray[np.float64]: Elevated array of shape ``(max0, max1, max2)``.
+
+    Note:
+        Inputs are assumed to be correct (no validation performed).
+    """
+    s0, s1, s2 = sub.shape
+    # Elevate along axis 0.
+    tmp0 = np.empty((max0, s1, s2), dtype=np.float64)
+    for j in range(s1):
+        for k in range(s2):
+            col = np.empty(s0, dtype=np.float64)
+            for i in range(s0):
+                col[i] = sub[i, j, k]
+            elev = _degree_elevate_1d_inplace(col, max0)
+            for i in range(max0):
+                tmp0[i, j, k] = elev[i]
+    # Elevate along axis 1.
+    tmp1 = np.empty((max0, max1, s2), dtype=np.float64)
+    for i in range(max0):
+        for k in range(s2):
+            col = np.empty(s1, dtype=np.float64)
+            for j in range(s1):
+                col[j] = tmp0[i, j, k]
+            elev = _degree_elevate_1d_inplace(col, max1)
+            for j in range(max1):
+                tmp1[i, j, k] = elev[j]
+    # Elevate along axis 2.
+    out = np.empty((max0, max1, max2), dtype=np.float64)
+    for i in range(max0):
+        for j in range(max1):
+            col = np.empty(s2, dtype=np.float64)
+            for k in range(s2):
+                col[k] = tmp1[i, j, k]
+            elev = _degree_elevate_1d_inplace(col, max2)
+            for k in range(max2):
+                out[i, j, k] = elev[k]
+    return out
+
+
+@nb_jit(nopython=True, cache=True)
 def compute_intersection_mask_3d(
     coeffs_f: npt.NDArray[np.float64],
     mask_f: npt.NDArray[np.bool_],
@@ -524,6 +599,10 @@ def compute_intersection_mask_3d(
     mask_g: npt.NDArray[np.bool_],
 ) -> npt.NDArray[np.bool_]:
     """Compute intersection mask for two 3D polynomials.
+
+    Uses orthant tests on each subcell to determine where *f* and *g* may
+    share a common zero. Polynomials are degree-elevated to a common degree
+    before testing.
 
     Args:
         coeffs_f (npt.NDArray[np.float64]): Coefficients of first polynomial.
@@ -557,17 +636,29 @@ def compute_intersection_mask_3d(
                 sub_f = _restrict_3d_subcell(coeffs_f, lo0, hi0, lo1, hi1, lo2, hi2)
                 sub_g = _restrict_3d_subcell(coeffs_g, lo0, hi0, lo1, hi1, lo2, hi2)
 
-                # Flatten for orthant test (simple approach: just flatten directly
-                # after degree elevation to common degree along each axis).
-                # For simplicity, just flatten and apply orthant test.
-                # (A more refined implementation would degree-elevate first.)
-                f_flat = sub_f.ravel()
-                g_flat = sub_g.ravel()
-                if len(f_flat) == len(g_flat):
-                    if not _orthant_test(f_flat, g_flat):
-                        out[i0, i1, i2] = True
-                else:
-                    # Different sizes — mark as potentially intersecting.
+                # Degree-elevate to common degree in each direction.
+                sf0, sf1, sf2 = sub_f.shape
+                sg0, sg1, sg2 = sub_g.shape
+                max0 = max(sf0, sg0)
+                max1 = max(sf1, sg1)
+                max2 = max(sf2, sg2)
+
+                f_elev = _elevate_3d_to_common(sub_f, max0, max1, max2)
+                g_elev = _elevate_3d_to_common(sub_g, max0, max1, max2)
+
+                # Flatten for orthant test.
+                n_total = max0 * max1 * max2
+                f_flat = np.empty(n_total, dtype=np.float64)
+                g_flat = np.empty(n_total, dtype=np.float64)
+                idx = 0
+                for a0 in range(max0):
+                    for a1 in range(max1):
+                        for a2 in range(max2):
+                            f_flat[idx] = f_elev[a0, a1, a2]
+                            g_flat[idx] = g_elev[a0, a1, a2]
+                            idx += 1
+
+                if not _orthant_test(f_flat, g_flat):
                     out[i0, i1, i2] = True
 
     return out
@@ -811,10 +902,7 @@ def _point_within_1d(
     Note:
         Inputs are assumed to be correct (no validation performed).
     """
-    idx = int(x * M)
-    if idx >= M:
-        idx = M - 1
-    idx = max(idx, 0)
+    idx = _clamp_to_mask_index(x)
     return bool(mask[idx])
 
 
@@ -835,14 +923,8 @@ def _point_within_2d(
     Note:
         Inputs are assumed to be correct (no validation performed).
     """
-    i0 = int(x[0] * M)
-    i1 = int(x[1] * M)
-    if i0 >= M:
-        i0 = M - 1
-    i0 = max(i0, 0)
-    if i1 >= M:
-        i1 = M - 1
-    i1 = max(i1, 0)
+    i0 = _clamp_to_mask_index(x[0])
+    i1 = _clamp_to_mask_index(x[1])
     return bool(mask[i0, i1])
 
 
@@ -863,18 +945,9 @@ def _point_within_3d(
     Note:
         Inputs are assumed to be correct (no validation performed).
     """
-    i0 = int(x[0] * M)
-    i1 = int(x[1] * M)
-    i2 = int(x[2] * M)
-    if i0 >= M:
-        i0 = M - 1
-    i0 = max(i0, 0)
-    if i1 >= M:
-        i1 = M - 1
-    i1 = max(i1, 0)
-    if i2 >= M:
-        i2 = M - 1
-    i2 = max(i2, 0)
+    i0 = _clamp_to_mask_index(x[0])
+    i1 = _clamp_to_mask_index(x[1])
+    i2 = _clamp_to_mask_index(x[2])
     return bool(mask[i0, i1, i2])
 
 
@@ -897,10 +970,7 @@ def _line_intersects_2d(
     Note:
         Inputs are assumed to be correct (no validation performed).
     """
-    idx_tang = int(x_base * M)
-    if idx_tang >= M:
-        idx_tang = M - 1
-    idx_tang = max(idx_tang, 0)
+    idx_tang = _clamp_to_mask_index(x_base)
 
     if k == 0:
         for i0 in range(M):
@@ -934,14 +1004,8 @@ def _line_intersects_3d(
     Note:
         Inputs are assumed to be correct (no validation performed).
     """
-    it0 = int(x_base[0] * M)
-    it1 = int(x_base[1] * M)
-    if it0 >= M:
-        it0 = M - 1
-    it0 = max(it0, 0)
-    if it1 >= M:
-        it1 = M - 1
-    it1 = max(it1, 0)
+    it0 = _clamp_to_mask_index(x_base[0])
+    it1 = _clamp_to_mask_index(x_base[1])
 
     if k == 0:
         for i0 in range(M):

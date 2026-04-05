@@ -36,6 +36,9 @@ from pantr.bezier.implicit._mask import (
     compute_intersection_mask_3d,
 )
 
+_NEAR_ZERO: float = 1e-300
+"""Guard against division by zero (well below subnormal range)."""
+
 
 @nb_jit(nopython=True, cache=True)
 def score_estimate_2d(
@@ -56,8 +59,8 @@ def score_estimate_2d(
         tuple[npt.NDArray[np.float64], npt.NDArray[np.bool_]]:
             ``(scores, has_disc)`` where *scores* has shape ``(2,)`` and
             *has_disc* has shape ``(2,)`` indicating directions with
-            non-empty discriminant-like features (not used in initial
-            implementation but reserved for future aggregate mode).
+            non-empty discriminant-like features (used in the build phase
+            to apply a score bonus and select tanh-sinh quadrature).
 
     Note:
         Inputs are assumed to be correct (no validation performed).
@@ -81,7 +84,7 @@ def score_estimate_2d(
                 x[1] = (i1 + 0.5) * inv_m
                 grad = _eval_gradient_2d(coeffs, x)
                 norm1 = abs(grad[0]) + abs(grad[1])
-                if norm1 > 1e-300:  # noqa: PLR2004
+                if norm1 > _NEAR_ZERO:
                     for d in range(2):
                         scores[d] += abs(grad[d]) / norm1
 
@@ -138,7 +141,7 @@ def score_estimate_3d(
                     x[2] = (i2 + 0.5) * inv_m
                     grad = _eval_gradient_3d(coeffs, x)
                     norm1 = abs(grad[0]) + abs(grad[1]) + abs(grad[2])
-                    if norm1 > 1e-300:  # noqa: PLR2004
+                    if norm1 > _NEAR_ZERO:
                         for d in range(3):
                             scores[d] += abs(grad[d]) / norm1
 

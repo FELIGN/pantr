@@ -39,8 +39,13 @@ _CLIP_REDUCTION_THRESHOLD: float = 0.2
 _CLIP_MAX_DEPTH: int = 64
 """Maximum recursion depth for the clipping stack."""
 
-_MAX_STACK_SIZE: int = 256
-"""Maximum stack size for the iterative clipping loop."""
+_MAX_STACK_SIZE: int = 512
+"""Maximum stack size for the iterative clipping loop.
+
+Intervals that cannot be pushed when the stack is full are silently dropped.
+This is extremely rare in practice (requires pathological polynomials with
+hundreds of roots in [0, 1]).
+"""
 
 _CLIP_MIN_DEGREE: int = 6
 """Minimum polynomial degree for Bezier clipping dispatch."""

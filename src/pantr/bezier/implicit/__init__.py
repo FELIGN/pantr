@@ -87,7 +87,7 @@ class ImplicitPolyQuadrature:
         n_polys (int): Number of input polynomials.
     """
 
-    def __init__(self, *polynomials: Bezier | npt.NDArray[np.float64]) -> None:
+    def __init__(self, *polynomials: Bezier | npt.NDArray[np.float64]) -> None:  # noqa: PLR0912
         """Build the quadrature hierarchy.
 
         Args:
@@ -111,7 +111,12 @@ class ImplicitPolyQuadrature:
                 # Bezier object: extract scalar control points.
                 cp = np.asarray(p.control_points, dtype=np.float64)
                 if cp.ndim > p.dim:  # type: ignore[union-attr]
-                    # Scalar Bezier: last axis is rank=1, squeeze it.
+                    if cp.shape[-1] != 1:
+                        msg = (
+                            f"Only scalar Bezier polynomials are supported, "
+                            f"got rank {cp.shape[-1]}."
+                        )
+                        raise ValueError(msg)
                     cp = cp[..., 0]
                 coeffs_arrays.append(cp)
             else:
@@ -131,21 +136,22 @@ class ImplicitPolyQuadrature:
         self.n_polys = len(coeffs_arrays)
         self._coeffs = coeffs_arrays
 
+        # Build typed lists (cached for reuse across quad calls).
+        self._coeffs_list = NumbaList()
+        for ca in coeffs_arrays:
+            self._coeffs_list.append(ca)
+
         # Compute masks and build hierarchy.
         if self.dim == 2:  # noqa: PLR2004
-            coeffs_list = NumbaList()
-            masks_list = NumbaList()
+            self._masks_list = NumbaList()
             for ca in coeffs_arrays:
-                coeffs_list.append(ca)
-                masks_list.append(compute_nonzero_mask_2d(ca))
-            self._build_result: tuple[Any, ...] = build_2d(coeffs_list, masks_list)
+                self._masks_list.append(compute_nonzero_mask_2d(ca))
+            self._build_result: tuple[Any, ...] = build_2d(self._coeffs_list, self._masks_list)
         else:
-            coeffs_list_3d = NumbaList()
-            masks_list_3d = NumbaList()
+            self._masks_list = NumbaList()
             for ca in coeffs_arrays:
-                coeffs_list_3d.append(ca)
-                masks_list_3d.append(compute_nonzero_mask_3d(ca))
-            self._build_result = build_3d(coeffs_list_3d, masks_list_3d)
+                self._masks_list.append(compute_nonzero_mask_3d(ca))
+            self._build_result = build_3d(self._coeffs_list, self._masks_list)
 
     def volume_quad(
         self,
@@ -159,58 +165,29 @@ class ImplicitPolyQuadrature:
 
         Args:
             q (int): Number of 1D quadrature points per sub-interval.
+                Must be >= 1.
             strategy (QuadStrategy): Quadrature method selection.
 
         Returns:
             tuple[npt.NDArray[np.float64], npt.NDArray[np.float64]]:
                 ``(points, weights)`` with shapes ``(n_pts, dim)`` and
                 ``(n_pts,)``. Weights sum to 1 (the volume of [0,1]^d).
+
+        Raises:
+            ValueError: If ``q < 1``.
         """
+        _validate_q(q)
         gl_nodes, gl_weights = _gauss_legendre_01(q)
         ts_nodes, ts_weights = _tanh_sinh_01(q)
         strat = int(strategy)
 
-        r = self._build_result
         if self.dim == 2:  # noqa: PLR2004
-            return volume_quad_2d(
-                r[0],
-                r[1],
-                r[2],
-                r[3],
-                r[4],
-                r[5],
-                r[6],
-                r[7],
-                r[8],
-                r[9],
-                gl_nodes,
-                gl_weights,
-                ts_nodes,
-                ts_weights,
-                strat,
+            return volume_quad_2d(  # type: ignore[call-arg]
+                *self._build_result, gl_nodes, gl_weights, ts_nodes, ts_weights, strat
             )
         else:
-            return volume_quad_3d(
-                r[0],
-                r[1],
-                r[2],
-                r[3],
-                r[4],
-                r[5],
-                r[6],
-                r[7],
-                r[8],
-                r[9],
-                r[10],
-                r[11],
-                r[12],
-                r[13],
-                r[14],
-                gl_nodes,
-                gl_weights,
-                ts_nodes,
-                ts_weights,
-                strat,
+            return volume_quad_3d(  # type: ignore[call-arg]
+                *self._build_result, gl_nodes, gl_weights, ts_nodes, ts_weights, strat
             )
 
     def surface_quad(
@@ -233,16 +210,28 @@ class ImplicitPolyQuadrature:
         direction and sums the flux-form contributions. This is more robust
         when vertical tangents exist in every coordinate direction (paper §3.7).
 
+        .. note::
+
+           In non-aggregate mode, quadrature points at vertical tangents
+           (where the gradient component along the height direction is zero)
+           are silently skipped. Use ``aggregate=True`` for geometries with
+           vertical tangents in every coordinate direction.
+
         Args:
             q (int): Number of 1D quadrature points per sub-interval.
+                Must be >= 1.
             strategy (QuadStrategy): Quadrature method selection.
             aggregate (bool): Use aggregate mode (run all d directions).
 
         Returns:
-            tuple[npt.NDArray, npt.NDArray, npt.NDArray]:
+            tuple[npt.NDArray[np.float64], npt.NDArray[np.float64], npt.NDArray[np.float64]]:
                 ``(points, scalar_weights, normal_weights)`` with shapes
                 ``(n_pts, dim)``, ``(n_pts,)``, ``(n_pts, dim)``.
+
+        Raises:
+            ValueError: If ``q < 1``.
         """
+        _validate_q(q)
         gl_nodes, gl_weights = _gauss_legendre_01(q)
         ts_nodes, ts_weights = _tanh_sinh_01(q)
         strat = int(strategy)
@@ -252,24 +241,11 @@ class ImplicitPolyQuadrature:
                 q, gl_nodes, gl_weights, ts_nodes, ts_weights, strat
             )
 
-        r = self._build_result
         if self.dim == 2:  # noqa: PLR2004
-            input_c = NumbaList()
-            for ca in self._coeffs:
-                input_c.append(ca)
-            return surface_quad_2d(
-                r[0],
-                r[1],
-                r[2],
-                r[3],
-                r[4],
-                r[5],
-                r[6],
-                r[7],
-                r[8],
-                r[9],
+            return surface_quad_2d(  # type: ignore[call-arg]
+                *self._build_result,
                 self.n_polys,
-                input_c,
+                self._coeffs_list,
                 gl_nodes,
                 gl_weights,
                 ts_nodes,
@@ -277,27 +253,10 @@ class ImplicitPolyQuadrature:
                 strat,
             )
         else:
-            input_c = NumbaList()
-            for ca in self._coeffs:
-                input_c.append(ca)
-            return surface_quad_3d(
-                r[0],
-                r[1],
-                r[2],
-                r[3],
-                r[4],
-                r[5],
-                r[6],
-                r[7],
-                r[8],
-                r[9],
-                r[10],
-                r[11],
-                r[12],
-                r[13],
-                r[14],
+            return surface_quad_3d(  # type: ignore[call-arg]
+                *self._build_result,
                 self.n_polys,
-                input_c,
+                self._coeffs_list,
                 gl_nodes,
                 gl_weights,
                 ts_nodes,
@@ -305,7 +264,7 @@ class ImplicitPolyQuadrature:
                 strat,
             )
 
-    def _surface_quad_aggregate(  # noqa: D417, PLR0913
+    def _surface_quad_aggregate(  # noqa: PLR0913
         self,
         q: int,
         gl_nodes: npt.NDArray[np.float64],
@@ -321,61 +280,34 @@ class ImplicitPolyQuadrature:
         """Aggregate surface quadrature: run for each height direction, combine.
 
         For each direction k, builds a hierarchy with forced k, computes the
-        flux-form surface integral ∫ f·n_k, and combines the results. The
-        k-th component of the normal weight comes from the k-th hierarchy.
+        flux-form surface integral, and combines the results. The k-th
+        component of the normal weight comes from the k-th hierarchy.
 
         Args:
             q (int): Quadrature order.
-            gl_nodes, gl_weights: GL quadrature on [0, 1].
-            ts_nodes, ts_weights: Tanh-sinh quadrature on [0, 1].
-            strat (int): Strategy code.
+            gl_nodes (npt.NDArray[np.float64]): GL nodes on [0, 1].
+            gl_weights (npt.NDArray[np.float64]): GL weights on [0, 1].
+            ts_nodes (npt.NDArray[np.float64]): Tanh-sinh nodes on [0, 1].
+            ts_weights (npt.NDArray[np.float64]): Tanh-sinh weights on [0, 1].
+            strat (int): Strategy code (see :class:`QuadStrategy`).
 
         Returns:
-            tuple: (points, scalar_weights, normal_weights).
+            tuple[npt.NDArray[np.float64], npt.NDArray[np.float64], npt.NDArray[np.float64]]:
+                ``(points, scalar_weights, normal_weights)``.
         """
         all_pts_list: list[npt.NDArray[np.float64]] = []
         all_sw_list: list[npt.NDArray[np.float64]] = []
         all_nw_list: list[npt.NDArray[np.float64]] = []
 
-        input_c = NumbaList()
-        for ca in self._coeffs:
-            input_c.append(ca)
-
         if self.dim == 2:  # noqa: PLR2004
-            coeffs_list = NumbaList()
-            masks_list = NumbaList()
-            for ca in self._coeffs:
-                coeffs_list.append(ca)
-                masks_list.append(compute_nonzero_mask_2d(ca))
-
             for k in range(2):
-                r_raw: tuple[Any, ...] = build_2d_forced_k(coeffs_list, masks_list, k)
+                r_raw = build_2d_forced_k(self._coeffs_list, self._masks_list, k)
                 # In aggregate mode, force TS on all levels (matches algoim).
-                r: tuple[Any, ...] = (
-                    r_raw[0],
-                    r_raw[1],
-                    r_raw[2],
-                    True,
-                    r_raw[4],
-                    r_raw[5],
-                    r_raw[6],
-                    r_raw[7],
-                    True,
-                    r_raw[9],
-                )
-                pts, sw, nw = surface_quad_2d_aggregate(
-                    r[0],
-                    r[1],
-                    r[2],
-                    r[3],
-                    r[4],
-                    r[5],
-                    r[6],
-                    r[7],
-                    r[8],
-                    r[9],
+                r = _force_ts_flags(r_raw, 2)
+                pts, sw, nw = surface_quad_2d_aggregate(  # type: ignore[call-arg]
+                    *r,
                     self.n_polys,
-                    input_c,
+                    self._coeffs_list,
                     gl_nodes,
                     gl_weights,
                     ts_nodes,
@@ -387,52 +319,14 @@ class ImplicitPolyQuadrature:
                     all_sw_list.append(sw)
                     all_nw_list.append(nw)
         else:
-            coeffs_list_3d = NumbaList()
-            masks_list_3d = NumbaList()
-            for ca in self._coeffs:
-                coeffs_list_3d.append(ca)
-                masks_list_3d.append(compute_nonzero_mask_3d(ca))
-
             for k in range(3):
-                r = build_3d_forced_k(coeffs_list_3d, masks_list_3d, k)
-                # In aggregate mode, algoim forces TS on all base integrals
-                # (line 621: base.build(false, auto_apply_TS || true)).
-                # Override use_ts flags to True for all levels.
-                r_agg: tuple[Any, ...] = (
-                    r[0],
-                    r[1],
-                    r[2],
-                    True,
-                    r[4],  # level 0: force use_ts
-                    r[5],
-                    r[6],
-                    r[7],
-                    True,
-                    r[9],  # level 1: force use_ts
-                    r[10],
-                    r[11],
-                    r[12],
-                    True,
-                    r[14],  # level 2: force use_ts
-                )
-                pts, sw, nw = surface_quad_3d_aggregate(
-                    r_agg[0],
-                    r_agg[1],
-                    r_agg[2],
-                    r_agg[3],
-                    r_agg[4],
-                    r_agg[5],
-                    r_agg[6],
-                    r_agg[7],
-                    r_agg[8],
-                    r_agg[9],
-                    r_agg[10],
-                    r_agg[11],
-                    r_agg[12],
-                    r_agg[13],
-                    r_agg[14],
+                r_raw_3d = build_3d_forced_k(self._coeffs_list, self._masks_list, k)
+                # Force TS on all levels for robustness with vertical tangents.
+                r_3d = _force_ts_flags(r_raw_3d, 3)
+                pts, sw, nw = surface_quad_3d_aggregate(  # type: ignore[call-arg]
+                    *r_3d,
                     self.n_polys,
-                    input_c,
+                    self._coeffs_list,
                     gl_nodes,
                     gl_weights,
                     ts_nodes,
@@ -466,7 +360,13 @@ class ImplicitPolyQuadrature:
 
         Returns:
             npt.NDArray[np.float64]: Values of shape ``(n_pts,)``.
+
+        Raises:
+            IndexError: If ``poly_idx`` is out of range ``[0, n_polys)``.
         """
+        if poly_idx < 0 or poly_idx >= self.n_polys:
+            msg = f"poly_idx {poly_idx} out of range [0, {self.n_polys})."
+            raise IndexError(msg)
         coeffs = self._coeffs[poly_idx]
         n = points.shape[0]
         values = np.empty(n, dtype=np.float64)
@@ -477,6 +377,45 @@ class ImplicitPolyQuadrature:
             for i in range(n):
                 values[i] = _eval_bernstein_3d(coeffs, points[i])
         return values
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+
+def _validate_q(q: int) -> None:
+    """Validate that ``q >= 1``.
+
+    Args:
+        q (int): Number of quadrature points.
+
+    Raises:
+        ValueError: If ``q < 1``.
+    """
+    if q < 1:
+        msg = f"q must be >= 1, got {q}."
+        raise ValueError(msg)
+
+
+def _force_ts_flags(build_result: tuple[Any, ...], dim: int) -> tuple[Any, ...]:
+    """Replace ``use_ts`` flags with ``True`` at each level of a build result.
+
+    The build result is a flat tuple with 5 fields per level
+    (coeffs, masks, k, use_ts, type). This function sets the ``use_ts``
+    field (index 3 within each level) to ``True``.
+
+    Args:
+        build_result (tuple[Any, ...]): Raw build result tuple.
+        dim (int): Parametric dimension (2 or 3). Determines number of levels.
+
+    Returns:
+        tuple[Any, ...]: Modified build result with all ``use_ts`` flags set to ``True``.
+    """
+    result = list(build_result)
+    for level in range(dim):
+        result[3 + level * 5] = True
+    return tuple(result)
 
 
 # ---------------------------------------------------------------------------
