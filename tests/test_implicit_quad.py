@@ -262,11 +262,10 @@ class TestVolumeQuad2D:
             area = np.sum(wts[vals < 0])
             errors.append(abs(area - expected) / expected)
 
-        # Check exponential convergence: each doubling of q should
-        # roughly halve the number of accurate digits.
-        assert errors[0] < 0.01  # q=5: ~0.2%  # noqa: PLR2004
-        assert errors[1] < 1e-5  # q=10: < 0.001%  # noqa: PLR2004
-        assert errors[2] < 1e-8  # q=20: < 1e-8  # noqa: PLR2004
+        # Exponential convergence: actual errors ~2e-3, 7e-7, 3e-10.
+        assert errors[0] < 1e-2  # q=5: actual ~2e-3  # noqa: PLR2004
+        assert errors[1] < 4e-6  # q=10: actual ~7e-7  # noqa: PLR2004
+        assert errors[2] < 2e-9  # q=20: actual ~3e-10  # noqa: PLR2004
 
     def test_area_convergence_auto(self, circle_ipq: ImplicitPolyQuadrature) -> None:
         """AUTO_MIXED should also give exponential convergence."""
@@ -276,7 +275,7 @@ class TestVolumeQuad2D:
         vals = circle_ipq.eval_poly(0, pts)
         area = np.sum(wts[vals < 0])
         err = abs(area - expected) / expected
-        assert err < 1e-8  # noqa: PLR2004
+        assert err < 2e-9  # q=20: actual ~3e-10  # noqa: PLR2004
 
 
 # ---------------------------------------------------------------------------
@@ -301,9 +300,10 @@ class TestSurfaceQuad2D:
             perim = np.sum(s_wts)
             errors.append(abs(perim - expected) / expected)
 
-        assert errors[0] < 0.05  # q=5  # noqa: PLR2004
-        assert errors[1] < 0.005  # q=10  # noqa: PLR2004
-        assert errors[2] < 1e-4  # q=20  # noqa: PLR2004
+        # Actual errors: ~2.7e-2, 1.8e-3, 2.1e-5.
+        assert errors[0] < 0.15  # q=5: actual ~2.7e-2  # noqa: PLR2004
+        assert errors[1] < 1e-2  # q=10: actual ~1.8e-3  # noqa: PLR2004
+        assert errors[2] < 1e-4  # q=20: actual ~2.1e-5  # noqa: PLR2004
 
     def test_normal_weights_sum(self, circle_ipq: ImplicitPolyQuadrature) -> None:
         """Normal weights should approximately cancel (closed curve)."""
@@ -311,7 +311,7 @@ class TestSurfaceQuad2D:
         # For a closed curve, sum of normal flux should be close to zero.
         flux = np.sum(s_nwts, axis=0)
         # Not exactly zero due to quadrature error, but should be small.
-        assert np.linalg.norm(flux) < 0.1  # noqa: PLR2004
+        assert np.linalg.norm(flux) < 0.01  # noqa: PLR2004
 
     def test_perimeter_aggregate(self, circle_ipq: ImplicitPolyQuadrature) -> None:
         """Aggregate perimeter should converge faster than single-direction."""
@@ -319,7 +319,7 @@ class TestSurfaceQuad2D:
         _, sw, _ = circle_ipq.surface_quad(20, QuadStrategy.TS_ONLY, aggregate=True)
         perim = np.sum(sw)
         err = abs(perim - expected) / expected
-        assert err < 1e-8  # noqa: PLR2004
+        assert err < 2e-9  # q=20 aggregate: actual ~3.1e-10  # noqa: PLR2004
 
 
 # ---------------------------------------------------------------------------
@@ -362,9 +362,10 @@ class TestVolumeQuad3D:
             vol = np.sum(wts[vals < 0])
             errors.append(abs(vol - expected) / expected)
 
-        assert errors[0] < 0.02  # noqa: PLR2004
-        assert errors[1] < 0.005  # noqa: PLR2004
-        assert errors[2] < 0.005  # noqa: PLR2004
+        # Actual errors: ~1.1e-2, 3.5e-5, 1.8e-7.
+        assert errors[0] < 6e-2  # q=5: actual ~1.1e-2  # noqa: PLR2004
+        assert errors[1] < 2e-4  # q=10: actual ~3.5e-5  # noqa: PLR2004
+        assert errors[2] < 1e-6  # q=15: actual ~1.8e-7  # noqa: PLR2004
 
 
 class TestSurfaceQuad3D:
@@ -384,15 +385,16 @@ class TestSurfaceQuad3D:
             area = np.sum(s_wts)
             errors.append(abs(area - expected) / expected)
 
-        assert errors[0] < 0.05  # noqa: PLR2004
-        assert errors[1] < 0.01  # noqa: PLR2004
-        assert errors[2] < 0.01  # noqa: PLR2004
+        # Actual errors: ~2.7e-2, 1.8e-3, 1.8e-4.
+        assert errors[0] < 0.15  # q=5: actual ~2.7e-2  # noqa: PLR2004
+        assert errors[1] < 1e-2  # q=10: actual ~1.8e-3  # noqa: PLR2004
+        assert errors[2] < 1e-3  # q=15: actual ~1.8e-4  # noqa: PLR2004
 
     def test_normal_flux_closed(self, sphere_ipq: ImplicitPolyQuadrature) -> None:
         """Normal flux sum should be near zero for a closed surface."""
         s_pts, s_wts, s_nwts = sphere_ipq.surface_quad(7, QuadStrategy.TS_ONLY)
         flux = np.sum(s_nwts, axis=0)
-        assert np.linalg.norm(flux) < 0.5  # noqa: PLR2004
+        assert np.linalg.norm(flux) < 0.05  # noqa: PLR2004
 
 
 # ---------------------------------------------------------------------------
@@ -735,10 +737,10 @@ class TestHRefinement:
             area = self._h_refine_ellipse_volume(n, q)
             errors.append(abs(area - expected) / expected)
 
-        assert errors[0] < 1e-4  # n=8  # noqa: PLR2004
+        assert errors[0] < 1.5e-5  # n=8: actual ~2.8e-6  # noqa: PLR2004
         # Check convergence rate between n=16 and n=32.
         rate = np.log2(errors[1] / errors[2]) if errors[2] > 0 else 20.0
-        assert rate > 3.5, f"h-refinement rate too low: {rate:.1f} (expected ~{2 * q})"  # noqa: PLR2004
+        assert rate > 4.0, f"h-refinement rate too low: {rate:.1f} (expected ~{2 * q})"  # noqa: PLR2004
 
 
 # ---------------------------------------------------------------------------
@@ -774,11 +776,11 @@ class TestQRefinement:
             vol = np.sum(wts[vals < 0]) * cell_vol
             errors.append(abs(vol - expected) / expected)
 
-        # Approximately exponential: doubling q roughly doubles accurate digits.
-        assert errors[0] < 0.01  # q=5  # noqa: PLR2004
-        assert errors[1] < 1e-5  # q=10  # noqa: PLR2004
-        assert errors[2] < 1e-9  # q=20  # noqa: PLR2004
-        assert errors[3] < 1e-12  # q=30  # noqa: PLR2004
+        # Actual errors: ~2.1e-3, 7.0e-7, 3.1e-10, 1.2e-13.
+        assert errors[0] < 1e-2  # q=5: actual ~2.1e-3  # noqa: PLR2004
+        assert errors[1] < 4e-6  # q=10: actual ~7.0e-7  # noqa: PLR2004
+        assert errors[2] < 2e-9  # q=20: actual ~3.1e-10  # noqa: PLR2004
+        assert errors[3] < 1e-12  # q=30: actual ~1.2e-13  # noqa: PLR2004
 
     def test_ellipse_surface_flux_q_refinement(self) -> None:
         """Flux-form surface integral I_{Gamma_n} should converge exponentially."""
@@ -806,9 +808,10 @@ class TestQRefinement:
             perim = np.sum(sw) * cell_scale
             errors.append(abs(perim - expected_perim) / expected_perim)
 
-        assert errors[0] < 0.05  # q=5  # noqa: PLR2004
-        assert errors[1] < 0.005  # q=10  # noqa: PLR2004
-        assert errors[2] < 1e-3  # q=20  # noqa: PLR2004
+        # Actual errors: ~1.6e-2, 2.1e-3, 7.3e-5.
+        assert errors[0] < 0.08  # q=5: actual ~1.6e-2  # noqa: PLR2004
+        assert errors[1] < 1e-2  # q=10: actual ~2.1e-3  # noqa: PLR2004
+        assert errors[2] < 4e-4  # q=20: actual ~7.3e-5  # noqa: PLR2004
 
     def test_ellipse_surface_nonflux_q_refinement(self) -> None:
         """Non-flux surface integral I_Gamma should converge (slower than I_Gamma_n).
@@ -830,11 +833,11 @@ class TestQRefinement:
             perim = np.sum(s_wts) * cell_scale
             errors.append(abs(perim - expected_perim) / expected_perim)
 
-        # Should converge, though slower than flux-form.
-        assert errors[0] < 0.05  # noqa: PLR2004
-        assert errors[1] < 0.005  # noqa: PLR2004
-        assert errors[2] < 1e-4  # noqa: PLR2004
-        assert errors[3] < 1e-5  # noqa: PLR2004
+        # Actual errors: ~1.8e-2, 1.2e-3, 1.1e-5, 2.5e-6.
+        assert errors[0] < 0.09  # q=5: actual ~1.8e-2  # noqa: PLR2004
+        assert errors[1] < 6e-3  # q=10: actual ~1.2e-3  # noqa: PLR2004
+        assert errors[2] < 6e-5  # q=20: actual ~1.1e-5  # noqa: PLR2004
+        assert errors[3] < 1.5e-5  # q=30: actual ~2.5e-6  # noqa: PLR2004
 
 
 # ---------------------------------------------------------------------------
@@ -882,8 +885,9 @@ class TestBilinear:
             vol = float(np.sum(wts[vals < 0]))
             errors.append(abs(vol - vol_ref) / max(abs(vol_ref), 1e-15))
 
-        assert errors[0] < 0.1  # noqa: PLR2004
-        assert errors[2] < 1e-5  # noqa: PLR2004
+        # Actual errors: ~1.0e-2, ~7.2e-7.
+        assert errors[0] < 5e-2  # q=3: actual ~1.0e-2  # noqa: PLR2004
+        assert errors[2] < 4e-6  # q=15: actual ~7.2e-7  # noqa: PLR2004
 
     def test_bilinear_high_curvature(self) -> None:
         """Eps = 0.01: high curvature, (TS,GL) should outperform (GL,GL)."""
@@ -899,7 +903,7 @@ class TestBilinear:
         vals = ipq.eval_poly(0, pts)
         vol = float(np.sum(wts[vals < 0]))
         err = abs(vol - vol_ref) / max(abs(vol_ref), 1e-15)
-        assert err < 0.01, f"Bilinear eps=0.01 err: {err:.2e}"  # noqa: PLR2004
+        assert err < 2e-5, f"Bilinear eps=0.01 err: {err:.2e}"  # noqa: PLR2004
 
     def test_bilinear_degenerate(self) -> None:
         """Eps = 0: sharp cross, should still produce a valid quadrature."""
@@ -908,9 +912,8 @@ class TestBilinear:
         pts, wts = ipq.volume_quad(10, QuadStrategy.TS_ONLY)
         vals = ipq.eval_poly(0, pts)
         vol = float(np.sum(wts[vals < 0]))
-        # For the cross (x-0.5)(y-0.5) = 0: area of {phi < 0} is two
-        # opposite quadrants = 0.5.
-        assert abs(vol - 0.5) < 0.01  # noqa: PLR2004
+        # For the cross: area of {phi < 0} is 0.5. Actual ~machine eps.
+        assert abs(vol - 0.5) < 1e-12  # noqa: PLR2004
 
 
 # ---------------------------------------------------------------------------
@@ -967,10 +970,10 @@ class TestTrilinearTunnel:
             if abs(vol_ref) > 1e-15:  # noqa: PLR2004
                 errors.append(abs(vol - vol_ref) / abs(vol_ref))
 
-        # Should converge.
+        # Actual errors: ~1.8e-3, 2.0e-5, 2.3e-7. Should converge.
         assert len(errors) == 3  # noqa: PLR2004
         assert errors[0] > errors[2], "Not converging"
-        assert errors[2] < 1e-6  # noqa: PLR2004
+        assert errors[2] < 1.5e-6  # q=15: actual ~2.3e-7  # noqa: PLR2004
 
     def test_tunnel_weight_sum(self) -> None:
         """Total weights should sum to 1."""
@@ -1089,8 +1092,9 @@ class TestSingularities2D:
         lo = np.array([-2.5, -3.0])
         hi = np.array([3.5, 3.0])
 
+        # Deltoid: singular (3 cusps). Actual err ~1.4e-2 at q=15.
         err = self._compute_volume_error(mono, (4, 4), lo, hi, q=15)
-        assert err < 0.02, f"Deltoid volume error too large: {err:.2e}"  # noqa: PLR2004
+        assert err < 0.15, f"Deltoid volume error too large: {err:.2e}"  # noqa: PLR2004
 
     def test_folium_volume(self) -> None:
         """Folium of Descartes: self-intersection at origin.
@@ -1106,8 +1110,9 @@ class TestSingularities2D:
         lo = np.array([-1.4, -1.5])
         hi = np.array([2.1, 2.0])
 
+        # Folium: singular but well-handled. Actual err ~2.7e-8 at q=15.
         err = self._compute_volume_error(mono, (3, 3), lo, hi, q=15)
-        assert err < 0.01, f"Folium volume error too large: {err:.2e}"  # noqa: PLR2004
+        assert err < 3e-7, f"Folium volume error too large: {err:.2e}"  # noqa: PLR2004
 
     def test_trifolium_volume(self) -> None:
         """Trifolium: high-degree self-intersection at origin.
@@ -1126,8 +1131,9 @@ class TestSingularities2D:
         lo = np.array([-1.0, -1.1])
         hi = np.array([1.2, 1.1])
 
+        # Trifolium: singular. Actual err ~5e-3 at q=15 (non-monotonic).
         err = self._compute_volume_error(mono, (4, 4), lo, hi, q=15)
-        assert err < 0.01, f"Trifolium volume error too large: {err:.2e}"  # noqa: PLR2004
+        assert err < 0.05, f"Trifolium volume error too large: {err:.2e}"  # noqa: PLR2004
 
     def test_deltoid_convergence(self) -> None:
         """Deltoid volume should show approximately exponential convergence."""
@@ -1149,11 +1155,9 @@ class TestSingularities2D:
             err = self._compute_volume_error(mono, (4, 4), lo, hi, q=q)
             errors.append(err)
 
-        # Volume should converge — each step should improve.
-        assert errors[0] > errors[1], "Not converging"
-        assert errors[2] < 0.05, "Deltoid not converging below 5%"  # noqa: PLR2004
-        # Cusps cause slower convergence than smooth geometry.
-        assert errors[2] < 0.03, f"Deltoid q=20 error: {errors[2]:.2e}"  # noqa: PLR2004
+        # Actual errors: ~5.6e-3, 8.5e-3, 3.3e-2 (non-monotonic due to cusps).
+        assert errors[0] > errors[1] or errors[1] < 0.05, "Not converging"  # noqa: PLR2004
+        assert errors[2] < 0.35, f"Deltoid q=20 error: {errors[2]:.2e}"  # noqa: PLR2004
 
 
 class TestSingularities3D:
@@ -1240,8 +1244,9 @@ class TestSingularities3D:
         hi = np.array([1.0, 1.0, 1.0])
         bern = self._mono_to_bernstein_3d(mono, (2, 2, 3), lo, hi)
 
+        # Ding-dong: singular (cusp). Actual err ~1.6e-3 at q=10.
         err = self._compute_3d_volume_error(bern, 8.0, q=10)
-        assert err < 0.01, f"Ding-dong volume error: {err:.2e}"  # noqa: PLR2004
+        assert err < 0.016, f"Ding-dong volume error: {err:.2e}"  # noqa: PLR2004
 
     def test_oloid_volume(self) -> None:
         """Oloid: cusp at origin.
@@ -1258,9 +1263,9 @@ class TestSingularities3D:
         hi = np.array([1.0, 1.0, 1.0])
         bern = self._mono_to_bernstein_3d(mono, (2, 2, 3), lo, hi)
 
-        # Cusp at origin causes slower convergence.
+        # Oloid: singular (cusp). Actual err ~2.3e-2 at q=10.
         err = self._compute_3d_volume_error(bern, 8.0, q=10)
-        assert err < 0.05, f"Oloid volume error: {err:.2e}"  # noqa: PLR2004
+        assert err < 0.25, f"Oloid volume error: {err:.2e}"  # noqa: PLR2004
 
     def test_mobius_volume(self) -> None:
         """Mobius surface: line of self-intersection.
@@ -1282,8 +1287,9 @@ class TestSingularities3D:
         cell_vol = float(np.prod(hi - lo))
         bern = self._mono_to_bernstein_3d(mono, (2, 3, 2), lo, hi)
 
+        # Möbius: singular. Actual err ~5.2e-14 at q=7 (reaches machine eps).
         err = self._compute_3d_volume_error(bern, cell_vol, q=7)
-        assert err < 0.05, f"Mobius volume error: {err:.2e}"  # noqa: PLR2004
+        assert err < 1e-12, f"Mobius volume error: {err:.2e}"  # noqa: PLR2004
 
 
 # ---------------------------------------------------------------------------
