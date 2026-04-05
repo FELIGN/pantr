@@ -968,9 +968,13 @@ def _squared_l2_norm_1d(coeffs: npt.NDArray[np.float64]) -> float:
     inv_2n1 = 1.0 / float(2 * n + 1)
     for i in range(n + 1):
         ci = coeffs[i]
+        if ci == 0.0:
+            continue
         bi = _bincoeff(n, i)
         for j in range(n + 1):
             cj = coeffs[j]
+            if cj == 0.0:
+                continue
             bj = _bincoeff(n, j)
             bij = _bincoeff(2 * n, i + j)
             if bij > 0.0:

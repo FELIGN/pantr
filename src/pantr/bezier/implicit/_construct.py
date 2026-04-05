@@ -354,7 +354,7 @@ def volume_quad_2d(  # noqa: PLR0912, PLR0913, PLR0915
             continue
         scale_outer = hi - lo
 
-        for qi in range(q):
+        for qi in range(len(nodes_outer)):
             # Map outer quadrature node to [lo, hi].
             x_tang_val = lo + nodes_outer[qi] * scale_outer
             w_tang = wts_outer[qi] * scale_outer
@@ -371,7 +371,7 @@ def volume_quad_2d(  # noqa: PLR0912, PLR0913, PLR0915
                     continue
                 scale_inner = ihi - ilo
 
-                for qj in range(q):
+                for qj in range(len(nodes_inner)):
                     x_height = ilo + nodes_inner[qj] * scale_inner
                     w_height = wts_inner[qj] * scale_inner
 
@@ -530,7 +530,7 @@ def volume_quad_3d(  # noqa: PLR0912, PLR0913, PLR0915
             continue
         scale0 = hi0 - lo0
 
-        for q0 in range(q):
+        for q0 in range(len(nodes_0)):
             x_1d = lo0 + nodes_0[q0] * scale0
             w_1d = wts_0[q0] * scale0
 
@@ -544,7 +544,7 @@ def volume_quad_3d(  # noqa: PLR0912, PLR0913, PLR0915
                     continue
                 scale1 = hi1 - lo1
 
-                for q1 in range(q):
+                for q1 in range(len(nodes_1)):
                     x_2d = lo1 + nodes_1[q1] * scale1
                     w_2d = wts_1[q1] * scale1
 
@@ -582,7 +582,7 @@ def volume_quad_3d(  # noqa: PLR0912, PLR0913, PLR0915
                             continue
                         scale2 = hi2 - lo2
 
-                        for q2 in range(q):
+                        for q2 in range(len(nodes_2)):
                             x_3d = lo2 + nodes_2[q2] * scale2
                             w_3d = wts_2[q2] * scale2
 
@@ -705,7 +705,7 @@ def surface_quad_2d(  # noqa: PLR0912, PLR0913, PLR0915
             continue
         scale = hi - lo
 
-        for qi in range(q):
+        for qi in range(len(nodes_outer)):
             x_tang_val = lo + nodes_outer[qi] * scale
             w_tang = wts_outer[qi] * scale
 
@@ -894,7 +894,7 @@ def surface_quad_3d(  # noqa: PLR0912, PLR0913, PLR0915
             continue
         scale0 = hi0 - lo0
 
-        for q0 in range(q):
+        for q0 in range(len(nodes_0)):
             x_1d = lo0 + nodes_0[q0] * scale0
             w_1d = wts_0[q0] * scale0
 
@@ -908,7 +908,7 @@ def surface_quad_3d(  # noqa: PLR0912, PLR0913, PLR0915
                     continue
                 scale1 = hi1 - lo1
 
-                for q1 in range(q):
+                for q1 in range(len(nodes_1)):
                     x_2d = lo1 + nodes_1[q1] * scale1
                     w_2d = wts_1[q1] * scale1
                     w_base = w_1d * w_2d
@@ -1072,7 +1072,7 @@ def surface_quad_2d_aggregate(  # noqa: PLR0912, PLR0913, PLR0915
             continue
         scale = hi - lo
 
-        for qi in range(q):
+        for qi in range(len(nodes_outer)):
             x_tang_val = lo + nodes_outer[qi] * scale
             w_tang = wts_outer[qi] * scale
 
@@ -1247,7 +1247,7 @@ def surface_quad_3d_aggregate(  # noqa: PLR0912, PLR0913, PLR0915
             continue
         scale0 = hi0 - lo0
 
-        for q0 in range(q):
+        for q0 in range(len(nodes_0)):
             x_1d = lo0 + nodes_0[q0] * scale0
             w_1d = wts_0[q0] * scale0
 
@@ -1260,7 +1260,7 @@ def surface_quad_3d_aggregate(  # noqa: PLR0912, PLR0913, PLR0915
                     continue
                 scale1 = hi1 - lo1
 
-                for q1 in range(q):
+                for q1 in range(len(nodes_1)):
                     x_2d = lo1 + nodes_1[q1] * scale1
                     w_2d = wts_1[q1] * scale1
                     w_base = w_1d * w_2d

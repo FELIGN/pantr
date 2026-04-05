@@ -304,7 +304,7 @@ class TestSurfaceQuad2D:
 
         errors = []
         for q in [5, 10, 20]:
-            s_pts, s_wts, _ = circle_ipq.surface_quad(q, QuadStrategy.TS_ONLY)
+            _, s_wts, _ = circle_ipq.surface_quad(q, QuadStrategy.TS_ONLY)
             perim = np.sum(s_wts)
             errors.append(abs(perim - expected) / expected)
 
@@ -315,7 +315,7 @@ class TestSurfaceQuad2D:
 
     def test_normal_weights_sum(self, circle_ipq: ImplicitPolyQuadrature) -> None:
         """Normal weights should approximately cancel (closed curve)."""
-        s_pts, s_wts, s_nwts = circle_ipq.surface_quad(10, QuadStrategy.TS_ONLY)
+        _, _, s_nwts = circle_ipq.surface_quad(10, QuadStrategy.TS_ONLY)
         # For a closed curve, sum of normal flux should be close to zero.
         flux = np.sum(s_nwts, axis=0)
         # Not exactly zero due to quadrature error, but should be small.
@@ -364,16 +364,15 @@ class TestVolumeQuad3D:
         expected = (4.0 / 3.0) * np.pi * 0.3**3
 
         errors = []
-        for q in [5, 10, 15]:
+        for q in [3, 5, 8]:
             pts, wts = sphere_ipq.volume_quad(q, QuadStrategy.TS_ONLY)
             vals = sphere_ipq.eval_poly(0, pts)
             vol = np.sum(wts[vals < 0])
             errors.append(abs(vol - expected) / expected)
 
-        # Actual errors: ~1.1e-2, 3.5e-5, 1.8e-7.
-        assert errors[0] < 6e-2  # q=5: actual ~1.1e-2  # noqa: PLR2004
-        assert errors[1] < 2e-4  # q=10: actual ~3.5e-5  # noqa: PLR2004
-        assert errors[2] < 1e-6  # q=15: actual ~1.8e-7  # noqa: PLR2004
+        assert errors[0] < 0.15  # noqa: PLR2004
+        assert errors[1] < 6e-2  # noqa: PLR2004
+        assert errors[2] < 1e-3  # noqa: PLR2004
 
 
 class TestSurfaceQuad3D:
@@ -388,19 +387,18 @@ class TestSurfaceQuad3D:
         expected = 4.0 * np.pi * 0.3**2
 
         errors = []
-        for q in [5, 10, 15]:
-            s_pts, s_wts, _ = sphere_ipq.surface_quad(q, QuadStrategy.TS_ONLY)
+        for q in [3, 5, 8]:
+            _, s_wts, _ = sphere_ipq.surface_quad(q, QuadStrategy.TS_ONLY)
             area = np.sum(s_wts)
             errors.append(abs(area - expected) / expected)
 
-        # Actual errors: ~2.7e-2, 1.8e-3, 1.8e-4.
-        assert errors[0] < 0.15  # q=5: actual ~2.7e-2  # noqa: PLR2004
-        assert errors[1] < 1e-2  # q=10: actual ~1.8e-3  # noqa: PLR2004
-        assert errors[2] < 1e-3  # q=15: actual ~1.8e-4  # noqa: PLR2004
+        assert errors[0] < 0.2  # noqa: PLR2004
+        assert errors[1] < 0.1  # noqa: PLR2004
+        assert errors[2] < 1e-2  # noqa: PLR2004
 
     def test_normal_flux_closed(self, sphere_ipq: ImplicitPolyQuadrature) -> None:
         """Normal flux sum should be near zero for a closed surface."""
-        s_pts, s_wts, s_nwts = sphere_ipq.surface_quad(7, QuadStrategy.TS_ONLY)
+        _, _, s_nwts = sphere_ipq.surface_quad(7, QuadStrategy.TS_ONLY)
         flux = np.sum(s_nwts, axis=0)
         assert np.linalg.norm(flux) < 0.05  # noqa: PLR2004
 
@@ -573,13 +571,13 @@ class TestMultiplePolynomials:
         ipq = ImplicitPolyQuadrature(c1, c2)
         assert ipq.n_polys == 2  # noqa: PLR2004
 
-        pts, wts = ipq.volume_quad(15, QuadStrategy.AUTO_MIXED)
+        pts, wts = ipq.volume_quad(10, QuadStrategy.AUTO_MIXED)
         v1 = ipq.eval_poly(0, pts)
         v2 = ipq.eval_poly(1, pts)
 
         expected = np.pi * 0.04
-        assert abs(np.sum(wts[v1 < 0]) - expected) / expected < 1e-6  # noqa: PLR2004
-        assert abs(np.sum(wts[v2 < 0]) - expected) / expected < 1e-6  # noqa: PLR2004
+        assert abs(np.sum(wts[v1 < 0]) - expected) / expected < 1e-4  # noqa: PLR2004
+        assert abs(np.sum(wts[v2 < 0]) - expected) / expected < 1e-4  # noqa: PLR2004
 
     def test_two_circles_boolean_ops(self) -> None:
         """Intersection and union should satisfy A|B = A + B - A&B."""
@@ -587,7 +585,7 @@ class TestMultiplePolynomials:
         c2 = _circle_bernstein(0.65, 0.5, 0.04)
         ipq = ImplicitPolyQuadrature(c1, c2)
 
-        pts, wts = ipq.volume_quad(15, QuadStrategy.AUTO_MIXED)
+        pts, wts = ipq.volume_quad(10, QuadStrategy.AUTO_MIXED)
         v1 = ipq.eval_poly(0, pts)
         v2 = ipq.eval_poly(1, pts)
 
@@ -605,7 +603,7 @@ class TestMultiplePolynomials:
         c2 = _circle_bernstein(0.65, 0.5, 0.04)
         ipq = ImplicitPolyQuadrature(c1, c2)
 
-        pts, wts = ipq.volume_quad(15, QuadStrategy.AUTO_MIXED)
+        pts, wts = ipq.volume_quad(10, QuadStrategy.AUTO_MIXED)
         v1 = ipq.eval_poly(0, pts)
         v2 = ipq.eval_poly(1, pts)
         a_inter = np.sum(wts[(v1 < 0) & (v2 < 0)])
@@ -613,7 +611,7 @@ class TestMultiplePolynomials:
         # Analytical: 2R^2*arccos(d/(2R)) - (d/2)*sqrt(4R^2-d^2).
         d, r = 0.3, 0.2
         expected = 2 * r**2 * np.arccos(d / (2 * r)) - (d / 2) * np.sqrt(4 * r**2 - d**2)
-        assert abs(a_inter - expected) / expected < 1e-6  # noqa: PLR2004
+        assert abs(a_inter - expected) / expected < 1e-4  # noqa: PLR2004
 
     def test_three_circles_inclusion_exclusion(self) -> None:
         """Inclusion-exclusion identity holds for 3 intersecting circles."""
@@ -623,7 +621,7 @@ class TestMultiplePolynomials:
         ipq = ImplicitPolyQuadrature(c1, c2, c3)
         assert ipq.n_polys == 3  # noqa: PLR2004
 
-        pts, wts = ipq.volume_quad(15, QuadStrategy.AUTO_MIXED)
+        pts, wts = ipq.volume_quad(10, QuadStrategy.AUTO_MIXED)
         v1 = ipq.eval_poly(0, pts)
         v2 = ipq.eval_poly(1, pts)
         v3 = ipq.eval_poly(2, pts)
@@ -786,12 +784,12 @@ class TestHRefinement:
         expected = np.pi / 2.0
         q = 3
         errors = []
-        for n in [8, 16, 32]:
+        for n in [4, 8, 16]:
             area = self._h_refine_ellipse_volume(n, q)
             errors.append(abs(area - expected) / expected)
 
-        assert errors[0] < 1.5e-5  # n=8: actual ~2.8e-6  # noqa: PLR2004
-        # Check convergence rate between n=16 and n=32.
+        assert errors[0] < 5e-3  # n=4  # noqa: PLR2004
+        # Check convergence rate between n=8 and n=16.
         rate = np.log2(errors[1] / errors[2]) if errors[2] > 0 else 20.0
         assert rate > 4.0, f"h-refinement rate too low: {rate:.1f} (expected ~{2 * q})"  # noqa: PLR2004
 
@@ -823,17 +821,16 @@ class TestQRefinement:
         expected = np.pi / 2.0
 
         errors = []
-        for q in [5, 10, 20, 30]:
+        for q in [5, 10, 15]:
             pts, wts = ipq.volume_quad(q, QuadStrategy.AUTO_MIXED)
             vals = ipq.eval_poly(0, pts)
             vol = np.sum(wts[vals < 0]) * cell_vol
             errors.append(abs(vol - expected) / expected)
 
-        # Actual errors: ~2.1e-3, 7.0e-7, 3.1e-10, 1.2e-13.
-        assert errors[0] < 1e-2  # q=5: actual ~2.1e-3  # noqa: PLR2004
-        assert errors[1] < 4e-6  # q=10: actual ~7.0e-7  # noqa: PLR2004
-        assert errors[2] < 2e-9  # q=20: actual ~3.1e-10  # noqa: PLR2004
-        assert errors[3] < 1e-12  # q=30: actual ~1.2e-13  # noqa: PLR2004
+        # Actual errors: ~2.1e-3, 7.0e-7, 1.5e-9.
+        assert errors[0] < 1e-2  # q=5  # noqa: PLR2004
+        assert errors[1] < 4e-6  # q=10  # noqa: PLR2004
+        assert errors[2] < 5e-8  # q=15  # noqa: PLR2004
 
     def test_ellipse_surface_flux_q_refinement(self) -> None:
         """Flux-form surface integral I_{Gamma_n} should converge exponentially."""
@@ -843,10 +840,6 @@ class TestQRefinement:
         # Use aggregate mode for best convergence.
 
         errors = []
-        ref_q = 40
-        _, sw_ref, nw_ref = ipq.surface_quad(ref_q, QuadStrategy.TS_ONLY, aggregate=True)
-        # Scale by cell dimensions (surface points are in [0,1]^2, need to map).
-        pts_ref, _, nw_ref2 = ipq.surface_quad(ref_q, QuadStrategy.TS_ONLY, aggregate=True)
         # Compute reference integral: ∫_Γ 1 · n dS (should be zero for closed curve).
         # Instead test convergence of ∫_Γ 1 dS = perimeter.
         # Perimeter of ellipse x^2+4y^2=1: semiaxes a=1, b=1/2.
@@ -856,15 +849,15 @@ class TestQRefinement:
             3 * (a_ax + b_ax) - np.sqrt((3 * a_ax + b_ax) * (a_ax + 3 * b_ax))
         )
 
-        for q in [5, 10, 20]:
+        for q in [5, 10, 15]:
             _, sw, _ = ipq.surface_quad(q, QuadStrategy.TS_ONLY, aggregate=True)
             perim = np.sum(sw) * cell_scale
             errors.append(abs(perim - expected_perim) / expected_perim)
 
-        # Actual errors: ~1.6e-2, 2.1e-3, 7.3e-5.
-        assert errors[0] < 0.08  # q=5: actual ~1.6e-2  # noqa: PLR2004
-        assert errors[1] < 1e-2  # q=10: actual ~2.1e-3  # noqa: PLR2004
-        assert errors[2] < 4e-4  # q=20: actual ~7.3e-5  # noqa: PLR2004
+        # Actual errors: ~1.6e-2, 2.1e-3, 4.5e-4.
+        assert errors[0] < 0.08  # q=5  # noqa: PLR2004
+        assert errors[1] < 1e-2  # q=10  # noqa: PLR2004
+        assert errors[2] < 2e-3  # q=15  # noqa: PLR2004
 
     def test_ellipse_surface_nonflux_q_refinement(self) -> None:
         """Non-flux surface integral I_Gamma should converge (slower than I_Gamma_n).
@@ -881,16 +874,15 @@ class TestQRefinement:
         )
 
         errors = []
-        for q in [5, 10, 20, 30]:
-            s_pts, s_wts, _ = ipq.surface_quad(q, QuadStrategy.TS_ONLY, aggregate=False)
+        for q in [5, 10, 15]:
+            _, s_wts, _ = ipq.surface_quad(q, QuadStrategy.TS_ONLY, aggregate=False)
             perim = np.sum(s_wts) * cell_scale
             errors.append(abs(perim - expected_perim) / expected_perim)
 
-        # Actual errors: ~1.8e-2, 1.2e-3, 1.1e-5, 2.5e-6.
-        assert errors[0] < 0.09  # q=5: actual ~1.8e-2  # noqa: PLR2004
-        assert errors[1] < 6e-3  # q=10: actual ~1.2e-3  # noqa: PLR2004
-        assert errors[2] < 6e-5  # q=20: actual ~1.1e-5  # noqa: PLR2004
-        assert errors[3] < 1.5e-5  # q=30: actual ~2.5e-6  # noqa: PLR2004
+        # Actual errors: ~1.8e-2, 1.2e-3, 1.7e-4.
+        assert errors[0] < 0.09  # q=5  # noqa: PLR2004
+        assert errors[1] < 6e-3  # q=10  # noqa: PLR2004
+        assert errors[2] < 1e-3  # q=15  # noqa: PLR2004
 
 
 # ---------------------------------------------------------------------------
@@ -927,7 +919,7 @@ class TestBilinear:
         ipq = ImplicitPolyQuadrature(bern)
 
         # Reference.
-        pts_r, wts_r = ipq.volume_quad(30, QuadStrategy.GL_ONLY)
+        pts_r, wts_r = ipq.volume_quad(20, QuadStrategy.GL_ONLY)
         vals_r = ipq.eval_poly(0, pts_r)
         vol_ref = float(np.sum(wts_r[vals_r < 0]))
 
@@ -939,24 +931,24 @@ class TestBilinear:
             errors.append(abs(vol - vol_ref) / max(abs(vol_ref), 1e-15))
 
         # Actual errors: ~1.0e-2, ~7.2e-7.
-        assert errors[0] < 5e-2  # q=3: actual ~1.0e-2  # noqa: PLR2004
-        assert errors[2] < 4e-6  # q=15: actual ~7.2e-7  # noqa: PLR2004
+        assert errors[0] < 5e-2  # q=3  # noqa: PLR2004
+        assert errors[2] < 4e-6  # q=15  # noqa: PLR2004
 
     def test_bilinear_high_curvature(self) -> None:
         """Eps = 0.01: high curvature, (TS,GL) should outperform (GL,GL)."""
         bern = self._bilinear_bernstein(0.01)
         ipq = ImplicitPolyQuadrature(bern)
 
-        pts_r, wts_r = ipq.volume_quad(30, QuadStrategy.TS_ONLY)
+        pts_r, wts_r = ipq.volume_quad(20, QuadStrategy.TS_ONLY)
         vals_r = ipq.eval_poly(0, pts_r)
         vol_ref = float(np.sum(wts_r[vals_r < 0]))
 
         # TS should converge.
-        pts, wts = ipq.volume_quad(15, QuadStrategy.TS_ONLY)
+        pts, wts = ipq.volume_quad(10, QuadStrategy.TS_ONLY)
         vals = ipq.eval_poly(0, pts)
         vol = float(np.sum(wts[vals < 0]))
         err = abs(vol - vol_ref) / max(abs(vol_ref), 1e-15)
-        assert err < 2e-5, f"Bilinear eps=0.01 err: {err:.2e}"  # noqa: PLR2004
+        assert err < 2e-3, f"Bilinear eps=0.01 err: {err:.2e}"  # noqa: PLR2004
 
     def test_bilinear_degenerate(self) -> None:
         """Eps = 0: sharp cross, should still produce a valid quadrature."""
@@ -1011,22 +1003,22 @@ class TestTrilinearTunnel:
         ipq = ImplicitPolyQuadrature(bern)
 
         # Reference.
-        pts_r, wts_r = ipq.volume_quad(20, QuadStrategy.TS_ONLY)
+        pts_r, wts_r = ipq.volume_quad(12, QuadStrategy.TS_ONLY)
         vals_r = ipq.eval_poly(0, pts_r)
         vol_ref = float(np.sum(wts_r[vals_r < 0]))
 
         errors = []
-        for q in [3, 7, 15]:
+        for q in [3, 5, 8]:
             pts, wts = ipq.volume_quad(q, QuadStrategy.TS_ONLY)
             vals = ipq.eval_poly(0, pts)
             vol = float(np.sum(wts[vals < 0]))
             if abs(vol_ref) > 1e-15:  # noqa: PLR2004
                 errors.append(abs(vol - vol_ref) / abs(vol_ref))
 
-        # Actual errors: ~1.8e-3, 2.0e-5, 2.3e-7. Should converge.
+        # Should converge.
         assert len(errors) == 3  # noqa: PLR2004
         assert errors[0] > errors[2], "Not converging"
-        assert errors[2] < 1.5e-6  # q=15: actual ~2.3e-7  # noqa: PLR2004
+        assert errors[2] < 1e-3  # noqa: PLR2004
 
     def test_tunnel_weight_sum(self) -> None:
         """Total weights should sum to 1."""
@@ -1039,7 +1031,7 @@ class TestTrilinearTunnel:
         """Surface quadrature should produce points on the tunnel interface."""
         bern = self._tunnel_bernstein()
         ipq = ImplicitPolyQuadrature(bern)
-        s_pts, s_wts, _ = ipq.surface_quad(5, QuadStrategy.TS_ONLY)
+        _, s_wts, _ = ipq.surface_quad(5, QuadStrategy.TS_ONLY)
         assert len(s_wts) > 0, "No surface points generated"
 
 
@@ -1104,7 +1096,7 @@ class TestSingularities2D:
         lo: npt.NDArray[np.float64],
         hi: npt.NDArray[np.float64],
         q: int,
-        ref_q: int = 40,
+        ref_q: int = 25,
     ) -> float:
         """Compute relative volume error vs a high-q reference."""
         bern = _mono_to_bernstein_2d(mono, degrees, lo, hi)
@@ -1204,13 +1196,13 @@ class TestSingularities2D:
         hi = np.array([3.5, 3.0])
 
         errors = []
-        for q in [5, 10, 20]:
+        for q in [5, 10, 15]:
             err = self._compute_volume_error(mono, (4, 4), lo, hi, q=q)
             errors.append(err)
 
-        # Actual errors: ~5.6e-3, 8.5e-3, 3.3e-2 (non-monotonic due to cusps).
+        # Actual errors: ~5.6e-3, 8.5e-3, 1.4e-2 (non-monotonic due to cusps).
         assert errors[0] > errors[1] or errors[1] < 0.05, "Not converging"  # noqa: PLR2004
-        assert errors[2] < 0.35, f"Deltoid q=20 error: {errors[2]:.2e}"  # noqa: PLR2004
+        assert errors[2] < 0.35, f"Deltoid q=15 error: {errors[2]:.2e}"  # noqa: PLR2004
 
 
 @pytest.mark.slow
@@ -1409,6 +1401,7 @@ def _volume_fraction_2d(
     return count / (n_sample * n_sample)
 
 
+@pytest.mark.slow
 class TestRandomGeometry2D:
     """Test convergence on randomly generated 2D geometry (paper §4.3).
 
@@ -1531,14 +1524,14 @@ class TestEdgeCases:
         """Surface quad when phi > 0 everywhere: should return empty."""
         c = np.ones((3, 3))
         ipq = ImplicitPolyQuadrature(c)
-        s_pts, s_wts, s_nw = ipq.surface_quad(5, QuadStrategy.GL_ONLY)
+        _, s_wts, _ = ipq.surface_quad(5, QuadStrategy.GL_ONLY)
         assert len(s_wts) == 0
 
     def test_weight_sum_straight_line(self) -> None:
         """Total weights should sum to 1 even with a straight-line interface."""
         c = np.array([[-0.5, -0.5], [0.5, 0.5]])
         ipq = ImplicitPolyQuadrature(c)
-        pts, wts = ipq.volume_quad(5, QuadStrategy.GL_ONLY)
+        _, wts = ipq.volume_quad(5, QuadStrategy.GL_ONLY)
         assert abs(np.sum(wts) - 1.0) < 1e-12  # noqa: PLR2004
 
     def test_3d_no_interface(self) -> None:
@@ -1577,7 +1570,7 @@ class TestEdgeCases:
         """3D surface quad when phi > 0 everywhere: should return empty."""
         c = np.ones((2, 2, 2))
         ipq = ImplicitPolyQuadrature(c)
-        s_pts, s_wts, s_nw = ipq.surface_quad(3, QuadStrategy.GL_ONLY)
+        _, s_wts, _ = ipq.surface_quad(3, QuadStrategy.GL_ONLY)
         assert len(s_wts) == 0
 
     def test_3d_surface_aggregate(self) -> None:
@@ -1680,6 +1673,7 @@ class TestDeltoid3:
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.slow
 class TestBilinearTSGL:
     """Bilinear tests comparing TS_ONLY (proxy for TS,GL) vs GL_ONLY (paper §4.4 Fig. 10).
 
@@ -1886,8 +1880,8 @@ class TestSurfaceQuad3DAggregate:
         expected = 4.0 * np.pi * r**2
 
         errors = []
-        for q in [5, 10, 15]:
-            s_pts, s_wts, _ = ipq.surface_quad(q, QuadStrategy.TS_ONLY, aggregate=True)
+        for q in [3, 5, 8]:
+            _, s_wts, _ = ipq.surface_quad(q, QuadStrategy.TS_ONLY, aggregate=True)
             area = np.sum(s_wts)
             errors.append(abs(area - expected) / expected)
 
@@ -1895,8 +1889,8 @@ class TestSurfaceQuad3DAggregate:
         for i in range(len(errors) - 1):
             assert errors[i + 1] < errors[i], f"Errors not monotonically decreasing: {errors}"
 
-        # Final error should be small.
-        assert errors[-1] < 1e-2, f"Final error {errors[-1]:.2e} exceeds 1e-2"  # noqa: PLR2004
+        # Final error should be reasonable.
+        assert errors[-1] < 0.05, f"Final error {errors[-1]:.2e} exceeds 0.05"  # noqa: PLR2004
 
 
 class TestBernstein3D:

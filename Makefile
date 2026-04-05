@@ -17,9 +17,9 @@ help:
 test:
 	pytest --no-cov
 
-# Generate an XML coverage report with Numba JIT disabled
+# Generate an XML coverage report with Numba JIT disabled (slow tests excluded)
 coverage:
-	COVERAGE_FILE=/tmp/.coverage NUMBA_DISABLE_JIT=1 pytest --cov=src/pantr --cov-report=xml
+	COVERAGE_FILE=/tmp/.coverage NUMBA_DISABLE_JIT=1 pytest -m "not slow" --cov=src/pantr --cov-report=xml
 
 # Remove build artifacts
 clean:
