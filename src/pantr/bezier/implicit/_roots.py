@@ -837,7 +837,7 @@ def _dedup_roots(
 
 
 @nb_jit(nopython=True, cache=True)
-def find_roots(
+def find_roots(  # noqa: PLR0911, PLR0912, PLR0915
     coeffs: npt.NDArray[np.float64],
 ) -> tuple[npt.NDArray[np.float64], int, bool]:
     """Find all real roots of a 1D Bernstein polynomial in (0, 1).
@@ -879,6 +879,59 @@ def find_roots(
     coeff_scale = max(abs(d_min), abs(d_max))
     if coeff_scale <= _DBL_EPSILON:
         return np.empty(0, dtype=np.float64), 0, False
+
+    # --- Fast path for degree 1 (linear) ---
+    # Root: alpha[0] / (alpha[0] - alpha[1]), keep if in (0, 1).
+    if n == 1:
+        if coeffs[0] == coeffs[1]:
+            return np.empty(0, dtype=np.float64), 0, False
+        x = coeffs[0] / (coeffs[0] - coeffs[1])
+        if x <= 0.0 or x >= 1.0:
+            return np.empty(0, dtype=np.float64), 0, False
+        roots = np.empty(1, dtype=np.float64)
+        roots[0] = x
+        return roots, 1, False
+
+    # --- Fast path for degree 2 (quadratic) ---
+    # Convert Bernstein to standard form: a*t^2 + b*t + c = 0.
+    #   a = alpha[0] - 2*alpha[1] + alpha[2]
+    #   b = 2*(alpha[1] - alpha[0])
+    #   c = alpha[0]
+    # Uses numerically stable quadratic formula (cf. algoim bernstein.hpp).
+    if n == 2:  # noqa: PLR2004
+        a = coeffs[0] - 2.0 * coeffs[1] + coeffs[2]
+        b = 2.0 * (coeffs[1] - coeffs[0])
+        c = coeffs[0]
+        delta = b * b - 4.0 * a * c
+        tol_delta = coeff_scale * 1.0e4 * _DBL_EPSILON
+        if abs(delta) < tol_delta:
+            delta = 0.0
+        if delta < 0.0:
+            return np.empty(0, dtype=np.float64), 0, False
+        roots = np.empty(2, dtype=np.float64)
+        count = 0
+        if abs(a) < _DBL_EPSILON * coeff_scale:
+            # Degenerate: linear equation b*t + c = 0.
+            if abs(b) > _DBL_EPSILON * coeff_scale:
+                x = -c / b
+                if 0.0 < x < 1.0:
+                    roots[0] = x
+                    count = 1
+        else:
+            sqrt_delta = np.sqrt(delta)
+            q_val = -0.5 * (b + sqrt_delta) if b >= 0.0 else -0.5 * (b - sqrt_delta)
+            r1 = q_val / a
+            r2 = c / q_val if abs(q_val) > 0.0 else -1.0
+            if 0.0 < r1 < 1.0:
+                roots[count] = r1
+                count += 1
+            if 0.0 < r2 < 1.0 and abs(r2 - r1) > _ROOT_TOL:
+                roots[count] = r2
+                count += 1
+            # Sort if two roots found.
+            if count == 2 and roots[0] > roots[1]:  # noqa: PLR2004
+                roots[0], roots[1] = roots[1], roots[0]
+        return roots, count, False
 
     tol = _ROOT_TOL
 

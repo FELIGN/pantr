@@ -38,7 +38,8 @@ from pantr.bezier.implicit._mask import (
     _line_intersects_3d,
     _point_within_1d,
     _point_within_2d,
-    _point_within_3d,
+    _point_within_2d_scalar,
+    _point_within_3d_scalar,
 )
 from pantr.bezier.implicit._roots import find_roots
 
@@ -169,14 +170,12 @@ def _collect_and_partition_from_2d(
 
         for r in range(n_roots):
             root = roots[r]
-            pt = np.empty(2, dtype=np.float64)
+            # Filter through mask using scalar coordinates (no allocation).
             if k == 0:
-                pt[0] = root
-                pt[1] = x_base
+                in_mask = _point_within_2d_scalar(masks_list[i], root, x_base)
             else:
-                pt[0] = x_base
-                pt[1] = root
-            if not _point_within_2d(masks_list[i], pt):
+                in_mask = _point_within_2d_scalar(masks_list[i], x_base, root)
+            if not in_mask:
                 continue
             count = _try_insert_node(nodes, count, root)
 
@@ -225,16 +224,15 @@ def _collect_and_partition_from_3d(
 
         for r in range(n_roots):
             root = roots[r]
-            # Build 3D point and filter through mask.
-            pt = np.empty(3, dtype=np.float64)
-            ti = 0
-            for d in range(3):
-                if d == k:
-                    pt[d] = root
-                else:
-                    pt[d] = x_base[ti]
-                    ti += 1
-            if not _point_within_3d(masks_list[i], pt):
+            # Filter through mask using scalar coordinates (no allocation).
+            # Map (x_base[0], x_base[1], root) back to 3D axes.
+            if k == 0:
+                in_mask = _point_within_3d_scalar(masks_list[i], root, x_base[0], x_base[1])
+            elif k == 1:
+                in_mask = _point_within_3d_scalar(masks_list[i], x_base[0], root, x_base[1])
+            else:
+                in_mask = _point_within_3d_scalar(masks_list[i], x_base[0], x_base[1], root)
+            if not in_mask:
                 continue
             count = _try_insert_node(nodes, count, root)
 
@@ -250,8 +248,8 @@ def _collect_and_partition_from_3d(
 
 @nb_jit(nopython=True, cache=True)
 def volume_quad_2d(  # noqa: PLR0912, PLR0913, PLR0915
-    coeffs_1d: NumbaList,
-    masks_1d: NumbaList,
+    base_bounds: npt.NDArray[np.float64],
+    base_nb: int,
     k0: int,
     use_ts_0: bool,
     type_0: int,
@@ -274,8 +272,9 @@ def volume_quad_2d(  # noqa: PLR0912, PLR0913, PLR0915
        partition [0,1] by roots, apply quad, combine coordinates/weights.
 
     Args:
-        coeffs_1d (NumbaList): 1D polynomial coefficients (base level).
-        masks_1d (NumbaList): 1D masks (base level).
+        base_bounds (npt.NDArray[np.float64]): Pre-computed sorted partition
+            boundaries for the 1D base level, including 0 and 1.
+        base_nb (int): Number of entries in *base_bounds*.
         k0 (int): Height direction at base level (always 0 for 1D).
         use_ts_0 (bool): Use tanh-sinh at base level.
         type_0 (int): Integral type at base level.
@@ -331,8 +330,9 @@ def volume_quad_2d(  # noqa: PLR0912, PLR0913, PLR0915
     # Tangential direction index for level 1.
     tang1 = 1 - k1
 
-    # Phase 1: Partition [0,1] by base (1D) polynomials.
-    boundaries, n_bounds = _collect_and_partition_1d(coeffs_1d, masks_1d)
+    # Phase 1: Partition [0,1] by base (1D) polynomials (pre-computed).
+    boundaries = base_bounds
+    n_bounds = base_nb
 
     # Estimate max output size.
     max_intervals_base = n_bounds - 1
@@ -398,8 +398,8 @@ def volume_quad_2d(  # noqa: PLR0912, PLR0913, PLR0915
 
 @nb_jit(nopython=True, cache=True)
 def volume_quad_3d(  # noqa: PLR0912, PLR0913, PLR0915
-    coeffs_1d: NumbaList,
-    masks_1d: NumbaList,
+    base_bounds: npt.NDArray[np.float64],
+    base_nb: int,
     k0: int,
     use_ts_0: bool,
     type_0: int,
@@ -424,8 +424,9 @@ def volume_quad_3d(  # noqa: PLR0912, PLR0913, PLR0915
     Three-level hierarchy walk: 1D base -> 2D -> 3D.
 
     Args:
-        coeffs_1d (NumbaList): 1D polynomial coefficients (base level).
-        masks_1d (NumbaList): 1D masks (base level).
+        base_bounds (npt.NDArray[np.float64]): Pre-computed sorted partition
+            boundaries for the 1D base level, including 0 and 1.
+        base_nb (int): Number of entries in *base_bounds*.
         k0 (int): Height direction at base level.
         use_ts_0 (bool): Use tanh-sinh at base level.
         type_0 (int): Integral type at base level.
@@ -514,14 +515,16 @@ def volume_quad_3d(  # noqa: PLR0912, PLR0913, PLR0915
     axis_k1_3d = tang2[k1]  # 3D axis for the 2D height direction
     axis_tang1_3d = tang2[tang1_2d]  # 3D axis for the 2D tangential direction
 
-    # Pre-allocate output.
+    # Pre-allocate output and scratch buffers.
     max_total = q * q * q * 8  # generous
     points = np.empty((max_total, 3), dtype=np.float64)
     weights = np.empty(max_total, dtype=np.float64)
     n_pts = 0
+    x_base_3d = np.empty(2, dtype=np.float64)
 
-    # Level 0: 1D base partition.
-    bounds_0, nb_0 = _collect_and_partition_1d(coeffs_1d, masks_1d)
+    # Level 0: 1D base partition (pre-computed at Python level).
+    bounds_0 = base_bounds
+    nb_0 = base_nb
 
     for b0 in range(nb_0 - 1):
         lo0 = bounds_0[b0]
@@ -549,25 +552,12 @@ def volume_quad_3d(  # noqa: PLR0912, PLR0913, PLR0915
                     w_2d = wts_1[q1] * scale1
 
                     # Level 2: Collapse 3D polys to 1D along k2.
-                    # The base point for 3D collapse is a 2D point in the
-                    # tangential plane.
-                    x_base_3d = np.empty(2, dtype=np.float64)
-                    x_base_3d[0] = x_1d  # maps to tang2[tang1_2d] direction...
-                    # Actually we need to figure out the ordering.
-                    # In the 3D collapse, x_tang has 2 components ordered by
-                    # increasing 3D axis index (skipping k2).
-                    # tang2[0] corresponds to x_tang[0], tang2[1] to x_tang[1].
-                    # x_1d is the coordinate for the 2D tangential direction,
-                    # which is tang2[tang1_2d] = axis_tang1_3d.
-                    # x_2d is the coordinate for the 2D height direction,
-                    # which is tang2[k1] = axis_k1_3d.
-                    # In x_tang ordering: tang2[0] and tang2[1].
+                    # x_tang has 2 components ordered by increasing 3D axis
+                    # index (skipping k2). Reuse pre-allocated buffer.
                     if tang1_2d == 0:
-                        # x_tang[0] = x_1d, x_tang[1] = x_2d
                         x_base_3d[0] = x_1d
                         x_base_3d[1] = x_2d
                     else:
-                        # x_tang[0] = x_2d, x_tang[1] = x_1d
                         x_base_3d[0] = x_2d
                         x_base_3d[1] = x_1d
 
@@ -616,8 +606,8 @@ def volume_quad_3d(  # noqa: PLR0912, PLR0913, PLR0915
 
 @nb_jit(nopython=True, cache=True)
 def surface_quad_2d(  # noqa: PLR0912, PLR0913, PLR0915
-    coeffs_1d: NumbaList,
-    masks_1d: NumbaList,
+    base_bounds: npt.NDArray[np.float64],
+    base_nb: int,
     k0: int,
     use_ts_0: bool,
     type_0: int,
@@ -646,8 +636,9 @@ def surface_quad_2d(  # noqa: PLR0912, PLR0913, PLR0915
     ``f(x) * sign(d_k phi) * w`` at each root.
 
     Args:
-        coeffs_1d (NumbaList): 1D polynomial coefficients (base level).
-        masks_1d (NumbaList): 1D masks (base level).
+        base_bounds (npt.NDArray[np.float64]): Pre-computed sorted partition
+            boundaries for the 1D base level, including 0 and 1.
+        base_nb (int): Number of entries in *base_bounds*.
         k0 (int): Height direction at base level.
         use_ts_0 (bool): Use tanh-sinh at base level.
         type_0 (int): Integral type at base level.
@@ -689,14 +680,16 @@ def surface_quad_2d(  # noqa: PLR0912, PLR0913, PLR0915
         nodes_outer = ts_nodes
         wts_outer = ts_weights
 
-    # Partition by base polynomials.
-    boundaries, n_bounds = _collect_and_partition_1d(coeffs_1d, masks_1d)
+    # Partition by base polynomials (pre-computed).
+    boundaries = base_bounds
+    n_bounds = base_nb
 
     max_total = q * 100
     points = np.empty((max_total, 2), dtype=np.float64)
     scalar_wts = np.empty(max_total, dtype=np.float64)
     normal_wts = np.empty((max_total, 2), dtype=np.float64)
     n_pts = 0
+    pt = np.empty(2, dtype=np.float64)
 
     for b_idx in range(n_bounds - 1):
         lo = boundaries[b_idx]
@@ -722,7 +715,6 @@ def surface_quad_2d(  # noqa: PLR0912, PLR0913, PLR0915
                 for ri in range(n_roots):
                     root = roots[ri]
 
-                    pt = np.empty(2, dtype=np.float64)
                     pt[tang1] = x_tang_val
                     pt[k1] = root
 
@@ -775,8 +767,8 @@ def surface_quad_2d(  # noqa: PLR0912, PLR0913, PLR0915
 
 @nb_jit(nopython=True, cache=True)
 def surface_quad_3d(  # noqa: PLR0912, PLR0913, PLR0915
-    coeffs_1d: NumbaList,
-    masks_1d: NumbaList,
+    base_bounds: npt.NDArray[np.float64],
+    base_nb: int,
     k0: int,
     use_ts_0: bool,
     type_0: int,
@@ -809,8 +801,9 @@ def surface_quad_3d(  # noqa: PLR0912, PLR0913, PLR0915
     weighted by the surface Jacobian |grad phi| / |d_k2 phi|.
 
     Args:
-        coeffs_1d (NumbaList): 1D polynomial coefficients (base level).
-        masks_1d (NumbaList): 1D masks (base level).
+        base_bounds (npt.NDArray[np.float64]): Pre-computed sorted partition
+            boundaries for the 1D base level, including 0 and 1.
+        base_nb (int): Number of entries in *base_bounds*.
         k0 (int): Height direction at base level.
         use_ts_0 (bool): Use tanh-sinh at base level.
         type_0 (int): Integral type at base level.
@@ -883,9 +876,12 @@ def surface_quad_3d(  # noqa: PLR0912, PLR0913, PLR0915
     scalar_wts = np.empty(max_total, dtype=np.float64)
     normal_wts = np.empty((max_total, 3), dtype=np.float64)
     n_pts = 0
+    x_base_3d = np.empty(2, dtype=np.float64)
+    pt = np.empty(3, dtype=np.float64)
 
-    # Level 0: 1D base partition.
-    bounds_0, nb_0 = _collect_and_partition_1d(coeffs_1d, masks_1d)
+    # Level 0: 1D base partition (pre-computed at Python level).
+    bounds_0 = base_bounds
+    nb_0 = base_nb
 
     for b0 in range(nb_0 - 1):
         lo0 = bounds_0[b0]
@@ -913,7 +909,6 @@ def surface_quad_3d(  # noqa: PLR0912, PLR0913, PLR0915
                     w_2d = wts_1[q1] * scale1
                     w_base = w_1d * w_2d
 
-                    x_base_3d = np.empty(2, dtype=np.float64)
                     if tang1_2d == 0:
                         x_base_3d[0] = x_1d
                         x_base_3d[1] = x_2d
@@ -933,7 +928,6 @@ def surface_quad_3d(  # noqa: PLR0912, PLR0913, PLR0915
                         for ri in range(n_roots):
                             root = roots[ri]
 
-                            pt = np.empty(3, dtype=np.float64)
                             pt[axis_tang1_3d] = x_1d
                             pt[axis_k1_3d] = x_2d
                             pt[k2] = root
@@ -987,8 +981,8 @@ def surface_quad_3d(  # noqa: PLR0912, PLR0913, PLR0915
 
 @nb_jit(nopython=True, cache=True)
 def surface_quad_2d_aggregate(  # noqa: PLR0912, PLR0913, PLR0915
-    coeffs_1d: NumbaList,
-    masks_1d: NumbaList,
+    base_bounds: npt.NDArray[np.float64],
+    base_nb: int,
     k0: int,
     use_ts_0: bool,
     type_0: int,
@@ -1015,8 +1009,9 @@ def surface_quad_2d_aggregate(  # noqa: PLR0912, PLR0913, PLR0915
     at each point since ``sum_k n_k^2 = 1``).
 
     Args:
-        coeffs_1d (NumbaList): 1D polynomial coefficients (base level).
-        masks_1d (NumbaList): 1D masks (base level).
+        base_bounds (npt.NDArray[np.float64]): Pre-computed sorted partition
+            boundaries for the 1D base level, including 0 and 1.
+        base_nb (int): Number of entries in *base_bounds*.
         k0 (int): Height direction at base level.
         use_ts_0 (bool): Use tanh-sinh at base level.
         type_0 (int): Integral type at base level.
@@ -1057,13 +1052,15 @@ def surface_quad_2d_aggregate(  # noqa: PLR0912, PLR0913, PLR0915
         nodes_outer = ts_nodes
         wts_outer = ts_weights
 
-    boundaries, n_bounds = _collect_and_partition_1d(coeffs_1d, masks_1d)
+    boundaries = base_bounds
+    n_bounds = base_nb
 
     max_total = q * 100
     points = np.empty((max_total, 2), dtype=np.float64)
     scalar_wts = np.empty(max_total, dtype=np.float64)
     normal_wts = np.empty((max_total, 2), dtype=np.float64)
     n_pts = 0
+    pt = np.empty(2, dtype=np.float64)
 
     for b_idx in range(n_bounds - 1):
         lo = boundaries[b_idx]
@@ -1086,7 +1083,6 @@ def surface_quad_2d_aggregate(  # noqa: PLR0912, PLR0913, PLR0915
 
                 for ri in range(n_roots):
                     root = roots[ri]
-                    pt = np.empty(2, dtype=np.float64)
                     pt[tang1] = x_tang_val
                     pt[k1] = root
 
@@ -1135,8 +1131,8 @@ def surface_quad_2d_aggregate(  # noqa: PLR0912, PLR0913, PLR0915
 
 @nb_jit(nopython=True, cache=True)
 def surface_quad_3d_aggregate(  # noqa: PLR0912, PLR0913, PLR0915
-    coeffs_1d: NumbaList,
-    masks_1d: NumbaList,
+    base_bounds: npt.NDArray[np.float64],
+    base_nb: int,
     k0: int,
     use_ts_0: bool,
     type_0: int,
@@ -1165,8 +1161,9 @@ def surface_quad_3d_aggregate(  # noqa: PLR0912, PLR0913, PLR0915
     level set and computing flux-form normal weights.
 
     Args:
-        coeffs_1d (NumbaList): 1D polynomial coefficients (base level).
-        masks_1d (NumbaList): 1D masks (base level).
+        base_bounds (npt.NDArray[np.float64]): Pre-computed sorted partition
+            boundaries for the 1D base level, including 0 and 1.
+        base_nb (int): Number of entries in *base_bounds*.
         k0 (int): Height direction at base level.
         use_ts_0 (bool): Use tanh-sinh at base level.
         type_0 (int): Integral type at base level.
@@ -1237,8 +1234,11 @@ def surface_quad_3d_aggregate(  # noqa: PLR0912, PLR0913, PLR0915
     scalar_wts = np.empty(max_total, dtype=np.float64)
     normal_wts = np.empty((max_total, 3), dtype=np.float64)
     n_pts = 0
+    x_base_3d = np.empty(2, dtype=np.float64)
+    pt = np.empty(3, dtype=np.float64)
 
-    bounds_0, nb_0 = _collect_and_partition_1d(coeffs_1d, masks_1d)
+    bounds_0 = base_bounds
+    nb_0 = base_nb
 
     for b0 in range(nb_0 - 1):
         lo0 = bounds_0[b0]
@@ -1265,7 +1265,6 @@ def surface_quad_3d_aggregate(  # noqa: PLR0912, PLR0913, PLR0915
                     w_2d = wts_1[q1] * scale1
                     w_base = w_1d * w_2d
 
-                    x_base_3d = np.empty(2, dtype=np.float64)
                     if tang1_2d == 0:
                         x_base_3d[0] = x_1d
                         x_base_3d[1] = x_2d
@@ -1283,7 +1282,6 @@ def surface_quad_3d_aggregate(  # noqa: PLR0912, PLR0913, PLR0915
 
                         for ri in range(n_roots):
                             root = roots[ri]
-                            pt = np.empty(3, dtype=np.float64)
                             pt[axis_tang1_3d] = x_1d
                             pt[axis_k1_3d] = x_2d
                             pt[k2] = root

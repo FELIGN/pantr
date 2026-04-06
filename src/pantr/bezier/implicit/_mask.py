@@ -952,6 +952,64 @@ def _point_within_3d(
 
 
 @nb_jit(nopython=True, cache=True)
+def _point_within_2d_scalar(
+    mask: npt.NDArray[np.bool_],
+    x0: float,
+    x1: float,
+) -> bool:
+    """Test if a 2D point falls in an active subcell (scalar arguments).
+
+    Equivalent to :func:`_point_within_2d` but accepts scalar coordinates
+    to avoid allocating a temporary array in tight loops.
+
+    Args:
+        mask (npt.NDArray[np.bool_]): 2D boolean mask of shape ``(M, M)``.
+        x0 (float): First coordinate in [0, 1].
+        x1 (float): Second coordinate in [0, 1].
+
+    Returns:
+        bool: True if the subcell containing ``(x0, x1)`` is active.
+
+    Note:
+        Inputs are assumed to be correct (no validation performed).
+    """
+    return bool(mask[_clamp_to_mask_index(x0), _clamp_to_mask_index(x1)])
+
+
+@nb_jit(nopython=True, cache=True)
+def _point_within_3d_scalar(
+    mask: npt.NDArray[np.bool_],
+    x0: float,
+    x1: float,
+    x2: float,
+) -> bool:
+    """Test if a 3D point falls in an active subcell (scalar arguments).
+
+    Equivalent to :func:`_point_within_3d` but accepts scalar coordinates
+    to avoid allocating a temporary array in tight loops.
+
+    Args:
+        mask (npt.NDArray[np.bool_]): 3D boolean mask of shape ``(M, M, M)``.
+        x0 (float): First coordinate in [0, 1].
+        x1 (float): Second coordinate in [0, 1].
+        x2 (float): Third coordinate in [0, 1].
+
+    Returns:
+        bool: True if the subcell containing ``(x0, x1, x2)`` is active.
+
+    Note:
+        Inputs are assumed to be correct (no validation performed).
+    """
+    return bool(
+        mask[
+            _clamp_to_mask_index(x0),
+            _clamp_to_mask_index(x1),
+            _clamp_to_mask_index(x2),
+        ]
+    )
+
+
+@nb_jit(nopython=True, cache=True)
 def _line_intersects_2d(
     mask: npt.NDArray[np.bool_],
     x_base: float,

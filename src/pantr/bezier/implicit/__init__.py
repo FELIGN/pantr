@@ -22,6 +22,7 @@ Main exports:
 
 from __future__ import annotations
 
+import functools
 from enum import IntEnum
 from typing import TYPE_CHECKING, Any, TypeAlias
 
@@ -37,6 +38,7 @@ from pantr.bezier.implicit._build import (
     build_3d_forced_k,
 )
 from pantr.bezier.implicit._construct import (
+    _collect_and_partition_1d,
     surface_quad_2d,
     surface_quad_2d_aggregate,
     surface_quad_3d,
@@ -49,9 +51,11 @@ from pantr.bezier.implicit._convert import (
     monomial_to_bernstein_3d,
 )
 from pantr.bezier.implicit._mask import (
+    _point_within_1d,
     compute_nonzero_mask_2d,
     compute_nonzero_mask_3d,
 )
+from pantr.bezier.implicit._roots import find_roots
 
 if TYPE_CHECKING:
     from pantr.bezier._bezier import Bezier
@@ -83,6 +87,144 @@ class QuadStrategy(IntEnum):
     """Tanh-sinh on all intervals."""
     AUTO_MIXED = 2
     """Tanh-sinh on outer integrals with branching points, GL on inner."""
+
+
+_EIGVALS_DEGREE_THRESHOLD: int = 20
+"""Use companion-matrix eigenvalues for root finding above this degree."""
+
+_MERGE_TOL: float = 10.0 * 2.2204460492503131e-16
+"""Tolerance for merging nearby roots with interval boundaries."""
+
+_NEAR_ZERO: float = 1e-300
+"""Guard against division by zero in monomial leading coefficient."""
+
+
+def _bernstein_to_monomial(bern: npt.NDArray[np.float64]) -> npt.NDArray[np.float64]:
+    """Convert Bernstein coefficients to monomial (power) basis.
+
+    Args:
+        bern: Bernstein coefficient array of shape ``(n+1,)``.
+
+    Returns:
+        Monomial coefficient array of shape ``(n+1,)``.
+    """
+    from math import comb  # noqa: PLC0415
+
+    n = len(bern) - 1
+    mat = np.zeros((n + 1, n + 1))
+    for j in range(n + 1):
+        for i in range(j, n + 1):
+            mat[j, i] = (-1) ** (i - j) * comb(n, i) * comb(i, j)
+    return mat @ bern
+
+
+def _find_roots_eigvals(
+    bern_coeffs: npt.NDArray[np.float64],
+    tol: float = 1e-10,
+) -> npt.NDArray[np.float64]:
+    """Find real roots in [0,1] via companion matrix eigenvalues.
+
+    Falls back to Bezier clipping if the Bernstein-to-monomial conversion
+    overflows or the leading coefficient is near-zero.
+
+    Args:
+        bern_coeffs: Bernstein coefficients.
+        tol: Tolerance for imaginary-part filtering.
+
+    Returns:
+        Sorted array of real roots in [0, 1].
+    """
+    deg = len(bern_coeffs) - 1
+    if deg <= 0:
+        return np.empty(0, dtype=np.float64)
+
+    try:
+        mono = _bernstein_to_monomial(bern_coeffs)
+    except (OverflowError, FloatingPointError):
+        roots, n_roots, _ = find_roots(bern_coeffs)
+        return np.array(roots[:n_roots], dtype=np.float64)
+
+    if not np.all(np.isfinite(mono)) or abs(mono[-1]) < _NEAR_ZERO:
+        roots, n_roots, _ = find_roots(bern_coeffs)
+        return np.array(roots[:n_roots], dtype=np.float64)
+
+    mono_monic = mono / mono[-1]
+
+    n = deg
+    companion = np.zeros((n, n))
+    if n > 1:
+        companion[1:, :-1] = np.eye(n - 1)
+    companion[:, -1] = -mono_monic[:-1]
+
+    try:
+        ev = np.linalg.eigvals(companion)
+    except np.linalg.LinAlgError:
+        roots, n_roots, _ = find_roots(bern_coeffs)
+        return np.array(roots[:n_roots], dtype=np.float64)
+
+    real_mask = np.abs(ev.imag) < tol
+    real_roots = ev[real_mask].real
+    in_unit = real_roots[(real_roots >= -tol) & (real_roots <= 1 + tol)]
+    return np.sort(np.clip(in_unit, 0.0, 1.0))
+
+
+def _precompute_base_partition(
+    coeffs_1d: NumbaList,
+    masks_1d: NumbaList,
+) -> tuple[npt.NDArray[np.float64], int]:
+    """Pre-compute the 1D base-level partition using eigvals for high-degree polys.
+
+    For polynomials with degree > ``_EIGVALS_DEGREE_THRESHOLD``, uses the
+    companion-matrix eigenvalue method (via ``np.linalg.eigvals``) which is
+    much faster than Bezier clipping for high-degree polynomials with many
+    roots or ill-conditioned coefficients.
+
+    For low-degree polynomials, delegates to the Numba-jitted
+    ``_collect_and_partition_1d`` which uses Bezier clipping.
+
+    Args:
+        coeffs_1d: Typed list of 1D Bernstein coefficient arrays.
+        masks_1d: Typed list of 1D boolean mask arrays.
+
+    Returns:
+        tuple: ``(bounds, n_bounds)`` — sorted partition boundaries including
+        0 and 1, and the count.
+    """
+    if len(coeffs_1d) == 0:
+        bounds = np.array([0.0, 1.0], dtype=np.float64)
+        return bounds, 2
+
+    max_degree = max(len(coeffs_1d[i]) - 1 for i in range(len(coeffs_1d)))
+
+    if max_degree <= _EIGVALS_DEGREE_THRESHOLD:
+        return _collect_and_partition_1d(coeffs_1d, masks_1d)
+
+    nodes: list[float] = [0.0, 1.0]
+
+    for i in range(len(coeffs_1d)):
+        c = np.asarray(coeffs_1d[i])
+        deg = len(c) - 1
+
+        if deg > _EIGVALS_DEGREE_THRESHOLD:
+            roots = _find_roots_eigvals(c)
+        else:
+            r, nr, _ = find_roots(c)
+            roots = np.asarray(r[:nr])
+
+        m = masks_1d[i]
+        for root in roots:
+            if _point_within_1d(m, float(root)):
+                nodes.append(float(root))
+
+    bounds = np.array(sorted(set(nodes)), dtype=np.float64)
+
+    # Merge nearby roots.
+    merged = [bounds[0]]
+    for b in bounds[1:]:
+        if b - merged[-1] > _MERGE_TOL:
+            merged.append(b)
+    result = np.array(merged, dtype=np.float64)
+    return result, len(result)
 
 
 class ImplicitPolyQuadrature:
@@ -173,6 +315,12 @@ class ImplicitPolyQuadrature:
                 self._masks_list.append(compute_nonzero_mask_3d(ca))
             self._build_result = build_3d(self._coeffs_list, self._masks_list)
 
+        # Pre-compute base-level partition (1D roots) using eigvals for
+        # high-degree polynomials produced by the resultant chain.
+        coeffs_1d = self._build_result[0]
+        masks_1d = self._build_result[1]
+        self._base_bounds, self._base_nb = _precompute_base_partition(coeffs_1d, masks_1d)
+
     @property
     def dim(self) -> int:
         """Get the parametric dimension.
@@ -222,11 +370,25 @@ class ImplicitPolyQuadrature:
 
         if self._dim == 2:  # noqa: PLR2004
             return volume_quad_2d(  # type: ignore[call-arg]
-                *self._build_result, gl_nodes, gl_weights, ts_nodes, ts_weights, strat
+                self._base_bounds,
+                self._base_nb,
+                *self._build_result[2:],
+                gl_nodes,
+                gl_weights,
+                ts_nodes,
+                ts_weights,
+                strat,
             )
         else:
             return volume_quad_3d(  # type: ignore[call-arg]
-                *self._build_result, gl_nodes, gl_weights, ts_nodes, ts_weights, strat
+                self._base_bounds,
+                self._base_nb,
+                *self._build_result[2:],
+                gl_nodes,
+                gl_weights,
+                ts_nodes,
+                ts_weights,
+                strat,
             )
 
     def surface_quad(
@@ -277,7 +439,9 @@ class ImplicitPolyQuadrature:
 
         if self._dim == 2:  # noqa: PLR2004
             return surface_quad_2d(  # type: ignore[call-arg]
-                *self._build_result,
+                self._base_bounds,
+                self._base_nb,
+                *self._build_result[2:],
                 self._n_polys,
                 self._coeffs_list,
                 gl_nodes,
@@ -288,7 +452,9 @@ class ImplicitPolyQuadrature:
             )
         else:
             return surface_quad_3d(  # type: ignore[call-arg]
-                *self._build_result,
+                self._base_bounds,
+                self._base_nb,
+                *self._build_result[2:],
                 self._n_polys,
                 self._coeffs_list,
                 gl_nodes,
@@ -333,8 +499,11 @@ class ImplicitPolyQuadrature:
                 r_raw = build_2d_forced_k(self._coeffs_list, self._masks_list, k)
                 # Aggregate mode always uses TS for robustness with vertical tangents.
                 r = _force_ts_flags(r_raw, 2)
+                bb, bn = _precompute_base_partition(r[0], r[1])
                 pts, sw, nw = surface_quad_2d_aggregate(  # type: ignore[call-arg]
-                    *r,
+                    bb,
+                    bn,
+                    *r[2:],
                     self._n_polys,
                     self._coeffs_list,
                     gl_nodes,
@@ -352,8 +521,11 @@ class ImplicitPolyQuadrature:
                 r_raw_3d = build_3d_forced_k(self._coeffs_list, self._masks_list, k)
                 # Aggregate mode always uses TS for robustness with vertical tangents.
                 r_3d = _force_ts_flags(r_raw_3d, 3)
+                bb, bn = _precompute_base_partition(r_3d[0], r_3d[1])
                 pts, sw, nw = surface_quad_3d_aggregate(  # type: ignore[call-arg]
-                    *r_3d,
+                    bb,
+                    bn,
+                    *r_3d[2:],
                     self._n_polys,
                     self._coeffs_list,
                     gl_nodes,
@@ -457,8 +629,12 @@ def _force_ts_flags(build_result: tuple[Any, ...], dim: int) -> tuple[Any, ...]:
 # ---------------------------------------------------------------------------
 
 
+@functools.lru_cache(maxsize=32)
 def _gauss_legendre_01(q: int) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64]]:
     """Compute Gauss-Legendre nodes and weights on [0, 1].
+
+    Results are cached across calls for the same *q*.  The returned arrays
+    are read-only to prevent accidental mutation of the cached data.
 
     Args:
         q (int): Number of quadrature points.
@@ -469,11 +645,19 @@ def _gauss_legendre_01(q: int) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.
     from numpy.polynomial.legendre import leggauss  # noqa: PLC0415
 
     pts, wts = leggauss(q)  # type: ignore[no-untyped-call]
-    return np.ascontiguousarray(0.5 * (pts + 1.0)), np.ascontiguousarray(0.5 * wts)
+    nodes = np.ascontiguousarray(0.5 * (pts + 1.0))
+    weights = np.ascontiguousarray(0.5 * wts)
+    nodes.flags.writeable = False
+    weights.flags.writeable = False
+    return nodes, weights
 
 
+@functools.lru_cache(maxsize=32)
 def _tanh_sinh_01(q: int) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64]]:
     """Compute tanh-sinh nodes and weights on [0, 1].
+
+    Results are cached across calls for the same *q*.  The returned arrays
+    are read-only to prevent accidental mutation of the cached data.
 
     Args:
         q (int): Number of quadrature points.
@@ -484,4 +668,8 @@ def _tanh_sinh_01(q: int) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float
     from pantr.quad import get_tanh_sinh_1d  # noqa: PLC0415
 
     nodes, weights = get_tanh_sinh_1d(q)
-    return np.ascontiguousarray(nodes), np.ascontiguousarray(weights)
+    nodes = np.ascontiguousarray(nodes)
+    weights = np.ascontiguousarray(weights)
+    nodes.flags.writeable = False
+    weights.flags.writeable = False
+    return nodes, weights
