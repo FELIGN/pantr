@@ -25,15 +25,13 @@ from pantr._numba_compat import nb_jit
 from pantr.bezier.implicit._bernstein import (
     _elevated_derivative_along_axis_2d,
     _elevated_derivative_along_axis_3d,
-    _eval_gradient_2d,
-    _eval_gradient_3d,
+    _eval_gradient_fused_2d,
+    _eval_gradient_fused_3d,
 )
 from pantr.bezier.implicit._mask import (
     M,
-    _mask_is_empty_2d,
-    _mask_is_empty_3d,
-    compute_intersection_mask_2d,
-    compute_intersection_mask_3d,
+    has_intersection_2d,
+    has_intersection_3d,
 )
 
 _NEAR_ZERO: float = 1e-300
@@ -50,6 +48,9 @@ def score_estimate_2d(
     For each polynomial, samples the gradient at the midpoint of every active
     mask subcell and accumulates ``|d_k phi| / ||grad phi||_1`` per direction k.
     The direction with the highest score is the best elimination axis.
+
+    Pre-computes derivative coefficient arrays once per polynomial to avoid
+    redundant allocation and differentiation inside the subcell loop.
 
     Args:
         coeffs_list (NumbaList): List of 2D coefficient arrays.
@@ -75,18 +76,19 @@ def score_estimate_2d(
         coeffs = coeffs_list[p]
         mask = masks_list[p]
 
-        # Accumulate gradient-based score at each active subcell midpoint.
+        # Accumulate gradient-based score at each active subcell midpoint
+        # using the fused gradient evaluation (single pass over coefficients).
         for i0 in range(M):
             for i1 in range(M):
                 if not mask[i0, i1]:
                     continue
                 x[0] = (i0 + 0.5) * inv_m
                 x[1] = (i1 + 0.5) * inv_m
-                grad = _eval_gradient_2d(coeffs, x)
+                grad = _eval_gradient_fused_2d(coeffs, x)
                 norm1 = abs(grad[0]) + abs(grad[1])
                 if norm1 > _NEAR_ZERO:
-                    for d in range(2):
-                        scores[d] += abs(grad[d]) / norm1
+                    scores[0] += abs(grad[0]) / norm1
+                    scores[1] += abs(grad[1]) / norm1
 
         # Check for discriminant features: does the intersection mask of
         # phi and elevated_derivative(phi, k) contain any active subcells?
@@ -95,8 +97,7 @@ def score_estimate_2d(
             if has_disc[k]:
                 continue
             ed = _elevated_derivative_along_axis_2d(coeffs, k)
-            int_mask = compute_intersection_mask_2d(coeffs, mask, ed, mask)
-            if not _mask_is_empty_2d(int_mask):
+            if has_intersection_2d(coeffs, mask, ed, mask):
                 has_disc[k] = True
 
     return scores, has_disc
@@ -108,6 +109,9 @@ def score_estimate_3d(
     masks_list: NumbaList,
 ) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.bool_]]:
     """Estimate scores for each height direction in 3D.
+
+    Pre-computes derivative coefficient arrays once per polynomial to avoid
+    redundant allocation and differentiation inside the subcell loop.
 
     Args:
         coeffs_list (NumbaList): List of 3D coefficient arrays.
@@ -130,7 +134,8 @@ def score_estimate_3d(
         coeffs = coeffs_list[p]
         mask = masks_list[p]
 
-        # Accumulate gradient-based score.
+        # Accumulate gradient-based score using fused gradient evaluation
+        # (single pass over coefficients, shared basis evaluations).
         for i0 in range(M):
             for i1 in range(M):
                 for i2 in range(M):
@@ -139,19 +144,19 @@ def score_estimate_3d(
                     x[0] = (i0 + 0.5) * inv_m
                     x[1] = (i1 + 0.5) * inv_m
                     x[2] = (i2 + 0.5) * inv_m
-                    grad = _eval_gradient_3d(coeffs, x)
+                    grad = _eval_gradient_fused_3d(coeffs, x)
                     norm1 = abs(grad[0]) + abs(grad[1]) + abs(grad[2])
                     if norm1 > _NEAR_ZERO:
-                        for d in range(3):
-                            scores[d] += abs(grad[d]) / norm1
+                        scores[0] += abs(grad[0]) / norm1
+                        scores[1] += abs(grad[1]) / norm1
+                        scores[2] += abs(grad[2]) / norm1
 
         # Check for discriminant features.
         for k in range(3):
             if has_disc[k]:
                 continue
             ed = _elevated_derivative_along_axis_3d(coeffs, k)
-            int_mask = compute_intersection_mask_3d(coeffs, mask, ed, mask)
-            if not _mask_is_empty_3d(int_mask):
+            if has_intersection_3d(coeffs, mask, ed, mask):
                 has_disc[k] = True
 
     return scores, has_disc

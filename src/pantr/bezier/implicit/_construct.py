@@ -29,7 +29,9 @@ from numpy import typing as npt
 from pantr._numba_compat import nb_jit
 from pantr.bezier.implicit._bernstein import (
     _collapse_2d,
+    _collapse_2d_into,
     _collapse_3d,
+    _collapse_3d_into,
     _eval_gradient_2d,
     _eval_gradient_3d,
 )
@@ -41,13 +43,36 @@ from pantr.bezier.implicit._mask import (
     _point_within_2d_scalar,
     _point_within_3d_scalar,
 )
-from pantr.bezier.implicit._roots import find_roots
+from pantr.bezier.implicit._roots import find_roots, find_roots_into
 
 _MERGE_TOL: float = 10.0 * 2.2204460492503131e-16
 """Tolerance for merging nearby roots with interval boundaries."""
 
 _NEAR_ZERO: float = 1e-300
 """Guard against division by zero (well below subnormal range)."""
+
+
+@nb_jit(nopython=True, cache=True, fastmath=True)
+def _insertion_sort(arr: npt.NDArray[np.float64], count: int) -> None:
+    """In-place insertion sort on ``arr[:count]``.
+
+    Optimal for the very small arrays (3-6 elements) produced by root
+    collection, and avoids the allocation that ``np.sort`` incurs.
+
+    Args:
+        arr (npt.NDArray[np.float64]): Array to sort (mutated in place).
+        count (int): Number of valid entries to sort.
+
+    Note:
+        Inputs are assumed to be correct (no validation performed).
+    """
+    for i in range(1, count):
+        key = arr[i]
+        j = i - 1
+        while j >= 0 and arr[j] > key:
+            arr[j + 1] = arr[j]
+            j -= 1
+        arr[j + 1] = key
 
 
 # ---------------------------------------------------------------------------
@@ -83,7 +108,7 @@ def _try_insert_node(
     return count + 1
 
 
-@nb_jit(nopython=True, cache=True)
+@nb_jit(nopython=True, cache=True, fastmath=True)
 def _collect_and_partition_1d(
     coeffs_list: NumbaList,
     masks_list: NumbaList,
@@ -124,12 +149,12 @@ def _collect_and_partition_1d(
                 continue
             count = _try_insert_node(nodes, count, root)
 
-    nodes[:count] = np.sort(nodes[:count])
+    _insertion_sort(nodes, count)
 
     return nodes, count
 
 
-@nb_jit(nopython=True, cache=True)
+@nb_jit(nopython=True, cache=True, fastmath=True)
 def _collect_and_partition_from_2d(
     coeffs_list: NumbaList,
     masks_list: NumbaList,
@@ -179,12 +204,12 @@ def _collect_and_partition_from_2d(
                 continue
             count = _try_insert_node(nodes, count, root)
 
-    nodes[:count] = np.sort(nodes[:count])
+    _insertion_sort(nodes, count)
 
     return nodes, count
 
 
-@nb_jit(nopython=True, cache=True)
+@nb_jit(nopython=True, cache=True, fastmath=True)
 def _collect_and_partition_from_3d(
     coeffs_list: NumbaList,
     masks_list: NumbaList,
@@ -236,9 +261,123 @@ def _collect_and_partition_from_3d(
                 continue
             count = _try_insert_node(nodes, count, root)
 
-    nodes[:count] = np.sort(nodes[:count])
+    _insertion_sort(nodes, count)
 
     return nodes, count
+
+
+@nb_jit(nopython=True, cache=True, fastmath=True)
+def _collect_and_partition_from_2d_into(  # noqa: PLR0913
+    coeffs_list: NumbaList,
+    masks_list: NumbaList,
+    k: int,
+    x_base: float,
+    nodes: npt.NDArray[np.float64],
+    poly1d_buf: npt.NDArray[np.float64],
+    basis_buf: npt.NDArray[np.float64],
+    roots_buf: npt.NDArray[np.float64],
+) -> int:
+    """Collapse 2D polys to 1D, find roots, partition [0,1] — workspace version.
+
+    Args:
+        coeffs_list (NumbaList): List of 2D coefficient arrays.
+        masks_list (NumbaList): List of 2D boolean mask arrays.
+        k (int): Height direction.
+        x_base (float): Base point in tangential direction.
+        nodes (npt.NDArray[np.float64]): Pre-allocated boundary buffer.
+        poly1d_buf (npt.NDArray[np.float64]): Pre-allocated 1D polynomial buffer.
+        basis_buf (npt.NDArray[np.float64]): Pre-allocated basis buffer.
+        roots_buf (npt.NDArray[np.float64]): Pre-allocated roots buffer.
+
+    Returns:
+        int: Number of valid entries in *nodes*.
+
+    Note:
+        Inputs are assumed to be correct (no validation performed).
+    """
+    nodes[0] = 0.0
+    nodes[1] = 1.0
+    count = 2
+
+    for i in range(len(coeffs_list)):
+        if not _line_intersects_2d(masks_list[i], x_base, k):
+            continue
+
+        _collapse_2d_into(coeffs_list[i], k, x_base, basis_buf, poly1d_buf)
+        deg_k = coeffs_list[i].shape[k] - 1
+        n_roots, _ = find_roots_into(poly1d_buf[: deg_k + 1], roots_buf)
+
+        for r in range(n_roots):
+            root = roots_buf[r]
+            if k == 0:
+                in_mask = _point_within_2d_scalar(masks_list[i], root, x_base)
+            else:
+                in_mask = _point_within_2d_scalar(masks_list[i], x_base, root)
+            if not in_mask:
+                continue
+            count = _try_insert_node(nodes, count, root)
+
+    _insertion_sort(nodes, count)
+    return count
+
+
+@nb_jit(nopython=True, cache=True, fastmath=True)
+def _collect_and_partition_from_3d_into(  # noqa: PLR0913
+    coeffs_list: NumbaList,
+    masks_list: NumbaList,
+    k: int,
+    x_base: npt.NDArray[np.float64],
+    nodes: npt.NDArray[np.float64],
+    poly1d_buf: npt.NDArray[np.float64],
+    basis_buf0: npt.NDArray[np.float64],
+    basis_buf1: npt.NDArray[np.float64],
+    roots_buf: npt.NDArray[np.float64],
+) -> int:
+    """Collapse 3D polys to 1D, find roots, partition [0,1] — workspace version.
+
+    Args:
+        coeffs_list (NumbaList): List of 3D coefficient arrays.
+        masks_list (NumbaList): List of 3D boolean mask arrays.
+        k (int): Height direction.
+        x_base (npt.NDArray[np.float64]): Base point of shape ``(2,)``.
+        nodes (npt.NDArray[np.float64]): Pre-allocated boundary buffer.
+        poly1d_buf (npt.NDArray[np.float64]): Pre-allocated 1D polynomial buffer.
+        basis_buf0 (npt.NDArray[np.float64]): Pre-allocated basis buffer (first tangential).
+        basis_buf1 (npt.NDArray[np.float64]): Pre-allocated basis buffer (second tangential).
+        roots_buf (npt.NDArray[np.float64]): Pre-allocated roots buffer.
+
+    Returns:
+        int: Number of valid entries in *nodes*.
+
+    Note:
+        Inputs are assumed to be correct (no validation performed).
+    """
+    nodes[0] = 0.0
+    nodes[1] = 1.0
+    count = 2
+
+    for i in range(len(coeffs_list)):
+        if not _line_intersects_3d(masks_list[i], x_base, k):
+            continue
+
+        _collapse_3d_into(coeffs_list[i], k, x_base, basis_buf0, basis_buf1, poly1d_buf)
+        deg_k = coeffs_list[i].shape[k] - 1
+        n_roots, _ = find_roots_into(poly1d_buf[: deg_k + 1], roots_buf)
+
+        for r in range(n_roots):
+            root = roots_buf[r]
+            if k == 0:
+                in_mask = _point_within_3d_scalar(masks_list[i], root, x_base[0], x_base[1])
+            elif k == 1:
+                in_mask = _point_within_3d_scalar(masks_list[i], x_base[0], root, x_base[1])
+            else:
+                in_mask = _point_within_3d_scalar(masks_list[i], x_base[0], x_base[1], root)
+            if not in_mask:
+                continue
+            count = _try_insert_node(nodes, count, root)
+
+    _insertion_sort(nodes, count)
+    return count
 
 
 # ---------------------------------------------------------------------------
@@ -246,7 +385,7 @@ def _collect_and_partition_from_3d(
 # ---------------------------------------------------------------------------
 
 
-@nb_jit(nopython=True, cache=True)
+@nb_jit(nopython=True, cache=True, fastmath=True)
 def volume_quad_2d(  # noqa: PLR0912, PLR0913, PLR0915
     base_bounds: npt.NDArray[np.float64],
     base_nb: int,
@@ -334,6 +473,22 @@ def volume_quad_2d(  # noqa: PLR0912, PLR0913, PLR0915
     boundaries = base_bounds
     n_bounds = base_nb
 
+    # Pre-allocate workspace for inner partition calls (avoids heap alloc in loop).
+    max_deg_k1 = 0
+    max_deg_tang1 = 0
+    max_nodes_2d = 2
+    for i in range(len(coeffs_2d)):
+        dk = coeffs_2d[i].shape[k1] - 1
+        dt = coeffs_2d[i].shape[tang1] - 1
+        max_deg_k1 = max(max_deg_k1, dk)
+        max_deg_tang1 = max(max_deg_tang1, dt)
+        max_nodes_2d += 2 * dk
+
+    ws_nodes = np.empty(max_nodes_2d, dtype=np.float64)
+    ws_poly1d = np.empty(max_deg_k1 + 1, dtype=np.float64)
+    ws_basis = np.empty(max_deg_tang1 + 1, dtype=np.float64)
+    ws_roots = np.empty(max(max_deg_k1, 1), dtype=np.float64)
+
     # Estimate max output size.
     max_intervals_base = n_bounds - 1
     max_pts_per_base = q
@@ -360,9 +515,17 @@ def volume_quad_2d(  # noqa: PLR0912, PLR0913, PLR0915
             w_tang = wts_outer[qi] * scale_outer
 
             # Phase 3: Collapse 2D polys to 1D along k1 at x_tang_val.
-            inner_bounds, n_inner = _collect_and_partition_from_2d(
-                coeffs_2d, masks_2d, k1, x_tang_val
+            n_inner = _collect_and_partition_from_2d_into(
+                coeffs_2d,
+                masks_2d,
+                k1,
+                x_tang_val,
+                ws_nodes,
+                ws_poly1d,
+                ws_basis,
+                ws_roots,
             )
+            inner_bounds = ws_nodes
 
             for ib in range(n_inner - 1):
                 ilo = inner_bounds[ib]
@@ -396,7 +559,7 @@ def volume_quad_2d(  # noqa: PLR0912, PLR0913, PLR0915
     return points[:n_pts].copy(), weights[:n_pts].copy()
 
 
-@nb_jit(nopython=True, cache=True)
+@nb_jit(nopython=True, cache=True, fastmath=True)
 def volume_quad_3d(  # noqa: PLR0912, PLR0913, PLR0915
     base_bounds: npt.NDArray[np.float64],
     base_nb: int,
@@ -515,7 +678,50 @@ def volume_quad_3d(  # noqa: PLR0912, PLR0913, PLR0915
     axis_k1_3d = tang2[k1]  # 3D axis for the 2D height direction
     axis_tang1_3d = tang2[tang1_2d]  # 3D axis for the 2D tangential direction
 
-    # Pre-allocate output and scratch buffers.
+    # Pre-allocate workspace for partition calls at both 2D and 3D levels.
+    # Level 1 workspace (2D -> 1D).
+    max_deg_k1 = 0
+    max_deg_tang1_2d = 0
+    max_nodes_2d = 2
+    for i in range(len(coeffs_2d)):
+        dk = coeffs_2d[i].shape[k1] - 1
+        dt = coeffs_2d[i].shape[1 - k1] - 1
+        max_deg_k1 = max(max_deg_k1, dk)
+        max_deg_tang1_2d = max(max_deg_tang1_2d, dt)
+        max_nodes_2d += 2 * dk
+
+    ws1_nodes = np.empty(max_nodes_2d, dtype=np.float64)
+    ws1_poly1d = np.empty(max_deg_k1 + 1, dtype=np.float64)
+    ws1_basis = np.empty(max_deg_tang1_2d + 1, dtype=np.float64)
+    ws1_roots = np.empty(max(max_deg_k1, 1), dtype=np.float64)
+
+    # Level 2 workspace (3D -> 1D).
+    max_deg_k2 = 0
+    max_deg_tang0_3d = 0
+    max_deg_tang1_3d = 0
+    max_nodes_3d = 2
+    for i in range(len(coeffs_3d)):
+        dk = coeffs_3d[i].shape[k2] - 1
+        max_deg_k2 = max(max_deg_k2, dk)
+        max_nodes_3d += 2 * dk
+        # Tangential degrees in 3D (the 2 axes != k2).
+        ti_loc = 0
+        for d in range(3):
+            if d != k2:
+                dt_loc = coeffs_3d[i].shape[d] - 1
+                if ti_loc == 0:
+                    max_deg_tang0_3d = max(max_deg_tang0_3d, dt_loc)
+                else:
+                    max_deg_tang1_3d = max(max_deg_tang1_3d, dt_loc)
+                ti_loc += 1
+
+    ws2_nodes = np.empty(max_nodes_3d, dtype=np.float64)
+    ws2_poly1d = np.empty(max_deg_k2 + 1, dtype=np.float64)
+    ws2_basis0 = np.empty(max_deg_tang0_3d + 1, dtype=np.float64)
+    ws2_basis1 = np.empty(max_deg_tang1_3d + 1, dtype=np.float64)
+    ws2_roots = np.empty(max(max_deg_k2, 1), dtype=np.float64)
+
+    # Pre-allocate output buffers.
     max_total = q * q * q * 8  # generous
     points = np.empty((max_total, 3), dtype=np.float64)
     weights = np.empty(max_total, dtype=np.float64)
@@ -538,7 +744,17 @@ def volume_quad_3d(  # noqa: PLR0912, PLR0913, PLR0915
             w_1d = wts_0[q0] * scale0
 
             # Level 1: Collapse 2D polys to 1D along k1 at x_1d.
-            bounds_1, nb_1 = _collect_and_partition_from_2d(coeffs_2d, masks_2d, k1, x_1d)
+            nb_1 = _collect_and_partition_from_2d_into(
+                coeffs_2d,
+                masks_2d,
+                k1,
+                x_1d,
+                ws1_nodes,
+                ws1_poly1d,
+                ws1_basis,
+                ws1_roots,
+            )
+            bounds_1 = ws1_nodes
 
             for b1 in range(nb_1 - 1):
                 lo1 = bounds_1[b1]
@@ -552,8 +768,6 @@ def volume_quad_3d(  # noqa: PLR0912, PLR0913, PLR0915
                     w_2d = wts_1[q1] * scale1
 
                     # Level 2: Collapse 3D polys to 1D along k2.
-                    # x_tang has 2 components ordered by increasing 3D axis
-                    # index (skipping k2). Reuse pre-allocated buffer.
                     if tang1_2d == 0:
                         x_base_3d[0] = x_1d
                         x_base_3d[1] = x_2d
@@ -561,9 +775,18 @@ def volume_quad_3d(  # noqa: PLR0912, PLR0913, PLR0915
                         x_base_3d[0] = x_2d
                         x_base_3d[1] = x_1d
 
-                    bounds_2, nb_2 = _collect_and_partition_from_3d(
-                        coeffs_3d, masks_3d, k2, x_base_3d
+                    nb_2 = _collect_and_partition_from_3d_into(
+                        coeffs_3d,
+                        masks_3d,
+                        k2,
+                        x_base_3d,
+                        ws2_nodes,
+                        ws2_poly1d,
+                        ws2_basis0,
+                        ws2_basis1,
+                        ws2_roots,
                     )
+                    bounds_2 = ws2_nodes
 
                     for b2 in range(nb_2 - 1):
                         lo2 = bounds_2[b2]

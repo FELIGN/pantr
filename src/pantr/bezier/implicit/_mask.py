@@ -208,10 +208,76 @@ def _restrict_2d_subcell(
 
 
 @nb_jit(nopython=True, cache=True)
+def _restrict_2d_axis0(
+    coeffs: npt.NDArray[np.float64],
+    lo: float,
+    hi: float,
+) -> npt.NDArray[np.float64]:
+    """Restrict a 2D TP Bernstein polynomial along axis 0 only.
+
+    Args:
+        coeffs (npt.NDArray[np.float64]): 2D coefficient array of shape ``(s0, s1)``.
+        lo (float): Lower bound along axis 0.
+        hi (float): Upper bound along axis 0.
+
+    Returns:
+        npt.NDArray[np.float64]: Partially restricted array of shape ``(s0, s1)``.
+
+    Note:
+        Inputs are assumed to be correct (no validation performed).
+    """
+    s0, s1 = coeffs.shape
+    out = np.empty((s0, s1), dtype=np.float64)
+    col = np.empty(s0, dtype=np.float64)
+    for j in range(s1):
+        for i in range(s0):
+            col[i] = coeffs[i, j]
+        res = _restrict_1d(col, lo, hi)
+        for i in range(s0):
+            out[i, j] = res[i]
+    return out
+
+
+@nb_jit(nopython=True, cache=True)
+def _restrict_rows_and_check(
+    strip: npt.NDArray[np.float64],
+    lo: float,
+    hi: float,
+) -> bool:
+    """Restrict a 2D strip along axis 1 and return True if sign is NOT uniform.
+
+    Args:
+        strip (npt.NDArray[np.float64]): 2D coefficient array (already restricted
+            along axis 0).
+        lo (float): Lower bound along axis 1.
+        hi (float): Upper bound along axis 1.
+
+    Returns:
+        bool: True if the restricted subcell may contain a zero.
+
+    Note:
+        Inputs are assumed to be correct (no validation performed).
+    """
+    s0, s1 = strip.shape
+    sub = np.empty((s0, s1), dtype=np.float64)
+    row = np.empty(s1, dtype=np.float64)
+    for i in range(s0):
+        for j in range(s1):
+            row[j] = strip[i, j]
+        res = _restrict_1d(row, lo, hi)
+        for j in range(s1):
+            sub[i, j] = res[j]
+    return not _has_uniform_sign(sub)
+
+
+@nb_jit(nopython=True, cache=True)
 def compute_nonzero_mask_2d(
     coeffs: npt.NDArray[np.float64],
 ) -> npt.NDArray[np.bool_]:
     """Compute a conservative nonzero mask for a 2D scalar polynomial.
+
+    Uses factored (incremental) restriction: restricts along axis 0 once per
+    strip, then along axis 1 per subcell, avoiding redundant de Casteljau work.
 
     Args:
         coeffs (npt.NDArray[np.float64]): 2D Bernstein coefficients.
@@ -232,11 +298,15 @@ def compute_nonzero_mask_2d(
     for i0 in range(M):
         lo0 = max(i0 * inv_m - eps, 0.0)
         hi0 = min((i0 + 1) * inv_m + eps, 1.0)
+        # Restrict along axis 0 once for this strip.
+        strip = _restrict_2d_axis0(coeffs, lo0, hi0)
+        # Quick check: if entire strip has uniform sign, skip all i1.
+        if _has_uniform_sign(strip):
+            continue
         for i1 in range(M):
             lo1 = max(i1 * inv_m - eps, 0.0)
             hi1 = min((i1 + 1) * inv_m + eps, 1.0)
-            sub = _restrict_2d_subcell(coeffs, lo0, hi0, lo1, hi1)
-            if not _has_uniform_sign(sub):
+            if _restrict_rows_and_check(strip, lo1, hi1):
                 out[i0, i1] = True
 
     return out
@@ -304,10 +374,110 @@ def _restrict_3d_subcell(  # noqa: PLR0913
 
 
 @nb_jit(nopython=True, cache=True)
+def _restrict_3d_axis0(
+    coeffs: npt.NDArray[np.float64],
+    lo: float,
+    hi: float,
+) -> npt.NDArray[np.float64]:
+    """Restrict a 3D TP Bernstein polynomial along axis 0 only.
+
+    Args:
+        coeffs (npt.NDArray[np.float64]): 3D coefficient array.
+        lo (float): Lower bound along axis 0.
+        hi (float): Upper bound along axis 0.
+
+    Returns:
+        npt.NDArray[np.float64]: Partially restricted 3D array.
+
+    Note:
+        Inputs are assumed to be correct (no validation performed).
+    """
+    s0, s1, s2 = coeffs.shape
+    out = np.empty((s0, s1, s2), dtype=np.float64)
+    col = np.empty(s0, dtype=np.float64)
+    for j in range(s1):
+        for k in range(s2):
+            for i in range(s0):
+                col[i] = coeffs[i, j, k]
+            res = _restrict_1d(col, lo, hi)
+            for i in range(s0):
+                out[i, j, k] = res[i]
+    return out
+
+
+@nb_jit(nopython=True, cache=True)
+def _restrict_3d_axis1(
+    coeffs: npt.NDArray[np.float64],
+    lo: float,
+    hi: float,
+) -> npt.NDArray[np.float64]:
+    """Restrict a 3D TP Bernstein polynomial along axis 1 only.
+
+    Args:
+        coeffs (npt.NDArray[np.float64]): 3D coefficient array.
+        lo (float): Lower bound along axis 1.
+        hi (float): Upper bound along axis 1.
+
+    Returns:
+        npt.NDArray[np.float64]: Partially restricted 3D array.
+
+    Note:
+        Inputs are assumed to be correct (no validation performed).
+    """
+    s0, s1, s2 = coeffs.shape
+    out = np.empty((s0, s1, s2), dtype=np.float64)
+    col = np.empty(s1, dtype=np.float64)
+    for i in range(s0):
+        for k in range(s2):
+            for j in range(s1):
+                col[j] = coeffs[i, j, k]
+            res = _restrict_1d(col, lo, hi)
+            for j in range(s1):
+                out[i, j, k] = res[j]
+    return out
+
+
+@nb_jit(nopython=True, cache=True)
+def _restrict_3d_axis2_and_check(
+    coeffs: npt.NDArray[np.float64],
+    lo: float,
+    hi: float,
+) -> bool:
+    """Restrict a 3D array along axis 2 and return True if sign is NOT uniform.
+
+    Args:
+        coeffs (npt.NDArray[np.float64]): 3D coefficient array (already restricted
+            along axes 0 and 1).
+        lo (float): Lower bound along axis 2.
+        hi (float): Upper bound along axis 2.
+
+    Returns:
+        bool: True if the restricted subcell may contain a zero.
+
+    Note:
+        Inputs are assumed to be correct (no validation performed).
+    """
+    s0, s1, s2 = coeffs.shape
+    sub = np.empty((s0, s1, s2), dtype=np.float64)
+    col = np.empty(s2, dtype=np.float64)
+    for i in range(s0):
+        for j in range(s1):
+            for k in range(s2):
+                col[k] = coeffs[i, j, k]
+            res = _restrict_1d(col, lo, hi)
+            for k in range(s2):
+                sub[i, j, k] = res[k]
+    return not _has_uniform_sign(sub)
+
+
+@nb_jit(nopython=True, cache=True)
 def compute_nonzero_mask_3d(
     coeffs: npt.NDArray[np.float64],
 ) -> npt.NDArray[np.bool_]:
     """Compute a conservative nonzero mask for a 3D scalar polynomial.
+
+    Uses factored (incremental) restriction: restricts along axis 0 once per
+    i0-strip, axis 1 once per (i0, i1)-strip, then axis 2 per subcell.
 
     Args:
         coeffs (npt.NDArray[np.float64]): 3D Bernstein coefficients.
@@ -328,14 +498,19 @@ def compute_nonzero_mask_3d(
     for i0 in range(M):
         lo0 = max(i0 * inv_m - eps, 0.0)
         hi0 = min((i0 + 1) * inv_m + eps, 1.0)
+        strip0 = _restrict_3d_axis0(coeffs, lo0, hi0)
+        if _has_uniform_sign(strip0):
+            continue
         for i1 in range(M):
             lo1 = max(i1 * inv_m - eps, 0.0)
             hi1 = min((i1 + 1) * inv_m + eps, 1.0)
+            strip1 = _restrict_3d_axis1(strip0, lo1, hi1)
+            if _has_uniform_sign(strip1):
+                continue
             for i2 in range(M):
                 lo2 = max(i2 * inv_m - eps, 0.0)
                 hi2 = min((i2 + 1) * inv_m + eps, 1.0)
-                sub = _restrict_3d_subcell(coeffs, lo0, hi0, lo1, hi1, lo2, hi2)
-                if not _has_uniform_sign(sub):
+                if _restrict_3d_axis2_and_check(strip1, lo2, hi2):
                     out[i0, i1, i2] = True
 
     return out
@@ -432,7 +607,86 @@ def _degree_elevate_1d_inplace(
 
 
 @nb_jit(nopython=True, cache=True)
-def compute_intersection_mask_2d(  # noqa: PLR0912
+def _orthant_test_2d_subcell(  # noqa: PLR0912, PLR0913
+    coeffs_f: npt.NDArray[np.float64],
+    coeffs_g: npt.NDArray[np.float64],
+    lo0: float,
+    hi0: float,
+    lo1: float,
+    hi1: float,
+) -> bool:
+    """Restrict two 2D polys to a subcell, elevate, and run the orthant test.
+
+    Args:
+        coeffs_f (npt.NDArray[np.float64]): First 2D coefficient array.
+        coeffs_g (npt.NDArray[np.float64]): Second 2D coefficient array.
+        lo0 (float): Lower bound along axis 0.
+        hi0 (float): Upper bound along axis 0.
+        lo1 (float): Lower bound along axis 1.
+        hi1 (float): Upper bound along axis 1.
+
+    Returns:
+        bool: True if the orthant test proves no common zero (separable).
+
+    Note:
+        Inputs are assumed to be correct (no validation performed).
+    """
+    sub_f = _restrict_2d_subcell(coeffs_f, lo0, hi0, lo1, hi1)
+    sub_g = _restrict_2d_subcell(coeffs_g, lo0, hi0, lo1, hi1)
+
+    sf0, sf1 = sub_f.shape
+    sg0, sg1 = sub_g.shape
+    max0 = max(sf0, sg0)
+    max1 = max(sf1, sg1)
+
+    f_elev = np.empty((max0, max1), dtype=np.float64)
+    for j in range(sf1):
+        col = np.empty(sf0, dtype=np.float64)
+        for i in range(sf0):
+            col[i] = sub_f[i, j]
+        elev = _degree_elevate_1d_inplace(col, max0)
+        for i in range(max0):
+            f_elev[i, j] = elev[i]
+    if sf1 < max1:
+        for i in range(max0):
+            row = np.empty(sf1, dtype=np.float64)
+            for j in range(sf1):
+                row[j] = f_elev[i, j]
+            elev = _degree_elevate_1d_inplace(row, max1)
+            for j in range(max1):
+                f_elev[i, j] = elev[j]
+
+    g_elev = np.empty((max0, max1), dtype=np.float64)
+    for j in range(sg1):
+        col = np.empty(sg0, dtype=np.float64)
+        for i in range(sg0):
+            col[i] = sub_g[i, j]
+        elev = _degree_elevate_1d_inplace(col, max0)
+        for i in range(max0):
+            g_elev[i, j] = elev[i]
+    if sg1 < max1:
+        for i in range(max0):
+            row = np.empty(sg1, dtype=np.float64)
+            for j in range(sg1):
+                row[j] = g_elev[i, j]
+            elev = _degree_elevate_1d_inplace(row, max1)
+            for j in range(max1):
+                g_elev[i, j] = elev[j]
+
+    f_flat = np.empty(max0 * max1, dtype=np.float64)
+    g_flat = np.empty(max0 * max1, dtype=np.float64)
+    idx = 0
+    for i in range(max0):
+        for j in range(max1):
+            f_flat[idx] = f_elev[i, j]
+            g_flat[idx] = g_elev[i, j]
+            idx += 1
+
+    return _orthant_test(f_flat, g_flat)
+
+
+@nb_jit(nopython=True, cache=True)
+def compute_intersection_mask_2d(
     coeffs_f: npt.NDArray[np.float64],
     mask_f: npt.NDArray[np.bool_],
     coeffs_g: npt.NDArray[np.float64],
@@ -462,7 +716,6 @@ def compute_intersection_mask_2d(  # noqa: PLR0912
 
     for i0 in range(M):
         for i1 in range(M):
-            # Skip if either mask is inactive.
             if not mask_f[i0, i1] or not mask_g[i0, i1]:
                 continue
 
@@ -471,67 +724,115 @@ def compute_intersection_mask_2d(  # noqa: PLR0912
             lo1 = max(i1 * inv_m - eps, 0.0)
             hi1 = min((i1 + 1) * inv_m + eps, 1.0)
 
-            sub_f = _restrict_2d_subcell(coeffs_f, lo0, hi0, lo1, hi1)
-            sub_g = _restrict_2d_subcell(coeffs_g, lo0, hi0, lo1, hi1)
-
-            # Degree-elevate to common degree in each direction.
-            sf0, sf1 = sub_f.shape
-            sg0, sg1 = sub_g.shape
-            max0 = max(sf0, sg0)
-            max1 = max(sf1, sg1)
-
-            # Elevate along axis 0 then axis 1, flatten for orthant test.
-            f_flat = np.empty(max0 * max1, dtype=np.float64)
-            g_flat = np.empty(max0 * max1, dtype=np.float64)
-
-            # Elevate f.
-            f_elev = np.empty((max0, max1), dtype=np.float64)
-            for j in range(sf1):
-                col = np.empty(sf0, dtype=np.float64)
-                for i in range(sf0):
-                    col[i] = sub_f[i, j]
-                elev = _degree_elevate_1d_inplace(col, max0)
-                for i in range(max0):
-                    f_elev[i, j] = elev[i]
-            if sf1 < max1:
-                for i in range(max0):
-                    row = np.empty(sf1, dtype=np.float64)
-                    for j in range(sf1):
-                        row[j] = f_elev[i, j]
-                    elev = _degree_elevate_1d_inplace(row, max1)
-                    for j in range(max1):
-                        f_elev[i, j] = elev[j]
-
-            # Elevate g.
-            g_elev = np.empty((max0, max1), dtype=np.float64)
-            for j in range(sg1):
-                col = np.empty(sg0, dtype=np.float64)
-                for i in range(sg0):
-                    col[i] = sub_g[i, j]
-                elev = _degree_elevate_1d_inplace(col, max0)
-                for i in range(max0):
-                    g_elev[i, j] = elev[i]
-            if sg1 < max1:
-                for i in range(max0):
-                    row = np.empty(sg1, dtype=np.float64)
-                    for j in range(sg1):
-                        row[j] = g_elev[i, j]
-                    elev = _degree_elevate_1d_inplace(row, max1)
-                    for j in range(max1):
-                        g_elev[i, j] = elev[j]
-
-            # Flatten.
-            idx = 0
-            for i in range(max0):
-                for j in range(max1):
-                    f_flat[idx] = f_elev[i, j]
-                    g_flat[idx] = g_elev[i, j]
-                    idx += 1
-
-            if not _orthant_test(f_flat, g_flat):
+            if not _orthant_test_2d_subcell(coeffs_f, coeffs_g, lo0, hi0, lo1, hi1):
                 out[i0, i1] = True
 
     return out
+
+
+@nb_jit(nopython=True, cache=True)
+def has_intersection_2d(
+    coeffs_f: npt.NDArray[np.float64],
+    mask_f: npt.NDArray[np.bool_],
+    coeffs_g: npt.NDArray[np.float64],
+    mask_g: npt.NDArray[np.bool_],
+) -> bool:
+    """Check if two 2D polynomials have any intersection subcells.
+
+    Early-exit version of :func:`compute_intersection_mask_2d`: returns True
+    as soon as the first non-separable subcell is found.
+
+    Args:
+        coeffs_f (npt.NDArray[np.float64]): Coefficients of first polynomial.
+        mask_f (npt.NDArray[np.bool_]): Nonzero mask of first polynomial.
+        coeffs_g (npt.NDArray[np.float64]): Coefficients of second polynomial.
+        mask_g (npt.NDArray[np.bool_]): Nonzero mask of second polynomial.
+
+    Returns:
+        bool: True if any subcell may contain a common zero.
+
+    Note:
+        Inputs are assumed to be correct (no validation performed).
+    """
+    eps = _MASK_EPS
+    inv_m = 1.0 / M
+
+    for i0 in range(M):
+        for i1 in range(M):
+            if not mask_f[i0, i1] or not mask_g[i0, i1]:
+                continue
+            lo0 = max(i0 * inv_m - eps, 0.0)
+            hi0 = min((i0 + 1) * inv_m + eps, 1.0)
+            lo1 = max(i1 * inv_m - eps, 0.0)
+            hi1 = min((i1 + 1) * inv_m + eps, 1.0)
+            if not _orthant_test_2d_subcell(coeffs_f, coeffs_g, lo0, hi0, lo1, hi1):
+                return True
+    return False
+
+
+@nb_jit(nopython=True, cache=True)
+def has_intersection_3d(
+    coeffs_f: npt.NDArray[np.float64],
+    mask_f: npt.NDArray[np.bool_],
+    coeffs_g: npt.NDArray[np.float64],
+    mask_g: npt.NDArray[np.bool_],
+) -> bool:
+    """Check if two 3D polynomials have any intersection subcells.
+
+    Early-exit version: returns True as soon as the first non-separable
+    subcell is found, without computing the full mask.
+
+    Args:
+        coeffs_f (npt.NDArray[np.float64]): Coefficients of first polynomial.
+        mask_f (npt.NDArray[np.bool_]): Nonzero mask of first polynomial.
+        coeffs_g (npt.NDArray[np.float64]): Coefficients of second polynomial.
+        mask_g (npt.NDArray[np.bool_]): Nonzero mask of second polynomial.
+
+    Returns:
+        bool: True if any subcell may contain a common zero.
+
+    Note:
+        Inputs are assumed to be correct (no validation performed).
+    """
+    eps = _MASK_EPS
+    inv_m = 1.0 / M
+
+    for i0 in range(M):
+        for i1 in range(M):
+            for i2 in range(M):
+                if not mask_f[i0, i1, i2] or not mask_g[i0, i1, i2]:
+                    continue
+                lo0 = max(i0 * inv_m - eps, 0.0)
+                hi0 = min((i0 + 1) * inv_m + eps, 1.0)
+                lo1 = max(i1 * inv_m - eps, 0.0)
+                hi1 = min((i1 + 1) * inv_m + eps, 1.0)
+                lo2 = max(i2 * inv_m - eps, 0.0)
+                hi2 = min((i2 + 1) * inv_m + eps, 1.0)
+                sub_f = _restrict_3d_subcell(coeffs_f, lo0, hi0, lo1, hi1, lo2, hi2)
+                sub_g = _restrict_3d_subcell(coeffs_g, lo0, hi0, lo1, hi1, lo2, hi2)
+
+                sf0, sf1, sf2 = sub_f.shape
+                sg0, sg1, sg2 = sub_g.shape
+                max0 = max(sf0, sg0)
+                max1 = max(sf1, sg1)
+                max2 = max(sf2, sg2)
+
+                f_elev = _elevate_3d_to_common(sub_f, max0, max1, max2)
+                g_elev = _elevate_3d_to_common(sub_g, max0, max1, max2)
+
+                n_total = max0 * max1 * max2
+                f_flat = np.empty(n_total, dtype=np.float64)
+                g_flat = np.empty(n_total, dtype=np.float64)
+                idx = 0
+                for a0 in range(max0):
+                    for a1 in range(max1):
+                        for a2 in range(max2):
+                            f_flat[idx] = f_elev[a0, a1, a2]
+                            g_flat[idx] = g_elev[a0, a1, a2]
+                            idx += 1
+                if not _orthant_test(f_flat, g_flat):
+                    return True
+    return False
 
 
 @nb_jit(nopython=True, cache=True)

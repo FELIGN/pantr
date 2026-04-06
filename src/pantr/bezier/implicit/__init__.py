@@ -57,8 +57,62 @@ from pantr.bezier.implicit._mask import (
 )
 from pantr.bezier.implicit._roots import find_roots
 
+# Numba-jitted helpers to compute masks in a single Numba call, avoiding
+# per-polynomial Python→Numba transitions.
+if not TYPE_CHECKING:
+    from pantr._numba_compat import nb_jit as _nb_jit
+
+    @_nb_jit(nopython=True, cache=True)
+    def _compute_masks_2d(coeffs_list: NumbaList) -> NumbaList:
+        """Compute nonzero masks for all 2D polynomials in a single Numba call.
+
+        Args:
+            coeffs_list: Typed list of 2D coefficient arrays.
+
+        Returns:
+            Typed list of 2D boolean mask arrays.
+
+        Note:
+            Inputs are assumed to be correct (no validation performed).
+        """
+        masks = NumbaList()
+        # Force-type the list for the empty case.
+        _dm = np.empty((1, 1), dtype=np.bool_)
+        masks.append(_dm)
+        masks.pop()
+        for i in range(len(coeffs_list)):
+            masks.append(compute_nonzero_mask_2d(coeffs_list[i]))
+        return masks
+
+    @_nb_jit(nopython=True, cache=True)
+    def _compute_masks_3d(coeffs_list: NumbaList) -> NumbaList:
+        """Compute nonzero masks for all 3D polynomials in a single Numba call.
+
+        Args:
+            coeffs_list: Typed list of 3D coefficient arrays.
+
+        Returns:
+            Typed list of 3D boolean mask arrays.
+
+        Note:
+            Inputs are assumed to be correct (no validation performed).
+        """
+        masks = NumbaList()
+        _dm = np.empty((1, 1, 1), dtype=np.bool_)
+        masks.append(_dm)
+        masks.pop()
+        for i in range(len(coeffs_list)):
+            masks.append(compute_nonzero_mask_3d(coeffs_list[i]))
+        return masks
+
+
 if TYPE_CHECKING:
     from pantr.bezier._bezier import Bezier
+
+    def _compute_masks_2d(coeffs_list: NumbaList) -> NumbaList: ...
+
+    def _compute_masks_3d(coeffs_list: NumbaList) -> NumbaList: ...
+
 
 VolQuadResult: TypeAlias = tuple[npt.NDArray[np.float64], npt.NDArray[np.float64]]
 """Volume quadrature result: ``(points, weights)``."""
@@ -304,15 +358,12 @@ class ImplicitPolyQuadrature:
             self._coeffs_list.append(ca)
 
         # Compute masks and build hierarchy.
+        # Use batched Numba helpers to avoid per-polynomial Python→Numba overhead.
         if self._dim == 2:  # noqa: PLR2004
-            self._masks_list = NumbaList()
-            for ca in coeffs_arrays:
-                self._masks_list.append(compute_nonzero_mask_2d(ca))
+            self._masks_list = _compute_masks_2d(self._coeffs_list)
             self._build_result: tuple[Any, ...] = build_2d(self._coeffs_list, self._masks_list)
         else:
-            self._masks_list = NumbaList()
-            for ca in coeffs_arrays:
-                self._masks_list.append(compute_nonzero_mask_3d(ca))
+            self._masks_list = _compute_masks_3d(self._coeffs_list)
             self._build_result = build_3d(self._coeffs_list, self._masks_list)
 
         # Pre-compute base-level partition (1D roots) using eigvals for

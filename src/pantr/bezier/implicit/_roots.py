@@ -956,3 +956,89 @@ def find_roots(  # noqa: PLR0911, PLR0912, PLR0915
 
     roots, count = _yuksel_roots(coeffs, tol)
     return roots, count, False
+
+
+@nb_jit(nopython=True, cache=True)
+def find_roots_into(  # noqa: PLR0911, PLR0912
+    coeffs: npt.NDArray[np.float64],
+    roots_buf: npt.NDArray[np.float64],
+) -> tuple[int, bool]:
+    """Find all real roots of a 1D Bernstein polynomial, writing into a pre-allocated buffer.
+
+    Same algorithm as :func:`find_roots` but avoids allocating the roots array.
+    For degree 1 and 2 (the fast paths in the construction hot loop), this
+    eliminates 1-2 heap allocations per call.
+
+    Args:
+        coeffs (npt.NDArray[np.float64]): 1D Bernstein coefficients.
+        roots_buf (npt.NDArray[np.float64]): Pre-allocated buffer for roots
+            (must have length >= degree).
+
+    Returns:
+        tuple[int, bool]: (count, overflowed).
+
+    Note:
+        Inputs are assumed to be correct (no validation performed).
+    """
+    n = len(coeffs) - 1
+    if n <= 0:
+        return 0, False
+
+    d_min = coeffs[0]
+    d_max = coeffs[0]
+    for i in range(1, n + 1):
+        d_min = min(d_min, coeffs[i])
+        d_max = max(d_max, coeffs[i])
+    if d_min > 0.0 or d_max < 0.0:
+        return 0, False
+
+    coeff_scale = max(abs(d_min), abs(d_max))
+    if coeff_scale <= _DBL_EPSILON:
+        return 0, False
+
+    if n == 1:
+        if coeffs[0] == coeffs[1]:
+            return 0, False
+        x = coeffs[0] / (coeffs[0] - coeffs[1])
+        if x <= 0.0 or x >= 1.0:
+            return 0, False
+        roots_buf[0] = x
+        return 1, False
+
+    if n == 2:  # noqa: PLR2004
+        a = coeffs[0] - 2.0 * coeffs[1] + coeffs[2]
+        b = 2.0 * (coeffs[1] - coeffs[0])
+        c = coeffs[0]
+        delta = b * b - 4.0 * a * c
+        tol_delta = coeff_scale * 1.0e4 * _DBL_EPSILON
+        if abs(delta) < tol_delta:
+            delta = 0.0
+        if delta < 0.0:
+            return 0, False
+        count = 0
+        if abs(a) < _DBL_EPSILON * coeff_scale:
+            if abs(b) > _DBL_EPSILON * coeff_scale:
+                x = -c / b
+                if 0.0 < x < 1.0:
+                    roots_buf[0] = x
+                    count = 1
+        else:
+            sqrt_delta = np.sqrt(delta)
+            q_val = -0.5 * (b + sqrt_delta) if b >= 0.0 else -0.5 * (b - sqrt_delta)
+            r1 = q_val / a
+            r2 = c / q_val if abs(q_val) > 0.0 else -1.0
+            if 0.0 < r1 < 1.0:
+                roots_buf[count] = r1
+                count += 1
+            if 0.0 < r2 < 1.0 and abs(r2 - r1) > _ROOT_TOL:
+                roots_buf[count] = r2
+                count += 1
+            if count == 2 and roots_buf[0] > roots_buf[1]:  # noqa: PLR2004
+                roots_buf[0], roots_buf[1] = roots_buf[1], roots_buf[0]
+        return count, False
+
+    # For higher degrees, fall back to the allocating version.
+    roots, count, overflowed = find_roots(coeffs)
+    for i in range(count):
+        roots_buf[i] = roots[i]
+    return count, overflowed
