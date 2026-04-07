@@ -24,10 +24,12 @@ from ._control_points import control_polygon_mesh
 from ._knot_lines import knot_lines_meshes
 from ._scene import Scene, plot
 from ._vtk_cells import save, to_pyvista
+from ._vtk_lagrange import implicit_to_pyvista
 
 __all__ = [
     "Scene",
     "control_polygon_mesh",
+    "implicit_to_pyvista",
     "knot_lines_meshes",
     "plot",
     "save",
