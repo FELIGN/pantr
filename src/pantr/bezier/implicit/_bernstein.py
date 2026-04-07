@@ -36,7 +36,7 @@ _NEAR_ZERO: float = 1e-300
 # ---------------------------------------------------------------------------
 
 
-@nb_jit(nopython=True, cache=True, fastmath=True)
+@nb_jit(nopython=True, cache=True)
 def _eval_bernstein_basis_1d(
     degree: int,
     x: float,
@@ -90,7 +90,7 @@ def _eval_bernstein_basis_1d(
     return basis
 
 
-@nb_jit(nopython=True, cache=True, fastmath=True)
+@nb_jit(nopython=True, cache=True)
 def _eval_bernstein_basis_1d_into(
     degree: int,
     x: float,
@@ -846,142 +846,6 @@ def _eval_gradient_3d(
     d2 = _derivative_along_axis_3d(coeffs, 2)
     grad[2] = _eval_bernstein_3d(d2, x)
 
-    return grad
-
-
-@nb_jit(nopython=True, cache=True, fastmath=True)
-def _derivative_basis_1d(
-    degree: int,
-    x: float,
-) -> npt.NDArray[np.float64]:
-    """Evaluate derivatives of all 1D Bernstein basis functions at *x*.
-
-    Uses the identity ``B'_{i,n}(x) = n * (B_{i-1,n-1}(x) - B_{i,n-1}(x))``
-    where ``B_{-1,n-1} = B_{n,n-1} = 0``.
-
-    Args:
-        degree (int): Polynomial degree (>= 0).
-        x (float): Parameter value in [0, 1].
-
-    Returns:
-        npt.NDArray[np.float64]: Derivative values of shape ``(degree + 1,)``.
-
-    Note:
-        Inputs are assumed to be correct (no validation performed).
-    """
-    n = degree
-    out = np.empty(n + 1, dtype=np.float64)
-    if n == 0:
-        out[0] = 0.0
-        return out
-    b = _eval_bernstein_basis_1d(n - 1, x)
-    fn = float(n)
-    out[0] = -fn * b[0]
-    for i in range(1, n):
-        out[i] = fn * (b[i - 1] - b[i])
-    out[n] = fn * b[n - 1]
-    return out
-
-
-@nb_jit(nopython=True, cache=True, fastmath=True)
-def _eval_gradient_fused_2d(
-    coeffs: npt.NDArray[np.float64],
-    x: npt.NDArray[np.float64],
-) -> npt.NDArray[np.float64]:
-    """Evaluate gradient of a 2D TP Bernstein polynomial in a single pass.
-
-    Computes basis AND derivative-basis once per direction, then accumulates
-    all gradient components in one loop over the coefficient array. This is
-    faster than the separate-derivative approach when the gradient is needed
-    at many points (e.g., in score estimation).
-
-    Args:
-        coeffs (npt.NDArray[np.float64]): 2D coefficient array of shape
-            ``(n0+1, n1+1)``.
-        x (npt.NDArray[np.float64]): Point of shape ``(2,)``.
-
-    Returns:
-        npt.NDArray[np.float64]: Gradient vector of shape ``(2,)``.
-
-    Note:
-        Inputs are assumed to be correct (no validation performed).
-    """
-    n0 = coeffs.shape[0] - 1
-    n1 = coeffs.shape[1] - 1
-
-    b0 = _eval_bernstein_basis_1d(n0, x[0])
-    b1 = _eval_bernstein_basis_1d(n1, x[1])
-    p0 = _derivative_basis_1d(n0, x[0])
-    p1 = _derivative_basis_1d(n1, x[1])
-
-    g0 = 0.0
-    g1 = 0.0
-    for i0 in range(n0 + 1):
-        p0_b1_acc = 0.0
-        b0_p1_acc = 0.0
-        for i1 in range(n1 + 1):
-            c = coeffs[i0, i1]
-            p0_b1_acc += c * b1[i1]
-            b0_p1_acc += c * p1[i1]
-        g0 += p0[i0] * p0_b1_acc
-        g1 += b0[i0] * b0_p1_acc
-
-    grad = np.empty(2, dtype=np.float64)
-    grad[0] = g0
-    grad[1] = g1
-    return grad
-
-
-@nb_jit(nopython=True, cache=True, fastmath=True)
-def _eval_gradient_fused_3d(
-    coeffs: npt.NDArray[np.float64],
-    x: npt.NDArray[np.float64],
-) -> npt.NDArray[np.float64]:
-    """Evaluate gradient of a 3D TP Bernstein polynomial in a single pass.
-
-    Computes basis AND derivative-basis once per direction, then accumulates
-    all gradient components in one loop over the coefficient array.
-
-    Args:
-        coeffs (npt.NDArray[np.float64]): 3D coefficient array of shape
-            ``(n0+1, n1+1, n2+1)``.
-        x (npt.NDArray[np.float64]): Point of shape ``(3,)``.
-
-    Returns:
-        npt.NDArray[np.float64]: Gradient vector of shape ``(3,)``.
-
-    Note:
-        Inputs are assumed to be correct (no validation performed).
-    """
-    n0 = coeffs.shape[0] - 1
-    n1 = coeffs.shape[1] - 1
-    n2 = coeffs.shape[2] - 1
-
-    b0 = _eval_bernstein_basis_1d(n0, x[0])
-    b1 = _eval_bernstein_basis_1d(n1, x[1])
-    b2 = _eval_bernstein_basis_1d(n2, x[2])
-    p0 = _derivative_basis_1d(n0, x[0])
-    p1 = _derivative_basis_1d(n1, x[1])
-    p2 = _derivative_basis_1d(n2, x[2])
-
-    g0 = 0.0
-    g1 = 0.0
-    g2 = 0.0
-    for i0 in range(n0 + 1):
-        for i1 in range(n1 + 1):
-            v01 = b0[i0] * b1[i1]
-            p0_b1 = p0[i0] * b1[i1]
-            b0_p1 = b0[i0] * p1[i1]
-            for i2 in range(n2 + 1):
-                c = coeffs[i0, i1, i2]
-                g0 += c * p0_b1 * b2[i2]
-                g1 += c * b0_p1 * b2[i2]
-                g2 += c * v01 * p2[i2]
-
-    grad = np.empty(3, dtype=np.float64)
-    grad[0] = g0
-    grad[1] = g1
-    grad[2] = g2
     return grad
 
 

@@ -36,6 +36,40 @@ from pantr.bezier.implicit._mask import (
 _NEAR_ZERO: float = 1e-300
 """Guard against division by zero (well below subnormal range)."""
 
+
+@nb_jit(nopython=True, cache=True)
+def _deriv_basis_val(
+    n: int,
+    fn: float,
+    bm: npt.NDArray[np.float64],
+    ii: int,
+) -> float:
+    """Evaluate the *ii*-th derivative basis function value from a lower-degree basis.
+
+    Computes ``n * (B_{ii-1,n-1}(x) - B_{ii,n-1}(x))`` given the pre-evaluated
+    lower-degree basis ``bm = B_{*,n-1}(x)``.
+
+    Args:
+        n (int): Polynomial degree.
+        fn (float): Float cast of *n*.
+        bm (npt.NDArray[np.float64]): Lower-degree basis values of shape ``(n,)``.
+        ii (int): Basis function index in ``[0, n]``.
+
+    Returns:
+        float: Derivative basis value at the pre-evaluated point.
+
+    Note:
+        Inputs are assumed to be correct (no validation performed).
+    """
+    if n == 0:
+        return 0.0
+    if ii == 0:
+        return float(-fn * bm[0])
+    if ii == n:
+        return float(fn * bm[n - 1])
+    return float(fn * (bm[ii - 1] - bm[ii]))
+
+
 _MAX_SCORE_SAMPLES_3D: int = 24
 """Maximum number of subcell gradient evaluations in 3D score estimation.
 
@@ -46,7 +80,7 @@ the cost for polynomials with many active mask cells.
 
 
 @nb_jit(nopython=True, cache=True)
-def score_estimate_2d(  # noqa: PLR0912, PLR0915
+def score_estimate_2d(
     coeffs_list: NumbaList,
     masks_list: NumbaList,
 ) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.bool_]]:
@@ -113,31 +147,13 @@ def score_estimate_2d(  # noqa: PLR0912, PLR0915
                 g0 = 0.0
                 g1 = 0.0
                 for ii0 in range(n0 + 1):
-                    # Derivative basis for axis 0: n0 * (b0m[ii0-1] - b0m[ii0]).
-                    if n0 == 0:
-                        p0_val = 0.0
-                    elif ii0 == 0:
-                        p0_val = -fn0 * b0m[0]
-                    elif ii0 == n0:
-                        p0_val = fn0 * b0m[n0 - 1]
-                    else:
-                        p0_val = fn0 * (b0m[ii0 - 1] - b0m[ii0])
-
+                    p0_val = _deriv_basis_val(n0, fn0, b0m, ii0)
                     acc_b1 = 0.0
                     acc_p1 = 0.0
                     for ii1 in range(n1 + 1):
                         c = coeffs[ii0, ii1]
                         acc_b1 += c * b1[ii1]
-                        # Derivative basis for axis 1.
-                        if n1 == 0:
-                            p1_val = 0.0
-                        elif ii1 == 0:
-                            p1_val = -fn1 * b1m[0]
-                        elif ii1 == n1:
-                            p1_val = fn1 * b1m[n1 - 1]
-                        else:
-                            p1_val = fn1 * (b1m[ii1 - 1] - b1m[ii1])
-                        acc_p1 += c * p1_val
+                        acc_p1 += c * _deriv_basis_val(n1, fn1, b1m, ii1)
 
                     g0 += p0_val * acc_b1
                     g1 += b0[ii0] * acc_p1
@@ -203,12 +219,14 @@ def score_estimate_3d(  # noqa: PLR0912, PLR0915
         fn1 = float(n1)
         fn2 = float(n2)
 
-        # Deterministic subsampling: use a fixed stride over the linear mask
-        # index instead of counting all active cells first.  The total number
-        # of mask cells is M^3; we stride so that at most
-        # _MAX_SCORE_SAMPLES_3D active cells are evaluated.
+        # Deterministic subsampling: use a prime stride over the linear mask
+        # index to reduce alignment artifacts.  A prime stride ensures the
+        # sampling pattern is not aligned with any regular mask structure.
         total_cells = M * M * M
-        skip_stride = max(total_cells // _MAX_SCORE_SAMPLES_3D, 1)
+        raw_stride = max(total_cells // _MAX_SCORE_SAMPLES_3D, 1)
+        # Round up to the next odd value to avoid powers-of-two alignment;
+        # for M=4 this gives stride 3 (prime), sampling ~21 of 64 cells.
+        skip_stride = raw_stride + 1 if raw_stride % 2 == 0 and raw_stride > 1 else raw_stride
         cell_idx = 0
 
         # Accumulate gradient-based score with inlined gradient computation.
@@ -224,14 +242,13 @@ def score_estimate_3d(  # noqa: PLR0912, PLR0915
                 if n1 > 0:
                     _eval_bernstein_basis_1d_into(n1 - 1, x1, b1m)
                 for i2 in range(M):
-                    if not mask[i0, i1, i2]:
-                        cell_idx += 1
-                        continue
-                    # Subsample: only evaluate every skip_stride-th cell.
-                    if cell_idx % skip_stride != 0:
-                        cell_idx += 1
-                        continue
+                    cur_idx = cell_idx
                     cell_idx += 1
+                    if not mask[i0, i1, i2]:
+                        continue
+                    # Subsample: only evaluate every skip_stride-th active cell.
+                    if cur_idx % skip_stride != 0:
+                        continue
 
                     x2 = (i2 + 0.5) * inv_m
                     _eval_bernstein_basis_1d_into(n2, x2, b2)
@@ -243,25 +260,9 @@ def score_estimate_3d(  # noqa: PLR0912, PLR0915
                     g1 = 0.0
                     g2 = 0.0
                     for ii0 in range(n0 + 1):
-                        if n0 == 0:
-                            p0_val = 0.0
-                        elif ii0 == 0:
-                            p0_val = -fn0 * b0m[0]
-                        elif ii0 == n0:
-                            p0_val = fn0 * b0m[n0 - 1]
-                        else:
-                            p0_val = fn0 * (b0m[ii0 - 1] - b0m[ii0])
-
+                        p0_val = _deriv_basis_val(n0, fn0, b0m, ii0)
                         for ii1 in range(n1 + 1):
-                            if n1 == 0:
-                                p1_val = 0.0
-                            elif ii1 == 0:
-                                p1_val = -fn1 * b1m[0]
-                            elif ii1 == n1:
-                                p1_val = fn1 * b1m[n1 - 1]
-                            else:
-                                p1_val = fn1 * (b1m[ii1 - 1] - b1m[ii1])
-
+                            p1_val = _deriv_basis_val(n1, fn1, b1m, ii1)
                             v01 = b0[ii0] * b1[ii1]
                             p0_b1 = p0_val * b1[ii1]
                             b0_p1 = b0[ii0] * p1_val
@@ -269,15 +270,7 @@ def score_estimate_3d(  # noqa: PLR0912, PLR0915
                                 c = coeffs[ii0, ii1, ii2]
                                 g0 += c * p0_b1 * b2[ii2]
                                 g1 += c * b0_p1 * b2[ii2]
-                                if n2 == 0:
-                                    p2_val = 0.0
-                                elif ii2 == 0:
-                                    p2_val = -fn2 * b2m[0]
-                                elif ii2 == n2:
-                                    p2_val = fn2 * b2m[n2 - 1]
-                                else:
-                                    p2_val = fn2 * (b2m[ii2 - 1] - b2m[ii2])
-                                g2 += c * v01 * p2_val
+                                g2 += c * v01 * _deriv_basis_val(n2, fn2, b2m, ii2)
 
                     norm1 = abs(g0) + abs(g1) + abs(g2)
                     if norm1 > _NEAR_ZERO:

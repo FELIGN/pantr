@@ -1,6 +1,6 @@
 """Mask operations for implicit quadrature.
 
-Masks are boolean arrays on an ``M x M x ... x M`` grid (``M = 8``) over
+Masks are boolean arrays on an ``M x M x ... x M`` grid (``M = 4``) over
 ``[0,1]^d``. A ``True`` subcell indicates that the associated polynomial may
 have a zero there; ``False`` means it is provably nonzero.
 

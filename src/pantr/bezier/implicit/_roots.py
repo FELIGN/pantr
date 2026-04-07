@@ -5,11 +5,11 @@ from ``pantr.bezier`` as standalone Numba nopython functions, so the implicit
 quadrature module has no runtime dependency on the rest of pantr's root-finding
 infrastructure.
 
-Dispatch heuristic (same as ``pantr.bezier._batch_core._dispatch_and_find``):
+Dispatch heuristic:
 
 - Degree < 6: Yuksel (lower overhead for small polynomials).
-- Degree >= 6 with coefficient range <= 1e8: Bezier clipping (superlinear).
-- Otherwise: Yuksel.
+- Degree >= 6: Bezier clipping (superlinear convergence, better scaling for
+  high-degree polynomials).
 
 Main exports:
 
@@ -834,26 +834,27 @@ def _dedup_roots(
 
 
 @nb_jit(nopython=True, cache=True)
-def find_roots(  # noqa: PLR0911, PLR0912, PLR0915
+def find_roots_into(  # noqa: PLR0911, PLR0912, PLR0915
     coeffs: npt.NDArray[np.float64],
-) -> tuple[npt.NDArray[np.float64], int, bool]:
-    """Find all real roots of a 1D Bernstein polynomial in (0, 1).
+    roots_buf: npt.NDArray[np.float64],
+) -> tuple[int, bool]:
+    """Find all real roots of a 1D Bernstein polynomial, writing into *roots_buf*.
 
-    Dispatches between Yuksel and Bezier clipping based on degree and
-    coefficient conditioning:
+    Core implementation shared by :func:`find_roots`.  Dispatches between
+    Yuksel and Bezier clipping based on degree:
 
     - Degree < 6: Yuksel (lower overhead).
-    - Degree >= 6 with coefficient range <= 1e8: Bezier clipping.
-    - Otherwise: Yuksel.
+    - Degree >= 6: Bezier clipping (superlinear convergence).
 
     Args:
         coeffs (npt.NDArray[np.float64]): 1D Bernstein coefficients of
             length ``n + 1`` (degree n >= 0).
+        roots_buf (npt.NDArray[np.float64]): Pre-allocated buffer for roots
+            (must have length >= degree).
 
     Returns:
-        tuple[npt.NDArray[np.float64], int, bool]: (roots_buffer, count,
-            overflowed) where only the first *count* entries are valid
-            roots, sorted in ascending order, and *overflowed* indicates
+        tuple[int, bool]: (count, overflowed) where *count* is the number
+            of valid roots written to *roots_buf* and *overflowed* indicates
             whether the clipping stack was exhausted.
 
     Note:
@@ -861,7 +862,7 @@ def find_roots(  # noqa: PLR0911, PLR0912, PLR0915
     """
     n = len(coeffs) - 1
     if n <= 0:
-        return np.empty(0, dtype=np.float64), 0, False
+        return 0, False
 
     # Quick rejection: uniform sign.
     d_min = coeffs[0]
@@ -870,120 +871,14 @@ def find_roots(  # noqa: PLR0911, PLR0912, PLR0915
         d_min = min(d_min, coeffs[i])
         d_max = max(d_max, coeffs[i])
     if d_min > 0.0 or d_max < 0.0:
-        return np.empty(0, dtype=np.float64), 0, False
+        return 0, False
 
     # All-zero check.
     coeff_scale = max(abs(d_min), abs(d_max))
     if coeff_scale <= _DBL_EPSILON:
-        return np.empty(0, dtype=np.float64), 0, False
+        return 0, False
 
     # --- Fast path for degree 1 (linear) ---
-    # Root: alpha[0] / (alpha[0] - alpha[1]), keep if in (0, 1).
-    if n == 1:
-        if coeffs[0] == coeffs[1]:
-            return np.empty(0, dtype=np.float64), 0, False
-        x = coeffs[0] / (coeffs[0] - coeffs[1])
-        if x <= 0.0 or x >= 1.0:
-            return np.empty(0, dtype=np.float64), 0, False
-        roots = np.empty(1, dtype=np.float64)
-        roots[0] = x
-        return roots, 1, False
-
-    # --- Fast path for degree 2 (quadratic) ---
-    # Convert Bernstein to standard form: a*t^2 + b*t + c = 0.
-    #   a = alpha[0] - 2*alpha[1] + alpha[2]
-    #   b = 2*(alpha[1] - alpha[0])
-    #   c = alpha[0]
-    # Uses numerically stable quadratic formula (cf. algoim bernstein.hpp).
-    if n == 2:  # noqa: PLR2004
-        a = coeffs[0] - 2.0 * coeffs[1] + coeffs[2]
-        b = 2.0 * (coeffs[1] - coeffs[0])
-        c = coeffs[0]
-        delta = b * b - 4.0 * a * c
-        tol_delta = coeff_scale * 1.0e4 * _DBL_EPSILON
-        if abs(delta) < tol_delta:
-            delta = 0.0
-        if delta < 0.0:
-            return np.empty(0, dtype=np.float64), 0, False
-        roots = np.empty(2, dtype=np.float64)
-        count = 0
-        if abs(a) < _DBL_EPSILON * coeff_scale:
-            # Degenerate: linear equation b*t + c = 0.
-            if abs(b) > _DBL_EPSILON * coeff_scale:
-                x = -c / b
-                if 0.0 < x < 1.0:
-                    roots[0] = x
-                    count = 1
-        else:
-            sqrt_delta = np.sqrt(delta)
-            q_val = -0.5 * (b + sqrt_delta) if b >= 0.0 else -0.5 * (b - sqrt_delta)
-            r1 = q_val / a
-            r2 = c / q_val if abs(q_val) > 0.0 else -1.0
-            if 0.0 < r1 < 1.0:
-                roots[count] = r1
-                count += 1
-            if 0.0 < r2 < 1.0 and abs(r2 - r1) > _ROOT_TOL:
-                roots[count] = r2
-                count += 1
-            # Sort if two roots found.
-            if count == 2 and roots[0] > roots[1]:  # noqa: PLR2004
-                roots[0], roots[1] = roots[1], roots[0]
-        return roots, count, False
-
-    tol = _ROOT_TOL
-
-    if n < _CLIP_MIN_DEGREE:
-        roots, count = _yuksel_roots(coeffs, tol)
-        return roots, count, False
-
-    # Bezier clipping for degree >= 6. Always preferred over Yuksel at high
-    # degree: clipping scales as O(n log n) per root while Yuksel's derivative
-    # chain construction is O(n^2) and becomes catastrophically slow for the
-    # high-degree polynomials (degree 30-128+) produced by nested
-    # resultant/discriminant computations.
-    raw, n_raw, clip_overflowed = _clip_roots_core(coeffs, tol, tol)
-    unique, n_unique = _dedup_roots(raw, n_raw, coeffs, tol, tol)
-    return unique, n_unique, clip_overflowed
-
-
-@nb_jit(nopython=True, cache=True)
-def find_roots_into(  # noqa: PLR0911, PLR0912
-    coeffs: npt.NDArray[np.float64],
-    roots_buf: npt.NDArray[np.float64],
-) -> tuple[int, bool]:
-    """Find all real roots of a 1D Bernstein polynomial, writing into a pre-allocated buffer.
-
-    Same algorithm as :func:`find_roots` but avoids allocating the roots array.
-    For degree 1 and 2 (the fast paths in the construction hot loop), this
-    eliminates 1-2 heap allocations per call.
-
-    Args:
-        coeffs (npt.NDArray[np.float64]): 1D Bernstein coefficients.
-        roots_buf (npt.NDArray[np.float64]): Pre-allocated buffer for roots
-            (must have length >= degree).
-
-    Returns:
-        tuple[int, bool]: (count, overflowed).
-
-    Note:
-        Inputs are assumed to be correct (no validation performed).
-    """
-    n = len(coeffs) - 1
-    if n <= 0:
-        return 0, False
-
-    d_min = coeffs[0]
-    d_max = coeffs[0]
-    for i in range(1, n + 1):
-        d_min = min(d_min, coeffs[i])
-        d_max = max(d_max, coeffs[i])
-    if d_min > 0.0 or d_max < 0.0:
-        return 0, False
-
-    coeff_scale = max(abs(d_min), abs(d_max))
-    if coeff_scale <= _DBL_EPSILON:
-        return 0, False
-
     if n == 1:
         if coeffs[0] == coeffs[1]:
             return 0, False
@@ -993,6 +888,8 @@ def find_roots_into(  # noqa: PLR0911, PLR0912
         roots_buf[0] = x
         return 1, False
 
+    # --- Fast path for degree 2 (quadratic) ---
+    # Uses numerically stable quadratic formula (cf. algoim bernstein.hpp).
     if n == 2:  # noqa: PLR2004
         a = coeffs[0] - 2.0 * coeffs[1] + coeffs[2]
         b = 2.0 * (coeffs[1] - coeffs[0])
@@ -1025,8 +922,47 @@ def find_roots_into(  # noqa: PLR0911, PLR0912
                 roots_buf[0], roots_buf[1] = roots_buf[1], roots_buf[0]
         return count, False
 
-    # For higher degrees, fall back to the allocating version.
-    roots, count, overflowed = find_roots(coeffs)
-    for i in range(count):
-        roots_buf[i] = roots[i]
-    return count, overflowed
+    tol = _ROOT_TOL
+
+    if n < _CLIP_MIN_DEGREE:
+        roots, count = _yuksel_roots(coeffs, tol)
+        for i in range(count):
+            roots_buf[i] = roots[i]
+        return count, False
+
+    # Bezier clipping for degree >= 6.
+    raw, n_raw, clip_overflowed = _clip_roots_core(coeffs, tol, tol)
+    unique, n_unique = _dedup_roots(raw, n_raw, coeffs, tol, tol)
+    for i in range(n_unique):
+        roots_buf[i] = unique[i]
+    return n_unique, clip_overflowed
+
+
+@nb_jit(nopython=True, cache=True)
+def find_roots(
+    coeffs: npt.NDArray[np.float64],
+) -> tuple[npt.NDArray[np.float64], int, bool]:
+    """Find all real roots of a 1D Bernstein polynomial in (0, 1).
+
+    Thin wrapper around :func:`find_roots_into` that allocates the output
+    buffer.  See :func:`find_roots_into` for algorithm details.
+
+    Args:
+        coeffs (npt.NDArray[np.float64]): 1D Bernstein coefficients of
+            length ``n + 1`` (degree n >= 0).
+
+    Returns:
+        tuple[npt.NDArray[np.float64], int, bool]: (roots_buffer, count,
+            overflowed) where only the first *count* entries are valid
+            roots, sorted in ascending order, and *overflowed* indicates
+            whether the clipping stack was exhausted.
+
+    Note:
+        Inputs are assumed to be correct (no validation performed).
+    """
+    n = len(coeffs) - 1
+    if n <= 0:
+        return np.empty(0, dtype=np.float64), 0, False
+    roots_buf = np.empty(max(n, 2), dtype=np.float64)
+    count, overflowed = find_roots_into(coeffs, roots_buf)
+    return roots_buf, count, overflowed

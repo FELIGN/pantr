@@ -400,6 +400,9 @@ def _det_qr(A: npt.NDArray[np.float64]) -> float:  # noqa: PLR0912
             if b_val == 0.0:
                 c = 1.0
                 s_val = 0.0
+            elif a_val == 0.0:
+                c = 0.0
+                s_val = 1.0 if b_val > 0.0 else -1.0
             elif abs(b_val) > abs(a_val):
                 tmp = a_val / b_val
                 s_val = 1.0 / np.sqrt(1.0 + tmp * tmp)
