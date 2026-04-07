@@ -1336,7 +1336,7 @@ class TestSingularities3D:
         # Möbius: singular. Err depends on mask resolution: ~5e-14 with M=8,
         # ~1.6e-6 with M=4 (coarser mask admits extra spurious partition roots).
         err = self._compute_3d_volume_error(bern, cell_vol, q=7)
-        assert err < 1e-5, f"Mobius volume error: {err:.2e}"  # noqa: PLR2004
+        assert err < 5e-6, f"Mobius volume error: {err:.2e}"  # noqa: PLR2004
 
 
 # ---------------------------------------------------------------------------

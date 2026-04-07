@@ -90,8 +90,8 @@ def score_estimate_2d(
     mask subcell and accumulates ``|d_k phi| / ||grad phi||_1`` per direction k.
     The direction with the highest score is the best elimination axis.
 
-    Pre-computes derivative coefficient arrays once per polynomial to avoid
-    redundant allocation and differentiation inside the subcell loop.
+    Pre-allocates Bernstein basis buffers per polynomial and computes
+    derivative basis values inline to avoid per-subcell allocation overhead.
 
     Args:
         coeffs_list (NumbaList): List of 2D coefficient arrays.
@@ -181,8 +181,10 @@ def score_estimate_3d(  # noqa: PLR0912, PLR0915
 ) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.bool_]]:
     """Estimate scores for each height direction in 3D.
 
-    Pre-computes derivative coefficient arrays once per polynomial to avoid
-    redundant allocation and differentiation inside the subcell loop.
+    Samples the gradient at a deterministic subset of active mask subcell
+    midpoints (stride-based subsampling, ~22 of 64 cells at M=4) and
+    accumulates ``|d_k phi| / ||grad phi||_1`` per direction k. Pre-allocates
+    Bernstein basis buffers and computes derivative basis values inline.
 
     Args:
         coeffs_list (NumbaList): List of 3D coefficient arrays.
@@ -225,7 +227,7 @@ def score_estimate_3d(  # noqa: PLR0912, PLR0915
         total_cells = M * M * M
         raw_stride = max(total_cells // _MAX_SCORE_SAMPLES_3D, 1)
         # Round up to the next odd value to avoid powers-of-two alignment;
-        # for M=4 this gives stride 3 (prime), sampling ~21 of 64 cells.
+        # for M=4 this gives stride 3 (prime), sampling 22 of 64 cells.
         skip_stride = raw_stride + 1 if raw_stride % 2 == 0 and raw_stride > 1 else raw_stride
         cell_idx = 0
 

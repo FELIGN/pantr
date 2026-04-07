@@ -7,13 +7,16 @@ infrastructure.
 
 Dispatch heuristic:
 
-- Degree < 6: Yuksel (lower overhead for small polynomials).
+- Degree 1: direct linear formula.
+- Degree 2: numerically stable quadratic formula.
+- Degree 3-5: Yuksel (lower overhead for small polynomials).
 - Degree >= 6: Bezier clipping (superlinear convergence, better scaling for
   high-degree polynomials).
 
 Main exports:
 
 - :func:`find_roots` -- find all real roots of a 1D Bernstein polynomial in [0, 1].
+- :func:`find_roots_into` -- core implementation writing into a pre-allocated buffer.
 
 Note:
     Inputs are assumed to be correct (no validation performed).
@@ -840,10 +843,12 @@ def find_roots_into(  # noqa: PLR0911, PLR0912, PLR0915
 ) -> tuple[int, bool]:
     """Find all real roots of a 1D Bernstein polynomial, writing into *roots_buf*.
 
-    Core implementation shared by :func:`find_roots`.  Dispatches between
-    Yuksel and Bezier clipping based on degree:
+    Core implementation shared by :func:`find_roots`.  Dispatches based on
+    degree:
 
-    - Degree < 6: Yuksel (lower overhead).
+    - Degree 1: direct linear formula.
+    - Degree 2: numerically stable quadratic formula.
+    - Degree 3-5: Yuksel (lower overhead).
     - Degree >= 6: Bezier clipping (superlinear convergence).
 
     Args:

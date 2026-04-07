@@ -460,7 +460,7 @@ def _derivative_along_axis_1d(
     return deriv
 
 
-@nb_jit(nopython=True, cache=True, fastmath=True)
+@nb_jit(nopython=True, cache=True)
 def _derivative_along_axis_2d(
     coeffs: npt.NDArray[np.float64],
     k: int,
@@ -502,7 +502,7 @@ def _derivative_along_axis_2d(
         return deriv
 
 
-@nb_jit(nopython=True, cache=True, fastmath=True)
+@nb_jit(nopython=True, cache=True)
 def _derivative_along_axis_3d(  # noqa: PLR0912
     coeffs: npt.NDArray[np.float64],
     k: int,

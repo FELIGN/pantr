@@ -39,6 +39,7 @@ from pantr.bezier.implicit._build import (
     build_3d_forced_k,
 )
 from pantr.bezier.implicit._construct import (
+    _MERGE_TOL,
     _collect_and_partition_1d,
     surface_quad_2d,
     surface_quad_2d_aggregate,
@@ -151,6 +152,12 @@ class QuadStrategy(IntEnum):
     """Tanh-sinh on outer integrals with branching points, GL on inner."""
 
 
+_OVERFLOW_WARNING: str = (
+    "Bezier clipping stack overflow detected during root finding. "
+    "Some roots may have been missed, leading to inaccurate quadrature."
+)
+"""Shared warning message for overflow detection in quadrature methods."""
+
 _EIGVALS_DEGREE_THRESHOLD: int = 20
 """Use companion-matrix eigenvalues for root finding above this degree.
 
@@ -160,15 +167,13 @@ often ill-conditioned, with coefficients spanning many orders of magnitude.
 The companion-matrix eigenvalue method (via ``np.linalg.eigvals``) is both
 faster and more numerically robust than Bezier clipping for these cases.
 
-The threshold must stay above the highest degree produced by single-level
-discriminants (~10-16 for degree-4 input), since the Bernstein-to-monomial
-conversion used by eigvals loses accuracy at moderate degree.  Setting it
-to 20 ensures only the truly high-degree nested-resultant polynomials
-(degree 32-128+) use this path.
+The threshold must stay above the highest degree produced by the
+discriminant of a single polynomial (~10-16 for degree-4 input, as
+opposed to nested resultants of multiple polynomials), since the
+Bernstein-to-monomial conversion used by eigvals loses accuracy at
+moderate degree.  Setting it to 20 ensures only the truly high-degree
+nested-resultant polynomials (degree 32-128+) use this path.
 """
-
-_MERGE_TOL: float = 10.0 * 2.2204460492503131e-16
-"""Tolerance for merging nearby roots with interval boundaries."""
 
 _NEAR_ZERO: float = 1e-300
 """Guard against division by zero in monomial leading coefficient."""
@@ -193,6 +198,7 @@ def _bernstein_to_monomial_matrix(n: int) -> npt.NDArray[np.float64]:
     for j in range(n + 1):
         for i in range(j, n + 1):
             mat[j, i] = (-1) ** (i - j) * comb(n, i) * comb(i, j)
+    mat.flags.writeable = False
     return mat
 
 
@@ -211,32 +217,36 @@ def _bernstein_to_monomial(bern: npt.NDArray[np.float64]) -> npt.NDArray[np.floa
 def _find_roots_eigvals(
     bern_coeffs: npt.NDArray[np.float64],
     tol: float = 1e-10,
-) -> npt.NDArray[np.float64]:
+) -> tuple[npt.NDArray[np.float64], bool]:
     """Find real roots in [0,1] via companion matrix eigenvalues.
 
-    Falls back to Bezier clipping if the Bernstein-to-monomial conversion
-    overflows or the leading coefficient is near-zero.
+    Falls back to :func:`find_roots` (Bezier clipping / Yuksel) if the
+    Bernstein-to-monomial conversion overflows or produces non-finite
+    coefficients, the leading monomial coefficient is near-zero, or the
+    eigenvalue solver fails.
 
     Args:
         bern_coeffs: Bernstein coefficients.
         tol: Tolerance for imaginary-part filtering.
 
     Returns:
-        Sorted array of real roots in [0, 1].
+        tuple[npt.NDArray[np.float64], bool]: ``(roots, overflowed)`` —
+            sorted array of real roots in [0, 1] and whether the Bezier
+            clipping stack overflowed in any fallback call.
     """
     deg = len(bern_coeffs) - 1
     if deg <= 0:
-        return np.empty(0, dtype=np.float64)
+        return np.empty(0, dtype=np.float64), False
 
     try:
         mono = _bernstein_to_monomial(bern_coeffs)
     except (OverflowError, FloatingPointError):
-        roots, n_roots, _overflow = find_roots(bern_coeffs)
-        return np.array(roots[:n_roots], dtype=np.float64)
+        roots, n_roots, overflow = find_roots(bern_coeffs)
+        return np.array(roots[:n_roots], dtype=np.float64), overflow
 
     if not np.all(np.isfinite(mono)) or abs(mono[-1]) < _NEAR_ZERO:
-        roots, n_roots, _overflow = find_roots(bern_coeffs)
-        return np.array(roots[:n_roots], dtype=np.float64)
+        roots, n_roots, overflow = find_roots(bern_coeffs)
+        return np.array(roots[:n_roots], dtype=np.float64), overflow
 
     mono_monic = mono / mono[-1]
 
@@ -249,13 +259,30 @@ def _find_roots_eigvals(
     try:
         ev = np.linalg.eigvals(companion)
     except np.linalg.LinAlgError:
-        roots, n_roots, _overflow = find_roots(bern_coeffs)
-        return np.array(roots[:n_roots], dtype=np.float64)
+        roots, n_roots, overflow = find_roots(bern_coeffs)
+        return np.array(roots[:n_roots], dtype=np.float64), overflow
 
     real_mask = np.abs(ev.imag) < tol
     real_roots = ev[real_mask].real
     in_unit = real_roots[(real_roots >= -tol) & (real_roots <= 1 + tol)]
-    return np.sort(np.clip(in_unit, 0.0, 1.0))
+    candidates = np.sort(np.clip(in_unit, 0.0, 1.0))
+
+    # Residual check: reject roots where the polynomial value is too large
+    # relative to the coefficient scale, guarding against garbage eigvals
+    # from ill-conditioned companion matrices.
+    coeff_scale = np.max(np.abs(bern_coeffs))
+    residual_tol = 1e-6 * coeff_scale
+    verified: list[float] = []
+    for r in candidates:
+        # De Casteljau evaluation at r.
+        tmp = bern_coeffs.copy()
+        for k in range(deg):
+            for j in range(deg - k):
+                tmp[j] = tmp[j] * (1.0 - r) + tmp[j + 1] * r
+        if abs(tmp[0]) <= residual_tol:
+            verified.append(float(r))
+
+    return np.array(verified, dtype=np.float64), False
 
 
 def _precompute_base_partition(  # noqa: PLR0912
@@ -270,7 +297,8 @@ def _precompute_base_partition(  # noqa: PLR0912
     roots or ill-conditioned coefficients.
 
     For low-degree polynomials, delegates to the Numba-jitted
-    ``_collect_and_partition_1d`` which uses Bezier clipping.
+    ``_collect_and_partition_1d`` which uses ``find_roots`` (Yuksel for
+    degree < 6, Bezier clipping otherwise).
 
     Args:
         coeffs_1d: Typed list of 1D Bernstein coefficient arrays.
@@ -295,12 +323,14 @@ def _precompute_base_partition(  # noqa: PLR0912
     # First, collect eigval roots for high-degree polynomials (Python).
     eigval_roots: list[float] = []
     low_degree_indices: list[int] = []
+    any_overflow = False
 
     for i in range(len(coeffs_1d)):
         deg = len(coeffs_1d[i]) - 1
         if deg > _EIGVALS_DEGREE_THRESHOLD:
             c = np.asarray(coeffs_1d[i])
-            roots = _find_roots_eigvals(c)
+            roots, ovf = _find_roots_eigvals(c)
+            any_overflow |= ovf
             m = masks_1d[i]
             for root in roots:
                 if _point_within_1d(m, float(root)):
@@ -309,7 +339,6 @@ def _precompute_base_partition(  # noqa: PLR0912
             low_degree_indices.append(i)
 
     # Get the base partition from low-degree polynomials via Numba.
-    any_overflow = False
     if low_degree_indices:
         low_coeffs = NumbaList()
         low_masks = NumbaList()
@@ -328,12 +357,13 @@ def _precompute_base_partition(  # noqa: PLR0912
 
     all_nodes: list[float] = list(base_bounds[:base_nb])
     all_nodes.extend(eigval_roots)
-    bounds = np.array(sorted(set(all_nodes)), dtype=np.float64)
+    all_sorted = np.sort(np.array(all_nodes, dtype=np.float64))
 
-    merged = [bounds[0]]
-    for b in bounds[1:]:
-        if b - merged[-1] > _MERGE_TOL:
-            merged.append(b)
+    # Single-pass tolerance merge (avoids set() on floats).
+    merged = [all_sorted[0]]
+    for v in all_sorted[1:]:
+        if v - merged[-1] > _MERGE_TOL:
+            merged.append(v)
     result = np.array(merged, dtype=np.float64)
     return result, len(result), any_overflow
 
@@ -509,11 +539,7 @@ class ImplicitPolyQuadrature:
             )
 
         if overflow or self._base_overflow:
-            warnings.warn(
-                "Bezier clipping stack overflow detected during root finding. "
-                "Some roots may have been missed, leading to inaccurate quadrature.",
-                stacklevel=2,
-            )
+            warnings.warn(_OVERFLOW_WARNING, RuntimeWarning, stacklevel=2)
         return pts, wts
 
     def surface_quad(
@@ -592,11 +618,7 @@ class ImplicitPolyQuadrature:
             )
 
         if overflow or self._base_overflow:
-            warnings.warn(
-                "Bezier clipping stack overflow detected during root finding. "
-                "Some roots may have been missed, leading to inaccurate quadrature.",
-                stacklevel=2,
-            )
+            warnings.warn(_OVERFLOW_WARNING, RuntimeWarning, stacklevel=2)
         return pts, sw, nw
 
     def _surface_quad_aggregate(  # noqa: PLR0913
@@ -680,11 +702,7 @@ class ImplicitPolyQuadrature:
                     all_nw_list.append(nw)
 
         if any_overflow or self._base_overflow:
-            warnings.warn(
-                "Bezier clipping stack overflow detected during root finding. "
-                "Some roots may have been missed, leading to inaccurate quadrature.",
-                stacklevel=2,
-            )
+            warnings.warn(_OVERFLOW_WARNING, RuntimeWarning, stacklevel=3)
 
         if not all_pts_list:
             return (

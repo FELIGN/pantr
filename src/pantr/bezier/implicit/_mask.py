@@ -12,6 +12,7 @@ Main exports:
 
 - :func:`compute_nonzero_mask_1d` / ``_2d`` / ``_3d`` -- build nonzero masks.
 - :func:`compute_intersection_mask_2d` / ``_3d`` -- build intersection masks.
+- :func:`has_intersection_2d` / ``_3d`` -- early-exit intersection checks.
 - :func:`_mask_is_empty_1d` / ``_2d`` / ``_3d`` -- test if mask is empty.
 - :func:`_collapse_mask_2d` / ``_3d`` -- OR-reduce along one axis.
 - :func:`_face_restrict_mask_2d` / ``_3d`` -- extract boundary face mask.
@@ -36,13 +37,15 @@ M: int = 4
 
 The paper (Saye, JCP 2022, Section 3.3) notes that M = 4 or 8 works well.
 A smaller M reduces mask computation cost (O(M^d)) at the expense of more
-false-positive subcells, which slightly increases downstream work but does
-not affect correctness.  M = 4 gives the best build-phase throughput for
-typical 3D problems.
+false-positive subcells, which increases downstream work but does not affect
+correctness.  M = 4 gives the best build-phase throughput for typical 3D
+problems.  For singular or near-singular geometry (e.g. self-intersecting
+surfaces), M = 4 may reduce accuracy by several orders of magnitude compared
+to M = 8 due to coarser root-of-interest filtering.
 """
 
 _MASK_EPS: float = 1.0 / (64.0 * M)
-"""Overlap epsilon for subcell restriction (about 1% of subcell width)."""
+"""Overlap epsilon for subcell restriction (~1.5% of subcell width at M=4)."""
 
 
 @nb_jit(nopython=True, cache=True)

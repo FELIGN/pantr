@@ -200,7 +200,7 @@ def _bezout_matrix(
 
 
 # ---------------------------------------------------------------------------
-# Section C: SVD-based Bernstein interpolation
+# Section C: Bernstein interpolation (GEPP with SVD fallback)
 # ---------------------------------------------------------------------------
 
 
@@ -333,11 +333,13 @@ def _bernstein_interpolate_1d(
 def _det_qr(A: npt.NDArray[np.float64]) -> float:  # noqa: PLR0912
     """Compute the determinant of a square matrix via Givens QR with column pivoting.
 
-    Implements the same algorithm as algoim's ``det_qr`` (Saye, JCP 2022,
-    supplementary ``quadrature_multipoly.hpp``). At each step, the column
-    with largest Euclidean norm is pivoted into position, then Givens
-    rotations eliminate the sub-diagonal entries. The determinant is the
-    product of the R diagonal, with sign flips for each column swap.
+    For 1x1, 2x2, and 3x3 matrices, returns the determinant directly via
+    closed-form expressions.  For larger matrices, implements the same
+    algorithm as algoim's ``det_qr`` (Saye, JCP 2022, supplementary
+    ``quadrature_multipoly.hpp``).  At each step, the column with largest
+    Euclidean norm (tracked incrementally) is pivoted into position, then
+    Givens rotations eliminate the sub-diagonal entries.  The determinant is
+    the product of the R diagonal, with sign flips for each column swap.
 
     This is more numerically stable than LU-based ``np.linalg.det`` for
     the Sylvester/Bezout matrices arising in resultant computations.
