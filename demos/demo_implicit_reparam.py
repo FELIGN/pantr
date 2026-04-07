@@ -90,37 +90,22 @@ def demo_2d_two_circles() -> None:
     c2 = _circle_bernstein(0.65, 0.5, 0.25)
     iq = ImplicitQuadrature(c1, c2)
 
-    # Region inside c1 but outside c2
+    # Region inside c1 but outside c2 (crescent)
     diff = iq.volume_reparam(q=10, signs=[-1, +1])
-    # Surface of c1 restricted to outside c2
-    surf_c1 = iq.surface_reparam(q=15, poly_idx=0, signs=[0, +1])
-    # Surface of c2 restricted to inside c1 (the "cut")
-    surf_c2 = iq.surface_reparam(q=15, poly_idx=1, signs=[-1, 0])
+    # Full boundary of the crescent domain
+    boundary = iq.surface_reparam(q=15, poly_idx=0, signs=[-1, +1])
 
     print(f"  c1 \\ c2: {diff.n_cells} quads")
-    print(f"  boundary c1 outside c2: {surf_c1.n_cells} curves")
-    print(f"  boundary c2 inside c1: {surf_c2.n_cells} curves")
+    print(f"  boundary: {boundary.n_cells} curves")
 
     pl = pv.Plotter()
-    pl.add_mesh(
-        implicit_to_pyvista(diff),
-        color="steelblue",
-        opacity=0.5,
-        label="c1 \\ c2",
-    )
-    if surf_c1.n_cells > 0:
+    pl.add_mesh(implicit_to_pyvista(diff), color="steelblue", opacity=0.5, label="c1 \\ c2")
+    if boundary.n_cells > 0:
         pl.add_mesh(
-            implicit_to_pyvista(surf_c1),
+            implicit_to_pyvista(boundary),
             color="red",
             line_width=4,
-            label="bdry c1",
-        )
-    if surf_c2.n_cells > 0:
-        pl.add_mesh(
-            implicit_to_pyvista(surf_c2),
-            color="orange",
-            line_width=4,
-            label="cut (c2)",
+            label="boundary",
         )
     pl.add_legend()
     pl.view_xy()
@@ -199,14 +184,11 @@ def demo_3d_two_spheres() -> None:
 
     # Intersection: inside both
     inter = iq.volume_reparam(q=5, signs=[-1, -1])
-    # Surface of s1 inside s2
-    surf_s1 = iq.surface_reparam(q=10, poly_idx=0, signs=[0, -1])
-    # Surface of s2 inside s1
-    surf_s2 = iq.surface_reparam(q=10, poly_idx=1, signs=[-1, 0])
+    # Full boundary of the intersection domain (both caps)
+    boundary = iq.surface_reparam(q=10, poly_idx=0, signs=[-1, -1])
 
     print(f"  Intersection volume: {inter.n_cells} hexes")
-    print(f"  Surface s1 (inside s2): {surf_s1.n_cells} quads")
-    print(f"  Surface s2 (inside s1): {surf_s2.n_cells} quads")
+    print(f"  Boundary: {boundary.n_cells} quads")
 
     pl = pv.Plotter()
     if inter.n_cells > 0:
@@ -217,19 +199,12 @@ def demo_3d_two_spheres() -> None:
             show_edges=True,
             label="Intersection vol",
         )
-    if surf_s1.n_cells > 0:
+    if boundary.n_cells > 0:
         pl.add_mesh(
-            implicit_to_pyvista(surf_s1),
-            color="steelblue",
-            opacity=0.7,
-            label="s1 cap",
-        )
-    if surf_s2.n_cells > 0:
-        pl.add_mesh(
-            implicit_to_pyvista(surf_s2),
+            implicit_to_pyvista(boundary),
             color="tomato",
             opacity=0.7,
-            label="s2 cap",
+            label="Boundary",
         )
     pl.add_legend()
     pl.add_title("Two spheres: intersection")
