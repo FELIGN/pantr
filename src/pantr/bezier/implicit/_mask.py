@@ -31,8 +31,15 @@ from numpy import typing as npt
 from pantr._numba_compat import nb_jit
 from pantr.bezier.implicit._roots import _restrict_scalar
 
-M: int = 8
-"""Mask grid resolution per axis."""
+M: int = 4
+"""Mask grid resolution per axis.
+
+The paper (Saye, JCP 2022, Section 3.3) notes that M = 4 or 8 works well.
+A smaller M reduces mask computation cost (O(M^d)) at the expense of more
+false-positive subcells, which slightly increases downstream work but does
+not affect correctness.  M = 4 gives the best build-phase throughput for
+typical 3D problems.
+"""
 
 _MASK_EPS: float = 1.0 / (64.0 * M)
 """Overlap epsilon for subcell restriction (about 1% of subcell width)."""

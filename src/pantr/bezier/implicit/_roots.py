@@ -49,9 +49,6 @@ is reported via the returned boolean flag so callers can warn the user.
 _CLIP_MIN_DEGREE: int = 6
 """Minimum polynomial degree for Bezier clipping dispatch."""
 
-_CLIP_COEFF_RANGE_LIMIT: float = 1e8
-"""Maximum coefficient dynamic range for Bezier clipping dispatch."""
-
 _ROOT_TOL: float = 1e-15
 """Default parametric tolerance for root finding."""
 
@@ -939,23 +936,14 @@ def find_roots(  # noqa: PLR0911, PLR0912, PLR0915
         roots, count = _yuksel_roots(coeffs, tol)
         return roots, count, False
 
-    # Check coefficient dynamic range for clipping dispatch.
-    # Use relative threshold so mixed-scale polynomials are handled correctly.
-    threshold = coeff_scale * _DBL_EPSILON
-    c_min_nonzero = coeff_scale
-    for i in range(n + 1):
-        a = abs(coeffs[i])
-        if a > threshold and a < c_min_nonzero:
-            c_min_nonzero = a
-    coeff_range = coeff_scale / c_min_nonzero
-
-    if coeff_range <= _CLIP_COEFF_RANGE_LIMIT:
-        raw, n_raw, clip_overflowed = _clip_roots_core(coeffs, tol, tol)
-        unique, n_unique = _dedup_roots(raw, n_raw, coeffs, tol, tol)
-        return unique, n_unique, clip_overflowed
-
-    roots, count = _yuksel_roots(coeffs, tol)
-    return roots, count, False
+    # Bezier clipping for degree >= 6. Always preferred over Yuksel at high
+    # degree: clipping scales as O(n log n) per root while Yuksel's derivative
+    # chain construction is O(n^2) and becomes catastrophically slow for the
+    # high-degree polynomials (degree 30-128+) produced by nested
+    # resultant/discriminant computations.
+    raw, n_raw, clip_overflowed = _clip_roots_core(coeffs, tol, tol)
+    unique, n_unique = _dedup_roots(raw, n_raw, coeffs, tol, tol)
+    return unique, n_unique, clip_overflowed
 
 
 @nb_jit(nopython=True, cache=True)

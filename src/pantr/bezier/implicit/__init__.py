@@ -144,7 +144,20 @@ class QuadStrategy(IntEnum):
 
 
 _EIGVALS_DEGREE_THRESHOLD: int = 20
-"""Use companion-matrix eigenvalues for root finding above this degree."""
+"""Use companion-matrix eigenvalues for root finding above this degree.
+
+Resultant and discriminant computations produce high-degree 1D polynomials
+at the base level (degree 32-128+ for 3D inputs).  These polynomials are
+often ill-conditioned, with coefficients spanning many orders of magnitude.
+The companion-matrix eigenvalue method (via ``np.linalg.eigvals``) is both
+faster and more numerically robust than Bezier clipping for these cases.
+
+The threshold must stay above the highest degree produced by single-level
+discriminants (~10-16 for degree-4 input), since the Bernstein-to-monomial
+conversion used by eigvals loses accuracy at moderate degree.  Setting it
+to 20 ensures only the truly high-degree nested-resultant polynomials
+(degree 32-128+) use this path.
+"""
 
 _MERGE_TOL: float = 10.0 * 2.2204460492503131e-16
 """Tolerance for merging nearby roots with interval boundaries."""

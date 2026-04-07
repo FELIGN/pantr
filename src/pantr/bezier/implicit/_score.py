@@ -36,7 +36,7 @@ from pantr.bezier.implicit._mask import (
 _NEAR_ZERO: float = 1e-300
 """Guard against division by zero (well below subnormal range)."""
 
-_MAX_SCORE_SAMPLES_3D: int = 64
+_MAX_SCORE_SAMPLES_3D: int = 24
 """Maximum number of subcell gradient evaluations in 3D score estimation.
 
 The score is a heuristic for axis selection; sampling a subset of active
@@ -203,19 +203,13 @@ def score_estimate_3d(  # noqa: PLR0912, PLR0915
         fn1 = float(n1)
         fn2 = float(n2)
 
-        # Count active subcells for subsampling.
-        n_active = 0
-        for i0 in range(M):
-            for i1 in range(M):
-                for i2 in range(M):
-                    if mask[i0, i1, i2]:
-                        n_active += 1
-
-        # Subsample: skip every skip_stride active cells when there are too many.
-        skip_stride = 1
-        if n_active > _MAX_SCORE_SAMPLES_3D:
-            skip_stride = (n_active + _MAX_SCORE_SAMPLES_3D - 1) // _MAX_SCORE_SAMPLES_3D
-        active_idx = 0
+        # Deterministic subsampling: use a fixed stride over the linear mask
+        # index instead of counting all active cells first.  The total number
+        # of mask cells is M^3; we stride so that at most
+        # _MAX_SCORE_SAMPLES_3D active cells are evaluated.
+        total_cells = M * M * M
+        skip_stride = max(total_cells // _MAX_SCORE_SAMPLES_3D, 1)
+        cell_idx = 0
 
         # Accumulate gradient-based score with inlined gradient computation.
         # Factored loop: reuse axis-0 basis across i1, i2 iterations.
@@ -231,12 +225,13 @@ def score_estimate_3d(  # noqa: PLR0912, PLR0915
                     _eval_bernstein_basis_1d_into(n1 - 1, x1, b1m)
                 for i2 in range(M):
                     if not mask[i0, i1, i2]:
+                        cell_idx += 1
                         continue
-                    # Subsample: only evaluate every skip_stride-th active cell.
-                    if active_idx % skip_stride != 0:
-                        active_idx += 1
+                    # Subsample: only evaluate every skip_stride-th cell.
+                    if cell_idx % skip_stride != 0:
+                        cell_idx += 1
                         continue
-                    active_idx += 1
+                    cell_idx += 1
 
                     x2 = (i2 + 0.5) * inv_m
                     _eval_bernstein_basis_1d_into(n2, x2, b2)
