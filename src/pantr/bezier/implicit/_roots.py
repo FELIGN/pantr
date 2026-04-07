@@ -5,15 +5,18 @@ from ``pantr.bezier`` as standalone Numba nopython functions, so the implicit
 quadrature module has no runtime dependency on the rest of pantr's root-finding
 infrastructure.
 
-Dispatch heuristic (same as ``pantr.bezier._batch_core._dispatch_and_find``):
+Dispatch heuristic:
 
-- Degree < 6: Yuksel (lower overhead for small polynomials).
-- Degree >= 6 with coefficient range <= 1e8: Bezier clipping (superlinear).
-- Otherwise: Yuksel.
+- Degree 1: direct linear formula.
+- Degree 2: numerically stable quadratic formula.
+- Degree 3-5: Yuksel (lower overhead for small polynomials).
+- Degree >= 6: Bezier clipping (superlinear convergence, better scaling for
+  high-degree polynomials).
 
 Main exports:
 
 - :func:`find_roots` -- find all real roots of a 1D Bernstein polynomial in [0, 1].
+- :func:`find_roots_into` -- core implementation writing into a pre-allocated buffer.
 
 Note:
     Inputs are assumed to be correct (no validation performed).
@@ -48,9 +51,6 @@ is reported via the returned boolean flag so callers can warn the user.
 
 _CLIP_MIN_DEGREE: int = 6
 """Minimum polynomial degree for Bezier clipping dispatch."""
-
-_CLIP_COEFF_RANGE_LIMIT: float = 1e8
-"""Maximum coefficient dynamic range for Bezier clipping dispatch."""
 
 _ROOT_TOL: float = 1e-15
 """Default parametric tolerance for root finding."""
@@ -837,17 +837,120 @@ def _dedup_roots(
 
 
 @nb_jit(nopython=True, cache=True)
+def find_roots_into(  # noqa: PLR0911, PLR0912, PLR0915
+    coeffs: npt.NDArray[np.float64],
+    roots_buf: npt.NDArray[np.float64],
+) -> tuple[int, bool]:
+    """Find all real roots of a 1D Bernstein polynomial, writing into *roots_buf*.
+
+    Core implementation shared by :func:`find_roots`.  Dispatches based on
+    degree:
+
+    - Degree 1: direct linear formula.
+    - Degree 2: numerically stable quadratic formula.
+    - Degree 3-5: Yuksel (lower overhead).
+    - Degree >= 6: Bezier clipping (superlinear convergence).
+
+    Args:
+        coeffs (npt.NDArray[np.float64]): 1D Bernstein coefficients of
+            length ``n + 1`` (degree n >= 0).
+        roots_buf (npt.NDArray[np.float64]): Pre-allocated buffer for roots
+            (must have length >= degree).
+
+    Returns:
+        tuple[int, bool]: (count, overflowed) where *count* is the number
+            of valid roots written to *roots_buf* and *overflowed* indicates
+            whether the clipping stack was exhausted.
+
+    Note:
+        Inputs are assumed to be correct (no validation performed).
+    """
+    n = len(coeffs) - 1
+    if n <= 0:
+        return 0, False
+
+    # Quick rejection: uniform sign.
+    d_min = coeffs[0]
+    d_max = coeffs[0]
+    for i in range(1, n + 1):
+        d_min = min(d_min, coeffs[i])
+        d_max = max(d_max, coeffs[i])
+    if d_min > 0.0 or d_max < 0.0:
+        return 0, False
+
+    # All-zero check.
+    coeff_scale = max(abs(d_min), abs(d_max))
+    if coeff_scale <= _DBL_EPSILON:
+        return 0, False
+
+    # --- Fast path for degree 1 (linear) ---
+    if n == 1:
+        if coeffs[0] == coeffs[1]:
+            return 0, False
+        x = coeffs[0] / (coeffs[0] - coeffs[1])
+        if x <= 0.0 or x >= 1.0:
+            return 0, False
+        roots_buf[0] = x
+        return 1, False
+
+    # --- Fast path for degree 2 (quadratic) ---
+    # Uses numerically stable quadratic formula (cf. algoim bernstein.hpp).
+    if n == 2:  # noqa: PLR2004
+        a = coeffs[0] - 2.0 * coeffs[1] + coeffs[2]
+        b = 2.0 * (coeffs[1] - coeffs[0])
+        c = coeffs[0]
+        delta = b * b - 4.0 * a * c
+        tol_delta = coeff_scale * 1.0e4 * _DBL_EPSILON
+        if abs(delta) < tol_delta:
+            delta = 0.0
+        if delta < 0.0:
+            return 0, False
+        count = 0
+        if abs(a) < _DBL_EPSILON * coeff_scale:
+            if abs(b) > _DBL_EPSILON * coeff_scale:
+                x = -c / b
+                if 0.0 < x < 1.0:
+                    roots_buf[0] = x
+                    count = 1
+        else:
+            sqrt_delta = np.sqrt(delta)
+            q_val = -0.5 * (b + sqrt_delta) if b >= 0.0 else -0.5 * (b - sqrt_delta)
+            r1 = q_val / a
+            r2 = c / q_val if abs(q_val) > 0.0 else -1.0
+            if 0.0 < r1 < 1.0:
+                roots_buf[count] = r1
+                count += 1
+            if 0.0 < r2 < 1.0 and abs(r2 - r1) > _ROOT_TOL:
+                roots_buf[count] = r2
+                count += 1
+            if count == 2 and roots_buf[0] > roots_buf[1]:  # noqa: PLR2004
+                roots_buf[0], roots_buf[1] = roots_buf[1], roots_buf[0]
+        return count, False
+
+    tol = _ROOT_TOL
+
+    if n < _CLIP_MIN_DEGREE:
+        roots, count = _yuksel_roots(coeffs, tol)
+        for i in range(count):
+            roots_buf[i] = roots[i]
+        return count, False
+
+    # Bezier clipping for degree >= 6.
+    raw, n_raw, clip_overflowed = _clip_roots_core(coeffs, tol, tol)
+    unique, n_unique = _dedup_roots(raw, n_raw, coeffs, tol, tol)
+    for i in range(n_unique):
+        roots_buf[i] = unique[i]
+    return n_unique, clip_overflowed
+
+
+@nb_jit(nopython=True, cache=True)
 def find_roots(
     coeffs: npt.NDArray[np.float64],
 ) -> tuple[npt.NDArray[np.float64], int, bool]:
     """Find all real roots of a 1D Bernstein polynomial in (0, 1).
 
-    Dispatches between Yuksel and Bezier clipping based on degree and
-    coefficient conditioning:
-
-    - Degree < 6: Yuksel (lower overhead).
-    - Degree >= 6 with coefficient range <= 1e8: Bezier clipping.
-    - Otherwise: Yuksel.
+    Thin wrapper around :func:`find_roots_into` that allocates the output
+    buffer.  See :func:`find_roots_into` for algorithm details.
 
     Args:
         coeffs (npt.NDArray[np.float64]): 1D Bernstein coefficients of
@@ -865,41 +968,6 @@ def find_roots(
     n = len(coeffs) - 1
     if n <= 0:
         return np.empty(0, dtype=np.float64), 0, False
-
-    # Quick rejection: uniform sign.
-    d_min = coeffs[0]
-    d_max = coeffs[0]
-    for i in range(1, n + 1):
-        d_min = min(d_min, coeffs[i])
-        d_max = max(d_max, coeffs[i])
-    if d_min > 0.0 or d_max < 0.0:
-        return np.empty(0, dtype=np.float64), 0, False
-
-    # All-zero check.
-    coeff_scale = max(abs(d_min), abs(d_max))
-    if coeff_scale <= _DBL_EPSILON:
-        return np.empty(0, dtype=np.float64), 0, False
-
-    tol = _ROOT_TOL
-
-    if n < _CLIP_MIN_DEGREE:
-        roots, count = _yuksel_roots(coeffs, tol)
-        return roots, count, False
-
-    # Check coefficient dynamic range for clipping dispatch.
-    # Use relative threshold so mixed-scale polynomials are handled correctly.
-    threshold = coeff_scale * _DBL_EPSILON
-    c_min_nonzero = coeff_scale
-    for i in range(n + 1):
-        a = abs(coeffs[i])
-        if a > threshold and a < c_min_nonzero:
-            c_min_nonzero = a
-    coeff_range = coeff_scale / c_min_nonzero
-
-    if coeff_range <= _CLIP_COEFF_RANGE_LIMIT:
-        raw, n_raw, clip_overflowed = _clip_roots_core(coeffs, tol, tol)
-        unique, n_unique = _dedup_roots(raw, n_raw, coeffs, tol, tol)
-        return unique, n_unique, clip_overflowed
-
-    roots, count = _yuksel_roots(coeffs, tol)
-    return roots, count, False
+    roots_buf = np.empty(max(n, 2), dtype=np.float64)
+    count, overflowed = find_roots_into(coeffs, roots_buf)
+    return roots_buf, count, overflowed

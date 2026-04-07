@@ -90,12 +90,60 @@ def _eval_bernstein_basis_1d(
     return basis
 
 
+@nb_jit(nopython=True, cache=True)
+def _eval_bernstein_basis_1d_into(
+    degree: int,
+    x: float,
+    out: npt.NDArray[np.float64],
+) -> None:
+    """Evaluate all 1D Bernstein basis functions into a pre-allocated buffer.
+
+    Same algorithm as :func:`_eval_bernstein_basis_1d` but writes into *out*
+    instead of allocating, eliminating heap allocation in hot loops.
+
+    Args:
+        degree (int): Polynomial degree (>= 0).
+        x (float): Parameter value in [0, 1].
+        out (npt.NDArray[np.float64]): Pre-allocated buffer of length >= degree + 1.
+
+    Note:
+        Inputs are assumed to be correct (no validation performed).
+    """
+    n = degree
+
+    if n == 0:
+        out[0] = 1.0
+        return
+
+    if x == 0.0:
+        for i in range(n + 1):
+            out[i] = 0.0
+        out[0] = 1.0
+        return
+    if x == 1.0:
+        for i in range(n + 1):
+            out[i] = 0.0
+        out[n] = 1.0
+        return
+
+    s = 1.0 - x
+    if s < _NEAR_ZERO:
+        for i in range(n + 1):
+            out[i] = 0.0
+        out[n] = 1.0
+        return
+    out[0] = s**n
+    ratio = x / s
+    for i in range(1, n + 1):
+        out[i] = out[i - 1] * (float(n - i + 1) / float(i)) * ratio
+
+
 # ---------------------------------------------------------------------------
 # Section B: Collapse (evaluate tangential directions, keep height direction)
 # ---------------------------------------------------------------------------
 
 
-@nb_jit(nopython=True, cache=True)
+@nb_jit(nopython=True, cache=True, fastmath=True)
 def _collapse_2d(
     coeffs: npt.NDArray[np.float64],
     k: int,
@@ -143,7 +191,7 @@ def _collapse_2d(
         return out
 
 
-@nb_jit(nopython=True, cache=True)
+@nb_jit(nopython=True, cache=True, fastmath=True)
 def _collapse_3d(
     coeffs: npt.NDArray[np.float64],
     k: int,
@@ -212,6 +260,102 @@ def _collapse_3d(
                     s += coeffs[i0, i1, i2] * b0 * basis1[i1]
             out[i2] = s
         return out
+
+
+@nb_jit(nopython=True, cache=True, fastmath=True)
+def _collapse_2d_into(
+    coeffs: npt.NDArray[np.float64],
+    k: int,
+    x_tang: float,
+    basis_buf: npt.NDArray[np.float64],
+    out: npt.NDArray[np.float64],
+) -> None:
+    """Collapse a 2D TP Bernstein polynomial to 1D, writing into pre-allocated buffers.
+
+    Args:
+        coeffs (npt.NDArray[np.float64]): 2D coefficient array.
+        k (int): Height direction (0 or 1) to keep.
+        x_tang (float): Parameter value for the tangential direction.
+        basis_buf (npt.NDArray[np.float64]): Pre-allocated buffer for basis values.
+        out (npt.NDArray[np.float64]): Pre-allocated output buffer of length >= nk+1.
+
+    Note:
+        Inputs are assumed to be correct (no validation performed).
+    """
+    n0, n1 = coeffs.shape[0] - 1, coeffs.shape[1] - 1
+
+    if k == 0:
+        _eval_bernstein_basis_1d_into(n1, x_tang, basis_buf)
+        for i0 in range(n0 + 1):
+            s = 0.0
+            for i1 in range(n1 + 1):
+                s += coeffs[i0, i1] * basis_buf[i1]
+            out[i0] = s
+    else:
+        _eval_bernstein_basis_1d_into(n0, x_tang, basis_buf)
+        for i1 in range(n1 + 1):
+            s = 0.0
+            for i0 in range(n0 + 1):
+                s += coeffs[i0, i1] * basis_buf[i0]
+            out[i1] = s
+
+
+@nb_jit(nopython=True, cache=True, fastmath=True)
+def _collapse_3d_into(  # noqa: PLR0913
+    coeffs: npt.NDArray[np.float64],
+    k: int,
+    x_tang: npt.NDArray[np.float64],
+    basis_buf0: npt.NDArray[np.float64],
+    basis_buf1: npt.NDArray[np.float64],
+    out: npt.NDArray[np.float64],
+) -> None:
+    """Collapse a 3D TP Bernstein polynomial to 1D, writing into pre-allocated buffers.
+
+    Args:
+        coeffs (npt.NDArray[np.float64]): 3D coefficient array.
+        k (int): Height direction (0, 1, or 2) to keep.
+        x_tang (npt.NDArray[np.float64]): Tangential parameter values, shape ``(2,)``.
+        basis_buf0 (npt.NDArray[np.float64]): Pre-allocated buffer for first tangential basis.
+        basis_buf1 (npt.NDArray[np.float64]): Pre-allocated buffer for second tangential basis.
+        out (npt.NDArray[np.float64]): Pre-allocated output buffer.
+
+    Note:
+        Inputs are assumed to be correct (no validation performed).
+    """
+    n0 = coeffs.shape[0] - 1
+    n1 = coeffs.shape[1] - 1
+    n2 = coeffs.shape[2] - 1
+
+    if k == 0:
+        _eval_bernstein_basis_1d_into(n1, x_tang[0], basis_buf0)
+        _eval_bernstein_basis_1d_into(n2, x_tang[1], basis_buf1)
+        for i0 in range(n0 + 1):
+            s = 0.0
+            for i1 in range(n1 + 1):
+                b1 = basis_buf0[i1]
+                for i2 in range(n2 + 1):
+                    s += coeffs[i0, i1, i2] * b1 * basis_buf1[i2]
+            out[i0] = s
+    elif k == 1:
+        _eval_bernstein_basis_1d_into(n0, x_tang[0], basis_buf0)
+        _eval_bernstein_basis_1d_into(n2, x_tang[1], basis_buf1)
+        for i1 in range(n1 + 1):
+            s = 0.0
+            for i0 in range(n0 + 1):
+                b0 = basis_buf0[i0]
+                for i2 in range(n2 + 1):
+                    s += coeffs[i0, i1, i2] * b0 * basis_buf1[i2]
+            out[i1] = s
+    else:
+        _eval_bernstein_basis_1d_into(n0, x_tang[0], basis_buf0)
+        _eval_bernstein_basis_1d_into(n1, x_tang[1], basis_buf1)
+        for i2 in range(n2 + 1):
+            s = 0.0
+            for i0 in range(n0 + 1):
+                b0 = basis_buf0[i0]
+                for i1 in range(n1 + 1):
+                    s += coeffs[i0, i1, i2] * b0 * basis_buf1[i1]
+            out[i2] = s
 
 
 # ---------------------------------------------------------------------------
@@ -576,7 +720,7 @@ def _elevated_derivative_along_axis_3d(  # noqa: PLR0912
 # ---------------------------------------------------------------------------
 
 
-@nb_jit(nopython=True, cache=True)
+@nb_jit(nopython=True, cache=True, fastmath=True)
 def _eval_bernstein_2d(
     coeffs: npt.NDArray[np.float64],
     x: npt.NDArray[np.float64],
@@ -605,7 +749,7 @@ def _eval_bernstein_2d(
     return result
 
 
-@nb_jit(nopython=True, cache=True)
+@nb_jit(nopython=True, cache=True, fastmath=True)
 def _eval_bernstein_3d(
     coeffs: npt.NDArray[np.float64],
     x: npt.NDArray[np.float64],

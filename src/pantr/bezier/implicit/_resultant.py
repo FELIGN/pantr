@@ -43,6 +43,15 @@ _AUTO_REDUCE_TOL: float = 1e4 * 2.2204460492503131e-16
 Matches algoim's ``1e4 * eps`` used in ``resultant_core``.
 """
 
+_NEAR_ZERO: float = 1e-300
+"""Guard against division by zero (well below subnormal range)."""
+
+_LU_RESIDUAL_TOL: float = 1e-10
+"""Relative residual threshold for accepting the LU/GEPP solve result."""
+
+_GEPP_SINGULAR_TOL: float = 1e-12
+"""Pivot threshold for Gaussian elimination; below this, matrix is singular."""
+
 
 # ---------------------------------------------------------------------------
 # Section A: Chebyshev interpolation nodes
@@ -191,8 +200,60 @@ def _bezout_matrix(
 
 
 # ---------------------------------------------------------------------------
-# Section C: SVD-based Bernstein interpolation
+# Section C: Bernstein interpolation (GEPP with SVD fallback)
 # ---------------------------------------------------------------------------
+
+
+@nb_jit(nopython=True, cache=True)
+def _solve_gepp(
+    A: npt.NDArray[np.float64],
+    b: npt.NDArray[np.float64],
+    x: npt.NDArray[np.float64],
+) -> bool:
+    """Solve A x = b via Gaussian elimination with partial pivoting.
+
+    Args:
+        A (npt.NDArray[np.float64]): Square matrix (overwritten).
+        b (npt.NDArray[np.float64]): Right-hand side (overwritten).
+        x (npt.NDArray[np.float64]): Solution vector (output).
+
+    Returns:
+        bool: True if solve succeeded, False if singular.
+
+    Note:
+        Inputs are assumed to be correct (no validation performed).
+    """
+    n = A.shape[0]
+    for col in range(n):
+        # Partial pivoting.
+        best = abs(A[col, col])
+        best_row = col
+        for row in range(col + 1, n):
+            v = abs(A[row, col])
+            if v > best:
+                best = v
+                best_row = row
+        if best < _GEPP_SINGULAR_TOL:
+            return False
+        if best_row != col:
+            for j in range(n):
+                A[col, j], A[best_row, j] = A[best_row, j], A[col, j]
+            b[col], b[best_row] = b[best_row], b[col]
+        # Eliminate.
+        inv_pivot = 1.0 / A[col, col]
+        for row in range(col + 1, n):
+            factor = A[row, col] * inv_pivot
+            A[row, col] = 0.0
+            for j in range(col + 1, n):
+                A[row, j] -= factor * A[col, j]
+            b[row] -= factor * b[col]
+    # Back substitution.
+    for i in range(n - 1, -1, -1):
+        s = b[i]
+        for j in range(i + 1, n):
+            s -= A[i, j] * x[j]
+        x[i] = s / A[i, i]
+    return True
 
 
 @nb_jit(nopython=True, cache=True)
@@ -201,10 +262,12 @@ def _bernstein_interpolate_1d(
     nodes: npt.NDArray[np.float64],
     degree: int,
 ) -> npt.NDArray[np.float64]:
-    """Recover Bernstein coefficients from nodal values via SVD.
+    """Recover Bernstein coefficients from nodal values.
 
     Builds a Vandermonde-like matrix of Bernstein basis evaluations at the
-    given nodes, then solves the interpolation system using truncated SVD.
+    given nodes, then solves the square interpolation system via Gaussian
+    elimination with partial pivoting.  Falls back to truncated SVD when
+    the matrix is singular or the relative residual is too large.
 
     Args:
         values (npt.NDArray[np.float64]): Function values at nodes, shape ``(n,)``.
@@ -227,13 +290,29 @@ def _bernstein_interpolate_1d(
         for j in range(n_coeffs):
             V[i, j] = basis[j]
 
-    # SVD solve with truncation.
+    # Fast path: direct solve for square systems.
+    if n_pts == n_coeffs:
+        A = V.copy()
+        rhs = values.copy()
+        coeffs = np.empty(n_coeffs, dtype=np.float64)
+        if _solve_gepp(A, rhs, coeffs):
+            # Cheap residual check: ||V @ coeffs - values||_inf / ||values||_inf.
+            val_norm = 0.0
+            res_norm = 0.0
+            for i in range(n_pts):
+                row_sum = 0.0
+                for j in range(n_coeffs):
+                    row_sum += V[i, j] * coeffs[j]
+                res_norm = max(res_norm, abs(row_sum - values[i]))
+                val_norm = max(val_norm, abs(values[i]))
+
+            if val_norm < _NEAR_ZERO or res_norm <= _LU_RESIDUAL_TOL * val_norm:
+                return coeffs
+        # else: fall through to SVD
+
+    # SVD solve with truncation (fallback for ill-conditioned or non-square).
     U, s, Vt = np.linalg.svd(V, False)
-
-    # Determine truncation threshold.
     tol = s[0] * max(n_pts, n_coeffs) * 2.2204460492503131e-16 * _SVD_TOL_FACTOR
-
-    # Compute coefficients: c = V^+ @ values.
     coeffs = np.zeros(n_coeffs, dtype=np.float64)
     for k in range(len(s)):
         if s[k] > tol:
@@ -242,7 +321,6 @@ def _bernstein_interpolate_1d(
                 proj += U[i, k] * values[i]
             for j in range(n_coeffs):
                 coeffs[j] += (proj / s[k]) * Vt[k, j]
-
     return coeffs
 
 
@@ -252,14 +330,16 @@ def _bernstein_interpolate_1d(
 
 
 @nb_jit(nopython=True, cache=True)
-def _det_qr(A: npt.NDArray[np.float64]) -> float:
+def _det_qr(A: npt.NDArray[np.float64]) -> float:  # noqa: PLR0912
     """Compute the determinant of a square matrix via Givens QR with column pivoting.
 
-    Implements the same algorithm as algoim's ``det_qr`` (Saye, JCP 2022,
-    supplementary ``quadrature_multipoly.hpp``). At each step, the column
-    with largest Euclidean norm is pivoted into position, then Givens
-    rotations eliminate the sub-diagonal entries. The determinant is the
-    product of the R diagonal, with sign flips for each column swap.
+    For 1x1, 2x2, and 3x3 matrices, returns the determinant directly via
+    closed-form expressions.  For larger matrices, implements the same
+    algorithm as algoim's ``det_qr`` (Saye, JCP 2022, supplementary
+    ``quadrature_multipoly.hpp``).  At each step, the column with largest
+    Euclidean norm (tracked incrementally) is pivoted into position, then
+    Givens rotations eliminate the sub-diagonal entries.  The determinant is
+    the product of the R diagonal, with sign flips for each column swap.
 
     This is more numerically stable than LU-based ``np.linalg.det`` for
     the Sylvester/Bezout matrices arising in resultant computations.
@@ -275,24 +355,43 @@ def _det_qr(A: npt.NDArray[np.float64]) -> float:
         Inputs are assumed to be correct (no validation performed).
     """
     n = A.shape[0]
+
+    # Fast paths for small matrices (common for degree-1 and degree-2 polynomials).
+    if n == 1:
+        return float(A[0, 0])
+    if n == 2:  # noqa: PLR2004
+        return float(A[0, 0] * A[1, 1] - A[0, 1] * A[1, 0])
+    if n == 3:  # noqa: PLR2004
+        return float(
+            A[0, 0] * (A[1, 1] * A[2, 2] - A[1, 2] * A[2, 1])
+            - A[0, 1] * (A[1, 0] * A[2, 2] - A[1, 2] * A[2, 0])
+            + A[0, 2] * (A[1, 0] * A[2, 1] - A[1, 1] * A[2, 0])
+        )
+
     det = 1.0
 
+    # Pre-compute column norms squared (updated incrementally).
+    col_norms_sq = np.empty(n, dtype=np.float64)
+    for col in range(n):
+        s = 0.0
+        for row in range(n):
+            s += A[row, col] * A[row, col]
+        col_norms_sq[col] = s
+
     for j in range(n):
-        # Column pivoting: find column k >= j with largest 2-norm.
-        best_norm = -1.0
+        # Column pivoting: find column k >= j with largest norm (using cached norms).
+        best_norm = col_norms_sq[j]
         best_k = j
-        for col in range(j, n):
-            col_norm = 0.0
-            for row in range(n):
-                col_norm += A[row, col] * A[row, col]
-            if col_norm > best_norm:
-                best_norm = col_norm
+        for col in range(j + 1, n):
+            if col_norms_sq[col] > best_norm:
+                best_norm = col_norms_sq[col]
                 best_k = col
 
         # Swap columns j and best_k.
         if best_k != j:
             for row in range(n):
                 A[row, j], A[row, best_k] = A[row, best_k], A[row, j]
+            col_norms_sq[j], col_norms_sq[best_k] = col_norms_sq[best_k], col_norms_sq[j]
             det = -det
 
         # Givens rotations to zero out sub-diagonal in column j.
@@ -302,23 +401,31 @@ def _det_qr(A: npt.NDArray[np.float64]) -> float:
             # Compute Givens rotation coefficients.
             if b_val == 0.0:
                 c = 1.0
-                s = 0.0
+                s_val = 0.0
+            elif a_val == 0.0:
+                c = 0.0
+                s_val = 1.0 if b_val > 0.0 else -1.0
             elif abs(b_val) > abs(a_val):
                 tmp = a_val / b_val
-                s = 1.0 / np.sqrt(1.0 + tmp * tmp)
-                c = tmp * s
+                s_val = 1.0 / np.sqrt(1.0 + tmp * tmp)
+                c = tmp * s_val
             else:
                 tmp = b_val / a_val
                 c = 1.0 / np.sqrt(1.0 + tmp * tmp)
-                s = tmp * c
+                s_val = tmp * c
             # Apply rotation to rows i-1 and i, columns j..n-1.
             for col in range(j, n):
                 x = A[i - 1, col]
                 y = A[i, col]
-                A[i - 1, col] = c * x + s * y
-                A[i, col] = -s * x + c * y
+                A[i - 1, col] = c * x + s_val * y
+                A[i, col] = -s_val * x + c * y
 
         det *= A[j, j]
+
+        # Update column norms: subtract the eliminated row's contribution.
+        for col in range(j + 1, n):
+            col_norms_sq[col] -= A[j, col] * A[j, col]
+            col_norms_sq[col] = max(col_norms_sq[col], 0.0)
 
     return det
 

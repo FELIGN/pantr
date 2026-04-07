@@ -22,8 +22,10 @@ Main exports:
 
 from __future__ import annotations
 
+import functools
+import warnings
 from enum import IntEnum
-from typing import TYPE_CHECKING, Any, TypeAlias
+from typing import TYPE_CHECKING, Any, TypeAlias, cast
 
 import numpy as np
 from numba.typed import List as NumbaList
@@ -37,6 +39,8 @@ from pantr.bezier.implicit._build import (
     build_3d_forced_k,
 )
 from pantr.bezier.implicit._construct import (
+    _MERGE_TOL,
+    _collect_and_partition_1d,
     surface_quad_2d,
     surface_quad_2d_aggregate,
     surface_quad_3d,
@@ -49,12 +53,75 @@ from pantr.bezier.implicit._convert import (
     monomial_to_bernstein_3d,
 )
 from pantr.bezier.implicit._mask import (
+    _point_within_1d,
     compute_nonzero_mask_2d,
     compute_nonzero_mask_3d,
 )
+from pantr.bezier.implicit._roots import find_roots
+
+# Numba-jitted helpers to compute masks in a single Numba call, avoiding
+# per-polynomial Python→Numba transitions.
+if not TYPE_CHECKING:
+    from pantr._numba_compat import nb_jit as _nb_jit
+
+    @_nb_jit(nopython=True, cache=True)
+    def _compute_masks_2d(coeffs_list: NumbaList) -> NumbaList:
+        """Compute nonzero masks for all 2D polynomials in a single Numba call.
+
+        Args:
+            coeffs_list: Typed list of 2D coefficient arrays.
+
+        Returns:
+            Typed list of 2D boolean mask arrays.
+
+        Note:
+            Inputs are assumed to be correct (no validation performed).
+        """
+        masks = NumbaList()
+        # Force-type the list for the empty case.
+        _dm = np.empty((1, 1), dtype=np.bool_)
+        masks.append(_dm)
+        masks.pop()
+        for i in range(len(coeffs_list)):
+            masks.append(compute_nonzero_mask_2d(coeffs_list[i]))
+        return masks
+
+    @_nb_jit(nopython=True, cache=True)
+    def _compute_masks_3d(coeffs_list: NumbaList) -> NumbaList:
+        """Compute nonzero masks for all 3D polynomials in a single Numba call.
+
+        Args:
+            coeffs_list: Typed list of 3D coefficient arrays.
+
+        Returns:
+            Typed list of 3D boolean mask arrays.
+
+        Note:
+            Inputs are assumed to be correct (no validation performed).
+        """
+        masks = NumbaList()
+        _dm = np.empty((1, 1, 1), dtype=np.bool_)
+        masks.append(_dm)
+        masks.pop()
+        for i in range(len(coeffs_list)):
+            masks.append(compute_nonzero_mask_3d(coeffs_list[i]))
+        return masks
+
 
 if TYPE_CHECKING:
     from pantr.bezier._bezier import Bezier
+
+    def _compute_masks_2d(coeffs_list: NumbaList) -> NumbaList: ...
+
+    def _compute_masks_3d(coeffs_list: NumbaList) -> NumbaList: ...
+
+
+def _is_bezier(obj: object) -> bool:
+    """Check if *obj* is a :class:`~pantr.bezier.Bezier` instance (lazy import)."""
+    from pantr.bezier._bezier import Bezier as _Bezier  # noqa: PLC0415
+
+    return isinstance(obj, _Bezier)
+
 
 VolQuadResult: TypeAlias = tuple[npt.NDArray[np.float64], npt.NDArray[np.float64]]
 """Volume quadrature result: ``(points, weights)``."""
@@ -83,6 +150,222 @@ class QuadStrategy(IntEnum):
     """Tanh-sinh on all intervals."""
     AUTO_MIXED = 2
     """Tanh-sinh on outer integrals with branching points, GL on inner."""
+
+
+_OVERFLOW_WARNING: str = (
+    "Bezier clipping stack overflow detected during root finding. "
+    "Some roots may have been missed, leading to inaccurate quadrature."
+)
+"""Shared warning message for overflow detection in quadrature methods."""
+
+_EIGVALS_DEGREE_THRESHOLD: int = 20
+"""Use companion-matrix eigenvalues for root finding above this degree.
+
+Resultant and discriminant computations produce high-degree 1D polynomials
+at the base level (degree 32-128+ for 3D inputs).  These polynomials are
+often ill-conditioned, with coefficients spanning many orders of magnitude.
+The companion-matrix eigenvalue method (via ``np.linalg.eigvals``) is both
+faster and more numerically robust than Bezier clipping for these cases.
+
+The threshold must stay above the highest degree produced by the
+discriminant of a single polynomial (~10-16 for degree-4 input, as
+opposed to nested resultants of multiple polynomials), since the
+Bernstein-to-monomial conversion used by eigvals loses accuracy at
+moderate degree.  Setting it to 20 ensures only the truly high-degree
+nested-resultant polynomials (degree 32-128+) use this path.
+"""
+
+_NEAR_ZERO: float = 1e-300
+"""Guard against division by zero in monomial leading coefficient."""
+
+
+@functools.lru_cache(maxsize=32)
+def _bernstein_to_monomial_matrix(n: int) -> npt.NDArray[np.float64]:
+    """Build the (n+1)x(n+1) Bernstein-to-monomial conversion matrix.
+
+    Cached by degree to avoid redundant O(n^2) construction when multiple
+    polynomials share the same degree.
+
+    Args:
+        n: Polynomial degree.
+
+    Returns:
+        Conversion matrix of shape ``(n+1, n+1)``.
+    """
+    from math import comb  # noqa: PLC0415
+
+    mat = np.zeros((n + 1, n + 1))
+    for j in range(n + 1):
+        for i in range(j, n + 1):
+            mat[j, i] = (-1) ** (i - j) * comb(n, i) * comb(i, j)
+    mat.flags.writeable = False
+    return mat
+
+
+def _bernstein_to_monomial(bern: npt.NDArray[np.float64]) -> npt.NDArray[np.float64]:
+    """Convert Bernstein coefficients to monomial (power) basis.
+
+    Args:
+        bern: Bernstein coefficient array of shape ``(n+1,)``.
+
+    Returns:
+        Monomial coefficient array of shape ``(n+1,)``.
+    """
+    return _bernstein_to_monomial_matrix(len(bern) - 1) @ bern
+
+
+def _find_roots_eigvals(
+    bern_coeffs: npt.NDArray[np.float64],
+    tol: float = 1e-10,
+) -> tuple[npt.NDArray[np.float64], bool]:
+    """Find real roots in [0,1] via companion matrix eigenvalues.
+
+    Falls back to :func:`find_roots` (Bezier clipping / Yuksel) if the
+    Bernstein-to-monomial conversion overflows or produces non-finite
+    coefficients, the leading monomial coefficient is near-zero, or the
+    eigenvalue solver fails.
+
+    Args:
+        bern_coeffs: Bernstein coefficients.
+        tol: Tolerance for imaginary-part filtering.
+
+    Returns:
+        tuple[npt.NDArray[np.float64], bool]: ``(roots, overflowed)`` —
+            sorted array of real roots in [0, 1] and whether the Bezier
+            clipping stack overflowed in any fallback call.
+    """
+    deg = len(bern_coeffs) - 1
+    if deg <= 0:
+        return np.empty(0, dtype=np.float64), False
+
+    try:
+        mono = _bernstein_to_monomial(bern_coeffs)
+    except (OverflowError, FloatingPointError):
+        roots, n_roots, overflow = find_roots(bern_coeffs)
+        return np.array(roots[:n_roots], dtype=np.float64), overflow
+
+    if not np.all(np.isfinite(mono)) or abs(mono[-1]) < _NEAR_ZERO:
+        roots, n_roots, overflow = find_roots(bern_coeffs)
+        return np.array(roots[:n_roots], dtype=np.float64), overflow
+
+    mono_monic = mono / mono[-1]
+
+    n = deg
+    companion = np.zeros((n, n))
+    if n > 1:
+        companion[1:, :-1] = np.eye(n - 1)
+    companion[:, -1] = -mono_monic[:-1]
+
+    try:
+        ev = np.linalg.eigvals(companion)
+    except np.linalg.LinAlgError:
+        roots, n_roots, overflow = find_roots(bern_coeffs)
+        return np.array(roots[:n_roots], dtype=np.float64), overflow
+
+    real_mask = np.abs(ev.imag) < tol
+    real_roots = ev[real_mask].real
+    in_unit = real_roots[(real_roots >= -tol) & (real_roots <= 1 + tol)]
+    candidates = np.sort(np.clip(in_unit, 0.0, 1.0))
+
+    # Residual check: reject roots where the polynomial value is too large
+    # relative to the coefficient scale, guarding against garbage eigvals
+    # from ill-conditioned companion matrices.
+    coeff_scale = np.max(np.abs(bern_coeffs))
+    residual_tol = 1e-6 * coeff_scale
+    verified: list[float] = []
+    for r in candidates:
+        # De Casteljau evaluation at r.
+        tmp = bern_coeffs.copy()
+        for k in range(deg):
+            for j in range(deg - k):
+                tmp[j] = tmp[j] * (1.0 - r) + tmp[j + 1] * r
+        if abs(tmp[0]) <= residual_tol:
+            verified.append(float(r))
+
+    return np.array(verified, dtype=np.float64), False
+
+
+def _precompute_base_partition(  # noqa: PLR0912
+    coeffs_1d: NumbaList,
+    masks_1d: NumbaList,
+) -> tuple[npt.NDArray[np.float64], int, bool]:
+    """Pre-compute the 1D base-level partition using eigvals for high-degree polys.
+
+    For polynomials with degree > ``_EIGVALS_DEGREE_THRESHOLD``, uses the
+    companion-matrix eigenvalue method (via ``np.linalg.eigvals``) which is
+    much faster than Bezier clipping for high-degree polynomials with many
+    roots or ill-conditioned coefficients.
+
+    For low-degree polynomials, delegates to the Numba-jitted
+    ``_collect_and_partition_1d`` which uses ``find_roots`` (Yuksel for
+    degree < 6, Bezier clipping otherwise).
+
+    Args:
+        coeffs_1d: Typed list of 1D Bernstein coefficient arrays.
+        masks_1d: Typed list of 1D boolean mask arrays.
+
+    Returns:
+        tuple: ``(bounds, n_bounds, any_overflow)`` — sorted partition
+        boundaries including 0 and 1, the count, and a boolean indicating
+        whether the Bezier clipping stack overflowed during any root-finding
+        call.
+    """
+    if len(coeffs_1d) == 0:
+        bounds = np.array([0.0, 1.0], dtype=np.float64)
+        return bounds, 2, False
+
+    max_degree = max(len(coeffs_1d[i]) - 1 for i in range(len(coeffs_1d)))
+
+    if max_degree <= _EIGVALS_DEGREE_THRESHOLD:
+        return _collect_and_partition_1d(coeffs_1d, masks_1d)
+
+    # Mixed path: use eigvals for high-degree polynomials, Numba for the rest.
+    # First, collect eigval roots for high-degree polynomials (Python).
+    eigval_roots: list[float] = []
+    low_degree_indices: list[int] = []
+    any_overflow = False
+
+    for i in range(len(coeffs_1d)):
+        deg = len(coeffs_1d[i]) - 1
+        if deg > _EIGVALS_DEGREE_THRESHOLD:
+            c = np.asarray(coeffs_1d[i])
+            roots, ovf = _find_roots_eigvals(c)
+            any_overflow |= ovf
+            m = masks_1d[i]
+            for root in roots:
+                if _point_within_1d(m, float(root)):
+                    eigval_roots.append(float(root))
+        else:
+            low_degree_indices.append(i)
+
+    # Get the base partition from low-degree polynomials via Numba.
+    if low_degree_indices:
+        low_coeffs = NumbaList()
+        low_masks = NumbaList()
+        for idx in low_degree_indices:
+            low_coeffs.append(coeffs_1d[idx])
+            low_masks.append(masks_1d[idx])
+        base_bounds, base_nb, overflow = _collect_and_partition_1d(low_coeffs, low_masks)
+        any_overflow |= overflow
+    else:
+        base_bounds = np.array([0.0, 1.0], dtype=np.float64)
+        base_nb = 2
+
+    # Merge eigval roots into the base partition.
+    if not eigval_roots:
+        return base_bounds, base_nb, any_overflow
+
+    all_nodes: list[float] = list(base_bounds[:base_nb])
+    all_nodes.extend(eigval_roots)
+    all_sorted = np.sort(np.array(all_nodes, dtype=np.float64))
+
+    # Single-pass tolerance merge (avoids set() on floats).
+    merged = [all_sorted[0]]
+    for v in all_sorted[1:]:
+        if v - merged[-1] > _MERGE_TOL:
+            merged.append(v)
+    result = np.array(merged, dtype=np.float64)
+    return result, len(result), any_overflow
 
 
 class ImplicitPolyQuadrature:
@@ -120,7 +403,7 @@ class ImplicitPolyQuadrature:
         for p in polynomials:
             if isinstance(p, np.ndarray):
                 coeffs_arrays.append(np.asarray(p, dtype=np.float64))
-            elif hasattr(p, "control_points"):
+            elif _is_bezier(p):
                 # Bezier object: extract scalar control points.
                 cp = np.asarray(p.control_points, dtype=np.float64)
                 if cp.ndim > p.dim:
@@ -162,16 +445,24 @@ class ImplicitPolyQuadrature:
             self._coeffs_list.append(ca)
 
         # Compute masks and build hierarchy.
+        # Use batched Numba helpers to avoid per-polynomial Python→Numba overhead.
         if self._dim == 2:  # noqa: PLR2004
-            self._masks_list = NumbaList()
-            for ca in coeffs_arrays:
-                self._masks_list.append(compute_nonzero_mask_2d(ca))
+            self._masks_list = _compute_masks_2d(self._coeffs_list)
             self._build_result: tuple[Any, ...] = build_2d(self._coeffs_list, self._masks_list)
         else:
-            self._masks_list = NumbaList()
-            for ca in coeffs_arrays:
-                self._masks_list.append(compute_nonzero_mask_3d(ca))
+            self._masks_list = _compute_masks_3d(self._coeffs_list)
             self._build_result = build_3d(self._coeffs_list, self._masks_list)
+
+        # Pre-compute base-level partition (1D roots) using eigvals for
+        # high-degree polynomials produced by the resultant chain.
+        coeffs_1d = self._build_result[0]
+        masks_1d = self._build_result[1]
+        self._base_bounds, self._base_nb, self._base_overflow = _precompute_base_partition(
+            coeffs_1d, masks_1d
+        )
+
+        # Pre-unpack build result args (avoids tuple unpacking on every quad call).
+        self._build_args = self._build_result[2:]
 
     @property
     def dim(self) -> int:
@@ -198,8 +489,12 @@ class ImplicitPolyQuadrature:
     ) -> VolQuadResult:
         """Generate volume quadrature points and weights.
 
-        The quadrature integrates over the full domain [0,1]^d. To compute
-        an integral over {phi < 0}, filter the points by the sign of phi.
+        The quadrature is adapted to the implicit geometry: the interval
+        partition ensures each sub-interval is smooth with respect to the
+        defining polynomials.  Points span the full domain ``[0,1]^d``, so
+        to compute an integral restricted to ``{phi < 0}`` the caller
+        should evaluate an appropriate indicator or weight function at the
+        returned points.
 
         Args:
             q (int): Number of 1D quadrature points per sub-interval.
@@ -208,9 +503,9 @@ class ImplicitPolyQuadrature:
 
         Returns:
             VolQuadResult: ``(points, weights)`` with shapes
-                ``(n_pts, dim)`` and ``(n_pts,)``. When integrated against
-                the constant function 1, the weights recover the volume
-                of ``[0, 1]^d``.
+                ``(n_pts, dim)`` and ``(n_pts,)``.  When integrated against
+                the constant function 1 the weights sum to the volume of
+                ``[0, 1]^d``.
 
         Raises:
             ValueError: If ``q < 1``.
@@ -221,13 +516,31 @@ class ImplicitPolyQuadrature:
         strat = int(strategy)
 
         if self._dim == 2:  # noqa: PLR2004
-            return volume_quad_2d(  # type: ignore[call-arg]
-                *self._build_result, gl_nodes, gl_weights, ts_nodes, ts_weights, strat
+            pts, wts, overflow = volume_quad_2d(  # type: ignore[call-arg]
+                self._base_bounds,
+                self._base_nb,
+                *self._build_args,
+                gl_nodes,
+                gl_weights,
+                ts_nodes,
+                ts_weights,
+                strat,
             )
         else:
-            return volume_quad_3d(  # type: ignore[call-arg]
-                *self._build_result, gl_nodes, gl_weights, ts_nodes, ts_weights, strat
+            pts, wts, overflow = volume_quad_3d(  # type: ignore[call-arg]
+                self._base_bounds,
+                self._base_nb,
+                *self._build_args,
+                gl_nodes,
+                gl_weights,
+                ts_nodes,
+                ts_weights,
+                strat,
             )
+
+        if overflow or self._base_overflow:
+            warnings.warn(_OVERFLOW_WARNING, RuntimeWarning, stacklevel=2)
+        return pts, wts
 
     def surface_quad(
         self,
@@ -237,9 +550,11 @@ class ImplicitPolyQuadrature:
     ) -> SurfQuadResult:
         """Generate surface quadrature points and weights.
 
-        Computes quadrature over the zero level set {phi = 0} in flux form.
-        The scalar weights integrate |f| and the normal weights integrate
-        f * n where n is the outward normal.
+        Computes quadrature over the zero level set ``{phi = 0}`` in flux
+        form.  The scalar weights, when summed, approximate the surface
+        area.  The normal weights encode the flux form: summing them
+        approximates ``integral_S n dS`` where *n* is the outward unit
+        normal scaled by the surface measure.
 
         When *aggregate* is True, the algorithm runs for each possible height
         direction and sums the flux-form contributions. This is more robust
@@ -276,8 +591,10 @@ class ImplicitPolyQuadrature:
             )
 
         if self._dim == 2:  # noqa: PLR2004
-            return surface_quad_2d(  # type: ignore[call-arg]
-                *self._build_result,
+            pts, sw, nw, overflow = surface_quad_2d(  # type: ignore[call-arg]
+                self._base_bounds,
+                self._base_nb,
+                *self._build_args,
                 self._n_polys,
                 self._coeffs_list,
                 gl_nodes,
@@ -287,8 +604,10 @@ class ImplicitPolyQuadrature:
                 strat,
             )
         else:
-            return surface_quad_3d(  # type: ignore[call-arg]
-                *self._build_result,
+            pts, sw, nw, overflow = surface_quad_3d(  # type: ignore[call-arg]
+                self._base_bounds,
+                self._base_nb,
+                *self._build_args,
                 self._n_polys,
                 self._coeffs_list,
                 gl_nodes,
@@ -297,6 +616,10 @@ class ImplicitPolyQuadrature:
                 ts_weights,
                 strat,
             )
+
+        if overflow or self._base_overflow:
+            warnings.warn(_OVERFLOW_WARNING, RuntimeWarning, stacklevel=2)
+        return pts, sw, nw
 
     def _surface_quad_aggregate(  # noqa: PLR0913
         self,
@@ -327,14 +650,19 @@ class ImplicitPolyQuadrature:
         all_pts_list: list[npt.NDArray[np.float64]] = []
         all_sw_list: list[npt.NDArray[np.float64]] = []
         all_nw_list: list[npt.NDArray[np.float64]] = []
+        any_overflow = False
 
         if self._dim == 2:  # noqa: PLR2004
             for k in range(2):
                 r_raw = build_2d_forced_k(self._coeffs_list, self._masks_list, k)
                 # Aggregate mode always uses TS for robustness with vertical tangents.
                 r = _force_ts_flags(r_raw, 2)
-                pts, sw, nw = surface_quad_2d_aggregate(  # type: ignore[call-arg]
-                    *r,
+                bb, bn, base_ovf = _precompute_base_partition(r[0], r[1])
+                any_overflow |= base_ovf
+                pts, sw, nw, ovf = surface_quad_2d_aggregate(  # type: ignore[call-arg]
+                    bb,
+                    bn,
+                    *r[2:],
                     self._n_polys,
                     self._coeffs_list,
                     gl_nodes,
@@ -343,6 +671,7 @@ class ImplicitPolyQuadrature:
                     ts_weights,
                     strat,
                 )
+                any_overflow |= ovf
                 if len(sw) > 0:
                     all_pts_list.append(pts)
                     all_sw_list.append(sw)
@@ -352,8 +681,12 @@ class ImplicitPolyQuadrature:
                 r_raw_3d = build_3d_forced_k(self._coeffs_list, self._masks_list, k)
                 # Aggregate mode always uses TS for robustness with vertical tangents.
                 r_3d = _force_ts_flags(r_raw_3d, 3)
-                pts, sw, nw = surface_quad_3d_aggregate(  # type: ignore[call-arg]
-                    *r_3d,
+                bb, bn, base_ovf = _precompute_base_partition(r_3d[0], r_3d[1])
+                any_overflow |= base_ovf
+                pts, sw, nw, ovf = surface_quad_3d_aggregate(  # type: ignore[call-arg]
+                    bb,
+                    bn,
+                    *r_3d[2:],
                     self._n_polys,
                     self._coeffs_list,
                     gl_nodes,
@@ -362,10 +695,14 @@ class ImplicitPolyQuadrature:
                     ts_weights,
                     strat,
                 )
+                any_overflow |= ovf
                 if len(sw) > 0:
                     all_pts_list.append(pts)
                     all_sw_list.append(sw)
                     all_nw_list.append(nw)
+
+        if any_overflow or self._base_overflow:
+            warnings.warn(_OVERFLOW_WARNING, RuntimeWarning, stacklevel=3)
 
         if not all_pts_list:
             return (
@@ -457,8 +794,12 @@ def _force_ts_flags(build_result: tuple[Any, ...], dim: int) -> tuple[Any, ...]:
 # ---------------------------------------------------------------------------
 
 
+@functools.lru_cache(maxsize=32)
 def _gauss_legendre_01(q: int) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64]]:
     """Compute Gauss-Legendre nodes and weights on [0, 1].
+
+    Results are cached across calls for the same *q*.  The returned arrays
+    are read-only to prevent accidental mutation of the cached data.
 
     Args:
         q (int): Number of quadrature points.
@@ -469,11 +810,19 @@ def _gauss_legendre_01(q: int) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.
     from numpy.polynomial.legendre import leggauss  # noqa: PLC0415
 
     pts, wts = leggauss(q)  # type: ignore[no-untyped-call]
-    return np.ascontiguousarray(0.5 * (pts + 1.0)), np.ascontiguousarray(0.5 * wts)
+    nodes = np.ascontiguousarray(0.5 * (pts + 1.0))
+    weights = np.ascontiguousarray(0.5 * wts)
+    nodes.flags.writeable = False
+    weights.flags.writeable = False
+    return nodes, weights
 
 
+@functools.lru_cache(maxsize=32)
 def _tanh_sinh_01(q: int) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64]]:
     """Compute tanh-sinh nodes and weights on [0, 1].
+
+    Results are cached across calls for the same *q*.  The returned arrays
+    are read-only to prevent accidental mutation of the cached data.
 
     Args:
         q (int): Number of quadrature points.
@@ -484,4 +833,8 @@ def _tanh_sinh_01(q: int) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float
     from pantr.quad import get_tanh_sinh_1d  # noqa: PLC0415
 
     nodes, weights = get_tanh_sinh_1d(q)
-    return np.ascontiguousarray(nodes), np.ascontiguousarray(weights)
+    nodes_f64 = cast(npt.NDArray[np.float64], np.ascontiguousarray(nodes))
+    weights_f64 = cast(npt.NDArray[np.float64], np.ascontiguousarray(weights))
+    nodes_f64.flags.writeable = False
+    weights_f64.flags.writeable = False
+    return nodes_f64, weights_f64

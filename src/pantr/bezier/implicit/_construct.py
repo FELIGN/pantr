@@ -29,7 +29,9 @@ from numpy import typing as npt
 from pantr._numba_compat import nb_jit
 from pantr.bezier.implicit._bernstein import (
     _collapse_2d,
+    _collapse_2d_into,
     _collapse_3d,
+    _collapse_3d_into,
     _eval_gradient_2d,
     _eval_gradient_3d,
 )
@@ -38,15 +40,39 @@ from pantr.bezier.implicit._mask import (
     _line_intersects_3d,
     _point_within_1d,
     _point_within_2d,
-    _point_within_3d,
+    _point_within_2d_scalar,
+    _point_within_3d_scalar,
 )
-from pantr.bezier.implicit._roots import find_roots
+from pantr.bezier.implicit._roots import find_roots, find_roots_into
 
 _MERGE_TOL: float = 10.0 * 2.2204460492503131e-16
 """Tolerance for merging nearby roots with interval boundaries."""
 
 _NEAR_ZERO: float = 1e-300
 """Guard against division by zero (well below subnormal range)."""
+
+
+@nb_jit(nopython=True, cache=True, fastmath=True)
+def _insertion_sort(arr: npt.NDArray[np.float64], count: int) -> None:
+    """In-place insertion sort on ``arr[:count]``.
+
+    Optimal for the very small arrays (3-6 elements) produced by root
+    collection, and avoids the allocation that ``np.sort`` incurs.
+
+    Args:
+        arr (npt.NDArray[np.float64]): Array to sort (mutated in place).
+        count (int): Number of valid entries to sort.
+
+    Note:
+        Inputs are assumed to be correct (no validation performed).
+    """
+    for i in range(1, count):
+        key = arr[i]
+        j = i - 1
+        while j >= 0 and arr[j] > key:
+            arr[j + 1] = arr[j]
+            j -= 1
+        arr[j + 1] = key
 
 
 # ---------------------------------------------------------------------------
@@ -82,11 +108,11 @@ def _try_insert_node(
     return count + 1
 
 
-@nb_jit(nopython=True, cache=True)
+@nb_jit(nopython=True, cache=True, fastmath=True)
 def _collect_and_partition_1d(
     coeffs_list: NumbaList,
     masks_list: NumbaList,
-) -> tuple[npt.NDArray[np.float64], int]:
+) -> tuple[npt.NDArray[np.float64], int, bool]:
     """Collect roots from all 1D polynomials and partition [0, 1].
 
     For the 1D base case: finds roots of each polynomial, filters through
@@ -97,12 +123,16 @@ def _collect_and_partition_1d(
         masks_list (NumbaList): List of 1D boolean mask arrays.
 
     Returns:
-        tuple[npt.NDArray[np.float64], int]: (boundaries, count) where
-            boundaries are sorted and include 0 and 1.
+        tuple[npt.NDArray[np.float64], int, bool]: (boundaries, count,
+            any_overflow) where boundaries are sorted and include 0 and 1,
+            and any_overflow is True if the Bezier clipping stack overflowed
+            during any root-finding call.
 
     Note:
         Inputs are assumed to be correct (no validation performed).
     """
+    any_overflow = False
+
     # Estimate max roots: 2x sum of degrees + 2 for boundaries (safety margin
     # in case near-coincident roots from different polynomials survive merging).
     max_roots = 2
@@ -115,7 +145,8 @@ def _collect_and_partition_1d(
     count = 2
 
     for i in range(len(coeffs_list)):
-        roots, n_roots, _ = find_roots(coeffs_list[i])
+        roots, n_roots, overflowed = find_roots(coeffs_list[i])
+        any_overflow |= overflowed
         for r in range(n_roots):
             root = roots[r]
             # Filter through mask.
@@ -123,18 +154,18 @@ def _collect_and_partition_1d(
                 continue
             count = _try_insert_node(nodes, count, root)
 
-    nodes[:count] = np.sort(nodes[:count])
+    _insertion_sort(nodes, count)
 
-    return nodes, count
+    return nodes, count, any_overflow
 
 
-@nb_jit(nopython=True, cache=True)
+@nb_jit(nopython=True, cache=True, fastmath=True)
 def _collect_and_partition_from_2d(
     coeffs_list: NumbaList,
     masks_list: NumbaList,
     k: int,
     x_base: float,
-) -> tuple[npt.NDArray[np.float64], int]:
+) -> tuple[npt.NDArray[np.float64], int, bool]:
     """Collapse 2D polynomials to 1D at *x_base*, find roots, partition [0,1].
 
     Args:
@@ -144,11 +175,15 @@ def _collect_and_partition_from_2d(
         x_base (float): Base point in tangential direction.
 
     Returns:
-        tuple[npt.NDArray[np.float64], int]: (boundaries, count).
+        tuple[npt.NDArray[np.float64], int, bool]: (boundaries, count,
+            any_overflow) where any_overflow is True if the Bezier clipping
+            stack overflowed during any root-finding call.
 
     Note:
         Inputs are assumed to be correct (no validation performed).
     """
+    any_overflow = False
+
     max_roots = 2
     for i in range(len(coeffs_list)):
         max_roots += 2 * (coeffs_list[i].shape[k] - 1)
@@ -165,33 +200,32 @@ def _collect_and_partition_from_2d(
 
         # Collapse to 1D along k.
         poly_1d = _collapse_2d(coeffs_list[i], k, x_base)
-        roots, n_roots, _ = find_roots(poly_1d)
+        roots, n_roots, overflowed = find_roots(poly_1d)
+        any_overflow |= overflowed
 
         for r in range(n_roots):
             root = roots[r]
-            pt = np.empty(2, dtype=np.float64)
+            # Filter through mask using scalar coordinates (no allocation).
             if k == 0:
-                pt[0] = root
-                pt[1] = x_base
+                in_mask = _point_within_2d_scalar(masks_list[i], root, x_base)
             else:
-                pt[0] = x_base
-                pt[1] = root
-            if not _point_within_2d(masks_list[i], pt):
+                in_mask = _point_within_2d_scalar(masks_list[i], x_base, root)
+            if not in_mask:
                 continue
             count = _try_insert_node(nodes, count, root)
 
-    nodes[:count] = np.sort(nodes[:count])
+    _insertion_sort(nodes, count)
 
-    return nodes, count
+    return nodes, count, any_overflow
 
 
-@nb_jit(nopython=True, cache=True)
+@nb_jit(nopython=True, cache=True, fastmath=True)
 def _collect_and_partition_from_3d(
     coeffs_list: NumbaList,
     masks_list: NumbaList,
     k: int,
     x_base: npt.NDArray[np.float64],
-) -> tuple[npt.NDArray[np.float64], int]:
+) -> tuple[npt.NDArray[np.float64], int, bool]:
     """Collapse 3D polynomials to 1D at *x_base*, find roots, partition [0,1].
 
     Args:
@@ -202,11 +236,15 @@ def _collect_and_partition_from_3d(
             in tangential directions.
 
     Returns:
-        tuple[npt.NDArray[np.float64], int]: (boundaries, count).
+        tuple[npt.NDArray[np.float64], int, bool]: (boundaries, count,
+            any_overflow) where any_overflow is True if the Bezier clipping
+            stack overflowed during any root-finding call.
 
     Note:
         Inputs are assumed to be correct (no validation performed).
     """
+    any_overflow = False
+
     max_roots = 2
     for i in range(len(coeffs_list)):
         max_roots += 2 * (coeffs_list[i].shape[k] - 1)
@@ -221,26 +259,148 @@ def _collect_and_partition_from_3d(
             continue
 
         poly_1d = _collapse_3d(coeffs_list[i], k, x_base)
-        roots, n_roots, _ = find_roots(poly_1d)
+        roots, n_roots, overflowed = find_roots(poly_1d)
+        any_overflow |= overflowed
 
         for r in range(n_roots):
             root = roots[r]
-            # Build 3D point and filter through mask.
-            pt = np.empty(3, dtype=np.float64)
-            ti = 0
-            for d in range(3):
-                if d == k:
-                    pt[d] = root
-                else:
-                    pt[d] = x_base[ti]
-                    ti += 1
-            if not _point_within_3d(masks_list[i], pt):
+            # Filter through mask using scalar coordinates (no allocation).
+            # Map (x_base[0], x_base[1], root) back to 3D axes.
+            if k == 0:
+                in_mask = _point_within_3d_scalar(masks_list[i], root, x_base[0], x_base[1])
+            elif k == 1:
+                in_mask = _point_within_3d_scalar(masks_list[i], x_base[0], root, x_base[1])
+            else:
+                in_mask = _point_within_3d_scalar(masks_list[i], x_base[0], x_base[1], root)
+            if not in_mask:
                 continue
             count = _try_insert_node(nodes, count, root)
 
-    nodes[:count] = np.sort(nodes[:count])
+    _insertion_sort(nodes, count)
 
-    return nodes, count
+    return nodes, count, any_overflow
+
+
+@nb_jit(nopython=True, cache=True, fastmath=True)
+def _collect_and_partition_from_2d_into(  # noqa: PLR0913
+    coeffs_list: NumbaList,
+    masks_list: NumbaList,
+    k: int,
+    x_base: float,
+    nodes: npt.NDArray[np.float64],
+    poly1d_buf: npt.NDArray[np.float64],
+    basis_buf: npt.NDArray[np.float64],
+    roots_buf: npt.NDArray[np.float64],
+) -> tuple[int, bool]:
+    """Collapse 2D polys to 1D, find roots, partition [0,1] — workspace version.
+
+    Args:
+        coeffs_list (NumbaList): List of 2D coefficient arrays.
+        masks_list (NumbaList): List of 2D boolean mask arrays.
+        k (int): Height direction.
+        x_base (float): Base point in tangential direction.
+        nodes (npt.NDArray[np.float64]): Pre-allocated boundary buffer.
+        poly1d_buf (npt.NDArray[np.float64]): Pre-allocated 1D polynomial buffer.
+        basis_buf (npt.NDArray[np.float64]): Pre-allocated basis buffer.
+        roots_buf (npt.NDArray[np.float64]): Pre-allocated roots buffer.
+
+    Returns:
+        tuple[int, bool]: (count, any_overflow) where count is the number of
+            valid entries in *nodes* and any_overflow is True if the Bezier
+            clipping stack overflowed during any root-finding call.
+
+    Note:
+        Inputs are assumed to be correct (no validation performed).
+    """
+    any_overflow = False
+    nodes[0] = 0.0
+    nodes[1] = 1.0
+    count = 2
+
+    for i in range(len(coeffs_list)):
+        if not _line_intersects_2d(masks_list[i], x_base, k):
+            continue
+
+        _collapse_2d_into(coeffs_list[i], k, x_base, basis_buf, poly1d_buf)
+        deg_k = coeffs_list[i].shape[k] - 1
+        n_roots, overflowed = find_roots_into(poly1d_buf[: deg_k + 1], roots_buf)
+        any_overflow |= overflowed
+
+        for r in range(n_roots):
+            root = roots_buf[r]
+            if k == 0:
+                in_mask = _point_within_2d_scalar(masks_list[i], root, x_base)
+            else:
+                in_mask = _point_within_2d_scalar(masks_list[i], x_base, root)
+            if not in_mask:
+                continue
+            count = _try_insert_node(nodes, count, root)
+
+    _insertion_sort(nodes, count)
+    return count, any_overflow
+
+
+@nb_jit(nopython=True, cache=True, fastmath=True)
+def _collect_and_partition_from_3d_into(  # noqa: PLR0913
+    coeffs_list: NumbaList,
+    masks_list: NumbaList,
+    k: int,
+    x_base: npt.NDArray[np.float64],
+    nodes: npt.NDArray[np.float64],
+    poly1d_buf: npt.NDArray[np.float64],
+    basis_buf0: npt.NDArray[np.float64],
+    basis_buf1: npt.NDArray[np.float64],
+    roots_buf: npt.NDArray[np.float64],
+) -> tuple[int, bool]:
+    """Collapse 3D polys to 1D, find roots, partition [0,1] — workspace version.
+
+    Args:
+        coeffs_list (NumbaList): List of 3D coefficient arrays.
+        masks_list (NumbaList): List of 3D boolean mask arrays.
+        k (int): Height direction.
+        x_base (npt.NDArray[np.float64]): Base point of shape ``(2,)``.
+        nodes (npt.NDArray[np.float64]): Pre-allocated boundary buffer.
+        poly1d_buf (npt.NDArray[np.float64]): Pre-allocated 1D polynomial buffer.
+        basis_buf0 (npt.NDArray[np.float64]): Pre-allocated basis buffer (first tangential).
+        basis_buf1 (npt.NDArray[np.float64]): Pre-allocated basis buffer (second tangential).
+        roots_buf (npt.NDArray[np.float64]): Pre-allocated roots buffer.
+
+    Returns:
+        tuple[int, bool]: (count, any_overflow) where count is the number of
+            valid entries in *nodes* and any_overflow is True if the Bezier
+            clipping stack overflowed during any root-finding call.
+
+    Note:
+        Inputs are assumed to be correct (no validation performed).
+    """
+    any_overflow = False
+    nodes[0] = 0.0
+    nodes[1] = 1.0
+    count = 2
+
+    for i in range(len(coeffs_list)):
+        if not _line_intersects_3d(masks_list[i], x_base, k):
+            continue
+
+        _collapse_3d_into(coeffs_list[i], k, x_base, basis_buf0, basis_buf1, poly1d_buf)
+        deg_k = coeffs_list[i].shape[k] - 1
+        n_roots, overflowed = find_roots_into(poly1d_buf[: deg_k + 1], roots_buf)
+        any_overflow |= overflowed
+
+        for r in range(n_roots):
+            root = roots_buf[r]
+            if k == 0:
+                in_mask = _point_within_3d_scalar(masks_list[i], root, x_base[0], x_base[1])
+            elif k == 1:
+                in_mask = _point_within_3d_scalar(masks_list[i], x_base[0], root, x_base[1])
+            else:
+                in_mask = _point_within_3d_scalar(masks_list[i], x_base[0], x_base[1], root)
+            if not in_mask:
+                continue
+            count = _try_insert_node(nodes, count, root)
+
+    _insertion_sort(nodes, count)
+    return count, any_overflow
 
 
 # ---------------------------------------------------------------------------
@@ -248,10 +408,10 @@ def _collect_and_partition_from_3d(
 # ---------------------------------------------------------------------------
 
 
-@nb_jit(nopython=True, cache=True)
+@nb_jit(nopython=True, cache=True, fastmath=True)
 def volume_quad_2d(  # noqa: PLR0912, PLR0913, PLR0915
-    coeffs_1d: NumbaList,
-    masks_1d: NumbaList,
+    base_bounds: npt.NDArray[np.float64],
+    base_nb: int,
     k0: int,
     use_ts_0: bool,
     type_0: int,
@@ -265,7 +425,7 @@ def volume_quad_2d(  # noqa: PLR0912, PLR0913, PLR0915
     ts_nodes: npt.NDArray[np.float64],
     ts_weights: npt.NDArray[np.float64],
     strategy: int,
-) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64]]:
+) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64], bool]:
     """Generate volume quadrature points and weights for 2D.
 
     Walks the hierarchy bottom-up:
@@ -274,8 +434,9 @@ def volume_quad_2d(  # noqa: PLR0912, PLR0913, PLR0915
        partition [0,1] by roots, apply quad, combine coordinates/weights.
 
     Args:
-        coeffs_1d (NumbaList): 1D polynomial coefficients (base level).
-        masks_1d (NumbaList): 1D masks (base level).
+        base_bounds (npt.NDArray[np.float64]): Pre-computed sorted partition
+            boundaries for the 1D base level, including 0 and 1.
+        base_nb (int): Number of entries in *base_bounds*.
         k0 (int): Height direction at base level (always 0 for 1D).
         use_ts_0 (bool): Use tanh-sinh at base level.
         type_0 (int): Integral type at base level.
@@ -291,8 +452,10 @@ def volume_quad_2d(  # noqa: PLR0912, PLR0913, PLR0915
         strategy (int): 0=GL only, 1=TS only, 2=auto mixed.
 
     Returns:
-        tuple[npt.NDArray[np.float64], npt.NDArray[np.float64]]:
-            (points, weights) with shapes ``(n_pts, 2)`` and ``(n_pts,)``.
+        tuple[npt.NDArray[np.float64], npt.NDArray[np.float64], bool]:
+            (points, weights, any_overflow) with shapes ``(n_pts, 2)`` and
+            ``(n_pts,)``. The boolean indicates whether the Bezier clipping
+            stack overflowed during any root-finding call.
 
     Note:
         Inputs are assumed to be correct (no validation performed).
@@ -311,7 +474,7 @@ def volume_quad_2d(  # noqa: PLR0912, PLR0913, PLR0915
                 points[idx, 1] = gl_nodes[j]
                 weights[idx] = gl_weights[i] * gl_weights[j]
                 idx += 1
-        return points, weights
+        return points, weights, False
 
     # Select quadrature rule for each level.
     nodes_outer = gl_nodes
@@ -331,8 +494,27 @@ def volume_quad_2d(  # noqa: PLR0912, PLR0913, PLR0915
     # Tangential direction index for level 1.
     tang1 = 1 - k1
 
-    # Phase 1: Partition [0,1] by base (1D) polynomials.
-    boundaries, n_bounds = _collect_and_partition_1d(coeffs_1d, masks_1d)
+    # Phase 1: Partition [0,1] by base (1D) polynomials (pre-computed).
+    boundaries = base_bounds
+    n_bounds = base_nb
+
+    # Pre-allocate workspace for inner partition calls (avoids heap alloc in loop).
+    max_deg_k1 = 0
+    max_deg_tang1 = 0
+    max_nodes_2d = 2
+    for i in range(len(coeffs_2d)):
+        dk = coeffs_2d[i].shape[k1] - 1
+        dt = coeffs_2d[i].shape[tang1] - 1
+        max_deg_k1 = max(max_deg_k1, dk)
+        max_deg_tang1 = max(max_deg_tang1, dt)
+        max_nodes_2d += 2 * dk
+
+    ws_nodes = np.empty(max_nodes_2d, dtype=np.float64)
+    ws_poly1d = np.empty(max_deg_k1 + 1, dtype=np.float64)
+    ws_basis = np.empty(max_deg_tang1 + 1, dtype=np.float64)
+    ws_roots = np.empty(max(max_deg_k1, 1), dtype=np.float64)
+
+    any_overflow = False
 
     # Estimate max output size.
     max_intervals_base = n_bounds - 1
@@ -360,9 +542,18 @@ def volume_quad_2d(  # noqa: PLR0912, PLR0913, PLR0915
             w_tang = wts_outer[qi] * scale_outer
 
             # Phase 3: Collapse 2D polys to 1D along k1 at x_tang_val.
-            inner_bounds, n_inner = _collect_and_partition_from_2d(
-                coeffs_2d, masks_2d, k1, x_tang_val
+            n_inner, inner_overflow = _collect_and_partition_from_2d_into(
+                coeffs_2d,
+                masks_2d,
+                k1,
+                x_tang_val,
+                ws_nodes,
+                ws_poly1d,
+                ws_basis,
+                ws_roots,
             )
+            any_overflow |= inner_overflow
+            inner_bounds = ws_nodes
 
             for ib in range(n_inner - 1):
                 ilo = inner_bounds[ib]
@@ -393,13 +584,13 @@ def volume_quad_2d(  # noqa: PLR0912, PLR0913, PLR0915
                     weights[n_pts] = w_tang * w_height
                     n_pts += 1
 
-    return points[:n_pts].copy(), weights[:n_pts].copy()
+    return points[:n_pts].copy(), weights[:n_pts].copy(), any_overflow
 
 
-@nb_jit(nopython=True, cache=True)
+@nb_jit(nopython=True, cache=True, fastmath=True)
 def volume_quad_3d(  # noqa: PLR0912, PLR0913, PLR0915
-    coeffs_1d: NumbaList,
-    masks_1d: NumbaList,
+    base_bounds: npt.NDArray[np.float64],
+    base_nb: int,
     k0: int,
     use_ts_0: bool,
     type_0: int,
@@ -418,14 +609,15 @@ def volume_quad_3d(  # noqa: PLR0912, PLR0913, PLR0915
     ts_nodes: npt.NDArray[np.float64],
     ts_weights: npt.NDArray[np.float64],
     strategy: int,
-) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64]]:
+) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64], bool]:
     """Generate volume quadrature points and weights for 3D.
 
     Three-level hierarchy walk: 1D base -> 2D -> 3D.
 
     Args:
-        coeffs_1d (NumbaList): 1D polynomial coefficients (base level).
-        masks_1d (NumbaList): 1D masks (base level).
+        base_bounds (npt.NDArray[np.float64]): Pre-computed sorted partition
+            boundaries for the 1D base level, including 0 and 1.
+        base_nb (int): Number of entries in *base_bounds*.
         k0 (int): Height direction at base level.
         use_ts_0 (bool): Use tanh-sinh at base level.
         type_0 (int): Integral type at base level.
@@ -446,8 +638,10 @@ def volume_quad_3d(  # noqa: PLR0912, PLR0913, PLR0915
         strategy (int): 0=GL only, 1=TS only, 2=auto mixed.
 
     Returns:
-        tuple[npt.NDArray[np.float64], npt.NDArray[np.float64]]:
-            (points, weights) with shapes ``(n_pts, 3)`` and ``(n_pts,)``.
+        tuple[npt.NDArray[np.float64], npt.NDArray[np.float64], bool]:
+            (points, weights, any_overflow) with shapes ``(n_pts, 3)`` and
+            ``(n_pts,)``. The boolean indicates whether the Bezier clipping
+            stack overflowed during any root-finding call.
 
     Note:
         Inputs are assumed to be correct (no validation performed).
@@ -468,7 +662,7 @@ def volume_quad_3d(  # noqa: PLR0912, PLR0913, PLR0915
                     points[idx, 2] = gl_nodes[l]
                     weights[idx] = gl_weights[i] * gl_weights[j] * gl_weights[l]
                     idx += 1
-        return points, weights
+        return points, weights, False
 
     # Select quadrature rules per level.
     # Level 0 (outermost/base): TS if branching detected (use_ts_1 from 2D level).
@@ -514,14 +708,61 @@ def volume_quad_3d(  # noqa: PLR0912, PLR0913, PLR0915
     axis_k1_3d = tang2[k1]  # 3D axis for the 2D height direction
     axis_tang1_3d = tang2[tang1_2d]  # 3D axis for the 2D tangential direction
 
-    # Pre-allocate output.
+    # Pre-allocate workspace for partition calls at both 2D and 3D levels.
+    # Level 1 workspace (2D -> 1D).
+    max_deg_k1 = 0
+    max_deg_tang1_2d = 0
+    max_nodes_2d = 2
+    for i in range(len(coeffs_2d)):
+        dk = coeffs_2d[i].shape[k1] - 1
+        dt = coeffs_2d[i].shape[1 - k1] - 1
+        max_deg_k1 = max(max_deg_k1, dk)
+        max_deg_tang1_2d = max(max_deg_tang1_2d, dt)
+        max_nodes_2d += 2 * dk
+
+    ws1_nodes = np.empty(max_nodes_2d, dtype=np.float64)
+    ws1_poly1d = np.empty(max_deg_k1 + 1, dtype=np.float64)
+    ws1_basis = np.empty(max_deg_tang1_2d + 1, dtype=np.float64)
+    ws1_roots = np.empty(max(max_deg_k1, 1), dtype=np.float64)
+
+    # Level 2 workspace (3D -> 1D).
+    max_deg_k2 = 0
+    max_deg_tang0_3d = 0
+    max_deg_tang1_3d = 0
+    max_nodes_3d = 2
+    for i in range(len(coeffs_3d)):
+        dk = coeffs_3d[i].shape[k2] - 1
+        max_deg_k2 = max(max_deg_k2, dk)
+        max_nodes_3d += 2 * dk
+        # Tangential degrees in 3D (the 2 axes != k2).
+        ti_loc = 0
+        for d in range(3):
+            if d != k2:
+                dt_loc = coeffs_3d[i].shape[d] - 1
+                if ti_loc == 0:
+                    max_deg_tang0_3d = max(max_deg_tang0_3d, dt_loc)
+                else:
+                    max_deg_tang1_3d = max(max_deg_tang1_3d, dt_loc)
+                ti_loc += 1
+
+    ws2_nodes = np.empty(max_nodes_3d, dtype=np.float64)
+    ws2_poly1d = np.empty(max_deg_k2 + 1, dtype=np.float64)
+    ws2_basis0 = np.empty(max_deg_tang0_3d + 1, dtype=np.float64)
+    ws2_basis1 = np.empty(max_deg_tang1_3d + 1, dtype=np.float64)
+    ws2_roots = np.empty(max(max_deg_k2, 1), dtype=np.float64)
+
+    any_overflow = False
+
+    # Pre-allocate output buffers.
     max_total = q * q * q * 8  # generous
     points = np.empty((max_total, 3), dtype=np.float64)
     weights = np.empty(max_total, dtype=np.float64)
     n_pts = 0
+    x_base_3d = np.empty(2, dtype=np.float64)
 
-    # Level 0: 1D base partition.
-    bounds_0, nb_0 = _collect_and_partition_1d(coeffs_1d, masks_1d)
+    # Level 0: 1D base partition (pre-computed at Python level).
+    bounds_0 = base_bounds
+    nb_0 = base_nb
 
     for b0 in range(nb_0 - 1):
         lo0 = bounds_0[b0]
@@ -535,7 +776,18 @@ def volume_quad_3d(  # noqa: PLR0912, PLR0913, PLR0915
             w_1d = wts_0[q0] * scale0
 
             # Level 1: Collapse 2D polys to 1D along k1 at x_1d.
-            bounds_1, nb_1 = _collect_and_partition_from_2d(coeffs_2d, masks_2d, k1, x_1d)
+            nb_1, ovf_1 = _collect_and_partition_from_2d_into(
+                coeffs_2d,
+                masks_2d,
+                k1,
+                x_1d,
+                ws1_nodes,
+                ws1_poly1d,
+                ws1_basis,
+                ws1_roots,
+            )
+            any_overflow |= ovf_1
+            bounds_1 = ws1_nodes
 
             for b1 in range(nb_1 - 1):
                 lo1 = bounds_1[b1]
@@ -549,31 +801,26 @@ def volume_quad_3d(  # noqa: PLR0912, PLR0913, PLR0915
                     w_2d = wts_1[q1] * scale1
 
                     # Level 2: Collapse 3D polys to 1D along k2.
-                    # The base point for 3D collapse is a 2D point in the
-                    # tangential plane.
-                    x_base_3d = np.empty(2, dtype=np.float64)
-                    x_base_3d[0] = x_1d  # maps to tang2[tang1_2d] direction...
-                    # Actually we need to figure out the ordering.
-                    # In the 3D collapse, x_tang has 2 components ordered by
-                    # increasing 3D axis index (skipping k2).
-                    # tang2[0] corresponds to x_tang[0], tang2[1] to x_tang[1].
-                    # x_1d is the coordinate for the 2D tangential direction,
-                    # which is tang2[tang1_2d] = axis_tang1_3d.
-                    # x_2d is the coordinate for the 2D height direction,
-                    # which is tang2[k1] = axis_k1_3d.
-                    # In x_tang ordering: tang2[0] and tang2[1].
                     if tang1_2d == 0:
-                        # x_tang[0] = x_1d, x_tang[1] = x_2d
                         x_base_3d[0] = x_1d
                         x_base_3d[1] = x_2d
                     else:
-                        # x_tang[0] = x_2d, x_tang[1] = x_1d
                         x_base_3d[0] = x_2d
                         x_base_3d[1] = x_1d
 
-                    bounds_2, nb_2 = _collect_and_partition_from_3d(
-                        coeffs_3d, masks_3d, k2, x_base_3d
+                    nb_2, ovf_2 = _collect_and_partition_from_3d_into(
+                        coeffs_3d,
+                        masks_3d,
+                        k2,
+                        x_base_3d,
+                        ws2_nodes,
+                        ws2_poly1d,
+                        ws2_basis0,
+                        ws2_basis1,
+                        ws2_roots,
                     )
+                    any_overflow |= ovf_2
+                    bounds_2 = ws2_nodes
 
                     for b2 in range(nb_2 - 1):
                         lo2 = bounds_2[b2]
@@ -606,7 +853,7 @@ def volume_quad_3d(  # noqa: PLR0912, PLR0913, PLR0915
                             weights[n_pts] = w_1d * w_2d * w_3d
                             n_pts += 1
 
-    return points[:n_pts].copy(), weights[:n_pts].copy()
+    return points[:n_pts].copy(), weights[:n_pts].copy(), any_overflow
 
 
 # ---------------------------------------------------------------------------
@@ -616,8 +863,8 @@ def volume_quad_3d(  # noqa: PLR0912, PLR0913, PLR0915
 
 @nb_jit(nopython=True, cache=True)
 def surface_quad_2d(  # noqa: PLR0912, PLR0913, PLR0915
-    coeffs_1d: NumbaList,
-    masks_1d: NumbaList,
+    base_bounds: npt.NDArray[np.float64],
+    base_nb: int,
     k0: int,
     use_ts_0: bool,
     type_0: int,
@@ -637,6 +884,7 @@ def surface_quad_2d(  # noqa: PLR0912, PLR0913, PLR0915
     npt.NDArray[np.float64],
     npt.NDArray[np.float64],
     npt.NDArray[np.float64],
+    bool,
 ]:
     """Generate surface (flux-form) quadrature for 2D.
 
@@ -646,8 +894,9 @@ def surface_quad_2d(  # noqa: PLR0912, PLR0913, PLR0915
     ``f(x) * sign(d_k phi) * w`` at each root.
 
     Args:
-        coeffs_1d (NumbaList): 1D polynomial coefficients (base level).
-        masks_1d (NumbaList): 1D masks (base level).
+        base_bounds (npt.NDArray[np.float64]): Pre-computed sorted partition
+            boundaries for the 1D base level, including 0 and 1.
+        base_nb (int): Number of entries in *base_bounds*.
         k0 (int): Height direction at base level.
         use_ts_0 (bool): Use tanh-sinh at base level.
         type_0 (int): Integral type at base level.
@@ -665,9 +914,11 @@ def surface_quad_2d(  # noqa: PLR0912, PLR0913, PLR0915
         strategy (int): 0=GL only, 1=TS only, 2=auto mixed.
 
     Returns:
-        tuple[npt.NDArray, npt.NDArray, npt.NDArray]:
-            (points, scalar_weights, normal_weights) with shapes
-            ``(n_pts, 2)``, ``(n_pts,)``, ``(n_pts, 2)``.
+        tuple[npt.NDArray, npt.NDArray, npt.NDArray, bool]:
+            (points, scalar_weights, normal_weights, any_overflow) with shapes
+            ``(n_pts, 2)``, ``(n_pts,)``, ``(n_pts, 2)``. The boolean
+            indicates whether the Bezier clipping stack overflowed during
+            any root-finding call.
 
     Note:
         Inputs are assumed to be correct (no validation performed).
@@ -681,6 +932,7 @@ def surface_quad_2d(  # noqa: PLR0912, PLR0913, PLR0915
             np.empty((0, 2), dtype=np.float64),
             np.empty(0, dtype=np.float64),
             np.empty((0, 2), dtype=np.float64),
+            False,
         )
 
     nodes_outer = gl_nodes
@@ -689,14 +941,18 @@ def surface_quad_2d(  # noqa: PLR0912, PLR0913, PLR0915
         nodes_outer = ts_nodes
         wts_outer = ts_weights
 
-    # Partition by base polynomials.
-    boundaries, n_bounds = _collect_and_partition_1d(coeffs_1d, masks_1d)
+    # Partition by base polynomials (pre-computed).
+    boundaries = base_bounds
+    n_bounds = base_nb
+
+    any_overflow = False
 
     max_total = q * 100
     points = np.empty((max_total, 2), dtype=np.float64)
     scalar_wts = np.empty(max_total, dtype=np.float64)
     normal_wts = np.empty((max_total, 2), dtype=np.float64)
     n_pts = 0
+    pt = np.empty(2, dtype=np.float64)
 
     for b_idx in range(n_bounds - 1):
         lo = boundaries[b_idx]
@@ -717,12 +973,12 @@ def surface_quad_2d(  # noqa: PLR0912, PLR0913, PLR0915
                     continue
 
                 poly_1d = _collapse_2d(poly_2d, k1, x_tang_val)
-                roots, n_roots, _ = find_roots(poly_1d)
+                roots, n_roots, overflowed = find_roots(poly_1d)
+                any_overflow |= overflowed
 
                 for ri in range(n_roots):
                     root = roots[ri]
 
-                    pt = np.empty(2, dtype=np.float64)
                     pt[tang1] = x_tang_val
                     pt[k1] = root
 
@@ -770,13 +1026,14 @@ def surface_quad_2d(  # noqa: PLR0912, PLR0913, PLR0915
         points[:n_pts].copy(),
         scalar_wts[:n_pts].copy(),
         normal_wts[:n_pts].copy(),
+        any_overflow,
     )
 
 
 @nb_jit(nopython=True, cache=True)
 def surface_quad_3d(  # noqa: PLR0912, PLR0913, PLR0915
-    coeffs_1d: NumbaList,
-    masks_1d: NumbaList,
+    base_bounds: npt.NDArray[np.float64],
+    base_nb: int,
     k0: int,
     use_ts_0: bool,
     type_0: int,
@@ -801,6 +1058,7 @@ def surface_quad_3d(  # noqa: PLR0912, PLR0913, PLR0915
     npt.NDArray[np.float64],
     npt.NDArray[np.float64],
     npt.NDArray[np.float64],
+    bool,
 ]:
     """Generate surface (flux-form) quadrature for 3D.
 
@@ -809,8 +1067,9 @@ def surface_quad_3d(  # noqa: PLR0912, PLR0913, PLR0915
     weighted by the surface Jacobian |grad phi| / |d_k2 phi|.
 
     Args:
-        coeffs_1d (NumbaList): 1D polynomial coefficients (base level).
-        masks_1d (NumbaList): 1D masks (base level).
+        base_bounds (npt.NDArray[np.float64]): Pre-computed sorted partition
+            boundaries for the 1D base level, including 0 and 1.
+        base_nb (int): Number of entries in *base_bounds*.
         k0 (int): Height direction at base level.
         use_ts_0 (bool): Use tanh-sinh at base level.
         type_0 (int): Integral type at base level.
@@ -833,9 +1092,11 @@ def surface_quad_3d(  # noqa: PLR0912, PLR0913, PLR0915
         strategy (int): 0=GL only, 1=TS only, 2=auto mixed.
 
     Returns:
-        tuple[npt.NDArray, npt.NDArray, npt.NDArray]:
-            (points, scalar_weights, normal_weights) with shapes
-            ``(n_pts, 3)``, ``(n_pts,)``, ``(n_pts, 3)``.
+        tuple[npt.NDArray, npt.NDArray, npt.NDArray, bool]:
+            (points, scalar_weights, normal_weights, any_overflow) with shapes
+            ``(n_pts, 3)``, ``(n_pts,)``, ``(n_pts, 3)``. The boolean
+            indicates whether the Bezier clipping stack overflowed during
+            any root-finding call.
 
     Note:
         Inputs are assumed to be correct (no validation performed).
@@ -847,6 +1108,7 @@ def surface_quad_3d(  # noqa: PLR0912, PLR0913, PLR0915
             np.empty((0, 3), dtype=np.float64),
             np.empty(0, dtype=np.float64),
             np.empty((0, 3), dtype=np.float64),
+            False,
         )
 
     # Per-level quadrature selection.
@@ -878,14 +1140,35 @@ def surface_quad_3d(  # noqa: PLR0912, PLR0913, PLR0915
     axis_k1_3d = tang2[k1]
     axis_tang1_3d = tang2[tang1_2d]
 
+    any_overflow = False
+
+    # Pre-allocate workspace for level-1 partition calls.
+    max_deg_k1 = 0
+    max_deg_tang1_2d = 0
+    max_nodes_2d = 2
+    for i in range(len(coeffs_2d)):
+        dk = coeffs_2d[i].shape[k1] - 1
+        dt = coeffs_2d[i].shape[tang1_2d] - 1
+        max_deg_k1 = max(max_deg_k1, dk)
+        max_deg_tang1_2d = max(max_deg_tang1_2d, dt)
+        max_nodes_2d += 2 * dk
+
+    ws_nodes = np.empty(max_nodes_2d, dtype=np.float64)
+    ws_poly1d = np.empty(max_deg_k1 + 1, dtype=np.float64)
+    ws_basis = np.empty(max_deg_tang1_2d + 1, dtype=np.float64)
+    ws_roots = np.empty(max(max_deg_k1, 1), dtype=np.float64)
+
     max_total = q * q * 50
     points = np.empty((max_total, 3), dtype=np.float64)
     scalar_wts = np.empty(max_total, dtype=np.float64)
     normal_wts = np.empty((max_total, 3), dtype=np.float64)
     n_pts = 0
+    x_base_3d = np.empty(2, dtype=np.float64)
+    pt = np.empty(3, dtype=np.float64)
 
-    # Level 0: 1D base partition.
-    bounds_0, nb_0 = _collect_and_partition_1d(coeffs_1d, masks_1d)
+    # Level 0: 1D base partition (pre-computed at Python level).
+    bounds_0 = base_bounds
+    nb_0 = base_nb
 
     for b0 in range(nb_0 - 1):
         lo0 = bounds_0[b0]
@@ -898,8 +1181,19 @@ def surface_quad_3d(  # noqa: PLR0912, PLR0913, PLR0915
             x_1d = lo0 + nodes_0[q0] * scale0
             w_1d = wts_0[q0] * scale0
 
-            # Level 1: partition along k1.
-            bounds_1, nb_1 = _collect_and_partition_from_2d(coeffs_2d, masks_2d, k1, x_1d)
+            # Level 1: partition along k1 (workspace version).
+            nb_1, ovf_1 = _collect_and_partition_from_2d_into(
+                coeffs_2d,
+                masks_2d,
+                k1,
+                x_1d,
+                ws_nodes,
+                ws_poly1d,
+                ws_basis,
+                ws_roots,
+            )
+            any_overflow |= ovf_1
+            bounds_1 = ws_nodes
 
             for b1 in range(nb_1 - 1):
                 lo1 = bounds_1[b1]
@@ -913,7 +1207,6 @@ def surface_quad_3d(  # noqa: PLR0912, PLR0913, PLR0915
                     w_2d = wts_1[q1] * scale1
                     w_base = w_1d * w_2d
 
-                    x_base_3d = np.empty(2, dtype=np.float64)
                     if tang1_2d == 0:
                         x_base_3d[0] = x_1d
                         x_base_3d[1] = x_2d
@@ -928,12 +1221,12 @@ def surface_quad_3d(  # noqa: PLR0912, PLR0913, PLR0915
                             continue
 
                         poly_1d = _collapse_3d(poly_3d, k2, x_base_3d)
-                        roots, n_roots, _ = find_roots(poly_1d)
+                        roots, n_roots, overflowed = find_roots(poly_1d)
+                        any_overflow |= overflowed
 
                         for ri in range(n_roots):
                             root = roots[ri]
 
-                            pt = np.empty(3, dtype=np.float64)
                             pt[axis_tang1_3d] = x_1d
                             pt[axis_k1_3d] = x_2d
                             pt[k2] = root
@@ -977,6 +1270,7 @@ def surface_quad_3d(  # noqa: PLR0912, PLR0913, PLR0915
         points[:n_pts].copy(),
         scalar_wts[:n_pts].copy(),
         normal_wts[:n_pts].copy(),
+        any_overflow,
     )
 
 
@@ -987,8 +1281,8 @@ def surface_quad_3d(  # noqa: PLR0912, PLR0913, PLR0915
 
 @nb_jit(nopython=True, cache=True)
 def surface_quad_2d_aggregate(  # noqa: PLR0912, PLR0913, PLR0915
-    coeffs_1d: NumbaList,
-    masks_1d: NumbaList,
+    base_bounds: npt.NDArray[np.float64],
+    base_nb: int,
     k0: int,
     use_ts_0: bool,
     type_0: int,
@@ -1004,7 +1298,7 @@ def surface_quad_2d_aggregate(  # noqa: PLR0912, PLR0913, PLR0915
     ts_nodes: npt.NDArray[np.float64],
     ts_weights: npt.NDArray[np.float64],
     strategy: int,
-) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64], npt.NDArray[np.float64]]:
+) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64], npt.NDArray[np.float64], bool]:
     """Aggregate flux-form surface quadrature for 2D (one height direction).
 
     Computes the k1-th component of the flux-form surface integral directly
@@ -1015,8 +1309,9 @@ def surface_quad_2d_aggregate(  # noqa: PLR0912, PLR0913, PLR0915
     at each point since ``sum_k n_k^2 = 1``).
 
     Args:
-        coeffs_1d (NumbaList): 1D polynomial coefficients (base level).
-        masks_1d (NumbaList): 1D masks (base level).
+        base_bounds (npt.NDArray[np.float64]): Pre-computed sorted partition
+            boundaries for the 1D base level, including 0 and 1.
+        base_nb (int): Number of entries in *base_bounds*.
         k0 (int): Height direction at base level.
         use_ts_0 (bool): Use tanh-sinh at base level.
         type_0 (int): Integral type at base level.
@@ -1034,9 +1329,11 @@ def surface_quad_2d_aggregate(  # noqa: PLR0912, PLR0913, PLR0915
         strategy (int): 0=GL only, 1=TS only, 2=auto mixed.
 
     Returns:
-        tuple[npt.NDArray, npt.NDArray, npt.NDArray]:
-            (points, scalar_weights, normal_weights) where normal_weights
-            has only the k1-th component nonzero.
+        tuple[npt.NDArray, npt.NDArray, npt.NDArray, bool]:
+            (points, scalar_weights, normal_weights, any_overflow) where
+            normal_weights has only the k1-th component nonzero. The boolean
+            indicates whether the Bezier clipping stack overflowed during
+            any root-finding call.
 
     Note:
         Inputs are assumed to be correct (no validation performed).
@@ -1049,6 +1346,7 @@ def surface_quad_2d_aggregate(  # noqa: PLR0912, PLR0913, PLR0915
             np.empty((0, 2), dtype=np.float64),
             np.empty(0, dtype=np.float64),
             np.empty((0, 2), dtype=np.float64),
+            False,
         )
 
     nodes_outer = gl_nodes
@@ -1057,13 +1355,17 @@ def surface_quad_2d_aggregate(  # noqa: PLR0912, PLR0913, PLR0915
         nodes_outer = ts_nodes
         wts_outer = ts_weights
 
-    boundaries, n_bounds = _collect_and_partition_1d(coeffs_1d, masks_1d)
+    boundaries = base_bounds
+    n_bounds = base_nb
+
+    any_overflow = False
 
     max_total = q * 100
     points = np.empty((max_total, 2), dtype=np.float64)
     scalar_wts = np.empty(max_total, dtype=np.float64)
     normal_wts = np.empty((max_total, 2), dtype=np.float64)
     n_pts = 0
+    pt = np.empty(2, dtype=np.float64)
 
     for b_idx in range(n_bounds - 1):
         lo = boundaries[b_idx]
@@ -1082,11 +1384,11 @@ def surface_quad_2d_aggregate(  # noqa: PLR0912, PLR0913, PLR0915
                     continue
 
                 poly_1d = _collapse_2d(poly_2d, k1, x_tang_val)
-                roots, n_roots, _ = find_roots(poly_1d)
+                roots, n_roots, overflowed = find_roots(poly_1d)
+                any_overflow |= overflowed
 
                 for ri in range(n_roots):
                     root = roots[ri]
-                    pt = np.empty(2, dtype=np.float64)
                     pt[tang1] = x_tang_val
                     pt[k1] = root
 
@@ -1130,13 +1432,14 @@ def surface_quad_2d_aggregate(  # noqa: PLR0912, PLR0913, PLR0915
         points[:n_pts].copy(),
         scalar_wts[:n_pts].copy(),
         normal_wts[:n_pts].copy(),
+        any_overflow,
     )
 
 
 @nb_jit(nopython=True, cache=True)
 def surface_quad_3d_aggregate(  # noqa: PLR0912, PLR0913, PLR0915
-    coeffs_1d: NumbaList,
-    masks_1d: NumbaList,
+    base_bounds: npt.NDArray[np.float64],
+    base_nb: int,
     k0: int,
     use_ts_0: bool,
     type_0: int,
@@ -1157,7 +1460,7 @@ def surface_quad_3d_aggregate(  # noqa: PLR0912, PLR0913, PLR0915
     ts_nodes: npt.NDArray[np.float64],
     ts_weights: npt.NDArray[np.float64],
     strategy: int,
-) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64], npt.NDArray[np.float64]]:
+) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64], npt.NDArray[np.float64], bool]:
     """Aggregate flux-form surface quadrature for 3D (one height direction).
 
     Same as :func:`surface_quad_2d_aggregate` but for 3D. Walks the 3-level
@@ -1165,8 +1468,9 @@ def surface_quad_3d_aggregate(  # noqa: PLR0912, PLR0913, PLR0915
     level set and computing flux-form normal weights.
 
     Args:
-        coeffs_1d (NumbaList): 1D polynomial coefficients (base level).
-        masks_1d (NumbaList): 1D masks (base level).
+        base_bounds (npt.NDArray[np.float64]): Pre-computed sorted partition
+            boundaries for the 1D base level, including 0 and 1.
+        base_nb (int): Number of entries in *base_bounds*.
         k0 (int): Height direction at base level.
         use_ts_0 (bool): Use tanh-sinh at base level.
         type_0 (int): Integral type at base level.
@@ -1189,9 +1493,11 @@ def surface_quad_3d_aggregate(  # noqa: PLR0912, PLR0913, PLR0915
         strategy (int): 0=GL only, 1=TS only, 2=auto mixed.
 
     Returns:
-        tuple[npt.NDArray[np.float64], npt.NDArray[np.float64], npt.NDArray[np.float64]]:
-            ``(points, scalar_weights, normal_weights)`` with shapes
-            ``(n_pts, 3)``, ``(n_pts,)``, ``(n_pts, 3)``.
+        tuple[npt.NDArray[np.float64], npt.NDArray[np.float64], npt.NDArray[np.float64], bool]:
+            ``(points, scalar_weights, normal_weights, any_overflow)`` with
+            shapes ``(n_pts, 3)``, ``(n_pts,)``, ``(n_pts, 3)``. The boolean
+            indicates whether the Bezier clipping stack overflowed during
+            any root-finding call.
 
     Note:
         Inputs are assumed to be correct (no validation performed).
@@ -1203,6 +1509,7 @@ def surface_quad_3d_aggregate(  # noqa: PLR0912, PLR0913, PLR0915
             np.empty((0, 3), dtype=np.float64),
             np.empty(0, dtype=np.float64),
             np.empty((0, 3), dtype=np.float64),
+            False,
         )
 
     nodes_0 = gl_nodes
@@ -1232,13 +1539,34 @@ def surface_quad_3d_aggregate(  # noqa: PLR0912, PLR0913, PLR0915
     axis_k1_3d = tang2[k1]
     axis_tang1_3d = tang2[tang1_2d]
 
+    any_overflow = False
+
+    # Pre-allocate workspace for level-1 partition calls.
+    max_deg_k1 = 0
+    max_deg_tang1_2d = 0
+    max_nodes_2d = 2
+    for i in range(len(coeffs_2d)):
+        dk = coeffs_2d[i].shape[k1] - 1
+        dt = coeffs_2d[i].shape[tang1_2d] - 1
+        max_deg_k1 = max(max_deg_k1, dk)
+        max_deg_tang1_2d = max(max_deg_tang1_2d, dt)
+        max_nodes_2d += 2 * dk
+
+    ws_nodes_agg = np.empty(max_nodes_2d, dtype=np.float64)
+    ws_poly1d_agg = np.empty(max_deg_k1 + 1, dtype=np.float64)
+    ws_basis_agg = np.empty(max_deg_tang1_2d + 1, dtype=np.float64)
+    ws_roots_agg = np.empty(max(max_deg_k1, 1), dtype=np.float64)
+
     max_total = q * q * 50
     points = np.empty((max_total, 3), dtype=np.float64)
     scalar_wts = np.empty(max_total, dtype=np.float64)
     normal_wts = np.empty((max_total, 3), dtype=np.float64)
     n_pts = 0
+    x_base_3d = np.empty(2, dtype=np.float64)
+    pt = np.empty(3, dtype=np.float64)
 
-    bounds_0, nb_0 = _collect_and_partition_1d(coeffs_1d, masks_1d)
+    bounds_0 = base_bounds
+    nb_0 = base_nb
 
     for b0 in range(nb_0 - 1):
         lo0 = bounds_0[b0]
@@ -1251,7 +1579,19 @@ def surface_quad_3d_aggregate(  # noqa: PLR0912, PLR0913, PLR0915
             x_1d = lo0 + nodes_0[q0] * scale0
             w_1d = wts_0[q0] * scale0
 
-            bounds_1, nb_1 = _collect_and_partition_from_2d(coeffs_2d, masks_2d, k1, x_1d)
+            # Level 1: partition along k1 (workspace version).
+            nb_1, ovf_1 = _collect_and_partition_from_2d_into(
+                coeffs_2d,
+                masks_2d,
+                k1,
+                x_1d,
+                ws_nodes_agg,
+                ws_poly1d_agg,
+                ws_basis_agg,
+                ws_roots_agg,
+            )
+            any_overflow |= ovf_1
+            bounds_1 = ws_nodes_agg
 
             for b1 in range(nb_1 - 1):
                 lo1 = bounds_1[b1]
@@ -1265,7 +1605,6 @@ def surface_quad_3d_aggregate(  # noqa: PLR0912, PLR0913, PLR0915
                     w_2d = wts_1[q1] * scale1
                     w_base = w_1d * w_2d
 
-                    x_base_3d = np.empty(2, dtype=np.float64)
                     if tang1_2d == 0:
                         x_base_3d[0] = x_1d
                         x_base_3d[1] = x_2d
@@ -1279,11 +1618,11 @@ def surface_quad_3d_aggregate(  # noqa: PLR0912, PLR0913, PLR0915
                             continue
 
                         poly_1d = _collapse_3d(poly_3d, k2, x_base_3d)
-                        roots, n_roots, _ = find_roots(poly_1d)
+                        roots, n_roots, overflowed = find_roots(poly_1d)
+                        any_overflow |= overflowed
 
                         for ri in range(n_roots):
                             root = roots[ri]
-                            pt = np.empty(3, dtype=np.float64)
                             pt[axis_tang1_3d] = x_1d
                             pt[axis_k1_3d] = x_2d
                             pt[k2] = root
@@ -1323,4 +1662,5 @@ def surface_quad_3d_aggregate(  # noqa: PLR0912, PLR0913, PLR0915
         points[:n_pts].copy(),
         scalar_wts[:n_pts].copy(),
         normal_wts[:n_pts].copy(),
+        any_overflow,
     )
