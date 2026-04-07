@@ -533,7 +533,7 @@ class ImplicitQuadrature:
 
         When *aggregate* is True, the algorithm runs for each possible height
         direction and sums the flux-form contributions. This is more robust
-        when vertical tangents exist in every coordinate direction (paper 3.7).
+        when vertical tangents exist in every coordinate direction (paper §3.7).
 
         .. note::
 

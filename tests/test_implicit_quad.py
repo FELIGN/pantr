@@ -62,7 +62,7 @@ def _make_circle_coeffs(r_sq: float = 0.1) -> npt.NDArray[np.float64]:
 
 
 class TestBernstein:
-    """Tests for _bernstein.py operations."""
+    """Tests for _bernstein_core.py operations."""
 
     def test_basis_eval_degree2(self) -> None:
         b = _eval_bernstein_basis_1d(2, 0.5)
@@ -122,7 +122,7 @@ class TestBernstein:
 
 
 class TestMask:
-    """Tests for _mask.py operations."""
+    """Tests for _mask_core.py operations."""
 
     def test_nonzero_mask_1d_with_root(self) -> None:
         m = compute_nonzero_mask_1d(np.array([-0.5, 0.5]))
@@ -157,7 +157,7 @@ class TestMask:
 
 
 class TestRootFinding:
-    """Tests for _roots.py."""
+    """Tests for _roots_core.py."""
 
     def test_linear(self) -> None:
         r, c, _ = find_roots(np.array([1.0, -1.0]))
@@ -1849,7 +1849,7 @@ class TestHRefinementExtended:
 
 
 class TestResultant:
-    """Direct unit tests for resultant_2d from _resultant.py."""
+    """Direct unit tests for resultant_2d from _resultant_core.py."""
 
     def test_resultant_along_y(self) -> None:
         """Resultant of (x-0.5) and (y-0.5) along axis 0 yields root at y=0.5."""
@@ -1923,7 +1923,7 @@ class TestBernstein3D:
 
 
 class TestConvertValidation:
-    """Tests for _convert.py input validation."""
+    """Tests for _convert_core.py input validation."""
 
     def test_monomial_to_bernstein_2d_bad_domain(self) -> None:
         """Reject domain_hi <= domain_lo in 2D."""
