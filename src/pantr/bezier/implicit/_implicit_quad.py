@@ -44,8 +44,6 @@ from pantr.bezier.implicit._mask_core import (
     compute_nonzero_mask_3d,
 )
 from pantr.bezier.implicit._reparameterize_core import (
-    _REPARAM_MIN_LEN,
-    _REPARAM_OFFSET,
     surface_reparam_2d,
     surface_reparam_3d,
     volume_reparam_2d,
@@ -780,7 +778,7 @@ class ImplicitQuadrature:
         q: int,
         signs: Sequence[int],
         *,
-        node_type: Literal["equispaced", "gll"] = "equispaced",
+        node_type: Literal["equispaced", "chebyshev", "gll"] = "chebyshev",
     ) -> ReparamResult:
         """Reparameterize the implicit volume domain with Lagrange cells.
 
@@ -794,9 +792,10 @@ class ImplicitQuadrature:
             signs (Sequence[int]): Sign condition per polynomial.
                 ``+1`` selects ``{phi > 0}``, ``-1`` selects ``{phi < 0}``,
                 ``0`` ignores that polynomial.
-            node_type: Node distribution.  ``"equispaced"`` (default) matches
-                VTK Lagrange cell interpolation exactly.  ``"gll"`` uses
-                Gauss-Lobatto-Legendre nodes.
+            node_type: Node distribution.  ``"chebyshev"`` (default) uses
+                modified Chebyshev (Chebyshev-Lobatto) nodes, optimal for
+                polynomial interpolation.  ``"equispaced"`` and ``"gll"``
+                are also supported.
 
         Returns:
             ReparamResult: Lagrange cell data.
@@ -816,8 +815,6 @@ class ImplicitQuadrature:
                 nodes,
                 signs_arr,
                 self._n_polys,
-                _REPARAM_OFFSET,
-                _REPARAM_MIN_LEN,
             )
         else:
             pts, n_cells, overflow = volume_reparam_3d(  # type: ignore[call-arg]
@@ -827,8 +824,6 @@ class ImplicitQuadrature:
                 nodes,
                 signs_arr,
                 self._n_polys,
-                _REPARAM_OFFSET,
-                _REPARAM_MIN_LEN,
             )
 
         if overflow or self._base_overflow:
@@ -850,22 +845,25 @@ class ImplicitQuadrature:
         poly_idx: int,
         signs: Sequence[int] | None = None,
         *,
-        node_type: Literal["equispaced", "gll"] = "equispaced",
+        node_type: Literal["equispaced", "chebyshev", "gll"] = "chebyshev",
     ) -> ReparamResult:
         """Reparameterize a levelset surface with Lagrange cells.
 
         Generates Lagrange cells (curves in 2D, quads in 3D) tracing the
         zero set ``{phi_{poly_idx} = 0}``, optionally restricted by sign
-        conditions on the other polynomials.
+        conditions on the other polynomials.  The surface is identified
+        via sign transitions between adjacent intervals (inside/outside).
 
         Args:
             q (int): Number of Lagrange nodes per direction per cell.
                 Must be >= 2.
             poly_idx (int): Index of the polynomial whose zero set to trace.
             signs (Sequence[int] | None): Sign condition per polynomial.
-                ``signs[poly_idx]`` is ignored.  If ``None``, no filtering
-                is applied (equivalent to all zeros).
-            node_type: Node distribution (``"equispaced"`` or ``"gll"``).
+                Defines the "inside" region; the surface is its boundary
+                (where the sign condition transitions).  If ``None``,
+                defaults to all ``-1`` (inside = all polynomials negative).
+            node_type: Node distribution (``"chebyshev"``, ``"equispaced"``,
+                or ``"gll"``).
 
         Returns:
             ReparamResult: Lagrange cell data.
@@ -880,11 +878,11 @@ class ImplicitQuadrature:
             raise IndexError(msg)
 
         if signs is None:
-            signs_arr = np.zeros(self._n_polys, dtype=np.int64)
+            # Default: inside = all polynomials negative.  The surface is
+            # the boundary of this domain (sign transitions).
+            signs_arr = np.full(self._n_polys, -1, dtype=np.int64)
         else:
             signs_arr = _validate_signs(signs, self._n_polys)
-        # Ignore sign of the target polynomial (we're on its zero set).
-        signs_arr[poly_idx] = 0
 
         nodes = _lagrange_nodes(q, node_type)
 
@@ -897,8 +895,6 @@ class ImplicitQuadrature:
                 nodes,
                 signs_arr,
                 self._n_polys,
-                _REPARAM_OFFSET,
-                _REPARAM_MIN_LEN,
             )
         else:
             pts, n_cells, overflow = surface_reparam_3d(  # type: ignore[call-arg]
@@ -909,8 +905,6 @@ class ImplicitQuadrature:
                 nodes,
                 signs_arr,
                 self._n_polys,
-                _REPARAM_OFFSET,
-                _REPARAM_MIN_LEN,
             )
 
         if overflow or self._base_overflow:
@@ -1010,20 +1004,27 @@ def _lagrange_nodes(q: int, node_type: str) -> npt.NDArray[np.float64]:
 
     Args:
         q: Number of nodes.
-        node_type: ``"equispaced"`` or ``"gll"``.
+        node_type: ``"chebyshev"``, ``"equispaced"``, or ``"gll"``.
 
     Returns:
         npt.NDArray[np.float64]: Nodes of shape ``(q,)``, read-only.
     """
-    if node_type == "equispaced":
+    if node_type == "chebyshev":
+        from pantr.quad import get_modified_chebyshev_nodes_1d  # noqa: PLC0415
+
+        nodes = np.ascontiguousarray(
+            get_modified_chebyshev_nodes_1d(q),
+            dtype=np.float64,
+        )
+    elif node_type == "equispaced":
         nodes = np.linspace(0.0, 1.0, q)
     elif node_type == "gll":
         from pantr.quad import get_gauss_lobatto_legendre_1d  # noqa: PLC0415
 
-        nodes, _wts = get_gauss_lobatto_legendre_1d(q)
-        nodes = np.ascontiguousarray(nodes, dtype=np.float64)
+        gll_nodes, _wts = get_gauss_lobatto_legendre_1d(q)
+        nodes = np.ascontiguousarray(gll_nodes, dtype=np.float64)
     else:
-        msg = f"Unknown node_type {node_type!r}, expected 'equispaced' or 'gll'."
+        msg = f"Unknown node_type {node_type!r}, expected 'chebyshev', 'equispaced', or 'gll'."
         raise ValueError(msg)
     nodes.flags.writeable = False
     return nodes
