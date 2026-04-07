@@ -27,7 +27,7 @@ from numba.typed import List as NumbaList
 from numpy import typing as npt
 
 from pantr._numba_compat import nb_jit
-from pantr.bezier.implicit._bernstein import (
+from pantr.bezier.implicit._bernstein_core import (
     _collapse_2d,
     _collapse_2d_into,
     _collapse_3d,
@@ -35,7 +35,7 @@ from pantr.bezier.implicit._bernstein import (
     _eval_gradient_2d,
     _eval_gradient_3d,
 )
-from pantr.bezier.implicit._mask import (
+from pantr.bezier.implicit._mask_core import (
     _line_intersects_2d,
     _line_intersects_3d,
     _point_within_1d,
@@ -43,7 +43,7 @@ from pantr.bezier.implicit._mask import (
     _point_within_2d_scalar,
     _point_within_3d_scalar,
 )
-from pantr.bezier.implicit._roots import find_roots, find_roots_into
+from pantr.bezier.implicit._roots_core import find_roots, find_roots_into
 
 _MERGE_TOL: float = 10.0 * 2.2204460492503131e-16
 """Tolerance for merging nearby roots with interval boundaries."""

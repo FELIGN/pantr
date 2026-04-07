@@ -22,7 +22,7 @@ import numpy as np
 from numpy import typing as npt
 
 from pantr._numba_compat import nb_jit
-from pantr.bezier.implicit._bernstein import (
+from pantr.bezier.implicit._bernstein_core import (
     _auto_reduce_1d,
     _auto_reduce_2d,
     _bincoeff,

@@ -24,13 +24,13 @@ import numpy as np
 from numba.typed import List as NumbaList
 
 from pantr._numba_compat import nb_jit
-from pantr.bezier.implicit._bernstein import (
+from pantr.bezier.implicit._bernstein_core import (
     _face_restrict_2d,
     _face_restrict_3d,
     _normalize_1d,
     _normalize_2d,
 )
-from pantr.bezier.implicit._mask import (
+from pantr.bezier.implicit._mask_core import (
     _collapse_mask_2d,
     _collapse_mask_3d,
     _face_restrict_mask_2d,
@@ -43,13 +43,13 @@ from pantr.bezier.implicit._mask import (
     compute_nonzero_mask_1d,
     compute_nonzero_mask_2d,
 )
-from pantr.bezier.implicit._resultant import (
+from pantr.bezier.implicit._resultant_core import (
     discriminant_2d,
     discriminant_3d,
     resultant_2d,
     resultant_3d,
 )
-from pantr.bezier.implicit._score import score_estimate_2d, score_estimate_3d
+from pantr.bezier.implicit._score_core import score_estimate_2d, score_estimate_3d
 
 # Integral type constants.
 INTEGRAL_INNER: int = 0
