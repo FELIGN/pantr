@@ -1,11 +1,8 @@
-"""Convert implicit reparameterization results to pyvista UnstructuredGrids.
+"""Visualization helpers for implicit reparameterization and quadrature.
 
-Each tensor-product Lagrange cell is linearly tessellated into VTK quads
-(2D cells) or hexahedra (3D cells) by connecting adjacent nodes.  For
-surface curves the nodes are connected into a VTK polyline.  This
-approach is simple, robust at any polynomial degree, and avoids the
-Runge-phenomenon artefacts that plague VTK higher-order cells with
-equispaced nodes.
+- :func:`implicit_to_pyvista`: convert reparameterization cells to pyvista.
+- :func:`quadrature_to_pyvista`: convert quadrature points to pyvista
+  (spheres coloured by weight, optional normal arrows).
 """
 
 from __future__ import annotations
@@ -20,7 +17,7 @@ from ._lazy_import import _import_pyvista
 if TYPE_CHECKING:
     import pyvista as pv
 
-    from ..bezier.implicit._implicit_quad import ReparamResult
+    from ..bezier.implicit._implicit_quad import ReparamResult, SurfQuadResult, VolQuadResult
 
 _MAX_PHYSICAL_DIM = 3
 """Maximum physical dimension for VTK coordinates."""
@@ -219,3 +216,85 @@ def _embed_in_3d(
     pts_3d = np.zeros((n, _MAX_PHYSICAL_DIM), dtype=np.float64)
     pts_3d[:, :dim] = points
     return pts_3d
+
+
+# ---------------------------------------------------------------------------
+# Quadrature point visualization
+# ---------------------------------------------------------------------------
+
+
+def quadrature_to_pyvista(
+    quad_result: VolQuadResult | SurfQuadResult,
+    *,
+    show_normals: bool = False,
+    normal_scale: float = 0.02,
+) -> pv.PolyData | tuple[pv.PolyData, pv.PolyData]:
+    """Convert quadrature results to pyvista for visualization.
+
+    Creates a ``pv.PolyData`` point cloud with a ``"weight"`` scalar
+    array suitable for rendering as coloured spheres.  For surface
+    quadrature, optionally produces a second ``PolyData`` with normal
+    arrows.
+
+    Usage example::
+
+        grid = quadrature_to_pyvista(iq.volume_quad(q=4))
+        plotter.add_mesh(grid, scalars="weight",
+                         render_points_as_spheres=True, point_size=8)
+
+    For surface quadrature with normals::
+
+        pts_mesh, arrows = quadrature_to_pyvista(
+            iq.surface_quad(q=4), show_normals=True)
+        plotter.add_mesh(pts_mesh, scalars="weight",
+                         render_points_as_spheres=True, point_size=8)
+        plotter.add_mesh(arrows, color="blue")
+
+    Args:
+        quad_result: Output of
+            :meth:`~pantr.bezier.implicit.ImplicitQuadrature.volume_quad`
+            (2-tuple) or
+            :meth:`~pantr.bezier.implicit.ImplicitQuadrature.surface_quad`
+            (3-tuple).
+        show_normals: If ``True`` and *quad_result* is a 3-tuple (surface),
+            return an additional ``PolyData`` with arrow glyphs for the
+            normal weights.
+        normal_scale: Length scale for normal arrows (fraction of domain).
+
+    Returns:
+        pv.PolyData: Point cloud with ``"weight"`` scalar data.
+            If *show_normals* is ``True`` and *quad_result* is a surface
+            result, returns ``(point_cloud, arrows)``.
+
+    Raises:
+        ImportError: If pyvista is not installed.
+    """
+    pv_mod = _import_pyvista()
+
+    is_surface = len(quad_result) == 3  # noqa: PLR2004
+    points = quad_result[0]
+    weights = quad_result[1]
+
+    dim = points.shape[1] if points.ndim == 2 else 1  # noqa: PLR2004
+    pts_3d = _embed_in_3d(points, dim)
+
+    cloud = pv_mod.PolyData(pts_3d)
+    cloud.point_data["weight"] = weights
+
+    if not (show_normals and is_surface):
+        return cloud  # type: ignore[return-value]
+
+    # Surface normals: build arrow glyphs.
+    normal_weights = quad_result[2]  # type: ignore[misc]
+    normals_3d = _embed_in_3d(normal_weights, dim)
+
+    cloud["normal"] = normals_3d
+    arrows = cloud.glyph(
+        orient="normal",
+        scale="weight",
+        factor=normal_scale,
+    )
+    # Remove normal data from the point cloud (not needed for rendering).
+    del cloud.point_data["normal"]
+
+    return cloud, arrows  # type: ignore[return-value]

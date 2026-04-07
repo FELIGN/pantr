@@ -18,7 +18,7 @@ from pantr.bezier.implicit import (
     monomial_to_bernstein_2d,
     monomial_to_bernstein_3d,
 )
-from pantr.viz import implicit_to_pyvista
+from pantr.viz import implicit_to_pyvista, quadrature_to_pyvista
 
 LO2 = np.array([0.0, 0.0])
 HI2 = np.array([1.0, 1.0])
@@ -215,6 +215,99 @@ def demo_3d_two_spheres() -> None:
 # Main
 # ---------------------------------------------------------------------------
 
+
+def demo_2d_circle_with_quadrature() -> None:
+    """Circle with quadrature points overlaid on the reparameterization."""
+    print("=== 2D Circle + Quadrature ===")
+    coeffs = _circle_bernstein(0.5, 0.5, 0.3)
+    iq = ImplicitQuadrature(coeffs)
+
+    # Reparameterization
+    vol = iq.volume_reparam(q=10, signs=[-1])
+    surf = iq.surface_reparam(q=20, poly_idx=0)
+
+    # Quadrature
+    vol_quad = iq.volume_quad(q=4)
+    surf_quad = iq.surface_quad(q=6)
+    vol_pts, vol_wts = vol_quad
+    surf_pts, surf_sw, surf_nw = surf_quad
+    print(f"  Volume quad: {len(vol_wts)} points")
+    print(f"  Surface quad: {len(surf_sw)} points")
+
+    # Filter volume quad to inside domain (phi < 0).
+    phi_vals = iq.eval_poly(0, vol_pts)
+    inside = phi_vals < 0
+    vol_quad_inside = (vol_pts[inside], vol_wts[inside])
+
+    pl = pv.Plotter()
+
+    # Reparameterization as background
+    pl.add_mesh(implicit_to_pyvista(vol), color="steelblue", opacity=0.3)
+    pl.add_mesh(implicit_to_pyvista(surf), color="grey", line_width=2)
+
+    # Volume quadrature points (spheres, coloured by weight)
+    vol_cloud = quadrature_to_pyvista(vol_quad_inside)
+    pl.add_mesh(
+        vol_cloud,
+        scalars="weight",
+        render_points_as_spheres=True,
+        point_size=12,
+        cmap="viridis",
+        scalar_bar_args={"title": "Volume weight"},
+    )
+
+    # Surface quadrature points (spheres, coloured by scalar weight)
+    surf_cloud = quadrature_to_pyvista(surf_quad)
+    pl.add_mesh(
+        surf_cloud,
+        scalars="weight",
+        render_points_as_spheres=True,
+        point_size=10,
+        cmap="plasma",
+        scalar_bar_args={"title": "Surface weight"},
+    )
+
+    pl.view_xy()
+    pl.add_title("Circle: reparam + quadrature points")
+    pl.show()
+
+
+def demo_3d_sphere_with_quadrature() -> None:
+    """Sphere with surface quadrature and normal arrows."""
+    print("=== 3D Sphere + Surface Quadrature ===")
+    coeffs = _sphere_bernstein(0.5, 0.5, 0.5, 0.35)
+    iq = ImplicitQuadrature(coeffs)
+
+    # Reparameterization
+    surf_reparam = iq.surface_reparam(q=10, poly_idx=0)
+    print(f"  Surface reparam: {surf_reparam.n_cells} quads")
+
+    # Surface quadrature with normals
+    surf_quad = iq.surface_quad(q=6)
+    _, surf_sw, _ = surf_quad
+    print(f"  Surface quad: {len(surf_sw)} points")
+
+    pl = pv.Plotter()
+
+    # Reparameterized surface (translucent)
+    pl.add_mesh(implicit_to_pyvista(surf_reparam), color="tomato", opacity=0.4)
+
+    # Surface quadrature: points + normal arrows
+    surf_cloud, arrows = quadrature_to_pyvista(surf_quad, show_normals=True, normal_scale=0.05)
+    pl.add_mesh(
+        surf_cloud,
+        scalars="weight",
+        render_points_as_spheres=True,
+        point_size=10,
+        cmap="plasma",
+        scalar_bar_args={"title": "Surface weight"},
+    )
+    pl.add_mesh(arrows, color="navy", opacity=0.7)
+
+    pl.add_title("Sphere: surface reparam + quadrature + normals")
+    pl.show()
+
+
 if __name__ == "__main__":
     print("Implicit domain reparameterization demos\n")
 
@@ -226,5 +319,9 @@ if __name__ == "__main__":
     # 3D demos
     demo_3d_sphere()
     demo_3d_two_spheres()
+
+    # Quadrature overlay demos
+    demo_2d_circle_with_quadrature()
+    demo_3d_sphere_with_quadrature()
 
     print("\nDone.")
