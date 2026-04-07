@@ -24,7 +24,7 @@ from __future__ import annotations
 
 import functools
 from enum import IntEnum
-from typing import TYPE_CHECKING, Any, TypeAlias
+from typing import TYPE_CHECKING, Any, TypeAlias, cast
 
 import numpy as np
 from numba.typed import List as NumbaList
@@ -752,8 +752,8 @@ def _tanh_sinh_01(q: int) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float
     from pantr.quad import get_tanh_sinh_1d  # noqa: PLC0415
 
     nodes, weights = get_tanh_sinh_1d(q)
-    nodes = np.ascontiguousarray(nodes)
-    weights = np.ascontiguousarray(weights)
-    nodes.flags.writeable = False
-    weights.flags.writeable = False
-    return nodes, weights
+    nodes_f64 = cast(npt.NDArray[np.float64], np.ascontiguousarray(nodes))
+    weights_f64 = cast(npt.NDArray[np.float64], np.ascontiguousarray(weights))
+    nodes_f64.flags.writeable = False
+    weights_f64.flags.writeable = False
+    return nodes_f64, weights_f64
