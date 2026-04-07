@@ -222,7 +222,7 @@ def _find_roots_eigvals(
     return np.sort(np.clip(in_unit, 0.0, 1.0))
 
 
-def _precompute_base_partition(
+def _precompute_base_partition(  # noqa: PLR0912
     coeffs_1d: NumbaList,
     masks_1d: NumbaList,
 ) -> tuple[npt.NDArray[np.float64], int]:
@@ -253,26 +253,43 @@ def _precompute_base_partition(
     if max_degree <= _EIGVALS_DEGREE_THRESHOLD:
         return _collect_and_partition_1d(coeffs_1d, masks_1d)
 
-    nodes: list[float] = [0.0, 1.0]
+    # Mixed path: use eigvals for high-degree polynomials, Numba for the rest.
+    # First, collect eigval roots for high-degree polynomials (Python).
+    eigval_roots: list[float] = []
+    low_degree_indices: list[int] = []
 
     for i in range(len(coeffs_1d)):
-        c = np.asarray(coeffs_1d[i])
-        deg = len(c) - 1
-
+        deg = len(coeffs_1d[i]) - 1
         if deg > _EIGVALS_DEGREE_THRESHOLD:
+            c = np.asarray(coeffs_1d[i])
             roots = _find_roots_eigvals(c)
+            m = masks_1d[i]
+            for root in roots:
+                if _point_within_1d(m, float(root)):
+                    eigval_roots.append(float(root))
         else:
-            r, nr, _ = find_roots(c)
-            roots = np.asarray(r[:nr])
+            low_degree_indices.append(i)
 
-        m = masks_1d[i]
-        for root in roots:
-            if _point_within_1d(m, float(root)):
-                nodes.append(float(root))
+    # Get the base partition from low-degree polynomials via Numba.
+    if low_degree_indices:
+        low_coeffs = NumbaList()
+        low_masks = NumbaList()
+        for idx in low_degree_indices:
+            low_coeffs.append(coeffs_1d[idx])
+            low_masks.append(masks_1d[idx])
+        base_bounds, base_nb = _collect_and_partition_1d(low_coeffs, low_masks)
+    else:
+        base_bounds = np.array([0.0, 1.0], dtype=np.float64)
+        base_nb = 2
 
-    bounds = np.array(sorted(set(nodes)), dtype=np.float64)
+    # Merge eigval roots into the base partition.
+    if not eigval_roots:
+        return base_bounds, base_nb
 
-    # Merge nearby roots.
+    all_nodes: list[float] = list(base_bounds[:base_nb])
+    all_nodes.extend(eigval_roots)
+    bounds = np.array(sorted(set(all_nodes)), dtype=np.float64)
+
     merged = [bounds[0]]
     for b in bounds[1:]:
         if b - merged[-1] > _MERGE_TOL:
@@ -372,6 +389,9 @@ class ImplicitPolyQuadrature:
         masks_1d = self._build_result[1]
         self._base_bounds, self._base_nb = _precompute_base_partition(coeffs_1d, masks_1d)
 
+        # Pre-unpack build result args (avoids tuple unpacking on every quad call).
+        self._build_args = self._build_result[2:]
+
     @property
     def dim(self) -> int:
         """Get the parametric dimension.
@@ -423,7 +443,7 @@ class ImplicitPolyQuadrature:
             return volume_quad_2d(  # type: ignore[call-arg]
                 self._base_bounds,
                 self._base_nb,
-                *self._build_result[2:],
+                *self._build_args,
                 gl_nodes,
                 gl_weights,
                 ts_nodes,
@@ -434,7 +454,7 @@ class ImplicitPolyQuadrature:
             return volume_quad_3d(  # type: ignore[call-arg]
                 self._base_bounds,
                 self._base_nb,
-                *self._build_result[2:],
+                *self._build_args,
                 gl_nodes,
                 gl_weights,
                 ts_nodes,
@@ -492,7 +512,7 @@ class ImplicitPolyQuadrature:
             return surface_quad_2d(  # type: ignore[call-arg]
                 self._base_bounds,
                 self._base_nb,
-                *self._build_result[2:],
+                *self._build_args,
                 self._n_polys,
                 self._coeffs_list,
                 gl_nodes,
@@ -505,7 +525,7 @@ class ImplicitPolyQuadrature:
             return surface_quad_3d(  # type: ignore[call-arg]
                 self._base_bounds,
                 self._base_nb,
-                *self._build_result[2:],
+                *self._build_args,
                 self._n_polys,
                 self._coeffs_list,
                 gl_nodes,

@@ -118,6 +118,51 @@ def _restrict_1d(
     return _restrict_scalar(coeffs, lower, upper)
 
 
+@nb_jit(nopython=True, cache=True)
+def _restrict_1d_into(
+    coeffs: npt.NDArray[np.float64],
+    lower: float,
+    upper: float,
+    out: npt.NDArray[np.float64],
+) -> None:
+    """Restrict 1D Bernstein coefficients to [lower, upper] in-place.
+
+    Same as :func:`_restrict_1d` but writes result into *out* to avoid
+    heap allocation in hot loops.
+
+    Args:
+        coeffs (npt.NDArray[np.float64]): 1D Bernstein coefficients.
+        lower (float): Left bound in [0, 1].
+        upper (float): Right bound in [0, 1].
+        out (npt.NDArray[np.float64]): Pre-allocated output buffer of same length.
+
+    Note:
+        Inputs are assumed to be correct (no validation performed).
+    """
+    p = len(coeffs) - 1
+    for i in range(p + 1):
+        out[i] = float(coeffs[i])
+
+    if abs(upper) >= abs(lower - 1.0):
+        tau = upper
+        for _step in range(1, p + 1):
+            for j in range(p, _step - 1, -1):
+                out[j] = out[j] * tau + out[j - 1] * (1.0 - tau)
+        tau2 = lower / upper if upper != 0.0 else 0.0
+        for _step in range(1, p + 1):
+            for j in range(p - _step + 1):
+                out[j] = out[j] * (1.0 - tau2) + out[j + 1] * tau2
+    else:
+        tau = lower
+        for _step in range(1, p + 1):
+            for j in range(p - _step + 1):
+                out[j] = out[j] * (1.0 - tau) + out[j + 1] * tau
+        tau2 = (upper - lower) / (1.0 - lower) if lower != 1.0 else 0.0
+        for _step in range(1, p + 1):
+            for j in range(p, _step - 1, -1):
+                out[j] = out[j] * tau2 + out[j - 1] * (1.0 - tau2)
+
+
 # ---------------------------------------------------------------------------
 # Section C: Nonzero mask construction
 # ---------------------------------------------------------------------------
@@ -229,10 +274,11 @@ def _restrict_2d_axis0(
     s0, s1 = coeffs.shape
     out = np.empty((s0, s1), dtype=np.float64)
     col = np.empty(s0, dtype=np.float64)
+    res = np.empty(s0, dtype=np.float64)
     for j in range(s1):
         for i in range(s0):
             col[i] = coeffs[i, j]
-        res = _restrict_1d(col, lo, hi)
+        _restrict_1d_into(col, lo, hi, res)
         for i in range(s0):
             out[i, j] = res[i]
     return out
@@ -261,10 +307,11 @@ def _restrict_rows_and_check(
     s0, s1 = strip.shape
     sub = np.empty((s0, s1), dtype=np.float64)
     row = np.empty(s1, dtype=np.float64)
+    res = np.empty(s1, dtype=np.float64)
     for i in range(s0):
         for j in range(s1):
             row[j] = strip[i, j]
-        res = _restrict_1d(row, lo, hi)
+        _restrict_1d_into(row, lo, hi, res)
         for j in range(s1):
             sub[i, j] = res[j]
     return not _has_uniform_sign(sub)
@@ -395,11 +442,12 @@ def _restrict_3d_axis0(
     s0, s1, s2 = coeffs.shape
     out = np.empty((s0, s1, s2), dtype=np.float64)
     col = np.empty(s0, dtype=np.float64)
+    res = np.empty(s0, dtype=np.float64)
     for j in range(s1):
         for k in range(s2):
             for i in range(s0):
                 col[i] = coeffs[i, j, k]
-            res = _restrict_1d(col, lo, hi)
+            _restrict_1d_into(col, lo, hi, res)
             for i in range(s0):
                 out[i, j, k] = res[i]
     return out
@@ -427,11 +475,12 @@ def _restrict_3d_axis1(
     s0, s1, s2 = coeffs.shape
     out = np.empty((s0, s1, s2), dtype=np.float64)
     col = np.empty(s1, dtype=np.float64)
+    res = np.empty(s1, dtype=np.float64)
     for i in range(s0):
         for k in range(s2):
             for j in range(s1):
                 col[j] = coeffs[i, j, k]
-            res = _restrict_1d(col, lo, hi)
+            _restrict_1d_into(col, lo, hi, res)
             for j in range(s1):
                 out[i, j, k] = res[j]
     return out
@@ -460,11 +509,12 @@ def _restrict_3d_axis2_and_check(
     s0, s1, s2 = coeffs.shape
     sub = np.empty((s0, s1, s2), dtype=np.float64)
     col = np.empty(s2, dtype=np.float64)
+    res = np.empty(s2, dtype=np.float64)
     for i in range(s0):
         for j in range(s1):
             for k in range(s2):
                 col[k] = coeffs[i, j, k]
-            res = _restrict_1d(col, lo, hi)
+            _restrict_1d_into(col, lo, hi, res)
             for k in range(s2):
                 sub[i, j, k] = res[k]
     return not _has_uniform_sign(sub)

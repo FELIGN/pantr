@@ -252,7 +252,7 @@ def _bernstein_interpolate_1d(
 
 
 @nb_jit(nopython=True, cache=True)
-def _det_qr(A: npt.NDArray[np.float64]) -> float:
+def _det_qr(A: npt.NDArray[np.float64]) -> float:  # noqa: PLR0912
     """Compute the determinant of a square matrix via Givens QR with column pivoting.
 
     Implements the same algorithm as algoim's ``det_qr`` (Saye, JCP 2022,
@@ -275,24 +275,43 @@ def _det_qr(A: npt.NDArray[np.float64]) -> float:
         Inputs are assumed to be correct (no validation performed).
     """
     n = A.shape[0]
+
+    # Fast paths for small matrices (common for degree-1 and degree-2 polynomials).
+    if n == 1:
+        return float(A[0, 0])
+    if n == 2:  # noqa: PLR2004
+        return float(A[0, 0] * A[1, 1] - A[0, 1] * A[1, 0])
+    if n == 3:  # noqa: PLR2004
+        return float(
+            A[0, 0] * (A[1, 1] * A[2, 2] - A[1, 2] * A[2, 1])
+            - A[0, 1] * (A[1, 0] * A[2, 2] - A[1, 2] * A[2, 0])
+            + A[0, 2] * (A[1, 0] * A[2, 1] - A[1, 1] * A[2, 0])
+        )
+
     det = 1.0
 
+    # Pre-compute column norms squared (updated incrementally).
+    col_norms_sq = np.empty(n, dtype=np.float64)
+    for col in range(n):
+        s = 0.0
+        for row in range(n):
+            s += A[row, col] * A[row, col]
+        col_norms_sq[col] = s
+
     for j in range(n):
-        # Column pivoting: find column k >= j with largest 2-norm.
-        best_norm = -1.0
+        # Column pivoting: find column k >= j with largest norm (using cached norms).
+        best_norm = col_norms_sq[j]
         best_k = j
-        for col in range(j, n):
-            col_norm = 0.0
-            for row in range(n):
-                col_norm += A[row, col] * A[row, col]
-            if col_norm > best_norm:
-                best_norm = col_norm
+        for col in range(j + 1, n):
+            if col_norms_sq[col] > best_norm:
+                best_norm = col_norms_sq[col]
                 best_k = col
 
         # Swap columns j and best_k.
         if best_k != j:
             for row in range(n):
                 A[row, j], A[row, best_k] = A[row, best_k], A[row, j]
+            col_norms_sq[j], col_norms_sq[best_k] = col_norms_sq[best_k], col_norms_sq[j]
             det = -det
 
         # Givens rotations to zero out sub-diagonal in column j.
@@ -302,23 +321,28 @@ def _det_qr(A: npt.NDArray[np.float64]) -> float:
             # Compute Givens rotation coefficients.
             if b_val == 0.0:
                 c = 1.0
-                s = 0.0
+                s_val = 0.0
             elif abs(b_val) > abs(a_val):
                 tmp = a_val / b_val
-                s = 1.0 / np.sqrt(1.0 + tmp * tmp)
-                c = tmp * s
+                s_val = 1.0 / np.sqrt(1.0 + tmp * tmp)
+                c = tmp * s_val
             else:
                 tmp = b_val / a_val
                 c = 1.0 / np.sqrt(1.0 + tmp * tmp)
-                s = tmp * c
+                s_val = tmp * c
             # Apply rotation to rows i-1 and i, columns j..n-1.
             for col in range(j, n):
                 x = A[i - 1, col]
                 y = A[i, col]
-                A[i - 1, col] = c * x + s * y
-                A[i, col] = -s * x + c * y
+                A[i - 1, col] = c * x + s_val * y
+                A[i, col] = -s_val * x + c * y
 
         det *= A[j, j]
+
+        # Update column norms: subtract the eliminated row's contribution.
+        for col in range(j + 1, n):
+            col_norms_sq[col] -= A[j, col] * A[j, col]
+            col_norms_sq[col] = max(col_norms_sq[col], 0.0)
 
     return det
 
