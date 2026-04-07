@@ -22,12 +22,12 @@ from numba.typed import List as NumbaList
 from numpy import typing as npt
 
 from pantr._numba_compat import nb_jit
-from pantr.bezier.implicit._bernstein import (
+from pantr.bezier.implicit._bernstein_core import (
     _elevated_derivative_along_axis_2d,
     _elevated_derivative_along_axis_3d,
     _eval_bernstein_basis_1d_into,
 )
-from pantr.bezier.implicit._mask import (
+from pantr.bezier.implicit._mask_core import (
     M,
     has_intersection_2d,
     has_intersection_3d,

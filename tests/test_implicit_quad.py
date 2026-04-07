@@ -10,8 +10,8 @@ import numpy as np
 import pytest
 from numpy import typing as npt
 
-from pantr.bezier.implicit import ImplicitPolyQuadrature, QuadStrategy
-from pantr.bezier.implicit._bernstein import (
+from pantr.bezier.implicit import ImplicitQuadrature, QuadStrategy
+from pantr.bezier.implicit._bernstein_core import (
     _collapse_2d,
     _collapse_3d,
     _degree_elevate_1d,
@@ -23,12 +23,12 @@ from pantr.bezier.implicit._bernstein import (
     _face_restrict_2d,
     _normalize_1d,
 )
-from pantr.bezier.implicit._convert import (
+from pantr.bezier.implicit._convert_core import (
     _validate_degrees,
     monomial_to_bernstein_2d,
     monomial_to_bernstein_3d,
 )
-from pantr.bezier.implicit._mask import (
+from pantr.bezier.implicit._mask_core import (
     _collapse_mask_2d,
     _mask_is_empty_1d,
     _mask_is_empty_2d,
@@ -36,8 +36,8 @@ from pantr.bezier.implicit._mask import (
     compute_nonzero_mask_1d,
     compute_nonzero_mask_2d,
 )
-from pantr.bezier.implicit._resultant import resultant_2d
-from pantr.bezier.implicit._roots import find_roots
+from pantr.bezier.implicit._resultant_core import resultant_2d
+from pantr.bezier.implicit._roots_core import find_roots
 
 # ---------------------------------------------------------------------------
 # Circle test geometry
@@ -62,7 +62,7 @@ def _make_circle_coeffs(r_sq: float = 0.1) -> npt.NDArray[np.float64]:
 
 
 class TestBernstein:
-    """Tests for _bernstein.py operations."""
+    """Tests for _bernstein_core.py operations."""
 
     def test_basis_eval_degree2(self) -> None:
         b = _eval_bernstein_basis_1d(2, 0.5)
@@ -122,7 +122,7 @@ class TestBernstein:
 
 
 class TestMask:
-    """Tests for _mask.py operations."""
+    """Tests for _mask_core.py operations."""
 
     def test_nonzero_mask_1d_with_root(self) -> None:
         m = compute_nonzero_mask_1d(np.array([-0.5, 0.5]))
@@ -157,7 +157,7 @@ class TestMask:
 
 
 class TestRootFinding:
-    """Tests for _roots.py."""
+    """Tests for _roots_core.py."""
 
     def test_linear(self) -> None:
         r, c, _ = find_roots(np.array([1.0, -1.0]))
@@ -190,7 +190,7 @@ class TestRootFinding:
 
     def test_cubic_yuksel(self) -> None:
         """Yuksel should find 3 roots of a cubic with well-separated roots."""
-        from pantr.bezier.implicit._roots import _yuksel_roots  # noqa: PLC0415
+        from pantr.bezier.implicit._roots_core import _yuksel_roots  # noqa: PLC0415
 
         # (t-0.1)(t-0.5)(t-0.9) in Bernstein degree 3.
         # f(0)=-0.045, f(1/3)~0.0296, f(2/3)~-0.0296, f(1)=0.045
@@ -212,7 +212,10 @@ class TestRootFinding:
         # (t-0.15)(t-0.35)(t-0.55)(t-0.75)(t-0.95) in Bernstein degree 5.
         # This has degree < 6 so will use Yuksel via dispatch,
         # but let's test clipping directly.
-        from pantr.bezier.implicit._roots import _clip_roots_core, _dedup_roots  # noqa: PLC0415
+        from pantr.bezier.implicit._roots_core import (  # noqa: PLC0415
+            _clip_roots_core,
+            _dedup_roots,
+        )
 
         roots_expected = [0.15, 0.35, 0.55, 0.75, 0.95]
         mono = P.polyfromroots(roots_expected)  # type: ignore[no-untyped-call]
@@ -251,15 +254,15 @@ class TestVolumeQuad2D:
     """Tests for 2D volume quadrature convergence."""
 
     @pytest.fixture(scope="class")
-    def circle_ipq(self) -> ImplicitPolyQuadrature:
-        return ImplicitPolyQuadrature(_make_circle_coeffs())
+    def circle_ipq(self) -> ImplicitQuadrature:
+        return ImplicitQuadrature(_make_circle_coeffs())
 
-    def test_weight_sum(self, circle_ipq: ImplicitPolyQuadrature) -> None:
+    def test_weight_sum(self, circle_ipq: ImplicitQuadrature) -> None:
         """Total weights should sum to 1 (volume of [0,1]^2)."""
         _pts, wts = circle_ipq.volume_quad(5, QuadStrategy.TS_ONLY)
         assert abs(np.sum(wts) - 1.0) < 1e-10  # noqa: PLR2004
 
-    def test_area_convergence_ts(self, circle_ipq: ImplicitPolyQuadrature) -> None:
+    def test_area_convergence_ts(self, circle_ipq: ImplicitQuadrature) -> None:
         """Area should converge exponentially with tanh-sinh."""
         expected = np.pi * 0.1
 
@@ -275,7 +278,7 @@ class TestVolumeQuad2D:
         assert errors[1] < 4e-6  # q=10: actual ~7e-7  # noqa: PLR2004
         assert errors[2] < 2e-9  # q=20: actual ~3e-10  # noqa: PLR2004
 
-    def test_area_convergence_auto(self, circle_ipq: ImplicitPolyQuadrature) -> None:
+    def test_area_convergence_auto(self, circle_ipq: ImplicitQuadrature) -> None:
         """AUTO_MIXED should also give exponential convergence."""
         expected = np.pi * 0.1
 
@@ -295,10 +298,10 @@ class TestSurfaceQuad2D:
     """Tests for 2D surface quadrature convergence."""
 
     @pytest.fixture(scope="class")
-    def circle_ipq(self) -> ImplicitPolyQuadrature:
-        return ImplicitPolyQuadrature(_make_circle_coeffs())
+    def circle_ipq(self) -> ImplicitQuadrature:
+        return ImplicitQuadrature(_make_circle_coeffs())
 
-    def test_perimeter_convergence(self, circle_ipq: ImplicitPolyQuadrature) -> None:
+    def test_perimeter_convergence(self, circle_ipq: ImplicitQuadrature) -> None:
         """Perimeter should converge with increasing q."""
         expected = 2.0 * np.pi * np.sqrt(0.1)
 
@@ -313,7 +316,7 @@ class TestSurfaceQuad2D:
         assert errors[1] < 1e-2  # q=10: actual ~1.8e-3  # noqa: PLR2004
         assert errors[2] < 1e-4  # q=20: actual ~2.1e-5  # noqa: PLR2004
 
-    def test_normal_weights_sum(self, circle_ipq: ImplicitPolyQuadrature) -> None:
+    def test_normal_weights_sum(self, circle_ipq: ImplicitQuadrature) -> None:
         """Normal weights should approximately cancel (closed curve)."""
         _, _, s_nwts = circle_ipq.surface_quad(10, QuadStrategy.TS_ONLY)
         # For a closed curve, sum of normal flux should be close to zero.
@@ -321,7 +324,7 @@ class TestSurfaceQuad2D:
         # Not exactly zero due to quadrature error, but should be small.
         assert np.linalg.norm(flux) < 0.01  # noqa: PLR2004
 
-    def test_perimeter_aggregate(self, circle_ipq: ImplicitPolyQuadrature) -> None:
+    def test_perimeter_aggregate(self, circle_ipq: ImplicitQuadrature) -> None:
         """Aggregate perimeter should converge faster than single-direction."""
         expected = 2.0 * np.pi * np.sqrt(0.1)
         _, sw, _ = circle_ipq.surface_quad(20, QuadStrategy.TS_ONLY, aggregate=True)
@@ -351,15 +354,15 @@ class TestVolumeQuad3D:
     """Tests for 3D volume quadrature convergence."""
 
     @pytest.fixture(scope="class")
-    def sphere_ipq(self) -> ImplicitPolyQuadrature:
-        return ImplicitPolyQuadrature(_make_sphere_coeffs())
+    def sphere_ipq(self) -> ImplicitQuadrature:
+        return ImplicitQuadrature(_make_sphere_coeffs())
 
-    def test_weight_sum(self, sphere_ipq: ImplicitPolyQuadrature) -> None:
+    def test_weight_sum(self, sphere_ipq: ImplicitQuadrature) -> None:
         """Total weights should sum to 1 (volume of [0,1]^3)."""
         _pts, wts = sphere_ipq.volume_quad(3, QuadStrategy.TS_ONLY)
         assert abs(np.sum(wts) - 1.0) < 1e-8  # noqa: PLR2004
 
-    def test_volume_convergence(self, sphere_ipq: ImplicitPolyQuadrature) -> None:
+    def test_volume_convergence(self, sphere_ipq: ImplicitQuadrature) -> None:
         """Sphere volume should converge exponentially."""
         expected = (4.0 / 3.0) * np.pi * 0.3**3
 
@@ -379,10 +382,10 @@ class TestSurfaceQuad3D:
     """Tests for 3D surface quadrature convergence."""
 
     @pytest.fixture(scope="class")
-    def sphere_ipq(self) -> ImplicitPolyQuadrature:
-        return ImplicitPolyQuadrature(_make_sphere_coeffs())
+    def sphere_ipq(self) -> ImplicitQuadrature:
+        return ImplicitQuadrature(_make_sphere_coeffs())
 
-    def test_area_convergence(self, sphere_ipq: ImplicitPolyQuadrature) -> None:
+    def test_area_convergence(self, sphere_ipq: ImplicitQuadrature) -> None:
         """Sphere surface area should converge."""
         expected = 4.0 * np.pi * 0.3**2
 
@@ -396,7 +399,7 @@ class TestSurfaceQuad3D:
         assert errors[1] < 0.1  # noqa: PLR2004
         assert errors[2] < 1e-2  # noqa: PLR2004
 
-    def test_normal_flux_closed(self, sphere_ipq: ImplicitPolyQuadrature) -> None:
+    def test_normal_flux_closed(self, sphere_ipq: ImplicitQuadrature) -> None:
         """Normal flux sum should be near zero for a closed surface."""
         _, _, s_nwts = sphere_ipq.surface_quad(7, QuadStrategy.TS_ONLY)
         flux = np.sum(s_nwts, axis=0)
@@ -408,33 +411,33 @@ class TestSurfaceQuad3D:
 # ---------------------------------------------------------------------------
 
 
-class TestImplicitPolyQuadrature:
-    """Tests for the ImplicitPolyQuadrature class."""
+class TestImplicitQuadrature:
+    """Tests for the ImplicitQuadrature class."""
 
     def test_init_with_array(self) -> None:
         c = _make_circle_coeffs()
-        ipq = ImplicitPolyQuadrature(c)
+        ipq = ImplicitQuadrature(c)
         assert ipq.dim == 2  # noqa: PLR2004
         assert ipq.n_polys == 1
 
     def test_init_validation(self) -> None:
         with pytest.raises(ValueError, match="At least one"):
-            ImplicitPolyQuadrature()
+            ImplicitQuadrature()
 
     def test_init_inconsistent_dims(self) -> None:
         """Reject polynomials with inconsistent dimensions."""
         with pytest.raises(ValueError, match="same dimension"):
-            ImplicitPolyQuadrature(np.ones((3, 3)), np.ones((2, 2, 2)))
+            ImplicitQuadrature(np.ones((3, 3)), np.ones((2, 2, 2)))
 
     def test_init_unsupported_dim_1d(self) -> None:
         """Reject 1D polynomials."""
         with pytest.raises(ValueError, match="Only 2D and 3D"):
-            ImplicitPolyQuadrature(np.array([1.0, 2.0, 3.0]))
+            ImplicitQuadrature(np.array([1.0, 2.0, 3.0]))
 
     def test_init_unsupported_dim_4d(self) -> None:
         """Reject 4D polynomials."""
         with pytest.raises(ValueError, match="Only 2D and 3D"):
-            ImplicitPolyQuadrature(np.ones((2, 2, 2, 2)))
+            ImplicitQuadrature(np.ones((2, 2, 2, 2)))
 
     def test_init_vector_bezier_rejected(self) -> None:
         """Reject vector-valued Bezier (rank > 1)."""
@@ -443,23 +446,23 @@ class TestImplicitPolyQuadrature:
         cp = np.ones((3, 3, 2))  # rank=2
         bez = Bezier(cp)
         with pytest.raises(ValueError, match="scalar Bezier"):
-            ImplicitPolyQuadrature(bez)
+            ImplicitQuadrature(bez)
 
     def test_volume_quad_q_validation(self) -> None:
         """Reject q < 1."""
-        ipq = ImplicitPolyQuadrature(_make_circle_coeffs())
+        ipq = ImplicitQuadrature(_make_circle_coeffs())
         with pytest.raises(ValueError, match="q must be >= 1"):
             ipq.volume_quad(0)
 
     def test_surface_quad_q_validation(self) -> None:
         """Reject q < 1 in surface_quad."""
-        ipq = ImplicitPolyQuadrature(_make_circle_coeffs())
+        ipq = ImplicitQuadrature(_make_circle_coeffs())
         with pytest.raises(ValueError, match="q must be >= 1"):
             ipq.surface_quad(0)
 
     def test_eval_poly_out_of_range(self) -> None:
         """Reject poly_idx out of range."""
-        ipq = ImplicitPolyQuadrature(_make_circle_coeffs())
+        ipq = ImplicitQuadrature(_make_circle_coeffs())
         pts = np.array([[0.5, 0.5]])
         with pytest.raises(IndexError, match="out of range"):
             ipq.eval_poly(1, pts)
@@ -468,7 +471,7 @@ class TestImplicitPolyQuadrature:
 
     def test_eval_poly(self) -> None:
         c = _make_circle_coeffs()
-        ipq = ImplicitPolyQuadrature(c)
+        ipq = ImplicitQuadrature(c)
         pts = np.array([[0.5, 0.5]])
         vals = ipq.eval_poly(0, pts)
         # At center: (0-0)^2 + (0-0)^2 - 0.1 = -0.1.
@@ -481,7 +484,7 @@ class TestImplicitPolyQuadrature:
         c = _make_circle_coeffs()
         cp = c[..., np.newaxis]  # rank=1
         bez = Bezier(cp)
-        ipq = ImplicitPolyQuadrature(bez)
+        ipq = ImplicitQuadrature(bez)
         assert ipq.dim == 2  # noqa: PLR2004
         pts, wts = ipq.volume_quad(10, QuadStrategy.AUTO_MIXED)
         vals = ipq.eval_poly(0, pts)
@@ -494,7 +497,7 @@ class TestImplicitPolyQuadrature:
             monomial_to_bernstein_2d,
             monomial_to_bernstein_3d,
         )
-        from pantr.bezier.implicit._bernstein import (  # noqa: PLC0415
+        from pantr.bezier.implicit._bernstein_core import (  # noqa: PLC0415
             _eval_bernstein_2d,
             _eval_bernstein_3d,
         )
@@ -531,7 +534,7 @@ class TestImplicitPolyQuadrature:
 
     def test_square_free_preprocessing(self) -> None:
         """Square-free factoring removes repeated roots from 1D polynomials."""
-        from pantr.bezier.implicit._bernstein import _make_square_free_1d  # noqa: PLC0415
+        from pantr.bezier.implicit._bernstein_core import _make_square_free_1d  # noqa: PLC0415
 
         # p(x) = (x-0.3)^2 in Bernstein degree 2.
         p = _mono_to_bernstein_1d(np.array([0.09, -0.6, 1.0]), 2)
@@ -568,7 +571,7 @@ class TestMultiplePolynomials:
         """Each circle area should be accurate independently."""
         c1 = _circle_bernstein(0.35, 0.5, 0.04)
         c2 = _circle_bernstein(0.65, 0.5, 0.04)
-        ipq = ImplicitPolyQuadrature(c1, c2)
+        ipq = ImplicitQuadrature(c1, c2)
         assert ipq.n_polys == 2  # noqa: PLR2004
 
         pts, wts = ipq.volume_quad(10, QuadStrategy.AUTO_MIXED)
@@ -583,7 +586,7 @@ class TestMultiplePolynomials:
         """Intersection and union should satisfy A|B = A + B - A&B."""
         c1 = _circle_bernstein(0.35, 0.5, 0.04)
         c2 = _circle_bernstein(0.65, 0.5, 0.04)
-        ipq = ImplicitPolyQuadrature(c1, c2)
+        ipq = ImplicitQuadrature(c1, c2)
 
         pts, wts = ipq.volume_quad(10, QuadStrategy.AUTO_MIXED)
         v1 = ipq.eval_poly(0, pts)
@@ -601,7 +604,7 @@ class TestMultiplePolynomials:
         """Intersection area should match the analytical formula."""
         c1 = _circle_bernstein(0.35, 0.5, 0.04)
         c2 = _circle_bernstein(0.65, 0.5, 0.04)
-        ipq = ImplicitPolyQuadrature(c1, c2)
+        ipq = ImplicitQuadrature(c1, c2)
 
         pts, wts = ipq.volume_quad(10, QuadStrategy.AUTO_MIXED)
         v1 = ipq.eval_poly(0, pts)
@@ -618,7 +621,7 @@ class TestMultiplePolynomials:
         c1 = _circle_bernstein(0.35, 0.5, 0.04)
         c2 = _circle_bernstein(0.65, 0.5, 0.04)
         c3 = _circle_bernstein(0.5, 0.75, 0.04)
-        ipq = ImplicitPolyQuadrature(c1, c2, c3)
+        ipq = ImplicitQuadrature(c1, c2, c3)
         assert ipq.n_polys == 3  # noqa: PLR2004
 
         pts, wts = ipq.volume_quad(10, QuadStrategy.AUTO_MIXED)
@@ -645,7 +648,7 @@ class TestMultiplePolynomials:
         c_tr = _circle_bernstein(0.7, 0.7, 0.02)
         c_bl = _circle_bernstein(0.3, 0.3, 0.02)
         c_br = _circle_bernstein(0.7, 0.3, 0.02)
-        ipq = ImplicitPolyQuadrature(c_tl, c_tr, c_bl, c_br)
+        ipq = ImplicitQuadrature(c_tl, c_tr, c_bl, c_br)
         assert ipq.n_polys == 4  # noqa: PLR2004
 
         pts, wts = ipq.volume_quad(10, QuadStrategy.AUTO_MIXED)
@@ -668,7 +671,7 @@ class TestMultiplePolynomials:
         c1 = _circle_bernstein(0.35, 0.5, 0.04)
         c2 = _circle_bernstein(0.65, 0.5, 0.04)
         c_line = np.array([[-0.5, 0.5], [-0.5, 0.5]])  # y - 0.5
-        ipq = ImplicitPolyQuadrature(c1, c2, c_line)
+        ipq = ImplicitQuadrature(c1, c2, c_line)
         assert ipq.n_polys == 3  # noqa: PLR2004
 
         pts, wts = ipq.volume_quad(10, QuadStrategy.AUTO_MIXED)
@@ -767,7 +770,7 @@ class TestHRefinement:
                 cell_lo = np.array([lo + ix * h, lo + iy * h])
                 cell_hi = np.array([lo + (ix + 1) * h, lo + (iy + 1) * h])
                 coeffs = _ellipse_bernstein_on_cell(cell_lo, cell_hi)
-                ipq = ImplicitPolyQuadrature(coeffs)
+                ipq = ImplicitQuadrature(coeffs)
                 # GL_ONLY is correct for h-refinement: as h→0 the geometry
                 # becomes locally flat, so GL gives optimal convergence.
                 pts, wts = ipq.volume_quad(q, QuadStrategy.GL_ONLY)
@@ -807,12 +810,12 @@ class TestQRefinement:
     """
 
     @staticmethod
-    def _single_cell_ellipse() -> ImplicitPolyQuadrature:
+    def _single_cell_ellipse() -> ImplicitQuadrature:
         """Create quadrature for the ellipse on U=(-1.1, 1.1)^2."""
         cell_lo = np.array([-1.1, -1.1])
         cell_hi = np.array([1.1, 1.1])
         coeffs = _ellipse_bernstein_on_cell(cell_lo, cell_hi)
-        return ImplicitPolyQuadrature(coeffs)
+        return ImplicitQuadrature(coeffs)
 
     def test_ellipse_volume_q_refinement(self) -> None:
         """Volume integral I_Omega should converge exponentially in q."""
@@ -916,7 +919,7 @@ class TestBilinear:
     def test_bilinear_smooth(self) -> None:
         """Eps = 0.1: smooth interface, should converge well with GL."""
         bern = self._bilinear_bernstein(0.1)
-        ipq = ImplicitPolyQuadrature(bern)
+        ipq = ImplicitQuadrature(bern)
 
         # Reference.
         pts_r, wts_r = ipq.volume_quad(20, QuadStrategy.GL_ONLY)
@@ -937,7 +940,7 @@ class TestBilinear:
     def test_bilinear_high_curvature(self) -> None:
         """Eps = 0.01: high curvature, (TS,GL) should outperform (GL,GL)."""
         bern = self._bilinear_bernstein(0.01)
-        ipq = ImplicitPolyQuadrature(bern)
+        ipq = ImplicitQuadrature(bern)
 
         pts_r, wts_r = ipq.volume_quad(20, QuadStrategy.TS_ONLY)
         vals_r = ipq.eval_poly(0, pts_r)
@@ -953,7 +956,7 @@ class TestBilinear:
     def test_bilinear_degenerate(self) -> None:
         """Eps = 0: sharp cross, should still produce a valid quadrature."""
         bern = self._bilinear_bernstein(0.0)
-        ipq = ImplicitPolyQuadrature(bern)
+        ipq = ImplicitQuadrature(bern)
         pts, wts = ipq.volume_quad(10, QuadStrategy.TS_ONLY)
         vals = ipq.eval_poly(0, pts)
         vol = float(np.sum(wts[vals < 0]))
@@ -1000,7 +1003,7 @@ class TestTrilinearTunnel:
     def test_tunnel_volume_convergence(self) -> None:
         """Volume integral should converge on the tunnel geometry."""
         bern = self._tunnel_bernstein()
-        ipq = ImplicitPolyQuadrature(bern)
+        ipq = ImplicitQuadrature(bern)
 
         # Reference.
         pts_r, wts_r = ipq.volume_quad(12, QuadStrategy.TS_ONLY)
@@ -1023,14 +1026,14 @@ class TestTrilinearTunnel:
     def test_tunnel_weight_sum(self) -> None:
         """Total weights should sum to 1."""
         bern = self._tunnel_bernstein()
-        ipq = ImplicitPolyQuadrature(bern)
+        ipq = ImplicitQuadrature(bern)
         _, wts = ipq.volume_quad(5, QuadStrategy.TS_ONLY)
         assert abs(np.sum(wts) - 1.0) < 1e-10  # noqa: PLR2004
 
     def test_tunnel_surface(self) -> None:
         """Surface quadrature should produce points on the tunnel interface."""
         bern = self._tunnel_bernstein()
-        ipq = ImplicitPolyQuadrature(bern)
+        ipq = ImplicitQuadrature(bern)
         _, s_wts, _ = ipq.surface_quad(5, QuadStrategy.TS_ONLY)
         assert len(s_wts) > 0, "No surface points generated"
 
@@ -1100,7 +1103,7 @@ class TestSingularities2D:
     ) -> float:
         """Compute relative volume error vs a high-q reference."""
         bern = _mono_to_bernstein_2d(mono, degrees, lo, hi)
-        ipq = ImplicitPolyQuadrature(bern)
+        ipq = ImplicitQuadrature(bern)
         cell_vol = float(np.prod(hi - lo))
 
         # Reference.
@@ -1261,7 +1264,7 @@ class TestSingularities3D:
         ref_q: int = 20,
     ) -> float:
         """Compute relative volume error vs a high-q reference."""
-        ipq = ImplicitPolyQuadrature(bern)
+        ipq = ImplicitQuadrature(bern)
         pts_r, wts_r = ipq.volume_quad(ref_q, QuadStrategy.TS_ONLY)
         vals_r = ipq.eval_poly(0, pts_r)
         vol_ref = np.sum(wts_r[vals_r < 0]) * cell_vol
@@ -1389,7 +1392,7 @@ def _volume_fraction_2d(
     n_sample: int = 50,
 ) -> float:
     """Estimate volume fraction of {phi<0} on [0,1]^2."""
-    from pantr.bezier.implicit._bernstein import _eval_bernstein_2d  # noqa: PLC0415
+    from pantr.bezier.implicit._bernstein_core import _eval_bernstein_2d  # noqa: PLC0415
 
     count = 0
     pt = np.empty(2, dtype=np.float64)
@@ -1440,7 +1443,7 @@ class TestRandomGeometry2D:
         for q in [5, 15]:
             errors = []
             for bern in polys:
-                ipq = ImplicitPolyQuadrature(bern)
+                ipq = ImplicitQuadrature(bern)
                 # Reference.
                 pts_r, wts_r = ipq.volume_quad(30, QuadStrategy.TS_ONLY)
                 vals_r = ipq.eval_poly(0, pts_r)
@@ -1476,7 +1479,7 @@ class TestEdgeCases:
     def test_phi_positive_everywhere(self) -> None:
         """No interface: phi > 0 on all of [0,1]^2."""
         c = np.ones((3, 3))
-        ipq = ImplicitPolyQuadrature(c)
+        ipq = ImplicitQuadrature(c)
         pts, wts = ipq.volume_quad(5, QuadStrategy.GL_ONLY)
         vals = ipq.eval_poly(0, pts)
         assert np.sum(wts[vals < 0]) == 0.0
@@ -1484,7 +1487,7 @@ class TestEdgeCases:
     def test_phi_negative_everywhere(self) -> None:
         """No interface: phi < 0 on all of [0,1]^2. Entire domain is inside."""
         c = -np.ones((3, 3))
-        ipq = ImplicitPolyQuadrature(c)
+        ipq = ImplicitQuadrature(c)
         pts, wts = ipq.volume_quad(5, QuadStrategy.GL_ONLY)
         vals = ipq.eval_poly(0, pts)
         assert abs(np.sum(wts[vals < 0]) - 1.0) < 1e-12  # noqa: PLR2004
@@ -1501,7 +1504,7 @@ class TestEdgeCases:
         for i in range(3):
             for j in range(3):
                 c[i, j] = bx[i] + by[j] - 0.5
-        ipq = ImplicitPolyQuadrature(c)
+        ipq = ImplicitQuadrature(c)
         pts, wts = ipq.volume_quad(10, QuadStrategy.AUTO_MIXED)
         vals = ipq.eval_poly(0, pts)
         # Domain is inside or on the circle → area ≈ 1.
@@ -1510,7 +1513,7 @@ class TestEdgeCases:
     def test_straight_line(self) -> None:
         """Linear phi = x - 0.5 splits domain exactly in half."""
         c = np.array([[-0.5, -0.5], [0.5, 0.5]])
-        ipq = ImplicitPolyQuadrature(c)
+        ipq = ImplicitQuadrature(c)
         pts, wts = ipq.volume_quad(5, QuadStrategy.GL_ONLY)
         vals = ipq.eval_poly(0, pts)
         assert abs(np.sum(wts[vals < 0]) - 0.5) < 1e-12  # noqa: PLR2004
@@ -1519,26 +1522,26 @@ class TestEdgeCases:
         """Phi = 0 everywhere: rejected as undefined domain."""
         c = np.zeros((2, 2))
         with pytest.raises(ValueError, match="identically zero"):
-            ImplicitPolyQuadrature(c)
+            ImplicitQuadrature(c)
 
     def test_surface_no_interface(self) -> None:
         """Surface quad when phi > 0 everywhere: should return empty."""
         c = np.ones((3, 3))
-        ipq = ImplicitPolyQuadrature(c)
+        ipq = ImplicitQuadrature(c)
         _, s_wts, _ = ipq.surface_quad(5, QuadStrategy.GL_ONLY)
         assert len(s_wts) == 0
 
     def test_weight_sum_straight_line(self) -> None:
         """Total weights should sum to 1 even with a straight-line interface."""
         c = np.array([[-0.5, -0.5], [0.5, 0.5]])
-        ipq = ImplicitPolyQuadrature(c)
+        ipq = ImplicitQuadrature(c)
         _, wts = ipq.volume_quad(5, QuadStrategy.GL_ONLY)
         assert abs(np.sum(wts) - 1.0) < 1e-12  # noqa: PLR2004
 
     def test_3d_no_interface(self) -> None:
         """3D: phi > 0 everywhere."""
         c = np.ones((2, 2, 2))
-        ipq = ImplicitPolyQuadrature(c)
+        ipq = ImplicitQuadrature(c)
         pts, wts = ipq.volume_quad(3, QuadStrategy.GL_ONLY)
         vals = ipq.eval_poly(0, pts)
         assert np.sum(wts[vals < 0]) == 0.0
@@ -1546,7 +1549,7 @@ class TestEdgeCases:
     def test_3d_phi_negative_everywhere(self) -> None:
         """3D: phi < 0 everywhere. Entire domain is inside."""
         c = -np.ones((2, 2, 2))
-        ipq = ImplicitPolyQuadrature(c)
+        ipq = ImplicitQuadrature(c)
         pts, wts = ipq.volume_quad(3, QuadStrategy.GL_ONLY)
         vals = ipq.eval_poly(0, pts)
         assert abs(np.sum(wts[vals < 0]) - 1.0) < 1e-12  # noqa: PLR2004
@@ -1556,7 +1559,7 @@ class TestEdgeCases:
         c = np.zeros((2, 2, 2))
         c[:, :, 0] = -0.5
         c[:, :, 1] = 0.5
-        ipq = ImplicitPolyQuadrature(c)
+        ipq = ImplicitQuadrature(c)
         pts, wts = ipq.volume_quad(3, QuadStrategy.GL_ONLY)
         vals = ipq.eval_poly(0, pts)
         assert abs(np.sum(wts[vals < 0]) - 0.5) < 1e-12  # noqa: PLR2004
@@ -1565,12 +1568,12 @@ class TestEdgeCases:
         """3D: phi = 0 everywhere: rejected as undefined domain."""
         c = np.zeros((2, 2, 2))
         with pytest.raises(ValueError, match="identically zero"):
-            ImplicitPolyQuadrature(c)
+            ImplicitQuadrature(c)
 
     def test_3d_surface_no_interface(self) -> None:
         """3D surface quad when phi > 0 everywhere: should return empty."""
         c = np.ones((2, 2, 2))
-        ipq = ImplicitPolyQuadrature(c)
+        ipq = ImplicitQuadrature(c)
         _, s_wts, _ = ipq.surface_quad(3, QuadStrategy.GL_ONLY)
         assert len(s_wts) == 0
 
@@ -1593,7 +1596,7 @@ class TestEdgeCases:
         mono[0, 0, 1] = -1.0
         mono[0, 0, 2] = 1.0
         bern = monomial_to_bernstein_3d(mono, (2, 2, 2), lo, hi)
-        ipq = ImplicitPolyQuadrature(bern)
+        ipq = ImplicitQuadrature(bern)
         _, sw, _ = ipq.surface_quad(8, QuadStrategy.TS_ONLY, aggregate=True)
         expected = 4.0 * np.pi * r**2
         err = abs(np.sum(sw) - expected) / expected
@@ -1650,7 +1653,7 @@ class TestDeltoid3:
     def test_deltoid3_volume(self) -> None:
         """Volume integral should converge for the 3D deltoid."""
         bern = self._deltoid3_bernstein()
-        ipq = ImplicitPolyQuadrature(bern)
+        ipq = ImplicitQuadrature(bern)
         cell_vol = 6.0 * 6.0 * 6.0  # (3.5-(-2.5)) * (3-(-3)) * (4-(-2))
 
         # Reference at q=10 (higher q is too slow for degree-(4,4,4)).
@@ -1696,7 +1699,7 @@ class TestBilinearTSGL:
         at q=40, while (GL,GL) only reaches ~1e-5.
         """
         bern = self._bilinear_bernstein(0.01)
-        ipq = ImplicitPolyQuadrature(bern)
+        ipq = ImplicitQuadrature(bern)
 
         # Reference with TS at high q.
         pts_r, wts_r = ipq.volume_quad(60, QuadStrategy.TS_ONLY)
@@ -1729,7 +1732,7 @@ class TestBilinearTSGL:
         the degenerate cross is exactly representable.
         """
         bern = self._bilinear_bernstein(0.0)
-        ipq = ImplicitPolyQuadrature(bern)
+        ipq = ImplicitQuadrature(bern)
 
         pts, wts = ipq.volume_quad(5, QuadStrategy.GL_ONLY)
         vals = ipq.eval_poly(0, pts)
@@ -1740,7 +1743,7 @@ class TestBilinearTSGL:
     def test_eps01_gl_converges(self) -> None:
         """For eps=0.1, GL converges to machine precision (smooth geometry)."""
         bern = self._bilinear_bernstein(0.1)
-        ipq = ImplicitPolyQuadrature(bern)
+        ipq = ImplicitQuadrature(bern)
 
         pts_r, wts_r = ipq.volume_quad(40, QuadStrategy.GL_ONLY)
         vals_r = ipq.eval_poly(0, pts_r)
@@ -1776,7 +1779,7 @@ class TestHRefinementExtended:
                 cell_lo = np.array([lo_v + ix * h, lo_v + iy * h])
                 cell_hi = np.array([lo_v + (ix + 1) * h, lo_v + (iy + 1) * h])
                 coeffs = _ellipse_bernstein_on_cell(cell_lo, cell_hi)
-                ipq = ImplicitPolyQuadrature(coeffs)
+                ipq = ImplicitQuadrature(coeffs)
                 pts, wts = ipq.volume_quad(q, QuadStrategy.GL_ONLY)
                 vals = ipq.eval_poly(0, pts)
                 total += np.sum(wts[vals < 0]) * h**2
@@ -1796,7 +1799,7 @@ class TestHRefinementExtended:
                         [lo_v + (ix + 1) * h, lo_v + (iy + 1) * h, lo_v + (iz + 1) * h]
                     )
                     coeffs = _ellipsoid_bernstein_on_cell(cell_lo, cell_hi)
-                    ipq = ImplicitPolyQuadrature(coeffs)
+                    ipq = ImplicitQuadrature(coeffs)
                     pts, wts = ipq.volume_quad(q, QuadStrategy.GL_ONLY)
                     vals = ipq.eval_poly(0, pts)
                     total += np.sum(wts[vals < 0]) * h**3
@@ -1846,7 +1849,7 @@ class TestHRefinementExtended:
 
 
 class TestResultant:
-    """Direct unit tests for resultant_2d from _resultant.py."""
+    """Direct unit tests for resultant_2d from _resultant_core.py."""
 
     def test_resultant_along_y(self) -> None:
         """Resultant of (x-0.5) and (y-0.5) along axis 0 yields root at y=0.5."""
@@ -1877,7 +1880,7 @@ class TestSurfaceQuad3DAggregate:
         r = 0.2
         r_sq = r**2
         coeffs = _make_sphere_coeffs(r_sq=r_sq)
-        ipq = ImplicitPolyQuadrature(coeffs)
+        ipq = ImplicitQuadrature(coeffs)
         expected = 4.0 * np.pi * r**2
 
         errors = []
@@ -1920,7 +1923,7 @@ class TestBernstein3D:
 
 
 class TestConvertValidation:
-    """Tests for _convert.py input validation."""
+    """Tests for _convert_core.py input validation."""
 
     def test_monomial_to_bernstein_2d_bad_domain(self) -> None:
         """Reject domain_hi <= domain_lo in 2D."""
@@ -1948,9 +1951,9 @@ class TestZeroPolyValidation:
     """Tests for identically-zero polynomial rejection."""
 
     def test_zero_polynomial_raises(self) -> None:
-        """ImplicitPolyQuadrature rejects identically-zero coefficients."""
+        """ImplicitQuadrature rejects identically-zero coefficients."""
         with pytest.raises(ValueError, match="identically zero"):
-            ImplicitPolyQuadrature(np.zeros((3, 3)))
+            ImplicitQuadrature(np.zeros((3, 3)))
 
 
 class TestEvalPolyValidation:
@@ -1958,12 +1961,12 @@ class TestEvalPolyValidation:
 
     def test_wrong_points_shape_1d(self) -> None:
         """Reject 1D points array."""
-        ipq = ImplicitPolyQuadrature(_make_circle_coeffs())
+        ipq = ImplicitQuadrature(_make_circle_coeffs())
         with pytest.raises(ValueError, match="shape"):
             ipq.eval_poly(0, np.array([0.5, 0.5]))
 
     def test_wrong_points_dim(self) -> None:
         """Reject points with wrong number of columns."""
-        ipq = ImplicitPolyQuadrature(_make_circle_coeffs())
+        ipq = ImplicitQuadrature(_make_circle_coeffs())
         with pytest.raises(ValueError, match="shape"):
             ipq.eval_poly(0, np.array([[0.5, 0.5, 0.5]]))

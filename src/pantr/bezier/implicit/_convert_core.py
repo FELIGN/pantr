@@ -2,7 +2,7 @@
 
 Converts polynomials from monomial (power) form on arbitrary domains to
 tensor-product Bernstein form on [0,1]^d. This is the standard way to
-prepare input for :class:`ImplicitPolyQuadrature`.
+prepare input for :class:`ImplicitQuadrature`.
 
 Main exports:
 
@@ -69,7 +69,7 @@ def monomial_to_bernstein_2d(
 
     Example:
         >>> import numpy as np
-        >>> from pantr.bezier.implicit._convert import monomial_to_bernstein_2d
+        >>> from pantr.bezier.implicit._convert_core import monomial_to_bernstein_2d
         >>> # phi(x, y) = x^2 + 4y^2 - 1 on [-1, 1]^2
         >>> mono = np.zeros((3, 3))
         >>> mono[2, 0] = 1.0   # x^2
