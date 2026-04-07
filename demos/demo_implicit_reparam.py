@@ -59,20 +59,20 @@ def demo_2d_circle() -> None:
     coeffs = _circle_bernstein(0.5, 0.5, 0.3)
     iq = ImplicitQuadrature(coeffs)
 
-    vol = iq.volume_reparam(q=6, signs=[-1])
-    surf = iq.surface_reparam(q=6, poly_idx=0)
+    vol = iq.volume_reparam(q=10, signs=[-1])
+    surf = iq.surface_reparam(q=20, poly_idx=0)
     print(f"  Volume: {vol.n_cells} quads, {vol.points.shape[0]} nodes")
     print(f"  Surface: {surf.n_cells} curves, {surf.points.shape[0]} nodes")
 
     pl = pv.Plotter()
     pl.add_mesh(
-        implicit_to_pyvista(vol).tessellate(),
+        implicit_to_pyvista(vol),
         color="steelblue",
         opacity=0.6,
         label="Interior",
     )
     pl.add_mesh(
-        implicit_to_pyvista(surf).tessellate(),
+        implicit_to_pyvista(surf),
         color="red",
         line_width=4,
         label="Boundary",
@@ -91,11 +91,11 @@ def demo_2d_two_circles() -> None:
     iq = ImplicitQuadrature(c1, c2)
 
     # Region inside c1 but outside c2
-    diff = iq.volume_reparam(q=6, signs=[-1, +1])
+    diff = iq.volume_reparam(q=10, signs=[-1, +1])
     # Surface of c1 restricted to outside c2
-    surf_c1 = iq.surface_reparam(q=6, poly_idx=0, signs=[0, +1])
+    surf_c1 = iq.surface_reparam(q=15, poly_idx=0, signs=[0, +1])
     # Surface of c2 restricted to inside c1 (the "cut")
-    surf_c2 = iq.surface_reparam(q=6, poly_idx=1, signs=[-1, 0])
+    surf_c2 = iq.surface_reparam(q=15, poly_idx=1, signs=[-1, 0])
 
     print(f"  c1 \\ c2: {diff.n_cells} quads")
     print(f"  boundary c1 outside c2: {surf_c1.n_cells} curves")
@@ -103,21 +103,21 @@ def demo_2d_two_circles() -> None:
 
     pl = pv.Plotter()
     pl.add_mesh(
-        implicit_to_pyvista(diff).tessellate(),
+        implicit_to_pyvista(diff),
         color="steelblue",
         opacity=0.5,
         label="c1 \\ c2",
     )
     if surf_c1.n_cells > 0:
         pl.add_mesh(
-            implicit_to_pyvista(surf_c1).tessellate(),
+            implicit_to_pyvista(surf_c1),
             color="red",
             line_width=4,
             label="bdry c1",
         )
     if surf_c2.n_cells > 0:
         pl.add_mesh(
-            implicit_to_pyvista(surf_c2).tessellate(),
+            implicit_to_pyvista(surf_c2),
             color="orange",
             line_width=4,
             label="cut (c2)",
@@ -134,22 +134,14 @@ def demo_2d_ellipse() -> None:
     coeffs = _ellipse_bernstein(0.5, 0.5, 0.4, 0.2)
     iq = ImplicitQuadrature(coeffs)
 
-    vol = iq.volume_reparam(q=6, signs=[-1])
-    surf = iq.surface_reparam(q=8, poly_idx=0)
+    vol = iq.volume_reparam(q=10, signs=[-1])
+    surf = iq.surface_reparam(q=20, poly_idx=0)
     print(f"  Volume: {vol.n_cells} quads")
     print(f"  Surface: {surf.n_cells} curves")
 
     pl = pv.Plotter()
-    pl.add_mesh(
-        implicit_to_pyvista(vol).tessellate(),
-        color="mediumseagreen",
-        opacity=0.6,
-    )
-    pl.add_mesh(
-        implicit_to_pyvista(surf).tessellate(),
-        color="darkgreen",
-        line_width=4,
-    )
+    pl.add_mesh(implicit_to_pyvista(vol), color="mediumseagreen", opacity=0.6)
+    pl.add_mesh(implicit_to_pyvista(surf), color="darkgreen", line_width=4)
     pl.view_xy()
     pl.add_title("Ellipse: volume + surface")
     pl.show()
@@ -179,8 +171,8 @@ def demo_3d_sphere() -> None:
     coeffs = _sphere_bernstein(0.5, 0.5, 0.5, 0.35)
     iq = ImplicitQuadrature(coeffs)
 
-    vol = iq.volume_reparam(q=4, signs=[-1])
-    surf = iq.surface_reparam(q=6, poly_idx=0)
+    vol = iq.volume_reparam(q=5, signs=[-1])
+    surf = iq.surface_reparam(q=10, poly_idx=0)
     print(f"  Volume: {vol.n_cells} hexes, {vol.points.shape[0]} nodes")
     print(f"  Surface: {surf.n_cells} quads, {surf.points.shape[0]} nodes")
 
@@ -188,13 +180,11 @@ def demo_3d_sphere() -> None:
 
     pl.subplot(0, 0)
     pl.add_title("Volume (hexes)")
-    grid_vol = implicit_to_pyvista(vol).tessellate()
-    pl.add_mesh(grid_vol, color="steelblue", opacity=0.4, show_edges=True)
+    pl.add_mesh(implicit_to_pyvista(vol), color="steelblue", opacity=0.4, show_edges=True)
 
     pl.subplot(0, 1)
     pl.add_title("Surface (quads)")
-    grid_surf = implicit_to_pyvista(surf).tessellate()
-    pl.add_mesh(grid_surf, color="tomato", opacity=0.8)
+    pl.add_mesh(implicit_to_pyvista(surf), color="tomato", opacity=0.8)
 
     pl.link_views()
     pl.show()
@@ -208,11 +198,11 @@ def demo_3d_two_spheres() -> None:
     iq = ImplicitQuadrature(s1, s2)
 
     # Intersection: inside both
-    inter = iq.volume_reparam(q=4, signs=[-1, -1])
+    inter = iq.volume_reparam(q=5, signs=[-1, -1])
     # Surface of s1 inside s2
-    surf_s1 = iq.surface_reparam(q=5, poly_idx=0, signs=[0, -1])
+    surf_s1 = iq.surface_reparam(q=10, poly_idx=0, signs=[0, -1])
     # Surface of s2 inside s1
-    surf_s2 = iq.surface_reparam(q=5, poly_idx=1, signs=[-1, 0])
+    surf_s2 = iq.surface_reparam(q=10, poly_idx=1, signs=[-1, 0])
 
     print(f"  Intersection volume: {inter.n_cells} hexes")
     print(f"  Surface s1 (inside s2): {surf_s1.n_cells} quads")
@@ -221,7 +211,7 @@ def demo_3d_two_spheres() -> None:
     pl = pv.Plotter()
     if inter.n_cells > 0:
         pl.add_mesh(
-            implicit_to_pyvista(inter).tessellate(),
+            implicit_to_pyvista(inter),
             color="gold",
             opacity=0.3,
             show_edges=True,
@@ -229,14 +219,14 @@ def demo_3d_two_spheres() -> None:
         )
     if surf_s1.n_cells > 0:
         pl.add_mesh(
-            implicit_to_pyvista(surf_s1).tessellate(),
+            implicit_to_pyvista(surf_s1),
             color="steelblue",
             opacity=0.7,
             label="s1 cap",
         )
     if surf_s2.n_cells > 0:
         pl.add_mesh(
-            implicit_to_pyvista(surf_s2).tessellate(),
+            implicit_to_pyvista(surf_s2),
             color="tomato",
             opacity=0.7,
             label="s2 cap",

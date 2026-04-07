@@ -41,11 +41,16 @@ from pantr.bezier.implicit._mask_core import (
 )
 from pantr.bezier.implicit._roots_core import find_roots
 
-_REPARAM_OFFSET: float = 1e-10
+_REPARAM_OFFSET: float = 0.02
 """Relative inset from interval boundaries when placing Lagrange nodes.
 
-Prevents degenerate cells when a levelset intersects the ``[0, 1]^d``
-boundary, causing roots to coincide with endpoints.
+Base-interval boundaries in the hierarchy mark topology transitions where
+the cross-section appears or disappears.  Endpoint-inclusive node
+distributions (equispaced, GLL) would place nodes exactly at these
+degenerate positions, producing cells with near-zero width in one
+direction.  A 2 % inset keeps all nodes safely inside the region where
+the cross-section has finite width, at a cost of ~2 % of each interval
+length — visually imperceptible.
 """
 
 _REPARAM_MIN_LEN: float = 1e-12

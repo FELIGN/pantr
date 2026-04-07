@@ -344,7 +344,9 @@ class TestPyvistaIntegration:
 
         result = circle_ipq.volume_reparam(q=3, signs=[-1])
         grid = implicit_to_pyvista(result)
-        assert grid.n_cells == result.n_cells
+        # Linear tessellation: (q-1)^2 sub-quads per Lagrange cell.
+        expected_sub = result.n_cells * (result.q - 1) ** result.cell_dim
+        assert grid.n_cells == expected_sub
         assert grid.n_points == result.n_cells * result.pts_per_cell
 
     def test_surface_to_pyvista(self, circle_ipq: ImplicitQuadrature) -> None:
@@ -353,7 +355,8 @@ class TestPyvistaIntegration:
 
         result = circle_ipq.surface_reparam(q=4, poly_idx=0)
         grid = implicit_to_pyvista(result)
-        assert grid.n_cells == result.n_cells
+        expected_sub = result.n_cells * (result.q - 1) ** result.cell_dim
+        assert grid.n_cells == expected_sub
         assert grid.n_points == result.n_cells * result.pts_per_cell
 
     def test_3d_volume_to_pyvista(self) -> None:
@@ -363,7 +366,8 @@ class TestPyvistaIntegration:
         iq = ImplicitQuadrature(_make_sphere_coeffs())
         result = iq.volume_reparam(q=2, signs=[-1])
         grid = implicit_to_pyvista(result)
-        assert grid.n_cells == result.n_cells
+        expected_sub = result.n_cells * (result.q - 1) ** result.cell_dim
+        assert grid.n_cells == expected_sub
 
     def test_3d_surface_to_pyvista(self) -> None:
         pv = pytest.importorskip("pyvista")  # noqa: F841
@@ -372,7 +376,8 @@ class TestPyvistaIntegration:
         iq = ImplicitQuadrature(_make_sphere_coeffs())
         result = iq.surface_reparam(q=3, poly_idx=0)
         grid = implicit_to_pyvista(result)
-        assert grid.n_cells == result.n_cells
+        expected_sub = result.n_cells * (result.q - 1) ** result.cell_dim
+        assert grid.n_cells == expected_sub
 
 
 # ---------------------------------------------------------------------------
