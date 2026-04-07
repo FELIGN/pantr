@@ -49,7 +49,7 @@ _MERGE_TOL: float = 10.0 * 2.2204460492503131e-16
 _MAX_REF_BOUNDS: int = 200
 """Maximum number of partition boundaries per reference (generous)."""
 
-# Backup sampling fractions for interval matching (algoim-style).
+# Backup sampling fractions for intermediate-point search.
 _BACKUP_TS = np.array([0.001, 0.005, 0.01, 0.05, 0.1, 0.5], dtype=np.float64)
 
 
@@ -143,6 +143,55 @@ def _check_signs_3d(
 
 
 @nb_jit(nopython=True, cache=True)
+def _match_roots_to_reference(
+    fresh_bounds: npt.NDArray[np.float64],
+    nb_fresh: int,
+    ref_bounds: npt.NDArray[np.float64],
+    ref_nb: int,
+    out: npt.NDArray[np.float64],
+) -> None:
+    """Match fresh roots to reference roots by nearest-neighbor assignment.
+
+    For each interior reference root, finds the closest fresh root and
+    uses it.  If no fresh root is close enough (within half the reference
+    interval width on either side), the reference root is kept as-is.
+    Boundaries (first and last) are always 0 and 1.
+
+    Result is written to *out* with exactly *ref_nb* entries, preserving
+    the reference partition topology while using the freshest available
+    root positions.
+
+    Args:
+        fresh_bounds: Sorted partition from fresh root finding.
+        nb_fresh: Number of entries in *fresh_bounds*.
+        ref_bounds: Reference partition boundaries.
+        ref_nb: Number of reference boundaries.
+        out: Output buffer (at least *ref_nb* entries).
+
+    Note:
+        Inputs are assumed to be correct (no validation performed).
+    """
+    out[0] = 0.0
+    out[ref_nb - 1] = 1.0
+
+    for i in range(1, ref_nb - 1):
+        ref_root = ref_bounds[i]
+        # Matching tolerance: half the smaller adjacent reference interval.
+        left_span = ref_bounds[i] - ref_bounds[i - 1]
+        right_span = ref_bounds[i + 1] - ref_bounds[i]
+        tol = 0.5 * min(left_span, right_span)
+
+        best_dist = tol
+        best_root = ref_root  # fallback: keep reference
+        for j in range(1, nb_fresh - 1):
+            d = abs(fresh_bounds[j] - ref_root)
+            if d < best_dist:
+                best_dist = d
+                best_root = fresh_bounds[j]
+        out[i] = best_root
+
+
+@nb_jit(nopython=True, cache=True)
 def _adapt_partition_2d(  # noqa: PLR0913
     coeffs_2d: NumbaList,
     masks_2d: NumbaList,
@@ -158,9 +207,17 @@ def _adapt_partition_2d(  # noqa: PLR0913
 ) -> tuple[int, bool]:
     """Compute a partition at *x_new* that matches the reference topology.
 
-    Tries a fresh partition first; if the root count differs, samples
-    intermediate points between *x_new* and *ref_x*; finally falls back
-    to the reference roots.  Result is written to *ws_nodes*.
+    Three-stage strategy:
+
+    1. **Fresh roots** — if the root count matches the reference, use
+       the fresh partition as-is.
+    2. **Intermediate points** — sample points between *x_new* and the
+       reference position *ref_x*; use the first that matches.
+    3. **Per-root matching** — snap each interior reference root to the
+       nearest fresh root (within tolerance), preserving the reference
+       root when no close match exists.  This is more robust than a full
+       fallback to stale reference positions because roots that *are*
+       found at the new position get their updated coordinates.
 
     Args:
         coeffs_2d: 2D polynomial coefficients.
@@ -183,7 +240,7 @@ def _adapt_partition_2d(  # noqa: PLR0913
     """
     any_overflow = False
 
-    # Step 1: Fresh partition at x_new.
+    # Stage 1: Fresh partition at x_new.
     nb, ovf = _collect_and_partition_from_2d_into(
         coeffs_2d,
         masks_2d,
@@ -196,9 +253,9 @@ def _adapt_partition_2d(  # noqa: PLR0913
     )
     any_overflow |= ovf
     if nb == ref_nb:
-        return nb, any_overflow
+        return ref_nb, any_overflow
 
-    # Step 2: Try intermediate points (algoim backup strategy).
+    # Stage 2: Intermediate points between x_new and ref_x.
     for ti in range(len(_BACKUP_TS)):
         t = _BACKUP_TS[ti]
         x_try = (1.0 - t) * x_new + t * ref_x
@@ -214,11 +271,25 @@ def _adapt_partition_2d(  # noqa: PLR0913
         )
         any_overflow |= ovf
         if nb == ref_nb:
-            return nb, any_overflow
+            return ref_nb, any_overflow
 
-    # Step 3: Final fallback — use reference roots.
-    for i in range(ref_nb):
-        ws_nodes[i] = ref_bounds[i]
+    # Stage 3: Per-root nearest-neighbor matching.
+    # Recompute fresh partition at x_new (ws_nodes was overwritten by stage 2).
+    nb, ovf = _collect_and_partition_from_2d_into(
+        coeffs_2d,
+        masks_2d,
+        k,
+        x_new,
+        ws_nodes,
+        ws_poly1d,
+        ws_basis,
+        ws_roots,
+    )
+    any_overflow |= ovf
+    fresh_copy = np.empty(nb, dtype=np.float64)
+    for i in range(nb):
+        fresh_copy[i] = ws_nodes[i]
+    _match_roots_to_reference(fresh_copy, nb, ref_bounds, ref_nb, ws_nodes)
     return ref_nb, any_overflow
 
 
@@ -238,6 +309,8 @@ def _adapt_partition_3d(  # noqa: PLR0913
     ws_roots: npt.NDArray[np.float64],
 ) -> tuple[int, bool]:
     """3D variant of :func:`_adapt_partition_2d`.
+
+    Same three-stage strategy: fresh → intermediate → per-root matching.
 
     Args:
         coeffs_3d: 3D polynomial coefficients.
@@ -262,6 +335,7 @@ def _adapt_partition_3d(  # noqa: PLR0913
     any_overflow = False
     x_try = np.empty(2, dtype=np.float64)
 
+    # Stage 1.
     nb, ovf = _collect_and_partition_from_3d_into(
         coeffs_3d,
         masks_3d,
@@ -275,8 +349,9 @@ def _adapt_partition_3d(  # noqa: PLR0913
     )
     any_overflow |= ovf
     if nb == ref_nb:
-        return nb, any_overflow
+        return ref_nb, any_overflow
 
+    # Stage 2.
     for ti in range(len(_BACKUP_TS)):
         t = _BACKUP_TS[ti]
         x_try[0] = (1.0 - t) * x_new[0] + t * ref_x[0]
@@ -294,10 +369,25 @@ def _adapt_partition_3d(  # noqa: PLR0913
         )
         any_overflow |= ovf
         if nb == ref_nb:
-            return nb, any_overflow
+            return ref_nb, any_overflow
 
-    for i in range(ref_nb):
-        ws_nodes[i] = ref_bounds[i]
+    # Stage 3.
+    nb, ovf = _collect_and_partition_from_3d_into(
+        coeffs_3d,
+        masks_3d,
+        k,
+        x_new,
+        ws_nodes,
+        ws_poly1d,
+        ws_basis0,
+        ws_basis1,
+        ws_roots,
+    )
+    any_overflow |= ovf
+    fresh_copy = np.empty(nb, dtype=np.float64)
+    for i in range(nb):
+        fresh_copy[i] = ws_nodes[i]
+    _match_roots_to_reference(fresh_copy, nb, ref_bounds, ref_nb, ws_nodes)
     return ref_nb, any_overflow
 
 
