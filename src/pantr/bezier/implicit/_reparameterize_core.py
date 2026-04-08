@@ -4,8 +4,9 @@ Given a pre-built dimension-reduction hierarchy (from the build phase), generate
 structured Lagrange cells that tile the implicit domain (volume) or its zero-set
 (surface).  Follows the algorithm from Saye / algoim:
 
-- **Node placement** uses modified Chebyshev (Chebyshev-Lobatto) nodes, which
-  cluster at interval endpoints and avoid Runge-phenomenon artefacts.
+- **Node placement** uses configurable Lagrange nodes (modified
+  Chebyshev-Lobatto by default), which cluster at interval endpoints and
+  avoid Runge-phenomenon artefacts.
 - **Interval matching** ensures the partition topology (root count) at each
   tangential node matches the reference computed at the interval midpoint.
   When the root count changes (near degenerate configurations), the algorithm
@@ -56,26 +57,6 @@ _BACKUP_TS = np.array([0.001, 0.005, 0.01, 0.05, 0.1, 0.5], dtype=np.float64)
 # ---------------------------------------------------------------------------
 # Section A: Helpers
 # ---------------------------------------------------------------------------
-
-
-@nb_jit(nopython=True, cache=True)
-def _modified_chebyshev_node(j: int, q: int) -> float:
-    """Return the *j*-th modified Chebyshev node for *q* points on [0, 1].
-
-    These are Chebyshev-Lobatto points (including endpoints), optimal for
-    polynomial interpolation and used by algoim for reparameterization.
-
-    Args:
-        j: Node index (0-based, 0 ≤ j < q).
-        q: Total number of nodes (≥ 2).
-
-    Returns:
-        float: Node position in [0, 1].
-
-    Note:
-        Inputs are assumed to be correct (no validation performed).
-    """
-    return float(0.5 - 0.5 * np.cos(np.pi * j / (q - 1)))
 
 
 @nb_jit(nopython=True, cache=True)
@@ -417,20 +398,22 @@ def volume_reparam_2d(  # noqa: PLR0912, PLR0913, PLR0915
     Args:
         base_bounds: Pre-computed sorted 1D base partition.
         base_nb: Number of entries in *base_bounds*.
-        k0: Height direction at base level (unused, for signature consistency).
-        use_ts_0: (Unused.)
-        type_0: (Unused.)
+        k0: Height direction at base level (accepted for call-signature
+            consistency with ``_build_args``).
+        use_ts_0: (Accepted for call-signature consistency.)
+        type_0: (Accepted for call-signature consistency.)
         coeffs_2d: 2D polynomial coefficients (original inputs).
         masks_2d: 2D masks (original inputs).
         k1: Height direction at top level.
-        use_ts_1: (Unused.)
-        type_1: (Unused.)
+        use_ts_1: (Accepted for call-signature consistency.)
+        type_1: (Accepted for call-signature consistency.)
         lagrange_nodes: 1D Lagrange nodes on ``[0, 1]``, shape ``(q,)``.
         signs: Sign condition per polynomial.
         n_polys: Number of input polynomials.
 
     Returns:
-        tuple: ``(points, n_cells, any_overflow)``.
+        tuple[npt.NDArray[np.float64], int, bool]: ``(points, n_cells,
+            any_overflow)`` where *points* has shape ``(n_pts, 2)``.
 
     Note:
         Inputs are assumed to be correct (no validation performed).
@@ -497,6 +480,9 @@ def volume_reparam_2d(  # noqa: PLR0912, PLR0913, PLR0915
             ws_roots,
         )
         any_overflow |= ovf
+        if nb_ref > _MAX_REF_BOUNDS:
+            nb_ref = _MAX_REF_BOUNDS
+            any_overflow = True
 
         # Save reference and determine activity.
         for i in range(nb_ref):
@@ -593,25 +579,27 @@ def volume_reparam_3d(  # noqa: PLR0912, PLR0913, PLR0915
     Args:
         base_bounds: Pre-computed sorted 1D base partition.
         base_nb: Number of entries in *base_bounds*.
-        k0: Height direction at base level (unused).
-        use_ts_0: (Unused.)
-        type_0: (Unused.)
+        k0: Height direction at base level (accepted for call-signature
+            consistency with ``_build_args``).
+        use_ts_0: (Accepted for call-signature consistency.)
+        type_0: (Accepted for call-signature consistency.)
         coeffs_2d: 2D polynomial coefficients (middle level, derived).
         masks_2d: 2D masks.
         k1: Height direction at middle level.
-        use_ts_1: (Unused.)
-        type_1: (Unused.)
+        use_ts_1: (Accepted for call-signature consistency.)
+        type_1: (Accepted for call-signature consistency.)
         coeffs_3d: 3D polynomial coefficients (original inputs).
         masks_3d: 3D masks.
         k2: Height direction at top level.
-        use_ts_2: (Unused.)
-        type_2: (Unused.)
+        use_ts_2: (Accepted for call-signature consistency.)
+        type_2: (Accepted for call-signature consistency.)
         lagrange_nodes: 1D Lagrange nodes on ``[0, 1]``, shape ``(q,)``.
         signs: Sign condition per polynomial.
         n_polys: Number of input polynomials.
 
     Returns:
-        tuple: ``(points, n_cells, any_overflow)``.
+        tuple[npt.NDArray[np.float64], int, bool]: ``(points, n_cells,
+            any_overflow)`` where *points* has shape ``(n_pts, 3)``.
 
     Note:
         Inputs are assumed to be correct (no validation performed).
@@ -725,6 +713,9 @@ def volume_reparam_3d(  # noqa: PLR0912, PLR0913, PLR0915
             ws1_roots,
         )
         any_overflow |= ovf
+        if nb1_ref > _MAX_REF_BOUNDS:
+            nb1_ref = _MAX_REF_BOUNDS
+            any_overflow = True
         for i in range(nb1_ref):
             ref1_bounds[i] = ws1_nodes[i]
 
@@ -779,13 +770,16 @@ def volume_reparam_3d(  # noqa: PLR0912, PLR0913, PLR0915
             # Store combos for active level-2 intervals.
             if has_active:
                 for b2 in range(nb2_ref - 1):
-                    if ref2_active[b2] and n_combos < max_combos:
-                        combo_l1_idx[n_combos] = b1
-                        combo_l2_idx[n_combos] = b2
-                        combo_ref2_nb[n_combos] = nb2_ref
-                        for ii in range(nb2_ref):
-                            combo_ref2_bounds[n_combos, ii] = ws2_nodes[ii]
-                        n_combos += 1
+                    if ref2_active[b2]:
+                        if n_combos < max_combos:
+                            combo_l1_idx[n_combos] = b1
+                            combo_l2_idx[n_combos] = b2
+                            combo_ref2_nb[n_combos] = nb2_ref
+                            for ii in range(nb2_ref):
+                                combo_ref2_bounds[n_combos, ii] = ws2_nodes[ii]
+                            n_combos += 1
+                        else:
+                            any_overflow = True
 
         if n_combos == 0:
             continue
@@ -887,7 +881,6 @@ def surface_reparam_2d(  # noqa: PLR0912, PLR0913, PLR0915
     k1: int,
     use_ts_1: bool,
     type_1: int,
-    poly_idx: int,
     lagrange_nodes: npt.NDArray[np.float64],
     signs: npt.NDArray[np.int64],
     n_polys: int,
@@ -895,26 +888,28 @@ def surface_reparam_2d(  # noqa: PLR0912, PLR0913, PLR0915
     """Generate surface Lagrange curve cells for 2D levelsets.
 
     Uses sign-transition (XOR) logic: the surface is at boundaries
-    between inside and outside intervals.
+    between inside and outside intervals.  The specific zero set is
+    selected by the caller via the ``signs`` array.
 
     Args:
         base_bounds: Pre-computed sorted 1D base partition.
         base_nb: Number of entries in *base_bounds*.
-        k0: Height direction at base level (unused).
-        use_ts_0: (Unused.)
-        type_0: (Unused.)
+        k0: Height direction at base level (accepted for call-signature
+            consistency with ``_build_args``).
+        use_ts_0: (Accepted for call-signature consistency.)
+        type_0: (Accepted for call-signature consistency.)
         coeffs_2d: 2D polynomial coefficients (original inputs).
         masks_2d: 2D masks.
         k1: Height direction at top level.
-        use_ts_1: (Unused.)
-        type_1: (Unused.)
-        poly_idx: Index of the polynomial whose zero set to trace.
+        use_ts_1: (Accepted for call-signature consistency.)
+        type_1: (Accepted for call-signature consistency.)
         lagrange_nodes: 1D Lagrange nodes on ``[0, 1]``, shape ``(q,)``.
-        signs: Sign condition per polynomial (``signs[poly_idx]`` ignored).
+        signs: Sign condition per polynomial.
         n_polys: Number of input polynomials.
 
     Returns:
-        tuple: ``(points, n_cells, any_overflow)``.
+        tuple[npt.NDArray[np.float64], int, bool]: ``(points, n_cells,
+            any_overflow)`` where *points* has shape ``(n_pts, 2)``.
 
     Note:
         Inputs are assumed to be correct (no validation performed).
@@ -968,6 +963,9 @@ def surface_reparam_2d(  # noqa: PLR0912, PLR0913, PLR0915
             ws_roots,
         )
         any_overflow |= ovf
+        if nb_ref > _MAX_REF_BOUNDS:
+            nb_ref = _MAX_REF_BOUNDS
+            any_overflow = True
         for i in range(nb_ref):
             ref_bounds[i] = ws_nodes[i]
 
@@ -1055,7 +1053,6 @@ def surface_reparam_3d(  # noqa: PLR0912, PLR0913, PLR0915
     k2: int,
     use_ts_2: bool,
     type_2: int,
-    poly_idx: int,
     lagrange_nodes: npt.NDArray[np.float64],
     signs: npt.NDArray[np.int64],
     n_polys: int,
@@ -1063,30 +1060,32 @@ def surface_reparam_3d(  # noqa: PLR0912, PLR0913, PLR0915
     """Generate surface Lagrange quad cells for 3D levelsets.
 
     Uses sign-transition logic at the innermost level (k2 direction).
+    The specific zero set is selected by the caller via ``signs``.
 
     Args:
         base_bounds: Pre-computed sorted 1D base partition.
         base_nb: Number of entries in *base_bounds*.
-        k0: Height direction at base level (unused).
-        use_ts_0: (Unused.)
-        type_0: (Unused.)
+        k0: Height direction at base level (accepted for call-signature
+            consistency with ``_build_args``).
+        use_ts_0: (Accepted for call-signature consistency.)
+        type_0: (Accepted for call-signature consistency.)
         coeffs_2d: 2D polynomial coefficients (middle level, derived).
         masks_2d: 2D masks.
         k1: Height direction at middle level.
-        use_ts_1: (Unused.)
-        type_1: (Unused.)
+        use_ts_1: (Accepted for call-signature consistency.)
+        type_1: (Accepted for call-signature consistency.)
         coeffs_3d: 3D polynomial coefficients (original inputs).
         masks_3d: 3D masks.
         k2: Height direction at top level.
-        use_ts_2: (Unused.)
-        type_2: (Unused.)
-        poly_idx: Index of the polynomial whose zero set to trace.
+        use_ts_2: (Accepted for call-signature consistency.)
+        type_2: (Accepted for call-signature consistency.)
         lagrange_nodes: 1D Lagrange nodes on ``[0, 1]``, shape ``(q,)``.
-        signs: Sign condition per polynomial (``signs[poly_idx]`` ignored).
+        signs: Sign condition per polynomial.
         n_polys: Number of input polynomials.
 
     Returns:
-        tuple: ``(points, n_cells, any_overflow)``.
+        tuple[npt.NDArray[np.float64], int, bool]: ``(points, n_cells,
+            any_overflow)`` where *points* has shape ``(n_pts, 3)``.
 
     Note:
         Inputs are assumed to be correct (no validation performed).
@@ -1183,6 +1182,9 @@ def surface_reparam_3d(  # noqa: PLR0912, PLR0913, PLR0915
             ws1_roots,
         )
         any_overflow |= ovf
+        if nb1_ref > _MAX_REF_BOUNDS:
+            nb1_ref = _MAX_REF_BOUNDS
+            any_overflow = True
         for i in range(nb1_ref):
             ref1_bounds[i] = ws1_nodes[i]
 
@@ -1229,13 +1231,16 @@ def surface_reparam_3d(  # noqa: PLR0912, PLR0913, PLR0915
 
             # Sign transitions along k2.
             for b2 in range(nb2_ref - 2):
-                if ref2_active[b2] != ref2_active[b2 + 1] and n_combos < max_combos:
-                    combo_l1_idx[n_combos] = b1
-                    combo_trans_bound_idx[n_combos] = b2 + 1
-                    combo_ref2_nb[n_combos] = nb2_ref
-                    for ii in range(nb2_ref):
-                        combo_ref2_bounds[n_combos, ii] = ws2_nodes[ii]
-                    n_combos += 1
+                if ref2_active[b2] != ref2_active[b2 + 1]:
+                    if n_combos < max_combos:
+                        combo_l1_idx[n_combos] = b1
+                        combo_trans_bound_idx[n_combos] = b2 + 1
+                        combo_ref2_nb[n_combos] = nb2_ref
+                        for ii in range(nb2_ref):
+                            combo_ref2_bounds[n_combos, ii] = ws2_nodes[ii]
+                        n_combos += 1
+                    else:
+                        any_overflow = True
 
         if n_combos == 0:
             continue

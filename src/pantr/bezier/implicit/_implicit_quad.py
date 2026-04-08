@@ -160,6 +160,26 @@ class ReparamResult:
     cell_dim: int
     """Topological dimension of each cell."""
 
+    def __post_init__(self) -> None:
+        """Validate invariants between fields."""
+        if self.q < 2:  # noqa: PLR2004
+            msg = f"q must be >= 2, got {self.q}"
+            raise ValueError(msg)
+        if self.dim not in (2, 3):
+            msg = f"dim must be 2 or 3, got {self.dim}"
+            raise ValueError(msg)
+        if self.cell_dim not in (self.dim - 1, self.dim):
+            msg = f"cell_dim must be {self.dim - 1} or {self.dim}, got {self.cell_dim}"
+            raise ValueError(msg)
+        expected_ppc = self.q**self.cell_dim
+        if self.pts_per_cell != expected_ppc:
+            msg = f"pts_per_cell must be q**cell_dim={expected_ppc}, got {self.pts_per_cell}"
+            raise ValueError(msg)
+        expected_rows = self.n_cells * self.pts_per_cell
+        if self.points.shape != (expected_rows, self.dim):
+            msg = f"points.shape must be ({expected_rows}, {self.dim}), got {self.points.shape}"
+            raise ValueError(msg)
+
 
 class QuadStrategy(IntEnum):
     """Strategy for choosing 1D quadrature method at each level."""
@@ -174,9 +194,9 @@ class QuadStrategy(IntEnum):
 
 _OVERFLOW_WARNING: str = (
     "Bezier clipping stack overflow detected during root finding. "
-    "Some roots may have been missed, leading to inaccurate quadrature."
+    "Some roots may have been missed, leading to inaccurate results."
 )
-"""Shared warning message for overflow detection in quadrature methods."""
+"""Shared warning message for overflow detection."""
 
 _EIGVALS_DEGREE_THRESHOLD: int = 20
 """Use companion-matrix eigenvalues for root finding above this degree.
@@ -891,7 +911,6 @@ class ImplicitQuadrature:
                 self._base_bounds,
                 self._base_nb,
                 *self._build_args,
-                poly_idx,
                 nodes,
                 signs_arr,
                 self._n_polys,
@@ -901,7 +920,6 @@ class ImplicitQuadrature:
                 self._base_bounds,
                 self._base_nb,
                 *self._build_args,
-                poly_idx,
                 nodes,
                 signs_arr,
                 self._n_polys,
@@ -991,10 +1009,10 @@ def _validate_signs(signs: Sequence[int], n_polys: int) -> npt.NDArray[np.int64]
     if arr.shape != (n_polys,):
         msg = f"signs must have length {n_polys}, got {arr.shape}."
         raise ValueError(msg)
-    for v in arr:
-        if v not in (-1, 0, 1):
-            msg = f"signs entries must be -1, 0, or +1, got {v}."
-            raise ValueError(msg)
+    if not np.all((arr == -1) | (arr == 0) | (arr == 1)):
+        bad = arr[~((arr == -1) | (arr == 0) | (arr == 1))][0]
+        msg = f"signs entries must be -1, 0, or +1, got {bad}."
+        raise ValueError(msg)
     return arr
 
 
@@ -1008,6 +1026,9 @@ def _lagrange_nodes(q: int, node_type: str) -> npt.NDArray[np.float64]:
 
     Returns:
         npt.NDArray[np.float64]: Nodes of shape ``(q,)``, read-only.
+
+    Raises:
+        ValueError: If *node_type* is not recognized.
     """
     if node_type == "chebyshev":
         from pantr.quad import get_modified_chebyshev_nodes_1d  # noqa: PLC0415

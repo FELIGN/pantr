@@ -413,8 +413,92 @@ class TestValidation:
         with pytest.raises(ValueError, match="Unknown node_type"):
             iq.volume_reparam(q=3, signs=[-1], node_type="bad")  # type: ignore[arg-type]
 
+    def test_bad_poly_idx_negative(self) -> None:
+        """Negative poly_idx should be rejected."""
+        iq = ImplicitQuadrature(_make_circle_coeffs())
+        with pytest.raises(IndexError, match="poly_idx"):
+            iq.surface_reparam(q=3, poly_idx=-1)
+
     def test_equispaced_nodes(self) -> None:
         """Equispaced node type should also work."""
         iq = ImplicitQuadrature(_make_circle_coeffs())
         result = iq.volume_reparam(q=3, signs=[-1], node_type="equispaced")
         assert result.n_cells > 0
+
+
+# ---------------------------------------------------------------------------
+# quadrature_to_pyvista
+# ---------------------------------------------------------------------------
+
+
+class TestQuadratureToPyvista:
+    """Tests for the quadrature point visualization."""
+
+    def test_volume_quad_to_pyvista(self) -> None:
+        """Volume quadrature produces a point cloud with weights."""
+        pv = pytest.importorskip("pyvista")  # noqa: F841
+        from pantr.viz import quadrature_to_pyvista  # noqa: PLC0415
+
+        iq = ImplicitQuadrature(_make_circle_coeffs())
+        vol_result = iq.volume_quad(q=4)
+        cloud = quadrature_to_pyvista(vol_result)
+        assert not isinstance(cloud, tuple)
+        assert "weight" in cloud.point_data
+        assert cloud.n_points == len(vol_result[0])
+
+    def test_surface_quad_to_pyvista(self) -> None:
+        """Surface quadrature produces a point cloud with weights."""
+        pv = pytest.importorskip("pyvista")  # noqa: F841
+        from pantr.viz import quadrature_to_pyvista  # noqa: PLC0415
+
+        iq = ImplicitQuadrature(_make_circle_coeffs())
+        surf_result = iq.surface_quad(q=4)
+        cloud = quadrature_to_pyvista(surf_result)
+        assert not isinstance(cloud, tuple)
+        assert "weight" in cloud.point_data
+
+    def test_surface_quad_with_normals(self) -> None:
+        """Surface quadrature with show_normals returns a tuple."""
+        pv = pytest.importorskip("pyvista")  # noqa: F841
+        from pantr.viz import quadrature_to_pyvista  # noqa: PLC0415
+
+        iq = ImplicitQuadrature(_make_circle_coeffs())
+        surf_result = iq.surface_quad(q=4)
+        result = quadrature_to_pyvista(surf_result, show_normals=True)
+        assert isinstance(result, tuple)
+        assert len(result) == 2  # noqa: PLR2004
+        cloud, arrows = result
+        assert "weight" in cloud.point_data
+
+
+# ---------------------------------------------------------------------------
+# Multi-polynomial 3D and surface signs=None
+# ---------------------------------------------------------------------------
+
+
+class TestMultiPolynomial3D:
+    """Tests with 3D multi-polynomial and default signs."""
+
+    def test_surface_reparam_signs_none_multi_poly(self) -> None:
+        """surface_reparam with signs=None and multiple polynomials."""
+        from pantr.bezier.implicit import monomial_to_bernstein_3d  # noqa: PLC0415
+
+        lo = np.array([0.0, 0.0, 0.0])
+        hi = np.array([1.0, 1.0, 1.0])
+        # Two spheres: one at (0.5, 0.5, 0.5) and one at (0.3, 0.5, 0.5).
+        mono1 = np.zeros((3, 3, 3))
+        mono1[0, 0, 0] = 0.75 - 0.09
+        mono1[2, 0, 0] = 1.0
+        mono1[0, 2, 0] = 1.0
+        mono1[0, 0, 2] = 1.0
+        mono1[1, 0, 0] = -1.0
+        mono1[0, 1, 0] = -1.0
+        mono1[0, 0, 1] = -1.0
+        c1 = monomial_to_bernstein_3d(mono1, (2, 2, 2), lo, hi)
+        c2 = _make_sphere_coeffs(0.04)
+        iq = ImplicitQuadrature(c1, c2)
+        # signs=None defaults to all -1.
+        result = iq.surface_reparam(q=3, poly_idx=0)
+        assert result.n_cells >= 0
+        assert result.dim == 3  # noqa: PLR2004
+        assert result.cell_dim == 2  # noqa: PLR2004

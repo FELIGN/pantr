@@ -1,8 +1,8 @@
 """Visualization helpers for implicit reparameterization and quadrature.
 
 - :func:`implicit_to_pyvista`: convert reparameterization cells to pyvista.
-- :func:`quadrature_to_pyvista`: convert quadrature points to pyvista
-  (spheres coloured by weight, optional normal arrows).
+- :func:`quadrature_to_pyvista`: convert quadrature points to a pyvista
+  point cloud with weight scalars (optional normal arrows).
 """
 
 from __future__ import annotations
@@ -86,7 +86,8 @@ def _tessellate_curves(
         q: Nodes per curve.
 
     Returns:
-        tuple: ``(cells, cell_types)`` arrays for pyvista.
+        tuple[npt.NDArray[np.intp], npt.NDArray[np.uint8]]: ``(cells,
+            cell_types)`` arrays for pyvista.
     """
     n_segs = (q - 1) * n_cells
     # Each line: [2, p0, p1]
@@ -119,7 +120,8 @@ def _tessellate_quads(
         q: Nodes per direction.
 
     Returns:
-        tuple: ``(cells, cell_types)`` arrays for pyvista.
+        tuple[npt.NDArray[np.intp], npt.NDArray[np.uint8]]: ``(cells,
+            cell_types)`` arrays for pyvista.
     """
     n_sub = (q - 1) * (q - 1)
     n_total = n_sub * n_cells
@@ -131,7 +133,7 @@ def _tessellate_quads(
         base = c * ppc
         for i in range(q - 1):
             for j in range(q - 1):
-                # Four corners of the sub-quad in TP order.
+                # Four corners in VTK counterclockwise winding order.
                 p00 = base + i * q + j
                 p01 = base + i * q + (j + 1)
                 p10 = base + (i + 1) * q + j
@@ -162,7 +164,8 @@ def _tessellate_hexes(
         q: Nodes per direction.
 
     Returns:
-        tuple: ``(cells, cell_types)`` arrays for pyvista.
+        tuple[npt.NDArray[np.intp], npt.NDArray[np.uint8]]: ``(cells,
+            cell_types)`` arrays for pyvista.
     """
     n_sub = (q - 1) ** 3
     n_total = n_sub * n_cells
@@ -262,9 +265,10 @@ def quadrature_to_pyvista(
         normal_scale: Length scale for normal arrows (fraction of domain).
 
     Returns:
-        pv.PolyData: Point cloud with ``"weight"`` scalar data.
-            If *show_normals* is ``True`` and *quad_result* is a surface
-            result, returns ``(point_cloud, arrows)``.
+        pv.PolyData | tuple[pv.PolyData, pv.PolyData]: Point cloud with
+            ``"weight"`` scalar data.  When *show_normals* is ``True``
+            and *quad_result* is a surface result, returns
+            ``(point_cloud, arrows)`` instead.
 
     Raises:
         ImportError: If pyvista is not installed.
