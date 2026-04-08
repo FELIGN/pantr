@@ -1,9 +1,19 @@
 """High-order quadrature on domains implicitly defined by multivariate polynomials.
 
-Implements the dimension-reduction algorithm of Saye (JCP 2022) entirely in
-Numba nopython mode for near-C++ performance. The algorithm recasts implicitly
-defined geometry as the graph of a multi-valued height function and applies
-recursive dimension reduction down to one-dimensional quadrature.
+This module is an independent Python/Numba reimplementation of the algorithms
+from the `algoim <https://github.com/algoim/algoim>`_ library by Robert Saye
+(Lawrence Berkeley National Laboratory). The original algorithm is described in:
+
+    R. Saye, "High-order quadrature on multi-component domains implicitly
+    defined by multivariate polynomials", J. Comput. Phys., 448, 110720, 2022.
+    https://doi.org/10.1016/j.jcp.2021.110720
+
+See ``THIRD_PARTY_NOTICES`` in the repository root for the full algoim license.
+
+The implementation uses Numba nopython mode for near-C++ performance.
+The algorithm recasts implicitly defined geometry as the graph of a
+multi-valued height function and applies recursive dimension reduction down
+to one-dimensional quadrature.
 
 The algorithm has two phases:
 
