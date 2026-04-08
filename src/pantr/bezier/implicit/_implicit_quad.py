@@ -1,19 +1,23 @@
 """Implementation of :class:`ImplicitQuadrature` and supporting helpers.
 
-This module contains the main quadrature class, the :class:`QuadStrategy` enum,
-type aliases, and all Python-level helpers (root finding via eigenvalues,
-base-level partition precomputation, quadrature node generation, etc.).
+This module contains the main quadrature class, the :class:`ReparamResult`
+dataclass, the :class:`QuadStrategy` enum, type aliases, and all Python-level
+helpers (root finding via eigenvalues, base-level partition precomputation,
+quadrature node generation, Lagrange-cell reparameterization, etc.).
 
 The Numba kernel files (``_bernstein_core``, ``_build_core``, ``_construct_core``,
-etc.) handle the heavy computation; this module orchestrates them.
+``_reparameterize_core``, etc.) handle the heavy computation; this module
+orchestrates them.
 """
 
 from __future__ import annotations
 
 import functools
 import warnings
+from collections.abc import Sequence
+from dataclasses import dataclass
 from enum import IntEnum
-from typing import TYPE_CHECKING, Any, TypeAlias, cast
+from typing import TYPE_CHECKING, Any, Literal, TypeAlias, cast
 
 import numpy as np
 from numba.typed import List as NumbaList
@@ -40,6 +44,12 @@ from pantr.bezier.implicit._mask_core import (
     _point_within_1d,
     compute_nonzero_mask_2d,
     compute_nonzero_mask_3d,
+)
+from pantr.bezier.implicit._reparameterize_core import (
+    surface_reparam_2d,
+    surface_reparam_3d,
+    volume_reparam_2d,
+    volume_reparam_3d,
 )
 from pantr.bezier.implicit._roots_core import find_roots
 
@@ -116,6 +126,77 @@ SurfQuadResult: TypeAlias = tuple[
 """Surface quadrature result: ``(points, scalar_weights, normal_weights)``."""
 
 
+@dataclass(frozen=True)
+class ReparamResult:
+    """Result of implicit domain reparameterization.
+
+    Cell *i* occupies rows ``[i * pts_per_cell : (i + 1) * pts_per_cell]``
+    of :attr:`points`, stored in natural tensor-product (row-major) order.
+
+    Attributes:
+        points (npt.NDArray[np.float64]): All cell nodes, shape
+            ``(n_cells * pts_per_cell, dim)``.  Read-only.
+        n_cells (int): Number of Lagrange cells (>= 0).
+        q (int): Lagrange order per direction (>= 2).
+        dim (int): Parametric dimension (2 or 3).
+        cell_dim (int): Topological dimension of each cell
+            (``dim`` for volume, ``dim - 1`` for surface).
+    """
+
+    points: npt.NDArray[np.float64]
+    """All cell nodes, shape ``(n_cells * pts_per_cell, dim)``.  Read-only."""
+
+    n_cells: int
+    """Number of Lagrange cells."""
+
+    q: int
+    """Lagrange order per direction."""
+
+    dim: int
+    """Parametric dimension (2 or 3)."""
+
+    cell_dim: int
+    """Topological dimension of each cell."""
+
+    @property
+    def pts_per_cell(self) -> int:
+        """Get the number of nodes per cell.
+
+        Returns:
+            int: ``q ** cell_dim``.
+        """
+        return int(self.q**self.cell_dim)
+
+    def __post_init__(self) -> None:
+        """Validate invariants between fields.
+
+        Raises:
+            ValueError: If ``q < 2``, ``n_cells < 0``, ``dim`` not in
+                ``{2, 3}``, ``cell_dim`` invalid, or ``points`` has wrong
+                shape or dtype.
+        """
+        if self.q < 2:  # noqa: PLR2004
+            msg = f"q must be >= 2, got {self.q}"
+            raise ValueError(msg)
+        if self.n_cells < 0:
+            msg = f"n_cells must be >= 0, got {self.n_cells}"
+            raise ValueError(msg)
+        if self.dim not in (2, 3):
+            msg = f"dim must be 2 or 3, got {self.dim}"
+            raise ValueError(msg)
+        if self.cell_dim not in (self.dim - 1, self.dim):
+            msg = f"cell_dim must be {self.dim - 1} or {self.dim}, got {self.cell_dim}"
+            raise ValueError(msg)
+        # Coerce dtype and freeze the array.
+        pts = np.asarray(self.points, dtype=np.float64)
+        pts.flags.writeable = False
+        object.__setattr__(self, "points", pts)
+        expected_rows = self.n_cells * self.pts_per_cell
+        if self.points.shape != (expected_rows, self.dim):
+            msg = f"points.shape must be ({expected_rows}, {self.dim}), got {self.points.shape}"
+            raise ValueError(msg)
+
+
 class QuadStrategy(IntEnum):
     """Strategy for choosing 1D quadrature method at each level."""
 
@@ -129,9 +210,16 @@ class QuadStrategy(IntEnum):
 
 _OVERFLOW_WARNING: str = (
     "Bezier clipping stack overflow detected during root finding. "
-    "Some roots may have been missed, leading to inaccurate quadrature."
+    "Some roots may have been missed, leading to inaccurate results."
 )
 """Shared warning message for overflow detection in quadrature methods."""
+
+_REPARAM_OVERFLOW_WARNING: str = (
+    "Numerical issues detected during reparameterization (root-finding "
+    "overflow or internal buffer capacity exceeded). Some cells may be "
+    "inaccurate or missing."
+)
+"""Warning message for overflow detection in reparameterization methods."""
 
 _EIGVALS_DEGREE_THRESHOLD: int = 20
 """Use companion-matrix eigenvalues for root finding above this degree.
@@ -724,6 +812,160 @@ class ImplicitQuadrature:
                 values[i] = _eval_bernstein_3d(coeffs, points[i])
         return values
 
+    # ------------------------------------------------------------------
+    # Reparameterization
+    # ------------------------------------------------------------------
+
+    def volume_reparam(
+        self,
+        q: int,
+        signs: Sequence[int],
+        *,
+        node_type: Literal["equispaced", "chebyshev", "gll"] = "chebyshev",
+    ) -> ReparamResult:
+        """Reparameterize the implicit volume domain with Lagrange cells.
+
+        Generates Lagrange cells (quads in 2D, hexes in 3D) that tile the
+        region of ``[0,1]^d`` satisfying the sign condition for each
+        polynomial.
+
+        Args:
+            q (int): Number of Lagrange nodes per direction per cell.
+                Must be >= 2.
+            signs (Sequence[int]): Sign condition per polynomial.
+                ``+1`` selects ``{phi > 0}``, ``-1`` selects ``{phi < 0}``,
+                ``0`` ignores that polynomial.
+            node_type: Node distribution.  ``"chebyshev"`` (default) uses
+                modified Chebyshev (Chebyshev-Lobatto) nodes, optimal for
+                polynomial interpolation.  ``"equispaced"`` and ``"gll"``
+                are also supported.
+
+        Returns:
+            ReparamResult: Lagrange cell data.
+
+        Raises:
+            ValueError: If ``q < 2`` or ``len(signs) != n_polys``.
+        """
+        _validate_q_reparam(q)
+        signs_arr = _validate_signs(signs, self._n_polys)
+        nodes = _lagrange_nodes(q, node_type)
+
+        if self._dim == 2:  # noqa: PLR2004
+            pts, n_cells, overflow = volume_reparam_2d(  # type: ignore[call-arg]
+                self._base_bounds,
+                self._base_nb,
+                *self._build_args,
+                nodes,
+                signs_arr,
+                self._n_polys,
+            )
+        else:
+            pts, n_cells, overflow = volume_reparam_3d(  # type: ignore[call-arg]
+                self._base_bounds,
+                self._base_nb,
+                *self._build_args,
+                nodes,
+                signs_arr,
+                self._n_polys,
+            )
+
+        if overflow or self._base_overflow:
+            warnings.warn(_REPARAM_OVERFLOW_WARNING, RuntimeWarning, stacklevel=2)
+
+        return ReparamResult(
+            points=pts,
+            n_cells=n_cells,
+            q=q,
+            dim=self._dim,
+            cell_dim=self._dim,
+        )
+
+    def surface_reparam(
+        self,
+        q: int,
+        poly_idx: int,
+        signs: Sequence[int] | None = None,
+        *,
+        node_type: Literal["equispaced", "chebyshev", "gll"] = "chebyshev",
+    ) -> ReparamResult:
+        """Reparameterize a levelset surface with Lagrange cells.
+
+        Generates Lagrange cells (curves in 2D, quads in 3D) tracing the
+        zero set ``{phi_{poly_idx} = 0}``, optionally restricted by sign
+        conditions on the other polynomials.  The surface is identified
+        via sign transitions between adjacent intervals (inside/outside).
+
+        Args:
+            q (int): Number of Lagrange nodes per direction per cell.
+                Must be >= 2.
+            poly_idx (int): Index of the polynomial whose zero set to trace.
+                When ``signs`` is ``None``, this determines which polynomial
+                defines the "inside" region (``signs[poly_idx] = -1``, all
+                others ``0``).  When ``signs`` is provided explicitly,
+                ``signs[poly_idx]`` must be non-zero.
+            signs (Sequence[int] | None): Sign condition per polynomial.
+                Defines the "inside" region; the surface is its boundary
+                (where the sign condition transitions).  If ``None``,
+                defaults to ``signs[poly_idx] = -1`` with all others ``0``
+                (traces only the zero set of the selected polynomial).
+            node_type: Node distribution (``"chebyshev"``, ``"equispaced"``,
+                or ``"gll"``).
+
+        Returns:
+            ReparamResult: Lagrange cell data.
+
+        Raises:
+            ValueError: If ``q < 2``, ``len(signs) != n_polys``, or
+                ``signs[poly_idx] == 0``.
+            IndexError: If ``poly_idx`` is out of range.
+        """
+        _validate_q_reparam(q)
+        if poly_idx < 0 or poly_idx >= self._n_polys:
+            msg = f"poly_idx {poly_idx} out of range [0, {self._n_polys})."
+            raise IndexError(msg)
+
+        if signs is None:
+            # Default: trace only the zero set of poly_idx.
+            signs_arr = np.zeros(self._n_polys, dtype=np.int64)
+            signs_arr[poly_idx] = -1
+        else:
+            signs_arr = _validate_signs(signs, self._n_polys)
+            if signs_arr[poly_idx] == 0:
+                msg = f"signs[poly_idx={poly_idx}] must be non-zero to trace a surface, got 0."
+                raise ValueError(msg)
+
+        nodes = _lagrange_nodes(q, node_type)
+
+        if self._dim == 2:  # noqa: PLR2004
+            pts, n_cells, overflow = surface_reparam_2d(  # type: ignore[call-arg]
+                self._base_bounds,
+                self._base_nb,
+                *self._build_args,
+                nodes,
+                signs_arr,
+                self._n_polys,
+            )
+        else:
+            pts, n_cells, overflow = surface_reparam_3d(  # type: ignore[call-arg]
+                self._base_bounds,
+                self._base_nb,
+                *self._build_args,
+                nodes,
+                signs_arr,
+                self._n_polys,
+            )
+
+        if overflow or self._base_overflow:
+            warnings.warn(_REPARAM_OVERFLOW_WARNING, RuntimeWarning, stacklevel=2)
+
+        return ReparamResult(
+            points=pts,
+            n_cells=n_cells,
+            q=q,
+            dim=self._dim,
+            cell_dim=self._dim - 1,
+        )
+
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -762,6 +1004,79 @@ def _force_ts_flags(build_result: tuple[Any, ...], dim: int) -> tuple[Any, ...]:
     for level in range(dim):
         result[3 + level * 5] = True
     return tuple(result)
+
+
+def _validate_q_reparam(q: int) -> None:
+    """Validate that ``q >= 2`` for reparameterization.
+
+    Args:
+        q (int): Number of Lagrange nodes per direction.
+
+    Raises:
+        ValueError: If ``q < 2``.
+    """
+    if q < 2:  # noqa: PLR2004
+        msg = f"q must be >= 2 for reparameterization, got {q}."
+        raise ValueError(msg)
+
+
+def _validate_signs(signs: Sequence[int], n_polys: int) -> npt.NDArray[np.int64]:
+    """Validate and convert signs to an int64 array.
+
+    Args:
+        signs: Sequence of sign conditions (+1, -1, or 0).
+        n_polys: Expected number of polynomials.
+
+    Returns:
+        npt.NDArray[np.int64]: Validated sign array.
+
+    Raises:
+        ValueError: If length mismatch or invalid sign values.
+    """
+    arr = np.asarray(signs, dtype=np.int64)
+    if arr.shape != (n_polys,):
+        msg = f"signs must have length {n_polys}, got {arr.shape}."
+        raise ValueError(msg)
+    if not np.all((arr == -1) | (arr == 0) | (arr == 1)):
+        bad = arr[~((arr == -1) | (arr == 0) | (arr == 1))][0]
+        msg = f"signs entries must be -1, 0, or +1, got {bad}."
+        raise ValueError(msg)
+    return arr
+
+
+@functools.lru_cache(maxsize=32)
+def _lagrange_nodes(q: int, node_type: str) -> npt.NDArray[np.float64]:
+    """Get 1D Lagrange reference nodes on [0, 1].
+
+    Args:
+        q: Number of nodes.
+        node_type: ``"chebyshev"``, ``"equispaced"``, or ``"gll"``.
+
+    Returns:
+        npt.NDArray[np.float64]: Nodes of shape ``(q,)``, read-only.
+
+    Raises:
+        ValueError: If *node_type* is not recognized.
+    """
+    if node_type == "chebyshev":
+        from pantr.quad import get_modified_chebyshev_nodes_1d  # noqa: PLC0415
+
+        nodes = np.ascontiguousarray(
+            get_modified_chebyshev_nodes_1d(q),
+            dtype=np.float64,
+        )
+    elif node_type == "equispaced":
+        nodes = np.linspace(0.0, 1.0, q)
+    elif node_type == "gll":
+        from pantr.quad import get_gauss_lobatto_legendre_1d  # noqa: PLC0415
+
+        gll_nodes, _wts = get_gauss_lobatto_legendre_1d(q)
+        nodes = np.ascontiguousarray(gll_nodes, dtype=np.float64)
+    else:
+        msg = f"Unknown node_type {node_type!r}, expected 'chebyshev', 'equispaced', or 'gll'."
+        raise ValueError(msg)
+    nodes.flags.writeable = False
+    return nodes
 
 
 # ---------------------------------------------------------------------------

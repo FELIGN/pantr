@@ -27,6 +27,7 @@ from pantr.bezier.implicit._convert_core import (
 from pantr.bezier.implicit._implicit_quad import (
     ImplicitQuadrature,
     QuadStrategy,
+    ReparamResult,
     SurfQuadResult,
     VolQuadResult,
 )
@@ -34,6 +35,7 @@ from pantr.bezier.implicit._implicit_quad import (
 __all__ = [
     "ImplicitQuadrature",
     "QuadStrategy",
+    "ReparamResult",
     "SurfQuadResult",
     "VolQuadResult",
     "monomial_to_bernstein_2d",
