@@ -4,9 +4,9 @@ Given a pre-built dimension-reduction hierarchy (from the build phase), generate
 structured Lagrange cells that tile the implicit domain (volume) or its zero-set
 (surface).  Follows the algorithm from Saye / algoim:
 
-- **Node placement** uses configurable Lagrange nodes (modified
-  Chebyshev-Lobatto by default), which cluster at interval endpoints and
-  avoid Runge-phenomenon artefacts.
+- **Node placement** uses configurable Lagrange nodes (typically
+  Chebyshev-Lobatto, passed by the caller), which cluster at interval
+  endpoints and avoid Runge-phenomenon artefacts.
 - **Interval matching** ensures the partition topology (root count) at each
   tangential node matches the reference computed at the interval midpoint.
   When the root count changes (near degenerate configurations), the algorithm
@@ -25,7 +25,8 @@ Main exports:
 
 Note:
     Inputs are assumed to be correct (no validation performed).
-    These are Layer 3 kernels for the implicit reparameterization module.
+    For general use, call :meth:`ImplicitQuadrature.volume_reparam` or
+    :meth:`ImplicitQuadrature.surface_reparam` instead.
 """
 
 from __future__ import annotations
@@ -622,7 +623,7 @@ def volume_reparam_3d(  # noqa: PLR0912, PLR0913, PLR0915
                     idx += 1
         return points, 1, False
 
-    # Axis mapping (same as volume_quad_3d).
+    # Axis mapping.
     tang2 = np.empty(2, dtype=np.int64)
     ti = 0
     for d in range(3):

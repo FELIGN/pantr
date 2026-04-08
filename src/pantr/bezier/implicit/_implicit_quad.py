@@ -1,11 +1,13 @@
 """Implementation of :class:`ImplicitQuadrature` and supporting helpers.
 
-This module contains the main quadrature class, the :class:`QuadStrategy` enum,
-type aliases, and all Python-level helpers (root finding via eigenvalues,
-base-level partition precomputation, quadrature node generation, etc.).
+This module contains the main quadrature class, the :class:`ReparamResult`
+dataclass, the :class:`QuadStrategy` enum, type aliases, and all Python-level
+helpers (root finding via eigenvalues, base-level partition precomputation,
+quadrature node generation, Lagrange-cell reparameterization, etc.).
 
 The Numba kernel files (``_bernstein_core``, ``_build_core``, ``_construct_core``,
-etc.) handle the heavy computation; this module orchestrates them.
+``_reparameterize_core``, etc.) handle the heavy computation; this module
+orchestrates them.
 """
 
 from __future__ import annotations
@@ -133,23 +135,19 @@ class ReparamResult:
 
     Attributes:
         points (npt.NDArray[np.float64]): All cell nodes, shape
-            ``(n_cells * pts_per_cell, dim)``.
-        n_cells (int): Number of Lagrange cells.
-        pts_per_cell (int): Nodes per cell (``q ** cell_dim``).
-        q (int): Lagrange order per direction.
+            ``(n_cells * pts_per_cell, dim)``.  Read-only.
+        n_cells (int): Number of Lagrange cells (>= 0).
+        q (int): Lagrange order per direction (>= 2).
         dim (int): Parametric dimension (2 or 3).
         cell_dim (int): Topological dimension of each cell
             (``dim`` for volume, ``dim - 1`` for surface).
     """
 
     points: npt.NDArray[np.float64]
-    """All cell nodes, shape ``(n_cells * pts_per_cell, dim)``."""
+    """All cell nodes, shape ``(n_cells * pts_per_cell, dim)``.  Read-only."""
 
     n_cells: int
     """Number of Lagrange cells."""
-
-    pts_per_cell: int
-    """Nodes per cell (``q ** cell_dim``)."""
 
     q: int
     """Lagrange order per direction."""
@@ -160,10 +158,28 @@ class ReparamResult:
     cell_dim: int
     """Topological dimension of each cell."""
 
+    @property
+    def pts_per_cell(self) -> int:
+        """Get the number of nodes per cell.
+
+        Returns:
+            int: ``q ** cell_dim``.
+        """
+        return int(self.q**self.cell_dim)
+
     def __post_init__(self) -> None:
-        """Validate invariants between fields."""
+        """Validate invariants between fields.
+
+        Raises:
+            ValueError: If ``q < 2``, ``n_cells < 0``, ``dim`` not in
+                ``{2, 3}``, ``cell_dim`` invalid, or ``points`` has wrong
+                shape or dtype.
+        """
         if self.q < 2:  # noqa: PLR2004
             msg = f"q must be >= 2, got {self.q}"
+            raise ValueError(msg)
+        if self.n_cells < 0:
+            msg = f"n_cells must be >= 0, got {self.n_cells}"
             raise ValueError(msg)
         if self.dim not in (2, 3):
             msg = f"dim must be 2 or 3, got {self.dim}"
@@ -171,10 +187,10 @@ class ReparamResult:
         if self.cell_dim not in (self.dim - 1, self.dim):
             msg = f"cell_dim must be {self.dim - 1} or {self.dim}, got {self.cell_dim}"
             raise ValueError(msg)
-        expected_ppc = self.q**self.cell_dim
-        if self.pts_per_cell != expected_ppc:
-            msg = f"pts_per_cell must be q**cell_dim={expected_ppc}, got {self.pts_per_cell}"
-            raise ValueError(msg)
+        # Coerce dtype and freeze the array.
+        pts = np.asarray(self.points, dtype=np.float64)
+        pts.flags.writeable = False
+        object.__setattr__(self, "points", pts)
         expected_rows = self.n_cells * self.pts_per_cell
         if self.points.shape != (expected_rows, self.dim):
             msg = f"points.shape must be ({expected_rows}, {self.dim}), got {self.points.shape}"
@@ -196,7 +212,14 @@ _OVERFLOW_WARNING: str = (
     "Bezier clipping stack overflow detected during root finding. "
     "Some roots may have been missed, leading to inaccurate results."
 )
-"""Shared warning message for overflow detection."""
+"""Shared warning message for overflow detection in quadrature methods."""
+
+_REPARAM_OVERFLOW_WARNING: str = (
+    "Numerical issues detected during reparameterization (root-finding "
+    "overflow or internal buffer capacity exceeded). Some cells may be "
+    "inaccurate or missing."
+)
+"""Warning message for overflow detection in reparameterization methods."""
 
 _EIGVALS_DEGREE_THRESHOLD: int = 20
 """Use companion-matrix eigenvalues for root finding above this degree.
@@ -847,16 +870,14 @@ class ImplicitQuadrature:
             )
 
         if overflow or self._base_overflow:
-            warnings.warn(_OVERFLOW_WARNING, RuntimeWarning, stacklevel=2)
+            warnings.warn(_REPARAM_OVERFLOW_WARNING, RuntimeWarning, stacklevel=2)
 
-        cell_dim = self._dim
         return ReparamResult(
             points=pts,
             n_cells=n_cells,
-            pts_per_cell=q**cell_dim,
             q=q,
             dim=self._dim,
-            cell_dim=cell_dim,
+            cell_dim=self._dim,
         )
 
     def surface_reparam(
@@ -878,10 +899,15 @@ class ImplicitQuadrature:
             q (int): Number of Lagrange nodes per direction per cell.
                 Must be >= 2.
             poly_idx (int): Index of the polynomial whose zero set to trace.
+                When ``signs`` is ``None``, this determines which polynomial
+                defines the "inside" region (``signs[poly_idx] = -1``, all
+                others ``0``).  When ``signs`` is provided explicitly,
+                ``signs[poly_idx]`` must be non-zero.
             signs (Sequence[int] | None): Sign condition per polynomial.
                 Defines the "inside" region; the surface is its boundary
                 (where the sign condition transitions).  If ``None``,
-                defaults to all ``-1`` (inside = all polynomials negative).
+                defaults to ``signs[poly_idx] = -1`` with all others ``0``
+                (traces only the zero set of the selected polynomial).
             node_type: Node distribution (``"chebyshev"``, ``"equispaced"``,
                 or ``"gll"``).
 
@@ -889,7 +915,8 @@ class ImplicitQuadrature:
             ReparamResult: Lagrange cell data.
 
         Raises:
-            ValueError: If ``q < 2`` or ``len(signs) != n_polys``.
+            ValueError: If ``q < 2``, ``len(signs) != n_polys``, or
+                ``signs[poly_idx] == 0``.
             IndexError: If ``poly_idx`` is out of range.
         """
         _validate_q_reparam(q)
@@ -898,11 +925,14 @@ class ImplicitQuadrature:
             raise IndexError(msg)
 
         if signs is None:
-            # Default: inside = all polynomials negative.  The surface is
-            # the boundary of this domain (sign transitions).
-            signs_arr = np.full(self._n_polys, -1, dtype=np.int64)
+            # Default: trace only the zero set of poly_idx.
+            signs_arr = np.zeros(self._n_polys, dtype=np.int64)
+            signs_arr[poly_idx] = -1
         else:
             signs_arr = _validate_signs(signs, self._n_polys)
+            if signs_arr[poly_idx] == 0:
+                msg = f"signs[poly_idx={poly_idx}] must be non-zero to trace a surface, got 0."
+                raise ValueError(msg)
 
         nodes = _lagrange_nodes(q, node_type)
 
@@ -926,16 +956,14 @@ class ImplicitQuadrature:
             )
 
         if overflow or self._base_overflow:
-            warnings.warn(_OVERFLOW_WARNING, RuntimeWarning, stacklevel=2)
+            warnings.warn(_REPARAM_OVERFLOW_WARNING, RuntimeWarning, stacklevel=2)
 
-        cell_dim = self._dim - 1
         return ReparamResult(
             points=pts,
             n_cells=n_cells,
-            pts_per_cell=q**cell_dim,
             q=q,
             dim=self._dim,
-            cell_dim=cell_dim,
+            cell_dim=self._dim - 1,
         )
 
 

@@ -22,10 +22,14 @@ if TYPE_CHECKING:
 _MAX_PHYSICAL_DIM = 3
 """Maximum physical dimension for VTK coordinates."""
 
-# VTK linear cell types used for tessellation.
 _VTK_LINE = 3
+"""VTK cell type ID for a line segment."""
+
 _VTK_QUAD = 9
+"""VTK cell type ID for a linear quadrilateral."""
+
 _VTK_HEXAHEDRON = 12
+"""VTK cell type ID for a linear hexahedron."""
 
 
 def implicit_to_pyvista(result: ReparamResult) -> pv.UnstructuredGrid:
@@ -79,7 +83,7 @@ def _tessellate_curves(
 ) -> tuple[npt.NDArray[np.intp], npt.NDArray[np.uint8]]:
     """Tessellate 1D Lagrange curves into VTK line segments.
 
-    Each degree-(q-1) curve produces ``q - 1`` line segments.
+    Each q-node Lagrange curve is tessellated into ``q - 1`` line segments.
 
     Args:
         n_cells: Number of Lagrange curves.
@@ -133,7 +137,7 @@ def _tessellate_quads(
         base = c * ppc
         for i in range(q - 1):
             for j in range(q - 1):
-                # Four corners in VTK counterclockwise winding order.
+                # Four corners in VTK quad winding order.
                 p00 = base + i * q + j
                 p01 = base + i * q + (j + 1)
                 p10 = base + (i + 1) * q + j

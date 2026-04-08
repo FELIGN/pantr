@@ -419,6 +419,19 @@ class TestValidation:
         with pytest.raises(IndexError, match="poly_idx"):
             iq.surface_reparam(q=3, poly_idx=-1)
 
+    def test_signs_poly_idx_zero(self) -> None:
+        """signs[poly_idx] == 0 should be rejected for surface_reparam."""
+        from pantr.bezier.implicit import monomial_to_bernstein_2d  # noqa: PLC0415
+
+        lo = np.array([0.0, 0.0])
+        hi = np.array([1.0, 1.0])
+        mono = np.array([[0.25 - 0.04, -1.0, 1.0], [-0.6, 0.0, 0.0], [1.0, 0.0, 0.0]])
+        c1 = monomial_to_bernstein_2d(mono, (2, 2), lo, hi)
+        c2 = _make_circle_coeffs()
+        iq = ImplicitQuadrature(c1, c2)
+        with pytest.raises(ValueError, match="signs.*must be non-zero"):
+            iq.surface_reparam(q=3, poly_idx=0, signs=[0, -1])
+
     def test_equispaced_nodes(self) -> None:
         """Equispaced node type should also work."""
         iq = ImplicitQuadrature(_make_circle_coeffs())
@@ -497,8 +510,117 @@ class TestMultiPolynomial3D:
         c1 = monomial_to_bernstein_3d(mono1, (2, 2, 2), lo, hi)
         c2 = _make_sphere_coeffs(0.04)
         iq = ImplicitQuadrature(c1, c2)
-        # signs=None defaults to all -1.
+        # signs=None defaults to signs[poly_idx]=-1, rest 0.
         result = iq.surface_reparam(q=3, poly_idx=0)
         assert result.n_cells >= 0
         assert result.dim == 3  # noqa: PLR2004
         assert result.cell_dim == 2  # noqa: PLR2004
+
+    def test_3d_surface_with_sign_filter(self) -> None:
+        """3D surface reparameterization with explicit sign filtering."""
+        from pantr.bezier.implicit import monomial_to_bernstein_3d  # noqa: PLC0415
+
+        lo = np.array([0.0, 0.0, 0.0])
+        hi = np.array([1.0, 1.0, 1.0])
+        mono1 = np.zeros((3, 3, 3))
+        mono1[0, 0, 0] = 0.75 - 0.09
+        mono1[2, 0, 0] = 1.0
+        mono1[0, 2, 0] = 1.0
+        mono1[0, 0, 2] = 1.0
+        mono1[1, 0, 0] = -1.0
+        mono1[0, 1, 0] = -1.0
+        mono1[0, 0, 1] = -1.0
+        c1 = monomial_to_bernstein_3d(mono1, (2, 2, 2), lo, hi)
+        c2 = _make_sphere_coeffs(0.04)
+        iq = ImplicitQuadrature(c1, c2)
+        result = iq.surface_reparam(q=3, poly_idx=0, signs=[-1, +1])
+        assert result.n_cells >= 0
+        assert result.dim == 3  # noqa: PLR2004
+
+
+# ---------------------------------------------------------------------------
+# ReparamResult invariant validation
+# ---------------------------------------------------------------------------
+
+
+class TestReparamResultInvariants:
+    """Direct tests for ReparamResult.__post_init__ validation."""
+
+    def test_bad_dim(self) -> None:
+        with pytest.raises(ValueError, match="dim must be 2 or 3"):
+            ReparamResult(
+                points=np.empty((4, 1), dtype=np.float64),
+                n_cells=1,
+                q=2,
+                dim=1,
+                cell_dim=1,
+            )
+
+    def test_bad_cell_dim(self) -> None:
+        with pytest.raises(ValueError, match="cell_dim must be"):
+            ReparamResult(
+                points=np.empty((4, 2), dtype=np.float64),
+                n_cells=1,
+                q=2,
+                dim=2,
+                cell_dim=0,
+            )
+
+    def test_bad_shape(self) -> None:
+        with pytest.raises(ValueError, match="points.shape must be"):
+            ReparamResult(
+                points=np.empty((3, 2), dtype=np.float64),
+                n_cells=1,
+                q=2,
+                dim=2,
+                cell_dim=2,
+            )
+
+    def test_negative_n_cells(self) -> None:
+        with pytest.raises(ValueError, match="n_cells must be >= 0"):
+            ReparamResult(
+                points=np.empty((0, 2), dtype=np.float64),
+                n_cells=-1,
+                q=2,
+                dim=2,
+                cell_dim=2,
+            )
+
+    def test_dtype_coercion(self) -> None:
+        """Float32 input is coerced to float64."""
+        pts = np.zeros((4, 2), dtype=np.float32)
+        result = ReparamResult(
+            points=pts,  # type: ignore[arg-type]
+            n_cells=1,
+            q=2,
+            dim=2,
+            cell_dim=2,
+        )
+        assert result.points.dtype == np.float64
+
+    def test_points_immutable(self) -> None:
+        """Points array should be read-only after construction."""
+        pts = np.zeros((4, 2), dtype=np.float64)
+        result = ReparamResult(points=pts, n_cells=1, q=2, dim=2, cell_dim=2)
+        with pytest.raises(ValueError, match="read-only"):
+            result.points[0, 0] = 1.0
+
+
+# ---------------------------------------------------------------------------
+# Additional quadrature_to_pyvista tests
+# ---------------------------------------------------------------------------
+
+
+class TestQuadratureToPyvistaExtra:
+    """Additional edge-case tests for quadrature visualization."""
+
+    def test_volume_quad_show_normals_ignored(self) -> None:
+        """show_normals=True with volume result returns plain PolyData."""
+        pv = pytest.importorskip("pyvista")  # noqa: F841
+        from pantr.viz import quadrature_to_pyvista  # noqa: PLC0415
+
+        iq = ImplicitQuadrature(_make_circle_coeffs())
+        vol_result = iq.volume_quad(q=4)
+        cloud = quadrature_to_pyvista(vol_result, show_normals=True)
+        assert not isinstance(cloud, tuple)
+        assert "weight" in cloud.point_data
