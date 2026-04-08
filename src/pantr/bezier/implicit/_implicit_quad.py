@@ -1092,19 +1092,21 @@ def _gauss_legendre_01(q: int) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.
     are read-only to prevent accidental mutation of the cached data.
 
     Args:
-        q (int): Number of quadrature points.
+        q (int): Number of quadrature points. Must be >= 1.
 
     Returns:
-        tuple: (nodes, weights) both of shape ``(q,)``.
-    """
-    from numpy.polynomial.legendre import leggauss  # noqa: PLC0415
+        tuple[npt.NDArray[np.float64], npt.NDArray[np.float64]]:
+            (nodes, weights) both of shape ``(q,)``.
 
-    pts, wts = leggauss(q)  # type: ignore[no-untyped-call]
-    nodes = np.ascontiguousarray(0.5 * (pts + 1.0))
-    weights = np.ascontiguousarray(0.5 * wts)
+    Raises:
+        ValueError: If ``q < 1``.
+    """
+    from pantr.quad import get_gauss_legendre_1d  # noqa: PLC0415
+
+    nodes, weights = get_gauss_legendre_1d(q)
     nodes.flags.writeable = False
     weights.flags.writeable = False
-    return nodes, weights
+    return cast(npt.NDArray[np.float64], nodes), cast(npt.NDArray[np.float64], weights)
 
 
 @functools.lru_cache(maxsize=32)
@@ -1115,16 +1117,18 @@ def _tanh_sinh_01(q: int) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float
     are read-only to prevent accidental mutation of the cached data.
 
     Args:
-        q (int): Number of quadrature points.
+        q (int): Number of quadrature points. Must be >= 1.
 
     Returns:
-        tuple: (nodes, weights) both of shape ``(q,)``.
+        tuple[npt.NDArray[np.float64], npt.NDArray[np.float64]]:
+            (nodes, weights) both of shape ``(q,)``.
+
+    Raises:
+        ValueError: If ``q < 1``.
     """
     from pantr.quad import get_tanh_sinh_1d  # noqa: PLC0415
 
     nodes, weights = get_tanh_sinh_1d(q)
-    nodes_f64 = cast(npt.NDArray[np.float64], np.ascontiguousarray(nodes))
-    weights_f64 = cast(npt.NDArray[np.float64], np.ascontiguousarray(weights))
-    nodes_f64.flags.writeable = False
-    weights_f64.flags.writeable = False
-    return nodes_f64, weights_f64
+    nodes.flags.writeable = False
+    weights.flags.writeable = False
+    return cast(npt.NDArray[np.float64], nodes), cast(npt.NDArray[np.float64], weights)
