@@ -1097,14 +1097,14 @@ def _gauss_legendre_01(q: int) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.
     Returns:
         tuple: (nodes, weights) both of shape ``(q,)``.
     """
-    from numpy.polynomial.legendre import leggauss  # noqa: PLC0415
+    from pantr.quad import get_gauss_legendre_1d  # noqa: PLC0415
 
-    pts, wts = leggauss(q)  # type: ignore[no-untyped-call]
-    nodes = np.ascontiguousarray(0.5 * (pts + 1.0))
-    weights = np.ascontiguousarray(0.5 * wts)
-    nodes.flags.writeable = False
-    weights.flags.writeable = False
-    return nodes, weights
+    nodes, weights = get_gauss_legendre_1d(q)
+    nodes_f64 = cast(npt.NDArray[np.float64], np.ascontiguousarray(nodes))
+    weights_f64 = cast(npt.NDArray[np.float64], np.ascontiguousarray(weights))
+    nodes_f64.flags.writeable = False
+    weights_f64.flags.writeable = False
+    return nodes_f64, weights_f64
 
 
 @functools.lru_cache(maxsize=32)
