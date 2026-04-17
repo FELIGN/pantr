@@ -13,6 +13,7 @@ space objects.
 
 import functools
 from collections.abc import Callable
+from math import comb
 
 import numpy as np
 import numpy.typing as npt
@@ -317,6 +318,60 @@ def compute_cardinal_to_bernstein_1d(
     )
 
 
+def compute_monomial_to_bernstein_1d(
+    degree: int,
+    dtype: npt.DTypeLike = np.float64,
+    out: npt.NDArray[np.float32 | np.float64] | None = None,
+) -> npt.NDArray[np.float32 | np.float64]:
+    r"""Create transformation matrix from monomial to Bernstein basis on [0, 1].
+
+    Given a polynomial of degree ``degree`` written in the monomial basis on
+    ``[0, 1]``, the returned matrix ``M`` converts its coefficient vector to
+    the Bernstein basis: ``bern_coeffs = M @ mono_coeffs``. Equivalently, on
+    basis evaluations, ``monomial(x) = M.T @ bernstein(x)``.
+
+    The entries are ``M[i, j] = C(i, j) / C(degree, j)`` for ``j <= i``, else
+    ``0``, where ``C(n, k)`` is the binomial coefficient.
+
+    Args:
+        degree (int): Polynomial degree. Must be non-negative.
+        dtype (npt.DTypeLike): Floating point type for the output matrix.
+            Defaults to np.float64.
+        out (npt.NDArray[np.float32 | np.float64] | None): Optional output array
+            where the result will be stored. If None, a new array is allocated.
+            Must have shape (degree+1, degree+1) and dtype matching the `dtype` parameter
+            if provided. This follows NumPy's style for output arrays. Defaults to None.
+
+    Returns:
+        npt.NDArray[np.float32 | np.float64]: (degree+1, degree+1) lower-triangular
+            transformation matrix ``M`` such that ``M @ [monomial coefficients] =
+            [Bernstein coefficients]``. If `out` was provided, returns the same array.
+
+    Raises:
+        ValueError: If degree is negative, dtype is not float32 or float64, or if `out`
+            is provided and has incorrect shape or dtype.
+    """
+    if degree < 0:
+        raise ValueError("Degree must be non-negative")
+    if dtype not in (np.float32, np.float64):
+        raise ValueError("dtype must be float32 or float64")
+
+    expected_shape = (degree + 1, degree + 1)
+    expected_dtype = dtype
+
+    if out is None:
+        out = np.zeros(expected_shape, dtype=expected_dtype)
+    else:
+        _validate_out_array_multidimensional(out, expected_shape, expected_dtype)
+        out[:] = 0
+
+    for i in range(degree + 1):
+        for j in range(i + 1):
+            out[i, j] = comb(i, j) / comb(degree, j)
+
+    return out
+
+
 @functools.lru_cache(maxsize=64)
 def _cached_lagrange_to_bernstein_matrix(
     degree: int,
@@ -387,4 +442,5 @@ __all__ = [
     "compute_bernstein_to_lagrange_1d",
     "compute_cardinal_to_bernstein_1d",
     "compute_lagrange_to_bernstein_1d",
+    "compute_monomial_to_bernstein_1d",
 ]
