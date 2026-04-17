@@ -17,6 +17,8 @@ from math import comb
 import numpy as np
 from numpy import typing as npt
 
+from pantr.change_basis import compute_monomial_to_bernstein_1d
+
 
 def _validate_degrees(
     mono_shape: tuple[int, ...],
@@ -101,7 +103,9 @@ def monomial_to_bernstein_2d(
                     cy = comb(iy, q) * lo_y ** (iy - q) * hy**q
                     mapped[p, q] += c * cx * cy
 
-    return _m2b_mat(dx) @ mapped @ _m2b_mat(dy).T
+    mx = compute_monomial_to_bernstein_1d(dx)
+    my = compute_monomial_to_bernstein_1d(dy)
+    return np.asarray(mx @ mapped @ my.T, dtype=np.float64)
 
 
 def monomial_to_bernstein_3d(
@@ -155,25 +159,9 @@ def monomial_to_bernstein_3d(
                             cz = comb(iz, r) * lo_z ** (iz - r) * hz**r
                             mapped[p, q, r] += c * cx * cy * cz
 
-    mx, my, mz = _m2b_mat(dx), _m2b_mat(dy), _m2b_mat(dz)
+    mx = compute_monomial_to_bernstein_1d(dx)
+    my = compute_monomial_to_bernstein_1d(dy)
+    mz = compute_monomial_to_bernstein_1d(dz)
     tmp1 = np.einsum("ip,pqr->iqr", mx, mapped)
     tmp2 = np.einsum("jq,iqr->ijr", my, tmp1)
     return np.asarray(np.einsum("kr,ijr->ijk", mz, tmp2), dtype=np.float64)
-
-
-def _m2b_mat(n: int) -> npt.NDArray[np.float64]:
-    """Monomial-to-Bernstein conversion matrix for degree *n*.
-
-    ``M[i, j] = C(i, j) / C(n, j)`` for ``j <= i``, else 0.
-
-    Args:
-        n (int): Polynomial degree.
-
-    Returns:
-        npt.NDArray[np.float64]: Lower-triangular matrix of shape ``(n+1, n+1)``.
-    """
-    mat = np.zeros((n + 1, n + 1))
-    for i in range(n + 1):
-        for j in range(i + 1):
-            mat[i, j] = comb(i, j) / comb(n, j)
-    return mat

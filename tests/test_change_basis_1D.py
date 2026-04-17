@@ -18,6 +18,7 @@ from pantr.change_basis import (
     compute_bernstein_to_lagrange_1d,
     compute_cardinal_to_bernstein_1d,
     compute_lagrange_to_bernstein_1d,
+    compute_monomial_to_bernstein_1d,
 )
 
 
@@ -466,3 +467,96 @@ class TestCachedChangeBasisMatrices:
         info = _cached_cardinal_to_bernstein_matrix.cache_info()
         assert info.maxsize is not None
         assert info.maxsize > 0
+
+
+class TestMonomialToBernsteinBasisOperator:
+    """Test the compute_monomial_to_bernstein_1d function."""
+
+    def test_negative_degree_error(self) -> None:
+        """Test that negative degree raises ValueError."""
+        with pytest.raises(ValueError, match="Degree must be non-negative"):
+            compute_monomial_to_bernstein_1d(-1)
+
+    def test_invalid_dtype_error(self) -> None:
+        """Test that invalid dtype raises ValueError."""
+        with pytest.raises(ValueError, match="dtype must be float32 or float64"):
+            compute_monomial_to_bernstein_1d(2, dtype=np.int32)
+        with pytest.raises(ValueError, match="dtype must be float32 or float64"):
+            compute_monomial_to_bernstein_1d(2, dtype=np.float16)
+
+    def test_out_parameter(self) -> None:
+        """Test that out parameter works correctly."""
+        degree = 3
+
+        result1 = compute_monomial_to_bernstein_1d(degree)
+        assert result1.shape == (degree + 1, degree + 1)
+        assert result1.dtype == np.float64
+
+        out = np.empty((degree + 1, degree + 1), dtype=np.float64)
+        result2 = compute_monomial_to_bernstein_1d(degree, out=out)
+        assert result2 is out
+        np.testing.assert_array_equal(result1, result2)
+
+        out_f32 = np.empty((degree + 1, degree + 1), dtype=np.float32)
+        result3 = compute_monomial_to_bernstein_1d(degree, dtype=np.float32, out=out_f32)
+        assert result3 is out_f32
+        assert result3.dtype == np.float32
+
+    def test_out_parameter_validation(self) -> None:
+        """Test that out parameter validation works correctly."""
+        degree = 2
+
+        out_wrong_shape = np.empty((degree + 2, degree + 1), dtype=np.float64)
+        with pytest.raises(ValueError, match="Output array has shape"):
+            compute_monomial_to_bernstein_1d(degree, out=out_wrong_shape)
+
+        out_wrong_dtype = np.empty((degree + 1, degree + 1), dtype=np.float32)
+        with pytest.raises(ValueError, match="Output array has dtype"):
+            compute_monomial_to_bernstein_1d(degree, out=out_wrong_dtype)
+
+        out_readonly = np.empty((degree + 1, degree + 1), dtype=np.float64)
+        out_readonly.setflags(write=False)
+        with pytest.raises(ValueError, match="Output array is not writeable"):
+            compute_monomial_to_bernstein_1d(degree, out=out_readonly)
+
+    def test_degree_zero(self) -> None:
+        """Degree 0 returns the 1x1 identity."""
+        mat = compute_monomial_to_bernstein_1d(0)
+        np.testing.assert_array_equal(mat, np.array([[1.0]]))
+
+    def test_known_values_degree_2(self) -> None:
+        """Degree 2: 1 = B0+B1+B2, t = (1/2)B1 + B2, t^2 = B2."""
+        expected = np.array(
+            [
+                [1.0, 0.0, 0.0],
+                [1.0, 0.5, 0.0],
+                [1.0, 1.0, 1.0],
+            ]
+        )
+        np.testing.assert_array_almost_equal(compute_monomial_to_bernstein_1d(2), expected)
+
+    def test_known_values_degree_3(self) -> None:
+        """Degree 3 reference values: M[i, j] = C(i, j) / C(3, j)."""
+        expected = np.array(
+            [
+                [1.0, 0.0, 0.0, 0.0],
+                [1.0, 1.0 / 3.0, 0.0, 0.0],
+                [1.0, 2.0 / 3.0, 1.0 / 3.0, 0.0],
+                [1.0, 1.0, 1.0, 1.0],
+            ]
+        )
+        np.testing.assert_array_almost_equal(compute_monomial_to_bernstein_1d(3), expected)
+
+    @pytest.mark.parametrize("degree", [1, 2, 3, 4, 5, 6])
+    def test_polynomial_reconstruction(self, degree: int) -> None:
+        """Bernstein coefficients from the matrix must reproduce the monomial polynomial."""
+        rng = np.random.default_rng(degree)
+        mono = rng.standard_normal(degree + 1)
+
+        bern_coeffs = compute_monomial_to_bernstein_1d(degree) @ mono
+
+        tt = np.linspace(0.0, 1.0, 25)
+        p_mono = sum(mono[k] * tt**k for k in range(degree + 1))
+        p_bern = tabulate_bernstein_1d(degree, tt) @ bern_coeffs
+
+        np.testing.assert_array_almost_equal(p_bern, p_mono)
