@@ -156,10 +156,11 @@ jobs:
           . .venv/bin/activate
           make coverage
 
-      - name: Run slow tests with JIT enabled
-        run: |
-          . .venv/bin/activate
-          pytest -m slow --no-cov -v
+      # "slow"-marked tests (e.g. TestSingularities3D volume integrals)
+      # all lived in the algoim engine that moved to `ocelat.algoim` in
+      # ocelat's Stage 6 refactor; pantr itself no longer has any.  If
+      # pantr reintroduces slow tests later, re-add the step from git
+      # history — `pytest -m slow --no-cov -v`.
 
       - name: Upload coverage xml
         uses: actions/upload-artifact@v4
