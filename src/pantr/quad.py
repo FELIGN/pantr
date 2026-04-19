@@ -43,19 +43,20 @@ def _scale_and_cast_nodes_and_weights(
     return nodes, weights
 
 
-def _validate_n_pts_and_dtype(n_pts: int, dtype: npt.DTypeLike) -> None:
+def _validate_n_pts_and_dtype(n_pts: int, dtype: npt.DTypeLike, min_pts: int = 1) -> None:
     """Validate the number of points and dtype.
 
     Args:
-        n_pts (int): The number of points. Must be at least 1.
-        dtype (npt.DTypeLike): The dtype of the nodes. If must be float32 or float64.
-            Defaults to float64.
+        n_pts (int): The number of points. Must be at least ``min_pts``.
+        dtype (npt.DTypeLike): The dtype of the nodes. Must be float32 or float64.
+        min_pts (int): Minimum required number of points. Defaults to 1.
 
     Raises:
-        ValueError: If n_pts is less than 1 or dtype is not float32 or float64.
+        ValueError: If ``n_pts`` is less than ``min_pts`` or dtype is not
+            float32 or float64.
     """
-    if n_pts < 1:
-        raise ValueError("n_pts must be at least 1")
+    if n_pts < min_pts:
+        raise ValueError(f"n_pts must be at least {min_pts}")
 
     dtype_obj = np.dtype(dtype)
     if dtype_obj.type not in (np.float32, np.float64):
@@ -140,10 +141,7 @@ def get_gauss_lobatto_legendre_1d(
     Raises:
         ValueError: If n_pts is less than 2 or dtype is not float32 or float64.
     """
-    _validate_n_pts_and_dtype(n_pts, dtype)
-
-    if n_pts < 2:  # noqa: PLR2004
-        raise ValueError("n_pts must be at least 2")
+    _validate_n_pts_and_dtype(n_pts, dtype, min_pts=2)
 
     # Degree N = n_pts - 1 Legendre polynomial P_N
     # GLL nodes are [-1, roots of P_N'(x), 1] on [-1, 1]
@@ -213,10 +211,7 @@ def get_modified_chebyshev_nodes_1d(
     Raises:
         ValueError: If *n_pts* < 2 or *dtype* is not float32 or float64.
     """
-    _validate_n_pts_and_dtype(n_pts, dtype)
-
-    if n_pts < 2:  # noqa: PLR2004
-        raise ValueError("n_pts must be at least 2")
+    _validate_n_pts_and_dtype(n_pts, dtype, min_pts=2)
 
     dtype_obj = np.dtype(dtype)
     i = np.arange(n_pts, dtype=dtype_obj)
@@ -241,10 +236,7 @@ def get_chebyshev_gauss_2nd_kind_1d(
     Raises:
         ValueError: If n_pts is less than 2 or dtype is not float32 or float64.
     """
-    _validate_n_pts_and_dtype(n_pts, dtype)
-
-    if n_pts < 2:  # noqa: PLR2004
-        raise ValueError("n_pts must be at least 2")
+    _validate_n_pts_and_dtype(n_pts, dtype, min_pts=2)
 
     cheb2_t = cast(Callable[[int], npt.NDArray[np.float64]], chebyshev.chebpts2)
     nodes = cheb2_t(n_pts)
@@ -390,12 +382,7 @@ def get_tanh_sinh_1d(
     _validate_n_pts_and_dtype(n_pts, dtype)
 
     data, _ = _generate_tanh_sinh(n_pts)
-
-    # Transform from [-1, 1] to [0, 1]
-    nodes = ((data[:, 0] + 1.0) * 0.5).astype(dtype)
-    weights = (data[:, 1] * 0.5).astype(dtype)
-
-    return nodes, weights
+    return _scale_and_cast_nodes_and_weights(data[:, 0], data[:, 1], dtype)
 
 
 class PointsLattice:

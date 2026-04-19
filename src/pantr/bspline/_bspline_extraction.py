@@ -12,7 +12,7 @@ import numpy.typing as npt
 
 from .._numba_compat import nb_jit
 from ..basis import LagrangeVariant
-from ..basis._basis_utils import _validate_out_array_3d_float
+from ..basis._basis_utils import _validate_out_array
 from ..change_basis import (
     _cached_cardinal_to_bernstein_matrix,
     _cached_lagrange_to_bernstein_matrix,
@@ -181,7 +181,7 @@ def _tabulate_Bspline_Bezier_1D_extraction_impl(
     if out is None:
         out = np.empty(expected_shape, dtype=dtype)
     else:
-        _validate_out_array_3d_float(out, expected_shape, dtype)
+        _validate_out_array(out, expected_shape, dtype)
 
     _tabulate_Bspline_Bezier_1D_extraction_core(knots, degree, tol, out)
 
@@ -234,7 +234,7 @@ def _tabulate_Bspline_Lagrange_1D_extraction_impl(
     if out is None:
         out = np.empty(expected_shape, dtype=dtype)
     else:
-        _validate_out_array_3d_float(out, expected_shape, dtype)
+        _validate_out_array(out, expected_shape, dtype)
 
     # Compute Bezier extraction into out
     _tabulate_Bspline_Bezier_1D_extraction_impl(knots, degree, tol, out=out)
@@ -295,7 +295,7 @@ def _tabulate_Bspline_cardinal_1D_extraction_impl(
     if out is None:
         out = np.empty(expected_shape, dtype=dtype)
     else:
-        _validate_out_array_3d_float(out, expected_shape, dtype)
+        _validate_out_array(out, expected_shape, dtype)
 
     # Compute Bezier extraction into out
     _tabulate_Bspline_Bezier_1D_extraction_impl(knots, degree, tol, out=out)

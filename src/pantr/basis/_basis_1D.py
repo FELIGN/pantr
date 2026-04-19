@@ -23,7 +23,7 @@ from ._basis_lagrange import _tabulate_lagrange_basis_1D_core
 from ._basis_utils import (
     _compute_final_output_shape_1D,
     _normalize_points_1D,
-    _validate_out_array_1D,
+    _validate_out_array,
 )
 
 if TYPE_CHECKING:
@@ -89,7 +89,7 @@ def _tabulate_basis_1D_impl_helper(
     if out is None:
         out = np.empty(expected_final_shape, dtype=t.dtype)
     else:
-        _validate_out_array_1D(out, expected_final_shape, cast(npt.DTypeLike, t.dtype))
+        _validate_out_array(out, expected_final_shape, cast(npt.DTypeLike, t.dtype))
 
     B_normalized = out.reshape(expected_normalized_shape)
 

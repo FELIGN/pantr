@@ -18,7 +18,7 @@ import numpy as np
 from numpy import typing as npt
 
 from .._numba_compat import nb_jit, nb_prange
-from ..basis._basis_utils import _validate_out_array_1D
+from ..basis._basis_utils import _validate_out_array
 from ..quad import PointsLattice
 from ._bspline_basis_core import (
     _compute_basis_deriv_nurbs_book_impl,
@@ -154,7 +154,7 @@ def _evaluate_Bspline_1D(
     if out is None:
         out_array = np.empty(expected_shape, dtype=expected_dtype)
     else:
-        _validate_out_array_1D(out, expected_shape, expected_dtype)
+        _validate_out_array(out, expected_shape, expected_dtype)
         out_array = out
 
     spline_1D = spline.space.spaces[0]
@@ -356,7 +356,7 @@ def _evaluate_Bspline_deriv_1D_rational(
 
     out_shape = (n_pts,) if rank == 1 else (n_pts, rank)
     if out is not None:
-        _validate_out_array_1D(out, out_shape, dtype)
+        _validate_out_array(out, out_shape, dtype)
 
     # Intermediate rows (k < n_deriv) need temporary storage; the last row
     # reuses `out` (or a fresh allocation when out is None) to avoid a copy.
@@ -419,12 +419,12 @@ def _evaluate_Bspline_deriv_1D_non_rational(
     buf: npt.NDArray[np.float32 | np.float64]
     if rank == 1:
         if out is not None:
-            _validate_out_array_1D(out, (n_pts,), dtype)
+            _validate_out_array(out, (n_pts,), dtype)
             buf = out.reshape(n_pts, 1)
         else:
             buf = np.empty((n_pts, 1), dtype=dtype)
     elif out is not None:
-        _validate_out_array_1D(out, (n_pts, rank), dtype)
+        _validate_out_array(out, (n_pts, rank), dtype)
         buf = out
     else:
         buf = np.empty((n_pts, rank), dtype=dtype)
@@ -842,7 +842,7 @@ def _evaluate_Bspline_deriv_multi_dim_rational(
     if rank_value == 1:
         final = final[..., 0]
     if out is not None:
-        _validate_out_array_1D(out, final.shape, dtype)
+        _validate_out_array(out, final.shape, dtype)
         out[:] = final
         return out
     return final
@@ -890,7 +890,7 @@ def _evaluate_Bspline_deriv_multi_dim_non_rational(
         _call_kernel(buf)
         final_nd: npt.NDArray[np.float32 | np.float64] = buf[..., 0]
         if out is not None:
-            _validate_out_array_1D(out, final_nd.shape, dtype)
+            _validate_out_array(out, final_nd.shape, dtype)
             out[:] = final_nd
             return out
         return final_nd
@@ -899,7 +899,7 @@ def _evaluate_Bspline_deriv_multi_dim_non_rational(
     if out is None:
         buf = np.empty(out_shape, dtype=dtype)
     else:
-        _validate_out_array_1D(out, out_shape, dtype)
+        _validate_out_array(out, out_shape, dtype)
         buf = out
     _call_kernel(buf)
     return buf
@@ -1192,7 +1192,7 @@ def _evaluate_Bspline_multi_dim(
         if out is None:
             out_array = np.empty(expected_shape, dtype=dtype)
         else:
-            _validate_out_array_1D(out, expected_shape, dtype)
+            _validate_out_array(out, expected_shape, dtype)
             out_array = out
 
         _evaluate_Bspline_multi_dim_lattice(cp, spline.space.spaces, pts, out_array)
@@ -1207,7 +1207,7 @@ def _evaluate_Bspline_multi_dim(
         if out is None:
             out_array = np.empty(expected_shape, dtype=dtype)
         else:
-            _validate_out_array_1D(out, expected_shape, dtype)
+            _validate_out_array(out, expected_shape, dtype)
             out_array = out
 
         _evaluate_Bspline_multi_dim_pts_array(cp, spline.space.spaces, pts, out_array)
