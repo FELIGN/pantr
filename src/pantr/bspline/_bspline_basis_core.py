@@ -18,9 +18,7 @@ from ..basis._basis_utils import (
     _compute_final_output_shape_1D,
     _compute_final_output_shape_1D_deriv,
     _normalize_points_1D,
-    _validate_out_array_1D,
-    _validate_out_array_deriv_1D,
-    _validate_out_array_first_basis,
+    _validate_out_array,
 )
 from ._bspline_knots import (
     _get_Bspline_num_basis_1D_impl,
@@ -300,7 +298,7 @@ def _tabulate_Bspline_basis_Bernstein_like_1D(
     if out_first_basis is None:
         out_first_basis = np.empty(expected_first_basis_shape, dtype=np.int_)
     else:
-        _validate_out_array_first_basis(out_first_basis, expected_first_basis_shape)
+        _validate_out_array(out_first_basis, expected_first_basis_shape, np.int_)
 
     # the first basis function is always the 0
     out_first_basis.fill(0)
@@ -427,12 +425,12 @@ def _tabulate_Bspline_basis_1D_impl(
 
     if out_basis is None:
         out_basis = np.empty(expected_final_shape, dtype=expected_dtype)
-    _validate_out_array_1D(out_basis, expected_final_shape, expected_dtype)
+    _validate_out_array(out_basis, expected_final_shape, expected_dtype)
     basis_normalized = out_basis.reshape(num_pts, n_basis)
 
     if out_first_basis is None:
         out_first_basis = np.empty(expected_first_basis_shape, dtype=np.int_)
-    _validate_out_array_first_basis(out_first_basis, expected_first_basis_shape)
+    _validate_out_array(out_first_basis, expected_first_basis_shape, np.int_)
     first_indices_normalized = out_first_basis.reshape(num_pts)
 
     if spline.has_Bezier_like_knots():
@@ -516,12 +514,12 @@ def _tabulate_Bspline_basis_deriv_1D_impl(
 
     if out_deriv is None:
         out_deriv = np.empty(expected_deriv_shape, dtype=expected_dtype)
-    _validate_out_array_deriv_1D(out_deriv, expected_deriv_shape, expected_dtype)
+    _validate_out_array(out_deriv, expected_deriv_shape, expected_dtype)
     deriv_normalized = out_deriv.reshape(num_pts, n_deriv + 1, order)
 
     if out_first_basis is None:
         out_first_basis = np.empty(expected_first_basis_shape, dtype=np.int_)
-    _validate_out_array_first_basis(out_first_basis, expected_first_basis_shape)
+    _validate_out_array(out_first_basis, expected_first_basis_shape, np.int_)
     first_indices_normalized = out_first_basis.reshape(num_pts)
 
     if spline.has_Bezier_like_knots():

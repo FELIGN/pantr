@@ -15,7 +15,7 @@ from typing import TYPE_CHECKING
 import numpy as np
 import numpy.typing as npt
 
-from ..basis._basis_utils import _validate_out_array_1D
+from ..basis._basis_utils import _validate_out_array
 from ._bezier_core import _evaluate_bezier_1d_core, _evaluate_bezier_deriv_1d_core
 from ._bezier_utils import _tabulate_bernstein_1d_fast
 
@@ -111,7 +111,7 @@ def _evaluate_bezier_1d(
         result = result[:, 0]
 
     if out is not None:
-        _validate_out_array_1D(out, result.shape, dtype)
+        _validate_out_array(out, result.shape, dtype)
         out[:] = result
         return out
     return result
@@ -203,7 +203,7 @@ def _evaluate_bezier_nd_pts_array(  # noqa: PLR0913
     result = _project_rational(bezier, result)
 
     if out is not None:
-        _validate_out_array_1D(out, result.shape, dtype)
+        _validate_out_array(out, result.shape, dtype)
         out[:] = result
         return out
     return result
@@ -263,7 +263,7 @@ def _evaluate_bezier_nd_lattice(  # noqa: PLR0913
     result = _project_rational(bezier, result)
 
     if out is not None:
-        _validate_out_array_1D(out, result.shape, dtype)
+        _validate_out_array(out, result.shape, dtype)
         out[:] = result
         return out
     return result
@@ -418,7 +418,7 @@ def _evaluate_bezier_deriv_1d_non_rational(  # noqa: PLR0913
         result = result[:, 0]
 
     if out is not None:
-        _validate_out_array_1D(out, result.shape, dtype)
+        _validate_out_array(out, result.shape, dtype)
         out[:] = result
         return out
     return result
@@ -470,7 +470,7 @@ def _evaluate_bezier_deriv_1d_rational(  # noqa: PLR0913
         final = final[:, 0]
 
     if out is not None:
-        _validate_out_array_1D(out, final.shape, dtype)
+        _validate_out_array(out, final.shape, dtype)
         out[:] = final
         return out
     return final
@@ -610,7 +610,7 @@ def _evaluate_bezier_deriv_nd_non_rational(  # noqa: PLR0913
         result = result[..., 0]
 
     if out is not None:
-        _validate_out_array_1D(out, result.shape, dtype)
+        _validate_out_array(out, result.shape, dtype)
         out[:] = result
         return out
     return result
@@ -716,7 +716,7 @@ def _evaluate_bezier_deriv_nd_rational(  # noqa: PLR0913, PLR0912
         final = final[..., 0]
 
     if out is not None:
-        _validate_out_array_1D(out, final.shape, dtype)
+        _validate_out_array(out, final.shape, dtype)
         out[:] = final
         return out
     return final

@@ -107,6 +107,10 @@ class TestGaussLobattoLegendre:
         with pytest.raises(ValueError, match="at least 2"):
             get_gauss_lobatto_legendre_1d(1)
 
+    def test_n_pts_zero_raises(self) -> None:
+        with pytest.raises(ValueError, match="at least 2"):
+            get_gauss_lobatto_legendre_1d(0)
+
     def test_invalid_dtype_raises(self) -> None:
         with pytest.raises(ValueError, match="float32 or float64"):
             get_gauss_lobatto_legendre_1d(2, np.int32)
@@ -177,6 +181,10 @@ class TestChebyshevGaussSecondKind:
     def test_invalid_n_pts_raises(self) -> None:
         with pytest.raises(ValueError, match="at least 2"):
             get_chebyshev_gauss_2nd_kind_1d(1)
+
+    def test_n_pts_zero_raises(self) -> None:
+        with pytest.raises(ValueError, match="at least 2"):
+            get_chebyshev_gauss_2nd_kind_1d(0)
 
     def test_invalid_dtype_raises(self) -> None:
         with pytest.raises(ValueError, match="float32 or float64"):
@@ -409,6 +417,11 @@ class TestModifiedChebyshevNodes:
         """n_pts < 2 must raise."""
         with pytest.raises(ValueError, match="at least 2"):
             get_modified_chebyshev_nodes_1d(1)
+
+    def test_n_pts_zero_raises(self) -> None:
+        """n_pts=0 must also raise with the min_pts=2 message."""
+        with pytest.raises(ValueError, match="at least 2"):
+            get_modified_chebyshev_nodes_1d(0)
 
     def test_invalid_dtype_raises(self) -> None:
         """Non-floating dtype must raise."""

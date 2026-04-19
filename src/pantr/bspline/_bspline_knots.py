@@ -13,7 +13,7 @@ import numpy as np
 import numpy.typing as npt
 
 from .._numba_compat import nb_jit
-from ..basis._basis_utils import _validate_out_array_bool
+from ..basis._basis_utils import _validate_out_array
 
 
 @nb_jit(
@@ -334,7 +334,7 @@ def _get_Bspline_cardinal_intervals_1D_impl(
     if out is None:
         out = np.empty(num_intervals, dtype=np.bool_)
     else:
-        _validate_out_array_bool(out, (num_intervals,))
+        _validate_out_array(out, (num_intervals,), np.bool_)
 
     _get_Bspline_cardinal_intervals_1D_core(knots, degree, tol, out)
 

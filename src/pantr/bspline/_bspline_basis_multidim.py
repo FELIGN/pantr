@@ -11,10 +11,7 @@ from typing import TYPE_CHECKING, cast
 import numpy as np
 import numpy.typing as npt
 
-from ..basis._basis_utils import (
-    _validate_out_array_1D,
-    _validate_out_array_first_basis,
-)
+from ..basis._basis_utils import _validate_out_array
 from ..quad import PointsLattice
 from ._bspline_knots import _is_in_domain_impl
 
@@ -156,12 +153,12 @@ def _tabulate_Bspline_basis_for_points_array_impl(
             np.empty(expected_basis_shape, dtype=expected_dtype),
         )
     else:
-        _validate_out_array_1D(out_basis, expected_basis_shape, expected_dtype)
+        _validate_out_array(out_basis, expected_basis_shape, expected_dtype)
 
     if out_first_basis is None:
         out_first_basis = np.empty(expected_first_basis_shape, dtype=np.int_)
     else:
-        _validate_out_array_first_basis(out_first_basis, expected_first_basis_shape)
+        _validate_out_array(out_first_basis, expected_first_basis_shape, np.int_)
 
     # Combine 1D basis along each direction using outer product to form the
     # tensor-product multidimensional basis.
@@ -257,12 +254,12 @@ def _tabulate_Bspline_basis_for_points_lattice_impl(
             np.empty(expected_basis_shape, dtype=expected_dtype),
         )
     else:
-        _validate_out_array_1D(out_basis, expected_basis_shape, expected_dtype)
+        _validate_out_array(out_basis, expected_basis_shape, expected_dtype)
 
     if out_first_basis is None:
         out_first_basis = np.empty(expected_first_basis_shape, dtype=np.int_)
     else:
-        _validate_out_array_first_basis(out_first_basis, expected_first_basis_shape)
+        _validate_out_array(out_first_basis, expected_first_basis_shape, np.int_)
 
     # 3. Combine first_indices into a multi-dimensional array (Meshgrid approach)
     # Result shape: (n_pts_0, n_pts_1, ..., n_pts_d, dim)
