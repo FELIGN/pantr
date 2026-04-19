@@ -20,7 +20,7 @@ import numpy.typing as npt
 
 from .basis import LagrangeVariant, tabulate_bernstein_1d, tabulate_cardinal_bspline_1d
 from .basis._basis_lagrange import _get_lagrange_points
-from .basis._basis_utils import _validate_out_array_multidimensional
+from .basis._basis_utils import _validate_out_array
 from .quad import get_gauss_legendre_1d
 
 
@@ -66,7 +66,7 @@ def compute_lagrange_to_bernstein_1d(
     if out is None:
         out = np.empty(expected_shape, dtype=expected_dtype)
     else:
-        _validate_out_array_multidimensional(out, expected_shape, expected_dtype)
+        _validate_out_array(out, expected_shape, expected_dtype)
 
     points = _get_lagrange_points(lagrange_variant, degree + 1, dtype)
 
@@ -120,7 +120,7 @@ def compute_bernstein_to_lagrange_1d(
     if out is None:
         out = np.empty(expected_shape, dtype=expected_dtype)
     else:
-        _validate_out_array_multidimensional(out, expected_shape, expected_dtype)
+        _validate_out_array(out, expected_shape, expected_dtype)
 
     C = compute_lagrange_to_bernstein_1d(degree, lagrange_variant, dtype)
     out[:] = np.linalg.inv(C)
@@ -191,7 +191,7 @@ def _compute_change_basis_1D(
     if out is None:
         out = np.empty(expected_shape, dtype=expected_dtype)
     else:
-        _validate_out_array_multidimensional(out, expected_shape, expected_dtype)
+        _validate_out_array(out, expected_shape, expected_dtype)
 
     # 3. Compute the Gram matrix G for the new basis B: G_kj = <b_k, b_j>
     # The inner product <f, g> is approximated by sum(w_m * f(x_m) * g(x_m))
@@ -243,7 +243,7 @@ def compute_bernstein_to_cardinal_1d(
     if out is None:
         out = np.empty(expected_shape, dtype=expected_dtype)
     else:
-        _validate_out_array_multidimensional(out, expected_shape, expected_dtype)
+        _validate_out_array(out, expected_shape, expected_dtype)
 
     def bernstein(
         pts: npt.NDArray[np.float32 | np.float64],
@@ -299,7 +299,7 @@ def compute_cardinal_to_bernstein_1d(
     if out is None:
         out = np.empty(expected_shape, dtype=expected_dtype)
     else:
-        _validate_out_array_multidimensional(out, expected_shape, expected_dtype)
+        _validate_out_array(out, expected_shape, expected_dtype)
 
     def bernstein(
         pts: npt.NDArray[np.float32 | np.float64],
@@ -362,7 +362,7 @@ def compute_monomial_to_bernstein_1d(
     if out is None:
         out = np.zeros(expected_shape, dtype=expected_dtype)
     else:
-        _validate_out_array_multidimensional(out, expected_shape, expected_dtype)
+        _validate_out_array(out, expected_shape, expected_dtype)
         out[:] = 0
 
     for i in range(degree + 1):

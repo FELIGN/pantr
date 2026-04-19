@@ -63,7 +63,7 @@ Other private modules: `_numba_compat.py` (Numba shim), `_basis_utils.py` (share
 ### Input validation policy
 
 - Validation lives exclusively in **Layer 2**. Layer 1 checks only trivial preconditions; Layer 3 checks nothing.
-- `_basis_utils.py` provides reusable validators (`_validate_out_array_1D`, `_validate_out_array_3d_float`, etc.) that check shape, dtype, and writability before any kernel call.
+- `_basis_utils.py` provides reusable validators (`_validate_out_array`, `_allocate_or_validate_out`) that check shape, dtype, and writability before any kernel call.
 - Integer point arrays are normalized to float64 in Layer 2 before reaching kernels.
 
 ### `out` parameter convention (NumPy style)

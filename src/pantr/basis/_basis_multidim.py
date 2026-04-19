@@ -15,7 +15,7 @@ import numpy.typing as npt
 from ..quad import PointsLattice
 from ._basis_utils import (
     _compute_output_shape_multidimensional,
-    _validate_out_array_multidimensional,
+    _validate_out_array,
 )
 
 
@@ -85,7 +85,7 @@ def _compute_basis_combinator_matrix_for_points_lattice(
     if out is None:
         out = np.empty(expected_shape, dtype=expected_dtype)
     else:
-        _validate_out_array_multidimensional(out, expected_shape, expected_dtype)
+        _validate_out_array(out, expected_shape, expected_dtype)
 
     # Same ordering (C or F) is used for both points and functions.
     op_str = "pi,qj->qpji" if order == "F" else "pi,qj->pqij"
@@ -185,7 +185,7 @@ def _compute_basis_combinator_matrix_for_points_array(
     if out is None:
         out = np.empty(expected_shape, dtype=expected_dtype)
     else:
-        _validate_out_array_multidimensional(out, expected_shape, expected_dtype)
+        _validate_out_array(out, expected_shape, expected_dtype)
 
     # Handle the 1D case separately
     if dim == 1:
