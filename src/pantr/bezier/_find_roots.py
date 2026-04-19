@@ -182,7 +182,10 @@ def _validate_coeff_array(
     Raises:
         TypeError: If ``coeff`` is not a float32/float64 ndarray.
         ValueError: If the array has the wrong rank or is empty along the
-            last axis.
+            last axis. For a 1-D array this is equivalent to checking
+            ``size < 1`` because the ``ndim`` check is applied first; for a
+            2-D array it checks that the coefficient (degree + 1) axis is
+            non-empty.
     """
     if not isinstance(coeff, np.ndarray) or coeff.dtype not in _SUPPORTED_DTYPES:
         dtype = getattr(coeff, "dtype", "N/A")

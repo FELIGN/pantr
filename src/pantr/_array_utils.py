@@ -1,8 +1,8 @@
 """Shared array-manipulation helpers for Layer 2 modules.
 
-This module centralizes recurring NumPy array-reshape idioms that would
-otherwise be duplicated across the ``bezier`` and ``bspline`` packages.
-All helpers are private (not part of the public API).
+This module centralizes recurring NumPy array-reshape idioms (moveaxis +
+flatten/unflatten) that would otherwise be duplicated across the ``bezier``
+and ``bspline`` packages. All helpers are private (not part of the public API).
 """
 
 from __future__ import annotations
@@ -54,7 +54,9 @@ def _unflatten_along_axis(
             by a kernel operating along the leading axis.
         trailing_shape (tuple[int, ...]): Trailing shape returned by
             :func:`_flatten_along_axis`. ``pts_2d.shape[0]`` may differ
-            from the original leading extent.
+            from the original ``arr.shape[axis]``; this supports kernels
+            whose output size differs from the input point count (e.g. degree
+            elevation or Bezier extraction changes the number of control points).
         axis (int): Target axis position (same value used when calling
             :func:`_flatten_along_axis`).
 

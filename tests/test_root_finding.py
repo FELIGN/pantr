@@ -24,6 +24,7 @@ from pantr.bezier._clipping_core import (
     _clip_roots_core,
     _dedup_roots,
 )
+from pantr.bezier._find_roots import _validate_coeff_array
 from pantr.bezier._root_finding_core import (
     _clip_hull_to_zero,
     _count_sign_changes,
@@ -586,6 +587,56 @@ class TestSolveMonotoneRootBatch(unittest.TestCase):
         """Empty batch returns empty array without error."""
         roots = find_monotone_root([])
         self.assertEqual(roots.shape, (0,))
+
+
+class TestValidateCoeffArray(unittest.TestCase):
+    """Tests for :func:`_validate_coeff_array` internal helper."""
+
+    def test_empty_1d_raises(self) -> None:
+        """Empty 1-D array (size 0) raises ValueError."""
+        with self.assertRaises(ValueError):
+            _validate_coeff_array(np.empty(0, dtype=np.float64), ndim=1, name="coeff")
+
+    def test_empty_last_axis_2d_raises(self) -> None:
+        """2-D array with zero columns raises ValueError."""
+        with self.assertRaises(ValueError):
+            _validate_coeff_array(np.empty((3, 0), dtype=np.float64), ndim=2, name="coeffs")
+
+    def test_wrong_ndim_raises(self) -> None:
+        """Array with wrong number of dimensions raises ValueError."""
+        with self.assertRaises(ValueError):
+            _validate_coeff_array(np.ones((2, 3), dtype=np.float64), ndim=1, name="coeff")
+
+    def test_wrong_dtype_raises(self) -> None:
+        """Integer array raises TypeError."""
+        with self.assertRaises(TypeError):
+            _validate_coeff_array(np.array([1, 2], dtype=np.int32), ndim=1, name="coeff")
+
+    def test_name_in_error_message(self) -> None:
+        """The ``name`` argument appears in error messages."""
+        with self.assertRaises(ValueError) as ctx:
+            _validate_coeff_array(np.empty(0, dtype=np.float64), ndim=1, name="my_arg")
+        self.assertIn("my_arg", str(ctx.exception))
+
+    def test_valid_1d_returns_contiguous(self) -> None:
+        """Valid 1-D input is returned C-contiguous."""
+        arr = np.array([1.0, -1.0], dtype=np.float64)
+        result = _validate_coeff_array(arr, ndim=1, name="coeff")
+        self.assertTrue(result.flags.c_contiguous)
+        np.testing.assert_array_equal(result, arr)
+
+    def test_valid_2d_returns_contiguous(self) -> None:
+        """Valid 2-D input is returned C-contiguous."""
+        arr = np.array([[1.0, -1.0], [0.5, -0.5]], dtype=np.float64)
+        result = _validate_coeff_array(arr, ndim=2, name="coeffs")
+        self.assertTrue(result.flags.c_contiguous)
+        np.testing.assert_array_equal(result, arr)
+
+    def test_float32_accepted(self) -> None:
+        """float32 arrays are accepted."""
+        arr = np.array([1.0, -1.0], dtype=np.float32)
+        result = _validate_coeff_array(arr, ndim=1, name="coeff")
+        self.assertEqual(result.dtype, np.float32)
 
 
 if __name__ == "__main__":

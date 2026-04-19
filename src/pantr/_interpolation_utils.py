@@ -21,12 +21,18 @@ def resolve_svd_tolerance(dtype: npt.DTypeLike, tol: float | None) -> float:
 
     Args:
         dtype (npt.DTypeLike): Floating-point dtype used to derive the default
-            tolerance (``SVD_TOL_FACTOR`` times machine epsilon).
+            tolerance (``SVD_TOL_FACTOR`` times machine epsilon). Must be a
+            floating-point dtype; integer dtypes cause ``np.finfo`` to raise
+            ``TypeError``.
         tol (float | None): User-provided tolerance, or ``None`` to use the
             dtype-based default.
 
     Returns:
         float: The resolved tolerance.
+
+    Raises:
+        TypeError: If ``dtype`` is not a floating-point dtype and ``tol`` is
+            ``None``.
     """
     if tol is not None:
         return tol

@@ -1,8 +1,7 @@
 """Shared Layer 2 helpers for the ``bezier`` package.
 
-Utilities that allocate and populate the output arrays expected by the
-Layer 3 Bernstein kernels. These helpers are private and not part of the
-public API.
+Utilities that allocate output arrays and invoke Layer 3 Bernstein kernels.
+These helpers are private and not part of the public API.
 """
 
 from __future__ import annotations
@@ -26,7 +25,9 @@ def _tabulate_bernstein_1d_fast(
 
     Thin Layer 2 wrapper around the Layer 3 kernel
     :func:`_tabulate_Bernstein_basis_1D_core`. Inputs are assumed already
-    validated (degree >= 0, ``pts`` 1-D and of the given ``dtype``).
+    validated: ``degree >= 0``, ``pts`` is 1-D, and ``pts.dtype`` matches
+    ``dtype`` exactly. Passing a mismatched dtype produces undefined behaviour
+    inside the Numba kernel.
 
     Args:
         degree (int): Polynomial degree.
