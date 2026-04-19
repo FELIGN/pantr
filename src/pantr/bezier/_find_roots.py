@@ -162,67 +162,43 @@ def _resolve_tol(
     return tol
 
 
-def _validate_coeff_1d(
+def _validate_coeff_array(
     coeff: npt.NDArray[np.float32 | np.float64],
+    *,
+    ndim: int,
+    name: str,
 ) -> npt.NDArray[np.float32 | np.float64]:
-    """Validate a single coefficient array.
+    """Validate a coefficient array of given rank and return it C-contiguous.
 
     Args:
-        coeff (npt.NDArray[np.float32 | np.float64]): Bernstein coefficients.
+        coeff (npt.NDArray[np.float32 | np.float64]): Bernstein coefficient
+            array (scalar 1-D or batch 2-D).
+        ndim (int): Required number of dimensions (1 or 2).
+        name (str): Argument name to use in error messages.
 
     Returns:
-        npt.NDArray[np.float32 | np.float64]: Contiguous 1-D array.
+        npt.NDArray[np.float32 | np.float64]: Contiguous ``ndim``-D array.
 
     Raises:
         TypeError: If ``coeff`` is not a float32/float64 ndarray.
-        ValueError: If the array has fewer than 1 element or is not 1-D.
+        ValueError: If the array has the wrong rank or is empty along the
+            last axis.
     """
     if not isinstance(coeff, np.ndarray) or coeff.dtype not in _SUPPORTED_DTYPES:
         dtype = getattr(coeff, "dtype", "N/A")
         msg = (
-            f"coeff must be a float32 or float64 ndarray, "
+            f"{name} must be a float32 or float64 ndarray, "
             f"got {type(coeff).__name__} with dtype {dtype}"
         )
         raise TypeError(msg)
-    if coeff.ndim != 1:
-        msg = f"coeff must be 1-D, got shape {coeff.shape}"
+    if coeff.ndim != ndim:
+        msg = f"{name} must be {ndim}-D, got shape {coeff.shape}"
         raise ValueError(msg)
-    if coeff.size < 1:
-        msg = "coeff must have at least 1 element"
+    if coeff.shape[-1] < 1:
+        suffix = "element" if ndim == 1 else "column (degree + 1)"
+        msg = f"{name} must have at least 1 {suffix}"
         raise ValueError(msg)
     return np.ascontiguousarray(coeff)
-
-
-def _validate_coeffs_batch(
-    coeffs: npt.NDArray[np.float32 | np.float64],
-) -> npt.NDArray[np.float32 | np.float64]:
-    """Validate a batch of coefficient arrays.
-
-    Args:
-        coeffs (npt.NDArray[np.float32 | np.float64]): Batch of Bernstein
-            coefficients, shape ``(n_polys, degree + 1)``.
-
-    Returns:
-        npt.NDArray[np.float32 | np.float64]: Contiguous 2-D array.
-
-    Raises:
-        TypeError: If ``coeffs`` is not a float32/float64 ndarray.
-        ValueError: If the array is not 2-D or has fewer than 1 column.
-    """
-    if not isinstance(coeffs, np.ndarray) or coeffs.dtype not in _SUPPORTED_DTYPES:
-        dtype = getattr(coeffs, "dtype", "N/A")
-        msg = (
-            f"coeffs must be a float32 or float64 ndarray, "
-            f"got {type(coeffs).__name__} with dtype {dtype}"
-        )
-        raise TypeError(msg)
-    if coeffs.ndim != 2:  # noqa: PLR2004
-        msg = f"coeffs must be 2-D, got shape {coeffs.shape}"
-        raise ValueError(msg)
-    if coeffs.shape[1] < 1:
-        msg = "coeffs must have at least 1 column (degree + 1)"
-        raise ValueError(msg)
-    return np.ascontiguousarray(coeffs)
 
 
 def _dispatch_single(  # noqa: PLR0911
@@ -285,7 +261,7 @@ def _find_roots_impl(
     _validate_bezier_for_roots(bezier)
     coeff = _extract_coeff(bezier)
     wait_for_jit_warmup()
-    arr = _validate_coeff_1d(coeff)
+    arr = _validate_coeff_array(coeff, ndim=1, name="coeff")
     resolved_tol = _resolve_tol(arr, tol)
     return _dispatch_single(arr, resolved_tol, resolved_tol)
 
@@ -302,7 +278,7 @@ def _find_roots_batch_impl(
 
     coeffs = _extract_batch_coeffs(beziers)
     wait_for_jit_warmup()
-    arr = _validate_coeffs_batch(coeffs)
+    arr = _validate_coeff_array(coeffs, ndim=2, name="coeffs")
 
     n_polys = arr.shape[0]
     degree = arr.shape[1] - 1
@@ -330,7 +306,7 @@ def _solve_monotone_root_impl(
     _validate_bezier_for_roots(bezier)
     coeff = _extract_coeff(bezier)
     wait_for_jit_warmup()
-    arr = _validate_coeff_1d(coeff)
+    arr = _validate_coeff_array(coeff, ndim=1, name="coeff")
     resolved_tol = _resolve_tol(arr, tol)
     return float(_solve_monotone_root_kernel(arr, resolved_tol))
 
@@ -347,7 +323,7 @@ def _solve_monotone_root_batch_impl(
 
     coeffs = _extract_batch_coeffs(beziers)
     wait_for_jit_warmup()
-    arr = _validate_coeffs_batch(coeffs)
+    arr = _validate_coeff_array(coeffs, ndim=2, name="coeffs")
 
     n_polys = arr.shape[0]
 

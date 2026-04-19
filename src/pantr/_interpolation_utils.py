@@ -16,6 +16,23 @@ SVD_TOL_FACTOR: float = 100.0
 """Factor multiplied by machine epsilon for default SVD truncation tolerance."""
 
 
+def resolve_svd_tolerance(dtype: npt.DTypeLike, tol: float | None) -> float:
+    """Resolve an SVD truncation tolerance from user input or a dtype default.
+
+    Args:
+        dtype (npt.DTypeLike): Floating-point dtype used to derive the default
+            tolerance (``SVD_TOL_FACTOR`` times machine epsilon).
+        tol (float | None): User-provided tolerance, or ``None`` to use the
+            dtype-based default.
+
+    Returns:
+        float: The resolved tolerance.
+    """
+    if tol is not None:
+        return tol
+    return SVD_TOL_FACTOR * float(np.finfo(dtype).eps)
+
+
 def split_components(
     values: npt.NDArray[np.floating[Any]],
     grid_shape: tuple[int, ...],

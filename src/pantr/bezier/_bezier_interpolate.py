@@ -32,7 +32,7 @@ from typing import TYPE_CHECKING, Any, Literal
 import numpy as np
 import numpy.typing as npt
 
-from .._interpolation_utils import SVD_TOL_FACTOR, split_components
+from .._interpolation_utils import resolve_svd_tolerance, split_components
 from ..quad import PointsLattice, get_modified_chebyshev_nodes_1d
 
 if TYPE_CHECKING:
@@ -99,9 +99,7 @@ def _bernstein_interpolate_1d(
     if n == 1:
         return f.copy()
 
-    eps = float(np.finfo(dtype).eps)
-    if tol is None:
-        tol = SVD_TOL_FACTOR * eps
+    tol = resolve_svd_tolerance(dtype, tol)
 
     U, sigma, Vt = _bernstein_vandermonde_svd(n, dtype)
 
@@ -143,6 +141,7 @@ def _bernstein_interpolate(
     """
     result = f.copy()
     ndim = f.ndim
+    actual_tol = resolve_svd_tolerance(f.dtype, tol)
 
     for dim in range(ndim):
         n = result.shape[dim]
@@ -151,8 +150,6 @@ def _bernstein_interpolate(
 
         U, sigma, Vt = _bernstein_vandermonde_svd(n, f.dtype)
 
-        eps = float(np.finfo(f.dtype).eps)
-        actual_tol = tol if tol is not None else SVD_TOL_FACTOR * eps
         min_sigma = actual_tol * sigma[0]
         inv_sigma = np.where(sigma >= min_sigma, 1.0 / sigma, 0.0)
 
@@ -287,8 +284,7 @@ def _build_bernstein_pinv(
     _tabulate_Bernstein_basis_1D_core(np.int32(deg), nodes, V)
     U, sigma, Vt = np.linalg.svd(V, full_matrices=False)
 
-    eps = float(np.finfo(dtype).eps)
-    actual_tol = tol if tol is not None else SVD_TOL_FACTOR * eps
+    actual_tol = resolve_svd_tolerance(dtype, tol)
     min_sigma = actual_tol * sigma[0]
     inv_sigma = np.where(sigma >= min_sigma, 1.0 / sigma, 0.0)
 
@@ -375,8 +371,7 @@ def _fit_from_scattered(
 
     # SVD pseudo-inverse with truncation
     U, sigma, Vt = np.linalg.svd(V, full_matrices=False)
-    eps = float(np.finfo(dtype).eps)
-    actual_tol = tol if tol is not None else SVD_TOL_FACTOR * eps
+    actual_tol = resolve_svd_tolerance(dtype, tol)
     min_sigma = actual_tol * sigma[0]
     inv_sigma = np.where(sigma >= min_sigma, 1.0 / sigma, 0.0)
     pinv: npt.NDArray[np.floating[Any]] = (Vt.T * inv_sigma[np.newaxis, :]) @ U.T
