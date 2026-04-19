@@ -9,8 +9,8 @@ influenced this project.
 Algoim
 ------
 
-The implicit-domain quadrature module (`pantr.bezier.implicit`) is a
-reimplementation of the algorithms described in:
+The Sylvester/Bezout resultant matrices in `pantr.bezier._resultant_matrices`
+implement the dimension-elimination step described in:
 
     Robert Saye, "High-order quadrature on multi-component domains
     implicitly defined by multivariate polynomials", Journal of
