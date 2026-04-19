@@ -1,5 +1,7 @@
 """Tests for change_basis_1D module."""
 
+import functools
+
 import numpy as np
 import numpy.typing as npt
 import pytest
@@ -41,6 +43,13 @@ class TestLagrangeToBernsteinBasisOperator:
             compute_lagrange_to_bernstein_1d(2, dtype=np.int32)
         with pytest.raises(ValueError, match="dtype must be float32 or float64"):
             compute_lagrange_to_bernstein_1d(2, dtype=np.float16)
+
+    def test_string_dtype_accepted(self) -> None:
+        """String dtype aliases are accepted via np.dtype() normalisation."""
+        result32 = compute_lagrange_to_bernstein_1d(2, dtype="float32")
+        assert result32.dtype == np.float32
+        result64 = compute_lagrange_to_bernstein_1d(2, dtype="float64")
+        assert result64.dtype == np.float64
 
     def test_out_parameter(self) -> None:
         """Test that out parameter works correctly."""
@@ -105,6 +114,13 @@ class TestBernsteinToLagrangeBasisOperator:
             compute_bernstein_to_lagrange_1d(2, dtype=np.int32)
         with pytest.raises(ValueError, match="dtype must be float32 or float64"):
             compute_bernstein_to_lagrange_1d(2, dtype=np.float16)
+
+    def test_string_dtype_accepted(self) -> None:
+        """String dtype aliases are accepted via np.dtype() normalisation."""
+        result32 = compute_bernstein_to_lagrange_1d(2, dtype="float32")
+        assert result32.dtype == np.float32
+        result64 = compute_bernstein_to_lagrange_1d(2, dtype="float64")
+        assert result64.dtype == np.float64
 
     def test_out_parameter(self) -> None:
         """Test that out parameter works correctly."""
@@ -216,6 +232,14 @@ class TestCardinalToBernsteinBasisOperator:
             compute_cardinal_to_bernstein_1d(2, dtype=np.int32)
         with pytest.raises(ValueError, match="dtype must be float32 or float64"):
             compute_cardinal_to_bernstein_1d(2, dtype=np.float16)
+
+    def test_string_dtype_accepted(self) -> None:
+        """String dtype aliases are accepted via np.dtype() normalisation."""
+        for fn in (compute_bernstein_to_cardinal_1d, compute_cardinal_to_bernstein_1d):
+            result32 = fn(2, dtype="float32")
+            assert result32.dtype == np.float32
+            result64 = fn(2, dtype="float64")
+            assert result64.dtype == np.float64
 
     def test_values(self) -> None:
         """Test that cardinal evaluations transformed with operator return Bernstein evaluations."""
@@ -332,6 +356,24 @@ class TestCreateChangeBasis:
 
         with pytest.raises(ValueError, match="dtype must be float32 or float64"):
             _compute_change_basis_1D(bernstein, cardinal, n_quad_pts=3, dtype=np.float16)
+
+    def test_string_dtype_accepted(self) -> None:
+        """String dtype aliases are accepted via np.dtype() normalisation."""
+        degree = 2
+        result32 = _compute_change_basis_1D(
+            functools.partial(tabulate_bernstein_1d, degree),
+            functools.partial(tabulate_cardinal_bspline_1d, degree),
+            n_quad_pts=degree + 1,
+            dtype="float32",
+        )
+        assert result32.dtype == np.float32
+        result64 = _compute_change_basis_1D(
+            functools.partial(tabulate_bernstein_1d, degree),
+            functools.partial(tabulate_cardinal_bspline_1d, degree),
+            n_quad_pts=degree + 1,
+            dtype="float64",
+        )
+        assert result64.dtype == np.float64
 
     def test_out_parameter(self) -> None:
         """Test that out parameter works correctly for _compute_change_basis_1D."""
@@ -484,6 +526,13 @@ class TestMonomialToBernsteinBasisOperator:
         with pytest.raises(ValueError, match="dtype must be float32 or float64"):
             compute_monomial_to_bernstein_1d(2, dtype=np.float16)
 
+    def test_string_dtype_accepted(self) -> None:
+        """String dtype aliases are accepted via np.dtype() normalisation."""
+        result32 = compute_monomial_to_bernstein_1d(2, dtype="float32")
+        assert result32.dtype == np.float32
+        result64 = compute_monomial_to_bernstein_1d(2, dtype="float64")
+        assert result64.dtype == np.float64
+
     def test_out_parameter(self) -> None:
         """Test that out parameter works correctly."""
         degree = 3
@@ -518,6 +567,17 @@ class TestMonomialToBernsteinBasisOperator:
         out_readonly.setflags(write=False)
         with pytest.raises(ValueError, match="Output array is not writeable"):
             compute_monomial_to_bernstein_1d(degree, out=out_readonly)
+
+    def test_out_parameter_pre_populated_is_zeroed(self) -> None:
+        """A caller-provided out array full of ones is zeroed before fill."""
+        degree = 2
+        out = np.ones((degree + 1, degree + 1), dtype=np.float64)
+        result = compute_monomial_to_bernstein_1d(degree, out=out)
+        assert result is out
+        # Upper triangle must be zero regardless of initial content.
+        assert result[0, 1] == 0.0
+        assert result[0, 2] == 0.0
+        assert result[1, 2] == 0.0
 
     def test_degree_zero(self) -> None:
         """Degree 0 returns the 1x1 identity."""

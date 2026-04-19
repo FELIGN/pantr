@@ -88,11 +88,16 @@ def _compute_final_output_shape_1D_deriv(
 def _validate_float_dtype(dtype: npt.DTypeLike) -> None:
     """Validate that ``dtype`` is ``float32`` or ``float64``.
 
+    The input is normalized through ``np.dtype()`` before comparison, so
+    string aliases such as ``"float32"`` are accepted alongside the NumPy
+    type objects and ``np.dtype`` instances.
+
     Args:
         dtype (npt.DTypeLike): The dtype to validate.
 
     Raises:
-        ValueError: If the dtype is not ``np.float32`` or ``np.float64``.
+        ValueError: If the dtype does not resolve to ``np.float32`` or
+            ``np.float64`` (e.g. ``np.int32``, ``np.float16``).
     """
     if np.dtype(dtype).type not in (np.float32, np.float64):
         raise ValueError("dtype must be float32 or float64")
@@ -152,11 +157,16 @@ def _allocate_or_validate_out(
     no array is provided, allocate one with the expected shape and dtype;
     otherwise validate that the provided array matches.
 
+    This helper is intentionally restricted to float arrays (``float32`` or
+    ``float64``).  For non-float output arrays (``bool_``, ``int_``), use
+    :func:`_validate_out_array` directly together with ``np.empty``.
+
     Args:
         out (npt.NDArray[np.float32 | np.float64] | None): Caller-provided
             output array, or ``None`` to allocate a new one.
         expected_shape (tuple[int, ...]): Required shape.
-        expected_dtype (npt.DTypeLike): Required dtype.
+        expected_dtype (npt.DTypeLike): Required dtype (``float32`` or
+            ``float64``).
 
     Returns:
         npt.NDArray[np.float32 | np.float64]: The validated or freshly

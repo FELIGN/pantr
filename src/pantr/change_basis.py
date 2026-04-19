@@ -190,7 +190,7 @@ def compute_bernstein_to_cardinal_1d(
 
     Args:
         degree (int): Polynomial degree. Must be non-negative.
-        dtype (np.dtype): Floating point type for the output matrix.
+        dtype (npt.DTypeLike): Floating point type for the output matrix.
             Defaults to np.float64.
         out (npt.NDArray[np.float32 | np.float64] | None): Optional output array
             where the result will be stored. If None, a new array is allocated.
@@ -230,7 +230,7 @@ def compute_cardinal_to_bernstein_1d(
 
     Args:
         degree (int): Polynomial degree. Must be non-negative.
-        dtype (np.dtype): Floating point type for the output matrix.
+        dtype (npt.DTypeLike): Floating point type for the output matrix.
             Defaults to np.float64.
         out (npt.NDArray[np.float32 | np.float64] | None): Optional output array
             where the result will be stored. If None, a new array is allocated.
