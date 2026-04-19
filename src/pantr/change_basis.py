@@ -20,7 +20,10 @@ import numpy.typing as npt
 
 from .basis import LagrangeVariant, tabulate_bernstein_1d, tabulate_cardinal_bspline_1d
 from .basis._basis_lagrange import _get_lagrange_points
-from .basis._basis_utils import _validate_out_array
+from .basis._basis_utils import (
+    _allocate_or_validate_out,
+    _validate_float_dtype,
+)
 from .quad import get_gauss_legendre_1d
 
 
@@ -57,22 +60,12 @@ def compute_lagrange_to_bernstein_1d(
     """
     if degree < 1:
         raise ValueError("Degree must at least 1")
-    if dtype not in (np.float32, np.float64):
-        raise ValueError("dtype must be float32 or float64")
+    _validate_float_dtype(dtype)
 
-    expected_shape = (degree + 1, degree + 1)
-    expected_dtype = dtype
-
-    if out is None:
-        out = np.empty(expected_shape, dtype=expected_dtype)
-    else:
-        _validate_out_array(out, expected_shape, expected_dtype)
+    out = _allocate_or_validate_out(out, (degree + 1, degree + 1), dtype)
 
     points = _get_lagrange_points(lagrange_variant, degree + 1, dtype)
-
-    result = out.T
-    tabulate_bernstein_1d(degree, points, out=result)
-
+    tabulate_bernstein_1d(degree, points, out=out.T)
     return out
 
 
@@ -111,16 +104,9 @@ def compute_bernstein_to_lagrange_1d(
     """
     if degree < 1:
         raise ValueError("Degree must at least 1")
-    if dtype not in (np.float32, np.float64):
-        raise ValueError("dtype must be float32 or float64")
+    _validate_float_dtype(dtype)
 
-    expected_shape = (degree + 1, degree + 1)
-    expected_dtype = dtype
-
-    if out is None:
-        out = np.empty(expected_shape, dtype=expected_dtype)
-    else:
-        _validate_out_array(out, expected_shape, expected_dtype)
+    out = _allocate_or_validate_out(out, (degree + 1, degree + 1), dtype)
 
     C = compute_lagrange_to_bernstein_1d(degree, lagrange_variant, dtype)
     out[:] = np.linalg.inv(C)
@@ -171,9 +157,7 @@ def _compute_change_basis_1D(
     """
     if n_quad_pts < 1:
         raise ValueError("Number of quadrature points must be positive.")
-
-    if dtype not in (np.float32, np.float64):
-        raise ValueError("dtype must be float32 or float64")
+    _validate_float_dtype(dtype)
 
     # 1. Get Gauss-Legendre quadrature points and weights for the inner product on [0, 1]
     points, weights = get_gauss_legendre_1d(n_quad_pts, dtype)
@@ -182,16 +166,7 @@ def _compute_change_basis_1D(
     new_basis = new_basis_eval(points)
     old_basis = old_basis_eval(points)
 
-    # Determine output shape from basis evaluations
-    n_old_basis = old_basis.shape[1]
-    n_new_basis = new_basis.shape[1]
-    expected_shape = (n_old_basis, n_new_basis)
-    expected_dtype = dtype
-
-    if out is None:
-        out = np.empty(expected_shape, dtype=expected_dtype)
-    else:
-        _validate_out_array(out, expected_shape, expected_dtype)
+    out = _allocate_or_validate_out(out, (old_basis.shape[1], new_basis.shape[1]), dtype)
 
     # 3. Compute the Gram matrix G for the new basis B: G_kj = <b_k, b_j>
     # The inner product <f, g> is approximated by sum(w_m * f(x_m) * g(x_m))
@@ -233,29 +208,13 @@ def compute_bernstein_to_cardinal_1d(
     """
     if degree < 0:
         raise ValueError("Degree must be non-negative")
+    _validate_float_dtype(dtype)
 
-    if dtype not in (np.float32, np.float64):
-        raise ValueError("dtype must be float32 or float64")
-
-    expected_shape = (degree + 1, degree + 1)
-    expected_dtype = dtype
-
-    if out is None:
-        out = np.empty(expected_shape, dtype=expected_dtype)
-    else:
-        _validate_out_array(out, expected_shape, expected_dtype)
-
-    def bernstein(
-        pts: npt.NDArray[np.float32 | np.float64],
-    ) -> npt.NDArray[np.float32 | np.float64]:
-        return tabulate_bernstein_1d(degree, pts)
-
-    def cardinal(pts: npt.NDArray[np.float32 | np.float64]) -> npt.NDArray[np.float32 | np.float64]:
-        return tabulate_cardinal_bspline_1d(degree, pts)
+    out = _allocate_or_validate_out(out, (degree + 1, degree + 1), dtype)
 
     return _compute_change_basis_1D(
-        new_basis_eval=bernstein,
-        old_basis_eval=cardinal,
+        new_basis_eval=functools.partial(tabulate_bernstein_1d, degree),
+        old_basis_eval=functools.partial(tabulate_cardinal_bspline_1d, degree),
         n_quad_pts=degree + 1,
         dtype=dtype,
         out=out,
@@ -289,29 +248,13 @@ def compute_cardinal_to_bernstein_1d(
     """
     if degree < 0:
         raise ValueError("Degree must be non-negative")
+    _validate_float_dtype(dtype)
 
-    if dtype not in (np.float32, np.float64):
-        raise ValueError("dtype must be float32 or float64")
-
-    expected_shape = (degree + 1, degree + 1)
-    expected_dtype = dtype
-
-    if out is None:
-        out = np.empty(expected_shape, dtype=expected_dtype)
-    else:
-        _validate_out_array(out, expected_shape, expected_dtype)
-
-    def bernstein(
-        pts: npt.NDArray[np.float32 | np.float64],
-    ) -> npt.NDArray[np.float32 | np.float64]:
-        return tabulate_bernstein_1d(degree, pts)
-
-    def cardinal(pts: npt.NDArray[np.float32 | np.float64]) -> npt.NDArray[np.float32 | np.float64]:
-        return tabulate_cardinal_bspline_1d(degree, pts)
+    out = _allocate_or_validate_out(out, (degree + 1, degree + 1), dtype)
 
     return _compute_change_basis_1D(
-        new_basis_eval=cardinal,
-        old_basis_eval=bernstein,
+        new_basis_eval=functools.partial(tabulate_cardinal_bspline_1d, degree),
+        old_basis_eval=functools.partial(tabulate_bernstein_1d, degree),
         n_quad_pts=degree + 1,
         dtype=dtype,
         out=out,
@@ -353,17 +296,10 @@ def compute_monomial_to_bernstein_1d(
     """
     if degree < 0:
         raise ValueError("Degree must be non-negative")
-    if dtype not in (np.float32, np.float64):
-        raise ValueError("dtype must be float32 or float64")
+    _validate_float_dtype(dtype)
 
-    expected_shape = (degree + 1, degree + 1)
-    expected_dtype = dtype
-
-    if out is None:
-        out = np.zeros(expected_shape, dtype=expected_dtype)
-    else:
-        _validate_out_array(out, expected_shape, expected_dtype)
-        out[:] = 0
+    out = _allocate_or_validate_out(out, (degree + 1, degree + 1), dtype)
+    out[:] = 0
 
     for i in range(degree + 1):
         for j in range(i + 1):
