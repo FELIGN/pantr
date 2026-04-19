@@ -114,8 +114,7 @@ def _insert_knots_bspline_1d_impl(
         # No knots were added (empty insertion).
         return refined_knots, ctrl.copy()
 
-    # Ensure contiguous layout for the Numba kernel.
-    ctrl_c = ctrl if ctrl.flags.c_contiguous else np.ascontiguousarray(ctrl)
+    ctrl_c = np.ascontiguousarray(ctrl)
 
     new_ctrl = _insert_knots_1d_core(degree, knots, ctrl_c, refined_knots)
     return refined_knots, new_ctrl
@@ -161,8 +160,7 @@ def _insert_knots_bspline(
 
         # Reshape remaining axes into a single column dimension.
         pts_2d = moved_ctrl.reshape(orig_shape[0], -1)
-        if not pts_2d.flags.c_contiguous:
-            pts_2d = np.ascontiguousarray(pts_2d)
+        pts_2d = np.ascontiguousarray(pts_2d)
 
         if is_periodic:
             # Round-trip through open form to preserve periodicity.
@@ -342,8 +340,7 @@ def _to_open_bspline_impl(bspline: Bspline) -> Bspline:
         moved_ctrl = np.moveaxis(ctrl, i, 0)
         orig_shape = moved_ctrl.shape
         pts_2d = moved_ctrl.reshape(orig_shape[0], -1)
-        if not pts_2d.flags.c_contiguous:
-            pts_2d = np.ascontiguousarray(pts_2d)
+        pts_2d = np.ascontiguousarray(pts_2d)
 
         open_knots, open_pts_2d = _to_open_bspline_1d_impl(
             space_1d.knots,
@@ -662,8 +659,7 @@ def _to_periodic_bspline_impl(
         moved_ctrl = np.moveaxis(ctrl, i, 0)
         orig_shape = moved_ctrl.shape
         pts_2d = moved_ctrl.reshape(orig_shape[0], -1)
-        if not pts_2d.flags.c_contiguous:
-            pts_2d = np.ascontiguousarray(pts_2d)
+        pts_2d = np.ascontiguousarray(pts_2d)
 
         per_knots, per_pts_2d = _to_periodic_bspline_1d_impl(knots_1d, p, pts_2d, m_bdy, tol_1d)
 

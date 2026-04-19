@@ -67,8 +67,7 @@ def _remove_knot_bspline_1d_impl(  # noqa: PLR0913
     max_removals = min(s, degree)
     num = max_removals if num is None else min(num, max_removals)
 
-    # Ensure contiguous layout for the Numba kernel.
-    ctrl_c = ctrl if ctrl.flags.c_contiguous else np.ascontiguousarray(ctrl)
+    ctrl_c = np.ascontiguousarray(ctrl)
 
     new_knots, new_ctrl, removals = _remove_knot_1d_core(
         degree,
@@ -130,8 +129,7 @@ def _remove_knots_bspline(
 
         # Flatten remaining axes into a single column dimension.
         pts_2d = moved_ctrl.reshape(orig_shape[0], -1)
-        if not pts_2d.flags.c_contiguous:
-            pts_2d = np.ascontiguousarray(pts_2d)
+        pts_2d = np.ascontiguousarray(pts_2d)
 
         current_knots = space_1d.knots
         current_ctrl = pts_2d

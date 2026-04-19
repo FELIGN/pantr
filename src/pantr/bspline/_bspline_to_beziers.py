@@ -17,6 +17,7 @@ from typing import TYPE_CHECKING, Any
 import numpy as np
 import numpy.typing as npt
 
+from .._array_utils import _flatten_along_axis, _unflatten_along_axis
 from .._numba_compat import nb_jit, nb_prange
 
 if TYPE_CHECKING:
@@ -98,20 +99,13 @@ def _to_beziers_impl(bspline: Bspline) -> npt.NDArray[np.object_]:
         n_el = num_intervals[d]
         order = degrees[d] + 1
 
-        # Move direction d to axis 0, flatten trailing axes into a 2D matrix.
-        moved_ctrl = np.moveaxis(ctrl, d, 0)
-        orig_shape = moved_ctrl.shape
-        pts_2d = moved_ctrl.reshape(orig_shape[0], -1)
-        if not pts_2d.flags.c_contiguous:
-            pts_2d = np.ascontiguousarray(pts_2d)
+        pts_2d, trailing_shape = _flatten_along_axis(ctrl, d)
 
         # Apply extraction: (n_basis, M) -> (n_el * order, M).
         out_2d = np.empty((n_el * order, pts_2d.shape[1]), dtype=pts_2d.dtype)
         _apply_bezier_extraction_1d_core(extraction_ops, pts_2d, out_2d)
 
-        # Restore shape and move axis back.
-        new_shape = (n_el * order, *orig_shape[1:])
-        ctrl = np.moveaxis(out_2d.reshape(new_shape), 0, d)
+        ctrl = _unflatten_along_axis(out_2d, trailing_shape, d)
 
     # ctrl now has shape (n_el_0*order_0, n_el_1*order_1, ..., rank).
     # Reshape to (n_el_0, order_0, n_el_1, order_1, ..., rank).

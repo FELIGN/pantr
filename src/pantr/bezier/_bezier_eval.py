@@ -15,9 +15,9 @@ from typing import TYPE_CHECKING
 import numpy as np
 import numpy.typing as npt
 
-from ..basis._basis_core import _tabulate_Bernstein_basis_1D_core
 from ..basis._basis_utils import _validate_out_array
 from ._bezier_core import _evaluate_bezier_1d_core, _evaluate_bezier_deriv_1d_core
+from ._bezier_utils import _tabulate_bernstein_1d_fast
 
 if TYPE_CHECKING:
     from ..quad import PointsLattice
@@ -187,14 +187,10 @@ def _evaluate_bezier_nd_pts_array(  # noqa: PLR0913
     if pts.dtype != dtype:
         raise ValueError(f"Points dtype ({pts.dtype}) must match Bézier dtype ({dtype}).")
 
-    n_pts = pts.shape[0]
-
     # Evaluate Bernstein basis per direction
-    bases: list[npt.NDArray[np.float32 | np.float64]] = []
-    for d in range(dim):
-        basis_d = np.empty((n_pts, degrees[d] + 1), dtype=dtype)
-        _tabulate_Bernstein_basis_1D_core(np.int32(degrees[d]), pts[:, d], basis_d)
-        bases.append(basis_d)
+    bases: list[npt.NDArray[np.float32 | np.float64]] = [
+        _tabulate_bernstein_1d_fast(degrees[d], pts[:, d], dtype) for d in range(dim)
+    ]
 
     # Sequential contraction
     # After contracting direction 0: result has shape (n_pts, n_1, ..., n_{d-1}, rank)
@@ -251,9 +247,7 @@ def _evaluate_bezier_nd_lattice(  # noqa: PLR0913
             raise ValueError(
                 f"PointsLattice dtype ({pts_d.dtype}) must match Bézier dtype ({dtype})."
             )
-        basis_d = np.empty((pts_d.shape[0], degrees[d] + 1), dtype=dtype)
-        _tabulate_Bernstein_basis_1D_core(np.int32(degrees[d]), pts_d, basis_d)
-        bases.append(basis_d)
+        bases.append(_tabulate_bernstein_1d_fast(degrees[d], pts_d, dtype))
 
     # Sequential tensordot contraction
     # ctrl has shape (n_0, n_1, ..., n_{d-1}, rank)
@@ -592,9 +586,7 @@ def _evaluate_bezier_deriv_nd_non_rational(  # noqa: PLR0913
         p_d = degrees[d]
 
         if order_d == 0:
-            # Regular basis
-            basis_d = np.empty((n_pts_d, p_d + 1), dtype=dtype)
-            _tabulate_Bernstein_basis_1D_core(np.int32(p_d), pts_d, basis_d)
+            basis_d = _tabulate_bernstein_1d_fast(p_d, pts_d, dtype)
         else:
             # Derivative basis
             deriv_all_d = np.empty((n_pts_d, order_d + 1, p_d + 1), dtype=dtype)
@@ -674,9 +666,7 @@ def _evaluate_bezier_deriv_nd_rational(  # noqa: PLR0913, PLR0912
         max_order_d = orders[d]
 
         if max_order_d == 0:
-            basis_d = np.empty((n_pts_d, p_d + 1), dtype=dtype)
-            _tabulate_Bernstein_basis_1D_core(np.int32(p_d), pts_d, basis_d)
-            all_bases.append([basis_d])
+            all_bases.append([_tabulate_bernstein_1d_fast(p_d, pts_d, dtype)])
         else:
             deriv_all_d = np.empty((n_pts_d, max_order_d + 1, p_d + 1), dtype=dtype)
             _tabulate_Bernstein_basis_deriv_1D_core(np.int32(p_d), pts_d, max_order_d, deriv_all_d)

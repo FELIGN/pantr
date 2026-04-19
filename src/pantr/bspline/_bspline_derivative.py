@@ -144,8 +144,7 @@ def _derivative_nonrational_nd(bspline: Bspline, direction: int) -> Bspline:
     orig_shape = moved.shape
     pts_2d = moved.reshape(orig_shape[0], -1)
 
-    if not pts_2d.flags.c_contiguous:
-        pts_2d = np.ascontiguousarray(pts_2d)
+    pts_2d = np.ascontiguousarray(pts_2d)
 
     new_pts_2d = _derivative_ctrl_1d(knots, p, pts_2d)
 
@@ -318,8 +317,7 @@ def _derivative_keep_degree_nonrational(bspline: Bspline, direction: int) -> Bsp
     orig_shape = moved.shape
     pts_2d = moved.reshape(orig_shape[0], -1)
 
-    if not pts_2d.flags.c_contiguous:
-        pts_2d = np.ascontiguousarray(pts_2d)
+    pts_2d = np.ascontiguousarray(pts_2d)
 
     # Derivative (degree p → p-1) + degree elevation (p-1 → p) on arrays.
     deriv_pts = _derivative_ctrl_1d(knots, p, pts_2d)

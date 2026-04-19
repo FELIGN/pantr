@@ -57,8 +57,7 @@ def _split_bezier(
     orig_shape = moved.shape
     pts_2d = moved.reshape(orig_shape[0], -1)
 
-    if not pts_2d.flags.c_contiguous:
-        pts_2d = np.ascontiguousarray(pts_2d)
+    pts_2d = np.ascontiguousarray(pts_2d)
 
     # Allocate outputs.
     out_left = np.empty_like(pts_2d)

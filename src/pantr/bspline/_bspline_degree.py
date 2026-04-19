@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING
 import numpy as np
 import numpy.typing as npt
 
+from .._array_utils import _flatten_along_axis, _unflatten_along_axis
 from ._bspline_degree_core import _degree_elevate_1d_core, _degree_reduce_1d_core
 from ._bspline_knot_insertion import _to_open_bspline_1d_impl, _to_periodic_bspline_1d_impl
 from ._bspline_knot_removal import _remove_knot_bspline_1d_impl
@@ -48,16 +49,7 @@ def _degree_elevate_bspline(bspline: Bspline, degree_increments: tuple[int, ...]
         if inc > 0:
             is_periodic = space_1d.periodic
 
-            # Move dimension i to the 0th axis
-            moved_ctrl = np.moveaxis(ctrl, i, 0)
-            orig_shape = moved_ctrl.shape
-
-            # Reshape rest into 2D points block for Numba
-            pts_2d = moved_ctrl.reshape(orig_shape[0], -1)
-
-            # Ensure proper contiguous layout for Numba
-            if not pts_2d.flags.c_contiguous:
-                pts_2d = np.ascontiguousarray(pts_2d)
+            pts_2d, trailing_shape = _flatten_along_axis(ctrl, i)
 
             if is_periodic:
                 # Round-trip through open form to preserve periodicity.
@@ -93,14 +85,8 @@ def _degree_elevate_bspline(bspline: Bspline, degree_increments: tuple[int, ...]
                 )
                 new_space_1d = BsplineSpace1D(new_knots, space_1d.degree + inc)
 
-            # Restore shape
-            new_shape = (new_pts_2d.shape[0], *orig_shape[1:])
-            new_moved_ctrl = new_pts_2d.reshape(new_shape)
+            ctrl = _unflatten_along_axis(new_pts_2d, trailing_shape, i)
 
-            # Move axis back
-            ctrl = np.moveaxis(new_moved_ctrl, 0, i)
-
-            # New BsplineSpace1D
             new_spaces_1d.append(new_space_1d)
         else:
             new_spaces_1d.append(space_1d)
@@ -203,12 +189,7 @@ def _degree_reduce_bspline(bspline: Bspline, degree_decrements: tuple[int, ...])
                 interior_knots = np.empty(0, dtype=orig_unique.dtype)
                 interior_mults = np.empty(0, dtype=orig_mults.dtype)
 
-            moved_ctrl = np.moveaxis(ctrl, i, 0)
-            orig_shape = moved_ctrl.shape
-
-            pts_2d = moved_ctrl.reshape(orig_shape[0], -1)
-            if not pts_2d.flags.c_contiguous:
-                pts_2d = np.ascontiguousarray(pts_2d)
+            pts_2d, trailing_shape = _flatten_along_axis(ctrl, i)
 
             if is_periodic:
                 m_bdy = int(orig_mults[0])
@@ -261,10 +242,7 @@ def _degree_reduce_bspline(bspline: Bspline, degree_decrements: tuple[int, ...])
 
                 new_space_1d = BsplineSpace1D(new_knots, new_degree)
 
-            # Restore shape.
-            new_shape = (new_pts_2d.shape[0], *orig_shape[1:])
-            new_moved_ctrl = new_pts_2d.reshape(new_shape)
-            ctrl = np.moveaxis(new_moved_ctrl, 0, i)
+            ctrl = _unflatten_along_axis(new_pts_2d, trailing_shape, i)
 
             new_spaces_1d.append(new_space_1d)
         else:

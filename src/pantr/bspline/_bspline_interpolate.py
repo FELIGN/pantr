@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING, Any, Literal
 import numpy as np
 from numpy import typing as npt
 
-from .._interpolation_utils import SVD_TOL_FACTOR, split_components
+from .._interpolation_utils import resolve_svd_tolerance, split_components
 from ..quad import PointsLattice
 from ._bspline_space_1d import BsplineSpace1D
 from ._bspline_space_factory import create_greville_lattice, get_greville_abscissae
@@ -133,8 +133,7 @@ def _solve_1d(
 
     # Truncated SVD pseudo-inverse for rectangular or singular systems.
     u, s, vt = np.linalg.svd(mat, full_matrices=False)
-    eps = float(np.finfo(mat.dtype).eps)  # type: ignore[misc]
-    threshold = (tol if tol is not None else SVD_TOL_FACTOR * eps) * s[0]
+    threshold = resolve_svd_tolerance(mat.dtype, tol) * s[0]
     s_inv = np.where(s > threshold, 1.0 / s, 0.0)
     # pinv @ rhs = Vt.T @ diag(s_inv) @ U.T @ rhs
     result: npt.NDArray[np.float32 | np.float64]

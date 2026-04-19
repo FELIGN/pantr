@@ -32,8 +32,9 @@ from typing import TYPE_CHECKING, Any, Literal
 import numpy as np
 import numpy.typing as npt
 
-from .._interpolation_utils import SVD_TOL_FACTOR, split_components
+from .._interpolation_utils import resolve_svd_tolerance, split_components
 from ..quad import PointsLattice, get_modified_chebyshev_nodes_1d
+from ._bezier_utils import _tabulate_bernstein_1d_fast
 
 if TYPE_CHECKING:
     from . import Bezier
@@ -61,11 +62,8 @@ def _bernstein_vandermonde_svd(
         tuple[npt.NDArray, npt.NDArray, npt.NDArray]: ``(U, sigma, Vt)`` where
         ``V = U @ diag(sigma) @ Vt``.
     """
-    from ..basis._basis_core import _tabulate_Bernstein_basis_1D_core  # noqa: PLC0415
-
     nodes = get_modified_chebyshev_nodes_1d(max(n, 2), dtype)[:n]
-    V = np.empty((n, n), dtype=dtype)
-    _tabulate_Bernstein_basis_1D_core(np.int32(n - 1), nodes, V)
+    V = _tabulate_bernstein_1d_fast(n - 1, nodes, dtype)
     U, sigma, Vt = np.linalg.svd(V, full_matrices=True)
     return U, sigma, Vt
 
@@ -99,9 +97,7 @@ def _bernstein_interpolate_1d(
     if n == 1:
         return f.copy()
 
-    eps = float(np.finfo(dtype).eps)
-    if tol is None:
-        tol = SVD_TOL_FACTOR * eps
+    tol = resolve_svd_tolerance(dtype, tol)
 
     U, sigma, Vt = _bernstein_vandermonde_svd(n, dtype)
 
@@ -143,6 +139,7 @@ def _bernstein_interpolate(
     """
     result = f.copy()
     ndim = f.ndim
+    actual_tol = resolve_svd_tolerance(f.dtype, tol)
 
     for dim in range(ndim):
         n = result.shape[dim]
@@ -151,8 +148,6 @@ def _bernstein_interpolate(
 
         U, sigma, Vt = _bernstein_vandermonde_svd(n, f.dtype)
 
-        eps = float(np.finfo(f.dtype).eps)
-        actual_tol = tol if tol is not None else SVD_TOL_FACTOR * eps
         min_sigma = actual_tol * sigma[0]
         inv_sigma = np.where(sigma >= min_sigma, 1.0 / sigma, 0.0)
 
@@ -273,8 +268,6 @@ def _build_bernstein_pinv(
         npt.NDArray[np.floating[Any]]: Pseudo-inverse matrix, shape
         ``(degree + 1, n_pts)``.
     """
-    from ..basis._basis_core import _tabulate_Bernstein_basis_1D_core  # noqa: PLC0415
-
     n_pts = nodes.shape[0]
     dtype = nodes.dtype
     deg = n_pts - 1 if degree is None else degree
@@ -282,13 +275,10 @@ def _build_bernstein_pinv(
     if n_pts == 1 and deg == 0:
         return np.ones((1, 1), dtype=dtype)
 
-    n_coeffs = deg + 1
-    V = np.empty((n_pts, n_coeffs), dtype=dtype)
-    _tabulate_Bernstein_basis_1D_core(np.int32(deg), nodes, V)
+    V = _tabulate_bernstein_1d_fast(deg, nodes, dtype)
     U, sigma, Vt = np.linalg.svd(V, full_matrices=False)
 
-    eps = float(np.finfo(dtype).eps)
-    actual_tol = tol if tol is not None else SVD_TOL_FACTOR * eps
+    actual_tol = resolve_svd_tolerance(dtype, tol)
     min_sigma = actual_tol * sigma[0]
     inv_sigma = np.where(sigma >= min_sigma, 1.0 / sigma, 0.0)
 
@@ -317,8 +307,6 @@ def _build_nd_bernstein_vandermonde(
         npt.NDArray[np.floating[Any]]: Vandermonde matrix, shape
         ``(n_pts, prod(degree[d] + 1))``.
     """
-    from ..basis._basis_core import _tabulate_Bernstein_basis_1D_core  # noqa: PLC0415
-
     ndim = len(degree_tuple)
     dtype = pts.dtype
 
@@ -326,12 +314,9 @@ def _build_nd_bernstein_vandermonde(
     n_pts = pts_2d.shape[0]
 
     # Evaluate univariate Bernstein bases per direction
-    basis_per_dir: list[npt.NDArray[np.floating[Any]]] = []
-    for d in range(ndim):
-        n_coeffs = degree_tuple[d] + 1
-        B_d = np.empty((n_pts, n_coeffs), dtype=dtype)
-        _tabulate_Bernstein_basis_1D_core(np.int32(degree_tuple[d]), pts_2d[:, d], B_d)
-        basis_per_dir.append(B_d)
+    basis_per_dir: list[npt.NDArray[np.floating[Any]]] = [
+        _tabulate_bernstein_1d_fast(degree_tuple[d], pts_2d[:, d], dtype) for d in range(ndim)
+    ]
 
     # Build tensor-product Vandermonde via successive Kronecker-like expansion
     V = basis_per_dir[0]
@@ -375,8 +360,7 @@ def _fit_from_scattered(
 
     # SVD pseudo-inverse with truncation
     U, sigma, Vt = np.linalg.svd(V, full_matrices=False)
-    eps = float(np.finfo(dtype).eps)
-    actual_tol = tol if tol is not None else SVD_TOL_FACTOR * eps
+    actual_tol = resolve_svd_tolerance(dtype, tol)
     min_sigma = actual_tol * sigma[0]
     inv_sigma = np.where(sigma >= min_sigma, 1.0 / sigma, 0.0)
     pinv: npt.NDArray[np.floating[Any]] = (Vt.T * inv_sigma[np.newaxis, :]) @ U.T

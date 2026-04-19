@@ -168,8 +168,7 @@ def _derivative_keep_degree_nonrational(bezier: Bezier, direction: int) -> Bezie
     orig_shape = moved.shape
     pts_2d = moved.reshape(orig_shape[0], -1)
 
-    if not pts_2d.flags.c_contiguous:
-        pts_2d = np.ascontiguousarray(pts_2d)
+    pts_2d = np.ascontiguousarray(pts_2d)
 
     new_pts_2d = _derivative_keep_degree_ctrl_1d(p, pts_2d)
 

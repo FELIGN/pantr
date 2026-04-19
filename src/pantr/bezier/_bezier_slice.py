@@ -61,8 +61,7 @@ def _slice_bezier(
     orig_shape = moved.shape
     pts_2d = moved.reshape(orig_shape[0], -1)
 
-    if not pts_2d.flags.c_contiguous:
-        pts_2d = np.ascontiguousarray(pts_2d)
+    pts_2d = np.ascontiguousarray(pts_2d)
 
     # Apply 1D de Casteljau via Numba kernel.
     result_1d = np.empty(pts_2d.shape[1], dtype=pts_2d.dtype)

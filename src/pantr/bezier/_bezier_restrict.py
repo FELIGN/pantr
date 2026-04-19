@@ -66,8 +66,7 @@ def _restrict_bezier(
         orig_shape = moved.shape
         pts_2d = moved.reshape(orig_shape[0], -1)
 
-        if not pts_2d.flags.c_contiguous:
-            pts_2d = np.ascontiguousarray(pts_2d)
+        pts_2d = np.ascontiguousarray(pts_2d)
 
         out = np.empty_like(pts_2d)
         _restrict_bezier_1d_core(pts_2d, lower, upper, out)
