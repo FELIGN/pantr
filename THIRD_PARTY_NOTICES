@@ -9,8 +9,9 @@ influenced this project.
 Algoim
 ------
 
-The Sylvester/Bezout resultant matrices in `pantr.bezier._resultant_matrices`
-implement the dimension-elimination step described in:
+Several Bezier and B-spline algorithms in `pantr.bezier` and `pantr.bspline`
+(degree elevation, Bernstein interpolation, least-squares degree reduction)
+follow techniques described in:
 
     Robert Saye, "High-order quadrature on multi-component domains
     implicitly defined by multivariate polynomials", Journal of
