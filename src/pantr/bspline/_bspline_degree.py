@@ -56,8 +56,7 @@ def _degree_elevate_bspline(bspline: Bspline, degree_increments: tuple[int, ...]
             pts_2d = moved_ctrl.reshape(orig_shape[0], -1)
 
             # Ensure proper contiguous layout for Numba
-            if not pts_2d.flags.c_contiguous:
-                pts_2d = np.ascontiguousarray(pts_2d)
+            pts_2d = np.ascontiguousarray(pts_2d)
 
             if is_periodic:
                 # Round-trip through open form to preserve periodicity.
@@ -207,8 +206,7 @@ def _degree_reduce_bspline(bspline: Bspline, degree_decrements: tuple[int, ...])
             orig_shape = moved_ctrl.shape
 
             pts_2d = moved_ctrl.reshape(orig_shape[0], -1)
-            if not pts_2d.flags.c_contiguous:
-                pts_2d = np.ascontiguousarray(pts_2d)
+            pts_2d = np.ascontiguousarray(pts_2d)
 
             if is_periodic:
                 m_bdy = int(orig_mults[0])

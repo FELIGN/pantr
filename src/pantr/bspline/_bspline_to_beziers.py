@@ -102,8 +102,7 @@ def _to_beziers_impl(bspline: Bspline) -> npt.NDArray[np.object_]:
         moved_ctrl = np.moveaxis(ctrl, d, 0)
         orig_shape = moved_ctrl.shape
         pts_2d = moved_ctrl.reshape(orig_shape[0], -1)
-        if not pts_2d.flags.c_contiguous:
-            pts_2d = np.ascontiguousarray(pts_2d)
+        pts_2d = np.ascontiguousarray(pts_2d)
 
         # Apply extraction: (n_basis, M) -> (n_el * order, M).
         out_2d = np.empty((n_el * order, pts_2d.shape[1]), dtype=pts_2d.dtype)

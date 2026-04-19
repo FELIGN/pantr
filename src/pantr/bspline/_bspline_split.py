@@ -111,8 +111,7 @@ def _split_bspline_impl(
     moved_ctrl = np.moveaxis(ctrl, direction, 0)
     orig_shape = moved_ctrl.shape
     pts_2d = moved_ctrl.reshape(orig_shape[0], -1)
-    if not pts_2d.flags.c_contiguous:
-        pts_2d = np.ascontiguousarray(pts_2d)
+    pts_2d = np.ascontiguousarray(pts_2d)
 
     space_1d = bspline.space.spaces[direction]
     (left_knots, left_pts_2d), (right_knots, right_pts_2d) = _split_bspline_1d_impl(

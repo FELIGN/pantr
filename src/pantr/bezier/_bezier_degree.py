@@ -62,8 +62,7 @@ def _degree_elevate_bezier(
         orig_shape = moved.shape
         pts_2d = moved.reshape(orig_shape[0], -1)
 
-        if not pts_2d.flags.c_contiguous:
-            pts_2d = np.ascontiguousarray(pts_2d)
+        pts_2d = np.ascontiguousarray(pts_2d)
 
         new_pts_2d = _degree_elevate_bezier_1d_core(p, pts_2d, inc)
 
@@ -118,8 +117,7 @@ def _degree_reduce_bezier(
         orig_shape = moved.shape
         pts_2d = moved.reshape(orig_shape[0], -1)
 
-        if not pts_2d.flags.c_contiguous:
-            pts_2d = np.ascontiguousarray(pts_2d)
+        pts_2d = np.ascontiguousarray(pts_2d)
 
         new_pts_2d = _degree_reduce_bezier_1d_core(p, pts_2d, dec)
 
@@ -241,8 +239,7 @@ def _minimize_degree_bezier(
             moved = np.moveaxis(result, dim, 0)
             shape_after = moved.shape
             flat = moved.reshape(shape_after[0], -1)
-            if not flat.flags.c_contiguous:
-                flat = np.ascontiguousarray(flat)
+            flat = np.ascontiguousarray(flat)
             reduced_flat = _degree_reduce_bezier_1d_core(degree, flat, 1)
             reduced = np.moveaxis(
                 reduced_flat.reshape(reduced_flat.shape[0], *shape_after[1:]), 0, dim
@@ -252,8 +249,7 @@ def _minimize_degree_bezier(
             moved_r = np.moveaxis(reduced, dim, 0)
             shape_r = moved_r.shape
             flat_r = moved_r.reshape(shape_r[0], -1)
-            if not flat_r.flags.c_contiguous:
-                flat_r = np.ascontiguousarray(flat_r)
+            flat_r = np.ascontiguousarray(flat_r)
             elevated_flat = _degree_elevate_bezier_1d_core(degree - 1, flat_r, 1)
             elevated = np.moveaxis(
                 elevated_flat.reshape(elevated_flat.shape[0], *shape_r[1:]), 0, dim

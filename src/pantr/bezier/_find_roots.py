@@ -64,9 +64,7 @@ def _extract_coeff(bezier: Bezier) -> npt.NDArray[np.float32 | np.float64]:
             array of length ``degree + 1``.
     """
     coeff = bezier.control_points[:, 0]
-    if not coeff.flags.c_contiguous:
-        return np.ascontiguousarray(coeff)
-    return coeff
+    return np.ascontiguousarray(coeff)
 
 
 def _validate_bezier_for_roots(bezier: object) -> Bezier:
@@ -192,9 +190,7 @@ def _validate_coeff_1d(
     if coeff.size < 1:
         msg = "coeff must have at least 1 element"
         raise ValueError(msg)
-    if not coeff.flags.c_contiguous:
-        return np.ascontiguousarray(coeff)
-    return coeff
+    return np.ascontiguousarray(coeff)
 
 
 def _validate_coeffs_batch(
@@ -226,9 +222,7 @@ def _validate_coeffs_batch(
     if coeffs.shape[1] < 1:
         msg = "coeffs must have at least 1 column (degree + 1)"
         raise ValueError(msg)
-    if not coeffs.flags.c_contiguous:
-        return np.ascontiguousarray(coeffs)
-    return coeffs
+    return np.ascontiguousarray(coeffs)
 
 
 def _dispatch_single(  # noqa: PLR0911

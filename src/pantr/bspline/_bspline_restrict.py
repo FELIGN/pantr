@@ -233,8 +233,7 @@ def _restrict_bspline_impl(
         moved_ctrl = np.moveaxis(ctrl, i, 0)
         orig_shape = moved_ctrl.shape
         pts_2d = moved_ctrl.reshape(orig_shape[0], -1)
-        if not pts_2d.flags.c_contiguous:
-            pts_2d = np.ascontiguousarray(pts_2d)
+        pts_2d = np.ascontiguousarray(pts_2d)
 
         restricted_knots, restricted_pts_2d = _restrict_bspline_1d_impl(
             space_1d.knots,

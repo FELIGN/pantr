@@ -135,8 +135,7 @@ def _slice_bspline(
     orig_shape = moved.shape
     pts_2d = moved.reshape(orig_shape[0], -1)
 
-    if not pts_2d.flags.c_contiguous:
-        pts_2d = np.ascontiguousarray(pts_2d)
+    pts_2d = np.ascontiguousarray(pts_2d)
 
     # Apply 1D de Boor corner cutting.
     result_1d = _slice_bspline_1d(knots, p, tol, pts_2d, value)
