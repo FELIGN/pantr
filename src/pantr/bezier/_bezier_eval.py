@@ -187,8 +187,6 @@ def _evaluate_bezier_nd_pts_array(  # noqa: PLR0913
     if pts.dtype != dtype:
         raise ValueError(f"Points dtype ({pts.dtype}) must match Bézier dtype ({dtype}).")
 
-    n_pts = pts.shape[0]
-
     # Evaluate Bernstein basis per direction
     bases: list[npt.NDArray[np.float32 | np.float64]] = [
         _tabulate_bernstein_1d_fast(degrees[d], pts[:, d], dtype) for d in range(dim)

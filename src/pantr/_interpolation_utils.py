@@ -30,7 +30,7 @@ def resolve_svd_tolerance(dtype: npt.DTypeLike, tol: float | None) -> float:
     """
     if tol is not None:
         return tol
-    return SVD_TOL_FACTOR * float(np.finfo(dtype).eps)
+    return SVD_TOL_FACTOR * float(np.finfo(dtype).eps)  # type: ignore[arg-type]
 
 
 def split_components(
