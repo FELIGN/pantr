@@ -1,45 +1,48 @@
-"""High-order quadrature on domains implicitly defined by multivariate polynomials.
+"""Deprecation shim -- re-exports ``ocelat.algoim`` under the old name.
 
-This module is an independent Python/Numba reimplementation of the algorithms
-from the `algoim <https://github.com/algoim/algoim>`_ library by Robert Saye
-(Lawrence Berkeley National Laboratory). The original algorithm is described in:
+The Saye 2022 Bernstein/Bezier implicit-quadrature engine used to live in
+``pantr.bezier.implicit``. In ocelat's Stage 6 refactor it moved verbatim to
+:mod:`ocelat.algoim`, where it serves as the Layer-3 backend for
+immersed-FEM CSG quadrature.
 
-    R. Saye, "High-order quadrature on multi-component domains implicitly
-    defined by multivariate polynomials", J. Comput. Phys., 448, 110720, 2022.
-    https://doi.org/10.1016/j.jcp.2021.110720
+This shim re-exports the same public names so existing call sites keep
+working. Importing from ``pantr.bezier.implicit`` now emits a
+:class:`DeprecationWarning` directing callers to the new location. The shim
+will be removed one release cycle after the move.
 
-See ``THIRD_PARTY_NOTICES`` in the repository root for the full algoim license.
+Switch imports to ``from ocelat.algoim import ...``.
 
-The implementation uses Numba nopython mode for near-C++ performance.
-The algorithm recasts implicitly defined geometry as the graph of a
-multi-valued height function and applies recursive dimension reduction down
-to one-dimensional quadrature.
+Re-exported names:
 
-The algorithm has two phases:
-
-1. **Build phase**: Given tensor-product Bernstein polynomials defining the
-   implicit geometry, construct a dimension-reduction hierarchy. This is done
-   once per set of polynomials and can be reused for different quadrature orders.
-
-2. **Construction phase**: Given the hierarchy and a quadrature order *q*,
-   generate quadrature points and weights. Supports volume integrals
-   (over {phi < 0}) and surface integrals (over {phi = 0}).
-
-Main exports:
-
-- :class:`ImplicitQuadrature` -- build + query interface.
+- :class:`~ocelat.algoim.ImplicitQuadrature`
+- :class:`~ocelat.algoim.QuadStrategy`
+- :class:`~ocelat.algoim.ReparamResult`
+- :class:`~ocelat.algoim.SurfQuadResult`
+- :class:`~ocelat.algoim.VolQuadResult`
+- :func:`~ocelat.algoim.monomial_to_bernstein_2d`
+- :func:`~ocelat.algoim.monomial_to_bernstein_3d`
 """
 
-from pantr.bezier.implicit._convert_core import (
-    monomial_to_bernstein_2d,
-    monomial_to_bernstein_3d,
-)
-from pantr.bezier.implicit._implicit_quad import (
+from __future__ import annotations
+
+import warnings
+
+from ocelat.algoim import (
     ImplicitQuadrature,
     QuadStrategy,
     ReparamResult,
     SurfQuadResult,
     VolQuadResult,
+    monomial_to_bernstein_2d,
+    monomial_to_bernstein_3d,
+)
+
+warnings.warn(
+    "pantr.bezier.implicit has moved to ocelat.algoim. This shim will be "
+    "removed in the next release; update imports to "
+    "'from ocelat.algoim import ...'.",
+    DeprecationWarning,
+    stacklevel=2,
 )
 
 __all__ = [

@@ -16,8 +16,7 @@ from ._lazy_import import _import_pyvista
 
 if TYPE_CHECKING:
     import pyvista as pv
-
-    from ..bezier.implicit._implicit_quad import ReparamResult, SurfQuadResult, VolQuadResult
+    from ocelat.algoim._implicit_quad import ReparamResult, SurfQuadResult, VolQuadResult
 
 _MAX_PHYSICAL_DIM = 3
 """Maximum physical dimension for VTK coordinates."""
