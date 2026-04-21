@@ -16,9 +16,20 @@ Covers:
 - Cell-index normalization (flat int, tuple, list, ndarray; negative indices
   rejected; IndexError / ValueError / TypeError on invalid input).
 - 1D spaces and rejection of dim > 3 via :exc:`NotImplementedError`.
+- Batch :meth:`apply_many` / :meth:`apply_transpose_many` /
+  :meth:`apply_MT_K_M_many` / :meth:`apply_M_K_MT_many`: round-trip match
+  against per-cell :meth:`apply` for all (d, op_kind, target, dtype) combos,
+  flat and per-direction index forms, user-provided ``out``/``scratch`` for all
+  four variants (including bilateral), empty batch for all four variants,
+  batch-size-1, aliasing rejection, wrong ``out`` shape, and validation errors
+  for :func:`_allocate_or_validate_scratch_many`.
+- :func:`normalize_cell_indices`: flat-to-2D conversion, per-direction
+  pass-through, negative index rejection, float input rejection, and error cases.
 """
 
 from __future__ import annotations
+
+from typing import Any
 
 import numpy as np
 import numpy.typing as npt
@@ -26,8 +37,13 @@ import pytest
 
 from pantr.basis import LagrangeVariant
 from pantr.bspline import BsplineSpace, BsplineSpace1D, SpanwiseElementExtraction
+from pantr.bspline._extraction_helpers import (
+    _allocate_or_validate_scratch_many,
+    _required_scratch_size,
+)
 from pantr.bspline.spanwise_element_extraction import (
     _numerical_identity_mask,
+    normalize_cell_indices,
     operand_shape,
 )
 
@@ -475,3 +491,431 @@ def test_negative_per_direction_index_rejected() -> None:
     ext = SpanwiseElementExtraction(sp, "bezier")
     with pytest.raises(IndexError):
         ext.is_identity_at((-1, 0))
+
+
+# ---------------------------------------------------------------- normalize_cell_indices
+
+
+def test_normalize_flat_indices_converts_to_2d() -> None:
+    """Flat 1-D indices are converted to per-direction 2-D array correctly."""
+    num_intervals = (4, 5)
+    flat = np.array([0, 1, 9, 19])
+    result = normalize_cell_indices(flat, num_intervals)
+    assert result.shape == (4, 2)
+    for i, f in enumerate(flat):
+        expected = np.unravel_index(f, num_intervals)
+        np.testing.assert_array_equal(result[i], expected)
+
+
+def test_normalize_2d_indices_passthrough() -> None:
+    """2-D per-direction indices are returned as a numpy array unchanged."""
+    num_intervals = (3, 4, 2)
+    idx = np.array([[0, 1, 0], [2, 3, 1]])
+    result = normalize_cell_indices(idx, num_intervals)
+    assert result.shape == (2, 3)
+    np.testing.assert_array_equal(result, idx)
+
+
+def test_normalize_list_of_flat_indices() -> None:
+    """A plain Python list of flat integers is accepted."""
+    num_intervals = (6, 6)
+    result = normalize_cell_indices([0, 7, 35], num_intervals)
+    assert result.shape == (3, 2)
+
+
+def test_normalize_empty_batch() -> None:
+    """An empty batch produces a (0, d) output array."""
+    result = normalize_cell_indices(np.array([], dtype=np.intp), (3, 4))
+    assert result.shape == (0, 2)
+
+
+def test_normalize_flat_out_of_range() -> None:
+    """Flat indices outside [0, total) raise IndexError."""
+    with pytest.raises(IndexError, match="Flat cell indices"):
+        normalize_cell_indices(np.array([12]), (3, 4))  # 3*4=12, so 12 is OOB
+
+
+def test_normalize_negative_flat_index_raises() -> None:
+    """Negative flat indices raise IndexError."""
+    with pytest.raises(IndexError, match="Flat cell indices"):
+        normalize_cell_indices(np.array([-1]), (3, 4))
+
+
+def test_normalize_per_direction_out_of_range() -> None:
+    """Per-direction indices outside per-direction bounds raise IndexError."""
+    with pytest.raises(IndexError, match="cell_indices"):
+        normalize_cell_indices(np.array([[3, 0]]), (3, 4))  # dir-0 max is 2
+
+
+def test_normalize_float_input_raises() -> None:
+    """Float cell_indices raise TypeError."""
+    with pytest.raises(TypeError, match="integers"):
+        normalize_cell_indices(np.array([0.0, 1.5, 2.9]), (3, 4))
+
+
+def test_normalize_wrong_ndim_raises() -> None:
+    """3-D or 0-D input raises ValueError."""
+    with pytest.raises(ValueError, match="ndim"):
+        normalize_cell_indices(np.zeros((2, 3, 4), dtype=np.intp), (3, 4))
+
+
+def test_normalize_wrong_d_raises() -> None:
+    """2-D input with wrong number of columns raises ValueError."""
+    with pytest.raises(ValueError, match="shape"):
+        normalize_cell_indices(np.array([[0, 1, 0]]), (3, 4))  # 3 cols but d=2
+
+
+# ---------------------------------------------------------------- batch apply helpers
+
+
+def _space_1d() -> BsplineSpace:
+    """Small 1D space for batch d=1 tests."""
+    sp1 = BsplineSpace1D([0, 0, 0, 1, 2, 3, 3, 3], 2)
+    return BsplineSpace([sp1])
+
+
+_BATCH_SPACES: list[tuple[int, BsplineSpace]] = [
+    (1, _space_1d()),
+    (2, _space_2d()),
+    (3, _space_3d()),
+]
+
+_OP_KINDS = ["apply", "apply_T", "MT_K_M", "M_K_MT"]
+_TARGETS = ["bezier", "lagrange", "cardinal"]
+
+
+def _batch_method(ext: SpanwiseElementExtraction, op_kind: str) -> Any:
+    """Return the batch method corresponding to op_kind."""
+    if op_kind == "apply":
+        return ext.apply_many
+    if op_kind == "apply_T":
+        return ext.apply_transpose_many
+    if op_kind == "MT_K_M":
+        return ext.apply_MT_K_M_many
+    return ext.apply_M_K_MT_many
+
+
+def _per_cell_method(ext: SpanwiseElementExtraction, op_kind: str) -> Any:
+    """Return the per-cell method corresponding to op_kind."""
+    if op_kind == "apply":
+        return ext.apply
+    if op_kind == "apply_T":
+        return ext.apply_transpose
+    if op_kind == "MT_K_M":
+        return ext.apply_MT_K_M
+    return ext.apply_M_K_MT
+
+
+# ---------------------------------------------------------------- batch correctness
+
+
+@pytest.mark.parametrize("target", _TARGETS)
+@pytest.mark.parametrize("op_kind", _OP_KINDS)
+@pytest.mark.parametrize(("d", "sp"), _BATCH_SPACES)
+def test_batch_apply_matches_per_cell(
+    d: int,
+    sp: BsplineSpace,
+    op_kind: str,
+    target: str,
+) -> None:
+    """Batch apply matches per-cell apply for every (d, op_kind, target) combo."""
+    ext = SpanwiseElementExtraction(sp, target)  # type: ignore[arg-type]
+    n_in = int(np.prod(ext.input_shape_per_dir))
+    n_out = int(np.prod(ext.output_shape_per_dir))
+    rng = np.random.default_rng(0)
+    n_cells = min(ext.num_total_intervals, 8)
+    flat_idx = rng.integers(0, ext.num_total_intervals, size=n_cells)
+    dt = ext.dtype
+
+    if op_kind == "apply":
+        operand = rng.standard_normal((n_cells, n_in)).astype(dt)
+    elif op_kind == "apply_T":
+        operand = rng.standard_normal((n_cells, n_out)).astype(dt)
+    elif op_kind == "MT_K_M":
+        operand = rng.standard_normal((n_cells, n_out, n_out)).astype(dt)
+    else:
+        operand = rng.standard_normal((n_cells, n_in, n_in)).astype(dt)
+
+    batch_fn = _batch_method(ext, op_kind)
+    per_cell_fn = _per_cell_method(ext, op_kind)
+    out_batch = batch_fn(operand, flat_idx)
+
+    for c in range(n_cells):
+        ref = per_cell_fn(operand[c], int(flat_idx[c]))
+        np.testing.assert_allclose(out_batch[c], ref, atol=1e-11, rtol=1e-11)
+
+
+@pytest.mark.parametrize("op_kind", _OP_KINDS)
+def test_batch_apply_float32_space(op_kind: str) -> None:
+    """Batch apply works correctly on a float32 B-spline space."""
+    knots = np.array([0, 0, 0, 1, 2, 3, 3, 3], dtype=np.float32)
+    sp1 = BsplineSpace1D(knots, 2)
+    sp = BsplineSpace([sp1, sp1])
+    ext = SpanwiseElementExtraction(sp, "bezier")
+    assert ext.dtype == np.float32
+    n_in = int(np.prod(ext.input_shape_per_dir))
+    n_out = int(np.prod(ext.output_shape_per_dir))
+    rng = np.random.default_rng(99)
+    n_cells = 4
+    flat_idx = rng.integers(0, ext.num_total_intervals, size=n_cells)
+
+    if op_kind == "apply":
+        operand = rng.standard_normal((n_cells, n_in)).astype(np.float32)
+    elif op_kind == "apply_T":
+        operand = rng.standard_normal((n_cells, n_out)).astype(np.float32)
+    elif op_kind == "MT_K_M":
+        operand = rng.standard_normal((n_cells, n_out, n_out)).astype(np.float32)
+    else:
+        operand = rng.standard_normal((n_cells, n_in, n_in)).astype(np.float32)
+
+    batch_fn = _batch_method(ext, op_kind)
+    per_cell_fn = _per_cell_method(ext, op_kind)
+    out_batch = batch_fn(operand, flat_idx)
+
+    for c in range(n_cells):
+        ref = per_cell_fn(operand[c], int(flat_idx[c]))
+        np.testing.assert_allclose(out_batch[c], ref, atol=1e-5, rtol=1e-5)
+
+
+@pytest.mark.parametrize("op_kind", _OP_KINDS)
+def test_batch_apply_per_direction_index_form(op_kind: str) -> None:
+    """2-D per-direction cell_indices produce the same result as flat indices."""
+    ext = SpanwiseElementExtraction(_space_2d(), "bezier")
+    n_in = int(np.prod(ext.input_shape_per_dir))
+    n_out = int(np.prod(ext.output_shape_per_dir))
+    rng = np.random.default_rng(1)
+    n_cells = 5
+    flat = rng.integers(0, ext.num_total_intervals, size=n_cells)
+    multi = np.stack(np.unravel_index(flat, ext.num_intervals), axis=1)
+
+    if op_kind == "apply":
+        operand = rng.standard_normal((n_cells, n_in))
+    elif op_kind == "apply_T":
+        operand = rng.standard_normal((n_cells, n_out))
+    elif op_kind == "MT_K_M":
+        operand = rng.standard_normal((n_cells, n_out, n_out))
+    else:
+        operand = rng.standard_normal((n_cells, n_in, n_in))
+
+    batch_fn = _batch_method(ext, op_kind)
+    out_flat = batch_fn(operand, flat)
+    out_multi = batch_fn(operand, multi)
+    np.testing.assert_allclose(out_flat, out_multi, atol=1e-14)
+
+
+@pytest.mark.parametrize("op_kind", _OP_KINDS)
+def test_batch_apply_identity_pattern_shortcircuits(op_kind: str) -> None:
+    """C⁰ Bézier space (all identity) gives the same result as no operator."""
+    sp1 = BsplineSpace1D([0, 0, 0, 1, 1, 1, 2, 2, 2], 2)
+    sp = BsplineSpace([sp1, sp1])
+    ext = SpanwiseElementExtraction(sp, "bezier")
+    assert ext.is_identity, "Space should have all-identity extraction"
+    n_in = int(np.prod(ext.input_shape_per_dir))
+    n_out = int(np.prod(ext.output_shape_per_dir))
+    rng = np.random.default_rng(2)
+    n_cells = 4
+    flat = rng.integers(0, ext.num_total_intervals, size=n_cells)
+
+    if op_kind in ("apply", "apply_T"):
+        operand = rng.standard_normal((n_cells, n_in if op_kind == "apply" else n_out))
+        out = _batch_method(ext, op_kind)(operand, flat)
+        np.testing.assert_allclose(out, operand, atol=1e-12)
+    elif op_kind == "MT_K_M":
+        K = rng.standard_normal((n_cells, n_out, n_out))
+        out = ext.apply_MT_K_M_many(K, flat)
+        np.testing.assert_allclose(out, K, atol=1e-12)
+    else:
+        K = rng.standard_normal((n_cells, n_in, n_in))
+        out = ext.apply_M_K_MT_many(K, flat)
+        np.testing.assert_allclose(out, K, atol=1e-12)
+
+
+# ---------------------------------------------------------------- batch edge cases / validation
+
+
+def test_batch_apply_empty_batch_returns_correct_shape() -> None:
+    """An empty batch (n_cells=0) returns an array with the right shape and no errors."""
+    ext = SpanwiseElementExtraction(_space_2d(), "bezier")
+    n_in = int(np.prod(ext.input_shape_per_dir))
+    n_out = int(np.prod(ext.output_shape_per_dir))
+    empty_idx = np.array([], dtype=np.intp)
+    out = ext.apply_many(np.empty((0, n_in)), empty_idx)
+    assert out.shape == (0, n_out)
+
+
+def test_batch_apply_accepts_user_out_and_scratch() -> None:
+    """User-provided ``out`` and ``scratch`` are written into and returned."""
+    ext = SpanwiseElementExtraction(_space_2d(), "bezier")
+    n_in = int(np.prod(ext.input_shape_per_dir))
+    n_out = int(np.prod(ext.output_shape_per_dir))
+    rng = np.random.default_rng(3)
+    n_cells = 3
+    flat = rng.integers(0, ext.num_total_intervals, size=n_cells)
+    v = rng.standard_normal((n_cells, n_in))
+    out = np.zeros((n_cells, n_out))
+    scratch = np.zeros((n_cells, 4 * n_in * n_out))
+    result = ext.apply_many(v, flat, out=out, scratch=scratch)
+    assert result is out
+
+    for c in range(n_cells):
+        ref = ext.apply(v[c], int(flat[c]))
+        np.testing.assert_allclose(out[c], ref, atol=1e-12)
+
+
+def test_batch_apply_wrong_operand_shape_raises() -> None:
+    """Wrong operand shape raises ValueError."""
+    ext = SpanwiseElementExtraction(_space_2d(), "bezier")
+    n_in = int(np.prod(ext.input_shape_per_dir))
+    with pytest.raises(ValueError, match="shape"):
+        ext.apply_many(np.zeros((3, n_in + 1)), np.array([0, 1, 2]))
+
+
+def test_batch_apply_wrong_cell_indices_ndim_raises() -> None:
+    """3-D cell_indices raises ValueError."""
+    ext = SpanwiseElementExtraction(_space_2d(), "bezier")
+    n_in = int(np.prod(ext.input_shape_per_dir))
+    with pytest.raises(ValueError):
+        ext.apply_many(np.zeros((1, n_in)), np.zeros((1, 1, 2), dtype=np.intp))
+
+
+def test_batch_apply_out_of_range_cell_index_raises() -> None:
+    """Out-of-range cell index raises IndexError."""
+    ext = SpanwiseElementExtraction(_space_2d(), "bezier")
+    n_in = int(np.prod(ext.input_shape_per_dir))
+    with pytest.raises(IndexError):
+        ext.apply_many(np.zeros((1, n_in)), np.array([ext.num_total_intervals]))
+
+
+def test_batch_apply_dim4_raises_not_implemented() -> None:
+    """A 4D space raises NotImplementedError for all batch apply variants."""
+    sp1 = BsplineSpace1D([0, 0, 0, 1, 2, 2, 2], 2)
+    sp = BsplineSpace([sp1, sp1, sp1, sp1])
+    ext = SpanwiseElementExtraction(sp, "bezier")
+    n_in = int(np.prod(ext.input_shape_per_dir))
+    with pytest.raises(NotImplementedError):
+        ext.apply_many(np.zeros((1, n_in)), np.array([0]))
+
+
+def test_batch_apply_size_one_matches_per_cell() -> None:
+    """A batch of exactly one cell produces the same result as the per-cell method."""
+    ext = SpanwiseElementExtraction(_space_2d(), "bezier")
+    n_in = int(np.prod(ext.input_shape_per_dir))
+    rng = np.random.default_rng(42)
+    v = rng.standard_normal((1, n_in))
+    cell = 7
+    out_batch = ext.apply_many(v, np.array([cell]))
+    out_single = ext.apply(v[0], cell)
+    np.testing.assert_allclose(out_batch[0], out_single, atol=1e-12)
+
+
+def test_batch_apply_bilateral_accepts_user_out_and_scratch() -> None:
+    """User-provided ``out`` and ``scratch`` work correctly for bilateral variants."""
+    ext = SpanwiseElementExtraction(_space_2d(), "bezier")
+    n_in = int(np.prod(ext.input_shape_per_dir))
+    n_out = int(np.prod(ext.output_shape_per_dir))
+    rng = np.random.default_rng(5)
+    n_cells = 3
+    flat = rng.integers(0, ext.num_total_intervals, size=n_cells)
+
+    # MT_K_M: operand (n_cells, N_out, N_out) → out (n_cells, N_in, N_in)
+    K_mtk = rng.standard_normal((n_cells, n_out, n_out))
+    scratch_sz = _required_scratch_size(ext.input_shape_per_dir, ext.output_shape_per_dir, "MT_K_M")
+    out_mtk = np.zeros((n_cells, n_in, n_in))
+    scratch_mtk = np.zeros((n_cells, max(scratch_sz, 1)))
+    result_mtk = ext.apply_MT_K_M_many(K_mtk, flat, out=out_mtk, scratch=scratch_mtk)
+    assert result_mtk is out_mtk
+    for c in range(n_cells):
+        ref = ext.apply_MT_K_M(K_mtk[c], int(flat[c]))
+        np.testing.assert_allclose(out_mtk[c], ref, atol=1e-11)
+
+    # M_K_MT: operand (n_cells, N_in, N_in) → out (n_cells, N_out, N_out)
+    K_mkt = rng.standard_normal((n_cells, n_in, n_in))
+    scratch_sz2 = _required_scratch_size(
+        ext.input_shape_per_dir, ext.output_shape_per_dir, "M_K_MT"
+    )
+    out_mkt = np.zeros((n_cells, n_out, n_out))
+    scratch_mkt = np.zeros((n_cells, max(scratch_sz2, 1)))
+    result_mkt = ext.apply_M_K_MT_many(K_mkt, flat, out=out_mkt, scratch=scratch_mkt)
+    assert result_mkt is out_mkt
+    for c in range(n_cells):
+        ref = ext.apply_M_K_MT(K_mkt[c], int(flat[c]))
+        np.testing.assert_allclose(out_mkt[c], ref, atol=1e-11)
+
+
+def test_batch_apply_empty_batch_bilateral_shapes() -> None:
+    """Empty batch returns the correct shape for all four variants."""
+    ext = SpanwiseElementExtraction(_space_2d(), "bezier")
+    n_in = int(np.prod(ext.input_shape_per_dir))
+    n_out = int(np.prod(ext.output_shape_per_dir))
+    empty = np.array([], dtype=np.intp)
+
+    assert ext.apply_many(np.empty((0, n_in)), empty).shape == (0, n_out)
+    assert ext.apply_transpose_many(np.empty((0, n_out)), empty).shape == (0, n_in)
+    assert ext.apply_MT_K_M_many(np.empty((0, n_out, n_out)), empty).shape == (0, n_in, n_in)
+    assert ext.apply_M_K_MT_many(np.empty((0, n_in, n_in)), empty).shape == (0, n_out, n_out)
+
+
+def test_batch_apply_bilateral_aliasing_raises() -> None:
+    """Passing the same array as both K and out raises ValueError."""
+    ext = SpanwiseElementExtraction(_space_2d(), "bezier")
+    n_out = int(np.prod(ext.output_shape_per_dir))
+    n_in = int(np.prod(ext.input_shape_per_dir))
+    rng = np.random.default_rng(7)
+    flat = rng.integers(0, ext.num_total_intervals, size=2)
+
+    K = rng.standard_normal((2, n_out, n_out))
+    with pytest.raises(ValueError, match="alias"):
+        ext.apply_MT_K_M_many(K, flat, out=K)
+
+    K2 = rng.standard_normal((2, n_in, n_in))
+    with pytest.raises(ValueError, match="alias"):
+        ext.apply_M_K_MT_many(K2, flat, out=K2)
+
+
+def test_batch_apply_wrong_out_shape_raises() -> None:
+    """Wrong ``out`` shape raises ValueError."""
+    ext = SpanwiseElementExtraction(_space_2d(), "bezier")
+    n_in = int(np.prod(ext.input_shape_per_dir))
+    n_out = int(np.prod(ext.output_shape_per_dir))
+    n_cells = 3
+    v = np.zeros((n_cells, n_in))
+    flat = np.arange(n_cells)
+    with pytest.raises(ValueError, match="shape"):
+        ext.apply_many(v, flat, out=np.zeros((n_cells, n_out + 1)))
+
+
+def test_allocate_or_validate_scratch_many_rejects_invalid() -> None:
+    """All five rejection branches in ``_allocate_or_validate_scratch_many`` raise ValueError."""
+    n_cells, width, dtype = 4, 8, np.float64
+
+    # Wrong ndim
+    with pytest.raises(ValueError, match="2D"):
+        _allocate_or_validate_scratch_many(np.zeros(n_cells * width), n_cells, width, dtype)
+
+    # Wrong dtype
+    with pytest.raises(ValueError, match="dtype"):
+        _allocate_or_validate_scratch_many(
+            np.zeros((n_cells, width), dtype=np.float32), n_cells, width, dtype
+        )
+
+    # Wrong shape[0]
+    with pytest.raises(ValueError, match="n_cells"):
+        _allocate_or_validate_scratch_many(
+            np.zeros((n_cells + 1, width), dtype=dtype), n_cells, width, dtype
+        )
+
+    # Too narrow (scratch.shape[1] < alloc_width = max(width, 1))
+    with pytest.raises(ValueError, match="width"):
+        _allocate_or_validate_scratch_many(
+            np.zeros((n_cells, width - 1), dtype=dtype), n_cells, width, dtype
+        )
+
+    # d=1 case: scratch_size_per_cell=0 so alloc_width=1; shape[1]=0 must be rejected
+    with pytest.raises(ValueError, match="width"):
+        _allocate_or_validate_scratch_many(np.zeros((n_cells, 0), dtype=dtype), n_cells, 0, dtype)
+
+    # Not writeable
+    ro = np.zeros((n_cells, width), dtype=dtype)
+    ro.flags.writeable = False
+    with pytest.raises(ValueError, match="writeable"):
+        _allocate_or_validate_scratch_many(ro, n_cells, width, dtype)

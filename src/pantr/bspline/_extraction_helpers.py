@@ -27,12 +27,24 @@ from ._extraction_kernels import (
     apply_kron_1d,
     apply_kron_2d,
     apply_kron_3d,
+    apply_kron_apply_many_1d,
+    apply_kron_apply_many_2d,
+    apply_kron_apply_many_3d,
+    apply_kron_apply_T_many_1d,
+    apply_kron_apply_T_many_2d,
+    apply_kron_apply_T_many_3d,
     apply_kron_M_K_MT_1d,
     apply_kron_M_K_MT_2d,
     apply_kron_M_K_MT_3d,
+    apply_kron_M_K_MT_many_1d,
+    apply_kron_M_K_MT_many_2d,
+    apply_kron_M_K_MT_many_3d,
     apply_kron_MT_K_M_1d,
     apply_kron_MT_K_M_2d,
     apply_kron_MT_K_M_3d,
+    apply_kron_MT_K_M_many_1d,
+    apply_kron_MT_K_M_many_2d,
+    apply_kron_MT_K_M_many_3d,
     apply_kron_T_1d,
     apply_kron_T_2d,
     apply_kron_T_3d,
@@ -62,6 +74,21 @@ _KERNELS: dict[tuple[OpKind, int], Callable[..., None]] = {
     ("M_K_MT", 1): apply_kron_M_K_MT_1d,
     ("M_K_MT", 2): apply_kron_M_K_MT_2d,
     ("M_K_MT", 3): apply_kron_M_K_MT_3d,
+}
+
+_KERNELS_MANY: dict[tuple[OpKind, int], Callable[..., None]] = {
+    ("apply", 1): apply_kron_apply_many_1d,
+    ("apply", 2): apply_kron_apply_many_2d,
+    ("apply", 3): apply_kron_apply_many_3d,
+    ("apply_T", 1): apply_kron_apply_T_many_1d,
+    ("apply_T", 2): apply_kron_apply_T_many_2d,
+    ("apply_T", 3): apply_kron_apply_T_many_3d,
+    ("MT_K_M", 1): apply_kron_MT_K_M_many_1d,
+    ("MT_K_M", 2): apply_kron_MT_K_M_many_2d,
+    ("MT_K_M", 3): apply_kron_MT_K_M_many_3d,
+    ("M_K_MT", 1): apply_kron_M_K_MT_many_1d,
+    ("M_K_MT", 2): apply_kron_M_K_MT_many_2d,
+    ("M_K_MT", 3): apply_kron_M_K_MT_many_3d,
 }
 
 
@@ -202,6 +229,30 @@ def _required_scratch_size(
         return _bilateral_scratch_size(output_shape_per_dir, input_shape_per_dir)
     # op_kind == "M_K_MT"
     return _bilateral_scratch_size(input_shape_per_dir, output_shape_per_dir)
+
+
+def _dispatch_apply_many(d: int, op_kind: OpKind) -> Callable[..., None]:
+    """Return the batch Layer-3 kernel for a given dimension and operation kind.
+
+    Args:
+        d (int): Number of tensor-product directions.
+        op_kind (OpKind): Operation kind.
+
+    Returns:
+        Callable[..., None]: The corresponding ``@njit(parallel=True)`` kernel.
+
+    Raises:
+        NotImplementedError: If ``d`` is not in ``{1, 2, 3}``.
+        ValueError: If ``op_kind`` is invalid.
+    """
+    _validate_op_kind(op_kind)
+    if d < 1 or d > MAX_SUPPORTED_DIM:
+        raise NotImplementedError(
+            f"Extraction kernels are specialized for d in {{1, 2, 3}}; got d={d}. "
+            "Add a generic-d kernel in pantr.bspline._extraction_kernels to support "
+            "higher dimensions."
+        )
+    return _KERNELS_MANY[(op_kind, d)]
 
 
 def _dispatch_apply(d: int, op_kind: OpKind) -> Callable[..., None]:
@@ -385,6 +436,17 @@ def _prepare_apply_call(  # noqa: PLR0913 -- each arg reflects a distinct kernel
     )
     _validate_operand(operand, expected_in_shape, dtype)
     out = _allocate_or_validate_out(out, expected_out_shape, dtype)
+    # When every direction is identity the bilateral kernel is a pure copy, so
+    # aliasing out=K is safe.  Only raise for the general (non-identity) case.
+    if (
+        op_kind in ("MT_K_M", "M_K_MT")
+        and not all(is_identity_per_dir)
+        and np.shares_memory(operand, out)
+    ):
+        raise ValueError(
+            "out must not alias the operand (K) for bilateral operations; "
+            "the kernel reads and writes overlapping memory"
+        )
 
     scratch_size = _required_scratch_size(input_shape_per_dir, output_shape_per_dir, op_kind)
     scratch = _allocate_or_validate_scratch(scratch, scratch_size, dtype)
@@ -402,13 +464,167 @@ def _prepare_apply_call(  # noqa: PLR0913 -- each arg reflects a distinct kernel
     return kernel, args, out
 
 
+def _allocate_or_validate_scratch_many(
+    scratch: npt.NDArray[np.float32 | np.float64] | None,
+    n_cells: int,
+    scratch_size_per_cell: int,
+    dtype: npt.DTypeLike,
+) -> npt.NDArray[np.float32 | np.float64]:
+    """Allocate or validate the per-cell scratch buffer for a batch call.
+
+    The scratch array has shape ``(n_cells, max(scratch_size_per_cell, 1))``
+    so that ``scratch[cell]`` is always a non-empty 1D view (even when the
+    per-cell kernel does not use scratch).
+
+    A user-provided buffer is accepted when it has the correct dtype, is
+    writeable, is 2D, has ``shape[0] == n_cells``, and
+    ``shape[1] >= scratch_size_per_cell``.
+
+    Args:
+        scratch (npt.NDArray[np.float32 | np.float64] | None): Caller-provided
+            scratch array, or ``None`` to allocate.
+        n_cells (int): Number of cells in the batch.
+        scratch_size_per_cell (int): Minimum scratch elements required per cell
+            (may be 0 for d=1 vector kernels).
+        dtype (npt.DTypeLike): Required dtype.
+
+    Returns:
+        npt.NDArray[np.float32 | np.float64]: The validated or freshly
+        allocated 2D scratch array.
+
+    Raises:
+        ValueError: If a provided ``scratch`` has wrong dtype, wrong ndim,
+            wrong ``shape[0]``, is too narrow, or is not writeable.
+    """
+    alloc_width = max(scratch_size_per_cell, 1)
+    if scratch is None:
+        return np.empty((n_cells, alloc_width), dtype=dtype)
+    if scratch.ndim != 2:  # noqa: PLR2004
+        raise ValueError(f"Batch scratch must be 2D; got ndim={scratch.ndim}")
+    if scratch.dtype != np.dtype(dtype):
+        raise ValueError(f"Batch scratch has dtype {scratch.dtype}, but expected {np.dtype(dtype)}")
+    if scratch.shape[0] != n_cells:
+        raise ValueError(
+            f"Batch scratch shape[0]={scratch.shape[0]} does not match n_cells={n_cells}"
+        )
+    if scratch.shape[1] < alloc_width:
+        raise ValueError(
+            f"Batch scratch shape[1]={scratch.shape[1]} is smaller than "
+            f"required width={alloc_width}"
+        )
+    if not scratch.flags.writeable:
+        raise ValueError("Batch scratch array is not writeable")
+    return scratch
+
+
+def _prepare_apply_many_call(  # noqa: PLR0912, PLR0913
+    ops_1d: tuple[npt.NDArray[np.float32 | np.float64], ...],
+    is_identity_masks: tuple[npt.NDArray[np.bool_], ...],
+    cell_indices: npt.NDArray[np.intp],
+    operand: npt.NDArray[np.float32 | np.float64],
+    out: npt.NDArray[np.float32 | np.float64] | None,
+    scratch: npt.NDArray[np.float32 | np.float64] | None,
+    op_kind: OpKind,
+) -> tuple[
+    Callable[..., None],
+    tuple[Any, ...],
+    npt.NDArray[np.float32 | np.float64],
+]:
+    """Validate inputs and build the kernel call for a batch of cells.
+
+    Args:
+        ops_1d (tuple[npt.NDArray[np.float32 | np.float64], ...]): Full per-direction
+            3D operator arrays ``(n_el_k, n_out_k, n_in_k)``. Length must equal ``d``.
+        is_identity_masks (tuple[npt.NDArray[np.bool_], ...]): Full per-direction
+            identity mask arrays of shape ``(n_el_k,)``. Length must equal ``d``.
+        cell_indices (npt.NDArray[np.intp]): Per-direction element indices,
+            shape ``(n_cells, d)``. Values must be non-negative and within the
+            per-direction element counts from ``ops_1d``.
+        operand (npt.NDArray[np.float32 | np.float64]): Batch input array.
+            Shape ``(n_cells, N_in)`` for ``"apply"``,
+            ``(n_cells, N_out)`` for ``"apply_T"``,
+            ``(n_cells, N_out, N_out)`` for ``"MT_K_M"``, or
+            ``(n_cells, N_in, N_in)`` for ``"M_K_MT"``.
+        out (npt.NDArray[np.float32 | np.float64] | None): Batch output array,
+            or ``None`` to allocate.
+        scratch (npt.NDArray[np.float32 | np.float64] | None): Per-cell scratch
+            array of shape ``(n_cells, s)`` with ``s >= scratch_size_per_cell``,
+            or ``None`` to allocate.
+        op_kind (OpKind): Operation kind.
+
+    Returns:
+        tuple[Callable, tuple, npt.NDArray]: ``(kernel, args, out)`` where
+        ``kernel(*args)`` runs the batch operation, writing into ``out``.
+
+    Raises:
+        ValueError: If shapes, dtypes, writability, or index-range invariants fail.
+        NotImplementedError: If ``d > 3``.
+    """
+    _validate_op_kind(op_kind)
+    d = len(ops_1d)
+    if len(is_identity_masks) != d:
+        raise ValueError(f"is_identity_masks has length {len(is_identity_masks)}, expected {d}")
+    if d < 1:
+        raise ValueError("At least one direction is required")
+    for k, op in enumerate(ops_1d):
+        if op.ndim != 3:  # noqa: PLR2004
+            raise ValueError(f"ops_1d[{k}] must be 3D; got ndim={op.ndim}")
+    dtype = ops_1d[0].dtype
+    for k, op in enumerate(ops_1d[1:], start=1):
+        if op.dtype != dtype:
+            raise ValueError(f"ops_1d[{k}] dtype {op.dtype} differs from ops_1d[0] dtype {dtype}")
+    if np.dtype(dtype).type not in (np.float32, np.float64):
+        raise ValueError(f"ops_1d operators must have dtype float32 or float64; got {dtype}")
+
+    if cell_indices.ndim != 2:  # noqa: PLR2004
+        raise ValueError(f"cell_indices must be 2D; got ndim={cell_indices.ndim}")
+    if cell_indices.shape[1] != d:
+        raise ValueError(f"cell_indices.shape[1]={cell_indices.shape[1]} does not match d={d}")
+    n_cells = cell_indices.shape[0]
+    if n_cells > 0:
+        for k, op in enumerate(ops_1d):
+            n_el_k = op.shape[0]
+            col = cell_indices[:, k]
+            if int(col.min()) < 0 or int(col.max()) >= n_el_k:
+                raise IndexError(f"cell_indices[:, {k}] contains values outside [0, {n_el_k})")
+
+    input_shape_per_dir = tuple(int(op.shape[2]) for op in ops_1d)
+    output_shape_per_dir = tuple(int(op.shape[1]) for op in ops_1d)
+    per_cell_in, per_cell_out = _operation_shapes(
+        input_shape_per_dir, output_shape_per_dir, op_kind
+    )
+    expected_operand = (n_cells, *per_cell_in)
+    expected_out_shape = (n_cells, *per_cell_out)
+    _validate_operand(operand, expected_operand, dtype)
+    out = _allocate_or_validate_out(out, expected_out_shape, dtype)
+    if op_kind in ("MT_K_M", "M_K_MT") and np.shares_memory(operand, out):
+        all_identity = n_cells == 0 or all(
+            bool(is_identity_masks[k][cell_indices[:, k]].all()) for k in range(d)
+        )
+        if not all_identity:
+            raise ValueError(
+                "out must not alias the operand (K) for bilateral operations; "
+                "the kernel reads and writes overlapping memory"
+            )
+
+    scratch_size = _required_scratch_size(input_shape_per_dir, output_shape_per_dir, op_kind)
+    scratch = _allocate_or_validate_scratch_many(scratch, n_cells, scratch_size, dtype)
+
+    kernel = _dispatch_apply_many(d, op_kind)
+    args: tuple[Any, ...] = (*ops_1d, *is_identity_masks, cell_indices, operand, out, scratch)
+    return kernel, args, out
+
+
 __all__ = [
     "MAX_SUPPORTED_DIM",
     "OpKind",
     "_allocate_or_validate_scratch",
+    "_allocate_or_validate_scratch_many",
     "_dispatch_apply",
+    "_dispatch_apply_many",
     "_operation_shapes",
     "_prepare_apply_call",
+    "_prepare_apply_many_call",
     "_required_scratch_size",
     "_validate_op_kind",
     "_validate_operand",

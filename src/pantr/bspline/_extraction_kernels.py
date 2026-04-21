@@ -2,17 +2,23 @@
 
 This module provides Layer-3 (Numba) primitives that apply tensor-product
 change-of-basis operators ``M = kron(M_0, M_1, ..., M_{d-1})`` to vectors and
-matrices without ever materializing the full Kronecker product. Each kernel
-operates on a single cell: the caller passes in the per-direction 1D operators
-selected for that cell (``M_k``), per-direction identity flags (``is_id_k``),
-and pre-allocated output and scratch arrays.
+matrices without ever materializing the full Kronecker product.
 
-Kernels are specialized for ``d in {1, 2, 3}`` and cover four operations:
+**Per-cell kernels** (single cell, no ``parallel``; callable from outer prange):
 
 - ``apply_kron_{d}d``:        ``out = M @ v``
 - ``apply_kron_T_{d}d``:      ``out = M^T @ v``
 - ``apply_kron_MT_K_M_{d}d``: ``out = M^T @ K @ M``
 - ``apply_kron_M_K_MT_{d}d``: ``out = M @ K @ M^T``
+
+**Batch kernels** (``parallel=True``; ``prange`` over cells):
+
+- ``apply_kron_apply_many_{d}d``:    ``out[c] = M_c @ v[c]``
+- ``apply_kron_apply_T_many_{d}d``:  ``out[c] = M_c^T @ v[c]``
+- ``apply_kron_MT_K_M_many_{d}d``:   ``out[c] = M_c^T @ K[c] @ M_c``
+- ``apply_kron_M_K_MT_many_{d}d``:   ``out[c] = M_c @ K[c] @ M_c^T``
+
+All kernels are specialized for ``d in {1, 2, 3}``.
 
 Identity short-circuit: when ``is_id_k`` is True, the mode-k contraction is
 skipped (the axis is passed through unchanged, and ``M_k`` is not read). When
@@ -20,23 +26,20 @@ all directions are identity, the kernel degenerates to a direct copy
 ``out[:] = input[:]``, which is aliasing-safe -- the caller may pass the same
 array as input and output.
 
-These kernels are designed to be callable from other ``@njit`` code: they are
+Per-cell kernels are designed to be callable from other ``@njit`` code: they are
 module-level free functions with plain NumPy-array arguments, no optional
-parameters, and ``cache=True`` so downstream libraries can dispatch to them
-directly from their own JIT-compiled loops.
-
-``parallel=True`` is intentionally omitted: these kernels operate on a single
-cell and are expected to be called from within a caller-level ``prange`` loop.
-Enabling intra-kernel parallelism would conflict with the outer thread pool and
-degrade performance.
+parameters, and ``cache=True``. The batch kernels use ``parallel=True`` and
+dispatch to the per-cell kernels inside the ``prange`` body.
 """
 
 from __future__ import annotations
 
+from typing import Any
+
 import numpy as np
 import numpy.typing as npt
 
-from .._numba_compat import nb_jit
+from .._numba_compat import nb_jit, nb_prange
 
 
 @nb_jit(nopython=True, cache=True)
@@ -1230,6 +1233,558 @@ def apply_kron_M_K_MT_3d(  # noqa: PLR0913, PLR0912, PLR0915 -- kernel fan-in an
                                 out_view[i, j, k, a, b, c] = cur[i, j, k, a, b, c]
 
 
+# ---------------------------------------------------------------- batch kernels
+# Each batch kernel wraps the corresponding per-cell kernel in a prange loop
+# over cells. Scratch is 2D: shape (n_cells, scratch_size_per_cell). Indexing
+# scratch[cell] gives the 1D per-cell slice that the per-cell kernels expect.
+
+
+@nb_jit(nopython=True, cache=True, parallel=True)
+def apply_kron_apply_many_1d(  # noqa: PLR0913 -- kernel fan-in is intentional.
+    ops_0: npt.NDArray[Any],
+    is_id_0: npt.NDArray[Any],
+    cell_indices: npt.NDArray[Any],
+    v: npt.NDArray[Any],
+    out: npt.NDArray[Any],
+    scratch: npt.NDArray[Any],
+) -> None:
+    """Apply ``M_0 @ v[c]`` for every cell ``c`` in the batch (d=1).
+
+    Args:
+        ops_0 (npt.NDArray[Any]): All element operators for direction 0,
+            shape ``(n_el_0, n_out_0, n_in_0)``.
+        is_id_0 (npt.NDArray[Any]): Per-element identity flags for direction 0,
+            shape ``(n_el_0,)`` boolean.
+        cell_indices (npt.NDArray[Any]): Per-direction element indices, shape
+            ``(n_cells, 1)`` integer.
+        v (npt.NDArray[Any]): Batch input vectors, shape ``(n_cells, N_in)``.
+        out (npt.NDArray[Any]): Batch output vectors, shape ``(n_cells, N_out)``.
+        scratch (npt.NDArray[Any]): Per-cell scratch buffers, shape
+            ``(n_cells, scratch_size)``; unused for d=1.
+
+    Note:
+        Inputs are assumed to be correct (no validation performed).
+        For general use, call the Layer-2 dispatcher in
+        :mod:`pantr.bspline._extraction_helpers` instead.
+    """
+    for cell in nb_prange(cell_indices.shape[0]):
+        i0 = cell_indices[cell, 0]
+        apply_kron_1d(ops_0[i0], is_id_0[i0], v[cell], out[cell], scratch[cell])
+
+
+@nb_jit(nopython=True, cache=True, parallel=True)
+def apply_kron_apply_many_2d(  # noqa: PLR0913
+    ops_0: npt.NDArray[Any],
+    ops_1: npt.NDArray[Any],
+    is_id_0: npt.NDArray[Any],
+    is_id_1: npt.NDArray[Any],
+    cell_indices: npt.NDArray[Any],
+    v: npt.NDArray[Any],
+    out: npt.NDArray[Any],
+    scratch: npt.NDArray[Any],
+) -> None:
+    """Apply ``kron(M_0, M_1) @ v[c]`` for every cell ``c`` in the batch (d=2).
+
+    Args:
+        ops_0 (npt.NDArray[Any]): All element operators for direction 0,
+            shape ``(n_el_0, n_out_0, n_in_0)``.
+        ops_1 (npt.NDArray[Any]): All element operators for direction 1,
+            shape ``(n_el_1, n_out_1, n_in_1)``.
+        is_id_0 (npt.NDArray[Any]): Per-element identity flags for direction 0,
+            shape ``(n_el_0,)`` boolean.
+        is_id_1 (npt.NDArray[Any]): Per-element identity flags for direction 1,
+            shape ``(n_el_1,)`` boolean.
+        cell_indices (npt.NDArray[Any]): Per-direction element indices, shape
+            ``(n_cells, 2)`` integer.
+        v (npt.NDArray[Any]): Batch input vectors, shape ``(n_cells, N_in)``.
+        out (npt.NDArray[Any]): Batch output vectors, shape ``(n_cells, N_out)``.
+        scratch (npt.NDArray[Any]): Per-cell scratch buffers, shape
+            ``(n_cells, scratch_size)``.
+
+    Note:
+        Inputs are assumed to be correct (no validation performed).
+        For general use, call the Layer-2 dispatcher in
+        :mod:`pantr.bspline._extraction_helpers` instead.
+    """
+    for cell in nb_prange(cell_indices.shape[0]):
+        i0 = cell_indices[cell, 0]
+        i1 = cell_indices[cell, 1]
+        apply_kron_2d(
+            ops_0[i0], ops_1[i1], is_id_0[i0], is_id_1[i1], v[cell], out[cell], scratch[cell]
+        )
+
+
+@nb_jit(nopython=True, cache=True, parallel=True)
+def apply_kron_apply_many_3d(  # noqa: PLR0913
+    ops_0: npt.NDArray[Any],
+    ops_1: npt.NDArray[Any],
+    ops_2: npt.NDArray[Any],
+    is_id_0: npt.NDArray[Any],
+    is_id_1: npt.NDArray[Any],
+    is_id_2: npt.NDArray[Any],
+    cell_indices: npt.NDArray[Any],
+    v: npt.NDArray[Any],
+    out: npt.NDArray[Any],
+    scratch: npt.NDArray[Any],
+) -> None:
+    """Apply ``kron(M_0, M_1, M_2) @ v[c]`` for every cell ``c`` in the batch (d=3).
+
+    Args:
+        ops_0 (npt.NDArray[Any]): All element operators for direction 0,
+            shape ``(n_el_0, n_out_0, n_in_0)``.
+        ops_1 (npt.NDArray[Any]): All element operators for direction 1,
+            shape ``(n_el_1, n_out_1, n_in_1)``.
+        ops_2 (npt.NDArray[Any]): All element operators for direction 2,
+            shape ``(n_el_2, n_out_2, n_in_2)``.
+        is_id_0 (npt.NDArray[Any]): Per-element identity flags for direction 0,
+            shape ``(n_el_0,)`` boolean.
+        is_id_1 (npt.NDArray[Any]): Per-element identity flags for direction 1,
+            shape ``(n_el_1,)`` boolean.
+        is_id_2 (npt.NDArray[Any]): Per-element identity flags for direction 2,
+            shape ``(n_el_2,)`` boolean.
+        cell_indices (npt.NDArray[Any]): Per-direction element indices, shape
+            ``(n_cells, 3)`` integer.
+        v (npt.NDArray[Any]): Batch input vectors, shape ``(n_cells, N_in)``.
+        out (npt.NDArray[Any]): Batch output vectors, shape ``(n_cells, N_out)``.
+        scratch (npt.NDArray[Any]): Per-cell scratch buffers, shape
+            ``(n_cells, scratch_size)``.
+
+    Note:
+        Inputs are assumed to be correct (no validation performed).
+        For general use, call the Layer-2 dispatcher in
+        :mod:`pantr.bspline._extraction_helpers` instead.
+    """
+    for cell in nb_prange(cell_indices.shape[0]):
+        i0 = cell_indices[cell, 0]
+        i1 = cell_indices[cell, 1]
+        i2 = cell_indices[cell, 2]
+        apply_kron_3d(
+            ops_0[i0],
+            ops_1[i1],
+            ops_2[i2],
+            is_id_0[i0],
+            is_id_1[i1],
+            is_id_2[i2],
+            v[cell],
+            out[cell],
+            scratch[cell],
+        )
+
+
+@nb_jit(nopython=True, cache=True, parallel=True)
+def apply_kron_apply_T_many_1d(  # noqa: PLR0913 -- kernel fan-in is intentional.
+    ops_0: npt.NDArray[Any],
+    is_id_0: npt.NDArray[Any],
+    cell_indices: npt.NDArray[Any],
+    v: npt.NDArray[Any],
+    out: npt.NDArray[Any],
+    scratch: npt.NDArray[Any],
+) -> None:
+    """Apply ``M_0^T @ v[c]`` for every cell ``c`` in the batch (d=1).
+
+    Args:
+        ops_0 (npt.NDArray[Any]): All element operators for direction 0,
+            shape ``(n_el_0, n_out_0, n_in_0)``.
+        is_id_0 (npt.NDArray[Any]): Per-element identity flags, shape
+            ``(n_el_0,)`` boolean.
+        cell_indices (npt.NDArray[Any]): Per-direction element indices, shape
+            ``(n_cells, 1)`` integer.
+        v (npt.NDArray[Any]): Batch input vectors, shape ``(n_cells, N_out)``.
+        out (npt.NDArray[Any]): Batch output vectors, shape ``(n_cells, N_in)``.
+        scratch (npt.NDArray[Any]): Per-cell scratch buffers, shape
+            ``(n_cells, scratch_size)``; unused for d=1.
+
+    Note:
+        Inputs are assumed to be correct (no validation performed).
+        For general use, call the Layer-2 dispatcher in
+        :mod:`pantr.bspline._extraction_helpers` instead.
+    """
+    for cell in nb_prange(cell_indices.shape[0]):
+        i0 = cell_indices[cell, 0]
+        apply_kron_T_1d(ops_0[i0], is_id_0[i0], v[cell], out[cell], scratch[cell])
+
+
+@nb_jit(nopython=True, cache=True, parallel=True)
+def apply_kron_apply_T_many_2d(  # noqa: PLR0913
+    ops_0: npt.NDArray[Any],
+    ops_1: npt.NDArray[Any],
+    is_id_0: npt.NDArray[Any],
+    is_id_1: npt.NDArray[Any],
+    cell_indices: npt.NDArray[Any],
+    v: npt.NDArray[Any],
+    out: npt.NDArray[Any],
+    scratch: npt.NDArray[Any],
+) -> None:
+    """Apply ``kron(M_0, M_1)^T @ v[c]`` for every cell ``c`` in the batch (d=2).
+
+    Args:
+        ops_0 (npt.NDArray[Any]): All element operators for direction 0,
+            shape ``(n_el_0, n_out_0, n_in_0)``.
+        ops_1 (npt.NDArray[Any]): All element operators for direction 1,
+            shape ``(n_el_1, n_out_1, n_in_1)``.
+        is_id_0 (npt.NDArray[Any]): Per-element identity flags for direction 0,
+            shape ``(n_el_0,)`` boolean.
+        is_id_1 (npt.NDArray[Any]): Per-element identity flags for direction 1,
+            shape ``(n_el_1,)`` boolean.
+        cell_indices (npt.NDArray[Any]): Per-direction element indices, shape
+            ``(n_cells, 2)`` integer.
+        v (npt.NDArray[Any]): Batch input vectors, shape ``(n_cells, N_out)``.
+        out (npt.NDArray[Any]): Batch output vectors, shape ``(n_cells, N_in)``.
+        scratch (npt.NDArray[Any]): Per-cell scratch buffers, shape
+            ``(n_cells, scratch_size)``.
+
+    Note:
+        Inputs are assumed to be correct (no validation performed).
+        For general use, call the Layer-2 dispatcher in
+        :mod:`pantr.bspline._extraction_helpers` instead.
+    """
+    for cell in nb_prange(cell_indices.shape[0]):
+        i0 = cell_indices[cell, 0]
+        i1 = cell_indices[cell, 1]
+        apply_kron_T_2d(
+            ops_0[i0], ops_1[i1], is_id_0[i0], is_id_1[i1], v[cell], out[cell], scratch[cell]
+        )
+
+
+@nb_jit(nopython=True, cache=True, parallel=True)
+def apply_kron_apply_T_many_3d(  # noqa: PLR0913
+    ops_0: npt.NDArray[Any],
+    ops_1: npt.NDArray[Any],
+    ops_2: npt.NDArray[Any],
+    is_id_0: npt.NDArray[Any],
+    is_id_1: npt.NDArray[Any],
+    is_id_2: npt.NDArray[Any],
+    cell_indices: npt.NDArray[Any],
+    v: npt.NDArray[Any],
+    out: npt.NDArray[Any],
+    scratch: npt.NDArray[Any],
+) -> None:
+    """Apply ``kron(M_0, M_1, M_2)^T @ v[c]`` for every cell ``c`` in the batch (d=3).
+
+    Args:
+        ops_0 (npt.NDArray[Any]): All element operators for direction 0,
+            shape ``(n_el_0, n_out_0, n_in_0)``.
+        ops_1 (npt.NDArray[Any]): All element operators for direction 1,
+            shape ``(n_el_1, n_out_1, n_in_1)``.
+        ops_2 (npt.NDArray[Any]): All element operators for direction 2,
+            shape ``(n_el_2, n_out_2, n_in_2)``.
+        is_id_0 (npt.NDArray[Any]): Per-element identity flags for direction 0,
+            shape ``(n_el_0,)`` boolean.
+        is_id_1 (npt.NDArray[Any]): Per-element identity flags for direction 1,
+            shape ``(n_el_1,)`` boolean.
+        is_id_2 (npt.NDArray[Any]): Per-element identity flags for direction 2,
+            shape ``(n_el_2,)`` boolean.
+        cell_indices (npt.NDArray[Any]): Per-direction element indices, shape
+            ``(n_cells, 3)`` integer.
+        v (npt.NDArray[Any]): Batch input vectors, shape ``(n_cells, N_out)``.
+        out (npt.NDArray[Any]): Batch output vectors, shape ``(n_cells, N_in)``.
+        scratch (npt.NDArray[Any]): Per-cell scratch buffers, shape
+            ``(n_cells, scratch_size)``.
+
+    Note:
+        Inputs are assumed to be correct (no validation performed).
+        For general use, call the Layer-2 dispatcher in
+        :mod:`pantr.bspline._extraction_helpers` instead.
+    """
+    for cell in nb_prange(cell_indices.shape[0]):
+        i0 = cell_indices[cell, 0]
+        i1 = cell_indices[cell, 1]
+        i2 = cell_indices[cell, 2]
+        apply_kron_T_3d(
+            ops_0[i0],
+            ops_1[i1],
+            ops_2[i2],
+            is_id_0[i0],
+            is_id_1[i1],
+            is_id_2[i2],
+            v[cell],
+            out[cell],
+            scratch[cell],
+        )
+
+
+@nb_jit(nopython=True, cache=True, parallel=True)
+def apply_kron_MT_K_M_many_1d(  # noqa: PLR0913 -- kernel fan-in is intentional.
+    ops_0: npt.NDArray[Any],
+    is_id_0: npt.NDArray[Any],
+    cell_indices: npt.NDArray[Any],
+    K: npt.NDArray[Any],
+    out: npt.NDArray[Any],
+    scratch: npt.NDArray[Any],
+) -> None:
+    """Compute ``M_0^T @ K[c] @ M_0`` for every cell ``c`` in the batch (d=1).
+
+    Args:
+        ops_0 (npt.NDArray[Any]): All element operators for direction 0,
+            shape ``(n_el_0, n_out_0, n_in_0)``.
+        is_id_0 (npt.NDArray[Any]): Per-element identity flags, shape
+            ``(n_el_0,)`` boolean.
+        cell_indices (npt.NDArray[Any]): Per-direction element indices, shape
+            ``(n_cells, 1)`` integer.
+        K (npt.NDArray[Any]): Batch input matrices, shape
+            ``(n_cells, N_out, N_out)``.
+        out (npt.NDArray[Any]): Batch output matrices, shape
+            ``(n_cells, N_in, N_in)``.
+        scratch (npt.NDArray[Any]): Per-cell scratch buffers, shape
+            ``(n_cells, scratch_size)``.
+
+    Note:
+        Inputs are assumed to be correct (no validation performed).
+        ``out[c]`` must not alias ``K[c]`` except in the all-identity case.
+        For general use, call the Layer-2 dispatcher in
+        :mod:`pantr.bspline._extraction_helpers` instead.
+    """
+    for cell in nb_prange(cell_indices.shape[0]):
+        i0 = cell_indices[cell, 0]
+        apply_kron_MT_K_M_1d(ops_0[i0], is_id_0[i0], K[cell], out[cell], scratch[cell])
+
+
+@nb_jit(nopython=True, cache=True, parallel=True)
+def apply_kron_MT_K_M_many_2d(  # noqa: PLR0913
+    ops_0: npt.NDArray[Any],
+    ops_1: npt.NDArray[Any],
+    is_id_0: npt.NDArray[Any],
+    is_id_1: npt.NDArray[Any],
+    cell_indices: npt.NDArray[Any],
+    K: npt.NDArray[Any],
+    out: npt.NDArray[Any],
+    scratch: npt.NDArray[Any],
+) -> None:
+    """Compute ``kron(M_0,M_1)^T @ K[c] @ kron(M_0,M_1)`` for every cell (d=2).
+
+    Args:
+        ops_0 (npt.NDArray[Any]): All element operators for direction 0,
+            shape ``(n_el_0, n_out_0, n_in_0)``.
+        ops_1 (npt.NDArray[Any]): All element operators for direction 1,
+            shape ``(n_el_1, n_out_1, n_in_1)``.
+        is_id_0 (npt.NDArray[Any]): Per-element identity flags for direction 0,
+            shape ``(n_el_0,)`` boolean.
+        is_id_1 (npt.NDArray[Any]): Per-element identity flags for direction 1,
+            shape ``(n_el_1,)`` boolean.
+        cell_indices (npt.NDArray[Any]): Per-direction element indices, shape
+            ``(n_cells, 2)`` integer.
+        K (npt.NDArray[Any]): Batch input matrices, shape
+            ``(n_cells, N_out, N_out)``.
+        out (npt.NDArray[Any]): Batch output matrices, shape
+            ``(n_cells, N_in, N_in)``.
+        scratch (npt.NDArray[Any]): Per-cell scratch buffers, shape
+            ``(n_cells, scratch_size)``.
+
+    Note:
+        Inputs are assumed to be correct (no validation performed).
+        ``out[c]`` must not alias ``K[c]`` except in the all-identity case.
+        For general use, call the Layer-2 dispatcher in
+        :mod:`pantr.bspline._extraction_helpers` instead.
+    """
+    for cell in nb_prange(cell_indices.shape[0]):
+        i0 = cell_indices[cell, 0]
+        i1 = cell_indices[cell, 1]
+        apply_kron_MT_K_M_2d(
+            ops_0[i0], ops_1[i1], is_id_0[i0], is_id_1[i1], K[cell], out[cell], scratch[cell]
+        )
+
+
+@nb_jit(nopython=True, cache=True, parallel=True)
+def apply_kron_MT_K_M_many_3d(  # noqa: PLR0913
+    ops_0: npt.NDArray[Any],
+    ops_1: npt.NDArray[Any],
+    ops_2: npt.NDArray[Any],
+    is_id_0: npt.NDArray[Any],
+    is_id_1: npt.NDArray[Any],
+    is_id_2: npt.NDArray[Any],
+    cell_indices: npt.NDArray[Any],
+    K: npt.NDArray[Any],
+    out: npt.NDArray[Any],
+    scratch: npt.NDArray[Any],
+) -> None:
+    """Compute ``kron(M_0,M_1,M_2)^T @ K[c] @ kron(M_0,M_1,M_2)`` for every cell (d=3).
+
+    Args:
+        ops_0 (npt.NDArray[Any]): All element operators for direction 0,
+            shape ``(n_el_0, n_out_0, n_in_0)``.
+        ops_1 (npt.NDArray[Any]): All element operators for direction 1,
+            shape ``(n_el_1, n_out_1, n_in_1)``.
+        ops_2 (npt.NDArray[Any]): All element operators for direction 2,
+            shape ``(n_el_2, n_out_2, n_in_2)``.
+        is_id_0 (npt.NDArray[Any]): Per-element identity flags for direction 0,
+            shape ``(n_el_0,)`` boolean.
+        is_id_1 (npt.NDArray[Any]): Per-element identity flags for direction 1,
+            shape ``(n_el_1,)`` boolean.
+        is_id_2 (npt.NDArray[Any]): Per-element identity flags for direction 2,
+            shape ``(n_el_2,)`` boolean.
+        cell_indices (npt.NDArray[Any]): Per-direction element indices, shape
+            ``(n_cells, 3)`` integer.
+        K (npt.NDArray[Any]): Batch input matrices, shape
+            ``(n_cells, N_out, N_out)``.
+        out (npt.NDArray[Any]): Batch output matrices, shape
+            ``(n_cells, N_in, N_in)``.
+        scratch (npt.NDArray[Any]): Per-cell scratch buffers, shape
+            ``(n_cells, scratch_size)``.
+
+    Note:
+        Inputs are assumed to be correct (no validation performed).
+        ``out[c]`` must not alias ``K[c]`` except in the all-identity case.
+        For general use, call the Layer-2 dispatcher in
+        :mod:`pantr.bspline._extraction_helpers` instead.
+    """
+    for cell in nb_prange(cell_indices.shape[0]):
+        i0 = cell_indices[cell, 0]
+        i1 = cell_indices[cell, 1]
+        i2 = cell_indices[cell, 2]
+        apply_kron_MT_K_M_3d(
+            ops_0[i0],
+            ops_1[i1],
+            ops_2[i2],
+            is_id_0[i0],
+            is_id_1[i1],
+            is_id_2[i2],
+            K[cell],
+            out[cell],
+            scratch[cell],
+        )
+
+
+@nb_jit(nopython=True, cache=True, parallel=True)
+def apply_kron_M_K_MT_many_1d(  # noqa: PLR0913 -- kernel fan-in is intentional.
+    ops_0: npt.NDArray[Any],
+    is_id_0: npt.NDArray[Any],
+    cell_indices: npt.NDArray[Any],
+    K: npt.NDArray[Any],
+    out: npt.NDArray[Any],
+    scratch: npt.NDArray[Any],
+) -> None:
+    """Compute ``M_0 @ K[c] @ M_0^T`` for every cell ``c`` in the batch (d=1).
+
+    Args:
+        ops_0 (npt.NDArray[Any]): All element operators for direction 0,
+            shape ``(n_el_0, n_out_0, n_in_0)``.
+        is_id_0 (npt.NDArray[Any]): Per-element identity flags, shape
+            ``(n_el_0,)`` boolean.
+        cell_indices (npt.NDArray[Any]): Per-direction element indices, shape
+            ``(n_cells, 1)`` integer.
+        K (npt.NDArray[Any]): Batch input matrices, shape
+            ``(n_cells, N_in, N_in)``.
+        out (npt.NDArray[Any]): Batch output matrices, shape
+            ``(n_cells, N_out, N_out)``.
+        scratch (npt.NDArray[Any]): Per-cell scratch buffers, shape
+            ``(n_cells, scratch_size)``.
+
+    Note:
+        Inputs are assumed to be correct (no validation performed).
+        ``out[c]`` must not alias ``K[c]`` except in the all-identity case.
+        For general use, call the Layer-2 dispatcher in
+        :mod:`pantr.bspline._extraction_helpers` instead.
+    """
+    for cell in nb_prange(cell_indices.shape[0]):
+        i0 = cell_indices[cell, 0]
+        apply_kron_M_K_MT_1d(ops_0[i0], is_id_0[i0], K[cell], out[cell], scratch[cell])
+
+
+@nb_jit(nopython=True, cache=True, parallel=True)
+def apply_kron_M_K_MT_many_2d(  # noqa: PLR0913
+    ops_0: npt.NDArray[Any],
+    ops_1: npt.NDArray[Any],
+    is_id_0: npt.NDArray[Any],
+    is_id_1: npt.NDArray[Any],
+    cell_indices: npt.NDArray[Any],
+    K: npt.NDArray[Any],
+    out: npt.NDArray[Any],
+    scratch: npt.NDArray[Any],
+) -> None:
+    """Compute ``kron(M_0,M_1) @ K[c] @ kron(M_0,M_1)^T`` for every cell (d=2).
+
+    Args:
+        ops_0 (npt.NDArray[Any]): All element operators for direction 0,
+            shape ``(n_el_0, n_out_0, n_in_0)``.
+        ops_1 (npt.NDArray[Any]): All element operators for direction 1,
+            shape ``(n_el_1, n_out_1, n_in_1)``.
+        is_id_0 (npt.NDArray[Any]): Per-element identity flags for direction 0,
+            shape ``(n_el_0,)`` boolean.
+        is_id_1 (npt.NDArray[Any]): Per-element identity flags for direction 1,
+            shape ``(n_el_1,)`` boolean.
+        cell_indices (npt.NDArray[Any]): Per-direction element indices, shape
+            ``(n_cells, 2)`` integer.
+        K (npt.NDArray[Any]): Batch input matrices, shape
+            ``(n_cells, N_in, N_in)``.
+        out (npt.NDArray[Any]): Batch output matrices, shape
+            ``(n_cells, N_out, N_out)``.
+        scratch (npt.NDArray[Any]): Per-cell scratch buffers, shape
+            ``(n_cells, scratch_size)``.
+
+    Note:
+        Inputs are assumed to be correct (no validation performed).
+        ``out[c]`` must not alias ``K[c]`` except in the all-identity case.
+        For general use, call the Layer-2 dispatcher in
+        :mod:`pantr.bspline._extraction_helpers` instead.
+    """
+    for cell in nb_prange(cell_indices.shape[0]):
+        i0 = cell_indices[cell, 0]
+        i1 = cell_indices[cell, 1]
+        apply_kron_M_K_MT_2d(
+            ops_0[i0], ops_1[i1], is_id_0[i0], is_id_1[i1], K[cell], out[cell], scratch[cell]
+        )
+
+
+@nb_jit(nopython=True, cache=True, parallel=True)
+def apply_kron_M_K_MT_many_3d(  # noqa: PLR0913
+    ops_0: npt.NDArray[Any],
+    ops_1: npt.NDArray[Any],
+    ops_2: npt.NDArray[Any],
+    is_id_0: npt.NDArray[Any],
+    is_id_1: npt.NDArray[Any],
+    is_id_2: npt.NDArray[Any],
+    cell_indices: npt.NDArray[Any],
+    K: npt.NDArray[Any],
+    out: npt.NDArray[Any],
+    scratch: npt.NDArray[Any],
+) -> None:
+    """Compute ``kron(M_0,M_1,M_2) @ K[c] @ kron(M_0,M_1,M_2)^T`` for every cell (d=3).
+
+    Args:
+        ops_0 (npt.NDArray[Any]): All element operators for direction 0,
+            shape ``(n_el_0, n_out_0, n_in_0)``.
+        ops_1 (npt.NDArray[Any]): All element operators for direction 1,
+            shape ``(n_el_1, n_out_1, n_in_1)``.
+        ops_2 (npt.NDArray[Any]): All element operators for direction 2,
+            shape ``(n_el_2, n_out_2, n_in_2)``.
+        is_id_0 (npt.NDArray[Any]): Per-element identity flags for direction 0,
+            shape ``(n_el_0,)`` boolean.
+        is_id_1 (npt.NDArray[Any]): Per-element identity flags for direction 1,
+            shape ``(n_el_1,)`` boolean.
+        is_id_2 (npt.NDArray[Any]): Per-element identity flags for direction 2,
+            shape ``(n_el_2,)`` boolean.
+        cell_indices (npt.NDArray[Any]): Per-direction element indices, shape
+            ``(n_cells, 3)`` integer.
+        K (npt.NDArray[Any]): Batch input matrices, shape
+            ``(n_cells, N_in, N_in)``.
+        out (npt.NDArray[Any]): Batch output matrices, shape
+            ``(n_cells, N_out, N_out)``.
+        scratch (npt.NDArray[Any]): Per-cell scratch buffers, shape
+            ``(n_cells, scratch_size)``.
+
+    Note:
+        Inputs are assumed to be correct (no validation performed).
+        ``out[c]`` must not alias ``K[c]`` except in the all-identity case.
+        For general use, call the Layer-2 dispatcher in
+        :mod:`pantr.bspline._extraction_helpers` instead.
+    """
+    for cell in nb_prange(cell_indices.shape[0]):
+        i0 = cell_indices[cell, 0]
+        i1 = cell_indices[cell, 1]
+        i2 = cell_indices[cell, 2]
+        apply_kron_M_K_MT_3d(
+            ops_0[i0],
+            ops_1[i1],
+            ops_2[i2],
+            is_id_0[i0],
+            is_id_1[i1],
+            is_id_2[i2],
+            K[cell],
+            out[cell],
+            scratch[cell],
+        )
+
+
 __all__ = [
     "apply_kron_1d",
     "apply_kron_2d",
@@ -1237,10 +1792,22 @@ __all__ = [
     "apply_kron_MT_K_M_1d",
     "apply_kron_MT_K_M_2d",
     "apply_kron_MT_K_M_3d",
+    "apply_kron_MT_K_M_many_1d",
+    "apply_kron_MT_K_M_many_2d",
+    "apply_kron_MT_K_M_many_3d",
     "apply_kron_M_K_MT_1d",
     "apply_kron_M_K_MT_2d",
     "apply_kron_M_K_MT_3d",
+    "apply_kron_M_K_MT_many_1d",
+    "apply_kron_M_K_MT_many_2d",
+    "apply_kron_M_K_MT_many_3d",
     "apply_kron_T_1d",
     "apply_kron_T_2d",
     "apply_kron_T_3d",
+    "apply_kron_apply_T_many_1d",
+    "apply_kron_apply_T_many_2d",
+    "apply_kron_apply_T_many_3d",
+    "apply_kron_apply_many_1d",
+    "apply_kron_apply_many_2d",
+    "apply_kron_apply_many_3d",
 ]
