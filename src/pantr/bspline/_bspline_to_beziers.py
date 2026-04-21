@@ -82,7 +82,7 @@ def _to_beziers_impl(bspline: Bspline) -> npt.NDArray[np.object_]:
         bspline (Bspline): Input B-spline to decompose.
 
     Returns:
-        ``npt.NDArray[np.object_]``: Array of :class:`~pantr.bezier.Bezier` objects
+        npt.NDArray[np.object_]: Array of :class:`~pantr.bezier.Bezier` objects
         with shape ``(*num_intervals)`` following the tensor-product interval
         structure.
     """
@@ -94,6 +94,8 @@ def _to_beziers_impl(bspline: Bspline) -> npt.NDArray[np.object_]:
     if any(s.periodic for s in bspline.space.spaces):
         bspline = bspline.to_open_bspline()
 
+    # is_identity_mask_1d is also built but unused here; its overhead is minor
+    # relative to the Numba kernel and accepted for the sake of consolidation.
     extraction = SpanwiseElementExtraction(bspline.space, target="bezier")
 
     ctrl = bspline.control_points
