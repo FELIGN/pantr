@@ -12,6 +12,7 @@ getting-started
 constructive-geometry
 visualization
 parallelism
+spanwise-element-extraction
 api/reference
 changelog
 ```
