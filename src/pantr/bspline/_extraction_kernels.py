@@ -1242,6 +1242,7 @@ def apply_kron_M_K_MT_3d(  # noqa: PLR0913, PLR0912, PLR0915 -- kernel fan-in an
 @nb_jit(nopython=True, cache=True, parallel=True)
 def apply_kron_apply_many_1d(  # noqa: PLR0913 -- kernel fan-in is intentional.
     ops_0: npt.NDArray[Any],
+    idx_map_0: npt.NDArray[Any],
     is_id_0: npt.NDArray[Any],
     cell_indices: npt.NDArray[Any],
     v: npt.NDArray[Any],
@@ -1251,8 +1252,11 @@ def apply_kron_apply_many_1d(  # noqa: PLR0913 -- kernel fan-in is intentional.
     """Apply ``M_0 @ v[c]`` for every cell ``c`` in the batch (d=1).
 
     Args:
-        ops_0 (npt.NDArray[Any]): All element operators for direction 0,
-            shape ``(n_el_0, n_out_0, n_in_0)``.
+        ops_0 (npt.NDArray[Any]): Compact element operators for direction 0,
+            shape ``(n_compact_0, n_out_0, n_in_0)``; only non-identity rows.
+        idx_map_0 (npt.NDArray[Any]): Compact index map for direction 0, shape
+            ``(n_el_0,)`` integer; ``idx_map_0[e]`` is the row index into
+            ``ops_0`` for element ``e`` (undefined for identity elements).
         is_id_0 (npt.NDArray[Any]): Per-element identity flags for direction 0,
             shape ``(n_el_0,)`` boolean.
         cell_indices (npt.NDArray[Any]): Per-direction element indices, shape
@@ -1269,13 +1273,15 @@ def apply_kron_apply_many_1d(  # noqa: PLR0913 -- kernel fan-in is intentional.
     """
     for cell in nb_prange(cell_indices.shape[0]):
         i0 = cell_indices[cell, 0]
-        apply_kron_1d(ops_0[i0], is_id_0[i0], v[cell], out[cell], scratch[cell])
+        apply_kron_1d(ops_0[idx_map_0[i0]], is_id_0[i0], v[cell], out[cell], scratch[cell])
 
 
 @nb_jit(nopython=True, cache=True, parallel=True)
 def apply_kron_apply_many_2d(  # noqa: PLR0913
     ops_0: npt.NDArray[Any],
     ops_1: npt.NDArray[Any],
+    idx_map_0: npt.NDArray[Any],
+    idx_map_1: npt.NDArray[Any],
     is_id_0: npt.NDArray[Any],
     is_id_1: npt.NDArray[Any],
     cell_indices: npt.NDArray[Any],
@@ -1286,10 +1292,14 @@ def apply_kron_apply_many_2d(  # noqa: PLR0913
     """Apply ``kron(M_0, M_1) @ v[c]`` for every cell ``c`` in the batch (d=2).
 
     Args:
-        ops_0 (npt.NDArray[Any]): All element operators for direction 0,
-            shape ``(n_el_0, n_out_0, n_in_0)``.
-        ops_1 (npt.NDArray[Any]): All element operators for direction 1,
-            shape ``(n_el_1, n_out_1, n_in_1)``.
+        ops_0 (npt.NDArray[Any]): Compact element operators for direction 0,
+            shape ``(n_compact_0, n_out_0, n_in_0)``; only non-identity rows.
+        ops_1 (npt.NDArray[Any]): Compact element operators for direction 1,
+            shape ``(n_compact_1, n_out_1, n_in_1)``; only non-identity rows.
+        idx_map_0 (npt.NDArray[Any]): Compact index map for direction 0, shape
+            ``(n_el_0,)`` integer.
+        idx_map_1 (npt.NDArray[Any]): Compact index map for direction 1, shape
+            ``(n_el_1,)`` integer.
         is_id_0 (npt.NDArray[Any]): Per-element identity flags for direction 0,
             shape ``(n_el_0,)`` boolean.
         is_id_1 (npt.NDArray[Any]): Per-element identity flags for direction 1,
@@ -1310,7 +1320,13 @@ def apply_kron_apply_many_2d(  # noqa: PLR0913
         i0 = cell_indices[cell, 0]
         i1 = cell_indices[cell, 1]
         apply_kron_2d(
-            ops_0[i0], ops_1[i1], is_id_0[i0], is_id_1[i1], v[cell], out[cell], scratch[cell]
+            ops_0[idx_map_0[i0]],
+            ops_1[idx_map_1[i1]],
+            is_id_0[i0],
+            is_id_1[i1],
+            v[cell],
+            out[cell],
+            scratch[cell],
         )
 
 
@@ -1319,6 +1335,9 @@ def apply_kron_apply_many_3d(  # noqa: PLR0913
     ops_0: npt.NDArray[Any],
     ops_1: npt.NDArray[Any],
     ops_2: npt.NDArray[Any],
+    idx_map_0: npt.NDArray[Any],
+    idx_map_1: npt.NDArray[Any],
+    idx_map_2: npt.NDArray[Any],
     is_id_0: npt.NDArray[Any],
     is_id_1: npt.NDArray[Any],
     is_id_2: npt.NDArray[Any],
@@ -1330,12 +1349,18 @@ def apply_kron_apply_many_3d(  # noqa: PLR0913
     """Apply ``kron(M_0, M_1, M_2) @ v[c]`` for every cell ``c`` in the batch (d=3).
 
     Args:
-        ops_0 (npt.NDArray[Any]): All element operators for direction 0,
-            shape ``(n_el_0, n_out_0, n_in_0)``.
-        ops_1 (npt.NDArray[Any]): All element operators for direction 1,
-            shape ``(n_el_1, n_out_1, n_in_1)``.
-        ops_2 (npt.NDArray[Any]): All element operators for direction 2,
-            shape ``(n_el_2, n_out_2, n_in_2)``.
+        ops_0 (npt.NDArray[Any]): Compact element operators for direction 0,
+            shape ``(n_compact_0, n_out_0, n_in_0)``; only non-identity rows.
+        ops_1 (npt.NDArray[Any]): Compact element operators for direction 1,
+            shape ``(n_compact_1, n_out_1, n_in_1)``; only non-identity rows.
+        ops_2 (npt.NDArray[Any]): Compact element operators for direction 2,
+            shape ``(n_compact_2, n_out_2, n_in_2)``; only non-identity rows.
+        idx_map_0 (npt.NDArray[Any]): Compact index map for direction 0, shape
+            ``(n_el_0,)`` integer.
+        idx_map_1 (npt.NDArray[Any]): Compact index map for direction 1, shape
+            ``(n_el_1,)`` integer.
+        idx_map_2 (npt.NDArray[Any]): Compact index map for direction 2, shape
+            ``(n_el_2,)`` integer.
         is_id_0 (npt.NDArray[Any]): Per-element identity flags for direction 0,
             shape ``(n_el_0,)`` boolean.
         is_id_1 (npt.NDArray[Any]): Per-element identity flags for direction 1,
@@ -1359,9 +1384,9 @@ def apply_kron_apply_many_3d(  # noqa: PLR0913
         i1 = cell_indices[cell, 1]
         i2 = cell_indices[cell, 2]
         apply_kron_3d(
-            ops_0[i0],
-            ops_1[i1],
-            ops_2[i2],
+            ops_0[idx_map_0[i0]],
+            ops_1[idx_map_1[i1]],
+            ops_2[idx_map_2[i2]],
             is_id_0[i0],
             is_id_1[i1],
             is_id_2[i2],
@@ -1374,6 +1399,7 @@ def apply_kron_apply_many_3d(  # noqa: PLR0913
 @nb_jit(nopython=True, cache=True, parallel=True)
 def apply_kron_apply_T_many_1d(  # noqa: PLR0913 -- kernel fan-in is intentional.
     ops_0: npt.NDArray[Any],
+    idx_map_0: npt.NDArray[Any],
     is_id_0: npt.NDArray[Any],
     cell_indices: npt.NDArray[Any],
     v: npt.NDArray[Any],
@@ -1383,8 +1409,10 @@ def apply_kron_apply_T_many_1d(  # noqa: PLR0913 -- kernel fan-in is intentional
     """Apply ``M_0^T @ v[c]`` for every cell ``c`` in the batch (d=1).
 
     Args:
-        ops_0 (npt.NDArray[Any]): All element operators for direction 0,
-            shape ``(n_el_0, n_out_0, n_in_0)``.
+        ops_0 (npt.NDArray[Any]): Compact element operators for direction 0,
+            shape ``(n_compact_0, n_out_0, n_in_0)``; only non-identity rows.
+        idx_map_0 (npt.NDArray[Any]): Compact index map for direction 0, shape
+            ``(n_el_0,)`` integer.
         is_id_0 (npt.NDArray[Any]): Per-element identity flags, shape
             ``(n_el_0,)`` boolean.
         cell_indices (npt.NDArray[Any]): Per-direction element indices, shape
@@ -1401,13 +1429,15 @@ def apply_kron_apply_T_many_1d(  # noqa: PLR0913 -- kernel fan-in is intentional
     """
     for cell in nb_prange(cell_indices.shape[0]):
         i0 = cell_indices[cell, 0]
-        apply_kron_T_1d(ops_0[i0], is_id_0[i0], v[cell], out[cell], scratch[cell])
+        apply_kron_T_1d(ops_0[idx_map_0[i0]], is_id_0[i0], v[cell], out[cell], scratch[cell])
 
 
 @nb_jit(nopython=True, cache=True, parallel=True)
 def apply_kron_apply_T_many_2d(  # noqa: PLR0913
     ops_0: npt.NDArray[Any],
     ops_1: npt.NDArray[Any],
+    idx_map_0: npt.NDArray[Any],
+    idx_map_1: npt.NDArray[Any],
     is_id_0: npt.NDArray[Any],
     is_id_1: npt.NDArray[Any],
     cell_indices: npt.NDArray[Any],
@@ -1418,10 +1448,14 @@ def apply_kron_apply_T_many_2d(  # noqa: PLR0913
     """Apply ``kron(M_0, M_1)^T @ v[c]`` for every cell ``c`` in the batch (d=2).
 
     Args:
-        ops_0 (npt.NDArray[Any]): All element operators for direction 0,
-            shape ``(n_el_0, n_out_0, n_in_0)``.
-        ops_1 (npt.NDArray[Any]): All element operators for direction 1,
-            shape ``(n_el_1, n_out_1, n_in_1)``.
+        ops_0 (npt.NDArray[Any]): Compact element operators for direction 0,
+            shape ``(n_compact_0, n_out_0, n_in_0)``; only non-identity rows.
+        ops_1 (npt.NDArray[Any]): Compact element operators for direction 1,
+            shape ``(n_compact_1, n_out_1, n_in_1)``; only non-identity rows.
+        idx_map_0 (npt.NDArray[Any]): Compact index map for direction 0, shape
+            ``(n_el_0,)`` integer.
+        idx_map_1 (npt.NDArray[Any]): Compact index map for direction 1, shape
+            ``(n_el_1,)`` integer.
         is_id_0 (npt.NDArray[Any]): Per-element identity flags for direction 0,
             shape ``(n_el_0,)`` boolean.
         is_id_1 (npt.NDArray[Any]): Per-element identity flags for direction 1,
@@ -1442,7 +1476,13 @@ def apply_kron_apply_T_many_2d(  # noqa: PLR0913
         i0 = cell_indices[cell, 0]
         i1 = cell_indices[cell, 1]
         apply_kron_T_2d(
-            ops_0[i0], ops_1[i1], is_id_0[i0], is_id_1[i1], v[cell], out[cell], scratch[cell]
+            ops_0[idx_map_0[i0]],
+            ops_1[idx_map_1[i1]],
+            is_id_0[i0],
+            is_id_1[i1],
+            v[cell],
+            out[cell],
+            scratch[cell],
         )
 
 
@@ -1451,6 +1491,9 @@ def apply_kron_apply_T_many_3d(  # noqa: PLR0913
     ops_0: npt.NDArray[Any],
     ops_1: npt.NDArray[Any],
     ops_2: npt.NDArray[Any],
+    idx_map_0: npt.NDArray[Any],
+    idx_map_1: npt.NDArray[Any],
+    idx_map_2: npt.NDArray[Any],
     is_id_0: npt.NDArray[Any],
     is_id_1: npt.NDArray[Any],
     is_id_2: npt.NDArray[Any],
@@ -1462,12 +1505,18 @@ def apply_kron_apply_T_many_3d(  # noqa: PLR0913
     """Apply ``kron(M_0, M_1, M_2)^T @ v[c]`` for every cell ``c`` in the batch (d=3).
 
     Args:
-        ops_0 (npt.NDArray[Any]): All element operators for direction 0,
-            shape ``(n_el_0, n_out_0, n_in_0)``.
-        ops_1 (npt.NDArray[Any]): All element operators for direction 1,
-            shape ``(n_el_1, n_out_1, n_in_1)``.
-        ops_2 (npt.NDArray[Any]): All element operators for direction 2,
-            shape ``(n_el_2, n_out_2, n_in_2)``.
+        ops_0 (npt.NDArray[Any]): Compact element operators for direction 0,
+            shape ``(n_compact_0, n_out_0, n_in_0)``; only non-identity rows.
+        ops_1 (npt.NDArray[Any]): Compact element operators for direction 1,
+            shape ``(n_compact_1, n_out_1, n_in_1)``; only non-identity rows.
+        ops_2 (npt.NDArray[Any]): Compact element operators for direction 2,
+            shape ``(n_compact_2, n_out_2, n_in_2)``; only non-identity rows.
+        idx_map_0 (npt.NDArray[Any]): Compact index map for direction 0, shape
+            ``(n_el_0,)`` integer.
+        idx_map_1 (npt.NDArray[Any]): Compact index map for direction 1, shape
+            ``(n_el_1,)`` integer.
+        idx_map_2 (npt.NDArray[Any]): Compact index map for direction 2, shape
+            ``(n_el_2,)`` integer.
         is_id_0 (npt.NDArray[Any]): Per-element identity flags for direction 0,
             shape ``(n_el_0,)`` boolean.
         is_id_1 (npt.NDArray[Any]): Per-element identity flags for direction 1,
@@ -1491,9 +1540,9 @@ def apply_kron_apply_T_many_3d(  # noqa: PLR0913
         i1 = cell_indices[cell, 1]
         i2 = cell_indices[cell, 2]
         apply_kron_T_3d(
-            ops_0[i0],
-            ops_1[i1],
-            ops_2[i2],
+            ops_0[idx_map_0[i0]],
+            ops_1[idx_map_1[i1]],
+            ops_2[idx_map_2[i2]],
             is_id_0[i0],
             is_id_1[i1],
             is_id_2[i2],
@@ -1506,6 +1555,7 @@ def apply_kron_apply_T_many_3d(  # noqa: PLR0913
 @nb_jit(nopython=True, cache=True, parallel=True)
 def apply_kron_MT_K_M_many_1d(  # noqa: PLR0913 -- kernel fan-in is intentional.
     ops_0: npt.NDArray[Any],
+    idx_map_0: npt.NDArray[Any],
     is_id_0: npt.NDArray[Any],
     cell_indices: npt.NDArray[Any],
     K: npt.NDArray[Any],
@@ -1515,8 +1565,10 @@ def apply_kron_MT_K_M_many_1d(  # noqa: PLR0913 -- kernel fan-in is intentional.
     """Compute ``M_0^T @ K[c] @ M_0`` for every cell ``c`` in the batch (d=1).
 
     Args:
-        ops_0 (npt.NDArray[Any]): All element operators for direction 0,
-            shape ``(n_el_0, n_out_0, n_in_0)``.
+        ops_0 (npt.NDArray[Any]): Compact element operators for direction 0,
+            shape ``(n_compact_0, n_out_0, n_in_0)``; only non-identity rows.
+        idx_map_0 (npt.NDArray[Any]): Compact index map for direction 0, shape
+            ``(n_el_0,)`` integer.
         is_id_0 (npt.NDArray[Any]): Per-element identity flags, shape
             ``(n_el_0,)`` boolean.
         cell_indices (npt.NDArray[Any]): Per-direction element indices, shape
@@ -1536,13 +1588,15 @@ def apply_kron_MT_K_M_many_1d(  # noqa: PLR0913 -- kernel fan-in is intentional.
     """
     for cell in nb_prange(cell_indices.shape[0]):
         i0 = cell_indices[cell, 0]
-        apply_kron_MT_K_M_1d(ops_0[i0], is_id_0[i0], K[cell], out[cell], scratch[cell])
+        apply_kron_MT_K_M_1d(ops_0[idx_map_0[i0]], is_id_0[i0], K[cell], out[cell], scratch[cell])
 
 
 @nb_jit(nopython=True, cache=True, parallel=True)
 def apply_kron_MT_K_M_many_2d(  # noqa: PLR0913
     ops_0: npt.NDArray[Any],
     ops_1: npt.NDArray[Any],
+    idx_map_0: npt.NDArray[Any],
+    idx_map_1: npt.NDArray[Any],
     is_id_0: npt.NDArray[Any],
     is_id_1: npt.NDArray[Any],
     cell_indices: npt.NDArray[Any],
@@ -1553,10 +1607,14 @@ def apply_kron_MT_K_M_many_2d(  # noqa: PLR0913
     """Compute ``kron(M_0,M_1)^T @ K[c] @ kron(M_0,M_1)`` for every cell (d=2).
 
     Args:
-        ops_0 (npt.NDArray[Any]): All element operators for direction 0,
-            shape ``(n_el_0, n_out_0, n_in_0)``.
-        ops_1 (npt.NDArray[Any]): All element operators for direction 1,
-            shape ``(n_el_1, n_out_1, n_in_1)``.
+        ops_0 (npt.NDArray[Any]): Compact element operators for direction 0,
+            shape ``(n_compact_0, n_out_0, n_in_0)``; only non-identity rows.
+        ops_1 (npt.NDArray[Any]): Compact element operators for direction 1,
+            shape ``(n_compact_1, n_out_1, n_in_1)``; only non-identity rows.
+        idx_map_0 (npt.NDArray[Any]): Compact index map for direction 0, shape
+            ``(n_el_0,)`` integer.
+        idx_map_1 (npt.NDArray[Any]): Compact index map for direction 1, shape
+            ``(n_el_1,)`` integer.
         is_id_0 (npt.NDArray[Any]): Per-element identity flags for direction 0,
             shape ``(n_el_0,)`` boolean.
         is_id_1 (npt.NDArray[Any]): Per-element identity flags for direction 1,
@@ -1580,7 +1638,13 @@ def apply_kron_MT_K_M_many_2d(  # noqa: PLR0913
         i0 = cell_indices[cell, 0]
         i1 = cell_indices[cell, 1]
         apply_kron_MT_K_M_2d(
-            ops_0[i0], ops_1[i1], is_id_0[i0], is_id_1[i1], K[cell], out[cell], scratch[cell]
+            ops_0[idx_map_0[i0]],
+            ops_1[idx_map_1[i1]],
+            is_id_0[i0],
+            is_id_1[i1],
+            K[cell],
+            out[cell],
+            scratch[cell],
         )
 
 
@@ -1589,6 +1653,9 @@ def apply_kron_MT_K_M_many_3d(  # noqa: PLR0913
     ops_0: npt.NDArray[Any],
     ops_1: npt.NDArray[Any],
     ops_2: npt.NDArray[Any],
+    idx_map_0: npt.NDArray[Any],
+    idx_map_1: npt.NDArray[Any],
+    idx_map_2: npt.NDArray[Any],
     is_id_0: npt.NDArray[Any],
     is_id_1: npt.NDArray[Any],
     is_id_2: npt.NDArray[Any],
@@ -1600,12 +1667,18 @@ def apply_kron_MT_K_M_many_3d(  # noqa: PLR0913
     """Compute ``kron(M_0,M_1,M_2)^T @ K[c] @ kron(M_0,M_1,M_2)`` for every cell (d=3).
 
     Args:
-        ops_0 (npt.NDArray[Any]): All element operators for direction 0,
-            shape ``(n_el_0, n_out_0, n_in_0)``.
-        ops_1 (npt.NDArray[Any]): All element operators for direction 1,
-            shape ``(n_el_1, n_out_1, n_in_1)``.
-        ops_2 (npt.NDArray[Any]): All element operators for direction 2,
-            shape ``(n_el_2, n_out_2, n_in_2)``.
+        ops_0 (npt.NDArray[Any]): Compact element operators for direction 0,
+            shape ``(n_compact_0, n_out_0, n_in_0)``; only non-identity rows.
+        ops_1 (npt.NDArray[Any]): Compact element operators for direction 1,
+            shape ``(n_compact_1, n_out_1, n_in_1)``; only non-identity rows.
+        ops_2 (npt.NDArray[Any]): Compact element operators for direction 2,
+            shape ``(n_compact_2, n_out_2, n_in_2)``; only non-identity rows.
+        idx_map_0 (npt.NDArray[Any]): Compact index map for direction 0, shape
+            ``(n_el_0,)`` integer.
+        idx_map_1 (npt.NDArray[Any]): Compact index map for direction 1, shape
+            ``(n_el_1,)`` integer.
+        idx_map_2 (npt.NDArray[Any]): Compact index map for direction 2, shape
+            ``(n_el_2,)`` integer.
         is_id_0 (npt.NDArray[Any]): Per-element identity flags for direction 0,
             shape ``(n_el_0,)`` boolean.
         is_id_1 (npt.NDArray[Any]): Per-element identity flags for direction 1,
@@ -1632,9 +1705,9 @@ def apply_kron_MT_K_M_many_3d(  # noqa: PLR0913
         i1 = cell_indices[cell, 1]
         i2 = cell_indices[cell, 2]
         apply_kron_MT_K_M_3d(
-            ops_0[i0],
-            ops_1[i1],
-            ops_2[i2],
+            ops_0[idx_map_0[i0]],
+            ops_1[idx_map_1[i1]],
+            ops_2[idx_map_2[i2]],
             is_id_0[i0],
             is_id_1[i1],
             is_id_2[i2],
@@ -1647,6 +1720,7 @@ def apply_kron_MT_K_M_many_3d(  # noqa: PLR0913
 @nb_jit(nopython=True, cache=True, parallel=True)
 def apply_kron_M_K_MT_many_1d(  # noqa: PLR0913 -- kernel fan-in is intentional.
     ops_0: npt.NDArray[Any],
+    idx_map_0: npt.NDArray[Any],
     is_id_0: npt.NDArray[Any],
     cell_indices: npt.NDArray[Any],
     K: npt.NDArray[Any],
@@ -1656,8 +1730,10 @@ def apply_kron_M_K_MT_many_1d(  # noqa: PLR0913 -- kernel fan-in is intentional.
     """Compute ``M_0 @ K[c] @ M_0^T`` for every cell ``c`` in the batch (d=1).
 
     Args:
-        ops_0 (npt.NDArray[Any]): All element operators for direction 0,
-            shape ``(n_el_0, n_out_0, n_in_0)``.
+        ops_0 (npt.NDArray[Any]): Compact element operators for direction 0,
+            shape ``(n_compact_0, n_out_0, n_in_0)``; only non-identity rows.
+        idx_map_0 (npt.NDArray[Any]): Compact index map for direction 0, shape
+            ``(n_el_0,)`` integer.
         is_id_0 (npt.NDArray[Any]): Per-element identity flags, shape
             ``(n_el_0,)`` boolean.
         cell_indices (npt.NDArray[Any]): Per-direction element indices, shape
@@ -1677,13 +1753,15 @@ def apply_kron_M_K_MT_many_1d(  # noqa: PLR0913 -- kernel fan-in is intentional.
     """
     for cell in nb_prange(cell_indices.shape[0]):
         i0 = cell_indices[cell, 0]
-        apply_kron_M_K_MT_1d(ops_0[i0], is_id_0[i0], K[cell], out[cell], scratch[cell])
+        apply_kron_M_K_MT_1d(ops_0[idx_map_0[i0]], is_id_0[i0], K[cell], out[cell], scratch[cell])
 
 
 @nb_jit(nopython=True, cache=True, parallel=True)
 def apply_kron_M_K_MT_many_2d(  # noqa: PLR0913
     ops_0: npt.NDArray[Any],
     ops_1: npt.NDArray[Any],
+    idx_map_0: npt.NDArray[Any],
+    idx_map_1: npt.NDArray[Any],
     is_id_0: npt.NDArray[Any],
     is_id_1: npt.NDArray[Any],
     cell_indices: npt.NDArray[Any],
@@ -1694,10 +1772,14 @@ def apply_kron_M_K_MT_many_2d(  # noqa: PLR0913
     """Compute ``kron(M_0,M_1) @ K[c] @ kron(M_0,M_1)^T`` for every cell (d=2).
 
     Args:
-        ops_0 (npt.NDArray[Any]): All element operators for direction 0,
-            shape ``(n_el_0, n_out_0, n_in_0)``.
-        ops_1 (npt.NDArray[Any]): All element operators for direction 1,
-            shape ``(n_el_1, n_out_1, n_in_1)``.
+        ops_0 (npt.NDArray[Any]): Compact element operators for direction 0,
+            shape ``(n_compact_0, n_out_0, n_in_0)``; only non-identity rows.
+        ops_1 (npt.NDArray[Any]): Compact element operators for direction 1,
+            shape ``(n_compact_1, n_out_1, n_in_1)``; only non-identity rows.
+        idx_map_0 (npt.NDArray[Any]): Compact index map for direction 0, shape
+            ``(n_el_0,)`` integer.
+        idx_map_1 (npt.NDArray[Any]): Compact index map for direction 1, shape
+            ``(n_el_1,)`` integer.
         is_id_0 (npt.NDArray[Any]): Per-element identity flags for direction 0,
             shape ``(n_el_0,)`` boolean.
         is_id_1 (npt.NDArray[Any]): Per-element identity flags for direction 1,
@@ -1721,7 +1803,13 @@ def apply_kron_M_K_MT_many_2d(  # noqa: PLR0913
         i0 = cell_indices[cell, 0]
         i1 = cell_indices[cell, 1]
         apply_kron_M_K_MT_2d(
-            ops_0[i0], ops_1[i1], is_id_0[i0], is_id_1[i1], K[cell], out[cell], scratch[cell]
+            ops_0[idx_map_0[i0]],
+            ops_1[idx_map_1[i1]],
+            is_id_0[i0],
+            is_id_1[i1],
+            K[cell],
+            out[cell],
+            scratch[cell],
         )
 
 
@@ -1730,6 +1818,9 @@ def apply_kron_M_K_MT_many_3d(  # noqa: PLR0913
     ops_0: npt.NDArray[Any],
     ops_1: npt.NDArray[Any],
     ops_2: npt.NDArray[Any],
+    idx_map_0: npt.NDArray[Any],
+    idx_map_1: npt.NDArray[Any],
+    idx_map_2: npt.NDArray[Any],
     is_id_0: npt.NDArray[Any],
     is_id_1: npt.NDArray[Any],
     is_id_2: npt.NDArray[Any],
@@ -1741,12 +1832,18 @@ def apply_kron_M_K_MT_many_3d(  # noqa: PLR0913
     """Compute ``kron(M_0,M_1,M_2) @ K[c] @ kron(M_0,M_1,M_2)^T`` for every cell (d=3).
 
     Args:
-        ops_0 (npt.NDArray[Any]): All element operators for direction 0,
-            shape ``(n_el_0, n_out_0, n_in_0)``.
-        ops_1 (npt.NDArray[Any]): All element operators for direction 1,
-            shape ``(n_el_1, n_out_1, n_in_1)``.
-        ops_2 (npt.NDArray[Any]): All element operators for direction 2,
-            shape ``(n_el_2, n_out_2, n_in_2)``.
+        ops_0 (npt.NDArray[Any]): Compact element operators for direction 0,
+            shape ``(n_compact_0, n_out_0, n_in_0)``; only non-identity rows.
+        ops_1 (npt.NDArray[Any]): Compact element operators for direction 1,
+            shape ``(n_compact_1, n_out_1, n_in_1)``; only non-identity rows.
+        ops_2 (npt.NDArray[Any]): Compact element operators for direction 2,
+            shape ``(n_compact_2, n_out_2, n_in_2)``; only non-identity rows.
+        idx_map_0 (npt.NDArray[Any]): Compact index map for direction 0, shape
+            ``(n_el_0,)`` integer.
+        idx_map_1 (npt.NDArray[Any]): Compact index map for direction 1, shape
+            ``(n_el_1,)`` integer.
+        idx_map_2 (npt.NDArray[Any]): Compact index map for direction 2, shape
+            ``(n_el_2,)`` integer.
         is_id_0 (npt.NDArray[Any]): Per-element identity flags for direction 0,
             shape ``(n_el_0,)`` boolean.
         is_id_1 (npt.NDArray[Any]): Per-element identity flags for direction 1,
@@ -1773,9 +1870,9 @@ def apply_kron_M_K_MT_many_3d(  # noqa: PLR0913
         i1 = cell_indices[cell, 1]
         i2 = cell_indices[cell, 2]
         apply_kron_M_K_MT_3d(
-            ops_0[i0],
-            ops_1[i1],
-            ops_2[i2],
+            ops_0[idx_map_0[i0]],
+            ops_1[idx_map_1[i1]],
+            ops_2[idx_map_2[i2]],
             is_id_0[i0],
             is_id_1[i1],
             is_id_2[i2],
