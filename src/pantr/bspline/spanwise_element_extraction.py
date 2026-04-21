@@ -76,7 +76,7 @@ class SpanwiseElementExtraction:
         _ops_1d (tuple[npt.NDArray[np.float32 | np.float64], ...]):
             Per-direction 3D operator arrays of shape
             ``(n_elements_k, n_out_k, n_in_k)``.
-        _is_identity_mask_1d (tuple[npt.NDArray[np.bool_], ...]): Per-direction
+        _is_identity_mask_1d (tuple[npt.NDArray[bool], ...]): Per-direction
             identity masks of shape ``(n_elements_k,)``.
     """
 
@@ -259,7 +259,7 @@ class SpanwiseElementExtraction:
         ``|C - I|_max < identity_tol`` test per element.
 
         Returns:
-            tuple[npt.NDArray[np.bool_], ...]: Length-``d`` tuple of read-only
+            tuple[npt.NDArray[bool], ...]: Length-``d`` tuple of read-only
             1D boolean arrays; ``is_identity_mask_1d[k][i]`` is ``True`` iff
             the ``i``-th element in direction ``k`` has an identity operator.
         """
@@ -651,7 +651,7 @@ def _numerical_identity_mask(
         tol (float): Absolute tolerance used element-wise.
 
     Returns:
-        npt.NDArray[np.bool_]: Boolean array of shape ``(n_elements,)``.
+        npt.NDArray[bool]: Boolean array of shape ``(n_elements,)``.
     """
     n_elements, n_out, n_in = ops.shape
     if n_out != n_in:
