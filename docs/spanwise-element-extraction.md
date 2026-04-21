@@ -48,7 +48,7 @@ Three targets are supported:
 
 | Target | Description | Identity detection |
 |---|---|---|
-| `"bezier"` | Bernstein / Bézier basis on each element | Numerical: $\lVert C - I \rVert_{\max} < \text{tol}$ per element |
+| `"bezier"` | Bernstein / Bézier basis on each element | Numerical: $\lVert C - I \rVert_{\max} \leq \text{tol}$ per element |
 | `"lagrange"` | Lagrange basis at the chosen point distribution | Numerical: same test |
 | `"cardinal"` | Cardinal B-spline basis on each element | Structural: `BsplineSpace1D.get_cardinal_intervals()` |
 
@@ -91,8 +91,9 @@ Each method takes a cell index and an operand, and optionally a pre-allocated
 import numpy as np
 
 # single-cell apply (index as flat int or per-direction tuple)
-cell = 5                        # flat index, row-major over num_intervals
-cell = (1, 2)                   # per-direction index for a 2D space
+cell_flat = 5                   # flat index, row-major over num_intervals
+cell_nd   = (1, 2)              # per-direction index for a 2D space
+cell = cell_flat                # use either form below
 
 N_in  = int(np.prod(ext.input_shape_per_dir))
 N_out = int(np.prod(ext.output_shape_per_dir))
@@ -111,11 +112,10 @@ B = ext.apply_M_K_MT(K_in, cell)              # B.shape == (N_out, N_out)
 Pre-allocated buffers avoid repeated heap allocation in loops over elements:
 
 ```python
-out     = np.empty(N_out, dtype=np.float64)
-scratch = np.empty(128,   dtype=np.float64)   # size: any >= _extraction_helpers minimum
+out = np.empty(N_out, dtype=np.float64)
 
 for cell in range(len(ext)):
-    ext.apply(v, cell, out=out, scratch=scratch)
+    ext.apply(v, cell, out=out)
     # use out ...
 ```
 
@@ -161,12 +161,13 @@ multiply for that direction.
 
 **`"cardinal"` target** — flags come from the *structural* mask returned by
 {meth}`~pantr.bspline.BsplineSpace1D.get_cardinal_intervals`.  An interval is
-cardinal if and only if its knot span is uniform (same width as its
-neighbours); on such intervals the cardinal extraction operator is provably
-the identity.  No numerical comparison is performed.
+cardinal if it has the same span length as the $p - 1$ preceding and $p - 1$
+following non-zero spans (where $p$ is the polynomial degree); on such
+intervals the cardinal extraction operator is provably the identity.  No
+numerical comparison is performed.
 
 **`"bezier"` and `"lagrange"` targets** — flags are computed *numerically*
-at construction time using $\lVert C_i - I \rVert_{\max} < \text{tol}$.  This
+at construction time using $\lVert C_i - I \rVert_{\max} \leq \text{tol}$.  This
 catches practical cases such as a $C^0$ Bézier space, where every element's
 Bézier extraction operator is already the identity.
 
@@ -214,9 +215,8 @@ def my_kernel(M0, f0, M1, f1, v, out, scratch):
     apply_kron_2d(M0[i0], f0[i0], M1[i1], f1[i1], v, out, scratch)
 ```
 
-Available kernels follow the naming pattern
-`apply_kron_{op_kind}_{d}d` for single-cell and
-`apply_kron_{op_kind}_many_{d}d` for batch:
+Batch kernels follow `apply_kron_{op_kind}_many_{d}d`.  Single-cell kernels
+drop the redundant `apply` prefix — as shown in the table below:
 
 | op_kind | Single-cell | Batch |
 |---|---|---|
