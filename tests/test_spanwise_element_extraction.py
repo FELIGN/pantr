@@ -3,16 +3,15 @@
 Covers:
 
 - Target dispatch (``bezier``, ``lagrange``, ``cardinal``) and construction
-  errors (unknown target, periodic directions, invalid ``identity_tol``).
+  errors (unknown target, periodic directions).
 - Shape/dtype and identity-mask properties.
 - Per-cell :meth:`apply` / :meth:`apply_transpose` / :meth:`apply_MT_K_M` /
   :meth:`apply_M_K_MT` against a dense reference ``kron(M_0, M_1, …)``.
 - :meth:`operator` / :meth:`tabulate` round-trip consistency, including
   user-provided ``out`` arrays.
 - Identity-query correctness: :attr:`is_identity`, :attr:`num_identity_elements`,
-  :meth:`per_direction_identity_flags`; cardinal spaces use the structural mask
-  from :meth:`BsplineSpace1D.get_cardinal_intervals`; C⁰ Bézier spaces detect
-  numerical identity on every element; ``identity_tol`` controls detection.
+  :meth:`per_direction_identity_flags`; all three targets use structural (exact)
+  identity predicates — no numerical tolerance.
 - Cell-index normalization (flat int, tuple, list, ndarray; negative indices
   rejected; IndexError / ValueError / TypeError on invalid input).
 - 1D spaces and rejection of dim > 3 via :exc:`NotImplementedError`.
@@ -42,7 +41,8 @@ from pantr.bspline._extraction_helpers import (
     _required_scratch_size,
 )
 from pantr.bspline.spanwise_element_extraction import (
-    _numerical_identity_mask,
+    _bezier_structural_identity_mask,
+    _lagrange_structural_identity_mask,
     normalize_cell_indices,
     operand_shape,
 )
@@ -119,8 +119,8 @@ def test_cardinal_identity_structural_matches_space() -> None:
         np.testing.assert_array_equal(mask, space_1d.get_cardinal_intervals())
 
 
-def test_bezier_c0_space_is_numerically_identity_everywhere() -> None:
-    """A C⁰ Bézier space has identity Bézier extraction on every element."""
+def test_bezier_c0_space_is_structurally_identity_everywhere() -> None:
+    """A C⁻¹ (Bézier) space has identity Bézier extraction on every element."""
     sp1 = BsplineSpace1D([0, 0, 0, 1, 1, 1, 2, 2, 2], 2)
     sp = BsplineSpace([sp1, sp1])
     ext = SpanwiseElementExtraction(sp, "bezier")
@@ -130,13 +130,103 @@ def test_bezier_c0_space_is_numerically_identity_everywhere() -> None:
     assert ext.num_identity_elements == ext.num_total_intervals
 
 
-def test_numerical_identity_mask_ignores_nonsquare() -> None:
-    """Non-square operators are never detected as identity."""
-    ops = np.empty((2, 3, 4), dtype=np.float64)
-    ops[0] = 0.0
-    ops[1] = 1.0
-    mask = _numerical_identity_mask(ops, 1e-12)
+def test_bezier_partial_identity_integration() -> None:
+    """SpanwiseElementExtraction reports partial identity for a mixed-multiplicity space."""
+    # degree 2; in-domain mults [3, 3, 2, 3] → elements 0 is identity, 1 and 2 are not
+    sp1 = BsplineSpace1D([0, 0, 0, 1, 1, 1, 2, 2, 3, 3, 3], 2)
+    sp = BsplineSpace([sp1])
+    ext = SpanwiseElementExtraction(sp, "bezier")
+    assert ext.is_identity_at(0)
+    assert not ext.is_identity_at(1)
+    assert not ext.is_identity_at(2)
+    assert ext.num_identity_elements == 1
+    assert not ext.is_identity
+    # Verify apply on identity element returns the input unchanged
+    v = RNG.standard_normal(ext.input_shape_per_dir[0]).astype(ext.dtype)
+    result = ext.apply(v, 0)
+    np.testing.assert_array_equal(result, v)
+
+
+def test_bezier_structural_identity_mask_only_at_full_multiplicity_knots() -> None:
+    """Bezier identity holds only at elements whose boundary knots have mult >= degree+1."""
+    # degree 2; boundaries 0 (mult 3) and 4 (mult 3), interior: 1 (mult 2), 2 (mult 3), 3 (mult 2)
+    # multiplicities (in-domain): [3, 2, 3, 2, 3]
+    # element 0: mults (3,2) → False; element 1: (2,3) → False
+    # element 2: (3,2) → False; element 3: (2,3) → False
+    sp1 = BsplineSpace1D([0, 0, 0, 1, 1, 2, 2, 2, 3, 3, 4, 4, 4], 2)
+    mask = _bezier_structural_identity_mask(sp1)
     assert not mask.any()
+
+    # Fully C⁻¹ space: all interior knots have mult = degree+1 = 3
+    sp2 = BsplineSpace1D([0, 0, 0, 1, 1, 1, 2, 2, 2], 2)
+    mask2 = _bezier_structural_identity_mask(sp2)
+    assert mask2.all()
+
+    # Smooth space (mult 1 everywhere): no identity
+    sp3 = BsplineSpace1D([0, 0, 0, 1, 2, 3, 3, 3], 2)
+    mask3 = _bezier_structural_identity_mask(sp3)
+    assert not mask3.any()
+
+
+def test_bezier_structural_identity_mask_partial() -> None:
+    """Bezier identity mask is selectively True when only some elements are fully isolated."""
+    # degree 2; knots [0,0,0,1,1,1,2,2,3,3,3] → in-domain mults [3, 3, 2, 3]
+    # element 0 [0,1]: (3,3) → True; element 1 [1,2]: (3,2) → False; element 2 [2,3]: (2,3) → False
+    sp1 = BsplineSpace1D([0, 0, 0, 1, 1, 1, 2, 2, 3, 3, 3], 2)
+    mask = _bezier_structural_identity_mask(sp1)
+    expected = np.array([True, False, False])
+    np.testing.assert_array_equal(mask, expected)
+
+
+def test_bezier_structural_identity_mask_degree0() -> None:
+    """Degree-0 space: threshold is 1, every knot qualifies, so all elements are identity."""
+    sp1 = BsplineSpace1D([0, 1, 2, 3], 0)
+    mask = _bezier_structural_identity_mask(sp1)
+    assert mask.all()
+    assert len(mask) == sp1.num_intervals
+
+
+def test_lagrange_structural_identity_degree0_all_identity() -> None:
+    """Lagrange degree-0 space: every element is identity, regardless of variant."""
+    sp1 = BsplineSpace1D([0, 1, 2, 3], 0)
+    for variant in LagrangeVariant:
+        mask = _lagrange_structural_identity_mask(sp1, variant)
+        assert mask.all()
+        assert len(mask) == sp1.num_intervals
+
+
+def test_lagrange_structural_identity_smooth_space_never_identity() -> None:
+    """Smooth spaces are never Lagrange-identity regardless of degree or variant."""
+    for degree in (1, 2, 3):
+        knots = [0.0] * (degree + 1) + [1.0, 2.0, 3.0] + [3.0] * (degree + 1)
+        sp1 = BsplineSpace1D(knots, degree)
+        for variant in LagrangeVariant:
+            mask = _lagrange_structural_identity_mask(sp1, variant)
+            assert not mask.any(), f"degree {degree}, variant {variant} should yield no identity"
+
+
+def test_lagrange_structural_identity_degree1_c_minus1_equispaced() -> None:
+    """Degree-1 EQUISPACES/GLL: lagr_to_bzr == I, so C⁻¹ elements are identity."""
+    # For degree 1 the Lagrange nodes {0, 1} coincide with Bernstein abscissae → lagr_to_bzr = I
+    sp1 = BsplineSpace1D([0, 0, 1, 1, 2, 2, 3, 3], 1)
+    for variant in (LagrangeVariant.EQUISPACES, LagrangeVariant.GAUSS_LOBATTO_LEGENDRE):
+        mask = _lagrange_structural_identity_mask(sp1, variant)
+        assert mask.all(), f"C⁻¹ degree-1 space should be all-identity for variant {variant}"
+
+
+def test_lagrange_structural_identity_degree2_never_identity() -> None:
+    """Degree-2 spaces are never Lagrange-identity regardless of variant or knot vector."""
+    sp1 = BsplineSpace1D([0, 0, 0, 1, 1, 1, 2, 2, 2], 2)  # C⁻¹, so bezier is identity
+    for variant in LagrangeVariant:
+        mask = _lagrange_structural_identity_mask(sp1, variant)
+        assert not mask.any(), f"degree-2 should yield no identity for variant {variant}"
+
+
+def test_identity_tol_kwarg_removed() -> None:
+    """Passing ``identity_tol`` raises ``TypeError`` (parameter no longer exists)."""
+    sp = _space_2d()
+    with pytest.raises(TypeError):
+        SpanwiseElementExtraction(sp, "bezier", identity_tol=1e-10)  # type: ignore[call-arg]
 
 
 # ---------------------------------------------------------------- apply correctness
@@ -342,18 +432,6 @@ def test_operand_shape_returns_vector_and_matrix_shapes() -> None:
     assert operand_shape(ext, "M_K_MT") == ((n_in, n_in), (n_out, n_out))
 
 
-# ---------------------------------------------------------------- construction validation
-
-
-def test_identity_tol_negative_rejected() -> None:
-    """Negative and NaN ``identity_tol`` raise ValueError."""
-    sp = _space_2d()
-    with pytest.raises(ValueError, match="non-negative"):
-        SpanwiseElementExtraction(sp, "bezier", identity_tol=-1.0)
-    with pytest.raises(ValueError, match="non-negative"):
-        SpanwiseElementExtraction(sp, "bezier", identity_tol=float("nan"))
-
-
 # ---------------------------------------------------------------- identity queries (extended)
 
 
@@ -393,20 +471,6 @@ def test_per_direction_identity_flags_matches_mask_lookup() -> None:
         )
         assert ext.per_direction_identity_flags(flat) == expected
         assert ext.per_direction_identity_flags(tuple(int(i) for i in multi)) == expected
-
-
-def test_identity_tol_affects_detection() -> None:
-    """A custom ``identity_tol`` changes which elements are flagged as identity."""
-    sp1 = BsplineSpace1D([0, 0, 0, 1, 2, 3, 3, 3], 2)
-    sp = BsplineSpace([sp1])
-    ext_default = SpanwiseElementExtraction(sp, "bezier")
-    # With an enormous tolerance every element looks like identity
-    ext_huge = SpanwiseElementExtraction(sp, "bezier", identity_tol=1e100)
-    assert ext_huge.is_identity_mask_1d[0].all()
-    assert ext_huge.identity_tol == 1e100  # noqa: PLR2004
-    # The default space is not all-identity (smooth space has non-trivial Bezier ops)
-    if not ext_default.is_identity_mask_1d[0].all():
-        assert not ext_default.is_identity
 
 
 # ---------------------------------------------------------------- operator / tabulate (extended)
