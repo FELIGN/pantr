@@ -34,12 +34,24 @@ import numpy as np
 import numpy.typing as npt
 import pytest
 
+from pantr._numba_compat import nb_jit
 from pantr.basis import LagrangeVariant
-from pantr.bspline import BsplineSpace, BsplineSpace1D, SpanwiseElementExtraction
+from pantr.bspline import (
+    BsplineSpace,
+    BsplineSpace1D,
+    ExtractionStructView,
+    SpanwiseElementExtraction,
+    make_struct_view,
+)
 from pantr.bspline._extraction_helpers import (
     _allocate_or_validate_scratch_many,
     _prepare_apply_many_call,
     _required_scratch_size,
+)
+from pantr.bspline._extraction_kernels import (
+    apply_kron_apply_many_1d,
+    apply_kron_apply_many_2d,
+    apply_kron_apply_many_3d,
 )
 from pantr.bspline.spanwise_element_extraction import (
     _bezier_structural_identity_mask,
@@ -1210,3 +1222,252 @@ def test_idx_maps_1d_validation_in_prepare_many_call() -> None:
             None,
             "apply",
         )
+
+
+# ---------------------------------------------------------------- struct view
+
+
+@pytest.mark.parametrize("target", ["bezier", "lagrange", "cardinal"])
+def test_struct_view_is_named_tuple_instance(target: str) -> None:
+    """The factory returns an ExtractionStructView (a NamedTuple subclass)."""
+    ext = SpanwiseElementExtraction(_space_2d(), target)  # type: ignore[arg-type]
+    view = make_struct_view(ext)
+    assert isinstance(view, ExtractionStructView)
+    assert isinstance(view, tuple)
+    # NamedTuple has _fields
+    assert set(view._fields) == {
+        "compact_ops_1d",
+        "idx_maps_1d",
+        "is_identity_mask_1d",
+        "num_intervals",
+        "input_shape_per_dir",
+        "output_shape_per_dir",
+        "dim",
+    }
+
+
+def _assert_struct_view_mirrors(view: ExtractionStructView, ext: SpanwiseElementExtraction) -> None:
+    """Check scalar and tuple metadata on ``view`` match the source extraction."""
+    assert view.dim == ext.dim
+    assert view.num_intervals == ext.num_intervals
+    assert view.input_shape_per_dir == ext.input_shape_per_dir
+    assert view.output_shape_per_dir == ext.output_shape_per_dir
+    assert len(view.compact_ops_1d) == ext.dim
+    assert len(view.idx_maps_1d) == ext.dim
+    assert len(view.is_identity_mask_1d) == ext.dim
+
+
+@pytest.mark.parametrize("target", ["bezier", "lagrange", "cardinal"])
+@pytest.mark.parametrize("space_factory", [_space_1d, _space_2d, _space_3d])
+def test_struct_view_fields_match_extraction(space_factory: Any, target: str) -> None:
+    """The view's fields mirror the extraction's compact storage and shape metadata."""
+    ext = SpanwiseElementExtraction(space_factory(), target)  # type: ignore[arg-type]
+    view = make_struct_view(ext)
+    _assert_struct_view_mirrors(view, ext)
+    # Arrays are shared, not copied.
+    for k in range(ext.dim):
+        assert view.compact_ops_1d[k] is ext.compact_ops_1d[k]
+        assert view.idx_maps_1d[k] is ext.idx_maps_1d[k]
+        assert view.is_identity_mask_1d[k] is ext.is_identity_mask_1d[k]
+        # Shared arrays must remain read-only (the factory's safety guarantee).
+        assert not view.compact_ops_1d[k].flags.writeable
+        assert not view.idx_maps_1d[k].flags.writeable
+        assert not view.is_identity_mask_1d[k].flags.writeable
+        # Shape invariants inherited from the extraction
+        assert view.compact_ops_1d[k].ndim == 3  # noqa: PLR2004
+        assert view.compact_ops_1d[k].dtype == ext.dtype
+        assert view.idx_maps_1d[k].shape == (ext.num_intervals[k],)
+        assert view.is_identity_mask_1d[k].shape == (ext.num_intervals[k],)
+
+
+@pytest.mark.parametrize("target", ["bezier", "lagrange", "cardinal"])
+@pytest.mark.parametrize("space_factory", [_space_1d, _space_2d, _space_3d])
+def test_struct_view_ints_are_python_ints(space_factory: Any, target: str) -> None:
+    """Scalar fields are plain ``int`` (not ``np.int*``), for clean Numba unboxing."""
+    ext = SpanwiseElementExtraction(space_factory(), target)  # type: ignore[arg-type]
+    view = make_struct_view(ext)
+    assert type(view.dim) is int
+    for n in view.num_intervals:
+        assert type(n) is int
+    for n in view.input_shape_per_dir:
+        assert type(n) is int
+    for n in view.output_shape_per_dir:
+        assert type(n) is int
+
+
+def test_struct_view_unpacks_by_position_and_name() -> None:
+    """NamedTuple ordering is stable: positional and keyword access agree."""
+    ext = SpanwiseElementExtraction(_space_2d(), "bezier")
+    view = make_struct_view(ext)
+    compact, idx_maps, masks, num_int, in_shape, out_shape, dim = view
+    assert compact is view.compact_ops_1d
+    assert idx_maps is view.idx_maps_1d
+    assert masks is view.is_identity_mask_1d
+    assert num_int is view.num_intervals
+    assert in_shape is view.input_shape_per_dir
+    assert out_shape is view.output_shape_per_dir
+    assert dim == view.dim
+
+
+# A small set of @njit functions that unbox an ExtractionStructView and drive
+# the Layer-3 batch kernels purely through the view's fields.  These exist
+# solely to prove that the struct view is passable into Numba code in the
+# same way that the (ops_1d, idx_maps_1d, is_identity_mask_1d, ...) tuple
+# bundle is.
+
+
+@nb_jit(nopython=True, cache=True)
+def _njit_apply_many_1d_via_view(  # pragma: no cover -- executed through Numba.
+    view: ExtractionStructView,
+    cell_indices: npt.NDArray[Any],
+    v: npt.NDArray[Any],
+    out: npt.NDArray[Any],
+    scratch: npt.NDArray[Any],
+) -> None:
+    apply_kron_apply_many_1d(
+        view.compact_ops_1d[0],
+        view.idx_maps_1d[0],
+        view.is_identity_mask_1d[0],
+        cell_indices,
+        v,
+        out,
+        scratch,
+    )
+
+
+@nb_jit(nopython=True, cache=True)
+def _njit_apply_many_2d_via_view(  # pragma: no cover -- executed through Numba.
+    view: ExtractionStructView,
+    cell_indices: npt.NDArray[Any],
+    v: npt.NDArray[Any],
+    out: npt.NDArray[Any],
+    scratch: npt.NDArray[Any],
+) -> None:
+    apply_kron_apply_many_2d(
+        view.compact_ops_1d[0],
+        view.compact_ops_1d[1],
+        view.idx_maps_1d[0],
+        view.idx_maps_1d[1],
+        view.is_identity_mask_1d[0],
+        view.is_identity_mask_1d[1],
+        cell_indices,
+        v,
+        out,
+        scratch,
+    )
+
+
+@nb_jit(nopython=True, cache=True)
+def _njit_apply_many_3d_via_view(  # pragma: no cover -- executed through Numba.
+    view: ExtractionStructView,
+    cell_indices: npt.NDArray[Any],
+    v: npt.NDArray[Any],
+    out: npt.NDArray[Any],
+    scratch: npt.NDArray[Any],
+) -> None:
+    apply_kron_apply_many_3d(
+        view.compact_ops_1d[0],
+        view.compact_ops_1d[1],
+        view.compact_ops_1d[2],
+        view.idx_maps_1d[0],
+        view.idx_maps_1d[1],
+        view.idx_maps_1d[2],
+        view.is_identity_mask_1d[0],
+        view.is_identity_mask_1d[1],
+        view.is_identity_mask_1d[2],
+        cell_indices,
+        v,
+        out,
+        scratch,
+    )
+
+
+@nb_jit(nopython=True, cache=True)
+def _njit_read_scalar_fields(  # pragma: no cover -- executed through Numba.
+    view: ExtractionStructView,
+) -> int:
+    # Exercises Numba's unboxing of the scalar/UniTuple-of-int fields.
+    total = view.dim
+    for n in view.num_intervals:
+        total += n
+    for n in view.input_shape_per_dir:
+        total += n
+    for n in view.output_shape_per_dir:
+        total += n
+    return total
+
+
+_VIEW_NJIT_KERNELS = {
+    1: _njit_apply_many_1d_via_view,
+    2: _njit_apply_many_2d_via_view,
+    3: _njit_apply_many_3d_via_view,
+}
+
+
+@pytest.mark.parametrize("target", ["bezier", "lagrange", "cardinal"])
+@pytest.mark.parametrize(
+    ("space_factory", "dim"),
+    [(_space_1d, 1), (_space_2d, 2), (_space_3d, 3)],
+)
+def test_struct_view_is_numba_callable(space_factory: Any, dim: int, target: str) -> None:
+    """An ``@njit`` function unboxes the view and drives the Layer-3 batch kernel."""
+    ext = SpanwiseElementExtraction(space_factory(), target)  # type: ignore[arg-type]
+    view = make_struct_view(ext)
+
+    n_in = int(np.prod(ext.input_shape_per_dir))
+    n_out = int(np.prod(ext.output_shape_per_dir))
+    cell_indices = normalize_cell_indices(
+        np.arange(ext.num_total_intervals, dtype=np.intp), ext.num_intervals
+    )
+    n_cells = cell_indices.shape[0]
+    v = RNG.standard_normal((n_cells, n_in)).astype(ext.dtype)
+    out = np.empty((n_cells, n_out), dtype=ext.dtype)
+    scratch_size = _required_scratch_size(
+        ext.input_shape_per_dir, ext.output_shape_per_dir, "apply"
+    )
+    scratch = np.empty((n_cells, max(scratch_size, 1)), dtype=ext.dtype)
+
+    kernel = _VIEW_NJIT_KERNELS[dim]
+    kernel(view, cell_indices, v, out, scratch)
+
+    expected = ext.apply_many(v, cell_indices)
+    np.testing.assert_allclose(out, expected, rtol=1e-12, atol=1e-12)
+
+
+def test_struct_view_scalar_fields_are_numba_unboxable() -> None:
+    """``dim`` and the per-direction int tuples unbox cleanly inside an ``@njit`` function."""
+    ext = SpanwiseElementExtraction(_space_2d(), "bezier")
+    view = make_struct_view(ext)
+    expected = (
+        view.dim
+        + sum(view.num_intervals)
+        + sum(view.input_shape_per_dir)
+        + sum(view.output_shape_per_dir)
+    )
+    assert _njit_read_scalar_fields(view) == expected
+
+
+def test_struct_view_float32_is_numba_callable() -> None:
+    """``@njit`` unboxing works for float32 operator arrays (distinct Numba specialisation)."""
+    knots = np.array([0, 0, 0, 1, 2, 3, 3, 3], dtype=np.float32)
+    sp1 = BsplineSpace1D(knots, 2)
+    ext = SpanwiseElementExtraction(BsplineSpace([sp1, sp1]), "bezier")
+    assert ext.dtype == np.float32
+    view = make_struct_view(ext)
+
+    n_in = int(np.prod(ext.input_shape_per_dir))
+    n_out = int(np.prod(ext.output_shape_per_dir))
+    cell_indices = normalize_cell_indices(
+        np.arange(ext.num_total_intervals, dtype=np.intp), ext.num_intervals
+    )
+    n_cells = cell_indices.shape[0]
+    v = RNG.standard_normal((n_cells, n_in)).astype(np.float32)
+    out = np.empty((n_cells, n_out), dtype=np.float32)
+    scratch_size = _required_scratch_size(
+        ext.input_shape_per_dir, ext.output_shape_per_dir, "apply"
+    )
+    scratch = np.empty((n_cells, max(scratch_size, 1)), dtype=np.float32)
+
+    _njit_apply_many_2d_via_view(view, cell_indices, v, out, scratch)
+    expected = ext.apply_many(v, cell_indices)
+    np.testing.assert_allclose(out, expected, rtol=1e-5, atol=1e-5)
