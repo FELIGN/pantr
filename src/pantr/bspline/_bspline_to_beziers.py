@@ -8,6 +8,10 @@ tensor-product interval structure.
 The core Numba kernel :func:`_apply_bezier_extraction_1d_core` applies the
 extraction operators for one parametric direction, transforming B-spline
 control points into Bezier control points for all elements simultaneously.
+
+Extraction operators are sourced from :class:`~pantr.bspline.SpanwiseElementExtraction`
+(target ``"bezier"``), which caches them once per construction and exposes them via
+:attr:`~pantr.bspline.SpanwiseElementExtraction.ops_1d`.
 """
 
 from __future__ import annotations
@@ -19,6 +23,7 @@ import numpy.typing as npt
 
 from .._array_utils import _flatten_along_axis, _unflatten_along_axis
 from .._numba_compat import nb_jit, nb_prange
+from .spanwise_element_extraction import SpanwiseElementExtraction
 
 if TYPE_CHECKING:
     from . import Bspline
@@ -67,10 +72,11 @@ def _apply_bezier_extraction_1d_core(
 def _to_beziers_impl(bspline: Bspline) -> npt.NDArray[np.object_]:
     """Decompose a B-spline into Bezier patches via extraction operators.
 
-    Converts periodic directions to open form, then applies Bezier extraction
-    operators direction by direction using the standard moveaxis pattern. The
-    resulting control point array is reshaped and split into individual
-    :class:`~pantr.bezier.Bezier` objects.
+    Converts periodic directions to open form, then delegates operator
+    construction to :class:`SpanwiseElementExtraction` (target ``"bezier"``).
+    Extraction operators are applied direction by direction using the standard
+    moveaxis pattern. The resulting control point array is reshaped and split
+    into individual :class:`~pantr.bezier.Bezier` objects.
 
     Args:
         bspline (Bspline): Input B-spline to decompose.
@@ -88,14 +94,15 @@ def _to_beziers_impl(bspline: Bspline) -> npt.NDArray[np.object_]:
     if any(s.periodic for s in bspline.space.spaces):
         bspline = bspline.to_open_bspline()
 
+    extraction = SpanwiseElementExtraction(bspline.space, target="bezier")
+
     ctrl = bspline.control_points
     num_intervals = bspline.space.num_intervals
     degrees = bspline.degree
 
     # Apply extraction operators direction by direction.
     for d in range(dim):
-        space_1d = bspline.space.spaces[d]
-        extraction_ops = space_1d.tabulate_Bezier_extraction_operators()
+        extraction_ops = extraction.ops_1d[d]
         n_el = num_intervals[d]
         order = degrees[d] + 1
 
