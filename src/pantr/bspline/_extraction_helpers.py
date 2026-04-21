@@ -368,7 +368,7 @@ def _prepare_apply_call(  # noqa: PLR0913 -- each arg reflects a distinct kernel
     if d < 1:
         raise ValueError("At least one direction is required")
     for k, M_k in enumerate(ops_1d_per_cell):
-        if M_k.ndim != 2:
+        if M_k.ndim != 2:  # noqa: PLR2004
             raise ValueError(f"ops_1d_per_cell[{k}] must be 2D; got ndim={M_k.ndim}")
     dtype = ops_1d_per_cell[0].dtype
     for k, M_k in enumerate(ops_1d_per_cell[1:], start=1):
