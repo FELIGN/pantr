@@ -22,7 +22,7 @@ from typing import Any, Literal, cast, get_args
 import numpy as np
 import numpy.typing as npt
 
-from ..basis._basis_utils import _allocate_or_validate_out, _validate_out_array
+from ..basis._basis_utils import _allocate_or_validate_out
 from ._extraction_kernels import (
     apply_kron_1d,
     apply_kron_2d,
@@ -47,9 +47,6 @@ See :mod:`pantr.bspline._extraction_helpers` for the meaning of each tag.
 
 MAX_SUPPORTED_DIM = 3
 """Highest tensor-product dimension for which specialized kernels exist."""
-
-
-_OPS_2D_NDIM = 2
 
 
 _KERNELS: dict[tuple[OpKind, int], Callable[..., None]] = {
@@ -371,7 +368,7 @@ def _prepare_apply_call(  # noqa: PLR0913 -- each arg reflects a distinct kernel
     if d < 1:
         raise ValueError("At least one direction is required")
     for k, M_k in enumerate(ops_1d_per_cell):
-        if M_k.ndim != _OPS_2D_NDIM:
+        if M_k.ndim != 2:
             raise ValueError(f"ops_1d_per_cell[{k}] must be 2D; got ndim={M_k.ndim}")
     dtype = ops_1d_per_cell[0].dtype
     for k, M_k in enumerate(ops_1d_per_cell[1:], start=1):
@@ -415,5 +412,4 @@ __all__ = [
     "_required_scratch_size",
     "_validate_op_kind",
     "_validate_operand",
-    "_validate_out_array",
 ]

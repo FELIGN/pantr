@@ -24,6 +24,11 @@ These kernels are designed to be callable from other ``@njit`` code: they are
 module-level free functions with plain NumPy-array arguments, no optional
 parameters, and ``cache=True`` so downstream libraries can dispatch to them
 directly from their own JIT-compiled loops.
+
+``parallel=True`` is intentionally omitted: these kernels operate on a single
+cell and are expected to be called from within a caller-level ``prange`` loop.
+Enabling intra-kernel parallelism would conflict with the outer thread pool and
+degrade performance.
 """
 
 from __future__ import annotations
