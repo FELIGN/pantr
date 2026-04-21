@@ -38,6 +38,7 @@ from pantr.basis import LagrangeVariant
 from pantr.bspline import BsplineSpace, BsplineSpace1D, SpanwiseElementExtraction
 from pantr.bspline._extraction_helpers import (
     _allocate_or_validate_scratch_many,
+    _prepare_apply_many_call,
     _required_scratch_size,
 )
 from pantr.bspline.spanwise_element_extraction import (
@@ -983,3 +984,178 @@ def test_allocate_or_validate_scratch_many_rejects_invalid() -> None:
     ro.flags.writeable = False
     with pytest.raises(ValueError, match="writeable"):
         _allocate_or_validate_scratch_many(ro, n_cells, width, dtype)
+
+
+# ---------------------------------------------------------------- compact storage
+
+
+@pytest.mark.parametrize("target", ["bezier", "lagrange", "cardinal"])
+@pytest.mark.parametrize("dtype", [np.float64, np.float32])
+def test_compact_ops_1d_shape(target: str, dtype: str) -> None:
+    """``compact_ops_1d[k]`` has exactly as many rows as non-identity elements."""
+    sp1 = BsplineSpace1D(np.array([0, 0, 0, 1, 2, 3, 4, 5, 6, 6, 6], dtype=dtype), 2)
+    ext = SpanwiseElementExtraction(BsplineSpace([sp1, sp1]), target)  # type: ignore[arg-type]
+    for k, (compact_ops, mask) in enumerate(
+        zip(ext.compact_ops_1d, ext.is_identity_mask_1d, strict=True)
+    ):
+        n_non_id = int(np.sum(~mask))
+        # Always at least 1 row (safe Numba indexing invariant)
+        assert compact_ops.shape[0] >= 1, f"dir {k}: compact_ops has 0 rows"
+        if n_non_id > 0:
+            assert compact_ops.shape[0] == n_non_id, (
+                f"dir {k}: expected {n_non_id} compact rows, got {compact_ops.shape[0]}"
+            )
+        assert compact_ops.shape[1:] == (3, 3)
+        assert not compact_ops.flags.writeable
+
+
+@pytest.mark.parametrize("target", ["bezier", "lagrange", "cardinal"])
+def test_idx_maps_1d_shape_and_type(target: str) -> None:
+    """``idx_maps_1d[k]`` has length ``n_elements_k``, integer dtype, and is read-only."""
+    sp = _space_2d()
+    ext = SpanwiseElementExtraction(sp, target)  # type: ignore[arg-type]
+    for k, (idx_map, mask) in enumerate(zip(ext.idx_maps_1d, ext.is_identity_mask_1d, strict=True)):
+        assert idx_map.ndim == 1, f"dir {k}: idx_map not 1D"
+        assert idx_map.shape[0] == mask.shape[0], f"dir {k}: length mismatch"
+        assert np.issubdtype(idx_map.dtype, np.integer), f"dir {k}: not integer dtype"
+        assert not idx_map.flags.writeable, f"dir {k}: idx_map is writeable"
+
+
+@pytest.mark.parametrize("target", ["bezier", "lagrange", "cardinal"])
+def test_idx_maps_1d_non_negative(target: str) -> None:
+    """All values in ``idx_maps_1d[k]`` are non-negative (0 for identity elements)."""
+    sp = _space_2d()
+    ext = SpanwiseElementExtraction(sp, target)  # type: ignore[arg-type]
+    for k, idx_map in enumerate(ext.idx_maps_1d):
+        assert int(idx_map.min()) >= 0, f"dir {k}: negative idx_map entry"
+
+
+def test_compact_ops_saves_memory_for_cardinal() -> None:
+    """Cardinal spaces with uniform interior have fewer compact rows than elements."""
+    # 10 uniform interior elements → most are cardinal-identity
+    sp1 = BsplineSpace1D([0, 0, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 10, 10], 2)
+    ext = SpanwiseElementExtraction(BsplineSpace([sp1, sp1]), "cardinal")
+    for k, (compact_ops, mask) in enumerate(
+        zip(ext.compact_ops_1d, ext.is_identity_mask_1d, strict=True)
+    ):
+        n_id = int(np.sum(mask))
+        n_el = int(mask.shape[0])
+        assert n_id > 0, f"dir {k}: expected some identity elements for cardinal"
+        assert compact_ops.shape[0] < n_el, (
+            f"dir {k}: compact storage not smaller than dense ({compact_ops.shape[0]} >= {n_el})"
+        )
+
+
+@pytest.mark.parametrize("target", ["bezier", "lagrange", "cardinal"])
+@pytest.mark.parametrize("dtype", [np.float64, np.float32])
+def test_ops_1d_round_trip(target: str, dtype: str) -> None:
+    """Lazy-reconstructed ``ops_1d`` matches ``tabulate`` element-by-element."""
+    sp1 = BsplineSpace1D(np.array([0, 0, 0, 1, 2, 3, 4, 5, 6, 6, 6], dtype=dtype), 2)
+    sp = BsplineSpace([sp1, sp1])
+    ext = SpanwiseElementExtraction(sp, target)  # type: ignore[arg-type]
+    tabulated = ext.tabulate()  # shape (n_total, N_out, N_in)
+    n_out = int(np.prod(ext.output_shape_per_dir))
+    n_in = int(np.prod(ext.input_shape_per_dir))
+    for flat in range(ext.num_total_intervals):
+        multi = np.unravel_index(flat, ext.num_intervals)
+        M_ref = tabulated[flat]
+        # Build from ops_1d (cached property)
+        M_ops = ext.ops_1d[0][int(multi[0])]
+        for k in range(1, ext.dim):
+            M_ops = np.kron(M_ops, ext.ops_1d[k][int(multi[k])])
+        assert M_ops.shape == (n_out, n_in)
+        np.testing.assert_allclose(
+            M_ops,
+            M_ref,
+            atol=1e-6 if np.dtype(dtype) == np.dtype(np.float32) else 1e-12,
+            err_msg=f"ops_1d round-trip mismatch at flat index {flat}",
+        )
+
+
+def test_compact_idx_map_correctness() -> None:
+    """Non-identity elements map to the correct compact operator via ``idx_maps_1d``."""
+    sp = _space_2d()
+    ext = SpanwiseElementExtraction(sp, "cardinal")
+    for k, (compact_ops, idx_map, mask) in enumerate(
+        zip(ext.compact_ops_1d, ext.idx_maps_1d, ext.is_identity_mask_1d, strict=True)
+    ):
+        full_ops = ext.ops_1d[k]  # reconstructed dense array
+        for e in range(int(mask.shape[0])):
+            if not mask[e]:
+                np.testing.assert_array_equal(
+                    compact_ops[idx_map[e]],
+                    full_ops[e],
+                    err_msg=f"dir {k}, element {e}: compact op != full op",
+                )
+
+
+def test_all_identity_direction_compact_shape() -> None:
+    """When all elements are identity the compact array has exactly 1 dummy row."""
+    # Bezier decomposition: every interior knot has mult >= degree+1 → all elements identity
+    sp1 = BsplineSpace1D([0, 0, 0, 1, 1, 1, 2, 2, 2, 3, 3, 3], 2)
+    ext = SpanwiseElementExtraction(BsplineSpace([sp1, sp1]), "bezier")
+    for k, (compact_ops, mask) in enumerate(
+        zip(ext.compact_ops_1d, ext.is_identity_mask_1d, strict=True)
+    ):
+        assert mask.all(), f"dir {k}: expected all-identity for Bezier decomposition space"
+        assert compact_ops.shape[0] == 1, (
+            f"dir {k}: all-identity compact should have 1 dummy row, got {compact_ops.shape[0]}"
+        )
+
+
+def test_idx_maps_1d_validation_in_prepare_many_call() -> None:
+    """``_prepare_apply_many_call`` validates idx_maps_1d length and dtype."""
+    sp = _space_2d()
+    ext = SpanwiseElementExtraction(sp, "bezier")
+    flat = np.array([0, 1, 2], dtype=np.intp)
+    idx2d = normalize_cell_indices(flat, ext.num_intervals)
+    n_in = int(np.prod(ext.input_shape_per_dir))
+    v = RNG.random((3, n_in))
+
+    # Wrong length for idx_maps_1d
+    bad_idx_map = (np.zeros(1, dtype=np.intp), np.zeros(1, dtype=np.intp))
+    with pytest.raises(ValueError, match="idx_maps_1d"):
+        _prepare_apply_many_call(
+            ext.compact_ops_1d,
+            bad_idx_map,
+            ext.is_identity_mask_1d,
+            idx2d,
+            v,
+            None,
+            None,
+            "apply",
+        )
+
+    # Non-integer idx_map — deliberately pass wrong dtype to trigger validation error
+    bad_float_map: Any = (
+        np.zeros(ext.num_intervals[0], dtype=np.float64),
+        np.zeros(ext.num_intervals[1], dtype=np.intp),
+    )
+    with pytest.raises(ValueError, match="integer"):
+        _prepare_apply_many_call(
+            ext.compact_ops_1d,
+            bad_float_map,
+            ext.is_identity_mask_1d,
+            idx2d,
+            v,
+            None,
+            None,
+            "apply",
+        )
+
+    # idx_map 2D instead of 1D
+    bad_2d_map = (
+        np.zeros((ext.num_intervals[0], 2), dtype=np.intp),
+        np.zeros(ext.num_intervals[1], dtype=np.intp),
+    )
+    with pytest.raises(ValueError, match="1D"):
+        _prepare_apply_many_call(
+            ext.compact_ops_1d,
+            bad_2d_map,
+            ext.is_identity_mask_1d,
+            idx2d,
+            v,
+            None,
+            None,
+            "apply",
+        )
