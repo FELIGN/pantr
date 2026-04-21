@@ -144,11 +144,15 @@ release = pantr.__version__
 nitpicky = True
 
 # Private NumPy typing internals are not exposed in the public inventory.
+# CellIndex and Target are Literal/Union type aliases; Sphinx resolves them as
+# py:class but they have no class inventory entry.
 nitpick_ignore = [
     ("py:class", "numpy._typing._array_like._SupportsArray"),
     ("py:class", "numpy._typing._dtype_like._DTypeDict"),
     ("py:class", "numpy._typing._dtype_like._SupportsDType"),
     ("py:class", "numpy._typing._nested_sequence._NestedSequence"),
+    ("py:class", "CellIndex"),
+    ("py:class", "Target"),
 ]
 
 # Short-form NumPy aliases used in type annotations (np.*, npt.*, numpy.*)

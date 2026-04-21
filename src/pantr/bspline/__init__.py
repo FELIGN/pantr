@@ -13,6 +13,8 @@ This package consolidates the B-spline API:
 - :func:`interpolate_bspline`, :func:`fit_bspline`,
   :func:`l2_project_bspline`: approximation functions.
 - :func:`create_from_bezier`: create a B-spline from a Bézier.
+- :class:`SpanwiseElementExtraction`: lazy tensor-product change-of-basis
+  operator across B-spline elements (Bézier/Lagrange/cardinal targets).
 """
 
 from ._bspline import Bspline, create_from_bezier
@@ -27,11 +29,13 @@ from ._bspline_space_factory import (
     get_greville_abscissae,
 )
 from ._bspline_space_nd import BsplineSpace
+from .spanwise_element_extraction import SpanwiseElementExtraction
 
 __all__ = [
     "Bspline",
     "BsplineSpace",
     "BsplineSpace1D",
+    "SpanwiseElementExtraction",
     "create_cardinal_knots",
     "create_from_bezier",
     "create_greville_lattice",
