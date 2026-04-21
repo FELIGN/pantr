@@ -33,7 +33,7 @@ from __future__ import annotations
 
 import functools
 from collections.abc import Iterator
-from typing import TYPE_CHECKING, Literal, get_args
+from typing import TYPE_CHECKING, Literal, NamedTuple, get_args
 
 import numpy as np
 import numpy.typing as npt
@@ -1055,11 +1055,87 @@ def operand_shape(
     )
 
 
+class ExtractionStructView(NamedTuple):
+    """Immutable struct view of a :class:`SpanwiseElementExtraction` for ``@njit`` callers.
+
+    A :class:`typing.NamedTuple` bundling the compact per-direction operator
+    storage, index maps, identity masks, and shape metadata into a single
+    object that Numba can unbox. Each field of a given type is homogeneous
+    (e.g. all ``compact_ops_1d`` entries share dtype and ndim), so Numba
+    represents the tuple fields as ``UniTuple`` inside an ``@njit`` function.
+    This makes ``ExtractionStructView`` a drop-in replacement for the separate
+    ``(ops_1d, idx_maps_1d, is_identity_mask_1d, …)`` bundle when calling the
+    Layer-3 batch kernels in ``pantr.bspline._extraction_kernels`` from
+    downstream Numba code.
+
+    Construct via :func:`make_struct_view`. Field semantics mirror the
+    same-named members of :class:`SpanwiseElementExtraction`:
+
+    - ``compact_ops_1d`` — per-direction compact 3D operator arrays of shape
+      ``(n_compact_k, n_out_k, n_in_k)``; only non-identity rows.
+    - ``idx_maps_1d`` — per-direction compact index maps of shape
+      ``(n_elements_k,)``.
+    - ``is_identity_mask_1d`` — per-direction identity masks of shape
+      ``(n_elements_k,)``.
+    - ``num_intervals`` — per-direction number of elements.
+    - ``input_shape_per_dir`` — per-direction input sizes
+      ``(n_in_0, …, n_in_{d-1})``.
+    - ``output_shape_per_dir`` — per-direction output sizes
+      ``(n_out_0, …, n_out_{d-1})``.
+    - ``dim`` — number of tensor-product directions ``d``.
+    """
+
+    compact_ops_1d: tuple[npt.NDArray[np.float32 | np.float64], ...]
+    idx_maps_1d: tuple[npt.NDArray[np.intp], ...]
+    is_identity_mask_1d: tuple[npt.NDArray[np.bool_], ...]
+    num_intervals: tuple[int, ...]
+    input_shape_per_dir: tuple[int, ...]
+    output_shape_per_dir: tuple[int, ...]
+    dim: int
+
+
+def make_struct_view(extraction: SpanwiseElementExtraction) -> ExtractionStructView:
+    """Bundle a :class:`SpanwiseElementExtraction` into a Numba-passable struct view.
+
+    Shares the underlying per-direction arrays (no copies). The arrays are
+    already marked read-only by :class:`SpanwiseElementExtraction`, so the
+    returned view is safe to pass into ``@njit`` code without risk of
+    accidental mutation.
+
+    Args:
+        extraction (SpanwiseElementExtraction): Source extraction object.
+
+    Returns:
+        ExtractionStructView: Named tuple wrapping the extraction's compact
+        storage and shape metadata. Suitable for direct use as a single
+        argument to ``@njit`` functions that call the Layer-3 batch kernels
+        in ``pantr.bspline._extraction_kernels``.
+
+    Example:
+        >>> from pantr.bspline import SpanwiseElementExtraction, make_struct_view
+        >>> ext = SpanwiseElementExtraction(space, "bezier")
+        >>> view = make_struct_view(ext)
+        >>> view.dim
+        2
+    """
+    return ExtractionStructView(
+        compact_ops_1d=extraction.compact_ops_1d,
+        idx_maps_1d=extraction.idx_maps_1d,
+        is_identity_mask_1d=extraction.is_identity_mask_1d,
+        num_intervals=tuple(int(n) for n in extraction.num_intervals),
+        input_shape_per_dir=extraction.input_shape_per_dir,
+        output_shape_per_dir=extraction.output_shape_per_dir,
+        dim=int(extraction.dim),
+    )
+
+
 __all__ = [
     "CellIndex",
     "CellIndicesBatch",
+    "ExtractionStructView",
     "SpanwiseElementExtraction",
     "Target",
+    "make_struct_view",
     "normalize_cell_indices",
     "operand_shape",
 ]

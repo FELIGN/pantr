@@ -15,6 +15,9 @@ This package consolidates the B-spline API:
 - :func:`create_from_bezier`: create a B-spline from a Bézier.
 - :class:`SpanwiseElementExtraction`: lazy tensor-product change-of-basis
   operator across B-spline elements (Bézier/Lagrange/cardinal targets).
+- :class:`ExtractionStructView`, :func:`make_struct_view`: Numba-passable
+  bundle of a :class:`SpanwiseElementExtraction`'s compact storage for
+  downstream ``@njit`` code.
 """
 
 from ._bspline import Bspline, create_from_bezier
@@ -29,12 +32,17 @@ from ._bspline_space_factory import (
     get_greville_abscissae,
 )
 from ._bspline_space_nd import BsplineSpace
-from .spanwise_element_extraction import SpanwiseElementExtraction
+from .spanwise_element_extraction import (
+    ExtractionStructView,
+    SpanwiseElementExtraction,
+    make_struct_view,
+)
 
 __all__ = [
     "Bspline",
     "BsplineSpace",
     "BsplineSpace1D",
+    "ExtractionStructView",
     "SpanwiseElementExtraction",
     "create_cardinal_knots",
     "create_from_bezier",
@@ -46,4 +54,5 @@ __all__ = [
     "get_greville_abscissae",
     "interpolate_bspline",
     "l2_project_bspline",
+    "make_struct_view",
 ]

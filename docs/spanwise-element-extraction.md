@@ -234,6 +234,39 @@ drop the redundant `apply` prefix — as shown in the table below:
 All kernels accept only plain NumPy arrays (no Python objects).  Dimensions
 above 3 raise `NotImplementedError` from the Layer-2 dispatcher.
 
+### Struct view for `@njit` callers
+
+{class}`~pantr.bspline.ExtractionStructView` bundles the compact storage and
+shape metadata of a {class}`~pantr.bspline.SpanwiseElementExtraction` into a
+single immutable `typing.NamedTuple` that Numba can unbox.  Pass it as a
+single argument instead of forwarding seven separate objects.
+
+```python
+from numba import njit
+from pantr.bspline import SpanwiseElementExtraction, make_struct_view
+from pantr.bspline._extraction_kernels import apply_kron_apply_many_2d
+
+ext  = SpanwiseElementExtraction(space, "bezier")
+view = make_struct_view(ext)   # shares arrays; no copies
+
+@njit(cache=True)
+def batch_apply(view, cell_indices, v, out, scratch):
+    apply_kron_apply_many_2d(
+        view.compact_ops_1d[0],       view.compact_ops_1d[1],
+        view.idx_maps_1d[0],          view.idx_maps_1d[1],
+        view.is_identity_mask_1d[0],  view.is_identity_mask_1d[1],
+        cell_indices, v, out, scratch,
+    )
+```
+
+The struct view exposes the same arrays and integer metadata already
+available on the extraction object — see the
+{class}`~pantr.bspline.ExtractionStructView` API reference for the full
+field list.  Because every field has a uniform Numba type (homogeneous
+tuples of arrays, plain ints, and int tuples), the view is a drop-in
+argument for any `@njit` function that previously took the individual
+pieces.
+
 ## Materializing operators
 
 Use {meth}`~pantr.bspline.SpanwiseElementExtraction.operator` to assemble the
