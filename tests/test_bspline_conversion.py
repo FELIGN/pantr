@@ -888,6 +888,13 @@ class TestToBeziersSpanwiseParity:
 
     where ``M = extraction.operator(idx) = kron(C_0[i0], ..., C_{d-1}[i_{d-1}])`` and
     ``ctrl_local = ctrl[i0:i0+order_0, ..., i_{d-1}:i_{d-1}+order_{d-1}, :]``.
+
+    The ``.T`` arises because ``_apply_bezier_extraction_1d_core`` computes
+    ``C_i^T @ P_local`` (column-convention operators matching the kernel at
+    ``_bspline_to_beziers.py:62``).
+
+    Periodic spaces are excluded: ``SpanwiseElementExtraction`` raises
+    ``NotImplementedError`` for them; periodic coverage lives in ``TestToBeziers``.
     """
 
     @pytest.mark.parametrize(
@@ -909,8 +916,14 @@ class TestToBeziersSpanwiseParity:
                 ],
                 30,
             ),
+            # Single-element space: Bezier extraction is the identity everywhere,
+            # so expected == ctrl_local. Exercises the identity short-circuit path.
+            ([BsplineSpace1D([0.0, 0.0, 0.0, 1.0, 1.0, 1.0], 2)], 40),
+            # Degree-3 space: exercises order=4 in the Numba kernel and higher-degree
+            # extraction operators with non-trivial entries.
+            ([BsplineSpace1D([0.0, 0.0, 0.0, 0.0, 0.5, 1.0, 1.0, 1.0, 1.0], 3)], 50),
         ],
-        ids=["1d", "2d", "3d"],
+        ids=["1d", "2d", "3d", "1d_single", "1d_deg3"],
     )
     def test_element_cp_matches_operator_transpose(
         self, spaces: list[BsplineSpace1D], rng_seed: int
