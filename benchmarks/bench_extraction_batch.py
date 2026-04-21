@@ -22,7 +22,7 @@ _BATCH_SIZES = [1, 10, 50, 100, 500, 1000, 5000]
 
 
 def _build_space() -> BsplineSpace:
-    """3D space: degree 3, 20 elements per direction, ~50k DOFs."""
+    """3D space: degree 3, 20 elements per direction, ~12k DOFs."""
     knots = np.concatenate(
         [
             np.zeros(4),

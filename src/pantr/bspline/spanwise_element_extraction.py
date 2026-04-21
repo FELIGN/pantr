@@ -671,7 +671,15 @@ class SpanwiseElementExtraction:
             scratch (npt.NDArray[np.float32 | np.float64] | None): Optional scratch.
 
         Returns:
-            npt.NDArray[np.float32 | np.float64]: The result array.
+            npt.NDArray[np.float32 | np.float64]: Result array of shape
+            ``(n_cells, N_out)`` for vector kinds or ``(n_cells, N_out, N_out)`` /
+            ``(n_cells, N_in, N_in)`` for bilateral kinds.
+
+        Raises:
+            IndexError: If any cell index is out of range.
+            ValueError: If operand shape/dtype or ``out``/``scratch`` are invalid.
+            TypeError: If ``cell_indices`` contains non-integer values.
+            NotImplementedError: If the space has more than 3 directions.
         """
         idx2d = normalize_cell_indices(cell_indices, self.num_intervals)
         kernel, args, result = _prepare_apply_many_call(
@@ -835,18 +843,22 @@ def normalize_cell_indices(
         npt.NDArray[np.intp]: 2-D integer array of shape ``(n_cells, d)``.
 
     Raises:
-        ValueError: If ``cell_indices`` has wrong shape or out-of-range values.
-        TypeError: If ``cell_indices`` is not an array-like of integers.
+        IndexError: If any value is out of range for its per-direction bound.
+        ValueError: If ``cell_indices`` has the wrong shape or ndim.
+        TypeError: If ``cell_indices`` contains non-integer values.
     """
     d = len(num_intervals)
-    arr = np.asarray(cell_indices, dtype=np.intp)
+    arr_raw = np.asarray(cell_indices)
+    if arr_raw.size > 0 and not np.issubdtype(arr_raw.dtype, np.integer):
+        raise TypeError(f"cell_indices must contain integers; got dtype {arr_raw.dtype}")
+    arr = arr_raw.astype(np.intp)
     if arr.ndim == 1:
         n_cells = arr.shape[0]
         total = 1
         for n in num_intervals:
             total *= n
         if n_cells > 0 and (int(arr.min()) < 0 or int(arr.max()) >= total):
-            raise ValueError(
+            raise IndexError(
                 f"Flat cell indices must be in [0, {total}); "
                 f"got range [{int(arr.min())}, {int(arr.max())}]"
             )
@@ -862,7 +874,7 @@ def normalize_cell_indices(
             for k, n_el in enumerate(num_intervals):
                 col = arr[:, k]
                 if int(col.min()) < 0 or int(col.max()) >= n_el:
-                    raise ValueError(
+                    raise IndexError(
                         f"cell_indices[:, {k}] must be in [0, {n_el}); "
                         f"got range [{int(col.min())}, {int(col.max())}]"
                     )

@@ -152,6 +152,7 @@ nitpick_ignore = [
     ("py:class", "numpy._typing._dtype_like._SupportsDType"),
     ("py:class", "numpy._typing._nested_sequence._NestedSequence"),
     ("py:class", "CellIndex"),
+    ("py:class", "CellIndicesBatch"),
     ("py:class", "Target"),
 ]
 

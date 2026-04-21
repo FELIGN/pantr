@@ -436,6 +436,17 @@ def _prepare_apply_call(  # noqa: PLR0913 -- each arg reflects a distinct kernel
     )
     _validate_operand(operand, expected_in_shape, dtype)
     out = _allocate_or_validate_out(out, expected_out_shape, dtype)
+    # When every direction is identity the bilateral kernel is a pure copy, so
+    # aliasing out=K is safe.  Only raise for the general (non-identity) case.
+    if (
+        op_kind in ("MT_K_M", "M_K_MT")
+        and not all(is_identity_per_dir)
+        and np.shares_memory(operand, out)
+    ):
+        raise ValueError(
+            "out must not alias the operand (K) for bilateral operations; "
+            "the kernel reads and writes overlapping memory"
+        )
 
     scratch_size = _required_scratch_size(input_shape_per_dir, output_shape_per_dir, op_kind)
     scratch = _allocate_or_validate_scratch(scratch, scratch_size, dtype)
@@ -496,17 +507,17 @@ def _allocate_or_validate_scratch_many(
         raise ValueError(
             f"Batch scratch shape[0]={scratch.shape[0]} does not match n_cells={n_cells}"
         )
-    if scratch.shape[1] < scratch_size_per_cell:
+    if scratch.shape[1] < alloc_width:
         raise ValueError(
             f"Batch scratch shape[1]={scratch.shape[1]} is smaller than "
-            f"required scratch_size_per_cell={scratch_size_per_cell}"
+            f"required width={alloc_width}"
         )
     if not scratch.flags.writeable:
         raise ValueError("Batch scratch array is not writeable")
     return scratch
 
 
-def _prepare_apply_many_call(  # noqa: PLR0913
+def _prepare_apply_many_call(  # noqa: PLR0912, PLR0913
     ops_1d: tuple[npt.NDArray[np.float32 | np.float64], ...],
     is_identity_masks: tuple[npt.NDArray[np.bool_], ...],
     cell_indices: npt.NDArray[np.intp],
@@ -530,8 +541,10 @@ def _prepare_apply_many_call(  # noqa: PLR0913
             shape ``(n_cells, d)``. Values must be non-negative and within the
             per-direction element counts from ``ops_1d``.
         operand (npt.NDArray[np.float32 | np.float64]): Batch input array.
-            Shape ``(n_cells, N_in)`` for vector kinds or
-            ``(n_cells, N, N)`` for bilateral kinds.
+            Shape ``(n_cells, N_in)`` for ``"apply"``,
+            ``(n_cells, N_out)`` for ``"apply_T"``,
+            ``(n_cells, N_out, N_out)`` for ``"MT_K_M"``, or
+            ``(n_cells, N_in, N_in)`` for ``"M_K_MT"``.
         out (npt.NDArray[np.float32 | np.float64] | None): Batch output array,
             or ``None`` to allocate.
         scratch (npt.NDArray[np.float32 | np.float64] | None): Per-cell scratch
@@ -560,6 +573,8 @@ def _prepare_apply_many_call(  # noqa: PLR0913
     for k, op in enumerate(ops_1d[1:], start=1):
         if op.dtype != dtype:
             raise ValueError(f"ops_1d[{k}] dtype {op.dtype} differs from ops_1d[0] dtype {dtype}")
+    if np.dtype(dtype).type not in (np.float32, np.float64):
+        raise ValueError(f"ops_1d operators must have dtype float32 or float64; got {dtype}")
 
     if cell_indices.ndim != 2:  # noqa: PLR2004
         raise ValueError(f"cell_indices must be 2D; got ndim={cell_indices.ndim}")
@@ -582,6 +597,15 @@ def _prepare_apply_many_call(  # noqa: PLR0913
     expected_out_shape = (n_cells, *per_cell_out)
     _validate_operand(operand, expected_operand, dtype)
     out = _allocate_or_validate_out(out, expected_out_shape, dtype)
+    if op_kind in ("MT_K_M", "M_K_MT") and np.shares_memory(operand, out):
+        all_identity = n_cells == 0 or all(
+            bool(is_identity_masks[k][cell_indices[:, k]].all()) for k in range(d)
+        )
+        if not all_identity:
+            raise ValueError(
+                "out must not alias the operand (K) for bilateral operations; "
+                "the kernel reads and writes overlapping memory"
+            )
 
     scratch_size = _required_scratch_size(input_shape_per_dir, output_shape_per_dir, op_kind)
     scratch = _allocate_or_validate_scratch_many(scratch, n_cells, scratch_size, dtype)
