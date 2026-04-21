@@ -12,6 +12,10 @@ Four operation kinds are supported (see :data:`OP_KINDS`):
 - ``"M_K_MT"``:   ``out = M @ K @ M^T``     (input x input -> output x output)
 
 with ``M = kron(M_0, M_1, ..., M_{d-1})``.
+
+The batch dispatch path (:func:`_prepare_apply_many_call`) uses compact operator
+storage (non-identity rows only) together with per-direction index maps, as built
+by :class:`~pantr.bspline.spanwise_element_extraction.SpanwiseElementExtraction`.
 """
 
 from __future__ import annotations
@@ -517,8 +521,9 @@ def _allocate_or_validate_scratch_many(
     return scratch
 
 
-def _prepare_apply_many_call(  # noqa: PLR0912, PLR0913
+def _prepare_apply_many_call(  # noqa: PLR0912, PLR0913, PLR0915
     ops_1d: tuple[npt.NDArray[np.float32 | np.float64], ...],
+    idx_maps_1d: tuple[npt.NDArray[np.intp], ...],
     is_identity_masks: tuple[npt.NDArray[np.bool_], ...],
     cell_indices: npt.NDArray[np.intp],
     operand: npt.NDArray[np.float32 | np.float64],
@@ -533,13 +538,19 @@ def _prepare_apply_many_call(  # noqa: PLR0912, PLR0913
     """Validate inputs and build the kernel call for a batch of cells.
 
     Args:
-        ops_1d (tuple[npt.NDArray[np.float32 | np.float64], ...]): Full per-direction
-            3D operator arrays ``(n_el_k, n_out_k, n_in_k)``. Length must equal ``d``.
+        ops_1d (tuple[npt.NDArray[np.float32 | np.float64], ...]): Compact
+            per-direction 3D operator arrays ``(n_compact_k, n_out_k, n_in_k)``
+            containing only non-identity rows. Length must equal ``d``.
+        idx_maps_1d (tuple[npt.NDArray[np.intp], ...]): Per-direction compact
+            index maps of shape ``(n_el_k,)``; ``idx_maps_1d[k][e]`` is the row
+            index into ``ops_1d[k]`` for element ``e`` (0 for identity elements,
+            unused; the kernel short-circuits on ``is_identity_masks``). Length
+            must equal ``d``.
         is_identity_masks (tuple[npt.NDArray[np.bool_], ...]): Full per-direction
             identity mask arrays of shape ``(n_el_k,)``. Length must equal ``d``.
         cell_indices (npt.NDArray[np.intp]): Per-direction element indices,
             shape ``(n_cells, d)``. Values must be non-negative and within the
-            per-direction element counts from ``ops_1d``.
+            per-direction element counts from ``is_identity_masks``.
         operand (npt.NDArray[np.float32 | np.float64]): Batch input array.
             Shape ``(n_cells, N_in)`` for ``"apply"``,
             ``(n_cells, N_out)`` for ``"apply_T"``,
@@ -562,6 +573,8 @@ def _prepare_apply_many_call(  # noqa: PLR0912, PLR0913
     """
     _validate_op_kind(op_kind)
     d = len(ops_1d)
+    if len(idx_maps_1d) != d:
+        raise ValueError(f"idx_maps_1d has length {len(idx_maps_1d)}, expected {d}")
     if len(is_identity_masks) != d:
         raise ValueError(f"is_identity_masks has length {len(is_identity_masks)}, expected {d}")
     if d < 1:
@@ -575,6 +588,25 @@ def _prepare_apply_many_call(  # noqa: PLR0912, PLR0913
             raise ValueError(f"ops_1d[{k}] dtype {op.dtype} differs from ops_1d[0] dtype {dtype}")
     if np.dtype(dtype).type not in (np.float32, np.float64):
         raise ValueError(f"ops_1d operators must have dtype float32 or float64; got {dtype}")
+    for k, (idx_map, mask, op) in enumerate(
+        zip(idx_maps_1d, is_identity_masks, ops_1d, strict=True)
+    ):
+        n_el_k = mask.shape[0]
+        if idx_map.ndim != 1:
+            raise ValueError(f"idx_maps_1d[{k}] must be 1D; got ndim={idx_map.ndim}")
+        if not np.issubdtype(idx_map.dtype, np.integer):
+            raise ValueError(f"idx_maps_1d[{k}] must be integer; got dtype {idx_map.dtype}")
+        if idx_map.shape[0] != n_el_k:
+            raise ValueError(
+                f"idx_maps_1d[{k}] has length {idx_map.shape[0]}, "
+                f"expected {n_el_k} to match is_identity_masks[{k}]"
+            )
+        non_id_vals = idx_map[~mask]
+        if len(non_id_vals) > 0 and int(non_id_vals.max()) >= int(op.shape[0]):
+            raise ValueError(
+                f"idx_maps_1d[{k}] contains out-of-range values for ops_1d[{k}]: "
+                f"max value {int(non_id_vals.max())} >= n_compact_{k}={int(op.shape[0])}"
+            )
 
     if cell_indices.ndim != 2:  # noqa: PLR2004
         raise ValueError(f"cell_indices must be 2D; got ndim={cell_indices.ndim}")
@@ -582,8 +614,8 @@ def _prepare_apply_many_call(  # noqa: PLR0912, PLR0913
         raise ValueError(f"cell_indices.shape[1]={cell_indices.shape[1]} does not match d={d}")
     n_cells = cell_indices.shape[0]
     if n_cells > 0:
-        for k, op in enumerate(ops_1d):
-            n_el_k = op.shape[0]
+        for k, mask in enumerate(is_identity_masks):
+            n_el_k = mask.shape[0]
             col = cell_indices[:, k]
             if int(col.min()) < 0 or int(col.max()) >= n_el_k:
                 raise IndexError(f"cell_indices[:, {k}] contains values outside [0, {n_el_k})")
@@ -611,7 +643,16 @@ def _prepare_apply_many_call(  # noqa: PLR0912, PLR0913
     scratch = _allocate_or_validate_scratch_many(scratch, n_cells, scratch_size, dtype)
 
     kernel = _dispatch_apply_many(d, op_kind)
-    args: tuple[Any, ...] = (*ops_1d, *is_identity_masks, cell_indices, operand, out, scratch)
+    idx_maps_intp = tuple(m if m.dtype == np.intp else m.astype(np.intp) for m in idx_maps_1d)
+    args: tuple[Any, ...] = (
+        *ops_1d,
+        *idx_maps_intp,
+        *is_identity_masks,
+        cell_indices,
+        operand,
+        out,
+        scratch,
+    )
     return kernel, args, out
 
 
