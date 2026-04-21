@@ -125,6 +125,41 @@ def _tabulate_Bspline_Bezier_1D_extraction_core(
                 out[elem_id + 1, reg - r : reg + 1, reg - r] = C[degree - r : degree + 1, degree]
 
 
+@nb_jit(
+    nopython=True,
+    cache=True,
+    parallel=False,
+)
+def _bezier_structural_identity_mask_core(
+    multiplicities: npt.NDArray[np.intp],
+    degree: int,
+    out: npt.NDArray[np.bool_],
+) -> None:
+    """Compute a per-element Bézier identity mask from knot multiplicities.
+
+    Element ``e`` spanning ``[unique_knots[e], unique_knots[e+1]]`` has an
+    identity Bézier extraction operator if and only if both boundary unique
+    knots have multiplicity ``>= degree + 1``, meaning the element is already
+    a Bézier patch (fully isolated from its neighbours).
+
+    Args:
+        multiplicities (npt.NDArray[np.intp]): Per-unique-knot multiplicity
+            array of length ``n_elements + 1`` (in-domain unique knots
+            including both endpoints).
+        degree (int): B-spline degree.
+        out (npt.NDArray[np.bool_]): Output boolean array of length
+            ``n_elements = len(multiplicities) - 1``.
+
+    Note:
+        Inputs are assumed to be correct (no validation performed).
+        For general use, call ``_bezier_structural_identity_mask`` instead.
+    """
+    threshold = degree + 1
+    n_elements = len(multiplicities) - 1
+    for e in range(n_elements):
+        out[e] = multiplicities[e] >= threshold and multiplicities[e + 1] >= threshold
+
+
 def _tabulate_Bspline_Bezier_1D_extraction_impl(
     knots: npt.NDArray[np.float32 | np.float64],
     degree: int,
@@ -337,6 +372,7 @@ def _warmup_numba_functions() -> None:
 
 
 __all__ = [
+    "_bezier_structural_identity_mask_core",
     "_tabulate_Bspline_Bezier_1D_extraction_impl",
     "_tabulate_Bspline_Lagrange_1D_extraction_impl",
     "_tabulate_Bspline_cardinal_1D_extraction_impl",

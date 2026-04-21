@@ -13,13 +13,18 @@ Three targets are supported (the source basis is always the B-spline basis):
   distribution (see :class:`pantr.basis.LagrangeVariant`).
 - ``"cardinal"``: cardinal B-spline basis on each element.
 
-Identity short-circuit is used wherever possible: for ``"cardinal"`` the
-structural mask from :meth:`BsplineSpace1D.get_cardinal_intervals` labels each
-interval whose knot spans are uniform (a *cardinal* interval); on such an
-interval the cardinal extraction operator is exactly the identity matrix. For
-``"bezier"`` and ``"lagrange"`` a per-element numerical test
-``|C - I|_max < tol`` marks trivial elements (for instance, a C⁰ Bézier space
-has identity Bézier extraction everywhere).
+Identity short-circuit is used wherever possible. All three targets use
+structural (exact) identity predicates:
+
+- ``"bezier"``: element ``e`` is identity iff both its boundary unique knots
+  have multiplicity ``>= degree + 1``, i.e. the element is already a Bézier
+  patch.
+- ``"lagrange"``: mathematically, the Lagrange-to-Bernstein matrix is never
+  the identity for ``degree > 0``, so no Lagrange element can be identity
+  unless ``degree == 0`` (in which case every element is trivially identity).
+- ``"cardinal"``: structural mask from
+  :meth:`BsplineSpace1D.get_cardinal_intervals` labels uniform-span intervals,
+  on which the cardinal extraction operator is exactly the identity.
 """
 
 from __future__ import annotations
@@ -33,6 +38,8 @@ import numpy.typing as npt
 
 from ..basis import LagrangeVariant
 from ..basis._basis_utils import _allocate_or_validate_out
+from ._bspline_extraction import _bezier_structural_identity_mask_core
+from ._bspline_knots import _get_unique_knots_and_multiplicity_impl
 from ._extraction_helpers import (
     OpKind,
     _operation_shapes,
@@ -41,6 +48,7 @@ from ._extraction_helpers import (
 )
 
 if TYPE_CHECKING:
+    from ._bspline_space_1d import BsplineSpace1D
     from ._bspline_space_nd import BsplineSpace
 
 
@@ -87,8 +95,6 @@ class SpanwiseElementExtraction:
         _target (Target): Target basis tag.
         _lagrange_variant (LagrangeVariant): Point distribution used when
             ``target == "lagrange"``; ignored otherwise.
-        _identity_tol (float): Numerical tolerance used for identity
-            detection on ``"bezier"`` and ``"lagrange"`` targets.
         _ops_1d (tuple[npt.NDArray[np.float32 | np.float64], ...]):
             Per-direction 3D operator arrays of shape
             ``(n_elements_k, n_out_k, n_in_k)``.
@@ -99,7 +105,6 @@ class SpanwiseElementExtraction:
     _space: BsplineSpace
     _target: Target
     _lagrange_variant: LagrangeVariant
-    _identity_tol: float
     _ops_1d: tuple[npt.NDArray[np.float32 | np.float64], ...]
     _is_identity_mask_1d: tuple[npt.NDArray[np.bool_], ...]
 
@@ -109,7 +114,6 @@ class SpanwiseElementExtraction:
         target: Target,
         *,
         lagrange_variant: LagrangeVariant = LagrangeVariant.EQUISPACES,
-        identity_tol: float | None = None,
     ) -> None:
         """Build the per-direction operators and identity masks.
 
@@ -119,13 +123,9 @@ class SpanwiseElementExtraction:
             lagrange_variant (LagrangeVariant): Point distribution used when
                 ``target == "lagrange"``. Defaults to
                 :attr:`pantr.basis.LagrangeVariant.EQUISPACES`.
-            identity_tol (float | None): Absolute tolerance for numerical
-                identity detection on ``"bezier"`` and ``"lagrange"`` targets.
-                If ``None``, defaults to ``space.tolerance``.
 
         Raises:
             ValueError: If ``target`` is not a recognized tag.
-            ValueError: If ``identity_tol`` is negative or NaN.
             NotImplementedError: If any direction of ``space`` is periodic;
                 periodic support is deferred to a later version.
         """
@@ -142,22 +142,18 @@ class SpanwiseElementExtraction:
         self._space = space
         self._target = target
         self._lagrange_variant = lagrange_variant
-        tol = float(space.tolerance) if identity_tol is None else float(identity_tol)
-        if not (tol >= 0.0):
-            raise ValueError(f"identity_tol must be non-negative; got {tol!r}")
-        self._identity_tol = tol
 
         ops_1d: list[npt.NDArray[np.float32 | np.float64]] = []
         masks_1d: list[npt.NDArray[np.bool_]] = []
         for space_1d in space.spaces:
             if target == "bezier":
                 ops = space_1d.tabulate_Bezier_extraction_operators()
-                mask = _numerical_identity_mask(ops, self._identity_tol)
+                mask = _bezier_structural_identity_mask(space_1d)
             elif target == "lagrange":
                 ops = space_1d.tabulate_Lagrange_extraction_operators(
                     lagrange_variant=lagrange_variant
                 )
-                mask = _numerical_identity_mask(ops, self._identity_tol)
+                mask = _lagrange_structural_identity_mask(space_1d)
             else:  # target == "cardinal"
                 ops = space_1d.tabulate_cardinal_extraction_operators()
                 mask = space_1d.get_cardinal_intervals()
@@ -206,15 +202,6 @@ class SpanwiseElementExtraction:
             LagrangeVariant: The point distribution. Meaningless for other targets.
         """
         return self._lagrange_variant
-
-    @property
-    def identity_tol(self) -> float:
-        """Get the tolerance used for numerical identity detection.
-
-        Returns:
-            float: The absolute tolerance.
-        """
-        return self._identity_tol
 
     @property
     def dim(self) -> int:
@@ -268,11 +255,12 @@ class SpanwiseElementExtraction:
     def is_identity_mask_1d(self) -> tuple[npt.NDArray[np.bool_], ...]:
         """Get the per-direction identity masks.
 
-        For the ``"cardinal"`` target each entry reflects whether the interval
-        has a uniform (cardinal) knot span, which is exactly when the cardinal
-        extraction operator is the identity matrix. For ``"bezier"`` and
-        ``"lagrange"`` targets the mask is computed by a numerical
-        ``|C - I|_max < identity_tol`` test per element.
+        All three targets use structural (exact) predicates — no numerical
+        tolerance is involved. For ``"bezier"``, an element is identity iff
+        both its boundary unique knots have multiplicity ``>= degree + 1``.
+        For ``"lagrange"``, every element is identity when ``degree == 0`` and
+        none are for ``degree > 0``. For ``"cardinal"``, the mask is the
+        structural output of :meth:`BsplineSpace1D.get_cardinal_intervals`.
 
         Returns:
             tuple[npt.NDArray[bool], ...]: Length-``d`` tuple of read-only
@@ -882,27 +870,50 @@ def normalize_cell_indices(
     raise ValueError(f"cell_indices must be 1-D (flat) or 2-D (per-direction); got ndim={arr.ndim}")
 
 
-def _numerical_identity_mask(
-    ops: npt.NDArray[np.float32 | np.float64], tol: float
+def _bezier_structural_identity_mask(
+    space_1d: BsplineSpace1D,
 ) -> npt.NDArray[np.bool_]:
-    """Compute a per-element identity mask by comparing each matrix against ``I``.
+    """Compute the per-element Bézier identity mask from knot multiplicities.
 
-    Non-square matrices are always reported as non-identity.
+    Element ``e`` is identity iff both its boundary unique knots (in-domain)
+    have multiplicity ``>= degree + 1``, meaning the element is already a
+    Bézier patch with no continuity coupling to its neighbours.
 
     Args:
-        ops (npt.NDArray[np.float32 | np.float64]): Stack of 2D operators,
-            shape ``(n_elements, n_out, n_in)``.
-        tol (float): Absolute tolerance used element-wise.
+        space_1d (BsplineSpace1D): A 1D B-spline space.
 
     Returns:
-        npt.NDArray[bool]: Boolean array of shape ``(n_elements,)``.
+        npt.NDArray[np.bool_]: Boolean array of shape ``(n_elements,)``.
     """
-    n_elements, n_out, n_in = ops.shape
-    if n_out != n_in:
-        return np.zeros(n_elements, dtype=np.bool_)
-    eye = np.eye(n_out, dtype=ops.dtype)
-    result: npt.NDArray[np.bool_] = np.max(np.abs(ops - eye[np.newaxis]), axis=(1, 2)) <= tol
-    return result
+    _, mults = _get_unique_knots_and_multiplicity_impl(
+        space_1d.knots, space_1d.degree, float(space_1d.tolerance), in_domain=True
+    )
+    n_elements = len(mults) - 1
+    out = np.empty(n_elements, dtype=np.bool_)
+    _bezier_structural_identity_mask_core(mults, space_1d.degree, out)
+    return out
+
+
+def _lagrange_structural_identity_mask(
+    space_1d: BsplineSpace1D,
+) -> npt.NDArray[np.bool_]:
+    """Compute the per-element Lagrange identity mask from the space degree.
+
+    For ``degree == 0`` every element is trivially identity (one constant
+    B-spline per element; the Lagrange extraction is ``[1]``). For
+    ``degree > 0`` the Lagrange-to-Bernstein matrix is never the identity, so
+    no element can have an identity Lagrange extraction operator.
+
+    Args:
+        space_1d (BsplineSpace1D): A 1D B-spline space.
+
+    Returns:
+        npt.NDArray[np.bool_]: Boolean array of shape ``(n_elements,)``.
+    """
+    n_elements = space_1d.num_intervals
+    if space_1d.degree == 0:
+        return np.ones(n_elements, dtype=np.bool_)
+    return np.zeros(n_elements, dtype=np.bool_)
 
 
 # The op_kind shape helper is kept import-local so downstream callers can build
