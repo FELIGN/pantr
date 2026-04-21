@@ -991,7 +991,7 @@ def test_allocate_or_validate_scratch_many_rejects_invalid() -> None:
 
 @pytest.mark.parametrize("target", ["bezier", "lagrange", "cardinal"])
 @pytest.mark.parametrize("dtype", [np.float64, np.float32])
-def test_compact_ops_1d_shape(target: str, dtype: str) -> None:
+def test_compact_ops_1d_shape(target: str, dtype: npt.DTypeLike) -> None:
     """``compact_ops_1d[k]`` has exactly as many rows as non-identity elements."""
     sp1 = BsplineSpace1D(np.array([0, 0, 0, 1, 2, 3, 4, 5, 6, 6, 6], dtype=dtype), 2)
     ext = SpanwiseElementExtraction(BsplineSpace([sp1, sp1]), target)  # type: ignore[arg-type]
@@ -1048,7 +1048,7 @@ def test_compact_ops_saves_memory_for_cardinal() -> None:
 
 @pytest.mark.parametrize("target", ["bezier", "lagrange", "cardinal"])
 @pytest.mark.parametrize("dtype", [np.float64, np.float32])
-def test_ops_1d_round_trip(target: str, dtype: str) -> None:
+def test_ops_1d_round_trip(target: str, dtype: npt.DTypeLike) -> None:
     """Lazy-reconstructed ``ops_1d`` matches ``tabulate`` element-by-element."""
     sp1 = BsplineSpace1D(np.array([0, 0, 0, 1, 2, 3, 4, 5, 6, 6, 6], dtype=dtype), 2)
     sp = BsplineSpace([sp1, sp1])
@@ -1072,10 +1072,11 @@ def test_ops_1d_round_trip(target: str, dtype: str) -> None:
         )
 
 
-def test_compact_idx_map_correctness() -> None:
+@pytest.mark.parametrize("target", ["bezier", "lagrange", "cardinal"])
+def test_compact_idx_map_correctness(target: str) -> None:
     """Non-identity elements map to the correct compact operator via ``idx_maps_1d``."""
     sp = _space_2d()
-    ext = SpanwiseElementExtraction(sp, "cardinal")
+    ext = SpanwiseElementExtraction(sp, target)  # type: ignore[arg-type]
     for k, (compact_ops, idx_map, mask) in enumerate(
         zip(ext.compact_ops_1d, ext.idx_maps_1d, ext.is_identity_mask_1d, strict=True)
     ):
@@ -1087,6 +1088,18 @@ def test_compact_idx_map_correctness() -> None:
                     full_ops[e],
                     err_msg=f"dir {k}, element {e}: compact op != full op",
                 )
+
+
+def test_compact_idx_map_identity_sentinel() -> None:
+    """Identity elements have ``idx_map[e] == 0`` (the unused sentinel value)."""
+    sp = _space_2d()
+    ext = SpanwiseElementExtraction(sp, "cardinal")
+    for k, (idx_map, mask) in enumerate(zip(ext.idx_maps_1d, ext.is_identity_mask_1d, strict=True)):
+        np.testing.assert_array_equal(
+            idx_map[mask],
+            0,
+            err_msg=f"dir {k}: identity elements should store idx_map sentinel 0",
+        )
 
 
 def test_all_identity_direction_compact_shape() -> None:
@@ -1103,6 +1116,44 @@ def test_all_identity_direction_compact_shape() -> None:
         )
 
 
+def test_all_non_identity_compact_shape() -> None:
+    """When no elements are identity the compact array has exactly n_el_k rows."""
+    # Bezier target on a non-decomposed space: no elements are identity
+    sp1 = BsplineSpace1D([0, 0, 0, 1, 2, 3, 4, 5, 6, 6, 6], 2)
+    ext = SpanwiseElementExtraction(BsplineSpace([sp1, sp1]), "bezier")
+    for k, (compact_ops, mask) in enumerate(
+        zip(ext.compact_ops_1d, ext.is_identity_mask_1d, strict=True)
+    ):
+        n_el = int(mask.shape[0])
+        assert not mask.any(), f"dir {k}: expected no identity elements"
+        assert compact_ops.shape[0] == n_el, (
+            f"dir {k}: all-non-identity compact should have {n_el} rows, got {compact_ops.shape[0]}"
+        )
+
+
+def test_idx_maps_1d_wrong_tuple_length_validation() -> None:
+    """``_prepare_apply_many_call`` rejects idx_maps_1d whose tuple length != d."""
+    sp = _space_2d()
+    ext = SpanwiseElementExtraction(sp, "bezier")
+    flat = np.array([0, 1, 2], dtype=np.intp)
+    idx2d = normalize_cell_indices(flat, ext.num_intervals)
+    n_in = int(np.prod(ext.input_shape_per_dir))
+    v = RNG.random((3, n_in))
+
+    # d=2 space but only 1 idx_map tuple element
+    with pytest.raises(ValueError, match="idx_maps_1d"):
+        _prepare_apply_many_call(
+            ext.compact_ops_1d,
+            (np.zeros(ext.num_intervals[0], dtype=np.intp),),
+            ext.is_identity_mask_1d,
+            idx2d,
+            v,
+            None,
+            None,
+            "apply",
+        )
+
+
 def test_idx_maps_1d_validation_in_prepare_many_call() -> None:
     """``_prepare_apply_many_call`` validates idx_maps_1d length and dtype."""
     sp = _space_2d()
@@ -1112,7 +1163,7 @@ def test_idx_maps_1d_validation_in_prepare_many_call() -> None:
     n_in = int(np.prod(ext.input_shape_per_dir))
     v = RNG.random((3, n_in))
 
-    # Wrong length for idx_maps_1d
+    # Wrong element-length for idx_maps_1d (each map has length 1 instead of n_el_k)
     bad_idx_map = (np.zeros(1, dtype=np.intp), np.zeros(1, dtype=np.intp))
     with pytest.raises(ValueError, match="idx_maps_1d"):
         _prepare_apply_many_call(

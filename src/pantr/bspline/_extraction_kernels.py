@@ -1256,7 +1256,8 @@ def apply_kron_apply_many_1d(  # noqa: PLR0913 -- kernel fan-in is intentional.
             shape ``(n_compact_0, n_out_0, n_in_0)``; only non-identity rows.
         idx_map_0 (npt.NDArray[Any]): Compact index map for direction 0, shape
             ``(n_el_0,)`` integer; ``idx_map_0[e]`` is the row index into
-            ``ops_0`` for element ``e`` (undefined for identity elements).
+            ``ops_0`` for element ``e`` (0 for identity elements, unused; kernel
+            short-circuits on ``is_id_0``).
         is_id_0 (npt.NDArray[Any]): Per-element identity flags for direction 0,
             shape ``(n_el_0,)`` boolean.
         cell_indices (npt.NDArray[Any]): Per-direction element indices, shape
@@ -1297,9 +1298,11 @@ def apply_kron_apply_many_2d(  # noqa: PLR0913
         ops_1 (npt.NDArray[Any]): Compact element operators for direction 1,
             shape ``(n_compact_1, n_out_1, n_in_1)``; only non-identity rows.
         idx_map_0 (npt.NDArray[Any]): Compact index map for direction 0, shape
-            ``(n_el_0,)`` integer.
+            ``(n_el_0,)`` integer; 0 for identity elements (unused; kernel
+            short-circuits on ``is_id_0``).
         idx_map_1 (npt.NDArray[Any]): Compact index map for direction 1, shape
-            ``(n_el_1,)`` integer.
+            ``(n_el_1,)`` integer; 0 for identity elements (unused; kernel
+            short-circuits on ``is_id_1``).
         is_id_0 (npt.NDArray[Any]): Per-element identity flags for direction 0,
             shape ``(n_el_0,)`` boolean.
         is_id_1 (npt.NDArray[Any]): Per-element identity flags for direction 1,
@@ -1356,11 +1359,14 @@ def apply_kron_apply_many_3d(  # noqa: PLR0913
         ops_2 (npt.NDArray[Any]): Compact element operators for direction 2,
             shape ``(n_compact_2, n_out_2, n_in_2)``; only non-identity rows.
         idx_map_0 (npt.NDArray[Any]): Compact index map for direction 0, shape
-            ``(n_el_0,)`` integer.
+            ``(n_el_0,)`` integer; 0 for identity elements (unused; kernel
+            short-circuits on ``is_id_0``).
         idx_map_1 (npt.NDArray[Any]): Compact index map for direction 1, shape
-            ``(n_el_1,)`` integer.
+            ``(n_el_1,)`` integer; 0 for identity elements (unused; kernel
+            short-circuits on ``is_id_1``).
         idx_map_2 (npt.NDArray[Any]): Compact index map for direction 2, shape
-            ``(n_el_2,)`` integer.
+            ``(n_el_2,)`` integer; 0 for identity elements (unused; kernel
+            short-circuits on ``is_id_2``).
         is_id_0 (npt.NDArray[Any]): Per-element identity flags for direction 0,
             shape ``(n_el_0,)`` boolean.
         is_id_1 (npt.NDArray[Any]): Per-element identity flags for direction 1,
@@ -1412,7 +1418,8 @@ def apply_kron_apply_T_many_1d(  # noqa: PLR0913 -- kernel fan-in is intentional
         ops_0 (npt.NDArray[Any]): Compact element operators for direction 0,
             shape ``(n_compact_0, n_out_0, n_in_0)``; only non-identity rows.
         idx_map_0 (npt.NDArray[Any]): Compact index map for direction 0, shape
-            ``(n_el_0,)`` integer.
+            ``(n_el_0,)`` integer; 0 for identity elements (unused; kernel
+            short-circuits on ``is_id_0``).
         is_id_0 (npt.NDArray[Any]): Per-element identity flags, shape
             ``(n_el_0,)`` boolean.
         cell_indices (npt.NDArray[Any]): Per-direction element indices, shape
@@ -1453,9 +1460,11 @@ def apply_kron_apply_T_many_2d(  # noqa: PLR0913
         ops_1 (npt.NDArray[Any]): Compact element operators for direction 1,
             shape ``(n_compact_1, n_out_1, n_in_1)``; only non-identity rows.
         idx_map_0 (npt.NDArray[Any]): Compact index map for direction 0, shape
-            ``(n_el_0,)`` integer.
+            ``(n_el_0,)`` integer; 0 for identity elements (unused; kernel
+            short-circuits on ``is_id_0``).
         idx_map_1 (npt.NDArray[Any]): Compact index map for direction 1, shape
-            ``(n_el_1,)`` integer.
+            ``(n_el_1,)`` integer; 0 for identity elements (unused; kernel
+            short-circuits on ``is_id_1``).
         is_id_0 (npt.NDArray[Any]): Per-element identity flags for direction 0,
             shape ``(n_el_0,)`` boolean.
         is_id_1 (npt.NDArray[Any]): Per-element identity flags for direction 1,
@@ -1512,11 +1521,14 @@ def apply_kron_apply_T_many_3d(  # noqa: PLR0913
         ops_2 (npt.NDArray[Any]): Compact element operators for direction 2,
             shape ``(n_compact_2, n_out_2, n_in_2)``; only non-identity rows.
         idx_map_0 (npt.NDArray[Any]): Compact index map for direction 0, shape
-            ``(n_el_0,)`` integer.
+            ``(n_el_0,)`` integer; 0 for identity elements (unused; kernel
+            short-circuits on ``is_id_0``).
         idx_map_1 (npt.NDArray[Any]): Compact index map for direction 1, shape
-            ``(n_el_1,)`` integer.
+            ``(n_el_1,)`` integer; 0 for identity elements (unused; kernel
+            short-circuits on ``is_id_1``).
         idx_map_2 (npt.NDArray[Any]): Compact index map for direction 2, shape
-            ``(n_el_2,)`` integer.
+            ``(n_el_2,)`` integer; 0 for identity elements (unused; kernel
+            short-circuits on ``is_id_2``).
         is_id_0 (npt.NDArray[Any]): Per-element identity flags for direction 0,
             shape ``(n_el_0,)`` boolean.
         is_id_1 (npt.NDArray[Any]): Per-element identity flags for direction 1,
@@ -1568,7 +1580,8 @@ def apply_kron_MT_K_M_many_1d(  # noqa: PLR0913 -- kernel fan-in is intentional.
         ops_0 (npt.NDArray[Any]): Compact element operators for direction 0,
             shape ``(n_compact_0, n_out_0, n_in_0)``; only non-identity rows.
         idx_map_0 (npt.NDArray[Any]): Compact index map for direction 0, shape
-            ``(n_el_0,)`` integer.
+            ``(n_el_0,)`` integer; 0 for identity elements (unused; kernel
+            short-circuits on ``is_id_0``).
         is_id_0 (npt.NDArray[Any]): Per-element identity flags, shape
             ``(n_el_0,)`` boolean.
         cell_indices (npt.NDArray[Any]): Per-direction element indices, shape
@@ -1612,9 +1625,11 @@ def apply_kron_MT_K_M_many_2d(  # noqa: PLR0913
         ops_1 (npt.NDArray[Any]): Compact element operators for direction 1,
             shape ``(n_compact_1, n_out_1, n_in_1)``; only non-identity rows.
         idx_map_0 (npt.NDArray[Any]): Compact index map for direction 0, shape
-            ``(n_el_0,)`` integer.
+            ``(n_el_0,)`` integer; 0 for identity elements (unused; kernel
+            short-circuits on ``is_id_0``).
         idx_map_1 (npt.NDArray[Any]): Compact index map for direction 1, shape
-            ``(n_el_1,)`` integer.
+            ``(n_el_1,)`` integer; 0 for identity elements (unused; kernel
+            short-circuits on ``is_id_1``).
         is_id_0 (npt.NDArray[Any]): Per-element identity flags for direction 0,
             shape ``(n_el_0,)`` boolean.
         is_id_1 (npt.NDArray[Any]): Per-element identity flags for direction 1,
@@ -1674,11 +1689,14 @@ def apply_kron_MT_K_M_many_3d(  # noqa: PLR0913
         ops_2 (npt.NDArray[Any]): Compact element operators for direction 2,
             shape ``(n_compact_2, n_out_2, n_in_2)``; only non-identity rows.
         idx_map_0 (npt.NDArray[Any]): Compact index map for direction 0, shape
-            ``(n_el_0,)`` integer.
+            ``(n_el_0,)`` integer; 0 for identity elements (unused; kernel
+            short-circuits on ``is_id_0``).
         idx_map_1 (npt.NDArray[Any]): Compact index map for direction 1, shape
-            ``(n_el_1,)`` integer.
+            ``(n_el_1,)`` integer; 0 for identity elements (unused; kernel
+            short-circuits on ``is_id_1``).
         idx_map_2 (npt.NDArray[Any]): Compact index map for direction 2, shape
-            ``(n_el_2,)`` integer.
+            ``(n_el_2,)`` integer; 0 for identity elements (unused; kernel
+            short-circuits on ``is_id_2``).
         is_id_0 (npt.NDArray[Any]): Per-element identity flags for direction 0,
             shape ``(n_el_0,)`` boolean.
         is_id_1 (npt.NDArray[Any]): Per-element identity flags for direction 1,
@@ -1733,7 +1751,8 @@ def apply_kron_M_K_MT_many_1d(  # noqa: PLR0913 -- kernel fan-in is intentional.
         ops_0 (npt.NDArray[Any]): Compact element operators for direction 0,
             shape ``(n_compact_0, n_out_0, n_in_0)``; only non-identity rows.
         idx_map_0 (npt.NDArray[Any]): Compact index map for direction 0, shape
-            ``(n_el_0,)`` integer.
+            ``(n_el_0,)`` integer; 0 for identity elements (unused; kernel
+            short-circuits on ``is_id_0``).
         is_id_0 (npt.NDArray[Any]): Per-element identity flags, shape
             ``(n_el_0,)`` boolean.
         cell_indices (npt.NDArray[Any]): Per-direction element indices, shape
@@ -1777,9 +1796,11 @@ def apply_kron_M_K_MT_many_2d(  # noqa: PLR0913
         ops_1 (npt.NDArray[Any]): Compact element operators for direction 1,
             shape ``(n_compact_1, n_out_1, n_in_1)``; only non-identity rows.
         idx_map_0 (npt.NDArray[Any]): Compact index map for direction 0, shape
-            ``(n_el_0,)`` integer.
+            ``(n_el_0,)`` integer; 0 for identity elements (unused; kernel
+            short-circuits on ``is_id_0``).
         idx_map_1 (npt.NDArray[Any]): Compact index map for direction 1, shape
-            ``(n_el_1,)`` integer.
+            ``(n_el_1,)`` integer; 0 for identity elements (unused; kernel
+            short-circuits on ``is_id_1``).
         is_id_0 (npt.NDArray[Any]): Per-element identity flags for direction 0,
             shape ``(n_el_0,)`` boolean.
         is_id_1 (npt.NDArray[Any]): Per-element identity flags for direction 1,
@@ -1839,11 +1860,14 @@ def apply_kron_M_K_MT_many_3d(  # noqa: PLR0913
         ops_2 (npt.NDArray[Any]): Compact element operators for direction 2,
             shape ``(n_compact_2, n_out_2, n_in_2)``; only non-identity rows.
         idx_map_0 (npt.NDArray[Any]): Compact index map for direction 0, shape
-            ``(n_el_0,)`` integer.
+            ``(n_el_0,)`` integer; 0 for identity elements (unused; kernel
+            short-circuits on ``is_id_0``).
         idx_map_1 (npt.NDArray[Any]): Compact index map for direction 1, shape
-            ``(n_el_1,)`` integer.
+            ``(n_el_1,)`` integer; 0 for identity elements (unused; kernel
+            short-circuits on ``is_id_1``).
         idx_map_2 (npt.NDArray[Any]): Compact index map for direction 2, shape
-            ``(n_el_2,)`` integer.
+            ``(n_el_2,)`` integer; 0 for identity elements (unused; kernel
+            short-circuits on ``is_id_2``).
         is_id_0 (npt.NDArray[Any]): Per-element identity flags for direction 0,
             shape ``(n_el_0,)`` boolean.
         is_id_1 (npt.NDArray[Any]): Per-element identity flags for direction 1,

@@ -110,7 +110,7 @@ class SpanwiseElementExtraction:
             index maps of shape ``(n_elements_k,)``; ``_idx_maps_1d[k][e]`` is
             the row index into ``_compact_ops_1d[k]`` for element ``e``
             (undefined for identity elements, stored as 0).
-        _is_identity_mask_1d (tuple[npt.NDArray[bool], ...]): Per-direction
+        _is_identity_mask_1d (tuple[npt.NDArray[np.bool_], ...]): Per-direction
             identity masks of shape ``(n_elements_k,)``.
     """
 
@@ -271,7 +271,8 @@ class SpanwiseElementExtraction:
 
         Reconstructs the full ``(n_elements_k, n_out_k, n_in_k)`` array from
         compact storage on first access and caches the result. Identity elements
-        are filled with the identity matrix; non-identity elements are read from
+        are filled with ``numpy.eye(n_out, n_in)`` (rectangular identity for
+        non-square operators); non-identity elements are read from
         :attr:`compact_ops_1d`.
 
         Returns:
@@ -287,16 +288,14 @@ class SpanwiseElementExtraction:
             self._compact_ops_1d, self._idx_maps_1d, self._is_identity_mask_1d, strict=True
         ):
             n_el = int(mask.shape[0])
+            # shape[1] and shape[2] are direction-wide constants (same for compact and full)
             n_out, n_in = int(compact_ops.shape[1]), int(compact_ops.shape[2])
             full: npt.NDArray[np.float32 | np.float64] = np.empty(
                 (n_el, n_out, n_in), dtype=compact_ops.dtype
             )
             eye = np.eye(n_out, n_in, dtype=compact_ops.dtype)
-            for e in range(n_el):
-                if mask[e]:
-                    full[e] = eye
-                else:
-                    full[e] = compact_ops[idx_map[e]]
+            full[mask] = eye
+            full[~mask] = compact_ops[idx_map[~mask]]
             full.flags.writeable = False
             dense.append(full)
         return tuple(dense)
@@ -343,7 +342,7 @@ class SpanwiseElementExtraction:
         of :meth:`BsplineSpace1D.get_cardinal_intervals`.
 
         Returns:
-            tuple[npt.NDArray[bool], ...]: Length-``d`` tuple of read-only
+            tuple[npt.NDArray[np.bool_], ...]: Length-``d`` tuple of read-only
             1D boolean arrays; ``is_identity_mask_1d[k][i]`` is ``True`` iff
             the ``i``-th element in direction ``k`` has an identity operator.
         """
@@ -356,6 +355,7 @@ class SpanwiseElementExtraction:
         Returns:
             tuple[int, ...]: ``(n_in_0, …, n_in_{d-1})``.
         """
+        # shape[2] is the per-direction input size, identical between compact and full layouts
         return tuple(int(ops.shape[2]) for ops in self._compact_ops_1d)
 
     @property
@@ -365,6 +365,7 @@ class SpanwiseElementExtraction:
         Returns:
             tuple[int, ...]: ``(n_out_0, …, n_out_{d-1})``.
         """
+        # shape[1] is the per-direction output size, identical between compact and full layouts
         return tuple(int(ops.shape[1]) for ops in self._compact_ops_1d)
 
     # ---------------------------------------------------------------- identity queries
@@ -615,14 +616,12 @@ class SpanwiseElementExtraction:
         Returns:
             tuple[tuple[npt.NDArray[np.float32 | np.float64], ...], tuple[bool, ...]]:
             ``(ops_for_cell, identity_flags)`` where ``ops_for_cell[k]`` is a
-            view into :attr:`ops_1d` ``[k]`` and ``identity_flags`` is the
-            per-direction identity mask at this element.
+            2D array of shape ``(n_out_k, n_in_k)`` (identity elements return a
+            fresh ``numpy.eye``; non-identity elements return a row from
+            :attr:`compact_ops_1d`) and ``identity_flags`` is the per-direction
+            identity mask at this element.
         """
-        multi = self._normalize_cell_idx(cell_idx)
-        ops = tuple(ops_dir[i] for ops_dir, i in zip(self.ops_1d, multi, strict=True))
-        flags = tuple(
-            bool(mask[i]) for mask, i in zip(self._is_identity_mask_1d, multi, strict=True)
-        )
+        ops, flags = self._ops_and_flags_for_cell(self._normalize_cell_idx(cell_idx))
         return ops, flags
 
     def __iter__(
@@ -676,6 +675,36 @@ class SpanwiseElementExtraction:
             return seq
         raise TypeError(f"cell_idx must be int or sequence of int; got {type(cell_idx).__name__}")
 
+    def _ops_and_flags_for_cell(
+        self, multi: tuple[int, ...]
+    ) -> tuple[
+        tuple[npt.NDArray[np.float32 | np.float64], ...],
+        tuple[bool, ...],
+    ]:
+        """Extract per-direction operators and identity flags from compact storage.
+
+        Args:
+            multi (tuple[int, ...]): Already-validated per-direction element indices.
+
+        Returns:
+            tuple[tuple[npt.NDArray, ...], tuple[bool, ...]]: ``(ops, flags)``
+            where each ``ops[k]`` is a 2D ``(n_out_k, n_in_k)`` array from
+            compact storage (or a fresh ``numpy.eye`` for identity elements).
+        """
+        ops: list[npt.NDArray[np.float32 | np.float64]] = []
+        flags: list[bool] = []
+        for compact, idx_map, mask, i in zip(
+            self._compact_ops_1d, self._idx_maps_1d, self._is_identity_mask_1d, multi, strict=True
+        ):
+            n_out, n_in = int(compact.shape[1]), int(compact.shape[2])
+            is_id = bool(mask[i])
+            flags.append(is_id)
+            if is_id:
+                ops.append(np.eye(n_out, n_in, dtype=compact.dtype))
+            else:
+                ops.append(compact[int(idx_map[i])])
+        return tuple(ops), tuple(flags)
+
     def _ops_for_cell(
         self, cell_idx: CellIndex
     ) -> tuple[npt.NDArray[np.float32 | np.float64], ...]:
@@ -688,8 +717,8 @@ class SpanwiseElementExtraction:
             tuple[npt.NDArray[np.float32 | np.float64], ...]: Per-direction
             2D operators, each of shape ``(n_out_k, n_in_k)``.
         """
-        multi = self._normalize_cell_idx(cell_idx)
-        return tuple(ops_dir[i] for ops_dir, i in zip(self.ops_1d, multi, strict=True))
+        ops, _ = self._ops_and_flags_for_cell(self._normalize_cell_idx(cell_idx))
+        return ops
 
     def _apply(
         self,
@@ -712,11 +741,7 @@ class SpanwiseElementExtraction:
         Returns:
             npt.NDArray[np.float32 | np.float64]: The result array.
         """
-        multi = self._normalize_cell_idx(cell_idx)
-        ops = tuple(ops_dir[i] for ops_dir, i in zip(self.ops_1d, multi, strict=True))
-        flags = tuple(
-            bool(mask[i]) for mask, i in zip(self._is_identity_mask_1d, multi, strict=True)
-        )
+        ops, flags = self._ops_and_flags_for_cell(self._normalize_cell_idx(cell_idx))
         kernel, args, result = _prepare_apply_call(ops, flags, operand, out, scratch, op_kind)
         kernel(*args)
         return result
@@ -739,9 +764,10 @@ class SpanwiseElementExtraction:
             scratch (npt.NDArray[np.float32 | np.float64] | None): Optional scratch.
 
         Returns:
-            npt.NDArray[np.float32 | np.float64]: Result array of shape
-            ``(n_cells, N_out)`` for vector kinds or ``(n_cells, N_out, N_out)`` /
-            ``(n_cells, N_in, N_in)`` for bilateral kinds.
+            npt.NDArray[np.float32 | np.float64]: Result array; shape is
+            ``(n_cells, N_out)`` for ``"apply"``, ``(n_cells, N_in)`` for
+            ``"apply_T"``, ``(n_cells, N_in, N_in)`` for ``"MT_K_M"``, or
+            ``(n_cells, N_out, N_out)`` for ``"M_K_MT"``.
 
         Raises:
             IndexError: If any cell index is out of range.
