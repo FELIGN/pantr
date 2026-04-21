@@ -15,6 +15,7 @@ from pantr.bspline import (
     create_uniform_periodic_knots,
 )
 from pantr.bspline._bspline_basis_core import _compute_basis_nurbs_book_impl
+from pantr.bspline.spanwise_element_extraction import SpanwiseElementExtraction
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -870,3 +871,77 @@ class TestToBeziers:
         single_bez = bs.to_bezier()
         beziers = bs.to_beziers()
         np.testing.assert_allclose(beziers[0].control_points, single_bez.control_points, atol=1e-14)
+
+
+# ---------------------------------------------------------------------------
+# Regression parity: to_beziers() vs SpanwiseElementExtraction
+# ---------------------------------------------------------------------------
+
+
+class TestToBeziersSpanwiseParity:
+    """Parity: to_beziers() control points match ``operator(idx).T @ ctrl_local``.
+
+    These tests catch drift between _to_beziers_impl and the extraction operators
+    cached by SpanwiseElementExtraction. The identity verified is::
+
+        beziers[idx].control_points.reshape(N, rank) == M.T @ ctrl_local.reshape(N, rank)
+
+    where ``M = extraction.operator(idx) = kron(C_0[i0], ..., C_{d-1}[i_{d-1}])`` and
+    ``ctrl_local = ctrl[i0:i0+order_0, ..., i_{d-1}:i_{d-1}+order_{d-1}, :]``.
+    """
+
+    @pytest.mark.parametrize(
+        "spaces,rng_seed",
+        [
+            ([BsplineSpace1D([0.0, 0.0, 0.0, 0.25, 0.5, 0.75, 1.0, 1.0, 1.0], 2)], 10),
+            (
+                [
+                    BsplineSpace1D([0.0, 0.0, 0.0, 0.5, 1.0, 1.0, 1.0], 2),
+                    BsplineSpace1D([0.0, 0.0, 0.5, 1.0, 1.0], 1),
+                ],
+                20,
+            ),
+            (
+                [
+                    BsplineSpace1D([0.0, 0.0, 0.5, 1.0, 1.0], 1),
+                    BsplineSpace1D([0.0, 0.0, 0.0, 0.5, 1.0, 1.0, 1.0], 2),
+                    BsplineSpace1D([0.0, 0.0, 0.0, 1.0 / 3, 2.0 / 3, 1.0, 1.0, 1.0], 2),
+                ],
+                30,
+            ),
+        ],
+        ids=["1d", "2d", "3d"],
+    )
+    def test_element_cp_matches_operator_transpose(
+        self, spaces: list[BsplineSpace1D], rng_seed: int
+    ) -> None:
+        """Bezier control points equal SpanwiseElementExtraction.operator(idx).T @ ctrl_local."""
+        space = BsplineSpace(spaces)
+        rng = np.random.default_rng(rng_seed)
+        cp = rng.standard_normal((*space.num_basis, 3))
+        bs = Bspline(space, cp)
+        beziers = bs.to_beziers()
+
+        extraction = SpanwiseElementExtraction(space, target="bezier")
+        degrees = bs.degree
+        orders = tuple(p + 1 for p in degrees)
+
+        for idx in np.ndindex(*space.num_intervals):
+            # Gather local B-spline control points for this element.
+            slices: tuple[slice | int, ...] = tuple(
+                slice(i, i + orders[d]) for d, i in enumerate(idx)
+            )
+            ctrl_local = bs.control_points[(*slices, slice(None))]
+            n_in = int(np.prod(orders))
+            rank = ctrl_local.shape[-1]
+
+            # Full Kronecker operator from SpanwiseElementExtraction.
+            M = extraction.operator(idx)
+            expected = (M.T @ ctrl_local.reshape(n_in, rank)).reshape(*orders, rank)
+
+            np.testing.assert_allclose(
+                beziers[idx].control_points,
+                expected,
+                atol=1e-12,
+                err_msg=f"Mismatch at element {idx}",
+            )
