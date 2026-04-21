@@ -503,7 +503,7 @@ def _allocate_or_validate_scratch_many(
         )
     if not scratch.flags.writeable:
         raise ValueError("Batch scratch array is not writeable")
-    return scratch  # type: ignore[return-value]
+    return scratch
 
 
 def _prepare_apply_many_call(  # noqa: PLR0913
