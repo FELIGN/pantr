@@ -110,7 +110,7 @@ class SpanwiseElementExtraction:
             index maps of shape ``(n_elements_k,)``; ``_idx_maps_1d[k][e]`` is
             the row index into ``_compact_ops_1d[k]`` for element ``e``
             (undefined for identity elements, stored as 0).
-        _is_identity_mask_1d (tuple[npt.NDArray[np.bool_], ...]): Per-direction
+        _is_identity_mask_1d (tuple[npt.NDArray[bool], ...]): Per-direction
             identity masks of shape ``(n_elements_k,)``.
     """
 
@@ -342,7 +342,7 @@ class SpanwiseElementExtraction:
         of :meth:`BsplineSpace1D.get_cardinal_intervals`.
 
         Returns:
-            tuple[npt.NDArray[np.bool_], ...]: Length-``d`` tuple of read-only
+            tuple[npt.NDArray[bool], ...]: Length-``d`` tuple of read-only
             1D boolean arrays; ``is_identity_mask_1d[k][i]`` is ``True`` iff
             the ``i``-th element in direction ``k`` has an identity operator.
         """
