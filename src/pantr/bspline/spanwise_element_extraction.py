@@ -14,14 +14,17 @@ Three targets are supported (the source basis is always the B-spline basis):
 - ``"cardinal"``: cardinal B-spline basis on each element.
 
 Identity short-circuit is used wherever possible: for ``"cardinal"`` the
-structural mask from :meth:`BsplineSpace1D.get_cardinal_intervals` labels every
-interval as identity or not; for ``"bezier"`` and ``"lagrange"`` a per-element
-numerical test ``|C - I|_max < tol`` marks trivial elements (for instance, a
-C0 Bezier space has identity Bezier extraction everywhere).
+structural mask from :meth:`BsplineSpace1D.get_cardinal_intervals` labels each
+interval whose knot spans are uniform (a *cardinal* interval); on such an
+interval the cardinal extraction operator is exactly the identity matrix. For
+``"bezier"`` and ``"lagrange"`` a per-element numerical test
+``|C - I|_max < tol`` marks trivial elements (for instance, a C⁰ Bézier space
+has identity Bézier extraction everywhere).
 """
 
 from __future__ import annotations
 
+import functools
 from collections.abc import Iterator
 from typing import TYPE_CHECKING, Literal, get_args
 
@@ -102,10 +105,11 @@ class SpanwiseElementExtraction:
                 :attr:`LagrangeVariant.EQUISPACES`.
             identity_tol (float | None): Absolute tolerance for numerical
                 identity detection on ``"bezier"`` and ``"lagrange"`` targets.
-                If ``None``, uses :attr:`BsplineSpace.tolerance`.
+                If ``None``, defaults to ``space.tolerance``.
 
         Raises:
             ValueError: If ``target`` is not a recognized tag.
+            ValueError: If ``identity_tol`` is negative or NaN.
             NotImplementedError: If any direction of ``space`` is periodic;
                 periodic support is deferred to a later version.
         """
@@ -122,7 +126,10 @@ class SpanwiseElementExtraction:
         self._space = space
         self._target = target
         self._lagrange_variant = lagrange_variant
-        self._identity_tol = float(space.tolerance) if identity_tol is None else float(identity_tol)
+        tol = float(space.tolerance) if identity_tol is None else float(identity_tol)
+        if not (tol >= 0.0):
+            raise ValueError(f"identity_tol must be non-negative; got {tol!r}")
+        self._identity_tol = tol
 
         ops_1d: list[npt.NDArray[np.float32 | np.float64]] = []
         masks_1d: list[npt.NDArray[np.bool_]] = []
@@ -145,6 +152,15 @@ class SpanwiseElementExtraction:
 
         self._ops_1d = tuple(ops_1d)
         self._is_identity_mask_1d = tuple(masks_1d)
+
+        if len(self._ops_1d) > 1:
+            dtype_0 = self._ops_1d[0].dtype
+            for k, _ops in enumerate(self._ops_1d[1:], start=1):
+                if _ops.dtype != dtype_0:
+                    raise ValueError(
+                        f"Per-direction operators have inconsistent dtypes: "
+                        f"ops_1d[0].dtype={dtype_0}, ops_1d[{k}].dtype={_ops.dtype}"
+                    )
 
     # ---------------------------------------------------------------- properties
 
@@ -236,6 +252,12 @@ class SpanwiseElementExtraction:
     def is_identity_mask_1d(self) -> tuple[npt.NDArray[np.bool_], ...]:
         """Get the per-direction identity masks.
 
+        For the ``"cardinal"`` target each entry reflects whether the interval
+        has a uniform (cardinal) knot span, which is exactly when the cardinal
+        extraction operator is the identity matrix. For ``"bezier"`` and
+        ``"lagrange"`` targets the mask is computed by a numerical
+        ``|C - I|_max < identity_tol`` test per element.
+
         Returns:
             tuple[npt.NDArray[np.bool_], ...]: Length-``d`` tuple of read-only
             1D boolean arrays; ``is_identity_mask_1d[k][i]`` is ``True`` iff
@@ -276,7 +298,7 @@ class SpanwiseElementExtraction:
         multi = self._normalize_cell_idx(cell_idx)
         return all(bool(mask[i]) for mask, i in zip(self._is_identity_mask_1d, multi, strict=True))
 
-    @property
+    @functools.cached_property
     def num_identity_elements(self) -> int:
         """Count elements whose per-direction operators are all identity.
 
@@ -287,6 +309,16 @@ class SpanwiseElementExtraction:
         for mask in self._is_identity_mask_1d:
             count *= int(np.count_nonzero(mask))
         return count
+
+    @property
+    def is_identity(self) -> bool:
+        """Check whether every element on the grid has an identity operator.
+
+        Returns:
+            bool: ``True`` iff all per-direction identity masks are all-``True``,
+            meaning every element's operator is the identity.
+        """
+        return all(bool(mask.all()) for mask in self._is_identity_mask_1d)
 
     def per_direction_identity_flags(self, cell_idx: CellIndex) -> tuple[bool, ...]:
         """Return the per-direction identity flags for a single element.
@@ -330,6 +362,10 @@ class SpanwiseElementExtraction:
         Returns:
             npt.NDArray[np.float32 | np.float64]: The result array (the same
             array as ``out`` when ``out`` was provided).
+
+        Raises:
+            NotImplementedError: If the space has more than 3 directions;
+                specialized kernels only exist for ``d in {1, 2, 3}``.
         """
         return self._apply(v, cell_idx, "apply", out, scratch)
 
@@ -354,6 +390,10 @@ class SpanwiseElementExtraction:
 
         Returns:
             npt.NDArray[np.float32 | np.float64]: The result array.
+
+        Raises:
+            NotImplementedError: If the space has more than 3 directions;
+                specialized kernels only exist for ``d in {1, 2, 3}``.
         """
         return self._apply(v, cell_idx, "apply_T", out, scratch)
 
@@ -379,6 +419,10 @@ class SpanwiseElementExtraction:
 
         Returns:
             npt.NDArray[np.float32 | np.float64]: The result matrix.
+
+        Raises:
+            NotImplementedError: If the space has more than 3 directions;
+                specialized kernels only exist for ``d in {1, 2, 3}``.
         """
         return self._apply(K, cell_idx, "MT_K_M", out, scratch)
 
@@ -404,6 +448,10 @@ class SpanwiseElementExtraction:
 
         Returns:
             npt.NDArray[np.float32 | np.float64]: The result matrix.
+
+        Raises:
+            NotImplementedError: If the space has more than 3 directions;
+                specialized kernels only exist for ``d in {1, 2, 3}``.
         """
         return self._apply(K, cell_idx, "M_K_MT", out, scratch)
 
@@ -415,8 +463,9 @@ class SpanwiseElementExtraction:
     ) -> npt.NDArray[np.float32 | np.float64]:
         """Materialize the full ``(N_out, N_in)`` operator for one element.
 
-        Uses :func:`numpy.kron` and is intended for testing or debugging;
-        production code should prefer the matrix-free apply methods.
+        Assembles the full Kronecker product in memory using :func:`numpy.kron`.
+        Prefer the matrix-free apply methods in production code when the full
+        matrix is not needed explicitly.
 
         Args:
             cell_idx (CellIndex): Element index.
@@ -516,8 +565,9 @@ class SpanwiseElementExtraction:
             tuple[int, ...]: Length-``d`` tuple of non-negative element indices.
 
         Raises:
-            IndexError: If a flat index is out of range, or a per-direction
-                entry is out of range for its direction.
+            IndexError: If a flat index is out of range (negative indices are
+                not supported and are also rejected), or a per-direction entry
+                is out of range for its direction.
             ValueError: If a per-direction index has the wrong length.
             TypeError: If ``cell_idx`` is not an ``int`` or sequence of ``int``.
         """
@@ -604,14 +654,11 @@ def _numerical_identity_mask(
         npt.NDArray[np.bool_]: Boolean array of shape ``(n_elements,)``.
     """
     n_elements, n_out, n_in = ops.shape
-    mask = np.zeros(n_elements, dtype=np.bool_)
     if n_out != n_in:
-        return mask
+        return np.zeros(n_elements, dtype=np.bool_)
     eye = np.eye(n_out, dtype=ops.dtype)
-    for i in range(n_elements):
-        if np.max(np.abs(ops[i] - eye)) <= tol:
-            mask[i] = True
-    return mask
+    result: npt.NDArray[np.bool_] = np.max(np.abs(ops - eye[np.newaxis]), axis=(1, 2)) <= tol
+    return result
 
 
 # The op_kind shape helper is kept import-local so downstream callers can build
@@ -624,8 +671,8 @@ def operand_shape(
     Args:
         extraction (SpanwiseElementExtraction): Extraction object supplying
             per-direction shapes.
-        op_kind (OpKind): One of ``"apply"``, ``"apply_T"``, ``"MT_K_M"``,
-            ``"M_K_MT"``.
+        op_kind (OpKind): One of the :data:`OpKind` literals: ``"apply"``,
+            ``"apply_T"``, ``"MT_K_M"``, ``"M_K_MT"``.
 
     Returns:
         tuple[tuple[int, ...], tuple[int, ...]]: ``(input_shape, output_shape)``.

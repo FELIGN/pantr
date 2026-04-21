@@ -3,16 +3,19 @@
 Covers:
 
 - Target dispatch (``bezier``, ``lagrange``, ``cardinal``) and construction
-  errors (unknown target, periodic directions).
+  errors (unknown target, periodic directions, invalid ``identity_tol``).
 - Shape/dtype and identity-mask properties.
 - Per-cell :meth:`apply` / :meth:`apply_transpose` / :meth:`apply_MT_K_M` /
   :meth:`apply_M_K_MT` against a dense reference ``kron(M_0, M_1, …)``.
-- :meth:`operator` / :meth:`tabulate` round-trip consistency.
-- Identity-query correctness: cardinal spaces use the structural mask from
-  :meth:`BsplineSpace1D.get_cardinal_intervals`, C⁰ Bézier spaces detect
-  numerical identity on every element.
-- Cell-index normalization (flat int, tuple, list; IndexError / ValueError
-  on invalid input).
+- :meth:`operator` / :meth:`tabulate` round-trip consistency, including
+  user-provided ``out`` arrays.
+- Identity-query correctness: :attr:`is_identity`, :attr:`num_identity_elements`,
+  :meth:`per_direction_identity_flags`; cardinal spaces use the structural mask
+  from :meth:`BsplineSpace1D.get_cardinal_intervals`; C⁰ Bézier spaces detect
+  numerical identity on every element; ``identity_tol`` controls detection.
+- Cell-index normalization (flat int, tuple, list, ndarray; negative indices
+  rejected; IndexError / ValueError / TypeError on invalid input).
+- 1D spaces and rejection of dim > 3 via :exc:`NotImplementedError`.
 """
 
 from __future__ import annotations
@@ -46,11 +49,11 @@ def _space_3d() -> BsplineSpace:
 def _dense_operator(
     ext: SpanwiseElementExtraction, cell_idx: int
 ) -> npt.NDArray[np.float32 | np.float64]:
-    """Build the per-cell Kronecker operator via explicit ``np.kron``."""
-    ops, _flags = ext[cell_idx]
-    result = ops[0]
-    for M in ops[1:]:
-        result = np.kron(result, M)
+    """Build the per-cell Kronecker operator from ``ops_1d`` without using ``__getitem__``."""
+    multi = np.unravel_index(cell_idx, ext.num_intervals)
+    result: npt.NDArray[np.float32 | np.float64] = ext.ops_1d[0][int(multi[0])]
+    for k in range(1, ext.dim):
+        result = np.kron(result, ext.ops_1d[k][int(multi[k])])
     return result
 
 
@@ -321,3 +324,154 @@ def test_operand_shape_returns_vector_and_matrix_shapes() -> None:
     assert operand_shape(ext, "apply_T") == ((n_out,), (n_in,))
     assert operand_shape(ext, "MT_K_M") == ((n_out, n_out), (n_in, n_in))
     assert operand_shape(ext, "M_K_MT") == ((n_in, n_in), (n_out, n_out))
+
+
+# ---------------------------------------------------------------- construction validation
+
+
+def test_identity_tol_negative_rejected() -> None:
+    """Negative and NaN ``identity_tol`` raise ValueError."""
+    sp = _space_2d()
+    with pytest.raises(ValueError, match="non-negative"):
+        SpanwiseElementExtraction(sp, "bezier", identity_tol=-1.0)
+    with pytest.raises(ValueError, match="non-negative"):
+        SpanwiseElementExtraction(sp, "bezier", identity_tol=float("nan"))
+
+
+# ---------------------------------------------------------------- identity queries (extended)
+
+
+def test_is_identity_property_true_for_c0_bezier() -> None:
+    """``is_identity`` is ``True`` when every element has an identity operator."""
+    sp1 = BsplineSpace1D([0, 0, 0, 1, 1, 1, 2, 2, 2], 2)
+    sp = BsplineSpace([sp1, sp1])
+    ext = SpanwiseElementExtraction(sp, "bezier")
+    assert ext.is_identity
+
+
+def test_is_identity_property_false_for_smooth_space() -> None:
+    """``is_identity`` is ``False`` when some elements have non-identity operators."""
+    sp = _space_2d()
+    ext = SpanwiseElementExtraction(sp, "bezier")
+    assert not ext.is_identity
+
+
+def test_num_identity_elements_formula_is_product_not_sum() -> None:
+    """``num_identity_elements`` uses the tensor-product formula, not a sum."""
+    sp = _space_2d()
+    ext = SpanwiseElementExtraction(sp, "cardinal")
+    counts = [int(np.count_nonzero(m)) for m in ext.is_identity_mask_1d]
+    assert ext.num_identity_elements == counts[0] * counts[1]
+    # Meaningful only when there is more than one identity interval per direction
+    assert all(c > 1 for c in counts), "space must have >1 identity per direction"
+
+
+def test_per_direction_identity_flags_matches_mask_lookup() -> None:
+    """``per_direction_identity_flags`` matches per-direction mask lookup for every cell."""
+    sp = _space_2d()
+    ext = SpanwiseElementExtraction(sp, "cardinal")
+    for flat in range(ext.num_total_intervals):
+        multi = np.unravel_index(flat, ext.num_intervals)
+        expected = tuple(
+            bool(m[int(i)]) for m, i in zip(ext.is_identity_mask_1d, multi, strict=True)
+        )
+        assert ext.per_direction_identity_flags(flat) == expected
+        assert ext.per_direction_identity_flags(tuple(int(i) for i in multi)) == expected
+
+
+def test_identity_tol_affects_detection() -> None:
+    """A custom ``identity_tol`` changes which elements are flagged as identity."""
+    sp1 = BsplineSpace1D([0, 0, 0, 1, 2, 3, 3, 3], 2)
+    sp = BsplineSpace([sp1])
+    ext_default = SpanwiseElementExtraction(sp, "bezier")
+    # With an enormous tolerance every element looks like identity
+    ext_huge = SpanwiseElementExtraction(sp, "bezier", identity_tol=1e100)
+    assert ext_huge.is_identity_mask_1d[0].all()
+    assert ext_huge.identity_tol == 1e100  # noqa: PLR2004
+    # The default space is not all-identity (smooth space has non-trivial Bezier ops)
+    if not ext_default.is_identity_mask_1d[0].all():
+        assert not ext_default.is_identity
+
+
+# ---------------------------------------------------------------- operator / tabulate (extended)
+
+
+def test_operator_accepts_user_out() -> None:
+    """User-provided ``out`` to ``operator`` is written into and returned."""
+    sp = _space_2d()
+    ext = SpanwiseElementExtraction(sp, "bezier")
+    n_out = int(np.prod(ext.output_shape_per_dir))
+    n_in = int(np.prod(ext.input_shape_per_dir))
+    out = np.zeros((n_out, n_in), dtype=ext.dtype)
+    result = ext.operator(7, out=out)
+    assert result is out
+    np.testing.assert_allclose(result, _dense_operator(ext, 7), atol=1e-12)
+
+
+def test_tabulate_accepts_user_out() -> None:
+    """User-provided ``out`` to ``tabulate`` is written into and returned."""
+    sp = _space_2d()
+    ext = SpanwiseElementExtraction(sp, "bezier")
+    n_out = int(np.prod(ext.output_shape_per_dir))
+    n_in = int(np.prod(ext.input_shape_per_dir))
+    out = np.zeros((ext.num_total_intervals, n_out, n_in), dtype=ext.dtype)
+    result = ext.tabulate(out=out)
+    assert result is out
+    for flat in range(ext.num_total_intervals):
+        np.testing.assert_allclose(result[flat], _dense_operator(ext, flat), atol=1e-12)
+
+
+# ---------------------------------------------------------------- 1D spaces
+
+
+def test_1d_space_apply_matches_dense() -> None:
+    """A 1D space (dim=1) works correctly for all four apply variants."""
+    sp1 = BsplineSpace1D([0, 0, 0, 1, 2, 3, 3, 3], 2)
+    sp = BsplineSpace([sp1])
+    ext = SpanwiseElementExtraction(sp, "bezier")
+    assert ext.dim == 1
+    n_in = ext.input_shape_per_dir[0]
+    n_out = ext.output_shape_per_dir[0]
+    for cell in range(ext.num_total_intervals):
+        M = ext.ops_1d[0][cell]
+        v = RNG.standard_normal(n_in).astype(ext.dtype)
+        np.testing.assert_allclose(ext.apply(v, cell), M @ v, atol=1e-12)
+        w = RNG.standard_normal(n_out).astype(ext.dtype)
+        np.testing.assert_allclose(ext.apply_transpose(w, cell), M.T @ w, atol=1e-12)
+        K = RNG.standard_normal((n_out, n_out)).astype(ext.dtype)
+        np.testing.assert_allclose(ext.apply_MT_K_M(K, cell), M.T @ K @ M, atol=1e-11)
+        K2 = RNG.standard_normal((n_in, n_in)).astype(ext.dtype)
+        np.testing.assert_allclose(ext.apply_M_K_MT(K2, cell), M @ K2 @ M.T, atol=1e-11)
+
+
+# ---------------------------------------------------------------- dim > 3
+
+
+def test_dim_4_apply_raises_not_implemented() -> None:
+    """Calling any apply variant on a 4D space raises NotImplementedError."""
+    sp1 = BsplineSpace1D([0, 0, 0, 1, 2, 2, 2], 2)
+    sp = BsplineSpace([sp1, sp1, sp1, sp1])
+    ext = SpanwiseElementExtraction(sp, "bezier")
+    n_in = int(np.prod(ext.input_shape_per_dir))
+    v = np.zeros(n_in, dtype=ext.dtype)
+    with pytest.raises(NotImplementedError):
+        ext.apply(v, 0)
+
+
+# ---------------------------------------------------------------- negative indices
+
+
+def test_negative_flat_index_rejected() -> None:
+    """Negative flat indices raise IndexError (Python-style wrap-around is not supported)."""
+    sp = _space_2d()
+    ext = SpanwiseElementExtraction(sp, "bezier")
+    with pytest.raises(IndexError):
+        ext.is_identity_at(-1)
+
+
+def test_negative_per_direction_index_rejected() -> None:
+    """Negative per-direction indices raise IndexError."""
+    sp = _space_2d()
+    ext = SpanwiseElementExtraction(sp, "bezier")
+    with pytest.raises(IndexError):
+        ext.is_identity_at((-1, 0))
