@@ -33,7 +33,12 @@ import numpy.typing as npt
 
 from ..basis import LagrangeVariant
 from ..basis._basis_utils import _allocate_or_validate_out
-from ._extraction_helpers import OpKind, _operation_shapes, _prepare_apply_call
+from ._extraction_helpers import (
+    OpKind,
+    _operation_shapes,
+    _prepare_apply_call,
+    _prepare_apply_many_call,
+)
 
 if TYPE_CHECKING:
     from ._bspline_space_nd import BsplineSpace
@@ -45,6 +50,17 @@ Target = Literal["bezier", "lagrange", "cardinal"]
 
 CellIndex = int | tuple[int, ...] | list[int] | npt.NDArray[np.int_]
 """Accepted cell-index forms: flat ``int``, or a per-direction integer sequence."""
+
+CellIndicesBatch = npt.NDArray[np.int_] | list[int] | list[tuple[int, ...]] | list[list[int]]
+"""Accepted batch cell-index forms.
+
+May be:
+
+- 1-D integer array or list of ``n_cells`` flat indices (row-major over
+  :attr:`~SpanwiseElementExtraction.num_intervals`).
+- 2-D integer array of shape ``(n_cells, d)`` with per-direction indices.
+- List of per-direction integer tuples or lists of length ``d``.
+"""
 
 
 class SpanwiseElementExtraction:
@@ -637,6 +653,222 @@ class SpanwiseElementExtraction:
         kernel(*args)
         return result
 
+    def _apply_many(
+        self,
+        operand: npt.NDArray[np.float32 | np.float64],
+        cell_indices: CellIndicesBatch,
+        op_kind: OpKind,
+        out: npt.NDArray[np.float32 | np.float64] | None,
+        scratch: npt.NDArray[np.float32 | np.float64] | None,
+    ) -> npt.NDArray[np.float32 | np.float64]:
+        """Dispatch a batch apply variant through the Layer-2 helper.
+
+        Args:
+            operand (npt.NDArray[np.float32 | np.float64]): Batch input array.
+            cell_indices (CellIndicesBatch): Flat or per-direction cell indices.
+            op_kind (OpKind): Which apply variant to dispatch.
+            out (npt.NDArray[np.float32 | np.float64] | None): Optional output.
+            scratch (npt.NDArray[np.float32 | np.float64] | None): Optional scratch.
+
+        Returns:
+            npt.NDArray[np.float32 | np.float64]: The result array.
+        """
+        idx2d = normalize_cell_indices(cell_indices, self.num_intervals)
+        kernel, args, result = _prepare_apply_many_call(
+            self._ops_1d,
+            self._is_identity_mask_1d,
+            idx2d,
+            operand,
+            out,
+            scratch,
+            op_kind,
+        )
+        kernel(*args)
+        return result
+
+    # ---------------------------------------------------------------- batch applies
+
+    def apply_many(
+        self,
+        v: npt.NDArray[np.float32 | np.float64],
+        cell_indices: CellIndicesBatch,
+        *,
+        out: npt.NDArray[np.float32 | np.float64] | None = None,
+        scratch: npt.NDArray[np.float32 | np.float64] | None = None,
+    ) -> npt.NDArray[np.float32 | np.float64]:
+        """Compute ``out[c] = M_c @ v[c]`` for all cells in the batch.
+
+        ``M_c = kron(M_0[c_0], …, M_{d-1}[c_{d-1}])`` with ``M_k[c_k]`` the
+        1D operator at element ``c_k`` in direction ``k``; identity directions
+        short-circuit per cell.
+
+        Args:
+            v (npt.NDArray[np.float32 | np.float64]): Batch input vectors,
+                shape ``(n_cells, N_in)`` with
+                ``N_in = prod(input_shape_per_dir)``.
+            cell_indices (CellIndicesBatch): Cell indices — flat 1-D array of
+                shape ``(n_cells,)`` or per-direction 2-D array of shape
+                ``(n_cells, d)``.
+            out (npt.NDArray[np.float32 | np.float64] | None): Optional output
+                array of shape ``(n_cells, N_out)``. Allocated if ``None``.
+            scratch (npt.NDArray[np.float32 | np.float64] | None): Optional
+                per-cell scratch array of shape ``(n_cells, s)`` with
+                ``s >= scratch_size_per_cell``. Allocated if ``None``.
+
+        Returns:
+            npt.NDArray[np.float32 | np.float64]: Result array of shape
+            ``(n_cells, N_out)``.
+
+        Raises:
+            NotImplementedError: If the space has more than 3 directions.
+        """
+        return self._apply_many(v, cell_indices, "apply", out, scratch)
+
+    def apply_transpose_many(
+        self,
+        v: npt.NDArray[np.float32 | np.float64],
+        cell_indices: CellIndicesBatch,
+        *,
+        out: npt.NDArray[np.float32 | np.float64] | None = None,
+        scratch: npt.NDArray[np.float32 | np.float64] | None = None,
+    ) -> npt.NDArray[np.float32 | np.float64]:
+        """Compute ``out[c] = M_c^T @ v[c]`` for all cells in the batch.
+
+        Args:
+            v (npt.NDArray[np.float32 | np.float64]): Batch input vectors,
+                shape ``(n_cells, N_out)`` with
+                ``N_out = prod(output_shape_per_dir)``.
+            cell_indices (CellIndicesBatch): Cell indices — flat or per-direction.
+            out (npt.NDArray[np.float32 | np.float64] | None): Optional output
+                array of shape ``(n_cells, N_in)``. Allocated if ``None``.
+            scratch (npt.NDArray[np.float32 | np.float64] | None): Optional
+                per-cell scratch array. Allocated if ``None``.
+
+        Returns:
+            npt.NDArray[np.float32 | np.float64]: Result array of shape
+            ``(n_cells, N_in)``.
+
+        Raises:
+            NotImplementedError: If the space has more than 3 directions.
+        """
+        return self._apply_many(v, cell_indices, "apply_T", out, scratch)
+
+    def apply_MT_K_M_many(
+        self,
+        K: npt.NDArray[np.float32 | np.float64],
+        cell_indices: CellIndicesBatch,
+        *,
+        out: npt.NDArray[np.float32 | np.float64] | None = None,
+        scratch: npt.NDArray[np.float32 | np.float64] | None = None,
+    ) -> npt.NDArray[np.float32 | np.float64]:
+        """Compute ``out[c] = M_c^T @ K[c] @ M_c`` for all cells in the batch.
+
+        Args:
+            K (npt.NDArray[np.float32 | np.float64]): Batch input matrices,
+                shape ``(n_cells, N_out, N_out)`` with
+                ``N_out = prod(output_shape_per_dir)``.
+            cell_indices (CellIndicesBatch): Cell indices — flat or per-direction.
+            out (npt.NDArray[np.float32 | np.float64] | None): Optional output
+                array of shape ``(n_cells, N_in, N_in)``. Must not alias ``K``.
+                Allocated if ``None``.
+            scratch (npt.NDArray[np.float32 | np.float64] | None): Optional
+                per-cell scratch array. Allocated if ``None``.
+
+        Returns:
+            npt.NDArray[np.float32 | np.float64]: Result array of shape
+            ``(n_cells, N_in, N_in)``.
+
+        Raises:
+            NotImplementedError: If the space has more than 3 directions.
+        """
+        return self._apply_many(K, cell_indices, "MT_K_M", out, scratch)
+
+    def apply_M_K_MT_many(
+        self,
+        K: npt.NDArray[np.float32 | np.float64],
+        cell_indices: CellIndicesBatch,
+        *,
+        out: npt.NDArray[np.float32 | np.float64] | None = None,
+        scratch: npt.NDArray[np.float32 | np.float64] | None = None,
+    ) -> npt.NDArray[np.float32 | np.float64]:
+        """Compute ``out[c] = M_c @ K[c] @ M_c^T`` for all cells in the batch.
+
+        Args:
+            K (npt.NDArray[np.float32 | np.float64]): Batch input matrices,
+                shape ``(n_cells, N_in, N_in)`` with
+                ``N_in = prod(input_shape_per_dir)``.
+            cell_indices (CellIndicesBatch): Cell indices — flat or per-direction.
+            out (npt.NDArray[np.float32 | np.float64] | None): Optional output
+                array of shape ``(n_cells, N_out, N_out)``. Must not alias ``K``.
+                Allocated if ``None``.
+            scratch (npt.NDArray[np.float32 | np.float64] | None): Optional
+                per-cell scratch array. Allocated if ``None``.
+
+        Returns:
+            npt.NDArray[np.float32 | np.float64]: Result array of shape
+            ``(n_cells, N_out, N_out)``.
+
+        Raises:
+            NotImplementedError: If the space has more than 3 directions.
+        """
+        return self._apply_many(K, cell_indices, "M_K_MT", out, scratch)
+
+
+def normalize_cell_indices(
+    cell_indices: CellIndicesBatch,
+    num_intervals: tuple[int, ...],
+) -> npt.NDArray[np.intp]:
+    """Convert batch cell indices to a validated ``(n_cells, d)`` integer array.
+
+    Accepts flat indices (row-major over ``num_intervals``) or per-direction
+    indices, in array or list form. Validates that all values are within their
+    respective per-direction bounds and that the shape is consistent.
+
+    Args:
+        cell_indices (CellIndicesBatch): Flat 1-D array or list of ``n_cells``
+            flat indices, or 2-D array/list of shape ``(n_cells, d)`` with
+            per-direction indices.
+        num_intervals (tuple[int, ...]): Per-direction element counts
+            ``(n_el_0, …, n_el_{d-1})``.
+
+    Returns:
+        npt.NDArray[np.intp]: 2-D integer array of shape ``(n_cells, d)``.
+
+    Raises:
+        ValueError: If ``cell_indices`` has wrong shape or out-of-range values.
+        TypeError: If ``cell_indices`` is not an array-like of integers.
+    """
+    d = len(num_intervals)
+    arr = np.asarray(cell_indices, dtype=np.intp)
+    if arr.ndim == 1:
+        n_cells = arr.shape[0]
+        total = 1
+        for n in num_intervals:
+            total *= n
+        if n_cells > 0 and (int(arr.min()) < 0 or int(arr.max()) >= total):
+            raise ValueError(
+                f"Flat cell indices must be in [0, {total}); "
+                f"got range [{int(arr.min())}, {int(arr.max())}]"
+            )
+        rows = np.unravel_index(arr, num_intervals)
+        return np.stack(rows, axis=1)
+    if arr.ndim == 2:  # noqa: PLR2004
+        if arr.shape[1] != d:
+            raise ValueError(
+                f"Per-direction cell_indices must have shape (n_cells, {d}); got shape {arr.shape}"
+            )
+        n_cells = arr.shape[0]
+        if n_cells > 0:
+            for k, n_el in enumerate(num_intervals):
+                col = arr[:, k]
+                if int(col.min()) < 0 or int(col.max()) >= n_el:
+                    raise ValueError(
+                        f"cell_indices[:, {k}] must be in [0, {n_el}); "
+                        f"got range [{int(col.min())}, {int(col.max())}]"
+                    )
+        return arr
+    raise ValueError(f"cell_indices must be 1-D (flat) or 2-D (per-direction); got ndim={arr.ndim}")
+
 
 def _numerical_identity_mask(
     ops: npt.NDArray[np.float32 | np.float64], tol: float
@@ -684,7 +916,9 @@ def operand_shape(
 
 __all__ = [
     "CellIndex",
+    "CellIndicesBatch",
     "SpanwiseElementExtraction",
     "Target",
+    "normalize_cell_indices",
     "operand_shape",
 ]
