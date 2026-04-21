@@ -3,7 +3,7 @@
 This module exposes :class:`SpanwiseElementExtraction`, a lazy tensor-product
 change-of-basis object. It eagerly caches the per-direction 1D extraction
 operators once at construction time and, on demand, dispatches to the Layer-3
-Kronecker kernels in :mod:`pantr.bspline._extraction_kernels` to apply the
+Kronecker kernels in ``pantr.bspline._extraction_kernels`` to apply the
 d-dimensional operator for a single element.
 
 Three targets are supported (the source basis is always the B-spline basis):
@@ -56,7 +56,7 @@ class SpanwiseElementExtraction:
     element d-dimensional operators are never materialized unless explicitly
     requested via :meth:`operator` or :meth:`tabulate`: instead the apply-style
     methods dispatch to the matrix-free Kronecker kernels in
-    :mod:`pantr.bspline._extraction_kernels`.
+    ``pantr.bspline._extraction_kernels``.
 
     With the current 1D builders all per-direction operators are square of
     size ``(degree_k + 1, degree_k + 1)``. The class also supports non-square
@@ -102,7 +102,7 @@ class SpanwiseElementExtraction:
             target (Target): One of ``"bezier"``, ``"lagrange"``, ``"cardinal"``.
             lagrange_variant (LagrangeVariant): Point distribution used when
                 ``target == "lagrange"``. Defaults to
-                :attr:`LagrangeVariant.EQUISPACES`.
+                :attr:`pantr.basis.LagrangeVariant.EQUISPACES`.
             identity_tol (float | None): Absolute tolerance for numerical
                 identity detection on ``"bezier"`` and ``"lagrange"`` targets.
                 If ``None``, defaults to ``space.tolerance``.
