@@ -1269,6 +1269,10 @@ def test_struct_view_fields_match_extraction(space_factory: Any, target: str) ->
         assert view.compact_ops_1d[k] is ext.compact_ops_1d[k]
         assert view.idx_maps_1d[k] is ext.idx_maps_1d[k]
         assert view.is_identity_mask_1d[k] is ext.is_identity_mask_1d[k]
+        # Shared arrays must remain read-only (the factory's safety guarantee).
+        assert not view.compact_ops_1d[k].flags.writeable
+        assert not view.idx_maps_1d[k].flags.writeable
+        assert not view.is_identity_mask_1d[k].flags.writeable
         # Shape invariants inherited from the extraction
         assert view.compact_ops_1d[k].ndim == 3  # noqa: PLR2004
         assert view.compact_ops_1d[k].dtype == ext.dtype
@@ -1276,9 +1280,11 @@ def test_struct_view_fields_match_extraction(space_factory: Any, target: str) ->
         assert view.is_identity_mask_1d[k].shape == (ext.num_intervals[k],)
 
 
-def test_struct_view_ints_are_python_ints() -> None:
+@pytest.mark.parametrize("target", ["bezier", "lagrange", "cardinal"])
+@pytest.mark.parametrize("space_factory", [_space_1d, _space_2d, _space_3d])
+def test_struct_view_ints_are_python_ints(space_factory: Any, target: str) -> None:
     """Scalar fields are plain ``int`` (not ``np.int*``), for clean Numba unboxing."""
-    ext = SpanwiseElementExtraction(_space_2d(), "bezier")
+    ext = SpanwiseElementExtraction(space_factory(), target)  # type: ignore[arg-type]
     view = make_struct_view(ext)
     assert type(view.dim) is int
     for n in view.num_intervals:
@@ -1300,7 +1306,7 @@ def test_struct_view_unpacks_by_position_and_name() -> None:
     assert num_int is view.num_intervals
     assert in_shape is view.input_shape_per_dir
     assert out_shape is view.output_shape_per_dir
-    assert dim is view.dim
+    assert dim == view.dim
 
 
 # A small set of @njit functions that unbox an ExtractionStructView and drive
@@ -1439,3 +1445,29 @@ def test_struct_view_scalar_fields_are_numba_unboxable() -> None:
         + sum(view.output_shape_per_dir)
     )
     assert _njit_read_scalar_fields(view) == expected
+
+
+def test_struct_view_float32_is_numba_callable() -> None:
+    """``@njit`` unboxing works for float32 operator arrays (distinct Numba specialisation)."""
+    knots = np.array([0, 0, 0, 1, 2, 3, 3, 3], dtype=np.float32)
+    sp1 = BsplineSpace1D(knots, 2)
+    ext = SpanwiseElementExtraction(BsplineSpace([sp1, sp1]), "bezier")
+    assert ext.dtype == np.float32
+    view = make_struct_view(ext)
+
+    n_in = int(np.prod(ext.input_shape_per_dir))
+    n_out = int(np.prod(ext.output_shape_per_dir))
+    cell_indices = normalize_cell_indices(
+        np.arange(ext.num_total_intervals, dtype=np.intp), ext.num_intervals
+    )
+    n_cells = cell_indices.shape[0]
+    v = RNG.standard_normal((n_cells, n_in)).astype(np.float32)
+    out = np.empty((n_cells, n_out), dtype=np.float32)
+    scratch_size = _required_scratch_size(
+        ext.input_shape_per_dir, ext.output_shape_per_dir, "apply"
+    )
+    scratch = np.empty((n_cells, max(scratch_size, 1)), dtype=np.float32)
+
+    _njit_apply_many_2d_via_view(view, cell_indices, v, out, scratch)
+    expected = ext.apply_many(v, cell_indices)
+    np.testing.assert_allclose(out, expected, rtol=1e-5, atol=1e-5)

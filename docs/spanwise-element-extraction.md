@@ -239,7 +239,7 @@ above 3 raise `NotImplementedError` from the Layer-2 dispatcher.
 {class}`~pantr.bspline.ExtractionStructView` bundles the compact storage and
 shape metadata of a {class}`~pantr.bspline.SpanwiseElementExtraction` into a
 single immutable `typing.NamedTuple` that Numba can unbox.  Pass it as a
-single argument instead of forwarding seven separate objects.
+single argument instead of forwarding the per-direction arrays individually.
 
 ```python
 from numba import njit

@@ -1060,9 +1060,10 @@ class ExtractionStructView(NamedTuple):
 
     A :class:`typing.NamedTuple` bundling the compact per-direction operator
     storage, index maps, identity masks, and shape metadata into a single
-    object that Numba can unbox. Each field of a given type is homogeneous
-    (e.g. all ``compact_ops_1d`` entries share dtype and ndim), so Numba
-    represents the tuple fields as ``UniTuple`` inside an ``@njit`` function.
+    object that Numba can unbox. Each array field is homogeneous in dtype and
+    array dimensionality across all directions (per-direction shapes may
+    differ), so Numba represents those tuple fields as ``UniTuple`` inside an
+    ``@njit`` function.
     This makes ``ExtractionStructView`` a drop-in replacement for the separate
     ``(ops_1d, idx_maps_1d, is_identity_mask_1d, …)`` bundle when calling the
     Layer-3 batch kernels in ``pantr.bspline._extraction_kernels`` from
@@ -1072,7 +1073,9 @@ class ExtractionStructView(NamedTuple):
     same-named members of :class:`SpanwiseElementExtraction`:
 
     - ``compact_ops_1d`` — per-direction compact 3D operator arrays of shape
-      ``(n_compact_k, n_out_k, n_in_k)``; only non-identity rows.
+      ``(n_compact_k, n_out_k, n_in_k)``; only non-identity rows are stored.
+      Always has at least one row (sentinel zeros) to ensure safe Numba
+      indexing.
     - ``idx_maps_1d`` — per-direction compact index maps of shape
       ``(n_elements_k,)``.
     - ``is_identity_mask_1d`` — per-direction identity masks of shape
@@ -1112,7 +1115,10 @@ def make_struct_view(extraction: SpanwiseElementExtraction) -> ExtractionStructV
         in ``pantr.bspline._extraction_kernels``.
 
     Example:
+        >>> from pantr.bspline import BsplineSpace1D, BsplineSpace
         >>> from pantr.bspline import SpanwiseElementExtraction, make_struct_view
+        >>> sp = BsplineSpace1D([0, 0, 0, 1, 2, 2, 2], 2)
+        >>> space = BsplineSpace([sp, sp])
         >>> ext = SpanwiseElementExtraction(space, "bezier")
         >>> view = make_struct_view(ext)
         >>> view.dim
