@@ -130,20 +130,34 @@ def test_bezier_c0_space_is_structurally_identity_everywhere() -> None:
     assert ext.num_identity_elements == ext.num_total_intervals
 
 
+def test_bezier_partial_identity_integration() -> None:
+    """SpanwiseElementExtraction reports partial identity for a mixed-multiplicity space."""
+    # degree 2; in-domain mults [3, 3, 2, 3] → elements 0 is identity, 1 and 2 are not
+    sp1 = BsplineSpace1D([0, 0, 0, 1, 1, 1, 2, 2, 3, 3, 3], 2)
+    sp = BsplineSpace([sp1])
+    ext = SpanwiseElementExtraction(sp, "bezier")
+    assert ext.is_identity_at(0)
+    assert not ext.is_identity_at(1)
+    assert not ext.is_identity_at(2)
+    assert ext.num_identity_elements == 1
+    assert not ext.is_identity
+    # Verify apply on identity element returns the input unchanged
+    v = RNG.standard_normal(ext.input_shape_per_dir[0]).astype(ext.dtype)
+    result = ext.apply(v, 0)
+    np.testing.assert_array_equal(result, v)
+
+
 def test_bezier_structural_identity_mask_only_at_full_multiplicity_knots() -> None:
     """Bezier identity holds only at elements whose boundary knots have mult >= degree+1."""
-    # degree 2, interior knots at 1 (mult 2), 2 (mult 3), 3 (mult 2), 4 (mult 3)
-    # Elements: [0,1] (mults 3,2), [1,2] (mults 2,3), [2,3] (mults 3,2), [3,4] (mults 2,3)
+    # degree 2; boundaries 0 (mult 3) and 4 (mult 3), interior: 1 (mult 2), 2 (mult 3), 3 (mult 2)
+    # multiplicities (in-domain): [3, 2, 3, 2, 3]
+    # element 0: mults (3,2) → False; element 1: (2,3) → False
+    # element 2: (3,2) → False; element 3: (2,3) → False
     sp1 = BsplineSpace1D([0, 0, 0, 1, 1, 2, 2, 2, 3, 3, 4, 4, 4], 2)
     mask = _bezier_structural_identity_mask(sp1)
-    # Elements with both boundary mults >= 3: element 1 ([1,2], mults 2,3 → left=2 < 3, not id)
-    # element 0: left=3 ✓, right=2 ✗ → False
-    # element 1: left=2 ✗ → False
-    # element 2: left=3 ✓, right=2 ✗ → False
-    # element 3: left=2 ✗ → False
     assert not mask.any()
 
-    # Now a fully C⁻¹ space: all interior knots have mult = degree+1 = 3
+    # Fully C⁻¹ space: all interior knots have mult = degree+1 = 3
     sp2 = BsplineSpace1D([0, 0, 0, 1, 1, 1, 2, 2, 2], 2)
     mask2 = _bezier_structural_identity_mask(sp2)
     assert mask2.all()
@@ -154,21 +168,58 @@ def test_bezier_structural_identity_mask_only_at_full_multiplicity_knots() -> No
     assert not mask3.any()
 
 
-def test_lagrange_structural_identity_degree0_all_identity() -> None:
-    """Lagrange degree-0 space: every element is identity."""
+def test_bezier_structural_identity_mask_partial() -> None:
+    """Bezier identity mask is selectively True when only some elements are fully isolated."""
+    # degree 2; knots [0,0,0,1,1,1,2,2,3,3,3] → in-domain mults [3, 3, 2, 3]
+    # element 0 [0,1]: (3,3) → True; element 1 [1,2]: (3,2) → False; element 2 [2,3]: (2,3) → False
+    sp1 = BsplineSpace1D([0, 0, 0, 1, 1, 1, 2, 2, 3, 3, 3], 2)
+    mask = _bezier_structural_identity_mask(sp1)
+    expected = np.array([True, False, False])
+    np.testing.assert_array_equal(mask, expected)
+
+
+def test_bezier_structural_identity_mask_degree0() -> None:
+    """Degree-0 space: threshold is 1, every knot qualifies, so all elements are identity."""
     sp1 = BsplineSpace1D([0, 1, 2, 3], 0)
-    mask = _lagrange_structural_identity_mask(sp1)
+    mask = _bezier_structural_identity_mask(sp1)
     assert mask.all()
     assert len(mask) == sp1.num_intervals
 
 
-def test_lagrange_structural_identity_degree_positive_never_identity() -> None:
-    """Lagrange degree > 0: no element is identity regardless of the knot vector."""
+def test_lagrange_structural_identity_degree0_all_identity() -> None:
+    """Lagrange degree-0 space: every element is identity, regardless of variant."""
+    sp1 = BsplineSpace1D([0, 1, 2, 3], 0)
+    for variant in LagrangeVariant:
+        mask = _lagrange_structural_identity_mask(sp1, variant)
+        assert mask.all()
+        assert len(mask) == sp1.num_intervals
+
+
+def test_lagrange_structural_identity_smooth_space_never_identity() -> None:
+    """Smooth spaces are never Lagrange-identity regardless of degree or variant."""
     for degree in (1, 2, 3):
         knots = [0.0] * (degree + 1) + [1.0, 2.0, 3.0] + [3.0] * (degree + 1)
         sp1 = BsplineSpace1D(knots, degree)
-        mask = _lagrange_structural_identity_mask(sp1)
-        assert not mask.any(), f"degree {degree} should yield no identity elements"
+        for variant in LagrangeVariant:
+            mask = _lagrange_structural_identity_mask(sp1, variant)
+            assert not mask.any(), f"degree {degree}, variant {variant} should yield no identity"
+
+
+def test_lagrange_structural_identity_degree1_c_minus1_equispaced() -> None:
+    """Degree-1 EQUISPACES/GLL: lagr_to_bzr == I, so C⁻¹ elements are identity."""
+    # For degree 1 the Lagrange nodes {0, 1} coincide with Bernstein abscissae → lagr_to_bzr = I
+    sp1 = BsplineSpace1D([0, 0, 1, 1, 2, 2, 3, 3], 1)
+    for variant in (LagrangeVariant.EQUISPACES, LagrangeVariant.GAUSS_LOBATTO_LEGENDRE):
+        mask = _lagrange_structural_identity_mask(sp1, variant)
+        assert mask.all(), f"C⁻¹ degree-1 space should be all-identity for variant {variant}"
+
+
+def test_lagrange_structural_identity_degree2_never_identity() -> None:
+    """Degree-2 spaces are never Lagrange-identity regardless of variant or knot vector."""
+    sp1 = BsplineSpace1D([0, 0, 0, 1, 1, 1, 2, 2, 2], 2)  # C⁻¹, so bezier is identity
+    for variant in LagrangeVariant:
+        mask = _lagrange_structural_identity_mask(sp1, variant)
+        assert not mask.any(), f"degree-2 should yield no identity for variant {variant}"
 
 
 def test_identity_tol_kwarg_removed() -> None:

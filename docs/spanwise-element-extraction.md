@@ -48,8 +48,8 @@ Three targets are supported:
 
 | Target | Description | Identity detection |
 |---|---|---|
-| `"bezier"` | Bernstein / Bézier basis on each element | Numerical: $\lVert C - I \rVert_{\max} \leq \text{tol}$ per element |
-| `"lagrange"` | Lagrange basis at the chosen point distribution | Numerical: same test |
+| `"bezier"` | Bernstein / Bézier basis on each element | Structural: both boundary knots have multiplicity $\geq p+1$ |
+| `"lagrange"` | Lagrange basis at the chosen point distribution | Structural: Bézier identity + Lagrange-to-Bernstein matrix $= I$ |
 | `"cardinal"` | Cardinal B-spline basis on each element | Structural: `BsplineSpace1D.get_cardinal_intervals()` |
 
 Additional keyword arguments:
@@ -60,7 +60,6 @@ from pantr.basis import LagrangeVariant
 ext = SpanwiseElementExtraction(
     space, "lagrange",
     lagrange_variant=LagrangeVariant.GAUSS_LOBATTO,  # default: EQUISPACES
-    identity_tol=1e-12,                              # default: space.tolerance
 )
 ```
 
@@ -166,10 +165,18 @@ following non-zero spans (where $p$ is the polynomial degree); on such
 intervals the cardinal extraction operator is provably the identity.  No
 numerical comparison is performed.
 
-**`"bezier"` and `"lagrange"` targets** — flags are computed *numerically*
-at construction time using $\lVert C_i - I \rVert_{\max} \leq \text{tol}$.  This
-catches practical cases such as a $C^0$ Bézier space, where every element's
-Bézier extraction operator is already the identity.
+**`"bezier"` target** — an element is identity iff both its boundary unique
+knots (in the domain) have multiplicity $\geq p+1$, meaning the element is
+already a Bézier patch fully isolated from its neighbours.  Knot
+multiplicities are computed using the space's own `tolerance`.
+
+**`"lagrange"` target** — the Lagrange extraction is `bezier_op[e] @ lagr_to_bzr`.
+This is the identity iff the Bézier extraction is identity *and* the
+Lagrange-to-Bernstein matrix `lagr_to_bzr` equals `I`.  The latter holds
+when the Lagrange nodes coincide with the Bernstein abscissae `i/p` — for
+example, `degree == 1` with equispaced, GLL, or Chebyshev-2nd nodes.  For
+`degree == 0`, every element is trivially identity.  No floating-point matrix
+comparison is performed; the check is a single `np.array_equal` against `I`.
 
 ### Querying identity flags
 

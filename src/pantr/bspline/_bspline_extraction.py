@@ -152,7 +152,8 @@ def _bezier_structural_identity_mask_core(
 
     Note:
         Inputs are assumed to be correct (no validation performed).
-        For general use, call ``_bezier_structural_identity_mask`` instead.
+        For general use, call
+        ``spanwise_element_extraction._bezier_structural_identity_mask`` instead.
     """
     threshold = degree + 1
     n_elements = len(multiplicities) - 1
@@ -366,13 +367,17 @@ def _warmup_numba_functions() -> None:
     # Warmup Bezier extraction core with float64
     _tabulate_Bspline_Bezier_1D_extraction_core(knots_dummy, degree_dummy, tol_dummy, out_dummy)
 
+    # Warmup structural identity mask kernel
+    mults_dummy = np.array([degree_dummy + 1, degree_dummy + 1], dtype=np.intp)
+    mask_dummy = np.empty(1, dtype=np.bool_)
+    _bezier_structural_identity_mask_core(mults_dummy, degree_dummy, mask_dummy)
+
 
 # Precompile numba functions on module import
 # (Moved to central thread in __init__.py)
 
 
 __all__ = [
-    "_bezier_structural_identity_mask_core",
     "_tabulate_Bspline_Bezier_1D_extraction_impl",
     "_tabulate_Bspline_Lagrange_1D_extraction_impl",
     "_tabulate_Bspline_cardinal_1D_extraction_impl",

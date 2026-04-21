@@ -14,14 +14,16 @@ Three targets are supported (the source basis is always the B-spline basis):
 - ``"cardinal"``: cardinal B-spline basis on each element.
 
 Identity short-circuit is used wherever possible. All three targets use
-structural (exact) identity predicates:
+structural (multiplicity-based) identity predicates:
 
 - ``"bezier"``: element ``e`` is identity iff both its boundary unique knots
   have multiplicity ``>= degree + 1``, i.e. the element is already a Bézier
-  patch.
-- ``"lagrange"``: mathematically, the Lagrange-to-Bernstein matrix is never
-  the identity for ``degree > 0``, so no Lagrange element can be identity
-  unless ``degree == 0`` (in which case every element is trivially identity).
+  patch. Knot multiplicities are computed using ``space.tolerance``.
+- ``"lagrange"``: for ``degree == 0`` every element is trivially identity.
+  For ``degree > 0`` an element is identity iff its Bézier extraction is
+  identity and the Lagrange-to-Bernstein matrix equals ``I`` (which holds when
+  the Lagrange nodes coincide with the Bernstein abscissae, e.g. ``degree == 1``
+  with equispaced, GLL, or Chebyshev-2nd nodes).
 - ``"cardinal"``: structural mask from
   :meth:`BsplineSpace1D.get_cardinal_intervals` labels uniform-span intervals,
   on which the cardinal extraction operator is exactly the identity.
@@ -38,8 +40,8 @@ import numpy.typing as npt
 
 from ..basis import LagrangeVariant
 from ..basis._basis_utils import _allocate_or_validate_out
+from ..change_basis import _cached_lagrange_to_bernstein_matrix
 from ._bspline_extraction import _bezier_structural_identity_mask_core
-from ._bspline_knots import _get_unique_knots_and_multiplicity_impl
 from ._extraction_helpers import (
     OpKind,
     _operation_shapes,
@@ -153,7 +155,7 @@ class SpanwiseElementExtraction:
                 ops = space_1d.tabulate_Lagrange_extraction_operators(
                     lagrange_variant=lagrange_variant
                 )
-                mask = _lagrange_structural_identity_mask(space_1d)
+                mask = _lagrange_structural_identity_mask(space_1d, lagrange_variant)
             else:  # target == "cardinal"
                 ops = space_1d.tabulate_cardinal_extraction_operators()
                 mask = space_1d.get_cardinal_intervals()
@@ -255,12 +257,14 @@ class SpanwiseElementExtraction:
     def is_identity_mask_1d(self) -> tuple[npt.NDArray[np.bool_], ...]:
         """Get the per-direction identity masks.
 
-        All three targets use structural (exact) predicates — no numerical
-        tolerance is involved. For ``"bezier"``, an element is identity iff
-        both its boundary unique knots have multiplicity ``>= degree + 1``.
-        For ``"lagrange"``, every element is identity when ``degree == 0`` and
-        none are for ``degree > 0``. For ``"cardinal"``, the mask is the
-        structural output of :meth:`BsplineSpace1D.get_cardinal_intervals`.
+        All three targets use structural (multiplicity-based) identity predicates.
+        For ``"bezier"``, an element is identity iff both its boundary unique knots
+        have multiplicity ``>= degree + 1``; multiplicities are computed using
+        ``space.tolerance``. For ``"lagrange"``, the mask delegates to the Bézier
+        mask when the Lagrange-to-Bernstein matrix equals ``I`` (e.g. ``degree == 1``
+        with equispaced or GLL nodes), returns all-``True`` for ``degree == 0``, and
+        all-``False`` otherwise. For ``"cardinal"``, the mask is the structural output
+        of :meth:`BsplineSpace1D.get_cardinal_intervals`.
 
         Returns:
             tuple[npt.NDArray[bool], ...]: Length-``d`` tuple of read-only
@@ -879,15 +883,16 @@ def _bezier_structural_identity_mask(
     have multiplicity ``>= degree + 1``, meaning the element is already a
     Bézier patch with no continuity coupling to its neighbours.
 
+    Knot multiplicities are computed via the space's own tolerance
+    (``space_1d.tolerance``), which groups coincident knots before counting.
+
     Args:
         space_1d (BsplineSpace1D): A 1D B-spline space.
 
     Returns:
         npt.NDArray[np.bool_]: Boolean array of shape ``(n_elements,)``.
     """
-    _, mults = _get_unique_knots_and_multiplicity_impl(
-        space_1d.knots, space_1d.degree, float(space_1d.tolerance), in_domain=True
-    )
+    _, mults = space_1d.get_unique_knots_and_multiplicity(in_domain=True)
     n_elements = len(mults) - 1
     out = np.empty(n_elements, dtype=np.bool_)
     _bezier_structural_identity_mask_core(mults, space_1d.degree, out)
@@ -896,16 +901,22 @@ def _bezier_structural_identity_mask(
 
 def _lagrange_structural_identity_mask(
     space_1d: BsplineSpace1D,
+    lagrange_variant: LagrangeVariant,
 ) -> npt.NDArray[np.bool_]:
-    """Compute the per-element Lagrange identity mask from the space degree.
+    """Compute the per-element Lagrange identity mask.
 
-    For ``degree == 0`` every element is trivially identity (one constant
-    B-spline per element; the Lagrange extraction is ``[1]``). For
-    ``degree > 0`` the Lagrange-to-Bernstein matrix is never the identity, so
-    no element can have an identity Lagrange extraction operator.
+    For ``degree == 0`` every element is trivially identity (the 1x1
+    extraction matrix is ``[[1.0]]``). For ``degree > 0`` the Lagrange
+    extraction operator at element ``e`` equals ``bezier_op[e] @ lagr_to_bzr``.
+    This is the identity iff ``bezier_op[e] == I`` and ``lagr_to_bzr == I``.
+    ``lagr_to_bzr`` equals ``I`` when the Lagrange nodes coincide with the
+    Bernstein abscissae ``i / degree`` — e.g. for ``degree == 1`` with
+    equispaced, GLL, or Chebyshev-2nd nodes.  For all other cases no element
+    can have an identity Lagrange extraction operator.
 
     Args:
         space_1d (BsplineSpace1D): A 1D B-spline space.
+        lagrange_variant (LagrangeVariant): Lagrange node distribution.
 
     Returns:
         npt.NDArray[np.bool_]: Boolean array of shape ``(n_elements,)``.
@@ -913,6 +924,10 @@ def _lagrange_structural_identity_mask(
     n_elements = space_1d.num_intervals
     if space_1d.degree == 0:
         return np.ones(n_elements, dtype=np.bool_)
+    dtype = space_1d.knots.dtype
+    lagr_to_bzr = _cached_lagrange_to_bernstein_matrix(space_1d.degree, lagrange_variant, dtype)
+    if np.array_equal(lagr_to_bzr, np.eye(space_1d.degree + 1, dtype=dtype)):
+        return _bezier_structural_identity_mask(space_1d)
     return np.zeros(n_elements, dtype=np.bool_)
 
 
