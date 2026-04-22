@@ -196,6 +196,7 @@ def _assert_algorithms_agree(
 # =====================================================================
 
 
+@pytest.mark.slow
 class TestAlgorithmAgreement:
     """Cross-validate Yuksel vs Bezier clipping on random polynomials."""
 
@@ -283,6 +284,7 @@ class TestAlgorithmAgreement:
             _assert_algorithms_agree(coeff, f"rational/s{seed}/i{i}")
 
 
+@pytest.mark.slow
 class TestBatchConsistency:
     """Verify batch API matches single-polynomial results."""
 
