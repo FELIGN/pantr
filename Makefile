@@ -15,7 +15,7 @@ help:
 
 # Run the test suite with Numba JIT enabled
 test:
-	pytest
+	pytest -n auto
 
 # Generate an XML coverage report with Numba JIT disabled
 coverage:
