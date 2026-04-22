@@ -143,6 +143,17 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-venv-${{ steps.setup-python.outputs.python-version }}-
 
+      - name: Cache Numba compiled objects
+        uses: actions/cache@v4
+        with:
+          path: |
+            src/pantr/basis/__pycache__
+            src/pantr/bezier/__pycache__
+            src/pantr/bspline/__pycache__
+          key: ${{ runner.os }}-numba-${{ steps.setup-python.outputs.python-version }}-${{ hashFiles('src/**/*.py') }}
+          restore-keys: |
+            ${{ runner.os }}-numba-${{ steps.setup-python.outputs.python-version }}-
+
       - name: Create venv and install dev deps (on cache miss)
         if: steps.cache-venv.outputs.cache-hit != 'true'
         run: |
@@ -150,6 +161,11 @@ jobs:
           . .venv/bin/activate
           python -m pip install --upgrade pip
           pip install -e ".[dev]"
+
+      - name: Run tests with JIT (populates Numba cache)
+        run: |
+          . .venv/bin/activate
+          make test
 
       - name: Run pytest with coverage
         run: |
