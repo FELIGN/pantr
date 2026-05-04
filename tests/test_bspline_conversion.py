@@ -1,6 +1,6 @@
 """Tests for Bspline conversion methods (to_open, to_periodic, to/from Bezier)."""
 
-from typing import Any
+from typing import Any, cast
 
 import numpy as np
 import numpy.typing as npt
@@ -710,8 +710,9 @@ class TestToBeziers:
         beziers = bs.to_beziers()
         assert beziers.shape == (2, 2)
         for idx in np.ndindex(2, 2):
-            assert beziers[idx].degree == (2, 1)
-            assert isinstance(beziers[idx], Bezier)
+            bez = cast(Bezier, beziers[idx])
+            assert bez.degree == (2, 1)
+            assert isinstance(bez, Bezier)
 
     def test_2d_evaluation_consistency(self) -> None:
         """Test evaluation consistency for a 2D B-spline decomposition."""
@@ -754,7 +755,7 @@ class TestToBeziers:
         beziers = bs.to_beziers()
         assert beziers.shape == (2, 2, 3)
         for idx in np.ndindex(2, 2, 3):
-            assert beziers[idx].degree == (1, 2, 2)
+            assert cast(Bezier, beziers[idx]).degree == (1, 2, 2)
 
     def test_periodic(self) -> None:
         """Test to_beziers for a periodic B-spline."""
@@ -859,7 +860,7 @@ class TestToBeziers:
 
         beziers = bs.to_beziers()
         for idx in np.ndindex(*beziers.shape):
-            assert beziers[idx].degree == bs.degree
+            assert cast(Bezier, beziers[idx]).degree == bs.degree
 
     def test_matches_to_bezier_single_element(self) -> None:
         """Test that to_beziers matches to_bezier for single-element B-splines."""
@@ -953,7 +954,7 @@ class TestToBeziersSpanwiseParity:
             expected = (M.T @ ctrl_local.reshape(n_in, rank)).reshape(*orders, rank)
 
             np.testing.assert_allclose(
-                beziers[idx].control_points,
+                cast(Bezier, beziers[idx]).control_points,
                 expected,
                 atol=1e-12,
                 err_msg=f"Mismatch at element {idx}",

@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 import numpy as np
 from numpy import typing as npt
@@ -277,7 +277,7 @@ def to_pyvista(
 
     patch_data = [
         _process_patch(
-            patches[idx],
+            cast(BezierCls, patches[idx]),
             geom,
             idx,
             is_rational,

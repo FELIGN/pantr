@@ -869,8 +869,7 @@ def _l2_solve_components(  # noqa: PLR0913
     n_components = len(components)
 
     for comp_idx, comp in enumerate(components):
-        load_arr = comp.astype(out_dtype).copy()
-        load: npt.NDArray[np.floating[Any]] = load_arr
+        load: npt.NDArray[np.floating[Any]] = np.array(comp, dtype=out_dtype)
         for d, s1d in enumerate(space.spaces):
             load = _assemble_load_1d(
                 s1d,
