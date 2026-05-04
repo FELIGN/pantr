@@ -34,7 +34,7 @@ def _identity_bezier(dim: int) -> Bezier:
     if dim == 1:
         return Bezier(np.array([[0.0], [1.0]]))
     if dim == 2:  # noqa: PLR2004
-        ctrl = np.zeros((2, 2, 2))
+        ctrl: npt.NDArray[np.float64] = np.zeros((2, 2, 2))
         for i in range(2):
             for j in range(2):
                 ctrl[i, j, 0] = float(i)

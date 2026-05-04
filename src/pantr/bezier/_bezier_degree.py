@@ -60,7 +60,7 @@ def _degree_elevate_bezier(
         # Move target direction to axis 0, flatten the rest.
         moved = np.moveaxis(ctrl, d, 0)
         orig_shape = moved.shape
-        pts_2d = moved.reshape(orig_shape[0], -1)
+        pts_2d: npt.NDArray[np.floating[Any]] = moved.reshape(orig_shape[0], -1)
 
         pts_2d = np.ascontiguousarray(pts_2d)
 
@@ -115,7 +115,7 @@ def _degree_reduce_bezier(
         # Move target direction to axis 0, flatten the rest.
         moved = np.moveaxis(ctrl, d, 0)
         orig_shape = moved.shape
-        pts_2d = moved.reshape(orig_shape[0], -1)
+        pts_2d: npt.NDArray[np.floating[Any]] = moved.reshape(orig_shape[0], -1)
 
         pts_2d = np.ascontiguousarray(pts_2d)
 
@@ -248,7 +248,7 @@ def _minimize_degree_bezier(
             # Elevate back to original shape for error check
             moved_r = np.moveaxis(reduced, dim, 0)
             shape_r = moved_r.shape
-            flat_r = moved_r.reshape(shape_r[0], -1)
+            flat_r: npt.NDArray[np.floating[Any]] = moved_r.reshape(shape_r[0], -1)
             flat_r = np.ascontiguousarray(flat_r)
             elevated_flat = _degree_elevate_bezier_1d_core(degree - 1, flat_r, 1)
             elevated = np.moveaxis(

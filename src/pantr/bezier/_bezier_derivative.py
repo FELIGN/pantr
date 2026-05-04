@@ -10,7 +10,7 @@ Works for non-rational and rational Bézier of any parametric dimension.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 import numpy.typing as npt
@@ -166,7 +166,7 @@ def _derivative_keep_degree_nonrational(bezier: Bezier, direction: int) -> Bezie
     # Move target direction to axis 0, flatten the rest.
     moved = np.moveaxis(ctrl, direction, 0)
     orig_shape = moved.shape
-    pts_2d = moved.reshape(orig_shape[0], -1)
+    pts_2d: npt.NDArray[np.floating[Any]] = moved.reshape(orig_shape[0], -1)
 
     pts_2d = np.ascontiguousarray(pts_2d)
 

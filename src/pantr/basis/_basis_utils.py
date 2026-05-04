@@ -10,6 +10,8 @@ helpers) of PaNTr:
   ``out`` arrays before calling Layer 3 kernels.
 """
 
+from typing import Any
+
 import numpy as np
 from numpy import typing as npt
 
@@ -104,7 +106,7 @@ def _validate_float_dtype(dtype: npt.DTypeLike) -> None:
 
 
 def _validate_out_array(
-    out: np.ndarray,
+    out: npt.NDArray[Any],
     expected_shape: tuple[int, ...],
     expected_dtype: npt.DTypeLike,
 ) -> None:

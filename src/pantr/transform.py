@@ -59,6 +59,7 @@ class AffineTransform:
 
         n = mat.shape[0]
 
+        tvec: npt.NDArray[np.float64]
         if translation is None:
             tvec = np.zeros(n, dtype=np.float64)
         else:

@@ -8,7 +8,7 @@ sub-splines.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 import numpy.typing as npt
@@ -110,7 +110,7 @@ def _split_bspline_impl(
     # Move the split direction to axis 0, flatten the rest.
     moved_ctrl = np.moveaxis(ctrl, direction, 0)
     orig_shape = moved_ctrl.shape
-    pts_2d = moved_ctrl.reshape(orig_shape[0], -1)
+    pts_2d: npt.NDArray[np.floating[Any]] = moved_ctrl.reshape(orig_shape[0], -1)
     pts_2d = np.ascontiguousarray(pts_2d)
 
     space_1d = bspline.space.spaces[direction]
