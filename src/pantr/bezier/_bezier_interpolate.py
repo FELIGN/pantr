@@ -95,7 +95,7 @@ def _bernstein_interpolate_1d(
     dtype = f.dtype
 
     if n == 1:
-        return f.copy()
+        return np.array(f)
 
     tol = resolve_svd_tolerance(dtype, tol)
 
@@ -111,7 +111,7 @@ def _bernstein_interpolate_1d(
 
     # Apply V to get coefficients
     out = Vt.T @ tmp
-    return out.astype(dtype)
+    return np.array(out, dtype=dtype)
 
 
 def _bernstein_interpolate(
@@ -159,7 +159,7 @@ def _bernstein_interpolate(
         # tensordot puts the result dimension first; move it back to `dim`
         result = np.moveaxis(result, 0, dim)
 
-    return result
+    return np.array(result, dtype=f.dtype)
 
 
 def _resolve_nodes(

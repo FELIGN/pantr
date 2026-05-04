@@ -28,6 +28,9 @@ class AffineTransform:
         _translation (npt.NDArray[np.float64]): The ``(n,)`` translation.
     """
 
+    _matrix: npt.NDArray[np.float64]
+    _translation: npt.NDArray[np.float64]
+
     # ------------------------------------------------------------------
     # Construction
     # ------------------------------------------------------------------
@@ -394,7 +397,7 @@ class AffineTransform:
                 f"Points last dimension ({pts.shape[-1]}) must match "
                 f"transform dimension ({self.dim})."
             )
-        return pts @ self._matrix.T + self._translation
+        return np.asarray(pts @ self._matrix.T + self._translation, dtype=np.float64)
 
     # ------------------------------------------------------------------
     # Dunder helpers

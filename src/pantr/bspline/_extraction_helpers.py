@@ -317,7 +317,7 @@ def _operation_shapes(
 
 
 def _validate_operand(
-    operand: np.ndarray,  # type: ignore[type-arg]
+    operand: np.ndarray,
     expected_shape: tuple[int, ...],
     dtype: npt.DTypeLike,
 ) -> None:

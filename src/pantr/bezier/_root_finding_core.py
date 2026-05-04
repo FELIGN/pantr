@@ -185,7 +185,7 @@ def _subdivide_scalar(
         For general use, call the Layer 2 helpers in ``_find_roots`` instead.
     """
     if t_min <= 0.0 and t_max >= 1.0:
-        return np.asarray(coeff, dtype=np.float64).copy()
+        return np.array(coeff, dtype=np.float64)
 
     t_min = max(t_min, 0.0)
     t_min = min(t_min, 1.0)

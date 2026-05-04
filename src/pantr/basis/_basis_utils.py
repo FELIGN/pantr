@@ -104,7 +104,7 @@ def _validate_float_dtype(dtype: npt.DTypeLike) -> None:
 
 
 def _validate_out_array(
-    out: np.ndarray,  # type: ignore[type-arg]
+    out: np.ndarray,
     expected_shape: tuple[int, ...],
     expected_dtype: npt.DTypeLike,
 ) -> None:

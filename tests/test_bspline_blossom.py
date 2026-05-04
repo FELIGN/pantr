@@ -18,7 +18,7 @@ def _eval_blossom(
     degree: int,
     ctrl: list[float] | list[list[float]],
     u_values: list[float],
-) -> np.ndarray:  # type: ignore[type-arg]
+) -> np.ndarray:
     """Thin wrapper: build numpy arrays and call _evaluate_blossom_1d."""
     kv = np.array(knots, dtype=np.float64)
     cp = np.array(ctrl, dtype=np.float64)
