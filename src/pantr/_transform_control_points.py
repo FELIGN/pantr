@@ -74,4 +74,4 @@ def _apply_affine_to_control_points(
     if in_place:
         cp[...] = cp @ A.T + b
         return cp
-    return (cp @ A.T + b).astype(dtype, copy=False)
+    return np.array(cp @ A.T + b, dtype=dtype)

@@ -6,7 +6,7 @@ multi-dimensional orchestration that wrap the Layer 3 knot-removal kernel.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 import numpy.typing as npt
@@ -128,7 +128,7 @@ def _remove_knots_bspline(
         orig_shape = moved_ctrl.shape
 
         # Flatten remaining axes into a single column dimension.
-        pts_2d = moved_ctrl.reshape(orig_shape[0], -1)
+        pts_2d: npt.NDArray[np.floating[Any]] = moved_ctrl.reshape(orig_shape[0], -1)
         pts_2d = np.ascontiguousarray(pts_2d)
 
         current_knots = space_1d.knots

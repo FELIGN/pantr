@@ -326,7 +326,7 @@ def _yuksel_roots(  # noqa: PLR0912, PLR0915
     deepest = n - 2
     c0 = derivs[deepest, 0]
     c1 = derivs[deepest, 1]
-    crit = np.empty(1, dtype=np.float64)
+    crit: npt.NDArray[np.float64] = np.empty(1, dtype=np.float64)
     n_crit = 0
     if c0 != c1:
         r = c0 / (c0 - c1)

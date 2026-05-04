@@ -7,7 +7,7 @@ Provides constants and helpers used by both
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, cast
 
 import numpy as np
 import numpy.typing as npt
@@ -36,7 +36,7 @@ def resolve_svd_tolerance(dtype: npt.DTypeLike, tol: float | None) -> float:
     """
     if tol is not None:
         return tol
-    return SVD_TOL_FACTOR * float(np.finfo(dtype).eps)  # type: ignore[arg-type]
+    return SVD_TOL_FACTOR * float(np.finfo(cast(type[np.floating[Any]], dtype)).eps)
 
 
 def split_components(

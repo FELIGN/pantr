@@ -11,9 +11,10 @@ and right ``[value, 1]`` halves, each reparametrized to ``[0, 1]``.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
+import numpy.typing as npt
 
 from ._bezier_core import _split_bezier_1d_core
 
@@ -55,7 +56,7 @@ def _split_bezier(
     # Move target axis to position 0, flatten the rest into a single axis.
     moved = np.moveaxis(ctrl, direction, 0)
     orig_shape = moved.shape
-    pts_2d = moved.reshape(orig_shape[0], -1)
+    pts_2d: npt.NDArray[np.floating[Any]] = moved.reshape(orig_shape[0], -1)
 
     pts_2d = np.ascontiguousarray(pts_2d)
 

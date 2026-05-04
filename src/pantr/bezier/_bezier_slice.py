@@ -12,7 +12,7 @@ last control point is returned directly in O(1).
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, Any, cast
 
 import numpy as np
 import numpy.typing as npt
@@ -59,7 +59,7 @@ def _slice_bezier(
     # Move target axis to position 0, flatten the rest into a single axis.
     moved = np.moveaxis(ctrl, axis, 0)
     orig_shape = moved.shape
-    pts_2d = moved.reshape(orig_shape[0], -1)
+    pts_2d: npt.NDArray[np.floating[Any]] = moved.reshape(orig_shape[0], -1)
 
     pts_2d = np.ascontiguousarray(pts_2d)
 

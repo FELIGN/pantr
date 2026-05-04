@@ -53,6 +53,8 @@ class Bspline:
             decomposition, or ``None`` if not yet computed.
     """
 
+    _control_points: npt.NDArray[np.float32 | np.float64]
+
     def __init__(
         self, space: BsplineSpace, control_points: npt.ArrayLike, is_rational: bool = False
     ) -> None:

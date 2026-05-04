@@ -10,6 +10,7 @@ different B-splines.
 from __future__ import annotations
 
 from collections.abc import Sequence
+from typing import Any
 
 import numpy as np
 from numpy import typing as npt
@@ -86,7 +87,7 @@ def _merge_breakpoints_n_way(
     union_bp: npt.NDArray[np.float64] = np.unique(np.concatenate(non_empty)).astype(np.float64)
 
     # Target multiplicity = element-wise max across all spaces
-    target_mults = np.zeros(len(union_bp), dtype=np.int_)
+    target_mults: npt.NDArray[np.signedinteger[Any]] = np.zeros(len(union_bp), dtype=np.int_)
     per_space_mults: list[npt.NDArray[np.int_]] = []
     for bp, mult in zip(bp_list, mult_list, strict=True):
         m = _lookup_mults_in_space(union_bp, bp, mult, tol)

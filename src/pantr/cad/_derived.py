@@ -47,7 +47,7 @@ def create_rectangle(
 
     # 4 spans, degree 1: knots [0,0, 0.25,0.25, 0.5,0.5, 0.75,0.75, 1,1]
     n_spans = 4
-    knots = np.empty(2 * (n_spans + 1), dtype=np.float64)
+    knots: npt.NDArray[np.float64] = np.empty(2 * (n_spans + 1), dtype=np.float64)
     knots[0] = 0.0
     knots[-1] = 1.0
     knots[1:-1] = np.linspace(0.0, 1.0, n_spans + 1).repeat(2)[1:-1]

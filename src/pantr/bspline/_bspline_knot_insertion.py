@@ -159,7 +159,7 @@ def _insert_knots_bspline(
         orig_shape = moved_ctrl.shape
 
         # Reshape remaining axes into a single column dimension.
-        pts_2d = moved_ctrl.reshape(orig_shape[0], -1)
+        pts_2d: npt.NDArray[np.floating[Any]] = moved_ctrl.reshape(orig_shape[0], -1)
         pts_2d = np.ascontiguousarray(pts_2d)
 
         if is_periodic:
@@ -339,7 +339,7 @@ def _to_open_bspline_impl(bspline: Bspline) -> Bspline:
         # Move dimension i to the 0th axis and flatten remaining axes.
         moved_ctrl = np.moveaxis(ctrl, i, 0)
         orig_shape = moved_ctrl.shape
-        pts_2d = moved_ctrl.reshape(orig_shape[0], -1)
+        pts_2d: npt.NDArray[np.floating[Any]] = moved_ctrl.reshape(orig_shape[0], -1)
         pts_2d = np.ascontiguousarray(pts_2d)
 
         open_knots, open_pts_2d = _to_open_bspline_1d_impl(
@@ -658,7 +658,7 @@ def _to_periodic_bspline_impl(
         tol_1d = float(space_1d.tolerance)
         moved_ctrl = np.moveaxis(ctrl, i, 0)
         orig_shape = moved_ctrl.shape
-        pts_2d = moved_ctrl.reshape(orig_shape[0], -1)
+        pts_2d: npt.NDArray[np.floating[Any]] = moved_ctrl.reshape(orig_shape[0], -1)
         pts_2d = np.ascontiguousarray(pts_2d)
 
         per_knots, per_pts_2d = _to_periodic_bspline_1d_impl(knots_1d, p, pts_2d, m_bdy, tol_1d)

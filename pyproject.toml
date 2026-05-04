@@ -7,7 +7,7 @@ name = "pantr"
 version = "0.2.0"
 description = "Polynomial And NURBS Toolkit"
 readme = "README.md"
-requires-python = ">=3.10, <3.13"
+requires-python = ">=3.10, <3.15"
 license = { text = "MIT License" }
 authors = [{ name = "Pablo Antolin", email = "pablo.antolin@epfl.ch" }]
 classifiers = [
@@ -20,13 +20,15 @@ classifiers = [
   "Programming Language :: Python :: 3.10",
   "Programming Language :: Python :: 3.11",
   "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Programming Language :: Python :: 3.14",
   "Topic :: Scientific/Engineering",
 ]
 dependencies = [
   "numpy>=1.26,<3",
   "scipy>=1.11,<2",
   "matplotlib>=3.8,<4",
-  "numba>=0.59,<0.61",
+  "numba>=0.63",
 ]
 
 [project.optional-dependencies]

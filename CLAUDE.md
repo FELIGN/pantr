@@ -38,7 +38,7 @@ Use **conventional commits** with the format:
 
 ## Architecture
 
-**PaNTr** is a polynomial and NURBS toolkit for geometric modeling and numerical analysis (Python 3.10–3.12).
+**PaNTr** is a polynomial and NURBS toolkit for geometric modeling and numerical analysis (Python 3.10–3.14).
 
 ### Layers
 

@@ -86,7 +86,7 @@ def _rotate_weighted(
         npt.NDArray[np.float64]: Rotated control points, same shape as *cw*.
     """
     R = AffineTransform.rotation_3d(angle, axis=axis)
-    out = cw.copy()
+    out = np.array(cw)
     out[..., :_PHYSICAL_DIM] = cw[..., :_PHYSICAL_DIM] @ R.matrix.T
     return out
 

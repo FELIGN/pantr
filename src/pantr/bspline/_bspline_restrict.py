@@ -9,7 +9,7 @@ already-open domain endpoint.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 import numpy.typing as npt
@@ -232,7 +232,7 @@ def _restrict_bspline_impl(
         # Move dimension i to the 0th axis and flatten remaining axes.
         moved_ctrl = np.moveaxis(ctrl, i, 0)
         orig_shape = moved_ctrl.shape
-        pts_2d = moved_ctrl.reshape(orig_shape[0], -1)
+        pts_2d: npt.NDArray[np.floating[Any]] = moved_ctrl.reshape(orig_shape[0], -1)
         pts_2d = np.ascontiguousarray(pts_2d)
 
         restricted_knots, restricted_pts_2d = _restrict_bspline_1d_impl(

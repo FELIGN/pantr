@@ -105,10 +105,11 @@ def _tabulate_lagrange_basis_1D_core(
 
     # Snap to exact Kronecker-delta at interpolation nodes to avoid tiny roundoff
     # off-diagonals (notably with float32 and Chebyshev nodes).
+    eps: float
     if B_normalized.dtype == np.float32:
-        eps = np.finfo(np.float32).eps * 16.0
+        eps = float(np.finfo(np.float32).eps) * 16.0
     else:
-        eps = np.finfo(np.float64).eps * 16.0
+        eps = float(np.finfo(np.float64).eps) * 16.0
     diffs = np.abs(t[:, None] - nodes_sorted[None, :])
     matches = diffs <= eps
     if np.any(matches):
