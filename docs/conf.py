@@ -147,6 +147,7 @@ nitpicky = True
 # CellIndex and Target are Literal/Union type aliases; Sphinx resolves them as
 # py:class but they have no class inventory entry.
 nitpick_ignore = [
+    ("py:class", "numpy._typing._array_like._Buffer"),
     ("py:class", "numpy._typing._array_like._SupportsArray"),
     ("py:class", "numpy._typing._dtype_like._DTypeDict"),
     ("py:class", "numpy._typing._dtype_like._SupportsDType"),
