@@ -34,7 +34,7 @@ def test_package_all_exports() -> None:
 
 def test_package_metadata_values() -> None:
     """Validate the package metadata constants."""
-    assert pantr.__version__ == "0.1.0"
+    assert pantr.__version__ == "0.3.0"
     assert pantr.__license__ == "MIT"
     assert pantr.__author__ == "Pablo Antolin <pablo.antolin@epfl.ch>"
 
@@ -42,7 +42,7 @@ def test_package_metadata_values() -> None:
 def test_metadata_import_stability() -> None:
     """Verify metadata survives module reloads."""
     module = importlib.reload(pantr)
-    assert module.__version__ == "0.1.0"
+    assert module.__version__ == "0.3.0"
 
 
 def test_submodule_all_exports() -> None:
