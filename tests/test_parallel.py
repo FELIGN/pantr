@@ -60,7 +60,7 @@ class TestNumThreadsContextManager:
         prev = get_num_threads()
         with pytest.raises(RuntimeError), num_threads(1):
             raise RuntimeError("test error")
-        assert get_num_threads() == prev
+        assert get_num_threads() == prev  # type: ignore[unreachable, unused-ignore]
 
     def test_nested_context_managers(self) -> None:
         """Nested context managers restore correctly."""
