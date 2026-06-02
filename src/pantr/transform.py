@@ -7,10 +7,12 @@ and composition operators.
 
 Main exports:
 
-- :class:`AffineTransform` — immutable affine-transformation object.
+- :class:`AffineTransform` — logically immutable affine-transformation object.
 """
 
 from __future__ import annotations
+
+import functools
 
 import numpy as np
 from numpy import typing as npt
@@ -20,8 +22,9 @@ class AffineTransform:
     """An affine transformation T(x) = A x + b in n-dimensional space.
 
     The transformation is defined by a square matrix ``A`` (the linear part)
-    and a translation vector ``b``.  Instances are immutable: every mutation
-    returns a new :class:`AffineTransform`.
+    and a translation vector ``b``.  Instances are treated as immutable: every
+    factory method and operator returns a new :class:`AffineTransform`; no
+    method mutates an existing instance.
 
     Attributes:
         _matrix (npt.NDArray[np.float64]): The ``(n, n)`` linear part.
@@ -52,8 +55,12 @@ class AffineTransform:
             ValueError: If *matrix* is not 2-D or not square.
             ValueError: If *translation* length does not match the matrix
                 dimension.
+
+        Note:
+            Both *matrix* and *translation* are stored as C-contiguous,
+            read-only ``float64`` arrays.
         """
-        mat = np.asarray(matrix, dtype=np.float64)
+        mat = np.ascontiguousarray(np.asarray(matrix, dtype=np.float64))
         if mat.ndim != 2 or mat.shape[0] != mat.shape[1]:  # noqa: PLR2004
             raise ValueError(f"matrix must be a square 2-D array, got shape {mat.shape}.")
 
@@ -63,7 +70,7 @@ class AffineTransform:
         if translation is None:
             tvec = np.zeros(n, dtype=np.float64)
         else:
-            tvec = np.asarray(translation, dtype=np.float64)
+            tvec = np.ascontiguousarray(np.asarray(translation, dtype=np.float64))
             if tvec.shape != (n,):
                 raise ValueError(f"translation must have shape ({n},), got {tvec.shape}.")
 
@@ -103,9 +110,13 @@ class AffineTransform:
         """
         return self._translation
 
-    @property
+    @functools.cached_property
     def inverse(self) -> AffineTransform:
         """Get the inverse transformation.
+
+        Computed once and cached; subsequent accesses are free. Safe because
+        neither the matrix nor the translation is ever modified after
+        construction.
 
         Returns:
             AffineTransform: The inverse such that ``T @ T.inverse`` is the
@@ -172,6 +183,12 @@ class AffineTransform:
         Raises:
             ValueError: If *factors* is a scalar and *center* is ``None``
                 (dimension cannot be inferred).
+            ValueError: If *factors* is a scalar and *center* is not a 1-D
+                array-like.
+            ValueError: If any factor is non-finite or zero (singular
+                transform).
+            ValueError: If *factors* is an array and *center* has the wrong
+                shape.
         """
         f = np.asarray(factors, dtype=np.float64)
         if f.ndim == 0:
@@ -182,10 +199,25 @@ class AffineTransform:
                     "array of per-axis factors so the dimension can be "
                     "inferred."
                 )
-            c = np.asarray(center, dtype=np.float64).ravel()
-            f = np.full(len(c), float(f))
+            fval = float(f)
+            if not np.isfinite(fval):
+                raise ValueError(f"scaling factors must be finite, got {fval!r}.")
+            if fval == 0.0:
+                raise ValueError(
+                    f"scaling factors must be non-zero (singular transform), got {fval!r}."
+                )
+            c = np.asarray(center, dtype=np.float64)
+            if c.ndim != 1:
+                raise ValueError(f"center must be a 1-D array, got shape {c.shape}.")
+            f = np.full(len(c), fval)
         else:
             f = f.ravel()
+            if not np.all(np.isfinite(f)):
+                raise ValueError(f"scaling factors must be finite, got {f!r}.")
+            if np.any(f == 0.0):
+                raise ValueError(
+                    f"scaling factors must be non-zero (singular transform), got {f!r}."
+                )
 
         mat = np.diag(f)
         t = AffineTransform(mat)
@@ -207,8 +239,14 @@ class AffineTransform:
 
         Returns:
             AffineTransform: The 2-D rotation.
+
+        Raises:
+            ValueError: If *angle* is non-finite.
         """
-        c, s = np.cos(angle), np.sin(angle)
+        angle_f = float(angle)
+        if not np.isfinite(angle_f):
+            raise ValueError(f"angle must be finite, got {angle_f!r}.")
+        c, s = np.cos(angle_f), np.sin(angle_f)
         mat = np.array([[c, -s], [s, c]], dtype=np.float64)
         t = AffineTransform(mat)
         if center is not None:
@@ -236,8 +274,10 @@ class AffineTransform:
             AffineTransform: The 3-D rotation.
 
         Raises:
+            ValueError: If *angle* is non-finite.
             ValueError: If an integer axis is not in ``{0, 1, 2}``.
-            ValueError: If a vector axis has zero norm.
+            ValueError: If a vector axis does not have shape ``(3,)``.
+            ValueError: If a vector axis is zero or non-finite.
         """
         if isinstance(axis, int | np.integer):
             axis_int = int(axis)
@@ -247,13 +287,18 @@ class AffineTransform:
             u[axis_int] = 1.0
         else:
             u = np.asarray(axis, dtype=np.float64).ravel()
+            if u.shape != (3,):
+                raise ValueError(f"Rotation axis must have shape (3,), got {u.shape}.")
             norm = np.linalg.norm(u)
-            if norm == 0.0:
-                raise ValueError("Rotation axis must be non-zero.")
+            if norm == 0.0 or not np.isfinite(norm):
+                raise ValueError(f"Rotation axis must be a finite non-zero vector, got {u!r}.")
             u = u / norm
 
+        angle_f = float(angle)
+        if not np.isfinite(angle_f):
+            raise ValueError(f"angle must be finite, got {angle_f!r}.")
         # Rodrigues rotation matrix: R = I cos(t) + (1-cos(t)) u u^T + sin(t) [u]x
-        c, s = np.cos(angle), np.sin(angle)
+        c, s = np.cos(angle_f), np.sin(angle_f)
         ux, uy, uz = u
         K = np.array(
             [[0.0, -uz, uy], [uz, 0.0, -ux], [-uy, ux, 0.0]],
@@ -288,12 +333,12 @@ class AffineTransform:
             AffineTransform: The reflection.
 
         Raises:
-            ValueError: If *normal* has zero norm.
+            ValueError: If *normal* is zero or non-finite.
         """
         n = np.asarray(normal, dtype=np.float64).ravel()
         norm = np.linalg.norm(n)
-        if norm == 0.0:
-            raise ValueError("Mirror normal must be non-zero.")
+        if norm == 0.0 or not np.isfinite(norm):
+            raise ValueError(f"Mirror normal must be a finite non-zero vector, got {n!r}.")
         n = n / norm
         mat = np.eye(len(n)) - 2.0 * np.outer(n, n)
         t = AffineTransform(mat)
@@ -325,6 +370,7 @@ class AffineTransform:
         Raises:
             ValueError: If *component* equals *direction*.
             ValueError: If *component* or *direction* is out of range.
+            ValueError: If *factor* is non-finite.
         """
         if component == direction:
             raise ValueError("component and direction must differ.")
@@ -332,8 +378,11 @@ class AffineTransform:
             raise ValueError(f"component must be in [0, {dim}), got {component}.")
         if not (0 <= direction < dim):
             raise ValueError(f"direction must be in [0, {dim}), got {direction}.")
+        factor_f = float(factor)
+        if not np.isfinite(factor_f):
+            raise ValueError(f"factor must be finite, got {factor_f!r}.")
         mat = np.eye(dim, dtype=np.float64)
-        mat[component, direction] = float(factor)
+        mat[component, direction] = factor_f
         return AffineTransform(mat)
 
     # ------------------------------------------------------------------
@@ -438,8 +487,15 @@ def _apply_center(
 
     Returns:
         AffineTransform: The re-centred transformation.
+
+    Raises:
+        ValueError: If *center* does not have shape ``(transform.dim,)``.
     """
     c = np.asarray(center, dtype=np.float64).ravel()
+    if c.shape != (transform.dim,):
+        raise ValueError(
+            f"center must have shape ({transform.dim},), got {np.asarray(center).shape}."
+        )
     t_neg = AffineTransform.translation(-c)
     t_pos = AffineTransform.translation(c)
     return t_pos @ transform @ t_neg
