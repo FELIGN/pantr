@@ -177,6 +177,26 @@ class TestAffineTransformScaling:
         with pytest.raises(ValueError, match="center must have shape"):
             AffineTransform.scaling([2.0, 3.0], center=[1.0, 0.0, 0.0])
 
+    def test_non_finite_scalar_factor_raises(self) -> None:
+        """A non-finite isotropic factor raises."""
+        with pytest.raises(ValueError, match="finite"):
+            AffineTransform.scaling(np.inf, center=[1.0, 1.0])
+
+    def test_nan_scalar_factor_raises(self) -> None:
+        """A NaN isotropic factor raises."""
+        with pytest.raises(ValueError, match="finite"):
+            AffineTransform.scaling(np.nan, center=[1.0, 1.0])
+
+    def test_nan_factor_array_raises(self) -> None:
+        """A NaN per-axis factor raises."""
+        with pytest.raises(ValueError, match="finite"):
+            AffineTransform.scaling([np.nan, 1.0])
+
+    def test_center_wrong_ndim_scalar_raises(self) -> None:
+        """A non-1-D center for isotropic scaling raises."""
+        with pytest.raises(ValueError, match="1-D"):
+            AffineTransform.scaling(2.0, center=[[1.0, 0.0], [0.0, 1.0]])
+
 
 class TestAffineTransformRotation2D:
     """Tests for AffineTransform.rotation_2d."""
@@ -197,6 +217,16 @@ class TestAffineTransformRotation2D:
         # Rotate (2,1) by 90 degrees about (1,1) -> (1,2)
         t = AffineTransform.rotation_2d(np.pi / 2, center=[1.0, 1.0])
         npt.assert_allclose(t(np.array([2.0, 1.0])), [1.0, 2.0], atol=1e-15)
+
+    def test_non_finite_angle_raises(self) -> None:
+        """A non-finite angle raises."""
+        with pytest.raises(ValueError, match="finite"):
+            AffineTransform.rotation_2d(np.inf)
+
+    def test_center_wrong_shape_raises(self) -> None:
+        """A center whose shape mismatches the rotation dimension raises."""
+        with pytest.raises(ValueError, match="center must have shape"):
+            AffineTransform.rotation_2d(np.pi / 2, center=[1.0, 0.0, 0.0])
 
 
 class TestAffineTransformRotation3D:
@@ -253,6 +283,21 @@ class TestAffineTransformRotation3D:
         with pytest.raises(ValueError, match="finite"):
             AffineTransform.rotation_3d(0.5, axis=[np.inf, 0.0, 0.0])
 
+    def test_nan_axis_raises(self) -> None:
+        """A NaN component in the axis raises."""
+        with pytest.raises(ValueError, match="finite"):
+            AffineTransform.rotation_3d(0.5, axis=[np.nan, 0.0, 0.0])
+
+    def test_non_finite_angle_raises(self) -> None:
+        """A non-finite angle raises."""
+        with pytest.raises(ValueError, match="finite"):
+            AffineTransform.rotation_3d(np.nan, axis=2)
+
+    def test_center_wrong_shape_raises(self) -> None:
+        """A center whose shape mismatches the rotation dimension raises."""
+        with pytest.raises(ValueError, match="center must have shape"):
+            AffineTransform.rotation_3d(np.pi / 2, axis=2, center=[1.0, 0.0])
+
 
 class TestAffineTransformMirror:
     """Tests for AffineTransform.mirror."""
@@ -291,6 +336,16 @@ class TestAffineTransformMirror:
         with pytest.raises(ValueError, match="finite"):
             AffineTransform.mirror([np.inf, 0.0])
 
+    def test_nan_normal_raises(self) -> None:
+        """A NaN component in the normal raises."""
+        with pytest.raises(ValueError, match="finite"):
+            AffineTransform.mirror([np.nan, 0.0])
+
+    def test_center_wrong_shape_raises(self) -> None:
+        """A center whose shape mismatches the mirror dimension raises."""
+        with pytest.raises(ValueError, match="center must have shape"):
+            AffineTransform.mirror([1.0, 0.0], center=[1.0, 0.0, 0.0])
+
 
 class TestAffineTransformShear:
     """Tests for AffineTransform.shear."""
@@ -309,6 +364,11 @@ class TestAffineTransformShear:
         """Out-of-range component raises."""
         with pytest.raises(ValueError, match="component"):
             AffineTransform.shear(dim=2, component=2, direction=0, factor=1.0)
+
+    def test_non_finite_factor_raises(self) -> None:
+        """A non-finite shear factor raises."""
+        with pytest.raises(ValueError, match="finite"):
+            AffineTransform.shear(dim=2, component=0, direction=1, factor=np.inf)
 
 
 # ======================================================================
@@ -373,6 +433,11 @@ class TestAffineTransformInverse:
         t = AffineTransform(np.zeros((2, 2)))
         with pytest.raises(ValueError, match="singular"):
             _ = t.inverse
+
+    def test_inverse_cached(self) -> None:
+        """Repeated accesses to inverse return the same object."""
+        t = AffineTransform(np.array([[1.0, 2.0], [3.0, 4.0]]), np.array([5.0, 6.0]))
+        assert t.inverse is t.inverse
 
 
 # ======================================================================
