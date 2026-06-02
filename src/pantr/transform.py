@@ -289,7 +289,7 @@ class AffineTransform:
             u = np.asarray(axis, dtype=np.float64).ravel()
             if u.shape != (3,):
                 raise ValueError(f"Rotation axis must have shape (3,), got {u.shape}.")
-            norm = float(np.linalg.norm(u))
+            norm = np.linalg.norm(u)
             if norm == 0.0 or not np.isfinite(norm):
                 raise ValueError(f"Rotation axis must be a finite non-zero vector, got {u!r}.")
             u = u / norm
@@ -336,7 +336,7 @@ class AffineTransform:
             ValueError: If *normal* is zero or non-finite.
         """
         n = np.asarray(normal, dtype=np.float64).ravel()
-        norm = float(np.linalg.norm(n))
+        norm = np.linalg.norm(n)
         if norm == 0.0 or not np.isfinite(norm):
             raise ValueError(f"Mirror normal must be a finite non-zero vector, got {n!r}.")
         n = n / norm
