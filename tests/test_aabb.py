@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import numpy as np
 import pytest
+from numpy import typing as npt
 
 from pantr.geometry import AABB
 from pantr.transform import AffineTransform
@@ -250,3 +251,109 @@ def test_aabb_empty_is_neutral_for_union() -> None:
     finite = AABB(lo=[1.0, 2.0, 3.0], hi=[4.0, 5.0, 6.0])
     assert AABB.empty(3).union(finite) == finite
     assert finite.union(AABB.empty(3)) == finite
+
+
+def test_aabb_union_both_empty() -> None:
+    assert AABB.empty(2).union(AABB.empty(2)).is_empty()
+
+
+def test_aabb_rejects_nan_in_hi() -> None:
+    with pytest.raises(ValueError, match="must not contain NaN"):
+        AABB(lo=[0.0, 0.0], hi=[1.0, np.nan])
+
+
+def test_aabb_ravel_input() -> None:
+    # Any-rank input is ravelled; a (1, 3) array works the same as [lo0, lo1, lo2].
+    b = AABB(lo=[[0.0, 0.0, 0.0]], hi=[[1.0, 2.0, 3.0]])
+    assert b.ndim == 3  # noqa: PLR2004
+    np.testing.assert_array_equal(b.lo, [0.0, 0.0, 0.0])
+
+
+def test_aabb_delete_attribute_raises() -> None:
+    b = AABB(lo=[0.0, 0.0], hi=[1.0, 1.0])
+    with pytest.raises(AttributeError, match="immutable"):
+        del b.lo
+    with pytest.raises(AttributeError, match="immutable"):
+        del b.hi
+
+
+def test_aabb_overlaps_with_empty() -> None:
+    finite = AABB(lo=[0.0, 0.0], hi=[1.0, 1.0])
+    empty = AABB.empty(2)
+    assert empty.overlaps(finite) is False
+    assert finite.overlaps(empty) is False
+    assert empty.overlaps(empty) is False
+
+
+def test_aabb_intersect_with_empty() -> None:
+    finite = AABB(lo=[0.0, 0.0], hi=[1.0, 1.0])
+    empty = AABB.empty(2)
+    assert empty.intersect(finite) is None
+    assert finite.intersect(empty) is None
+    assert empty.intersect(empty) is None
+
+
+def test_aabb_pad_negative_shrinks_to_empty() -> None:
+    b = AABB(lo=[0.0, 0.0], hi=[1.0, 1.0])
+    assert b.pad(-2.0).is_empty()
+
+
+def test_aabb_transform_empty_stays_empty() -> None:
+    assert AABB.empty(2).transform(AffineTransform(np.eye(2))).is_empty()
+    assert AABB.empty(3).transform(AffineTransform(np.diag([2.0, 3.0, 4.0]))).is_empty()
+
+
+def test_aabb_transform_nan_raises() -> None:
+    # Row 0 of A has two non-zero entries; axis 1 of the box has lo=hi=+inf,
+    # so contrib_min[0,1] = +inf while contrib_min[0,0] = -inf (lo[0]=-inf).
+    # np.sum(contrib_min, axis=1)[0] = -inf + (+inf) = NaN → ValueError.
+    b = AABB(lo=[-np.inf, np.inf], hi=[1.0, np.inf])
+    t = AffineTransform(np.array([[1.0, 1.0], [0.0, 1.0]]))
+    with pytest.raises(ValueError, match="NaN bounds"):
+        b.transform(t)
+
+
+def test_aabb_transform_rejects_non_square_matrix() -> None:
+    b = AABB(lo=[0.0, 0.0, 0.0], hi=[1.0, 1.0, 1.0])
+
+    class RectAffine:
+        @property
+        def dim(self) -> int:
+            return 3
+
+        @property
+        def matrix(self) -> npt.NDArray[np.float64]:
+            return np.eye(2, dtype=np.float64)
+
+        @property
+        def offset(self) -> npt.NDArray[np.float64]:
+            return np.zeros(3, dtype=np.float64)
+
+    with pytest.raises(ValueError, match="matrix"):
+        b.transform(RectAffine())
+
+
+def test_aabb_contains_point() -> None:
+    b = AABB(lo=[0.0, 0.0, 0.0], hi=[1.0, 2.0, 3.0])
+    assert b.contains_point([0.5, 1.0, 1.5]) is True
+    assert b.contains_point([0.0, 0.0, 0.0]) is True  # boundary
+    assert b.contains_point([1.0, 2.0, 3.0]) is True  # boundary
+    assert b.contains_point([2.0, 0.0, 0.0]) is False
+    assert AABB.empty(3).contains_point([0.5, 0.5, 0.5]) is False
+    with pytest.raises(ValueError, match="length"):
+        b.contains_point([0.5, 0.5])
+
+
+def test_aabb_as_bounds_properties() -> None:
+    b = AABB(lo=[0.0, 1.0, 2.0], hi=[3.0, 4.0, 5.0])
+    bounds = b.as_bounds()
+    assert bounds.shape == (3, 2)
+    assert bounds.dtype == np.float64
+    assert bounds.flags.writeable
+    np.testing.assert_array_equal(bounds[:, 0], b.lo)
+    np.testing.assert_array_equal(bounds[:, 1], b.hi)
+
+
+def test_aabb_repr() -> None:
+    b = AABB(lo=[0.0, 1.0], hi=[2.0, 3.0])
+    assert repr(b) == "AABB(lo=[0.0, 1.0], hi=[2.0, 3.0])"

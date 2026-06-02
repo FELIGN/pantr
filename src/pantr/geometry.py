@@ -23,8 +23,9 @@ from typing import Final, Protocol
 import numpy as np
 from numpy import typing as npt
 
-# Expected trailing-axis length of an AABB-compatible ``(ndim, 2)`` bounds array.
-_BOUNDS_LAST_AXIS: Final[int] = 2
+# Shape constants for :meth:`AABB.from_bounds` / :meth:`AABB.as_bounds`.
+_BOUNDS_NDIM: Final[int] = 2  # bounds array must be exactly 2-D (axes x {lo,hi})
+_BOUNDS_AXIS_LEN: Final[int] = 2  # last axis encodes [lo, hi]
 
 
 class _AffineMap(Protocol):
@@ -127,8 +128,8 @@ class AABB:
         attributes on ``self``.
 
         Args:
-            lo (npt.ArrayLike): Lower corner; 1-D length-``ndim`` array-like of
-                finite-or-infinite floats.
+            lo (npt.ArrayLike): Lower corner; array-like of finite-or-infinite floats.
+                Any rank is accepted and ravelled to 1-D of length ``ndim``.
             hi (npt.ArrayLike): Upper corner, same shape and semantics as ``lo``.
 
         Raises:
@@ -150,8 +151,8 @@ class AABB:
                 f"AABB bounds must not contain NaN; got lo={lo_arr.tolist()!r}, "
                 f"hi={hi_arr.tolist()!r}."
             )
-        frozen_lo = np.ascontiguousarray(lo_arr.copy(), dtype=np.float64)
-        frozen_hi = np.ascontiguousarray(hi_arr.copy(), dtype=np.float64)
+        frozen_lo = lo_arr.copy()
+        frozen_hi = hi_arr.copy()
         frozen_lo.flags.writeable = False
         frozen_hi.flags.writeable = False
         object.__setattr__(self, "lo", frozen_lo)
@@ -160,14 +161,18 @@ class AABB:
     def __setattr__(self, name: str, value: object) -> None:
         """Reject post-construction attribute writes.
 
-        Args:
-            name (str): Attribute name.
-            value (object): Proposed value (ignored).
-
         Raises:
             AttributeError: Always -- :class:`AABB` is immutable.
         """
         raise AttributeError(f"AABB is immutable; cannot set attribute {name!r}.")
+
+    def __delattr__(self, name: str) -> None:
+        """Reject attribute deletion.
+
+        Raises:
+            AttributeError: Always -- :class:`AABB` is immutable.
+        """
+        raise AttributeError(f"AABB is immutable; cannot delete attribute {name!r}.")
 
     def __repr__(self) -> str:
         """Return a compact representation useful for debugging.
@@ -180,13 +185,20 @@ class AABB:
     def __eq__(self, other: object) -> bool:
         """Compare value-based equality: two AABBs are equal iff their bounds match.
 
+        This is *value* equality, not geometric equality: two empty AABBs whose
+        corner arrays differ (e.g. ``AABB.empty(2)`` vs a hand-constructed empty)
+        compare unequal even though they contain the same set of points.
+
         Args:
             other (object): Expected to be an :class:`AABB`.
 
         Returns:
             bool: ``True`` when both corner arrays are element-wise equal
-            (``+inf == +inf`` and ``-inf == -inf`` as usual);
-            :data:`NotImplemented` for non-AABB ``other``.
+            (``+inf == +inf`` and ``-inf == -inf`` as usual).
+
+        Note:
+            Returns :data:`NotImplemented` for non-:class:`AABB` ``other`` so
+            that Python's reflected equality protocol works correctly.
         """
         if not isinstance(other, AABB):
             return NotImplemented
@@ -212,15 +224,39 @@ class AABB:
     def is_empty(self) -> bool:
         """Check whether the box contains no points.
 
-        A box is empty iff ``lo[i] > hi[i]`` on at least one axis.
-        :meth:`intersect` returns ``None`` for disjoint boxes rather than an
-        empty AABB, so most callers do not need this check; it is useful for
-        boxes constructed manually or received from user code.
+        A box is empty iff ``lo[i] > hi[i]`` on at least one axis. Useful when
+        constructing boxes manually, accepting boxes from external sources, or
+        after :meth:`pad` with a negative radius.
 
         Returns:
             bool: ``True`` when the box is empty.
         """
         return bool(np.any(self.lo > self.hi))
+
+    def contains_point(self, x: npt.ArrayLike) -> bool:
+        """Check whether point ``x`` lies inside or on the boundary of the box.
+
+        A point is inside iff ``lo[i] <= x[i] <= hi[i]`` on every axis.
+        An empty box contains no points.
+
+        Args:
+            x (npt.ArrayLike): Point to test; array-like of floats, ravelled to
+                1-D of length ``ndim``.
+
+        Returns:
+            bool: ``True`` when ``x`` is inside or on the boundary.
+
+        Raises:
+            ValueError: If the ravelled ``x`` does not have length ``ndim``,
+                or if ``x`` contains NaN.
+            TypeError: If ``x`` has a non-numeric dtype.
+        """
+        x_arr = _as_float64(x, name="x").ravel()
+        if x_arr.shape != (self.ndim,):
+            raise ValueError(f"contains_point: x must have length {self.ndim}; got {x_arr.shape}.")
+        if np.any(np.isnan(x_arr)):
+            raise ValueError("contains_point: x must not contain NaN.")
+        return bool(np.all((x_arr >= self.lo) & (x_arr <= self.hi)))
 
     def overlaps(self, other: AABB) -> bool:
         """Check whether ``self`` and ``other`` share at least one point.
@@ -339,15 +375,22 @@ class AABB:
             AABB: The axis-aligned wrap of the transformed box.
 
         Raises:
-            ValueError: If ``affine.dim != self.ndim``, or if the wrap produces
-                NaN (an ill-defined transform for this box, e.g. a singular
-                matrix combined with infinite bounds).
+            ValueError: If ``affine.dim != self.ndim``, if ``affine.matrix`` is
+                not square ``(ndim, ndim)``, or if the wrap produces NaN (e.g.
+                a matrix containing NaN, or ``inf - inf`` arithmetic from
+                opposing infinite bounds in the same row).
         """
+        if self.is_empty():
+            return AABB.empty(self.ndim)
         if affine.dim != self.ndim:
             raise ValueError(
                 f"transform(): affine dim ({affine.dim}) must match AABB ndim ({self.ndim})."
             )
         a = affine.matrix
+        if a.shape != (self.ndim, self.ndim):
+            raise ValueError(
+                f"transform(): affine.matrix must be ({self.ndim}, {self.ndim}); got {a.shape}."
+            )
         b = affine.offset
         # Per output axis i and input axis j the contribution is the pair
         #   (A[i,j] * lo[j], A[i,j] * hi[j]);
@@ -358,15 +401,17 @@ class AABB:
         lo = self.lo
         hi = self.hi
         mask = a != 0.0
+        # Suppress invalid-value warnings: 0*inf=NaN is masked away by np.where, and
+        # inf+(-inf)=NaN in the row sums is caught explicitly by the NaN check below.
         with np.errstate(invalid="ignore"):
             term_lo = a * lo[np.newaxis, :]
             term_hi = a * hi[np.newaxis, :]
-        term_lo = np.where(mask, term_lo, 0.0)
-        term_hi = np.where(mask, term_hi, 0.0)
-        contrib_min = np.minimum(term_lo, term_hi)
-        contrib_max = np.maximum(term_lo, term_hi)
-        new_lo = np.sum(contrib_min, axis=1) + b
-        new_hi = np.sum(contrib_max, axis=1) + b
+            term_lo = np.where(mask, term_lo, 0.0)
+            term_hi = np.where(mask, term_hi, 0.0)
+            contrib_min = np.minimum(term_lo, term_hi)
+            contrib_max = np.maximum(term_lo, term_hi)
+            new_lo = np.sum(contrib_min, axis=1) + b
+            new_hi = np.sum(contrib_max, axis=1) + b
         if np.any(np.isnan(new_lo)) or np.any(np.isnan(new_hi)):
             raise ValueError(
                 "AABB.transform produced NaN bounds; the transform is incompatible with "
@@ -435,7 +480,7 @@ class AABB:
             TypeError: If ``bounds`` has a non-numeric dtype.
         """
         arr = _as_float64(bounds, name="bounds")
-        if arr.ndim != _BOUNDS_LAST_AXIS or arr.shape[-1] != _BOUNDS_LAST_AXIS:
+        if arr.ndim != _BOUNDS_NDIM or arr.shape[-1] != _BOUNDS_AXIS_LEN:
             raise ValueError(f"from_bounds: bounds must have shape (ndim, 2); got {arr.shape}.")
         return AABB(arr[:, 0], arr[:, 1])
 
@@ -446,7 +491,7 @@ class AABB:
             npt.NDArray[np.float64]: A freshly-allocated, writeable, C-contiguous
             ``(ndim, 2)`` array.
         """
-        out = np.empty((self.ndim, _BOUNDS_LAST_AXIS), dtype=np.float64)
+        out = np.empty((self.ndim, _BOUNDS_AXIS_LEN), dtype=np.float64)
         out[:, 0] = self.lo
         out[:, 1] = self.hi
         return out
