@@ -59,17 +59,9 @@ class TensorProductGrid(Grid):
 
     Cells are numbered in row-major (C) order over :attr:`cells_per_axis` (last
     axis varies fastest). See the module docstring for the footprint and
-    construction notes.
-
-    Attributes:
-        ndim (int): Spatial dimension (``>= 1``).
-        num_cells (int): Total number of cells (product of per-axis counts).
-        cells_per_axis (tuple[int, ...]): Per-axis cell counts.
-        breakpoints (tuple[npt.NDArray[np.float64], ...]): Per-axis strictly
-            increasing breakpoint arrays; ``breakpoints[d]`` has length
-            ``cells_per_axis[d] + 1``.
-        bounds (npt.NDArray[np.float64]): ``(ndim, 2)`` array of per-axis
-            ``[lo, hi]`` extremes.
+    construction notes. Size and geometry metadata are exposed through the
+    :attr:`ndim`, :attr:`num_cells`, :attr:`cells_per_axis`, :attr:`breakpoints`,
+    and :attr:`bounds` properties.
     """
 
     __slots__ = (

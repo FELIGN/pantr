@@ -61,12 +61,6 @@ class BVH:
     Build by passing per-cell AABBs to :meth:`from_cell_bounds`; direct
     construction from the raw array representation is supported via the default
     constructor but is mostly intended for tests and round-trip serialization.
-
-    Attributes:
-        ndim (int): Spatial dimension of the indexed AABBs (``>= 1``).
-        n_cells (int): Number of cells indexed (equal to the number of leaves).
-        n_nodes (int): Total number of nodes (``2 * n_cells - 1`` for
-            ``n_cells > 0``, else ``0``).
     """
 
     __slots__ = (
@@ -79,6 +73,13 @@ class BVH:
         "n_nodes",
         "ndim",
     )
+
+    #: Spatial dimension of the indexed AABBs (``>= 1``).
+    ndim: int
+    #: Number of cells indexed (equal to the number of leaves).
+    n_cells: int
+    #: Total number of nodes (``2 * n_cells - 1`` for ``n_cells > 0``, else ``0``).
+    n_nodes: int
 
     def __init__(  # noqa: PLR0913 -- BVH is a five-array flat struct
         self,

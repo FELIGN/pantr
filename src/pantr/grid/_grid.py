@@ -63,11 +63,9 @@ class Grid(abc.ABC):
     """Abstract structured cell grid with implicit connectivity.
 
     See the module docstring for the contract and the set of methods a subclass
-    must implement versus those provided as overridable defaults.
-
-    Attributes:
-        ndim (int): Spatial dimension of the grid (``>= 1``).
-        num_cells (int): Number of cells in this (local) grid.
+    must implement versus those provided as overridable defaults. The size
+    metadata is exposed through the :attr:`ndim` and :attr:`num_cells`
+    properties.
     """
 
     __slots__ = ("_bvh", "_cell_tags", "_facet_tags")
@@ -399,7 +397,7 @@ class Grid(abc.ABC):
     def cell_bvh(self) -> BVH:
         """Return the cached :class:`pantr.grid.BVH` over the grid's cell AABBs.
 
-        Built lazily on first call from :meth:`_collect_cell_bounds` and cached.
+        Built lazily on first call from ``_collect_cell_bounds`` and cached.
         Building the BVH materializes ``O(num_cells)`` node arrays, so it is
         deferred until an :meth:`query_aabb` (or direct) call needs it -- an
         untagged, un-queried grid never pays this cost.

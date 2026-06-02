@@ -96,11 +96,8 @@ class CellTags:
 
     Each tag named ``name`` is a pair of parallel ``int64`` arrays
     ``(ids, values)`` sorted by ``ids``; a cell not listed in ``ids`` is
-    untagged under ``name``. Distinct tag names are independent.
-
-    Attributes:
-        num_cells (int): Number of cells in the owning grid; cell ids must lie
-            in ``[0, num_cells)``.
+    untagged under ``name``. Distinct tag names are independent. The owning
+    grid's cell count is exposed through the :attr:`num_cells` property.
     """
 
     __slots__ = ("_num_cells", "_tags")
@@ -229,7 +226,7 @@ class CellTags:
         fill: int = 0,
         dtype: npt.DTypeLike = np.int64,
     ) -> npt.NDArray[np.int_]:
-        """Scatter tag ``name`` into a dense ``(num_cells,)`` array.
+        r"""Scatter tag ``name`` into a dense ``(num_cells,)`` array.
 
         Untagged cells receive ``fill``. Useful when a downstream Numba kernel
         wants a per-cell label array rather than the sparse representation.
@@ -238,10 +235,10 @@ class CellTags:
             name (str): Tag name.
             fill (int): Value for untagged cells. Defaults to ``0``.
             dtype (npt.DTypeLike): Output integer dtype. Defaults to
-                :data:`numpy.int64`.
+                ``numpy.int64``.
 
         Returns:
-            npt.NDArray[np.int_]: Fresh, writeable ``(num_cells,)`` array.
+            npt.NDArray[np.int\_]: Fresh, writeable ``(num_cells,)`` array.
 
         Raises:
             KeyError: If no tag named ``name`` exists.
@@ -259,12 +256,9 @@ class FacetTags:
     ``local_facet_id`` in ``[0, facets_per_cell)``. Each tag named ``name`` is a
     pair ``(keys, values)`` where ``keys`` is an ``(M, 2)`` ``int64`` array of
     ``(cell_id, local_facet_id)`` rows and ``values`` is a length-``M``
-    ``int64`` array, sorted lexicographically by key.
-
-    Attributes:
-        num_cells (int): Number of cells in the owning grid.
-        facets_per_cell (int): Number of local facets per cell (``2 * ndim`` for
-            an axis-aligned box grid).
+    ``int64`` array, sorted lexicographically by key. The owning grid's cell
+    count and per-cell facet count are exposed through the :attr:`num_cells` and
+    :attr:`facets_per_cell` properties.
     """
 
     __slots__ = ("_facets_per_cell", "_num_cells", "_tags")
