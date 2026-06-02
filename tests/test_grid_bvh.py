@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 import numpy as np
+import numpy.typing as npt
 import pytest
 
 from pantr.geometry import AABB
 from pantr.grid import BVH
 
 
-def _grid_cells(nx: int, ny: int) -> tuple[np.ndarray, np.ndarray]:
+def _grid_cells(nx: int, ny: int) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64]]:
     """Return per-cell ``(lo, hi)`` for an ``nx`` x ``ny`` unit-cell grid."""
     lo = []
     hi = []
