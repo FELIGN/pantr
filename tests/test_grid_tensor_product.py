@@ -295,3 +295,39 @@ def test_tensor_product_grid_periodic_rejected() -> None:
     space = BsplineSpace([sp_per])
     with pytest.raises(ValueError, match="periodic"):
         tensor_product_grid(space)
+
+
+def test_locate_many_1d() -> None:
+    """locate_many on a 1-D grid matches scalar locate, including boundaries."""
+    g = uniform_grid([[0.0, 4.0]], 4)
+    pts = np.array([[-0.5], [0.0], [0.999], [1.0], [2.5], [3.999], [4.0], [5.0]])
+    result = g.locate_many(pts)
+    for i, p in enumerate(pts[:, 0]):
+        single = g.locate([p])
+        assert result[i] == (-1 if single is None else single)
+
+
+def test_construction_rejects_complex_breakpoints() -> None:
+    """Complex-valued breakpoints are rejected with TypeError."""
+    with pytest.raises(TypeError, match="numeric"):
+        TensorProductGrid([np.array([0 + 0j, 1 + 0j, 2 + 0j])])
+
+
+def test_construction_rejects_bool_breakpoints() -> None:
+    """Boolean breakpoints are rejected with TypeError."""
+    with pytest.raises(TypeError, match="numeric"):
+        TensorProductGrid([np.array([False, True, True])])
+
+
+def test_flat_cell_index_wrong_ndim_raises() -> None:
+    """flat_cell_index raises ValueError when multi-index has wrong length."""
+    g = uniform_grid([[0.0, 3.0], [0.0, 2.0]], [3, 2])
+    with pytest.raises(ValueError, match="length"):
+        g.flat_cell_index([0])
+
+
+def test_flat_cell_index_out_of_range_raises() -> None:
+    """flat_cell_index raises IndexError when a per-axis index is out of range."""
+    g = uniform_grid([[0.0, 3.0], [0.0, 2.0]], [3, 2])
+    with pytest.raises(IndexError):
+        g.flat_cell_index([3, 0])  # axis 0 index 3 >= cells_per_axis[0]=3

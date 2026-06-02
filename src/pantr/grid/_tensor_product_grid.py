@@ -46,12 +46,33 @@ if TYPE_CHECKING:
 
     from ..bspline import BsplineSpace
 
-# Absolute tolerance for detecting uniform per-axis spacing. Chosen so a
-# ``1e6``-cell uniform grid still registers as uniform despite double-precision
-# round-off from the ``linspace`` that generated it.
-_UNIFORM_SPACING_ATOL: Final[float] = 1e-10
+# Relative tolerance for detecting uniform per-axis spacing. Applied as
+# ``ptp(diff) < _UNIFORM_SPACING_RTOL * mean(diff)`` so the check scales with
+# the actual breakpoint spacing and works correctly for grids at any physical
+# scale (e.g. millimetre meshes or kilometre-scale domains).
+_UNIFORM_SPACING_RTOL: Final[float] = 1e-10
 # Smallest useful grid: at least one cell per axis (two breakpoints).
 _MIN_BREAKPOINTS_PER_AXIS: Final[int] = 2
+
+
+def _is_axis_uniform(bp: npt.NDArray[np.float64]) -> bool:
+    """Return whether the breakpoint vector ``bp`` has uniform spacing.
+
+    A single-interval axis (two breakpoints) is vacuously uniform. Longer
+    axes use a relative tolerance: ``ptp(diff) < RTOL * mean(diff)``.
+
+    Args:
+        bp (npt.NDArray[np.float64]): Strictly increasing breakpoint vector,
+            length ``>= 2``.
+
+    Returns:
+        bool: ``True`` iff the spacing is uniform to within
+        ``_UNIFORM_SPACING_RTOL``.
+    """
+    if bp.shape[0] <= 2:  # noqa: PLR2004
+        return True
+    diff = np.diff(bp)
+    return bool(float(np.ptp(diff)) < _UNIFORM_SPACING_RTOL * float(diff.mean()))
 
 
 class TensorProductGrid(Grid):
@@ -120,10 +141,7 @@ class TensorProductGrid(Grid):
         self._bounds = bounds
         self._strides = c_order_strides(self._cells_per_axis)
         self._strides.flags.writeable = False
-        self._is_uniform = all(
-            bool(np.ptp(np.diff(bp)) < _UNIFORM_SPACING_ATOL) if bp.shape[0] > 2 else True  # noqa: PLR2004
-            for bp in self._breakpoints
-        )
+        self._is_uniform = all(_is_axis_uniform(bp) for bp in self._breakpoints)
 
     # ------------------------------------------------------------------
     # Read-only attributes
@@ -334,7 +352,7 @@ class TensorProductGrid(Grid):
     def _collect_cell_bounds(
         self,
     ) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64]]:
-        """Materialize per-cell ``(lo, hi)`` in C-order via per-axis broadcasting.
+        """Materialize per-cell ``(lo, hi)`` in C-order via meshgrid and fancy indexing.
 
         Returns:
             tuple[npt.NDArray[np.float64], npt.NDArray[np.float64]]:
@@ -356,7 +374,7 @@ class TensorProductGrid(Grid):
         """Return a compact representation useful for debugging.
 
         Returns:
-            str: ``"TensorProductGrid(ndim=..., cells_per_axis=...)"``.
+            str: ``"TensorProductGrid(ndim=..., cells_per_axis=..., uniform=...)"``
         """
         return (
             f"TensorProductGrid(ndim={self._ndim}, cells_per_axis={self._cells_per_axis}, "

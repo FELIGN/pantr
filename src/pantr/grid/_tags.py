@@ -242,11 +242,22 @@ class CellTags:
 
         Raises:
             KeyError: If no tag named ``name`` exists.
+            TypeError: If ``dtype`` is not an integer or unsigned-integer dtype.
         """
+        if np.dtype(dtype).kind not in ("i", "u"):
+            raise TypeError(f"dtype must be an integer dtype; got {np.dtype(dtype)!r}.")
         ids, values = self._tags[name]
         out = np.full(self._num_cells, fill, dtype=dtype)
         out[ids] = values
         return out
+
+    def __repr__(self) -> str:
+        """Return a concise representation showing the cell count and tag names.
+
+        Returns:
+            str: ``"CellTags(num_cells=..., tags=[...])"``
+        """
+        return f"CellTags(num_cells={self._num_cells}, tags={list(self._tags)!r})"
 
 
 class FacetTags:
@@ -322,7 +333,7 @@ class FacetTags:
         if key_raw.dtype.kind not in ("i", "u"):
             raise TypeError(f"keys must have an integer dtype; got {key_raw.dtype!r}.")
         key_arr = np.ascontiguousarray(key_raw.astype(np.int64, copy=False))
-        if key_arr.ndim != _FACET_KEY_WIDTH or key_arr.shape[1] != _FACET_KEY_WIDTH:
+        if key_arr.ndim != 2 or key_arr.shape[1] != _FACET_KEY_WIDTH:  # noqa: PLR2004
             raise ValueError(f"keys must have shape (M, 2); got shape {key_arr.shape}.")
         if key_arr.shape[0] > 0:
             cids = key_arr[:, 0]
@@ -410,6 +421,52 @@ class FacetTags:
             KeyError: If no tag named ``name`` exists.
         """
         del self._tags[name]
+
+    def to_dense(
+        self,
+        name: str,
+        *,
+        fill: int = 0,
+        dtype: npt.DTypeLike = np.int64,
+    ) -> npt.NDArray[np.int_]:
+        r"""Scatter tag ``name`` into a dense ``(num_cells, facets_per_cell)`` array.
+
+        Untagged facets receive ``fill``. Useful when a downstream Numba kernel
+        wants a per-facet label array rather than the sparse representation.
+
+        Args:
+            name (str): Tag name.
+            fill (int): Value for untagged facets. Defaults to ``0``.
+            dtype (npt.DTypeLike): Output integer dtype. Defaults to
+                ``numpy.int64``.
+
+        Returns:
+            npt.NDArray[np.int\_]: Fresh, writeable
+            ``(num_cells, facets_per_cell)`` array.
+
+        Raises:
+            KeyError: If no tag named ``name`` exists.
+            TypeError: If ``dtype`` is not an integer or unsigned-integer dtype.
+        """
+        if np.dtype(dtype).kind not in ("i", "u"):
+            raise TypeError(f"dtype must be an integer dtype; got {np.dtype(dtype)!r}.")
+        keys, values = self._tags[name]
+        out = np.full((self._num_cells, self._facets_per_cell), fill, dtype=dtype)
+        if keys.shape[0] > 0:
+            out[keys[:, 0], keys[:, 1]] = values
+        return out
+
+    def __repr__(self) -> str:
+        """Return a concise representation showing the cell/facet counts and tag names.
+
+        Returns:
+            str: ``"FacetTags(num_cells=..., facets_per_cell=..., tags=[...])"``
+        """
+        return (
+            f"FacetTags(num_cells={self._num_cells}, "
+            f"facets_per_cell={self._facets_per_cell}, "
+            f"tags={list(self._tags)!r})"
+        )
 
 
 __all__ = ["CellTags", "FacetTags"]

@@ -160,3 +160,63 @@ def test_grid_cell_tags_round_trip() -> None:
     assert dense[cut[0]] == 2  # noqa: PLR2004
     assert dense[cut[1]] == 2  # noqa: PLR2004
     assert int(np.count_nonzero(dense)) == 2  # noqa: PLR2004
+
+
+def test_cell_tags_to_dense_missing_key_raises() -> None:
+    """to_dense raises KeyError for an unregistered tag name."""
+    tags = CellTags(num_cells=4)
+    with pytest.raises(KeyError):
+        tags.to_dense("nonexistent")
+
+
+def test_cell_tags_to_dense_custom_dtype() -> None:
+    """to_dense respects a caller-supplied integer dtype."""
+    tags = CellTags(num_cells=4)
+    tags.set("m", [0, 2], [1, 2])
+    dense = tags.to_dense("m", dtype=np.int32)
+    assert dense.dtype == np.int32
+    assert dense.tolist() == [1, 0, 2, 0]
+
+
+def test_cell_tags_to_dense_float_dtype_raises() -> None:
+    """to_dense rejects non-integer dtypes."""
+    tags = CellTags(num_cells=4)
+    tags.set("m", [0], [1])
+    with pytest.raises(TypeError, match="integer"):
+        tags.to_dense("m", dtype=np.float64)
+
+
+def test_cell_tags_empty_set() -> None:
+    """Setting an empty tag is valid; to_dense returns the fill value everywhere."""
+    tags = CellTags(num_cells=4)
+    tags.set("empty", np.array([], dtype=np.int64), 0)
+    dense = tags.to_dense("empty", fill=7)
+    assert dense.tolist() == [7, 7, 7, 7]
+
+
+def test_facet_tags_empty_set() -> None:
+    """Setting an empty facet tag is valid."""
+    tags = FacetTags(num_cells=4, facets_per_cell=4)
+    tags.set("none", np.zeros((0, 2), dtype=np.int64), np.zeros(0, dtype=np.int64))
+    keys, values = tags["none"]
+    assert keys.shape == (0, 2)
+    assert values.shape == (0,)
+
+
+def test_facet_tags_to_dense() -> None:
+    """to_dense scatters a facet tag into a (num_cells, facets_per_cell) array."""
+    tags = FacetTags(num_cells=3, facets_per_cell=4)
+    tags.set("bc", [[0, 0], [2, 3]], [1, 2])
+    dense = tags.to_dense("bc", fill=0)
+    assert dense.shape == (3, 4)
+    assert dense[0, 0] == 1
+    assert dense[2, 3] == 2  # noqa: PLR2004
+    assert int(np.count_nonzero(dense)) == 2  # noqa: PLR2004
+
+
+def test_facet_tags_to_dense_float_dtype_raises() -> None:
+    """FacetTags.to_dense rejects non-integer dtypes."""
+    tags = FacetTags(num_cells=2, facets_per_cell=4)
+    tags.set("a", [[0, 0]], [1])
+    with pytest.raises(TypeError, match="integer"):
+        tags.to_dense("a", dtype=np.float32)

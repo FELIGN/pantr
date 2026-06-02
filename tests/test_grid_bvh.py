@@ -133,12 +133,13 @@ def test_inconsistent_shapes_raise() -> None:
 
 
 def test_ctor_node_count_validation() -> None:
-    """The raw constructor checks n_nodes == 2*n_cells - 1."""
+    """The raw constructor rejects n_nodes values that are not 2*n_cells - 1."""
+    # 2 nodes → implied n_cells=1 → expected n_nodes=1 → mismatch.
     node_lo = np.zeros((2, 2), dtype=np.float64)
     node_hi = np.ones((2, 2), dtype=np.float64)
     idx = np.zeros(2, dtype=np.int64)
-    with pytest.raises(ValueError, match="implies n_nodes"):
-        BVH(node_lo, node_hi, idx, idx, idx, n_cells=2)
+    with pytest.raises(ValueError, match="valid BVH node count"):
+        BVH(node_lo, node_hi, idx, idx, idx)
 
 
 def test_ctor_dtype_validation() -> None:
@@ -147,7 +148,7 @@ def test_ctor_dtype_validation() -> None:
     node_hi = np.ones((1, 2), dtype=np.float64)
     bad = np.zeros(1, dtype=np.int32)
     with pytest.raises(TypeError, match="int64"):
-        BVH(node_lo, node_hi, bad, bad, bad, n_cells=1)  # type: ignore[arg-type]
+        BVH(node_lo, node_hi, bad, bad, bad)  # type: ignore[arg-type]
 
 
 def test_nodes_are_read_only() -> None:
@@ -158,3 +159,31 @@ def test_nodes_are_read_only() -> None:
     assert not bvh.node_cell.flags.writeable
     with pytest.raises(ValueError, match="read-only|assignment"):
         bvh.node_lo[0, 0] = 5.0
+
+
+def test_query_1d_partial() -> None:
+    """A 1-D BVH returns the cells that partially overlap the query range."""
+    lo = np.arange(5, dtype=np.float64).reshape(-1, 1)
+    hi = lo + 1.0  # cells [0,1],[1,2],[2,3],[3,4],[4,5]
+    bvh = BVH.from_cell_bounds(lo, hi)
+    result = sorted(int(c) for c in bvh.query_aabb(AABB([1.5], [3.5])))
+    assert result == [1, 2, 3]  # cells [1,2],[2,3],[3,4] overlap [1.5, 3.5]
+
+
+def test_build_tree_3_cells_structure() -> None:
+    """A 3-cell BVH has 5 nodes and each cell is individually queryable."""
+    lo = np.array([[0.0], [1.0], [2.0]])
+    hi = lo + 1.0
+    bvh = BVH.from_cell_bounds(lo, hi)
+    assert bvh.n_nodes == 5  # noqa: PLR2004
+    assert bvh.n_cells == 3  # noqa: PLR2004
+    for c in range(3):
+        mid = float(lo[c, 0]) + 0.5
+        result = bvh.query_aabb(AABB([mid - 0.1], [mid + 0.1]))
+        assert c in result.tolist()
+
+
+def test_from_cell_bounds_1d_array_raises() -> None:
+    """from_cell_bounds rejects a flat (1-D) input array."""
+    with pytest.raises(ValueError, match="2-D"):
+        BVH.from_cell_bounds(np.array([0.0, 1.0]), np.array([1.0, 2.0]))

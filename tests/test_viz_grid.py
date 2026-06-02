@@ -66,3 +66,15 @@ def test_unsupported_ndim_raises() -> None:
     g = uniform_grid([[0.0, 1.0]] * 4, 1)
     with pytest.raises(ValueError, match="ndim"):
         grid_to_pyvista(g)
+
+
+def test_1d_points_padded_to_3d() -> None:
+    """1-D grid points are padded to 3-D with y=z=0."""
+    g = TensorProductGrid([[0.0, 1.0, 3.0]])
+    ug = grid_to_pyvista(g)
+    pts = np.asarray(ug.points)
+    assert pts.shape[1] == 3  # noqa: PLR2004
+    np.testing.assert_array_equal(pts[:, 1], 0.0)
+    np.testing.assert_array_equal(pts[:, 2], 0.0)
+    assert float(pts[:, 0].min()) == pytest.approx(0.0)
+    assert float(pts[:, 0].max()) == pytest.approx(3.0)

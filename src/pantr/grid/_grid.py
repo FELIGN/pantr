@@ -404,6 +404,11 @@ class Grid(abc.ABC):
 
         Returns:
             BVH: The grid's spatial index over its cell AABBs.
+
+        Warning:
+            Not thread-safe: concurrent first calls from multiple Python threads
+            may each construct and store a separate :class:`BVH` instance.  Call
+            this method once on the main thread before sharing the grid.
         """
         from ._bvh import BVH  # noqa: PLC0415
 
@@ -445,6 +450,10 @@ class Grid(abc.ABC):
         Returns:
             CellTags: A registry of named ``(cell_ids, values)`` associations,
             empty until first use.
+
+        Warning:
+            Not thread-safe on first access.  Create the registry on the main
+            thread before sharing the grid across threads.
         """
         if self._cell_tags is None:
             self._cell_tags = CellTags(self.num_cells)
@@ -458,6 +467,10 @@ class Grid(abc.ABC):
             FacetTags: A registry of named ``((cell_id, local_facet_id), value)``
             associations, empty until first use. Sized for ``2 * ndim`` facets
             per cell (an axis-aligned box grid).
+
+        Warning:
+            Not thread-safe on first access.  Create the registry on the main
+            thread before sharing the grid across threads.
         """
         if self._facet_tags is None:
             self._facet_tags = FacetTags(self.num_cells, 2 * self.ndim)

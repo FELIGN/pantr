@@ -60,41 +60,35 @@ class BVH:
 
     Build by passing per-cell AABBs to :meth:`from_cell_bounds`; direct
     construction from the raw array representation is supported via the default
-    constructor but is mostly intended for tests and round-trip serialization.
+    constructor but is mostly intended for tests.
     """
 
     __slots__ = (
+        "_n_cells",
+        "_n_nodes",
+        "_ndim",
         "_node_cell",
         "_node_hi",
         "_node_left",
         "_node_lo",
         "_node_right",
-        "n_cells",
-        "n_nodes",
-        "ndim",
     )
 
-    #: Spatial dimension of the indexed AABBs (``>= 1``).
-    ndim: int
-    #: Number of cells indexed (equal to the number of leaves).
-    n_cells: int
-    #: Total number of nodes (``2 * n_cells - 1`` for ``n_cells > 0``, else ``0``).
-    n_nodes: int
-
-    def __init__(  # noqa: PLR0913 -- BVH is a five-array flat struct
+    def __init__(
         self,
         node_lo: npt.NDArray[np.float64],
         node_hi: npt.NDArray[np.float64],
         node_left: npt.NDArray[np.int64],
         node_right: npt.NDArray[np.int64],
         node_cell: npt.NDArray[np.int64],
-        *,
-        n_cells: int,
     ) -> None:
         """Store the raw BVH arrays after validating their shapes.
 
-        Callers should prefer :meth:`from_cell_bounds`; this constructor is
-        useful for tests that need to poke specific tree shapes.
+        ``n_cells`` is derived from ``node_lo.shape[0]`` as
+        ``(n_nodes + 1) // 2`` (or ``0`` when ``n_nodes == 0``); callers do not
+        pass it explicitly.  Callers should prefer :meth:`from_cell_bounds`;
+        this constructor is useful for tests that need to poke specific tree
+        shapes.
 
         Args:
             node_lo (npt.NDArray[np.float64]): Per-node AABB lo corners, shape
@@ -107,12 +101,12 @@ class BVH:
                 leaves.
             node_cell (npt.NDArray[np.int64]): Leaf cell identifiers; ``-1`` on
                 internal nodes.
-            n_cells (int): Number of indexed cells (leaves).
 
         Raises:
             TypeError: If any array has the wrong dtype.
             ValueError: If shapes are inconsistent, ``ndim`` is ``< 1``, or
-                ``n_nodes != 2 * n_cells - 1`` (``0`` when ``n_cells == 0``).
+                ``n_nodes`` is not ``0`` or ``2 * n_cells - 1`` for some
+                ``n_cells >= 1``.
         """
         if node_lo.dtype != np.float64 or node_hi.dtype != np.float64:
             raise TypeError(
@@ -136,12 +130,14 @@ class BVH:
                 raise TypeError(f"{name} must be int64; got {arr.dtype!r}.")
             if arr.shape != (n_nodes,):
                 raise ValueError(f"{name} must have shape ({n_nodes},); got {arr.shape}.")
-        n_cells_int = int(n_cells)
+        # Derive n_cells from n_nodes; validate the implied node-count formula.
+        n_cells_int = (n_nodes + 1) // 2 if n_nodes > 0 else 0
         expected_nodes = 2 * n_cells_int - 1 if n_cells_int > 0 else 0
         if n_nodes != expected_nodes:
             raise ValueError(
-                f"BVH: n_cells={n_cells_int} implies n_nodes={expected_nodes}; "
-                f"got node arrays with {n_nodes} rows."
+                f"BVH: n_nodes={n_nodes} is not a valid BVH node count "
+                f"(must be 0 or 2*n_cells-1 for some n_cells >= 1); "
+                f"implied n_cells={n_cells_int} implies n_nodes={expected_nodes}."
             )
         self._node_lo = np.ascontiguousarray(node_lo, dtype=np.float64)
         self._node_hi = np.ascontiguousarray(node_hi, dtype=np.float64)
@@ -156,9 +152,9 @@ class BVH:
             self._node_cell,
         ):
             arr_ro.flags.writeable = False
-        self.ndim = ndim
-        self.n_cells = n_cells_int
-        self.n_nodes = n_nodes
+        self._ndim = ndim
+        self._n_cells = n_cells_int
+        self._n_nodes = n_nodes
 
     @classmethod
     def from_cell_bounds(
@@ -206,7 +202,7 @@ class BVH:
             empty_lo = np.zeros((0, ndim), dtype=np.float64)
             empty_hi = np.zeros((0, ndim), dtype=np.float64)
             empty_i = np.zeros(0, dtype=np.int64)
-            return cls(empty_lo, empty_hi, empty_i, empty_i, empty_i, n_cells=0)
+            return cls(empty_lo, empty_hi, empty_i, empty_i, empty_i)
         # Guard against the fixed-depth Numba stack in :mod:`pantr.grid._bvh_core`.
         # Median-of-longest-axis splits produce a balanced tree of height
         # ``ceil(log2(n_cells)) + 1``; the ``+ 1`` accounts for the root push.
@@ -218,7 +214,7 @@ class BVH:
                 f"This is a library limit; please report this as an issue."
             )
         node_lo, node_hi, node_left, node_right, node_cell = _build_tree(lo, hi)
-        return cls(node_lo, node_hi, node_left, node_right, node_cell, n_cells=n_cells)
+        return cls(node_lo, node_hi, node_left, node_right, node_cell)
 
     def query_aabb(self, aabb: AABB) -> npt.NDArray[np.int64]:
         """Return the ids of every leaf cell whose AABB overlaps ``aabb``.
@@ -234,11 +230,11 @@ class BVH:
         Raises:
             ValueError: If ``aabb.ndim != self.ndim``.
         """
-        if aabb.ndim != self.ndim:
+        if aabb.ndim != self._ndim:
             raise ValueError(
-                f"BVH.query_aabb: aabb.ndim ({aabb.ndim}) must match self.ndim ({self.ndim})."
+                f"BVH.query_aabb: aabb.ndim ({aabb.ndim}) must match self.ndim ({self._ndim})."
             )
-        if self.n_cells == 0:
+        if self._n_cells == 0:
             return np.zeros(0, dtype=np.int64)
         count = int(
             _bvh_query_count_core(
@@ -268,10 +264,48 @@ class BVH:
         )
         if written != count:
             raise RuntimeError(
-                f"BVH.query_aabb: internal count/emit mismatch (count pass returned {count}, "
-                f"emit pass wrote {written}). This is a bug in the BVH kernel; please report it."
+                f"BVH.query_aabb: internal count/emit mismatch "
+                f"(count={count}, written={written}, "
+                f"n_cells={self._n_cells}, ndim={self._ndim}, "
+                f"query=[{aabb.lo.tolist()}, {aabb.hi.tolist()}]). "
+                f"This is a bug in the BVH kernel; please report it."
             )
         return out
+
+    @property
+    def ndim(self) -> int:
+        """Get the spatial dimension of the indexed AABBs.
+
+        Returns:
+            int: Number of axes (``>= 1``).
+        """
+        return self._ndim
+
+    @property
+    def n_cells(self) -> int:
+        """Get the number of cells indexed (equal to the number of leaves).
+
+        Returns:
+            int: ``(n_nodes + 1) // 2``, or ``0`` for an empty BVH.
+        """
+        return self._n_cells
+
+    @property
+    def n_nodes(self) -> int:
+        """Get the total number of nodes.
+
+        Returns:
+            int: ``2 * n_cells - 1`` for ``n_cells > 0``, else ``0``.
+        """
+        return self._n_nodes
+
+    def __repr__(self) -> str:
+        """Return a concise representation useful for debugging.
+
+        Returns:
+            str: ``"BVH(ndim=..., n_cells=..., n_nodes=...)"``
+        """
+        return f"BVH(ndim={self._ndim}, n_cells={self._n_cells}, n_nodes={self._n_nodes})"
 
     @property
     def node_lo(self) -> npt.NDArray[np.float64]:
