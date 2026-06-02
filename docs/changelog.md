@@ -8,6 +8,13 @@
   parametric domains and grid-cell bounds; decoupled from any concrete affine
   transform via a structural `_AffineMap` protocol.
 
+### Changed
+- `pantr.transform.AffineTransform`: stricter input validation (reject
+  zero / non-finite scaling factors; validate rotation-axis and mirror-normal
+  finiteness and the `center` shape), a cached `inverse`, and C-contiguous
+  stored arrays (#154). Enables ocelat to adopt pantr's `AffineTransform` and
+  drop its local copy.
+
 ## 0.3.0 (2026-05-06)
 
 ### Added
