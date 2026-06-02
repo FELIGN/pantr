@@ -22,6 +22,7 @@ def test_package_all_exports() -> None:
         "bspline",
         "cad",
         "change_basis",
+        "geometry",
         "get_num_threads",
         "num_threads",
         "quad",
