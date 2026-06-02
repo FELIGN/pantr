@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.4.0 (2026-06-02)
+
+### Added
+- `pantr.geometry`: new module exposing `AABB`, an immutable, general-*d*
+  axis-aligned bounding box (#153). Shared domain primitive for spline-space
+  parametric domains and grid-cell bounds; decoupled from any concrete affine
+  transform via a structural `_AffineMap` protocol.
+
 ## 0.3.0 (2026-05-06)
 
 ### Added

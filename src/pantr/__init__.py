@@ -7,6 +7,7 @@ The main modules are:
 - :mod:`pantr.basis`: 1D polynomial basis evaluation (Bernstein, Lagrange, etc.).
 - :mod:`pantr.bspline`: B-spline spaces, geometric objects, and knot vector factories.
 - :mod:`pantr.change_basis`: Transformation matrices between different bases.
+- :mod:`pantr.geometry`: Axis-aligned bounding boxes and geometry primitives.
 - :mod:`pantr.quad`: Quadrature rules and evaluation grid helpers.
 - :mod:`pantr.tolerance`: Uniform floating-point tolerance utilities.
 - :mod:`pantr.transform`: Affine transformations for geometric objects.
@@ -22,6 +23,7 @@ from . import (
     bspline,
     cad,
     change_basis,
+    geometry,
     quad,
     tolerance,
     transform,
@@ -43,6 +45,7 @@ __all__ = [
     "bspline",
     "cad",
     "change_basis",
+    "geometry",
     "get_num_threads",
     "num_threads",
     "quad",
