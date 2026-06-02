@@ -5,8 +5,8 @@ axis-aligned bounding box in any spatial dimension ``ndim >= 1``. It is the
 shared box / domain primitive for PaNTr (for example, the parametric domain of
 a spline space or the bounds of a grid cell) and for libraries built on PaNTr.
 
-An :class:`AABB` stores two read-only ``float64`` corner arrays :attr:`lo` and
-:attr:`hi` of shape ``(ndim,)``. Entries may be finite or ``+/- numpy.inf`` (for
+An :class:`AABB` stores two read-only ``float64`` corner arrays :attr:`AABB.lo` and
+:attr:`AABB.hi` of shape ``(ndim,)``. Entries may be finite or ``+/- numpy.inf`` (for
 unbounded axes); ``numpy.nan`` is rejected. A point ``x`` is inside the box when
 ``lo[i] <= x[i] <= hi[i]`` on every axis; a box with ``lo[i] > hi[i]`` on some
 axis is *empty* and reported by :meth:`AABB.is_empty`.
@@ -109,15 +109,13 @@ class AABB:
     when ``lo[i] <= x[i] <= hi[i]`` on every axis. A box with ``lo[i] > hi[i]``
     on some axis is *empty* (no point satisfies the inequality);
     :meth:`is_empty` reports this.
-
-    Attributes:
-        lo (npt.NDArray[np.float64]): Lower corner, shape ``(ndim,)``, read-only.
-        hi (npt.NDArray[np.float64]): Upper corner, shape ``(ndim,)``, read-only.
     """
 
     __slots__ = ("hi", "lo")
 
+    #: Lower corner, shape ``(ndim,)``, read-only.
     lo: npt.NDArray[np.float64]
+    #: Upper corner, shape ``(ndim,)``, read-only.
     hi: npt.NDArray[np.float64]
 
     def __init__(self, lo: npt.ArrayLike, hi: npt.ArrayLike) -> None:

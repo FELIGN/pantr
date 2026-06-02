@@ -152,6 +152,11 @@ nitpick_ignore = [
     ("py:class", "numpy._typing._dtype_like._DTypeDict"),
     ("py:class", "numpy._typing._dtype_like._SupportsDType"),
     ("py:class", "numpy._typing._nested_sequence._NestedSequence"),
+    # Napoleon strips the npt. prefix from npt.ArrayLike / npt.DTypeLike
+    ("py:class", "ArrayLike"),
+    ("py:class", "DTypeLike"),
+    # Private structural protocol; not in __all__ and not cross-referenceable
+    ("py:class", "_AffineMap"),
     ("py:class", "CellIndex"),
     ("py:class", "CellIndicesBatch"),
     ("py:class", "Target"),
