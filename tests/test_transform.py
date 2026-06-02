@@ -157,6 +157,26 @@ class TestAffineTransformScaling:
         npt.assert_allclose(t(np.array([1.0, 0.0])), [1.0, 0.0])
         npt.assert_allclose(t(np.array([2.0, 1.0])), [3.0, 3.0])
 
+    def test_zero_factor_scalar_raises(self) -> None:
+        """A zero isotropic factor is a singular transform and raises."""
+        with pytest.raises(ValueError, match="non-zero"):
+            AffineTransform.scaling(0.0, center=[1.0, 1.0])
+
+    def test_zero_factor_array_raises(self) -> None:
+        """A zero per-axis factor raises."""
+        with pytest.raises(ValueError, match="non-zero"):
+            AffineTransform.scaling([2.0, 0.0])
+
+    def test_non_finite_factor_raises(self) -> None:
+        """A non-finite factor raises."""
+        with pytest.raises(ValueError, match="finite"):
+            AffineTransform.scaling([np.inf, 1.0])
+
+    def test_center_wrong_shape_raises(self) -> None:
+        """A center whose shape mismatches the factors raises."""
+        with pytest.raises(ValueError, match="center must have shape"):
+            AffineTransform.scaling([2.0, 3.0], center=[1.0, 0.0, 0.0])
+
 
 class TestAffineTransformRotation2D:
     """Tests for AffineTransform.rotation_2d."""
@@ -223,6 +243,16 @@ class TestAffineTransformRotation3D:
         # (2,0,0) rotated 90 about z through (1,0,0) -> (1,1,0)
         npt.assert_allclose(t(np.array([2.0, 0.0, 0.0])), [1.0, 1.0, 0.0], atol=1e-15)
 
+    def test_axis_wrong_shape_raises(self) -> None:
+        """A vector axis that is not length-3 raises."""
+        with pytest.raises(ValueError, match=r"shape \(3,\)"):
+            AffineTransform.rotation_3d(0.5, axis=[1.0, 0.0])
+
+    def test_non_finite_axis_raises(self) -> None:
+        """A non-finite axis raises."""
+        with pytest.raises(ValueError, match="finite"):
+            AffineTransform.rotation_3d(0.5, axis=[np.inf, 0.0, 0.0])
+
 
 class TestAffineTransformMirror:
     """Tests for AffineTransform.mirror."""
@@ -255,6 +285,11 @@ class TestAffineTransformMirror:
         """Zero-length normal raises."""
         with pytest.raises(ValueError, match="non-zero"):
             AffineTransform.mirror([0.0, 0.0])
+
+    def test_non_finite_normal_raises(self) -> None:
+        """A non-finite normal raises."""
+        with pytest.raises(ValueError, match="finite"):
+            AffineTransform.mirror([np.inf, 0.0])
 
 
 class TestAffineTransformShear:

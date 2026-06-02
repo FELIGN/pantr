@@ -12,6 +12,8 @@ Main exports:
 
 from __future__ import annotations
 
+import functools
+
 import numpy as np
 from numpy import typing as npt
 
@@ -53,7 +55,7 @@ class AffineTransform:
             ValueError: If *translation* length does not match the matrix
                 dimension.
         """
-        mat = np.asarray(matrix, dtype=np.float64)
+        mat = np.ascontiguousarray(np.asarray(matrix, dtype=np.float64))
         if mat.ndim != 2 or mat.shape[0] != mat.shape[1]:  # noqa: PLR2004
             raise ValueError(f"matrix must be a square 2-D array, got shape {mat.shape}.")
 
@@ -63,7 +65,7 @@ class AffineTransform:
         if translation is None:
             tvec = np.zeros(n, dtype=np.float64)
         else:
-            tvec = np.asarray(translation, dtype=np.float64)
+            tvec = np.ascontiguousarray(np.asarray(translation, dtype=np.float64))
             if tvec.shape != (n,):
                 raise ValueError(f"translation must have shape ({n},), got {tvec.shape}.")
 
@@ -103,9 +105,12 @@ class AffineTransform:
         """
         return self._translation
 
-    @property
+    @functools.cached_property
     def inverse(self) -> AffineTransform:
         """Get the inverse transformation.
+
+        Computed once and cached; subsequent accesses are free. Safe because
+        an :class:`AffineTransform` is immutable.
 
         Returns:
             AffineTransform: The inverse such that ``T @ T.inverse`` is the
@@ -171,7 +176,8 @@ class AffineTransform:
 
         Raises:
             ValueError: If *factors* is a scalar and *center* is ``None``
-                (dimension cannot be inferred).
+                (dimension cannot be inferred), if any factor is non-finite or
+                zero (singular transform), or if *center* has the wrong shape.
         """
         f = np.asarray(factors, dtype=np.float64)
         if f.ndim == 0:
@@ -182,10 +188,27 @@ class AffineTransform:
                     "array of per-axis factors so the dimension can be "
                     "inferred."
                 )
+            fval = float(f)
+            if not np.isfinite(fval):
+                raise ValueError(f"scaling factors must be finite, got {fval!r}.")
+            if fval == 0.0:
+                raise ValueError(
+                    f"scaling factors must be non-zero (singular transform), got {fval!r}."
+                )
             c = np.asarray(center, dtype=np.float64).ravel()
-            f = np.full(len(c), float(f))
+            f = np.full(len(c), fval)
         else:
             f = f.ravel()
+            if not np.all(np.isfinite(f)):
+                raise ValueError(f"scaling factors must be finite, got {f!r}.")
+            if np.any(f == 0.0):
+                raise ValueError(
+                    f"scaling factors must be non-zero (singular transform), got {f!r}."
+                )
+            if center is not None:
+                c = np.asarray(center, dtype=np.float64).ravel()
+                if c.shape != (len(f),):
+                    raise ValueError(f"center must have shape ({len(f)},), got {c.shape}.")
 
         mat = np.diag(f)
         t = AffineTransform(mat)
@@ -247,9 +270,11 @@ class AffineTransform:
             u[axis_int] = 1.0
         else:
             u = np.asarray(axis, dtype=np.float64).ravel()
-            norm = np.linalg.norm(u)
-            if norm == 0.0:
-                raise ValueError("Rotation axis must be non-zero.")
+            if u.shape != (3,):
+                raise ValueError(f"Rotation axis must have shape (3,), got {u.shape}.")
+            norm = float(np.linalg.norm(u))
+            if norm == 0.0 or not np.isfinite(norm):
+                raise ValueError(f"Rotation axis must be a finite non-zero vector, got {u!r}.")
             u = u / norm
 
         # Rodrigues rotation matrix: R = I cos(t) + (1-cos(t)) u u^T + sin(t) [u]x
@@ -291,9 +316,9 @@ class AffineTransform:
             ValueError: If *normal* has zero norm.
         """
         n = np.asarray(normal, dtype=np.float64).ravel()
-        norm = np.linalg.norm(n)
-        if norm == 0.0:
-            raise ValueError("Mirror normal must be non-zero.")
+        norm = float(np.linalg.norm(n))
+        if norm == 0.0 or not np.isfinite(norm):
+            raise ValueError(f"Mirror normal must be a finite non-zero vector, got {n!r}.")
         n = n / norm
         mat = np.eye(len(n)) - 2.0 * np.outer(n, n)
         t = AffineTransform(mat)
@@ -438,8 +463,15 @@ def _apply_center(
 
     Returns:
         AffineTransform: The re-centred transformation.
+
+    Raises:
+        ValueError: If ``center`` does not have shape ``(transform.dim,)``.
     """
     c = np.asarray(center, dtype=np.float64).ravel()
+    if c.shape != (transform.dim,):
+        raise ValueError(
+            f"center must have shape ({transform.dim},), got {np.asarray(center).shape}."
+        )
     t_neg = AffineTransform.translation(-c)
     t_pos = AffineTransform.translation(c)
     return t_pos @ transform @ t_neg
