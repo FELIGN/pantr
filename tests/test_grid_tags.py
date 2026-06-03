@@ -49,7 +49,7 @@ def test_cell_tags_membership_and_names() -> None:
     assert "a" in tags
     assert "c" not in tags
     assert set(tags.names) == {"a", "b"}
-    assert len(tags) == 2  # noqa: PLR2004
+    assert len(tags) == 2
     assert set(iter(tags)) == {"a", "b"}
 
 
@@ -79,7 +79,7 @@ def test_cell_tags_values_are_read_only() -> None:
 def test_cell_tags_validation() -> None:
     """Out-of-range ids, duplicates, length mismatch, and bad dtype are rejected."""
     tags = CellTags(num_cells=5)
-    with pytest.raises(ValueError, match="in range|in \\[0"):
+    with pytest.raises(ValueError, match=r"in range|in \[0"):
         tags.set("a", [5], 1)  # id == num_cells out of range
     with pytest.raises(ValueError, match="unique"):
         tags.set("a", [1, 1], 1)
@@ -133,7 +133,7 @@ def test_facet_tags_membership() -> None:
     assert "a" in tags
     assert tags.names == ("a",)
     assert len(tags) == 1
-    assert tags.facets_per_cell == 4  # noqa: PLR2004
+    assert tags.facets_per_cell == 4
     tags.remove("a")
     assert "a" not in tags
 
@@ -157,6 +157,6 @@ def test_grid_cell_tags_round_trip() -> None:
     g.cell_tags.set("location", cut, 2)
     dense = g.cell_tags.to_dense("location", fill=0)
     assert dense.shape == (g.num_cells,)
-    assert dense[cut[0]] == 2  # noqa: PLR2004
-    assert dense[cut[1]] == 2  # noqa: PLR2004
-    assert int(np.count_nonzero(dense)) == 2  # noqa: PLR2004
+    assert dense[cut[0]] == 2
+    assert dense[cut[1]] == 2
+    assert int(np.count_nonzero(dense)) == 2

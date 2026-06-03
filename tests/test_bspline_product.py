@@ -106,7 +106,7 @@ class TestNonRationalProduct:
 
         h = f.multiply(g)
 
-        assert h.rank == 2  # noqa: PLR2004
+        assert h.rank == 2
         pts = eval_pts()
         np.testing.assert_allclose(h.evaluate(pts), f.evaluate(pts) * g.evaluate(pts), atol=1e-11)
 
@@ -305,9 +305,9 @@ class TestOptimalContinuity:
             h_space.knots, 4, float(h_space.tolerance), in_domain=True
         )
         # unique[0]=0.0, unique[1]=0.5, unique[2]=1.0
-        assert unique.shape[0] == 3  # noqa: PLR2004
+        assert unique.shape[0] == 3
         np.testing.assert_allclose(unique[1], 0.5, atol=1e-12)
-        assert int(mults[1]) == 4  # noqa: PLR2004
+        assert int(mults[1]) == 4
 
         # Correctness check.
         pts = eval_pts()
@@ -329,7 +329,7 @@ class TestOptimalContinuity:
         # Full-Bezier product: degree 4, 2 elements → 4*2+1 = 9 basis functions.
         # Optimal: interior mult = max(1+2, 1+2) = 3 → [0]*5+[0.5]*3+[1]*5 = 13 knots → 8 basis.
         n_h = h.space.num_total_basis
-        assert n_h == 8  # noqa: PLR2004
+        assert n_h == 8
 
         pts = eval_pts()
         np.testing.assert_allclose(h.evaluate(pts), f.evaluate(pts) * g.evaluate(pts), atol=1e-11)
@@ -343,7 +343,7 @@ class TestOptimalContinuity:
         h = f.multiply(g)
 
         # Single element, degree 4: 5 basis functions.
-        assert h.space.num_total_basis == 5  # noqa: PLR2004
+        assert h.space.num_total_basis == 5
         pts = eval_pts()
         np.testing.assert_allclose(h.evaluate(pts), f.evaluate(pts) * g.evaluate(pts), atol=1e-11)
 

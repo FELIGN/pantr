@@ -252,7 +252,7 @@ class TestClipRootsCore(unittest.TestCase):
         geom_tol: float = 1e-12,
     ) -> npt.NDArray[np.float64]:
         """Helper: run clipping + dedup."""
-        if len(c) < 2:  # noqa: PLR2004
+        if len(c) < 2:
             return np.empty(0, dtype=np.float64)
         if np.all(np.abs(c) <= geom_tol):
             return np.empty(0, dtype=np.float64)
@@ -315,7 +315,7 @@ class TestClipRootsCore(unittest.TestCase):
 
         roots = self._find_roots_clip(c)
         self.assertGreaterEqual(len(roots), 1)
-        has_root_at_half = any(abs(r - 0.5) < 1e-6 for r in roots)  # noqa: PLR2004
+        has_root_at_half = any(abs(r - 0.5) < 1e-6 for r in roots)
         self.assertTrue(has_root_at_half, f"Expected root near 0.5, got {roots}")
 
     def test_agrees_with_yuksel_quadratic(self) -> None:

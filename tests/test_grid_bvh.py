@@ -25,11 +25,11 @@ def test_build_node_count() -> None:
     """A BVH over N cells has 2N-1 nodes and N leaves."""
     lo, hi = _grid_cells(4, 4)
     bvh = BVH.from_cell_bounds(lo, hi)
-    assert bvh.n_cells == 16  # noqa: PLR2004
+    assert bvh.n_cells == 16
     assert bvh.n_nodes == 2 * 16 - 1
-    assert bvh.ndim == 2  # noqa: PLR2004
+    assert bvh.ndim == 2
     n_leaves = int(np.sum(bvh.node_cell >= 0))
-    assert n_leaves == 16  # noqa: PLR2004
+    assert n_leaves == 16
 
 
 def test_query_returns_all_overlapping() -> None:
@@ -82,7 +82,7 @@ def test_empty_tree() -> None:
     bvh = BVH.from_cell_bounds(np.zeros((0, 3)), np.zeros((0, 3)))
     assert bvh.n_cells == 0
     assert bvh.n_nodes == 0
-    assert bvh.ndim == 3  # noqa: PLR2004
+    assert bvh.ndim == 3
     assert bvh.query_aabb(AABB([0.0, 0.0, 0.0], [1.0, 1.0, 1.0])).shape == (0,)
 
 
@@ -156,5 +156,5 @@ def test_nodes_are_read_only() -> None:
     bvh = BVH.from_cell_bounds(lo, hi)
     assert not bvh.node_lo.flags.writeable
     assert not bvh.node_cell.flags.writeable
-    with pytest.raises(ValueError, match="read-only|assignment"):
+    with pytest.raises(ValueError, match=r"read-only|assignment"):
         bvh.node_lo[0, 0] = 5.0

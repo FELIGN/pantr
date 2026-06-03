@@ -13,9 +13,9 @@ from pantr.transform import AffineTransform
 def test_construction_metadata() -> None:
     """Per-axis breakpoints set ndim, counts, bounds, and num_cells."""
     g = TensorProductGrid([[0.0, 1.0, 2.0, 3.0], [0.0, 2.0, 4.0]])
-    assert g.ndim == 2  # noqa: PLR2004
+    assert g.ndim == 2
     assert g.cells_per_axis == (3, 2)
-    assert g.num_cells == 6  # noqa: PLR2004
+    assert g.num_cells == 6
     assert g.bounds.tolist() == [[0.0, 3.0], [0.0, 4.0]]
     assert [b.tolist() for b in g.breakpoints] == [[0.0, 1.0, 2.0, 3.0], [0.0, 2.0, 4.0]]
 
@@ -86,7 +86,7 @@ def test_locate_breakpoint_tie_goes_to_lower_cell() -> None:
     assert g.locate(1.0) == 0  # face between cell 0 and 1 -> cell 0
     assert g.locate(3.0) == 1
     assert g.locate(0.0) == 0  # left boundary -> cell 0
-    assert g.locate(6.0) == 2  # noqa: PLR2004 -- right boundary -> last cell
+    assert g.locate(6.0) == 2
 
 
 def test_locate_wrong_shape_raises() -> None:
@@ -119,9 +119,9 @@ def test_neighbors_interior_and_corner() -> None:
     """Interior cells have 2*ndim neighbours; corner cells have ndim."""
     g = uniform_grid([[0.0, 3.0], [0.0, 3.0]], 3)
     center = g.flat_cell_index((1, 1))
-    assert len(g.neighbors(center)) == 4  # noqa: PLR2004
+    assert len(g.neighbors(center)) == 4
     corner = g.flat_cell_index((0, 0))
-    assert len(g.neighbors(corner)) == 2  # noqa: PLR2004
+    assert len(g.neighbors(corner)) == 2
 
 
 def test_neighbor_across_facet() -> None:
@@ -149,7 +149,7 @@ def test_facet_accessors() -> None:
     """Facet count, axis/side decoding, and degenerate facet bounds."""
     g = uniform_grid([[0.0, 2.0], [0.0, 2.0]], 2)
     cid = g.flat_cell_index((0, 0))
-    assert g.num_local_facets(cid) == 4  # noqa: PLR2004
+    assert g.num_local_facets(cid) == 4
     assert g.local_facet_axis_side(cid, 0) == (0, 0)
     assert g.local_facet_axis_side(cid, 3) == (1, 1)
     lo, hi = g.local_facet_bounds(cid, 1)  # axis 0, high face
@@ -261,7 +261,7 @@ def test_tensor_product_grid_from_space() -> None:
     space = BsplineSpace([sp, sp])
     g = tensor_product_grid(space)
     assert g.cells_per_axis == space.num_intervals
-    assert g.ndim == 2  # noqa: PLR2004
+    assert g.ndim == 2
     np.testing.assert_allclose(g.bounds, [[0.0, 2.0], [0.0, 2.0]], atol=1e-9)
 
 

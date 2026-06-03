@@ -120,7 +120,7 @@ def test_default_facet_accessors() -> None:
     """Default facet count / axis-side / bounds follow the box convention."""
     tpg = uniform_grid([[0.0, 2.0], [0.0, 2.0]], 2)
     plain = _PlainGrid(tpg)
-    assert plain.num_local_facets(0) == 4  # noqa: PLR2004
+    assert plain.num_local_facets(0) == 4
     assert plain.local_facet_axis_side(0, 3) == (1, 1)
     lo, hi = plain.local_facet_bounds(0, 0)  # axis 0, low face
     assert lo[0] == hi[0] == 0.0

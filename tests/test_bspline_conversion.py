@@ -189,7 +189,7 @@ class TestToOpenBspline:
         f_open = f.to_open_bspline()
 
         assert f_open.space.spaces[0].has_open_knots()
-        assert f_open.space.spaces[0].degree == 3  # noqa: PLR2004
+        assert f_open.space.spaces[0].degree == 3
 
         a, b = f_open.space.spaces[0].domain
         pts = np.linspace(float(a), float(b), 51, dtype=np.float64)[1:-1]

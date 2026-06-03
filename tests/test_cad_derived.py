@@ -60,13 +60,13 @@ class TestDisk:
     def test_full_disk(self) -> None:
         """Test a full disk (inner radius = 0)."""
         d = create_disk(radius_outer=2.0)
-        assert d.dim == 2  # noqa: PLR2004
+        assert d.dim == 2
         assert d.is_rational
 
     def test_annulus(self) -> None:
         """Test an annular sector."""
         ann = create_disk(radius_inner=1.0, radius_outer=2.0)
-        assert ann.dim == 2  # noqa: PLR2004
+        assert ann.dim == 2
         assert ann.is_rational
 
     def test_disk_points_within_radius(self) -> None:
@@ -107,7 +107,7 @@ class TestDisk:
     def test_disk_with_angle(self) -> None:
         """Test partial disk (sector)."""
         d = create_disk(radius_outer=1.0, angle=np.pi / 2)
-        assert d.dim == 2  # noqa: PLR2004
+        assert d.dim == 2
 
 
 class TestCylinder:
@@ -116,7 +116,7 @@ class TestCylinder:
     def test_default_cylinder(self) -> None:
         """Test default cylinder."""
         cyl = create_cylinder()
-        assert cyl.dim == 2  # noqa: PLR2004
+        assert cyl.dim == 2
         assert cyl.is_rational
 
     def test_cylinder_radius(self) -> None:
@@ -148,4 +148,4 @@ class TestCylinder:
     def test_cylinder_partial_angle(self) -> None:
         """Test partial cylinder (angular sector)."""
         cyl = create_cylinder(radius=1.0, height=1.0, angle=np.pi / 2)
-        assert cyl.dim == 2  # noqa: PLR2004
+        assert cyl.dim == 2

@@ -18,7 +18,7 @@ class TestExtrude:
         """Test extruding a line into a surface."""
         crv = create_line([0, 0, 0], [1, 0, 0])
         srf = extrude(crv, [0, 0, 1])
-        assert srf.dim == 2  # noqa: PLR2004
+        assert srf.dim == 2
         assert srf.rank == _RANK_3D
         assert not srf.is_rational
 
@@ -51,7 +51,7 @@ class TestExtrude:
         """Test extruding a circle produces a cylinder."""
         crv = create_circle(radius=2.0)
         cyl = extrude(crv, [0, 0, 5])
-        assert cyl.dim == 2  # noqa: PLR2004
+        assert cyl.dim == 2
         assert cyl.is_rational
         # Evaluate on a grid and check all points lie on the cylinder
         u = np.linspace(0, 1, 20)
@@ -93,7 +93,7 @@ class TestRuled:
         c1 = create_line([0, 0, 0], [1, 0, 0])
         c2 = create_line([0, 1, 0], [1, 1, 0])
         srf = create_ruled(c1, c2)
-        assert srf.dim == 2  # noqa: PLR2004
+        assert srf.dim == 2
         assert srf.degree == (1, 1)
         assert not srf.is_rational
 
@@ -122,7 +122,7 @@ class TestRuled:
         inner = create_circle(radius=1.0)
         outer = create_circle(radius=2.0)
         annulus = create_ruled(inner, outer)
-        assert annulus.dim == 2  # noqa: PLR2004
+        assert annulus.dim == 2
         assert annulus.is_rational
         # Evaluate and check radii
         u = np.linspace(0, 1, 30)
@@ -141,7 +141,7 @@ class TestRuled:
         c2 = create_circle(angle=np.pi / 2)  # degree 2
         srf = create_ruled(c1, c2)
         # Both should have been elevated to degree 2
-        assert srf.degree[0] == 2  # noqa: PLR2004
+        assert srf.degree[0] == 2
 
     def test_ruled_mixed_rational(self) -> None:
         """Test that mixing rational and non-rational promotes correctly."""

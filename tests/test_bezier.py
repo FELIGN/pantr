@@ -46,14 +46,14 @@ class TestBezierInit:
         b = _make_bezier_1d([[1.0, 2.0], [3.0, 4.0], [5.0, 6.0]])
         assert b.dim == 1
         assert b.degree == (2,)
-        assert b.rank == 2  # noqa: PLR2004
+        assert b.rank == 2
         assert b.control_points.shape == (3, 2)
 
     def test_valid_initialization_2d_scalar(self) -> None:
         """Test 2D scalar Bezier."""
         ctrl = np.array([[[1.0], [2.0]], [[3.0], [4.0]], [[5.0], [6.0]]])
         b = Bezier(ctrl)
-        assert b.dim == 2  # noqa: PLR2004
+        assert b.dim == 2
         assert b.degree == (2, 1)
         assert b.rank == 1
         assert b.control_points.shape == (3, 2, 1)
@@ -62,15 +62,15 @@ class TestBezierInit:
         """Test 2D vector Bezier."""
         ctrl = np.arange(36, dtype=np.float64).reshape(3, 2, 6)
         b = Bezier(ctrl)
-        assert b.dim == 2  # noqa: PLR2004
+        assert b.dim == 2
         assert b.degree == (2, 1)
-        assert b.rank == 6  # noqa: PLR2004
+        assert b.rank == 6
 
     def test_valid_initialization_3d(self) -> None:
         """Test 3D Bezier."""
         ctrl = np.ones((3, 2, 4, 1), dtype=np.float64)
         b = Bezier(ctrl)
-        assert b.dim == 3  # noqa: PLR2004
+        assert b.dim == 3
         assert b.degree == (2, 1, 3)
 
     def test_rational(self) -> None:
@@ -78,7 +78,7 @@ class TestBezierInit:
         ctrl = np.array([[1.0, 0.0, 1.0], [1.0, 1.0, 1.0], [0.0, 1.0, 1.0]])
         b = Bezier(ctrl, is_rational=True)
         assert b.is_rational is True
-        assert b.rank == 2  # noqa: PLR2004
+        assert b.rank == 2
         assert b.control_points.shape == (3, 3)
 
     def test_1d_array_reshaped_to_scalar(self) -> None:

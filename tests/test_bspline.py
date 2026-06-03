@@ -34,7 +34,7 @@ class TestBsplineInit:
         bspline = Bspline(space, control_points)
 
         assert bspline.dim == 1
-        assert bspline.rank == 2  # noqa: PLR2004
+        assert bspline.rank == 2
         assert bspline.control_points.shape == (3, 2)
         np.testing.assert_array_equal(bspline.control_points, control_points)
 
@@ -48,7 +48,7 @@ class TestBsplineInit:
         control_points = np.array([1.0, 2.0, 3.0, 4.0, 5.0, 6.0], dtype=np.float64)
         bspline = Bspline(space, control_points)
 
-        assert bspline.dim == 2  # noqa: PLR2004
+        assert bspline.dim == 2
         assert bspline.degree == (2, 1)
         assert bspline.rank == 1  # shape (3, 2, 1): ndim=3, dim=2, rank=1
         assert bspline.control_points.shape == (3, 2, 1)
@@ -67,8 +67,8 @@ class TestBsplineInit:
         )
         bspline = Bspline(space, control_points)
 
-        assert bspline.dim == 2  # noqa: PLR2004
-        assert bspline.rank == 2  # noqa: PLR2004
+        assert bspline.dim == 2
+        assert bspline.rank == 2
         assert bspline.control_points.shape == (3, 2, 2)
         np.testing.assert_array_equal(bspline.control_points, control_points.reshape(3, 2, 2))
 
@@ -84,7 +84,7 @@ class TestBsplineInit:
         control_points = np.arange(24, dtype=np.float64)
         bspline = Bspline(space, control_points)
 
-        assert bspline.dim == 3  # noqa: PLR2004
+        assert bspline.dim == 3
         assert bspline.degree == (2, 1, 3)
         assert bspline.rank == 1  # shape (3, 2, 4, 1): ndim=4, dim=3, rank=1
         assert bspline.control_points.shape == (3, 2, 4, 1)
@@ -111,7 +111,7 @@ class TestBsplineInit:
         bspline = Bspline(space, control_points, is_rational=True)
 
         assert bspline.is_rational is True
-        assert bspline.rank == 3  # noqa: PLR2004
+        assert bspline.rank == 3
 
     def test_valid_initialization_float32(self) -> None:
         """Test valid Bspline initialization with float32 dtype."""
@@ -211,7 +211,7 @@ class TestBsplineProperties:
         space2 = BsplineSpace([space_1d, space_1d_2])
         control_points2 = np.array([1.0, 2.0, 3.0, 4.0, 5.0, 6.0], dtype=np.float64)
         bspline2 = Bspline(space2, control_points2)
-        assert bspline2.dim == 2  # noqa: PLR2004
+        assert bspline2.dim == 2
 
     def test_degree_property(self) -> None:
         """Test the degree property for different spaces."""
@@ -282,7 +282,7 @@ class TestBsplineProperties:
         bspline = Bspline(space, control_points)
 
         # shape (3, 2): ndim=2, dim=1, rank=2
-        assert bspline.rank == 2  # noqa: PLR2004
+        assert bspline.rank == 2
 
     def test_rank_property_non_rational_higher_rank(self) -> None:
         """Test rank for non-rational B-spline with higher rank (e.g. matrix-valued)."""
@@ -294,7 +294,7 @@ class TestBsplineProperties:
         bspline = Bspline(space, control_points)
 
         # shape (3, 4): rank = shape[-1] = 4
-        assert bspline.rank == 4  # noqa: PLR2004
+        assert bspline.rank == 4
 
     def test_rank_property_rational_scalar(self) -> None:
         """Test rank for rational scalar B-spline."""
@@ -317,7 +317,7 @@ class TestBsplineProperties:
         bspline = Bspline(space, control_points, is_rational=True)
 
         # shape (3, 3): rational rank = 3-1 = 2
-        assert bspline.rank == 2  # noqa: PLR2004
+        assert bspline.rank == 2
 
     def test_rank_property_2D_non_rational_scalar(self) -> None:
         """Test rank for 2D non-rational scalar B-spline."""
@@ -343,7 +343,7 @@ class TestBsplineProperties:
         control_points = np.arange(12, dtype=np.float64)
         bspline = Bspline(space, control_points)
 
-        assert bspline.rank == 2  # noqa: PLR2004
+        assert bspline.rank == 2
 
     def test_rank_property_2D_rational_scalar(self) -> None:
         """Test rank for 2D rational scalar B-spline."""
@@ -393,7 +393,7 @@ class TestBsplineEdgeCases:
         cp_vec = np.arange(18, dtype=np.float64)
         bspline_vec = Bspline(space, cp_vec)
         assert bspline_vec.control_points.shape == (3, 2, 3)
-        assert bspline_vec.rank == 3  # noqa: PLR2004
+        assert bspline_vec.rank == 3
 
     def test_control_points_flat_input(self) -> None:
         """Test that flat control_points are correctly reshaped for higher dimensions."""
@@ -433,4 +433,4 @@ class TestBsplineEdgeCases:
         cp_vec = np.arange(48, dtype=np.float64)
         bspline_vec = Bspline(space, cp_vec)
         assert bspline_vec.control_points.shape == (3, 2, 4, 2)
-        assert bspline_vec.rank == 2  # shape[-1]=2, rank=2  # noqa: PLR2004
+        assert bspline_vec.rank == 2  # shape[-1]=2, rank=2

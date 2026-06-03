@@ -19,7 +19,7 @@ def test_2d_quads() -> None:
     """A 2-D grid exports one quad per cell with 4 vertices each."""
     g = uniform_grid([[0.0, 4.0], [0.0, 3.0]], [4, 3])
     ug = grid_to_pyvista(g)
-    assert ug.n_cells == 12  # noqa: PLR2004
+    assert ug.n_cells == 12
     assert ug.n_points == 12 * 4
     assert np.all(ug.celltypes == _VTK_QUAD)
 
@@ -28,7 +28,7 @@ def test_3d_hexes() -> None:
     """A 3-D grid exports one hexahedron per cell with 8 vertices each."""
     g = uniform_grid([[0.0, 2.0], [0.0, 2.0], [0.0, 2.0]], 2)
     ug = grid_to_pyvista(g)
-    assert ug.n_cells == 8  # noqa: PLR2004
+    assert ug.n_cells == 8
     assert ug.n_points == 8 * 8
     assert np.all(ug.celltypes == _VTK_HEXAHEDRON)
 
@@ -37,7 +37,7 @@ def test_1d_lines() -> None:
     """A 1-D grid exports one line per cell."""
     g = TensorProductGrid([[0.0, 1.0, 3.0, 6.0]])
     ug = grid_to_pyvista(g)
-    assert ug.n_cells == 3  # noqa: PLR2004
+    assert ug.n_cells == 3
     assert np.all(ug.celltypes == _VTK_LINE)
 
 
