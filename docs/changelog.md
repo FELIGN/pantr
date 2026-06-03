@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.5.0 (2026-06-03)
 
 ### Added
 - `pantr.grid`: new structured-grid layer. `Grid` is an abstract base class
@@ -14,6 +14,12 @@
   bounding-volume hierarchy over cell AABBs (lazily built, backing
   `Grid.query_aabb`), and `CellTags` / `FacetTags` are sparse, dolfinx-style
   named tag registries for cells and facets.
+- `pantr.grid.HierarchicalGrid`: hierarchical refinement grid with a fixed
+  per-direction subdivision factor (octree = the dyadic case). Active cells are
+  stored as rectangular blocks per level (no per-cell storage); supports
+  `refine(level, lo, hi)` with union semantics, automatic single-level balance,
+  `refine_cells`, and `hanging_neighbors` for hanging-node facets. Built with the
+  `hierarchical_grid(root, factor)` factory.
 - `pantr.viz.grid_to_pyvista`: export a 1-D/2-D/3-D `Grid` to a pyvista
   `UnstructuredGrid` (lines / quads / hexahedra).
 - `pantr.quad.QuadratureRule`: immutable d-dimensional quadrature rule on the
