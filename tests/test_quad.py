@@ -14,13 +14,16 @@ from numpy.polynomial import chebyshev
 from pantr.basis import LagrangeVariant
 from pantr.quad import (
     PointsLattice,
+    QuadratureRule,
     create_lagrange_points_lattice,
+    gauss_legendre_quadrature,
     get_chebyshev_gauss_1st_kind_1d,
     get_chebyshev_gauss_2nd_kind_1d,
     get_gauss_legendre_1d,
     get_gauss_lobatto_legendre_1d,
     get_modified_chebyshev_nodes_1d,
     get_trapezoidal_1d,
+    tensor_product_quadrature,
 )
 from pantr.tolerance import get_conservative, get_default, get_strict
 
@@ -462,3 +465,140 @@ class TestModifiedChebyshevNodes:
         """Nodes are strictly increasing."""
         nodes = get_modified_chebyshev_nodes_1d(10)
         assert np.all(np.diff(nodes) > 0)
+
+
+class TestQuadratureRule:
+    """Tests for the QuadratureRule value type."""
+
+    def test_basic_properties(self) -> None:
+        rule = QuadratureRule(points=[[0.25, 0.75], [0.5, 0.5]], weights=[0.4, 0.6])
+        assert rule.ndim == 2
+        assert rule.num_points == 2
+        assert rule.points.shape == (2, 2)
+        assert rule.weights.shape == (2,)
+
+    def test_arrays_are_read_only(self) -> None:
+        rule = QuadratureRule(points=[[0.5]], weights=[1.0])
+        assert not rule.points.flags.writeable
+        assert not rule.weights.flags.writeable
+
+    def test_does_not_alias_input(self) -> None:
+        pts = np.array([[0.5, 0.5]])
+        rule = QuadratureRule(points=pts, weights=[1.0])
+        pts[0, 0] = 0.1  # mutating the source must not affect the rule
+        nptest.assert_array_equal(rule.points, [[0.5, 0.5]])
+
+    def test_repr(self) -> None:
+        assert repr(QuadratureRule([[0.5, 0.5]], [1.0])) == "QuadratureRule(ndim=2, num_points=1)"
+
+    @pytest.mark.parametrize(
+        ("points", "weights", "match"),
+        [
+            ([0.5, 0.5], [1.0], "points must be 2D"),
+            ([[0.5]], [[1.0]], "weights must be 1D"),
+            ([[0.5], [0.5]], [1.0], "must match the number of points"),
+            (np.empty((0, 2)), [], "non-empty"),
+            ([[np.inf, 0.5]], [1.0], "finite"),
+            ([[0.5, 0.5]], [np.nan], "finite"),
+            ([[-0.1, 0.5]], [1.0], "unit cube"),
+            ([[0.5, 1.5]], [1.0], "unit cube"),
+        ],
+    )
+    def test_validation(
+        self,
+        points: npt.ArrayLike,
+        weights: npt.ArrayLike,
+        match: str,
+    ) -> None:
+        with pytest.raises(ValueError, match=match):
+            QuadratureRule(points, weights)
+
+    def test_endpoints_allowed(self) -> None:
+        # Points exactly on the unit-cube boundary are valid (e.g. Lobatto).
+        rule = QuadratureRule(points=[[0.0, 0.0], [1.0, 1.0]], weights=[0.5, 0.5])
+        assert rule.num_points == 2
+
+
+class TestTensorProductQuadrature:
+    """Tests for tensor_product_quadrature."""
+
+    def test_shape_and_count(self) -> None:
+        rule = tensor_product_quadrature([get_gauss_legendre_1d(2), get_gauss_legendre_1d(3)])
+        assert rule.ndim == 2
+        assert rule.num_points == 6
+        assert rule.points.shape == (6, 2)
+
+    def test_c_order_last_axis_fastest(self) -> None:
+        # Axis-0 nodes {0.25, 0.75}, axis-1 nodes {0.5}: C-order has axis 1 fastest.
+        rule = tensor_product_quadrature(
+            [(np.array([0.25, 0.75]), np.array([0.5, 0.5])), (np.array([0.5]), np.array([1.0]))]
+        )
+        nptest.assert_allclose(rule.points, [[0.25, 0.5], [0.75, 0.5]])
+        nptest.assert_allclose(rule.weights, [0.5, 0.5])
+
+    def test_weights_are_outer_product(self) -> None:
+        rule = tensor_product_quadrature(
+            [(np.array([0.5]), np.array([0.3])), (np.array([0.5]), np.array([0.4]))]
+        )
+        nptest.assert_allclose(rule.weights, [0.12])
+
+    def test_single_axis(self) -> None:
+        nodes, weights = get_gauss_legendre_1d(4)
+        rule = tensor_product_quadrature([(nodes, weights)])
+        assert rule.ndim == 1
+        assert rule.num_points == 4
+        nptest.assert_allclose(rule.points[:, 0], nodes)
+
+    def test_integrates_polynomial(self) -> None:
+        # int over [0,1]^2 of x^3 y = (1/4)(1/2) = 1/8.
+        rule = tensor_product_quadrature([get_gauss_legendre_1d(2), get_gauss_legendre_1d(2)])
+        val = float((rule.weights * rule.points[:, 0] ** 3 * rule.points[:, 1]).sum())
+        nptest.assert_allclose(val, 1.0 / 8.0, rtol=1e-13)
+
+    def test_empty_rules(self) -> None:
+        with pytest.raises(ValueError, match="at least one axis"):
+            tensor_product_quadrature([])
+
+    def test_mismatched_nodes_weights(self) -> None:
+        with pytest.raises(ValueError, match="matching non-empty"):
+            tensor_product_quadrature([(np.array([0.5, 0.5]), np.array([1.0]))])
+
+
+class TestGaussLegendreQuadrature:
+    """Tests for gauss_legendre_quadrature."""
+
+    def test_isotropic(self) -> None:
+        rule = gauss_legendre_quadrature(3, 2)
+        assert rule.ndim == 3
+        assert rule.num_points == 8
+        nptest.assert_allclose(rule.weights.sum(), 1.0, atol=1e-14)
+
+    def test_anisotropic(self) -> None:
+        rule = gauss_legendre_quadrature(2, [2, 4])
+        assert rule.num_points == 8
+
+    def test_exactness_degree(self) -> None:
+        # n-point GL is exact to degree 2n-1; n=3 -> degree 5 per axis.
+        rule = gauss_legendre_quadrature(2, 3)
+        # int over [0,1]^2 of x^5 y^5 = (1/6)^2.
+        val = float((rule.weights * rule.points[:, 0] ** 5 * rule.points[:, 1] ** 5).sum())
+        nptest.assert_allclose(val, (1.0 / 6.0) ** 2, rtol=1e-13)
+
+    def test_matches_manual_tensor_product(self) -> None:
+        rule = gauss_legendre_quadrature(2, [2, 3])
+        manual = tensor_product_quadrature([get_gauss_legendre_1d(2), get_gauss_legendre_1d(3)])
+        nptest.assert_allclose(rule.points, manual.points)
+        nptest.assert_allclose(rule.weights, manual.weights)
+
+    @pytest.mark.parametrize(
+        ("ndim", "npts", "match"),
+        [
+            (0, 2, "ndim must be >= 1"),
+            (2, [2], "length-2 sequence"),
+            (2, [2, 0], "must be >= 1"),
+            (1, 0, "must be >= 1"),
+        ],
+    )
+    def test_validation(self, ndim: int, npts: int | list[int], match: str) -> None:
+        with pytest.raises(ValueError, match=match):
+            gauss_legendre_quadrature(ndim, npts)
