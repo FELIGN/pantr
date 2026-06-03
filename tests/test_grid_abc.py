@@ -5,7 +5,7 @@ The generic, box-geometry defaults on :class:`Grid` are validated by wrapping a
 forwards only the five abstract methods and inherits every default. Comparing
 the wrapper's default outputs against the tensor-product grid's specialized
 overrides (notably ``locate_many`` and the lazy BVH built from
-``_collect_cell_bounds``) checks the defaults for correctness.
+``collect_cell_bounds``) checks the defaults for correctness.
 """
 
 from __future__ import annotations
@@ -86,7 +86,7 @@ def test_default_locate_many_matches_kernel() -> None:
 
 
 def test_default_query_aabb_matches_specialized() -> None:
-    """The default _collect_cell_bounds builds a BVH matching the tensor grid."""
+    """The default collect_cell_bounds builds a BVH matching the tensor grid."""
     tpg = uniform_grid([[0.0, 5.0], [0.0, 5.0]], 5)
     plain = _PlainGrid(tpg)
     box = AABB([1.5, 1.5], [3.5, 3.5])

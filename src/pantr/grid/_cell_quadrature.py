@@ -64,7 +64,7 @@ def cell_quadrature(
     if rule.ndim != grid.ndim:
         raise ValueError(f"rule.ndim ({rule.ndim}) must match grid.ndim ({grid.ndim}).")
 
-    cell_lo_all, cell_hi_all = grid._collect_cell_bounds()
+    cell_lo_all, cell_hi_all = grid.collect_cell_bounds()
     if cells is None:
         cell_lo, cell_hi = cell_lo_all, cell_hi_all
     else:
@@ -94,7 +94,7 @@ def _resolve_cell_ids(cells: npt.ArrayLike, num_cells: int) -> npt.NDArray[np.in
     """
     arr = np.atleast_1d(np.asarray(cells))
     if arr.ndim != 1:
-        raise ValueError(f"cells must be 1D; got shape {np.asarray(cells).shape}.")
+        raise ValueError(f"cells must be 1D; got shape {arr.shape}.")
     if arr.size == 0:
         return np.empty(0, dtype=np.intp)
     if arr.dtype.kind not in ("i", "u"):

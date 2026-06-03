@@ -531,14 +531,6 @@ class QuadratureRule:
     (:func:`tensor_product_quadrature`, :func:`gauss_legendre_quadrature`) have
     weights summing to ``1`` (the measure of the unit cube), so the rule
     integrates the constant ``1`` exactly. The stored arrays are read-only.
-
-    Attributes:
-        _points (npt.NDArray[np.float64]): Read-only ``(num_points, ndim)`` array
-            of points in ``[0, 1]^ndim``.
-        _weights (npt.NDArray[np.float64]): Read-only ``(num_points,)`` array of
-            weights.
-        _ndim (int): Spatial dimension of the rule.
-        _num_points (int): Number of quadrature points.
     """
 
     __slots__ = ("_ndim", "_num_points", "_points", "_weights")
@@ -661,8 +653,13 @@ def tensor_product_quadrature(
     nodes_per_axis: list[npt.NDArray[np.float64]] = []
     weights_per_axis: list[npt.NDArray[np.float64]] = []
     for d, pair in enumerate(rules):
-        nodes_d = np.asarray(pair[0], dtype=np.float64).ravel()
-        weights_d = np.asarray(pair[1], dtype=np.float64).ravel()
+        nodes_d = np.asarray(pair[0], dtype=np.float64)
+        weights_d = np.asarray(pair[1], dtype=np.float64)
+        if nodes_d.ndim != 1 or weights_d.ndim != 1:
+            raise ValueError(
+                f"tensor_product_quadrature: axis {d} nodes and weights must be 1D; "
+                f"got shapes {nodes_d.shape} and {weights_d.shape}."
+            )
         if nodes_d.shape[0] == 0 or nodes_d.shape != weights_d.shape:
             raise ValueError(
                 f"tensor_product_quadrature: axis {d} needs matching non-empty "

@@ -332,7 +332,7 @@ class TensorProductGrid(Grid):
             multi[axis] = i + 1
         return self.flat_cell_index(multi)
 
-    def _collect_cell_bounds(
+    def collect_cell_bounds(
         self,
     ) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64]]:
         """Materialize per-cell ``(lo, hi)`` in C-order via per-axis broadcasting.
