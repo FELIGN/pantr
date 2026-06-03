@@ -331,3 +331,59 @@ def test_flat_cell_index_out_of_range_raises() -> None:
     g = uniform_grid([[0.0, 3.0], [0.0, 2.0]], [3, 2])
     with pytest.raises(IndexError):
         g.flat_cell_index([3, 0])  # axis 0 index 3 >= cells_per_axis[0]=3
+
+
+def test_locate_many_interior_breakpoint_tie() -> None:
+    """locate_many Numba kernel agrees with scalar locate at every interior breakpoint."""
+    g = TensorProductGrid([[0.0, 1.0, 3.0, 6.0], [0.0, 2.0, 5.0]])
+    # Interior breakpoints are at x=1.0, x=3.0 (axis 0) and y=2.0 (axis 1).
+    breakpoints_2d = [[1.0, 0.5], [1.0, 2.0], [3.0, 0.5], [3.0, 2.0]]
+    pts = np.array(breakpoints_2d, dtype=np.float64)
+    batch = g.locate_many(pts)
+    for i, pt in enumerate(breakpoints_2d):
+        single = g.locate(pt)
+        expected = -1 if single is None else single
+        assert int(batch[i]) == expected, (
+            f"locate_many disagreed with locate at breakpoint {pt}: "
+            f"batch={batch[i]}, single={single}"
+        )
+
+
+def test_locate_many_3d() -> None:
+    """locate_many works correctly for 3-D tensor-product grids."""
+    g = uniform_grid([[0.0, 2.0], [0.0, 3.0], [0.0, 4.0]], [2, 3, 4])
+    rng = np.random.default_rng(42)
+    pts = rng.uniform(-0.5, 4.5, size=(60, 3))
+    batch = g.locate_many(pts)
+    for i, pt in enumerate(pts):
+        single = g.locate(pt)
+        assert int(batch[i]) == (-1 if single is None else single)
+
+
+def test_query_aabb_3d() -> None:
+    """query_aabb works correctly for 3-D tensor-product grids."""
+    from pantr.geometry import AABB  # noqa: PLC0415
+
+    g = uniform_grid([[0.0, 3.0], [0.0, 3.0], [0.0, 3.0]], 3)
+    # Each axis has cells [0,1), [1,2), [2,3). A query box [0.5,1.5]^3
+    # strictly overlaps only the 8 cells in the lower 2x2x2 block (indices 0
+    # or 1 on every axis).
+    box = AABB([0.5, 0.5, 0.5], [1.5, 1.5, 1.5])
+    result = sorted(int(c) for c in g.query_aabb(box))
+    expected = sorted(
+        g.flat_cell_index(m)
+        for m in [(i, j, k) for i in range(2) for j in range(2) for k in range(2)]
+    )
+    assert result == expected
+
+
+def test_uniform_grid_single_cell_per_axis() -> None:
+    """uniform_grid with cells=1 produces a single-cell grid per axis."""
+    g = uniform_grid([[0.0, 5.0], [1.0, 3.0]], 1)
+    assert g.cells_per_axis == (1, 1)
+    assert g.num_cells == 1
+    assert g.locate([2.5, 2.0]) == 0
+    assert g.locate([5.0, 3.0]) == 0  # right boundary → only cell
+    assert g.locate([5.1, 2.0]) is None
+    out = g.locate_many(np.array([[2.5, 2.0], [-1.0, 2.0]]))
+    assert out.tolist() == [0, -1]

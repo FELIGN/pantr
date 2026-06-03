@@ -193,6 +193,11 @@ class BVH:
         n_cells, ndim = int(lo.shape[0]), int(lo.shape[1])
         if ndim < 1:
             raise ValueError(f"BVH ndim must be >= 1; got {ndim}.")
+        if not np.all(np.isfinite(lo)) or not np.all(np.isfinite(hi)):
+            raise ValueError(
+                "BVH.from_cell_bounds: cell_lo and cell_hi must contain only finite "
+                "values; got NaN or Inf."
+            )
         if np.any(hi < lo):
             raise ValueError(
                 "Every cell must satisfy cell_hi >= cell_lo on every axis; "
@@ -415,8 +420,10 @@ def _build_tree(
         next_idx += 2
         node_left[idx] = left_idx
         node_right[idx] = right_idx
-        # Push right first so left pops first (preorder visit order matches the
-        # recursive description in the module docstring).
+        # Push right first so left pops first (preorder left-to-right construction
+        # order, matching the _bvh.py module docstring). Note: the query kernels
+        # in _bvh_core.py push left first and visit right first — opposite
+        # direction — but count and emit use the same order, so results agree.
         work.append((right_idx, mid, end))
         work.append((left_idx, start, mid))
     return node_lo, node_hi, node_left, node_right, node_cell

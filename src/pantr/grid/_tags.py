@@ -22,7 +22,7 @@ responsibility; these classes only store the result.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Final
+from typing import TYPE_CHECKING, Any, Final
 
 import numpy as np
 
@@ -225,7 +225,7 @@ class CellTags:
         *,
         fill: int = 0,
         dtype: npt.DTypeLike = np.int64,
-    ) -> npt.NDArray[np.int_]:
+    ) -> npt.NDArray[Any]:
         r"""Scatter tag ``name`` into a dense ``(num_cells,)`` array.
 
         Untagged cells receive ``fill``. Useful when a downstream Numba kernel
@@ -235,19 +235,35 @@ class CellTags:
             name (str): Tag name.
             fill (int): Value for untagged cells. Defaults to ``0``.
             dtype (npt.DTypeLike): Output integer dtype. Defaults to
-                ``numpy.int64``.
+                ``numpy.int64``. Values are stored as ``int64`` internally; if
+                ``dtype`` is narrower than ``int64`` and any stored value falls
+                outside the dtype's representable range, an ``OverflowError`` is
+                raised rather than silently truncating the value.
 
         Returns:
-            npt.NDArray[np.int\_]: Fresh, writeable ``(num_cells,)`` array.
+            npt.NDArray[Any]: Fresh, writeable ``(num_cells,)`` array with
+            ``dtype`` as the scalar type.
 
         Raises:
             KeyError: If no tag named ``name`` exists.
             TypeError: If ``dtype`` is not an integer or unsigned-integer dtype.
+            OverflowError: If any stored value cannot be represented exactly in
+                ``dtype`` (only raised when ``dtype`` is narrower than ``int64``).
         """
-        if np.dtype(dtype).kind not in ("i", "u"):
-            raise TypeError(f"dtype must be an integer dtype; got {np.dtype(dtype)!r}.")
+        out_dtype = np.dtype(dtype)
+        if out_dtype.kind not in ("i", "u"):
+            raise TypeError(f"dtype must be an integer dtype; got {out_dtype!r}.")
         ids, values = self._tags[name]
-        out = np.full(self._num_cells, fill, dtype=dtype)
+        if ids.shape[0] > 0 and out_dtype.itemsize < 8:  # noqa: PLR2004
+            info = np.iinfo(out_dtype)
+            vmin, vmax = int(values.min()), int(values.max())
+            if vmin < info.min or vmax > info.max:
+                raise OverflowError(
+                    f"dtype {out_dtype!r} cannot represent all tag values without "
+                    f"truncation; value range [{vmin}, {vmax}] exceeds "
+                    f"dtype range [{info.min}, {info.max}]."
+                )
+        out = np.full(self._num_cells, fill, dtype=out_dtype)
         out[ids] = values
         return out
 
@@ -428,7 +444,7 @@ class FacetTags:
         *,
         fill: int = 0,
         dtype: npt.DTypeLike = np.int64,
-    ) -> npt.NDArray[np.int_]:
+    ) -> npt.NDArray[Any]:
         r"""Scatter tag ``name`` into a dense ``(num_cells, facets_per_cell)`` array.
 
         Untagged facets receive ``fill``. Useful when a downstream Numba kernel
@@ -438,20 +454,35 @@ class FacetTags:
             name (str): Tag name.
             fill (int): Value for untagged facets. Defaults to ``0``.
             dtype (npt.DTypeLike): Output integer dtype. Defaults to
-                ``numpy.int64``.
+                ``numpy.int64``. Values are stored as ``int64`` internally; if
+                ``dtype`` is narrower than ``int64`` and any stored value falls
+                outside the dtype's representable range, an ``OverflowError`` is
+                raised rather than silently truncating the value.
 
         Returns:
-            npt.NDArray[np.int\_]: Fresh, writeable
-            ``(num_cells, facets_per_cell)`` array.
+            npt.NDArray[Any]: Fresh, writeable ``(num_cells, facets_per_cell)``
+            array with ``dtype`` as the scalar type.
 
         Raises:
             KeyError: If no tag named ``name`` exists.
             TypeError: If ``dtype`` is not an integer or unsigned-integer dtype.
+            OverflowError: If any stored value cannot be represented exactly in
+                ``dtype`` (only raised when ``dtype`` is narrower than ``int64``).
         """
-        if np.dtype(dtype).kind not in ("i", "u"):
-            raise TypeError(f"dtype must be an integer dtype; got {np.dtype(dtype)!r}.")
+        out_dtype = np.dtype(dtype)
+        if out_dtype.kind not in ("i", "u"):
+            raise TypeError(f"dtype must be an integer dtype; got {out_dtype!r}.")
         keys, values = self._tags[name]
-        out = np.full((self._num_cells, self._facets_per_cell), fill, dtype=dtype)
+        if keys.shape[0] > 0 and out_dtype.itemsize < 8:  # noqa: PLR2004
+            info = np.iinfo(out_dtype)
+            vmin, vmax = int(values.min()), int(values.max())
+            if vmin < info.min or vmax > info.max:
+                raise OverflowError(
+                    f"dtype {out_dtype!r} cannot represent all tag values without "
+                    f"truncation; value range [{vmin}, {vmax}] exceeds "
+                    f"dtype range [{info.min}, {info.max}]."
+                )
+        out = np.full((self._num_cells, self._facets_per_cell), fill, dtype=out_dtype)
         if keys.shape[0] > 0:
             out[keys[:, 0], keys[:, 1]] = values
         return out

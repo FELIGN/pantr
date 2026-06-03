@@ -30,6 +30,7 @@ Construction
 
 from __future__ import annotations
 
+import math
 from typing import TYPE_CHECKING, Final
 
 import numpy as np
@@ -132,7 +133,7 @@ class TensorProductGrid(Grid):
         self._ndim = ndim
         self._breakpoints = tuple(validated)
         self._cells_per_axis = tuple(cells_per_axis)
-        self._num_cells = int(np.prod(self._cells_per_axis))
+        self._num_cells = math.prod(self._cells_per_axis)
         bounds = np.empty((ndim, 2), dtype=np.float64)
         for d in range(ndim):
             bounds[d, 0] = self._breakpoints[d][0]
@@ -198,8 +199,8 @@ class TensorProductGrid(Grid):
         """Get whether every axis has uniform breakpoint spacing.
 
         Returns:
-            bool: ``True`` iff each axis's spacing is constant to within an
-            absolute tolerance.
+            bool: ``True`` iff each axis's spacing is constant to within a
+            relative tolerance (``_UNIFORM_SPACING_RTOL``).
         """
         return self._is_uniform
 

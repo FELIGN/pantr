@@ -15,7 +15,10 @@ Two kernels are exposed to Layer 2:
 Both kernels share the same traversal structure and visit nodes in an identical
 order so that ``count`` and ``emit`` agree on the output size. The traversal is
 deterministic: the left child is pushed first and the right child last, so the
-stack pops right first and the tree is visited in preorder, right to left.
+stack pops right first and the tree is visited in preorder, right to left. This
+is the opposite of the left-to-right construction order in ``_build_tree``
+(:mod:`pantr.grid._bvh`); both are preorder, but only the count/emit consistency
+matters for correctness.
 
 The stack is a fixed-size ``int64`` array. For ``N`` cells a balanced
 median-split BVH has height ``ceil(log2(N)) + 1``; depth 128 covers any

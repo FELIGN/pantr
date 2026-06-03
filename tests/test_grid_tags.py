@@ -220,3 +220,22 @@ def test_facet_tags_to_dense_float_dtype_raises() -> None:
     tags.set("a", [[0, 0]], [1])
     with pytest.raises(TypeError, match="integer"):
         tags.to_dense("a", dtype=np.float32)
+
+
+def test_cell_tags_to_dense_overflow_raises() -> None:
+    """to_dense raises OverflowError when a narrow dtype cannot hold a stored value."""
+    tags = CellTags(num_cells=4)
+    tags.set("m", [0, 1], [200, 1])  # 200 does not fit in int8 (-128..127)
+    with pytest.raises(OverflowError, match="truncation"):
+        tags.to_dense("m", dtype=np.int8)
+    # int16 range is -32768..32767; 200 fits fine.
+    dense = tags.to_dense("m", dtype=np.int16)
+    assert dense.tolist() == [200, 1, 0, 0]
+
+
+def test_facet_tags_to_dense_overflow_raises() -> None:
+    """FacetTags.to_dense raises OverflowError when a narrow dtype cannot hold a value."""
+    tags = FacetTags(num_cells=2, facets_per_cell=4)
+    tags.set("bc", [[0, 0]], [200])
+    with pytest.raises(OverflowError, match="truncation"):
+        tags.to_dense("bc", dtype=np.int8)
