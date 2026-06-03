@@ -16,6 +16,15 @@
   named tag registries for cells and facets.
 - `pantr.viz.grid_to_pyvista`: export a 1-D/2-D/3-D `Grid` to a pyvista
   `UnstructuredGrid` (lines / quads / hexahedra).
+- `pantr.quad.QuadratureRule`: immutable d-dimensional quadrature rule on the
+  unit cube `[0, 1]^ndim`, with `tensor_product_quadrature` (tensor product of
+  per-axis 1-D rules) and `gauss_legendre_quadrature` (isotropic or anisotropic
+  Gauss-Legendre) factories.
+- `pantr.grid.cell_quadrature`: map a reference `QuadratureRule` from the unit
+  cube onto a grid's cells (or a subset), returning per-cell points
+  `(num_cells, num_points, ndim)` and weights `(num_cells, num_points)` via the
+  per-cell affine map with volume-scaled weights. The uncut/background-cell
+  quadrature bridge for immersed / unfitted discretizations.
 
 ## 0.4.0 (2026-06-02)
 
