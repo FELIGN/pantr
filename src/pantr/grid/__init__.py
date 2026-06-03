@@ -32,6 +32,8 @@ Main exports:
   registries for cells and facets.
 - :func:`cell_quadrature`: map a :class:`pantr.quad.QuadratureRule` from the
   unit cube onto a grid's cells (per-cell points and weights).
+- :func:`overlay`: the coarsest :class:`TensorProductGrid` refining two input
+  tensor-product grids (union of per-axis breakpoints on their domain overlap).
 """
 
 from __future__ import annotations
@@ -40,6 +42,7 @@ from ._bvh import BVH
 from ._cell_quadrature import cell_quadrature
 from ._grid import Grid
 from ._hierarchical_grid import HierarchicalGrid, hierarchical_grid
+from ._overlay import overlay
 from ._tags import CellTags, FacetTags
 from ._tensor_product_grid import TensorProductGrid, tensor_product_grid, uniform_grid
 
@@ -52,6 +55,7 @@ __all__ = [
     "TensorProductGrid",
     "cell_quadrature",
     "hierarchical_grid",
+    "overlay",
     "tensor_product_grid",
     "uniform_grid",
 ]
