@@ -106,6 +106,12 @@ def test_overlay_disjoint_domains_raises() -> None:
         overlay(uniform_grid([[0.0, 1.0]], 2), uniform_grid([[2.0, 3.0]], 2))
 
 
+def test_overlay_touching_domains_raises() -> None:
+    """Domains that share only an endpoint (zero-width intersection) are a ValueError."""
+    with pytest.raises(ValueError, match="do not overlap"):
+        overlay(uniform_grid([[0.0, 1.0]], 2), uniform_grid([[1.0, 2.0]], 2))
+
+
 def test_overlay_non_grid_input_raises() -> None:
     """Non-TensorProductGrid inputs are a TypeError."""
     grid = uniform_grid([[0.0, 1.0]], 2)

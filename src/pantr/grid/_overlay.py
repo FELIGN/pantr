@@ -55,11 +55,14 @@ def overlay(grid_a: TensorProductGrid, grid_b: TensorProductGrid) -> TensorProdu
             on some axis (the per-axis intersection is empty or degenerate).
 
     Example:
+        >>> import numpy.testing as npt
         >>> from pantr.grid import uniform_grid, overlay
         >>> a = uniform_grid([[0.0, 1.0]], 2)
         >>> b = uniform_grid([[0.0, 1.0]], 3)
-        >>> overlay(a, b).breakpoints[0]
-        array([0.        , 0.33333333, 0.5       , 0.66666667, 1.        ])
+        >>> npt.assert_allclose(
+        ...     overlay(a, b).breakpoints[0],
+        ...     [0.0, 1/3, 0.5, 2/3, 1.0],
+        ... )
     """
     if not isinstance(grid_a, TensorProductGrid) or not isinstance(grid_b, TensorProductGrid):
         raise TypeError(
@@ -119,8 +122,8 @@ def _merge_axis_breakpoints(
     keep = np.ones(candidates.shape[0], dtype=bool)
     keep[1:] = np.diff(candidates) > atol
     merged = candidates[keep]
-    # Pin the exact intersection bounds to wash out any drift from the
-    # concatenate / sort roundtrip (they are already first / last by build).
+    # Belt-and-suspenders: re-pin lo/hi so any float conversion noise in
+    # the sort/concatenate path doesn't alter the caller-supplied bounds.
     merged[0] = lo
     merged[-1] = hi
     return np.ascontiguousarray(merged, dtype=np.float64)
