@@ -158,3 +158,52 @@ def test_nodes_are_read_only() -> None:
     assert not bvh.node_cell.flags.writeable
     with pytest.raises(ValueError, match=r"read-only|assignment"):
         bvh.node_lo[0, 0] = 5.0
+
+
+def test_query_1d_partial() -> None:
+    """A 1-D BVH returns the cells that partially overlap the query range."""
+    lo = np.arange(5, dtype=np.float64).reshape(-1, 1)
+    hi = lo + 1.0  # cells [0,1],[1,2],[2,3],[3,4],[4,5]
+    bvh = BVH.from_cell_bounds(lo, hi)
+    result = sorted(int(c) for c in bvh.query_aabb(AABB([1.5], [3.5])))
+    assert result == [1, 2, 3]  # cells [1,2],[2,3],[3,4] overlap [1.5, 3.5]
+
+
+def test_build_tree_3_cells_structure() -> None:
+    """A 3-cell BVH has 5 nodes and each cell is individually queryable."""
+    lo = np.array([[0.0], [1.0], [2.0]])
+    hi = lo + 1.0
+    bvh = BVH.from_cell_bounds(lo, hi)
+    assert bvh.n_nodes == 5
+    assert bvh.n_cells == 3
+    for c in range(3):
+        mid = float(lo[c, 0]) + 0.5
+        result = bvh.query_aabb(AABB([mid - 0.1], [mid + 0.1]))
+        assert c in result.tolist()
+
+
+def test_from_cell_bounds_1d_array_raises() -> None:
+    """from_cell_bounds rejects a flat (1-D) input array."""
+    with pytest.raises(ValueError, match="2-D"):
+        BVH.from_cell_bounds(np.array([0.0, 1.0]), np.array([1.0, 2.0]))
+
+
+def test_from_cell_bounds_rejects_nan_inf() -> None:
+    """Non-finite cell bounds raise ValueError before building the BVH."""
+    lo = np.array([[0.0, 0.0]])
+    hi_nan = np.array([[np.nan, 1.0]])
+    hi_inf = np.array([[np.inf, 1.0]])
+    with pytest.raises(ValueError, match="finite"):
+        BVH.from_cell_bounds(lo, hi_nan)
+    with pytest.raises(ValueError, match="finite"):
+        BVH.from_cell_bounds(lo, hi_inf)
+
+
+def test_stack_overflow_guard(monkeypatch: pytest.MonkeyPatch) -> None:
+    """from_cell_bounds raises when the tree depth would overflow the kernel stack."""
+    import pantr.grid._bvh as _bvh_mod  # noqa: PLC0415
+
+    monkeypatch.setattr(_bvh_mod, "_BVH_STACK_DEPTH", 1)
+    lo, hi = _grid_cells(2, 2)  # 4 cells → depth 3 > 1
+    with pytest.raises(ValueError, match="stack depth"):
+        BVH.from_cell_bounds(lo, hi)

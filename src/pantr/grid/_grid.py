@@ -404,8 +404,9 @@ class Grid(abc.ABC):
         """Return the ids of every cell whose AABB overlaps ``aabb``.
 
         Backed by a :class:`pantr.grid.BVH` over the grid's cell AABBs, built
-        lazily on first call and cached for the grid's lifetime. Cells touching
-        ``aabb`` on a shared face are included.
+        lazily on first call and cached for the grid's lifetime. The overlap test
+        is inclusive on every axis, so cells touching ``aabb`` on any face, edge,
+        or corner are included.
 
         Args:
             aabb (AABB): Query box; must match :attr:`ndim`.
@@ -428,6 +429,15 @@ class Grid(abc.ABC):
 
         Returns:
             BVH: The grid's spatial index over its cell AABBs.
+
+        Warning:
+            Not fully thread-safe. Under CPython (with the GIL), concurrent
+            first calls may each build a valid :class:`BVH` and the second write
+            silently wins — the only cost is redundant construction. Under
+            free-threaded Python 3.13+ (``--disable-gil``) the assignment is not
+            atomic and a concurrent caller could observe a partially-written
+            reference. Call this method once on the main thread before sharing
+            the grid across threads.
         """
         from ._bvh import BVH  # noqa: PLC0415
 
