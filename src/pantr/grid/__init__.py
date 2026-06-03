@@ -30,11 +30,14 @@ Main exports:
   :meth:`Grid.query_aabb`.
 - :class:`CellTags`, :class:`FacetTags`: sparse, dolfinx-style named tag
   registries for cells and facets.
+- :func:`cell_quadrature`: map a :class:`pantr.quad.QuadratureRule` from the
+  unit cube onto a grid's cells (per-cell points and weights).
 """
 
 from __future__ import annotations
 
 from ._bvh import BVH
+from ._cell_quadrature import cell_quadrature
 from ._grid import Grid
 from ._hierarchical_grid import HierarchicalGrid, hierarchical_grid
 from ._tags import CellTags, FacetTags
@@ -47,6 +50,7 @@ __all__ = [
     "Grid",
     "HierarchicalGrid",
     "TensorProductGrid",
+    "cell_quadrature",
     "hierarchical_grid",
     "tensor_product_grid",
     "uniform_grid",

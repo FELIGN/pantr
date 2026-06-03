@@ -824,7 +824,7 @@ class HierarchicalGrid(Grid):
     # Overrides for BVH efficiency
     # ------------------------------------------------------------------
 
-    def _collect_cell_bounds(
+    def collect_cell_bounds(
         self,
     ) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64]]:
         """Materialize ``(cell_lo, cell_hi)`` in flat-id order for the BVH.

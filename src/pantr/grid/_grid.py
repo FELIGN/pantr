@@ -422,7 +422,7 @@ class Grid(abc.ABC):
     def cell_bvh(self) -> BVH:
         """Return the cached :class:`pantr.grid.BVH` over the grid's cell AABBs.
 
-        Built lazily on first call from ``_collect_cell_bounds`` and cached.
+        Built lazily on first call from ``collect_cell_bounds`` and cached.
         Building the BVH materializes ``O(num_cells)`` node arrays, so it is
         deferred until an :meth:`query_aabb` (or direct) call needs it -- an
         untagged, un-queried grid never pays this cost.
@@ -442,11 +442,11 @@ class Grid(abc.ABC):
         from ._bvh import BVH  # noqa: PLC0415
 
         if self._bvh is None:
-            cell_lo, cell_hi = self._collect_cell_bounds()
+            cell_lo, cell_hi = self.collect_cell_bounds()
             self._bvh = BVH.from_cell_bounds(cell_lo, cell_hi)
         return self._bvh
 
-    def _collect_cell_bounds(
+    def collect_cell_bounds(
         self,
     ) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64]]:
         """Materialize per-cell ``(lo, hi)`` as ``(num_cells, ndim)`` arrays.
