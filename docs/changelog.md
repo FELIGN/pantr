@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+### Added
+- `pantr.grid.overlay`: build the coarsest `TensorProductGrid` that refines two
+  input tensor-product grids — its per-axis breakpoints are the union of both
+  inputs' breakpoints restricted to their domain overlap, so every overlay cell
+  lies inside one cell of each input. Defined for any `ndim >= 1`. The
+  background-grid bridge for immersed / unfitted quadrature.
+
 ## 0.5.0 (2026-06-03)
 
 ### Added
