@@ -23,7 +23,7 @@ class TestCoonsSurface:
         c_v1 = create_line([1, 0, 0], [1, 1, 0])
 
         srf = create_coons_surface(((c_v0, c_v1), (c_u0, c_u1)))
-        assert srf.dim == 2  # noqa: PLR2004
+        assert srf.dim == 2
         assert srf.rank == _RANK_3D
 
         # Should match bilinear

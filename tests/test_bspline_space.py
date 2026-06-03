@@ -29,8 +29,8 @@ class TestBsplineSpaceInit:
         space_1d_2 = BsplineSpace1D(knots2, 1)
         space = BsplineSpace([space_1d_1, space_1d_2])
 
-        assert space.dim == 2  # noqa: PLR2004
-        assert len(space.spaces) == 2  # noqa: PLR2004
+        assert space.dim == 2
+        assert len(space.spaces) == 2
         assert space.degrees == (2, 1)
 
     def test_valid_initialization_3D(self) -> None:
@@ -43,8 +43,8 @@ class TestBsplineSpaceInit:
         space_1d_3 = BsplineSpace1D(knots3, 3)
         space = BsplineSpace([space_1d_1, space_1d_2, space_1d_3])
 
-        assert space.dim == 3  # noqa: PLR2004
-        assert len(space.spaces) == 3  # noqa: PLR2004
+        assert space.dim == 3
+        assert len(space.spaces) == 3
         assert space.degrees == (2, 1, 3)
 
     def test_different_dtype_error(self) -> None:
@@ -70,7 +70,7 @@ class TestBsplineSpaceProperties:
 
         space_1d_2 = BsplineSpace1D(knots, 2)
         space_2d = BsplineSpace([space_1d, space_1d_2])
-        assert space_2d.dim == 2  # noqa: PLR2004
+        assert space_2d.dim == 2
 
     def test_spaces(self) -> None:
         """Test spaces property."""
@@ -132,7 +132,7 @@ class TestBsplineSpaceProperties:
         space_1d_2 = BsplineSpace1D(knots2, 1)
         space = BsplineSpace([space_1d_1, space_1d_2])
 
-        assert space.num_total_basis == 6  # noqa: PLR2004
+        assert space.num_total_basis == 6
         assert isinstance(space.num_total_basis, int)
 
     def test_num_intervals(self) -> None:
@@ -154,7 +154,7 @@ class TestBsplineSpaceProperties:
         space_1d_2 = BsplineSpace1D(knots2, 2)
         space = BsplineSpace([space_1d_1, space_1d_2])
 
-        assert space.num_total_intervals == 4  # noqa: PLR2004
+        assert space.num_total_intervals == 4
         assert isinstance(space.num_total_intervals, int)
 
     def test_domain(self) -> None:

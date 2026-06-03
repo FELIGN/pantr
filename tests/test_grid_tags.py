@@ -49,7 +49,7 @@ def test_cell_tags_membership_and_names() -> None:
     assert "a" in tags
     assert "c" not in tags
     assert set(tags.names) == {"a", "b"}
-    assert len(tags) == 2  # noqa: PLR2004
+    assert len(tags) == 2
     assert set(iter(tags)) == {"a", "b"}
 
 
@@ -79,7 +79,7 @@ def test_cell_tags_values_are_read_only() -> None:
 def test_cell_tags_validation() -> None:
     """Out-of-range ids, duplicates, length mismatch, and bad dtype are rejected."""
     tags = CellTags(num_cells=5)
-    with pytest.raises(ValueError, match="in range|in \\[0"):
+    with pytest.raises(ValueError, match=r"in range|in \[0"):
         tags.set("a", [5], 1)  # id == num_cells out of range
     with pytest.raises(ValueError, match="unique"):
         tags.set("a", [1, 1], 1)
@@ -133,7 +133,7 @@ def test_facet_tags_membership() -> None:
     assert "a" in tags
     assert tags.names == ("a",)
     assert len(tags) == 1
-    assert tags.facets_per_cell == 4  # noqa: PLR2004
+    assert tags.facets_per_cell == 4
     tags.remove("a")
     assert "a" not in tags
 
@@ -157,6 +157,85 @@ def test_grid_cell_tags_round_trip() -> None:
     g.cell_tags.set("location", cut, 2)
     dense = g.cell_tags.to_dense("location", fill=0)
     assert dense.shape == (g.num_cells,)
-    assert dense[cut[0]] == 2  # noqa: PLR2004
-    assert dense[cut[1]] == 2  # noqa: PLR2004
-    assert int(np.count_nonzero(dense)) == 2  # noqa: PLR2004
+    assert dense[cut[0]] == 2
+    assert dense[cut[1]] == 2
+    assert int(np.count_nonzero(dense)) == 2
+
+
+def test_cell_tags_to_dense_missing_key_raises() -> None:
+    """to_dense raises KeyError for an unregistered tag name."""
+    tags = CellTags(num_cells=4)
+    with pytest.raises(KeyError):
+        tags.to_dense("nonexistent")
+
+
+def test_cell_tags_to_dense_custom_dtype() -> None:
+    """to_dense respects a caller-supplied integer dtype."""
+    tags = CellTags(num_cells=4)
+    tags.set("m", [0, 2], [1, 2])
+    dense = tags.to_dense("m", dtype=np.int32)
+    assert dense.dtype == np.int32
+    assert dense.tolist() == [1, 0, 2, 0]
+
+
+def test_cell_tags_to_dense_float_dtype_raises() -> None:
+    """to_dense rejects non-integer dtypes."""
+    tags = CellTags(num_cells=4)
+    tags.set("m", [0], [1])
+    with pytest.raises(TypeError, match="integer"):
+        tags.to_dense("m", dtype=np.float64)
+
+
+def test_cell_tags_empty_set() -> None:
+    """Setting an empty tag is valid; to_dense returns the fill value everywhere."""
+    tags = CellTags(num_cells=4)
+    tags.set("empty", np.array([], dtype=np.int64), 0)
+    dense = tags.to_dense("empty", fill=7)
+    assert dense.tolist() == [7, 7, 7, 7]
+
+
+def test_facet_tags_empty_set() -> None:
+    """Setting an empty facet tag is valid."""
+    tags = FacetTags(num_cells=4, facets_per_cell=4)
+    tags.set("none", np.zeros((0, 2), dtype=np.int64), np.zeros(0, dtype=np.int64))
+    keys, values = tags["none"]
+    assert keys.shape == (0, 2)
+    assert values.shape == (0,)
+
+
+def test_facet_tags_to_dense() -> None:
+    """to_dense scatters a facet tag into a (num_cells, facets_per_cell) array."""
+    tags = FacetTags(num_cells=3, facets_per_cell=4)
+    tags.set("bc", [[0, 0], [2, 3]], [1, 2])
+    dense = tags.to_dense("bc", fill=0)
+    assert dense.shape == (3, 4)
+    assert dense[0, 0] == 1
+    assert dense[2, 3] == 2
+    assert int(np.count_nonzero(dense)) == 2
+
+
+def test_facet_tags_to_dense_float_dtype_raises() -> None:
+    """FacetTags.to_dense rejects non-integer dtypes."""
+    tags = FacetTags(num_cells=2, facets_per_cell=4)
+    tags.set("a", [[0, 0]], [1])
+    with pytest.raises(TypeError, match="integer"):
+        tags.to_dense("a", dtype=np.float32)
+
+
+def test_cell_tags_to_dense_overflow_raises() -> None:
+    """to_dense raises OverflowError when a narrow dtype cannot hold a stored value."""
+    tags = CellTags(num_cells=4)
+    tags.set("m", [0, 1], [200, 1])  # 200 does not fit in int8 (-128..127)
+    with pytest.raises(OverflowError, match="truncation"):
+        tags.to_dense("m", dtype=np.int8)
+    # int16 range is -32768..32767; 200 fits fine.
+    dense = tags.to_dense("m", dtype=np.int16)
+    assert dense.tolist() == [200, 1, 0, 0]
+
+
+def test_facet_tags_to_dense_overflow_raises() -> None:
+    """FacetTags.to_dense raises OverflowError when a narrow dtype cannot hold a value."""
+    tags = FacetTags(num_cells=2, facets_per_cell=4)
+    tags.set("bc", [[0, 0]], [200])
+    with pytest.raises(OverflowError, match="truncation"):
+        tags.to_dense("bc", dtype=np.int8)

@@ -224,7 +224,7 @@ class TestInterpolateCallableLattice:
 
         def func(lat: PointsLattice) -> npt.NDArray[np.floating[Any]]:
             assert isinstance(lat, PointsLattice)
-            assert lat.dim == 2  # noqa: PLR2004
+            assert lat.dim == 2
             pts = lat.get_all_points()
             return pts[:, 0] + pts[:, 1]
 

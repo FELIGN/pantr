@@ -143,9 +143,9 @@ class TestTanhSinhIntegration:
         """Integration of exp(x) on [0,1] converges with increasing n."""
         approx = self._integrate(n_pts, np.exp)
         exact = np.e - 1.0
-        if n_pts >= 50:  # noqa: PLR2004
+        if n_pts >= 50:
             nptest.assert_allclose(approx, exact, rtol=1e-14)
-        elif n_pts >= 20:  # noqa: PLR2004
+        elif n_pts >= 20:
             nptest.assert_allclose(approx, exact, rtol=1e-9)
         else:
             nptest.assert_allclose(approx, exact, rtol=1e-5)

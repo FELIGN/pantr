@@ -19,7 +19,7 @@ class TestRevolve:
         """Test revolving a radial line produces a full annulus."""
         crv = create_line([1, 0, 0], [2, 0, 0])
         srf = revolve(crv, point=0, axis=2)
-        assert srf.dim == 2  # noqa: PLR2004
+        assert srf.dim == 2
         assert srf.is_rational
 
     def test_revolve_points_on_cylinder(self) -> None:
@@ -111,7 +111,7 @@ class TestSweep:
         section = create_line([0, 0, 0], [1, 0, 0])
         trajectory = create_line([0, 0, 0], [0, 1, 0])
         srf = sweep(section, trajectory)
-        assert srf.dim == 2  # noqa: PLR2004
+        assert srf.dim == 2
         assert srf.rank == _RANK_3D
         # Evaluate corners
         pts = srf.evaluate(

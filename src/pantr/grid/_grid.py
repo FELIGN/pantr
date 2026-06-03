@@ -348,6 +348,30 @@ class Grid(abc.ABC):
         """
         return self.neighbor_across_facet(cid, lfid) is None
 
+    def hanging_neighbors(self, cid: int, lfid: int) -> tuple[int, ...]:
+        """Return all active cells sharing facet ``lfid`` of ``cid``.
+
+        For conforming grids (flat :class:`TensorProductGrid`) this is
+        equivalent to :meth:`neighbor_across_facet` wrapped in a tuple.  For
+        hierarchical grids, a single coarse face may abut multiple fine cells
+        (hanging nodes); this method returns all of them.
+
+        Subclasses with hanging-node support should override this method.
+
+        Args:
+            cid (int): Cell identifier.
+            lfid (int): Local facet identifier in ``[0, num_local_facets(cid))``.
+
+        Returns:
+            tuple[int, ...]: All neighbouring cell ids across the facet;
+            empty when the facet lies on the grid's outer boundary.
+
+        Raises:
+            IndexError: If ``cid`` or ``lfid`` is out of range.
+        """
+        nbr = self.neighbor_across_facet(cid, lfid)
+        return () if nbr is None else (nbr,)
+
     # ------------------------------------------------------------------
     # Point location and spatial queries
     # ------------------------------------------------------------------
@@ -380,8 +404,9 @@ class Grid(abc.ABC):
         """Return the ids of every cell whose AABB overlaps ``aabb``.
 
         Backed by a :class:`pantr.grid.BVH` over the grid's cell AABBs, built
-        lazily on first call and cached for the grid's lifetime. Cells touching
-        ``aabb`` on a shared face are included.
+        lazily on first call and cached for the grid's lifetime. The overlap test
+        is inclusive on every axis, so cells touching ``aabb`` on any face, edge,
+        or corner are included.
 
         Args:
             aabb (AABB): Query box; must match :attr:`ndim`.
@@ -404,6 +429,15 @@ class Grid(abc.ABC):
 
         Returns:
             BVH: The grid's spatial index over its cell AABBs.
+
+        Warning:
+            Not fully thread-safe. Under CPython (with the GIL), concurrent
+            first calls may each build a valid :class:`BVH` and the second write
+            silently wins — the only cost is redundant construction. Under
+            free-threaded Python 3.13+ (``--disable-gil``) the assignment is not
+            atomic and a concurrent caller could observe a partially-written
+            reference. Call this method once on the main thread before sharing
+            the grid across threads.
         """
         from ._bvh import BVH  # noqa: PLC0415
 

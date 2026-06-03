@@ -346,7 +346,7 @@ class TestOptimalContinuity2D:
         for d in range(2):
             bp, mults = _get_interior_mults(h.space.spaces[d])
             assert len(bp) == 1
-            assert int(mults[0]) == 3  # noqa: PLR2004
+            assert int(mults[0]) == 3
             np.testing.assert_allclose(bp[0], 0.5, atol=1e-12)
 
         # Fewer basis than full-Bezier: optimal has 8 per dir, full-Bezier has 9.
@@ -377,12 +377,12 @@ class TestOptimalContinuity2D:
         # u-direction: mult = max(2+2, 1+2) = 4 (C^0)
         bp_u, mults_u = _get_interior_mults(h.space.spaces[0])
         assert len(bp_u) == 1
-        assert int(mults_u[0]) == 4  # noqa: PLR2004
+        assert int(mults_u[0]) == 4
 
         # v-direction: mult = max(1+2, 1+2) = 3 (C^1)
         bp_v, mults_v = _get_interior_mults(h.space.spaces[1])
         assert len(bp_v) == 1
-        assert int(mults_v[0]) == 3  # noqa: PLR2004
+        assert int(mults_v[0]) == 3
 
         _eval_2d_product(f, g, h)
 
@@ -414,12 +414,12 @@ class TestOptimalContinuity2D:
         # u-direction: max(1+3, 1+2) = 4, less than full-Bezier = 5
         bp_u, mults_u = _get_interior_mults(h.space.spaces[0])
         assert len(bp_u) == 1
-        assert int(mults_u[0]) == 4  # noqa: PLR2004
+        assert int(mults_u[0]) == 4
 
         # v-direction: max(1+2, 1+3) = 4, less than full-Bezier = 5
         bp_v, mults_v = _get_interior_mults(h.space.spaces[1])
         assert len(bp_v) == 1
-        assert int(mults_v[0]) == 4  # noqa: PLR2004
+        assert int(mults_v[0]) == 4
 
         _eval_2d_product(f, g, h)
 
@@ -446,12 +446,12 @@ class TestOptimalContinuity2D:
 
         # u-direction: 2 breakpoints, each with optimal mult 3 < full-Bezier 4.
         bp_u, mults_u = _get_interior_mults(h.space.spaces[0])
-        assert len(bp_u) == 2  # noqa: PLR2004
+        assert len(bp_u) == 2
         np.testing.assert_array_equal(mults_u, [3, 3])
 
         # v-direction: 3 breakpoints, each with optimal mult 3 < full-Bezier 4.
         bp_v, mults_v = _get_interior_mults(h.space.spaces[1])
-        assert len(bp_v) == 3  # noqa: PLR2004
+        assert len(bp_v) == 3
         np.testing.assert_array_equal(mults_v, [3, 3, 3])
 
         _eval_2d_product(f, g, h)
@@ -475,7 +475,7 @@ class TestOptimalContinuity2D:
 
         # Full-Bezier: degree 4, 2 elements per dir -> 9 basis per dir.
         # Optimal: interior mult 3 -> 8 basis per dir.
-        assert h.space.num_total_basis == 64  # noqa: PLR2004
+        assert h.space.num_total_basis == 64
         assert h.space.num_basis == (8, 8)
 
         _eval_2d_product(f, g, h)

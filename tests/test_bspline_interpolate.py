@@ -82,7 +82,7 @@ class TestGrevilleLattice:
         space = create_uniform_space([2, 3], [3, 4])
         lat = create_greville_lattice(space)
         assert isinstance(lat, PointsLattice)
-        assert lat.dim == 2  # noqa: PLR2004
+        assert lat.dim == 2
         assert lat.pts_per_dir[0].shape[0] == space.num_basis[0]
         assert lat.pts_per_dir[1].shape[0] == space.num_basis[1]
 
@@ -104,7 +104,7 @@ class TestCreateUniformSpace:
     def test_2d_list_args(self) -> None:
         """Sequence arguments create an nD space."""
         space = create_uniform_space([2, 3], [4, 5])
-        assert space.dim == 2  # noqa: PLR2004
+        assert space.dim == 2
         assert space.degrees == (2, 3)
 
     def test_periodic(self) -> None:
@@ -128,17 +128,17 @@ class TestCreateUniformSpace:
     def test_periodic_tuple_infers_ndim(self) -> None:
         """A tuple periodic=(True, False) correctly infers ndim=2."""
         space = create_uniform_space([2, 2], [3, 3], periodic=(True, False))
-        assert space.dim == 2  # noqa: PLR2004
+        assert space.dim == 2
         assert space.spaces[0].periodic is True
         assert space.spaces[1].periodic is False
 
     def test_tuple_degree_infers_ndim(self) -> None:
         """A tuple degree=(3, 4) with scalar num_intervals infers ndim=2."""
         space = create_uniform_space(degree=(3, 4), num_intervals=4)
-        assert space.dim == 2  # noqa: PLR2004
+        assert space.dim == 2
         assert space.degrees == (3, 4)
-        assert space.spaces[0].degree == 3  # noqa: PLR2004
-        assert space.spaces[1].degree == 4  # noqa: PLR2004
+        assert space.spaces[0].degree == 3
+        assert space.spaces[1].degree == 4
 
     def test_inconsistent_lengths_raises(self) -> None:
         """Inconsistent sequence lengths raise ValueError."""
@@ -214,7 +214,7 @@ class TestInterpolate1DVector:
             return np.stack([np.cos(t), np.sin(t)], axis=-1)
 
         b = interpolate_bspline(quarter_circle, space)
-        assert b.rank == 2  # noqa: PLR2004
+        assert b.rank == 2
 
         pts = np.linspace(0, np.pi / 2, 21)
         vals = b.evaluate(pts)
@@ -330,7 +330,7 @@ class TestFitTensorProduct:
         nodes = get_greville_abscissae(space.spaces[0])
         vals = np.stack([nodes**2, nodes**3], axis=-1)
         b = fit_bspline(vals, [nodes], space)
-        assert b.rank == 2  # noqa: PLR2004
+        assert b.rank == 2
 
         pts = np.linspace(0, 1, 11)
         result = b.evaluate(pts)
@@ -406,7 +406,7 @@ class TestL2Project:
             return np.stack([x**2, x**3], axis=-1)
 
         b = l2_project_bspline(func, space, boundary_interpolation=True)
-        assert b.rank == 2  # noqa: PLR2004
+        assert b.rank == 2
         endpoints = np.array([0.0, 1.0])
         vals = b.evaluate(endpoints)
         expected = np.array([[0.0, 0.0], [1.0, 1.0]])

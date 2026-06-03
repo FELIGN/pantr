@@ -50,7 +50,7 @@ class TestBsplineSpace1DInit:
         degree = 2
         spline = BsplineSpace1D(knots, degree)
 
-        assert spline.degree == 2  # noqa: PLR2004
+        assert spline.degree == 2
         assert spline.periodic is False
         np.testing.assert_array_equal(spline.knots, np.array(knots))
 
@@ -70,7 +70,7 @@ class TestBsplineSpace1DInit:
         degree = 2
         spline = BsplineSpace1D(knots, degree, periodic=True)
 
-        assert spline.degree == 2  # noqa: PLR2004
+        assert spline.degree == 2
         assert spline.periodic is True
 
     def test_integer_knots_conversion(self) -> None:
@@ -189,7 +189,7 @@ class TestBsplineSpace1DMethods:
         knots = [0.0, 0.0, 0.0, 1.0, 1.0, 1.0]
         degree = 2
         spline = BsplineSpace1D(knots, degree)
-        assert spline.num_basis == 3  # noqa: PLR2004
+        assert spline.num_basis == 3
 
     def test_get_num_basis_periodic(self) -> None:
         """Test get_num_basis for periodic spline."""
@@ -197,7 +197,7 @@ class TestBsplineSpace1DMethods:
         knots = create_uniform_periodic_knots(num_intervals=3, degree=degree, domain=(0.0, 1.0))
         spline = BsplineSpace1D(knots, degree, periodic=True)
         # For periodic splines, the number of basis functions is reduced
-        assert spline.num_basis == 3  # noqa: PLR2004
+        assert spline.num_basis == 3
 
     def test_get_unique_knots_and_multiplicity_full(self) -> None:
         """Test _get_unique_knots_and_multiplicity for full knot vector."""
@@ -490,7 +490,7 @@ class TestGetMultiplicityOfFirstKnotInDomain:
         tol = 1e-10
         result = _get_multiplicity_of_first_knot_in_domain_impl(knots, degree, tol)
         # First knot in domain (index 2) has multiplicity 3
-        assert result == 3  # noqa: PLR2004
+        assert result == 3
 
     def test_periodic_knot_vector(self) -> None:
         """Test multiplicity calculation for periodic knot vector."""
@@ -586,7 +586,7 @@ class TestComputeNumBasis:
         tol = 1e-10
         result = _get_Bspline_num_basis_1D_impl(knots, degree, periodic, tol)
         # knots.size - degree - 1 = 6 - 2 - 1 = 3
-        assert result == 3  # noqa: PLR2004
+        assert result == 3
 
     def test_periodic_knot_vector(self) -> None:
         """Test basis count for periodic knot vector."""
@@ -600,7 +600,7 @@ class TestComputeNumBasis:
         # multiplicity_of_first_knot_in_domain = 1
         # regularity = 2 - 1 = 1
         # num_basis = 7 - 2 - 1 - 1 - 1 = 2
-        assert result == 2  # noqa: PLR2004
+        assert result == 2
 
 
 class TestGetLastKnotSmallerEqual:

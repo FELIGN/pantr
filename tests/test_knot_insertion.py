@@ -87,17 +87,17 @@ class TestBsplineSpace1DInsertKnots:
         # [0,0,0,0.5,1,1,1]: interior knot 0.5 has multiplicity 1; inserting once more → 2
         space = BsplineSpace1D([0, 0, 0, 0.5, 1, 1, 1], 2)
         new_space = space.insert_knots([0.5])
-        assert np.sum(np.isclose(new_space.knots, 0.5)) == 2  # noqa: PLR2004
+        assert np.sum(np.isclose(new_space.knots, 0.5)) == 2
         # Inserting 0.5 once more reaches the maximum multiplicity degree+1=3.
         new_space2 = new_space.insert_knots([0.5])
-        assert np.sum(np.isclose(new_space2.knots, 0.5)) == 3  # noqa: PLR2004
+        assert np.sum(np.isclose(new_space2.knots, 0.5)) == 3
 
     def test_insert_repeated_knots_in_one_call(self) -> None:
         """Inserting [0.5, 0.5] in one call raises multiplicity from 1 to degree+1=3."""
         # degree=2, so max multiplicity = 3; starting from 1, insert [0.5, 0.5] → 3
         space = BsplineSpace1D([0, 0, 0, 0.5, 1, 1, 1], 2)
         new_space = space.insert_knots([0.5, 0.5])
-        assert np.sum(np.isclose(new_space.knots, 0.5)) == 3  # noqa: PLR2004
+        assert np.sum(np.isclose(new_space.knots, 0.5)) == 3
 
     def test_insert_out_of_domain_raises(self) -> None:
         """Values outside the domain raise ValueError."""
@@ -168,14 +168,14 @@ class TestBsplineSpace1DSubdivide:
         # degree=2, regularity=0 → repeat=2
         space = BsplineSpace1D([0, 0, 0, 1, 1, 1], 2)
         new_space = space.subdivide(2, regularity=0)
-        assert np.sum(np.isclose(new_space.knots, 0.5)) == 2  # noqa: PLR2004
+        assert np.sum(np.isclose(new_space.knots, 0.5)) == 2
 
     def test_subdivide_regularity_minus1_gives_multiplicity_degree_plus1(self) -> None:
         """regularity=-1 inserts each knot degree+1 times (discontinuous, C^{-1})."""
         # degree=2, regularity=-1 → repeat=3
         space = BsplineSpace1D([0, 0, 0, 1, 1, 1], 2)
         new_space = space.subdivide(2, regularity=-1)
-        assert np.sum(np.isclose(new_space.knots, 0.5)) == 3  # noqa: PLR2004
+        assert np.sum(np.isclose(new_space.knots, 0.5)) == 3
 
     def test_subdivide_regularity_out_of_range_raises(self) -> None:
         """Regularity outside [-1, degree-1] raises ValueError."""
@@ -247,7 +247,7 @@ class TestBsplineInsertKnots1DNonRational:
         )
         new_bs = bspline.insert_knots([0.5])
         knots = new_bs.space.spaces[0].knots
-        assert np.sum(np.isclose(knots, 0.5)) == 2  # noqa: PLR2004
+        assert np.sum(np.isclose(knots, 0.5)) == 2
 
     def test_1d_repeated_knots_in_one_call_reaches_max_multiplicity(self) -> None:
         """Inserting [0.5, 0.5] in one call raises multiplicity from 1 to degree+1=3."""
@@ -258,7 +258,7 @@ class TestBsplineInsertKnots1DNonRational:
         )
         new_bs = bspline.insert_knots([0.5, 0.5])
         knots = new_bs.space.spaces[0].knots
-        assert np.sum(np.isclose(knots, 0.5)) == 3  # noqa: PLR2004
+        assert np.sum(np.isclose(knots, 0.5)) == 3
 
 
 # ---------------------------------------------------------------------------
@@ -407,7 +407,7 @@ class TestBsplineSubdivide1D:
         bspline = _make_1d_bspline([0, 0, 0, 1, 1, 1], 2, [[0, 0], [0.5, 1], [1, 0]])
         new_bs = bspline.subdivide(2, regularity=0)
         knots = new_bs.space.spaces[0].knots
-        assert np.sum(np.isclose(knots, 0.5)) == 2  # noqa: PLR2004
+        assert np.sum(np.isclose(knots, 0.5)) == 2
 
     def test_subdivide_regularity_minus1_gives_discontinuous(self) -> None:
         """regularity=-1 inserts each new knot degree+1 times (C^{-1}, discontinuous)."""
@@ -415,7 +415,7 @@ class TestBsplineSubdivide1D:
         bspline = _make_1d_bspline([0, 0, 0, 1, 1, 1], 2, [[0, 0], [0.5, 1], [1, 0]])
         new_bs = bspline.subdivide(2, regularity=-1)
         knots = new_bs.space.spaces[0].knots
-        assert np.sum(np.isclose(knots, 0.5)) == 3  # noqa: PLR2004
+        assert np.sum(np.isclose(knots, 0.5)) == 3
 
     def test_subdivide_regularity_out_of_range_raises(self) -> None:
         """Regularity outside valid range raises ValueError."""
@@ -498,9 +498,9 @@ class TestBsplineSubdivideMultiDim:
         knots_u = new_bs.space.spaces[0].knots
         knots_v = new_bs.space.spaces[1].knots
         # u: domain [0,2], midpoint 0.5 and 1.5 should appear twice each
-        assert np.sum(np.isclose(knots_u, 0.5)) == 2  # noqa: PLR2004
+        assert np.sum(np.isclose(knots_u, 0.5)) == 2
         # v: domain [0,1], midpoint 0.5 should appear twice
-        assert np.sum(np.isclose(knots_v, 0.5)) == 2  # noqa: PLR2004
+        assert np.sum(np.isclose(knots_v, 0.5)) == 2
 
         _, old_vals = _eval_pts_2d(bspline)
         _, new_vals = _eval_pts_2d(new_bs)

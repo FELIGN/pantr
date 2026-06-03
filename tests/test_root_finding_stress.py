@@ -84,7 +84,7 @@ def _make_double_root_coeff(
     Constructs (t - r)^2 * q(t) in Bernstein form by multiplying
     Bernstein representations.
     """
-    if degree < 2:  # noqa: PLR2004
+    if degree < 2:
         return _make_random_coeff(rng, degree)
 
     from pantr.bezier._bezier_core import (  # noqa: PLC0415
@@ -133,7 +133,7 @@ def _find_roots_yuksel(
     tol: float = 1e-12,
 ) -> npt.NDArray[np.float64]:
     """Run Yuksel root finder and return sorted roots."""
-    if len(coeff) < 2 or np.all(np.abs(coeff) <= tol):  # noqa: PLR2004
+    if len(coeff) < 2 or np.all(np.abs(coeff) <= tol):
         return np.empty(0, dtype=np.float64)
     roots, count = _yuksel_roots(coeff, tol)
     if count == 0:
@@ -146,7 +146,7 @@ def _find_roots_clipping(
     tol: float = 1e-12,
 ) -> npt.NDArray[np.float64]:
     """Run Bezier clipping root finder and return sorted, deduped roots."""
-    if len(coeff) < 2 or np.all(np.abs(coeff) <= tol):  # noqa: PLR2004
+    if len(coeff) < 2 or np.all(np.abs(coeff) <= tol):
         return np.empty(0, dtype=np.float64)
     raw, count = _clip_roots_core(coeff, tol, tol)
     return _dedup_roots(raw, count, coeff, tol, tol)

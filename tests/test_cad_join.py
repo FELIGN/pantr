@@ -58,7 +58,7 @@ class TestJoinSurfaces:
         s1 = create_bilinear(corners1)
         s2 = create_bilinear(corners2)
         result = join(s1, s2, axis=0)
-        assert result.dim == 2  # noqa: PLR2004
+        assert result.dim == 2
         domain_u = result.space.spaces[0].domain
         u_end = float(domain_u[1])
         pts = result.evaluate(

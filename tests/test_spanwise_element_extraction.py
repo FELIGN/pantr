@@ -109,10 +109,10 @@ def test_per_direction_shapes(target: str) -> None:
     """``ops_1d`` and identity masks match the space's per-direction sizes."""
     sp = _space_2d()
     ext = SpanwiseElementExtraction(sp, target)  # type: ignore[arg-type]
-    assert ext.dim == 2  # noqa: PLR2004
+    assert ext.dim == 2
     assert ext.num_intervals == (6, 6)
-    assert ext.num_total_intervals == 36  # noqa: PLR2004
-    assert len(ext.ops_1d) == 2  # noqa: PLR2004
+    assert ext.num_total_intervals == 36
+    assert len(ext.ops_1d) == 2
     for ops in ext.ops_1d:
         assert ops.shape == (6, 3, 3)
         assert ops.dtype == ext.dtype
@@ -1274,7 +1274,7 @@ def test_struct_view_fields_match_extraction(space_factory: Any, target: str) ->
         assert not view.idx_maps_1d[k].flags.writeable
         assert not view.is_identity_mask_1d[k].flags.writeable
         # Shape invariants inherited from the extraction
-        assert view.compact_ops_1d[k].ndim == 3  # noqa: PLR2004
+        assert view.compact_ops_1d[k].ndim == 3
         assert view.compact_ops_1d[k].dtype == ext.dtype
         assert view.idx_maps_1d[k].shape == (ext.num_intervals[k],)
         assert view.is_identity_mask_1d[k].shape == (ext.num_intervals[k],)

@@ -20,7 +20,7 @@ def test_aabb_basic_construction() -> None:
     b = AABB(lo=[0.0, 0.0, 0.0], hi=[1.0, 2.0, 3.0])
     np.testing.assert_array_equal(b.lo, [0.0, 0.0, 0.0])
     np.testing.assert_array_equal(b.hi, [1.0, 2.0, 3.0])
-    assert b.ndim == 3  # noqa: PLR2004
+    assert b.ndim == 3
     assert b.is_empty() is False
 
 
@@ -32,7 +32,7 @@ def test_aabb_rejects_mismatched_shapes() -> None:
 def test_aabb_allows_general_ndim() -> None:
     # PaNTr is general-d: a 4-D box is valid (ocelat capped this at 2/3).
     b = AABB(lo=[0.0, 0.0, 0.0, 0.0], hi=[1.0, 1.0, 1.0, 1.0])
-    assert b.ndim == 4  # noqa: PLR2004
+    assert b.ndim == 4
     assert not b.is_empty()
 
 
@@ -195,7 +195,7 @@ def test_aabb_unbounded() -> None:
 def test_aabb_unbounded_allows_high_ndim() -> None:
     # General-d: unbounded works for ndim > 3 (ocelat rejected this).
     u = AABB.unbounded(5)
-    assert u.ndim == 5  # noqa: PLR2004
+    assert u.ndim == 5
 
 
 def test_aabb_unbounded_rejects_ndim_zero() -> None:
@@ -237,7 +237,7 @@ def test_aabb_equality_and_hash() -> None:
 def test_aabb_empty_factory() -> None:
     e = AABB.empty(3)
     assert e.is_empty()
-    assert e.ndim == 3  # noqa: PLR2004
+    assert e.ndim == 3
     np.testing.assert_array_equal(e.lo, [np.inf, np.inf, np.inf])
     np.testing.assert_array_equal(e.hi, [-np.inf, -np.inf, -np.inf])
 
@@ -265,7 +265,7 @@ def test_aabb_rejects_nan_in_hi() -> None:
 def test_aabb_ravel_input() -> None:
     # Any-rank input is ravelled; a (1, 3) array works the same as [lo0, lo1, lo2].
     b = AABB(lo=[[0.0, 0.0, 0.0]], hi=[[1.0, 2.0, 3.0]])
-    assert b.ndim == 3  # noqa: PLR2004
+    assert b.ndim == 3
     np.testing.assert_array_equal(b.lo, [0.0, 0.0, 0.0])
 
 

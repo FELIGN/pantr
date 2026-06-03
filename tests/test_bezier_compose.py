@@ -33,14 +33,14 @@ def _identity_bezier(dim: int) -> Bezier:
     """
     if dim == 1:
         return Bezier(np.array([[0.0], [1.0]]))
-    if dim == 2:  # noqa: PLR2004
+    if dim == 2:
         ctrl: npt.NDArray[np.float64] = np.zeros((2, 2, 2))
         for i in range(2):
             for j in range(2):
                 ctrl[i, j, 0] = float(i)
                 ctrl[i, j, 1] = float(j)
         return Bezier(ctrl)
-    if dim == 3:  # noqa: PLR2004
+    if dim == 3:
         ctrl = np.zeros((2, 2, 2, 3))
         for i in range(2):
             for j in range(2):
@@ -90,7 +90,7 @@ class TestCompose1Dto1D:
 
         assert h.dim == 1
         assert h.degree == (2,)
-        assert h.rank == 2  # noqa: PLR2004
+        assert h.rank == 2
         _verify_composition(f, g, h)
 
     def test_quadratic_with_quadratic(self) -> None:
@@ -137,7 +137,7 @@ class TestComposeNDto1D:
 
         assert h.dim == 1
         assert h.degree == (10,)  # (2+3) * 2
-        assert h.rank == 2  # noqa: PLR2004
+        assert h.rank == 2
         _verify_composition(surface, curve, h)
 
     def test_volume_with_curve(self) -> None:
@@ -148,7 +148,7 @@ class TestComposeNDto1D:
 
         assert h.dim == 1
         assert h.degree == (12,)  # (2+2+2) * 2
-        assert h.rank == 2  # noqa: PLR2004
+        assert h.rank == 2
         _verify_composition(volume, curve, h)
 
     def test_surface_with_linear_curve(self) -> None:
@@ -175,9 +175,9 @@ class TestComposeNDto2D:
         inner = _random_bezier((2, 2), 2, rng=np.random.default_rng(41))
         h = surface.compose(inner)
 
-        assert h.dim == 2  # noqa: PLR2004
+        assert h.dim == 2
         assert h.degree == (10, 10)  # (2+3)*2, (2+3)*2
-        assert h.rank == 2  # noqa: PLR2004
+        assert h.rank == 2
         _verify_composition(surface, inner, h)
 
     def test_volume_with_surface(self) -> None:
@@ -186,9 +186,9 @@ class TestComposeNDto2D:
         inner = _random_bezier((2, 2), 3, rng=np.random.default_rng(51))
         h = volume.compose(inner)
 
-        assert h.dim == 2  # noqa: PLR2004
+        assert h.dim == 2
         assert h.degree == (12, 12)  # (2+2+2)*2, (2+2+2)*2
-        assert h.rank == 2  # noqa: PLR2004
+        assert h.rank == 2
         _verify_composition(volume, inner, h)
 
 
@@ -206,9 +206,9 @@ class TestComposeNDto3D:
         inner = _random_bezier((1, 1, 1), 3, rng=np.random.default_rng(61))
         h = volume.compose(inner)
 
-        assert h.dim == 3  # noqa: PLR2004
+        assert h.dim == 3
         assert h.degree == (6, 6, 6)  # (2+2+2)*1
-        assert h.rank == 2  # noqa: PLR2004
+        assert h.rank == 2
         _verify_composition(volume, inner, h)
 
 
@@ -316,7 +316,7 @@ class TestComposeEdgeCases:
         assert inner.degree == (1, 0)
         h = surface.compose(inner)
 
-        assert h.dim == 2  # noqa: PLR2004
+        assert h.dim == 2
         assert h.degree == (5, 0)  # (2+3)*1, (2+3)*0
         _verify_composition(surface, inner, h)
 

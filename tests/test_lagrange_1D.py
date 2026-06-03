@@ -34,7 +34,7 @@ def _lagrange_nodes(
         )
         nodes = legroots_t(coefs64)
     elif variant == LagrangeVariant.GAUSS_LOBATTO_LEGENDRE:
-        if n_pts == 2:  # noqa: PLR2004
+        if n_pts == 2:
             nodes = np.array([-1.0, 1.0], dtype=target_dtype)
         else:
             basis_t = cast("Callable[[int], Any]", legendre.Legendre.basis)

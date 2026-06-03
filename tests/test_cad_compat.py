@@ -144,7 +144,7 @@ class TestCompatKnotMerge:
         assert_allclose(knots1, knots2)
         # 0.5 should appear with multiplicity 2
         count_05 = np.sum(np.abs(knots1 - 0.5) < _KNOT_TOL)
-        assert count_05 == 2  # noqa: PLR2004
+        assert count_05 == 2
 
 
 class TestCompatSurface:
@@ -156,10 +156,10 @@ class TestCompatSurface:
         s2 = _make_surface([0, 0, 0, 1, 1, 1], 2, [0, 0, 0, 1, 1, 1], 2)
         r1, r2 = make_compat(s1, s2, axes=0)
         # Axis 0 should be elevated to degree 2
-        assert r1.degree[0] == 2  # noqa: PLR2004
-        assert r2.degree[0] == 2  # noqa: PLR2004
+        assert r1.degree[0] == 2
+        assert r2.degree[0] == 2
         # Axis 1 should be unchanged for s1
-        assert r1.degree[1] == 2  # noqa: PLR2004
+        assert r1.degree[1] == 2
 
 
 class TestCompatCombined:

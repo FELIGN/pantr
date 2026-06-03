@@ -208,7 +208,7 @@ class TestNonRationalNonOpen1D:
         """Degree decreases by 1."""
         f = _make_nonopen(5, 3)
         f_prime = f.derivative()
-        assert f_prime.space.spaces[0].degree == 2  # noqa: PLR2004
+        assert f_prime.space.spaces[0].degree == 2
 
 
 # ---------------------------------------------------------------------------
@@ -240,7 +240,7 @@ class TestNonRationalPeriodic1D:
         """Degree decreases by 1."""
         f = _make_periodic(5, 3)
         f_prime = f.derivative()
-        assert f_prime.space.spaces[0].degree == 2  # noqa: PLR2004
+        assert f_prime.space.spaces[0].degree == 2
 
     def test_periodic_second_derivative(self) -> None:
         """Composable second derivative of periodic B-spline."""
@@ -284,7 +284,7 @@ class TestNonRationalND:
         f = self._make_2d_surface()
         f_prime = f.derivative(direction=0)
         assert f_prime.space.spaces[0].degree == 1  # was 2
-        assert f_prime.space.spaces[1].degree == 3  # unchanged  # noqa: PLR2004
+        assert f_prime.space.spaces[1].degree == 3  # unchanged
 
     def test_periodic_direction(self) -> None:
         """Periodic in one direction, open in another."""
@@ -301,7 +301,7 @@ class TestNonRationalND:
         f_prime = f.derivative(direction=1)
         assert f_prime.space.spaces[1].periodic
         assert f_prime.space.spaces[1].degree == 1  # p=2 -> p=1
-        assert f_prime.space.spaces[0].degree == 2  # unchanged  # noqa: PLR2004
+        assert f_prime.space.spaces[0].degree == 2  # unchanged
 
 
 # ---------------------------------------------------------------------------
@@ -356,7 +356,7 @@ class TestRational1D:
         ctrl = [[1.0, 0.0, 1.0], [2.0, 4.0, 2.0], [1.5, 3.0, 1.0], [3.0, 1.5, 1.5]]
         f = make_bspline_1d(knots, 2, ctrl, is_rational=True)
         f_prime = f.derivative()
-        assert f_prime.space.spaces[0].degree == 4  # 2 * 2 = 4  # noqa: PLR2004
+        assert f_prime.space.spaces[0].degree == 4  # 2 * 2 = 4
 
 
 # ---------------------------------------------------------------------------
@@ -439,7 +439,7 @@ class TestKeepDegreeNonRational:
         """Degree is preserved in 1D case."""
         f = _make_open(3, 2)
         f_prime = f.derivative(keep_degree=True)
-        assert f_prime.space.spaces[0].degree == 2  # noqa: PLR2004
+        assert f_prime.space.spaces[0].degree == 2
 
     def test_1d_matches_evaluate_derivatives(self) -> None:
         """Values match evaluate_derivatives for 1D open B-spline."""
@@ -470,7 +470,7 @@ class TestKeepDegreeNonRational:
         ctrl = [[0.0, 0.0], [1.0, 2.0], [2.0, 1.0], [3.0, 3.0]]
         f = make_bspline_1d(knots, 2, ctrl)
         f_prime = f.derivative(keep_degree=True)
-        assert f_prime.space.spaces[0].degree == 2  # noqa: PLR2004
+        assert f_prime.space.spaces[0].degree == 2
         pts = eval_pts()
         expected = f.evaluate_derivatives(pts, 1)
         actual = f_prime.evaluate(pts)
@@ -481,7 +481,7 @@ class TestKeepDegreeNonRational:
         f = _make_periodic(4, 3)
         f_prime = f.derivative(keep_degree=True)
         # Degree elevation doesn't support periodic, so result is open.
-        assert f_prime.space.spaces[0].degree == 3  # noqa: PLR2004
+        assert f_prime.space.spaces[0].degree == 3
         assert not f_prime.space.spaces[0].periodic
 
         # Values must still match.
@@ -527,8 +527,8 @@ class TestKeepDegreeNonRational:
         f = Bspline(space, ctrl)
 
         f_prime = f.derivative(direction=0, keep_degree=True)
-        assert f_prime.space.spaces[0].degree == 2  # noqa: PLR2004
-        assert f_prime.space.spaces[1].degree == 3  # unchanged  # noqa: PLR2004
+        assert f_prime.space.spaces[0].degree == 2
+        assert f_prime.space.spaces[1].degree == 3  # unchanged
 
 
 class TestKeepDegreeRational:
@@ -596,9 +596,9 @@ class TestEdgeCases:
 
         # Derivative has degree 2, same interior knot at 0.5 with mult 2.
         space_d = f_prime.space.spaces[0]
-        assert space_d.degree == 2  # noqa: PLR2004
+        assert space_d.degree == 2
         unique, mults = space_d.get_unique_knots_and_multiplicity(in_domain=True)
         # Interior knots (exclude boundaries).
         interior_mask = (unique > 0.0 + 1e-10) & (unique < 1.0 - 1e-10)
         assert np.sum(interior_mask) == 1
-        assert mults[interior_mask][0] == 2  # noqa: PLR2004
+        assert mults[interior_mask][0] == 2

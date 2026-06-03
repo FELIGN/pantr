@@ -73,7 +73,7 @@ class TestBilinear:
     def test_default_bilinear(self) -> None:
         """Test default unit square surface."""
         srf = create_bilinear()
-        assert srf.dim == 2  # noqa: PLR2004
+        assert srf.dim == 2
         assert srf.degree == (1, 1)
         assert srf.rank == _RANK_3D
         assert not srf.is_rational
@@ -260,7 +260,7 @@ class TestCircle:
     def test_full_circle_control_point_count(self) -> None:
         """Test full circle has 9 control points (4 spans)."""
         crv = create_circle()
-        assert crv.control_points.shape[0] == 9  # noqa: PLR2004
+        assert crv.control_points.shape[0] == 9
 
     def test_full_circle_knot_structure(self) -> None:
         """Test full circle knot vector: 4 spans, double interior knots."""
@@ -316,14 +316,14 @@ class TestCircle:
     def test_half_circle_structure(self) -> None:
         """Test arc <= 180 deg has 2 spans, 5 control points, 1 double knot."""
         crv = create_circle(angle=np.pi)
-        assert crv.control_points.shape[0] == 5  # noqa: PLR2004
+        assert crv.control_points.shape[0] == 5
         expected_knots = np.array([0, 0, 0, 0.5, 0.5, 1, 1, 1])
         assert_allclose(crv.space.spaces[0].knots, expected_knots)
 
     def test_three_quarter_arc_structure(self) -> None:
         """Test arc <= 270 deg has 3 spans, 7 control points, 2 double knots."""
         crv = create_circle(angle=3 * np.pi / 2)
-        assert crv.control_points.shape[0] == 7  # noqa: PLR2004
+        assert crv.control_points.shape[0] == 7
 
     def test_arc_points_on_circle(self) -> None:
         """Test that arc points lie on the circle."""
