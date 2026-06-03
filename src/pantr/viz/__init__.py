@@ -16,11 +16,13 @@ Main exports:
 - :class:`Scene`: Composable multi-geometry visualization scene.
 - :func:`control_polygon_mesh`: Control polygon (points + wireframe).
 - :func:`knot_lines_meshes`: Knot line meshes for B-splines.
+- :func:`grid_to_pyvista`: Convert a :class:`pantr.grid.Grid` to an ``UnstructuredGrid``.
 """
 
 from __future__ import annotations
 
 from ._control_points import control_polygon_mesh
+from ._grid import grid_to_pyvista
 from ._knot_lines import knot_lines_meshes
 from ._scene import Scene, plot
 from ._vtk_cells import save, to_pyvista
@@ -28,6 +30,7 @@ from ._vtk_cells import save, to_pyvista
 __all__ = [
     "Scene",
     "control_polygon_mesh",
+    "grid_to_pyvista",
     "knot_lines_meshes",
     "plot",
     "save",

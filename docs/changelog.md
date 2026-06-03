@@ -1,5 +1,22 @@
 # Changelog
 
+## Unreleased
+
+### Added
+- `pantr.grid`: new structured-grid layer. `Grid` is an abstract base class
+  defining the grid contract (cell bounds, point location, facet neighbours)
+  with axis-aligned box defaults for facets, reference maps, neighbour lists,
+  batch point location, and AABB queries. `TensorProductGrid` is a concrete,
+  low-footprint tensor-product grid of axis-aligned boxes with per-axis
+  breakpoints and row-major (C-order) cell ids matching
+  `SpanwiseElementExtraction`. Factories `uniform_grid` and `tensor_product_grid`
+  build a uniform grid and a B-spline knot-span grid respectively. `BVH` is a
+  bounding-volume hierarchy over cell AABBs (lazily built, backing
+  `Grid.query_aabb`), and `CellTags` / `FacetTags` are sparse, dolfinx-style
+  named tag registries for cells and facets.
+- `pantr.viz.grid_to_pyvista`: export a 1-D/2-D/3-D `Grid` to a pyvista
+  `UnstructuredGrid` (lines / quads / hexahedra).
+
 ## 0.4.0 (2026-06-02)
 
 ### Added

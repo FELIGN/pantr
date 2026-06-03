@@ -8,6 +8,7 @@ The main modules are:
 - :mod:`pantr.bspline`: B-spline spaces, geometric objects, and knot vector factories.
 - :mod:`pantr.change_basis`: Transformation matrices between different bases.
 - :mod:`pantr.geometry`: Axis-aligned bounding boxes and geometry primitives.
+- :mod:`pantr.grid`: Structured cell grids (tensor-product, BVH, tags).
 - :mod:`pantr.quad`: Quadrature rules and evaluation grid helpers.
 - :mod:`pantr.tolerance`: Uniform floating-point tolerance utilities.
 - :mod:`pantr.transform`: Affine transformations for geometric objects.
@@ -24,6 +25,7 @@ from . import (
     cad,
     change_basis,
     geometry,
+    grid,
     quad,
     tolerance,
     transform,
@@ -47,6 +49,7 @@ __all__ = [
     "change_basis",
     "geometry",
     "get_num_threads",
+    "grid",
     "num_threads",
     "quad",
     "set_num_threads",

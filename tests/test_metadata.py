@@ -24,6 +24,7 @@ def test_package_all_exports() -> None:
         "change_basis",
         "geometry",
         "get_num_threads",
+        "grid",
         "num_threads",
         "quad",
         "set_num_threads",
