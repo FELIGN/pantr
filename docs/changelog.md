@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.5.1 (2026-06-03)
 
 ### Added
 - `pantr.grid.overlay`: build the coarsest `TensorProductGrid` that refines two
