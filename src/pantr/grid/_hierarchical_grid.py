@@ -472,6 +472,18 @@ class HierarchicalGrid(Grid):
         """
         return int(self._root.cells_per_axis[axis]) * int(self._factor[axis] ** level)
 
+    def _check_level(self, level: int) -> None:
+        """Validate that ``level`` is an existing hierarchy level.
+
+        Args:
+            level (int): Hierarchy level to validate.
+
+        Raises:
+            ValueError: If ``level`` is outside ``[0, max_level]``.
+        """
+        if not (0 <= level <= self.max_level):
+            raise ValueError(f"level must be in [0, {self.max_level}]; got {level!r}.")
+
     # ------------------------------------------------------------------
     # Grid contract
     # ------------------------------------------------------------------
@@ -705,6 +717,109 @@ class HierarchicalGrid(Grid):
         self._check_cid(cid)
         _, midx = self._decode_flat_id(cid)
         return midx
+
+    # ------------------------------------------------------------------
+    # Active-set accessors
+    # ------------------------------------------------------------------
+
+    def level_cells_per_axis(self, level: int) -> tuple[int, ...]:
+        """Return the per-axis cell count of the level-``level`` grid.
+
+        This is a pure formula — ``level`` need not be an existing hierarchy level.
+        Values above ``max_level`` return the count for the hypothetical finer grid
+        that would result from additional uniform subdivision.  This differs from
+        :meth:`active_blocks`, :meth:`active_leaf_mask`, and :meth:`subdomain_mask`,
+        which all require ``level <= max_level``.
+
+        Args:
+            level (int): Hierarchy level.  Must be ``>= 0``; values above
+                ``max_level`` are accepted and return the geometrically valid count.
+
+        Returns:
+            tuple[int, ...]: ``root.cells_per_axis[k] * factor[k] ** level`` for
+            every axis ``k``.
+
+        Raises:
+            ValueError: If ``level < 0``.
+        """
+        if level < 0:
+            raise ValueError(f"level must be >= 0; got {level!r}.")
+        return tuple(self._n_cells_at_level_k(level, k) for k in range(self.ndim))
+
+    def active_blocks(self, level: int) -> tuple[tuple[tuple[int, ...], tuple[int, ...]], ...]:
+        """Return the active-leaf blocks at ``level``.
+
+        Args:
+            level (int): Hierarchy level.  Must be in ``[0, max_level]``.
+
+        Returns:
+            tuple[tuple[tuple[int, ...], tuple[int, ...]], ...]: The sorted,
+            non-overlapping ``(lo, hi)`` integer rectangles of active (leaf) cells
+            at ``level``, in level-``level`` coordinates.
+
+        Raises:
+            ValueError: If ``level`` is outside ``[0, max_level]``.
+        """
+        self._check_level(level)
+        return tuple(self._blocks[level])
+
+    def active_leaf_mask(self, level: int) -> npt.NDArray[np.bool_]:
+        """Return a boolean mask of the active-leaf cells at ``level``.
+
+        Args:
+            level (int): Hierarchy level.  Must be in ``[0, max_level]``.
+
+        Returns:
+            npt.NDArray[bool]: Fresh array of shape
+            ``level_cells_per_axis(level)``; ``True`` where the level-``level``
+            cell ``(level, midx)`` is an active (leaf) cell.
+
+        Raises:
+            ValueError: If ``level`` is outside ``[0, max_level]``.
+        """
+        self._check_level(level)
+        mask = np.zeros(self.level_cells_per_axis(level), dtype=np.bool_)
+        for lo, hi in self._blocks[level]:
+            mask[tuple(slice(lo_k, hi_k) for lo_k, hi_k in zip(lo, hi, strict=False))] = True
+        return mask
+
+    def subdomain_mask(self, level: int) -> npt.NDArray[np.bool_]:
+        r"""Return a boolean mask of the level-``level`` refined subdomain.
+
+        A level-``level`` cell lies in the subdomain :math:`\Omega_{level}` (the
+        region refined to at least ``level``) iff it is **not** covered by an
+        active leaf of a coarser level.  The mask is computed at the level-``level``
+        resolution by projecting every coarser active-leaf block up to ``level`` and
+        clearing those cells.
+
+        Args:
+            level (int): Hierarchy level.  Must be in ``[0, max_level]``.
+
+        Returns:
+            npt.NDArray[bool]: Fresh array of shape
+            ``level_cells_per_axis(level)``; ``True`` where the level-``level``
+            cell lies in :math:`\Omega_{level}`.
+
+        Raises:
+            ValueError: If ``level`` is outside ``[0, max_level]``.
+
+        Note:
+            The mask is sized to the level-``level`` cell grid (computed on demand,
+            never stored).  Block-wise selection is a future optimization for deep
+            hierarchies.
+        """
+        self._check_level(level)
+        mask = np.ones(self.level_cells_per_axis(level), dtype=np.bool_)
+        for m in range(level):
+            scale = tuple(self._factor[k] ** (level - m) for k in range(self.ndim))
+            for lo, hi in self._blocks[m]:
+                mask[
+                    tuple(
+                        slice(lo_k * s, hi_k * s)
+                        for lo_k, hi_k, s in zip(lo, hi, scale, strict=False)
+                    )
+                ] = False
+        return mask
 
     # ------------------------------------------------------------------
     # Refinement

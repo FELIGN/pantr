@@ -18,6 +18,8 @@ This package consolidates the B-spline API:
 - :class:`ExtractionStructView`, :func:`make_struct_view`: Numba-passable
   bundle of a :class:`SpanwiseElementExtraction`'s compact storage for
   downstream ``@njit`` code.
+- :class:`THBSplineSpace`: hierarchical B-spline space (truncated /
+  non-truncated) on a :class:`pantr.grid.HierarchicalGrid`.
 """
 
 from ._bspline import Bspline, create_from_bezier
@@ -32,6 +34,7 @@ from ._bspline_space_factory import (
     get_greville_abscissae,
 )
 from ._bspline_space_nd import BsplineSpace
+from ._thb_spline_space import THBSplineSpace
 from .spanwise_element_extraction import (
     ExtractionStructView,
     SpanwiseElementExtraction,
@@ -44,6 +47,7 @@ __all__ = [
     "BsplineSpace1D",
     "ExtractionStructView",
     "SpanwiseElementExtraction",
+    "THBSplineSpace",
     "create_cardinal_knots",
     "create_from_bezier",
     "create_greville_lattice",

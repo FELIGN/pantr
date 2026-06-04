@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import numpy as np
-import numpy.testing as npt
+import numpy.testing as np_testing
 import pytest
 
 from pantr.geometry import AABB
@@ -171,11 +171,11 @@ class TestHierarchicalGridInitialCells:
         g = _grid_1d(5, 2)
         all_lo = sorted(float(g.cell_bounds(cid)[0][0]) for cid in range(g.num_cells))
         all_hi = sorted(float(g.cell_bounds(cid)[1][0]) for cid in range(g.num_cells))
-        npt.assert_allclose(all_lo[0], 0.0)
-        npt.assert_allclose(all_hi[-1], 1.0)
+        np_testing.assert_allclose(all_lo[0], 0.0)
+        np_testing.assert_allclose(all_hi[-1], 1.0)
         # Adjacent cells tile without gaps or overlaps.
         for lo, hi in zip(all_hi[:-1], all_lo[1:], strict=False):
-            npt.assert_allclose(lo, hi)
+            np_testing.assert_allclose(lo, hi)
 
     def test_cell_level_zero_before_refine(self) -> None:
         g = _grid_2d(3, 2)
@@ -227,8 +227,8 @@ class TestHierarchicalGridRefine:
         # Union of fine cells = parent
         all_lo = np.min(fine_los, axis=0)
         all_hi = np.max(fine_his, axis=0)
-        npt.assert_allclose(all_lo, parent_lo)
-        npt.assert_allclose(all_hi, parent_hi)
+        np_testing.assert_allclose(all_lo, parent_lo)
+        np_testing.assert_allclose(all_hi, parent_hi)
 
     def test_refine_cell_levels(self) -> None:
         g = _grid_1d(4, 2)
@@ -399,7 +399,7 @@ class TestHierarchicalGridNeighbors:
         nbr = g.neighbor_across_facet(0, 1)
         assert nbr is not None
         lo_nbr, _hi_nbr = g.cell_bounds(nbr)
-        npt.assert_allclose(lo_nbr[0], 0.25)
+        np_testing.assert_allclose(lo_nbr[0], 0.25)
 
     def test_fine_to_coarse_neighbor(self) -> None:
         """Fine cell adjacent to a coarser frame cell → the coarse cell."""
@@ -500,3 +500,91 @@ class TestHierarchicalGridTags:
         _ = g.facet_tags  # create
         g.refine(0, [1], [3])
         assert g._facet_tags is None
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Active-set accessors
+# ──────────────────────────────────────────────────────────────────────────────
+
+
+class TestActiveSetAccessors:
+    """Tests for level_cells_per_axis, active_blocks, and the masks."""
+
+    def test_level_cells_per_axis(self) -> None:
+        g = _grid_1d(4, 2)
+        assert g.level_cells_per_axis(0) == (4,)
+        assert g.level_cells_per_axis(2) == (16,)
+
+    def test_level_cells_per_axis_2d_anisotropic(self) -> None:
+        g = hierarchical_grid(uniform_grid([[0.0, 1.0], [0.0, 1.0]], 4), (2, 1))
+        assert g.level_cells_per_axis(1) == (8, 4)
+
+    def test_level_cells_per_axis_negative_raises(self) -> None:
+        with pytest.raises(ValueError, match="level"):
+            _grid_1d(4, 2).level_cells_per_axis(-1)
+
+    def test_active_blocks_fresh(self) -> None:
+        g = _grid_1d(4, 2)
+        assert g.active_blocks(0) == (((0,), (4,)),)
+
+    def test_active_blocks_after_refine(self) -> None:
+        g = _grid_1d(4, 2)
+        g.refine(0, [0], [2])
+        assert g.active_blocks(0) == (((2,), (4,)),)
+        assert g.active_blocks(1) == (((0,), (4,)),)
+
+    def test_active_blocks_out_of_range_raises(self) -> None:
+        with pytest.raises(ValueError, match="level"):
+            _grid_1d(4, 2).active_blocks(1)
+
+    def test_active_leaf_mask_total_equals_num_cells(self) -> None:
+        g = _grid_2d(4, 2)
+        g.refine(0, [0, 0], [2, 2])
+        g.refine(1, [0, 0], [2, 2])
+        total = sum(int(g.active_leaf_mask(level).sum()) for level in range(g.max_level + 1))
+        assert total == g.num_cells
+
+    def test_subdomain_mask_level0_all_true(self) -> None:
+        g = _grid_2d(4, 2)
+        g.refine(0, [0, 0], [2, 2])
+        assert g.subdomain_mask(0).all()
+
+    def test_mask_consistency_1d(self) -> None:
+        g = _grid_1d(4, 2)
+        g.refine(0, [0], [2])
+        np.testing.assert_array_equal(g.active_leaf_mask(0), [False, False, True, True])
+        np.testing.assert_array_equal(g.subdomain_mask(0), [True, True, True, True])
+        np.testing.assert_array_equal(
+            g.subdomain_mask(1), [True, True, True, True, False, False, False, False]
+        )
+        np.testing.assert_array_equal(
+            g.active_leaf_mask(1), [True, True, True, True, False, False, False, False]
+        )
+
+    def test_subdomain_mask_out_of_range_raises(self) -> None:
+        g = _grid_1d(4, 2)
+        g.refine(0, [0], [2])
+        with pytest.raises(ValueError, match="level"):
+            g.subdomain_mask(2)
+
+    def test_active_blocks_negative_level_raises(self) -> None:
+        with pytest.raises(ValueError, match="level"):
+            _grid_1d(4, 2).active_blocks(-1)
+
+    def test_active_leaf_mask_negative_level_raises(self) -> None:
+        with pytest.raises(ValueError, match="level"):
+            _grid_1d(4, 2).active_leaf_mask(-1)
+
+    def test_subdomain_mask_three_levels(self) -> None:
+        # Refine the left half at level 0, then refine all level-1 cells.
+        # Exercises the two-iteration accumulation path in subdomain_mask.
+        g = _grid_1d(4, 2)
+        g.refine(0, [0], [2])  # level-0 block [(2,), (4,)]; level-1 block [(0,), (4,)]
+        g.refine(1, [0], [4])  # level-1 block emptied; level-2 block [(0,), (8,)]
+        # Level-2 grid: 4 * 2^2 = 16 cells.
+        # Subdomain mask: start all True, clear cells covered by coarser leaves.
+        # Level-0 leaf block [(2,), (4,)) → scale 4 → slice [8, 16): cleared.
+        # Level-1 has no leaf blocks → nothing more to clear.
+        expected = np.zeros(16, dtype=bool)
+        expected[:8] = True
+        np.testing.assert_array_equal(g.subdomain_mask(2), expected)
