@@ -71,8 +71,11 @@ class _BasisEval1D(NamedTuple):
     first_basis: npt.NDArray[np.int64]
 
 
-_EvalCache = dict[tuple[int, int], _BasisEval1D]
-"""Per-call cache of 1D basis evaluations keyed by ``(level, direction)``."""
+_EvalCache = dict[tuple[int, int, int], _BasisEval1D]
+"""Per-call cache of 1D basis evaluations keyed by ``(level, direction, order)``.
+
+``order`` is the derivative order evaluated in that direction (``0`` for values).
+"""
 
 _EINSUM_MAX_DIM = 24
 """Maximum parametric dimension supported by the single-letter einsum subscript scheme.
@@ -695,67 +698,77 @@ class THBSplineSpace:
         self,
         level: int,
         k: int,
+        order: int,
         flat_pts: npt.NDArray[np.float64],
         eval_cache: _EvalCache,
     ) -> _BasisEval1D:
-        """Evaluate (and cache) the level-``level`` 1D basis in direction ``k``.
+        """Evaluate (and cache) the level-``level`` 1D basis (or a derivative).
 
         Args:
             level (int): Hierarchy level whose 1D space is evaluated.
             k (int): Parametric direction.
+            order (int): Derivative order in direction ``k`` (``0`` for values).
             flat_pts (npt.NDArray[np.float64]): All parametric points of shape
                 ``(num_pts, dim)``; column ``k`` is used.
-            eval_cache (_EvalCache): Per-call cache keyed by ``(level, k)``.
+            eval_cache (_EvalCache): Per-call cache keyed by ``(level, k, order)``.
 
         Returns:
-            _BasisEval1D: ``(values, first_basis)`` as returned by
-            :meth:`~pantr.bspline.BsplineSpace1D.tabulate_basis`.
+            _BasisEval1D: ``(values, first_basis)`` where ``values`` holds the
+            ``order``-th derivative of each local basis function (the function
+            values when ``order == 0``).
         """
-        key = (level, k)
+        key = (level, k, order)
         cached = eval_cache.get(key)
         if cached is None:
             sp1d = self._level_spaces[level].spaces[k]
-            values, first_basis = sp1d.tabulate_basis(np.ascontiguousarray(flat_pts[:, k]))
-            cached = _BasisEval1D(
-                np.asarray(values, dtype=np.float64),
-                np.asarray(first_basis, dtype=np.int64),
-            )
+            pts_k = np.ascontiguousarray(flat_pts[:, k])
+            if order == 0:
+                values, first_basis = sp1d.tabulate_basis(pts_k)
+                deriv = np.asarray(values, dtype=np.float64)
+            else:
+                all_deriv, first_basis = sp1d.tabulate_basis_derivatives(pts_k, order)
+                deriv = np.asarray(all_deriv, dtype=np.float64)[:, order, :]
+            cached = _BasisEval1D(deriv, np.asarray(first_basis, dtype=np.int64))
             eval_cache[key] = cached
         return cached
 
     def _truncated_column(
         self,
         entry: _TruncCoeffs,
+        orders: tuple[int, ...],
         flat_pts: npt.NDArray[np.float64],
         eval_cache: _EvalCache,
-        point_index: npt.NDArray[np.int64],
-        num_pts: int,
     ) -> npt.NDArray[np.float64]:
-        """Evaluate one truncated function from its stored coefficients.
+        """Evaluate one truncated function (or a derivative) from its coefficients.
 
-        Computes ``sum_multi coeffs[multi] * prod_k B^rep_{box_lo[k] + multi_k}(pt)``
-        over the stored coefficient box via a tensor contraction.
+        Computes ``sum_multi coeffs[multi] * prod_k D^orders[k] B^rep_{box_lo[k] +
+        multi_k}(pt)`` over the stored coefficient box via a tensor contraction,
+        where ``D^orders[k]`` is the ``orders[k]``-th derivative in direction ``k``.
 
         Args:
             entry (_TruncCoeffs): ``(rep_level, box_lo, coeffs)`` for the function.
+            orders (tuple[int, ...]): Per-direction derivative orders (all ``0`` for
+                function values).
             flat_pts (npt.NDArray[np.float64]): Points of shape ``(num_pts, dim)``.
             eval_cache (_EvalCache): Per-call 1D-basis evaluation cache.
-            point_index (npt.NDArray[np.int64]): ``arange(num_pts)`` for gathering.
-            num_pts (int): Number of points.
 
         Returns:
-            npt.NDArray[np.float64]: Function values of shape ``(num_pts,)``.
+            npt.NDArray[np.float64]: Values of shape ``(num_pts,)``.
         """
         rep_level, box_lo, coeffs = entry
         dim = self.dim
+        num_pts = flat_pts.shape[0]
+        point_index = np.arange(num_pts)
         if dim > _EINSUM_MAX_DIM:
             raise NotImplementedError(
                 f"_truncated_column uses single-letter einsum subscripts; "
-                f"only dim ≤ {_EINSUM_MAX_DIM} is supported, got dim={dim}."
+                f"only dim <= {_EINSUM_MAX_DIM} is supported, got dim={dim}."
             )
         value_mats: list[npt.NDArray[np.float64]] = []
         for k in range(dim):
-            values, first_basis = self._basis_1d_cached(rep_level, k, flat_pts, eval_cache)
+            values, first_basis = self._basis_1d_cached(
+                rep_level, k, orders[k], flat_pts, eval_cache
+            )
             degree_k = self.degrees[k]
             width = coeffs.shape[k]
             vmat = np.zeros((num_pts, width), dtype=np.float64)
@@ -772,37 +785,32 @@ class THBSplineSpace:
         column = np.asarray(np.einsum(subscripts, coeffs, *value_mats), dtype=np.float64)
         return column
 
-    def tabulate_basis(
+    def _tabulate_orders(
         self,
         cid: int,
         pts: npt.ArrayLike,
-        out: npt.NDArray[np.float64] | None = None,
+        orders: tuple[int, ...],
+        out: npt.NDArray[np.float64] | None,
     ) -> npt.NDArray[np.float64]:
-        """Evaluate the active hierarchical functions on cell ``cid`` at ``pts``.
+        """Evaluate the active functions' ``orders`` mixed partial on cell ``cid``.
 
-        Untruncated functions are a single tensor-product B-spline (the product of
-        their 1D B-spline values).  Truncated functions are evaluated from their
-        stored coefficients in the finest tensor-product basis their support reaches.
-        The returned columns are ordered as :meth:`active_basis` (sorted global dof);
-        a listed truncated function may evaluate to exactly zero on the cell.
+        Shared implementation for :meth:`tabulate_basis` (``orders`` all zero) and
+        :meth:`tabulate_basis_derivatives`.
 
         Args:
             cid (int): Active cell flat id in ``[0, grid.num_cells)``.
-            pts (npt.ArrayLike): Parametric points of shape ``(..., dim)`` lying in
-                cell ``cid``.  Points outside the cell's bounds raise
-                :class:`ValueError`.
-            out (npt.NDArray[np.float64] | None): Optional output array of shape
-                ``(..., K)`` with ``K = active_basis(cid).size``.  Allocated when
-                ``None``.
+            pts (npt.ArrayLike): Parametric points of shape ``(..., dim)`` in the cell.
+            orders (tuple[int, ...]): Per-direction derivative orders.
+            out (npt.NDArray[np.float64] | None): Optional output of shape ``(..., K)``.
 
         Returns:
-            npt.NDArray[np.float64]: Function values of shape ``(..., K)``.
+            npt.NDArray[np.float64]: Values of shape ``(..., K)``.
 
         Raises:
             IndexError: If ``cid`` is out of range ``[0, grid.num_cells)``.
             ValueError: If ``pts`` does not have trailing dimension ``dim``, if any
-                point lies outside the bounds of cell ``cid``, or if ``out`` has the
-                wrong shape, dtype, or is not writeable.
+                point lies outside cell ``cid``, or if ``out`` has the wrong shape,
+                dtype, or is not writeable.
             RuntimeError: If the grid has been modified since construction.
         """
         contribs = self._cell_contributions(cid)  # validates cid; raises if stale
@@ -845,7 +853,9 @@ class THBSplineSpace:
             if entry is None:
                 column = np.ones(num_pts, dtype=np.float64)
                 for k in range(self.dim):
-                    values, first_basis = self._basis_1d_cached(level, k, flat_pts, eval_cache)
+                    values, first_basis = self._basis_1d_cached(
+                        level, k, orders[k], flat_pts, eval_cache
+                    )
                     local = multi[k] - first_basis
                     degree_k = self.degrees[k]
                     valid = (local >= 0) & (local <= degree_k)
@@ -853,12 +863,98 @@ class THBSplineSpace:
                     column *= np.where(valid, gathered, 0.0)
                 buffer[:, col] = column
             else:
-                buffer[:, col] = self._truncated_column(
-                    entry, flat_pts, eval_cache, point_index, num_pts
-                )
+                buffer[:, col] = self._truncated_column(entry, orders, flat_pts, eval_cache)
 
         result[...] = buffer.reshape(out_shape)
         return result
+
+    def tabulate_basis(
+        self,
+        cid: int,
+        pts: npt.ArrayLike,
+        out: npt.NDArray[np.float64] | None = None,
+    ) -> npt.NDArray[np.float64]:
+        """Evaluate the active hierarchical functions on cell ``cid`` at ``pts``.
+
+        Untruncated functions are a single tensor-product B-spline (the product of
+        their 1D B-spline values).  Truncated functions are evaluated from their
+        stored coefficients in the finest tensor-product basis their support reaches.
+        The returned columns are ordered as :meth:`active_basis` (sorted global dof);
+        a listed truncated function may evaluate to exactly zero on the cell.
+
+        Args:
+            cid (int): Active cell flat id in ``[0, grid.num_cells)``.
+            pts (npt.ArrayLike): Parametric points of shape ``(..., dim)`` lying in
+                cell ``cid``.  Points outside the cell's bounds raise
+                :class:`ValueError`.
+            out (npt.NDArray[np.float64] | None): Optional output array of shape
+                ``(..., K)`` with ``K = active_basis(cid).size``.  Allocated when
+                ``None``.
+
+        Returns:
+            npt.NDArray[np.float64]: Function values of shape ``(..., K)``.
+
+        Raises:
+            IndexError: If ``cid`` is out of range ``[0, grid.num_cells)``.
+            ValueError: If ``pts`` does not have trailing dimension ``dim``, if any
+                point lies outside the bounds of cell ``cid``, or if ``out`` has the
+                wrong shape, dtype, or is not writeable.
+            RuntimeError: If the grid has been modified since construction.
+        """
+        return self._tabulate_orders(cid, pts, (0,) * self.dim, out)
+
+    def tabulate_basis_derivatives(
+        self,
+        cid: int,
+        pts: npt.ArrayLike,
+        orders: int | Sequence[int],
+        out: npt.NDArray[np.float64] | None = None,
+    ) -> npt.NDArray[np.float64]:
+        r"""Evaluate a mixed partial derivative of the active functions on cell ``cid``.
+
+        Computes the single mixed partial :math:`\partial^{orders}` of each active
+        hierarchical function, where ``orders[k]`` is the derivative order in
+        parametric direction ``k`` (derivatives are with respect to the parametric
+        coordinates).  Untruncated functions differentiate as a tensor product of 1D
+        B-spline derivatives; truncated functions apply their stored coefficients to
+        the B-spline derivatives at their representation level.  The returned columns
+        are ordered as :meth:`active_basis` (sorted global dof).
+
+        Args:
+            cid (int): Active cell flat id in ``[0, grid.num_cells)``.
+            pts (npt.ArrayLike): Parametric points of shape ``(..., dim)`` lying in
+                cell ``cid``.  Points outside the cell's bounds raise
+                :class:`ValueError`.
+            orders (int | Sequence[int]): Per-direction derivative orders.  A scalar
+                is broadcast to every direction.  Each entry must be ``>= 0``; orders
+                exceeding the degree yield zero.
+            out (npt.NDArray[np.float64] | None): Optional output array of shape
+                ``(..., K)`` with ``K = active_basis(cid).size``.  Allocated when
+                ``None``.
+
+        Returns:
+            npt.NDArray[np.float64]: Derivative values of shape ``(..., K)``.
+
+        Raises:
+            IndexError: If ``cid`` is out of range ``[0, grid.num_cells)``.
+            ValueError: If ``orders`` has the wrong length or a negative entry, if
+                ``pts`` does not have trailing dimension ``dim``, if any point lies
+                outside cell ``cid``, or if ``out`` has the wrong shape, dtype, or is
+                not writeable.
+            RuntimeError: If the grid has been modified since construction.
+        """
+        if isinstance(orders, int):
+            orders_t = (orders,) * self.dim
+        else:
+            orders_t = tuple(int(o) for o in orders)
+            if len(orders_t) != self.dim:
+                raise ValueError(
+                    f"orders must be a scalar or length-{self.dim} sequence; "
+                    f"got length {len(orders_t)}."
+                )
+        if any(o < 0 for o in orders_t):
+            raise ValueError(f"orders must be non-negative; got {orders_t!r}.")
+        return self._tabulate_orders(cid, pts, orders_t, out)
 
     def __repr__(self) -> str:
         """Return a compact string representation.
