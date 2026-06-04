@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Callable
 
 import numpy as np
+import numpy.typing as npt
 import pytest
 
 from pantr.bspline import BsplineSpace, BsplineSpace1D, THBSplineSpace
@@ -39,7 +40,7 @@ def _grid_2d() -> HierarchicalGrid:
 
 def _collocation(
     thb: THBSplineSpace, n_per_axis: int | None = None
-) -> tuple[np.ndarray, np.ndarray]:
+) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64]]:
     """Build a global collocation matrix and sample points.
 
     Returns ``(A, pts)`` where ``A[r, dof]`` is the value of active function ``dof``
@@ -51,8 +52,8 @@ def _collocation(
     n_active = thb.num_active_functions
     npa = (thb.degrees[0] + 3) if n_per_axis is None else n_per_axis
     u = np.linspace(0.0, 1.0, npa)[1:-1]
-    rows: list[np.ndarray] = []
-    pts: list[np.ndarray] = []
+    rows: list[npt.NDArray[np.float64]] = []
+    pts: list[npt.NDArray[np.float64]] = []
     for cid in range(grid.num_cells):
         lo, hi = grid.cell_bounds(cid)
         axes = [lo[k] + (hi[k] - lo[k]) * u for k in range(dim)]
@@ -69,7 +70,7 @@ def _collocation(
 
 
 def _max_reproduction_residual(
-    thb: THBSplineSpace, target: Callable[[np.ndarray], np.ndarray]
+    thb: THBSplineSpace, target: Callable[[npt.NDArray[np.float64]], npt.NDArray[np.float64]]
 ) -> float:
     """Least-squares fit ``target`` with the HB basis; return max residual."""
     mat, pts = _collocation(thb)
