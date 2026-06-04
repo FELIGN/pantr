@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import itertools
 import string
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, NamedTuple
 
 import numpy as np
 
@@ -43,22 +43,42 @@ _Support1D = tuple[
 all ``int64`` arrays.
 """
 
-_TruncCoeffs = tuple[int, "tuple[int, ...]", "npt.NDArray[np.float64]"]
-"""Stored representation of a truncated function.
 
-``(rep_level, box_lo, coeffs)``: ``coeffs`` is a dense array of the function's
-coefficients in the level-``rep_level`` tensor-product basis over the box of
-function multi-indices starting at ``box_lo`` (one axis per direction).
-"""
+class _TruncCoeffs(NamedTuple):
+    """Stored representation of a truncated function.
 
-_EvalCache = dict[
-    tuple[int, int],
-    "tuple[npt.NDArray[np.float64], npt.NDArray[np.int64]]",
-]
-"""Per-call cache of 1D basis evaluations keyed by ``(level, direction)``.
+    ``rep_level`` is the finest level at which the function is expressed.
+    ``box_lo[k]`` is the per-direction lower function index of the coefficient
+    box; ``coeffs.shape[k] == box_hi[k] - box_lo[k]`` (``box_hi`` is implicit
+    in the array shape).  ``coeffs`` holds the function's coefficients in the
+    level-``rep_level`` tensor-product basis.
+    """
 
-Maps to ``(values, first_basis)`` from
-:meth:`~pantr.bspline.BsplineSpace1D.tabulate_basis` at the query points.
+    rep_level: int
+    box_lo: tuple[int, ...]
+    coeffs: npt.NDArray[np.float64]
+
+
+class _BasisEval1D(NamedTuple):
+    """Cached result of a single 1D basis evaluation.
+
+    ``values`` has shape ``(num_pts, degree + 1)``; ``first_basis`` has shape
+    ``(num_pts,)``.  Both come from a single call to
+    :meth:`~pantr.bspline.BsplineSpace1D.tabulate_basis`.
+    """
+
+    values: npt.NDArray[np.float64]
+    first_basis: npt.NDArray[np.int64]
+
+
+_EvalCache = dict[tuple[int, int], _BasisEval1D]
+"""Per-call cache of 1D basis evaluations keyed by ``(level, direction)``."""
+
+_EINSUM_MAX_DIM = 24
+"""Maximum parametric dimension supported by the single-letter einsum subscript scheme.
+
+``string.ascii_lowercase`` provides 26 letters; the einsum needs ``dim`` letters for the
+coefficient axes plus one for the point axis, leaving a safe ceiling of 24 dimensions.
 """
 
 
@@ -151,9 +171,9 @@ class THBSplineSpace:
         _num_active (int): Total number of active hierarchical functions.
         _grid_snapshot (tuple[int, int]): ``(max_level, num_cells)`` captured at
             construction; used to detect post-construction grid mutations.
-        _trunc (dict): Map from global dof to stored truncated coefficients
-            ``(rep_level, box_lo, coeffs)``; only truncated functions appear (empty
-            when ``truncate=False``).
+        _trunc (dict[int, _TruncCoeffs]): Map from global dof to stored truncated
+            coefficients; only truncated functions appear (empty when
+            ``truncate=False``).
     """
 
     __slots__ = (
@@ -333,7 +353,7 @@ class THBSplineSpace:
 
         Returns:
             tuple[tuple[npt.NDArray[np.float64], ...], ...]: Matrices indexed by
-            ``[m][k]`` for ``m`` in ``[0, num_levels - 1)``.
+            ``[m][k]`` for ``m`` in ``[0, num_levels - 2]``.
         """
         mats: list[tuple[npt.NDArray[np.float64], ...]] = []
         for m in range(self.num_levels - 1):
@@ -367,7 +387,12 @@ class THBSplineSpace:
 
         Returns:
             tuple[npt.NDArray[np.float64], list[int], list[int]]: Refined
-            coefficients and the new ``(box_lo, box_hi)``.
+            coefficients and fresh lists ``(box_lo, box_hi)`` for the next
+            level; the input lists are not modified.
+
+        Raises:
+            ValueError: If the Oslo matrix slice for any direction is entirely
+                zero, indicating a degenerate box or invalid knot refinement.
         """
         new_lo = list(box_lo)
         new_hi = list(box_hi)
@@ -376,6 +401,12 @@ class THBSplineSpace:
             alpha = oslo_m[k]
             cols = alpha[:, box_lo[k] : box_hi[k]]
             rows = np.nonzero(np.any(cols != 0.0, axis=1))[0]
+            if rows.size == 0:
+                raise ValueError(
+                    f"_refine_box: Oslo matrix slice for direction {k} "
+                    f"(columns [{box_lo[k]}:{box_hi[k]}]) is entirely zero — "
+                    "degenerate or invalid knot refinement."
+                )
             nlo, nhi = int(rows[0]), int(rows[-1]) + 1
             sub = alpha[nlo:nhi, box_lo[k] : box_hi[k]]
             contracted = np.asarray(np.tensordot(sub, out, axes=([1], [k])), dtype=np.float64)
@@ -391,16 +422,18 @@ class THBSplineSpace:
         active_at_level: npt.NDArray[np.int64],
         num_basis: tuple[int, ...],
     ) -> bool:
-        """Zero coefficients on active functions (in place); report if any zeroed.
+        """Zero basis coefficients at active-function positions (in place); report if any zeroed.
 
         Args:
             coeffs (npt.NDArray[np.float64]): Coefficients over the box (modified in
                 place).
             box_lo (list[int]): Per-direction lower function index of the box.
             box_hi (list[int]): Per-direction upper (exclusive) function index.
-            active_at_level (npt.NDArray[np.int64]): Sorted flat indices of the
-                active functions at this level.
-            num_basis (tuple[int, ...]): Per-direction function counts at this level.
+            active_at_level (npt.NDArray[np.int64]): Sorted flat indices of the active
+                functions at the refined level (the level whose basis ``coeffs`` is
+                expressed in).
+            num_basis (tuple[int, ...]): Per-direction function counts at the refined
+                level.
 
         Returns:
             bool: ``True`` iff at least one coefficient was zeroed.
@@ -420,8 +453,10 @@ class THBSplineSpace:
         For each active function that straddles a finer refinement boundary, the
         function is represented in successively finer bases (two-scale refinement),
         zeroing the components on active finer functions at each level (truncation),
-        until its support no longer reaches deeper refinement.  Untruncated functions
-        are omitted.
+        until its support no longer reaches deeper refinement.  Truncation is applied
+        at each level in the support chain, not only the first; a function may be
+        truncated against active sets at multiple levels before its support clears all
+        refinement.  Untruncated functions are omitted.
 
         Returns:
             dict[int, _TruncCoeffs]: Map from global dof to ``(rep_level, box_lo,
@@ -469,8 +504,11 @@ class THBSplineSpace:
                         self._level_spaces[m].num_basis,
                     )
                     any_zeroed = any_zeroed or zeroed
+                # A function whose support enters a refined region but whose
+                # coefficient box at every finer level has no overlap with active
+                # finer functions requires no truncation (remains a plain B-spline).
                 if any_zeroed:
-                    trunc[offset + pos] = (rep, tuple(box_lo), coeffs)
+                    trunc[offset + pos] = _TruncCoeffs(rep, tuple(box_lo), coeffs)
         return trunc
 
     def _check_not_stale(self) -> None:
@@ -660,18 +698,18 @@ class THBSplineSpace:
         k: int,
         flat_pts: npt.NDArray[np.float64],
         eval_cache: _EvalCache,
-    ) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.int64]]:
+    ) -> _BasisEval1D:
         """Evaluate (and cache) the level-``level`` 1D basis in direction ``k``.
 
         Args:
             level (int): Hierarchy level whose 1D space is evaluated.
             k (int): Parametric direction.
-            flat_pts (npt.NDArray[np.float64]): Points of shape ``(num_pts, dim)``.
+            flat_pts (npt.NDArray[np.float64]): All parametric points of shape
+                ``(num_pts, dim)``; column ``k`` is used.
             eval_cache (_EvalCache): Per-call cache keyed by ``(level, k)``.
 
         Returns:
-            tuple[npt.NDArray[np.float64], npt.NDArray[np.int64]]:
-            ``(values, first_basis)`` as returned by
+            _BasisEval1D: ``(values, first_basis)`` as returned by
             :meth:`~pantr.bspline.BsplineSpace1D.tabulate_basis`.
         """
         key = (level, k)
@@ -679,7 +717,7 @@ class THBSplineSpace:
         if cached is None:
             sp1d = self._level_spaces[level].spaces[k]
             values, first_basis = sp1d.tabulate_basis(np.ascontiguousarray(flat_pts[:, k]))
-            cached = (
+            cached = _BasisEval1D(
                 np.asarray(values, dtype=np.float64),
                 np.asarray(first_basis, dtype=np.int64),
             )
@@ -711,6 +749,11 @@ class THBSplineSpace:
         """
         rep_level, box_lo, coeffs = entry
         dim = self.dim
+        if dim > _EINSUM_MAX_DIM:
+            raise NotImplementedError(
+                f"_truncated_column uses single-letter einsum subscripts; "
+                f"only dim ≤ {_EINSUM_MAX_DIM} is supported, got dim={dim}."
+            )
         value_mats: list[npt.NDArray[np.float64]] = []
         for k in range(dim):
             values, first_basis = self._basis_1d_cached(rep_level, k, flat_pts, eval_cache)

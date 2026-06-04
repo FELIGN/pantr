@@ -544,3 +544,83 @@ class TestTruncation:
     def test_repr_truncate_true(self) -> None:
         thb = THBSplineSpace(_root_1d(), _grid_1d(), truncate=True)
         assert "truncate=True" in repr(thb)
+
+    def test_tabulate_basis_out_argument_truncated(self) -> None:
+        thb = _refined_2d_corner()
+        cid = thb.grid.locate([0.1, 0.1])
+        assert cid is not None
+        active = thb.active_basis(cid)
+        assert any(dof in thb._trunc for dof in active), "no truncated dof on this cell"
+        pts = np.array([[0.1, 0.1]])
+        out = np.empty((1, active.shape[0]), dtype=np.float64)
+        ret = thb.tabulate_basis(cid, pts, out=out)
+        assert ret is out
+        np.testing.assert_allclose(out, thb.tabulate_basis(cid, pts))
+
+    def test_deepest_level_functions_not_in_trunc(self) -> None:
+        # Active functions at the deepest level have no finer level below;
+        # _compute_truncated_coeffs iterates over level < num_levels-1 only.
+        thb = _refined_1d_three_levels()
+        deepest = thb.num_levels - 1
+        offset = int(thb._func_offset[deepest])
+        count = int(thb.num_active_functions_per_level[deepest])
+        for i in range(count):
+            assert offset + i not in thb._trunc
+
+    def test_partition_of_unity_with_regularity_c0(self) -> None:
+        root = _root_1d()
+        grid = _grid_1d()
+        grid.refine(0, [0], [2])
+        thb = THBSplineSpace(root, grid, truncate=True, regularity=0)
+        mat, _ = _collocation(thb)
+        np.testing.assert_allclose(mat.sum(axis=1), 1.0, atol=1e-10)
+
+    def test_truncated_function_column_strictly_less_than_hb(self) -> None:
+        # A truncated function on a refined cell evaluates to a value strictly
+        # less than its HB counterpart (truncation reduced it) and >= 0.
+        root = _root_1d()
+        grid = _grid_1d()
+        grid.refine(0, [0], [2])
+        thb = THBSplineSpace(root, grid, truncate=True)
+        hb = THBSplineSpace(root, grid, truncate=False)
+        cid = grid.locate([0.3])
+        assert cid is not None
+        lo, hi = grid.cell_bounds(cid)
+        mid = (0.5 * (lo + hi)).reshape(1, -1)
+        thb_active = thb.active_basis(cid)
+        hb_active = hb.active_basis(cid)
+        thb_vals = thb.tabulate_basis(cid, mid)[0]
+        hb_vals = hb.tabulate_basis(cid, mid)[0]
+        found_truncated = False
+        for i, dof in enumerate(thb_active):
+            if dof in thb._trunc:
+                found_truncated = True
+                thb_val = float(thb_vals[i])
+                j = int(np.searchsorted(hb_active, dof))
+                hb_val = float(hb_vals[j])
+                assert thb_val >= 0.0
+                assert thb_val < hb_val - 1e-10, (
+                    f"dof {dof}: THB value {thb_val:.6f} not < HB value {hb_val:.6f}"
+                )
+        assert found_truncated, "no truncated dof found on refined cell"
+
+    def test_partition_of_unity_anisotropic_truncated(self) -> None:
+        root = _root_2d()
+        grid = hierarchical_grid(uniform_grid([[0.0, 1.0], [0.0, 1.0]], 4), (2, 1))
+        grid.refine(0, [0, 0], [2, 2])
+        thb = THBSplineSpace(root, grid, truncate=True)
+        mat, _ = _collocation(thb)
+        np.testing.assert_allclose(mat.sum(axis=1), 1.0, atol=1e-10)
+
+    def test_tabulate_basis_multidim_leading_shape_truncated(self) -> None:
+        thb = _refined_2d_corner()
+        cid = thb.grid.locate([0.1, 0.1])
+        assert cid is not None
+        lo, hi = thb.grid.cell_bounds(cid)
+        ts = np.linspace(0.1, 0.9, 6)
+        pts_flat = lo + (hi - lo) * ts[:, None]  # (6, 2)
+        pts = pts_flat.reshape(2, 3, thb.dim)
+        result = thb.tabulate_basis(cid, pts)
+        n_active = thb.active_basis(cid).shape[0]
+        assert result.shape == (2, 3, n_active)
+        np.testing.assert_allclose(result.sum(axis=-1), 1.0, atol=1e-10)
