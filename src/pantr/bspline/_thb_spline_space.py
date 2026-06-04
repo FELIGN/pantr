@@ -378,7 +378,8 @@ class THBSplineSpace:
             rows = np.nonzero(np.any(cols != 0.0, axis=1))[0]
             nlo, nhi = int(rows[0]), int(rows[-1]) + 1
             sub = alpha[nlo:nhi, box_lo[k] : box_hi[k]]
-            out = np.moveaxis(np.tensordot(sub, out, axes=([1], [k])), 0, k)
+            contracted = np.asarray(np.tensordot(sub, out, axes=([1], [k])), dtype=np.float64)
+            out = np.moveaxis(contracted, 0, k)
             new_lo[k], new_hi[k] = nlo, nhi
         return out, new_lo, new_hi
 
@@ -726,7 +727,7 @@ class THBSplineSpace:
         func_subs = letters[:dim]
         pt_sub = letters[dim]
         subscripts = f"{func_subs},{','.join(pt_sub + func_subs[k] for k in range(dim))}->{pt_sub}"
-        column: npt.NDArray[np.float64] = np.einsum(subscripts, coeffs, *value_mats)
+        column = np.asarray(np.einsum(subscripts, coeffs, *value_mats), dtype=np.float64)
         return column
 
     def tabulate_basis(
