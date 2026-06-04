@@ -3,13 +3,8 @@
 This module defines :class:`THBSplineSpace`, a hierarchical spline space built on
 a :class:`pantr.grid.HierarchicalGrid`.  It follows the G+Smo *self-evaluating*
 model: per level it stores the Kraft selection of active tensor-product B-splines,
-and (from PR2 onward) a sparse coefficient vector only for truncated functions.
-Untruncated functions are plain tensor-product B-splines.
-
-This first increment implements the **non-truncated hierarchical (HB)** path
-(``truncate=False``): nested per-level spaces, the active-function selection, and
-value evaluation.  Truncation (``truncate=True``) and derivatives land in later
-increments (see GitHub issue #164).
+and (once truncation is implemented, GitHub issue #164) a sparse coefficient vector
+only for truncated functions.  Untruncated functions are plain tensor-product B-splines.
 
 Main exports:
 
@@ -78,6 +73,10 @@ def _func_support_1d(space: BsplineSpace1D) -> _Support1D:
             if first_cell[i] < 0:
                 first_cell[i] = interval
             last_cell[i] = interval
+    assert np.all(first_cell >= 0), (
+        f"B-spline function(s) with empty support detected at indices "
+        f"{np.where(first_cell < 0)[0].tolist()}. This indicates an invalid B-spline space."
+    )
     return first_basis, first_cell, last_cell
 
 
@@ -92,31 +91,40 @@ class THBSplineSpace:
     its support lies in the level-``l`` subdomain :math:`\Omega_l` but not entirely
     in the finer subdomain :math:`\Omega_{l+1}`.
 
-    This increment implements only the **non-truncated (HB)** basis
-    (``truncate=False``); ``truncate=True`` raises :class:`NotImplementedError`
-    (truncation lands in a later increment, GitHub issue #164).
+    This space is a snapshot of the grid at construction time.  Calling
+    :meth:`~pantr.grid.HierarchicalGrid.refine` on the underlying grid after
+    construction invalidates this space; subsequent calls to :meth:`active_basis` or
+    :meth:`tabulate_basis` will raise :class:`RuntimeError`.  Create a new
+    :class:`THBSplineSpace` from the updated grid instead.
+
+    Truncation (``truncate=True``) is not yet implemented; see GitHub issue #164.
 
     Attributes:
         _root_space (BsplineSpace): The level-0 tensor-product space.
-        _grid (HierarchicalGrid): The active-cell hierarchy.
-        _truncate (bool): Whether the basis is truncated (always ``False`` here).
+        _grid (HierarchicalGrid): The active-cell hierarchy (snapshot reference).
+        _truncate (bool): Whether the truncated (THB) basis is used; ``False`` for
+            the plain hierarchical (HB) basis.
         _regularity (tuple[int | None, ...]): Per-direction continuity used when
             subdividing to build finer levels.
         _level_spaces (tuple[BsplineSpace, ...]): Per-level tensor-product spaces;
             index ``l`` is the root subdivided to level ``l``.
-        _support (tuple): Per-level, per-direction function-to-cell support arrays
-            (one ``_Support1D`` triple per direction per level).
+        _support (tuple[tuple[_Support1D, ...], ...]): Per-level, per-direction
+            function-to-cell support arrays (one ``_Support1D`` triple per direction
+            per level).
         _active_funcs (tuple[npt.NDArray[np.int64], ...]): Per-level sorted flat
             (C-order) indices of the active tensor-product functions.
         _func_offset (npt.NDArray[np.int64]): Per-level global-dof base; length
             ``num_levels + 1`` (cumulative active-function counts).
         _num_active (int): Total number of active hierarchical functions.
+        _grid_snapshot (tuple[int, int]): ``(max_level, num_cells)`` captured at
+            construction; used to detect post-construction grid mutations.
     """
 
     __slots__ = (
         "_active_funcs",
         "_func_offset",
         "_grid",
+        "_grid_snapshot",
         "_level_spaces",
         "_num_active",
         "_regularity",
@@ -125,12 +133,14 @@ class THBSplineSpace:
         "_truncate",
     )
 
+    _support: tuple[tuple[_Support1D, ...], ...]
+
     def __init__(
         self,
         root_space: BsplineSpace,
         grid: HierarchicalGrid,
         *,
-        truncate: bool = True,
+        truncate: bool = False,
         regularity: int | Sequence[int | None] | None = None,
     ) -> None:
         """Create a hierarchical B-spline space.
@@ -139,19 +149,26 @@ class THBSplineSpace:
             root_space (BsplineSpace): The level-0 tensor-product B-spline space.
             grid (HierarchicalGrid): Hierarchical grid whose root knot-span grid
                 matches ``root_space``.
-            truncate (bool): If ``True`` (default), build the truncated basis.
-                **Not yet implemented** — raises :class:`NotImplementedError`.
-                Use ``truncate=False`` for the non-truncated hierarchical basis.
+            truncate (bool): If ``True``, build the truncated basis.  **Not yet
+                implemented** — raises :class:`NotImplementedError`.  Defaults to
+                ``False`` (non-truncated hierarchical basis).
             regularity (int | Sequence[int | None] | None): Per-direction continuity
                 at the knots inserted when subdividing to finer levels.  A scalar is
                 broadcast to every axis; ``None`` (default) uses maximal smoothness.
+                Each non-``None`` entry must satisfy ``-1 <= regularity[k] < degree[k]``.
 
         Raises:
-            TypeError: If ``grid`` is not a :class:`~pantr.grid.HierarchicalGrid`.
+            TypeError: If ``root_space`` is not a :class:`~pantr.bspline.BsplineSpace`
+                or ``grid`` is not a :class:`~pantr.grid.HierarchicalGrid`.
             ValueError: If ``grid`` and ``root_space`` disagree on dimension or on
-                the root knot-span grid, or if ``regularity`` has the wrong length.
+                the root knot-span grid, if ``regularity`` has the wrong length, or
+                if any per-direction regularity value is out of range.
             NotImplementedError: If ``truncate`` is ``True``.
         """
+        if not isinstance(root_space, BsplineSpace):
+            raise TypeError(
+                f"root_space must be a BsplineSpace; got {type(root_space).__name__!r}."
+            )
         if not isinstance(grid, HierarchicalGrid):
             raise TypeError(f"grid must be a HierarchicalGrid; got {type(grid).__name__!r}.")
         dim = root_space.dim
@@ -175,6 +192,11 @@ class THBSplineSpace:
             if len(reg) != dim:
                 raise ValueError(
                     f"regularity must be a scalar or length-{dim} sequence; got length {len(reg)}."
+                )
+        for k, (r, d) in enumerate(zip(reg, root_space.degrees, strict=False)):
+            if r is not None and not (-1 <= r < d):
+                raise ValueError(
+                    f"regularity[{k}]={r!r} must be in [-1, degree[{k}]-1={d - 1}]; got {r!r}."
                 )
 
         if truncate:
@@ -200,6 +222,7 @@ class THBSplineSpace:
             np.int64
         )
         self._num_active = int(self._func_offset[-1])
+        self._grid_snapshot = (grid.max_level, grid.num_cells)
 
     # ------------------------------------------------------------------
     # Construction helpers
@@ -230,9 +253,9 @@ class THBSplineSpace:
     def _select_active_functions(self) -> tuple[npt.NDArray[np.int64], ...]:
         r"""Compute the Kraft selection of active functions per level.
 
-        A level-``l`` tensor-product function is selected iff its support lies in
-        :math:`\Omega_l` (``subdomain_mask``) but not entirely in
-        :math:`\Omega_{l+1}` (``subdomain_mask & ~active_leaf_mask``).
+        A level-``l`` tensor-product function is selected iff its support lies
+        entirely in :math:`\Omega_l` (``subdomain_mask``) but not entirely in the
+        further-refined region (``subdomain_mask & ~active_leaf_mask``).
 
         Returns:
             tuple[npt.NDArray[np.int64], ...]: Per-level sorted flat (C-order)
@@ -273,17 +296,31 @@ class THBSplineSpace:
             active.append(np.array(sorted(selected), dtype=np.int64))
         return tuple(active)
 
+    def _check_not_stale(self) -> None:
+        """Raise if the grid has been modified since this space was constructed.
+
+        Raises:
+            RuntimeError: If the grid's ``max_level`` or ``num_cells`` differs from
+                the snapshot taken at construction.
+        """
+        if (self._grid.max_level, self._grid.num_cells) != self._grid_snapshot:
+            raise RuntimeError(
+                "THBSplineSpace is stale: the underlying HierarchicalGrid has been modified "
+                "after construction. Create a new THBSplineSpace from the updated grid."
+            )
+
     def _cell_contributions(self, cid: int) -> list[tuple[int, int, tuple[int, ...]]]:
         """Return the active functions non-zero on cell ``cid``.
 
         Args:
-            cid (int): Active cell flat id.
+            cid (int): Active cell flat id in ``[0, grid.num_cells)``.
 
         Returns:
             list[tuple[int, int, tuple[int, ...]]]: ``(global_dof, level, multi)``
-            triples sorted by ``global_dof``, where ``multi`` is the contributing
-            function's flat-free multi-index in its level space.
+            triples sorted by ``global_dof``, where ``multi`` is the per-axis function
+            index tuple (multi-index) in its level space.
         """
+        self._check_not_stale()
         cell_level = self._grid.cell_level(cid)
         cell_midx = self._grid.cell_multi_index(cid)
         factor = self._grid.factor
@@ -351,19 +388,20 @@ class THBSplineSpace:
 
     @property
     def num_levels(self) -> int:
-        """Get the number of hierarchy levels.
+        """Get the number of hierarchy levels at construction time.
 
         Returns:
-            int: ``grid.max_level + 1``.
+            int: Number of levels; stable even if the grid is later refined.
         """
-        return self._grid.max_level + 1
+        return len(self._level_spaces)
 
     @property
     def truncate(self) -> bool:
         """Get whether the hierarchical basis is truncated.
 
         Returns:
-            bool: ``True`` for THB, ``False`` for plain HB.
+            bool: ``True`` for THB, ``False`` for plain HB.  Always ``False``
+            until truncation is implemented (GitHub issue #164).
         """
         return self._truncate
 
@@ -427,14 +465,15 @@ class THBSplineSpace:
         """Return the global dofs of the active functions non-zero on cell ``cid``.
 
         Args:
-            cid (int): Active cell flat id.
+            cid (int): Active cell flat id in ``[0, grid.num_cells)``.
 
         Returns:
             npt.NDArray[np.int64]: Sorted global hierarchical-dof indices of the
             functions whose support intersects cell ``cid``.
 
         Raises:
-            IndexError: If ``cid`` is out of range.
+            IndexError: If ``cid`` is out of range ``[0, grid.num_cells)``.
+            RuntimeError: If the grid has been modified since construction.
         """
         return np.array([dof for dof, _, _ in self._cell_contributions(cid)], dtype=np.int64)
 
@@ -452,9 +491,10 @@ class THBSplineSpace:
         :meth:`active_basis` (sorted global dof).
 
         Args:
-            cid (int): Active cell flat id.
+            cid (int): Active cell flat id in ``[0, grid.num_cells)``.
             pts (npt.ArrayLike): Parametric points of shape ``(..., dim)`` lying in
-                cell ``cid``.
+                cell ``cid``.  Points outside the cell's bounds raise
+                :class:`ValueError`.
             out (npt.NDArray[np.float64] | None): Optional output array of shape
                 ``(..., K)`` with ``K = active_basis(cid).size``.  Allocated when
                 ``None``.
@@ -463,11 +503,13 @@ class THBSplineSpace:
             npt.NDArray[np.float64]: Function values of shape ``(..., K)``.
 
         Raises:
-            IndexError: If ``cid`` is out of range.
-            ValueError: If ``pts`` does not have trailing dimension ``dim`` or
-                ``out`` has the wrong shape, dtype, or is not writeable.
+            IndexError: If ``cid`` is out of range ``[0, grid.num_cells)``.
+            ValueError: If ``pts`` does not have trailing dimension ``dim``, if any
+                point lies outside the bounds of cell ``cid``, or if ``out`` has the
+                wrong shape, dtype, or is not writeable.
+            RuntimeError: If the grid has been modified since construction.
         """
-        contribs = self._cell_contributions(cid)
+        contribs = self._cell_contributions(cid)  # validates cid; raises if stale
         n_active = len(contribs)
 
         pts_arr = np.asarray(pts, dtype=np.float64)
@@ -478,6 +520,14 @@ class THBSplineSpace:
         lead = pts_arr.shape[:-1]
         num_pts = int(np.prod(lead)) if lead else 1
         flat_pts = pts_arr.reshape(num_pts, self.dim)
+
+        cell_lo, cell_hi = self._grid.cell_bounds(cid)
+        _tol = 1e-12
+        if not (np.all(flat_pts >= cell_lo - _tol) and np.all(flat_pts <= cell_hi + _tol)):
+            raise ValueError(
+                f"pts must lie inside cell {cid!r} with bounds lo={cell_lo}, hi={cell_hi}."
+            )
+
         out_shape = (*lead, n_active)
 
         if out is None:
@@ -519,10 +569,11 @@ class THBSplineSpace:
         return result
 
     def __repr__(self) -> str:
-        """Return a compact developer-friendly representation.
+        """Return a compact string representation.
 
         Returns:
-            str: Shows dimension, degrees, level count, and active-function count.
+            str: Shows dimension, degrees, level count, active-function count, and
+            truncation flag.
         """
         return (
             f"THBSplineSpace(dim={self.dim}, degrees={self.degrees}, "

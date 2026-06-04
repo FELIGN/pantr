@@ -725,8 +725,15 @@ class HierarchicalGrid(Grid):
     def level_cells_per_axis(self, level: int) -> tuple[int, ...]:
         """Return the per-axis cell count of the level-``level`` grid.
 
+        This is a pure formula — ``level`` need not be an existing hierarchy level.
+        Values above ``max_level`` return the count for the hypothetical finer grid
+        that would result from additional uniform subdivision.  This differs from
+        :meth:`active_blocks`, :meth:`active_leaf_mask`, and :meth:`subdomain_mask`,
+        which all require ``level <= max_level``.
+
         Args:
-            level (int): Hierarchy level.  Must be ``>= 0``.
+            level (int): Hierarchy level.  Must be ``>= 0``; values above
+                ``max_level`` are accepted and return the geometrically valid count.
 
         Returns:
             tuple[int, ...]: ``root.cells_per_axis[k] * factor[k] ** level`` for

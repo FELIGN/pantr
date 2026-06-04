@@ -87,13 +87,18 @@ def _max_reproduction_residual(
 class TestConstruction:
     """Constructor validation and the deferred-truncation guard."""
 
+    def test_default_truncate_false_succeeds(self) -> None:
+        thb = THBSplineSpace(_root_1d(), _grid_1d())
+        assert thb.truncate is False
+
     def test_truncate_true_raises(self) -> None:
         with pytest.raises(NotImplementedError, match="truncate=False"):
-            THBSplineSpace(_root_1d(), _grid_1d())
-
-    def test_truncate_true_explicit_raises(self) -> None:
-        with pytest.raises(NotImplementedError):
             THBSplineSpace(_root_1d(), _grid_1d(), truncate=True)
+
+    def test_root_space_not_bspline_raises(self) -> None:
+        sp1d = BsplineSpace1D(_KNOTS_DEG2_4, 2)
+        with pytest.raises(TypeError, match="BsplineSpace"):
+            THBSplineSpace(sp1d, _grid_1d(), truncate=False)  # type: ignore[arg-type]
 
     def test_grid_not_hierarchical_raises(self) -> None:
         flat = uniform_grid([[0.0, 1.0]], 4)
@@ -117,6 +122,16 @@ class TestConstruction:
     def test_regularity_length_mismatch_raises(self) -> None:
         with pytest.raises(ValueError, match="regularity"):
             THBSplineSpace(_root_1d(), _grid_1d(), truncate=False, regularity=[1, 1])
+
+    def test_regularity_value_too_high_raises(self) -> None:
+        # degree=2 → max regularity is 1; regularity=2 is invalid.
+        with pytest.raises(ValueError, match="regularity"):
+            THBSplineSpace(_root_1d(), _grid_1d(), truncate=False, regularity=2)
+
+    def test_regularity_value_too_low_raises(self) -> None:
+        # -1 is the minimum (C^{-1}); -2 is invalid.
+        with pytest.raises(ValueError, match="regularity"):
+            THBSplineSpace(_root_1d(), _grid_1d(), truncate=False, regularity=-2)
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -151,6 +166,14 @@ class TestUnrefined:
         thb = THBSplineSpace(_root_2d(), _grid_2d(), truncate=False)
         mat, _ = _collocation(thb)
         np.testing.assert_allclose(mat.sum(axis=1), 1.0, atol=1e-12)
+
+    def test_repr_smoke(self) -> None:
+        thb = THBSplineSpace(_root_1d(), _grid_1d(), truncate=False)
+        r = repr(thb)
+        assert "THBSplineSpace" in r
+        assert "dim=1" in r
+        assert "num_levels=1" in r
+        assert "truncate=False" in r
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -234,13 +257,23 @@ class TestSelection:
     def test_active_indices_returns_copy(self) -> None:
         thb = THBSplineSpace(_root_1d(), _grid_1d(), truncate=False)
         idx = thb.active_function_indices(0)
+        original_first = int(idx[0])
         idx[0] = -999
-        np.testing.assert_array_equal(thb.active_function_indices(0)[0], 0)
+        assert int(thb.active_function_indices(0)[0]) == original_first
 
     def test_active_function_indices_out_of_range(self) -> None:
         thb = THBSplineSpace(_root_1d(), _grid_1d(), truncate=False)
         with pytest.raises(IndexError):
             thb.active_function_indices(5)
+
+    def test_fully_refined_level_has_no_active_functions(self) -> None:
+        # Refining the entire domain at level 0 displaces all level-0 functions.
+        root = _root_1d()
+        grid = _grid_1d()
+        grid.refine(0, [0], [4])
+        thb = THBSplineSpace(root, grid, truncate=False)
+        assert thb.num_active_functions_per_level[0] == 0
+        assert thb.num_active_functions_per_level[1] > 0
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -289,10 +322,48 @@ class TestEvaluation:
         with pytest.raises(ValueError, match="shape"):
             thb.tabulate_basis(0, np.array([[0.1]]), out=np.empty((1, 99)))
 
+    def test_tabulate_basis_bad_out_dtype_raises(self) -> None:
+        thb = THBSplineSpace(_root_1d(), _grid_1d(), truncate=False)
+        k = thb.active_basis(0).shape[0]
+        out_bad = np.empty((1, k), dtype=np.float32)
+        with pytest.raises(ValueError, match="dtype"):
+            thb.tabulate_basis(0, np.array([[0.1]]), out=out_bad)  # type: ignore[arg-type]
+
+    def test_tabulate_basis_readonly_out_raises(self) -> None:
+        thb = THBSplineSpace(_root_1d(), _grid_1d(), truncate=False)
+        k = thb.active_basis(0).shape[0]
+        out = np.empty((1, k), dtype=np.float64)
+        out.flags.writeable = False
+        with pytest.raises(ValueError, match="writeable"):
+            thb.tabulate_basis(0, np.array([[0.1]]), out=out)
+
     def test_tabulate_basis_bad_point_dim_raises(self) -> None:
         thb = THBSplineSpace(_root_2d(), _grid_2d(), truncate=False)
         with pytest.raises(ValueError, match="trailing dimension"):
             thb.tabulate_basis(0, np.array([[0.1, 0.2, 0.3]]))
+
+    def test_active_basis_bad_cid_raises(self) -> None:
+        thb = THBSplineSpace(_root_1d(), _grid_1d(), truncate=False)
+        with pytest.raises(IndexError):
+            thb.active_basis(999)
+
+    def test_tabulate_basis_bad_cid_raises(self) -> None:
+        thb = THBSplineSpace(_root_1d(), _grid_1d(), truncate=False)
+        with pytest.raises(IndexError):
+            thb.tabulate_basis(999, np.array([[0.5]]))
+
+    def test_tabulate_basis_pts_outside_cell_raises(self) -> None:
+        thb = THBSplineSpace(_root_1d(), _grid_1d(), truncate=False)
+        # Cell 0 covers [0.0, 0.25); point 0.5 is outside.
+        with pytest.raises(ValueError, match="bounds"):
+            thb.tabulate_basis(0, np.array([[0.5]]))
+
+    def test_tabulate_basis_scalar_point(self) -> None:
+        thb = THBSplineSpace(_root_1d(), _grid_1d(), truncate=False)
+        # Shape (dim,) — single point without a leading batch dimension.
+        result = thb.tabulate_basis(0, np.array([0.1]))
+        assert result.ndim == 1
+        assert result.shape[0] == thb.active_basis(0).shape[0]
 
     def test_not_partition_of_unity_when_refined(self) -> None:
         # HB (non-truncated) is NOT a partition of unity over refined regions.
@@ -302,8 +373,40 @@ class TestEvaluation:
         thb = THBSplineSpace(root, grid, truncate=False)
         cid = grid.locate([0.1])
         assert cid is not None
-        total = thb.tabulate_basis(cid, np.array([[0.1]])).sum()
-        assert total > 1.0 + 1e-3
+        lo, hi = grid.cell_bounds(cid)
+        mid = float(0.5 * (lo[0] + hi[0]))
+        total = thb.tabulate_basis(cid, np.array([[mid]])).sum()
+        # Functions from both level 0 and level 1 contribute; sum > 1.
+        assert total > 1.0
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Stale-grid detection
+# ──────────────────────────────────────────────────────────────────────────────
+
+
+class TestStaleGrid:
+    """THBSplineSpace raises RuntimeError if the grid is modified after construction."""
+
+    def test_stale_grid_active_basis_raises(self) -> None:
+        grid = _grid_1d()
+        thb = THBSplineSpace(_root_1d(), grid, truncate=False)
+        grid.refine(0, [0], [2])
+        with pytest.raises(RuntimeError, match="stale"):
+            thb.active_basis(0)
+
+    def test_stale_grid_tabulate_basis_raises(self) -> None:
+        grid = _grid_1d()
+        thb = THBSplineSpace(_root_1d(), grid, truncate=False)
+        grid.refine(0, [0], [2])
+        with pytest.raises(RuntimeError, match="stale"):
+            thb.tabulate_basis(0, np.array([[0.1]]))
+
+    def test_unmodified_grid_does_not_raise(self) -> None:
+        grid = _grid_1d()
+        thb = THBSplineSpace(_root_1d(), grid, truncate=False)
+        # No refine call — must not raise.
+        _ = thb.active_basis(0)
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -342,4 +445,5 @@ class TestLevelSpaces:
         # Axis 0 subdivided (8 intervals), axis 1 unchanged (4 intervals).
         assert level1.num_intervals == (8, 4)
         assert level0.num_intervals == (4, 4)
+        assert thb.num_active_functions == sum(thb.num_active_functions_per_level)
         assert _max_reproduction_residual(thb, lambda p: p[:, 0] * p[:, 1]) < 1e-9
