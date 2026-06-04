@@ -85,15 +85,15 @@ def _max_reproduction_residual(
 
 
 class TestConstruction:
-    """Constructor validation and the deferred-truncation guard."""
+    """Constructor validation and the ``truncate`` flag."""
 
-    def test_default_truncate_false_succeeds(self) -> None:
+    def test_default_is_truncated(self) -> None:
         thb = THBSplineSpace(_root_1d(), _grid_1d())
-        assert thb.truncate is False
+        assert thb.truncate is True
 
-    def test_truncate_true_raises(self) -> None:
-        with pytest.raises(NotImplementedError, match="truncate=False"):
-            THBSplineSpace(_root_1d(), _grid_1d(), truncate=True)
+    def test_truncate_false_succeeds(self) -> None:
+        thb = THBSplineSpace(_root_1d(), _grid_1d(), truncate=False)
+        assert thb.truncate is False
 
     def test_root_space_not_bspline_raises(self) -> None:
         sp1d = BsplineSpace1D(_KNOTS_DEG2_4, 2)
@@ -447,3 +447,100 @@ class TestLevelSpaces:
         assert level0.num_intervals == (4, 4)
         assert thb.num_active_functions == sum(thb.num_active_functions_per_level)
         assert _max_reproduction_residual(thb, lambda p: p[:, 0] * p[:, 1]) < 1e-9
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Truncation (THB)
+# ──────────────────────────────────────────────────────────────────────────────
+
+
+def _refined_1d_three_levels() -> THBSplineSpace:
+    """Degree-2 1D space with the left region refined twice (truncated)."""
+    grid = _grid_1d()
+    grid.refine(0, [0], [2])
+    grid.refine(1, [0], [2])
+    return THBSplineSpace(_root_1d(), grid, truncate=True)
+
+
+def _refined_2d_corner() -> THBSplineSpace:
+    """Degree-(2, 2) space with the lower-left corner refined once (truncated)."""
+    grid = _grid_2d()
+    grid.refine(0, [0, 0], [2, 2])
+    return THBSplineSpace(_root_2d(), grid, truncate=True)
+
+
+class TestTruncation:
+    """Truncated (THB) basis: partition of unity, nonnegativity, reproduction."""
+
+    def test_partition_of_unity_1d(self) -> None:
+        mat, _ = _collocation(_refined_1d_three_levels())
+        np.testing.assert_allclose(mat.sum(axis=1), 1.0, atol=1e-10)
+
+    def test_partition_of_unity_2d_corner(self) -> None:
+        mat, _ = _collocation(_refined_2d_corner())
+        np.testing.assert_allclose(mat.sum(axis=1), 1.0, atol=1e-10)
+
+    def test_partition_of_unity_2d_three_levels(self) -> None:
+        grid = _grid_2d()
+        grid.refine(0, [1, 1], [3, 3])
+        grid.refine(1, [2, 2], [6, 6])
+        thb = THBSplineSpace(_root_2d(), grid, truncate=True)
+        assert thb.num_levels == 3
+        mat, _ = _collocation(thb)
+        np.testing.assert_allclose(mat.sum(axis=1), 1.0, atol=1e-10)
+
+    def test_values_nonnegative(self) -> None:
+        mat, _ = _collocation(_refined_2d_corner())
+        assert mat.min() >= -1e-14
+
+    def test_reproduces_coarse_space_2d(self) -> None:
+        # V_0 ⊆ V_h holds for THB as well (same space as HB, just truncated basis).
+        thb = _refined_2d_corner()
+        assert _max_reproduction_residual(thb, lambda p: np.ones(len(p))) < 1e-9
+        assert _max_reproduction_residual(thb, lambda p: p[:, 0]) < 1e-9
+        assert _max_reproduction_residual(thb, lambda p: p[:, 1]) < 1e-9
+        assert _max_reproduction_residual(thb, lambda p: p[:, 0] * p[:, 1]) < 1e-9
+
+    def test_some_functions_truncated(self) -> None:
+        thb = _refined_2d_corner()
+        n_truncated = len(thb._trunc)
+        assert 0 < n_truncated < thb.num_active_functions
+
+    def test_no_truncation_when_unrefined(self) -> None:
+        thb = THBSplineSpace(_root_1d(), _grid_1d(), truncate=True)
+        assert len(thb._trunc) == 0
+        assert thb.num_active_functions == _root_1d().num_total_basis
+
+    def test_truncation_identity_outside_refinement(self) -> None:
+        # On a cell entirely outside the refined region, truncation changes nothing:
+        # THB and HB values coincide there (same selection, same values).
+        root = _root_1d()
+        grid = _grid_1d()
+        grid.refine(0, [0], [2])  # refine left half [0, 0.5)
+        thb = THBSplineSpace(root, grid, truncate=True)
+        hb = THBSplineSpace(root, grid, truncate=False)
+        cid = grid.locate([0.9])  # cell [0.75, 1.0], outside the refinement
+        assert cid is not None
+        lo, hi = grid.cell_bounds(cid)
+        pts = lo + (hi - lo) * np.linspace(0.1, 0.9, 5)[:, None]
+        np.testing.assert_array_equal(thb.active_basis(cid), hb.active_basis(cid))
+        np.testing.assert_allclose(
+            thb.tabulate_basis(cid, pts), hb.tabulate_basis(cid, pts), atol=1e-12
+        )
+
+    def test_truncation_restores_partition_of_unity_on_refined_cell(self) -> None:
+        # Where HB over-sums (> 1), THB sums to exactly 1.
+        root = _root_1d()
+        grid = _grid_1d()
+        grid.refine(0, [0], [2])
+        thb = THBSplineSpace(root, grid, truncate=True)
+        hb = THBSplineSpace(root, grid, truncate=False)
+        cid = grid.locate([0.1])  # refined region
+        assert cid is not None
+        pt = np.array([[0.1]])
+        assert thb.tabulate_basis(cid, pt).sum() == pytest.approx(1.0, abs=1e-12)
+        assert hb.tabulate_basis(cid, pt).sum() > 1.0 + 1e-3
+
+    def test_repr_truncate_true(self) -> None:
+        thb = THBSplineSpace(_root_1d(), _grid_1d(), truncate=True)
+        assert "truncate=True" in repr(thb)
