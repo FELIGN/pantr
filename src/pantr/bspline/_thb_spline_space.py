@@ -133,8 +133,6 @@ class THBSplineSpace:
         "_truncate",
     )
 
-    _support: tuple[tuple[_Support1D, ...], ...]
-
     def __init__(
         self,
         root_space: BsplineSpace,
