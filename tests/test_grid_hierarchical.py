@@ -500,3 +500,69 @@ class TestHierarchicalGridTags:
         _ = g.facet_tags  # create
         g.refine(0, [1], [3])
         assert g._facet_tags is None
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Active-set accessors
+# ──────────────────────────────────────────────────────────────────────────────
+
+
+class TestActiveSetAccessors:
+    """Tests for level_cells_per_axis, active_blocks, and the masks."""
+
+    def test_level_cells_per_axis(self) -> None:
+        g = _grid_1d(4, 2)
+        assert g.level_cells_per_axis(0) == (4,)
+        assert g.level_cells_per_axis(2) == (16,)
+
+    def test_level_cells_per_axis_2d_anisotropic(self) -> None:
+        g = hierarchical_grid(uniform_grid([[0.0, 1.0], [0.0, 1.0]], 4), (2, 1))
+        assert g.level_cells_per_axis(1) == (8, 4)
+
+    def test_level_cells_per_axis_negative_raises(self) -> None:
+        with pytest.raises(ValueError, match="level"):
+            _grid_1d(4, 2).level_cells_per_axis(-1)
+
+    def test_active_blocks_fresh(self) -> None:
+        g = _grid_1d(4, 2)
+        assert g.active_blocks(0) == (((0,), (4,)),)
+
+    def test_active_blocks_after_refine(self) -> None:
+        g = _grid_1d(4, 2)
+        g.refine(0, [0], [2])
+        assert g.active_blocks(0) == (((2,), (4,)),)
+        assert g.active_blocks(1) == (((0,), (4,)),)
+
+    def test_active_blocks_out_of_range_raises(self) -> None:
+        with pytest.raises(ValueError, match="level"):
+            _grid_1d(4, 2).active_blocks(1)
+
+    def test_active_leaf_mask_total_equals_num_cells(self) -> None:
+        g = _grid_2d(4, 2)
+        g.refine(0, [0, 0], [2, 2])
+        g.refine(1, [0, 0], [2, 2])
+        total = sum(int(g.active_leaf_mask(level).sum()) for level in range(g.max_level + 1))
+        assert total == g.num_cells
+
+    def test_subdomain_mask_level0_all_true(self) -> None:
+        g = _grid_2d(4, 2)
+        g.refine(0, [0, 0], [2, 2])
+        assert g.subdomain_mask(0).all()
+
+    def test_mask_consistency_1d(self) -> None:
+        g = _grid_1d(4, 2)
+        g.refine(0, [0], [2])
+        np.testing.assert_array_equal(g.active_leaf_mask(0), [False, False, True, True])
+        np.testing.assert_array_equal(g.subdomain_mask(0), [True, True, True, True])
+        np.testing.assert_array_equal(
+            g.subdomain_mask(1), [True, True, True, True, False, False, False, False]
+        )
+        np.testing.assert_array_equal(
+            g.active_leaf_mask(1), [True, True, True, True, False, False, False, False]
+        )
+
+    def test_subdomain_mask_out_of_range_raises(self) -> None:
+        g = _grid_1d(4, 2)
+        g.refine(0, [0], [2])
+        with pytest.raises(ValueError, match="level"):
+            g.subdomain_mask(2)
