@@ -171,9 +171,8 @@ class THBSplineSpace:
         _num_active (int): Total number of active hierarchical functions.
         _grid_snapshot (tuple[int, int]): ``(max_level, num_cells)`` captured at
             construction; used to detect post-construction grid mutations.
-        _trunc (dict[int, _TruncCoeffs]): Map from global dof to stored truncated
-            coefficients; only truncated functions appear (empty when
-            ``truncate=False``).
+        _trunc (dict): Map from global dof (int) to ``_TruncCoeffs``; only
+            truncated functions appear (empty when ``truncate=False``).
     """
 
     __slots__ = (
