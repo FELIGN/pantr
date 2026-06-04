@@ -108,9 +108,9 @@ class THBSplineSpace:
             subdividing to build finer levels.
         _level_spaces (tuple[BsplineSpace, ...]): Per-level tensor-product spaces;
             index ``l`` is the root subdivided to level ``l``.
-        _support (tuple[tuple[_Support1D, ...], ...]): Per-level, per-direction
-            function-to-cell support arrays (one ``_Support1D`` triple per direction
-            per level).
+        _support (tuple): Per-level, per-direction function-to-cell support arrays;
+            each entry is a tuple of ``(first_basis, first_cell, last_cell)`` int64
+            arrays for one direction at one level.
         _active_funcs (tuple[npt.NDArray[np.int64], ...]): Per-level sorted flat
             (C-order) indices of the active tensor-product functions.
         _func_offset (npt.NDArray[np.int64]): Per-level global-dof base; length
