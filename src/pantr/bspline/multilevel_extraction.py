@@ -33,15 +33,14 @@ Main exports:
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, get_args
+from typing import cast, get_args
 
 import numpy as np
+import numpy.typing as npt
 
+from ..basis._basis_utils import _allocate_or_validate_out
 from ._thb_spline_space import THBSplineSpace
 from .spanwise_element_extraction import SpanwiseElementExtraction, Target
-
-if TYPE_CHECKING:
-    import numpy.typing as npt
 
 
 class MultiLevelExtraction:
@@ -69,7 +68,9 @@ class MultiLevelExtraction:
     Attributes:
         _space (THBSplineSpace): The hierarchical space being extracted.
         _target (Target): The single-level reference basis tag.
-        _oslo (tuple): Cached per-level, per-direction two-scale matrices.
+        _oslo (tuple[tuple[npt.NDArray[np.float64], ...], ...]): Cached per-level,
+            per-direction two-scale (Oslo) matrices; ``_oslo[m][k]`` maps level ``m``
+            to level ``m+1`` in direction ``k``.
         _ext (dict[int, SpanwiseElementExtraction]): Cache of per-level single-level
             extractions, built lazily.
     """
@@ -130,11 +131,12 @@ class MultiLevelExtraction:
         return self._space.dim
 
     @property
-    def dtype(self) -> npt.DTypeLike:
+    def dtype(self) -> type[np.float64]:
         """Get the floating-point dtype of the operators.
 
         Returns:
-            npt.DTypeLike: ``numpy.float64``.
+            type[np.float64]: Always ``numpy.float64``; Oslo matrices and all operators
+            are computed in double precision.
         """
         return np.float64
 
@@ -146,6 +148,14 @@ class MultiLevelExtraction:
             int: ``space.grid.num_cells``.
         """
         return self._space.grid.num_cells
+
+    def __len__(self) -> int:
+        """Return the number of active cells.
+
+        Returns:
+            int: ``num_elements``.
+        """
+        return self.num_elements
 
     # ------------------------------------------------------------------
     # Per-element operators
@@ -183,7 +193,8 @@ class MultiLevelExtraction:
         Args:
             cid (int): Active cell flat id in ``[0, num_elements)``.
             out (npt.NDArray[np.float64] | None): Optional output array of shape
-                ``(K, n)``.  Allocated when ``None``.
+                ``(K, n)`` where ``K = active_basis(cid).size`` and
+                ``n = (p + 1) ** d``.  Allocated when ``None``.
 
         Returns:
             npt.NDArray[np.float64]: The operator :math:`M^\epsilon`.
@@ -194,6 +205,7 @@ class MultiLevelExtraction:
             RuntimeError: If the grid has been modified since construction.
         """
         space = self._space
+        space._check_not_stale()
         grid = space.grid
         level = grid.cell_level(cid)
         cell_midx = grid.cell_multi_index(cid)
@@ -207,7 +219,10 @@ class MultiLevelExtraction:
         n_per = tuple(degrees[d] + 1 for d in range(dim))
         n_single = int(np.prod(n_per))
 
-        result = self._allocate_or_validate(out, (n_active, n_single))
+        result = cast(
+            npt.NDArray[np.float64],
+            _allocate_or_validate_out(out, (n_active, n_single), np.float64),
+        )
         result[...] = 0.0
         for row, (_, origin_level, multi) in enumerate(contribs):
             box_lo, coeffs = self._element_coeffs(origin_level, multi, level)
@@ -224,8 +239,14 @@ class MultiLevelExtraction:
                     break
                 dst_slices.append(slice(j0, j1))
                 src_slices.append(slice(offset + j0, offset + j1))
-            if covered:
-                block[tuple(dst_slices)] = coeffs[tuple(src_slices)]
+            if not covered:
+                raise RuntimeError(
+                    f"multilevel_operator: cell {cid} row {row} "
+                    f"(origin_level={origin_level}, multi={multi}) — refined coefficient "
+                    "box does not overlap the cell window. This is a bug; please report "
+                    "it with the space and grid configuration."
+                )
+            block[tuple(dst_slices)] = coeffs[tuple(src_slices)]
             result[row] = block.ravel()
         return result
 
@@ -245,7 +266,8 @@ class MultiLevelExtraction:
         Args:
             cid (int): Active cell flat id in ``[0, num_elements)``.
             out (npt.NDArray[np.float64] | None): Optional output array of shape
-                ``(K, n)``.  Allocated when ``None``.
+                ``(K, n)`` where ``K = active_basis(cid).size`` and
+                ``n = (p + 1) ** d``.  Allocated when ``None``.
 
         Returns:
             npt.NDArray[np.float64]: The operator :math:`C^\epsilon`.
@@ -256,15 +278,18 @@ class MultiLevelExtraction:
             RuntimeError: If the grid has been modified since construction.
         """
         space = self._space
+        space._check_not_stale()
         level = space.grid.cell_level(cid)
         cell_midx = space.grid.cell_multi_index(cid)
+        level_ext = self._level_extraction(level)
+        n_in = int(np.prod(level_ext.input_shape_per_dir))
         multilevel = self.multilevel_operator(cid)
-        single_level = self._level_extraction(level).operator(cell_midx)
-        product: npt.NDArray[np.float64] = np.asarray(
-            multilevel @ np.asarray(single_level, dtype=np.float64), dtype=np.float64
+        result = cast(
+            npt.NDArray[np.float64],
+            _allocate_or_validate_out(out, (multilevel.shape[0], n_in), np.float64),
         )
-        result = self._allocate_or_validate(out, product.shape)
-        result[...] = product
+        single_level_f64 = np.asarray(level_ext.operator(cell_midx), dtype=np.float64)
+        np.matmul(multilevel, single_level_f64, out=result)
         return result
 
     # ------------------------------------------------------------------
@@ -272,7 +297,7 @@ class MultiLevelExtraction:
     # ------------------------------------------------------------------
 
     def _level_extraction(self, level: int) -> SpanwiseElementExtraction:
-        """Return the cached single-level extraction for ``level``.
+        """Return (building and caching on first call) the single-level extraction for ``level``.
 
         Args:
             level (int): Hierarchy level.
@@ -296,12 +321,9 @@ class MultiLevelExtraction:
         """Express a hierarchical function on a cell in the level-``target_level`` basis.
 
         Refines the originating B-spline ``B^{origin_level}_multi`` from its origin level
-        up to ``target_level``, applying the (active-function) truncation at each finer
-        level when the space is truncated.  Truncations beyond ``target_level`` do not
-        affect values on a level-``target_level`` leaf cell, so this gives the function's
-        exact coefficients in the level-``target_level`` tensor-product basis over the
-        cell — even when the function's globally-stored representation lives at a finer
-        level than ``target_level``.
+        up to ``target_level``, applying the truncation at each intermediate level when the
+        space is truncated.  The result is the function's exact coefficients in the
+        level-``target_level`` tensor-product basis over the cell.
 
         Args:
             origin_level (int): Level the function originates at.
@@ -311,7 +333,14 @@ class MultiLevelExtraction:
         Returns:
             tuple[list[int], npt.NDArray[np.float64]]: ``(box_lo, coeffs)`` over the
             level-``target_level`` function box.
+
+        Raises:
+            ValueError: If ``origin_level > target_level``.
         """
+        if origin_level > target_level:
+            raise ValueError(
+                f"origin_level ({origin_level}) must be <= target_level ({target_level})."
+            )
         space = self._space
         dim = space.dim
         box_lo = [int(multi[d]) for d in range(dim)]
@@ -330,33 +359,6 @@ class MultiLevelExtraction:
                     space._level_spaces[lvl + 1].num_basis,
                 )
         return box_lo, coeffs
-
-    @staticmethod
-    def _allocate_or_validate(
-        out: npt.NDArray[np.float64] | None,
-        shape: tuple[int, ...],
-    ) -> npt.NDArray[np.float64]:
-        """Allocate a fresh ``float64`` array or validate a provided ``out``.
-
-        Args:
-            out (npt.NDArray[np.float64] | None): Candidate output array, or ``None``.
-            shape (tuple[int, ...]): Required shape.
-
-        Returns:
-            npt.NDArray[np.float64]: ``out`` (validated) or a fresh array.
-
-        Raises:
-            ValueError: If ``out`` has the wrong shape, dtype, or is not writeable.
-        """
-        if out is None:
-            return np.empty(shape, dtype=np.float64)
-        if out.shape != shape:
-            raise ValueError(f"out must have shape {shape}; got {out.shape}.")
-        if out.dtype != np.float64:
-            raise ValueError(f"out must have dtype float64; got {out.dtype}.")
-        if not out.flags.writeable:
-            raise ValueError("out must be writeable.")
-        return out
 
     def __repr__(self) -> str:
         """Return a compact string representation.

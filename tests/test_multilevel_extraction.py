@@ -40,8 +40,8 @@ def _grid_2d() -> HierarchicalGrid:
     return hierarchical_grid(uniform_grid([[0.0, 1.0], [0.0, 1.0]], 4), 2)
 
 
-def _interior_points(thb: THBSplineSpace, cid: int) -> npt.NDArray[np.float64]:
-    """Reference points ξ ∈ (0,1)^d and their cell images, for one cell."""
+def _interior_points(thb: THBSplineSpace) -> npt.NDArray[np.float64]:
+    """Reference points ξ ∈ (0,1)^d in the cell interior (reference space)."""
     u = np.linspace(0.0, 1.0, thb.degrees[0] + 3)[1:-1]
     mesh = np.meshgrid(*[u] * thb.dim, indexing="ij")
     return np.stack([m.ravel() for m in mesh], axis=-1)
@@ -54,7 +54,7 @@ def _reproduction_error(thb: THBSplineSpace) -> float:
     err = 0.0
     for cid in range(thb.grid.num_cells):
         lo, hi = thb.grid.cell_bounds(cid)
-        xi = _interior_points(thb, cid)
+        xi = _interior_points(thb)
         x = lo + (hi - lo) * xi
         c_op = mle.operator(cid)
         bernstein = tabulate_bernstein(degrees, xi)
@@ -207,6 +207,21 @@ class TestMayerNarrowBand:
         assert _reproduction_error(thb) < 1e-12
         assert _pou_error(thb) < 1e-10
 
+    def test_narrow_band_no_zero_rows(self) -> None:
+        # If the §3.6.1 bug were present, the straddling passive function would be
+        # spuriously truncated to zero in Mᵉ.  Guard that no row is all zeros.
+        grid = _grid_1d()
+        grid.refine(0, [1], [2])
+        grid.refine(1, [2], [3])
+        thb = THBSplineSpace(_root_1d(), grid)
+        mle = MultiLevelExtraction(thb)
+        for cid in range(thb.grid.num_cells):
+            m_op = mle.multilevel_operator(cid)
+            assert not np.any(np.all(m_op == 0.0, axis=1)), (
+                f"cell {cid}: multilevel_operator has an all-zero row "
+                "(passive straddling function was spuriously dropped)"
+            )
+
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Operator shape / API / validation
@@ -243,6 +258,68 @@ class TestOperatorApi:
         with pytest.raises(ValueError, match="shape"):
             mle.operator(0, out=np.empty((1, 99)))
 
+    def test_out_bad_dtype_raises(self) -> None:
+        thb = THBSplineSpace(_root_1d(), _grid_1d())
+        mle = MultiLevelExtraction(thb)
+        k = mle.active_basis(0).shape[0]
+        n = thb.degrees[0] + 1
+        with pytest.raises(ValueError, match="dtype"):
+            mle.operator(0, out=np.empty((k, n), dtype=np.float32))
+        with pytest.raises(ValueError, match="dtype"):
+            mle.multilevel_operator(0, out=np.empty((k, n), dtype=np.float32))
+
+    def test_out_not_writeable_raises(self) -> None:
+        thb = THBSplineSpace(_root_1d(), _grid_1d())
+        mle = MultiLevelExtraction(thb)
+        k = mle.active_basis(0).shape[0]
+        n = thb.degrees[0] + 1
+        buf = np.empty((k, n), dtype=np.float64)
+        buf.flags.writeable = False
+        with pytest.raises(ValueError, match="writeable"):
+            mle.operator(0, out=buf)
+        with pytest.raises(ValueError, match="writeable"):
+            mle.multilevel_operator(0, out=buf)
+
+    def test_multilevel_operator_out_argument(self) -> None:
+        thb = THBSplineSpace(_root_1d(), _grid_1d())
+        mle = MultiLevelExtraction(thb)
+        k = mle.active_basis(0).shape[0]
+        out = np.empty((k, thb.degrees[0] + 1), dtype=np.float64)
+        ret = mle.multilevel_operator(0, out=out)
+        assert ret is out
+        np.testing.assert_allclose(out, mle.multilevel_operator(0))
+
+    def test_stale_grid_raises(self) -> None:
+        grid = _grid_1d()
+        thb = THBSplineSpace(_root_1d(), grid)
+        mle = MultiLevelExtraction(thb)
+        grid.refine(0, [0], [2])
+        with pytest.raises(RuntimeError, match="stale"):
+            mle.operator(0)
+        with pytest.raises(RuntimeError, match="stale"):
+            mle.multilevel_operator(0)
+
+    def test_negative_cid_raises(self) -> None:
+        thb = THBSplineSpace(_root_1d(), _grid_1d())
+        mle = MultiLevelExtraction(thb)
+        with pytest.raises(IndexError):
+            mle.operator(-1)
+        with pytest.raises(IndexError):
+            mle.multilevel_operator(-1)
+
+    def test_cardinal_target(self) -> None:
+        thb = THBSplineSpace(_root_1d(), _grid_1d())
+        mle = MultiLevelExtraction(thb, "cardinal")
+        assert mle.target == "cardinal"
+        for cid in range(thb.grid.num_cells):
+            mle.operator(cid)
+            mle.multilevel_operator(cid)
+
+    def test_len(self) -> None:
+        thb = THBSplineSpace(_root_1d(), _grid_1d())
+        mle = MultiLevelExtraction(thb)
+        assert len(mle) == mle.num_elements == thb.grid.num_cells
+
     def test_out_of_range_cid_raises(self) -> None:
         thb = THBSplineSpace(_root_1d(), _grid_1d())
         mle = MultiLevelExtraction(thb)
@@ -261,4 +338,8 @@ class TestOperatorApi:
             np.testing.assert_allclose(
                 lagrange.multilevel_operator(cid), bezier.multilevel_operator(cid), atol=1e-12
             )
-            assert lagrange.operator(cid).shape == bezier.operator(cid).shape
+        # Cᵉ must differ between targets (target is actually threaded through to Eᵉ).
+        assert any(
+            not np.allclose(lagrange.operator(cid), bezier.operator(cid))
+            for cid in range(thb.grid.num_cells)
+        ), "lagrange and bezier operators should differ on at least one cell"
