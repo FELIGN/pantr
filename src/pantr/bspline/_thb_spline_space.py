@@ -1121,6 +1121,137 @@ class THBSplineSpace:
             (k_nbr, p) for p in itertools.product(*parent_ranges) if grid.is_active_leaf(k_nbr, p)
         ]
 
+    def coarsen(
+        self,
+        cell_ids: npt.ArrayLike,
+        *,
+        admissible_class: int | None = 2,
+    ) -> THBSplineSpace:
+        """Return a new space with the marked cells coarsened away.
+
+        A parent cell is reactivated (its children removed) only when **all** of its
+        children are marked active leaves, mirroring the coarsening algorithm of
+        Carraturo et al. (2019, Alg. 5).  With ``admissible_class=None`` this is the
+        exact inverse of :meth:`refine`: ``space.refine(cells).coarsen(children_of(cells))``
+        recovers ``space``.  With ``admissible_class=m`` the guard may suppress some
+        coarsenings, so the recovery holds only when the guard permits them all.
+
+        With ``admissible_class=m`` (the default ``m=2``) a parent is reactivated only
+        if its coarsening neighborhood (Def. 3.5) is empty, so the resulting mesh stays
+        admissible of class ``m``.  With ``admissible_class=None`` that guard is skipped.
+
+        The space is immutable: a fresh grid is coarsened and a new
+        :class:`THBSplineSpace` is built; ``self`` and its grid are unchanged.
+        An empty ``cell_ids`` is valid and returns an unchanged copy of the space.
+
+        Args:
+            cell_ids (npt.ArrayLike): Flat ids of active leaf cells to coarsen away.
+                An empty array is valid and produces an unchanged copy.
+            admissible_class (int | None): Admissibility class ``m >= 2`` to maintain,
+                or ``None`` to skip the admissibility guard.  Defaults to ``2``.
+
+        Returns:
+            THBSplineSpace: A new space on the coarsened grid (same ``root_space``,
+            ``truncate``, and ``regularity``).
+
+        Raises:
+            IndexError: If any id is outside ``[0, grid.num_cells)``.
+            ValueError: If ``admissible_class`` is an integer ``< 2``.
+            RuntimeError: If the grid has been modified since construction.
+        """
+        self._check_not_stale()
+        if admissible_class is not None and admissible_class < 2:  # noqa: PLR2004
+            raise ValueError(
+                f"admissible_class must be an integer >= 2 or None; got {admissible_class!r}."
+            )
+        ids = np.unique(np.asarray(cell_ids, dtype=np.int64).ravel())
+        bad = [int(x) for x in ids if int(x) < 0 or int(x) >= self._grid.num_cells]
+        if bad:
+            raise IndexError(
+                f"cell_ids must lie in [0, {self._grid.num_cells}); got out-of-range id(s): {bad}."
+            )
+        dim = self.dim
+        factor = self._grid.factor
+        marked = {(self._grid.cell_level(int(c)), self._grid.cell_multi_index(int(c))) for c in ids}
+        parents = {
+            (level - 1, tuple(midx[d] // factor[d] for d in range(dim)))
+            for level, midx in marked
+            if level >= 1
+        }
+        grid_copy = copy.deepcopy(self._grid)
+        for parent_level, pmidx in sorted(parents, key=lambda pc: -pc[0]):
+            children = [
+                tuple(pmidx[d] * factor[d] + off[d] for d in range(dim))
+                for off in itertools.product(*(range(factor[d]) for d in range(dim)))
+            ]
+            if not all(grid_copy.is_active_leaf(parent_level + 1, c) for c in children):
+                continue
+            if not all((parent_level + 1, c) in marked for c in children):
+                continue
+            if admissible_class is not None and not self._coarsening_neighborhood_empty(
+                parent_level, pmidx, admissible_class, grid_copy
+            ):
+                continue
+            grid_copy.coarsen(parent_level, list(pmidx), [p + 1 for p in pmidx])
+        return THBSplineSpace(
+            self._root_space,
+            grid_copy,
+            truncate=self._truncate,
+            regularity=self._regularity,
+        )
+
+    def _coarsening_neighborhood_empty(
+        self,
+        parent_level: int,
+        pmidx: tuple[int, ...],
+        m: int,
+        grid: HierarchicalGrid,
+    ) -> bool:
+        """Return whether the coarsening neighborhood of a parent is empty (Def. 3.5).
+
+        The neighborhood is the set of active cells at level ``parent_level + m``
+        contained in the multilevel support extension (at level ``parent_level + 1``)
+        of the parent's children.  When it is empty, reactivating the parent preserves
+        class-``m`` admissibility (Carraturo et al. 2019).
+
+        Args:
+            parent_level (int): Level of the parent being considered for coarsening.
+            pmidx (tuple[int, ...]): Per-axis index of the parent at ``parent_level``.
+            m (int): Admissibility class (``>= 2``).
+            grid (HierarchicalGrid): The grid copy whose active set is queried.
+
+        Returns:
+            bool: ``True`` iff no active cell at level ``parent_level + m`` lies in the
+            support extension of the parent's children.
+
+        Note:
+            Assumes ``parent_level + 1 < self.num_levels`` and ``m >= 2``; both are
+            guaranteed by the calling context in :meth:`coarsen`.  No input validation
+            is performed.
+        """
+        dim = self.dim
+        factor = self._grid.factor
+        support = self._support[parent_level + 1]
+        ext_lo: list[int] = []
+        ext_hi: list[int] = []
+        for d in range(dim):
+            first_basis, first_cell, last_cell = support[d]
+            c_lo = pmidx[d] * factor[d]
+            c_hi = (pmidx[d] + 1) * factor[d]
+            fmin = int(first_basis[c_lo])
+            fmax = int(first_basis[c_hi - 1]) + self.degrees[d]
+            ext_lo.append(int(first_cell[fmin]))
+            ext_hi.append(int(last_cell[fmax]) + 1)
+        target = parent_level + m
+        if target > grid.max_level:
+            return True
+        box_lo = [ext_lo[d] * factor[d] ** (m - 1) for d in range(dim)]
+        box_hi = [ext_hi[d] * factor[d] ** (m - 1) for d in range(dim)]
+        for blk_lo, blk_hi in grid.active_blocks(target):
+            if all(max(box_lo[d], blk_lo[d]) < min(box_hi[d], blk_hi[d]) for d in range(dim)):
+                return False
+        return True
+
     # ------------------------------------------------------------------
     # Prolongation
     # ------------------------------------------------------------------
@@ -1212,7 +1343,7 @@ class THBSplineSpace:
             mismatches.append(
                 f"fine.num_levels={fine.num_levels} < self.num_levels={self.num_levels}"
             )
-        if not all(
+        if fine.dim == self.dim and not all(
             np.array_equal(fine._root_space.spaces[k].knots, self._root_space.spaces[k].knots)
             for k in range(self.dim)
         ):
@@ -1262,6 +1393,36 @@ class THBSplineSpace:
                 f"fine is not a refinement of this space (prolongation residual {residual:.2e})."
             )
         return prolongation
+
+    def restriction_to(self, coarse: THBSplineSpace) -> npt.NDArray[np.float64]:
+        """Return the restriction matrix from this space to a coarsening ``coarse``.
+
+        ``self`` must be a refinement of ``coarse``.  The restriction is the algebraic
+        pseudo-inverse of the prolongation, ``R = pinv(P)`` with
+        ``P = coarse.prolongation_to(self)``.  It is assembly-free (no mass matrix) and
+        satisfies ``R @ P == I``, so restricting a prolonged coarse field recovers it
+        exactly; for a general fine field ``R @ u_fine`` is the least-squares
+        (coefficient-space) projection onto the coarse space.
+
+        Args:
+            coarse (THBSplineSpace): A coarsening of this space (``self`` is a
+                refinement of ``coarse``).
+
+        Returns:
+            npt.NDArray[np.float64]: Matrix ``R`` of shape
+            ``(coarse.num_active_functions, self.num_active_functions)``.
+
+        Raises:
+            TypeError: If ``coarse`` is not a :class:`THBSplineSpace`.
+            ValueError: If ``self`` is not a refinement of ``coarse``.
+        """
+        if not isinstance(coarse, THBSplineSpace):
+            raise TypeError(f"coarse must be a THBSplineSpace; got {type(coarse)!r}.")
+        prolongation = coarse.prolongation_to(self)
+        restriction: npt.NDArray[np.float64] = np.asarray(
+            np.linalg.pinv(prolongation), dtype=np.float64
+        )
+        return restriction
 
     def __repr__(self) -> str:
         """Return a compact string representation.

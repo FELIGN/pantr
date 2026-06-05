@@ -953,6 +953,83 @@ class HierarchicalGrid(Grid):
         for lv in sorted(level_lo):
             self.refine(lv, level_lo[lv], level_hi[lv])
 
+    def coarsen(
+        self,
+        level: int,
+        lo: Sequence[int],
+        hi: Sequence[int],
+    ) -> None:
+        """Coarsen the rectangular region ``[lo, hi)`` at ``level`` (inverse of refine).
+
+        Reactivates the level-``level`` cells in ``[lo, hi)`` and removes their
+        level-``(level+1)`` children.  The region must be **fully refined to exactly
+        level ``level+1``**: every child cell in ``[lo*factor, hi*factor)`` must be an
+        active leaf at ``level+1`` (none further refined, none still a leaf at
+        ``level``).  Calling :meth:`coarsen` with the same arguments as a preceding
+        :meth:`refine` exactly restores the grid.
+
+        After the call all flat cell ids are **reassigned** (the BVH, cell tags, and
+        facet tags are invalidated).
+
+        Args:
+            level (int): Level whose cells are reactivated.  Must satisfy
+                ``0 <= level < max_level``.
+            lo (Sequence[int]): Per-direction start index (inclusive), in level-``level``
+                coordinates.
+            hi (Sequence[int]): Per-direction end index (exclusive), in level-``level``
+                coordinates.
+
+        Raises:
+            ValueError: If ``level`` is out of range, ``lo``/``hi`` have the wrong
+                length, any ``lo[k] >= hi[k]``, ``[lo, hi)`` is out of bounds, or the
+                region is not fully refined to exactly level ``level+1``.
+        """
+        ndim = self.ndim
+        if not (0 <= int(level) < self.max_level):
+            raise ValueError(f"level must be in [0, {self.max_level}); got {level!r}.")
+        lo_t = tuple(int(x) for x in lo)
+        hi_t = tuple(int(x) for x in hi)
+        if len(lo_t) != ndim or len(hi_t) != ndim:
+            raise ValueError(f"lo and hi must have length {ndim}; got {len(lo_t)} and {len(hi_t)}.")
+        if any(lo_k >= h for lo_k, h in zip(lo_t, hi_t, strict=False)):
+            raise ValueError(
+                f"lo must be strictly less than hi in every dimension; "
+                f"got lo={lo_t!r}, hi={hi_t!r}."
+            )
+        for k in range(ndim):
+            n_k = self._n_cells_at_level_k(level, k)
+            if lo_t[k] < 0 or hi_t[k] > n_k:
+                raise ValueError(
+                    f"[lo, hi) out of bounds at level {level}: "
+                    f"axis {k} needs [0, {n_k}), got [{lo_t[k]}, {hi_t[k]})."
+                )
+
+        child_lo = tuple(lo_t[k] * self._factor[k] for k in range(ndim))
+        child_hi = tuple(hi_t[k] * self._factor[k] for k in range(ndim))
+        child_size = _block_size(child_lo, child_hi)
+
+        # The children region must be fully tiled by active leaves at level+1.
+        covered = 0
+        new_finer: list[_Block] = []
+        for block_lo, block_hi in self._blocks[level + 1]:
+            inter = _rect_intersect(block_lo, block_hi, child_lo, child_hi)
+            if inter is None:
+                new_finer.append((block_lo, block_hi))
+                continue
+            covered += _block_size(*inter)
+            new_finer.extend(_peel(block_lo, block_hi, *inter))
+        if covered != child_size:
+            raise ValueError(
+                f"cannot coarsen [{lo_t}, {hi_t}) at level {level}: the region is not "
+                f"fully refined to exactly level {level + 1}."
+            )
+
+        self._blocks[level + 1] = _normalize_blocks(new_finer)
+        self._blocks[level] = _normalize_blocks([*self._blocks[level], (lo_t, hi_t)])
+        while len(self._blocks) > 1 and not self._blocks[-1]:
+            self._blocks.pop()
+        self._rebuild()
+
     # ------------------------------------------------------------------
     # Overrides for BVH efficiency
     # ------------------------------------------------------------------

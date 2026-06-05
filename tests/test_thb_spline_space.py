@@ -1054,6 +1054,13 @@ class TestProlongation:
         with pytest.raises(ValueError, match="refinement"):
             coarse.prolongation_to(other)
 
+    def test_dim_mismatch_raises(self) -> None:
+        # self.dim=2 > fine.dim=1: old code raised IndexError; now raises ValueError
+        coarse_2d = THBSplineSpace(_root_2d(), _grid_2d())
+        fine_1d = THBSplineSpace(_root_1d(), _grid_1d())
+        with pytest.raises(ValueError):
+            coarse_2d.prolongation_to(fine_1d)
+
     def test_truncate_mismatch_raises(self) -> None:
         coarse = THBSplineSpace(_root_1d(), _grid_1d())  # truncate=True (default)
         fine_hb = THBSplineSpace(_root_1d(), _grid_1d(), truncate=False)
@@ -1070,3 +1077,111 @@ class TestProlongation:
         coarse = THBSplineSpace(_root_1d(), _grid_1d())
         with pytest.raises(TypeError, match="THBSplineSpace"):
             coarse.prolongation_to(_grid_1d())  # type: ignore[arg-type]
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Coarsening / restriction
+# ──────────────────────────────────────────────────────────────────────────────
+
+
+def _cells_at_level(thb: THBSplineSpace, level: int) -> list[int]:
+    """Return the flat ids of active cells at ``level``."""
+    return [c for c in range(thb.grid.num_cells) if thb.grid.cell_level(c) == level]
+
+
+def _active_indices(thb: THBSplineSpace) -> tuple[tuple[int, ...], ...]:
+    """Return the per-level active function indices as nested tuples."""
+    return tuple(tuple(thb.active_function_indices(lv).tolist()) for lv in range(thb.num_levels))
+
+
+class TestCoarsen:
+    """THBSplineSpace.coarsen reverses refinement and grades for admissibility."""
+
+    def test_coarsen_inverts_refine_1d(self) -> None:
+        coarse = THBSplineSpace(_root_1d(), _grid_1d())
+        fine = coarse.refine([0, 1])
+        back = fine.coarsen(_cells_at_level(fine, 1))
+        assert _active_indices(back) == _active_indices(coarse)
+
+    def test_coarsen_inverts_refine_2d(self) -> None:
+        coarse = THBSplineSpace(_root_2d(), _grid_2d())
+        fine = coarse.refine([0], admissible_class=None)
+        back = fine.coarsen(_cells_at_level(fine, 1), admissible_class=None)
+        assert _active_indices(back) == _active_indices(coarse)
+
+    def test_coarsen_partition_of_unity(self) -> None:
+        coarse = THBSplineSpace(_root_2d(), _grid_2d())
+        fine = coarse.refine([0])
+        back = fine.coarsen(_cells_at_level(fine, 1))
+        mat, _ = _collocation(back)
+        np.testing.assert_allclose(mat.sum(axis=1), 1.0, atol=1e-10)
+
+    def test_partial_children_not_coarsened(self) -> None:
+        coarse = THBSplineSpace(_root_1d(), _grid_1d())
+        fine = coarse.refine([0])  # cell 0 -> children at level 1
+        children = _cells_at_level(fine, 1)
+        back = fine.coarsen([children[0]])  # only one of the two children marked
+        assert back.num_active_functions == fine.num_active_functions  # no-op
+
+    def test_root_cells_not_coarsened(self) -> None:
+        coarse = THBSplineSpace(_root_1d(), _grid_1d())
+        back = coarse.coarsen([0])  # level-0 cell has no parent
+        assert back.num_active_functions == coarse.num_active_functions
+
+    def test_coarsen_out_of_range_raises(self) -> None:
+        coarse = THBSplineSpace(_root_1d(), _grid_1d())
+        with pytest.raises(IndexError):
+            coarse.coarsen([999])
+
+    def test_coarsen_admissible_class_below_two_raises(self) -> None:
+        coarse = THBSplineSpace(_root_1d(), _grid_1d())
+        with pytest.raises(ValueError, match="admissible_class"):
+            coarse.coarsen([0], admissible_class=1)
+
+    def test_admissibility_blocks_unsafe_coarsening(self) -> None:
+        # Build a 3-level 1D mesh: refine [0, 0.5) to level 1, then [0, 0.25) to level 2.
+        coarse = THBSplineSpace(_root_1d(), _grid_1d())
+        f1 = coarse.refine([0, 1], admissible_class=None)  # level-1 over [0, 0.5)
+        deep = f1.refine(
+            _cells_at_level(f1, 1)[:2], admissible_class=None
+        )  # level-2 over [0, 0.25)
+        assert deep.num_levels == 3
+        # Coarsening the level-1 leaves back to level 0 would make a level-0 function
+        # span levels 0..2 (class 3); the class-2 guard must refuse what ungraded allows.
+        marked = _cells_at_level(deep, 1)
+        graded = deep.coarsen(marked, admissible_class=2)
+        ungraded = deep.coarsen(marked, admissible_class=None)
+        assert _nonzero_level_span(graded) <= 2
+        assert graded.num_active_functions != ungraded.num_active_functions
+
+
+class TestRestriction:
+    """The fine->coarse restriction is the pseudo-inverse of the prolongation."""
+
+    def _check(self, coarse: THBSplineSpace, fine: THBSplineSpace) -> None:
+        prolong = coarse.prolongation_to(fine)
+        restrict = fine.restriction_to(coarse)
+        assert restrict.shape == (coarse.num_active_functions, fine.num_active_functions)
+        np.testing.assert_allclose(
+            restrict @ prolong, np.eye(coarse.num_active_functions), atol=1e-9
+        )
+        u_coarse = np.random.default_rng(0).random(coarse.num_active_functions)
+        np.testing.assert_allclose(restrict @ (prolong @ u_coarse), u_coarse, atol=1e-9)
+
+    def test_restriction_1d_thb(self) -> None:
+        coarse = THBSplineSpace(_root_1d(), _grid_1d())
+        self._check(coarse, coarse.refine([0, 1]))
+
+    def test_restriction_2d_thb(self) -> None:
+        coarse = THBSplineSpace(_root_2d(), _grid_2d())
+        self._check(coarse, coarse.refine([0]))
+
+    def test_restriction_hb(self) -> None:
+        coarse = THBSplineSpace(_root_1d(), _grid_1d(), truncate=False)
+        self._check(coarse, coarse.refine([0, 1], admissible_class=None))
+
+    def test_restriction_non_refinement_raises(self) -> None:
+        fine = THBSplineSpace(_root_1d(), _grid_1d())
+        other = THBSplineSpace(_root_2d(), _grid_2d())
+        with pytest.raises(ValueError, match="refinement"):
+            fine.restriction_to(other)
