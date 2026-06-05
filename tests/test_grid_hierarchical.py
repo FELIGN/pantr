@@ -611,3 +611,58 @@ class TestActiveSetAccessors:
         assert not g.is_active_leaf(1, (0,))  # wrong ndim (1D tuple on 2D grid)
         assert not g.is_active_leaf(0, (-1, 0))  # negative index
         assert not g.is_active_leaf(5, (0, 0))  # nonexistent level
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Coarsening
+# ──────────────────────────────────────────────────────────────────────────────
+
+
+def _grid_snapshot(g: HierarchicalGrid) -> tuple[object, ...]:
+    """Capture the full structural state of a hierarchical grid."""
+    return (g.num_cells, g.max_level, tuple(g.active_blocks(lv) for lv in range(g.max_level + 1)))
+
+
+class TestHierarchicalGridCoarsen:
+    """Tests for the coarsen method (inverse of refine)."""
+
+    def test_coarsen_inverts_refine_1d(self) -> None:
+        g = _grid_1d(4, 2)
+        before = _grid_snapshot(g)
+        g.refine(0, [1], [3])
+        g.coarsen(0, [1], [3])
+        assert _grid_snapshot(g) == before
+
+    def test_coarsen_inverts_refine_2d(self) -> None:
+        g = _grid_2d(4, 2)
+        before = _grid_snapshot(g)
+        g.refine(0, [1, 1], [3, 3])
+        g.coarsen(0, [1, 1], [3, 3])
+        assert _grid_snapshot(g) == before
+
+    def test_coarsen_drops_trailing_level(self) -> None:
+        g = _grid_1d(4, 2)
+        g.refine(0, [0], [4])
+        assert g.max_level == 1
+        g.coarsen(0, [0], [4])
+        assert g.max_level == 0
+        assert g.num_cells == 4
+
+    def test_coarsen_one_of_two_levels(self) -> None:
+        g = _grid_1d(4, 2)
+        g.refine(0, [0], [2])
+        snap_one = _grid_snapshot(g)
+        g.refine(1, [0], [4])  # refine all level-1 cells to level 2
+        g.coarsen(1, [0], [4])  # undo just the level-1 refinement
+        assert _grid_snapshot(g) == snap_one
+
+    def test_coarsen_partial_region_raises(self) -> None:
+        g = _grid_1d(4, 2)
+        g.refine(0, [0], [1])  # only cell 0 refined
+        with pytest.raises(ValueError, match="fully refined"):
+            g.coarsen(0, [0], [2])  # cell 1 has no children
+
+    def test_coarsen_level_out_of_range_raises(self) -> None:
+        g = _grid_1d(4, 2)  # max_level 0, no level 1 to coarsen from
+        with pytest.raises(ValueError, match="level"):
+            g.coarsen(0, [0], [1])
