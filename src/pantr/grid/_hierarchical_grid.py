@@ -764,7 +764,7 @@ class HierarchicalGrid(Grid):
         return tuple(self._blocks[level])
 
     def active_leaf_mask(self, level: int) -> npt.NDArray[np.bool_]:
-        """Return a boolean mask of the active-leaf cells at ``level``.
+        r"""Return a boolean mask of the active-leaf cells at ``level``.
 
         Args:
             level (int): Hierarchy level.  Must be in ``[0, max_level]``.
