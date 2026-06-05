@@ -666,3 +666,21 @@ class TestHierarchicalGridCoarsen:
         g = _grid_1d(4, 2)  # max_level 0, no level 1 to coarsen from
         with pytest.raises(ValueError, match="level"):
             g.coarsen(0, [0], [1])
+
+    def test_coarsen_lo_ge_hi_raises(self) -> None:
+        g = _grid_1d(4, 2)
+        g.refine(0, [0], [4])
+        with pytest.raises(ValueError, match="strictly less"):
+            g.coarsen(0, [2], [2])
+
+    def test_coarsen_out_of_bounds_raises(self) -> None:
+        g = _grid_1d(4, 2)
+        g.refine(0, [0], [4])
+        with pytest.raises(ValueError, match="out of bounds"):
+            g.coarsen(0, [0], [5])  # hi=5 > 4 cells at level 0
+
+    def test_coarsen_wrong_ndim_raises(self) -> None:
+        g = _grid_1d(4, 2)
+        g.refine(0, [0], [4])
+        with pytest.raises(ValueError, match="length"):
+            g.coarsen(0, [0, 0], [4, 4])  # 1D grid, 2D lo/hi

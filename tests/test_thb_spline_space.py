@@ -1054,6 +1054,13 @@ class TestProlongation:
         with pytest.raises(ValueError, match="refinement"):
             coarse.prolongation_to(other)
 
+    def test_dim_mismatch_raises(self) -> None:
+        # self.dim=2 > fine.dim=1: old code raised IndexError; now raises ValueError
+        coarse_2d = THBSplineSpace(_root_2d(), _grid_2d())
+        fine_1d = THBSplineSpace(_root_1d(), _grid_1d())
+        with pytest.raises(ValueError):
+            coarse_2d.prolongation_to(fine_1d)
+
     def test_truncate_mismatch_raises(self) -> None:
         coarse = THBSplineSpace(_root_1d(), _grid_1d())  # truncate=True (default)
         fine_hb = THBSplineSpace(_root_1d(), _grid_1d(), truncate=False)

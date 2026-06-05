@@ -1131,8 +1131,10 @@ class THBSplineSpace:
 
         A parent cell is reactivated (its children removed) only when **all** of its
         children are marked active leaves, mirroring the coarsening algorithm of
-        Carraturo et al. (2019, Alg. 5).  This is the inverse of :meth:`refine`:
-        ``space.refine(cells).coarsen(children_of(cells))`` recovers ``space``.
+        Carraturo et al. (2019, Alg. 5).  With ``admissible_class=None`` this is the
+        exact inverse of :meth:`refine`: ``space.refine(cells).coarsen(children_of(cells))``
+        recovers ``space``.  With ``admissible_class=m`` the guard may suppress some
+        coarsenings, so the recovery holds only when the guard permits them all.
 
         With ``admissible_class=m`` (the default ``m=2``) a parent is reactivated only
         if its coarsening neighborhood (Def. 3.5) is empty, so the resulting mesh stays
@@ -1140,9 +1142,11 @@ class THBSplineSpace:
 
         The space is immutable: a fresh grid is coarsened and a new
         :class:`THBSplineSpace` is built; ``self`` and its grid are unchanged.
+        An empty ``cell_ids`` is valid and returns an unchanged copy of the space.
 
         Args:
             cell_ids (npt.ArrayLike): Flat ids of active leaf cells to coarsen away.
+                An empty array is valid and produces an unchanged copy.
             admissible_class (int | None): Admissibility class ``m >= 2`` to maintain,
                 or ``None`` to skip the admissibility guard.  Defaults to ``2``.
 
@@ -1161,9 +1165,10 @@ class THBSplineSpace:
                 f"admissible_class must be an integer >= 2 or None; got {admissible_class!r}."
             )
         ids = np.unique(np.asarray(cell_ids, dtype=np.int64).ravel())
-        if ids.size and (int(ids[0]) < 0 or int(ids[-1]) >= self._grid.num_cells):
+        bad = [int(x) for x in ids if int(x) < 0 or int(x) >= self._grid.num_cells]
+        if bad:
             raise IndexError(
-                f"cell_ids must lie in [0, {self._grid.num_cells}); got out-of-range id."
+                f"cell_ids must lie in [0, {self._grid.num_cells}); got out-of-range id(s): {bad}."
             )
         dim = self.dim
         factor = self._grid.factor
@@ -1218,6 +1223,11 @@ class THBSplineSpace:
         Returns:
             bool: ``True`` iff no active cell at level ``parent_level + m`` lies in the
             support extension of the parent's children.
+
+        Note:
+            Assumes ``parent_level + 1 < self.num_levels`` and ``m >= 2``; both are
+            guaranteed by the calling context in :meth:`coarsen`.  No input validation
+            is performed.
         """
         dim = self.dim
         factor = self._grid.factor
@@ -1406,6 +1416,8 @@ class THBSplineSpace:
             TypeError: If ``coarse`` is not a :class:`THBSplineSpace`.
             ValueError: If ``self`` is not a refinement of ``coarse``.
         """
+        if not isinstance(coarse, THBSplineSpace):
+            raise TypeError(f"coarse must be a THBSplineSpace; got {type(coarse)!r}.")
         prolongation = coarse.prolongation_to(self)
         restriction: npt.NDArray[np.float64] = np.asarray(
             np.linalg.pinv(prolongation), dtype=np.float64
