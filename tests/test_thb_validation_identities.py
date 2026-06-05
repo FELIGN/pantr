@@ -162,7 +162,7 @@ class TestCoarseningProjection:
 
         c_fine = l2_project_thb(fine, quad).coeffs
         c_back = fine.restriction_to(coarse) @ c_fine
-        xs = np.linspace(0.02, 0.98, 80).reshape(-1, 1)
+        xs = np.linspace(0.02, 0.98, 80).reshape(-1, 1).astype(np.float64)
         np.testing.assert_allclose(
             THBSpline(coarse, c_back).evaluate(xs).ravel(), quad(xs), atol=1e-8
         )
