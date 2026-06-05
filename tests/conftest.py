@@ -1,8 +1,10 @@
 """Pytest configuration: make `src` and the repository root importable.
 
-`src` is added so the package resolves without installation; the repository root is
-added so test modules can import shared, non-collected helpers via the ``tests``
-namespace package (e.g. ``from tests._thb_assembly import ...``).
+`src` is added so the package resolves without installation.  The repository root is
+added so test modules can import shared, non-collected helpers from the regular
+``tests`` package (e.g. ``from tests._thb_assembly import ...``); under pytest this
+already resolves via ``rootdir``, so the addition is a belt-and-suspenders guard for
+direct (non-pytest) invocation.
 """
 
 from __future__ import annotations

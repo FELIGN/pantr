@@ -48,7 +48,9 @@ def _assemble(
             ``(n_pts, dim)`` point array and returning ``(n_pts,)``.  If ``None``,
             the returned load vector is zero.
         n_quad (int | None): Gauss points per direction.  ``None`` uses
-            ``max(degrees) + 1`` (exact for the degree-``2p`` mass products).
+            ``max(degrees) + 1``, exact for the per-cell degree-``2p`` mass products
+            when all degrees are equal (each active function is degree ``p`` on a leaf
+            cell, so a ``p + 1``-point rule is exact to degree ``2p + 1``).
 
     Returns:
         tuple[npt.NDArray[np.float64], npt.NDArray[np.float64]]: ``(M, b)`` of shapes
@@ -83,7 +85,9 @@ def gram_matrix(thb: THBSplineSpace, *, n_quad: int | None = None) -> npt.NDArra
             ``max(degrees) + 1``.
 
     Returns:
-        npt.NDArray[np.float64]: SPD matrix of shape ``(num_active, num_active)``.
+        npt.NDArray[np.float64]: Symmetric matrix of shape ``(num_active, num_active)``;
+        positive definite for the linearly independent THB basis, only positive
+        semidefinite for a non-truncated HB basis.
     """
     return _assemble(thb, None, n_quad)[0]
 
