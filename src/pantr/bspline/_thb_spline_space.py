@@ -25,6 +25,7 @@ import numpy as np
 from ..grid import HierarchicalGrid
 from ._bspline_knot_insertion_core import _compute_oslo_matrix_1d_core
 from ._bspline_space_nd import BsplineSpace
+from ._thb_eval_core import _combine_tp_values
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -109,6 +110,38 @@ def _check_out_array(
         raise ValueError(f"{name} must have dtype {np.dtype(dtype).name}; got {out.dtype}.")
     if not out.flags.writeable:
         raise ValueError(f"{name} must be writeable.")
+
+
+def _box_all_true(
+    mask: npt.NDArray[np.bool_],
+    lo: npt.NDArray[np.int64],
+    hi: npt.NDArray[np.int64],
+) -> npt.NDArray[np.bool_]:
+    """Test, for a batch of axis-aligned boxes, whether ``mask`` is all-``True`` inside.
+
+    Each box ``b`` spans the half-open range ``[lo[b, d], hi[b, d])`` per axis ``d``.
+    A summed-area table over ``~mask`` makes each box's all-``True`` test
+    (``mask[box].all()`` ⟺ no ``False`` cell in the box) an O(``2**ndim``) lookup per box.
+    Table construction is O(``N * ndim``) where ``N`` is the total cell count of ``mask``.
+
+    Args:
+        mask (npt.NDArray[np.bool_]): The ``ndim``-dimensional boolean mask.
+        lo (npt.NDArray[np.int64]): Box lower corners, shape ``(n_boxes, ndim)``.
+        hi (npt.NDArray[np.int64]): Box upper corners (exclusive), shape ``(n_boxes, ndim)``.
+
+    Returns:
+        npt.NDArray[np.bool_]: Shape ``(n_boxes,)``; ``True`` where the box is all-``True``.
+    """
+    dim = mask.ndim
+    prefix = np.pad((~mask).astype(np.int64), [(1, 0)] * dim)
+    for ax in range(dim):
+        prefix = np.cumsum(prefix, axis=ax)
+    total = np.zeros(lo.shape[0], dtype=np.int64)
+    for corner in itertools.product((0, 1), repeat=dim):
+        idx = tuple(hi[:, d] if corner[d] else lo[:, d] for d in range(dim))
+        sign = (-1) ** (dim - sum(corner))
+        total = total + sign * prefix[idx]
+    return np.asarray(total == 0, dtype=np.bool_)
 
 
 def _func_support_1d(space: BsplineSpace1D) -> _Support1D:
@@ -208,6 +241,7 @@ class THBSplineSpace:
 
     __slots__ = (
         "_active_funcs",
+        "_contrib_cache",
         "_func_offset",
         "_grid",
         "_grid_snapshot",
@@ -300,6 +334,9 @@ class THBSplineSpace:
         self._num_active = int(self._func_offset[-1])
         self._grid_snapshot = (grid.max_level, grid.num_cells)
         self._trunc = self._compute_truncated_coeffs() if truncate else {}
+        # Lazy per-cell cache of _cell_contributions (populated on first access). The
+        # space is an immutable construction-time snapshot, so cached results stay valid.
+        self._contrib_cache: dict[int, list[tuple[int, int, tuple[int, ...]]]] = {}
 
     # ------------------------------------------------------------------
     # Construction helpers
@@ -353,24 +390,28 @@ class THBSplineSpace:
             bbox_lo = true_coords.min(axis=0)
             bbox_hi = true_coords.max(axis=0) + 1
 
-            candidates_per_dir: list[list[int]] = []
+            candidates_per_dir: list[npt.NDArray[np.int64]] = []
             for k in range(dim):
                 _, first_cell, last_cell = support[k]
                 overlaps = (last_cell >= bbox_lo[k]) & (first_cell < bbox_hi[k])
-                candidates_per_dir.append(np.nonzero(overlaps)[0].tolist())
+                candidates_per_dir.append(np.nonzero(overlaps)[0].astype(np.int64))
 
-            selected: list[int] = []
-            for multi in itertools.product(*candidates_per_dir):
-                box = tuple(
-                    slice(int(support[k][1][multi[k]]), int(support[k][2][multi[k]]) + 1)
-                    for k in range(dim)
-                )
-                if not bool(subdomain[box].all()):
-                    continue
-                if bool(refined[box].all()):
-                    continue
-                selected.append(int(np.ravel_multi_index(multi, num_basis)))
-            active.append(np.array(sorted(selected), dtype=np.int64))
+            # Enumerate candidate multi-indices and batch the support-box all-checks via
+            # a summed-area table: selected iff the support box lies entirely in the
+            # subdomain (Ω_l) but not entirely in the further-refined region.
+            mesh = np.meshgrid(*candidates_per_dir, indexing="ij")
+            multis = np.stack([m.ravel() for m in mesh], axis=-1)  # (n_cand, dim)
+            box_lo = np.empty_like(multis)
+            box_hi = np.empty_like(multis)
+            for k in range(dim):
+                _, first_cell, last_cell = support[k]
+                box_lo[:, k] = first_cell[multis[:, k]]
+                box_hi[:, k] = last_cell[multis[:, k]] + 1
+            in_subdomain = _box_all_true(subdomain, box_lo, box_hi)
+            in_refined = _box_all_true(refined, box_lo, box_hi)
+            selected = multis[in_subdomain & ~in_refined]
+            flats = np.ravel_multi_index([selected[:, k] for k in range(dim)], num_basis)
+            active.append(np.sort(flats).astype(np.int64))
         return tuple(active)
 
     def _build_oslo_matrices(self) -> tuple[tuple[npt.NDArray[np.float64], ...], ...]:
@@ -570,8 +611,16 @@ class THBSplineSpace:
             list[tuple[int, int, tuple[int, ...]]]: ``(global_dof, level, multi)``
             triples sorted by ``global_dof``, where ``multi`` is the per-axis function
             index tuple (multi-index) in its level space.
+
+        Note:
+            Results are memoized per ``cid`` in ``self._contrib_cache`` (the space is an
+            immutable snapshot).  The returned list is the cached object; callers must
+            not mutate it.
         """
         self._check_not_stale()
+        cached = self._contrib_cache.get(cid)
+        if cached is not None:
+            return cached
         cell_level = self._grid.cell_level(cid)
         cell_midx = self._grid.cell_multi_index(cid)
         factor = self._grid.factor
@@ -595,6 +644,7 @@ class THBSplineSpace:
                 if pos < active_at_level.shape[0] and int(active_at_level[pos]) == flat:
                     contribs.append((offset + pos, level, multi))
         contribs.sort(key=lambda triple: triple[0])
+        self._contrib_cache[cid] = contribs
         return contribs
 
     # ------------------------------------------------------------------
@@ -832,8 +882,6 @@ class THBSplineSpace:
         """
         rep_level, box_lo, coeffs = entry
         dim = self.dim
-        num_pts = flat_pts.shape[0]
-        point_index = np.arange(num_pts)
         if dim > _EINSUM_MAX_DIM:
             raise NotImplementedError(
                 f"_truncated_column uses single-letter einsum subscripts; "
@@ -846,12 +894,11 @@ class THBSplineSpace:
             )
             degree_k = self.degrees[k]
             width = coeffs.shape[k]
-            vmat = np.zeros((num_pts, width), dtype=np.float64)
-            for j in range(width):
-                local = (box_lo[k] + j) - first_basis
-                valid = (local >= 0) & (local <= degree_k)
-                vmat[:, j] = np.where(valid, values[point_index, np.clip(local, 0, degree_k)], 0.0)
-            value_mats.append(vmat)
+            # local[p, j] = (box_lo[k] + j) - first_basis[p]; gather + mask in one shot.
+            local = (box_lo[k] + np.arange(width))[None, :] - first_basis[:, None]
+            valid = (local >= 0) & (local <= degree_k)
+            gathered = np.take_along_axis(values, np.clip(local, 0, degree_k), axis=1)
+            value_mats.append(np.where(valid, gathered, 0.0))
 
         letters = string.ascii_lowercase
         func_subs = letters[:dim]
@@ -933,23 +980,34 @@ class THBSplineSpace:
 
         buffer = np.empty((num_pts, n_active), dtype=np.float64)
         eval_cache: _EvalCache = {}
-        point_index = np.arange(num_pts)
+        dim = self.dim
+        degrees_arr = np.asarray(self.degrees, dtype=np.int64)
+        max_order = int(degrees_arr.max()) + 1
+
+        # Truncated functions are evaluated individually (coefficient contraction);
+        # untruncated ones are grouped by level and combined in a single batched kernel
+        # call (the common, hot case).
+        untrunc_by_level: dict[int, tuple[list[int], list[tuple[int, ...]]]] = {}
         for col, (gdof, level, multi) in enumerate(contribs):
             entry = self._trunc.get(gdof)
             if entry is None:
-                column = np.ones(num_pts, dtype=np.float64)
-                for k in range(self.dim):
-                    values, first_basis = self._basis_1d_cached(
-                        level, k, orders[k], flat_pts, eval_cache
-                    )
-                    local = multi[k] - first_basis
-                    degree_k = self.degrees[k]
-                    valid = (local >= 0) & (local <= degree_k)
-                    gathered = values[point_index, np.clip(local, 0, degree_k)]
-                    column *= np.where(valid, gathered, 0.0)
-                buffer[:, col] = column
+                cols, multis = untrunc_by_level.setdefault(level, ([], []))
+                cols.append(col)
+                multis.append(multi)
             else:
                 buffer[:, col] = self._truncated_column(entry, orders, flat_pts, eval_cache)
+
+        for level, (cols, multis) in untrunc_by_level.items():
+            vals = np.zeros((dim, num_pts, max_order), dtype=np.float64)
+            first_basis = np.empty((dim, num_pts), dtype=np.int64)
+            for k in range(dim):
+                values_k, fb_k = self._basis_1d_cached(level, k, orders[k], flat_pts, eval_cache)
+                vals[k, :, : values_k.shape[1]] = values_k
+                first_basis[k] = fb_k
+            block = _combine_tp_values(
+                vals, first_basis, np.asarray(multis, dtype=np.int64), degrees_arr
+            )
+            buffer[:, cols] = block
 
         result[...] = buffer.reshape(out_shape)
         return result, dofs_result
