@@ -770,7 +770,7 @@ class HierarchicalGrid(Grid):
             level (int): Hierarchy level.  Must be in ``[0, max_level]``.
 
         Returns:
-            npt.NDArray[bool]: Fresh array of shape
+            npt.NDArray[np.bool_]: Fresh array of shape
             ``level_cells_per_axis(level)``; ``True`` where the level-``level``
             cell ``(level, midx)`` is an active (leaf) cell.
 
@@ -796,7 +796,7 @@ class HierarchicalGrid(Grid):
             level (int): Hierarchy level.  Must be in ``[0, max_level]``.
 
         Returns:
-            npt.NDArray[bool]: Fresh array of shape
+            npt.NDArray[np.bool_]: Fresh array of shape
             ``level_cells_per_axis(level)``; ``True`` where the level-``level``
             cell lies in :math:`\Omega_{level}`.
 
@@ -804,9 +804,8 @@ class HierarchicalGrid(Grid):
             ValueError: If ``level`` is outside ``[0, max_level]``.
 
         Note:
-            The mask is sized to the level-``level`` cell grid (computed on demand,
-            never stored).  Block-wise selection is a future optimization for deep
-            hierarchies.
+            The mask is sized to the level-``level`` cell grid and computed on
+            demand; it is never stored.
         """
         self._check_level(level)
         mask = np.ones(self.level_cells_per_axis(level), dtype=np.bool_)

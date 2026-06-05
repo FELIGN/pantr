@@ -263,7 +263,7 @@ class TestSelection:
 
     def test_active_function_indices_out_of_range(self) -> None:
         thb = THBSplineSpace(_root_1d(), _grid_1d(), truncate=False)
-        with pytest.raises(IndexError):
+        with pytest.raises(ValueError):
             thb.active_function_indices(5)
 
     def test_fully_refined_level_has_no_active_functions(self) -> None:
@@ -419,7 +419,7 @@ class TestLevelSpaces:
 
     def test_level_space_out_of_range(self) -> None:
         thb = THBSplineSpace(_root_1d(), _grid_1d(), truncate=False)
-        with pytest.raises(IndexError):
+        with pytest.raises(ValueError):
             thb.level_space(1)
 
     def test_levels_are_nested_1d(self) -> None:
@@ -624,6 +624,57 @@ class TestTruncation:
         n_active = thb.active_basis(cid).shape[0]
         assert result.shape == (2, 3, n_active)
         np.testing.assert_allclose(result.sum(axis=-1), 1.0, atol=1e-10)
+
+    def test_thb_and_hb_same_active_count(self) -> None:
+        # Truncation changes function values but not the active-function selection.
+        root, grid = _root_2d(), _grid_2d()
+        grid.refine(0, [0, 0], [2, 2])
+        thb = THBSplineSpace(root, grid, truncate=True)
+        hb = THBSplineSpace(root, grid, truncate=False)
+        assert thb.num_active_functions == hb.num_active_functions
+        assert thb.num_active_functions_per_level == hb.num_active_functions_per_level
+        assert thb.num_active_functions == sum(thb.num_active_functions_per_level)
+
+    def test_active_basis_union_covers_all_dofs(self) -> None:
+        # The union of active_basis(cid) over all cells must equal {0, …, N-1}.
+        thb = _refined_2d_corner()
+        seen: set[int] = set()
+        for cid in range(thb.grid.num_cells):
+            seen.update(thb.active_basis(cid).tolist())
+        assert seen == set(range(thb.num_active_functions))
+
+    def test_partition_of_unity_factor3(self) -> None:
+        # Verify that factor=3 (non-power-of-2) refinement still gives partition of unity.
+        root = _root_1d()
+        grid = hierarchical_grid(uniform_grid([[0.0, 1.0]], 4), 3)
+        grid.refine(0, [0], [2])
+        thb = THBSplineSpace(root, grid, truncate=True)
+        mat, _ = _collocation(thb)
+        np.testing.assert_allclose(mat.sum(axis=1), 1.0, atol=1e-10)
+
+    def test_partition_of_unity_degree1(self) -> None:
+        # Degree-1 (linear): support = 1 interval per function; different truncation geometry.
+        knots = np.array([0.0, 0.0, 0.25, 0.5, 0.75, 1.0, 1.0])
+        sp1d = BsplineSpace1D(knots, 1)
+        root = BsplineSpace([sp1d])
+        grid = hierarchical_grid(uniform_grid([[0.0, 1.0]], 4), 2)
+        grid.refine(0, [0], [2])
+        thb = THBSplineSpace(root, grid, truncate=True)
+        mat, _ = _collocation(thb)
+        np.testing.assert_allclose(mat.sum(axis=1), 1.0, atol=1e-10)
+
+    def test_regularity_sequence_form(self) -> None:
+        # Scalar regularity=0 and equivalent sequence form [0] produce the same space.
+        root = _root_1d()
+        grid1 = _grid_1d()
+        grid1.refine(0, [0], [2])
+        thb_scalar = THBSplineSpace(root, grid1, truncate=True, regularity=0)
+        grid2 = _grid_1d()
+        grid2.refine(0, [0], [2])
+        thb_seq = THBSplineSpace(root, grid2, truncate=True, regularity=[0])
+        assert thb_scalar.num_active_functions == thb_seq.num_active_functions
+        mat, _ = _collocation(thb_seq)
+        np.testing.assert_allclose(mat.sum(axis=1), 1.0, atol=1e-10)
 
 
 # ──────────────────────────────────────────────────────────────────────────────

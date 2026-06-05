@@ -117,10 +117,11 @@ def _func_support_1d(space: BsplineSpace1D) -> _Support1D:
             if first_cell[i] < 0:
                 first_cell[i] = interval
             last_cell[i] = interval
-    assert np.all(first_cell >= 0), (
-        f"B-spline function(s) with empty support detected at indices "
-        f"{np.where(first_cell < 0)[0].tolist()}. This indicates an invalid B-spline space."
-    )
+    if not np.all(first_cell >= 0):
+        raise RuntimeError(
+            f"B-spline function(s) with empty support detected at indices "
+            f"{np.where(first_cell < 0)[0].tolist()}. This indicates an invalid B-spline space."
+        )
     return first_basis, first_cell, last_cell
 
 
@@ -164,9 +165,10 @@ class THBSplineSpace:
             subdividing to build finer levels.
         _level_spaces (tuple[BsplineSpace, ...]): Per-level tensor-product spaces;
             index ``l`` is the root subdivided to level ``l``.
-        _support (tuple): Per-level, per-direction function-to-cell support arrays;
-            each entry is a tuple of ``(first_basis, first_cell, last_cell)`` int64
-            arrays for one direction at one level.
+        _support (tuple[tuple[_Support1D, ...], ...]): Per-level, per-direction
+            function-to-cell support arrays; ``_support[level][k]`` is the
+            ``(first_basis, first_cell, last_cell)`` int64 triple for direction
+            ``k`` at ``level``.
         _active_funcs (tuple[npt.NDArray[np.int64], ...]): Per-level sorted flat
             (C-order) indices of the active tensor-product functions.
         _func_offset (npt.NDArray[np.int64]): Per-level global-dof base; length
@@ -174,8 +176,9 @@ class THBSplineSpace:
         _num_active (int): Total number of active hierarchical functions.
         _grid_snapshot (tuple[int, int]): ``(max_level, num_cells)`` captured at
             construction; used to detect post-construction grid mutations.
-        _trunc (dict): Map from global dof (int) to ``_TruncCoeffs``; only
-            truncated functions appear (empty when ``truncate=False``).
+        _trunc (dict[int, _TruncCoeffs]): Map from global dof to
+            ``_TruncCoeffs``; only truncated functions appear (empty when
+            ``truncate=False``).
     """
 
     __slots__ = (
@@ -510,6 +513,12 @@ class THBSplineSpace:
                 # coefficient box at every finer level has no overlap with active
                 # finer functions requires no truncation (remains a plain B-spline).
                 if any_zeroed:
+                    if len(box_lo) != coeffs.ndim:
+                        raise RuntimeError(
+                            f"_compute_truncated_coeffs: box_lo length {len(box_lo)} "
+                            f"!= coeffs.ndim {coeffs.ndim}."
+                        )
+                    coeffs.flags.writeable = False
                     trunc[offset + pos] = _TruncCoeffs(rep, tuple(box_lo), coeffs)
         return trunc
 
@@ -647,6 +656,9 @@ class THBSplineSpace:
     def level_space(self, level: int) -> BsplineSpace:
         """Return the tensor-product space at ``level``.
 
+        Returns a construction-time snapshot; not affected by subsequent grid
+        mutations (no stale check is performed).
+
         Args:
             level (int): Hierarchy level in ``[0, num_levels)``.
 
@@ -654,14 +666,17 @@ class THBSplineSpace:
             BsplineSpace: The root space subdivided to ``level``.
 
         Raises:
-            IndexError: If ``level`` is out of range.
+            ValueError: If ``level`` is out of range.
         """
         if not (0 <= level < self.num_levels):
-            raise IndexError(f"level must be in [0, {self.num_levels - 1}]; got {level!r}.")
+            raise ValueError(f"level must be in [0, {self.num_levels - 1}]; got {level!r}.")
         return self._level_spaces[level]
 
     def active_function_indices(self, level: int) -> npt.NDArray[np.int64]:
         """Return the flat indices of the active functions at ``level``.
+
+        Returns a construction-time snapshot; not affected by subsequent grid
+        mutations (no stale check is performed).
 
         Args:
             level (int): Hierarchy level in ``[0, num_levels)``.
@@ -671,15 +686,15 @@ class THBSplineSpace:
             indices selected by the Kraft rule.  A fresh copy is returned.
 
         Raises:
-            IndexError: If ``level`` is out of range.
+            ValueError: If ``level`` is out of range.
         """
         if not (0 <= level < self.num_levels):
-            raise IndexError(f"level must be in [0, {self.num_levels - 1}]; got {level!r}.")
+            raise ValueError(f"level must be in [0, {self.num_levels - 1}]; got {level!r}.")
         indices: npt.NDArray[np.int64] = self._active_funcs[level].copy()
         return indices
 
     def active_basis(self, cid: int) -> npt.NDArray[np.int64]:
-        """Return the global dofs of the active functions non-zero on cell ``cid``.
+        """Return the global dofs of the active functions whose support intersects cell ``cid``.
 
         Args:
             cid (int): Active cell flat id in ``[0, grid.num_cells)``.
@@ -753,7 +768,11 @@ class THBSplineSpace:
             eval_cache (_EvalCache): Per-call 1D-basis evaluation cache.
 
         Returns:
-            npt.NDArray[np.float64]: Values of shape ``(num_pts,)``.
+            npt.NDArray[np.float64]: Function values of shape ``(num_pts,)``.
+
+        Raises:
+            NotImplementedError: If ``self.dim > _EINSUM_MAX_DIM`` (24); the
+                einsum subscript scheme requires one letter per axis.
         """
         rep_level, box_lo, coeffs = entry
         dim = self.dim
@@ -799,9 +818,13 @@ class THBSplineSpace:
 
         Args:
             cid (int): Active cell flat id in ``[0, grid.num_cells)``.
-            pts (npt.ArrayLike): Parametric points of shape ``(..., dim)`` in the cell.
+            pts (npt.ArrayLike): Parametric points of shape ``(..., dim)`` lying in
+                cell ``cid``.  A tolerance of ``1e-12`` is applied at the cell
+                boundary; points further outside raise :class:`ValueError`.
             orders (tuple[int, ...]): Per-direction derivative orders.
-            out (npt.NDArray[np.float64] | None): Optional output of shape ``(..., K)``.
+            out (npt.NDArray[np.float64] | None): Optional output array of shape
+                ``(..., K)`` with ``K = active_basis(cid).size``.  Allocated when
+                ``None``.
 
         Returns:
             npt.NDArray[np.float64]: Values of shape ``(..., K)``.
