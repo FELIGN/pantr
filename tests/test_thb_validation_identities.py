@@ -160,7 +160,7 @@ class TestCoarseningProjection:
         def quad(p: npt.NDArray[np.float64]) -> npt.NDArray[np.float64]:
             return np.asarray(p[:, 0] ** 2 - 0.3 * p[:, 0] + 0.1)
 
-        c_fine = l2_project_thb(fine, quad).coeffs
+        c_fine = l2_project_thb(fine, quad).control_points
         c_back = fine.restriction_to(coarse) @ c_fine
         xs = np.linspace(0.02, 0.98, 80).reshape(-1, 1).astype(np.float64)
         np.testing.assert_allclose(
@@ -173,7 +173,7 @@ class TestCoarseningProjection:
         def quad(p: npt.NDArray[np.float64]) -> npt.NDArray[np.float64]:
             return np.asarray(p[:, 0] ** 2 + p[:, 0] * p[:, 1] - 0.5)
 
-        c_fine = l2_project_thb(fine, quad).coeffs
+        c_fine = l2_project_thb(fine, quad).control_points
         c_back = fine.restriction_to(coarse) @ c_fine
         u = np.linspace(0.05, 0.95, 7)
         pts = np.stack([m.ravel() for m in np.meshgrid(u, u, indexing="ij")], axis=-1)
@@ -217,7 +217,7 @@ class TestBezierReconstruction:
         def func(p: npt.NDArray[np.float64]) -> npt.NDArray[np.float64]:
             return np.asarray(np.cos(2.0 * p[:, 0]) + (p[:, -1] if thb.dim > 1 else 0.0))
 
-        coeffs = l2_project_thb(thb, func).coeffs
+        coeffs = l2_project_thb(thb, func).control_points
         spline = THBSpline(thb, coeffs)
         ext = MultiLevelExtraction(thb)
         degrees = list(thb.degrees)

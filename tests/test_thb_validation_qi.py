@@ -109,7 +109,7 @@ class TestQIConsistency:
         tp_qi = quasi_interpolate_bspline(_f1, root)
         # On an unrefined space the THB-QI coefficients equal the TP-QI control points
         # (the hierarchical construction collapses to the single chosen level QI).
-        np.testing.assert_allclose(thb_qi.coeffs, tp_qi.control_points.ravel(), atol=1e-12)
+        np.testing.assert_allclose(thb_qi.control_points, tp_qi.control_points.ravel(), atol=1e-12)
 
 
 class TestHBQuasiInterpolationDegraded:

@@ -83,7 +83,7 @@ class TestL2Reproduction:
         coeffs = np.random.default_rng(dim).standard_normal(thb.num_total_basis)
         target = THBSpline(thb, coeffs)
         proj = l2_project_thb(thb, lambda p: np.asarray(target.evaluate(p)))
-        np.testing.assert_allclose(proj.coeffs, coeffs, atol=1e-9)
+        np.testing.assert_allclose(proj.control_points, coeffs, atol=1e-9)
 
 
 class TestL2Convergence:

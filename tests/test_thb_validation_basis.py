@@ -192,7 +192,7 @@ class TestDerivativeReproduction:
         def dpoly(x: npt.NDArray[np.float64]) -> npt.NDArray[np.float64]:
             return np.asarray(sum(k * pcoeffs[k] * x ** (k - 1) for k in range(1, degree + 1)))
 
-        coeffs = l2_project_thb(thb, poly).coeffs
+        coeffs = l2_project_thb(thb, poly).control_points
         xi = np.linspace(0.1, 0.9, 5)
         for cid in range(thb.grid.num_cells):
             lo, hi = thb.grid.cell_bounds(cid)
