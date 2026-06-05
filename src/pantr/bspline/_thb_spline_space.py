@@ -111,6 +111,37 @@ def _check_out_array(
         raise ValueError(f"{name} must be writeable.")
 
 
+def _box_all_true(
+    mask: npt.NDArray[np.bool_],
+    lo: npt.NDArray[np.int64],
+    hi: npt.NDArray[np.int64],
+) -> npt.NDArray[np.bool_]:
+    """Test, for a batch of axis-aligned boxes, whether ``mask`` is all-``True`` inside.
+
+    Each box ``b`` spans the half-open range ``[lo[b, d], hi[b, d])`` per axis ``d``.
+    A summed-area table over ``~mask`` makes each box's all-``True`` test
+    (``mask[box].all()`` ⟺ no ``False`` cell in the box) an O(``2**ndim``) lookup.
+
+    Args:
+        mask (npt.NDArray[np.bool_]): The ``ndim``-dimensional boolean mask.
+        lo (npt.NDArray[np.int64]): Box lower corners, shape ``(n_boxes, ndim)``.
+        hi (npt.NDArray[np.int64]): Box upper corners (exclusive), shape ``(n_boxes, ndim)``.
+
+    Returns:
+        npt.NDArray[np.bool_]: Shape ``(n_boxes,)``; ``True`` where the box is all-``True``.
+    """
+    dim = mask.ndim
+    prefix = np.pad((~mask).astype(np.int64), [(1, 0)] * dim)
+    for ax in range(dim):
+        prefix = np.cumsum(prefix, axis=ax)
+    total = np.zeros(lo.shape[0], dtype=np.int64)
+    for corner in itertools.product((0, 1), repeat=dim):
+        idx = tuple(hi[:, d] if corner[d] else lo[:, d] for d in range(dim))
+        sign = (-1) ** (dim - sum(corner))
+        total = total + sign * prefix[idx]
+    return np.asarray(total == 0, dtype=np.bool_)
+
+
 def _func_support_1d(space: BsplineSpace1D) -> _Support1D:
     """Compute the cell support of every B-spline function of a 1D space.
 
@@ -208,6 +239,7 @@ class THBSplineSpace:
 
     __slots__ = (
         "_active_funcs",
+        "_contrib_cache",
         "_func_offset",
         "_grid",
         "_grid_snapshot",
@@ -300,6 +332,9 @@ class THBSplineSpace:
         self._num_active = int(self._func_offset[-1])
         self._grid_snapshot = (grid.max_level, grid.num_cells)
         self._trunc = self._compute_truncated_coeffs() if truncate else {}
+        # Lazy per-cell cache of _cell_contributions (populated on first access). The
+        # space is an immutable construction-time snapshot, so cached results stay valid.
+        self._contrib_cache: dict[int, list[tuple[int, int, tuple[int, ...]]]] = {}
 
     # ------------------------------------------------------------------
     # Construction helpers
@@ -353,24 +388,28 @@ class THBSplineSpace:
             bbox_lo = true_coords.min(axis=0)
             bbox_hi = true_coords.max(axis=0) + 1
 
-            candidates_per_dir: list[list[int]] = []
+            candidates_per_dir: list[npt.NDArray[np.int64]] = []
             for k in range(dim):
                 _, first_cell, last_cell = support[k]
                 overlaps = (last_cell >= bbox_lo[k]) & (first_cell < bbox_hi[k])
-                candidates_per_dir.append(np.nonzero(overlaps)[0].tolist())
+                candidates_per_dir.append(np.nonzero(overlaps)[0].astype(np.int64))
 
-            selected: list[int] = []
-            for multi in itertools.product(*candidates_per_dir):
-                box = tuple(
-                    slice(int(support[k][1][multi[k]]), int(support[k][2][multi[k]]) + 1)
-                    for k in range(dim)
-                )
-                if not bool(subdomain[box].all()):
-                    continue
-                if bool(refined[box].all()):
-                    continue
-                selected.append(int(np.ravel_multi_index(multi, num_basis)))
-            active.append(np.array(sorted(selected), dtype=np.int64))
+            # Enumerate candidate multi-indices and batch the support-box all-checks via
+            # a summed-area table: selected iff the support box lies entirely in the
+            # subdomain (Ω_l) but not entirely in the further-refined region.
+            mesh = np.meshgrid(*candidates_per_dir, indexing="ij")
+            multis = np.stack([m.ravel() for m in mesh], axis=-1)  # (n_cand, dim)
+            box_lo = np.empty_like(multis)
+            box_hi = np.empty_like(multis)
+            for k in range(dim):
+                _, first_cell, last_cell = support[k]
+                box_lo[:, k] = first_cell[multis[:, k]]
+                box_hi[:, k] = last_cell[multis[:, k]] + 1
+            in_subdomain = _box_all_true(subdomain, box_lo, box_hi)
+            in_refined = _box_all_true(refined, box_lo, box_hi)
+            selected = multis[in_subdomain & ~in_refined]
+            flats = np.ravel_multi_index([selected[:, k] for k in range(dim)], num_basis)
+            active.append(np.sort(flats).astype(np.int64))
         return tuple(active)
 
     def _build_oslo_matrices(self) -> tuple[tuple[npt.NDArray[np.float64], ...], ...]:
@@ -570,8 +609,16 @@ class THBSplineSpace:
             list[tuple[int, int, tuple[int, ...]]]: ``(global_dof, level, multi)``
             triples sorted by ``global_dof``, where ``multi`` is the per-axis function
             index tuple (multi-index) in its level space.
+
+        Note:
+            Results are memoized per ``cid`` in ``self._contrib_cache`` (the space is an
+            immutable snapshot).  The returned list is the cached object; callers must
+            not mutate it.
         """
         self._check_not_stale()
+        cached = self._contrib_cache.get(cid)
+        if cached is not None:
+            return cached
         cell_level = self._grid.cell_level(cid)
         cell_midx = self._grid.cell_multi_index(cid)
         factor = self._grid.factor
@@ -595,6 +642,7 @@ class THBSplineSpace:
                 if pos < active_at_level.shape[0] and int(active_at_level[pos]) == flat:
                     contribs.append((offset + pos, level, multi))
         contribs.sort(key=lambda triple: triple[0])
+        self._contrib_cache[cid] = contribs
         return contribs
 
     # ------------------------------------------------------------------
