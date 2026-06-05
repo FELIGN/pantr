@@ -59,7 +59,7 @@ def _reproduction_error(thb: THBSplineSpace) -> float:
         c_op = mle.operator(cid)
         bernstein = tabulate_bernstein(degrees, xi)
         from_extraction = (c_op @ bernstein.T).T
-        direct = thb.tabulate_basis(cid, x)
+        direct, _ = thb.tabulate_basis(cid, x)
         err = max(err, float(np.abs(from_extraction - direct).max()))
         # C == M @ E by construction.
         m_op = mle.multilevel_operator(cid)

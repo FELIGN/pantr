@@ -87,7 +87,7 @@ def quasi_interpolate_thb_spline(
 
     grid = space.grid
     dim = space.dim
-    num_active = space.num_active_functions
+    num_active = space.num_total_basis
     func_offset = space._func_offset
 
     # Candidate leaf cells per dof: cells whose level equals the contributing

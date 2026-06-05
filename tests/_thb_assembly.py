@@ -57,7 +57,7 @@ def _assemble(
         ``(num_active, num_active)`` and ``(num_active,)``.
     """
     dim = thb.dim
-    n = thb.num_active_functions
+    n = thb.num_total_basis
     nq = max(thb.degrees) + 1 if n_quad is None else n_quad
     rule = gauss_legendre_quadrature(dim, nq)
     pts_all, wts_all = cell_quadrature(thb.grid, rule)
@@ -67,8 +67,8 @@ def _assemble(
     for cid in range(thb.grid.num_cells):
         pts = np.ascontiguousarray(pts_all[cid], dtype=np.float64)
         wts = np.asarray(wts_all[cid], dtype=np.float64)
-        vals = np.asarray(thb.tabulate_basis(cid, pts), dtype=np.float64)
-        dofs = thb.active_basis(cid)
+        vals_arr, dofs = thb.tabulate_basis(cid, pts)
+        vals = np.asarray(vals_arr, dtype=np.float64)
         mass[np.ix_(dofs, dofs)] += vals.T @ (vals * wts[:, None])
         if func is not None:
             fvals = np.asarray(func(pts), dtype=np.float64).reshape(pts.shape[0])

@@ -109,7 +109,7 @@ class TestQIConsistency:
         tp_qi = quasi_interpolate_bspline(_f1, root)
         # On an unrefined space the THB-QI coefficients equal the TP-QI control points
         # (the hierarchical construction collapses to the single chosen level QI).
-        np.testing.assert_allclose(thb_qi.coeffs, tp_qi.control_points.ravel(), atol=1e-12)
+        np.testing.assert_allclose(thb_qi.control_points, tp_qi.control_points.ravel(), atol=1e-12)
 
 
 class TestHBQuasiInterpolationDegraded:
@@ -161,5 +161,5 @@ class TestQIAdaptiveEfficiency:
         adaptive = self._space([(0, [3], [5]), (1, [7], [9])])
         err_uniform = l2_error(quasi_interpolate_thb_spline(self._bump, uniform), self._bump)
         err_adaptive = l2_error(quasi_interpolate_thb_spline(self._bump, adaptive), self._bump)
-        assert adaptive.num_active_functions < uniform.num_active_functions
+        assert adaptive.num_total_basis < uniform.num_total_basis
         assert err_adaptive < err_uniform

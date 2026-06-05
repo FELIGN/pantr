@@ -52,10 +52,10 @@ def _sample(dim: int, n: int = 9) -> npt.NDArray[np.float64]:
 def _thb_reproduction_error(thb: THBSplineSpace, seed: int = 0) -> float:
     """QI of a random THB spline recovers its coefficients."""
     rng = np.random.default_rng(seed)
-    coeffs = rng.standard_normal(thb.num_active_functions)
+    coeffs = rng.standard_normal(thb.num_total_basis)
     f = THBSpline(thb, coeffs)
     recovered = quasi_interpolate_thb_spline(f.evaluate, thb)
-    return float(np.abs(recovered.coeffs - coeffs).max())
+    return float(np.abs(recovered.control_points - coeffs).max())
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -193,11 +193,11 @@ class TestThbReproduction:
         grid.refine(0, [0], [2])
         thb = THBSplineSpace(_root_1d(), grid)
         rng = np.random.default_rng(3)
-        coeffs = rng.standard_normal((thb.num_active_functions, 2))
+        coeffs = rng.standard_normal((thb.num_total_basis, 2))
         f = THBSpline(thb, coeffs)
         recovered = quasi_interpolate_thb_spline(f.evaluate, thb)
         assert recovered.rank == 2
-        np.testing.assert_allclose(recovered.coeffs, coeffs, atol=1e-10)
+        np.testing.assert_allclose(recovered.control_points, coeffs, atol=1e-10)
 
     def test_multiple_candidate_cells_selects_nearest(self) -> None:
         # Refine two non-adjacent cells so a coarse dof whose support spans both
@@ -239,7 +239,7 @@ class TestConvergence:
         root = _root_1d()
         tp = quasi_interpolate_bspline(f, root)
         thb = quasi_interpolate_thb_spline(f, THBSplineSpace(root, _grid_1d()))
-        np.testing.assert_allclose(thb.coeffs, tp.control_points.ravel(), atol=1e-12)
+        np.testing.assert_allclose(thb.control_points, tp.control_points.ravel(), atol=1e-12)
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -260,8 +260,8 @@ class TestHb:
         grid.refine(0, [0], [2])
         thb = THBSplineSpace(_root_1d(), grid, truncate=False)
         qi = quasi_interpolate_thb_spline(lambda p: np.sin(p[:, 0]), thb)
-        assert qi.coeffs.shape == (thb.num_active_functions,)
-        assert np.all(np.isfinite(qi.coeffs))
+        assert qi.control_points.shape == (thb.num_total_basis,)
+        assert np.all(np.isfinite(qi.control_points))
 
     def test_bad_space_raises(self) -> None:
         with pytest.raises(TypeError, match="THBSplineSpace"):
@@ -296,7 +296,7 @@ class TestThbSpline:
     def test_evaluate_matches_manual_assembly(self) -> None:
         thb = THBSplineSpace(_root_2d(), _grid_2d())
         rng = np.random.default_rng(5)
-        coeffs = rng.standard_normal(thb.num_active_functions)
+        coeffs = rng.standard_normal(thb.num_total_basis)
         spline = THBSpline(thb, coeffs)
         pts = _sample(2, 5)
         got = np.asarray(spline.evaluate(pts)).ravel()
@@ -304,25 +304,25 @@ class TestThbSpline:
         for i, p in enumerate(pts):
             cid = thb.grid.locate(p)
             assert cid is not None
-            dofs = thb.active_basis(cid)
-            manual[i] = thb.tabulate_basis(cid, p.reshape(1, -1))[0] @ coeffs[dofs]
+            vals, dofs = thb.tabulate_basis(cid, p.reshape(1, -1))
+            manual[i] = vals[0] @ coeffs[dofs]
         np.testing.assert_allclose(got, manual, atol=1e-13)
 
     def test_properties_and_repr(self) -> None:
         thb = THBSplineSpace(_root_1d(), _grid_1d())
-        spline = THBSpline(thb, np.zeros(thb.num_active_functions))
+        spline = THBSpline(thb, np.zeros(thb.num_total_basis))
         assert spline.space is thb
         assert spline.dim == 1
         assert spline.rank == 1
         assert spline.dtype == np.float64
-        assert spline.coeffs.shape == (thb.num_active_functions,)
+        assert spline.control_points.shape == (thb.num_total_basis,)
         assert "THBSpline" in repr(spline)
 
     def test_vector_coeffs_shape(self) -> None:
         thb = THBSplineSpace(_root_1d(), _grid_1d())
-        spline = THBSpline(thb, np.zeros((thb.num_active_functions, 3)))
+        spline = THBSpline(thb, np.zeros((thb.num_total_basis, 3)))
         assert spline.rank == 3
-        assert spline.coeffs.shape == (thb.num_active_functions, 3)
+        assert spline.control_points.shape == (thb.num_total_basis, 3)
         xs = np.array([[0.1], [0.9]])
         assert np.asarray(spline.evaluate(xs)).shape == (2, 3)
 
@@ -333,24 +333,24 @@ class TestThbSpline:
     def test_bad_coeffs_length_raises(self) -> None:
         thb = THBSplineSpace(_root_1d(), _grid_1d())
         with pytest.raises(ValueError, match="length"):
-            THBSpline(thb, np.zeros(thb.num_active_functions + 1))
+            THBSpline(thb, np.zeros(thb.num_total_basis + 1))
 
     def test_out_of_domain_raises(self) -> None:
         thb = THBSplineSpace(_root_1d(), _grid_1d())
-        spline = THBSpline(thb, np.zeros(thb.num_active_functions))
+        spline = THBSpline(thb, np.zeros(thb.num_total_basis))
         with pytest.raises(ValueError, match="outside"):
             spline.evaluate(np.array([[2.0]]))
 
     def test_wrong_trailing_dim_raises(self) -> None:
         thb = THBSplineSpace(_root_2d(), _grid_2d())
-        spline = THBSpline(thb, np.zeros(thb.num_active_functions))
+        spline = THBSpline(thb, np.zeros(thb.num_total_basis))
         with pytest.raises(ValueError, match="trailing dimension"):
             spline.evaluate(np.array([[0.1]]))
 
     def test_stale_grid_raises_on_evaluate(self) -> None:
         grid = _grid_1d()
         thb = THBSplineSpace(_root_1d(), grid)
-        spline = THBSpline(thb, np.zeros(thb.num_active_functions))
+        spline = THBSpline(thb, np.zeros(thb.num_total_basis))
         grid.refine(0, [0], [2])
         with pytest.raises(RuntimeError, match="stale"):
             spline.evaluate(np.array([[0.5]]))
@@ -358,24 +358,24 @@ class TestThbSpline:
     def test_bad_coeffs_ndim_raises(self) -> None:
         thb = THBSplineSpace(_root_1d(), _grid_1d())
         with pytest.raises(ValueError, match="1-D or 2-D"):
-            THBSpline(thb, np.zeros((thb.num_active_functions, 2, 2)))
+            THBSpline(thb, np.zeros((thb.num_total_basis, 2, 2)))
 
     def test_bad_coeffs_2d_leading_dim_raises(self) -> None:
         thb = THBSplineSpace(_root_1d(), _grid_1d())
         with pytest.raises(ValueError, match="leading dimension"):
-            THBSpline(thb, np.zeros((thb.num_active_functions + 1, 2)))
+            THBSpline(thb, np.zeros((thb.num_total_basis + 1, 2)))
 
     def test_coeffs_readonly(self) -> None:
         thb = THBSplineSpace(_root_1d(), _grid_1d())
-        spline = THBSpline(thb, np.ones(thb.num_active_functions))
+        spline = THBSpline(thb, np.ones(thb.num_total_basis))
         with pytest.raises(ValueError, match="read-only"):
-            spline.coeffs[:] = 0.0
+            spline.control_points[:] = 0.0
 
     def test_vector_coeffs_readonly(self) -> None:
         thb = THBSplineSpace(_root_1d(), _grid_1d())
-        spline = THBSpline(thb, np.ones((thb.num_active_functions, 2)))
+        spline = THBSpline(thb, np.ones((thb.num_total_basis, 2)))
         with pytest.raises(ValueError, match="read-only"):
-            spline.coeffs[:] = 0.0
+            spline.control_points[:] = 0.0
 
     def test_evaluate_vector_refined_2d(self) -> None:
         # Vector-valued evaluate on a refined 2D grid exercises the full
@@ -384,7 +384,7 @@ class TestThbSpline:
         grid.refine(0, [1, 1], [3, 3])
         thb = THBSplineSpace(_root_2d(), grid)
         rng = np.random.default_rng(7)
-        coeffs = rng.standard_normal((thb.num_active_functions, 2))
+        coeffs = rng.standard_normal((thb.num_total_basis, 2))
         spline = THBSpline(thb, coeffs)
         pts = _sample(2, 5)
         got = np.asarray(spline.evaluate(pts))
@@ -393,6 +393,54 @@ class TestThbSpline:
         for i, p in enumerate(pts):
             cid = thb.grid.locate(p)
             assert cid is not None
-            dofs = thb.active_basis(cid)
-            expected = thb.tabulate_basis(cid, p.reshape(1, -1))[0] @ coeffs[dofs]
+            vals, dofs = thb.tabulate_basis(cid, p.reshape(1, -1))
+            expected = vals[0] @ coeffs[dofs]
             np.testing.assert_allclose(got[i], expected, atol=1e-13)
+
+    def test_degree_property(self) -> None:
+        # Mirrors Bspline.degree.
+        thb = THBSplineSpace(_root_2d(), _grid_2d())
+        spline = THBSpline(thb, np.zeros(thb.num_total_basis))
+        assert spline.degree == thb.degrees == (2, 2)
+
+    def test_evaluate_out_argument(self) -> None:
+        thb = THBSplineSpace(_root_1d(), _grid_1d())
+        spline = quasi_interpolate_thb_spline(lambda p: p[:, 0] ** 2, thb)
+        xs = _sample(1)
+        out = np.empty(xs.shape[0], dtype=np.float64)
+        ret = spline.evaluate(xs, out=out)
+        assert ret is out
+        np.testing.assert_allclose(out, spline.evaluate(xs))
+
+    def test_evaluate_out_bad_shape_raises(self) -> None:
+        thb = THBSplineSpace(_root_1d(), _grid_1d())
+        spline = THBSpline(thb, np.zeros(thb.num_total_basis))
+        with pytest.raises(ValueError, match="shape"):
+            spline.evaluate(np.array([[0.1], [0.2]]), out=np.empty(99))
+
+    def test_evaluate_derivatives_reproduces_polynomial_derivative(self) -> None:
+        # On a refined THB space, QI reproduces x^2 exactly; its derivative is 2x.
+        grid = _grid_1d()
+        grid.refine(0, [0], [2])
+        thb = THBSplineSpace(_root_1d(), grid)
+        spline = quasi_interpolate_thb_spline(lambda p: p[:, 0] ** 2, thb)
+        xs = _sample(1)
+        # Order 0 equals the values.
+        np.testing.assert_allclose(
+            np.asarray(spline.evaluate_derivatives(xs, 0)).ravel(),
+            np.asarray(spline.evaluate(xs)).ravel(),
+            atol=1e-12,
+        )
+        # First derivative of x^2 is 2x.
+        np.testing.assert_allclose(
+            np.asarray(spline.evaluate_derivatives(xs, 1)).ravel(), 2.0 * xs[:, 0], atol=1e-9
+        )
+
+    def test_evaluate_derivatives_out_argument(self) -> None:
+        thb = THBSplineSpace(_root_1d(), _grid_1d())
+        spline = quasi_interpolate_thb_spline(lambda p: p[:, 0] ** 2, thb)
+        xs = _sample(1)
+        out = np.empty(xs.shape[0], dtype=np.float64)
+        ret = spline.evaluate_derivatives(xs, 1, out=out)
+        assert ret is out
+        np.testing.assert_allclose(out, spline.evaluate_derivatives(xs, 1))
