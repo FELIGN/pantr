@@ -86,6 +86,31 @@ coefficient axes plus one for the point axis, leaving a safe ceiling of 24 dimen
 """
 
 
+def _check_out_array(
+    out: npt.NDArray[np.float64] | npt.NDArray[np.int64],
+    shape: tuple[int, ...],
+    dtype: npt.DTypeLike,
+    name: str,
+) -> None:
+    """Validate an output array's shape, dtype, and writeability.
+
+    Args:
+        out (npt.NDArray[np.float64] | npt.NDArray[np.int64]): The output array.
+        shape (tuple[int, ...]): The required shape.
+        dtype (npt.DTypeLike): The required dtype.
+        name (str): The parameter name, used in error messages.
+
+    Raises:
+        ValueError: If ``out`` has the wrong shape or dtype, or is not writeable.
+    """
+    if out.shape != shape:
+        raise ValueError(f"{name} must have shape {shape}; got {out.shape}.")
+    if out.dtype != dtype:
+        raise ValueError(f"{name} must have dtype {np.dtype(dtype).name}; got {out.dtype}.")
+    if not out.flags.writeable:
+        raise ValueError(f"{name} must be writeable.")
+
+
 def _func_support_1d(space: BsplineSpace1D) -> _Support1D:
     """Compute the cell support of every B-spline function of a 1D space.
 
@@ -840,8 +865,9 @@ class THBSplineSpace:
         cid: int,
         pts: npt.ArrayLike,
         orders: tuple[int, ...],
-        out: npt.NDArray[np.float64] | None,
-    ) -> npt.NDArray[np.float64]:
+        out_basis: npt.NDArray[np.float64] | None,
+        out_dofs: npt.NDArray[np.int64] | None,
+    ) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.int64]]:
         """Evaluate the active functions' ``orders`` mixed partial on cell ``cid``.
 
         Shared implementation for :meth:`tabulate_basis` (``orders`` all zero) and
@@ -853,22 +879,26 @@ class THBSplineSpace:
                 cell ``cid``.  A tolerance of ``1e-12`` is applied at the cell
                 boundary; points further outside raise :class:`ValueError`.
             orders (tuple[int, ...]): Per-direction derivative orders.
-            out (npt.NDArray[np.float64] | None): Optional output array of shape
+            out_basis (npt.NDArray[np.float64] | None): Optional output array of shape
                 ``(..., K)`` with ``K = active_basis(cid).size``.  Allocated when
                 ``None``.
+            out_dofs (npt.NDArray[np.int64] | None): Optional output array of shape
+                ``(K,)`` for the global dofs.  Allocated when ``None``.
 
         Returns:
-            npt.NDArray[np.float64]: Values of shape ``(..., K)``.
+            tuple[npt.NDArray[np.float64], npt.NDArray[np.int64]]: ``(values, dofs)``
+            of shapes ``(..., K)`` and ``(K,)``.
 
         Raises:
             IndexError: If ``cid`` is out of range ``[0, grid.num_cells)``.
             ValueError: If ``pts`` does not have trailing dimension ``dim``, if any
-                point lies outside cell ``cid``, or if ``out`` has the wrong shape,
-                dtype, or is not writeable.
+                point lies outside cell ``cid``, or if ``out_basis``/``out_dofs`` has
+                the wrong shape, dtype, or is not writeable.
             RuntimeError: If the grid has been modified since construction.
         """
         contribs = self._cell_contributions(cid)  # validates cid; raises if stale
         n_active = len(contribs)
+        dofs = np.array([gdof for gdof, _, _ in contribs], dtype=np.int64)
 
         pts_arr = np.asarray(pts, dtype=np.float64)
         if pts_arr.ndim == 0 or pts_arr.shape[-1] != self.dim:
@@ -888,16 +918,18 @@ class THBSplineSpace:
 
         out_shape = (*lead, n_active)
 
-        if out is None:
+        if out_basis is None:
             result = np.empty(out_shape, dtype=np.float64)
         else:
-            if out.shape != out_shape:
-                raise ValueError(f"out must have shape {out_shape}; got {out.shape}.")
-            if out.dtype != np.float64:
-                raise ValueError(f"out must have dtype float64; got {out.dtype}.")
-            if not out.flags.writeable:
-                raise ValueError("out must be writeable.")
-            result = out
+            _check_out_array(out_basis, out_shape, np.float64, "out_basis")
+            result = out_basis
+
+        if out_dofs is None:
+            dofs_result = dofs
+        else:
+            _check_out_array(out_dofs, (n_active,), np.int64, "out_dofs")
+            out_dofs[...] = dofs
+            dofs_result = out_dofs
 
         buffer = np.empty((num_pts, n_active), dtype=np.float64)
         eval_cache: _EvalCache = {}
@@ -920,50 +952,57 @@ class THBSplineSpace:
                 buffer[:, col] = self._truncated_column(entry, orders, flat_pts, eval_cache)
 
         result[...] = buffer.reshape(out_shape)
-        return result
+        return result, dofs_result
 
     def tabulate_basis(
         self,
         cid: int,
         pts: npt.ArrayLike,
-        out: npt.NDArray[np.float64] | None = None,
-    ) -> npt.NDArray[np.float64]:
+        out_basis: npt.NDArray[np.float64] | None = None,
+        out_dofs: npt.NDArray[np.int64] | None = None,
+    ) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.int64]]:
         """Evaluate the active hierarchical functions on cell ``cid`` at ``pts``.
 
         Untruncated functions are a single tensor-product B-spline (the product of
         their 1D B-spline values).  Truncated functions are evaluated from their
         stored coefficients in the finest tensor-product basis their support reaches.
-        The returned columns are ordered as :meth:`active_basis` (sorted global dof);
-        a listed truncated function may evaluate to exactly zero on the cell.
+        The returned columns are ordered as ``dofs`` (the sorted global dofs, equal to
+        :meth:`active_basis`); a listed truncated function may evaluate to exactly zero
+        on the cell.  Mirrors the ``(basis, first_basis)`` two-return of
+        :meth:`~pantr.bspline.BsplineSpace.tabulate_basis`.
 
         Args:
             cid (int): Active cell flat id in ``[0, grid.num_cells)``.
             pts (npt.ArrayLike): Parametric points of shape ``(..., dim)`` lying in
                 cell ``cid``.  Points outside the cell's bounds raise
                 :class:`ValueError`.
-            out (npt.NDArray[np.float64] | None): Optional output array of shape
+            out_basis (npt.NDArray[np.float64] | None): Optional output array of shape
                 ``(..., K)`` with ``K = active_basis(cid).size``.  Allocated when
                 ``None``.
+            out_dofs (npt.NDArray[np.int64] | None): Optional output array of shape
+                ``(K,)`` for the dofs.  Allocated when ``None``.
 
         Returns:
-            npt.NDArray[np.float64]: Function values of shape ``(..., K)``.
+            tuple[npt.NDArray[np.float64], npt.NDArray[np.int64]]: ``(values, dofs)`` of
+            shapes ``(..., K)`` and ``(K,)``.
 
         Raises:
             IndexError: If ``cid`` is out of range ``[0, grid.num_cells)``.
             ValueError: If ``pts`` does not have trailing dimension ``dim``, if any
-                point lies outside the bounds of cell ``cid``, or if ``out`` has the
-                wrong shape, dtype, or is not writeable.
+                point lies outside the bounds of cell ``cid``, or if ``out_basis`` /
+                ``out_dofs`` has the wrong shape, dtype, or is not writeable.
             RuntimeError: If the grid has been modified since construction.
         """
-        return self._tabulate_orders(cid, pts, (0,) * self.dim, out)
+        return self._tabulate_orders(cid, pts, (0,) * self.dim, out_basis, out_dofs)
 
     def tabulate_basis_derivatives(
         self,
         cid: int,
         pts: npt.ArrayLike,
         orders: int | Sequence[int],
-        out: npt.NDArray[np.float64] | None = None,
-    ) -> npt.NDArray[np.float64]:
+        out_basis: npt.NDArray[np.float64] | None = None,
+        out_dofs: npt.NDArray[np.int64] | None = None,
+    ) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.int64]]:
         r"""Evaluate a mixed partial derivative of the active functions on cell ``cid``.
 
         Computes the single mixed partial :math:`\partial^{orders}` of each active
@@ -972,7 +1011,7 @@ class THBSplineSpace:
         coordinates).  Untruncated functions differentiate as a tensor product of 1D
         B-spline derivatives; truncated functions apply their stored coefficients to
         the B-spline derivatives at their representation level.  The returned columns
-        are ordered as :meth:`active_basis` (sorted global dof).
+        are ordered as ``dofs`` (the sorted global dofs, equal to :meth:`active_basis`).
 
         Args:
             cid (int): Active cell flat id in ``[0, grid.num_cells)``.
@@ -982,19 +1021,22 @@ class THBSplineSpace:
             orders (int | Sequence[int]): Per-direction derivative orders.  A scalar
                 is broadcast to every direction.  Each entry must be ``>= 0``; orders
                 exceeding the degree yield zero.
-            out (npt.NDArray[np.float64] | None): Optional output array of shape
+            out_basis (npt.NDArray[np.float64] | None): Optional output array of shape
                 ``(..., K)`` with ``K = active_basis(cid).size``.  Allocated when
                 ``None``.
+            out_dofs (npt.NDArray[np.int64] | None): Optional output array of shape
+                ``(K,)`` for the dofs.  Allocated when ``None``.
 
         Returns:
-            npt.NDArray[np.float64]: Derivative values of shape ``(..., K)``.
+            tuple[npt.NDArray[np.float64], npt.NDArray[np.int64]]: ``(values, dofs)`` of
+            shapes ``(..., K)`` and ``(K,)``.
 
         Raises:
             IndexError: If ``cid`` is out of range ``[0, grid.num_cells)``.
             ValueError: If ``orders`` has the wrong length or a negative entry, if
                 ``pts`` does not have trailing dimension ``dim``, if any point lies
-                outside cell ``cid``, or if ``out`` has the wrong shape, dtype, or is
-                not writeable.
+                outside cell ``cid``, or if ``out_basis`` / ``out_dofs`` has the wrong
+                shape, dtype, or is not writeable.
             RuntimeError: If the grid has been modified since construction.
         """
         if isinstance(orders, int):
@@ -1008,7 +1050,7 @@ class THBSplineSpace:
                 )
         if any(o < 0 for o in orders_t):
             raise ValueError(f"orders must be non-negative; got {orders_t!r}.")
-        return self._tabulate_orders(cid, pts, orders_t, out)
+        return self._tabulate_orders(cid, pts, orders_t, out_basis, out_dofs)
 
     # ------------------------------------------------------------------
     # Refinement

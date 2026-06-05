@@ -72,7 +72,7 @@ class TestNonnegativityAndPartitionOfUnity:
         grid.refine(0, [0] * dim, [2] * dim)
         thb = THBSplineSpace(root, grid)
         for cid, pts in _cell_samples(thb):
-            assert thb.tabulate_basis(cid, pts).min() >= -1e-13
+            assert thb.tabulate_basis(cid, pts)[0].min() >= -1e-13
 
     @pytest.mark.parametrize("dim", [1, 2])
     def test_partition_of_unity(self, dim: int) -> None:
@@ -80,7 +80,8 @@ class TestNonnegativityAndPartitionOfUnity:
         grid.refine(0, [0] * dim, [2] * dim)
         thb = THBSplineSpace(root, grid)
         for cid, pts in _cell_samples(thb):
-            np.testing.assert_allclose(thb.tabulate_basis(cid, pts).sum(axis=-1), 1.0, atol=1e-12)
+            vals, _ = thb.tabulate_basis(cid, pts)
+            np.testing.assert_allclose(vals.sum(axis=-1), 1.0, atol=1e-12)
 
     def test_hb_is_not_partition_of_unity(self) -> None:
         # Truncation is what restores PoU; the non-truncated basis over-counts.
@@ -89,7 +90,8 @@ class TestNonnegativityAndPartitionOfUnity:
         hb = THBSplineSpace(_root_1d(), grid, truncate=False)
         worst = 0.0
         for cid, pts in _cell_samples(hb):
-            worst = max(worst, float(np.abs(hb.tabulate_basis(cid, pts).sum(axis=-1) - 1.0).max()))
+            vals, _ = hb.tabulate_basis(cid, pts)
+            worst = max(worst, float(np.abs(vals.sum(axis=-1) - 1.0).max()))
         assert worst > 1e-3
 
 
@@ -195,6 +197,6 @@ class TestDerivativeReproduction:
         for cid in range(thb.grid.num_cells):
             lo, hi = thb.grid.cell_bounds(cid)
             x = (lo[0] + (hi[0] - lo[0]) * xi).reshape(-1, 1)
-            dofs = thb.active_basis(cid)
-            got = thb.tabulate_basis_derivatives(cid, x, 1) @ coeffs[dofs]
+            vals, dofs = thb.tabulate_basis_derivatives(cid, x, 1)
+            got = vals @ coeffs[dofs]
             np.testing.assert_allclose(got, dpoly(x[:, 0]), atol=1e-11)

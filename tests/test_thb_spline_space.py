@@ -59,8 +59,7 @@ def _collocation(
         axes = [lo[k] + (hi[k] - lo[k]) * u for k in range(dim)]
         mesh = np.meshgrid(*axes, indexing="ij")
         cell_pts = np.stack([m.ravel() for m in mesh], axis=-1)
-        active = thb.active_basis(cid)
-        values = thb.tabulate_basis(cid, cell_pts)
+        values, active = thb.tabulate_basis(cid, cell_pts)
         for i in range(cell_pts.shape[0]):
             row = np.zeros(n_active)
             row[active] = values[i]
@@ -292,8 +291,7 @@ class TestEvaluation:
         for cid in range(grid.num_cells):
             lo, hi = grid.cell_bounds(cid)
             mid = (0.5 * (lo + hi)).reshape(1, thb.dim)
-            active = thb.active_basis(cid)
-            values = thb.tabulate_basis(cid, mid)
+            values, active = thb.tabulate_basis(cid, mid)
             assert values.shape == (1, active.shape[0])
             # B-splines nonzero on the cell are strictly positive at its midpoint.
             assert np.all(values[0] > 0.0)
@@ -308,26 +306,35 @@ class TestEvaluation:
         mat, _ = _collocation(thb)
         assert mat.min() >= 0.0
 
-    def test_tabulate_basis_out_argument(self) -> None:
+    def test_tabulate_basis_out_arguments(self) -> None:
         thb = THBSplineSpace(_root_1d(), _grid_1d(), truncate=False)
         pts = np.array([[0.1], [0.2]])
         k = thb.active_basis(0).shape[0]
-        out = np.empty((2, k), dtype=np.float64)
-        ret = thb.tabulate_basis(0, pts, out=out)
-        assert ret is out
-        np.testing.assert_allclose(out, thb.tabulate_basis(0, pts))
+        out_basis = np.empty((2, k), dtype=np.float64)
+        out_dofs = np.empty((k,), dtype=np.int64)
+        vals, dofs = thb.tabulate_basis(0, pts, out_basis=out_basis, out_dofs=out_dofs)
+        assert vals is out_basis
+        assert dofs is out_dofs
+        exp_vals, exp_dofs = thb.tabulate_basis(0, pts)
+        np.testing.assert_allclose(out_basis, exp_vals)
+        np.testing.assert_array_equal(out_dofs, exp_dofs)
 
     def test_tabulate_basis_bad_out_shape_raises(self) -> None:
         thb = THBSplineSpace(_root_1d(), _grid_1d(), truncate=False)
         with pytest.raises(ValueError, match="shape"):
-            thb.tabulate_basis(0, np.array([[0.1]]), out=np.empty((1, 99)))
+            thb.tabulate_basis(0, np.array([[0.1]]), out_basis=np.empty((1, 99)))
+
+    def test_tabulate_basis_bad_out_dofs_shape_raises(self) -> None:
+        thb = THBSplineSpace(_root_1d(), _grid_1d(), truncate=False)
+        with pytest.raises(ValueError, match="out_dofs must have shape"):
+            thb.tabulate_basis(0, np.array([[0.1]]), out_dofs=np.empty((99,), dtype=np.int64))
 
     def test_tabulate_basis_bad_out_dtype_raises(self) -> None:
         thb = THBSplineSpace(_root_1d(), _grid_1d(), truncate=False)
         k = thb.active_basis(0).shape[0]
         out_bad = np.empty((1, k), dtype=np.float32)
         with pytest.raises(ValueError, match="dtype"):
-            thb.tabulate_basis(0, np.array([[0.1]]), out=out_bad)  # type: ignore[arg-type]
+            thb.tabulate_basis(0, np.array([[0.1]]), out_basis=out_bad)  # type: ignore[arg-type]
 
     def test_tabulate_basis_readonly_out_raises(self) -> None:
         thb = THBSplineSpace(_root_1d(), _grid_1d(), truncate=False)
@@ -335,7 +342,7 @@ class TestEvaluation:
         out = np.empty((1, k), dtype=np.float64)
         out.flags.writeable = False
         with pytest.raises(ValueError, match="writeable"):
-            thb.tabulate_basis(0, np.array([[0.1]]), out=out)
+            thb.tabulate_basis(0, np.array([[0.1]]), out_basis=out)
 
     def test_tabulate_basis_bad_point_dim_raises(self) -> None:
         thb = THBSplineSpace(_root_2d(), _grid_2d(), truncate=False)
@@ -361,7 +368,7 @@ class TestEvaluation:
     def test_tabulate_basis_scalar_point(self) -> None:
         thb = THBSplineSpace(_root_1d(), _grid_1d(), truncate=False)
         # Shape (dim,) — single point without a leading batch dimension.
-        result = thb.tabulate_basis(0, np.array([0.1]))
+        result, _ = thb.tabulate_basis(0, np.array([0.1]))
         assert result.ndim == 1
         assert result.shape[0] == thb.active_basis(0).shape[0]
 
@@ -375,7 +382,7 @@ class TestEvaluation:
         assert cid is not None
         lo, hi = grid.cell_bounds(cid)
         mid = float(0.5 * (lo[0] + hi[0]))
-        total = thb.tabulate_basis(cid, np.array([[mid]])).sum()
+        total = thb.tabulate_basis(cid, np.array([[mid]]))[0].sum()
         # Functions from both level 0 and level 1 contribute; sum > 1.
         assert total > 1.0
 
@@ -525,7 +532,7 @@ class TestTruncation:
         pts = lo + (hi - lo) * np.linspace(0.1, 0.9, 5)[:, None]
         np.testing.assert_array_equal(thb.active_basis(cid), hb.active_basis(cid))
         np.testing.assert_allclose(
-            thb.tabulate_basis(cid, pts), hb.tabulate_basis(cid, pts), atol=1e-12
+            thb.tabulate_basis(cid, pts)[0], hb.tabulate_basis(cid, pts)[0], atol=1e-12
         )
 
     def test_truncation_restores_partition_of_unity_on_refined_cell(self) -> None:
@@ -538,8 +545,8 @@ class TestTruncation:
         cid = grid.locate([0.1])  # refined region
         assert cid is not None
         pt = np.array([[0.1]])
-        assert thb.tabulate_basis(cid, pt).sum() == pytest.approx(1.0, abs=1e-12)
-        assert hb.tabulate_basis(cid, pt).sum() > 1.0 + 1e-3
+        assert thb.tabulate_basis(cid, pt)[0].sum() == pytest.approx(1.0, abs=1e-12)
+        assert hb.tabulate_basis(cid, pt)[0].sum() > 1.0 + 1e-3
 
     def test_repr_truncate_true(self) -> None:
         thb = THBSplineSpace(_root_1d(), _grid_1d(), truncate=True)
@@ -552,10 +559,11 @@ class TestTruncation:
         active = thb.active_basis(cid)
         assert any(dof in thb._trunc for dof in active), "no truncated dof on this cell"
         pts = np.array([[0.1, 0.1]])
-        out = np.empty((1, active.shape[0]), dtype=np.float64)
-        ret = thb.tabulate_basis(cid, pts, out=out)
-        assert ret is out
-        np.testing.assert_allclose(out, thb.tabulate_basis(cid, pts))
+        out_basis = np.empty((1, active.shape[0]), dtype=np.float64)
+        vals, _ = thb.tabulate_basis(cid, pts, out_basis=out_basis)
+        assert vals is out_basis
+        exp, _ = thb.tabulate_basis(cid, pts)
+        np.testing.assert_allclose(out_basis, exp)
 
     def test_deepest_level_functions_not_in_trunc(self) -> None:
         # Active functions at the deepest level have no finer level below;
@@ -589,8 +597,8 @@ class TestTruncation:
         mid = (0.5 * (lo + hi)).reshape(1, -1)
         thb_active = thb.active_basis(cid)
         hb_active = hb.active_basis(cid)
-        thb_vals = thb.tabulate_basis(cid, mid)[0]
-        hb_vals = hb.tabulate_basis(cid, mid)[0]
+        thb_vals = thb.tabulate_basis(cid, mid)[0][0]
+        hb_vals = hb.tabulate_basis(cid, mid)[0][0]
         found_truncated = False
         for i, dof in enumerate(thb_active):
             if dof in thb._trunc:
@@ -620,9 +628,10 @@ class TestTruncation:
         ts = np.linspace(0.1, 0.9, 6)
         pts_flat = lo + (hi - lo) * ts[:, None]  # (6, 2)
         pts = pts_flat.reshape(2, 3, thb.dim)
-        result = thb.tabulate_basis(cid, pts)
+        result, dofs = thb.tabulate_basis(cid, pts)
         n_active = thb.active_basis(cid).shape[0]
         assert result.shape == (2, 3, n_active)
+        assert dofs.shape == (n_active,)
         np.testing.assert_allclose(result.sum(axis=-1), 1.0, atol=1e-10)
 
     def test_thb_and_hb_same_active_count(self) -> None:
@@ -697,8 +706,7 @@ def _collocation_derivatives(
         axes = [lo[k] + (hi[k] - lo[k]) * u for k in range(dim)]
         mesh = np.meshgrid(*axes, indexing="ij")
         cell_pts = np.stack([m.ravel() for m in mesh], axis=-1)
-        active = thb.active_basis(cid)
-        values = thb.tabulate_basis_derivatives(cid, cell_pts, orders)
+        values, active = thb.tabulate_basis_derivatives(cid, cell_pts, orders)
         for i in range(cell_pts.shape[0]):
             row = np.zeros(n_active)
             row[active] = values[i]
@@ -717,7 +725,7 @@ class TestDerivatives:
         lo, hi = thb.grid.cell_bounds(cid)
         pts = (lo + (hi - lo) * 0.5).reshape(1, thb.dim)
         np.testing.assert_allclose(
-            thb.tabulate_basis_derivatives(cid, pts, 0), thb.tabulate_basis(cid, pts)
+            thb.tabulate_basis_derivatives(cid, pts, 0)[0], thb.tabulate_basis(cid, pts)[0]
         )
 
     def test_order_zero_equals_values_hb(self) -> None:
@@ -730,7 +738,7 @@ class TestDerivatives:
         lo, hi = grid.cell_bounds(cid)
         pts = lo + (hi - lo) * np.array([0.25, 0.5, 0.75])[:, None]
         np.testing.assert_allclose(
-            hb.tabulate_basis_derivatives(cid, pts, 0), hb.tabulate_basis(cid, pts)
+            hb.tabulate_basis_derivatives(cid, pts, 0)[0], hb.tabulate_basis(cid, pts)[0]
         )
 
     def test_partition_of_unity_derivative_is_zero_1d(self) -> None:
@@ -774,10 +782,10 @@ class TestDerivatives:
             lo, hi = thb.grid.cell_bounds(cid)
             x = float(0.5 * (lo[0] + hi[0]))
             fd = (
-                thb.tabulate_basis(cid, np.array([[x + h]]))
-                - thb.tabulate_basis(cid, np.array([[x - h]]))
+                thb.tabulate_basis(cid, np.array([[x + h]]))[0]
+                - thb.tabulate_basis(cid, np.array([[x - h]]))[0]
             ) / (2.0 * h)
-            analytic = thb.tabulate_basis_derivatives(cid, np.array([[x]]), 1)
+            analytic = thb.tabulate_basis_derivatives(cid, np.array([[x]]), 1)[0]
             np.testing.assert_allclose(fd, analytic, atol=1e-6)
 
     def test_high_order_is_zero(self) -> None:
@@ -785,7 +793,7 @@ class TestDerivatives:
         thb = _refined_1d_three_levels()
         cid = thb.grid.locate([0.1])
         assert cid is not None
-        result = thb.tabulate_basis_derivatives(cid, np.array([[0.1]]), 3)
+        result, _ = thb.tabulate_basis_derivatives(cid, np.array([[0.1]]), 3)
         np.testing.assert_allclose(result, 0.0, atol=1e-12)
 
     def test_orders_length_mismatch_raises(self) -> None:
@@ -805,10 +813,11 @@ class TestDerivatives:
         lo, hi = thb.grid.cell_bounds(cid)
         pts = lo + (hi - lo) * np.array([0.3, 0.6])[:, None]
         k = thb.active_basis(cid).shape[0]
-        out = np.empty((2, k), dtype=np.float64)
-        ret = thb.tabulate_basis_derivatives(cid, pts, 1, out=out)
-        assert ret is out
-        np.testing.assert_allclose(out, thb.tabulate_basis_derivatives(cid, pts, 1))
+        out_basis = np.empty((2, k), dtype=np.float64)
+        vals, _ = thb.tabulate_basis_derivatives(cid, pts, 1, out_basis=out_basis)
+        assert vals is out_basis
+        exp, _ = thb.tabulate_basis_derivatives(cid, pts, 1)
+        np.testing.assert_allclose(out_basis, exp)
 
     def test_hb_derivative_reproduction(self) -> None:
         root = _root_1d()
@@ -845,8 +854,7 @@ def _nonzero_level_span(thb: THBSplineSpace) -> int:
         lo, hi = grid.cell_bounds(cid)
         mesh = np.meshgrid(*[lo[k] + (hi[k] - lo[k]) * u for k in range(thb.dim)], indexing="ij")
         pts = np.stack([m.ravel() for m in mesh], axis=-1)
-        active = thb.active_basis(cid)
-        vals = thb.tabulate_basis(cid, pts)
+        vals, active = thb.tabulate_basis(cid, pts)
         nonzero = active[np.abs(vals).max(axis=0) > 1e-12]
         if nonzero.size == 0:
             continue
@@ -859,8 +867,8 @@ def _field_at(
     thb: THBSplineSpace, coeffs: npt.NDArray[np.float64], cid: int, pts: npt.NDArray[np.float64]
 ) -> npt.NDArray[np.float64]:
     """Evaluate the field ``sum coeffs[i] Phi_i`` at ``pts`` on cell ``cid``."""
-    active = thb.active_basis(cid)
-    result: npt.NDArray[np.float64] = thb.tabulate_basis(cid, pts) @ coeffs[active]
+    values, active = thb.tabulate_basis(cid, pts)
+    result: npt.NDArray[np.float64] = values @ coeffs[active]
     return result
 
 

@@ -67,8 +67,8 @@ def _assemble(
     for cid in range(thb.grid.num_cells):
         pts = np.ascontiguousarray(pts_all[cid], dtype=np.float64)
         wts = np.asarray(wts_all[cid], dtype=np.float64)
-        vals = np.asarray(thb.tabulate_basis(cid, pts), dtype=np.float64)
-        dofs = thb.active_basis(cid)
+        vals_arr, dofs = thb.tabulate_basis(cid, pts)
+        vals = np.asarray(vals_arr, dtype=np.float64)
         mass[np.ix_(dofs, dofs)] += vals.T @ (vals * wts[:, None])
         if func is not None:
             fvals = np.asarray(func(pts), dtype=np.float64).reshape(pts.shape[0])

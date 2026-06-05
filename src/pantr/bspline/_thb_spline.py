@@ -165,13 +165,12 @@ class THBSpline:
         out = np.empty((n_pts, rank), dtype=np.float64)
         for cid in np.unique(cids):
             mask = cids == cid
-            dofs = self._space.active_basis(int(cid))
+            values, dofs = self._space.tabulate_basis(int(cid), flat[mask])
             if dofs.size == 0:
                 raise RuntimeError(
                     f"cell {int(cid)} has no active basis functions; "
                     "the THBSplineSpace may be inconsistent."
                 )
-            values = self._space.tabulate_basis(int(cid), flat[mask])
             out[mask] = np.asarray(values, dtype=np.float64) @ self._coeffs[dofs]
 
         if self._scalar:

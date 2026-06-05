@@ -304,8 +304,8 @@ class TestThbSpline:
         for i, p in enumerate(pts):
             cid = thb.grid.locate(p)
             assert cid is not None
-            dofs = thb.active_basis(cid)
-            manual[i] = thb.tabulate_basis(cid, p.reshape(1, -1))[0] @ coeffs[dofs]
+            vals, dofs = thb.tabulate_basis(cid, p.reshape(1, -1))
+            manual[i] = vals[0] @ coeffs[dofs]
         np.testing.assert_allclose(got, manual, atol=1e-13)
 
     def test_properties_and_repr(self) -> None:
@@ -393,6 +393,6 @@ class TestThbSpline:
         for i, p in enumerate(pts):
             cid = thb.grid.locate(p)
             assert cid is not None
-            dofs = thb.active_basis(cid)
-            expected = thb.tabulate_basis(cid, p.reshape(1, -1))[0] @ coeffs[dofs]
+            vals, dofs = thb.tabulate_basis(cid, p.reshape(1, -1))
+            expected = vals[0] @ coeffs[dofs]
             np.testing.assert_allclose(got[i], expected, atol=1e-13)
