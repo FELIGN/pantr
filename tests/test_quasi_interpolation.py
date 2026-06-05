@@ -107,6 +107,18 @@ class TestTensorProductQI:
         with pytest.raises(ValueError, match="kind"):
             quasi_interpolate_bspline(lambda p: p[:, 0], _root_1d(), kind="nope")  # type: ignore[arg-type]
 
+    def test_func_zero_d_raises(self) -> None:
+        with pytest.raises(ValueError, match="0-D"):
+            quasi_interpolate_bspline(lambda p: np.float64(1.0), _root_1d())
+
+    def test_func_3d_raises(self) -> None:
+        with pytest.raises(ValueError, match="3-D"):
+            quasi_interpolate_bspline(lambda p: np.zeros((p.shape[0], 2, 2)), _root_1d())
+
+    def test_func_wrong_count_raises(self) -> None:
+        with pytest.raises(ValueError, match="values"):
+            quasi_interpolate_bspline(lambda p: np.zeros(p.shape[0] + 1), _root_1d())
+
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Hierarchical quasi-interpolation — exact reproduction (THB)
@@ -187,6 +199,16 @@ class TestThbReproduction:
         assert recovered.rank == 2
         np.testing.assert_allclose(recovered.coeffs, coeffs, atol=1e-10)
 
+    def test_multiple_candidate_cells_selects_nearest(self) -> None:
+        # Refine two non-adjacent cells so a coarse dof whose support spans both
+        # refined regions has more than one leaf-cell candidate; exercises the
+        # nearest-Greville selection branch.
+        grid = _grid_1d()
+        grid.refine(0, [0], [2])
+        grid.refine(0, [3], [4])
+        thb = THBSplineSpace(_root_1d(), grid)
+        assert _thb_reproduction_error(thb) < 1e-10
+
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Convergence smoke + TP consistency
@@ -207,8 +229,8 @@ class TestConvergence:
             got = np.asarray(qi.evaluate(xs)).ravel()
             errs.append(np.abs(got - np.sin(2.0 * np.pi * xs)).max())
         orders = [np.log2(errs[i] / errs[i + 1]) for i in range(len(errs) - 1)]
-        # degree-2 LLM projector: expect order ≈ 3; assert comfortably super-quadratic.
-        assert min(orders) > 2.5
+        # degree-2 LLM projector: expect order ≈ 3.
+        assert min(orders) > 2.9
 
     def test_unrefined_thb_matches_tp(self) -> None:
         def f(p: npt.NDArray[np.float64]) -> npt.NDArray[np.float64]:
@@ -249,6 +271,18 @@ class TestHb:
         thb = THBSplineSpace(_root_1d(), _grid_1d())
         with pytest.raises(ValueError, match="kind"):
             quasi_interpolate_thb_spline(lambda p: p[:, 0], thb, kind="nope")  # type: ignore[arg-type]
+
+    def test_func_wrong_count_raises(self) -> None:
+        thb = THBSplineSpace(_root_1d(), _grid_1d())
+        with pytest.raises(ValueError, match="values"):
+            quasi_interpolate_thb_spline(lambda p: np.zeros(p.shape[0] + 1), thb)
+
+    def test_stale_grid_raises_on_qi(self) -> None:
+        grid = _grid_1d()
+        thb = THBSplineSpace(_root_1d(), grid)
+        grid.refine(0, [0], [2])
+        with pytest.raises(RuntimeError, match="stale"):
+            quasi_interpolate_thb_spline(lambda p: p[:, 0], thb)
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -312,3 +346,53 @@ class TestThbSpline:
         spline = THBSpline(thb, np.zeros(thb.num_active_functions))
         with pytest.raises(ValueError, match="trailing dimension"):
             spline.evaluate(np.array([[0.1]]))
+
+    def test_stale_grid_raises_on_evaluate(self) -> None:
+        grid = _grid_1d()
+        thb = THBSplineSpace(_root_1d(), grid)
+        spline = THBSpline(thb, np.zeros(thb.num_active_functions))
+        grid.refine(0, [0], [2])
+        with pytest.raises(RuntimeError, match="stale"):
+            spline.evaluate(np.array([[0.5]]))
+
+    def test_bad_coeffs_ndim_raises(self) -> None:
+        thb = THBSplineSpace(_root_1d(), _grid_1d())
+        with pytest.raises(ValueError, match="1-D or 2-D"):
+            THBSpline(thb, np.zeros((thb.num_active_functions, 2, 2)))
+
+    def test_bad_coeffs_2d_leading_dim_raises(self) -> None:
+        thb = THBSplineSpace(_root_1d(), _grid_1d())
+        with pytest.raises(ValueError, match="leading dimension"):
+            THBSpline(thb, np.zeros((thb.num_active_functions + 1, 2)))
+
+    def test_coeffs_readonly(self) -> None:
+        thb = THBSplineSpace(_root_1d(), _grid_1d())
+        spline = THBSpline(thb, np.ones(thb.num_active_functions))
+        with pytest.raises(ValueError, match="read-only"):
+            spline.coeffs[:] = 0.0
+
+    def test_vector_coeffs_readonly(self) -> None:
+        thb = THBSplineSpace(_root_1d(), _grid_1d())
+        spline = THBSpline(thb, np.ones((thb.num_active_functions, 2)))
+        with pytest.raises(ValueError, match="read-only"):
+            spline.coeffs[:] = 0.0
+
+    def test_evaluate_vector_refined_2d(self) -> None:
+        # Vector-valued evaluate on a refined 2D grid exercises the full
+        # multi-level dofs → active_basis → tabulate_basis → matmul path.
+        grid = _grid_2d()
+        grid.refine(0, [1, 1], [3, 3])
+        thb = THBSplineSpace(_root_2d(), grid)
+        rng = np.random.default_rng(7)
+        coeffs = rng.standard_normal((thb.num_active_functions, 2))
+        spline = THBSpline(thb, coeffs)
+        pts = _sample(2, 5)
+        got = np.asarray(spline.evaluate(pts))
+        assert got.shape == (pts.shape[0], 2)
+        # Verify against manual assembly.
+        for i, p in enumerate(pts):
+            cid = thb.grid.locate(p)
+            assert cid is not None
+            dofs = thb.active_basis(cid)
+            expected = thb.tabulate_basis(cid, p.reshape(1, -1))[0] @ coeffs[dofs]
+            np.testing.assert_allclose(got[i], expected, atol=1e-13)

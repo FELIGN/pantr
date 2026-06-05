@@ -11,8 +11,9 @@ local interpolation recovers their exact coefficients and the operator is a
 projector onto the spline space (``Q B_β = B_β``).
 
 The same low-level helpers (:func:`_interval_interior_points`,
-:func:`_local_weight_row`, :func:`_tensor_point_grid`, :func:`_contract_weights`)
-back the hierarchical quasi-interpolant in ``_thb_quasi_interpolation``.
+:func:`_local_weight_row`, :func:`_tensor_point_grid`, :func:`_contract_weights`,
+:func:`_evaluate_func`) and :data:`QIKind` back the hierarchical quasi-interpolant
+in ``_thb_quasi_interpolation``.
 
 Main exports:
 
@@ -78,14 +79,32 @@ def _local_weight_row(
     Args:
         space1d (BsplineSpace1D): The 1D B-spline space.
         points (npt.NDArray[np.float64]): ``order`` distinct points in one interval.
-        target_index (int): Global index of the target basis function.
+        target_index (int): Index of the target basis function within ``space1d``
+            (0-indexed within the 1D space, not a global hierarchical dof index).
 
     Returns:
         npt.NDArray[np.float64]: Weights of shape ``(order,)``.
+
+    Raises:
+        ValueError: If the local collocation matrix is singular or nearly singular
+            (non-finite inverse), which indicates degenerate knot intervals.
     """
     basis, first_basis = space1d.tabulate_basis(points)
     block = np.asarray(basis, dtype=np.float64)
-    inv = np.asarray(np.linalg.inv(block), dtype=np.float64)
+    try:
+        inv = np.asarray(np.linalg.inv(block), dtype=np.float64)
+    except np.linalg.LinAlgError as exc:
+        raise ValueError(
+            f"Local collocation matrix for basis function {target_index} is singular. "
+            "This usually indicates repeated or degenerate knot intervals. "
+            f"Points: {points.tolist()}"
+        ) from exc
+    if not np.all(np.isfinite(inv)):
+        raise ValueError(
+            f"Local collocation matrix inversion for basis function {target_index} "
+            f"produced non-finite values (condition number too large). "
+            f"Points: {points.tolist()}"
+        )
     local = target_index - int(first_basis[0])
     return np.asarray(inv[local], dtype=np.float64)
 
@@ -179,9 +198,20 @@ def _evaluate_func(
         ``values`` of shape ``(M, rank)``.
 
     Raises:
-        ValueError: If the output leading dimension does not match ``M``.
+        ValueError: If the output is 0-D, has more than 2 dimensions, or its leading
+            dimension does not match ``M``.
     """
     values = np.asarray(func(np.ascontiguousarray(points, dtype=np.float64)), dtype=np.float64)
+    if values.ndim == 0:
+        raise ValueError(
+            f"func returned a 0-D scalar; expected shape ({points.shape[0]},) "
+            f"or ({points.shape[0]}, rank)."
+        )
+    if values.ndim > 2:  # noqa: PLR2004
+        raise ValueError(
+            f"func returned a {values.ndim}-D array of shape {values.shape!r}; "
+            f"expected shape ({points.shape[0]},) or ({points.shape[0]}, rank)."
+        )
     if values.shape[0] != points.shape[0]:
         raise ValueError(f"func returned {values.shape[0]} values for {points.shape[0]} points.")
     if values.ndim == 1:
@@ -221,7 +251,13 @@ def quasi_interpolate_bspline(
 
     Raises:
         TypeError: If ``space`` is not a :class:`~pantr.bspline.BsplineSpace`.
-        ValueError: If ``kind`` is not recognized.
+        ValueError: If ``kind`` is not recognized, or if ``func`` returns an output
+            with an invalid shape (0-D, more than 2-D, or wrong leading dimension).
+
+    Note:
+        All internal computation uses ``float64``.  The returned control points are
+        cast to ``space.dtype`` at the end, so a ``float32`` space incurs a precision
+        loss on the final cast.
 
     Example:
         >>> import numpy as np

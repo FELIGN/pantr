@@ -73,7 +73,8 @@ def quasi_interpolate_thb_spline(
 
     Raises:
         TypeError: If ``space`` is not a :class:`~pantr.bspline.THBSplineSpace`.
-        ValueError: If ``kind`` is not recognized.
+        ValueError: If ``kind`` is not recognized, or if ``func`` returns an output
+            with an invalid shape (0-D, more than 2-D, or wrong leading dimension).
         RuntimeError: If the grid has been modified since ``space`` was constructed,
             or an active dof has no leaf cell at its level (inconsistent space).
     """
@@ -140,6 +141,9 @@ def quasi_interpolate_thb_spline(
         for k in range(dim):
             pts = _interval_interior_points(float(lo[k]), float(hi[k]), orders[k])
             per_dir_points.append(pts)
+            # best_multi[k] is the per-direction index within the level-l
+            # tensor-product basis (not the global hierarchical dof index),
+            # which is what _local_weight_row expects.
             dof_weights[dof].append(_local_weight_row(level_space.spaces[k], pts, best_multi[k]))
         all_points[dof * block : (dof + 1) * block] = _tensor_point_grid(per_dir_points)
 

@@ -66,6 +66,11 @@ class THBSpline:
             raise ValueError(f"coeffs must be 1-D or 2-D; got {arr.ndim}-D.")
         self._space = space
         self._coeffs = np.ascontiguousarray(arr, dtype=np.float64)
+        # Ensure we own the data before marking read-only; ascontiguousarray may
+        # return a view of the input when it is already C-contiguous float64.
+        if not self._coeffs.flags.owndata:
+            self._coeffs = self._coeffs.copy()
+        self._coeffs.flags.writeable = False
         self._scalar = scalar
 
     @property
@@ -79,11 +84,12 @@ class THBSpline:
 
     @property
     def coeffs(self) -> npt.NDArray[np.float64]:
-        """Get the coefficients.
+        """Get the coefficients (read-only view).
 
         Returns:
             npt.NDArray[np.float64]: Shape ``(num_active,)`` for a scalar field,
-            ``(num_active, rank)`` otherwise.
+            ``(num_active, rank)`` otherwise.  The array is read-only; copy it
+            before modifying.
         """
         if self._scalar:
             return self._coeffs[:, 0]
@@ -108,13 +114,14 @@ class THBSpline:
         return int(self._coeffs.shape[1])
 
     @property
-    def dtype(self) -> npt.DTypeLike:
+    def dtype(self) -> np.dtype[np.float64]:
         """Get the floating-point dtype of the coefficients.
 
         Returns:
-            npt.DTypeLike: ``numpy.float64``.
+            np.dtype[np.float64]: Dtype of the stored coefficients, always
+            ``numpy.float64``.
         """
-        return np.float64
+        return self._coeffs.dtype
 
     def evaluate(self, pts: npt.ArrayLike) -> npt.NDArray[np.float64]:
         """Evaluate the THB spline at ``pts``.
@@ -133,7 +140,8 @@ class THBSpline:
         Raises:
             ValueError: If ``pts`` does not have trailing dimension ``dim`` or any
                 point lies outside the grid domain.
-            RuntimeError: If the grid has been modified since construction.
+            RuntimeError: If the grid has been modified since construction, or a cell
+                has no active basis functions (inconsistent space).
         """
         self._space._check_not_stale()
         arr = np.asarray(pts, dtype=np.float64)
@@ -158,6 +166,11 @@ class THBSpline:
         for cid in np.unique(cids):
             mask = cids == cid
             dofs = self._space.active_basis(int(cid))
+            if dofs.size == 0:
+                raise RuntimeError(
+                    f"cell {int(cid)} has no active basis functions; "
+                    "the THBSplineSpace may be inconsistent."
+                )
             values = self._space.tabulate_basis(int(cid), flat[mask])
             out[mask] = np.asarray(values, dtype=np.float64) @ self._coeffs[dofs]
 
