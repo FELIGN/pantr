@@ -9,7 +9,8 @@ import numpy.typing as npt
 import pytest
 
 from pantr.bspline import BsplineSpace, BsplineSpace1D, THBSplineSpace
-from pantr.bspline._thb_spline_space import _func_support_1d
+from pantr.bspline._thb_eval_core import _combine_tp_values
+from pantr.bspline._thb_spline_space import _box_all_true, _func_support_1d
 from pantr.grid import HierarchicalGrid, hierarchical_grid, uniform_grid
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -1191,3 +1192,177 @@ class TestRestriction:
         other = THBSplineSpace(_root_2d(), _grid_2d())
         with pytest.raises(ValueError, match="refinement"):
             fine.restriction_to(other)
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# _combine_tp_values kernel
+# ──────────────────────────────────────────────────────────────────────────────
+
+
+class TestCombineTPValues:
+    """Direct unit tests for the _combine_tp_values Numba kernel."""
+
+    def test_in_support_1d(self) -> None:
+        # first_basis=1 → local indices [0,2] map to global [1,3].
+        # multi[0]=2: local = 2-1 = 1 → vals[0, 0, 1] = 0.5.
+        vals = np.array([[[0.3, 0.5, 0.2]]], dtype=np.float64)  # (1, 1, 3)
+        first_basis = np.array([[1]], dtype=np.int64)
+        multis = np.array([[2]], dtype=np.int64)
+        degrees = np.array([2], dtype=np.int64)
+        result = _combine_tp_values(vals, first_basis, multis, degrees)
+        assert result.shape == (1, 1)
+        np.testing.assert_allclose(result[0, 0], 0.5)
+
+    def test_out_of_support_high_index_1d(self) -> None:
+        # multi[0]=5, first_basis=1: local = 4 > degree 2 → product = 0 (early break).
+        vals = np.array([[[0.3, 0.5, 0.2]]], dtype=np.float64)
+        first_basis = np.array([[1]], dtype=np.int64)
+        multis = np.array([[5]], dtype=np.int64)
+        degrees = np.array([2], dtype=np.int64)
+        result = _combine_tp_values(vals, first_basis, multis, degrees)
+        np.testing.assert_allclose(result[0, 0], 0.0)
+
+    def test_out_of_support_low_index_1d(self) -> None:
+        # multi[0]=0, first_basis=2: local = -2 < 0 → product = 0 (early break).
+        vals = np.array([[[0.3, 0.5, 0.2]]], dtype=np.float64)
+        first_basis = np.array([[2]], dtype=np.int64)
+        multis = np.array([[0]], dtype=np.int64)
+        degrees = np.array([2], dtype=np.int64)
+        result = _combine_tp_values(vals, first_basis, multis, degrees)
+        np.testing.assert_allclose(result[0, 0], 0.0)
+
+    def test_anisotropic_degrees_2d(self) -> None:
+        # degrees=(2,3) → max_order=4; direction 0 has only 3 valid entries.
+        # multi=(1,2), first_basis=(0,0): local=(1,2).
+        # dir 0: degree=2, local=1 → vals[0,0,1]=0.4; dir 1: degree=3, local=2 → vals[1,0,2]=0.4.
+        vals = np.zeros((2, 1, 4), dtype=np.float64)
+        vals[0, 0, :3] = [0.1, 0.4, 0.5]
+        vals[1, 0, :4] = [0.2, 0.3, 0.4, 0.1]
+        first_basis = np.zeros((2, 1), dtype=np.int64)
+        multis = np.array([[1, 2]], dtype=np.int64)
+        degrees = np.array([2, 3], dtype=np.int64)
+        result = _combine_tp_values(vals, first_basis, multis, degrees)
+        np.testing.assert_allclose(result[0, 0], 0.4 * 0.4)
+
+    def test_anisotropic_out_of_support_second_direction(self) -> None:
+        # degrees=(2,3), multi=(1,5): dir 1 local=5 > 3 → early break → 0.
+        vals = np.zeros((2, 1, 4), dtype=np.float64)
+        vals[0, 0, :3] = [0.1, 0.4, 0.5]
+        vals[1, 0, :4] = [0.2, 0.3, 0.4, 0.1]
+        first_basis = np.zeros((2, 1), dtype=np.int64)
+        multis = np.array([[1, 5]], dtype=np.int64)
+        degrees = np.array([2, 3], dtype=np.int64)
+        result = _combine_tp_values(vals, first_basis, multis, degrees)
+        np.testing.assert_allclose(result[0, 0], 0.0)
+
+    def test_anisotropic_in_support_dir0_out_dir1_differs_from_isotropic(self) -> None:
+        # Confirms degrees[k] (not max(degrees)) gates the out-of-support check.
+        # If the check used max(degrees)=3 instead of degrees[0]=2,
+        # local=3 would pass for dir 0 and return a nonzero product.
+        vals = np.zeros((2, 1, 4), dtype=np.float64)
+        vals[0, 0, :4] = [0.1, 0.2, 0.3, 0.9]  # index 3 is nonzero
+        vals[1, 0, :4] = [0.2, 0.3, 0.4, 0.1]
+        first_basis = np.zeros((2, 1), dtype=np.int64)
+        # local for dir 0 = 3; degree[0]=2 → out of support → 0.
+        multis = np.array([[3, 1]], dtype=np.int64)
+        degrees = np.array([2, 3], dtype=np.int64)
+        result = _combine_tp_values(vals, first_basis, multis, degrees)
+        np.testing.assert_allclose(result[0, 0], 0.0)
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# _box_all_true SAT helper
+# ──────────────────────────────────────────────────────────────────────────────
+
+
+class TestBoxAllTrue:
+    """Direct unit tests for the _box_all_true summed-area-table helper."""
+
+    def test_all_true_2d(self) -> None:
+        mask = np.ones((5, 5), dtype=np.bool_)
+        lo = np.array([[1, 1]], dtype=np.int64)
+        hi = np.array([[4, 4]], dtype=np.int64)
+        assert bool(_box_all_true(mask, lo, hi)[0]) is True
+
+    def test_false_inside_box_2d(self) -> None:
+        mask = np.ones((5, 5), dtype=np.bool_)
+        mask[2, 2] = False
+        lo = np.array([[1, 1]], dtype=np.int64)
+        hi = np.array([[4, 4]], dtype=np.int64)
+        assert bool(_box_all_true(mask, lo, hi)[0]) is False
+
+    def test_false_outside_box_ignored_2d(self) -> None:
+        mask = np.ones((5, 5), dtype=np.bool_)
+        mask[0, 0] = False  # outside [1,4)x[1,4)
+        lo = np.array([[1, 1]], dtype=np.int64)
+        hi = np.array([[4, 4]], dtype=np.int64)
+        assert bool(_box_all_true(mask, lo, hi)[0]) is True
+
+    def test_single_cell_1d(self) -> None:
+        mask = np.array([True, False, True], dtype=np.bool_)
+        lo = np.array([[0], [1], [2]], dtype=np.int64)
+        hi = np.array([[1], [2], [3]], dtype=np.int64)
+        result = _box_all_true(mask, lo, hi)
+        assert [bool(r) for r in result] == [True, False, True]
+
+    def test_batch_1d_mixed(self) -> None:
+        # mask[3]=False; [0,3) is all-True; [2,4) contains the False.
+        mask = np.array([True, True, True, False, True, True], dtype=np.bool_)
+        lo = np.array([[0], [2]], dtype=np.int64)
+        hi = np.array([[3], [4]], dtype=np.int64)
+        result = _box_all_true(mask, lo, hi)
+        assert bool(result[0]) is True
+        assert bool(result[1]) is False
+
+    def test_full_mask_3d(self) -> None:
+        mask = np.ones((4, 4, 4), dtype=np.bool_)
+        lo = np.array([[0, 0, 0]], dtype=np.int64)
+        hi = np.array([[4, 4, 4]], dtype=np.int64)
+        assert bool(_box_all_true(mask, lo, hi)[0]) is True
+
+    def test_single_false_3d(self) -> None:
+        mask = np.ones((4, 4, 4), dtype=np.bool_)
+        mask[1, 2, 3] = False
+        lo = np.array([[0, 0, 0]], dtype=np.int64)
+        hi = np.array([[4, 4, 4]], dtype=np.int64)
+        assert bool(_box_all_true(mask, lo, hi)[0]) is False
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# _contrib_cache
+# ──────────────────────────────────────────────────────────────────────────────
+
+
+class TestContribCache:
+    """Tests for the lazy per-cell _cell_contributions cache."""
+
+    def test_second_call_returns_same_object(self) -> None:
+        grid = _grid_1d()
+        grid.refine(0, [0], [2])
+        thb = THBSplineSpace(_root_1d(), grid)
+        cid = grid.locate([0.1])
+        assert cid is not None
+        first = thb._cell_contributions(cid)
+        second = thb._cell_contributions(cid)
+        assert second is first
+
+    def test_cache_warm_stale_grid_still_raises(self) -> None:
+        grid = _grid_1d()
+        thb = THBSplineSpace(_root_1d(), grid)
+        _ = thb._cell_contributions(0)  # warm cache
+        assert 0 in thb._contrib_cache
+        grid.refine(0, [0], [2])  # mutate grid after cache is warm
+        with pytest.raises(RuntimeError, match="stale"):
+            thb._cell_contributions(0)
+
+    def test_different_cells_cached_independently(self) -> None:
+        grid = _grid_1d()
+        grid.refine(0, [0], [2])
+        thb = THBSplineSpace(_root_1d(), grid)
+        c0 = grid.locate([0.1])
+        c1 = grid.locate([0.8])
+        assert c0 is not None and c1 is not None
+        r0 = thb._cell_contributions(c0)
+        r1 = thb._cell_contributions(c1)
+        assert thb._cell_contributions(c0) is r0
+        assert thb._cell_contributions(c1) is r1

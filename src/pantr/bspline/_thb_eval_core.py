@@ -33,8 +33,10 @@ def _combine_tp_values(
     ``multis[f]``) and point ``p``, computes the product over directions ``k`` of the
     1D value ``vals[k, p, multis[f, k] - first_basis[k, p]]``; a factor is ``0`` when the
     local index falls outside ``[0, degrees[k]]`` (the function is not supported at the
-    point in that direction).  This is the value of the mixed partial when ``vals`` holds
-    per-direction derivative values (the partial of a product factorizes per direction).
+    point in that direction); the inner ``k``-loop exits early on the first such direction
+    via ``break`` — remaining directions are not evaluated.  This is the value of the mixed
+    partial when ``vals`` holds per-direction derivative values (the partial of a product
+    factorizes per direction).
 
     Args:
         vals (npt.NDArray[np.float64]): Per-direction 1D values, shape

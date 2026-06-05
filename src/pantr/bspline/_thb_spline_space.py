@@ -121,7 +121,8 @@ def _box_all_true(
 
     Each box ``b`` spans the half-open range ``[lo[b, d], hi[b, d])`` per axis ``d``.
     A summed-area table over ``~mask`` makes each box's all-``True`` test
-    (``mask[box].all()`` ⟺ no ``False`` cell in the box) an O(``2**ndim``) lookup.
+    (``mask[box].all()`` ⟺ no ``False`` cell in the box) an O(``2**ndim``) lookup per box.
+    Table construction is O(``N * ndim``) where ``N`` is the total cell count of ``mask``.
 
     Args:
         mask (npt.NDArray[np.bool_]): The ``ndim``-dimensional boolean mask.

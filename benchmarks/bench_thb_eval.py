@@ -45,14 +45,14 @@ def _sweep(thb: THBSplineSpace, xi: np.ndarray, orders: tuple[int, ...] | None) 
             thb.tabulate_basis_derivatives(cid, pts, orders)
 
 
-def _best_ms(thb: THBSplineSpace, xi: np.ndarray, orders: tuple[int, ...] | None) -> float:
-    """Minimum wall time (ms) of the sweep over ``_N_REPEATS`` runs."""
+def _best_us(thb: THBSplineSpace, xi: np.ndarray, orders: tuple[int, ...] | None) -> float:
+    """Minimum wall time (µs) of the sweep over ``_N_REPEATS`` runs."""
     best = float("inf")
     for _ in range(_N_REPEATS):
         t0 = time.perf_counter()
         _sweep(thb, xi, orders)
         best = min(best, time.perf_counter() - t0)
-    return best * 1e3
+    return best * 1e6
 
 
 def main() -> None:
@@ -67,8 +67,8 @@ def main() -> None:
         deriv_orders = (1,) + (0,) * (dim - 1)
         _sweep(thb, xi, None)  # warm up the JIT / cache
         _sweep(thb, xi, deriv_orders)
-        values_us = _best_ms(thb, xi, None) * 1e3 / nc
-        deriv_us = _best_ms(thb, xi, deriv_orders) * 1e3 / nc
+        values_us = _best_us(thb, xi, None) / nc
+        deriv_us = _best_us(thb, xi, deriv_orders) / nc
         print(f"{f'{dim}D deg{degree} n{n}':>16}  {nc:>6}  {values_us:>10.1f}  {deriv_us:>10.1f}")
 
 
