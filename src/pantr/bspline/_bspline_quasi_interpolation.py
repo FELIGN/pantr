@@ -119,10 +119,10 @@ def _contract_weights(
     Returns:
         npt.NDArray[np.float64]: The coefficient of shape ``(rank,)``.
     """
-    result = values
+    result = np.asarray(values, dtype=np.float64)
     for w in weights:
-        result = np.tensordot(w, result, axes=([0], [0]))
-    return np.asarray(result, dtype=np.float64)
+        result = np.asarray(np.tensordot(w, result, axes=([0], [0])), dtype=np.float64)
+    return result
 
 
 def _llm_tp_direction_data(
