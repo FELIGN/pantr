@@ -132,7 +132,7 @@ class TestPreservationAndReproduction:
             return np.asarray(sum(pcoeffs[k] * p[:, 0] ** k for k in range(degree + 1)))
 
         proj = l2_project_thb(thb, poly)
-        xs = np.linspace(0.02, 0.98, 60).reshape(-1, 1)
+        xs = np.linspace(0.02, 0.98, 60).reshape(-1, 1).astype(np.float64)
         np.testing.assert_allclose(proj.evaluate(xs).ravel(), poly(xs), atol=1e-9)
 
     def test_qi_reproduces_polynomial_2d(self) -> None:
