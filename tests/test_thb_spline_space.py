@@ -1,8 +1,8 @@
-"""Tests for pantr.bspline.THBSplineSpace (non-truncated / HB path)."""
+"""Tests for pantr.bspline.THBSplineSpace (HB and THB bases, values and derivatives)."""
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 
 import numpy as np
 import numpy.typing as npt
@@ -263,7 +263,7 @@ class TestSelection:
 
     def test_active_function_indices_out_of_range(self) -> None:
         thb = THBSplineSpace(_root_1d(), _grid_1d(), truncate=False)
-        with pytest.raises(IndexError):
+        with pytest.raises(ValueError):
             thb.active_function_indices(5)
 
     def test_fully_refined_level_has_no_active_functions(self) -> None:
@@ -419,7 +419,7 @@ class TestLevelSpaces:
 
     def test_level_space_out_of_range(self) -> None:
         thb = THBSplineSpace(_root_1d(), _grid_1d(), truncate=False)
-        with pytest.raises(IndexError):
+        with pytest.raises(ValueError):
             thb.level_space(1)
 
     def test_levels_are_nested_1d(self) -> None:
@@ -624,3 +624,199 @@ class TestTruncation:
         n_active = thb.active_basis(cid).shape[0]
         assert result.shape == (2, 3, n_active)
         np.testing.assert_allclose(result.sum(axis=-1), 1.0, atol=1e-10)
+
+    def test_thb_and_hb_same_active_count(self) -> None:
+        # Truncation changes function values but not the active-function selection.
+        root, grid = _root_2d(), _grid_2d()
+        grid.refine(0, [0, 0], [2, 2])
+        thb = THBSplineSpace(root, grid, truncate=True)
+        hb = THBSplineSpace(root, grid, truncate=False)
+        assert thb.num_active_functions == hb.num_active_functions
+        assert thb.num_active_functions_per_level == hb.num_active_functions_per_level
+        assert thb.num_active_functions == sum(thb.num_active_functions_per_level)
+
+    def test_active_basis_union_covers_all_dofs(self) -> None:
+        # The union of active_basis(cid) over all cells must equal {0, …, N-1}.
+        thb = _refined_2d_corner()
+        seen: set[int] = set()
+        for cid in range(thb.grid.num_cells):
+            seen.update(thb.active_basis(cid).tolist())
+        assert seen == set(range(thb.num_active_functions))
+
+    def test_partition_of_unity_factor3(self) -> None:
+        # Verify that factor=3 (non-power-of-2) refinement still gives partition of unity.
+        root = _root_1d()
+        grid = hierarchical_grid(uniform_grid([[0.0, 1.0]], 4), 3)
+        grid.refine(0, [0], [2])
+        thb = THBSplineSpace(root, grid, truncate=True)
+        mat, _ = _collocation(thb)
+        np.testing.assert_allclose(mat.sum(axis=1), 1.0, atol=1e-10)
+
+    def test_partition_of_unity_degree1(self) -> None:
+        # Degree-1 (linear): support = 1 interval per function; different truncation geometry.
+        knots = np.array([0.0, 0.0, 0.25, 0.5, 0.75, 1.0, 1.0])
+        sp1d = BsplineSpace1D(knots, 1)
+        root = BsplineSpace([sp1d])
+        grid = hierarchical_grid(uniform_grid([[0.0, 1.0]], 4), 2)
+        grid.refine(0, [0], [2])
+        thb = THBSplineSpace(root, grid, truncate=True)
+        mat, _ = _collocation(thb)
+        np.testing.assert_allclose(mat.sum(axis=1), 1.0, atol=1e-10)
+
+    def test_regularity_sequence_form(self) -> None:
+        # Scalar regularity=0 and equivalent sequence form [0] produce the same space.
+        root = _root_1d()
+        grid1 = _grid_1d()
+        grid1.refine(0, [0], [2])
+        thb_scalar = THBSplineSpace(root, grid1, truncate=True, regularity=0)
+        grid2 = _grid_1d()
+        grid2.refine(0, [0], [2])
+        thb_seq = THBSplineSpace(root, grid2, truncate=True, regularity=[0])
+        assert thb_scalar.num_active_functions == thb_seq.num_active_functions
+        mat, _ = _collocation(thb_seq)
+        np.testing.assert_allclose(mat.sum(axis=1), 1.0, atol=1e-10)
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Derivatives
+# ──────────────────────────────────────────────────────────────────────────────
+
+
+def _collocation_derivatives(
+    thb: THBSplineSpace, orders: int | Sequence[int]
+) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64]]:
+    """Like :func:`_collocation` but evaluates the ``orders`` mixed partial."""
+    grid = thb.grid
+    dim = thb.dim
+    n_active = thb.num_active_functions
+    u = np.linspace(0.0, 1.0, thb.degrees[0] + 3)[1:-1]
+    rows: list[npt.NDArray[np.float64]] = []
+    pts: list[npt.NDArray[np.float64]] = []
+    for cid in range(grid.num_cells):
+        lo, hi = grid.cell_bounds(cid)
+        axes = [lo[k] + (hi[k] - lo[k]) * u for k in range(dim)]
+        mesh = np.meshgrid(*axes, indexing="ij")
+        cell_pts = np.stack([m.ravel() for m in mesh], axis=-1)
+        active = thb.active_basis(cid)
+        values = thb.tabulate_basis_derivatives(cid, cell_pts, orders)
+        for i in range(cell_pts.shape[0]):
+            row = np.zeros(n_active)
+            row[active] = values[i]
+            rows.append(row)
+            pts.append(cell_pts[i])
+    return np.asarray(rows), np.asarray(pts)
+
+
+class TestDerivatives:
+    """Parametric derivatives via tabulate_basis_derivatives (HB and THB)."""
+
+    def test_order_zero_equals_values_thb(self) -> None:
+        thb = _refined_2d_corner()
+        cid = thb.grid.locate([0.1, 0.1])
+        assert cid is not None
+        lo, hi = thb.grid.cell_bounds(cid)
+        pts = (lo + (hi - lo) * 0.5).reshape(1, thb.dim)
+        np.testing.assert_allclose(
+            thb.tabulate_basis_derivatives(cid, pts, 0), thb.tabulate_basis(cid, pts)
+        )
+
+    def test_order_zero_equals_values_hb(self) -> None:
+        root = _root_1d()
+        grid = _grid_1d()
+        grid.refine(0, [0], [2])
+        hb = THBSplineSpace(root, grid, truncate=False)
+        cid = grid.locate([0.1])
+        assert cid is not None
+        lo, hi = grid.cell_bounds(cid)
+        pts = lo + (hi - lo) * np.array([0.25, 0.5, 0.75])[:, None]
+        np.testing.assert_allclose(
+            hb.tabulate_basis_derivatives(cid, pts, 0), hb.tabulate_basis(cid, pts)
+        )
+
+    def test_partition_of_unity_derivative_is_zero_1d(self) -> None:
+        # d/dx of (sum of THB basis = 1) is 0 everywhere.
+        mat, _ = _collocation_derivatives(_refined_1d_three_levels(), 1)
+        np.testing.assert_allclose(mat.sum(axis=1), 0.0, atol=1e-10)
+
+    def test_partition_of_unity_derivative_is_zero_2d(self) -> None:
+        thb = _refined_2d_corner()
+        for orders in ([1, 0], [0, 1]):
+            mat, _ = _collocation_derivatives(thb, orders)
+            np.testing.assert_allclose(mat.sum(axis=1), 0.0, atol=1e-10)
+
+    def test_reproduce_first_derivative_1d(self) -> None:
+        thb = _refined_1d_three_levels()
+        a_val, pts = _collocation(thb)
+        a_dx, _ = _collocation_derivatives(thb, 1)
+        coef, _, _, _ = np.linalg.lstsq(a_val, pts[:, 0] ** 2, rcond=None)  # reproduce x^2
+        assert np.abs(a_dx @ coef - 2.0 * pts[:, 0]).max() < 1e-9  # d/dx (x^2) = 2x
+
+    def test_reproduce_second_derivative_1d(self) -> None:
+        thb = _refined_1d_three_levels()
+        a_val, pts = _collocation(thb)
+        a_dxx, _ = _collocation_derivatives(thb, 2)
+        coef, _, _, _ = np.linalg.lstsq(a_val, pts[:, 0] ** 2, rcond=None)
+        assert np.abs(a_dxx @ coef - 2.0).max() < 1e-9  # d2/dx2 (x^2) = 2
+
+    def test_reproduce_mixed_derivative_2d(self) -> None:
+        thb = _refined_2d_corner()
+        a_val, pts = _collocation(thb)
+        coef, _, _, _ = np.linalg.lstsq(a_val, pts[:, 0] * pts[:, 1], rcond=None)  # reproduce xy
+        a_dx, _ = _collocation_derivatives(thb, [1, 0])
+        a_dxy, _ = _collocation_derivatives(thb, [1, 1])
+        assert np.abs(a_dx @ coef - pts[:, 1]).max() < 1e-9  # d/dx (xy) = y
+        assert np.abs(a_dxy @ coef - 1.0).max() < 1e-9  # d2/dxdy (xy) = 1
+
+    def test_finite_difference_1d(self) -> None:
+        thb = _refined_1d_three_levels()
+        h = 1e-6
+        for cid in range(thb.grid.num_cells):
+            lo, hi = thb.grid.cell_bounds(cid)
+            x = float(0.5 * (lo[0] + hi[0]))
+            fd = (
+                thb.tabulate_basis(cid, np.array([[x + h]]))
+                - thb.tabulate_basis(cid, np.array([[x - h]]))
+            ) / (2.0 * h)
+            analytic = thb.tabulate_basis_derivatives(cid, np.array([[x]]), 1)
+            np.testing.assert_allclose(fd, analytic, atol=1e-6)
+
+    def test_high_order_is_zero(self) -> None:
+        # Degree 2: the third derivative is identically zero.
+        thb = _refined_1d_three_levels()
+        cid = thb.grid.locate([0.1])
+        assert cid is not None
+        result = thb.tabulate_basis_derivatives(cid, np.array([[0.1]]), 3)
+        np.testing.assert_allclose(result, 0.0, atol=1e-12)
+
+    def test_orders_length_mismatch_raises(self) -> None:
+        thb = _refined_2d_corner()
+        with pytest.raises(ValueError, match="orders"):
+            thb.tabulate_basis_derivatives(0, np.array([[0.1, 0.1]]), [1])
+
+    def test_negative_order_raises(self) -> None:
+        thb = _refined_1d_three_levels()
+        with pytest.raises(ValueError, match="non-negative"):
+            thb.tabulate_basis_derivatives(0, np.array([[0.1]]), -1)
+
+    def test_out_argument(self) -> None:
+        thb = _refined_1d_three_levels()
+        cid = thb.grid.locate([0.1])
+        assert cid is not None
+        lo, hi = thb.grid.cell_bounds(cid)
+        pts = lo + (hi - lo) * np.array([0.3, 0.6])[:, None]
+        k = thb.active_basis(cid).shape[0]
+        out = np.empty((2, k), dtype=np.float64)
+        ret = thb.tabulate_basis_derivatives(cid, pts, 1, out=out)
+        assert ret is out
+        np.testing.assert_allclose(out, thb.tabulate_basis_derivatives(cid, pts, 1))
+
+    def test_hb_derivative_reproduction(self) -> None:
+        root = _root_1d()
+        grid = _grid_1d()
+        grid.refine(0, [0], [2])
+        grid.refine(1, [0], [2])
+        hb = THBSplineSpace(root, grid, truncate=False)
+        a_val, pts = _collocation(hb)
+        a_dx, _ = _collocation_derivatives(hb, 1)
+        coef, _, _, _ = np.linalg.lstsq(a_val, pts[:, 0] ** 2, rcond=None)
+        assert np.abs(a_dx @ coef - 2.0 * pts[:, 0]).max() < 1e-9
