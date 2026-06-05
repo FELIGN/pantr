@@ -588,3 +588,13 @@ class TestActiveSetAccessors:
         expected = np.zeros(16, dtype=bool)
         expected[:8] = True
         np.testing.assert_array_equal(g.subdomain_mask(2), expected)
+
+    def test_is_active_leaf(self) -> None:
+        g = _grid_1d(4, 2)
+        g.refine(0, [0], [2])  # level-0 leaves at [2, 4); level-1 leaves at [0, 8)
+        assert g.is_active_leaf(0, (2,))  # active level-0 leaf
+        assert not g.is_active_leaf(0, (0,))  # refined away
+        assert g.is_active_leaf(1, (0,))  # active level-1 leaf
+        assert not g.is_active_leaf(1, (0, 0))  # wrong ndim
+        assert not g.is_active_leaf(0, (-1,))  # out of range
+        assert not g.is_active_leaf(5, (0,))  # nonexistent level

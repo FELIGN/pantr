@@ -718,6 +718,25 @@ class HierarchicalGrid(Grid):
         _, midx = self._decode_flat_id(cid)
         return midx
 
+    def is_active_leaf(self, level: int, midx: Sequence[int]) -> bool:
+        """Return whether ``(level, midx)`` is an active (leaf) cell.
+
+        Args:
+            level (int): Hierarchy level.
+            midx (Sequence[int]): Per-axis index in level-``level`` coordinates.
+
+        Returns:
+            bool: ``True`` iff a cell with this level and multi-index is currently
+            active (a leaf); ``False`` if it is out of range, not yet created, or has
+            been refined away.
+        """
+        if level < 0 or level >= len(self._blocks):
+            return False
+        midx_t = tuple(int(i) for i in midx)
+        if len(midx_t) != self.ndim or any(i < 0 for i in midx_t):
+            return False
+        return self._encode_midx(level, midx_t) is not None
+
     # ------------------------------------------------------------------
     # Active-set accessors
     # ------------------------------------------------------------------
