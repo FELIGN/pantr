@@ -991,8 +991,8 @@ class THBSplineSpace:
     ) -> THBSplineSpace:
         """Return a new space with the marked cells refined.
 
-        The space is immutable: a fresh grid is refined and a new
-        :class:`THBSplineSpace` is built; ``self`` and its grid are unchanged.
+        This method does not mutate ``self`` or its grid: a fresh grid is refined
+        and a new :class:`THBSplineSpace` is built; ``self`` and its grid are unchanged.
 
         With ``admissible_class=m`` (the default ``m=2``) the refinement is graded so
         the resulting mesh is admissible of class ``m`` (the truncated functions
@@ -1022,9 +1022,10 @@ class THBSplineSpace:
                 f"admissible_class must be an integer >= 2 or None; got {admissible_class!r}."
             )
         ids = np.unique(np.asarray(cell_ids, dtype=np.int64).ravel())
-        if ids.size and (int(ids[0]) < 0 or int(ids[-1]) >= self._grid.num_cells):
+        bad = [int(x) for x in ids if int(x) < 0 or int(x) >= self._grid.num_cells]
+        if bad:
             raise IndexError(
-                f"cell_ids must lie in [0, {self._grid.num_cells}); got out-of-range id."
+                f"cell_ids must lie in [0, {self._grid.num_cells}); got out-of-range id(s): {bad}."
             )
         # Convert to (level, midx) on the original grid before any refinement, since
         # flat ids are reassigned by every grid.refine call.
@@ -1061,6 +1062,11 @@ class THBSplineSpace:
             level (int): Level of the cell to refine.
             midx (tuple[int, ...]): Per-axis index of the cell at ``level``.
             m (int): Admissibility class (``>= 2``).
+
+        Raises:
+            RecursionError: Unreachable in practice — recursion depth is bounded by
+                ``level <= grid.max_level``, which is bounded by available memory long
+                before Python's default recursion limit.
         """
         for nlevel, nmidx in self._refinement_neighborhood(level, midx, m, grid):
             self._refine_recursive(grid, nlevel, nmidx, m)
@@ -1076,9 +1082,10 @@ class THBSplineSpace:
     ) -> list[tuple[int, tuple[int, ...]]]:
         """Return the refinement neighborhood of cell ``(level, midx)`` for class ``m``.
 
-        Implements Definition 3.4 of Carraturo et al. (2019): the active cells at level
-        ``level - m + 1`` that are parents of a cell in the multilevel support extension
-        of ``(level, midx)`` at level ``level - m + 2``.
+        Implements Definition 3.4 of Carraturo et al. (2019). Finds all cells at level
+        ``level - m + 1`` that are parents of a level-``level - m + 2`` cell touched by
+        any B-spline whose support covers the containing cell of ``(level, midx)`` at
+        level ``level - m + 2``.
 
         Args:
             level (int): Level of the cell.
@@ -1096,6 +1103,10 @@ class THBSplineSpace:
         if k_nbr < 0:
             return []
         k_ext = level - m + 2  # = k_nbr + 1; <= level because m >= 2
+        # k_ext < len(self._support) because level <= original max_level = num_levels - 1
+        assert k_ext < len(self._support), (
+            f"k_ext={k_ext} out of range; level={level}, m={m}, num_levels={self.num_levels}"
+        )
         support_ext = self._support[k_ext]
         # Containing cell of (level, midx) at level k_ext.
         q = tuple(midx[d] // factor[d] ** (level - k_ext) for d in range(dim))
@@ -1129,7 +1140,9 @@ class THBSplineSpace:
         Args:
             dof (int): Global active-function index.
             oslo (tuple[tuple[npt.NDArray[np.float64], ...], ...]): Per-level,
-                per-direction two-scale matrices spanning ``0 .. target_level - 1``.
+                per-direction two-scale matrices; must be indexed from at least
+                ``0`` through ``target_level - 1``.  Only ``oslo[start..target_level-1]``
+                is accessed, where ``start`` is the dof's native or representation level.
             target_level (int): Level whose TP basis the result is expressed in.
 
         Returns:
@@ -1159,8 +1172,8 @@ class THBSplineSpace:
     def prolongation_to(self, fine: THBSplineSpace) -> npt.NDArray[np.float64]:
         """Return the prolongation matrix from this space to a refinement ``fine``.
 
-        The hierarchical spaces are nested (``V_h subset of V_h'``), so every function
-        of this (coarse) space lies in ``fine``.  The returned matrix ``P`` maps a
+        The hierarchical spaces are nested (``V_h ⊆ V_h'``), so every function of this
+        (coarse) space lies in ``fine``.  The returned matrix ``P`` maps a
         coefficient vector in this space's basis to the coefficients of the **same
         function** in ``fine``'s basis: if ``u`` are coarse coefficients, ``P @ u`` are
         the fine coefficients.
@@ -1186,18 +1199,30 @@ class THBSplineSpace:
         """
         if not isinstance(fine, THBSplineSpace):
             raise TypeError(f"fine must be a THBSplineSpace; got {type(fine).__name__!r}.")
-        if (
-            fine.dim != self.dim
-            or fine._truncate != self._truncate
-            or tuple(fine._grid.factor) != tuple(self._grid.factor)
-            or fine._regularity != self._regularity
-            or fine.num_levels < self.num_levels
-            or not all(
-                np.array_equal(fine._root_space.spaces[k].knots, self._root_space.spaces[k].knots)
-                for k in range(self.dim)
+        mismatches: list[str] = []
+        if fine.dim != self.dim:
+            mismatches.append(f"dim: self={self.dim} vs fine={fine.dim}")
+        if fine._truncate != self._truncate:
+            mismatches.append(f"truncate: self={self._truncate} vs fine={fine._truncate}")
+        if tuple(fine._grid.factor) != tuple(self._grid.factor):
+            mismatches.append(f"factor: self={self._grid.factor} vs fine={fine._grid.factor}")
+        if fine._regularity != self._regularity:
+            mismatches.append(f"regularity: self={self._regularity} vs fine={fine._regularity}")
+        if fine.num_levels < self.num_levels:
+            mismatches.append(
+                f"fine.num_levels={fine.num_levels} < self.num_levels={self.num_levels}"
             )
+        if not all(
+            np.array_equal(fine._root_space.spaces[k].knots, self._root_space.spaces[k].knots)
+            for k in range(self.dim)
         ):
-            raise ValueError("fine must be a refinement of this space (incompatible spaces).")
+            mismatches.append("root knot vectors differ")
+        if mismatches:
+            raise ValueError(
+                "fine must be a refinement of this space; mismatches: "
+                + "; ".join(mismatches)
+                + "."
+            )
 
         target = fine.num_levels - 1
         oslo = fine._build_oslo_matrices()
@@ -1230,7 +1255,8 @@ class THBSplineSpace:
 
         solution, *_ = np.linalg.lstsq(fine_mat, coarse_mat, rcond=None)
         prolongation: npt.NDArray[np.float64] = np.asarray(solution, dtype=np.float64)
-        residual = float(np.abs(fine_mat @ prolongation - coarse_mat).max())
+        diff = np.abs(fine_mat @ prolongation - coarse_mat)
+        residual = float(diff.max()) if diff.size > 0 else 0.0
         if residual > 1e-8 * (1.0 + float(np.abs(coarse_mat).max())):
             raise ValueError(
                 f"fine is not a refinement of this space (prolongation residual {residual:.2e})."

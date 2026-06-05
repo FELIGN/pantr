@@ -833,7 +833,11 @@ def _dof_level(thb: THBSplineSpace, dof: int) -> int:
 
 
 def _nonzero_level_span(thb: THBSplineSpace) -> int:
-    """Return the max number of successive levels of nonzero THB functions on any cell."""
+    """Return the max number of successive levels of nonzero THB functions on any cell.
+
+    Uses tabulated values to filter: fully-truncated functions evaluate to exactly
+    zero on cells where they have no truncated support, and correctly don't count.
+    """
     grid = thb.grid
     u = np.linspace(0.0, 1.0, thb.degrees[0] + 3)[1:-1]
     worst = 0
@@ -898,15 +902,41 @@ class TestRefine:
         fine = coarse.refine([], admissible_class=None)
         assert fine.grid.num_cells == coarse.grid.num_cells
 
+    def test_ungraded_refines_exactly_marked_multi_cell(self) -> None:
+        # Verifies the is_active_leaf guard: already-coarse cells not in [0, 1] are untouched.
+        coarse = THBSplineSpace(_root_1d(), _grid_1d())
+        fine = coarse.refine([0, 1], admissible_class=None)
+        assert fine.grid.max_level == 1
+        # Cells 2 and 3 (the unmarked level-0 leaves) must still be at level 0.
+        for unmarked_pt in [0.6, 0.9]:
+            cid = fine.grid.locate([unmarked_pt])
+            assert cid is not None
+            assert fine.grid.cell_level(cid) == 0
+        # Cells 0 and 1 are split: point inside each should be at level 1.
+        for marked_pt in [0.06, 0.18]:
+            cid = fine.grid.locate([marked_pt])
+            assert cid is not None
+            assert fine.grid.cell_level(cid) == 1
+
     def test_refine_out_of_range_raises(self) -> None:
         coarse = THBSplineSpace(_root_1d(), _grid_1d())
-        with pytest.raises(IndexError):
+        with pytest.raises(IndexError, match=r"\[0, 4\)"):
             coarse.refine([999])
+
+    def test_refine_negative_id_raises(self) -> None:
+        coarse = THBSplineSpace(_root_1d(), _grid_1d())
+        with pytest.raises(IndexError, match=r"\[0, 4\)"):
+            coarse.refine([-1])
 
     def test_admissible_class_below_two_raises(self) -> None:
         coarse = THBSplineSpace(_root_1d(), _grid_1d())
         with pytest.raises(ValueError, match="admissible_class"):
             coarse.refine([0], admissible_class=1)
+
+    def test_admissible_class_zero_raises(self) -> None:
+        coarse = THBSplineSpace(_root_1d(), _grid_1d())
+        with pytest.raises(ValueError, match="admissible_class"):
+            coarse.refine([0], admissible_class=0)
 
     def test_stale_grid_refine_raises(self) -> None:
         grid = _grid_1d()
@@ -937,13 +967,16 @@ class TestAdmissibility:
         deeper = fine.refine([_locate(fine.grid, [0.05, 0.05])], admissible_class=None)
         assert _nonzero_level_span(deeper) > 2  # grading is what bounds the span
 
-    def test_grading_refines_at_least_as_many(self) -> None:
+    def test_grading_refines_strictly_more(self) -> None:
+        # A level-1 cell has a non-empty neighborhood at level 0 (k_nbr = 1 - 2 + 1 = 0).
+        # Graded refinement must pre-refine those level-0 neighbors, producing strictly
+        # more cells than the ungraded path which only splits the one marked cell.
         coarse = THBSplineSpace(_root_2d(), _grid_2d())
         f_g = coarse.refine([0], admissible_class=2)
         deep_g = f_g.refine([_locate(f_g.grid, [0.05, 0.05])], admissible_class=2)
         f_u = coarse.refine([0], admissible_class=None)
         deep_u = f_u.refine([_locate(f_u.grid, [0.05, 0.05])], admissible_class=None)
-        assert deep_g.grid.num_cells >= deep_u.grid.num_cells
+        assert deep_g.grid.num_cells > deep_u.grid.num_cells
 
 
 class TestProlongation:
@@ -1020,6 +1053,18 @@ class TestProlongation:
         other = THBSplineSpace(_root_2d(), _grid_2d())
         with pytest.raises(ValueError, match="refinement"):
             coarse.prolongation_to(other)
+
+    def test_truncate_mismatch_raises(self) -> None:
+        coarse = THBSplineSpace(_root_1d(), _grid_1d())  # truncate=True (default)
+        fine_hb = THBSplineSpace(_root_1d(), _grid_1d(), truncate=False)
+        with pytest.raises(ValueError, match="truncate"):
+            coarse.prolongation_to(fine_hb)
+
+    def test_regularity_mismatch_raises(self) -> None:
+        coarse = THBSplineSpace(_root_1d(), _grid_1d())  # regularity=None (default)
+        fine_reg0 = THBSplineSpace(_root_1d(), _grid_1d(), regularity=0)
+        with pytest.raises(ValueError, match="regularity"):
+            coarse.prolongation_to(fine_reg0)
 
     def test_non_thb_argument_raises(self) -> None:
         coarse = THBSplineSpace(_root_1d(), _grid_1d())

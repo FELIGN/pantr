@@ -598,3 +598,16 @@ class TestActiveSetAccessors:
         assert not g.is_active_leaf(1, (0, 0))  # wrong ndim
         assert not g.is_active_leaf(0, (-1,))  # out of range
         assert not g.is_active_leaf(5, (0,))  # nonexistent level
+
+    def test_is_active_leaf_2d(self) -> None:
+        g = _grid_2d(4, 2)
+        # Refine level-0 cell (0, 0) -> children at level 1 in [0,2)x[0,2)
+        g.refine(0, [0, 0], [1, 1])
+        assert not g.is_active_leaf(0, (0, 0))  # refined away
+        assert g.is_active_leaf(0, (1, 0))  # unrefined level-0 leaf
+        assert g.is_active_leaf(0, (0, 1))  # unrefined level-0 leaf
+        assert g.is_active_leaf(1, (0, 0))  # active level-1 leaf
+        assert g.is_active_leaf(1, (1, 1))  # active level-1 leaf (sibling)
+        assert not g.is_active_leaf(1, (0,))  # wrong ndim (1D tuple on 2D grid)
+        assert not g.is_active_leaf(0, (-1, 0))  # negative index
+        assert not g.is_active_leaf(5, (0, 0))  # nonexistent level
