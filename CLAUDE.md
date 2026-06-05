@@ -2,8 +2,9 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-## Environment
+## Non-negotiable rules
 
+- **Never run `git push` without first running the full check suite** (ruff, mypy, pytest, docs build). This applies every time — new PRs, review fixes, hotfixes, everything. Run `pre-pr-checks` skill or the commands in the Commands section below.
 - Always run commands in the `pantr` conda environment: `conda activate pantr`
 - Always use git worktrees for implementing changes (via the `EnterWorktree` tool or `git worktree add`)
 
@@ -18,6 +19,7 @@ NUMBA_DISABLE_JIT=1 pytest --cov=src/pantr --cov-report=xml         # coverage (
 ruff check .                                                         # lint
 ruff format .                                                        # format
 mypy --config-file mypy.ini src tests                               # type check
+NUMBA_DISABLE_JIT=1 make docs SPHINXOPTS="-W --keep-going -j auto"  # docs build (matches CI)
 ```
 
 > Default pytest (via `pytest.ini`) adds `--cov`, which slows things down and requires ≥85% coverage. Always pass `--no-cov` during development.
