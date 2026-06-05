@@ -165,10 +165,10 @@ class THBSplineSpace:
             subdividing to build finer levels.
         _level_spaces (tuple[BsplineSpace, ...]): Per-level tensor-product spaces;
             index ``l`` is the root subdivided to level ``l``.
-        _support (tuple[tuple[_Support1D, ...], ...]): Per-level, per-direction
-            function-to-cell support arrays; ``_support[level][k]`` is the
-            ``(first_basis, first_cell, last_cell)`` int64 triple for direction
-            ``k`` at ``level``.
+        _support (tuple): Per-level, per-direction function-to-cell support
+            arrays; ``_support[level][k]`` is the
+            ``(first_basis, first_cell, last_cell)`` int64 triple
+            (a ``_Support1D``) for direction ``k`` at ``level``.
         _active_funcs (tuple[npt.NDArray[np.int64], ...]): Per-level sorted flat
             (C-order) indices of the active tensor-product functions.
         _func_offset (npt.NDArray[np.int64]): Per-level global-dof base; length
@@ -176,9 +176,8 @@ class THBSplineSpace:
         _num_active (int): Total number of active hierarchical functions.
         _grid_snapshot (tuple[int, int]): ``(max_level, num_cells)`` captured at
             construction; used to detect post-construction grid mutations.
-        _trunc (dict[int, _TruncCoeffs]): Map from global dof to
-            ``_TruncCoeffs``; only truncated functions appear (empty when
-            ``truncate=False``).
+        _trunc (dict): Map from global dof (``int``) to ``_TruncCoeffs``;
+            only truncated functions appear (empty when ``truncate=False``).
     """
 
     __slots__ = (

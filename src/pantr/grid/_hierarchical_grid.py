@@ -770,7 +770,7 @@ class HierarchicalGrid(Grid):
             level (int): Hierarchy level.  Must be in ``[0, max_level]``.
 
         Returns:
-            npt.NDArray[np.bool_]: Fresh array of shape
+            npt.NDArray[np.bool\_]: Fresh array of shape
             ``level_cells_per_axis(level)``; ``True`` where the level-``level``
             cell ``(level, midx)`` is an active (leaf) cell.
 
@@ -796,7 +796,7 @@ class HierarchicalGrid(Grid):
             level (int): Hierarchy level.  Must be in ``[0, max_level]``.
 
         Returns:
-            npt.NDArray[np.bool_]: Fresh array of shape
+            npt.NDArray[np.bool\_]: Fresh array of shape
             ``level_cells_per_axis(level)``; ``True`` where the level-``level``
             cell lies in :math:`\Omega_{level}`.
 
