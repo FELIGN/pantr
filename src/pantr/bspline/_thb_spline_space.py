@@ -25,6 +25,7 @@ import numpy as np
 from ..grid import HierarchicalGrid
 from ._bspline_knot_insertion_core import _compute_oslo_matrix_1d_core
 from ._bspline_space_nd import BsplineSpace
+from ._thb_eval_core import _combine_tp_values
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -880,8 +881,6 @@ class THBSplineSpace:
         """
         rep_level, box_lo, coeffs = entry
         dim = self.dim
-        num_pts = flat_pts.shape[0]
-        point_index = np.arange(num_pts)
         if dim > _EINSUM_MAX_DIM:
             raise NotImplementedError(
                 f"_truncated_column uses single-letter einsum subscripts; "
@@ -894,12 +893,11 @@ class THBSplineSpace:
             )
             degree_k = self.degrees[k]
             width = coeffs.shape[k]
-            vmat = np.zeros((num_pts, width), dtype=np.float64)
-            for j in range(width):
-                local = (box_lo[k] + j) - first_basis
-                valid = (local >= 0) & (local <= degree_k)
-                vmat[:, j] = np.where(valid, values[point_index, np.clip(local, 0, degree_k)], 0.0)
-            value_mats.append(vmat)
+            # local[p, j] = (box_lo[k] + j) - first_basis[p]; gather + mask in one shot.
+            local = (box_lo[k] + np.arange(width))[None, :] - first_basis[:, None]
+            valid = (local >= 0) & (local <= degree_k)
+            gathered = np.take_along_axis(values, np.clip(local, 0, degree_k), axis=1)
+            value_mats.append(np.where(valid, gathered, 0.0))
 
         letters = string.ascii_lowercase
         func_subs = letters[:dim]
@@ -981,23 +979,34 @@ class THBSplineSpace:
 
         buffer = np.empty((num_pts, n_active), dtype=np.float64)
         eval_cache: _EvalCache = {}
-        point_index = np.arange(num_pts)
+        dim = self.dim
+        degrees_arr = np.asarray(self.degrees, dtype=np.int64)
+        max_order = int(degrees_arr.max()) + 1
+
+        # Truncated functions are evaluated individually (coefficient contraction);
+        # untruncated ones are grouped by level and combined in a single batched kernel
+        # call (the common, hot case).
+        untrunc_by_level: dict[int, tuple[list[int], list[tuple[int, ...]]]] = {}
         for col, (gdof, level, multi) in enumerate(contribs):
             entry = self._trunc.get(gdof)
             if entry is None:
-                column = np.ones(num_pts, dtype=np.float64)
-                for k in range(self.dim):
-                    values, first_basis = self._basis_1d_cached(
-                        level, k, orders[k], flat_pts, eval_cache
-                    )
-                    local = multi[k] - first_basis
-                    degree_k = self.degrees[k]
-                    valid = (local >= 0) & (local <= degree_k)
-                    gathered = values[point_index, np.clip(local, 0, degree_k)]
-                    column *= np.where(valid, gathered, 0.0)
-                buffer[:, col] = column
+                cols, multis = untrunc_by_level.setdefault(level, ([], []))
+                cols.append(col)
+                multis.append(multi)
             else:
                 buffer[:, col] = self._truncated_column(entry, orders, flat_pts, eval_cache)
+
+        for level, (cols, multis) in untrunc_by_level.items():
+            vals = np.zeros((dim, num_pts, max_order), dtype=np.float64)
+            first_basis = np.empty((dim, num_pts), dtype=np.int64)
+            for k in range(dim):
+                values_k, fb_k = self._basis_1d_cached(level, k, orders[k], flat_pts, eval_cache)
+                vals[k, :, : values_k.shape[1]] = values_k
+                first_basis[k] = fb_k
+            block = _combine_tp_values(
+                vals, first_basis, np.asarray(multis, dtype=np.int64), degrees_arr
+            )
+            buffer[:, cols] = block
 
         result[...] = buffer.reshape(out_shape)
         return result, dofs_result
