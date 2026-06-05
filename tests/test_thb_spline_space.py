@@ -820,3 +820,253 @@ class TestDerivatives:
         a_dx, _ = _collocation_derivatives(hb, 1)
         coef, _, _, _ = np.linalg.lstsq(a_val, pts[:, 0] ** 2, rcond=None)
         assert np.abs(a_dx @ coef - 2.0 * pts[:, 0]).max() < 1e-9
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Refinement / admissibility / prolongation
+# ──────────────────────────────────────────────────────────────────────────────
+
+
+def _dof_level(thb: THBSplineSpace, dof: int) -> int:
+    """Return the hierarchy level owning global dof ``dof``."""
+    return int(np.searchsorted(thb._func_offset, dof, side="right")) - 1
+
+
+def _nonzero_level_span(thb: THBSplineSpace) -> int:
+    """Return the max number of successive levels of nonzero THB functions on any cell.
+
+    Uses tabulated values to filter: fully-truncated functions evaluate to exactly
+    zero on cells where they have no truncated support, and correctly don't count.
+    """
+    grid = thb.grid
+    u = np.linspace(0.0, 1.0, thb.degrees[0] + 3)[1:-1]
+    worst = 0
+    for cid in range(grid.num_cells):
+        lo, hi = grid.cell_bounds(cid)
+        mesh = np.meshgrid(*[lo[k] + (hi[k] - lo[k]) * u for k in range(thb.dim)], indexing="ij")
+        pts = np.stack([m.ravel() for m in mesh], axis=-1)
+        active = thb.active_basis(cid)
+        vals = thb.tabulate_basis(cid, pts)
+        nonzero = active[np.abs(vals).max(axis=0) > 1e-12]
+        if nonzero.size == 0:
+            continue
+        levels = [_dof_level(thb, int(d)) for d in nonzero]
+        worst = max(worst, max(levels) - min(levels) + 1)
+    return worst
+
+
+def _field_at(
+    thb: THBSplineSpace, coeffs: npt.NDArray[np.float64], cid: int, pts: npt.NDArray[np.float64]
+) -> npt.NDArray[np.float64]:
+    """Evaluate the field ``sum coeffs[i] Phi_i`` at ``pts`` on cell ``cid``."""
+    active = thb.active_basis(cid)
+    result: npt.NDArray[np.float64] = thb.tabulate_basis(cid, pts) @ coeffs[active]
+    return result
+
+
+def _locate(grid: HierarchicalGrid, point: list[float]) -> int:
+    """Locate the active cell containing ``point`` (asserting it exists)."""
+    cid = grid.locate(point)
+    assert cid is not None
+    return cid
+
+
+class TestRefine:
+    """THBSplineSpace.refine returns a new, refined, non-mutating space."""
+
+    def test_returns_new_space_original_unchanged(self) -> None:
+        coarse = THBSplineSpace(_root_1d(), _grid_1d())
+        n_cells, n_active = coarse.grid.num_cells, coarse.num_active_functions
+        fine = coarse.refine([0, 1], admissible_class=None)
+        assert fine is not coarse
+        assert coarse.grid.num_cells == n_cells
+        assert coarse.num_active_functions == n_active
+        assert fine.grid.num_cells > n_cells
+
+    def test_refine_preserves_partition_of_unity(self) -> None:
+        coarse = THBSplineSpace(_root_2d(), _grid_2d())
+        fine = coarse.refine([0])
+        mat, _ = _collocation(fine)
+        np.testing.assert_allclose(mat.sum(axis=1), 1.0, atol=1e-10)
+
+    def test_basic_refines_exactly_marked(self) -> None:
+        coarse = THBSplineSpace(_root_1d(), _grid_1d())
+        fine = coarse.refine([0], admissible_class=None)
+        assert fine.grid.max_level == 1
+        child = fine.grid.locate([0.06])  # inside marked cell 0 = [0, 0.25]
+        assert child is not None
+        assert fine.grid.cell_level(child) == 1
+
+    def test_refine_empty_copies_grid(self) -> None:
+        coarse = THBSplineSpace(_root_1d(), _grid_1d())
+        fine = coarse.refine([], admissible_class=None)
+        assert fine.grid.num_cells == coarse.grid.num_cells
+
+    def test_ungraded_refines_exactly_marked_multi_cell(self) -> None:
+        # Verifies the is_active_leaf guard: already-coarse cells not in [0, 1] are untouched.
+        coarse = THBSplineSpace(_root_1d(), _grid_1d())
+        fine = coarse.refine([0, 1], admissible_class=None)
+        assert fine.grid.max_level == 1
+        # Cells 2 and 3 (the unmarked level-0 leaves) must still be at level 0.
+        for unmarked_pt in [0.6, 0.9]:
+            cid = fine.grid.locate([unmarked_pt])
+            assert cid is not None
+            assert fine.grid.cell_level(cid) == 0
+        # Cells 0 and 1 are split: point inside each should be at level 1.
+        for marked_pt in [0.06, 0.18]:
+            cid = fine.grid.locate([marked_pt])
+            assert cid is not None
+            assert fine.grid.cell_level(cid) == 1
+
+    def test_refine_out_of_range_raises(self) -> None:
+        coarse = THBSplineSpace(_root_1d(), _grid_1d())
+        with pytest.raises(IndexError, match=r"\[0, 4\)"):
+            coarse.refine([999])
+
+    def test_refine_negative_id_raises(self) -> None:
+        coarse = THBSplineSpace(_root_1d(), _grid_1d())
+        with pytest.raises(IndexError, match=r"\[0, 4\)"):
+            coarse.refine([-1])
+
+    def test_admissible_class_below_two_raises(self) -> None:
+        coarse = THBSplineSpace(_root_1d(), _grid_1d())
+        with pytest.raises(ValueError, match="admissible_class"):
+            coarse.refine([0], admissible_class=1)
+
+    def test_admissible_class_zero_raises(self) -> None:
+        coarse = THBSplineSpace(_root_1d(), _grid_1d())
+        with pytest.raises(ValueError, match="admissible_class"):
+            coarse.refine([0], admissible_class=0)
+
+    def test_stale_grid_refine_raises(self) -> None:
+        grid = _grid_1d()
+        coarse = THBSplineSpace(_root_1d(), grid)
+        grid.refine(0, [0], [2])
+        with pytest.raises(RuntimeError, match="stale"):
+            coarse.refine([0])
+
+
+class TestAdmissibility:
+    """Graded refinement maintains class-m admissibility (Carraturo et al. 2019)."""
+
+    def test_graded_class_two_2d(self) -> None:
+        coarse = THBSplineSpace(_root_2d(), _grid_2d())
+        fine = coarse.refine([0], admissible_class=2)
+        deeper = fine.refine([_locate(fine.grid, [0.05, 0.05])], admissible_class=2)
+        assert _nonzero_level_span(deeper) <= 2
+
+    def test_graded_class_two_1d(self) -> None:
+        coarse = THBSplineSpace(_root_1d(), _grid_1d())
+        fine = coarse.refine([0], admissible_class=2)
+        deeper = fine.refine([_locate(fine.grid, [0.03])], admissible_class=2)
+        assert _nonzero_level_span(deeper) <= 2
+
+    def test_ungraded_can_violate_class_two(self) -> None:
+        coarse = THBSplineSpace(_root_2d(), _grid_2d())
+        fine = coarse.refine([0], admissible_class=None)
+        deeper = fine.refine([_locate(fine.grid, [0.05, 0.05])], admissible_class=None)
+        assert _nonzero_level_span(deeper) > 2  # grading is what bounds the span
+
+    def test_grading_refines_strictly_more(self) -> None:
+        # A level-1 cell has a non-empty neighborhood at level 0 (k_nbr = 1 - 2 + 1 = 0).
+        # Graded refinement must pre-refine those level-0 neighbors, producing strictly
+        # more cells than the ungraded path which only splits the one marked cell.
+        coarse = THBSplineSpace(_root_2d(), _grid_2d())
+        f_g = coarse.refine([0], admissible_class=2)
+        deep_g = f_g.refine([_locate(f_g.grid, [0.05, 0.05])], admissible_class=2)
+        f_u = coarse.refine([0], admissible_class=None)
+        deep_u = f_u.refine([_locate(f_u.grid, [0.05, 0.05])], admissible_class=None)
+        assert deep_g.grid.num_cells > deep_u.grid.num_cells
+
+
+class TestProlongation:
+    """The coarse->fine prolongation transfers a coefficient field exactly."""
+
+    def _check_reproduction(
+        self, coarse: THBSplineSpace, fine: THBSplineSpace, rng: np.random.Generator
+    ) -> None:
+        p = coarse.prolongation_to(fine)
+        assert p.shape == (fine.num_active_functions, coarse.num_active_functions)
+        u_coarse = rng.random(coarse.num_active_functions)
+        u_fine = p @ u_coarse
+        u_axis = np.linspace(0.1, 0.9, 3)
+        err = 0.0
+        for cid in range(fine.grid.num_cells):
+            lo, hi = fine.grid.cell_bounds(cid)
+            mesh = np.meshgrid(
+                *[lo[k] + (hi[k] - lo[k]) * u_axis for k in range(fine.dim)], indexing="ij"
+            )
+            pts = np.stack([m.ravel() for m in mesh], axis=-1)
+            f_fine = _field_at(fine, u_fine, cid, pts)
+            coarse_cid = coarse.grid.locate(pts[0])
+            assert coarse_cid is not None
+            f_coarse = _field_at(coarse, u_coarse, coarse_cid, pts)
+            err = max(err, float(np.abs(f_fine - f_coarse).max()))
+        assert err < 1e-9
+
+    def test_reproduction_1d_thb(self) -> None:
+        coarse = THBSplineSpace(_root_1d(), _grid_1d())
+        fine = coarse.refine([0, 1])
+        self._check_reproduction(coarse, fine, np.random.default_rng(0))
+
+    def test_reproduction_2d_thb(self) -> None:
+        coarse = THBSplineSpace(_root_2d(), _grid_2d())
+        fine = coarse.refine([0])
+        self._check_reproduction(coarse, fine, np.random.default_rng(1))
+
+    def test_reproduction_hb(self) -> None:
+        coarse = THBSplineSpace(_root_1d(), _grid_1d(), truncate=False)
+        fine = coarse.refine([0, 1], admissible_class=None)
+        self._check_reproduction(coarse, fine, np.random.default_rng(2))
+
+    def test_reproduction_multi_level(self) -> None:
+        coarse = THBSplineSpace(_root_2d(), _grid_2d())
+        f1 = coarse.refine([0], admissible_class=None)
+        f2 = f1.refine([_locate(f1.grid, [0.05, 0.05])], admissible_class=None)
+        assert f2.num_levels >= 3
+        self._check_reproduction(coarse, f2, np.random.default_rng(3))
+
+    def test_identity_when_no_refinement(self) -> None:
+        coarse = THBSplineSpace(_root_2d(), _grid_2d())
+        p = coarse.prolongation_to(coarse)
+        np.testing.assert_allclose(p, np.eye(coarse.num_active_functions), atol=1e-10)
+
+    def test_columns_reproduce_basis_functions(self) -> None:
+        coarse = THBSplineSpace(_root_1d(), _grid_1d())
+        fine = coarse.refine([0])
+        p = coarse.prolongation_to(fine)
+        unit = np.zeros(coarse.num_active_functions)
+        unit[2] = 1.0  # a single coarse basis function
+        col = p[:, 2]
+        for cid in range(fine.grid.num_cells):
+            lo, hi = fine.grid.cell_bounds(cid)
+            mid = (0.5 * (lo + hi)).reshape(1, 1)
+            coarse_cid = coarse.grid.locate(mid[0])
+            assert coarse_cid is not None
+            assert (
+                abs(_field_at(fine, col, cid, mid)[0] - _field_at(coarse, unit, coarse_cid, mid)[0])
+                < 1e-9
+            )
+
+    def test_non_refinement_raises(self) -> None:
+        coarse = THBSplineSpace(_root_1d(), _grid_1d())
+        other = THBSplineSpace(_root_2d(), _grid_2d())
+        with pytest.raises(ValueError, match="refinement"):
+            coarse.prolongation_to(other)
+
+    def test_truncate_mismatch_raises(self) -> None:
+        coarse = THBSplineSpace(_root_1d(), _grid_1d())  # truncate=True (default)
+        fine_hb = THBSplineSpace(_root_1d(), _grid_1d(), truncate=False)
+        with pytest.raises(ValueError, match="truncate"):
+            coarse.prolongation_to(fine_hb)
+
+    def test_regularity_mismatch_raises(self) -> None:
+        coarse = THBSplineSpace(_root_1d(), _grid_1d())  # regularity=None (default)
+        fine_reg0 = THBSplineSpace(_root_1d(), _grid_1d(), regularity=0)
+        with pytest.raises(ValueError, match="regularity"):
+            coarse.prolongation_to(fine_reg0)
+
+    def test_non_thb_argument_raises(self) -> None:
+        coarse = THBSplineSpace(_root_1d(), _grid_1d())
+        with pytest.raises(TypeError, match="THBSplineSpace"):
+            coarse.prolongation_to(_grid_1d())  # type: ignore[arg-type]
