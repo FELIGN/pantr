@@ -106,7 +106,7 @@ class TestLinearIndependenceAndStability:
         eig = np.linalg.eigvalsh(mass)
         # Strictly positive spectrum ⇒ linearly independent basis (full rank).
         assert eig.min() > 0.0
-        assert np.linalg.matrix_rank(mass) == thb.num_active_functions
+        assert np.linalg.matrix_rank(mass) == thb.num_total_basis
 
     def test_condition_number_bounded_under_refinement(self) -> None:
         # Strong stability (GJS 2014, not 2012): the mesh-normalized Gram condition

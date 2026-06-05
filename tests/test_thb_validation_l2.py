@@ -80,7 +80,7 @@ class TestL2Reproduction:
         grid = hierarchical_grid(uniform_grid([[0.0, 1.0]] * dim, 4), 2)
         grid.refine(0, [0] * dim, [2] * dim)
         thb = THBSplineSpace(root, grid)
-        coeffs = np.random.default_rng(dim).standard_normal(thb.num_active_functions)
+        coeffs = np.random.default_rng(dim).standard_normal(thb.num_total_basis)
         target = THBSpline(thb, coeffs)
         proj = l2_project_thb(thb, lambda p: np.asarray(target.evaluate(p)))
         np.testing.assert_allclose(proj.coeffs, coeffs, atol=1e-9)
@@ -138,5 +138,5 @@ class TestAdaptiveEfficiency:
         err_adaptive = l2_error(l2_project_thb(adaptive, self._bump), self._bump)
 
         # Adaptive achieves a smaller error with fewer degrees of freedom.
-        assert adaptive.num_active_functions < uniform.num_active_functions
+        assert adaptive.num_total_basis < uniform.num_total_basis
         assert err_adaptive < err_uniform

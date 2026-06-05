@@ -47,12 +47,12 @@ class THBSpline:
         Raises:
             TypeError: If ``space`` is not a :class:`THBSplineSpace`.
             ValueError: If ``coeffs`` is not 1-D/2-D or its leading dimension does
-                not equal ``space.num_active_functions``.
+                not equal ``space.num_total_basis``.
         """
         if not isinstance(space, THBSplineSpace):
             raise TypeError(f"space must be a THBSplineSpace; got {type(space).__name__!r}.")
         arr = np.asarray(coeffs, dtype=np.float64)
-        n = space.num_active_functions
+        n = space.num_total_basis
         if arr.ndim == 1:
             scalar = True
             if arr.shape[0] != n:
@@ -185,6 +185,5 @@ class THBSpline:
             str: Summary with dimension, rank, and active-function count.
         """
         return (
-            f"THBSpline(dim={self.dim}, rank={self.rank}, "
-            f"num_active={self._space.num_active_functions})"
+            f"THBSpline(dim={self.dim}, rank={self.rank}, num_active={self._space.num_total_basis})"
         )

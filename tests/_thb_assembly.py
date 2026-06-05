@@ -57,7 +57,7 @@ def _assemble(
         ``(num_active, num_active)`` and ``(num_active,)``.
     """
     dim = thb.dim
-    n = thb.num_active_functions
+    n = thb.num_total_basis
     nq = max(thb.degrees) + 1 if n_quad is None else n_quad
     rule = gauss_legendre_quadrature(dim, nq)
     pts_all, wts_all = cell_quadrature(thb.grid, rule)

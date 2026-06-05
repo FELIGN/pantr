@@ -632,8 +632,11 @@ class THBSplineSpace:
         return self._truncate
 
     @property
-    def num_active_functions(self) -> int:
-        """Get the total number of active hierarchical functions.
+    def num_total_basis(self) -> int:
+        """Get the total number of active hierarchical basis functions.
+
+        Mirrors :attr:`~pantr.bspline.BsplineSpace.num_total_basis` (the hierarchical
+        basis is not tensor-product, so there is no per-direction ``num_basis``).
 
         Returns:
             int: Total active-function count across all levels.
@@ -641,13 +644,41 @@ class THBSplineSpace:
         return self._num_active
 
     @property
-    def num_active_functions_per_level(self) -> tuple[int, ...]:
-        """Get the number of active functions at each level.
+    def num_basis_per_level(self) -> tuple[int, ...]:
+        """Get the number of active basis functions at each level.
 
         Returns:
             tuple[int, ...]: Active-function count per level.
         """
         return tuple(int(a.shape[0]) for a in self._active_funcs)
+
+    @property
+    def domain(self) -> npt.NDArray[np.float32 | np.float64]:
+        """Get the parametric domain bounds.
+
+        Returns:
+            npt.NDArray[np.float32 | np.float64]: Shape ``(dim, 2)`` ``[lo, hi]`` per
+            direction (from the root space).
+        """
+        return self._root_space.domain
+
+    @property
+    def dtype(self) -> npt.DTypeLike:
+        """Get the floating-point dtype of the space.
+
+        Returns:
+            npt.DTypeLike: Always ``numpy.float64`` (THB evaluation is float64).
+        """
+        return np.float64
+
+    @property
+    def tolerance(self) -> float:
+        """Get the numerical tolerance.
+
+        Returns:
+            float: The root space's tolerance.
+        """
+        return self._root_space.tolerance
 
     # ------------------------------------------------------------------
     # Public API
@@ -1320,7 +1351,7 @@ class THBSplineSpace:
 
         Returns:
             npt.NDArray[np.float64]: Matrix ``P`` of shape
-            ``(fine.num_active_functions, self.num_active_functions)``.
+            ``(fine.num_total_basis, self.num_total_basis)``.
 
         Raises:
             TypeError: If ``fine`` is not a :class:`THBSplineSpace`.
@@ -1368,8 +1399,8 @@ class THBSplineSpace:
             flats = np.ravel_multi_index([g.ravel() for g in mesh], num_basis_finest)
             return flats, coeffs.ravel()
 
-        coarse_cols = [column_flats(self, i) for i in range(self.num_active_functions)]
-        fine_cols = [column_flats(fine, j) for j in range(fine.num_active_functions)]
+        coarse_cols = [column_flats(self, i) for i in range(self.num_total_basis)]
+        fine_cols = [column_flats(fine, j) for j in range(fine.num_total_basis)]
 
         touched = sorted(
             {int(f) for flats, _ in (*coarse_cols, *fine_cols) for f in flats.tolist()}
@@ -1377,10 +1408,10 @@ class THBSplineSpace:
         touched_arr = np.array(touched, dtype=np.int64)
         n_rows = touched_arr.shape[0]
 
-        coarse_mat = np.zeros((n_rows, self.num_active_functions), dtype=np.float64)
+        coarse_mat = np.zeros((n_rows, self.num_total_basis), dtype=np.float64)
         for i, (flats, vals) in enumerate(coarse_cols):
             coarse_mat[np.searchsorted(touched_arr, flats), i] = vals
-        fine_mat = np.zeros((n_rows, fine.num_active_functions), dtype=np.float64)
+        fine_mat = np.zeros((n_rows, fine.num_total_basis), dtype=np.float64)
         for j, (flats, vals) in enumerate(fine_cols):
             fine_mat[np.searchsorted(touched_arr, flats), j] = vals
 
@@ -1410,7 +1441,7 @@ class THBSplineSpace:
 
         Returns:
             npt.NDArray[np.float64]: Matrix ``R`` of shape
-            ``(coarse.num_active_functions, self.num_active_functions)``.
+            ``(coarse.num_total_basis, self.num_total_basis)``.
 
         Raises:
             TypeError: If ``coarse`` is not a :class:`THBSplineSpace`.
@@ -1433,6 +1464,6 @@ class THBSplineSpace:
         """
         return (
             f"THBSplineSpace(dim={self.dim}, degrees={self.degrees}, "
-            f"num_levels={self.num_levels}, num_active_functions={self._num_active}, "
+            f"num_levels={self.num_levels}, num_total_basis={self._num_active}, "
             f"truncate={self._truncate})"
         )

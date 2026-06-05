@@ -61,7 +61,7 @@ class TestRefinementNesting:
         fine = THBSplineSpace(_root_1d(), fine_grid)
 
         rng = np.random.default_rng(0)
-        c_coarse = rng.standard_normal(coarse.num_active_functions)
+        c_coarse = rng.standard_normal(coarse.num_total_basis)
         prolong = coarse.prolongation_to(fine)
         c_fine = prolong @ c_coarse
 
@@ -108,7 +108,7 @@ class TestCoarseningExactInverse:
         prolong = coarse.prolongation_to(fine)
         restrict = fine.restriction_to(coarse)
         identity = restrict @ prolong
-        np.testing.assert_allclose(identity, np.eye(coarse.num_active_functions), atol=1e-9)
+        np.testing.assert_allclose(identity, np.eye(coarse.num_total_basis), atol=1e-9)
 
 
 class TestCoarseningProjection:
@@ -188,14 +188,14 @@ class TestCoarseningProjection:
         proj = prolong @ restrict  # coarsen, then prolong back
 
         rng = np.random.default_rng(0)
-        u = rng.standard_normal(fine.num_active_functions)
+        u = rng.standard_normal(fine.num_total_basis)
         # Genuine coarsening: a generic fine field carries detail the coarse space
         # cannot hold, so the round trip must change it (P∘R is not the identity).
         assert np.linalg.norm(proj @ u - u) > 1e-2 * np.linalg.norm(u)
         # ...yet it is an idempotent projection (re-applying it changes nothing)...
         np.testing.assert_allclose(proj @ (proj @ u), proj @ u, atol=1e-9)
         # ...onto exactly the coarse subspace.
-        assert np.linalg.matrix_rank(proj) == coarse.num_active_functions
+        assert np.linalg.matrix_rank(proj) == coarse.num_total_basis
 
 
 class TestBezierReconstruction:

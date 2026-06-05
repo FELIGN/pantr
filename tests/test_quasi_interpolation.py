@@ -52,7 +52,7 @@ def _sample(dim: int, n: int = 9) -> npt.NDArray[np.float64]:
 def _thb_reproduction_error(thb: THBSplineSpace, seed: int = 0) -> float:
     """QI of a random THB spline recovers its coefficients."""
     rng = np.random.default_rng(seed)
-    coeffs = rng.standard_normal(thb.num_active_functions)
+    coeffs = rng.standard_normal(thb.num_total_basis)
     f = THBSpline(thb, coeffs)
     recovered = quasi_interpolate_thb_spline(f.evaluate, thb)
     return float(np.abs(recovered.coeffs - coeffs).max())
@@ -193,7 +193,7 @@ class TestThbReproduction:
         grid.refine(0, [0], [2])
         thb = THBSplineSpace(_root_1d(), grid)
         rng = np.random.default_rng(3)
-        coeffs = rng.standard_normal((thb.num_active_functions, 2))
+        coeffs = rng.standard_normal((thb.num_total_basis, 2))
         f = THBSpline(thb, coeffs)
         recovered = quasi_interpolate_thb_spline(f.evaluate, thb)
         assert recovered.rank == 2
@@ -260,7 +260,7 @@ class TestHb:
         grid.refine(0, [0], [2])
         thb = THBSplineSpace(_root_1d(), grid, truncate=False)
         qi = quasi_interpolate_thb_spline(lambda p: np.sin(p[:, 0]), thb)
-        assert qi.coeffs.shape == (thb.num_active_functions,)
+        assert qi.coeffs.shape == (thb.num_total_basis,)
         assert np.all(np.isfinite(qi.coeffs))
 
     def test_bad_space_raises(self) -> None:
@@ -296,7 +296,7 @@ class TestThbSpline:
     def test_evaluate_matches_manual_assembly(self) -> None:
         thb = THBSplineSpace(_root_2d(), _grid_2d())
         rng = np.random.default_rng(5)
-        coeffs = rng.standard_normal(thb.num_active_functions)
+        coeffs = rng.standard_normal(thb.num_total_basis)
         spline = THBSpline(thb, coeffs)
         pts = _sample(2, 5)
         got = np.asarray(spline.evaluate(pts)).ravel()
@@ -310,19 +310,19 @@ class TestThbSpline:
 
     def test_properties_and_repr(self) -> None:
         thb = THBSplineSpace(_root_1d(), _grid_1d())
-        spline = THBSpline(thb, np.zeros(thb.num_active_functions))
+        spline = THBSpline(thb, np.zeros(thb.num_total_basis))
         assert spline.space is thb
         assert spline.dim == 1
         assert spline.rank == 1
         assert spline.dtype == np.float64
-        assert spline.coeffs.shape == (thb.num_active_functions,)
+        assert spline.coeffs.shape == (thb.num_total_basis,)
         assert "THBSpline" in repr(spline)
 
     def test_vector_coeffs_shape(self) -> None:
         thb = THBSplineSpace(_root_1d(), _grid_1d())
-        spline = THBSpline(thb, np.zeros((thb.num_active_functions, 3)))
+        spline = THBSpline(thb, np.zeros((thb.num_total_basis, 3)))
         assert spline.rank == 3
-        assert spline.coeffs.shape == (thb.num_active_functions, 3)
+        assert spline.coeffs.shape == (thb.num_total_basis, 3)
         xs = np.array([[0.1], [0.9]])
         assert np.asarray(spline.evaluate(xs)).shape == (2, 3)
 
@@ -333,24 +333,24 @@ class TestThbSpline:
     def test_bad_coeffs_length_raises(self) -> None:
         thb = THBSplineSpace(_root_1d(), _grid_1d())
         with pytest.raises(ValueError, match="length"):
-            THBSpline(thb, np.zeros(thb.num_active_functions + 1))
+            THBSpline(thb, np.zeros(thb.num_total_basis + 1))
 
     def test_out_of_domain_raises(self) -> None:
         thb = THBSplineSpace(_root_1d(), _grid_1d())
-        spline = THBSpline(thb, np.zeros(thb.num_active_functions))
+        spline = THBSpline(thb, np.zeros(thb.num_total_basis))
         with pytest.raises(ValueError, match="outside"):
             spline.evaluate(np.array([[2.0]]))
 
     def test_wrong_trailing_dim_raises(self) -> None:
         thb = THBSplineSpace(_root_2d(), _grid_2d())
-        spline = THBSpline(thb, np.zeros(thb.num_active_functions))
+        spline = THBSpline(thb, np.zeros(thb.num_total_basis))
         with pytest.raises(ValueError, match="trailing dimension"):
             spline.evaluate(np.array([[0.1]]))
 
     def test_stale_grid_raises_on_evaluate(self) -> None:
         grid = _grid_1d()
         thb = THBSplineSpace(_root_1d(), grid)
-        spline = THBSpline(thb, np.zeros(thb.num_active_functions))
+        spline = THBSpline(thb, np.zeros(thb.num_total_basis))
         grid.refine(0, [0], [2])
         with pytest.raises(RuntimeError, match="stale"):
             spline.evaluate(np.array([[0.5]]))
@@ -358,22 +358,22 @@ class TestThbSpline:
     def test_bad_coeffs_ndim_raises(self) -> None:
         thb = THBSplineSpace(_root_1d(), _grid_1d())
         with pytest.raises(ValueError, match="1-D or 2-D"):
-            THBSpline(thb, np.zeros((thb.num_active_functions, 2, 2)))
+            THBSpline(thb, np.zeros((thb.num_total_basis, 2, 2)))
 
     def test_bad_coeffs_2d_leading_dim_raises(self) -> None:
         thb = THBSplineSpace(_root_1d(), _grid_1d())
         with pytest.raises(ValueError, match="leading dimension"):
-            THBSpline(thb, np.zeros((thb.num_active_functions + 1, 2)))
+            THBSpline(thb, np.zeros((thb.num_total_basis + 1, 2)))
 
     def test_coeffs_readonly(self) -> None:
         thb = THBSplineSpace(_root_1d(), _grid_1d())
-        spline = THBSpline(thb, np.ones(thb.num_active_functions))
+        spline = THBSpline(thb, np.ones(thb.num_total_basis))
         with pytest.raises(ValueError, match="read-only"):
             spline.coeffs[:] = 0.0
 
     def test_vector_coeffs_readonly(self) -> None:
         thb = THBSplineSpace(_root_1d(), _grid_1d())
-        spline = THBSpline(thb, np.ones((thb.num_active_functions, 2)))
+        spline = THBSpline(thb, np.ones((thb.num_total_basis, 2)))
         with pytest.raises(ValueError, match="read-only"):
             spline.coeffs[:] = 0.0
 
@@ -384,7 +384,7 @@ class TestThbSpline:
         grid.refine(0, [1, 1], [3, 3])
         thb = THBSplineSpace(_root_2d(), grid)
         rng = np.random.default_rng(7)
-        coeffs = rng.standard_normal((thb.num_active_functions, 2))
+        coeffs = rng.standard_normal((thb.num_total_basis, 2))
         spline = THBSpline(thb, coeffs)
         pts = _sample(2, 5)
         got = np.asarray(spline.evaluate(pts))

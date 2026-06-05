@@ -49,7 +49,7 @@ def _collocation(
     """
     grid = thb.grid
     dim = thb.dim
-    n_active = thb.num_active_functions
+    n_active = thb.num_total_basis
     npa = (thb.degrees[0] + 3) if n_per_axis is None else n_per_axis
     u = np.linspace(0.0, 1.0, npa)[1:-1]
     rows: list[npt.NDArray[np.float64]] = []
@@ -154,13 +154,13 @@ class TestUnrefined:
     def test_active_count_equals_root_1d(self) -> None:
         root = _root_1d()
         thb = THBSplineSpace(root, _grid_1d(), truncate=False)
-        assert thb.num_active_functions == root.num_total_basis
-        assert thb.num_active_functions_per_level == (root.num_total_basis,)
+        assert thb.num_total_basis == root.num_total_basis
+        assert thb.num_basis_per_level == (root.num_total_basis,)
 
     def test_active_count_equals_root_2d(self) -> None:
         root = _root_2d()
         thb = THBSplineSpace(root, _grid_2d(), truncate=False)
-        assert thb.num_active_functions == root.num_total_basis
+        assert thb.num_total_basis == root.num_total_basis
 
     def test_partition_of_unity_when_unrefined(self) -> None:
         thb = THBSplineSpace(_root_2d(), _grid_2d(), truncate=False)
@@ -228,7 +228,7 @@ class TestSelection:
         grid = _grid_1d()
         grid.refine(0, [0], [2])
         thb = THBSplineSpace(_root_1d(), grid, truncate=False)
-        assert thb.num_active_functions_per_level == (4, 4)
+        assert thb.num_basis_per_level == (4, 4)
         np.testing.assert_array_equal(thb.active_function_indices(0), [2, 3, 4, 5])
         np.testing.assert_array_equal(thb.active_function_indices(1), [0, 1, 2, 3])
 
@@ -272,8 +272,8 @@ class TestSelection:
         grid = _grid_1d()
         grid.refine(0, [0], [4])
         thb = THBSplineSpace(root, grid, truncate=False)
-        assert thb.num_active_functions_per_level[0] == 0
-        assert thb.num_active_functions_per_level[1] > 0
+        assert thb.num_basis_per_level[0] == 0
+        assert thb.num_basis_per_level[1] > 0
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -445,7 +445,7 @@ class TestLevelSpaces:
         # Axis 0 subdivided (8 intervals), axis 1 unchanged (4 intervals).
         assert level1.num_intervals == (8, 4)
         assert level0.num_intervals == (4, 4)
-        assert thb.num_active_functions == sum(thb.num_active_functions_per_level)
+        assert thb.num_total_basis == sum(thb.num_basis_per_level)
         assert _max_reproduction_residual(thb, lambda p: p[:, 0] * p[:, 1]) < 1e-9
 
 
@@ -504,12 +504,12 @@ class TestTruncation:
     def test_some_functions_truncated(self) -> None:
         thb = _refined_2d_corner()
         n_truncated = len(thb._trunc)
-        assert 0 < n_truncated < thb.num_active_functions
+        assert 0 < n_truncated < thb.num_total_basis
 
     def test_no_truncation_when_unrefined(self) -> None:
         thb = THBSplineSpace(_root_1d(), _grid_1d(), truncate=True)
         assert len(thb._trunc) == 0
-        assert thb.num_active_functions == _root_1d().num_total_basis
+        assert thb.num_total_basis == _root_1d().num_total_basis
 
     def test_truncation_identity_outside_refinement(self) -> None:
         # On a cell entirely outside the refined region, truncation changes nothing:
@@ -563,7 +563,7 @@ class TestTruncation:
         thb = _refined_1d_three_levels()
         deepest = thb.num_levels - 1
         offset = int(thb._func_offset[deepest])
-        count = int(thb.num_active_functions_per_level[deepest])
+        count = int(thb.num_basis_per_level[deepest])
         for i in range(count):
             assert offset + i not in thb._trunc
 
@@ -631,9 +631,9 @@ class TestTruncation:
         grid.refine(0, [0, 0], [2, 2])
         thb = THBSplineSpace(root, grid, truncate=True)
         hb = THBSplineSpace(root, grid, truncate=False)
-        assert thb.num_active_functions == hb.num_active_functions
-        assert thb.num_active_functions_per_level == hb.num_active_functions_per_level
-        assert thb.num_active_functions == sum(thb.num_active_functions_per_level)
+        assert thb.num_total_basis == hb.num_total_basis
+        assert thb.num_basis_per_level == hb.num_basis_per_level
+        assert thb.num_total_basis == sum(thb.num_basis_per_level)
 
     def test_active_basis_union_covers_all_dofs(self) -> None:
         # The union of active_basis(cid) over all cells must equal {0, …, N-1}.
@@ -641,7 +641,7 @@ class TestTruncation:
         seen: set[int] = set()
         for cid in range(thb.grid.num_cells):
             seen.update(thb.active_basis(cid).tolist())
-        assert seen == set(range(thb.num_active_functions))
+        assert seen == set(range(thb.num_total_basis))
 
     def test_partition_of_unity_factor3(self) -> None:
         # Verify that factor=3 (non-power-of-2) refinement still gives partition of unity.
@@ -672,7 +672,7 @@ class TestTruncation:
         grid2 = _grid_1d()
         grid2.refine(0, [0], [2])
         thb_seq = THBSplineSpace(root, grid2, truncate=True, regularity=[0])
-        assert thb_scalar.num_active_functions == thb_seq.num_active_functions
+        assert thb_scalar.num_total_basis == thb_seq.num_total_basis
         mat, _ = _collocation(thb_seq)
         np.testing.assert_allclose(mat.sum(axis=1), 1.0, atol=1e-10)
 
@@ -688,7 +688,7 @@ def _collocation_derivatives(
     """Like :func:`_collocation` but evaluates the ``orders`` mixed partial."""
     grid = thb.grid
     dim = thb.dim
-    n_active = thb.num_active_functions
+    n_active = thb.num_total_basis
     u = np.linspace(0.0, 1.0, thb.degrees[0] + 3)[1:-1]
     rows: list[npt.NDArray[np.float64]] = []
     pts: list[npt.NDArray[np.float64]] = []
@@ -876,11 +876,11 @@ class TestRefine:
 
     def test_returns_new_space_original_unchanged(self) -> None:
         coarse = THBSplineSpace(_root_1d(), _grid_1d())
-        n_cells, n_active = coarse.grid.num_cells, coarse.num_active_functions
+        n_cells, n_active = coarse.grid.num_cells, coarse.num_total_basis
         fine = coarse.refine([0, 1], admissible_class=None)
         assert fine is not coarse
         assert coarse.grid.num_cells == n_cells
-        assert coarse.num_active_functions == n_active
+        assert coarse.num_total_basis == n_active
         assert fine.grid.num_cells > n_cells
 
     def test_refine_preserves_partition_of_unity(self) -> None:
@@ -986,8 +986,8 @@ class TestProlongation:
         self, coarse: THBSplineSpace, fine: THBSplineSpace, rng: np.random.Generator
     ) -> None:
         p = coarse.prolongation_to(fine)
-        assert p.shape == (fine.num_active_functions, coarse.num_active_functions)
-        u_coarse = rng.random(coarse.num_active_functions)
+        assert p.shape == (fine.num_total_basis, coarse.num_total_basis)
+        u_coarse = rng.random(coarse.num_total_basis)
         u_fine = p @ u_coarse
         u_axis = np.linspace(0.1, 0.9, 3)
         err = 0.0
@@ -1029,13 +1029,13 @@ class TestProlongation:
     def test_identity_when_no_refinement(self) -> None:
         coarse = THBSplineSpace(_root_2d(), _grid_2d())
         p = coarse.prolongation_to(coarse)
-        np.testing.assert_allclose(p, np.eye(coarse.num_active_functions), atol=1e-10)
+        np.testing.assert_allclose(p, np.eye(coarse.num_total_basis), atol=1e-10)
 
     def test_columns_reproduce_basis_functions(self) -> None:
         coarse = THBSplineSpace(_root_1d(), _grid_1d())
         fine = coarse.refine([0])
         p = coarse.prolongation_to(fine)
-        unit = np.zeros(coarse.num_active_functions)
+        unit = np.zeros(coarse.num_total_basis)
         unit[2] = 1.0  # a single coarse basis function
         col = p[:, 2]
         for cid in range(fine.grid.num_cells):
@@ -1121,12 +1121,12 @@ class TestCoarsen:
         fine = coarse.refine([0])  # cell 0 -> children at level 1
         children = _cells_at_level(fine, 1)
         back = fine.coarsen([children[0]])  # only one of the two children marked
-        assert back.num_active_functions == fine.num_active_functions  # no-op
+        assert back.num_total_basis == fine.num_total_basis  # no-op
 
     def test_root_cells_not_coarsened(self) -> None:
         coarse = THBSplineSpace(_root_1d(), _grid_1d())
         back = coarse.coarsen([0])  # level-0 cell has no parent
-        assert back.num_active_functions == coarse.num_active_functions
+        assert back.num_total_basis == coarse.num_total_basis
 
     def test_coarsen_out_of_range_raises(self) -> None:
         coarse = THBSplineSpace(_root_1d(), _grid_1d())
@@ -1152,7 +1152,7 @@ class TestCoarsen:
         graded = deep.coarsen(marked, admissible_class=2)
         ungraded = deep.coarsen(marked, admissible_class=None)
         assert _nonzero_level_span(graded) <= 2
-        assert graded.num_active_functions != ungraded.num_active_functions
+        assert graded.num_total_basis != ungraded.num_total_basis
 
 
 class TestRestriction:
@@ -1161,11 +1161,9 @@ class TestRestriction:
     def _check(self, coarse: THBSplineSpace, fine: THBSplineSpace) -> None:
         prolong = coarse.prolongation_to(fine)
         restrict = fine.restriction_to(coarse)
-        assert restrict.shape == (coarse.num_active_functions, fine.num_active_functions)
-        np.testing.assert_allclose(
-            restrict @ prolong, np.eye(coarse.num_active_functions), atol=1e-9
-        )
-        u_coarse = np.random.default_rng(0).random(coarse.num_active_functions)
+        assert restrict.shape == (coarse.num_total_basis, fine.num_total_basis)
+        np.testing.assert_allclose(restrict @ prolong, np.eye(coarse.num_total_basis), atol=1e-9)
+        u_coarse = np.random.default_rng(0).random(coarse.num_total_basis)
         np.testing.assert_allclose(restrict @ (prolong @ u_coarse), u_coarse, atol=1e-9)
 
     def test_restriction_1d_thb(self) -> None:
