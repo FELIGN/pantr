@@ -42,7 +42,7 @@ per-cell tag footprint. Deciding *what* to tag is the consumer's job.
 from __future__ import annotations
 
 import abc
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, NamedTuple
 
 import numpy as np
 
@@ -258,6 +258,44 @@ class Grid(abc.ABC):
             if neighbor is not None:
                 result.append(neighbor)
         return result
+
+    # ------------------------------------------------------------------
+    # Restriction / windowing
+    # ------------------------------------------------------------------
+
+    def restrict(self, cell_ids: npt.ArrayLike) -> GridRestriction:
+        """Return the structured sub-grid spanning a subset of cells.
+
+        The sub-grid is the smallest grid of the same kind that contains every
+        requested cell -- for a tensor-product grid, the multi-index bounding box
+        of ``cell_ids``. Its breakpoints are *pure slices* of this grid's (never
+        re-clamped or re-based), so a B-spline or field built on the sub-grid
+        agrees pointwise with the global one over the shared cells.
+
+        The bounding box may contain cells that were not requested (when
+        ``cell_ids`` is non-convex); :attr:`GridRestriction.in_subset` flags, per
+        local cell, whether it was requested (``True``) or is bounding-box fill
+        (``False``).
+
+        Restriction is an *optional* grid capability: this base implementation
+        raises :class:`NotImplementedError`. Grids with structured windowing (for
+        example :class:`pantr.grid.TensorProductGrid`) override it.
+
+        Args:
+            cell_ids (npt.ArrayLike): Flat cell identifiers to span; duplicates
+                are ignored. Each must satisfy ``0 <= cid < num_cells``.
+
+        Returns:
+            GridRestriction: The windowed sub-grid, the ``local_to_global_cell``
+            map, and the ``in_subset`` mask.
+
+        Raises:
+            NotImplementedError: If this grid kind does not support restriction.
+            ValueError: If ``cell_ids`` is empty (in overriding implementations).
+            IndexError: If any cell id is out of range (in overriding
+                implementations).
+        """
+        raise NotImplementedError(f"{type(self).__name__} does not support restrict().")
 
     # ------------------------------------------------------------------
     # Facet accessors (axis-aligned box defaults)
@@ -555,4 +593,25 @@ class Grid(abc.ABC):
         return np.ascontiguousarray(arr)
 
 
-__all__ = ["Grid"]
+class GridRestriction(NamedTuple):
+    """Result of :meth:`Grid.restrict`: a windowed sub-grid plus index maps.
+
+    A :class:`typing.NamedTuple` returned by :meth:`Grid.restrict`:
+
+    - ``grid`` -- the windowed sub-grid: the smallest structured grid of the same
+      kind containing every requested cell, of the same concrete type as the grid
+      that produced it.
+    - ``local_to_global_cell`` -- shape ``(grid.num_cells,)`` map from each
+      sub-grid cell id to its id in the original grid, in the sub-grid's own
+      cell-id order.
+    - ``in_subset`` -- shape ``(grid.num_cells,)`` boolean mask: ``True`` for
+      cells that were in the requested ``cell_ids``, ``False`` for bounding-box
+      fill cells (present only when the request was non-convex).
+    """
+
+    grid: Grid
+    local_to_global_cell: npt.NDArray[np.int64]
+    in_subset: npt.NDArray[np.bool_]
+
+
+__all__ = ["Grid", "GridRestriction"]

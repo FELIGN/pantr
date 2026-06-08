@@ -6,7 +6,7 @@ import numpy as np
 import pytest
 
 from pantr.geometry import AABB
-from pantr.grid import TensorProductGrid, tensor_product_grid, uniform_grid
+from pantr.grid import GridRestriction, TensorProductGrid, tensor_product_grid, uniform_grid
 from pantr.transform import AffineTransform
 
 
@@ -387,3 +387,140 @@ def test_uniform_grid_single_cell_per_axis() -> None:
     assert g.locate([5.1, 2.0]) is None
     out = g.locate_many(np.array([[2.5, 2.0], [-1.0, 2.0]]))
     assert out.tolist() == [0, -1]
+
+
+# ---------------------------------------------------------------- restrict
+
+
+def _assert_window_matches_global(g: TensorProductGrid, r: GridRestriction) -> None:
+    """Every sub-grid cell coincides with its global cell (bounds and locate)."""
+    for k in range(r.grid.num_cells):
+        gcid = int(r.local_to_global_cell[k])
+        lo_s, hi_s = r.grid.cell_bounds(k)
+        lo_g, hi_g = g.cell_bounds(gcid)
+        np.testing.assert_allclose(lo_s, lo_g)
+        np.testing.assert_allclose(hi_s, hi_g)
+        center = 0.5 * (lo_s + hi_s)
+        assert r.grid.locate(center) == k
+        assert g.locate(center) == gcid
+
+
+def test_restrict_convex_block_matches_global() -> None:
+    """A contiguous block restricts to a sub-grid coinciding with the window."""
+    g = uniform_grid([[0.0, 4.0], [0.0, 4.0]], 4)
+    cell_ids = [g.flat_cell_index(m) for m in [(1, 1), (1, 2), (2, 1), (2, 2)]]
+    r = g.restrict(cell_ids)
+    assert isinstance(r, GridRestriction)
+    assert isinstance(r.grid, TensorProductGrid)
+    assert r.grid.cells_per_axis == (2, 2)
+    np.testing.assert_array_equal(r.local_to_global_cell, [5, 6, 9, 10])
+    assert bool(r.in_subset.all())
+    _assert_window_matches_global(g, r)
+
+
+def test_restrict_local_global_round_trip() -> None:
+    """local_to_global composes with the bbox offset; in_subset recovers the request."""
+    g = uniform_grid([[0.0, 5.0], [0.0, 4.0]], [5, 4])
+    cell_ids = [g.flat_cell_index(m) for m in [(1, 1), (1, 2), (2, 1), (3, 2)]]
+    r = g.restrict(cell_ids)  # bbox rows 1..3, cols 1..2 -> offset (1, 1)
+    assert isinstance(r.grid, TensorProductGrid)
+    for k in range(r.grid.num_cells):
+        sm = r.grid.cell_multi_index(k)
+        assert g.flat_cell_index((sm[0] + 1, sm[1] + 1)) == int(r.local_to_global_cell[k])
+    assert {int(c) for c in r.local_to_global_cell[r.in_subset]} == set(cell_ids)
+
+
+def test_restrict_non_convex_flags_fill_cells() -> None:
+    """A non-convex request yields the full bbox with fill cells flagged False."""
+    g = uniform_grid([[0.0, 3.0], [0.0, 3.0]], 3)
+    corners = [g.flat_cell_index(m) for m in [(0, 0), (0, 2), (2, 0), (2, 2)]]
+    r = g.restrict(corners)
+    assert isinstance(r.grid, TensorProductGrid)
+    assert r.grid.cells_per_axis == (3, 3)  # bbox spans the whole grid
+    np.testing.assert_array_equal(r.local_to_global_cell, np.arange(9))
+    expected_mask = np.zeros(9, dtype=bool)
+    expected_mask[corners] = True
+    np.testing.assert_array_equal(r.in_subset, expected_mask)
+    _assert_window_matches_global(g, r)
+
+
+def test_restrict_breakpoints_not_reclamped() -> None:
+    """Sub-grid breakpoints are pure slices of the parent (never re-based)."""
+    g = uniform_grid([[0.0, 4.0], [0.0, 4.0]], 4)  # breakpoints 0,1,2,3,4 per axis
+    cell_ids = [g.flat_cell_index(m) for m in [(1, 1), (1, 2), (2, 1), (2, 2)]]
+    sub = g.restrict(cell_ids).grid
+    assert isinstance(sub, TensorProductGrid)
+    np.testing.assert_allclose(sub.breakpoints[0], [1.0, 2.0, 3.0])
+    np.testing.assert_allclose(sub.breakpoints[1], [1.0, 2.0, 3.0])
+    np.testing.assert_allclose(sub.bounds, [[1.0, 3.0], [1.0, 3.0]])
+
+
+def test_restrict_full_grid_is_identity() -> None:
+    """Restricting to all cells reproduces the grid with an identity cell map."""
+    g = TensorProductGrid([[0.0, 1.0, 3.0], [0.0, 2.0, 5.0, 6.0]])  # cells (2, 3)
+    r = g.restrict(list(range(g.num_cells)))
+    assert isinstance(r.grid, TensorProductGrid)
+    assert r.grid.cells_per_axis == g.cells_per_axis
+    for d in range(g.ndim):
+        np.testing.assert_allclose(r.grid.breakpoints[d], g.breakpoints[d])
+    np.testing.assert_array_equal(r.local_to_global_cell, np.arange(g.num_cells))
+    assert bool(r.in_subset.all())
+
+
+def test_restrict_single_cell() -> None:
+    """Restricting one cell yields a single-cell grid mapping back to it."""
+    g = uniform_grid([[0.0, 3.0], [0.0, 3.0]], 3)
+    cid = g.flat_cell_index((1, 2))
+    r = g.restrict([cid])
+    assert isinstance(r.grid, TensorProductGrid)
+    assert r.grid.cells_per_axis == (1, 1)
+    assert int(r.local_to_global_cell[0]) == cid
+    np.testing.assert_array_equal(r.in_subset, [True])
+    lo_s, hi_s = r.grid.cell_bounds(0)
+    lo_g, hi_g = g.cell_bounds(cid)
+    np.testing.assert_allclose(lo_s, lo_g)
+    np.testing.assert_allclose(hi_s, hi_g)
+
+
+def test_restrict_1d() -> None:
+    """Restriction works on a 1-D grid."""
+    g = uniform_grid([[0.0, 6.0]], 6)  # cells 0..5
+    r = g.restrict([2, 3, 4])
+    assert isinstance(r.grid, TensorProductGrid)
+    assert r.grid.cells_per_axis == (3,)
+    np.testing.assert_allclose(r.grid.breakpoints[0], [2.0, 3.0, 4.0, 5.0])
+    np.testing.assert_array_equal(r.local_to_global_cell, [2, 3, 4])
+    assert bool(r.in_subset.all())
+
+
+def test_restrict_duplicates_ignored() -> None:
+    """Duplicate cell ids do not change the result."""
+    g = uniform_grid([[0.0, 4.0], [0.0, 4.0]], 4)
+    ids = [g.flat_cell_index(m) for m in [(1, 1), (1, 2), (2, 1), (2, 2)]]
+    r_dup = g.restrict(ids + ids)
+    r = g.restrict(ids)
+    np.testing.assert_array_equal(r_dup.local_to_global_cell, r.local_to_global_cell)
+    np.testing.assert_array_equal(r_dup.in_subset, r.in_subset)
+
+
+def test_restrict_empty_raises() -> None:
+    """An empty cell_ids is rejected."""
+    g = uniform_grid([[0.0, 2.0]], 2)
+    with pytest.raises(ValueError, match="non-empty"):
+        g.restrict([])
+
+
+def test_restrict_out_of_range_raises() -> None:
+    """Out-of-range cell ids raise IndexError."""
+    g = uniform_grid([[0.0, 2.0]], 2)
+    with pytest.raises(IndexError):
+        g.restrict([0, 2])  # 2 == num_cells
+    with pytest.raises(IndexError):
+        g.restrict([-1, 0])
+
+
+def test_restrict_non_integer_raises() -> None:
+    """Non-integer cell ids raise TypeError."""
+    g = uniform_grid([[0.0, 2.0]], 2)
+    with pytest.raises(TypeError, match="integer"):
+        g.restrict([0.0, 1.0])

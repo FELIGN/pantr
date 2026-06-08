@@ -36,7 +36,7 @@ from typing import TYPE_CHECKING, Final
 import numpy as np
 
 from ._cell_index import c_order_strides, flat_to_multi, multi_to_flat
-from ._grid import Grid
+from ._grid import Grid, GridRestriction
 from ._grid_utils import _as_float64
 from ._locate_core import _locate_points_core
 
@@ -352,6 +352,55 @@ class TensorProductGrid(Grid):
             cell_lo[:, d] = lo_axes[d][flat_idx]
             cell_hi[:, d] = hi_axes[d][flat_idx]
         return cell_lo, cell_hi
+
+    def restrict(self, cell_ids: npt.ArrayLike) -> GridRestriction:
+        """Return the multi-index bounding-box sub-grid spanning ``cell_ids``.
+
+        The window is the axis-aligned bounding box of the requested cells in
+        multi-index space. Each axis of the sub-grid uses a pure slice of this
+        grid's breakpoints, ``breakpoints[d][imin_d : imax_d + 2]`` -- never
+        re-based or re-clamped -- so the sub-grid's cells coincide exactly with
+        the matching cells of this grid.
+
+        Args:
+            cell_ids (npt.ArrayLike): Flat cell identifiers to span; duplicates
+                are ignored. Each must satisfy ``0 <= cid < num_cells``.
+
+        Returns:
+            GridRestriction: The windowed :class:`TensorProductGrid`, its
+            ``local_to_global_cell`` map of shape ``(sub.num_cells,)``, and the
+            ``in_subset`` mask flagging requested versus bounding-box-fill cells.
+
+        Raises:
+            ValueError: If ``cell_ids`` is empty.
+            IndexError: If any cell id is out of range ``[0, num_cells)``.
+            TypeError: If ``cell_ids`` is not integer-valued.
+        """
+        ids = np.asarray(cell_ids).ravel()
+        if ids.size == 0:
+            raise ValueError("restrict: cell_ids must be non-empty.")
+        if not np.issubdtype(ids.dtype, np.integer):
+            raise TypeError(f"restrict: cell_ids must be integer-valued; got dtype {ids.dtype}.")
+        ids = ids.astype(np.int64, copy=False)
+        lo, hi = int(ids.min()), int(ids.max())
+        if lo < 0 or hi >= self._num_cells:
+            raise IndexError(
+                f"restrict: cell id out of range [0, {self._num_cells}); got [{lo}, {hi}]."
+            )
+        multi = np.unravel_index(ids, self._cells_per_axis)
+        imin = [int(m.min()) for m in multi]
+        imax = [int(m.max()) for m in multi]
+        sub_breakpoints = [self._breakpoints[d][imin[d] : imax[d] + 2] for d in range(self._ndim)]
+        sub_grid = TensorProductGrid(sub_breakpoints)
+        sub_cells_per_axis = [imax[d] - imin[d] + 1 for d in range(self._ndim)]
+        idx_grids = np.meshgrid(
+            *[np.arange(n, dtype=np.int64) for n in sub_cells_per_axis], indexing="ij"
+        )
+        local_to_global = np.zeros(int(math.prod(sub_cells_per_axis)), dtype=np.int64)
+        for d in range(self._ndim):
+            local_to_global += (idx_grids[d].ravel() + imin[d]) * int(self._strides[d])
+        in_subset = np.isin(local_to_global, ids)
+        return GridRestriction(sub_grid, local_to_global, in_subset)
 
     def __repr__(self) -> str:
         """Return a compact representation useful for debugging.
