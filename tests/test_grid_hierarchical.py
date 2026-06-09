@@ -7,7 +7,7 @@ import numpy.testing as np_testing
 import pytest
 
 from pantr.geometry import AABB
-from pantr.grid import HierarchicalGrid, hierarchical_grid, uniform_grid
+from pantr.grid import GridRestriction, HierarchicalGrid, hierarchical_grid, uniform_grid
 from pantr.grid._hierarchical_grid import (
     _block_size,
     _in_block,
@@ -684,3 +684,150 @@ class TestHierarchicalGridCoarsen:
         g.refine(0, [0], [4])
         with pytest.raises(ValueError, match="length"):
             g.coarsen(0, [0, 0], [4, 4])  # 1D grid, 2D lo/hi
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# restrict
+# ──────────────────────────────────────────────────────────────────────────────
+
+
+def _check_restrict(g: HierarchicalGrid, r: GridRestriction, requested: list[int]) -> None:
+    """Assert a restriction is internally consistent with the global grid."""
+    assert isinstance(r.grid, HierarchicalGrid)
+    assert not r.local_to_global_cell.flags.writeable
+    assert not r.in_subset.flags.writeable
+    sub = r.grid
+    l2g = r.local_to_global_cell
+    assert l2g.shape == (sub.num_cells,)
+    assert len(set(l2g.tolist())) == sub.num_cells  # distinct global ids
+    for k in range(sub.num_cells):
+        gcid = int(l2g[k])
+        lo_s, hi_s = sub.cell_bounds(k)
+        lo_g, hi_g = g.cell_bounds(gcid)
+        np_testing.assert_allclose(lo_s, lo_g)
+        np_testing.assert_allclose(hi_s, hi_g)
+        assert sub.cell_level(k) == g.cell_level(gcid)
+        center = 0.5 * (lo_s + hi_s)
+        assert sub.locate(center) == k
+        assert g.locate(center) == gcid
+    assert {int(c) for c in l2g[r.in_subset]} == set(requested)
+
+
+class TestHierarchicalGridRestrict:
+    """Tests for HierarchicalGrid.restrict."""
+
+    def test_refined_region_matches_global(self) -> None:
+        g = _grid_2d(4, 2)
+        g.refine(0, [1, 1], [3, 3])
+        requested = [c for c in range(g.num_cells) if g.cell_level(c) == 1]
+        r = g.restrict(requested)
+        _check_restrict(g, r, requested)
+        assert r.grid.num_cells == len(requested)  # window == refined region
+        assert bool(r.in_subset.all())
+
+    def test_in_subset_flags_fill_cells(self) -> None:
+        g = _grid_2d(4, 2)
+        g.refine(0, [1, 1], [3, 3])
+        # Request only the level-0 frame leaves inside root box [0,3)x[0,3).
+        requested = [
+            c
+            for c in range(g.num_cells)
+            if g.cell_level(c) == 0 and all(i < 3 for i in g.cell_multi_index(c))
+        ]
+        r = g.restrict(requested)
+        _check_restrict(g, r, requested)
+        assert not bool(r.in_subset.all())  # refined cells in the bbox are fill
+        assert int(r.in_subset.sum()) == len(requested)
+
+    def test_single_deep_cell_returns_root_subtree(self) -> None:
+        g = _grid_2d(4, 2)
+        g.refine(0, [1, 1], [2, 2])  # refine root cell (1,1) -> 4 level-1 leaves
+        fine = [c for c in range(g.num_cells) if g.cell_level(c) == 1]
+        r = g.restrict([fine[0]])
+        _check_restrict(g, r, [fine[0]])
+        assert r.grid.num_cells == 4  # whole root-cell subtree
+        assert int(r.in_subset.sum()) == 1
+
+    def test_coarse_only_region_trims_levels(self) -> None:
+        g = _grid_2d(4, 2)
+        g.refine(0, [1, 1], [3, 3])
+        # Root row 0 is entirely level-0 frame, disjoint from the refined region.
+        requested = [
+            c for c in range(g.num_cells) if g.cell_level(c) == 0 and g.cell_multi_index(c)[0] == 0
+        ]
+        r = g.restrict(requested)
+        _check_restrict(g, r, requested)
+        sub = r.grid
+        assert isinstance(sub, HierarchicalGrid)
+        assert sub.max_level == 0  # finer level trimmed away
+        assert bool(r.in_subset.all())
+
+    def test_full_grid_is_identity(self) -> None:
+        g = _grid_2d(4, 2)
+        g.refine(0, [1, 1], [3, 3])
+        r = g.restrict(list(range(g.num_cells)))
+        assert r.grid.num_cells == g.num_cells
+        np_testing.assert_array_equal(r.local_to_global_cell, np.arange(g.num_cells))
+        assert bool(r.in_subset.all())
+        _check_restrict(g, r, list(range(g.num_cells)))
+
+    def test_full_grid_neighbors_match(self) -> None:
+        g = _grid_2d(4, 2)
+        g.refine(0, [1, 1], [3, 3])
+        r = g.restrict(list(range(g.num_cells)))
+        sub, l2g = r.grid, r.local_to_global_cell
+        for k in range(sub.num_cells):
+            for lfid in range(2 * sub.ndim):
+                ns = sub.neighbor_across_facet(k, lfid)
+                ng = g.neighbor_across_facet(int(l2g[k]), lfid)
+                assert (None if ns is None else int(l2g[ns])) == ng
+
+    def test_window_neighbors_map_to_global(self) -> None:
+        g = _grid_2d(4, 2)
+        g.refine(0, [1, 1], [3, 3])
+        requested = [c for c in range(g.num_cells) if g.cell_level(c) == 1]
+        r = g.restrict(requested)
+        sub, l2g = r.grid, r.local_to_global_cell
+        for k in range(sub.num_cells):
+            for lfid in range(2 * sub.ndim):
+                ns = sub.neighbor_across_facet(k, lfid)
+                if ns is not None:
+                    assert int(l2g[ns]) == g.neighbor_across_facet(int(l2g[k]), lfid)
+
+    def test_sub_root_not_reclamped(self) -> None:
+        g = _grid_2d(4, 2)  # root breakpoints [0, .25, .5, .75, 1]
+        g.refine(0, [1, 1], [3, 3])
+        requested = [c for c in range(g.num_cells) if g.cell_level(c) == 1]
+        sub = g.restrict(requested).grid
+        assert isinstance(sub, HierarchicalGrid)
+        np_testing.assert_allclose(sub.root.breakpoints[0], [0.25, 0.5, 0.75])
+
+    def test_1d(self) -> None:
+        g = _grid_1d(4, 2)
+        g.refine(0, [1], [3])
+        requested = [c for c in range(g.num_cells) if g.cell_level(c) == 1]
+        r = g.restrict(requested)
+        _check_restrict(g, r, requested)
+        assert r.grid.ndim == 1
+
+    def test_returns_grid_restriction(self) -> None:
+        g = _grid_2d(4, 2)
+        g.refine(0, [1, 1], [3, 3])
+        r = g.restrict([0, 1, 2])
+        assert isinstance(r, GridRestriction)
+        assert isinstance(r.grid, HierarchicalGrid)
+
+    def test_empty_raises(self) -> None:
+        with pytest.raises(ValueError, match="non-empty"):
+            _grid_2d(2, 2).restrict([])
+
+    def test_out_of_range_raises(self) -> None:
+        g = _grid_2d(2, 2)
+        with pytest.raises(IndexError):
+            g.restrict([g.num_cells])
+        with pytest.raises(IndexError):
+            g.restrict([-1])
+
+    def test_non_integer_raises(self) -> None:
+        with pytest.raises(TypeError, match="integer"):
+            _grid_2d(2, 2).restrict([0.0, 1.0])
