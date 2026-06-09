@@ -166,7 +166,7 @@ def test_rcb_2d_balances_count() -> None:
     part = partition_grid(grid, 4, backend="rcb")
     _assert_full_partition(part, 4, 100)
     counts = np.bincount(part.cell_owner, minlength=4)
-    assert counts.max() - counts.min() <= 1
+    assert counts.min() == 25 and counts.max() == 25
 
 
 def test_rcb_1d_parts_are_contiguous() -> None:
@@ -197,6 +197,41 @@ def test_rcb_respects_cell_active() -> None:
     assert set(owner[:5].tolist()) == {0, 1}
     np.testing.assert_array_equal(part.active_mask, active)
     _assert_full_partition(part, 2, 5)
+
+
+def test_rcb_non_contiguous_active_cells() -> None:
+    # Alternating active/inactive cells: exercises the active_idx scatter-back path.
+    grid = uniform_grid([[0.0, 1.0]], 10)
+    active = np.array([True, False, True, False, True, False, True, False, True, False])
+    part = partition_grid(grid, 2, backend="rcb", cell_active=active)
+    owner = part.cell_owner
+    np.testing.assert_array_equal(owner[1::2], -1)
+    assert set(owner[0::2].tolist()) == {0, 1}
+    np.testing.assert_array_equal(part.active_mask, active)
+    _assert_full_partition(part, 2, 5)
+
+
+def test_rcb_combined_weights_and_active() -> None:
+    # Cells 0-7 active (weights [1]*7+[7]); cells 8-9 inactive.
+    # rcb must slice weights to active cells and balance total weight (7+7=14).
+    grid = uniform_grid([[0.0, 1.0]], 10)
+    weights = [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 7.0, 0.0, 0.0]
+    active = np.array([True] * 8 + [False, False])
+    part = partition_grid(grid, 2, backend="rcb", cell_weights=weights, cell_active=active)
+    owner = part.cell_owner
+    assert np.all(owner[8:] == -1)
+    w = np.asarray(weights)
+    part_weights = np.array([w[owner == r].sum() for r in range(2)])
+    np.testing.assert_allclose(part_weights, [7.0, 7.0])
+
+
+def test_rcb_n_parts_one_with_active() -> None:
+    # n_parts=1 hits the k==1 base case immediately; inactive cells must stay -1.
+    grid = uniform_grid([[0.0, 1.0]], 6)
+    active = np.array([True, False, True, False, True, False])
+    owner = partition_grid(grid, 1, backend="rcb", cell_active=active).cell_owner
+    np.testing.assert_array_equal(owner[1::2], -1)
+    np.testing.assert_array_equal(owner[0::2], 0)
 
 
 def test_rcb_on_hierarchical_grid() -> None:
