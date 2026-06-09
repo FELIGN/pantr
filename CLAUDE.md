@@ -19,7 +19,9 @@ NUMBA_DISABLE_JIT=1 pytest --cov=src/pantr --cov-report=xml         # coverage (
 ruff check .                                                         # lint
 ruff format .                                                        # format
 mypy --config-file mypy.ini src tests                               # type check
+lint-imports                                                        # import boundaries (core must not import pantr.mpi)
 NUMBA_DISABLE_JIT=1 make docs SPHINXOPTS="-W --keep-going -j auto"  # docs build (matches CI)
+PANTR_NO_MPI=1 pip install -e ".[dev]"                              # serial-only install (drop mpi4py)
 ```
 
 > Default pytest (via `pytest.ini`) adds `--cov`, which slows things down and requires ≥85% coverage. Always pass `--no-cov` during development.
@@ -59,6 +61,14 @@ The library is organized in three strict layers. Each layer has a well-defined r
 - Pure computation: Cox–de Boor, de Boor, Lagrange evaluation, etc.
 - Decorated with `@nb_jit(nopython=True, cache=True, parallel=True)` and `prange` for multi-core throughput
 - **No input validation whatsoever** — docstrings explicitly state this. All correctness guarantees come from Layer 2.
+
+### Optional MPI layer (`pantr.mpi`)
+
+`pantr.mpi` hosts the optional MPI-parallel distribution code (and the dolfinx bridge). It is kept strictly separate from the serial core:
+
+- **The serial core never imports `pantr.mpi`.** This is enforced by an import-linter contract (`make import-lint`, run in CI) and a grimp-based test. New core modules are covered automatically by the test.
+- **MPI imports are lazy.** `import pantr.mpi` succeeds even without `mpi4py`; only `pantr.mpi.require_mpi()` imports it (raising a clear error if absent).
+- **`mpi4py` is a default dependency**, injected by the hatchling metadata hook in `hatch_build.py`. Set `PANTR_NO_MPI=1` at build/install time for a serial-only, MPI-free install. Base runtime deps live in `[tool.pantr] base-dependencies` in `pyproject.toml` (the hook reads them, since `dependencies` is `dynamic`).
 
 Other private modules: `_numba_compat.py` (Numba shim), `_basis_utils.py` (shared validation helpers), `__init__.py` (async Numba warmup at import time).
 

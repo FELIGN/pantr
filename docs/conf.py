@@ -155,6 +155,9 @@ nitpick_ignore = [
     # Napoleon strips the npt. prefix from npt.ArrayLike / npt.DTypeLike
     ("py:class", "ArrayLike"),
     ("py:class", "DTypeLike"),
+    # types.ModuleType return annotation: stripped to a bare name by autodoc and
+    # not carried in the Python inventory under that short form.
+    ("py:class", "ModuleType"),
     # Private structural protocol; not in __all__ and not cross-referenceable
     ("py:class", "_AffineMap"),
     ("py:class", "CellIndex"),

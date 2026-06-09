@@ -1,4 +1,4 @@
-.PHONY: help test coverage clean install ruff-lint ruff-format-check type-check before_push docs
+.PHONY: help test coverage clean install ruff-lint ruff-format-check type-check import-lint pre-pull-request docs
 
 help:
 	@echo "Commands:"
@@ -10,8 +10,9 @@ help:
 	@echo "  ruff-format : check Ruff formatting changing files."
 	@echo "  ruff-format-check : check Ruff formatting without changing files."
 	@echo "  type-check: run mypy static type checker."
+	@echo "  import-lint: check import boundaries (core must not import pantr.mpi)."
 	@echo "  docs      : build the documentation."
-	@echo "  befor-pr: run lint, format, format check, type check, tests, coverage, and docs."
+	@echo "  before-pr: run lint, format, format check, type check, tests, coverage, and docs."
 
 # Run the test suite with Numba JIT enabled
 test:
@@ -46,9 +47,13 @@ ruff-format-check:
 type-check:
 	mypy --config-file mypy.ini src tests
 
+# Import boundary checks: serial core must not import pantr.mpi
+import-lint:
+	lint-imports
+
 # Build documentation
 docs:
 	$(MAKE) -C docs html SPHINXOPTS="$(SPHINXOPTS)"
 
 # Aggregate target to run all checks before creating a pull request
-pre-pull-request: ruff-lint ruff-format ruff-format-check type-check test coverage docs
+pre-pull-request: ruff-lint ruff-format ruff-format-check type-check import-lint test coverage docs
