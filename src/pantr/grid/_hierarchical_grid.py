@@ -35,7 +35,7 @@ from typing import TYPE_CHECKING
 import numpy as np
 
 from ._cell_index import flat_to_multi, multi_to_flat
-from ._grid import Grid
+from ._grid import Grid, GridRestriction
 from ._grid_utils import _as_float64
 from ._tensor_product_grid import TensorProductGrid
 
@@ -299,6 +299,50 @@ class HierarchicalGrid(Grid):
         self._level_base: list[int] = []
         self._num_cells: int = 0
         self._rebuild()
+
+    @classmethod
+    def _from_blocks(
+        cls,
+        root: TensorProductGrid,
+        factor: tuple[int, ...],
+        blocks: list[list[_Block]],
+    ) -> HierarchicalGrid:
+        """Build a grid directly from per-level block lists (internal constructor).
+
+        Bypasses the public ``__init__`` (which starts with a single level-0 block
+        spanning the whole root) to assemble an arbitrary, already-consistent
+        active-leaf decomposition. Used by :meth:`restrict` to produce a windowed
+        sub-grid. The per-level block lists are normalized (sorted and merged) and
+        empty trailing levels are dropped.
+
+        Args:
+            root (TensorProductGrid): The level-0 root grid of the sub-hierarchy.
+            factor (tuple[int, ...]): Per-direction subdivision factor.
+            blocks (list[list[_Block]]): ``blocks[l]`` lists the active-leaf
+                ``(lo, hi)`` rectangles at level ``l`` in level-``l`` coordinates.
+
+        Returns:
+            HierarchicalGrid: A grid whose active leaves span the same cells as
+            ``blocks``, after greedy merging of adjacent aligned pairs.
+
+        Note:
+            Callers must supply a valid active-leaf decomposition: blocks at each
+            level are non-overlapping, and the per-level sets collectively partition
+            the root's cells consistently with ``factor`` (no gaps or overlaps across
+            levels).
+        """
+        self = cls.__new__(cls)
+        Grid.__init__(self)
+        self._root = root
+        self._factor = factor
+        normalized = [_normalize_blocks(list(level_blocks)) for level_blocks in blocks]
+        while len(normalized) > 1 and not normalized[-1]:
+            normalized.pop()
+        self._blocks = normalized
+        self._level_base = []
+        self._num_cells = 0
+        self._rebuild()
+        return self
 
     # ------------------------------------------------------------------
     # Properties
@@ -680,6 +724,100 @@ class HierarchicalGrid(Grid):
             if ccid is not None:
                 result.append(ccid)
         return tuple(result)
+
+    # ------------------------------------------------------------------
+    # Restriction / windowing
+    # ------------------------------------------------------------------
+
+    def restrict(self, cell_ids: npt.ArrayLike) -> GridRestriction:
+        """Return the root-cell-aligned bounding-box sub-grid spanning ``cell_ids``.
+
+        The window is the multi-index bounding box, **in root-cell coordinates**,
+        of the root cells containing the requested leaves (a leaf at
+        ``(level, midx)`` lives in root cell ``midx[k] // factor[k] ** level``).
+        The sub-grid's root is the matching slice of this grid's root breakpoints
+        (never re-clamped) and it keeps the same ``factor``; its active leaves are
+        the per-level intersections of this grid's blocks with the window.
+
+        Because the window is root-cell-aligned, restricting a single deep leaf
+        returns the whole leaf-tiling of its root cell, with only the requested
+        leaf flagged in :attr:`GridRestriction.in_subset`.
+
+        Args:
+            cell_ids (npt.ArrayLike): Flat cell identifiers to span; duplicates
+                are ignored. Each must satisfy ``0 <= cid < num_cells``.
+
+        Returns:
+            GridRestriction: The windowed :class:`HierarchicalGrid`, its
+            ``local_to_global_cell`` map of shape ``(sub.num_cells,)``, and the
+            boolean ``in_subset`` mask flagging requested versus bounding-box-fill cells.
+
+        Raises:
+            ValueError: If ``cell_ids`` is empty.
+            IndexError: If any cell id is out of range ``[0, num_cells)``.
+            TypeError: If ``cell_ids`` is not integer-valued.
+            RuntimeError: If an internal invariant is violated (should be unreachable).
+        """
+        ids = np.asarray(cell_ids).ravel()
+        if ids.size == 0:
+            raise ValueError("restrict: cell_ids must be non-empty.")
+        if not np.issubdtype(ids.dtype, np.integer):
+            raise TypeError(f"restrict: cell_ids must be integer-valued; got dtype {ids.dtype}.")
+        ids = ids.astype(np.int64, copy=False)
+        lo_id, hi_id = int(ids.min()), int(ids.max())
+        if lo_id < 0 or hi_id >= self._num_cells:
+            raise IndexError(
+                f"restrict: cell id out of range [0, {self._num_cells}); got [{lo_id}, {hi_id}]."
+            )
+
+        ndim = self.ndim
+        # Root-cell bounding box over the requested leaves.
+        r_lo = list(self._root.cells_per_axis)
+        r_hi = [0] * ndim
+        for cid in {int(c) for c in ids}:
+            level, midx = self._decode_flat_id(cid)
+            for k in range(ndim):
+                root_ik = midx[k] // (self._factor[k] ** level)
+                r_lo[k] = min(r_lo[k], root_ik)
+                r_hi[k] = max(r_hi[k], root_ik + 1)
+
+        # Sub-root: pure slice of the root breakpoints (never re-clamped).
+        sub_root = TensorProductGrid(
+            [self._root.breakpoints[k][r_lo[k] : r_hi[k] + 1] for k in range(ndim)]
+        )
+
+        # Per-level block intersection, translated into sub coordinates.
+        sub_blocks: list[list[_Block]] = []
+        for level in range(len(self._blocks)):
+            w_lo = tuple(r_lo[k] * self._factor[k] ** level for k in range(ndim))
+            w_hi = tuple(r_hi[k] * self._factor[k] ** level for k in range(ndim))
+            level_sub: list[_Block] = []
+            for blo, bhi in self._blocks[level]:
+                inter = _rect_intersect(blo, bhi, w_lo, w_hi)
+                if inter is None:
+                    continue
+                i_lo, i_hi = inter
+                s_lo = tuple(i_lo[k] - w_lo[k] for k in range(ndim))
+                s_hi = tuple(i_hi[k] - w_lo[k] for k in range(ndim))
+                level_sub.append((s_lo, s_hi))
+            sub_blocks.append(level_sub)
+
+        sub = HierarchicalGrid._from_blocks(sub_root, self._factor, sub_blocks)
+
+        # Local -> global cell map: translate each sub leaf back to global coords.
+        local_to_global = np.empty(sub.num_cells, dtype=np.int64)
+        for sub_cid in range(sub.num_cells):
+            level = sub.cell_level(sub_cid)
+            sub_midx = sub.cell_multi_index(sub_cid)
+            g_midx = tuple(sub_midx[k] + r_lo[k] * self._factor[k] ** level for k in range(ndim))
+            g_cid = self._encode_midx(level, g_midx)
+            assert g_cid is not None  # invariant: every windowed leaf maps to an active global leaf
+            local_to_global[sub_cid] = g_cid
+
+        in_subset = np.isin(local_to_global, ids)
+        local_to_global.flags.writeable = False
+        in_subset.flags.writeable = False
+        return GridRestriction(sub, local_to_global, in_subset)
 
     # ------------------------------------------------------------------
     # Hierarchy accessors
