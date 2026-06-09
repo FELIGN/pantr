@@ -524,3 +524,65 @@ def test_restrict_non_integer_raises() -> None:
     g = uniform_grid([[0.0, 2.0]], 2)
     with pytest.raises(TypeError, match="integer"):
         g.restrict([0.0, 1.0])
+
+
+def test_restrict_non_square_grid_exact_local_to_global() -> None:
+    """On a non-square grid, local_to_global_cell uses the global strides."""
+    g = uniform_grid([[0.0, 3.0], [0.0, 5.0]], [3, 5])  # 3x5, strides (5, 1)
+    # rows 1-2, cols 1-3 -> local (0,0)..(1,2)
+    cell_ids = [g.flat_cell_index(m) for m in [(1, 1), (1, 2), (1, 3), (2, 1), (2, 2), (2, 3)]]
+    r = g.restrict(cell_ids)
+    assert isinstance(r.grid, TensorProductGrid)
+    assert r.grid.cells_per_axis == (2, 3)
+    # global ids: row*5 + col for (1,1),(1,2),(1,3),(2,1),(2,2),(2,3) = 6,7,8,11,12,13
+    np.testing.assert_array_equal(r.local_to_global_cell, [6, 7, 8, 11, 12, 13])
+    assert bool(r.in_subset.all())
+    _assert_window_matches_global(g, r)
+
+
+def test_restrict_3d() -> None:
+    """Restriction works on a 3-D grid."""
+    g = uniform_grid([[0.0, 4.0], [0.0, 3.0], [0.0, 2.0]], [4, 3, 2])  # 4x3x2 = 24 cells
+    cell_ids = [g.flat_cell_index(m) for m in [(1, 1, 0), (1, 1, 1), (2, 1, 0), (2, 1, 1)]]
+    r = g.restrict(cell_ids)
+    assert isinstance(r.grid, TensorProductGrid)
+    assert r.grid.cells_per_axis == (2, 1, 2)
+    assert bool(r.in_subset.all())
+    _assert_window_matches_global(g, r)
+
+
+def test_restrict_non_convex_non_square_grid() -> None:
+    """Non-convex request in a non-square grid flags fill cells correctly."""
+    g = uniform_grid([[0.0, 2.0], [0.0, 3.0]], [2, 3])  # 2x3, strides (3, 1)
+    corners = [g.flat_cell_index((0, 0)), g.flat_cell_index((1, 2))]  # 0 and 5
+    r = g.restrict(corners)
+    assert isinstance(r.grid, TensorProductGrid)
+    assert r.grid.cells_per_axis == (2, 3)
+    np.testing.assert_array_equal(r.local_to_global_cell, np.arange(6))
+    expected_mask = np.zeros(6, dtype=bool)
+    expected_mask[[0, 5]] = True
+    np.testing.assert_array_equal(r.in_subset, expected_mask)
+    _assert_window_matches_global(g, r)
+
+
+def test_restrict_non_uniform_breakpoints() -> None:
+    """Breakpoint slicing is correct for non-uniform spacing."""
+    g = TensorProductGrid([[0.0, 1.0, 3.0, 6.0, 10.0], [0.0, 5.0, 7.0]])  # 4x2 grid
+    cell_ids = [g.flat_cell_index(m) for m in [(1, 0), (2, 0)]]
+    r = g.restrict(cell_ids)
+    assert isinstance(r.grid, TensorProductGrid)
+    assert r.grid.cells_per_axis == (2, 1)
+    np.testing.assert_allclose(r.grid.breakpoints[0], [1.0, 3.0, 6.0])
+    np.testing.assert_allclose(r.grid.breakpoints[1], [0.0, 5.0])
+    assert bool(r.in_subset.all())
+    _assert_window_matches_global(g, r)
+
+
+def test_restrict_result_arrays_are_read_only() -> None:
+    """local_to_global_cell and in_subset are read-only."""
+    g = uniform_grid([[0.0, 2.0]], 2)
+    r = g.restrict([0, 1])
+    with pytest.raises(ValueError, match="read-only"):
+        r.local_to_global_cell[0] = 99
+    with pytest.raises(ValueError, match="read-only"):
+        r.in_subset[0] = False

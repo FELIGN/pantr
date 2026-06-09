@@ -400,6 +400,8 @@ class TensorProductGrid(Grid):
         for d in range(self._ndim):
             local_to_global += (idx_grids[d].ravel() + imin[d]) * int(self._strides[d])
         in_subset = np.isin(local_to_global, ids)
+        local_to_global.flags.writeable = False
+        in_subset.flags.writeable = False
         return GridRestriction(sub_grid, local_to_global, in_subset)
 
     def __repr__(self) -> str:

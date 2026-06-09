@@ -294,6 +294,8 @@ class Grid(abc.ABC):
             ValueError: If ``cell_ids`` is empty (in overriding implementations).
             IndexError: If any cell id is out of range (in overriding
                 implementations).
+            TypeError: If ``cell_ids`` is not integer-valued (in overriding
+                implementations).
         """
         raise NotImplementedError(f"{type(self).__name__} does not support restrict().")
 
@@ -596,17 +598,18 @@ class Grid(abc.ABC):
 class GridRestriction(NamedTuple):
     """Result of :meth:`Grid.restrict`: a windowed sub-grid plus index maps.
 
-    A :class:`typing.NamedTuple` returned by :meth:`Grid.restrict`:
-
-    - ``grid`` -- the windowed sub-grid: the smallest structured grid of the same
-      kind containing every requested cell, of the same concrete type as the grid
-      that produced it.
-    - ``local_to_global_cell`` -- shape ``(grid.num_cells,)`` map from each
-      sub-grid cell id to its id in the original grid, in the sub-grid's own
-      cell-id order.
-    - ``in_subset`` -- shape ``(grid.num_cells,)`` boolean mask: ``True`` for
-      cells that were in the requested ``cell_ids``, ``False`` for bounding-box
-      fill cells (present only when the request was non-convex).
+    Attributes:
+        grid (Grid): The windowed sub-grid -- the smallest structured grid
+            containing every requested cell. For structured implementations
+            (e.g. :class:`TensorProductGrid`) this is the same concrete type
+            as the grid that produced it.
+        local_to_global_cell (npt.NDArray[np.int64]): Shape
+            ``(grid.num_cells,)`` map from each sub-grid cell id to its id in
+            the original grid, in the sub-grid's own cell-id order. Read-only.
+        in_subset (npt.NDArray[np.bool_]): Shape ``(grid.num_cells,)`` boolean
+            mask: ``True`` for cells that were in the requested ``cell_ids``,
+            ``False`` for bounding-box fill cells (present only when the request
+            was non-convex). Read-only.
     """
 
     grid: Grid
