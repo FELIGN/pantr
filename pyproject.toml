@@ -1,5 +1,5 @@
 [build-system]
-requires = ["hatchling>=1.12.0"]
+requires = ["hatchling>=1.12.0", "tomli>=1.1.0; python_version < '3.11'"]
 build-backend = "hatchling.build"
 
 [project]
@@ -24,12 +24,11 @@ classifiers = [
   "Programming Language :: Python :: 3.14",
   "Topic :: Scientific/Engineering",
 ]
-dependencies = [
-  "numpy>=1.26,<3",
-  "scipy>=1.11,<2",
-  "matplotlib>=3.8,<4",
-  "numba>=0.63",
-]
+# Runtime dependencies are resolved by the hatchling metadata hook in
+# `hatch_build.py`: the base list below plus `mpi4py` (unless the `PANTR_NO_MPI`
+# build-time environment variable is set). They are declared `dynamic` because a
+# PEP 621 field cannot be both static and hook-populated.
+dynamic = ["dependencies"]
 
 [project.optional-dependencies]
 dev = [
@@ -39,6 +38,7 @@ dev = [
   "mypy>=1.10,<2",
   "ruff>=0.12.0,<0.13",
   "pre-commit>=3.6,<4",
+  "import-linter>=2.0,<3",
 ]
 parallel = [
   "threadpoolctl>=3.0",
@@ -67,3 +67,37 @@ packages = ["src/pantr"]
 
 [tool.hatch.version]
 path = "src/pantr/__init__.py"
+
+# Resolve `dynamic = ["dependencies"]` via the CustomMetadataHook in hatch_build.py.
+[tool.hatch.metadata.hooks.custom]
+
+# Always-on runtime dependencies. `mpi4py` is appended by the metadata hook unless
+# the `PANTR_NO_MPI` build-time environment variable is set (see hatch_build.py).
+[tool.pantr]
+base-dependencies = [
+  "numpy>=1.26,<3",
+  "scipy>=1.11,<2",
+  "matplotlib>=3.8,<4",
+  "numba>=0.63",
+]
+
+[tool.importlinter]
+root_package = "pantr"
+
+[[tool.importlinter.contracts]]
+name = "Serial core must not import pantr.mpi"
+type = "forbidden"
+source_modules = [
+  "pantr.basis",
+  "pantr.bezier",
+  "pantr.bspline",
+  "pantr.cad",
+  "pantr.change_basis",
+  "pantr.geometry",
+  "pantr.grid",
+  "pantr.quad",
+  "pantr.tolerance",
+  "pantr.transform",
+  "pantr.viz",
+]
+forbidden_modules = ["pantr.mpi"]

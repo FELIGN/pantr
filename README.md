@@ -21,6 +21,17 @@ cd pantr
 pip install .
 ```
 
+By default PaNTr depends on `mpi4py` (for the optional `pantr.mpi` distribution
+layer), which requires an MPI library at build time. For a serial-only, MPI-free
+install, set `PANTR_NO_MPI` when building:
+
+```bash
+PANTR_NO_MPI=1 pip install .
+```
+
+The serial core (`pantr.grid`, `pantr.bspline`, ...) never imports `pantr.mpi`, so
+it works identically with or without MPI.
+
 ## Development
 
 ```bash

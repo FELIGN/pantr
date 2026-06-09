@@ -10,6 +10,11 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+# pantr depends on mpi4py by default; the runners have no MPI toolchain and there
+# is no MPI code to exercise yet, so drop it at install time via the build flag.
+env:
+  PANTR_NO_MPI: "1"
+
 jobs:
   lint:
     name: Lint (Ruff)
@@ -64,6 +69,11 @@ jobs:
         run: |
           . .venv/bin/activate
           make ruff-format-check
+
+      - name: Import boundary check (import-linter)
+        run: |
+          . .venv/bin/activate
+          make import-lint
 
   type-check:
     name: Type check (mypy)

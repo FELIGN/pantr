@@ -41,6 +41,11 @@ For transformations between these domains, the `pantr.change_basis` utilities ac
    :undoc-members:
    :show-inheritance:
 
+.. automodule:: pantr.mpi
+   :members:
+   :undoc-members:
+   :show-inheritance:
+
 .. automodule:: pantr.quad
    :members:
    :undoc-members:
