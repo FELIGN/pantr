@@ -1,16 +1,19 @@
 """Serial windowing helpers for distributing a tensor-product B-spline space.
 
-These functions compute, without any MPI, pieces a distributed local space is built
-from:
+These functions compute, without any MPI, the pieces a distributed local space is
+built from:
 
 - :func:`compute_halo`: the function-support closure of a set of owned cells -- the
   extra cells a rank must see so the B-spline functions touching its owned cells are
   fully represented.
 - :func:`dof_owner`: the owner rank of every global DOF, by the
   lex-first-active-cell-in-support rule.
+- :func:`build_local`: compose the above into a rank-local :class:`LocalSpace` --
+  the complete windowed view a distributed solver needs.
+- :class:`LocalSpace`: NamedTuple returned by :func:`build_local`.
 
-Both operate on the knot-span grid of a :class:`~pantr.bspline.BsplineSpace`: cells
-are flat-indexed in C-order over ``num_intervals`` and DOFs in C-order over
+All functions operate on the knot-span grid of a :class:`~pantr.bspline.BsplineSpace`:
+cells are flat-indexed in C-order over ``num_intervals`` and DOFs in C-order over
 ``num_basis``, matching :func:`pantr.grid.tensor_product_grid` and
 :class:`~pantr.bspline.SpanwiseElementExtraction`.
 """
@@ -239,7 +242,12 @@ def build_local(global_space: BsplineSpace, partition: Partition, rank: int) -> 
     grid_restr = tensor_product_grid(global_space).restrict(window)
     local_to_global_cell = grid_restr.local_to_global_cell
     local_to_global_dof = restr.local_to_global_dof
-    assert local_to_global_cell.shape[0] == restr.space.num_total_intervals
+    if local_to_global_cell.shape[0] != restr.space.num_total_intervals:
+        raise RuntimeError(
+            f"Grid restriction ({local_to_global_cell.shape[0]} cells) and space restriction "
+            f"({restr.space.num_total_intervals} cells) disagree after restricting to the same "
+            f"window of {window.size} cells. This is a bug in restrict()."
+        )
 
     cell_owner = partition.cell_owner
     owned_cell_mask = cell_owner[local_to_global_cell] == rank
