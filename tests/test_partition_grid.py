@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import cast
+from typing import Any
 
 import numpy as np
 import numpy.typing as npt
@@ -20,11 +20,13 @@ from pantr.grid._partition_grid import _divisors, _factor_blocks
 def _cell_multi_indices(cells_per_axis: tuple[int, ...]) -> npt.NDArray[np.intp]:
     """Return the (num_cells, ndim) C-order multi-index of every cell."""
     n = int(np.prod(cells_per_axis))
-    multi = np.array(np.unravel_index(np.arange(n), cells_per_axis)).T
-    return cast("npt.NDArray[np.intp]", multi)
+    multi: npt.NDArray[np.intp] = np.array(
+        np.unravel_index(np.arange(n), cells_per_axis), dtype=np.intp
+    ).T
+    return multi
 
 
-def _assert_owner_boxes(owner: np.ndarray, cells_per_axis: tuple[int, ...]) -> None:
+def _assert_owner_boxes(owner: npt.NDArray[Any], cells_per_axis: tuple[int, ...]) -> None:
     """Assert each owner's cells form a solid axis-aligned box, tiling the grid."""
     multi = _cell_multi_indices(cells_per_axis)
     for rank in np.unique(owner):

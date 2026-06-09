@@ -109,7 +109,9 @@ def _block_partition(grid: TensorProductGrid, n_parts: int) -> npt.NDArray[np.in
     bpa = np.asarray(blocks_per_axis, dtype=np.int64)
     multi = np.stack(np.unravel_index(np.arange(grid.num_cells), cells_per_axis), axis=0)
     block_multi = (multi * bpa[:, None]) // cpa[:, None]
-    owner = np.ravel_multi_index(block_multi, blocks_per_axis).astype(np.int32)
+    owner = np.ravel_multi_index(
+        [block_multi[d] for d in range(len(cells_per_axis))], blocks_per_axis
+    ).astype(np.int32)
     return cast("npt.NDArray[np.int32]", owner)
 
 
