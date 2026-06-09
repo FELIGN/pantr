@@ -24,7 +24,7 @@ from typing import TYPE_CHECKING, NamedTuple
 
 import numpy as np
 
-from ._thb_spline_space import _func_support_1d
+from ._thb_spline_space import THBSplineSpace, _func_support_1d
 
 if TYPE_CHECKING:
     import numpy.typing as npt
@@ -166,28 +166,29 @@ def dof_owner(space: BsplineSpace, partition: Partition) -> npt.NDArray[np.int32
 
 
 class LocalSpace(NamedTuple):
-    """The rank-local windowed view of a distributed tensor-product B-spline space.
+    """The rank-local windowed view of a distributed B-spline or THB space.
 
     Produced by :func:`build_local`. A :class:`typing.NamedTuple` bundling a windowed
-    :class:`~pantr.bspline.BsplineSpace` with the maps and masks relating it to the
-    global space:
+    :class:`~pantr.bspline.BsplineSpace` or :class:`~pantr.bspline.THBSplineSpace` with
+    the maps and masks relating it to the global space:
 
-    - ``space`` -- the windowed B-spline space over the bounding box of the rank's
-      owned cells and their support-closure halo; a real pantr object whose basis
-      equals the global basis pointwise over those cells.
-    - ``local_to_global_cell`` -- read-only ``(space.num_total_intervals,)`` map from
-      each local knot-span cell to its global cell id.
+    - ``space`` -- the windowed space over the bounding box of the rank's owned cells
+      and their support-closure halo; a real pantr object whose basis equals the global
+      basis pointwise over the rank's owned cells.
+    - ``local_to_global_cell`` -- read-only map (one entry per local cell) from each
+      local cell to its global cell id.
     - ``local_to_global_dof`` -- read-only ``(space.num_total_basis,)`` map from each
-      local DOF to its global DOF id.
-    - ``owned_cell_mask`` -- read-only boolean ``(space.num_total_intervals,)`` mask;
+      local DOF to its global DOF id (``-1`` for a THB boundary DOF with no global
+      counterpart).
+    - ``owned_cell_mask`` -- read-only boolean mask (one entry per local cell);
       ``True`` for the cells this rank owns (the rest are halo / bounding-box fill).
     - ``owned_dof_mask`` -- read-only boolean ``(space.num_total_basis,)`` mask;
       ``True`` for the DOFs this rank owns.
-    - ``n_global_cells`` -- total knot-span cells in the global space.
+    - ``n_global_cells`` -- total cells in the global space's grid.
     - ``n_global_dofs`` -- total basis functions in the global space.
     """
 
-    space: BsplineSpace
+    space: BsplineSpace | THBSplineSpace
     local_to_global_cell: npt.NDArray[np.int64]
     local_to_global_dof: npt.NDArray[np.int64]
     owned_cell_mask: npt.NDArray[np.bool_]
@@ -196,21 +197,22 @@ class LocalSpace(NamedTuple):
     n_global_dofs: int
 
 
-def build_local(global_space: BsplineSpace, partition: Partition, rank: int) -> LocalSpace:
-    """Build the rank-local windowed space of a distributed tensor-product B-spline space.
+def build_local(
+    global_space: BsplineSpace | THBSplineSpace, partition: Partition, rank: int
+) -> LocalSpace:
+    """Build the rank-local windowed space of a distributed B-spline or THB space.
 
-    Windows ``global_space`` to the bounding box of the cells owned by ``rank`` together
-    with their support-closure halo (:func:`compute_halo`), so the local basis equals the
-    global basis pointwise over those cells. Composes the grid restriction
-    (:meth:`pantr.grid.TensorProductGrid.restrict`) for the cell map and the space
-    restriction (:meth:`pantr.bspline.BsplineSpace.restrict`) for the windowed space and
-    DOF map, and marks owned cells/DOFs via :func:`dof_owner`.
+    Windows ``global_space`` to the cells owned by ``rank`` together with their
+    support-closure halo, so the local basis equals the global basis pointwise over the
+    rank's owned cells. Dispatches on the space type: a
+    :class:`~pantr.bspline.BsplineSpace` uses the tensor-product path
+    (:func:`compute_halo` / :func:`dof_owner`); a :class:`~pantr.bspline.THBSplineSpace`
+    uses the hierarchical path (cross-level support closure and ownership).
 
     Args:
-        global_space (BsplineSpace): The global tensor-product B-spline space
-            (non-periodic).
-        partition (Partition): Owner of every knot-span cell; ``cell_owner`` must have
-            length ``global_space.num_total_intervals``.
+        global_space (BsplineSpace | THBSplineSpace): The global space (non-periodic).
+        partition (Partition): Owner of every cell of the space's grid; ``cell_owner``
+            length must equal the global cell count.
         rank (int): The rank whose local space is built; must be in
             ``[0, partition.n_parts)``.
 
@@ -223,6 +225,9 @@ def build_local(global_space: BsplineSpace, partition: Partition, rank: int) -> 
             ``partition`` does not match the space's cell count, or ``rank`` owns no
             cells.
     """
+    if isinstance(global_space, THBSplineSpace):
+        return _build_local_thb(global_space, partition, rank)
+
     from ..grid import tensor_product_grid  # noqa: PLC0415
 
     _reject_periodic(global_space)
@@ -262,6 +267,114 @@ def build_local(global_space: BsplineSpace, partition: Partition, rank: int) -> 
         owned_dof_mask=owned_dof_mask,
         n_global_cells=global_space.num_total_intervals,
         n_global_dofs=global_space.num_total_basis,
+    )
+
+
+def _thb_halo(thb: THBSplineSpace, owned_cells: npt.NDArray[np.int64]) -> npt.NDArray[np.int64]:
+    """Return the cross-level support-closure halo of ``owned_cells`` for a THB space.
+
+    A cell is in the halo iff it shares an active hierarchical function with an owned
+    cell, so every function touching an owned cell has its full support inside the owned
+    cells plus this halo (making the owned cells interior for
+    :meth:`THBSplineSpace.restrict`).
+
+    Args:
+        thb (THBSplineSpace): The global hierarchical space.
+        owned_cells (npt.NDArray[np.int64]): Active cell ids owned by the rank.
+
+    Returns:
+        npt.NDArray[np.int64]: Sorted, read-only halo cell ids (closure minus owned).
+    """
+    owned = {int(c) for c in owned_cells}
+    owned_funcs: set[int] = set()
+    for c in owned:
+        owned_funcs.update(int(d) for d in thb.active_basis(c))
+    closure = [
+        c
+        for c in range(thb.grid.num_cells)
+        if any(int(d) in owned_funcs for d in thb.active_basis(c))
+    ]
+    halo = np.array(sorted(set(closure) - owned), dtype=np.int64)
+    halo.flags.writeable = False
+    return halo
+
+
+def _thb_dof_owner(thb: THBSplineSpace, partition: Partition) -> npt.NDArray[np.int32]:
+    """Return the owner rank of every global THB dof (lex-first-active-cell rule).
+
+    Each hierarchical dof is owned by the rank owning the active cell with the smallest
+    flat id in the dof's support; ``-1`` for a dead dof whose support has no active cell.
+
+    Args:
+        thb (THBSplineSpace): The global hierarchical space.
+        partition (Partition): Owner of every cell; ``cell_owner`` must have length
+            ``thb.grid.num_cells``.
+
+    Returns:
+        npt.NDArray[np.int32]: Read-only ``(num_total_basis,)`` owner rank per dof.
+
+    Raises:
+        ValueError: If ``partition`` does not match the grid's cell count.
+    """
+    cell_owner = partition.cell_owner
+    if cell_owner.shape[0] != thb.grid.num_cells:
+        raise ValueError(
+            f"partition has {cell_owner.shape[0]} cells; expected {thb.grid.num_cells} "
+            f"(grid.num_cells)."
+        )
+    owners = np.full(thb.num_total_basis, -1, dtype=np.int32)
+    for c in range(thb.grid.num_cells):  # ascending: the first active cell wins (lex-first)
+        rank_c = int(cell_owner[c])
+        if rank_c < 0:
+            continue
+        for dof in thb.active_basis(c):
+            if owners[int(dof)] < 0:
+                owners[int(dof)] = rank_c
+    owners.flags.writeable = False
+    return owners
+
+
+def _build_local_thb(thb: THBSplineSpace, partition: Partition, rank: int) -> LocalSpace:
+    """Build the rank-local windowed space of a distributed THB space (see build_local)."""
+    if not 0 <= rank < partition.n_parts:
+        raise ValueError(f"rank must be in [0, {partition.n_parts}); got {rank}.")
+    if partition.n_cells != thb.grid.num_cells:
+        raise ValueError(
+            f"partition has {partition.n_cells} cells; expected {thb.grid.num_cells} "
+            f"(grid.num_cells)."
+        )
+    owned = partition.owned_cells(rank)
+    if owned.size == 0:
+        raise ValueError(f"rank {rank} owns no cells; cannot build a local space.")
+
+    window = np.union1d(owned, _thb_halo(thb, owned))
+    restr = thb.restrict(window)
+    grid_restr = thb.grid.restrict(window)
+    local_to_global_cell = grid_restr.local_to_global_cell
+    local_to_global_dof = restr.local_to_global_dof
+    if local_to_global_cell.shape[0] != restr.space.grid.num_cells:
+        raise RuntimeError(
+            f"Grid restriction ({local_to_global_cell.shape[0]} cells) and THB restriction "
+            f"({restr.space.grid.num_cells} cells) disagree after restricting to the same "
+            f"window of {window.size} cells. This is a bug in restrict()."
+        )
+
+    cell_owner = partition.cell_owner
+    owned_cell_mask = cell_owner[local_to_global_cell] == rank
+    global_dof_owner = _thb_dof_owner(thb, partition)
+    owned_dof_mask = np.zeros(local_to_global_dof.shape[0], dtype=np.bool_)
+    valid = local_to_global_dof >= 0
+    owned_dof_mask[valid] = global_dof_owner[local_to_global_dof[valid]] == rank
+    owned_cell_mask.flags.writeable = False
+    owned_dof_mask.flags.writeable = False
+    return LocalSpace(
+        space=restr.space,
+        local_to_global_cell=local_to_global_cell,
+        local_to_global_dof=local_to_global_dof,
+        owned_cell_mask=owned_cell_mask,
+        owned_dof_mask=owned_dof_mask,
+        n_global_cells=thb.grid.num_cells,
+        n_global_dofs=thb.num_total_basis,
     )
 
 
