@@ -36,6 +36,9 @@ This package consolidates the B-spline API:
 - :func:`build_local`, :class:`LocalSpace`: build a rank's windowed local space
   (cell/DOF maps and ownership masks) from a global space and a
   :class:`pantr.grid.Partition`.
+- :func:`coupling_graph`, :class:`CouplingGraph`: cell-coupling (dual) graph of a
+  space -- cells sharing basis functions, weighted by the number shared -- in
+  METIS / Scotch CSR format, for graph-based partitioning.
 """
 
 from ._bspline import Bspline, create_from_bezier
@@ -51,6 +54,7 @@ from ._bspline_space_factory import (
     get_greville_abscissae,
 )
 from ._bspline_space_nd import BsplineSpace, BsplineSpaceRestriction
+from ._coupling_graph import CouplingGraph, coupling_graph
 from ._local_space import LocalSpace, build_local, compute_halo, dof_owner
 from ._thb_quasi_interpolation import quasi_interpolate_thb_spline
 from ._thb_spline import THBSpline
@@ -67,6 +71,7 @@ __all__ = [
     "BsplineSpace",
     "BsplineSpace1D",
     "BsplineSpaceRestriction",
+    "CouplingGraph",
     "ExtractionStructView",
     "LocalSpace",
     "MultiLevelExtraction",
@@ -76,6 +81,7 @@ __all__ = [
     "THBSplineSpaceRestriction",
     "build_local",
     "compute_halo",
+    "coupling_graph",
     "create_cardinal_knots",
     "create_from_bezier",
     "create_greville_lattice",
