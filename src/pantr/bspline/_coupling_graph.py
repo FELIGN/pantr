@@ -8,7 +8,8 @@ and no external dependency, and consumed later by the optional graph-partition
 backends.
 
 The graph is emitted in the standard CSR adjacency format used by METIS and
-Scotch (``xadj`` / ``adjncy`` / ``adjwgt`` / ``vwgt``), so a backend can hand it
+Scotch (``xadj`` / ``adjncy`` / ``edge_weights`` / ``vertex_weights``, corresponding
+to METIS ``xadj`` / ``adjncy`` / ``adjwgt`` / ``vwgt``), so a backend can hand it
 to those libraries with no reshaping.
 """
 
@@ -31,18 +32,22 @@ class CouplingGraph(NamedTuple):
     """Cell-coupling graph of a space, in METIS / Scotch CSR adjacency format.
 
     A :class:`typing.NamedTuple` returned by :func:`coupling_graph`. The graph is
-    undirected (symmetric adjacency) and has no self-loops:
+    undirected (symmetric adjacency) and has no self-loops. All array fields are
+    read-only.
 
-    - ``num_vertices`` -- number of cells (graph vertices).
-    - ``xadj`` -- CSR row pointers, shape ``(num_vertices + 1,)``; the neighbors of
-      cell ``c`` are ``adjncy[xadj[c]:xadj[c + 1]]``. (METIS ``xadj``.) Read-only.
-    - ``adjncy`` -- concatenated neighbor cell ids, shape ``(xadj[-1],)``. (METIS
-      ``adjncy``.) Read-only.
-    - ``edge_weights`` -- per-adjacency-entry weight = number of basis functions the
-      two cells share, aligned with ``adjncy``. (METIS ``adjwgt``.) Read-only.
-    - ``vertex_weights`` -- per-cell weight (assembly cost), shape
-      ``(num_vertices,)``; uniform ``1.0`` unless ``cell_weights`` was given. (METIS
-      ``vwgt``.) Read-only.
+    Attributes:
+        num_vertices (int): Number of cells (graph vertices).
+        xadj (npt.NDArray[np.int64]): CSR row pointers, shape ``(num_vertices + 1,)``;
+            the neighbors of cell ``c`` are ``adjncy[xadj[c]:xadj[c + 1]]``.
+            (METIS ``xadj``.)
+        adjncy (npt.NDArray[np.int64]): Concatenated neighbor cell ids, shape
+            ``(xadj[-1],)``. (METIS ``adjncy``.)
+        edge_weights (npt.NDArray[np.int64]): Per-adjacency-entry weight = number of
+            basis functions the two cells share, aligned with ``adjncy``.
+            (METIS ``adjwgt``.)
+        vertex_weights (npt.NDArray[np.float64]): Per-cell weight (assembly cost),
+            shape ``(num_vertices,)``; uniform ``1.0`` unless ``cell_weights`` was
+            given. (METIS ``vwgt``.)
     """
 
     num_vertices: int
@@ -109,9 +114,10 @@ def _tp_incidence(space: BsplineSpace) -> tuple[npt.NDArray[np.int64], npt.NDArr
     """Build the cell -> DOF incidence (row, col) pairs for a tensor-product space.
 
     Cell ``c`` (multi-index ``i``) is supported by the tensor product of the per-axis
-    function ranges ``[fb_d[i_d], fb_d[i_d] + degree_d]``, where ``fb_d`` is the first
-    function non-zero on each cell along axis ``d``. Cells and DOFs are flat-indexed in
-    C-order over ``num_intervals`` and ``num_basis`` respectively.
+    function ranges ``fb_d[i_d], fb_d[i_d] + 1, ..., fb_d[i_d] + degree_d`` (that is,
+    ``degree_d + 1`` functions per axis), where ``fb_d`` is the first function non-zero
+    on each cell along axis ``d``. Cells and DOFs are flat-indexed in C-order over
+    ``num_intervals`` and ``num_basis`` respectively.
 
     Args:
         space (BsplineSpace): Non-periodic tensor-product B-spline space.
@@ -143,6 +149,9 @@ def _thb_incidence(space: THBSplineSpace) -> tuple[npt.NDArray[np.int64], npt.ND
     """Build the cell -> DOF incidence (row, col) pairs for a THB-spline space.
 
     Uses :meth:`THBSplineSpace.active_basis` for the active global DOF ids on each cell.
+    ``active_basis`` returns all functions whose untruncated support intersects the cell,
+    including truncated functions that may evaluate to zero there; edge weights therefore
+    count support-intersecting functions, not just non-zero ones.
 
     Args:
         space (THBSplineSpace): The hierarchical space.
@@ -151,7 +160,8 @@ def _thb_incidence(space: THBSplineSpace) -> tuple[npt.NDArray[np.int64], npt.ND
         tuple[npt.NDArray[np.int64], npt.NDArray[np.int64]]: ``(rows, cols)`` cell ids
         and the global DOF ids they support, one entry per (cell, active DOF).
     """
-    # A grid always has at least one cell, so the lists are never empty.
+    # grid.num_cells >= 1 is enforced by TensorProductGrid construction, so the loop
+    # always executes at least once and np.concatenate never receives an empty list.
     rows_list: list[npt.NDArray[np.int64]] = []
     cols_list: list[npt.NDArray[np.int64]] = []
     for cid in range(space.grid.num_cells):
@@ -170,9 +180,15 @@ def _dual_graph(
 ) -> CouplingGraph:
     """Assemble the dual graph from a cell -> DOF incidence.
 
-    Forms the boolean cell-by-DOF incidence ``B`` and the symmetric product
-    ``B @ B.T``: its off-diagonal entry ``(i, j)`` counts the DOFs cells ``i`` and ``j``
-    share. The diagonal (self-coupling) is dropped, leaving the CSR adjacency.
+    Forms the integer cell-by-DOF incidence ``B`` (entries are 1 for active
+    ``(cell, DOF)`` pairs) and the symmetric product ``B @ B.T``: its off-diagonal entry
+    ``(i, j)`` counts the DOFs cells ``i`` and ``j`` share. The diagonal (self-coupling)
+    is dropped, leaving the CSR adjacency.
+
+    Note:
+        ``rows`` / ``cols`` must be duplicate-free. ``scipy.sparse.csr_matrix`` sums
+        repeated ``(row, col)`` entries, so any duplicate ``(cell, DOF)`` pair would
+        silently inflate the edge weight for that cell pair.
 
     Args:
         rows (npt.NDArray[np.int64]): Cell ids of the incidence entries.

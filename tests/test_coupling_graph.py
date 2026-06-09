@@ -34,6 +34,23 @@ def _thb_two_level(*, truncate: bool = True) -> THBSplineSpace:
     return THBSplineSpace(root, grid, truncate=truncate)
 
 
+def _thb_two_level_2d() -> THBSplineSpace:
+    """A 2D two-level THB space: degree-(2,2), 4x4 root cells, lower-left quadrant refined."""
+    root = create_uniform_space([2, 2], [4, 4])
+    grid = hierarchical_grid(uniform_grid([[0.0, 1.0], [0.0, 1.0]], 4), 2)
+    grid.refine(0, [0, 0], [2, 2])
+    return THBSplineSpace(root, grid)
+
+
+def _thb_three_level() -> THBSplineSpace:
+    """A 1D three-level THB space: degree-2, 4 root cells, iterated left-half refinement."""
+    root = create_uniform_space(2, 4)
+    grid = hierarchical_grid(uniform_grid([[0.0, 1.0]], 4), 2)
+    grid.refine(0, [0], [2])
+    grid.refine(1, [0], [2])
+    return THBSplineSpace(root, grid)
+
+
 # --------------------------------------------------------------------------- #
 # Tensor-product: closed-form coupling weights (independent of the impl)
 # --------------------------------------------------------------------------- #
@@ -78,14 +95,37 @@ def test_2d_coupling_closed_form(degrees: tuple[int, int], cells: tuple[int, int
     np.testing.assert_array_equal(_dense(graph), expected)
 
 
+@pytest.mark.parametrize(
+    ("degrees", "cells"),
+    [((1, 2, 1), (2, 3, 2)), ((2, 2, 2), (3, 3, 3))],
+)
+def test_3d_coupling_closed_form(
+    degrees: tuple[int, int, int], cells: tuple[int, int, int]
+) -> None:
+    # Same closed-form as 2D generalised to 3 axes.
+    space = create_uniform_space(list(degrees), list(cells))
+    graph = coupling_graph(space)
+    n = int(np.prod(cells))
+    assert graph.num_vertices == n
+
+    multi = np.array(np.unravel_index(np.arange(n), cells)).T
+    expected = np.zeros((n, n), dtype=np.int64)
+    for a in range(n):
+        for b in range(n):
+            if a != b:
+                weight = 1
+                for d in range(3):
+                    weight *= max(0, degrees[d] + 1 - abs(int(multi[a, d]) - int(multi[b, d])))
+                expected[a, b] = weight
+    np.testing.assert_array_equal(_dense(graph), expected)
+
+
 # --------------------------------------------------------------------------- #
 # THB: cross-check against active_basis intersections
 # --------------------------------------------------------------------------- #
 
 
-@pytest.mark.parametrize("truncate", [True, False])
-def test_thb_matches_active_basis_intersection(truncate: bool) -> None:
-    space = _thb_two_level(truncate=truncate)
+def _assert_matches_active_basis(space: THBSplineSpace) -> None:
     graph = coupling_graph(space)
     assert graph.num_vertices == space.grid.num_cells
     mat = _dense(graph)
@@ -95,6 +135,19 @@ def test_thb_matches_active_basis_intersection(truncate: bool) -> None:
         for b in range(n):
             shared = 0 if a == b else len(dofs[a] & dofs[b])
             assert int(mat[a, b]) == shared
+
+
+@pytest.mark.parametrize("truncate", [True, False])
+def test_thb_matches_active_basis_intersection(truncate: bool) -> None:
+    _assert_matches_active_basis(_thb_two_level(truncate=truncate))
+
+
+def test_thb_2d_matches_active_basis_intersection() -> None:
+    _assert_matches_active_basis(_thb_two_level_2d())
+
+
+def test_thb_three_levels_matches_active_basis_intersection() -> None:
+    _assert_matches_active_basis(_thb_three_level())
 
 
 # --------------------------------------------------------------------------- #
@@ -166,7 +219,10 @@ def test_cell_weights_wrong_shape_raises(bad: list[float]) -> None:
         coupling_graph(create_uniform_space(2, 4), cell_weights=bad)
 
 
-@pytest.mark.parametrize("bad", [[1.0, -1.0, 1.0, 1.0], [1.0, np.inf, 1.0, 1.0]])
+@pytest.mark.parametrize(
+    "bad",
+    [[1.0, -1.0, 1.0, 1.0], [1.0, np.inf, 1.0, 1.0], [1.0, np.nan, 1.0, 1.0]],
+)
 def test_cell_weights_invalid_values_raise(bad: list[float]) -> None:
     with pytest.raises(ValueError, match="finite and non-negative"):
         coupling_graph(create_uniform_space(2, 4), cell_weights=bad)
@@ -174,6 +230,12 @@ def test_cell_weights_invalid_values_raise(bad: list[float]) -> None:
 
 def test_periodic_space_raises() -> None:
     space = create_uniform_space(2, 4, periodic=True)
+    with pytest.raises(ValueError, match="periodic"):
+        coupling_graph(space)
+
+
+def test_partially_periodic_2d_raises() -> None:
+    space = create_uniform_space([2, 2], [3, 3], periodic=[True, False])
     with pytest.raises(ValueError, match="periodic"):
         coupling_graph(space)
 
