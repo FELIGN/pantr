@@ -37,12 +37,25 @@ class CustomMetadataHook(MetadataHookInterface):
         Args:
             metadata: The project metadata mapping to mutate in place. Its
                 ``dependencies`` key is populated with the resolved dependency list.
+
+        Raises:
+            FileNotFoundError: If ``pyproject.toml`` is not found under ``self.root``.
+            RuntimeError: If ``[tool.pantr] base-dependencies`` is missing from
+                ``pyproject.toml``.
         """
         pyproject = Path(self.root) / "pyproject.toml"
         with pyproject.open("rb") as fh:
             data = tomllib.load(fh)
 
-        deps: list[str] = list(data["tool"]["pantr"]["base-dependencies"])
+        try:
+            deps: list[str] = list(data["tool"]["pantr"]["base-dependencies"])
+        except KeyError as exc:
+            raise RuntimeError(
+                f"hatch_build: could not read [tool.pantr] base-dependencies from "
+                f"{pyproject}: missing key {exc}. "
+                "Ensure pyproject.toml has a [tool.pantr] section with a "
+                "'base-dependencies' list."
+            ) from exc
         if not os.environ.get(_OPT_OUT_ENV):
             deps.append(_MPI_DEPENDENCY)
         metadata["dependencies"] = deps

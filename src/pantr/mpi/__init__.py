@@ -1,6 +1,6 @@
 """Optional MPI-parallel distribution layer for PaNTr.
 
-This subpackage hosts the MPI-dependent and dolfinx-bridge code for distributing
+This subpackage will host the MPI-dependent and dolfinx-bridge code for distributing
 B-spline and THB-spline spaces across ranks. Everything here is optional: the
 serial core (:mod:`pantr.grid`, :mod:`pantr.bspline`, ...) never imports it
 (enforced by an import-linter contract), and ``import pantr.mpi`` succeeds even
@@ -12,8 +12,8 @@ The default ``pip install pantr`` pulls in ``mpi4py``. Build with the
 serial-only, MPI-free install.
 
 Main exports:
-- :data:`HAS_MPI`: whether ``mpi4py`` is importable in the current environment.
-- :func:`mpi_available`: runtime check for ``mpi4py`` availability.
+- :data:`HAS_MPI`: whether ``mpi4py`` was importable at module load time.
+- :func:`mpi_available`: live runtime check for ``mpi4py`` availability.
 - :func:`require_mpi`: lazily import and return the ``mpi4py.MPI`` module, or raise.
 """
 
@@ -37,7 +37,13 @@ def mpi_available() -> bool:
 
 
 HAS_MPI: Final[bool] = mpi_available()
-"""bool: Whether ``mpi4py`` is importable, evaluated once at import time."""
+"""bool: Whether ``mpi4py`` was importable at module load time.
+
+This value is frozen at import and will not reflect environment changes made
+afterwards. Use :func:`mpi_available` for a live probe. In code paths that
+actually need MPI, always call :func:`require_mpi` — it checks freshly and
+raises a clear error if MPI is unavailable or broken.
+"""
 
 
 def require_mpi() -> ModuleType:
@@ -50,7 +56,8 @@ def require_mpi() -> ModuleType:
         ModuleType: The imported ``mpi4py.MPI`` module.
 
     Raises:
-        ImportError: If ``mpi4py`` is not installed, with guidance on how to obtain it.
+        ImportError: If ``mpi4py`` is not installed or fails to load (e.g. the
+            underlying MPI runtime library is missing or ABI-incompatible).
     """
     if not mpi_available():
         raise ImportError(
@@ -58,7 +65,16 @@ def require_mpi() -> ModuleType:
             "with pantr; reinstall without the PANTR_NO_MPI build flag, or run "
             "'pip install mpi4py' in an environment with an MPI library."
         )
-    return importlib.import_module("mpi4py.MPI")
+    try:
+        return importlib.import_module("mpi4py.MPI")
+    except Exception as exc:
+        raise ImportError(
+            "pantr.mpi found 'mpi4py' but failed to import 'mpi4py.MPI'. "
+            "This usually means the MPI runtime library (e.g. libmpi.so) is missing "
+            "or the mpi4py build is incompatible with the current environment. "
+            "Install an MPI library (e.g. 'conda install openmpi') or reinstall "
+            "pantr without MPI via 'PANTR_NO_MPI=1 pip install pantr'."
+        ) from exc
 
 
 __all__ = [

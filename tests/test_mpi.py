@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import importlib
 import importlib.util
+import subprocess
+import sys
 
 import pytest
 
@@ -27,7 +30,7 @@ def test_mpi_available_matches_find_spec() -> None:
 def test_require_mpi_raises_when_unavailable(monkeypatch: pytest.MonkeyPatch) -> None:
     """`require_mpi()` raises an informative ImportError when mpi4py is absent."""
     monkeypatch.setattr(pantr.mpi, "mpi_available", lambda: False)
-    with pytest.raises(ImportError, match="mpi4py"):
+    with pytest.raises(ImportError, match="PANTR_NO_MPI"):
         pantr.mpi.require_mpi()
 
 
@@ -43,7 +46,20 @@ def test_require_mpi_imports_mpi4py_mpi(monkeypatch: pytest.MonkeyPatch) -> None
     monkeypatch.setattr(pantr.mpi, "mpi_available", lambda: True)
     monkeypatch.setattr(importlib, "import_module", fake_import)
     assert pantr.mpi.require_mpi() is sentinel
+    assert "name" in imported, "fake_import was never called — monkeypatch target may be wrong"
     assert imported["name"] == "mpi4py.MPI"
+
+
+def test_require_mpi_raises_on_broken_install(monkeypatch: pytest.MonkeyPatch) -> None:
+    """`require_mpi()` wraps non-ImportError load failures as ImportError."""
+
+    def broken_import(name: str) -> object:
+        raise OSError("libmpi.so: cannot open shared object file")
+
+    monkeypatch.setattr(pantr.mpi, "mpi_available", lambda: True)
+    monkeypatch.setattr(importlib, "import_module", broken_import)
+    with pytest.raises(ImportError, match="mpi4py.MPI"):
+        pantr.mpi.require_mpi()
 
 
 def test_require_mpi_returns_module_when_available() -> None:
@@ -54,8 +70,27 @@ def test_require_mpi_returns_module_when_available() -> None:
     assert hasattr(mpi, "COMM_WORLD")
 
 
+def test_pantr_toplevel_does_not_import_mpi() -> None:
+    """``import pantr`` must not cause ``pantr.mpi`` to appear in ``sys.modules``."""
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "import pantr, sys; assert 'pantr.mpi' not in sys.modules, list(sys.modules)",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+
+
 def test_core_does_not_import_pantr_mpi() -> None:
-    """No serial-core module imports pantr.mpi (mirrors the import-linter contract)."""
+    """No serial-core module directly imports pantr.mpi (mirrors the import-linter contract).
+
+    Note: only direct (one-hop) imports are checked here. Transitive coverage is
+    provided by the import-linter contract in pyproject.toml (``make import-lint``).
+    """
     grimp = pytest.importorskip("grimp")
     graph = grimp.build_graph("pantr")
     mpi_modules = {m for m in graph.modules if m == "pantr.mpi" or m.startswith("pantr.mpi.")}

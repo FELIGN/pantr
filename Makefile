@@ -1,4 +1,4 @@
-.PHONY: help test coverage clean install ruff-lint ruff-format-check type-check import-lint before_push docs
+.PHONY: help test coverage clean install ruff-lint ruff-format-check type-check import-lint pre-pull-request docs
 
 help:
 	@echo "Commands:"
@@ -12,7 +12,7 @@ help:
 	@echo "  type-check: run mypy static type checker."
 	@echo "  import-lint: check import boundaries (core must not import pantr.mpi)."
 	@echo "  docs      : build the documentation."
-	@echo "  befor-pr: run lint, format, format check, type check, tests, coverage, and docs."
+	@echo "  before-pr: run lint, format, format check, type check, tests, coverage, and docs."
 
 # Run the test suite with Numba JIT enabled
 test:
