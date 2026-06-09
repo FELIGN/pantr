@@ -1,23 +1,26 @@
 """Serial windowing helpers for distributing a tensor-product B-spline space.
 
-These functions compute, without any MPI, pieces a distributed local space is built
-from:
+These functions compute, without any MPI, the pieces a distributed local space is
+built from:
 
 - :func:`compute_halo`: the function-support closure of a set of owned cells -- the
   extra cells a rank must see so the B-spline functions touching its owned cells are
   fully represented.
 - :func:`dof_owner`: the owner rank of every global DOF, by the
   lex-first-active-cell-in-support rule.
+- :func:`build_local`: compose the above into a rank-local :class:`LocalSpace` --
+  the complete windowed view a distributed solver needs.
+- :class:`LocalSpace`: NamedTuple returned by :func:`build_local`.
 
-Both operate on the knot-span grid of a :class:`~pantr.bspline.BsplineSpace`: cells
-are flat-indexed in C-order over ``num_intervals`` and DOFs in C-order over
+All functions operate on the knot-span grid of a :class:`~pantr.bspline.BsplineSpace`:
+cells are flat-indexed in C-order over ``num_intervals`` and DOFs in C-order over
 ``num_basis``, matching :func:`pantr.grid.tensor_product_grid` and
 :class:`~pantr.bspline.SpanwiseElementExtraction`.
 """
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, NamedTuple
 
 import numpy as np
 
@@ -162,4 +165,104 @@ def dof_owner(space: BsplineSpace, partition: Partition) -> npt.NDArray[np.int32
     return owners
 
 
-__all__ = ["compute_halo", "dof_owner"]
+class LocalSpace(NamedTuple):
+    """The rank-local windowed view of a distributed tensor-product B-spline space.
+
+    Produced by :func:`build_local`. A :class:`typing.NamedTuple` bundling a windowed
+    :class:`~pantr.bspline.BsplineSpace` with the maps and masks relating it to the
+    global space:
+
+    - ``space`` -- the windowed B-spline space over the bounding box of the rank's
+      owned cells and their support-closure halo; a real pantr object whose basis
+      equals the global basis pointwise over those cells.
+    - ``local_to_global_cell`` -- read-only ``(space.num_total_intervals,)`` map from
+      each local knot-span cell to its global cell id.
+    - ``local_to_global_dof`` -- read-only ``(space.num_total_basis,)`` map from each
+      local DOF to its global DOF id.
+    - ``owned_cell_mask`` -- read-only boolean ``(space.num_total_intervals,)`` mask;
+      ``True`` for the cells this rank owns (the rest are halo / bounding-box fill).
+    - ``owned_dof_mask`` -- read-only boolean ``(space.num_total_basis,)`` mask;
+      ``True`` for the DOFs this rank owns.
+    - ``n_global_cells`` -- total knot-span cells in the global space.
+    - ``n_global_dofs`` -- total basis functions in the global space.
+    """
+
+    space: BsplineSpace
+    local_to_global_cell: npt.NDArray[np.int64]
+    local_to_global_dof: npt.NDArray[np.int64]
+    owned_cell_mask: npt.NDArray[np.bool_]
+    owned_dof_mask: npt.NDArray[np.bool_]
+    n_global_cells: int
+    n_global_dofs: int
+
+
+def build_local(global_space: BsplineSpace, partition: Partition, rank: int) -> LocalSpace:
+    """Build the rank-local windowed space of a distributed tensor-product B-spline space.
+
+    Windows ``global_space`` to the bounding box of the cells owned by ``rank`` together
+    with their support-closure halo (:func:`compute_halo`), so the local basis equals the
+    global basis pointwise over those cells. Composes the grid restriction
+    (:meth:`pantr.grid.TensorProductGrid.restrict`) for the cell map and the space
+    restriction (:meth:`pantr.bspline.BsplineSpace.restrict`) for the windowed space and
+    DOF map, and marks owned cells/DOFs via :func:`dof_owner`.
+
+    Args:
+        global_space (BsplineSpace): The global tensor-product B-spline space
+            (non-periodic).
+        partition (Partition): Owner of every knot-span cell; ``cell_owner`` must have
+            length ``global_space.num_total_intervals``.
+        rank (int): The rank whose local space is built; must be in
+            ``[0, partition.n_parts)``.
+
+    Returns:
+        LocalSpace: The windowed space plus local-to-global cell/DOF maps and ownership
+        masks.
+
+    Raises:
+        ValueError: If ``global_space`` is periodic, ``rank`` is out of range,
+            ``partition`` does not match the space's cell count, or ``rank`` owns no
+            cells.
+    """
+    from ..grid import tensor_product_grid  # noqa: PLC0415
+
+    _reject_periodic(global_space)
+    if not 0 <= rank < partition.n_parts:
+        raise ValueError(f"rank must be in [0, {partition.n_parts}); got {rank}.")
+    if partition.n_cells != global_space.num_total_intervals:
+        raise ValueError(
+            f"partition has {partition.n_cells} cells; "
+            f"expected {global_space.num_total_intervals} (space.num_total_intervals)."
+        )
+    owned = partition.owned_cells(rank)
+    if owned.size == 0:
+        raise ValueError(f"rank {rank} owns no cells; cannot build a local space.")
+
+    window = np.union1d(owned, compute_halo(global_space, owned))
+    restr = global_space.restrict(window)
+    grid_restr = tensor_product_grid(global_space).restrict(window)
+    local_to_global_cell = grid_restr.local_to_global_cell
+    local_to_global_dof = restr.local_to_global_dof
+    if local_to_global_cell.shape[0] != restr.space.num_total_intervals:
+        raise RuntimeError(
+            f"Grid restriction ({local_to_global_cell.shape[0]} cells) and space restriction "
+            f"({restr.space.num_total_intervals} cells) disagree after restricting to the same "
+            f"window of {window.size} cells. This is a bug in restrict()."
+        )
+
+    cell_owner = partition.cell_owner
+    owned_cell_mask = cell_owner[local_to_global_cell] == rank
+    owned_dof_mask = dof_owner(global_space, partition)[local_to_global_dof] == rank
+    owned_cell_mask.flags.writeable = False
+    owned_dof_mask.flags.writeable = False
+    return LocalSpace(
+        space=restr.space,
+        local_to_global_cell=local_to_global_cell,
+        local_to_global_dof=local_to_global_dof,
+        owned_cell_mask=owned_cell_mask,
+        owned_dof_mask=owned_dof_mask,
+        n_global_cells=global_space.num_total_intervals,
+        n_global_dofs=global_space.num_total_basis,
+    )
+
+
+__all__ = ["LocalSpace", "build_local", "compute_halo", "dof_owner"]

@@ -1,4 +1,4 @@
-"""Tests for pantr.bspline.compute_halo and dof_owner."""
+"""Tests for pantr.bspline.compute_halo, dof_owner, build_local, and LocalSpace."""
 
 from __future__ import annotations
 
@@ -6,7 +6,14 @@ import numpy as np
 import numpy.typing as npt
 import pytest
 
-from pantr.bspline import BsplineSpace, BsplineSpace1D, compute_halo, dof_owner
+from pantr.bspline import (
+    BsplineSpace,
+    BsplineSpace1D,
+    LocalSpace,
+    build_local,
+    compute_halo,
+    dof_owner,
+)
 from pantr.grid import Partition
 
 
@@ -200,3 +207,154 @@ def test_dof_owner_2d_multirank() -> None:
     part = Partition(np.array([0, 0, 1, 1], dtype=np.int32), n_parts=2)
     # DOFs in rows 0-1 (i<2) have lex-first support cell in row 0 -> rank 0; row 2 -> rank 1
     np.testing.assert_array_equal(dof_owner(space, part), [0, 0, 0, 0, 0, 0, 1, 1, 1])
+
+
+# ------------------------------------------------------------------ build_local
+
+
+def _round_robin(space: BsplineSpace, n_parts: int) -> Partition:
+    """Round-robin partition of all knot-span cells over ``n_parts`` ranks."""
+    return Partition(
+        np.arange(space.num_total_intervals, dtype=np.int32) % n_parts, n_parts=n_parts
+    )
+
+
+def _cell_midpoints(space: BsplineSpace, cells: npt.NDArray[np.int64]) -> npt.NDArray[np.float64]:
+    """Midpoints of the given flat (C-order) knot-span cells of ``space``."""
+    per_axis_uk = [sp.get_unique_knots_and_multiplicity(in_domain=True)[0] for sp in space.spaces]
+    multi = np.unravel_index(cells, space.num_intervals)
+    pts = np.empty((len(cells), space.dim), dtype=np.float64)
+    for d in range(space.dim):
+        uk = per_axis_uk[d]
+        pts[:, d] = 0.5 * (uk[multi[d]] + uk[multi[d] + 1])
+    return pts
+
+
+def test_build_local_partitions_cells_and_dofs() -> None:
+    # Over all ranks, build_local's owned cells/DOFs must exactly partition the active
+    # cells / non-dead DOFs (complete and disjoint).
+    space = _open_uniform_space([2, 2], [5, 4])
+    part = _round_robin(space, 3)
+    global_owner = dof_owner(space, part)
+
+    owned_cells: list[int] = []
+    owned_dofs: list[int] = []
+    for rank in range(part.n_parts):
+        loc = build_local(space, part, rank)
+        assert isinstance(loc, LocalSpace)
+        oc = loc.local_to_global_cell[loc.owned_cell_mask]
+        od = loc.local_to_global_dof[loc.owned_dof_mask]
+        np.testing.assert_array_equal(part.cell_owner[oc], rank)
+        np.testing.assert_array_equal(global_owner[od], rank)
+        owned_cells.extend(int(c) for c in oc)
+        owned_dofs.extend(int(d) for d in od)
+
+    assert sorted(owned_cells) == list(range(space.num_total_intervals))
+    assert len(owned_cells) == len(set(owned_cells))
+    assert sorted(owned_dofs) == sorted(int(d) for d in np.flatnonzero(global_owner >= 0))
+    assert len(owned_dofs) == len(set(owned_dofs))
+
+
+def test_build_local_reproduces_global_basis_on_owned_cells() -> None:
+    space = _open_uniform_space([2, 2], [5, 5])
+    part = _round_robin(space, 4)
+    g_nb = space.num_basis
+    degs = space.degrees
+    for rank in range(part.n_parts):
+        loc = build_local(space, part, rank)
+        sub = loc.space
+        owned_local = np.flatnonzero(loc.owned_cell_mask)
+        pts = _cell_midpoints(sub, owned_local)
+        gb, gfb = space.tabulate_basis(pts)
+        wb, wfb = sub.tabulate_basis(pts)
+        np.testing.assert_allclose(wb, gb, atol=1e-12)  # windowed basis == global on owned cells
+        w_nb = sub.num_basis
+        l2g = loc.local_to_global_dof
+        for i in range(pts.shape[0]):
+            w_axis = [wfb[i, d] + np.arange(degs[d] + 1) for d in range(space.dim)]
+            g_axis = [gfb[i, d] + np.arange(degs[d] + 1) for d in range(space.dim)]
+            w_flat = np.ravel_multi_index(
+                [m.ravel() for m in np.meshgrid(*w_axis, indexing="ij")], w_nb
+            )
+            g_flat = np.ravel_multi_index(
+                [m.ravel() for m in np.meshgrid(*g_axis, indexing="ij")], g_nb
+            )
+            np.testing.assert_array_equal(l2g[w_flat], g_flat)  # DOF map lines up
+
+
+def test_build_local_shapes_and_readonly() -> None:
+    space = _open_uniform_space([2, 2], [4, 4])
+    loc = build_local(space, _round_robin(space, 2), 0)
+    n_cells = loc.space.num_total_intervals
+    n_dofs = loc.space.num_total_basis
+    assert loc.local_to_global_cell.shape == (n_cells,)
+    assert loc.owned_cell_mask.shape == (n_cells,)
+    assert loc.local_to_global_dof.shape == (n_dofs,)
+    assert loc.owned_dof_mask.shape == (n_dofs,)
+    assert loc.n_global_cells == space.num_total_intervals
+    assert loc.n_global_dofs == space.num_total_basis
+    for arr in (
+        loc.local_to_global_cell,
+        loc.local_to_global_dof,
+        loc.owned_cell_mask,
+        loc.owned_dof_mask,
+    ):
+        assert not arr.flags.writeable
+
+
+def test_build_local_includes_halo_cells() -> None:
+    space = _open_uniform_space([2], [8])
+    owner = np.ones(8, dtype=np.int32)
+    owner[[3, 4]] = 0  # rank 0 owns an interior sub-block
+    loc = build_local(space, Partition(owner, n_parts=2), 0)
+    assert int(loc.owned_cell_mask.sum()) == 2  # only cells 3, 4 owned
+    assert loc.space.num_total_intervals > 2  # halo / bbox-fill cells present
+    np.testing.assert_array_equal(
+        sorted(loc.local_to_global_cell[loc.owned_cell_mask].tolist()), [3, 4]
+    )
+
+
+def test_build_local_periodic_rejected() -> None:
+    from pantr.bspline import create_uniform_periodic_knots  # noqa: PLC0415
+
+    per = BsplineSpace1D(create_uniform_periodic_knots(num_intervals=4, degree=2), 2, periodic=True)
+    part = Partition(np.zeros(4, dtype=np.int32), n_parts=1)
+    with pytest.raises(ValueError, match="periodic"):
+        build_local(BsplineSpace([per]), part, 0)
+
+
+def test_build_local_bad_rank_raises() -> None:
+    space = _open_uniform_space([1], [4])
+    part = Partition(np.zeros(4, dtype=np.int32), n_parts=2)
+    with pytest.raises(ValueError, match="rank"):
+        build_local(space, part, 2)
+    with pytest.raises(ValueError, match="rank"):
+        build_local(space, part, -1)
+
+
+def test_build_local_cell_count_mismatch_raises() -> None:
+    space = _open_uniform_space([2], [5])
+    part = Partition(np.zeros(3, dtype=np.int32), n_parts=1)
+    with pytest.raises(ValueError, match="cells"):
+        build_local(space, part, 0)
+
+
+def test_build_local_rank_owns_nothing_raises() -> None:
+    space = _open_uniform_space([1], [4])
+    part = Partition(np.zeros(4, dtype=np.int32), n_parts=2)  # rank 1 owns nothing
+    with pytest.raises(ValueError, match="owns no cells"):
+        build_local(space, part, 1)
+
+
+def test_build_local_with_inactive_cells() -> None:
+    # Cells 1 and 3 are inactive (-1); rank 0 owns cells 0 and 2.
+    # Dead DOFs (no active cell in support) must appear with owned_dof_mask == False.
+    space = _open_uniform_space([1], [4])  # degree 1, 4 cells, 5 DOFs
+    owner = np.array([0, -1, 0, -1], dtype=np.int32)
+    part = Partition(owner, n_parts=1)
+    loc = build_local(space, part, 0)
+    global_owners = dof_owner(space, part)
+    expected_owned = global_owners[loc.local_to_global_dof] == 0
+    np.testing.assert_array_equal(loc.owned_dof_mask, expected_owned)
+    dead_local = np.flatnonzero(global_owners[loc.local_to_global_dof] == -1)
+    assert not loc.owned_dof_mask[dead_local].any()
