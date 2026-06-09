@@ -1490,3 +1490,5 @@ def test_restrict_errors() -> None:
         g.restrict([])
     with pytest.raises(IndexError):
         g.restrict([g.grid.num_cells])
+    with pytest.raises(TypeError):
+        g.restrict([0.5, 1.5])

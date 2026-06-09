@@ -839,15 +839,22 @@ class THBSplineSpace:
             read-only ``local_to_global_dof`` map; entry ``d`` is the global
             hierarchical dof of local dof ``d`` when the local function matches a
             globally-active function of the same level and multi-index, else ``-1``.
+            Values are exact over interior cells; functions near the window boundary
+            may map to ``-1``.
 
         Raises:
             ValueError: If ``cell_ids`` is empty.
             TypeError: If ``cell_ids`` is not integer-valued.
             IndexError: If any cell id is out of range ``[0, grid.num_cells)``.
         """
+        self._check_not_stale()
         grid_restr = self._grid.restrict(cell_ids)
         sub_grid = grid_restr.grid
-        assert isinstance(sub_grid, HierarchicalGrid)
+        if not isinstance(sub_grid, HierarchicalGrid):
+            raise RuntimeError(
+                f"restrict: expected HierarchicalGrid from grid.restrict; "
+                f"got {type(sub_grid).__name__!r}. This is a bug in HierarchicalGrid.restrict."
+            )
         dim = self.dim
         factor = self._grid.factor
 
@@ -858,7 +865,7 @@ class THBSplineSpace:
         ]
         r_hi = [r_lo[k] + sub_grid.root.cells_per_axis[k] for k in range(dim)]
 
-        # Window the root space to that box (A3) and rebuild the THB space on the sub-grid.
+        # Window the root space to that box and rebuild the THB space on the sub-grid.
         root_ni = self._root_space.num_intervals
         box = [np.arange(r_lo[k], r_hi[k]) for k in range(dim)]
         root_cells = np.ravel_multi_index(
@@ -893,6 +900,7 @@ class THBSplineSpace:
                 if gpos < glob_active.shape[0] and int(glob_active[gpos]) == glob_flat:
                     local_to_global_dof[sub_offset + sub_pos] = glob_offset + gpos
             sub_offset += int(sub_active.shape[0])
+        assert sub_offset == sub_space.num_total_basis
         local_to_global_dof.flags.writeable = False
         return THBSplineSpaceRestriction(sub_space, local_to_global_dof)
 
@@ -1658,8 +1666,10 @@ class THBSplineSpaceRestriction(NamedTuple):
       function-support-closure lies inside the window).
     - ``local_to_global_dof`` -- read-only ``(space.num_total_basis,)`` map; entry ``d``
       is the global hierarchical dof of local dof ``d`` when the local function matches a
-      globally-active function of the same level and multi-index, else ``-1`` (a boundary
-      function with no global counterpart). Values are exact over interior cells.
+      globally-active function of the same level and multi-index, else ``-1`` (local
+      function active in the sub-space but absent from the global active set -- arises
+      near the window boundary where Kraft selection may differ). Values are exact over
+      interior cells.
     """
 
     space: THBSplineSpace
