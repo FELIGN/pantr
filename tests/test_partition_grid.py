@@ -1,4 +1,4 @@
-"""Tests for the native block partitioner :func:`pantr.grid.partition_grid`."""
+"""Tests for :func:`pantr.grid.partition_grid` (block, rcb, and auto backends)."""
 
 from __future__ import annotations
 
@@ -41,7 +41,7 @@ def _assert_owner_boxes(owner: npt.NDArray[Any], cells_per_axis: tuple[int, ...]
 
 
 # --------------------------------------------------------------------------- #
-# Invariants over a sweep of grids and part counts
+# block backend: invariants over a sweep of grids and part counts
 # --------------------------------------------------------------------------- #
 
 
@@ -54,7 +54,7 @@ def test_block_partition_invariants(cells_per_axis: tuple[int, ...], n_parts: in
     grid = uniform_grid([[0.0, 1.0]] * len(cells_per_axis), list(cells_per_axis))
     num_cells = grid.num_cells
     try:
-        part = partition_grid(grid, n_parts)
+        part = partition_grid(grid, n_parts, backend="block")
     except ValueError:
         # Infeasible factorization for this grid/part count; covered separately.
         return
@@ -76,35 +76,35 @@ def test_block_partition_invariants(cells_per_axis: tuple[int, ...], n_parts: in
 
 def test_block_partition_is_deterministic() -> None:
     grid = uniform_grid([[0.0, 1.0], [0.0, 1.0]], [6, 4])
-    a = partition_grid(grid, 6).cell_owner
-    b = partition_grid(grid, 6).cell_owner
+    a = partition_grid(grid, 6, backend="block").cell_owner
+    b = partition_grid(grid, 6, backend="block").cell_owner
     np.testing.assert_array_equal(a, b)
 
 
 def test_block_load_is_balanced() -> None:
     # 1D uneven split: each rank gets floor or ceil of num_cells/n_parts.
     grid = uniform_grid([[0.0, 1.0]], 7)
-    owner = partition_grid(grid, 3).cell_owner
+    owner = partition_grid(grid, 3, backend="block").cell_owner
     counts = np.bincount(owner, minlength=3)
     assert int(counts.min()) == 7 // 3
     assert int(counts.max()) == math.ceil(7 / 3)
 
 
 # --------------------------------------------------------------------------- #
-# Exact, hand-computed cases
+# block backend: exact, hand-computed cases
 # --------------------------------------------------------------------------- #
 
 
 def test_block_1d_even_split() -> None:
     grid = uniform_grid([[0.0, 1.0]], 8)
-    owner = partition_grid(grid, 4).cell_owner
+    owner = partition_grid(grid, 4, backend="block").cell_owner
     np.testing.assert_array_equal(owner, [0, 0, 1, 1, 2, 2, 3, 3])
 
 
 def test_block_2d_four_parts() -> None:
     # (4, 4) into 4 -> blocks (2, 2); owner = (i0 // 2) * 2 + (i1 // 2).
     grid = uniform_grid([[0.0, 1.0], [0.0, 1.0]], [4, 4])
-    owner = partition_grid(grid, 4).cell_owner
+    owner = partition_grid(grid, 4, backend="block").cell_owner
     i0, i1 = np.unravel_index(np.arange(16), (4, 4))
     expected = (i0 // 2) * 2 + (i1 // 2)
     np.testing.assert_array_equal(owner, expected)
@@ -113,7 +113,7 @@ def test_block_2d_four_parts() -> None:
 def test_block_is_aspect_ratio_aware() -> None:
     # (8, 2) into 4: cube-like blocks are (4, 1), so owner depends only on axis 0.
     grid = uniform_grid([[0.0, 1.0], [0.0, 1.0]], [8, 2])
-    owner = partition_grid(grid, 4).cell_owner.reshape(8, 2)
+    owner = partition_grid(grid, 4, backend="block").cell_owner.reshape(8, 2)
     # Constant across axis 1 (the short axis was not split)...
     assert np.all(owner[:, 0] == owner[:, 1])
     # ...and varies along axis 0 (the long axis was split into 4).
@@ -122,26 +122,191 @@ def test_block_is_aspect_ratio_aware() -> None:
 
 def test_block_n_parts_one() -> None:
     grid = uniform_grid([[0.0, 1.0], [0.0, 1.0]], [5, 3])
-    part = partition_grid(grid, 1)
+    part = partition_grid(grid, 1, backend="block")
     assert part.n_parts == 1
     assert np.all(part.cell_owner == 0)
 
 
 def test_block_n_parts_equals_num_cells_is_bijection() -> None:
     grid = uniform_grid([[0.0, 1.0], [0.0, 1.0]], [3, 3])
-    owner = partition_grid(grid, 9).cell_owner
+    owner = partition_grid(grid, 9, backend="block").cell_owner
     np.testing.assert_array_equal(np.sort(owner), np.arange(9))
 
 
 def test_block_single_cell_axis_concentrates_blocks() -> None:
     # (1, 8) into 4: axis 0 has 1 cell so all blocks must go on axis 1.
     grid = uniform_grid([[0.0, 1.0], [0.0, 1.0]], [1, 8])
-    owner = partition_grid(grid, 4).cell_owner
+    owner = partition_grid(grid, 4, backend="block").cell_owner
     np.testing.assert_array_equal(owner, np.repeat(np.arange(4), 2))
 
 
 # --------------------------------------------------------------------------- #
-# Error handling
+# rcb backend
+# --------------------------------------------------------------------------- #
+
+
+def _assert_full_partition(part: Partition, n_parts: int, n_active: int) -> None:
+    """Assert every active cell is assigned, all ranks used, no rank empty."""
+    owner = part.cell_owner
+    assert part.n_parts == n_parts
+    assert int(np.count_nonzero(owner >= 0)) == n_active
+    assert set(owner[owner >= 0].tolist()) == set(range(n_parts))
+
+
+def test_rcb_balances_count_when_uniform() -> None:
+    grid = uniform_grid([[0.0, 1.0]], 100)
+    part = partition_grid(grid, 4, backend="rcb")
+    _assert_full_partition(part, 4, 100)
+    counts = np.bincount(part.cell_owner, minlength=4)
+    assert counts.min() == 25 and counts.max() == 25
+
+
+def test_rcb_2d_balances_count() -> None:
+    grid = uniform_grid([[0.0, 1.0], [0.0, 1.0]], [10, 10])
+    part = partition_grid(grid, 4, backend="rcb")
+    _assert_full_partition(part, 4, 100)
+    counts = np.bincount(part.cell_owner, minlength=4)
+    assert counts.min() == 25 and counts.max() == 25
+
+
+def test_rcb_1d_parts_are_contiguous() -> None:
+    # In 1D, rcb sorts by the single coordinate, so part ids are non-decreasing.
+    grid = uniform_grid([[0.0, 1.0]], 30)
+    owner = partition_grid(grid, 4, backend="rcb").cell_owner
+    assert np.all(np.diff(owner) >= 0)
+
+
+def test_rcb_balances_weight_not_count() -> None:
+    # One heavy cell: rcb balances total weight, so the heavy cell gets a part alone.
+    grid = uniform_grid([[0.0, 1.0]], 8)
+    weights = [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 7.0]
+    owner = partition_grid(grid, 2, backend="rcb", cell_weights=weights).cell_owner
+    counts = np.bincount(owner, minlength=2)
+    w = np.asarray(weights)
+    part_weights = np.array([w[owner == r].sum() for r in range(2)])
+    np.testing.assert_allclose(part_weights, [7.0, 7.0])
+    assert sorted(counts.tolist()) == [1, 7]
+
+
+def test_rcb_respects_cell_active() -> None:
+    grid = uniform_grid([[0.0, 1.0]], 10)
+    active = np.array([True] * 5 + [False] * 5)
+    part = partition_grid(grid, 2, backend="rcb", cell_active=active)
+    owner = part.cell_owner
+    assert np.all(owner[5:] == -1)
+    assert set(owner[:5].tolist()) == {0, 1}
+    np.testing.assert_array_equal(part.active_mask, active)
+    _assert_full_partition(part, 2, 5)
+
+
+def test_rcb_non_contiguous_active_cells() -> None:
+    # Alternating active/inactive cells: exercises the active_idx scatter-back path.
+    grid = uniform_grid([[0.0, 1.0]], 10)
+    active = np.array([True, False, True, False, True, False, True, False, True, False])
+    part = partition_grid(grid, 2, backend="rcb", cell_active=active)
+    owner = part.cell_owner
+    np.testing.assert_array_equal(owner[1::2], -1)
+    assert set(owner[0::2].tolist()) == {0, 1}
+    np.testing.assert_array_equal(part.active_mask, active)
+    _assert_full_partition(part, 2, 5)
+
+
+def test_rcb_combined_weights_and_active() -> None:
+    # Cells 0-7 active (weights [1]*7+[7]); cells 8-9 inactive.
+    # rcb must slice weights to active cells and balance total weight (7+7=14).
+    grid = uniform_grid([[0.0, 1.0]], 10)
+    weights = [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 7.0, 0.0, 0.0]
+    active = np.array([True] * 8 + [False, False])
+    part = partition_grid(grid, 2, backend="rcb", cell_weights=weights, cell_active=active)
+    owner = part.cell_owner
+    assert np.all(owner[8:] == -1)
+    w = np.asarray(weights)
+    part_weights = np.array([w[owner == r].sum() for r in range(2)])
+    np.testing.assert_allclose(part_weights, [7.0, 7.0])
+
+
+def test_rcb_n_parts_one_with_active() -> None:
+    # n_parts=1 hits the k==1 base case immediately; inactive cells must stay -1.
+    grid = uniform_grid([[0.0, 1.0]], 6)
+    active = np.array([True, False, True, False, True, False])
+    owner = partition_grid(grid, 1, backend="rcb", cell_active=active).cell_owner
+    np.testing.assert_array_equal(owner[1::2], -1)
+    np.testing.assert_array_equal(owner[0::2], 0)
+
+
+def test_rcb_on_hierarchical_grid() -> None:
+    hgrid = hierarchical_grid(uniform_grid([[0.0, 1.0], [0.0, 1.0]], 4), 2)
+    part = partition_grid(hgrid, 3, backend="rcb")
+    _assert_full_partition(part, 3, hgrid.num_cells)
+
+
+def test_rcb_n_parts_one() -> None:
+    grid = uniform_grid([[0.0, 1.0], [0.0, 1.0]], [4, 4])
+    owner = partition_grid(grid, 1, backend="rcb").cell_owner
+    assert np.all(owner == 0)
+
+
+def test_rcb_n_parts_equals_n_active_is_bijection() -> None:
+    grid = uniform_grid([[0.0, 1.0]], 6)
+    owner = partition_grid(grid, 6, backend="rcb").cell_owner
+    np.testing.assert_array_equal(np.sort(owner), np.arange(6))
+
+
+def test_rcb_is_deterministic() -> None:
+    grid = uniform_grid([[0.0, 1.0], [0.0, 1.0]], [7, 5])
+    a = partition_grid(grid, 5, backend="rcb").cell_owner
+    b = partition_grid(grid, 5, backend="rcb").cell_owner
+    np.testing.assert_array_equal(a, b)
+
+
+def test_rcb_n_parts_exceeds_active_raises() -> None:
+    grid = uniform_grid([[0.0, 1.0]], 4)
+    with pytest.raises(ValueError, match="exceeds the number of active cells"):
+        partition_grid(grid, 5, backend="rcb")
+
+
+def test_rcb_n_parts_exceeds_active_with_mask_raises() -> None:
+    grid = uniform_grid([[0.0, 1.0]], 10)
+    active = np.array([True] * 3 + [False] * 7)
+    with pytest.raises(ValueError, match="exceeds the number of active cells"):
+        partition_grid(grid, 4, backend="rcb", cell_active=active)
+
+
+# --------------------------------------------------------------------------- #
+# auto dispatch
+# --------------------------------------------------------------------------- #
+
+
+def test_auto_uses_block_for_tp_feasible() -> None:
+    grid = uniform_grid([[0.0, 1.0], [0.0, 1.0]], [4, 4])
+    auto = partition_grid(grid, 4).cell_owner
+    block = partition_grid(grid, 4, backend="block").cell_owner
+    np.testing.assert_array_equal(auto, block)
+
+
+def test_auto_falls_back_to_rcb_for_prime_n() -> None:
+    # 7 cannot factor onto (4, 4); auto must fall back to rcb instead of raising.
+    grid = uniform_grid([[0.0, 1.0], [0.0, 1.0]], [4, 4])
+    part = partition_grid(grid, 7)  # default backend="auto"
+    _assert_full_partition(part, 7, 16)
+
+
+def test_auto_uses_rcb_when_weights_given() -> None:
+    grid = uniform_grid([[0.0, 1.0]], 8)
+    weights = [1.0] * 7 + [7.0]
+    part = partition_grid(grid, 2, cell_weights=weights)
+    part_weights = np.array([np.asarray(weights)[part.cell_owner == r].sum() for r in range(2)])
+    np.testing.assert_allclose(part_weights, [7.0, 7.0])
+
+
+def test_auto_uses_rcb_for_hierarchical_grid() -> None:
+    hgrid = hierarchical_grid(uniform_grid([[0.0, 1.0]], 4), 2)
+    part = partition_grid(hgrid, 2)  # not tensor-product -> rcb
+    _assert_full_partition(part, 2, hgrid.num_cells)
+
+
+# --------------------------------------------------------------------------- #
+# Error handling and hook validation
 # --------------------------------------------------------------------------- #
 
 
@@ -155,27 +320,65 @@ def test_invalid_n_parts_raises(n_parts: int) -> None:
 def test_unknown_backend_raises() -> None:
     grid = uniform_grid([[0.0, 1.0]], 4)
     with pytest.raises(ValueError, match="unknown backend"):
-        partition_grid(grid, 2, backend="rcb")
+        partition_grid(grid, 2, backend="metis")
 
 
 def test_block_on_non_tensor_product_grid_raises() -> None:
     hgrid = hierarchical_grid(uniform_grid([[0.0, 1.0]], 4), 2)
     with pytest.raises(ValueError, match="requires a TensorProductGrid"):
-        partition_grid(hgrid, 2)
+        partition_grid(hgrid, 2, backend="block")
+
+
+def test_block_rejects_cell_weights() -> None:
+    grid = uniform_grid([[0.0, 1.0]], 4)
+    with pytest.raises(ValueError, match="does not support cell_weights"):
+        partition_grid(grid, 2, backend="block", cell_weights=[1.0, 1.0, 1.0, 1.0])
+
+
+def test_block_rejects_cell_active() -> None:
+    grid = uniform_grid([[0.0, 1.0]], 4)
+    with pytest.raises(ValueError, match="does not support cell_weights or cell_active"):
+        partition_grid(grid, 2, backend="block", cell_active=[True, True, True, False])
 
 
 def test_infeasible_factorization_raises() -> None:
-    # 7 is prime and larger than every axis (4), so no non-empty box split exists.
+    # 7 is prime and larger than every axis (4); block has no non-empty box split.
     grid = uniform_grid([[0.0, 1.0], [0.0, 1.0]], [4, 4])
     with pytest.raises(ValueError, match="cannot factor n_parts"):
-        partition_grid(grid, 7)
+        partition_grid(grid, 7, backend="block")
 
 
 def test_infeasible_1d_n_parts_exceeds_cells_raises() -> None:
-    # 1D: n_parts=7 > num_cells=4; the final-axis check rejects it.
+    # 1D: n_parts=7 > num_cells=4; the block final-axis check rejects it.
     grid = uniform_grid([[0.0, 1.0]], 4)
     with pytest.raises(ValueError, match="cannot factor n_parts"):
-        partition_grid(grid, 7)
+        partition_grid(grid, 7, backend="block")
+
+
+@pytest.mark.parametrize("bad_weights", [[1.0, 2.0], [1.0, 2.0, 3.0, 4.0, 5.0]])
+def test_cell_weights_wrong_shape_raises(bad_weights: list[float]) -> None:
+    grid = uniform_grid([[0.0, 1.0]], 4)
+    with pytest.raises(ValueError, match="cell_weights must have shape"):
+        partition_grid(grid, 2, backend="rcb", cell_weights=bad_weights)
+
+
+@pytest.mark.parametrize("bad", [[1.0, -1.0, 1.0, 1.0], [1.0, np.inf, 1.0, 1.0]])
+def test_cell_weights_invalid_values_raise(bad: list[float]) -> None:
+    grid = uniform_grid([[0.0, 1.0]], 4)
+    with pytest.raises(ValueError, match="finite and non-negative"):
+        partition_grid(grid, 2, backend="rcb", cell_weights=bad)
+
+
+def test_cell_active_wrong_shape_raises() -> None:
+    grid = uniform_grid([[0.0, 1.0]], 4)
+    with pytest.raises(ValueError, match="cell_active must have shape"):
+        partition_grid(grid, 2, backend="rcb", cell_active=[True, False])
+
+
+def test_cell_active_all_false_raises() -> None:
+    grid = uniform_grid([[0.0, 1.0]], 4)
+    with pytest.raises(ValueError, match="at least one cell active"):
+        partition_grid(grid, 2, backend="rcb", cell_active=[False, False, False, False])
 
 
 # --------------------------------------------------------------------------- #

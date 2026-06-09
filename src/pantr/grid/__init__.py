@@ -38,7 +38,9 @@ Main exports:
   tensor-product grids (union of per-axis breakpoints on their domain overlap).
 - :class:`Partition`: a per-cell owner assignment for distributing a grid's cells.
 - :func:`partition_grid`: split a grid into ``n_parts`` rank subdomains (native,
-  dependency-free; the ``"block"`` Cartesian backend).
+  dependency-free): the ``"block"`` Cartesian backend, the ``"rcb"`` recursive
+  coordinate bisection backend (weight- and activity-aware), and an ``"auto"``
+  dispatch between them.
 """
 
 from __future__ import annotations
