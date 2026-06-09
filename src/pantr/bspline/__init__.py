@@ -31,6 +31,9 @@ This package consolidates the B-spline API:
   quasi-interpolation onto a :class:`THBSplineSpace`.
 - :func:`compute_halo`, :func:`dof_owner`: serial helpers for distributing a
   B-spline space (support-closure halo and lex-first-active-cell DOF ownership).
+- :func:`build_local`, :class:`LocalSpace`: build a rank's windowed local space
+  (cell/DOF maps and ownership masks) from a global space and a
+  :class:`pantr.grid.Partition`.
 """
 
 from ._bspline import Bspline, create_from_bezier
@@ -46,7 +49,7 @@ from ._bspline_space_factory import (
     get_greville_abscissae,
 )
 from ._bspline_space_nd import BsplineSpace, BsplineSpaceRestriction
-from ._local_space import compute_halo, dof_owner
+from ._local_space import LocalSpace, build_local, compute_halo, dof_owner
 from ._thb_quasi_interpolation import quasi_interpolate_thb_spline
 from ._thb_spline import THBSpline
 from ._thb_spline_space import THBSplineSpace
@@ -63,10 +66,12 @@ __all__ = [
     "BsplineSpace1D",
     "BsplineSpaceRestriction",
     "ExtractionStructView",
+    "LocalSpace",
     "MultiLevelExtraction",
     "SpanwiseElementExtraction",
     "THBSpline",
     "THBSplineSpace",
+    "build_local",
     "compute_halo",
     "create_cardinal_knots",
     "create_from_bezier",
