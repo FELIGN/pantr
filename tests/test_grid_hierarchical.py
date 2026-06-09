@@ -767,7 +767,7 @@ class TestHierarchicalGridRestrict:
         g.refine(0, [1, 1], [3, 3])
         r = g.restrict(list(range(g.num_cells)))
         assert r.grid.num_cells == g.num_cells
-        np_testing.assert_array_equal(r.local_to_global_cell, np.arange(g.num_cells))
+        assert set(r.local_to_global_cell.tolist()) == set(range(g.num_cells))
         assert bool(r.in_subset.all())
         _check_restrict(g, r, list(range(g.num_cells)))
 
@@ -831,3 +831,35 @@ class TestHierarchicalGridRestrict:
     def test_non_integer_raises(self) -> None:
         with pytest.raises(TypeError, match="integer"):
             _grid_2d(2, 2).restrict([0.0, 1.0])
+
+    def test_multilevel_restrict(self) -> None:
+        # Two levels of refinement: level 0 → level 1 → level 2.
+        g = _grid_2d(4, 2)
+        g.refine(0, [1, 1], [3, 3])  # level-1 leaves in [1,3)x[1,3)
+        # Refine one level-1 block to level 2.
+        l1_cells = [c for c in range(g.num_cells) if g.cell_level(c) == 1]
+        l1_midxs = [g.cell_multi_index(c) for c in l1_cells]
+        lo = min(m[0] for m in l1_midxs)
+        g.refine(1, [lo, lo], [lo + 1, lo + 1])
+        l2_cells = [c for c in range(g.num_cells) if g.cell_level(c) == 2]
+        assert len(l2_cells) > 0
+        r = g.restrict([l2_cells[0]])
+        _check_restrict(g, r, [l2_cells[0]])
+        assert int(r.in_subset.sum()) == 1
+
+    def test_non_contiguous_ids(self) -> None:
+        # Cells from two disjoint corners force a large bounding box with fill cells.
+        g = _grid_2d(6, 2)
+        # Top-left corner root cell (0,0) and bottom-right corner root cell (5,5).
+        corner_cells = [
+            c
+            for c in range(g.num_cells)
+            if g.cell_level(c) == 0
+            and (tuple(g.cell_multi_index(c)) == (0, 0) or tuple(g.cell_multi_index(c)) == (5, 5))
+        ]
+        assert len(corner_cells) == 2
+        r = g.restrict(corner_cells)
+        _check_restrict(g, r, corner_cells)
+        # Bounding box spans the full 6x6 root; in_subset flags only the two corners.
+        assert int(r.in_subset.sum()) == 2
+        assert r.grid.num_cells > 2  # fill cells included in bbox

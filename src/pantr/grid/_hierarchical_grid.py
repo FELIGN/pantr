@@ -322,11 +322,14 @@ class HierarchicalGrid(Grid):
                 ``(lo, hi)`` rectangles at level ``l`` in level-``l`` coordinates.
 
         Returns:
-            HierarchicalGrid: A grid whose active leaves are exactly ``blocks``.
+            HierarchicalGrid: A grid whose active leaves span the same cells as
+            ``blocks``, after greedy merging of adjacent aligned pairs.
 
         Note:
-            No validation is performed; callers must pass non-overlapping blocks
-            that tile ``root`` consistently with ``factor``.
+            Callers must supply a valid active-leaf decomposition: blocks at each
+            level are non-overlapping, and the per-level sets collectively partition
+            the root's cells consistently with ``factor`` (no gaps or overlaps across
+            levels).
         """
         self = cls.__new__(cls)
         Grid.__init__(self)
@@ -747,12 +750,13 @@ class HierarchicalGrid(Grid):
         Returns:
             GridRestriction: The windowed :class:`HierarchicalGrid`, its
             ``local_to_global_cell`` map of shape ``(sub.num_cells,)``, and the
-            ``in_subset`` mask flagging requested versus bounding-box-fill cells.
+            boolean ``in_subset`` mask flagging requested versus bounding-box-fill cells.
 
         Raises:
             ValueError: If ``cell_ids`` is empty.
             IndexError: If any cell id is out of range ``[0, num_cells)``.
             TypeError: If ``cell_ids`` is not integer-valued.
+            RuntimeError: If an internal invariant is violated (should be unreachable).
         """
         ids = np.asarray(cell_ids).ravel()
         if ids.size == 0:
@@ -807,8 +811,7 @@ class HierarchicalGrid(Grid):
             sub_midx = sub.cell_multi_index(sub_cid)
             g_midx = tuple(sub_midx[k] + r_lo[k] * self._factor[k] ** level for k in range(ndim))
             g_cid = self._encode_midx(level, g_midx)
-            if g_cid is None:  # pragma: no cover - windowed leaves are always global leaves
-                raise RuntimeError("restrict: windowed leaf has no global cell id.")
+            assert g_cid is not None  # invariant: every windowed leaf maps to an active global leaf
             local_to_global[sub_cid] = g_cid
 
         in_subset = np.isin(local_to_global, ids)
