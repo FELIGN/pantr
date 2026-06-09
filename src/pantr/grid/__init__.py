@@ -37,6 +37,8 @@ Main exports:
 - :func:`overlay`: the coarsest :class:`TensorProductGrid` refining two input
   tensor-product grids (union of per-axis breakpoints on their domain overlap).
 - :class:`Partition`: a per-cell owner assignment for distributing a grid's cells.
+- :func:`partition_grid`: split a grid into ``n_parts`` rank subdomains (native,
+  dependency-free; the ``"block"`` Cartesian backend).
 """
 
 from __future__ import annotations
@@ -47,6 +49,7 @@ from ._grid import Grid, GridRestriction
 from ._hierarchical_grid import HierarchicalGrid, hierarchical_grid
 from ._overlay import overlay
 from ._partition import Partition
+from ._partition_grid import partition_grid
 from ._tags import CellTags, FacetTags
 from ._tensor_product_grid import TensorProductGrid, tensor_product_grid, uniform_grid
 
@@ -62,6 +65,7 @@ __all__ = [
     "cell_quadrature",
     "hierarchical_grid",
     "overlay",
+    "partition_grid",
     "tensor_product_grid",
     "uniform_grid",
 ]
