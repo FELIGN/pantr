@@ -32,22 +32,18 @@ class CouplingGraph(NamedTuple):
     """Cell-coupling graph of a space, in METIS / Scotch CSR adjacency format.
 
     A :class:`typing.NamedTuple` returned by :func:`coupling_graph`. The graph is
-    undirected (symmetric adjacency) and has no self-loops. All array fields are
-    read-only.
+    undirected (symmetric adjacency) and has no self-loops:
 
-    Attributes:
-        num_vertices (int): Number of cells (graph vertices).
-        xadj (npt.NDArray[np.int64]): CSR row pointers, shape ``(num_vertices + 1,)``;
-            the neighbors of cell ``c`` are ``adjncy[xadj[c]:xadj[c + 1]]``.
-            (METIS ``xadj``.)
-        adjncy (npt.NDArray[np.int64]): Concatenated neighbor cell ids, shape
-            ``(xadj[-1],)``. (METIS ``adjncy``.)
-        edge_weights (npt.NDArray[np.int64]): Per-adjacency-entry weight = number of
-            basis functions the two cells share, aligned with ``adjncy``.
-            (METIS ``adjwgt``.)
-        vertex_weights (npt.NDArray[np.float64]): Per-cell weight (assembly cost),
-            shape ``(num_vertices,)``; uniform ``1.0`` unless ``cell_weights`` was
-            given. (METIS ``vwgt``.)
+    - ``num_vertices`` -- number of cells (graph vertices).
+    - ``xadj`` -- CSR row pointers, shape ``(num_vertices + 1,)``; the neighbors of
+      cell ``c`` are ``adjncy[xadj[c]:xadj[c + 1]]``. (METIS ``xadj``.) Read-only.
+    - ``adjncy`` -- concatenated neighbor cell ids, shape ``(xadj[-1],)``. (METIS
+      ``adjncy``.) Read-only.
+    - ``edge_weights`` -- per-adjacency-entry weight = number of basis functions the
+      two cells share, aligned with ``adjncy``. (METIS ``adjwgt``.) Read-only.
+    - ``vertex_weights`` -- per-cell weight (assembly cost), shape
+      ``(num_vertices,)``; uniform ``1.0`` unless ``cell_weights`` was given. (METIS
+      ``vwgt``.) Read-only.
     """
 
     num_vertices: int
