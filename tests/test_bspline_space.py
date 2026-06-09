@@ -1060,6 +1060,16 @@ class TestBsplineSpaceRestrict:
         r = space.restrict([1, 2])  # intervals [1,3); first basis on interval 1 is index 1
         np.testing.assert_array_equal(r.local_to_global_dof, [1, 2, 3, 4])
 
+    def test_dof_map_explicit_2d(self) -> None:
+        # degree-(1,1) space, num_intervals=(3,2), num_basis=(4,3).
+        # Restrict to row 1 (all columns): cell_ids [1*2+0, 1*2+1] = [2,3].
+        # Per-axis windows: axis-0 -> [1,2), axis-1 -> [0,2) (full).
+        # Expected dof_0=[1,2], dof_1=[0,1,2]; meshgrid(ij) -> ravel over (4,3):
+        # [1*3+0, 1*3+1, 1*3+2, 2*3+0, 2*3+1, 2*3+2] = [3,4,5,6,7,8].
+        space = BsplineSpace([_open_uniform_space_1d(1, 3), _open_uniform_space_1d(1, 2)])
+        r = space.restrict([2, 3])
+        np.testing.assert_array_equal(r.local_to_global_dof, [3, 4, 5, 6, 7, 8])
+
     def test_returns_restriction_namedtuple(self) -> None:
         space = BsplineSpace([_open_uniform_space_1d(2, 3), _open_uniform_space_1d(2, 3)])
         r = space.restrict([0])

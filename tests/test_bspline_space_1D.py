@@ -2019,6 +2019,9 @@ class TestBsplineSpace1DRestrict:
     def test_interior_window(self) -> None:
         _check_restrict_1d(_open_uniform_1d(2, 5), 1, 4)
 
+    def test_left_boundary_window(self) -> None:
+        _check_restrict_1d(_open_uniform_1d(2, 5), 0, 3)
+
     def test_interior_window_cubic(self) -> None:
         _check_restrict_1d(_open_uniform_1d(3, 6), 2, 5)
 

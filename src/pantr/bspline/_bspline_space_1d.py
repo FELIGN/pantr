@@ -700,8 +700,9 @@ class BsplineSpace1D:
 
         Returns:
             tuple[BsplineSpace1D, npt.NDArray[np.int64]]: The windowed space and a
-            read-only ``local_to_global_dof`` array of shape ``(num_basis_local,)``
-            mapping each windowed basis index to its index in this space.
+            read-only ``local_to_global_dof`` array of shape
+            ``(windowed_space.num_basis,)`` mapping each windowed basis index to its
+            index in this space.
 
         Raises:
             ValueError: If the space is periodic, or the interval range is invalid.

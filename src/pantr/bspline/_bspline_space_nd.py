@@ -235,7 +235,7 @@ class BsplineSpace:
         Returns:
             BsplineSpaceRestriction: The windowed :class:`BsplineSpace` and the
             read-only ``local_to_global_dof`` map of shape
-            ``(space.num_total_basis,)``.
+            ``(windowed_space.num_total_basis,)``.
 
         Raises:
             ValueError: If ``cell_ids`` is empty or any axis is periodic.
@@ -276,14 +276,14 @@ class BsplineSpace:
 class BsplineSpaceRestriction(NamedTuple):
     """Result of :meth:`BsplineSpace.restrict`: a windowed space and its DOF map.
 
-    A :class:`typing.NamedTuple` returned by :meth:`BsplineSpace.restrict`:
-
-    - ``space`` -- the windowed :class:`BsplineSpace`: per axis a pure knot-vector
-      slice of the parent (never re-clamped), so its basis equals the parent's
-      pointwise over the windowed cells.
-    - ``local_to_global_dof`` -- read-only, shape ``(space.num_total_basis,)``, mapping
-      each windowed DOF (flat, C-order over the windowed per-axis basis counts) to its
-      flat index in the parent space.
+    Attributes:
+        space (BsplineSpace): The windowed space; per axis a pure knot-vector slice
+            of the parent (never re-clamped), so its basis equals the parent's
+            pointwise over the windowed cells.
+        local_to_global_dof (npt.NDArray[np.int64]): Read-only array of shape
+            ``(space.num_total_basis,)`` mapping each windowed DOF (flat, C-order
+            over the windowed per-axis basis counts) to its flat index in the parent
+            space.
 
     Unlike :class:`pantr.grid.GridRestriction` there is no ``in_subset`` mask: every
     windowed DOF is a genuine parent DOF (a windowed space spans a box of cells, so
