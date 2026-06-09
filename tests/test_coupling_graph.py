@@ -39,7 +39,7 @@ def _thb_two_level(*, truncate: bool = True) -> THBSplineSpace:
 # --------------------------------------------------------------------------- #
 
 
-@pytest.mark.parametrize("degree", [1, 2, 3])
+@pytest.mark.parametrize("degree", [1, 2, 3, 4])
 @pytest.mark.parametrize("n_cells", [4, 6, 7])
 def test_1d_coupling_closed_form(degree: int, n_cells: int) -> None:
     # Open-uniform 1D B-splines: cells i, j share max(0, p + 1 - |i - j|) functions.
@@ -87,6 +87,7 @@ def test_2d_coupling_closed_form(degrees: tuple[int, int], cells: tuple[int, int
 def test_thb_matches_active_basis_intersection(truncate: bool) -> None:
     space = _thb_two_level(truncate=truncate)
     graph = coupling_graph(space)
+    assert graph.num_vertices == space.grid.num_cells
     mat = _dense(graph)
     n = space.grid.num_cells
     dofs = [set(space.active_basis(c).tolist()) for c in range(n)]
@@ -177,6 +178,33 @@ def test_periodic_space_raises() -> None:
         coupling_graph(space)
 
 
+def test_cell_weights_all_zero_accepted() -> None:
+    graph = coupling_graph(create_uniform_space(2, 4), cell_weights=[0.0, 0.0, 0.0, 0.0])
+    np.testing.assert_array_equal(graph.vertex_weights, 0.0)
+    assert not graph.vertex_weights.flags.writeable
+
+
 def test_non_space_input_raises() -> None:
     with pytest.raises(TypeError, match="BsplineSpace or THBSplineSpace"):
         coupling_graph(uniform_grid([[0.0, 1.0]], 4))  # type: ignore[arg-type]
+
+
+# --------------------------------------------------------------------------- #
+# Reduced-continuity closed-form coupling
+# --------------------------------------------------------------------------- #
+
+
+def test_1d_coupling_reduced_continuity() -> None:
+    # C^0 (continuity=0) degree-2 space: adjacent cells share exactly 1 DOF,
+    # non-adjacent share 0 (vs max-continuity where adjacent cells share 2).
+    degree, n_cells = 2, 5
+    space = create_uniform_space(degree, n_cells, continuity=0)
+    graph = coupling_graph(space)
+    assert graph.num_vertices == n_cells
+
+    expected = np.zeros((n_cells, n_cells), dtype=np.int64)
+    for i in range(n_cells):
+        for j in range(n_cells):
+            if abs(i - j) == 1:
+                expected[i, j] = 1
+    np.testing.assert_array_equal(_dense(graph), expected)

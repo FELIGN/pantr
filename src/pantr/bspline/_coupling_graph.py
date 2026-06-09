@@ -225,6 +225,7 @@ def _validate_vertex_weights(
         ValueError: If the shape is not ``(n_cells,)`` or any entry is negative or
             non-finite.
     """
+    weights: npt.NDArray[np.float64]
     if cell_weights is None:
         weights = np.ones(n_cells, dtype=np.float64)
     else:
@@ -234,7 +235,7 @@ def _validate_vertex_weights(
         if not bool(np.all(np.isfinite(weights))) or bool(np.any(weights < 0.0)):
             raise ValueError("cell_weights must be finite and non-negative.")
     weights.flags.writeable = False
-    return cast("npt.NDArray[np.float64]", weights)
+    return weights
 
 
 __all__ = ["CouplingGraph", "coupling_graph"]
