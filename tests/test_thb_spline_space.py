@@ -8,7 +8,13 @@ import numpy as np
 import numpy.typing as npt
 import pytest
 
-from pantr.bspline import BsplineSpace, BsplineSpace1D, THBSplineSpace
+from pantr.bspline import (
+    BsplineSpace,
+    BsplineSpace1D,
+    MultiLevelExtraction,
+    THBSplineSpace,
+    THBSplineSpaceRestriction,
+)
 from pantr.bspline._thb_eval_core import _combine_tp_values
 from pantr.bspline._thb_spline_space import _box_all_true, _func_support_1d
 from pantr.grid import HierarchicalGrid, hierarchical_grid, uniform_grid
@@ -1366,3 +1372,123 @@ class TestContribCache:
         r1 = thb._cell_contributions(c1)
         assert thb._cell_contributions(c0) is r0
         assert thb._cell_contributions(c1) is r1
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# restrict (windowed THB sub-space)
+# ──────────────────────────────────────────────────────────────────────────────
+
+
+def _refined_thb_2d(
+    n: int = 4, lo: tuple[int, int] = (1, 1), hi: tuple[int, int] = (3, 3), *, truncate: bool = True
+) -> THBSplineSpace:
+    """Degree-2 ``n x n`` THB space on [0, n]^2, refining ``[lo, hi)`` to level 1."""
+    knots = [0.0] * 3 + [float(i) for i in range(1, n)] + [float(n)] * 3
+    sp = BsplineSpace1D(knots, 2)
+    grid = hierarchical_grid(uniform_grid([[0.0, float(n)], [0.0, float(n)]], n), 2)
+    grid.refine(0, list(lo), list(hi))
+    return THBSplineSpace(BsplineSpace([sp, sp]), grid, truncate=truncate)
+
+
+def _cells_in_root_box(g: THBSplineSpace, lo: tuple[int, ...], hi: tuple[int, ...]) -> list[int]:
+    """Active cell ids whose root cell lies in the box ``[lo, hi)``."""
+    factor = g.grid.factor
+    out = []
+    for cid in range(g.grid.num_cells):
+        lv = g.grid.cell_level(cid)
+        m = g.grid.cell_multi_index(cid)
+        rc = [m[k] // factor[k] ** lv for k in range(g.dim)]
+        if all(lo[k] <= rc[k] < hi[k] for k in range(g.dim)):
+            out.append(cid)
+    return out
+
+
+def _check_restrict_interior(
+    g: THBSplineSpace, cell_ids: list[int]
+) -> tuple[int, THBSplineSpaceRestriction]:
+    """Assert windowed THB basis and extraction match the global ones on interior cells.
+
+    An interior cell is one whose active functions all map to a global dof.
+    """
+    r = g.restrict(cell_ids)
+    sub, l2g_dof = r.space, r.local_to_global_dof
+    assert isinstance(r, THBSplineSpaceRestriction)
+    assert isinstance(sub, THBSplineSpace)
+    assert not l2g_dof.flags.writeable
+    l2g_cell = g.grid.restrict(cell_ids).local_to_global_cell
+    ext_g, ext_s = MultiLevelExtraction(g), MultiLevelExtraction(sub)
+    n_interior = 0
+    for lcid in range(sub.grid.num_cells):
+        mapped = l2g_dof[sub.active_basis(lcid)]
+        if np.any(mapped < 0):
+            continue  # boundary cell: a touching function has no global counterpart
+        gcid = int(l2g_cell[lcid])
+        lo, hi = sub.grid.cell_bounds(lcid)
+        pt = (0.5 * (lo + hi)).reshape(1, -1)
+        vs, _ = sub.tabulate_basis(lcid, pt)
+        vg, dg = g.tabulate_basis(gcid, pt)
+        gval = {int(d): float(v) for d, v in zip(dg, vg[0], strict=True)}
+        assert {int(x) for x in mapped} == {int(d) for d in dg}
+        op_s, op_g = ext_s.operator(lcid), ext_g.operator(gcid)
+        grow = {int(d): op_g[j] for j, d in enumerate(g.active_basis(gcid))}
+        for i, gd in enumerate(mapped):
+            np.testing.assert_allclose(vs[0, i], gval[int(gd)], atol=1e-11)  # basis value
+            np.testing.assert_allclose(op_s[i], grow[int(gd)], atol=1e-10)  # extraction row
+        n_interior += 1
+    return n_interior, r
+
+
+def test_restrict_full_grid_2d() -> None:
+    g = _refined_thb_2d()
+    n_interior, r = _check_restrict_interior(g, list(range(g.grid.num_cells)))
+    assert n_interior == g.grid.num_cells  # full restrict: every cell is interior
+    np.testing.assert_array_equal(r.local_to_global_dof, np.arange(g.num_total_basis))
+
+
+def test_restrict_full_grid_1d() -> None:
+    knots = [0.0, 0.0, 0.0, 1.0, 2.0, 3.0, 4.0, 4.0, 4.0]  # degree 2, 4 intervals
+    grid = hierarchical_grid(uniform_grid([[0.0, 4.0]], 4), 2)
+    grid.refine(0, [1], [3])
+    g = THBSplineSpace(BsplineSpace([BsplineSpace1D(knots, 2)]), grid)
+    n_interior, _ = _check_restrict_interior(g, list(range(g.grid.num_cells)))
+    assert n_interior == g.grid.num_cells
+
+
+def test_restrict_hb_full_grid() -> None:
+    g = _refined_thb_2d(truncate=False)
+    n_interior, r = _check_restrict_interior(g, list(range(g.grid.num_cells)))
+    assert n_interior == g.grid.num_cells
+    assert r.space.truncate is False
+
+
+def test_restrict_subset_has_interior_2d() -> None:
+    g = _refined_thb_2d(n=8, lo=(3, 3), hi=(5, 5))
+    cell_ids = _cells_in_root_box(g, (1, 1), (7, 7))
+    n_interior, _ = _check_restrict_interior(g, cell_ids)
+    assert n_interior > 0
+
+
+def test_restrict_dof_map_injective() -> None:
+    g = _refined_thb_2d(n=6, lo=(2, 2), hi=(4, 4))
+    l2g = g.restrict(_cells_in_root_box(g, (1, 1), (5, 5))).local_to_global_dof
+    valid = l2g[l2g >= 0]
+    assert np.all(valid < g.num_total_basis)
+    assert len(set(valid.tolist())) == valid.size  # injective on the mapped dofs
+
+
+def test_restrict_returns_namedtuple() -> None:
+    g = _refined_thb_2d()
+    r = g.restrict([0, 1, 2, 3])
+    assert isinstance(r, THBSplineSpaceRestriction)
+    assert isinstance(r.space, THBSplineSpace)
+    assert not r.local_to_global_dof.flags.writeable
+
+
+def test_restrict_errors() -> None:
+    g = _refined_thb_2d()
+    with pytest.raises(ValueError, match="non-empty"):
+        g.restrict([])
+    with pytest.raises(IndexError):
+        g.restrict([g.grid.num_cells])
+    with pytest.raises(TypeError):
+        g.restrict([0.5, 1.5])

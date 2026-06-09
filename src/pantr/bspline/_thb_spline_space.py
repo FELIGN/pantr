@@ -815,6 +815,95 @@ class THBSplineSpace:
         """
         return np.array([dof for dof, _, _ in self._cell_contributions(cid)], dtype=np.int64)
 
+    def restrict(self, cell_ids: npt.ArrayLike) -> THBSplineSpaceRestriction:
+        """Return the windowed sub-space over a subset of active cells.
+
+        Windows this space to the root-cell-aligned bounding box of ``cell_ids``: the
+        hierarchical grid is restricted (:meth:`pantr.grid.HierarchicalGrid.restrict`),
+        the root space is windowed (:meth:`pantr.bspline.BsplineSpace.restrict`), and a
+        new :class:`THBSplineSpace` is rebuilt on the sub-grid (re-running the Kraft
+        active-function selection and truncation).
+
+        Unlike the tensor-product :meth:`pantr.bspline.BsplineSpace.restrict`, the
+        windowed THB basis equals the global one only over the **interior** cells --
+        those whose entire (cross-level) function-support-closure lies inside the
+        window -- because Kraft selection and truncation depend on the subdomain near
+        the window boundary. Callers make the cells they care about interior by padding
+        ``cell_ids`` with a support-closure halo.
+
+        Args:
+            cell_ids (npt.ArrayLike): Active cell flat ids to span; duplicates ignored.
+
+        Returns:
+            THBSplineSpaceRestriction: The windowed :class:`THBSplineSpace` and a
+            read-only ``local_to_global_dof`` map; entry ``d`` is the global
+            hierarchical dof of local dof ``d`` when the local function matches a
+            globally-active function of the same level and multi-index, else ``-1``.
+            Values are exact over interior cells; functions near the window boundary
+            may map to ``-1``.
+
+        Raises:
+            ValueError: If ``cell_ids`` is empty.
+            TypeError: If ``cell_ids`` is not integer-valued.
+            IndexError: If any cell id is out of range ``[0, grid.num_cells)``.
+        """
+        self._check_not_stale()
+        grid_restr = self._grid.restrict(cell_ids)
+        sub_grid = grid_restr.grid
+        if not isinstance(sub_grid, HierarchicalGrid):
+            raise RuntimeError(
+                f"restrict: expected HierarchicalGrid from grid.restrict; "
+                f"got {type(sub_grid).__name__!r}. This is a bug in HierarchicalGrid.restrict."
+            )
+        dim = self.dim
+        factor = self._grid.factor
+
+        # Root-cell bounding box of the window (the sub-grid's root spans it exactly).
+        r_lo = [
+            int(np.searchsorted(self._grid.root.breakpoints[k], sub_grid.root.breakpoints[k][0]))
+            for k in range(dim)
+        ]
+        r_hi = [r_lo[k] + sub_grid.root.cells_per_axis[k] for k in range(dim)]
+
+        # Window the root space to that box and rebuild the THB space on the sub-grid.
+        root_ni = self._root_space.num_intervals
+        box = [np.arange(r_lo[k], r_hi[k]) for k in range(dim)]
+        root_cells = np.ravel_multi_index(
+            tuple(m.ravel() for m in np.meshgrid(*box, indexing="ij")), root_ni
+        )
+        windowed_root = self._root_space.restrict(root_cells).space
+        sub_space = THBSplineSpace(
+            windowed_root, sub_grid, truncate=self._truncate, regularity=self._regularity
+        )
+
+        # Map each sub active function (level, sub_multi) to the global dof of the same
+        # (level, sub_multi + per-level window origin), or -1 if not globally active.
+        local_to_global_dof = np.full(sub_space.num_total_basis, -1, dtype=np.int64)
+        sub_offset = 0
+        for level in range(sub_space.num_levels):
+            origin = [
+                int(self._support[level][k][0][r_lo[k] * factor[k] ** level]) for k in range(dim)
+            ]
+            glob_num_basis = self._level_spaces[level].num_basis
+            glob_active = self._active_funcs[level]
+            glob_offset = int(self._func_offset[level])
+            sub_active = sub_space.active_function_indices(level)
+            sub_num_basis = sub_space.level_space(level).num_basis
+            for sub_pos, sub_flat in enumerate(sub_active.tolist()):
+                sub_multi = np.unravel_index(sub_flat, sub_num_basis)
+                glob_flat = int(
+                    np.ravel_multi_index(
+                        tuple(int(sub_multi[k]) + origin[k] for k in range(dim)), glob_num_basis
+                    )
+                )
+                gpos = int(np.searchsorted(glob_active, glob_flat))
+                if gpos < glob_active.shape[0] and int(glob_active[gpos]) == glob_flat:
+                    local_to_global_dof[sub_offset + sub_pos] = glob_offset + gpos
+            sub_offset += int(sub_active.shape[0])
+        assert sub_offset == sub_space.num_total_basis
+        local_to_global_dof.flags.writeable = False
+        return THBSplineSpaceRestriction(sub_space, local_to_global_dof)
+
     def _basis_1d_cached(
         self,
         level: int,
@@ -1567,3 +1656,21 @@ class THBSplineSpace:
             f"num_levels={self.num_levels}, num_total_basis={self._num_active}, "
             f"truncate={self._truncate})"
         )
+
+
+class THBSplineSpaceRestriction(NamedTuple):
+    """Result of :meth:`THBSplineSpace.restrict`: a windowed THB space and its DOF map.
+
+    - ``space`` -- the windowed :class:`THBSplineSpace` rebuilt on the restricted grid;
+      its basis equals the global basis pointwise over interior cells (those whose
+      function-support-closure lies inside the window).
+    - ``local_to_global_dof`` -- read-only ``(space.num_total_basis,)`` map; entry ``d``
+      is the global hierarchical dof of local dof ``d`` when the local function matches a
+      globally-active function of the same level and multi-index, else ``-1`` (local
+      function active in the sub-space but absent from the global active set -- arises
+      near the window boundary where Kraft selection may differ). Values are exact over
+      interior cells.
+    """
+
+    space: THBSplineSpace
+    local_to_global_dof: npt.NDArray[np.int64]
