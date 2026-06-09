@@ -902,7 +902,9 @@ class THBSplineSpace:
             sub_offset += int(sub_active.shape[0])
         assert sub_offset == sub_space.num_total_basis
         local_to_global_dof.flags.writeable = False
-        return THBSplineSpaceRestriction(sub_space, local_to_global_dof)
+        return THBSplineSpaceRestriction(
+            sub_space, local_to_global_dof, grid_restr.local_to_global_cell
+        )
 
     def _basis_1d_cached(
         self,
@@ -1659,7 +1661,7 @@ class THBSplineSpace:
 
 
 class THBSplineSpaceRestriction(NamedTuple):
-    """Result of :meth:`THBSplineSpace.restrict`: a windowed THB space and its DOF map.
+    """Result of :meth:`THBSplineSpace.restrict`: a windowed THB space with its maps.
 
     - ``space`` -- the windowed :class:`THBSplineSpace` rebuilt on the restricted grid;
       its basis equals the global basis pointwise over interior cells (those whose
@@ -1670,7 +1672,11 @@ class THBSplineSpaceRestriction(NamedTuple):
       function active in the sub-space but absent from the global active set -- arises
       near the window boundary where Kraft selection may differ). Values are exact over
       interior cells.
+    - ``local_to_global_cell`` -- read-only ``(space.grid.num_cells,)`` map; entry ``c``
+      is the global flat cell id of local cell ``c``. Same ordering as
+      :attr:`space.grid <THBSplineSpace.grid>`.
     """
 
     space: THBSplineSpace
     local_to_global_dof: npt.NDArray[np.int64]
+    local_to_global_cell: npt.NDArray[np.int64]
