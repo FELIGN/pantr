@@ -1980,3 +1980,89 @@ class TestOutParameter:
 
         with pytest.raises(ValueError, match="Output array is not writeable"):
             spline.tabulate_cardinal_extraction_operators(out=out)
+
+
+def _open_uniform_1d(degree: int, n_int: int) -> BsplineSpace1D:
+    """Open-uniform 1D space: ``n_int`` unit intervals on ``[0, n_int]``."""
+    knots = (
+        [0.0] * (degree + 1) + [float(i) for i in range(1, n_int)] + [float(n_int)] * (degree + 1)
+    )
+    return BsplineSpace1D(knots, degree)
+
+
+def _check_restrict_1d(
+    space: BsplineSpace1D, lo: int, hi: int
+) -> tuple[BsplineSpace1D, npt.NDArray[np.int64]]:
+    """Assert a 1D restriction reproduces the global basis, derivatives, and DOF map."""
+    wspace, dof = space.restrict(lo, hi)
+    p = space.degree
+    assert not dof.flags.writeable
+    assert wspace.degree == p
+    assert wspace.num_intervals == hi - lo
+    assert wspace.num_basis == len(dof)
+    # Windowed knots are a pure slice of the global knots (never re-clamped).
+    j_lo, j_hi = int(dof[0]), int(dof[-1])
+    np.testing.assert_array_equal(wspace.knots, space.knots[j_lo : j_hi + p + 2])
+    # Windowed basis and all derivatives equal the global ones over the window cells.
+    uk, _ = wspace.get_unique_knots_and_multiplicity(in_domain=True)
+    mids = 0.5 * (uk[:-1] + uk[1:])
+    gd, gfb = space.tabulate_basis_derivatives(mids, p)
+    wd, wfb = wspace.tabulate_basis_derivatives(mids, p)
+    np.testing.assert_allclose(wd, gd, atol=1e-11)
+    np.testing.assert_array_equal(dof[wfb], gfb)  # windowed first-basis maps to global
+    return wspace, dof
+
+
+class TestBsplineSpace1DRestrict:
+    """Tests for BsplineSpace1D.restrict (windowed sub-space + DOF map)."""
+
+    def test_interior_window(self) -> None:
+        _check_restrict_1d(_open_uniform_1d(2, 5), 1, 4)
+
+    def test_left_boundary_window(self) -> None:
+        _check_restrict_1d(_open_uniform_1d(2, 5), 0, 3)
+
+    def test_interior_window_cubic(self) -> None:
+        _check_restrict_1d(_open_uniform_1d(3, 6), 2, 5)
+
+    def test_full_range_is_identity(self) -> None:
+        space = _open_uniform_1d(3, 4)
+        wspace, dof = _check_restrict_1d(space, 0, space.num_intervals)
+        np.testing.assert_array_equal(wspace.knots, space.knots)
+        np.testing.assert_array_equal(dof, np.arange(space.num_basis))
+
+    def test_single_interval(self) -> None:
+        space = _open_uniform_1d(2, 5)
+        wspace, _ = _check_restrict_1d(space, 2, 3)
+        assert wspace.num_intervals == 1
+        assert wspace.num_basis == space.degree + 1
+
+    def test_interior_window_not_reclamped(self) -> None:
+        wspace, _ = _open_uniform_1d(2, 5).restrict(1, 4)
+        # Interior window keeps the original (multiplicity-1) boundary knots.
+        assert not wspace.has_left_end_open()
+        assert not wspace.has_right_end_open()
+
+    def test_dof_range(self) -> None:
+        space = _open_uniform_1d(2, 4)  # knots [0,0,0,1,2,3,4,4,4], num_basis 6
+        _, dof = space.restrict(1, 3)
+        np.testing.assert_array_equal(dof, [1, 2, 3, 4])
+
+    def test_domain_matches_window(self) -> None:
+        wspace, _ = _open_uniform_1d(2, 5).restrict(1, 4)
+        np.testing.assert_allclose(wspace.domain, (1.0, 4.0))
+
+    def test_periodic_rejected(self) -> None:
+        knots = create_uniform_periodic_knots(num_intervals=4, degree=2)
+        space = BsplineSpace1D(knots, 2, periodic=True)
+        with pytest.raises(ValueError, match="periodic"):
+            space.restrict(0, 2)
+
+    def test_invalid_range_raises(self) -> None:
+        space = _open_uniform_1d(2, 4)
+        with pytest.raises(ValueError, match="interval"):
+            space.restrict(2, 2)  # lo == hi
+        with pytest.raises(ValueError, match="interval"):
+            space.restrict(-1, 2)  # lo < 0
+        with pytest.raises(ValueError, match="interval"):
+            space.restrict(0, 5)  # hi > num_intervals

@@ -3,7 +3,7 @@
 import numpy as np
 import pytest
 
-from pantr.bspline import BsplineSpace, BsplineSpace1D
+from pantr.bspline import BsplineSpace, BsplineSpace1D, BsplineSpaceRestriction
 from pantr.quad import PointsLattice
 
 
@@ -977,3 +977,127 @@ class TestOutParameter:
         np.testing.assert_array_equal(idx1, idx2)
         assert basis2 is out_basis
         assert idx2 is out_first
+
+
+def _open_uniform_space_1d(degree: int, n_int: int) -> BsplineSpace1D:
+    """Open-uniform 1D space: ``n_int`` unit intervals on ``[0, n_int]``, given degree."""
+    knots = (
+        [0.0] * (degree + 1) + [float(i) for i in range(1, n_int)] + [float(n_int)] * (degree + 1)
+    )
+    return BsplineSpace1D(knots, degree)
+
+
+def _check_restrict(space: BsplineSpace, cell_ids: list[int]) -> BsplineSpaceRestriction:
+    """Assert a space restriction reproduces the global basis and DOF map over the window."""
+    r = space.restrict(cell_ids)
+    sub, l2g = r.space, r.local_to_global_dof
+    assert isinstance(r, BsplineSpaceRestriction)
+    assert isinstance(sub, BsplineSpace)
+    assert not l2g.flags.writeable
+    assert l2g.shape == (sub.num_total_basis,)
+    assert len(set(l2g.tolist())) == sub.num_total_basis  # bijection into global DOFs
+
+    # Sample the tensor grid of windowed-cell midpoints (inside both windows).
+    axis_pts = [
+        0.5 * (uk[:-1] + uk[1:])
+        for uk in (
+            sub.spaces[d].get_unique_knots_and_multiplicity(in_domain=True)[0]
+            for d in range(space.dim)
+        )
+    ]
+    grids = np.meshgrid(*axis_pts, indexing="ij")
+    pts = np.stack([g.ravel() for g in grids], axis=-1).astype(np.float64)
+
+    gb, gfb = space.tabulate_basis(pts)
+    wb, wfb = sub.tabulate_basis(pts)
+    np.testing.assert_allclose(wb, gb, atol=1e-12)  # windowed basis == global basis pointwise
+
+    g_nb, w_nb, degs = space.num_basis, sub.num_basis, space.degrees
+    for i in range(pts.shape[0]):
+        g_axis = [gfb[i, d] + np.arange(degs[d] + 1) for d in range(space.dim)]
+        w_axis = [wfb[i, d] + np.arange(degs[d] + 1) for d in range(space.dim)]
+        g_flat = np.ravel_multi_index(
+            [m.ravel() for m in np.meshgrid(*g_axis, indexing="ij")], g_nb
+        )
+        w_flat = np.ravel_multi_index(
+            [m.ravel() for m in np.meshgrid(*w_axis, indexing="ij")], w_nb
+        )
+        np.testing.assert_array_equal(l2g[w_flat], g_flat)  # DOF-map ordering correct
+    return r
+
+
+class TestBsplineSpaceRestrict:
+    """Tests for BsplineSpace.restrict (windowed sub-space + DOF map)."""
+
+    def test_contiguous_block_2d(self) -> None:
+        space = BsplineSpace([_open_uniform_space_1d(2, 4), _open_uniform_space_1d(2, 3)])
+        # intervals [1,3) x [0,2); flat C-order over num_intervals (4,3): i*3 + j
+        cell_ids = [i * 3 + j for i in (1, 2) for j in (0, 1)]
+        r = _check_restrict(space, cell_ids)
+        assert r.space.num_intervals == (2, 2)
+
+    def test_full_space_is_bijection(self) -> None:
+        space = BsplineSpace([_open_uniform_space_1d(2, 3), _open_uniform_space_1d(1, 4)])
+        r = _check_restrict(space, list(range(space.num_total_intervals)))
+        assert r.space.num_intervals == space.num_intervals
+        assert r.space.num_total_basis == space.num_total_basis
+        assert set(r.local_to_global_dof.tolist()) == set(range(space.num_total_basis))
+
+    def test_non_convex_uses_bbox(self) -> None:
+        space = BsplineSpace([_open_uniform_space_1d(2, 4), _open_uniform_space_1d(2, 4)])
+        corners = [0, 3 * 4 + 3]  # (0,0) and (3,3) over num_intervals (4,4)
+        r = _check_restrict(space, corners)
+        assert r.space.num_intervals == (4, 4)  # bbox spans everything
+
+    def test_single_cell_1d(self) -> None:
+        space = BsplineSpace([_open_uniform_space_1d(3, 5)])
+        r = _check_restrict(space, [2])
+        assert r.space.num_intervals == (1,)
+        assert r.space.num_total_basis == 4  # degree + 1 (Bezier-like window)
+
+    def test_dof_map_matches_global_indices(self) -> None:
+        space = BsplineSpace([_open_uniform_space_1d(2, 4)])  # num_basis 6, intervals 4
+        r = space.restrict([1, 2])  # intervals [1,3); first basis on interval 1 is index 1
+        np.testing.assert_array_equal(r.local_to_global_dof, [1, 2, 3, 4])
+
+    def test_dof_map_explicit_2d(self) -> None:
+        # degree-(1,1) space, num_intervals=(3,2), num_basis=(4,3).
+        # Restrict to row 1 (all columns): cell_ids [1*2+0, 1*2+1] = [2,3].
+        # Per-axis windows: axis-0 -> [1,2), axis-1 -> [0,2) (full).
+        # Expected dof_0=[1,2], dof_1=[0,1,2]; meshgrid(ij) -> ravel over (4,3):
+        # [1*3+0, 1*3+1, 1*3+2, 2*3+0, 2*3+1, 2*3+2] = [3,4,5,6,7,8].
+        space = BsplineSpace([_open_uniform_space_1d(1, 3), _open_uniform_space_1d(1, 2)])
+        r = space.restrict([2, 3])
+        np.testing.assert_array_equal(r.local_to_global_dof, [3, 4, 5, 6, 7, 8])
+
+    def test_returns_restriction_namedtuple(self) -> None:
+        space = BsplineSpace([_open_uniform_space_1d(2, 3), _open_uniform_space_1d(2, 3)])
+        r = space.restrict([0])
+        assert isinstance(r, BsplineSpaceRestriction)
+        assert isinstance(r.space, BsplineSpace)
+
+    def test_empty_raises(self) -> None:
+        space = BsplineSpace([_open_uniform_space_1d(2, 3)])
+        with pytest.raises(ValueError, match="non-empty"):
+            space.restrict([])
+
+    def test_out_of_range_raises(self) -> None:
+        space = BsplineSpace([_open_uniform_space_1d(2, 3)])
+        with pytest.raises(IndexError):
+            space.restrict([space.num_total_intervals])
+        with pytest.raises(IndexError):
+            space.restrict([-1])
+
+    def test_non_integer_raises(self) -> None:
+        space = BsplineSpace([_open_uniform_space_1d(2, 3)])
+        with pytest.raises(TypeError, match="integer"):
+            space.restrict([0.0])
+
+    def test_periodic_rejected(self) -> None:
+        from pantr.bspline import create_uniform_periodic_knots  # noqa: PLC0415
+
+        knots = create_uniform_periodic_knots(num_intervals=4, degree=2)
+        per = BsplineSpace1D(knots, 2, periodic=True)
+        space = BsplineSpace([per])
+        with pytest.raises(ValueError, match="periodic"):
+            space.restrict([0])
