@@ -29,6 +29,8 @@ This package consolidates the B-spline API:
 - :class:`THBSpline`: an evaluable THB spline function (space + coefficients).
 - :func:`quasi_interpolate_thb_spline`: Speleers-Manni hierarchical
   quasi-interpolation onto a :class:`THBSplineSpace`.
+- :func:`compute_halo`, :func:`dof_owner`: serial helpers for distributing a
+  B-spline space (support-closure halo and lex-first-active-cell DOF ownership).
 """
 
 from ._bspline import Bspline, create_from_bezier
@@ -44,6 +46,7 @@ from ._bspline_space_factory import (
     get_greville_abscissae,
 )
 from ._bspline_space_nd import BsplineSpace, BsplineSpaceRestriction
+from ._local_space import compute_halo, dof_owner
 from ._thb_quasi_interpolation import quasi_interpolate_thb_spline
 from ._thb_spline import THBSpline
 from ._thb_spline_space import THBSplineSpace
@@ -64,12 +67,14 @@ __all__ = [
     "SpanwiseElementExtraction",
     "THBSpline",
     "THBSplineSpace",
+    "compute_halo",
     "create_cardinal_knots",
     "create_from_bezier",
     "create_greville_lattice",
     "create_uniform_open_knots",
     "create_uniform_periodic_knots",
     "create_uniform_space",
+    "dof_owner",
     "fit_bspline",
     "get_greville_abscissae",
     "interpolate_bspline",
