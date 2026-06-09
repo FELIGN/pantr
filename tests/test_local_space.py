@@ -15,7 +15,7 @@ from pantr.bspline import (
     compute_halo,
     dof_owner,
 )
-from pantr.bspline._local_space import _thb_dof_owner
+from pantr.bspline._local_space import _thb_dof_owner, _thb_halo
 from pantr.grid import Partition, hierarchical_grid, uniform_grid
 
 
@@ -431,6 +431,10 @@ def test_build_local_thb_includes_halo() -> None:
     assert isinstance(loc.space, THBSplineSpace)
     assert int(loc.owned_cell_mask.sum()) == len(central)
     assert loc.space.grid.num_cells > len(central)  # halo / bbox-fill cells present
+    # Owned global cell ids must exactly match what we assigned to rank 0
+    np.testing.assert_array_equal(
+        sorted(loc.local_to_global_cell[loc.owned_cell_mask].tolist()), sorted(central)
+    )
 
 
 def test_build_local_thb_returns_thb_localspace() -> None:
@@ -468,3 +472,60 @@ def test_build_local_thb_bad_rank_raises() -> None:
     part = Partition(np.zeros(g.grid.num_cells, dtype=np.int32), n_parts=2)
     with pytest.raises(ValueError, match="rank"):
         build_local(g, part, 2)
+
+
+def _corner_refined_thb() -> THBSplineSpace:
+    """Degree-2 6x6 THB space with [0,3)x[0,3) refined to level 1.
+
+    This produces globally-inactive level-0 functions (fully superseded by level-1
+    functions), so a window covering only a few level-1 cells yields ``local_to_global_dof
+    == -1`` entries — exercising the boundary-DOF path in ``_build_local_thb``.
+    """
+    knots = [0.0] * 3 + [float(i) for i in range(1, 6)] + [6.0] * 3
+    sp = BsplineSpace1D(knots, 2)
+    grid = hierarchical_grid(uniform_grid([[0.0, 6.0], [0.0, 6.0]], 6), 2)
+    grid.refine(0, [0, 0], [3, 3])
+    return THBSplineSpace(BsplineSpace([sp, sp]), grid)
+
+
+def test_build_local_thb_boundary_dofs_not_owned() -> None:
+    # Local DOFs mapping to -1 (window-boundary THB functions) must never be marked owned.
+    g = _corner_refined_thb()
+    l1 = [c for c in range(g.grid.num_cells) if g.grid.cell_level(c) == 1]
+    owner = np.ones(g.grid.num_cells, dtype=np.int32)
+    for c in l1[:4]:
+        owner[c] = 0  # rank 0 owns just 4 level-1 cells — ensures boundary DOFs exist
+    loc = build_local(g, Partition(owner, n_parts=2), 0)
+    boundary = loc.local_to_global_dof < 0
+    assert boundary.any(), "fixture produced no boundary DOFs; test is vacuous"
+    assert not loc.owned_dof_mask[boundary].any()
+
+
+def test_build_local_thb_full_owned_no_halo() -> None:
+    # All cells owned by one rank: halo is empty, owned_cell_mask is all True.
+    g = _refined_thb()
+    loc = build_local(g, Partition(np.zeros(g.grid.num_cells, dtype=np.int32), n_parts=1), 0)
+    assert isinstance(loc.space, THBSplineSpace)
+    assert loc.owned_cell_mask.all()
+    assert loc.space.grid.num_cells == g.grid.num_cells
+    # _thb_halo with all cells owned should yield empty halo
+    all_cells = np.arange(g.grid.num_cells, dtype=np.int64)
+    assert _thb_halo(g, all_cells).size == 0
+
+
+def test_thb_dof_owner_all_one_rank() -> None:
+    # 1-rank partition: every non-dead DOF must be owned by rank 0.
+    g = _refined_thb()
+    part = Partition(np.zeros(g.grid.num_cells, dtype=np.int32), n_parts=1)
+    owners = _thb_dof_owner(g, part)
+    assert owners.shape == (g.num_total_basis,)
+    assert not owners.flags.writeable
+    # With all cells active and owned by rank 0, no DOF should be dead.
+    np.testing.assert_array_equal(owners, np.zeros(g.num_total_basis, dtype=np.int32))
+
+
+def test_thb_dof_owner_cell_count_mismatch_raises() -> None:
+    g = _refined_thb()
+    part = Partition(np.zeros(g.grid.num_cells - 1, dtype=np.int32), n_parts=1)
+    with pytest.raises(ValueError, match="cells"):
+        _thb_dof_owner(g, part)
