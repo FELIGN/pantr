@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from typing import Any
 
 import numpy as np
@@ -80,6 +81,15 @@ def test_block_partition_is_deterministic() -> None:
     np.testing.assert_array_equal(a, b)
 
 
+def test_block_load_is_balanced() -> None:
+    # 1D uneven split: each rank gets floor or ceil of num_cells/n_parts.
+    grid = uniform_grid([[0.0, 1.0]], 7)
+    owner = partition_grid(grid, 3).cell_owner
+    counts = np.bincount(owner, minlength=3)
+    assert int(counts.min()) == 7 // 3
+    assert int(counts.max()) == math.ceil(7 / 3)
+
+
 # --------------------------------------------------------------------------- #
 # Exact, hand-computed cases
 # --------------------------------------------------------------------------- #
@@ -123,6 +133,13 @@ def test_block_n_parts_equals_num_cells_is_bijection() -> None:
     np.testing.assert_array_equal(np.sort(owner), np.arange(9))
 
 
+def test_block_single_cell_axis_concentrates_blocks() -> None:
+    # (1, 8) into 4: axis 0 has 1 cell so all blocks must go on axis 1.
+    grid = uniform_grid([[0.0, 1.0], [0.0, 1.0]], [1, 8])
+    owner = partition_grid(grid, 4).cell_owner
+    np.testing.assert_array_equal(owner, np.repeat(np.arange(4), 2))
+
+
 # --------------------------------------------------------------------------- #
 # Error handling
 # --------------------------------------------------------------------------- #
@@ -154,6 +171,13 @@ def test_infeasible_factorization_raises() -> None:
         partition_grid(grid, 7)
 
 
+def test_infeasible_1d_n_parts_exceeds_cells_raises() -> None:
+    # 1D: n_parts=7 > num_cells=4; the final-axis check rejects it.
+    grid = uniform_grid([[0.0, 1.0]], 4)
+    with pytest.raises(ValueError, match="cannot factor n_parts"):
+        partition_grid(grid, 7)
+
+
 # --------------------------------------------------------------------------- #
 # Factoring helpers
 # --------------------------------------------------------------------------- #
@@ -161,6 +185,8 @@ def test_infeasible_factorization_raises() -> None:
 
 def test_divisors() -> None:
     assert _divisors(1) == [1]
+    assert _divisors(4) == [1, 2, 4]  # perfect square: i == n//i branch
+    assert _divisors(9) == [1, 3, 9]  # perfect square: i == n//i branch
     assert _divisors(12) == [1, 2, 3, 4, 6, 12]
     assert _divisors(13) == [1, 13]
     assert _divisors(36) == [1, 2, 3, 4, 6, 9, 12, 18, 36]
@@ -174,6 +200,8 @@ def test_divisors() -> None:
         ((8, 2), 4, (4, 1)),  # aspect-aware: cube-like blocks
         ((4, 3), 12, (4, 3)),  # greedy-by-ratio would fail; exact search succeeds
         ((3, 3, 3), 27, (3, 3, 3)),
+        ((4, 4, 4), 8, (2, 2, 2)),  # 3D symmetric
+        ((6, 4, 2), 6, (3, 2, 1)),  # 3D asymmetric: extents (2,2,2) → var=0
         ((10, 1), 2, (2, 1)),
         ((6, 4), 1, (1, 1)),
     ],
@@ -185,6 +213,14 @@ def test_factor_blocks(
     assert blocks == expected
     assert np.prod(blocks) == n_parts
     assert all(b <= c for b, c in zip(blocks, cells_per_axis, strict=True))
+
+
+def test_factor_blocks_tie_only_contract() -> None:
+    # (3,3,3) into 9 has three equally optimal factorizations: (1,3,3), (3,1,3),
+    # (3,3,1). Test only the contract, not the specific tuple.
+    blocks = _factor_blocks((3, 3, 3), 9)
+    assert math.prod(blocks) == 9
+    assert all(b <= c for b, c in zip(blocks, (3, 3, 3), strict=True))
 
 
 def test_factor_blocks_infeasible_raises() -> None:
