@@ -65,13 +65,23 @@ def compute_halo(space: BsplineSpace, owned_cells: npt.ArrayLike) -> npt.NDArray
 
     Raises:
         ValueError: If any axis is periodic.
+        TypeError: If ``owned_cells`` is not integer-valued.
         IndexError: If any owned cell id is out of range ``[0, num_total_intervals)``.
     """
     _reject_periodic(space)
     num_intervals = space.num_intervals
     n_cells = space.num_total_intervals
-    owned = np.asarray(owned_cells, dtype=np.int64).ravel()
-    if owned.size and (int(owned.min()) < 0 or int(owned.max()) >= n_cells):
+    owned = np.asarray(owned_cells).ravel()
+    if owned.size == 0:
+        result = np.empty(0, dtype=np.int64)
+        result.flags.writeable = False
+        return result
+    if not np.issubdtype(owned.dtype, np.integer):
+        raise TypeError(
+            f"compute_halo: owned_cells must be integer-valued; got dtype {owned.dtype}."
+        )
+    owned = owned.astype(np.int64, copy=False)
+    if int(owned.min()) < 0 or int(owned.max()) >= n_cells:
         raise IndexError(f"owned cell id out of range [0, {n_cells}).")
 
     # Per-axis interval -> inclusive support-cell range: functions non-zero on
@@ -114,8 +124,9 @@ def dof_owner(space: BsplineSpace, partition: Partition) -> npt.NDArray[np.int32
         ``-1`` for dead DOFs.
 
     Raises:
-        ValueError: If any axis is periodic, or ``partition`` does not match the
-            space's cell count.
+        ValueError: If any axis is periodic.
+        ValueError: If ``partition.cell_owner`` length does not match
+            ``space.num_total_intervals``.
     """
     _reject_periodic(space)
     cell_owner = partition.cell_owner

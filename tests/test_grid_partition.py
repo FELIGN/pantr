@@ -82,3 +82,8 @@ def test_empty_partition() -> None:
     p = Partition(np.array([], dtype=np.int32), n_parts=1)
     assert p.n_cells == 0
     assert p.owned_cells(0).size == 0
+
+
+def test_owned_cells_dtype() -> None:
+    p = Partition([0, 1, 0, 1], n_parts=2)
+    assert p.owned_cells(0).dtype == np.int64

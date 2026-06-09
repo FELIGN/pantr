@@ -114,6 +114,24 @@ def test_halo_out_of_range_raises() -> None:
         compute_halo(space, [space.num_total_intervals])
 
 
+def test_halo_out_of_range_negative() -> None:
+    space = _open_uniform_space([2], [5])
+    with pytest.raises(IndexError):
+        compute_halo(space, [-1])
+
+
+def test_halo_empty_owned() -> None:
+    space = _open_uniform_space([1], [4])
+    halo = compute_halo(space, [])
+    assert halo.size == 0
+
+
+def test_halo_non_integer_raises() -> None:
+    space = _open_uniform_space([1], [4])
+    with pytest.raises(TypeError, match="integer"):
+        compute_halo(space, [0.0, 1.0])
+
+
 # ------------------------------------------------------------------- dof_owner
 
 
@@ -165,3 +183,20 @@ def test_dof_owner_periodic_rejected() -> None:
     part = Partition(np.zeros(4, dtype=np.int32), n_parts=1)
     with pytest.raises(ValueError, match="periodic"):
         dof_owner(BsplineSpace([per]), part)
+
+
+def test_dof_owner_lex_first_active_degree2() -> None:
+    # degree 2, 5 cells => 7 DOFs; partition splits at cell 2
+    space = _open_uniform_space([2], [5])
+    part = Partition(np.array([0, 0, 1, 1, 1], dtype=np.int32), n_parts=2)
+    # B_0:[0]->0, B_1:[0,1]->0, B_2:[0,1,2]->0, B_3:[1,2,3]->cell1=rank0,
+    # B_4:[2,3,4]->cell2=rank1, B_5:[3,4]->rank1, B_6:[4]->rank1
+    np.testing.assert_array_equal(dof_owner(space, part), [0, 0, 0, 0, 1, 1, 1])
+
+
+def test_dof_owner_2d_multirank() -> None:
+    # degree (1,1), 2x2 cells => 3x3=9 DOFs; first two flat cells (row 0) -> rank 0, rest -> rank 1
+    space = _open_uniform_space([1, 1], [2, 2])
+    part = Partition(np.array([0, 0, 1, 1], dtype=np.int32), n_parts=2)
+    # DOFs in rows 0-1 (i<2) have lex-first support cell in row 0 -> rank 0; row 2 -> rank 1
+    np.testing.assert_array_equal(dof_owner(space, part), [0, 0, 0, 0, 0, 0, 1, 1, 1])
