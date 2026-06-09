@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import functools
 from collections.abc import Iterable
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, NamedTuple
 
 import numpy as np
 from numpy import typing as npt
@@ -217,3 +217,78 @@ class BsplineSpace:
         return _tabulate_Bspline_basis_impl(
             self, pts, out_basis=out_basis, out_first_basis=out_first_basis
         )
+
+    def restrict(self, cell_ids: npt.ArrayLike) -> BsplineSpaceRestriction:
+        """Return the bounding-box windowed sub-space spanning ``cell_ids``.
+
+        The window is the per-axis multi-index bounding box of the requested
+        knot-span cells (flat ids in C-order over :attr:`num_intervals`, the same
+        convention as :func:`pantr.grid.tensor_product_grid` and
+        :class:`SpanwiseElementExtraction`). Each axis is windowed by slicing its
+        knot vector (never re-clamped), so the windowed basis equals this space's
+        basis pointwise over the windowed cells.
+
+        Args:
+            cell_ids (npt.ArrayLike): Flat knot-span cell ids to span; duplicates
+                are ignored. Each must satisfy ``0 <= cid < num_total_intervals``.
+
+        Returns:
+            BsplineSpaceRestriction: The windowed :class:`BsplineSpace` and the
+            read-only ``local_to_global_dof`` map of shape
+            ``(space.num_total_basis,)``.
+
+        Raises:
+            ValueError: If ``cell_ids`` is empty or any axis is periodic.
+            IndexError: If any cell id is out of range ``[0, num_total_intervals)``.
+            TypeError: If ``cell_ids`` is not integer-valued.
+        """
+        if any(space.periodic for space in self._spaces):
+            raise ValueError("restrict: periodic B-spline spaces are not supported.")
+        ids = np.asarray(cell_ids).ravel()
+        if ids.size == 0:
+            raise ValueError("restrict: cell_ids must be non-empty.")
+        if not np.issubdtype(ids.dtype, np.integer):
+            raise TypeError(f"restrict: cell_ids must be integer-valued; got dtype {ids.dtype}.")
+        ids = ids.astype(np.int64, copy=False)
+        n_int = self.num_total_intervals
+        lo_id, hi_id = int(ids.min()), int(ids.max())
+        if lo_id < 0 or hi_id >= n_int:
+            raise IndexError(
+                f"restrict: cell id out of range [0, {n_int}); got [{lo_id}, {hi_id}]."
+            )
+
+        multi = np.unravel_index(ids, self.num_intervals)
+        windowed_1d: list[BsplineSpace1D] = []
+        dof_axes: list[npt.NDArray[np.int64]] = []
+        for d, space in enumerate(self._spaces):
+            w_space, dof_d = space.restrict(int(multi[d].min()), int(multi[d].max()) + 1)
+            windowed_1d.append(w_space)
+            dof_axes.append(dof_d)
+
+        mesh = np.meshgrid(*dof_axes, indexing="ij")
+        local_to_global_dof = np.ravel_multi_index(
+            tuple(m.ravel() for m in mesh), self.num_basis
+        ).astype(np.int64)
+        local_to_global_dof.flags.writeable = False
+        return BsplineSpaceRestriction(BsplineSpace(windowed_1d), local_to_global_dof)
+
+
+class BsplineSpaceRestriction(NamedTuple):
+    """Result of :meth:`BsplineSpace.restrict`: a windowed space and its DOF map.
+
+    A :class:`typing.NamedTuple` returned by :meth:`BsplineSpace.restrict`:
+
+    - ``space`` -- the windowed :class:`BsplineSpace`: per axis a pure knot-vector
+      slice of the parent (never re-clamped), so its basis equals the parent's
+      pointwise over the windowed cells.
+    - ``local_to_global_dof`` -- read-only, shape ``(space.num_total_basis,)``, mapping
+      each windowed DOF (flat, C-order over the windowed per-axis basis counts) to its
+      flat index in the parent space.
+
+    Unlike :class:`pantr.grid.GridRestriction` there is no ``in_subset`` mask: every
+    windowed DOF is a genuine parent DOF (a windowed space spans a box of cells, so
+    there are no fill DOFs).
+    """
+
+    space: BsplineSpace
+    local_to_global_dof: npt.NDArray[np.int64]

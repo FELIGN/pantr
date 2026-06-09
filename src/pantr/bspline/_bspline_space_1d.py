@@ -682,3 +682,51 @@ class BsplineSpace1D:
             self._knots, self._degree, self._tol, n_subdivisions, eff_regularity
         )
         return self.insert_knots(new_knots)
+
+    def restrict(
+        self, interval_lo: int, interval_hi: int
+    ) -> tuple[BsplineSpace1D, npt.NDArray[np.int64]]:
+        """Return the windowed sub-space over the intervals ``[interval_lo, interval_hi)``.
+
+        The windowed knot vector is a pure slice of this space's knots (never
+        re-clamped), chosen so the windowed basis functions are exactly the global
+        basis functions supported on the windowed intervals; they therefore equal
+        the global basis pointwise over those intervals.
+
+        Args:
+            interval_lo (int): First interval (knot span) of the window, inclusive.
+            interval_hi (int): One past the last interval of the window, exclusive.
+                Must satisfy ``0 <= interval_lo < interval_hi <= num_intervals``.
+
+        Returns:
+            tuple[BsplineSpace1D, npt.NDArray[np.int64]]: The windowed space and a
+            read-only ``local_to_global_dof`` array of shape ``(num_basis_local,)``
+            mapping each windowed basis index to its index in this space.
+
+        Raises:
+            ValueError: If the space is periodic, or the interval range is invalid.
+        """
+        if self._periodic:
+            raise ValueError("restrict: periodic B-spline spaces are not supported.")
+        n_int = self.num_intervals
+        lo, hi = int(interval_lo), int(interval_hi)
+        if not 0 <= lo < hi <= n_int:
+            raise ValueError(
+                f"restrict: require 0 <= interval_lo < interval_hi <= {n_int}; got [{lo}, {hi})."
+            )
+        unique_knots, _ = self.get_unique_knots_and_multiplicity(in_domain=True)
+        mids = np.array(
+            [
+                0.5 * (unique_knots[lo] + unique_knots[lo + 1]),
+                0.5 * (unique_knots[hi - 1] + unique_knots[hi]),
+            ],
+            dtype=self._knots.dtype,
+        )
+        _, first_basis = self.tabulate_basis(mids)
+        j_lo = int(first_basis[0])
+        j_hi = int(first_basis[1]) + self._degree
+        windowed_knots = self._knots[j_lo : j_hi + self._degree + 2]
+        windowed = BsplineSpace1D(windowed_knots, self._degree, periodic=False, snap_knots=False)
+        local_to_global_dof = np.arange(j_lo, j_hi + 1, dtype=np.int64)
+        local_to_global_dof.flags.writeable = False
+        return windowed, local_to_global_dof

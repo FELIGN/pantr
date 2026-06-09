@@ -5,6 +5,8 @@ This package consolidates the B-spline API:
 - :class:`Bspline`: parametric B-spline curves, surfaces, and volumes.
 - :class:`BsplineSpace1D`: 1D B-spline space (knot vector + degree).
 - :class:`BsplineSpace`: multi-dimensional tensor-product B-spline spaces.
+- :class:`BsplineSpaceRestriction`: result of :meth:`BsplineSpace.restrict` -- a
+  windowed sub-space plus its local-to-global DOF map.
 - :func:`create_uniform_open_knots`, :func:`create_uniform_periodic_knots`,
   :func:`create_cardinal_knots`: knot vector construction helpers.
 - :func:`create_uniform_space`: convenience factory for tensor-product spaces.
@@ -41,7 +43,7 @@ from ._bspline_space_factory import (
     create_uniform_space,
     get_greville_abscissae,
 )
-from ._bspline_space_nd import BsplineSpace
+from ._bspline_space_nd import BsplineSpace, BsplineSpaceRestriction
 from ._thb_quasi_interpolation import quasi_interpolate_thb_spline
 from ._thb_spline import THBSpline
 from ._thb_spline_space import THBSplineSpace
@@ -56,6 +58,7 @@ __all__ = [
     "Bspline",
     "BsplineSpace",
     "BsplineSpace1D",
+    "BsplineSpaceRestriction",
     "ExtractionStructView",
     "MultiLevelExtraction",
     "SpanwiseElementExtraction",
