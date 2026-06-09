@@ -17,6 +17,8 @@ Main exports:
 - :class:`Grid`: abstract base class defining the grid contract and supplying
   axis-aligned box defaults for facets, neighbours, reference maps, batch point
   location, and spatial queries.
+- :class:`GridRestriction`: result of :meth:`Grid.restrict` -- a windowed
+  sub-grid plus local-to-global cell index maps.
 - :class:`TensorProductGrid`: concrete tensor-product grid of axis-aligned boxes
   with per-axis breakpoints and row-major (C-order) cell ids.
 - :class:`HierarchicalGrid`: hierarchical grid with a fixed per-direction
@@ -40,7 +42,7 @@ from __future__ import annotations
 
 from ._bvh import BVH
 from ._cell_quadrature import cell_quadrature
-from ._grid import Grid
+from ._grid import Grid, GridRestriction
 from ._hierarchical_grid import HierarchicalGrid, hierarchical_grid
 from ._overlay import overlay
 from ._tags import CellTags, FacetTags
@@ -51,6 +53,7 @@ __all__ = [
     "CellTags",
     "FacetTags",
     "Grid",
+    "GridRestriction",
     "HierarchicalGrid",
     "TensorProductGrid",
     "cell_quadrature",

@@ -157,3 +157,10 @@ def test_locate_many_bad_shape_raises() -> None:
     plain = _PlainGrid(uniform_grid([[0.0, 2.0], [0.0, 2.0]], 2))
     with pytest.raises(ValueError, match="shape"):
         plain.locate_many(np.zeros((4, 3)))
+
+
+def test_default_restrict_not_implemented() -> None:
+    """The base Grid.restrict default raises NotImplementedError."""
+    plain = _PlainGrid(uniform_grid([[0.0, 3.0]], 3))
+    with pytest.raises(NotImplementedError, match="restrict"):
+        plain.restrict([0, 1])
