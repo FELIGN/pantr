@@ -17,8 +17,15 @@ def test_import_and_public_surface() -> None:
     assert callable(pantr.mpi.mpi_available)
     assert callable(pantr.mpi.require_mpi)
     assert callable(pantr.mpi.from_dolfinx)
+    assert isinstance(pantr.mpi.DistributedSpace, type)
     assert isinstance(pantr.mpi.HAS_MPI, bool)
-    assert set(pantr.mpi.__all__) == {"HAS_MPI", "from_dolfinx", "mpi_available", "require_mpi"}
+    assert set(pantr.mpi.__all__) == {
+        "DistributedSpace",
+        "HAS_MPI",
+        "from_dolfinx",
+        "mpi_available",
+        "require_mpi",
+    }
 
 
 def test_mpi_available_matches_find_spec() -> None:

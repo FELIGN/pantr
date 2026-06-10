@@ -16,6 +16,7 @@ Main exports:
 - :func:`mpi_available`: live runtime check for ``mpi4py`` availability.
 - :func:`require_mpi`: lazily import and return the ``mpi4py.MPI`` module, or raise.
 - :func:`from_dolfinx`: build a :class:`pantr.grid.Partition` from a dolfinx mesh.
+- :class:`DistributedSpace`: the per-rank handle to an MPI-distributed space.
 """
 
 from __future__ import annotations
@@ -24,6 +25,7 @@ import importlib.util
 from types import ModuleType
 from typing import Final
 
+from ._distributed_space import DistributedSpace
 from ._from_dolfinx import from_dolfinx
 
 
@@ -82,6 +84,7 @@ def require_mpi() -> ModuleType:
 
 __all__ = [
     "HAS_MPI",
+    "DistributedSpace",
     "from_dolfinx",
     "mpi_available",
     "require_mpi",
