@@ -32,7 +32,7 @@ class _FakeComm:
         return self._size
 
     def allgather(self, sendobj: object) -> list[object]:
-        result: list[object] = [None] * self._size
+        result: list[object] = [np.array([], dtype=np.int64)] * self._size
         result[self._rank] = sendobj
         for rank, ids in self._others.items():
             result[rank] = np.asarray(ids, dtype=np.int64)
@@ -121,6 +121,7 @@ def test_consistent_across_ranks() -> None:
     rank0 = from_dolfinx(_mesh(0, 2, [0, 1, 2], others={1: [3, 4, 5]}), 6)
     rank1 = from_dolfinx(_mesh(1, 2, [3, 4, 5], others={0: [0, 1, 2]}), 6)
     np.testing.assert_array_equal(rank0.cell_owner, rank1.cell_owner)
+    np.testing.assert_array_equal(rank0.cell_owner, [0, 0, 0, 1, 1, 1])
 
 
 # --------------------------------------------------------------------------- #
@@ -131,8 +132,9 @@ def test_consistent_across_ranks() -> None:
 def test_explicit_map_reorders_ownership() -> None:
     # dolfinx global -> pantr id reversal: rank0 owns dolfinx {0,1} -> pantr {3,2},
     # rank1 owns dolfinx {2,3} -> pantr {1,0}.
+    # others carries rank 1's post-mapping pantr ids (allgather sends local_ids, not originals).
     mapping = [3, 2, 1, 0]
-    mesh = _mesh(0, 2, [0, 1], others={1: [1, 0]})  # others carry mapped pantr ids
+    mesh = _mesh(0, 2, [0, 1], others={1: [1, 0]})
     part = from_dolfinx(mesh, 4, dolfinx_to_pantr=mapping)
     np.testing.assert_array_equal(part.cell_owner, [1, 1, 0, 0])
 
@@ -143,6 +145,12 @@ def test_identity_map_matches_none() -> None:
     a = from_dolfinx(mesh_none, 6)
     b = from_dolfinx(mesh_id, 6, dolfinx_to_pantr=[0, 1, 2, 3, 4, 5])
     np.testing.assert_array_equal(a.cell_owner, b.cell_owner)
+
+
+def test_map_numpy_array_works() -> None:
+    mesh = _mesh(0, 2, [0, 1, 2], others={1: [3, 4, 5]})
+    part = from_dolfinx(mesh, 6, dolfinx_to_pantr=np.array([0, 1, 2, 3, 4, 5], dtype=np.int32))
+    np.testing.assert_array_equal(part.cell_owner, [0, 0, 0, 1, 1, 1])
 
 
 # --------------------------------------------------------------------------- #
@@ -159,7 +167,7 @@ def test_invalid_n_cells_raises(n_cells: int) -> None:
 
 def test_double_ownership_raises() -> None:
     mesh = _mesh(0, 2, [0, 1], others={1: [1, 2]})  # cell 1 claimed by both ranks
-    with pytest.raises(ValueError, match="more than one rank"):
+    with pytest.raises(ValueError, match="claimed by both"):
         from_dolfinx(mesh, 3)
 
 
@@ -169,13 +177,37 @@ def test_pantr_id_out_of_range_raises() -> None:
         from_dolfinx(mesh, 4)
 
 
+def test_map_negative_pantr_id_raises() -> None:
+    mesh = _mesh(0, 1, [0, 1])
+    with pytest.raises(ValueError, match="mapped pantr cell ids must lie"):
+        from_dolfinx(mesh, 4, dolfinx_to_pantr=[-1, 0, 1, 2])
+
+
 def test_map_not_1d_integer_raises() -> None:
     mesh = _mesh(0, 1, [0, 1])
     with pytest.raises(ValueError, match="1D integer array"):
         from_dolfinx(mesh, 4, dolfinx_to_pantr=[[0, 1], [2, 3]])
 
 
+def test_map_float_dtype_raises() -> None:
+    mesh = _mesh(0, 1, [0, 1])
+    with pytest.raises(ValueError, match="1D integer array"):
+        from_dolfinx(mesh, 4, dolfinx_to_pantr=[0.0, 1.0, 2.0, 3.0])
+
+
 def test_map_index_out_of_bounds_raises() -> None:
     mesh = _mesh(0, 1, [0, 5])  # original index 5 but map has length 4
     with pytest.raises(ValueError, match="dolfinx_to_pantr has length"):
         from_dolfinx(mesh, 6, dolfinx_to_pantr=[0, 1, 2, 3])
+
+
+def test_negative_original_index_raises() -> None:
+    mesh = _mesh(0, 1, [-1, 0])  # original_cell_index contains -1
+    with pytest.raises(ValueError, match="non-negative"):
+        from_dolfinx(mesh, 4, dolfinx_to_pantr=[0, 1, 2, 3])
+
+
+def test_non_injective_map_raises() -> None:
+    mesh = _mesh(0, 1, [0, 1])  # two dolfinx cells both mapping to pantr id 0
+    with pytest.raises(ValueError, match="not injective"):
+        from_dolfinx(mesh, 4, dolfinx_to_pantr=[0, 0, 2, 3])

@@ -8,6 +8,8 @@ consumers (e.g. qugar / tigarx).
 ``dolfinx`` is never imported here: the mesh (and its MPI communicator) are supplied by
 the caller, and only its attributes are read. This module therefore has no import-time
 dependency on ``dolfinx`` or ``mpi4py`` -- ``import pantr.mpi`` still works without them.
+At runtime, ``mesh.comm`` must behave as an ``mpi4py.MPI.Comm`` (providing ``size`` and
+``allgather``).
 """
 
 from __future__ import annotations
@@ -47,9 +49,9 @@ def from_dolfinx(
             ``dolfinx`` import): ``mesh.comm`` (an MPI communicator with ``size`` and
             ``allgather``), ``mesh.topology.dim``,
             ``mesh.topology.index_map(dim).size_local``, and
-            ``mesh.topology.original_cell_index``.
-        n_cells (int): Total number of cells in the pantr grid (e.g. ``grid.num_cells``
-            or ``space.num_total_intervals``); must be ``>= 1``.
+            ``mesh.topology.original_cell_index`` (must support integer-slice indexing).
+        n_cells (int): Total number of cells in the pantr grid (e.g.
+            ``grid.num_cells``); must be ``>= 1``.
         dolfinx_to_pantr (npt.ArrayLike | None): Optional integer map from a dolfinx
             *original global* cell index to a pantr cell id. ``None`` means identity (the
             mesh is in pantr C-order).
@@ -59,9 +61,12 @@ def from_dolfinx(
         pantr cells absent from the mesh.
 
     Raises:
-        ValueError: If ``n_cells < 1``; if ``dolfinx_to_pantr`` is not a 1D integer array
-            or an original index falls outside it; if a mapped cell id is outside
-            ``[0, n_cells)``; or if two ranks own the same cell (inconsistent mesh/map).
+        ValueError: If ``n_cells < 1``; if ``topology.index_map(dim).size_local`` is
+            negative; if ``dolfinx_to_pantr`` is not a 1D integer array, is not injective,
+            or an original index falls outside it; if any (original or mapped) pantr cell
+            id is outside ``[0, n_cells)``; if ``allgather`` returns an inconsistent number
+            of entries or a non-1D result for any rank; if any gathered cell id is out of
+            range; or if two ranks own the same cell (inconsistent mesh/map).
     """
     if n_cells < 1:
         raise ValueError(f"n_cells must be >= 1; got {n_cells}.")
@@ -69,23 +74,47 @@ def from_dolfinx(
     topology = mesh.topology
     tdim = int(topology.dim)
     size_local = int(topology.index_map(tdim).size_local)
+    if size_local < 0:
+        raise ValueError(
+            f"topology.index_map({tdim}).size_local returned {size_local}; "
+            "expected a non-negative count of locally-owned cells."
+        )
     original = np.asarray(topology.original_cell_index, dtype=np.int64)[:size_local]
     local_ids = _map_to_pantr(original, dolfinx_to_pantr, n_cells)
 
     gathered = mesh.comm.allgather(local_ids)
+    n_parts = int(mesh.comm.size)
+    if len(gathered) != n_parts:
+        raise ValueError(
+            f"allgather returned {len(gathered)} entries but mesh.comm.size is {n_parts}; "
+            "the communicator's allgather is inconsistent."
+        )
     cell_owner = np.full(n_cells, -1, dtype=np.int32)
     for owner_rank, ids in enumerate(gathered):
         ids_arr = np.asarray(ids, dtype=np.int64)
+        if ids_arr.ndim != 1:
+            raise ValueError(
+                f"allgather result for rank {owner_rank} is not a 1-D array "
+                f"(got shape {ids_arr.shape})."
+            )
         if ids_arr.size == 0:
             continue
-        if bool(np.any(cell_owner[ids_arr] != -1)):
+        if int(ids_arr.min()) < 0 or int(ids_arr.max()) >= n_cells:
             raise ValueError(
-                "inconsistent partition: a cell is owned by more than one rank "
-                f"(rank {owner_rank} re-claims an already-owned cell)."
+                f"gathered cell ids from rank {owner_rank} are outside [0, {n_cells}): "
+                f"got range [{int(ids_arr.min())}, {int(ids_arr.max())}]."
+            )
+        conflict_mask = cell_owner[ids_arr] != -1
+        if bool(np.any(conflict_mask)):
+            conflict_cell = int(ids_arr[conflict_mask][0])
+            prev_owner = int(cell_owner[conflict_cell])
+            raise ValueError(
+                f"inconsistent partition: cell {conflict_cell} is claimed by both "
+                f"rank {prev_owner} and rank {owner_rank}."
             )
         cell_owner[ids_arr] = owner_rank
 
-    return Partition(cell_owner, int(mesh.comm.size))
+    return Partition(cell_owner, n_parts)
 
 
 def _map_to_pantr(
@@ -106,21 +135,30 @@ def _map_to_pantr(
         npt.NDArray[np.int64]: Pantr cell ids of the owned cells.
 
     Raises:
-        ValueError: If the map is not a 1D integer array, an original index lies outside
-            the map, or a resulting pantr id lies outside ``[0, n_cells)``.
+        ValueError: If the map is not a 1D integer array, original indices are negative,
+            an original index lies outside the map, the map is not injective, or a
+            resulting pantr id lies outside ``[0, n_cells)``.
     """
     if dolfinx_to_pantr is None:
         ids = original
     else:
         mapping = np.asarray(dolfinx_to_pantr)
-        if mapping.ndim != 1 or not np.issubdtype(mapping.dtype, np.integer):
+        if mapping.ndim != 1 or mapping.dtype.kind not in ("i", "u"):
             raise ValueError("dolfinx_to_pantr must be a 1D integer array.")
+        if original.size and int(original.min()) < 0:
+            raise ValueError(
+                f"original cell indices must be non-negative; got {int(original.min())}."
+            )
         if original.size and int(original.max()) >= mapping.shape[0]:
             raise ValueError(
                 f"dolfinx_to_pantr has length {mapping.shape[0]} but an original cell "
                 f"index reaches {int(original.max())}."
             )
         ids = mapping[original].astype(np.int64)
+        if ids.size and np.unique(ids).size != ids.size:
+            raise ValueError(
+                "dolfinx_to_pantr is not injective: two dolfinx cells map to the same pantr id."
+            )
 
     if ids.size and (int(ids.min()) < 0 or int(ids.max()) >= n_cells):
         raise ValueError(
