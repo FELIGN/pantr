@@ -7,21 +7,21 @@ every rank), it builds *this rank's* windowed :class:`~pantr.bspline.LocalSpace`
 and no DOF exchange -- consistent with pantr's redundant per-rank storage model
 (cross-rank coupling is the consumer's job, e.g. via a PETSc ``PtAP``).
 
-``mpi4py`` is not imported: the communicator is supplied by the caller and only its
-``rank`` and ``size`` are read, so ``import pantr.mpi`` still works without MPI.
+``mpi4py`` is not imported by this module: the communicator is treated as an opaque object
+and only its ``rank`` and ``size`` attributes are read.
 """
 
 from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
-from ..bspline import THBSplineSpace, build_local
+from ..bspline import BsplineSpace, THBSplineSpace, build_local
 
 if TYPE_CHECKING:
     import numpy as np
     import numpy.typing as npt
 
-    from ..bspline import BsplineSpace, LocalSpace
+    from ..bspline import LocalSpace
     from ..grid import Partition
 
 
@@ -38,9 +38,16 @@ class DistributedSpace:
     every rank (guaranteed by pantr's deterministic partitioners and by
     :func:`~pantr.mpi.from_dolfinx`), so each rank can window the global space locally.
 
-    Attributes are exposed through the :attr:`comm`, :attr:`rank`, :attr:`n_parts`,
-    :attr:`global_space`, :attr:`partition`, :attr:`local`, :attr:`owns_cells`, and
-    :attr:`owned_cells` properties.
+    The public surface exposes:
+
+    - :attr:`comm` -- the MPI communicator passed at construction.
+    - :attr:`rank` -- this rank's id within the communicator.
+    - :attr:`n_parts` -- number of ranks the space is distributed over.
+    - :attr:`global_space` -- the undistributed global space.
+    - :attr:`partition` -- the cell-ownership partition.
+    - :attr:`local` -- this rank's windowed local space (``None`` if it owns no cells).
+    - :attr:`owns_cells` -- whether this rank owns at least one cell.
+    - :attr:`owned_cells` -- read-only sorted global cell ids owned by this rank.
     """
 
     __slots__ = ("_comm", "_global_space", "_local", "_owned_cells", "_partition", "_rank")
@@ -62,11 +69,22 @@ class DistributedSpace:
                 ``rank`` and ``size`` attributes are read.
 
         Raises:
-            ValueError: If ``comm.size != partition.n_parts``; if ``partition`` does not
-                match the global space's cell count; if ``comm.rank`` is out of range; or
-                if ``global_space`` is a periodic :class:`~pantr.bspline.BsplineSpace`.
+            ValueError: If ``global_space`` is a periodic
+                :class:`~pantr.bspline.BsplineSpace`; if ``comm.size != partition.n_parts``;
+                if ``partition`` does not match the global space's cell count; or if
+                ``comm.rank`` is outside ``[0, comm.size)`` (delegated to
+                :meth:`~pantr.grid.Partition.owned_cells`).
+
+        Note:
+            Unlike :func:`~pantr.bspline.build_local`, construction succeeds when this rank
+            owns no cells -- :attr:`local` is set to ``None`` and :attr:`owns_cells` to
+            ``False``.
         """
-        size = int(comm.size)
+        if isinstance(global_space, BsplineSpace) and any(
+            sp.periodic for sp in global_space.spaces
+        ):
+            raise ValueError("periodic B-spline spaces are not supported.")
+        size = int(comm.size)  # int() guards against mpi4py returning numpy.intp
         if size != partition.n_parts:
             raise ValueError(
                 f"comm.size ({size}) must equal partition.n_parts ({partition.n_parts})."
@@ -78,7 +96,7 @@ class DistributedSpace:
                 f"expected {n_global_cells} (the global space's cell count)."
             )
 
-        rank = int(comm.rank)
+        rank = int(comm.rank)  # int() guards against mpi4py returning numpy.intp
         owned = partition.owned_cells(rank)  # validates rank in [0, n_parts)
         owned.flags.writeable = False
 
@@ -87,6 +105,7 @@ class DistributedSpace:
         self._partition = partition
         self._rank = rank
         self._owned_cells = owned
+        # build_local raises if the rank owns no cells; guard here to support empty ranks.
         self._local: LocalSpace | None = (
             build_local(global_space, partition, rank) if owned.size else None
         )
@@ -114,7 +133,7 @@ class DistributedSpace:
         """Get the number of ranks (parts) the space is distributed over.
 
         Returns:
-            int: ``comm.size`` (equal to ``partition.n_parts``).
+            int: ``partition.n_parts`` (equal to ``comm.size`` at construction time).
         """
         return self._partition.n_parts
 
@@ -143,7 +162,12 @@ class DistributedSpace:
         Returns:
             LocalSpace | None: The rank-local space (windowed space plus local-to-global
             cell/DOF maps and ownership masks), or ``None`` when ``owns_cells`` is
-            ``False``.
+            ``False``. See :class:`~pantr.bspline.LocalSpace` for all fields.
+
+        Note:
+            Callers must narrow the type before use: ``assert ds.local is not None``
+            or ``if ds.local is not None``. :attr:`owns_cells` does not statically
+            narrow this property in mypy.
         """
         return self._local
 
