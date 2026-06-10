@@ -276,13 +276,15 @@ def test_unknown_backend_raises() -> None:
 
 
 def test_metis_missing_raises(monkeypatch: pytest.MonkeyPatch) -> None:
-    # Simulate pymetis being unavailable even if it is installed.
-    real_find_spec = importlib.util.find_spec
+    # Simulate pymetis unavailable (or broken install) by making import_module raise.
+    real_import_module = importlib.import_module
 
-    def fake_find_spec(name: str, package: str | None = None) -> object:
-        return None if name == "pymetis" else real_find_spec(name, package)
+    def fake_import_module(name: str, package: str | None = None) -> object:
+        if name == "pymetis":
+            raise ImportError("no module named 'pymetis'")
+        return real_import_module(name, package)
 
-    monkeypatch.setattr(importlib.util, "find_spec", fake_find_spec)
+    monkeypatch.setattr(importlib, "import_module", fake_import_module)
     graph = coupling_graph(create_uniform_space(2, 4))
     with pytest.raises(ImportError, match="requires 'pymetis'"):
         partition_graph(graph, 2, backend="metis")
@@ -305,10 +307,12 @@ def test_metis_separates_clusters() -> None:
 
 @requires_pymetis
 def test_metis_real_space_is_valid() -> None:
-    part = partition_graph(coupling_graph(create_uniform_space([2, 2], [6, 6])), 4, backend="metis")
+    space = create_uniform_space([2, 2], [6, 6])
+    part = partition_graph(coupling_graph(space), 4, backend="metis")
     owner = part.cell_owner
     assert part.n_parts == 4
-    assert int(np.count_nonzero(owner >= 0)) == 36  # every (active) cell assigned
+    assert int(np.count_nonzero(owner >= 0)) == 36  # all active cells assigned
+    # METIS does not guarantee every part is non-empty; check only valid range.
     assert owner.min() >= 0 and owner.max() < 4
 
 
@@ -319,6 +323,7 @@ def test_metis_thb_space_is_valid() -> None:
     grid.refine(0, [0], [2])
     thb = THBSplineSpace(root, grid)
     owner = partition_graph(coupling_graph(thb), 2, backend="metis").cell_owner
+    # METIS does not guarantee both parts non-empty; check only valid range.
     assert np.all(owner >= 0) and owner.max() < 2
 
 
@@ -346,3 +351,26 @@ def test_metis_is_deterministic() -> None:
     a = partition_graph(graph, 4, backend="metis").cell_owner
     b = partition_graph(graph, 4, backend="metis").cell_owner
     np.testing.assert_array_equal(a, b)
+
+
+@requires_pymetis
+def test_metis_zero_vertex_weight_clamped() -> None:
+    # A vertex with weight 0 must be clamped to 1 (METIS requires positive int weights).
+    adjacency = _cliques([[0, 1, 2], [3, 4, 5]], 6)
+    adjacency[2, 3] = adjacency[3, 2] = 1
+    vertex_weights = np.array([1.0, 1.0, 1.0, 1.0, 1.0, 0.0])
+    graph = _make_graph(adjacency, vertex_weights=vertex_weights)
+    owner = partition_graph(graph, 2, backend="metis").cell_owner
+    assert set(owner.tolist()).issubset({0, 1})
+
+
+@requires_pymetis
+def test_metis_nonuniform_vertex_weights_valid() -> None:
+    # Verify non-uniform vertex weights flow through integer conversion without error
+    # and produce a valid partition (all cells assigned, all owners in range).
+    adjacency = _cliques([[0, 1, 2], [3, 4, 5]], 6)
+    adjacency[2, 3] = adjacency[3, 2] = 1
+    vertex_weights = np.array([1.0, 2.0, 3.0, 4.0, 5.0, 10.0])
+    graph = _make_graph(adjacency, vertex_weights=vertex_weights)
+    owner = partition_graph(graph, 2, backend="metis").cell_owner
+    assert set(owner.tolist()).issubset({0, 1})

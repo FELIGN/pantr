@@ -18,7 +18,7 @@ Exports:
 
 from __future__ import annotations
 
-import importlib.util
+import importlib
 from types import ModuleType
 from typing import TYPE_CHECKING, Any, cast
 
@@ -156,8 +156,8 @@ def _spectral_partition(
 
 
 def _metis_partition(
-    xadj: npt.NDArray[np.int64],
-    adjncy: npt.NDArray[np.int64],
+    xadj: Any,  # noqa: ANN401 -- scipy CSR indptr; dtype (int32/int64) is scipy-version-dependent
+    adjncy: Any,  # noqa: ANN401 -- scipy CSR indices; dtype (int32/int64) is scipy-version-dependent
     edge_weights: npt.NDArray[np.float64],
     vertex_weights: npt.NDArray[np.float64],
     n_parts: int,
@@ -165,14 +165,16 @@ def _metis_partition(
     """Partition by METIS (k-way min-cut) via the optional ``pymetis`` package.
 
     Vertex weights are rounded to integers (clamped to ``>= 1``, as METIS requires
-    positive integer weights) and edge weights to integers; METIS then minimizes the cut
-    while balancing the integer vertex weights. Unlike :func:`_spectral_partition`, METIS
-    does not guarantee every part is non-empty.
+    positive integer weights) and edge weights to integers (must be ``> 0``); METIS then
+    minimizes the cut while balancing the integer vertex weights. Unlike
+    :func:`_spectral_partition`, METIS does not guarantee every part is non-empty.
 
     Args:
-        xadj (npt.NDArray[np.int64]): CSR row pointers of the (active) subgraph.
-        adjncy (npt.NDArray[np.int64]): CSR neighbour indices.
-        edge_weights (npt.NDArray[np.float64]): Per-edge weights aligned with ``adjncy``.
+        xadj (Any): CSR row pointers of the (active) subgraph (scipy-version-dependent
+            dtype; coerced to ``pymetis.zero_copy_dtype()`` internally).
+        adjncy (Any): CSR neighbour indices (same dtype note as ``xadj``).
+        edge_weights (npt.NDArray[np.float64]): Per-edge weights aligned with ``adjncy``;
+            must round to integers ``>= 1``.
         vertex_weights (npt.NDArray[np.float64]): Per-vertex weights.
         n_parts (int): Number of parts (``>= 1``).
 
@@ -180,17 +182,39 @@ def _metis_partition(
         npt.NDArray[np.int32]: Per-vertex owner in ``range(n_parts)``.
 
     Raises:
-        ImportError: If ``pymetis`` is not installed.
+        ImportError: If ``pymetis`` is not installed or fails to load, and
+            ``n_parts > 1``.
+        ValueError: If any edge weight rounds to ``<= 0`` (METIS requires positive
+            integer edge weights).
+        RuntimeError: If the METIS library reports an internal error.
     """
     n_vertices = int(xadj.shape[0]) - 1
     if n_parts == 1:
         return np.zeros(n_vertices, dtype=np.int32)
 
     pymetis: Any = _require_pymetis()
-    adjacency = pymetis.CSRAdjacency(np.asarray(xadj), np.asarray(adjncy))
-    eweights = np.rint(edge_weights).astype(np.int64)
-    vweights = np.maximum(1, np.rint(vertex_weights)).astype(np.int64)
-    _, membership = pymetis.part_graph(n_parts, adjacency, vweights=vweights, eweights=eweights)
+    idx_dtype = pymetis.zero_copy_dtype()
+    adjacency = pymetis.CSRAdjacency(
+        np.asarray(xadj, dtype=idx_dtype),
+        np.asarray(adjncy, dtype=idx_dtype),
+    )
+    eweights = np.rint(edge_weights).astype(idx_dtype)
+    zero_count = int(np.sum(eweights <= 0))
+    if zero_count > 0:
+        raise ValueError(
+            f"METIS requires positive integer edge weights; after rounding, "
+            f"{zero_count} edge(s) have weight <= 0. Scale up the graph edge weights "
+            f"or use backend='spectral'."
+        )
+    vweights = np.maximum(1, np.rint(vertex_weights)).astype(idx_dtype)
+    try:
+        _, membership = pymetis.part_graph(n_parts, adjacency, vweights=vweights, eweights=eweights)
+    except RuntimeError as exc:
+        raise RuntimeError(
+            f"METIS partitioning failed for graph with {n_vertices} vertices and "
+            f"{int(adjncy.shape[0])} edges (n_parts={n_parts}). "
+            f"Try backend='spectral' as a fallback. METIS error: {exc}"
+        ) from exc
     return cast("npt.NDArray[np.int32]", np.asarray(membership, dtype=np.int32))
 
 
@@ -201,15 +225,17 @@ def _require_pymetis() -> ModuleType:
         ModuleType: The imported ``pymetis`` module.
 
     Raises:
-        ImportError: If ``pymetis`` is not installed, with guidance on how to obtain it.
+        ImportError: If ``pymetis`` is not installed or fails to load (e.g. missing
+            native library), with guidance on how to obtain it.
     """
-    if importlib.util.find_spec("pymetis") is None:
+    try:
+        return importlib.import_module("pymetis")
+    except ImportError as exc:
         raise ImportError(
-            "backend='metis' requires 'pymetis', which is not installed. Install it with "
-            "\"pip install 'pantr[metis]'\" (or 'pip install pymetis'); or use "
-            "backend='spectral', which needs no extra dependency."
-        )
-    return importlib.import_module("pymetis")
+            "backend='metis' requires 'pymetis', which is not installed or failed to load. "
+            "Install it with \"pip install 'pantr[metis]'\" (or 'pip install pymetis'); or use "
+            f"backend='spectral', which needs no extra dependency. (Original error: {exc})"
+        ) from exc
 
 
 def _spectral_order(sub_adjacency: object) -> npt.NDArray[np.intp]:
@@ -228,8 +254,8 @@ def _spectral_order(sub_adjacency: object) -> npt.NDArray[np.intp]:
         npt.NDArray[np.intp]: A length-``m`` permutation of ``range(m)``.
 
     Note:
-        ``m >= 2`` is assumed; the caller (``bisect``) guarantees this via its
-        ``k == 1`` early-return.
+        ``m >= 2`` is assumed; the caller guarantees this because subgraphs of size 1
+        are assigned directly without further bisection.
     """
     m = sub_adjacency.shape[0]  # type: ignore[attr-defined]
     n_components, labels = csgraph.connected_components(sub_adjacency, directed=False)
