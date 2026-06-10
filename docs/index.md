@@ -13,6 +13,7 @@ constructive-geometry
 visualization
 parallelism
 spanwise-element-extraction
+distributed-spaces
 api/reference
 changelog
 ```
