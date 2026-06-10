@@ -39,6 +39,9 @@ This package consolidates the B-spline API:
 - :func:`coupling_graph`, :class:`CouplingGraph`: cell-coupling (dual) graph of a
   space -- cells sharing basis functions, weighted by the number shared -- in
   METIS / Scotch CSR format, for graph-based partitioning.
+- :func:`partition_graph`: partition a :class:`CouplingGraph` into ``n_parts`` rank
+  subdomains by spectral (Fiedler) bisection (weight- and activity-aware, dependency
+  free), minimizing cross-rank DOF coupling.
 """
 
 from ._bspline import Bspline, create_from_bezier
@@ -56,6 +59,7 @@ from ._bspline_space_factory import (
 from ._bspline_space_nd import BsplineSpace, BsplineSpaceRestriction
 from ._coupling_graph import CouplingGraph, coupling_graph
 from ._local_space import LocalSpace, build_local, compute_halo, dof_owner
+from ._partition_graph import partition_graph
 from ._thb_quasi_interpolation import quasi_interpolate_thb_spline
 from ._thb_spline import THBSpline
 from ._thb_spline_space import THBSplineSpace, THBSplineSpaceRestriction
@@ -94,6 +98,7 @@ __all__ = [
     "interpolate_bspline",
     "l2_project_bspline",
     "make_struct_view",
+    "partition_graph",
     "quasi_interpolate_bspline",
     "quasi_interpolate_thb_spline",
 ]
