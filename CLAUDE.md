@@ -22,7 +22,12 @@ mypy --config-file mypy.ini src tests                               # type check
 lint-imports                                                        # import boundaries (core must not import pantr.mpi)
 NUMBA_DISABLE_JIT=1 make docs SPHINXOPTS="-W --keep-going -j auto"  # docs build (matches CI)
 PANTR_NO_MPI=1 pip install -e ".[dev]"                              # serial-only install (drop mpi4py)
+PANTR_RUN_MPI=1 mpiexec -n 2 python -m pytest tests/mpi/ --no-cov   # MPI smoke tests (needs mpi4py + MPI launcher)
 ```
+
+> `tests/mpi/` holds real-MPI smoke tests; they are **skipped** unless `PANTR_RUN_MPI` is set
+> (and run under `mpiexec`). The default `pytest` run collects and skips them. CI runs them in a
+> dedicated `mpi-tests` job (installs OpenMPI, builds `mpi4py` from source, `mpiexec -n {2,3}`).
 
 > Default pytest (via `pytest.ini`) adds `--cov`, which slows things down and requires ≥85% coverage. Always pass `--no-cov` during development.
 
