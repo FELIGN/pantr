@@ -255,3 +255,55 @@ jobs:
         run: |
           . .venv/bin/activate
           make docs SPHINXOPTS="-W --keep-going -j auto"
+
+  mpi-tests:
+    name: MPI tests (mpiexec)
+    needs: [lint, type-check]
+    runs-on: ubuntu-latest
+    # The only job that exercises the real distributed stack under multiple ranks, so
+    # unlike the rest it KEEPS the default mpi4py dependency (PANTR_NO_MPI unset) and
+    # builds mpi4py from source against the system OpenMPI -- the prebuilt wheels bundle
+    # MPICH, which would not match the `openmpi-bin` launcher. PANTR_RUN_MPI enables the
+    # otherwise-skipped tests under tests/mpi/.
+    env:
+      PANTR_NO_MPI: ""
+      PANTR_RUN_MPI: "1"
+      PIP_NO_BINARY: "mpi4py"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+          cache-dependency-path: |
+            pyproject.toml
+
+      - name: Install OpenMPI
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libopenmpi-dev openmpi-bin
+
+      - name: Create venv and install (with mpi4py, built from source)
+        run: |
+          python -m venv .venv
+          . .venv/bin/activate
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+
+      - name: Verify mpi4py matches the launcher
+        run: |
+          . .venv/bin/activate
+          mpiexec --oversubscribe -n 2 python -c "from mpi4py import MPI; assert MPI.COMM_WORLD.size == 2"
+
+      - name: Run MPI smoke tests (2 ranks)
+        run: |
+          . .venv/bin/activate
+          mpiexec --oversubscribe -n 2 python -m pytest tests/mpi/ --no-cov -p no:cacheprovider
+
+      - name: Run MPI smoke tests (3 ranks)
+        run: |
+          . .venv/bin/activate
+          mpiexec --oversubscribe -n 3 python -m pytest tests/mpi/ --no-cov -p no:cacheprovider
