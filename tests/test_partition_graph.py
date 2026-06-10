@@ -117,6 +117,34 @@ def test_eigsh_failure_falls_back_to_dense(monkeypatch: pytest.MonkeyPatch) -> N
     )
     owner = partition_graph(graph, 2).cell_owner
     assert set(owner.tolist()) == {0, 1}
+    assert int(np.sum(owner[:-1] != owner[1:])) == 1
+
+
+def test_clique_chain_into_three_parts() -> None:
+    clusters = [[0, 1, 2], [3, 4, 5], [6, 7, 8]]
+    adjacency = _cliques(clusters, 9)
+    for i, j in [(2, 3), (5, 6)]:
+        adjacency[i, j] = adjacency[j, i] = 1
+    owner = partition_graph(_make_graph(adjacency), 3).cell_owner
+    for cluster in clusters:
+        assert len(set(owner[cluster].tolist())) == 1, "each clique should be one part"
+    assert len(set(owner.tolist())) == 3
+
+
+def test_dense_threshold_boundary() -> None:
+    # m=512 must use dense eigh (<=); m=513 must use sparse eigsh (>).
+    for n in (512, 513):
+        diag = np.ones(n - 1, dtype=np.int64)
+        csr = sparse.diags([diag, diag], [1, -1], format="csr", dtype=np.int64)
+        graph = CouplingGraph(
+            n,
+            csr.indptr.astype(np.int64),
+            csr.indices.astype(np.int64),
+            csr.data.astype(np.int64),
+            np.ones(n),
+        )
+        owner = partition_graph(graph, 2).cell_owner
+        assert int(np.sum(owner[:-1] != owner[1:])) == 1
 
 
 # --------------------------------------------------------------------------- #
@@ -180,6 +208,17 @@ def test_respects_cell_active() -> None:
     assert np.all(owner[4:] == -1)
     assert set(owner[:4].tolist()) == {0, 1}
     np.testing.assert_array_equal(part.active_mask, active)
+
+
+def test_cell_active_int_coerced_to_bool() -> None:
+    graph = coupling_graph(create_uniform_space(2, 4))
+    part = partition_graph(graph, 2, cell_active=[1, 1, 0, 0])
+    assert np.all(part.cell_owner[2:] == -1)
+
+
+def test_cell_owner_is_read_only() -> None:
+    part = partition_graph(coupling_graph(create_uniform_space(2, 4)), 2)
+    assert not part.cell_owner.flags.writeable
 
 
 # --------------------------------------------------------------------------- #

@@ -6,6 +6,9 @@ recursive spectral (Fiedler) bisection, minimizing the cross-rank DOF coupling
 that geometric backends (``block`` / ``rcb`` in :func:`pantr.grid.partition_grid`)
 cannot see. It is the dependency-free, weight- and activity-aware graph backend:
 pure core, ``scipy`` only -- no MPI, no external graph library.
+
+Exports:
+    - :func:`partition_graph`
 """
 
 from __future__ import annotations
@@ -87,9 +90,12 @@ def partition_graph(
     owner_active = np.empty(n_active, dtype=np.int32)
 
     def bisect(idx: npt.NDArray[np.intp], part_lo: int, part_hi: int) -> None:
-        # Split parts [part_lo, part_hi) by ordering this subgraph's vertices via its
-        # Fiedler vector, cutting at the (clamped) weighted split point so each side
-        # keeps at least as many cells as parts (no rank is left empty).
+        """Assign parts ``[part_lo, part_hi)`` to vertices ``idx`` by spectral bisection.
+
+        Orders ``idx`` by the Fiedler vector of its induced subgraph, cuts at the
+        weighted split point, and recurses. The cut is clamped so each half receives at
+        least as many vertices as it has parts (no rank is left empty).
+        """
         k = part_hi - part_lo
         if k == 1:
             owner_active[idx] = part_lo
@@ -126,7 +132,8 @@ def _spectral_order(sub_adjacency: object) -> npt.NDArray[np.intp]:
         npt.NDArray[np.intp]: A length-``m`` permutation of ``range(m)``.
 
     Note:
-        Inputs are assumed valid (``m >= 2``); no validation is performed.
+        ``m >= 2`` is assumed; the caller (``bisect``) guarantees this via its
+        ``k == 1`` early-return.
     """
     m = sub_adjacency.shape[0]  # type: ignore[attr-defined]
     n_components, labels = csgraph.connected_components(sub_adjacency, directed=False)
