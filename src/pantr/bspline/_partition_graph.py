@@ -1,11 +1,16 @@
-"""Spectral partitioning of a space's cell-coupling graph into rank subdomains.
+"""Graph partitioning of a space's cell-coupling graph into rank subdomains.
 
 :func:`partition_graph` turns a :class:`~pantr.bspline.CouplingGraph` (built by
-:func:`~pantr.bspline.coupling_graph`) into a :class:`~pantr.grid.Partition` by
-recursive spectral (Fiedler) bisection, minimizing the cross-rank DOF coupling
-that geometric backends (``block`` / ``rcb`` in :func:`pantr.grid.partition_grid`)
-cannot see. It is the dependency-free, weight- and activity-aware graph backend:
-pure core, ``scipy`` only -- no MPI, no external graph library.
+:func:`~pantr.bspline.coupling_graph`) into a :class:`~pantr.grid.Partition`, minimizing
+the cross-rank DOF coupling that geometric backends (``block`` / ``rcb`` in
+:func:`pantr.grid.partition_grid`) cannot see. Two backends, both serial (the partition
+is computed redundantly per rank -- no MPI):
+
+- ``"spectral"`` (default) -- recursive Fiedler bisection; pure ``scipy``, no extra
+  dependency; weight- and activity-aware.
+- ``"metis"`` -- METIS via the optional ``pymetis`` package (``pip install
+  'pantr[metis]'``); higher-quality min-cut. Raises a clear error if ``pymetis`` is
+  absent, so the default install never requires it.
 
 Exports:
     - :func:`partition_graph`
@@ -13,7 +18,9 @@ Exports:
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, cast
+import importlib.util
+from types import ModuleType
+from typing import TYPE_CHECKING, Any, cast
 
 import numpy as np
 from scipy import sparse
@@ -29,42 +36,51 @@ if TYPE_CHECKING:
 _DENSE_FIEDLER_MAX = 512
 """Subgraphs with at most this many vertices use a dense eigensolver."""
 
+_BACKENDS = ("spectral", "metis")
+"""Graph-partition backends recognized by :func:`partition_graph`."""
+
 
 def partition_graph(
     coupling: CouplingGraph,
     n_parts: int,
     *,
+    backend: str = "spectral",
     cell_active: npt.ArrayLike | None = None,
 ) -> Partition:
     """Partition a cell-coupling graph into ``n_parts`` rank subdomains.
 
-    Recursively bisects the graph, ordering each subgraph's vertices by its Fiedler
-    vector (the second eigenvector of the weighted graph Laplacian) and cutting at the
-    weighted split point. Balances :attr:`CouplingGraph.vertex_weights` and clamps the
-    cut so no rank is left empty. Disconnected subgraphs are split by connected
-    component first. The result minimizes cross-rank DOF coupling far better than a
-    geometric split for irregular or hierarchical meshes.
+    Balances :attr:`CouplingGraph.vertex_weights` across parts while minimizing the
+    weight of cut edges (shared DOFs). Cells excluded by ``cell_active`` get owner
+    ``-1`` and are dropped from the graph.
 
     Args:
         coupling (CouplingGraph): The cell-coupling graph (see
             :func:`~pantr.bspline.coupling_graph`); its ``vertex_weights`` drive the
-            load balance.
+            load balance and ``edge_weights`` the cut cost.
         n_parts (int): Number of parts (ranks); must be ``>= 1``.
+        backend (str): ``"spectral"`` (default; recursive Fiedler bisection, no extra
+            dependency, never leaves a rank empty) or ``"metis"`` (METIS via the optional
+            ``pymetis`` package; higher-quality min-cut, but may leave a rank empty).
         cell_active (npt.ArrayLike | None): Optional boolean mask, shape
             ``(coupling.num_vertices,)``; inactive cells get owner ``-1`` and are
-            excluded from the bisection. ``None`` means all active.
+            excluded. ``None`` means all active.
 
     Returns:
         Partition: A per-cell owner assignment with ``n_parts`` parts; ``-1`` for
-        inactive cells, otherwise a rank in ``range(n_parts)`` with no rank empty.
+        inactive cells, otherwise a rank in ``range(n_parts)``.
 
     Raises:
         TypeError: If ``coupling`` is not a :class:`CouplingGraph`.
-        ValueError: If ``n_parts < 1``; if ``cell_active`` has the wrong shape or marks
-            no cell active; or if ``n_parts`` exceeds the number of active cells.
+        ValueError: If ``backend`` is unknown; if ``n_parts < 1``; if ``cell_active`` has
+            the wrong shape or marks no cell active; or if ``n_parts`` exceeds the number
+            of active cells.
+        ImportError: If ``backend="metis"`` but ``pymetis`` is not installed.
     """
     if not isinstance(coupling, CouplingGraph):
         raise TypeError(f"coupling must be a CouplingGraph; got {type(coupling).__name__}.")
+    if backend not in _BACKENDS:
+        valid = ", ".join(repr(b) for b in _BACKENDS)
+        raise ValueError(f"unknown backend {backend!r}; valid backends: {valid}.")
     if n_parts < 1:
         raise ValueError(f"n_parts must be >= 1; got {n_parts}.")
 
@@ -87,18 +103,44 @@ def partition_graph(
         adjacency = adjacency[active_idx][:, active_idx]
     weights = coupling.vertex_weights[active_idx]
 
-    owner_active = np.empty(n_active, dtype=np.int32)
+    if backend == "spectral":
+        owner_active = _spectral_partition(adjacency, weights, n_parts)
+    else:  # "metis"
+        adjacency.sort_indices()
+        owner_active = _metis_partition(
+            adjacency.indptr, adjacency.indices, adjacency.data, weights, n_parts
+        )
+
+    owner = np.full(n, -1, dtype=np.int32)
+    owner[active_idx] = owner_active
+    return Partition(owner, n_parts)
+
+
+def _spectral_partition(
+    adjacency: Any,  # noqa: ANN401 -- a scipy sparse matrix (scipy is untyped)
+    weights: npt.NDArray[np.float64],
+    n_parts: int,
+) -> npt.NDArray[np.int32]:
+    """Partition by recursive spectral (Fiedler) bisection.
+
+    Splits the part count ``k -> (k // 2, k - k // 2)``, orders each subgraph's vertices
+    by its Fiedler vector, and cuts at the weighted split point -- clamped so each half
+    receives at least as many vertices as it has parts (no rank is left empty).
+
+    Args:
+        adjacency (Any): ``(n_active, n_active)`` weighted ``scipy`` sparse adjacency.
+        weights (npt.NDArray[np.float64]): Per-vertex weights.
+        n_parts (int): Number of parts (``>= 1``).
+
+    Returns:
+        npt.NDArray[np.int32]: Per-vertex owner in ``range(n_parts)``.
+    """
+    owner = np.empty(int(adjacency.shape[0]), dtype=np.int32)
 
     def bisect(idx: npt.NDArray[np.intp], part_lo: int, part_hi: int) -> None:
-        """Assign parts ``[part_lo, part_hi)`` to vertices ``idx`` by spectral bisection.
-
-        Orders ``idx`` by the Fiedler vector of its induced subgraph, cuts at the
-        weighted split point, and recurses. The cut is clamped so each half receives at
-        least as many vertices as it has parts (no rank is left empty).
-        """
         k = part_hi - part_lo
         if k == 1:
-            owner_active[idx] = part_lo
+            owner[idx] = part_lo
             return
         ordered = idx[_spectral_order(adjacency[idx][:, idx])]
         cumw = np.cumsum(weights[ordered])
@@ -109,11 +151,65 @@ def partition_graph(
         bisect(ordered[:split], part_lo, part_lo + k_left)
         bisect(ordered[split:], part_lo + k_left, part_hi)
 
-    bisect(np.arange(n_active), 0, n_parts)
+    bisect(np.arange(owner.size), 0, n_parts)
+    return owner
 
-    owner = np.full(n, -1, dtype=np.int32)
-    owner[active_idx] = owner_active
-    return Partition(owner, n_parts)
+
+def _metis_partition(
+    xadj: npt.NDArray[np.int64],
+    adjncy: npt.NDArray[np.int64],
+    edge_weights: npt.NDArray[np.float64],
+    vertex_weights: npt.NDArray[np.float64],
+    n_parts: int,
+) -> npt.NDArray[np.int32]:
+    """Partition by METIS (k-way min-cut) via the optional ``pymetis`` package.
+
+    Vertex weights are rounded to integers (clamped to ``>= 1``, as METIS requires
+    positive integer weights) and edge weights to integers; METIS then minimizes the cut
+    while balancing the integer vertex weights. Unlike :func:`_spectral_partition`, METIS
+    does not guarantee every part is non-empty.
+
+    Args:
+        xadj (npt.NDArray[np.int64]): CSR row pointers of the (active) subgraph.
+        adjncy (npt.NDArray[np.int64]): CSR neighbour indices.
+        edge_weights (npt.NDArray[np.float64]): Per-edge weights aligned with ``adjncy``.
+        vertex_weights (npt.NDArray[np.float64]): Per-vertex weights.
+        n_parts (int): Number of parts (``>= 1``).
+
+    Returns:
+        npt.NDArray[np.int32]: Per-vertex owner in ``range(n_parts)``.
+
+    Raises:
+        ImportError: If ``pymetis`` is not installed.
+    """
+    n_vertices = int(xadj.shape[0]) - 1
+    if n_parts == 1:
+        return np.zeros(n_vertices, dtype=np.int32)
+
+    pymetis: Any = _require_pymetis()
+    adjacency = pymetis.CSRAdjacency(np.asarray(xadj), np.asarray(adjncy))
+    eweights = np.rint(edge_weights).astype(np.int64)
+    vweights = np.maximum(1, np.rint(vertex_weights)).astype(np.int64)
+    _, membership = pymetis.part_graph(n_parts, adjacency, vweights=vweights, eweights=eweights)
+    return cast("npt.NDArray[np.int32]", np.asarray(membership, dtype=np.int32))
+
+
+def _require_pymetis() -> ModuleType:
+    """Import and return the ``pymetis`` module, or raise a clear error if absent.
+
+    Returns:
+        ModuleType: The imported ``pymetis`` module.
+
+    Raises:
+        ImportError: If ``pymetis`` is not installed, with guidance on how to obtain it.
+    """
+    if importlib.util.find_spec("pymetis") is None:
+        raise ImportError(
+            "backend='metis' requires 'pymetis', which is not installed. Install it with "
+            "\"pip install 'pantr[metis]'\" (or 'pip install pymetis'); or use "
+            "backend='spectral', which needs no extra dependency."
+        )
+    return importlib.import_module("pymetis")
 
 
 def _spectral_order(sub_adjacency: object) -> npt.NDArray[np.intp]:

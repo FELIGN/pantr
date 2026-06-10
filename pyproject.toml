@@ -40,9 +40,13 @@ dev = [
   "pre-commit>=3.6,<4",
   "import-linter>=2.0,<3",
   "hatchling>=1.12.0",
+  "pymetis>=2025.2",
 ]
 parallel = [
   "threadpoolctl>=3.0",
+]
+metis = [
+  "pymetis>=2025.2",
 ]
 viz = [
   "pyvista>=0.43,<1",

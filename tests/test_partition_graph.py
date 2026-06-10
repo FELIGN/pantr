@@ -1,6 +1,8 @@
-"""Tests for :func:`pantr.bspline.partition_graph` (spectral graph bisection)."""
+"""Tests for :func:`pantr.bspline.partition_graph` (spectral and METIS backends)."""
 
 from __future__ import annotations
+
+import importlib.util
 
 import numpy as np
 import numpy.typing as npt
@@ -16,6 +18,10 @@ from pantr.bspline import (
     partition_graph,
 )
 from pantr.grid import hierarchical_grid, uniform_grid
+
+requires_pymetis = pytest.mark.skipif(
+    importlib.util.find_spec("pymetis") is None, reason="pymetis is not installed"
+)
 
 
 def _make_graph(
@@ -261,3 +267,82 @@ def test_cell_active_all_false_raises() -> None:
     graph = coupling_graph(create_uniform_space(2, 4))
     with pytest.raises(ValueError, match="at least one cell active"):
         partition_graph(graph, 2, cell_active=[False, False, False, False])
+
+
+def test_unknown_backend_raises() -> None:
+    graph = coupling_graph(create_uniform_space(2, 4))
+    with pytest.raises(ValueError, match="unknown backend"):
+        partition_graph(graph, 2, backend="nope")
+
+
+def test_metis_missing_raises(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Simulate pymetis being unavailable even if it is installed.
+    real_find_spec = importlib.util.find_spec
+
+    def fake_find_spec(name: str, package: str | None = None) -> object:
+        return None if name == "pymetis" else real_find_spec(name, package)
+
+    monkeypatch.setattr(importlib.util, "find_spec", fake_find_spec)
+    graph = coupling_graph(create_uniform_space(2, 4))
+    with pytest.raises(ImportError, match="requires 'pymetis'"):
+        partition_graph(graph, 2, backend="metis")
+
+
+# --------------------------------------------------------------------------- #
+# METIS backend (optional pymetis)
+# --------------------------------------------------------------------------- #
+
+
+@requires_pymetis
+def test_metis_separates_clusters() -> None:
+    adjacency = _cliques([[0, 1, 2], [3, 4, 5]], 6)
+    adjacency[2, 3] = adjacency[3, 2] = 1
+    owner = partition_graph(_make_graph(adjacency), 2, backend="metis").cell_owner
+    assert owner[0] == owner[1] == owner[2]
+    assert owner[3] == owner[4] == owner[5]
+    assert owner[0] != owner[3]
+
+
+@requires_pymetis
+def test_metis_real_space_is_valid() -> None:
+    part = partition_graph(coupling_graph(create_uniform_space([2, 2], [6, 6])), 4, backend="metis")
+    owner = part.cell_owner
+    assert part.n_parts == 4
+    assert int(np.count_nonzero(owner >= 0)) == 36  # every (active) cell assigned
+    assert owner.min() >= 0 and owner.max() < 4
+
+
+@requires_pymetis
+def test_metis_thb_space_is_valid() -> None:
+    root = create_uniform_space(2, 4)
+    grid = hierarchical_grid(uniform_grid([[0.0, 1.0]], 4), 2)
+    grid.refine(0, [0], [2])
+    thb = THBSplineSpace(root, grid)
+    owner = partition_graph(coupling_graph(thb), 2, backend="metis").cell_owner
+    assert np.all(owner >= 0) and owner.max() < 2
+
+
+@requires_pymetis
+def test_metis_respects_cell_active() -> None:
+    space = create_uniform_space(2, 8)
+    active = np.array([True] * 4 + [False] * 4)
+    part = partition_graph(coupling_graph(space), 2, backend="metis", cell_active=active)
+    owner = part.cell_owner
+    assert np.all(owner[4:] == -1)
+    assert set(owner[:4].tolist()) <= {0, 1}
+    np.testing.assert_array_equal(part.active_mask, active)
+
+
+@requires_pymetis
+def test_metis_n_parts_one() -> None:
+    graph = coupling_graph(create_uniform_space(2, 4))
+    owner = partition_graph(graph, 1, backend="metis").cell_owner
+    assert np.all(owner == 0)
+
+
+@requires_pymetis
+def test_metis_is_deterministic() -> None:
+    graph = coupling_graph(create_uniform_space([2, 2], [5, 5]))
+    a = partition_graph(graph, 4, backend="metis").cell_owner
+    b = partition_graph(graph, 4, backend="metis").cell_owner
+    np.testing.assert_array_equal(a, b)
