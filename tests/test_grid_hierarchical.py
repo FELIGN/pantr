@@ -927,7 +927,7 @@ class TestHierKernelEquivalence:
         np_testing.assert_array_equal(g.locate_many(pts)[:3], [-1, -1, -1])
         assert g.locate_many(pts)[3] >= 0
 
-    @pytest.mark.parametrize(("ndim", "factor"), [(2, 2), (2, (2, 3)), (3, 2)])
+    @pytest.mark.parametrize(("ndim", "factor"), [(1, 2), (2, 2), (2, (2, 3)), (3, 2)])
     def test_decode_encode_roundtrip(self, ndim: int, factor: int | tuple[int, ...]) -> None:
         """_decode_flat_id and _encode_midx are mutually inverse over all cells."""
         g = _irregular_grid(ndim, factor)
@@ -979,3 +979,31 @@ class TestHierKernelEquivalence:
         got = sub.locate_many(pts)
         expected = np.array([-1 if (c := sub.locate(p)) is None else c for p in pts])
         np_testing.assert_array_equal(got, expected)
+
+    @pytest.mark.parametrize("ndim", [1, 2, 3])
+    def test_locate_many_empty_input(self, ndim: int) -> None:
+        """locate_many with zero rows returns a shape-(0,) array without error."""
+        g = _irregular_grid(ndim, 2)
+        out = g.locate_many(np.empty((0, ndim), dtype=np.float64))
+        assert out.shape == (0,)
+        assert out.dtype == np.int64
+
+    @pytest.mark.parametrize("ndim", [1, 2])
+    def test_locate_many_single_point_1d_input(self, ndim: int) -> None:
+        """A 1-D array (single point) is promoted to (1, ndim) and located."""
+        g = _irregular_grid(ndim, 2)
+        pt = np.full(ndim, 0.5)
+        out = g.locate_many(pt)
+        assert out.shape == (1,)
+        expected = g.locate(pt)
+        assert out[0] == (-1 if expected is None else expected)
+
+    def test_collect_cell_bounds_unrefined(self) -> None:
+        """collect_cell_bounds on a flat (level-0 only) grid matches per-cell bounds."""
+        g = _grid_2d(4)  # 4x4 uniform grid, no refinement
+        assert g.max_level == 0
+        lo_all, hi_all = g.collect_cell_bounds()
+        for cid in range(g.num_cells):
+            lo, hi = g.cell_bounds(cid)
+            np_testing.assert_array_equal(lo_all[cid], lo)
+            np_testing.assert_array_equal(hi_all[cid], hi)

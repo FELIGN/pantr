@@ -262,7 +262,7 @@ class HierarchicalGrid(Grid):
             structural change (see :attr:`version`).
         _packed_block_lo (npt.NDArray[np.int64]): Packed block lower bounds for
             the Numba kernels, shape ``(n_blocks_total, ndim)``, concatenated
-            level by level in flat-id order (see :mod:`pantr.grid._hier_core`).
+            level by level in flat-id order (see ``_hier_core``).
         _packed_block_hi (npt.NDArray[np.int64]): Packed block upper bounds,
             same shape.
         _packed_block_base (npt.NDArray[np.int64]): Flat cell id of each
@@ -456,7 +456,7 @@ class HierarchicalGrid(Grid):
         Bumps :attr:`version` so snapshot consumers can detect any mutation,
         including compensating refine/coarsen pairs that leave ``max_level``
         and ``num_cells`` unchanged.  Also repacks the block lists into the
-        flat ``int64`` arrays consumed by the :mod:`pantr.grid._hier_core`
+        flat ``int64`` arrays consumed by the ``_hier_core``
         kernels (``O(total_blocks)`` work).
         """
         base = 0
