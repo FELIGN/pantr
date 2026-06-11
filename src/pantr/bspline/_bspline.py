@@ -829,6 +829,18 @@ class Bspline:
         new_space = BsplineSpace(new_spaces)
 
         new_cp = _reverse_control_points(self._control_points, direction, in_place=in_place)
+        if old_space.periodic:
+            # The stored periodic points expand as full[j] = stored[j % n_stored];
+            # reversing the full sequence therefore needs a plain flip *plus* a
+            # cyclic shift by the ghost count n_full - n_stored.
+            n_stored = new_cp.shape[direction]
+            n_full = knots.shape[0] - old_space.degree - 1
+            shift = (n_full - n_stored) % n_stored
+            if shift:
+                if in_place:
+                    new_cp[:] = np.roll(new_cp, shift, axis=direction)
+                else:
+                    new_cp = np.roll(new_cp, shift, axis=direction)
 
         if in_place:
             self._space = new_space

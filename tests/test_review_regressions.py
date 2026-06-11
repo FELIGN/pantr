@@ -233,22 +233,12 @@ def test_locate_nan_is_a_miss() -> None:
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="default knot snapping uses np.isclose with its default rtol=1e-5: knots "
-    "0.5 and 0.500001 are merged into one double knot, changing the space's continuity",
-)
 def test_snap_knots_does_not_merge_distant_knots() -> None:
     space = BsplineSpace1D(np.array([0.0, 0.0, 0.0, 0.5, 0.500001, 1.0, 1.0, 1.0]), 2)
     _, mults = space.get_unique_knots_and_multiplicity()
     assert np.asarray(mults).tolist() == [3, 1, 1, 3]
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="reverse() of a periodic direction flips the stored control points without "
-    "the cyclic ghost shift, so the result is a parameter-shifted (wrong) reversal",
-)
 def test_periodic_reverse_is_pointwise_mirror() -> None:
     space = create_uniform_space(2, [4], periodic=True)
     n_basis = space.spaces[0].num_basis
@@ -262,11 +252,6 @@ def test_periodic_reverse_is_pointwise_mirror() -> None:
     np.testing.assert_allclose(values, mirrored, atol=1e-12)
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="the 1D evaluate path performs no domain check (the nD path does): "
-    "out-of-domain points reach the kernel and return silent garbage",
-)
 def test_bspline_evaluate_1d_rejects_out_of_domain() -> None:
     space = create_uniform_space(2, [4])
     n_basis = space.spaces[0].num_basis
@@ -275,11 +260,6 @@ def test_bspline_evaluate_1d_rejects_out_of_domain() -> None:
         spline.evaluate(np.array([-0.5]))
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="to_open_bspline trims p+1-m_left knots from BOTH ends: asymmetric boundary "
-    "multiplicities shrink the domain and change the function",
-)
 def test_to_open_preserves_asymmetric_unclamped_spline() -> None:
     space = BsplineSpace([BsplineSpace1D(np.array([-0.5, 0.0, 0.5, 1.0, 1.0]), 1)])
     n_basis = space.spaces[0].num_basis
@@ -298,12 +278,6 @@ def test_to_open_preserves_asymmetric_unclamped_spline() -> None:
     )
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="boundary_interpolation=True overwrites the boundary load slice with point "
-    "values while cross directions still apply mass solves: the 2D projection no longer "
-    "reproduces functions that lie exactly in the space",
-)
 def test_l2_project_boundary_interpolation_2d_reproduces_space_function() -> None:
     space = create_uniform_space(2, [5, 5])
 
@@ -319,11 +293,6 @@ def test_l2_project_boundary_interpolation_2d_reproduces_space_function() -> Non
     np.testing.assert_allclose(values, exact, atol=1e-8)
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="get_unique_knots_and_multiplicity returns the writable lru-cached arrays: "
-    "a caller mutation poisons the cache for every later query of the same space",
-)
 def test_unique_knots_cache_is_not_corruptible() -> None:
     space = BsplineSpace1D(np.array([0.0, 0.0, 0.0, 0.5, 1.0, 1.0, 1.0]), 2)
     unique, _ = space.get_unique_knots_and_multiplicity()
@@ -334,22 +303,12 @@ def test_unique_knots_cache_is_not_corruptible() -> None:
     assert float(np.asarray(fresh)[0]) == 0.0
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="BsplineSpace1D(snap_knots=False) freezes the caller's knot array in place "
-    "instead of copying before setting writeable=False",
-)
 def test_snap_knots_false_does_not_freeze_caller_array() -> None:
     knots = np.array([0.0, 0.0, 1.0, 1.0])
     BsplineSpace1D(knots, 1, snap_knots=False)
     assert knots.flags.writeable
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="degree-0 extraction allocates np.zeros(degree - 1) = np.zeros(-1): every "
-    "extraction entry point crashes for degree-0 spaces",
-)
 def test_degree0_extraction_operator() -> None:
     space = create_uniform_space(0, [4])
     extraction = SpanwiseElementExtraction(space, "bezier")
@@ -357,12 +316,6 @@ def test_degree0_extraction_operator() -> None:
     np.testing.assert_allclose(operator, np.ones((1, 1)))
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="the derivative scaling evaluates degree*diff/denom eagerly inside np.where: "
-    "a C^-1 interior knot (multiplicity p+1) emits a divide-by-zero RuntimeWarning, "
-    "which the repo's warnings-as-errors pytest config turns into an error",
-)
 def test_cm1_interior_knot_derivative_emits_no_warning() -> None:
     knots = np.array([0.0, 0.0, 0.0, 0.5, 0.5, 0.5, 1.0, 1.0, 1.0])
     space = BsplineSpace([BsplineSpace1D(knots, 2)])
