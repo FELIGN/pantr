@@ -383,11 +383,6 @@ def test_cm1_interior_knot_derivative_emits_no_warning() -> None:
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="get_chebyshev_gauss_2nd_kind_1d pairs Chebyshev-Lobatto nodes with "
-    "Gauss-Chebyshev-U interior-node weights: the rule has no polynomial accuracy",
-)
 def test_chebyshev_gauss_2nd_kind_integrates_quadratic() -> None:
     pts, wts = get_chebyshev_gauss_2nd_kind_1d(5)
     x = np.asarray(pts, dtype=np.float64)
@@ -397,11 +392,6 @@ def test_chebyshev_gauss_2nd_kind_integrates_quadratic() -> None:
     assert abs(float(np.sum(w * mapped**2)) - pi / 16.0) < 1e-10
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="get_all_points(order='F') uses meshgrid(indexing='xy'), which only swaps "
-    "the first two axes: for dim >= 3 the first index does not vary fastest",
-)
 def test_points_lattice_f_order_first_axis_fastest_3d() -> None:
     lattice = PointsLattice(
         [np.array([0.0, 1.0]), np.array([10.0, 11.0]), np.array([20.0, 21.0, 22.0])]
@@ -412,12 +402,6 @@ def test_points_lattice_f_order_first_axis_fastest_3d() -> None:
     assert pts[2].tolist() == [0.0, 11.0, 20.0]
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="VTK high-order quad ordering: edge 2 must run in increasing i and the "
-    "interior block i-fastest (vtkHigherOrderQuadrilateral); pantr reverses edge 2 and "
-    "emits the interior j-fastest, so cubic-and-higher quads render wrong",
-)
 def test_vtk_quad_ordering_matches_vtk_convention_cubic() -> None:
     perm = np.asarray(vtk_ordering_quad(3, 3), dtype=np.int64)
     ij = [divmod(int(flat), 4) for flat in perm]  # tp flat index is i-major
@@ -442,12 +426,6 @@ def test_vtk_quad_ordering_matches_vtk_convention_cubic() -> None:
     assert ij == expected
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="VTK high-order hex ordering: the six face blocks must come in the order "
-    "(i=0, i=pu, j=0, j=pv, k=0, k=pw) per vtkHigherOrderHexahedron; pantr emits "
-    "(k=0, k=pw, j=0, i=pu, j=pv, i=0), so every quadratic-and-higher hex renders wrong",
-)
 def test_vtk_hex_face_block_order_quadratic() -> None:
     perm = np.asarray(vtk_ordering_hex(2, 2, 2), dtype=np.int64)
     # Degree (2,2,2): 8 corners + 12 edge nodes, then the 6 face centres at
@@ -462,6 +440,100 @@ def test_vtk_hex_face_block_order_quadratic() -> None:
         1 * 9 + 1 * 3 + 2,  # k = pw -> (1,1,2) = 14
     ]
     assert face_centres == expected
+
+
+def _vtk_ref_quad_index(i: int, j: int, order: tuple[int, int]) -> int:
+    """``vtkHigherOrderQuadrilateral::PointIndexFromIJK`` transcribed verbatim."""
+    ibdy = i in (0, order[0])
+    jbdy = j in (0, order[1])
+    if ibdy and jbdy:  # corner
+        return (2 if j else 1) if i else (3 if j else 0)
+    offset = 4
+    if not ibdy:  # i-axis edge (j on a boundary)
+        return (i - 1) + (order[0] - 1 + order[1] - 1 if j else 0) + offset
+    if not jbdy:  # j-axis edge (i on a boundary)
+        return (j - 1) + (order[0] - 1 if i else 2 * (order[0] - 1) + order[1] - 1) + offset
+    raise AssertionError("unreachable")
+
+
+def _vtk_ref_quad_face_index(i: int, j: int, order: tuple[int, int]) -> int:
+    """Face-interior branch of the quad ``PointIndexFromIJK``."""
+    offset = 4 + 2 * (order[0] - 1 + order[1] - 1)
+    return offset + (i - 1) + (order[0] - 1) * (j - 1)
+
+
+def _vtk_ref_hex_index(  # noqa: PLR0911
+    i: int, j: int, k: int, order: tuple[int, int, int]
+) -> int:
+    """``vtkHigherOrderHexahedron::PointIndexFromIJK`` transcribed verbatim."""
+    o0, o1, o2 = order
+    ibdy = i in (0, o0)
+    jbdy = j in (0, o1)
+    kbdy = k in (0, o2)
+    nbdy = int(ibdy) + int(jbdy) + int(kbdy)
+    if nbdy == 3:  # corner
+        return ((2 if j else 1) if i else (3 if j else 0)) + (4 if k else 0)
+    offset = 8
+    if nbdy == 2:  # edge
+        if not ibdy:  # i-axis edge
+            return (
+                (i - 1)
+                + (o0 - 1 + o1 - 1 if j else 0)
+                + (2 * (o0 - 1 + o1 - 1) if k else 0)
+                + offset
+            )
+        if not jbdy:  # j-axis edge
+            return (
+                (j - 1)
+                + ((o0 - 1) if i else 2 * (o0 - 1) + o1 - 1)
+                + (2 * (o0 - 1 + o1 - 1) if k else 0)
+                + offset
+            )
+        # k-axis edge
+        offset += 4 * (o0 - 1) + 4 * (o1 - 1)
+        return (k - 1) + (o2 - 1) * ((2 if j else 1) if i else (3 if j else 0)) + offset
+    offset = 8 + 4 * (o0 - 1 + o1 - 1 + o2 - 1)
+    if nbdy == 1:  # face
+        if ibdy:
+            return (j - 1) + (o1 - 1) * (k - 1) + ((o1 - 1) * (o2 - 1) if i else 0) + offset
+        offset += 2 * (o1 - 1) * (o2 - 1)
+        if jbdy:
+            return (i - 1) + (o0 - 1) * (k - 1) + ((o2 - 1) * (o0 - 1) if j else 0) + offset
+        offset += 2 * (o2 - 1) * (o0 - 1)
+        return (i - 1) + (o0 - 1) * (j - 1) + ((o0 - 1) * (o1 - 1) if k else 0) + offset
+    # body
+    offset += 2 * ((o1 - 1) * (o2 - 1) + (o2 - 1) * (o0 - 1) + (o0 - 1) * (o1 - 1))
+    return offset + (i - 1) + (o0 - 1) * ((j - 1) + (o1 - 1) * (k - 1))
+
+
+@pytest.mark.parametrize("degrees", [(2, 2), (3, 3), (3, 4), (4, 2), (1, 3)])
+def test_vtk_quad_ordering_matches_pointindexfromijk(degrees: tuple[int, int]) -> None:
+    """The quad permutation must invert VTK's PointIndexFromIJK for every node."""
+    perm = np.asarray(vtk_ordering_quad(*degrees), dtype=np.int64)
+    nv = degrees[1] + 1
+    for i in range(degrees[0] + 1):
+        for j in range(nv):
+            ibdy = i in (0, degrees[0])
+            jbdy = j in (0, degrees[1])
+            if ibdy or jbdy:
+                vtk_pos = _vtk_ref_quad_index(i, j, degrees)
+            else:
+                vtk_pos = _vtk_ref_quad_face_index(i, j, degrees)
+            assert int(perm[vtk_pos]) == i * nv + j, (degrees, i, j)
+
+
+@pytest.mark.parametrize("degrees", [(2, 2, 2), (3, 3, 3), (3, 4, 2), (2, 1, 2)])
+def test_vtk_hex_ordering_matches_pointindexfromijk(
+    degrees: tuple[int, int, int],
+) -> None:
+    """The hex permutation must invert VTK's PointIndexFromIJK for every node."""
+    perm = np.asarray(vtk_ordering_hex(*degrees), dtype=np.int64)
+    nv, nw = degrees[1] + 1, degrees[2] + 1
+    for i in range(degrees[0] + 1):
+        for j in range(nv):
+            for k in range(nw):
+                vtk_pos = _vtk_ref_hex_index(i, j, k, degrees)
+                assert int(perm[vtk_pos]) == (i * nv + j) * nw + k, (degrees, i, j, k)
 
 
 # ---------------------------------------------------------------------------
