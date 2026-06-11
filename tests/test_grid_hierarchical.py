@@ -7,7 +7,13 @@ import numpy.testing as np_testing
 import pytest
 
 from pantr.geometry import AABB
-from pantr.grid import GridRestriction, HierarchicalGrid, hierarchical_grid, uniform_grid
+from pantr.grid import (
+    GridRestriction,
+    HierarchicalGrid,
+    TensorProductGrid,
+    hierarchical_grid,
+    uniform_grid,
+)
 from pantr.grid._hierarchical_grid import (
     _block_size,
     _in_block,
@@ -873,8 +879,6 @@ class TestHierarchicalGridRestrict:
 def _irregular_grid(ndim: int, factor: int | tuple[int, ...]) -> HierarchicalGrid:
     """Multi-level grid on irregular breakpoints with disjoint refined regions."""
     rng = np.random.default_rng(5 + ndim)
-    from pantr.grid import TensorProductGrid
-
     bp = [np.sort(np.concatenate([[0.0, 1.0], rng.random(5)])) for _ in range(ndim)]
     g = hierarchical_grid(TensorProductGrid(bp), factor)
     for lev in range(3):

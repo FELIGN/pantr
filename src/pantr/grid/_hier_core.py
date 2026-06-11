@@ -70,8 +70,8 @@ def _block_of_midx(  # noqa: PLR0913
             continue
         offset = 0
         for k in range(ndim):
-            offset = offset * (block_hi[b, k] - block_lo[b, k]) + (midx[k] - block_lo[b, k])
-        return block_base[b] + offset
+            offset = offset * int(block_hi[b, k] - block_lo[b, k]) + int(midx[k] - block_lo[b, k])
+        return int(block_base[b]) + offset
     return -1
 
 
@@ -107,7 +107,7 @@ def _encode_midx_core(  # noqa: PLR0913
 
 
 @nb_jit(nopython=True, cache=True)
-def _decode_flat_id_core(
+def _decode_flat_id_core(  # noqa: PLR0913
     cid: int,
     block_lo: npt.NDArray[np.int64],
     block_hi: npt.NDArray[np.int64],
@@ -168,7 +168,7 @@ def _decode_flat_id_core(
 
 
 @nb_jit(nopython=True, cache=True, parallel=True)
-def _hier_locate_points_core(  # noqa: PLR0913 -- flat hierarchical grid descriptor
+def _hier_locate_points_core(  # noqa: PLR0912, PLR0913, PLR0915 -- flat grid descriptor
     points: npt.NDArray[np.float64],
     knots_flat: npt.NDArray[np.float64],
     knot_starts: npt.NDArray[np.int64],
@@ -249,7 +249,7 @@ def _hier_locate_points_core(  # noqa: PLR0913 -- flat hierarchical grid descrip
             continue
 
         # --- Top-down descent through the levels. ---
-        result = np.int64(-1)
+        result = -1
         for level in range(n_levels):
             cid = _block_of_midx(level, midx, block_lo, block_hi, block_base, level_block_start)
             if cid >= 0:
