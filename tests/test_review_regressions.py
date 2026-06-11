@@ -111,11 +111,6 @@ def _bernstein_degree6_from_roots(
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="dedup merge radius zero_tol/|f'| is unbounded at a multiple root: an exact "
-    "double root at t=0 swallows every other root on the clipping path (degree >= 6)",
-)
 def test_find_roots_double_root_at_zero_keeps_other_roots() -> None:
     # f(t) = t^2 (t - 0.5) (t + 1) (t^2 + 1): roots in [0, 1] are 0 (double) and 0.5.
     coeffs = _bernstein_degree6_from_roots([0.0, 0.0, 0.5, -1.0], [1.0, 0.0, 1.0])
@@ -124,17 +119,6 @@ def test_find_roots_double_root_at_zero_keeps_other_roots() -> None:
     assert np.any(np.abs(roots) < 1e-6), f"root at 0 missing: {roots!r}"
 
 
-@pytest.mark.skipif(
-    not _JIT_DISABLED,
-    reason="the unclamped count overflows out_roots: an out-of-bounds write is "
-    "memory-unsafe under JIT (nopython kernels have no bounds checks)",
-)
-@pytest.mark.xfail(
-    strict=True,
-    reason="batch dedup does not clamp the root count to the polynomial degree: "
-    "candidates around several even-multiplicity roots overflow the (degree,)-wide "
-    "output row (IndexError with JIT disabled, memory corruption with JIT)",
-)
 def test_find_roots_batch_multiple_double_roots_within_degree() -> None:
     # f(t) = t^2 (t - 0.3)^2 (t - 0.7)^2, degree 6, three double roots.
     coeffs = _bernstein_degree6_from_roots([0.0, 0.0, 0.3, 0.3, 0.7, 0.7])
@@ -145,8 +129,8 @@ def test_find_roots_batch_multiple_double_roots_within_degree() -> None:
     for row in range(2):
         count = int(counts[row])
         assert count <= degree
-        row_roots = np.asarray(roots[row][:count], dtype=np.float64)
-        assert np.all((row_roots >= 0.0) & (row_roots <= 1.0))
+        row_roots = np.sort(np.asarray(roots[row][:count], dtype=np.float64))
+        np.testing.assert_allclose(row_roots, [0.0, 0.3, 0.7], atol=1e-6)
 
 
 # ---------------------------------------------------------------------------
