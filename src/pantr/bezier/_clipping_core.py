@@ -298,6 +298,83 @@ def _clip_roots_core(  # noqa: PLR0912, PLR0915
     return roots, n_roots
 
 
+@nb_jit(nopython=True, cache=True)
+def _dedup_roots_core(
+    raw_roots: npt.NDArray[np.float32 | np.float64],
+    n_roots: int,
+    coeff: npt.NDArray[np.float32 | np.float64],
+    param_tol: float,
+    geom_tol: float,
+) -> tuple[npt.NDArray[np.float64], int]:
+    """Sort and deduplicate raw root candidates with derivative-aware merging.
+
+    The same root can be reported from multiple converging intervals. The
+    maximum gap between duplicates is ``O(zero_tol / |f'(root)|)``, so the
+    dedup threshold is adaptive: for each candidate, the derivative is
+    evaluated and the local merge radius is computed.
+
+    At a multiple root ``f'(root) = 0`` and the linearized radius diverges, so
+    it is capped at ``zero_tol ** (1/3)`` -- an upper bound on the candidate
+    cluster width around roots of multiplicity up to three (``|f| <= zero_tol``
+    within ``O(zero_tol ** (1/m))`` of a multiplicity-``m`` root). Without the
+    cap, an exact multiple root would swallow every later candidate.
+
+    Args:
+        raw_roots (npt.NDArray[np.float32 | np.float64]): Unsorted array of root
+            candidates. Only the first ``n_roots`` entries are valid.
+        n_roots (int): Number of valid entries in ``raw_roots``.
+        coeff (npt.NDArray[np.float32 | np.float64]): Original Bernstein coefficients
+            (used for derivative evaluation during dedup).
+        param_tol (float): Parametric tolerance.
+        geom_tol (float): Geometric tolerance.
+
+    Returns:
+        tuple[npt.NDArray[np.float64], int]: ``(roots, count)`` where only the
+            first ``count`` entries of ``roots`` are valid, sorted ascending.
+
+    Note:
+        Inputs are assumed to be correct (no validation performed).
+        For general use, call :func:`pantr.bezier.find_roots` instead.
+    """
+    out = np.empty(max(n_roots, 1), dtype=np.float64)
+    if n_roots == 0:
+        return out, 0
+
+    n = len(coeff) - 1
+    coeff_scale = 0.0
+    for i in range(n + 1):
+        coeff_scale = max(coeff_scale, abs(float(coeff[i])))
+    zero_tol = max(coeff_scale * (n + 1) * 4.0 * _DBL_EPSILON, geom_tol)
+    base_dedup = max(param_tol * 2.0, zero_tol * 4.0)
+    radius_cap = zero_tol ** (1.0 / 3.0)
+
+    for i in range(n_roots):
+        out[i] = raw_roots[i]
+    # Insertion sort -- n_roots is small.
+    for i in range(1, n_roots):
+        key = out[i]
+        j = i - 1
+        while j >= 0 and out[j] > key:
+            out[j + 1] = out[j]
+            j -= 1
+        out[j + 1] = key
+
+    count = 1
+    for i in range(1, n_roots):
+        gap = out[i] - out[count - 1]
+        if gap <= base_dedup:
+            continue
+        # Derivative-aware merge, capped for (near-)multiple roots.
+        _, df = _de_casteljau_eval_and_deriv_scalar(coeff, out[count - 1])
+        local_tol = zero_tol / max(abs(df), _DBL_EPSILON)
+        if gap <= max(base_dedup, min(local_tol * 4.0, radius_cap)):
+            continue
+        out[count] = out[i]
+        count += 1
+
+    return out, count
+
+
 def _dedup_roots(
     raw_roots: npt.NDArray[np.float32 | np.float64],
     n_roots: int,
@@ -305,12 +382,10 @@ def _dedup_roots(
     param_tol: float,
     geom_tol: float,
 ) -> npt.NDArray[np.float64]:
-    """Sort and deduplicate raw root candidates with derivative-aware merging.
+    """Sort and deduplicate raw root candidates (plain-Python wrapper).
 
-    The same root can be reported from multiple converging intervals. The
-    maximum gap between duplicates is ``O(zero_tol / |f'(root)|)``, so the
-    dedup threshold is adaptive: for each candidate, the derivative is
-    evaluated and the local merge radius is computed.
+    Thin wrapper around :func:`_dedup_roots_core` returning only the valid
+    prefix; see that kernel for the merge-radius logic.
 
     Args:
         raw_roots (npt.NDArray[np.float32 | np.float64]): Unsorted array of root
@@ -326,26 +401,9 @@ def _dedup_roots(
     """
     if n_roots == 0:
         return np.empty(0, dtype=np.float64)
-
-    n = len(coeff) - 1
-    coeff_scale = float(np.max(np.abs(coeff)))
-    zero_tol = max(coeff_scale * (n + 1) * 4.0 * _DBL_EPSILON, geom_tol)
-    base_dedup = max(param_tol * 2.0, zero_tol * 4.0)
-
-    result = sorted(float(raw_roots[i]) for i in range(n_roots))
-    unique: list[float] = [result[0]]
-    for r in result[1:]:
-        gap = r - unique[-1]
-        if gap <= base_dedup:
-            continue
-        # Derivative-aware merge.
-        _, df = _de_casteljau_eval_and_deriv_scalar(coeff, unique[-1])
-        local_tol = zero_tol / max(abs(df), _DBL_EPSILON)
-        if gap <= max(base_dedup, local_tol * 4.0):
-            continue
-        unique.append(r)
-
-    return np.array(unique, dtype=np.float64)
+    out, count = _dedup_roots_core(raw_roots, n_roots, coeff, param_tol, geom_tol)
+    result: npt.NDArray[np.float64] = out[:count].copy()
+    return result
 
 
 def _warmup_numba_functions() -> None:
@@ -354,4 +412,5 @@ def _warmup_numba_functions() -> None:
     Called from the background warmup thread in ``pantr.__init__``.
     """
     dummy = np.array([1.0, -1.0, 0.5], dtype=np.float64)
-    _clip_roots_core(dummy, 1e-12, 1e-12)
+    raw, n_raw = _clip_roots_core(dummy, 1e-12, 1e-12)
+    _dedup_roots_core(raw, n_raw, dummy, 1e-12, 1e-12)

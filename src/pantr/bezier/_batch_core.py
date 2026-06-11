@@ -16,8 +16,7 @@ import numpy as np
 from numpy import typing as npt
 
 from pantr._numba_compat import nb_jit, nb_prange
-from pantr.bezier._clipping_core import _clip_roots_core
-from pantr.bezier._root_finding_core import _DBL_EPSILON
+from pantr.bezier._clipping_core import _clip_roots_core, _dedup_roots_core
 from pantr.bezier._yuksel_core import (
     _solve_monotone_root_kernel,
     _yuksel_roots,
@@ -38,7 +37,7 @@ Duplicated from ``_find_roots.py`` -- keep in sync.
 
 
 @nb_jit(nopython=True, cache=True)
-def _dispatch_and_find(  # noqa: PLR0912
+def _dispatch_and_find(
     coeff: npt.NDArray[np.float32 | np.float64],
     param_tol: float,
     geom_tol: float,
@@ -98,31 +97,9 @@ def _dispatch_and_find(  # noqa: PLR0912
     if n_roots == 0:
         return raw_roots, 0
 
-    # Sort (simple insertion sort -- n_roots is small).
-    for i in range(1, n_roots):
-        key = raw_roots[i]
-        j = i - 1
-        while j >= 0 and raw_roots[j] > key:
-            raw_roots[j + 1] = raw_roots[j]
-            j -= 1
-        raw_roots[j + 1] = key
-
-    # Basic dedup.
-    coeff_scale = 0.0
-    for i in range(n + 1):
-        coeff_scale = max(coeff_scale, abs(coeff[i]))
-    zero_tol = max(coeff_scale * (n + 1) * 4.0 * _DBL_EPSILON, geom_tol)
-    dedup_tol = max(param_tol * 2.0, zero_tol * 4.0)
-
-    out = np.empty(n_roots, dtype=np.float64)
-    out[0] = raw_roots[0]
-    count = 1
-    for i in range(1, n_roots):
-        if raw_roots[i] - out[count - 1] > dedup_tol:
-            out[count] = raw_roots[i]
-            count += 1
-
-    return out, count
+    # Sort and deduplicate with the shared derivative-aware merge (capped for
+    # multiple roots), matching the single-polynomial path.
+    return _dedup_roots_core(raw_roots, n_roots, coeff, param_tol, geom_tol)
 
 
 @nb_jit(nopython=True, cache=True, parallel=True)
@@ -158,6 +135,9 @@ def _find_roots_batch_core(
     for i in nb_prange(n_polys):
         coeff_i = coeffs[i].copy()
         roots, count = _dispatch_and_find(coeff_i, param_tol, geom_tol)
+        # A degree-n polynomial has at most n roots; clamp as a memory-safety
+        # backstop so a dedup artifact can never overflow the output row.
+        count = min(count, out_roots.shape[1])
         out_counts[i] = count
         for j in range(count):
             out_roots[i, j] = roots[j]
