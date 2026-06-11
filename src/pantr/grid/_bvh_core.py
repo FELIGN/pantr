@@ -14,7 +14,7 @@ Three kernels are exposed to Layer 2:
 - :func:`_bvh_query_emit_core` -- fills a preallocated output array with the
   cell identifiers of overlapping leaves.
 
-Both kernels share the same traversal structure and visit nodes in an identical
+Both query kernels share the same traversal structure and visit nodes in an identical
 order so that ``count`` and ``emit`` agree on the output size. The traversal is
 deterministic: the left child is pushed first and the right child last, so the
 stack pops right first and the tree is visited in preorder, right to left. This

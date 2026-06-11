@@ -180,6 +180,27 @@ def test_build_tree_3_cells_structure() -> None:
         mid = float(lo[c, 0]) + 0.5
         result = bvh.query_aabb(AABB([mid - 0.1], [mid + 0.1]))
         assert c in result.tolist()
+    # Exact preorder node-index layout (regression guard for next_idx / push order).
+    # Root splits [0,3) at median 1 → left=node1 (leaf, cell 0), right=node2.
+    # Node2 splits [1,3) at median 1 → left=node3 (leaf, cell 1), right=node4 (leaf, cell 2).
+    assert bvh.node_left[0] == 1 and bvh.node_right[0] == 2
+    assert bvh.node_cell[0] == -1
+    assert bvh.node_cell[1] == 0 and bvh.node_left[1] == -1
+    assert bvh.node_left[2] == 3 and bvh.node_right[2] == 4
+    assert bvh.node_cell[2] == -1
+    assert bvh.node_cell[3] == 1 and bvh.node_cell[4] == 2
+
+
+def test_build_tree_2_cells_structure() -> None:
+    """A 2-cell BVH (minimal internal node) has 3 nodes with correct structure."""
+    lo = np.array([[0.0], [1.0]])
+    hi = lo + 1.0
+    bvh = BVH.from_cell_bounds(lo, hi)
+    assert bvh.n_nodes == 3
+    assert bvh.n_cells == 2
+    assert bvh.node_cell[0] == -1
+    assert bvh.node_left[0] == 1 and bvh.node_right[0] == 2
+    assert sorted(bvh.node_cell[1:].tolist()) == [0, 1]
 
 
 def test_from_cell_bounds_1d_array_raises() -> None:
@@ -249,6 +270,8 @@ def test_build_invariants_random() -> None:
             np.testing.assert_array_equal(bvh.node_hi[i], hi[cell])
         else:
             assert bvh.node_cell[i] == -1
+            assert 0 <= left < bvh.n_nodes
+            assert 0 <= right < bvh.n_nodes
             np.testing.assert_array_equal(
                 bvh.node_lo[i], np.minimum(bvh.node_lo[left], bvh.node_lo[right])
             )
