@@ -176,12 +176,6 @@ def _two_level_jump_grid() -> tuple[HierarchicalGrid, int, int]:
     return grid, cid_coarse, cid_fine
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="neighbor_across_facet only probes +-1 level: a facet between level-0 and "
-    "level-2 cells (which plain refine() permits) reports no neighbor and the interior "
-    "facet is misclassified as a mesh boundary",
-)
 def test_hierarchical_neighbor_across_two_level_jump() -> None:
     grid, cid_coarse, cid_fine = _two_level_jump_grid()
     assert grid.neighbor_across_facet(cid_coarse, 1) == cid_fine
@@ -190,12 +184,44 @@ def test_hierarchical_neighbor_across_two_level_jump() -> None:
     assert grid.hanging_neighbors(cid_coarse, 1) == (cid_fine,)
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="the (max_level, num_cells) staleness snapshot is fooled by a compensating "
-    "refine+coarsen pair: the stale THB space then silently returns wrong dofs/values "
-    "instead of raising",
-)
+def test_hierarchical_hanging_neighbors_mixed_level_facet() -> None:
+    """A facet shared with level-1 AND level-2 cells must report all of them.
+
+    The brute-force oracle pairs every active cell whose face lies on the shared
+    plane and overlaps the coarse cell's extent.
+    """
+    grid = HierarchicalGrid(uniform_grid([[0.0, 1.0], [0.0, 1.0]], [4, 4]), 2)
+    grid.refine(0, [1, 0], [2, 4])  # refine the x-index-1 column to level 1
+    grid.refine(1, [2, 2], [3, 3])  # refine one of its cells to level 2
+
+    coarse = next(
+        c
+        for c in range(grid.num_cells)
+        if grid.cell_level(c) == 0 and grid.cell_multi_index(c) == (0, 1)
+    )
+    lo_c, hi_c = grid.cell_bounds(coarse)
+    plane = float(hi_c[0])
+
+    def touches_facet(other: int) -> bool:
+        lo_o, hi_o = grid.cell_bounds(other)
+        on_plane = abs(float(lo_o[0]) - plane) < 1e-12
+        overlaps = float(lo_o[1]) < float(hi_c[1]) - 1e-12 and (
+            float(hi_o[1]) > float(lo_c[1]) + 1e-12
+        )
+        return on_plane and overlaps
+
+    expected = {c for c in range(grid.num_cells) if c != coarse and touches_facet(c)}
+    levels = {grid.cell_level(c) for c in expected}
+    assert levels == {1, 2}  # the configuration really mixes two finer levels
+
+    got = grid.hanging_neighbors(coarse, 1)
+    assert set(got) == expected
+    assert len(got) == len(expected)
+    assert grid.neighbor_across_facet(coarse, 1) in expected
+    for fine in expected:
+        assert grid.neighbor_across_facet(fine, 0) == coarse
+
+
 def test_thb_space_detects_compensating_refine_coarsen() -> None:
     root = BsplineSpace([_open_uniform_1d(2, 8)])
     grid = HierarchicalGrid(uniform_grid([[0.0, 1.0]], [8]), 2)
@@ -216,11 +242,6 @@ def test_thb_space_detects_compensating_refine_coarsen() -> None:
         space.tabulate_basis(2, pt)
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="locate/locate_many accept NaN coordinates and return a valid cell id "
-    "(last cell on the scalar path, first cell on the batch path) instead of a miss",
-)
 def test_locate_nan_is_a_miss() -> None:
     grid = uniform_grid([[0.0, 1.0]], [4])
     assert grid.locate([float("nan")]) is None
