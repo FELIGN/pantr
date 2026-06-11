@@ -2158,6 +2158,27 @@ class TestSerialParallelKernelTwins:
         np.testing.assert_array_equal(basis_ser, basis_par)
         np.testing.assert_array_equal(first_ser, first_par)
 
+    def test_float32_deriv_supported(self) -> None:
+        """Serial derivative twin compiles and agrees for float32 inputs."""
+        knots = np.array([0, 0, 0, 0.25, 0.5, 0.75, 1, 1, 1], dtype=np.float32)
+        sp = BsplineSpace1D(knots, 2)
+        pts = np.array([0.1, 0.4, 0.9], dtype=np.float32)
+        n_deriv = 2
+        order = sp.degree + 1
+
+        der_par = np.empty((3, n_deriv + 1, order), dtype=np.float32)
+        first_par = np.empty(3, dtype=np.int_)
+        _compute_basis_deriv_nurbs_book_impl(
+            sp.knots, sp.degree, sp.periodic, sp.tolerance, n_deriv, pts, der_par, first_par
+        )
+        der_ser = np.empty((3, n_deriv + 1, order), dtype=np.float32)
+        first_ser = np.empty(3, dtype=np.int_)
+        _compute_basis_deriv_nurbs_book_serial_impl(
+            sp.knots, sp.degree, sp.periodic, sp.tolerance, n_deriv, pts, der_ser, first_ser
+        )
+        np.testing.assert_array_equal(der_ser, der_par)
+        np.testing.assert_array_equal(first_ser, first_par)
+
     def test_layer2_dispatch_consistent_across_threshold(self) -> None:
         """Layer-2 tabulation gives identical results below and above the threshold."""
         knots = create_uniform_open_knots(num_intervals=16, degree=3)
@@ -2171,10 +2192,43 @@ class TestSerialParallelKernelTwins:
         np.testing.assert_array_equal(basis_small, basis_big[:8])
         np.testing.assert_array_equal(first_small, first_big[:8])
 
+        # n_deriv=2: standard case
         der_big, dfirst_big = _tabulate_Bspline_basis_deriv_1D_impl(sp, big, 2)
         der_small, dfirst_small = _tabulate_Bspline_basis_deriv_1D_impl(sp, small, 2)
         np.testing.assert_array_equal(der_small, der_big[:8])
         np.testing.assert_array_equal(dfirst_small, dfirst_big[:8])
+
+        # n_deriv=0: degenerate path — only 0th-order row is filled
+        der_big0, _ = _tabulate_Bspline_basis_deriv_1D_impl(sp, big, 0)
+        der_small0, _ = _tabulate_Bspline_basis_deriv_1D_impl(sp, small, 0)
+        np.testing.assert_array_equal(der_small0, der_big0[:8])
+
+    @pytest.mark.parametrize(
+        "num_pts", [_PARALLEL_MIN_NUM_PTS - 1, _PARALLEL_MIN_NUM_PTS, _PARALLEL_MIN_NUM_PTS + 1]
+    )
+    def test_layer2_dispatch_boundary(self, num_pts: int) -> None:
+        """Basis values are correct at, one below, and one above the dispatch threshold."""
+        knots = create_uniform_open_knots(num_intervals=16, degree=3)
+        sp = BsplineSpace1D(knots, 3)
+        rng = np.random.default_rng(42)
+        pts = rng.random(num_pts)
+        basis, _ = _tabulate_Bspline_basis_1D_impl(sp, pts)
+        np.testing.assert_allclose(basis.sum(axis=-1), np.ones(num_pts), atol=1e-13)
+
+    def test_layer2_dispatch_periodic_small_batch(self) -> None:
+        """Serial path is used for periodic spaces below the threshold."""
+        periodic_knots = create_uniform_periodic_knots(num_intervals=8, degree=3)
+        sp = BsplineSpace1D(periodic_knots, 3, periodic=True)
+        rng = np.random.default_rng(99)
+        lo, hi = float(sp.domain[0]), float(sp.domain[1])
+        pts_small = lo + (hi - lo) * rng.random(8)
+        pts_big = lo + (hi - lo) * rng.random(_PARALLEL_MIN_NUM_PTS + 64)
+
+        basis_small, _ = _tabulate_Bspline_basis_1D_impl(sp, pts_small)
+        np.testing.assert_allclose(basis_small.sum(axis=-1), np.ones(8), atol=1e-13)
+
+        basis_big, _ = _tabulate_Bspline_basis_1D_impl(sp, pts_big)
+        np.testing.assert_allclose(basis_big.sum(axis=-1), np.ones(len(pts_big)), atol=1e-13)
 
 
 class TestKnotPredicateCaching:
@@ -2204,4 +2258,12 @@ class TestKnotPredicateCaching:
         assert not sp.has_left_end_open()
         assert not sp.has_right_end_open()
         assert not sp.has_open_knots()
+        assert not sp.has_Bezier_like_knots()
+
+    def test_open_non_bezier_not_bezier_like(self) -> None:
+        """Open knots with multiple spans must not report Bézier-like."""
+        knots = create_uniform_open_knots(num_intervals=3, degree=2)
+        sp = BsplineSpace1D(knots, 2)
+        assert sp.has_open_knots()
+        assert sp.num_basis > sp.degree + 1
         assert not sp.has_Bezier_like_knots()
