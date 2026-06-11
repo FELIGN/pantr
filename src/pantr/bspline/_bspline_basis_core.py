@@ -41,6 +41,7 @@ the Layer-2 tabulation helpers dispatch to the serial twin kernels instead.
 @nb_jit(
     nopython=True,
     cache=True,
+    parallel=False,
 )
 def _find_spans_and_first_basis(  # noqa: PLR0913
     knots: npt.NDArray[np.float32 | np.float64],
@@ -52,9 +53,18 @@ def _find_spans_and_first_basis(  # noqa: PLR0913
 ) -> npt.NDArray[np.int_]:
     """Compute clamped knot-span indices and fill the first-basis indices.
 
-    Shared preamble of the BasisFuncs / DerBasisFuncs kernels: locates each
-    point's knot span, clamps it to the last in-domain span, and derives the
-    index of the first nonzero basis function per point.
+    Shared preamble of the BasisFuncs / DerBasisFuncs kernels.  Three steps:
+
+    1. Locate each point's raw knot span via binary search.
+    2. Clamp each span index to ``knots.size - degree - 2`` (the last in-domain
+       span).  Without clamping, a point at the right domain endpoint can be
+       placed in an out-of-domain span, causing Cox-de Boor to read knot values
+       beyond the last valid span.
+    3. Compute ``out_first_basis``: for non-periodic splines the index is
+       additionally clamped so the final evaluation point always addresses the
+       last ``degree + 1`` active basis functions; for periodic splines the raw
+       (unclamped) index is used so the evaluation loop can wrap it modulo the
+       number of control points.
 
     Args:
         knots (npt.NDArray[np.float32 | np.float64]): B-spline knot vector.
@@ -70,6 +80,7 @@ def _find_spans_and_first_basis(  # noqa: PLR0913
 
     Note:
         Inputs are assumed to be correct (no validation performed).
+        For general use, call :func:`_tabulate_Bspline_basis_1D_impl` instead.
     """
     knot_ids = _get_last_knot_smaller_equal_impl(knots, pts)
 
@@ -167,7 +178,7 @@ def _compute_basis_nurbs_book_impl(  # noqa: PLR0913
     This function implements Algorithm A2.2 from "The NURBS Book" by Piegl & Tiller.
     Results are written directly to the output arrays (C-style).  The outer loop
     over evaluation points is parallelized via ``prange``; for small batches
-    (fewer than `_PARALLEL_MIN_NUM_PTS` points) prefer the serial twin
+    (fewer than ``_PARALLEL_MIN_NUM_PTS`` points) prefer the serial twin
     :func:`_compute_basis_nurbs_book_serial_impl`, which avoids the parallel
     launch overhead.
 
@@ -329,6 +340,9 @@ def _basis_derivs_point(  # noqa: PLR0913
             s2 = j
 
     # --- Step 3: apply degree factorial scaling factors ---
+    # When k > degree, fac becomes 0 (degree - k ≤ 0), so rows beyond degree
+    # are zeroed out.  This is intentional: the k-th derivative of a degree-p
+    # polynomial is identically zero for k > p.
     fac = degree
     for k in range(1, n_deriv + 1):
         for j in range(order):
@@ -356,7 +370,7 @@ def _compute_basis_deriv_nurbs_book_impl(  # noqa: PLR0913
     This function implements Algorithm A2.3 from "The NURBS Book" by Piegl & Tiller.
     Results are written directly to the output arrays (C-style).  The outer loop
     over evaluation points is parallelized via ``prange``; for small batches
-    (fewer than `_PARALLEL_MIN_NUM_PTS` points) prefer the serial twin
+    (fewer than ``_PARALLEL_MIN_NUM_PTS`` points) prefer the serial twin
     :func:`_compute_basis_deriv_nurbs_book_serial_impl`, which avoids the
     parallel launch overhead.
 
@@ -550,7 +564,9 @@ def _tabulate_Bspline_basis_1D_impl(
 
     This function automatically selects the most efficient evaluation method:
     - For Bézier-like knots: direct Bernstein evaluation
-    - For general knots: BasisFuncs (Piegl & Tiller A2.2)
+    - For general knots: BasisFuncs (Piegl & Tiller A2.2).  Batches smaller
+      than ``_PARALLEL_MIN_NUM_PTS`` use the serial (non-parallel) kernel to
+      avoid fork/join overhead; larger batches use the ``parallel=True`` kernel.
 
     In both cases it calls vectorized or numba implementations.
 
@@ -652,6 +668,8 @@ def _tabulate_Bspline_basis_deriv_1D_impl(
     Implements Algorithm A2.3 (DerBasisFuncs) from Piegl & Tiller.  Uses a
     fast Bernstein path for Bézier-like knots (parallel kernel + chain-rule
     scaling) and falls back to the general DerBasisFuncs kernel otherwise.
+    For general knots, batches smaller than ``_PARALLEL_MIN_NUM_PTS`` use the
+    serial twin to avoid fork/join overhead.
     The 0th slice of the result is identical to the output of
     :func:`_tabulate_Bspline_basis_1D_impl`.  For ``n_deriv > degree`` all
     rows beyond ``degree`` are identically zero.
@@ -738,8 +756,9 @@ def _tabulate_Bspline_basis_deriv_1D_impl(
 def _warmup_numba_functions() -> None:
     """Precompile numba functions with float64 signatures for faster first call.
 
-    This function triggers compilation of the numba-decorated functions
-    with float64 arrays, ensuring they are cached and ready for use.
+    Triggers compilation of the parallel and serial twin kernels (BasisFuncs,
+    DerBasisFuncs) and the Bernstein derivative core with float64 arrays,
+    ensuring they are cached and ready for use.
     """
     # Small dummy arrays for warmup
     knots_dummy = np.array([0.0, 0.0, 0.0, 1.0, 1.0, 1.0], dtype=np.float64)

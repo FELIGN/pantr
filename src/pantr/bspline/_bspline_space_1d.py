@@ -344,7 +344,8 @@ class BsplineSpace1D:
         """Whether the left end is open (cached; knots are immutable).
 
         Returns:
-            bool: True if the first ``degree + 1`` knots are equal.
+            bool: True if the first ``degree + 1`` knots are equal; always
+            False for periodic splines regardless of knot values.
         """
         if self.periodic:
             return False
@@ -358,7 +359,8 @@ class BsplineSpace1D:
         """Whether the right end is open (cached; knots are immutable).
 
         Returns:
-            bool: True if the last ``degree + 1`` knots are equal.
+            bool: True if the last ``degree + 1`` knots are equal; always
+            False for periodic splines regardless of knot values.
         """
         if self.periodic:
             return False
@@ -372,7 +374,8 @@ class BsplineSpace1D:
         """Whether the knots are a Bézier-like configuration (cached; knots are immutable).
 
         Returns:
-            bool: True if knots have open ends and only one non-zero span.
+            bool: True iff the spline is non-periodic, open on both ends, and
+            ``num_basis == degree + 1`` (i.e., exactly one non-zero span).
         """
         return (
             (not self._periodic)

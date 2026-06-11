@@ -111,10 +111,12 @@ if not TYPE_CHECKING:
             _clipping_core._warmup_numba_functions()
             _batch_core._warmup_numba_functions()
             logger.debug("Finished Numba JIT warmup.")
-        except Exception:
+        except Exception as exc:
             # During process teardown (e.g. short scripts), background Numba caching
-            # might fail due to unavailable module locators. We silently ignore this.
-            pass
+            # might fail due to unavailable module locators.  Log rather than swallow
+            # so that compilation errors (wrong type specialisation, cache corruption)
+            # are observable; the first affected call will still compile on demand.
+            logger.warning("Numba JIT warmup failed: %s", exc)
         finally:
             # Always signal completion so callers are never blocked indefinitely.
             _warmup_complete.set()
