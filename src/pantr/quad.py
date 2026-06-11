@@ -225,7 +225,15 @@ def get_modified_chebyshev_nodes_1d(
 def get_chebyshev_gauss_2nd_kind_1d(
     n_pts: int, dtype: npt.DTypeLike = np.float64
 ) -> tuple[npt.NDArray[np.float32 | np.float64], npt.NDArray[np.float32 | np.float64]]:
-    """Get Chebyshev-Gauss quadrature of the second kind on [0, 1] for the given number of points.
+    r"""Get Chebyshev-Gauss quadrature of the second kind on [0, 1] for the given number of points.
+
+    The rule integrates against the Chebyshev second-kind weight function
+    mapped to [0, 1]: :math:`\int_0^1 f(x) \sqrt{1 - (2x - 1)^2}\, dx \approx
+    \sum_k w_k f(x_k)`, exactly for polynomials of degree up to
+    ``2 * n_pts - 1``.  The nodes are the mapped roots of the Chebyshev
+    polynomial of the second kind :math:`U_{n_pts}` -- all interior (no
+    endpoints).  For endpoint-including Chebyshev-Lobatto *interpolation*
+    nodes, use :func:`get_modified_chebyshev_nodes_1d` instead.
 
     Args:
         n_pts (int): Number of quadrature points. Must be at least 2.
@@ -234,17 +242,18 @@ def get_chebyshev_gauss_2nd_kind_1d(
 
     Returns:
         tuple[npt.NDArray[np.float32 | np.float64], npt.NDArray[np.float32 | np.float64]]:
-            The nodes and weights.
+            The nodes (ascending, interior) and weights.
 
     Raises:
         ValueError: If n_pts is less than 2 or dtype is not float32 or float64.
     """
     _validate_n_pts_and_dtype(n_pts, dtype, min_pts=2)
 
-    cheb2_t = cast(Callable[[int], npt.NDArray[np.float64]], chebyshev.chebpts2)
-    nodes = cheb2_t(n_pts)
-    n_pts_plus_1 = float(n_pts + 1)
-    weights = np.pi / n_pts_plus_1 * (np.sin(np.arange(1, n_pts + 1) * np.pi / n_pts_plus_1) ** 2)
+    angles = np.arange(1, n_pts + 1, dtype=np.float64) * np.pi / float(n_pts + 1)
+    # Ascending Gauss-Chebyshev-U nodes on [-1, 1]; the weight formula is
+    # symmetric under k -> n_pts + 1 - k, so the pairing stays exact.
+    nodes = -np.cos(angles)
+    weights = np.pi / float(n_pts + 1) * np.sin(angles) ** 2
 
     return _scale_and_cast_nodes_and_weights(nodes, weights, dtype)
 
@@ -474,14 +483,18 @@ class PointsLattice:
             npt.NDArray[np.float32 | np.float64]: The dim-dimensional points
                 in the lattice. It has shape: (n_pts, dim).
         """
+        tp_coords = np.meshgrid(*self._pts_per_dir, indexing="ij")
         if order == "C":  # Last index varies fastest
-            tp_coords = np.meshgrid(*self._pts_per_dir, indexing="ij")
-        else:  # if order == "F": # First index varies fastest
-            tp_coords = np.meshgrid(*self._pts_per_dir, indexing="xy")
-
+            return cast(
+                npt.NDArray[np.float32 | np.float64],
+                np.array(tp_coords).reshape(self.dim, -1).T,  # (n_pts, dim)
+            )
+        # order == "F": first index varies fastest.  meshgrid(indexing="xy") only
+        # swaps the first two axes, so a Fortran-order ravel of each "ij"
+        # coordinate grid is required for dim >= 3.
         return cast(
             npt.NDArray[np.float32 | np.float64],
-            np.array(tp_coords).reshape(self.dim, -1).T,  # (n_pts, dim)
+            np.stack([c.ravel(order="F") for c in tp_coords], axis=-1),  # (n_pts, dim)
         )
 
 
