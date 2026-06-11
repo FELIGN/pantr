@@ -233,8 +233,10 @@ class THBSplineSpace:
         _func_offset (npt.NDArray[np.int64]): Per-level global-dof base; length
             ``num_levels + 1`` (cumulative active-function counts).
         _num_active (int): Total number of active hierarchical functions.
-        _grid_snapshot (tuple[int, int]): ``(max_level, num_cells)`` captured at
-            construction; used to detect post-construction grid mutations.
+        _grid_snapshot (tuple[int, int, int]): ``(max_level, num_cells, version)``
+            captured at construction; used to detect post-construction grid
+            mutations (the grid's :attr:`~pantr.grid.HierarchicalGrid.version`
+            counter catches mutations the other two cannot distinguish).
         _trunc (dict): Map from global dof (``int``) to ``_TruncCoeffs``;
             only truncated functions appear (empty when ``truncate=False``).
     """
@@ -332,7 +334,7 @@ class THBSplineSpace:
             np.int64
         )
         self._num_active = int(self._func_offset[-1])
-        self._grid_snapshot = (grid.max_level, grid.num_cells)
+        self._grid_snapshot = (grid.max_level, grid.num_cells, grid.version)
         self._trunc = self._compute_truncated_coeffs() if truncate else {}
         # Lazy per-cell cache of _cell_contributions (populated on first access). The
         # space is an immutable construction-time snapshot, so cached results stay valid.
@@ -592,10 +594,11 @@ class THBSplineSpace:
         """Raise if the grid has been modified since this space was constructed.
 
         Raises:
-            RuntimeError: If the grid's ``max_level`` or ``num_cells`` differs from
-                the snapshot taken at construction.
+            RuntimeError: If the grid's ``max_level``, ``num_cells``, or mutation
+                ``version`` differs from the snapshot taken at construction.
         """
-        if (self._grid.max_level, self._grid.num_cells) != self._grid_snapshot:
+        current = (self._grid.max_level, self._grid.num_cells, self._grid.version)
+        if current != self._grid_snapshot:
             raise RuntimeError(
                 "THBSplineSpace is stale: the underlying HierarchicalGrid has been modified "
                 "after construction. Create a new THBSplineSpace from the updated grid."

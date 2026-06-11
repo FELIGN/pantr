@@ -17,8 +17,10 @@ already-refined area is silently correct: only the currently-active portion of
 the region is refined.  Since the children of newly-active cells are always
 disjoint from existing level blocks, no deduplication is needed.
 
-*Automatic single-level balance.*  A level-``l`` frame cell is always adjacent
-to level-``(l+1)`` cells (diff = 1).  No explicit balancing pass is needed.
+*No balance constraint.*  :meth:`refine` imposes no 2:1 grading: cells of any
+two levels may share a facet.  Facet adjacency (:meth:`neighbor_across_facet`,
+:meth:`hanging_neighbors`) walks as many levels up or down as the interface
+requires.
 
 Main exports:
 
@@ -30,6 +32,7 @@ Main exports:
 from __future__ import annotations
 
 import bisect
+import itertools
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -251,9 +254,11 @@ class HierarchicalGrid(Grid):
         _level_base (list[int]): ``_level_base[l]`` is the flat-id base of
             level ``l``; length ``max_level + 2`` (includes sentinel).
         _num_cells (int): Cached total active cell count.
+        _version (int): Monotonic mutation counter, incremented on every
+            structural change (see :attr:`version`).
     """
 
-    __slots__ = ("_blocks", "_factor", "_level_base", "_num_cells", "_root")
+    __slots__ = ("_blocks", "_factor", "_level_base", "_num_cells", "_root", "_version")
 
     def __init__(
         self,
@@ -298,6 +303,7 @@ class HierarchicalGrid(Grid):
         self._blocks: list[list[_Block]] = [[(lo0, hi0)]]
         self._level_base: list[int] = []
         self._num_cells: int = 0
+        self._version: int = 0
         self._rebuild()
 
     @classmethod
@@ -341,6 +347,7 @@ class HierarchicalGrid(Grid):
         self._blocks = normalized
         self._level_base = []
         self._num_cells = 0
+        self._version = 0
         self._rebuild()
         return self
 
@@ -394,6 +401,20 @@ class HierarchicalGrid(Grid):
         """
         return len(self._blocks) - 1
 
+    @property
+    def version(self) -> int:
+        """Get the monotonic mutation counter of this grid.
+
+        Incremented on every structural change (:meth:`refine`, :meth:`coarsen`).
+        Snapshot consumers (e.g. :class:`~pantr.bspline.THBSplineSpace`) compare
+        it to detect *any* post-construction mutation -- ``max_level`` and
+        ``num_cells`` alone cannot distinguish compensating refine/coarsen pairs.
+
+        Returns:
+            int: The current mutation count (``>= 1``).
+        """
+        return self._version
+
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
@@ -402,6 +423,9 @@ class HierarchicalGrid(Grid):
         """Recompute ``_level_base``, ``_num_cells``, and reset the BVH/tags.
 
         Called after every structural change (construction or refinement).
+        Bumps :attr:`version` so snapshot consumers can detect any mutation,
+        including compensating refine/coarsen pairs that leave ``max_level``
+        and ``num_cells`` unchanged.
         """
         base = 0
         level_base: list[int] = []
@@ -411,6 +435,7 @@ class HierarchicalGrid(Grid):
         level_base.append(base)  # sentinel for bisect_right
         self._level_base = level_base
         self._num_cells = base
+        self._version += 1
         self._bvh = None
         self._cell_tags = None
         self._facet_tags = None
@@ -608,21 +633,21 @@ class HierarchicalGrid(Grid):
 
         return None  # unreachable
 
-    def neighbor_across_facet(self, cid: int, lfid: int) -> int | None:
-        """Return the cell across local facet ``lfid`` of ``cid``, or ``None``.
-
-        Handles hanging-node interfaces: when the neighbour is coarser (the
-        current cell is at a finer level), the coarse neighbour is returned.
-        When the neighbour is finer (the current cell is at a coarser level),
-        the first fine child touching the face (lowest C-order) is returned.
-        Use :meth:`hanging_neighbors` to retrieve *all* fine neighbours.
+    def _facet_neighbor_position(
+        self, cid: int, lfid: int
+    ) -> tuple[int, tuple[int, ...], int, int] | None:
+        """Resolve facet ``lfid`` of ``cid`` to its neighbour position.
 
         Args:
             cid (int): Cell identifier.
             lfid (int): Local facet identifier in ``[0, 2 * ndim)``.
 
         Returns:
-            int | None: Neighbouring cell id, or ``None`` on a boundary facet.
+            tuple[int, tuple[int, ...], int, int] | None:
+            ``(level, nbr_midx, axis, face_j)`` where ``(level, nbr_midx)`` is the
+            same-level position across the facet and ``face_j`` is the per-axis
+            child offset of descendants touching the shared facet plane, or
+            ``None`` when the facet lies on the grid outer boundary.
 
         Raises:
             IndexError: If ``cid`` or ``lfid`` is out of range.
@@ -638,39 +663,116 @@ class HierarchicalGrid(Grid):
             return None  # grid outer boundary
 
         nbr_midx = (*midx[:axis], new_ik, *midx[axis + 1 :])
+        face_j = self._factor[axis] - 1 if side == 0 else 0
+        return level, nbr_midx, axis, face_j
+
+    def _nearest_active_ancestor(self, level: int, midx: tuple[int, ...]) -> int | None:
+        """Return the active leaf covering ``(level, midx)`` at a strictly coarser level.
+
+        Args:
+            level (int): Level of the queried position.
+            midx (tuple[int, ...]): Per-axis index in level-``level`` coordinates.
+
+        Returns:
+            int | None: Flat id of the covering active leaf at the nearest coarser
+            level, or ``None`` when no ancestor is active (the position is either
+            an active leaf itself or subdivided into finer leaves).
+        """
+        anc = midx
+        for lvl in range(level - 1, -1, -1):
+            anc = tuple(i // f for i, f in zip(anc, self._factor, strict=False))
+            cid = self._encode_midx(lvl, anc)
+            if cid is not None:
+                return cid
+        return None
+
+    def _active_face_descendants(
+        self,
+        level: int,
+        midx: tuple[int, ...],
+        axis: int,
+        face_j: int,
+    ) -> list[int]:
+        """Collect the active leaves inside ``(level, midx)`` touching one of its faces.
+
+        Descends recursively through the subdivision tree, at each step keeping only
+        the children on the facet plane (child offset ``face_j`` on ``axis``) and
+        enumerating the remaining axes in C-order (depth-first), so the returned ids
+        are ordered by their position along the face.
+
+        Args:
+            level (int): Level of the starting position.
+            midx (tuple[int, ...]): Per-axis index in level-``level`` coordinates.
+            axis (int): Axis normal to the face.
+            face_j (int): Child offset on ``axis`` adjacent to the facet plane
+                (``factor[axis] - 1`` for the low side, ``0`` for the high side).
+
+        Returns:
+            list[int]: Flat ids of the active leaf descendants touching the face;
+            ``[cid]`` when ``(level, midx)`` is itself an active leaf.
+        """
+        cid = self._encode_midx(level, midx)
+        if cid is not None:
+            return [cid]
+        if level + 1 >= len(self._blocks):
+            return []
+        child_ranges = [
+            (face_j,) if k == axis else tuple(range(self._factor[k])) for k in range(self.ndim)
+        ]
+        result: list[int] = []
+        for offsets in itertools.product(*child_ranges):
+            child = tuple(m * f + o for m, f, o in zip(midx, self._factor, offsets, strict=False))
+            result.extend(self._active_face_descendants(level + 1, child, axis, face_j))
+        return result
+
+    def neighbor_across_facet(self, cid: int, lfid: int) -> int | None:
+        """Return the cell across local facet ``lfid`` of ``cid``, or ``None``.
+
+        Handles hanging-node interfaces across **any** level difference (no 2:1
+        balance is enforced by :meth:`refine`): when the neighbour is coarser, the
+        active leaf covering the position -- however many levels up -- is returned.
+        When the neighbour side is finer, the first active leaf descendant touching
+        the face (lowest C-order along the face) is returned.  Use
+        :meth:`hanging_neighbors` to retrieve *all* fine neighbours.
+
+        Args:
+            cid (int): Cell identifier.
+            lfid (int): Local facet identifier in ``[0, 2 * ndim)``.
+
+        Returns:
+            int | None: Neighbouring cell id, or ``None`` on a boundary facet.
+
+        Raises:
+            IndexError: If ``cid`` or ``lfid`` is out of range.
+        """
+        position = self._facet_neighbor_position(cid, lfid)
+        if position is None:
+            return None  # grid outer boundary
+        level, nbr_midx, axis, face_j = position
 
         # Case 1: same-level active neighbour (conforming).
         ncid = self._encode_midx(level, nbr_midx)
         if ncid is not None:
             return ncid
 
-        # Case 2: coarser active neighbour — current cell is finer.
-        if level > 0:
-            parent_midx = tuple(i // f for i, f in zip(nbr_midx, self._factor, strict=False))
-            pcid = self._encode_midx(level - 1, parent_midx)
-            if pcid is not None:
-                return pcid
+        # Case 2: coarser active neighbour (any number of levels up).
+        pcid = self._nearest_active_ancestor(level, nbr_midx)
+        if pcid is not None:
+            return pcid
 
-        # Case 3: finer active neighbour — current cell is coarser.
-        # (level, nbr_midx) was created and then refined.  Return the first
-        # child of (level, nbr_midx) at level+1 that touches the face.
-        if level + 1 < len(self._blocks):
-            face_j = self._factor[axis] - 1 if side == 0 else 0
-            child_midx: list[int] = []
-            for k, (nk, fk) in enumerate(zip(nbr_midx, self._factor, strict=False)):
-                child_midx.append(nk * fk + (face_j if k == axis else 0))
-            ccid = self._encode_midx(level + 1, tuple(child_midx))
-            if ccid is not None:
-                return ccid
-
-        return None
+        # Case 3: finer active neighbours (any number of levels down) — return
+        # the first leaf touching the face.
+        descendants = self._active_face_descendants(level, nbr_midx, axis, face_j)
+        return descendants[0] if descendants else None
 
     def hanging_neighbors(self, cid: int, lfid: int) -> tuple[int, ...]:
         """Return all active neighbours across facet ``lfid`` of ``cid``.
 
-        Equivalent to :meth:`neighbor_across_facet` for conforming interfaces.
-        For a hanging (fine-to-coarse) interface, returns all
-        ``factor^(ndim-1)`` fine children that touch the face in C-order.
+        Equivalent to :meth:`neighbor_across_facet` for conforming and coarser
+        interfaces (a single neighbour, however many levels up).  For a hanging
+        (fine-side) interface, returns *all* active leaves touching the face,
+        descending as many levels as the interface requires, ordered depth-first
+        along the face (C-order over the non-``axis`` directions at each level).
 
         Args:
             cid (int): Cell identifier.
@@ -682,48 +784,21 @@ class HierarchicalGrid(Grid):
         Raises:
             IndexError: If ``cid`` or ``lfid`` is out of range.
         """
-        self._check_lfid(cid, lfid)
-        axis, side = divmod(int(lfid), 2)
-        level, midx = self._decode_flat_id(cid)
-
-        delta = -1 if side == 0 else 1
-        new_ik = midx[axis] + delta
-        n_k = self._n_cells_at_level_k(level, axis)
-        if new_ik < 0 or new_ik >= n_k:
-            return ()
-
-        nbr_midx = (*midx[:axis], new_ik, *midx[axis + 1 :])
+        position = self._facet_neighbor_position(cid, lfid)
+        if position is None:
+            return ()  # grid outer boundary
+        level, nbr_midx, axis, face_j = position
 
         # Conforming or coarser — at most one neighbour.
         ncid = self._encode_midx(level, nbr_midx)
         if ncid is not None:
             return (ncid,)
-        if level > 0:
-            parent_midx = tuple(i // f for i, f in zip(nbr_midx, self._factor, strict=False))
-            pcid = self._encode_midx(level - 1, parent_midx)
-            if pcid is not None:
-                return (pcid,)
+        pcid = self._nearest_active_ancestor(level, nbr_midx)
+        if pcid is not None:
+            return (pcid,)
 
-        # Finer side — collect all factor^(ndim-1) children touching the face.
-        if level + 1 >= len(self._blocks):
-            return ()
-
-        face_j = self._factor[axis] - 1 if side == 0 else 0
-        result: list[int] = []
-
-        import itertools  # noqa: PLC0415
-
-        other_ranges = [range(self._factor[k]) for k in range(self.ndim) if k != axis]
-        for other_js in itertools.product(*other_ranges):
-            it = iter(other_js)
-            child_midx: list[int] = []
-            for k, (nk, fk) in enumerate(zip(nbr_midx, self._factor, strict=False)):
-                j = face_j if k == axis else next(it)
-                child_midx.append(nk * fk + j)
-            ccid = self._encode_midx(level + 1, tuple(child_midx))
-            if ccid is not None:
-                result.append(ccid)
-        return tuple(result)
+        # Finer side — collect all active leaves touching the face.
+        return tuple(self._active_face_descendants(level, nbr_midx, axis, face_j))
 
     # ------------------------------------------------------------------
     # Restriction / windowing
