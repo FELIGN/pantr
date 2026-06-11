@@ -6,7 +6,7 @@ using the BasisFuncs algorithm (Piegl & Tiller) and Bernstein-like evaluation.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING
 
 import numpy as np
 import numpy.typing as npt
@@ -87,11 +87,13 @@ def _find_spans_and_first_basis(  # noqa: PLR0913
     # recurrence always uses an in-domain span.  For open knot vectors this
     # subsumes the former ``knot_id == knots.size - 1`` special case.
     max_knot_id = knots.size - degree - 2
-    # Clamp both ends: upper bound prevents out-of-domain right-side points from
-    # landing in an invalid span; lower bound (`degree`) ensures knot_id + 1 - j >= 0
-    # for all j in range(1, degree+1), so _basis_funcs_point never wraps into
-    # negative knot indices for points left of the domain.
-    knot_ids = cast(npt.NDArray[np.int_], np.minimum(np.maximum(knot_ids, degree), max_knot_id))
+    # Clamp upper end (right-of-domain points → last valid span).
+    knot_ids = np.minimum(knot_ids, max_knot_id)
+    # Clamp lower end: ensures knot_id + 1 - j >= 0 for all j in range(1, degree+1),
+    # so _basis_funcs_point never wraps into negative knot indices for points left of
+    # the domain.  In-place boolean assignment avoids calling np.maximum (whose return
+    # type is Any on old py3.10 numpy stubs).
+    knot_ids[knot_ids < degree] = degree
 
     # For non-periodic splines, clamp first_basis so the last (degree+1) basis
     # functions are addressed by the final evaluation point.  For periodic
