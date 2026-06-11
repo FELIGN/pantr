@@ -95,7 +95,7 @@ def _tabulate_Bspline_Bezier_1D_extraction_core(
                 alpha = (t - lcl_knots[k]) / (lcl_knots[k + degree - r] - lcl_knots[k])
                 C[:, k - 1] = alpha * C[:, k] + (one - alpha) * C[:, k - 1]
 
-    alphas = np.zeros(degree - 1, dtype=dtype)
+    alphas = np.zeros(max(degree - 1, 0), dtype=dtype)  # degree 0: no insertion coefficients
 
     knt_id = degree
     mult = 0

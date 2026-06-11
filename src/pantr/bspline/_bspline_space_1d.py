@@ -68,7 +68,12 @@ def _cached_unique_knots_and_multiplicity(
     dtype = np.dtype(dtype_str)
     knots = np.frombuffer(knots_bytes, dtype=dtype, count=size).copy()
     tol_value = dtype.type(tol)
-    return _get_unique_knots_and_multiplicity_impl(knots, degree, tol_value, in_domain)
+    unique, mults = _get_unique_knots_and_multiplicity_impl(knots, degree, tol_value, in_domain)
+    # The same arrays are returned to every caller; freeze them so a caller
+    # mutation cannot poison the cache.
+    unique.flags.writeable = False
+    mults.flags.writeable = False
+    return unique, mults
 
 
 class BsplineSpace1D:
@@ -114,9 +119,14 @@ class BsplineSpace1D:
         """
         BsplineSpace1D._validate_input(knots, degree, periodic)
 
-        self._knots = np.asarray(knots)
-        if np.issubdtype(self._knots.dtype, np.integer):
-            self._knots = self._knots.astype(np.float64)
+        knots_arr = np.asarray(knots)
+        if np.issubdtype(knots_arr.dtype, np.integer):
+            knots_arr = knots_arr.astype(np.float64)
+        else:
+            # Always own the storage: the vector is frozen read-only below, and
+            # freezing a caller-supplied array in place would mutate caller state.
+            knots_arr = knots_arr.copy()
+        self._knots = knots_arr
 
         self._tol = BsplineSpace1D._get_tolerance(self.dtype)
 
@@ -204,7 +214,10 @@ class BsplineSpace1D:
 
         snapped_knots = self._knots.copy()
         for val in unique_vals:
-            mask = np.isclose(rounded, val, atol=0)
+            # Exact match on the rounded values: knots are merged only when they
+            # round to the same tolerance-grid point.  (np.isclose would compare
+            # with its default rtol=1e-5 and merge far-apart knots.)
+            mask = rounded == val
             snapped_knots[mask] = np.mean(self._knots[mask], dtype=self.dtype)
         self._knots = snapped_knots
 

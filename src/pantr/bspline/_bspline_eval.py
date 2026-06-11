@@ -24,6 +24,7 @@ from ._bspline_basis_core import (
     _compute_basis_deriv_nurbs_book_impl,
     _compute_basis_nurbs_book_impl,
 )
+from ._bspline_knots import _is_in_domain_impl
 
 if TYPE_CHECKING:
     from ..quad import PointsLattice
@@ -99,6 +100,30 @@ def _evaluate_Bspline_basis_combine_1D(  # noqa: PLR0913
     return out
 
 
+def _check_pts_in_domain_1d(
+    spline_1d: BsplineSpace1D,
+    pts: npt.NDArray[np.float32 | np.float64],
+) -> None:
+    """Raise if any evaluation point lies outside the 1D space's domain.
+
+    Mirrors the validation of the nD tabulation path: without it, out-of-domain
+    points reach the Layer-3 kernels and produce silent garbage (negative span
+    indices wrap around the control-point array).
+
+    Args:
+        spline_1d (BsplineSpace1D): The 1D space whose domain bounds apply.
+        pts (npt.NDArray[np.float32 | np.float64]): Evaluation points.
+
+    Raises:
+        ValueError: If any point lies outside the knot-vector domain
+            (up to the space's tolerance).
+    """
+    if not np.all(_is_in_domain_impl(spline_1d.knots, spline_1d.degree, pts, spline_1d.tolerance)):
+        raise ValueError(
+            f"One or more values in pts are outside the knot vector domain {spline_1d.domain}"
+        )
+
+
 def _evaluate_Bspline_1D(
     spline: Bspline,
     pts: npt.NDArray[np.float32 | np.float64] | PointsLattice,
@@ -145,6 +170,9 @@ def _evaluate_Bspline_1D(
     if pts_array.dtype != spline.dtype:
         raise ValueError("Points dtype must match B-spline dtype")
 
+    spline_1D = spline.space.spaces[0]
+    _check_pts_in_domain_1d(spline_1D, pts_array)
+
     n_pts = pts_array.shape[0]
     expected_shape = (n_pts, spline.control_points.shape[-1])
     expected_dtype = spline.dtype
@@ -156,8 +184,6 @@ def _evaluate_Bspline_1D(
     else:
         _validate_out_array(out, expected_shape, expected_dtype)
         out_array = out
-
-    spline_1D = spline.space.spaces[0]
 
     _evaluate_Bspline_basis_combine_1D(
         spline.control_points,
@@ -495,6 +521,7 @@ def _evaluate_Bspline_deriv_1D(
         raise ValueError("Points dtype must match B-spline dtype")
 
     spline_1D = spline.space.spaces[0]
+    _check_pts_in_domain_1d(spline_1D, pts_array)
     if spline.is_rational:
         return _evaluate_Bspline_deriv_1D_rational(spline, spline_1D, pts_array, n_deriv, out)
     return _evaluate_Bspline_deriv_1D_non_rational(spline, spline_1D, pts_array, n_deriv, out)

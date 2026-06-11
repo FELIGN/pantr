@@ -56,7 +56,12 @@ def _derivative_ctrl_1d(
     for _ in range(ctrl.ndim - 1):
         denom = denom[..., np.newaxis]
     diff = ctrl[1:] - ctrl[:-1]
-    return np.where(denom == 0.0, 0.0, degree * diff / denom)
+    # Masked division: a multiplicity-(degree+1) interior knot makes denom zero
+    # (C^-1 spline); np.where would still evaluate the division eagerly and emit
+    # a divide-by-zero warning (an error under warnings-as-errors test configs).
+    result = np.zeros(np.broadcast_shapes(diff.shape, denom.shape), dtype=diff.dtype)
+    np.divide(degree * diff, denom, out=result, where=denom != 0.0)
+    return result
 
 
 def _derivative_nonrational_1d(bspline: Bspline) -> Bspline:
