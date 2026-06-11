@@ -863,3 +863,115 @@ class TestHierarchicalGridRestrict:
         # Bounding box spans the full 6x6 root; in_subset flags only the two corners.
         assert int(r.in_subset.sum()) == 2
         assert r.grid.num_cells > 2  # fill cells included in bbox
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Numba kernel backing (locate_many / collect_cell_bounds / encode / decode)
+# ──────────────────────────────────────────────────────────────────────────────
+
+
+def _irregular_grid(ndim: int, factor: int | tuple[int, ...]) -> HierarchicalGrid:
+    """Multi-level grid on irregular breakpoints with disjoint refined regions."""
+    rng = np.random.default_rng(5 + ndim)
+    from pantr.grid import TensorProductGrid
+
+    bp = [np.sort(np.concatenate([[0.0, 1.0], rng.random(5)])) for _ in range(ndim)]
+    g = hierarchical_grid(TensorProductGrid(bp), factor)
+    for lev in range(3):
+        n = g.level_cells_per_axis(lev)
+        g.refine(lev, [0] * ndim, [max(1, n[k] // 2) for k in range(ndim)])
+    n1 = g.level_cells_per_axis(1)
+    g.refine(1, [max(0, n1[k] - 2) for k in range(ndim)], list(n1))
+    return g
+
+
+class TestHierKernelEquivalence:
+    """Kernel-backed batch methods agree exactly with the scalar reference paths."""
+
+    @pytest.mark.parametrize(("ndim", "factor"), [(1, 2), (2, 2), (2, (2, 3)), (3, 2)])
+    def test_collect_cell_bounds_matches_scalar(
+        self, ndim: int, factor: int | tuple[int, ...]
+    ) -> None:
+        """collect_cell_bounds is bitwise-identical to per-cell cell_bounds."""
+        g = _irregular_grid(ndim, factor)
+        assert g.max_level == 3
+        lo_all, hi_all = g.collect_cell_bounds()
+        for cid in range(g.num_cells):
+            lo, hi = g.cell_bounds(cid)
+            np_testing.assert_array_equal(lo_all[cid], lo)
+            np_testing.assert_array_equal(hi_all[cid], hi)
+
+    @pytest.mark.parametrize(("ndim", "factor"), [(1, 2), (2, 2), (2, (2, 3)), (3, 2)])
+    def test_locate_many_matches_scalar_locate(
+        self, ndim: int, factor: int | tuple[int, ...]
+    ) -> None:
+        """locate_many agrees with the per-point scalar locate on every point class."""
+        g = _irregular_grid(ndim, factor)
+        rng = np.random.default_rng(11)
+        pts = rng.random((4000, ndim)) * 1.3 - 0.15  # interior + outside points
+        lo_all, hi_all = g.collect_cell_bounds()
+        # Cell corners exercise breakpoint / level-interface ties.
+        pts = np.concatenate([pts, lo_all[:64], hi_all[:64]], axis=0)
+        got = g.locate_many(pts)
+        expected = np.array([-1 if (c := g.locate(p)) is None else c for p in pts], dtype=np.int64)
+        np_testing.assert_array_equal(got, expected)
+
+    def test_locate_many_nonfinite_points(self) -> None:
+        """NaN / infinite coordinates map to -1."""
+        g = _grid_2d()
+        pts = np.array([[np.nan, 0.5], [np.inf, 0.5], [0.5, -np.inf], [0.5, 0.5]])
+        np_testing.assert_array_equal(g.locate_many(pts)[:3], [-1, -1, -1])
+        assert g.locate_many(pts)[3] >= 0
+
+    @pytest.mark.parametrize(("ndim", "factor"), [(2, 2), (2, (2, 3)), (3, 2)])
+    def test_decode_encode_roundtrip(self, ndim: int, factor: int | tuple[int, ...]) -> None:
+        """_decode_flat_id and _encode_midx are mutually inverse over all cells."""
+        g = _irregular_grid(ndim, factor)
+        for cid in range(g.num_cells):
+            level, midx = g._decode_flat_id(cid)
+            assert g._encode_midx(level, midx) == cid
+
+    def test_encode_midx_inactive_positions(self) -> None:
+        """_encode_midx returns None for refined (non-leaf) and never-active positions."""
+        g = _grid_2d(4)
+        g.refine(0, [0, 0], [2, 2])
+        # (0, (0, 0)) was refined away -> not an active leaf.
+        assert g._encode_midx(0, (0, 0)) is None
+        # A level beyond the hierarchy.
+        assert g._encode_midx(5, (0, 0)) is None
+        # Level-1 position outside the refined region is not active.
+        assert g._encode_midx(1, (7, 7)) is None
+
+    def test_decode_out_of_range_raises(self) -> None:
+        """_decode_flat_id rejects out-of-range ids."""
+        g = _grid_2d(4)
+        with pytest.raises(IndexError, match="out of range"):
+            g._decode_flat_id(g.num_cells)
+        with pytest.raises(IndexError, match="out of range"):
+            g._decode_flat_id(-1)
+
+    def test_kernel_state_tracks_mutation(self) -> None:
+        """Packed kernel arrays are rebuilt by refine/coarsen (results stay exact)."""
+        g = _grid_2d(8)
+        rng = np.random.default_rng(17)
+        pts = rng.random((500, 2))
+        g.refine(0, [0, 0], [4, 4])
+        after_refine = g.locate_many(pts)
+        expected = np.array([-1 if (c := g.locate(p)) is None else c for p in pts])
+        np_testing.assert_array_equal(after_refine, expected)
+        g.coarsen(0, [0, 0], [4, 4])
+        after_coarsen = g.locate_many(pts)
+        expected2 = np.array([-1 if (c := g.locate(p)) is None else c for p in pts])
+        np_testing.assert_array_equal(after_coarsen, expected2)
+
+    def test_restricted_grid_uses_fresh_packed_arrays(self) -> None:
+        """Grids built via restrict() (the _from_blocks path) locate correctly."""
+        g = _grid_2d(8)
+        g.refine(0, [0, 0], [4, 4])
+        restr = g.restrict(np.arange(min(20, g.num_cells)))
+        sub = restr.grid
+        rng = np.random.default_rng(23)
+        pts = rng.random((300, 2))
+        got = sub.locate_many(pts)
+        expected = np.array([-1 if (c := sub.locate(p)) is None else c for p in pts])
+        np_testing.assert_array_equal(got, expected)
