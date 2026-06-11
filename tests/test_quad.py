@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from math import gamma
 from typing import Any, cast
 
 import numpy as np
@@ -195,16 +196,31 @@ class TestChebyshevGaussSecondKind:
 
     @pytest.mark.parametrize("n_pts", [2, 5, 9])
     @pytest.mark.parametrize("dtype", [np.float32, np.float64])
-    def test_nodes_endpoints_and_total_weight(self, n_pts: int, dtype: npt.DTypeLike) -> None:
+    def test_nodes_interior_and_total_weight(self, n_pts: int, dtype: npt.DTypeLike) -> None:
         nodes, weights = get_chebyshev_gauss_2nd_kind_1d(n_pts, dtype)
-        # endpoints included for n>=2
-        nptest.assert_allclose(nodes[0], np.array(0.0, dtype=dtype))
-        nptest.assert_allclose(nodes[-1], np.array(1.0, dtype=dtype))
-        # weights sum to (integral of sqrt(1-x^2) over [0,1]) = pi/4 after scaling
+        # Gauss nodes are the mapped roots of U_{n_pts}: all interior, ascending.
+        assert np.all((nodes > 0.0) & (nodes < 1.0))
+        assert np.all(np.diff(nodes) > 0.0)
+        # weights sum to (integral of sqrt(1-(2x-1)^2) over [0,1]) = pi/4
         nptest.assert_allclose(
             np.sum(weights), np.array(np.pi / 4.0, dtype=dtype), rtol=get_strict(dtype)
         )
-        assert np.all((nodes >= 0.0) & (nodes <= 1.0))
+
+    @pytest.mark.parametrize("n_pts", [2, 5, 9])
+    def test_weighted_polynomial_exactness(self, n_pts: int) -> None:
+        """The rule must be exact for x^d * sqrt(1-(2x-1)^2) up to d = 2*n_pts - 1."""
+        nodes, weights = get_chebyshev_gauss_2nd_kind_1d(n_pts, np.float64)
+        u = 2.0 * np.asarray(nodes, dtype=np.float64) - 1.0
+        w = np.asarray(weights, dtype=np.float64)
+        # int_{-1}^{1} u^d sqrt(1-u^2) du = sqrt(pi)/2 * gamma((d+1)/2) / gamma(d/2+2)
+        # for even d (0 for odd d); the [0,1] mapping halves the value.
+        for d in range(2 * n_pts):
+            exact = (
+                0.5 * np.sqrt(np.pi) / 2.0 * gamma((d + 1) / 2.0) / gamma(d / 2.0 + 2.0)
+                if d % 2 == 0
+                else 0.0
+            )
+            nptest.assert_allclose(np.sum(w * u**d), exact, atol=1e-14)
 
 
 class TestPointsLattice:

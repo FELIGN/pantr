@@ -281,12 +281,14 @@ def _to_open_bspline_1d_impl(
 
     # Trim external / ghost knots.  For both periodic (ghost knots) and
     # non-periodic unclamped (external support knots), there are
-    # ``p + 1 - m_bdy`` entries on each side that lie outside the domain and
-    # must be removed to obtain a clamped (open) knot vector.
-    n_trim = p + 1 - m_left
-    open_knots = new_knots[n_trim : len(new_knots) - n_trim] if n_trim else new_knots
+    # ``p + 1 - m_bdy`` entries outside the domain on each side -- counted with
+    # each side's own boundary multiplicity, which may differ.
+    n_trim_left = p + 1 - m_left
+    n_trim_right = p + 1 - m_right
+    end = len(new_knots) - n_trim_right
+    open_knots = new_knots[n_trim_left:end]
     n_open = len(open_knots) - p - 1
-    open_ctrl = new_ctrl[n_trim : n_trim + n_open] if n_trim else new_ctrl[:n_open]
+    open_ctrl = new_ctrl[n_trim_left : n_trim_left + n_open]
 
     return open_knots, open_ctrl
 

@@ -7,6 +7,7 @@ Provides :func:`interpolate_bspline` (callable-based),
 
 from __future__ import annotations
 
+import itertools
 from collections.abc import Callable, Sequence
 from typing import TYPE_CHECKING, Any, Literal
 
@@ -16,7 +17,7 @@ from numpy import typing as npt
 from .._interpolation_utils import resolve_svd_tolerance, split_components
 from ..quad import PointsLattice
 from ._bspline_space_1d import BsplineSpace1D
-from ._bspline_space_factory import create_greville_lattice, get_greville_abscissae
+from ._bspline_space_factory import create_greville_lattice
 from ._bspline_space_nd import BsplineSpace
 
 if TYPE_CHECKING:
@@ -881,7 +882,14 @@ def _l2_solve_components(  # noqa: PLR0913
 
         # Apply boundary interpolation to load vector.
         _apply_boundary_load(
-            func, space, quad_nodes_per_dir, bi_flags, load, comp_idx, n_components
+            func,
+            space,
+            quad_nodes_per_dir,
+            quad_weights_per_dir,
+            bi_flags,
+            load,
+            comp_idx,
+            n_components,
         )
 
         # Solve mass system per direction.
@@ -895,40 +903,66 @@ def _apply_boundary_load(  # noqa: PLR0913
     func: Callable[..., npt.ArrayLike],
     space: BsplineSpace,
     quad_nodes_per_dir: list[npt.NDArray[np.float32 | np.float64]],
+    quad_weights_per_dir: list[npt.NDArray[np.float32 | np.float64]],
     bi_flags: list[tuple[bool, bool]],
     load: npt.NDArray[np.floating[Any]],
     comp_idx: int,
     n_components: int,
 ) -> None:
-    """Apply boundary interpolation values to the load tensor in-place.
+    """Apply boundary-trace load values to the load tensor in-place.
+
+    The right-hand side of a Kronecker row is the tensor product of the
+    per-direction rows: a collocation row in every direction whose boundary row
+    was replaced, a mass row elsewhere.  An entry whose index sits on the
+    boundary of the directions in a set ``S`` must therefore hold the load
+    integrals over the directions **not** in ``S`` of the function restricted
+    to the boundary coordinates of ``S`` -- the boundary face traces, edge
+    traces, down to plain point values at corners where every direction is
+    collocated.  Subsets are processed by increasing size so the higher-order
+    intersections (edges, corners) overwrite the face values they sit on.
 
     Args:
         func (Callable): Function being projected.
         space (BsplineSpace): Target B-spline space.
         quad_nodes_per_dir (list[npt.NDArray]): Per-direction quadrature nodes.
+        quad_weights_per_dir (list[npt.NDArray]): Per-direction quadrature weights.
         bi_flags (list[tuple[bool, bool]]): Per-direction boundary flags.
         load (npt.NDArray): Load tensor to modify in-place.
         comp_idx (int): Which output component is being processed.
         n_components (int): Total number of output components.
     """
+    # Per direction, the flagged (slice_index, boundary_coordinate) sides.
+    sides_per_dir: dict[int, list[tuple[int, float]]] = {}
     for d, s1d in enumerate(space.spaces):
+        if s1d.periodic:
+            continue
         bi_left, bi_right = bi_flags[d]
-        if bi_left and not s1d.periodic:
-            a = s1d.domain[0]
-            boundary_val = _evaluate_func_at_boundary(
-                func, space, quad_nodes_per_dir, d, a, comp_idx, n_components
-            )
-            slices: list[int | slice] = [slice(None)] * load.ndim
-            slices[d] = 0
-            load[tuple(slices)] = boundary_val
-        if bi_right and not s1d.periodic:
-            b = s1d.domain[1]
-            boundary_val = _evaluate_func_at_boundary(
-                func, space, quad_nodes_per_dir, d, b, comp_idx, n_components
-            )
-            slices = [slice(None)] * load.ndim
-            slices[d] = -1
-            load[tuple(slices)] = boundary_val
+        sides: list[tuple[int, float]] = []
+        if bi_left:
+            sides.append((0, float(s1d.domain[0])))
+        if bi_right:
+            sides.append((-1, float(s1d.domain[1])))
+        if sides:
+            sides_per_dir[d] = sides
+
+    flagged_dirs = sorted(sides_per_dir)
+    for size in range(1, len(flagged_dirs) + 1):
+        for dirs in itertools.combinations(flagged_dirs, size):
+            for chosen in itertools.product(*(sides_per_dir[d] for d in dirs)):
+                fixed = {d: coord for d, (_, coord) in zip(dirs, chosen, strict=True)}
+                value = _boundary_trace_load(
+                    func,
+                    space,
+                    quad_nodes_per_dir,
+                    quad_weights_per_dir,
+                    fixed,
+                    comp_idx,
+                    n_components,
+                )
+                slices: list[int | slice] = [slice(None)] * load.ndim
+                for d, (idx, _) in zip(dirs, chosen, strict=True):
+                    slices[d] = idx
+                load[tuple(slices)] = value
 
 
 def _assemble_mass_and_quad_1d(
@@ -1033,54 +1067,41 @@ def _assemble_load_1d(
     return result
 
 
-def _evaluate_func_at_boundary(  # noqa: PLR0913
+def _boundary_trace_load(  # noqa: PLR0913
     func: Callable[..., npt.ArrayLike],
     space: BsplineSpace,
     quad_nodes_per_dir: list[npt.NDArray[np.float32 | np.float64]],
-    direction: int,
-    boundary_value: float | np.float32 | np.float64,
+    quad_weights_per_dir: list[npt.NDArray[np.float32 | np.float64]],
+    fixed: dict[int, float],
     comp_idx: int,
     n_components: int,
 ) -> npt.NDArray[np.floating[Any]] | np.floating[Any]:
-    """Evaluate a single component of the function at a boundary point (or hyperplane).
+    """Compute the load tensor of a boundary trace of ``func``.
 
-    For the boundary interpolation row in the Kronecker L2 projection, we
-    need the function value at the boundary. For 1D this is a scalar; for nD
-    it's a tensor over the other directions' Greville nodes.
+    Samples ``func`` on the lattice that pins the directions in ``fixed`` at
+    their boundary coordinates and uses quadrature nodes elsewhere, then
+    contracts every non-fixed direction with its weighted basis
+    (:func:`_assemble_load_1d`).  The result is the right-hand side matching a
+    Kronecker row that is collocated exactly in the ``fixed`` directions: the
+    load integrals of the trace ``func(.., fixed values, ..)`` -- a plain point
+    value when every direction is fixed (a corner).
 
     Args:
         func (Callable): Function to evaluate.
         space (BsplineSpace): Target B-spline space.
         quad_nodes_per_dir (list[npt.NDArray]): Quadrature nodes per direction.
-        direction (int): The direction of the boundary.
-        boundary_value: The boundary coordinate value.
+        quad_weights_per_dir (list[npt.NDArray]): Quadrature weights per direction.
+        fixed (dict[int, float]): Boundary coordinate per collocated direction.
         comp_idx (int): Which output component to extract.
         n_components (int): Total number of output components.
 
     Returns:
-        Value(s) at the boundary for insertion into the load tensor.
+        Trace load values shaped over the non-fixed directions' basis indices
+        (the fixed axes are squeezed out); a scalar when all axes are fixed.
     """
-    dtype = quad_nodes_per_dir[direction].dtype
-
-    if space.dim == 1:
-        # 1D: evaluate function at the single boundary point.
-        lattice = PointsLattice([np.array([boundary_value], dtype=dtype)])
-        raw = np.asarray(func(lattice))
-        if not np.issubdtype(raw.dtype, np.floating):
-            raw = raw.astype(np.float64)
-        flat = raw.ravel()
-        if n_components > 1:
-            # Vector-valued: extract the component.
-            val: np.floating[Any] = flat[comp_idx]
-            return val
-        val = flat[0]
-        return val
-
-    # nD: create a lattice with a single point in the boundary direction
-    # and Greville nodes in the other directions.
-    greville_nodes = [get_greville_abscissae(s) for s in space.spaces]
+    dtype = quad_nodes_per_dir[0].dtype
     boundary_nodes = [
-        np.array([boundary_value], dtype=dtype) if d == direction else greville_nodes[d]
+        np.array([fixed[d]], dtype=dtype) if d in fixed else quad_nodes_per_dir[d]
         for d in range(space.dim)
     ]
     lattice = PointsLattice(boundary_nodes)
@@ -1090,13 +1111,21 @@ def _evaluate_func_at_boundary(  # noqa: PLR0913
     if not np.issubdtype(raw.dtype, np.floating):
         raw = raw.astype(np.float64)
 
+    trace: npt.NDArray[np.floating[Any]]
     if n_components > 1:
         # Vector-valued: reshape to (*grid_shape, rank) and extract component.
-        values = raw.reshape(*grid_shape, n_components)
-        return values[..., comp_idx].squeeze(axis=direction)
+        trace = np.asarray(raw.reshape(*grid_shape, n_components)[..., comp_idx])
+    else:
+        trace = np.asarray(raw.reshape(grid_shape))
 
-    values = raw.reshape(grid_shape)
-    return values.squeeze(axis=direction)
+    for d, s1d in enumerate(space.spaces):
+        if d in fixed:
+            continue
+        trace = _assemble_load_1d(s1d, trace, quad_nodes_per_dir[d], quad_weights_per_dir[d], d)
+    squeezed = trace.squeeze(axis=tuple(sorted(fixed)))
+    if squeezed.ndim == 0:
+        return squeezed[()]
+    return squeezed
 
 
 def _resolve_boundary_interpolation(

@@ -253,7 +253,8 @@ class TensorProductGrid(Grid):
 
         A point exactly on an interior breakpoint is assigned to the
         lower-indexed cell sharing that face; a point on the outer boundary is
-        assigned to the adjacent boundary cell.
+        assigned to the adjacent boundary cell.  Non-finite coordinates
+        (NaN or infinity) are outside every cell.
 
         Args:
             pt (npt.ArrayLike): Length-``ndim`` point.
@@ -272,7 +273,8 @@ class TensorProductGrid(Grid):
         for d in range(self._ndim):
             bp = self._breakpoints[d]
             x = float(arr[d])
-            if x < bp[0] or x > bp[-1]:
+            # The negated chained comparison is NaN-safe (NaN fails both bounds).
+            if not bp[0] <= x <= bp[-1]:
                 return None
             idx = int(np.searchsorted(bp, x, side="left")) - 1
             idx = min(max(idx, 0), self._cells_per_axis[d] - 1)
@@ -288,7 +290,7 @@ class TensorProductGrid(Grid):
 
         Returns:
             npt.NDArray[np.int64]: Shape ``(npts,)`` cell ids; ``-1`` for points
-            outside the grid.
+            outside the grid (including points with NaN or infinite coordinates).
 
         Raises:
             ValueError: If the trailing axis of ``points`` is not ``ndim``.
@@ -301,6 +303,11 @@ class TensorProductGrid(Grid):
         cells_per_axis = np.array(self._cells_per_axis, dtype=np.int64)
         out = np.empty(pts.shape[0], dtype=np.int64)
         _locate_points_core(pts, knots_flat, knot_starts, cells_per_axis, self._strides, out)
+        # The kernel's binary search has no NaN handling (NaN comparisons are
+        # all False, silently landing in the first cell); mask them out here.
+        finite = np.isfinite(pts).all(axis=1)
+        if not finite.all():
+            out[~finite] = -1
         return out
 
     def neighbor_across_facet(self, cid: int, lfid: int) -> int | None:

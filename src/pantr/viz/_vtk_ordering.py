@@ -82,12 +82,17 @@ def vtk_ordering_quad(degree_u: int, degree_v: int) -> npt.NDArray[np.intp]:
         VTK vertex 2 → (degree_u, degree_v)
         VTK vertex 3 → (0, degree_v)
 
-    VTK quad edge ordering::
+    VTK quad edge ordering (interior nodes; per
+    ``vtkHigherOrderQuadrilateral::PointIndexFromIJK`` every run is in
+    **increasing** index order, including the top edge -- the high-order node
+    layout does not follow the linear cell's winding direction)::
 
-        Edge 0: (0,0)→(degree_u,0)        — bottom, increasing i, j=0
-        Edge 1: (degree_u,0)→(degree_u,degree_v) — right, i=degree_u, increasing j
-        Edge 2: (degree_u,degree_v)→(0,degree_v) — top, decreasing i, j=degree_v
-        Edge 3: (0,0)→(0,degree_v)         — left, i=0, increasing j
+        Edge 0: j=0        — increasing i
+        Edge 1: i=degree_u — increasing j
+        Edge 2: j=degree_v — increasing i
+        Edge 3: i=0        — increasing j
+
+    The face interior runs ``i`` fastest (``(i-1) + (degree_u-1)*(j-1)``).
 
     Args:
         degree_u: Polynomial degree in u direction (≥ 1).
@@ -113,16 +118,16 @@ def vtk_ordering_quad(degree_u: int, degree_v: int) -> npt.NDArray[np.intp]:
     # Edge 1: right (i=degree_u), j = 1..degree_v-1
     for j in range(1, degree_v):
         order.append(_tp_flat_index((degree_u, j), shape))
-    # Edge 2: top (j=degree_v), i = degree_u-1..1 (decreasing)
-    for i in range(degree_u - 1, 0, -1):
+    # Edge 2: top (j=degree_v), i = 1..degree_u-1 (increasing, per VTK)
+    for i in range(1, degree_u):
         order.append(_tp_flat_index((i, degree_v), shape))
     # Edge 3: left (i=0), j = 1..degree_v-1
     for j in range(1, degree_v):
         order.append(_tp_flat_index((0, j), shape))
 
-    # --- Face interior ---
-    for i in range(1, degree_u):
-        for j in range(1, degree_v):
+    # --- Face interior (i fastest, per VTK) ---
+    for j in range(1, degree_v):
+        for i in range(1, degree_u):
             order.append(_tp_flat_index((i, j), shape))
 
     return np.array(order, dtype=np.intp)
@@ -170,14 +175,19 @@ def vtk_ordering_hex(  # noqa: PLR0912
         Edge 10: vtx 2→6 — vertical, i=pu, j=pv, increasing k
         Edge 11: vtx 3→7 — vertical, i=0, j=pv, increasing k
 
-    VTK hex face ordering (6 faces, interior points only)::
+    VTK hex face ordering (6 faces, interior points only; per
+    ``vtkHigherOrderHexahedron::PointIndexFromIJK`` the i-normal face pair
+    comes first, then j-normal, then k-normal, with the lower face of each
+    pair first; the first in-face index varies fastest)::
 
-        Face 0: k=0    (bottom)  — ordered in local (i, j) increasing
-        Face 1: k=pw   (top)     — ordered in local (i, j) increasing
-        Face 2: j=0    (front)   — ordered in local (i, k) increasing
-        Face 3: i=pu   (right)   — ordered in local (j, k) increasing
-        Face 4: j=pv   (back)    — ordered in local (i, k) increasing
-        Face 5: i=0    (left)    — ordered in local (j, k) increasing
+        Face 0: i=0    (left)    — (j, k) interior, j fastest
+        Face 1: i=pu   (right)   — (j, k) interior, j fastest
+        Face 2: j=0    (front)   — (i, k) interior, i fastest
+        Face 3: j=pv   (back)    — (i, k) interior, i fastest
+        Face 4: k=0    (bottom)  — (i, j) interior, i fastest
+        Face 5: k=pw   (top)     — (i, j) interior, i fastest
+
+    The volume interior runs ``i`` fastest, then ``j``, then ``k``.
 
     Args:
         degree_u: Polynomial degree in u direction (≥ 1).
@@ -247,36 +257,36 @@ def vtk_ordering_hex(  # noqa: PLR0912
     for k in range(1, pw):
         order.append(flat(0, pv, k))
 
-    # --- 6 Faces (interior points only) ---
-    # Face 0: k=0 (bottom), interior (i, j) with i in 1..pu-1, j in 1..pv-1
-    for i in range(1, pu):
+    # --- 6 Faces (interior points only; i-pair, j-pair, k-pair, per VTK) ---
+    # Face 0: i=0 (left), interior (j, k), j fastest
+    for k in range(1, pw):
         for j in range(1, pv):
-            order.append(flat(i, j, 0))
-    # Face 1: k=pw (top)
-    for i in range(1, pu):
-        for j in range(1, pv):
-            order.append(flat(i, j, pw))
-    # Face 2: j=0 (front), interior (i, k)
-    for i in range(1, pu):
-        for k in range(1, pw):
-            order.append(flat(i, 0, k))
-    # Face 3: i=pu (right), interior (j, k)
-    for j in range(1, pv):
-        for k in range(1, pw):
-            order.append(flat(pu, j, k))
-    # Face 4: j=pv (back), interior (i, k)
-    for i in range(1, pu):
-        for k in range(1, pw):
-            order.append(flat(i, pv, k))
-    # Face 5: i=0 (left), interior (j, k)
-    for j in range(1, pv):
-        for k in range(1, pw):
             order.append(flat(0, j, k))
-
-    # --- Volume interior ---
-    for i in range(1, pu):
+    # Face 1: i=pu (right), interior (j, k), j fastest
+    for k in range(1, pw):
         for j in range(1, pv):
-            for k in range(1, pw):
+            order.append(flat(pu, j, k))
+    # Face 2: j=0 (front), interior (i, k), i fastest
+    for k in range(1, pw):
+        for i in range(1, pu):
+            order.append(flat(i, 0, k))
+    # Face 3: j=pv (back), interior (i, k), i fastest
+    for k in range(1, pw):
+        for i in range(1, pu):
+            order.append(flat(i, pv, k))
+    # Face 4: k=0 (bottom), interior (i, j), i fastest
+    for j in range(1, pv):
+        for i in range(1, pu):
+            order.append(flat(i, j, 0))
+    # Face 5: k=pw (top), interior (i, j), i fastest
+    for j in range(1, pv):
+        for i in range(1, pu):
+            order.append(flat(i, j, pw))
+
+    # --- Volume interior (i fastest, then j, then k, per VTK) ---
+    for k in range(1, pw):
+        for j in range(1, pv):
+            for i in range(1, pu):
                 order.append(flat(i, j, k))
 
     return np.array(order, dtype=np.intp)

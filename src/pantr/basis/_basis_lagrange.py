@@ -16,9 +16,9 @@ if TYPE_CHECKING:
     from . import LagrangeVariant
 from ..quad import (
     get_chebyshev_gauss_1st_kind_1d,
-    get_chebyshev_gauss_2nd_kind_1d,
     get_gauss_legendre_1d,
     get_gauss_lobatto_legendre_1d,
+    get_modified_chebyshev_nodes_1d,
     get_trapezoidal_1d,
 )
 
@@ -55,7 +55,10 @@ def _get_lagrange_points(
     elif variant_value == "chebyshev_1st":
         return get_chebyshev_gauss_1st_kind_1d(n_pts, dtype)[0]
     else:  # "chebyshev_2nd"
-        return get_chebyshev_gauss_2nd_kind_1d(n_pts, dtype)[0]
+        # Chebyshev-Lobatto points (endpoints included) -- the documented
+        # LagrangeVariant.CHEBYSHEV_2ND interpolation nodes.  The quadrature
+        # function of the same name now returns interior Gauss-U nodes.
+        return get_modified_chebyshev_nodes_1d(n_pts, dtype)
 
 
 def _tabulate_lagrange_basis_1D_core(
