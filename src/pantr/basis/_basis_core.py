@@ -36,12 +36,13 @@ def _bernstein_point(
     ``u == 1.0`` is special-cased (the recurrence would produce NaN).
 
     Args:
-        n (np.int32): Degree of the Bernstein polynomials (>= 1).
+        n (np.int32): Degree of the Bernstein polynomials (>= 0).
         u (np.float32 | np.float64): Evaluation point.
         out_row (npt.NDArray[np.float32 | np.float64]): Output row of length ``n + 1``.
 
     Note:
         Inputs are assumed to be correct (no validation performed).
+        For general use, call :func:`_tabulate_Bernstein_basis_1D_impl` instead.
     """
     if u == 1.0:
         # At t=1.0: only B_n,n(1) = 1, all others are 0
@@ -92,10 +93,8 @@ def _tabulate_Bernstein_basis_1D_core(
             shape and dtype (no validation performed inside this numba-compiled function).
 
     Note:
-        This is a Numba-compiled function optimized for performance. It
-        expects pre-normalized inputs (1D contiguous arrays) and assumes the
-        output array has the correct shape and dtype. For general use,
-        call _tabulate_Bernstein_basis_1D_impl instead.
+        Inputs are assumed to be correct (no validation performed).
+        For general use, call :func:`_tabulate_Bernstein_basis_1D_impl` instead.
     """
     if n == 0:
         # The basis is just B_0,0(pts) = 1
@@ -288,6 +287,7 @@ def _bernstein_derivs_point(
 
     Note:
         Inputs are assumed to be correct (no validation performed).
+        For general use, call :func:`_tabulate_Bspline_basis_deriv_1D_impl` instead.
     """
     order = int(n) + 1
     dtype = out_pt.dtype

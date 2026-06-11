@@ -89,9 +89,7 @@ def _local_weight_row(
         ValueError: If the local collocation matrix is singular or nearly singular
             (non-finite inverse), which indicates degenerate knot intervals.
     """
-    # Points are generated inside a single knot interval by the caller; skip
-    # the domain check.
-    basis, first_basis = space1d.tabulate_basis(points, validate=False)
+    basis, first_basis = space1d.tabulate_basis(points)
     block = np.asarray(basis, dtype=np.float64)
     try:
         inv = np.asarray(np.linalg.inv(block), dtype=np.float64)

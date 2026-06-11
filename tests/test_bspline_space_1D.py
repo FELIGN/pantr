@@ -2354,3 +2354,21 @@ class TestTabulateValidateFlag:
             sp.tabulate_basis(np.array([-0.5]))
         with pytest.raises(ValueError, match="outside"):
             sp.tabulate_basis_derivatives(np.array([1.5]), 1)
+
+    def test_validate_false_does_not_raise_out_of_domain_derivatives(self) -> None:
+        """validate=False bypasses the domain check in tabulate_basis_derivatives."""
+        sp = self._space()
+        # Should not raise even though -0.5 is outside [0, 1].
+        sp.tabulate_basis_derivatives(np.array([-0.5]), 1, validate=False)
+
+    def test_validate_false_bezier_like_space(self) -> None:
+        """validate=False works on a Bézier-like (Bernstein fast-path) space."""
+        sp = BsplineSpace1D(np.array([0.0, 0.0, 0.0, 1.0, 1.0, 1.0]), 2)
+        rng = np.random.default_rng(41)
+        pts = rng.random(10)
+        b_val, f_val = sp.tabulate_basis(pts)
+        b_no, f_no = sp.tabulate_basis(pts, validate=False)
+        np.testing.assert_array_equal(b_no, b_val)
+        np.testing.assert_array_equal(f_no, f_val)
+        # validate=False should not raise for in-domain points on a Bézier-like space.
+        sp.tabulate_basis_derivatives(pts, 2, validate=False)

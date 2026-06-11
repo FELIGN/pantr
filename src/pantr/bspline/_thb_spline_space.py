@@ -937,8 +937,11 @@ class THBSplineSpace:
         if cached is None:
             sp1d = self._level_spaces[level].spaces[k]
             pts_k = np.ascontiguousarray(flat_pts[:, k])
-            # Points were already validated against the cell bounds (a subset of
-            # the level-space domain) in _tabulate_orders; skip the domain check.
+            # Safety: _tabulate_orders validated flat_pts against cell_lo/hi (one
+            # check per dimension via broadcasting) before calling here.  Cell bounds
+            # are a strict subset of each level-space's parametric domain, so pts_k
+            # is guaranteed in-domain.  Do NOT use validate=False from any other
+            # call site without re-verifying this invariant.
             if order == 0:
                 values, first_basis = sp1d.tabulate_basis(pts_k, validate=False)
                 deriv = np.asarray(values, dtype=np.float64)

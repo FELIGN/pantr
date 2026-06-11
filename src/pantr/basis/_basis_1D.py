@@ -55,7 +55,8 @@ def _tabulate_basis_1D_impl_helper(
         n (int): Degree of the basis polynomials. Must be non-negative.
         t (npt.ArrayLike): Evaluation points. Can be a scalar, list, or numpy array.
             Types different from float32 or float64 are automatically converted to float64.
-        core_func (_BasisCoreFunc): Core function to call for computation. Must accept
+        core_func (_BasisCoreFunc): Parallel core function; used for batches of
+            ``_PARALLEL_MIN_NUM_PTS`` points or more. Must accept
             (np.int32, npt.NDArray[float32/float64], npt.NDArray[float32/float64]) -> None.
         out (npt.NDArray[np.float32 | np.float64] | None): Optional output array
             where the result will be stored. If None, a new array is allocated.

@@ -87,7 +87,11 @@ def _find_spans_and_first_basis(  # noqa: PLR0913
     # recurrence always uses an in-domain span.  For open knot vectors this
     # subsumes the former ``knot_id == knots.size - 1`` special case.
     max_knot_id = knots.size - degree - 2
-    knot_ids = np.minimum(knot_ids, max_knot_id)
+    # Clamp both ends: upper bound prevents out-of-domain right-side points from
+    # landing in an invalid span; lower bound (`degree`) ensures knot_id + 1 - j >= 0
+    # for all j in range(1, degree+1), so _basis_funcs_point never wraps into
+    # negative knot indices for points left of the domain.
+    knot_ids = np.minimum(np.maximum(knot_ids, degree), max_knot_id)
 
     # For non-periodic splines, clamp first_basis so the last (degree+1) basis
     # functions are addressed by the final evaluation point.  For periodic
@@ -131,6 +135,7 @@ def _basis_funcs_point(  # noqa: PLR0913
 
     Note:
         Inputs are assumed to be correct (no validation performed).
+        For general use, call :func:`_tabulate_Bspline_basis_1D_impl` instead.
     """
     order = degree + 1
     dtype = knots.dtype
@@ -234,6 +239,7 @@ def _compute_basis_nurbs_book_serial_impl(  # noqa: PLR0913
 
     Note:
         Inputs are assumed to be correct (no validation performed).
+        For general use, call :func:`_tabulate_Bspline_basis_1D_impl` instead.
     """
     n_pts = pts.size
     knot_ids = _find_spans_and_first_basis(knots, degree, periodic, tol, pts, out_first_basis)
@@ -273,6 +279,7 @@ def _basis_derivs_point(  # noqa: PLR0913
 
     Note:
         Inputs are assumed to be correct (no validation performed).
+        For general use, call :func:`_tabulate_Bspline_basis_deriv_1D_impl` instead.
     """
     order = degree + 1
     dtype = knots.dtype
@@ -433,6 +440,7 @@ def _compute_basis_deriv_nurbs_book_serial_impl(  # noqa: PLR0913
 
     Note:
         Inputs are assumed to be correct (no validation performed).
+        For general use, call :func:`_tabulate_Bspline_basis_deriv_1D_impl` instead.
     """
     n_pts = pts.size
     knot_ids = _find_spans_and_first_basis(knots, degree, periodic, tol, pts, out_first_basis)

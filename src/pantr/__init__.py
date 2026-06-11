@@ -16,6 +16,7 @@ The main modules are:
 - :mod:`pantr.bezier`: Bézier curves/surfaces and root finding for Bernstein polynomials.
 """
 
+import sys
 from typing import Final
 
 from . import (
@@ -113,10 +114,13 @@ if not TYPE_CHECKING:
             logger.debug("Finished Numba JIT warmup.")
         except Exception as exc:
             # During process teardown (e.g. short scripts), background Numba caching
-            # might fail due to unavailable module locators.  Log rather than swallow
-            # so that compilation errors (wrong type specialisation, cache corruption)
-            # are observable; the first affected call will still compile on demand.
-            logger.warning("Numba JIT warmup failed: %s", exc)
+            # fails because module locators become unavailable.  Distinguish teardown
+            # (DEBUG) from real compilation errors (WARNING) so that cache corruption
+            # or wrong type specialisations remain observable without noisy false alarms.
+            if sys.is_finalizing():
+                logger.debug("Numba JIT warmup skipped (process finalizing): %s", exc)
+            else:
+                logger.warning("Numba JIT warmup failed: %s", exc)
         finally:
             # Always signal completion so callers are never blocked indefinitely.
             _warmup_complete.set()
