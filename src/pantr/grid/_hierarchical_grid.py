@@ -31,15 +31,19 @@ Main exports:
 
 from __future__ import annotations
 
-import bisect
 import itertools
 from typing import TYPE_CHECKING
 
 import numpy as np
 
-from ._cell_index import flat_to_multi, multi_to_flat
 from ._grid import Grid, GridRestriction
 from ._grid_utils import _as_float64
+from ._hier_core import (
+    _decode_flat_id_core,
+    _encode_midx_core,
+    _hier_collect_cell_bounds_core,
+    _hier_locate_points_core,
+)
 from ._tensor_product_grid import TensorProductGrid
 
 if TYPE_CHECKING:
@@ -256,9 +260,35 @@ class HierarchicalGrid(Grid):
         _num_cells (int): Cached total active cell count.
         _version (int): Monotonic mutation counter, incremented on every
             structural change (see :attr:`version`).
+        _packed_block_lo (npt.NDArray[np.int64]): Packed block lower bounds for
+            the Numba kernels, shape ``(n_blocks_total, ndim)``, concatenated
+            level by level in flat-id order (see :mod:`pantr.grid._hier_core`).
+        _packed_block_hi (npt.NDArray[np.int64]): Packed block upper bounds,
+            same shape.
+        _packed_block_base (npt.NDArray[np.int64]): Flat cell id of each
+            block's first cell, shape ``(n_blocks_total,)``.
+        _packed_level_start (npt.NDArray[np.int64]): Block index range of each
+            level, shape ``(max_level + 2,)``.
+        _root_knots_flat (npt.NDArray[np.float64]): Root per-axis breakpoints
+            concatenated end to end (kernel descriptor).
+        _root_knot_starts (npt.NDArray[np.int64]): Per-axis start offset into
+            ``_root_knots_flat``, shape ``(ndim,)``.
     """
 
-    __slots__ = ("_blocks", "_factor", "_level_base", "_num_cells", "_root", "_version")
+    __slots__ = (
+        "_blocks",
+        "_factor",
+        "_level_base",
+        "_num_cells",
+        "_packed_block_base",
+        "_packed_block_hi",
+        "_packed_block_lo",
+        "_packed_level_start",
+        "_root",
+        "_root_knot_starts",
+        "_root_knots_flat",
+        "_version",
+    )
 
     def __init__(
         self,
@@ -425,7 +455,9 @@ class HierarchicalGrid(Grid):
         Called after every structural change (construction or refinement).
         Bumps :attr:`version` so snapshot consumers can detect any mutation,
         including compensating refine/coarsen pairs that leave ``max_level``
-        and ``num_cells`` unchanged.
+        and ``num_cells`` unchanged.  Also repacks the block lists into the
+        flat ``int64`` arrays consumed by the :mod:`pantr.grid._hier_core`
+        kernels (``O(total_blocks)`` work).
         """
         base = 0
         level_base: list[int] = []
@@ -440,8 +472,45 @@ class HierarchicalGrid(Grid):
         self._cell_tags = None
         self._facet_tags = None
 
+        # Pack the per-level block lists for the Numba kernels, in the same
+        # order flat ids are assigned (level by level, block by block, C-order
+        # within a block).
+        ndim = self._root.ndim
+        n_blocks = sum(len(blocks_at_level) for blocks_at_level in self._blocks)
+        packed_lo = np.empty((n_blocks, ndim), dtype=np.int64)
+        packed_hi = np.empty((n_blocks, ndim), dtype=np.int64)
+        packed_base = np.empty(n_blocks, dtype=np.int64)
+        level_start = np.empty(len(self._blocks) + 1, dtype=np.int64)
+        b = 0
+        cell_base = 0
+        for level, blocks_at_level in enumerate(self._blocks):
+            level_start[level] = b
+            for lo, hi in blocks_at_level:
+                packed_lo[b] = lo
+                packed_hi[b] = hi
+                packed_base[b] = cell_base
+                cell_base += _block_size(lo, hi)
+                b += 1
+        level_start[len(self._blocks)] = b
+        self._packed_block_lo = packed_lo
+        self._packed_block_hi = packed_hi
+        self._packed_block_base = packed_base
+        self._packed_level_start = level_start
+
+        # Root breakpoint descriptor for the kernels (root is immutable, but
+        # rebuilding here keeps a single construction path).
+        breakpoints = self._root.breakpoints
+        counts = np.array([bp.shape[0] for bp in breakpoints], dtype=np.int64)
+        knot_starts = np.zeros(ndim, dtype=np.int64)
+        knot_starts[1:] = np.cumsum(counts[:-1])
+        self._root_knots_flat = np.concatenate(breakpoints).astype(np.float64, copy=False)
+        self._root_knot_starts = knot_starts
+
     def _decode_flat_id(self, cid: int) -> tuple[int, tuple[int, ...]]:
         """Convert a flat cell id to ``(level, multi_index)``.
+
+        Backed by the :func:`~pantr.grid._hier_core._decode_flat_id_core`
+        kernel over the packed block arrays.
 
         Args:
             cid (int): Flat cell identifier.
@@ -453,21 +522,18 @@ class HierarchicalGrid(Grid):
         Raises:
             IndexError: If ``cid`` is out of range.
         """
-        level = bisect.bisect_right(self._level_base, cid) - 1
-        if level < 0 or level >= len(self._blocks):
+        if not 0 <= cid < self._num_cells:
             raise IndexError(f"cell id {cid!r} is out of range [0, {self._num_cells}).")
-        offset = cid - self._level_base[level]
-        cum = 0
-        for lo, hi in self._blocks[level]:
-            size = _block_size(lo, hi)
-            if cum + size > offset:
-                local = offset - cum
-                shape = tuple(h - lo_k for h, lo_k in zip(hi, lo, strict=False))
-                local_midx = flat_to_multi(local, shape)
-                midx = tuple(lo_k + lm for lo_k, lm in zip(lo, local_midx, strict=False))
-                return level, midx
-            cum += size
-        raise IndexError(f"cell id {cid!r} is out of range [0, {self._num_cells}).")
+        midx = np.empty(self._root.ndim, dtype=np.int64)
+        level = _decode_flat_id_core(
+            int(cid),
+            self._packed_block_lo,
+            self._packed_block_hi,
+            self._packed_block_base,
+            self._packed_level_start,
+            midx,
+        )
+        return int(level), tuple(int(i) for i in midx)
 
     def _encode_midx(
         self,
@@ -476,7 +542,9 @@ class HierarchicalGrid(Grid):
     ) -> int | None:
         """Convert ``(level, multi_index)`` to a flat cell id, or ``None``.
 
-        Returns ``None`` when the cell is not an active (leaf) cell.
+        Returns ``None`` when the cell is not an active (leaf) cell.  Backed by
+        the :func:`~pantr.grid._hier_core._encode_midx_core` kernel over the
+        packed block arrays.
 
         Args:
             level (int): Hierarchy level.
@@ -489,15 +557,15 @@ class HierarchicalGrid(Grid):
         """
         if level >= len(self._blocks):
             return None
-        base = self._level_base[level]
-        cum = 0
-        for lo, hi in self._blocks[level]:
-            if _in_block(midx, lo, hi):
-                shape = tuple(h - lo_k for h, lo_k in zip(hi, lo, strict=False))
-                local = tuple(m - lo_k for m, lo_k in zip(midx, lo, strict=False))
-                return base + cum + multi_to_flat(local, shape)
-            cum += _block_size(lo, hi)
-        return None
+        cid = _encode_midx_core(
+            int(level),
+            np.asarray(midx, dtype=np.int64),
+            self._packed_block_lo,
+            self._packed_block_hi,
+            self._packed_block_base,
+            self._packed_level_start,
+        )
+        return None if cid < 0 else int(cid)
 
     def _cell_bounds_from_level_midx(
         self,
@@ -632,6 +700,41 @@ class HierarchicalGrid(Grid):
             midx = tuple(new_midx)
 
         return None  # unreachable
+
+    def locate_many(self, points: npt.ArrayLike) -> npt.NDArray[np.int64]:
+        """Locate a batch of points via the Numba top-down descent kernel.
+
+        Args:
+            points (npt.ArrayLike): ``(npts, ndim)`` array-like of points, or a
+                single length-``ndim`` point.
+
+        Returns:
+            npt.NDArray[np.int64]: Shape ``(npts,)`` cell ids; ``-1`` for points
+            outside the grid (including points with NaN or infinite coordinates).
+
+        Raises:
+            ValueError: If the trailing axis of ``points`` is not ``ndim``.
+        """
+        pts = self._normalize_points(points)
+        out = np.empty(pts.shape[0], dtype=np.int64)
+        _hier_locate_points_core(
+            pts,
+            self._root_knots_flat,
+            self._root_knot_starts,
+            np.asarray(self._root.cells_per_axis, dtype=np.int64),
+            np.asarray(self._factor, dtype=np.int64),
+            self._packed_block_lo,
+            self._packed_block_hi,
+            self._packed_block_base,
+            self._packed_level_start,
+            out,
+        )
+        # The kernel's binary search has no NaN handling (NaN comparisons are
+        # all False, silently landing in the first cell); mask them out here.
+        finite = np.isfinite(pts).all(axis=1)
+        if not finite.all():
+            out[~finite] = -1
+        return out
 
     def _facet_neighbor_position(
         self, cid: int, lfid: int
@@ -1252,6 +1355,9 @@ class HierarchicalGrid(Grid):
     ) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64]]:
         """Materialize ``(cell_lo, cell_hi)`` in flat-id order for the BVH.
 
+        Backed by a Numba kernel parallelizing over the active blocks; results
+        are identical to calling :meth:`cell_bounds` per cell.
+
         Returns:
             tuple[npt.NDArray[np.float64], npt.NDArray[np.float64]]:
             ``(cell_lo, cell_hi)`` of shape ``(num_cells, ndim)``.
@@ -1260,18 +1366,17 @@ class HierarchicalGrid(Grid):
         nd = self.ndim
         cell_lo = np.empty((n, nd), dtype=np.float64)
         cell_hi = np.empty((n, nd), dtype=np.float64)
-        flat_id = 0
-        for level, blocks_at_level in enumerate(self._blocks):
-            for blo, bhi in blocks_at_level:
-                shape = tuple(h - lo_k for h, lo_k in zip(bhi, blo, strict=False))
-                n_block = _block_size(blo, bhi)
-                for offset in range(n_block):
-                    local = flat_to_multi(offset, shape)
-                    midx = tuple(lo_k + lm for lo_k, lm in zip(blo, local, strict=False))
-                    lo, hi = self._cell_bounds_from_level_midx(level, midx)
-                    cell_lo[flat_id] = lo
-                    cell_hi[flat_id] = hi
-                    flat_id += 1
+        _hier_collect_cell_bounds_core(
+            self._root_knots_flat,
+            self._root_knot_starts,
+            np.asarray(self._factor, dtype=np.int64),
+            self._packed_block_lo,
+            self._packed_block_hi,
+            self._packed_block_base,
+            self._packed_level_start,
+            cell_lo,
+            cell_hi,
+        )
         return cell_lo, cell_hi
 
     # ------------------------------------------------------------------
