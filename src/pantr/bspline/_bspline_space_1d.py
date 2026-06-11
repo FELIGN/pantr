@@ -339,6 +339,48 @@ class BsplineSpace1D:
         i0, i1 = self._get_domain_indices()
         return (self._knots[i0], self._knots[i1])
 
+    @functools.cached_property
+    def _left_end_open(self) -> bool:
+        """Whether the left end is open (cached; knots are immutable).
+
+        Returns:
+            bool: True if the first ``degree + 1`` knots are equal.
+        """
+        if self.periodic:
+            return False
+
+        # Check if the first degree+1 knots are equal
+        # (we know that they are non-decreasing).
+        return bool(np.isclose(self._knots[0], self._knots[self._degree], atol=self._tol))
+
+    @functools.cached_property
+    def _right_end_open(self) -> bool:
+        """Whether the right end is open (cached; knots are immutable).
+
+        Returns:
+            bool: True if the last ``degree + 1`` knots are equal.
+        """
+        if self.periodic:
+            return False
+
+        # Check if the last degree+1 knots are equal
+        # (we know that they are non-decreasing).
+        return bool(np.isclose(self._knots[-self._degree - 1], self._knots[-1], atol=self._tol))
+
+    @functools.cached_property
+    def _bezier_like_knots(self) -> bool:
+        """Whether the knots are a Bézier-like configuration (cached; knots are immutable).
+
+        Returns:
+            bool: True if knots have open ends and only one non-zero span.
+        """
+        return (
+            (not self._periodic)
+            and self._left_end_open
+            and self._right_end_open
+            and self.num_basis == (self._degree + 1)
+        )
+
     def has_left_end_open(self) -> bool:
         """Check if the left end of the B-spline is open.
 
@@ -347,12 +389,7 @@ class BsplineSpace1D:
         Returns:
             bool: True if the left end is open, False otherwise.
         """
-        if self.periodic:
-            return False
-
-        # Check if the first degree+1 knots are equal
-        # (we know that they are non-decreasing).
-        return bool(np.isclose(self._knots[0], self._knots[self._degree], atol=self._tol))
+        return self._left_end_open
 
     def has_right_end_open(self) -> bool:
         """Check if the right end of the B-spline is open.
@@ -362,12 +399,7 @@ class BsplineSpace1D:
         Returns:
             bool: True if the right end is open, False otherwise.
         """
-        if self.periodic:
-            return False
-
-        # Check if the last degree+1 knots are equal
-        # (we know that they are non-decreasing).
-        return bool(np.isclose(self._knots[-self._degree - 1], self._knots[-1], atol=self._tol))
+        return self._right_end_open
 
     def has_open_knots(self) -> bool:
         """Check if the B-spline has open ends.
@@ -375,7 +407,7 @@ class BsplineSpace1D:
         Returns:
             bool: True if both ends are open, False otherwise.
         """
-        return self.has_left_end_open() and self.has_right_end_open()
+        return self._left_end_open and self._right_end_open
 
     def has_Bezier_like_knots(self) -> bool:
         """Check if the knot vector represents a Bézier-like configuration.
@@ -390,9 +422,7 @@ class BsplineSpace1D:
             >>> bspline.has_Bezier_like_knots()
             True
         """
-        return (
-            (not self._periodic) and self.has_open_knots() and self.num_basis == (self._degree + 1)
-        )
+        return self._bezier_like_knots
 
     def get_cardinal_intervals(
         self, out: npt.NDArray[np.bool_] | None = None
