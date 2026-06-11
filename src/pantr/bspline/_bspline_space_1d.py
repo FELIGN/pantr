@@ -339,6 +339,51 @@ class BsplineSpace1D:
         i0, i1 = self._get_domain_indices()
         return (self._knots[i0], self._knots[i1])
 
+    @functools.cached_property
+    def _left_end_open(self) -> bool:
+        """Whether the left end is open (cached; knots are immutable).
+
+        Returns:
+            bool: True if the first ``degree + 1`` knots are equal; always
+            False for periodic splines regardless of knot values.
+        """
+        if self.periodic:
+            return False
+
+        # Check if the first degree+1 knots are equal
+        # (we know that they are non-decreasing).
+        return bool(np.isclose(self._knots[0], self._knots[self._degree], atol=self._tol))
+
+    @functools.cached_property
+    def _right_end_open(self) -> bool:
+        """Whether the right end is open (cached; knots are immutable).
+
+        Returns:
+            bool: True if the last ``degree + 1`` knots are equal; always
+            False for periodic splines regardless of knot values.
+        """
+        if self.periodic:
+            return False
+
+        # Check if the last degree+1 knots are equal
+        # (we know that they are non-decreasing).
+        return bool(np.isclose(self._knots[-self._degree - 1], self._knots[-1], atol=self._tol))
+
+    @functools.cached_property
+    def _bezier_like_knots(self) -> bool:
+        """Whether the knots are a Bézier-like configuration (cached; knots are immutable).
+
+        Returns:
+            bool: True iff the spline is non-periodic, open on both ends, and
+            ``num_basis == degree + 1`` (i.e., exactly one non-zero span).
+        """
+        return (
+            (not self._periodic)
+            and self._left_end_open
+            and self._right_end_open
+            and self.num_basis == (self._degree + 1)
+        )
+
     def has_left_end_open(self) -> bool:
         """Check if the left end of the B-spline is open.
 
@@ -347,12 +392,7 @@ class BsplineSpace1D:
         Returns:
             bool: True if the left end is open, False otherwise.
         """
-        if self.periodic:
-            return False
-
-        # Check if the first degree+1 knots are equal
-        # (we know that they are non-decreasing).
-        return bool(np.isclose(self._knots[0], self._knots[self._degree], atol=self._tol))
+        return self._left_end_open
 
     def has_right_end_open(self) -> bool:
         """Check if the right end of the B-spline is open.
@@ -362,12 +402,7 @@ class BsplineSpace1D:
         Returns:
             bool: True if the right end is open, False otherwise.
         """
-        if self.periodic:
-            return False
-
-        # Check if the last degree+1 knots are equal
-        # (we know that they are non-decreasing).
-        return bool(np.isclose(self._knots[-self._degree - 1], self._knots[-1], atol=self._tol))
+        return self._right_end_open
 
     def has_open_knots(self) -> bool:
         """Check if the B-spline has open ends.
@@ -375,7 +410,7 @@ class BsplineSpace1D:
         Returns:
             bool: True if both ends are open, False otherwise.
         """
-        return self.has_left_end_open() and self.has_right_end_open()
+        return self._left_end_open and self._right_end_open
 
     def has_Bezier_like_knots(self) -> bool:
         """Check if the knot vector represents a Bézier-like configuration.
@@ -390,9 +425,7 @@ class BsplineSpace1D:
             >>> bspline.has_Bezier_like_knots()
             True
         """
-        return (
-            (not self._periodic) and self.has_open_knots() and self.num_basis == (self._degree + 1)
-        )
+        return self._bezier_like_knots
 
     def get_cardinal_intervals(
         self, out: npt.NDArray[np.bool_] | None = None
@@ -440,6 +473,8 @@ class BsplineSpace1D:
         pts: npt.ArrayLike,
         out_basis: npt.NDArray[np.float32 | np.float64] | None = None,
         out_first_basis: npt.NDArray[np.int_] | None = None,
+        *,
+        validate: bool = True,
     ) -> tuple[npt.NDArray[np.float32 | np.float64], npt.NDArray[np.int_]]:
         """Evaluate the B-spline basis functions at the given points.
 
@@ -453,6 +488,10 @@ class BsplineSpace1D:
                 first basis indices will be stored. If None, a new array is allocated. Must have
                 the correct shape and dtype numpy.intp if provided. This follows NumPy's style for
                 output arrays. Defaults to None.
+            validate (bool): If True (default), check that every point lies inside
+                the spline domain. Pass False only when the caller guarantees
+                in-domain points; out-of-domain points are then undefined behavior.
+                Defaults to True.
 
         Returns:
             tuple[
@@ -469,8 +508,9 @@ class BsplineSpace1D:
                   of evaluation points. If `out_first_basis` was provided, returns the same array.
 
         Raises:
-            ValueError: If any evaluation points are outside the B-spline domain, or if `out_basis`
-                or `out_first_basis` is provided and has incorrect shape or dtype.
+            ValueError: If ``validate`` is True and any evaluation point is outside the
+                B-spline domain, or if `out_basis` or `out_first_basis` is provided and
+                has incorrect shape or dtype.
 
         Example:
             >>> bspline = BsplineSpace1D([0, 0, 0, 0.25, 0.7, 0.7, 1, 1, 1], 2)
@@ -482,7 +522,7 @@ class BsplineSpace1D:
              array([0, 1, 3, 3]))
         """
         return _tabulate_Bspline_basis_1D_impl(
-            self, pts, out_basis=out_basis, out_first_basis=out_first_basis
+            self, pts, out_basis=out_basis, out_first_basis=out_first_basis, validate=validate
         )
 
     def tabulate_basis_derivatives(
@@ -491,6 +531,8 @@ class BsplineSpace1D:
         n_deriv: int,
         out_deriv: npt.NDArray[np.float32 | np.float64] | None = None,
         out_first_basis: npt.NDArray[np.int_] | None = None,
+        *,
+        validate: bool = True,
     ) -> tuple[npt.NDArray[np.float32 | np.float64], npt.NDArray[np.int_]]:
         """Evaluate B-spline basis function derivatives at the given points.
 
@@ -510,6 +552,10 @@ class BsplineSpace1D:
                 for first basis indices. If None, a new array is allocated. Must have
                 shape ``pts_shape`` and dtype ``numpy.intp`` if provided.
                 Defaults to None.
+            validate (bool): If True (default), check that every point lies inside
+                the spline domain. Pass False only when the caller guarantees
+                in-domain points; out-of-domain points are then undefined behavior.
+                Defaults to True.
 
         Returns:
             tuple[
@@ -523,9 +569,9 @@ class BsplineSpace1D:
                   global index of the first nonzero basis function for each point.
 
         Raises:
-            ValueError: If ``n_deriv < 0``, any evaluation point is outside the
-                domain, or ``out_deriv`` / ``out_first_basis`` has incorrect shape
-                or dtype.
+            ValueError: If ``n_deriv < 0``, if ``validate`` is True and any evaluation
+                point is outside the domain, or ``out_deriv`` / ``out_first_basis``
+                has incorrect shape or dtype.
 
         Example:
             >>> bspline = BsplineSpace1D([0, 0, 0, 1, 1, 1], 2)
@@ -536,7 +582,12 @@ class BsplineSpace1D:
             array([-1.,  0.,  1.])
         """
         return _tabulate_Bspline_basis_deriv_1D_impl(
-            self, pts, n_deriv, out_deriv=out_deriv, out_first_basis=out_first_basis
+            self,
+            pts,
+            n_deriv,
+            out_deriv=out_deriv,
+            out_first_basis=out_first_basis,
+            validate=validate,
         )
 
     def tabulate_Bezier_extraction_operators(

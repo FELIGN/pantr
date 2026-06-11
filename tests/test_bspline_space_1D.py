@@ -12,6 +12,13 @@ from pantr.basis import (
     tabulate_cardinal_bspline_1d,
     tabulate_lagrange_1d,
 )
+from pantr.basis._basis_core import (
+    _PARALLEL_MIN_NUM_PTS,
+    _tabulate_Bernstein_basis_1D_core,
+    _tabulate_Bernstein_basis_1D_serial_core,
+    _tabulate_Bernstein_basis_deriv_1D_core,
+    _tabulate_Bernstein_basis_deriv_1D_serial_core,
+)
 from pantr.bspline import (
     BsplineSpace1D,
     create_cardinal_knots,
@@ -19,8 +26,13 @@ from pantr.bspline import (
     create_uniform_periodic_knots,
 )
 from pantr.bspline._bspline_basis_core import (
+    _compute_basis_deriv_nurbs_book_impl,
+    _compute_basis_deriv_nurbs_book_serial_impl,
     _compute_basis_nurbs_book_impl,
+    _compute_basis_nurbs_book_serial_impl,
+    _tabulate_Bspline_basis_1D_impl,
     _tabulate_Bspline_basis_Bernstein_like_1D,
+    _tabulate_Bspline_basis_deriv_1D_impl,
 )
 from pantr.bspline._bspline_extraction import (
     _tabulate_Bspline_Bezier_1D_extraction_impl,
@@ -2066,3 +2078,297 @@ class TestBsplineSpace1DRestrict:
             space.restrict(-1, 2)  # lo < 0
         with pytest.raises(ValueError, match="interval"):
             space.restrict(0, 5)  # hi > num_intervals
+
+
+class TestSerialParallelKernelTwins:
+    """Serial twin kernels must match the parallel kernels exactly."""
+
+    @staticmethod
+    def _spaces() -> list[BsplineSpace1D]:
+        """Build a mix of open non-uniform and periodic spaces of varied degree."""
+        rng = np.random.default_rng(7)
+        spaces = []
+        for degree in (1, 2, 3, 4):
+            interior = np.sort(rng.random(6))
+            knots = np.concatenate([np.zeros(degree + 1), interior, np.ones(degree + 1)])
+            spaces.append(BsplineSpace1D(knots, degree))
+        periodic_knots = create_uniform_periodic_knots(num_intervals=6, degree=2)
+        spaces.append(BsplineSpace1D(periodic_knots, 2, periodic=True))
+        return spaces
+
+    @pytest.mark.parametrize("num_pts", [1, 3, 100, 5000])
+    def test_basis_values_match(self, num_pts: int) -> None:
+        """Serial and parallel BasisFuncs kernels agree bitwise on all paths."""
+        rng = np.random.default_rng(11)
+        for sp in self._spaces():
+            lo, hi = (float(sp.domain[0]), float(sp.domain[1]))
+            pts = lo + (hi - lo) * rng.random(num_pts)
+            order = sp.degree + 1
+
+            basis_par = np.empty((num_pts, order), dtype=np.float64)
+            first_par = np.empty(num_pts, dtype=np.int_)
+            _compute_basis_nurbs_book_impl(
+                sp.knots, sp.degree, sp.periodic, sp.tolerance, pts, basis_par, first_par
+            )
+
+            basis_ser = np.empty((num_pts, order), dtype=np.float64)
+            first_ser = np.empty(num_pts, dtype=np.int_)
+            _compute_basis_nurbs_book_serial_impl(
+                sp.knots, sp.degree, sp.periodic, sp.tolerance, pts, basis_ser, first_ser
+            )
+
+            np.testing.assert_array_equal(basis_ser, basis_par)
+            np.testing.assert_array_equal(first_ser, first_par)
+
+    @pytest.mark.parametrize("num_pts", [1, 3, 100, 5000])
+    def test_basis_derivs_match(self, num_pts: int) -> None:
+        """Serial and parallel DerBasisFuncs kernels agree bitwise on all paths."""
+        rng = np.random.default_rng(13)
+        for sp in self._spaces():
+            lo, hi = (float(sp.domain[0]), float(sp.domain[1]))
+            pts = lo + (hi - lo) * rng.random(num_pts)
+            order = sp.degree + 1
+            n_deriv = sp.degree + 1  # include the identically-zero row
+
+            der_par = np.empty((num_pts, n_deriv + 1, order), dtype=np.float64)
+            first_par = np.empty(num_pts, dtype=np.int_)
+            _compute_basis_deriv_nurbs_book_impl(
+                sp.knots, sp.degree, sp.periodic, sp.tolerance, n_deriv, pts, der_par, first_par
+            )
+
+            der_ser = np.empty((num_pts, n_deriv + 1, order), dtype=np.float64)
+            first_ser = np.empty(num_pts, dtype=np.int_)
+            _compute_basis_deriv_nurbs_book_serial_impl(
+                sp.knots, sp.degree, sp.periodic, sp.tolerance, n_deriv, pts, der_ser, first_ser
+            )
+
+            np.testing.assert_array_equal(der_ser, der_par)
+            np.testing.assert_array_equal(first_ser, first_par)
+
+    def test_float32_supported(self) -> None:
+        """Serial twins compile and agree for float32 inputs."""
+        knots = np.array([0, 0, 0, 0.25, 0.5, 0.75, 1, 1, 1], dtype=np.float32)
+        sp = BsplineSpace1D(knots, 2)
+        pts = np.array([0.1, 0.4, 0.9], dtype=np.float32)
+
+        basis_par = np.empty((3, 3), dtype=np.float32)
+        first_par = np.empty(3, dtype=np.int_)
+        _compute_basis_nurbs_book_impl(
+            sp.knots, sp.degree, sp.periodic, sp.tolerance, pts, basis_par, first_par
+        )
+        basis_ser = np.empty((3, 3), dtype=np.float32)
+        first_ser = np.empty(3, dtype=np.int_)
+        _compute_basis_nurbs_book_serial_impl(
+            sp.knots, sp.degree, sp.periodic, sp.tolerance, pts, basis_ser, first_ser
+        )
+        np.testing.assert_array_equal(basis_ser, basis_par)
+        np.testing.assert_array_equal(first_ser, first_par)
+
+    def test_float32_deriv_supported(self) -> None:
+        """Serial derivative twin compiles and agrees for float32 inputs."""
+        knots = np.array([0, 0, 0, 0.25, 0.5, 0.75, 1, 1, 1], dtype=np.float32)
+        sp = BsplineSpace1D(knots, 2)
+        pts = np.array([0.1, 0.4, 0.9], dtype=np.float32)
+        n_deriv = 2
+        order = sp.degree + 1
+
+        der_par = np.empty((3, n_deriv + 1, order), dtype=np.float32)
+        first_par = np.empty(3, dtype=np.int_)
+        _compute_basis_deriv_nurbs_book_impl(
+            sp.knots, sp.degree, sp.periodic, sp.tolerance, n_deriv, pts, der_par, first_par
+        )
+        der_ser = np.empty((3, n_deriv + 1, order), dtype=np.float32)
+        first_ser = np.empty(3, dtype=np.int_)
+        _compute_basis_deriv_nurbs_book_serial_impl(
+            sp.knots, sp.degree, sp.periodic, sp.tolerance, n_deriv, pts, der_ser, first_ser
+        )
+        np.testing.assert_array_equal(der_ser, der_par)
+        np.testing.assert_array_equal(first_ser, first_par)
+
+    def test_layer2_dispatch_consistent_across_threshold(self) -> None:
+        """Layer-2 tabulation gives identical results below and above the threshold."""
+        knots = create_uniform_open_knots(num_intervals=16, degree=3)
+        sp = BsplineSpace1D(knots, 3)
+        rng = np.random.default_rng(17)
+        big = rng.random(_PARALLEL_MIN_NUM_PTS + 64)
+
+        basis_big, first_big = _tabulate_Bspline_basis_1D_impl(sp, big)
+        small = big[:8]
+        basis_small, first_small = _tabulate_Bspline_basis_1D_impl(sp, small)
+        np.testing.assert_array_equal(basis_small, basis_big[:8])
+        np.testing.assert_array_equal(first_small, first_big[:8])
+
+        # n_deriv=2: standard case
+        der_big, dfirst_big = _tabulate_Bspline_basis_deriv_1D_impl(sp, big, 2)
+        der_small, dfirst_small = _tabulate_Bspline_basis_deriv_1D_impl(sp, small, 2)
+        np.testing.assert_array_equal(der_small, der_big[:8])
+        np.testing.assert_array_equal(dfirst_small, dfirst_big[:8])
+
+        # n_deriv=0: degenerate path — only 0th-order row is filled
+        der_big0, _ = _tabulate_Bspline_basis_deriv_1D_impl(sp, big, 0)
+        der_small0, _ = _tabulate_Bspline_basis_deriv_1D_impl(sp, small, 0)
+        np.testing.assert_array_equal(der_small0, der_big0[:8])
+
+    @pytest.mark.parametrize(
+        "num_pts", [_PARALLEL_MIN_NUM_PTS - 1, _PARALLEL_MIN_NUM_PTS, _PARALLEL_MIN_NUM_PTS + 1]
+    )
+    def test_layer2_dispatch_boundary(self, num_pts: int) -> None:
+        """Basis values are correct at, one below, and one above the dispatch threshold."""
+        knots = create_uniform_open_knots(num_intervals=16, degree=3)
+        sp = BsplineSpace1D(knots, 3)
+        rng = np.random.default_rng(42)
+        pts = rng.random(num_pts)
+        basis, _ = _tabulate_Bspline_basis_1D_impl(sp, pts)
+        np.testing.assert_allclose(basis.sum(axis=-1), np.ones(num_pts), atol=1e-13)
+
+    def test_layer2_dispatch_periodic_small_batch(self) -> None:
+        """Serial path is used for periodic spaces below the threshold."""
+        periodic_knots = create_uniform_periodic_knots(num_intervals=8, degree=3)
+        sp = BsplineSpace1D(periodic_knots, 3, periodic=True)
+        rng = np.random.default_rng(99)
+        lo, hi = float(sp.domain[0]), float(sp.domain[1])
+        pts_small = lo + (hi - lo) * rng.random(8)
+        pts_big = lo + (hi - lo) * rng.random(_PARALLEL_MIN_NUM_PTS + 64)
+
+        basis_small, _ = _tabulate_Bspline_basis_1D_impl(sp, pts_small)
+        np.testing.assert_allclose(basis_small.sum(axis=-1), np.ones(8), atol=1e-13)
+
+        basis_big, _ = _tabulate_Bspline_basis_1D_impl(sp, pts_big)
+        np.testing.assert_allclose(basis_big.sum(axis=-1), np.ones(len(pts_big)), atol=1e-13)
+
+
+class TestKnotPredicateCaching:
+    """Knot-structure predicates are cached and stable on immutable knots."""
+
+    def test_predicates_stable_and_consistent(self) -> None:
+        """Repeated predicate calls return the same values as a fresh instance."""
+        knots = create_uniform_open_knots(num_intervals=4, degree=2)
+        sp = BsplineSpace1D(knots, 2)
+        fresh = BsplineSpace1D(knots.copy(), 2)
+        for _ in range(3):
+            assert sp.has_left_end_open() == fresh.has_left_end_open() is True
+            assert sp.has_right_end_open() == fresh.has_right_end_open() is True
+            assert sp.has_open_knots() == fresh.has_open_knots() is True
+            assert sp.has_Bezier_like_knots() == fresh.has_Bezier_like_knots() is False
+
+    def test_bezier_like_space(self) -> None:
+        """Single-span open space reports Bézier-like on every call."""
+        sp = BsplineSpace1D(np.array([1.0, 1.0, 1.0, 3.0, 3.0, 3.0]), 2)
+        assert sp.has_Bezier_like_knots()
+        assert sp.has_Bezier_like_knots()  # cached second call
+
+    def test_periodic_space_predicates(self) -> None:
+        """Periodic spaces report closed ends and non-Bézier-like knots."""
+        knots = create_uniform_periodic_knots(num_intervals=4, degree=2)
+        sp = BsplineSpace1D(knots, 2, periodic=True)
+        assert not sp.has_left_end_open()
+        assert not sp.has_right_end_open()
+        assert not sp.has_open_knots()
+        assert not sp.has_Bezier_like_knots()
+
+    def test_open_non_bezier_not_bezier_like(self) -> None:
+        """Open knots with multiple spans must not report Bézier-like."""
+        knots = create_uniform_open_knots(num_intervals=3, degree=2)
+        sp = BsplineSpace1D(knots, 2)
+        assert sp.has_open_knots()
+        assert sp.num_basis > sp.degree + 1
+        assert not sp.has_Bezier_like_knots()
+
+
+class TestBernsteinSerialParallelTwins:
+    """Bernstein serial twin cores must match the parallel cores exactly."""
+
+    @pytest.mark.parametrize("num_pts", [1, 3, 100, 5000])
+    @pytest.mark.parametrize("degree", [0, 1, 2, 4])
+    def test_values_match(self, num_pts: int, degree: int) -> None:
+        """Serial and parallel Bernstein value cores agree bitwise (incl. t=1)."""
+        rng = np.random.default_rng(19)
+        t = rng.random(num_pts)
+        t[0] = 1.0  # exercise the t == 1 special case
+
+        out_par = np.empty((num_pts, degree + 1), dtype=np.float64)
+        _tabulate_Bernstein_basis_1D_core(np.int32(degree), t, out_par)
+        out_ser = np.empty((num_pts, degree + 1), dtype=np.float64)
+        _tabulate_Bernstein_basis_1D_serial_core(np.int32(degree), t, out_ser)
+        np.testing.assert_array_equal(out_ser, out_par)
+
+    @pytest.mark.parametrize("num_pts", [1, 3, 100, 5000])
+    @pytest.mark.parametrize("degree", [0, 2, 3])
+    def test_derivs_match(self, num_pts: int, degree: int) -> None:
+        """Serial and parallel Bernstein derivative cores agree bitwise."""
+        rng = np.random.default_rng(23)
+        t = rng.random(num_pts)
+        t[-1] = 1.0
+        n_deriv = degree + 1
+
+        out_par = np.empty((num_pts, n_deriv + 1, degree + 1), dtype=np.float64)
+        _tabulate_Bernstein_basis_deriv_1D_core(np.int32(degree), t, n_deriv, out_par)
+        out_ser = np.empty((num_pts, n_deriv + 1, degree + 1), dtype=np.float64)
+        _tabulate_Bernstein_basis_deriv_1D_serial_core(np.int32(degree), t, n_deriv, out_ser)
+        np.testing.assert_array_equal(out_ser, out_par)
+
+    def test_bezier_like_layer2_dispatch_consistent(self) -> None:
+        """Layer-2 results on a Bézier-like space agree below and above the threshold."""
+        sp = BsplineSpace1D(np.array([0.0, 0.0, 0.0, 1.0, 1.0, 1.0]), 2)
+        rng = np.random.default_rng(29)
+        big = rng.random(_PARALLEL_MIN_NUM_PTS + 64)
+
+        basis_big, first_big = _tabulate_Bspline_basis_1D_impl(sp, big)
+        basis_small, first_small = _tabulate_Bspline_basis_1D_impl(sp, big[:8])
+        np.testing.assert_array_equal(basis_small, basis_big[:8])
+        np.testing.assert_array_equal(first_small, first_big[:8])
+
+        der_big, dfirst_big = _tabulate_Bspline_basis_deriv_1D_impl(sp, big, 2)
+        der_small, dfirst_small = _tabulate_Bspline_basis_deriv_1D_impl(sp, big[:8], 2)
+        np.testing.assert_array_equal(der_small, der_big[:8])
+        np.testing.assert_array_equal(dfirst_small, dfirst_big[:8])
+
+
+class TestTabulateValidateFlag:
+    """The validate flag skips only the domain check, never changes results."""
+
+    @staticmethod
+    def _space() -> BsplineSpace1D:
+        knots = create_uniform_open_knots(num_intervals=8, degree=3)
+        return BsplineSpace1D(knots, 3)
+
+    def test_values_identical_for_in_domain_points(self) -> None:
+        """validate=False returns bitwise-identical results for in-domain points."""
+        sp = self._space()
+        pts = np.random.default_rng(31).random(50)
+
+        b_val, f_val = sp.tabulate_basis(pts)
+        b_no, f_no = sp.tabulate_basis(pts, validate=False)
+        np.testing.assert_array_equal(b_no, b_val)
+        np.testing.assert_array_equal(f_no, f_val)
+
+        d_val, df_val = sp.tabulate_basis_derivatives(pts, 2)
+        d_no, df_no = sp.tabulate_basis_derivatives(pts, 2, validate=False)
+        np.testing.assert_array_equal(d_no, d_val)
+        np.testing.assert_array_equal(df_no, df_val)
+
+    def test_validate_true_still_raises_out_of_domain(self) -> None:
+        """The default validate=True keeps rejecting out-of-domain points."""
+        sp = self._space()
+        with pytest.raises(ValueError, match="outside"):
+            sp.tabulate_basis(np.array([-0.5]))
+        with pytest.raises(ValueError, match="outside"):
+            sp.tabulate_basis_derivatives(np.array([1.5]), 1)
+
+    def test_validate_false_does_not_raise_out_of_domain_derivatives(self) -> None:
+        """validate=False bypasses the domain check in tabulate_basis_derivatives."""
+        sp = self._space()
+        # Should not raise even though -0.5 is outside [0, 1].
+        sp.tabulate_basis_derivatives(np.array([-0.5]), 1, validate=False)
+
+    def test_validate_false_bezier_like_space(self) -> None:
+        """validate=False works on a Bézier-like (Bernstein fast-path) space."""
+        sp = BsplineSpace1D(np.array([0.0, 0.0, 0.0, 1.0, 1.0, 1.0]), 2)
+        rng = np.random.default_rng(41)
+        pts = rng.random(10)
+        b_val, f_val = sp.tabulate_basis(pts)
+        b_no, f_no = sp.tabulate_basis(pts, validate=False)
+        np.testing.assert_array_equal(b_no, b_val)
+        np.testing.assert_array_equal(f_no, f_val)
+        # validate=False should not raise for in-domain points on a Bézier-like space.
+        sp.tabulate_basis_derivatives(pts, 2, validate=False)
