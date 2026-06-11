@@ -19,8 +19,14 @@ from pantr.bspline import (
     create_uniform_periodic_knots,
 )
 from pantr.bspline._bspline_basis_core import (
+    _PARALLEL_MIN_NUM_PTS,
+    _compute_basis_deriv_nurbs_book_impl,
+    _compute_basis_deriv_nurbs_book_serial_impl,
     _compute_basis_nurbs_book_impl,
+    _compute_basis_nurbs_book_serial_impl,
+    _tabulate_Bspline_basis_1D_impl,
     _tabulate_Bspline_basis_Bernstein_like_1D,
+    _tabulate_Bspline_basis_deriv_1D_impl,
 )
 from pantr.bspline._bspline_extraction import (
     _tabulate_Bspline_Bezier_1D_extraction_impl,
@@ -2066,3 +2072,136 @@ class TestBsplineSpace1DRestrict:
             space.restrict(-1, 2)  # lo < 0
         with pytest.raises(ValueError, match="interval"):
             space.restrict(0, 5)  # hi > num_intervals
+
+
+class TestSerialParallelKernelTwins:
+    """Serial twin kernels must match the parallel kernels exactly."""
+
+    @staticmethod
+    def _spaces() -> list[BsplineSpace1D]:
+        """Build a mix of open non-uniform and periodic spaces of varied degree."""
+        rng = np.random.default_rng(7)
+        spaces = []
+        for degree in (1, 2, 3, 4):
+            interior = np.sort(rng.random(6))
+            knots = np.concatenate([np.zeros(degree + 1), interior, np.ones(degree + 1)])
+            spaces.append(BsplineSpace1D(knots, degree))
+        periodic_knots = create_uniform_periodic_knots(num_intervals=6, degree=2)
+        spaces.append(BsplineSpace1D(periodic_knots, 2, periodic=True))
+        return spaces
+
+    @pytest.mark.parametrize("num_pts", [1, 3, 100, 5000])
+    def test_basis_values_match(self, num_pts: int) -> None:
+        """Serial and parallel BasisFuncs kernels agree bitwise on all paths."""
+        rng = np.random.default_rng(11)
+        for sp in self._spaces():
+            lo, hi = (float(sp.domain[0]), float(sp.domain[1]))
+            pts = lo + (hi - lo) * rng.random(num_pts)
+            order = sp.degree + 1
+
+            basis_par = np.empty((num_pts, order), dtype=np.float64)
+            first_par = np.empty(num_pts, dtype=np.int_)
+            _compute_basis_nurbs_book_impl(
+                sp.knots, sp.degree, sp.periodic, sp.tolerance, pts, basis_par, first_par
+            )
+
+            basis_ser = np.empty((num_pts, order), dtype=np.float64)
+            first_ser = np.empty(num_pts, dtype=np.int_)
+            _compute_basis_nurbs_book_serial_impl(
+                sp.knots, sp.degree, sp.periodic, sp.tolerance, pts, basis_ser, first_ser
+            )
+
+            np.testing.assert_array_equal(basis_ser, basis_par)
+            np.testing.assert_array_equal(first_ser, first_par)
+
+    @pytest.mark.parametrize("num_pts", [1, 3, 100, 5000])
+    def test_basis_derivs_match(self, num_pts: int) -> None:
+        """Serial and parallel DerBasisFuncs kernels agree bitwise on all paths."""
+        rng = np.random.default_rng(13)
+        for sp in self._spaces():
+            lo, hi = (float(sp.domain[0]), float(sp.domain[1]))
+            pts = lo + (hi - lo) * rng.random(num_pts)
+            order = sp.degree + 1
+            n_deriv = sp.degree + 1  # include the identically-zero row
+
+            der_par = np.empty((num_pts, n_deriv + 1, order), dtype=np.float64)
+            first_par = np.empty(num_pts, dtype=np.int_)
+            _compute_basis_deriv_nurbs_book_impl(
+                sp.knots, sp.degree, sp.periodic, sp.tolerance, n_deriv, pts, der_par, first_par
+            )
+
+            der_ser = np.empty((num_pts, n_deriv + 1, order), dtype=np.float64)
+            first_ser = np.empty(num_pts, dtype=np.int_)
+            _compute_basis_deriv_nurbs_book_serial_impl(
+                sp.knots, sp.degree, sp.periodic, sp.tolerance, n_deriv, pts, der_ser, first_ser
+            )
+
+            np.testing.assert_array_equal(der_ser, der_par)
+            np.testing.assert_array_equal(first_ser, first_par)
+
+    def test_float32_supported(self) -> None:
+        """Serial twins compile and agree for float32 inputs."""
+        knots = np.array([0, 0, 0, 0.25, 0.5, 0.75, 1, 1, 1], dtype=np.float32)
+        sp = BsplineSpace1D(knots, 2)
+        pts = np.array([0.1, 0.4, 0.9], dtype=np.float32)
+
+        basis_par = np.empty((3, 3), dtype=np.float32)
+        first_par = np.empty(3, dtype=np.int_)
+        _compute_basis_nurbs_book_impl(
+            sp.knots, sp.degree, sp.periodic, sp.tolerance, pts, basis_par, first_par
+        )
+        basis_ser = np.empty((3, 3), dtype=np.float32)
+        first_ser = np.empty(3, dtype=np.int_)
+        _compute_basis_nurbs_book_serial_impl(
+            sp.knots, sp.degree, sp.periodic, sp.tolerance, pts, basis_ser, first_ser
+        )
+        np.testing.assert_array_equal(basis_ser, basis_par)
+        np.testing.assert_array_equal(first_ser, first_par)
+
+    def test_layer2_dispatch_consistent_across_threshold(self) -> None:
+        """Layer-2 tabulation gives identical results below and above the threshold."""
+        knots = create_uniform_open_knots(num_intervals=16, degree=3)
+        sp = BsplineSpace1D(knots, 3)
+        rng = np.random.default_rng(17)
+        big = rng.random(_PARALLEL_MIN_NUM_PTS + 64)
+
+        basis_big, first_big = _tabulate_Bspline_basis_1D_impl(sp, big)
+        small = big[:8]
+        basis_small, first_small = _tabulate_Bspline_basis_1D_impl(sp, small)
+        np.testing.assert_array_equal(basis_small, basis_big[:8])
+        np.testing.assert_array_equal(first_small, first_big[:8])
+
+        der_big, dfirst_big = _tabulate_Bspline_basis_deriv_1D_impl(sp, big, 2)
+        der_small, dfirst_small = _tabulate_Bspline_basis_deriv_1D_impl(sp, small, 2)
+        np.testing.assert_array_equal(der_small, der_big[:8])
+        np.testing.assert_array_equal(dfirst_small, dfirst_big[:8])
+
+
+class TestKnotPredicateCaching:
+    """Knot-structure predicates are cached and stable on immutable knots."""
+
+    def test_predicates_stable_and_consistent(self) -> None:
+        """Repeated predicate calls return the same values as a fresh instance."""
+        knots = create_uniform_open_knots(num_intervals=4, degree=2)
+        sp = BsplineSpace1D(knots, 2)
+        fresh = BsplineSpace1D(knots.copy(), 2)
+        for _ in range(3):
+            assert sp.has_left_end_open() == fresh.has_left_end_open() is True
+            assert sp.has_right_end_open() == fresh.has_right_end_open() is True
+            assert sp.has_open_knots() == fresh.has_open_knots() is True
+            assert sp.has_Bezier_like_knots() == fresh.has_Bezier_like_knots() is False
+
+    def test_bezier_like_space(self) -> None:
+        """Single-span open space reports Bézier-like on every call."""
+        sp = BsplineSpace1D(np.array([1.0, 1.0, 1.0, 3.0, 3.0, 3.0]), 2)
+        assert sp.has_Bezier_like_knots()
+        assert sp.has_Bezier_like_knots()  # cached second call
+
+    def test_periodic_space_predicates(self) -> None:
+        """Periodic spaces report closed ends and non-Bézier-like knots."""
+        knots = create_uniform_periodic_knots(num_intervals=4, degree=2)
+        sp = BsplineSpace1D(knots, 2, periodic=True)
+        assert not sp.has_left_end_open()
+        assert not sp.has_right_end_open()
+        assert not sp.has_open_knots()
+        assert not sp.has_Bezier_like_knots()
