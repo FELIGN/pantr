@@ -207,3 +207,65 @@ def test_stack_overflow_guard(monkeypatch: pytest.MonkeyPatch) -> None:
     lo, hi = _grid_cells(2, 2)  # 4 cells → depth 3 > 1
     with pytest.raises(ValueError, match="stack depth"):
         BVH.from_cell_bounds(lo, hi)
+
+
+# ---------------------------------------------------------------------------
+# Numba build kernel (PR 3 of #197)
+# ---------------------------------------------------------------------------
+
+
+def test_build_is_deterministic() -> None:
+    """Two builds over the same input produce identical arrays."""
+    rng = np.random.default_rng(7)
+    lo = rng.random((500, 3))
+    hi = lo + rng.random((500, 3))
+    a = BVH.from_cell_bounds(lo, hi)
+    b = BVH.from_cell_bounds(lo, hi)
+    np.testing.assert_array_equal(a.node_lo, b.node_lo)
+    np.testing.assert_array_equal(a.node_hi, b.node_hi)
+    np.testing.assert_array_equal(a.node_left, b.node_left)
+    np.testing.assert_array_equal(a.node_right, b.node_right)
+    np.testing.assert_array_equal(a.node_cell, b.node_cell)
+
+
+def test_build_invariants_random() -> None:
+    """Internal AABBs are the union of their children; leaves partition the cells."""
+    rng = np.random.default_rng(11)
+    n = 2000
+    lo = rng.random((n, 2))
+    hi = lo + rng.random((n, 2)) * 0.1
+    bvh = BVH.from_cell_bounds(lo, hi)
+    assert bvh.n_nodes == 2 * n - 1
+
+    leaves = []
+    for i in range(bvh.n_nodes):
+        left, right = bvh.node_left[i], bvh.node_right[i]
+        if left == -1:
+            assert right == -1
+            cell = bvh.node_cell[i]
+            assert cell >= 0
+            leaves.append(cell)
+            np.testing.assert_array_equal(bvh.node_lo[i], lo[cell])
+            np.testing.assert_array_equal(bvh.node_hi[i], hi[cell])
+        else:
+            assert bvh.node_cell[i] == -1
+            np.testing.assert_array_equal(
+                bvh.node_lo[i], np.minimum(bvh.node_lo[left], bvh.node_lo[right])
+            )
+            np.testing.assert_array_equal(
+                bvh.node_hi[i], np.maximum(bvh.node_hi[left], bvh.node_hi[right])
+            )
+    assert sorted(leaves) == list(range(n))
+
+
+def test_build_identical_cells_stable() -> None:
+    """All-identical cells (fully tied centroids) build a valid, full tree."""
+    n = 33
+    lo = np.zeros((n, 2))
+    hi = np.ones((n, 2))
+    bvh = BVH.from_cell_bounds(lo, hi)
+    assert bvh.n_nodes == 2 * n - 1
+    cells = sorted(bvh.node_cell[bvh.node_cell >= 0].tolist())
+    assert cells == list(range(n))
+    result = sorted(bvh.query_aabb(AABB([0.5, 0.5], [0.6, 0.6])).tolist())
+    assert result == list(range(n))
