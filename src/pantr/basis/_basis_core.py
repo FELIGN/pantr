@@ -11,6 +11,52 @@ import numpy.typing as npt
 
 from .._numba_compat import nb_jit, nb_prange
 
+_PARALLEL_MIN_NUM_PTS = 4096
+"""Minimum number of evaluation points for which the ``parallel=True`` kernels pay off.
+
+Below this threshold the fork/join overhead of a parallel Numba kernel launch
+(hundreds of microseconds) dwarfs the per-point work (tens of nanoseconds), so
+the Layer-2 tabulation helpers dispatch to the serial twin kernels instead.
+"""
+
+
+@nb_jit(
+    nopython=True,
+    cache=True,
+    inline="always",
+)
+def _bernstein_point(
+    n: np.int32,
+    u: np.float32 | np.float64,
+    out_row: npt.NDArray[np.float32 | np.float64],
+) -> None:
+    """Evaluate all Bernstein basis polynomials of degree ``n`` at one point.
+
+    Recurrence: ``B_0,n(u) = (1-u)^n``; ``B_i,n = B_{i-1},n * ((n-i+1)/i) * (u/(1-u))``.
+    ``u == 1.0`` is special-cased (the recurrence would produce NaN).
+
+    Args:
+        n (np.int32): Degree of the Bernstein polynomials (>= 1).
+        u (np.float32 | np.float64): Evaluation point.
+        out_row (npt.NDArray[np.float32 | np.float64]): Output row of length ``n + 1``.
+
+    Note:
+        Inputs are assumed to be correct (no validation performed).
+    """
+    if u == 1.0:
+        # At t=1.0: only B_n,n(1) = 1, all others are 0
+        for i in range(out_row.shape[0]):
+            out_row[i] = 0.0
+        out_row[n] = 1.0
+    else:
+        # For t != 1.0, use recurrence relation
+        one_minus_u = 1.0 - u
+        out_row[0] = np.power(one_minus_u, n)
+        t_over_1mt = u / one_minus_u
+        for i in range(1, n + 1):
+            const_factor = (n - i + 1.0) / i
+            out_row[i] = out_row[i - 1] * const_factor * t_over_1mt
+
 
 @nb_jit(
     nopython=True,
@@ -28,16 +74,11 @@ def _tabulate_Bernstein_basis_1D_core(
     at each evaluation point in t. Writes the result to the provided output array,
     where out[j, i] contains the value of the i-th basis polynomial evaluated at point t_j.
 
-    The implementation uses a recurrence relation for efficient computation:
-    - Base case: B_0,n(t) = (1-t)^n
-    - Recurrence: B_i,n(t) = B_{i-1},n(t) * ((n-i+1)/i) * (t/(1-t))
-
-    Special handling is applied for points where t=1.0, where the recurrence
-    relation would produce NaN values. At t=1.0, only the last basis function
-    B_n,n(1) = 1, while all others are 0.
-
     Each evaluation point is independent, so the outer loop over points is
     parallelised with ``numba.prange`` for better throughput on large arrays.
+    For small batches (fewer than ``_PARALLEL_MIN_NUM_PTS`` points) prefer the
+    serial twin :func:`_tabulate_Bernstein_basis_1D_serial_core`, which avoids
+    the parallel launch overhead.
 
     Args:
         n (np.int32): Degree of the Bernstein polynomials. Must be non-negative.
@@ -64,21 +105,44 @@ def _tabulate_Bernstein_basis_1D_core(
 
     # Process each point — rows are independent, so use prange.
     for j in nb_prange(t.shape[0]):
-        u = t[j]
-        if u == 1.0:
-            # At t=1.0: only B_n,n(1) = 1, all others are 0
-            for i in range(out.shape[1]):
-                out[j, i] = 0.0
-            out[j, n] = 1.0
-        else:
-            # For t != 1.0, use recurrence relation
-            one_minus_u = 1.0 - u
-            out[j, 0] = np.power(one_minus_u, n)
-            if n > 0:
-                t_over_1mt = u / one_minus_u
-                for i in range(1, n + 1):
-                    const_factor = (n - i + 1.0) / i
-                    out[j, i] = out[j, i - 1] * const_factor * t_over_1mt
+        _bernstein_point(n, t[j], out[j, :])
+
+
+@nb_jit(
+    nopython=True,
+    cache=True,
+)
+def _tabulate_Bernstein_basis_1D_serial_core(
+    n: np.int32,
+    t: npt.NDArray[np.float32 | np.float64],
+    out: npt.NDArray[np.float32 | np.float64],
+) -> None:
+    """Evaluate Bernstein basis polynomials of degree n at points t (serial twin).
+
+    Identical to :func:`_tabulate_Bernstein_basis_1D_core` but compiled without
+    ``parallel=True``: no fork/join overhead, which makes it the faster choice
+    for small point batches.
+
+    Args:
+        n (np.int32): Degree of the Bernstein polynomials. Must be non-negative.
+        t (npt.NDArray[np.float32 | np.float64]): 1D array of
+            evaluation points. Must be a contiguous array of float32 or float64
+            values.
+        out (npt.NDArray[np.float32 | np.float64]): Output array
+            of shape (len(t), n+1) and dtype matching t. Must have the correct
+            shape and dtype (no validation performed).
+
+    Note:
+        Inputs are assumed to be correct (no validation performed).
+        For general use, call _tabulate_Bernstein_basis_1D_impl instead.
+    """
+    if n == 0:
+        for j in range(out.shape[0]):
+            out[j, 0] = 1.0
+        return
+
+    for j in range(t.shape[0]):
+        _bernstein_point(n, t[j], out[j, :])
 
 
 @nb_jit(
@@ -202,9 +266,108 @@ def _tabulate_Legendre_basis_1D_core(
 @nb_jit(
     nopython=True,
     cache=True,
+    inline="always",
+)
+def _bernstein_derivs_point(
+    n: np.int32,
+    s: np.float32 | np.float64,
+    n_deriv: int,
+    out_pt: npt.NDArray[np.float32 | np.float64],
+) -> None:
+    """Evaluate all Bernstein basis derivatives at one point (A2.3 body, unit spans).
+
+    Inlined (``inline="always"``) into the batch kernels so the per-point
+    scratch allocations stay visible to Numba's parallel allocation hoisting.
+
+    Args:
+        n (np.int32): Degree of the Bernstein polynomials (>= 0).
+        s (np.float32 | np.float64): Evaluation point in [0, 1].
+        n_deriv (int): Maximum derivative order to compute (>= 0).
+        out_pt (npt.NDArray[np.float32 | np.float64]): Output block of shape
+            ``(n_deriv + 1, n + 1)``.
+
+    Note:
+        Inputs are assumed to be correct (no validation performed).
+    """
+    order = int(n) + 1
+    dtype = out_pt.dtype
+    zero = dtype.type(0.0)
+    one = dtype.type(1.0)
+
+    # Zero out this point's output slice (thread-local write)
+    for k in range(n_deriv + 1):
+        for i in range(order):
+            out_pt[k, i] = zero
+
+    # --- Build ndu table for uniform knots on [0, 1] ---
+    # Upper triangle / diagonal: ndu[r, j] = B_{r, j}(s)  (r <= j)
+    # Lower triangle:            ndu[j, r] = 1             (r <  j)  ← knot differences
+    ndu = np.zeros((order, order), dtype=dtype)
+    a_arr = np.zeros((2, n_deriv + 1), dtype=dtype)
+
+    ndu[0, 0] = one
+    for j in range(1, order):
+        saved = zero
+        for r in range(j):
+            ndu[j, r] = one  # knot difference = 1 for uniform Bernstein knots
+            temp = ndu[r, j - 1]  # divide by ndu[j, r] = 1
+            ndu[r, j] = saved + (one - s) * temp
+            saved = s * temp
+        ndu[j, j] = saved
+
+    # 0th derivatives = Bernstein basis values
+    for j in range(order):
+        out_pt[0, j] = ndu[j, int(n)]
+
+    # --- k-th derivatives via triangular recursion (A2.3, unit knot spans) ---
+    for r in range(order):
+        s1 = 0
+        s2 = 1
+        a_arr[0, 0] = one
+
+        for k in range(1, n_deriv + 1):
+            d = zero
+            rk = r - k
+            pk = int(n) - k
+
+            if r >= k:
+                a_arr[s2, 0] = a_arr[s1, 0]  # divide by ndu[pk+1, rk] = 1
+                d = a_arr[s2, 0] * ndu[rk, pk]
+
+            j1 = 1 if rk >= -1 else -rk
+            j2 = k - 1 if (r - 1) <= pk else int(n) - r
+
+            for jj in range(j1, j2 + 1):
+                a_arr[s2, jj] = a_arr[s1, jj] - a_arr[s1, jj - 1]  # divide by 1
+                d += a_arr[s2, jj] * ndu[rk + jj, pk]
+
+            if r <= pk:
+                a_arr[s2, k] = -a_arr[s1, k - 1]  # divide by ndu[pk+1, r] = 1
+                d += a_arr[s2, k] * ndu[r, pk]
+
+            out_pt[k, r] = d
+
+            # Swap rows
+            tmp_s = s1
+            s1 = s2
+            s2 = tmp_s
+
+    # --- Factorial scaling: multiply k-th row by n! / (n-k)! ---
+    # When k > n, fac becomes 0, zeroing rows beyond the degree (the k-th
+    # derivative of a degree-n polynomial is identically zero for k > n).
+    fac = int(n)
+    for k in range(1, n_deriv + 1):
+        for j in range(order):
+            out_pt[k, j] *= fac
+        fac *= int(n) - k
+
+
+@nb_jit(
+    nopython=True,
+    cache=True,
     parallel=True,
 )
-def _tabulate_Bernstein_basis_deriv_1D_core(  # noqa: PLR0912
+def _tabulate_Bernstein_basis_deriv_1D_core(
     n: np.int32,
     t: npt.NDArray[np.float32 | np.float64],
     n_deriv: int,
@@ -214,7 +377,10 @@ def _tabulate_Bernstein_basis_deriv_1D_core(  # noqa: PLR0912
 
     Implements Algorithm A2.3 (DerBasisFuncs) from Piegl & Tiller specialised
     for Bernstein polynomials, where all knot differences equal one.  The outer
-    loop over points is parallelised with ``numba.prange``.
+    loop over points is parallelised with ``numba.prange``; for small batches
+    (fewer than ``_PARALLEL_MIN_NUM_PTS`` points) prefer the serial twin
+    :func:`_tabulate_Bernstein_basis_deriv_1D_serial_core`, which avoids the
+    parallel launch overhead.
 
     Args:
         n (np.int32): Degree of the Bernstein polynomials (>= 0).
@@ -235,79 +401,43 @@ def _tabulate_Bernstein_basis_deriv_1D_core(  # noqa: PLR0912
         Inputs are assumed to be correct (no validation performed).
         For general use, call :func:`_tabulate_Bspline_basis_deriv_1D_impl` instead.
     """
-    order = int(n) + 1
     n_pts = t.shape[0]
-    dtype = t.dtype
-    zero = dtype.type(0.0)
-    one = dtype.type(1.0)
-
     for pt_id in nb_prange(n_pts):
-        s = t[pt_id]
+        _bernstein_derivs_point(n, t[pt_id], n_deriv, out_deriv[pt_id, :, :])
 
-        # Zero out this point's output slice (thread-local write)
-        for k in range(n_deriv + 1):
-            for i in range(order):
-                out_deriv[pt_id, k, i] = zero
 
-        # --- Build ndu table for uniform knots on [0, 1] ---
-        # Upper triangle / diagonal: ndu[r, j] = B_{r, j}(s)  (r <= j)
-        # Lower triangle:            ndu[j, r] = 1             (r <  j)  ← knot differences
-        ndu = np.zeros((order, order), dtype=dtype)
-        a_arr = np.zeros((2, n_deriv + 1), dtype=dtype)
+@nb_jit(
+    nopython=True,
+    cache=True,
+)
+def _tabulate_Bernstein_basis_deriv_1D_serial_core(
+    n: np.int32,
+    t: npt.NDArray[np.float32 | np.float64],
+    n_deriv: int,
+    out_deriv: npt.NDArray[np.float32 | np.float64],
+) -> None:
+    """Evaluate Bernstein basis function derivatives on [0, 1] (serial twin).
 
-        ndu[0, 0] = one
-        for j in range(1, order):
-            saved = zero
-            for r in range(j):
-                ndu[j, r] = one  # knot difference = 1 for uniform Bernstein knots
-                temp = ndu[r, j - 1]  # divide by ndu[j, r] = 1
-                ndu[r, j] = saved + (one - s) * temp
-                saved = s * temp
-            ndu[j, j] = saved
+    Identical to :func:`_tabulate_Bernstein_basis_deriv_1D_core` but compiled
+    without ``parallel=True``: no fork/join overhead, which makes it the faster
+    choice for small point batches.
 
-        # 0th derivatives = Bernstein basis values
-        for j in range(order):
-            out_deriv[pt_id, 0, j] = ndu[j, int(n)]
+    Args:
+        n (np.int32): Degree of the Bernstein polynomials (>= 0).
+        t (npt.NDArray[np.float32 | np.float64]): 1D array of evaluation points
+            in [0, 1].
+        n_deriv (int): Maximum derivative order to compute (>= 0).
+        out_deriv (npt.NDArray[np.float32 | np.float64]): Output array of shape
+            ``(len(t), n_deriv+1, n+1)`` and dtype matching ``t``. Must have the
+            correct shape and dtype (no validation performed).
 
-        # --- k-th derivatives via triangular recursion (A2.3, unit knot spans) ---
-        for r in range(order):
-            s1 = 0
-            s2 = 1
-            a_arr[0, 0] = one
-
-            for k in range(1, n_deriv + 1):
-                d = zero
-                rk = r - k
-                pk = int(n) - k
-
-                if r >= k:
-                    a_arr[s2, 0] = a_arr[s1, 0]  # divide by ndu[pk+1, rk] = 1
-                    d = a_arr[s2, 0] * ndu[rk, pk]
-
-                j1 = 1 if rk >= -1 else -rk
-                j2 = k - 1 if (r - 1) <= pk else int(n) - r
-
-                for jj in range(j1, j2 + 1):
-                    a_arr[s2, jj] = a_arr[s1, jj] - a_arr[s1, jj - 1]  # divide by 1
-                    d += a_arr[s2, jj] * ndu[rk + jj, pk]
-
-                if r <= pk:
-                    a_arr[s2, k] = -a_arr[s1, k - 1]  # divide by ndu[pk+1, r] = 1
-                    d += a_arr[s2, k] * ndu[r, pk]
-
-                out_deriv[pt_id, k, r] = d
-
-                # Swap rows
-                tmp_s = s1
-                s1 = s2
-                s2 = tmp_s
-
-        # --- Factorial scaling: multiply k-th row by n! / (n-k)! ---
-        fac = int(n)
-        for k in range(1, n_deriv + 1):
-            for j in range(order):
-                out_deriv[pt_id, k, j] *= fac
-            fac *= int(n) - k
+    Note:
+        Inputs are assumed to be correct (no validation performed).
+        For general use, call :func:`_tabulate_Bspline_basis_deriv_1D_impl` instead.
+    """
+    n_pts = t.shape[0]
+    for pt_id in range(n_pts):
+        _bernstein_derivs_point(n, t[pt_id], n_deriv, out_deriv[pt_id, :, :])
 
 
 def _warmup_numba_functions() -> None:
@@ -320,15 +450,19 @@ def _warmup_numba_functions() -> None:
     t_dummy = np.array([0.0, 0.5, 1.0], dtype=np.float64)
     out_dummy = np.empty((3, 2), dtype=np.float64)
 
-    # Warmup each core function with float64
+    # Warmup each core function with float64 (parallel and serial twins)
     _tabulate_Bernstein_basis_1D_core(np.int32(1), t_dummy, out_dummy)
+    _tabulate_Bernstein_basis_1D_serial_core(np.int32(1), t_dummy, out_dummy)
     _tabulate_cardinal_Bspline_basis_1D_core(np.int32(1), t_dummy, out_dummy)
     _tabulate_Legendre_basis_1D_core(np.int32(1), t_dummy, out_dummy)
 
-    # Warmup Bernstein derivative core with float64
+    # Warmup Bernstein derivative cores with float64 (parallel and serial twins)
     n_deriv_dummy = 2
     out_deriv_dummy = np.empty((3, n_deriv_dummy + 1, 2), dtype=np.float64)
     _tabulate_Bernstein_basis_deriv_1D_core(np.int32(1), t_dummy, n_deriv_dummy, out_deriv_dummy)
+    _tabulate_Bernstein_basis_deriv_1D_serial_core(
+        np.int32(1), t_dummy, n_deriv_dummy, out_deriv_dummy
+    )
 
 
 # Precompile numba functions on module import

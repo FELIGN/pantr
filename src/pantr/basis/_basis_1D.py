@@ -15,7 +15,9 @@ import numpy.typing as npt
 
 from .._numba_compat import wait_for_jit_warmup
 from ._basis_core import (
+    _PARALLEL_MIN_NUM_PTS,
     _tabulate_Bernstein_basis_1D_core,
+    _tabulate_Bernstein_basis_1D_serial_core,
     _tabulate_cardinal_Bspline_basis_1D_core,
     _tabulate_Legendre_basis_1D_core,
 )
@@ -30,14 +32,19 @@ if TYPE_CHECKING:
     from . import LagrangeVariant
 
 
+_BasisCoreFunc = Callable[
+    [np.int32, npt.NDArray[np.float32 | np.float64], npt.NDArray[np.float32 | np.float64]],
+    None,
+]
+"""Signature of a 1D basis tabulation core kernel: ``(degree, pts, out) -> None``."""
+
+
 def _tabulate_basis_1D_impl_helper(
     n: int,
     t: npt.ArrayLike,
-    core_func: Callable[
-        [np.int32, npt.NDArray[np.float32 | np.float64], npt.NDArray[np.float32 | np.float64]],
-        None,
-    ],
+    core_func: _BasisCoreFunc,
     out: npt.NDArray[np.float32 | np.float64] | None = None,
+    core_func_serial: _BasisCoreFunc | None = None,
 ) -> npt.NDArray[np.float32 | np.float64]:
     """Common implementation for tabulating 1D basis functions.
 
@@ -48,11 +55,14 @@ def _tabulate_basis_1D_impl_helper(
         n (int): Degree of the basis polynomials. Must be non-negative.
         t (npt.ArrayLike): Evaluation points. Can be a scalar, list, or numpy array.
             Types different from float32 or float64 are automatically converted to float64.
-        core_func: Core function to call for computation. Must accept
+        core_func (_BasisCoreFunc): Core function to call for computation. Must accept
             (np.int32, npt.NDArray[float32/float64], npt.NDArray[float32/float64]) -> None.
         out (npt.NDArray[np.float32 | np.float64] | None): Optional output array
             where the result will be stored. If None, a new array is allocated.
             Must have the correct shape and dtype if provided. Defaults to None.
+        core_func_serial (_BasisCoreFunc | None): Optional serial twin of ``core_func``,
+            used for batches smaller than ``_PARALLEL_MIN_NUM_PTS`` to avoid the
+            parallel launch overhead. Defaults to None (always use ``core_func``).
 
     Returns:
         npt.NDArray[np.float32 | np.float64]: Evaluated basis functions, with the same shape
@@ -93,7 +103,10 @@ def _tabulate_basis_1D_impl_helper(
 
     B_normalized = out.reshape(expected_normalized_shape)
 
-    core_func(np.int32(n), t, B_normalized)
+    if core_func_serial is not None and num_pts < _PARALLEL_MIN_NUM_PTS:
+        core_func_serial(np.int32(n), t, B_normalized)
+    else:
+        core_func(np.int32(n), t, B_normalized)
 
     return out
 
@@ -129,7 +142,13 @@ def _tabulate_Bernstein_basis_1D_impl(
                [0.0625, 0.375 , 0.5625],
                [0.    , 0.    , 1.    ]])
     """
-    return _tabulate_basis_1D_impl_helper(n, t, _tabulate_Bernstein_basis_1D_core, out)
+    return _tabulate_basis_1D_impl_helper(
+        n,
+        t,
+        _tabulate_Bernstein_basis_1D_core,
+        out,
+        core_func_serial=_tabulate_Bernstein_basis_1D_serial_core,
+    )
 
 
 def _tabulate_cardinal_Bspline_basis_1D_impl(

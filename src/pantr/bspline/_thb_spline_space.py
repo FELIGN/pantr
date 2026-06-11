@@ -937,11 +937,15 @@ class THBSplineSpace:
         if cached is None:
             sp1d = self._level_spaces[level].spaces[k]
             pts_k = np.ascontiguousarray(flat_pts[:, k])
+            # Points were already validated against the cell bounds (a subset of
+            # the level-space domain) in _tabulate_orders; skip the domain check.
             if order == 0:
-                values, first_basis = sp1d.tabulate_basis(pts_k)
+                values, first_basis = sp1d.tabulate_basis(pts_k, validate=False)
                 deriv = np.asarray(values, dtype=np.float64)
             else:
-                all_deriv, first_basis = sp1d.tabulate_basis_derivatives(pts_k, order)
+                all_deriv, first_basis = sp1d.tabulate_basis_derivatives(
+                    pts_k, order, validate=False
+                )
                 deriv = np.asarray(all_deriv, dtype=np.float64)[:, order, :]
             cached = _BasisEval1D(deriv, np.asarray(first_basis, dtype=np.int64))
             eval_cache[key] = cached

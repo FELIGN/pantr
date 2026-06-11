@@ -13,7 +13,11 @@ import numpy.typing as npt
 
 from .._numba_compat import nb_jit, nb_prange
 from ..basis._basis_1D import _tabulate_Bernstein_basis_1D_impl
-from ..basis._basis_core import _tabulate_Bernstein_basis_deriv_1D_core
+from ..basis._basis_core import (
+    _PARALLEL_MIN_NUM_PTS,
+    _tabulate_Bernstein_basis_deriv_1D_core,
+    _tabulate_Bernstein_basis_deriv_1D_serial_core,
+)
 from ..basis._basis_utils import (
     _compute_final_output_shape_1D,
     _compute_final_output_shape_1D_deriv,
@@ -28,14 +32,6 @@ from ._bspline_knots import (
 
 if TYPE_CHECKING:
     from ._bspline_space_1d import BsplineSpace1D
-
-_PARALLEL_MIN_NUM_PTS = 4096
-"""Minimum number of evaluation points for which the ``parallel=True`` kernels pay off.
-
-Below this threshold the fork/join overhead of a parallel Numba kernel launch
-(hundreds of microseconds) dwarfs the per-point work (tens of nanoseconds), so
-the Layer-2 tabulation helpers dispatch to the serial twin kernels instead.
-"""
 
 
 @nb_jit(
@@ -540,9 +536,12 @@ def _tabulate_Bspline_basis_Bernstein_like_deriv_1D(
     k0, k1 = spline.domain
     pts_normalized = (pts - k0) / (k1 - k0)  # map to [0, 1]
 
-    _tabulate_Bernstein_basis_deriv_1D_core(
-        np.int32(spline.degree), pts_normalized, n_deriv, out_deriv
+    deriv_core = (
+        _tabulate_Bernstein_basis_deriv_1D_core
+        if pts_normalized.shape[0] >= _PARALLEL_MIN_NUM_PTS
+        else _tabulate_Bernstein_basis_deriv_1D_serial_core
     )
+    deriv_core(np.int32(spline.degree), pts_normalized, n_deriv, out_deriv)
 
     # Chain-rule: d^k/dx^k f(x) = d^k/ds^k f(s) * (ds/dx)^k = d^k/ds^k f(s) * (1/(k1-k0))^k
     inv_span: float = 1.0 / float(k1 - k0)
@@ -559,6 +558,8 @@ def _tabulate_Bspline_basis_1D_impl(
     pts: npt.ArrayLike,
     out_basis: npt.NDArray[np.float32 | np.float64] | None = None,
     out_first_basis: npt.NDArray[np.int_] | None = None,
+    *,
+    validate: bool = True,
 ) -> tuple[npt.NDArray[np.float32 | np.float64], npt.NDArray[np.int_]]:
     """Evaluate B-spline basis functions at given points.
 
@@ -581,6 +582,10 @@ def _tabulate_Bspline_basis_1D_impl(
             first basis indices will be stored. If None, a new array is allocated. Must have
             the correct shape and dtype np.int_ if provided. This follows NumPy's style for
             output arrays. Defaults to None.
+        validate (bool): If True (default), check that every point lies inside the
+            spline domain. Pass False only when the caller guarantees in-domain
+            points (e.g. points generated inside a knot span); out-of-domain
+            points are then undefined behavior. Defaults to True.
 
     Returns:
         tuple[
@@ -597,8 +602,9 @@ def _tabulate_Bspline_basis_1D_impl(
               If `out_first_basis` was provided, returns the same array.
 
     Raises:
-        ValueError: If any evaluation points are outside the B-spline domain, or if `out_basis`
-            or `out_first_basis` is provided and has incorrect shape or dtype.
+        ValueError: If ``validate`` is True and any evaluation point is outside the
+            B-spline domain, or if `out_basis` or `out_first_basis` is provided and
+            has incorrect shape or dtype.
 
     Example:
         >>> bspline = BsplineSpace1D([0, 0, 0, 0.25, 0.7, 0.7, 1, 1, 1], 2)
@@ -612,7 +618,9 @@ def _tabulate_Bspline_basis_1D_impl(
     input_shape = np.shape(pts)
     pts = _normalize_points_1D(pts)
 
-    if not np.all(_is_in_domain_impl(spline.knots, spline.degree, pts, spline.tolerance)):
+    if validate and not np.all(
+        _is_in_domain_impl(spline.knots, spline.degree, pts, spline.tolerance)
+    ):
         raise ValueError(
             f"One or more values in pts are outside the knot vector domain {spline.domain}"
         )
@@ -656,12 +664,14 @@ def _tabulate_Bspline_basis_1D_impl(
     return out_basis, out_first_basis
 
 
-def _tabulate_Bspline_basis_deriv_1D_impl(
+def _tabulate_Bspline_basis_deriv_1D_impl(  # noqa: PLR0913
     spline: BsplineSpace1D,
     pts: npt.ArrayLike,
     n_deriv: int,
     out_deriv: npt.NDArray[np.float32 | np.float64] | None = None,
     out_first_basis: npt.NDArray[np.int_] | None = None,
+    *,
+    validate: bool = True,
 ) -> tuple[npt.NDArray[np.float32 | np.float64], npt.NDArray[np.int_]]:
     """Evaluate B-spline basis function derivatives at given points.
 
@@ -685,6 +695,10 @@ def _tabulate_Bspline_basis_deriv_1D_impl(
         out_first_basis (npt.NDArray[np.int_] | None): Optional output array for first
             basis indices. If None, a new array is allocated. Must have shape ``pts_shape``
             and dtype ``np.int_`` if provided. Defaults to None.
+        validate (bool): If True (default), check that every point lies inside the
+            spline domain. Pass False only when the caller guarantees in-domain
+            points (e.g. points generated inside a knot span); out-of-domain
+            points are then undefined behavior. Defaults to True.
 
     Returns:
         tuple[npt.NDArray[np.float32 | np.float64], npt.NDArray[np.int_]]: Tuple of
@@ -693,8 +707,9 @@ def _tabulate_Bspline_basis_deriv_1D_impl(
             function at each point.
 
     Raises:
-        ValueError: If ``n_deriv < 0``, any evaluation point is outside the domain, or
-            ``out_deriv`` / ``out_first_basis`` has incorrect shape or dtype.
+        ValueError: If ``n_deriv < 0``, if ``validate`` is True and any evaluation
+            point is outside the domain, or ``out_deriv`` / ``out_first_basis`` has
+            incorrect shape or dtype.
 
     Example:
         >>> bspline = BsplineSpace1D([0, 0, 0, 1, 1, 1], 2)
@@ -708,7 +723,9 @@ def _tabulate_Bspline_basis_deriv_1D_impl(
     input_shape = np.shape(pts)
     pts = _normalize_points_1D(pts)
 
-    if not np.all(_is_in_domain_impl(spline.knots, spline.degree, pts, spline.tolerance)):
+    if validate and not np.all(
+        _is_in_domain_impl(spline.knots, spline.degree, pts, spline.tolerance)
+    ):
         raise ValueError(
             f"One or more values in pts are outside the knot vector domain {spline.domain}"
         )

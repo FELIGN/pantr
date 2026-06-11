@@ -473,6 +473,8 @@ class BsplineSpace1D:
         pts: npt.ArrayLike,
         out_basis: npt.NDArray[np.float32 | np.float64] | None = None,
         out_first_basis: npt.NDArray[np.int_] | None = None,
+        *,
+        validate: bool = True,
     ) -> tuple[npt.NDArray[np.float32 | np.float64], npt.NDArray[np.int_]]:
         """Evaluate the B-spline basis functions at the given points.
 
@@ -486,6 +488,10 @@ class BsplineSpace1D:
                 first basis indices will be stored. If None, a new array is allocated. Must have
                 the correct shape and dtype numpy.intp if provided. This follows NumPy's style for
                 output arrays. Defaults to None.
+            validate (bool): If True (default), check that every point lies inside
+                the spline domain. Pass False only when the caller guarantees
+                in-domain points; out-of-domain points are then undefined behavior.
+                Defaults to True.
 
         Returns:
             tuple[
@@ -502,8 +508,9 @@ class BsplineSpace1D:
                   of evaluation points. If `out_first_basis` was provided, returns the same array.
 
         Raises:
-            ValueError: If any evaluation points are outside the B-spline domain, or if `out_basis`
-                or `out_first_basis` is provided and has incorrect shape or dtype.
+            ValueError: If ``validate`` is True and any evaluation point is outside the
+                B-spline domain, or if `out_basis` or `out_first_basis` is provided and
+                has incorrect shape or dtype.
 
         Example:
             >>> bspline = BsplineSpace1D([0, 0, 0, 0.25, 0.7, 0.7, 1, 1, 1], 2)
@@ -515,7 +522,7 @@ class BsplineSpace1D:
              array([0, 1, 3, 3]))
         """
         return _tabulate_Bspline_basis_1D_impl(
-            self, pts, out_basis=out_basis, out_first_basis=out_first_basis
+            self, pts, out_basis=out_basis, out_first_basis=out_first_basis, validate=validate
         )
 
     def tabulate_basis_derivatives(
@@ -524,6 +531,8 @@ class BsplineSpace1D:
         n_deriv: int,
         out_deriv: npt.NDArray[np.float32 | np.float64] | None = None,
         out_first_basis: npt.NDArray[np.int_] | None = None,
+        *,
+        validate: bool = True,
     ) -> tuple[npt.NDArray[np.float32 | np.float64], npt.NDArray[np.int_]]:
         """Evaluate B-spline basis function derivatives at the given points.
 
@@ -543,6 +552,10 @@ class BsplineSpace1D:
                 for first basis indices. If None, a new array is allocated. Must have
                 shape ``pts_shape`` and dtype ``numpy.intp`` if provided.
                 Defaults to None.
+            validate (bool): If True (default), check that every point lies inside
+                the spline domain. Pass False only when the caller guarantees
+                in-domain points; out-of-domain points are then undefined behavior.
+                Defaults to True.
 
         Returns:
             tuple[
@@ -556,9 +569,9 @@ class BsplineSpace1D:
                   global index of the first nonzero basis function for each point.
 
         Raises:
-            ValueError: If ``n_deriv < 0``, any evaluation point is outside the
-                domain, or ``out_deriv`` / ``out_first_basis`` has incorrect shape
-                or dtype.
+            ValueError: If ``n_deriv < 0``, if ``validate`` is True and any evaluation
+                point is outside the domain, or ``out_deriv`` / ``out_first_basis``
+                has incorrect shape or dtype.
 
         Example:
             >>> bspline = BsplineSpace1D([0, 0, 0, 1, 1, 1], 2)
@@ -569,7 +582,12 @@ class BsplineSpace1D:
             array([-1.,  0.,  1.])
         """
         return _tabulate_Bspline_basis_deriv_1D_impl(
-            self, pts, n_deriv, out_deriv=out_deriv, out_first_basis=out_first_basis
+            self,
+            pts,
+            n_deriv,
+            out_deriv=out_deriv,
+            out_first_basis=out_first_basis,
+            validate=validate,
         )
 
     def tabulate_Bezier_extraction_operators(
