@@ -12,6 +12,13 @@ from pantr.basis import (
     tabulate_cardinal_bspline_1d,
     tabulate_lagrange_1d,
 )
+from pantr.basis._basis_core import (
+    _PARALLEL_MIN_NUM_PTS,
+    _tabulate_Bernstein_basis_1D_core,
+    _tabulate_Bernstein_basis_1D_serial_core,
+    _tabulate_Bernstein_basis_deriv_1D_core,
+    _tabulate_Bernstein_basis_deriv_1D_serial_core,
+)
 from pantr.bspline import (
     BsplineSpace1D,
     create_cardinal_knots,
@@ -19,7 +26,6 @@ from pantr.bspline import (
     create_uniform_periodic_knots,
 )
 from pantr.bspline._bspline_basis_core import (
-    _PARALLEL_MIN_NUM_PTS,
     _compute_basis_deriv_nurbs_book_impl,
     _compute_basis_deriv_nurbs_book_serial_impl,
     _compute_basis_nurbs_book_impl,
@@ -2267,3 +2273,84 @@ class TestKnotPredicateCaching:
         assert sp.has_open_knots()
         assert sp.num_basis > sp.degree + 1
         assert not sp.has_Bezier_like_knots()
+
+
+class TestBernsteinSerialParallelTwins:
+    """Bernstein serial twin cores must match the parallel cores exactly."""
+
+    @pytest.mark.parametrize("num_pts", [1, 3, 100, 5000])
+    @pytest.mark.parametrize("degree", [0, 1, 2, 4])
+    def test_values_match(self, num_pts: int, degree: int) -> None:
+        """Serial and parallel Bernstein value cores agree bitwise (incl. t=1)."""
+        rng = np.random.default_rng(19)
+        t = rng.random(num_pts)
+        t[0] = 1.0  # exercise the t == 1 special case
+
+        out_par = np.empty((num_pts, degree + 1), dtype=np.float64)
+        _tabulate_Bernstein_basis_1D_core(np.int32(degree), t, out_par)
+        out_ser = np.empty((num_pts, degree + 1), dtype=np.float64)
+        _tabulate_Bernstein_basis_1D_serial_core(np.int32(degree), t, out_ser)
+        np.testing.assert_array_equal(out_ser, out_par)
+
+    @pytest.mark.parametrize("num_pts", [1, 3, 100, 5000])
+    @pytest.mark.parametrize("degree", [0, 2, 3])
+    def test_derivs_match(self, num_pts: int, degree: int) -> None:
+        """Serial and parallel Bernstein derivative cores agree bitwise."""
+        rng = np.random.default_rng(23)
+        t = rng.random(num_pts)
+        t[-1] = 1.0
+        n_deriv = degree + 1
+
+        out_par = np.empty((num_pts, n_deriv + 1, degree + 1), dtype=np.float64)
+        _tabulate_Bernstein_basis_deriv_1D_core(np.int32(degree), t, n_deriv, out_par)
+        out_ser = np.empty((num_pts, n_deriv + 1, degree + 1), dtype=np.float64)
+        _tabulate_Bernstein_basis_deriv_1D_serial_core(np.int32(degree), t, n_deriv, out_ser)
+        np.testing.assert_array_equal(out_ser, out_par)
+
+    def test_bezier_like_layer2_dispatch_consistent(self) -> None:
+        """Layer-2 results on a Bézier-like space agree below and above the threshold."""
+        sp = BsplineSpace1D(np.array([0.0, 0.0, 0.0, 1.0, 1.0, 1.0]), 2)
+        rng = np.random.default_rng(29)
+        big = rng.random(_PARALLEL_MIN_NUM_PTS + 64)
+
+        basis_big, first_big = _tabulate_Bspline_basis_1D_impl(sp, big)
+        basis_small, first_small = _tabulate_Bspline_basis_1D_impl(sp, big[:8])
+        np.testing.assert_array_equal(basis_small, basis_big[:8])
+        np.testing.assert_array_equal(first_small, first_big[:8])
+
+        der_big, dfirst_big = _tabulate_Bspline_basis_deriv_1D_impl(sp, big, 2)
+        der_small, dfirst_small = _tabulate_Bspline_basis_deriv_1D_impl(sp, big[:8], 2)
+        np.testing.assert_array_equal(der_small, der_big[:8])
+        np.testing.assert_array_equal(dfirst_small, dfirst_big[:8])
+
+
+class TestTabulateValidateFlag:
+    """The validate flag skips only the domain check, never changes results."""
+
+    @staticmethod
+    def _space() -> BsplineSpace1D:
+        knots = create_uniform_open_knots(num_intervals=8, degree=3)
+        return BsplineSpace1D(knots, 3)
+
+    def test_values_identical_for_in_domain_points(self) -> None:
+        """validate=False returns bitwise-identical results for in-domain points."""
+        sp = self._space()
+        pts = np.random.default_rng(31).random(50)
+
+        b_val, f_val = sp.tabulate_basis(pts)
+        b_no, f_no = sp.tabulate_basis(pts, validate=False)
+        np.testing.assert_array_equal(b_no, b_val)
+        np.testing.assert_array_equal(f_no, f_val)
+
+        d_val, df_val = sp.tabulate_basis_derivatives(pts, 2)
+        d_no, df_no = sp.tabulate_basis_derivatives(pts, 2, validate=False)
+        np.testing.assert_array_equal(d_no, d_val)
+        np.testing.assert_array_equal(df_no, df_val)
+
+    def test_validate_true_still_raises_out_of_domain(self) -> None:
+        """The default validate=True keeps rejecting out-of-domain points."""
+        sp = self._space()
+        with pytest.raises(ValueError, match="outside"):
+            sp.tabulate_basis(np.array([-0.5]))
+        with pytest.raises(ValueError, match="outside"):
+            sp.tabulate_basis_derivatives(np.array([1.5]), 1)
