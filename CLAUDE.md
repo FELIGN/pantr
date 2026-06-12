@@ -11,7 +11,6 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Commands
 
 ```bash
-pip install -e ".[dev]"                                              # install with dev deps
 pytest --no-cov                                                      # run tests (JIT enabled)
 pytest tests/test_basis.py::test_name --no-cov -v                   # single test
 pytest tests/ -k "keyword" --no-cov -v                              # filtered tests

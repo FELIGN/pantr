@@ -77,8 +77,8 @@ def require_mpi() -> ModuleType:
             "pantr.mpi found 'mpi4py' but failed to import 'mpi4py.MPI'. "
             "This usually means the MPI runtime library (e.g. libmpi.so) is missing "
             "or the mpi4py build is incompatible with the current environment. "
-            "Install an MPI library (e.g. 'conda install openmpi'), or use a plain "
-            "serial-only 'pip install pantr' (without the [mpi] extra)."
+            "Install an MPI library (e.g. 'conda install openmpi'), or reinstall "
+            "mpi4py against it (e.g. 'pip install --no-binary mpi4py mpi4py')."
         ) from exc
 
 
