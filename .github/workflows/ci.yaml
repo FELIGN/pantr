@@ -10,11 +10,6 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
-# pantr depends on mpi4py by default; the runners have no MPI toolchain and there
-# is no MPI code to exercise yet, so drop it at install time via the build flag.
-env:
-  PANTR_NO_MPI: "1"
-
 jobs:
   lint:
     name: Lint (Ruff)
@@ -164,6 +159,11 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-numba-${{ steps.setup-python.outputs.python-version }}-
 
+      - name: Install OpenMPI (needed by mpi4py installed via [dev])
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y libopenmpi-dev openmpi-bin
+
       - name: Create venv and install dev deps (on cache miss)
         if: steps.cache-venv.outputs.cache-hit != 'true'
         run: |
@@ -260,13 +260,11 @@ jobs:
     name: MPI tests (mpiexec)
     needs: [lint, type-check]
     runs-on: ubuntu-latest
-    # The only job that exercises the real distributed stack under multiple ranks, so
-    # unlike the rest it KEEPS the default mpi4py dependency (PANTR_NO_MPI unset) and
+    # The only job that exercises the real distributed stack under multiple ranks. It
     # builds mpi4py from source against the system OpenMPI -- the prebuilt wheels bundle
     # MPICH, which would not match the `openmpi-bin` launcher. PANTR_RUN_MPI enables the
     # otherwise-skipped tests under tests/mpi/.
     env:
-      PANTR_NO_MPI: ""
       PANTR_RUN_MPI: "1"
       PIP_NO_BINARY: "mpi4py"
     steps:

@@ -2,7 +2,7 @@
 
 ## Installation
 
-Requires Python 3.10–3.12.
+Requires Python 3.10–3.14.
 
 ```bash
 pip install pantr
@@ -11,7 +11,7 @@ pip install pantr
 For development:
 
 ```bash
-pip install -e ".[dev,docs]"
+pip install -e ".[dev]"
 pre-commit install
 ```
 

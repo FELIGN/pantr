@@ -16,7 +16,7 @@ Typical usage::
     with pantr.num_threads(1):
         result = space.tabulate_basis(pts)  # runs serially
 
-    # Also throttle BLAS threads (requires threadpoolctl)
+    # Also throttle BLAS threads
     with pantr.num_threads(4, limit_blas=True):
         result = space.tabulate_basis(pts)
 """
@@ -26,11 +26,11 @@ from __future__ import annotations
 import contextlib
 import os
 import threading
-import warnings
 from collections.abc import Generator
 from typing import Any, Final
 
 import numba as nb
+from threadpoolctl import threadpool_limits
 
 _user_configured: Final[threading.Event] = threading.Event()
 """Set by the public setters; queried by default policies (e.g. the per-rank MPI
@@ -108,16 +108,14 @@ def num_threads(n: int, *, limit_blas: bool = False) -> Generator[None, None, No
     """Context manager that temporarily sets the parallel thread count.
 
     On entry the Numba thread-pool size is changed to *n*; on exit the
-    previous value is restored.  When *limit_blas* is ``True`` and the
-    optional ``threadpoolctl`` package is installed, BLAS/LAPACK thread
-    pools (OpenBLAS, MKL, ...) are also limited to *n* threads for the
-    duration of the block.
+    previous value is restored.  When *limit_blas* is ``True``, BLAS/LAPACK
+    thread pools (OpenBLAS, MKL, ...) are also limited to *n* threads for the
+    duration of the block, via ``threadpoolctl``.
 
     Args:
         n (int): Desired thread count for the block.
         limit_blas (bool): If ``True``, also limit BLAS/LAPACK threads
-            via ``threadpoolctl``.  Emits a warning when
-            ``threadpoolctl`` is not installed.  Defaults to ``False``.
+            via ``threadpoolctl``.  Defaults to ``False``.
 
     Yields:
         None
@@ -139,17 +137,8 @@ def num_threads(n: int, *, limit_blas: bool = False) -> Generator[None, None, No
 
     blas_ctx: Any = None
     if limit_blas:
-        try:
-            from threadpoolctl import threadpool_limits  # noqa: PLC0415
-
-            blas_ctx = threadpool_limits(limits=n)
-            blas_ctx.__enter__()
-        except ImportError:
-            warnings.warn(
-                "limit_blas=True requires the 'threadpoolctl' package. "
-                "Install it with: pip install threadpoolctl",
-                stacklevel=2,
-            )
+        blas_ctx = threadpool_limits(limits=n)
+        blas_ctx.__enter__()
 
     try:
         yield

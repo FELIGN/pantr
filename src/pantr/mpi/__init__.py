@@ -7,9 +7,9 @@ serial core (:mod:`pantr.grid`, :mod:`pantr.bspline`, ...) never imports it
 when ``mpi4py`` is absent -- only helpers that genuinely need MPI raise at call
 time, via :func:`require_mpi`.
 
-The default ``pip install pantr`` pulls in ``mpi4py``. Build with the
-``PANTR_NO_MPI`` environment variable set to drop that dependency, yielding a
-serial-only, MPI-free install.
+``mpi4py`` is an opt-in dependency: a plain ``pip install pantr`` is serial-only
+and MPI-free, while ``pip install "pantr[mpi]"`` adds ``mpi4py`` (and requires an
+MPI library).
 
 Main exports:
 - :data:`HAS_MPI`: whether ``mpi4py`` was importable at module load time.
@@ -76,9 +76,9 @@ def require_mpi() -> ModuleType:
     """
     if not mpi_available():
         raise ImportError(
-            "pantr.mpi requires 'mpi4py', which is not installed. It ships by default "
-            "with pantr; reinstall without the PANTR_NO_MPI build flag, or run "
-            "'pip install mpi4py' in an environment with an MPI library."
+            "pantr.mpi requires 'mpi4py', which is not installed. Install the optional "
+            "MPI extra with 'pip install \"pantr[mpi]\"', or 'pip install mpi4py', in an "
+            "environment with an MPI library."
         )
     try:
         return importlib.import_module("mpi4py.MPI")
@@ -87,8 +87,8 @@ def require_mpi() -> ModuleType:
             "pantr.mpi found 'mpi4py' but failed to import 'mpi4py.MPI'. "
             "This usually means the MPI runtime library (e.g. libmpi.so) is missing "
             "or the mpi4py build is incompatible with the current environment. "
-            "Install an MPI library (e.g. 'conda install openmpi') or reinstall "
-            "pantr without MPI via 'PANTR_NO_MPI=1 pip install pantr'."
+            "Install an MPI library (e.g. 'conda install openmpi'), or reinstall "
+            "mpi4py against it (e.g. 'pip install --no-binary mpi4py mpi4py')."
         ) from exc
 
 

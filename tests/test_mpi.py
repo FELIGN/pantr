@@ -40,7 +40,7 @@ def test_mpi_available_matches_find_spec() -> None:
 def test_require_mpi_raises_when_unavailable(monkeypatch: pytest.MonkeyPatch) -> None:
     """`require_mpi()` raises an informative ImportError when mpi4py is absent."""
     monkeypatch.setattr(pantr.mpi, "mpi_available", lambda: False)
-    with pytest.raises(ImportError, match="PANTR_NO_MPI"):
+    with pytest.raises(ImportError, match=r"pantr\[mpi\]"):
         pantr.mpi.require_mpi()
 
 

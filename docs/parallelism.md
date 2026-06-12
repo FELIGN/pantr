@@ -56,21 +56,13 @@ performance.
 
 The `num_threads` context manager accepts a `limit_blas` flag that throttles
 BLAS thread pools for the duration of the block via the
-[threadpoolctl](https://github.com/joblib/threadpoolctl) package (optional
-dependency):
+[threadpoolctl](https://github.com/joblib/threadpoolctl) package (a core
+dependency of PaNTr):
 
 ```python
 with pantr.num_threads(4, limit_blas=True):
     # Numba uses 4 threads; BLAS also limited to 4
     result = bspline.evaluate(pts)
-```
-
-```{warning}
-`limit_blas=True` requires the [threadpoolctl](https://github.com/joblib/threadpoolctl)
-package.  If it is not installed, a `UserWarning` is emitted and BLAS threads are
-**not** limited.  Install it with:
-
-    pip install pantr[parallel]
 ```
 
 ## Usage patterns
