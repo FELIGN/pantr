@@ -114,6 +114,82 @@ with concurrent.futures.ThreadPoolExecutor(4) as pool:
 # 4 user threads x 2 Numba threads = 8 total on an 8-core machine
 ```
 
+## Hybrid MPI + threads
+
+Under MPI the two parallel layers can collide: every rank evaluates the same Numba
+kernels, and each rank's thread pool defaults to *all* logical cores. Running `R`
+ranks on an `n`-core node would launch `R x n` compute threads (plus a BLAS pool per
+rank) -- heavy over-subscription, and worse still when the launcher pins each rank to
+a single core.
+
+To prevent this, the **first use of any `pantr.mpi` entry point**
+(`DistributedSpace`, `from_dolfinx`) applies a process-level default: **one Numba
+thread per rank** (flat MPI -- the convention PETSc and dolfinx also follow). It is
+applied at most once per process and never overrides a thread count you set yourself.
+
+### Precedence
+
+Explicit configuration always wins over the default. If any of the following is in
+effect when an entry point first runs, the policy is a no-op:
+
+| Set by | When | Effect |
+|---|---|---|
+| `NUMBA_NUM_THREADS` env var | before importing PaNTr | caps *and* fixes the count; the default never fires |
+| `pantr.set_num_threads(n)` / `pantr.num_threads(...)` | any time | marks the count user-owned for the rest of the process |
+| `pantr.mpi.configure_threads(n)` | any time | sets the per-rank count explicitly |
+
+Once the default has fired, raising the count afterwards (e.g. for serial rank-0
+post-processing) sticks -- the policy will not re-throttle on a later entry-point call.
+
+### Choosing threads per rank
+
+For a hybrid run with `k` threads per rank, call `configure_threads` on **every**
+rank -- before or after building the distributed space:
+
+```python
+import pantr.mpi
+
+pantr.mpi.configure_threads(4)                    # 4 Numba threads on this rank
+pantr.mpi.configure_threads(4, limit_blas=True)   # also cap BLAS/LAPACK to 4
+```
+
+`configure_threads` can only *lower* the count below `NUMBA_NUM_THREADS` (the
+import-time maximum, defaulting to all logical cores). To raise that ceiling, set
+`NUMBA_NUM_THREADS` in the environment before launch.
+
+### Pinning: give each rank its cores
+
+Launchers often bind each rank to a single core by default, so a rank's extra threads
+would just timeshare that one core. Tell the launcher to hand each rank `k` cores:
+
+```bash
+# OpenMPI: k cores per rank
+mpiexec -n R --map-by socket:PE=k --bind-to core python run.py
+# ...or drop binding entirely and let the OS schedule
+mpiexec -n R --bind-to none python run.py
+# Slurm
+srun --ntasks=R --cpus-per-task=k python run.py
+```
+
+### Serial PaNTr under your own `mpiexec`
+
+If you run PaNTr serially across ranks **without** constructing any `pantr.mpi`
+object, no entry point fires and the default policy never engages. Throttle each rank
+yourself:
+
+```python
+pantr.mpi.configure_threads(1)   # or pantr.set_num_threads(1)
+```
+
+```{note}
+Numba's thread count is **thread-local**: `configure_threads` and the default policy
+govern kernels launched from the calling thread -- in SPMD that is the rank's main
+thread, where assembly runs. If a rank launches PaNTr kernels from its *own* worker
+threads, call `pantr.set_num_threads` inside each one.
+```
+
+See [Distributed spaces](distributed-spaces.md) for the MPI distribution layer itself.
+
 ## Threading layer
 
 Numba supports several threading backends: **TBB**, **OpenMP**, and

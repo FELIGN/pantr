@@ -136,6 +136,30 @@ that leaves a rank empty) gets `ds.local is None` and `ds.owns_cells is False`
 rather than failing -- guard with `if ds.owns_cells:` before assembling.
 ```
 
+## Threads per rank
+
+PaNTr's kernels are Numba-parallel and default to *all* logical cores, so without
+coordination every rank would spawn a full thread pool and over-subscribe the node.
+To prevent this, the first `DistributedSpace` / `from_dolfinx` call on a process
+limits it to **one Numba thread per rank** (flat MPI). The default never overrides a
+thread count you set explicitly.
+
+For a hybrid run, request `k` threads per rank with `configure_threads` on every rank,
+and give each rank `k` cores at launch:
+
+```python
+import pantr.mpi
+
+pantr.mpi.configure_threads(4)   # this rank may use 4 Numba threads
+```
+
+```bash
+mpiexec -n R --map-by socket:PE=4 python run.py   # or: srun --cpus-per-task=4
+```
+
+See [Parallelism -> Hybrid MPI + threads](parallelism.md) for the precedence rules,
+CPU-binding flags, and BLAS coordination.
+
 ## Immersion hooks
 
 PaNTr stores **no** geometric classification (interior / cut / exterior). An
