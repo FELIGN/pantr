@@ -73,9 +73,16 @@ class MultiLevelExtraction:
             to level ``m+1`` in direction ``k``.
         _ext (dict[int, SpanwiseElementExtraction]): Cache of per-level single-level
             extractions, built lazily.
+        _coeffs_cache (dict[tuple[int, tuple[int, ...], int], tuple[tuple[int, ...],
+            npt.NDArray[np.float64]]]): Memoized ``_element_coeffs`` results keyed
+            by ``(origin_level, multi, target_level)``.  A hierarchical function's
+            coefficients in a finer level's basis are independent of the cell, but a
+            function's support covers up to ``(p + 1) ** d`` cells per level, so the
+            per-cell operators would otherwise recompute each entry many times.
+            Cached coefficient arrays are frozen read-only.
     """
 
-    __slots__ = ("_ext", "_oslo", "_space", "_target")
+    __slots__ = ("_coeffs_cache", "_ext", "_oslo", "_space", "_target")
 
     def __init__(self, space: THBSplineSpace, target: Target = "bezier") -> None:
         """Create a multi-level extraction for a hierarchical space.
@@ -98,6 +105,10 @@ class MultiLevelExtraction:
         self._target = target
         self._oslo = space._build_oslo_matrices()
         self._ext: dict[int, SpanwiseElementExtraction] = {}
+        self._coeffs_cache: dict[
+            tuple[int, tuple[int, ...], int],
+            tuple[tuple[int, ...], npt.NDArray[np.float64]],
+        ] = {}
 
     # ------------------------------------------------------------------
     # Properties
@@ -317,7 +328,7 @@ class MultiLevelExtraction:
         origin_level: int,
         multi: tuple[int, ...],
         target_level: int,
-    ) -> tuple[list[int], npt.NDArray[np.float64]]:
+    ) -> tuple[tuple[int, ...], npt.NDArray[np.float64]]:
         """Express a hierarchical function on a cell in the level-``target_level`` basis.
 
         Refines the originating B-spline ``B^{origin_level}_multi`` from its origin level
@@ -325,14 +336,18 @@ class MultiLevelExtraction:
         space is truncated.  The result is the function's exact coefficients in the
         level-``target_level`` tensor-product basis over the cell.
 
+        The result depends only on the arguments — not on the cell — so it is
+        memoized on the instance (see ``_coeffs_cache``); the returned ``coeffs``
+        array is shared across calls and frozen read-only.
+
         Args:
             origin_level (int): Level the function originates at.
             multi (tuple[int, ...]): Per-axis function index at ``origin_level``.
             target_level (int): The cell's level; the basis the result is expressed in.
 
         Returns:
-            tuple[list[int], npt.NDArray[np.float64]]: ``(box_lo, coeffs)`` over the
-            level-``target_level`` function box.
+            tuple[tuple[int, ...], npt.NDArray[np.float64]]: ``(box_lo, coeffs)`` over
+            the level-``target_level`` function box.  ``coeffs`` is read-only.
 
         Raises:
             ValueError: If ``origin_level > target_level``.
@@ -341,6 +356,10 @@ class MultiLevelExtraction:
             raise ValueError(
                 f"origin_level ({origin_level}) must be <= target_level ({target_level})."
             )
+        key = (origin_level, multi, target_level)
+        cached = self._coeffs_cache.get(key)
+        if cached is not None:
+            return cached
         space = self._space
         dim = space.dim
         box_lo = [int(multi[d]) for d in range(dim)]
@@ -358,7 +377,10 @@ class MultiLevelExtraction:
                     space._active_funcs[lvl + 1],
                     space._level_spaces[lvl + 1].num_basis,
                 )
-        return box_lo, coeffs
+        coeffs.flags.writeable = False
+        entry = (tuple(box_lo), coeffs)
+        self._coeffs_cache[key] = entry
+        return entry
 
     def __repr__(self) -> str:
         """Return a compact string representation.
