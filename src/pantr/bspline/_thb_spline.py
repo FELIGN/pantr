@@ -243,23 +243,35 @@ class THBSpline:
         rank = self.rank
         grid = self._space.grid
 
-        cids = np.empty(n_pts, dtype=np.int64)
-        for i in range(n_pts):
-            cid = grid.locate(flat[i])
-            if cid is None:
-                raise ValueError(f"point {flat[i].tolist()!r} lies outside the grid domain.")
-            cids[i] = cid
+        cids = grid.locate_many(flat)
+        if n_pts > 0 and int(cids.min()) < 0:
+            i = int(np.argmax(cids < 0))
+            raise ValueError(f"point {flat[i].tolist()!r} lies outside the grid domain.")
+
+        # Group points by cell via a stable argsort: order[starts[g]:ends[g]]
+        # holds the point indices of the g-th occupied cell. Avoids the
+        # O(num_cells * num_pts) per-cell boolean masks.
+        order = np.argsort(cids, kind="stable")
+        sorted_cids = cids[order]
+        boundaries = np.flatnonzero(np.diff(sorted_cids)) + 1
+        if n_pts > 0:
+            starts = np.concatenate(([0], boundaries))
+            ends = np.concatenate((boundaries, [n_pts]))
+        else:
+            starts = np.empty(0, dtype=np.int64)
+            ends = np.empty(0, dtype=np.int64)
 
         raw = np.empty((n_pts, rank), dtype=np.float64)
-        for cid in np.unique(cids):
-            mask = cids == cid
-            values, dofs = self._space.tabulate_basis_derivatives(int(cid), flat[mask], orders)
+        for s, e in zip(starts, ends, strict=True):
+            cid = int(sorted_cids[s])
+            idx = order[s:e]
+            values, dofs = self._space.tabulate_basis_derivatives(cid, flat[idx], orders)
             if dofs.size == 0:
                 raise RuntimeError(
-                    f"cell {int(cid)} has no active basis functions; "
+                    f"cell {cid} has no active basis functions; "
                     "the THBSplineSpace may be inconsistent."
                 )
-            raw[mask] = np.asarray(values, dtype=np.float64) @ self._control_points[dofs]
+            raw[idx] = np.asarray(values, dtype=np.float64) @ self._control_points[dofs]
 
         result = raw[:, 0].reshape(batch_shape) if self._scalar else raw.reshape(*batch_shape, rank)
         if out is None:
