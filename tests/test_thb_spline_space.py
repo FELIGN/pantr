@@ -1534,26 +1534,27 @@ class TestTHBSplineEvaluateGrouping:
         np.testing.assert_allclose(got, np.asarray(expected), rtol=1e-13, atol=0.0)
 
     def test_vector_field_grouping(self) -> None:
-        """Vector-valued evaluation keeps point-to-result correspondence."""
+        """Vector-valued evaluation keeps point-to-result correspondence for all points."""
         spline = self._spline(rank=3)
         rng = np.random.default_rng(13)
         pts = rng.random((150, 2))
         got = spline.evaluate(pts)
         assert got.shape == (150, 3)
         cp = np.asarray(spline.control_points)
-        for i in (0, 73, 149):
-            cid = spline.space.grid.locate(pts[i])
+        expected = []
+        for p in pts:
+            cid = spline.space.grid.locate(p)
             assert cid is not None
-            values, dofs = spline.space.tabulate_basis(int(cid), pts[i][None, :])
-            np.testing.assert_allclose(
-                got[i], np.asarray(values)[0] @ cp[dofs], rtol=1e-13, atol=0.0
-            )
+            values, dofs = spline.space.tabulate_basis(int(cid), p[None, :])
+            expected.append(np.asarray(values)[0] @ cp[dofs])
+        np.testing.assert_allclose(got, np.asarray(expected), rtol=1e-13, atol=0.0)
 
     def test_outside_point_raises(self) -> None:
-        """An outside point raises ValueError naming the offending point."""
+        """An outside point raises ValueError naming the first offending point."""
         spline = self._spline()
+        # pts[0] is inside; pts[1] is the first outside point (x=1.5 > 1.0).
         pts = np.array([[0.5, 0.5], [1.5, 0.5], [2.5, 0.5]])
-        with pytest.raises(ValueError, match="outside the grid domain"):
+        with pytest.raises(ValueError, match=r"1\.5.*outside the grid domain"):
             spline.evaluate(pts)
 
     def test_empty_points(self) -> None:
@@ -1578,3 +1579,61 @@ class TestTHBSplineEvaluateGrouping:
             np.testing.assert_allclose(
                 got[i], np.asarray(values)[0] @ cp[dofs], rtol=1e-12, atol=1e-12
             )
+
+    def test_all_points_same_cell(self) -> None:
+        """All points in one cell form a single group (boundaries empty, one slice)."""
+        spline = self._spline()
+        # Level-0 cell [3,3] covers [0.75, 1.0]^2 and is never refined by _spline().
+        rng = np.random.default_rng(41)
+        pts = rng.random((30, 2)) * 0.2 + 0.78  # all within [0.78, 0.98]^2
+        got = spline.evaluate(pts)
+        cp = np.asarray(spline.control_points)
+        expected = []
+        for p in pts:
+            cid = spline.space.grid.locate(p)
+            assert cid is not None
+            values, dofs = spline.space.tabulate_basis(int(cid), p[None, :])
+            expected.append(float(np.asarray(values)[0] @ cp[dofs]))
+        # Verify all points landed in the same cell (single group, no splits).
+        cids = np.array([spline.space.grid.locate(p) for p in pts])
+        assert len(np.unique(cids)) == 1
+        np.testing.assert_allclose(got, np.asarray(expected), rtol=1e-13, atol=0.0)
+
+    def test_single_point_batch(self) -> None:
+        """A single-point batch (n_pts=1) forms one group and evaluates correctly."""
+        spline = self._spline()
+        pt = np.array([[0.6, 0.6]])
+        got = spline.evaluate(pt)
+        assert got.shape == (1,)
+        cp = np.asarray(spline.control_points)
+        cid = spline.space.grid.locate(pt[0])
+        assert cid is not None
+        values, dofs = spline.space.tabulate_basis(int(cid), pt)
+        np.testing.assert_allclose(
+            got[0], float(np.asarray(values)[0] @ cp[dofs]), rtol=1e-13, atol=0.0
+        )
+
+    @staticmethod
+    def _spline_1d() -> THBSpline:
+        """1D THBSpline fixture on [0, 1] with one level of refinement."""
+        grid = _grid_1d()
+        grid.refine(0, [0], [2])
+        thb = THBSplineSpace(_root_1d(), grid)
+        rng = np.random.default_rng(53)
+        return THBSpline(thb, rng.random(thb.num_total_basis))
+
+    def test_1d_evaluation(self) -> None:
+        """1D grouping path matches per-point scalar evaluation."""
+        spline = self._spline_1d()
+        rng = np.random.default_rng(61)
+        pts = rng.random((80, 1))
+        got = spline.evaluate(pts)
+        assert got.shape == (80,)
+        cp = np.asarray(spline.control_points)
+        expected = []
+        for p in pts:
+            cid = spline.space.grid.locate(p)
+            assert cid is not None
+            values, dofs = spline.space.tabulate_basis(int(cid), p[None, :])
+            expected.append(float(np.asarray(values)[0] @ cp[dofs]))
+        np.testing.assert_allclose(got, np.asarray(expected), rtol=1e-13, atol=0.0)
