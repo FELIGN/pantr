@@ -343,3 +343,58 @@ class TestOperatorApi:
             not np.allclose(lagrange.operator(cid), bezier.operator(cid))
             for cid in range(thb.grid.num_cells)
         ), "lagrange and bezier operators should differ on at least one cell"
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Coefficient memoization (PR 5 of #197)
+# ──────────────────────────────────────────────────────────────────────────────
+
+
+class TestElementCoeffsMemoization:
+    """_element_coeffs is memoized per (origin_level, multi, target_level)."""
+
+    @staticmethod
+    def _thb() -> THBSplineSpace:
+        grid = hierarchical_grid(uniform_grid([[0.0, 1.0], [0.0, 1.0]], 4), 2)
+        grid.refine(0, [0, 0], [2, 2])
+        grid.refine(1, [0, 0], [2, 2])
+        return THBSplineSpace(_root_2d(), grid)
+
+    def test_cache_returns_shared_readonly_entry(self) -> None:
+        """Repeated keys return the same frozen array; distinct keys return independent objects."""
+        ext = MultiLevelExtraction(self._thb())
+        box1, c1 = ext._element_coeffs(0, (0, 0), 2)
+        box2, c2 = ext._element_coeffs(0, (0, 0), 2)
+        assert c1 is c2
+        assert box1 == box2
+        assert not c1.flags.writeable
+        with pytest.raises(ValueError, match="read-only|assignment"):
+            c1[(0,) * c1.ndim] = 1.0
+        # Different target_level → independent cache entry (no key collision).
+        _, c_other = ext._element_coeffs(0, (0, 0), 1)
+        assert c_other is not c1
+
+    def test_operators_match_fresh_instance(self) -> None:
+        """Operators computed through a warm cache equal a fresh instance's."""
+        thb = self._thb()
+        warm = MultiLevelExtraction(thb)
+        for cid in range(thb.grid.num_cells):  # warm the cache over all cells
+            warm.multilevel_operator(cid)
+        fresh = MultiLevelExtraction(thb)
+        for cid in range(thb.grid.num_cells):
+            np.testing.assert_array_equal(
+                warm.multilevel_operator(cid), fresh.multilevel_operator(cid)
+            )
+            np.testing.assert_array_equal(warm.operator(cid), fresh.operator(cid))
+
+    def test_repeated_calls_identical(self) -> None:
+        """Two operator calls on the same cell are bitwise identical."""
+        ext = MultiLevelExtraction(self._thb())
+        cid = ext.num_elements - 1
+        np.testing.assert_array_equal(ext.operator(cid), ext.operator(cid))
+
+    def test_invalid_levels_still_raise(self) -> None:
+        """The origin > target validation fires before the cache."""
+        ext = MultiLevelExtraction(self._thb())
+        with pytest.raises(ValueError, match="must be <="):
+            ext._element_coeffs(2, (0, 0), 0)
