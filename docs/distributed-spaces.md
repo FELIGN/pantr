@@ -36,8 +36,8 @@ it identically.
 ## Installation
 
 ```bash
-pip install pantr                  # default: pulls in mpi4py (needs an MPI library)
-PANTR_NO_MPI=1 pip install pantr   # serial-only build, no mpi4py dependency
+pip install pantr                  # serial-only, no mpi4py dependency
+pip install 'pantr[mpi]'           # + mpi4py, for distributed spaces (needs an MPI library)
 pip install 'pantr[metis]'         # + pymetis, for partition_graph(backend="metis")
 ```
 

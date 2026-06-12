@@ -1,6 +1,6 @@
 # PaNTr
 
-Polynomial and NURBS Toolkit (**PaNTr**) is a pure Python 3.10–3.12 library for geometric modeling and numerical analysis using **NumPy**, **SciPy**, **Matplotlib**, and **Numba**.
+Polynomial and NURBS Toolkit (**PaNTr**) is a pure Python 3.10–3.14 library for geometric modeling and numerical analysis using **NumPy**, **SciPy**, and **Numba**.
 
 ## Features
 
@@ -21,21 +21,30 @@ cd pantr
 pip install .
 ```
 
-By default PaNTr depends on `mpi4py` (for the optional `pantr.mpi` distribution
-layer), which requires an MPI library at build time. For a serial-only, MPI-free
-install, set `PANTR_NO_MPI` when building:
+### Optional features
+
+The serial core (`pantr.grid`, `pantr.bspline`, ...) has no optional dependencies.
+Extra features are opt-in via extras:
+
+| Extra | Enables | Pulls in |
+|---|---|---|
+| `mpi` | distributed spaces (`pantr.mpi`) | `mpi4py` (needs an MPI library) |
+| `metis` | METIS graph partitioning backend | `pymetis` |
+| `viz` | visualization (`pantr.viz`) | `pyvista` (VTK) |
+| `docs` | building the documentation | Sphinx stack |
 
 ```bash
-PANTR_NO_MPI=1 pip install .
+pip install "pantr[mpi]"        # e.g. distributed spaces
+pip install "pantr[mpi,viz]"    # several extras at once
 ```
 
-The serial core (`pantr.grid`, `pantr.bspline`, ...) never imports `pantr.mpi`, so
-it works identically with or without MPI.
+The serial core never imports `pantr.mpi`, so it works identically with or without
+the `mpi` extra.
 
 ## Development
 
 ```bash
-pip install -e ".[dev,docs]"
+pip install -e ".[dev]"   # includes all optional feature extras
 ```
 
 ## License

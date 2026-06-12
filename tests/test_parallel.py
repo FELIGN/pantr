@@ -72,12 +72,33 @@ class TestNumThreadsContextManager:
             assert get_num_threads() == 1
         assert get_num_threads() == prev
 
-    def test_limit_blas_without_threadpoolctl(self) -> None:
-        """limit_blas=True warns when threadpoolctl is absent."""
+    def test_limit_blas_limits_and_restores(self) -> None:
+        """limit_blas=True limits BLAS threads in-block and restores on exit."""
+        from threadpoolctl import threadpool_info  # noqa: PLC0415
+
         prev = get_num_threads()
-        with pytest.warns(UserWarning, match="threadpoolctl"), num_threads(1, limit_blas=True):
+        with num_threads(1, limit_blas=True):
             assert get_num_threads() == 1
+            pools = threadpool_info()
+            if not pools:
+                pytest.skip("no BLAS thread pool detected; threadpoolctl has nothing to limit")
+            for pool in pools:
+                assert pool["num_threads"] == 1
         assert get_num_threads() == prev
+
+    def test_limit_blas_restores_on_exception(self) -> None:
+        """limit_blas=True restores BLAS threads even when an exception propagates."""
+        from threadpoolctl import threadpool_info  # noqa: PLC0415
+
+        pools_before = threadpool_info()
+        if not pools_before:
+            pytest.skip("no BLAS thread pool detected")
+        prev = get_num_threads()
+        with pytest.raises(RuntimeError), num_threads(1, limit_blas=True):
+            raise RuntimeError("crash inside blas context")
+        assert get_num_threads() == prev  # type: ignore[unreachable, unused-ignore]
+        for pool in threadpool_info():
+            assert pool["num_threads"] >= prev
 
 
 class TestPublicReExports:

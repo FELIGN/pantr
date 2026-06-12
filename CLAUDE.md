@@ -11,7 +11,6 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Commands
 
 ```bash
-pip install -e ".[dev]"                                              # install with dev deps
 pytest --no-cov                                                      # run tests (JIT enabled)
 pytest tests/test_basis.py::test_name --no-cov -v                   # single test
 pytest tests/ -k "keyword" --no-cov -v                              # filtered tests
@@ -21,7 +20,8 @@ ruff format .                                                        # format
 mypy --config-file mypy.ini src tests                               # type check
 lint-imports                                                        # import boundaries (core must not import pantr.mpi)
 NUMBA_DISABLE_JIT=1 make docs SPHINXOPTS="-W --keep-going -j auto"  # docs build (matches CI)
-PANTR_NO_MPI=1 pip install -e ".[dev]"                              # serial-only install (drop mpi4py)
+pip install -e ".[dev]"                                             # full dev env (pulls all optional extras)
+pip install "pantr[mpi]"                                            # opt in to MPI (pantr.mpi + mpi4py)
 PANTR_RUN_MPI=1 mpiexec -n 2 python -m pytest tests/mpi/ --no-cov   # MPI smoke tests (needs mpi4py + MPI launcher)
 ```
 
@@ -73,7 +73,7 @@ The library is organized in three strict layers. Each layer has a well-defined r
 
 - **The serial core never imports `pantr.mpi`.** This is enforced by an import-linter contract (`make import-lint`, run in CI) and a grimp-based test. New core modules are covered automatically by the test.
 - **MPI imports are lazy.** `import pantr.mpi` succeeds even without `mpi4py`; only `pantr.mpi.require_mpi()` imports it (raising a clear error if absent).
-- **`mpi4py` is a default dependency**, injected by the hatchling metadata hook in `hatch_build.py`. Set `PANTR_NO_MPI=1` at build/install time for a serial-only, MPI-free install. Base runtime deps live in `[tool.pantr] base-dependencies` in `pyproject.toml` (the hook reads them, since `dependencies` is `dynamic`).
+- **`mpi4py` is an opt-in dependency**, declared in the `mpi` extra. A plain `pip install pantr` is serial-only and MPI-free; `pip install "pantr[mpi]"` adds `mpi4py` (and needs an MPI library). The `dev` extra includes `pantr[mpi]`, so contributor installs always get it.
 
 Other private modules: `_numba_compat.py` (Numba shim), `_basis_utils.py` (shared validation helpers), `__init__.py` (async Numba warmup at import time).
 
