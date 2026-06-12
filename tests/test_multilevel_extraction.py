@@ -361,7 +361,7 @@ class TestElementCoeffsMemoization:
         return THBSplineSpace(_root_2d(), grid)
 
     def test_cache_returns_shared_readonly_entry(self) -> None:
-        """Repeated keys return the same frozen array object."""
+        """Repeated keys return the same frozen array; distinct keys return independent objects."""
         ext = MultiLevelExtraction(self._thb())
         box1, c1 = ext._element_coeffs(0, (0, 0), 2)
         box2, c2 = ext._element_coeffs(0, (0, 0), 2)
@@ -370,6 +370,9 @@ class TestElementCoeffsMemoization:
         assert not c1.flags.writeable
         with pytest.raises(ValueError, match="read-only|assignment"):
             c1[(0,) * c1.ndim] = 1.0
+        # Different target_level → independent cache entry (no key collision).
+        _, c_other = ext._element_coeffs(0, (0, 0), 1)
+        assert c_other is not c1
 
     def test_operators_match_fresh_instance(self) -> None:
         """Operators computed through a warm cache equal a fresh instance's."""
@@ -378,7 +381,7 @@ class TestElementCoeffsMemoization:
         for cid in range(thb.grid.num_cells):  # warm the cache over all cells
             warm.multilevel_operator(cid)
         fresh = MultiLevelExtraction(thb)
-        for cid in range(0, thb.grid.num_cells, 7):
+        for cid in range(thb.grid.num_cells):
             np.testing.assert_array_equal(
                 warm.multilevel_operator(cid), fresh.multilevel_operator(cid)
             )
