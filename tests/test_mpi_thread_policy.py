@@ -7,6 +7,7 @@ thread count and resets the sticky policy flags after every test.
 
 from __future__ import annotations
 
+import importlib.util
 from types import SimpleNamespace
 from typing import Any
 
@@ -122,6 +123,14 @@ def test_num_threads_context_disables_default(monkeypatch: pytest.MonkeyPatch) -
     assert pantr.get_num_threads() == _MAX
 
 
+def test_num_threads_active_context_prevents_throttling(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A pantr.num_threads block active during construction prevents throttling."""
+    _unthrottled_and_unmarked(monkeypatch)
+    with pantr.num_threads(_MAX):
+        _build_distributed_space()
+        assert pantr.get_num_threads() == _MAX
+
+
 def test_configure_threads_disables_default(monkeypatch: pytest.MonkeyPatch) -> None:
     """A prior configure_threads call disables the default."""
     monkeypatch.delenv("NUMBA_NUM_THREADS", raising=False)
@@ -153,9 +162,22 @@ def test_configure_threads_validates() -> None:
 
 def test_configure_threads_limit_blas_warns_without_threadpoolctl() -> None:
     """limit_blas=True warns when threadpoolctl is absent (and still sets Numba)."""
+    if importlib.util.find_spec("threadpoolctl") is not None:
+        pytest.skip("threadpoolctl is installed; test requires its absence")
     with pytest.warns(UserWarning, match="threadpoolctl"):
         configure_threads(1, limit_blas=True)
     assert pantr.get_num_threads() == 1
+
+
+def test_configure_threads_after_default_policy(monkeypatch: pytest.MonkeyPatch) -> None:
+    """configure_threads overrides a fired default; later entry points are then no-ops."""
+    _unthrottled_and_unmarked(monkeypatch)
+    _build_distributed_space()
+    assert pantr.get_num_threads() == 1
+    configure_threads(_MAX)
+    assert pantr.get_num_threads() == _MAX
+    _build_distributed_space()  # sticky guard prevents re-throttling
+    assert pantr.get_num_threads() == _MAX
 
 
 # --------------------------------------------------------------------------- #

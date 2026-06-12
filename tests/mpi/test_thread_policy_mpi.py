@@ -47,6 +47,8 @@ def test_default_policy_one_thread_per_rank() -> None:
 def test_configure_threads_wins_across_ranks() -> None:
     """An explicit configure_threads value survives construction on every rank."""
     n = min(2, int(nb.config.NUMBA_NUM_THREADS))
+    if n < 2:
+        pytest.skip("needs >= 2 available threads to observe a non-default count")
     comm = MPI.COMM_WORLD
     pantr.mpi.configure_threads(n)
     _build_distributed_space(comm)

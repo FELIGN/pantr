@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import importlib.util
+
 import pytest
 
 import pantr
@@ -74,6 +76,8 @@ class TestNumThreadsContextManager:
 
     def test_limit_blas_without_threadpoolctl(self) -> None:
         """limit_blas=True warns when threadpoolctl is absent."""
+        if importlib.util.find_spec("threadpoolctl") is not None:
+            pytest.skip("threadpoolctl is installed; test requires its absence")
         prev = get_num_threads()
         with pytest.warns(UserWarning, match="threadpoolctl"), num_threads(1, limit_blas=True):
             assert get_num_threads() == 1

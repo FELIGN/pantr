@@ -90,9 +90,12 @@ def set_num_threads(n: int) -> None:
 def _threads_explicitly_configured() -> bool:
     """Report whether the user explicitly configured the thread count.
 
-    ``True`` when :func:`set_num_threads` was called (directly or via the
-    :func:`num_threads` context manager), or when the ``NUMBA_NUM_THREADS``
-    environment variable is set.
+    ``True`` when :func:`set_num_threads` was called directly, when the
+    ``NUMBA_NUM_THREADS`` environment variable is set, or when the
+    :func:`num_threads` context manager was used.  The flag is set on both
+    entry *and* exit of :func:`num_threads` (exit restores the previous count
+    via :func:`set_num_threads`), so any use of that context manager permanently
+    marks the process as explicitly configured for the rest of its lifetime.
 
     Returns:
         bool: Whether explicit thread configuration is in effect.
@@ -118,6 +121,13 @@ def num_threads(n: int, *, limit_blas: bool = False) -> Generator[None, None, No
 
     Yields:
         None
+
+    Note:
+        Using this context manager permanently marks the thread count as explicitly
+        configured (via :func:`set_num_threads` on both entry and exit).  Default
+        policies -- e.g. the per-rank MPI default in :mod:`pantr.mpi` -- will not
+        override the thread count for the rest of the process lifetime, even after
+        the ``with`` block exits.
 
     Example:
         >>> with pantr.num_threads(1):

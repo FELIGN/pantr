@@ -44,5 +44,7 @@ def _isolate_thread_state() -> Iterator[None]:
     yield
     from pantr.mpi import _thread_policy  # noqa: PLC0415
 
-    _thread_policy._reset_policy_for_testing()
-    nb.set_num_threads(prev)
+    try:
+        _thread_policy._reset_policy_for_testing()
+    finally:
+        nb.set_num_threads(prev)

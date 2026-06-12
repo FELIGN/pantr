@@ -24,8 +24,8 @@ first use of any MPI-engaging entry point limits this process to **one Numba thr
 per rank**, unless threads were explicitly configured (``NUMBA_NUM_THREADS``,
 ``pantr.set_num_threads``, ``pantr.num_threads``, or :func:`configure_threads`).
 Every new MPI entry point added to this package must call
-``_thread_policy._ensure_default_thread_policy()`` before any other work -- there is
-no structural chokepoint, since communicators are duck-typed.
+``_ensure_default_thread_policy()`` from :mod:`pantr.mpi._thread_policy` before any
+other work -- there is no structural chokepoint, since communicators are duck-typed.
 """
 
 from __future__ import annotations

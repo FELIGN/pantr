@@ -37,10 +37,18 @@ _DEFAULT_THREADS_PER_RANK: Final[int] = 1
 """Numba threads granted to each MPI rank by the default policy (flat MPI)."""
 
 _policy_applied: Final[threading.Event] = threading.Event()
-"""Set once the default policy has run in this process (sticky guard)."""
+"""Sticky guard applied at most once per process.
+
+Uses :class:`threading.Event` so that ``is_set()`` and ``set()`` are atomic
+without a separate lock.
+"""
 
 _blas_state: Final[dict[str, Any]] = {"limiter": None}
-"""Holds the live ``threadpoolctl.threadpool_limits`` object (persistent BLAS limit)."""
+"""Holds the live ``threadpoolctl.threadpool_limits`` object (persistent BLAS limit).
+
+A ``dict`` (rather than a bare module variable) lets :func:`configure_threads`
+update the limiter via mutation without rebinding a ``Final`` name.
+"""
 
 
 def configure_threads(threads_per_rank: int = 1, *, limit_blas: bool = False) -> None:
@@ -67,7 +75,10 @@ def configure_threads(threads_per_rank: int = 1, *, limit_blas: bool = False) ->
             ``numba.config.NUMBA_NUM_THREADS``.
 
     Note:
-        Numba's thread mask is thread-local; see the module docstring.
+        Numba's thread mask is thread-local: this call governs kernels launched from
+        the calling thread only. Call it on each thread individually if running PaNTr
+        kernels from multiple threads; in SPMD practice, calling it once on the rank's
+        main thread is sufficient.
     """
     _parallel.set_num_threads(threads_per_rank)
     _policy_applied.set()
@@ -81,8 +92,10 @@ def configure_threads(threads_per_rank: int = 1, *, limit_blas: bool = False) ->
                 stacklevel=2,
             )
         else:
-            if _blas_state["limiter"] is not None:
-                _blas_state["limiter"].restore_original_limits()
+            old_limiter = _blas_state["limiter"]
+            _blas_state["limiter"] = None
+            if old_limiter is not None:
+                old_limiter.restore_original_limits()
             _blas_state["limiter"] = threadpool_limits(limits=threads_per_rank)
 
 
