@@ -159,6 +159,11 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-numba-${{ steps.setup-python.outputs.python-version }}-
 
+      - name: Install OpenMPI (needed by mpi4py installed via [dev])
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y libopenmpi-dev openmpi-bin
+
       - name: Create venv and install dev deps (on cache miss)
         if: steps.cache-venv.outputs.cache-hit != 'true'
         run: |
