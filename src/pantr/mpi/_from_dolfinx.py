@@ -19,6 +19,7 @@ from typing import TYPE_CHECKING, Any
 import numpy as np
 
 from ..grid import Partition
+from ._thread_policy import _ensure_default_thread_policy
 
 if TYPE_CHECKING:
     import numpy.typing as npt
@@ -67,7 +68,13 @@ def from_dolfinx(
             id is outside ``[0, n_cells)``; if ``allgather`` returns an inconsistent number
             of entries or a non-1D result for any rank; if any gathered cell id is out of
             range; or if two ranks own the same cell (inconsistent mesh/map).
+
+    Note:
+        Calling this engages the default MPI thread policy: unless threads were
+        explicitly configured, this process's Numba thread pool is limited to one
+        thread per rank. See :func:`pantr.mpi.configure_threads`.
     """
+    _ensure_default_thread_policy()
     if n_cells < 1:
         raise ValueError(f"n_cells must be >= 1; got {n_cells}.")
 
