@@ -12,11 +12,12 @@ last control point is returned directly in O(1).
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, cast
 
 import numpy as np
 import numpy.typing as npt
 
+from .._array_utils import _flatten_along_axis
 from ._bezier_core import _slice_bezier_1d_core
 
 if TYPE_CHECKING:
@@ -56,12 +57,7 @@ def _slice_bezier(
 
     ctrl = bezier.control_points
 
-    # Move target axis to position 0, flatten the rest into a single axis.
-    moved = np.moveaxis(ctrl, axis, 0)
-    orig_shape = moved.shape
-    pts_2d: npt.NDArray[np.floating[Any]] = moved.reshape(orig_shape[0], -1)
-
-    pts_2d = np.ascontiguousarray(pts_2d)
+    pts_2d, trailing_shape = _flatten_along_axis(ctrl, axis)
 
     # Apply 1D de Casteljau via Numba kernel.
     result_1d = np.empty(pts_2d.shape[1], dtype=pts_2d.dtype)
@@ -74,8 +70,7 @@ def _slice_bezier(
             return cast(npt.NDArray[np.float32 | np.float64], result_1d[:-1] / weight)
         return result_1d
 
-    # Restore shape: remove the sliced axis dimension.
-    new_shape = orig_shape[1:]
-    new_ctrl = result_1d.reshape(new_shape)
+    # Restore shape: the sliced axis is removed.
+    new_ctrl = result_1d.reshape(trailing_shape)
 
     return BezierCls(new_ctrl, is_rational=bezier.is_rational)

@@ -8,11 +8,12 @@ sub-splines.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 import numpy as np
 import numpy.typing as npt
 
+from .._array_utils import _flatten_along_axis, _unflatten_along_axis
 from ._bspline_knot_insertion import (
     _insert_knots_bspline_1d_impl,
     _to_open_bspline_1d_impl,
@@ -90,7 +91,7 @@ def _split_bspline_impl(
     """Split a B-spline into two at a parameter value in one direction.
 
     Applies :func:`_split_bspline_1d_impl` along the specified parametric
-    direction using the standard moveaxis pattern.
+    direction via the shared flatten/unflatten helpers.
 
     Args:
         bspline: Input B-spline.
@@ -107,11 +108,7 @@ def _split_bspline_impl(
     dim = bspline.dim
     ctrl = bspline.control_points
 
-    # Move the split direction to axis 0, flatten the rest.
-    moved_ctrl = np.moveaxis(ctrl, direction, 0)
-    orig_shape = moved_ctrl.shape
-    pts_2d: npt.NDArray[np.floating[Any]] = moved_ctrl.reshape(orig_shape[0], -1)
-    pts_2d = np.ascontiguousarray(pts_2d)
+    pts_2d, trailing_shape = _flatten_along_axis(ctrl, direction)
 
     space_1d = bspline.space.spaces[direction]
     (left_knots, left_pts_2d), (right_knots, right_pts_2d) = _split_bspline_1d_impl(
@@ -123,13 +120,8 @@ def _split_bspline_impl(
         value,
     )
 
-    # Build left B-spline.
-    left_shape = (left_pts_2d.shape[0], *orig_shape[1:])
-    left_ctrl = np.moveaxis(left_pts_2d.reshape(left_shape), 0, direction)
-
-    # Build right B-spline.
-    right_shape = (right_pts_2d.shape[0], *orig_shape[1:])
-    right_ctrl = np.moveaxis(right_pts_2d.reshape(right_shape), 0, direction)
+    left_ctrl = _unflatten_along_axis(left_pts_2d, trailing_shape, direction)
+    right_ctrl = _unflatten_along_axis(right_pts_2d, trailing_shape, direction)
 
     # Construct the spaces: replace the split direction, keep others.
     left_spaces: list[BsplineSpace1D] = []

@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING, Any, Literal
 import numpy as np
 from numpy import typing as npt
 
+from .._array_utils import _flatten_along_axis, _unflatten_along_axis
 from .._interpolation_utils import resolve_svd_tolerance, split_components
 from ..quad import PointsLattice
 from ._bspline_space_1d import BsplineSpace1D
@@ -176,13 +177,9 @@ def _solve_kronecker(
     """
     result = rhs.copy()
     for d, mat in enumerate(matrices):
-        # Move axis d to position 0, solve, move back.
-        result = np.moveaxis(result, d, 0)
-        shape_rest = result.shape[1:]
-        result_2d = result.reshape(mat.shape[0], -1)
-        solved = _solve_1d(mat, result_2d, tol)
-        result = solved.reshape(mat.shape[1], *shape_rest)
-        result = np.moveaxis(result, 0, d)
+        pts_2d, trailing_shape = _flatten_along_axis(result, d)
+        solved = _solve_1d(mat, pts_2d, tol)
+        result = _unflatten_along_axis(solved, trailing_shape, d)
     return np.array(result, dtype=rhs.dtype)
 
 

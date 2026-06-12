@@ -10,10 +10,12 @@ Works for non-rational and rational Bézier of any parametric dimension.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 import numpy as np
 import numpy.typing as npt
+
+from .._array_utils import _flatten_along_axis, _unflatten_along_axis
 
 if TYPE_CHECKING:
     from . import Bezier
@@ -91,7 +93,7 @@ def _derivative_ctrl_nd(
     """Compute the partial derivative of an N-D coefficient array along one axis.
 
     Applies :func:`_derivative_ctrl_1d` along dimension ``dim`` using the
-    moveaxis/reshape/restore pattern, reducing the size in that dimension
+    shared flatten/unflatten helpers, reducing the size in that dimension
     by 1.
 
     Args:
@@ -108,19 +110,16 @@ def _derivative_ctrl_nd(
         For general use, call :func:`_derivative_bezier` instead.
     """
     degree = coeffs.shape[dim] - 1
-    moved = np.moveaxis(coeffs, dim, 0)
-    orig_shape = moved.shape
-    flat = moved.reshape(orig_shape[0], -1)
-    result = _derivative_ctrl_1d(degree, flat)
-    new_shape = (result.shape[0], *orig_shape[1:])
-    return np.moveaxis(result.reshape(new_shape), 0, dim)
+    pts_2d, trailing_shape = _flatten_along_axis(coeffs, dim)
+    result = _derivative_ctrl_1d(degree, pts_2d)
+    return _unflatten_along_axis(result, trailing_shape, dim)
 
 
 def _derivative_nonrational(bezier: Bezier, direction: int) -> Bezier:
     """Compute the partial derivative of a non-rational Bézier.
 
     Applies the 1D derivative formula along the given parametric direction
-    using the moveaxis/reshape/restore pattern.
+    using the shared flatten/unflatten helpers.
 
     Args:
         bezier (~pantr.bezier.Bezier): A non-rational Bézier.
@@ -144,7 +143,7 @@ def _derivative_keep_degree_nonrational(bezier: Bezier, direction: int) -> Bezie
     """Compute the partial derivative of a non-rational Bézier, preserving degree.
 
     Fuses the derivative and degree elevation into a single operation along
-    the given direction using the moveaxis/reshape/restore pattern.
+    the given direction using the shared flatten/unflatten helpers.
 
     Args:
         bezier (~pantr.bezier.Bezier): A non-rational Bézier.
@@ -163,19 +162,9 @@ def _derivative_keep_degree_nonrational(bezier: Bezier, direction: int) -> Bezie
     p = bezier.degree[direction]
     ctrl = bezier.control_points
 
-    # Move target direction to axis 0, flatten the rest.
-    moved = np.moveaxis(ctrl, direction, 0)
-    orig_shape = moved.shape
-    pts_2d: npt.NDArray[np.floating[Any]] = moved.reshape(orig_shape[0], -1)
-
-    pts_2d = np.ascontiguousarray(pts_2d)
-
+    pts_2d, trailing_shape = _flatten_along_axis(ctrl, direction)
     new_pts_2d = _derivative_keep_degree_ctrl_1d(p, pts_2d)
-
-    # Restore shape and move axis back.
-    new_shape = (new_pts_2d.shape[0], *orig_shape[1:])
-    new_moved = new_pts_2d.reshape(new_shape)
-    new_ctrl = np.moveaxis(new_moved, 0, direction)
+    new_ctrl = _unflatten_along_axis(new_pts_2d, trailing_shape, direction)
 
     return BezierCls(new_ctrl, is_rational=False)
 

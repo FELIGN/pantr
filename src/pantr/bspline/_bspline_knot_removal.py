@@ -6,11 +6,12 @@ multi-dimensional orchestration that wrap the Layer 3 knot-removal kernel.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 import numpy as np
 import numpy.typing as npt
 
+from .._array_utils import _flatten_along_axis, _unflatten_along_axis
 from ._bspline_knot_removal_core import _remove_knot_1d_core
 from ._bspline_knots import _find_knot_index_and_multiplicity
 
@@ -123,13 +124,7 @@ def _remove_knots_bspline(
             new_spaces_1d.append(space_1d)
             continue
 
-        # Move dimension i to the 0th axis.
-        moved_ctrl = np.moveaxis(ctrl, i, 0)
-        orig_shape = moved_ctrl.shape
-
-        # Flatten remaining axes into a single column dimension.
-        pts_2d: npt.NDArray[np.floating[Any]] = moved_ctrl.reshape(orig_shape[0], -1)
-        pts_2d = np.ascontiguousarray(pts_2d)
+        pts_2d, trailing_shape = _flatten_along_axis(ctrl, i)
 
         current_knots = space_1d.knots
         current_ctrl = pts_2d
@@ -146,12 +141,7 @@ def _remove_knots_bspline(
                 tol_deviation,
             )
 
-        # Restore multi-dimensional shape.
-        new_shape = (current_ctrl.shape[0], *orig_shape[1:])
-        new_moved_ctrl = current_ctrl.reshape(new_shape)
-
-        # Move axis back to its original position.
-        ctrl = np.moveaxis(new_moved_ctrl, 0, i)
+        ctrl = _unflatten_along_axis(current_ctrl, trailing_shape, i)
 
         new_spaces_1d.append(BsplineSpace1D(current_knots, space_1d.degree))
 

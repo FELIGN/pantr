@@ -9,11 +9,12 @@ already-open domain endpoint.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 import numpy as np
 import numpy.typing as npt
 
+from .._array_utils import _flatten_along_axis, _unflatten_along_axis
 from ._bspline_knot_insertion import (
     _insert_knots_bspline_1d_impl,
     _to_open_bspline_1d_impl,
@@ -195,7 +196,7 @@ def _restrict_bspline_impl(
     """Restrict a B-spline to a sub-region of its parametric domain.
 
     Applies :func:`_restrict_bspline_1d_impl` per parametric direction using the
-    standard moveaxis pattern. Directions with ``None`` bounds are left unchanged.
+    shared flatten/unflatten helpers. Directions with ``None`` bounds are left unchanged.
 
     Args:
         bspline: Input B-spline.
@@ -229,11 +230,7 @@ def _restrict_bspline_impl(
             new_spaces_1d.append(space_1d)
             continue
 
-        # Move dimension i to the 0th axis and flatten remaining axes.
-        moved_ctrl = np.moveaxis(ctrl, i, 0)
-        orig_shape = moved_ctrl.shape
-        pts_2d: npt.NDArray[np.floating[Any]] = moved_ctrl.reshape(orig_shape[0], -1)
-        pts_2d = np.ascontiguousarray(pts_2d)
+        pts_2d, trailing_shape = _flatten_along_axis(ctrl, i)
 
         restricted_knots, restricted_pts_2d = _restrict_bspline_1d_impl(
             space_1d.knots,
@@ -246,10 +243,7 @@ def _restrict_bspline_impl(
 
         any_restricted = True
 
-        # Restore multi-dimensional shape.
-        new_shape = (restricted_pts_2d.shape[0], *orig_shape[1:])
-        new_moved_ctrl = restricted_pts_2d.reshape(new_shape)
-        ctrl = np.moveaxis(new_moved_ctrl, 0, i)
+        ctrl = _unflatten_along_axis(restricted_pts_2d, trailing_shape, i)
 
         new_spaces_1d.append(
             BsplineSpace1D(restricted_knots, space_1d.degree, periodic=False, snap_knots=False)

@@ -11,11 +11,11 @@ and right ``[value, 1]`` halves, each reparametrized to ``[0, 1]``.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 import numpy as np
-import numpy.typing as npt
 
+from .._array_utils import _flatten_along_axis, _unflatten_along_axis
 from ._bezier_core import _split_bezier_1d_core
 
 if TYPE_CHECKING:
@@ -53,22 +53,12 @@ def _split_bezier(
 
     ctrl = bezier.control_points
 
-    # Move target axis to position 0, flatten the rest into a single axis.
-    moved = np.moveaxis(ctrl, direction, 0)
-    orig_shape = moved.shape
-    pts_2d: npt.NDArray[np.floating[Any]] = moved.reshape(orig_shape[0], -1)
-
-    pts_2d = np.ascontiguousarray(pts_2d)
-
-    # Allocate outputs.
+    pts_2d, trailing_shape = _flatten_along_axis(ctrl, direction)
     out_left = np.empty_like(pts_2d)
     out_right = np.empty_like(pts_2d)
-
     _split_bezier_1d_core(pts_2d, value, out_left, out_right)
-
-    # Restore multi-dimensional shape and move axis back.
-    left_ctrl = np.moveaxis(out_left.reshape(orig_shape), 0, direction)
-    right_ctrl = np.moveaxis(out_right.reshape(orig_shape), 0, direction)
+    left_ctrl = _unflatten_along_axis(out_left, trailing_shape, direction)
+    right_ctrl = _unflatten_along_axis(out_right, trailing_shape, direction)
 
     return (
         BezierCls(left_ctrl, is_rational=bezier.is_rational),
