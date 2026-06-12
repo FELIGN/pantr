@@ -16,6 +16,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 
 from ..bspline import BsplineSpace, THBSplineSpace, build_local
+from ._thread_policy import _ensure_default_thread_policy
 
 if TYPE_CHECKING:
     import numpy as np
@@ -79,7 +80,13 @@ class DistributedSpace:
             Unlike :func:`~pantr.bspline.build_local`, construction succeeds when this rank
             owns no cells -- :attr:`local` is set to ``None`` and :attr:`owns_cells` to
             ``False``.
+
+        Note:
+            Construction engages the default MPI thread policy: unless threads were
+            explicitly configured, this process's Numba thread pool is limited to one
+            thread per rank. See :func:`pantr.mpi.configure_threads`.
         """
+        _ensure_default_thread_policy()
         if isinstance(global_space, BsplineSpace) and any(
             sp.periodic for sp in global_space.spaces
         ):

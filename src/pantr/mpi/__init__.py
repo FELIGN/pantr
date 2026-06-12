@@ -17,6 +17,15 @@ Main exports:
 - :func:`require_mpi`: lazily import and return the ``mpi4py.MPI`` module, or raise.
 - :func:`from_dolfinx`: build a :class:`pantr.grid.Partition` from a dolfinx mesh.
 - :class:`DistributedSpace`: the per-rank handle to an MPI-distributed space.
+- :func:`configure_threads`: explicitly set this rank's Numba thread count.
+
+A process-level thread policy coordinates MPI with PaNTr's Numba parallelism: the
+first use of any MPI-engaging entry point limits this process to **one Numba thread
+per rank**, unless threads were explicitly configured (``NUMBA_NUM_THREADS``,
+``pantr.set_num_threads``, ``pantr.num_threads``, or :func:`configure_threads`).
+Every new MPI entry point added to this package must call
+``_thread_policy._ensure_default_thread_policy()`` before any other work -- there is
+no structural chokepoint, since communicators are duck-typed.
 """
 
 from __future__ import annotations
@@ -27,6 +36,7 @@ from typing import Final
 
 from ._distributed_space import DistributedSpace
 from ._from_dolfinx import from_dolfinx
+from ._thread_policy import configure_threads
 
 
 def mpi_available() -> bool:
@@ -85,6 +95,7 @@ def require_mpi() -> ModuleType:
 __all__ = [
     "HAS_MPI",
     "DistributedSpace",
+    "configure_threads",
     "from_dolfinx",
     "mpi_available",
     "require_mpi",

@@ -1,5 +1,23 @@
 # Changelog
 
+## Unreleased
+
+### Added
+- `pantr.mpi.configure_threads`: explicitly set the per-rank Numba thread count
+  for hybrid MPI + threads runs (optionally also limiting BLAS/LAPACK pools via
+  the optional `threadpoolctl` package). Calling it disables the default MPI
+  thread policy.
+
+### Changed
+- MPI-engaging entry points (`pantr.mpi.DistributedSpace`,
+  `pantr.mpi.from_dolfinx`) now apply a process-level default on first use: the
+  Numba thread pool is limited to one thread per rank (flat MPI), preventing
+  `n_ranks x n_cores` thread oversubscription when running under `mpiexec`.
+  Explicit configuration always wins (`NUMBA_NUM_THREADS`,
+  `pantr.set_num_threads`, `pantr.num_threads`, or
+  `pantr.mpi.configure_threads`), and the policy is applied at most once per
+  process, so raising the count afterwards sticks.
+
 ## 0.5.1 (2026-06-03)
 
 ### Added
