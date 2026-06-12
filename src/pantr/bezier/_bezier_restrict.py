@@ -11,11 +11,11 @@ Bézier round-trip.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 import numpy as np
-import numpy.typing as npt
 
+from .._array_utils import _flatten_along_axis, _unflatten_along_axis
 from ._bezier_core import _restrict_bezier_1d_core
 
 if TYPE_CHECKING:
@@ -28,9 +28,9 @@ def _restrict_bezier(
 ) -> Bezier:
     """Restrict a Bézier to a sub-region of ``[0, 1]^dim``.
 
-    Applies :func:`_restrict_bezier_1d_core` per parametric direction using the
-    standard moveaxis pattern. Directions with ``None`` bounds are left
-    unchanged.
+    Applies :func:`_restrict_bezier_1d_core` per parametric direction via the
+    shared :func:`_flatten_along_axis` / :func:`_unflatten_along_axis` helpers.
+    Directions with ``None`` bounds are left unchanged.
 
     Args:
         bezier (~pantr.bezier.Bezier): Input Bézier.
@@ -62,18 +62,10 @@ def _restrict_bezier(
 
         any_restricted = True
 
-        # Move target axis to position 0, flatten the rest.
-        moved = np.moveaxis(ctrl, i, 0)
-        orig_shape = moved.shape
-        pts_2d: npt.NDArray[np.floating[Any]] = moved.reshape(orig_shape[0], -1)
-
-        pts_2d = np.ascontiguousarray(pts_2d)
-
+        pts_2d, trailing_shape = _flatten_along_axis(ctrl, i)
         out = np.empty_like(pts_2d)
         _restrict_bezier_1d_core(pts_2d, lower, upper, out)
-
-        # Restore shape and move axis back.
-        ctrl = np.moveaxis(out.reshape(orig_shape), 0, i)
+        ctrl = _unflatten_along_axis(out, trailing_shape, i)
 
     if not any_restricted:
         raise ValueError("Bounds match the full domain; at least one direction must be restricted.")

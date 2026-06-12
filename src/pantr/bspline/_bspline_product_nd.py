@@ -19,6 +19,7 @@ from typing import TYPE_CHECKING
 import numpy as np
 import numpy.typing as npt
 
+from .._array_utils import _flatten_along_axis, _unflatten_along_axis
 from ..bezier._bezier_product import _bernstein_product_coefficients_nd
 from ._bspline_knots import _get_Bspline_num_basis_1D_impl, _get_unique_knots_and_multiplicity_impl
 from ._bspline_product import (
@@ -131,14 +132,9 @@ def _project_to_optimal_nd(
         oslo_d = _compute_oslo_matrix_1d_core(
             degrees_sum[d], knots_opt_per_dir[d], knots_full_per_dir[d]
         )
-        # Move axis d to front, flatten the rest into a single trailing axis.
-        moved = np.moveaxis(ctrl, d, 0)
-        leading = moved.shape[0]
-        flat = moved.reshape(leading, -1)
+        flat, trailing_shape = _flatten_along_axis(ctrl, d)
         projected, *_ = np.linalg.lstsq(oslo_d, flat, rcond=None)
-        new_leading = projected.shape[0]
-        new_shape = (new_leading, *moved.shape[1:])
-        ctrl = np.moveaxis(projected.reshape(new_shape), 0, d).astype(dtype)
+        ctrl = _unflatten_along_axis(projected, trailing_shape, d).astype(dtype)
 
     return ctrl
 
@@ -392,11 +388,8 @@ def _convert_boundary_direction(  # noqa: PLR0913
     oslo2 = _compute_oslo_matrix_1d_core(r, t_per_open, h_knots_1d)
     oslo = oslo2 @ oslo1_trimmed
 
-    # Apply along the specified axis: move it to front, flatten the rest.
-    moved = np.moveaxis(ctrl, axis, 0)
-    leading = moved.shape[0]
-    rest_shape = moved.shape[1:]
-    flat = moved.reshape(leading, -1)
+    # Apply along the specified axis via the shared flatten/unflatten helpers.
+    flat, trailing_shape = _flatten_along_axis(ctrl, axis)
 
     if target_type == "periodic":
         n_full = len(t_ghost) - r - 1
@@ -412,9 +405,7 @@ def _convert_boundary_direction(  # noqa: PLR0913
         sol, *_ = np.linalg.lstsq(oslo, flat, rcond=None)
         new_space_1d = BsplineSpace1D(t_ghost, r)
 
-    new_leading = sol.shape[0]
-    new_shape = (new_leading, *rest_shape)
-    ctrl = np.moveaxis(sol.astype(dtype).reshape(new_shape), 0, axis)
+    ctrl = _unflatten_along_axis(sol.astype(dtype), trailing_shape, axis)
     return ctrl, new_space_1d
 
 

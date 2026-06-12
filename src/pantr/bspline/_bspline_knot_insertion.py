@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING, Any
 import numpy as np
 import numpy.typing as npt
 
+from .._array_utils import _flatten_along_axis, _unflatten_along_axis
 from ._bspline_knot_insertion_core import _compute_oslo_matrix_1d_core, _insert_knots_1d_core
 from ._bspline_knots import (
     _get_Bspline_num_basis_1D_impl,
@@ -154,13 +155,7 @@ def _insert_knots_bspline(
 
         is_periodic = space_1d.periodic
 
-        # Move dimension i to the 0th axis.
-        moved_ctrl = np.moveaxis(ctrl, i, 0)
-        orig_shape = moved_ctrl.shape
-
-        # Reshape remaining axes into a single column dimension.
-        pts_2d: npt.NDArray[np.floating[Any]] = moved_ctrl.reshape(orig_shape[0], -1)
-        pts_2d = np.ascontiguousarray(pts_2d)
+        pts_2d, trailing_shape = _flatten_along_axis(ctrl, i)
 
         if is_periodic:
             # Round-trip through open form to preserve periodicity.
@@ -192,12 +187,7 @@ def _insert_knots_bspline(
             )
             new_space_1d = BsplineSpace1D(refined_knots, space_1d.degree)
 
-        # Restore multi-dimensional shape.
-        new_shape = (new_pts_2d.shape[0], *orig_shape[1:])
-        new_moved_ctrl = new_pts_2d.reshape(new_shape)
-
-        # Move axis back to its original position.
-        ctrl = np.moveaxis(new_moved_ctrl, 0, i)
+        ctrl = _unflatten_along_axis(new_pts_2d, trailing_shape, i)
 
         new_spaces_1d.append(new_space_1d)
 
@@ -338,11 +328,7 @@ def _to_open_bspline_impl(bspline: Bspline) -> Bspline:
             new_spaces_1d.append(space_1d)
             continue
 
-        # Move dimension i to the 0th axis and flatten remaining axes.
-        moved_ctrl = np.moveaxis(ctrl, i, 0)
-        orig_shape = moved_ctrl.shape
-        pts_2d: npt.NDArray[np.floating[Any]] = moved_ctrl.reshape(orig_shape[0], -1)
-        pts_2d = np.ascontiguousarray(pts_2d)
+        pts_2d, trailing_shape = _flatten_along_axis(ctrl, i)
 
         open_knots, open_pts_2d = _to_open_bspline_1d_impl(
             space_1d.knots,
@@ -352,12 +338,7 @@ def _to_open_bspline_impl(bspline: Bspline) -> Bspline:
             float(space_1d.tolerance),
         )
 
-        # Restore multi-dimensional shape.
-        new_shape = (open_pts_2d.shape[0], *orig_shape[1:])
-        new_moved_ctrl = open_pts_2d.reshape(new_shape)
-
-        # Move axis back to its original position.
-        ctrl = np.moveaxis(new_moved_ctrl, 0, i)
+        ctrl = _unflatten_along_axis(open_pts_2d, trailing_shape, i)
 
         new_spaces_1d.append(BsplineSpace1D(open_knots, space_1d.degree, periodic=False))
 
@@ -658,16 +639,11 @@ def _to_periodic_bspline_impl(
 
         knots_1d = space_1d.knots
         tol_1d = float(space_1d.tolerance)
-        moved_ctrl = np.moveaxis(ctrl, i, 0)
-        orig_shape = moved_ctrl.shape
-        pts_2d: npt.NDArray[np.floating[Any]] = moved_ctrl.reshape(orig_shape[0], -1)
-        pts_2d = np.ascontiguousarray(pts_2d)
+        pts_2d, trailing_shape = _flatten_along_axis(ctrl, i)
 
         per_knots, per_pts_2d = _to_periodic_bspline_1d_impl(knots_1d, p, pts_2d, m_bdy, tol_1d)
 
-        new_shape = (per_pts_2d.shape[0], *orig_shape[1:])
-        new_moved_ctrl = per_pts_2d.reshape(new_shape)
-        ctrl = np.moveaxis(new_moved_ctrl, 0, i)
+        ctrl = _unflatten_along_axis(per_pts_2d, trailing_shape, i)
 
         new_spaces_1d.append(BsplineSpace1D(per_knots, p, periodic=True))
 

@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING, Any
 import numpy as np
 import numpy.typing as npt
 
+from .._array_utils import _flatten_along_axis, _unflatten_along_axis
 from ._bezier_core import _degree_elevate_bezier_1d_core, _degree_reduce_bezier_1d_core
 
 if TYPE_CHECKING:
@@ -31,7 +32,7 @@ def _degree_elevate_bezier(
     """Degree-elevate a Bézier in one or more parametric directions.
 
     For each direction with a positive increment, applies the Bézier degree
-    elevation kernel using the moveaxis/reshape pattern.
+    elevation kernel via the shared flatten/unflatten helpers.
 
     Args:
         bezier (~pantr.bezier.Bezier): The Bézier to elevate.
@@ -57,19 +58,9 @@ def _degree_elevate_bezier(
 
         p = degrees[d]
 
-        # Move target direction to axis 0, flatten the rest.
-        moved = np.moveaxis(ctrl, d, 0)
-        orig_shape = moved.shape
-        pts_2d: npt.NDArray[np.floating[Any]] = moved.reshape(orig_shape[0], -1)
-
-        pts_2d = np.ascontiguousarray(pts_2d)
-
+        pts_2d, trailing_shape = _flatten_along_axis(ctrl, d)
         new_pts_2d = _degree_elevate_bezier_1d_core(p, pts_2d, inc)
-
-        # Restore shape and move axis back.
-        new_shape = (new_pts_2d.shape[0], *orig_shape[1:])
-        new_moved = new_pts_2d.reshape(new_shape)
-        ctrl = np.moveaxis(new_moved, 0, d)
+        ctrl = _unflatten_along_axis(new_pts_2d, trailing_shape, d)
 
         # Update degrees for subsequent iterations.
         degrees = (*degrees[:d], p + inc, *degrees[d + 1 :])
@@ -84,7 +75,7 @@ def _degree_reduce_bezier(
     """Degree-reduce a Bézier in one or more parametric directions.
 
     For each direction with a positive decrement, applies the Bézier degree
-    reduction kernel using the moveaxis/reshape pattern.  The reduction is a
+    reduction kernel via the shared flatten/unflatten helpers.  The reduction is a
     least-squares approximation (not exact in general).
 
     Args:
@@ -112,19 +103,9 @@ def _degree_reduce_bezier(
 
         p = degrees[d]
 
-        # Move target direction to axis 0, flatten the rest.
-        moved = np.moveaxis(ctrl, d, 0)
-        orig_shape = moved.shape
-        pts_2d: npt.NDArray[np.floating[Any]] = moved.reshape(orig_shape[0], -1)
-
-        pts_2d = np.ascontiguousarray(pts_2d)
-
+        pts_2d, trailing_shape = _flatten_along_axis(ctrl, d)
         new_pts_2d = _degree_reduce_bezier_1d_core(p, pts_2d, dec)
-
-        # Restore shape and move axis back.
-        new_shape = (new_pts_2d.shape[0], *orig_shape[1:])
-        new_moved = new_pts_2d.reshape(new_shape)
-        ctrl = np.moveaxis(new_moved, 0, d)
+        ctrl = _unflatten_along_axis(new_pts_2d, trailing_shape, d)
 
         # Update degrees for subsequent iterations.
         degrees = (*degrees[:d], p - dec, *degrees[d + 1 :])
@@ -236,24 +217,14 @@ def _minimize_degree_bezier(
             degree = result.shape[dim] - 1
 
             # Reduce all rank components together along this dimension
-            moved = np.moveaxis(result, dim, 0)
-            shape_after = moved.shape
-            flat = moved.reshape(shape_after[0], -1)
-            flat = np.ascontiguousarray(flat)
+            flat, trailing_shape = _flatten_along_axis(result, dim)
             reduced_flat = _degree_reduce_bezier_1d_core(degree, flat, 1)
-            reduced = np.moveaxis(
-                reduced_flat.reshape(reduced_flat.shape[0], *shape_after[1:]), 0, dim
-            )
+            reduced = _unflatten_along_axis(reduced_flat, trailing_shape, dim)
 
             # Elevate back to original shape for error check
-            moved_r = np.moveaxis(reduced, dim, 0)
-            shape_r = moved_r.shape
-            flat_r: npt.NDArray[np.floating[Any]] = moved_r.reshape(shape_r[0], -1)
-            flat_r = np.ascontiguousarray(flat_r)
+            flat_r, trailing_r = _flatten_along_axis(reduced, dim)
             elevated_flat = _degree_elevate_bezier_1d_core(degree - 1, flat_r, 1)
-            elevated = np.moveaxis(
-                elevated_flat.reshape(elevated_flat.shape[0], *shape_r[1:]), 0, dim
-            )
+            elevated = _unflatten_along_axis(elevated_flat, trailing_r, dim)
 
             # Check L2 error summed across all rank components
             diff = elevated - result

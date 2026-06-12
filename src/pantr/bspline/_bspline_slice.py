@@ -14,11 +14,12 @@ point lookup.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, cast
 
 import numpy as np
 import numpy.typing as npt
 
+from .._array_utils import _flatten_along_axis
 from ._bspline_knots import _count_multiplicity, _find_span
 from ._bspline_space_nd import BsplineSpace
 
@@ -130,12 +131,7 @@ def _slice_bspline(
         indices = np.arange(n_full) % n_periodic
         ctrl = np.take(ctrl, indices, axis=axis)
 
-    # Move target axis to position 0, flatten the rest into a single axis.
-    moved = np.moveaxis(ctrl, axis, 0)
-    orig_shape = moved.shape
-    pts_2d: npt.NDArray[np.floating[Any]] = moved.reshape(orig_shape[0], -1)
-
-    pts_2d = np.ascontiguousarray(pts_2d)
+    pts_2d, trailing_shape = _flatten_along_axis(ctrl, axis)
 
     # Apply 1D de Boor corner cutting.
     result_1d = _slice_bspline_1d(knots, p, tol, pts_2d, value)
@@ -148,14 +144,8 @@ def _slice_bspline(
             return cast(npt.NDArray[np.float32 | np.float64], result_1d[:-1] / weight)
         return result_1d
 
-    # Restore shape: remove the sliced axis dimension.
-    new_shape = orig_shape[1:]
-    result_nd = result_1d.reshape(new_shape)
-
-    # Move axis is not needed since we removed axis 0 entirely.
-    # The remaining shape is the original shape minus the sliced direction.
-    # result_nd already has shape (*other_dims, rank).
-    new_ctrl = result_nd
+    # Restore shape: the sliced axis is removed.
+    new_ctrl = result_1d.reshape(trailing_shape)
 
     # Build new spaces list: remove the sliced direction.
     new_spaces = [s for i, s in enumerate(bspline.space.spaces) if i != axis]

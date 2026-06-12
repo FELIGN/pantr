@@ -12,11 +12,12 @@ dimension, and correctly preserves per-direction boundary structure
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 import numpy as np
 import numpy.typing as npt
 
+from .._array_utils import _flatten_along_axis, _unflatten_along_axis
 from ._bspline_knots import _get_Bspline_num_basis_1D_impl
 from ._bspline_space_1d import BsplineSpace1D
 from ._bspline_space_nd import BsplineSpace
@@ -115,7 +116,7 @@ def _derivative_nonrational_nd(bspline: Bspline, direction: int) -> Bspline:
     """Compute the partial derivative of a non-rational nD B-spline.
 
     Applies the 1D derivative formula along the given parametric direction
-    using the moveaxis/reshape/restore pattern. Other directions are unchanged.
+    via the shared flatten/unflatten helpers. Other directions are unchanged.
 
     Args:
         bspline (~pantr.bspline.Bspline): A non-rational nD B-spline.
@@ -144,19 +145,11 @@ def _derivative_nonrational_nd(bspline: Bspline, direction: int) -> Bspline:
         indices = np.arange(n_full) % n_periodic
         ctrl = np.take(ctrl, indices, axis=direction)
 
-    # Move target direction to axis 0, flatten the rest.
-    moved = np.moveaxis(ctrl, direction, 0)
-    orig_shape = moved.shape
-    pts_2d: npt.NDArray[np.floating[Any]] = moved.reshape(orig_shape[0], -1)
-
-    pts_2d = np.ascontiguousarray(pts_2d)
+    pts_2d, trailing_shape = _flatten_along_axis(ctrl, direction)
 
     new_pts_2d = _derivative_ctrl_1d(knots, p, pts_2d)
 
-    # Restore shape and move axis back.
-    new_shape = (new_pts_2d.shape[0], *orig_shape[1:])
-    new_moved = new_pts_2d.reshape(new_shape)
-    new_ctrl = np.moveaxis(new_moved, 0, direction)
+    new_ctrl = _unflatten_along_axis(new_pts_2d, trailing_shape, direction)
 
     # For periodic: trim to periodic CP count.
     new_knots = knots[1:-1]
@@ -317,22 +310,14 @@ def _derivative_keep_degree_nonrational(bspline: Bspline, direction: int) -> Bsp
     knots = space_d.knots
     ctrl = bspline.control_points
 
-    # Move target direction to axis 0, flatten the rest.
-    moved = np.moveaxis(ctrl, direction, 0)
-    orig_shape = moved.shape
-    pts_2d: npt.NDArray[np.floating[Any]] = moved.reshape(orig_shape[0], -1)
-
-    pts_2d = np.ascontiguousarray(pts_2d)
+    pts_2d, trailing_shape = _flatten_along_axis(ctrl, direction)
 
     # Derivative (degree p → p-1) + degree elevation (p-1 → p) on arrays.
     deriv_pts = _derivative_ctrl_1d(knots, p, pts_2d)
     deriv_knots = knots[1:-1]
     elevated_pts, elevated_knots = _degree_elevate_1d_core(p - 1, deriv_pts, deriv_knots, 1)
 
-    # Restore shape and move axis back.
-    new_shape = (elevated_pts.shape[0], *orig_shape[1:])
-    new_moved = elevated_pts.reshape(new_shape)
-    new_ctrl = np.moveaxis(new_moved, 0, direction)
+    new_ctrl = _unflatten_along_axis(elevated_pts, trailing_shape, direction)
 
     # Build new spaces: replace direction d, keep others unchanged.
     # Result is open in the differentiated direction.
