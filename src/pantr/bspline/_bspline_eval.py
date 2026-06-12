@@ -18,7 +18,7 @@ import numpy as np
 from numpy import typing as npt
 
 from .._numba_compat import nb_jit, nb_prange
-from ..basis._basis_utils import _validate_out_array
+from ..basis._basis_utils import _allocate_or_validate_out, _validate_out_array
 from ..quad import PointsLattice
 from ._bspline_basis_core import (
     _compute_basis_deriv_nurbs_book_impl,
@@ -177,13 +177,7 @@ def _evaluate_Bspline_1D(
     expected_shape = (n_pts, spline.control_points.shape[-1])
     expected_dtype = spline.dtype
 
-    # Allocate output array if not provided
-    out_array: npt.NDArray[np.float32 | np.float64]
-    if out is None:
-        out_array = np.empty(expected_shape, dtype=expected_dtype)
-    else:
-        _validate_out_array(out, expected_shape, expected_dtype)
-        out_array = out
+    out_array = _allocate_or_validate_out(out, expected_shape, expected_dtype)
 
     _evaluate_Bspline_basis_combine_1D(
         spline.control_points,
@@ -923,11 +917,7 @@ def _evaluate_Bspline_deriv_multi_dim_non_rational(
         return final_nd
 
     # Vector: out shape matches kernel output directly.
-    if out is None:
-        buf = np.empty(out_shape, dtype=dtype)
-    else:
-        _validate_out_array(out, out_shape, dtype)
-        buf = out
+    buf = _allocate_or_validate_out(out, out_shape, dtype)
     _call_kernel(buf)
     return buf
 
@@ -1216,11 +1206,7 @@ def _evaluate_Bspline_multi_dim(
 
         pts_grid_shape = tuple(int(p.shape[0]) for p in pts.pts_per_dir)
         expected_shape = (*pts_grid_shape, cp.shape[-1])
-        if out is None:
-            out_array = np.empty(expected_shape, dtype=dtype)
-        else:
-            _validate_out_array(out, expected_shape, dtype)
-            out_array = out
+        out_array = _allocate_or_validate_out(out, expected_shape, dtype)
 
         _evaluate_Bspline_multi_dim_lattice(cp, spline.space.spaces, pts, out_array)
 
@@ -1231,11 +1217,7 @@ def _evaluate_Bspline_multi_dim(
             raise ValueError("Points dtype must match B-spline dtype")
 
         expected_shape = (pts.shape[0], cp.shape[-1])
-        if out is None:
-            out_array = np.empty(expected_shape, dtype=dtype)
-        else:
-            _validate_out_array(out, expected_shape, dtype)
-            out_array = out
+        out_array = _allocate_or_validate_out(out, expected_shape, dtype)
 
         _evaluate_Bspline_multi_dim_pts_array(cp, spline.space.spaces, pts, out_array)
 

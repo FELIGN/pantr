@@ -8,7 +8,7 @@ output array management.
 from __future__ import annotations
 
 from collections.abc import Callable
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING
 
 import numpy as np
 import numpy.typing as npt
@@ -23,9 +23,9 @@ from ._basis_core import (
 )
 from ._basis_lagrange import _tabulate_lagrange_basis_1D_core
 from ._basis_utils import (
+    _allocate_or_validate_out,
     _compute_final_output_shape_1D,
     _normalize_points_1D,
-    _validate_out_array,
 )
 
 if TYPE_CHECKING:
@@ -97,10 +97,7 @@ def _tabulate_basis_1D_impl_helper(
     expected_normalized_shape = (num_pts, n_basis)
     expected_final_shape = _compute_final_output_shape_1D(input_shape, n_basis)
 
-    if out is None:
-        out = np.empty(expected_final_shape, dtype=t.dtype)
-    else:
-        _validate_out_array(out, expected_final_shape, cast(npt.DTypeLike, t.dtype))
+    out = _allocate_or_validate_out(out, expected_final_shape, t.dtype)
 
     B_normalized = out.reshape(expected_normalized_shape)
 
