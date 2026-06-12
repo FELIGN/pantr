@@ -68,17 +68,24 @@ def _reference(
     operand: npt.NDArray[Any],
     op_kind: str,
 ) -> npt.NDArray[Any]:
-    """Naive reference using the materialized Kronecker product."""
-    M = _full_kron(ops)
+    """Naive reference using the materialized Kronecker product.
+
+    Computes in float64 to avoid float32 overflow/subnormal warnings; the
+    result is cast back to the original dtype for comparison.
+    """
+    M = _full_kron([op.astype(np.float64) for op in ops])
+    op64 = operand.astype(np.float64)
     if op_kind == "apply":
-        return cast(npt.NDArray[Any], M @ operand)
-    if op_kind == "apply_T":
-        return cast(npt.NDArray[Any], M.T @ operand)
-    if op_kind == "MT_K_M":
-        return cast(npt.NDArray[Any], M.T @ operand @ M)
-    if op_kind == "M_K_MT":
-        return cast(npt.NDArray[Any], M @ operand @ M.T)
-    raise ValueError(f"unknown op_kind {op_kind}")
+        result = M @ op64
+    elif op_kind == "apply_T":
+        result = M.T @ op64
+    elif op_kind == "MT_K_M":
+        result = M.T @ op64 @ M
+    elif op_kind == "M_K_MT":
+        result = M @ op64 @ M.T
+    else:
+        raise ValueError(f"unknown op_kind {op_kind}")
+    return cast(npt.NDArray[Any], result.astype(operand.dtype))
 
 
 def _identity_patterns(d: int) -> list[tuple[bool, ...]]:
