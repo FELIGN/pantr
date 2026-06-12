@@ -1,8 +1,8 @@
 """Bounding-volume hierarchy over grid cells.
 
 A simple but efficient BVH that indexes a fixed collection of axis-aligned
-bounding boxes (one per grid cell). The tree is built once (Layer 2, Python) by
-recursive median-of-longest-axis splits; queries descend iteratively via the
+bounding boxes (one per grid cell). The tree is built once by iterative
+median-of-longest-axis splits and queried by iterative descent, both via the
 Layer-3 kernels in :mod:`pantr.grid._bvh_core`.
 
 Layout
@@ -41,6 +41,7 @@ import numpy as np
 
 from ._bvh_core import (
     _BVH_STACK_DEPTH,
+    _bvh_build_core,
     _bvh_query_count_core,
     _bvh_query_emit_core,
 )
@@ -222,7 +223,13 @@ class BVH:
                 f">= {max_depth}, exceeding the internal stack depth {_BVH_STACK_DEPTH}. "
                 f"This is a library limit; please report this as an issue."
             )
-        node_lo, node_hi, node_left, node_right, node_cell = _build_tree(lo, hi)
+        max_nodes = 2 * n_cells - 1
+        node_lo = np.empty((max_nodes, ndim), dtype=np.float64)
+        node_hi = np.empty((max_nodes, ndim), dtype=np.float64)
+        node_left = np.full(max_nodes, -1, dtype=np.int64)
+        node_right = np.full(max_nodes, -1, dtype=np.int64)
+        node_cell = np.full(max_nodes, -1, dtype=np.int64)
+        _bvh_build_core(lo, hi, node_lo, node_hi, node_left, node_right, node_cell)
         return cls(node_lo, node_hi, node_left, node_right, node_cell, n_cells=n_cells)
 
     def query_aabb(self, aabb: AABB) -> npt.NDArray[np.int64]:
@@ -323,76 +330,6 @@ class BVH:
             nodes, ``0 <= id < n_cells`` on leaves.
         """
         return self._node_cell
-
-
-def _build_tree(
-    cell_lo: npt.NDArray[np.float64],
-    cell_hi: npt.NDArray[np.float64],
-) -> tuple[
-    npt.NDArray[np.float64],
-    npt.NDArray[np.float64],
-    npt.NDArray[np.int64],
-    npt.NDArray[np.int64],
-    npt.NDArray[np.int64],
-]:
-    """Build the BVH arrays from validated per-cell AABBs.
-
-    Iterative top-down construction with a work stack. The root claims node index
-    ``0``; subsequent splits claim indices in preorder.
-
-    Args:
-        cell_lo (npt.NDArray[np.float64]): Per-cell lo corners, shape
-            ``(n_cells, ndim)``, ``n_cells >= 1``.
-        cell_hi (npt.NDArray[np.float64]): Per-cell hi corners, same shape;
-            ``hi >= lo`` is assumed.
-
-    Returns:
-        tuple[npt.NDArray[np.float64], npt.NDArray[np.float64], npt.NDArray[np.int64],
-        npt.NDArray[np.int64], npt.NDArray[np.int64]]:
-        ``(node_lo, node_hi, node_left, node_right, node_cell)`` as defined in the
-        module docstring.
-
-    Note:
-        Inputs are assumed validated by the caller. This helper never raises.
-    """
-    n_cells, ndim = cell_lo.shape
-    max_nodes = 2 * n_cells - 1
-    node_lo = np.empty((max_nodes, ndim), dtype=np.float64)
-    node_hi = np.empty((max_nodes, ndim), dtype=np.float64)
-    node_left = np.full(max_nodes, -1, dtype=np.int64)
-    node_right = np.full(max_nodes, -1, dtype=np.int64)
-    node_cell = np.full(max_nodes, -1, dtype=np.int64)
-    centroid = 0.5 * (cell_lo + cell_hi)
-    perm = np.arange(n_cells, dtype=np.int64)
-    # Work stack: (node_idx, cell_start, cell_end).
-    work: list[tuple[int, int, int]] = [(0, 0, n_cells)]
-    next_idx = 1
-    while work:
-        idx, start, end = work.pop()
-        sub = perm[start:end]
-        node_lo[idx] = cell_lo[sub].min(axis=0)
-        node_hi[idx] = cell_hi[sub].max(axis=0)
-        count = end - start
-        if count == 1:
-            node_cell[idx] = int(sub[0])
-            continue
-        extent = node_hi[idx] - node_lo[idx]
-        axis = int(np.argmax(extent))
-        order = np.argsort(centroid[sub, axis], kind="stable")
-        perm[start:end] = sub[order]
-        mid = start + count // 2
-        left_idx = next_idx
-        right_idx = next_idx + 1
-        next_idx += 2
-        node_left[idx] = left_idx
-        node_right[idx] = right_idx
-        # Push right first so left pops first (preorder left-to-right construction
-        # order, matching the _bvh.py module docstring). Note: the query kernels
-        # in _bvh_core.py push left first and visit right first — opposite
-        # direction — but count and emit use the same order, so results agree.
-        work.append((right_idx, mid, end))
-        work.append((left_idx, start, mid))
-    return node_lo, node_hi, node_left, node_right, node_cell
 
 
 __all__ = ["BVH"]
