@@ -12,6 +12,7 @@ from pantr.bspline import (
     BsplineSpace,
     BsplineSpace1D,
     MultiLevelExtraction,
+    THBSpline,
     THBSplineSpace,
     THBSplineSpaceRestriction,
 )
@@ -1492,3 +1493,88 @@ def test_restrict_errors() -> None:
         g.restrict([g.grid.num_cells])
     with pytest.raises(TypeError):
         g.restrict([0.5, 1.5])
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# THBSpline.evaluate batched locate + argsort grouping (PR 4 of #197)
+# ──────────────────────────────────────────────────────────────────────────────
+
+
+class TestTHBSplineEvaluateGrouping:
+    """The batched evaluate path matches per-point evaluation exactly."""
+
+    @staticmethod
+    def _spline(rank: int = 1) -> THBSpline:
+        grid = _grid_2d()
+        grid.refine(0, [0, 0], [2, 2])
+        grid.refine(1, [0, 0], [2, 2])
+        thb = THBSplineSpace(_root_2d(), grid)
+        rng = np.random.default_rng(31)
+        shape = (thb.num_total_basis,) if rank == 1 else (thb.num_total_basis, rank)
+        return THBSpline(thb, rng.random(shape))
+
+    def test_matches_per_point_evaluation(self) -> None:
+        """Shuffled multi-cell points (with duplicates) match per-point results."""
+        spline = self._spline()
+        rng = np.random.default_rng(7)
+        pts = rng.random((400, 2))
+        pts[100:120] = pts[:20]  # duplicated points
+        lo, hi = spline.space.grid.collect_cell_bounds()
+        pts[200:210] = lo[:: max(1, lo.shape[0] // 10)][:10]  # cell corners
+        got = spline.evaluate(pts)
+        cp = np.asarray(spline.control_points)
+        expected = []
+        for p in pts:
+            cid = spline.space.grid.locate(p)
+            assert cid is not None
+            values, dofs = spline.space.tabulate_basis(int(cid), p[None, :])
+            expected.append(float(np.asarray(values)[0] @ cp[dofs]))
+        # Grouped points share a BLAS matrix-vector product whose summation
+        # order differs from a single-point dot at the last ulp.
+        np.testing.assert_allclose(got, np.asarray(expected), rtol=1e-13, atol=0.0)
+
+    def test_vector_field_grouping(self) -> None:
+        """Vector-valued evaluation keeps point-to-result correspondence."""
+        spline = self._spline(rank=3)
+        rng = np.random.default_rng(13)
+        pts = rng.random((150, 2))
+        got = spline.evaluate(pts)
+        assert got.shape == (150, 3)
+        cp = np.asarray(spline.control_points)
+        for i in (0, 73, 149):
+            cid = spline.space.grid.locate(pts[i])
+            assert cid is not None
+            values, dofs = spline.space.tabulate_basis(int(cid), pts[i][None, :])
+            np.testing.assert_allclose(
+                got[i], np.asarray(values)[0] @ cp[dofs], rtol=1e-13, atol=0.0
+            )
+
+    def test_outside_point_raises(self) -> None:
+        """An outside point raises ValueError naming the offending point."""
+        spline = self._spline()
+        pts = np.array([[0.5, 0.5], [1.5, 0.5], [2.5, 0.5]])
+        with pytest.raises(ValueError, match="outside the grid domain"):
+            spline.evaluate(pts)
+
+    def test_empty_points(self) -> None:
+        """An empty point batch returns an empty result of the right shape."""
+        spline = self._spline()
+        got = spline.evaluate(np.empty((0, 2)))
+        assert got.shape == (0,)
+
+    def test_derivatives_grouping(self) -> None:
+        """evaluate_derivatives goes through the same grouping path."""
+        spline = self._spline()
+        rng = np.random.default_rng(19)
+        pts = rng.random((60, 2))
+        got = spline.evaluate_derivatives(pts, (1, 0))
+        cp = np.asarray(spline.control_points)
+        for i in (0, 30, 59):
+            cid = spline.space.grid.locate(pts[i])
+            assert cid is not None
+            values, dofs = spline.space.tabulate_basis_derivatives(
+                int(cid), pts[i][None, :], (1, 0)
+            )
+            np.testing.assert_allclose(
+                got[i], np.asarray(values)[0] @ cp[dofs], rtol=1e-12, atol=1e-12
+            )
