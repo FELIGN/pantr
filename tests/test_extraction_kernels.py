@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import itertools
-from typing import Any, cast
+from typing import Any
 
 import numpy as np
 import numpy.typing as npt
@@ -85,7 +85,7 @@ def _reference(
         result = M @ op64 @ M.T
     else:
         raise ValueError(f"unknown op_kind {op_kind}")
-    return cast(npt.NDArray[Any], result.astype(operand.dtype))
+    return result.astype(operand.dtype)
 
 
 def _identity_patterns(d: int) -> list[tuple[bool, ...]]:
