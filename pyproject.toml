@@ -1,5 +1,5 @@
 [build-system]
-requires = ["hatchling>=1.12.0", "tomli>=1.1.0; python_version < '3.11'"]
+requires = ["hatchling>=1.12.0"]
 build-backend = "hatchling.build"
 
 [project]
@@ -24,26 +24,18 @@ classifiers = [
   "Programming Language :: Python :: 3.14",
   "Topic :: Scientific/Engineering",
 ]
-# Runtime dependencies are resolved by the hatchling metadata hook in
-# `hatch_build.py`: the base list below plus `mpi4py` (unless the `PANTR_NO_MPI`
-# build-time environment variable is set). They are declared `dynamic` because a
-# PEP 621 field cannot be both static and hook-populated.
-dynamic = ["dependencies"]
+# Always-on runtime dependencies. Optional features (MPI, METIS partitioning,
+# visualization) live in `[project.optional-dependencies]` and are opt-in.
+dependencies = [
+  "numpy>=1.26,<3",
+  "scipy>=1.11,<2",
+  "numba>=0.63",
+  "threadpoolctl>=3.0",
+]
 
 [project.optional-dependencies]
-dev = [
-  "pytest>=7.4,<9",
-  "pytest-cov>=4,<6",
-  "pytest-xdist>=3,<4",
-  "mypy>=1.10,<2",
-  "ruff>=0.12.0,<0.13",
-  "pre-commit>=3.6,<4",
-  "import-linter>=2.0,<3",
-  "hatchling>=1.12.0",
-  "pymetis>=2025.2",
-]
-parallel = [
-  "threadpoolctl>=3.0",
+mpi = [
+  "mpi4py>=3.1,<5",
 ]
 metis = [
   "pymetis>=2025.2",
@@ -59,6 +51,23 @@ docs = [
   "markdown>=3.5,<4",
   "myst-parser>=2.0,<3",
   "linkify-it-py>=2.0,<3",
+  "matplotlib>=3.8,<4",
+]
+# `dev` pulls in every optional feature extra so a single
+# `pip install -e ".[dev]"` yields a complete contributor environment and CI runs
+# the full suite (no silently skipped viz/MPI/METIS tests).
+dev = [
+  "pytest>=7.4,<9",
+  "pytest-cov>=4,<6",
+  "pytest-xdist>=3,<4",
+  "mypy>=1.10,<2",
+  "ruff>=0.12.0,<0.13",
+  "pre-commit>=3.6,<4",
+  "import-linter>=2.0,<3",
+  "pantr[mpi]",
+  "pantr[metis]",
+  "pantr[viz]",
+  "pantr[docs]",
 ]
 
 [project.urls]
@@ -72,19 +81,6 @@ packages = ["src/pantr"]
 
 [tool.hatch.version]
 path = "src/pantr/__init__.py"
-
-# Resolve `dynamic = ["dependencies"]` via the CustomMetadataHook in hatch_build.py.
-[tool.hatch.metadata.hooks.custom]
-
-# Always-on runtime dependencies. `mpi4py` is appended by the metadata hook unless
-# the `PANTR_NO_MPI` build-time environment variable is set (see hatch_build.py).
-[tool.pantr]
-base-dependencies = [
-  "numpy>=1.26,<3",
-  "scipy>=1.11,<2",
-  "matplotlib>=3.8,<4",
-  "numba>=0.63",
-]
 
 [tool.importlinter]
 root_package = "pantr"

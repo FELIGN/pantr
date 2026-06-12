@@ -43,6 +43,6 @@ repos:
           'mypy>=1.10,<2',
           'numpy>=1.26,<3',
           'scipy>=1.11,<2',
-          'matplotlib>=3.8,<4',
-          'numba>=0.59,<0.61',
+          'numba>=0.63',
+          'threadpoolctl>=3.0',
         ]

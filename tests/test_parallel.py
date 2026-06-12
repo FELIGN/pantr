@@ -72,11 +72,15 @@ class TestNumThreadsContextManager:
             assert get_num_threads() == 1
         assert get_num_threads() == prev
 
-    def test_limit_blas_without_threadpoolctl(self) -> None:
-        """limit_blas=True warns when threadpoolctl is absent."""
+    def test_limit_blas_limits_and_restores(self) -> None:
+        """limit_blas=True limits BLAS threads in-block and restores on exit."""
+        from threadpoolctl import threadpool_info  # noqa: PLC0415
+
         prev = get_num_threads()
-        with pytest.warns(UserWarning, match="threadpoolctl"), num_threads(1, limit_blas=True):
+        with num_threads(1, limit_blas=True):
             assert get_num_threads() == 1
+            for pool in threadpool_info():
+                assert pool["num_threads"] == 1
         assert get_num_threads() == prev
 
 
