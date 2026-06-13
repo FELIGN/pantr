@@ -62,6 +62,15 @@ def _single_level_space(dim: int, degree: int = 2, n: int = 3) -> THBSplineSpace
     return THBSplineSpace(root, grid)
 
 
+def _three_level_space(dim: int, degree: int = 2, n: int = 4) -> THBSplineSpace:
+    """A 3-level graded THB space (refine the lower block twice)."""
+    root = create_uniform_space([degree] * dim, [n] * dim)
+    grid = hierarchical_grid(uniform_grid([[0.0, 1.0]] * dim, n), 2)
+    grid.refine(0, [0] * dim, [n // 2] * dim)
+    grid.refine(1, [0] * dim, [n // 2] * dim)
+    return THBSplineSpace(root, grid)
+
+
 def _scalar_thb(space: THBSplineSpace, seed: int = 0) -> THBSpline:
     """A scalar (rank-1) THB spline with random coefficients."""
     rng = np.random.default_rng(seed)
@@ -99,6 +108,7 @@ class TestTHBToPyvista:
         ug = to_pyvista(_geometric_thb(space, rank))
         assert ug.n_cells == space.grid.num_cells
         assert "scalar" not in ug.point_data
+        assert float(np.std(ug.points)) > 1e-6  # control points are non-trivial
 
     def test_custom_scalar_name(self) -> None:
         ug = to_pyvista(_scalar_thb(_graded_space(2)), scalar_name="temperature")
@@ -159,11 +169,24 @@ class TestTHBToPyvista:
 class TestTHBKnotLines:
     """Active-cell boundary knot lines."""
 
-    def test_curve_knot_points(self) -> None:
-        thb = _scalar_thb(_graded_space(1))
+    @pytest.mark.parametrize("rank", [1, 2])
+    def test_curve_knot_points(self, rank: int) -> None:
+        space = _graded_space(1)
+        thb = _scalar_thb(space) if rank == 1 else _geometric_thb(space, rank)
+        # interior cell boundaries = unique cell-bound coordinates minus the two domain ends
+        coords: set[float] = set()
+        for cid in range(space.grid.num_cells):
+            lo, hi = space.grid.cell_bounds(cid)
+            coords.add(round(float(lo[0]), 12))
+            coords.add(round(float(hi[0]), 12))
         meshes = knot_lines_meshes(thb)
         assert len(meshes) == 1
-        assert meshes[0].n_points > 0  # interior cell boundaries exist in a graded mesh
+        assert meshes[0].n_points == len(coords) - 2
+
+    def test_empty_interior_returns_empty(self) -> None:
+        """A single-cell 1D domain has no interior boundaries -> empty point cloud."""
+        meshes = knot_lines_meshes(_scalar_thb(_single_level_space(1, n=1)))
+        assert meshes[0].n_points == 0
 
     @pytest.mark.parametrize(("dim", "per_cell"), [(2, 4), (3, 12)])
     def test_boundary_curve_counts(self, dim: int, per_cell: int) -> None:
@@ -172,12 +195,22 @@ class TestTHBKnotLines:
         assert len(meshes) == 1
         mesh = meshes[0]
         assert mesh.n_cells == per_cell * space.grid.num_cells
+        # every boundary curve is a degree-2 Bézier curve: 3 control points
+        assert mesh.n_points == 3 * mesh.n_cells
         assert np.all(mesh.celltypes == VTK_BEZIER_CURVE)
 
     def test_geometric_surface_boundaries(self) -> None:
         space = _graded_space(2)
         mesh = knot_lines_meshes(_geometric_thb(space, 3))[0]
         assert mesh.n_cells == 4 * space.grid.num_cells
+
+    def test_elevation_lifts_boundaries(self) -> None:
+        """elevation=True lifts the scalar boundary curves off the z = 0 plane."""
+        thb = _scalar_thb(_graded_space(2))
+        flat = knot_lines_meshes(thb, elevation=False)[0]
+        lifted = knot_lines_meshes(thb, elevation=True)[0]
+        np.testing.assert_allclose(flat.points[:, 2], 0.0)
+        assert np.any(np.abs(lifted.points[:, 2]) > 1e-6)
 
 
 # ---------------------------------------------------------------------------
@@ -197,6 +230,32 @@ class TestTHBControlPolygon:
         levels = np.asarray(poly.point_data["level"])
         per_level = [int((levels == lvl).sum()) for lvl in range(space.num_levels)]
         assert per_level == list(space.num_basis_per_level)
+
+    @pytest.mark.parametrize("dim", [1, 2, 3])
+    def test_dof_to_level_mapping_is_exact(self, dim: int) -> None:
+        """Each control point maps to the right global dof, across 3 levels and any dim.
+
+        Encoding the global dof index in coordinate 0 of a geometric THB, the
+        control net must emit points in global-dof order (level-by-level,
+        contiguous), with the ``"level"`` tag matching the per-level partition.
+        Catches any error in the per-level ``dof_offset`` accumulation.
+        """
+        space = _three_level_space(dim)
+        n = space.num_total_basis
+        cp = np.zeros((n, max(2, dim)))
+        cp[:, 0] = np.arange(n)
+        poly = control_polygon_mesh(THBSpline(space, cp))
+        np.testing.assert_array_equal(poly.points[:, 0], np.arange(n, dtype=float))
+        expected_levels = np.concatenate(
+            [np.full(c, lvl) for lvl, c in enumerate(space.num_basis_per_level)]
+        )
+        np.testing.assert_array_equal(poly.point_data["level"], expected_levels)
+
+    def test_single_level_control_net(self) -> None:
+        space = _single_level_space(2)
+        poly = control_polygon_mesh(_scalar_thb(space))
+        assert poly.n_points == space.num_total_basis
+        assert np.all(np.asarray(poly.point_data["level"]) == 0)
 
     @pytest.mark.parametrize("dim", [1, 2, 3])
     def test_edges_stay_within_level(self, dim: int) -> None:
@@ -239,12 +298,19 @@ class TestTHBScene:
         scene = Scene()
         result = scene.add(thb, show_knot_lines=True, show_control_polygon=True, elevation=True)
         assert result is scene  # chaining
-        assert scene.to_plotter() is not None
+        plotter = scene.to_plotter()
+        # surface + control net + knot lines were all added to the renderer
+        assert len(plotter.actors) >= 3
 
     def test_geometric_surface_scene(self) -> None:
         thb = _geometric_thb(_graded_space(2), 3)
-        scene = Scene().add(thb, show_knot_lines=True, show_control_polygon=True)
-        assert scene.to_plotter() is not None
+        plotter = Scene().add(thb, show_knot_lines=True, show_control_polygon=True).to_plotter()
+        assert len(plotter.actors) >= 3
 
     def test_plot_convenience(self) -> None:
         assert plot(_scalar_thb(_graded_space(2)), elevation=True) is not None
+
+    def test_linear_thb_skips_tessellation(self) -> None:
+        """A degree-1 THB exercises the linear-geometry tessellation bypass."""
+        space = _graded_space(2, degree=1)
+        assert plot(_scalar_thb(space), show_knot_lines=True, elevation=True) is not None

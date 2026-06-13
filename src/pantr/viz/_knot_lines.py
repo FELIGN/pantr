@@ -14,8 +14,9 @@ boundaries** of its hierarchical grid, drawn on the rendered geometry/field: the
 endpoints of each active cell (dim=1) or the boundary Bézier curves of each
 active cell's patch (dim=2/3). Finer cells therefore yield denser boundaries.
 
-Each lower-dimensional slice is converted to a pyvista mesh via
-:func:`~pantr.viz.to_pyvista`.
+For a B-spline, each lower-dimensional slice is converted to a pyvista mesh via
+:func:`~pantr.viz.to_pyvista`; the THB-spline cell boundaries are assembled
+directly as VTK Bézier cells.
 """
 
 from __future__ import annotations

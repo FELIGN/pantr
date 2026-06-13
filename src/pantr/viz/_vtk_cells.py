@@ -253,7 +253,8 @@ def _thb_bezier_patches(
         tuple: ``(patches, n_per)`` where *patches* is a list of
         ``(cid, bern)`` pairs — *cid* the active-cell id and *bern* the cell's
         Bernstein control points of shape ``(n_single, rank)`` in C-order — and
-        *n_per* is the per-direction control-point count ``(degree[d] + 1,)``.
+        *n_per* is a ``tuple`` of length ``dim`` whose entry ``d`` is
+        ``degree[d] + 1``.
     """
     from ..bspline import MultiLevelExtraction  # noqa: PLC0415
 
@@ -283,7 +284,7 @@ def _thb_patch_coords(  # noqa: PLR0913
 
     Args:
         bern: Cell Bernstein control points, shape ``(n_single, rank)``.
-        n_per: Per-direction control-point count ``(degree[d] + 1,)``.
+        n_per: A ``tuple`` of length ``dim`` whose entry ``d`` is ``degree[d] + 1``.
         cell_box: The active cell's parametric ``(lo, hi)`` bounds.
         rank: Geometric output rank (``1`` for a scalar field).
         dim: Parametric dimension.
@@ -519,6 +520,8 @@ def save(
 
     Raises:
         ImportError: If pyvista is not installed.
+        TypeError: If *geom* is not a ``Bspline``, ``Bezier``, or ``THBSpline``.
+        ValueError: If the parametric dimension is not 1, 2, or 3.
     """
     grid = to_pyvista(geom, scalar_name=scalar_name, elevation=elevation)
     grid.save(str(filename))

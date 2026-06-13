@@ -9,11 +9,14 @@ Rational geometries always use projected (Euclidean) coordinates.
 For a :class:`~pantr.bspline.THBSpline` the mesh is a *per-level* control net:
 each hierarchy level's active control points are connected by that level's own
 tensor-grid adjacency and tagged with a ``"level"`` point-data array (so callers
-can colour by level). Each active control point sits at the Greville abscissa of
-its own level — well-defined because THB truncation *preserves coefficients*
-(Giannelli-Jüttler-Speleers), so the per-level nets are exact and the convex
-hull bounds the geometry. Scalar fields are drawn as a graph ``(greville, value)``
-(value as elevation) for dim <= 2.
+can colour by level). Scalar fields (``rank == 1``) are drawn as a graph -- each
+active control point at ``(greville, value)`` using its own level's Greville
+abscissa (value as elevation, for dim <= 2); geometric splines (``rank >= 2``)
+use the physical control-point position. Placing each scalar control point at its
+own level's Greville abscissa is well-defined because THB truncation *preserves
+coefficients* (Giannelli-Jüttler-Speleers): truncated coarse functions keep their
+own level's Greville node, so the values shown are the genuine THB basis
+coefficients and the geometry lies within the per-level convex hull.
 """
 
 from __future__ import annotations
