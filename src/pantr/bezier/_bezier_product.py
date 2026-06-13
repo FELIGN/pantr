@@ -18,6 +18,8 @@ from typing import TYPE_CHECKING
 import numpy as np
 import numpy.typing as npt
 
+from .._control_points_utils import _append_unit_weight_column
+
 if TYPE_CHECKING:
     from . import Bezier
 
@@ -260,5 +262,4 @@ def _ensure_rational_ctrl(
     ctrl = bezier.control_points
     if bezier.is_rational:
         return ctrl
-    weights = np.ones((*ctrl.shape[:-1], 1), dtype=ctrl.dtype)
-    return np.concatenate([ctrl, weights], axis=-1)
+    return _append_unit_weight_column(ctrl)

@@ -20,6 +20,7 @@ import numpy as np
 import numpy.typing as npt
 
 from .._array_utils import _flatten_along_axis, _unflatten_along_axis
+from .._control_points_utils import _append_unit_weight_column
 from ..bezier._bezier_product import _bernstein_product_coefficients_nd
 from ._bspline_knots import _get_Bspline_num_basis_1D_impl, _get_unique_knots_and_multiplicity_impl
 from ._bspline_product import (
@@ -264,9 +265,7 @@ def _to_rational_nd(f: Bspline) -> Bspline:
         return f
     from . import Bspline as BsplineCls  # noqa: PLC0415
 
-    cp = f.control_points
-    weights = np.ones((*cp.shape[:-1], 1), dtype=cp.dtype)
-    new_ctrl = np.concatenate([cp, weights], axis=-1)
+    new_ctrl = _append_unit_weight_column(f.control_points)
     return BsplineCls(f.space, new_ctrl, is_rational=True)
 
 
