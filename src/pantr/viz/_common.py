@@ -37,8 +37,8 @@ def _project_homogeneous(
     """Split flat control points into Euclidean coords and homogeneous weights.
 
     For rational geometries the leading columns are divided by the trailing
-    weight column; non-rational input is returned unchanged with ``None``
-    weights. Inputs are upcast to ``float64``.
+    weight column; non-rational input is returned without weight projection
+    (post-upcast) with ``None`` weights. Inputs are upcast to ``float64``.
 
     Args:
         flat_cp (npt.NDArray[np.float32 | np.float64]): Flattened control points
