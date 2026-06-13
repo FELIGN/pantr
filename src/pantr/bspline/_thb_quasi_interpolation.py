@@ -88,7 +88,6 @@ def quasi_interpolate_thb_spline(
     grid = space.grid
     dim = space.dim
     num_active = space.num_total_basis
-    func_offset = space._func_offset
 
     # Candidate leaf cells per dof: cells whose level equals the contributing
     # function's level (i.e. level-l active leaf cells inside supp(B^l_β)).
@@ -122,7 +121,7 @@ def quasi_interpolate_thb_spline(
             raise RuntimeError(
                 f"active dof {dof} has no leaf cell at its level; the THB space is inconsistent."
             )
-        level = int(np.searchsorted(func_offset, dof, side="right")) - 1
+        level = space._dof_level(dof)
         multi = cand[0][1]
         target = np.array([_greville(level, k)[multi[k]] for k in range(dim)], dtype=np.float64)
 

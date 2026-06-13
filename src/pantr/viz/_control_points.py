@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING, Any
 import numpy as np
 from numpy import typing as npt
 
+from ._common import _pad_points_to_3d
 from ._lazy_import import _import_pyvista
 
 if TYPE_CHECKING:
@@ -21,9 +22,6 @@ if TYPE_CHECKING:
 
     from ..bezier import Bezier
     from ..bspline import Bspline
-
-_MAX_PHYSICAL_DIM = 3
-"""Maximum physical dimension for VTK coordinates."""
 
 
 def _get_euclidean_control_points(
@@ -55,8 +53,7 @@ def _get_euclidean_control_points(
     else:
         coords = flat
 
-    pts_3d = np.zeros((n_pts, _MAX_PHYSICAL_DIM), dtype=np.float64)
-    pts_3d[:, :rank] = coords[:, :rank]
+    pts_3d = _pad_points_to_3d(coords, rank)
     return pts_3d, grid_shape, rank
 
 

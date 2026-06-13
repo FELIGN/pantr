@@ -220,10 +220,7 @@ class AffineTransform:
                 )
 
         mat = np.diag(f)
-        t = AffineTransform(mat)
-        if center is not None:
-            t = _apply_center(t, center)
-        return t
+        return _with_optional_center(mat, center)
 
     @staticmethod
     def rotation_2d(
@@ -248,10 +245,7 @@ class AffineTransform:
             raise ValueError(f"angle must be finite, got {angle_f!r}.")
         c, s = np.cos(angle_f), np.sin(angle_f)
         mat = np.array([[c, -s], [s, c]], dtype=np.float64)
-        t = AffineTransform(mat)
-        if center is not None:
-            t = _apply_center(t, center)
-        return t
+        return _with_optional_center(mat, center)
 
     @staticmethod
     def rotation_3d(
@@ -306,10 +300,7 @@ class AffineTransform:
         )
         mat = c * np.eye(3) + (1.0 - c) * np.outer(u, u) + s * K
 
-        t = AffineTransform(mat)
-        if center is not None:
-            t = _apply_center(t, center)
-        return t
+        return _with_optional_center(mat, center)
 
     @staticmethod
     def mirror(
@@ -341,10 +332,7 @@ class AffineTransform:
             raise ValueError(f"Mirror normal must be a finite non-zero vector, got {n!r}.")
         n = n / norm
         mat = np.eye(len(n)) - 2.0 * np.outer(n, n)
-        t = AffineTransform(mat)
-        if center is not None:
-            t = _apply_center(t, center)
-        return t
+        return _with_optional_center(mat, center)
 
     @staticmethod
     def shear(
@@ -499,3 +487,23 @@ def _apply_center(
     t_neg = AffineTransform.translation(-c)
     t_pos = AffineTransform.translation(c)
     return t_pos @ transform @ t_neg
+
+
+def _with_optional_center(
+    mat: npt.NDArray[np.float64],
+    center: npt.ArrayLike | None,
+) -> AffineTransform:
+    """Build an :class:`AffineTransform` from ``mat``, re-centred if requested.
+
+    Args:
+        mat (npt.NDArray[np.float64]): The linear part of the transform.
+        center (npt.ArrayLike | None): Optional center point; when given, the
+            transform is conjugated about it via :func:`_apply_center`.
+
+    Returns:
+        AffineTransform: The transform, about ``center`` when provided.
+    """
+    t = AffineTransform(mat)
+    if center is not None:
+        t = _apply_center(t, center)
+    return t

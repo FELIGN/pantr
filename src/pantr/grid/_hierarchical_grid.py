@@ -37,7 +37,7 @@ from typing import TYPE_CHECKING
 import numpy as np
 
 from ._grid import Grid, GridRestriction
-from ._grid_utils import _as_float64
+from ._grid_utils import _as_float64, _mask_nonfinite_locate
 from ._hier_core import (
     _decode_flat_id_core,
     _encode_midx_core,
@@ -729,11 +729,7 @@ class HierarchicalGrid(Grid):
             self._packed_level_start,
             out,
         )
-        # The kernel's binary search has no NaN handling (NaN comparisons are
-        # all False, silently landing in the first cell); mask them out here.
-        finite = np.isfinite(pts).all(axis=1)
-        if not finite.all():
-            out[~finite] = -1
+        _mask_nonfinite_locate(pts, out)
         return out
 
     def _facet_neighbor_position(

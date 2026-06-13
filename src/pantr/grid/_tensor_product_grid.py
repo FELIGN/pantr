@@ -37,7 +37,7 @@ import numpy as np
 
 from ._cell_index import c_order_strides, flat_to_multi, multi_to_flat
 from ._grid import Grid, GridRestriction
-from ._grid_utils import _as_float64
+from ._grid_utils import _as_float64, _mask_nonfinite_locate
 from ._locate_core import _locate_points_core
 
 if TYPE_CHECKING:
@@ -303,11 +303,7 @@ class TensorProductGrid(Grid):
         cells_per_axis = np.array(self._cells_per_axis, dtype=np.int64)
         out = np.empty(pts.shape[0], dtype=np.int64)
         _locate_points_core(pts, knots_flat, knot_starts, cells_per_axis, self._strides, out)
-        # The kernel's binary search has no NaN handling (NaN comparisons are
-        # all False, silently landing in the first cell); mask them out here.
-        finite = np.isfinite(pts).all(axis=1)
-        if not finite.all():
-            out[~finite] = -1
+        _mask_nonfinite_locate(pts, out)
         return out
 
     def neighbor_across_facet(self, cid: int, lfid: int) -> int | None:

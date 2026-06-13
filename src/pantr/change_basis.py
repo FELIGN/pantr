@@ -27,6 +27,34 @@ from .basis._basis_utils import (
 from .quad import get_gauss_legendre_1d
 
 
+def _prepare_square_out(
+    degree: int,
+    dtype: npt.DTypeLike,
+    out: npt.NDArray[np.float32 | np.float64] | None,
+) -> npt.NDArray[np.float32 | np.float64]:
+    """Validate ``dtype`` and allocate/validate a ``(degree+1, degree+1)`` matrix.
+
+    Shared prologue for the ``compute_*_1d`` change-of-basis builders, which all
+    return a square ``(degree+1, degree+1)`` matrix in a validated float dtype.
+
+    Args:
+        degree (int): Polynomial degree; the matrix is ``(degree+1, degree+1)``.
+        dtype (npt.DTypeLike): Output dtype; must be ``float32`` or ``float64``.
+        out (npt.NDArray[np.float32 | np.float64] | None): Caller-provided output
+            array to validate, or ``None`` to allocate a fresh one.
+
+    Returns:
+        npt.NDArray[np.float32 | np.float64]: The validated or freshly allocated
+        ``(degree+1, degree+1)`` matrix.
+
+    Raises:
+        ValueError: If ``dtype`` is not float32/float64, or ``out`` has the wrong
+            shape, dtype, or is not writeable.
+    """
+    _validate_float_dtype(dtype)
+    return _allocate_or_validate_out(out, (degree + 1, degree + 1), dtype)
+
+
 def compute_lagrange_to_bernstein_1d(
     degree: int,
     lagrange_variant: LagrangeVariant = LagrangeVariant.EQUISPACES,
@@ -60,9 +88,7 @@ def compute_lagrange_to_bernstein_1d(
     """
     if degree < 1:
         raise ValueError("Degree must at least 1")
-    _validate_float_dtype(dtype)
-
-    out = _allocate_or_validate_out(out, (degree + 1, degree + 1), dtype)
+    out = _prepare_square_out(degree, dtype, out)
 
     points = _get_lagrange_points(lagrange_variant, degree + 1, dtype)
     tabulate_bernstein_1d(degree, points, out=out.T)
@@ -104,9 +130,7 @@ def compute_bernstein_to_lagrange_1d(
     """
     if degree < 1:
         raise ValueError("Degree must at least 1")
-    _validate_float_dtype(dtype)
-
-    out = _allocate_or_validate_out(out, (degree + 1, degree + 1), dtype)
+    out = _prepare_square_out(degree, dtype, out)
 
     C = compute_lagrange_to_bernstein_1d(degree, lagrange_variant, dtype)
     out[:] = np.linalg.inv(C)
@@ -208,9 +232,7 @@ def compute_bernstein_to_cardinal_1d(
     """
     if degree < 0:
         raise ValueError("Degree must be non-negative")
-    _validate_float_dtype(dtype)
-
-    out = _allocate_or_validate_out(out, (degree + 1, degree + 1), dtype)
+    out = _prepare_square_out(degree, dtype, out)
 
     return _compute_change_basis_1D(
         new_basis_eval=functools.partial(tabulate_bernstein_1d, degree),
@@ -248,9 +270,7 @@ def compute_cardinal_to_bernstein_1d(
     """
     if degree < 0:
         raise ValueError("Degree must be non-negative")
-    _validate_float_dtype(dtype)
-
-    out = _allocate_or_validate_out(out, (degree + 1, degree + 1), dtype)
+    out = _prepare_square_out(degree, dtype, out)
 
     return _compute_change_basis_1D(
         new_basis_eval=functools.partial(tabulate_cardinal_bspline_1d, degree),
@@ -296,9 +316,7 @@ def compute_monomial_to_bernstein_1d(
     """
     if degree < 0:
         raise ValueError("Degree must be non-negative")
-    _validate_float_dtype(dtype)
-
-    out = _allocate_or_validate_out(out, (degree + 1, degree + 1), dtype)
+    out = _prepare_square_out(degree, dtype, out)
     out[:] = 0
 
     for i in range(degree + 1):
