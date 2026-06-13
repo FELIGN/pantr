@@ -13,7 +13,7 @@ import numpy as np
 import numpy.typing as npt
 
 from .._numba_compat import nb_jit
-from ..basis._basis_utils import _validate_out_array
+from ..basis._basis_utils import _validate_float_dtype, _validate_out_array
 
 
 @nb_jit(
@@ -373,13 +373,7 @@ def _validate_knot_input(
     if continuity < -1 or continuity >= degree:
         raise ValueError(f"Continuity must be between -1 and {degree - 1} for degree {degree}.")
 
-    if dtype not in (
-        np.dtype(np.float64),
-        np.dtype(np.float32),
-        np.float32,
-        np.float64,
-    ):
-        raise ValueError("dtype must be float64 or float32")
+    _validate_float_dtype(dtype)
 
 
 def _ensure_scalar_arrays(
