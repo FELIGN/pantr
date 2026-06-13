@@ -235,8 +235,8 @@ class TestBsplineSpace1DMethods:
         np.testing.assert_array_almost_equal(unique_knots, expected_unique)
         np.testing.assert_array_equal(multiplicities, expected_mults)
 
-    def test_get_num_intervals(self) -> None:
-        """Test get_num_intervals method."""
+    def test_num_intervals(self) -> None:
+        """Test num_intervals property."""
         num_intervals = 2
         degree = 2
         knots = create_uniform_open_knots(num_intervals, degree)
