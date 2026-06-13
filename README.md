@@ -4,18 +4,38 @@ Polynomial and NURBS Toolkit (**PaNTr**) is a pure Python 3.10–3.14 library fo
 
 ## Features
 
-- Precise polynomial and NURBS basis evaluation with strict type hints.
-- Vectorized implementations tailored for scientific computing workflows.
-- Comprehensive testing with `pytest`, coverage reporting, and type checking.
-- Documentation powered by **Sphinx**, **MyST**, and related tooling.
+- **B-spline & NURBS spaces** — univariate and tensor-product `BsplineSpace`,
+  exact rational (NURBS) geometry, evaluation and derivatives, knot
+  insertion/removal, degree elevation, and splitting.
+- **Bézier toolkit** — Bernstein/Bézier curves and patches, composition,
+  products, degree reduction, and Bernstein-polynomial root finding.
+- **Truncated hierarchical B-splines** — `THBSplineSpace` with local
+  refinement, mirroring the tensor-product API.
+- **Constructive geometry (`pantr.cad`)** — lines, circles and arcs, disks,
+  cylinders, extrude, revolve, sweep, ruled and Coons surfaces/volumes.
+- **Structured grids (`pantr.grid`)** — tensor-product and hierarchical grids,
+  BVH spatial queries, dolfinx-style cell/facet tags, and cell quadrature.
+- **Quadrature and change of basis** — Gauss–Legendre and tensor-product
+  rules, plus exact matrices between Bernstein, Lagrange, monomial, and
+  cardinal B-spline bases.
+- **Fast and typed** — Numba-JIT kernels parallelized over CPU cores, with
+  strict type hints across the public API.
+- **Optional MPI and visualization** — distribute spaces across ranks
+  (`pantr.mpi`) and render exact higher-order geometry through VTK
+  (`pantr.viz`).
 
 ## Installation
 
 ```bash
-# Install directly from GitHub
-pip install git+https://github.com/pantolin/pantr.git
+pip install pantr
+```
 
-# Or clone and install locally
+Requires Python 3.10–3.14. The serial core depends only on NumPy, SciPy,
+Numba, and threadpoolctl.
+
+To install the latest development version from source:
+
+```bash
 git clone https://github.com/pantolin/pantr.git
 cd pantr
 pip install .

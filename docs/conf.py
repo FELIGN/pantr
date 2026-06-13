@@ -97,6 +97,11 @@ autosummary_generate = True
 autodoc_typehints = "description"
 autodoc_member_order = "bysource"
 
+# Optional heavy dependencies are mocked so the docs build without installing
+# them. pantr imports them lazily at runtime, so autodoc can still import the
+# modules. `pyvista` backs `pantr.viz`; `mpi4py` / `pymetis` back `pantr.mpi`.
+autodoc_mock_imports = ["pyvista", "mpi4py", "pymetis"]
+
 myst_enable_extensions = [
     "colon_fence",
     "deflist",
@@ -126,7 +131,7 @@ html_theme_options = {
 
 html_context = {
     "display_github": True,
-    "github_user": "pablodroca",
+    "github_user": "pantolin",
     "github_repo": "pantr",
     "github_version": "main",
     "conf_py_path": "/docs/",
@@ -158,6 +163,8 @@ nitpick_ignore = [
     # types.ModuleType return annotation: stripped to a bare name by autodoc and
     # not carried in the Python inventory under that short form.
     ("py:class", "ModuleType"),
+    # pathlib.Path appears as a bare `Path` in pantr.viz.save's type annotation.
+    ("py:class", "Path"),
     # Private structural protocol; not in __all__ and not cross-referenceable
     ("py:class", "_AffineMap"),
     ("py:class", "CellIndex"),
@@ -175,6 +182,10 @@ nitpick_ignore_regex = [
     ("py:class", r"np\.\w+"),
     ("py:class", r"npt\.\w+"),
     ("py:class", r"numpy\.\w+"),
+    # pantr.viz annotations reference pyvista via the local alias `pv`; pyvista
+    # exposes no cross-referenceable inventory in this build.
+    ("py:class", r"pv\.\w+"),
+    ("py:class", r"pyvista\..*"),
 ]
 
 suppress_warnings: list[str] = []
