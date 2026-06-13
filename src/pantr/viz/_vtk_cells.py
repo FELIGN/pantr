@@ -16,6 +16,7 @@ polynomial geometry without tessellation.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
@@ -135,12 +136,13 @@ def _embed_scalar_field(
 
 
 def _param_coords_from_axes(
-    grids_1d: list[npt.NDArray[np.float64]],
+    grids_1d: Sequence[npt.NDArray[np.floating[Any]]],
 ) -> npt.NDArray[np.float64]:
     """Build flattened C-order parametric coordinates from per-axis node arrays.
 
     Args:
-        grids_1d: One 1-D node array per parametric direction.
+        grids_1d: One 1-D node array per parametric direction (any float dtype;
+            upcast to ``float64``).
 
     Returns:
         NDArray[float64]: Array of shape ``(n_pts, dim)`` with the tensor-product
