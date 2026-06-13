@@ -14,6 +14,8 @@ The main modules are:
 - :mod:`pantr.transform`: Affine transformations for geometric objects.
 - :mod:`pantr.cad`: Constructive geometry for B-spline curves, surfaces, and volumes.
 - :mod:`pantr.bezier`: Bézier curves/surfaces and root finding for Bernstein polynomials.
+- :mod:`pantr.mpi`: Optional MPI-distributed B-spline / THB-spline spaces (``mpi`` extra).
+- :mod:`pantr.viz`: Optional PyVista/VTK visualization of geometries (``viz`` extra).
 """
 
 import sys
@@ -35,7 +37,7 @@ from ._parallel import get_num_threads, num_threads, set_num_threads
 from .basis import _basis_utils  # noqa: F401
 
 # Package metadata
-__version__: Final[str] = "0.5.1"
+__version__: Final[str] = "0.6.0"
 __license__: Final[str] = "MIT"
 __author__: Final[str] = "Pablo Antolin <pablo.antolin@epfl.ch>"
 
