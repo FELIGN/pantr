@@ -100,15 +100,7 @@ def _evaluate_bezier_1d(
     out_raw = np.empty((n_pts, cp_size), dtype=dtype)
     _evaluate_bezier_1d_core(ctrl, pts_array, out_raw)
 
-    if bezier.is_rational:
-        out_raw[:, :-1] = out_raw[:, :-1] / out_raw[:, -1:]
-        result = out_raw[:, :-1]
-    else:
-        result = out_raw
-
-    # Squeeze scalar output
-    if result.shape[-1] == 1:
-        result = result[:, 0]
+    result = _project_rational(bezier, out_raw)
 
     if out is not None:
         _validate_out_array(out, result.shape, dtype)

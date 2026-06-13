@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING, Any
 import numpy as np
 from numpy import typing as npt
 
-from ._common import _pad_points_to_3d
+from ._common import _pad_points_to_3d, _project_homogeneous
 from ._lazy_import import _import_pyvista
 
 if TYPE_CHECKING:
@@ -45,14 +45,7 @@ def _get_euclidean_control_points(
     grid_shape = cp.shape[:-1]
     rank = geom.rank
     n_pts = int(np.prod(grid_shape))
-    flat = cp.reshape(n_pts, -1)
-
-    if geom.is_rational:
-        weights = flat[:, -1:]
-        coords = flat[:, :-1] / weights
-    else:
-        coords = flat
-
+    coords, _ = _project_homogeneous(cp.reshape(n_pts, -1), geom.is_rational)
     pts_3d = _pad_points_to_3d(coords, rank)
     return pts_3d, grid_shape, rank
 

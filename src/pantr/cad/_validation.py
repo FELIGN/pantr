@@ -11,6 +11,8 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 
+from .._control_points_utils import _append_unit_weight_column
+
 if TYPE_CHECKING:
     from numpy import typing as npt
 
@@ -56,7 +58,5 @@ def _promote_to_rational(bspline: Bspline) -> Bspline:
 
     from ..bspline import Bspline as BsplineCls  # noqa: PLC0415
 
-    cp = bspline.control_points
-    ones = np.ones((*cp.shape[:-1], 1), dtype=cp.dtype)
-    new_cp = np.concatenate([cp, ones], axis=-1)
+    new_cp = _append_unit_weight_column(bspline.control_points)
     return BsplineCls(bspline.space, new_cp, is_rational=True)

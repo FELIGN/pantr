@@ -18,6 +18,7 @@ from typing import TYPE_CHECKING
 import numpy as np
 import numpy.typing as npt
 
+from .._control_points_utils import _append_unit_weight_column
 from ..bezier._bezier_product import _bernstein_product_coefficients
 from ._bspline_knots import (
     _get_Bspline_num_basis_1D_impl,
@@ -476,9 +477,7 @@ def _to_rational(f: Bspline) -> Bspline:
         return f
     from . import Bspline  # noqa: PLC0415
 
-    n = f.control_points.shape[0]
-    weights = np.ones((n, 1), dtype=f.control_points.dtype)
-    new_ctrl = np.concatenate([f.control_points, weights], axis=-1)
+    new_ctrl = _append_unit_weight_column(f.control_points)
     return Bspline(f.space, new_ctrl, is_rational=True)
 
 

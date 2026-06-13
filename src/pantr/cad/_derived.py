@@ -94,9 +94,8 @@ def create_disk(
     inner_cp = np.zeros((n_cp, rank_full), dtype=np.float64)
     # Copy weights from outer arc
     inner_cp[:, _PHYSICAL_DIM] = outer.control_points[:, _PHYSICAL_DIM]
-    # Set weighted coordinates: w * center
-    for i in range(_PHYSICAL_DIM):
-        inner_cp[:, i] = inner_cp[:, _PHYSICAL_DIM] * c[i]
+    # Set weighted coordinates: w * center (broadcast the weight column over axes)
+    inner_cp[:, :_PHYSICAL_DIM] = inner_cp[:, _PHYSICAL_DIM : _PHYSICAL_DIM + 1] * c
 
     inner = Bspline(outer.space, inner_cp, is_rational=True)
     return create_ruled(inner, outer)
