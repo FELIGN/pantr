@@ -91,7 +91,7 @@ class TestValidateKnotInput:
 
     def test_invalid_dtype_error(self) -> None:
         """Reject non-floating dtype requests."""
-        with pytest.raises(ValueError, match="dtype must be float64 or float32"):
+        with pytest.raises(ValueError, match="dtype must be float32 or float64"):
             _validate_knot_input(
                 num_intervals=2,
                 degree=2,

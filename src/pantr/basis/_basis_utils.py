@@ -15,6 +15,10 @@ from typing import Any
 import numpy as np
 from numpy import typing as npt
 
+from .._array_utils import _validate_float_dtype
+
+__all__ = ["_validate_float_dtype"]
+
 
 def _normalize_points_1D(pts: npt.ArrayLike) -> npt.NDArray[np.float32 | np.float64]:
     """Normalize points to a 1D float array for basis function evaluation.
@@ -85,24 +89,6 @@ def _compute_final_output_shape_1D_deriv(
     if len(input_shape) == 0:
         return (n_deriv + 1, n_basis)
     return (*input_shape, n_deriv + 1, n_basis)
-
-
-def _validate_float_dtype(dtype: npt.DTypeLike) -> None:
-    """Validate that ``dtype`` is ``float32`` or ``float64``.
-
-    The input is normalized through ``np.dtype()`` before comparison, so
-    string aliases such as ``"float32"`` are accepted alongside the NumPy
-    type objects and ``np.dtype`` instances.
-
-    Args:
-        dtype (npt.DTypeLike): The dtype to validate.
-
-    Raises:
-        ValueError: If the dtype does not resolve to ``np.float32`` or
-            ``np.float64`` (e.g. ``np.int32``, ``np.float16``).
-    """
-    if np.dtype(dtype).type not in (np.float32, np.float64):
-        raise ValueError("dtype must be float32 or float64")
 
 
 def _validate_out_array(

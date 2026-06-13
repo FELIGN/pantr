@@ -20,6 +20,8 @@ import numpy as np
 import numpy.typing as npt
 from numpy.polynomial import chebyshev, legendre
 
+from ._array_utils import _validate_float_dtype
+
 if TYPE_CHECKING:
     from .basis import LagrangeVariant
 
@@ -61,9 +63,7 @@ def _validate_n_pts_and_dtype(n_pts: int, dtype: npt.DTypeLike, min_pts: int = 1
     if n_pts < min_pts:
         raise ValueError(f"n_pts must be at least {min_pts}")
 
-    dtype_obj = np.dtype(dtype)
-    if dtype_obj.type not in (np.float32, np.float64):
-        raise ValueError("dtype must be float32 or float64")
+    _validate_float_dtype(dtype)
 
 
 def get_trapezoidal_1d(
