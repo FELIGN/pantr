@@ -84,6 +84,28 @@ Before creating the PR, run the full check suite. Invoke the `pre-pr-checks` ski
 
 Fix any issues and commit the fixes before proceeding. All checks must pass.
 
+**Always run every check on the whole repo, not single files.** Running
+`ruff check <one_file>` while skipping `ruff format --check .` (or vice versa) has
+let real failures through. Run all five commands, every push — no shortcuts.
+
+**Local green ≠ CI green.** The local environment can differ from CI in ways that
+hide failures; the local suite passing is necessary but not sufficient. Known traps:
+
+- **mypy runs on a Python matrix (3.10–3.14).** CI's 3.10 job uses *older* numpy
+  stubs than a typical local env, so code that type-checks locally can fail on 3.10.
+  `mypy.ini` pins `python_version = 3.10`, but the *numpy stub version* is whatever is
+  installed locally. Be defensive with numpy typing: no bare `np.ndarray`; cast
+  `tensordot`/`einsum`/`linspace` results to `float64` where the dtype matters; and
+  prefer a covariant `Sequence[...]` parameter over an invariant `list[...]` when the
+  element dtype may be inferred differently across stub versions.
+- **Headless GL.** The CI test job runs without a display. pyvista/VTK tests must not
+  call `.show()` or `pantr.viz.plot()` (they force a render and segfault headless) —
+  build the scene with `to_plotter()` instead. The full suite runs under coverage with
+  `NUMBA_DISABLE_JIT=1`; a segfault there crashes the whole run.
+- If a dependency the suite needs (e.g. `pyvista`, `mpi4py`) is missing locally, the
+  relevant tests silently skip — install it so they actually run before you rely on a
+  green local result.
+
 ## Phase 5.5: Automated review (fresh Sonnet reviewers)
 
 After checks pass and before pushing, run a fresh-context review of the branch diff.
@@ -149,12 +171,28 @@ Once all checks pass:
    )"
    ```
 
-3. **Notify the user**: Tell them the PR is ready, provide the URL, and give a brief summary of what was done.
+3. **Verify CI is green before declaring done.** Pushing is not the finish line —
+   local checks can pass while CI fails (see the local-vs-CI traps in Phase 5). After
+   creating the PR, watch the checks to completion:
+
+   ```bash
+   gh pr checks <pr-number> --watch    # or poll `gh pr checks <pr-number>`
+   ```
+
+   If any job fails, read its log (`gh run view --job <id> --log`), fix the cause,
+   commit, and push again — then re-watch. Do not report the PR as ready until every
+   required check passes. Avoid pushing twice in quick succession: a second push can
+   cancel the first run's in-progress jobs (showing a spurious "failure"); wait for the
+   run to settle, or confirm a job was *canceled* (not a real failure) before reacting.
+
+4. **Notify the user**: Tell them the PR is ready *and CI is green*, provide the URL,
+   and give a brief summary of what was done.
 
 ## Important notes
 
 - If the user asks you to **plan only** (not implement), stop after Phase 2 and present the plan.
 - If at any point you're unsure about a design decision, ask the user rather than guessing.
-- Do not push or create a PR without running all checks first.
+- Do not push or create a PR without running all checks first (every command, whole repo).
 - Do not push or create a PR without running Phase 5.5 review first (unless the diff hit the trivial carve-out).
-- Keep the user informed at natural milestones (plan ready, implementation done, tests passing, PR created).
+- The work is not done until **CI is green**, not merely when local checks pass — always confirm with `gh pr checks` before declaring the PR ready.
+- Keep the user informed at natural milestones (plan ready, implementation done, tests passing, PR created, CI green).
