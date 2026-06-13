@@ -1,8 +1,7 @@
-"""Shared Layer-2 helpers for the grid package.
+"""Re-export shim: exposes ``_as_float64`` from :mod:`pantr.geometry`.
 
-Re-exports the ``float64`` coercion helper from :mod:`pantr.geometry` so that
-existing ``from ._grid_utils import _as_float64`` imports keep working while the
-implementation lives in a single place (it was previously duplicated here).
+Keeps existing ``from ._grid_utils import _as_float64`` call-sites working
+while the implementation lives in a single place.
 """
 
 from __future__ import annotations

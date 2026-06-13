@@ -20,7 +20,7 @@ import numpy as np
 import numpy.typing as npt
 from numpy.polynomial import chebyshev, legendre
 
-from .basis._basis_utils import _validate_float_dtype
+from ._array_utils import _validate_float_dtype
 
 if TYPE_CHECKING:
     from .basis import LagrangeVariant

@@ -1,8 +1,8 @@
-"""Shared array-manipulation helpers for Layer 2 modules.
+"""Shared array and dtype helpers for Layer 2 modules.
 
-This module centralizes recurring NumPy array-reshape idioms (moveaxis +
-flatten/unflatten) that would otherwise be duplicated across the ``bezier``
-and ``bspline`` packages. All helpers are private (not part of the public API).
+This module centralizes recurring array-reshape idioms (moveaxis +
+flatten/unflatten) and dtype validators that would otherwise be duplicated
+across packages. All helpers are private (not part of the public API).
 """
 
 from __future__ import annotations
@@ -13,6 +13,25 @@ import numpy as np
 
 if TYPE_CHECKING:
     import numpy.typing as npt
+
+
+def _validate_float_dtype(dtype: npt.DTypeLike) -> None:
+    """Validate that ``dtype`` is ``float32`` or ``float64``.
+
+    The input is normalized through ``np.dtype()`` before comparison, so
+    string aliases such as ``"float32"`` are accepted alongside NumPy type
+    objects and ``np.dtype`` instances. ``None`` resolves to ``np.float64``
+    per NumPy semantics and is therefore accepted.
+
+    Args:
+        dtype (npt.DTypeLike): The dtype to validate.
+
+    Raises:
+        ValueError: If the dtype does not resolve to ``np.float32`` or
+            ``np.float64`` (e.g. ``np.int32``, ``np.float16``).
+    """
+    if np.dtype(dtype).type not in (np.float32, np.float64):
+        raise ValueError("dtype must be float32 or float64")
 
 
 def _flatten_along_axis(
