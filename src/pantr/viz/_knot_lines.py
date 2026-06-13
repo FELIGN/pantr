@@ -213,8 +213,9 @@ def _thb_knot_lines(thb: THBSpline, elevation: bool) -> list[pv.PolyData | pv.Un
 
     Args:
         thb: Input THB spline (dim 1, 2, or 3).
-        elevation: For scalar fields with dim ≤ 2, use the value as a spatial
-            coordinate so the boundaries lie on the elevated field.
+        elevation: For a dim=2 scalar field, use the value as a spatial coordinate
+            so the boundaries lie on the elevated field. A dim=1 scalar field is
+            always drawn as the graph ``(t, f(t))`` (see :func:`_thb_knot_points`).
 
     Returns:
         list[pv.PolyData | pv.UnstructuredGrid]: A single mesh holding the
@@ -257,9 +258,10 @@ def knot_lines_meshes(
 
     Args:
         geom: Input B-spline or THB-spline geometry (dim 1, 2, or 3).
-        elevation: For THB scalar fields with dim ≤ 2, use the value as a spatial
-            coordinate so the boundaries lie on the elevated field. Ignored for
-            B-splines.
+        elevation: For a THB scalar field with dim == 2, use the value as a spatial
+            coordinate so the boundaries lie on the elevated field. A dim=1 scalar
+            field is always drawn as the graph ``(t, f(t))`` regardless of this
+            flag; ignored for B-splines.
 
     Returns:
         list[pv.PolyData | pv.UnstructuredGrid]: Knot line meshes.
