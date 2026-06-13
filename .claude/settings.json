@@ -1,22 +1,14 @@
 {
   "permissions": {
     "allow": [
-      "Bash(conda run -n pantr *)",
-      "Bash(pytest *)",
-      "Bash(ruff *)",
-      "Bash(mypy *)",
-      "Bash(git *)",
-      "Bash(pip *)",
-      "Bash(ls *)",
-      "Bash(cat *)",
-      "Bash(head *)",
-      "Bash(tail *)",
-      "Bash(python *)",
-      "Bash(python3 *)",
-      "Bash(cd *)",
-      "Bash(sphinx-build *)",
-      "Bash(make *)",
-      "Bash(conda activate *)"
+      "Bash(conda run:*)",
+      "Bash(conda activate:*)",
+      "Bash(pytest:*)",
+      "Bash(ruff:*)",
+      "Bash(mypy:*)",
+      "Bash(sphinx-build:*)",
+      "Bash(make:*)",
+      "Bash(lint-imports:*)"
     ]
   }
 }

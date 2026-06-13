@@ -84,6 +84,42 @@ Before creating the PR, run the full check suite. Invoke the `pre-pr-checks` ski
 
 Fix any issues and commit the fixes before proceeding. All checks must pass.
 
+## Phase 5.5: Automated review (fresh Sonnet reviewers)
+
+After checks pass and before pushing, run a fresh-context review of the branch diff.
+
+**Carve-out — skip this phase entirely** if the diff is trivial: docs-only,
+formatting-only, or comment-only changes (`git diff main...HEAD` touches no
+executable logic). For these, proceed straight to Phase 6.
+
+Otherwise, launch the pr-review-toolkit agents **in parallel** via the Task tool,
+each with **`model: sonnet`** (the orchestrator stays on Opus; reviewers get clean,
+uncontaminated context):
+
+- `pr-review-toolkit:code-reviewer` — always
+- `pr-review-toolkit:pr-test-analyzer` — if test files changed
+- `pr-review-toolkit:comment-analyzer` — if comments/docstrings changed
+- `pr-review-toolkit:silent-failure-hunter` — if error handling changed
+- `pr-review-toolkit:type-design-analyzer` — if new types added
+
+Tell each agent to review the branch diff against `main` (`git diff main...HEAD`).
+
+Aggregate findings into **Critical / Important / Suggestion** buckets, then:
+
+1. Fix every **Critical** and **Important** finding. Commit the fixes
+   (`fix(<scope>): address review findings`).
+2. Re-run Phase 5 checks — they must pass.
+3. Re-run the review on the new diff. Repeat until no Critical/Important findings
+   remain, or two consecutive rounds surface nothing new (**hard cap: 3 rounds**).
+4. List any unaddressed **Suggestions** in the PR body under a "Review notes"
+   heading — do not silently drop them.
+
+This phase is **unattended** — do not pause for approval. Proceed to Phase 6 when clean.
+
+> Note: findings come from fresh Sonnet reviewers, but fixes are applied by this
+> (Opus) orchestrator, which carries implementation context. The re-review in
+> step 3 is what guards against the implementer rationalizing away a real finding.
+
 ## Phase 6: PR and notify
 
 Once all checks pass:
@@ -120,4 +156,5 @@ Once all checks pass:
 - If the user asks you to **plan only** (not implement), stop after Phase 2 and present the plan.
 - If at any point you're unsure about a design decision, ask the user rather than guessing.
 - Do not push or create a PR without running all checks first.
+- Do not push or create a PR without running Phase 5.5 review first (unless the diff hit the trivial carve-out).
 - Keep the user informed at natural milestones (plan ready, implementation done, tests passing, PR created).
