@@ -17,6 +17,7 @@ from typing import TYPE_CHECKING, Any, cast
 import numpy as np
 from numpy import typing as npt
 
+from ._common import _MAX_PHYSICAL_DIM, _pad_points_to_3d
 from ._lazy_import import _import_pyvista
 from ._vtk_ordering import vtk_ordering
 
@@ -36,9 +37,6 @@ _VTK_CELL_TYPE_BY_DIM = {
     2: VTK_BEZIER_QUADRILATERAL,
     3: VTK_BEZIER_HEXAHEDRON,
 }
-
-_MAX_PHYSICAL_DIM = 3
-"""Maximum physical dimension for VTK coordinates."""
 
 
 def _get_bezier_patches(
@@ -215,9 +213,7 @@ def _process_patch(  # noqa: PLR0913
         pts_3d = _embed_scalar_field(scalar_vals, param_coords, dim, elevation)
         scalars = scalar_vals[ordering]
     else:
-        n_pts = coords.shape[0]
-        pts_3d = np.zeros((n_pts, _MAX_PHYSICAL_DIM), dtype=np.float64)
-        pts_3d[:, :rank] = coords
+        pts_3d = _pad_points_to_3d(coords, rank)
 
     return _PatchGeometry(
         points_3d=pts_3d[ordering],

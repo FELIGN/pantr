@@ -202,6 +202,29 @@ def tabulate_legendre_1d(
     return _tabulate_Legendre_basis_1D_impl(degree, pts, out=out)
 
 
+def _validate_degrees(degrees: Iterable[int]) -> tuple[int, ...]:
+    """Validate and materialize per-direction polynomial degrees.
+
+    Materializing to a tuple guards against single-pass iterables: the
+    tensor-product tabulators consume ``degrees`` twice (validation, then
+    per-direction evaluator construction), which would silently yield nothing
+    on the second pass for a one-shot generator.
+
+    Args:
+        degrees (Iterable[int]): Per-direction degrees.
+
+    Returns:
+        tuple[int, ...]: The degrees as a tuple.
+
+    Raises:
+        ValueError: If any degree is not a non-negative integer.
+    """
+    degrees_t = tuple(degrees)
+    if not all(isinstance(d, int) and d >= 0 for d in degrees_t):
+        raise ValueError("All degrees must be non-negative integers")
+    return degrees_t
+
+
 def tabulate_bernstein(
     degrees: Iterable[int],
     pts: npt.ArrayLike | PointsLattice,
@@ -237,8 +260,7 @@ def tabulate_bernstein(
         ValueError: If any degree is negative, or if `out` is provided and has incorrect
             shape or dtype.
     """
-    if not all(isinstance(degree, int) and degree >= 0 for degree in degrees):
-        raise ValueError("All degrees must be non-negative integers")
+    degrees = _validate_degrees(degrees)
     evaluators_1D = cast(
         tuple[Callable[[npt.ArrayLike], npt.NDArray[np.float32 | np.float64]]],
         tuple(lambda pts, d=degree: tabulate_bernstein_1d(d, pts) for degree in degrees),
@@ -281,8 +303,7 @@ def tabulate_cardinal_bspline(
         ValueError: If any degree is negative, or if `out` is provided and has incorrect
             shape or dtype.
     """
-    if not all(isinstance(degree, int) and degree >= 0 for degree in degrees):
-        raise ValueError("All degrees must be non-negative integers")
+    degrees = _validate_degrees(degrees)
     evaluators_1D = cast(
         tuple[Callable[[npt.ArrayLike], npt.NDArray[np.float32 | np.float64]]],
         tuple(lambda pts, d=degree: tabulate_cardinal_bspline_1d(d, pts) for degree in degrees),
@@ -327,8 +348,7 @@ def tabulate_lagrange(
         ValueError: If any degree is negative, or if `out` is provided and has incorrect
             shape or dtype.
     """
-    if not all(isinstance(degree, int) and degree >= 0 for degree in degrees):
-        raise ValueError("All degrees must be non-negative integers")
+    degrees = _validate_degrees(degrees)
     evaluators_1D = cast(
         tuple[Callable[[npt.ArrayLike], npt.NDArray[np.float32 | np.float64]]],
         tuple(lambda pts, d=degree: tabulate_lagrange_1d(d, variant, pts) for degree in degrees),

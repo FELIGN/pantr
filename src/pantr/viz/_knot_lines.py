@@ -19,6 +19,7 @@ from typing import TYPE_CHECKING
 import numpy as np
 from numpy import typing as npt
 
+from ._common import _MAX_PHYSICAL_DIM, _pad_points_to_3d
 from ._lazy_import import _import_pyvista
 from ._vtk_cells import to_pyvista
 
@@ -26,9 +27,6 @@ if TYPE_CHECKING:
     import pyvista as pv
 
     from ..bspline import Bspline
-
-_MAX_PHYSICAL_DIM = 3
-"""Maximum physical dimension for VTK coordinates."""
 
 
 def _get_interior_knots(
@@ -83,56 +81,30 @@ def _knot_points_curve(bspline: Bspline) -> pv.PolyData:
     if pts_phys.ndim == 1:
         pts_phys = pts_phys.reshape(1, -1)
 
-    rank = bspline.rank
-    n_pts = len(knot_vals)
-    pts_3d = np.zeros((n_pts, _MAX_PHYSICAL_DIM), dtype=np.float64)
-    pts_3d[:, :rank] = pts_phys[:, :rank]
+    pts_3d = _pad_points_to_3d(pts_phys, bspline.rank)
     return pv.PolyData(pts_3d)  # type: ignore[no-any-return]
 
 
-def _knot_lines_surface(bspline: Bspline) -> list[pv.UnstructuredGrid]:
-    """Compute knot lines for a 2D B-spline surface.
+def _knot_slices(bspline: Bspline, n_directions: int) -> list[pv.UnstructuredGrid]:
+    """Slice a B-spline at every interior knot along the first ``n_directions`` axes.
 
-    Slices the surface at each interior knot in each direction, producing
-    iso-parametric curves that are converted to VTK Bézier curve cells.
+    Shared by 2D surfaces (``n_directions=2``, yielding iso-parametric curves)
+    and 3D volumes (``n_directions=3``, yielding iso-parametric surfaces); each
+    slice is converted to a VTK Bézier cell mesh.
 
     Args:
-        bspline: A 2D B-spline surface.
+        bspline: A 2D B-spline surface or 3D B-spline volume.
+        n_directions: Number of parametric directions to slice along.
 
     Returns:
-        list[pv.UnstructuredGrid]: One grid per knot line (iso-curve).
+        list[pv.UnstructuredGrid]: One grid per knot slice.
     """
     interior_knots = _get_interior_knots(bspline)
     grids: list[pv.UnstructuredGrid] = []
 
-    n_directions = 2
     for direction in range(n_directions):
         for knot_val in interior_knots[direction]:
-            curve = bspline.slice(direction, float(knot_val))
-            grids.append(to_pyvista(curve))  # type: ignore[arg-type]
-
-    return grids
-
-
-def _knot_surfaces_volume(bspline: Bspline) -> list[pv.UnstructuredGrid]:
-    """Compute knot surfaces for a 3D B-spline volume.
-
-    Slices the volume at each interior knot in each direction, producing
-    iso-parametric surfaces that are converted to VTK Bézier quad cells.
-
-    Args:
-        bspline: A 3D B-spline volume.
-
-    Returns:
-        list[pv.UnstructuredGrid]: One grid per knot surface.
-    """
-    interior_knots = _get_interior_knots(bspline)
-    grids: list[pv.UnstructuredGrid] = []
-
-    for direction in range(_MAX_PHYSICAL_DIM):
-        for knot_val in interior_knots[direction]:
-            surface = bspline.slice(direction, float(knot_val))
-            grids.append(to_pyvista(surface))  # type: ignore[arg-type]
+            grids.append(to_pyvista(bspline.slice(direction, float(knot_val))))  # type: ignore[arg-type]
 
     return grids
 
@@ -163,7 +135,7 @@ def knot_lines_meshes(bspline: Bspline) -> list[pv.PolyData | pv.UnstructuredGri
     if dim == 1:
         return [_knot_points_curve(bspline)]
     if dim == 2:  # noqa: PLR2004
-        return list(_knot_lines_surface(bspline))
+        return _knot_slices(bspline, 2)
     if dim == _MAX_PHYSICAL_DIM:
-        return list(_knot_surfaces_volume(bspline))
+        return _knot_slices(bspline, _MAX_PHYSICAL_DIM)
     raise ValueError(f"Unsupported parametric dimension {dim}.")

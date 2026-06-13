@@ -10,6 +10,7 @@ Provides:
 
 from __future__ import annotations
 
+from dataclasses import KW_ONLY, dataclass
 from typing import TYPE_CHECKING, Any
 
 from ._control_points import control_polygon_mesh
@@ -52,67 +53,49 @@ def _effective_tessellation(geom: Bspline | Bezier, requested: int) -> int:
     return requested
 
 
+@dataclass
 class _GeometryEntry:
-    """Internal record of a geometry added to a Scene."""
+    """Internal record of a geometry added to a Scene.
 
-    def __init__(  # noqa: PLR0913
-        self,
-        geom: Bspline | Bezier,
-        *,
-        color: str | None = None,
-        opacity: float = 1.0,
-        show_control_polygon: bool = False,
-        show_knot_lines: bool = False,
-        control_point_color: str = _DEFAULT_CP_COLOR,
-        control_point_size: float = _DEFAULT_CP_SIZE,
-        control_polygon_color: str = _DEFAULT_POLYGON_COLOR,
-        knot_line_color: str = _DEFAULT_KNOT_COLOR,
-        knot_line_width: float = _DEFAULT_KNOT_WIDTH,
-        scalar_name: str = "scalar",
-        scalar_bar: bool = True,
-        elevation: bool = False,
-        tessellation_level: int = _DEFAULT_TESSELLATION_LEVEL,
-        line_width: float = _DEFAULT_LINE_WIDTH,
-    ) -> None:
-        """Initialize a geometry entry.
+    Attributes:
+        geom (Bspline | Bezier): The geometry to visualize.
+        color (str | None): Surface color. ``None`` uses the default colormap
+            for scalar fields or pyvista's default for geometric objects.
+        opacity (float): Surface opacity (0.0 to 1.0).
+        show_control_polygon (bool): Render control polygon (points + wireframe).
+        show_knot_lines (bool): Render knot lines (B-splines only).
+        control_point_color (str): Color for control points and polygon wireframe.
+        control_point_size (float): Point size for control points.
+        control_polygon_color (str): Color for control polygon wireframe.
+        knot_line_color (str): Color for knot lines.
+        knot_line_width (float): Line width for knot lines.
+        scalar_name (str): Name for scalar point data.
+        scalar_bar (bool): Show scalar bar for scalar fields.
+        elevation (bool): Use scalar as elevation coordinate.
+        tessellation_level (int): Number of VTK non-linear subdivisions used when
+            rendering curved cells. Higher values produce smoother output at the
+            cost of more triangles. Ignored for degree-1 geometries (always
+            coarsest). Defaults to ``4``.
+        line_width (float): Width of lines when rendering curve geometries
+            (dim=1). Defaults to ``2.0``.
+    """
 
-        Args:
-            geom: The geometry to visualize.
-            color: Surface color. ``None`` uses the default colormap for
-                scalar fields or pyvista's default for geometric objects.
-            opacity: Surface opacity (0.0 to 1.0).
-            show_control_polygon: Render control polygon (points and wireframe).
-            show_knot_lines: Render knot lines (B-splines only).
-            control_point_color: Color for control points and polygon wireframe.
-            control_point_size: Point size for control points.
-            control_polygon_color: Color for control polygon wireframe.
-            knot_line_color: Color for knot lines.
-            knot_line_width: Line width for knot lines.
-            scalar_name: Name for scalar point data.
-            scalar_bar: Show scalar bar for scalar fields.
-            elevation: Use scalar as elevation coordinate.
-            tessellation_level: Number of VTK non-linear subdivisions used when
-                rendering curved cells. Higher values produce smoother output at
-                the cost of more triangles. Ignored for degree-1 geometries
-                (always coarsest). Defaults to ``4``.
-            line_width: Width of lines when rendering curve geometries (dim=1).
-                Defaults to ``2.0``.
-        """
-        self.geom = geom
-        self.color = color
-        self.opacity = opacity
-        self.show_control_polygon = show_control_polygon
-        self.show_knot_lines = show_knot_lines
-        self.control_point_color = control_point_color
-        self.control_point_size = control_point_size
-        self.control_polygon_color = control_polygon_color
-        self.knot_line_color = knot_line_color
-        self.knot_line_width = knot_line_width
-        self.scalar_name = scalar_name
-        self.scalar_bar = scalar_bar
-        self.elevation = elevation
-        self.tessellation_level = tessellation_level
-        self.line_width = line_width
+    geom: Bspline | Bezier
+    _: KW_ONLY
+    color: str | None = None
+    opacity: float = 1.0
+    show_control_polygon: bool = False
+    show_knot_lines: bool = False
+    control_point_color: str = _DEFAULT_CP_COLOR
+    control_point_size: float = _DEFAULT_CP_SIZE
+    control_polygon_color: str = _DEFAULT_POLYGON_COLOR
+    knot_line_color: str = _DEFAULT_KNOT_COLOR
+    knot_line_width: float = _DEFAULT_KNOT_WIDTH
+    scalar_name: str = "scalar"
+    scalar_bar: bool = True
+    elevation: bool = False
+    tessellation_level: int = _DEFAULT_TESSELLATION_LEVEL
+    line_width: float = _DEFAULT_LINE_WIDTH
 
 
 class Scene:

@@ -12,7 +12,7 @@ import numpy.typing as npt
 
 from .._numba_compat import nb_jit
 from ..basis import LagrangeVariant
-from ..basis._basis_utils import _validate_out_array
+from ..basis._basis_utils import _allocate_or_validate_out
 from ..change_basis import (
     _cached_cardinal_to_bernstein_matrix,
     _cached_lagrange_to_bernstein_matrix,
@@ -161,6 +161,41 @@ def _bezier_structural_identity_mask_core(
         out[e] = multiplicities[e] >= threshold and multiplicities[e + 1] >= threshold
 
 
+def _prepare_extraction_out(
+    knots: npt.NDArray[np.float32 | np.float64],
+    degree: int,
+    tol: float,
+    out: npt.NDArray[np.float32 | np.float64] | None,
+) -> npt.NDArray[np.float32 | np.float64]:
+    """Validate inputs and allocate/validate the extraction-operator output array.
+
+    Shared prologue for the ``_tabulate_Bspline_*_1D_extraction_impl`` helpers:
+    validates ``tol`` and the spline info, then allocates (or validates) the
+    ``(n_intervals, degree+1, degree+1)`` output array.
+
+    Args:
+        knots (npt.NDArray[np.float32 | np.float64]): B-spline knot vector.
+        degree (int): B-spline degree.
+        tol (float): Tolerance for numerical comparisons; must be non-negative.
+        out (npt.NDArray[np.float32 | np.float64] | None): Caller-provided output
+            array to validate, or ``None`` to allocate a fresh one.
+
+    Returns:
+        npt.NDArray[np.float32 | np.float64]: The ``(n_intervals, degree+1,
+        degree+1)`` output array.
+
+    Raises:
+        ValueError: If ``tol`` is negative, the knots/degree fail validation, or
+            ``out`` has the wrong shape, dtype, or is not writeable.
+    """
+    if tol < 0:
+        raise ValueError("tol must be non-negative")
+    _check_spline_info(knots, degree)
+    unique_knots, _ = _get_unique_knots_and_multiplicity_impl(knots, degree, tol, in_domain=True)
+    n_elems = len(unique_knots) - 1
+    return _allocate_or_validate_out(out, (n_elems, degree + 1, degree + 1), knots.dtype)
+
+
 def _tabulate_Bspline_Bezier_1D_extraction_impl(
     knots: npt.NDArray[np.float32 | np.float64],
     degree: int,
@@ -203,21 +238,7 @@ def _tabulate_Bspline_Bezier_1D_extraction_impl(
         ValueError: If the knot vector or degree fails basic validation or if tol is negative.
         ValueError: If `out` is provided and has incorrect shape or dtype.
     """
-    if tol < 0:
-        raise ValueError("tol must be positive")
-
-    _check_spline_info(knots, degree)
-
-    unique_knots, _ = _get_unique_knots_and_multiplicity_impl(knots, degree, tol, in_domain=True)
-
-    n_elems = len(unique_knots) - 1
-    dtype = knots.dtype
-    expected_shape = (n_elems, degree + 1, degree + 1)
-
-    if out is None:
-        out = np.empty(expected_shape, dtype=dtype)
-    else:
-        _validate_out_array(out, expected_shape, dtype)
+    out = _prepare_extraction_out(knots, degree, tol, out)
 
     _tabulate_Bspline_Bezier_1D_extraction_core(knots, degree, tol, out)
 
@@ -257,27 +278,14 @@ def _tabulate_Bspline_Lagrange_1D_extraction_impl(
         ValueError: If the knot vector or degree fails basic validation or if tol is negative.
         ValueError: If `out` is provided and has incorrect shape or dtype.
     """
-    if tol < 0:
-        raise ValueError("tol must be positive")
-
-    _check_spline_info(knots, degree)
-
-    unique_knots, _ = _get_unique_knots_and_multiplicity_impl(knots, degree, tol, in_domain=True)
-    n_elems = len(unique_knots) - 1
-    dtype = knots.dtype
-    expected_shape = (n_elems, degree + 1, degree + 1)
-
-    if out is None:
-        out = np.empty(expected_shape, dtype=dtype)
-    else:
-        _validate_out_array(out, expected_shape, dtype)
+    out = _prepare_extraction_out(knots, degree, tol, out)
 
     # Compute Bezier extraction into out
     _tabulate_Bspline_Bezier_1D_extraction_impl(knots, degree, tol, out=out)
 
     # Transform to Lagrange extraction in-place to avoid extra copy
     # For every interval, right-multiply the Bezier-to-B-spline extraction by lagr_to_bzr in-place.
-    lagr_to_bzr = _cached_lagrange_to_bernstein_matrix(degree, lagrange_variant, dtype)
+    lagr_to_bzr = _cached_lagrange_to_bernstein_matrix(degree, lagrange_variant, knots.dtype)
     for i in range(out.shape[0]):
         # Use out[i, :, :] = out[i, :, :] @ lagr_to_bzr, but perform in-place via np.matmul
         # to avoid extra allocation.
@@ -318,26 +326,13 @@ def _tabulate_Bspline_cardinal_1D_extraction_impl(
         ValueError: If the knot vector or degree fails basic validation or if tol is negative.
         ValueError: If `out` is provided and has incorrect shape or dtype.
     """
-    if tol < 0:
-        raise ValueError("tol must be positive")
-
-    _check_spline_info(knots, degree)
-
-    unique_knots, _ = _get_unique_knots_and_multiplicity_impl(knots, degree, tol, in_domain=True)
-    n_elems = len(unique_knots) - 1
-    dtype = knots.dtype
-    expected_shape = (n_elems, degree + 1, degree + 1)
-
-    if out is None:
-        out = np.empty(expected_shape, dtype=dtype)
-    else:
-        _validate_out_array(out, expected_shape, dtype)
+    out = _prepare_extraction_out(knots, degree, tol, out)
 
     # Compute Bezier extraction into out
     _tabulate_Bspline_Bezier_1D_extraction_impl(knots, degree, tol, out=out)
 
     # Transform to cardinal extraction
-    card_to_bzr = _cached_cardinal_to_bernstein_matrix(degree, dtype)
+    card_to_bzr = _cached_cardinal_to_bernstein_matrix(degree, knots.dtype)
     # Transform to cardinal extraction in-place to avoid unnecessary copy
     # out[...] = out @ card_to_bzr is not strictly in-place (it creates a new array then assigns)
     # To perform an in-place transformation, use np.matmul (or @) with out as the output
@@ -346,7 +341,7 @@ def _tabulate_Bspline_cardinal_1D_extraction_impl(
     # Set identity for cardinal intervals
     cardinal_intervals = _get_Bspline_cardinal_intervals_1D_impl(knots, degree, tol)
     for i in np.where(cardinal_intervals)[0]:
-        out[i, :, :] = np.eye(degree + 1, dtype=dtype)
+        out[i, :, :] = np.eye(degree + 1, dtype=knots.dtype)
 
     return out
 

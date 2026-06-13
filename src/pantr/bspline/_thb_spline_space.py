@@ -1488,6 +1488,19 @@ class THBSplineSpace:
     # Prolongation
     # ------------------------------------------------------------------
 
+    def _dof_level(self, dof: int) -> int:
+        """Return the hierarchy level that owns global active-function ``dof``.
+
+        Args:
+            dof (int): Global active-function index. Caller must ensure
+                ``0 <= dof < num_total_basis``; out-of-range values produce a
+                nonsensical level without raising.
+
+        Returns:
+            int: The level whose dof range (per ``_func_offset``) contains ``dof``.
+        """
+        return int(np.searchsorted(self._func_offset, dof, side="right")) - 1
+
     def _finest_tp_coeffs(
         self,
         dof: int,
@@ -1513,7 +1526,7 @@ class THBSplineSpace:
             level-``target_level`` function box.
         """
         dim = self.dim
-        level = int(np.searchsorted(self._func_offset, dof, side="right")) - 1
+        level = self._dof_level(dof)
         pos = dof - int(self._func_offset[level])
         flat = int(self._active_funcs[level][pos])
         entry = self._trunc.get(dof)
