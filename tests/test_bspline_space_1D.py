@@ -1186,7 +1186,7 @@ class TestCreateBsplineBezierExtractionOperators:
         """Test that negative tolerance raises ValueError."""
         knots = np.array([0.0, 0.0, 0.0, 1.0, 1.0, 1.0], dtype=np.float64)
         degree = 2
-        with pytest.raises(ValueError, match="tol must be positive"):
+        with pytest.raises(ValueError, match="tol must be non-negative"):
             _tabulate_Bspline_Bezier_1D_extraction_impl(knots, degree, -1.0)
 
     def test_public_method(self) -> None:
@@ -1255,7 +1255,7 @@ class TestCreateBsplineLagrangeExtractionOperators:
         """Test that negative tolerance raises ValueError."""
         knots = np.array([0.0, 0.0, 0.0, 1.0, 1.0, 1.0], dtype=np.float64)
         degree = 2
-        with pytest.raises(ValueError, match="tol must be positive"):
+        with pytest.raises(ValueError, match="tol must be non-negative"):
             _tabulate_Bspline_Lagrange_1D_extraction_impl(knots, degree, -1.0)
 
     def test_public_method(self) -> None:
@@ -1427,7 +1427,7 @@ class TestCreateBsplineCardinalExtractionOperators:
         """Test that negative tolerance raises ValueError."""
         knots = np.array([0.0, 0.0, 0.0, 1.0, 1.0, 1.0], dtype=np.float64)
         degree = 2
-        with pytest.raises(ValueError, match="tol must be positive"):
+        with pytest.raises(ValueError, match="tol must be non-negative"):
             _tabulate_Bspline_cardinal_1D_extraction_impl(knots, degree, -1.0)
 
     def test_public_method(self) -> None:

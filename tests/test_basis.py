@@ -884,3 +884,36 @@ class TestOutParameterMultidimensional:
         # Results should match
         nptest.assert_allclose(result1, result2)
         nptest.assert_allclose(out, result1)
+
+
+# ---------------------------------------------------------------------------
+# Generator / single-pass iterable regression tests
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("basis_type", list(BasisType))
+def test_generator_degrees_same_as_list(basis_type: BasisType) -> None:
+    """Generator input for ``degrees`` must produce the same result as a list.
+
+    Regression test for the double-consumption bug: the old inline validation
+    iterated ``degrees`` once (checking types/values) and then the evaluator-
+    construction loop iterated it again, silently yielding an empty tuple on
+    the second pass when ``degrees`` was a generator.  ``_validate_degrees``
+    materialises to a tuple first, so both passes see all elements.
+    """
+    pts = np.array([[0.2, 0.4], [0.6, 0.8]], dtype=np.float64)
+    degrees_list = [2, 3]
+
+    func = _get_basis_function(basis_type)
+    if basis_type == BasisType.LAGRANGE:
+        result_list = func(degrees_list, LagrangeVariant.EQUISPACES, pts)
+        result_gen = func(iter(degrees_list), LagrangeVariant.EQUISPACES, pts)
+    else:
+        result_list = func(degrees_list, pts)
+        result_gen = func(iter(degrees_list), pts)
+
+    assert result_gen.shape == result_list.shape, (
+        f"Generator input produced shape {result_gen.shape}, expected {result_list.shape}. "
+        "Likely the degrees generator was consumed before the evaluator loop."
+    )
+    nptest.assert_allclose(result_gen, result_list, atol=1e-14)

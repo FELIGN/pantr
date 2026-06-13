@@ -1492,7 +1492,9 @@ class THBSplineSpace:
         """Return the hierarchy level that owns global active-function ``dof``.
 
         Args:
-            dof (int): Global active-function index.
+            dof (int): Global active-function index. Caller must ensure
+                ``0 <= dof < num_total_basis``; out-of-range values produce a
+                nonsensical level without raising.
 
         Returns:
             int: The level whose dof range (per ``_func_offset``) contains ``dof``.

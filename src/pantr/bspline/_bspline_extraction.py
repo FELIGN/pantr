@@ -189,7 +189,7 @@ def _prepare_extraction_out(
             ``out`` has the wrong shape, dtype, or is not writeable.
     """
     if tol < 0:
-        raise ValueError("tol must be positive")
+        raise ValueError("tol must be non-negative")
     _check_spline_info(knots, degree)
     unique_knots, _ = _get_unique_knots_and_multiplicity_impl(knots, degree, tol, in_domain=True)
     n_elems = len(unique_knots) - 1
