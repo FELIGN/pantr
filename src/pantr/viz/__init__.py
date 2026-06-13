@@ -1,8 +1,10 @@
 """Optional visualization module for PaNTr using pyvista.
 
-Provides conversion of B-spline and Bézier geometries to pyvista
+Provides conversion of B-spline, Bézier, and THB-spline geometries to pyvista
 ``UnstructuredGrid`` objects with native VTK Bézier cell types, interactive
-visualization, and export to VTK file formats for ParaView.
+visualization, and export to VTK file formats for ParaView. A
+:class:`~pantr.bspline.THBSpline` is decomposed into one VTK Bézier cell per
+active cell of its hierarchical grid.
 
 This module requires ``pyvista`` (optional dependency). Install with::
 
@@ -10,12 +12,15 @@ This module requires ``pyvista`` (optional dependency). Install with::
 
 Main exports:
 
-- :func:`to_pyvista`: Convert a geometry to a pyvista ``UnstructuredGrid``.
+- :func:`to_pyvista`: Convert a B-spline / Bézier / THB-spline to a pyvista
+  ``UnstructuredGrid``.
 - :func:`save`: Export a geometry to a VTK file.
 - :func:`plot`: Quick interactive visualization of one or more geometries.
 - :class:`Scene`: Composable multi-geometry visualization scene.
-- :func:`control_polygon_mesh`: Control polygon (points + wireframe).
-- :func:`knot_lines_meshes`: Knot line meshes for B-splines.
+- :func:`control_polygon_mesh`: Control polygon (points + wireframe); a per-level
+  control net coloured by level for THB-splines.
+- :func:`knot_lines_meshes`: Knot line meshes for B-splines; active-cell
+  boundaries for THB-splines.
 - :func:`grid_to_pyvista`: Convert a :class:`pantr.grid.Grid` to an ``UnstructuredGrid``.
 """
 

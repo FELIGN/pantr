@@ -1,7 +1,13 @@
-"""Convert Bézier and B-spline objects to pyvista UnstructuredGrids.
+"""Convert Bézier, B-spline, and THB-spline objects to pyvista UnstructuredGrids.
 
 Implements the core pipeline:
 ``Bspline/Bezier → open form → Bézier decomposition → VTK Bézier cells``
+
+A :class:`~pantr.bspline.THBSpline` is decomposed analogously via
+:class:`~pantr.bspline.MultiLevelExtraction`: each active cell restricts to a
+single polynomial, so its Bernstein control points are ``C.T @ coeff[active]``
+(``C`` the per-cell multi-level Bézier extraction operator), yielding one VTK
+Bézier cell per active cell.
 
 Uses native VTK higher-order Bézier cell types (``VTK_BEZIER_CURVE``,
 ``VTK_BEZIER_QUADRILATERAL``, ``VTK_BEZIER_HEXAHEDRON``) which render exact
@@ -10,6 +16,7 @@ polynomial geometry without tessellation.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
@@ -25,7 +32,7 @@ if TYPE_CHECKING:
     import pyvista as pv
 
     from ..bezier import Bezier
-    from ..bspline import Bspline
+    from ..bspline import Bspline, THBSpline
 
 # VTK cell type constants for Bézier cells.
 VTK_BEZIER_CURVE = 75
@@ -128,6 +135,25 @@ def _embed_scalar_field(
     return pts_3d
 
 
+def _param_coords_from_axes(
+    grids_1d: Sequence[npt.NDArray[np.floating[Any]]],
+) -> npt.NDArray[np.float64]:
+    """Build flattened C-order parametric coordinates from per-axis node arrays.
+
+    Args:
+        grids_1d: One 1-D node array per parametric direction (any float dtype;
+            upcast to ``float64``).
+
+    Returns:
+        NDArray[float64]: Array of shape ``(n_pts, dim)`` with the tensor-product
+        coordinates flattened in C-order (last axis varies fastest).
+    """
+    mesh = np.meshgrid(*grids_1d, indexing="ij")
+    coords = np.stack(mesh, axis=-1)
+    n_pts = int(np.prod(coords.shape[:-1]))
+    return coords.reshape(n_pts, -1).astype(np.float64)
+
+
 def _build_parametric_greville_coords(
     geom: Bspline | Bezier,
     bezier_index: tuple[int, ...],
@@ -165,11 +191,7 @@ def _build_parametric_greville_coords(
             t1 = float(unique_knots[bezier_index[d] + 1])
             grids_1d.append(np.linspace(t0, t1, degree[d] + 1))
 
-    mesh = np.meshgrid(*grids_1d, indexing="ij")
-    coords = np.stack(mesh, axis=-1)
-    n_pts = int(np.prod(coords.shape[:-1]))
-    result: npt.NDArray[np.float64] = coords.reshape(n_pts, -1).astype(np.float64)
-    return result
+    return _param_coords_from_axes(grids_1d)
 
 
 def _process_patch(  # noqa: PLR0913
@@ -216,16 +238,143 @@ def _process_patch(  # noqa: PLR0913
     )
 
 
+def _thb_bezier_patches(
+    thb: THBSpline,
+) -> tuple[list[tuple[int, npt.NDArray[np.float64]]], tuple[int, ...]]:
+    """Decompose a THB spline into per-active-cell Bernstein control points.
+
+    On each active cell the THB function restricts to a single polynomial, whose
+    Bernstein coefficients are ``C.T @ coeff[active]`` with ``C`` the per-cell
+    multi-level Bézier extraction operator
+    (:meth:`~pantr.bspline.MultiLevelExtraction.operator`).
+
+    Args:
+        thb: Input THB spline.
+
+    Returns:
+        tuple: ``(patches, n_per)`` where *patches* is a list of
+        ``(cid, bern)`` pairs — *cid* the active-cell id and *bern* the cell's
+        Bernstein control points of shape ``(n_single, rank)`` in C-order — and
+        *n_per* is a ``tuple`` of length ``dim`` whose entry ``d`` is
+        ``degree[d] + 1``.
+    """
+    from ..bspline import MultiLevelExtraction  # noqa: PLC0415
+
+    mle = MultiLevelExtraction(thb.space, target="bezier")
+    cp = np.asarray(thb.control_points, dtype=np.float64)
+    coeff = cp.reshape(cp.shape[0], -1)  # (n_dofs, rank)
+    n_per = tuple(d + 1 for d in thb.degree)
+
+    patches: list[tuple[int, npt.NDArray[np.float64]]] = []
+    for cid in range(mle.num_elements):
+        dofs = mle.active_basis(cid)
+        operator = mle.operator(cid)  # (K, n_single)
+        bern = operator.T @ coeff[dofs]  # (n_single, rank)
+        patches.append((cid, bern))
+    return patches, n_per
+
+
+def _thb_patch_coords(  # noqa: PLR0913
+    bern: npt.NDArray[np.float64],
+    n_per: tuple[int, ...],
+    cell_box: tuple[npt.NDArray[np.float64], npt.NDArray[np.float64]],
+    rank: int,
+    dim: int,
+    elevation: bool,
+) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64] | None]:
+    """Embed a THB cell's Bernstein control points into 3D (C-order, no VTK reorder).
+
+    Args:
+        bern: Cell Bernstein control points, shape ``(n_single, rank)``.
+        n_per: A ``tuple`` of length ``dim`` whose entry ``d`` is ``degree[d] + 1``.
+        cell_box: The active cell's parametric ``(lo, hi)`` bounds.
+        rank: Geometric output rank (``1`` for a scalar field).
+        dim: Parametric dimension.
+        elevation: For scalar fields, use the value as a spatial coordinate.
+
+    Returns:
+        tuple: ``(pts_3d, scalars)`` with *pts_3d* of shape ``(n_single, 3)`` in
+        C-order and *scalars* of shape ``(n_single,)`` (``None`` when ``rank > 1``).
+    """
+    if rank == 1:
+        scalar_vals = bern[:, 0].copy()
+        lo, hi = cell_box
+        grids_1d = [np.linspace(float(lo[d]), float(hi[d]), n_per[d]) for d in range(dim)]
+        param_coords = _param_coords_from_axes(grids_1d)
+        pts_3d = _embed_scalar_field(scalar_vals, param_coords, dim, elevation)
+        return pts_3d, scalar_vals
+    return _pad_points_to_3d(bern, rank), None
+
+
+def _thb_to_pyvista(
+    thb: THBSpline,
+    *,
+    scalar_name: str,
+    elevation: bool,
+) -> pv.UnstructuredGrid:
+    """Convert a THB spline to a pyvista UnstructuredGrid (one cell per active cell).
+
+    Args:
+        thb: Input THB spline.
+        scalar_name: Name for the scalar point data array when ``rank == 1``.
+        elevation: For scalar fields with dim ≤ 2, use the scalar value as a
+            spatial coordinate instead of a flat color map.
+
+    Returns:
+        pv.UnstructuredGrid: Grid of VTK Bézier cells, one per active cell.
+
+    Raises:
+        ValueError: If the parametric dimension is not 1, 2, or 3.
+    """
+    pv = _import_pyvista()
+    dim, rank, degree = thb.dim, thb.rank, thb.degree
+
+    if dim not in _VTK_CELL_TYPE_BY_DIM:
+        raise ValueError(f"Unsupported parametric dimension {dim}.")
+
+    cell_type = _VTK_CELL_TYPE_BY_DIM[dim]
+    ordering = vtk_ordering(degree)
+    n_pts_per_cell = len(ordering)
+    effective_elevation = elevation or (rank == 1 and dim == 1)
+
+    grid = thb.space.grid
+    patches, n_per = _thb_bezier_patches(thb)
+    patch_data: list[_PatchGeometry] = []
+    for cid, bern in patches:
+        pts_3d, scalars = _thb_patch_coords(
+            bern, n_per, grid.cell_bounds(cid), rank, dim, effective_elevation
+        )
+        patch_data.append(
+            _PatchGeometry(
+                points_3d=pts_3d[ordering],
+                weights=None,
+                scalars=scalars[ordering] if scalars is not None else None,
+            )
+        )
+
+    return _assemble_grid(
+        pv,
+        patch_data,
+        cell_type,
+        n_pts_per_cell,
+        is_rational=False,
+        rank=rank,
+        scalar_name=scalar_name,
+    )
+
+
 def to_pyvista(
-    geom: Bspline | Bezier,
+    geom: Bspline | Bezier | THBSpline,
     *,
     scalar_name: str = "scalar",
     elevation: bool = False,
 ) -> pv.UnstructuredGrid:
-    """Convert a B-spline or Bézier geometry to a pyvista UnstructuredGrid.
+    """Convert a B-spline, Bézier, or THB-spline geometry to a pyvista UnstructuredGrid.
 
     Uses native VTK Bézier cell types for exact polynomial rendering.
-    Periodic/unclamped B-splines are automatically converted to open form.
+    Periodic/unclamped B-splines are automatically converted to open form. A
+    :class:`~pantr.bspline.THBSpline` is decomposed into one VTK Bézier cell per
+    active cell of its hierarchical grid.
 
     For scalar fields (``rank == 1``):
 
@@ -235,7 +384,7 @@ def to_pyvista(
     - **dim=3**: color map on ``(u, v, w)``.
 
     Args:
-        geom: Input B-spline or Bézier geometry.
+        geom: Input B-spline, Bézier, or THB-spline geometry.
         scalar_name: Name for the scalar point data array when ``rank == 1``.
         elevation: For scalar fields with dim ≤ 2, use the scalar value as
             a spatial coordinate instead of a flat color map.  Ignored when
@@ -246,9 +395,14 @@ def to_pyvista(
 
     Raises:
         ImportError: If pyvista is not installed.
-        TypeError: If *geom* is not a ``Bspline`` or ``Bezier``.
+        TypeError: If *geom* is not a ``Bspline``, ``Bezier``, or ``THBSpline``.
         ValueError: If the parametric dimension is not 1, 2, or 3.
     """
+    from ..bspline import THBSpline as THBSplineCls  # noqa: PLC0415
+
+    if isinstance(geom, THBSplineCls):
+        return _thb_to_pyvista(geom, scalar_name=scalar_name, elevation=elevation)
+
     pv = _import_pyvista()
 
     patches, is_rational = _get_bezier_patches(geom)
@@ -345,13 +499,13 @@ def _assemble_grid(  # noqa: PLR0913
 
 
 def save(
-    geom: Bspline | Bezier,
+    geom: Bspline | Bezier | THBSpline,
     filename: str | Path,
     *,
     scalar_name: str = "scalar",
     elevation: bool = False,
 ) -> None:
-    """Export a B-spline or Bézier geometry to a VTK file.
+    """Export a B-spline, Bézier, or THB-spline geometry to a VTK file.
 
     Converts the geometry to VTK Bézier cells and saves using pyvista.
     The file format is inferred from the extension (``.vtu`` recommended,
@@ -360,7 +514,7 @@ def save(
     ParaView ≥ 5.10 renders VTK Bézier cells natively with exact geometry.
 
     Args:
-        geom: Input B-spline or Bézier geometry.
+        geom: Input B-spline, Bézier, or THB-spline geometry.
         filename: Output file path. Extension determines format.
         scalar_name: Name for scalar point data when ``rank == 1``.
         elevation: For scalar fields with dim ≤ 2, use scalar as
@@ -368,6 +522,8 @@ def save(
 
     Raises:
         ImportError: If pyvista is not installed.
+        TypeError: If *geom* is not a ``Bspline``, ``Bezier``, or ``THBSpline``.
+        ValueError: If the parametric dimension is not 1, 2, or 3.
     """
     grid = to_pyvista(geom, scalar_name=scalar_name, elevation=elevation)
     grid.save(str(filename))

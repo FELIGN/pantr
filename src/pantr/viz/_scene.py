@@ -22,7 +22,7 @@ if TYPE_CHECKING:
     import pyvista as pv
 
     from ..bezier import Bezier
-    from ..bspline import Bspline
+    from ..bspline import Bspline, THBSpline
 
 
 _DEFAULT_CP_COLOR = "red"
@@ -34,7 +34,7 @@ _DEFAULT_TESSELLATION_LEVEL = 4
 _DEFAULT_LINE_WIDTH = 2.0
 
 
-def _effective_tessellation(geom: Bspline | Bezier, requested: int) -> int:
+def _effective_tessellation(geom: Bspline | Bezier | THBSpline, requested: int) -> int:
     """Return the tessellation level to use for *geom*.
 
     Degree-1 (linear) geometries are already exact — no subdivision is
@@ -42,7 +42,7 @@ def _effective_tessellation(geom: Bspline | Bezier, requested: int) -> int:
     For all other geometries the caller-supplied *requested* level is used.
 
     Args:
-        geom: B-spline or Bézier geometry.
+        geom: B-spline, Bézier, or THB-spline geometry.
         requested: Tessellation level requested by the caller.
 
     Returns:
@@ -58,12 +58,13 @@ class _GeometryEntry:
     """Internal record of a geometry added to a Scene.
 
     Attributes:
-        geom (Bspline | Bezier): The geometry to visualize.
+        geom (Bspline | Bezier | THBSpline): The geometry to visualize.
         color (str | None): Surface color. ``None`` uses the default colormap
             for scalar fields or pyvista's default for geometric objects.
         opacity (float): Surface opacity (0.0 to 1.0).
         show_control_polygon (bool): Render control polygon (points + wireframe).
-        show_knot_lines (bool): Render knot lines (B-splines only).
+            For a THB spline this is the per-level control net, coloured by level.
+        show_knot_lines (bool): Render knot lines (B-splines and THB-splines).
         control_point_color (str): Color for control points and polygon wireframe.
         control_point_size (float): Point size for control points.
         control_polygon_color (str): Color for control polygon wireframe.
@@ -80,7 +81,7 @@ class _GeometryEntry:
             (dim=1). Defaults to ``2.0``.
     """
 
-    geom: Bspline | Bezier
+    geom: Bspline | Bezier | THBSpline
     _: KW_ONLY
     color: str | None = None
     opacity: float = 1.0
@@ -117,7 +118,7 @@ class Scene:
 
     def add(  # noqa: PLR0913
         self,
-        geom: Bspline | Bezier,
+        geom: Bspline | Bezier | THBSpline,
         *,
         color: str | None = None,
         opacity: float = 1.0,
@@ -137,12 +138,13 @@ class Scene:
         """Add a geometry to the scene.
 
         Args:
-            geom: B-spline or Bézier geometry to add.
+            geom: B-spline, Bézier, or THB-spline geometry to add.
             color: Surface color. ``None`` uses the default colormap for
                 scalar fields or pyvista's default for geometric objects.
             opacity: Surface opacity (0.0 to 1.0).
             show_control_polygon: Render control polygon (points and wireframe).
-            show_knot_lines: Render knot lines (B-splines only).
+                For a THB spline this is the per-level control net coloured by level.
+            show_knot_lines: Render knot lines (B-splines and THB-splines).
             control_point_color: Color for control points and polygon wireframe.
             control_point_size: Point size for control points.
             control_polygon_color: Color for control polygon wireframe.
@@ -229,6 +231,7 @@ def _add_entry_to_plotter(plotter: pv.Plotter, entry: _GeometryEntry) -> None:
         entry: Geometry entry with rendering options.
     """
     from ..bspline import Bspline as BsplineCls  # noqa: PLC0415
+    from ..bspline import THBSpline as THBSplineCls  # noqa: PLC0415
 
     grid = to_pyvista(
         entry.geom,
@@ -253,20 +256,26 @@ def _add_entry_to_plotter(plotter: pv.Plotter, entry: _GeometryEntry) -> None:
 
     plotter.add_mesh(render_mesh, **mesh_kwargs)
 
-    # Control polygon (points + wireframe)
+    # Control polygon (points + wireframe). For a THB spline the mesh carries a
+    # per-point "level" array; colour by it instead of a single fixed colour.
     if entry.show_control_polygon:
         poly_mesh = control_polygon_mesh(entry.geom)
-        plotter.add_mesh(
-            poly_mesh,
-            color=entry.control_point_color,
-            point_size=entry.control_point_size,
-            render_points_as_spheres=True,
-            line_width=entry.knot_line_width,
-        )
+        cp_kwargs: dict[str, Any] = {
+            "point_size": entry.control_point_size,
+            "render_points_as_spheres": True,
+            "line_width": entry.knot_line_width,
+        }
+        if "level" in poly_mesh.point_data:
+            cp_kwargs["scalars"] = "level"
+            cp_kwargs["cmap"] = "tab10"
+            cp_kwargs["show_scalar_bar"] = False
+        else:
+            cp_kwargs["color"] = entry.control_point_color
+        plotter.add_mesh(poly_mesh, **cp_kwargs)
 
-    # Knot lines
-    if entry.show_knot_lines and isinstance(entry.geom, BsplineCls):
-        for kl_mesh in knot_lines_meshes(entry.geom):
+    # Knot lines (B-splines and THB-splines)
+    if entry.show_knot_lines and isinstance(entry.geom, BsplineCls | THBSplineCls):
+        for kl_mesh in knot_lines_meshes(entry.geom, elevation=entry.elevation):
             plotter.add_mesh(
                 kl_mesh,
                 color=entry.knot_line_color,
@@ -277,7 +286,7 @@ def _add_entry_to_plotter(plotter: pv.Plotter, entry: _GeometryEntry) -> None:
 
 
 def plot(  # noqa: PLR0913
-    *geoms: Bspline | Bezier,
+    *geoms: Bspline | Bezier | THBSpline,
     color: str | None = None,
     opacity: float = 1.0,
     show_control_polygon: bool = False,
@@ -298,11 +307,12 @@ def plot(  # noqa: PLR0913
     :class:`Scene` directly.
 
     Args:
-        *geoms: One or more B-spline or Bézier geometries.
+        *geoms: One or more B-spline, Bézier, or THB-spline geometries.
         color: Surface color for all geometries.
         opacity: Surface opacity for all geometries.
         show_control_polygon: Render control polygon (points and wireframe).
-        show_knot_lines: Render knot lines (B-splines only).
+            For a THB spline this is the per-level control net coloured by level.
+        show_knot_lines: Render knot lines (B-splines and THB-splines).
         scalar_name: Name for scalar point data.
         scalar_bar: Show scalar bar for scalar fields.
         elevation: Use scalar as elevation coordinate.
