@@ -24,7 +24,6 @@ from pantr.viz import (  # noqa: E402
     Scene,
     control_polygon_mesh,
     knot_lines_meshes,
-    plot,
     save,
     to_pyvista,
 )
@@ -307,10 +306,15 @@ class TestTHBScene:
         plotter = Scene().add(thb, show_knot_lines=True, show_control_polygon=True).to_plotter()
         assert len(plotter.actors) >= 3
 
-    def test_plot_convenience(self) -> None:
-        assert plot(_scalar_thb(_graded_space(2)), elevation=True) is not None
+    def test_scalar_field_via_scene(self) -> None:
+        """A scalar THB renders as an elevated field actor."""
+        plotter = Scene().add(_scalar_thb(_graded_space(2)), elevation=True).to_plotter()
+        assert len(plotter.actors) >= 1
 
     def test_linear_thb_skips_tessellation(self) -> None:
         """A degree-1 THB exercises the linear-geometry tessellation bypass."""
         space = _graded_space(2, degree=1)
-        assert plot(_scalar_thb(space), show_knot_lines=True, elevation=True) is not None
+        plotter = (
+            Scene().add(_scalar_thb(space), show_knot_lines=True, elevation=True).to_plotter()
+        )
+        assert len(plotter.actors) >= 2
