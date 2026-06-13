@@ -17,7 +17,7 @@ from typing import TYPE_CHECKING, Any, cast
 import numpy as np
 from numpy import typing as npt
 
-from ._common import _MAX_PHYSICAL_DIM, _pad_points_to_3d
+from ._common import _MAX_PHYSICAL_DIM, _pad_points_to_3d, _project_homogeneous
 from ._lazy_import import _import_pyvista
 from ._vtk_ordering import vtk_ordering
 
@@ -96,13 +96,7 @@ def _flatten_and_project(
         and *weights* is ``(n_pts,)`` or ``None``.
     """
     n_pts = int(np.prod(cp.shape[:-1]))
-    flat_cp = cp.reshape(n_pts, -1).astype(np.float64)
-
-    if is_rational:
-        weights = flat_cp[:, -1].copy()
-        coords = flat_cp[:, :-1] / weights[:, np.newaxis]
-        return coords, weights
-    return flat_cp, None
+    return _project_homogeneous(cp.reshape(n_pts, -1), is_rational)
 
 
 def _embed_scalar_field(
