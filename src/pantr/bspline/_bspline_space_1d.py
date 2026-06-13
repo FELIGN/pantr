@@ -9,7 +9,6 @@ geometric properties (domain, intervals, cardinality).
 from __future__ import annotations
 
 import functools
-from typing import TYPE_CHECKING
 
 import numpy as np
 from numpy import typing as npt
@@ -34,9 +33,6 @@ from ._bspline_knots import (
     _get_Bspline_num_basis_1D_impl,
     _get_unique_knots_and_multiplicity_impl,
 )
-
-if TYPE_CHECKING:
-    pass
 
 
 @functools.lru_cache(maxsize=128)
@@ -306,8 +302,8 @@ class BsplineSpace1D:
             int: Number of intervals.
 
         Example:
-            >>> bspline = BsplineSpace1D([0, 0, 0, 1, 2, 2, 2], 2)
-            >>> bspline.get_num_intervals
+            >>> space = BsplineSpace1D([0, 0, 0, 1, 2, 2, 2], 2)
+            >>> space.num_intervals
             2
         """
         unique_knots, _ = self.get_unique_knots_and_multiplicity(in_domain=True)

@@ -536,7 +536,7 @@ class Bezier:
 
         from .._control_points_utils import _permute_control_points  # noqa: PLC0415
 
-        new_cp = _permute_control_points(self._control_points, perm, self.dim, in_place=in_place)
+        new_cp = _permute_control_points(self._control_points, perm, self.dim)
 
         if in_place:
             self._control_points = new_cp

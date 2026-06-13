@@ -890,7 +890,7 @@ class Bspline:
         if sorted(perm) != list(range(self.dim)):
             raise ValueError(f"permutation must be a permutation of range({self.dim}), got {perm}.")
 
-        new_cp = _permute_control_points(self._control_points, perm, self.dim, in_place=in_place)
+        new_cp = _permute_control_points(self._control_points, perm, self.dim)
 
         # Reorder 1D spaces.
         old_spaces = self._space.spaces

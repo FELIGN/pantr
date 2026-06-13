@@ -274,7 +274,7 @@ def _find_roots_batch_impl(
     *,
     tol: float | None = None,
 ) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.intp]]:
-    """L2 implementation for :func:`pantr.bezier.find_roots_batch`."""
+    """L2 implementation for :func:`pantr.bezier.find_roots`."""
     from pantr.bezier._batch_core import (  # noqa: PLC0415
         _find_roots_batch_core,
     )
@@ -319,7 +319,7 @@ def _solve_monotone_root_batch_impl(
     *,
     tol: float | None = None,
 ) -> npt.NDArray[np.float64]:
-    """L2 implementation for :func:`pantr.bezier.solve_monotone_root_batch`."""
+    """L2 implementation for :func:`pantr.bezier.find_monotone_root`."""
     from pantr.bezier._batch_core import (  # noqa: PLC0415
         _solve_monotone_root_batch_core,
     )

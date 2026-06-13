@@ -43,30 +43,21 @@ def _permute_control_points(
     ctrl: npt.NDArray[np.float32 | np.float64],
     permutation: Sequence[int],
     dim: int,
-    *,
-    in_place: bool,
 ) -> npt.NDArray[np.float32 | np.float64]:
     """Reorder control-point axes according to a permutation.
+
+    Transposing changes the array shape, so a new contiguous array is always
+    returned; callers performing an in-place permutation assign the result
+    back to their own buffer.
 
     Args:
         ctrl (npt.NDArray[np.float32 | np.float64]): Control point array with
             shape ``(*num_basis, rank)``.
         permutation (Sequence[int]): A permutation of ``range(dim)``.
         dim (int): Number of parametric dimensions (rank axis is ``dim``).
-        in_place (bool): If ``True``, store the result back into ``ctrl``
-            (requires a contiguous temporary). If ``False``, return a new
-            contiguous array.
 
     Returns:
         npt.NDArray[np.float32 | np.float64]: The permuted control points
         (contiguous).
     """
-    axes = [*permutation, dim]
-    new_cp = np.ascontiguousarray(np.transpose(ctrl, axes))
-
-    if in_place:
-        # The shape changes, so we cannot write back into the same buffer.
-        # Replace the reference instead (caller must assign back).
-        return new_cp
-
-    return new_cp
+    return np.ascontiguousarray(np.transpose(ctrl, [*permutation, dim]))

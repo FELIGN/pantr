@@ -181,8 +181,8 @@ class TensorProductGrid(Grid):
         """Get whether every axis has uniform breakpoint spacing.
 
         Returns:
-            bool: ``True`` iff each axis's spacing is constant to within a
-            relative tolerance (``_UNIFORM_SPACING_RTOL``).
+            bool: ``True`` iff each axis's spacing is constant to within an
+            absolute tolerance (``_UNIFORM_SPACING_ATOL``).
         """
         return self._is_uniform
 
