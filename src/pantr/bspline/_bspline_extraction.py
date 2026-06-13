@@ -283,13 +283,11 @@ def _tabulate_Bspline_Lagrange_1D_extraction_impl(
     # Compute Bezier extraction into out
     _tabulate_Bspline_Bezier_1D_extraction_impl(knots, degree, tol, out=out)
 
-    # Transform to Lagrange extraction in-place to avoid extra copy
-    # For every interval, right-multiply the Bezier-to-B-spline extraction by lagr_to_bzr in-place.
+    # Transform Bezier -> Lagrange extraction in-place: out[i] = out[i] @ lagr_to_bzr
+    # for every interval, as a single batched matmul (np.matmul broadcasts the
+    # (p+1, p+1) matrix over the leading interval axis), mirroring the cardinal path.
     lagr_to_bzr = _cached_lagrange_to_bernstein_matrix(degree, lagrange_variant, knots.dtype)
-    for i in range(out.shape[0]):
-        # Use out[i, :, :] = out[i, :, :] @ lagr_to_bzr, but perform in-place via np.matmul
-        # to avoid extra allocation.
-        np.matmul(out[i, :, :], lagr_to_bzr, out=out[i, :, :])
+    np.matmul(out, lagr_to_bzr, out=out)
 
     return out
 
