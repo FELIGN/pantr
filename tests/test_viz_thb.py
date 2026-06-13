@@ -314,7 +314,5 @@ class TestTHBScene:
     def test_linear_thb_skips_tessellation(self) -> None:
         """A degree-1 THB exercises the linear-geometry tessellation bypass."""
         space = _graded_space(2, degree=1)
-        plotter = (
-            Scene().add(_scalar_thb(space), show_knot_lines=True, elevation=True).to_plotter()
-        )
+        plotter = Scene().add(_scalar_thb(space), show_knot_lines=True, elevation=True).to_plotter()
         assert len(plotter.actors) >= 2
