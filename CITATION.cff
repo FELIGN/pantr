@@ -1,0 +1,22 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite it using these metadata."
+title: "PaNTr: Polynomial and NURBS Toolkit"
+type: software
+authors:
+  - family-names: Antolin
+    given-names: Pablo
+    email: pablo.antolin@epfl.ch
+    affiliation: "École Polytechnique Fédérale de Lausanne (EPFL)"
+version: 0.6.0
+date-released: "2026-06-13"
+license: MIT
+repository-code: "https://github.com/pantolin/pantr"
+url: "https://github.com/pantolin/pantr"
+keywords:
+  - nurbs
+  - b-spline
+  - bezier
+  - isogeometric-analysis
+  - cad
+  - geometric-modeling
+  - scientific-computing

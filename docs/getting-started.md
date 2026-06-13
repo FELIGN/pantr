@@ -17,15 +17,29 @@ pre-commit install
 
 ## Quick Example
 
-```python
-from __future__ import annotations
+Build a quadratic B-spline curve and evaluate it:
 
+```python
 import numpy as np
 
-import pantr
+from pantr.bspline import Bspline, BsplineSpace, BsplineSpace1D
 
-print(pantr.__version__)
+# Quadratic univariate space on the knot vector [0, 0, 0, 1, 2, 3, 3, 3]
+space = BsplineSpace([BsplineSpace1D([0, 0, 0, 1, 2, 3, 3, 3], 2)])
+
+# Five 2-D control points
+control_points = np.array(
+    [[0.0, 0.0], [1.0, 2.0], [2.0, -1.0], [3.0, 1.0], [4.0, 0.0]]
+)
+curve = Bspline(space, control_points)
+
+# Evaluate at 50 parameters spanning the domain [0, 3]
+u = np.linspace(0.0, 3.0, 50)
+points = curve.evaluate(u)  # shape (50, 2)
 ```
+
+To render geometries interactively or export them to VTK, see
+[Visualization](visualization.md) (requires the `viz` extra).
 
 ## Building the Documentation
 

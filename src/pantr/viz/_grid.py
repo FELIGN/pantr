@@ -59,7 +59,7 @@ def grid_to_pyvista(grid: Grid) -> pv.UnstructuredGrid:
 
     Returns:
         pyvista.UnstructuredGrid: A grid of lines (1-D), quads (2-D), or
-        hexahedra (3-D), one cell per grid cell, in :meth:`Grid.iter_cells`
+        hexahedra (3-D), one cell per grid cell, in :meth:`~pantr.grid.Grid.iter_cells`
         order. Points are padded to 3-D (``z = 0``, and ``y = 0`` in 1-D).
 
     Raises:
