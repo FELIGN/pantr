@@ -60,7 +60,7 @@ def _dispatch_and_find(
 
     Note:
         Inputs are assumed to be correct (no validation performed).
-        For general use, call :func:`pantr.bezier.find_roots_batch`
+        For general use, call :func:`pantr.bezier.find_roots`
         instead.
     """
     n = len(coeff) - 1
@@ -128,7 +128,7 @@ def _find_roots_batch_core(
 
     Note:
         Inputs are assumed to be correct (no validation performed).
-        For general use, call :func:`pantr.bezier.find_roots_batch`
+        For general use, call :func:`pantr.bezier.find_roots`
         instead.
     """
     n_polys = coeffs.shape[0]
@@ -166,7 +166,7 @@ def _solve_monotone_root_batch_core(
     Note:
         Inputs are assumed to be correct (no validation performed).
         For general use, call
-        :func:`pantr.bezier.solve_monotone_root_batch` instead.
+        :func:`pantr.bezier.find_monotone_root` instead.
     """
     n_polys = coeffs.shape[0]
     for i in nb_prange(n_polys):
