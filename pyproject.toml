@@ -64,7 +64,8 @@ docs = [
   # Sphinx-Gallery executes the `demos/` scripts and embeds their output; pyvista
   # renders the 3-D scenes off-screen and the trame stack (+ nest_asyncio2)
   # exports them as interactive vtk.js widgets. The headless CI / RTD builders
-  # swap vtk for vtk-osmesa (see `.readthedocs.yaml` / the CI docs job).
+  # render under Xvfb + Mesa software GL (apt packages; see `.readthedocs.yaml`
+  # and the CI docs job).
   "sphinx-gallery>=0.15,<1",
   "sphinx-design>=0.5,<1",
   "pantr[viz]",
