@@ -4,7 +4,7 @@ Approximation: interpolation, fitting, projection, quasi-interpolation
 
 :mod:`pantr.bspline` offers several ways to approximate a function with a spline:
 :func:`~pantr.bspline.interpolate_bspline` (match the function at the Greville
-points), :func:`~pantr.bspline.l2_project_bspline` (best :math:`L^2` fit), and
+points by default), :func:`~pantr.bspline.l2_project_bspline` (best :math:`L^2` fit), and
 :func:`~pantr.bspline.quasi_interpolate_bspline` (a cheap local projector). This
 demo compares them and shows :math:`L^2` convergence under refinement.
 

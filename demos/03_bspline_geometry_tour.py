@@ -65,7 +65,8 @@ viz.plot(surface, color="lightsteelblue", show_knot_lines=True, show_control_pol
 # An exact circle (NURBS)
 # -----------------------
 # A circle is not a polynomial, but it *is* a rational quadratic. The control
-# polygon is the classic triangle/square fan; the curve is exact to round-off.
+# points alternate between the circle and the corners of the circumscribed
+# square; the curve is exact to round-off.
 circle = create_circle(radius=1.0)
 print("circle is rational:", circle.is_rational)
 viz.plot(circle, color="crimson", show_control_polygon=True)

@@ -50,7 +50,7 @@ print(f"{len(hit_cells)} cells overlap {window.lo}-{window.hi}")
 # index just to show the per-cell data channel.
 ug = viz.grid_to_pyvista(grid)
 ug.cell_data["cell_id"] = np.arange(grid.num_cells)
-ug.plot(scalars="cell_id", show_edges=True, cpos="xy", off_screen=True)
+ug.plot(scalars="cell_id", show_edges=True, cpos="xy")
 
 # %%
 # A hierarchical grid
@@ -59,4 +59,4 @@ ug.plot(scalars="cell_id", show_edges=True, cpos="xy", off_screen=True)
 # the multi-level structure directly.
 hgrid = hierarchical_grid(uniform_grid([[0.0, 1.0], [0.0, 1.0]], 4), 2)
 hgrid.refine(0, [0, 0], [2, 2])
-viz.grid_to_pyvista(hgrid).plot(show_edges=True, cpos="xy", off_screen=True)
+viz.grid_to_pyvista(hgrid).plot(show_edges=True, cpos="xy")

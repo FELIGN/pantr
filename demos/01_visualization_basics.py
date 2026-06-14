@@ -19,7 +19,7 @@ Requires the ``viz`` extra: ``pip install "pantr[viz]"``.
 import numpy as np
 
 from pantr import viz
-from pantr.bspline import Bspline, BsplineSpace, BsplineSpace1D
+from pantr.bspline import Bspline, BsplineSpace, BsplineSpace1D, get_greville_abscissae
 from pantr.cad import create_circle, create_disk
 
 # %%
@@ -45,7 +45,7 @@ viz.plot(disk, color="lightsteelblue", show_knot_lines=True)
 # colour map; ``elevation=True`` lifts the value into the third coordinate. Here we
 # build a biquadratic field whose coefficients sample ``sin(pi u) sin(pi v)``.
 space = BsplineSpace([BsplineSpace1D([0, 0, 0, 0.5, 1, 1, 1], 2) for _ in range(2)])
-greville = np.linspace(0.0, 1.0, space.num_basis[0])
+greville = get_greville_abscissae(space.spaces[0])
 gu, gv = np.meshgrid(greville, greville, indexing="ij")
 coeffs = (np.sin(np.pi * gu) * np.sin(np.pi * gv))[..., np.newaxis]
 field = Bspline(space, coeffs)

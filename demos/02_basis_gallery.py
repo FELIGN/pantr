@@ -68,6 +68,7 @@ plt.show()
 # %%
 # Partition of unity
 # ------------------
-# The Bernstein and (B-spline-like) bases sum to one at every point -- the
-# property that makes the convex-hull bound of a control polygon hold.
+# The Bernstein basis is non-negative and sums to one at every point -- the
+# property behind the convex-hull bound of a control polygon. (Lagrange bases also
+# sum to one but may be negative; Legendre polynomials do not sum to one.)
 print("max |sum of Bernstein - 1| =", float(np.abs(bases["Bernstein"].sum(axis=1) - 1.0).max()))

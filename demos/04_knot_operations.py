@@ -45,7 +45,7 @@ plt.show()
 # -------------------------------------------
 elevated = curve.elevate_degree(1)  # quadratic -> cubic
 err = np.max(np.abs(np.asarray(curve.evaluate(u)) - np.asarray(elevated.evaluate(u))))
-print(f"degree {curve.degree} -> {elevated.degree}, max |curve - elevated| = {err:.2e}")
+print(f"degree {curve.degree[0]} -> {elevated.degree[0]}, max |curve - elevated| = {err:.2e}")
 
 # %%
 # Bézier extraction
