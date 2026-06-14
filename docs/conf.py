@@ -7,7 +7,6 @@ from __future__ import annotations
 
 import importlib.util
 import os
-import shutil
 import sys
 import warnings
 from datetime import date
@@ -111,16 +110,14 @@ autodoc_member_order = "bysource"
 autodoc_mock_imports = ["mpi4py", "pymetis"]
 
 # --- Sphinx-Gallery + PyVista (interactive demo gallery) --------------------
-# Execute the standalone scripts in ``demos/`` and embed their output. On the
-# headless CI / Read-the-Docs builders PyVista renders into a virtual X display
-# (Xvfb) backed by Mesa software GL (the builders ``apt install`` xvfb + libgl —
-# see ``.readthedocs.yaml`` and the CI docs job); ``start_xvfb`` is a no-op where
-# Xvfb is absent (e.g. a local macOS build, which renders off-screen directly).
-# ``BUILDING_GALLERY`` makes each ``plotter.show()`` export both a screenshot
-# (thumbnail) and a self-contained ``.vtksz`` scene; ``DynamicScraper`` embeds
-# the latter as an interactive vtk.js widget (no server needed at view time).
-if sys.platform.startswith("linux") and shutil.which("Xvfb"):
-    pyvista.start_xvfb()
+# Execute the standalone scripts in ``demos/`` and embed their output. PyVista
+# renders off-screen; on the headless CI / Read-the-Docs builders the regular vtk
+# wheel is swapped for the matching OSMesa software-GL build (no GPU/X server),
+# which loads the system libOSMesa (apt: libgl1 + libosmesa6) -- see
+# ``.readthedocs.yaml`` and the CI docs job. ``BUILDING_GALLERY`` makes each
+# ``plotter.show()`` export both a screenshot (thumbnail) and a self-contained
+# ``.vtksz`` scene; ``DynamicScraper`` embeds the latter as an interactive vtk.js
+# widget (no server needed at view time).
 pyvista.OFF_SCREEN = True
 pyvista.BUILDING_GALLERY = True
 
