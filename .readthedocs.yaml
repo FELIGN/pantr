@@ -8,12 +8,12 @@ build:
     python: "3.12"
   jobs:
     # The Sphinx-Gallery build renders the demos with PyVista on a headless
-    # builder. Swap the regular vtk wheel (pulled in via pyvista) for the
-    # OSMesa software-rendering build so off-screen rendering works without a
-    # GPU or X server.
+    # builder. Replace the regular vtk wheel (pulled in via pyvista) with the
+    # matching OSMesa software-rendering build so off-screen rendering works
+    # without a GPU or X server. vtk-osmesa is published on Kitware's wheel
+    # index (not PyPI); pin it to the exact vtk version pyvista resolved.
     post_install:
-      - pip uninstall --yes vtk
-      - pip install "vtk-osmesa>=9.3,<9.5"
+      - VER=$(pip show vtk | sed -n 's/^Version: //p') && pip uninstall --yes vtk && pip install --extra-index-url https://wheels.vtk.org "vtk-osmesa==$VER"
 
 sphinx:
   configuration: docs/conf.py

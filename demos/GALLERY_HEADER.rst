@@ -36,6 +36,7 @@ The examples, in order:
 - **08 — THB adaptive refinement**: local refinement with the hierarchical mesh
   and per-level control net (:mod:`pantr.bspline`, :mod:`pantr.grid`).
 - **09 — Grids and quadrature**: grids, ``cell_quadrature`` integration, a BVH
-  query, grid rendering (:mod:`pantr.grid`, :mod:`pantr.quad`).
+  query, grid rendering (:mod:`pantr.grid`, :mod:`pantr.quad`,
+  :mod:`pantr.geometry`).
 - **10 — Transforms**: affine translation / rotation / scaling / shear and
   composition (:mod:`pantr.transform`).
