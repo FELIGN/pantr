@@ -5,7 +5,6 @@ Initializes metadata, extensions, and build parameters.
 
 from __future__ import annotations
 
-import atexit
 import importlib.util
 import os
 import shutil
@@ -122,12 +121,15 @@ autodoc_mock_imports = ["mpi4py", "pymetis"]
 # in the CI workflow -- means no GitHub Actions change is required. Skipped where
 # Xvfb is absent (e.g. a local macOS build, which renders off-screen directly).
 if sys.platform.startswith("linux") and shutil.which("Xvfb") and not os.environ.get("DISPLAY"):
-    _xvfb_proc = subprocess.Popen(
+    # Intentionally leave Xvfb running: terminating it at interpreter exit races
+    # VTK's own teardown and triggers a fatal XIO error (a non-zero exit even
+    # though the build succeeded). The CI / RTD runner reaps it as an orphan when
+    # the job ends.
+    subprocess.Popen(
         ["Xvfb", ":99", "-screen", "0", "1920x1080x24", "-nolisten", "tcp"],
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
     )
-    atexit.register(_xvfb_proc.terminate)
     os.environ["DISPLAY"] = ":99"
     _socket = "/tmp/.X11-unix/X99"
     for _ in range(100):  # wait for the X server socket to appear
