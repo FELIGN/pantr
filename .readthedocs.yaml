@@ -6,6 +6,10 @@ build:
   os: ubuntu-24.04
   tools:
     python: "3.12"
+  # vtk-osmesa renders through the system OSMesa software-GL library.
+  apt_packages:
+    - libgl1
+    - libosmesa6
   jobs:
     # The Sphinx-Gallery build renders the demos with PyVista on a headless
     # builder. Replace the regular vtk wheel (pulled in via pyvista) with the
