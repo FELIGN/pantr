@@ -7,17 +7,13 @@ build:
   tools:
     python: "3.12"
   # The Sphinx-Gallery build renders the demos with PyVista on a headless
-  # builder. Use the OSMesa software-GL build of vtk (no GPU/X server); it loads
-  # the system libOSMesa provided by libosmesa6.
+  # builder. docs/conf.py starts a virtual X display (Xvfb); VTK renders through
+  # Mesa's software GL driver. Install both (the regular vtk wheel is kept).
   apt_packages:
+    - xvfb
     - libgl1
-    - libosmesa6
-  jobs:
-    # Replace the regular vtk wheel (pulled in via pyvista) with the matching
-    # OSMesa build from Kitware's wheel index (vtk-osmesa is not on PyPI). Guard
-    # makes it idempotent: skip when a cached env already has vtk-osmesa.
-    post_install:
-      - if pip show vtk >/dev/null 2>&1; then VER=$(pip show vtk | sed -n 's/^Version: //p'); pip uninstall --yes vtk; pip install --extra-index-url https://wheels.vtk.org "vtk-osmesa==$VER"; fi
+    - libglx-mesa0
+    - libgl1-mesa-dri
 
 sphinx:
   configuration: docs/conf.py

@@ -63,9 +63,9 @@ docs = [
   "linkify-it-py>=2.0,<3",
   # Sphinx-Gallery executes the `demos/` scripts and embeds their output; pyvista
   # renders the 3-D scenes off-screen and the trame stack (+ nest_asyncio2)
-  # exports them as interactive vtk.js widgets. The headless CI / RTD builders
-  # render with the OSMesa build of vtk (see `.readthedocs.yaml` / the CI docs
-  # job for the vtk-osmesa swap + libosmesa6).
+  # exports them as interactive vtk.js widgets. On headless builders docs/conf.py
+  # starts Xvfb and VTK renders via Mesa software GL (RTD installs them through
+  # `.readthedocs.yaml`; GitHub's ubuntu-latest ships them).
   "sphinx-gallery>=0.15,<1",
   "sphinx-design>=0.5,<1",
   "pantr[viz]",

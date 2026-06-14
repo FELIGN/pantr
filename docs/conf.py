@@ -5,9 +5,13 @@ Initializes metadata, extensions, and build parameters.
 
 from __future__ import annotations
 
+import atexit
 import importlib.util
 import os
+import shutil
+import subprocess
 import sys
+import time
 import warnings
 from datetime import date
 from pathlib import Path
@@ -109,15 +113,33 @@ autodoc_member_order = "bysource"
 # Sphinx-Gallery build executes the `demos/` scripts and needs it for real.
 autodoc_mock_imports = ["mpi4py", "pymetis"]
 
+# --- Headless rendering -----------------------------------------------------
+# The Sphinx-Gallery build below executes the demos, which render 3-D scenes with
+# PyVista. On a headless builder there is no display, so start a virtual X server
+# (Xvfb) and point PyVista at it; VTK then renders through Mesa's software GL.
+# GitHub's ubuntu-latest runner ships Xvfb + Mesa; Read-the-Docs installs them via
+# ``build.apt_packages`` (see ``.readthedocs.yaml``). Doing this here -- rather than
+# in the CI workflow -- means no GitHub Actions change is required. Skipped where
+# Xvfb is absent (e.g. a local macOS build, which renders off-screen directly).
+if sys.platform.startswith("linux") and shutil.which("Xvfb") and not os.environ.get("DISPLAY"):
+    _xvfb_proc = subprocess.Popen(
+        ["Xvfb", ":99", "-screen", "0", "1920x1080x24", "-nolisten", "tcp"],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    atexit.register(_xvfb_proc.terminate)
+    os.environ["DISPLAY"] = ":99"
+    _socket = "/tmp/.X11-unix/X99"
+    for _ in range(100):  # wait for the X server socket to appear
+        if os.path.exists(_socket):
+            break
+        time.sleep(0.1)
+    time.sleep(0.5)
+
 # --- Sphinx-Gallery + PyVista (interactive demo gallery) --------------------
-# Execute the standalone scripts in ``demos/`` and embed their output. PyVista
-# renders off-screen; on the headless CI / Read-the-Docs builders the regular vtk
-# wheel is swapped for the matching OSMesa software-GL build (no GPU/X server),
-# which loads the system libOSMesa (apt: libgl1 + libosmesa6) -- see
-# ``.readthedocs.yaml`` and the CI docs job. ``BUILDING_GALLERY`` makes each
-# ``plotter.show()`` export both a screenshot (thumbnail) and a self-contained
-# ``.vtksz`` scene; ``DynamicScraper`` embeds the latter as an interactive vtk.js
-# widget (no server needed at view time).
+# ``BUILDING_GALLERY`` makes each ``plotter.show()`` export both a screenshot
+# (thumbnail) and a self-contained ``.vtksz`` scene; ``DynamicScraper`` embeds
+# the latter as an interactive vtk.js widget (no server needed at view time).
 pyvista.OFF_SCREEN = True
 pyvista.BUILDING_GALLERY = True
 
