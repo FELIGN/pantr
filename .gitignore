@@ -56,6 +56,10 @@ docs/.doctrees/
 # Intersphinx cached inventories (downloaded by CI)
 docs/_intersphinx/
 
+# Sphinx-Gallery generated output (built from demos/)
+docs/auto_examples/
+docs/sg_execution_times.rst
+
 # Temporary files
 *.swp
 *.swo

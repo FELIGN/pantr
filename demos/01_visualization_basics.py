@@ -3,9 +3,10 @@ Visualization basics
 =====================
 
 PaNTr's :mod:`pantr.viz` module turns B-spline, Bézier, and THB-spline geometries
-into `PyVista <https://docs.pyvista.org>`_ meshes using native VTK Bézier cells, so
-curves and surfaces render *exactly* (no tessellation error). This first demo
-introduces the toolkit reused throughout the gallery:
+into `PyVista <https://docs.pyvista.org>`_ meshes backed by native VTK Bézier cells
+that store the *exact* polynomial geometry. The interactive viewer below subdivides
+those cells for display, while a ``.vtu`` opened in ParaView (>= 5.10) renders them
+exactly. This first demo introduces the toolkit reused throughout the gallery:
 
 - :func:`~pantr.viz.plot` -- one-call interactive viewing,
 - :class:`~pantr.viz.Scene` -- compose several geometries with per-geometry options,
@@ -15,6 +16,9 @@ introduces the toolkit reused throughout the gallery:
 
 Requires the ``viz`` extra: ``pip install "pantr[viz]"``.
 """
+
+import tempfile
+from pathlib import Path
 
 import numpy as np
 
@@ -65,5 +69,6 @@ scene.show()
 # ----------------
 # :func:`~pantr.viz.save` writes a ``.vtu`` file that ParaView (>= 5.10) renders with
 # exact Bézier geometry -- handy for publication figures.
-viz.save(disk, "disk.vtu")
-print("wrote disk.vtu")
+out_file = Path(tempfile.gettempdir()) / "pantr_disk.vtu"
+viz.save(disk, out_file)
+print(f"wrote {out_file}")

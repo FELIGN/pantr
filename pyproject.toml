@@ -61,6 +61,18 @@ docs = [
   "sphinx-rtd-dark-mode>=1.3,<2",
   "myst-parser>=2.0,<3",
   "linkify-it-py>=2.0,<3",
+  # Sphinx-Gallery executes the `demos/` scripts and embeds their output; pyvista
+  # renders the 3-D scenes off-screen and the trame stack (+ nest_asyncio2)
+  # exports them as interactive vtk.js widgets. On headless builders docs/conf.py
+  # starts Xvfb and VTK renders via Mesa software GL (RTD installs them through
+  # `.readthedocs.yaml`; GitHub's ubuntu-latest ships them).
+  "sphinx-gallery>=0.15,<1",
+  "sphinx-design>=0.5,<1",
+  "pantr[viz]",
+  "trame>=3,<4",
+  "trame-vtk>=2,<3",
+  "trame-vuetify>=2,<4",
+  "nest-asyncio2>=1,<2",
 ]
 # `dev` pulls in every optional feature extra so a single
 # `pip install -e ".[dev]"` yields a complete contributor environment and CI runs

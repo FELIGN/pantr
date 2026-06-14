@@ -2,10 +2,10 @@
 Knot operations and Bézier extraction
 ======================================
 
-Knot insertion, degree elevation, and splitting all change a B-spline's
-*representation* without changing the curve it describes. This demo shows that
-invariance, then extracts the per-element Bézier pieces -- the representation
-finite-element assembly consumes.
+Knot insertion and degree elevation change a B-spline's *representation* without
+changing the curve it describes. This demo shows that invariance, then extracts
+the per-element Bézier pieces -- the representation finite-element assembly
+consumes.
 """
 
 import matplotlib.pyplot as plt
