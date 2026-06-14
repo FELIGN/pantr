@@ -9,6 +9,7 @@
 :caption: Contents
 
 getting-started
+auto_examples/index
 constructive-geometry
 visualization
 parallelism

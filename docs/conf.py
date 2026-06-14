@@ -13,6 +13,9 @@ from datetime import date
 from pathlib import Path
 from typing import Final
 
+import pyvista
+from pyvista.plotting.utilities.sphinx_gallery import DynamicScraper
+
 # Disable Numba JIT during documentation build. This avoids issues with
 # JIT caching and potential concurrent-compilation crashes while Sphinx
 # imports the package.
@@ -43,6 +46,9 @@ extensions = [
     "sphinx.ext.viewcode",
     "sphinx.ext.intersphinx",
     "myst_parser",
+    "sphinx_design",
+    "sphinx_gallery.gen_gallery",
+    "pyvista.ext.viewer_directive",
     "sphinx_rtd_dark_mode",
 ]
 
@@ -99,8 +105,33 @@ autodoc_member_order = "bysource"
 
 # Optional heavy dependencies are mocked so the docs build without installing
 # them. pantr imports them lazily at runtime, so autodoc can still import the
-# modules. `pyvista` backs `pantr.viz`; `mpi4py` / `pymetis` back `pantr.mpi`.
-autodoc_mock_imports = ["pyvista", "mpi4py", "pymetis"]
+# modules. `mpi4py` / `pymetis` back `pantr.mpi`. `pyvista` is NOT mocked: the
+# Sphinx-Gallery build executes the `demos/` scripts and needs it for real.
+autodoc_mock_imports = ["mpi4py", "pymetis"]
+
+# --- Sphinx-Gallery + PyVista (interactive demo gallery) --------------------
+# Execute the standalone scripts in ``demos/`` and embed their output. PyVista
+# renders off-screen; ``vtk-osmesa`` provides the GL stack on the headless CI /
+# Read-the-Docs builders (see ``.readthedocs.yaml`` and the CI docs job).
+# ``BUILDING_GALLERY`` makes each ``plotter.show()`` export both a screenshot
+# (thumbnail) and a self-contained ``.vtksz`` scene; ``DynamicScraper`` embeds
+# the latter as an interactive vtk.js widget (no server needed at view time).
+pyvista.OFF_SCREEN = True
+pyvista.BUILDING_GALLERY = True
+
+sphinx_gallery_conf = {
+    # Absolute path so the demo directory resolves the same regardless of the
+    # build's working directory (relative paths can collide with sibling git
+    # worktrees during sphinx-gallery's duplicate-filename check).
+    "examples_dirs": str(PROJECT_ROOT / "demos"),
+    "gallery_dirs": "auto_examples",
+    # Only files whose name starts with a number (``01_…``) are executed.
+    "filename_pattern": r"[/\\]\d+_",
+    "image_scrapers": ("matplotlib", DynamicScraper()),
+    "within_subsection_order": "FileNameSortKey",
+    "remove_config_comments": True,
+    "matplotlib_animations": False,
+}
 
 myst_enable_extensions = [
     "colon_fence",

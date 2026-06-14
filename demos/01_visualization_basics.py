@@ -16,6 +16,9 @@ introduces the toolkit reused throughout the gallery:
 Requires the ``viz`` extra: ``pip install "pantr[viz]"``.
 """
 
+import tempfile
+from pathlib import Path
+
 import numpy as np
 
 from pantr import viz
@@ -65,5 +68,6 @@ scene.show()
 # ----------------
 # :func:`~pantr.viz.save` writes a ``.vtu`` file that ParaView (>= 5.10) renders with
 # exact Bézier geometry -- handy for publication figures.
-viz.save(disk, "disk.vtu")
-print("wrote disk.vtu")
+out_file = Path(tempfile.gettempdir()) / "pantr_disk.vtu"
+viz.save(disk, out_file)
+print(f"wrote {out_file}")
