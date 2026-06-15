@@ -248,7 +248,7 @@ rev = curve.reverse(0)
 swapped = surface.permute_directions((1, 0))
 
 # Affine transformation (translation, rotation, scale, …)
-from pantr.cad import AffineTransform
+from pantr.transform import AffineTransform
 moved = curve.transform(AffineTransform.translation([1.0, 0.0, 0.0]))
 ```
 

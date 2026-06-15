@@ -140,11 +140,16 @@ Both interpolation and least-squares fitting are also available for
 ```python
 from pantr.bezier import interpolate_bezier, fit_bezier
 
-# Interpolate 1D: nodes and values, degree inferred from len(nodes)-1
+# Interpolate a callable: sampled at n_pts nodes, degree inferred as n_pts - 1.
+# func is called as func(lattice) with a PointsLattice and returns (n_total, rank).
+def f(lattice):
+    u = lattice.get_all_points()[:, 0]
+    return np.column_stack([u, np.sin(np.pi * u)])
+
+bezier = interpolate_bezier(f, 5)        # exact, degree 4 at 5 Chebyshev nodes
+
+# Least-squares fit from pre-evaluated samples (values at known nodes)
 nodes  = np.linspace(0, 1, 5)
 values = np.array([[0., 0.], [0.3, 0.9], [0.6, 0.7], [0.8, 0.3], [1., 0.]])
-bezier = interpolate_bezier(nodes, values)
-
-# Least-squares fit to degree 3
-bezier_fit = fit_bezier(nodes, values, degree=3)
+bezier_fit = fit_bezier(values, nodes, degree=3)   # degree 3 < 5 nodes → least squares
 ```
