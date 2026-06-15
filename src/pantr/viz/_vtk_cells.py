@@ -74,37 +74,6 @@ def _get_bezier_patches(
     raise TypeError(f"Expected Bspline or Bezier, got {type(geom).__name__}")
 
 
-def _elevate_to_isotropic(geom: Bspline | Bezier) -> Bspline | Bezier:
-    """Degree-elevate a geometry so every parametric direction shares one degree.
-
-    VTK's surface tessellator (``vtkDataSetSurfaceFilter``, used by the
-    interactive viewer and screenshots) infers an *isotropic* order from the
-    control-point count and cannot honor a direction-dependent
-    ``HigherOrderDegrees`` attribute; an anisotropic patch (e.g. a degree-(2, 1)
-    disk) is therefore drawn as a flat bilinear quad. Elevating every direction
-    to ``max(degree)`` makes the point count a perfect power so the order is
-    inferred correctly. Degree elevation is exact, so the rendered geometry is
-    unchanged.
-
-    Note:
-        This sidesteps the *anisotropic-degree* limitation only. Rational 2D
-        cells remain a separate, unsolved VTK issue — see :func:`to_pyvista`.
-
-    Args:
-        geom: Input geometry (Bspline or Bezier).
-
-    Returns:
-        Bspline | Bezier: The geometry with isotropic degree (same object when
-        already isotropic).
-    """
-    degree = geom.degree
-    target = max(degree)
-    increments = tuple(target - d for d in degree)
-    if any(increments):
-        return geom.elevate_degree(increments)
-    return geom
-
-
 @dataclass
 class _PatchGeometry:
     """Intermediate representation of a single Bézier patch for VTK assembly."""
@@ -305,39 +274,6 @@ def _thb_bezier_patches(
     return patches, n_per
 
 
-def _elevate_bern_to_isotropic(
-    bern: npt.NDArray[np.float64],
-    n_per: tuple[int, ...],
-    rank: int,
-    target: int,
-) -> npt.NDArray[np.float64]:
-    """Degree-elevate a THB cell's Bernstein control points to isotropic degree.
-
-    Wraps the cell polynomial as a non-rational :class:`~pantr.bezier.Bezier` and
-    elevates every direction to ``target`` so VTK's tessellator infers the order
-    correctly (see :func:`_elevate_to_isotropic`). Exact: the geometry is
-    unchanged. A no-op when the cell is already isotropic.
-
-    Args:
-        bern: Cell Bernstein control points, shape ``(n_single, rank)`` in C-order.
-        n_per: Per-direction control-point counts (``degree[d] + 1``).
-        rank: Geometric output rank.
-        target: Target degree shared by every direction.
-
-    Returns:
-        NDArray[float64]: Elevated control points, shape ``((target + 1) ** dim, rank)``
-        in C-order (unchanged input when already isotropic).
-    """
-    increments = tuple(target - (n - 1) for n in n_per)
-    if not any(increments):
-        return bern
-    from ..bezier import Bezier as BezierCls  # noqa: PLC0415
-
-    cp = bern.reshape(*n_per, rank)
-    elevated = BezierCls(cp).elevate_degree(increments)
-    return np.asarray(elevated.control_points, dtype=np.float64).reshape(-1, rank)
-
-
 def _thb_patch_coords(  # noqa: PLR0913
     bern: npt.NDArray[np.float64],
     n_per: tuple[int, ...],
@@ -397,12 +333,7 @@ def _thb_to_pyvista(
         raise ValueError(f"Unsupported parametric dimension {dim}.")
 
     cell_type = _VTK_CELL_TYPE_BY_DIM[dim]
-    # Render every cell at isotropic degree so VTK infers the order correctly
-    # (it cannot honor direction-dependent degrees). Exact, geometry unchanged.
-    target = max(degree)
-    iso_degree = (target,) * dim
-    iso_n_per = (target + 1,) * dim
-    ordering = vtk_ordering(iso_degree)
+    ordering = vtk_ordering(degree)
     n_pts_per_cell = len(ordering)
     effective_elevation = elevation or (rank == 1 and dim == 1)
 
@@ -410,9 +341,8 @@ def _thb_to_pyvista(
     patches, n_per = _thb_bezier_patches(thb)
     patch_data: list[_PatchGeometry] = []
     for cid, bern in patches:
-        bern_iso = _elevate_bern_to_isotropic(bern, n_per, rank, target)
         pts_3d, scalars = _thb_patch_coords(
-            bern_iso, iso_n_per, grid.cell_bounds(cid), rank, dim, effective_elevation
+            bern, n_per, grid.cell_bounds(cid), rank, dim, effective_elevation
         )
         patch_data.append(
             _PatchGeometry(
@@ -427,7 +357,7 @@ def _thb_to_pyvista(
         patch_data,
         cell_type,
         n_pts_per_cell,
-        iso_degree,
+        degree,
         is_rational=False,
         rank=rank,
         scalar_name=scalar_name,
@@ -454,19 +384,6 @@ def to_pyvista(
       ``elevation=True`` for ``(u, v, f(u,v))``.
     - **dim=3**: color map on ``(u, v, w)``.
 
-    Note:
-        **Known limitation — rational 2D/3D surfaces in the interactive
-        viewer.** VTK's surface tessellator (``vtkDataSetSurfaceFilter``, used
-        by ``viz.plot`` and screenshots) does not apply rational weights to 2D
-        Bézier *quad* / 3D *hexahedron* cells (it does for 1D curves). A
-        rational surface such as :func:`~pantr.cad.create_disk` therefore
-        renders as the flat control-net polygon in the viewer, even though the
-        cell stores the exact NURBS geometry. The exported ``.vtu`` (see
-        :func:`save`) carries the correct ``RationalWeights`` / degrees and
-        renders exactly in ParaView ≥ 5.10. Anisotropic *non-rational* surfaces
-        are handled here by isotropic degree elevation; the rational case is
-        left for a future fix (pantr-side tessellation).
-
     Args:
         geom: Input B-spline, Bézier, or THB-spline geometry.
         scalar_name: Name for the scalar point data array when ``rank == 1``.
@@ -482,23 +399,15 @@ def to_pyvista(
         TypeError: If *geom* is not a ``Bspline``, ``Bezier``, or ``THBSpline``.
         ValueError: If the parametric dimension is not 1, 2, or 3.
     """
-    from ..bezier import Bezier as BezierCls  # noqa: PLC0415
-    from ..bspline import Bspline as BsplineCls  # noqa: PLC0415
     from ..bspline import THBSpline as THBSplineCls  # noqa: PLC0415
 
     if isinstance(geom, THBSplineCls):
         return _thb_to_pyvista(geom, scalar_name=scalar_name, elevation=elevation)
-    if not isinstance(geom, BsplineCls | BezierCls):
-        raise TypeError(f"Expected Bspline or Bezier, got {type(geom).__name__}")
 
     pv = _import_pyvista()
 
-    # Elevate to isotropic degree so VTK's tessellator infers the order
-    # correctly (it cannot honor direction-dependent degrees). Exact, so the
-    # displayed geometry is unchanged.
-    geom = _elevate_to_isotropic(geom)
-
     patches, is_rational = _get_bezier_patches(geom)
+    from ..bezier import Bezier as BezierCls  # noqa: PLC0415
 
     first_patch: BezierCls = patches.flat[0]  # type: ignore[assignment]
     dim, rank, degree = first_patch.dim, first_patch.rank, first_patch.degree
@@ -535,6 +444,31 @@ def to_pyvista(
         rank=rank,
         scalar_name=scalar_name,
     )
+
+
+def _add_data_array(attrs: Any, name: str, values: npt.NDArray[np.float64]) -> Any:  # noqa: ANN401
+    """Attach a named array to a ``vtkDataSetAttributes`` without touching active scalars.
+
+    pyvista's ``data[name] = ...`` setter marks the new array as the *active
+    SCALARS*. For ``RationalWeights`` that is fatal: VTK's tessellator skips
+    rational (NURBS) evaluation whenever the weights array is also the active
+    scalars, so the cell is drawn non-rationally (e.g. a circle bulges to its
+    control polygon). ``AddArray`` attaches the array without that side effect.
+
+    Args:
+        attrs: Target ``vtkPointData`` or ``vtkCellData``.
+        name: Array name.
+        values: Array values, shape ``(n,)`` or ``(n, n_components)``.
+
+    Returns:
+        Any: The attached ``vtkDataArray`` (e.g. to pass to a typed setter).
+    """
+    from vtkmodules.util.numpy_support import numpy_to_vtk  # noqa: PLC0415
+
+    arr = numpy_to_vtk(np.ascontiguousarray(values), deep=True)  # type: ignore[no-untyped-call]
+    arr.SetName(name)
+    attrs.AddArray(arr)
+    return arr
 
 
 def _assemble_grid(  # noqa: PLR0913
@@ -583,27 +517,31 @@ def _assemble_grid(  # noqa: PLR0913
     grid = pv.UnstructuredGrid(cell_array, cell_type_array, points)
 
     # VTK higher-order cells infer an *isotropic* order from the point count
-    # unless per-cell degrees are supplied. Anisotropic patches (e.g. a
-    # degree-(2, 1) disk → 6 points) would otherwise collapse to a bilinear
-    # quad. The "HigherOrderDegrees" cell array carries the (u, v, w) degrees
-    # (unused directions left at 0) and must be registered as the dedicated
-    # vtkCellData attribute slot — a plain named array is ignored by GetCell.
+    # unless per-cell degrees are supplied. The "HigherOrderDegrees" cell array
+    # carries the (u, v, w) degrees (unused directions left at 0) and must be
+    # registered as the dedicated vtkCellData attribute slot. It is attached via
+    # AddArray (not the pyvista setter) so it does not become the active scalars.
     ho_degrees = np.zeros((len(patch_data), _MAX_PHYSICAL_DIM), dtype=np.float64)
     ho_degrees[:, : len(degree)] = degree
-    grid.cell_data["HigherOrderDegrees"] = ho_degrees
-    grid.GetCellData().SetHigherOrderDegrees(grid.GetCellData().GetArray("HigherOrderDegrees"))
+    cell_attrs = grid.GetCellData()
+    cell_attrs.SetHigherOrderDegrees(_add_data_array(cell_attrs, "HigherOrderDegrees", ho_degrees))
 
     if is_rational:
         weight_arrays = [p.weights for p in patch_data if p.weights is not None]
         if weight_arrays:
-            # Likewise registered as the dedicated point-data attribute so the
-            # cell performs rational (NURBS) evaluation rather than ignoring it.
-            grid.point_data["RationalWeights"] = np.concatenate(weight_arrays)
-            grid.GetPointData().SetRationalWeights(grid.GetPointData().GetArray("RationalWeights"))
+            # Attach via AddArray + the typed setter so the weights occupy the
+            # dedicated RationalWeights slot *without* becoming the active
+            # scalars (which would disable rational tessellation).
+            point_attrs = grid.GetPointData()
+            point_attrs.SetRationalWeights(
+                _add_data_array(point_attrs, "RationalWeights", np.concatenate(weight_arrays))
+            )
 
     if rank == 1:
         scalar_arrays = [p.scalars for p in patch_data if p.scalars is not None]
         if scalar_arrays:
+            # The colour field *should* be the active scalars, so the pyvista
+            # setter is the right tool here.
             grid.point_data[scalar_name] = np.concatenate(scalar_arrays)
 
     return grid  # type: ignore[no-any-return]
