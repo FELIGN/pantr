@@ -15,6 +15,7 @@ from pantr.bspline import (
     create_uniform_periodic_knots,
 )
 from pantr.bspline._bspline_basis_core import _compute_basis_nurbs_book_impl
+from pantr.bspline._bspline_to_beziers import _first_basis_per_element
 from pantr.bspline.spanwise_element_extraction import SpanwiseElementExtraction
 
 # ---------------------------------------------------------------------------
@@ -888,7 +889,10 @@ class TestToBeziersSpanwiseParity:
         beziers[idx].control_points.reshape(N, rank) == M.T @ ctrl_local.reshape(N, rank)
 
     where ``M = extraction.operator(idx) = kron(C_0[i0], ..., C_{d-1}[i_{d-1}])`` and
-    ``ctrl_local = ctrl[i0:i0+order_0, ..., i_{d-1}:i_{d-1}+order_{d-1}, :]``.
+    ``ctrl_local`` is the support window of element ``idx`` — the ``order_d``
+    functions supported on the element per direction, starting at
+    ``first_basis_d[i_d]`` (the index of the first supported function, which only
+    equals ``i_d`` for multiplicity-1 interior knots).
 
     The ``.T`` arises because ``_apply_bezier_extraction_1d_core`` computes
     ``C_i^T @ P_local`` (column-convention operators matching the kernel at
@@ -923,8 +927,12 @@ class TestToBeziersSpanwiseParity:
             # Degree-3 space: exercises order=4 in the Numba kernel and higher-degree
             # extraction operators with non-trivial entries.
             ([BsplineSpace1D([0.0, 0.0, 0.0, 0.0, 0.5, 1.0, 1.0, 1.0, 1.0], 3)], 50),
+            # Repeated interior knots (multiplicity 2): the support offset advances
+            # faster than the element index, so this fails if ctrl_local is gathered
+            # by element index instead of first-supported-function index.
+            ([BsplineSpace1D([0.0, 0.0, 0.0, 0.5, 0.5, 1.0, 1.0, 1.0], 2)], 60),
         ],
-        ids=["1d", "2d", "3d", "1d_single", "1d_deg3"],
+        ids=["1d", "2d", "3d", "1d_single", "1d_deg3", "1d_mult2"],
     )
     def test_element_cp_matches_operator_transpose(
         self, spaces: list[BsplineSpace1D], rng_seed: int
@@ -939,11 +947,15 @@ class TestToBeziersSpanwiseParity:
         extraction = SpanwiseElementExtraction(space, target="bezier")
         degrees = bs.degree
         orders = tuple(p + 1 for p in degrees)
+        first_basis_per_dir = [_first_basis_per_element(sp) for sp in space.spaces]
 
         for idx in np.ndindex(*space.num_intervals):
-            # Gather local B-spline control points for this element.
+            # Gather the support window: the order_d functions supported on this
+            # element per direction, starting at the first supported function
+            # (== element index only for multiplicity-1 interior knots).
             slices: tuple[slice | int, ...] = tuple(
-                slice(i, i + orders[d]) for d, i in enumerate(idx)
+                slice(start := int(first_basis_per_dir[d][i]), start + orders[d])
+                for d, i in enumerate(idx)
             )
             ctrl_local = bs.control_points[(*slices, slice(None))]
             n_in = int(np.prod(orders))
