@@ -357,6 +357,7 @@ def _thb_to_pyvista(
         patch_data,
         cell_type,
         n_pts_per_cell,
+        degree,
         is_rational=False,
         rank=rank,
         scalar_name=scalar_name,
@@ -438,6 +439,7 @@ def to_pyvista(
         patch_data,
         cell_type,
         n_pts_per_cell,
+        degree,
         is_rational=is_rational,
         rank=rank,
         scalar_name=scalar_name,
@@ -449,6 +451,7 @@ def _assemble_grid(  # noqa: PLR0913
     patch_data: list[_PatchGeometry],
     cell_type: int,
     n_pts_per_cell: int,
+    degree: Sequence[int],
     *,
     is_rational: bool,
     rank: int,
@@ -461,6 +464,9 @@ def _assemble_grid(  # noqa: PLR0913
         patch_data: List of processed patch geometries.
         cell_type: VTK cell type constant.
         n_pts_per_cell: Number of points per cell.
+        degree: Polynomial degree per parametric direction, shared by every
+            patch (Bézier decomposition preserves the parent degree). Used to
+            populate the ``HigherOrderDegrees`` cell-data array.
         is_rational: Whether to attach rational weights.
         rank: Output rank of the geometry.
         scalar_name: Name for scalar point data.
@@ -485,10 +491,24 @@ def _assemble_grid(  # noqa: PLR0913
 
     grid = pv.UnstructuredGrid(cell_array, cell_type_array, points)
 
+    # VTK higher-order cells infer an *isotropic* order from the point count
+    # unless per-cell degrees are supplied. Anisotropic patches (e.g. a
+    # degree-(2, 1) disk → 6 points) would otherwise collapse to a bilinear
+    # quad. The "HigherOrderDegrees" cell array carries the (u, v, w) degrees
+    # (unused directions left at 0) and must be registered as the dedicated
+    # vtkCellData attribute slot — a plain named array is ignored by GetCell.
+    ho_degrees = np.zeros((len(patch_data), _MAX_PHYSICAL_DIM), dtype=np.float64)
+    ho_degrees[:, : len(degree)] = degree
+    grid.cell_data["HigherOrderDegrees"] = ho_degrees
+    grid.GetCellData().SetHigherOrderDegrees(grid.GetCellData().GetArray("HigherOrderDegrees"))
+
     if is_rational:
         weight_arrays = [p.weights for p in patch_data if p.weights is not None]
         if weight_arrays:
+            # Likewise registered as the dedicated point-data attribute so the
+            # cell performs rational (NURBS) evaluation rather than ignoring it.
             grid.point_data["RationalWeights"] = np.concatenate(weight_arrays)
+            grid.GetPointData().SetRationalWeights(grid.GetPointData().GetArray("RationalWeights"))
 
     if rank == 1:
         scalar_arrays = [p.scalars for p in patch_data if p.scalars is not None]

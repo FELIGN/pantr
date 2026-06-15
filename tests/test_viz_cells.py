@@ -9,6 +9,8 @@ import pytest
 
 pv = pytest.importorskip("pyvista")
 
+from vtkmodules.vtkCommonCore import reference  # noqa: E402
+
 from pantr.bezier import Bezier  # noqa: E402
 from pantr.bspline import (  # noqa: E402
     Bspline,
@@ -16,6 +18,7 @@ from pantr.bspline import (  # noqa: E402
     BsplineSpace1D,
     create_uniform_periodic_knots,
 )
+from pantr.cad import create_disk  # noqa: E402
 from pantr.viz import save, to_pyvista  # noqa: E402
 from pantr.viz._vtk_cells import (  # noqa: E402
     VTK_BEZIER_CURVE,
@@ -63,6 +66,16 @@ def bezier_surface_3d() -> Bezier:
 def bezier_scalar_2d() -> Bezier:
     """Bilinear scalar Bézier (dim=2, rank=1)."""
     cp = np.array([[[0.0], [1.0]], [[2.0], [3.0]]])
+    return Bezier(cp)
+
+
+@pytest.fixture()
+def anisotropic_surface_3d() -> Bezier:
+    """Bézier surface with direction-dependent degree (2 in u, 1 in v)."""
+    cp = np.zeros((3, 2, 3))
+    for i, u in enumerate((0.0, 0.5, 1.0)):
+        for j, v in enumerate((0.0, 1.0)):
+            cp[i, j] = [u, v, np.sin(np.pi * u)]
     return Bezier(cp)
 
 
@@ -145,6 +158,55 @@ class TestBezierToPyvista:
         grid = to_pyvista(bezier_scalar_2d, scalar_name="temperature")
         assert "temperature" in grid.point_data
         assert "scalar" not in grid.point_data
+
+
+# ---------------------------------------------------------------------------
+# Per-cell degrees on anisotropic higher-order cells (regression)
+# ---------------------------------------------------------------------------
+
+
+class TestHigherOrderDegrees:
+    """Regression tests for direction-dependent degrees on higher-order cells.
+
+    Without a registered ``HigherOrderDegrees`` cell attribute, VTK infers an
+    isotropic order from the point count and collapses anisotropic patches
+    (e.g. a degree-(2, 1) surface → 6 points) into a flat bilinear quad.
+    """
+
+    def test_degrees_array_attached(self, anisotropic_surface_3d: Bezier) -> None:
+        grid = to_pyvista(anisotropic_surface_3d)
+        assert "HigherOrderDegrees" in grid.cell_data
+        np.testing.assert_array_equal(grid.cell_data["HigherOrderDegrees"][0], [2.0, 1.0, 0.0])
+
+    def test_degrees_registered_as_attribute(self, anisotropic_surface_3d: Bezier) -> None:
+        # A plain named array is ignored by GetCell; it must occupy the
+        # dedicated vtkCellData attribute slot.
+        grid = to_pyvista(anisotropic_surface_3d)
+        assert grid.GetCellData().GetHigherOrderDegrees() is not None
+
+    def test_cell_reports_anisotropic_order(self, anisotropic_surface_3d: Bezier) -> None:
+        grid = to_pyvista(anisotropic_surface_3d)
+        cell = grid.GetCell(0)
+        assert (cell.GetOrder(0), cell.GetOrder(1)) == anisotropic_surface_3d.degree
+
+    def test_rational_disk_stays_within_radius(self) -> None:
+        # A correctly evaluated unit disk never exceeds radius 1; the buggy
+        # flat-quad fallback reaches the corner control point at radius √2.
+        disk = create_disk(radius_outer=1.0)
+        grid = to_pyvista(disk)
+        assert grid.GetPointData().GetRationalWeights() is not None
+        cell = grid.GetCell(0)
+        assert (cell.GetOrder(0), cell.GetOrder(1)) == disk.degree
+
+        n_pts = cell.GetNumberOfPoints()
+        max_radius = 0.0
+        for a in np.linspace(0.0, 1.0, 6):
+            for b in np.linspace(0.0, 1.0, 6):
+                x = [0.0, 0.0, 0.0]
+                weights = [0.0] * n_pts
+                cell.EvaluateLocation(reference(0), [a, b, 0.0], x, weights)
+                max_radius = max(max_radius, np.hypot(x[0], x[1]))
+        assert max_radius <= 1.0 + 1e-9
 
 
 # ---------------------------------------------------------------------------
