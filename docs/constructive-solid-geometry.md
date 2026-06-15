@@ -1,4 +1,4 @@
-# Constructive Geometry
+# Constructive Solid Geometry
 
 The `pantr.cad` module provides CAD-style functions for building B-spline
 curves, surfaces, and volumes from geometric descriptions.  All functions

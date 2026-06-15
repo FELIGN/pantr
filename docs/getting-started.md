@@ -39,9 +39,10 @@ points = curve.evaluate(u)  # shape (50, 2)
 ```
 
 To render geometries interactively or export them to VTK, see
-[Visualization](visualization.md) (requires the `viz` extra).
+[Visualization](visualization.md) (requires [PyVista](https://docs.pyvista.org/);
+install via `pip install "pantr[viz]"` or `pip install pyvista`).
 
-## Building the Documentation
+### Building the Documentation
 
 ```bash
 pip install -e ".[docs]"
