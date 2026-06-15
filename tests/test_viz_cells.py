@@ -9,8 +9,6 @@ import pytest
 
 pv = pytest.importorskip("pyvista")
 
-from vtkmodules.vtkCommonCore import reference  # noqa: E402
-
 from pantr.bezier import Bezier  # noqa: E402
 from pantr.bspline import (  # noqa: E402
     Bspline,
@@ -161,52 +159,66 @@ class TestBezierToPyvista:
 
 
 # ---------------------------------------------------------------------------
-# Per-cell degrees on anisotropic higher-order cells (regression)
+# Anisotropic 2D higher-order cells (regression)
 # ---------------------------------------------------------------------------
 
 
-class TestHigherOrderDegrees:
-    """Regression tests for direction-dependent degrees on higher-order cells.
+class TestAnisotropicSurfaces:
+    """Regression tests for direction-dependent degrees on 2D higher-order cells.
 
-    Without a registered ``HigherOrderDegrees`` cell attribute, VTK infers an
-    isotropic order from the point count and collapses anisotropic patches
-    (e.g. a degree-(2, 1) surface → 6 points) into a flat bilinear quad.
+    VTK's surface tessellator infers an isotropic order from the control-point
+    count and cannot honor a direction-dependent ``HigherOrderDegrees``
+    attribute, so an anisotropic patch (e.g. degree (2, 1) → 6 points) renders
+    as a flat bilinear quad and emits ``GetOrder`` errors. ``to_pyvista`` works
+    around this by degree-elevating to isotropic degree, which is exact.
     """
 
-    def test_degrees_array_attached(self, anisotropic_surface_3d: Bezier) -> None:
+    def test_cells_elevated_to_isotropic(self, anisotropic_surface_3d: Bezier) -> None:
+        grid = to_pyvista(anisotropic_surface_3d)
+        cell = grid.GetCell(0)
+        target = max(anisotropic_surface_3d.degree)
+        assert cell.GetOrder(0) == cell.GetOrder(1) == target
+
+    def test_higher_order_degrees_registered(self, anisotropic_surface_3d: Bezier) -> None:
         grid = to_pyvista(anisotropic_surface_3d)
         assert "HigherOrderDegrees" in grid.cell_data
-        np.testing.assert_array_equal(grid.cell_data["HigherOrderDegrees"][0], [2.0, 1.0, 0.0])
-
-    def test_degrees_registered_as_attribute(self, anisotropic_surface_3d: Bezier) -> None:
-        # A plain named array is ignored by GetCell; it must occupy the
-        # dedicated vtkCellData attribute slot.
-        grid = to_pyvista(anisotropic_surface_3d)
+        # Elevated to isotropic degree 2 in both directions.
+        np.testing.assert_array_equal(grid.cell_data["HigherOrderDegrees"][0], [2.0, 2.0, 0.0])
+        # Registered in the dedicated attribute slot (a named array alone is
+        # ignored by GetCell).
         assert grid.GetCellData().GetHigherOrderDegrees() is not None
 
-    def test_cell_reports_anisotropic_order(self, anisotropic_surface_3d: Bezier) -> None:
+    def test_anisotropic_surface_renders_curved(self, anisotropic_surface_3d: Bezier) -> None:
+        # The fixture curves in z (z = sin(pi u), peaking at the degree-2 Bézier
+        # midpoint 0.5). Before the fix it tessellated flat with max z == 0.
         grid = to_pyvista(anisotropic_surface_3d)
-        cell = grid.GetCell(0)
-        assert (cell.GetOrder(0), cell.GetOrder(1)) == anisotropic_surface_3d.degree
+        surf = grid.extract_surface(nonlinear_subdivision=4, algorithm="dataset_surface")
+        assert surf.points[:, 2].max() > 0.4
 
-    def test_rational_disk_stays_within_radius(self) -> None:
-        # A correctly evaluated unit disk never exceeds radius 1; the buggy
-        # flat-quad fallback reaches the corner control point at radius √2.
+    def test_rational_disk_no_anisotropic_order(self) -> None:
+        # The disk is rational degree (2, 1); after elevation its cell is
+        # isotropic, so no GetOrder errors are emitted.
         disk = create_disk(radius_outer=1.0)
         grid = to_pyvista(disk)
-        assert grid.GetPointData().GetRationalWeights() is not None
         cell = grid.GetCell(0)
-        assert (cell.GetOrder(0), cell.GetOrder(1)) == disk.degree
+        assert cell.GetOrder(0) == cell.GetOrder(1)
+        assert grid.GetPointData().GetRationalWeights() is not None
 
-        n_pts = cell.GetNumberOfPoints()
-        max_radius = 0.0
-        for a in np.linspace(0.0, 1.0, 6):
-            for b in np.linspace(0.0, 1.0, 6):
-                x = [0.0, 0.0, 0.0]
-                weights = [0.0] * n_pts
-                cell.EvaluateLocation(reference(0), [a, b, 0.0], x, weights)
-                max_radius = max(max_radius, np.hypot(x[0], x[1]))
-        assert max_radius <= 1.0 + 1e-9
+    @pytest.mark.xfail(
+        reason="VTK's surface tessellator ignores rational weights for 2D cells, so a "
+        "rational surface renders as the flat control net (see to_pyvista note). The "
+        "exact geometry is preserved in the cell data / .vtu export. Remove this marker "
+        "once the viewer renders rational surfaces correctly.",
+        strict=True,
+    )
+    def test_rational_surface_renders_curved(self) -> None:
+        # A correct unit disk never exceeds radius 1; the flat control-net
+        # fallback reaches the corner control point at radius √2.
+        disk = create_disk(radius_outer=1.0)
+        grid = to_pyvista(disk)
+        surf = grid.extract_surface(nonlinear_subdivision=4, algorithm="dataset_surface")
+        r = np.hypot(surf.points[:, 0], surf.points[:, 1])
+        assert r.max() <= 1.0 + 1e-6
 
 
 # ---------------------------------------------------------------------------

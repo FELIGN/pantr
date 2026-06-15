@@ -74,6 +74,37 @@ def _get_bezier_patches(
     raise TypeError(f"Expected Bspline or Bezier, got {type(geom).__name__}")
 
 
+def _elevate_to_isotropic(geom: Bspline | Bezier) -> Bspline | Bezier:
+    """Degree-elevate a geometry so every parametric direction shares one degree.
+
+    VTK's surface tessellator (``vtkDataSetSurfaceFilter``, used by the
+    interactive viewer and screenshots) infers an *isotropic* order from the
+    control-point count and cannot honor a direction-dependent
+    ``HigherOrderDegrees`` attribute; an anisotropic patch (e.g. a degree-(2, 1)
+    disk) is therefore drawn as a flat bilinear quad. Elevating every direction
+    to ``max(degree)`` makes the point count a perfect power so the order is
+    inferred correctly. Degree elevation is exact, so the rendered geometry is
+    unchanged.
+
+    Note:
+        This sidesteps the *anisotropic-degree* limitation only. Rational 2D
+        cells remain a separate, unsolved VTK issue — see :func:`to_pyvista`.
+
+    Args:
+        geom: Input geometry (Bspline or Bezier).
+
+    Returns:
+        Bspline | Bezier: The geometry with isotropic degree (same object when
+        already isotropic).
+    """
+    degree = geom.degree
+    target = max(degree)
+    increments = tuple(target - d for d in degree)
+    if any(increments):
+        return geom.elevate_degree(increments)
+    return geom
+
+
 @dataclass
 class _PatchGeometry:
     """Intermediate representation of a single Bézier patch for VTK assembly."""
@@ -274,6 +305,39 @@ def _thb_bezier_patches(
     return patches, n_per
 
 
+def _elevate_bern_to_isotropic(
+    bern: npt.NDArray[np.float64],
+    n_per: tuple[int, ...],
+    rank: int,
+    target: int,
+) -> npt.NDArray[np.float64]:
+    """Degree-elevate a THB cell's Bernstein control points to isotropic degree.
+
+    Wraps the cell polynomial as a non-rational :class:`~pantr.bezier.Bezier` and
+    elevates every direction to ``target`` so VTK's tessellator infers the order
+    correctly (see :func:`_elevate_to_isotropic`). Exact: the geometry is
+    unchanged. A no-op when the cell is already isotropic.
+
+    Args:
+        bern: Cell Bernstein control points, shape ``(n_single, rank)`` in C-order.
+        n_per: Per-direction control-point counts (``degree[d] + 1``).
+        rank: Geometric output rank.
+        target: Target degree shared by every direction.
+
+    Returns:
+        NDArray[float64]: Elevated control points, shape ``((target + 1) ** dim, rank)``
+        in C-order (unchanged input when already isotropic).
+    """
+    increments = tuple(target - (n - 1) for n in n_per)
+    if not any(increments):
+        return bern
+    from ..bezier import Bezier as BezierCls  # noqa: PLC0415
+
+    cp = bern.reshape(*n_per, rank)
+    elevated = BezierCls(cp).elevate_degree(increments)
+    return np.asarray(elevated.control_points, dtype=np.float64).reshape(-1, rank)
+
+
 def _thb_patch_coords(  # noqa: PLR0913
     bern: npt.NDArray[np.float64],
     n_per: tuple[int, ...],
@@ -333,7 +397,12 @@ def _thb_to_pyvista(
         raise ValueError(f"Unsupported parametric dimension {dim}.")
 
     cell_type = _VTK_CELL_TYPE_BY_DIM[dim]
-    ordering = vtk_ordering(degree)
+    # Render every cell at isotropic degree so VTK infers the order correctly
+    # (it cannot honor direction-dependent degrees). Exact, geometry unchanged.
+    target = max(degree)
+    iso_degree = (target,) * dim
+    iso_n_per = (target + 1,) * dim
+    ordering = vtk_ordering(iso_degree)
     n_pts_per_cell = len(ordering)
     effective_elevation = elevation or (rank == 1 and dim == 1)
 
@@ -341,8 +410,9 @@ def _thb_to_pyvista(
     patches, n_per = _thb_bezier_patches(thb)
     patch_data: list[_PatchGeometry] = []
     for cid, bern in patches:
+        bern_iso = _elevate_bern_to_isotropic(bern, n_per, rank, target)
         pts_3d, scalars = _thb_patch_coords(
-            bern, n_per, grid.cell_bounds(cid), rank, dim, effective_elevation
+            bern_iso, iso_n_per, grid.cell_bounds(cid), rank, dim, effective_elevation
         )
         patch_data.append(
             _PatchGeometry(
@@ -357,7 +427,7 @@ def _thb_to_pyvista(
         patch_data,
         cell_type,
         n_pts_per_cell,
-        degree,
+        iso_degree,
         is_rational=False,
         rank=rank,
         scalar_name=scalar_name,
@@ -384,6 +454,19 @@ def to_pyvista(
       ``elevation=True`` for ``(u, v, f(u,v))``.
     - **dim=3**: color map on ``(u, v, w)``.
 
+    Note:
+        **Known limitation — rational 2D/3D surfaces in the interactive
+        viewer.** VTK's surface tessellator (``vtkDataSetSurfaceFilter``, used
+        by ``viz.plot`` and screenshots) does not apply rational weights to 2D
+        Bézier *quad* / 3D *hexahedron* cells (it does for 1D curves). A
+        rational surface such as :func:`~pantr.cad.create_disk` therefore
+        renders as the flat control-net polygon in the viewer, even though the
+        cell stores the exact NURBS geometry. The exported ``.vtu`` (see
+        :func:`save`) carries the correct ``RationalWeights`` / degrees and
+        renders exactly in ParaView ≥ 5.10. Anisotropic *non-rational* surfaces
+        are handled here by isotropic degree elevation; the rational case is
+        left for a future fix (pantr-side tessellation).
+
     Args:
         geom: Input B-spline, Bézier, or THB-spline geometry.
         scalar_name: Name for the scalar point data array when ``rank == 1``.
@@ -399,15 +482,23 @@ def to_pyvista(
         TypeError: If *geom* is not a ``Bspline``, ``Bezier``, or ``THBSpline``.
         ValueError: If the parametric dimension is not 1, 2, or 3.
     """
+    from ..bezier import Bezier as BezierCls  # noqa: PLC0415
+    from ..bspline import Bspline as BsplineCls  # noqa: PLC0415
     from ..bspline import THBSpline as THBSplineCls  # noqa: PLC0415
 
     if isinstance(geom, THBSplineCls):
         return _thb_to_pyvista(geom, scalar_name=scalar_name, elevation=elevation)
+    if not isinstance(geom, BsplineCls | BezierCls):
+        raise TypeError(f"Expected Bspline or Bezier, got {type(geom).__name__}")
 
     pv = _import_pyvista()
 
+    # Elevate to isotropic degree so VTK's tessellator infers the order
+    # correctly (it cannot honor direction-dependent degrees). Exact, so the
+    # displayed geometry is unchanged.
+    geom = _elevate_to_isotropic(geom)
+
     patches, is_rational = _get_bezier_patches(geom)
-    from ..bezier import Bezier as BezierCls  # noqa: PLC0415
 
     first_patch: BezierCls = patches.flat[0]  # type: ignore[assignment]
     dim, rank, degree = first_patch.dim, first_patch.rank, first_patch.degree
