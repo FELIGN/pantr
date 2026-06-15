@@ -111,7 +111,7 @@ def _radii_xy(points: npt.NDArray[np.float64]) -> npt.NDArray[np.float64]:
 # Per-demo validators
 
 
-def _validate_01(ns: Namespace) -> None:
+def _validate_02(ns: Namespace) -> None:
     """Visualization basics: NURBS arc on the unit circle, scalar field, VTK export."""
     arc = ns["arc"]
     assert arc.is_rational, "create_circle should build a rational (NURBS) curve"
@@ -134,7 +134,7 @@ def _validate_01(ns: Namespace) -> None:
     assert mesh.n_cells > 0, "exported .vtu should contain cells"
 
 
-def _validate_02(ns: Namespace) -> None:
+def _validate_03(ns: Namespace) -> None:
     """Basis gallery: Bernstein/Lagrange/Legendre basis checks + change-of-basis snapshot."""
     bases = ns["bases"]
     bern = np.asarray(bases["Bernstein"])
@@ -177,7 +177,7 @@ def _validate_02(ns: Namespace) -> None:
     )
 
 
-def _validate_03(ns: Namespace) -> None:
+def _validate_01(ns: Namespace) -> None:
     """Geometry tour: clamped endpoints, Greville snapshot, derivative vs FD, exact circle."""
     curve = ns["curve"]
     cp = np.asarray(ns["control_points"])
@@ -386,9 +386,9 @@ def _validate_10(ns: Namespace) -> None:
 
 
 _VALIDATORS: dict[str, Callable[[Namespace], None]] = {
-    "01_visualization_basics": _validate_01,
-    "02_basis_gallery": _validate_02,
-    "03_bspline_geometry_tour": _validate_03,
+    "01_bspline_geometry_tour": _validate_01,
+    "02_visualization_basics": _validate_02,
+    "03_basis_gallery": _validate_03,
     "04_knot_operations": _validate_04,
     "05_approximation": _validate_05,
     "06_cad_modeling": _validate_06,
