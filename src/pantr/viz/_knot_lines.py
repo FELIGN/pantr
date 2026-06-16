@@ -1,22 +1,23 @@
 """Knot line visualization for B-spline and THB-spline geometries.
 
-For a B-spline, knot lines are the images of iso-parametric lines at interior
-knot values:
+Knot lines are the element (knot-span) boundaries drawn on the rendered
+geometry/field:
 
 - **dim=1 (curves)**: knot *points* — evaluate the curve at each interior knot.
-- **dim=2 (surfaces)**: knot *curves* — slice the surface at each interior knot
-  in each direction, yielding iso-parametric curves.
-- **dim=3 (volumes)**: knot *surfaces* — slice the volume at each interior knot
-  in each direction, yielding iso-parametric surfaces.
+- **dim=2/3 (surfaces/volumes)**: the **cell boundaries** of the VTK Bézier-cell
+  decomposition. Because Bézier extraction yields one VTK cell per element, the
+  boundary edges of those cells *are* the knot lines.
 
-For a :class:`~pantr.bspline.THBSpline` the analogue is the **active-cell
-boundaries** of its hierarchical grid, drawn on the rendered geometry/field: the
-endpoints of each active cell (dim=1) or the boundary Bézier curves of each
-active cell's patch (dim=2/3). Finer cells therefore yield denser boundaries.
+For dim ≥ 2 the boundaries are obtained by tessellating each Bézier cell at the
+**same subdivision level the surface uses** and extracting the tessellated cell
+boundary with :meth:`pyvista.DataSet.extract_feature_edges`. The resulting edges
+therefore share the surface's facet vertices exactly: they lie *on* the rendered
+surface (no facet-vs-curve mismatch) and VTK's coincident-topology resolution
+keeps them from z-fighting. This applies uniformly to B-splines (element
+boundaries) and :class:`~pantr.bspline.THBSpline` (active-cell boundaries).
 
-For a B-spline, each lower-dimensional slice is converted to a pyvista mesh via
-:func:`~pantr.viz.to_pyvista`; the THB-spline cell boundaries are assembled
-directly as VTK Bézier cells.
+For a 1D :class:`~pantr.bspline.THBSpline` the analogue is the interior
+active-cell endpoints.
 """
 
 from __future__ import annotations
@@ -28,18 +29,16 @@ from numpy import typing as npt
 
 from ._common import _MAX_PHYSICAL_DIM, _pad_points_to_3d
 from ._lazy_import import _import_pyvista
-from ._vtk_cells import (
-    VTK_BEZIER_CURVE,
-    _thb_bezier_patches,
-    _thb_patch_coords,
-    to_pyvista,
-)
-from ._vtk_ordering import vtk_ordering_curve
+from ._vtk_cells import to_pyvista
 
 if TYPE_CHECKING:
     import pyvista as pv
 
     from ..bspline import Bspline, THBSpline
+
+# Matches the scene's default; callers (e.g. ``Scene``) pass the level actually
+# used for the surface so the extracted edges coincide with the rendered facets.
+_DEFAULT_TESSELLATION_LEVEL = 4
 
 
 def _get_interior_knots(
@@ -70,8 +69,7 @@ def _get_interior_knots(
 def _knot_points_curve(bspline: Bspline) -> pv.PolyData:
     """Compute knot points for a 1D B-spline curve.
 
-    Evaluates the curve at each interior knot value and returns
-    a point cloud.
+    Evaluates the curve at each interior knot value and returns a point cloud.
 
     Args:
         bspline: A 1D B-spline curve.
@@ -96,30 +94,6 @@ def _knot_points_curve(bspline: Bspline) -> pv.PolyData:
 
     pts_3d = _pad_points_to_3d(pts_phys, bspline.rank)
     return pv.PolyData(pts_3d)  # type: ignore[no-any-return]
-
-
-def _knot_slices(bspline: Bspline, n_directions: int) -> list[pv.UnstructuredGrid]:
-    """Slice a B-spline at every interior knot along the first ``n_directions`` axes.
-
-    Shared by 2D surfaces (``n_directions=2``, yielding iso-parametric curves)
-    and 3D volumes (``n_directions=3``, yielding iso-parametric surfaces); each
-    slice is converted to a VTK Bézier cell mesh.
-
-    Args:
-        bspline: A 2D B-spline surface or 3D B-spline volume.
-        n_directions: Number of parametric directions to slice along.
-
-    Returns:
-        list[pv.UnstructuredGrid]: One grid per knot slice.
-    """
-    interior_knots = _get_interior_knots(bspline)
-    grids: list[pv.UnstructuredGrid] = []
-
-    for direction in range(n_directions):
-        for knot_val in interior_knots[direction]:
-            grids.append(to_pyvista(bspline.slice(direction, float(knot_val))))  # type: ignore[arg-type]
-
-    return grids
 
 
 def _thb_knot_points(thb: THBSpline) -> pv.PolyData:
@@ -155,113 +129,79 @@ def _thb_knot_points(thb: THBSpline) -> pv.PolyData:
     return pv.PolyData(pts_3d)  # type: ignore[no-any-return]
 
 
-def _boundary_curve_lines(
-    pts_nd: npt.NDArray[np.float64], dim: int
-) -> list[npt.NDArray[np.float64]]:
-    """Extract the boundary Bézier-curve control points of one patch.
+def _cell_boundary_edges(
+    grid: pv.UnstructuredGrid, tessellation_level: int, dim: int
+) -> pv.PolyData:
+    """Extract the per-cell tessellated boundary edges of a Bézier-cell grid.
+
+    Each Bézier cell is tessellated at *tessellation_level* (matching the
+    surface) and its boundary edges are extracted; the union over cells is the
+    knot-line grid. Because the edges are taken from the cells' own tessellation
+    they share the surface's facet vertices exactly, so they lie on the rendered
+    surface without floating or z-fighting.
+
+    For a surface (``dim == 2``) the boundary is the perimeter of each cell's
+    tessellated patch. For a volume (``dim == 3``) the cell tessellates to a
+    closed solid, so the cell wireframe is recovered as the *feature* edges of
+    its outer surface instead.
 
     Args:
-        pts_nd: Patch control points embedded in 3D, shape ``(*n_per, 3)``.
+        grid: A :func:`~pantr.viz.to_pyvista` grid of VTK Bézier cells.
+        tessellation_level: Non-linear subdivision level, equal to the surface's.
         dim: Parametric dimension (2 or 3).
 
     Returns:
-        list[NDArray[float64]]: One ``(m, 3)`` control-point array per boundary
-        edge — 4 edges for a surface patch, 12 for a volume patch.
+        pv.PolyData: Merged boundary-edge polylines (empty if the grid has no
+        cells).
     """
-    ends = (0, -1)
-    if dim == 2:  # noqa: PLR2004
-        return (
-            [pts_nd[:, j, :] for j in ends]  # u-edges at v = 0, 1
-            + [pts_nd[i, :, :] for i in ends]  # v-edges at u = 0, 1
+    pv_mod = _import_pyvista()
+    level = max(int(tessellation_level), 1)
+    is_volume = dim == _MAX_PHYSICAL_DIM
+    edge_meshes: list[pv.PolyData] = []
+    for cid in range(grid.n_cells):
+        tess = grid.extract_cells([cid]).tessellate(max_n_subdivide=level)
+        # A surface patch already exposes its perimeter to extract_feature_edges;
+        # a volume must first be reduced to its bounding surface.
+        src = tess.extract_surface(algorithm="geometry") if is_volume else tess
+        edges = src.extract_feature_edges(
+            boundary_edges=not is_volume,
+            feature_edges=is_volume,
+            manifold_edges=False,
+            non_manifold_edges=False,
         )
-    return (
-        [pts_nd[:, j, k, :] for j in ends for k in ends]  # u-edges
-        + [pts_nd[i, :, k, :] for i in ends for k in ends]  # v-edges
-        + [pts_nd[i, j, :, :] for i in ends for j in ends]  # w-edges
-    )
+        if edges.n_cells:
+            edge_meshes.append(edges)
 
-
-def _curves_to_grid(lines: list[npt.NDArray[np.float64]]) -> pv.UnstructuredGrid:
-    """Assemble boundary control-point lines into one VTK Bézier-curve grid.
-
-    Args:
-        lines: Control-point arrays, one ``(m, 3)`` per boundary curve.
-
-    Returns:
-        pv.UnstructuredGrid: A grid of ``VTK_BEZIER_CURVE`` cells.
-    """
-    pv = _import_pyvista()
-    if not lines:
-        return pv.UnstructuredGrid()  # type: ignore[no-any-return]
-    all_pts: list[npt.NDArray[np.float64]] = []
-    conn: list[int] = []
-    offset = 0
-    for line in lines:
-        m = line.shape[0]
-        all_pts.append(line[vtk_ordering_curve(m - 1)])
-        conn.append(m)
-        conn.extend(range(offset, offset + m))
-        offset += m
-    cell_types = np.full(len(lines), VTK_BEZIER_CURVE, dtype=np.uint8)
-    return pv.UnstructuredGrid(  # type: ignore[no-any-return]
-        np.array(conn, dtype=np.intp), cell_types, np.vstack(all_pts)
-    )
-
-
-def _thb_knot_lines(thb: THBSpline, elevation: bool) -> list[pv.PolyData | pv.UnstructuredGrid]:
-    """Compute active-cell-boundary knot lines for a THB spline.
-
-    Args:
-        thb: Input THB spline (dim 1, 2, or 3).
-        elevation: For a dim=2 scalar field, use the value as a spatial coordinate
-            so the boundaries lie on the elevated field. A dim=1 scalar field is
-            always drawn as the graph ``(t, f(t))`` (see :func:`_thb_knot_points`).
-
-    Returns:
-        list[pv.PolyData | pv.UnstructuredGrid]: A single mesh holding the
-        active-cell boundaries.
-
-    Raises:
-        ValueError: If the parametric dimension is not 1, 2, or 3.
-    """
-    _import_pyvista()  # ensure pyvista is available
-    dim, rank = thb.dim, thb.rank
-    if dim == 1:
-        return [_thb_knot_points(thb)]
-    if dim not in (2, _MAX_PHYSICAL_DIM):
-        raise ValueError(f"Unsupported parametric dimension {dim}.")
-
-    grid = thb.space.grid
-    patches, n_per = _thb_bezier_patches(thb)
-    lines: list[npt.NDArray[np.float64]] = []
-    for cid, bern in patches:
-        pts, _ = _thb_patch_coords(bern, n_per, grid.cell_bounds(cid), rank, dim, elevation)
-        lines.extend(_boundary_curve_lines(pts.reshape(*n_per, _MAX_PHYSICAL_DIM), dim))
-    return [_curves_to_grid(lines)]
+    if not edge_meshes:
+        return pv_mod.PolyData()  # type: ignore[no-any-return]
+    if len(edge_meshes) == 1:
+        return edge_meshes[0]
+    return edge_meshes[0].merge(edge_meshes[1:])  # type: ignore[no-any-return]
 
 
 def knot_lines_meshes(
-    geom: Bspline | THBSpline, *, elevation: bool = False
+    geom: Bspline | THBSpline,
+    *,
+    tessellation_level: int = _DEFAULT_TESSELLATION_LEVEL,
+    elevation: bool = False,
 ) -> list[pv.PolyData | pv.UnstructuredGrid]:
     """Compute knot line meshes for a B-spline or THB-spline geometry.
 
-    For a B-spline, returns one mesh per knot line (or point, or surface)
-    depending on the parametric dimension:
-
-    - **dim=1**: single ``PolyData`` point cloud of knot locations.
-    - **dim=2**: list of ``UnstructuredGrid`` iso-parametric curves.
-    - **dim=3**: list of ``UnstructuredGrid`` iso-parametric surfaces.
-
-    For a :class:`~pantr.bspline.THBSpline`, returns a single mesh holding the
-    active-cell boundaries (a ``PolyData`` point cloud in dim=1, a
-    ``UnstructuredGrid`` of boundary Bézier curves in dim=2/3).
+    - **dim=1**: a single ``PolyData`` point cloud of interior knot locations.
+    - **dim=2/3**: a single ``PolyData`` of the Bézier cells' boundary edges
+      (element boundaries for a B-spline, active-cell boundaries for a THB
+      spline), tessellated at *tessellation_level* so the edges coincide with a
+      surface rendered at the same level.
 
     Args:
         geom: Input B-spline or THB-spline geometry (dim 1, 2, or 3).
-        elevation: For a THB scalar field with dim == 2, use the value as a spatial
-            coordinate so the boundaries lie on the elevated field. A dim=1 scalar
-            field is always drawn as the graph ``(t, f(t))`` regardless of this
-            flag; ignored for B-splines.
+        tessellation_level: Non-linear subdivision level for the cell-boundary
+            edges (dim ≥ 2). Pass the same level used to render the surface so
+            the edges lie exactly on the rendered facets. Ignored for dim=1.
+        elevation: For a dim=2 scalar field (``rank == 1``), use the value as a
+            spatial coordinate so the boundaries lie on the elevated field. A
+            dim=1 scalar field is always drawn as the graph ``(t, f(t))``;
+            ignored for vector-valued geometries.
 
     Returns:
         list[pv.PolyData | pv.UnstructuredGrid]: Knot line meshes.
@@ -272,16 +212,15 @@ def knot_lines_meshes(
     """
     from ..bspline import THBSpline as THBSplineCls  # noqa: PLC0415
 
-    if isinstance(geom, THBSplineCls):
-        return _thb_knot_lines(geom, elevation)
-
     _import_pyvista()  # ensure pyvista is available
 
     dim = geom.dim
     if dim == 1:
+        if isinstance(geom, THBSplineCls):
+            return [_thb_knot_points(geom)]
         return [_knot_points_curve(geom)]
-    if dim == 2:  # noqa: PLR2004
-        return _knot_slices(geom, 2)
-    if dim == _MAX_PHYSICAL_DIM:
-        return _knot_slices(geom, _MAX_PHYSICAL_DIM)
-    raise ValueError(f"Unsupported parametric dimension {dim}.")
+    if dim not in (2, _MAX_PHYSICAL_DIM):
+        raise ValueError(f"Unsupported parametric dimension {dim}.")
+
+    grid = to_pyvista(geom, elevation=elevation)
+    return [_cell_boundary_edges(grid, tessellation_level, dim)]
