@@ -560,7 +560,10 @@ def save(
     The file format is inferred from the extension (``.vtu`` recommended,
     ``.vtk`` for legacy format).
 
-    ParaView ≥ 5.10 renders VTK Bézier cells natively with exact geometry.
+    ParaView ≥ 5.10 renders VTK Bézier cells natively with exact geometry. Enable
+    **Surface With Edges** to see the element (knot) boundaries: ParaView draws the
+    cells' curved edges, dynamically tessellated at the chosen *Nonlinear
+    Subdivision Level* — so no knot-line geometry is written to the file.
 
     Args:
         geom: Input B-spline, Bézier, or THB-spline geometry.

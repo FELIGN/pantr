@@ -68,7 +68,9 @@ scene.show()
 # Exporting to VTK
 # ----------------
 # :func:`~pantr.viz.save` writes a ``.vtu`` file that ParaView (>= 5.10) renders with
-# exact Bézier geometry -- handy for publication figures.
+# exact Bézier geometry -- handy for publication figures. In ParaView, switch the
+# representation to *Surface With Edges* to see the knot lines: it draws the cells'
+# curved edges, dynamically tessellated at the chosen *Nonlinear Subdivision Level*.
 out_file = Path(tempfile.gettempdir()) / "pantr_disk.vtu"
 viz.save(disk, out_file)
 print(f"wrote {out_file}")
