@@ -1,4 +1,4 @@
-"""Optional visualization module for PaNTr using pyvista.
+"""Visualization module for PaNTr using pyvista.
 
 Provides conversion of B-spline, Bézier, and THB-spline geometries to pyvista
 ``UnstructuredGrid`` objects with native VTK Bézier cell types, interactive
@@ -6,9 +6,12 @@ visualization, and export to VTK file formats for ParaView. A
 :class:`~pantr.bspline.THBSpline` is decomposed into one VTK Bézier cell per
 active cell of its hierarchical grid.
 
-This module requires ``pyvista`` (optional dependency). Install with::
+This module ships with PaNTr but is **backend-gated**: it needs the third-party
+``pyvista`` library and activates as soon as ``pyvista`` is importable (otherwise its
+functions raise a clear error). The ``viz`` extra adds no PaNTr code -- it is just a
+convenience that installs ``pyvista`` for you::
 
-    pip install pantr[viz]
+    pip install "pantr[viz]"    # or, equivalently: pip install pyvista
 
 Main exports:
 

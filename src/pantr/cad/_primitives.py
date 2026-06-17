@@ -5,7 +5,7 @@ Defines create_line, create_circle, create_bilinear, and create_trilinear.
 Provides functions to create basic B-spline objects from geometric
 descriptions (points, corners, radii, angles).  All primitives produce
 rank-3 (3D) output so they can be freely composed with higher-level
-operations such as ``extrude`` and ``revolve``.
+operations such as ``create_extrusion`` and ``create_revolution``.
 """
 
 from __future__ import annotations

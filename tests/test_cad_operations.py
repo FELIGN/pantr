@@ -1,4 +1,4 @@
-"""Tests for CAD operations: extrude and ruled."""
+"""Tests for CAD operations: create_extrusion and create_ruled."""
 
 from __future__ import annotations
 
@@ -6,7 +6,7 @@ import numpy as np
 import pytest
 from numpy.testing import assert_allclose
 
-from pantr.cad import create_bilinear, create_circle, create_line, create_ruled, extrude
+from pantr.cad import create_bilinear, create_circle, create_extrusion, create_line, create_ruled
 
 _RANK_3D = 3
 
@@ -17,7 +17,7 @@ class TestExtrude:
     def test_line_to_surface(self) -> None:
         """Test extruding a line into a surface."""
         crv = create_line([0, 0, 0], [1, 0, 0])
-        srf = extrude(crv, [0, 0, 1])
+        srf = create_extrusion(crv, [0, 0, 1])
         assert srf.dim == 2
         assert srf.rank == _RANK_3D
         assert not srf.is_rational
@@ -25,13 +25,13 @@ class TestExtrude:
     def test_extrude_degree(self) -> None:
         """Test that the new direction has degree 1."""
         crv = create_line([0, 0, 0], [1, 0, 0])
-        srf = extrude(crv, [0, 1, 0])
+        srf = create_extrusion(crv, [0, 1, 0])
         assert srf.degree == (1, 1)
 
     def test_extrude_evaluate_corners(self) -> None:
         """Test evaluation at the four corners of an extruded line."""
         crv = create_line([0, 0, 0], [2, 0, 0])
-        srf = extrude(crv, [0, 3, 0])
+        srf = create_extrusion(crv, [0, 3, 0])
         pts = srf.evaluate(
             np.array(
                 [
@@ -50,7 +50,7 @@ class TestExtrude:
     def test_extrude_circle_to_cylinder(self) -> None:
         """Test extruding a circle produces a cylinder."""
         crv = create_circle(radius=2.0)
-        cyl = extrude(crv, [0, 0, 5])
+        cyl = create_extrusion(crv, [0, 0, 5])
         assert cyl.dim == 2
         assert cyl.is_rational
         # Evaluate on a grid and check all points lie on the cylinder
@@ -67,20 +67,20 @@ class TestExtrude:
     def test_extrude_surface_to_volume(self) -> None:
         """Test extruding a surface into a volume."""
         srf = create_bilinear()
-        vol = extrude(srf, [0, 0, 1])
+        vol = create_extrusion(srf, [0, 0, 1])
         assert vol.dim == _RANK_3D
         assert vol.degree == (1, 1, 1)
 
     def test_extrude_volume_raises(self) -> None:
         """Test that extruding a volume raises ValueError."""
-        vol = extrude(create_bilinear(), [0, 0, 1])
+        vol = create_extrusion(create_bilinear(), [0, 0, 1])
         with pytest.raises(ValueError, match="dim"):
-            extrude(vol, [0, 0, 1])
+            create_extrusion(vol, [0, 0, 1])
 
     def test_extrude_2d_displacement(self) -> None:
         """Test that 2D displacement is zero-padded to 3D."""
         crv = create_line([0, 0, 0], [1, 0, 0])
-        srf = extrude(crv, [0, 1])
+        srf = create_extrusion(crv, [0, 1])
         pt = srf.evaluate(np.array([[0.5, 1.0]]))
         assert_allclose(pt, [0.5, 1.0, 0.0], atol=1e-14)
 

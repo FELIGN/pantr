@@ -11,21 +11,28 @@ pip install pantr
 
 ### Optional features
 
-Extra capabilities are opt-in via extras, so a plain install stays lightweight:
+A plain `pip install pantr` already includes **every** PaNTr module, including
+{mod}`pantr.viz` and {mod}`pantr.mpi`. These two don't do anything on their own — each
+needs a third-party *backend* library, and activates automatically as soon as that
+library is importable. Until then, calling into the module raises a clear error; nothing
+else is affected.
 
-| Extra | Enables | Pulls in |
-|---|---|---|
-| `viz` | visualization & VTK export ({mod}`pantr.viz`) | `pyvista` |
-| `mpi` | distributed spaces ({mod}`pantr.mpi`) | `mpi4py` (needs an MPI library) |
-| `metis` | METIS graph-partitioning backend | `pymetis` |
+The extras below install **no extra PaNTr code** — they are a convenience that pulls in
+the backend for you. Installing the backend yourself is exactly equivalent:
+
+| Capability | Module | Backend | Install (extra *or* direct) |
+|---|---|---|---|
+| Visualization & VTK export | {mod}`pantr.viz` | `pyvista` | `pip install "pantr[viz]"` · `pip install pyvista` |
+| Distributed (MPI) spaces | {mod}`pantr.mpi` | `mpi4py` (+ an MPI library) | `pip install "pantr[mpi]"` |
+| METIS partitioning backend | {func}`pantr.bspline.partition_graph` | `pymetis` | `pip install "pantr[metis]"` |
 
 ```bash
-pip install "pantr[viz]"        # e.g. to run the tutorials' 3-D scenes
-pip install "pantr[mpi,viz]"    # several extras at once
+pip install "pantr[viz]"        # enable visualization (installs pyvista)
+pip install "pantr[mpi,viz]"    # several backends at once
 ```
 
-The serial core never imports {mod}`pantr.mpi`, so it behaves identically with or
-without the `mpi` extra.
+The serial core never imports {mod}`pantr.mpi`, so a plain `pip install pantr` behaves
+identically whether or not these backends are present.
 
 ## Your first spline
 

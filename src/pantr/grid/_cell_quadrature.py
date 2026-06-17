@@ -10,7 +10,7 @@ to that cell's volume and ``sum_i w_i f(x_i)`` approximates the integral of
 ``f`` over the cell.
 
 This is the uncut/background-cell quadrature bridge: a consumer (for example,
-ocelat) takes this rule for interior cells and substitutes its own cut-cell
+lepard) takes this rule for interior cells and substitutes its own cut-cell
 rule on cells flagged as cut.
 """
 

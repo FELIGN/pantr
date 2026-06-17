@@ -5,7 +5,9 @@ hierarchical THB-spline space (`THBSplineSpace`) across MPI ranks for parallel
 assembly. The design keeps a clear separation:
 
 - a **serial windowing core** (in `pantr.grid` / `pantr.bspline`) that needs no MPI;
-- an **optional MPI layer** (`pantr.mpi`) that wraps it per rank.
+- the **MPI layer** (`pantr.mpi`) that wraps it per rank — it ships with PaNTr and
+  becomes usable once `mpi4py` is installed (the `mpi` extra is just a convenience for
+  that; see the Installation section below).
 
 Every rank holds a **redundant, self-contained** local space covering the cells it
 owns plus their support halo, so basis evaluation and element assembly are purely
@@ -91,8 +93,9 @@ partition = partition_graph(graph, comm.size)       # backend="spectral" (defaul
 
 ## Consuming an external partition (dolfinx)
 
-When a dolfinx-based consumer (e.g. qugar or tigarx) already partitioned a mesh,
-ingest *its* cell ownership instead of re-partitioning:
+When a dolfinx-based consumer (e.g. [QUGaR](https://github.com/pantolin/qugar) or
+[tIGArx](https://github.com/pantolin/tIGArx)) already partitioned a mesh, ingest *its*
+cell ownership instead of re-partitioning:
 
 ```python
 from pantr.mpi import from_dolfinx
@@ -153,7 +156,7 @@ partition = partition_grid(grid, comm.size, cell_weights=cost, cell_active=inter
 
 ## Consumer patterns
 
-**Native MPI (e.g. ocelat), no dolfinx.** Partition the grid (or coupling graph)
+**Native MPI (e.g. lepard), no dolfinx.** Partition the grid (or coupling graph)
 directly and build the distributed space:
 
 ```python
@@ -168,7 +171,8 @@ if ds.owns_cells:
     assemble_local(ds.local)        # your element loop over ds.local.space
 ```
 
-**dolfinx-driven (e.g. tigarx, qugar).** Let dolfinx own the partition and bridge
+**dolfinx-driven (e.g. [tIGArx](https://github.com/pantolin/tIGArx),
+[QUGaR](https://github.com/pantolin/qugar)).** Let dolfinx own the partition and bridge
 it in -- the immersed `cell_active` path falls out for free (trimmed cells become
 owner `-1`):
 

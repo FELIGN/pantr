@@ -61,7 +61,7 @@ def test_overlay_refines_both_inputs() -> None:
 
 
 def test_overlay_high_dimension() -> None:
-    """Overlay is defined for ndim > 3 (generalized beyond ocelat's 2/3-D cap)."""
+    """Overlay is defined for ndim > 3 (generalized beyond lepard's 2/3-D cap)."""
     a = uniform_grid([[0.0, 1.0]] * 4, 2)
     b = uniform_grid([[0.0, 1.0]] * 4, 3)
     result = overlay(a, b)

@@ -2,9 +2,10 @@
 Approximation: interpolation, fitting, projection, quasi-interpolation
 ======================================================================
 
-So far we have *prescribed* control points. Often the geometry is the unknown: given a
-function (or sampled data), find the spline that best represents it. :mod:`pantr.bspline`
-offers several routes, trading cost against accuracy:
+So far the control points have come from geometry we built directly -- placed by hand or
+produced by the CAD module. Often the geometry is the *unknown* instead: given a function
+(or sampled data), find the spline that best represents it. :mod:`pantr.bspline` offers
+several routes, trading cost against accuracy:
 :func:`~pantr.bspline.interpolate_bspline` (match the function at the Greville points by
 default), :func:`~pantr.bspline.l2_project_bspline` (best :math:`L^2` fit), and
 :func:`~pantr.bspline.quasi_interpolate_bspline` (a cheap, purely local projector). This

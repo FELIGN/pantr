@@ -117,19 +117,25 @@ with concurrent.futures.ThreadPoolExecutor(4) as pool:
 ## Threading layer
 
 Numba supports several threading backends: **TBB**, **OpenMP**, and
-**workqueue** (the default).  TBB is the recommended choice for PaNTr because
-it handles nested and concurrent parallel regions safely.  To select it, set
-the environment variable before importing PaNTr:
+**workqueue**. With the default `NUMBA_THREADING_LAYER=default`, Numba selects
+the first that is installed, preferring **TBB → OpenMP → workqueue** — so a
+bare environment with neither TBB nor OpenMP available falls back to workqueue.
+
+**TBB is the recommended backend for PaNTr** because it handles nested and
+concurrent parallel regions safely — `workqueue` is *not* safe when several
+Python threads call PaNTr kernels concurrently (the *Usage patterns* above). The
+reliable way to get it is to **install the TBB backend**:
+
+```bash
+pip install tbb
+```
+
+Numba then selects it automatically (no env var needed). To *force* it — and get
+a clear error instead of a silent workqueue fallback if TBB is missing — set the
+environment variable before importing PaNTr (or any Numba code):
 
 ```bash
 export NUMBA_THREADING_LAYER=tbb
-```
-
-or, in Python before any Numba import:
-
-```python
-import os
-os.environ["NUMBA_THREADING_LAYER"] = "tbb"
 ```
 
 The maximum number of threads available to Numba is determined by
@@ -142,5 +148,5 @@ this maximum.
 | Variable | Default | Effect |
 |---|---|---|
 | `NUMBA_NUM_THREADS` | Number of logical cores | Maximum thread-pool size |
-| `NUMBA_THREADING_LAYER` | `workqueue` | Threading backend (`tbb`, `omp`, `workqueue`) |
+| `NUMBA_THREADING_LAYER` | `default` (picks `tbb`→`omp`→`workqueue` by availability) | Threading backend; install `tbb` to get TBB, or set this to force a specific layer |
 | `NUMBA_DISABLE_JIT` | `0` | Set to `1` to disable JIT entirely (useful for coverage) |

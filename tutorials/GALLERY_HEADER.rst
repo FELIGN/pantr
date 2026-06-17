@@ -13,8 +13,13 @@ rest of the User Guide for the conceptual reference behind each step.
 
 Running them yourself::
 
-    pip install "pantr[viz]"          # the 3-D tutorials need the viz extra
+    pip install "pantr[viz]" matplotlib    # 3-D scenes need PyVista; 2-D plots use matplotlib
     python tutorials/01_first_bspline.py
+
+The 2-D plots are drawn with `matplotlib <https://matplotlib.org>`_ and the interactive
+3-D scenes with `PyVista <https://docs.pyvista.org>`_. Neither is a dependency of PaNTr
+itself -- they are used only by these tutorial scripts (PaNTr's own rendering lives in
+:mod:`pantr.viz`, which needs only PyVista).
 
 The 3-D scenes are interactive -- drag to rotate, scroll to zoom. The plotting scripts
 use Numba kernels; on a fresh process you may hit a Numba background-warmup threading
@@ -31,8 +36,8 @@ The path, in order:
    scalar fields, VTK export (:mod:`pantr.viz`).
 #. **Knot operations & Bézier extraction** -- knot insertion, degree elevation, and the
    element-local Bézier pieces (:mod:`pantr.bspline`).
-#. **Constructive CAD modeling** -- primitives plus extrude / revolve / ruled, assembled
-   (:mod:`pantr.cad`).
+#. **Constructive CAD modeling** -- primitives plus extrusion / revolution / ruled,
+   assembled (:mod:`pantr.cad`).
 #. **Approximation** -- interpolation, L2 projection, quasi-interpolation, and
    convergence (:mod:`pantr.bspline`).
 #. **Polynomial bases & change of basis** -- Bernstein / Lagrange / Legendre and the

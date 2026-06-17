@@ -1,15 +1,19 @@
 # Visualization
 
-PaNTr includes an optional visualization module (`pantr.viz`) built on
-[PyVista](https://docs.pyvista.org/) that renders B-spline and Bezier
-geometries using **native VTK higher-order Bezier cell types**.  This means
-exact polynomial geometry at any zoom level -- no tessellation to triangles.
+PaNTr ships with a visualization module (`pantr.viz`) built on
+[PyVista](https://docs.pyvista.org/) that renders B-spline and Bezier geometries
+using **native VTK higher-order Bezier cell types**. Rather than baking the geometry
+into a fixed triangle mesh up front, each cell carries the *exact* polynomial map.
+To display it, a viewer still tessellates the cell into triangles -- but at a
+**subdivision level you choose**, so you trade resolution for cost and can refine as
+far as you like; the geometry stored in a file stays exact no matter how it is later
+tessellated.
 
 ## Installation
 
-`pantr.viz` requires [PyVista](https://docs.pyvista.org/), which is not
-included in a default `pantr` install.  You can make it available in two
-equivalent ways:
+`pantr.viz` ships with every PaNTr install but needs the third-party
+[PyVista](https://docs.pyvista.org/) library to do anything; PyVista is not pulled in by
+a default `pip install pantr`. Make it available in either equivalent way:
 
 ```bash
 pip install "pantr[viz]"   # let pantr pull in pyvista automatically
@@ -175,8 +179,9 @@ by default, configurable via `scalar_name`).
 ## Exporting to VTK files
 
 Export geometries to VTK files for visualization in
-[ParaView](https://www.paraview.org/) (version 5.10+ supports Bezier cells
-natively):
+[ParaView](https://www.paraview.org/) (5.10+ supports Bézier cells natively). ParaView
+tessellates each cell at its **Nonlinear Subdivision Level** -- raise that level for a
+closer fit to the curved geometry; the data stored in the file is exact regardless:
 
 ```python
 from pantr.viz import save

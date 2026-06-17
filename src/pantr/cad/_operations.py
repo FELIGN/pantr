@@ -1,4 +1,4 @@
-"""Constructive operations: extrude, revolve, ruled, and sweep.
+"""Constructive operations: extrusion, revolution, ruled, and sweep.
 
 Provides functions that create higher-dimensional B-spline objects
 by combining existing ones: extrusion along a vector, revolution
@@ -20,7 +20,7 @@ _MAX_DIM_FOR_OPERATIONS = 2
 _NORM_TOL = 1e-14
 
 
-def extrude(bspline: Bspline, displacement: npt.ArrayLike) -> Bspline:
+def create_extrusion(bspline: Bspline, displacement: npt.ArrayLike) -> Bspline:
     """Extrude a B-spline curve or surface along a displacement vector.
 
     Creates a new B-spline with one additional parametric dimension by
@@ -39,13 +39,15 @@ def extrude(bspline: Bspline, displacement: npt.ArrayLike) -> Bspline:
         ValueError: If ``bspline.dim > 2``.
 
     Example:
-        >>> from pantr.cad import create_circle, extrude
-        >>> cyl = extrude(create_circle(), [0, 0, 1])
+        >>> from pantr.cad import create_circle, create_extrusion
+        >>> cyl = create_extrusion(create_circle(), [0, 0, 1])
         >>> cyl.dim
         2
     """
     if bspline.dim > _MAX_DIM_FOR_OPERATIONS:
-        raise ValueError(f"extrude requires dim <= {_MAX_DIM_FOR_OPERATIONS}, got {bspline.dim}.")
+        raise ValueError(
+            f"create_extrusion requires dim <= {_MAX_DIM_FOR_OPERATIONS}, got {bspline.dim}."
+        )
 
     disp = _pad_to_3d(displacement)
     cp = bspline.control_points
@@ -234,7 +236,7 @@ def _revolve_control_points(
     return qw
 
 
-def revolve(
+def create_revolution(
     bspline: Bspline,
     point: npt.ArrayLike,
     axis: int | npt.ArrayLike = 2,
@@ -267,9 +269,11 @@ def revolve(
         ValueError: If ``bspline.rank != 3``.
     """
     if bspline.dim > _MAX_DIM_FOR_OPERATIONS:
-        raise ValueError(f"revolve requires dim <= {_MAX_DIM_FOR_OPERATIONS}, got {bspline.dim}.")
+        raise ValueError(
+            f"create_revolution requires dim <= {_MAX_DIM_FOR_OPERATIONS}, got {bspline.dim}."
+        )
     if bspline.rank != _PHYSICAL_DIM:
-        raise ValueError(f"revolve requires rank == {_PHYSICAL_DIM}, got {bspline.rank}.")
+        raise ValueError(f"create_revolution requires rank == {_PHYSICAL_DIM}, got {bspline.rank}.")
 
     pt = _pad_to_3d(point)
     v = _normalize_axis_vector(axis)
@@ -290,7 +294,7 @@ def revolve(
     return result_back
 
 
-def sweep(section: Bspline, trajectory: Bspline) -> Bspline:
+def create_sweep(section: Bspline, trajectory: Bspline) -> Bspline:
     """Construct the translational sweep of a section along a trajectory.
 
     Creates a new B-spline by summing the section and trajectory
@@ -315,10 +319,10 @@ def sweep(section: Bspline, trajectory: Bspline) -> Bspline:
     """
     if section.dim > _MAX_DIM_FOR_OPERATIONS:
         raise ValueError(
-            f"sweep requires section.dim <= {_MAX_DIM_FOR_OPERATIONS}, got {section.dim}."
+            f"create_sweep requires section.dim <= {_MAX_DIM_FOR_OPERATIONS}, got {section.dim}."
         )
     if trajectory.dim != 1:
-        raise ValueError(f"sweep requires trajectory.dim == 1, got {trajectory.dim}.")
+        raise ValueError(f"create_sweep requires trajectory.dim == 1, got {trajectory.dim}.")
 
     is_rational = section.is_rational or trajectory.is_rational
 

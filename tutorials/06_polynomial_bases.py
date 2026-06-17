@@ -2,8 +2,8 @@
 Polynomial bases and change of basis
 ====================================
 
-Underneath every spline is a *basis*. :mod:`pantr.basis` tabulates the common 1-D
-polynomial bases used to build spline and finite-element spaces, and
+Every spline is a linear combination of *basis functions*. :mod:`pantr.basis` tabulates
+the common 1-D polynomial bases used to build spline and finite-element spaces, and
 :mod:`pantr.change_basis` provides the exact matrices that convert coefficients between
 them. This tutorial plots the bases at a fixed degree and visualizes one such
 change-of-basis matrix.

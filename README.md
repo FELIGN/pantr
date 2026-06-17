@@ -12,7 +12,7 @@ Polynomial and NURBS Toolkit (**PaNTr**) is a pure Python 3.11–3.14 library fo
 - **Truncated hierarchical B-splines** — `THBSplineSpace` with local
   refinement, mirroring the tensor-product API.
 - **Constructive geometry (`pantr.cad`)** — lines, circles and arcs, disks,
-  cylinders, extrude, revolve, sweep, ruled and Coons surfaces/volumes.
+  cylinders, extrusion, revolution, sweep, ruled and Coons surfaces/volumes.
 - **Structured grids (`pantr.grid`)** — tensor-product and hierarchical grids,
   BVH spatial queries, [dolfinx](https://github.com/FEniCS/dolfinx)-style
   cell/facet tags, and cell quadrature.
@@ -21,9 +21,11 @@ Polynomial and NURBS Toolkit (**PaNTr**) is a pure Python 3.11–3.14 library fo
   monomial, and cardinal B-spline bases.
 - **Fast and typed** — Numba-JIT kernels parallelized over CPU cores, with
   strict type hints across the public API.
-- **Optional MPI and visualization** — distribute spaces across ranks
-  (`pantr.mpi`) and render exact higher-order geometry through
-  [PyVista](https://docs.pyvista.org) and [VTK](https://vtk.org) (`pantr.viz`).
+- **Dependency-gated MPI and visualization** — `pantr.mpi` distributes spaces across
+  ranks once [`mpi4py`](https://github.com/mpi4py/mpi4py) is installed, and `pantr.viz`
+  renders exact higher-order geometry through [PyVista](https://docs.pyvista.org) /
+  [VTK](https://vtk.org) once PyVista is installed. Both modules ship with PaNTr; only
+  their backends are optional.
 
 ## Installation
 
@@ -44,23 +46,23 @@ pip install .
 
 ### Optional features
 
-The serial core (`pantr.grid`, `pantr.bspline`, ...) has no optional dependencies.
-Extra features are opt-in via extras:
+Every install of PaNTr includes **all** of its modules — `pantr.viz` and `pantr.mpi`
+among them. Those two stay dormant until their third-party backend is importable, and
+activate automatically once it is; until then, calling into them raises a clear,
+actionable error (nothing else is affected). The "extras" below add **no PaNTr code** —
+they are just a convenience that installs the backend for you, so `pip install
+"pantr[viz]"` and `pip install pyvista` are equivalent.
 
-| Extra | Enables | Pulls in |
-|---|---|---|
-| `mpi` | distributed spaces (`pantr.mpi`) | [`mpi4py`](https://github.com/mpi4py/mpi4py) (needs an MPI library) |
-| `metis` | [METIS](https://github.com/KarypisLab/METIS) graph partitioning backend | [`pymetis`](https://github.com/inducer/pymetis) |
-| `viz` | visualization (`pantr.viz`) | [`pyvista`](https://docs.pyvista.org) ([VTK](https://vtk.org)) |
-| `docs` | building the documentation | [Sphinx](https://www.sphinx-doc.org) stack |
+| Capability | Module | Backend it needs | Install (extra or direct) |
+|---|---|---|---|
+| Visualization & VTK export | `pantr.viz` | [`pyvista`](https://docs.pyvista.org) (+ [VTK](https://vtk.org)) | `pip install "pantr[viz]"` · or `pip install pyvista` |
+| Distributed (MPI) spaces | `pantr.mpi` | [`mpi4py`](https://github.com/mpi4py/mpi4py) (+ an MPI library) | `pip install "pantr[mpi]"` |
+| METIS partitioning backend | `pantr.bspline.partition_graph` | [`pymetis`](https://github.com/inducer/pymetis) | `pip install "pantr[metis]"` |
 
-```bash
-pip install "pantr[mpi]"        # e.g. distributed spaces
-pip install "pantr[mpi,viz]"    # several extras at once
-```
-
-The serial core never imports `pantr.mpi`, so it works identically with or without
-the `mpi` extra.
+The serial core (`pantr.grid`, `pantr.bspline`, …) never imports `pantr.mpi`, so a plain
+`pip install pantr` behaves identically with or without these backends. Contributors can
+grab everything — including the docs toolchain ([Sphinx](https://www.sphinx-doc.org)) —
+with `pip install -e ".[dev]"`.
 
 ## Development
 

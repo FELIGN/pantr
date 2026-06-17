@@ -52,12 +52,9 @@ extensions = [
     "sphinx_design",
     "sphinx_gallery.gen_gallery",
     "pyvista.ext.viewer_directive",
-    "sphinx_rtd_dark_mode",
 ]
 
-OPTIONAL_EXTENSIONS: Final[list[str]] = [
-    "sphinx_rtd_dark_mode",
-]
+OPTIONAL_EXTENSIONS: Final[list[str]] = []
 
 for ext in OPTIONAL_EXTENSIONS:
     try:
@@ -167,32 +164,32 @@ myst_enable_extensions = [
     "smartquotes",
 ]
 
-html_theme = "sphinx_rtd_theme"
+# Furo: a clean theme that follows the reader's OS light/dark preference automatically
+# (a manual toggle is also available in the sidebar). Fall back to the built-in
+# 'alabaster' theme only if furo is not installed (it is pinned in the `docs` extra).
+html_theme = "furo"
 try:
-    if importlib.util.find_spec("sphinx_rtd_theme") is None:
+    if importlib.util.find_spec("furo") is None:
         raise ImportError
 except (ImportError, ModuleNotFoundError):
     warnings.warn(
-        "sphinx_rtd_theme not found. Falling back to 'alabaster'.",
+        "furo not found. Falling back to 'alabaster'.",
         stacklevel=1,
     )
     html_theme = "alabaster"
 html_static_path = ["_static"]
 html_show_sourcelink = True
 
-html_theme_options = {
-    "collapse_navigation": False,
-    "navigation_depth": 4,
-    "sticky_navigation": True,
-}
-
-html_context = {
-    "display_github": True,
-    "github_user": "pantolin",
-    "github_repo": "pantr",
-    "github_version": "main",
-    "conf_py_path": "/docs/",
-}
+# Furo provides light/dark automatically; these options drive its "Edit source" link.
+html_theme_options = (
+    {
+        "source_repository": "https://github.com/pantolin/pantr",
+        "source_branch": "main",
+        "source_directory": "docs/",
+    }
+    if html_theme == "furo"
+    else {}
+)
 
 html_logo = None
 html_favicon = None

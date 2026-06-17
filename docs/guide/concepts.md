@@ -131,13 +131,17 @@ Two specializations reuse the same model:
 
 The serial core ({mod}`pantr.bspline`, {mod}`pantr.bezier`, {mod}`pantr.basis`,
 {mod}`pantr.cad`, {mod}`pantr.grid`, {mod}`pantr.quad`, …) depends only on NumPy, SciPy,
-and Numba. Two heavier capabilities are **opt-in extras** and are never imported by the
-core:
+and Numba. Two further modules ship with every install but are **dependency-gated** —
+they need a third-party backend and activate automatically once it is importable (until
+then, using them raises a clear error). They are never imported by the core:
 
-- {mod}`pantr.viz` (the ``viz`` extra) — PyVista/VTK rendering and export
+- {mod}`pantr.viz` — PyVista/VTK rendering and export; needs `pyvista`
   ({doc}`/guide/visualization`).
-- {mod}`pantr.mpi` (the ``mpi`` extra) — MPI-distributed spaces
+- {mod}`pantr.mpi` — MPI-distributed spaces; needs `mpi4py`
   ({doc}`/guide/distributed`).
+
+The `viz` / `mpi` / `metis` install extras are just a convenience that pulls those
+backends in; installing the backend directly (e.g. `pip install pyvista`) is equivalent.
 
 Geometric predicates that need a floating-point tolerance (knot-multiplicity tests,
 endpoint detection) draw it from {mod}`pantr.tolerance`, so the whole library shares one
