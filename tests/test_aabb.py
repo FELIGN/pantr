@@ -1,6 +1,6 @@
 """Tests for :class:`pantr.geometry.AABB`.
 
-Ported from ocelat's AABB suite and extended for general ``ndim`` (PaNTr is not
+Ported from lepard's AABB suite and extended for general ``ndim`` (PaNTr is not
 restricted to 2-D/3-D) and PaNTr's standard-exception convention
 (:class:`ValueError` / :class:`TypeError` instead of a library-specific error
 type).
@@ -30,7 +30,7 @@ def test_aabb_rejects_mismatched_shapes() -> None:
 
 
 def test_aabb_allows_general_ndim() -> None:
-    # PaNTr is general-d: a 4-D box is valid (ocelat capped this at 2/3).
+    # PaNTr is general-d: a 4-D box is valid (lepard capped this at 2/3).
     b = AABB(lo=[0.0, 0.0, 0.0, 0.0], hi=[1.0, 1.0, 1.0, 1.0])
     assert b.ndim == 4
     assert not b.is_empty()
@@ -193,7 +193,7 @@ def test_aabb_unbounded() -> None:
 
 
 def test_aabb_unbounded_allows_high_ndim() -> None:
-    # General-d: unbounded works for ndim > 3 (ocelat rejected this).
+    # General-d: unbounded works for ndim > 3 (lepard rejected this).
     u = AABB.unbounded(5)
     assert u.ndim == 5
 

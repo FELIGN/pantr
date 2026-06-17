@@ -3,7 +3,7 @@
 :func:`from_dolfinx` consumes the cell ownership of a (distributed) ``dolfinx`` mesh
 and returns the serial, redundant :class:`~pantr.grid.Partition` over a pantr grid's
 cells that the distributed-space machinery consumes -- the bridge for dolfinx-based
-consumers (e.g. qugar / tigarx).
+consumers (e.g. QUGaR / tIGArx).
 
 ``dolfinx`` is never imported here: the mesh (and its MPI communicator) are supplied by
 the caller, and only its attributes are read. This module therefore has no import-time

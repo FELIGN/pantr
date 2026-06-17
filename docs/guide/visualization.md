@@ -2,10 +2,12 @@
 
 PaNTr ships with a visualization module (`pantr.viz`) built on
 [PyVista](https://docs.pyvista.org/) that renders B-spline and Bezier geometries
-using **native VTK higher-order Bezier cell types**. The cells store the *exact*
-polynomial geometry rather than a pre-baked triangle mesh, so a viewer can tessellate
-them as finely as needed and the geometry written to a file stays exact regardless of
-the display resolution.
+using **native VTK higher-order Bezier cell types**. Rather than baking the geometry
+into a fixed triangle mesh up front, each cell carries the *exact* polynomial map.
+To display it, a viewer still tessellates the cell into triangles -- but at a
+**subdivision level you choose**, so you trade resolution for cost and can refine as
+far as you like; the geometry stored in a file stays exact no matter how it is later
+tessellated.
 
 ## Installation
 

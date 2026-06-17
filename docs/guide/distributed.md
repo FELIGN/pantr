@@ -93,8 +93,9 @@ partition = partition_graph(graph, comm.size)       # backend="spectral" (defaul
 
 ## Consuming an external partition (dolfinx)
 
-When a dolfinx-based consumer (e.g. qugar or tigarx) already partitioned a mesh,
-ingest *its* cell ownership instead of re-partitioning:
+When a dolfinx-based consumer (e.g. [QUGaR](https://github.com/pantolin/qugar) or
+[tIGArx](https://github.com/pantolin/tIGArx)) already partitioned a mesh, ingest *its*
+cell ownership instead of re-partitioning:
 
 ```python
 from pantr.mpi import from_dolfinx
@@ -155,7 +156,7 @@ partition = partition_grid(grid, comm.size, cell_weights=cost, cell_active=inter
 
 ## Consumer patterns
 
-**Native MPI (e.g. ocelat), no dolfinx.** Partition the grid (or coupling graph)
+**Native MPI (e.g. lepard), no dolfinx.** Partition the grid (or coupling graph)
 directly and build the distributed space:
 
 ```python
@@ -170,7 +171,8 @@ if ds.owns_cells:
     assemble_local(ds.local)        # your element loop over ds.local.space
 ```
 
-**dolfinx-driven (e.g. tigarx, qugar).** Let dolfinx own the partition and bridge
+**dolfinx-driven (e.g. [tIGArx](https://github.com/pantolin/tIGArx),
+[QUGaR](https://github.com/pantolin/qugar)).** Let dolfinx own the partition and bridge
 it in -- the immersed `cell_active` path falls out for free (trimmed cells become
 owner `-1`):
 
