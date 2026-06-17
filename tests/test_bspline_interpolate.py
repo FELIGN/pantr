@@ -196,6 +196,15 @@ class TestInterpolate1DScalar:
         pts = np.linspace(0, 1, 11)
         nptest.assert_allclose(b.evaluate(pts), pts**2, atol=1e-12)
 
+    def test_custom_nodes_bare_1d_array(self) -> None:
+        # Regression: the ``nodes == "greville"`` check used to do an element-wise
+        # array comparison and raise when nodes was a bare 1D ndarray.
+        space = create_uniform_space(3, 4)
+        nodes = np.linspace(0, 1, space.num_basis[0])
+        b = interpolate_bspline(lambda lat: lat.get_all_points()[:, 0] ** 2, space, nodes=nodes)
+        pts = np.linspace(0, 1, 11)
+        nptest.assert_allclose(b.evaluate(pts), pts**2, atol=1e-12)
+
 
 # ---------------------------------------------------------------------------
 # interpolate_bspline — 1D vector-valued
