@@ -2,7 +2,7 @@
 
 ## Installation
 
-Requires Python 3.10–3.14.
+Requires Python 3.11–3.14.
 
 ```bash
 pip install pantr
