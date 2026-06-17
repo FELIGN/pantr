@@ -36,7 +36,7 @@ Custom interpolation nodes override the Greville default:
 ```python
 # Gauss-Lobatto nodes (better conditioning for high degree)
 from pantr.quad import get_gauss_lobatto_legendre_1d
-nodes = get_gauss_lobatto_legendre_1d(space.num_basis[0])
+nodes, _ = get_gauss_lobatto_legendre_1d(space.num_basis[0])  # returns (nodes, weights)
 result = interpolate_bspline(func, space, nodes=nodes)
 ```
 

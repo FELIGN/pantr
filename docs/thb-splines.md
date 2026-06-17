@@ -109,12 +109,12 @@ tp_space_l1 = fine_space.level_space(1)
 ## Updating the geometry after refinement
 
 After refining the space you need to re-associate control points with the new
-(larger) set of active basis functions.  The `restriction_to` method provides the
+(larger) set of active basis functions.  The `prolongation_to` method provides the
 prolongation operator from a coarser space to a finer one:
 
 ```python
 # Build the coarse-to-fine prolongation matrix
-P = fine_space.restriction_to(space)    # shape (fine dofs, coarse dofs)
+P = space.prolongation_to(fine_space)    # shape (fine dofs, coarse dofs)
 
 # Prolongate the control points
 cp_fine = (P @ cp.reshape(space.num_total_basis, -1))  # (fine dofs, rank)

@@ -10,11 +10,13 @@ geometry/field:
 
 For dim ≥ 2 the boundaries are obtained by tessellating each Bézier cell at the
 **same subdivision level the surface uses** and extracting the tessellated cell
-boundary with :meth:`pyvista.DataSet.extract_feature_edges`. The resulting edges
-therefore share the surface's facet vertices exactly: they lie *on* the rendered
-surface (no facet-vs-curve mismatch) and VTK's coincident-topology resolution
-keeps them from z-fighting. This applies uniformly to B-splines (element
-boundaries) and :class:`~pantr.bspline.THBSpline` (active-cell boundaries).
+boundary with :meth:`pyvista.DataSet.extract_feature_edges` — the perimeter
+edges for a surface patch, or (for a volume) the feature edges of the cell's
+bounding surface. The resulting edges therefore share the surface's facet
+vertices exactly: they lie *on* the rendered surface (no facet-vs-curve
+mismatch) and VTK's coincident-topology resolution keeps them from z-fighting.
+This applies uniformly to B-splines (element boundaries) and
+:class:`~pantr.bspline.THBSpline` (active-cell boundaries).
 
 For a 1D :class:`~pantr.bspline.THBSpline` the analogue is the interior
 active-cell endpoints.
@@ -143,7 +145,10 @@ def _cell_boundary_edges(
     For a surface (``dim == 2``) the boundary is the perimeter of each cell's
     tessellated patch. For a volume (``dim == 3``) the cell tessellates to a
     closed solid, so the cell wireframe is recovered as the *feature* edges of
-    its outer surface instead.
+    its outer surface instead — using a dihedral-angle threshold. On a strongly
+    curved hexahedron this is approximate: intra-face tessellation seams steeper
+    than the threshold can show up as extra lines. (Surfaces, the common case,
+    are exact.)
 
     Args:
         grid: A :func:`~pantr.viz.to_pyvista` grid of VTK Bézier cells.
@@ -187,11 +192,13 @@ def knot_lines_meshes(
 ) -> list[pv.PolyData | pv.UnstructuredGrid]:
     """Compute knot line meshes for a B-spline or THB-spline geometry.
 
-    - **dim=1**: a single ``PolyData`` point cloud of interior knot locations.
+    - **dim=1**: a single ``PolyData`` point cloud of *interior* knot locations.
     - **dim=2/3**: a single ``PolyData`` of the Bézier cells' boundary edges
       (element boundaries for a B-spline, active-cell boundaries for a THB
       spline), tessellated at *tessellation_level* so the edges coincide with a
-      surface rendered at the same level.
+      surface rendered at the same level. This includes the domain-boundary
+      knots (the full element mesh), so a single-element surface yields its
+      outline rather than an empty mesh.
 
     Args:
         geom: Input B-spline or THB-spline geometry (dim 1, 2, or 3).

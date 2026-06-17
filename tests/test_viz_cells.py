@@ -201,7 +201,11 @@ class TestRationalAndAnisotropicRendering:
         # reach the corner control point at radius √2.
         disk = create_disk(radius_outer=1.0)
         grid = to_pyvista(disk)
-        assert grid.GetPointData().GetRationalWeights() is not None
+        point_data = grid.GetPointData()
+        assert point_data.GetRationalWeights() is not None
+        # The weights must NOT be the active scalars (that disables rational eval).
+        active = point_data.GetScalars()
+        assert active is None or active.GetName() != "RationalWeights"
         surf = grid.extract_surface(nonlinear_subdivision=4, algorithm="dataset_surface")
         r = np.hypot(surf.points[:, 0], surf.points[:, 1])
         assert r.max() <= 1.0 + 1e-6

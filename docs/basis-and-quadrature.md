@@ -9,7 +9,7 @@ or spectral-element workflows.
 
 ## Polynomial bases (`pantr.basis`)
 
-Five bases are supported.  All live on the reference interval $[0, 1]$:
+Four bases are supported.  All live on the reference interval $[0, 1]$:
 
 | Basis | Function | Node distribution |
 |---|---|---|

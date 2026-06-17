@@ -10,8 +10,9 @@ single polynomial, so its Bernstein control points are ``C.T @ coeff[active]``
 Bézier cell per active cell.
 
 Uses native VTK higher-order Bézier cell types (``VTK_BEZIER_CURVE``,
-``VTK_BEZIER_QUADRILATERAL``, ``VTK_BEZIER_HEXAHEDRON``) which render exact
-polynomial geometry without tessellation.
+``VTK_BEZIER_QUADRILATERAL``, ``VTK_BEZIER_HEXAHEDRON``) which store the exact
+polynomial geometry and are tessellated at render time (no pre-tessellation is
+baked into the data).
 """
 
 from __future__ import annotations
