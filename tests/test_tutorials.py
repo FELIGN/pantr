@@ -261,7 +261,7 @@ def _validate_approximation(ns: Namespace) -> None:
     )
     assert e_l2 <= e_quasi + 1e-12, "L2 projection must be at least as L2-accurate as quasi-interp"
     assert max(e_interp, e_l2, e_quasi) < 0.1, "cubic approximations should be reasonably accurate"
-    errors = np.asarray(ns["errors"])  # degree-4 L2 errors (p=4 is last in the loop over {2, 3, 4})
+    errors = np.asarray(ns["degree4_errors"])
     assert len(errors) == 5, "expected five refinement steps (one per entry of n_elements)"
     assert np.all(np.diff(errors) < 0), "L2 error must decrease under refinement"
     np.testing.assert_allclose(
@@ -423,10 +423,12 @@ def test_tutorials_and_validators_match() -> None:
 def _stub_rendering(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     """Stub interactive rendering so the tutorials run headless.
 
-    Sets three things via ``monkeypatch`` (so each is restored on teardown): forces
+    Sets four things via ``monkeypatch`` (so each is restored on teardown): forces
     ``pv.OFF_SCREEN`` so any ``Plotter`` built before ``show`` skips the display
     connection; stubs ``pv.Plotter.show`` (the VTK render/window step every viz call
-    funnels through) to a no-op; and stubs ``matplotlib.pyplot.show`` to a no-op.
+    funnels through) to a no-op; stubs ``pv.DataSet.plot`` (the convenience method
+    some tutorials call directly) to a no-op; and stubs ``matplotlib.pyplot.show``
+    to a no-op.
     Teardown also closes open Matplotlib figures so the cumulative-figure
     ``RuntimeWarning`` never trips the warnings-as-errors filter.
 
@@ -438,6 +440,7 @@ def _stub_rendering(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     """
     monkeypatch.setattr(pv, "OFF_SCREEN", True)
     monkeypatch.setattr(pv.Plotter, "show", lambda self, *args, **kwargs: None)
+    monkeypatch.setattr(pv.DataSet, "plot", lambda self, *args, **kwargs: None)
     monkeypatch.setattr(plt, "show", lambda *args, **kwargs: None)
     yield
     plt.close("all")

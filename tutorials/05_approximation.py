@@ -86,3 +86,5 @@ ax.legend()
 ax.grid(True, which="both", alpha=0.3)
 ax.set_title("L2 projection convergence")
 plt.show()
+
+degree4_errors = errors  # last loop iteration (p=4); captured for testing

@@ -121,8 +121,9 @@ def make_compat(
     Periodic B-splines are converted to open form before processing.
 
     Args:
-        *bsplines: Two or more B-splines to make compatible.
+        *bsplines: One or more B-splines to make compatible.
             All must have the same parametric dimension.
+            If fewer than two are provided, returns them unchanged.
         axes: Parametric axes along which to operate.  ``None``
             (default) means all axes.  A single ``int`` or a sequence
             of ``int`` selects specific axes.

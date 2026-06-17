@@ -88,8 +88,9 @@ homogeneous B-spline and divides by the weight, so {meth}`~pantr.bspline.Bspline
 returns ordinary Euclidean points. Consequences worth remembering:
 
 - {attr}`~pantr.bspline.Bspline.is_rational` is ``True``; the stored
-  {attr}`~pantr.bspline.Bspline.control_points` include the weight column, but
-  {attr}`~pantr.bspline.Bspline.rank` **excludes** it.
+  {attr}`~pantr.bspline.Bspline.control_points` include the weight column
+  (shape ``(*num_basis, rank + 1)``), but {attr}`~pantr.bspline.Bspline.rank`
+  **excludes** it (i.e. ``rank`` is the geometric dimension without the weight).
 - {func}`~pantr.cad.create_circle` (and the conic-based CAD operations) produce exact
   rational quadratics — see {doc}`/tutorials/01_first_bspline` and {doc}`/guide/cad`.
 
@@ -142,9 +143,5 @@ Geometric predicates that need a floating-point tolerance (knot-multiplicity tes
 endpoint detection) draw it from {mod}`pantr.tolerance`, so the whole library shares one
 consistent notion of "equal".
 
-## Where to go next
-
-- Build something: {doc}`/tutorials/index`.
-- Knot vectors, continuity, refinement, and element extraction: {doc}`/guide/spaces-knots`.
-- Construct geometry without hand-placing control points: {doc}`/guide/cad`.
-- Every symbol and signature: {doc}`/api/reference`.
+Continue with {doc}`/tutorials/index` to build something, or {doc}`/guide/spaces-knots`
+for knot vectors, refinement, and element extraction.
