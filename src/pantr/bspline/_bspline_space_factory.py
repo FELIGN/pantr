@@ -109,7 +109,7 @@ def create_uniform_periodic_knots(
         domain (Optional[tuple[np.float32 | np.float64 | float, np.float32 | np.float64 | float]]):
             Domain boundaries as (start, end). Defaults to (0.0, 1.0) if not provided.
         dtype (Optional[np.dtype]): Data type for the knot vector.
-            If None, inferred from start/end or defaults to float64.
+            If ``None``, inferred from the domain endpoints. Defaults to ``np.float64``.
 
     Returns:
         npt.NDArray[np.floating]: Periodic knot vector with uniform spacing.

@@ -1,12 +1,14 @@
 """
-Visualization basics
-=====================
+Visualizing geometries
+======================
 
-PaNTr's :mod:`pantr.viz` module turns B-spline, Bézier, and THB-spline geometries
-into `PyVista <https://docs.pyvista.org>`_ meshes backed by native VTK Bézier cells
-that store the *exact* polynomial geometry. The interactive viewer below subdivides
-those cells for display, while a ``.vtu`` opened in ParaView (>= 5.10) renders them
-exactly. This demo introduces the visualization toolkit reused throughout the gallery:
+Now that you can build a geometry (:doc:`/tutorials/01_first_bspline`), this tutorial
+shows how to *see* it. PaNTr's :mod:`pantr.viz` module turns B-spline, Bézier, and
+THB-spline geometries into `PyVista <https://docs.pyvista.org>`_ meshes backed by
+native VTK Bézier cells that store the *exact* polynomial geometry. The interactive
+viewer below subdivides those cells for display, while a ``.vtu`` opened in ParaView
+(>= 5.10) renders them exactly. The toolkit is reused throughout the rest of the
+tutorials:
 
 - :func:`~pantr.viz.plot` -- one-call interactive viewing,
 - :class:`~pantr.viz.Scene` -- compose several geometries with per-geometry options,
@@ -14,7 +16,8 @@ exactly. This demo introduces the visualization toolkit reused throughout the ga
 - **scalar fields** drawn as a colour map or an elevation surface,
 - :func:`~pantr.viz.save` -- export to a ``.vtu`` file for ParaView.
 
-Requires the ``viz`` extra: ``pip install "pantr[viz]"``.
+Requires the ``viz`` extra: ``pip install "pantr[viz]"``. The :doc:`/guide/visualization`
+guide covers every rendering option in depth.
 """
 
 import tempfile

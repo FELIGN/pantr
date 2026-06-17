@@ -71,7 +71,7 @@ def find_roots(
             parameters in [0, 1]. Empty if no roots exist. Always float64
             regardless of input dtype.
         tuple[npt.NDArray[np.float64], npt.NDArray[np.intp]]: *(batch mode)*
-            - ``roots``: padded array of shape ``(n_polys, degree)`` where
+            - ``roots``: padded array of shape ``(n_polys, max(degree, 1))`` where
               only the first ``counts[i]`` entries per row are valid.
               Always float64.
             - ``counts``: 1-D array of shape ``(n_polys,)`` with the number

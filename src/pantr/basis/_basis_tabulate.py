@@ -121,10 +121,9 @@ def tabulate_cardinal_bspline_1d(
 
     Example:
         >>> tabulate_cardinal_bspline_1d(2, [0.0, 0.5, 1.0])
-        array([[0.5    , 0.5    , 0.     ],
-               [0.125  , 0.75   , 0.125  ],
-               [0.03125, 0.6875 , 0.28125],
-               [0.     , 0.5    , 0.5    ]])
+        array([[0.5  , 0.5  , 0.   ],
+               [0.125, 0.75 , 0.125],
+               [0.   , 0.5  , 0.5  ]])
 
     """
     return _tabulate_cardinal_Bspline_basis_1D_impl(degree, pts, out=out)
@@ -140,15 +139,14 @@ def tabulate_lagrange_1d(
 
     The polynomials are defined in the interval [0, 1] and are given by the formula:
     \[
-    L_{n,i}(t) = \prod_{j=0}^{n} \frac{t - x_j}{x_i - x_j}
+    L_{n,i}(t) = \prod_{j=0,\, j \neq i}^{n} \frac{t - x_j}{x_i - x_j}
     \]
     where \( x_i \) are the points at which the basis is evaluated.
 
     The variant determines the points at which the basis is evaluated.
-    central cardinal B-spline basis.
 
     Args:
-        degree (int): Degree of the B-spline basis. Must be non-negative.
+        degree (int): Degree of the Lagrange basis. Must be non-negative.
         variant (LagrangeVariant): Variant of the Lagrange basis.
         pts (npt.ArrayLike): Evaluation points. Can be a scalar, list, or numpy array.
             Types different from float32 or float64 are automatically converted to float64.

@@ -1,13 +1,17 @@
 """
-Polynomial basis gallery
-=========================
+Polynomial bases and change of basis
+====================================
 
-:mod:`pantr.basis` tabulates the common 1-D polynomial bases used to build
-splines and finite-element spaces. This demo plots them at a fixed degree and
-visualizes a change-of-basis matrix from :mod:`pantr.change_basis`.
+Underneath every spline is a *basis*. :mod:`pantr.basis` tabulates the common 1-D
+polynomial bases used to build spline and finite-element spaces, and
+:mod:`pantr.change_basis` provides the exact matrices that convert coefficients between
+them. This tutorial plots the bases at a fixed degree and visualizes one such
+change-of-basis matrix.
 
-Each ``tabulate_*_1d`` call returns an ``(n_points, degree + 1)`` array whose
-columns are the individual basis functions sampled at the supplied points.
+Each ``tabulate_*_1d`` call returns an ``(n_points, degree + 1)`` array whose columns
+are the individual basis functions sampled at the supplied points. The same bases
+appear element-locally in :class:`~pantr.bspline.SpanwiseElementExtraction`
+(:doc:`/guide/spaces-knots`).
 """
 
 import matplotlib.pyplot as plt

@@ -2,10 +2,16 @@
 Knot operations and Bézier extraction
 ======================================
 
-Knot insertion and degree elevation change a B-spline's *representation* without
-changing the curve it describes. This demo shows that invariance, then extracts
-the per-element Bézier pieces -- the representation finite-element assembly
-consumes.
+The same curve can be written many ways. Knot insertion and degree elevation change a
+B-spline's *representation* -- they add control points -- without changing the curve it
+describes. This tutorial demonstrates that invariance, then extracts the per-element
+Bézier pieces: the element-local representation that finite-element / isogeometric
+assembly consumes.
+
+These operations are the workhorses of refinement and analysis; the
+:doc:`/guide/spaces-knots` guide explains the underlying theory (continuity, knot
+multiplicity, and the :class:`~pantr.bspline.SpanwiseElementExtraction` operator behind
+``to_beziers``).
 """
 
 import matplotlib.pyplot as plt

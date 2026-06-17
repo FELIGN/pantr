@@ -17,6 +17,8 @@ import functools
 import numpy as np
 from numpy import typing as npt
 
+__all__ = ["AffineTransform"]
+
 
 class AffineTransform:
     """An affine transformation T(x) = A x + b in n-dimensional space.

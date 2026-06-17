@@ -479,7 +479,7 @@ def _get_knots_ends_and_dtype(
         end (Optional[float | int | np.floating]): End value of the domain.
             Defaults to 1.0 if not provided.
         dtype (Optional[npt.DTypeLike]): Data type for the knot vector.
-            If None, inferred from start/end or defaults to float64.
+            If ``None``, inferred from start/end or defaults to ``np.float64``.
 
     Returns:
         tuple[np.floating, np.floating, np.dtype]: Tuple of (start, end, dtype).

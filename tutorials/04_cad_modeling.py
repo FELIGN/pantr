@@ -2,10 +2,15 @@
 Constructive CAD modeling
 =========================
 
-:mod:`pantr.cad` builds B-spline geometry the way a CAD kernel does: primitives
-(lines, circles, disks, cylinders) combined by operations (extrude, revolve,
-ruled surfaces, sweeps, Coons patches) and assembled with ``join``. This demo
-builds a few shapes and lays them out in one scene.
+Hand-authoring control points (as in :doc:`/tutorials/01_first_bspline`) does not
+scale. :mod:`pantr.cad` builds B-spline geometry the way a CAD kernel does: primitives
+(lines, circles, disks, cylinders) combined by operations (extrude, revolve, ruled
+surfaces, sweeps, Coons patches) and assembled with ``join``. Every result is an
+ordinary :class:`~pantr.bspline.Bspline`, so it supports evaluation, derivatives, and
+the knot operations from the previous tutorial.
+
+This tutorial builds a few shapes and lays them out in one scene; the
+:doc:`/guide/cad` guide is the complete reference for the module.
 """
 
 from pantr import viz
@@ -47,8 +52,8 @@ viz.plot(frustum, color="lightgreen", show_knot_lines=True)
 # %%
 # An assembled scene
 # ------------------
-# Lay the shapes side by side by translating each (see the transforms demo) and
-# adding them to one :class:`~pantr.viz.Scene`.
+# Lay the shapes side by side by translating each (transforms are covered in
+# :doc:`/tutorials/10_transforms`) and adding them to one :class:`~pantr.viz.Scene`.
 scene = viz.Scene()
 for i, geom in enumerate([cylinder, tube, surface_of_revolution, frustum]):
     placed = geom.transform(AffineTransform.translation([2.0 * i, 0.0, 0.0]))

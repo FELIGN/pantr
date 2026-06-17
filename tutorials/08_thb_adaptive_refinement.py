@@ -2,13 +2,16 @@
 THB-splines: adaptive local refinement
 =======================================
 
-Truncated hierarchical B-splines (THB-splines) add resolution only where it is
-needed, keeping coarse basis functions elsewhere. Refinement leaves the
-coefficients of functions that stay active at coarser levels unchanged
-(truncation preserves coefficients). This demo refines toward a localized
-feature, quasi-interpolates a peaked function onto the hierarchical space, and
-renders the field with its hierarchical mesh and per-level control net (see
-:mod:`pantr.viz`).
+Uniform knot refinement (:doc:`/tutorials/03_knot_operations`) adds resolution
+everywhere. Truncated hierarchical B-splines (THB-splines) instead add resolution only
+where it is needed, keeping coarse basis functions elsewhere. Refinement leaves the
+coefficients of functions that stay active at coarser levels unchanged (truncation
+preserves coefficients). The API mirrors the tensor-product one: a
+:class:`~pantr.bspline.THBSplineSpace` plays the role of :class:`~pantr.bspline.BsplineSpace`.
+
+This tutorial refines toward a localized feature, quasi-interpolates a peaked function
+onto the hierarchical space, and renders the field with its hierarchical mesh and
+per-level control net (:doc:`/guide/visualization`).
 """
 
 import numpy as np

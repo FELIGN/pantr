@@ -68,6 +68,8 @@ class Bspline:
         Raises:
             ValueError: If the number of control points is not a multiple
                 of the number of basis functions.
+            ValueError: If the control points dtype does not match the
+                B-spline space dtype.
             ValueError: If the B-spline has rank smaller than 1.
         """
         self._space = space
@@ -97,7 +99,7 @@ class Bspline:
 
     @property
     def dim(self) -> int:
-        """Get the geometric dimension of the B-spline.
+        """Get the parametric dimension of the B-spline.
 
         Returns:
             int: Number of parametric dimensions (equals the dimension of the

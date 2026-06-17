@@ -4,9 +4,11 @@ Affine transformations
 
 :class:`~pantr.transform.AffineTransform` represents an affine map ``T(x) = A x + b``
 with factory methods for translation, scaling, rotation, mirroring, and shear.
-Transforms compose with ``@`` and apply to any geometry via ``geom.transform(T)``
-(operating on control points, so the result is exact). This demo builds a few
-transforms and applies them to a single base shape.
+Transforms compose with ``@`` and apply to any geometry via ``geom.transform(T)``.
+Because a transform acts on the *control points* -- not on sampled points -- the result
+is another exact :class:`~pantr.bspline.Bspline`, not a discretization. This tutorial
+builds a few transforms and applies them to a single base shape (the layout trick used
+back in :doc:`/tutorials/04_cad_modeling`).
 """
 
 import numpy as np

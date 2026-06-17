@@ -1,25 +1,27 @@
-"""Execute the documentation demos and validate their results.
+"""Execute the documentation tutorials and validate their results.
 
-Each ``demos/NN_*.py`` script is a standalone Sphinx-Gallery example. Sphinx-Gallery
-only runs them during the docs build, so a library change that breaks a demo would
-otherwise slip past the test suite. This module runs every numbered demo end-to-end and
-then checks its results, so a demo that raises -- or merely emits a warning, since the
-suite treats warnings as errors -- or that silently computes the wrong answer fails CI.
+Each ``tutorials/NN_*.py`` script is a standalone Sphinx-Gallery example. Sphinx-Gallery
+only runs them during the docs build, so a library change that breaks a tutorial would
+otherwise slip past the test suite. This module runs every numbered tutorial end-to-end
+and then checks its results, so a tutorial that raises -- or merely emits a warning,
+since the suite treats warnings as errors -- or that silently computes the wrong answer
+fails CI.
 
-Each demo's computed objects are harvested from the namespace ``runpy.run_path`` returns
-and handed to a per-demo validator. The validators assert two kinds of property:
+Each tutorial's computed objects are harvested from the namespace ``runpy.run_path``
+returns and handed to a per-tutorial validator. The validators assert two kinds of
+property:
 
 * **Invariants** that must hold regardless of the exact numbers -- partition of unity,
   an interpolant passing through its data, the L2 projection being the L2-optimal fit,
   quadrature matching a known analytic value, found roots evaluating to zero,
   geometry-preserving knot/degree operations, a derivative matching finite differences,
-  exact transform composition. These survive cosmetic demo edits and pin the
+  exact transform composition. These survive cosmetic tutorial edits and pin the
   mathematics.
 * **Golden snapshots** of a few headline values (the change-of-basis matrix, the located
   roots, the L2-convergence errors, the THB active-function count). These catch silent
   numerical drift; update the constant deliberately when a result is meant to change.
 
-Interactive rendering is reduced to a no-op at the two entry points the demos use to
+Interactive rendering is reduced to a no-op at the two entry points the tutorials use to
 draw: :meth:`pyvista.Plotter.show` (reached by ``pantr.viz.plot``, ``Scene.show``, and
 PyVista's ``DataSet.plot`` -- all of which ultimately call it) and
 :func:`matplotlib.pyplot.show`. The scripts still build every PyVista and Matplotlib
@@ -50,11 +52,11 @@ import matplotlib.pyplot as plt  # noqa: E402
 
 from pantr.bspline import get_greville_abscissae  # noqa: E402
 
-_DEMOS_DIR: Path = Path(__file__).resolve().parent.parent / "demos"
-_DEMO_SCRIPTS: list[Path] = sorted(_DEMOS_DIR.glob("[0-9]*_*.py"))
+_TUTORIALS_DIR: Path = Path(__file__).resolve().parent.parent / "tutorials"
+_TUTORIAL_SCRIPTS: list[Path] = sorted(_TUTORIALS_DIR.glob("[0-9]*_*.py"))
 
 Namespace = dict[str, Any]
-"""The module namespace a demo leaves behind, as returned by ``runpy.run_path``."""
+"""The module namespace a tutorial leaves behind, as returned by ``runpy.run_path``."""
 
 
 # ---------------------------------------------------------------------------
@@ -111,8 +113,8 @@ def _radii_xy(points: npt.NDArray[np.float64]) -> npt.NDArray[np.float64]:
 # Per-demo validators
 
 
-def _validate_02(ns: Namespace) -> None:
-    """Visualization basics: NURBS arc on the unit circle, scalar field, VTK export."""
+def _validate_visualization(ns: Namespace) -> None:
+    """Visualization: NURBS arc on the unit circle, scalar field, VTK export."""
     arc = ns["arc"]
     assert arc.is_rational, "create_circle should build a rational (NURBS) curve"
     np.testing.assert_allclose(
@@ -134,8 +136,8 @@ def _validate_02(ns: Namespace) -> None:
     assert mesh.n_cells > 0, "exported .vtu should contain cells"
 
 
-def _validate_03(ns: Namespace) -> None:
-    """Basis gallery: Bernstein/Lagrange/Legendre basis checks + change-of-basis snapshot."""
+def _validate_polynomial_bases(ns: Namespace) -> None:
+    """Polynomial bases: Bernstein/Lagrange/Legendre checks + change-of-basis snapshot."""
     bases = ns["bases"]
     bern = np.asarray(bases["Bernstein"])
     np.testing.assert_allclose(
@@ -177,8 +179,8 @@ def _validate_03(ns: Namespace) -> None:
     )
 
 
-def _validate_01(ns: Namespace) -> None:
-    """Geometry tour: clamped endpoints, Greville snapshot, derivative vs FD, exact circle."""
+def _validate_first_bspline(ns: Namespace) -> None:
+    """First B-spline: clamped endpoints, Greville snapshot, derivative vs FD, exact circle."""
     curve = ns["curve"]
     cp = np.asarray(ns["control_points"])
     lo, hi = curve.space.spaces[0].domain
@@ -215,7 +217,7 @@ def _validate_01(ns: Namespace) -> None:
     np.testing.assert_allclose(_radii_xy(_sample_geom(circle, 40)), 1.0, atol=1e-9)
 
 
-def _validate_04(ns: Namespace) -> None:
+def _validate_knot_operations(ns: Namespace) -> None:
     """Knot ops: insertion/elevation preserve the curve; +3 control points; 3 Bézier cells."""
     curve, refined, elevated = ns["curve"], ns["refined"], ns["elevated"]
     u = _axis(curve, 0, 200)
@@ -239,7 +241,7 @@ def _validate_04(ns: Namespace) -> None:
     assert ns["beziers"].size == 3, "a quadratic over 3 spans yields 3 Bézier elements"
 
 
-def _validate_05(ns: Namespace) -> None:
+def _validate_approximation(ns: Namespace) -> None:
     """Approximation: interpolant hits data, L2 projection is L2-optimal, errors decrease."""
     g, approx = ns["g"], ns["approx"]
     greville = np.asarray(get_greville_abscissae(ns["space"].spaces[0]), dtype=float)
@@ -259,7 +261,7 @@ def _validate_05(ns: Namespace) -> None:
     )
     assert e_l2 <= e_quasi + 1e-12, "L2 projection must be at least as L2-accurate as quasi-interp"
     assert max(e_interp, e_l2, e_quasi) < 0.1, "cubic approximations should be reasonably accurate"
-    errors = np.asarray(ns["errors"])  # degree-4 L2 errors (p=4 is last in the loop over {2, 3, 4})
+    errors = np.asarray(ns["degree4_errors"])
     assert len(errors) == 5, "expected five refinement steps (one per entry of n_elements)"
     assert np.all(np.diff(errors) < 0), "L2 error must decrease under refinement"
     np.testing.assert_allclose(
@@ -277,7 +279,7 @@ def _validate_05(ns: Namespace) -> None:
     )
 
 
-def _validate_06(ns: Namespace) -> None:
+def _validate_cad_modeling(ns: Namespace) -> None:
     """CAD modeling: cylinder/tube radii exact; revolved and ruled surfaces within bounds."""
     cyl = ns["cylinder"]
     assert cyl.is_rational, "cylinder is a rational surface"
@@ -299,7 +301,7 @@ def _validate_06(ns: Namespace) -> None:
     assert frustum_r.max() <= 0.7 + 1e-6, "frustum radius must not exceed the bottom radius 0.7"
 
 
-def _validate_07(ns: Namespace) -> None:
+def _validate_bezier_and_roots(ns: Namespace) -> None:
     """Bézier roots: roots are real zeros (snapshot); 3 curve-line intersections on y=y0."""
     poly, roots = ns["poly"], np.asarray(ns["roots"])
     assert roots.size == 2, "find_roots should locate 2 roots in [0, 1]"
@@ -319,7 +321,7 @@ def _validate_07(ns: Namespace) -> None:
     )
 
 
-def _validate_08(ns: Namespace) -> None:
+def _validate_thb(ns: Namespace) -> None:
     """THB: level/active-function counts (snapshot + structural); peak sits in the corner."""
     space = ns["space"]
     assert space.num_levels == 3, "two refinements should yield 3 levels"
@@ -336,7 +338,7 @@ def _validate_08(ns: Namespace) -> None:
     assert np.all(np.abs(vals[1:]) < 1e-6), "field must be ~0 away from the peak"
 
 
-def _validate_09(ns: Namespace) -> None:
+def _validate_grids_and_quadrature(ns: Namespace) -> None:
     """Quadrature: integral matches the analytic value; weights sum to area; counts/mesh."""
     integral, exact = ns["integral"], ns["exact"]
     assert abs(integral - exact) < 1e-9, f"quadrature integral {integral} != exact {exact}"
@@ -351,7 +353,7 @@ def _validate_09(ns: Namespace) -> None:
     assert ns["ug"].n_cells == ns["grid"].num_cells, "grid mesh must have one cell per grid cell"
 
 
-def _validate_10(ns: Namespace) -> None:
+def _validate_transforms(ns: Namespace) -> None:
     """Transforms: composition equals sequential; rotation/shear/scaling act as specified."""
     assert ns["err"] < 1e-12, f"(t2 @ t1) must equal t2(t1(.)) on control points, err={ns['err']}"
     base_cp = np.asarray(ns["base"].control_points)
@@ -386,16 +388,16 @@ def _validate_10(ns: Namespace) -> None:
 
 
 _VALIDATORS: dict[str, Callable[[Namespace], None]] = {
-    "01_bspline_geometry_tour": _validate_01,
-    "02_visualization_basics": _validate_02,
-    "03_basis_gallery": _validate_03,
-    "04_knot_operations": _validate_04,
-    "05_approximation": _validate_05,
-    "06_cad_modeling": _validate_06,
-    "07_bezier_and_roots": _validate_07,
-    "08_thb_adaptive_refinement": _validate_08,
-    "09_grids_and_quadrature": _validate_09,
-    "10_transforms": _validate_10,
+    "01_first_bspline": _validate_first_bspline,
+    "02_visualization": _validate_visualization,
+    "03_knot_operations": _validate_knot_operations,
+    "04_cad_modeling": _validate_cad_modeling,
+    "05_approximation": _validate_approximation,
+    "06_polynomial_bases": _validate_polynomial_bases,
+    "07_bezier_and_roots": _validate_bezier_and_roots,
+    "08_thb_adaptive_refinement": _validate_thb,
+    "09_grids_and_quadrature": _validate_grids_and_quadrature,
+    "10_transforms": _validate_transforms,
 }
 
 
@@ -403,28 +405,30 @@ _VALIDATORS: dict[str, Callable[[Namespace], None]] = {
 # Tests
 
 
-def test_demo_scripts_discovered() -> None:
+def test_tutorial_scripts_discovered() -> None:
     """Guard against a glob/path mistake silently producing zero parametrized tests."""
-    assert _DEMO_SCRIPTS, f"no demo scripts found under {_DEMOS_DIR}"
+    assert _TUTORIAL_SCRIPTS, f"no tutorial scripts found under {_TUTORIALS_DIR}"
 
 
-def test_demos_and_validators_match() -> None:
-    """Force every demo to ship result checks, and flag validators with no demo."""
-    stems = {p.stem for p in _DEMO_SCRIPTS}
+def test_tutorials_and_validators_match() -> None:
+    """Force every tutorial to ship result checks, and flag validators with no tutorial."""
+    stems = {p.stem for p in _TUTORIAL_SCRIPTS}
     missing = sorted(stems - _VALIDATORS.keys())
     orphaned = sorted(_VALIDATORS.keys() - stems)
-    assert not missing, f"demos without a result validator: {missing}"
-    assert not orphaned, f"validators with no matching demo: {orphaned}"
+    assert not missing, f"tutorials without a result validator: {missing}"
+    assert not orphaned, f"validators with no matching tutorial: {orphaned}"
 
 
 @pytest.fixture
 def _stub_rendering(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
-    """Stub interactive rendering so the demos run headless.
+    """Stub interactive rendering so the tutorials run headless.
 
-    Sets three things via ``monkeypatch`` (so each is restored on teardown): forces
+    Sets four things via ``monkeypatch`` (so each is restored on teardown): forces
     ``pv.OFF_SCREEN`` so any ``Plotter`` built before ``show`` skips the display
     connection; stubs ``pv.Plotter.show`` (the VTK render/window step every viz call
-    funnels through) to a no-op; and stubs ``matplotlib.pyplot.show`` to a no-op.
+    funnels through) to a no-op; stubs ``pv.DataSet.plot`` (the convenience method
+    some tutorials call directly) to a no-op; and stubs ``matplotlib.pyplot.show``
+    to a no-op.
     Teardown also closes open Matplotlib figures so the cumulative-figure
     ``RuntimeWarning`` never trips the warnings-as-errors filter.
 
@@ -436,22 +440,23 @@ def _stub_rendering(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     """
     monkeypatch.setattr(pv, "OFF_SCREEN", True)
     monkeypatch.setattr(pv.Plotter, "show", lambda self, *args, **kwargs: None)
+    monkeypatch.setattr(pv.DataSet, "plot", lambda self, *args, **kwargs: None)
     monkeypatch.setattr(plt, "show", lambda *args, **kwargs: None)
     yield
     plt.close("all")
 
 
 @pytest.mark.usefixtures("_stub_rendering")
-@pytest.mark.parametrize("script", _DEMO_SCRIPTS, ids=lambda p: p.stem)
-def test_demo_runs(script: Path) -> None:
-    """Run a demo end-to-end, then validate its computed results.
+@pytest.mark.parametrize("script", _TUTORIAL_SCRIPTS, ids=lambda p: p.stem)
+def test_tutorial_runs(script: Path) -> None:
+    """Run a tutorial end-to-end, then validate its computed results.
 
-    The demo must complete without raising or emitting a warning (the suite is
-    warnings-as-errors), and the values it produced must satisfy the demo's registered
-    invariant and snapshot checks.
+    The tutorial must complete without raising or emitting a warning (the suite is
+    warnings-as-errors), and the values it produced must satisfy the tutorial's
+    registered invariant and snapshot checks.
 
     Args:
-        script: Path to the ``demos/NN_*.py`` script to execute.
+        script: Path to the ``tutorials/NN_*.py`` script to execute.
     """
     namespace = runpy.run_path(str(script), run_name="__main__")
     _VALIDATORS[script.stem](namespace)
