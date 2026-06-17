@@ -5,7 +5,7 @@ development setup and the conventions the project follows.
 
 ## Development setup
 
-PaNTr targets Python 3.10–3.14. Clone the repository and install the package
+PaNTr targets Python 3.11–3.14. Clone the repository and install the package
 with all development and optional-feature dependencies:
 
 ```bash
@@ -54,7 +54,7 @@ PANTR_RUN_MPI=1 mpiexec -n 2 python -m pytest tests/mpi/ --no-cov
 - **Docstrings**: Google-style, enforced by Ruff's `pydocstyle` rules. Private
   functions are documented too; Numba kernels carry a `Note:` stating that no
   input validation is performed.
-- **Style**: Ruff, line length 100, target Python 3.10.
+- **Style**: Ruff, line length 100, target Python 3.11.
 - **Layering**: the library is organized in three strict layers — public API,
   implementation helpers (all input validation), and Numba kernels (no
   validation). Review the architecture section of the documentation before

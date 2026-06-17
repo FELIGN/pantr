@@ -35,7 +35,7 @@ visit the same nodes in the same order, so the result is a fresh, compact
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Self
 
 import numpy as np
 
@@ -166,7 +166,7 @@ class BVH:
         cls,
         cell_lo: npt.ArrayLike,
         cell_hi: npt.ArrayLike,
-    ) -> BVH:
+    ) -> Self:
         """Build a BVH over ``n_cells`` axis-aligned cell AABBs.
 
         Uses a top-down recursive median-of-longest-axis split. Cells are sorted
@@ -181,7 +181,7 @@ class BVH:
                 ``cell_hi >= cell_lo``.
 
         Returns:
-            BVH: The constructed hierarchy.
+            Self: The constructed hierarchy.
 
         Raises:
             TypeError: If inputs cannot be cast to ``float64``.

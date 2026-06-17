@@ -212,6 +212,8 @@ nitpick_ignore = [
     ("py:class", "numpy._typing._array_like._Buffer"),
     ("py:class", "numpy._typing._array_like._SupportsArray"),
     ("py:class", "numpy._typing._dtype_like._DTypeDict"),
+    ("py:class", "numpy._typing._dtype_like._HasDType"),
+    ("py:class", "numpy._typing._dtype_like._HasNumPyDType"),
     ("py:class", "numpy._typing._dtype_like._SupportsDType"),
     ("py:class", "numpy._typing._nested_sequence._NestedSequence"),
     # Napoleon strips the npt. prefix from npt.ArrayLike / npt.DTypeLike

@@ -210,11 +210,12 @@ def _metis_partition(
     try:
         _, membership = pymetis.part_graph(n_parts, adjacency, vweights=vweights, eweights=eweights)
     except RuntimeError as exc:
-        raise RuntimeError(
-            f"METIS partitioning failed for graph with {n_vertices} vertices and "
-            f"{int(adjncy.shape[0])} edges (n_parts={n_parts}). "
-            f"Try backend='spectral' as a fallback. METIS error: {exc}"
-        ) from exc
+        err = RuntimeError("METIS partitioning failed.")
+        err.add_note(
+            f"Graph: {n_vertices} vertices, {int(adjncy.shape[0])} edges, n_parts={n_parts}"
+        )
+        err.add_note("Try backend='spectral' as a fallback.")
+        raise err from exc
     return cast("npt.NDArray[np.int32]", np.asarray(membership, dtype=np.int32))
 
 
