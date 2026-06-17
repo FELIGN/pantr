@@ -191,4 +191,4 @@ comm. Genuine multi-rank tests live under `tests/mpi/`, are skipped unless
 PANTR_RUN_MPI=1 mpiexec -n 3 python -m pytest tests/mpi/
 ```
 
-See the [API reference](api/reference.md) for full signatures.
+See the [API reference](../api/reference.md) for full signatures.
