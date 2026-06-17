@@ -132,7 +132,6 @@ def make_compat(
         along the specified axes.
 
     Raises:
-        ValueError: If fewer than 2 B-splines are provided.
         ValueError: If B-splines have different parametric dimensions.
         ValueError: If any axis index is out of range.
     """
