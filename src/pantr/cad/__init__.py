@@ -20,12 +20,8 @@ from ._derived import create_cylinder, create_disk, create_rectangle
 from ._join import join
 from ._operations import create_ruled, extrude, revolve, sweep
 from ._primitives import create_bilinear, create_circle, create_line, create_trilinear
-from ._validation import _PHYSICAL_DIM, _pad_to_3d, _promote_to_rational
 
 __all__ = [
-    "_PHYSICAL_DIM",
-    "_pad_to_3d",
-    "_promote_to_rational",
     "create_bilinear",
     "create_circle",
     "create_coons_surface",
