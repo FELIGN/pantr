@@ -5,7 +5,9 @@ hierarchical THB-spline space (`THBSplineSpace`) across MPI ranks for parallel
 assembly. The design keeps a clear separation:
 
 - a **serial windowing core** (in `pantr.grid` / `pantr.bspline`) that needs no MPI;
-- an **optional MPI layer** (`pantr.mpi`) that wraps it per rank.
+- the **MPI layer** (`pantr.mpi`) that wraps it per rank — it ships with PaNTr and
+  becomes usable once `mpi4py` is installed (the `mpi` extra is just a convenience for
+  that; see the Installation section below).
 
 Every rank holds a **redundant, self-contained** local space covering the cells it
 owns plus their support halo, so basis evaluation and element assembly are purely

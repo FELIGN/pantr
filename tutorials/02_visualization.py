@@ -6,8 +6,9 @@ Now that you can build a geometry (:doc:`/tutorials/01_first_bspline`), this tut
 shows how to *see* it. PaNTr's :mod:`pantr.viz` module turns B-spline, Bézier, and
 THB-spline geometries into `PyVista <https://docs.pyvista.org>`_ meshes backed by
 native VTK Bézier cells that store the *exact* polynomial geometry. The interactive
-viewer below subdivides those cells for display, while a ``.vtu`` opened in ParaView
-(>= 5.10) renders them exactly. The toolkit is reused throughout the rest of the
+viewer below subdivides those cells for display, and a ``.vtu`` opened in ParaView
+(>= 5.10) renders them as exact Bézier cells, tessellated at ParaView's chosen
+*Nonlinear Subdivision Level*. The toolkit is reused throughout the rest of the
 tutorials:
 
 - :func:`~pantr.viz.plot` -- one-call interactive viewing,

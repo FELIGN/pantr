@@ -60,29 +60,29 @@ via {func}`~pantr.cad.create_ruled` between inner and outer circles.
 Operations create higher-dimensional objects from existing ones by adding
 a new parametric direction.
 
-### Extrude
+### Extrusion
 
 ```python
-from pantr.cad import create_circle, extrude
+from pantr.cad import create_circle, create_extrusion
 
-pipe = extrude(create_circle(), [0, 0, 2])   # circle -> cylindrical surface
+pipe = create_extrusion(create_circle(), [0, 0, 2])   # circle -> cylindrical surface
 ```
 
-{func}`~pantr.cad.extrude` translates a curve or surface along a displacement
+{func}`~pantr.cad.create_extrusion` translates a curve or surface along a displacement
 vector, appending a degree-1 parametric direction.
 
-### Revolve
+### Revolution
 
 ```python
-from pantr.cad import create_line, revolve
+from pantr.cad import create_line, create_revolution
 import numpy as np
 
-srf = revolve(create_line([1, 0, 0], [2, 0, 0]), point=0, axis=2)
-quarter = revolve(create_line([1, 0, 0], [1, 0, 3]), point=0, axis=2,
-                  angle=np.pi / 2)
+srf = create_revolution(create_line([1, 0, 0], [2, 0, 0]), point=0, axis=2)
+quarter = create_revolution(create_line([1, 0, 0], [1, 0, 3]), point=0, axis=2,
+                            angle=np.pi / 2)
 ```
 
-{func}`~pantr.cad.revolve` rotates a curve or surface around an axis.
+{func}`~pantr.cad.create_revolution` rotates a curve or surface around an axis.
 The angular direction inherits the same span structure as
 {func}`~pantr.cad.create_circle` (one span per 90 degrees, C0 at arc junctions).
 Supports coordinate axes (`axis=0, 1, 2`) and arbitrary axis vectors.
@@ -102,13 +102,13 @@ made compatible via {func}`~pantr.cad.make_compat`.
 ### Sweep
 
 ```python
-from pantr.cad import create_line, sweep
+from pantr.cad import create_line, create_sweep
 
-srf = sweep(create_line([0, 0, 0], [1, 0, 0]),    # section
-            create_line([0, 0, 0], [0, 0, 3]))     # trajectory
+srf = create_sweep(create_line([0, 0, 0], [1, 0, 0]),    # section
+                   create_line([0, 0, 0], [0, 0, 3]))     # trajectory
 ```
 
-{func}`~pantr.cad.sweep` creates a translational sweep:
+{func}`~pantr.cad.create_sweep` creates a translational sweep:
 $S(u, v) = \text{section}(u) + \text{trajectory}(v)$.
 
 ## Coons blending

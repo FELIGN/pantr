@@ -1,15 +1,15 @@
 """Optional MPI-parallel distribution layer for PaNTr.
 
-This subpackage will host the MPI-dependent and dolfinx-bridge code for distributing
-B-spline and THB-spline spaces across ranks. Everything here is optional: the
-serial core (:mod:`pantr.grid`, :mod:`pantr.bspline`, ...) never imports it
-(enforced by an import-linter contract), and ``import pantr.mpi`` succeeds even
-when ``mpi4py`` is absent -- only helpers that genuinely need MPI raise at call
-time, via :func:`require_mpi`.
+This subpackage hosts the MPI-dependent and dolfinx-bridge code for distributing
+B-spline and THB-spline spaces across ranks. It ships with every install of PaNTr but
+is **backend-gated**: the serial core (:mod:`pantr.grid`, :mod:`pantr.bspline`, ...)
+never imports it (enforced by an import-linter contract), and ``import pantr.mpi``
+succeeds even when ``mpi4py`` is absent -- only helpers that genuinely need MPI raise at
+call time, via :func:`require_mpi`.
 
-``mpi4py`` is an opt-in dependency: a plain ``pip install pantr`` is serial-only
-and MPI-free, while ``pip install "pantr[mpi]"`` adds ``mpi4py`` (and requires an
-MPI library).
+``mpi4py`` is the optional *backend*, not extra PaNTr code: a plain ``pip install pantr``
+is serial-only and MPI-free, while ``pip install "pantr[mpi]"`` simply installs ``mpi4py``
+for you (equivalently ``pip install mpi4py``; an MPI library is also required).
 
 Main exports:
 - :data:`HAS_MPI`: whether ``mpi4py`` was importable at module load time.

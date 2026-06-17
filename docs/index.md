@@ -57,13 +57,15 @@ Every module, class, and function, with full signatures.
   degree reduction, and Bernstein-polynomial root finding ({mod}`pantr.bezier`).
 - **Truncated hierarchical B-splines** — {class}`~pantr.bspline.THBSplineSpace` for
   adaptive local refinement, mirroring the tensor-product API.
-- **Constructive geometry** — lines, arcs, disks, cylinders, extrude, revolve, sweep,
-  ruled and Coons surfaces/volumes ({mod}`pantr.cad`).
+- **Constructive geometry** — lines, arcs, disks, cylinders, extrusion, revolution,
+  sweep, ruled and Coons surfaces/volumes ({mod}`pantr.cad`).
 - **Grids & quadrature** — tensor-product and hierarchical grids, BVH spatial queries,
   cell/facet tags, and quadrature rules ({mod}`pantr.grid`, {mod}`pantr.quad`).
-- **Optional MPI & visualization** — distribute spaces across ranks
-  ({mod}`pantr.mpi`) and render exact higher-order geometry through
-  [PyVista](https://docs.pyvista.org) and [VTK](https://vtk.org) ({mod}`pantr.viz`).
+- **Dependency-gated MPI & visualization** — {mod}`pantr.mpi` distributes spaces across
+  ranks (with [`mpi4py`](https://github.com/mpi4py/mpi4py)) and {mod}`pantr.viz` renders
+  exact higher-order geometry through [PyVista](https://docs.pyvista.org) /
+  [VTK](https://vtk.org) (with PyVista). Both ship with PaNTr; see
+  {doc}`getting-started` for how the optional backends are enabled.
 
 ```{toctree}
 :caption: Getting started
