@@ -7,11 +7,18 @@ exact polynomial geometry at any zoom level -- no tessellation to triangles.
 
 ## Installation
 
-PyVista is not installed by default.  Add it with the `viz` extra:
+`pantr.viz` requires [PyVista](https://docs.pyvista.org/), which is not
+included in a default `pantr` install.  You can make it available in two
+equivalent ways:
 
 ```bash
-pip install pantr[viz]
+pip install "pantr[viz]"   # let pantr pull in pyvista automatically
+pip install pyvista        # or install pyvista directly
 ```
+
+The `viz` extra simply enforces that `pyvista` gets installed alongside
+`pantr`; if `pyvista` is already present (or installed later), `pantr.viz`
+works without the extra.
 
 ## Quick start
 

@@ -13,8 +13,9 @@ from pantr.bspline import (  # noqa: E402
     BsplineSpace,
     BsplineSpace1D,
     create_uniform_open_knots,
+    create_uniform_space,
 )
-from pantr.viz import control_polygon_mesh, knot_lines_meshes  # noqa: E402
+from pantr.viz import control_polygon_mesh, knot_lines_meshes, to_pyvista  # noqa: E402
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -97,23 +98,60 @@ class TestKnotLinesCurve:
 
 
 class TestKnotLinesSurface:
-    """Tests for knot line computation on 2D B-splines."""
+    """Knot lines on 2D B-splines = the Bézier cells' tessellated boundary edges."""
 
-    def test_returns_list_of_grids(self, bspline_surface: Bspline) -> None:
+    def test_returns_single_edge_mesh(self, bspline_surface: Bspline) -> None:
         meshes = knot_lines_meshes(bspline_surface)
         assert isinstance(meshes, list)
-        assert len(meshes) > 0
+        assert len(meshes) == 1  # one merged edge mesh
+        assert meshes[0].n_cells > 0
 
-    def test_knot_line_count(self, bspline_surface: Bspline) -> None:
-        meshes = knot_lines_meshes(bspline_surface)
-        # 3 elements in u → 2 interior knots; 2 elements in v → 1 interior knot
-        n_expected = 2 + 1
-        assert len(meshes) == n_expected
+    def test_edges_are_linear(self, bspline_surface: Bspline) -> None:
+        # Boundary edges are linear polylines (PolyData line cells), not Bézier.
+        mesh = knot_lines_meshes(bspline_surface)[0]
+        assert mesh.n_lines == mesh.n_cells > 0
 
-    def test_knot_lines_are_curves(self, bspline_surface: Bspline) -> None:
-        meshes = knot_lines_meshes(bspline_surface)
-        for mesh in meshes:
-            assert mesh.n_cells > 0
+    def test_edges_lie_on_surface(self, bspline_surface: Bspline) -> None:
+        # The defining property of the cell-boundary approach: the edges are the
+        # cells' own tessellated boundaries, so every edge vertex coincides with
+        # the surface tessellation (no float, no z-fighting).
+        from scipy.spatial import cKDTree  # noqa: PLC0415
+
+        tess = 4
+        surf = to_pyvista(bspline_surface).tessellate(max_n_subdivide=tess)
+        edges = knot_lines_meshes(bspline_surface, tessellation_level=tess)[0]
+        dist, _ = cKDTree(surf.points).query(edges.points)
+        np.testing.assert_allclose(dist, 0.0, atol=1e-9)
+
+    def test_single_element_surface_draws_outline(self) -> None:
+        # One element (no interior knots): the knot lines are the patch outline
+        # (the domain-boundary knots) -- the full element mesh, not empty.
+        space = BsplineSpace([BsplineSpace1D([0, 0, 0, 1, 1, 1], 2) for _ in range(2)])
+        gu, gv = np.meshgrid(*[np.linspace(0, 1, n) for n in space.num_basis], indexing="ij")
+        cp = np.stack([gu, gv, np.zeros_like(gu)], axis=-1)
+        mesh = knot_lines_meshes(Bspline(space, cp))[0]
+        assert mesh.n_lines > 0
+
+
+class TestKnotLinesVolume:
+    """Knot lines on 3D B-spline volumes = the cells' tessellated wireframe edges."""
+
+    def test_volume_edges_coincide_with_tessellation(self) -> None:
+        # 3D cell-wireframe edges (incl. interior element boundaries) come from the
+        # cells' own tessellation, so their vertices coincide with the volume
+        # tessellation's vertices -- robust to the hidden interior edges.
+        from scipy.spatial import cKDTree  # noqa: PLC0415
+
+        space = create_uniform_space([2, 2, 2], [2, 2, 2])
+        gu, gv, gw = np.meshgrid(*[np.linspace(0, 1, n) for n in space.num_basis], indexing="ij")
+        cp = np.stack([gu, gv, gw + 0.1 * np.sin(np.pi * gu) * np.sin(np.pi * gv)], axis=-1)
+        vol = Bspline(space, cp)
+        tess = 3
+        full = to_pyvista(vol).tessellate(max_n_subdivide=tess)
+        edges = knot_lines_meshes(vol, tessellation_level=tess)[0]
+        assert edges.n_lines > 0
+        dist, _ = cKDTree(full.points).query(edges.points)
+        np.testing.assert_allclose(dist, 0.0, atol=1e-9)
 
 
 # ---------------------------------------------------------------------------

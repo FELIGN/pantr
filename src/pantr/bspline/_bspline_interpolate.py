@@ -266,7 +266,7 @@ def _resolve_nodes(
     Raises:
         ValueError: If nodes are inconsistent with the space.
     """
-    if nodes is None or nodes == "greville":
+    if nodes is None or (isinstance(nodes, str) and nodes == "greville"):
         lattice = create_greville_lattice(space)
         return list(lattice.pts_per_dir)
 

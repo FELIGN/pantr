@@ -243,6 +243,16 @@ nitpick_ignore_regex = [
     # exposes no cross-referenceable inventory in this build.
     ("py:class", r"pv\.\w+"),
     ("py:class", r"pyvista\..*"),
+    # NamedTuple fields annotated under TYPE_CHECKING + from __future__ import
+    # annotations produce two kinds of unresolvable Sphinx cross-references:
+    #   1. ForwardRef('typename') — from property descriptors autodoc generates
+    #      for each field.
+    #   2. Quote-wrapped fragments ('typename, typename') — Sphinx splits union
+    #      and generic types at '|' and '[' and attaches the surrounding quote
+    #      to the fragment (e.g. 'npt.NDArray, THBSplineSpace').
+    ("py:class", r"ForwardRef\(.*\)"),
+    ("py:class", r"'.*"),  # leading-quote fragment (e.g. 'npt.NDArray, 'int')
+    ("py:class", r".*'"),  # trailing-quote fragment (e.g. THBSplineSpace')
 ]
 
 suppress_warnings: list[str] = []

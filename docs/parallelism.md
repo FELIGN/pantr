@@ -144,3 +144,10 @@ this maximum.
 | `NUMBA_NUM_THREADS` | Number of logical cores | Maximum thread-pool size |
 | `NUMBA_THREADING_LAYER` | `workqueue` | Threading backend (`tbb`, `omp`, `workqueue`) |
 | `NUMBA_DISABLE_JIT` | `0` | Set to `1` to disable JIT entirely (useful for coverage) |
+
+```{toctree}
+:maxdepth: 1
+:caption: In this section
+
+distributed-spaces
+```

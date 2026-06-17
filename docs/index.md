@@ -1,5 +1,7 @@
 # PaNTr Documentation
 
+**Source:** <https://github.com/pantolin/pantr>
+
 ```{include} ../README.md
 :start-line: 1
 ```
@@ -10,11 +12,11 @@
 
 getting-started
 auto_examples/index
-constructive-geometry
+basis-and-quadrature
+splines
+constructive-solid-geometry
 visualization
 parallelism
-spanwise-element-extraction
-distributed-spaces
 api/reference
 changelog
 ```

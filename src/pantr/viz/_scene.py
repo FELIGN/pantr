@@ -273,9 +273,13 @@ def _add_entry_to_plotter(plotter: pv.Plotter, entry: _GeometryEntry) -> None:
             cp_kwargs["color"] = entry.control_point_color
         plotter.add_mesh(poly_mesh, **cp_kwargs)
 
-    # Knot lines (B-splines and THB-splines)
+    # Knot lines (B-splines and THB-splines). For dim >= 2 these are the Bézier
+    # cells' boundary edges, tessellated at the *same* level as the surface so
+    # they coincide with the rendered facets (no float, no z-fighting).
     if entry.show_knot_lines and isinstance(entry.geom, BsplineCls | THBSplineCls):
-        for kl_mesh in knot_lines_meshes(entry.geom, elevation=entry.elevation):
+        for kl_mesh in knot_lines_meshes(
+            entry.geom, tessellation_level=tess, elevation=entry.elevation
+        ):
             plotter.add_mesh(
                 kl_mesh,
                 color=entry.knot_line_color,

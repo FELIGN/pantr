@@ -6,7 +6,7 @@ PaNTr's :mod:`pantr.viz` module turns B-spline, Bézier, and THB-spline geometri
 into `PyVista <https://docs.pyvista.org>`_ meshes backed by native VTK Bézier cells
 that store the *exact* polynomial geometry. The interactive viewer below subdivides
 those cells for display, while a ``.vtu`` opened in ParaView (>= 5.10) renders them
-exactly. This first demo introduces the toolkit reused throughout the gallery:
+exactly. This demo introduces the visualization toolkit reused throughout the gallery:
 
 - :func:`~pantr.viz.plot` -- one-call interactive viewing,
 - :class:`~pantr.viz.Scene` -- compose several geometries with per-geometry options,
@@ -68,7 +68,9 @@ scene.show()
 # Exporting to VTK
 # ----------------
 # :func:`~pantr.viz.save` writes a ``.vtu`` file that ParaView (>= 5.10) renders with
-# exact Bézier geometry -- handy for publication figures.
+# exact Bézier geometry -- handy for publication figures. In ParaView, switch the
+# representation to *Surface With Edges* to see the knot lines: it draws the cells'
+# curved edges, dynamically tessellated at the chosen *Nonlinear Subdivision Level*.
 out_file = Path(tempfile.gettempdir()) / "pantr_disk.vtu"
 viz.save(disk, out_file)
 print(f"wrote {out_file}")
