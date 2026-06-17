@@ -16,6 +16,7 @@ from pantr.bspline import (  # noqa: E402
     BsplineSpace1D,
     create_uniform_periodic_knots,
 )
+from pantr.cad import create_circle, create_disk  # noqa: E402
 from pantr.viz import save, to_pyvista  # noqa: E402
 from pantr.viz._vtk_cells import (  # noqa: E402
     VTK_BEZIER_CURVE,
@@ -63,6 +64,16 @@ def bezier_surface_3d() -> Bezier:
 def bezier_scalar_2d() -> Bezier:
     """Bilinear scalar Bézier (dim=2, rank=1)."""
     cp = np.array([[[0.0], [1.0]], [[2.0], [3.0]]])
+    return Bezier(cp)
+
+
+@pytest.fixture()
+def anisotropic_surface_3d() -> Bezier:
+    """Bézier surface with direction-dependent degree (2 in u, 1 in v)."""
+    cp = np.zeros((3, 2, 3))
+    for i, u in enumerate((0.0, 0.5, 1.0)):
+        for j, v in enumerate((0.0, 1.0)):
+            cp[i, j] = [u, v, np.sin(np.pi * u)]
     return Bezier(cp)
 
 
@@ -145,6 +156,68 @@ class TestBezierToPyvista:
         grid = to_pyvista(bezier_scalar_2d, scalar_name="temperature")
         assert "temperature" in grid.point_data
         assert "scalar" not in grid.point_data
+
+
+# ---------------------------------------------------------------------------
+# Anisotropic 2D higher-order cells (regression)
+# ---------------------------------------------------------------------------
+
+
+class TestRationalAndAnisotropicRendering:
+    """Rational and anisotropic-degree cells tessellate with their exact geometry.
+
+    VTK's surface tessellator silently disables rational evaluation
+    (``RationalWeights``) and direction-dependent degree evaluation
+    (``HigherOrderDegrees``) whenever those arrays are the *active scalars* —
+    which is exactly what pyvista's ``grid.data[name] = ...`` setter makes them.
+    ``to_pyvista`` attaches them via ``AddArray`` (the dedicated attribute slot)
+    instead, so both are honored and no degree elevation is needed.
+    """
+
+    def test_attributes_not_active_scalars(self, anisotropic_surface_3d: Bezier) -> None:
+        grid = to_pyvista(anisotropic_surface_3d)
+        cell_data = grid.GetCellData()
+        assert cell_data.GetHigherOrderDegrees() is not None
+        active = cell_data.GetScalars()
+        # The degrees array must NOT be the active scalars (that disables it).
+        assert active is None or active.GetName() != "HigherOrderDegrees"
+
+    def test_anisotropic_degree_preserved(self, anisotropic_surface_3d: Bezier) -> None:
+        # No elevation: the cell keeps its true (2, 1) order.
+        grid = to_pyvista(anisotropic_surface_3d)
+        cell = grid.GetCell(0)
+        assert (cell.GetOrder(0), cell.GetOrder(1)) == anisotropic_surface_3d.degree
+        np.testing.assert_array_equal(grid.cell_data["HigherOrderDegrees"][0], [2.0, 1.0, 0.0])
+
+    def test_anisotropic_surface_renders_curved(self, anisotropic_surface_3d: Bezier) -> None:
+        # z = sin(pi u) peaks at the degree-2 Bézier midpoint 0.5; a flat
+        # (bilinear) fallback would give max z == 0.
+        grid = to_pyvista(anisotropic_surface_3d)
+        surf = grid.extract_surface(nonlinear_subdivision=4, algorithm="dataset_surface")
+        assert surf.points[:, 2].max() > 0.4
+
+    def test_rational_disk_renders_within_radius(self) -> None:
+        # A correct unit disk stays within radius 1; ignoring the weights would
+        # reach the corner control point at radius √2.
+        disk = create_disk(radius_outer=1.0)
+        grid = to_pyvista(disk)
+        point_data = grid.GetPointData()
+        assert point_data.GetRationalWeights() is not None
+        # The weights must NOT be the active scalars (that disables rational eval).
+        active = point_data.GetScalars()
+        assert active is None or active.GetName() != "RationalWeights"
+        surf = grid.extract_surface(nonlinear_subdivision=4, algorithm="dataset_surface")
+        r = np.hypot(surf.points[:, 0], surf.points[:, 1])
+        assert r.max() <= 1.0 + 1e-6
+
+    def test_rational_circle_renders_on_circle(self) -> None:
+        # Every tessellated point of a unit-circle curve must lie on the circle
+        # (radius exactly 1); ignoring the weights bulges it to ~1.06.
+        arc = create_circle(radius=1.0, angle=(0.0, 2.0 * np.pi))
+        grid = to_pyvista(arc)
+        surf = grid.extract_surface(nonlinear_subdivision=5, algorithm="dataset_surface")
+        r = np.hypot(surf.points[:, 0], surf.points[:, 1])
+        np.testing.assert_allclose(r, 1.0, atol=1e-6)
 
 
 # ---------------------------------------------------------------------------

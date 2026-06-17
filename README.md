@@ -1,6 +1,6 @@
 # PaNTr
 
-Polynomial and NURBS Toolkit (**PaNTr**) is a pure Python 3.10–3.14 library for geometric modeling and numerical analysis using [NumPy](https://numpy.org), [SciPy](https://scipy.org), and [Numba](https://numba.pydata.org).
+Polynomial and NURBS Toolkit (**PaNTr**) is a pure Python 3.11–3.14 library for geometric modeling and numerical analysis using [NumPy](https://numpy.org), [SciPy](https://scipy.org), and [Numba](https://numba.pydata.org).
 
 ## Features
 
@@ -31,7 +31,7 @@ Polynomial and NURBS Toolkit (**PaNTr**) is a pure Python 3.10–3.14 library fo
 pip install pantr
 ```
 
-Requires Python 3.10–3.14. The serial core depends only on NumPy, SciPy,
+Requires Python 3.11–3.14. The serial core depends only on NumPy, SciPy,
 Numba, and [threadpoolctl](https://github.com/joblib/threadpoolctl).
 
 To install the latest development version from source:

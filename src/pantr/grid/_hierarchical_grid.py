@@ -32,7 +32,7 @@ Main exports:
 from __future__ import annotations
 
 import itertools
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Self
 
 import numpy as np
 
@@ -342,7 +342,7 @@ class HierarchicalGrid(Grid):
         root: TensorProductGrid,
         factor: tuple[int, ...],
         blocks: list[list[_Block]],
-    ) -> HierarchicalGrid:
+    ) -> Self:
         """Build a grid directly from per-level block lists (internal constructor).
 
         Bypasses the public ``__init__`` (which starts with a single level-0 block
@@ -358,7 +358,7 @@ class HierarchicalGrid(Grid):
                 ``(lo, hi)`` rectangles at level ``l`` in level-``l`` coordinates.
 
         Returns:
-            HierarchicalGrid: A grid whose active leaves span the same cells as
+            Self: A grid whose active leaves span the same cells as
             ``blocks``, after greedy merging of adjacent aligned pairs.
 
         Note:

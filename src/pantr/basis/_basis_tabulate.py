@@ -9,7 +9,7 @@ and delegates to Layer 2 implementations.
 from __future__ import annotations
 
 from collections.abc import Callable, Iterable
-from enum import Enum
+from enum import StrEnum
 from typing import TYPE_CHECKING, Literal, cast
 
 import numpy as np
@@ -27,7 +27,7 @@ if TYPE_CHECKING:
     from ..quad import PointsLattice
 
 
-class LagrangeVariant(Enum):
+class LagrangeVariant(StrEnum):
     """Enumeration for Lagrange polynomial variants."""
 
     EQUISPACES = "equispaces"

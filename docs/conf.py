@@ -212,6 +212,8 @@ nitpick_ignore = [
     ("py:class", "numpy._typing._array_like._Buffer"),
     ("py:class", "numpy._typing._array_like._SupportsArray"),
     ("py:class", "numpy._typing._dtype_like._DTypeDict"),
+    ("py:class", "numpy._typing._dtype_like._HasDType"),
+    ("py:class", "numpy._typing._dtype_like._HasNumPyDType"),
     ("py:class", "numpy._typing._dtype_like._SupportsDType"),
     ("py:class", "numpy._typing._nested_sequence._NestedSequence"),
     # Napoleon strips the npt. prefix from npt.ArrayLike / npt.DTypeLike
@@ -243,14 +245,16 @@ nitpick_ignore_regex = [
     # exposes no cross-referenceable inventory in this build.
     ("py:class", r"pv\.\w+"),
     ("py:class", r"pyvista\..*"),
-    # Python 3.14 + Sphinx renders the field annotations of the NamedTuple-based
-    # classes (CouplingGraph, LocalSpace, GridRestriction, THBSplineSpaceRestriction)
-    # as `ForwardRef('...')` or quote-split fragments (`'npt.NDArray`, `'int'`,
-    # `'BsplineSpace`, ...). None of these are resolvable cross-reference targets, and
-    # a real Python-domain class name never contains a quote, so ignoring any quoted
-    # `py:class` target is safe. No-op on the py3.12 CI / Read-the-Docs build, which
-    # renders these annotations normally.
-    ("py:class", r".*'.*"),
+    # NamedTuple fields annotated under TYPE_CHECKING + from __future__ import
+    # annotations produce two kinds of unresolvable Sphinx cross-references:
+    #   1. ForwardRef('typename') — from property descriptors autodoc generates
+    #      for each field.
+    #   2. Quote-wrapped fragments ('typename, typename') — Sphinx splits union
+    #      and generic types at '|' and '[' and attaches the surrounding quote
+    #      to the fragment (e.g. 'npt.NDArray, THBSplineSpace').
+    ("py:class", r"ForwardRef\(.*\)"),
+    ("py:class", r"'.*"),  # leading-quote fragment (e.g. 'npt.NDArray, 'int')
+    ("py:class", r".*'"),  # trailing-quote fragment (e.g. THBSplineSpace')
 ]
 
 suppress_warnings: list[str] = []

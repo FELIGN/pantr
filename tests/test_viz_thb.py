@@ -187,28 +187,31 @@ class TestTHBKnotLines:
         meshes = knot_lines_meshes(_scalar_thb(_single_level_space(1, n=1)))
         assert meshes[0].n_points == 0
 
-    @pytest.mark.parametrize(("dim", "per_cell"), [(2, 4), (3, 12)])
-    def test_boundary_curve_counts(self, dim: int, per_cell: int) -> None:
-        space = _graded_space(dim)
-        meshes = knot_lines_meshes(_scalar_thb(space))
-        assert len(meshes) == 1
-        mesh = meshes[0]
-        assert mesh.n_cells == per_cell * space.grid.num_cells
-        # every boundary curve is a degree-2 Bézier curve: 3 control points
-        assert mesh.n_points == 3 * mesh.n_cells
-        assert np.all(mesh.celltypes == VTK_BEZIER_CURVE)
+    @pytest.mark.parametrize("dim", [2, 3])
+    def test_boundaries_are_linear_edges(self, dim: int) -> None:
+        # For dim >= 2 the knot lines are the cells' tessellated boundary edges
+        # (linear PolyData line cells), not Bézier curves.
+        mesh = knot_lines_meshes(_scalar_thb(_graded_space(dim)))[0]
+        assert mesh.n_lines == mesh.n_cells > 0
 
-    def test_geometric_surface_boundaries(self) -> None:
-        space = _graded_space(2)
-        mesh = knot_lines_meshes(_geometric_thb(space, 3))[0]
-        assert mesh.n_cells == 4 * space.grid.num_cells
+    def test_boundaries_lie_on_surface(self) -> None:
+        # The defining property: the edges are the cells' own tessellated
+        # boundaries, so they share the surface tessellation's vertices exactly.
+        from scipy.spatial import cKDTree  # noqa: PLC0415
+
+        thb = _geometric_thb(_graded_space(2), 3)
+        tess = 4
+        surf = to_pyvista(thb).tessellate(max_n_subdivide=tess)
+        edges = knot_lines_meshes(thb, tessellation_level=tess)[0]
+        dist, _ = cKDTree(surf.points).query(edges.points)
+        np.testing.assert_allclose(dist, 0.0, atol=1e-9)
 
     def test_elevation_lifts_boundaries(self) -> None:
-        """elevation=True lifts the scalar boundary curves off the z = 0 plane."""
+        """elevation=True lifts the scalar boundary edges off the z = 0 plane."""
         thb = _scalar_thb(_graded_space(2))
         flat = knot_lines_meshes(thb, elevation=False)[0]
         lifted = knot_lines_meshes(thb, elevation=True)[0]
-        np.testing.assert_allclose(flat.points[:, 2], 0.0)
+        np.testing.assert_allclose(flat.points[:, 2], 0.0, atol=1e-9)
         assert np.any(np.abs(lifted.points[:, 2]) > 1e-6)
 
 

@@ -47,7 +47,7 @@ Use **conventional commits** with the format:
 
 ## Architecture
 
-**PaNTr** is a polynomial and NURBS toolkit for geometric modeling and numerical analysis (Python 3.10–3.14).
+**PaNTr** is a polynomial and NURBS toolkit for geometric modeling and numerical analysis (Python 3.11–3.14).
 
 ### Layers
 
@@ -100,7 +100,7 @@ Public functions and Layer 2 helpers accept an optional `out` argument for the r
 ## Code conventions
 
 - Strict mypy (`strict=True`); all public and private functions must be fully typed
-- Ruff with Google-style docstrings, line length 100, target Python 3.10
+- Ruff with Google-style docstrings, line length 100, target Python 3.11
 - Warnings are treated as errors in pytest
 - Layer 3 kernels run under Numba `nopython=True`: only use NumPy operations supported in that mode; unsupported calls cause a hard compile error or silent object-mode fallback
 

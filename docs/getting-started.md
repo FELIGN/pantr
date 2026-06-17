@@ -2,7 +2,7 @@
 
 ## Installation
 
-PaNTr requires Python 3.10–3.14. The serial core depends only on NumPy, SciPy, Numba,
+PaNTr requires Python 3.11–3.14. The serial core depends only on NumPy, SciPy, Numba,
 and threadpoolctl:
 
 ```bash

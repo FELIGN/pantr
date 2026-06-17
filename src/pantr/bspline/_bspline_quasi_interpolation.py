@@ -94,11 +94,10 @@ def _local_weight_row(
     try:
         inv = np.asarray(np.linalg.inv(block), dtype=np.float64)
     except np.linalg.LinAlgError as exc:
-        raise ValueError(
-            f"Local collocation matrix for basis function {target_index} is singular. "
-            "This usually indicates repeated or degenerate knot intervals. "
-            f"Points: {points.tolist()}"
-        ) from exc
+        err = ValueError(f"Local collocation matrix for basis function {target_index} is singular.")
+        err.add_note("This usually indicates repeated or degenerate knot intervals.")
+        err.add_note(f"Points: {points.tolist()}")
+        raise err from exc
     if not np.all(np.isfinite(inv)):
         raise ValueError(
             f"Local collocation matrix inversion for basis function {target_index} "
@@ -140,7 +139,7 @@ def _contract_weights(
     """
     result = np.asarray(values, dtype=np.float64)
     for w in weights:
-        result = np.asarray(np.tensordot(w, result, axes=([0], [0])), dtype=np.float64)
+        result = np.tensordot(w, result, axes=([0], [0]))
     return result
 
 

@@ -91,13 +91,10 @@ let real failures through. Run all five commands, every push — no shortcuts.
 **Local green ≠ CI green.** The local environment can differ from CI in ways that
 hide failures; the local suite passing is necessary but not sufficient. Known traps:
 
-- **mypy runs on a Python matrix (3.10–3.14).** CI's 3.10 job uses *older* numpy
-  stubs than a typical local env, so code that type-checks locally can fail on 3.10.
-  `mypy.ini` pins `python_version = 3.10`, but the *numpy stub version* is whatever is
-  installed locally. Be defensive with numpy typing: no bare `np.ndarray`; cast
-  `tensordot`/`einsum`/`linspace` results to `float64` where the dtype matters; and
-  prefer a covariant `Sequence[...]` parameter over an invariant `list[...]` when the
-  element dtype may be inferred differently across stub versions.
+- **mypy runs on a Python matrix (3.11–3.14).** `mypy.ini` pins `python_version = 3.11`,
+  but the *numpy stub version* is whatever is installed locally. Be defensive with numpy
+  typing: no bare `np.ndarray`; `np.einsum` still returns `Any` in current stubs, so wrap
+  its result with `np.asarray(..., dtype=np.float64)` where the dtype matters.
 - **Headless GL.** The CI test job runs without a display. pyvista/VTK tests must not
   call `.show()` or `pantr.viz.plot()` (they force a render and segfault headless) —
   build the scene with `to_plotter()` instead. The full suite runs under coverage with
