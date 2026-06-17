@@ -1,6 +1,6 @@
 # PaNTr
 
-Polynomial and NURBS Toolkit (**PaNTr**) is a pure Python 3.10–3.14 library for geometric modeling and numerical analysis using **NumPy**, **SciPy**, and **Numba**.
+Polynomial and NURBS Toolkit (**PaNTr**) is a pure Python 3.10–3.14 library for geometric modeling and numerical analysis using [NumPy](https://numpy.org), [SciPy](https://scipy.org), and [Numba](https://numba.pydata.org).
 
 ## Features
 
@@ -14,15 +14,16 @@ Polynomial and NURBS Toolkit (**PaNTr**) is a pure Python 3.10–3.14 library fo
 - **Constructive geometry (`pantr.cad`)** — lines, circles and arcs, disks,
   cylinders, extrude, revolve, sweep, ruled and Coons surfaces/volumes.
 - **Structured grids (`pantr.grid`)** — tensor-product and hierarchical grids,
-  BVH spatial queries, dolfinx-style cell/facet tags, and cell quadrature.
+  BVH spatial queries, [dolfinx](https://github.com/FEniCS/dolfinx)-style
+  cell/facet tags, and cell quadrature.
 - **Quadrature and change of basis** — Gauss–Legendre and tensor-product
-  rules, plus exact matrices between Bernstein, Lagrange, monomial, and
-  cardinal B-spline bases.
+  rules, plus exact change of basis operators between Bernstein, Lagrange,
+  monomial, and cardinal B-spline bases.
 - **Fast and typed** — Numba-JIT kernels parallelized over CPU cores, with
   strict type hints across the public API.
 - **Optional MPI and visualization** — distribute spaces across ranks
-  (`pantr.mpi`) and render exact higher-order geometry through VTK
-  (`pantr.viz`).
+  (`pantr.mpi`) and render exact higher-order geometry through
+  [PyVista](https://docs.pyvista.org) and [VTK](https://vtk.org) (`pantr.viz`).
 
 ## Installation
 
@@ -31,7 +32,7 @@ pip install pantr
 ```
 
 Requires Python 3.10–3.14. The serial core depends only on NumPy, SciPy,
-Numba, and threadpoolctl.
+Numba, and [threadpoolctl](https://github.com/joblib/threadpoolctl).
 
 To install the latest development version from source:
 
@@ -48,10 +49,10 @@ Extra features are opt-in via extras:
 
 | Extra | Enables | Pulls in |
 |---|---|---|
-| `mpi` | distributed spaces (`pantr.mpi`) | `mpi4py` (needs an MPI library) |
-| `metis` | METIS graph partitioning backend | `pymetis` |
-| `viz` | visualization (`pantr.viz`) | `pyvista` (VTK) |
-| `docs` | building the documentation | Sphinx stack |
+| `mpi` | distributed spaces (`pantr.mpi`) | [`mpi4py`](https://github.com/mpi4py/mpi4py) (needs an MPI library) |
+| `metis` | [METIS](https://github.com/KarypisLab/METIS) graph partitioning backend | [`pymetis`](https://github.com/inducer/pymetis) |
+| `viz` | visualization (`pantr.viz`) | [`pyvista`](https://docs.pyvista.org) ([VTK](https://vtk.org)) |
+| `docs` | building the documentation | [Sphinx](https://www.sphinx-doc.org) stack |
 
 ```bash
 pip install "pantr[mpi]"        # e.g. distributed spaces

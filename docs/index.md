@@ -2,7 +2,7 @@
 
 **PaNTr** (Polynomial And NURBS Toolkit) is a pure-Python library for geometric
 modeling and numerical analysis with B-splines, NURBS, Bézier patches, and truncated
-hierarchical B-splines. It is built on **NumPy**, **SciPy**, and **Numba** — typed
+hierarchical B-splines. It is built on [NumPy](https://numpy.org), [SciPy](https://scipy.org), and [Numba](https://numba.pydata.org) — typed
 across its public API and JIT-compiled for multi-core throughput — and targets
 isogeometric analysis, CAD-style modeling, and scientific computing.
 
@@ -62,8 +62,8 @@ Every module, class, and function, with full signatures.
 - **Grids & quadrature** — tensor-product and hierarchical grids, BVH spatial queries,
   cell/facet tags, and quadrature rules ({mod}`pantr.grid`, {mod}`pantr.quad`).
 - **Optional MPI & visualization** — distribute spaces across ranks
-  ({mod}`pantr.mpi`) and render exact higher-order geometry through VTK
-  ({mod}`pantr.viz`).
+  ({mod}`pantr.mpi`) and render exact higher-order geometry through
+  [PyVista](https://docs.pyvista.org) and [VTK](https://vtk.org) ({mod}`pantr.viz`).
 
 ```{toctree}
 :caption: Getting started
