@@ -1,7 +1,8 @@
 """Derived primitives built from core operations.
 
 Provides higher-level geometric primitives constructed by composing
-:func:`create_circle`, :func:`extrude`, :func:`create_ruled`, and :func:`revolve`.
+:func:`create_circle`, :func:`create_extrusion`, :func:`create_ruled`, and
+:func:`create_revolution`.
 """
 
 from __future__ import annotations
@@ -10,7 +11,7 @@ import numpy as np
 from numpy import typing as npt
 
 from ..bspline import Bspline, BsplineSpace, BsplineSpace1D
-from ._operations import create_ruled, extrude
+from ._operations import create_extrusion, create_ruled
 from ._primitives import create_circle
 from ._validation import _PHYSICAL_DIM, _pad_to_3d
 
@@ -125,4 +126,5 @@ def create_cylinder(
         >>> cyl.dim
         2
     """
-    return extrude(create_circle(radius=radius, center=center, angle=angle), [0, 0, height])
+    circle = create_circle(radius=radius, center=center, angle=angle)
+    return create_extrusion(circle, [0, 0, height])
