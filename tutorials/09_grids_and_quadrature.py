@@ -2,11 +2,15 @@
 Grids and quadrature
 =====================
 
-:mod:`pantr.grid` provides structured cell grids with implicit connectivity, a
-lazy BVH spatial index, and named cell/facet tags. :mod:`pantr.quad` supplies
-quadrature rules that :func:`~pantr.grid.cell_quadrature` maps onto a grid's
-cells. This demo integrates a function, queries the grid spatially, and renders
-both a tensor-product and a hierarchical grid.
+Numerical analysis on a spline needs a *mesh* and a *quadrature rule*.
+:mod:`pantr.grid` provides structured cell grids with implicit connectivity, a lazy BVH
+spatial index, and named cell/facet tags; :mod:`pantr.quad` supplies quadrature rules
+that :func:`~pantr.grid.cell_quadrature` maps onto a grid's cells. Together with the
+element extraction of :doc:`/tutorials/03_knot_operations`, these are the building
+blocks of an isogeometric assembly loop.
+
+This tutorial integrates a function, queries the grid spatially, and renders both a
+tensor-product and a hierarchical grid.
 """
 
 import numpy as np

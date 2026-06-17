@@ -2,11 +2,13 @@
 Bézier geometry and Bernstein root finding
 ===========================================
 
-:class:`~pantr.bezier.Bezier` stores a single polynomial patch in Bernstein form;
-its degree comes from the control-point shape. :func:`~pantr.bezier.find_roots`
-robustly finds all roots of a scalar 1-D Bézier in ``[0, 1]``, selecting its
-algorithm automatically (Bézier clipping at high degree, an exact derivative-based
-solver at low degree). This demo renders a Bézier surface and locates roots.
+A :class:`~pantr.bezier.Bezier` stores a single polynomial patch in Bernstein form (its
+degree comes from the control-point shape) -- exactly the per-element pieces produced by
+``to_beziers`` in :doc:`/tutorials/03_knot_operations`. On top of that representation,
+:func:`~pantr.bezier.find_roots` robustly finds all roots of a scalar 1-D Bézier in
+``[0, 1]``, selecting its algorithm automatically (Bézier clipping at high degree, an
+exact derivative-based solver at low degree). This tutorial renders a Bézier surface,
+locates roots, then uses root finding for a curve-line intersection.
 """
 
 import matplotlib.pyplot as plt

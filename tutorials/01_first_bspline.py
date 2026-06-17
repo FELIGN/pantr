@@ -1,11 +1,23 @@
 """
-B-spline geometry tour
-=======================
+Your first B-spline
+===================
 
-:class:`~pantr.bspline.Bspline` represents parametric curves, surfaces, and
-volumes (and rational NURBS) from a :class:`~pantr.bspline.BsplineSpace` plus a
-control-point array. This demo evaluates a curve and its derivative, marks the
-Greville abscissae, and renders a surface and an exact NURBS circle.
+**Start here.** This tutorial introduces the one idea the rest of PaNTr is built on:
+a geometry is a *function space* plus *control points*.
+
+- a :class:`~pantr.bspline.BsplineSpace1D` is one knot vector and a degree (a 1-D
+  spline space);
+- a :class:`~pantr.bspline.BsplineSpace` is a tensor product of those 1-D spaces -- it
+  fixes the *basis* and the *parametric dimension* ``dim`` (1 = curve, 2 = surface,
+  3 = volume);
+- a :class:`~pantr.bspline.Bspline` pairs that space with a control-point array of
+  shape ``(*num_basis, rank)`` to give an actual curve/surface/volume. ``rank`` is the
+  embedding dimension (2 for a planar curve, 3 in space, 1 for a scalar field).
+
+We build a quadratic curve, evaluate it and its derivative, mark the Greville
+abscissae, then reuse the same recipe for a surface and for an *exact* circle (a
+NURBS). See :doc:`/guide/concepts` for the full data model and :doc:`/guide/spaces-knots`
+for knot vectors and continuity.
 """
 
 import matplotlib.pyplot as plt
@@ -24,9 +36,12 @@ from pantr.cad import create_circle
 # %%
 # A curve, its control polygon, Greville points, and tangents
 # -----------------------------------------------------------
-# The curve passes near (not through) its control points; the Greville abscissae
-# are the natural parameter values "attached" to each control point. The first
-# derivative is itself a B-spline, evaluated here to draw tangent vectors.
+# The knot vector ``[0,0,0,1,2,3,3,3]`` with degree 2 defines a quadratic 1-D space;
+# wrapping it in a (1-direction) :class:`~pantr.bspline.BsplineSpace` and adding five
+# 2-D control points gives a planar curve (``dim == 1``, ``rank == 2``). The curve
+# passes near -- not through -- its control points; the Greville abscissae are the
+# natural parameter values "attached" to each control point. The first derivative is
+# itself a B-spline, evaluated here to draw tangent vectors.
 space1d = BsplineSpace1D([0, 0, 0, 1, 2, 3, 3, 3], 2)
 control_points = np.array([[0.0, 0.0], [1.0, 2.0], [2.0, -1.0], [3.0, 1.5], [4.0, 0.0]])
 curve = Bspline(BsplineSpace([space1d]), control_points)

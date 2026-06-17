@@ -109,11 +109,11 @@ autodoc_member_order = "bysource"
 # Optional heavy dependencies are mocked so the docs build without installing
 # them. pantr imports them lazily at runtime, so autodoc can still import the
 # modules. `mpi4py` / `pymetis` back `pantr.mpi`. `pyvista` is NOT mocked: the
-# Sphinx-Gallery build executes the `demos/` scripts and needs it for real.
+# Sphinx-Gallery build executes the `tutorials/` scripts and needs it for real.
 autodoc_mock_imports = ["mpi4py", "pymetis"]
 
 # --- Headless rendering -----------------------------------------------------
-# The Sphinx-Gallery build below executes the demos, which render 3-D scenes with
+# The Sphinx-Gallery build below executes the tutorials, which render 3-D scenes with
 # PyVista. On a headless builder there is no display, so start a virtual X server
 # (Xvfb) and point PyVista at it; VTK then renders through Mesa's software GL.
 # GitHub's ubuntu-latest runner ships Xvfb + Mesa; Read-the-Docs installs them via
@@ -138,7 +138,7 @@ if sys.platform.startswith("linux") and shutil.which("Xvfb") and not os.environ.
         time.sleep(0.1)
     time.sleep(0.5)
 
-# --- Sphinx-Gallery + PyVista (interactive demo gallery) --------------------
+# --- Sphinx-Gallery + PyVista (interactive tutorial gallery) ----------------
 # ``BUILDING_GALLERY`` makes each ``plotter.show()`` export both a screenshot
 # (thumbnail) and a self-contained ``.vtksz`` scene; ``DynamicScraper`` embeds
 # the latter as an interactive vtk.js widget (no server needed at view time).
@@ -146,11 +146,11 @@ pyvista.OFF_SCREEN = True
 pyvista.BUILDING_GALLERY = True
 
 sphinx_gallery_conf = {
-    # Absolute path so the demo directory resolves the same regardless of the
+    # Absolute path so the tutorials directory resolves the same regardless of the
     # build's working directory (relative paths can collide with sibling git
     # worktrees during sphinx-gallery's duplicate-filename check).
-    "examples_dirs": str(PROJECT_ROOT / "demos"),
-    "gallery_dirs": "auto_examples",
+    "examples_dirs": str(PROJECT_ROOT / "tutorials"),
+    "gallery_dirs": "tutorials",
     # Only files whose name starts with a number (``01_…``) are executed.
     "filename_pattern": r"[/\\]\d+_",
     "image_scrapers": ("matplotlib", DynamicScraper()),

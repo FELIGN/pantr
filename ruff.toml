@@ -38,8 +38,8 @@ convention = "google"
   "PLR2004",
 ]
 "docs/**/*.py" = ["D100", "D101", "D102", "D103", "D104", "D105"]
-# Demos are standalone teaching scripts (sphinx-gallery sources): keep real checks
+# Tutorials are standalone teaching scripts (sphinx-gallery sources): keep real checks
 # (imports, bugs, numpy) but drop library-grade docstring/annotation/magic-value rules.
 # D205/D212/D415 are dropped because a gallery script's module docstring is a reST
 # title block ("Title\n=====\n\n..."), not a one-line-summary API docstring.
-"demos/**/*.py" = ["D101", "D102", "D103", "D105", "D205", "D212", "D415", "ANN", "PLR2004"]
+"tutorials/**/*.py" = ["D101", "D102", "D103", "D105", "D205", "D212", "D415", "ANN", "PLR2004"]
