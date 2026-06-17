@@ -243,6 +243,14 @@ nitpick_ignore_regex = [
     # exposes no cross-referenceable inventory in this build.
     ("py:class", r"pv\.\w+"),
     ("py:class", r"pyvista\..*"),
+    # Python 3.14 + Sphinx renders the field annotations of the NamedTuple-based
+    # classes (CouplingGraph, LocalSpace, GridRestriction, THBSplineSpaceRestriction)
+    # as `ForwardRef('...')` or quote-split fragments (`'npt.NDArray`, `'int'`,
+    # `'BsplineSpace`, ...). None of these are resolvable cross-reference targets, and
+    # a real Python-domain class name never contains a quote, so ignoring any quoted
+    # `py:class` target is safe. No-op on the py3.12 CI / Read-the-Docs build, which
+    # renders these annotations normally.
+    ("py:class", r".*'.*"),
 ]
 
 suppress_warnings: list[str] = []
