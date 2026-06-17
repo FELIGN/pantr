@@ -482,7 +482,7 @@ class THBSplineSpace:
                 )
             nlo, nhi = int(rows[0]), int(rows[-1]) + 1
             sub = alpha[nlo:nhi, box_lo[k] : box_hi[k]]
-            contracted = np.asarray(np.tensordot(sub, out, axes=([1], [k])), dtype=np.float64)
+            contracted = np.tensordot(sub, out, axes=([1], [k]))
             out = np.moveaxis(contracted, 0, k)
             new_lo[k], new_hi[k] = nlo, nhi
         return out, new_lo, new_hi

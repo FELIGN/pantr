@@ -83,13 +83,13 @@ def require_mpi() -> ModuleType:
     try:
         return importlib.import_module("mpi4py.MPI")
     except Exception as exc:
-        raise ImportError(
-            "pantr.mpi found 'mpi4py' but failed to import 'mpi4py.MPI'. "
-            "This usually means the MPI runtime library (e.g. libmpi.so) is missing "
-            "or the mpi4py build is incompatible with the current environment. "
-            "Install an MPI library (e.g. 'conda install openmpi'), or reinstall "
-            "mpi4py against it (e.g. 'pip install --no-binary mpi4py mpi4py')."
-        ) from exc
+        err = ImportError("pantr.mpi found 'mpi4py' but failed to import 'mpi4py.MPI'.")
+        err.add_note("The MPI runtime library (e.g. libmpi.so) may be missing or ABI-incompatible.")
+        err.add_note("Fix: install an MPI library (e.g. 'conda install openmpi').")
+        err.add_note(
+            "Fix: reinstall mpi4py against it (e.g. 'pip install --no-binary mpi4py mpi4py')."
+        )
+        raise err from exc
 
 
 __all__ = [
