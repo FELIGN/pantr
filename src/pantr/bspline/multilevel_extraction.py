@@ -65,6 +65,10 @@ class MultiLevelExtraction:
 
     The operators' rows are ordered as :meth:`active_basis` (sorted global dof).
 
+    References:
+        Multi-level Bézier extraction for hierarchical local refinement
+        :cite:p:`dangella2018multilevel`.
+
     Attributes:
         _space (THBSplineSpace): The hierarchical space being extracted.
         _target (Target): The single-level reference basis tag.

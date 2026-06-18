@@ -216,6 +216,13 @@ class THBSplineSpace:
         cell.  :meth:`tabulate_basis` always returns the correct (possibly zero)
         values.
 
+    References:
+        Adaptive isogeometric algorithms for hierarchical splines
+        :cite:p:`garau2018algorithms`.  Per-element multi-level Bézier extraction
+        (used for element assembly and visualization) is provided by
+        :class:`~pantr.bspline.MultiLevelExtraction`, following
+        :cite:t:`dangella2018multilevel`.
+
     Attributes:
         _root_space (BsplineSpace): The level-0 tensor-product space.
         _grid (HierarchicalGrid): The active-cell hierarchy (snapshot reference).

@@ -1183,6 +1183,10 @@ class HierarchicalGrid(Grid):
             ValueError: If ``level`` is out of range, ``lo``/``hi`` have the
                 wrong length, any ``lo[k] >= hi[k]``, or ``[lo, hi)`` falls
                 entirely outside the level-``level`` domain.
+
+        References:
+            Refinement and coarsening algorithms for adaptive hierarchical-spline
+            meshes :cite:p:`garau2018algorithms`.
         """
         ndim = self.ndim
         if not (0 <= int(level) <= self.max_level):
@@ -1295,6 +1299,10 @@ class HierarchicalGrid(Grid):
             ValueError: If ``level`` is out of range, ``lo``/``hi`` have the wrong
                 length, any ``lo[k] >= hi[k]``, ``[lo, hi)`` is out of bounds, or the
                 region is not fully refined to exactly level ``level+1``.
+
+        References:
+            Coarsening algorithms for adaptive hierarchical-spline meshes
+            :cite:p:`garau2018algorithms`.
         """
         ndim = self.ndim
         if not (0 <= int(level) < self.max_level):

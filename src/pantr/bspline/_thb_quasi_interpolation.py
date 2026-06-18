@@ -77,6 +77,10 @@ def quasi_interpolate_thb_spline(
             with an invalid shape (0-D, more than 2-D, or wrong leading dimension).
         RuntimeError: If the grid has been modified since ``space`` was constructed,
             or an active dof has no leaf cell at its level (inconsistent space).
+
+    References:
+        Hierarchical quasi-interpolation in truncated hierarchical spaces
+        :cite:p:`speleers2016quasi`.
     """
     if not isinstance(space, THBSplineSpace):
         raise TypeError(f"space must be a THBSplineSpace; got {type(space).__name__!r}.")
