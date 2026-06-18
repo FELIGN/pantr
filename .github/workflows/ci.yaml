@@ -274,10 +274,11 @@ jobs:
           cache-dependency-path: |
             pyproject.toml
 
-      - name: Install MPICH
-        run: |
-          sudo apt-get update -q
-          sudo apt-get install -y libmpich-dev mpich
+      - name: Install MPICH (cached)
+        uses: awalsh128/cache-apt-pkgs-action@latest
+        with:
+          packages: libmpich-dev mpich
+          version: 1.0
 
       - name: Cache virtualenv
         id: cache-venv
