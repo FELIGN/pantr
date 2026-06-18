@@ -102,5 +102,6 @@ guide/distributed
 :hidden:
 
 api/reference
+references
 changelog
 ```

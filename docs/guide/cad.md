@@ -128,7 +128,9 @@ srf = create_coons_surface(((c_v0, c_v1), (c_u0, c_u1)))
 
 {func}`~pantr.cad.create_coons_surface` builds a bilinearly blended surface from
 four boundary curves using the formula $S = R_0 + R_1 - B$, where $R_0$
-and $R_1$ are ruled surfaces and $B$ is the bilinear corner interpolant.
+and $R_1$ are ruled surfaces and $B$ is the bilinear corner interpolant. This is
+the transfinite interpolation introduced by {cite:t}`coons1967surfaces`; see also
+{cite:t}`farin2002cagd` for a modern treatment.
 
 ### Volume
 

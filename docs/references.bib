@@ -1,0 +1,255 @@
+% ===========================================================================
+% PaNTr — references.bib
+% Bibliography for the documentation. Entries verified against
+% Crossref / publisher / DOI.org records.
+% ===========================================================================
+
+% --- Isogeometric analysis --------------------------------------------------
+
+@article{hughes2005iga,
+  author  = {Hughes, T. J. R. and Cottrell, J. A. and Bazilevs, Y.},
+  title   = {Isogeometric analysis: {CAD}, finite elements, {NURBS}, exact
+             geometry and mesh refinement},
+  journal = {Computer Methods in Applied Mechanics and Engineering},
+  volume  = {194},
+  number  = {39--41},
+  pages   = {4135--4195},
+  year    = {2005},
+  doi     = {10.1016/j.cma.2004.10.008}
+}
+
+% --- Hierarchical / THB-splines ---------------------------------------------
+
+@incollection{kraft1997hierarchical,
+  author    = {Kraft, R.},
+  title     = {Adaptive and linearly independent multilevel {B}-splines},
+  booktitle = {Surface Fitting and Multiresolution Methods},
+  editor    = {Le M{\'e}haut{\'e}, A. and Rabut, C. and Schumaker, L. L.},
+  publisher = {Vanderbilt University Press},
+  address   = {Nashville},
+  pages     = {209--218},
+  year      = {1997}
+}
+
+@article{vuong2011hierarchical,
+  author  = {Vuong, A.-V. and Giannelli, C. and J{\"u}ttler, B. and Simeon, B.},
+  title   = {A hierarchical approach to adaptive local refinement in
+             isogeometric analysis},
+  journal = {Computer Methods in Applied Mechanics and Engineering},
+  volume  = {200},
+  number  = {49--52},
+  pages   = {3554--3567},
+  year    = {2011},
+  doi     = {10.1016/j.cma.2011.09.004}
+}
+
+@article{giannelli2012thb,
+  author  = {Giannelli, Carlotta and J{\"u}ttler, Bert and Speleers, Hendrik},
+  title   = {{THB}-splines: The truncated basis for hierarchical splines},
+  journal = {Computer Aided Geometric Design},
+  volume  = {29},
+  number  = {7},
+  pages   = {485--498},
+  year    = {2012},
+  doi     = {10.1016/j.cagd.2012.03.025}
+}
+
+% --- Foundational books -----------------------------------------------------
+
+@book{piegl1997nurbs,
+  author    = {Piegl, Les and Tiller, Wayne},
+  title     = {The {NURBS} Book},
+  edition   = {2},
+  publisher = {Springer},
+  address   = {Berlin, Heidelberg},
+  year      = {1997},
+  isbn      = {978-3-540-61545-3},
+  doi       = {10.1007/978-3-642-59223-2}
+}
+
+@book{deboor2001splines,
+  author    = {de Boor, Carl},
+  title     = {A Practical Guide to Splines},
+  edition   = {Revised},
+  series    = {Applied Mathematical Sciences},
+  volume    = {27},
+  publisher = {Springer},
+  address   = {New York},
+  year      = {2001},
+  isbn      = {978-0-387-95366-3}
+}
+
+@book{farin2002cagd,
+  author    = {Farin, Gerald},
+  title     = {Curves and Surfaces for {CAGD}: A Practical Guide},
+  edition   = {5},
+  publisher = {Morgan Kaufmann},
+  address   = {San Francisco},
+  year      = {2002},
+  isbn      = {978-1-55860-737-8}
+}
+
+% --- B-spline evaluation (Cox--de Boor recurrence) --------------------------
+
+@article{deboor1972calculating,
+  author  = {de Boor, Carl},
+  title   = {On calculating with {B}-splines},
+  journal = {Journal of Approximation Theory},
+  volume  = {6},
+  number  = {1},
+  pages   = {50--62},
+  year    = {1972},
+  doi     = {10.1016/0021-9045(72)90080-9}
+}
+
+@article{cox1972bsplines,
+  author  = {Cox, M. G.},
+  title   = {The numerical evaluation of {B}-splines},
+  journal = {IMA Journal of Applied Mathematics},
+  volume  = {10},
+  number  = {2},
+  pages   = {134--149},
+  year    = {1972},
+  doi     = {10.1093/imamat/10.2.134}
+}
+
+% --- Knot insertion & refinement --------------------------------------------
+
+@article{boehm1980knots,
+  author  = {Boehm, Wolfgang},
+  title   = {Inserting new knots into {B}-spline curves},
+  journal = {Computer-Aided Design},
+  volume  = {12},
+  number  = {4},
+  pages   = {199--201},
+  year    = {1980},
+  doi     = {10.1016/0010-4485(80)90154-2}
+}
+
+@article{cohen1980oslo,
+  author  = {Cohen, Elaine and Lyche, Tom and Riesenfeld, Richard},
+  title   = {Discrete {B}-splines and subdivision techniques in
+             computer-aided geometric design and computer graphics},
+  journal = {Computer Graphics and Image Processing},
+  volume  = {14},
+  number  = {2},
+  pages   = {87--111},
+  year    = {1980},
+  doi     = {10.1016/0146-664X(80)90040-4}
+}
+
+% --- Degree elevation -------------------------------------------------------
+
+@article{prautzsch1984degree,
+  author  = {Prautzsch, Hartmut},
+  title   = {Degree elevation of {B}-spline curves},
+  journal = {Computer Aided Geometric Design},
+  volume  = {1},
+  number  = {2},
+  pages   = {193--198},
+  year    = {1984},
+  doi     = {10.1016/0167-8396(84)90031-1}
+}
+
+@article{prautzsch1991fast,
+  author  = {Prautzsch, Hartmut and Piper, Bruce},
+  title   = {A fast algorithm to raise the degree of spline curves},
+  journal = {Computer Aided Geometric Design},
+  volume  = {8},
+  number  = {4},
+  pages   = {253--265},
+  year    = {1991},
+  doi     = {10.1016/0167-8396(91)90015-4}
+}
+
+% --- Bezier extraction ------------------------------------------------------
+
+@article{borden2011bezier,
+  author  = {Borden, Michael J. and Scott, Michael A. and Evans, John A.
+             and Hughes, Thomas J. R.},
+  title   = {Isogeometric finite element data structures based on
+             {B}{\'e}zier extraction of {NURBS}},
+  journal = {International Journal for Numerical Methods in Engineering},
+  volume  = {87},
+  number  = {1--5},
+  pages   = {15--47},
+  year    = {2011},
+  doi     = {10.1002/nme.2968}
+}
+
+@article{scott2011tsplines,
+  author  = {Scott, Michael A. and Borden, Michael J. and Verhoosel, Clemens V.
+             and Sederberg, Thomas W. and Hughes, Thomas J. R.},
+  title   = {Isogeometric finite element data structures based on
+             {B}{\'e}zier extraction of {T}-splines},
+  journal = {International Journal for Numerical Methods in Engineering},
+  volume  = {88},
+  number  = {2},
+  pages   = {126--156},
+  year    = {2011},
+  doi     = {10.1002/nme.3167}
+}
+
+% --- Bezier clipping / root finding -----------------------------------------
+
+@article{sederberg1990clipping,
+  author  = {Sederberg, T. W. and Nishita, T.},
+  title   = {Curve intersection using {B}{\'e}zier clipping},
+  journal = {Computer-Aided Design},
+  volume  = {22},
+  number  = {9},
+  pages   = {538--549},
+  year    = {1990},
+  doi     = {10.1016/0010-4485(90)90039-F}
+}
+
+@article{yuksel2022roots,
+  author  = {Yuksel, Cem},
+  title   = {High-Performance Polynomial Root Finding for Graphics},
+  journal = {Proceedings of the ACM on Computer Graphics and Interactive
+             Techniques},
+  volume  = {5},
+  number  = {3},
+  pages   = {1--15},
+  articleno = {27},
+  year    = {2022},
+  doi     = {10.1145/3543865}
+}
+
+% --- Gauss quadrature -------------------------------------------------------
+
+@article{golub1969gauss,
+  author  = {Golub, Gene H. and Welsch, John H.},
+  title   = {Calculation of {G}auss quadrature rules},
+  journal = {Mathematics of Computation},
+  volume  = {23},
+  number  = {106},
+  pages   = {221--230},
+  year    = {1969},
+  doi     = {10.1090/S0025-5718-69-99647-1}
+}
+
+% --- Graph partitioning -----------------------------------------------------
+
+@article{karypis1998metis,
+  author  = {Karypis, George and Kumar, Vipin},
+  title   = {A fast and high quality multilevel scheme for partitioning
+             irregular graphs},
+  journal = {SIAM Journal on Scientific Computing},
+  volume  = {20},
+  number  = {1},
+  pages   = {359--392},
+  year    = {1998},
+  doi     = {10.1137/S1064827595287997}
+}
+
+% --- Coons patches ----------------------------------------------------------
+
+@techreport{coons1967surfaces,
+  author      = {Coons, Steven A.},
+  title       = {Surfaces for Computer-Aided Design of Space Forms},
+  institution = {Massachusetts Institute of Technology, Project MAC},
+  number      = {MAC-TR-41},
+  year        = {1967},
+  url         = {https://publications.csail.mit.edu/lcs/pubs/pdf/MIT-LCS-TR-041.pdf}
+}

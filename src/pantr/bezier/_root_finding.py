@@ -95,6 +95,10 @@ def find_roots(
         >>> from pantr.bezier import Bezier, find_roots
         >>> find_roots(Bezier([1.0, -1.0]))
         array([0.5])
+
+    References:
+        Yuksel's monotone-decomposition root finder :cite:p:`yuksel2022roots`
+        and the Bézier clipping method :cite:p:`sederberg1990clipping`.
     """
     from pantr.bezier._bezier import Bezier as BezierCls  # noqa: PLC0415
 

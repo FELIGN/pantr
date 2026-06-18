@@ -52,6 +52,7 @@ extensions = [
     "sphinx_design",
     "sphinx_gallery.gen_gallery",
     "pyvista.ext.viewer_directive",
+    "sphinxcontrib.bibtex",
 ]
 
 OPTIONAL_EXTENSIONS: Final[list[str]] = []
@@ -67,6 +68,14 @@ for ext in OPTIONAL_EXTENSIONS:
                 stacklevel=1,
             )
             extensions = [e for e in extensions if e != ext]
+
+# -- sphinxcontrib-bibtex ----------------------------------------------------
+# Bibliographic citations: `{cite:p}` / `{cite:t}` roles in the prose and docstrings,
+# resolved against docs/references.bib and listed on the References page. Author-year
+# inline labels match the convention of the scientific literature PaNTr draws on.
+bibtex_bibfiles: Final[list[str]] = ["references.bib"]
+bibtex_default_style: Final[str] = "unsrt"
+bibtex_reference_style: Final[str] = "author_year"
 
 _INTERSPHINX_DIR: Final[Path] = PROJECT_ROOT / "docs" / "_intersphinx"
 
