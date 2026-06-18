@@ -64,9 +64,8 @@ multivariate space. They are the default sites for interpolation
 
 A central property: several operations change a geometry's *representation* — its space
 and control points — while leaving the curve/surface/volume it describes **unchanged** (to
-round-off). They are the workhorses of refinement and inter-operability. Knot insertion
-follows {cite:t}`boehm1980knots` and the Oslo algorithm of {cite:t}`cohen1980oslo`;
-degree elevation follows {cite:t}`prautzsch1984degree,prautzsch1991fast`:
+round-off). They are the workhorses of refinement and inter-operability; see
+{cite:t}`piegl1997nurbs` for the underlying knot-insertion and degree-elevation algorithms:
 
 | Operation | Method | Effect on representation |
 |---|---|---|

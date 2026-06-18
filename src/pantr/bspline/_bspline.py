@@ -321,7 +321,7 @@ class Bspline:
             ValueError: If the number of increments does not match the dimension.
 
         References:
-            Degree elevation of spline curves :cite:p:`prautzsch1984degree,prautzsch1991fast`.
+            Degree elevation of spline curves :cite:p:`piegl1997nurbs`.
         """
         if isinstance(degree_increments, int):
             increments = (degree_increments,) * self.dim
@@ -419,8 +419,7 @@ class Bspline:
             ValueError: If any insertion would exceed maximum multiplicity.
 
         References:
-            Knot insertion :cite:p:`boehm1980knots` and the Oslo algorithm for
-            simultaneous insertion :cite:p:`cohen1980oslo`.
+            Knot insertion and refinement :cite:p:`piegl1997nurbs`.
         """
         dtype = self.dtype
 

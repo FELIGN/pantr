@@ -519,7 +519,7 @@ class BsplineSpace1D:
 
         References:
             Basis values are computed with the stable Cox-de Boor recurrence
-            :cite:p:`cox1972bsplines,deboor1972calculating`.
+            :cite:p:`deboor2001splines`.
         """
         return _tabulate_Bspline_basis_1D_impl(
             self, pts, out_basis=out_basis, out_first_basis=out_first_basis, validate=validate
