@@ -10,8 +10,8 @@ authors:
 version: 0.6.0
 date-released: "2026-06-13"
 license: MIT
-repository-code: "https://github.com/pantolin/pantr"
-url: "https://github.com/pantolin/pantr"
+repository-code: "https://github.com/FELIGN/pantr"
+url: "https://github.com/FELIGN/pantr"
 keywords:
   - nurbs
   - b-spline

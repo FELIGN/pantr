@@ -183,7 +183,7 @@ html_show_sourcelink = True
 # Furo provides light/dark automatically; these options drive its "Edit source" link.
 html_theme_options = (
     {
-        "source_repository": "https://github.com/pantolin/pantr",
+        "source_repository": "https://github.com/FELIGN/pantr",
         "source_branch": "main",
         "source_directory": "docs/",
     }
