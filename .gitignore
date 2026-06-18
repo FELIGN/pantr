@@ -41,6 +41,7 @@ env/
 .idea/
 .vscode/
 *.code-workspace
+.cursor/
 .claude/worktrees/
 .claude/settings.local.json
 
@@ -71,3 +72,9 @@ Thumbs.db
 
 # Hatch build artifacts
 .hatch/
+
+# Grimp import-graph cache
+.grimp_cache/
+
+# Stray temp dir
+.git_tmp/

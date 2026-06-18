@@ -39,7 +39,7 @@ Numba, and [threadpoolctl](https://github.com/joblib/threadpoolctl).
 To install the latest development version from source:
 
 ```bash
-git clone https://github.com/pantolin/pantr.git
+git clone https://github.com/FELIGN/pantr.git
 cd pantr
 pip install .
 ```

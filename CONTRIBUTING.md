@@ -9,7 +9,7 @@ PaNTr targets Python 3.11–3.14. Clone the repository and install the package
 with all development and optional-feature dependencies:
 
 ```bash
-git clone https://github.com/pantolin/pantr.git
+git clone https://github.com/FELIGN/pantr.git
 cd pantr
 pip install -e ".[dev]"
 pre-commit install
