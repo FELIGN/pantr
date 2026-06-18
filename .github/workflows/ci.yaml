@@ -159,6 +159,12 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-numba-${{ steps.setup-python.outputs.python-version }}-
 
+      - name: Install OpenMPI (cached)
+        uses: awalsh128/cache-apt-pkgs-action@latest
+        with:
+          packages: libopenmpi-dev openmpi-bin
+          version: 1.0
+
       - name: Create venv and install dev deps (on cache miss)
         if: steps.cache-venv.outputs.cache-hit != 'true'
         run: |
@@ -255,12 +261,13 @@ jobs:
     name: MPI tests (mpiexec)
     needs: [lint, type-check]
     runs-on: ubuntu-latest
-    # The only job that exercises the real distributed stack under multiple ranks.
-    # Uses the system MPICH launcher together with the prebuilt mpi4py wheel (which
-    # bundles MPICH), so no source build is needed. PANTR_RUN_MPI enables the
+    # The only job that exercises the real distributed stack under multiple ranks. It
+    # builds mpi4py from source against the system OpenMPI -- the prebuilt wheels are not
+    # guaranteed to match the system launcher's wire protocol. PANTR_RUN_MPI enables the
     # otherwise-skipped tests under tests/mpi/.
     env:
       PANTR_RUN_MPI: "1"
+      PIP_NO_BINARY: "mpi4py"
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -274,10 +281,10 @@ jobs:
           cache-dependency-path: |
             pyproject.toml
 
-      - name: Install MPICH (cached)
+      - name: Install OpenMPI (cached)
         uses: awalsh128/cache-apt-pkgs-action@latest
         with:
-          packages: libmpich-dev mpich
+          packages: libopenmpi-dev openmpi-bin
           version: 1.0
 
       - name: Cache virtualenv
@@ -289,7 +296,7 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-venv-${{ steps.setup-python.outputs.python-version }}-mpi-
 
-      - name: Create venv and install dev deps (on cache miss)
+      - name: Create venv and install (with mpi4py built from source, on cache miss)
         if: steps.cache-venv.outputs.cache-hit != 'true'
         run: |
           python -m venv .venv
@@ -300,14 +307,14 @@ jobs:
       - name: Verify mpi4py matches the launcher
         run: |
           . .venv/bin/activate
-          mpiexec -n 2 python -c "from mpi4py import MPI; assert MPI.COMM_WORLD.size == 2"
+          mpiexec --oversubscribe -n 2 python -c "from mpi4py import MPI; assert MPI.COMM_WORLD.size == 2"
 
       - name: Run MPI smoke tests (2 ranks)
         run: |
           . .venv/bin/activate
-          mpiexec -n 2 python -m pytest tests/mpi/ --no-cov -p no:cacheprovider
+          mpiexec --oversubscribe -n 2 python -m pytest tests/mpi/ --no-cov -p no:cacheprovider
 
       - name: Run MPI smoke tests (3 ranks)
         run: |
           . .venv/bin/activate
-          mpiexec -n 3 python -m pytest tests/mpi/ --no-cov -p no:cacheprovider
+          mpiexec --oversubscribe -n 3 python -m pytest tests/mpi/ --no-cov -p no:cacheprovider
