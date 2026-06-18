@@ -69,6 +69,9 @@ docs = [
   # `.readthedocs.yaml`; GitHub's ubuntu-latest ships them).
   "sphinx-gallery>=0.15,<1",
   "sphinx-design>=0.5,<1",
+  # Bibliographic citations ({cite} roles + the References page bibliography).
+  # Pinned <2.7: 2.7+ requires Sphinx >=8, but the docs toolchain is pinned to Sphinx 7.
+  "sphinxcontrib-bibtex>=2.6,<2.7",
   "pantr[viz]",
   "trame>=3,<4",
   "trame-vtk>=2,<3",

@@ -64,7 +64,8 @@ multivariate space. They are the default sites for interpolation
 
 A central property: several operations change a geometry's *representation* — its space
 and control points — while leaving the curve/surface/volume it describes **unchanged** (to
-round-off). They are the workhorses of refinement and inter-operability:
+round-off). They are the workhorses of refinement and inter-operability; see
+{cite:t}`piegl1997nurbs` for the underlying knot-insertion and degree-elevation algorithms:
 
 | Operation | Method | Effect on representation |
 |---|---|---|
@@ -85,7 +86,7 @@ round-off). They are the workhorses of refinement and inter-operability:
 Insert every interior knot up to multiplicity ``p`` and each element becomes an isolated
 **Bézier patch** — a single polynomial in Bernstein form. This *Bézier extraction* is the
 bridge between the smooth, globally-coupled spline basis and the element-local basis a
-finite-element code assembles against.
+finite-element code assembles against {cite:p}`borden2011bezier,scott2011tsplines`.
 
 {meth}`~pantr.bspline.Bspline.to_beziers` returns the per-element Bézier pieces (as an
 array of {class}`~pantr.bezier.Bezier` objects); {meth}`~pantr.bspline.Bspline.to_bezier`

@@ -9,7 +9,7 @@ into place. Everything here is illustrated end-to-end in
 
 PaNTr keeps a strict separation between a **function space** (a basis) and a
 **geometry** (a map built from that basis). This is the same split that underpins
-isogeometric analysis, and it is worth internalizing:
+isogeometric analysis {cite:p}`hughes2005iga`, and it is worth internalizing:
 
 | Object | What it is | Holds |
 |---|---|---|
@@ -79,7 +79,8 @@ data by default (see {doc}`/tutorials/05_approximation`).
 
 Polynomials cannot represent a circle or any other conic exactly; *rational* polynomials
 can. A rational B-spline (a NURBS) attaches a positive **weight** to each control point
-and evaluates the weighted average.
+and evaluates the weighted average. {cite:t}`piegl1997nurbs` and {cite:t}`deboor2001splines`
+are the standard references for the underlying spline theory.
 
 PaNTr stores NURBS in the standard **homogeneous (projective)** representation: the
 control-point array carries one extra trailing coordinate, the weight ``w``, and the

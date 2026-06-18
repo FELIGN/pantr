@@ -704,6 +704,10 @@ def gauss_legendre_quadrature(ndim: int, npts: int | Sequence[int]) -> Quadratur
     Raises:
         ValueError: If ``ndim < 1``, ``npts`` is a sequence of the wrong length,
             or any count is ``< 1``.
+
+    References:
+        Nodes and weights follow the classical Gauss-Legendre construction
+        :cite:p:`golub1969gauss`.
     """
     if ndim < 1:
         raise ValueError(f"gauss_legendre_quadrature: ndim must be >= 1; got {ndim}.")

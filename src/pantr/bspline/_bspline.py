@@ -319,6 +319,9 @@ class Bspline:
             ValueError: If any degree increment is negative.
             ValueError: If all degree increments are zero.
             ValueError: If the number of increments does not match the dimension.
+
+        References:
+            Degree elevation of spline curves :cite:p:`piegl1997nurbs`.
         """
         if isinstance(degree_increments, int):
             increments = (degree_increments,) * self.dim
@@ -414,6 +417,9 @@ class Bspline:
             ValueError: If all directions have empty or ``None`` knot arrays.
             ValueError: If any knot lies outside its direction's domain.
             ValueError: If any insertion would exceed maximum multiplicity.
+
+        References:
+            Knot insertion and refinement :cite:p:`piegl1997nurbs`.
         """
         dtype = self.dtype
 
@@ -729,6 +735,10 @@ class Bspline:
             (3,)
             >>> beziers[0].degree
             (2,)
+
+        References:
+            Bézier extraction of NURBS :cite:p:`borden2011bezier` (and its
+            T-spline generalization :cite:p:`scott2011tsplines`).
         """
         if self._beziers_cache is None:
             self._beziers_cache = _to_beziers_impl(self)

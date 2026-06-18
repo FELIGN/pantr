@@ -191,16 +191,17 @@ class THBSplineSpace:
     :class:`~pantr.grid.HierarchicalGrid` carrying the active-cell hierarchy.  The
     per-level tensor-product spaces are obtained by uniformly subdividing the root
     space according to the grid's per-direction ``factor``.  The active hierarchical
-    basis is the Kraft selection: a level-``l`` tensor-product B-spline is active iff
-    its support lies in the level-``l`` subdomain :math:`\Omega_l` but not entirely
-    in the finer subdomain :math:`\Omega_{l+1}`.
+    basis is the Kraft selection :cite:p:`kraft1997hierarchical,vuong2011hierarchical`:
+    a level-``l`` tensor-product B-spline is active iff its support lies in the
+    level-``l`` subdomain :math:`\Omega_l` but not entirely in the finer subdomain
+    :math:`\Omega_{l+1}`.
 
     With ``truncate=True`` (the default) the *truncated* hierarchical basis (THB) is
-    built: each active function that straddles a finer-level refinement boundary has
-    its components on active finer functions removed (Giannelli-Jüttler-Speleers
-    truncation), restoring the partition of unity.  Only truncated functions store a
-    coefficient vector (in the finest tensor-product basis their support reaches);
-    untruncated functions remain plain tensor-product B-splines.  With
+    built: each active function that straddles a finer-level refinement boundary has its
+    components on active finer functions removed (Giannelli-Jüttler-Speleers truncation
+    :cite:p:`giannelli2012thb`), restoring the partition of unity.  Only truncated
+    functions store a coefficient vector (in the finest tensor-product basis their support
+    reaches); untruncated functions remain plain tensor-product B-splines.  With
     ``truncate=False`` the non-truncated hierarchical basis (HB) is built.
 
     This space is a snapshot of the grid at construction time.  Calling

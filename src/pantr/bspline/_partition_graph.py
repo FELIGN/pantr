@@ -169,6 +169,9 @@ def _metis_partition(
     minimizes the cut while balancing the integer vertex weights. Unlike
     :func:`_spectral_partition`, METIS does not guarantee every part is non-empty.
 
+    METIS implements the multilevel k-way partitioning scheme of
+    :cite:t:`karypis1998metis`.
+
     Args:
         xadj (Any): CSR row pointers of the (active) subgraph (scipy-version-dependent
             dtype; coerced to ``pymetis.zero_copy_dtype()`` internally).
