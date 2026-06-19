@@ -1700,9 +1700,13 @@ class THBSplineSpace:
         function** in ``fine``'s basis: if ``u`` are coarse coefficients, ``P @ u`` are
         the fine coefficients.
 
-        It is built by expressing every coarse and every fine basis function in the
-        common finest tensor-product basis of ``fine`` and solving the (consistent)
-        linear systems in the least-squares sense.
+        It is built column-by-column following the local two-scale construction used
+        in practice (Garau & Vazquez 2018; D'Angella et al. 2018): each coarse
+        function is matched against only the fine functions over its support,
+        expressed in the deepest level present there (not the global finest level),
+        and reproduced by a small local least-squares solve.  Functions far from the
+        refinement yield trivial (identity) columns, so cost and sparsity follow the
+        refined region.
 
         Args:
             fine (THBSplineSpace): A refinement of this space (same ``root_space``,

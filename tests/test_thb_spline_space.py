@@ -1203,6 +1203,33 @@ class TestProlongation:
         p = coarse.prolongation_to(coarse)
         np.testing.assert_allclose(p, np.eye(coarse.num_total_basis), atol=1e-10)
 
+    def test_reproduction_3d(self) -> None:
+        coarse = create_thb_space(create_uniform_space([2, 2, 2], [4, 4, 4]))
+        fine = coarse.refine_region(0, [0, 0, 0], [2, 2, 2], admissible_class=None)
+        self._check_reproduction(coarse, fine, np.random.default_rng(44))
+
+    def test_reproduction_anisotropic_factor(self) -> None:
+        coarse = create_thb_space(create_uniform_space([2, 2], [6, 9]), factor=[2, 3])
+        fine = coarse.refine_region(0, [0, 0], [3, 3], admissible_class=None)
+        self._check_reproduction(coarse, fine, np.random.default_rng(42))
+
+    def test_reproduction_reduced_regularity(self) -> None:
+        coarse = create_thb_space(create_uniform_space([2], [8]), regularity=0)
+        fine = coarse.refine_region(0, [0], [4], admissible_class=None)
+        self._check_reproduction(coarse, fine, np.random.default_rng(43))
+
+    def test_reproduction_deep_corner_refinement(self) -> None:
+        # 4-level nested corner refinement: candidates span levels 0..3, so the
+        # column solve must pick a deep local level (the motivating perf case).
+        coarse = create_thb_space(create_uniform_space([2, 2], [8, 8]))
+        f1 = coarse.refine_region(0, [0, 0], [4, 4], admissible_class=None)
+        f2 = f1.refine_region(1, [0, 0], [4, 4], admissible_class=None)
+        f3 = f2.refine_region(2, [0, 0], [4, 4], admissible_class=None)
+        assert f3.num_levels == 4
+        self._check_reproduction(coarse, f3, np.random.default_rng(45))
+        self._check_reproduction(f1, f3, np.random.default_rng(46))  # 2-level -> 4-level
+        self._check_reproduction(f2, f3, np.random.default_rng(47))  # 3-level -> 4-level
+
     def test_columns_reproduce_basis_functions(self) -> None:
         coarse = THBSplineSpace(_root_1d(), _grid_1d())
         fine = coarse.refine([0])
