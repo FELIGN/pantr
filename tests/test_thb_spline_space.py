@@ -16,6 +16,7 @@ from pantr.bspline import (
     THBSplineSpace,
     THBSplineSpaceRestriction,
     create_thb_space,
+    create_uniform_space,
 )
 from pantr.bspline._thb_eval_core import _combine_tp_values
 from pantr.bspline._thb_spline_space import _box_all_true, _func_support_1d
@@ -1792,3 +1793,76 @@ class TestTHBSplineEvaluateGrouping:
             values, dofs = spline.space.tabulate_basis(int(cid), p[None, :])
             expected.append(float(np.asarray(values)[0] @ cp[dofs]))
         np.testing.assert_allclose(got, np.asarray(expected), rtol=1e-13, atol=0.0)
+
+
+class TestTHBSplineRefine:
+    """THBSpline.refine / refine_region refine a function, preserving its values."""
+
+    @staticmethod
+    def _field(rng: np.random.Generator, truncate: bool = True, rank: int = 1) -> THBSpline:
+        thb = create_thb_space(create_uniform_space([2, 2], [8, 8]), truncate=truncate)
+        shape = (thb.num_total_basis,) if rank == 1 else (thb.num_total_basis, rank)
+        return THBSpline(thb, rng.standard_normal(shape))
+
+    def test_refine_region_preserves_values(self) -> None:
+        rng = np.random.default_rng(0)
+        f = self._field(rng)
+        g = f.refine_region(0, [0, 0], [4, 4])
+        pts = rng.random((50, 2))
+        np.testing.assert_allclose(g.evaluate(pts), f.evaluate(pts), atol=1e-10)
+        assert g.space.num_total_basis > f.space.num_total_basis
+
+    def test_refine_by_ids_preserves_values(self) -> None:
+        rng = np.random.default_rng(1)
+        f = self._field(rng)
+        g = f.refine([0, 1, 8, 9])
+        pts = rng.random((50, 2))
+        np.testing.assert_allclose(g.evaluate(pts), f.evaluate(pts), atol=1e-10)
+
+    def test_vector_field_preserves_values(self) -> None:
+        rng = np.random.default_rng(2)
+        f = self._field(rng, rank=3)
+        g = f.refine_region(0, [0, 0], [4, 4])
+        pts = rng.random((30, 2))
+        assert g.rank == 3
+        np.testing.assert_allclose(g.evaluate(pts), f.evaluate(pts), atol=1e-10)
+
+    def test_scalar_stays_scalar(self) -> None:
+        rng = np.random.default_rng(3)
+        f = self._field(rng)
+        g = f.refine_region(0, [0, 0], [2, 2])
+        assert g.control_points.ndim == 1  # scalar field stays scalar
+
+    def test_hb_preserves_values(self) -> None:
+        rng = np.random.default_rng(4)
+        f = self._field(rng, truncate=False)
+        g = f.refine([0, 1], admissible_class=None)
+        pts = rng.random((40, 2))
+        np.testing.assert_allclose(g.evaluate(pts), f.evaluate(pts), atol=1e-10)
+
+    def test_chained_refinement_preserves_values(self) -> None:
+        rng = np.random.default_rng(5)
+        f = self._field(rng)
+        g = f.refine_region(0, [0, 0], [4, 4]).refine_region(1, [0, 0], [4, 4])
+        assert g.space.num_levels == 3
+        pts = rng.random((50, 2))
+        np.testing.assert_allclose(g.evaluate(pts), f.evaluate(pts), atol=1e-10)
+
+    def test_does_not_mutate_original(self) -> None:
+        rng = np.random.default_rng(6)
+        f = self._field(rng)
+        n_before = f.space.num_total_basis
+        cp_before = np.array(f.control_points)
+        f.refine_region(0, [0, 0], [4, 4])
+        assert f.space.num_total_basis == n_before
+        np.testing.assert_array_equal(f.control_points, cp_before)
+
+    def test_invalid_admissible_class_raises(self) -> None:
+        f = self._field(np.random.default_rng(7))
+        with pytest.raises(ValueError, match="admissible_class"):
+            f.refine([0], admissible_class=1)
+
+    def test_region_out_of_range_raises(self) -> None:
+        f = self._field(np.random.default_rng(8))
+        with pytest.raises(ValueError, match="level must be in"):
+            f.refine_region(9, [0, 0], [1, 1])
