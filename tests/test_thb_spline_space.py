@@ -1819,6 +1819,21 @@ class TestTHBSplineRefine:
         pts = rng.random((50, 2))
         np.testing.assert_allclose(g.evaluate(pts), f.evaluate(pts), atol=1e-10)
 
+    def test_preserves_values_1d(self) -> None:
+        rng = np.random.default_rng(9)
+        thb = create_thb_space(create_uniform_space(2, 8))  # 1D, degree 2
+        f = THBSpline(thb, rng.standard_normal(thb.num_total_basis))
+        g = f.refine_region(0, [0], [4])
+        pts = rng.random((50, 1))
+        np.testing.assert_allclose(g.evaluate(pts), f.evaluate(pts), atol=1e-10)
+
+    def test_ungraded_region_preserves_values(self) -> None:
+        rng = np.random.default_rng(10)
+        f = self._field(rng)
+        g = f.refine_region(0, [0, 0], [4, 4], admissible_class=None)
+        pts = rng.random((50, 2))
+        np.testing.assert_allclose(g.evaluate(pts), f.evaluate(pts), atol=1e-10)
+
     def test_vector_field_preserves_values(self) -> None:
         rng = np.random.default_rng(2)
         f = self._field(rng, rank=3)
@@ -1853,9 +1868,12 @@ class TestTHBSplineRefine:
         f = self._field(rng)
         n_before = f.space.num_total_basis
         cp_before = np.array(f.control_points)
-        f.refine_region(0, [0, 0], [4, 4])
+        g = f.refine_region(0, [0, 0], [4, 4])
         assert f.space.num_total_basis == n_before
         np.testing.assert_array_equal(f.control_points, cp_before)
+        # The read-only contract holds for both the original and the refined spline.
+        assert not f.control_points.flags.writeable
+        assert not g.control_points.flags.writeable
 
     def test_invalid_admissible_class_raises(self) -> None:
         f = self._field(np.random.default_rng(7))
