@@ -139,6 +139,26 @@ that leaves a rank empty) gets `ds.local is None` and `ds.owns_cells is False`
 rather than failing -- guard with `if ds.owns_cells:` before assembling.
 ```
 
+### One-call shortcut
+
+When you don't need to hold the grid or partition yourself,
+`pantr.mpi.create_distributed_space(global_space, comm, *, method="grid", backend=None,
+cell_weights=None, cell_active=None)` derives the grid, partitions it, and builds the
+`DistributedSpace` in one call:
+
+```python
+from pantr.mpi import create_distributed_space
+
+ds = create_distributed_space(space, comm)                  # geometric (partition_grid)
+ds = create_distributed_space(space, comm, method="graph")  # coupling-graph (partition_graph)
+```
+
+`method="grid"` (default) partitions geometrically; `method="graph"` minimizes
+cross-rank DOF coupling. `backend=None` picks each method's default (`"auto"` /
+`"spectral"`), and `cell_weights` / `cell_active` are forwarded to the chosen
+partitioner. The explicit three-step flow above stays available when you need the grid
+or partition as separate objects.
+
 ## Immersion hooks
 
 PaNTr stores **no** geometric classification (interior / cut / exterior). An
