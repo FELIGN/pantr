@@ -16,6 +16,7 @@ from pantr.bspline import (
     THBSplineSpace,
     THBSplineSpaceRestriction,
     create_thb_space,
+    create_uniform_space,
 )
 from pantr.bspline._thb_eval_core import _combine_tp_values
 from pantr.bspline._thb_spline_space import _box_all_true, _func_support_1d
@@ -1218,6 +1219,19 @@ class TestProlongation:
                 abs(_field_at(fine, col, cid, mid)[0] - _field_at(coarse, unit, coarse_cid, mid)[0])
                 < 1e-9
             )
+
+    def test_sparse_and_local_for_local_refinement(self) -> None:
+        # A coarse function untouched by the refinement maps to a single fine
+        # function (unit column); the operator is sparse, not dense. This guards
+        # against a regression to a global dense least-squares construction.
+        coarse = create_thb_space(create_uniform_space([2, 2], [16, 16]))
+        fine = coarse.refine_region(0, [0, 0], [2, 2]).refine_region(1, [0, 0], [2, 2])
+        p = coarse.prolongation_to(fine)
+        density = np.count_nonzero(p) / p.size
+        assert density < 0.05, f"prolongation not sparse: density {density:.3f}"
+        # Far-from-refinement coarse functions are reproduced by exactly one fine dof.
+        unit_columns = int(np.sum(np.count_nonzero(p, axis=0) == 1))
+        assert unit_columns > coarse.num_total_basis // 2
 
     def test_non_refinement_raises(self) -> None:
         coarse = THBSplineSpace(_root_1d(), _grid_1d())
