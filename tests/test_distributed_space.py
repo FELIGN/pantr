@@ -276,7 +276,18 @@ class TestCreateDistributedSpace:
         got = create_distributed_space(space, _FakeComm(0, 2), cell_active=active)
         np.testing.assert_array_equal(got.partition.cell_owner, part.cell_owner)
 
+    def test_cell_weights_passthrough_graph(self) -> None:
+        space = create_uniform_space([2, 2], [4, 4])
+        weights = np.arange(1, space.num_total_intervals + 1, dtype=np.float64)
+        part = partition_graph(coupling_graph(space, cell_weights=weights), 3)
+        got = create_distributed_space(space, _FakeComm(0, 3), method="graph", cell_weights=weights)
+        np.testing.assert_array_equal(got.partition.cell_owner, part.cell_owner)
+
     def test_invalid_method_raises(self) -> None:
         space = create_uniform_space([2, 2], [4, 4])
         with pytest.raises(ValueError, match="method must be"):
             create_distributed_space(space, _FakeComm(0, 4), method="bogus")
+
+    def test_grid_method_invalid_type_raises(self) -> None:
+        with pytest.raises(TypeError, match="BsplineSpace or THBSplineSpace"):
+            create_distributed_space(object(), _FakeComm(0, 2))  # type: ignore[arg-type]
