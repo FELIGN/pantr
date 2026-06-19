@@ -281,11 +281,10 @@ jobs:
           cache-dependency-path: |
             pyproject.toml
 
-      - name: Install OpenMPI (cached)
-        uses: awalsh128/cache-apt-pkgs-action@latest
-        with:
-          packages: libopenmpi-dev openmpi-bin
-          version: 1.0
+      - name: Install OpenMPI
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y libopenmpi-dev openmpi-bin
 
       - name: Cache virtualenv
         id: cache-venv
