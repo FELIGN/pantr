@@ -22,7 +22,7 @@ from typing import TYPE_CHECKING, NamedTuple
 
 import numpy as np
 
-from ..grid import HierarchicalGrid
+from ..grid import HierarchicalGrid, hierarchical_grid, tensor_product_grid
 from ._bspline_knot_insertion_core import _compute_oslo_matrix_1d_core
 from ._bspline_space_nd import BsplineSpace
 from ._thb_eval_core import _combine_tp_values
@@ -1257,10 +1257,7 @@ class THBSplineSpace:
             RuntimeError: If the grid has been modified since construction.
         """
         self._check_not_stale()
-        if admissible_class is not None and admissible_class < 2:  # noqa: PLR2004
-            raise ValueError(
-                f"admissible_class must be an integer >= 2 or None; got {admissible_class!r}."
-            )
+        self._check_admissible_class(admissible_class)
         ids = np.unique(np.asarray(cell_ids, dtype=np.int64).ravel())
         bad = [int(x) for x in ids if int(x) < 0 or int(x) >= self._grid.num_cells]
         if bad:
@@ -1270,6 +1267,147 @@ class THBSplineSpace:
         # Convert to (level, midx) on the original grid before any refinement, since
         # flat ids are reassigned by every grid.refine call.
         marked = [(self._grid.cell_level(int(c)), self._grid.cell_multi_index(int(c))) for c in ids]
+        return self._refine_marked(marked, admissible_class)
+
+    def refine_region(
+        self,
+        level: int,
+        lo: Sequence[int],
+        hi: Sequence[int],
+        *,
+        admissible_class: int | None = 2,
+    ) -> THBSplineSpace:
+        """Return a new space with the active cells in a rectangular region refined.
+
+        The region is the integer cell-index box ``[lo, hi)`` at ``level`` (in
+        level-``level`` coordinates), matching the convention of
+        :meth:`pantr.grid.HierarchicalGrid.refine`.  Only the currently-active leaf
+        cells inside the box are refined; the rest of the box (already refined, or
+        not present at ``level``) is ignored.  If the box contains no active leaf
+        cells, the call is a no-op and returns a space equivalent to ``self``.  This
+        is the region-based counterpart of :meth:`refine`, which marks individual
+        cells by flat id.
+
+        Like :meth:`refine`, this does not mutate ``self`` or its grid: a fresh grid
+        is refined and a new :class:`THBSplineSpace` is returned.  Calls chain, so
+        successive regions refine progressively (graded by default).
+
+        Args:
+            level (int): Level at which the box lives.  Must satisfy
+                ``0 <= level <= grid.max_level``.
+            lo (Sequence[int]): Per-direction start index (inclusive), in
+                level-``level`` coordinates.
+            hi (Sequence[int]): Per-direction end index (exclusive), in
+                level-``level`` coordinates.
+            admissible_class (int | None): Admissibility class ``m >= 2`` to maintain
+                (graded refinement), or ``None`` for ungraded refinement.  Defaults
+                to ``2``.  See :meth:`refine`.
+
+        Returns:
+            THBSplineSpace: A new space on the refined grid (same ``root_space``,
+            ``truncate``, and ``regularity``).
+
+        Raises:
+            ValueError: If ``admissible_class`` is an integer ``< 2``, ``level`` is
+                out of range, ``lo``/``hi`` have the wrong length, any
+                ``lo[k] >= hi[k]``, or any part of ``[lo, hi)`` lies outside the
+                level domain.
+            RuntimeError: If the grid has been modified since construction.
+        """
+        self._check_not_stale()
+        self._check_admissible_class(admissible_class)
+        lo_t, hi_t = self._validate_region(level, lo, hi)
+        # Enumerate the active leaves in the box on the original grid (flat ids are
+        # reassigned by every grid.refine call, so capture cells up front).
+        marked = [
+            (level, midx)
+            for midx in itertools.product(*(range(lo_t[k], hi_t[k]) for k in range(self.dim)))
+            if self._grid.is_active_leaf(level, midx)
+        ]
+        return self._refine_marked(marked, admissible_class)
+
+    @staticmethod
+    def _check_admissible_class(admissible_class: int | None) -> None:
+        """Validate the ``admissible_class`` argument shared by the refine methods.
+
+        Args:
+            admissible_class (int | None): The class value to check.
+
+        Raises:
+            ValueError: If ``admissible_class`` is an integer ``< 2``.
+        """
+        if admissible_class is not None and admissible_class < 2:  # noqa: PLR2004
+            raise ValueError(
+                f"admissible_class must be an integer >= 2 or None; got {admissible_class!r}."
+            )
+
+    def _validate_region(
+        self,
+        level: int,
+        lo: Sequence[int],
+        hi: Sequence[int],
+    ) -> tuple[tuple[int, ...], tuple[int, ...]]:
+        """Validate a ``[lo, hi)`` cell-index box at ``level`` and normalize to tuples.
+
+        Applies the same four checks as :meth:`pantr.grid.HierarchicalGrid.refine`:
+        ``level`` range, ``lo``/``hi`` lengths, ``lo < hi`` per axis, and ``[lo, hi)``
+        within ``[0, level_cells_per_axis(level))`` on every axis.
+
+        Args:
+            level (int): Level the box lives at.
+            lo (Sequence[int]): Per-direction start index (inclusive).
+            hi (Sequence[int]): Per-direction end index (exclusive).
+
+        Returns:
+            tuple[tuple[int, ...], tuple[int, ...]]: The validated ``(lo, hi)`` tuples.
+
+        Raises:
+            ValueError: If ``level`` is out of range, ``lo``/``hi`` have the wrong
+                length, any ``lo[k] >= hi[k]``, or ``[lo, hi)`` is out of bounds.
+        """
+        ndim = self.dim
+        max_level = self._grid.max_level
+        if not 0 <= int(level) <= max_level:
+            raise ValueError(f"level must be in [0, {max_level}]; got {level!r}.")
+        lo_t = tuple(int(x) for x in lo)
+        hi_t = tuple(int(x) for x in hi)
+        if len(lo_t) != ndim or len(hi_t) != ndim:
+            raise ValueError(f"lo and hi must have length {ndim}; got {len(lo_t)} and {len(hi_t)}.")
+        if any(lo_k >= hi_k for lo_k, hi_k in zip(lo_t, hi_t, strict=False)):
+            raise ValueError(
+                f"lo must be strictly less than hi in every dimension; "
+                f"got lo={lo_t!r}, hi={hi_t!r}."
+            )
+        n_per_axis = self._grid.level_cells_per_axis(level)
+        for k in range(ndim):
+            if lo_t[k] < 0 or hi_t[k] > n_per_axis[k]:
+                raise ValueError(
+                    f"[lo, hi) out of bounds at level {level}: "
+                    f"axis {k} needs [0, {n_per_axis[k]}), got [{lo_t[k]}, {hi_t[k]})."
+                )
+        return lo_t, hi_t
+
+    def _refine_marked(
+        self,
+        marked: list[tuple[int, tuple[int, ...]]],
+        admissible_class: int | None,
+    ) -> THBSplineSpace:
+        """Refine the marked ``(level, midx)`` cells on a fresh grid copy.
+
+        Shared by :meth:`refine` and :meth:`refine_region`.  Does not mutate
+        ``self``.  Callers are responsible for capturing ``marked`` against the
+        original grid before any refinement (flat ids reassign on every refine).
+
+        Args:
+            marked (list[tuple[int, tuple[int, ...]]]): ``(level, midx)`` pairs of
+                cells to refine, captured on the original grid.
+            admissible_class (int | None): Admissibility class to maintain, or
+                ``None`` for ungraded refinement.
+
+        Returns:
+            THBSplineSpace: A new space on the refined grid (same ``root_space``,
+            ``truncate``, and ``regularity``).
+        """
         grid_copy = copy.deepcopy(self._grid)
         for level, midx in marked:
             if admissible_class is None:
@@ -1711,3 +1849,53 @@ class THBSplineSpaceRestriction(NamedTuple):
     space: THBSplineSpace
     local_to_global_dof: npt.NDArray[np.int64]
     local_to_global_cell: npt.NDArray[np.int64]
+
+
+def create_thb_space(
+    root: BsplineSpace,
+    factor: int | Sequence[int] = 2,
+    *,
+    truncate: bool = True,
+    regularity: int | Sequence[int | None] | None = None,
+) -> THBSplineSpace:
+    """Create a trivial (unrefined) THB-spline space from a B-spline space.
+
+    Convenience factory that wraps ``root`` in a single-level
+    :class:`~pantr.grid.HierarchicalGrid` (its knot-span grid, ready to subdivide by
+    ``factor``) and builds the corresponding :class:`THBSplineSpace`.  The result has
+    one level and its active basis coincides with that of ``root``; refine it with
+    :meth:`THBSplineSpace.refine` or :meth:`THBSplineSpace.refine_region`.
+
+    It is the ergonomic entry point for lifting an existing :class:`BsplineSpace` into
+    a single-level hierarchy, leaving the two-argument :class:`THBSplineSpace`
+    constructor for callers that build the hierarchical grid explicitly.
+
+    Args:
+        root (BsplineSpace): The level-0 tensor-product B-spline space.
+        factor (int | Sequence[int]): Per-direction subdivision factor used when the
+            space is later refined.  A scalar is broadcast to every axis.  Each entry
+            must be ``>= 1``.  Defaults to ``2`` (dyadic refinement).
+        truncate (bool): If ``True`` (default), build the truncated (THB) basis; if
+            ``False``, build the non-truncated hierarchical (HB) basis.
+        regularity (int | Sequence[int | None] | None): Per-direction continuity at
+            the knots inserted when subdividing to finer levels.  See
+            :class:`THBSplineSpace`.  Defaults to ``None`` (maximal smoothness).
+
+    Returns:
+        THBSplineSpace: A single-level THB space over ``root``.
+
+    Raises:
+        ValueError: If any ``factor`` entry is ``< 1``, ``factor`` has the wrong
+            length, or ``regularity`` is out of range for ``root``'s degrees.
+
+    Example:
+        >>> from pantr.bspline import create_uniform_space, create_thb_space
+        >>> thb = create_thb_space(create_uniform_space([2, 2], [8, 8]))
+        >>> thb.num_levels
+        1
+        >>> thb = thb.refine_region(0, [0, 0], [4, 4])  # refine the lower-left quarter
+        >>> thb.num_levels
+        2
+    """
+    grid = hierarchical_grid(tensor_product_grid(root), factor)
+    return THBSplineSpace(root, grid, truncate=truncate, regularity=regularity)

@@ -15,10 +15,11 @@ from pantr.bspline import (
     THBSpline,
     THBSplineSpace,
     THBSplineSpaceRestriction,
+    create_thb_space,
 )
 from pantr.bspline._thb_eval_core import _combine_tp_values
 from pantr.bspline._thb_spline_space import _box_all_true, _func_support_1d
-from pantr.grid import HierarchicalGrid, hierarchical_grid, uniform_grid
+from pantr.grid import HierarchicalGrid, hierarchical_grid, tensor_product_grid, uniform_grid
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Helpers
@@ -960,6 +961,160 @@ class TestRefine:
         grid.refine(0, [0], [2])
         with pytest.raises(RuntimeError, match="stale"):
             coarse.refine([0])
+
+
+def _lower_left_level0_ids(thb: THBSplineSpace, threshold: float = 0.5) -> npt.NDArray[np.int64]:
+    """Flat ids of the active (level-0) cells whose midpoint is below ``threshold`` per axis."""
+    lo, hi = thb.grid.collect_cell_bounds()
+    mid = 0.5 * (lo + hi)
+    return np.flatnonzero(np.all(mid < threshold, axis=1)).astype(np.int64)
+
+
+class TestCreateThbSpace:
+    """create_thb_space builds a trivial single-level THB space from a B-spline space."""
+
+    def test_unrefined_single_level(self) -> None:
+        root = _root_2d()
+        thb = create_thb_space(root)
+        assert thb.num_levels == 1
+        assert thb.num_total_basis == root.num_total_basis
+        assert thb.grid.num_cells == root.num_total_intervals
+
+    def test_equivalent_to_explicit_construction(self) -> None:
+        root = _root_2d()
+        explicit = THBSplineSpace(root, hierarchical_grid(tensor_product_grid(root), 2))
+        factory = create_thb_space(root, 2)
+        assert factory.num_total_basis == explicit.num_total_basis
+        assert factory.grid.num_cells == explicit.grid.num_cells
+
+    def test_factor_forwarded_to_grid(self) -> None:
+        thb = create_thb_space(_root_2d(), [2, 3])
+        assert thb.grid.factor == (2, 3)
+
+    def test_truncate_flag_forwarded(self) -> None:
+        assert create_thb_space(_root_2d(), truncate=False).truncate is False
+        assert create_thb_space(_root_2d(), truncate=True).truncate is True
+
+    def test_refinable_after_creation(self) -> None:
+        thb = create_thb_space(_root_2d())
+        fine = thb.refine_region(0, [0, 0], [2, 2])
+        assert fine.num_levels == 2
+        assert thb.num_levels == 1  # original untouched
+
+    def test_regularity_forwarded(self) -> None:
+        root = _root_1d()  # degree 2 -> regularity 0 is valid
+        explicit = THBSplineSpace(
+            root, hierarchical_grid(tensor_product_grid(root), 2), regularity=0
+        )
+        factory = create_thb_space(root, regularity=0)
+        assert factory._regularity == explicit._regularity
+        # Reduced regularity survives refinement (extra knots -> more basis at level 1).
+        f1 = factory.refine_region(0, [0], [2], admissible_class=None)
+        e1 = explicit.refine_region(0, [0], [2], admissible_class=None)
+        assert f1._regularity == e1._regularity
+        assert f1.num_basis_per_level == e1.num_basis_per_level
+
+    def test_anisotropic_factor_refines(self) -> None:
+        thb = create_thb_space(_root_2d(), [2, 3])
+        fine = thb.refine_region(0, [0, 0], [2, 2], admissible_class=None)
+        assert fine.grid.max_level == 1
+        assert fine.grid.factor == (2, 3)
+
+
+class TestRefineRegion:
+    """THBSplineSpace.refine_region refines the active cells in a cell-index box."""
+
+    def test_returns_new_space_original_unchanged(self) -> None:
+        coarse = THBSplineSpace(_root_1d(), _grid_1d())
+        n_cells, n_active = coarse.grid.num_cells, coarse.num_total_basis
+        fine = coarse.refine_region(0, [0], [2], admissible_class=None)
+        assert fine is not coarse
+        assert coarse.grid.num_cells == n_cells
+        assert coarse.num_total_basis == n_active
+        assert fine.grid.num_cells > n_cells
+
+    def test_refines_active_leaves_in_box(self) -> None:
+        coarse = THBSplineSpace(_root_1d(), _grid_1d())
+        fine = coarse.refine_region(0, [0], [2], admissible_class=None)  # cells 0,1 = [0, 0.5)
+        assert fine.grid.max_level == 1
+        for inside in [0.06, 0.18]:
+            assert fine.grid.cell_level(_locate(fine.grid, [inside])) == 1
+        for outside in [0.6, 0.9]:
+            assert fine.grid.cell_level(_locate(fine.grid, [outside])) == 0
+
+    def test_matches_grid_refine_ungraded(self) -> None:
+        root = _root_2d()
+        grid = hierarchical_grid(tensor_product_grid(root), 2)
+        grid.refine(0, [0, 0], [2, 2])
+        reference = THBSplineSpace(root, grid)
+        region = create_thb_space(root).refine_region(0, [0, 0], [2, 2], admissible_class=None)
+        assert region.num_basis_per_level == reference.num_basis_per_level
+        assert region.grid.num_cells == reference.grid.num_cells
+
+    def test_matches_refine_by_ids_graded(self) -> None:
+        thb = create_thb_space(_root_2d())
+        via_ids = thb.refine(_lower_left_level0_ids(thb))
+        via_box = thb.refine_region(0, [0, 0], [2, 2])
+        # Compare per-level structure, not just totals (same counts can hide topology).
+        assert via_box.num_basis_per_level == via_ids.num_basis_per_level
+        assert via_box.grid.num_cells == via_ids.grid.num_cells
+
+    def test_graded_keeps_admissibility(self) -> None:
+        # Graded (default) refine_region across two levels stays class-2 admissible.
+        coarse = THBSplineSpace(_root_1d(), _grid_1d())
+        f1 = coarse.refine_region(0, [0], [1])
+        f2 = f1.refine_region(1, [0], [1])  # refine a level-1 child
+        assert _nonzero_level_span(f2) <= 2
+
+    def test_chains(self) -> None:
+        thb = create_thb_space(_root_2d())
+        fine = thb.refine_region(0, [0, 0], [4, 4]).refine_region(1, [0, 0], [4, 4])
+        assert fine.num_levels == 3
+
+    def test_empty_region_is_noop(self) -> None:
+        coarse = THBSplineSpace(_root_1d(), _grid_1d())
+        all_refined = coarse.refine_region(0, [0], [4], admissible_class=None)  # all level-0 cells
+        # No level-0 leaves remain, so the box maps to an empty marked set: structural no-op.
+        again = all_refined.refine_region(0, [0], [4], admissible_class=None)
+        assert again.grid.num_cells == all_refined.grid.num_cells
+        assert again.num_basis_per_level == all_refined.num_basis_per_level
+
+    def test_level_out_of_range_raises(self) -> None:
+        coarse = THBSplineSpace(_root_1d(), _grid_1d())
+        with pytest.raises(ValueError, match="level must be in"):
+            coarse.refine_region(9, [0], [1])
+
+    def test_wrong_length_raises(self) -> None:
+        coarse = THBSplineSpace(_root_2d(), _grid_2d())
+        with pytest.raises(ValueError, match="length 2"):
+            coarse.refine_region(0, [0], [1])
+
+    def test_lo_not_less_than_hi_raises(self) -> None:
+        coarse = THBSplineSpace(_root_1d(), _grid_1d())
+        with pytest.raises(ValueError, match="strictly less"):
+            coarse.refine_region(0, [2], [1])
+
+    def test_out_of_bounds_high_raises(self) -> None:
+        coarse = THBSplineSpace(_root_1d(), _grid_1d())
+        with pytest.raises(ValueError, match="out of bounds"):
+            coarse.refine_region(0, [0], [99])
+
+    def test_out_of_bounds_negative_lo_raises(self) -> None:
+        coarse = THBSplineSpace(_root_1d(), _grid_1d())
+        with pytest.raises(ValueError, match="out of bounds"):
+            coarse.refine_region(0, [-1], [2])
+
+    def test_admissible_class_below_two_raises(self) -> None:
+        coarse = THBSplineSpace(_root_1d(), _grid_1d())
+        with pytest.raises(ValueError, match="admissible_class"):
+            coarse.refine_region(0, [0], [1], admissible_class=1)
+
+    def test_stale_grid_raises(self) -> None:
+        grid = _grid_1d()
+        coarse = THBSplineSpace(_root_1d(), grid)
+        grid.refine(0, [0], [2])
+        with pytest.raises(RuntimeError, match="stale"):
+            coarse.refine_region(0, [0], [1])
 
 
 class TestAdmissibility:
