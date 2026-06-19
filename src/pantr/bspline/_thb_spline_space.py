@@ -1283,8 +1283,10 @@ class THBSplineSpace:
         level-``level`` coordinates), matching the convention of
         :meth:`pantr.grid.HierarchicalGrid.refine`.  Only the currently-active leaf
         cells inside the box are refined; the rest of the box (already refined, or
-        not present at ``level``) is ignored.  This is the region-based counterpart
-        of :meth:`refine`, which marks individual cells by flat id.
+        not present at ``level``) is ignored.  If the box contains no active leaf
+        cells, the call is a no-op and returns a space equivalent to ``self``.  This
+        is the region-based counterpart of :meth:`refine`, which marks individual
+        cells by flat id.
 
         Like :meth:`refine`, this does not mutate ``self`` or its grid: a fresh grid
         is refined and a new :class:`THBSplineSpace` is returned.  Calls chain, so
@@ -1308,7 +1310,8 @@ class THBSplineSpace:
         Raises:
             ValueError: If ``admissible_class`` is an integer ``< 2``, ``level`` is
                 out of range, ``lo``/``hi`` have the wrong length, any
-                ``lo[k] >= hi[k]``, or ``[lo, hi)`` falls outside the level domain.
+                ``lo[k] >= hi[k]``, or any part of ``[lo, hi)`` lies outside the
+                level domain.
             RuntimeError: If the grid has been modified since construction.
         """
         self._check_not_stale()
@@ -1346,7 +1349,9 @@ class THBSplineSpace:
     ) -> tuple[tuple[int, ...], tuple[int, ...]]:
         """Validate a ``[lo, hi)`` cell-index box at ``level`` and normalize to tuples.
 
-        Mirrors the checks of :meth:`pantr.grid.HierarchicalGrid.refine`.
+        Applies the same four checks as :meth:`pantr.grid.HierarchicalGrid.refine`:
+        ``level`` range, ``lo``/``hi`` lengths, ``lo < hi`` per axis, and ``[lo, hi)``
+        within ``[0, level_cells_per_axis(level))`` on every axis.
 
         Args:
             level (int): Level the box lives at.
@@ -1390,7 +1395,8 @@ class THBSplineSpace:
         """Refine the marked ``(level, midx)`` cells on a fresh grid copy.
 
         Shared by :meth:`refine` and :meth:`refine_region`.  Does not mutate
-        ``self``.
+        ``self``.  Callers are responsible for capturing ``marked`` against the
+        original grid before any refinement (flat ids reassign on every refine).
 
         Args:
             marked (list[tuple[int, tuple[int, ...]]]): ``(level, midx)`` pairs of
@@ -1857,11 +1863,11 @@ def create_thb_space(
     Convenience factory that wraps ``root`` in a single-level
     :class:`~pantr.grid.HierarchicalGrid` (its knot-span grid, ready to subdivide by
     ``factor``) and builds the corresponding :class:`THBSplineSpace`.  The result has
-    one level and the same basis as ``root``; refine it with
+    one level and its active basis coincides with that of ``root``; refine it with
     :meth:`THBSplineSpace.refine` or :meth:`THBSplineSpace.refine_region`.
 
-    This is to :class:`THBSplineSpace` what :func:`create_uniform_space` is to
-    :class:`BsplineSpace`: the ergonomic entry point, leaving the two-argument
+    It is the ergonomic entry point for lifting an existing :class:`BsplineSpace` into
+    a single-level hierarchy, leaving the two-argument :class:`THBSplineSpace`
     constructor for callers that build the hierarchical grid explicitly.
 
     Args:
@@ -1877,6 +1883,10 @@ def create_thb_space(
 
     Returns:
         THBSplineSpace: A single-level THB space over ``root``.
+
+    Raises:
+        ValueError: If any ``factor`` entry is ``< 1``, ``factor`` has the wrong
+            length, or ``regularity`` is out of range for ``root``'s degrees.
 
     Example:
         >>> from pantr.bspline import create_uniform_space, create_thb_space
