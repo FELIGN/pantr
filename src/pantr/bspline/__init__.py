@@ -24,6 +24,8 @@ This package consolidates the B-spline API:
   downstream ``@njit`` code.
 - :class:`THBSplineSpace`: hierarchical B-spline space (truncated /
   non-truncated) on a :class:`pantr.grid.HierarchicalGrid`.
+- :func:`create_thb_space`: convenience factory for a trivial (unrefined) THB
+  space from a B-spline space.
 - :class:`THBSplineSpaceRestriction`: result of :meth:`THBSplineSpace.restrict` --
   a windowed THB sub-space plus its local-to-global DOF map.
 - :class:`MultiLevelExtraction`: per-element multi-level (Bézier) extraction
@@ -62,7 +64,7 @@ from ._local_space import LocalSpace, build_local, compute_halo, dof_owner
 from ._partition_graph import partition_graph
 from ._thb_quasi_interpolation import quasi_interpolate_thb_spline
 from ._thb_spline import THBSpline
-from ._thb_spline_space import THBSplineSpace, THBSplineSpaceRestriction
+from ._thb_spline_space import THBSplineSpace, THBSplineSpaceRestriction, create_thb_space
 from .multilevel_extraction import MultiLevelExtraction
 from .spanwise_element_extraction import (
     ExtractionStructView,
@@ -89,6 +91,7 @@ __all__ = [
     "create_cardinal_knots",
     "create_from_bezier",
     "create_greville_lattice",
+    "create_thb_space",
     "create_uniform_open_knots",
     "create_uniform_periodic_knots",
     "create_uniform_space",
