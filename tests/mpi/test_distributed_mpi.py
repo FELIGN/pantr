@@ -18,7 +18,7 @@ import pytest
 
 from pantr.bspline import build_local, create_uniform_space
 from pantr.grid import partition_grid, tensor_product_grid
-from pantr.mpi import DistributedSpace, from_dolfinx
+from pantr.mpi import DistributedSpace, create_distributed_space, from_dolfinx
 
 MPI = pytest.importorskip("mpi4py.MPI")
 
@@ -49,6 +49,27 @@ def test_distributed_space_partitions_globals_across_ranks() -> None:
 
     all_cells = np.concatenate(comm.allgather(ds.owned_cells))
     np.testing.assert_array_equal(np.sort(all_cells), np.arange(space.num_total_intervals))
+
+
+def test_create_distributed_space_matches_explicit_across_ranks() -> None:
+    comm = MPI.COMM_WORLD
+    space = create_uniform_space([2, 2], [6, 6])
+
+    ds = create_distributed_space(space, comm)  # one-call factory
+    ref = DistributedSpace(space, partition_grid(tensor_product_grid(space), comm.size), comm)
+
+    assert ds.rank == comm.rank and ds.n_parts == comm.size
+    np.testing.assert_array_equal(ds.owned_cells, ref.owned_cells)
+    if ds.local is not None:
+        assert ref.local is not None
+        np.testing.assert_array_equal(ds.local.local_to_global_dof, ref.local.local_to_global_dof)
+
+    # Collective: the factory's partition still tiles the globals exactly.
+    owned = (
+        ds.local.local_to_global_dof[ds.local.owned_dof_mask] if ds.local else np.empty(0, np.int64)
+    )
+    all_dofs = np.concatenate(comm.allgather(owned))
+    np.testing.assert_array_equal(np.sort(all_dofs), np.arange(space.num_total_basis))
 
 
 def _slice_mesh(comm: Any, owned: list[int]) -> SimpleNamespace:

@@ -15,7 +15,9 @@ from pantr.bspline import (
     LocalSpace,
     THBSplineSpace,
     build_local,
+    coupling_graph,
     create_uniform_space,
+    partition_graph,
 )
 from pantr.grid import (
     Partition,
@@ -24,7 +26,7 @@ from pantr.grid import (
     tensor_product_grid,
     uniform_grid,
 )
-from pantr.mpi import DistributedSpace
+from pantr.mpi import DistributedSpace, create_distributed_space
 
 
 class _FakeComm:
@@ -211,3 +213,70 @@ def test_periodic_space_raises() -> None:
     part2 = Partition(np.zeros(n_cells, dtype=np.int64), 2)
     with pytest.raises(ValueError, match="periodic"):
         DistributedSpace(periodic_space, part2, _FakeComm(1, 2))
+
+
+# --------------------------------------------------------------------------- #
+# create_distributed_space convenience factory
+# --------------------------------------------------------------------------- #
+
+
+class TestCreateDistributedSpace:
+    """create_distributed_space mirrors the explicit grid/graph -> DistributedSpace flow."""
+
+    def test_grid_method_matches_explicit_tp(self) -> None:
+        space = create_uniform_space([2, 2], [4, 4])
+        part = partition_grid(tensor_product_grid(space), 4)
+        for rank in range(4):
+            comm = _FakeComm(rank, 4)
+            got = create_distributed_space(space, comm)  # method="grid" default
+            ref = DistributedSpace(space, part, comm)
+            if got.local is not None:
+                assert ref.local is not None
+                _assert_local_equal(got.local, ref.local)
+            np.testing.assert_array_equal(got.owned_cells, ref.owned_cells)
+
+    def test_grid_method_matches_explicit_thb(self) -> None:
+        root = create_uniform_space(2, 4)
+        grid = hierarchical_grid(uniform_grid([[0.0, 1.0]], 4), 2)
+        grid.refine(0, [0], [2])
+        thb = THBSplineSpace(root, grid)
+        part = partition_grid(thb.grid, 2)
+        for rank in range(2):
+            comm = _FakeComm(rank, 2)
+            got = create_distributed_space(thb, comm)
+            ref = DistributedSpace(thb, part, comm)
+            if got.local is not None:
+                assert ref.local is not None
+                _assert_local_equal(got.local, ref.local)
+            np.testing.assert_array_equal(got.owned_cells, ref.owned_cells)
+
+    def test_graph_method_matches_explicit(self) -> None:
+        space = create_uniform_space([2, 2], [4, 4])
+        part = partition_graph(coupling_graph(space), 3)
+        for rank in range(3):
+            comm = _FakeComm(rank, 3)
+            got = create_distributed_space(space, comm, method="graph")
+            ref = DistributedSpace(space, part, comm)
+            if got.local is not None:
+                assert ref.local is not None
+                _assert_local_equal(got.local, ref.local)
+            np.testing.assert_array_equal(got.owned_cells, ref.owned_cells)
+
+    def test_grid_backend_passthrough(self) -> None:
+        space = create_uniform_space([2, 2], [4, 4])
+        part = partition_grid(tensor_product_grid(space), 4, backend="rcb")
+        got = create_distributed_space(space, _FakeComm(0, 4), backend="rcb")
+        np.testing.assert_array_equal(got.partition.cell_owner, part.cell_owner)
+
+    def test_cell_active_passthrough_grid(self) -> None:
+        space = create_uniform_space([2, 2], [4, 4])
+        active = np.ones(space.num_total_intervals, dtype=bool)
+        active[:2] = False  # exclude two cells
+        part = partition_grid(tensor_product_grid(space), 2, cell_active=active)
+        got = create_distributed_space(space, _FakeComm(0, 2), cell_active=active)
+        np.testing.assert_array_equal(got.partition.cell_owner, part.cell_owner)
+
+    def test_invalid_method_raises(self) -> None:
+        space = create_uniform_space([2, 2], [4, 4])
+        with pytest.raises(ValueError, match="method must be"):
+            create_distributed_space(space, _FakeComm(0, 4), method="bogus")
