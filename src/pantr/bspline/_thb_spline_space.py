@@ -1700,9 +1700,13 @@ class THBSplineSpace:
         function** in ``fine``'s basis: if ``u`` are coarse coefficients, ``P @ u`` are
         the fine coefficients.
 
-        It is built by expressing every coarse and every fine basis function in the
-        common finest tensor-product basis of ``fine`` and solving the (consistent)
-        linear systems in the least-squares sense.
+        It is built column-by-column following the local two-scale construction used
+        in practice (Garau & Vazquez 2018; D'Angella et al. 2018): each coarse
+        function is matched against only the fine functions over its support,
+        expressed in the deepest level present there (not the global finest level),
+        and reproduced by a small local least-squares solve.  Functions far from the
+        refinement yield trivial (identity) columns, so cost and sparsity follow the
+        refined region.
 
         Args:
             fine (THBSplineSpace): A refinement of this space (same ``root_space``,
@@ -1746,44 +1750,184 @@ class THBSplineSpace:
                 + "."
             )
 
-        target = fine.num_levels - 1
+        return self._assemble_prolongation(fine)
+
+    def _assemble_prolongation(self, fine: THBSplineSpace) -> npt.NDArray[np.float64]:
+        """Build the prolongation column-by-column from local two-scale data.
+
+        Each coarse function is represented by only the fine functions over its
+        support, expressed in a common *local* tensor-product level (the deepest
+        present there) rather than the global finest level.  Functions far from the
+        refinement stay at their own level (a trivial solve, often the identity), so
+        the cost follows the refined region rather than the whole finest grid.  This
+        is the local two-scale view of the change of basis (Garau & Vazquez 2018;
+        D'Angella et al. 2018): coarse functions expanded by the refinement mask and
+        matched against the active fine (truncated) basis.
+
+        Args:
+            fine (THBSplineSpace): A validated refinement of ``self``.
+
+        Returns:
+            npt.NDArray[np.float64]: Prolongation ``P`` of shape
+            ``(fine.num_total_basis, self.num_total_basis)``.
+
+        Raises:
+            ValueError: If a column cannot reproduce its coarse function (residual
+                above tolerance), i.e. ``fine`` is not a refinement of ``self``.
+        """
         oslo = fine._build_oslo_matrices()
-        num_basis_finest = fine.level_space(target).num_basis
+        root_cells = self._grid.level_cells_per_axis(0)
+        n_coarse, n_fine = self.num_total_basis, fine.num_total_basis
 
-        def column_flats(
-            space: THBSplineSpace, dof: int
-        ) -> tuple[npt.NDArray[np.int64], npt.NDArray[np.float64]]:
-            box_lo, coeffs = space._finest_tp_coeffs(dof, oslo, target)
-            ranges = [np.arange(box_lo[d], box_lo[d] + coeffs.shape[d]) for d in range(self.dim)]
-            mesh = np.meshgrid(*ranges, indexing="ij")
-            flats = np.ravel_multi_index([g.ravel() for g in mesh], num_basis_finest)
-            return flats, coeffs.ravel()
+        # Map each root cell to the fine functions whose support covers it.
+        fine_box = [self._func_root_box(fine, j) for j in range(n_fine)]
+        cell_to_fine: dict[int, list[int]] = {}
+        for j, (_, lo, hi) in enumerate(fine_box):
+            for cell in self._cells_in_box(lo, hi, root_cells):
+                cell_to_fine.setdefault(cell, []).append(j)
 
-        coarse_cols = [column_flats(self, i) for i in range(self.num_total_basis)]
-        fine_cols = [column_flats(fine, j) for j in range(fine.num_total_basis)]
+        prolongation: npt.NDArray[np.float64] = np.zeros((n_fine, n_coarse), dtype=np.float64)
+        max_residual = 0.0
+        max_coarse_val = 0.0
+        for i in range(n_coarse):
+            _, c_lo, c_hi = self._func_root_box(self, i)
+            candidates = sorted(
+                {
+                    j
+                    for c in self._cells_in_box(c_lo, c_hi, root_cells)
+                    for j in cell_to_fine.get(c, [])
+                }
+            )
+            sol, residual, coarse_val = self._prolong_column(fine, oslo, i, candidates, fine_box)
+            if sol is not None:
+                prolongation[np.array(candidates), i] = sol
+            max_residual = max(max_residual, residual)
+            max_coarse_val = max(max_coarse_val, coarse_val)
 
-        touched = sorted(
-            {int(f) for flats, _ in (*coarse_cols, *fine_cols) for f in flats.tolist()}
-        )
-        touched_arr = np.array(touched, dtype=np.int64)
-        n_rows = touched_arr.shape[0]
-
-        coarse_mat = np.zeros((n_rows, self.num_total_basis), dtype=np.float64)
-        for i, (flats, vals) in enumerate(coarse_cols):
-            coarse_mat[np.searchsorted(touched_arr, flats), i] = vals
-        fine_mat = np.zeros((n_rows, fine.num_total_basis), dtype=np.float64)
-        for j, (flats, vals) in enumerate(fine_cols):
-            fine_mat[np.searchsorted(touched_arr, flats), j] = vals
-
-        solution, *_ = np.linalg.lstsq(fine_mat, coarse_mat, rcond=None)
-        prolongation: npt.NDArray[np.float64] = np.asarray(solution, dtype=np.float64)
-        diff = np.abs(fine_mat @ prolongation - coarse_mat)
-        residual = float(diff.max()) if diff.size > 0 else 0.0
-        if residual > 1e-8 * (1.0 + float(np.abs(coarse_mat).max())):
+        if max_residual > 1e-8 * (1.0 + max_coarse_val):
             raise ValueError(
-                f"fine is not a refinement of this space (prolongation residual {residual:.2e})."
+                f"fine is not a refinement of this space (prolongation residual "
+                f"{max_residual:.2e})."
             )
         return prolongation
+
+    def _prolong_column(
+        self,
+        fine: THBSplineSpace,
+        oslo: tuple[tuple[npt.NDArray[np.float64], ...], ...],
+        i: int,
+        candidates: list[int],
+        fine_box: list[tuple[int, list[int], list[int]]],
+    ) -> tuple[npt.NDArray[np.float64] | None, float, float]:
+        """Solve the local system reproducing coarse function ``i`` in the fine basis.
+
+        Args:
+            fine (THBSplineSpace): The refinement.
+            oslo (tuple[tuple[npt.NDArray[np.float64], ...], ...]): Per-level,
+                per-direction two-scale matrices of ``fine``.
+            i (int): Coarse global dof whose column is computed.
+            candidates (list[int]): Fine dofs whose support covers ``i``'s support.
+            fine_box (list[tuple[int, list[int], list[int]]]): ``(rep_level, lo, hi)``
+                per fine dof (from :meth:`_func_root_box`).
+
+        Returns:
+            tuple[npt.NDArray[np.float64] | None, float, float]: ``(solution,
+            residual, max_coarse_value)``.  ``solution`` is the column restricted to
+            ``candidates`` (``None`` if there are no candidates).
+        """
+        c_level = self._func_root_box(self, i)[0]
+        level = max([c_level, *(fine_box[j][0] for j in candidates)])
+        num_basis = fine.level_space(level).num_basis
+        c_flats, c_vals = self._tp_column(self, i, oslo, level, num_basis)
+        coarse_val = float(np.abs(c_vals).max()) if c_vals.size else 0.0
+        cols = [self._tp_column(fine, j, oslo, level, num_basis) for j in candidates]
+        rows = sorted(
+            {int(f) for f in c_flats.tolist()}
+            | {int(f) for flats, _ in cols for f in flats.tolist()}
+        )
+        row_of = {d: r for r, d in enumerate(rows)}
+        rhs = np.zeros(len(rows), dtype=np.float64)
+        rhs[[row_of[int(f)] for f in c_flats.tolist()]] = c_vals
+        if not candidates:
+            return None, (float(np.abs(rhs).max()) if rhs.size else 0.0), coarse_val
+        amat = np.zeros((len(rows), len(candidates)), dtype=np.float64)
+        for cj, (flats, vals) in enumerate(cols):
+            amat[[row_of[int(f)] for f in flats.tolist()], cj] = vals
+        sol, *_ = np.linalg.lstsq(amat, rhs, rcond=None)
+        residual = float(np.abs(amat @ sol - rhs).max()) if rhs.size else 0.0
+        return np.asarray(sol, dtype=np.float64), residual, coarse_val
+
+    @staticmethod
+    def _func_root_box(space: THBSplineSpace, dof: int) -> tuple[int, list[int], list[int]]:
+        """Return ``(rep_level, lo, hi)``: the inclusive root-cell support box of ``dof``.
+
+        Args:
+            space (THBSplineSpace): The space owning ``dof``.
+            dof (int): Global active-function index.
+
+        Returns:
+            tuple[int, list[int], list[int]]: The function's representation level
+            (``rep_level`` if truncated, else its native level) and the inclusive
+            per-direction root-cell support box ``(lo, hi)``.
+        """
+        dim = space.dim
+        factor = space._grid.factor
+        level = space._dof_level(dof)
+        pos = dof - int(space._func_offset[level])
+        flat = int(space._active_funcs[level][pos])
+        multi = np.unravel_index(flat, space._level_spaces[level].num_basis)
+        sup = space._support[level]
+        lo = [0] * dim
+        hi = [0] * dim
+        for k in range(dim):
+            p = factor[k] ** level
+            lo[k] = int(sup[k][1][int(multi[k])]) // p
+            hi[k] = int(sup[k][2][int(multi[k])]) // p
+        entry = space._trunc.get(dof)
+        return (entry.rep_level if entry is not None else level), lo, hi
+
+    @staticmethod
+    def _cells_in_box(lo: list[int], hi: list[int], root_cells: tuple[int, ...]) -> list[int]:
+        """Return the flat root-cell ids inside the inclusive box ``[lo, hi]``.
+
+        Args:
+            lo (list[int]): Per-direction lower root-cell index (inclusive).
+            hi (list[int]): Per-direction upper root-cell index (inclusive).
+            root_cells (tuple[int, ...]): Per-direction root-cell counts.
+
+        Returns:
+            list[int]: Flat root-cell ids in the box.
+        """
+        prod = itertools.product(*(range(lo[k], hi[k] + 1) for k in range(len(lo))))
+        return [int(np.ravel_multi_index(c, root_cells)) for c in prod]
+
+    @staticmethod
+    def _tp_column(
+        space: THBSplineSpace,
+        dof: int,
+        oslo: tuple[tuple[npt.NDArray[np.float64], ...], ...],
+        lvl: int,
+        num_basis: tuple[int, ...],
+    ) -> tuple[npt.NDArray[np.int64], npt.NDArray[np.float64]]:
+        """Express ``dof`` in the level-``lvl`` tensor-product basis as flat indices and coeffs.
+
+        Args:
+            space (THBSplineSpace): The space owning ``dof``.
+            dof (int): Global active-function index.
+            oslo (tuple[tuple[npt.NDArray[np.float64], ...], ...]): Two-scale matrices
+                covering levels up to ``lvl``.
+            lvl (int): Target level (``>=`` the function's representation level).
+            num_basis (tuple[int, ...]): Per-direction function counts at ``lvl``.
+
+        Returns:
+            tuple[npt.NDArray[np.int64], npt.NDArray[np.float64]]: Flat level-``lvl``
+            TP indices and the corresponding coefficients.
+        """
+        box_lo, coeffs = space._finest_tp_coeffs(dof, oslo, lvl)
+        ranges = [np.arange(box_lo[d], box_lo[d] + coeffs.shape[d]) for d in range(space.dim)]
+        mesh = np.meshgrid(*ranges, indexing="ij")
+        flats = np.ravel_multi_index([g.ravel() for g in mesh], num_basis)
+        return flats, coeffs.ravel()
 
     def restriction_to(self, coarse: THBSplineSpace) -> npt.NDArray[np.float64]:
         """Return the restriction matrix from this space to a coarsening ``coarse``.
