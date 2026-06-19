@@ -285,6 +285,83 @@ class THBSpline:
         out[...] = result
         return out
 
+    def refine(self, cell_ids: npt.ArrayLike, *, admissible_class: int | None = 2) -> THBSpline:
+        """Return the same function on a space with the marked cells refined.
+
+        Refines the underlying :class:`THBSplineSpace` (see
+        :meth:`THBSplineSpace.refine`) and prolongs the control points onto it, so the
+        returned spline represents the **same function** -- hierarchical refinement is
+        exact (the spaces are nested).  This does not mutate ``self``.
+
+        Args:
+            cell_ids (npt.ArrayLike): Flat ids of active cells to refine.
+            admissible_class (int | None): Admissibility class ``m >= 2`` to maintain
+                (graded refinement), or ``None`` for ungraded refinement.  Defaults
+                to ``2``.  See :meth:`THBSplineSpace.refine`.
+
+        Returns:
+            THBSpline: A new spline on the refined space, equal to ``self`` as a
+            function.
+
+        Raises:
+            IndexError: If any id is outside ``[0, grid.num_cells)``.
+            ValueError: If ``admissible_class`` is an integer ``< 2``.
+            RuntimeError: If the grid has been modified since construction.
+        """
+        fine = self._space.refine(cell_ids, admissible_class=admissible_class)
+        return self._prolong_to(fine)
+
+    def refine_region(
+        self,
+        level: int,
+        lo: Sequence[int],
+        hi: Sequence[int],
+        *,
+        admissible_class: int | None = 2,
+    ) -> THBSpline:
+        """Return the same function on a space with a rectangular region refined.
+
+        Refines the underlying :class:`THBSplineSpace` (see
+        :meth:`THBSplineSpace.refine_region`) and prolongs the control points onto it,
+        so the returned spline represents the **same function**.  This does not mutate
+        ``self``.
+
+        Args:
+            level (int): Level at which the box lives.  Must satisfy
+                ``0 <= level <= grid.max_level``.
+            lo (Sequence[int]): Per-direction start index (inclusive), in
+                level-``level`` coordinates.
+            hi (Sequence[int]): Per-direction end index (exclusive), in
+                level-``level`` coordinates.
+            admissible_class (int | None): Admissibility class ``m >= 2`` to maintain,
+                or ``None`` for ungraded refinement.  Defaults to ``2``.  See
+                :meth:`THBSplineSpace.refine_region`.
+
+        Returns:
+            THBSpline: A new spline on the refined space, equal to ``self`` as a
+            function.
+
+        Raises:
+            ValueError: If ``admissible_class`` is an integer ``< 2``, ``level`` is
+                out of range, ``lo``/``hi`` have the wrong length, any
+                ``lo[k] >= hi[k]``, or ``[lo, hi)`` lies outside the level domain.
+            RuntimeError: If the grid has been modified since construction.
+        """
+        fine = self._space.refine_region(level, lo, hi, admissible_class=admissible_class)
+        return self._prolong_to(fine)
+
+    def _prolong_to(self, fine: THBSplineSpace) -> THBSpline:
+        """Prolong the control points onto a refinement ``fine`` (value-preserving).
+
+        Args:
+            fine (THBSplineSpace): A refinement of this spline's space.
+
+        Returns:
+            THBSpline: A new spline on ``fine`` equal to ``self`` as a function.
+        """
+        prolongation = self._space.prolongation_to(fine)
+        return THBSpline(fine, prolongation @ self.control_points)
+
     def __repr__(self) -> str:
         """Return a concise representation.
 
