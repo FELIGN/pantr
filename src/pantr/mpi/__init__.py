@@ -18,6 +18,8 @@ Main exports:
 - :func:`from_dolfinx`: build a :class:`pantr.grid.Partition` from a dolfinx mesh.
 - :class:`DistributedSpace`: the per-rank handle to an MPI-distributed space.
 - :func:`create_distributed_space`: build a :class:`DistributedSpace` from a space.
+- :class:`DistributedFunction`: the per-rank handle to an MPI-distributed function.
+- :func:`create_distributed_function`: build a :class:`DistributedFunction` from a function.
 - :func:`configure_threads`: explicitly set this rank's Numba thread count.
 
 A process-level thread policy coordinates MPI with PaNTr's Numba parallelism: the
@@ -36,6 +38,7 @@ from types import ModuleType
 from typing import Final
 
 from ._create import create_distributed_space
+from ._distributed_function import DistributedFunction, create_distributed_function
 from ._distributed_space import DistributedSpace
 from ._from_dolfinx import from_dolfinx
 from ._thread_policy import configure_threads
@@ -96,8 +99,10 @@ def require_mpi() -> ModuleType:
 
 __all__ = [
     "HAS_MPI",
+    "DistributedFunction",
     "DistributedSpace",
     "configure_threads",
+    "create_distributed_function",
     "create_distributed_space",
     "from_dolfinx",
     "mpi_available",
