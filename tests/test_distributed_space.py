@@ -10,12 +10,15 @@ import numpy as np
 import pytest
 
 from pantr.bspline import (
+    Bspline,
     BsplineSpace,
     BsplineSpace1D,
     LocalSpace,
+    THBSpline,
     THBSplineSpace,
     build_local,
     coupling_graph,
+    create_thb_space,
     create_uniform_space,
     partition_graph,
 )
@@ -26,7 +29,12 @@ from pantr.grid import (
     tensor_product_grid,
     uniform_grid,
 )
-from pantr.mpi import DistributedSpace, create_distributed_space
+from pantr.mpi import (
+    DistributedFunction,
+    DistributedSpace,
+    create_distributed_function,
+    create_distributed_space,
+)
 
 
 class _FakeComm:
@@ -291,3 +299,130 @@ class TestCreateDistributedSpace:
     def test_grid_method_invalid_type_raises(self) -> None:
         with pytest.raises(TypeError, match="BsplineSpace or THBSplineSpace"):
             create_distributed_space(object(), _FakeComm(0, 2))  # type: ignore[arg-type]
+
+
+# --------------------------------------------------------------------------- #
+# DistributedSpace.localize and DistributedFunction
+# --------------------------------------------------------------------------- #
+
+
+def _assert_local_field_matches_global(
+    local_fn: Bspline | THBSpline,
+    global_fn: Bspline | THBSpline,
+    local: LocalSpace,
+    grid: object,
+) -> None:
+    """Local function reproduces the global one at every owned cell's midpoint."""
+    for lc in np.flatnonzero(local.owned_cell_mask):
+        lo, hi = grid.cell_bounds(int(lc))  # type: ignore[attr-defined]
+        mid = (0.5 * (lo + hi))[None]
+        np.testing.assert_allclose(local_fn.evaluate(mid), global_fn.evaluate(mid), atol=1e-10)
+
+
+class TestLocalize:
+    """DistributedSpace.localize slices a global field to this rank's local function."""
+
+    def test_matches_manual_slice_thb(self) -> None:
+        # THBSpline keeps control points flat per DOF, so the slice is direct.
+        thb = create_thb_space(create_uniform_space([2, 2], [8, 8])).refine_region(
+            0, [0, 0], [4, 4]
+        )
+        cp = np.random.default_rng(0).standard_normal(thb.num_total_basis)
+        part = partition_grid(thb.grid, 3)
+        for rank in range(3):
+            ds = DistributedSpace(thb, part, _FakeComm(rank, 3))
+            local_fn = ds.localize(cp)
+            if local_fn is None:
+                continue
+            assert ds.local is not None
+            np.testing.assert_array_equal(local_fn.control_points, cp[ds.local.local_to_global_dof])
+
+    def test_value_preserving_bspline(self) -> None:
+        space = create_uniform_space([2, 2], [4, 4])
+        cp = np.random.default_rng(1).standard_normal((space.num_total_basis, 2))  # vector
+        gfn = Bspline(space, cp)
+        part = partition_grid(tensor_product_grid(space), 4)
+        for rank in range(4):
+            ds = DistributedSpace(space, part, _FakeComm(rank, 4))
+            lf = ds.localize(cp)
+            if lf is None:
+                continue
+            assert ds.local is not None
+            assert isinstance(lf, Bspline)
+            _assert_local_field_matches_global(lf, gfn, ds.local, tensor_product_grid(lf.space))
+
+    def test_value_preserving_thb(self) -> None:
+        thb = create_thb_space(create_uniform_space([2, 2], [8, 8])).refine_region(
+            0, [0, 0], [4, 4]
+        )
+        cp = np.random.default_rng(2).standard_normal(thb.num_total_basis)
+        gfn = THBSpline(thb, cp)
+        part = partition_grid(thb.grid, 3)
+        for rank in range(3):
+            ds = DistributedSpace(thb, part, _FakeComm(rank, 3))
+            lf = ds.localize(cp)
+            if lf is None:
+                continue
+            assert ds.local is not None
+            assert isinstance(lf, THBSpline)
+            _assert_local_field_matches_global(lf, gfn, ds.local, lf.space.grid)
+
+    def test_scalar_thb_stays_scalar(self) -> None:
+        thb = create_thb_space(create_uniform_space([2, 2], [8, 8])).refine_region(
+            0, [0, 0], [4, 4]
+        )
+        cp = np.random.default_rng(3).standard_normal(thb.num_total_basis)  # scalar (1-D)
+        ds = DistributedSpace(thb, partition_grid(thb.grid, 2), _FakeComm(0, 2))
+        lf = ds.localize(cp)
+        assert lf is not None and lf.control_points.ndim == 1
+
+    def test_empty_rank_returns_none(self) -> None:
+        space = create_uniform_space([2, 2], [4, 4])
+        n_cells = space.num_total_intervals
+        part = Partition(np.zeros(n_cells, dtype=np.int64), 2)  # rank 1 owns nothing
+        cp = np.zeros(space.num_total_basis)
+        assert DistributedSpace(space, part, _FakeComm(1, 2)).localize(cp) is None
+
+    def test_wrong_size_raises(self) -> None:
+        space = create_uniform_space([2, 2], [4, 4])
+        ds = DistributedSpace(space, partition_grid(tensor_product_grid(space), 2), _FakeComm(0, 2))
+        with pytest.raises(ValueError, match="leading dimension must be"):
+            ds.localize(np.zeros(space.num_total_basis + 1))
+
+
+class TestDistributedFunction:
+    """create_distributed_function / DistributedFunction wrap a distributed field."""
+
+    def test_local_matches_localize(self) -> None:
+        space = create_uniform_space([2, 2], [4, 4])
+        cp = np.random.default_rng(4).standard_normal(space.num_total_basis)
+        fn = Bspline(space, cp)
+        for rank in range(4):
+            comm = _FakeComm(rank, 4)
+            dfn = create_distributed_function(fn, comm)
+            ref = create_distributed_space(space, comm).localize(cp)
+            assert dfn.rank == rank and dfn.n_parts == 4
+            assert dfn.owns_cells == (dfn.local is not None)
+            if dfn.local is None:
+                assert ref is None
+            else:
+                assert ref is not None
+                np.testing.assert_array_equal(dfn.local.control_points, ref.control_points)
+
+    def test_graph_method_thb(self) -> None:
+        thb = create_thb_space(create_uniform_space([2, 2], [8, 8])).refine_region(
+            0, [0, 0], [4, 4]
+        )
+        fn = THBSpline(thb, np.random.default_rng(5).standard_normal(thb.num_total_basis))
+        dfn = create_distributed_function(fn, _FakeComm(0, 2), method="graph")
+        assert isinstance(dfn.local, THBSpline)
+        assert dfn.global_function is fn
+        assert dfn.distributed_space.global_space is thb
+
+    def test_space_mismatch_raises(self) -> None:
+        space = create_uniform_space([2, 2], [4, 4])
+        other = create_uniform_space([2, 2], [4, 4])  # equal but a different object
+        fn = Bspline(space, np.zeros(space.num_total_basis))
+        ds = create_distributed_space(other, _FakeComm(0, 2))
+        with pytest.raises(ValueError, match="global_space"):
+            DistributedFunction(fn, ds)

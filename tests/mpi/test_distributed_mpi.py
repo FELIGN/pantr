@@ -16,9 +16,14 @@ from typing import Any
 import numpy as np
 import pytest
 
-from pantr.bspline import build_local, create_uniform_space
+from pantr.bspline import Bspline, build_local, create_uniform_space
 from pantr.grid import partition_grid, tensor_product_grid
-from pantr.mpi import DistributedSpace, create_distributed_space, from_dolfinx
+from pantr.mpi import (
+    DistributedSpace,
+    create_distributed_function,
+    create_distributed_space,
+    from_dolfinx,
+)
 
 MPI = pytest.importorskip("mpi4py.MPI")
 
@@ -70,6 +75,43 @@ def test_create_distributed_space_matches_explicit_across_ranks() -> None:
     )
     all_dofs = np.concatenate(comm.allgather(owned))
     np.testing.assert_array_equal(np.sort(all_dofs), np.arange(space.num_total_basis))
+
+
+def test_create_distributed_function_reproduces_serial_field() -> None:
+    comm = MPI.COMM_WORLD
+    space = create_uniform_space([2, 2], [6, 6])
+    # Identical global field on every rank (same seed), then distribute it.
+    cp = np.arange(space.num_total_basis, dtype=np.float64)  # deterministic, same on all ranks
+    global_fn = Bspline(space, cp)
+    dfn = create_distributed_function(global_fn, comm)
+
+    assert dfn.rank == comm.rank and dfn.n_parts == comm.size
+    assert dfn.owns_cells == (dfn.local is not None)
+
+    # Each rank evaluates its local field at the midpoints of its owned cells; the
+    # gathered (cell, value) pairs must reproduce the serial field over every cell.
+    cells: list[int] = []
+    vals: list[float] = []
+    if dfn.local is not None:
+        assert isinstance(dfn.local, Bspline)
+        local = dfn.distributed_space.local
+        assert local is not None
+        lgrid = tensor_product_grid(dfn.local.space)
+        for lc in np.flatnonzero(local.owned_cell_mask):
+            lo, hi = lgrid.cell_bounds(int(lc))
+            mid = (0.5 * (lo + hi))[None]
+            cells.append(int(local.local_to_global_cell[lc]))
+            vals.append(float(np.asarray(dfn.local.evaluate(mid)).reshape(-1)[0]))
+
+    all_cells = np.concatenate(comm.allgather(np.asarray(cells, dtype=np.int64)))
+    all_vals = np.concatenate(comm.allgather(np.asarray(vals, dtype=np.float64)))
+    order = np.argsort(all_cells)
+    np.testing.assert_array_equal(all_cells[order], np.arange(space.num_total_intervals))
+
+    grid = tensor_product_grid(space)
+    lo, hi = grid.collect_cell_bounds()
+    serial = np.asarray(global_fn.evaluate(0.5 * (lo + hi))).reshape(-1)
+    np.testing.assert_allclose(all_vals[order], serial, atol=1e-10)
 
 
 def _slice_mesh(comm: Any, owned: list[int]) -> SimpleNamespace:
