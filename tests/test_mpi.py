@@ -18,12 +18,14 @@ def test_import_and_public_surface() -> None:
     assert callable(pantr.mpi.require_mpi)
     assert callable(pantr.mpi.from_dolfinx)
     assert callable(pantr.mpi.configure_threads)
+    assert callable(pantr.mpi.create_distributed_space)
     assert isinstance(pantr.mpi.DistributedSpace, type)
     assert isinstance(pantr.mpi.HAS_MPI, bool)
     assert set(pantr.mpi.__all__) == {
         "DistributedSpace",
         "HAS_MPI",
         "configure_threads",
+        "create_distributed_space",
         "from_dolfinx",
         "mpi_available",
         "require_mpi",
