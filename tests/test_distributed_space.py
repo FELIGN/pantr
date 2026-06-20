@@ -409,6 +409,39 @@ class TestDistributedFunction:
                 assert ref is not None
                 np.testing.assert_array_equal(dfn.local.control_points, ref.control_points)
 
+    def test_vector_bspline_value_preserving(self) -> None:
+        # Exercises _dof_coeffs flattening of a vector Bspline (*num_basis, rank).
+        space = create_uniform_space([2, 2], [4, 4])
+        cp = np.random.default_rng(10).standard_normal((space.num_total_basis, 2))
+        gfn = Bspline(space, cp)
+        for rank in range(4):
+            dfn = create_distributed_function(gfn, _FakeComm(rank, 4))
+            if dfn.local is None:
+                continue
+            assert isinstance(dfn.local, Bspline) and dfn.local.control_points.shape[-1] == 2
+            local = dfn.distributed_space.local
+            assert local is not None
+            grid = tensor_product_grid(dfn.local.space)
+            for lc in np.flatnonzero(local.owned_cell_mask):
+                lo, hi = grid.cell_bounds(int(lc))
+                mid = (0.5 * (lo + hi))[None]
+                np.testing.assert_allclose(dfn.local.evaluate(mid), gfn.evaluate(mid), atol=1e-10)
+
+    def test_empty_rank_owns_nothing(self) -> None:
+        space = create_uniform_space([2, 2], [4, 4])
+        part = Partition(np.zeros(space.num_total_intervals, dtype=np.int64), 2)  # rank 1 empty
+        fn = Bspline(space, np.zeros(space.num_total_basis))
+        dfn = DistributedFunction(fn, DistributedSpace(space, part, _FakeComm(1, 2)))
+        assert dfn.local is None
+        assert dfn.owns_cells is False
+
+    def test_float32_bspline(self) -> None:
+        space = create_uniform_space([2, 2], [4, 4], dtype=np.float32)
+        cp = np.random.default_rng(11).standard_normal(space.num_total_basis).astype(np.float32)
+        dfn = create_distributed_function(Bspline(space, cp), _FakeComm(0, 2))
+        assert dfn.local is not None
+        assert dfn.local.control_points.dtype == np.float32
+
     def test_graph_method_thb(self) -> None:
         thb = create_thb_space(create_uniform_space([2, 2], [8, 8])).refine_region(
             0, [0, 0], [4, 4]

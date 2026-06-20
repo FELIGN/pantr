@@ -22,22 +22,22 @@ if TYPE_CHECKING:
     import numpy.typing as npt
 
 
-def _dof_coeffs(function: Bspline | THBSpline) -> npt.NDArray[np.float64]:
+def _dof_coeffs(function: Bspline | THBSpline) -> npt.NDArray[np.float32 | np.float64]:
     """Return a function's control points indexed by global DOF.
 
     A :class:`~pantr.bspline.THBSpline` already stores its coefficients per active DOF;
     a :class:`~pantr.bspline.Bspline` stores them tensor-product reshaped
     (``(*num_basis, rank)``), so they are flattened to ``(num_total_basis, rank)`` in the
-    C-order DOF numbering used by the windowing maps.
+    C-order DOF numbering used by the windowing maps.  The function's dtype is preserved.
 
     Args:
         function (Bspline | THBSpline): The global function.
 
     Returns:
-        npt.NDArray[np.float64]: Control points shaped ``(num_total_basis,)`` or
-        ``(num_total_basis, rank)``, indexed by global DOF.
+        npt.NDArray[np.float32 | np.float64]: Control points shaped
+        ``(num_total_basis,)`` or ``(num_total_basis, rank)``, indexed by global DOF.
     """
-    cp = np.asarray(function.control_points, dtype=np.float64)
+    cp = np.asarray(function.control_points)
     if isinstance(function, Bspline):
         return cp.reshape(function.space.num_total_basis, -1)
     return cp

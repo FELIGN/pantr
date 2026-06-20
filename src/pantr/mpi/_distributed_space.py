@@ -226,7 +226,7 @@ class DistributedSpace:
         local = self._local
         if local is None:
             return None
-        cp = np.asarray(control_points, dtype=np.float64)
+        cp = np.asarray(control_points, dtype=self._global_space.dtype)
         n_global = self._global_space.num_total_basis
         if cp.shape[0] != n_global:
             raise ValueError(
