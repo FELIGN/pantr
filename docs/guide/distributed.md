@@ -159,6 +159,30 @@ cross-rank DOF coupling. `backend=None` picks each method's default (`"auto"` /
 partitioner. The explicit three-step flow above stays available when you need the grid
 or partition as separate objects.
 
+## Distributing a function
+
+To distribute a *function* (space **+** control points), not just a space, use
+`DistributedSpace.localize(control_points)` to slice a global coefficient field to this
+rank's local function, or `pantr.mpi.create_distributed_function(global_function, comm,
+...)` for the one-call path (same `method` / `backend` / `cell_weights` / `cell_active`
+options as `create_distributed_space`):
+
+```python
+from pantr.mpi import create_distributed_function
+
+df = create_distributed_function(global_function, comm)
+local_f = df.local            # this rank's windowed Bspline / THBSpline (or None)
+
+# Or localize many fields on one distributed space (solver loop):
+ds = create_distributed_space(space, comm)
+local_u = ds.localize(u)      # u, residual, ... are global coefficient vectors
+```
+
+The global control points are identical on every rank (the SPMD model); "distributing"
+windows the space and slices the coefficients to this rank's DOFs. `df.local` equals the
+global function pointwise over the rank's owned cells, and is `None` on a rank that owns
+no cells.
+
 ## Immersion hooks
 
 PaNTr stores **no** geometric classification (interior / cut / exterior). An

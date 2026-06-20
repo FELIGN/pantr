@@ -15,11 +15,12 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
-from ..bspline import BsplineSpace, THBSplineSpace, build_local
+import numpy as np
+
+from ..bspline import Bspline, BsplineSpace, THBSpline, THBSplineSpace, build_local
 from ._thread_policy import _ensure_default_thread_policy
 
 if TYPE_CHECKING:
-    import numpy as np
     import numpy.typing as npt
 
     from ..bspline import LocalSpace
@@ -196,6 +197,46 @@ class DistributedSpace:
             (empty if the rank owns none).
         """
         return self._owned_cells
+
+    def localize(self, control_points: npt.ArrayLike) -> Bspline | THBSpline | None:
+        """Restrict a global coefficient field to this rank's local function.
+
+        Slices the *global* control points (identical on every rank, one per global DOF)
+        down to this rank's local DOFs via :attr:`local`'s ``local_to_global_dof`` map,
+        and wraps them on the windowed :attr:`local` space.  The returned function equals
+        the global one pointwise over the rank's owned cells, so per-element evaluation
+        and assembly are local.  Reuse a single distributed space to localize many fields
+        (right-hand side, solution, residual, ...).
+
+        Args:
+            control_points (npt.ArrayLike): Global control points, shape
+                ``(n_global_dofs,)`` for a scalar field or ``(n_global_dofs, rank)`` for a
+                vector field, where ``n_global_dofs == global_space.num_total_basis``.
+
+        Returns:
+            Bspline | THBSpline | None: This rank's local function (a
+            :class:`~pantr.bspline.Bspline` for a tensor-product space, a
+            :class:`~pantr.bspline.THBSpline` for a hierarchical one), or ``None`` if the
+            rank owns no cells.  Scalar vs. vector kind is preserved.
+
+        Raises:
+            ValueError: If ``control_points``'s leading dimension is not
+                ``global_space.num_total_basis``.
+        """
+        local = self._local
+        if local is None:
+            return None
+        cp = np.asarray(control_points, dtype=np.float64)
+        n_global = self._global_space.num_total_basis
+        if cp.shape[0] != n_global:
+            raise ValueError(
+                f"control_points leading dimension must be {n_global} "
+                f"(global_space.num_total_basis); got {cp.shape[0]}."
+            )
+        local_cp = cp[local.local_to_global_dof]
+        if isinstance(local.space, THBSplineSpace):
+            return THBSpline(local.space, local_cp)
+        return Bspline(local.space, local_cp)
 
 
 def _global_cell_count(space: BsplineSpace | THBSplineSpace) -> int:
