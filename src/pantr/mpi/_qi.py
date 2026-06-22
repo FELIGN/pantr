@@ -3,7 +3,7 @@
 Provides :func:`quasi_interpolate_bspline_distributed`, the MPI-parallel counterpart of
 :func:`~pantr.bspline.quasi_interpolate_bspline`.  Each rank evaluates the function only
 on the points required by its *owned* DOFs (no redundant evaluation of halo-DOF points),
-then a single :pyfunc:`allgather` collective assembles the full global coefficient field.
+then a single ``allgather`` collective assembles the full global coefficient field.
 The result is a :class:`~pantr.mpi.DistributedFunction` whose
 :attr:`~pantr.mpi.DistributedFunction.local` reproduces the serial quasi-interpolant
 exactly over the rank's owned cells.

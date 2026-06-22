@@ -365,3 +365,53 @@ def test_func_shape_error_propagates() -> None:
     ds = DistributedSpace(space, part, _FakeComm(0, 1))
     with pytest.raises(ValueError):
         quasi_interpolate_bspline_distributed(lambda p: np.zeros(p.shape[0] + 1), ds)
+
+
+# ---------------------------------------------------------------------------
+# dtype propagation
+# ---------------------------------------------------------------------------
+
+
+def test_float32_space_preserves_dtype() -> None:
+    """Global control points retain float32 dtype when the space uses float32."""
+    space = create_uniform_space([2], [4], dtype=np.float32)
+    part = partition_grid(tensor_product_grid(space), 1)
+    ds = DistributedSpace(space, part, _FakeComm(0, 1))
+    dfn = quasi_interpolate_bspline_distributed(lambda p: p[:, 0] ** 2, ds)
+    assert dfn.global_function.control_points.dtype == np.float32
+
+
+@pytest.mark.parametrize("n_parts", [2, 4])
+def test_float32_multi_rank_matches_serial(n_parts: int) -> None:
+    """float32 distributed QI matches the serial result within float32 tolerance."""
+    space = create_uniform_space([2, 2], [4, 4], dtype=np.float32)
+    func = lambda p: (p[:, 0] ** 2 + p[:, 1]).astype(np.float32)  # noqa: E731
+    results = _simulate_distributed_qi(func, space, n_parts)
+    serial = quasi_interpolate_bspline(func, space)
+    for dfn in results:
+        assert dfn.global_function.control_points.dtype == np.float32
+        np.testing.assert_allclose(
+            dfn.global_function.control_points.astype(np.float64),
+            serial.control_points.astype(np.float64),
+            atol=1e-6,
+        )
+
+
+# ---------------------------------------------------------------------------
+# 1D multi-rank
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("n_parts", [2, 4])
+def test_1d_multi_rank_matches_serial(n_parts: int) -> None:
+    """1D distributed QI matches the serial result across multiple ranks."""
+    func = lambda p: np.sin(np.pi * p[:, 0])  # noqa: E731
+    space = create_uniform_space([3], [8])
+    results = _simulate_distributed_qi(func, space, n_parts)
+    serial = quasi_interpolate_bspline(func, space)
+    for dfn in results:
+        np.testing.assert_allclose(
+            dfn.global_function.control_points,
+            serial.control_points,
+            atol=1e-10,
+        )

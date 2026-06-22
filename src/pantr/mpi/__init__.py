@@ -21,7 +21,8 @@ Main exports:
 - :class:`DistributedFunction`: the per-rank handle to an MPI-distributed function.
 - :func:`create_distributed_function`: build a :class:`DistributedFunction` from a function.
 - :func:`configure_threads`: explicitly set this rank's Numba thread count.
-- :func:`quasi_interpolate_bspline_distributed`: quasi-interpolate a callable onto a distributed B-spline space.
+- :func:`quasi_interpolate_bspline_distributed`: quasi-interpolate a callable onto a distributed
+  B-spline space.
 
 A process-level thread policy coordinates MPI with PaNTr's Numba parallelism: the
 first use of any MPI-engaging entry point limits this process to **one Numba thread
