@@ -21,6 +21,7 @@ Main exports:
 - :class:`DistributedFunction`: the per-rank handle to an MPI-distributed function.
 - :func:`create_distributed_function`: build a :class:`DistributedFunction` from a function.
 - :func:`configure_threads`: explicitly set this rank's Numba thread count.
+- :func:`quasi_interpolate_bspline_distributed`: distributed B-spline quasi-interpolation.
 
 A process-level thread policy coordinates MPI with PaNTr's Numba parallelism: the
 first use of any MPI-engaging entry point limits this process to **one Numba thread
@@ -41,6 +42,7 @@ from ._create import create_distributed_space
 from ._distributed_function import DistributedFunction, create_distributed_function
 from ._distributed_space import DistributedSpace
 from ._from_dolfinx import from_dolfinx
+from ._qi import quasi_interpolate_bspline_distributed
 from ._thread_policy import configure_threads
 
 
@@ -106,5 +108,6 @@ __all__ = [
     "create_distributed_space",
     "from_dolfinx",
     "mpi_available",
+    "quasi_interpolate_bspline_distributed",
     "require_mpi",
 ]
