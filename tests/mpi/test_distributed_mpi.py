@@ -16,13 +16,20 @@ from typing import Any
 import numpy as np
 import pytest
 
-from pantr.bspline import Bspline, build_local, create_uniform_space
+from pantr.bspline import (
+    Bspline,
+    BsplineSpace,
+    build_local,
+    create_uniform_space,
+    quasi_interpolate_bspline,
+)
 from pantr.grid import partition_grid, tensor_product_grid
 from pantr.mpi import (
     DistributedSpace,
     create_distributed_function,
     create_distributed_space,
     from_dolfinx,
+    quasi_interpolate_bspline_distributed,
 )
 
 MPI = pytest.importorskip("mpi4py.MPI")
@@ -136,3 +143,55 @@ def test_from_dolfinx_assembles_global_partition_across_ranks() -> None:
     assert partition.n_parts == comm.size
     expected = np.repeat(np.arange(comm.size), per_rank)
     np.testing.assert_array_equal(partition.cell_owner, expected)
+
+
+def test_quasi_interpolate_bspline_distributed_matches_serial() -> None:
+    """Distributed QI reproduces the serial quasi-interpolant over every cell.
+
+    Each rank evaluates func only on its owned-DOF interior points; a single
+    allgather assembles the global field.  The test verifies:
+    1. The global function is identical on every rank (allgather correctness).
+    2. Each rank's local function agrees with the serial QI at its owned cell midpoints.
+    """
+    comm = MPI.COMM_WORLD
+    space = create_uniform_space([2, 2], [8, 8])
+    func = lambda p: np.sin(np.pi * p[:, 0]) * np.cos(np.pi * p[:, 1])  # noqa: E731
+
+    ds = create_distributed_space(space, comm)
+    dfn = quasi_interpolate_bspline_distributed(func, ds)
+    serial = quasi_interpolate_bspline(func, space)
+
+    # 1. Global function must be identical on all ranks.
+    all_global_cp = comm.allgather(np.asarray(dfn.global_function.control_points))
+    for rank_cp in all_global_cp:
+        np.testing.assert_allclose(rank_cp, serial.control_points, atol=1e-10)
+
+    # 2. Local function reproduces serial QI at owned cell midpoints.
+    if dfn.local is None:
+        return
+    assert ds.local is not None
+    assert isinstance(dfn.local.space, BsplineSpace)
+    grid = tensor_product_grid(dfn.local.space)
+    for lc in np.flatnonzero(ds.local.owned_cell_mask):
+        lo, hi = grid.cell_bounds(int(lc))
+        mid = (0.5 * (lo + hi))[None]
+        np.testing.assert_allclose(
+            dfn.local.evaluate(mid),
+            serial.evaluate(mid),
+            atol=1e-10,
+        )
+
+
+def test_quasi_interpolate_bspline_distributed_vector_func() -> None:
+    """Vector-valued func (rank=2) distributes correctly."""
+    comm = MPI.COMM_WORLD
+    space = create_uniform_space([2, 2], [6, 6])
+    func = lambda p: np.stack([p[:, 0], 1.0 - p[:, 1]], axis=-1)  # noqa: E731
+
+    ds = create_distributed_space(space, comm)
+    dfn = quasi_interpolate_bspline_distributed(func, ds)
+    serial = quasi_interpolate_bspline(func, space)
+
+    np.testing.assert_allclose(
+        dfn.global_function.control_points, serial.control_points, atol=1e-10
+    )
