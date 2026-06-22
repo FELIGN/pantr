@@ -19,11 +19,11 @@ jobs:
         python-version: ["3.11", "3.13", "3.14"]
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Set up Python
         id: setup-python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: ${{ matrix.python-version }}
           cache: "pip"
@@ -31,7 +31,7 @@ jobs:
             pyproject.toml
 
       - name: Cache Ruff cache
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: ~/.cache/ruff
           key: ${{ runner.os }}-ruff-${{ hashFiles('ruff.toml', '.ruff.toml') }}
@@ -40,7 +40,7 @@ jobs:
 
       - name: Cache virtualenv
         id: cache-venv
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: .venv
           key: ${{ runner.os }}-venv-${{ steps.setup-python.outputs.python-version }}-${{ hashFiles('pyproject.toml') }}
@@ -78,11 +78,11 @@ jobs:
         python-version: ["3.11", "3.13", "3.14"]
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Set up Python
         id: setup-python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: ${{ matrix.python-version }}
           cache: "pip"
@@ -90,7 +90,7 @@ jobs:
             pyproject.toml
 
       - name: Cache mypy cache
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: .mypy_cache
           key: ${{ runner.os }}-mypy-${{ hashFiles('pyproject.toml', 'mypy.ini') }}
@@ -99,7 +99,7 @@ jobs:
 
       - name: Cache virtualenv
         id: cache-venv
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: .venv
           key: ${{ runner.os }}-venv-${{ steps.setup-python.outputs.python-version }}-${{ hashFiles('pyproject.toml') }}
@@ -128,11 +128,11 @@ jobs:
         python-version: ["3.11", "3.13", "3.14"]
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Set up Python
         id: setup-python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: ${{ matrix.python-version }}
           cache: "pip"
@@ -141,7 +141,7 @@ jobs:
 
       - name: Cache virtualenv
         id: cache-venv
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: .venv
           key: ${{ runner.os }}-venv-${{ steps.setup-python.outputs.python-version }}-${{ hashFiles('pyproject.toml') }}
@@ -149,7 +149,7 @@ jobs:
             ${{ runner.os }}-venv-${{ steps.setup-python.outputs.python-version }}-
 
       - name: Cache Numba compiled objects
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: |
             src/pantr/basis/__pycache__
@@ -196,17 +196,17 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Cache Sphinx doctrees
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: docs/_build/doctrees
           key: ${{ runner.os }}-sphinx-${{ hashFiles('docs/**/*.md', 'docs/conf.py', 'pyproject.toml', 'src/**/*.py') }}
 
       - name: Cache intersphinx inventories
         id: cache-intersphinx
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: docs/_intersphinx
           key: ${{ runner.os }}-intersphinx-${{ hashFiles('docs/conf.py') }}
@@ -215,7 +215,7 @@ jobs:
 
       - name: Set up Python
         id: setup-python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: "3.11"
           cache: "pip"
@@ -224,7 +224,7 @@ jobs:
 
       - name: Cache virtualenv
         id: cache-venv
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: .venv
           key: ${{ runner.os }}-venv-${{ steps.setup-python.outputs.python-version }}-${{ hashFiles('pyproject.toml', 'docs/**/*.md', 'docs/conf.py') }}
@@ -270,11 +270,11 @@ jobs:
       PIP_NO_BINARY: "mpi4py"
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Set up Python
         id: setup-python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: "3.12"
           cache: "pip"
@@ -288,7 +288,7 @@ jobs:
 
       - name: Cache virtualenv
         id: cache-venv
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: .venv
           key: ${{ runner.os }}-venv-${{ steps.setup-python.outputs.python-version }}-mpi-${{ hashFiles('pyproject.toml') }}
