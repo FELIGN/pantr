@@ -159,11 +159,10 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-numba-${{ steps.setup-python.outputs.python-version }}-
 
-      - name: Install OpenMPI (cached)
-        uses: awalsh128/cache-apt-pkgs-action@latest
-        with:
-          packages: libopenmpi-dev openmpi-bin
-          version: 1.0
+      - name: Install OpenMPI
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y libopenmpi-dev openmpi-bin
 
       - name: Create venv and install dev deps (on cache miss)
         if: steps.cache-venv.outputs.cache-hit != 'true'
@@ -184,7 +183,7 @@ jobs:
           make coverage
 
       - name: Upload coverage xml
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: coverage-xml-py${{ matrix.python-version }}-run${{ github.run_attempt }}
           path: coverage.xml
