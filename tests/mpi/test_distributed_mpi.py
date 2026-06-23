@@ -26,6 +26,7 @@ from pantr.bspline import (
     create_uniform_space,
     fit_bspline,
     interpolate_bspline,
+    l2_project_bspline,
     quasi_interpolate_bspline,
     quasi_interpolate_thb_spline,
 )
@@ -37,6 +38,7 @@ from pantr.mpi import (
     fit_bspline_distributed,
     from_dolfinx,
     interpolate_bspline_distributed,
+    l2_project_bspline_distributed,
     quasi_interpolate_bspline_distributed,
     quasi_interpolate_thb_spline_distributed,
 )
@@ -253,6 +255,68 @@ def test_quasi_interpolate_thb_spline_distributed_vector_func() -> None:
     ds = create_distributed_space(space, comm)
     dfn = quasi_interpolate_thb_spline_distributed(func, ds)
     serial = quasi_interpolate_thb_spline(func, space)
+
+    np.testing.assert_allclose(
+        dfn.global_function.control_points, serial.control_points, atol=1e-10
+    )
+
+
+def _grid_mesh(lat: Any) -> tuple[np.ndarray, ...]:
+    """Return the C-order, flattened meshgrid of a PointsLattice's per-direction nodes.
+
+    Mirrors the serial ``func(lattice)`` convention: each returned array is the flat
+    ``(n_total,)`` coordinate vector for one parametric direction.
+    """
+    return tuple(g.reshape(-1) for g in np.meshgrid(*list(lat.pts_per_dir), indexing="ij"))
+
+
+def test_l2_project_bspline_distributed_matches_serial() -> None:
+    """Distributed L2 projection reproduces the serial result over every cell.
+
+    Each rank assembles the load over its owned cells only; a single allreduce sums the
+    global load and the replicated Kronecker solve recovers the coefficients.  The test
+    verifies:
+    1. The global function is identical on every rank (allreduce correctness).
+    2. Each rank's local function agrees with the serial L2 at its owned cell midpoints.
+    """
+    comm = MPI.COMM_WORLD
+    space = create_uniform_space([2, 2], [8, 8])
+    func = lambda lat: np.sin(np.pi * _grid_mesh(lat)[0]) * np.cos(np.pi * _grid_mesh(lat)[1])  # noqa: E731
+
+    ds = create_distributed_space(space, comm)
+    dfn = l2_project_bspline_distributed(func, ds)
+    serial = l2_project_bspline(func, space)
+
+    # 1. Global function must be identical on all ranks.
+    all_global_cp = comm.allgather(np.asarray(dfn.global_function.control_points))
+    for rank_cp in all_global_cp:
+        np.testing.assert_allclose(rank_cp, serial.control_points, atol=1e-10)
+
+    # 2. Local function reproduces serial L2 at owned cell midpoints.
+    if dfn.local is None:
+        return
+    assert ds.local is not None
+    assert isinstance(dfn.local.space, BsplineSpace)
+    grid = tensor_product_grid(dfn.local.space)
+    for lc in np.flatnonzero(ds.local.owned_cell_mask):
+        lo, hi = grid.cell_bounds(int(lc))
+        mid = (0.5 * (lo + hi))[None]
+        np.testing.assert_allclose(
+            dfn.local.evaluate(mid),
+            serial.evaluate(mid),
+            atol=1e-10,
+        )
+
+
+def test_l2_project_bspline_distributed_boundary_interpolation() -> None:
+    """Distributed L2 with boundary_interpolation matches the serial result."""
+    comm = MPI.COMM_WORLD
+    space = create_uniform_space([3, 3], [6, 6])
+    func = lambda lat: np.cos(_grid_mesh(lat)[0]) * _grid_mesh(lat)[1] ** 2  # noqa: E731
+
+    ds = create_distributed_space(space, comm)
+    dfn = l2_project_bspline_distributed(func, ds, boundary_interpolation=True)
+    serial = l2_project_bspline(func, space, boundary_interpolation=True)
 
     np.testing.assert_allclose(
         dfn.global_function.control_points, serial.control_points, atol=1e-10

@@ -23,6 +23,7 @@ Main exports:
 - :func:`configure_threads`: explicitly set this rank's Numba thread count.
 - :func:`interpolate_bspline_distributed`: distributed B-spline collocation interpolation.
 - :func:`fit_bspline_distributed`: distributed B-spline fit from pre-evaluated values.
+- :func:`l2_project_bspline_distributed`: distributed B-spline L2 projection.
 - :func:`quasi_interpolate_bspline_distributed`: distributed B-spline quasi-interpolation.
 - :func:`quasi_interpolate_thb_spline_distributed`: distributed THB-spline quasi-interpolation.
 
@@ -46,6 +47,7 @@ from ._create import create_distributed_space
 from ._distributed_function import DistributedFunction, create_distributed_function
 from ._distributed_space import DistributedSpace
 from ._from_dolfinx import from_dolfinx
+from ._l2 import l2_project_bspline_distributed
 from ._qi import quasi_interpolate_bspline_distributed
 from ._thb_qi import quasi_interpolate_thb_spline_distributed
 from ._thread_policy import configure_threads
@@ -114,6 +116,7 @@ __all__ = [
     "fit_bspline_distributed",
     "from_dolfinx",
     "interpolate_bspline_distributed",
+    "l2_project_bspline_distributed",
     "mpi_available",
     "quasi_interpolate_bspline_distributed",
     "quasi_interpolate_thb_spline_distributed",

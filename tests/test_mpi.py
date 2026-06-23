@@ -23,6 +23,7 @@ def test_import_and_public_surface() -> None:
     assert isinstance(pantr.mpi.DistributedSpace, type)
     assert isinstance(pantr.mpi.DistributedFunction, type)
     assert isinstance(pantr.mpi.HAS_MPI, bool)
+    assert callable(pantr.mpi.l2_project_bspline_distributed)
     assert callable(pantr.mpi.quasi_interpolate_bspline_distributed)
     assert callable(pantr.mpi.quasi_interpolate_thb_spline_distributed)
     assert callable(pantr.mpi.interpolate_bspline_distributed)
@@ -37,6 +38,7 @@ def test_import_and_public_surface() -> None:
         "fit_bspline_distributed",
         "from_dolfinx",
         "interpolate_bspline_distributed",
+        "l2_project_bspline_distributed",
         "mpi_available",
         "quasi_interpolate_bspline_distributed",
         "quasi_interpolate_thb_spline_distributed",
