@@ -709,6 +709,93 @@ def _build_nd_collocation_matrix(
 # ---------------------------------------------------------------------------
 
 
+def _build_l2_mass_and_quad(
+    space: BsplineSpace,
+    n_quad: int | Sequence[int] | None,
+    quadrature: Literal["gauss-legendre", "gauss-lobatto"],
+    boundary_interpolation: bool | Sequence[tuple[bool, bool]],
+) -> tuple[
+    list[npt.NDArray[np.float32 | np.float64]],
+    list[npt.NDArray[np.float32 | np.float64]],
+    list[npt.NDArray[np.float32 | np.float64]],
+    list[tuple[bool, bool]],
+    tuple[int, ...],
+]:
+    """Build the per-direction L2 mass matrices and global quadrature nodes/weights.
+
+    Resolves ``n_quad`` and ``boundary_interpolation`` per direction, assembles each 1D
+    mass matrix via per-element quadrature, and replaces the first/last mass row with a
+    collocation (interpolation) row where requested.  Shared by the serial
+    :func:`l2_project_bspline` and its MPI-distributed counterpart; the result depends
+    only on ``space`` and the quadrature settings, never on any partition, so every rank
+    builds it identically.
+
+    Args:
+        space (BsplineSpace): The target B-spline space.
+        n_quad (int | Sequence[int] | None): Quadrature points per element per direction.
+            ``None`` defaults to ``degree + 1`` per direction.
+        quadrature (Literal["gauss-legendre", "gauss-lobatto"]): Quadrature rule type.
+        boundary_interpolation (bool | Sequence[tuple[bool, bool]]): Boundary
+            interpolation flags (see :func:`l2_project_bspline`).
+
+    Returns:
+        tuple: ``(mass_matrices, quad_nodes_per_dir, quad_weights_per_dir, bi_flags,
+        n_quads)`` -- per-direction mass matrices (boundary rows applied), global
+        quadrature nodes and weights, the resolved per-direction ``(left, right)``
+        boundary flags, and the resolved per-direction quadrature-point counts.
+
+    Raises:
+        ValueError: If ``n_quad`` or ``boundary_interpolation`` is inconsistent with
+            ``space``.
+    """
+    from ..quad import get_gauss_legendre_1d, get_gauss_lobatto_legendre_1d  # noqa: PLC0415
+
+    ndim = space.dim
+
+    # Resolve n_quad per direction.
+    if n_quad is None:
+        n_quads = tuple(s.degree + 1 for s in space.spaces)
+    elif isinstance(n_quad, int):
+        n_quads = tuple(n_quad for _ in range(ndim))
+    else:
+        n_quads = tuple(n_quad)
+        if len(n_quads) != ndim:
+            raise ValueError(f"n_quad has length {len(n_quads)}, expected {ndim}")
+
+    # Resolve boundary interpolation flags.
+    bi_flags = _resolve_boundary_interpolation(boundary_interpolation, space)
+
+    mass_matrices: list[npt.NDArray[np.float32 | np.float64]] = []
+    quad_nodes_per_dir: list[npt.NDArray[np.float32 | np.float64]] = []
+    quad_weights_per_dir: list[npt.NDArray[np.float32 | np.float64]] = []
+
+    quad_func = (
+        get_gauss_legendre_1d if quadrature == "gauss-legendre" else get_gauss_lobatto_legendre_1d
+    )
+
+    for d, s1d in enumerate(space.spaces):
+        nq = n_quads[d]
+        mass, q_nodes, q_weights = _assemble_mass_and_quad_1d(s1d, nq, quad_func)
+
+        # Apply boundary interpolation if requested.
+        bi_left, bi_right = bi_flags[d]
+        if bi_left and not s1d.periodic:
+            a = s1d.domain[0]
+            colloc_row = _build_collocation_matrix_1d(s1d, np.array([a], dtype=s1d.dtype))
+            mass[0, :] = colloc_row[0, :]
+
+        if bi_right and not s1d.periodic:
+            b = s1d.domain[1]
+            colloc_row = _build_collocation_matrix_1d(s1d, np.array([b], dtype=s1d.dtype))
+            mass[-1, :] = colloc_row[0, :]
+
+        mass_matrices.append(mass)
+        quad_nodes_per_dir.append(q_nodes)
+        quad_weights_per_dir.append(q_weights)
+
+    return mass_matrices, quad_nodes_per_dir, quad_weights_per_dir, bi_flags, n_quads
+
+
 def l2_project_bspline(  # noqa: PLR0913
     func: Callable[..., npt.ArrayLike],
     space: BsplineSpace,
@@ -764,55 +851,16 @@ def l2_project_bspline(  # noqa: PLR0913
         ...     lambda lat: lat.pts_per_dir[0] ** 2, space
         ... )
     """
-    from ..quad import get_gauss_legendre_1d, get_gauss_lobatto_legendre_1d  # noqa: PLC0415
     from ._bspline import Bspline  # noqa: PLC0415
 
     if not isinstance(space, BsplineSpace):
         raise TypeError(f"Expected BsplineSpace, got {type(space).__name__}")
 
-    ndim = space.dim
-
-    # Resolve n_quad per direction.
-    if n_quad is None:
-        n_quads = tuple(s.degree + 1 for s in space.spaces)
-    elif isinstance(n_quad, int):
-        n_quads = tuple(n_quad for _ in range(ndim))
-    else:
-        n_quads = tuple(n_quad)
-        if len(n_quads) != ndim:
-            raise ValueError(f"n_quad has length {len(n_quads)}, expected {ndim}")
-
-    # Resolve boundary interpolation flags.
-    bi_flags = _resolve_boundary_interpolation(boundary_interpolation, space)
-
-    # Build per-direction mass matrices and quadrature-sampled nodes.
-    mass_matrices: list[npt.NDArray[np.float32 | np.float64]] = []
-    quad_nodes_per_dir: list[npt.NDArray[np.float32 | np.float64]] = []
-    quad_weights_per_dir: list[npt.NDArray[np.float32 | np.float64]] = []
-
-    quad_func = (
-        get_gauss_legendre_1d if quadrature == "gauss-legendre" else get_gauss_lobatto_legendre_1d
+    # Build per-direction mass matrices (with boundary-interpolation rows applied),
+    # global quadrature nodes/weights, and the normalized n_quad / boundary flags.
+    mass_matrices, quad_nodes_per_dir, quad_weights_per_dir, bi_flags, _n_quads = (
+        _build_l2_mass_and_quad(space, n_quad, quadrature, boundary_interpolation)
     )
-
-    for d, s1d in enumerate(space.spaces):
-        nq = n_quads[d]
-        mass, q_nodes, q_weights = _assemble_mass_and_quad_1d(s1d, nq, quad_func)
-
-        # Apply boundary interpolation if requested.
-        bi_left, bi_right = bi_flags[d]
-        if bi_left and not s1d.periodic:
-            a = s1d.domain[0]
-            colloc_row = _build_collocation_matrix_1d(s1d, np.array([a], dtype=s1d.dtype))
-            mass[0, :] = colloc_row[0, :]
-
-        if bi_right and not s1d.periodic:
-            b = s1d.domain[1]
-            colloc_row = _build_collocation_matrix_1d(s1d, np.array([b], dtype=s1d.dtype))
-            mass[-1, :] = colloc_row[0, :]
-
-        mass_matrices.append(mass)
-        quad_nodes_per_dir.append(q_nodes)
-        quad_weights_per_dir.append(q_weights)
 
     # Build quadrature lattice and evaluate function.
     quad_lattice = PointsLattice(quad_nodes_per_dir)

@@ -21,6 +21,7 @@ Main exports:
 - :class:`DistributedFunction`: the per-rank handle to an MPI-distributed function.
 - :func:`create_distributed_function`: build a :class:`DistributedFunction` from a function.
 - :func:`configure_threads`: explicitly set this rank's Numba thread count.
+- :func:`l2_project_bspline_distributed`: distributed B-spline L2 projection.
 - :func:`quasi_interpolate_bspline_distributed`: distributed B-spline quasi-interpolation.
 - :func:`quasi_interpolate_thb_spline_distributed`: distributed THB-spline quasi-interpolation.
 
@@ -43,6 +44,7 @@ from ._create import create_distributed_space
 from ._distributed_function import DistributedFunction, create_distributed_function
 from ._distributed_space import DistributedSpace
 from ._from_dolfinx import from_dolfinx
+from ._l2 import l2_project_bspline_distributed
 from ._qi import quasi_interpolate_bspline_distributed
 from ._thb_qi import quasi_interpolate_thb_spline_distributed
 from ._thread_policy import configure_threads
@@ -109,6 +111,7 @@ __all__ = [
     "create_distributed_function",
     "create_distributed_space",
     "from_dolfinx",
+    "l2_project_bspline_distributed",
     "mpi_available",
     "quasi_interpolate_bspline_distributed",
     "quasi_interpolate_thb_spline_distributed",
