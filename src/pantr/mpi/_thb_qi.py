@@ -4,7 +4,8 @@ Provides :func:`quasi_interpolate_thb_spline_distributed`, the MPI-parallel coun
 of :func:`~pantr.bspline.quasi_interpolate_thb_spline`.  Each rank runs the serial
 Speleers-Manni hierarchical quasi-interpolant on its *windowed* local space -- which
 covers every owned active DOF's full support, including the level-``l`` active leaf cell
-the per-level functional samples -- then keeps only its *owned* DOFs' coefficients.  A
+on which the per-level functional samples ``func`` -- then keeps only its *owned* DOFs'
+coefficients.  A
 single ``allgather`` collective assembles the full global coefficient field.  The result
 is a :class:`~pantr.mpi.DistributedFunction` whose
 :attr:`~pantr.mpi.DistributedFunction.local` reproduces the serial quasi-interpolant
@@ -75,11 +76,11 @@ def quasi_interpolate_thb_spline_distributed(
             with an invalid shape (0-D, more than 2-D, or wrong leading dimension).
 
     Note:
-        All computation uses ``float64``.  Scalar vs. vector kind is preserved (a scalar
-        ``func`` yields a scalar :class:`~pantr.bspline.THBSpline`).  Like the serial
+        Scalar vs. vector kind is preserved (a scalar ``func`` yields a scalar
+        :class:`~pantr.bspline.THBSpline`).  Like the serial
         :func:`~pantr.bspline.quasi_interpolate_thb_spline`, the result is always
-        ``float64`` -- :class:`~pantr.bspline.THBSpline` stores ``float64`` coefficients
-        regardless of ``global_space.dtype``.
+        ``float64``: :class:`~pantr.bspline.THBSpline` coerces its coefficients to
+        ``float64`` on construction, regardless of ``global_space.dtype``.
 
     Example:
         >>> from mpi4py import MPI  # doctest: +SKIP
@@ -118,11 +119,11 @@ def quasi_interpolate_thb_spline_distributed(
         # (num_total_basis, rank) vector.  Preserve that rank so scalar funcs stay
         # scalar, matching the serial quasi-interpolant exactly.
         local_thb = quasi_interpolate_thb_spline(func, local.space, kind=kind)
-        coeffs = np.asarray(local_thb.control_points, dtype=np.float64)
+        cp = np.asarray(local_thb.control_points, dtype=np.float64)
         # Restrict to owned DOFs and record their global indices.
         owned_mask = local.owned_dof_mask
         owned_global_dofs: npt.NDArray[np.int64] = local.local_to_global_dof[owned_mask]
-        owned_coeffs: npt.NDArray[np.float64] = coeffs[owned_mask]
+        owned_coeffs: npt.NDArray[np.float64] = cp[owned_mask]
     else:
         owned_global_dofs = np.empty(0, dtype=np.int64)
         owned_coeffs = np.empty(0, dtype=np.float64)
@@ -133,7 +134,8 @@ def quasi_interpolate_thb_spline_distributed(
     )
 
     # Detect scalar vs. vector (and its rank) from the first non-empty contribution.
-    # At least one rank owns cells, so a non-empty contribution always exists.
+    # Every global DOF is owned by exactly one rank, so for any non-empty space at
+    # least one rank contributes a non-empty array (the loop always breaks).
     scalar = True
     rank_dim = 1
     for _, coeffs in gathered:

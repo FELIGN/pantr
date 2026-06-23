@@ -181,10 +181,15 @@ def test_empty_rank_has_none_local() -> None:
     contrib1 = (np.empty(0, dtype=np.int64), np.empty(0, dtype=np.float64))
     allgather_data = [contrib0, contrib1]
 
+    serial = quasi_interpolate_thb_spline(lambda p: p[:, 0], space)
     for rank in range(2):
         comm = _FakeComm(rank, 2, allgather_results=allgather_data)
         ds = DistributedSpace(space, part, comm)
         dfn = quasi_interpolate_thb_spline_distributed(lambda p: p[:, 0], ds)
+        # The empty rank contributes nothing, yet both ranks assemble the full field.
+        np.testing.assert_allclose(
+            dfn.global_function.control_points, serial.control_points, atol=1e-12
+        )
         if rank == 0:
             assert dfn.local is not None
         else:
@@ -303,6 +308,45 @@ class TestMultiRankEquivalence:
                     serial.evaluate(mid),
                     atol=1e-10,
                 )
+
+    @pytest.mark.parametrize("n_parts", [2, 4])
+    def test_1d_multi_rank_matches_serial(self, n_parts: int) -> None:
+        """1D two-level THB QI matches the serial result across multiple ranks."""
+        func = lambda p: np.sin(np.pi * p[:, 0])  # noqa: E731
+        space = create_thb_space(create_uniform_space([3], [8])).refine_region(0, [0], [4])
+        results = _simulate_distributed_qi(func, space, n_parts)
+        serial = quasi_interpolate_thb_spline(func, space)
+        for dfn in results:
+            np.testing.assert_allclose(
+                dfn.global_function.control_points,
+                serial.control_points,
+                atol=1e-10,
+            )
+
+    @pytest.mark.parametrize("n_parts", [2, 4])
+    def test_three_level_hierarchy_matches_serial(self, n_parts: int) -> None:
+        """A 3-level THB space distributes correctly.
+
+        Exercises the per-level leaf-cell selection (issue #240, I2): ranks straddling
+        a level-2 refinement must window in active DOFs from all three levels, and the
+        Speleers-Manni functional's level-``l`` leaf cell must still resolve inside each
+        rank's windowed parametric sub-domain.
+        """
+        func = lambda p: np.sin(np.pi * p[:, 0]) * np.cos(np.pi * p[:, 1])  # noqa: E731
+        space = (
+            create_thb_space(create_uniform_space([2, 2], [8, 8]))
+            .refine_region(0, [0, 0], [4, 4])
+            .refine_region(1, [0, 0], [4, 4])
+        )
+        assert space.num_levels == 3
+        results = _simulate_distributed_qi(func, space, n_parts)
+        serial = quasi_interpolate_thb_spline(func, space)
+        for dfn in results:
+            np.testing.assert_allclose(
+                dfn.global_function.control_points,
+                serial.control_points,
+                atol=1e-10,
+            )
 
 
 # ---------------------------------------------------------------------------
