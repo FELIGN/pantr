@@ -21,8 +21,11 @@ from pantr.bspline import (
     BsplineSpace,
     THBSpline,
     build_local,
+    create_greville_lattice,
     create_thb_space,
     create_uniform_space,
+    fit_bspline,
+    interpolate_bspline,
     quasi_interpolate_bspline,
     quasi_interpolate_thb_spline,
 )
@@ -31,7 +34,9 @@ from pantr.mpi import (
     DistributedSpace,
     create_distributed_function,
     create_distributed_space,
+    fit_bspline_distributed,
     from_dolfinx,
+    interpolate_bspline_distributed,
     quasi_interpolate_bspline_distributed,
     quasi_interpolate_thb_spline_distributed,
 )
@@ -248,6 +253,105 @@ def test_quasi_interpolate_thb_spline_distributed_vector_func() -> None:
     ds = create_distributed_space(space, comm)
     dfn = quasi_interpolate_thb_spline_distributed(func, ds)
     serial = quasi_interpolate_thb_spline(func, space)
+
+    np.testing.assert_allclose(
+        dfn.global_function.control_points, serial.control_points, atol=1e-10
+    )
+
+
+def test_interpolate_bspline_distributed_matches_serial() -> None:
+    """Distributed collocation interpolation reproduces the serial interpolant.
+
+    Each rank evaluates func only on its block of the flattened Greville grid; a single
+    allgather assembles the full value field before the replicated Kronecker solve.  The
+    test verifies the global function is identical on every rank and equals the serial
+    interpolant, and that the local function agrees with serial at owned cell midpoints.
+    """
+    comm = MPI.COMM_WORLD
+    space = create_uniform_space([2, 2], [8, 8])
+    # The distributed func takes a flat (M, dim) array; serial takes a PointsLattice.
+    flat: Any = lambda p: np.sin(np.pi * p[:, 0]) * np.cos(np.pi * p[:, 1])  # noqa: E731
+
+    ds = create_distributed_space(space, comm)
+    dfn = interpolate_bspline_distributed(flat, ds)
+    serial = interpolate_bspline(lambda lat: flat(lat.get_all_points(order="C")), space)
+
+    # 1. Global function must be identical on all ranks and equal to serial.
+    all_global_cp = comm.allgather(np.asarray(dfn.global_function.control_points))
+    for rank_cp in all_global_cp:
+        np.testing.assert_allclose(rank_cp, serial.control_points, atol=1e-10)
+
+    # 2. Local function reproduces serial at owned cell midpoints.
+    if dfn.local is None:
+        return
+    assert ds.local is not None
+    assert isinstance(dfn.local.space, BsplineSpace)
+    grid = tensor_product_grid(dfn.local.space)
+    for lc in np.flatnonzero(ds.local.owned_cell_mask):
+        lo, hi = grid.cell_bounds(int(lc))
+        mid = (0.5 * (lo + hi))[None]
+        np.testing.assert_allclose(dfn.local.evaluate(mid), serial.evaluate(mid), atol=1e-10)
+
+
+def test_interpolate_bspline_distributed_vector_func() -> None:
+    """Vector-valued func (rank=2) distributes correctly via collocation."""
+    comm = MPI.COMM_WORLD
+    space = create_uniform_space([2, 2], [6, 6])
+    flat: Any = lambda p: np.stack([p[:, 0], 1.0 - p[:, 1]], axis=-1)  # noqa: E731
+
+    ds = create_distributed_space(space, comm)
+    dfn = interpolate_bspline_distributed(flat, ds)
+    serial = interpolate_bspline(lambda lat: flat(lat.get_all_points(order="C")), space)
+
+    np.testing.assert_allclose(
+        dfn.global_function.control_points, serial.control_points, atol=1e-10
+    )
+
+
+def test_fit_bspline_distributed_predistributed_values_matches_serial() -> None:
+    """Distributed fit with pre-distributed value blocks reproduces the serial fit.
+
+    Every rank evaluates only its block of the flattened Greville grid, passes it with
+    ``values_distributed=True``, and a single allgather assembles the full field before
+    the replicated solve.  The block split must match the routine's contiguous C-order
+    blocks (``divmod`` even split, first remainder ranks one longer).
+    """
+    comm = MPI.COMM_WORLD
+    space = create_uniform_space([2, 2], [8, 8])
+    lattice = create_greville_lattice(space)
+    pts = lattice.get_all_points(order="C")
+    n_total = pts.shape[0]
+    flat: Any = lambda p: p[:, 0] ** 2 + p[:, 1]  # noqa: E731
+
+    base, extra = divmod(n_total, comm.size)
+    start = comm.rank * base + min(comm.rank, extra)
+    stop = start + base + (1 if comm.rank < extra else 0)
+    block = np.ascontiguousarray(flat(pts[start:stop]))
+
+    ds = create_distributed_space(space, comm)
+    dfn = fit_bspline_distributed(block, lattice, ds, values_distributed=True)
+
+    # Reference serial fit on the full value field.
+    grid_shape = tuple(a.shape[0] for a in lattice.pts_per_dir)
+    serial = fit_bspline(flat(pts).reshape(grid_shape), lattice, space)
+
+    all_global_cp = comm.allgather(np.asarray(dfn.global_function.control_points))
+    for rank_cp in all_global_cp:
+        np.testing.assert_allclose(rank_cp, serial.control_points, atol=1e-10)
+
+
+def test_fit_bspline_distributed_replicated_values_matches_serial() -> None:
+    """Distributed fit with replicated values (full field on every rank) matches serial."""
+    comm = MPI.COMM_WORLD
+    space = create_uniform_space([2, 2], [6, 6])
+    lattice = create_greville_lattice(space)
+    pts = lattice.get_all_points(order="C")
+    grid_shape = tuple(a.shape[0] for a in lattice.pts_per_dir)
+    vals = (pts[:, 0] ** 2 + pts[:, 1]).reshape(grid_shape)
+
+    ds = create_distributed_space(space, comm)
+    dfn = fit_bspline_distributed(vals, lattice, ds)
+    serial = fit_bspline(vals, lattice, space)
 
     np.testing.assert_allclose(
         dfn.global_function.control_points, serial.control_points, atol=1e-10
