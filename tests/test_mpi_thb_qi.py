@@ -24,7 +24,7 @@ from pantr.bspline import (
     quasi_interpolate_thb_spline,
 )
 from pantr.bspline._bspline_quasi_interpolation import QIKind
-from pantr.grid import Partition, partition_grid
+from pantr.grid import Partition, partition_grid, tensor_product_grid
 from pantr.mpi import (
     DistributedFunction,
     DistributedSpace,
@@ -293,6 +293,7 @@ class TestMultiRankEquivalence:
                 continue
             assert dfn.local is not None
             assert isinstance(dfn.local, THBSpline)
+            assert isinstance(local.space, THBSplineSpace)
             grid = local.space.grid
             for lc in np.flatnonzero(local.owned_cell_mask):
                 lo, hi = grid.cell_bounds(int(lc))
@@ -312,8 +313,6 @@ class TestMultiRankEquivalence:
 def test_bspline_space_raises_type_error() -> None:
     """TypeError when global_space is BsplineSpace (not THBSplineSpace)."""
     space = create_uniform_space([2, 2], [4, 4])
-    from pantr.grid import tensor_product_grid
-
     part = partition_grid(tensor_product_grid(space), 1)
     ds = DistributedSpace(space, part, _FakeComm(0, 1))
     with pytest.raises(TypeError, match="THBSplineSpace"):
