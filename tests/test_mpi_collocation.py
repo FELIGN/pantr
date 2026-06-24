@@ -432,3 +432,35 @@ def test_fit_scattered_replicated_falls_back() -> None:
     dfn = fit_bspline_distributed(vals, nodes, ds)
     serial = fit_bspline(vals, nodes, space)
     np.testing.assert_array_equal(dfn.global_function.control_points, serial.control_points)
+
+
+def test_interpolate_func_bad_ndim_raises() -> None:
+    """ValueError when func returns an array whose ndim is neither 1 nor 2."""
+    space = create_uniform_space([2], [4])
+    part = partition_grid(tensor_product_grid(space), 1)
+    ds = DistributedSpace(space, part, _FakeComm(0, 1))
+    with pytest.raises(ValueError, match="func returned shape"):
+        interpolate_bspline_distributed(lambda p: np.zeros((p.shape[0], 2, 2)), ds)
+
+
+def test_interpolate_func_wrong_length_raises() -> None:
+    """ValueError when func returns the wrong number of values for its block."""
+    space = create_uniform_space([2], [4])
+    part = partition_grid(tensor_product_grid(space), 1)
+    ds = DistributedSpace(space, part, _FakeComm(0, 1))
+    with pytest.raises(ValueError, match="func returned shape"):
+        interpolate_bspline_distributed(lambda p: np.zeros(p.shape[0] + 1), ds)
+
+
+def test_fit_distributed_blocks_undercover_raises() -> None:
+    """ValueError when pre-distributed blocks do not tile the flattened grid."""
+    space = create_uniform_space([2], [4])
+    lattice = create_greville_lattice(space)
+    n_total = lattice.get_all_points(order="C").shape[0]
+    # Two blocks that together cover fewer points than the flattened grid.
+    blocks = [np.zeros(1), np.zeros(1)]
+    assert sum(b.shape[0] for b in blocks) < n_total
+    part = partition_grid(tensor_product_grid(space), 2)
+    ds = DistributedSpace(space, part, _FakeComm(0, 2, allgather_results=blocks))
+    with pytest.raises(ValueError, match="do not tile"):
+        fit_bspline_distributed(blocks[0], lattice, ds, values_distributed=True)
