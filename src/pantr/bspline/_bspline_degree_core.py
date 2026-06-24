@@ -1,7 +1,9 @@
 """Numba kernels for B-spline degree elevation and reduction.
 
-These kernels implement the algorithms from The NURBS Book / MATLAB NURBS
-Toolbox layer and the bidiagonal least-squares reduction from algoim.
+Elevation follows The NURBS Book (Piegl & Tiller, Algorithm A5.9) / MATLAB
+NURBS Toolbox layer.  Reduction solves the Bernstein degree-elevation system
+in the least-squares sense via bidiagonal QR (Golub & Van Loan, *Matrix
+Computations*, 4th ed., sections 5.1-5.2).
 
 Note:
     Inputs are assumed to be correct (no validation performed).
@@ -223,13 +225,20 @@ def _reduce_bezier_segment(  # noqa: PLR0912
     degree_decrement: int,
     out: npt.NDArray[Any],
 ) -> None:
-    """Degree-reduce a single Bézier segment into a pre-allocated output.
+    r"""Degree-reduce a single Bézier segment into a pre-allocated output.
 
-    Implements the same bidiagonal least-squares algorithm as
-    :func:`~pantr.bezier._bezier_core._degree_reduce_bezier_1d_core`.
-    The code is duplicated here because a circular import prevents
-    calling the Bézier kernel directly (``_bezier_core`` already
-    imports ``_bincoeff`` from this module).
+    Solves the Bernstein degree-elevation system in the least-squares sense,
+    the same bidiagonal QR scheme used by
+    :func:`~pantr.bezier._bezier_core._degree_reduce_bezier_1d_core` (Golub &
+    Van Loan, *Matrix Computations*, 4th ed., sections 5.1-5.2).  Elevation from degree
+    ``p-1`` to ``p`` is the ``(p+1) x p`` lower-bidiagonal matrix ``M`` with
+    diagonal :math:`1 - k/p` and sub-diagonal :math:`(k+1)/p`; a Givens sweep
+    factors ``M = Q R`` with ``R`` upper bidiagonal, and back-substitution on
+    ``R`` recovers the reduced control points.
+
+    The kernel is duplicated here (rather than importing the Bézier version)
+    because ``_bezier_core`` already imports ``_bincoeff`` from this module, so
+    calling back into it would create a circular import.
 
     Args:
         degree (int): Current polynomial degree (``p >= 1``).
@@ -245,13 +254,14 @@ def _reduce_bezier_segment(  # noqa: PLR0912
     """
     rank = bpts.shape[1]
 
-    # Pre-allocate scratch arrays sized for the largest step (initial degree).
-    diag = np.empty(degree, dtype=np.float64)
-    sup = np.empty(degree, dtype=np.float64)
+    # Scratch sized for the first (largest) step; later steps reuse a prefix.
+    # r_diag / r_super: main and super-diagonal of the upper-bidiagonal R.
+    # cos / sin: the Givens rotations, replayed on every right-hand side.
+    r_diag = np.empty(degree, dtype=np.float64)
+    r_super = np.empty(degree, dtype=np.float64)
+    cos = np.empty(degree, dtype=np.float64)
+    sin = np.empty(degree, dtype=np.float64)
     rhs = np.empty(degree + 1, dtype=np.float64)
-    # Store Givens cosines/sines to avoid recomputing per rank component.
-    cs_arr = np.empty(degree, dtype=np.float64)
-    sn_arr = np.empty(degree, dtype=np.float64)
 
     cur = np.empty((degree + 1, rank), dtype=bpts.dtype)
     for i in range(degree + 1):
@@ -261,54 +271,59 @@ def _reduce_bezier_segment(  # noqa: PLR0912
     cur_deg = degree
 
     for _step in range(degree_decrement):
-        p = cur_deg
-        n_new = p
+        p = cur_deg  # reduce degree p (p+1 points) to degree p-1 (p points)
 
-        nxt = np.empty((n_new, rank), dtype=bpts.dtype)
+        nxt = np.empty((p, rank), dtype=bpts.dtype)
 
-        # Compute Givens rotation coefficients (independent of rank).
-        for k in range(p):
-            diag[k] = 1.0 - np.float64(k) / np.float64(p)
-        for k in range(p):
-            sup[k] = 0.0
+        inv_p = 1.0 / np.float64(p)
 
+        # --- QR sweep on the elevation matrix M (right-hand-side free) -------
+        # Column k carries M[k, k] = 1 - k/p (`head`, mutated by the previous
+        # rotation) and M[k+1, k] = (k+1)/p (`tail`, the entry G_k zeros).
+        # `tail` is always > 0, so the Givens of G&VL Alg. 5.1.3 needs only two
+        # branches.  G_k also spreads M[k+1, k+1] onto the super-diagonal of R.
+        next_diag = 1.0  # M[0, 0]
         for k in range(p):
-            bk = np.float64(k + 1) / np.float64(p)
-            ak = diag[k]
-            if bk == 0.0:
-                cs = 1.0
-                sn = 0.0
-            elif abs(bk) > abs(ak):
-                tmp = ak / bk
-                sn = 1.0 / np.sqrt(1.0 + tmp * tmp)
-                cs = tmp * sn
+            head = next_diag
+            tail = np.float64(k + 1) * inv_p
+
+            if abs(tail) > abs(head):
+                ratio = head / tail
+                sn = 1.0 / np.sqrt(1.0 + ratio * ratio)
+                cs = ratio * sn
+                rho = tail / sn
             else:
-                tmp = bk / ak
-                cs = 1.0 / np.sqrt(1.0 + tmp * tmp)
-                sn = tmp * cs
+                ratio = tail / head
+                cs = 1.0 / np.sqrt(1.0 + ratio * ratio)
+                sn = ratio * cs
+                rho = head / cs
 
-            cs_arr[k] = cs
-            sn_arr[k] = sn
-            diag[k] = cs * ak + sn * bk
+            cos[k] = cs
+            sin[k] = sn
+            r_diag[k] = rho
+
             if k + 1 < p:
-                sup[k] = sn * diag[k + 1]
-                diag[k + 1] = cs * diag[k + 1]
+                below = 1.0 - np.float64(k + 1) * inv_p  # M[k+1, k+1]
+                r_super[k] = sn * below
+                next_diag = cs * below
 
-        # Apply rotations and back-substitute for each rank component.
+        # --- Apply Q^T to each right-hand side and back-substitute -----------
         for r in range(rank):
-            for k in range(p + 1):
-                rhs[k] = np.float64(cur[k, r])
+            for i in range(p + 1):
+                rhs[i] = np.float64(cur[i, r])
 
             for k in range(p):
-                cs = cs_arr[k]
-                sn = sn_arr[k]
-                rk = rhs[k]
-                rhs[k] = cs * rk + sn * rhs[k + 1]
-                rhs[k + 1] = -sn * rk + cs * rhs[k + 1]
+                cs = cos[k]
+                sn = sin[k]
+                top = rhs[k]
+                bot = rhs[k + 1]
+                rhs[k] = cs * top + sn * bot
+                rhs[k + 1] = -sn * top + cs * bot
 
-            nxt[p - 1, r] = bpts.dtype.type(rhs[p - 1] / diag[p - 1])
+            nxt[p - 1, r] = bpts.dtype.type(rhs[p - 1] / r_diag[p - 1])
             for k in range(p - 2, -1, -1):
-                nxt[k, r] = bpts.dtype.type((rhs[k] - sup[k] * np.float64(nxt[k + 1, r])) / diag[k])
+                solved = (rhs[k] - r_super[k] * np.float64(nxt[k + 1, r])) / r_diag[k]
+                nxt[k, r] = bpts.dtype.type(solved)
 
         cur = nxt
         cur_deg = p - 1

@@ -262,19 +262,34 @@ def _degree_elevate_bezier_1d_core(
 
 
 @nb_jit(nopython=True, cache=True)
-def _degree_reduce_bezier_1d_core(  # noqa: PLR0912
+def _degree_reduce_bezier_1d_core(
     degree: int,
     ctrl: npt.NDArray[np.float32 | np.float64],
     degree_decrement: int,
 ) -> npt.NDArray[np.float32 | np.float64]:
     r"""Degree-reduce a single Bézier segment via least-squares approximation.
 
-    The degree elevation matrix from degree ``P-1`` to ``P`` is a
-    ``(P+1) \times P`` lower bidiagonal matrix with diagonal
-    ``a_k = 1 - k/P`` and sub-diagonal ``b_k = (k+1)/P``.  Degree reduction
-    solves the overdetermined system ``M x = c`` in the least-squares sense
-    using QR factorisation with Givens rotations (complexity ``O(P)`` per
-    rank component).
+    Bernstein degree elevation from degree ``P-1`` to ``P`` maps the ``P``
+    control points :math:`q_0,\dots,q_{P-1}` to ``P+1`` control points via
+
+    .. math::
+
+        c_k = \frac{k}{P}\,q_{k-1} + \Bigl(1 - \frac{k}{P}\Bigr)\,q_k,
+        \qquad k = 0,\dots,P,
+
+    (with the out-of-range terms dropped at the endpoints).  In matrix form
+    :math:`c = M q` where :math:`M` is the ``(P+1) x P`` lower-bidiagonal
+    elevation matrix with diagonal :math:`M_{kk} = 1 - k/P` and sub-diagonal
+    :math:`M_{k+1,k} = (k+1)/P`.  Degree reduction recovers ``q`` as the
+    least-squares solution of the overdetermined system :math:`M q = c`.
+
+    The solve follows the standard bidiagonal QR scheme (Golub & Van Loan,
+    *Matrix Computations*, 4th ed., sections 5.1-5.2): a sweep of Givens rotations
+    ``G_0, ..., G_{P-1}`` annihilates the sub-diagonal one column at a time,
+    yielding an upper-bidiagonal :math:`R` (the same rotations are applied to
+    the right-hand side), after which back-substitution returns ``q``.  Each
+    rotation introduces a single fill-in entry on the super-diagonal.  The
+    cost is :math:`O(P)` per right-hand side (rank component).
 
     When ``degree_decrement > 1``, the single-step reduction is applied
     iteratively.
@@ -303,64 +318,72 @@ def _degree_reduce_bezier_1d_core(  # noqa: PLR0912
     cur_deg = degree
 
     for _step in range(degree_decrement):
-        p = cur_deg
-        n_new = p  # reduced degree = p - 1, so p control points
+        p = cur_deg  # reduce from degree p (P+1 points) to degree p-1 (p points)
 
-        nxt = np.empty((n_new, rank), dtype=ctrl.dtype)
+        nxt = np.empty((p, rank), dtype=ctrl.dtype)
 
-        # Build diagonal and sub-diagonal of the (P+1) x P elevation matrix.
-        # diagonal:     a[k] = 1 - k/P   for k = 0 .. P-1
-        # sub-diagonal: b[k] = (k+1)/P   for k = 0 .. P-1
-        #
-        # Givens QR: zero each sub-diagonal entry, producing an upper
-        # bidiagonal R and transforming the RHS.  Then back-substitute.
-        diag = np.empty(p, dtype=np.float64)
-        sup = np.empty(p, dtype=np.float64)  # super-diagonal created by Givens
+        # Triangular factor R of the QR factorisation of the elevation matrix
+        # M (size (p+1) x p).  R is upper bidiagonal: r_diag is its main
+        # diagonal, r_super the fill-in super-diagonal produced by the Givens
+        # sweep.  cos/sin store each rotation so the same orthogonal transform
+        # can be replayed on every right-hand side.
+        r_diag = np.empty(p, dtype=np.float64)
+        r_super = np.empty(p, dtype=np.float64)  # r_super[p-1] is never read
+        cos = np.empty(p, dtype=np.float64)
+        sin = np.empty(p, dtype=np.float64)
         rhs = np.empty(p + 1, dtype=np.float64)
 
+        inv_p = 1.0 / np.float64(p)
+
+        # --- QR sweep on M (independent of the right-hand side) ---------------
+        # Column k holds M[k, k] = 1 - k/p (carried in `head`, mutated by the
+        # previous rotation) and M[k+1, k] = (k+1)/p (`tail`, the entry G_k
+        # annihilates).  `tail` is always > 0, so the magnitude-scaled Givens
+        # of G&VL Alg. 5.1.3 reduces to two branches (no `tail == 0` case).
+        next_diag = 1.0  # M[0, 0]
+        for k in range(p):
+            head = next_diag
+            tail = np.float64(k + 1) * inv_p
+
+            if abs(tail) > abs(head):
+                ratio = head / tail
+                sn = 1.0 / np.sqrt(1.0 + ratio * ratio)
+                cs = ratio * sn
+                rho = tail / sn
+            else:
+                ratio = tail / head
+                cs = 1.0 / np.sqrt(1.0 + ratio * ratio)
+                sn = ratio * cs
+                rho = head / cs
+
+            cos[k] = cs
+            sin[k] = sn
+            r_diag[k] = rho
+
+            if k + 1 < p:
+                # The rotation spreads M[k+1, k+1] = 1 - (k+1)/p onto the
+                # super-diagonal of R and into the diagonal carried to column k+1.
+                below = 1.0 - np.float64(k + 1) * inv_p
+                r_super[k] = sn * below
+                next_diag = cs * below
+
+        # --- Apply Q^T to each right-hand side and back-substitute -----------
         for r in range(rank):
-            # Initialise diagonal entries and RHS for this rank component.
+            for i in range(p + 1):
+                rhs[i] = np.float64(cur[i, r])
+
             for k in range(p):
-                diag[k] = 1.0 - np.float64(k) / np.float64(p)
-            for k in range(p):
-                sup[k] = 0.0
-            for k in range(p + 1):
-                rhs[k] = np.float64(cur[k, r])
+                cs = cos[k]
+                sn = sin[k]
+                top = rhs[k]
+                bot = rhs[k + 1]
+                rhs[k] = cs * top + sn * bot
+                rhs[k + 1] = -sn * top + cs * bot
 
-            # Forward Givens pass
-            for k in range(p):
-                bk = np.float64(k + 1) / np.float64(p)  # sub-diagonal value
-                ak = diag[k]
-
-                # Givens rotation to zero bk
-                if bk == 0.0:
-                    cs = 1.0
-                    sn = 0.0
-                elif abs(bk) > abs(ak):
-                    tmp = ak / bk
-                    sn = 1.0 / np.sqrt(1.0 + tmp * tmp)
-                    cs = tmp * sn
-                else:
-                    tmp = bk / ak
-                    cs = 1.0 / np.sqrt(1.0 + tmp * tmp)
-                    sn = tmp * cs
-
-                diag[k] = cs * ak + sn * bk  # = hypot(ak, bk)
-
-                # Rotation creates a super-diagonal entry at (k, k+1)
-                if k + 1 < p:
-                    sup[k] = sn * diag[k + 1]
-                    diag[k + 1] = cs * diag[k + 1]
-
-                # Rotate RHS rows k and k+1
-                rk = rhs[k]
-                rhs[k] = cs * rk + sn * rhs[k + 1]
-                rhs[k + 1] = -sn * rk + cs * rhs[k + 1]
-
-            # Back-substitution on upper bidiagonal R
-            nxt[p - 1, r] = ctrl.dtype.type(rhs[p - 1] / diag[p - 1])
+            nxt[p - 1, r] = ctrl.dtype.type(rhs[p - 1] / r_diag[p - 1])
             for k in range(p - 2, -1, -1):
-                nxt[k, r] = ctrl.dtype.type((rhs[k] - sup[k] * np.float64(nxt[k + 1, r])) / diag[k])
+                solved = (rhs[k] - r_super[k] * np.float64(nxt[k + 1, r])) / r_diag[k]
+                nxt[k, r] = ctrl.dtype.type(solved)
 
         cur = nxt
         cur_deg = p - 1
