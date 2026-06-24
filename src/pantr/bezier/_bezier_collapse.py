@@ -6,8 +6,7 @@ univariate Bézier along the remaining direction.
 
 The algorithm evaluates the Bernstein basis in each collapsed direction at the
 given parameter value, then contracts the control point tensor against these
-basis vectors using :func:`numpy.tensordot`.  This mirrors the single-pass
-tensor contraction strategy used in algoim's ``collapseAlongAxis``.
+basis vectors using :func:`numpy.tensordot`.
 """
 
 from __future__ import annotations
