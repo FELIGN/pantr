@@ -1,5 +1,8 @@
 # PaNTr
 
+[![PyPI version](https://img.shields.io/pypi/v/pantr.svg)](https://pypi.org/project/pantr/)
+[![Python versions](https://img.shields.io/pypi/pyversions/pantr.svg)](https://pypi.org/project/pantr/)
+[![License: MIT](https://img.shields.io/badge/license-MIT-yellow.svg)](https://github.com/FELIGN/pantr/blob/main/LICENSE)
 [![Documentation Status](https://readthedocs.org/projects/pantr/badge/?version=latest)](https://pantr.readthedocs.io/en/latest/?badge=latest)
 
 Polynomial and NURBS Toolkit (**PaNTr**) is a pure Python 3.11–3.14 library for geometric modeling and numerical analysis using [NumPy](https://numpy.org), [SciPy](https://scipy.org), and [Numba](https://numba.pydata.org).
@@ -48,7 +51,31 @@ cd pantr
 pip install .
 ```
 
-### Optional features
+## Quick start
+
+A geometry is a **function space** plus **control points**; build one and evaluate it:
+
+```python
+import numpy as np
+from pantr.bspline import Bspline, BsplineSpace, BsplineSpace1D
+
+# Quadratic 1-D space on the knot vector [0, 0, 0, 1, 2, 3, 3, 3]
+space = BsplineSpace([BsplineSpace1D([0, 0, 0, 1, 2, 3, 3, 3], 2)])
+
+# Five 2-D control points -> a planar curve
+control_points = np.array(
+    [[0.0, 0.0], [1.0, 2.0], [2.0, -1.0], [3.0, 1.0], [4.0, 0.0]]
+)
+curve = Bspline(space, control_points)
+
+# Evaluate at 50 parameters spanning the domain [0, 3]
+points = curve.evaluate(np.linspace(0.0, 3.0, 50))  # shape (50, 2)
+```
+
+See the [getting-started guide](https://pantr.readthedocs.io/en/latest/getting-started.html)
+for a full walkthrough from this first curve to NURBS, CAD modeling, and refinement.
+
+## Optional features
 
 Every install of PaNTr includes **all** of its modules — `pantr.viz` and `pantr.mpi`
 among them. Those two stay dormant until their third-party backend is importable, and
