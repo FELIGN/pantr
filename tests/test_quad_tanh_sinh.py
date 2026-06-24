@@ -17,8 +17,8 @@ from pantr.tolerance import get_conservative
 # the pre-refactor implementation on ``main`` (commit 71ede9a, the original
 # algoim-derived rule) by calling ``get_tanh_sinh_1d(n)`` for each ``n`` below.
 # Regenerate by checking out that commit and re-running the same calls. The
-# public rule is consumed verbatim by the ocelat project
-# (``ocelat.implicit.algoim._implicit_quad``), so this guard pins the values the
+# public rule is consumed verbatim by the lepard project
+# (``lepard.implicit.algoim._implicit_quad``), so this guard pins the values the
 # clean-room reimplementation must reproduce — it is NOT generated from the new
 # code, so it genuinely tests backward compatibility.
 _GOLDEN_PATH = Path(__file__).parent / "data" / "tanh_sinh_golden.npz"
@@ -210,9 +210,9 @@ class TestTanhSinhOddEven:
 
 
 class TestTanhSinhGoldenValues:
-    """Golden-value regression guarding the ocelat consumer contract.
+    """Golden-value regression guarding the lepard consumer contract.
 
-    ``pantr.quad.get_tanh_sinh_1d`` is imported by the ocelat project, which
+    ``pantr.quad.get_tanh_sinh_1d`` is imported by the lepard project, which
     feeds the returned nodes/weights straight into its implicit-quadrature
     kernels. The values must therefore stay numerically identical across
     refactors. These tests pin the node/weight arrays (and the effective node

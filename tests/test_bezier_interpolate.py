@@ -46,7 +46,7 @@ def _eval_bernstein_on_modified_chebyshev_grid(
 class TestBernsteinInterpolateRoundTrip:
     """Round-trip tests for the N-D ``_bernstein_interpolate`` helper.
 
-    This private helper is consumed across the package boundary by ocelat, so it
+    This private helper is consumed across the package boundary by lepard, so it
     needs its own coverage: build a known polynomial in Bernstein form, evaluate
     it on the modified-Chebyshev grid, interpolate, and check the recovered
     coefficients reproduce the original polynomial.

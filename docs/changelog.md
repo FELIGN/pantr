@@ -83,7 +83,7 @@
 - `pantr.transform.AffineTransform`: stricter input validation (reject
   zero / non-finite scaling factors; validate rotation-axis and mirror-normal
   finiteness and the `center` shape), a cached `inverse`, and C-contiguous
-  stored arrays (#154). Enables ocelat to adopt pantr's `AffineTransform` and
+  stored arrays (#154). Enables lepard to adopt pantr's `AffineTransform` and
   drop its local copy.
 
 ## 0.3.0 (2026-05-06)
@@ -130,7 +130,7 @@
 - `bezier`: `_gauss_legendre_01` now delegates to `pantr.quad` (#133).
 - Layer 2 validation helpers consolidated and shared across `bezier` / `bspline`
   (#138, #139).
-- `bezier.implicit`: legacy algoim engine moved out into `ocelat.algoim`,
+- `bezier.implicit`: legacy algoim engine moved out into `lepard.algoim`,
   and dead algoim-era modules dropped (#136, #137).
 
 ### Documentation
