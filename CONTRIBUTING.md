@@ -75,6 +75,13 @@ Use [Conventional Commits](https://www.conventionalcommits.org/):
 
 Changes are merged via pull requests, not direct pushes to `main`.
 
+## Releasing
+
+Releases are automated: pushing a `v*` tag publishes to PyPI (via trusted
+publishing) and cuts a GitHub Release. The full maintainer runbook — version
+bump, changelog, tagging, and the one-time PyPI / Read the Docs setup — is in
+[`RELEASING.md`](RELEASING.md).
+
 ## License
 
 By contributing, you agree that your contributions are licensed under the
