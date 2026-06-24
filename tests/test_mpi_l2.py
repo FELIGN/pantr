@@ -2,9 +2,12 @@
 
 MPI is not available in the test environment, so the communicator is duck-typed by
 ``_FakeComm``, which adds ``allreduce`` support (needed by this function) on top of the
-basic rank/size interface used elsewhere.  Multi-rank runs are simulated in one process:
-each rank's owned-cell load is assembled, then the ``allreduce`` is replayed so every
-rank sees the summed global load.
+basic rank/size interface used elsewhere.  Multi-rank runs are simulated in one process
+by sharing a single ``_AllreduceHub`` across the per-rank ``_FakeComm`` instances: every
+rank's ``comm.allreduce(local_load)`` deposits the *actual* tensor production code passes,
+and the hub returns the genuine SUM across all ranks.  The hub never fabricates the
+result, so a regression in *what* ``_l2.py`` feeds ``allreduce`` (wrong stacking, wrong
+masking) is caught by the equivalence-vs-serial assertions.
 
 The real-MPI equivalence test (collective over ``MPI.COMM_WORLD``) lives in
 ``tests/mpi/test_distributed_mpi.py`` and runs under ``mpiexec``.
@@ -37,37 +40,114 @@ from pantr.mpi import (
 # ---------------------------------------------------------------------------
 
 
+class _AllreduceHub:
+    """Shared SUM accumulator for a simulated multi-rank ``allreduce``.
+
+    All per-rank :class:`_FakeComm` instances of one simulation share a single hub.  Each
+    rank's ``comm.allreduce(local_load)`` deposits the *actual* array production code
+    passes; the hub sums every deposited contribution and returns that genuine SUM.  It
+    never fabricates the reduced value, so it faithfully exercises what ``_l2.py`` feeds
+    ``allreduce``.
+
+    The simulation runs in two passes.  During the *collecting* pass every rank's
+    ``allreduce`` deposits its contribution and gets back a (still partial) sum so
+    production can finish; once :meth:`freeze` is called the hub stops collecting, and the
+    *result* pass returns the complete SUM to every rank without re-depositing.
+
+    Attributes:
+        contributions (list[np.ndarray]): The per-rank tensors deposited so far.
+        collecting (bool): Whether :meth:`allreduce` should still record deposits.
+    """
+
+    def __init__(self) -> None:
+        """Initialize an empty, collecting hub."""
+        self.contributions: list[np.ndarray] = []
+        self.collecting: bool = True
+
+    def allreduce(self, data: np.ndarray) -> np.ndarray:
+        """Deposit (while collecting) and return the SUM over deposited contributions.
+
+        Args:
+            data (np.ndarray): The tensor a rank passed to ``comm.allreduce``.
+
+        Returns:
+            np.ndarray: The element-wise SUM over every contribution deposited so far
+            (the complete cross-rank sum once :meth:`freeze` has been called).
+        """
+        if self.collecting:
+            self.contributions.append(np.asarray(data).copy())
+        total = self.contributions[0].copy()
+        for contrib in self.contributions[1:]:
+            total = total + contrib
+        return total
+
+    def freeze(self) -> None:
+        """Stop collecting so subsequent ``allreduce`` calls return the complete SUM."""
+        self.collecting = False
+
+
 class _FakeComm:
     """Minimal stand-in for an mpi4py communicator.
 
-    Supports ``rank``, ``size``, and a single-rank ``allreduce`` (returns its argument).
-    For multi-rank simulations pass ``allreduce_result`` to set the summed value returned
-    regardless of local data.
+    Supports ``rank``, ``size``, and a SUM ``allreduce``.  For single-rank use the
+    ``allreduce`` returns its (sole) argument.  For multi-rank simulations pass a shared
+    :class:`_AllreduceHub`; ``allreduce`` then deposits its argument into the hub and
+    returns the genuine SUM over every rank's contribution.
+
+    Attributes:
+        hub (_AllreduceHub | None): Shared SUM accumulator for multi-rank simulations.
     """
 
     def __init__(
         self,
         rank: int,
         size: int,
-        allreduce_result: Any = None,
+        hub: _AllreduceHub | None = None,
     ) -> None:
+        """Initialize a fake communicator.
+
+        Args:
+            rank (int): This rank's id.
+            size (int): The communicator size.
+            hub (_AllreduceHub | None): Shared SUM accumulator for multi-rank
+                simulations.  ``None`` for single-rank use. Defaults to ``None``.
+        """
         self._rank = rank
         self._size = size
-        self._allreduce_result = allreduce_result
+        self._hub = hub
 
     @property
     def rank(self) -> int:
+        """Get this rank's id.
+
+        Returns:
+            int: The rank id.
+        """
         return self._rank
 
     @property
     def size(self) -> int:
+        """Get the communicator size.
+
+        Returns:
+            int: The number of ranks.
+        """
         return self._size
 
     def allreduce(self, data: Any) -> Any:
-        if self._allreduce_result is not None:
-            return self._allreduce_result
+        """Sum-reduce ``data`` across the (simulated) communicator.
+
+        Args:
+            data (Any): This rank's contribution.
+
+        Returns:
+            Any: The genuine SUM across ranks (the hub result for multi-rank, or ``data``
+            itself for single-rank).
+        """
+        if self._hub is not None:
+            return self._hub.allreduce(np.asarray(data))
         assert self._size == 1, (
-            "Multi-rank allreduce requires pre-set allreduce_result; "
+            "Multi-rank allreduce requires a shared hub; "
             "use _simulate_distributed_l2() for multi-rank tests."
         )
         return data
@@ -92,46 +172,55 @@ def _simulate_distributed_l2(
     func: Any,
     space: BsplineSpace,
     n_parts: int,
+    *,
+    part: Partition | None = None,
     **kwargs: Any,
 ) -> list[DistributedFunction]:
     """Simulate l2_project_bspline_distributed across n_parts ranks in one process.
 
-    Pass 1 runs each rank up to its local load contribution and sums them (the
-    ``allreduce``).  Pass 2 runs the distributed projection for every rank with the
-    pre-summed global load, so each rank assembles the identical global field.
+    A single shared :class:`_AllreduceHub` turns the simulated ``allreduce`` into a genuine
+    cross-rank SUM, so the simulation runs the *real* production code on every rank in two
+    passes:
+
+    * **Collecting pass** -- run each rank's projection once so it deposits its *actual*
+      local load into the hub.  These intermediate results are discarded (an early rank
+      sees only a partial sum, but its load tensor still has the correct shape, so
+      production completes without error).
+    * **Result pass** (after :meth:`_AllreduceHub.freeze`) -- run each rank again; the hub
+      now returns the complete global sum, so every rank assembles the identical global
+      field.  These results are returned.
+
+    Because the hub reduces exactly what ``_l2.py`` feeds ``allreduce``, a regression in the
+    local assembly (wrong stacking, wrong owned-cell masking) surfaces in the
+    equivalence-vs-serial assertions instead of being masked by a pre-computed sum.
+
+    Args:
+        func (Any): Function to project, in the ``func(lattice)`` serial convention.
+        space (BsplineSpace): The global space to project onto.
+        n_parts (int): Number of simulated ranks.
+        part (Partition | None): Explicit cell partition.  Defaults to a fresh
+            ``partition_grid(tensor_product_grid(space), n_parts)``. Defaults to ``None``.
+        **kwargs (Any): Forwarded verbatim to ``l2_project_bspline_distributed`` (e.g.
+            ``boundary_interpolation``, ``n_quad``).
+
+    Returns:
+        list[DistributedFunction]: One result per rank, indexed by rank.
     """
-    from pantr.bspline._bspline_interpolate import (  # noqa: PLC0415
-        _build_l2_mass_and_quad,
-        _evaluate_func_on_lattice,
-    )
-    from pantr.mpi._l2 import _assemble_owned_load, _owned_quad_cell_mask  # noqa: PLC0415
-    from pantr.quad import PointsLattice  # noqa: PLC0415
+    if part is None:
+        part = partition_grid(tensor_product_grid(space), n_parts)
+    hub = _AllreduceHub()
 
-    part = partition_grid(tensor_product_grid(space), n_parts)
-    n_quad = kwargs.get("n_quad")
-    quadrature = kwargs.get("quadrature", "gauss-legendre")
-    boundary_interpolation = kwargs.get("boundary_interpolation", False)
-
-    _, q_nodes, q_weights, _, n_quads = _build_l2_mass_and_quad(
-        space, n_quad, quadrature, boundary_interpolation
-    )
-    lattice = PointsLattice(q_nodes)
-    quad_grid_shape = tuple(a.shape[0] for a in q_nodes)
-    components, out_dtype = _evaluate_func_on_lattice(func, lattice, quad_grid_shape)
-
-    total: np.ndarray | None = None
+    # Collecting pass: every rank deposits its real local load into the hub.
     for rank in range(n_parts):
-        mask = _owned_quad_cell_mask(space, part.cell_owner, rank, n_quads, quad_grid_shape)
-        loads = _assemble_owned_load(space, components, mask, out_dtype, q_nodes, q_weights)
-        local_load = np.stack(loads, axis=-1).astype(out_dtype, copy=False)
-        total = local_load if total is None else total + local_load
+        ds = DistributedSpace(space, part, _FakeComm(rank, n_parts, hub=hub))
+        l2_project_bspline_distributed(func, ds, **kwargs)
+    hub.freeze()
 
+    # Result pass: the hub now returns the complete global sum to every rank.
     results: list[DistributedFunction] = []
     for rank in range(n_parts):
-        comm = _FakeComm(rank, n_parts, allreduce_result=total)
-        ds = DistributedSpace(space, part, comm)
-        dfn = l2_project_bspline_distributed(func, ds, **kwargs)
-        results.append(dfn)
+        ds = DistributedSpace(space, part, _FakeComm(rank, n_parts, hub=hub))
+        results.append(l2_project_bspline_distributed(func, ds, **kwargs))
     return results
 
 
@@ -181,32 +270,9 @@ def test_empty_rank_has_none_local() -> None:
     part = Partition(np.zeros(n_cells, dtype=np.int64), 2)
     func = lambda lat: _grid(lat)[0]  # noqa: E731
 
-    # Build the global load (only rank 0 contributes) and replay the allreduce.
-    from pantr.bspline._bspline_interpolate import (  # noqa: PLC0415
-        _build_l2_mass_and_quad,
-        _evaluate_func_on_lattice,
-    )
-    from pantr.mpi._l2 import _assemble_owned_load, _owned_quad_cell_mask  # noqa: PLC0415
-    from pantr.quad import PointsLattice  # noqa: PLC0415
-
-    _, q_nodes, q_weights, _, n_quads = _build_l2_mass_and_quad(
-        space, None, "gauss-legendre", False
-    )
-    lattice = PointsLattice(q_nodes)
-    quad_grid_shape = tuple(a.shape[0] for a in q_nodes)
-    components, out_dtype = _evaluate_func_on_lattice(func, lattice, quad_grid_shape)
-    mask0 = _owned_quad_cell_mask(space, part.cell_owner, 0, n_quads, quad_grid_shape)
-    loads0 = _assemble_owned_load(space, components, mask0, out_dtype, q_nodes, q_weights)
-    total = np.stack(loads0, axis=-1).astype(out_dtype, copy=False)
-
-    for rank in range(2):
-        comm = _FakeComm(rank, 2, allreduce_result=total)
-        ds = DistributedSpace(space, part, comm)
-        dfn = l2_project_bspline_distributed(func, ds)
-        if rank == 0:
-            assert dfn.local is not None
-        else:
-            assert dfn.local is None
+    results = _simulate_distributed_l2(func, space, 2, part=part)
+    assert results[0].local is not None
+    assert results[1].local is None
 
 
 # ---------------------------------------------------------------------------

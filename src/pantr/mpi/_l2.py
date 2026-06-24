@@ -3,7 +3,7 @@
 Provides :func:`l2_project_bspline_distributed`, the MPI-parallel counterpart of
 :func:`~pantr.bspline.l2_project_bspline`.  L2 assembly is per-element, mapping directly
 onto the cell partition: each rank evaluates ``func`` only on the quadrature points of
-its *owned* cells and contracts them into a per-direction load tensor, a single
+its *owned* cells and contracts them into a per-component load tensor, a single
 ``allreduce`` sums the global load across ranks, and the (replicated) Kronecker solve
 recovers the global coefficients.  The per-direction mass matrices are
 partition-independent and built identically on every rank, so only the load is
@@ -64,6 +64,11 @@ def _owned_quad_cell_mask(
     Returns:
         npt.NDArray[np.bool_]: Boolean mask of shape ``quad_grid_shape``; ``True`` at
         quadrature points whose owning cell belongs to ``rank``.
+
+    Note:
+        Assumes a full partition: every cell is owned by exactly one rank (no inactive
+        ``-1`` cells).  A future trimmed-grid caller with unowned cells would need to
+        handle the ``-1`` owner before relying on this mask.
     """
     num_intervals = space.num_intervals
     elem_idx_per_dir = [
@@ -105,6 +110,11 @@ def _assemble_owned_load(  # noqa: PLR0913
     Returns:
         list[npt.NDArray[np.floating[Any]]]: Per-component load tensors of shape
         ``num_basis``.
+
+    Note:
+        This reproduces the full serial *interior* L2 load only.  Boundary-interpolation
+        rows are not applied here: they are imposed later (via ``_apply_boundary_load``)
+        on the reduced (global) load, after the ``allreduce``.
     """
     loads: list[npt.NDArray[np.floating[Any]]] = []
     for comp in components:
@@ -129,7 +139,7 @@ def l2_project_bspline_distributed(  # noqa: PLR0913
     The MPI-parallel counterpart of :func:`~pantr.bspline.l2_project_bspline`.  L2
     assembly is per-element and maps directly onto the cell partition: each rank
     evaluates ``func`` only on the quadrature points of its *owned* cells and contracts
-    them into a per-direction load tensor; a single ``allreduce`` sums the global load
+    them into a per-component load tensor; a single ``allreduce`` sums the global load
     across ranks; and the replicated Kronecker solve recovers the global coefficients.
     The returned :class:`~pantr.mpi.DistributedFunction` agrees with the serial L2
     projection pointwise over every owned cell.
@@ -137,8 +147,9 @@ def l2_project_bspline_distributed(  # noqa: PLR0913
     The per-direction mass matrices are partition-independent and built identically on
     every rank (cheap ``n_dofs_i x n_dofs_i`` systems), so only the load is communicated.
     ``boundary_interpolation`` rows are handled after the reduce: each boundary trace is
-    partition-independent, so every rank recomputes the same boundary row (equivalent to
-    only the rank owning the boundary cell contributing it).  Construction requires one
+    partition-independent, so every rank recomputes the same boundary row (the boundary
+    trace spans the whole face, so it is not attributable to a single owning cell -- every
+    rank recomputes it identically from the global lattice).  Construction requires one
     MPI collective (``comm.allreduce``) after the local assembly.
 
     Args:
@@ -170,12 +181,25 @@ def l2_project_bspline_distributed(  # noqa: PLR0913
         TypeError: If ``distributed_space.global_space`` is not a
             :class:`~pantr.bspline.BsplineSpace`.
         ValueError: If ``n_quad`` or ``boundary_interpolation`` is inconsistent with the
-            global space, or if ``func`` returns an output with an invalid shape.
+            global space, if ``func`` returns an output with an invalid shape, or if the
+            reduced load does not match the expected stacked shape ``(*num_basis,
+            n_components)`` (a symptom of ``func`` returning inconsistent shapes across
+            ranks).
+
+    Note:
+        ``func`` MUST be rank-independent: for a given quadrature lattice it must return
+        the same shape and dtype on every rank.  The reduction (``comm.allreduce``) is a
+        collective that every rank must reach with a matching contribution; if ``func``
+        raised on a subset of ranks (e.g. a shape error seen by some ranks only) those
+        ranks would abort before the collective and deadlock the rest, and mixed dtypes
+        would corrupt the reduction.
 
     Note:
         The output dtype is inferred from the return value of ``func`` (as in the serial
-        :func:`~pantr.bspline.l2_project_bspline`) and the global control points are cast
-        to ``global_space.dtype`` before assembly.
+        :func:`~pantr.bspline.l2_project_bspline`).  Unlike the serial path -- where
+        :class:`~pantr.bspline.Bspline` raises on a control-point/space dtype mismatch --
+        the distributed path is more lenient: it coerces the assembled global control
+        points to ``global_space.dtype`` rather than raising.
 
     Example:
         >>> from mpi4py import MPI  # doctest: +SKIP
@@ -238,6 +262,12 @@ def l2_project_bspline_distributed(  # noqa: PLR0913
         "npt.NDArray[np.floating[Any]]",
         np.asarray(comm.allreduce(local_load), dtype=out_dtype),
     )
+    expected_shape = (*num_basis, n_components)
+    if global_load.shape != expected_shape:
+        raise ValueError(
+            f"Reduced load has shape {global_load.shape}, expected {expected_shape}; "
+            f"this indicates 'func' returned an inconsistent shape across ranks."
+        )
 
     # Apply boundary-interpolation rows on the reduced (global) load, replicated on every
     # rank.  Each boundary trace is partition-independent, matching the serial result.
