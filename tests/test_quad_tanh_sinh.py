@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any, cast
 
 import numpy as np
@@ -11,6 +12,17 @@ import pytest
 
 from pantr.quad import get_tanh_sinh_1d
 from pantr.tolerance import get_conservative
+
+# Golden node/weight values for ``get_tanh_sinh_1d``. Provenance: captured from
+# the pre-refactor implementation on ``main`` (commit 71ede9a, the original
+# algoim-derived rule) by calling ``get_tanh_sinh_1d(n)`` for each ``n`` below.
+# Regenerate by checking out that commit and re-running the same calls. The
+# public rule is consumed verbatim by the ocelat project
+# (``ocelat.implicit.algoim._implicit_quad``), so this guard pins the values the
+# clean-room reimplementation must reproduce — it is NOT generated from the new
+# code, so it genuinely tests backward compatibility.
+_GOLDEN_PATH = Path(__file__).parent / "data" / "tanh_sinh_golden.npz"
+_GOLDEN_N_PTS: tuple[int, ...] = (2, 3, 4, 5, 6, 7, 8, 10, 15, 20, 30, 50, 100, 200)
 
 
 class TestTanhSinhValidation:
@@ -195,3 +207,33 @@ class TestTanhSinhOddEven:
         """Even n does not include a node at 0.5."""
         nodes, _ = get_tanh_sinh_1d(6)
         assert not np.any(np.isclose(nodes, 0.5, atol=1e-14))
+
+
+class TestTanhSinhGoldenValues:
+    """Golden-value regression guarding the ocelat consumer contract.
+
+    ``pantr.quad.get_tanh_sinh_1d`` is imported by the ocelat project, which
+    feeds the returned nodes/weights straight into its implicit-quadrature
+    kernels. The values must therefore stay numerically identical across
+    refactors. These tests pin the node/weight arrays (and the effective node
+    count after endpoint snapping) for a representative range of ``n_pts``.
+    """
+
+    @pytest.mark.parametrize("n_pts", _GOLDEN_N_PTS)
+    def test_nodes_weights_match_golden(self, n_pts: int) -> None:
+        """Nodes and weights reproduce the captured golden arrays to tolerance."""
+        golden = np.load(_GOLDEN_PATH)
+        nodes, weights = get_tanh_sinh_1d(n_pts)
+        golden_nodes = golden[f"nodes_{n_pts}"]
+        golden_weights = golden[f"weights_{n_pts}"]
+        assert nodes.shape == golden_nodes.shape
+        assert weights.shape == golden_weights.shape
+        nptest.assert_allclose(nodes, golden_nodes, rtol=0.0, atol=5e-15)
+        nptest.assert_allclose(weights, golden_weights, rtol=0.0, atol=5e-15)
+
+    @pytest.mark.parametrize("n_pts", _GOLDEN_N_PTS)
+    def test_effective_node_count_matches_golden(self, n_pts: int) -> None:
+        """Endpoint snapping yields the same effective node count as the reference."""
+        golden = np.load(_GOLDEN_PATH)
+        nodes, _ = get_tanh_sinh_1d(n_pts)
+        assert nodes.shape[0] == golden[f"nodes_{n_pts}"].shape[0]

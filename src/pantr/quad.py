@@ -258,36 +258,35 @@ def get_chebyshev_gauss_2nd_kind_1d(
     return _scale_and_cast_nodes_and_weights(nodes, weights, dtype)
 
 
-def _lambert_w(z: float) -> float:
-    """Compute the principal branch of the Lambert W function.
-
-    Solves ``w * exp(w) = z`` for ``w >= 0`` using Newton's method.
-
-    Args:
-        z (float): Input value. Must be non-negative.
-
-    Returns:
-        float: The Lambert W function value ``W(z)``.
-
-    Note:
-        Implementation follows algoim (Saye, J. Comput. Phys. 448, 2022).
-    """
-    import math  # noqa: PLC0415
-
-    w = z - 0.45 * z * z if z < 1.0 else 0.75 * math.log(z)
-    for _ in range(10):
-        ew = math.exp(w)
-        w -= (w * ew - z) / (ew + w * ew)
-    return w
+# Step-size tuning constant for the double-exponential rule.  Fixing the
+# truncation point so the smallest retained node sits a constant number of decay
+# e-folds from the endpoint turns the equation for the step ``h`` into a
+# ``u * exp(u)`` form whose root is the Lambert W function (see
+# `_generate_tanh_sinh`).  The value resolves the endpoint cluster within the
+# float64 range and keeps the rule numerically interchangeable across releases.
+_TANH_SINH_DECAY_FACTOR: float = 0.6
+"""Decay-rate factor selecting the uniform step ``h`` in transform space."""
 
 
 def _generate_tanh_sinh(n: int) -> tuple[npt.NDArray[np.float64], int]:
-    """Generate tanh-sinh quadrature nodes and weights on [-1, 1].
+    r"""Generate tanh-sinh quadrature nodes and weights on [-1, 1].
 
-    Computes an *n*-point tanh-sinh scheme.  Nodes near the endpoints that
-    are indistinguishable from -1 or 1 in floating-point arithmetic are
-    snapped to the boundary and their weights accumulated, so the effective
-    number of nodes *m* may be less than *n*.
+    Builds an *n*-point double-exponential (tanh-sinh) scheme.  Under the
+    change of variables :math:`x(t) = \tanh\!\big(\tfrac{\pi}{2}\sinh t\big)`
+    the integral over ``[-1, 1]`` becomes an integral over ``t in R`` of an
+    integrand that decays double-exponentially, so the trapezoidal rule with
+    uniform step *h* converges rapidly.  The Jacobian gives the weight
+    :math:`w(t) = \tfrac{\pi}{2}\,\cosh t \,/\, \cosh^2\!\big(\tfrac{\pi}{2}
+    \sinh t\big)`.  Nodes are generated symmetrically about ``t = 0`` (with a
+    central node at the origin for odd *n*); the step *h* is chosen from the
+    truncation balance solved via the Lambert W function (see
+    :data:`_TANH_SINH_DECAY_FACTOR`).
+
+    Nodes so close to :math:`\pm 1` that ``1 - |x|`` underflows to ``0`` in
+    float64 are snapped to the boundary and their weights accumulated onto the
+    shared endpoint pair, so the effective number of nodes *m* may be less than
+    *n*.  The weights are finally rescaled to sum to ``2`` (the measure of
+    ``[-1, 1]``).
 
     Args:
         n (int): Requested number of quadrature points (must be >= 1).
@@ -298,42 +297,47 @@ def _generate_tanh_sinh(n: int) -> tuple[npt.NDArray[np.float64], int]:
         ``[-1, 1]``, and *m* is the effective node count.
 
     Note:
-        Implementation follows algoim (Saye, J. Comput. Phys. 448, 2022).
+        Nodes and weights follow the double-exponential formulas of Takahasi &
+        Mori (1974), *Publ. RIMS, Kyoto Univ.* 9(3), 721-741; the step-size root
+        is evaluated with :func:`scipy.special.lambertw`.
     """
     if n == 1:
         return np.array([[0.0, 2.0]]), 1
 
-    h_a = 0.6 * 0.5 * np.pi
-    h = 2.0 * _lambert_w(2.0 * h_a * (n - 1)) / n
+    from scipy.special import lambertw  # noqa: PLC0415
 
-    # Pre-allocate for worst case: n pairs
-    buf = np.empty((n, 2), dtype=np.float64)
+    half_pi = 0.5 * np.pi
+    # Uniform step in transform space; the argument of W follows from the
+    # large-argument truncation balance described in _TANH_SINH_DECAY_FACTOR.
+    decay_arg = 2.0 * _TANH_SINH_DECAY_FACTOR * half_pi * (n - 1)
+    h = 2.0 * float(lambertw(decay_arg).real) / n
+
+    buf = np.empty((n, 2), dtype=np.float64)  # worst case: n nodes
     count = 0
 
-    # Central node for odd n
-    if n % 2:
-        buf[count] = [0.0, np.pi * 0.5]
+    odd = bool(n % 2)
+    if odd:
+        # Central node at t = 0: x = 0, w = (pi / 2) * cosh(0) / cosh(0)^2.
+        buf[count] = [0.0, half_pi]
         count += 1
 
-    snapped_endpoint = False
+    endpoint_snapped = False
 
     for i in range(n // 2):
-        t = float(i + 1) * h if n % 2 else (float(i) + 0.5) * h
-        exp_t = np.exp(t)
-        exp_mt = 1.0 / exp_t
-        omega = 0.25 * np.pi * (exp_t - exp_mt)  # pi/2 * sinh(t)
-        exp_omega = np.exp(omega)
-        cosh_omega_2 = exp_omega + 1.0 / exp_omega  # 2 * cosh(omega)
-        cosh_t_2 = exp_t + exp_mt  # 2 * cosh(t)
+        # Odd n samples t = h, 2h, ...; even n offsets by half a step.
+        t = (i + 1) * h if odd else (i + 0.5) * h
+        omega = half_pi * np.sinh(t)
+        w = half_pi * np.cosh(t) / np.cosh(omega) ** 2
+        # gap = 1 - tanh(omega), the node's distance from the +1 endpoint,
+        # via the algebraically equal form 2 / (1 + e^{2 omega}).  This keeps
+        # gap a small but nonzero float right up to the underflow boundary,
+        # whereas 1 - np.tanh(omega) saturates to 0 a step too early and would
+        # snap nodes prematurely.
+        gap = 2.0 / (1.0 + np.exp(2.0 * omega))
 
-        w = np.pi * cosh_t_2 / (cosh_omega_2 * cosh_omega_2)
-        xc = 2.0 / (1.0 + exp_omega * exp_omega)  # 1 - x(t)
-
-        # Snap test: if 1 - xc rounds to 1 then xc is effectively 0
-        test = np.float64(1.0) - np.float64(xc)
-        if abs(float(test) - 1.0) <= 0.0:
-            if snapped_endpoint:
-                # Accumulate weights to existing -1 and +1 nodes
+        if (np.float64(1.0) - np.float64(gap)) == np.float64(1.0):
+            # gap underflowed: the node is numerically at the boundary.
+            if endpoint_snapped:
                 buf[count - 2, 1] += w
                 buf[count - 1, 1] += w
             else:
@@ -341,18 +345,19 @@ def _generate_tanh_sinh(n: int) -> tuple[npt.NDArray[np.float64], int]:
                 count += 1
                 buf[count] = [1.0, w]
                 count += 1
-                snapped_endpoint = True
+                endpoint_snapped = True
         else:
-            buf[count] = [-1.0 + xc, w]
+            # Symmetric pair at -(1 - gap) and +(1 - gap); writing both from
+            # gap keeps the coordinates exact negatives of each other.
+            buf[count] = [-(1.0 - gap), w]
             count += 1
-            buf[count] = [1.0 - xc, w]
+            buf[count] = [1.0 - gap, w]
             count += 1
 
     data = buf[:count].copy()
 
-    # Normalize weights to sum to 2 (measure of [-1, 1])
-    weight_sum = np.sum(data[:, 1])
-    data[:, 1] *= 2.0 / weight_sum
+    # Rescale weights to integrate the constant 1 exactly over [-1, 1].
+    data[:, 1] *= 2.0 / np.sum(data[:, 1])
 
     return data, count
 
