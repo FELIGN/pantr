@@ -19,9 +19,8 @@ Supporting utilities (used internally and by the resultant pipeline):
 
 - :func:`_bernstein_vandermonde_svd` — SVD of the Bernstein Vandermonde
   matrix at modified Chebyshev nodes.
-- :func:`_bernstein_interpolate_1d` — 1D SVD-based interpolation from
-  node values to Bernstein coefficients.
-- :func:`_bernstein_interpolate` — Tensor-product extension to N-D.
+- :func:`_bernstein_interpolate` — tensor-product interpolation from node
+  values on a modified-Chebyshev grid to Bernstein coefficients.
 """
 
 from __future__ import annotations
@@ -51,8 +50,11 @@ def _bernstein_vandermonde_svd(
     """Compute the SVD of the Bernstein Vandermonde matrix at modified Chebyshev nodes.
 
     The Vandermonde matrix ``V`` has entries ``V[i, j] = B_{j,n-1}(x_i)``
-    where ``x_i`` are the modified Chebyshev nodes and ``B_{j,n-1}`` is the
-    ``j``-th Bernstein basis function of degree ``n - 1``.
+    where ``x_i`` are the ``n`` modified Chebyshev-Lobatto nodes on ``[0, 1]``
+    and ``B_{j,n-1}`` is the ``j``-th Bernstein basis function of degree
+    ``n - 1``.  ``V`` is square (``n`` nodes, ``n`` coefficients), so its SVD
+    underlies the truncated pseudo-inverse used to invert the (ill-conditioned
+    at high degree) interpolation system.
 
     Args:
         n (int): Number of nodes/coefficients (degree + 1). Must be >= 1.
@@ -64,64 +66,30 @@ def _bernstein_vandermonde_svd(
     """
     nodes = get_modified_chebyshev_nodes_1d(max(n, 2), dtype)[:n]
     V = _tabulate_bernstein_1d_fast(n - 1, nodes, dtype)
-    U, sigma, Vt = np.linalg.svd(V, full_matrices=True)
+    U, sigma, Vt = np.linalg.svd(V, full_matrices=False)
     return U, sigma, Vt
-
-
-def _bernstein_interpolate_1d(
-    f: npt.NDArray[np.floating[Any]],
-    tol: float | None = None,
-) -> npt.NDArray[np.floating[Any]]:
-    """Interpolate values at modified Chebyshev nodes to 1D Bernstein coefficients.
-
-    Given function values ``f[i]`` sampled at the modified Chebyshev nodes
-    of order ``len(f)``, compute the Bernstein coefficients of the
-    interpolating polynomial via truncated SVD.
-
-    Args:
-        f (npt.NDArray[np.floating[Any]]): Function values at modified
-            Chebyshev nodes.  Shape ``(n,)`` where ``n >= 1``.
-        tol (float | None): SVD truncation tolerance (relative to the
-            largest singular value).  If *None*, uses
-            ``100 * eps`` where ``eps`` is machine epsilon.
-
-    Returns:
-        npt.NDArray[np.floating[Any]]: Bernstein coefficients, shape ``(n,)``.
-
-    Note:
-        Implementation follows algoim (Saye, J. Comput. Phys. 448, 2022).
-    """
-    n = f.shape[0]
-    dtype = f.dtype
-
-    if n == 1:
-        return np.array(f)
-
-    tol = resolve_svd_tolerance(dtype, tol)
-
-    U, sigma, Vt = _bernstein_vandermonde_svd(n, dtype)
-
-    # Apply U^T to f
-    tmp = U.T @ f
-
-    # Truncated pseudo-inverse: zero out small singular values
-    min_sigma = tol * sigma[0]
-    inv_sigma = np.where(sigma >= min_sigma, 1.0 / sigma, 0.0)
-    tmp *= inv_sigma
-
-    # Apply V to get coefficients
-    out = Vt.T @ tmp
-    return np.array(out, dtype=dtype)
 
 
 def _bernstein_interpolate(
     f: npt.NDArray[np.floating[Any]],
     tol: float | None = None,
 ) -> npt.NDArray[np.floating[Any]]:
-    """Interpolate tensor-product values at modified Chebyshev nodes to Bernstein coefficients.
+    r"""Interpolate tensor-product values at modified Chebyshev nodes to Bernstein coefficients.
 
-    Applies :func:`_bernstein_interpolate_1d` sequentially along each
-    dimension of the input array.
+    Given values of a degree-``(n_0 - 1, ..., n_{N-1} - 1)`` polynomial sampled
+    on the tensor product of modified Chebyshev-Lobatto node sets, recover its
+    Bernstein coefficients.  Because the interpolation operator separates over a
+    tensor-product grid, the inverse is applied one axis at a time: along axis
+    ``k`` the values are mapped through the truncated-SVD pseudo-inverse of the
+    univariate Bernstein Vandermonde matrix ``V^{(k)}``.
+
+    For each axis with ``V = U \Sigma V^\top`` the pseudo-inverse is
+    :math:`V^{+} = V \Sigma^{+} U^\top`, where :math:`\Sigma^{+}` inverts only
+    the singular values above ``tol * sigma_max`` and zeroes the rest.  This
+    truncated SVD (standard regularised least squares; see Golub & Van Loan,
+    *Matrix Computations*) keeps the recovery stable even when ``V`` becomes
+    ill-conditioned at high degree.  Size-1 axes (degree 0) are passed through
+    unchanged.
 
     Args:
         f (npt.NDArray[np.floating[Any]]): Function values at the tensor
@@ -133,33 +101,26 @@ def _bernstein_interpolate(
     Returns:
         npt.NDArray[np.floating[Any]]: Bernstein coefficients with the same
         shape as ``f``.
-
-    Note:
-        Implementation follows algoim (Saye, J. Comput. Phys. 448, 2022).
     """
-    result = f.copy()
-    ndim = f.ndim
-    actual_tol = resolve_svd_tolerance(f.dtype, tol)
+    dtype = f.dtype
+    actual_tol = resolve_svd_tolerance(dtype, tol)
 
-    for dim in range(ndim):
-        n = result.shape[dim]
+    result = np.asarray(f, dtype=dtype)
+    for axis in range(result.ndim):
+        n = result.shape[axis]
         if n == 1:
             continue
 
-        U, sigma, Vt = _bernstein_vandermonde_svd(n, f.dtype)
+        U, sigma, Vt = _bernstein_vandermonde_svd(n, dtype)
 
-        min_sigma = actual_tol * sigma[0]
-        inv_sigma = np.where(sigma >= min_sigma, 1.0 / sigma, 0.0)
-
-        # Pseudoinverse matrix: V @ diag(1/sigma) @ U^T
+        # Truncated pseudo-inverse V^+ = V @ diag(sigma^+) @ U^T.
+        inv_sigma = np.where(sigma >= actual_tol * sigma[0], 1.0 / sigma, 0.0)
         pinv = (Vt.T * inv_sigma[np.newaxis, :]) @ U.T
 
-        # Apply along dimension `dim`
-        result = np.tensordot(pinv, result, axes=([1], [dim]))
-        # tensordot puts the result dimension first; move it back to `dim`
-        result = np.moveaxis(result, 0, dim)
+        # Apply V^+ along `axis`; tensordot puts the new axis first, so move it back.
+        result = np.moveaxis(np.tensordot(pinv, result, axes=([1], [axis])), 0, axis)
 
-    return np.array(result, dtype=f.dtype)
+    return np.asarray(result, dtype=dtype)
 
 
 def _resolve_nodes(

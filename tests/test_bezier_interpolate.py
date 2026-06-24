@@ -10,7 +10,96 @@ import numpy.typing as npt
 import pytest
 
 from pantr.bezier import fit_bezier, interpolate_bezier
-from pantr.quad import PointsLattice
+from pantr.bezier._bezier_interpolate import _bernstein_interpolate
+from pantr.bezier._bezier_utils import _tabulate_bernstein_1d_fast
+from pantr.quad import PointsLattice, get_modified_chebyshev_nodes_1d
+
+
+def _eval_bernstein_on_modified_chebyshev_grid(
+    coeffs: npt.NDArray[np.floating[Any]],
+) -> npt.NDArray[np.floating[Any]]:
+    """Evaluate a Bernstein polynomial on the modified-Chebyshev tensor grid.
+
+    Given Bernstein coefficients of shape ``(n_0, ..., n_{N-1})``, evaluates the
+    polynomial at the tensor product of modified Chebyshev-Lobatto nodes (the
+    nodes :func:`_bernstein_interpolate` interpolates from), returning the value
+    array with the same shape.
+
+    Args:
+        coeffs (npt.NDArray[np.floating[Any]]): Bernstein coefficients.
+
+    Returns:
+        npt.NDArray[np.floating[Any]]: Sampled values, same shape as *coeffs*.
+    """
+    result = coeffs
+    for dim in range(coeffs.ndim):
+        n = coeffs.shape[dim]
+        if n == 1:
+            continue
+        nodes = get_modified_chebyshev_nodes_1d(n, np.float64)
+        bern = _tabulate_bernstein_1d_fast(n - 1, nodes, np.float64)
+        result = np.tensordot(bern, result, axes=([1], [dim]))
+        result = np.moveaxis(result, 0, dim)
+    return np.asarray(result, dtype=np.float64)
+
+
+class TestBernsteinInterpolateRoundTrip:
+    """Round-trip tests for the N-D ``_bernstein_interpolate`` helper.
+
+    This private helper is consumed across the package boundary by ocelat, so it
+    needs its own coverage: build a known polynomial in Bernstein form, evaluate
+    it on the modified-Chebyshev grid, interpolate, and check the recovered
+    coefficients reproduce the original polynomial.
+    """
+
+    def test_roundtrip_1d(self) -> None:
+        """A 1D Bernstein polynomial round-trips to its original coefficients."""
+        rng = np.random.default_rng(0)
+        coeffs = rng.standard_normal(7)
+        vals = _eval_bernstein_on_modified_chebyshev_grid(coeffs)
+        recovered = _bernstein_interpolate(vals)
+        nptest.assert_allclose(recovered, coeffs, atol=1e-11)
+
+    def test_roundtrip_2d(self) -> None:
+        """A 2D tensor-product Bernstein polynomial round-trips exactly."""
+        rng = np.random.default_rng(1)
+        coeffs = rng.standard_normal((4, 5))
+        vals = _eval_bernstein_on_modified_chebyshev_grid(coeffs)
+        recovered = _bernstein_interpolate(vals)
+        nptest.assert_allclose(recovered, coeffs, atol=1e-11)
+
+    def test_roundtrip_3d(self) -> None:
+        """A 3D tensor-product Bernstein polynomial round-trips exactly."""
+        rng = np.random.default_rng(2)
+        coeffs = rng.standard_normal((3, 4, 2))
+        vals = _eval_bernstein_on_modified_chebyshev_grid(coeffs)
+        recovered = _bernstein_interpolate(vals)
+        nptest.assert_allclose(recovered, coeffs, atol=1e-11)
+
+    def test_recovers_monomial_x_squared(self) -> None:
+        """Interpolating x^2 (degree-2 Bernstein form) recovers known coefficients."""
+        # x^2 in Bernstein form of degree 2 has coefficients [0, 0, 1].
+        coeffs = np.array([0.0, 0.0, 1.0])
+        vals = _eval_bernstein_on_modified_chebyshev_grid(coeffs)
+        recovered = _bernstein_interpolate(vals)
+        nptest.assert_allclose(recovered, coeffs, atol=1e-12)
+
+    def test_singleton_dimension_passthrough(self) -> None:
+        """A size-1 axis is left untouched (degree-0 in that direction)."""
+        rng = np.random.default_rng(3)
+        coeffs = rng.standard_normal((1, 3, 1))
+        vals = _eval_bernstein_on_modified_chebyshev_grid(coeffs)
+        recovered = _bernstein_interpolate(vals)
+        assert recovered.shape == coeffs.shape
+        nptest.assert_allclose(recovered, coeffs, atol=1e-12)
+
+    def test_preserves_float32_dtype(self) -> None:
+        """The output dtype matches the input dtype."""
+        coeffs = np.array([0.0, 1.0, 0.5], dtype=np.float32)
+        vals = _eval_bernstein_on_modified_chebyshev_grid(coeffs).astype(np.float32)
+        recovered = _bernstein_interpolate(vals)
+        assert recovered.dtype == np.float32
+
 
 # ---------------------------------------------------------------------------
 # 1D scalar interpolation

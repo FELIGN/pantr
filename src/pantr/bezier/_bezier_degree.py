@@ -22,7 +22,23 @@ if TYPE_CHECKING:
     from . import Bezier
 
 _AUTO_REDUCTION_TOL_FACTOR: float = 1.0e3
-"""Factor multiplied by machine epsilon for automatic degree reduction."""
+"""Default relative tolerance for automatic degree reduction, in units of eps.
+
+When :func:`_minimize_degree_bezier` is called without an explicit ``tol``, a
+degree-1 reduction is accepted whenever the round-trip (reduce then re-elevate)
+relative :math:`L^2` error stays below ``_AUTO_REDUCTION_TOL_FACTOR * eps``,
+where ``eps`` is the machine epsilon of the control-point dtype.
+
+The factor of ``1e3`` gives roughly three decimal digits of headroom above the
+unit-roundoff floor. The least-squares reduction and the subsequent
+re-elevation each accumulate ``O(p)`` floating-point operations, so a curve that
+is exactly reducible (for instance a degree-elevated lower-degree curve)
+produces a round-trip error of a small multiple of ``eps`` rather than exactly
+zero. A threshold at the bare ``eps`` level would spuriously reject such curves;
+``1e3 * eps`` (``~2.2e-13`` for ``float64``) comfortably accepts genuine
+reductions while still rejecting curves whose true degree cannot be lowered
+without visible geometric error.
+"""
 
 
 def _degree_elevate_bezier(
@@ -113,64 +129,72 @@ def _degree_reduce_bezier(
     return BezierCls(ctrl, is_rational=bezier.is_rational)
 
 
-def _squared_l2_norm(
-    coeffs: npt.NDArray[np.floating[Any]],
-) -> float:
-    r"""Compute the squared L2 norm of a Bernstein polynomial.
+def _bernstein_gram_matrix_1d(degree: int) -> npt.NDArray[np.float64]:
+    r"""Build the degree-``n`` univariate Bernstein mass (Gram) matrix on :math:`[0, 1]`.
 
-    Uses the Bernstein inner product formula:
+    The entries are the exact inner products of the Bernstein basis functions,
+    given by the closed form of Farouki & Rajan (*Computer Aided Geometric
+    Design* 5, 1988):
 
     .. math::
 
-        \int_0^1 B_{i,n}(x) B_{j,n}(x)\,dx
-        = \frac{1}{2n+1} \frac{\binom{n}{i} \binom{n}{j}}{\binom{2n}{i+j}}
+        G_{ij} = \int_0^1 B_{i,n}(x) B_{j,n}(x)\,dx
+        = \frac{1}{2n+1}\,
+          \frac{\binom{n}{i}\binom{n}{j}}{\binom{2n}{i+j}},
+        \qquad 0 \le i, j \le n .
 
-    extended to tensor products for multivariate polynomials.
+    Args:
+        degree (int): Polynomial degree ``n`` (``>= 0``).
+
+    Returns:
+        npt.NDArray[np.float64]: Symmetric ``(n + 1, n + 1)`` Gram matrix.
+    """
+    n = degree
+    binom_n = np.array([math.comb(n, i) for i in range(n + 1)], dtype=np.float64)
+    binom_2n = np.array([math.comb(2 * n, k) for k in range(2 * n + 1)], dtype=np.float64)
+
+    idx = np.arange(n + 1)
+    numerator = np.outer(binom_n, binom_n)
+    denominator = binom_2n[idx[:, None] + idx[None, :]]
+    gram: npt.NDArray[np.float64] = numerator / denominator / (2.0 * n + 1.0)
+    return gram
+
+
+def _squared_l2_norm(
+    coeffs: npt.NDArray[np.floating[Any]],
+) -> float:
+    r"""Compute the squared :math:`L^2` norm of a Bernstein polynomial on :math:`[0, 1]^d`.
+
+    A polynomial with Bernstein coefficients ``c`` has squared norm equal to the
+    Bernstein-Gram quadratic form :math:`\lVert p\rVert_2^2 = c^\top G\, c`,
+    where :math:`G` is the Bernstein mass matrix.  For a tensor-product basis the
+    mass matrix factorises as a Kronecker product of the univariate Gram matrices
+    :math:`G = G^{(0)} \otimes \cdots \otimes G^{(d-1)}`, so the quadratic form is
+    evaluated by contracting each univariate :math:`G^{(k)}` against the
+    coefficient tensor along its axis and taking the final inner product with the
+    coefficients.
+
+    The closed-form univariate Gram entries are due to Farouki & Rajan (*Computer
+    Aided Geometric Design* 5, 1988); see :func:`_bernstein_gram_matrix_1d`.
 
     Args:
         coeffs (npt.NDArray[np.floating[Any]]): Bernstein coefficients
             (any shape).
 
     Returns:
-        float: The squared L2 norm ``||p||_2^2``.
-
-    Note:
-        Implementation follows algoim (Saye, J. Comput. Phys. 448, 2022).
+        float: The squared :math:`L^2` norm ``||p||_2^2``.
     """
-    ndim = coeffs.ndim
-    shape = coeffs.shape
+    c = coeffs.astype(np.float64, copy=False)
 
-    # Precompute binomial rows and Gram factors per dimension
-    binom_rows = []
-    binom_double = []
-    for d in range(ndim):
-        n = shape[d] - 1
-        brow = np.array([math.comb(n, i) for i in range(n + 1)], dtype=np.float64)
-        bdbl = np.array([math.comb(2 * n, k) for k in range(2 * n + 1)], dtype=np.float64)
-        binom_rows.append(brow)
-        binom_double.append(bdbl)
+    # Apply G = G^(0) (x) ... (x) G^(d-1) by contracting one axis at a time.
+    g_c = c
+    for axis in range(c.ndim):
+        gram = _bernstein_gram_matrix_1d(c.shape[axis] - 1)
+        g_c = np.moveaxis(np.tensordot(gram, g_c, axes=([1], [axis])), 0, axis)
 
-    # Flatten and compute all pairwise products with Gram weights
-    flat = coeffs.ravel().astype(np.float64)
-    indices = np.array(np.unravel_index(np.arange(flat.size), shape)).T  # (size, ndim)
-
-    # For each pair (i, j): gram_weight = product over dims of binom(n_d, i_d)*binom(n_d, j_d) /
-    #                                      binom(2*n_d, i_d + j_d)
-    # This is O(size^2) but polynomials are small in practice.
-    delta = 0.0
-    for idx_i in range(flat.size):
-        for idx_j in range(flat.size):
-            g = 1.0
-            for d in range(ndim):
-                ii = indices[idx_i, d]
-                jj = indices[idx_j, d]
-                g *= (binom_rows[d][ii] * binom_rows[d][jj]) / binom_double[d][ii + jj]
-            delta += flat[idx_i] * flat[idx_j] * g
-
-    for d in range(ndim):
-        delta /= 2.0 * shape[d] - 1.0
-
-    return abs(delta)
+    # Quadratic form c^T (G c); the analytic value is non-negative, so guard
+    # against a small negative result from floating-point round-off.
+    return abs(float(np.sum(c * g_c)))
 
 
 def _minimize_degree_bezier(
@@ -179,10 +203,16 @@ def _minimize_degree_bezier(
 ) -> Bezier:
     """Automatically reduce the degree of a Bézier while maintaining accuracy.
 
-    Iterates over each parametric direction and repeatedly tries to reduce
-    the degree by 1.  A reduction is accepted when the round-trip
-    (reduce then elevate) relative L2 error stays below ``tol``.  For
-    vector-valued Bézier, all rank components are checked simultaneously.
+    Greedy, direction-by-direction degree reduction.  For each parametric
+    direction the degree is lowered by one as long as the candidate reduction is
+    accurate enough: the trial curve is degree-reduced (least squares) and then
+    re-elevated back to the current degree, and the round-trip relative
+    :math:`L^2` error is compared against ``tol``.  The first rejected trial in a
+    direction stops further reduction in that direction (the error is
+    monotonically non-decreasing as the degree drops, so there is nothing to gain
+    by continuing).  For vector-valued Bézier all rank components are combined
+    into a single error measure, so a reduction is accepted only when every
+    component is preserved.
 
     Args:
         bezier (~pantr.bezier.Bezier): The Bézier to simplify.
@@ -194,53 +224,55 @@ def _minimize_degree_bezier(
         ~pantr.bezier.Bezier: A new Bézier with the lowest degree that
         preserves accuracy within ``tol``.  If no reduction is possible,
         returns a copy of the input.
-
-    Note:
-        Implementation follows algoim (Saye, J. Comput. Phys. 448, 2022).
     """
     from . import Bezier as BezierCls  # noqa: PLC0415
 
     ctrl: npt.NDArray[np.floating[Any]] = bezier.control_points  # (*orders, rank)
-    n_param = bezier.dim
-    eps = float(np.finfo(ctrl.dtype).eps)
+    rank = ctrl.shape[-1]
+
     if tol is None:
-        tol = _AUTO_REDUCTION_TOL_FACTOR * eps
+        tol = _AUTO_REDUCTION_TOL_FACTOR * float(np.finfo(ctrl.dtype).eps)
 
     if tol <= 0.0:
         return BezierCls(ctrl.copy(), is_rational=bezier.is_rational)
 
+    def total_squared_norm(arr: npt.NDArray[np.floating[Any]]) -> float:
+        """Sum the squared L2 norms of every rank component of *arr*."""
+        return float(sum(_squared_l2_norm(arr[..., r]) for r in range(rank)))
+
     result = ctrl
     changed = False
 
-    for dim in range(n_param):
+    for dim in range(bezier.dim):
+        # Each direction shrinks until a reduction is rejected.
         while result.shape[dim] >= 2:  # noqa: PLR2004
             degree = result.shape[dim] - 1
 
-            # Reduce all rank components together along this dimension
-            flat, trailing_shape = _flatten_along_axis(result, dim)
-            reduced_flat = _degree_reduce_bezier_1d_core(degree, flat, 1)
-            reduced = _unflatten_along_axis(reduced_flat, trailing_shape, dim)
+            # Reduce by one along `dim` (all rank components together) ...
+            flat, trailing = _flatten_along_axis(result, dim)
+            reduced = _unflatten_along_axis(
+                _degree_reduce_bezier_1d_core(degree, flat, 1), trailing, dim
+            )
 
-            # Elevate back to original shape for error check
-            flat_r, trailing_r = _flatten_along_axis(reduced, dim)
-            elevated_flat = _degree_elevate_bezier_1d_core(degree - 1, flat_r, 1)
-            elevated = _unflatten_along_axis(elevated_flat, trailing_r, dim)
+            # ... then re-elevate so the trial can be compared to `result`.
+            flat_reduced, trailing_reduced = _flatten_along_axis(reduced, dim)
+            elevated = _unflatten_along_axis(
+                _degree_elevate_bezier_1d_core(degree - 1, flat_reduced, 1),
+                trailing_reduced,
+                dim,
+            )
 
-            # Check L2 error summed across all rank components
-            diff = elevated - result
-            diff_norm = sum(_squared_l2_norm(diff[..., r]) for r in range(result.shape[-1]))
-            orig_norm = sum(_squared_l2_norm(result[..., r]) for r in range(result.shape[-1]))
+            # Relative round-trip L2 error across all components.
+            diff_norm2 = total_squared_norm(elevated - result)
+            orig_norm2 = total_squared_norm(result)
+            rel_error = math.sqrt(diff_norm2)
+            if orig_norm2 > 0.0:
+                rel_error /= math.sqrt(orig_norm2)
 
-            if orig_norm > 0.0:
-                rel_error = math.sqrt(abs(diff_norm)) / math.sqrt(abs(orig_norm))
-            else:
-                rel_error = math.sqrt(abs(diff_norm))
-
-            if rel_error < tol:
-                result = reduced
-                changed = True
-            else:
+            if rel_error >= tol:
                 break
+            result = reduced
+            changed = True
 
     if not changed:
         return BezierCls(ctrl.copy(), is_rational=bezier.is_rational)
