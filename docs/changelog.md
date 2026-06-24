@@ -1,18 +1,6 @@
 # Changelog
 
-## Unreleased
-
-### Removed
-- Dropped the `THIRD_PARTY_NOTICES` file and its `pyproject.toml` `license-files`
-  entry. The routines that previously followed algoim — Bézier/B-spline degree
-  reduction, Bernstein interpolation, the Bernstein L2 norm and degree
-  minimization, and the tanh–sinh rule with its Lambert W step — were
-  reimplemented clean-room from public references (The NURBS Book; Farouki &
-  Rajan, *CAGD* 1988; Golub & Van Loan; Takahasi & Mori 1974; SciPy), with no
-  change in public API or numerical results, so the third-party attribution is
-  no longer required.
-
-## 0.6.0 (2026-06-13)
+## 0.6.0 (2026-06-24)
 
 ### Added
 - `pantr.mpi.configure_threads`: explicitly set the per-rank Numba thread count
@@ -29,6 +17,16 @@
   `pantr.set_num_threads`, `pantr.num_threads`, or
   `pantr.mpi.configure_threads`), and the policy is applied at most once per
   process, so raising the count afterwards sticks.
+
+### Removed
+- Dropped the `THIRD_PARTY_NOTICES` file and its `pyproject.toml` `license-files`
+  entry. The routines that previously followed algoim — Bézier/B-spline degree
+  reduction, Bernstein interpolation, the Bernstein L2 norm and degree
+  minimization, and the tanh–sinh rule with its Lambert W step — were
+  reimplemented clean-room from public references (The NURBS Book; Farouki &
+  Rajan, *CAGD* 1988; Golub & Van Loan; Takahasi & Mori 1974; SciPy), with no
+  change in public API or numerical results, so the third-party attribution is
+  no longer required.
 
 ## 0.5.1 (2026-06-03)
 
