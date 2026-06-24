@@ -9,8 +9,11 @@ the global DOF count).  Each rank therefore evaluates ``func`` on its block-assi
 of the flattened grid, a single ``allgather`` assembles the full value field, and the
 Kronecker solve runs **replicated** on every rank.  The result is a
 :class:`~pantr.mpi.DistributedFunction` whose global coefficient field equals the serial
-:func:`~pantr.bspline.interpolate_bspline` result bit-for-bit (and whose
+:func:`~pantr.bspline.interpolate_bspline` result (and whose
 :attr:`~pantr.mpi.DistributedFunction.local` reproduces it over the rank's owned cells).
+With a single block (``n_parts=1``) and a batch-invariant ``func`` the agreement is exact;
+across multiple ranks it is exact up to floating-point reassociation of the per-block
+evaluation (the tests assert it within a tight ``atol``).
 
 Both entry points operate on tensor-product (lattice / Greville) nodes -- the case the
 distributed algorithm parallelizes.  Scattered-node inputs fall back to a fully replicated
@@ -76,6 +79,9 @@ def _evaluate_block(
 ) -> npt.NDArray[np.float64]:
     """Evaluate ``func`` on a contiguous block of the flattened grid points.
 
+    Here ``rank`` denotes ``func``'s vector output dimension (the number of value
+    components), not the MPI rank.
+
     Args:
         func (Callable): Function called on a flat ``(M, dim)`` point array; must return
             ``(M,)`` (scalar) or ``(M, rank)`` (vector-valued).
@@ -87,12 +93,25 @@ def _evaluate_block(
         npt.NDArray[np.float64]: This rank's values, shape ``(stop - start,)`` (scalar) or
         ``(stop - start, rank)`` (vector); always ``float64`` and C-contiguous.
 
+    Raises:
+        ValueError: If ``func`` returns an array whose ndim is not 1 or 2, or whose leading
+            dimension does not equal this block's point count (``stop - start``).
+
     Note:
-        No input validation is performed; ``func``'s return shape is checked downstream by
-        the replicated Kronecker solve.
+        This validation fires identically on every rank (each knows its own block length),
+        so a bad ``func`` raises on all ranks symmetrically -- no collective asymmetry or
+        deadlock.  Only the leading-dimension / ndim contract is checked here; the
+        cross-block consistency of the rank dimension is enforced by the assembly step.
     """
     block = np.ascontiguousarray(all_points[start:stop])
     values = np.asarray(func(block), dtype=np.float64)
+    expected = stop - start
+    if values.ndim not in (1, 2) or values.shape[0] != expected:
+        raise ValueError(
+            f"func returned shape {values.shape} for a block of {expected} points; "
+            f"expected ({expected},) (scalar) or ({expected}, rank) (vector-valued), "
+            f"where rank is func's vector output dimension."
+        )
     return np.ascontiguousarray(values)
 
 
@@ -112,9 +131,17 @@ def _assemble_full_values(
         npt.NDArray[np.float64]: The full value field, shape ``(n_total,)`` (scalar) or
         ``(n_total, rank)`` (vector).
 
+    Raises:
+        ValueError: If the per-rank blocks do not tile the flattened grid, i.e. their
+            lengths sum to fewer than ``n_total`` (over-coverage already errors via the
+            in-place assignment).  This happens when ``func`` returned the wrong number of
+            values for some block (interpolate path) or when user-supplied blocks do not
+            match the contiguous C-order split (fit path with ``values_distributed=True``).
+
     Note:
-        No input validation is performed.  The rank dimension is inferred from the first
-        non-empty 2D block; if every block is empty the field is treated as scalar.
+        The rank dimension is inferred from the first non-empty block; if every block is
+        empty the field is treated as scalar.  Empty blocks (``(0,)`` or ``(0, rank)``,
+        contributed by ranks with no assigned points) are skipped.
     """
     scalar = True
     rank_dim = 1
@@ -134,6 +161,15 @@ def _assemble_full_values(
             continue
         full[offset : offset + m] = b if scalar else b.reshape(m, rank_dim)
         offset += m
+
+    if offset != n_total:
+        raise ValueError(
+            f"Per-rank value blocks do not tile the flattened grid: they cover {offset} of "
+            f"{n_total} points. On the interpolate path this means func returned the wrong "
+            f"number of values for a block; on the fit path (values_distributed=True) it "
+            f"means the supplied blocks do not match the contiguous C-order split of the "
+            f"grid (see fit_bspline_distributed's documented block layout)."
+        )
     return full
 
 
@@ -167,7 +203,10 @@ def _solve_replicated(
 
     Note:
         No input validation is performed.  ``full_values`` must already be shaped
-        consistently with ``node_arrays``.
+        consistently with ``node_arrays``.  The control points are coerced to
+        ``space.dtype`` (rather than raising on a value/space dtype mismatch); this matches
+        the distributed quasi-interpolation convention and keeps both
+        :func:`fit_bspline_distributed` value layouts consistent.
     """
     grid_shape = tuple(a.shape[0] for a in node_arrays)
     if full_values.ndim == 1:
@@ -223,9 +262,14 @@ def interpolate_bspline_distributed(
     Construction requires one MPI collective (``comm.allgather``) after each rank's local
     evaluation.
 
+    In ``(M, rank)`` shapes below, ``rank`` is ``func``'s vector output dimension (the
+    number of value components), not the MPI rank.
+
     Args:
         func (Callable): Function to interpolate.  Called on a flat ``(M, dim)`` point
-            array; must return ``(M,)`` (scalar) or ``(M, rank)`` (vector-valued).
+            array; must return ``(M,)`` (scalar) or ``(M, rank)`` (vector-valued).  On a
+            rank with no assigned points it is called on an empty ``(0, dim)`` block and
+            must return a correspondingly empty ``(0,)`` / ``(0, rank)`` result.
         distributed_space (DistributedSpace): The distributed space to interpolate onto.
             Its ``global_space`` must be a :class:`~pantr.bspline.BsplineSpace`.
         nodes: Interpolation node selection, identical to
