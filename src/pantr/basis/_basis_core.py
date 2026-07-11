@@ -32,8 +32,24 @@ def _bernstein_point(
 ) -> None:
     """Evaluate all Bernstein basis polynomials of degree ``n`` at one point.
 
-    Recurrence: ``B_0,n(u) = (1-u)^n``; ``B_i,n = B_{i-1},n * ((n-i+1)/i) * (u/(1-u))``.
-    ``u == 1.0`` is special-cased (the recurrence would produce NaN).
+    Uses the O(n) ratio recurrence, run from whichever endpoint keeps the seed
+    term bounded away from underflow, exploiting the symmetry
+    ``B_i,n(u) = B_{n-i},n(1-u)``:
+
+    - ``u <= 0.5``: forward recurrence from ``u = 0``:
+      ``B_0,n(u) = (1-u)^n``; ``B_i,n = B_{i-1},n * ((n-i+1)/i) * (u/(1-u))``.
+    - ``u > 0.5``: mirrored recurrence from ``u = 1``:
+      ``B_n,n(u) = u^n``; ``B_{i-1},n = B_i,n * (i/(n-i+1)) * ((1-u)/u)``.
+
+    Branching on the midpoint bounds the seed (``(1-u)^n`` or ``u^n``) below
+    by ``0.5^n``, so it never underflows for any representable degree ``n``.
+    Without the branch, the forward seed ``(1-u)^n`` underflows to exact
+    ``0.0`` once ``u`` is close enough to 1 at high degree, and every
+    subsequent term (a positive multiple of the previous one) stays zero —
+    including ``B_n,n``, whose true value is near 1 — silently breaking
+    partition of unity. ``u == 1.0`` needs no special-casing: the mirrored
+    branch handles it exactly (``u^n == 1.0``, then every step multiplies by
+    ``(1-u)/u == 0.0``).
 
     Args:
         n (np.int32): Degree of the Bernstein polynomials (>= 0).
@@ -44,13 +60,19 @@ def _bernstein_point(
         Inputs are assumed to be correct (no validation performed).
         For general use, call :func:`_tabulate_Bernstein_basis_1D_impl` instead.
     """
-    if u == 1.0:
-        # At t=1.0: only B_n,n(1) = 1, all others are 0
-        for i in range(out_row.shape[0]):
-            out_row[i] = 0.0
-        out_row[n] = 1.0
+    if u > 0.5:
+        # Mirrored recurrence from u=1: seed B_n,n(u) = u^n is >= 0.5^n, so it
+        # never underflows. Low-index entries may legitimately underflow to
+        # exact 0.0 (their true value is negligible near u=1).
+        one_minus_u = 1.0 - u
+        out_row[n] = np.power(u, n)
+        one_minus_u_over_u = one_minus_u / u
+        for i in range(n, 0, -1):
+            const_factor = i / (n - i + 1.0)
+            out_row[i - 1] = out_row[i] * const_factor * one_minus_u_over_u
     else:
-        # For t != 1.0, use recurrence relation
+        # Forward recurrence from u=0: seed B_0,n(u) = (1-u)^n is >= 0.5^n, so
+        # it never underflows.
         one_minus_u = 1.0 - u
         out_row[0] = np.power(one_minus_u, n)
         t_over_1mt = u / one_minus_u

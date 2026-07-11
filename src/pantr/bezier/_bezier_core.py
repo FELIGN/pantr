@@ -33,8 +33,16 @@ def _evaluate_bezier_1d_core(
 
     Fuses Bernstein basis evaluation with control point contraction: for each
     evaluation point the ``(p+1)`` Bernstein basis values are computed via the
-    recurrence relation and immediately multiplied with the corresponding
-    control points, avoiding allocation of a full ``(n_pts, p+1)`` basis matrix.
+    ratio recurrence and immediately multiplied with the corresponding control
+    points, avoiding allocation of a full ``(n_pts, p+1)`` basis matrix.
+
+    As in :func:`_bernstein_point` (``_basis_core.py``), the recurrence is run
+    from whichever endpoint keeps its seed term bounded away from underflow:
+    forward from ``u = 0`` (seed ``(1-u)^p``) when ``u <= 0.5``, mirrored from
+    ``u = 1`` (seed ``u^p``) when ``u > 0.5``, using the symmetry
+    ``B_i,p(u) = B_{p-i},p(1-u)``. Without this branch, the forward seed
+    underflows to exact ``0.0`` for ``u`` close enough to 1 at high degree,
+    silently zeroing the whole evaluation.
 
     Args:
         ctrl (npt.NDArray[np.float32 | np.float64]): Control points of shape
@@ -61,6 +69,20 @@ def _evaluate_bezier_1d_core(
         elif u == 1.0:
             for r in range(rank):
                 out[pt_id, r] = ctrl[p, r]
+        elif u > 0.5:
+            one_minus_u = 1.0 - u
+            # B_p = u^p
+            b_curr = np.power(u, p)
+
+            # Accumulate: start with basis[p] * ctrl[p]
+            for r in range(rank):
+                out[pt_id, r] = b_curr * ctrl[p, r]
+
+            one_minus_u_over_u = one_minus_u / u
+            for i in range(p, 0, -1):
+                b_curr = b_curr * (i / (p - i + 1.0)) * one_minus_u_over_u
+                for r in range(rank):
+                    out[pt_id, r] += b_curr * ctrl[i - 1, r]
         else:
             one_minus_u = 1.0 - u
             # B_0 = (1 - u)^p
@@ -70,13 +92,12 @@ def _evaluate_bezier_1d_core(
             for r in range(rank):
                 out[pt_id, r] = b_prev * ctrl[0, r]
 
-            if p > 0:
-                t_over_1mt = u / one_minus_u
-                for i in range(1, p + 1):
-                    b_curr = b_prev * ((p - i + 1.0) / i) * t_over_1mt
-                    for r in range(rank):
-                        out[pt_id, r] += b_curr * ctrl[i, r]
-                    b_prev = b_curr
+            t_over_1mt = u / one_minus_u
+            for i in range(1, p + 1):
+                b_curr = b_prev * ((p - i + 1.0) / i) * t_over_1mt
+                for r in range(rank):
+                    out[pt_id, r] += b_curr * ctrl[i, r]
+                b_prev = b_curr
 
 
 @nb_jit(
