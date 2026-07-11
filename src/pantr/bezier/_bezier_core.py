@@ -18,13 +18,20 @@ import numpy.typing as npt
 from .._numba_compat import nb_jit, nb_prange
 from ..bspline._bspline_degree_core import _bincoeff
 
+_MIRROR_THRESHOLD = 0.5
+"""Midpoint used to pick the Bernstein ratio-recurrence branch in `_evaluate_bezier_1d_core`.
+
+Bounds the recurrence seed (``(1-u)^p`` or ``u^p``) below by ``0.5^p``, so it
+never underflows regardless of degree. Matches ``_basis_core._MIRROR_THRESHOLD``.
+"""
+
 
 @nb_jit(
     nopython=True,
     cache=True,
     parallel=True,
 )
-def _evaluate_bezier_1d_core(
+def _evaluate_bezier_1d_core(  # noqa: PLR0912
     ctrl: npt.NDArray[np.float32 | np.float64],
     pts: npt.NDArray[np.float32 | np.float64],
     out: npt.NDArray[np.float32 | np.float64],
@@ -37,12 +44,26 @@ def _evaluate_bezier_1d_core(
     points, avoiding allocation of a full ``(n_pts, p+1)`` basis matrix.
 
     As in :func:`_bernstein_point` (``_basis_core.py``), the recurrence is run
-    from whichever endpoint keeps its seed term bounded away from underflow:
-    forward from ``u = 0`` (seed ``(1-u)^p``) when ``u <= 0.5``, mirrored from
-    ``u = 1`` (seed ``u^p``) when ``u > 0.5``, using the symmetry
-    ``B_i,p(u) = B_{p-i},p(1-u)``. Without this branch, the forward seed
-    underflows to exact ``0.0`` for ``u`` close enough to 1 at high degree,
-    silently zeroing the whole evaluation.
+    from whichever endpoint keeps its seed term bounded away from underflow,
+    using the symmetry ``B_i,p(u) = B_{p-i},p(1-u)``:
+
+    - ``u <= 0.5``: forward recurrence (seed ``(1-u)^p``), contracted with
+      ``ctrl`` in ascending order.
+    - ``u > 0.5``: the same forward recurrence run on ``1-u`` in place of
+      ``u`` (seed ``u^p``, ratio ``(1-u)/u``), contracted with ``ctrl`` in
+      *descending* order (``ctrl[p - i, :]`` at loop step ``i``) so that the
+      ``i``-th term of the ascending recurrence — which equals
+      ``B_i,p(1-u) = B_{p-i},p(u)`` — pairs with its matching control point.
+      Reusing the ascending loop (rather than accumulating via a genuinely
+      descending recurrence) avoids a measured slowdown from the
+      decreasing-index store pattern a naive mirrored loop would produce; here
+      the running scalar ``b_curr`` accumulates into the same fixed ``rank``
+      output slots every iteration, so reading ``ctrl`` in reverse carries no
+      such penalty.
+
+    Without this branch, the forward seed underflows to exact ``0.0`` for
+    ``u`` close enough to 1 at high degree, silently zeroing the whole
+    evaluation.
 
     Args:
         ctrl (npt.NDArray[np.float32 | np.float64]): Control points of shape
@@ -69,20 +90,21 @@ def _evaluate_bezier_1d_core(
         elif u == 1.0:
             for r in range(rank):
                 out[pt_id, r] = ctrl[p, r]
-        elif u > 0.5:
+        elif u > _MIRROR_THRESHOLD:
             one_minus_u = 1.0 - u
-            # B_p = u^p
+            # b_curr = B_0,p(1-u) = u^p = B_p,p(u); pairs with ctrl[p]
             b_curr = np.power(u, p)
 
-            # Accumulate: start with basis[p] * ctrl[p]
             for r in range(rank):
                 out[pt_id, r] = b_curr * ctrl[p, r]
 
             one_minus_u_over_u = one_minus_u / u
-            for i in range(p, 0, -1):
-                b_curr = b_curr * (i / (p - i + 1.0)) * one_minus_u_over_u
+            for i in range(1, p + 1):
+                const_factor = (p - i + 1.0) / i
+                b_curr = b_curr * const_factor * one_minus_u_over_u
+                # b_curr = B_i,p(1-u) = B_{p-i},p(u); pairs with ctrl[p - i]
                 for r in range(rank):
-                    out[pt_id, r] += b_curr * ctrl[i - 1, r]
+                    out[pt_id, r] += b_curr * ctrl[p - i, r]
         else:
             one_minus_u = 1.0 - u
             # B_0 = (1 - u)^p

@@ -33,8 +33,17 @@ import numpy as np
 import numpy.typing as npt
 import pytest
 
+from pantr._numba_compat import wait_for_jit_warmup
 from pantr.basis._basis_core import _bernstein_derivs_point, _bernstein_point
 from pantr.bezier._bezier_core import _evaluate_bezier_1d_core, _slice_bezier_1d_core
+
+# This module calls parallel=True Numba kernels directly (bypassing the
+# public API) very early in the test session. Numba's default threading
+# layer cannot safely compile the same kernel concurrently from two threads,
+# so wait for pantr's background warmup thread to finish first — otherwise it
+# can race with these direct calls and crash the interpreter (see
+# `pantr/__init__.py`'s `_async_warmup` and `_numba_compat.wait_for_jit_warmup`).
+wait_for_jit_warmup()
 
 DEGREES = [2, 5, 10, 20, 30, 64]
 
@@ -47,16 +56,24 @@ _U64 = [0.0, 1e-17, 0.25, 0.5 - _EPS64, 0.5, 0.5 + _EPS64, 0.75, 1.0 - 1e-8, 1.0
 _U32 = [0.0, 1e-7, 0.25, 0.5 - _EPS32, 0.5, 0.5 + _EPS32, 0.75, 1.0 - 1e-4, 1.0 - _EPS32, 1.0]
 
 
-def _eval_bernstein_row(n: int, u: float, dtype: npt.DTypeLike) -> npt.NDArray[np.floating[Any]]:
+_Float32Or64 = type[np.float32] | type[np.float64]
+"""Concrete float scalar types accepted by this module's test helpers.
+
+Narrower than `npt.DTypeLike`: calling the type directly (e.g. ``dtype(u)``)
+gives mypy a single concrete overload instead of the ambiguous ``np.void``
+fallback that ``np.dtype(some_DTypeLike).type(...)`` resolves to.
+"""
+
+
+def _eval_bernstein_row(n: int, u: float, dtype: _Float32Or64) -> npt.NDArray[np.floating[Any]]:
     """Evaluate the Layer-3 kernel `_bernstein_point` at one point."""
-    dt = np.dtype(dtype)
-    out_row = np.empty(n + 1, dtype=dt)
-    _bernstein_point(np.int32(n), dt.type(u), out_row)
+    out_row = np.empty(n + 1, dtype=dtype)
+    _bernstein_point(np.int32(n), dtype(u), out_row)
     return out_row
 
 
 def _all_bernstein_reference(
-    n: int, u: float, dtype: npt.DTypeLike = np.float64
+    n: int, u: float, dtype: _Float32Or64 = np.float64
 ) -> npt.NDArray[np.floating[Any]]:
     """Evaluate all degree-n Bernstein basis functions via corner-cutting (A1.3).
 
@@ -66,15 +83,14 @@ def _all_bernstein_reference(
     blow-up and hence no risk of the total-flush failure mode this module
     guards against.
     """
-    dt = np.dtype(dtype)
-    one = dt.type(1.0)
-    uu = dt.type(u)
+    one = dtype(1.0)
+    uu = dtype(u)
     u1 = one - uu
 
-    row = np.zeros(n + 1, dtype=dt)
+    row = np.zeros(n + 1, dtype=dtype)
     row[0] = one
     for j in range(1, n + 1):
-        saved = dt.type(0.0)
+        saved = dtype(0.0)
         for k in range(j):
             temp = row[k]
             row[k] = saved + u1 * temp
@@ -147,8 +163,8 @@ class TestForwardMirroredSymmetry:
         # u < 0.5 strictly, so `u` takes the forward branch and `1 - u` (> 0.5)
         # takes the mirrored branch.
         us = np.concatenate([rng.uniform(0.0, 0.5, size=20), [1e-17, 0.25]])
-        for u in us:
-            u = float(u)
+        for u_raw in us:
+            u = float(u_raw)
             row_forward = _eval_bernstein_row(degree, u, np.float64)
             row_mirrored = _eval_bernstein_row(degree, 1.0 - u, np.float64)
             np.testing.assert_allclose(
