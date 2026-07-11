@@ -314,6 +314,14 @@ class TestBernsteinPointNoMirror:
         _bernstein_point_no_mirror(np.int32(degree), u, out_row)
         assert abs(float(out_row.sum()) - 1.0) <= 8 * degree * _EPS64
 
+    def test_partition_of_unity_at_max_safe_degree_float32(self) -> None:
+        """Float32 analogue of `test_partition_of_unity_at_max_safe_degree`."""
+        degree = _MAX_SAFE_DEGREE_NO_MIRROR_FLOAT32
+        u = np.nextafter(np.float32(1.0), np.float32(0.0))
+        out_row = np.empty(degree + 1, dtype=np.float32)
+        _bernstein_point_no_mirror(np.int32(degree), u, out_row)
+        assert abs(float(out_row.sum()) - 1.0) <= 8 * degree * _EPS32
+
 
 class TestDegreeGateDispatch:
     """The batch tabulation kernels must dispatch correctly at the safe-degree boundary."""

@@ -593,6 +593,17 @@ def _warmup_numba_functions() -> None:
 
     This function triggers compilation of the numba-decorated core functions
     with float64 arrays, ensuring they are cached and ready for use.
+
+    Note:
+        Unlike its siblings in other modules, this function is not invoked
+        from `pantr/__init__.py`'s background async-warmup thread: this
+        module's kernels are ``parallel=True``, and compiling them from a
+        background thread while the main thread may also call them
+        concurrently is a known Numba crash (see the warmup-thread comment
+        in `pantr/__init__.py`). They compile lazily on first user call
+        instead, always from the calling (main) thread, avoiding the race.
+        This function is kept for potential future use (e.g. an explicit,
+        single-threaded warmup call site) but is currently dead code.
     """
     # Small dummy arrays for warmup
     t_dummy = np.array([0.0, 0.5, 1.0], dtype=np.float64)
