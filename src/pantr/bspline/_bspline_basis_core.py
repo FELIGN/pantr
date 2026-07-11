@@ -37,41 +37,6 @@ if TYPE_CHECKING:
 @nb_jit(
     nopython=True,
     cache=True,
-    inline="always",
-)
-def _scaled_denom_tol(
-    knots: npt.NDArray[np.float32 | np.float64],
-    tol: float,
-) -> float:
-    """Scale an absolute tolerance by the knot vector's parametric span.
-
-    The Cox-de Boor recurrence denominator is itself a knot difference, so
-    comparing it against a plain absolute ``tol`` makes the guard in
-    :func:`_basis_funcs_point` / :func:`_basis_derivs_point` scale-dependent:
-    the same relative knot structure evaluates differently depending on the
-    domain's parametric span. Scaling ``tol`` by ``knots[-1] - knots[0]`` (the
-    full span of the knot vector) restores affine invariance under shift and
-    scale, since knot *differences* do not depend on the shift and grow/shrink
-    linearly with the scale.
-
-    Args:
-        knots (npt.NDArray[np.float32 | np.float64]): B-spline knot vector.
-        tol (float): Absolute per-dtype tolerance (e.g. ``spline.tolerance``).
-
-    Returns:
-        float: ``tol`` scaled by the knot vector span, ``tol * (knots[-1] - knots[0])``.
-
-    Note:
-        Inputs are assumed to be correct (no validation performed). Callers
-        compute this once per batch, outside the per-point loop, so it adds no
-        per-iteration cost to the hot Cox-de Boor kernels.
-    """
-    return float(tol * (knots[knots.size - 1] - knots[0]))
-
-
-@nb_jit(
-    nopython=True,
-    cache=True,
     parallel=False,
 )
 def _find_spans_and_first_basis(  # noqa: PLR0913
@@ -149,10 +114,9 @@ def _find_spans_and_first_basis(  # noqa: PLR0913
     cache=True,
     inline="always",
 )
-def _basis_funcs_point(  # noqa: PLR0913
+def _basis_funcs_point(
     knots: npt.NDArray[np.float32 | np.float64],
     degree: int,
-    tol_rel: float,
     knot_id: int,
     pt: np.float32 | np.float64,
     N: npt.NDArray[np.float32 | np.float64],
@@ -165,11 +129,6 @@ def _basis_funcs_point(  # noqa: PLR0913
     Args:
         knots (npt.NDArray[np.float32 | np.float64]): B-spline knot vector.
         degree (int): B-spline degree.
-        tol_rel (float): Denominator guard threshold, already scaled by the knot
-            vector's parametric span (``tol * (knots[-1] - knots[0])``; see
-            :func:`_scaled_denom_tol`). Using the pre-scaled threshold instead of a
-            plain absolute ``tol`` keeps the guard invariant under affine
-            reparametrization of the knots (shift and scale).
         knot_id (int): Clamped knot-span index of ``pt``.
         pt (np.float32 | np.float64): Evaluation point.
         N (npt.NDArray[np.float32 | np.float64]): Output row of length ``degree + 1``.
@@ -178,13 +137,15 @@ def _basis_funcs_point(  # noqa: PLR0913
         Inputs are assumed to be correct (no validation performed). The recurrence
         denominator is a sum of two knot differences and is always ``>= 0`` for a
         non-decreasing knot vector; it is treated as zero (and the corresponding
-        term dropped) whenever it is at or below ``tol_rel`` (``denom <= tol_rel``).
-        For knots stored bitwise identical (the case for exactly repeated knots,
-        since IEEE-754 subtraction is antisymmetric) the denominator is exactly
-        ``0.0`` and this rule reduces to the textbook exact-zero test regardless of
-        ``tol_rel`` -- including the degenerate case ``tol_rel == 0`` (a zero-width
-        knot-vector span), where the ``<=`` comparison still catches ``denom == 0``
-        and avoids a division by zero.
+        term dropped) exactly when ``denom == 0`` (Piegl & Tiller A2.2's textbook
+        guard). Because IEEE-754 subtraction is antisymmetric, ``denom`` is exactly
+        ``0.0`` whenever the two knots it comes from are stored bitwise identical --
+        which is guaranteed for knots meant to be equal, since
+        :class:`~pantr.bspline.BsplineSpace1D` snaps near-duplicate knots (within
+        tolerance) to a single bitwise value at construction time (see
+        ``BsplineSpace1D._snap_knots``). No tolerance parameter is needed here: the
+        exact-zero test is scale-invariant by construction, so this guard is
+        unaffected by the knot vector's parametric span (shift or scale).
         For general use, call :func:`_tabulate_Bspline_basis_1D_impl` instead.
     """
     order = degree + 1
@@ -203,7 +164,7 @@ def _basis_funcs_point(  # noqa: PLR0913
 
         for r in range(j):
             denom = right[r + 1] + left[j - r]  # always >= 0 (non-decreasing knots)
-            temp = zero if denom <= tol_rel else N[r] / denom
+            temp = zero if denom == zero else N[r] / denom
             N[r] = saved + right[r + 1] * temp
             saved = left[j - r] * temp
 
@@ -237,10 +198,10 @@ def _compute_basis_nurbs_book_impl(  # noqa: PLR0913
         knots (npt.NDArray[np.float32 | np.float64]): B-spline knot vector.
         degree (int): B-spline degree.
         periodic (bool): Whether the B-spline is periodic.
-        tol (float): Absolute per-dtype tolerance for numerical comparisons. Used
-            directly for periodic multiplicity detection; scaled by the knot
-            vector's span (:func:`_scaled_denom_tol`) for the Cox-de Boor
-            denominator guard, so the guard stays affine-invariant.
+        tol (float): Absolute per-dtype tolerance for numerical comparisons, used
+            for periodic multiplicity detection (see
+            :func:`_find_spans_and_first_basis`). The Cox-de Boor denominator guard
+            itself needs no tolerance; see :func:`_basis_funcs_point`.
         pts (npt.NDArray[np.float32 | np.float64]): Points (1D array) to evaluate basis
             functions at.
         out_basis (npt.NDArray[np.float32 | np.float64]): Output array for basis values.
@@ -254,10 +215,9 @@ def _compute_basis_nurbs_book_impl(  # noqa: PLR0913
     # See The NURBS Book, by Piegl & Tiller. Algorithm A2.2 (BasisFuncs)
     n_pts = pts.size
     knot_ids = _find_spans_and_first_basis(knots, degree, periodic, tol, pts, out_first_basis)
-    tol_rel = _scaled_denom_tol(knots, tol)
 
     for pt_id in nb_prange(n_pts):
-        _basis_funcs_point(knots, degree, tol_rel, knot_ids[pt_id], pts[pt_id], out_basis[pt_id, :])
+        _basis_funcs_point(knots, degree, knot_ids[pt_id], pts[pt_id], out_basis[pt_id, :])
 
 
 @nb_jit(
@@ -283,10 +243,10 @@ def _compute_basis_nurbs_book_serial_impl(  # noqa: PLR0913
         knots (npt.NDArray[np.float32 | np.float64]): B-spline knot vector.
         degree (int): B-spline degree.
         periodic (bool): Whether the B-spline is periodic.
-        tol (float): Absolute per-dtype tolerance for numerical comparisons. Used
-            directly for periodic multiplicity detection; scaled by the knot
-            vector's span (:func:`_scaled_denom_tol`) for the Cox-de Boor
-            denominator guard, so the guard stays affine-invariant.
+        tol (float): Absolute per-dtype tolerance for numerical comparisons, used
+            for periodic multiplicity detection (see
+            :func:`_find_spans_and_first_basis`). The Cox-de Boor denominator guard
+            itself needs no tolerance; see :func:`_basis_funcs_point`.
         pts (npt.NDArray[np.float32 | np.float64]): Points (1D array) to evaluate basis
             functions at.
         out_basis (npt.NDArray[np.float32 | np.float64]): Output array for basis values.
@@ -300,10 +260,9 @@ def _compute_basis_nurbs_book_serial_impl(  # noqa: PLR0913
     """
     n_pts = pts.size
     knot_ids = _find_spans_and_first_basis(knots, degree, periodic, tol, pts, out_first_basis)
-    tol_rel = _scaled_denom_tol(knots, tol)
 
     for pt_id in range(n_pts):
-        _basis_funcs_point(knots, degree, tol_rel, knot_ids[pt_id], pts[pt_id], out_basis[pt_id, :])
+        _basis_funcs_point(knots, degree, knot_ids[pt_id], pts[pt_id], out_basis[pt_id, :])
 
 
 @nb_jit(
@@ -314,7 +273,6 @@ def _compute_basis_nurbs_book_serial_impl(  # noqa: PLR0913
 def _basis_derivs_point(  # noqa: PLR0913
     knots: npt.NDArray[np.float32 | np.float64],
     degree: int,
-    tol_rel: float,
     n_deriv: int,
     knot_id: int,
     pt: np.float32 | np.float64,
@@ -328,11 +286,6 @@ def _basis_derivs_point(  # noqa: PLR0913
     Args:
         knots (npt.NDArray[np.float32 | np.float64]): B-spline knot vector.
         degree (int): B-spline degree.
-        tol_rel (float): Denominator guard threshold, already scaled by the knot
-            vector's parametric span (``tol * (knots[-1] - knots[0])``; see
-            :func:`_scaled_denom_tol`). Using the pre-scaled threshold instead of a
-            plain absolute ``tol`` keeps the guard invariant under affine
-            reparametrization of the knots (shift and scale).
         n_deriv (int): Maximum derivative order to compute (>= 0).
         knot_id (int): Clamped knot-span index of ``pt``.
         pt (np.float32 | np.float64): Evaluation point.
@@ -343,13 +296,15 @@ def _basis_derivs_point(  # noqa: PLR0913
         Inputs are assumed to be correct (no validation performed). The recurrence
         denominator ``ndu[j, r]`` is a sum of two knot differences and is always
         ``>= 0`` for a non-decreasing knot vector; it is treated as zero (and the
-        corresponding term dropped) whenever it is at or below ``tol_rel``
-        (``denom <= tol_rel``). For knots stored bitwise identical (the case for
-        exactly repeated knots, since IEEE-754 subtraction is antisymmetric) the
-        denominator is exactly ``0.0`` and this rule reduces to the textbook
-        exact-zero test regardless of ``tol_rel`` -- including the degenerate case
-        ``tol_rel == 0`` (a zero-width knot-vector span), where the ``<=``
-        comparison still catches ``denom == 0`` and avoids a division by zero.
+        corresponding term dropped) exactly when ``denom == 0`` (Piegl & Tiller
+        A2.3's textbook guard). Because IEEE-754 subtraction is antisymmetric,
+        ``denom`` is exactly ``0.0`` whenever the two knots it comes from are
+        stored bitwise identical -- which is guaranteed for knots meant to be
+        equal, since :class:`~pantr.bspline.BsplineSpace1D` snaps near-duplicate
+        knots (within tolerance) to a single bitwise value at construction time
+        (see ``BsplineSpace1D._snap_knots``). No tolerance parameter is needed
+        here: the exact-zero test is scale-invariant by construction, so this
+        guard is unaffected by the knot vector's parametric span (shift or scale).
         For general use, call :func:`_tabulate_Bspline_basis_deriv_1D_impl` instead.
     """
     order = degree + 1
@@ -371,7 +326,7 @@ def _basis_derivs_point(  # noqa: PLR0913
         for r in range(j):
             ndu[j, r] = right[r + 1] + left[j - r]  # knot differences (lower triangle)
             denom = ndu[j, r]
-            temp = zero if denom <= tol_rel else ndu[r, j - 1] / denom
+            temp = zero if denom == zero else ndu[r, j - 1] / denom
             ndu[r, j] = saved + right[r + 1] * temp  # basis values (upper triangle)
             saved = left[j - r] * temp
         ndu[j, j] = saved
@@ -456,10 +411,10 @@ def _compute_basis_deriv_nurbs_book_impl(  # noqa: PLR0913
         knots (npt.NDArray[np.float32 | np.float64]): B-spline knot vector.
         degree (int): B-spline degree.
         periodic (bool): Whether the B-spline is periodic.
-        tol (float): Absolute per-dtype tolerance for numerical comparisons. Used
-            directly for periodic multiplicity detection; scaled by the knot
-            vector's span (:func:`_scaled_denom_tol`) for the Cox-de Boor
-            denominator guard, so the guard stays affine-invariant.
+        tol (float): Absolute per-dtype tolerance for numerical comparisons, used
+            for periodic multiplicity detection (see
+            :func:`_find_spans_and_first_basis`). The Cox-de Boor denominator guard
+            itself needs no tolerance; see :func:`_basis_derivs_point`.
         n_deriv (int): Maximum derivative order to compute (>= 0).
         pts (npt.NDArray[np.float32 | np.float64]): Points (1D array) to evaluate.
         out_deriv (npt.NDArray[np.float32 | np.float64]): Output array for derivative values.
@@ -473,11 +428,10 @@ def _compute_basis_deriv_nurbs_book_impl(  # noqa: PLR0913
     # See The NURBS Book, by Piegl & Tiller. Algorithm A2.3 (DerBasisFuncs)
     n_pts = pts.size
     knot_ids = _find_spans_and_first_basis(knots, degree, periodic, tol, pts, out_first_basis)
-    tol_rel = _scaled_denom_tol(knots, tol)
 
     for pt_id in nb_prange(n_pts):
         _basis_derivs_point(
-            knots, degree, tol_rel, n_deriv, knot_ids[pt_id], pts[pt_id], out_deriv[pt_id, :, :]
+            knots, degree, n_deriv, knot_ids[pt_id], pts[pt_id], out_deriv[pt_id, :, :]
         )
 
 
@@ -505,10 +459,10 @@ def _compute_basis_deriv_nurbs_book_serial_impl(  # noqa: PLR0913
         knots (npt.NDArray[np.float32 | np.float64]): B-spline knot vector.
         degree (int): B-spline degree.
         periodic (bool): Whether the B-spline is periodic.
-        tol (float): Absolute per-dtype tolerance for numerical comparisons. Used
-            directly for periodic multiplicity detection; scaled by the knot
-            vector's span (:func:`_scaled_denom_tol`) for the Cox-de Boor
-            denominator guard, so the guard stays affine-invariant.
+        tol (float): Absolute per-dtype tolerance for numerical comparisons, used
+            for periodic multiplicity detection (see
+            :func:`_find_spans_and_first_basis`). The Cox-de Boor denominator guard
+            itself needs no tolerance; see :func:`_basis_derivs_point`.
         n_deriv (int): Maximum derivative order to compute (>= 0).
         pts (npt.NDArray[np.float32 | np.float64]): Points (1D array) to evaluate.
         out_deriv (npt.NDArray[np.float32 | np.float64]): Output array for derivative values.
@@ -522,11 +476,10 @@ def _compute_basis_deriv_nurbs_book_serial_impl(  # noqa: PLR0913
     """
     n_pts = pts.size
     knot_ids = _find_spans_and_first_basis(knots, degree, periodic, tol, pts, out_first_basis)
-    tol_rel = _scaled_denom_tol(knots, tol)
 
     for pt_id in range(n_pts):
         _basis_derivs_point(
-            knots, degree, tol_rel, n_deriv, knot_ids[pt_id], pts[pt_id], out_deriv[pt_id, :, :]
+            knots, degree, n_deriv, knot_ids[pt_id], pts[pt_id], out_deriv[pt_id, :, :]
         )
 
 

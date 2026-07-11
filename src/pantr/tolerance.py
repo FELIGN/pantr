@@ -2,16 +2,19 @@
 
 The presets returned here (:func:`get_default`, :func:`get_strict`,
 :func:`get_conservative`) are **absolute** tolerances: a fixed value per dtype,
-independent of the magnitude of the values being compared. This is appropriate for
-comparisons made directly against parametric coordinates on an assumed-reasonable
-(O(1)) domain, such as knot-multiplicity detection.
+independent of the magnitude of the values being compared. This is used for
+knot-multiplicity detection (grouping near-duplicate knot values, e.g.
+``_get_unique_knots_and_multiplicity_impl``) and for canonicalizing near-duplicate
+knots to a single bitwise value at construction time
+(``BsplineSpace1D._snap_knots``).
 
-Kernels that compare a *difference of two knots* against tolerance (e.g. the
-Cox-de Boor recurrence denominator guard in
-:mod:`pantr.bspline._bspline_basis_core`) additionally scale the absolute preset by
-the knot vector's parametric span before comparing, so the guard stays invariant
-under affine reparametrization (shift and scale) of the knots. See
-``_scaled_denom_tol`` in that module for the exact rule.
+Kernels that compare a *difference of two knots* against zero -- e.g. the Cox-de
+Boor recurrence denominator guard in :mod:`pantr.bspline._bspline_basis_core`
+(``_basis_funcs_point``, ``_basis_derivs_point``) -- do **not** take a tolerance
+at all: they use an exact ``denom == 0.0`` test. This is safe (and scale-invariant
+by construction, unlike a tolerance-based guard) precisely because construction-time
+snapping already guarantees that any two knots meant to be equal are stored bitwise
+identical, so IEEE-754 subtraction makes their difference exactly zero.
 """
 
 from __future__ import annotations
