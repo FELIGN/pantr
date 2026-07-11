@@ -9,7 +9,7 @@ knots to a single bitwise value at construction time
 (``BsplineSpace1D._snap_knots``).
 
 Kernels that compare a *difference of two knots* against zero -- e.g. the Cox-de
-Boor recurrence denominator guard in :mod:`pantr.bspline._bspline_basis_core`
+Boor recurrence denominator guard in ``pantr.bspline._bspline_basis_core``
 (``_basis_funcs_point``, ``_basis_derivs_point``) -- do **not** take a tolerance
 at all: they use an exact ``denom == 0.0`` test. This is safe (and scale-invariant
 by construction, unlike a tolerance-based guard) precisely because construction-time
