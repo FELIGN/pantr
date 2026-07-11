@@ -6,6 +6,7 @@ import numpy as np
 import numpy.typing as npt
 import pytest
 
+import pantr
 from pantr.basis import (
     LagrangeVariant,
     tabulate_bernstein_1d,
@@ -2235,6 +2236,128 @@ class TestSerialParallelKernelTwins:
 
         basis_big, _ = _tabulate_Bspline_basis_1D_impl(sp, pts_big)
         np.testing.assert_allclose(basis_big.sum(axis=-1), np.ones(len(pts_big)), atol=1e-13)
+
+
+class TestParallelSpanFusionCorrectness:
+    """Regression tests for the fused span-search + Cox-de Boor prange loop (issue #255).
+
+    ``_find_span_and_first_basis_point`` is inlined into the same ``prange`` iteration
+    as the basis/derivative evaluation, replacing a separate serial span-search pass.
+    These tests force real multi-threaded execution (not just JIT compilation with the
+    default thread count) and check parity against the serial twins on both sides of the
+    ``_PARALLEL_MIN_NUM_PTS`` dispatch boundary.
+    """
+
+    @staticmethod
+    def _multithread_count() -> int:
+        """Pick a thread count greater than one for exercising the parallel kernels.
+
+        Returns:
+            int: Thread count to use, capped at 4 and at the environment's maximum.
+        """
+        import numba as nb  # noqa: PLC0415
+
+        max_threads: int = nb.config.NUMBA_NUM_THREADS
+        return max(1, min(4, max_threads))
+
+    @pytest.mark.parametrize(
+        "num_pts",
+        [
+            1,
+            _PARALLEL_MIN_NUM_PTS - 1,
+            _PARALLEL_MIN_NUM_PTS,
+            _PARALLEL_MIN_NUM_PTS + 1,
+            _PARALLEL_MIN_NUM_PTS + 5000,
+        ],
+    )
+    def test_basis_values_match_multithreaded(self, num_pts: int) -> None:
+        """Parallel BasisFuncs output matches the serial twin under real multithreading."""
+        knots = create_uniform_open_knots(num_intervals=32, degree=3)
+        sp = BsplineSpace1D(knots, 3)
+        rng = np.random.default_rng(101)
+        lo, hi = float(sp.domain[0]), float(sp.domain[1])
+        pts = lo + (hi - lo) * rng.random(num_pts)
+        pts[0], pts[-1] = lo, hi  # exercise domain-endpoint span clamping
+        order = sp.degree + 1
+
+        basis_ser = np.empty((num_pts, order), dtype=np.float64)
+        first_ser = np.empty(num_pts, dtype=np.int_)
+        _compute_basis_nurbs_book_serial_impl(
+            sp.knots, sp.degree, sp.periodic, sp.tolerance, pts, basis_ser, first_ser
+        )
+
+        with pantr.num_threads(self._multithread_count()):
+            basis_par = np.empty((num_pts, order), dtype=np.float64)
+            first_par = np.empty(num_pts, dtype=np.int_)
+            _compute_basis_nurbs_book_impl(
+                sp.knots, sp.degree, sp.periodic, sp.tolerance, pts, basis_par, first_par
+            )
+
+        np.testing.assert_array_equal(basis_par, basis_ser)
+        np.testing.assert_array_equal(first_par, first_ser)
+
+    @pytest.mark.parametrize(
+        "num_pts",
+        [
+            1,
+            _PARALLEL_MIN_NUM_PTS - 1,
+            _PARALLEL_MIN_NUM_PTS,
+            _PARALLEL_MIN_NUM_PTS + 1,
+            _PARALLEL_MIN_NUM_PTS + 5000,
+        ],
+    )
+    def test_basis_derivs_match_multithreaded(self, num_pts: int) -> None:
+        """Parallel DerBasisFuncs output matches the serial twin under real multithreading."""
+        knots = create_uniform_open_knots(num_intervals=32, degree=3)
+        sp = BsplineSpace1D(knots, 3)
+        rng = np.random.default_rng(103)
+        lo, hi = float(sp.domain[0]), float(sp.domain[1])
+        pts = lo + (hi - lo) * rng.random(num_pts)
+        pts[0], pts[-1] = lo, hi
+        order = sp.degree + 1
+        n_deriv = sp.degree + 1  # include the identically-zero row
+
+        der_ser = np.empty((num_pts, n_deriv + 1, order), dtype=np.float64)
+        first_ser = np.empty(num_pts, dtype=np.int_)
+        _compute_basis_deriv_nurbs_book_serial_impl(
+            sp.knots, sp.degree, sp.periodic, sp.tolerance, n_deriv, pts, der_ser, first_ser
+        )
+
+        with pantr.num_threads(self._multithread_count()):
+            der_par = np.empty((num_pts, n_deriv + 1, order), dtype=np.float64)
+            first_par = np.empty(num_pts, dtype=np.int_)
+            _compute_basis_deriv_nurbs_book_impl(
+                sp.knots, sp.degree, sp.periodic, sp.tolerance, n_deriv, pts, der_par, first_par
+            )
+
+        np.testing.assert_array_equal(der_par, der_ser)
+        np.testing.assert_array_equal(first_par, first_ser)
+
+    @pytest.mark.parametrize("num_pts", [_PARALLEL_MIN_NUM_PTS - 1, _PARALLEL_MIN_NUM_PTS + 1])
+    def test_periodic_basis_values_match_multithreaded(self, num_pts: int) -> None:
+        """Periodic BasisFuncs: parallel path matches serial across the dispatch boundary."""
+        periodic_knots = create_uniform_periodic_knots(num_intervals=16, degree=3)
+        sp = BsplineSpace1D(periodic_knots, 3, periodic=True)
+        rng = np.random.default_rng(107)
+        lo, hi = float(sp.domain[0]), float(sp.domain[1])
+        order = sp.degree + 1
+        pts = lo + (hi - lo) * rng.random(num_pts)
+
+        basis_ser = np.empty((num_pts, order), dtype=np.float64)
+        first_ser = np.empty(num_pts, dtype=np.int_)
+        _compute_basis_nurbs_book_serial_impl(
+            sp.knots, sp.degree, sp.periodic, sp.tolerance, pts, basis_ser, first_ser
+        )
+
+        with pantr.num_threads(self._multithread_count()):
+            basis_par = np.empty((num_pts, order), dtype=np.float64)
+            first_par = np.empty(num_pts, dtype=np.int_)
+            _compute_basis_nurbs_book_impl(
+                sp.knots, sp.degree, sp.periodic, sp.tolerance, pts, basis_par, first_par
+            )
+
+        np.testing.assert_array_equal(basis_par, basis_ser)
+        np.testing.assert_array_equal(first_par, first_ser)
 
 
 class TestKnotPredicateCaching:
