@@ -2359,6 +2359,102 @@ class TestParallelSpanFusionCorrectness:
         np.testing.assert_array_equal(basis_par, basis_ser)
         np.testing.assert_array_equal(first_par, first_ser)
 
+    @pytest.mark.parametrize("num_pts", [_PARALLEL_MIN_NUM_PTS - 1, _PARALLEL_MIN_NUM_PTS + 1])
+    def test_periodic_basis_derivs_match_multithreaded(self, num_pts: int) -> None:
+        """Periodic DerBasisFuncs: parallel path matches serial across the dispatch boundary.
+
+        Mirrors ``test_periodic_basis_values_match_multithreaded`` for the derivative
+        kernel: since ``_find_span_and_first_basis_point`` is ``inline="always"``, it is
+        compiled separately into each call site, so the periodic branch needs its own
+        coverage at the derivative call site too.
+        """
+        periodic_knots = create_uniform_periodic_knots(num_intervals=16, degree=3)
+        sp = BsplineSpace1D(periodic_knots, 3, periodic=True)
+        rng = np.random.default_rng(109)
+        lo, hi = float(sp.domain[0]), float(sp.domain[1])
+        order = sp.degree + 1
+        n_deriv = sp.degree + 1
+        pts = lo + (hi - lo) * rng.random(num_pts)
+
+        der_ser = np.empty((num_pts, n_deriv + 1, order), dtype=np.float64)
+        first_ser = np.empty(num_pts, dtype=np.int_)
+        _compute_basis_deriv_nurbs_book_serial_impl(
+            sp.knots, sp.degree, sp.periodic, sp.tolerance, n_deriv, pts, der_ser, first_ser
+        )
+
+        with pantr.num_threads(self._multithread_count()):
+            der_par = np.empty((num_pts, n_deriv + 1, order), dtype=np.float64)
+            first_par = np.empty(num_pts, dtype=np.int_)
+            _compute_basis_deriv_nurbs_book_impl(
+                sp.knots, sp.degree, sp.periodic, sp.tolerance, n_deriv, pts, der_par, first_par
+            )
+
+        np.testing.assert_array_equal(der_par, der_ser)
+        np.testing.assert_array_equal(first_par, first_ser)
+
+    @pytest.mark.parametrize("num_pts", [_PARALLEL_MIN_NUM_PTS - 1, _PARALLEL_MIN_NUM_PTS + 1])
+    @pytest.mark.parametrize("degree", [0, 1, 2, 4])
+    def test_basis_values_match_multithreaded_degree(self, degree: int, num_pts: int) -> None:
+        """BasisFuncs parallel/serial parity holds across degrees, not just degree=3.
+
+        The scalar clamp in ``_find_span_and_first_basis_point`` depends directly on
+        ``degree`` (``max_knot_id``, the lower clamp, ``first_basis``), so degree=3
+        alone would miss degree-dependent off-by-ones (e.g. degree=0, where the lower
+        clamp ``knot_id < degree`` is nearly a no-op).
+        """
+        knots = create_uniform_open_knots(num_intervals=16, degree=degree)
+        sp = BsplineSpace1D(knots, degree)
+        rng = np.random.default_rng(111)
+        lo, hi = float(sp.domain[0]), float(sp.domain[1])
+        pts = lo + (hi - lo) * rng.random(num_pts)
+        pts[0], pts[-1] = lo, hi
+        order = sp.degree + 1
+
+        basis_ser = np.empty((num_pts, order), dtype=np.float64)
+        first_ser = np.empty(num_pts, dtype=np.int_)
+        _compute_basis_nurbs_book_serial_impl(
+            sp.knots, sp.degree, sp.periodic, sp.tolerance, pts, basis_ser, first_ser
+        )
+
+        with pantr.num_threads(self._multithread_count()):
+            basis_par = np.empty((num_pts, order), dtype=np.float64)
+            first_par = np.empty(num_pts, dtype=np.int_)
+            _compute_basis_nurbs_book_impl(
+                sp.knots, sp.degree, sp.periodic, sp.tolerance, pts, basis_par, first_par
+            )
+
+        np.testing.assert_array_equal(basis_par, basis_ser)
+        np.testing.assert_array_equal(first_par, first_ser)
+
+    @pytest.mark.parametrize("num_pts", [_PARALLEL_MIN_NUM_PTS - 1, _PARALLEL_MIN_NUM_PTS + 1])
+    @pytest.mark.parametrize("degree", [0, 1, 2, 4])
+    def test_basis_derivs_match_multithreaded_degree(self, degree: int, num_pts: int) -> None:
+        """DerBasisFuncs parallel/serial parity holds across degrees, not just degree=3."""
+        knots = create_uniform_open_knots(num_intervals=16, degree=degree)
+        sp = BsplineSpace1D(knots, degree)
+        rng = np.random.default_rng(113)
+        lo, hi = float(sp.domain[0]), float(sp.domain[1])
+        pts = lo + (hi - lo) * rng.random(num_pts)
+        pts[0], pts[-1] = lo, hi
+        order = sp.degree + 1
+        n_deriv = sp.degree + 1
+
+        der_ser = np.empty((num_pts, n_deriv + 1, order), dtype=np.float64)
+        first_ser = np.empty(num_pts, dtype=np.int_)
+        _compute_basis_deriv_nurbs_book_serial_impl(
+            sp.knots, sp.degree, sp.periodic, sp.tolerance, n_deriv, pts, der_ser, first_ser
+        )
+
+        with pantr.num_threads(self._multithread_count()):
+            der_par = np.empty((num_pts, n_deriv + 1, order), dtype=np.float64)
+            first_par = np.empty(num_pts, dtype=np.int_)
+            _compute_basis_deriv_nurbs_book_impl(
+                sp.knots, sp.degree, sp.periodic, sp.tolerance, n_deriv, pts, der_par, first_par
+            )
+
+        np.testing.assert_array_equal(der_par, der_ser)
+        np.testing.assert_array_equal(first_par, first_ser)
+
 
 class TestKnotPredicateCaching:
     """Knot-structure predicates are cached and stable on immutable knots."""

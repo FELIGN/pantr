@@ -137,7 +137,8 @@ def _find_span_and_first_basis_point(
         periodic (bool): Whether the B-spline is periodic.
         num_basis (int): Total number of basis functions, precomputed once by
             the caller (e.g. via :func:`_get_Bspline_num_basis_1D_impl`) since
-            it does not depend on the point.
+            it does not depend on the point. Ignored when ``periodic`` is True
+            (callers may pass any placeholder value in that case).
         pt (np.float32 | np.float64): Evaluation point.
 
     Returns:
@@ -146,7 +147,8 @@ def _find_span_and_first_basis_point(
 
     Note:
         Inputs are assumed to be correct (no validation performed).
-        For general use, call :func:`_tabulate_Bspline_basis_1D_impl` instead.
+        For general use, call :func:`_tabulate_Bspline_basis_1D_impl` or
+        :func:`_tabulate_Bspline_basis_deriv_1D_impl` instead.
     """
     knot_id = int(np.searchsorted(knots, pt, side="right")) - 1
 
@@ -262,7 +264,9 @@ def _compute_basis_nurbs_book_impl(  # noqa: PLR0913
     """
     # See The NURBS Book, by Piegl & Tiller. Algorithm A2.2 (BasisFuncs)
     n_pts = pts.size
-    num_basis = _get_Bspline_num_basis_1D_impl(knots, degree, periodic, tol)
+    # num_basis is only used by the non-periodic clamp in _find_span_and_first_basis_point;
+    # skip computing it for periodic splines, matching _find_spans_and_first_basis's cost.
+    num_basis = 0 if periodic else _get_Bspline_num_basis_1D_impl(knots, degree, periodic, tol)
 
     for pt_id in nb_prange(n_pts):
         pt = pts[pt_id]
@@ -468,7 +472,9 @@ def _compute_basis_deriv_nurbs_book_impl(  # noqa: PLR0913
     """
     # See The NURBS Book, by Piegl & Tiller. Algorithm A2.3 (DerBasisFuncs)
     n_pts = pts.size
-    num_basis = _get_Bspline_num_basis_1D_impl(knots, degree, periodic, tol)
+    # num_basis is only used by the non-periodic clamp in _find_span_and_first_basis_point;
+    # skip computing it for periodic splines, matching _find_spans_and_first_basis's cost.
+    num_basis = 0 if periodic else _get_Bspline_num_basis_1D_impl(knots, degree, periodic, tol)
 
     for pt_id in nb_prange(n_pts):
         pt = pts[pt_id]
