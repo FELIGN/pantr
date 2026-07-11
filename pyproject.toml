@@ -40,7 +40,7 @@ classifiers = [
 dependencies = [
   "numpy>=1.26,<3",
   "scipy>=1.11,<2",
-  "numba>=0.63",
+  "numba>=0.63,<0.66",  # 0.66.0 broke mypy's view of get_num_threads/config.NUMBA_NUM_THREADS
   "threadpoolctl>=3.0",
 ]
 
