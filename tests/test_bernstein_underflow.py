@@ -27,6 +27,7 @@ This module covers:
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import Any
 
 import numpy as np
@@ -34,7 +35,15 @@ import numpy.typing as npt
 import pytest
 
 from pantr._numba_compat import wait_for_jit_warmup
-from pantr.basis._basis_core import _bernstein_derivs_point, _bernstein_point
+from pantr.basis._basis_core import (
+    _MAX_SAFE_DEGREE_NO_MIRROR_FLOAT32,
+    _MAX_SAFE_DEGREE_NO_MIRROR_FLOAT64,
+    _bernstein_derivs_point,
+    _bernstein_point,
+    _bernstein_point_no_mirror,
+    _tabulate_Bernstein_basis_1D_core,
+    _tabulate_Bernstein_basis_1D_serial_core,
+)
 from pantr.bezier._bezier_core import _evaluate_bezier_1d_core, _slice_bezier_1d_core
 
 # This module calls parallel=True Numba kernels directly (bypassing the
@@ -63,6 +72,11 @@ Narrower than `npt.DTypeLike`: calling the type directly (e.g. ``dtype(u)``)
 gives mypy a single concrete overload instead of the ambiguous ``np.void``
 fallback that ``np.dtype(some_DTypeLike).type(...)`` resolves to.
 """
+
+_TabulateFn = Callable[
+    [np.int32, npt.NDArray[np.floating[Any]], npt.NDArray[np.floating[Any]]], None
+]
+"""Shared signature of `_tabulate_Bernstein_basis_1D_core` and its serial twin."""
 
 
 def _eval_bernstein_row(n: int, u: float, dtype: _Float32Or64) -> npt.NDArray[np.floating[Any]]:
@@ -214,3 +228,144 @@ class TestFusedBezierKernel:
         _slice_bezier_1d_core(ctrl, u, out_ref)
 
         np.testing.assert_allclose(out_fused[0], out_ref, rtol=1e-10, atol=1e-10)
+
+    def test_batch_of_mixed_points_matches_de_casteljau(self) -> None:
+        """A single batched call mixing both branches matches de Casteljau per point.
+
+        `_evaluate_bezier_1d_core` is a ``parallel=True``/``prange`` kernel: a
+        batch with more than one point, spanning the forward branch, the
+        mirrored branch, and the shared boundary, guards against any
+        cross-iteration state-sharing bug the branch could introduce (each
+        point's ``b_curr`` must stay independent of every other point's).
+        """
+        degree = 30
+        rank = 3
+        pts = np.array([0.0, 0.1, 0.25, 0.5, 0.5 + _EPS64, 0.75, 1.0 - 1e-12, 1.0 - 1e-16, 1.0])
+        rng = np.random.default_rng(7)
+        ctrl = rng.normal(size=(degree + 1, rank))
+
+        out_fused = np.empty((pts.size, rank), dtype=np.float64)
+        _evaluate_bezier_1d_core(ctrl, pts, out_fused)
+
+        for k, u in enumerate(pts):
+            out_ref = np.empty(rank, dtype=np.float64)
+            _slice_bezier_1d_core(ctrl, float(u), out_ref)
+            np.testing.assert_allclose(out_fused[k], out_ref, rtol=1e-10, atol=1e-10)
+
+
+class TestBernsteinPointNoMirror:
+    """Pin the fast path's "bit-identical to the pre-issue-#258 recurrence" contract."""
+
+    @pytest.mark.parametrize("u", [u for u in _U64 if u <= 0.5] + [1.0], ids=lambda u: f"{u:.17g}")
+    @pytest.mark.parametrize("degree", [0, 1, 2, 5, 10, _MAX_SAFE_DEGREE_NO_MIRROR_FLOAT64])
+    def test_bitwise_identical_where_both_take_the_same_code_path(
+        self, degree: int, u: float
+    ) -> None:
+        """`_bernstein_point_no_mirror` is bit-identical to `_bernstein_point`.
+
+        Only where they run the *textually identical* code: `_bernstein_point`
+        takes its own forward branch (unbranched, matching
+        `_bernstein_point_no_mirror` line for line) for ``u <= 0.5``, and both
+        functions special-case ``u == 1.0`` identically. This is the
+        "byte-for-byte-unbranched fast path" contract from
+        `_bernstein_point_no_mirror`'s docstring.
+        """
+        out_no_mirror = np.empty(degree + 1, dtype=np.float64)
+        _bernstein_point_no_mirror(np.int32(degree), np.float64(u), out_no_mirror)
+
+        out_mirrored = _eval_bernstein_row(degree, u, np.float64)
+
+        np.testing.assert_array_equal(out_no_mirror, out_mirrored)
+
+    @pytest.mark.parametrize("u", [u for u in _U64 if 0.5 < u < 1.0], ids=lambda u: f"{u:.17g}")
+    @pytest.mark.parametrize("degree", [2, 5, 10, _MAX_SAFE_DEGREE_NO_MIRROR_FLOAT64])
+    def test_matches_mirrored_kernel_within_a_few_ulp_for_u_above_half(
+        self, degree: int, u: float
+    ) -> None:
+        """For ``u > 0.5`` (excluding 1.0) the two paths take different code.
+
+        `_bernstein_point` mirrors (forward recurrence on ``1-u`` then
+        reversed) while `_bernstein_point_no_mirror` always runs forward on
+        ``u`` directly. Both are mathematically correct at these safe
+        degrees, but accumulate the same value through different sequences
+        of floating-point operations, so they are compared within a few ULPs
+        rather than bit-for-bit (same rationale as
+        `TestForwardMirroredSymmetry`).
+        """
+        out_no_mirror = np.empty(degree + 1, dtype=np.float64)
+        _bernstein_point_no_mirror(np.int32(degree), np.float64(u), out_no_mirror)
+
+        out_mirrored = _eval_bernstein_row(degree, u, np.float64)
+
+        np.testing.assert_allclose(
+            out_no_mirror, out_mirrored, rtol=degree * _EPS64, atol=degree * _EPS64
+        )
+
+    def test_partition_of_unity_at_max_safe_degree(self) -> None:
+        """The fast path holds partition of unity at its own proven degree bound.
+
+        Uses the exact worst-case point (`np.nextafter(1.0, 0.0)`, the
+        representable float64 closest to 1) that the docstring's underflow
+        analysis is based on.
+        """
+        degree = _MAX_SAFE_DEGREE_NO_MIRROR_FLOAT64
+        u = np.nextafter(1.0, 0.0)
+        out_row = np.empty(degree + 1, dtype=np.float64)
+        _bernstein_point_no_mirror(np.int32(degree), u, out_row)
+        assert abs(float(out_row.sum()) - 1.0) <= 8 * degree * _EPS64
+
+
+class TestDegreeGateDispatch:
+    """The batch tabulation kernels must dispatch correctly at the safe-degree boundary."""
+
+    @pytest.mark.parametrize(
+        ("dtype", "max_safe_degree", "eps", "worst_case_u"),
+        [
+            pytest.param(
+                np.float64,
+                _MAX_SAFE_DEGREE_NO_MIRROR_FLOAT64,
+                _EPS64,
+                np.nextafter(np.float64(1.0), np.float64(0.0)),
+                id="float64",
+            ),
+            pytest.param(
+                np.float32,
+                _MAX_SAFE_DEGREE_NO_MIRROR_FLOAT32,
+                _EPS32,
+                np.nextafter(np.float32(1.0), np.float32(0.0)),
+                id="float32",
+            ),
+        ],
+    )
+    @pytest.mark.parametrize(
+        "tabulate_fn",
+        [_tabulate_Bernstein_basis_1D_core, _tabulate_Bernstein_basis_1D_serial_core],
+        ids=["parallel", "serial"],
+    )
+    def test_partition_of_unity_across_the_boundary(
+        self,
+        tabulate_fn: _TabulateFn,
+        dtype: _Float32Or64,
+        max_safe_degree: int,
+        eps: float,
+        worst_case_u: np.floating[Any],
+    ) -> None:
+        """Both the branch-free fast path and the mirrored path stay correct.
+
+        Degree ``max_safe_degree`` must take the fast (branch-free) dispatch
+        path; degree ``max_safe_degree + 1`` is the first degree where the
+        fast path would fail, so it must take the mirrored path instead —
+        this is the regression guard that the dispatch boundary itself
+        doesn't reintroduce issue #258 right where it matters. Runs both the
+        parallel (`_tabulate_Bernstein_basis_1D_core`) and serial
+        (`_tabulate_Bernstein_basis_1D_serial_core`) twins, since the dispatch
+        logic is duplicated between them.
+        """
+        t: npt.NDArray[np.floating[Any]] = np.array([worst_case_u], dtype=dtype)
+        for degree in (max_safe_degree, max_safe_degree + 1):
+            out: npt.NDArray[np.floating[Any]] = np.empty((1, degree + 1), dtype=dtype)
+            tabulate_fn(np.int32(degree), t, out)
+            total = float(out[0].sum())
+            assert abs(total - 1.0) <= 8 * degree * eps, (
+                f"degree={degree} (max_safe_degree={max_safe_degree}) sum={total}"
+            )
