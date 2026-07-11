@@ -1,4 +1,18 @@
-"""Tolerance utilities for floating-point comparisons in IGA applications."""
+"""Tolerance utilities for floating-point comparisons in IGA applications.
+
+The presets returned here (:func:`get_default`, :func:`get_strict`,
+:func:`get_conservative`) are **absolute** tolerances: a fixed value per dtype,
+independent of the magnitude of the values being compared. This is appropriate for
+comparisons made directly against parametric coordinates on an assumed-reasonable
+(O(1)) domain, such as knot-multiplicity detection.
+
+Kernels that compare a *difference of two knots* against tolerance (e.g. the
+Cox-de Boor recurrence denominator guard in
+:mod:`pantr.bspline._bspline_basis_core`) additionally scale the absolute preset by
+the knot vector's parametric span before comparing, so the guard stays invariant
+under affine reparametrization (shift and scale) of the knots. See
+``_scaled_denom_tol`` in that module for the exact rule.
+"""
 
 from __future__ import annotations
 
