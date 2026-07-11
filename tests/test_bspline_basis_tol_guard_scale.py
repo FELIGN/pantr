@@ -49,9 +49,10 @@ class TestScaleDependentDenominatorGuard:
         strict preset (``1e-15``, see :func:`pantr.tolerance.get_strict`). Every
         local knot span is well below ``tol`` even though it is not zero; before the
         fix this made the guard incorrectly collapse every Cox-de Boor contribution,
-        so the basis functions no longer summed to one. ``tol`` is still passed to
-        the kernel (it is used for periodic multiplicity detection) but no longer
-        affects the denominator guard, which is now an exact ``denom == 0.0`` test.
+        so the basis functions no longer summed to one. ``tol`` is still a required
+        argument of the kernel (unrelated interface reasons, see
+        ``_find_spans_and_first_basis``) but no longer affects the denominator
+        guard, which is now an exact ``denom == 0.0`` test.
         """
         scale = 1e-16
         knots = np.array([0.0, 0.0, 0.0, 0.25, 0.5, 0.75, 1.0, 1.0, 1.0], dtype=np.float64) * scale
@@ -292,3 +293,26 @@ class TestConsistencyWithMultiplicity:
 
         assert np.all(np.isfinite(basis))
         np.testing.assert_allclose(basis.sum(axis=-1), 1.0, atol=1e-13)
+
+    def test_snap_knots_false_near_duplicate_not_worse_than_absolute_tol(self) -> None:
+        """With snapping disabled, a near-duplicate knot pair must not be zeroed.
+
+        ``BsplineSpace1D(..., snap_knots=False)`` opts out of the construction-time
+        canonicalization the exact-zero guard otherwise relies on, so this pair
+        (one float64 ULP apart) stays genuinely distinct, not bitwise-identical.
+        Found in review: the previous absolute-tolerance guard (``denom < tol``)
+        zeroed every contribution at the smaller of the two knots (an all-zero,
+        partition-of-unity-violating row); the exact-zero guard does not, since it
+        only special-cases a *literal* zero denominator and otherwise evaluates the
+        (numerically well-defined, if poorly conditioned) division normally.
+        """
+        a = 0.5
+        b = np.nextafter(a, -np.inf)
+        knots = np.array([0.0, 0.0, 0.0, 0.0, b, a, a, a, 1.0, 1.0, 1.0, 1.0], dtype=np.float64)
+        space = BsplineSpace1D(knots, 3, snap_knots=False)
+        assert space.knots[4] != space.knots[5]  # genuinely distinct, not snapped
+
+        basis, _ = space.tabulate_basis(np.array([b], dtype=np.float64))
+
+        assert np.all(np.isfinite(basis))
+        np.testing.assert_allclose(basis.sum(axis=-1), 1.0, atol=1e-12)

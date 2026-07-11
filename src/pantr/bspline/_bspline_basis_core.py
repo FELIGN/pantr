@@ -139,13 +139,16 @@ def _basis_funcs_point(
         non-decreasing knot vector; it is treated as zero (and the corresponding
         term dropped) exactly when ``denom == 0`` (Piegl & Tiller A2.2's textbook
         guard). Because IEEE-754 subtraction is antisymmetric, ``denom`` is exactly
-        ``0.0`` whenever the two knots it comes from are stored bitwise identical --
-        which is guaranteed for knots meant to be equal, since
-        :class:`~pantr.bspline.BsplineSpace1D` snaps near-duplicate knots (within
-        tolerance) to a single bitwise value at construction time (see
-        ``BsplineSpace1D._snap_knots``). No tolerance parameter is needed here: the
-        exact-zero test is scale-invariant by construction, so this guard is
-        unaffected by the knot vector's parametric span (shift or scale).
+        ``0.0`` whenever the two knots it comes from are stored bitwise identical.
+        This holds for knots meant to be equal when the space was constructed with
+        the default ``snap_knots=True``, which snaps near-duplicate knots (within
+        tolerance) to a single bitwise value (see ``BsplineSpace1D._snap_knots``);
+        callers that build a knot vector with ``snap_knots=False`` (or bypass
+        :class:`~pantr.bspline.BsplineSpace1D` and call this kernel directly) are
+        responsible for the knot vector's own consistency. No tolerance parameter
+        is needed here regardless: the exact-zero test is scale-invariant by
+        construction, so this guard is unaffected by the knot vector's parametric
+        span (shift or scale).
         For general use, call :func:`_tabulate_Bspline_basis_1D_impl` instead.
     """
     order = degree + 1
@@ -198,10 +201,13 @@ def _compute_basis_nurbs_book_impl(  # noqa: PLR0913
         knots (npt.NDArray[np.float32 | np.float64]): B-spline knot vector.
         degree (int): B-spline degree.
         periodic (bool): Whether the B-spline is periodic.
-        tol (float): Absolute per-dtype tolerance for numerical comparisons, used
-            for periodic multiplicity detection (see
-            :func:`_find_spans_and_first_basis`). The Cox-de Boor denominator guard
-            itself needs no tolerance; see :func:`_basis_funcs_point`.
+        tol (float): Absolute per-dtype tolerance, threaded through to
+            :func:`_find_spans_and_first_basis` for interface consistency with the
+            space's other tolerance-based conventions (e.g.
+            :func:`_get_Bspline_num_basis_1D_impl`'s periodic-regularity path); it
+            does not affect this function's own behavior. The Cox-de Boor
+            denominator guard itself needs no tolerance; see
+            :func:`_basis_funcs_point`.
         pts (npt.NDArray[np.float32 | np.float64]): Points (1D array) to evaluate basis
             functions at.
         out_basis (npt.NDArray[np.float32 | np.float64]): Output array for basis values.
@@ -243,10 +249,13 @@ def _compute_basis_nurbs_book_serial_impl(  # noqa: PLR0913
         knots (npt.NDArray[np.float32 | np.float64]): B-spline knot vector.
         degree (int): B-spline degree.
         periodic (bool): Whether the B-spline is periodic.
-        tol (float): Absolute per-dtype tolerance for numerical comparisons, used
-            for periodic multiplicity detection (see
-            :func:`_find_spans_and_first_basis`). The Cox-de Boor denominator guard
-            itself needs no tolerance; see :func:`_basis_funcs_point`.
+        tol (float): Absolute per-dtype tolerance, threaded through to
+            :func:`_find_spans_and_first_basis` for interface consistency with the
+            space's other tolerance-based conventions (e.g.
+            :func:`_get_Bspline_num_basis_1D_impl`'s periodic-regularity path); it
+            does not affect this function's own behavior. The Cox-de Boor
+            denominator guard itself needs no tolerance; see
+            :func:`_basis_funcs_point`.
         pts (npt.NDArray[np.float32 | np.float64]): Points (1D array) to evaluate basis
             functions at.
         out_basis (npt.NDArray[np.float32 | np.float64]): Output array for basis values.
@@ -299,12 +308,15 @@ def _basis_derivs_point(  # noqa: PLR0913
         corresponding term dropped) exactly when ``denom == 0`` (Piegl & Tiller
         A2.3's textbook guard). Because IEEE-754 subtraction is antisymmetric,
         ``denom`` is exactly ``0.0`` whenever the two knots it comes from are
-        stored bitwise identical -- which is guaranteed for knots meant to be
-        equal, since :class:`~pantr.bspline.BsplineSpace1D` snaps near-duplicate
-        knots (within tolerance) to a single bitwise value at construction time
-        (see ``BsplineSpace1D._snap_knots``). No tolerance parameter is needed
-        here: the exact-zero test is scale-invariant by construction, so this
-        guard is unaffected by the knot vector's parametric span (shift or scale).
+        stored bitwise identical. This holds for knots meant to be equal when the
+        space was constructed with the default ``snap_knots=True``, which snaps
+        near-duplicate knots (within tolerance) to a single bitwise value (see
+        ``BsplineSpace1D._snap_knots``); callers that build a knot vector with
+        ``snap_knots=False`` (or bypass :class:`~pantr.bspline.BsplineSpace1D` and
+        call this kernel directly) are responsible for the knot vector's own
+        consistency. No tolerance parameter is needed here regardless: the
+        exact-zero test is scale-invariant by construction, so this guard is
+        unaffected by the knot vector's parametric span (shift or scale).
         For general use, call :func:`_tabulate_Bspline_basis_deriv_1D_impl` instead.
     """
     order = degree + 1
@@ -411,10 +423,13 @@ def _compute_basis_deriv_nurbs_book_impl(  # noqa: PLR0913
         knots (npt.NDArray[np.float32 | np.float64]): B-spline knot vector.
         degree (int): B-spline degree.
         periodic (bool): Whether the B-spline is periodic.
-        tol (float): Absolute per-dtype tolerance for numerical comparisons, used
-            for periodic multiplicity detection (see
-            :func:`_find_spans_and_first_basis`). The Cox-de Boor denominator guard
-            itself needs no tolerance; see :func:`_basis_derivs_point`.
+        tol (float): Absolute per-dtype tolerance, threaded through to
+            :func:`_find_spans_and_first_basis` for interface consistency with the
+            space's other tolerance-based conventions (e.g.
+            :func:`_get_Bspline_num_basis_1D_impl`'s periodic-regularity path); it
+            does not affect this function's own behavior. The Cox-de Boor
+            denominator guard itself needs no tolerance; see
+            :func:`_basis_derivs_point`.
         n_deriv (int): Maximum derivative order to compute (>= 0).
         pts (npt.NDArray[np.float32 | np.float64]): Points (1D array) to evaluate.
         out_deriv (npt.NDArray[np.float32 | np.float64]): Output array for derivative values.
@@ -459,10 +474,13 @@ def _compute_basis_deriv_nurbs_book_serial_impl(  # noqa: PLR0913
         knots (npt.NDArray[np.float32 | np.float64]): B-spline knot vector.
         degree (int): B-spline degree.
         periodic (bool): Whether the B-spline is periodic.
-        tol (float): Absolute per-dtype tolerance for numerical comparisons, used
-            for periodic multiplicity detection (see
-            :func:`_find_spans_and_first_basis`). The Cox-de Boor denominator guard
-            itself needs no tolerance; see :func:`_basis_derivs_point`.
+        tol (float): Absolute per-dtype tolerance, threaded through to
+            :func:`_find_spans_and_first_basis` for interface consistency with the
+            space's other tolerance-based conventions (e.g.
+            :func:`_get_Bspline_num_basis_1D_impl`'s periodic-regularity path); it
+            does not affect this function's own behavior. The Cox-de Boor
+            denominator guard itself needs no tolerance; see
+            :func:`_basis_derivs_point`.
         n_deriv (int): Maximum derivative order to compute (>= 0).
         pts (npt.NDArray[np.float32 | np.float64]): Points (1D array) to evaluate.
         out_deriv (npt.NDArray[np.float32 | np.float64]): Output array for derivative values.
