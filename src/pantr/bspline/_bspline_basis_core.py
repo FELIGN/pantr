@@ -114,6 +114,63 @@ def _find_spans_and_first_basis(  # noqa: PLR0913
     cache=True,
     inline="always",
 )
+def _find_span_and_first_basis_point(
+    knots: npt.NDArray[np.float32 | np.float64],
+    degree: int,
+    periodic: bool,
+    num_basis: int,
+    pt: np.float32 | np.float64,
+) -> tuple[int, int]:
+    """Compute the clamped knot-span and first-basis index for one point.
+
+    Per-point body of :func:`_find_spans_and_first_basis`.  Inlined
+    (``inline="always"``) into the parallel ``BasisFuncs``/``DerBasisFuncs``
+    kernels so span search and Cox-de Boor evaluation both run inside the same
+    ``prange`` iteration, instead of a first serial pass over all points
+    followed by a second parallel pass. See :func:`_find_spans_and_first_basis`
+    for the two-step clamping rationale (out-of-domain spans, negative knot
+    indices); the logic here is the scalar equivalent.
+
+    Args:
+        knots (npt.NDArray[np.float32 | np.float64]): B-spline knot vector.
+        degree (int): B-spline degree.
+        periodic (bool): Whether the B-spline is periodic.
+        num_basis (int): Total number of basis functions, precomputed once by
+            the caller (e.g. via :func:`_get_Bspline_num_basis_1D_impl`) since
+            it does not depend on the point.
+        pt (np.float32 | np.float64): Evaluation point.
+
+    Returns:
+        tuple[int, int]: ``(knot_id, first_basis)`` — the clamped knot-span
+        index and the index of the first active basis function at ``pt``.
+
+    Note:
+        Inputs are assumed to be correct (no validation performed).
+        For general use, call :func:`_tabulate_Bspline_basis_1D_impl` instead.
+    """
+    knot_id = int(np.searchsorted(knots, pt, side="right")) - 1
+
+    # Clamp to the last in-domain span (see _find_spans_and_first_basis).
+    max_knot_id = knots.size - degree - 2
+    knot_id = min(knot_id, max_knot_id)
+    knot_id = max(knot_id, degree)
+
+    if periodic:
+        first_basis = knot_id - degree
+    else:
+        order = degree + 1
+        first_basis = knot_id - degree
+        max_first_basis = num_basis - order
+        first_basis = min(first_basis, max_first_basis)
+
+    return knot_id, first_basis
+
+
+@nb_jit(
+    nopython=True,
+    cache=True,
+    inline="always",
+)
 def _basis_funcs_point(  # noqa: PLR0913
     knots: npt.NDArray[np.float32 | np.float64],
     degree: int,
@@ -179,11 +236,14 @@ def _compute_basis_nurbs_book_impl(  # noqa: PLR0913
     """Evaluate B-spline basis functions using BasisFuncs (Piegl & Tiller A2.2).
 
     This function implements Algorithm A2.2 from "The NURBS Book" by Piegl & Tiller.
-    Results are written directly to the output arrays (C-style).  The outer loop
-    over evaluation points is parallelized via ``prange``; for small batches
-    (fewer than ``_PARALLEL_MIN_NUM_PTS`` points) prefer the serial twin
-    :func:`_compute_basis_nurbs_book_serial_impl`, which avoids the parallel
-    launch overhead.
+    Results are written directly to the output arrays (C-style).  Each point's span
+    search and Cox-de Boor evaluation are independent, so both are fused into a
+    single ``prange`` loop over evaluation points (span search alone does not
+    parallelize well enough on its own to be worth a separate pass — see
+    :func:`_find_spans_and_first_basis`, which remains serial for the small-batch
+    twin below).  For small batches (fewer than ``_PARALLEL_MIN_NUM_PTS`` points)
+    prefer the serial twin :func:`_compute_basis_nurbs_book_serial_impl`, which
+    avoids the parallel launch overhead.
 
     Args:
         knots (npt.NDArray[np.float32 | np.float64]): B-spline knot vector.
@@ -202,10 +262,15 @@ def _compute_basis_nurbs_book_impl(  # noqa: PLR0913
     """
     # See The NURBS Book, by Piegl & Tiller. Algorithm A2.2 (BasisFuncs)
     n_pts = pts.size
-    knot_ids = _find_spans_and_first_basis(knots, degree, periodic, tol, pts, out_first_basis)
+    num_basis = _get_Bspline_num_basis_1D_impl(knots, degree, periodic, tol)
 
     for pt_id in nb_prange(n_pts):
-        _basis_funcs_point(knots, degree, tol, knot_ids[pt_id], pts[pt_id], out_basis[pt_id, :])
+        pt = pts[pt_id]
+        knot_id, first_basis = _find_span_and_first_basis_point(
+            knots, degree, periodic, num_basis, pt
+        )
+        out_first_basis[pt_id] = first_basis
+        _basis_funcs_point(knots, degree, tol, knot_id, pt, out_basis[pt_id, :])
 
 
 @nb_jit(
@@ -373,8 +438,11 @@ def _compute_basis_deriv_nurbs_book_impl(  # noqa: PLR0913
     """Evaluate B-spline basis function derivatives using DerBasisFuncs (Piegl & Tiller A2.3).
 
     This function implements Algorithm A2.3 from "The NURBS Book" by Piegl & Tiller.
-    Results are written directly to the output arrays (C-style).  The outer loop
-    over evaluation points is parallelized via ``prange``; for small batches
+    Results are written directly to the output arrays (C-style).  Each point's span
+    search and derivative evaluation are independent, so both are fused into a
+    single ``prange`` loop over evaluation points (mirrors
+    :func:`_compute_basis_nurbs_book_impl`; see :func:`_find_spans_and_first_basis`,
+    which remains serial for the small-batch twin below).  For small batches
     (fewer than ``_PARALLEL_MIN_NUM_PTS`` points) prefer the serial twin
     :func:`_compute_basis_deriv_nurbs_book_serial_impl`, which avoids the
     parallel launch overhead.
@@ -400,12 +468,15 @@ def _compute_basis_deriv_nurbs_book_impl(  # noqa: PLR0913
     """
     # See The NURBS Book, by Piegl & Tiller. Algorithm A2.3 (DerBasisFuncs)
     n_pts = pts.size
-    knot_ids = _find_spans_and_first_basis(knots, degree, periodic, tol, pts, out_first_basis)
+    num_basis = _get_Bspline_num_basis_1D_impl(knots, degree, periodic, tol)
 
     for pt_id in nb_prange(n_pts):
-        _basis_derivs_point(
-            knots, degree, tol, n_deriv, knot_ids[pt_id], pts[pt_id], out_deriv[pt_id, :, :]
+        pt = pts[pt_id]
+        knot_id, first_basis = _find_span_and_first_basis_point(
+            knots, degree, periodic, num_basis, pt
         )
+        out_first_basis[pt_id] = first_basis
+        _basis_derivs_point(knots, degree, tol, n_deriv, knot_id, pt, out_deriv[pt_id, :, :])
 
 
 @nb_jit(
