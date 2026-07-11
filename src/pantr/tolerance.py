@@ -1,4 +1,24 @@
-"""Tolerance utilities for floating-point comparisons in IGA applications."""
+"""Tolerance utilities for floating-point comparisons in IGA applications.
+
+The presets returned here (:func:`get_default`, :func:`get_strict`,
+:func:`get_conservative`) are **absolute** tolerances: a fixed value per dtype,
+independent of the magnitude of the values being compared. This is used for
+knot-multiplicity detection (grouping near-duplicate knot values, e.g.
+``_get_unique_knots_and_multiplicity_impl``) and for canonicalizing near-duplicate
+knots to a single bitwise value at construction time
+(``BsplineSpace1D._snap_knots``).
+
+Kernels that compare a *difference of two knots* against zero -- e.g. the Cox-de
+Boor recurrence denominator guard in ``pantr.bspline._bspline_basis_core``
+(``_basis_funcs_point``, ``_basis_derivs_point``) -- do **not** take a tolerance
+at all: they use an exact ``denom == 0.0`` test, which is scale-invariant by
+construction (unlike a tolerance-based guard). This is safe whenever any two knots
+meant to be equal are stored bitwise identical, so IEEE-754 subtraction makes their
+difference exactly zero -- the default ``snap_knots=True`` construction path
+guarantees this by snapping near-duplicate knots together; callers that opt out of
+snapping (``snap_knots=False``) or call the kernels directly are responsible for
+the knot vector's own consistency.
+"""
 
 from __future__ import annotations
 
