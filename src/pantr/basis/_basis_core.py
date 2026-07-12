@@ -19,6 +19,41 @@ Below this threshold the fork/join overhead of a parallel Numba kernel launch
 the Layer-2 tabulation helpers dispatch to the serial twin kernels instead.
 """
 
+_MIRROR_THRESHOLD = 0.5
+"""Midpoint used to pick the Bernstein ratio-recurrence branch in `_bernstein_point`.
+
+Bounds the recurrence seed (``(1-u)^n`` or ``u^n``) below by ``0.5^n``, so it
+never underflows regardless of degree.
+"""
+
+_MAX_SAFE_DEGREE_NO_MIRROR_FLOAT64 = 20
+"""Largest float64 degree for which the plain (unmirrored) forward recurrence
+cannot underflow for *any* representable ``u``.
+
+The smallest positive ``1 - u`` for a representable float64 ``u < 1`` is half
+a ULP below 1, i.e. ``2**-53`` (attained at ``u = np.nextafter(1.0, 0.0)``).
+``(2**-53)**n`` first underflows to exactly ``0.0`` (below the smallest
+float64 subnormal, ``2**-1074``) once ``53 * n > 1074``, i.e. at ``n = 21``.
+Verified empirically: partition of unity holds within ``8*n*eps`` at that
+worst-case ``u`` for every ``n`` up to 20, and fails at ``n = 21``. Used by
+the tabulation kernels to dispatch to :func:`_bernstein_point_no_mirror`
+(bit-identical to the pre-fix recurrence) instead of the mirrored
+:func:`_bernstein_point`, avoiding the mirror branch's overhead entirely for
+degrees where it can provably never be needed.
+"""
+
+_MAX_SAFE_DEGREE_NO_MIRROR_FLOAT32 = 6
+"""Float32 analogue of `_MAX_SAFE_DEGREE_NO_MIRROR_FLOAT64`.
+
+The smallest positive ``1 - u`` for representable float32 ``u < 1`` is
+``2**-24``; the smallest float32 subnormal is ``2**-149``. Underflow to exact
+``0.0`` first occurs once ``24 * n > 149``, i.e. at ``n = 7``. Verified
+empirically (see `_MAX_SAFE_DEGREE_NO_MIRROR_FLOAT64`): safe up to ``n = 6``.
+"""
+
+_FLOAT64_ITEMSIZE = 8
+"""Byte width of a float64 element, used to pick the safe-degree threshold by dtype."""
+
 
 @nb_jit(
     nopython=True,
@@ -32,8 +67,31 @@ def _bernstein_point(
 ) -> None:
     """Evaluate all Bernstein basis polynomials of degree ``n`` at one point.
 
-    Recurrence: ``B_0,n(u) = (1-u)^n``; ``B_i,n = B_{i-1},n * ((n-i+1)/i) * (u/(1-u))``.
-    ``u == 1.0`` is special-cased (the recurrence would produce NaN).
+    Uses the O(n) ratio recurrence, run from whichever endpoint keeps the seed
+    term bounded away from underflow, exploiting the symmetry
+    ``B_i,n(u) = B_{n-i},n(1-u)``:
+
+    - ``u <= 0.5``: forward recurrence from ``u = 0``, written directly into
+      ``out_row`` in ascending order:
+      ``B_0,n(u) = (1-u)^n``; ``B_i,n = B_{i-1},n * ((n-i+1)/i) * (u/(1-u))``.
+    - ``u > 0.5``: the same forward recurrence run on ``1-u`` in place of
+      ``u`` (seed ``u^n``, ratio ``(1-u)/u``) — which by the symmetry above
+      computes ``B_i,n(1-u) = B_{n-i},n(u)`` into ``out_row[i]`` — followed by
+      an in-place reversal of ``out_row`` to restore ``B_i,n(u)`` at index
+      ``i``. Reusing the *ascending* loop (rather than accumulating directly
+      into descending indices) avoids a measured slowdown from the
+      decreasing-index store pattern a naive mirrored loop would produce.
+
+    Branching on the midpoint bounds the seed (``(1-u)^n`` or ``u^n``) below
+    by ``0.5^n``, so it never underflows for any representable degree ``n``.
+    Without the branch, the forward seed ``(1-u)^n`` underflows to exact
+    ``0.0`` once ``u`` is close enough to 1 at high degree, and every
+    subsequent term (a positive multiple of the previous one) stays zero —
+    including ``B_n,n``, whose true value is near 1 — silently breaking
+    partition of unity. ``u == 1.0`` needs no special-casing: the mirrored
+    branch handles it exactly (``u^n == 1.0``, then every step multiplies by
+    ``(1-u)/u == 0.0``, and the reversal is a no-op on the resulting
+    ``[1.0, 0.0, ..., 0.0]`` row read backwards).
 
     Args:
         n (np.int32): Degree of the Bernstein polynomials (>= 0).
@@ -44,13 +102,76 @@ def _bernstein_point(
         Inputs are assumed to be correct (no validation performed).
         For general use, call :func:`_tabulate_Bernstein_basis_1D_impl` instead.
     """
+    if u > _MIRROR_THRESHOLD:
+        # Mirrored recurrence from u=1, computed as the forward recurrence on
+        # 1-u (seed u^n >= 0.5^n never underflows) written ascending into
+        # out_row, then reversed in place to land B_i,n(u) at index i.
+        one_minus_u = 1.0 - u
+        out_row[0] = np.power(u, n)
+        one_minus_u_over_u = one_minus_u / u
+        for i in range(1, n + 1):
+            const_factor = (n - i + 1.0) / i
+            out_row[i] = out_row[i - 1] * const_factor * one_minus_u_over_u
+        lo = 0
+        hi = n
+        while lo < hi:
+            tmp = out_row[lo]
+            out_row[lo] = out_row[hi]
+            out_row[hi] = tmp
+            lo += 1
+            hi -= 1
+    else:
+        # Forward recurrence from u=0: seed B_0,n(u) = (1-u)^n is >= 0.5^n, so
+        # it never underflows.
+        one_minus_u = 1.0 - u
+        out_row[0] = np.power(one_minus_u, n)
+        t_over_1mt = u / one_minus_u
+        for i in range(1, n + 1):
+            const_factor = (n - i + 1.0) / i
+            out_row[i] = out_row[i - 1] * const_factor * t_over_1mt
+
+
+@nb_jit(
+    nopython=True,
+    cache=True,
+    inline="always",
+)
+def _bernstein_point_no_mirror(
+    n: np.int32,
+    u: np.float32 | np.float64,
+    out_row: npt.NDArray[np.float32 | np.float64],
+) -> None:
+    """Evaluate Bernstein basis polynomials at one point via the plain forward recurrence.
+
+    Bit-identical to the pre-issue-#258 recurrence: ``B_0,n(u) = (1-u)^n``,
+    ``B_i,n = B_{i-1},n * ((n-i+1)/i) * (u/(1-u))``, with ``u == 1.0``
+    special-cased directly. Callers must only use this for degrees at or
+    below `_MAX_SAFE_DEGREE_NO_MIRROR_FLOAT64` (float64) or
+    `_MAX_SAFE_DEGREE_NO_MIRROR_FLOAT32` (float32), where the seed
+    ``(1-u)^n`` is proven to never underflow — this function has none of
+    :func:`_bernstein_point`'s mirroring, so it is unsafe for higher degrees.
+    Kept as a byte-for-byte-unbranched fast path purely for performance: the
+    tabulation kernels dispatch to it once per batch (not per point) so that
+    low-degree callers, which can never hit the underflow this issue fixes,
+    pay zero overhead for the mirror-branch machinery.
+
+    Args:
+        n (np.int32): Degree of the Bernstein polynomials (>= 0), at or below
+            the relevant `_MAX_SAFE_DEGREE_NO_MIRROR_*` bound for ``u``'s dtype.
+        u (np.float32 | np.float64): Evaluation point.
+        out_row (npt.NDArray[np.float32 | np.float64]): Output row of length ``n + 1``.
+
+    Note:
+        Inputs are assumed to be correct (no validation performed), including
+        the degree bound above: this is a private performance fast path, not
+        a general-purpose entry point.
+        For general use, call :func:`_tabulate_Bernstein_basis_1D_impl` instead.
+    """
     if u == 1.0:
-        # At t=1.0: only B_n,n(1) = 1, all others are 0
         for i in range(out_row.shape[0]):
             out_row[i] = 0.0
         out_row[n] = 1.0
     else:
-        # For t != 1.0, use recurrence relation
         one_minus_u = 1.0 - u
         out_row[0] = np.power(one_minus_u, n)
         t_over_1mt = u / one_minus_u
@@ -81,6 +202,13 @@ def _tabulate_Bernstein_basis_1D_core(
     serial twin :func:`_tabulate_Bernstein_basis_1D_serial_core`, which avoids
     the parallel launch overhead.
 
+    The degree/dtype check against `_MAX_SAFE_DEGREE_NO_MIRROR_FLOAT64` /
+    `_MAX_SAFE_DEGREE_NO_MIRROR_FLOAT32` happens once per call (not once per
+    point), then dispatches every point to the branch-free
+    :func:`_bernstein_point_no_mirror` when safe, or the mirrored
+    :func:`_bernstein_point` otherwise — this keeps the (measured) mirror
+    branch's overhead confined to the rare degrees that actually need it.
+
     Args:
         n (np.int32): Degree of the Bernstein polynomials. Must be non-negative.
         t (npt.NDArray[np.float32 | np.float64]): 1D array of
@@ -102,9 +230,18 @@ def _tabulate_Bernstein_basis_1D_core(
             out[j, 0] = 1.0
         return
 
+    max_safe_degree = (
+        _MAX_SAFE_DEGREE_NO_MIRROR_FLOAT64
+        if t.itemsize == _FLOAT64_ITEMSIZE
+        else _MAX_SAFE_DEGREE_NO_MIRROR_FLOAT32
+    )
     # Process each point — rows are independent, so use prange.
-    for j in nb_prange(t.shape[0]):
-        _bernstein_point(n, t[j], out[j, :])
+    if n <= max_safe_degree:
+        for j in nb_prange(t.shape[0]):
+            _bernstein_point_no_mirror(n, t[j], out[j, :])
+    else:
+        for j in nb_prange(t.shape[0]):
+            _bernstein_point(n, t[j], out[j, :])
 
 
 @nb_jit(
@@ -120,7 +257,9 @@ def _tabulate_Bernstein_basis_1D_serial_core(
 
     Identical to :func:`_tabulate_Bernstein_basis_1D_core` but compiled without
     ``parallel=True``: no fork/join overhead, which makes it the faster choice
-    for small point batches.
+    for small point batches. Dispatches to the branch-free
+    :func:`_bernstein_point_no_mirror` or the mirrored :func:`_bernstein_point`
+    exactly as described there.
 
     Args:
         n (np.int32): Degree of the Bernstein polynomials. Must be non-negative.
@@ -140,8 +279,17 @@ def _tabulate_Bernstein_basis_1D_serial_core(
             out[j, 0] = 1.0
         return
 
-    for j in range(t.shape[0]):
-        _bernstein_point(n, t[j], out[j, :])
+    max_safe_degree = (
+        _MAX_SAFE_DEGREE_NO_MIRROR_FLOAT64
+        if t.itemsize == _FLOAT64_ITEMSIZE
+        else _MAX_SAFE_DEGREE_NO_MIRROR_FLOAT32
+    )
+    if n <= max_safe_degree:
+        for j in range(t.shape[0]):
+            _bernstein_point_no_mirror(n, t[j], out[j, :])
+    else:
+        for j in range(t.shape[0]):
+            _bernstein_point(n, t[j], out[j, :])
 
 
 @nb_jit(
@@ -445,6 +593,17 @@ def _warmup_numba_functions() -> None:
 
     This function triggers compilation of the numba-decorated core functions
     with float64 arrays, ensuring they are cached and ready for use.
+
+    Note:
+        Unlike its siblings in other modules, this function is not invoked
+        from `pantr/__init__.py`'s background async-warmup thread: this
+        module's kernels are ``parallel=True``, and compiling them from a
+        background thread while the main thread may also call them
+        concurrently is a known Numba crash (see the warmup-thread comment
+        in `pantr/__init__.py`). They compile lazily on first user call
+        instead, always from the calling (main) thread, avoiding the race.
+        This function is kept for potential future use (e.g. an explicit,
+        single-threaded warmup call site) but is currently dead code.
     """
     # Small dummy arrays for warmup
     t_dummy = np.array([0.0, 0.5, 1.0], dtype=np.float64)
@@ -455,6 +614,17 @@ def _warmup_numba_functions() -> None:
     _tabulate_Bernstein_basis_1D_serial_core(np.int32(1), t_dummy, out_dummy)
     _tabulate_cardinal_Bspline_basis_1D_core(np.int32(1), t_dummy, out_dummy)
     _tabulate_Legendre_basis_1D_core(np.int32(1), t_dummy, out_dummy)
+
+    # The Bernstein tabulation kernels dispatch on degree (see
+    # `_MAX_SAFE_DEGREE_NO_MIRROR_FLOAT64`): the n=1 warmup above only compiles
+    # the branch-free `_bernstein_point_no_mirror` fast path, so warm up the
+    # mirrored `_bernstein_point` path too with a degree above the threshold.
+    n_mirrored_dummy = _MAX_SAFE_DEGREE_NO_MIRROR_FLOAT64 + 1
+    out_mirrored_dummy = np.empty((3, n_mirrored_dummy + 1), dtype=np.float64)
+    _tabulate_Bernstein_basis_1D_core(np.int32(n_mirrored_dummy), t_dummy, out_mirrored_dummy)
+    _tabulate_Bernstein_basis_1D_serial_core(
+        np.int32(n_mirrored_dummy), t_dummy, out_mirrored_dummy
+    )
 
     # Warmup Bernstein derivative cores with float64 (parallel and serial twins)
     n_deriv_dummy = 2
