@@ -97,6 +97,11 @@ class SpanwiseElementExtraction:
     - *Dense* (:attr:`ops_1d`): the full ``(n_elements_k, n_out_k, n_in_k)``
       layout, reconstructed lazily from compact storage on first access.
 
+    For one element at a time, :meth:`factors` returns the per-direction
+    ``(is_identity, operator)`` pairs without allocating anything, which is what
+    a consumer serializing the 1D factors should use; ``__getitem__`` is the
+    convenience form that materializes an explicit identity matrix instead.
+
     Attributes:
         _space (BsplineSpace): Underlying multi-dimensional B-spline space.
         _target (Target): Target basis tag.
@@ -418,6 +423,58 @@ class SpanwiseElementExtraction:
         return tuple(
             bool(mask[i]) for mask, i in zip(self._is_identity_mask_1d, multi, strict=True)
         )
+
+    def factors(
+        self, cell_idx: CellIndex
+    ) -> tuple[tuple[bool, npt.NDArray[np.float32 | np.float64] | None], ...]:
+        """Return the per-direction 1D factors of one element's operator.
+
+        The element operator is ``kron(F_0, …, F_{d-1})`` where ``F_k`` is the
+        returned direction-``k`` operator, or the identity where the flag is set.
+        This is the same factorization :meth:`operator` and ``__getitem__``
+        use, exposed without materializing anything: identity directions yield
+        ``None`` rather than an identity matrix, and non-identity directions yield
+        a read-only view into :attr:`compact_ops_1d` rather than a copy. Elements
+        sharing a compact row therefore share its memory -- the view object itself
+        is new on each call, as numpy basic indexing always builds one, but no
+        operator data is copied.
+
+        Args:
+            cell_idx (CellIndex): Element index (flat or per-direction).
+
+        Returns:
+            tuple[tuple[bool, npt.NDArray[np.float32 | np.float64] | None], ...]:
+            Length-``d`` tuple whose entry ``k`` is ``(is_identity_k, op_k)``.
+            ``op_k`` is ``None`` exactly when ``is_identity_k`` is ``True``;
+            otherwise it is a read-only ``(n_out_k, n_in_k)`` view.
+
+        Raises:
+            IndexError: If a flat index is out of range, or a per-direction entry
+                is out of range for its direction.
+            ValueError: If a per-direction index has the wrong length.
+            TypeError: If ``cell_idx`` is not an ``int`` or sequence of ``int``.
+
+        Example:
+            >>> import numpy as np
+            >>> from pantr.bspline import BsplineSpace, BsplineSpace1D
+            >>> space = BsplineSpace([BsplineSpace1D([0, 0, 0, 1, 2, 3, 4, 4, 4], 2)])
+            >>> ext = SpanwiseElementExtraction(space, "cardinal")
+            >>> ext.factors(1)
+            ((True, None),)
+            >>> flag, op = ext.factors(0)[0]
+            >>> flag, op.shape, op.flags.writeable
+            (False, (3, 3), False)
+        """
+        multi = self._normalize_cell_idx(cell_idx)
+        factors: list[tuple[bool, npt.NDArray[np.float32 | np.float64] | None]] = []
+        for compact, idx_map, mask, i in zip(
+            self._compact_ops_1d, self._idx_maps_1d, self._is_identity_mask_1d, multi, strict=True
+        ):
+            if bool(mask[i]):
+                factors.append((True, None))
+            else:
+                factors.append((False, compact[int(idx_map[i])]))
+        return tuple(factors)
 
     # ---------------------------------------------------------------- per-cell applies
 
