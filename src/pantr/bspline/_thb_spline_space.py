@@ -21,6 +21,7 @@ import string
 from typing import TYPE_CHECKING, NamedTuple
 
 import numpy as np
+from scipy import sparse
 
 from ..grid import HierarchicalGrid, hierarchical_grid, tensor_product_grid
 from ._bspline_knot_insertion_core import _compute_oslo_matrix_1d_core
@@ -28,7 +29,7 @@ from ._bspline_space_nd import BsplineSpace
 from ._thb_eval_core import _combine_tp_values
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
+    from collections.abc import Iterator, Sequence
 
     import numpy.typing as npt
 
@@ -1742,6 +1743,11 @@ class THBSplineSpace:
         refinement yield trivial (identity) columns, so cost and sparsity follow the
         refined region.
 
+        For a large refinement prefer :meth:`prolongation_to_sparse`, which computes the
+        same entries with the same arithmetic but stores only the non-zeros: this dense
+        variant allocates ``n_fine * n_coarse`` float64 regardless of how few columns the
+        refinement actually touches.
+
         Args:
             fine (THBSplineSpace): A refinement of this space (same ``root_space``,
                 ``factor``, ``regularity``, and ``truncate``; more levels / refined
@@ -1756,6 +1762,58 @@ class THBSplineSpace:
             ValueError: If ``fine`` is not a refinement of this space (mismatched
                 root/factor/regularity/truncation, fewer levels, or the prolongation
                 residual is non-negligible).
+        """
+        self._check_is_refinement(fine)
+        return self._assemble_prolongation(fine)
+
+    def prolongation_to_sparse(self, fine: THBSplineSpace) -> sparse.csr_array:
+        """Return the prolongation to a refinement ``fine`` in sparse CSR form.
+
+        The same matrix :meth:`prolongation_to` returns, entry for entry: the columns come
+        from the same local two-scale solves in the same order, so ``toarray()`` is
+        **bitwise equal** to the dense result. Only the storage differs.
+
+        That storage is the whole point at scale. The dense variant is
+        ``O(n_fine * n_coarse)`` -- for ``1e5`` fine by ``9e4`` coarse dofs, some 72 GB --
+        while the matrix has only a handful of entries per column: a coarse function is
+        matched against the fine functions overlapping its support, and away from the
+        refined region that is one entry of value ``1.0``. Sparse storage is ``O(nnz)``.
+
+        Entries are stored exactly as solved, including any that happen to be zero, since
+        they are the two-scale coefficients rather than a thresholded approximation. Call
+        ``eliminate_zeros()`` on the result if a caller wants them dropped.
+
+        Args:
+            fine (THBSplineSpace): A refinement of this space, on the same terms as
+                :meth:`prolongation_to`.
+
+        Returns:
+            scipy.sparse.csr_array: Matrix ``P`` of shape
+            ``(fine.num_total_basis, self.num_total_basis)``, ``float64``.
+
+        Raises:
+            TypeError: If ``fine`` is not a :class:`THBSplineSpace`.
+            ValueError: If ``fine`` is not a refinement of this space -- the same
+                mismatches and residual check as :meth:`prolongation_to`.
+        """
+        self._check_is_refinement(fine)
+        return self._assemble_prolongation_sparse(fine)
+
+    def _check_is_refinement(self, fine: THBSplineSpace) -> None:
+        """Raise unless ``fine`` is a structurally compatible refinement of ``self``.
+
+        Checks everything decidable without assembling: type, dimension, truncation mode,
+        subdivision factor, regularity, level count, and root knot vectors. The remaining
+        condition -- that the coarse basis is actually reproducible in the fine one -- is
+        a residual check during assembly.
+
+        Args:
+            fine (THBSplineSpace): Candidate refinement.
+
+        Raises:
+            TypeError: If ``fine`` is not a :class:`THBSplineSpace`.
+            ValueError: If any structural property disagrees; the message lists every
+                mismatch found, not just the first.
         """
         if not isinstance(fine, THBSplineSpace):
             raise TypeError(f"fine must be a THBSplineSpace; got {type(fine).__name__!r}.")
@@ -1784,30 +1842,38 @@ class THBSplineSpace:
                 + "."
             )
 
-        return self._assemble_prolongation(fine)
+    def _prolongation_columns(
+        self, fine: THBSplineSpace
+    ) -> Iterator[tuple[int, npt.NDArray[np.int64], npt.NDArray[np.float64]]]:
+        """Yield the prolongation one column at a time, as ``(column, rows, values)``.
 
-    def _assemble_prolongation(self, fine: THBSplineSpace) -> npt.NDArray[np.float64]:
-        """Build the prolongation column-by-column from local two-scale data.
+        The shared driver behind both :meth:`prolongation_to` and
+        :meth:`prolongation_to_sparse`, so the two cannot drift: each coarse function is
+        represented by only the fine functions over its support, expressed in a common
+        *local* tensor-product level (the deepest present there) rather than the global
+        finest level.  Functions far from the refinement stay at their own level (a trivial
+        solve, often the identity), so the cost follows the refined region rather than the
+        whole finest grid.  This is the local two-scale view of the change of basis (Garau
+        & Vazquez 2018; D'Angella et al. 2018): coarse functions expanded by the refinement
+        mask and matched against the active fine (truncated) basis.
 
-        Each coarse function is represented by only the fine functions over its
-        support, expressed in a common *local* tensor-product level (the deepest
-        present there) rather than the global finest level.  Functions far from the
-        refinement stay at their own level (a trivial solve, often the identity), so
-        the cost follows the refined region rather than the whole finest grid.  This
-        is the local two-scale view of the change of basis (Garau & Vazquez 2018;
-        D'Angella et al. 2018): coarse functions expanded by the refinement mask and
-        matched against the active fine (truncated) basis.
+        Columns with no candidate fine functions are skipped rather than yielded empty.
 
         Args:
             fine (THBSplineSpace): A validated refinement of ``self``.
 
-        Returns:
-            npt.NDArray[np.float64]: Prolongation ``P`` of shape
-            ``(fine.num_total_basis, self.num_total_basis)``.
+        Yields:
+            tuple[int, npt.NDArray[np.int64], npt.NDArray[np.float64]]: The coarse dof
+            index, the fine dof indices its column occupies, and the values there.
 
         Raises:
-            ValueError: If a column cannot reproduce its coarse function (residual
+            ValueError: If some column cannot reproduce its coarse function (residual
                 above tolerance), i.e. ``fine`` is not a refinement of ``self``.
+
+        Note:
+            The residual is only known once every column has been solved, so the check
+            runs after the last one. A consumer that abandons the iterator early therefore
+            skips it; both callers here exhaust it.
         """
         oslo = fine._build_oslo_matrices()
         root_cells = self._grid.level_cells_per_axis(0)
@@ -1820,7 +1886,6 @@ class THBSplineSpace:
             for cell in self._cells_in_box(lo, hi, root_cells):
                 cell_to_fine.setdefault(cell, []).append(j)
 
-        prolongation: npt.NDArray[np.float64] = np.zeros((n_fine, n_coarse), dtype=np.float64)
         max_residual = 0.0
         max_coarse_val = 0.0
         for i in range(n_coarse):
@@ -1834,7 +1899,7 @@ class THBSplineSpace:
             )
             sol, residual, coarse_val = self._prolong_column(fine, oslo, i, candidates, fine_box)
             if sol is not None:
-                prolongation[np.array(candidates), i] = sol
+                yield i, np.array(candidates, dtype=np.int64), sol
             max_residual = max(max_residual, residual)
             max_coarse_val = max(max_coarse_val, coarse_val)
 
@@ -1843,7 +1908,65 @@ class THBSplineSpace:
                 f"fine is not a refinement of this space (prolongation residual "
                 f"{max_residual:.2e})."
             )
+
+    def _assemble_prolongation(self, fine: THBSplineSpace) -> npt.NDArray[np.float64]:
+        """Scatter the prolongation columns into a dense matrix.
+
+        Args:
+            fine (THBSplineSpace): A validated refinement of ``self``.
+
+        Returns:
+            npt.NDArray[np.float64]: Prolongation ``P`` of shape
+            ``(fine.num_total_basis, self.num_total_basis)``.
+
+        Raises:
+            ValueError: If a column cannot reproduce its coarse function (residual
+                above tolerance), i.e. ``fine`` is not a refinement of ``self``.
+        """
+        shape = (fine.num_total_basis, self.num_total_basis)
+        prolongation: npt.NDArray[np.float64] = np.zeros(shape, dtype=np.float64)
+        for column, rows, values in self._prolongation_columns(fine):
+            prolongation[rows, column] = values
         return prolongation
+
+    def _assemble_prolongation_sparse(self, fine: THBSplineSpace) -> sparse.csr_array:
+        """Gather the prolongation columns into a CSR array.
+
+        Args:
+            fine (THBSplineSpace): A validated refinement of ``self``.
+
+        Returns:
+            scipy.sparse.csr_array: Prolongation ``P`` of shape
+            ``(fine.num_total_basis, self.num_total_basis)``, ``float64``.
+
+        Raises:
+            ValueError: If a column cannot reproduce its coarse function (residual
+                above tolerance), i.e. ``fine`` is not a refinement of ``self``.
+
+        Note:
+            Assembled through COO, whose duplicate summation never fires: each column is
+            emitted exactly once and its rows are distinct, so the stored values are the
+            solved ones unaltered.
+        """
+        shape = (fine.num_total_basis, self.num_total_basis)
+        all_rows: list[npt.NDArray[np.int64]] = []
+        all_cols: list[npt.NDArray[np.int64]] = []
+        all_values: list[npt.NDArray[np.float64]] = []
+        for column, rows, values in self._prolongation_columns(fine):
+            all_rows.append(rows)
+            all_cols.append(np.full(rows.shape[0], column, dtype=np.int64))
+            all_values.append(values)
+
+        if not all_values:
+            return sparse.csr_array(shape, dtype=np.float64)
+        coo = sparse.coo_array(
+            (
+                np.concatenate(all_values),
+                (np.concatenate(all_rows), np.concatenate(all_cols)),
+            ),
+            shape=shape,
+        )
+        return coo.tocsr()
 
     def _prolong_column(
         self,
