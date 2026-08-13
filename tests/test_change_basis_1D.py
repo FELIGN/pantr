@@ -1,6 +1,7 @@
 """Tests for change_basis_1D module."""
 
 import functools
+from collections.abc import Callable
 
 import numpy as np
 import numpy.typing as npt
@@ -11,17 +12,80 @@ from pantr.basis import (
     tabulate_bernstein_1d,
     tabulate_cardinal_bspline_1d,
     tabulate_lagrange_1d,
+    tabulate_legendre_1d,
 )
 from pantr.change_basis import (
     _cached_cardinal_to_bernstein_matrix,
+    _cached_cardinal_to_legendre_matrix,
     _cached_lagrange_to_bernstein_matrix,
+    _cached_legendre_to_cardinal_matrix,
     _compute_change_basis_1D,
     compute_bernstein_to_cardinal_1d,
     compute_bernstein_to_lagrange_1d,
+    compute_cardinal_dual_legendre_coeffs_1d,
     compute_cardinal_to_bernstein_1d,
+    compute_cardinal_to_legendre_1d,
     compute_lagrange_to_bernstein_1d,
+    compute_legendre_to_cardinal_1d,
     compute_monomial_to_bernstein_1d,
 )
+from pantr.quad import get_gauss_legendre_1d
+from pantr.tolerance import get_machine_epsilon
+
+_COND_SAFETY_FACTOR = 64
+"""
+Safety factor multiplying the first-order error bound ``cond(A) * eps``.
+
+The bound itself is the standard one for a linear solve. The factor covers what it
+does not model: the biorthogonality check contracts the duals against a quadrature
+rule, so its error accumulates over ``2 * degree + 2`` points on top of the solve.
+Measured margins with this factor range from 6x (degree 8, biorthogonality) to
+several hundred (low degrees), i.e. it is never looser than needed by more than two
+orders and never tighter than the phenomenon.
+"""
+
+_ROUNDOFF_FACTOR = 64
+"""
+Multiple of machine epsilon for quantities that carry no conditioning penalty.
+
+Applies to the well-conditioned direction (Legendre to cardinal) and to the
+partition-of-unity identity, both of which are built on the Legendre Gram matrix,
+which is the identity. Measured errors are flat in degree at 2-4 ulp, so a fixed
+multiple of epsilon is the right form; 64 leaves ~32x margin.
+"""
+
+_COMPOSED_ROUNDOFF_FACTOR = 256
+"""
+Multiple of machine epsilon for an identity chaining two changes of basis.
+
+Used by the consistency check against the Bernstein pair, whose right-hand side is a
+product of two separately-computed matrices. Measured error grows to 2.7e-15 at
+degree 8, so the single-map factor of 64 would leave only 5x; 256 restores ~21x.
+"""
+
+
+def _conditioning_atol(degree: int, dtype: npt.DTypeLike = np.float64) -> float:
+    """Return the attainable accuracy for inverting the Legendre-to-cardinal map.
+
+    The cardinal-to-Legendre direction requires solving with a matrix whose
+    condition number grows steeply with degree (``1.1e3`` at degree 4, ``3.0e8`` at
+    degree 8), so no algorithm can do better than roughly ``cond(A) * eps``. Tests
+    of that direction, of the duals built from it, and of biorthogonality are all
+    bounded by this quantity rather than by a flat tolerance.
+
+    The condition number is always taken from the float64 matrix: it is a property
+    of the two bases, not of the dtype the result is stored in.
+
+    Args:
+        degree (int): Polynomial degree.
+        dtype (npt.DTypeLike): Dtype whose machine epsilon sets the noise floor.
+            Defaults to np.float64.
+
+    Returns:
+        float: Absolute tolerance for identities involving the inverse map.
+    """
+    cond = float(np.linalg.cond(compute_legendre_to_cardinal_1d(degree)))
+    return _COND_SAFETY_FACTOR * cond * get_machine_epsilon(dtype)
 
 
 class TestLagrangeToBernsteinBasisOperator:
@@ -620,3 +684,211 @@ class TestMonomialToBernsteinBasisOperator:
         p_bern = tabulate_bernstein_1d(degree, tt) @ bern_coeffs
 
         np.testing.assert_array_almost_equal(p_bern, p_mono)
+
+
+class TestLegendreCardinalBasisOperators:
+    """Test the Legendre<->cardinal pair and the cardinal-dual Legendre coefficients."""
+
+    def test_degree_one_closed_form(self) -> None:
+        """Degree 1 matches the closed form obtained by integrating by hand.
+
+        With ``B_0 = 1 - x``, ``B_1 = x`` and the orthonormal shifted Legendre pair
+        ``p0 = 1``, ``p1 = sqrt(3) (2x - 1)``, the coefficient of ``p1`` in ``B_0``
+        is ``int_0^1 (1-x) sqrt(3) (2x-1) dx = -sqrt(3)/6 = -1/(2 sqrt(3))``.
+        """
+        expected = np.array(
+            [
+                [0.5, -1.0 / (2.0 * np.sqrt(3.0))],
+                [0.5, 1.0 / (2.0 * np.sqrt(3.0))],
+            ]
+        )
+        np.testing.assert_allclose(compute_legendre_to_cardinal_1d(1), expected, atol=1e-15)
+
+    @pytest.mark.parametrize("degree", range(9))
+    def test_forward_map_reproduces_cardinal_basis(self, degree: int) -> None:
+        """``A @ legendre(x)`` must equal ``cardinal(x)`` at arbitrary points, not just nodes.
+
+        This is the property the matrix is defined by, checked away from the
+        quadrature points used to build it, so a rule that happened to be exact only
+        at its own nodes would not pass.
+        """
+        rng = np.random.default_rng(20260813 + degree)
+        pts = rng.random(50)
+
+        result = compute_legendre_to_cardinal_1d(degree) @ tabulate_legendre_1d(degree, pts).T
+
+        np.testing.assert_allclose(
+            result,
+            tabulate_cardinal_bspline_1d(degree, pts).T,
+            atol=_ROUNDOFF_FACTOR * get_machine_epsilon(np.float64),
+        )
+
+    @pytest.mark.parametrize("degree", range(9))
+    def test_roundtrip(self, degree: int) -> None:
+        """Both products of the pair must be the identity, to the attainable accuracy.
+
+        The tolerance is derived rather than flat: the inverse direction cannot beat
+        ``cond(A) * eps``, which spans ten orders of magnitude across these degrees.
+        """
+        forward = compute_legendre_to_cardinal_1d(degree)
+        inverse = compute_cardinal_to_legendre_1d(degree)
+        identity = np.eye(degree + 1)
+        atol = _conditioning_atol(degree)
+
+        np.testing.assert_allclose(inverse @ forward, identity, atol=atol)
+        np.testing.assert_allclose(forward @ inverse, identity, atol=atol)
+
+    @pytest.mark.parametrize("degree", range(5))
+    def test_roundtrip_float32(self, degree: int) -> None:
+        """The pair round-trips in float32 over the degrees where the bound is meaningful.
+
+        Beyond degree 5 the derived bound ``cond(A) * eps32`` exceeds 0.1 and the
+        assertion would be vacuous, so those degrees are deliberately not claimed.
+        """
+        forward = compute_legendre_to_cardinal_1d(degree, dtype=np.float32)
+        inverse = compute_cardinal_to_legendre_1d(degree, dtype=np.float32)
+        assert forward.dtype == np.float32
+        assert inverse.dtype == np.float32
+
+        np.testing.assert_allclose(
+            inverse @ forward,
+            np.eye(degree + 1, dtype=np.float32),
+            atol=_conditioning_atol(degree, np.float32),
+        )
+
+    @pytest.mark.parametrize("degree", range(9))
+    def test_partition_of_unity(self, degree: int) -> None:
+        """Column sums of ``A`` must be ``[1, 0, ..., 0]``.
+
+        The cardinal basis sums to 1, which is exactly the first orthonormal
+        Legendre polynomial, so every higher coefficient must cancel across the
+        rows. This direction carries no conditioning penalty.
+        """
+        expected = np.zeros(degree + 1)
+        expected[0] = 1.0
+
+        np.testing.assert_allclose(
+            compute_legendre_to_cardinal_1d(degree).sum(axis=0),
+            expected,
+            atol=_ROUNDOFF_FACTOR * get_machine_epsilon(np.float64),
+        )
+
+    @pytest.mark.parametrize("degree", range(9))
+    def test_dual_biorthogonality(self, degree: int) -> None:
+        """The duals must satisfy ``int D_i B_j = delta_ij``, by independent quadrature.
+
+        Integrated with a ``2 * degree + 2`` point Gauss-Legendre rule, which is
+        exact for the degree-``2 * degree`` products and is not the rule used to
+        build the matrices.
+        """
+        duals = compute_cardinal_dual_legendre_coeffs_1d(degree)
+        pts, weights = get_gauss_legendre_1d(2 * degree + 2)
+        cardinal = tabulate_cardinal_bspline_1d(degree, pts)
+        legendre = tabulate_legendre_1d(degree, pts)
+
+        gram = (duals @ (legendre.T * weights)) @ cardinal
+
+        np.testing.assert_allclose(gram, np.eye(degree + 1), atol=_conditioning_atol(degree))
+
+    @pytest.mark.parametrize("degree", range(9))
+    def test_dual_integrates_to_one(self, degree: int) -> None:
+        """Every dual must integrate to 1 over the unit interval.
+
+        Summing biorthogonality over ``j`` gives ``int D_i (sum_j B_j) = 1``, and the
+        cardinal basis is a partition of unity, so ``int D_i = 1``. Because the
+        Legendre basis is orthonormal that integral is the ``p0`` coefficient, i.e.
+        the first column, which must therefore be all ones.
+        """
+        duals = compute_cardinal_dual_legendre_coeffs_1d(degree)
+
+        np.testing.assert_allclose(
+            duals[:, 0], np.ones(degree + 1), atol=_conditioning_atol(degree)
+        )
+
+    @pytest.mark.parametrize("degree", range(9))
+    def test_dual_equals_inverse_transpose(self, degree: int) -> None:
+        """The duals must be exactly the transpose of the cardinal-to-Legendre matrix."""
+        np.testing.assert_array_equal(
+            compute_cardinal_dual_legendre_coeffs_1d(degree),
+            compute_cardinal_to_legendre_1d(degree).T,
+        )
+
+    @pytest.mark.parametrize("degree", range(9))
+    def test_consistency_with_bernstein_pair(self, degree: int) -> None:
+        """``A_lc`` must equal ``A_bc @ M_lb``, routing through the Bernstein basis.
+
+        An independent construction of the same matrix: going Legendre to Bernstein
+        to cardinal must land where going Legendre to cardinal directly does.
+        """
+        legendre_to_bernstein = _compute_change_basis_1D(
+            new_basis_eval=functools.partial(tabulate_legendre_1d, degree),
+            old_basis_eval=functools.partial(tabulate_bernstein_1d, degree),
+            n_quad_pts=degree + 1,
+        )
+
+        np.testing.assert_allclose(
+            compute_legendre_to_cardinal_1d(degree),
+            compute_bernstein_to_cardinal_1d(degree) @ legendre_to_bernstein,
+            atol=_COMPOSED_ROUNDOFF_FACTOR * get_machine_epsilon(np.float64),
+        )
+
+    @pytest.mark.parametrize(
+        "builder",
+        [
+            compute_legendre_to_cardinal_1d,
+            compute_cardinal_to_legendre_1d,
+            compute_cardinal_dual_legendre_coeffs_1d,
+        ],
+    )
+    def test_negative_degree_error(
+        self,
+        builder: Callable[..., npt.NDArray[np.float32 | np.float64]],
+    ) -> None:
+        """Degree 0 is allowed but a negative degree is rejected."""
+        assert builder(0).shape == (1, 1)
+        with pytest.raises(ValueError, match="Degree must be non-negative"):
+            builder(-1)
+
+    @pytest.mark.parametrize(
+        "builder",
+        [
+            compute_legendre_to_cardinal_1d,
+            compute_cardinal_to_legendre_1d,
+            compute_cardinal_dual_legendre_coeffs_1d,
+        ],
+    )
+    def test_out_and_dtype_validation(
+        self,
+        builder: Callable[..., npt.NDArray[np.float32 | np.float64]],
+    ) -> None:
+        """A provided ``out`` is returned and filled; a bad one is rejected."""
+        degree = 3
+        out = np.empty((degree + 1, degree + 1), dtype=np.float64)
+        result = builder(degree, np.float64, out)
+        assert result is out
+        np.testing.assert_allclose(result, builder(degree))
+
+        with pytest.raises(ValueError, match="dtype must be float32 or float64"):
+            builder(degree, np.int32)
+        with pytest.raises(ValueError):
+            builder(degree, np.float64, np.empty((degree, degree), dtype=np.float64))
+        with pytest.raises(ValueError):
+            builder(degree, np.float64, np.empty((degree + 1, degree + 1), dtype=np.float32))
+
+        readonly = np.empty((degree + 1, degree + 1), dtype=np.float64)
+        readonly.flags.writeable = False
+        with pytest.raises(ValueError):
+            builder(degree, np.float64, readonly)
+
+    def test_cached_variants_are_frozen_and_shared(self) -> None:
+        """The cached matrices are read-only, shared per key, and equal to the builders."""
+        for cached, builder in (
+            (_cached_legendre_to_cardinal_matrix, compute_legendre_to_cardinal_1d),
+            (_cached_cardinal_to_legendre_matrix, compute_cardinal_to_legendre_1d),
+        ):
+            first = cached(3, np.dtype(np.float64))
+            assert first is cached(3, np.dtype(np.float64))
+            assert not first.flags.writeable
+            np.testing.assert_array_equal(first, builder(3))
+            with pytest.raises(ValueError):
+                first[0, 0] = 0.0
