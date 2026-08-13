@@ -13,9 +13,12 @@ from pantr.bspline import (
     THBSplineSpace,
     build_local,
     compute_halo,
+    create_uniform_periodic_knots,
     dof_owner,
+    dof_owner_windowed,
 )
 from pantr.bspline._local_space import _thb_dof_owner, _thb_halo
+from pantr.bspline._thb_spline_space import _func_support_1d
 from pantr.grid import Partition, hierarchical_grid, uniform_grid
 
 
@@ -529,3 +532,171 @@ def test_thb_dof_owner_cell_count_mismatch_raises() -> None:
     part = Partition(np.zeros(g.grid.num_cells - 1, dtype=np.int32), n_parts=1)
     with pytest.raises(ValueError, match="cells"):
         _thb_dof_owner(g, part)
+
+
+# ---------------------------------------------------------------- kernel equivalence
+
+
+def _reference_dof_owner(space: BsplineSpace, partition: Partition) -> npt.NDArray[np.int32]:
+    """The pre-kernel implementation of `dof_owner`, kept as an equivalence oracle.
+
+    A per-dof Python loop building an `arange` per axis, a `meshgrid` and a
+    `ravel_multi_index`, then taking the smallest active cell. Unusably slow at scale,
+    which is why it was replaced -- but it is the definition the kernel must reproduce
+    bit for bit, so it stays here rather than in the library.
+    """
+    cell_owner = partition.cell_owner
+    num_intervals = space.num_intervals
+    fc_axes = []
+    lc_axes = []
+    for one_d in space.spaces:
+        _, first_cell, last_cell = _func_support_1d(one_d)
+        fc_axes.append(first_cell.astype(np.int64))
+        lc_axes.append(last_cell.astype(np.int64))
+
+    owners = np.full(space.num_total_basis, -1, dtype=np.int32)
+    dof_multi = np.unravel_index(np.arange(space.num_total_basis), space.num_basis)
+    for dof in range(space.num_total_basis):
+        axis_ranges = [
+            np.arange(fc_axes[d][dof_multi[d][dof]], lc_axes[d][dof_multi[d][dof]] + 1)
+            for d in range(space.dim)
+        ]
+        mesh = np.meshgrid(*axis_ranges, indexing="ij")
+        support = np.ravel_multi_index(tuple(m.ravel() for m in mesh), num_intervals)
+        active = support[cell_owner[support] >= 0]
+        if active.size:
+            owners[dof] = cell_owner[int(active.min())]
+    return owners
+
+
+def _reference_halo(space: BsplineSpace, owned: npt.NDArray[np.int64]) -> npt.NDArray[np.int64]:
+    """The pre-kernel implementation of `compute_halo`, kept as an equivalence oracle."""
+    num_intervals = space.num_intervals
+    lo_axes = []
+    hi_axes = []
+    for one_d in space.spaces:
+        first_basis, first_cell, last_cell = _func_support_1d(one_d)
+        lo_axes.append(first_cell[first_basis].astype(np.int64))
+        hi_axes.append(last_cell[first_basis + one_d.degree].astype(np.int64))
+
+    mask = np.zeros(num_intervals, dtype=np.bool_)
+    owned_multi = np.unravel_index(owned, num_intervals)
+    for i in range(owned.size):
+        window = tuple(
+            slice(int(lo_axes[d][owned_multi[d][i]]), int(hi_axes[d][owned_multi[d][i]]) + 1)
+            for d in range(space.dim)
+        )
+        mask[window] = True
+    return np.setdiff1d(np.flatnonzero(mask.ravel()), owned).astype(np.int64)
+
+
+def _random_space_and_partition(
+    rng: np.random.Generator,
+) -> tuple[BsplineSpace, Partition]:
+    """Build a random non-periodic space with repeated interior knots, and a partition."""
+    dim = int(rng.integers(1, 4))
+    spaces = []
+    for _ in range(dim):
+        degree = int(rng.integers(1, 5))
+        n_intervals = int(rng.integers(1, 5))
+        interior: list[float] = []
+        for j in range(1, n_intervals):
+            interior += [float(j)] * int(rng.integers(1, degree + 1))
+        knots = [0.0] * (degree + 1) + interior + [float(n_intervals)] * (degree + 1)
+        spaces.append(BsplineSpace1D(knots, degree))
+    space = BsplineSpace(spaces)
+    n_parts = int(rng.integers(1, 6))
+    owner = rng.integers(-1, n_parts, size=space.num_total_intervals).astype(np.int32)
+    return space, Partition(owner, n_parts)
+
+
+def test_dof_owner_matches_reference() -> None:
+    """The kernel reproduces the pre-kernel implementation exactly.
+
+    Randomized over 1D/2D/3D spaces, degrees 1-4, repeated interior knots, 1-5 parts,
+    and partitions containing inactive (`-1`) cells, so dead dofs are exercised too.
+    """
+    rng = np.random.default_rng(20260813)
+    saw_dead = False
+    for _ in range(40):
+        space, partition = _random_space_and_partition(rng)
+        expected = _reference_dof_owner(space, partition)
+        np.testing.assert_array_equal(dof_owner(space, partition), expected)
+        saw_dead |= bool((expected < 0).any())
+    assert saw_dead, "expected at least one dead dof across the randomized cases"
+
+
+def test_compute_halo_matches_reference() -> None:
+    """The halo kernel reproduces the pre-kernel mask loop exactly."""
+    rng = np.random.default_rng(4242)
+    for _ in range(40):
+        space, _partition = _random_space_and_partition(rng)
+        n_cells = space.num_total_intervals
+        owned = np.unique(rng.integers(0, n_cells, size=max(1, n_cells // 2))).astype(np.int64)
+        np.testing.assert_array_equal(compute_halo(space, owned), _reference_halo(space, owned))
+
+
+def test_compute_halo_edge_cases() -> None:
+    """Empty, single-cell and whole-domain owned sets all agree with the reference."""
+    space = _open_uniform_space([2, 2], [4, 3])
+    n_cells = space.num_total_intervals
+
+    assert compute_halo(space, []).size == 0
+
+    single = np.array([n_cells // 2], dtype=np.int64)
+    np.testing.assert_array_equal(compute_halo(space, single), _reference_halo(space, single))
+
+    everything = np.arange(n_cells, dtype=np.int64)
+    assert compute_halo(space, everything).size == 0
+
+
+def test_dof_owner_windowed_matches_full() -> None:
+    """A windowed query equals the full result restricted to the requested dofs."""
+    rng = np.random.default_rng(99)
+    for _ in range(20):
+        space, partition = _random_space_and_partition(rng)
+        full = dof_owner(space, partition)
+
+        subset = rng.integers(0, space.num_total_basis, size=11)
+        np.testing.assert_array_equal(dof_owner_windowed(space, partition, subset), full[subset])
+
+        # Duplicates and descending order must be honoured positionally.
+        repeated = np.concatenate([subset, subset[::-1]])
+        np.testing.assert_array_equal(
+            dof_owner_windowed(space, partition, repeated), full[repeated]
+        )
+
+
+def test_dof_owner_windowed_empty_and_readonly() -> None:
+    """An empty request gives an empty frozen array; results are always frozen."""
+    space = _open_uniform_space([2], [4])
+    partition = Partition(np.zeros(space.num_total_intervals, dtype=np.int32), 1)
+
+    empty = dof_owner_windowed(space, partition, [])
+    assert empty.shape == (0,)
+    assert empty.dtype == np.int32
+    assert not empty.flags.writeable
+
+    some = dof_owner_windowed(space, partition, [0, 1])
+    assert not some.flags.writeable
+
+
+def test_dof_owner_windowed_validation() -> None:
+    """Bad dof ids, dtypes, partitions and periodic spaces are all rejected."""
+    space = _open_uniform_space([2, 2], [3, 3])
+    partition = Partition(np.zeros(space.num_total_intervals, dtype=np.int32), 1)
+
+    with pytest.raises(TypeError, match="must be integer-valued"):
+        dof_owner_windowed(space, partition, [0.5])
+    with pytest.raises(IndexError, match="out of range"):
+        dof_owner_windowed(space, partition, [space.num_total_basis])
+    with pytest.raises(IndexError, match="out of range"):
+        dof_owner_windowed(space, partition, [-1])
+    with pytest.raises(ValueError, match="expected"):
+        dof_owner_windowed(space, Partition(np.zeros(3, dtype=np.int32), 1), [0])
+
+    periodic = BsplineSpace(
+        [BsplineSpace1D(create_uniform_periodic_knots(num_intervals=4, degree=2), 2, periodic=True)]
+    )
+    with pytest.raises(ValueError, match="periodic"):
+        dof_owner_windowed(periodic, Partition(np.zeros(4, dtype=np.int32), 1), [0])
