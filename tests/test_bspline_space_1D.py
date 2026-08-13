@@ -2591,3 +2591,119 @@ class TestTabulateValidateFlag:
         np.testing.assert_array_equal(f_no, f_val)
         # validate=False should not raise for in-domain points on a Bézier-like space.
         sp.tabulate_basis_derivatives(pts, 2, validate=False)
+
+
+# ---------------------------------------------------------------- first_basis_per_interval
+
+
+def _first_basis_by_tabulation(space: BsplineSpace1D) -> npt.NDArray[np.int64]:
+    """Reference first-supported-function index, via basis tabulation at midpoints.
+
+    The independent oracle for `first_basis_per_interval`, which uses exact integer
+    arithmetic instead. Midpoints never coincide with a knot, so this route is robust
+    to interior multiplicities up to `degree + 1`.
+    """
+    unique_knots, _ = space.get_unique_knots_and_multiplicity(in_domain=True)
+    midpoints = 0.5 * (unique_knots[:-1] + unique_knots[1:])
+    _, first_basis = space.tabulate_basis(midpoints)
+    return np.asarray(first_basis, dtype=np.int64)
+
+
+@pytest.mark.parametrize("degree", [1, 2, 3, 4])
+def test_first_basis_per_interval_uniform_open(degree: int) -> None:
+    """On uniform open knots the first index advances by one per interval."""
+    n_intervals = 5
+    knots = [0.0] * (degree + 1) + [float(j) for j in range(1, n_intervals)]
+    knots += [float(n_intervals)] * (degree + 1)
+    space = BsplineSpace1D(knots, degree)
+
+    first = space.first_basis_per_interval()
+
+    assert first.dtype == np.int64
+    assert first.shape == (space.num_intervals,)
+    np.testing.assert_array_equal(first, np.arange(n_intervals, dtype=np.int64))
+    assert int(first[0]) == 0
+    assert int(first[-1]) == space.num_basis - degree - 1
+
+
+def test_first_basis_per_interval_interior_multiplicity() -> None:
+    """A repeated interior knot makes the index jump by that multiplicity."""
+    doubled = BsplineSpace1D([0, 0, 0, 1, 2, 2, 3, 3, 3], 2)
+    np.testing.assert_array_equal(
+        doubled.first_basis_per_interval(), np.array([0, 1, 3], dtype=np.int64)
+    )
+
+    single = BsplineSpace1D([0, 0, 0, 1, 2, 3, 3, 3], 2)
+    np.testing.assert_array_equal(
+        single.first_basis_per_interval(), np.array([0, 1, 2], dtype=np.int64)
+    )
+
+
+@pytest.mark.parametrize("multiplicity", [1, 2, 3])
+def test_first_basis_per_interval_c0_and_discontinuous(multiplicity: int) -> None:
+    """Interior multiplicity up to ``degree + 1`` (C^0 and C^-1) is handled exactly."""
+    degree = 2
+    knots = [0.0] * (degree + 1) + [1.0] * multiplicity + [2.0] * (degree + 1)
+    space = BsplineSpace1D(knots, degree)
+
+    first = space.first_basis_per_interval()
+
+    np.testing.assert_array_equal(first, _first_basis_by_tabulation(space))
+    assert int(first[1]) - int(first[0]) == multiplicity
+
+
+def test_first_basis_per_interval_matches_tabulation_property() -> None:
+    """Over many random knot vectors the exact route equals basis tabulation.
+
+    This is what licenses the exact integer arithmetic: it never evaluates the basis,
+    so a wrong derivation would not show up as a tolerance failure but as a plainly
+    wrong index, and only a comparison against the evaluating route catches it.
+    """
+    rng = np.random.default_rng(20260813)
+    checked = 0
+    for _ in range(300):
+        degree = int(rng.integers(0, 5))
+        n_intervals = int(rng.integers(1, 7))
+        interior: list[float] = []
+        for j in range(1, n_intervals):
+            interior += [float(j)] * int(rng.integers(1, degree + 2))
+        knots = [0.0] * (degree + 1) + interior + [float(n_intervals)] * (degree + 1)
+        space = BsplineSpace1D(knots, degree)
+
+        np.testing.assert_array_equal(
+            space.first_basis_per_interval(), _first_basis_by_tabulation(space)
+        )
+        checked += 1
+    assert checked == 300
+
+
+def test_first_basis_per_interval_is_non_decreasing() -> None:
+    """The index never decreases, and its steps are the interior multiplicities."""
+    space = BsplineSpace1D([0, 0, 0, 1, 1, 2, 3, 3, 4, 4, 4], 2)
+
+    first = space.first_basis_per_interval()
+    _, multiplicities = space.get_unique_knots_and_multiplicity(in_domain=True)
+
+    assert np.all(np.diff(first) > 0)
+    np.testing.assert_array_equal(np.diff(first), np.asarray(multiplicities[1:-1]))
+
+
+def test_first_basis_per_interval_cached_and_frozen() -> None:
+    """The same read-only array comes back on every call."""
+    space = BsplineSpace1D([0, 0, 0, 1, 2, 3, 3, 3], 2)
+
+    first = space.first_basis_per_interval()
+
+    assert first is space.first_basis_per_interval()
+    assert not first.flags.writeable
+    with pytest.raises(ValueError):
+        first[0] = 7
+
+
+def test_first_basis_per_interval_rejects_periodic() -> None:
+    """Periodic spaces are rejected, as elsewhere in the 1D API."""
+    knots = create_uniform_periodic_knots(num_intervals=3, degree=2, domain=(0.0, 1.0))
+    space = BsplineSpace1D(knots, 2, periodic=True)
+
+    with pytest.raises(ValueError, match="periodic B-spline spaces are not supported"):
+        space.first_basis_per_interval()
