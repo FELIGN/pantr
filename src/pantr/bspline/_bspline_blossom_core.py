@@ -21,6 +21,41 @@ from .._numba_compat import nb_jit
 
 
 @nb_jit(nopython=True, cache=True)
+def _blossom_span(knots: npt.NDArray[Any], u_last: float, n: int) -> int:
+    """Return the knot span the blossom's de Boor recurrence starts from.
+
+    The span index is the position of the last knot not exceeding ``u_last``, found by
+    binary search. For a value inside a non-empty span this is exactly what a scan for
+    the first ``idx`` with ``knots[idx] <= u_last < knots[idx + 1]`` returns, repeated
+    knots included, because that first match is the last occurrence of the span's left
+    knot.
+
+    Args:
+        knots (npt.NDArray[Any]): Non-decreasing knot vector.
+        u_last (float): Largest of the blossom's parameter values.
+        n (int): Index of the last control point (``control_points.shape[0] - 1``).
+
+    Returns:
+        int: Span index in ``[0, n]``.
+
+    Note:
+        Inputs are assumed to be correct (no validation performed).
+
+        Both out-of-span cases return the rightmost span ``n``, which is what the linear
+        scan this replaced also returned for ``u_last`` at or beyond the last knot and
+        for ``u_last`` below the first knot. Layer 2 (``_evaluate_blossom_1d``) accepts
+        parameters up to its tolerance outside the domain, so the second case is
+        reachable and its behaviour is preserved deliberately. The clamp additionally
+        keeps the index in range for a parameter past the domain of a non-clamped knot
+        vector, where the scan could return an index that reads past the control points.
+    """
+    span = int(np.searchsorted(knots, u_last, side="right")) - 1
+    if span < 0 or span > n:
+        return n
+    return span
+
+
+@nb_jit(nopython=True, cache=True)
 def _evaluate_blossom_1d_core(
     knots: npt.NDArray[Any],
     degree: int,
@@ -66,11 +101,7 @@ def _evaluate_blossom_1d_core(
     # Find knot span for the largest u value (u_values[-1]).
     u_last = u_values[degree - 1]
     n = control_points.shape[0] - 1
-    k = n  # default: rightmost span
-    for idx in range(n + degree):
-        if knots[idx] <= u_last < knots[idx + 1]:
-            k = idx
-            break
+    k = _blossom_span(knots, u_last, n)
 
     # Local copy of control points d[j] = P[k-p+j] for j in 0..p.
     d = np.empty((degree + 1, rank), dtype=control_points.dtype)
@@ -108,4 +139,4 @@ def _warmup_numba_functions() -> None:
     _evaluate_blossom_1d_core(knots, 2, ctrl, u_vals)
 
 
-__all__ = ["_evaluate_blossom_1d_core"]
+__all__ = ["_blossom_span", "_evaluate_blossom_1d_core"]

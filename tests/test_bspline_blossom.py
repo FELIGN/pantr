@@ -10,6 +10,7 @@ import pytest
 
 from pantr.bspline import Bspline, BsplineSpace, BsplineSpace1D
 from pantr.bspline._bspline_blossom import _evaluate_blossom_1d
+from pantr.bspline._bspline_blossom_core import _blossom_span
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -202,4 +203,123 @@ class TestBlossomValidation:
                 ctrl,
                 u,
                 1e-12,
+            )
+
+
+# ---------------------------------------------------------------------------
+# Knot-span search: the binary search must reproduce the linear scan
+# ---------------------------------------------------------------------------
+
+
+def _linear_scan_span(knots: npt.NDArray[Any], u_last: float, n: int, degree: int) -> int:
+    """The ``O(n)`` scan ``_blossom_span`` replaced, kept here as the reference oracle.
+
+    Verbatim from the kernel before the change, including its ``k = n`` fall-through when
+    no half-open span contains ``u_last``.
+    """
+    k = n
+    for idx in range(n + degree):
+        if knots[idx] <= u_last < knots[idx + 1]:
+            k = idx
+            break
+    return k
+
+
+def _random_open_knots(
+    degree: int, n_interior: int, seed: int, *, repeat_first: bool = False
+) -> npt.NDArray[np.float64]:
+    """Return a clamped knot vector on ``[0, 1]`` with random interior knots."""
+    rng = np.random.default_rng(seed)
+    interior = np.sort(rng.uniform(0.0, 1.0, size=n_interior))
+    if repeat_first and n_interior > 1:
+        interior[1] = interior[0]
+    return np.concatenate([np.zeros(degree + 1), interior, np.ones(degree + 1)]).astype(np.float64)
+
+
+class TestBlossomSpan:
+    """The binary span search agrees with the linear scan on every valid input."""
+
+    @pytest.mark.parametrize("degree", [1, 2, 3, 4, 5])
+    @pytest.mark.parametrize("n_interior", [0, 1, 2, 5])
+    @pytest.mark.parametrize("repeat_first", [False, True])
+    def test_matches_the_linear_scan(
+        self, degree: int, n_interior: int, repeat_first: bool
+    ) -> None:
+        """Identical span indices, interior multiplicities and endpoints included.
+
+        The probe set covers the interior, both domain endpoints, every interior knot
+        exactly, and the band just outside the domain that Layer 2 still accepts within
+        its tolerance.
+        """
+        knots = _random_open_knots(
+            degree, n_interior, seed=100 * degree + n_interior, repeat_first=repeat_first
+        )
+        n = knots.shape[0] - degree - 2
+        interior = knots[degree + 1 : knots.shape[0] - degree - 1]
+        rng = np.random.default_rng(7)
+        probes = [
+            *rng.uniform(0.0, 1.0, size=30).tolist(),
+            0.0,
+            1.0,
+            *interior.tolist(),
+            -1e-12,
+            1.0 + 1e-12,
+        ]
+        for u in probes:
+            assert int(_blossom_span(knots, float(u), n)) == _linear_scan_span(
+                knots, float(u), n, degree
+            ), f"degree={degree} u={u!r} knots={knots.tolist()}"
+
+    def test_below_the_first_knot_gives_the_rightmost_span(self) -> None:
+        """Preserved behaviour: an under-range parameter falls through to span ``n``.
+
+        Reachable through Layer 2, which accepts parameters up to its tolerance below the
+        domain start. The scan returned ``n`` here because no span matched; the binary
+        search would give ``-1`` without the guard.
+        """
+        knots = np.array([0.0, 0.0, 0.0, 0.5, 1.0, 1.0, 1.0])
+        n = knots.shape[0] - 4
+        assert int(_blossom_span(knots, -1e-9, n)) == n
+        assert _linear_scan_span(knots, -1e-9, n, 2) == n
+
+    def test_at_and_beyond_the_last_knot_clamps(self) -> None:
+        """The right domain endpoint and anything past it both give span ``n``."""
+        knots = np.array([0.0, 0.0, 0.0, 0.5, 1.0, 1.0, 1.0])
+        n = knots.shape[0] - 4
+        assert int(_blossom_span(knots, 1.0, n)) == n
+        assert int(_blossom_span(knots, 2.0, n)) == n
+
+    def test_non_clamped_knots_stay_in_range(self) -> None:
+        """On a non-clamped vector a parameter past the domain still yields a valid index.
+
+        Here the linear scan matched a span above ``n`` and the caller then read past the
+        control points; the clamp removes that. Inputs like this are outside the Layer 2
+        contract either way.
+        """
+        knots = np.array([0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0])
+        n = knots.shape[0] - 4  # degree 2 => 3 control points
+        assert int(_blossom_span(knots, 4.5, n)) == n
+        assert _linear_scan_span(knots, 4.5, n, 2) > n
+
+    @pytest.mark.parametrize("degree", [1, 2, 3, 4, 5])
+    def test_diagonal_property_with_interior_multiplicities(self, degree: int) -> None:
+        """``f[t, ..., t] == f(t)`` on knots with a repeated interior knot.
+
+        The end-to-end guard on the span change: degrees 1 to 5, a non-uniform knot vector
+        carrying an interior multiplicity, and ``t`` at both endpoints, exactly on every
+        interior knot, and in between.
+        """
+        knots = _random_open_knots(degree, 4, seed=degree, repeat_first=True)
+        space = BsplineSpace1D(knots, degree)
+        rng = np.random.default_rng(degree + 50)
+        ctrl = rng.uniform(-1.0, 1.0, size=(space.num_basis, 2))
+        curve = Bspline(BsplineSpace([space]), np.ascontiguousarray(ctrl))
+        interior = knots[degree + 1 : knots.shape[0] - degree - 1]
+        tol = 64.0 * float(np.finfo(np.float64).eps)
+
+        for t in [0.0, 1.0, *interior.tolist(), *rng.uniform(0.0, 1.0, size=10).tolist()]:
+            blossom = _evaluate_blossom_1d(knots, degree, ctrl, np.full(degree, float(t)), tol)
+            direct = np.asarray(curve.evaluate(np.array([float(t)]))).reshape(2)
+            np.testing.assert_allclose(
+                np.asarray(blossom).reshape(2), direct, atol=tol, rtol=0.0, err_msg=f"t={t}"
             )
