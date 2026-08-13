@@ -16,6 +16,7 @@ import numpy as np
 from numpy import typing as npt
 
 from ._bspline_basis_multidim import _tabulate_Bspline_basis_impl
+from ._bspline_cell_supports import _cell_supports_impl
 
 if TYPE_CHECKING:
     from ..quad import PointsLattice
@@ -217,6 +218,42 @@ class BsplineSpace:
         return _tabulate_Bspline_basis_impl(
             self, pts, out_basis=out_basis, out_first_basis=out_first_basis
         )
+
+    def cell_supports(self, cell_ids: npt.ArrayLike) -> npt.NDArray[np.int64]:
+        """Return the control points supported on each of the given cells.
+
+        Every cell of a tensor-product space is supported by exactly
+        ``prod(degree + 1)`` control points, contiguous per direction, so the result
+        is a dense ``(n, W)`` table rather than a ragged structure. Column ``k``
+        always means the same local offset: the one whose C-order index within
+        ``degrees + 1`` is ``k``.
+
+        Args:
+            cell_ids (npt.ArrayLike): Flat knot-span cell ids in C-order over
+                :attr:`num_intervals`, the same convention as
+                :func:`pantr.grid.tensor_product_grid` and
+                :class:`SpanwiseElementExtraction`. Each must satisfy
+                ``0 <= cid < num_total_intervals``.
+
+        Returns:
+            npt.NDArray[np.int64]: Array of shape ``(n, prod(degree + 1))`` of flat
+            C-order control-point ids. Empty input gives shape ``(0, W)``.
+
+        Raises:
+            ValueError: If any direction is periodic, ``cell_ids`` is not integral or
+                one-dimensional, or an id is out of range.
+
+        Example:
+            >>> from pantr.bspline import BsplineSpace, BsplineSpace1D
+            >>> first = BsplineSpace1D([0, 0, 0, 1, 2, 3, 3, 3], 2)
+            >>> second = BsplineSpace1D([0, 0, 0, 1, 1, 1], 2)
+            >>> space = BsplineSpace([first, second])
+            >>> space.num_basis
+            (5, 3)
+            >>> space.cell_supports([0])
+            array([[0, 1, 2, 3, 4, 5, 6, 7, 8]])
+        """
+        return _cell_supports_impl(self, cell_ids)
 
     def restrict(self, cell_ids: npt.ArrayLike) -> BsplineSpaceRestriction:
         """Return the bounding-box windowed sub-space spanning ``cell_ids``.

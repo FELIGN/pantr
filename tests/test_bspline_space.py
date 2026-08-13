@@ -1,9 +1,16 @@
 """Tests for bspline_space module."""
 
+import itertools
+
 import numpy as np
 import pytest
 
-from pantr.bspline import BsplineSpace, BsplineSpace1D, BsplineSpaceRestriction
+from pantr.bspline import (
+    BsplineSpace,
+    BsplineSpace1D,
+    BsplineSpaceRestriction,
+    create_uniform_periodic_knots,
+)
 from pantr.quad import PointsLattice
 
 
@@ -1101,3 +1108,112 @@ class TestBsplineSpaceRestrict:
         space = BsplineSpace([per])
         with pytest.raises(ValueError, match="periodic"):
             space.restrict([0])
+
+
+# ---------------------------------------------------------------- cell_supports
+
+
+def _cell_support_by_tabulation(space: BsplineSpace, cell_id: int) -> list[int]:
+    """Reference row of `cell_supports`, built by tabulating the basis per direction.
+
+    An independent oracle: it finds each direction's first supported function by
+    evaluating the basis at the cell midpoint, then forms the flat ids with an explicit
+    Python loop, sharing none of the vectorized index arithmetic under test.
+    """
+    multi = np.unravel_index(cell_id, space.num_intervals)
+    firsts = []
+    for direction, one_d in enumerate(space.spaces):
+        unique_knots, _ = one_d.get_unique_knots_and_multiplicity(in_domain=True)
+        index = int(multi[direction])
+        midpoint = np.array([0.5 * (unique_knots[index] + unique_knots[index + 1])])
+        _, first_basis = one_d.tabulate_basis(midpoint)
+        firsts.append(int(first_basis[0]))
+
+    row = []
+    for offsets in itertools.product(*[range(degree + 1) for degree in space.degrees]):
+        indices = tuple(first + offset for first, offset in zip(firsts, offsets, strict=True))
+        row.append(int(np.ravel_multi_index(indices, space.num_basis)))
+    return row
+
+
+@pytest.mark.parametrize(
+    "degrees",
+    [(2,), (2, 1), (1, 3), (3, 4, 2)],
+)
+def test_cell_supports_matches_tabulation(degrees: tuple[int, ...]) -> None:
+    """Every row equals an independent per-direction tabulation reference, exactly."""
+    space = BsplineSpace([_open_uniform_space_1d(degree, degree + 1) for degree in degrees])
+    cell_ids = np.arange(space.num_total_intervals)
+
+    supports = space.cell_supports(cell_ids)
+
+    expected_width = int(np.prod([degree + 1 for degree in degrees]))
+    assert supports.shape == (space.num_total_intervals, expected_width)
+    assert supports.dtype == np.int64
+    for cell_id in cell_ids:
+        assert supports[cell_id].tolist() == _cell_support_by_tabulation(space, int(cell_id))
+
+
+def test_cell_supports_with_repeated_interior_knots() -> None:
+    """Repeated interior knots shift the supports, and the reference agrees."""
+    space = BsplineSpace(
+        [
+            BsplineSpace1D([0, 0, 0, 1, 2, 2, 3, 3, 3], 2),
+            BsplineSpace1D([0, 0, 1, 1], 1),
+        ]
+    )
+    cell_ids = np.arange(space.num_total_intervals)
+
+    supports = space.cell_supports(cell_ids)
+
+    for cell_id in cell_ids:
+        assert supports[cell_id].tolist() == _cell_support_by_tabulation(space, int(cell_id))
+
+
+def test_cell_supports_documented_example() -> None:
+    """The 2D example from the specification reproduces exactly."""
+    space = BsplineSpace(
+        [
+            BsplineSpace1D([0, 0, 0, 1, 2, 3, 3, 3], 2),
+            BsplineSpace1D([0, 0, 0, 1, 2, 2, 2], 2),
+        ]
+    )
+    assert space.num_basis == (5, 4)
+
+    flat = int(np.ravel_multi_index((0, 1), space.num_intervals))
+
+    assert space.cell_supports([flat]).tolist() == [[1, 2, 3, 5, 6, 7, 9, 10, 11]]
+
+
+def test_cell_supports_empty_input() -> None:
+    """An empty id list gives an empty table of the right width."""
+    space = BsplineSpace([_open_uniform_space_1d(2, 3), _open_uniform_space_1d(1, 2)])
+
+    supports = space.cell_supports([])
+
+    assert supports.shape == (0, 6)
+    assert supports.dtype == np.int64
+
+
+def test_cell_supports_validation() -> None:
+    """Out-of-range, non-integer and non-1D inputs are rejected."""
+    space = BsplineSpace([_open_uniform_space_1d(2, 3), _open_uniform_space_1d(1, 2)])
+    total = space.num_total_intervals
+
+    with pytest.raises(ValueError, match=r"must lie in \[0, "):
+        space.cell_supports([total])
+    with pytest.raises(ValueError, match=r"must lie in \[0, "):
+        space.cell_supports([-1])
+    with pytest.raises(ValueError, match="integer dtype"):
+        space.cell_supports([0.5])
+    with pytest.raises(ValueError, match="one-dimensional"):
+        space.cell_supports([[0, 1], [2, 3]])
+
+
+def test_cell_supports_rejects_periodic() -> None:
+    """Periodic directions are rejected, as for restrict."""
+    knots = create_uniform_periodic_knots(num_intervals=4, degree=2)
+    space = BsplineSpace([BsplineSpace1D(knots, 2, periodic=True)])
+
+    with pytest.raises(ValueError, match="periodic"):
+        space.cell_supports([0])
