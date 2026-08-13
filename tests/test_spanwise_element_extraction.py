@@ -1471,3 +1471,130 @@ def test_struct_view_float32_is_numba_callable() -> None:
     _njit_apply_many_2d_via_view(view, cell_indices, v, out, scratch)
     expected = ext.apply_many(v, cell_indices)
     np.testing.assert_allclose(out, expected, rtol=1e-5, atol=1e-5)
+
+
+# ---------------------------------------------------------------- factors()
+
+
+def _space_for_degrees(degrees: tuple[int, ...]) -> BsplineSpace:
+    """Build an open-knot space with the given per-direction degrees.
+
+    Interior knots are single so the interior intervals are non-identity, while the
+    boundary intervals are, giving every direction a mix of both cases.
+    """
+    spaces = [
+        BsplineSpace1D([0.0] * (d + 1) + [1.0, 2.0, 3.0] + [4.0] * (d + 1), d) for d in degrees
+    ]
+    return BsplineSpace(spaces)
+
+
+def _kron_from_factors(
+    ext: SpanwiseElementExtraction, cell_idx: int
+) -> npt.NDArray[np.float32 | np.float64]:
+    """Reassemble a cell's dense operator from :meth:`factors`, substituting eye for None."""
+    mats = []
+    for k, (is_identity, op) in enumerate(ext.factors(cell_idx)):
+        compact = ext.compact_ops_1d[k]
+        if is_identity:
+            mats.append(np.eye(compact.shape[1], compact.shape[2], dtype=compact.dtype))
+        else:
+            assert op is not None
+            mats.append(op)
+    result = mats[0]
+    for mat in mats[1:]:
+        result = np.kron(result, mat)
+    return result
+
+
+def test_factors_identity_directions_are_none() -> None:
+    """``None`` appears exactly where the identity flag is set, and flags agree."""
+    sp1 = BsplineSpace1D([0, 0, 0, 1, 2, 3, 4, 4, 4], 2)
+    sp2 = BsplineSpace1D([0, 0, 0, 1, 2, 3, 3, 3], 2)
+    ext = SpanwiseElementExtraction(BsplineSpace([sp1, sp2]), "cardinal")
+
+    for cell in range(ext.num_total_intervals):
+        factors = ext.factors(cell)
+        flags = ext.per_direction_identity_flags(cell)
+        assert tuple(flag for flag, _ in factors) == flags
+        for is_identity, op in factors:
+            assert (op is None) == is_identity
+
+
+def test_factors_identity_cell_is_all_none() -> None:
+    """A wholly identity element yields ``(True, None)`` in every direction."""
+    sp = BsplineSpace1D([0, 0, 0, 1, 2, 3, 4, 4, 4], 2)
+    ext = SpanwiseElementExtraction(BsplineSpace([sp, sp]), "cardinal")
+
+    identity_cells = [cell for cell in range(ext.num_total_intervals) if ext.is_identity_at(cell)]
+    assert identity_cells, "expected at least one fully-identity element"
+    for cell in identity_cells:
+        assert ext.factors(cell) == ((True, None), (True, None))
+
+
+def test_factors_zero_copy_and_readonly() -> None:
+    """Non-identity entries are read-only views sharing memory with compact storage.
+
+    The view object is necessarily new on each call -- numpy basic indexing always
+    builds one -- so the property that matters is shared memory, not identity.
+    """
+    ext = SpanwiseElementExtraction(_space_for_degrees((2, 3)), "cardinal")
+
+    saw_non_identity = False
+    for cell in range(ext.num_total_intervals):
+        for k, (is_identity, op) in enumerate(ext.factors(cell)):
+            if is_identity:
+                continue
+            saw_non_identity = True
+            assert op is not None
+            assert not op.flags.writeable
+            assert np.shares_memory(op, ext.compact_ops_1d[k])
+            with pytest.raises(ValueError):
+                op[0, 0] = 0.0
+    assert saw_non_identity, "expected at least one non-identity direction"
+
+
+@pytest.mark.parametrize("degrees", [(2,), (2, 3), (1, 2, 2)])
+@pytest.mark.parametrize("target", ["bezier", "cardinal"])
+def test_factors_kron_matches_operator(degrees: tuple[int, ...], target: str) -> None:
+    """The Kronecker product of the factors equals the dense per-cell operator, exactly.
+
+    Both go through the same arithmetic path, so this is an exact comparison rather
+    than a tolerance check.
+    """
+    ext = SpanwiseElementExtraction(_space_for_degrees(degrees), target)  # type: ignore[arg-type]
+
+    for cell in range(ext.num_total_intervals):
+        assert np.array_equal(_kron_from_factors(ext, cell), ext.operator(cell))
+
+
+def test_factors_flat_and_multi_index_agree() -> None:
+    """A flat index and its unravelled per-direction form give the same factors."""
+    ext = SpanwiseElementExtraction(_space_for_degrees((2, 3)), "cardinal")
+
+    for flat in range(ext.num_total_intervals):
+        multi = tuple(int(i) for i in np.unravel_index(flat, ext.num_intervals))
+        by_flat = ext.factors(flat)
+        by_multi = ext.factors(multi)
+        assert tuple(flag for flag, _ in by_flat) == tuple(flag for flag, _ in by_multi)
+        for (_, left), (_, right) in zip(by_flat, by_multi, strict=True):
+            if left is None:
+                assert right is None
+            else:
+                assert right is not None
+                assert np.array_equal(left, right)
+
+
+def test_factors_validation() -> None:
+    """Bad cell indices raise the same errors as the rest of the per-cell API."""
+    ext = SpanwiseElementExtraction(_space_for_degrees((2, 3)), "cardinal")
+
+    with pytest.raises(IndexError, match="out of range"):
+        ext.factors(ext.num_total_intervals)
+    with pytest.raises(IndexError, match="out of range"):
+        ext.factors(-1)
+    with pytest.raises(IndexError, match="direction"):
+        ext.factors((0, ext.num_intervals[1]))
+    with pytest.raises(ValueError, match="length"):
+        ext.factors((0,))
+    with pytest.raises(TypeError, match="must be int or sequence"):
+        ext.factors("0")  # type: ignore[arg-type]
