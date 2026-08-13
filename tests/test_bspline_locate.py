@@ -1,0 +1,748 @@
+"""Tests for physical-to-parametric point inversion (``Bspline.locate``)."""
+
+from __future__ import annotations
+
+from collections.abc import Callable
+
+import numpy as np
+import numpy.typing as npt
+import pytest
+
+from pantr.bspline import Bspline, BsplineSpace, BsplineSpace1D
+from pantr.bspline._bspline_locate import (
+    _cell_physical_bounds,
+    _geometric_scale,
+    _LocateContext,
+)
+from pantr.transform import AffineTransform
+
+_XI_REL_ATOL: float = 1e-10
+"""
+Absolute tolerance on a recovered parametric coordinate, as a multiple of the geometry's
+scale (the larger of its control-point bounding-box diagonal and its largest coordinate
+magnitude).
+
+The inversion stops when ``||F(xi) - x||_2 <= 1e-12 * scale``, so the coordinate error is
+that residual divided by the smallest singular value of the Jacobian:
+``1e-12 * scale / sigma_min``. Every geometry below has ``sigma_min`` of order one, and
+the measured worst case over them is ``2.8e-12`` on a geometry of scale ``2.83``, i.e.
+``1e-12 * scale`` exactly as predicted. The ``1e-10`` factor leaves two decades of margin
+for a less favourable Jacobian.
+"""
+
+_XI_ATOL_FLOAT32: float = 1e-4
+"""
+Absolute tolerance on a recovered parametric coordinate for a ``float32`` B-spline.
+
+The convergence threshold is :func:`pantr.tolerance.get_default` for ``float32``
+(``1e-6``) times the geometric scale, so the coordinate error is four orders of magnitude
+larger than in the ``float64`` case. Measured worst case over the cases below:
+``5.2e-6``; the ``1e-4`` leaves a factor of 19.
+"""
+
+
+def _quarter_annulus(
+    r_in: float = 1.0,
+    r_out: float = 2.0,
+    shift: tuple[float, float] = (0.0, 0.0),
+    dtype: npt.DTypeLike = np.float64,
+) -> Bspline:
+    """Return the exact quarter annulus: a degree-2 rational arc times a linear radius.
+
+    The angular direction is the standard degree-2 NURBS quarter circle (three control
+    points, middle weight ``sqrt(2) / 2``), so ``|F(u, v) - shift| == r_in + v *
+    (r_out - r_in)`` holds exactly, not approximately.
+    """
+    weight = np.sqrt(2.0) / 2.0
+    arc = np.array([[1.0, 0.0], [1.0, 1.0], [0.0, 1.0]])
+    weights = np.array([1.0, weight, 1.0])
+    radii = np.array([r_in, r_out])
+    cp = np.empty((3, 2, 3), dtype=np.float64)
+    for i in range(3):
+        for j in range(2):
+            cp[i, j, :2] = weights[i] * (radii[j] * arc[i] + np.asarray(shift))
+            cp[i, j, 2] = weights[i]
+    angular = BsplineSpace1D(np.array([0.0, 0.0, 0.0, 1.0, 1.0, 1.0], dtype=dtype), 2)
+    radial = BsplineSpace1D(np.array([0.0, 0.0, 1.0, 1.0], dtype=dtype), 1)
+    return Bspline(BsplineSpace([angular, radial]), cp.astype(dtype), is_rational=True)
+
+
+def _greville_abscissae(space: BsplineSpace1D) -> npt.NDArray[np.float64]:
+    """Return the Greville abscissae of a 1-D space, one per basis function."""
+    knots = np.asarray(space.knots, dtype=np.float64)
+    degree = space.degree
+    return np.array(
+        [knots[i + 1 : i + degree + 1].mean() for i in range(space.num_basis)], dtype=np.float64
+    )
+
+
+def _identity_map(
+    knots: npt.ArrayLike, degree: int, dim: int, dtype: npt.DTypeLike = np.float64
+) -> Bspline:
+    """Return the identity mapping of the knot vector's box, from Greville abscissae."""
+    spaces = [BsplineSpace1D(np.asarray(knots, dtype=dtype), degree) for _ in range(dim)]
+    mesh = np.meshgrid(*[_greville_abscissae(sub) for sub in spaces], indexing="ij")
+    cp = np.stack(mesh, axis=-1) if dim > 1 else mesh[0][:, np.newaxis]
+    return Bspline(BsplineSpace(spaces), np.ascontiguousarray(cp.astype(dtype)))
+
+
+def _perturbed_patch(
+    degree: int, n_cells: int, dim: int, seed: int, dtype: npt.DTypeLike = np.float64
+) -> Bspline:
+    """Return an injective patch: the identity map plus a bounded random perturbation.
+
+    The perturbation (``0.12`` of a unit cell) is small enough to keep the Jacobian
+    determinant positive, which the tests that compare recovered coordinates assert
+    directly rather than assume.
+    """
+    rng = np.random.default_rng(seed)
+    knots = np.concatenate(
+        [np.zeros(degree + 1), np.arange(1.0, n_cells), np.full(degree + 1, float(n_cells))]
+    )
+    spaces = [BsplineSpace1D(knots.astype(dtype), degree) for _ in range(dim)]
+    mesh = np.meshgrid(*[_greville_abscissae(sub) for sub in spaces], indexing="ij")
+    cp = np.stack(mesh, axis=-1) if dim > 1 else mesh[0][:, np.newaxis]
+    cp = cp + 0.12 * rng.uniform(-1.0, 1.0, size=cp.shape)
+    return Bspline(BsplineSpace(spaces), np.ascontiguousarray(cp.astype(dtype)))
+
+
+def _folded_patch() -> Bspline:
+    """Return a patch whose Jacobian determinant changes sign, so it is not injective."""
+    knots = np.array([0.0, 0.0, 0.0, 0.25, 0.5, 0.75, 1.0, 1.0, 1.0])
+    sub = BsplineSpace1D(knots, 2)
+    space = BsplineSpace([sub, sub])
+    u_grev, v_grev = (np.linspace(0.0, 1.0, n) for n in space.num_basis)
+    u_mesh, v_mesh = np.meshgrid(u_grev, v_grev, indexing="ij")
+    cp = np.stack([u_mesh + 0.9 * v_mesh, v_mesh + 0.9 * np.sin(3.0 * u_mesh)], axis=-1)
+    return Bspline(space, np.ascontiguousarray(cp))
+
+
+def _stretched_patch() -> Bspline:
+    """Return an injective sheared patch whose per-cell physical boxes overlap heavily."""
+    knots = np.array([0.0, 0.0, 0.0, 0.25, 0.5, 0.75, 1.0, 1.0, 1.0])
+    sub = BsplineSpace1D(knots, 2)
+    space = BsplineSpace([sub, sub])
+    u_grev, v_grev = (np.linspace(0.0, 1.0, n) for n in space.num_basis)
+    u_mesh, v_mesh = np.meshgrid(u_grev, v_grev, indexing="ij")
+    cp = np.stack([u_mesh + 0.9 * v_mesh, v_mesh + 0.25 * np.sin(3.0 * u_mesh)], axis=-1)
+    return Bspline(space, np.ascontiguousarray(cp))
+
+
+def _collapsed_edge_patch() -> Bspline:
+    """Return the bilinear patch ``F(u, v) = (u * v, v)``, whose ``v == 0`` edge collapses.
+
+    Its Jacobian ``[[v, u], [0, 1]]`` is singular along that edge, and its image is the
+    triangle ``0 <= x <= y <= 1`` rather than the full control-point box.
+    """
+    cp = np.array([[[0.0, 0.0], [0.0, 1.0]], [[0.0, 0.0], [1.0, 1.0]]], dtype=np.float64)
+    sub = BsplineSpace1D(np.array([0.0, 0.0, 1.0, 1.0]), 1)
+    return Bspline(BsplineSpace([sub, sub]), cp)
+
+
+def _scale_of(spline: Bspline) -> float:
+    """Return the geometric scale the default tolerance is expressed in."""
+    return _geometric_scale(*_cell_physical_bounds(spline))
+
+
+def _cache_of(spline: Bspline) -> _LocateContext | None:
+    """Return the point-inversion cache attribute of ``spline``.
+
+    Read through a function rather than inline: an inline ``assert spline._locate_cache is
+    None`` narrows the attribute's type for the rest of the test, and mypy then calls the
+    later assertions unreachable. A call expression is not narrowed.
+    """
+    return spline._locate_cache
+
+
+def _sample_parametric(
+    spline: Bspline, n_pts: int, seed: int, margin: float = 0.02
+) -> npt.NDArray[np.float64]:
+    """Return ``n_pts`` random parametric points, kept ``margin`` away from the boundary."""
+    domain = np.asarray(spline.space.domain, dtype=np.float64)
+    lo, hi = domain[:, 0], domain[:, 1]
+    rng = np.random.default_rng(seed)
+    unit = rng.uniform(margin, 1.0 - margin, size=(n_pts, spline.dim))
+    return lo + (hi - lo) * unit
+
+
+def _evaluate_at(spline: Bspline, xi: npt.NDArray[np.float64]) -> npt.NDArray[np.float64]:
+    """Evaluate ``spline`` at ``(n, dim)`` parametric points, always returning ``(n, rank)``."""
+    pts = np.ascontiguousarray((xi[:, 0] if spline.dim == 1 else xi).astype(spline.dtype))
+    values = spline.evaluate(pts)
+    return np.asarray(values, dtype=np.float64).reshape(xi.shape[0], spline.rank)
+
+
+def _jacobian_determinants(spline: Bspline, xi: npt.NDArray[np.float64]) -> npt.NDArray[np.float64]:
+    """Return ``det J`` at each parametric point, for an injectivity guard."""
+    pts = np.ascontiguousarray((xi[:, 0] if spline.dim == 1 else xi).astype(spline.dtype))
+    columns = []
+    for axis in range(spline.dim):
+        orders = [0] * spline.dim
+        orders[axis] = 1
+        column = spline.evaluate_derivatives(pts, orders)
+        columns.append(np.asarray(column, dtype=np.float64).reshape(xi.shape[0], spline.rank))
+    return np.asarray(np.linalg.det(np.stack(columns, axis=-1)), dtype=np.float64)
+
+
+def _assert_cell_contains(
+    spline: Bspline,
+    cell_ids: npt.NDArray[np.int64],
+    ref_coords: npt.NDArray[np.float64],
+) -> None:
+    """Assert every reported cell's parametric box contains its reported coordinates.
+
+    An independent check of the ``cell_ids`` half of the result: it reads the per-axis
+    breakpoints straight off the knot vectors instead of asking the grid again, which is
+    what produced the ids.
+    """
+    multi = np.unravel_index(cell_ids, spline.space.num_intervals)
+    for axis, sub in enumerate(spline.space.spaces):
+        breakpoints = np.asarray(
+            sub.get_unique_knots_and_multiplicity(in_domain=True)[0], dtype=np.float64
+        )
+        index = multi[axis]
+        assert np.all(breakpoints[index] <= ref_coords[:, axis])
+        assert np.all(ref_coords[:, axis] <= breakpoints[index + 1])
+
+
+class TestRoundtrip:
+    """Inverting ``evaluate`` recovers the parametric coordinates it was called with."""
+
+    @pytest.mark.parametrize("degree", [1, 2, 3, 4])
+    @pytest.mark.parametrize("dim", [1, 2])
+    def test_perturbed_identity(self, degree: int, dim: int) -> None:
+        """A perturbed identity patch inverts to the generating coordinates."""
+        spline = _perturbed_patch(degree, 4, dim, seed=100 * degree + dim)
+        xi_true = _sample_parametric(spline, 200, seed=1)
+        assert np.all(_jacobian_determinants(spline, xi_true) > 0.0), "patch must be injective"
+        points = _evaluate_at(spline, xi_true)
+
+        cell_ids, ref_coords = spline.locate(points)
+
+        atol = _XI_REL_ATOL * _scale_of(spline)
+        assert np.all(cell_ids >= 0)
+        np.testing.assert_allclose(ref_coords, xi_true, atol=atol, rtol=0.0)
+        np.testing.assert_allclose(_evaluate_at(spline, ref_coords), points, atol=atol, rtol=0.0)
+        _assert_cell_contains(spline, cell_ids, ref_coords)
+
+    def test_three_dimensional(self) -> None:
+        """A 3-D perturbed identity volume inverts to the generating coordinates."""
+        spline = _perturbed_patch(2, 3, 3, seed=77)
+        xi_true = _sample_parametric(spline, 200, seed=2)
+        assert np.all(_jacobian_determinants(spline, xi_true) > 0.0)
+        points = _evaluate_at(spline, xi_true)
+
+        cell_ids, ref_coords = spline.locate(points)
+
+        assert np.all(cell_ids >= 0)
+        np.testing.assert_allclose(
+            ref_coords, xi_true, atol=_XI_REL_ATOL * _scale_of(spline), rtol=0.0
+        )
+        _assert_cell_contains(spline, cell_ids, ref_coords)
+
+    def test_repeated_interior_knots(self) -> None:
+        """A knot vector with a repeated interior knot (a C0 line) inverts correctly."""
+        knots = np.array([0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 2.0, 3.0, 3.0, 3.0, 3.0])
+        spline = _identity_map(knots, 3, 2)
+        xi_true = _sample_parametric(spline, 200, seed=3)
+        points = _evaluate_at(spline, xi_true)
+
+        cell_ids, ref_coords = spline.locate(points)
+
+        assert np.all(cell_ids >= 0)
+        np.testing.assert_allclose(
+            ref_coords, xi_true, atol=_XI_REL_ATOL * _scale_of(spline), rtol=0.0
+        )
+        _assert_cell_contains(spline, cell_ids, ref_coords)
+
+    def test_one_dimensional_input_is_a_list_of_scalars(self) -> None:
+        """For ``rank == 1`` a 1-D input is read as ``n`` points, matching ``evaluate``."""
+        spline = _perturbed_patch(3, 4, 1, seed=5)
+        xi_true = _sample_parametric(spline, 20, seed=4)
+        points = _evaluate_at(spline, xi_true)
+
+        cell_ids, ref_coords = spline.locate(points[:, 0])
+
+        assert cell_ids.shape == (20,)
+        assert ref_coords.shape == (20, 1)
+        np.testing.assert_allclose(
+            ref_coords, xi_true, atol=_XI_REL_ATOL * _scale_of(spline), rtol=0.0
+        )
+
+    def test_single_point_as_a_flat_array(self) -> None:
+        """A flat array of ``rank`` coordinates is read as one point."""
+        spline = _perturbed_patch(2, 3, 2, seed=6)
+        xi_true = _sample_parametric(spline, 1, seed=7)
+        point = _evaluate_at(spline, xi_true)[0]
+
+        cell_ids, ref_coords = spline.locate(point)
+
+        assert cell_ids.shape == (1,)
+        np.testing.assert_allclose(
+            ref_coords, xi_true, atol=_XI_REL_ATOL * _scale_of(spline), rtol=0.0
+        )
+
+    def test_empty_input(self) -> None:
+        """An empty batch returns empty results rather than raising."""
+        spline = _perturbed_patch(2, 2, 2, seed=8)
+        cell_ids, ref_coords = spline.locate(np.zeros((0, 2)))
+        assert cell_ids.shape == (0,)
+        assert ref_coords.shape == (0, 2)
+
+    def test_outputs_are_read_only(self) -> None:
+        """Both returned arrays are frozen, like the rest of pantr's exposed arrays."""
+        spline = _perturbed_patch(2, 2, 2, seed=9)
+        points = _evaluate_at(spline, _sample_parametric(spline, 5, seed=10))
+        cell_ids, ref_coords = spline.locate(points)
+        assert not cell_ids.flags.writeable
+        assert not ref_coords.flags.writeable
+
+
+class TestRationalAnnulus:
+    """Inversion of an exact NURBS quarter annulus, interior and boundary."""
+
+    def test_geometry_is_the_exact_annulus(self) -> None:
+        """Guard on the fixture: the radius is exactly affine in ``v``."""
+        annulus = _quarter_annulus()
+        xi = _sample_parametric(annulus, 100, seed=11)
+        radii = np.linalg.norm(_evaluate_at(annulus, xi), axis=1)
+        np.testing.assert_allclose(radii, 1.0 + xi[:, 1], atol=1e-15, rtol=0.0)
+
+    def test_interior_points(self) -> None:
+        """Interior points invert to the generating coordinates."""
+        annulus = _quarter_annulus()
+        xi_true = _sample_parametric(annulus, 200, seed=11)
+        points = _evaluate_at(annulus, xi_true)
+
+        cell_ids, ref_coords = annulus.locate(points)
+
+        assert np.all(cell_ids == 0), "a single-cell patch has only cell 0"
+        np.testing.assert_allclose(
+            ref_coords, xi_true, atol=_XI_REL_ATOL * _scale_of(annulus), rtol=0.0
+        )
+
+    def test_boundary_and_corner_points(self) -> None:
+        """Points on the domain boundary, including corners, are found."""
+        annulus = _quarter_annulus()
+        xi_true = np.array(
+            [
+                [0.0, 0.0],
+                [1.0, 0.0],
+                [0.0, 1.0],
+                [1.0, 1.0],
+                [0.0, 0.5],
+                [1.0, 0.5],
+                [0.5, 0.0],
+                [0.5, 1.0],
+            ]
+        )
+        points = _evaluate_at(annulus, xi_true)
+
+        cell_ids, ref_coords = annulus.locate(points)
+
+        assert np.all(cell_ids == 0)
+        np.testing.assert_allclose(
+            ref_coords, xi_true, atol=_XI_REL_ATOL * _scale_of(annulus), rtol=0.0
+        )
+
+    def test_float32_spline(self) -> None:
+        """A ``float32`` annulus inverts to ``float32``-limited accuracy."""
+        annulus32 = _quarter_annulus(dtype=np.float32)
+        xi_true = _sample_parametric(annulus32, 200, seed=12)
+        points = _evaluate_at(annulus32, xi_true)
+
+        cell_ids, ref_coords = annulus32.locate(points)
+
+        assert ref_coords.dtype == np.float64
+        assert np.all(cell_ids == 0)
+        np.testing.assert_allclose(ref_coords, xi_true, atol=_XI_ATOL_FLOAT32, rtol=0.0)
+
+
+class TestOutsidePoints:
+    """Points that are not on the mapping's image report ``-1`` and ``nan``."""
+
+    def test_outside_the_bounding_box(self) -> None:
+        """A point far from the geometry is reported as not found."""
+        annulus = _quarter_annulus()
+        cell_ids, ref_coords = annulus.locate(np.array([[10.0, 10.0], [-3.0, 0.5]]))
+        assert cell_ids.tolist() == [-1, -1]
+        assert bool(np.all(np.isnan(ref_coords)))
+
+    def test_inside_the_bounding_box_but_off_the_domain(self) -> None:
+        """The annulus hole is inside the control-point box yet off the geometry."""
+        annulus = _quarter_annulus()
+        holes = np.array([[0.0, 0.0], [0.2, 0.2], [0.5, 0.5], [1.9, 1.9]])
+        cell_ids, ref_coords = annulus.locate(holes)
+        assert cell_ids.tolist() == [-1, -1, -1, -1]
+        assert bool(np.all(np.isnan(ref_coords)))
+
+    def test_mixed_batch_keeps_the_found_points(self) -> None:
+        """A batch mixing found and unfound points resolves each independently."""
+        annulus = _quarter_annulus()
+        xi_true = np.array([[0.3, 0.7], [0.8, 0.1]])
+        points = np.vstack([_evaluate_at(annulus, xi_true), np.array([[0.0, 0.0], [9.0, 9.0]])])
+
+        cell_ids, ref_coords = annulus.locate(points)
+
+        assert cell_ids.tolist() == [0, 0, -1, -1]
+        np.testing.assert_allclose(
+            ref_coords[:2], xi_true, atol=_XI_REL_ATOL * _scale_of(annulus), rtol=0.0
+        )
+        assert bool(np.all(np.isnan(ref_coords[2:])))
+
+
+class TestCandidateCells:
+    """Behaviour when several cells' physical boxes contain the query point."""
+
+    def test_stretched_patch_with_overlapping_boxes(self) -> None:
+        """A sheared patch whose cell boxes overlap still resolves every point."""
+        from pantr.bspline._bspline_locate import _locate_context  # noqa: PLC0415
+        from pantr.geometry import AABB  # noqa: PLC0415
+
+        spline = _stretched_patch()
+        xi_true = _sample_parametric(spline, 300, seed=13, margin=0.01)
+        assert np.all(_jacobian_determinants(spline, xi_true) > 0.0)
+        points = _evaluate_at(spline, xi_true)
+
+        cell_ids, ref_coords = spline.locate(points)
+
+        # The premise of the test: the AABB test really is ambiguous here.
+        context = _locate_context(spline)
+        tol_phys = 1e-12 * context.scale
+        counts = np.array([context.bvh.query_aabb(AABB(x, x).pad(tol_phys)).size for x in points])
+        assert counts.mean() > 2.0, "expected genuinely ambiguous candidate boxes"
+
+        assert np.all(cell_ids >= 0)
+        np.testing.assert_allclose(
+            ref_coords, xi_true, atol=_XI_REL_ATOL * _scale_of(spline), rtol=0.0
+        )
+        _assert_cell_contains(spline, cell_ids, ref_coords)
+
+    def test_folded_patch_returns_a_valid_preimage(self) -> None:
+        """A non-injective mapping is inverted to *some* preimage, not a specified one.
+
+        This pins the documented contract: what holds is ``F(ref_coords) == points``, not
+        ``ref_coords == the coordinates evaluate was called with``.
+        """
+        spline = _folded_patch()
+        xi_true = _sample_parametric(spline, 300, seed=14, margin=0.01)
+        determinants = _jacobian_determinants(spline, xi_true)
+        assert determinants.min() < 0.0 < determinants.max(), "fixture must actually fold"
+        points = _evaluate_at(spline, xi_true)
+
+        cell_ids, ref_coords = spline.locate(points)
+
+        atol = _XI_REL_ATOL * _scale_of(spline)
+        assert np.all(cell_ids >= 0)
+        np.testing.assert_allclose(_evaluate_at(spline, ref_coords), points, atol=atol, rtol=0.0)
+        assert np.abs(ref_coords - xi_true).max() > atol, (
+            "a folded mapping is expected to return a different preimage for some points"
+        )
+        _assert_cell_contains(spline, cell_ids, ref_coords)
+
+    def test_collapsed_edge_patch(self) -> None:
+        """A patch with a collapsed edge (singular Jacobian there) still inverts."""
+        spline = _collapsed_edge_patch()
+        # F(u, v) = (u * v, v): the whole v == 0 edge collapses onto the origin, so the
+        # last query has a whole family of preimages and any of them is correct.
+        points = np.array([[0.25, 0.5], [0.5, 0.75], [0.0, 0.0]])
+
+        cell_ids, ref_coords = spline.locate(points)
+
+        assert np.all(cell_ids == 0)
+        np.testing.assert_allclose(
+            _evaluate_at(spline, ref_coords), points, atol=_XI_REL_ATOL, rtol=0.0
+        )
+
+    def test_singular_jacobian_abandons_the_candidate(self) -> None:
+        """A query that drives the iterate onto a singular Jacobian is reported unfound.
+
+        The image of ``F(u, v) = (u * v, v)`` is the triangle ``0 <= x <= y <= 1``, so
+        ``(0.5, 0)`` lies outside it while still inside the control-point box. Newton is
+        pushed onto the collapsed ``v == 0`` edge, where the smallest singular value of
+        the Jacobian is exactly zero (measured), and the candidate is abandoned instead of
+        an arbitrary step being taken from a rank-deficient solve.
+        """
+        spline = _collapsed_edge_patch()
+
+        cell_ids, ref_coords = spline.locate(np.array([[0.5, 0.0]]))
+
+        assert cell_ids.tolist() == [-1]
+        assert bool(np.all(np.isnan(ref_coords)))
+
+    def test_off_image_query_exhausts_the_iteration_budget(self) -> None:
+        """The other way a candidate fails: a healthy Jacobian that never converges.
+
+        ``(0.75, 0.25)`` is also outside the triangle, but the iterate settles at
+        ``(1, 0.25)`` with a well-conditioned Jacobian, so it is the iteration budget that
+        ends the attempt rather than the rank guard.
+        """
+        spline = _collapsed_edge_patch()
+
+        cell_ids, ref_coords = spline.locate(np.array([[0.75, 0.25]]))
+
+        assert cell_ids.tolist() == [-1]
+        assert bool(np.all(np.isnan(ref_coords)))
+
+    def test_fully_degenerate_patch_reports_unfound_instead_of_raising(self) -> None:
+        """A patch that collapses onto a line is handled, not crashed on.
+
+        ``F(u, v) = (u + v, u + v)`` has ``J = [[1, 1], [1, 1]]`` everywhere, and
+        ``numpy.linalg.solve`` raises ``LinAlgError`` on it (verified). The rank guard is
+        what turns that into a plain "not found". A query that happens to lie on the
+        image is still answered, since the residual test runs before the Jacobian.
+        """
+        sub = BsplineSpace1D(np.array([0.0, 0.0, 1.0, 1.0]), 1)
+        cp = np.array([[[0.0, 0.0], [1.0, 1.0]], [[1.0, 1.0], [2.0, 2.0]]], dtype=np.float64)
+        flat = Bspline(BsplineSpace([sub, sub]), cp)
+
+        cell_ids, ref_coords = flat.locate(np.array([[0.3, 0.9], [1.0, 1.0]]))
+
+        assert cell_ids.tolist() == [-1, 0]
+        assert bool(np.all(np.isnan(ref_coords[0])))
+        np.testing.assert_allclose(
+            _evaluate_at(flat, ref_coords[1:]), np.array([[1.0, 1.0]]), atol=1e-15, rtol=0.0
+        )
+
+
+class TestIdentityMap:
+    """The identity mapping inverts in one Newton step, to machine precision."""
+
+    @pytest.mark.parametrize("degree", [1, 2, 3, 4])
+    def test_machine_precision_but_not_bitwise(self, degree: int) -> None:
+        """Recovery is exact to a few ulp of the domain, which is all that is available.
+
+        The control points are the Greville abscissae, so the mapping is the identity
+        mathematically but not in floating point: ``F(xi)`` already differs from ``xi`` by
+        up to ``1.3e-15`` on a domain of length 3 (measured, degrees 1-4). A bitwise
+        round trip is therefore unattainable by any implementation, and the reachable
+        statement is a few ulp.
+        """
+        knots = np.concatenate([np.zeros(degree + 1), [1.0, 2.0], np.full(degree + 1, 3.0)])
+        spline = _identity_map(knots, degree, 2)
+        xi_true = _sample_parametric(spline, 200, seed=15)
+
+        forward_error = np.abs(_evaluate_at(spline, xi_true) - xi_true).max()
+        cell_ids, ref_coords = spline.locate(xi_true)
+
+        assert np.all(cell_ids >= 0)
+        # 8 ulp of the domain length: measured worst case is 1.8e-15, i.e. under 3 ulp.
+        atol = 8.0 * float(np.finfo(np.float64).eps) * 3.0
+        np.testing.assert_allclose(ref_coords, xi_true, atol=atol, rtol=0.0)
+        assert forward_error > 0.0, "the discrete identity is not exact in floating point"
+
+    def test_converges_in_a_single_newton_step(self) -> None:
+        """One step suffices: the mapping is affine, so the Jacobian is constant."""
+        knots = np.array([0.0, 0.0, 0.0, 1.0, 2.0, 3.0, 3.0, 3.0])
+        spline = _identity_map(knots, 2, 2)
+        xi_true = _sample_parametric(spline, 100, seed=16)
+
+        cell_ids, _ = spline.locate(xi_true, max_iter=1)
+
+        assert np.all(cell_ids >= 0)
+
+
+class TestToleranceScaling:
+    """The default tolerance follows the geometry's own size, offset included."""
+
+    def test_scale_uses_the_coordinate_magnitude_not_only_the_diagonal(self) -> None:
+        """Translating a geometry leaves its diagonal alone but raises its scale."""
+        centered = _quarter_annulus()
+        shifted = _quarter_annulus(shift=(1.0e6, 1.0e6))
+        assert _scale_of(centered) == pytest.approx(2.8284271247461903)
+        # The diagonal is translation invariant; the scale must not be.
+        assert _scale_of(shifted) > 1.0e6
+
+    @pytest.mark.parametrize("shift", [1.0e3, 1.0e6, 1.0e9])
+    def test_offset_geometry_still_inverts(self, shift: float) -> None:
+        """A geometry far from the origin is fully recovered with the default tolerance.
+
+        A tolerance taken from the bounding-box diagonal alone would be below the
+        residual's own arithmetic floor here (measured: 113 of 200 points lost at a
+        ``1e6`` offset), because the floor scales with the coordinate magnitude and the
+        diagonal does not.
+        """
+        spline = _quarter_annulus(shift=(shift, shift))
+        xi_true = _sample_parametric(spline, 200, seed=17)
+        points = _evaluate_at(spline, xi_true)
+
+        cell_ids, ref_coords = spline.locate(points)
+
+        assert np.all(cell_ids == 0)
+        np.testing.assert_allclose(
+            ref_coords, xi_true, atol=_XI_REL_ATOL * _scale_of(spline), rtol=0.0
+        )
+
+    def test_explicit_tolerance_is_an_absolute_distance(self) -> None:
+        """A slack ``tol`` accepts a point that is merely near the geometry.
+
+        The image of a square mapping is a full-dimensional region, so "near but not on"
+        only exists outside it: the point below sits ``1e-3`` inside the annulus hole,
+        just off the ``v == 0`` boundary.
+        """
+        annulus = _quarter_annulus()
+        direction = np.array([[np.cos(0.7), np.sin(0.7)]])
+        nearby = (1.0 - 1.0e-3) * direction
+
+        assert annulus.locate(nearby)[0].tolist() == [-1]
+        assert annulus.locate(nearby, tol=1.0e-2)[0].tolist() == [0]
+
+    def test_max_iter_is_honoured(self) -> None:
+        """Too small an iteration budget reports "not found" instead of a wrong answer.
+
+        The annulus needs 5 Newton steps from a cell midpoint (measured); with a budget
+        of 1 the residual test simply never passes.
+        """
+        annulus = _quarter_annulus()
+        points = _evaluate_at(annulus, np.array([[0.05, 0.95], [0.95, 0.05]]))
+
+        assert annulus.locate(points, max_iter=1)[0].tolist() == [-1, -1]
+        assert annulus.locate(points, max_iter=30)[0].tolist() == [0, 0]
+
+
+class TestCellPhysicalBounds:
+    """The per-cell physical boxes match an independent brute-force oracle."""
+
+    @pytest.mark.parametrize(
+        "spline_factory",
+        [
+            lambda: _quarter_annulus(),
+            lambda: _quarter_annulus().subdivide(3),
+            lambda: _perturbed_patch(3, 4, 2, seed=18),
+            lambda: _identity_map(
+                np.array([0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 2.0, 3.0, 3.0, 3.0, 3.0]), 3, 2
+            ),
+            lambda: _perturbed_patch(2, 2, 3, seed=19),
+        ],
+    )
+    def test_matches_cell_supports_oracle(self, spline_factory: Callable[[], Bspline]) -> None:
+        """A running min/max per axis equals a gather over the full per-cell support.
+
+        Bitwise equality is the right assertion here: both routes take the minimum and
+        maximum of the same finite set of floats, with no arithmetic in between.
+        """
+        spline = spline_factory()
+        space = spline.space
+        lo, hi = _cell_physical_bounds(spline)
+
+        supports = space.cell_supports(np.arange(space.num_total_intervals))
+        cp = np.asarray(spline.control_points, dtype=np.float64).reshape(space.num_total_basis, -1)
+        physical = cp[:, :-1] / cp[:, -1:] if spline.is_rational else cp
+        boxes = physical[supports]
+
+        assert np.array_equal(lo, boxes.min(axis=1))
+        assert np.array_equal(hi, boxes.max(axis=1))
+
+
+class TestCaching:
+    """The inversion state is cached, and the in-place mutators invalidate it."""
+
+    def test_second_call_reuses_the_context(self) -> None:
+        """The hierarchy is built once per B-spline."""
+        spline = _quarter_annulus()
+        assert _cache_of(spline) is None
+        spline.locate(np.array([[1.2, 0.3]]))
+        first = _cache_of(spline)
+        assert first is not None
+        spline.locate(np.array([[0.3, 1.2]]))
+        second = _cache_of(spline)
+        assert second is first
+        assert second is not None
+        assert second.bvh is first.bvh
+
+    @pytest.mark.parametrize("mutate", ["reverse", "permute_directions", "transform"])
+    def test_in_place_mutation_invalidates_the_context(self, mutate: str) -> None:
+        """Every in-place mutator drops the cache, as it does the Bézier cache.
+
+        Without this a stale hierarchy would survive a mutation that moves the geometry,
+        and the next call would silently report points as not found.
+        """
+        spline = _perturbed_patch(2, 2, 2, seed=20)
+        xi_true = _sample_parametric(spline, 20, seed=21)
+        spline.locate(_evaluate_at(spline, xi_true))
+        assert _cache_of(spline) is not None
+
+        if mutate == "reverse":
+            spline.reverse(0, in_place=True)
+        elif mutate == "permute_directions":
+            spline.permute_directions([1, 0], in_place=True)
+        else:
+            spline.transform(AffineTransform.translation([100.0, 100.0]), in_place=True)
+
+        assert _cache_of(spline) is None
+        # And the mutated geometry inverts correctly, which a stale cache would break.
+        moved = _sample_parametric(spline, 20, seed=22)
+        cell_ids, ref_coords = spline.locate(_evaluate_at(spline, moved))
+        assert np.all(cell_ids >= 0)
+        np.testing.assert_allclose(
+            ref_coords, moved, atol=_XI_REL_ATOL * _scale_of(spline), rtol=0.0
+        )
+
+
+class TestValidation:
+    """Rejected inputs, each with the exception the contract promises."""
+
+    def test_embedded_geometry_is_not_implemented(self) -> None:
+        """A curve in the plane (``rank > dim``) needs a closest-point solve."""
+        sub = BsplineSpace1D(np.array([0.0, 0.0, 0.0, 1.0, 1.0, 1.0]), 2)
+        curve = Bspline(BsplineSpace([sub]), np.array([[0.0, 0.0], [1.0, 2.0], [2.0, 0.0]]))
+        with pytest.raises(NotImplementedError, match="rank 2 > dim 1"):
+            curve.locate(np.array([[1.0, 1.0]]))
+
+    def test_rank_below_dim_is_rejected(self) -> None:
+        """A scalar field over a surface cannot be inverted at all."""
+        sub = BsplineSpace1D(np.array([0.0, 0.0, 1.0, 1.0]), 1)
+        space = BsplineSpace([sub, sub])
+        field = Bspline(space, np.arange(4.0).reshape(2, 2, 1))
+        with pytest.raises(ValueError, match="rank 1 < dim 2"):
+            field.locate(np.array([[1.0]]))
+
+    def test_periodic_space_is_rejected(self) -> None:
+        """Periodic directions have no bounded knot-span grid to report cells from."""
+        knots = np.array([0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0])
+        periodic = BsplineSpace1D(knots, 2, periodic=True)
+        space = BsplineSpace([periodic, periodic])
+        n_0, n_1 = space.num_basis
+        rng = np.random.default_rng(23)
+        spline = Bspline(space, rng.uniform(size=(n_0, n_1, 2)))
+        with pytest.raises(ValueError, match="periodic"):
+            spline.locate(np.array([[0.5, 0.5]]))
+
+    def test_non_positive_weight_is_rejected(self) -> None:
+        """The convex-hull property behind the candidate search needs positive weights."""
+        annulus = _quarter_annulus()
+        cp = np.array(annulus.control_points, dtype=np.float64)
+        cp[1, 0, 2] = -cp[1, 0, 2]
+        broken = Bspline(annulus.space, cp, is_rational=True)
+        with pytest.raises(ValueError, match="weight must be strictly positive"):
+            broken.locate(np.array([[1.2, 0.3]]))
+
+    @pytest.mark.parametrize(
+        "bad_points",
+        [
+            np.zeros((3, 3)),
+            np.zeros((3, 1)),
+            np.zeros((2, 2, 2)),
+            np.array([np.nan, 0.5]),
+            np.array([[0.5, np.inf]]),
+        ],
+    )
+    def test_bad_points_are_rejected(self, bad_points: npt.NDArray[np.float64]) -> None:
+        """Wrong trailing dimension, wrong rank, or a non-finite coordinate."""
+        annulus = _quarter_annulus()
+        with pytest.raises(ValueError):
+            annulus.locate(bad_points)
+
+    @pytest.mark.parametrize("max_iter", [0, -1])
+    def test_max_iter_must_be_positive(self, max_iter: int) -> None:
+        """A budget of zero steps is a caller mistake, not a silent empty result."""
+        annulus = _quarter_annulus()
+        with pytest.raises(ValueError, match="max_iter"):
+            annulus.locate(np.array([[1.2, 0.3]]), max_iter=max_iter)
+
+    @pytest.mark.parametrize("tol", [0.0, -1e-6, np.nan, np.inf])
+    def test_tol_must_be_positive_and_finite(self, tol: float) -> None:
+        """An explicit tolerance is an absolute distance, so it must be usable as one."""
+        annulus = _quarter_annulus()
+        with pytest.raises(ValueError, match="tol"):
+            annulus.locate(np.array([[1.2, 0.3]]), tol=tol)
