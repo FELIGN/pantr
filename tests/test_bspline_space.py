@@ -1217,3 +1217,161 @@ def test_cell_supports_rejects_periodic() -> None:
 
     with pytest.raises(ValueError, match="periodic"):
         space.cell_supports([0])
+
+
+# --------------------------------------------------------------- boundary_dofs
+
+
+def _boundary_dofs_bruteforce(
+    space: BsplineSpace, direction: int, side: int, layers: int
+) -> list[int]:
+    """Reference row of `boundary_dofs`, by filtering every dof on its unraveled index.
+
+    An independent oracle: it walks all dofs with `unravel_index` and keeps the ones
+    inside the slab, sharing none of the vectorized `ravel_multi_index` arithmetic
+    under test.
+    """
+    num_basis_dir = space.num_basis[direction]
+    first = 0 if side == 0 else num_basis_dir - layers
+    return [
+        flat
+        for flat in range(space.num_total_basis)
+        if first <= int(np.unravel_index(flat, space.num_basis)[direction]) < first + layers
+    ]
+
+
+def test_boundary_dofs_2d_known_values() -> None:
+    """The documented 2D slabs reproduce exactly, flat ids being ``i0 * 4 + i1``."""
+    space = BsplineSpace(
+        [
+            BsplineSpace1D([0, 0, 0, 1, 2, 3, 3, 3], 2),
+            BsplineSpace1D([0, 0, 0, 1, 2, 2, 2], 2),
+        ]
+    )
+    assert space.num_basis == (5, 4)
+
+    assert space.boundary_dofs(0, 0).tolist() == [0, 1, 2, 3]
+    assert space.boundary_dofs(0, 1).tolist() == [16, 17, 18, 19]
+    assert space.boundary_dofs(1, 0).tolist() == [0, 4, 8, 12, 16]
+    assert space.boundary_dofs(1, 1, layers=2).tolist() == [2, 3, 6, 7, 10, 11, 14, 15, 18, 19]
+    assert space.boundary_dofs(0, 0, layers=5).tolist() == list(range(20))
+
+
+def test_boundary_dofs_3d_known_values() -> None:
+    """A 3D tangential slab holds ``num_basis[0] * num_basis[2]`` ids of the form i0*20+i2."""
+    space = BsplineSpace(
+        [
+            BsplineSpace1D([0, 0, 0, 1, 1, 1], 2),
+            _open_uniform_space_1d(2, 2),
+            _open_uniform_space_1d(2, 3),
+        ]
+    )
+    assert space.num_basis == (3, 4, 5)
+
+    dofs = space.boundary_dofs(1, 0)
+
+    assert dofs.tolist() == [i0 * 20 + i2 for i0 in range(3) for i2 in range(5)]
+
+
+@pytest.mark.parametrize(
+    "space",
+    [
+        BsplineSpace([_open_uniform_space_1d(2, 4)]),
+        BsplineSpace([_open_uniform_space_1d(2, 4), _open_uniform_space_1d(1, 3)]),
+        BsplineSpace(
+            [
+                _open_uniform_space_1d(3, 2),
+                _open_uniform_space_1d(4, 2),
+                _open_uniform_space_1d(2, 3),
+            ]
+        ),
+        BsplineSpace(
+            [BsplineSpace1D([0, 0, 0, 1, 2, 2, 3, 3, 3], 2), _open_uniform_space_1d(1, 3)]
+        ),
+    ],
+    ids=["1d_p2", "2d_aniso_p21", "3d_aniso_p342", "repeated_interior_knots"],
+)
+def test_boundary_dofs_matches_bruteforce(space: BsplineSpace) -> None:
+    """Every face, side and thickness equals the brute-force filter, exactly."""
+    for direction in range(space.dim):
+        num_basis_dir = space.num_basis[direction]
+        for side in (0, 1):
+            for layers in range(1, min(3, num_basis_dir) + 1):
+                dofs = space.boundary_dofs(direction, side, layers)
+
+                assert dofs.tolist() == _boundary_dofs_bruteforce(space, direction, side, layers)
+                assert dofs.dtype == np.int64
+                assert not dofs.flags.writeable
+                assert dofs.shape == (layers * space.num_total_basis // num_basis_dir,)
+                # unique() both sorts and deduplicates, so equality proves the slab is
+                # emitted strictly ascending with no repeats and needs no sort.
+                np.testing.assert_array_equal(np.unique(dofs), dofs)
+
+
+def test_boundary_dofs_trace_property() -> None:
+    """With open knots, ``layers=1`` is exactly the set with non-zero trace on the face."""
+    space = BsplineSpace([_open_uniform_space_1d(2, 4), _open_uniform_space_1d(3, 3)])
+
+    for direction in range(space.dim):
+        one_d = space.spaces[direction]
+        for side in (0, 1):
+            endpoint = np.array([one_d.domain[side]], dtype=np.float64)
+            values, first_basis = one_d.tabulate_basis(endpoint)
+            on_face = {
+                int(first_basis[0]) + local
+                for local in range(one_d.degree + 1)
+                if abs(float(values[0, local])) > space.tolerance
+            }
+            # The clamped end leaves a single function alive on the face; if that ever
+            # stopped holding, layers=1 would no longer mean "non-zero trace".
+            assert len(on_face) == 1
+
+            axis_indices = [set(range(n)) for n in space.num_basis]
+            axis_indices[direction] = on_face
+            expected = sorted(
+                int(np.ravel_multi_index(multi, space.num_basis))
+                for multi in itertools.product(*axis_indices)
+            )
+
+            assert space.boundary_dofs(direction, side).tolist() == expected
+
+
+def test_boundary_dofs_layers_nested() -> None:
+    """A thicker slab strictly contains a thinner one, and the full thickness is every dof."""
+    space = BsplineSpace([_open_uniform_space_1d(2, 4), _open_uniform_space_1d(2, 3)])
+
+    for direction in range(space.dim):
+        num_basis_dir = space.num_basis[direction]
+        for side in (0, 1):
+            for layers in range(1, num_basis_dir):
+                thin = set(space.boundary_dofs(direction, side, layers).tolist())
+                thick = set(space.boundary_dofs(direction, side, layers + 1).tolist())
+                assert thin < thick
+
+            full = space.boundary_dofs(direction, side, num_basis_dir)
+            assert full.tolist() == list(range(space.num_total_basis))
+
+
+def test_boundary_dofs_validation() -> None:
+    """Out-of-range direction, side and layers are rejected."""
+    space = BsplineSpace([_open_uniform_space_1d(2, 4), _open_uniform_space_1d(1, 3)])
+
+    with pytest.raises(ValueError, match=r"direction must lie in \[0, 2\)"):
+        space.boundary_dofs(2, 0)
+    with pytest.raises(ValueError, match="direction must lie"):
+        space.boundary_dofs(-1, 0)
+    with pytest.raises(ValueError, match="side must be 0"):
+        space.boundary_dofs(0, 2)
+    with pytest.raises(ValueError, match="layers must lie"):
+        space.boundary_dofs(0, 0, layers=0)
+    with pytest.raises(ValueError, match="layers must lie"):
+        space.boundary_dofs(0, 0, layers=space.num_basis[0] + 1)
+
+
+def test_boundary_dofs_rejects_periodic() -> None:
+    """Periodic directions are rejected: a periodic direction has no boundary."""
+    knots = create_uniform_periodic_knots(num_intervals=4, degree=2)
+    space = BsplineSpace([BsplineSpace1D(knots, 2, periodic=True)])
+
+    with pytest.raises(ValueError, match="periodic"):
+        space.boundary_dofs(0, 0)

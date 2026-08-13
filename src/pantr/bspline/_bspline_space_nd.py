@@ -255,6 +255,82 @@ class BsplineSpace:
         """
         return _cell_supports_impl(self, cell_ids)
 
+    def boundary_dofs(
+        self,
+        direction: int,
+        side: int,
+        layers: int = 1,
+    ) -> npt.NDArray[np.int64]:
+        """Return the control points of a boundary slab, as flat C-order ids.
+
+        The slab holds the control points whose index along ``direction`` lies in the
+        first (``side == 0``) or last (``side == 1``) ``layers`` positions, and every
+        index on the remaining axes. For an open knot vector, ``layers == 1`` selects
+        exactly the basis functions with non-zero trace on that face, which is what a
+        strong Dirichlet condition needs; a thicker slab serves a clamped or
+        :math:`C^1` condition.
+
+        The result holds **control-point** ids over :attr:`num_basis`, never cell ids
+        over :attr:`num_intervals`. Interior knot multiplicities do not affect it: a
+        boundary slab is a notion in index space.
+
+        Args:
+            direction (int): Axis of the face, in ``[0, dim)``.
+            side (int): ``0`` for the low face, ``1`` for the high face. Together with
+                ``direction`` this is the ``lfid = 2 * direction + side`` encoding of
+                :meth:`pantr.grid.Grid.local_facet_axis_side`.
+            layers (int): Slab thickness in control-point indices, in
+                ``[1, num_basis[direction]]``. Defaults to 1.
+
+        Returns:
+            npt.NDArray[np.int64]: Read-only, strictly ascending flat C-order
+            control-point ids, of shape
+            ``(layers * num_total_basis // num_basis[direction],)``.
+
+        Raises:
+            ValueError: If ``direction``, ``side`` or ``layers`` is out of range, or if
+                any direction is periodic -- a periodic direction has no boundary.
+
+        Example:
+            >>> from pantr.bspline import BsplineSpace, BsplineSpace1D
+            >>> first = BsplineSpace1D([0, 0, 0, 1, 2, 3, 3, 3], 2)
+            >>> second = BsplineSpace1D([0, 0, 0, 1, 2, 2, 2], 2)
+            >>> space = BsplineSpace([first, second])
+            >>> space.num_basis
+            (5, 4)
+            >>> space.boundary_dofs(0, 0)
+            array([0, 1, 2, 3])
+            >>> space.boundary_dofs(1, 0)
+            array([ 0,  4,  8, 12, 16])
+            >>> space.boundary_dofs(1, 1, layers=2)
+            array([ 2,  3,  6,  7, 10, 11, 14, 15, 18, 19])
+        """
+        if any(space.periodic for space in self._spaces):
+            raise ValueError("boundary_dofs: periodic B-spline spaces are not supported.")
+        if not 0 <= direction < self.dim:
+            raise ValueError(
+                f"boundary_dofs: direction must lie in [0, {self.dim}); got {direction}."
+            )
+        if side not in (0, 1):
+            raise ValueError(f"boundary_dofs: side must be 0 (low) or 1 (high); got {side}.")
+        num_basis_dir = self.num_basis[direction]
+        if not 1 <= layers <= num_basis_dir:
+            raise ValueError(
+                f"boundary_dofs: layers must lie in [1, {num_basis_dir}]; got {layers}."
+            )
+
+        first = 0 if side == 0 else num_basis_dir - layers
+        axes = [np.arange(n, dtype=np.int64) for n in self.num_basis]
+        axes[direction] = np.arange(first, first + layers, dtype=np.int64)
+
+        # Each axis range is ascending and the C-order flat id is monotone in the
+        # lexicographic order of the multi-index, so the slab comes out sorted and
+        # unique without an explicit sort.
+        mesh = np.meshgrid(*axes, indexing="ij")
+        dofs = np.ravel_multi_index(tuple(m.ravel() for m in mesh), self.num_basis).astype(np.int64)
+        dofs.flags.writeable = False
+        return dofs
+
     def restrict(self, cell_ids: npt.ArrayLike) -> BsplineSpaceRestriction:
         """Return the bounding-box windowed sub-space spanning ``cell_ids``.
 
