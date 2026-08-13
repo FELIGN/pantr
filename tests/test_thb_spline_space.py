@@ -1291,6 +1291,210 @@ class TestProlongation:
             coarse.prolongation_to(_grid_1d())  # type: ignore[arg-type]
 
 
+def _assert_same_field(
+    coarse: THBSplineSpace,
+    fine: THBSplineSpace,
+    u_coarse: npt.NDArray[np.float64],
+    u_fine: npt.NDArray[np.float64],
+) -> None:
+    """Assert the two coefficient vectors describe the same function, cell by cell."""
+    u_axis = np.linspace(0.1, 0.9, 3)
+    err = 0.0
+    for cid in range(fine.grid.num_cells):
+        lo, hi = fine.grid.cell_bounds(cid)
+        mesh = np.meshgrid(
+            *[lo[k] + (hi[k] - lo[k]) * u_axis for k in range(fine.dim)], indexing="ij"
+        )
+        pts = np.stack([m.ravel() for m in mesh], axis=-1)
+        coarse_cid = coarse.grid.locate(pts[0])
+        assert coarse_cid is not None
+        err = max(
+            err,
+            float(
+                np.abs(
+                    _field_at(fine, u_fine, cid, pts) - _field_at(coarse, u_coarse, coarse_cid, pts)
+                ).max()
+            ),
+        )
+    assert err < 1e-12
+
+
+_MATVEC_ATOL = 64.0 * float(np.finfo(np.float64).eps)
+"""Bound on the gap between a CSR matvec and a dense BLAS matvec of the same matrix.
+
+The two matrices are bitwise identical, but a matrix-vector product is not: scipy sums a
+row in stored-index order while BLAS blocks and reorders, and floating-point addition is
+not associative. A row here holds at most a few dozen entries of order one, so the gap is
+bounded by roughly ``2 * row_length * eps / 2``; 64 ulp covers that with margin. Compare
+the *matrices* bitwise and their *products* within this bound, never the other way round.
+"""
+
+
+class TestProlongationSparse:
+    """prolongation_to_sparse stores exactly the matrix the dense variant computes."""
+
+    @pytest.mark.parametrize("truncate", [True, False])
+    def test_equals_dense_1d(self, truncate: bool) -> None:
+        """Bitwise equality, not an approximation: the same solves in the same order."""
+        coarse = THBSplineSpace(_root_1d(), _grid_1d(), truncate=truncate)
+        fine = coarse.refine([0, 1], admissible_class=None)
+
+        sparse_p = coarse.prolongation_to_sparse(fine)
+        dense = coarse.prolongation_to(fine)
+
+        assert sparse_p.shape == (fine.num_total_basis, coarse.num_total_basis)
+        assert sparse_p.dtype == np.float64
+        assert np.array_equal(sparse_p.toarray(), dense)
+
+    @pytest.mark.parametrize("truncate", [True, False])
+    def test_equals_dense_2d_multi_level(self, truncate: bool) -> None:
+        """Two refinement rounds, so columns resolve at several local levels."""
+        coarse = THBSplineSpace(_root_2d(), _grid_2d(), truncate=truncate)
+        f1 = coarse.refine([0], admissible_class=None)
+        f2 = f1.refine([_locate(f1.grid, [0.05, 0.05])], admissible_class=None)
+        assert f2.num_levels >= 3
+
+        assert np.array_equal(
+            coarse.prolongation_to_sparse(f2).toarray(), coarse.prolongation_to(f2)
+        )
+
+    @pytest.mark.parametrize("truncate", [True, False])
+    def test_equals_dense_anisotropic_degrees(self, truncate: bool) -> None:
+        """Anisotropic degrees (2, 3) and factor (2, 3)."""
+        coarse = create_thb_space(
+            create_uniform_space([2, 3], [6, 9]), factor=[2, 3], truncate=truncate
+        )
+        fine = coarse.refine_region(0, [0, 0], [3, 3], admissible_class=None)
+
+        assert np.array_equal(
+            coarse.prolongation_to_sparse(fine).toarray(), coarse.prolongation_to(fine)
+        )
+
+    def test_identity_when_no_refinement(self) -> None:
+        coarse = THBSplineSpace(_root_2d(), _grid_2d())
+        p = coarse.prolongation_to_sparse(coarse)
+        np.testing.assert_allclose(p.toarray(), np.eye(coarse.num_total_basis), atol=1e-10)
+
+    def test_unit_columns_need_eliminate_zeros(self) -> None:
+        """A coarse function away from the refinement has one non-zero, of value 1.0.
+
+        The *stored* count is larger. Every fine function overlapping the coarse support
+        enters the local solve, and its coefficient is kept even when it solves to exactly
+        zero, because these are two-scale coefficients rather than a thresholded
+        approximation. So the unit-column property holds after ``eliminate_zeros()``, and
+        this test pins both halves of that.
+        """
+        coarse = create_thb_space(create_uniform_space([2, 2], [16, 16]))
+        fine = coarse.refine_region(0, [0, 0], [2, 2])
+
+        p = coarse.prolongation_to_sparse(fine)
+        stored_per_column = np.diff(p.tocsc().indptr)
+        pruned = p.copy()
+        pruned.eliminate_zeros()
+        nonzeros_per_column = np.diff(pruned.tocsc().indptr)
+
+        unit_columns = np.flatnonzero(nonzeros_per_column == 1)
+        assert unit_columns.size > coarse.num_total_basis // 2
+        values = p.toarray()[:, unit_columns]
+        np.testing.assert_array_equal(values[values != 0.0], np.ones(unit_columns.size))
+        # Explicit zeros really are stored, which is why the property needs the pruning.
+        assert int(stored_per_column.sum()) > int(nonzeros_per_column.sum())
+
+    def test_storage_grows_with_dofs_not_their_square(self) -> None:
+        """Storage follows nnz, so it grows like the dof count, not like its square.
+
+        This needs two sizes to say anything: at one small size the constant factor
+        (entries per column) dominates and sparse storage is merely a fraction of dense,
+        which would pass a threshold test for the wrong reason. Measured here, the coarse
+        dof count grows 11.6x, sparse storage 13x, dense storage 121x.
+        """
+        measured = []
+        for cells in (8, 32):
+            coarse = create_thb_space(create_uniform_space([2, 2], [cells, cells]))
+            fine = coarse.refine_region(0, [0, 0], [2, 2])
+            p = coarse.prolongation_to_sparse(fine)
+            measured.append((coarse.num_total_basis, fine.num_total_basis, p.nnz))
+        (n_coarse_0, n_fine_0, nnz_0), (n_coarse_1, n_fine_1, nnz_1) = measured
+        dof_growth = n_coarse_1 / n_coarse_0
+
+        # Entries per column stay bounded: a coarse function only ever meets the fine
+        # functions overlapping its own support, however large the space grows.
+        assert nnz_1 / n_coarse_1 < 1.5 * (nnz_0 / n_coarse_0)
+        # Hence sparse storage grows like the dof count...
+        assert nnz_1 / nnz_0 < 3.0 * dof_growth
+        # ...while dense storage grows like its square.
+        assert (n_fine_1 * n_coarse_1) / (n_fine_0 * n_coarse_0) > 5.0 * dof_growth
+
+    def test_partition_of_unity_thb(self) -> None:
+        """For THB, prolonging the constant 1 yields the fine constant 1."""
+        coarse = THBSplineSpace(_root_2d(), _grid_2d())
+        fine = coarse.refine([0])
+
+        got = coarse.prolongation_to_sparse(fine) @ np.ones(coarse.num_total_basis)
+
+        np.testing.assert_allclose(got, np.ones(fine.num_total_basis), atol=1e-12)
+
+    def test_partition_of_unity_must_not_hold_for_hb(self) -> None:
+        """``P @ 1 == 1`` is a THB identity only, and the sparse path must not fake it.
+
+        A refined HB basis is not a partition of unity -- it sums to more than one over the
+        refined region, which is precisely why truncation exists -- so the coefficients of
+        the constant 1 in the fine HB basis are not all ones. The function is still
+        transferred exactly; ``test_transfer_roundtrip`` is what checks that. Asserting the
+        deviation here keeps anyone from "repairing" it into the THB identity.
+        """
+        coarse = THBSplineSpace(_root_1d(), _grid_1d(), truncate=False)
+        fine = coarse.refine([0, 1], admissible_class=None)
+        ones = np.ones(coarse.num_total_basis)
+
+        got = coarse.prolongation_to_sparse(fine) @ ones
+
+        assert float(np.abs(got - 1.0).max()) > 0.1
+        # The refined HB basis over-counts: its own all-ones field is not the constant 1.
+        refined_cid = _locate(fine.grid, [0.05])
+        hb_sum = _field_at(fine, np.ones(fine.num_total_basis), refined_cid, np.array([[0.05]]))
+        assert float(hb_sum[0]) > 1.0 + 1e-6
+        # Same deviation from the dense operator, to matvec precision (see _MATVEC_ATOL).
+        np.testing.assert_allclose(
+            got, coarse.prolongation_to(fine) @ ones, rtol=0.0, atol=_MATVEC_ATOL
+        )
+
+    @pytest.mark.parametrize("truncate", [True, False])
+    def test_transfer_roundtrip(self, truncate: bool) -> None:
+        """Random coefficients transfer to the same function through the sparse operator."""
+        coarse = THBSplineSpace(_root_2d(), _grid_2d(), truncate=truncate)
+        fine = coarse.refine([0], admissible_class=None)
+        rng = np.random.default_rng(11)
+        u_coarse = rng.random(coarse.num_total_basis)
+
+        u_fine = coarse.prolongation_to_sparse(fine) @ u_coarse
+
+        _assert_same_field(coarse, fine, u_coarse, u_fine)
+
+    def test_validation_message_matches_dense(self) -> None:
+        """The sparse entry point rejects what the dense one rejects, with the same text."""
+        coarse = THBSplineSpace(_root_1d(), _grid_1d())
+        other = THBSplineSpace(_root_2d(), _grid_2d())
+
+        with pytest.raises(ValueError, match="refinement") as sparse_err:
+            coarse.prolongation_to_sparse(other)
+        with pytest.raises(ValueError, match="refinement") as dense_err:
+            coarse.prolongation_to(other)
+
+        assert str(sparse_err.value) == str(dense_err.value)
+
+    def test_truncate_mismatch_raises(self) -> None:
+        coarse = THBSplineSpace(_root_1d(), _grid_1d())
+        fine_hb = THBSplineSpace(_root_1d(), _grid_1d(), truncate=False)
+        with pytest.raises(ValueError, match="truncate"):
+            coarse.prolongation_to_sparse(fine_hb)
+
+    def test_non_thb_argument_raises(self) -> None:
+        coarse = THBSplineSpace(_root_1d(), _grid_1d())
+        with pytest.raises(TypeError, match="THBSplineSpace"):
+            coarse.prolongation_to_sparse(_grid_1d())  # type: ignore[arg-type]
+
+
 # ──────────────────────────────────────────────────────────────────────────────
 # Coarsening / restriction
 # ──────────────────────────────────────────────────────────────────────────────
