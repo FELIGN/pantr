@@ -4,32 +4,66 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Non-negotiable rules
 
-- **Never run `git push` without first running the full check suite** (ruff, mypy, pytest, docs build). This applies every time — new PRs, review fixes, hotfixes, everything. Run `pre-pr-checks` skill or the commands in the Commands section below.
-- Always run commands in the `pantr` conda environment: `conda activate pantr`
-- Always use git worktrees for implementing changes (via the `EnterWorktree` tool or `git worktree add`)
+- **Never run `git push` without first running the full check suite** (ruff, ruff format, mypy, import-lint, pytest, docs build). This applies every time — new PRs, review fixes, hotfixes, everything. `make pre-pull-request` runs all of it; the individual commands are in the Commands section below.
+- **Run every check on the whole repo, not on single files.** Checking one file while skipping a repo-wide check has let real failures through.
+- Always run commands in the `pantr` conda environment, as `conda run -n pantr <command>`. Do not use `conda activate` — shell state does not persist between tool calls, so an `activate` in one call is gone by the next.
+- Always use git worktrees for implementing changes (via the `EnterWorktree` tool or `git worktree add`). `pytest.ini` sets `pythonpath = src`, so tests import the worktree's own source without a per-worktree reinstall.
 
 ## Commands
 
+All of these assume the `pantr` env, i.e. prefix with `conda run -n pantr`.
+
 ```bash
-pytest --no-cov                                                      # run tests (JIT enabled)
-pytest tests/test_basis.py::test_name --no-cov -v                   # single test
-pytest tests/ -k "keyword" --no-cov -v                              # filtered tests
-NUMBA_DISABLE_JIT=1 pytest --cov=src/pantr --cov-report=xml         # coverage (JIT disabled)
-ruff check .                                                         # lint
-ruff format .                                                        # format
-mypy --config-file mypy.ini src tests                               # type check
-lint-imports                                                        # import boundaries (core must not import pantr.mpi)
+make pre-pull-request                                       # the full check suite CI runs
+pytest                                                      # run tests (JIT enabled, no coverage)
+pytest tests/test_basis.py::test_name -v                    # single test
+pytest tests/ -k "keyword" -v                               # filtered tests
+pytest -m "not slow"                                        # skip the slow-marked tests
+NUMBA_DISABLE_JIT=1 pytest --cov=src/pantr --cov-report=xml # coverage (JIT disabled)
+ruff check .                                                # lint
+ruff format .                                               # format
+mypy --config-file mypy.ini src tests                       # type check
+PYTHONPATH=src lint-imports                                 # import boundaries (core must not import pantr.mpi)
 NUMBA_DISABLE_JIT=1 make docs SPHINXOPTS="-W --keep-going -j auto"  # docs build (matches CI)
-pip install -e ".[dev]"                                             # full dev env (pulls all optional extras)
-pip install "pantr[mpi]"                                            # opt in to MPI (pantr.mpi + mpi4py)
-PANTR_RUN_MPI=1 mpiexec -n 2 python -m pytest tests/mpi/ --no-cov   # MPI smoke tests (needs mpi4py + MPI launcher)
+pip install -e ".[dev]"                                     # full dev env (pulls all optional extras)
+pip install "pantr[mpi]"                                    # opt in to MPI (pantr.mpi + mpi4py)
+PANTR_RUN_MPI=1 mpiexec -n 2 python -m pytest tests/mpi/    # MPI smoke tests (needs mpi4py + MPI launcher)
 ```
 
 > `tests/mpi/` holds real-MPI smoke tests; they are **skipped** unless `PANTR_RUN_MPI` is set
 > (and run under `mpiexec`). The default `pytest` run collects and skips them. CI runs them in a
 > dedicated `mpi-tests` job (installs OpenMPI, builds `mpi4py` from source, `mpiexec -n {2,3}`).
 
-> Default pytest (via `pytest.ini`) adds `--cov`, which slows things down and requires ≥85% coverage. Always pass `--no-cov` during development.
+> Coverage is **opt-in**: `pytest.ini`'s `addopts` is only `--strict-config --strict-markers`, so a
+> plain `pytest` run carries no coverage overhead and `--no-cov` is unnecessary. The `coverage.toml`
+> threshold (`fail_under = 85`) applies only when `--cov` is passed explicitly, which the `coverage`
+> make target and the CI `tests` job do.
+
+## Local green is not CI green
+
+The local suite passing is necessary but not sufficient. Known traps:
+
+- **mypy runs on a Python matrix (3.11, 3.13, 3.14)** while the installed *numpy stub* version is
+  whatever is local. Be defensive with numpy typing: never a bare `np.ndarray`, and wrap the result
+  of `np.einsum` / `np.tensordot` with `np.asarray(..., dtype=np.float64)` where the dtype matters —
+  those return `Any` in some stub versions and the annotation silently degrades.
+- **The CI test job is headless.** pyvista/VTK tests must never call `.show()` or `pantr.viz.plot()`
+  (`src/pantr/viz/_scene.py:292`) — they force a render and segfault without a display. Build the
+  scene with `Scene.to_plotter()` (`src/pantr/viz/_scene.py:187`) instead. The coverage run has
+  `NUMBA_DISABLE_JIT=1`, and one segfault there takes down the whole run.
+- **A missing optional dependency skips tests silently.** If `pyvista` or `mpi4py` is absent
+  locally, the tests that need them skip without complaint — install them before trusting a local
+  green.
+- **`pythonpath = src` covers pytest only.** Anything that imports `pantr` outside the pytest
+  process — `lint-imports`, a test that spawns a subprocess — resolves the *installed* package
+  instead. Two consequences: those commands need `PYTHONPATH=src` to see the current worktree, and a
+  stale editable install (one pointing at a deleted worktree) makes them fail with
+  `ModuleNotFoundError` while the rest of the suite passes. Repair it with
+  `pip install -e ".[dev]"` **from the main checkout**, never from a worktree.
+- **CI is the finish line, not the push.** After creating a PR, watch it (`gh pr checks <n> --watch`)
+  and do not report the work as done until every required check passes. Avoid pushing twice in quick
+  succession: `ci.yaml` sets `cancel-in-progress: true`, so a second push cancels the first run's
+  jobs and the canceled run reads as a failure. Confirm a job was *canceled* before reacting to it.
 
 ## Commit conventions
 
@@ -44,6 +78,38 @@ Use **conventional commits** with the format:
 - First line: imperative mood, lowercase, no trailing period
 - One logical change per commit — do not bundle unrelated changes
 - Branch names follow the same convention: `<type>/<short-kebab-description>`
+
+## Workflow
+
+This repository has **no local skills of its own**. The development process comes from the shared
+toolkit in `~/.claude` (agents, commands, and skills), and this file supplies the project-specific
+facts that toolkit discovers — the check suite above, the layer architecture below, the conventions.
+Do not reintroduce a repo-local workflow skill: it drifts from the shared one and then silently
+contradicts it.
+
+Pick the entry point by the shape of the work:
+
+| Situation | Use |
+|---|---|
+| A feature from a loose idea | `/forge` — map, interview, architecture, plan, build, review, spec |
+| An open GitHub issue | `/implement-ticket` |
+| Several unblocked issues at once | `/run-wave` — clusters them by file footprint |
+| Something is broken | Just say what broke; the `fix` skill fires on its own (reproduce, pin with a failing test *before* the fix, fix, record as a numbered `B` with its own commit) |
+| Ready to commit | The `commit` skill — it discovers this project's toolchain from the `Makefile` and this file |
+| Review before merging | `/light-review` by default; `/deep-review` when the change carries new numerical content or new public surface |
+| Converged research code needs cleaning up | `/formalize` |
+| Turning a finding into a ticket | The `file-bug` skill. **Never `gh issue create` by hand.** |
+
+Specialist agents are dispatched by asking in plain language ("run the tolerance-hunter over this
+file", "have a scout map the extraction layer"). The ones that come up most here: `engineer` for
+judgment-heavy work, `implementer` for pinned execution, `scout` for a code map, `tolerance-hunter`
+for any new tolerance, `test-writer` and `test-architect` for the suite, `verifier` for a claim that
+one run or quote would settle.
+
+One project-specific rule the shared toolkit cannot know: **`lepard`, a separate and not-yet-public
+consumer, imports pantr *private* symbols** (kernels and helpers under a leading underscore). Before
+deleting or reshaping any symbol, public or private, check that repository for consumers — pantr's
+own CI cannot see breakage there.
 
 ## Architecture
 

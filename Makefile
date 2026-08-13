@@ -1,4 +1,4 @@
-.PHONY: help test coverage clean install ruff-lint ruff-format-check type-check import-lint pre-pull-request docs
+.PHONY: help test coverage clean install ruff-lint ruff-format ruff-format-check type-check import-lint pre-pull-request docs
 
 help:
 	@echo "Commands:"
@@ -12,7 +12,7 @@ help:
 	@echo "  type-check: run mypy static type checker."
 	@echo "  import-lint: check import boundaries (core must not import pantr.mpi)."
 	@echo "  docs      : build the documentation."
-	@echo "  before-pr: run lint, format, format check, type check, tests, coverage, and docs."
+	@echo "  pre-pull-request: run lint, format, format check, type check, import lint, tests, coverage, and docs."
 
 # Run the test suite with Numba JIT enabled
 test:
@@ -47,9 +47,12 @@ ruff-format-check:
 type-check:
 	mypy --config-file mypy.ini src tests
 
-# Import boundary checks: serial core must not import pantr.mpi
+# Import boundary checks: serial core must not import pantr.mpi.
+# PYTHONPATH=src pins the analysis to this checkout's source: import-linter resolves
+# `pantr` through sys.path, so without it the contract is checked against whatever the
+# editable install points at, which in a git worktree is a different tree entirely.
 import-lint:
-	lint-imports
+	PYTHONPATH=src lint-imports
 
 # Build documentation
 docs:

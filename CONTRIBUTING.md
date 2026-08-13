@@ -27,9 +27,11 @@ them):
 ruff check .                             # lint
 ruff format --check .                    # formatting
 mypy --config-file mypy.ini src tests    # static types (strict)
-lint-imports                             # import-boundary contracts
-pytest --no-cov                          # tests (JIT enabled)
+PYTHONPATH=src lint-imports              # import-boundary contracts
+pytest                                   # tests (JIT enabled)
 ```
+
+`make pre-pull-request` runs all of them in one go, plus the docs build.
 
 Build the documentation the same way CI does:
 
@@ -37,15 +39,15 @@ Build the documentation the same way CI does:
 NUMBA_DISABLE_JIT=1 make docs SPHINXOPTS="-W --keep-going -j auto"
 ```
 
-> The default `pytest` run adds coverage (`--cov`), which is slower and requires
-> ≥85% coverage. Pass `--no-cov` during development. To run the coverage gate
-> locally: `NUMBA_DISABLE_JIT=1 pytest --cov=src/pantr --cov-report=xml`.
+> Coverage is opt-in: a plain `pytest` run carries none. To run the coverage gate
+> locally: `NUMBA_DISABLE_JIT=1 pytest --cov=src/pantr --cov-report=xml`, which
+> applies the `coverage.toml` threshold of 85%.
 
 The optional MPI smoke tests under `tests/mpi/` are skipped unless
 `PANTR_RUN_MPI` is set and run under a launcher:
 
 ```bash
-PANTR_RUN_MPI=1 mpiexec -n 2 python -m pytest tests/mpi/ --no-cov
+PANTR_RUN_MPI=1 mpiexec -n 2 python -m pytest tests/mpi/
 ```
 
 ## Code conventions
