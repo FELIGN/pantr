@@ -6,9 +6,11 @@ bases.
 
 Architecturally, this module serves as the **bridge between different basis types**,
 providing pure mathematical functions to compute the exact $(degree+1, degree+1)$
-transformation matrices (e.g., $M$ such that $new\\_basis(x) = M @ old\\_basis(x)$)
-without tying the dense numerical quadrature logic directly into the core Spline
-space objects.
+transformation matrices without tying the dense numerical quadrature logic directly
+into the core Spline space objects.
+
+Every public builder is named ``compute_A_to_B_1d`` and returns the matrix $M$ with
+$M \\, [A\\ values](x) = [B\\ values](x)$.
 """
 
 import functools
@@ -151,7 +153,12 @@ def _compute_change_basis_1D(
     """Create a change of basis operator using numerical quadrature.
 
     This function computes the transformation matrix M that satisfies:
-        new_basis(x) = M @ old_basis(x)
+        old_basis(x) = M @ new_basis(x)
+
+    That is, row ``i`` of ``M`` holds the coefficients of the ``i``-th *old* basis
+    function expanded in the *new* basis. Note the direction: the public
+    ``compute_A_to_B_1d`` wrappers document ``M @ [A values] = [B values]`` and
+    therefore pass ``new_basis_eval=A``, ``old_basis_eval=B``.
 
     The matrix is computed by solving the system C = G M^T where:
     - G is the Gram matrix of the new basis
