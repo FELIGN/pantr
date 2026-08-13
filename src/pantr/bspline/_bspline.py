@@ -25,6 +25,7 @@ from ._bspline_knot_insertion import (
     _to_periodic_bspline_impl,
 )
 from ._bspline_knot_removal import _remove_knots_bspline
+from ._bspline_locate import _locate_impl
 from ._bspline_restrict import _restrict_bspline_impl
 from ._bspline_slice import _slice_bspline
 from ._bspline_split import _split_bspline_impl
@@ -34,6 +35,7 @@ if TYPE_CHECKING:
     from ..bezier import Bezier
     from ..quad import PointsLattice
     from ..transform import AffineTransform
+    from ._bspline_locate import _LocateContext
     from ._bspline_space_nd import BsplineSpace
 
 
@@ -51,6 +53,9 @@ class Bspline:
         _is_rational (bool): Whether the B-spline is rational (NURBS).
         _beziers_cache (``npt.NDArray[np.object_] | None``): Cached Bézier
             decomposition, or ``None`` if not yet computed.
+        _locate_cache (``_LocateContext | None``): Cached point-inversion state
+            (see :meth:`locate`), or ``None`` if not yet computed. Invalidated
+            alongside ``_beziers_cache`` by the in-place mutators.
     """
 
     _control_points: npt.NDArray[np.float32 | np.float64]
@@ -93,6 +98,7 @@ class Bspline:
 
         self._is_rational = is_rational
         self._beziers_cache: npt.NDArray[np.object_] | None = None
+        self._locate_cache: _LocateContext | None = None
 
         if self.rank <= 0:
             raise ValueError(f"The B-spline must have at least rank one. Got rank {self.rank}")
@@ -250,6 +256,78 @@ class Bspline:
         """
         orders_seq: Sequence[int] = [orders] * self.dim if isinstance(orders, int) else orders
         return _evaluate_Bspline_deriv(self, pts, orders_seq, out)
+
+    def locate(
+        self,
+        points: npt.ArrayLike,
+        *,
+        tol: float | None = None,
+        max_iter: int = 30,
+    ) -> tuple[npt.NDArray[np.int64], npt.NDArray[np.float64]]:
+        """Invert the mapping: find the parametric coordinates of physical points.
+
+        The inverse of :meth:`evaluate`. Candidate knot-span cells come from a cached
+        hierarchy over the per-cell control-point boxes (the convex-hull property), and
+        each candidate is refined by Newton's method on ``F(xi) - x = 0``. The
+        hierarchy is built on the first call and reused afterwards.
+
+        Only square mappings are inverted (``rank == dim``), which covers planar and
+        volumetric geometry maps. For a rational B-spline every weight must be
+        strictly positive: the candidate search relies on the projected control points
+        bounding the cell's image, which is false for a non-positive weight.
+
+        Args:
+            points (npt.ArrayLike): Physical points, shape ``(n, rank)``. A 1-D input is
+                one point of ``rank`` coordinates, except when ``rank == 1``, where it is
+                ``n`` scalar coordinates.
+            tol (float | None): Convergence threshold on ``||F(xi) - x||_2``, as an
+                absolute distance in physical units. ``None`` (default) uses
+                :func:`pantr.tolerance.get_default` for this B-spline's dtype, scaled by
+                the geometry's own size: the larger of its control-point bounding-box
+                diagonal and its largest coordinate magnitude. Defaults to None.
+            max_iter (int): Maximum number of Newton steps per candidate cell.
+                Defaults to 30.
+
+        Returns:
+            tuple[npt.NDArray[np.int64], npt.NDArray[np.float64]]: ``(cell_ids,
+            ref_coords)``, both read-only. ``cell_ids`` has shape ``(n,)`` and holds
+            flat knot-span cell ids in C-order over ``space.num_intervals`` -- the
+            convention of :func:`pantr.grid.tensor_product_grid` and
+            :class:`SpanwiseElementExtraction`. ``ref_coords`` has shape ``(n, dim)``
+            and holds *parametric* (not cell-local) coordinates satisfying
+            ``evaluate(ref_coords[i]) == points[i]`` within ``tol``. A point not on the
+            mapping's image gets ``cell_ids[i] = -1`` and ``ref_coords[i] = nan``.
+
+        Raises:
+            NotImplementedError: If ``rank > dim`` (an embedded curve or surface, which
+                needs a Gauss-Newton closest-point solve).
+            ValueError: If ``rank < dim``, any direction is periodic, a rational
+                B-spline has a non-positive weight, ``points`` has the wrong shape or a
+                non-finite entry, ``max_iter < 1``, or ``tol`` is not positive and
+                finite.
+
+        Note:
+            What is guaranteed is that ``evaluate(ref_coords[i])`` reproduces
+            ``points[i]``, not that ``ref_coords[i]`` is a particular preimage. A
+            mapping that folds (its Jacobian determinant changes sign) sends several
+            parametric points to the same physical point, and any of them is a correct
+            answer; only for an injective mapping does :meth:`locate` invert
+            :meth:`evaluate` back to the coordinates it was called with.
+
+            A point on an interior knot line legitimately belongs to either adjacent
+            cell; ``ref_coords`` is unique but the reported ``cell_ids`` entry is
+            whichever cell :meth:`pantr.grid.TensorProductGrid.locate_many` assigns.
+
+            The inversion always runs in ``float64``: a ``float32`` B-spline is promoted
+            to an exact ``float64`` copy, since a ``float32`` residual cannot be resolved
+            below the ``float32`` tolerance preset. Evaluating the returned coordinates
+            on the original ``float32`` B-spline therefore reproduces the query point to
+            ``float32`` accuracy only.
+
+        Example:
+            >>> cell_ids, ref_coords = surface.locate(surface.evaluate(pts))
+        """
+        return _locate_impl(self, points, tol, max_iter)
 
     def derivative(self, direction: int = 0, *, keep_degree: bool = False) -> Bspline:
         """Return a B-spline representing the first derivative in the given direction.
@@ -857,6 +935,7 @@ class Bspline:
         if in_place:
             self._space = new_space
             self._beziers_cache = None
+            self._locate_cache = None
             return None
         return Bspline(new_space, new_cp, is_rational=self._is_rational)
 
@@ -913,6 +992,7 @@ class Bspline:
             self._control_points = new_cp
             self._space = new_space
             self._beziers_cache = None
+            self._locate_cache = None
             return None
         return Bspline(new_space, new_cp, is_rational=self._is_rational)
 
@@ -968,6 +1048,7 @@ class Bspline:
         )
         if in_place:
             self._beziers_cache = None
+            self._locate_cache = None
             return None
         return Bspline(self._space, new_cp, is_rational=self._is_rational)
 
