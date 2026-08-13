@@ -47,9 +47,12 @@ ruff-format-check:
 type-check:
 	mypy --config-file mypy.ini src tests
 
-# Import boundary checks: serial core must not import pantr.mpi
+# Import boundary checks: serial core must not import pantr.mpi.
+# PYTHONPATH=src pins the analysis to this checkout's source: import-linter resolves
+# `pantr` through sys.path, so without it the contract is checked against whatever the
+# editable install points at, which in a git worktree is a different tree entirely.
 import-lint:
-	lint-imports
+	PYTHONPATH=src lint-imports
 
 # Build documentation
 docs:
