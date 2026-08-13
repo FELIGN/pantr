@@ -309,6 +309,60 @@ class BsplineSpace1D:
         unique_knots, _ = self.get_unique_knots_and_multiplicity(in_domain=True)
         return len(unique_knots) - 1
 
+    @functools.cached_property
+    def _first_basis_per_interval_cached(self) -> npt.NDArray[np.int64]:
+        """Compute and freeze the first supported basis index of each interval.
+
+        Cached because the knot vector is immutable, and frozen because the cached
+        array is handed out directly.
+
+        The index is exact integer arithmetic, no basis evaluation: the functions
+        non-zero on the span starting at knot index ``k`` are ``k - degree`` through
+        ``k``, so the first one is ``k - degree``, where ``k`` is the *last* position
+        at which that unique knot occurs. Selecting the unique knots whose last
+        position lies in ``[degree, num_basis)`` picks out exactly the knots that
+        start an in-domain interval, which makes the first interval no different from
+        the rest and needs no special case for a non-clamped knot vector.
+
+        Returns:
+            npt.NDArray[np.int64]: Read-only array of shape ``(num_intervals,)``.
+        """
+        _, multiplicities = self.get_unique_knots_and_multiplicity(in_domain=False)
+        last_position = np.cumsum(np.asarray(multiplicities, dtype=np.int64)) - 1
+        starts_an_interval = (last_position >= self._degree) & (last_position < self.num_basis)
+        first_basis = (last_position[starts_an_interval] - self._degree).astype(np.int64)
+        first_basis.flags.writeable = False
+        return first_basis
+
+    def first_basis_per_interval(self) -> npt.NDArray[np.int64]:
+        """Get the index of the first B-spline function supported on each interval.
+
+        Entry ``j`` is the smallest global function index ``i`` whose function is
+        non-zero on the open interval between in-domain unique knots ``j`` and
+        ``j + 1``. The functions non-zero there are exactly ``i`` through
+        ``i + degree``, so this one index describes the whole support of the interval.
+
+        The result is cached and read-only: repeated calls return the same array.
+
+        Returns:
+            npt.NDArray[np.int64]: Read-only ``int64`` array of shape
+            ``(num_intervals,)``, non-decreasing, whose successive differences are
+            the interior knot multiplicities.
+
+        Raises:
+            ValueError: If the space is periodic.
+
+        Example:
+            >>> space = BsplineSpace1D([0, 0, 0, 1, 2, 2, 3, 3, 3], 2)
+            >>> space.first_basis_per_interval()
+            array([0, 1, 3])
+        """
+        if self._periodic:
+            raise ValueError(
+                "first_basis_per_interval: periodic B-spline spaces are not supported."
+            )
+        return self._first_basis_per_interval_cached
+
     def _get_domain_indices(self) -> tuple[int, int]:
         """Get the domain boundary indices of the knot vector.
 

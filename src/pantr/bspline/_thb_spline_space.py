@@ -147,11 +147,10 @@ def _box_all_true(
 def _func_support_1d(space: BsplineSpace1D) -> _Support1D:
     """Compute the cell support of every B-spline function of a 1D space.
 
-    The first non-zero function index per interval is obtained from
-    :meth:`~pantr.bspline.BsplineSpace1D.tabulate_basis` evaluated at interval
-    midpoints (robust to knot multiplicities), then inverted to give, for each
-    function ``i``, the inclusive interval (cell) range ``[first_cell, last_cell]``
-    it is supported on.
+    The first non-zero function index per interval comes from
+    :meth:`~pantr.bspline.BsplineSpace1D.first_basis_per_interval`, which is then
+    inverted to give, for each function ``i``, the inclusive interval (cell) range
+    ``[first_cell, last_cell]`` it is supported on.
 
     Args:
         space (BsplineSpace1D): The 1D B-spline space.
@@ -161,10 +160,7 @@ def _func_support_1d(space: BsplineSpace1D) -> _Support1D:
         has length ``num_intervals`` and ``first_cell`` / ``last_cell`` have length
         ``num_basis``.
     """
-    unique_knots, _ = space.get_unique_knots_and_multiplicity(in_domain=True)
-    midpoints = 0.5 * (unique_knots[:-1] + unique_knots[1:])
-    _, first_basis_per_pt = space.tabulate_basis(midpoints)
-    first_basis = np.asarray(first_basis_per_pt, dtype=np.int64)
+    first_basis = space.first_basis_per_interval()
 
     degree = space.degree
     n_basis = space.num_basis
