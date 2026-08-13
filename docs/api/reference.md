@@ -15,6 +15,7 @@ for worked examples; this page is the exhaustive contract.
 | {mod}`pantr.cad` | constructive geometry: primitives + operations | {doc}`/guide/cad` |
 | {mod}`pantr.transform` | affine transforms acting exactly on control points | {doc}`/tutorials/10_transforms` |
 | {mod}`pantr.geometry` | the {class}`~pantr.geometry.AABB` box primitive | {doc}`/guide/concepts` |
+| {mod}`pantr.multipatch` | how separate patches meet: interfaces and matched control points | {doc}`/guide/concepts` |
 | {mod}`pantr.grid` | structured / hierarchical cell grids, BVH, tags | {doc}`/tutorials/09_grids_and_quadrature` |
 | {mod}`pantr.quad` | quadrature rules and point lattices | {doc}`/tutorials/09_grids_and_quadrature` |
 | {mod}`pantr.tolerance` | shared floating-point tolerance policy | {doc}`/guide/concepts` |
@@ -53,6 +54,10 @@ for worked examples; this page is the exhaustive contract.
    :show-inheritance:
 
 .. automodule:: pantr.geometry
+   :members:
+   :show-inheritance:
+
+.. automodule:: pantr.multipatch
    :members:
    :show-inheritance:
 ```
