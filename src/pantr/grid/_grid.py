@@ -388,6 +388,35 @@ class Grid(abc.ABC):
         """
         return self.neighbor_across_facet(cid, lfid) is None
 
+    def boundary_facets(self) -> npt.NDArray[np.int64]:
+        """Return every facet on the grid's outer boundary as ``(cid, lfid)`` rows.
+
+        Only the outer (domain) boundary: a facet shared with any neighbouring cell
+        is excluded, whether that neighbour is conforming, coarser, or finer. For a
+        hierarchical grid this means level interfaces are **not** boundary facets,
+        even though the leaf-cell mesh makes them topologically exterior (hanging
+        vertices) and so a consumer searching that mesh over-reports them.
+
+        The default enumerates :meth:`is_mesh_boundary_facet` over every cell and
+        local facet, costing ``O(num_cells * 2 * ndim)`` neighbour queries.
+        Subclasses with exploitable structure should override it.
+
+        Returns:
+            npt.NDArray[np.int64]: Read-only array of shape ``(n, 2)`` whose rows are
+            ``(cid, lfid)`` with ``lfid = 2 * axis + side`` (see
+            :meth:`local_facet_axis_side`), sorted lexicographically by
+            ``(cid, lfid)``.
+        """
+        rows = [
+            (cid, lfid)
+            for cid in self.iter_cells()
+            for lfid in range(self.num_local_facets(cid))
+            if self.is_mesh_boundary_facet(cid, lfid)
+        ]
+        out = np.array(rows, dtype=np.int64).reshape(len(rows), 2)
+        out.flags.writeable = False
+        return out
+
     def hanging_neighbors(self, cid: int, lfid: int) -> tuple[int, ...]:
         """Return all active cells sharing facet ``lfid`` of ``cid``.
 

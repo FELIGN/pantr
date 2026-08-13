@@ -899,6 +899,64 @@ class HierarchicalGrid(Grid):
         # Finer side — collect all active leaves touching the face.
         return tuple(self._active_face_descendants(level, nbr_midx, axis, face_j))
 
+    def boundary_facets(self) -> npt.NDArray[np.int64]:
+        """Return every facet on the grid's outer boundary as ``(cid, lfid)`` rows.
+
+        Same semantics as :meth:`pantr.grid.Grid.boundary_facets` -- the outer
+        boundary only, so level interfaces are excluded -- computed from the packed
+        active blocks instead of one neighbour query per facet.
+
+        A level-``l`` cell's facet ``(axis, side)`` is on the outer boundary iff its
+        level-``l`` index along ``axis`` is ``0`` (side 0) or
+        ``level_cells_per_axis(l)[axis] - 1`` (side 1), which is exactly the
+        out-of-range test in ``_facet_neighbor_position``. Since a block is a
+        rectangle of contiguous indices, that condition is decided **once per block
+        face** rather than per cell, and the whole face is emitted vectorized. Cost is
+        ``O(total boundary facets + num_blocks * 2 * ndim)``.
+
+        Returns:
+            npt.NDArray[np.int64]: Read-only array of shape ``(n, 2)`` whose rows are
+            ``(cid, lfid)`` with ``lfid = 2 * axis + side``, sorted lexicographically
+            by ``(cid, lfid)``.
+        """
+        ndim = self.ndim
+        chunks: list[npt.NDArray[np.int64]] = []
+        for level in range(len(self._blocks)):
+            cells_per_axis = [self._n_cells_at_level_k(level, k) for k in range(ndim)]
+            first_block = int(self._packed_level_start[level])
+            last_block = int(self._packed_level_start[level + 1])
+            for b in range(first_block, last_block):
+                block_lo = self._packed_block_lo[b]
+                block_hi = self._packed_block_hi[b]
+                base = int(self._packed_block_base[b])
+                shape = tuple(int(block_hi[k] - block_lo[k]) for k in range(ndim))
+                for axis in range(ndim):
+                    for side in (0, 1):
+                        touches = (
+                            int(block_lo[axis]) == 0
+                            if side == 0
+                            else int(block_hi[axis]) == cells_per_axis[axis]
+                        )
+                        if not touches:
+                            continue
+                        # Fix the normal axis at the block's boundary layer; span the rest.
+                        face = [np.arange(extent, dtype=np.int64) for extent in shape]
+                        face[axis] = np.array([0 if side == 0 else shape[axis] - 1], dtype=np.int64)
+                        grids = np.meshgrid(*face, indexing="ij")
+                        offsets = np.ravel_multi_index([g.ravel() for g in grids], shape)
+                        chunk = np.empty((offsets.size, 2), dtype=np.int64)
+                        chunk[:, 0] = base + offsets
+                        chunk[:, 1] = 2 * axis + side
+                        chunks.append(chunk)
+
+        if chunks:
+            rows = np.concatenate(chunks)
+            out = rows[np.lexsort((rows[:, 1], rows[:, 0]))]
+        else:
+            out = np.empty((0, 2), dtype=np.int64)
+        out.flags.writeable = False
+        return out
+
     # ------------------------------------------------------------------
     # Restriction / windowing
     # ------------------------------------------------------------------
@@ -1382,6 +1440,117 @@ class HierarchicalGrid(Grid):
             cell_hi,
         )
         return cell_lo, cell_hi
+
+    def _lattice_to_coords(self, lattice: npt.NDArray[np.int64]) -> npt.NDArray[np.float64]:
+        """Map finest-level integer lattice coordinates to parametric coordinates.
+
+        The lattice has ``factor[k] ** max_level`` steps per root cell on axis ``k``, so
+        every active-leaf corner at every level lands on an integer node. One formula
+        serves all of them, which is what makes coincident corners map to *identical*
+        floats and lets :meth:`export_cells` deduplicate without a tolerance.
+
+        Args:
+            lattice (npt.NDArray[np.int64]): ``(n, ndim)`` integer lattice coordinates,
+                each in ``[0, factor[k] ** max_level * root.cells_per_axis[k]]``.
+
+        Returns:
+            npt.NDArray[np.float64]: ``(n, ndim)`` fresh, writeable parametric
+            coordinates.
+        """
+        points = np.empty(lattice.shape, dtype=np.float64)
+        for k in range(self.ndim):
+            breakpoints = np.asarray(self._root.breakpoints[k], dtype=np.float64)
+            num_root_cells = int(self._root.cells_per_axis[k])
+            steps = self._factor[k] ** self.max_level
+            coord = lattice[:, k]
+            # Clamp so the domain's far edge borrows the last root cell; the exact
+            # breakpoint is written back below rather than reconstructed by arithmetic.
+            root_cell = np.minimum(coord // steps, num_root_cells - 1)
+            offset = coord - root_cell * steps
+            widths = breakpoints[root_cell + 1] - breakpoints[root_cell]
+            points[:, k] = breakpoints[root_cell] + offset * (widths / steps)
+            points[coord == steps * num_root_cells, k] = breakpoints[num_root_cells]
+        return points
+
+    def export_cells(self) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.int64]]:
+        """Return deduplicated leaf-cell vertices and their connectivity.
+
+        The mesh a dolfinx-style consumer needs: one vertex per distinct corner of the
+        active leaves, shared exactly between the cells that meet there, including
+        corners shared across levels (a hanging vertex appears once).
+
+        Deduplication is **exact and tolerance-free**: corners are identified on the
+        finest-level integer lattice, where a level-``l`` cell at ``midx`` contributes
+        ``(midx[k] + bit[k]) * factor[k] ** (max_level - l)``. Equal corners are equal
+        integers, and ``_lattice_to_coords`` then maps each distinct integer node
+        through one formula, so coincident corners come out bitwise identical.
+
+        Corner order within a row is the tensor-product (basix/dolfinx) convention:
+        corner ``c`` takes the ``hi`` bound on axis ``k`` iff bit ``k`` of ``c`` is set,
+        with axis 0 the least-significant bit. In 2D that is
+        ``[(lo0, lo1), (hi0, lo1), (lo0, hi1), (hi0, hi1)]``. This is a *corner*
+        convention and is deliberately unlike pantr's C-order flat cell and dof ids,
+        where the **last** axis varies fastest.
+
+        Returns:
+            tuple[npt.NDArray[np.float64], npt.NDArray[np.int64]]: ``(points, conn)``,
+            both read-only. ``points`` has shape ``(num_vertices, ndim)``, sorted
+            lexicographically by integer lattice coordinate; ``conn`` has shape
+            ``(num_cells, 2 ** ndim)`` and indexes ``points``, one row per active leaf
+            in flat cell-id order.
+
+        Note:
+            ``points[conn[cid]]`` reproduces the corners of :meth:`cell_bounds` to
+            within ``8 * eps * |coordinate|`` (about 4 ulp), and bitwise whenever every
+            intermediate is exactly representable -- a dyadic ``factor`` on dyadic root
+            breakpoints, which covers the usual unit-domain power-of-two case.
+
+            Bitwise agreement in general is not merely unimplemented, it is
+            unattainable. :meth:`cell_bounds` scales a root cell's width by
+            ``factor ** level``, so for a corner shared between two levels it evaluates
+            a *different* expression on each side and can return two floats one ulp
+            apart; no single deduplicated vertex can equal both. The bound follows from
+            three roundings per side (one division, one integer-scaled multiply, one
+            addition, plus one more for a ``hi`` corner) against a coordinate that
+            dominates its own offset.
+
+        Warning:
+            Materializes ``O(num_cells * 2 ** ndim * ndim)`` integers before
+            deduplication, so a large 3D hierarchy costs several times ``conn`` in peak
+            memory.
+        """
+        ndim = self.ndim
+        num_corners = 1 << ndim
+        corner_bits = (
+            np.arange(num_corners, dtype=np.int64)[:, None] >> np.arange(ndim, dtype=np.int64)
+        ) & 1
+
+        lattice = np.empty((self._num_cells, num_corners, ndim), dtype=np.int64)
+        for level in range(len(self._blocks)):
+            scale = np.array(
+                [self._factor[k] ** (self.max_level - level) for k in range(ndim)], dtype=np.int64
+            )
+            first_block = int(self._packed_level_start[level])
+            last_block = int(self._packed_level_start[level + 1])
+            for b in range(first_block, last_block):
+                block_lo = self._packed_block_lo[b]
+                block_hi = self._packed_block_hi[b]
+                base = int(self._packed_block_base[b])
+                shape = tuple(int(block_hi[k] - block_lo[k]) for k in range(ndim))
+                axes = [int(block_lo[k]) + np.arange(shape[k], dtype=np.int64) for k in range(ndim)]
+                grids = np.meshgrid(*axes, indexing="ij")
+                # C-order within the block, matching how flat ids are assigned.
+                cell_midx = np.stack([g.ravel() for g in grids], axis=1)
+                stop = base + cell_midx.shape[0]
+                for corner in range(num_corners):
+                    lattice[base:stop, corner, :] = (cell_midx + corner_bits[corner]) * scale
+
+        unique_nodes, inverse = np.unique(lattice.reshape(-1, ndim), axis=0, return_inverse=True)
+        conn = np.asarray(inverse, dtype=np.int64).reshape(self._num_cells, num_corners)
+        points = self._lattice_to_coords(unique_nodes)
+        points.flags.writeable = False
+        conn.flags.writeable = False
+        return points, conn
 
     # ------------------------------------------------------------------
     # Representation

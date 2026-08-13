@@ -586,3 +586,26 @@ def test_restrict_result_arrays_are_read_only() -> None:
         r.local_to_global_cell[0] = 99
     with pytest.raises(ValueError, match="read-only"):
         r.in_subset[0] = False
+
+
+@pytest.mark.parametrize("ndim", [1, 2, 3])
+def test_boundary_facets_inherited_default(ndim: int) -> None:
+    """The inherited Grid.boundary_facets enumerates a flat grid's outer boundary."""
+    n = 3
+    g = uniform_grid([[0.0, 1.0]] * ndim, n)
+    rows = g.boundary_facets()
+
+    assert rows.shape == (2 * ndim * n ** (ndim - 1), 2)
+    assert rows.dtype == np.int64
+    assert not rows.flags.writeable
+    # Every row is a boundary facet, and no interior facet is reported.
+    reported = {tuple(row) for row in rows.tolist()}
+    for cid in range(g.num_cells):
+        for lfid in range(g.num_local_facets(cid)):
+            assert ((cid, lfid) in reported) == g.is_mesh_boundary_facet(cid, lfid)
+
+
+def test_boundary_facets_single_cell() -> None:
+    """A one-cell grid has every facet on the boundary."""
+    g = uniform_grid([[0.0, 1.0], [0.0, 1.0]], 1)
+    assert g.boundary_facets().tolist() == [[0, 0], [0, 1], [0, 2], [0, 3]]
