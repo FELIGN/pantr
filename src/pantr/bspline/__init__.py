@@ -33,7 +33,8 @@ This package consolidates the B-spline API:
 - :class:`THBSpline`: an evaluable THB spline function (space + coefficients).
 - :func:`quasi_interpolate_thb_spline`: Speleers-Manni hierarchical
   quasi-interpolation onto a :class:`THBSplineSpace`.
-- :func:`compute_halo`, :func:`dof_owner`: serial helpers for distributing a
+- :func:`compute_halo`, :func:`dof_owner`, :func:`dof_owner_windowed`: serial helpers
+  for distributing a
   B-spline space (support-closure halo and lex-first-active-cell DOF ownership).
 - :func:`build_local`, :class:`LocalSpace`: build a rank's windowed local space
   (cell/DOF maps and ownership masks) from a global space and a
@@ -60,7 +61,13 @@ from ._bspline_space_factory import (
 )
 from ._bspline_space_nd import BsplineSpace, BsplineSpaceRestriction
 from ._coupling_graph import CouplingGraph, coupling_graph
-from ._local_space import LocalSpace, build_local, compute_halo, dof_owner
+from ._local_space import (
+    LocalSpace,
+    build_local,
+    compute_halo,
+    dof_owner,
+    dof_owner_windowed,
+)
 from ._partition_graph import partition_graph
 from ._thb_quasi_interpolation import quasi_interpolate_thb_spline
 from ._thb_spline import THBSpline
@@ -96,6 +103,7 @@ __all__ = [
     "create_uniform_periodic_knots",
     "create_uniform_space",
     "dof_owner",
+    "dof_owner_windowed",
     "fit_bspline",
     "get_greville_abscissae",
     "interpolate_bspline",
