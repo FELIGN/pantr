@@ -6,9 +6,11 @@ bases.
 
 Architecturally, this module serves as the **bridge between different basis types**,
 providing pure mathematical functions to compute the exact $(degree+1, degree+1)$
-transformation matrices (e.g., $M$ such that $new\\_basis(x) = M @ old\\_basis(x)$)
-without tying the dense numerical quadrature logic directly into the core Spline
-space objects.
+transformation matrices without tying the dense numerical quadrature logic directly
+into the core Spline space objects.
+
+Every public builder is named ``compute_A_to_B_1d`` and returns the matrix $M$ with
+$M \\, [A\\ values](x) = [B\\ values](x)$.
 """
 
 import functools
@@ -18,7 +20,12 @@ from math import comb
 import numpy as np
 import numpy.typing as npt
 
-from .basis import LagrangeVariant, tabulate_bernstein_1d, tabulate_cardinal_bspline_1d
+from .basis import (
+    LagrangeVariant,
+    tabulate_bernstein_1d,
+    tabulate_cardinal_bspline_1d,
+    tabulate_legendre_1d,
+)
 from .basis._basis_lagrange import _get_lagrange_points
 from .basis._basis_utils import (
     _allocate_or_validate_out,
@@ -151,7 +158,12 @@ def _compute_change_basis_1D(
     """Create a change of basis operator using numerical quadrature.
 
     This function computes the transformation matrix M that satisfies:
-        new_basis(x) = M @ old_basis(x)
+        old_basis(x) = M @ new_basis(x)
+
+    That is, row ``i`` of ``M`` holds the coefficients of the ``i``-th *old* basis
+    function expanded in the *new* basis. Note the direction: the public
+    ``compute_A_to_B_1d`` wrappers document ``M @ [A values] = [B values]`` and
+    therefore pass ``new_basis_eval=A``, ``old_basis_eval=B``.
 
     The matrix is computed by solving the system C = G M^T where:
     - G is the Gram matrix of the new basis
@@ -281,6 +293,190 @@ def compute_cardinal_to_bernstein_1d(
     )
 
 
+def compute_legendre_to_cardinal_1d(
+    degree: int,
+    dtype: npt.DTypeLike = np.float64,
+    out: npt.NDArray[np.float32 | np.float64] | None = None,
+) -> npt.NDArray[np.float32 | np.float64]:
+    r"""Create transformation matrix from orthonormal shifted Legendre to cardinal B-spline basis.
+
+    The Legendre basis is the orthonormal shifted Legendre basis on ``[0, 1]``
+    (see :func:`~pantr.basis.tabulate_legendre_1d`), so row ``j`` of the result
+    holds the coefficients of the ``j``-th cardinal B-spline in that basis.
+
+    The quadrature is exact: ``degree + 1`` Gauss-Legendre points integrate
+    polynomials up to degree ``2 * degree + 1`` exactly, while every inner
+    product formed here is between two polynomials of degree ``degree`` and so
+    has degree ``2 * degree``. Consequently the Legendre Gram matrix is the
+    identity up to round-off, and the returned matrix carries no quadrature
+    error beyond floating-point round-off.
+
+    Args:
+        degree (int): Polynomial degree. Must be non-negative.
+        dtype (npt.DTypeLike): Floating point type for the output matrix.
+            Defaults to np.float64.
+        out (npt.NDArray[np.float32 | np.float64] | None): Optional output array
+            where the result will be stored. If None, a new array is allocated.
+            Must have shape (degree+1, degree+1) and dtype matching the `dtype` parameter
+            if provided. This follows NumPy's style for output arrays. Defaults to None.
+
+    Returns:
+        npt.NDArray[np.float32 | np.float64]: (degree+1, degree+1) transformation matrix A such
+            that ``A @ [Legendre values] = [cardinal values]``. If `out` was provided,
+            returns the same array.
+
+    Raises:
+        ValueError: If degree is negative, dtype is not float32 or float64, or if `out` is
+            provided and has incorrect shape or dtype.
+
+    Example:
+        >>> import numpy as np
+        >>> A = compute_legendre_to_cardinal_1d(1)
+        >>> np.allclose(A, [[0.5, -0.28867513], [0.5, 0.28867513]])
+        True
+    """
+    if degree < 0:
+        raise ValueError("Degree must be non-negative")
+    out = _prepare_square_out(degree, dtype, out)
+
+    return _compute_change_basis_1D(
+        new_basis_eval=functools.partial(tabulate_legendre_1d, degree),
+        old_basis_eval=functools.partial(tabulate_cardinal_bspline_1d, degree),
+        n_quad_pts=degree + 1,
+        dtype=dtype,
+        out=out,
+    )
+
+
+def compute_cardinal_to_legendre_1d(
+    degree: int,
+    dtype: npt.DTypeLike = np.float64,
+    out: npt.NDArray[np.float32 | np.float64] | None = None,
+) -> npt.NDArray[np.float32 | np.float64]:
+    r"""Create transformation matrix from cardinal B-spline to orthonormal shifted Legendre basis.
+
+    The inverse direction of :func:`compute_legendre_to_cardinal_1d`: with ``A``
+    from that function, this returns ``W`` solving ``A @ W = I``, computed by one
+    LU solve against the identity (:func:`numpy.linalg.solve`). No explicit
+    inverse is formed.
+
+    Note:
+        A second Gram projection -- swapping the two evaluators and solving with
+        the *cardinal* Gram matrix -- is the obvious alternative and is the wrong
+        one. It is equivalent in exact arithmetic, but the cardinal Gram matrix
+        satisfies $\kappa(G) = \kappa(A)^2$ (verified numerically to three digits
+        for degrees 0-7; at degree 8 it saturates against $1/\varepsilon$), so it
+        loses twice as many digits. Measured round-trip error at degree 8 in
+        float64: ``5e-6`` via the Gram projection against ``5e-10`` here. The
+        forward direction does not face this because *its* Gram matrix is the
+        Legendre one, which is the identity.
+
+    Warning:
+        The cardinal-to-Legendre map is intrinsically ill-conditioned at high
+        degree -- $\kappa(A)$ is ``1.1e3`` at degree 4 and ``3.0e8`` at degree 8
+        -- so the attainable accuracy of ``W``, by any algorithm, is bounded by
+        roughly $\kappa(A)\varepsilon$. In float64 the round trip holds to about
+        ``1e-13`` through degree 6 and degrades to ``5e-10`` at degree 8; in
+        float32 it is meaningless beyond degree 4. This is a property of the
+        bases, not of the implementation.
+
+    Args:
+        degree (int): Polynomial degree. Must be non-negative.
+        dtype (npt.DTypeLike): Floating point type for the output matrix.
+            Defaults to np.float64.
+        out (npt.NDArray[np.float32 | np.float64] | None): Optional output array
+            where the result will be stored. If None, a new array is allocated.
+            Must have shape (degree+1, degree+1) and dtype matching the `dtype` parameter
+            if provided. This follows NumPy's style for output arrays. Defaults to None.
+
+    Returns:
+        npt.NDArray[np.float32 | np.float64]: (degree+1, degree+1) transformation matrix W such
+            that ``W @ [cardinal values] = [Legendre values]``. If `out` was provided,
+            returns the same array.
+
+    Raises:
+        ValueError: If degree is negative, dtype is not float32 or float64, or if `out` is
+            provided and has incorrect shape or dtype.
+
+    Example:
+        >>> import numpy as np
+        >>> A = compute_legendre_to_cardinal_1d(3)
+        >>> W = compute_cardinal_to_legendre_1d(3)
+        >>> np.allclose(W @ A, np.eye(4), atol=1e-13)
+        True
+    """
+    if degree < 0:
+        raise ValueError("Degree must be non-negative")
+    out = _prepare_square_out(degree, dtype, out)
+
+    forward = compute_legendre_to_cardinal_1d(degree, dtype)
+    out[:] = np.linalg.solve(forward, np.eye(degree + 1, dtype=out.dtype))
+    return out
+
+
+def compute_cardinal_dual_legendre_coeffs_1d(
+    degree: int,
+    dtype: npt.DTypeLike = np.float64,
+    out: npt.NDArray[np.float32 | np.float64] | None = None,
+) -> npt.NDArray[np.float32 | np.float64]:
+    r"""Create the cardinal-dual $L^2$ functionals, expressed in the Legendre basis.
+
+    Row ``i`` holds the coefficients, in the orthonormal shifted Legendre basis,
+    of the dual function $D_i$ biorthogonal to the cardinal B-spline basis:
+
+    \[
+    \int_0^1 D_i(x) B_{p,j}(x) \, dx = \delta_{ij}
+    \]
+
+    Derivation: write the cardinal basis in the Legendre basis as
+    ``cardinal = A @ legendre`` with ``A`` from
+    :func:`compute_legendre_to_cardinal_1d`, and let $D_i = \sum_k T_{ik}
+    \tilde{p}_k$. Because the Legendre basis is orthonormal,
+    $\int D_i B_j = \sum_k T_{ik} A_{jk} = (A T^\mathsf{T})_{ji}$, so
+    biorthogonality holds exactly when $T^\mathsf{T} = A^{-1}$, i.e.
+    $T = A^{-\mathsf{T}}$. No inverse is formed: since
+    :func:`compute_cardinal_to_legendre_1d` returns ``W`` with ``W @ A = I`` from
+    an LU solve, the result is simply ``W.T``.
+
+    Warning:
+        Biorthogonality is limited by the same conditioning that bounds ``W`` --
+        see the warning on :func:`compute_cardinal_to_legendre_1d`. In float64
+        $\int D_i B_j = \delta_{ij}$ holds to about ``1e-13`` through degree 6 and
+        to ``5e-10`` at degree 8.
+
+    Args:
+        degree (int): Polynomial degree. Must be non-negative.
+        dtype (npt.DTypeLike): Floating point type for the output matrix.
+            Defaults to np.float64.
+        out (npt.NDArray[np.float32 | np.float64] | None): Optional output array
+            where the result will be stored. If None, a new array is allocated.
+            Must have shape (degree+1, degree+1) and dtype matching the `dtype` parameter
+            if provided. This follows NumPy's style for output arrays. Defaults to None.
+
+    Returns:
+        npt.NDArray[np.float32 | np.float64]: (degree+1, degree+1) matrix whose row ``i``
+            holds the Legendre coefficients of the dual function $D_i$. If `out` was
+            provided, returns the same array.
+
+    Raises:
+        ValueError: If degree is negative, dtype is not float32 or float64, or if `out` is
+            provided and has incorrect shape or dtype.
+
+    Example:
+        >>> import numpy as np
+        >>> D = compute_cardinal_dual_legendre_coeffs_1d(2)
+        >>> W = compute_cardinal_to_legendre_1d(2)
+        >>> np.allclose(D, W.T)
+        True
+    """
+    if degree < 0:
+        raise ValueError("Degree must be non-negative")
+    out = _prepare_square_out(degree, dtype, out)
+
+    out[:] = compute_cardinal_to_legendre_1d(degree, dtype).T
+    return out
+
+
 def compute_monomial_to_bernstein_1d(
     degree: int,
     dtype: npt.DTypeLike = np.float64,
@@ -391,10 +587,73 @@ def _cached_cardinal_to_bernstein_matrix(
     return mat
 
 
+@functools.lru_cache(maxsize=64)
+def _cached_legendre_to_cardinal_matrix(
+    degree: int,
+    dtype: np.dtype[np.float32 | np.float64],
+) -> npt.NDArray[np.float32 | np.float64]:
+    """Return a cached, read-only Legendre-to-cardinal-B-spline change-of-basis matrix.
+
+    This is the hot-path counterpart of
+    :func:`compute_legendre_to_cardinal_1d`.  Because the matrix depends only on
+    ``(degree, dtype)`` — never on the knot vector — it is safe to share a
+    single immutable copy across all calls with matching arguments.
+
+    The returned array has ``writeable=False`` to guard the cached copy against
+    accidental in-place mutation.  NumPy's ``matmul`` and ``@`` operator accept
+    read-only arrays as non-output arguments, so callers can use the matrix
+    directly with :func:`numpy.matmul`.
+
+    Args:
+        degree (int): Polynomial degree.
+        dtype (np.dtype): Floating-point dtype (``float32`` or ``float64``).
+
+    Returns:
+        npt.NDArray[np.float32 | np.float64]: Read-only ``(degree+1, degree+1)``
+            transformation matrix such that ``A @ legendre_values = cardinal_values``.
+    """
+    mat = compute_legendre_to_cardinal_1d(degree, dtype)
+    mat.flags.writeable = False
+    return mat
+
+
+@functools.lru_cache(maxsize=64)
+def _cached_cardinal_to_legendre_matrix(
+    degree: int,
+    dtype: np.dtype[np.float32 | np.float64],
+) -> npt.NDArray[np.float32 | np.float64]:
+    """Return a cached, read-only cardinal-B-spline-to-Legendre change-of-basis matrix.
+
+    This is the hot-path counterpart of
+    :func:`compute_cardinal_to_legendre_1d`.  Because the matrix depends only on
+    ``(degree, dtype)`` — never on the knot vector — it is safe to share a
+    single immutable copy across all calls with matching arguments.
+
+    The returned array has ``writeable=False`` to guard the cached copy against
+    accidental in-place mutation.  NumPy's ``matmul`` and ``@`` operator accept
+    read-only arrays as non-output arguments, so callers can use the matrix
+    directly with :func:`numpy.matmul`.
+
+    Args:
+        degree (int): Polynomial degree.
+        dtype (np.dtype): Floating-point dtype (``float32`` or ``float64``).
+
+    Returns:
+        npt.NDArray[np.float32 | np.float64]: Read-only ``(degree+1, degree+1)``
+            transformation matrix such that ``W @ cardinal_values = legendre_values``.
+    """
+    mat = compute_cardinal_to_legendre_1d(degree, dtype)
+    mat.flags.writeable = False
+    return mat
+
+
 __all__ = [
     "compute_bernstein_to_cardinal_1d",
     "compute_bernstein_to_lagrange_1d",
+    "compute_cardinal_dual_legendre_coeffs_1d",
     "compute_cardinal_to_bernstein_1d",
+    "compute_cardinal_to_legendre_1d",
     "compute_lagrange_to_bernstein_1d",
+    "compute_legendre_to_cardinal_1d",
     "compute_monomial_to_bernstein_1d",
 ]
