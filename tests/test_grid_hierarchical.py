@@ -8,6 +8,7 @@ import pytest
 
 from pantr.geometry import AABB
 from pantr.grid import (
+    Grid,
     GridRestriction,
     HierarchicalGrid,
     TensorProductGrid,
@@ -1007,3 +1008,208 @@ class TestHierKernelEquivalence:
             lo, hi = g.cell_bounds(cid)
             np_testing.assert_array_equal(lo_all[cid], lo)
             np_testing.assert_array_equal(hi_all[cid], hi)
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Boundary facets
+# ──────────────────────────────────────────────────────────────────────────────
+
+
+def _boundary_facets_bruteforce(grid: HierarchicalGrid) -> list[list[int]]:
+    """Reference enumeration: one `is_mesh_boundary_facet` query per cell and facet.
+
+    Independent of the block-vectorized implementation under test, which decides a
+    whole block face at once and never queries a neighbour.
+    """
+    return [
+        [cid, lfid]
+        for cid in range(grid.num_cells)
+        for lfid in range(grid.num_local_facets(cid))
+        if grid.is_mesh_boundary_facet(cid, lfid)
+    ]
+
+
+def _refined_corner_grid() -> HierarchicalGrid:
+    """2x2 unit grid with the low corner root cell refined once: 3 coarse + 4 fine."""
+    g = hierarchical_grid(uniform_grid([[0.0, 1.0], [0.0, 1.0]], 2), 2)
+    g.refine(0, (0, 0), (1, 1))
+    return g
+
+
+class TestBoundaryFacets:
+    """boundary_facets enumerates the outer boundary only, and agrees with the predicate."""
+
+    @pytest.mark.parametrize(
+        ("ndim", "factor"), [(1, 2), (2, 2), (2, (2, 3)), (3, 2), (1, 3), (2, 3)]
+    )
+    def test_matches_predicate(self, ndim: int, factor: int | tuple[int, ...]) -> None:
+        """The block-vectorized enumeration equals the per-facet predicate, exactly."""
+        g = _irregular_grid(ndim, factor)
+        rows = g.boundary_facets()
+
+        assert rows.tolist() == _boundary_facets_bruteforce(g)
+        assert rows.shape[0] > 0  # not vacuously empty
+        assert rows.dtype == np.int64
+        assert rows.shape[1] == 2
+        assert not rows.flags.writeable
+        # Lexicographic in (cid, lfid).
+        np_testing.assert_array_equal(rows[np.lexsort((rows[:, 1], rows[:, 0]))], rows)
+
+    @pytest.mark.parametrize(("ndim", "factor"), [(1, 2), (2, 2), (3, 2)])
+    def test_override_agrees_with_abc_default(
+        self, ndim: int, factor: int | tuple[int, ...]
+    ) -> None:
+        """The specialized override returns exactly what the inherited default would."""
+        g = _irregular_grid(ndim, factor)
+        np_testing.assert_array_equal(g.boundary_facets(), Grid.boundary_facets(g))
+
+    @pytest.mark.parametrize("ndim", [1, 2, 3])
+    def test_unrefined_count_is_analytic(self, ndim: int) -> None:
+        """A flat n^ndim grid has 2 * ndim * n^(ndim-1) boundary facets."""
+        n = 3
+        g = hierarchical_grid(uniform_grid([[0.0, 1.0]] * ndim, n), 2)
+        assert g.boundary_facets().shape[0] == 2 * ndim * n ** (ndim - 1)
+
+    def test_excludes_level_interfaces(self) -> None:
+        """Level-interface facets are excluded, and the outer count is the analytic one."""
+        g = _refined_corner_grid()
+        rows = g.boundary_facets()
+        assert g.num_cells == 7
+
+        # 4 sides x 2 root cells = 8 coarse facets; the refined quadrant touches 2 of
+        # those sides and on each *replaces* its coarse facet by 2 fine ones: 8 - 2 + 4.
+        assert rows.shape[0] == 10
+
+        # Every reported facet has no neighbour at all — a stricter check than the
+        # predicate, since it would also catch a facet with hanging fine neighbours.
+        for cid, lfid in rows.tolist():
+            assert g.hanging_neighbors(cid, lfid) == ()
+
+        # And the level interface, which does exist here, is entirely absent.
+        interface = {
+            (cid, lfid)
+            for cid in range(g.num_cells)
+            for lfid in range(g.num_local_facets(cid))
+            for nbrs in [g.hanging_neighbors(cid, lfid)]
+            if nbrs and any(g.cell_level(n) != g.cell_level(cid) for n in nbrs)
+        }
+        assert interface
+        assert not interface & {tuple(row) for row in rows.tolist()}
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Leaf-cell mesh export
+# ──────────────────────────────────────────────────────────────────────────────
+
+_CORNER_RTOL = 8.0 * np.finfo(np.float64).eps
+"""Bound on ``|export_cells corner - cell_bounds corner|`` relative to the coordinate.
+
+`cell_bounds` builds a corner as ``bp + s * (width / factor**level)``, with one more
+addition for a ``hi`` corner; `export_cells` builds the same value as
+``bp + o * (width / factor**max_level)``. Same quantity, different expression, so up to
+four correctly-rounded operations per side, each at most ``eps/2`` relative to a
+coordinate that dominates its own offset: ``<= 7 * eps / 2``, i.e. under ``4 * eps``.
+Measured worst case over the cases below is 1 ulp; the 8 leaves a 2x margin.
+"""
+
+
+def _cell_corners(grid: HierarchicalGrid, cid: int) -> list[np.ndarray]:
+    """Corners of `cell_bounds(cid)` in the export corner order (axis 0 = LSB)."""
+    lo, hi = grid.cell_bounds(cid)
+    return [
+        np.array(
+            [hi[k] if (corner >> k) & 1 else lo[k] for k in range(grid.ndim)], dtype=np.float64
+        )
+        for corner in range(1 << grid.ndim)
+    ]
+
+
+class TestExportCells:
+    """export_cells deduplicates leaf corners exactly and reproduces the cell bounds."""
+
+    @pytest.mark.parametrize(("ndim", "factor"), [(1, 2), (2, 2), (2, (2, 3)), (3, 2), (2, 3)])
+    def test_roundtrip_matches_cell_bounds(self, ndim: int, factor: int | tuple[int, ...]) -> None:
+        """points[conn[cid]] reproduces every cell's corners within the derived bound."""
+        g = _irregular_grid(ndim, factor)
+        points, conn = g.export_cells()
+
+        assert conn.shape == (g.num_cells, 1 << ndim)
+        assert points.shape[1] == ndim
+        assert points.dtype == np.float64
+        assert conn.dtype == np.int64
+        assert not points.flags.writeable
+        assert not conn.flags.writeable
+        assert int(conn.min()) >= 0
+        assert int(conn.max()) == points.shape[0] - 1
+
+        for cid in range(g.num_cells):
+            for corner, want in enumerate(_cell_corners(g, cid)):
+                np_testing.assert_allclose(
+                    points[conn[cid, corner]], want, rtol=_CORNER_RTOL, atol=0.0
+                )
+
+    def test_roundtrip_exact_on_dyadic_grid(self) -> None:
+        """With dyadic breakpoints and a dyadic factor every corner agrees bitwise."""
+        g = hierarchical_grid(uniform_grid([[0.0, 1.0], [0.0, 1.0]], 2), 2)
+        g.refine(0, (0, 0), (1, 1))
+        g.refine(1, (0, 0), (2, 2))
+        points, conn = g.export_cells()
+
+        for cid in range(g.num_cells):
+            for corner, want in enumerate(_cell_corners(g, cid)):
+                np_testing.assert_array_equal(points[conn[cid, corner]], want)
+
+    def test_dedup_exact_with_hanging_vertices(self) -> None:
+        """The refined-corner example: 14 distinct vertices, hanging ones counted once."""
+        g = _refined_corner_grid()
+        points, conn = g.export_cells()
+
+        assert conn.shape == (7, 4)
+        # The 9 root corners of the 2x2 grid, plus the 5 level-1 nodes inside the
+        # refined quadrant: 2 on the domain boundary, the quadrant centre, and the 2
+        # hanging nodes on the level interface.
+        assert points.shape == (14, 2)
+        got = {tuple(p) for p in points.tolist()}
+        assert len(got) == 14
+        assert got == {
+            (0.0, 0.0), (0.0, 0.25), (0.0, 0.5), (0.0, 1.0),
+            (0.25, 0.0), (0.25, 0.25), (0.25, 0.5),
+            (0.5, 0.0), (0.5, 0.25), (0.5, 0.5), (0.5, 1.0),
+            (1.0, 0.0), (1.0, 0.5), (1.0, 1.0),
+        }  # fmt: skip
+
+    def test_dedup_exact_with_non_uniform_breakpoints(self) -> None:
+        """Non-uniform root breakpoints deduplicate exactly as well."""
+        g = hierarchical_grid(TensorProductGrid([np.array([0.0, 0.3, 1.0])] * 2), 2)
+        g.refine(0, (0, 0), (1, 1))
+        points, _ = g.export_cells()
+
+        assert points.shape == (14, 2)
+        assert len({tuple(p) for p in points.tolist()}) == 14
+        # 0.15 is the level-1 node inside [0, 0.3]; it must appear exactly once.
+        assert [tuple(p) for p in points.tolist()].count((0.15, 0.0)) == 1
+
+    def test_shared_vertex_referenced_by_every_touching_cell(self) -> None:
+        """An interior vertex is one index, referenced once per cell that touches it."""
+        g = hierarchical_grid(uniform_grid([[0.0, 1.0], [0.0, 1.0]], 2), 2)
+        points, conn = g.export_cells()
+
+        centre = int(np.flatnonzero((points == 0.5).all(axis=1))[0])
+        assert int((conn == centre).sum()) == 4  # all four root cells meet there
+
+    def test_corner_order_convention(self) -> None:
+        """Corner c takes the hi bound on axis k iff bit k of c is set (axis 0 = LSB)."""
+        # Deliberately anisotropic bounds, so a transposed convention cannot pass.
+        g = hierarchical_grid(TensorProductGrid([np.array([0.0, 1.0]), np.array([0.0, 2.0])]), 2)
+        points, conn = g.export_cells()
+
+        assert points[conn[0]].tolist() == [[0.0, 0.0], [1.0, 0.0], [0.0, 2.0], [1.0, 2.0]]
+
+    def test_unrefined_grid_matches_tensor_product_lattice(self) -> None:
+        """On a flat n^ndim grid the vertex set is the full (n+1)^ndim breakpoint lattice."""
+        n = 3
+        g = hierarchical_grid(uniform_grid([[0.0, 1.0]] * 3, n), 2)
+        points, conn = g.export_cells()
+
+        assert points.shape == ((n + 1) ** 3, 3)
+        assert conn.shape == (n**3, 8)

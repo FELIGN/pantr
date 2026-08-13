@@ -243,6 +243,8 @@ class THBSplineSpace:
             counter catches mutations the other two cannot distinguish).
         _trunc (dict): Map from global dof (``int``) to ``_TruncCoeffs``;
             only truncated functions appear (empty when ``truncate=False``).
+        _max_active_per_cell (int | None): Memoized :meth:`max_active_per_cell`
+            result; ``None`` until first requested.
     """
 
     __slots__ = (
@@ -252,6 +254,7 @@ class THBSplineSpace:
         "_grid",
         "_grid_snapshot",
         "_level_spaces",
+        "_max_active_per_cell",
         "_num_active",
         "_regularity",
         "_root_space",
@@ -343,6 +346,7 @@ class THBSplineSpace:
         # Lazy per-cell cache of _cell_contributions (populated on first access). The
         # space is an immutable construction-time snapshot, so cached results stay valid.
         self._contrib_cache: dict[int, list[tuple[int, int, tuple[int, ...]]]] = {}
+        self._max_active_per_cell: int | None = None
 
     # ------------------------------------------------------------------
     # Construction helpers
@@ -821,6 +825,40 @@ class THBSplineSpace:
             RuntimeError: If the grid has been modified since construction.
         """
         return np.array([dof for dof, _, _ in self._cell_contributions(cid)], dtype=np.int64)
+
+    def max_active_per_cell(self) -> int:
+        """Return the largest number of active functions on any single cell.
+
+        The width a fixed-size dofmap needs: ``max(active_basis(cid).size)`` over every
+        active cell. On an unrefined space this is ``prod(degree + 1)``; near a level
+        interface a cell also sees the coarser functions overlapping it, so the count
+        grows there.
+
+        Computed once and cached, since the space is a construction-time snapshot.
+
+        Returns:
+            int: Maximum active-function count over all cells (``>= 1``).
+
+        Raises:
+            RuntimeError: If the grid has been modified since construction.
+
+        Note:
+            Counts exactly what :meth:`active_basis` returns, which selects on
+            tensor-product support. Truncation can only annihilate a function on a cell
+            it supports, never add one, so with ``truncate=True`` this is an upper bound
+            on the number of *non-zero* functions -- which is what a fixed-width dofmap
+            wants. The value is therefore the same for the THB and HB bases.
+
+            Visits every cell, so the first call populates the per-cell contribution
+            cache for the whole grid -- the same cache :meth:`active_basis` fills lazily,
+            but warmed in full.
+        """
+        self._check_not_stale()
+        if self._max_active_per_cell is None:
+            self._max_active_per_cell = max(
+                len(self._cell_contributions(cid)) for cid in range(self._grid.num_cells)
+            )
+        return self._max_active_per_cell
 
     def restrict(self, cell_ids: npt.ArrayLike) -> THBSplineSpaceRestriction:
         """Return the windowed sub-space over a subset of active cells.

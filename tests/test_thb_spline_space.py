@@ -1572,6 +1572,78 @@ class TestContribCache:
 
 
 # ──────────────────────────────────────────────────────────────────────────────
+# max_active_per_cell (fixed-width dofmap size)
+# ──────────────────────────────────────────────────────────────────────────────
+
+
+class TestMaxActivePerCell:
+    """max_active_per_cell is the max over cells of the active_basis size."""
+
+    @pytest.mark.parametrize("truncate", [True, False])
+    def test_unrefined_is_product_of_orders(self, truncate: bool) -> None:
+        """An unrefined space sees exactly prod(degree + 1) functions on every cell."""
+        thb = THBSplineSpace(_root_2d(), _grid_2d(), truncate=truncate)
+        assert thb.grid.max_level == 0
+
+        expected = int(np.prod([d + 1 for d in thb.degrees]))
+        assert thb.max_active_per_cell() == expected
+        assert {thb.active_basis(cid).size for cid in range(thb.grid.num_cells)} == {expected}
+
+    @pytest.mark.parametrize("truncate", [True, False])
+    @pytest.mark.parametrize("rounds", [1, 2])
+    def test_refined_matches_python_loop(self, truncate: bool, rounds: int) -> None:
+        """The cached value equals an explicit loop over active_basis, and exceeds the flat one."""
+        grid = _grid_2d()
+        for level in range(rounds):
+            grid.refine(level, [0, 0], [2 * 2**level, 2 * 2**level])
+        thb = THBSplineSpace(_root_2d(), grid, truncate=truncate)
+
+        loop_max = max(thb.active_basis(cid).size for cid in range(grid.num_cells))
+        assert thb.max_active_per_cell() == loop_max
+        # A level interface makes some cell see more than the tensor-product count.
+        assert loop_max > int(np.prod([d + 1 for d in thb.degrees]))
+
+    def test_thb_and_hb_agree(self) -> None:
+        """Truncation changes coefficients, not the active set, so the count is the same."""
+        grid = _grid_2d()
+        grid.refine(0, [0, 0], [2, 2])
+        root = _root_2d()
+
+        thb = THBSplineSpace(root, grid, truncate=True)
+        hb = THBSplineSpace(root, grid, truncate=False)
+        assert thb.max_active_per_cell() == hb.max_active_per_cell()
+
+    def test_cached_across_calls(self) -> None:
+        """The result is memoized: a second call recomputes nothing."""
+        grid = _grid_1d()
+        grid.refine(0, [0], [2])
+        thb = THBSplineSpace(_root_1d(), grid)
+
+        first = thb.max_active_per_cell()
+        # Recomputing would have to walk every cell and refill this cache.
+        thb._contrib_cache.clear()
+        assert thb.max_active_per_cell() == first
+        assert thb._contrib_cache == {}
+
+    def test_stale_grid_raises(self) -> None:
+        """A grid mutated after construction is rejected, as for active_basis."""
+        grid = _grid_1d()
+        thb = THBSplineSpace(_root_1d(), grid)
+        grid.refine(0, [0], [2])
+        with pytest.raises(RuntimeError, match="stale"):
+            thb.max_active_per_cell()
+
+    def test_stale_grid_raises_after_caching(self) -> None:
+        """Staleness is detected even once the value has been cached."""
+        grid = _grid_1d()
+        thb = THBSplineSpace(_root_1d(), grid)
+        _ = thb.max_active_per_cell()
+        grid.refine(0, [0], [2])
+        with pytest.raises(RuntimeError, match="stale"):
+            thb.max_active_per_cell()
+
+
+# ──────────────────────────────────────────────────────────────────────────────
 # restrict (windowed THB sub-space)
 # ──────────────────────────────────────────────────────────────────────────────
 
