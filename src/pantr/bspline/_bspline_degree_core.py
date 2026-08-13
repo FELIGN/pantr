@@ -11,7 +11,6 @@ Note:
     ``_degree_reduce_bspline`` instead.
 """
 
-import math
 from typing import Any
 
 import numpy as np
@@ -22,14 +21,50 @@ from .._numba_compat import nb_jit
 
 @nb_jit(nopython=True, cache=True)
 def _bincoeff(n: int, k: int) -> float:
-    """Compute binomial coefficient (n choose k)."""
+    """Compute the binomial coefficient ``C(n, k)`` in exact integer arithmetic.
+
+    Runs the multiplicative recurrence ``C(m, i) = C(m - 1, i - 1) * m // i`` over the
+    smaller of ``k`` and ``n - k``. The running product after step ``i`` is exactly
+    ``C(n - kk + i, i)``, an integer, so every division is exact and the result carries
+    no rounding at all.
+
+    Args:
+        n (int): Upper index.
+        k (int): Lower index.
+
+    Returns:
+        float: ``C(n, k)``, or ``0.0`` when ``k`` lies outside ``[0, n]``.
+
+    Note:
+        Inputs are assumed to be correct (no validation performed).
+
+        Exactness envelope, measured against :func:`math.comb`. The largest intermediate
+        is ``C(n, k) * min(k, n - k)``, so the integer arithmetic is exact while that
+        fits in ``int64``: every ``k`` up to ``n = 61``. From ``n = 62`` an intermediate
+        wraps silently (Numba does not trap integer overflow) and the result is outside
+        the contract. Independently, the ``float`` return is lossless only while
+        ``C(n, k) <= 2**53``, i.e. every ``k`` up to ``n = 56`` (``C(57, 28)`` is the
+        first coefficient past it); between 57 and 61 the exact integer is computed and
+        then correctly rounded, which is the most a float return can carry. Call sites
+        pass ``p + t`` (degree elevation) and ``p + q`` (Bernstein product), so the
+        envelope covers every numerically meaningful degree.
+
+        The previous route, ``floor(0.5 + exp(lgamma(n + 1) - lgamma(k + 1) -
+        lgamma(n - k + 1)))``, was silently wrong well inside both limits: it is off by
+        380 at ``(57, 28)`` and by 5600 at ``(60, 30)``, since a value above ``2**53``
+        cannot be recovered from logarithms. Where exactly it starts failing depends on
+        the ``libm`` in use -- compiled here it already differed from ``(48, 25)`` on,
+        while CPython's own ``lgamma`` still agreed there -- which is the other reason to
+        prefer integer arithmetic: the envelope becomes a property of the algorithm
+        rather than of the platform.
+    """
     if k < 0 or k > n:
         return 0.0
-    if k in (0, n):
-        return 1.0
-    return math.floor(
-        0.5 + math.exp(math.lgamma(n + 1) - math.lgamma(k + 1) - math.lgamma(n - k + 1))
-    )
+    kk = min(k, n - k)
+    result = np.int64(1)
+    for i in range(1, kk + 1):
+        result = result * np.int64(n - kk + i) // np.int64(i)
+    return float(result)
 
 
 @nb_jit(nopython=True, cache=True)
