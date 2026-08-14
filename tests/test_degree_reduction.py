@@ -7,6 +7,7 @@ import pytest
 
 from pantr.bezier import Bezier
 from pantr.bspline import Bspline, BsplineSpace, BsplineSpace1D, create_uniform_periodic_knots
+from pantr.bspline._bspline_degree_core import _degree_reduce_1d_core
 
 
 def _make_bezier_1d(ctrl: list[list[float]], rational: bool = False) -> Bezier:
@@ -306,6 +307,95 @@ class TestBsplineReduceDegreeRoundTrip:
 
         pts = np.linspace(0, 1, 20)
         np.testing.assert_allclose(bsp.evaluate(pts), reduced.evaluate(pts), atol=1e-12)
+
+
+def _open_uniform_bspline(degree: int, n_el: int, rank: int = 2, seed: int = 0) -> Bspline:
+    """Create an open B-spline with ``n_el`` uniform elements and random control points."""
+    knots = np.concatenate([np.zeros(degree), np.linspace(0.0, 1.0, n_el + 1), np.ones(degree)])
+    space = BsplineSpace([BsplineSpace1D(knots, degree)])
+    rng = np.random.default_rng(seed)
+    return Bspline(space, rng.random((space.num_total_basis, rank)))
+
+
+class TestBsplineReduceDegreeOutputSizing:
+    """Regression: the kernel sized its output buffers from ``len(knots)``.
+
+    The reduced spline is in Bézier form, so it holds ``n_seg * new_degree + 1``
+    control points, a count that grows with the number of elements while
+    ``len(knots)`` grows more slowly.  Past the crossover the kernel wrote beyond
+    the end of both output arrays: unchecked under ``nopython``, and surfacing
+    downstream as a control-point/basis-count mismatch.
+    """
+
+    @pytest.mark.parametrize(
+        "degree,n_el,dec",
+        [
+            (5, 8, 1),  # the smallest failing case at degree 5
+            (4, 13, 1),
+            (6, 7, 1),
+            (7, 6, 1),
+            (8, 5, 1),
+            (5, 16, 2),
+            (7, 11, 3),
+            (8, 13, 4),
+        ],
+    )
+    def test_reduction_fills_a_consistent_spline(self, degree: int, n_el: int, dec: int) -> None:
+        """Reducing an open uniform B-spline yields a well-formed spline."""
+        bsp = _open_uniform_bspline(degree, n_el)
+        reduced = bsp.reduce_degree(dec)
+
+        assert reduced.degree == (degree - dec,)
+        space_1d = reduced.space.spaces[0]
+        assert len(space_1d.knots) == space_1d.num_basis + space_1d.degree + 1
+        assert reduced.control_points.shape[0] == space_1d.num_basis
+
+    def test_kernel_output_matches_the_bezier_form_count(self) -> None:
+        """The kernel returns exactly ``n_seg * new_degree + 1`` control points."""
+        degree, n_el, dec = 5, 8, 1
+        bsp = _open_uniform_bspline(degree, n_el, rank=1)
+        space_1d = bsp.space.spaces[0]
+
+        new_ctrl, new_knots = _degree_reduce_1d_core(
+            degree, bsp.control_points, space_1d.knots, dec
+        )
+
+        new_degree = degree - dec
+        assert new_ctrl.shape[0] == n_el * new_degree + 1
+        assert new_knots.shape[0] == new_ctrl.shape[0] + new_degree + 1
+
+    def test_round_trip_on_the_triggering_configuration(self) -> None:
+        """Degree 5 with 8 elements: elevate then reduce recovers the geometry."""
+        bsp = _open_uniform_bspline(4, 8, rank=2, seed=3)
+        reduced = bsp.elevate_degree(1).reduce_degree(1)
+
+        pts = np.linspace(0.0, 1.0, 100)
+        np.testing.assert_allclose(reduced.evaluate(pts), bsp.evaluate(pts), atol=1e-12)
+
+    def test_periodic_spline_of_the_same_size(self) -> None:
+        """The periodic path reaches the same kernel."""
+        knots = create_uniform_periodic_knots(num_intervals=8, degree=4)
+        space = BsplineSpace([BsplineSpace1D(knots, 4, periodic=True)])
+        rng = np.random.default_rng(1)
+        bsp = Bspline(space, rng.random((space.num_total_basis, 2)))
+
+        reduced = bsp.elevate_degree(1).reduce_degree(1)
+
+        assert reduced.degree == (4,)
+        assert reduced.space.spaces[0].periodic
+
+    def test_surface_direction_of_the_same_size(self) -> None:
+        """A 2D surface reduced along one direction only."""
+        knots_x = np.concatenate([np.zeros(5), np.linspace(0.0, 1.0, 9), np.ones(5)])
+        knots_y = np.array([0.0, 0.0, 0.0, 0.5, 1.0, 1.0, 1.0])
+        space = BsplineSpace([BsplineSpace1D(knots_x, 5), BsplineSpace1D(knots_y, 2)])
+        rng = np.random.default_rng(2)
+        bsp = Bspline(space, rng.random((*space.num_basis, 3)))
+
+        reduced = bsp.reduce_degree((1, 0))
+
+        assert reduced.degree == (4, 2)
+        assert reduced.control_points.shape[:2] == reduced.space.num_basis
 
 
 class TestBsplineReduceDegreePeriodic:

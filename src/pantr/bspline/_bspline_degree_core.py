@@ -411,10 +411,22 @@ def _degree_reduce_1d_core(  # noqa: PLR0912, PLR0915
     alfs = np.zeros(d, dtype=np.float64)
     rbpts = np.empty((new_deg + 1, rank), dtype=ctrl.dtype)
 
-    # Over-allocate output arrays (same pattern as elevation kernel).
-    max_new_knots = len(knots) + len(knots)
-    oc = np.empty((n_pts + len(knots), rank), dtype=ctrl.dtype)
-    ok = np.empty(max_new_knots, dtype=np.float64)
+    # Size the output arrays from the number of Bézier segments the sweep below
+    # will produce, counted with that sweep's own advance rule.  The reduced
+    # spline is in Bézier form, so it has exactly ``n_seg * new_deg + 1`` control
+    # points and ``n_seg * new_deg + new_deg + 2`` knots.  (A bound expressed in
+    # terms of ``len(knots)`` alone is not an upper bound: it fails from 8
+    # elements on at degree 5, and the kernel then writes past the end.)
+    n_seg = 0
+    scan = d + 1
+    while scan < m:
+        while scan < m and knots[scan] == knots[scan + 1]:
+            scan += 1
+        n_seg += 1
+        scan += 1
+
+    oc = np.empty((n_seg * new_deg + 1, rank), dtype=ctrl.dtype)
+    ok = np.empty(n_seg * new_deg + new_deg + 2, dtype=np.float64)
 
     # Initialise: first boundary knots and first Bézier segment.
     ua = knots[0]
