@@ -7,6 +7,11 @@ import numpy.typing as npt
 import pytest
 
 from pantr.bspline import Bspline, BsplineSpace, BsplineSpace1D, create_uniform_periodic_knots
+from pantr.bspline._bspline_knot_insertion_core import (
+    _compute_oslo_matrix_1d_core,
+    _compute_oslo_rows_1d_core,
+    _insert_knots_1d_core,
+)
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -678,3 +683,257 @@ class TestPeriodicBsplineSubdivide:
         orig = bsp.to_open_bspline().evaluate(pts)
         sub = subdivided.to_open_bspline().evaluate(pts)
         np.testing.assert_allclose(orig, sub, atol=1e-12)
+
+
+# ---------------------------------------------------------------------------
+# Banded Oslo rows
+# ---------------------------------------------------------------------------
+
+_EPS = float(np.finfo(np.float64).eps)
+
+_OSLO_ATOL_FACTOR = 8.0
+"""Safety factor on the agreement between the banded and dense Oslo sweeps.
+
+The two run the same recurrence over the same knot differences in the same
+order — the banded one simply skips the entries the dense one computes as exact
+zeros — so they agree bit for bit whenever the compiler emits the same
+instructions, which is what is observed here. The bound is written in eps rather
+than as an equality because the assertion crosses a compilation boundary: the
+reference is interpreted NumPy while the kernel is compiled, and a fused
+multiply-add contracted by one and not the other moves the last bit without
+anything being wrong. Eight eps is the classic forward bound for the three
+roundings per entry, with room for that contraction.
+"""
+
+
+def _dense_oslo_reference(
+    degree: int,
+    old_knots: npt.NDArray[np.float64],
+    new_knots: npt.NDArray[np.float64],
+) -> npt.NDArray[np.float64]:
+    """Build the Oslo matrix by the dense sweep the banded kernel replaced.
+
+    Kept here as an oracle: it walks every column at every order, so it makes no
+    assumption about where the discrete B-splines are supported.
+
+    Args:
+        degree (int): Polynomial degree.
+        old_knots (npt.NDArray[np.float64]): Original knot vector.
+        new_knots (npt.NDArray[np.float64]): Refined knot vector.
+
+    Returns:
+        npt.NDArray[np.float64]: Dense refinement matrix of shape ``(m+1, n+1)``.
+    """
+    n = old_knots.shape[0] - degree - 2
+    m = new_knots.shape[0] - degree - 2
+
+    previous = np.zeros((m + 1, n + 2))
+    current = np.zeros((m + 1, n + 2))
+
+    for i in range(m + 1):
+        j = int(np.searchsorted(old_knots, new_knots[i], side="right")) - 1
+        previous[i, min(max(j, 0), n)] = 1.0
+
+    for k in range(2, degree + 2):
+        current[:] = 0.0
+        for i in range(m + 1):
+            sik = new_knots[i + k - 1]
+            for j in range(n + 1):
+                value = 0.0
+                denom1 = old_knots[j + k - 1] - old_knots[j]
+                if denom1 > 0.0:
+                    value += (sik - old_knots[j]) / denom1 * previous[i, j]
+                denom2 = old_knots[j + k] - old_knots[j + 1]
+                if denom2 > 0.0:
+                    value += (old_knots[j + k] - sik) / denom2 * previous[i, j + 1]
+                current[i, j] = value
+        previous[:] = current
+
+    return previous[:, : n + 1].copy()
+
+
+def _scatter_oslo_rows(
+    alphas: npt.NDArray[np.float64], first_col: npt.NDArray[np.int64], n_cols: int
+) -> npt.NDArray[np.float64]:
+    """Place banded rows into a dense matrix, dropping columns outside the space.
+
+    Args:
+        alphas (npt.NDArray[np.float64]): Bands of shape ``(m+1, degree+1)``.
+        first_col (npt.NDArray[np.int64]): Global column of each band's first entry.
+        n_cols (int): Number of old control points.
+
+    Returns:
+        npt.NDArray[np.float64]: Dense matrix of shape ``(m+1, n_cols)``.
+    """
+    dense = np.zeros((alphas.shape[0], n_cols))
+    for i in range(alphas.shape[0]):
+        for offset in range(alphas.shape[1]):
+            col = int(first_col[i]) + offset
+            if 0 <= col < n_cols:
+                dense[i, col] = alphas[i, offset]
+    return dense
+
+
+def _oslo_case(
+    degree: int, kind: str, seed: int
+) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64]]:
+    """Build an (old, refined) knot-vector pair of the requested shape.
+
+    Args:
+        degree (int): Polynomial degree.
+        kind (str): One of ``uniform``, ``non_uniform``, ``multiple``,
+            ``single_knot``, ``re_insert``, ``many``.
+        seed (int): Seed for the random parts.
+
+    Returns:
+        tuple: ``(old_knots, new_knots)`` with ``new_knots`` a superset.
+    """
+    rng = np.random.default_rng(seed)
+    if kind == "non_uniform":
+        interior = np.sort(rng.random(5))
+    elif kind == "multiple":
+        # Interior knots repeated up to multiplicity `degree`.
+        interior = np.repeat(np.array([0.25, 0.5, 0.75]), max(1, degree))
+    else:
+        interior = np.linspace(0.0, 1.0, 6)[1:-1]
+
+    old = np.concatenate([np.zeros(degree + 1), interior, np.ones(degree + 1)])
+
+    if kind == "single_knot":
+        inserted = np.array([0.37])
+    elif kind == "re_insert":
+        # Raise the multiplicity of knots that are already there.
+        existing = np.unique(old[degree + 1 : old.shape[0] - degree - 1])
+        inserted = np.repeat(existing, max(1, degree - 1)) if existing.size else np.array([0.5])
+    elif kind == "many":
+        inserted = np.sort(rng.random(37))
+    else:
+        inserted = np.sort(rng.random(4))
+
+    return old, np.sort(np.concatenate([old, inserted]))
+
+
+_OSLO_KINDS = ["uniform", "non_uniform", "multiple", "single_knot", "re_insert", "many"]
+
+
+class TestOsloBandedRows:
+    """The banded row recurrence against the dense sweep it replaced."""
+
+    @pytest.mark.parametrize("degree", range(9))
+    @pytest.mark.parametrize("kind", _OSLO_KINDS)
+    def test_banded_rows_reproduce_the_dense_sweep(self, degree: int, kind: str) -> None:
+        """Scattering the bands gives back the dense refinement matrix."""
+        old, new = _oslo_case(degree, kind, seed=degree * 10 + len(kind))
+        reference = _dense_oslo_reference(degree, old, new)
+
+        alphas, first_col = _compute_oslo_rows_1d_core(degree, old, new)
+        scattered = _scatter_oslo_rows(alphas, first_col, reference.shape[1])
+
+        assert alphas.shape == (reference.shape[0], degree + 1)
+        assert first_col.shape == (reference.shape[0],)
+        np.testing.assert_allclose(scattered, reference, rtol=0.0, atol=_OSLO_ATOL_FACTOR * _EPS)
+
+    @pytest.mark.parametrize("degree", range(9))
+    @pytest.mark.parametrize("kind", _OSLO_KINDS)
+    def test_dense_wrapper_is_unchanged(self, degree: int, kind: str) -> None:
+        """The public dense kernel still returns what the dense sweep returned."""
+        old, new = _oslo_case(degree, kind, seed=degree + 3)
+
+        np.testing.assert_allclose(
+            _compute_oslo_matrix_1d_core(degree, old, new),
+            _dense_oslo_reference(degree, old, new),
+            rtol=0.0,
+            atol=_OSLO_ATOL_FACTOR * _EPS,
+        )
+
+    @pytest.mark.parametrize("degree", range(1, 7))
+    @pytest.mark.parametrize("kind", _OSLO_KINDS)
+    def test_the_dense_matrix_has_no_nonzeros_outside_the_band(
+        self, degree: int, kind: str
+    ) -> None:
+        """Everything the dense sweep computes outside the band is exactly zero.
+
+        This is the claim the whole change rests on, so it is checked against the
+        dense oracle rather than against the banded kernel.
+        """
+        old, new = _oslo_case(degree, kind, seed=degree * 7 + 1)
+        reference = _dense_oslo_reference(degree, old, new)
+        _, first_col = _compute_oslo_rows_1d_core(degree, old, new)
+
+        for i in range(reference.shape[0]):
+            nonzero = np.flatnonzero(reference[i] != 0.0)
+            if nonzero.size:
+                assert nonzero.min() >= first_col[i]
+                assert nonzero.max() <= first_col[i] + degree
+
+    @pytest.mark.parametrize("degree", range(9))
+    @pytest.mark.parametrize("kind", _OSLO_KINDS)
+    def test_rows_sum_to_one(self, degree: int, kind: str) -> None:
+        """Discrete B-splines form a partition of unity on every row."""
+        old, new = _oslo_case(degree, kind, seed=degree * 5 + 2)
+        alphas, first_col = _compute_oslo_rows_1d_core(degree, old, new)
+        n_cols = old.shape[0] - degree - 1
+
+        sums = _scatter_oslo_rows(alphas, first_col, n_cols).sum(axis=1)
+
+        np.testing.assert_allclose(sums, 1.0, rtol=0.0, atol=_OSLO_ATOL_FACTOR * _EPS)
+
+    @pytest.mark.parametrize("degree", [2, 3, 4, 5])
+    def test_periodic_knot_vectors_push_the_band_left_of_the_space(self, degree: int) -> None:
+        """A non-clamped knot vector produces bands that start before column 0.
+
+        The clipping in the kernel's consumers is therefore load-bearing, not
+        defensive: on these vectors some spans sit inside the first ``degree``
+        knots.
+        """
+        periodic = np.asarray(
+            create_uniform_periodic_knots(num_intervals=6, degree=degree), dtype=np.float64
+        )
+        refined = np.sort(np.concatenate([periodic, np.array([0.05, 0.55])]))
+
+        alphas, first_col = _compute_oslo_rows_1d_core(degree, periodic, refined)
+        n_cols = periodic.shape[0] - degree - 1
+
+        assert (first_col < 0).any()
+        reference = _dense_oslo_reference(degree, periodic, refined)
+        np.testing.assert_allclose(
+            _scatter_oslo_rows(alphas, first_col, n_cols),
+            reference,
+            rtol=0.0,
+            atol=_OSLO_ATOL_FACTOR * _EPS,
+        )
+
+    @pytest.mark.parametrize("degree", range(1, 7))
+    @pytest.mark.parametrize("kind", _OSLO_KINDS)
+    def test_insertion_matches_the_dense_matrix_product(self, degree: int, kind: str) -> None:
+        """Applying the bands agrees with multiplying by the dense matrix.
+
+        The two sum the same products in a different order, so they are compared
+        within the forward bound of a dot product of ``degree + 1`` terms rather
+        than by equality.
+        """
+        rng = np.random.default_rng(degree * 11 + len(kind))
+        old, new = _oslo_case(degree, kind, seed=degree + 17)
+        ctrl = rng.standard_normal((old.shape[0] - degree - 1, 3))
+
+        banded = _insert_knots_1d_core(degree, old, ctrl, new)
+        dense = _dense_oslo_reference(degree, old, new) @ ctrl
+
+        atol = (degree + 1) * _EPS * float(np.max(np.abs(ctrl)))
+        np.testing.assert_allclose(banded, dense, rtol=0.0, atol=atol)
+
+    @pytest.mark.parametrize("degree", range(1, 7))
+    @pytest.mark.parametrize("rational", [False, True])
+    def test_geometry_is_preserved(self, degree: int, rational: bool) -> None:
+        """Refinement leaves the mapping unchanged at a thousand random points."""
+        rng = np.random.default_rng(degree * 3 + int(rational))
+        knots = np.concatenate([np.zeros(degree), np.linspace(0.0, 1.0, 7), np.ones(degree)])
+        space = BsplineSpace([BsplineSpace1D(knots, degree)])
+        ctrl = rng.random((space.num_total_basis, 4)) + 1.0
+        bsp = Bspline(space, ctrl, is_rational=rational)
+
+        refined = bsp.insert_knots(np.sort(rng.random(23)))
+
+        pts = np.sort(rng.random(1000))
+        atol = 64.0 * _EPS * float(np.max(np.abs(bsp.evaluate(pts))))
+        np.testing.assert_allclose(refined.evaluate(pts), bsp.evaluate(pts), rtol=0.0, atol=atol)
