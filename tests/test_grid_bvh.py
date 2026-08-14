@@ -220,6 +220,106 @@ def test_from_cell_bounds_rejects_nan_inf() -> None:
         BVH.from_cell_bounds(lo, hi_inf)
 
 
+def _chain_bvh_arrays(
+    n_leaves: int,
+) -> tuple[
+    npt.NDArray[np.float64],
+    npt.NDArray[np.float64],
+    npt.NDArray[np.int64],
+    npt.NDArray[np.int64],
+    npt.NDArray[np.int64],
+]:
+    """Build raw node arrays for a maximally unbalanced (linear-chain) 1-D BVH.
+
+    Leaf ``k`` covers the unit cell ``[k, k+1]``. Node ``i`` for
+    ``i < n_leaves - 1`` is internal, with left child = leaf ``i`` and right
+    child = the next internal node (the last internal node's right child is
+    leaf ``n_leaves - 1`` instead). Every internal node's AABB is the honest
+    union of its subtree, so a correctly-pruning query still answers right.
+    This chain is the deepest possible tree over ``n_leaves`` leaves: the
+    longest root-to-leaf path has exactly ``n_leaves`` nodes.
+    """
+    n_internal = n_leaves - 1
+    n_nodes = 2 * n_leaves - 1
+    node_lo = np.zeros((n_nodes, 1), dtype=np.float64)
+    node_hi = np.zeros((n_nodes, 1), dtype=np.float64)
+    node_left = np.full(n_nodes, -1, dtype=np.int64)
+    node_right = np.full(n_nodes, -1, dtype=np.int64)
+    node_cell = np.full(n_nodes, -1, dtype=np.int64)
+    for i in range(n_internal):
+        node_lo[i, 0] = float(i)
+        node_hi[i, 0] = float(n_leaves)
+        node_left[i] = n_internal + i
+        node_right[i] = i + 1 if i < n_internal - 1 else n_internal + i + 1
+    for k in range(n_leaves):
+        leaf = n_internal + k
+        node_lo[leaf, 0] = float(k)
+        node_hi[leaf, 0] = float(k + 1)
+        node_cell[leaf] = k
+    return node_lo, node_hi, node_left, node_right, node_cell
+
+
+def test_ctor_unbalanced_chain_raises_at_construction() -> None:
+    """A hand-built 148-leaf linear-chain tree exceeds the kernel stack depth.
+
+    148 leaves force a chain of depth 148, past the traversal kernels' fixed
+    stack depth (``_BVH_STACK_DEPTH == 128`` in ``_bvh_core.py``). Unlike
+    ``from_cell_bounds``, the raw constructor accepts arbitrary node arrays, so
+    this depth cannot be inferred from ``n_cells`` alone; ``BVH.__init__`` must
+    reject it before any query touches the fixed-size kernel stack.
+    """
+    node_lo, node_hi, node_left, node_right, node_cell = _chain_bvh_arrays(148)
+    with pytest.raises(ValueError, match="stack depth"):
+        BVH(node_lo, node_hi, node_left, node_right, node_cell, n_cells=148)
+
+
+def test_ctor_unbalanced_chain_at_the_limit_constructs_and_queries() -> None:
+    """A 128-leaf chain sits exactly on the limit and must still be accepted.
+
+    A depth-``d`` DFS occupies at most ``d`` stack slots: the root takes one, then
+    each of the ``d - 1`` internal expansions along the deepest path pops one entry
+    and pushes two, a net ``+1``. So ``d == _BVH_STACK_DEPTH == 128`` fits exactly
+    while ``d == 129`` does not, which is what makes the guard's strict ``>`` the
+    right comparison. Confirmed against the kernel under ``NUMBA_BOUNDSCHECK=1``
+    with the guard lifted: a depth-128 chain queries correctly, and a depth-129
+    chain raises ``IndexError`` from inside the compiled traversal.
+
+    So this is the exact boundary, and it also shows the guard cannot pass merely
+    by rejecting everything.
+    """
+    node_lo, node_hi, node_left, node_right, node_cell = _chain_bvh_arrays(128)
+    bvh = BVH(node_lo, node_hi, node_left, node_right, node_cell, n_cells=128)
+    result = sorted(int(c) for c in bvh.query_aabb(AABB([50.5], [52.5])))
+    assert result == [50, 51, 52]
+
+
+def test_ctor_unbalanced_chain_one_past_the_limit_raises() -> None:
+    """A 129-leaf chain is the smallest chain that overflows, and must be rejected.
+
+    Pins the other side of the boundary above: without the guard this constructs
+    cleanly and then writes one slot past the kernel's 128-entry stack on the very
+    first query.
+    """
+    node_lo, node_hi, node_left, node_right, node_cell = _chain_bvh_arrays(129)
+    with pytest.raises(ValueError, match="stack depth"):
+        BVH(node_lo, node_hi, node_left, node_right, node_cell, n_cells=129)
+
+
+def test_ctor_rejects_a_cyclic_node_graph_without_hanging() -> None:
+    """A node array that is not a tree must be rejected, not walked forever.
+
+    The depth walk stops as soon as the bound is exceeded, so a self-referential
+    or cyclic child pointer terminates instead of growing the traversal stack
+    without limit. A validator that hangs would be worse than the out-of-bounds
+    write it replaces.
+    """
+    node_lo, node_hi, node_left, node_right, node_cell = _chain_bvh_arrays(4)
+    node_right[0] = 0  # root points back at itself
+
+    with pytest.raises(ValueError, match="stack depth"):
+        BVH(node_lo, node_hi, node_left, node_right, node_cell, n_cells=4)
+
+
 def test_stack_overflow_guard(monkeypatch: pytest.MonkeyPatch) -> None:
     """from_cell_bounds raises when the tree depth would overflow the kernel stack."""
     import pantr.grid._bvh as _bvh_mod  # noqa: PLC0415
