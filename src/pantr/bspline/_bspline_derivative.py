@@ -292,15 +292,29 @@ def _derivative_keep_degree_nonrational(bspline: Bspline, direction: int) -> Bsp
         input.  Periodic directions in the differentiated axis are converted
         to open representation (degree elevation does not support periodic).
 
+    Raises:
+        ValueError: If the direction's degree exceeds the exactness envelope of the
+            binomial-coefficient kernel (see
+            :data:`~pantr.bspline._bspline_degree_core._BINCOEFF_MAX_N`).
+
     Note:
         Inputs are assumed to be correct (no validation performed).
         For general use, call :func:`_derivative_bspline` instead.
     """
     from . import Bspline as BsplineCls  # noqa: PLC0415
-    from ._bspline_degree_core import _degree_elevate_1d_core  # noqa: PLC0415
+    from ._bspline_degree_core import (  # noqa: PLC0415
+        _check_bincoeff_envelope,
+        _degree_elevate_1d_core,
+    )
 
     space_d = bspline.space.spaces[direction]
     p = space_d.degree
+
+    # Re-elevating from ``p - 1`` back to ``p`` builds the Bezier table from
+    # ``C(p, i)``.  This is the only degree-elevating path a caller can reach without
+    # asking for elevation: every derivative of a *rational* B-spline routes here,
+    # ``keep_degree`` or not.
+    _check_bincoeff_envelope(p, f"Degree-preserving derivative of a degree-{p} B-spline")
 
     # Degree elevation requires open knot vectors. For periodic B-splines,
     # convert to open representation first, then recurse.

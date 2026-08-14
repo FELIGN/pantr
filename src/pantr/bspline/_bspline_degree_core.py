@@ -18,6 +18,49 @@ import numpy.typing as npt
 
 from .._numba_compat import nb_jit
 
+_BINCOEFF_MAX_N: int = 61
+"""Largest ``n`` for which :func:`_bincoeff` honours its contract.
+
+The exact-integer recurrence is safe while its largest intermediate,
+``C(n, k) * min(k, n - k)``, fits in ``int64``: ``6.98e18`` at ``n = 61`` against an
+``int64`` ceiling of ``9.22e18``, and ``1.44e19`` at ``n = 62``. Numba does not trap
+integer overflow, so from ``n = 62`` an intermediate wraps and the returned value is
+silently wrong (negative, at ``(62, 31)``).
+
+This is the *integer* limit, deliberately, and not the tighter ``n = 56`` beyond which
+the ``float`` return can no longer hold ``C(n, k)`` exactly. Every caller in the
+library consumes ``_bincoeff`` only inside a floating-point **ratio** of binomial
+coefficients -- ``C(d, j) * C(t, i - j) / C(ph, i)`` in degree elevation,
+``C(p, i) * C(q, j) / C(r, k)`` in the Bernstein product -- so those ratios are formed
+in floating point regardless and a correctly rounded operand is all they can use. For
+``57 <= n <= 61`` that is exactly what :func:`_bincoeff` delivers: the integer is exact
+and the cast rounds once. Capping at 56 instead would reject usable degrees for no
+gain in the accuracy of any result the library actually computes.
+"""
+
+
+def _check_bincoeff_envelope(n: int, what: str) -> None:
+    """Raise if ``n`` exceeds the exactness envelope of :func:`_bincoeff`.
+
+    A Layer-2 validator: it lives beside the kernel whose contract it enforces so the
+    two cannot drift apart, but it is plain Python and is never called from inside a
+    kernel. Layer-3 kernels here still validate nothing.
+
+    Args:
+        n (int): Largest upper index the caller will pass to :func:`_bincoeff`.
+        what (str): Description of the requested operation, used in the error message.
+
+    Raises:
+        ValueError: If ``n`` exceeds :data:`_BINCOEFF_MAX_N`.
+    """
+    if n > _BINCOEFF_MAX_N:
+        raise ValueError(
+            f"{what} needs binomial coefficients up to C({n}, k), beyond the largest "
+            f"upper index {_BINCOEFF_MAX_N} that pantr's exact-integer binomial kernel "
+            f"can compute without an int64 overflow. Past that the coefficients wrap "
+            f"silently and the result is corrupted rather than merely inaccurate."
+        )
+
 
 @nb_jit(nopython=True, cache=True)
 def _bincoeff(n: int, k: int) -> float:
