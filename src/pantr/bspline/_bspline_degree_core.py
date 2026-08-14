@@ -1,9 +1,9 @@
 """Numba kernels for B-spline degree elevation and reduction.
 
 Elevation follows The NURBS Book (Piegl & Tiller, Algorithm A5.9) / MATLAB
-NURBS Toolbox layer.  Reduction solves the Bernstein degree-elevation system
-in the least-squares sense via bidiagonal QR (Golub & Van Loan, *Matrix
-Computations*, 4th ed., sections 5.1-5.2).
+NURBS Toolbox layer.  Reduction decomposes the spline into Bézier segments and
+applies a precomputed reduction operator to each; the operator itself is
+assembled in :mod:`pantr.bezier._bezier_degree`.
 
 Note:
     Inputs are assumed to be correct (no validation performed).
@@ -254,118 +254,46 @@ def _degree_elevate_1d_core(  # noqa: PLR0912, PLR0915
 
 
 @nb_jit(nopython=True, cache=True)
-def _reduce_bezier_segment(  # noqa: PLR0912
-    degree: int,
-    bpts: npt.NDArray[Any],
-    degree_decrement: int,
+def _apply_reduction_operator(
+    operator: npt.NDArray[np.float64],
+    ctrl: npt.NDArray[Any],
     out: npt.NDArray[Any],
 ) -> None:
-    r"""Degree-reduce a single Bézier segment into a pre-allocated output.
+    r"""Apply a degree-reduction operator to one set of Bézier control points.
 
-    Solves the Bernstein degree-elevation system in the least-squares sense,
-    the same bidiagonal QR scheme used by
-    :func:`~pantr.bezier._bezier_core._degree_reduce_bezier_1d_core` (Golub &
-    Van Loan, *Matrix Computations*, 4th ed., sections 5.1-5.2).  Elevation from degree
-    ``p-1`` to ``p`` is the ``(p+1) x p`` lower-bidiagonal matrix ``M`` with
-    diagonal :math:`1 - k/p` and sub-diagonal :math:`(k+1)/p`; a Givens sweep
-    factors ``M = Q R`` with ``R`` upper bidiagonal, and back-substitution on
-    ``R`` recovers the reduced control points.
+    Computes :math:`\hat q = R\, c` for the dense operator ``R`` assembled by
+    :func:`~pantr.bezier._bezier_degree._interpolating_reduction_operator` (or
+    its unconstrained sibling), accumulating in ``float64`` regardless of the
+    control-point dtype and rounding once on the write.
 
-    The kernel is duplicated here (rather than importing the Bézier version)
-    because ``_bezier_core`` already imports ``_bincoeff`` from this module, so
-    calling back into it would create a circular import.
+    Rows of ``R`` that pin an endpoint are unit vectors, so the corresponding
+    output values reproduce their inputs bit for bit.
+
+    This kernel lives here rather than in ``pantr.bezier`` because
+    ``_bezier_core`` already imports ``_bincoeff`` from this module; the reverse
+    import would close a cycle.
 
     Args:
-        degree (int): Current polynomial degree (``p >= 1``).
-        bpts (npt.NDArray[Any]): Input Bézier control points of shape
-            ``(p + 1, rank)``.
-        degree_decrement (int): Number of degrees to reduce (``1 <= t <= p``).
-        out (npt.NDArray[Any]): Pre-allocated output of shape
-            ``(p - t + 1, rank)``.
+        operator (npt.NDArray[np.float64]): Reduction operator of shape
+            ``(q + 1, p + 1)``.
+        ctrl (npt.NDArray[Any]): Control points of shape ``(p + 1, rank)``.
+        out (npt.NDArray[Any]): Pre-allocated output of shape ``(q + 1, rank)``.
 
     Note:
         Inputs are assumed to be correct (no validation performed).
-        For general use, call :func:`_degree_reduce_bspline` instead.
+        For general use, call :func:`_degree_reduce_bspline` or
+        :func:`~pantr.bezier._bezier_degree._degree_reduce_bezier` instead.
     """
-    rank = bpts.shape[1]
+    n_out = operator.shape[0]
+    n_in = operator.shape[1]
+    rank = ctrl.shape[1]
 
-    # Scratch sized for the first (largest) step; later steps reuse a prefix.
-    # r_diag / r_super: main and super-diagonal of the upper-bidiagonal R.
-    # cos / sin: the Givens rotations, replayed on every right-hand side.
-    r_diag = np.empty(degree, dtype=np.float64)
-    r_super = np.empty(degree, dtype=np.float64)
-    cos = np.empty(degree, dtype=np.float64)
-    sin = np.empty(degree, dtype=np.float64)
-    rhs = np.empty(degree + 1, dtype=np.float64)
-
-    cur = np.empty((degree + 1, rank), dtype=bpts.dtype)
-    for i in range(degree + 1):
+    for i in range(n_out):
         for r in range(rank):
-            cur[i, r] = bpts[i, r]
-
-    cur_deg = degree
-
-    for _step in range(degree_decrement):
-        p = cur_deg  # reduce degree p (p+1 points) to degree p-1 (p points)
-
-        nxt = np.empty((p, rank), dtype=bpts.dtype)
-
-        inv_p = 1.0 / np.float64(p)
-
-        # --- QR sweep on the elevation matrix M (right-hand-side free) -------
-        # Column k carries M[k, k] = 1 - k/p (`head`, mutated by the previous
-        # rotation) and M[k+1, k] = (k+1)/p (`tail`, the entry G_k zeros).
-        # `tail` is always > 0, so the Givens of G&VL Alg. 5.1.3 needs only two
-        # branches.  G_k also spreads M[k+1, k+1] onto the super-diagonal of R.
-        next_diag = 1.0  # M[0, 0]
-        for k in range(p):
-            head = next_diag
-            tail = np.float64(k + 1) * inv_p
-
-            if abs(tail) > abs(head):
-                ratio = head / tail
-                sn = 1.0 / np.sqrt(1.0 + ratio * ratio)
-                cs = ratio * sn
-                rho = tail / sn
-            else:
-                ratio = tail / head
-                cs = 1.0 / np.sqrt(1.0 + ratio * ratio)
-                sn = ratio * cs
-                rho = head / cs
-
-            cos[k] = cs
-            sin[k] = sn
-            r_diag[k] = rho
-
-            if k + 1 < p:
-                below = 1.0 - np.float64(k + 1) * inv_p  # M[k+1, k+1]
-                r_super[k] = sn * below
-                next_diag = cs * below
-
-        # --- Apply Q^T to each right-hand side and back-substitute -----------
-        for r in range(rank):
-            for i in range(p + 1):
-                rhs[i] = np.float64(cur[i, r])
-
-            for k in range(p):
-                cs = cos[k]
-                sn = sin[k]
-                top = rhs[k]
-                bot = rhs[k + 1]
-                rhs[k] = cs * top + sn * bot
-                rhs[k + 1] = -sn * top + cs * bot
-
-            nxt[p - 1, r] = bpts.dtype.type(rhs[p - 1] / r_diag[p - 1])
-            for k in range(p - 2, -1, -1):
-                solved = (rhs[k] - r_super[k] * np.float64(nxt[k + 1, r])) / r_diag[k]
-                nxt[k, r] = bpts.dtype.type(solved)
-
-        cur = nxt
-        cur_deg = p - 1
-
-    for i in range(out.shape[0]):
-        for r in range(rank):
-            out[i, r] = cur[i, r]
+            acc = 0.0
+            for j in range(n_in):
+                acc += operator[i, j] * np.float64(ctrl[j, r])
+            out[i, r] = out.dtype.type(acc)
 
 
 @nb_jit(nopython=True, cache=True)
@@ -374,19 +302,29 @@ def _degree_reduce_1d_core(  # noqa: PLR0912, PLR0915
     ctrl: npt.NDArray[Any],
     knots: npt.NDArray[Any],
     degree_decrement: int,
+    reduction_operator: npt.NDArray[np.float64],
 ) -> tuple[npt.NDArray[Any], npt.NDArray[Any]]:
     """Degree reduce a B-spline curve by ``degree_decrement``.
 
     Decomposes the B-spline into Bézier segments by iterating through knot
-    spans (same alpha-blending as the elevation kernel), reduces each segment
-    via bidiagonal least-squares, and stitches the results into a B-spline in
-    Bézier form (C0 at every interior breakpoint).
+    spans (same alpha-blending as the elevation kernel), applies the reduction
+    operator to each segment, and stitches the results into a B-spline in Bézier
+    form (C0 at every interior breakpoint).
+
+    Because the operator interpolates the segment endpoints, the last control
+    point of one reduced segment and the first of the next are both the shared
+    breakpoint value of the *original* spline, bit for bit.  The junction is
+    therefore written once and the stitch is exactly C0; no averaging of the two
+    sides is involved, and neither segment is perturbed away from its own
+    optimum.
 
     Args:
         degree (int): Original degree.
         ctrl (npt.NDArray[Any]): Control points of shape ``(n_pts, rank)``.
         knots (npt.NDArray[Any]): Knot vector of shape ``(n_knots,)``.
         degree_decrement (int): Number of degrees to reduce (``1 <= t <= degree``).
+        reduction_operator (npt.NDArray[np.float64]): Operator of shape
+            ``(degree - t + 1, degree + 1)`` for this degree pair.
 
     Returns:
         tuple[npt.NDArray[Any], npt.NDArray[Any]]: ``(reduced_ctrl, reduced_knots)``
@@ -471,26 +409,16 @@ def _degree_reduce_1d_core(  # noqa: PLR0912, PLR0915
                     Nextbpts[save, ii] = bpts[d, ii]
 
         # --- Reduce the current Bézier segment ---
-        _reduce_bezier_segment(d, bpts, t, rbpts)
+        _apply_reduction_operator(reduction_operator, bpts, rbpts)
 
-        # If this is the very first segment, write all control points.
-        # Otherwise, average the shared boundary point with the previous
-        # segment's last point, then write the interior + end points.
-        if cind == 0:
-            # First segment: write all new_deg + 1 points.
-            for j in range(new_deg + 1):
-                for ii in range(rank):
-                    oc[cind, ii] = rbpts[j, ii]
-                cind += 1
-        else:
-            # Average the shared boundary point.
+        # The first segment contributes all of its control points; every later
+        # one skips its first, which the previous segment already wrote with the
+        # identical value.
+        start = 0 if cind == 0 else 1
+        for j in range(start, new_deg + 1):
             for ii in range(rank):
-                oc[cind - 1, ii] = (oc[cind - 1, ii] + rbpts[0, ii]) * 0.5
-            # Write interior and end points.
-            for j in range(1, new_deg + 1):
-                for ii in range(rank):
-                    oc[cind, ii] = rbpts[j, ii]
-                cind += 1
+                oc[cind, ii] = rbpts[j, ii]
+            cind += 1
 
         # Write interior breakpoint knots (multiplicity = new_deg for C0).
         if a != d:

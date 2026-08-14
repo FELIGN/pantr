@@ -2,17 +2,62 @@
 
 from __future__ import annotations
 
+import itertools
+import math
+
 import numpy as np
+import numpy.typing as npt
 import pytest
 
 from pantr.bezier import Bezier
+from pantr.bezier._bezier_degree import (
+    _elevation_matrix_exact,
+    _interpolating_reduction_operator,
+    _l2_reduction_operator,
+    _squared_l2_norm,
+)
 from pantr.bspline import Bspline, BsplineSpace, BsplineSpace1D, create_uniform_periodic_knots
 from pantr.bspline._bspline_degree_core import _degree_reduce_1d_core
+
+_EPS = float(np.finfo(np.float64).eps)
+
+_ROUND_TRIP_FACTOR = 8.0
+"""Safety factor on the round-trip bound ``(p + 1) * eps * max|ctrl|``.
+
+Reduction applies a dense operator, so each output coefficient is a dot product
+of ``p + 1`` terms and carries the classic forward error ``(p + 1) * u *
+sum_j |R_ij| |c_j|``.  The operator entries stay near unity over the whole
+tested range (``max |R| = 1.52`` at degree 30), so a factor of 8 covers the row
+sums with room to spare.  Measured worst over degrees 1 to 22 and decrements 1
+to 3: ``1.3e-15``, that is 55 times inside the bound.
+"""
+
+_MAX_INTERPOLATION_PRICE = 5.0
+"""Largest admissible ratio of interpolating to unconstrained :math:`L^2` error.
+
+Endpoint interpolation removes two degrees of freedom, so it can only make the
+:math:`L^2` error larger; the ratio is 1 exactly when the unconstrained optimum
+already interpolates.  Measured over degrees 1 to 20 and every decrement, the
+ratio stays in ``[1.002, 4.547]``, the worst cases being reductions to a
+straight line.  A regression that dropped the constraints, or one that solved
+the wrong system, would leave this window immediately.
+"""
 
 
 def _make_bezier_1d(ctrl: list[list[float]], rational: bool = False) -> Bezier:
     """Create a 1D Bézier from a list of control points."""
     return Bezier(np.array(ctrl), is_rational=rational)
+
+
+def _l2_norm_squared(bezier: Bezier) -> float:
+    """Sum the squared L2 norms of every rank component of a Bézier."""
+    ctrl = bezier.control_points
+    return float(sum(_squared_l2_norm(ctrl[..., r]) for r in range(ctrl.shape[-1])))
+
+
+def _difference(left: Bezier, right: Bezier) -> Bezier:
+    """Coefficient-wise difference of two Béziers of equal degree."""
+    return Bezier(left.control_points - right.control_points)
 
 
 # ---------------------------------------------------------------------------
@@ -99,14 +144,12 @@ class TestBezierReduceDegreeApproximate:
         assert np.max(np.abs(vals_orig - vals_red)) < max_err_tol
 
     def test_endpoints_preserved(self) -> None:
-        """After reduction, endpoints should be close to the original."""
+        """After reduction, the endpoints are reproduced exactly."""
         b = _make_bezier_1d([[0.0, 0.0], [0.3, 1.5], [0.7, -0.5], [1.0, 1.0]])
         reduced = b.reduce_degree(1)
 
         pts = np.array([0.0, 1.0])
-        vals_orig = b.evaluate(pts)
-        vals_red = reduced.evaluate(pts)
-        np.testing.assert_allclose(vals_red, vals_orig, atol=0.5)
+        assert np.array_equal(reduced.evaluate(pts), b.evaluate(pts))
 
     def test_reduce_degree_result_type(self) -> None:
         """Reduced Bézier has correct degree and dtype."""
@@ -125,6 +168,291 @@ class TestBezierReduceDegreeApproximate:
         # The constant is the least-squares fit: average of endpoints
         expected = np.array([[1.0, 2.0]])
         np.testing.assert_allclose(reduced.control_points, expected, atol=1e-14)
+
+
+# ---------------------------------------------------------------------------
+# The reduction operator and what makes it optimal
+# ---------------------------------------------------------------------------
+
+
+class TestReductionOperator:
+    """The cached operators that drive every reduction."""
+
+    @pytest.mark.parametrize("degree", [1, 2, 3, 5, 8, 12, 16, 20])
+    @pytest.mark.parametrize("increment", [1, 2, 5])
+    def test_exact_elevation_matrix_matches_the_elevation_kernel(
+        self, degree: int, increment: int
+    ) -> None:
+        """The rational elevation matrix reproduces the compiled elevation kernel."""
+        rng = np.random.default_rng(degree * 100 + increment)
+        ctrl = rng.standard_normal((degree + 1, 2))
+
+        from_kernel = Bezier(ctrl).elevate_degree(increment).control_points
+        matrix = np.array(
+            [[float(v) for v in row] for row in _elevation_matrix_exact(degree, increment)]
+        )
+
+        # Both routes sum O(degree) products, so compare against the magnitude
+        # of the result rather than entry by entry: a coefficient near zero is
+        # the difference of larger terms and has no relative accuracy.
+        scale = float(np.max(np.abs(from_kernel)))
+        assert float(np.max(np.abs(matrix @ ctrl - from_kernel))) <= 8.0 * _EPS * scale
+
+    @pytest.mark.parametrize("degree,decrement", [(1, 1), (4, 1), (7, 3), (12, 2)])
+    def test_operator_is_shared_and_read_only(self, degree: int, decrement: int) -> None:
+        """Repeated calls hand back the same immutable array."""
+        first = _interpolating_reduction_operator(degree, decrement)
+        second = _interpolating_reduction_operator(degree, decrement)
+
+        assert first is second
+        assert not first.flags.writeable
+        assert first.shape == (degree - decrement + 1, degree + 1)
+
+    def test_reduction_to_a_constant_is_the_mean(self) -> None:
+        """Two endpoint conditions cannot hold with one coefficient; the mean does."""
+        operator = _interpolating_reduction_operator(3, 3)
+
+        np.testing.assert_allclose(operator, np.full((1, 4), 0.25), rtol=0.0, atol=_EPS)
+
+    def test_the_two_operators_differ(self) -> None:
+        """The interpolating operator is not the plain projection."""
+        interpolating = _interpolating_reduction_operator(5, 1)
+        unconstrained = _l2_reduction_operator(5, 1)
+
+        assert not np.allclose(interpolating, unconstrained)
+
+
+def _bernstein_values(degree: int, points: npt.NDArray[np.float64]) -> npt.NDArray[np.float64]:
+    """Tabulate the degree-``n`` Bernstein basis by evaluating the unit Béziers.
+
+    Goes through the public evaluator, so it shares nothing with the assembly of
+    the reduction operator.
+
+    Args:
+        degree (int): Polynomial degree.
+        points (npt.NDArray[np.float64]): Evaluation points in ``[0, 1]``.
+
+    Returns:
+        npt.NDArray[np.float64]: ``(len(points), degree + 1)`` basis values.
+    """
+    return np.column_stack(
+        [np.ravel(Bezier(np.eye(degree + 1)[:, [i]]).evaluate(points)) for i in range(degree + 1)]
+    )
+
+
+def _reference_reduction(ctrl: npt.NDArray[np.float64], decrement: int) -> npt.NDArray[np.float64]:
+    """Solve the endpoint-constrained L2 fit by Gauss-Legendre quadrature.
+
+    An ``n``-node Gauss-Legendre rule integrates polynomials of degree
+    ``2n - 1`` exactly, so with ``n = degree + 2`` nodes the discrete weighted
+    least-squares problem *is* the continuous one, not an approximation of it.
+    The endpoint conditions are imposed by substitution and the remaining
+    overdetermined system goes through :func:`numpy.linalg.lstsq`, so the
+    reference shares no algebra with the implementation.
+
+    Args:
+        ctrl (npt.NDArray[np.float64]): Control points of shape ``(p + 1, rank)``.
+        decrement (int): Degrees to remove.
+
+    Returns:
+        npt.NDArray[np.float64]: Reference reduced control points.
+    """
+    degree = ctrl.shape[0] - 1
+    target = degree - decrement
+
+    nodes, weights = np.polynomial.legendre.leggauss(degree + 2)
+    nodes = 0.5 * (nodes + 1.0)
+    root_weights = np.sqrt(0.5 * weights)[:, None]
+
+    high = _bernstein_values(degree, nodes) * root_weights
+    low = _bernstein_values(target, nodes) * root_weights
+
+    residual = high @ ctrl - np.outer(low[:, 0], ctrl[0]) - np.outer(low[:, target], ctrl[-1])
+    reduced = np.empty((target + 1, ctrl.shape[1]))
+    reduced[0] = ctrl[0]
+    reduced[target] = ctrl[-1]
+    if target >= 2:
+        reduced[1:target] = np.linalg.lstsq(low[:, 1:target], residual, rcond=None)[0]
+    return reduced
+
+
+class TestBezierReductionOptimality:
+    """Optimality against an independent oracle, and variationally."""
+
+    @pytest.mark.parametrize("degree", [3, 4, 5, 8, 10])
+    @pytest.mark.parametrize("decrement", [1, 2, 3])
+    def test_matches_a_quadrature_reference(self, degree: int, decrement: int) -> None:
+        """The reduction agrees with a Gauss-Legendre constrained least-squares fit."""
+        if decrement >= degree:
+            pytest.skip("a reduction to a constant keeps no endpoint condition")
+
+        rng = np.random.default_rng(degree * 10 + decrement)
+        ctrl = rng.standard_normal((degree + 1, 2))
+
+        reduced = Bezier(ctrl).reduce_degree(decrement).control_points
+        reference = _reference_reduction(ctrl, decrement)
+
+        # The reference solves the same problem through a design matrix whose
+        # condition number is the square root of the Gram's; over these degrees
+        # that is at most ~2e2, so half a dozen digits of head-room is plenty.
+        scale = float(np.max(np.abs(reference)))
+        assert float(np.max(np.abs(reduced - reference))) <= 1e-9 * scale
+
+    @pytest.mark.parametrize("degree", [3, 5, 8, 12])
+    def test_moving_off_the_optimum_costs_error_in_every_direction(self, degree: int) -> None:
+        """Any admissible move increases the L2 error, at every interior coefficient."""
+        rng = np.random.default_rng(degree * 3)
+        bezier = Bezier(rng.standard_normal((degree + 1, 1)))
+        reduced = bezier.reduce_degree(1)
+        best = _l2_norm_squared(_difference(reduced.elevate_degree(1), bezier))
+
+        for index in range(1, degree - 1):
+            for step in (-1e-3, 1e-3):
+                moved = reduced.control_points.copy()
+                moved[index] += step
+                perturbed = _l2_norm_squared(_difference(Bezier(moved).elevate_degree(1), bezier))
+                assert perturbed > best
+
+    @pytest.mark.parametrize("degree", [2, 3, 5, 8, 12, 16])
+    def test_endpoint_conditions_cost_a_bounded_factor(self, degree: int) -> None:
+        """Interpolating is never better than projecting, and never much worse."""
+        rng = np.random.default_rng(degree + 500)
+        for decrement in range(1, degree):
+            target = degree - decrement
+            for _ in range(3):
+                ctrl = rng.standard_normal((degree + 1, 1))
+                bezier = Bezier(ctrl)
+
+                interpolating = Bezier(_interpolating_reduction_operator(degree, decrement) @ ctrl)
+                unconstrained = Bezier(_l2_reduction_operator(degree, decrement) @ ctrl)
+                assert interpolating.degree == (target,)
+
+                error_i = math.sqrt(
+                    _l2_norm_squared(_difference(interpolating.elevate_degree(decrement), bezier))
+                )
+                error_u = math.sqrt(
+                    _l2_norm_squared(_difference(unconstrained.elevate_degree(decrement), bezier))
+                )
+
+                assert error_u <= error_i * (1.0 + 1e-12)
+                assert error_i <= _MAX_INTERPOLATION_PRICE * error_u
+
+
+class TestBezierEndpointInterpolation:
+    """The endpoint values survive reduction untouched."""
+
+    @pytest.mark.parametrize("degree", [1, 2, 3, 5, 8, 12, 16, 20])
+    @pytest.mark.parametrize("rank", [1, 3])
+    def test_endpoints_are_reproduced_bit_for_bit(self, degree: int, rank: int) -> None:
+        """Every decrement short of a constant leaves both ends exactly where they were."""
+        rng = np.random.default_rng(degree * 7 + rank)
+        ctrl = rng.standard_normal((degree + 1, rank))
+
+        for decrement in range(1, degree):
+            reduced = Bezier(ctrl).reduce_degree(decrement).control_points
+            assert np.array_equal(reduced[0], ctrl[0])
+            assert np.array_equal(reduced[-1], ctrl[-1])
+
+    @pytest.mark.parametrize(
+        "target,increment", [(1, 1), (2, 3), (5, 2), (12, 1), (16, 2), (20, 2)]
+    )
+    def test_elevated_data_round_trips(self, target: int, increment: int) -> None:
+        """Reduction inverts elevation to the accuracy of applying one dense operator."""
+        rng = np.random.default_rng(target * 13 + increment)
+        ctrl = rng.standard_normal((target + 1, 3))
+        degree = target + increment
+
+        back = Bezier(ctrl).elevate_degree(increment).reduce_degree(increment).control_points
+
+        bound = _ROUND_TRIP_FACTOR * (degree + 1) * _EPS * float(np.max(np.abs(ctrl)))
+        assert float(np.max(np.abs(back - ctrl))) <= bound
+
+    def test_float32_stays_float32(self) -> None:
+        """A float32 Bézier round trips within single-precision rounding."""
+        rng = np.random.default_rng(4)
+        ctrl = rng.standard_normal((6, 2)).astype(np.float32)
+
+        back = Bezier(ctrl).elevate_degree(2).reduce_degree(2).control_points
+
+        assert back.dtype == np.float32
+        eps32 = float(np.finfo(np.float32).eps)
+        assert float(np.max(np.abs(back - ctrl))) <= 8.0 * eps32 * float(np.max(np.abs(ctrl)))
+
+
+class TestBezierDegreeReductionError:
+    """The exact L2 error reported alongside a reduction."""
+
+    @pytest.mark.parametrize("degree,decrement", [(3, 1), (5, 1), (5, 2), (8, 3)])
+    def test_matches_numerical_quadrature(self, degree: int, decrement: int) -> None:
+        """The reported norm matches a fine trapezoidal integration of the error."""
+        rng = np.random.default_rng(degree * 3 + decrement)
+        bezier = Bezier(rng.standard_normal((degree + 1, 1)))
+
+        reported = bezier.degree_reduction_error(decrement)
+
+        samples = np.linspace(0.0, 1.0, 200001)
+        diff = np.ravel(bezier.evaluate(samples)) - np.ravel(
+            bezier.reduce_degree(decrement).evaluate(samples)
+        )
+        quadrature = float(np.sqrt(np.trapezoid(diff**2, samples)))
+
+        # The composite trapezoidal rule converges as h^2; at 2e5 intervals that
+        # leaves well under six digits for a smooth integrand.
+        assert reported == pytest.approx(quadrature, rel=1e-6)
+
+    def test_vanishes_for_exactly_reducible_input(self) -> None:
+        """An elevated curve can be reduced back for free."""
+        rng = np.random.default_rng(11)
+        bezier = Bezier(rng.standard_normal((4, 2))).elevate_degree(2)
+
+        reported = bezier.degree_reduction_error(2)
+
+        scale = float(np.max(np.abs(bezier.control_points)))
+        assert reported <= _ROUND_TRIP_FACTOR * (bezier.degree[0] + 1) * _EPS * scale
+
+    def test_grows_with_the_decrement(self) -> None:
+        """Removing more degrees cannot reduce the error, while a target degree remains.
+
+        The interpolating targets are nested — a degree-``q`` polynomial through
+        both endpoints is also a degree-``q+1`` one — so the optimum over the
+        smaller set cannot be closer.  The chain stops short of a constant,
+        which is not in that family (see the companion test).
+        """
+        rng = np.random.default_rng(12)
+        bezier = Bezier(rng.standard_normal((7, 1)))
+
+        errors = [bezier.degree_reduction_error(dec) for dec in range(1, 6)]
+
+        assert errors == sorted(errors)
+
+    def test_reduction_to_a_constant_breaks_the_monotone_chain(self) -> None:
+        """Dropping to degree 0 can beat degree 1, because it stops interpolating.
+
+        Degree 1 is pinned to the chord between the endpoints; degree 0 keeps no
+        endpoint condition at all and is free to sit at the mean, which for this
+        curve is closer.  Worth pinning: it is the visible edge of the
+        interpolating family, not an accident of the arithmetic.
+        """
+        rng = np.random.default_rng(12)
+        bezier = Bezier(rng.standard_normal((7, 1)))
+
+        to_line = bezier.degree_reduction_error(5)
+        to_constant = bezier.degree_reduction_error(6)
+
+        assert to_constant < to_line
+
+    def test_rejects_the_same_arguments_reduce_degree_does(self) -> None:
+        """Validation is shared with :meth:`Bezier.reduce_degree`."""
+        bezier = _make_bezier_1d([[0.0], [1.0], [2.0]])
+
+        with pytest.raises(ValueError, match=r"exceeds current degree"):
+            bezier.degree_reduction_error(3)
+        with pytest.raises(ValueError, match=r"non-negative"):
+            bezier.degree_reduction_error(-1)
+        with pytest.raises(ValueError, match=r"(?i)at least one"):
+            bezier.degree_reduction_error(0)
+        with pytest.raises(ValueError, match=r"must match dimension"):
+            bezier.degree_reduction_error((1, 1))
 
 
 # ---------------------------------------------------------------------------
@@ -357,7 +685,11 @@ class TestBsplineReduceDegreeOutputSizing:
         space_1d = bsp.space.spaces[0]
 
         new_ctrl, new_knots = _degree_reduce_1d_core(
-            degree, bsp.control_points, space_1d.knots, dec
+            degree,
+            bsp.control_points,
+            space_1d.knots,
+            dec,
+            _interpolating_reduction_operator(degree, dec),
         )
 
         new_degree = degree - dec
@@ -396,6 +728,56 @@ class TestBsplineReduceDegreeOutputSizing:
 
         assert reduced.degree == (4, 2)
         assert reduced.control_points.shape[:2] == reduced.space.num_basis
+
+
+class TestBsplineSegmentStitching:
+    """Reduced segments meet exactly, so nothing has to be averaged."""
+
+    @pytest.mark.parametrize("degree,n_el", [(3, 5), (4, 7), (5, 8), (6, 4)])
+    def test_neighbouring_segments_agree_bit_for_bit(self, degree: int, n_el: int) -> None:
+        """Independently reduced segments share their junction control point exactly.
+
+        This is what removes the averaging step: the old kernel replaced both
+        sides with their mean, moving each segment off its own optimum to buy a
+        C0 join that endpoint interpolation now provides for free.
+        """
+        bsp = _open_uniform_bspline(degree, n_el, rank=2, seed=degree * 3 + n_el)
+        operator = _interpolating_reduction_operator(degree, 1)
+
+        segments = [bezier.control_points for bezier in bsp.to_beziers().ravel()]
+        reduced = [operator @ segment for segment in segments]
+
+        assert len(reduced) == n_el
+        for left, right in itertools.pairwise(reduced):
+            assert np.array_equal(left[-1], right[0])
+
+    @pytest.mark.parametrize("degree,n_el", [(3, 4), (4, 6)])
+    def test_the_stitched_spline_interpolates_the_breakpoints(self, degree: int, n_el: int) -> None:
+        """Before knot coarsening, the reduced spline meets the original at every breakpoint."""
+        bsp = _open_uniform_bspline(degree, n_el, rank=2, seed=degree + n_el)
+        space_1d = bsp.space.spaces[0]
+
+        new_ctrl, new_knots = _degree_reduce_1d_core(
+            degree,
+            bsp.control_points,
+            space_1d.knots,
+            1,
+            _interpolating_reduction_operator(degree, 1),
+        )
+        bezier_form = Bspline(
+            BsplineSpace([BsplineSpace1D(new_knots, degree - 1)]),
+            new_ctrl,
+        )
+
+        breakpoints = np.linspace(0.0, 1.0, n_el + 1)
+        # Bézier form: the value at a breakpoint is a control point, and the
+        # reduction pinned it to the original segment's endpoint.
+        np.testing.assert_allclose(
+            bezier_form.evaluate(breakpoints),
+            bsp.evaluate(breakpoints),
+            rtol=0.0,
+            atol=8.0 * _EPS * float(np.max(np.abs(bsp.control_points))),
+        )
 
 
 class TestBsplineReduceDegreePeriodic:
