@@ -421,14 +421,23 @@ class Bspline:
         return _degree_elevate_bspline(self, increments)
 
     def reduce_degree(self, degree_decrements: int | Sequence[int]) -> Bspline:
-        """Reduce the polynomial degree of the B-spline via least-squares approximation.
+        r"""Reduce the polynomial degree of the B-spline.
 
-        Decomposes to Bézier segments, reduces each segment using bidiagonal
-        least-squares (Givens QR), and coarsens the knot vector to restore
-        the original continuity structure.
+        Decomposes to Bézier segments, reduces each segment, and coarsens the
+        knot vector to restore the original continuity structure.
 
         Unlike :meth:`elevate_degree`, this operation is **not exact** in
         general: the result is an approximation of the original mapping.
+
+        Each Bézier segment is reduced on its own, to the closest lower-degree
+        polynomial in :math:`L^2` among those reproducing the segment's endpoint
+        values.  Adjacent segments therefore agree at every breakpoint bit for
+        bit and the stitch is exactly C0, with neither side moved off its own
+        optimum.  Knots are then removed to restore the original continuity
+        structure, and that step, not the reduction, is what sets the final
+        error: it is a forced removal with no deviation bound, so the exact
+        per-segment figure :meth:`~pantr.bezier.Bezier.degree_reduction_error`
+        reports does not carry over to the assembled spline.
 
         Args:
             degree_decrements (int | Sequence[int]): Number of degrees to

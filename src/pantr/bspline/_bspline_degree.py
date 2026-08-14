@@ -161,6 +161,10 @@ def _degree_reduce_bspline(bspline: Bspline, degree_decrements: tuple[int, ...])
     Returns:
         Bspline: New B-spline with reduced degrees.
     """
+    # Deferred to break the import cycle: pantr.bezier._bezier_core imports
+    # _bincoeff from this package's Layer 3.
+    from ..bezier._bezier_degree import _interpolating_reduction_operator  # noqa: PLC0415
+
     dim = bspline.dim
     ctrl = bspline.control_points
 
@@ -190,6 +194,7 @@ def _degree_reduce_bspline(bspline: Bspline, degree_decrements: tuple[int, ...])
                 interior_mults = np.empty(0, dtype=orig_mults.dtype)
 
             pts_2d, trailing_shape = _flatten_along_axis(ctrl, i)
+            operator = _interpolating_reduction_operator(space_1d.degree, dec)
 
             if is_periodic:
                 m_bdy = int(orig_mults[0])
@@ -199,7 +204,7 @@ def _degree_reduce_bspline(bspline: Bspline, degree_decrements: tuple[int, ...])
                 )
 
                 new_pts_2d, new_knots = _degree_reduce_1d_core(
-                    space_1d.degree, open_pts_2d, open_knots, dec
+                    space_1d.degree, open_pts_2d, open_knots, dec, operator
                 )
 
                 new_degree = space_1d.degree - dec
@@ -224,7 +229,7 @@ def _degree_reduce_bspline(bspline: Bspline, degree_decrements: tuple[int, ...])
                 new_space_1d = BsplineSpace1D(per_knots, new_degree, periodic=True)
             else:
                 new_pts_2d, new_knots = _degree_reduce_1d_core(
-                    space_1d.degree, pts_2d, space_1d.knots, dec
+                    space_1d.degree, pts_2d, space_1d.knots, dec, operator
                 )
                 new_degree = space_1d.degree - dec
 

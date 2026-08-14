@@ -1,5 +1,32 @@
 # Changelog
 
+## Unreleased
+
+### Added
+- `Bezier.degree_reduction_error`: the exact $L^2$ norm of the error
+  `Bezier.reduce_degree` would introduce, computed through the Bernstein mass
+  matrix rather than by sampling.
+
+### Changed
+- `Bezier.reduce_degree` and `Bspline.reduce_degree` now interpolate the
+  endpoints of every segment: among the lower-degree polynomials that reproduce
+  the original at both ends of the parametric domain, the result is the closest
+  in $L^2$. Reduced control points therefore differ from previous releases on
+  any reduction that is not exact. In exchange, adjacent B-spline segments meet
+  at breakpoints bit for bit and the previous averaging of the shared control
+  point — which moved *both* segments off their own optima — is gone. Without
+  the endpoint conditions the $L^2$ error would be a factor 1.1 (degree 16) to
+  4.5 (reduction to a straight line) smaller. Reduction to degree 0 keeps no
+  endpoint condition and still returns the mean of the control points.
+
+### Fixed
+- `Bspline.reduce_degree` wrote past the end of its output buffers whenever the
+  reduced Bézier form needed more control points than `len(knots)` allowed —
+  from 13 elements on at degree 4, 8 at degree 5, 5 at degree 8, on the open,
+  periodic and tensor-product paths alike. Unchecked under `nopython`, it
+  surfaced as a control-point/basis-count mismatch from the `Bspline`
+  constructor.
+
 ## 0.6.0 (2026-06-24)
 
 ### Added
