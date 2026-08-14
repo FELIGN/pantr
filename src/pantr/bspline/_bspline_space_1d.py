@@ -401,8 +401,11 @@ class BsplineSpace1D:
             return False
 
         # Check if the first degree+1 knots are equal
-        # (we know that they are non-decreasing).
-        return bool(np.isclose(self._knots[0], self._knots[self._degree], atol=self._tol))
+        # (we know that they are non-decreasing).  The comparison is absolute, as
+        # ``_snap_knots`` already notes: ``np.isclose`` keeps its default
+        # ``rtol=1e-5``, which would read a gap of up to ``1e-5 * |knots[degree]|``
+        # as clamped (half the domain, on a knot vector based at 1e6).
+        return bool(abs(float(self._knots[0]) - float(self._knots[self._degree])) <= self._tol)
 
     @functools.cached_property
     def _right_end_open(self) -> bool:
@@ -416,8 +419,11 @@ class BsplineSpace1D:
             return False
 
         # Check if the last degree+1 knots are equal
-        # (we know that they are non-decreasing).
-        return bool(np.isclose(self._knots[-self._degree - 1], self._knots[-1], atol=self._tol))
+        # (we know that they are non-decreasing).  Absolute comparison, as in
+        # :attr:`_left_end_open`.
+        return bool(
+            abs(float(self._knots[-self._degree - 1]) - float(self._knots[-1])) <= self._tol
+        )
 
     @functools.cached_property
     def _bezier_like_knots(self) -> bool:

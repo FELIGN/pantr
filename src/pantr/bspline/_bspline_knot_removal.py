@@ -59,9 +59,9 @@ def _remove_knot_bspline_1d_impl(  # noqa: PLR0913
     # Boundary knots of open splines cannot be removed.
     domain_lo = float(knots[degree])
     domain_hi = float(knots[-degree - 1])
-    if np.isclose(knot_value, domain_lo, atol=tol_space):
+    if abs(float(knot_value) - domain_lo) <= tol_space:
         raise ValueError(f"Cannot remove boundary knot {knot_value} (domain start).")
-    if np.isclose(knot_value, domain_hi, atol=tol_space):
+    if abs(float(knot_value) - domain_hi) <= tol_space:
         raise ValueError(f"Cannot remove boundary knot {knot_value} (domain end).")
 
     # Cap at the actual multiplicity (and at degree per the algorithm).

@@ -52,15 +52,15 @@ def _validate_restrict_bounds(
     if a_new >= b_new:
         raise ValueError(f"Lower bound ({a_new}) must be strictly less than upper bound ({b_new}).")
 
-    if a_new < a and not np.isclose(a_new, a, atol=tol):
+    if a_new < a and abs(a_new - a) > tol:
         raise ValueError(f"Lower bound ({a_new}) is below the domain start ({a}).")
-    if b_new > b and not np.isclose(b_new, b, atol=tol):
+    if b_new > b and abs(b_new - b) > tol:
         raise ValueError(f"Upper bound ({b_new}) is above the domain end ({b}).")
 
     # Snap bounds to domain endpoints if within tolerance.
-    if np.isclose(a_new, a, atol=tol):
+    if abs(a_new - a) <= tol:
         a_new = a
-    if np.isclose(b_new, b, atol=tol):
+    if abs(b_new - b) <= tol:
         b_new = b
 
     return a_new, b_new
@@ -96,10 +96,10 @@ def _compute_boundary_knots_to_insert(
     a = float(knots[p])
     b = float(knots[-p - 1])
 
-    left_at_domain = np.isclose(a_new, a, atol=tol)
-    right_at_domain = np.isclose(b_new, b, atol=tol)
-    left_open = bool(np.isclose(knots[0], knots[p], atol=tol))
-    right_open = bool(np.isclose(knots[-p - 1], knots[-1], atol=tol))
+    left_at_domain = abs(a_new - a) <= tol
+    right_at_domain = abs(b_new - b) <= tol
+    left_open = abs(float(knots[0]) - float(knots[p])) <= tol
+    right_open = abs(float(knots[-p - 1]) - float(knots[-1])) <= tol
 
     if left_at_domain and right_at_domain and left_open and right_open:
         raise ValueError("Bounds match the full domain and the direction is already open.")
@@ -107,13 +107,13 @@ def _compute_boundary_knots_to_insert(
     knots_list: list[float] = []
 
     if not (left_at_domain and left_open):
-        m_left = int(np.sum(np.isclose(knots, a_new, atol=tol)))
+        m_left = int(np.sum(np.abs(knots - a_new) <= tol))
         deficit = p + 1 - m_left
         if deficit > 0:
             knots_list.extend([a_new] * deficit)
 
     if not (right_at_domain and right_open):
-        m_right = int(np.sum(np.isclose(knots, b_new, atol=tol)))
+        m_right = int(np.sum(np.abs(knots - b_new) <= tol))
         deficit = p + 1 - m_right
         if deficit > 0:
             knots_list.extend([b_new] * deficit)

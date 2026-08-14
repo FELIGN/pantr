@@ -306,9 +306,17 @@ class THBSplineSpace:
                 f"grid root cells_per_axis {tuple(grid.root.cells_per_axis)!r} must match "
                 f"root_space.num_intervals {tuple(root_space.num_intervals)!r}."
             )
-        if not np.allclose(
-            np.asarray(grid.root.bounds, dtype=np.float64),
-            np.asarray(root_space.domain, dtype=np.float64),
+        # Absolute comparison against the space's own knot tolerance.  Bare
+        # ``np.allclose`` would apply numpy's defaults (``rtol=1e-5``, ``atol=1e-8``),
+        # which accept a 3e-6 relative domain mismatch at every scale and, through the
+        # atol leg, pass ``[0, 1e-9]`` against ``[0, 2e-9]`` -- a factor-of-two wrong
+        # domain.
+        if not np.all(
+            np.abs(
+                np.asarray(grid.root.bounds, dtype=np.float64)
+                - np.asarray(root_space.domain, dtype=np.float64)
+            )
+            <= root_space.tolerance
         ):
             raise ValueError("grid root bounds must match root_space domain.")
 

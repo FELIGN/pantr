@@ -63,7 +63,7 @@ def _split_bspline_1d_impl(  # noqa: PLR0913
         knots, ctrl_2d = _to_open_bspline_1d_impl(knots, p, ctrl_2d, periodic, tol)
 
     # Compute current multiplicity of the split value.
-    m_current = int(np.sum(np.isclose(knots, value, atol=tol)))
+    m_current = int(np.sum(np.abs(knots - value) <= tol))
     deficit = p + 1 - m_current
     if deficit > 0:
         knots_to_insert = np.full(deficit, value, dtype=knots.dtype)

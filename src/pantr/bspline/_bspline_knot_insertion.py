@@ -239,8 +239,8 @@ def _to_open_bspline_1d_impl(
     a = float(knots[p])
     b = float(knots[-p - 1])
 
-    m_left = int(np.sum(np.isclose(knots[: p + 1], a, atol=tol)))
-    m_right = int(np.sum(np.isclose(knots[-p - 1 :], b, atol=tol)))
+    m_left = int(np.sum(np.abs(knots[: p + 1] - a) <= tol))
+    m_right = int(np.sum(np.abs(knots[-p - 1 :] - b) <= tol))
 
     if m_left == p + 1 and m_right == p + 1 and not periodic:
         raise ValueError(
@@ -475,8 +475,8 @@ def _to_periodic_bspline_1d_impl(
     b = float(open_knots[-p - 1])
 
     # --- Quick C^0 check when knots are clamped (P_0 = f(a), P_{n-1} = f(b)) ---
-    m_left = int(np.sum(np.isclose(open_knots[: p + 1], a, atol=tol)))
-    m_right = int(np.sum(np.isclose(open_knots[-p - 1 :], b, atol=tol)))
+    m_left = int(np.sum(np.abs(open_knots[: p + 1] - a) <= tol))
+    m_right = int(np.sum(np.abs(open_knots[-p - 1 :] - b) <= tol))
     is_clamped = m_left == p + 1 and m_right == p + 1
     if is_clamped:
         eps = float(np.finfo(np.float64).eps)
