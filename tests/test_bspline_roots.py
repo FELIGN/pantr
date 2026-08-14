@@ -44,6 +44,18 @@ below is ``2.3e-13`` at degree 5 on a domain around ``1e3``, that is two ulp of 
 coordinate, so 64 ulp leaves a factor of 32.
 """
 
+_MULTIPLE_ROOT_SAFETY: float = 2.0
+"""
+Safety factor on the half-width of the interval a multiple root cannot be located inside.
+
+That half-width is the physical limit, not an estimate, so asserting against it bare leaves
+no margin at all and the assertion turns on where the iteration happens to stop. It stops
+somewhere different on every build: the same double root lands at ``2.3e-8`` under one numpy
+and at ``3.1e-8`` under another, a 40 % spread with no bug behind it. Two absorbs that, and
+still fails on anything an order of magnitude out. Measured margins with it: 16 times at
+multiplicities two and three, 9.5 at four, 3.3 for a double root beside a simple one.
+"""
+
 _PARITY_RTOL: float = 1e-10
 """
 Agreement required between this method and extraction plus Bernstein root finding.
@@ -198,21 +210,30 @@ def test_a_multiple_root_is_reported_once(multiplicity: int) -> None:
 
     found = find_roots(_spline(knots, coeffs, multiplicity))
 
+    half_width = _zero_tol(coeffs, multiplicity) ** (1.0 / multiplicity)
     assert found.shape == (1,)
-    assert abs(found[0] - 0.5) <= _zero_tol(coeffs, multiplicity) ** (1.0 / multiplicity)
+    assert abs(found[0] - 0.5) <= _MULTIPLE_ROOT_SAFETY * half_width
 
 
 def test_a_simple_and_a_double_root_stay_separate() -> None:
-    """Merging collapses a repeated report of one zero, never two distinct zeros."""
+    """Merging collapses a repeated report of one zero, never two distinct zeros.
+
+    The double root's accuracy comes from its own curvature, not from a generic one: for
+    ``(x - 1/4) (x - 1/2) ** 2`` the second derivative at ``1/2`` is ``2 * (1/2 - 1/4)``,
+    so the interval where the spline is indistinguishable from zero has half-width
+    ``sqrt(2 * zero_tol / 0.5)``, four times wider than for ``(x - 1/2) ** 2``.
+    """
     degree = 3
     knots = _open_knots(degree, np.linspace(0.0, 1.0, 6))
     coeffs = _polynomial_coefficients(knots, degree, (0.25, 0.5, 0.5))
 
     found = find_roots(_spline(knots, coeffs, degree))
 
+    second_derivative = 2.0 * (0.5 - 0.25)
+    half_width = math.sqrt(2.0 * _zero_tol(coeffs, degree) / second_derivative)
     assert found.shape == (2,)
     assert abs(found[0] - 0.25) <= _ROOT_ULPS * _EPS
-    assert abs(found[1] - 0.5) <= _zero_tol(coeffs, degree) ** 0.5
+    assert abs(found[1] - 0.5) <= _MULTIPLE_ROOT_SAFETY * half_width
 
 
 def test_a_root_sitting_exactly_on_an_interior_knot() -> None:
