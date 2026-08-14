@@ -327,6 +327,36 @@ class TestBsplineSpace1DMethods:
         expected = np.array([False, True, True, False])
         np.testing.assert_array_equal(result, expected)
 
+    @pytest.mark.parametrize(
+        "knots",
+        [
+            [0.0, 0.25, 0.5, 0.75, 1.0],  # uniform
+            [0.0, 0.1, 0.5, 0.9, 1.0],  # deliberately non-uniform
+        ],
+    )
+    def test_get_cardinal_intervals_degree_zero(self, knots: list[float]) -> None:
+        """Degree 0: every interval is cardinal and nothing is read out of bounds.
+
+        The comparison window inside the kernel spans ``2 * degree - 1`` knot
+        intervals, so at ``degree == 0`` it is empty and its centre index
+        ``degree - 1 == -1`` addressed a zero-length array. A degree-0 space
+        carries one basis function per interval and its cardinal extraction
+        operator is the 1x1 identity everywhere, so the answer is all-``True``
+        regardless of the knot spacing.
+        """
+        spline = BsplineSpace1D(knots, 0)
+        result = spline.get_cardinal_intervals()
+
+        assert result.shape == (len(knots) - 1,)
+        np.testing.assert_array_equal(result, np.ones(len(knots) - 1, dtype=np.bool_))
+
+    def test_tabulate_cardinal_extraction_operators_degree_zero(self) -> None:
+        """Degree-0 cardinal extraction operators are 1x1 identities."""
+        spline = BsplineSpace1D([0.0, 0.25, 0.5, 0.75, 1.0], 0)
+        ops = spline.tabulate_cardinal_extraction_operators()
+
+        np.testing.assert_array_equal(ops, np.ones((4, 1, 1)))
+
 
 class TestBsplineSpace1DWithKnotGenerators:
     """Test BsplineSpace1D with knot vector generators."""

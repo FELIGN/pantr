@@ -260,6 +260,10 @@ def _get_Bspline_cardinal_intervals_1D_core(
     In the case of open knot vectors, this definition automatically
     discards the first degree-1 and the last degree-1 intervals.
 
+    At ``degree == 0`` there are no neighbouring intervals to compare against and
+    every interval is cardinal; see the in-body comment for why that is also the
+    geometrically correct answer.
+
     Args:
         knots (npt.NDArray[np.float32 | np.float64]): B-spline knot vector.
         degree (int): B-spline degree.
@@ -289,10 +293,19 @@ def _get_Bspline_cardinal_intervals_1D_core(
     # This would require to compute knot_id differently.
     for elem_id in range(num_intervals):
         if mult[elem_id] == 1 and mult[elem_id + 1] == 1:
-            local_knots = knots[knot_id - degree + 1 : knot_id + degree + 1]
-            lengths = np.diff(local_knots)
-            if np.all(np.isclose(lengths, lengths[degree - 1], atol=tol)):
+            if degree == 0:
+                # The comparison window below spans ``2 * degree - 1`` knot intervals
+                # and its reference is the centre entry ``degree - 1``; at degree 0 the
+                # window is empty and that index addressed a zero-length array.  There
+                # is nothing to compare: a degree-0 space has one basis function per
+                # interval and its cardinal extraction operator is the 1x1 identity
+                # everywhere, so every interval is cardinal.
                 out[elem_id] = np.True_
+            else:
+                local_knots = knots[knot_id - degree + 1 : knot_id + degree + 1]
+                lengths = np.diff(local_knots)
+                if np.all(np.isclose(lengths, lengths[degree - 1], atol=tol)):
+                    out[elem_id] = np.True_
 
         knot_id += mult[elem_id + 1]
 
