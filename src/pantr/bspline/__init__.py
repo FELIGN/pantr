@@ -14,6 +14,8 @@ This package consolidates the B-spline API:
   utilities.
 - :func:`interpolate_bspline`, :func:`fit_bspline`,
   :func:`l2_project_bspline`: approximation functions.
+- :func:`find_roots`: zeros of a scalar univariate B-spline, by repeated knot
+  insertion at the zeros of the control polygon (Mørken-Reimers).
 - :func:`quasi_interpolate_bspline`: Lee-Lyche-Mørken local quasi-interpolation
   onto a tensor-product space.
 - :func:`create_from_bezier`: create a B-spline from a Bézier.
@@ -50,6 +52,7 @@ This package consolidates the B-spline API:
 from ._bspline import Bspline, create_from_bezier
 from ._bspline_interpolate import fit_bspline, interpolate_bspline, l2_project_bspline
 from ._bspline_quasi_interpolation import quasi_interpolate_bspline
+from ._bspline_roots import find_roots
 from ._bspline_space_1d import BsplineSpace1D
 from ._bspline_space_factory import (
     create_cardinal_knots,
@@ -104,6 +107,7 @@ __all__ = [
     "create_uniform_space",
     "dof_owner",
     "dof_owner_windowed",
+    "find_roots",
     "fit_bspline",
     "get_greville_abscissae",
     "interpolate_bspline",
