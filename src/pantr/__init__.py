@@ -96,9 +96,10 @@ if not TYPE_CHECKING:
             _bspline_knot_insertion_core._warmup_numba_functions()
             _bspline_knot_removal_core._warmup_numba_functions()
             _bspline_knots._warmup_numba_functions()
-            from .bspline import _bspline_blossom_core  # noqa: PLC0415
+            from .bspline import _bspline_blossom_core, _bspline_roots_core  # noqa: PLC0415
 
             _bspline_blossom_core._warmup_numba_functions()
+            _bspline_roots_core._warmup_numba_functions()
             from .bezier import _bezier_core  # noqa: PLC0415
 
             _bezier_core._warmup_numba_functions()
