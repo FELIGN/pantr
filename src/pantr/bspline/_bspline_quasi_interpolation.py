@@ -263,7 +263,7 @@ def quasi_interpolate_bspline(
         >>> from pantr.bspline import create_uniform_space, quasi_interpolate_bspline
         >>> space = create_uniform_space([2], [4])
         >>> qi = quasi_interpolate_bspline(lambda p: p[:, 0] ** 2, space)
-        >>> bool(np.isclose(qi.evaluate(np.array([[0.3]]))[0, 0], 0.09))
+        >>> bool(np.isclose(qi.evaluate(np.array([[0.3]])), 0.09))
         True
     """
     if not isinstance(space, BsplineSpace):
