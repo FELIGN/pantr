@@ -3,11 +3,67 @@
 ## Unreleased
 
 ### Added
+- `pantr.multipatch`: new subpackage for multi-patch topology. `Interface` and
+  `MultiPatch` describe how patches meet; `detect_interfaces` finds the
+  interfaces of a patch collection by enumerating candidate orientations and
+  verifying them, which resolves the ambiguity a corner-matching rule leaves on
+  symmetric faces; `match_face_cps` pairs the control points across an
+  interface. Knots, coordinates and NURBS weights are compared against separate
+  tolerances, since they are not the same kind of quantity.
+- `pantr.bspline.find_roots`: every zero of a scalar univariate B-spline,
+  computed on the spline's own knot vector by repeatedly inserting the zero of
+  the control polygon (Mørken & Reimers, *Math. Comp.* 76, 2007). No Bézier
+  extraction, no stitching of roots at segment boundaries, and about 8 times
+  faster than extraction plus the Bernstein solver on a cubic with 1000
+  elements.
+- `Bspline.locate`: point inversion from physical to parametric coordinates,
+  batched over all points, returning the cell and the parameters. The default
+  tolerance scales with the coordinate magnitude, not only with the bounding-box
+  diagonal, so a geometry far from the origin does not silently lose points.
+- `BsplineSpace.boundary_dofs`: the control-point indices of a boundary slab of
+  chosen thickness, on a chosen face.
+- `BsplineSpace.cell_supports` and `BsplineSpace1D.first_basis_per_interval`:
+  which basis functions are supported on which cells, and the index of the first
+  one per knot interval. Both are cached and computed in exact integer
+  arithmetic, with no basis evaluation.
+- `THBSplineSpace.prolongation_to_sparse`: the CSR counterpart of
+  `prolongation_to`, assembled column by column so the dense operator is never
+  built. Storage grows linearly with the coarse space where the dense form grows
+  quadratically (measured over a refinement sweep: 12.9x against 120.6x).
+- `THBSplineSpace.max_active_per_cell`, `HierarchicalGrid.export_cells` and
+  `Grid.boundary_facets`: the largest number of active functions on any cell, a
+  deduplicated vertex/cell export for downstream meshes, and the boundary facets
+  of a grid, with an axis-aligned default on the base class.
+- `SpanwiseElementExtraction.factors`: per-cell access to the univariate
+  extraction factors, as views sharing memory with the stored operators.
+- `pantr.change_basis`: `compute_legendre_to_cardinal_1d`,
+  `compute_cardinal_to_legendre_1d` and
+  `compute_cardinal_dual_legendre_coeffs_1d`, completing the Legendre-cardinal
+  pair. The transforms are obtained from an LU solve on the cardinal matrix
+  rather than from its Gram matrix, which would square the conditioning; the
+  docstrings state the accuracy actually attainable per degree instead of
+  promising a fixed bound.
+- `pantr.bspline.dof_owner_windowed`: owner lookup restricted to a window of
+  degrees of freedom, for the distributed layer.
 - `Bezier.degree_reduction_error`: the exact $L^2$ norm of the error
   `Bezier.reduce_degree` would introduce, computed through the Bernstein mass
   matrix rather than by sampling.
 
 ### Changed
+- Knot insertion runs the Oslo recurrence over the `degree + 1` band each row is
+  supported on, instead of over the full row. Refining a spline with 10⁴ control
+  points dyadically takes 1.9 ms where it took 1432 ms. The refinement matrix
+  returned by the internal dense entry point is unchanged bit for bit, so the
+  THB, spline-product and periodic-conversion paths are untouched; inserted
+  control points sum the same products in a different order and can move in the
+  last bit.
+- `dof_owner` and `compute_halo` are compiled. Measured on 10⁶ control points in
+  3D at degree 3: 68 ms and 168 ms. They stay single-threaded on purpose — the
+  Numba workqueue threading layer is not threadsafe against the warmup thread
+  the package starts at import.
+- The span search shared by the basis and derivative kernels is fused into the
+  parallel loop instead of running as a serial pass before it. It dominated the
+  runtime, so multi-core speed-up was capped near 1.3x by Amdahl's law.
 - `Bezier.reduce_degree` and `Bspline.reduce_degree` now interpolate the
   endpoints of every segment: among the lower-degree polynomials that reproduce
   the original at both ends of the parametric domain, the result is the closest
@@ -26,6 +82,18 @@
   periodic and tensor-product paths alike. Unchecked under `nopython`, it
   surfaced as a control-point/basis-count mismatch from the `Bspline`
   constructor.
+- The Bernstein evaluation recurrence seeded from `(1 - u)^p`, which underflows
+  to zero for `u` close enough to 1 from degree 21 in float64 (degree 7 in
+  float32); every later term is a positive multiple of the seed, so the basis
+  summed to 0 instead of 1. The recurrence now starts from whichever endpoint
+  keeps the seed above `0.5^p`. Degrees below the proven-safe bound keep the
+  original branch-free loop, so the benchmark-gated tabulation is unaffected.
+- The Cox-de Boor denominator guard compared a knot difference against an
+  absolute tolerance, which is scale-dependent: on a small enough domain a
+  genuinely non-empty knot span fell below it and was zeroed, breaking the
+  partition of unity. The guard now tests against exact zero, which is
+  scale-invariant by construction because knot vectors already snap
+  near-duplicate knots to one bitwise value.
 
 ## 0.6.0 (2026-06-24)
 
