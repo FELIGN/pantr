@@ -1,11 +1,14 @@
 """Known-bug regressions from the adversarial parameter sweep (August 2026).
 
-Every test here is an ``xfail(strict=True)`` reproduction of a bug the sweep in
-``tools/adversarial_sweep/`` found on inputs the rest of the suite does not contain. When
-a bug is fixed the corresponding test starts passing, pytest reports a strict XPASS
-failure, and the marker should be removed, promoting the test to a permanent guard. That
-is the same convention ``tests/test_review_regressions.py`` follows for the June 2026
-review, whose markers have all since been removed.
+Each test here reproduces a bug the sweep in ``tools/adversarial_sweep/`` found on inputs
+the rest of the suite does not contain. A bug that is still open carries
+``xfail(strict=True)``; when it is fixed the test starts passing, pytest reports a strict
+XPASS failure, and the marker comes off, promoting the test to a permanent guard on the
+same data. That is the convention ``tests/test_review_regressions.py`` follows for the
+June 2026 review, whose markers have all since been removed.
+
+One marker has already come off here: the domain-membership test, closed by the
+``np.isclose`` tolerance-leak fix in #289. Eight remain open.
 
 One test per **root cause**, not per symptom: several of these root causes have many
 triggering combinations, and each test names them in a comment rather than repeating
@@ -172,50 +175,49 @@ def test_degree_elevation_preserves_float32() -> None:
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="domain membership is tested with np.isclose(..., atol=tol), which keeps the "
-    "default rtol=1e-5, so the effective tolerance is 1e-5 * |knot| instead of tol",
-)
 def test_out_of_domain_points_are_rejected_at_large_knot_magnitude() -> None:
-    # `_is_in_domain` (`_bspline_knots.py:172-173`) accepts a point when
-    # `np.isclose(knot_end, pt, atol=tol)`. Setting `atol` does not clear `rtol`, which
-    # stays at numpy's default 1e-5, so the test is really
-    # `|pt - knot_end| <= tol + 1e-5 * |knot_end|`. On a domain of length 1 placed at 1e6
-    # that admits points up to 10.00001 outside -- ten domain lengths -- while the space's
-    # stated tolerance is 1e-15.
+    # FIXED in `fix(bspline,grid): close eight Layer-2 validation gaps and the np.isclose
+    # tolerance leak (#289)`, which converted all 26 sites to absolute comparisons. Kept as
+    # a regression guard with its original triggering data, per this repository's
+    # convention that the fix PR un-xfails the tests it closes.
     #
-    # This is one root cause with 26 sites: every `np.isclose(..., atol=tol)` in
+    # What it was: `_is_in_domain` (`_bspline_knots.py:172-173`) accepted a point when
+    # `np.isclose(knot_end, pt, atol=tol)`. Setting `atol` does not clear `rtol`, which
+    # stayed at numpy's default 1e-5, so the test was really
+    # `|pt - knot_end| <= tol + 1e-5 * |knot_end|`. On a domain of length 1 placed at 1e6
+    # that admitted points up to 10.00001 outside -- ten domain lengths -- while the
+    # space's stated tolerance is 1e-15.
+    #
+    # It was one root cause with 26 sites: every `np.isclose(..., atol=tol)` in
     # `pantr.bspline` leaves `rtol` at its default, across `_bspline_restrict.py` (10),
     # `_bspline_knots.py` (5), `_bspline_knot_insertion.py` (4),
     # `_bspline_knot_removal.py` (2), `_bspline_product.py` (2),
-    # `_bspline_space_1d.py` (2) and `_bspline_split.py` (1) -- not one of them passes
+    # `_bspline_space_1d.py` (2) and `_bspline_split.py` (1) -- not one of them passed
     # `rtol`. (A 27th call, in `_bspline_quasi_interpolation.py`, is inside a doctest and
-    # so not a library site.) Consequences already
-    # measured, all at |knot| ~ 1e6: `tabulate_basis` accepts a point 10 units outside a
-    # unit-length domain and returns a polynomial extrapolation (max|B| = 640 at degree 2,
-    # 4.3e43 at degree 62) instead of raising; `remove_knots` refuses to remove the
-    # interior knot 1000000.3125, calling it the domain start; `insert_knots` reports a
-    # false multiplicity clash between knots 0.0625 apart.
+    # so not a library site.) Consequences measured at the time, all at |knot| ~ 1e6:
+    # `tabulate_basis` accepted a point 10 units outside a unit-length domain and returned
+    # a polynomial extrapolation (max|B| = 640 at degree 2, 4.3e43 at degree 62) instead of
+    # raising; `remove_knots` refused to remove the interior knot 1000000.3125, calling it
+    # the domain start; `insert_knots` reported a false multiplicity clash between knots
+    # 0.0625 apart.
     #
-    # It is also **memory-unsafe**, which is what lifts it above a wrong-answer bug. On a
+    # It was also **memory-unsafe**, which is what lifted it above a wrong-answer bug. On a
     # *periodic* space over the same translated domain, `elevate_degree` and
-    # `reduce_degree` make a genuine out-of-bounds access -- `IndexError: index is out of
+    # `reduce_degree` made a genuine out-of-bounds access -- `IndexError: index is out of
     # bounds` under NUMBA_BOUNDSCHECK=1, at degrees 1, 2 and 3 in both dtypes. The
-    # boundary multiplicity is counted with the same leaky comparison
-    # (`_bspline_knot_insertion.py:242-243`), the false count is then used as an index,
-    # and with the bounds check off that read is silent. Varying only the domain isolates
+    # boundary multiplicity was counted with the same leaky comparison
+    # (`_bspline_knot_insertion.py:242-243`), the false count was then used as an index,
+    # and with the bounds check off that read was silent. Varying only the domain isolated
     # it:
     #
     #   [0, 1]  [0, 5]  [0, 100]  [0, 1e6]  [1e3, 1e3+1]  [1e4, 1e4+1]  ->  fine
     #   [1e6, 1e6+1]                                                    ->  IndexError
     #
-    # So it is not magnitude but *translation*: the offset sets the effective tolerance
-    # (1e-5 * 1e6 = 10) while the span it must resolve stays 1. In C++ that read is
-    # undefined behaviour, which makes this the finding the port most needs fixed.
+    # So it was not magnitude but *translation*: the offset set the effective tolerance
+    # (1e-5 * 1e6 = 10) while the span it had to resolve stayed 1.
     #
     # The author knew the trap -- `_snap_knots` (`_bspline_space_1d.py:211-215`) carries a
-    # comment warning about exactly it -- and avoided it in that one place.
+    # comment warning about exactly it -- and had avoided it in that one place.
     lo, hi = 1e6, 1e6 + 1.0
     knots = np.concatenate([np.full(3, lo), [lo + 0.5], np.full(3, hi)])
     space = BsplineSpace1D(knots, 2)
@@ -224,6 +226,14 @@ def test_out_of_domain_points_are_rejected_at_large_knot_magnitude() -> None:
     with pytest.raises(ValueError, match="outside the knot vector domain"):
         # 10 domain lengths past the right end.
         space.tabulate_basis(np.array([hi + 10.0]))
+
+    # Guard the other side too, which the original xfail did not: the fix must not
+    # over-correct into rejecting points that are legitimately inside. A tolerance that
+    # went fully absolute at 1e-15 would fail here, because the endpoint itself is only
+    # representable to about 1.2e-10 at this magnitude (one ulp of 1e6).
+    inside = np.array([lo, lo + 0.5, hi], dtype=np.float64)
+    basis, _ = space.tabulate_basis(inside)
+    assert np.all(np.isfinite(basis)), "in-domain points must still be accepted"
 
 
 # ---------------------------------------------------------------------------

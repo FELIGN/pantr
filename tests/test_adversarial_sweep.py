@@ -58,16 +58,22 @@ cases; this floor leaves room to prune without becoming a maintenance chore.
 
 _KNOWN_FINDINGS = frozenset(
     {
-        # Degree-0 cardinal extraction reads out of bounds in
-        # `_get_Bspline_cardinal_intervals_1D_core` (`_bspline_knots.py:294`,
-        # `lengths[degree - 1]` on an empty array). Logged before this sweep.
-        "cardinal_intervals_d0_m1_float64",
-        "extraction_build_d0_m1_float64_cardinal",
         # `_degree_elevate_1d_core` returns a knot vector and a control-point array that
         # disagree once an interior knot reaches multiplicity degree + 1. Pinned by
         # `test_sweep_regressions.py::test_degree_elevation_outputs_are_mutually_consistent`.
         "elevate_degree_d0_m1_float64_random",
         "elevate_degree_d1_m2_float64_random",
+        # `num_intervals=0` is documented as legal by two knot-vector factories and
+        # rejected by a third; neither accepting factory returns a usable vector -- the
+        # periodic one returns NaN and inf, the open one returns one interval instead of
+        # none. Pinned by
+        # `test_sweep_regressions.py::test_knot_factories_agree_on_zero_intervals`.
+        "create_uniform_open_knots_d0_float64_[0,1]_n0",
+        "create_uniform_open_knots_d1_float64_[0,1]_n0",
+        "create_uniform_open_knots_d3_float64_[0,1]_n0",
+        "create_uniform_periodic_knots_d0_float64_[0,1]_n0",
+        "create_uniform_periodic_knots_d1_float64_[0,1]_n0",
+        "create_uniform_periodic_knots_d3_float64_[0,1]_n0",
         # `_de_casteljau_eval_scalar` reads `coeff[0]` with no guard, so an empty
         # coefficient array reads out of bounds. Layer 3 documents that it validates
         # nothing, and no public path reaches it with an empty array, so this is a port
@@ -78,9 +84,17 @@ _KNOWN_FINDINGS = frozenset(
 """Findings the smoke profile is expected to reproduce.
 
 The assertion is containment, not equality: a **new** finding fails the test, while fixing
-a known one merely shrinks the set. Each entry is either pinned by an ``xfail(strict=True)``
-test in ``test_sweep_regressions.py``, which is what fails when the bug is fixed, or
-recorded above as a deliberate contract-boundary probe.
+a known one merely shrinks the set. Every entry must be *tracked*, not merely *seen* --
+each is either pinned by an ``xfail(strict=True)`` test in ``test_sweep_regressions.py``,
+which is what fails when the bug is fixed, or recorded above as a deliberate
+contract-boundary probe. An entry with neither would make this list a way to silence a
+finding, which is the one thing it must not become.
+
+Two entries were removed when ``fix(bspline,grid): … (#289)`` landed: the degree-0
+cardinal extraction reads out of bounds no longer occur, so the sweep stopped reporting
+``cardinal_intervals_d0_m1_float64`` and ``extraction_build_d0_m1_float64_cardinal``.
+Containment would have tolerated leaving them, but a stale entry misdescribes the state of
+the code.
 """
 
 
