@@ -187,6 +187,21 @@
   succeeded and silently discarded the caller's choice of precision, doubling
   memory and halving throughput without a word. Both knot outputs now follow the
   input knot vector's dtype.
+- `Bspline.reduce_degree` never returned on a degree-1 periodic spline. Degree
+  reduction hands the periodic conversion `m_bdy - decrement` as the target
+  boundary multiplicity, and a maximally smooth periodic space has `m_bdy = 1`,
+  so the argument is 0 at every degree; the conversion documents
+  `1 <= m_bdy <= degree` and nothing checked it. The ghost-knot builder then had
+  a per-period tile of total multiplicity 0 and its right-hand loop, which
+  appends until it has enough ghost knots, could append nothing and incremented
+  its shift forever. Degrees 2 and 3 escaped only because the C^0 seam check a
+  few lines earlier rejected them first, so the trigger's narrowness was an
+  accident of check ordering rather than anything about degree 1. The
+  precondition is now enforced, so every degree refuses in under 10 ms with a
+  message naming the actual problem; the loop's termination argument is written
+  down beside it. Reducing a periodic spline to degree 0 has no answer in this
+  representation, an empty `[1, degree]` meaning no ghost knots and nothing to
+  wrap; `to_open_bspline().reduce_degree(1)` does it in the open form.
 
 ## 0.6.0 (2026-06-24)
 

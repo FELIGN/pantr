@@ -7,12 +7,13 @@ XPASS failure, and the marker comes off, promoting the test to a permanent guard
 same data. That is the convention ``tests/test_review_regressions.py`` follows for the
 June 2026 review, whose markers have all since been removed.
 
-Four markers have already come off here: the domain-membership test, closed by the
+Five markers have already come off here: the domain-membership test, closed by the
 ``np.isclose`` tolerance-leak fix in #289; the tanh-sinh endpoint test, closed by
 truncating the rule where the endpoint gap stops being resolvable; the Lagrange
-reproducibility test, closed by seeding the barycentric node permutation; and the float32
-degree-elevation test, closed by allocating the kernels' knot output in the input's dtype.
-Five remain open.
+reproducibility test, closed by seeding the barycentric node permutation; the float32
+degree-elevation test, closed by allocating the kernels' knot output in the input's dtype;
+and the periodic degree-reduction hang, closed by enforcing the periodic conversion's own
+boundary-multiplicity precondition. Four remain open.
 
 One test per **root cause**, not per symptom: several of these root causes have many
 triggering combinations, and each test names them in a comment rather than repeating
@@ -515,28 +516,46 @@ def test_knot_factories_agree_on_zero_intervals() -> None:
 
 
 @pytest.mark.skipif(not hasattr(signal, "SIGALRM"), reason="needs SIGALRM to bound the call")
-@pytest.mark.xfail(
-    strict=True,
-    reason="Bspline.reduce_degree(1) does not terminate on a degree-1 periodic spline",
-)
 def test_reduce_degree_terminates_on_a_periodic_linear_spline() -> None:
+    # FIXED by enforcing `_to_periodic_bspline_1d_impl`'s own documented precondition,
+    # `1 <= m_bdy <= degree`. Kept as a regression guard with its original triggering
+    # data, per this repository's convention that the fix PR un-xfails the tests it
+    # closes.
+    #
     # Found by the sweep the hard way: it stalled a 25952-case run indefinitely, which is
     # why the harness now bounds every case (`_core.CASE_TIMEOUT_SECONDS`).
     #
-    # The trigger is exact and narrow -- periodic **and** degree 1 **and** `reduce_degree`:
+    # The trigger was exact and narrow -- periodic **and** degree 1 **and**
+    # `reduce_degree`:
     #
-    #   degree 1, periodic,   2 / 3 / 4 / 8 intervals    -> never returns
-    #   degree 1, same knots, periodic=False             -> returns in 0.003 s
-    #   degree 1, periodic,   domain [0, 1e-6] or [0, 1] -> never returns (scale is not it)
+    #   degree 1, periodic,   2 / 3 / 4 / 8 intervals    -> never returned
+    #   degree 1, same knots, periodic=False             -> returned in 0.003 s
+    #   degree 1, periodic,   domain [0, 1e-6] or [0, 1] -> never returned (scale was not
+    #                                                       it)
     #   degree 0, periodic                               -> documented ValueError (the
     #                                                       decrement exceeds the degree)
     #   degree 2 and 3, periodic                         -> documented ValueError (residual
     #                                                       exceeds tolerance)
     #
-    # So it is not a slow path, and not a tolerance loop that eventually gives up: the
-    # degrees on either side terminate, and only the periodic form of degree 1 spins. A
-    # non-terminating public call is the worst outcome in this codebase's own triage, and
-    # for the C++ port an infinite loop in a numerical routine is unrecoverable.
+    # The mechanism: `_degree_reduce_bspline` passes `m_bdy_new = m_bdy - decrement` to
+    # `_to_periodic_bspline_1d_impl`, and a maximally smooth periodic space has
+    # `m_bdy = 1`, so the argument is 0 at **every** degree. That violates the documented
+    # `1 <= m_bdy <= degree`, which nothing checked. `_build_periodic_knot_vector` then
+    # builds its per-period tile with multiplicity 0 at the seam, and its right-ghost
+    # `while` loop has nothing to append: it increments `shift` forever.
+    #
+    # Degrees 2 and 3 escaped only by accident -- the C^0 seam check a few lines earlier
+    # rejected them first -- so the narrowness of the trigger was a coincidence of check
+    # ordering, not a property of degree 1. Degree 1 is the one case where nothing rejects
+    # it first, because reducing it leaves a single control point and the seam check
+    # compares that point with itself.
+    #
+    # A clean refusal is the right outcome here rather than a working reduction: the
+    # result would be degree 0, and the periodic representation this library uses needs
+    # `1 <= m_bdy <= degree`, a range that is empty at degree 0. With no ghost knots there
+    # is nothing to wrap, and the periodic form of a piecewise constant is its open form.
+    # `spline.to_open_bspline().reduce_degree(1)` does the reduction and returns in
+    # milliseconds.
     knots = np.asarray(create_uniform_periodic_knots(4, 1), dtype=np.float64)
     space = BsplineSpace1D(knots, 1, periodic=True)
     spline = Bspline(
@@ -551,15 +570,21 @@ def test_reduce_degree_terminates_on_a_periodic_linear_spline() -> None:
     previous = signal.signal(signal.SIGALRM, _expire)
     signal.setitimer(signal.ITIMER_REAL, _HANG_BUDGET_SECONDS)
     try:
-        spline.reduce_degree(1)
+        # Terminating is the point, so the timeout is what this test really guards; the
+        # message is asserted as well so that a *different* refusal cannot pass for the
+        # fix, which is what the bare `except ValueError` of the xfail version allowed.
+        with pytest.raises(ValueError, match=r"boundary multiplicity in \[1, degree\]"):
+            spline.reduce_degree(1)
     except _CallTimeout:
         pytest.fail(
             f"reduce_degree(1) on a degree-1 periodic spline did not return within "
             f"{_HANG_BUDGET_SECONDS} s; the clamped equivalent takes 0.003 s"
         )
-    except ValueError:
-        # A clean refusal would be a fix, not a failure: the point is that it terminates.
-        pass
     finally:
         signal.setitimer(signal.ITIMER_REAL, 0.0)
         signal.signal(signal.SIGALRM, previous)
+
+    # The escape route the message names, on the same data.
+    reduced = spline.to_open_bspline().reduce_degree(1)
+    assert reduced.degree[0] == 0
+    assert not reduced.space.spaces[0].periodic
