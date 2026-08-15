@@ -122,6 +122,13 @@ def _degree_elevate_1d_core(  # noqa: PLR0912, PLR0915
     Implements a robust version of Piegl & Tiller Algorithm A5.9
     (Degree elevate a B-spline curve).
 
+    Elevation preserves smoothness: a breakpoint where the spline is
+    :math:`C^{s}` stays :math:`C^{s}`, so its multiplicity goes from ``m`` to
+    ``m + t``, which is what the knot-writing step emits.  That includes
+    ``m = degree + 1``, a :math:`C^{-1}` breakpoint, where the two adjacent
+    Bézier segments share no control point and the segment after it therefore
+    contributes all ``degree + t + 1`` of its coefficients.
+
     Args:
         degree (int): Original degree.
         ctrl (np.ndarray): Control points of shape (n_pts, rank).
@@ -191,7 +198,15 @@ def _degree_elevate_1d_core(  # noqa: PLR0912, PLR0915
         for ii in range(rank):
             bpts[i, ii] = ctrl[i, ii]
 
-    while b < m:
+    # ``b <= m`` rather than A5.9's ``b < m``: the loop body runs once per segment,
+    # indexed by the last knot of the run that closes it, so the final segment needs
+    # ``b == m``.  For ``d >= 1`` the closing block holds ``d + 1`` equal knots and the
+    # inner run scan reaches ``m`` on its own, which is why A5.9 gets away with the
+    # strict bound; at ``d == 0`` that block is a single knot, the scan cannot advance,
+    # and the strict bound drops the last segment together with the closing knots,
+    # leaving a knot vector whose tail is still zero and a domain collapsed to a point.
+    # The ``break`` below is what the strict bound used to provide.
+    while b <= m:
         i = b
         while b < m and knots[b] == knots[b + 1]:
             b += 1
@@ -201,7 +216,20 @@ def _degree_elevate_1d_core(  # noqa: PLR0912, PLR0915
         oldr = r
         r = d - mul
 
-        lbz = (oldr + 2) // 2 if oldr > 0 else 1
+        # First elevated Bezier coefficient this segment contributes.  A5.9 assumes
+        # interior knots of multiplicity at most d, where consecutive segments meet
+        # C^0 and the junction coefficient has already been written, so it starts at
+        # 1.  A knot of multiplicity d + 1 leaves oldr = -1: the spline is C^-1
+        # there, the segments share nothing, and skipping index 0 would drop a
+        # control point (the returned array would then be one shorter than the knot
+        # vector calls for).  The first pass through the loop also has oldr = -1 but
+        # a == d, and its index 0 really was written, before the loop.
+        if oldr > 0:
+            lbz = (oldr + 2) // 2
+        elif oldr < 0 and a != d:
+            lbz = 0
+        else:
+            lbz = 1
 
         rbz = ph - (r + 1) // 2 if r > 0 else ph
 
@@ -294,6 +322,7 @@ def _degree_elevate_1d_core(  # noqa: PLR0912, PLR0915
         else:
             for i in range(ph + 1):
                 ik[kind + i] = ub
+            break
 
     return ic[:cind].copy(), ik[: kind + ph + 1].copy()
 
