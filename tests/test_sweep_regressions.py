@@ -196,9 +196,26 @@ def test_out_of_domain_points_are_rejected_at_large_knot_magnitude() -> None:
     # unit-length domain and returns a polynomial extrapolation (max|B| = 640 at degree 2,
     # 4.3e43 at degree 62) instead of raising; `remove_knots` refuses to remove the
     # interior knot 1000000.3125, calling it the domain start; `insert_knots` reports a
-    # false multiplicity clash between knots 0.0625 apart. The author knew the trap --
-    # `_snap_knots` (`_bspline_space_1d.py:211-215`) carries a comment warning about
-    # exactly it -- and avoided it in that one place.
+    # false multiplicity clash between knots 0.0625 apart.
+    #
+    # It is also **memory-unsafe**, which is what lifts it above a wrong-answer bug. On a
+    # *periodic* space over the same translated domain, `elevate_degree` and
+    # `reduce_degree` make a genuine out-of-bounds access -- `IndexError: index is out of
+    # bounds` under NUMBA_BOUNDSCHECK=1, at degrees 1, 2 and 3 in both dtypes. The
+    # boundary multiplicity is counted with the same leaky comparison
+    # (`_bspline_knot_insertion.py:242-243`), the false count is then used as an index,
+    # and with the bounds check off that read is silent. Varying only the domain isolates
+    # it:
+    #
+    #   [0, 1]  [0, 5]  [0, 100]  [0, 1e6]  [1e3, 1e3+1]  [1e4, 1e4+1]  ->  fine
+    #   [1e6, 1e6+1]                                                    ->  IndexError
+    #
+    # So it is not magnitude but *translation*: the offset sets the effective tolerance
+    # (1e-5 * 1e6 = 10) while the span it must resolve stays 1. In C++ that read is
+    # undefined behaviour, which makes this the finding the port most needs fixed.
+    #
+    # The author knew the trap -- `_snap_knots` (`_bspline_space_1d.py:211-215`) carries a
+    # comment warning about exactly it -- and avoided it in that one place.
     lo, hi = 1e6, 1e6 + 1.0
     knots = np.concatenate([np.full(3, lo), [lo + 0.5], np.full(3, hi)])
     space = BsplineSpace1D(knots, 2)
