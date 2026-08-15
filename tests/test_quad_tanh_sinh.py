@@ -246,6 +246,12 @@ class TestTanhSinhGoldenValues:
     :func:`_resolvable` says exactly which entries went: at the fourteen point
     counts below, the current nodes and weights equal the golden arrays
     restricted by that predicate, to 2.2e-16 and 1.1e-16 respectively.
+
+    All fourteen counts are unaffected by a separate limit that starts well
+    above them: from ``n_pts = 544`` in float64 two consecutive samples round
+    onto one representable coordinate, so the returned nodes stop being
+    pairwise distinct. That is the format running out of coordinates, not a node
+    reaching an endpoint, and it is out of this test's range.
     """
 
     @pytest.mark.parametrize("n_pts", _GOLDEN_N_PTS)
@@ -268,5 +274,5 @@ class TestTanhSinhGoldenValues:
         nodes, _ = get_tanh_sinh_1d(n_pts)
         golden_nodes = golden[f"nodes_{n_pts}"]
         assert nodes.shape[0] == int(np.count_nonzero(_resolvable(golden_nodes)))
-        # 2, 3 and 4 entries go at n_pts 50, 100 and 200; none at any smaller count.
+        # 2, 2 and 4 entries go at n_pts 50, 100 and 200; none at any smaller count.
         assert nodes.shape[0] == golden_nodes.shape[0] or n_pts in (50, 100, 200)

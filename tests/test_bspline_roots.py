@@ -619,6 +619,13 @@ def test_regression_a_jump_across_the_axis_is_not_a_root() -> None:
 
     np.testing.assert_allclose(found, _JUMP_ROOTS, rtol=0.0, atol=_ROOT_ULPS * _EPS)
 
+    # The Bézier route as well, as the two regression tests above do: it solves each
+    # segment on its own, so a C^-1 break is simply where one segment ends, and it has no
+    # opportunity to invent a root there.
+    expected = _bezier_reference_roots(spline, _JUMP_KNOTS)
+    assert found.shape == expected.shape
+    np.testing.assert_allclose(found, expected, rtol=0.0, atol=_PARITY_RTOL)
+
 
 # --- Kernels --------------------------------------------------------------------------
 

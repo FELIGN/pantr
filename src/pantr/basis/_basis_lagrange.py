@@ -52,6 +52,16 @@ Passing a seed rather than a :class:`~numpy.random.Generator` is deliberate: Sci
 a fresh generator from an integer, so the ``n + 1`` cardinal functions below are all built
 on one permutation and therefore on one set of weights. A ``Generator`` instance would
 advance between them and give every column weights of its own.
+
+**Open: this needs SciPy 1.15 or newer, while ``pyproject.toml`` still declares
+``scipy>=1.11,<2``.** Read at the release tags: 1.11 takes no seeding argument at all and
+permutes with the global ``np.random.permutation``; 1.12 through 1.14 take
+``random_state``; ``rng`` arrives in 1.15, where ``random_state`` still works but warns,
+and this project turns warnings into errors under pytest. So the call below raises
+``TypeError`` on 1.11 through 1.14. Neither closing the gap by raising the declared floor
+nor closing it by selecting the keyword at import time is this module's decision to make;
+until it is made, the effective floor is 1.15. Note that 1.11 cannot be made reproducible
+through this class at all -- it accepts neither a seed nor precomputed ``wi`` weights.
 """
 
 

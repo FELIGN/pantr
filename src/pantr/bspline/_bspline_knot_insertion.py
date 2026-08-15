@@ -430,11 +430,14 @@ def _build_periodic_knot_vector(
     # We create a long enough sequence and slice to n_ghost entries.
     # Right ghosts: interior breakpoints + period, then a + 2*period, etc.
     #
-    # The loop terminates because `bp_mults` sums to at least `m_bdy >= 1`, which the
-    # caller enforces: every pass from `shift = 2` on appends at least that many
-    # entries, so `n_ghost` is reached in at most `n_ghost + 1` passes. At `m_bdy = 0`
-    # and with no interior breakpoint there is nothing to append and it never ends,
-    # which is why the caller checks rather than assumes.
+    # Both loops below terminate for the same reason, and only for that reason:
+    # `bp_mults` sums to at least `m_bdy`, which `_check_boundary_multiplicity` has
+    # already put at 1 or more. Each pass then appends at least one entry -- the right
+    # loop from `shift = 2` on, since its `shift == 1` pass skips the seam entry, and
+    # the left loop from its first -- so `n_ghost` is reached in at most `n_ghost + 1`
+    # passes. At `m_bdy = 0` with no interior breakpoint the tile is empty, neither
+    # loop can append anything, and both spin forever. That is why the caller checks
+    # rather than assumes, and why weakening that one check reintroduces a hang here.
     right_entries: list[np.floating[Any]] = []
     shift = 1
     while len(right_entries) < n_ghost:
@@ -500,7 +503,10 @@ def _to_periodic_bspline_1d_impl(
             not periodic (C^0 check at seam or residual exceeds tolerance).
 
     Note:
-        Inputs are assumed to be correct (no validation performed).
+        Layer 2, so it does validate, and the boilerplate that used to stand here
+        claiming otherwise was never true of it: the C^0 seam test below predates
+        this docstring and :func:`_check_boundary_multiplicity` joins it. What is
+        *not* checked is shapes and dtypes, which the caller owns.
         For general use, call :meth:`~pantr.bspline.Bspline.to_periodic` instead.
     """
     p = degree

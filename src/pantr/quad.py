@@ -280,13 +280,26 @@ def _tanh_sinh_min_gap(dtype: npt.DTypeLike) -> float:
     *in the frame the rule is returned in*.
 
     :func:`get_tanh_sinh_1d` maps ``[-1, 1]`` onto ``[0, 1]`` by ``(x + 1) / 2``
-    and casts to *dtype*, so the node near the right end is computed as
-    ``(2 - gap) / 2``.  The halving is exact; the subtraction is not, and
-    ``2 - gap`` rounds to ``2`` as soon as ``gap <= eps / 2``, which sends the
-    node onto ``1``.  Returning ``eps`` keeps one bit of margin over that
-    boundary.  For ``float32`` the same threshold governs the final cast, since
-    ``1 - gap / 2`` rounds to ``1.0f`` once ``gap / 2`` falls below half a
-    ``float32`` ulp.
+    and casts to *dtype*, so the node near the right end is reached as
+    ``((1 - gap) + 1) / 2``, and it is that whole expression, not any one step of
+    it, that has to land strictly below ``1``.  Two of the three steps round.
+    Writing ``u = eps / 2`` for the spacing just below ``1``:
+
+    * ``1 - gap`` rounds to ``1 - u`` while ``gap < 1.5 u``, and to ``1 - 2u``
+      from there on;
+    * ``+ 1`` maps ``1 - u`` to ``2 - u``, the midpoint of ``[2 - 2u, 2]``, which
+      ties to even and so becomes ``2``; it maps ``1 - 2u`` to ``2 - 2u`` exactly;
+    * the halving is exact.
+
+    So the node collapses onto ``1`` exactly when ``gap < 1.5 u = 0.75 eps``, and
+    returning ``eps`` clears that by one representable step of ``gap``, a factor
+    ``4 / 3``.  Bisecting on ``gap`` puts the crossing at ``0.75 eps`` to fifty
+    digits in ``float64`` and in ``float32`` alike, the argument being about the
+    binade boundary at ``1`` and not about the width of the format.
+
+    Note that reasoning about a single step gives the wrong answer here: ``2 -
+    gap`` alone survives down to ``gap > eps / 2``, a factor 1.5 below the true
+    threshold, because it ignores the rounding of ``1 - gap`` that precedes it.
 
     Truncating there costs nothing.  With ``gap = 1 - tanh(omega)`` one has
     ``cosh(omega)**-2 = gap * (2 - gap)``, so the discarded weight is
@@ -296,6 +309,13 @@ def _tanh_sinh_min_gap(dtype: npt.DTypeLike) -> float:
     ``n`` from 2 to 400: ``8.19e-15``).  That is below the rounding of the sum
     the weight would have joined, and the rescaling in
     :func:`_generate_tanh_sinh` restores that sum.
+
+    What this bound does *not* claim is that the returned nodes are all distinct.
+    Two consecutive samples can both clear the threshold and still round onto one
+    representable coordinate, first at ``n_pts = 544`` in ``float64`` and
+    ``n_pts = 324`` in ``float32``, both at ``1 - eps``.  That is the format
+    running out of coordinates rather than a node reaching the endpoint, and the
+    two weights, ``2.9e-16`` together at ``n_pts = 544``, land where they belong.
 
     Args:
         dtype (npt.DTypeLike): Floating-point dtype the rule will be returned in.

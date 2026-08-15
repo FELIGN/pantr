@@ -191,11 +191,13 @@ def test_degree_elevation_preserves_float32() -> None:
     # xfail is satisfied by *any* failure, so the marker hid the fact that this half was
     # never exercising the bug. The knot vector is the original one; only the count
     # changes, and the precondition below now pins it.
+    periodic_degree = 2
     periodic_knots = (np.arange(-2, 6, dtype=np.float64) / 3.0).astype(np.float32)
-    periodic_space = BsplineSpace1D(periodic_knots, 2, periodic=True)
-    assert periodic_space.num_basis == periodic_knots.size - 2 * 2 - 1, (
-        f"precondition: 8 knots at degree 2 give 8 - 2 * 2 - 1 = 3 periodic basis "
-        f"functions, got {periodic_space.num_basis}"
+    periodic_space = BsplineSpace1D(periodic_knots, periodic_degree, periodic=True)
+    assert periodic_space.num_basis == periodic_knots.size - 2 * periodic_degree - 1, (
+        f"precondition: {periodic_knots.size} knots at degree {periodic_degree} give "
+        f"{periodic_knots.size - 2 * periodic_degree - 1} periodic basis functions, got "
+        f"{periodic_space.num_basis}"
     )
     periodic = Bspline(
         BsplineSpace([periodic_space]),
@@ -217,10 +219,15 @@ def test_degree_elevation_preserves_float32() -> None:
     sample = np.linspace(0.0, 1.0, 17, dtype=np.float32).reshape(-1, 1)
     before = np.asarray(clamped.evaluate(sample), dtype=np.float64)
     after = np.asarray(reduced.evaluate(sample), dtype=np.float64)
-    # Elevating then reducing is exact in exact arithmetic, so the only error is float32
-    # rounding through the two kernels: `degree + 1` convex combinations each way, on
-    # values up to 4.
-    tolerance = 2.0 * (2 + 1) * get_machine_epsilon(np.float32) * float(np.abs(before).max())
+    # Elevating then reducing is exact in exact arithmetic -- the reduction operator
+    # interpolates the endpoints and is an exact left-inverse of elevation on the
+    # elevated subspace -- so the only error is float32 rounding through the two kernels:
+    # `degree + 1` convex combinations each way, on values up to 4. Checked rather than
+    # assumed: the same round trip in float64 leaves a residual of 0 to 3.6 eps relative
+    # over degrees 1 to 4 and 3, 4 and 6 breakpoints, which is rounding and not method
+    # error.
+    degree = int(clamped.degree[0])
+    tolerance = 2.0 * (degree + 1) * get_machine_epsilon(np.float32) * float(np.abs(before).max())
     assert float(np.max(np.abs(before - after))) <= tolerance
 
 
