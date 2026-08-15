@@ -18,8 +18,27 @@ from typing import TYPE_CHECKING, Final, NamedTuple
 
 import numpy as np
 
+from pantr.basis import LagrangeVariant
+
 if TYPE_CHECKING:
     import numpy.typing as npt
+
+
+LAGRANGE_MIN_NODES: Final[dict[LagrangeVariant, int]] = {
+    LagrangeVariant.EQUISPACES: 1,
+    LagrangeVariant.GAUSS_LEGENDRE: 1,
+    LagrangeVariant.GAUSS_LOBATTO_LEGENDRE: 2,
+    LagrangeVariant.CHEBYSHEV_1ST: 1,
+    LagrangeVariant.CHEBYSHEV_2ND: 2,
+}
+"""Smallest node count each Lagrange variant's underlying quadrature rule accepts.
+
+The floor is the ``min_pts`` of the rule ``_basis_lagrange._get_lagrange_points``
+(``_basis_lagrange.py:90-103``) dispatches to, and it is a *library* fact rather than a
+swept axis, which is why it lives here rather than in one probe module: both the
+``basis`` and ``quad`` groups need it to decide whether a given node count is legal, and
+two copies of a contract table drift.
+"""
 
 
 class Profile(enum.IntEnum):

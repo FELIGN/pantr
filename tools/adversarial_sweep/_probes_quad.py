@@ -11,6 +11,16 @@ claims of :class:`~pantr.quad.QuadratureRule` and
 corners (0 and -1, which must be rejected, then 1, 2, 3, 4, 5, 17, 64, 200, 1000)
 rather than its middle, since off-by-one and int64-wraparound defects live at the
 edges of a count, not in its interior.
+
+**Verdict flags.** Every case here carries ``must_succeed`` or ``must_reject``
+unless the entry point's contract genuinely admits both, and the few that carry
+neither say why at the site. Without them a legal-input failure is graded against
+the ``Raises:`` section alone, which cannot see the two failure modes that matter
+most: a documented exception type raised for an *undocumented reason* reads as a
+correct rejection, and an entry point that silently starts accepting nonsense
+reads as ``OK``. The flags are decided from the docstrings quoted at each site,
+not from what the code happens to do -- the point is to grade the code against its
+contract, so a site where the two disagree is left unflagged and named.
 """
 
 from __future__ import annotations
@@ -36,7 +46,7 @@ from pantr.quad import (
     tensor_product_quadrature,
 )
 
-from ._axes import Profile, dims, dtypes
+from ._axes import LAGRANGE_MIN_NODES, Profile, dims, dtypes
 from ._core import Case, custom
 
 if TYPE_CHECKING:
@@ -248,6 +258,16 @@ def _rule_1d_cases(profile: Profile) -> Iterator[Case]:
                     and min_pts <= n_pts <= _GL_EXACTNESS_MAX_N
                 ):
                     invariants.append(_gauss_legendre_exactness(n_pts))
+                # `min_pts` is each factory's own documented floor ("Must be at
+                # least N", with a matching `Raises: ValueError`), so it decides
+                # the verdict outright: below it the call must be refused, at or
+                # above it -- with a float64/float32 dtype, which is the only other
+                # stated precondition -- there is nothing left for the rule to
+                # object to and any exception is a finding. `get_tanh_sinh_1d` is
+                # still `must_succeed` at large `n_pts` even though it returns
+                # *fewer* nodes than requested: that truncation is documented
+                # (`quad.py:433-434`), and returning fewer points is a return, not
+                # a refusal.
                 yield Case(
                     GROUP,
                     f"{name}_n{n_pts}_{np.dtype(dtype).name}",
@@ -255,6 +275,8 @@ def _rule_1d_cases(profile: Profile) -> Iterator[Case]:
                     lambda func=func, n_pts=n_pts, dtype=dtype: func(n_pts, dtype=dtype),
                     {"rule": name, "n_pts": n_pts, "dtype": dtype, "nodes_only": nodes_only},
                     invariants=tuple(invariants),
+                    must_succeed=n_pts >= min_pts,
+                    must_reject=n_pts < min_pts,
                 )
 
 
@@ -272,12 +294,16 @@ def _bad_dtype_cases(profile: Profile) -> Iterator[Case]:
     for name, func, min_pts, _, _, _ in _RULES:
         n_pts = max(min_pts, 5)
         for bad_dtype in (np.dtype(np.int32), np.dtype(np.float16)):
+            # Every factory's `Raises:` says "or dtype is not float32 or float64",
+            # and the shared validator names these two exact dtypes as the
+            # rejected examples (`_array_utils.py:31`), so refusal is the contract.
             yield Case(
                 GROUP,
                 f"{name}_bad_dtype_{bad_dtype.name}",
                 func,
                 lambda func=func, n_pts=n_pts, bad_dtype=bad_dtype: func(n_pts, dtype=bad_dtype),
                 {"rule": name, "n_pts": n_pts, "dtype": bad_dtype},
+                must_reject=True,
             )
 
 
@@ -293,41 +319,56 @@ def _lattice_cases(profile: Profile) -> Iterator[Case]:
     for dtype in dtypes(profile):
         name = np.dtype(dtype).name
         single = [np.array([0.3], dtype=dtype), np.array([0.7], dtype=dtype)]
+        # Two axes, one point each, one shared dtype, both 1D and non-empty: every
+        # condition `_validate_pts_per_dir` states (`quad.py:507-520`) is met, so
+        # the lattice is legal by construction.
         yield Case(
             GROUP,
             f"lattice_single_point_per_axis_{name}",
             PointsLattice,
             lambda single=single: PointsLattice(single),
             {"kind": "single-point-per-axis", "dtype": dtype},
+            must_succeed=True,
         )
+        # `order` is a documented `Literal["C", "F"]` with no `Raises:` at all
+        # (`quad.py:551-563`), so "F" on a legal lattice cannot legitimately fail.
         yield Case(
             GROUP,
             f"lattice_get_all_points_order_F_{name}",
             PointsLattice.get_all_points,
             lambda single=single: PointsLattice(single).get_all_points(order="F"),
             {"kind": "order-F", "dtype": dtype},
+            must_succeed=True,
         )
         empty_axis = [np.array([0.3], dtype=dtype), np.zeros(0, dtype=dtype)]
+        # "All points must have at least 1 point" (`quad.py:519-520`).
         yield Case(
             GROUP,
             f"lattice_empty_axis_{name}",
             PointsLattice,
             lambda empty_axis=empty_axis: PointsLattice(empty_axis),
             {"kind": "empty-axis", "dtype": dtype},
+            must_reject=True,
         )
 
     if profile is not Profile.FULL:
         return
 
     mixed = [np.array([0.1, 0.9], dtype=np.float64), np.array([0.2, 0.8], dtype=np.float32)]
+    # "All points must have the same dtype" -- stated in `__init__`'s own `Raises:`
+    # (`quad.py:498-499`) as well as the validator's.
     yield Case(
         GROUP,
         "lattice_mismatched_dtypes",
         PointsLattice,
         lambda mixed=mixed: PointsLattice(mixed),
         {"kind": "mismatched-dtypes"},
+        must_reject=True,
     )
     four_axes = [np.array([0.2, 0.8]) for _ in range(4)]
+    # No maximum dimension is stated anywhere in `PointsLattice`, so four axes are
+    # as legal as two and the `n ** dim` growth is the caller's problem, not a
+    # refusal the class is entitled to make.
     yield Case(
         GROUP,
         "lattice_four_axes",
@@ -340,6 +381,7 @@ def _lattice_cases(profile: Profile) -> Iterator[Case]:
                 lambda r: None if r.shape == (16, 4) else f"got shape {r.shape}, expected (16, 4)",
             ),
         ),
+        must_succeed=True,
     )
 
 
@@ -367,6 +409,22 @@ def _lagrange_lattice_cases(profile: Profile) -> Iterator[Case]:
         for n_pts in n_pts_values:
             for dim in dims(profile, max_dim=3):
                 n_pts_per_dir = (n_pts,) * dim
+                # `create_lagrange_points_lattice` documents "Each value must be at
+                # least 1" and enforces exactly that (`quad.py:592-593, 607-608`), so
+                # zero is a documented refusal and anything at or above each variant's
+                # own floor is legal. The gap between the two is a genuine contract
+                # boundary and stays unflagged: at `n_pts == 1` the *stated* contract
+                # accepts every variant, but GAUSS_LOBATTO_LEGENDRE and CHEBYSHEV_2ND
+                # are refused two calls deeper, by the rule this function dispatches to
+                # (`_basis_lagrange.py:90-103` -> `quad.py:148` / `quad.py:218`), whose
+                # own docstring does state the "at least 2" caveat that this one omits.
+                # One of the two docstrings is wrong; which is the caller's decision, so
+                # neither verdict is asserted here rather than guessing and manufacturing
+                # a finding. Because the deeper refusal is a `ValueError`, and this
+                # function's `Raises:` lists `ValueError`, the sweep currently grades it
+                # a documented rejection and says nothing -- which is why it needs saying
+                # here.
+                legal_everywhere = n_pts >= LAGRANGE_MIN_NODES[variant]
                 yield Case(
                     GROUP,
                     f"lagrange_lattice_{variant.value}_n{n_pts}_d{dim}",
@@ -376,6 +434,8 @@ def _lagrange_lattice_cases(profile: Profile) -> Iterator[Case]:
                         variant, n_pts_per_dir
                     ),
                     {"variant": variant, "n_pts": n_pts, "dim": dim},
+                    must_succeed=legal_everywhere,
+                    must_reject=n_pts < 1,
                 )
 
 
@@ -416,6 +476,9 @@ def _quadrature_rule_cases(profile: Profile) -> Iterator[Case]:
     del profile  # every construction below is a corner; nothing to widen further
     step = float(np.spacing(np.float64(1.0)))
 
+    # The constructor's `Raises:` (`quad.py:641-644`) is a closed list: not 2D, weights
+    # not 1D, lengths disagree, either empty, non-finite, or a point outside [0, 1].
+    # Every case below is on one side or the other of exactly that list.
     yield Case(
         GROUP,
         "quadrule_endpoints_0_1",
@@ -424,7 +487,13 @@ def _quadrature_rule_cases(profile: Profile) -> Iterator[Case]:
         {"kind": "endpoints"},
         invariants=(_quadrature_rule_shape_readonly(2, 1),),
         arrays={"points": np.array([[0.0], [1.0]]), "weights": np.array([0.5, 0.5])},
+        must_succeed=True,
     )
+    # A negative weight is legal by construction, and deliberately so: the class
+    # docstring's "weights sum to one" language (`quad.py:622-628`) is scoped to the two
+    # factories, and `__init__` neither documents nor checks weight sign or sum. Refusing
+    # this input would be the finding, not accepting it -- several legitimate rules
+    # (Newton-Cotes past degree 8, moment-fitted rules) carry negative weights.
     yield Case(
         GROUP,
         "quadrule_negative_weight",
@@ -433,6 +502,7 @@ def _quadrature_rule_cases(profile: Profile) -> Iterator[Case]:
         {"kind": "negative-weight"},
         invariants=(_quadrature_rule_shape_readonly(1, 1),),
         arrays={"points": np.array([[0.5]]), "weights": np.array([-1.0])},
+        must_succeed=True,
     )
     yield Case(
         GROUP,
@@ -440,6 +510,7 @@ def _quadrature_rule_cases(profile: Profile) -> Iterator[Case]:
         QuadratureRule,
         lambda step=step: QuadratureRule([[-8.0 * step]], [1.0]),
         {"kind": "just-outside-left"},
+        must_reject=True,
     )
     yield Case(
         GROUP,
@@ -447,6 +518,7 @@ def _quadrature_rule_cases(profile: Profile) -> Iterator[Case]:
         QuadratureRule,
         lambda step=step: QuadratureRule([[1.0 + 8.0 * step]], [1.0]),
         {"kind": "just-outside-right"},
+        must_reject=True,
     )
     yield Case(
         GROUP,
@@ -455,6 +527,7 @@ def _quadrature_rule_cases(profile: Profile) -> Iterator[Case]:
         lambda: QuadratureRule([[np.nan]], [1.0]),
         {"kind": "nan-point"},
         finite_inputs=False,
+        must_reject=True,
     )
     yield Case(
         GROUP,
@@ -463,6 +536,7 @@ def _quadrature_rule_cases(profile: Profile) -> Iterator[Case]:
         lambda: QuadratureRule([[0.5]], [np.inf]),
         {"kind": "inf-weight"},
         finite_inputs=False,
+        must_reject=True,
     )
     yield Case(
         GROUP,
@@ -470,6 +544,7 @@ def _quadrature_rule_cases(profile: Profile) -> Iterator[Case]:
         QuadratureRule,
         lambda: QuadratureRule(np.zeros((0, 1)), np.zeros(0)),
         {"kind": "zero-length"},
+        must_reject=True,
     )
     yield Case(
         GROUP,
@@ -477,6 +552,7 @@ def _quadrature_rule_cases(profile: Profile) -> Iterator[Case]:
         QuadratureRule,
         lambda: QuadratureRule([0.1, 0.5, 0.9], [1.0, 1.0, 1.0]),
         {"kind": "wrong-ndim-points"},
+        must_reject=True,
     )
 
 
@@ -532,6 +608,9 @@ def _tensor_product_cases(profile: Profile) -> Iterator[Case]:
     nodes_b = np.array([0.2, 0.5, 0.8])
     weights_b = np.full(3, 1.0 / 3.0)
     rules_2d = [(nodes_a, weights_a), (nodes_b, weights_b)]
+    # Matching non-empty 1D pairs with nodes inside [0, 1] satisfy every precondition
+    # the docstring states (`quad.py:731-734`), including the `[0, 1]` bound it defers
+    # to `QuadratureRule`.
     yield Case(
         GROUP,
         "tpq_ordering_2axis_distinct_lengths",
@@ -540,6 +619,7 @@ def _tensor_product_cases(profile: Profile) -> Iterator[Case]:
         {"kind": "ordering", "shape": (2, 3)},
         invariants=(_tensor_product_ordering([nodes_a, nodes_b]),),
         arrays={"nodes_a": nodes_a, "nodes_b": nodes_b},
+        must_succeed=True,
     )
 
     nodes_c = np.array([0.15, 0.55, 0.65, 0.95])
@@ -553,6 +633,7 @@ def _tensor_product_cases(profile: Profile) -> Iterator[Case]:
         {"kind": "ordering", "shape": (2, 3, 4)},
         invariants=(_tensor_product_ordering([nodes_a, nodes_b, nodes_c]),),
         arrays={"nodes_a": nodes_a, "nodes_b": nodes_b, "nodes_c": nodes_c},
+        must_succeed=True,
     )
 
     yield Case(
@@ -561,6 +642,7 @@ def _tensor_product_cases(profile: Profile) -> Iterator[Case]:
         tensor_product_quadrature,
         lambda: tensor_product_quadrature([]),
         {"kind": "empty"},
+        must_reject=True,  # "If ``rules`` is empty" (quad.py:741-744)
     )
 
     if profile is not Profile.FULL:
@@ -573,6 +655,7 @@ def _tensor_product_cases(profile: Profile) -> Iterator[Case]:
         tensor_product_quadrature,
         lambda mismatched=mismatched: tensor_product_quadrature(mismatched),
         {"kind": "mismatched-lengths"},
+        must_reject=True,  # "not a matching pair of ... 1D arrays" (quad.py:741-744)
     )
 
 
@@ -590,6 +673,9 @@ def _gauss_legendre_nd_cases(profile: Profile) -> Iterator[Case]:
         Case: One hostile ``(ndim, npts)`` combination.
     """
     npts_values = _GLQ_NPTS_FULL if profile is Profile.FULL else _GLQ_NPTS_SMOKE
+    # The docstring states three preconditions and no more (`quad.py:776-779`):
+    # `ndim >= 1`, a sequence of length `ndim` if not a scalar, and every count
+    # `>= 1`. Each case below satisfies all three or violates exactly one.
     for ndim in dims(profile, max_dim=3):
         for npts in npts_values:
             yield Case(
@@ -599,6 +685,7 @@ def _gauss_legendre_nd_cases(profile: Profile) -> Iterator[Case]:
                 lambda ndim=ndim, npts=npts: gauss_legendre_quadrature(ndim, npts),
                 {"ndim": ndim, "npts": npts, "kind": "scalar"},
                 invariants=(_weights_sum_to_one(npts**ndim, np.dtype(np.float64)),),
+                must_succeed=True,
             )
 
     if profile is not Profile.FULL:
@@ -611,9 +698,11 @@ def _gauss_legendre_nd_cases(profile: Profile) -> Iterator[Case]:
         lambda: gauss_legendre_quadrature(3, (2, 3, 4)),
         {"ndim": 3, "npts": (2, 3, 4), "kind": "sequence"},
         invariants=(_weights_sum_to_one(2 * 3 * 4, np.dtype(np.float64)),),
+        must_succeed=True,
     )
     # A 4-D case to probe n ** dim growth, as the entry point allows ndim >= 1
-    # with no explicit upper bound.
+    # with no explicit upper bound. No upper bound stated means no refusal is
+    # licensed: 83521 points is the caller's choice, so `must_succeed` holds.
     yield Case(
         GROUP,
         "glq_growth_d4_n17",
@@ -621,6 +710,7 @@ def _gauss_legendre_nd_cases(profile: Profile) -> Iterator[Case]:
         lambda: gauss_legendre_quadrature(4, 17),
         {"ndim": 4, "npts": 17, "kind": "growth"},
         invariants=(_weights_sum_to_one(17**4, np.dtype(np.float64)),),
+        must_succeed=True,
     )
     yield Case(
         GROUP,
@@ -628,6 +718,7 @@ def _gauss_legendre_nd_cases(profile: Profile) -> Iterator[Case]:
         gauss_legendre_quadrature,
         lambda: gauss_legendre_quadrature(0, 3),
         {"ndim": 0, "kind": "invalid-ndim"},
+        must_reject=True,
     )
     yield Case(
         GROUP,
@@ -635,6 +726,7 @@ def _gauss_legendre_nd_cases(profile: Profile) -> Iterator[Case]:
         gauss_legendre_quadrature,
         lambda: gauss_legendre_quadrature(-1, 3),
         {"ndim": -1, "kind": "invalid-ndim"},
+        must_reject=True,
     )
     yield Case(
         GROUP,
@@ -642,6 +734,7 @@ def _gauss_legendre_nd_cases(profile: Profile) -> Iterator[Case]:
         gauss_legendre_quadrature,
         lambda: gauss_legendre_quadrature(3, (2, 3)),
         {"ndim": 3, "npts": (2, 3), "kind": "wrong-length"},
+        must_reject=True,
     )
     yield Case(
         GROUP,
@@ -649,6 +742,7 @@ def _gauss_legendre_nd_cases(profile: Profile) -> Iterator[Case]:
         gauss_legendre_quadrature,
         lambda: gauss_legendre_quadrature(2, 0),
         {"ndim": 2, "npts": 0, "kind": "invalid-count"},
+        must_reject=True,
     )
     yield Case(
         GROUP,
@@ -656,6 +750,7 @@ def _gauss_legendre_nd_cases(profile: Profile) -> Iterator[Case]:
         gauss_legendre_quadrature,
         lambda: gauss_legendre_quadrature(2, -1),
         {"ndim": 2, "npts": -1, "kind": "invalid-count"},
+        must_reject=True,
     )
 
 

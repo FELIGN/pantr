@@ -11,6 +11,17 @@ conditioning allows -- rather than raw memory corruption (that lives in the
 62, the exact cliff where ``_bincoeff``'s integer recurrence wraps int64), and
 every evaluation-point family from :func:`~_axes.point_specs` is exercised,
 including the ones that deliberately sit outside ``[0, 1]`` or carry ``NaN``.
+
+**Verdict flags.** Every case carries ``must_succeed`` or ``must_reject`` unless the
+contract genuinely admits both, and the exceptions say why at the site. The decision is
+easy for this group and worth stating once: the only precondition any tabulator states is
+``degree >= 0`` (plus a valid ``out``), and **no entry point here documents a domain for
+its evaluation points at all** -- Layer 1 is silent, and the one Layer-3 kernel that does
+make a domain claim, ``_tabulate_cardinal_Bspline_basis_1D_core``'s "Values are zero
+outside [0, 1]" (``_basis_core.py:309-310``), is contradicted by the kernel itself, which
+extrapolates. So an out-of-domain or ``NaN`` point is not an illegal input, it is an
+unspecified one: the call must still *return*, and what it returns is graded by the
+finiteness check and nothing stronger.
 """
 
 from __future__ import annotations
@@ -43,7 +54,7 @@ from pantr.change_basis import (
 )
 from pantr.quad import PointsLattice
 
-from ._axes import Profile, degrees, dtypes, point_specs, rng
+from ._axes import LAGRANGE_MIN_NODES, Profile, degrees, dtypes, point_specs, rng
 from ._core import Case, custom, expected_shape, partition_of_unity
 
 if TYPE_CHECKING:
@@ -147,6 +158,11 @@ def _tabulate_1d_cases(
                         invariants.append(partition_of_unity(degree, dtype))
                     if claims_nonneg:
                         invariants.append(_bernstein_nonneg())
+                # `degree >= 0` is the only precondition stated, and the swept degrees
+                # are all non-negative. The point family does not change the verdict:
+                # no tabulator documents a domain for `pts`, so an out-of-domain or
+                # `NaN` point is unspecified rather than illegal, and refusing one
+                # would be an undocumented rejection. See the module docstring.
                 yield Case(
                     GROUP,
                     f"{name}_1d_deg{degree}_{spec.name}_{np.dtype(dtype).name}",
@@ -155,6 +171,7 @@ def _tabulate_1d_cases(
                     {"degree": degree, "dtype": dtype, "points": spec.name},
                     invariants=tuple(invariants),
                     finite_inputs=spec.finite,
+                    must_succeed=True,
                 )
 
 
@@ -171,15 +188,20 @@ def _tabulate_1d_extra_cases(
     Yields:
         Case: One hostile call outside the ``(degree, point-family)`` grid.
     """
+    # "Must be non-negative", with a matching `Raises: ValueError` on every tabulator.
     yield Case(
         GROUP,
         f"{name}_1d_degree_negative",
         func,
         lambda func=func: func(-1, [0.2, 0.5]),
         {"degree": -1, "kind": "invalid-degree"},
+        must_reject=True,
     )
     if profile is not Profile.FULL:
         return
+    # All three below are shapes the `pts` docstring explicitly admits: "Can be a
+    # scalar, list, or numpy array" and "Types different from float32 or float64 are
+    # automatically converted to float64".
     yield Case(
         GROUP,
         f"{name}_1d_scalar_point",
@@ -187,6 +209,7 @@ def _tabulate_1d_extra_cases(
         lambda func=func: func(2, 0.4),
         {"degree": 2, "kind": "scalar-point"},
         invariants=(expected_shape((3,)),),
+        must_succeed=True,
     )
     yield Case(
         GROUP,
@@ -195,6 +218,7 @@ def _tabulate_1d_extra_cases(
         lambda func=func: func(2, np.array([[0.4]])),
         {"degree": 2, "kind": "shape-1x1-points"},
         invariants=(expected_shape((1, 1, 3)),),
+        must_succeed=True,
     )
     yield Case(
         GROUP,
@@ -203,18 +227,8 @@ def _tabulate_1d_extra_cases(
         lambda func=func: func(2, np.array([0, 1], dtype=np.int64)),
         {"degree": 2, "kind": "int-points-auto-cast"},
         invariants=(expected_shape((2, 3)),),
+        must_succeed=True,
     )
-
-
-_LAGRANGE_VARIANT_MIN_NPTS: Final[dict[LagrangeVariant, int]] = {
-    LagrangeVariant.EQUISPACES: 1,
-    LagrangeVariant.GAUSS_LEGENDRE: 1,
-    LagrangeVariant.GAUSS_LOBATTO_LEGENDRE: 2,
-    LagrangeVariant.CHEBYSHEV_1ST: 1,
-    LagrangeVariant.CHEBYSHEV_2ND: 2,
-}
-"""Minimum ``degree + 1`` (node count) each Lagrange variant's underlying
-quadrature rule accepts (`_basis_lagrange.py:31-32`)."""
 
 
 def _lagrange_1d_cases(profile: Profile) -> Iterator[Case]:
@@ -229,7 +243,7 @@ def _lagrange_1d_cases(profile: Profile) -> Iterator[Case]:
     variants = tuple(LagrangeVariant) if profile is Profile.FULL else (LagrangeVariant.EQUISPACES,)
     for degree in _capped(degrees(profile), 2, profile):
         for variant in variants:
-            if degree + 1 < _LAGRANGE_VARIANT_MIN_NPTS[variant]:
+            if degree + 1 < LAGRANGE_MIN_NODES[variant]:
                 continue
             for dtype in dtypes(profile):
                 specs = _capped(point_specs(_UNIT_DOMAIN, dtype, profile), 1, profile)
@@ -245,6 +259,7 @@ def _lagrange_1d_cases(profile: Profile) -> Iterator[Case]:
                         {"degree": degree, "variant": variant, "dtype": dtype, "points": spec.name},
                         invariants=(expected_shape((*spec.pts.shape, degree + 1)),),
                         finite_inputs=spec.finite,
+                        must_succeed=True,
                     )
     yield Case(
         GROUP,
@@ -252,6 +267,7 @@ def _lagrange_1d_cases(profile: Profile) -> Iterator[Case]:
         tabulate_lagrange_1d,
         lambda: tabulate_lagrange_1d(-1, LagrangeVariant.EQUISPACES, [0.2, 0.5]),
         {"degree": -1, "kind": "invalid-degree"},
+        must_reject=True,
     )
 
 
@@ -302,7 +318,10 @@ def _lagrange_cardinality_cases(profile: Profile) -> Iterator[Case]:
     variants = tuple(LagrangeVariant) if profile is Profile.FULL else (LagrangeVariant.EQUISPACES,)
     for degree in _capped(degrees(profile), 2, profile):
         for variant in variants:
-            if degree + 1 < _LAGRANGE_VARIANT_MIN_NPTS[variant]:
+            # Not merely a filter: `_get_lagrange_points` runs in this generator
+            # *body*, so a variant below its own node floor would raise during
+            # enumeration and truncate the run rather than being classified.
+            if degree + 1 < LAGRANGE_MIN_NODES[variant]:
                 continue
             for dtype in dtypes(profile):
                 nodes = _get_lagrange_points(variant, degree + 1, dtype)
@@ -315,6 +334,9 @@ def _lagrange_cardinality_cases(profile: Profile) -> Iterator[Case]:
                     ),
                     {"degree": degree, "variant": variant, "dtype": dtype, "kind": "cardinality"},
                     invariants=(_lagrange_cardinality_invariant(degree, dtype),),
+                    # The nodes came out of `_get_lagrange_points` for this very
+                    # variant and count, so they are in-domain by construction.
+                    must_succeed=True,
                 )
 
 
@@ -447,6 +469,8 @@ def _nd_wrapper_cases(
                 invariants.append(partition_of_unity(n_basis - 1, dtype))
             if claims_nonneg:
                 invariants.append(_bernstein_nonneg())
+            # Non-negative degrees, one per direction, and points of matching
+            # dimension inside the unit cube: every stated precondition is met.
             yield Case(
                 GROUP,
                 f"{name}_nd_deg{degrees_tuple}_{np.dtype(dtype).name}",
@@ -454,6 +478,7 @@ def _nd_wrapper_cases(
                 lambda call=call, degrees_tuple=degrees_tuple, pts=pts: call(degrees_tuple, pts),
                 {"degrees": degrees_tuple, "dtype": dtype},
                 invariants=tuple(invariants),
+                must_succeed=True,
             )
 
     if profile is not Profile.FULL:
@@ -465,6 +490,14 @@ def _nd_wrapper_cases(
     pts = _scattered_points(2, dtype, generator)
 
     empty_pts = np.zeros((3, 0), dtype=dtype)
+    # Deliberately unflagged: a zero-dimensional tabulation is a genuine contract
+    # boundary. No docstring in this module says whether an empty `degrees` is legal,
+    # and there is a defensible answer either way -- the empty tensor product is the
+    # single constant function 1, or a basis needs at least one direction. What the
+    # code does is reject it from Layer 2 ("The dimension of the points must be at
+    # least 1", `_basis_multidim.py:161`) with a `ValueError` the Layer-1 `Raises:`
+    # does not list, so the sweep reports it as a *suspected* undocumented rejection,
+    # which is exactly the right strength of claim until the contract says.
     yield Case(
         GROUP,
         f"{name}_nd_empty_degrees",
@@ -481,6 +514,7 @@ def _nd_wrapper_cases(
         ),
         {"degrees": degrees_tuple, "kind": "funcs-order-F"},
         invariants=(expected_shape((pts.shape[0], n_basis)),),
+        must_succeed=True,
     )
     lattice = PointsLattice(
         [np.array([0.2, 0.8], dtype=dtype), np.array([0.3, 0.6, 0.9], dtype=dtype)]
@@ -494,8 +528,14 @@ def _nd_wrapper_cases(
         ),
         {"degrees": degrees_tuple, "kind": "points-lattice"},
         invariants=(expected_shape((6, n_basis)),),
+        must_succeed=True,
     )
     mismatched_pts = _scattered_points(3, dtype, generator)
+    # Two degrees against three-dimensional points: the `degrees`/`pts` pairing is
+    # per-direction by definition, so there is no basis to tabulate and *returning*
+    # something would be the finding. (The `ValueError` it raises comes from Layer 2
+    # and is absent from the Layer-1 `Raises:` list -- a documentation gap, not a
+    # reason to call the input legal.)
     yield Case(
         GROUP,
         f"{name}_nd_dim_mismatch",
@@ -504,6 +544,7 @@ def _nd_wrapper_cases(
             degrees_tuple, mismatched_pts
         ),
         {"degrees": degrees_tuple, "kind": "dim-mismatch"},
+        must_reject=True,
     )
     yield Case(
         GROUP,
@@ -511,6 +552,7 @@ def _nd_wrapper_cases(
         call,
         lambda call=call, pts=pts: call((-1, 2), pts),
         {"degrees": (-1, 2), "kind": "negative-degree"},
+        must_reject=True,  # "If any degree is negative"
     )
 
 
@@ -539,6 +581,8 @@ def _lagrange_nd_variant_cases(profile: Profile) -> Iterator[Case]:
             ),
             {"degrees": degrees_tuple, "variant": variant},
             invariants=(expected_shape((pts.shape[0], n_basis)),),
+            # Degrees 3 and 4 give 4 and 5 nodes, above every variant's floor.
+            must_succeed=True,
         )
 
 
@@ -564,6 +608,8 @@ def _change_basis_square_cases(profile: Profile) -> Iterator[Case]:
     Yields:
         Case: One hostile call per builder.
     """
+    # All six document exactly two preconditions -- "Must be non-negative" and a
+    # float32/float64 dtype -- with a matching `Raises: ValueError` naming both.
     for name, func in _SQUARE_BUILDERS:
         for degree in _capped(degrees(profile), 2, profile):
             for dtype in dtypes(profile):
@@ -574,6 +620,7 @@ def _change_basis_square_cases(profile: Profile) -> Iterator[Case]:
                     lambda func=func, degree=degree, dtype=dtype: func(degree, dtype),
                     {"degree": degree, "dtype": dtype},
                     invariants=(expected_shape((degree + 1, degree + 1)),),
+                    must_succeed=True,
                 )
         yield Case(
             GROUP,
@@ -581,6 +628,7 @@ def _change_basis_square_cases(profile: Profile) -> Iterator[Case]:
             func,
             lambda func=func: func(-1),
             {"degree": -1, "kind": "invalid-degree"},
+            must_reject=True,
         )
         if profile is Profile.FULL:
             yield Case(
@@ -589,6 +637,7 @@ def _change_basis_square_cases(profile: Profile) -> Iterator[Case]:
                 func,
                 lambda func=func: func(3, np.int64),
                 {"degree": 3, "kind": "bad-dtype-int64"},
+                must_reject=True,
             )
 
 
@@ -614,7 +663,7 @@ def _change_basis_lagrange_pair_cases(profile: Profile) -> Iterator[Case]:
     for name, func in _LAGRANGE_PAIR_BUILDERS:
         for degree in _capped(degrees(profile), 2, profile):
             for variant in variants:
-                if degree + 1 < _LAGRANGE_VARIANT_MIN_NPTS[variant]:
+                if degree + 1 < LAGRANGE_MIN_NODES[variant]:
                     continue
                 for dtype in dtypes(profile):
                     yield Case(
@@ -626,6 +675,10 @@ def _change_basis_lagrange_pair_cases(profile: Profile) -> Iterator[Case]:
                         ),
                         {"degree": degree, "variant": variant, "dtype": dtype},
                         invariants=(expected_shape((degree + 1, degree + 1)),),
+                        # These two builders document "Must be at least 1", so the
+                        # swept degree 0 is a documented refusal, not a success.
+                        must_succeed=degree >= 1,
+                        must_reject=degree < 1,
                     )
         yield Case(
             GROUP,
@@ -633,6 +686,7 @@ def _change_basis_lagrange_pair_cases(profile: Profile) -> Iterator[Case]:
             func,
             lambda func=func: func(-1),
             {"degree": -1, "kind": "invalid-degree"},
+            must_reject=True,
         )
 
 
@@ -730,6 +784,9 @@ def _round_trip_case(
         run,
         {"degree": degree, "dtype": dtype, "kind": "round-trip", "cond": cond},
         invariants=invariants,
+        # Both matrices are built at a degree and dtype each builder accepts, so
+        # neither call may refuse; ill-conditioning is not grounds for an exception.
+        must_succeed=True,
     )
 
 
@@ -801,6 +858,11 @@ def _tabulate_1d_out_cases(name: str, func: Callable[..., Any], profile: Profile
     pts = np.array([0.2, 0.6, 0.9], dtype=dtype)
     n_basis = degree + 1
 
+    # The `out` contract is stated identically everywhere: "Must have the correct
+    # shape and dtype if provided", with a matching `Raises: ValueError`. So a
+    # correct `out` must be used and returned, and each of the three malformed ones
+    # must be refused -- for the non-writable case because accepting it means writing
+    # through a read-only view, which is the finding, not the rejection.
     good_out = np.empty((pts.shape[0], n_basis), dtype=dtype)
     yield Case(
         GROUP,
@@ -809,6 +871,7 @@ def _tabulate_1d_out_cases(name: str, func: Callable[..., Any], profile: Profile
         lambda func=func, pts=pts, good_out=good_out: func(degree, pts, out=good_out),
         {"degree": degree, "kind": "out-correct"},
         invariants=(_out_same_array(good_out),),
+        must_succeed=True,
     )
     wrong_shape = np.empty((pts.shape[0] + 1, n_basis), dtype=dtype)
     yield Case(
@@ -817,6 +880,7 @@ def _tabulate_1d_out_cases(name: str, func: Callable[..., Any], profile: Profile
         func,
         lambda func=func, pts=pts, wrong_shape=wrong_shape: func(degree, pts, out=wrong_shape),
         {"degree": degree, "kind": "out-wrong-shape"},
+        must_reject=True,
     )
     wrong_dtype = np.empty((pts.shape[0], n_basis), dtype=np.float32)
     yield Case(
@@ -825,6 +889,7 @@ def _tabulate_1d_out_cases(name: str, func: Callable[..., Any], profile: Profile
         func,
         lambda func=func, pts=pts, wrong_dtype=wrong_dtype: func(degree, pts, out=wrong_dtype),
         {"degree": degree, "kind": "out-wrong-dtype"},
+        must_reject=True,
     )
     non_writable = np.empty((pts.shape[0], n_basis), dtype=dtype)
     non_writable.flags.writeable = False
@@ -834,6 +899,7 @@ def _tabulate_1d_out_cases(name: str, func: Callable[..., Any], profile: Profile
         func,
         lambda func=func, pts=pts, non_writable=non_writable: func(degree, pts, out=non_writable),
         {"degree": degree, "kind": "out-non-writable"},
+        must_reject=True,
     )
 
 
@@ -862,6 +928,7 @@ def _lagrange_1d_out_cases(profile: Profile) -> Iterator[Case]:
         lambda good_out=good_out: tabulate_lagrange_1d(degree, variant, pts, out=good_out),
         {"degree": degree, "kind": "out-correct"},
         invariants=(_out_same_array(good_out),),
+        must_succeed=True,
     )
     wrong_shape = np.empty((pts.shape[0] + 1, n_basis), dtype=dtype)
     yield Case(
@@ -870,6 +937,7 @@ def _lagrange_1d_out_cases(profile: Profile) -> Iterator[Case]:
         tabulate_lagrange_1d,
         lambda wrong_shape=wrong_shape: tabulate_lagrange_1d(degree, variant, pts, out=wrong_shape),
         {"degree": degree, "kind": "out-wrong-shape"},
+        must_reject=True,
     )
     non_writable = np.empty((pts.shape[0], n_basis), dtype=dtype)
     non_writable.flags.writeable = False
@@ -881,6 +949,7 @@ def _lagrange_1d_out_cases(profile: Profile) -> Iterator[Case]:
             degree, variant, pts, out=non_writable
         ),
         {"degree": degree, "kind": "out-non-writable"},
+        must_reject=True,
     )
 
 
@@ -905,6 +974,7 @@ def _monomial_to_bernstein_out_cases(profile: Profile) -> Iterator[Case]:
         lambda good_out=good_out: compute_monomial_to_bernstein_1d(degree, dtype, out=good_out),
         {"degree": degree, "kind": "out-correct"},
         invariants=(_out_same_array(good_out),),
+        must_succeed=True,
     )
     wrong_shape = np.empty((degree, degree + 1), dtype=dtype)
     yield Case(
@@ -915,6 +985,7 @@ def _monomial_to_bernstein_out_cases(profile: Profile) -> Iterator[Case]:
             degree, dtype, out=wrong_shape
         ),
         {"degree": degree, "kind": "out-wrong-shape"},
+        must_reject=True,
     )
 
 
@@ -940,6 +1011,7 @@ def _bernstein_nd_out_cases(profile: Profile) -> Iterator[Case]:
         lambda good_out=good_out: tabulate_bernstein(degrees_tuple, pts, out=good_out),
         {"degrees": degrees_tuple, "kind": "out-correct"},
         invariants=(_out_same_array(good_out),),
+        must_succeed=True,
     )
     wrong_shape = np.empty((pts.shape[0] + 1, n_basis), dtype=np.float64)
     yield Case(
@@ -948,6 +1020,7 @@ def _bernstein_nd_out_cases(profile: Profile) -> Iterator[Case]:
         tabulate_bernstein,
         lambda wrong_shape=wrong_shape: tabulate_bernstein(degrees_tuple, pts, out=wrong_shape),
         {"degrees": degrees_tuple, "kind": "out-wrong-shape"},
+        must_reject=True,
     )
 
 
