@@ -45,7 +45,8 @@ def _remove_knot_1d_core(  # noqa: PLR0912, PLR0913, PLR0915
         knot_index (int): Index *r* such that ``knots[r] == knot_value`` and
             ``knots[r] != knots[r + 1]`` (i.e. the last occurrence).
         multiplicity (int): Current multiplicity *s* of *knot_value*.
-        num (int): Maximum number of removals to attempt.
+        num (int): Maximum number of removals to attempt. **Load-bearing for
+            memory safety**; see the precondition in the notes below.
         tol (float): Maximum allowed Euclidean distance between the two
             intermediate control-point approximations.
 
@@ -57,6 +58,27 @@ def _remove_knot_1d_core(  # noqa: PLR0912, PLR0913, PLR0915
     Note:
         Inputs are assumed to be correct (no validation performed).
         For general use, call ``_remove_knot_bspline_1d_impl`` instead.
+
+        **Precondition on** ``num`` **-- memory safety, not merely correctness:**
+        ``2 * num <= degree + multiplicity``.
+
+        The scratch buffer ``temp`` is sized ``(2 * degree + 1, rank)`` once, before
+        the removal loop. Pass ``t`` writes up to row ``last + 1 - off`` with
+        ``off = first - 1``; since ``first`` decreases and ``last`` increases by one
+        per pass, that highest row is ``degree - s + 2 * t + 2``, growing by two each
+        time. Keeping it within ``2 * degree`` gives ``t <= (degree + s - 2) / 2`` for
+        the final pass ``t = num - 1``, which is the bound above. Past it the kernel
+        writes outside ``temp`` -- silently, since Numba compiles without bounds
+        checking by default, and as undefined behaviour once ported. Confirmed under
+        ``NUMBA_BOUNDSCHECK=1``: that bound is exactly where ``IndexError`` begins,
+        for every ``(degree, multiplicity)`` pair with ``degree <= 4``.
+
+        The Layer-2 caller ``_remove_knot_bspline_1d_impl`` establishes this today by
+        capping ``num`` at ``min(multiplicity, degree)``, which implies the bound and
+        is one removal conservative for some pairs (``degree = 4``,
+        ``multiplicity = 2`` would admit ``num = 3``). Any other caller must establish
+        it itself -- in particular a future C ABI, where the Python-side cap stops
+        being an implicit guarantee.
     """
     n = ctrl.shape[0] - 1  # last control point index
     rank = ctrl.shape[1]

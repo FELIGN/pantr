@@ -64,7 +64,11 @@ def _remove_knot_bspline_1d_impl(  # noqa: PLR0913
     if abs(float(knot_value) - domain_hi) <= tol_space:
         raise ValueError(f"Cannot remove boundary knot {knot_value} (domain end).")
 
-    # Cap at the actual multiplicity (and at degree per the algorithm).
+    # Cap at the actual multiplicity (and at degree per the algorithm).  This clamp is
+    # load-bearing for memory safety, not just a sanity bound: `_remove_knot_1d_core`
+    # sizes its scratch buffer for `2 * num <= degree + s` and writes outside it past
+    # that, silently.  `min(s, degree)` implies that bound, so the clamp has to stay,
+    # including when the caller supplied `num` explicitly.
     max_removals = min(s, degree)
     num = max_removals if num is None else min(num, max_removals)
 
