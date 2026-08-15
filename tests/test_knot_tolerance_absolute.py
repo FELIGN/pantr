@@ -146,9 +146,16 @@ class TestDomainGate:
         ``knot_begin`` against ``pts`` and the right end ``pts`` against
         ``knot_end``, so undershoot at a domain starting at 0 was judged on a bare
         ``atol`` while overshoot at the far end got the full relative window.
+
+        ``tol`` is scaled with ``hi`` so the probes stay representable. With a fixed
+        ``tol = 1e-10``, ``hi + 0.5 * tol`` rounds back to exactly ``hi`` once
+        ``hi = 1e6`` (half a ulp there is 5.8e-11), and the "just inside" probe would
+        silently degenerate into an exact-boundary check at the very scale this
+        module is about.
         """
         knots = np.array([0.0, 0.0, 0.0, hi, hi, hi], dtype=np.float64)
-        tol = 1e-10
+        tol = 1e-10 * hi
+        assert hi + 0.5 * tol != hi, "probe must be representable at this scale"
 
         just_in = np.array([-0.5 * tol, hi + 0.5 * tol])
         just_out = np.array([-2.0 * tol, hi + 2.0 * tol])
