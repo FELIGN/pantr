@@ -41,6 +41,24 @@ two copies of a contract table drift.
 """
 
 
+EXTRAPOLATION_POINT_FAMILIES: Final = frozenset(
+    {"just_outside_right", "just_outside_left", "far_outside", "just_outside"}
+)
+"""Point families from :func:`point_specs` that deliberately sit outside the domain.
+
+Every polynomial basis in this library extrapolates rather than refusing or clamping, and
+a Bernstein or Cox-de Boor value grows like ``O(t ** degree)`` off the domain, so at a
+fixed out-of-domain parameter a high enough degree overflows the format before any
+implementation defect is involved -- ``float32`` at degree 62 does, and that is arithmetic,
+not a bug. So the automatic finiteness check is switched off for these families rather than
+asserted and then explained away. Shape and crash safety are still graded, and every
+invariant a docstring actually claims still applies.
+
+The families are named rather than derived because ``PointSpec.finite`` says something
+different -- whether the *input* contains ``NaN``/``inf`` -- and conflating the two would
+switch off the check for the wrong cases."""
+
+
 class Profile(enum.IntEnum):
     """How wide to open each axis."""
 

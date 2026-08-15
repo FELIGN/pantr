@@ -54,7 +54,15 @@ from pantr.change_basis import (
 )
 from pantr.quad import PointsLattice
 
-from ._axes import LAGRANGE_MIN_NODES, Profile, degrees, dtypes, point_specs, rng
+from ._axes import (
+    EXTRAPOLATION_POINT_FAMILIES,
+    LAGRANGE_MIN_NODES,
+    Profile,
+    degrees,
+    dtypes,
+    point_specs,
+    rng,
+)
 from ._core import Case, custom, expected_shape, partition_of_unity
 
 if TYPE_CHECKING:
@@ -170,7 +178,10 @@ def _tabulate_1d_cases(
                     lambda func=func, degree=degree, pts=spec.pts: func(degree, pts),
                     {"degree": degree, "dtype": dtype, "points": spec.name},
                     invariants=tuple(invariants),
-                    finite_inputs=spec.finite,
+                    # A point outside [0, 1] is extrapolated, not refused, and at
+                    # degree 62 in float32 the extrapolated value overflows the format
+                    # -- arithmetic, not a defect. See EXTRAPOLATION_POINT_FAMILIES.
+                    finite_inputs=spec.finite and spec.name not in EXTRAPOLATION_POINT_FAMILIES,
                     must_succeed=True,
                 )
 
@@ -258,7 +269,7 @@ def _lagrange_1d_cases(profile: Profile) -> Iterator[Case]:
                         ),
                         {"degree": degree, "variant": variant, "dtype": dtype, "points": spec.name},
                         invariants=(expected_shape((*spec.pts.shape, degree + 1)),),
-                        finite_inputs=spec.finite,
+                        finite_inputs=spec.finite and spec.name not in EXTRAPOLATION_POINT_FAMILIES,
                         must_succeed=True,
                     )
     yield Case(

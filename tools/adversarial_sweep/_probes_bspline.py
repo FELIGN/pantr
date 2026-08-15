@@ -60,6 +60,7 @@ from pantr.bspline import (
 from pantr.tolerance import get_machine_epsilon
 
 from ._axes import (
+    EXTRAPOLATION_POINT_FAMILIES,
     Profile,
     coeff_specs,
     degrees,
@@ -554,9 +555,24 @@ def _root_quality(spline: Bspline, degree: int, dtype: npt.DTypeLike) -> Predica
     A degree-``n`` polynomial has at most ``n`` roots per interval, and a spline with
     ``k`` intervals therefore at most ``degree * k``; more than that is a defect no
     conditioning argument excuses. Each root must lie in the domain, and each must be an
-    actual root: de Boor evaluation of a degree-``n`` spline with coefficients of
-    magnitude ``cs`` carries about ``n * eps * cs`` of noise, so the residual is checked
-    against that and nothing tighter.
+    actual root.
+
+    "An actual root" needs two terms, not one. The first is the evaluation noise: de Boor
+    evaluation of a degree-``n`` spline with coefficients of magnitude ``cs`` carries about
+    ``n * eps * cs``. The second is the root finder's own stopping criterion, which the
+    original bound omitted. ``find_roots`` documents ``tol`` as a *parametric* tolerance --
+    the iteration stops when the spread of the last ``degree`` iterates falls to
+    ``tol * max(|t_a|, |t_{a+degree}|, domain_length)`` -- so a root located to ``dt`` in
+    the parameter leaves a residual of about ``|f'| * dt``, about which the evaluation
+    noise says nothing. Bounding the derivative by ``degree * max|delta c| / h_min``, the
+    standard Lipschitz bound read off the hodograph's control points, closes the gap.
+
+    Both terms are needed and neither is slack. With only the first, a genuine root located
+    to a few ulps of parametric precision was reported as a defect at degree 62 -- residual
+    1.7e-13 against a bound of 1.1e-13, where the corrected bound is 6.1e-13. With the
+    second added the check still refutes what it should: a returned value with no zero
+    anywhere near it, off by 0.03 in the parameter, exceeds the corrected bound by a factor
+    of 6.7e11.
 
     Args:
         spline (Bspline): The spline whose roots were requested.
@@ -571,10 +587,19 @@ def _root_quality(spline: Bspline, degree: int, dtype: npt.DTypeLike) -> Predica
     lo = float(knots[degree])
     hi = float(knots[knots.size - degree - 1])
     limit = degree * space.num_intervals
-    scale = float(np.max(np.abs(np.asarray(spline.control_points, dtype=np.float64))))
-    residual_tol = (
-        _ERROR_SAFETY_FACTOR * (degree + 1) * get_machine_epsilon(dtype) * max(scale, 1.0)
+    control = np.asarray(spline.control_points, dtype=np.float64)
+    scale = float(np.max(np.abs(control)))
+    eps = get_machine_epsilon(dtype)
+    evaluation_noise = _ERROR_SAFETY_FACTOR * (degree + 1) * eps * max(scale, 1.0)
+    # `find_roots` defaults `tol` to `get_strict(dtype)`, which is `eps` to within the
+    # safety factor this bound already carries, times the scale its docstring names.
+    parametric_tol = eps * max(abs(lo), abs(hi), hi - lo)
+    slope_bound = (
+        degree * float(np.max(np.abs(np.diff(control, axis=0)))) / _min_nonzero_span(space)
+        if degree > 0 and control.shape[0] > 1
+        else 0.0
     )
+    residual_tol = evaluation_noise + _ERROR_SAFETY_FACTOR * slope_bound * parametric_tol
 
     def predicate(result: object) -> str | None:
         roots = np.asarray(result, dtype=np.float64).ravel()
@@ -607,6 +632,16 @@ def _derivative_agreement(
     parametric span converts that into the derivative's own units. Anything tighter would
     report the finite difference's own noise as a defect.
 
+    That derivation assumes ``h`` is represented exactly, which it is on the unit domain
+    and is not on a translated one. Forming ``t +/- h`` rounds the *sum* to one ulp of
+    ``|t|``, so the step actually taken differs from ``h`` by up to ``eps * |t|``, and the
+    quotient inherits a relative error of ``eps * |t| / h`` -- six orders of magnitude on a
+    domain at ``1e6`` with spans of order one. Ignoring that reported 32 findings, all but
+    two of them on the translated domain; the worst was ``4.2e-6`` against a bound of
+    ``2.3e-9``, while the corrected bound below is ``3.7e-5`` there and comfortably
+    holds. This is an honest statement about what a finite difference can resolve at that
+    coordinate magnitude, not slack granted to the derivative.
+
     Args:
         curve (Bspline): The spline whose derivative is under test.
         pts (npt.NDArray[np.floating[Any]]): Parameters strictly inside knot intervals,
@@ -620,12 +655,19 @@ def _derivative_agreement(
     eps = get_machine_epsilon(fixture.dtype)
     span = _min_nonzero_span(fixture.space)
     step = float(eps ** (1.0 / 3.0)) * span
+    lo, hi = fixture.domain
+    coord_scale = max(abs(lo), abs(hi), 1.0)
+    # Two independent floors, added rather than maximized: the finite difference's own
+    # truncation/rounding balance, and the error inherited from a step that cannot be
+    # represented exactly at this coordinate magnitude. On the unit domain the second
+    # term is negligible and this reduces to the original bound.
+    fd_floor = eps ** (2.0 / 3.0) / span
+    step_representation = eps * coord_scale / (step * span) if step > 0.0 else 0.0
     tol = (
         _ERROR_SAFETY_FACTOR
         * (fixture.degree + 1)
-        * eps ** (2.0 / 3.0)
+        * (fd_floor + step_representation)
         * max(value_scale, 1.0)
-        / span
     )
 
     def predicate(result: object) -> str | None:
@@ -684,6 +726,64 @@ def _split_agreement(curve: Bspline, fixture: _Fixture, tol: float) -> Predicate
     return predicate
 
 
+def _restriction_agreement(curve: Bspline, window: tuple[float, float], tol: float) -> Predicate:
+    """Build a predicate requiring a restriction to span its window and reproduce there.
+
+    ``Bspline.restrict`` carried no invariant at all, which is how it came to be the one
+    entry point in this sweep whose worst failure was invisible: on a domain whose upper
+    bound exceeds 16 in float64 it can return a spline over a *shorter* window than the
+    caller asked for, silently. Whether that surfaces at all was an accident of the
+    fixture -- with four intervals the truncated knot vector is too short and the
+    constructor raises, so it read as a loud ``must_succeed`` failure, but with twenty
+    intervals enough knots survive and the call simply returns the wrong curve. Grading
+    only "did it raise" cannot tell those apart.
+
+    So both halves are checked: the returned domain must be the requested window, and the
+    restricted spline must reproduce the original inside it. The samples stay strictly
+    inside the window, since its ends are knots and a C^-1 spline has two values there --
+    the same reason :func:`_split_agreement` avoids the split point.
+
+    Args:
+        curve (Bspline): The spline before restriction.
+        window (tuple[float, float]): The ``(lower, upper)`` bounds requested.
+        tol (float): Bound from :func:`_eval_tolerance`.
+
+    Returns:
+        Predicate: Check for :func:`adversarial_sweep._core.custom`.
+    """
+    lower, upper = window
+    inner = np.array([0.13, 0.37, 0.61, 0.83])
+    sample = lower + (upper - lower) * inner
+
+    def predicate(result: object) -> str | None:
+        if not isinstance(result, Bspline):
+            return f"expected a Bspline, got {type(result).__name__}"
+        space = result.space.spaces[0]
+        degree = int(space.degree)
+        knots = np.asarray(space.knots, dtype=np.float64)
+        got_lo = float(knots[degree])
+        got_hi = float(knots[knots.size - degree - 1])
+        # The window's own scale sets what "the same endpoint" can mean: at |t| ~ 1e6 the
+        # endpoints are representable to about one ulp there, not to an absolute epsilon.
+        endpoint_tol = 8.0 * get_machine_epsilon(result.dtype) * max(abs(lower), abs(upper), 1.0)
+        if abs(got_lo - lower) > endpoint_tol or abs(got_hi - upper) > endpoint_tol:
+            return (
+                f"restricted domain is [{got_lo:.17g}, {got_hi:.17g}], "
+                f"asked for [{lower:.17g}, {upper:.17g}]"
+            )
+        pts = sample.astype(result.dtype)
+        expected = np.asarray(curve.evaluate(pts), dtype=np.float64)
+        got = np.asarray(result.evaluate(pts), dtype=np.float64)
+        if got.shape != expected.shape:
+            return f"shape {got.shape} != original {expected.shape}"
+        worst = float(np.max(np.abs(got - expected))) if got.size else 0.0
+        if not np.isfinite(worst) or worst > tol:
+            return f"max|f - f_ref| = {worst:.3e} > {tol:.3e} inside the window"
+        return None
+
+    return predicate
+
+
 def _bezier_agreement(curve: Bspline, fixture: _Fixture, tol: float) -> Predicate:
     """Build a predicate requiring each extracted Bézier to reproduce its own interval.
 
@@ -737,9 +837,22 @@ def _product_agreement(
     evaluation error times the other factor's magnitude, so the bound is the evaluation
     tolerance scaled by the value magnitude once more.
 
+    The comparison parameters must avoid the knots, for the same reason
+    :func:`_split_agreement` and :func:`_bezier_agreement` say so in their own
+    docstrings: at an interior knot of multiplicity ``degree + 1`` the spline has two
+    values, and the product's own representation is free to pick the other one. Passing
+    the shared ``_sample_points(fixture)`` here -- which lands on ``0.5``, an interior
+    knot of every ``_mult_knots`` fixture -- reported that discontinuity as a defect on
+    34 cases. Measured on the unit domain with the swept fixtures: at the fractions the
+    shared sampler uses, ``max|fg - f*g|`` is 1.5e-1 at degree 0, 3.9e-1 at degree 1,
+    1.1e-1 at degree 2 and 1.7e-1 at degree 3; at the interval midpoints of the very
+    same splines it is 0, 1.1e-16, 1.7e-16 and 1.5e-16. The product is exact, and the
+    probe was measuring the jump.
+
     Args:
         scalar (Bspline): The scalar spline being squared.
-        pts (npt.NDArray[np.floating[Any]]): Comparison parameters.
+        pts (npt.NDArray[np.floating[Any]]): Comparison parameters. Must lie strictly
+            inside the knot intervals; pass ``_sample_points(fixture, avoid_knots=True)``.
         fixture (_Fixture): Supplies degree and dtype.
 
     Returns:
@@ -1216,7 +1329,14 @@ def _tabulation_cases(profile: Profile) -> Iterator[Case]:
                 lambda space=space, pts=pts: space.tabulate_basis(pts.pts, validate=False),
                 {**fixture.params, "pts": pts.name, "validate": False},
                 invariants=(index,),
-                finite_inputs=pts.finite,
+                # This is the one tabulation case that actually *evaluates* off the
+                # domain -- the two above reject an out-of-domain point before any
+                # arithmetic -- so it is also the only one that can legitimately
+                # overflow. Cox-de Boor extrapolates like O(t ** degree), and at
+                # degree 62 in float32 the result is `inf` for arithmetic reasons.
+                # That produced 18 findings, every one of them float32 at degree 62 on
+                # the `far_outside` family. See EXTRAPOLATION_POINT_FAMILIES.
+                finite_inputs=pts.finite and pts.name not in EXTRAPOLATION_POINT_FAMILIES,
             )
 
 
@@ -1532,7 +1652,9 @@ def _one_curve_cases(fixture: _Fixture, kind: str, profile: Profile) -> Iterator
         Bspline.multiply,
         lambda scalar=scalar: scalar.multiply(scalar),
         {**fixture.params, "cp": kind},
-        invariants=(custom("product-is-pointwise", _product_agreement(scalar, pts, fixture)),),
+        invariants=(
+            custom("product-is-pointwise", _product_agreement(scalar, smooth_pts, fixture)),
+        ),
         must_succeed=legal,
     )
 
@@ -1543,6 +1665,9 @@ def _one_curve_cases(fixture: _Fixture, kind: str, profile: Profile) -> Iterator
         Bspline.restrict,
         lambda curve=curve, window=window: curve.restrict(window),
         {**fixture.params, "cp": kind},
+        invariants=(
+            custom("restriction-spans-the-window", _restriction_agreement(curve, window, tol)),
+        ),
         must_succeed=legal,
     )
 

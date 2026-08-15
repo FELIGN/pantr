@@ -49,7 +49,15 @@ from pantr.quad import PointsLattice
 from pantr.tolerance import get_default, get_machine_epsilon
 from pantr.transform import AffineTransform
 
-from ._axes import Profile, coeff_specs, degrees, dtypes, point_specs, rng
+from ._axes import (
+    EXTRAPOLATION_POINT_FAMILIES,
+    Profile,
+    coeff_specs,
+    degrees,
+    dtypes,
+    point_specs,
+    rng,
+)
 from ._core import Case, custom, expected_shape
 
 if TYPE_CHECKING:
@@ -86,18 +94,6 @@ def _rank_dim_combos(profile: Profile) -> tuple[tuple[int, int], ...]:
         tuple[tuple[int, int], ...]: ``(rank, dim)`` pairs.
     """
     return _RANK_DIM_SMOKE if profile is Profile.SMOKE else _RANK_DIM_FULL
-
-
-_EXTRAPOLATION_POINT_FAMILIES: Final = frozenset(
-    {"just_outside_right", "just_outside_left", "far_outside", "just_outside"}
-)
-"""Point families that deliberately evaluate outside ``[0, 1]``.
-
-Bernstein basis functions extrapolate like ``O(t ** n)``, so at a fixed
-off-domain parameter a high enough degree overflows even before any
-implementation defect is involved; these families are excluded from the
-automatic finiteness check rather than asserted finite at every degree.
-"""
 
 
 _MAGNITUDE_FULL: Final = (
@@ -567,7 +563,7 @@ def _evaluate_cases(profile: Profile) -> Iterator[Case]:
                     # eventually float64) well before any implementation error
                     # is involved -- nothing in `evaluate`'s contract promises
                     # a finite answer for these families at every degree.
-                    finite_expected = finite and name not in _EXTRAPOLATION_POINT_FAMILIES
+                    finite_expected = finite and name not in EXTRAPOLATION_POINT_FAMILIES
                     # Every family here has the shape and dtype `evaluate` asks for, and
                     # `evaluate` states no domain at all for `pts` -- there is no
                     # rejection clause an out-of-domain, empty or `NaN` point could
