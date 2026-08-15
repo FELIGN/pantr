@@ -82,6 +82,24 @@
   endpoint condition and still returns the mean of the control points.
 
 ### Fixed
+- `pantr.bspline.find_roots` returned values that are not roots, silently, on
+  ordinary input: a clamped cubic on `[0, 1]` with control points alternating
+  `+1, -1` gave back `0.375` and `0.625`, where the spline is `0.0208` rather
+  than zero. Its residual test only ever ran on one of the four ways the
+  tracking of a sign change can stop; on the other three the residual was
+  hard-coded to zero and the value accepted unconditionally, and those are the
+  branches that fire when the iteration is in trouble. Every exit now evaluates
+  `|f(x)|` and the same test decides all of them, so a status records how the
+  iteration stopped and never whether the value may be reported. Two further
+  changes were needed to keep that from costing genuine roots. The stop on a
+  repeated iterate now tests the hypothesis Mørken and Reimers actually state in
+  their Corollary 14 — `degree - 1` active knots collapsed onto the iterate —
+  rather than the bare repetition, which is also what a nearly horizontal
+  control-polygon secant produces at a shallow non-zero minimum. And the
+  threshold a tracked iterate is tested against now carries the term the
+  parametric tolerance itself allows, `|f'| * 2 * tol * scale`, alongside the
+  evaluation error: testing the evaluation error alone rejects the correctly
+  located zeros of a steep spline.
 - Knot comparisons went through `np.isclose(a, b, atol=tol)` at 26 sites across
   seven modules. Setting `atol` does not clear `rtol`, which stays at NumPy's
   default `1e-5`, so the effective test was `|a - b| <= tol + 1e-5 * |b|`: on a

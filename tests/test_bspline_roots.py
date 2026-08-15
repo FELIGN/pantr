@@ -17,6 +17,8 @@ from pantr.bspline._bspline_roots_core import (
     _knot_average,
     _merge_roots,
     _morken_reimers_roots,
+    _residual_at,
+    _span_at,
     _split_at_root,
     _zero_index,
 )
@@ -143,9 +145,44 @@ def _bezier_reference_roots(
     return out
 
 
+def _hodograph_slope_bound(
+    coeffs: npt.NDArray[np.float64],
+    knots: npt.NDArray[np.float64],
+    degree: int,
+) -> float:
+    """Bound ``|f'|`` over the whole domain from the hodograph coefficients.
+
+    The derivative of a spline is the spline whose coefficients are
+    ``degree * (c[i] - c[i-1]) / (t[i+degree] - t[i])``, and a spline never leaves the
+    range of its own coefficients, so the largest such difference quotient bounds ``|f'|``
+    everywhere. A zero-length denominator is a C^-1 knot, where the spline jumps and no
+    finite slope describes it, and is skipped.
+    """
+    gaps = knots[degree + 1 : coeffs.shape[0] + degree] - knots[1 : coeffs.shape[0]]
+    quotients = np.abs(np.diff(coeffs))[gaps > 0.0] / gaps[gaps > 0.0]
+    return float(degree * quotients.max()) if quotients.size else 0.0
+
+
 def _zero_tol(coeffs: npt.NDArray[np.float64], degree: int) -> float:
     """Return the residual threshold ``find_roots`` derives for these coefficients."""
     return float(np.abs(coeffs).max()) * max((degree + 1) * 4.0 * _EPS, 1e-15)
+
+
+def _root_tol(
+    coeffs: npt.NDArray[np.float64],
+    knots: npt.NDArray[np.float64],
+    degree: int,
+) -> float:
+    """Return the residual threshold ``find_roots`` allows a *tracked* iterate.
+
+    Larger than :func:`_zero_tol` by the value the spline reaches at the parametric
+    resolution the iteration stops at, ``|f'| * 2 * tol * scale``.
+    """
+    num_coeffs = coeffs.shape[0]
+    scale = max(abs(float(knots[degree])), abs(float(knots[num_coeffs])))
+    scale = max(scale, float(knots[num_coeffs] - knots[degree]))
+    slope = _hodograph_slope_bound(coeffs, knots, degree)
+    return _zero_tol(coeffs, degree) + 2.0 * slope * _STRICT_TOL * scale
 
 
 # --- Analytic cases -------------------------------------------------------------------
@@ -295,6 +332,32 @@ def test_matches_the_bezier_route_on_random_splines(degree: int) -> None:
         assert found.shape == expected.shape
         if found.size:
             np.testing.assert_allclose(found, expected, rtol=0.0, atol=_PARITY_RTOL)
+
+
+@pytest.mark.parametrize("degree", [1, 2, 3, 4, 5, 6, 7])
+def test_sign_alternating_splines_agree_with_the_bezier_route(degree: int) -> None:
+    """Coefficients alternating ``+1, -1`` give the same zero set as extraction.
+
+    The family the August 2026 sweep found the certificate defect with, and the one the
+    residual test has to be careful not to over-reject: one sign change per interval, so
+    every zero the polygon can bracket is present, and a slope steep enough that the
+    evaluation error alone is not what a correctly located zero leaves behind.
+
+    Two intervals are excluded. There the outer zeros are near-tangential and both routes
+    place them only to ``zero_tol ** (1 / m)``, which at degree 7 is ``1.8e-3``: a real
+    accuracy limit of the problem, asserted by ``test_a_multiple_root_is_reported_once``
+    on data built for it, and not what this test is about.
+    """
+    for n_intervals in (3, 4, 5, 8):
+        knots = _open_knots(degree, np.linspace(0.0, 1.0, n_intervals + 1))
+        coeffs = np.where(np.arange(len(knots) - degree - 1) % 2, -1.0, 1.0)
+        spline = _spline(knots, coeffs, degree)
+
+        found = find_roots(spline)
+        expected = _bezier_reference_roots(spline, knots)
+
+        assert found.shape == expected.shape, f"{n_intervals} intervals"
+        np.testing.assert_allclose(found, expected, rtol=0.0, atol=_PARITY_RTOL)
 
 
 @pytest.mark.parametrize(
@@ -640,6 +703,36 @@ def test_knot_average_is_the_greville_abscissa() -> None:
         assert _knot_average(knots, degree, index) == pytest.approx(expected, abs=_EPS)
 
 
+def test_span_at_stays_inside_the_last_span_of_the_domain() -> None:
+    """The span search brackets every point, and treats the end of the domain from the left."""
+    degree = 2
+    knots = _open_knots(degree, np.linspace(0.0, 1.0, 5))
+    num_coeffs = len(knots) - degree - 1
+
+    for point, expected in ((0.0, 2), (0.1, 2), (0.25, 3), (0.6, 4), (0.99, 5)):
+        assert _span_at(knots, num_coeffs, degree, point) == expected
+        assert knots[expected] <= point < knots[expected + 1]
+
+    # The one point no bracket contains: an open knot vector's last span is half open, so
+    # the search stops at it rather than walking into the clamped tail.
+    assert _span_at(knots, num_coeffs, degree, 1.0) == num_coeffs - 1
+
+
+def test_residual_at_evaluates_the_spline_it_is_given() -> None:
+    """``_residual_at`` is ``|f|``, and agrees with the public evaluator that certifies it."""
+    degree = 3
+    knots = _open_knots(degree, np.linspace(0.0, 1.0, 5))
+    coeffs = _polynomial_coefficients(knots, degree, (0.2, 0.5, 0.9))
+    num_coeffs = coeffs.shape[0]
+    work = np.empty(degree + 1, dtype=np.float64)
+    points = np.array([0.0, 0.2, 0.37, 0.5, 0.75, 0.9, 1.0])
+
+    expected = np.abs(np.asarray(_spline(knots, coeffs, degree).evaluate(points)).reshape(-1))
+    got = [_residual_at(knots, coeffs, num_coeffs, degree, float(p), work) for p in points]
+
+    np.testing.assert_allclose(got, expected, rtol=0.0, atol=(degree + 1) * _EPS)
+
+
 def test_zero_index_needs_a_non_zero_left_neighbour() -> None:
     """A pinned coefficient is a barrier: no sign change is reported across it."""
     coeffs = np.array([0.0, -1.0, 1.0, 1.0, -1.0])
@@ -733,23 +826,54 @@ def test_kernel_reports_a_zero_whose_budget_ran_out() -> None:
     degree = 3
     knots = _open_knots(degree, np.linspace(0.0, 1.0, 6))
     coeffs = _polynomial_coefficients(knots, degree, (0.2, 0.5, 0.9))
+    zero_tol = _zero_tol(coeffs, degree)
 
-    _, _, truncated = _morken_reimers_roots(
-        knots, degree, coeffs, 1e-15, _zero_tol(coeffs, degree), 1
+    _, _, truncated, abandoned = _morken_reimers_roots(
+        knots, degree, coeffs, 1e-15, zero_tol, _root_tol(coeffs, knots, degree), 1
     )
 
-    assert truncated > 0
+    assert truncated + abandoned > 0
 
 
 def test_budget_exhaustion_warns(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Layer 2 turns an exhausted budget into a warning naming how many zeros it hit."""
+    """A zero reported at an unconverged iterate says so: it may be less accurate than tol.
+
+    A budget of eight is enough for the residual to certify all three zeros of this
+    spline but not for the iterates of the first to stagnate, which is the case the
+    warning is for. It has to be measured rather than reasoned: the budget at which the
+    two stop coinciding is a property of this spline.
+    """
+    degree = 3
+    knots = _open_knots(degree, np.linspace(0.0, 1.0, 6))
+    coeffs = _polynomial_coefficients(knots, degree, (0.2, 0.5, 0.9))
+    monkeypatch.setattr(_bspline_roots, "_max_insertions", lambda _degree: 8)
+
+    with pytest.warns(RuntimeWarning, match="reported at the last iterate reached"):
+        found = find_roots(_spline(knots, coeffs, degree))
+
+    assert found.shape == (3,)
+
+
+def test_a_sign_change_the_budget_never_certified_is_not_silently_dropped(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Rejecting an uncertified iterate loses a zero, and losing one silently is not allowed.
+
+    Uniform residual testing is what keeps a non-root out of the result, and the price is
+    that a sign change whose tracking never converges is dropped rather than reported at
+    whatever it reached. That is the sound direction, but it is a *missing* root, so it is
+    the one rejection the caller is told about. A budget of one exhausts before any of the
+    three zeros below is located at all.
+    """
     degree = 3
     knots = _open_knots(degree, np.linspace(0.0, 1.0, 6))
     coeffs = _polynomial_coefficients(knots, degree, (0.2, 0.5, 0.9))
     monkeypatch.setattr(_bspline_roots, "_max_insertions", lambda _degree: 1)
 
-    with pytest.warns(RuntimeWarning, match="insertion budget"):
-        find_roots(_spline(knots, coeffs, degree))
+    with pytest.warns(RuntimeWarning, match="may be missing a root"):
+        found = find_roots(_spline(knots, coeffs, degree))
+
+    assert found.shape == (0,)
 
 
 def test_insertion_budget_grows_with_degree() -> None:

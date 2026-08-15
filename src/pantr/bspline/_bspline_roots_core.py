@@ -15,6 +15,14 @@ an open (clamped) knot vector, this time on ``[zero, end]``. That is what bounds
 the memory, since the insertions spent on one zero are discarded when the next
 one is reported, and it is what keeps every span search inside the buffer.
 
+Nothing here is reported on the strength of the branch that produced it. The
+paper's certificates -- a repeated iterate, an iterate at the end of its Greville
+interval -- are theorems of exact arithmetic, and a floating-point iteration can
+satisfy their conclusions' *tests* without being anywhere near a zero. So
+:func:`_track_zero` hands back ``|f(x)|`` on every exit, its status says only how
+the iteration stopped, and :func:`_morken_reimers_roots` reports an iterate if and
+only if that residual is within ``root_tol``.
+
 Note:
     Inputs are assumed to be correct (no validation performed).
     For general use, call :func:`pantr.bspline.find_roots` instead.
@@ -29,20 +37,30 @@ import numpy.typing as npt
 
 from .._numba_compat import nb_jit
 
-_STATUS_CONVERGED: int = 1
-"""The iterates stagnated, or repeated exactly, at a zero of the spline."""
+_STATUS_STAGNATED: int = 1
+"""The iteration reached a point it will not leave.
 
-_STATUS_CANDIDATE: int = 2
-"""The polygon cannot certify the last iterate; its residual decides.
+Covers the three stopping rules: an iterate repeated exactly, the last ``degree``
+iterates spanned less than ``tol``, and an iterate reached the right end of its
+Greville interval, where every value of ``lam`` gives the same point.
+"""
 
-Reached when the tracked sign change vanished under refinement, which is either a
-tangential zero or a false warning of the variation-diminishing bound, and when the
-iterate reached a knot of multiplicity ``degree + 1``, where the spline jumps and the
-sign change need not bracket a zero at all.
+_STATUS_VANISHED: int = 2
+"""The tracked sign change disappeared under refinement.
+
+Either a tangential zero, where the two sign changes bracketing it collapse, or a
+false warning of the variation-diminishing bound.
 """
 
 _STATUS_BUDGET: int = 3
-"""The insertion budget ran out before the iterates stagnated."""
+"""The insertion budget ran out before the iteration stopped."""
+
+_COROLLARY_14_DEGREE: int = 2
+"""Lowest degree at which Corollary 14 of Mørken-Reimers asks for a collapsed knot run.
+
+The corollary needs ``degree - 1`` active knots collapsed onto the iterate, so at
+degree 1 it asks for none and a repeated iterate satisfies it on its own.
+"""
 
 
 @nb_jit(nopython=True, cache=True)
@@ -155,6 +173,72 @@ def _deboor_point(  # noqa: PLR0913
             alpha = (point - knots[left]) / denominator if denominator > 0.0 else 0.0
             work[i] = (1.0 - alpha) * work[i - 1] + alpha * work[i]
     return float(work[degree])
+
+
+@nb_jit(nopython=True, cache=True)
+def _span_at(
+    knots: npt.NDArray[Any],
+    num_coeffs: int,
+    degree: int,
+    point: float,
+) -> int:
+    """Locate the knot span of ``point`` in an open (clamped) knot window.
+
+    The search is bounded above by ``num_coeffs - 1``, the last span of an open
+    knot vector, so that a point at the end of the domain is handled from the
+    left instead of walking off the end of the buffer.
+
+    Args:
+        knots (npt.NDArray[Any]): Open (clamped) knot window.
+        num_coeffs (int): Number of valid coefficients in the window.
+        degree (int): Polynomial degree.
+        point (float): Point inside the window's domain.
+
+    Returns:
+        int: Span index in ``[degree, num_coeffs - 1]``.
+
+    Note:
+        Inputs are assumed to be correct (no validation performed).
+        For general use, call :func:`pantr.bspline.find_roots` instead.
+    """
+    span = degree
+    while span + 1 < num_coeffs and point >= knots[span + 1]:
+        span += 1
+    return span
+
+
+@nb_jit(nopython=True, cache=True)
+def _residual_at(  # noqa: PLR0913
+    knots: npt.NDArray[Any],
+    coeffs: npt.NDArray[Any],
+    num_coeffs: int,
+    degree: int,
+    point: float,
+    work: npt.NDArray[Any],
+) -> float:
+    """Evaluate ``|f(point)|`` on a refined window.
+
+    This is the certificate every reported zero has to produce, so it is computed
+    from the window as it stands rather than assumed from the branch that reached
+    it.
+
+    Args:
+        knots (npt.NDArray[Any]): Open (clamped) knot window.
+        coeffs (npt.NDArray[Any]): Coefficient window.
+        num_coeffs (int): Number of valid entries in ``coeffs``.
+        degree (int): Polynomial degree.
+        point (float): Evaluation point, inside the window's domain.
+        work (npt.NDArray[Any]): Scratch buffer of at least ``degree + 1`` entries.
+
+    Returns:
+        float: ``|f(point)|``.
+
+    Note:
+        Inputs are assumed to be correct (no validation performed).
+        For general use, call :func:`pantr.bspline.find_roots` instead.
+    """
+    span = _span_at(knots, num_coeffs, degree, point)
+    return abs(_deboor_point(knots, coeffs, degree, point, span, work))
 
 
 @nb_jit(nopython=True, cache=True)
@@ -277,6 +361,38 @@ def _split_at_root(  # noqa: PLR0913
 
 
 @nb_jit(nopython=True, cache=True)
+def _drop_window_head(
+    knots: npt.NDArray[Any],
+    coeffs: npt.NDArray[Any],
+    num_coeffs: int,
+    degree: int,
+    offset: int,
+) -> int:
+    """Discard the first ``offset`` coefficients of the window, shifting the rest down.
+
+    Args:
+        knots (npt.NDArray[Any]): Knot window, shifted in place.
+        coeffs (npt.NDArray[Any]): Coefficient window, shifted in place.
+        num_coeffs (int): Number of valid entries in ``coeffs`` before the shift.
+        degree (int): Polynomial degree.
+        offset (int): Number of leading coefficients to drop.
+
+    Returns:
+        int: The coefficient count after the shift, ``num_coeffs - offset``.
+
+    Note:
+        Inputs are assumed to be correct (no validation performed).
+        For general use, call :func:`pantr.bspline.find_roots` instead.
+    """
+    remaining = num_coeffs - offset
+    for i in range(remaining):
+        coeffs[i] = coeffs[i + offset]
+    for i in range(remaining + degree + 1):
+        knots[i] = knots[i + offset]
+    return remaining
+
+
+@nb_jit(nopython=True, cache=True)
 def _track_zero(  # noqa: PLR0913
     knots: npt.NDArray[Any],
     coeffs: npt.NDArray[Any],
@@ -284,7 +400,6 @@ def _track_zero(  # noqa: PLR0913
     degree: int,
     index: int,
     tol: float,
-    zero_tol: float,
     domain_length: float,
     max_insertions: int,
     iterates: npt.NDArray[Any],
@@ -310,8 +425,6 @@ def _track_zero(  # noqa: PLR0913
         index (int): Zero index to track, inside the window. The caller
             guarantees that :func:`_is_zero_index` holds for it.
         tol (float): Relative stagnation tolerance.
-        zero_tol (float): Absolute residual below which a coefficient counts as
-            zero.
         domain_length (float): Length of the spline's parametric domain, used as
             a floor for the tolerance scale.
         max_insertions (int): Insertion budget for this zero.
@@ -320,11 +433,13 @@ def _track_zero(  # noqa: PLR0913
 
     Returns:
         tuple[float, int, float, int, int]: ``(x, status, residual, num_coeffs,
-        index)``. ``status`` is one of ``_STATUS_CONVERGED``,
-        ``_STATUS_CANDIDATE`` or ``_STATUS_BUDGET``, ``x`` is the last polygon
-        zero computed, ``residual`` is ``|f(x)|`` when the status is
-        ``_STATUS_CANDIDATE`` and ``0.0`` otherwise, and the last two are the
-        coefficient count and tracked index left behind in the refined window.
+        index)``. ``x`` is the last polygon zero computed and ``residual`` is
+        ``|f(x)|``, evaluated on the refined window on *every* exit: the status
+        records how the iteration stopped, never whether ``x`` may be reported,
+        which is the caller's residual test alone. ``status`` is one of
+        ``_STATUS_STAGNATED``, ``_STATUS_VANISHED`` or ``_STATUS_BUDGET``, and
+        the last two are the coefficient count and tracked index left behind in
+        the refined window.
 
     Note:
         Inputs are assumed to be correct (no validation performed).
@@ -365,9 +480,32 @@ def _track_zero(  # noqa: PLR0913
         x = max(x, knots[index])
 
         # A repeated iterate is a fixed point of the iteration, hence a zero of
-        # the spline (Morken-Reimers, Lemma 13 and Corollary 14).
+        # the spline (Morken-Reimers, Lemma 13 and Corollary 14). The corollary
+        # is a statement about exact arithmetic, so what it licenses is stopping
+        # here, not the value being a zero: the residual is what says that.
+        #
+        # Its hypothesis is that the tracked sign change has `degree - 1` of its
+        # active knots collapsed onto the iterate, `t[index + 1] = ... =
+        # t[index + degree - 1] = x`, and the knots being ascending the two ends
+        # of that run decide it. Repetition alone is a much weaker signal: it is
+        # also what a secant that is nearly horizontal in the control polygon
+        # produces, once the correction it asks for falls below an ulp of the
+        # Greville abscissa, and that happens at a shallow non-zero minimum just
+        # as readily as at a zero. Testing repetition alone stops the iteration
+        # early, wherever precision runs out first, which at degree 3 is after
+        # one collapsed knot of the two the corollary needs.
+        #
+        # Falling through instead inserts x again, which collapses one more knot
+        # onto it, so the hypothesis is reached in at most `degree - 1` further
+        # insertions and the budget bounds the rest. For degree 1 the run is
+        # empty and the corollary asks for nothing.
         if num_iterates > 0 and x == previous_x:
-            return x, _STATUS_CONVERGED, 0.0, num_coeffs, index
+            collapsed = degree < _COROLLARY_14_DEGREE or (
+                knots[index + 1] == x and knots[index + degree - 1] == x
+            )
+            if collapsed:
+                residual = _residual_at(knots, coeffs, num_coeffs, degree, x, work)
+                return x, _STATUS_STAGNATED, residual, num_coeffs, index
 
         # Their Lemma 3: an iterate that reaches the right end of its Greville
         # interval carries `coeffs[index] = 0`, hence f(x) = 0.
@@ -376,25 +514,20 @@ def _track_zero(  # noqa: PLR0913
         # and that interval is empty exactly when the two abscissae coincide,
         # which happens exactly when `knots[index] == knots[index + degree]`,
         # that is when the knot run at x carries multiplicity `degree + 1` and
-        # the spline is C^-1 there. The hypothesis is therefore a property of the
-        # knot vector alone: the test below is structural and needs no tolerance,
-        # and it leaves every other spline on the path it already took.
+        # the spline is C^-1 there. In that one excluded case the secant through
+        # the two coefficients is vertical, its zero is x for every `lam`, and
+        # nothing forces `coeffs[index]` to vanish; the sign change is then the
+        # spline jumping across the axis rather than meeting it.
         #
-        # In that one excluded case the secant through the two coefficients is
-        # vertical, its zero is x for every `lam`, and nothing forces
-        # `coeffs[index]` to vanish; the sign change is then the spline jumping
-        # across the axis rather than meeting it. So test the lemma's conclusion
-        # instead of assuming it. At an exact C^-1 knot `coeffs[index]` is the
-        # value of the spline immediately to the right of the run, with no
-        # positional error to inflate it, so comparing it against the residual
-        # threshold is dimensionally sound.
+        # Either way the conclusion is tested rather than assumed, so the two
+        # cases need no separating: reaching this branch means the knot run at x
+        # has multiplicity at least `degree`, and `coeffs[index]` is then exactly
+        # the value of the spline immediately to the right of the run, with no
+        # positional error to inflate it. Refining instead would insert a knot
+        # into a run the method keeps at multiplicity at most `degree`, and
+        # divide by a zero-length span.
         if x >= knots[index + degree]:
-            if knots[index] < knots[index + degree] or abs(coeffs[index]) <= zero_tol:
-                return x, _STATUS_CONVERGED, 0.0, num_coeffs, index
-            # Hand the jump to the caller's residual test, which rejects it.
-            # Refining instead would insert a knot into a run the method keeps at
-            # multiplicity at most `degree`, and divide by a zero-length span.
-            return x, _STATUS_CANDIDATE, abs(coeffs[index]), num_coeffs, index
+            return x, _STATUS_STAGNATED, abs(coeffs[index]), num_coeffs, index
 
         iterates[num_iterates % degree] = x
         previous_x = x
@@ -409,10 +542,12 @@ def _track_zero(  # noqa: PLR0913
             scale = max(abs(knots[index]), abs(knots[index + degree]))
             scale = max(scale, domain_length)
             if highest - lowest <= tol * scale:
-                return x, _STATUS_CONVERGED, 0.0, num_coeffs, index
+                residual = _residual_at(knots, coeffs, num_coeffs, degree, x, work)
+                return x, _STATUS_STAGNATED, residual, num_coeffs, index
 
         if inserted >= budget:
-            return x, _STATUS_BUDGET, 0.0, num_coeffs, index
+            residual = _residual_at(knots, coeffs, num_coeffs, degree, x, work)
+            return x, _STATUS_BUDGET, residual, num_coeffs, index
 
         span = index
         while x >= knots[span + 1]:
@@ -426,34 +561,37 @@ def _track_zero(  # noqa: PLR0913
         if not _is_zero_index(coeffs, num_coeffs, index):
             index += 1
             if not _is_zero_index(coeffs, num_coeffs, index):
-                span = 0
-                while x >= knots[span + 1]:
-                    span += 1
-                residual = _deboor_point(knots, coeffs, degree, x, span, work)
-                return x, _STATUS_CANDIDATE, abs(residual), num_coeffs, index
+                residual = _residual_at(knots, coeffs, num_coeffs, degree, x, work)
+                return x, _STATUS_VANISHED, residual, num_coeffs, index
 
 
 @nb_jit(nopython=True, cache=True)
-def _morken_reimers_roots(  # noqa: PLR0912, PLR0913
+def _morken_reimers_roots(  # noqa: PLR0912, PLR0913, PLR0915
     knots: npt.NDArray[Any],
     degree: int,
     coeffs: npt.NDArray[Any],
     tol: float,
     zero_tol: float,
+    root_tol: float,
     max_insertions: int,
-) -> tuple[npt.NDArray[np.float64], int, int]:
+) -> tuple[npt.NDArray[np.float64], int, int, int]:
     """Compute every zero of a scalar spline by the Mørken-Reimers method.
 
-    Scans the control polygon left to right and tracks each sign change to a
-    zero of the spline. A sign change that disappears under refinement is a
-    false warning of the variation-diminishing bound, unless the spline is
-    tangent to the axis there: those are separated by testing the residual
-    ``|f(x)| <= zero_tol``, which is also how the two domain endpoints are
-    tested. Zeros of even multiplicity have no sign change in the limit and
-    cannot be certified by the polygon alone, so they are reported through that
-    residual test only. A sign change across a knot of multiplicity
-    ``degree + 1``, where the spline is C^-1 and jumps across the axis without
-    reaching it, is rejected by that same test.
+    Scans the control polygon left to right and tracks each sign change. What
+    the polygon supplies is a *place to look*, never a certificate: the
+    tracking stops for three different reasons, none of which implies that the
+    point it stopped at is a zero, so every iterate is reported only when
+    ``|f(x)| <= root_tol``. It is what separates a tangential zero, where the
+    two sign changes bracketing it collapse, from a false warning of the
+    variation-diminishing bound; what rejects a sign change across a knot of
+    multiplicity ``degree + 1``, where the spline is C^-1 and jumps across the
+    axis without reaching it; and what rejects an iteration that stopped moving
+    somewhere other than a zero.
+
+    The two domain endpoints are decided by ``zero_tol`` instead, on the
+    coefficient an open knot vector interpolates there: that is the value of the
+    spline, carrying no location error at all, so only the evaluation term
+    applies.
 
     Args:
         knots (npt.NDArray[Any]): Open (clamped) knot vector of shape
@@ -461,14 +599,22 @@ def _morken_reimers_roots(  # noqa: PLR0912, PLR0913
         degree (int): Polynomial degree, at least 1.
         coeffs (npt.NDArray[Any]): B-spline coefficients of the scalar spline.
         tol (float): Relative stagnation tolerance for the iterates.
-        zero_tol (float): Absolute residual below which a value counts as zero.
+        zero_tol (float): Absolute residual below which an exactly located value
+            counts as zero, that is the error of evaluating the spline.
+        root_tol (float): Absolute residual below which a *tracked* iterate
+            counts as a zero. Larger than ``zero_tol`` by what the parametric
+            tolerance the iteration stops at leaves behind, and derived in
+            :func:`pantr.bspline._bspline_roots._find_roots_impl`.
         max_insertions (int): Insertion budget per zero.
 
     Returns:
-        tuple[npt.NDArray[np.float64], int, int]: ``(roots, count, truncated)``
-        where only the first ``count`` entries of ``roots`` are valid, sorted
-        ascending, and ``truncated`` counts the zeros whose insertion budget ran
-        out before the iterates stagnated.
+        tuple[npt.NDArray[np.float64], int, int, int]: ``(roots, count,
+        truncated, abandoned)`` where only the first ``count`` entries of
+        ``roots`` are valid, sorted ascending. ``truncated`` counts the reported
+        zeros whose insertion budget ran out first, so that they sit at the last
+        iterate reached rather than at a stagnated one; ``abandoned`` counts the
+        sign changes whose budget ran out without the residual ever certifying
+        them, each of which may be a zero this call does not report.
 
     Note:
         Inputs are assumed to be correct (no validation performed).
@@ -482,6 +628,7 @@ def _morken_reimers_roots(  # noqa: PLR0912, PLR0913
     roots = np.empty(num_coeffs + 2, dtype=np.float64)
     count = 0
     truncated = 0
+    abandoned = 0
 
     start = float(knots[degree])
     end = float(knots[num_coeffs])
@@ -519,9 +666,11 @@ def _morken_reimers_roots(  # noqa: PLR0912, PLR0913
         # Stop while a full tracking and the split that may follow it still fit.
         # Reaching this means the insertions between two reported zeros outran
         # the room the compaction reclaims, which the capacity below is sized to
-        # prevent; the count of unfinished zeros is what tells the caller.
+        # prevent; the count of unfinished zeros is what tells the caller. This
+        # sign change is never tracked at all, so it is abandoned rather than
+        # truncated.
         if num_live + max_insertions + 2 * (degree + 1) > capacity:
-            truncated += 1
+            abandoned += 1
             break
 
         x, status, residual, num_live, index = _track_zero(
@@ -531,27 +680,38 @@ def _morken_reimers_roots(  # noqa: PLR0912, PLR0913
             degree,
             index,
             tol,
-            zero_tol,
             domain_length,
             max_insertions,
             iterates,
             work,
         )
 
-        if status == _STATUS_BUDGET:
-            truncated += 1
+        # The residual, and nothing else, is what makes an iterate a zero. The
+        # three ways the tracking can stop are three provenances, not three
+        # entitlements: the polygon lost its sign change, the iteration stopped
+        # moving, or the budget ran out, and each of them can stop at a point
+        # where the spline does not vanish. The theory that says otherwise holds
+        # in exact arithmetic, where a coefficient reaches zero only near a zero
+        # of the spline; in floating point it can reach zero for reasons of its
+        # own, so the conclusion is tested rather than inherited.
+        #
+        # `root_tol` rather than `zero_tol`, because the iteration stops at a
+        # *parametric* resolution: a zero located to that much leaves `|f'|`
+        # times it behind however exactly f is then evaluated, and testing the
+        # evaluation error alone would reject the genuine zeros of a steep
+        # spline.
+        certified = residual <= root_tol
 
-        # A polygon that lost its sign change is at a zero of even multiplicity if
-        # the spline vanishes there, and at a false warning of the
-        # variation-diminishing bound otherwise. A sign change straddling a knot
-        # of multiplicity `degree + 1` arrives here as well, and the same test
-        # rejects it: the spline jumps across the axis without ever reaching it.
-        accepted = residual <= zero_tol if status == _STATUS_CANDIDATE else True
+        if status == _STATUS_BUDGET:
+            if certified:
+                truncated += 1
+            else:
+                abandoned += 1
 
         # The sweep is strictly left to right, so an iterate that did not pass
         # the zero reported last is that same zero seen again through another
         # sign change of the polygon, not a new one.
-        if accepted and previous_root < x <= end:
+        if certified and previous_root < x <= end:
             roots[count] = x
             count += 1
             previous_root = x
@@ -565,11 +725,7 @@ def _morken_reimers_roots(  # noqa: PLR0912, PLR0913
                 num_live, offset = _split_at_root(
                     live_knots, live_coeffs, num_live, degree, x, zero_tol
                 )
-                for i in range(num_live - offset):
-                    live_coeffs[i] = live_coeffs[i + offset]
-                for i in range(num_live - offset + degree + 1):
-                    live_knots[i] = live_knots[i + offset]
-                num_live -= offset
+                num_live = _drop_window_head(live_knots, live_coeffs, num_live, degree, offset)
                 scan_from = 1
         else:
             # One index past the sign change just rejected, and no further: the
@@ -584,7 +740,7 @@ def _morken_reimers_roots(  # noqa: PLR0912, PLR0913
         roots[count] = end
         count += 1
 
-    return roots, count, truncated
+    return roots, count, truncated, abandoned
 
 
 @nb_jit(nopython=True, cache=True)
@@ -641,17 +797,20 @@ def _warmup_numba_functions() -> None:
     """
     knots = np.array([0.0, 0.0, 0.0, 0.0, 0.5, 1.0, 1.0, 1.0, 1.0], dtype=np.float64)
     coeffs = np.array([-1.0, -0.5, 0.5, 1.0, 2.0], dtype=np.float64)
-    roots, count, _ = _morken_reimers_roots(knots, 3, coeffs, 1e-15, 1e-14, 64)
+    roots, count, _, _ = _morken_reimers_roots(knots, 3, coeffs, 1e-15, 1e-14, 1e-13, 64)
     _merge_roots(roots[:count], np.full(count, 1e-15, dtype=np.float64))
 
 
 __all__ = [
     "_deboor_point",
+    "_drop_window_head",
     "_insert_knot",
     "_is_zero_index",
     "_knot_average",
     "_merge_roots",
     "_morken_reimers_roots",
+    "_residual_at",
+    "_span_at",
     "_split_at_root",
     "_track_zero",
     "_zero_index",
