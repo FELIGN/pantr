@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from fractions import Fraction
 from typing import Any, cast
 
 import numpy as np
@@ -12,6 +13,7 @@ import pytest
 from numpy.polynomial import chebyshev, legendre
 
 from pantr.basis import LagrangeVariant, tabulate_lagrange_1d
+from pantr.basis._basis_lagrange import _get_lagrange_points
 from pantr.tolerance import get_default
 
 
@@ -118,6 +120,108 @@ def test_partition_of_unity(variant: LagrangeVariant, dtype: npt.DTypeLike) -> N
     sums = np.sum(res, axis=-1)
     rtol = get_default(dtype)
     nptest.assert_allclose(sums, 1.0, rtol=rtol, atol=0.0)
+
+
+_SNAP_CLEARANCE: float = 1e-5
+"""Minimum distance from an evaluation point to the nearest node, for the test below.
+
+``_tabulate_lagrange_basis_1D_core`` replaces any row within ``16 * eps`` of a node by a
+hardcoded identity row, so a test meant to see the interpolator has to stay outside that
+window. ``16 * eps`` is 3.6e-15; this leaves ten orders of magnitude. The tightest
+approach the fixed points make is 1e-4, from ``0.5001`` against the node at ``0.5``
+that every symmetric variant carries at even degree, so this is a guard against a later
+edit moving a point onto a node, not a constraint the current data is near.
+"""
+
+_BARYCENTRIC_SAFETY: float = 4.0
+"""Safety factor on the barycentric evaluation-error bound used below.
+
+The bound itself is ``(degree + 1) * eps``, one relative rounding per term of the
+barycentric quotient, applied to the largest cardinal value in the row so that it is a
+bound on a value of that scale rather than on an absolute number. Measured against exact
+rational arithmetic over the five variants at degrees 1 to 12, the worst relative error
+is 1.55e-15 (equispaced, degree 12) against a bare bound of 2.89e-15 there, a margin of
+only 1.9. Four takes that to 7.4 while still failing by twelve orders of magnitude on
+anything that changes the polynomial rather than its rounding.
+"""
+
+
+def _exact_cardinal_row(nodes: npt.NDArray[np.floating[Any]], point: float) -> list[Fraction]:
+    """Evaluate the cardinal basis of ``nodes`` at ``point`` in exact rational arithmetic.
+
+    A float64 is itself a rational, so :class:`~fractions.Fraction` reproduces the
+    interpolation nodes the implementation actually uses with no error at all, and the
+    product form ``prod_{k != j} (t - x_k) / (x_j - x_k)`` is then evaluated exactly.
+    This is an independent oracle rather than a mirror: it is the defining formula of the
+    basis, not the barycentric quotient the implementation evaluates.
+
+    Args:
+        nodes (npt.NDArray[np.floating[Any]]): Interpolation nodes, in any order.
+        point (float): Evaluation point.
+
+    Returns:
+        list[Fraction]: One exact cardinal value per node, in the order given.
+    """
+    xs = [Fraction(float(v)) for v in nodes]
+    t = Fraction(float(point))
+    row: list[Fraction] = []
+    for j, xj in enumerate(xs):
+        value = Fraction(1)
+        for k, xk in enumerate(xs):
+            if k != j:
+                value *= (t - xk) / (xj - xk)
+        row.append(value)
+    return row
+
+
+@pytest.mark.parametrize(
+    "variant",
+    [
+        LagrangeVariant.EQUISPACES,
+        LagrangeVariant.GAUSS_LEGENDRE,
+        LagrangeVariant.GAUSS_LOBATTO_LEGENDRE,
+        LagrangeVariant.CHEBYSHEV_1ST,
+        LagrangeVariant.CHEBYSHEV_2ND,
+    ],
+)
+@pytest.mark.parametrize("degree", [1, 2, 3, 5, 8, 12])
+def test_matches_exact_rational_arithmetic_away_from_the_nodes(
+    variant: LagrangeVariant, degree: int
+) -> None:
+    """Off-node values match the defining product formula computed in exact arithmetic.
+
+    The delta and partition-of-unity tests above cannot see the interpolator at all:
+    ``_tabulate_lagrange_basis_1D_core`` overwrites any row within ``16 * eps`` of a node
+    with a hardcoded identity row, so the first is satisfied by that snap, and the second
+    is satisfied by any basis that sums to one, which a wrong-degree interpolant still
+    does. A mutation that lowered the interpolator's degree left both of them green.
+    Evaluating away from every node is what pins the polynomial itself.
+    """
+    points = np.array([0.13, 0.37, 0.5001, 0.86])
+    # The implementation's own nodes, not the independent reconstruction
+    # `_lagrange_nodes` builds: a cardinal basis is *defined* by its nodes, so an oracle
+    # for the interpolator has to be given the same ones. The two differ by an ulp for
+    # Gauss-Legendre (`leggauss` against `legroots`), and an ulp of node position moves
+    # the exact cardinal value by more than the interpolator's own error budget.
+    # Column j is the cardinal function of node j in this order, whatever that order is.
+    nodes = _get_lagrange_points(variant, degree + 1, np.float64)
+    clearance = float(np.min(np.abs(points[:, None] - nodes[None, :])))
+    assert clearance > _SNAP_CLEARANCE, (
+        f"the evaluation points must stay clear of the snap window around every node; "
+        f"closest approach is {clearance:.3e}"
+    )
+
+    values = np.asarray(tabulate_lagrange_1d(degree, variant, points), dtype=np.float64)
+
+    for i, point in enumerate(points):
+        exact = _exact_cardinal_row(nodes, float(point))
+        scale = max(abs(float(value)) for value in exact)
+        bound = _BARYCENTRIC_SAFETY * (degree + 1) * float(np.finfo(np.float64).eps) * scale
+        for j, value in enumerate(exact):
+            assert abs(values[i, j] - float(value)) <= bound, (
+                f"{variant.value} degree {degree}: cardinal {j} at {point} is "
+                f"{values[i, j]!r}, exact {float(value)!r}, bound {bound:.3e}"
+            )
 
 
 def test_scalar_and_nd_shape_preservation() -> None:

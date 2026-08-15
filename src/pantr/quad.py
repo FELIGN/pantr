@@ -21,6 +21,7 @@ import numpy.typing as npt
 from numpy.polynomial import chebyshev, legendre
 
 from ._array_utils import _validate_float_dtype
+from .tolerance import get_machine_epsilon
 
 if TYPE_CHECKING:
     from .basis import LagrangeVariant
@@ -268,7 +269,66 @@ _TANH_SINH_DECAY_FACTOR: float = 0.6
 """Decay-rate factor selecting the uniform step ``h`` in transform space."""
 
 
-def _generate_tanh_sinh(n: int) -> tuple[npt.NDArray[np.float64], int]:
+def _tanh_sinh_min_gap(dtype: npt.DTypeLike) -> float:
+    """Get the smallest endpoint gap ``1 - |x|`` a tanh-sinh node may carry on [-1, 1].
+
+    A double-exponential rule is what it is because no node ever reaches an
+    endpoint; that is what makes an endpoint singularity integrable, and it is
+    the property :func:`get_tanh_sinh_1d` advertises.  The gap falls
+    double-exponentially along the transform axis, so the rule has to stop
+    somewhere, and the place to stop is where the gap stops being representable
+    *in the frame the rule is returned in*.
+
+    :func:`get_tanh_sinh_1d` maps ``[-1, 1]`` onto ``[0, 1]`` by ``(x + 1) / 2``
+    and casts to *dtype*, so the node near the right end is reached as
+    ``((1 - gap) + 1) / 2``, and it is that whole expression, not any one step of
+    it, that has to land strictly below ``1``.  Two of the three steps round.
+    Writing ``u = eps / 2`` for the spacing just below ``1``:
+
+    * ``1 - gap`` rounds to ``1 - u`` while ``gap < 1.5 u``, and to ``1 - 2u``
+      from there on;
+    * ``+ 1`` maps ``1 - u`` to ``2 - u``, the midpoint of ``[2 - 2u, 2]``, which
+      ties to even and so becomes ``2``; it maps ``1 - 2u`` to ``2 - 2u`` exactly;
+    * the halving is exact.
+
+    So the node collapses onto ``1`` exactly when ``gap < 1.5 u = 0.75 eps``, and
+    returning ``eps`` clears that by one representable step of ``gap``, a factor
+    ``4 / 3``.  Bisecting on ``gap`` puts the crossing at ``0.75 eps`` to fifty
+    digits in ``float64`` and in ``float32`` alike, the argument being about the
+    binade boundary at ``1`` and not about the width of the format.
+
+    Note that reasoning about a single step gives the wrong answer here: ``2 -
+    gap`` alone survives down to ``gap > eps / 2``, a factor 1.5 below the true
+    threshold, because it ignores the rounding of ``1 - gap`` that precedes it.
+
+    Truncating there costs nothing.  With ``gap = 1 - tanh(omega)`` one has
+    ``cosh(omega)**-2 = gap * (2 - gap)``, so the discarded weight is
+    ``w = (pi / 2) * cosh(t) * gap * (2 - gap) <= pi * cosh(t) * gap``.  In
+    float64 the threshold puts ``omega`` at ``18.4`` and ``cosh(t)`` at ``11.8``,
+    giving ``w <= 8.3e-15`` against a weight sum of ``2`` (largest measured over
+    ``n`` from 2 to 400: ``8.19e-15``).  That is below the rounding of the sum
+    the weight would have joined, and the rescaling in
+    :func:`_generate_tanh_sinh` restores that sum.
+
+    What this bound does *not* claim is that the returned nodes are all distinct.
+    Two consecutive samples can both clear the threshold and still round onto one
+    representable coordinate, first at ``n_pts = 544`` in ``float64`` and
+    ``n_pts = 324`` in ``float32``, both at ``1 - eps``.  That is the format
+    running out of coordinates rather than a node reaching the endpoint, and the
+    two weights, ``2.9e-16`` together at ``n_pts = 544``, land where they belong.
+
+    Args:
+        dtype (npt.DTypeLike): Floating-point dtype the rule will be returned in.
+
+    Returns:
+        float: The smallest admissible gap, one machine epsilon of *dtype*.
+    """
+    return get_machine_epsilon(dtype)
+
+
+def _generate_tanh_sinh(
+    n: int, dtype: npt.DTypeLike = np.float64
+) -> tuple[npt.NDArray[np.float64], int]:
     r"""Generate tanh-sinh quadrature nodes and weights on [-1, 1].
 
     Builds an *n*-point double-exponential (tanh-sinh) scheme.  Under the
@@ -282,14 +342,18 @@ def _generate_tanh_sinh(n: int) -> tuple[npt.NDArray[np.float64], int]:
     truncation balance solved via the Lambert W function (see
     :data:`_TANH_SINH_DECAY_FACTOR`).
 
-    Nodes so close to :math:`\pm 1` that ``1 - |x|`` underflows to ``0`` in
-    float64 are snapped to the boundary and their weights accumulated onto the
-    shared endpoint pair, so the effective number of nodes *m* may be less than
-    *n*.  The weights are finally rescaled to sum to ``2`` (the measure of
-    ``[-1, 1]``).
+    Generation stops at the last node whose distance to the endpoint is still
+    representable once the rule is mapped onto ``[0, 1]`` in *dtype* (see
+    :func:`_tanh_sinh_min_gap`), so the effective number of nodes *m* may be less
+    than *n* and no node ever sits on an endpoint.  The weights are finally
+    rescaled onto the measure ``2`` of ``[-1, 1]``, up to the rounding of their
+    own sum.
 
     Args:
         n (int): Requested number of quadrature points (must be >= 1).
+        dtype (npt.DTypeLike): Floating-point dtype the rule will be returned in.
+            It sets the truncation point and nothing else; the returned data is
+            float64 either way.  Defaults to ``np.float64``.
 
     Returns:
         tuple[npt.NDArray[np.float64], int]: A pair ``(data, m)`` where
@@ -312,6 +376,7 @@ def _generate_tanh_sinh(n: int) -> tuple[npt.NDArray[np.float64], int]:
     decay_arg = 2.0 * _TANH_SINH_DECAY_FACTOR * half_pi * (n - 1)
     h = 2.0 * float(lambertw(decay_arg).real) / n
 
+    min_gap = _tanh_sinh_min_gap(dtype)
     buf = np.empty((n, 2), dtype=np.float64)  # worst case: n nodes
     count = 0
 
@@ -321,8 +386,6 @@ def _generate_tanh_sinh(n: int) -> tuple[npt.NDArray[np.float64], int]:
         buf[count] = [0.0, half_pi]
         count += 1
 
-    endpoint_snapped = False
-
     for i in range(n // 2):
         # Odd n samples t = h, 2h, ...; even n offsets by half a step.
         t = (i + 1) * h if odd else (i + 0.5) * h
@@ -330,33 +393,28 @@ def _generate_tanh_sinh(n: int) -> tuple[npt.NDArray[np.float64], int]:
         w = half_pi * np.cosh(t) / np.cosh(omega) ** 2
         # gap = 1 - tanh(omega), the node's distance from the +1 endpoint,
         # via the algebraically equal form 2 / (1 + e^{2 omega}).  This keeps
-        # gap a small but nonzero float right up to the underflow boundary,
+        # gap a small but nonzero float right up to the resolution limit,
         # whereas 1 - np.tanh(omega) saturates to 0 a step too early and would
-        # snap nodes prematurely.
+        # truncate the rule prematurely.
         gap = 2.0 / (1.0 + np.exp(2.0 * omega))
 
-        if (np.float64(1.0) - np.float64(gap)) == np.float64(1.0):
-            # gap underflowed: the node is numerically at the boundary.
-            if endpoint_snapped:
-                buf[count - 2, 1] += w
-                buf[count - 1, 1] += w
-            else:
-                buf[count] = [-1.0, w]
-                count += 1
-                buf[count] = [1.0, w]
-                count += 1
-                endpoint_snapped = True
-        else:
-            # Symmetric pair at -(1 - gap) and +(1 - gap); writing both from
-            # gap keeps the coordinates exact negatives of each other.
-            buf[count] = [-(1.0 - gap), w]
-            count += 1
-            buf[count] = [1.0 - gap, w]
-            count += 1
+        # gap decreases monotonically in t, so the first node whose distance to
+        # the endpoint no longer survives the mapping onto [0, 1] ends the rule.
+        if gap < min_gap:
+            break
+
+        # Symmetric pair at -(1 - gap) and +(1 - gap); writing both from
+        # gap keeps the coordinates exact negatives of each other.
+        buf[count] = [-(1.0 - gap), w]
+        count += 1
+        buf[count] = [1.0 - gap, w]
+        count += 1
 
     data = buf[:count].copy()
 
-    # Rescale weights to integrate the constant 1 exactly over [-1, 1].
+    # Rescale the weights onto the measure 2 of [-1, 1].  The sum of the rescaled
+    # weights is 2 only up to the rounding of that sum: dividing by a computed sum
+    # cannot make a floating-point sum exact.
     data[:, 1] *= 2.0 / np.sum(data[:, 1])
 
     return data, count
@@ -370,9 +428,12 @@ def get_tanh_sinh_1d(
     Tanh-sinh (double-exponential) quadrature clusters nodes near the
     endpoints of the interval, making it well suited for integrands with
     endpoint singularities or steep boundary layers.  The scheme is
-    symmetric and nodes near the endpoints that are indistinguishable from
-    0 or 1 in floating-point arithmetic are snapped to the boundary, so
-    the effective number of returned nodes may be less than *n_pts*.
+    symmetric, and every returned node lies strictly inside ``(0, 1)``: a node
+    that would sit closer to an endpoint than *dtype* can resolve ends the rule
+    instead of being moved onto the boundary, so the number of returned nodes
+    may be less than *n_pts*, and fewer in ``float32`` than in ``float64``.
+    Placing a node *on* the boundary would defeat the purpose of the rule, an
+    endpoint singularity being exactly what it is meant to integrate.
 
     Args:
         n_pts (int): Requested number of quadrature points.  Must be at
@@ -383,22 +444,34 @@ def get_tanh_sinh_1d(
     Returns:
         tuple[npt.NDArray[np.float32 | np.float64], npt.NDArray[np.float32 | np.float64]]:
             ``(nodes, weights)`` on ``[0, 1]``.  Both arrays have the same
-            length, which may be less than *n_pts* due to endpoint
-            snapping.  Weights sum to 1.
+            length, which may be less than *n_pts* because the rule is
+            truncated where the endpoint gap stops being resolvable.  Weights
+            sum to 1 up to the rounding of that sum.
 
     Raises:
         ValueError: If *n_pts* < 1 or *dtype* is not ``float32``/``float64``.
 
+    Note:
+        Truncation puts a floor on what a singular integrand can reach, and
+        raising *n_pts* past it buys nothing.  The rule covers
+        ``[delta, 1 - delta]`` with ``delta`` of order ``eps / 2``, so the error
+        is the integral over the two neglected tails.  For ``x**-0.5`` that is
+        ``2 * sqrt(delta) = 2e-8`` (measured 2.0e-8 from *n_pts* 49 on) and for
+        ``log(x)`` it is ``delta * (log(delta) - 1) = 4e-15`` (measured 3.9e-15).
+        A smooth integrand is unaffected and converges to machine precision.
+
     Example:
         >>> nodes, weights = get_tanh_sinh_1d(5)
         >>> nodes.shape[0] <= 5
+        True
+        >>> bool(((nodes > 0.0) & (nodes < 1.0)).all())
         True
         >>> abs(weights.sum() - 1.0) < 1e-14
         True
     """
     _validate_n_pts_and_dtype(n_pts, dtype)
 
-    data, _ = _generate_tanh_sinh(n_pts)
+    data, _ = _generate_tanh_sinh(n_pts, dtype)
     return _scale_and_cast_nodes_and_weights(data[:, 0], data[:, 1], dtype)
 
 
@@ -547,8 +620,12 @@ class QuadratureRule:
     :func:`pantr.grid.cell_quadrature` affinely maps onto each cell of a grid.
     Points lie in the closed unit cube; the factory-built rules
     (:func:`tensor_product_quadrature`, :func:`gauss_legendre_quadrature`) have
-    weights summing to ``1`` (the measure of the unit cube), so the rule
-    integrates the constant ``1`` exactly. The stored arrays are read-only.
+    weights summing to ``1``, the measure of the unit cube, so the rule
+    integrates the constant ``1`` to within the rounding of that sum and not
+    exactly: a ``ndim``-fold product of rounded 1D weights, summed over
+    ``num_points`` terms, cannot land on ``1.0`` bitwise. Measured over Gauss-
+    Legendre rules of 1 to 40 points per direction, the largest ``|sum - 1|`` is
+    2 ulp in 1D, 3 ulp in 2D and 4 ulp in 3D. The stored arrays are read-only.
     """
 
     __slots__ = ("_ndim", "_num_points", "_points", "_weights")

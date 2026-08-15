@@ -174,9 +174,11 @@ def _degree_elevate_1d_core(  # noqa: PLR0912, PLR0915
     cind = 1
     ua = knots[0]
 
-    # We allocate more than enough space for the new arrays
+    # We allocate more than enough space for the new arrays.  Both outputs follow
+    # their own input's dtype: a caller who asked for float32 gets a float32 spline
+    # back, and the two halves of the return stay usable together.
     max_new_knots = len(knots) + t * len(knots)
-    ik = np.zeros(max_new_knots, dtype=np.float64)
+    ik = np.zeros(max_new_knots, dtype=knots.dtype)
     ic = np.zeros((n_pts + t * len(knots), rank), dtype=ctrl.dtype)
 
     for ii in range(rank):
@@ -406,8 +408,9 @@ def _degree_reduce_1d_core(  # noqa: PLR0912, PLR0915
         n_seg += 1
         scan += 1
 
+    # Both outputs follow their own input's dtype, as in the elevation kernel.
     oc = np.empty((n_seg * new_deg + 1, rank), dtype=ctrl.dtype)
-    ok = np.empty(n_seg * new_deg + new_deg + 2, dtype=np.float64)
+    ok = np.empty(n_seg * new_deg + new_deg + 2, dtype=knots.dtype)
 
     # Initialise: first boundary knots and first Bézier segment.
     ua = knots[0]

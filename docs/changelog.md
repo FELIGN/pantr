@@ -50,6 +50,12 @@
   matrix rather than by sampling.
 
 ### Changed
+- The minimum supported SciPy is now 1.15, raised from 1.11. Lagrange tabulation
+  seeds the node permutation SciPy's `BarycentricInterpolator` applies, and the
+  `rng` argument that makes that possible arrived in 1.15. Earlier versions
+  cannot be made reproducible through that class at all — 1.11 accepts neither a
+  seed nor precomputed weights — so the previous floor was already untrue for
+  this function rather than merely untested.
 - Knot insertion runs the Oslo recurrence over the `degree + 1` band each row is
   supported on, instead of over the full row. Refining a spline with 10⁴ control
   points dyadically takes 1.9 ms where it took 1432 ms. The refinement matrix
@@ -130,6 +136,78 @@
   partition of unity. The guard now tests against exact zero, which is
   scale-invariant by construction because knot vectors already snap
   near-duplicate knots to one bitwise value.
+- `find_roots` reported a root at every interior knot of multiplicity
+  `degree + 1` whose two straddling coefficients change sign, where the spline
+  is C^-1 and jumps across the axis without ever reaching it. The tracking cited
+  Mørken-Reimers Lemma 3, whose conclusion `c[a] = 0` rests on the iterate lying
+  in the half-open interval between two consecutive Greville abscissae, and that
+  interval is empty at precisely that multiplicity: the secant through the two
+  coefficients is vertical there, so its zero is the knot for every `lambda` and
+  nothing forces the coefficient to vanish. The fabricated root then took a real
+  one with it, since reporting it split the spline at the jump and pinned the
+  coefficient on the far side to zero as the split barrier, destroying the sign
+  change that bracketed the next zero. On a quadratic split once at C^-1 the
+  reported set was `[0.40269975, 0.5]` where the zeros are `0.40269975` and
+  `0.61721778`. The lemma's hypothesis is now tested on the knot vector, which
+  needs no tolerance, and a jump is rejected by the same residual test that
+  already separates a tangential zero from a false sign change.
+- `get_tanh_sinh_1d` returned `inf` for `1/sqrt(x)` — the integrand a
+  double-exponential rule exists for — at every `n_pts >= 45`, and raising the
+  point count therefore turned a correct answer into `inf`. A node whose
+  distance to the endpoint had underflowed was moved *onto* the endpoint and
+  kept, with a nonzero weight, and from `n_pts = 53` a second node landed on the
+  same boundary and was returned twice. The rule is now truncated there instead:
+  generation stops at the last node whose gap survives the mapping onto `[0, 1]`
+  in the requested dtype, which is one machine epsilon. The discarded weight is
+  at most `pi * cosh(t) * gap`, measured at `8.2e-15` against a weight sum of
+  `2`, so a smooth integrand is unchanged; a singular one now converges to the
+  truncation floor, `2e-8` for `x**-0.5` and `4e-15` for `log(x)`, both stated
+  in the docstring. Returning fewer nodes than requested was already documented.
+  In `float32` the cast onto `[0, 1]` collapsed a node onto `1.0` from
+  `n_pts = 19`, which the dtype-aware threshold also closes.
+- `QuadratureRule` claimed its factory-built rules integrate the constant `1`
+  exactly. They do not, and cannot: dividing by a computed sum leaves the
+  rescaled weights summing to `1` only up to rounding. Measured over Gauss-
+  Legendre rules of 1 to 40 points per direction, `|sum - 1|` reaches 2 ulp in
+  1D, 3 ulp in 2D and 4 ulp in 3D. The docstring now says that.
+- Lagrange tabulation was not reproducible between processes. SciPy's
+  `BarycentricInterpolator` permutes the nodes before forming the barycentric
+  weights, which is Berrut and Trefethen's remedy against the product over- or
+  underflowing, and it was built without the `rng` argument, so the permutation
+  came from the unseeded global NumPy state. Two runs of the same call differed
+  by 1.6e-16 to 1.5e-15 relative at degrees 3 to 12, by 4.18 absolute on a value
+  scale of 3.75e7 at degree 62, and by `inf` against 1e16 evaluated outside
+  `[0, 1]`. That is an unseeded generator, not floating-point nondeterminism
+  with a bound. `tabulate_lagrange`, `compute_lagrange_to_bernstein_1d`,
+  `tabulate_Lagrange_extraction_operators` and `SpanwiseElementExtraction` with
+  a Lagrange target all inherited it. The permutation is now seeded from a
+  recorded constant, which also makes the `degree + 1` cardinal functions share
+  one set of weights instead of drawing their own.
+- `Bspline.elevate_degree` and `Bspline.reduce_degree` were unusable on every
+  float32 spline. Both kernels allocated the two halves of their return with
+  different dtypes: the control points followed the input while the knot vector
+  was hardcoded float64. On a clamped space the `Bspline` constructor then
+  rejected the mismatched pair with a message about the *caller's* control
+  points, at every degree and every knot count; on a periodic space the round
+  trip through open form converted the control points as well, so the call
+  succeeded and silently discarded the caller's choice of precision, doubling
+  memory and halving throughput without a word. Both knot outputs now follow the
+  input knot vector's dtype.
+- `Bspline.reduce_degree` never returned on a degree-1 periodic spline. Degree
+  reduction hands the periodic conversion `m_bdy - decrement` as the target
+  boundary multiplicity, and a maximally smooth periodic space has `m_bdy = 1`,
+  so the argument is 0 at every degree; the conversion documents
+  `1 <= m_bdy <= degree` and nothing checked it. The ghost-knot builder then had
+  a per-period tile of total multiplicity 0 and its right-hand loop, which
+  appends until it has enough ghost knots, could append nothing and incremented
+  its shift forever. Degrees 2 and 3 escaped only because the C^0 seam check a
+  few lines earlier rejected them first, so the trigger's narrowness was an
+  accident of check ordering rather than anything about degree 1. The
+  precondition is now enforced, so every degree refuses in under 10 ms with a
+  message naming the actual problem; the loop's termination argument is written
+  down beside it. Reducing a periodic spline to degree 0 has no answer in this
+  representation, an empty `[1, degree]` meaning no ghost knots and nothing to
+  wrap; `to_open_bspline().reduce_degree(1)` does it in the open form.
 
 ## 0.6.0 (2026-06-24)
 

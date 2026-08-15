@@ -22,6 +22,48 @@ from ..quad import (
     get_trapezoidal_1d,
 )
 
+_BARYCENTRIC_SEED: int = 0
+"""Seed for the node permutation SciPy uses to build the barycentric weights.
+
+:class:`scipy.interpolate.BarycentricInterpolator` multiplies the node differences in a
+random order, which is Berrut and Trefethen's remedy (2004, p. 510) for the product
+over- or underflowing at high degree. Left unseeded it draws from the *global* NumPy
+state, so the tabulated basis changed from one process to the next: measured relative
+spreads of 1.6e-16 at degree 3 to 1.5e-15 at degree 12, growing to 4.18 absolute on a
+value scale of 3.75e7 at degree 62, and to ``inf`` against 1e16 evaluated outside
+``[0, 1]``. That is not floating-point nondeterminism with a bound one could derive; it
+is an unseeded generator, so no bound exists.
+
+The integer itself is arbitrary. What matters is that it is *fixed and recorded*: a
+different seed orders the same product differently and so rounds differently, which is a
+choice about reproducibility rather than about accuracy. Every consumer inherits it --
+:func:`~pantr.basis.tabulate_lagrange`,
+:func:`~pantr.change_basis.compute_lagrange_to_bernstein_1d`, the Lagrange extraction
+operators.
+
+What it pins, precisely: two calls in one environment agree bit for bit. It does *not*
+pin the bits across a NumPy or SciPy upgrade, since the permutation comes from their
+generator, nor across a reimplementation in another language, which would have to
+reproduce that generator's stream to match. A reimplementation reproduces the same
+polynomial to the accuracy of the barycentric formula and freezes a choice of its own;
+that is the contract, and bit-exactness across implementations is not part of it.
+
+Passing a seed rather than a :class:`~numpy.random.Generator` is deliberate: SciPy builds
+a fresh generator from an integer, so the ``n + 1`` cardinal functions below are all built
+on one permutation and therefore on one set of weights. A ``Generator`` instance would
+advance between them and give every column weights of its own.
+
+**Open: this needs SciPy 1.15 or newer, while ``pyproject.toml`` still declares
+``scipy>=1.11,<2``.** Read at the release tags: 1.11 takes no seeding argument at all and
+permutes with the global ``np.random.permutation``; 1.12 through 1.14 take
+``random_state``; ``rng`` arrives in 1.15, where ``random_state`` still works but warns,
+and this project turns warnings into errors under pytest. So the call below raises
+``TypeError`` on 1.11 through 1.14. Neither closing the gap by raising the declared floor
+nor closing it by selecting the keyword at import time is this module's decision to make;
+until it is made, the effective floor is 1.15. Note that 1.11 cannot be made reproducible
+through this class at all -- it accepts neither a seed nor precomputed ``wi`` weights.
+"""
+
 
 def _get_lagrange_points(
     variant: LagrangeVariant, n_pts: int, dtype: npt.DTypeLike = np.float64
@@ -101,7 +143,7 @@ def _tabulate_lagrange_basis_1D_core(
         y_sorted = np.zeros(n_pts, dtype=t.dtype)
         y_sorted[inv_perm[j]] = 1.0
 
-        interpolator = BarycentricInterpolator(nodes_sorted, y_sorted)
+        interpolator = BarycentricInterpolator(nodes_sorted, y_sorted, rng=_BARYCENTRIC_SEED)
 
         # SciPy may upcast internally; ensure we preserve input dtype.
         B_normalized[:, j] = np.asarray(interpolator(t), dtype=t.dtype)

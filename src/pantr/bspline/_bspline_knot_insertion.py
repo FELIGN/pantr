@@ -346,6 +346,35 @@ def _to_open_bspline_impl(bspline: Bspline) -> Bspline:
     return Bspline(new_space, ctrl, is_rational=bspline.is_rational)
 
 
+def _check_boundary_multiplicity(m_bdy: int, degree: int) -> None:
+    """Raise if a target boundary multiplicity is outside ``[1, degree]``.
+
+    The precondition of :func:`_to_periodic_bspline_1d_impl`, enforced rather than
+    assumed because :func:`_build_periodic_knot_vector` cannot survive its violation:
+    with ``m_bdy = 0`` the per-period tile it replicates has total multiplicity 0 at the
+    seam, so its right-hand loop appends nothing and increments its shift forever.
+
+    Every caller but one derives ``m_bdy`` from a range that already satisfies this:
+    ``to_periodic`` computes ``degree - continuity`` with a validated continuity, and
+    knot insertion and degree elevation carry a multiplicity forward from an existing
+    periodic space. Degree reduction computes ``m_bdy - decrement``, which reaches 0.
+
+    Args:
+        m_bdy (int): Target boundary multiplicity of the periodic knot vector.
+        degree (int): Polynomial degree of the periodic space.
+
+    Raises:
+        ValueError: If ``m_bdy`` is outside ``[1, degree]``.
+    """
+    if not 1 <= m_bdy <= degree:
+        raise ValueError(
+            f"A periodic knot vector needs a boundary multiplicity in [1, degree] = "
+            f"[1, {degree}], got {m_bdy}. At degree 0 that range is empty: with no ghost "
+            f"knots there is nothing to wrap, and the periodic form of a piecewise "
+            f"constant is its open form. Work in the open representation instead."
+        )
+
+
 def _build_periodic_knot_vector(
     open_knots: npt.NDArray[np.float32 | np.float64],
     degree: int,
@@ -400,6 +429,15 @@ def _build_periodic_knot_vector(
     # Build ghost knots by generating shifted copies of the tile breakpoints.
     # We create a long enough sequence and slice to n_ghost entries.
     # Right ghosts: interior breakpoints + period, then a + 2*period, etc.
+    #
+    # Both loops below terminate for the same reason, and only for that reason:
+    # `bp_mults` sums to at least `m_bdy`, which `_check_boundary_multiplicity` has
+    # already put at 1 or more. Each pass then appends at least one entry -- the right
+    # loop from `shift = 2` on, since its `shift == 1` pass skips the seam entry, and
+    # the left loop from its first -- so `n_ghost` is reached in at most `n_ghost + 1`
+    # passes. At `m_bdy = 0` with no interior breakpoint the tile is empty, neither
+    # loop can append anything, and both spin forever. That is why the caller checks
+    # rather than assumes, and why weakening that one check reintroduces a hang here.
     right_entries: list[np.floating[Any]] = []
     shift = 1
     while len(right_entries) < n_ghost:
@@ -461,15 +499,20 @@ def _to_periodic_bspline_1d_impl(
         ``(n_periodic, rank)``.
 
     Raises:
-        ValueError: If the function is not periodic (C^0 check at seam or
-            residual exceeds tolerance).
+        ValueError: If ``m_bdy`` is outside ``[1, degree]``, or if the function is
+            not periodic (C^0 check at seam or residual exceeds tolerance).
 
     Note:
-        Inputs are assumed to be correct (no validation performed).
+        Layer 2, so it does validate, and the boilerplate that used to stand here
+        claiming otherwise was never true of it: the C^0 seam test below predates
+        this docstring and :func:`_check_boundary_multiplicity` joins it. What is
+        *not* checked is shapes and dtypes, which the caller owns.
         For general use, call :meth:`~pantr.bspline.Bspline.to_periodic` instead.
     """
     p = degree
     dtype = open_knots.dtype
+
+    _check_boundary_multiplicity(m_bdy, p)
 
     a = float(open_knots[p])
     b = float(open_knots[-p - 1])
