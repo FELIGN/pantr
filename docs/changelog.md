@@ -50,6 +50,12 @@
   matrix rather than by sampling.
 
 ### Changed
+- The minimum supported SciPy is now 1.15, raised from 1.11. Lagrange tabulation
+  seeds the node permutation SciPy's `BarycentricInterpolator` applies, and the
+  `rng` argument that makes that possible arrived in 1.15. Earlier versions
+  cannot be made reproducible through that class at all — 1.11 accepts neither a
+  seed nor precomputed weights — so the previous floor was already untrue for
+  this function rather than merely untested.
 - Knot insertion runs the Oslo recurrence over the `degree + 1` band each row is
   supported on, instead of over the full row. Refining a spline with 10⁴ control
   points dyadically takes 1.9 ms where it took 1432 ms. The refinement matrix
