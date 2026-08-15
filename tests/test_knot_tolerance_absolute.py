@@ -156,6 +156,34 @@ class TestDomainGate:
         np.testing.assert_array_equal(_is_in_domain_impl(knots, 2, just_in, tol), [True, True])
         np.testing.assert_array_equal(_is_in_domain_impl(knots, 2, just_out, tol), [False, False])
 
+    def test_band_stays_tol_wide_when_tol_falls_below_one_ulp(self) -> None:
+        """The admitted band must be ``tol`` wide even where ``tol < ulp(knot_end)``.
+
+        The obvious way to write an absolute gate is to shift the bound,
+        ``pts <= knot_end + tol``. In floating point that is a *different* predicate:
+        ``knot_end + tol`` rounds to the nearest representable value, so once ``tol``
+        falls below ``ulp(knot_end)`` the effective tolerance silently becomes
+        ``ulp(knot_end)``. On a domain ending at 1e6 that ulp is 1.164e-10, so a
+        requested ``tol`` of 1e-10 would admit points 1.164e-10 past the end.
+
+        Forming the difference first and only then comparing against ``tol`` avoids
+        it; the subtraction is exact for the nearby points that decide the boundary.
+        This is the same shape of defect as the leak the rest of this module fixes --
+        a tolerance quietly becoming something other than what was asked for -- at one
+        ulp instead of 1e-5 relative.
+        """
+        hi = 1e6
+        tol = 1e-10
+        knots = np.array([0.0, 0.0, 0.0, hi, hi, hi], dtype=np.float64)
+        assert np.spacing(hi) > tol, "construction requires tol below one ulp of hi"
+
+        # One ulp past the end: admitted by the shifted-bound form, outside the true
+        # tol-wide band.
+        just_past = np.array([np.nextafter(hi, np.inf)])
+        assert float(just_past[0]) - hi > tol
+
+        assert not bool(_is_in_domain_impl(knots, 2, just_past, tol)[0])
+
     @pytest.mark.parametrize("hi", SCALES)
     def test_evaluate_rejects_an_out_of_domain_point(self, hi: float) -> None:
         """The public evaluation path inherits the tightened gate."""

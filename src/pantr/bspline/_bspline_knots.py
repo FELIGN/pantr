@@ -168,14 +168,24 @@ def _is_in_domain_impl(
         Inputs are assumed to be correct (no validation performed).
     """
     knot_begin, knot_end = knots[degree], knots[-degree - 1]
-    # ``tol`` is an absolute tolerance, so widen the domain by exactly ``tol`` at each
-    # end.  ``np.isclose`` would carry its default ``rtol=1e-5`` and, since the rtol
-    # leg attaches to the second operand, accept an overshoot of ``1e-5 * |knot_end|``
-    # at the right end while rejecting ``tol``-sized undershoot at a left end sitting
-    # at zero -- an asymmetry that is an accident of argument order.
+    # ``tol`` is an absolute tolerance, so the admitted band is exactly ``tol`` wide at
+    # each end.  ``np.isclose`` would carry its default ``rtol=1e-5`` and, since the
+    # rtol leg attaches to the second operand, accept an overshoot of
+    # ``1e-5 * |knot_end|`` at the right end while rejecting ``tol``-sized undershoot
+    # at a left end sitting at zero -- an asymmetry that is an accident of argument
+    # order.
+    #
+    # The difference is formed first and only then compared against ``tol``.  Shifting
+    # the bound instead (``pts <= knot_end + tol``) reads more directly but is not the
+    # same predicate in floating point: ``knot_end + tol`` rounds to the nearest
+    # representable value, so once ``tol`` drops below ``ulp(knot_end)`` the effective
+    # tolerance becomes ``ulp(knot_end)`` rather than ``tol`` -- 1.16e-10 instead of a
+    # requested 1e-10 on a domain ending at 1e6.  Subtracting first is exact here
+    # (Sterbenz, for the nearby points that decide the boundary), so the band stays
+    # ``tol`` wide at every scale.
     return np.logical_and(  # type: ignore[no-any-return]
-        pts >= knot_begin - tol,
-        pts <= knot_end + tol,
+        (knot_begin < pts) | (np.abs(knot_begin - pts) <= tol),
+        (pts < knot_end) | (np.abs(pts - knot_end) <= tol),
     )
 
 
