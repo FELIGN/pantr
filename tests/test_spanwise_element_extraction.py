@@ -949,6 +949,72 @@ def test_batch_apply_bilateral_aliasing_raises() -> None:
         ext.apply_M_K_MT_many(K2, flat, out=K2)
 
 
+def _space_1d_square() -> BsplineSpace:
+    """Degree-3 1D space on 4 intervals, where ``N_in == N_out == 4``.
+
+    Equal input and output sizes are what make an in-place ``apply`` shape-legal in
+    the first place, so this is the configuration where aliasing can actually occur.
+    """
+    degree, n_int = 3, 4
+    knots = np.concatenate(
+        [np.zeros(degree + 1), np.arange(1.0, n_int), np.full(degree + 1, float(n_int))]
+    )
+    return BsplineSpace([BsplineSpace1D(knots, degree)])
+
+
+def test_apply_aliasing_raises() -> None:
+    """``out`` aliasing the operand must raise for ``apply``/``apply_T`` too.
+
+    The guard existed only for the bilateral kinds, so an in-place ``apply``
+    silently returned wrong numbers: on this degree-3 Bezier target the result
+    differed from the correct one by up to 1.13 in absolute value, and the
+    corruption is data-dependent -- cell 0's operator is the identity there, so that
+    cell happened to agree and a test looking only at it would have seen nothing.
+    """
+    ext = SpanwiseElementExtraction(_space_1d_square(), "bezier")
+    n_in = int(np.prod(ext.input_shape_per_dir))
+    assert n_in == int(np.prod(ext.output_shape_per_dir))
+
+    v = RNG.standard_normal(n_in)
+    with pytest.raises(ValueError, match="alias"):
+        ext.apply(v, 1, out=v)
+
+    w = RNG.standard_normal(n_in)
+    with pytest.raises(ValueError, match="alias"):
+        ext.apply_transpose(w, 1, out=w)
+
+
+def test_batch_apply_aliasing_raises() -> None:
+    """The batch ``apply_many``/``apply_transpose_many`` share the gap and the fix."""
+    ext = SpanwiseElementExtraction(_space_1d_square(), "bezier")
+    n_in = int(np.prod(ext.input_shape_per_dir))
+    flat = np.arange(3)
+
+    V = RNG.standard_normal((3, n_in))
+    with pytest.raises(ValueError, match="alias"):
+        ext.apply_many(V, flat, out=V)
+
+    W = RNG.standard_normal((3, n_in))
+    with pytest.raises(ValueError, match="alias"):
+        ext.apply_transpose_many(W, flat, out=W)
+
+
+def test_apply_with_distinct_out_still_works() -> None:
+    """A non-aliasing ``out`` must still be accepted and give the allocating answer.
+
+    Guards against the widened check rejecting the ordinary ``out=`` usage.
+    """
+    ext = SpanwiseElementExtraction(_space_1d_square(), "bezier")
+    n_in = int(np.prod(ext.input_shape_per_dir))
+    n_out = int(np.prod(ext.output_shape_per_dir))
+    v = RNG.standard_normal(n_in)
+
+    buf = np.empty(n_out)
+    got = ext.apply(v, 1, out=buf)
+
+    np.testing.assert_array_equal(np.asarray(got), np.asarray(ext.apply(v, 1)))
+
+
 def test_batch_apply_wrong_out_shape_raises() -> None:
     """Wrong ``out`` shape raises ValueError."""
     ext = SpanwiseElementExtraction(_space_2d(), "bezier")

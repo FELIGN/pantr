@@ -440,16 +440,17 @@ def _prepare_apply_call(  # noqa: PLR0913 -- each arg reflects a distinct kernel
     )
     _validate_operand(operand, expected_in_shape, dtype)
     out = _allocate_or_validate_out(out, expected_out_shape, dtype)
-    # When every direction is identity the bilateral kernel is a pure copy, so
-    # aliasing out=K is safe.  Only raise for the general (non-identity) case.
-    if (
-        op_kind in ("MT_K_M", "M_K_MT")
-        and not all(is_identity_per_dir)
-        and np.shares_memory(operand, out)
-    ):
+    # No op kind may alias its operand: every kernel reads and writes overlapping
+    # memory.  The guard is uniform on purpose.  Whether a particular contraction
+    # survives aliasing depends on the parametric dimension and on which directions
+    # happen to be identity -- an in-place ``apply`` is corrupted in 1D (measured up
+    # to 1.1 absolute on a degree-3 Bezier target) yet survives in 2D, where the
+    # intermediate lands in the scratch buffer.  That is not a contract a caller can
+    # reason about, so it is not one to offer.  The one exemption is the all-identity
+    # case, where every kernel degenerates to a straight copy.
+    if not all(is_identity_per_dir) and np.shares_memory(operand, out):
         raise ValueError(
-            "out must not alias the operand (K) for bilateral operations; "
-            "the kernel reads and writes overlapping memory"
+            "out must not alias the operand; the kernel reads and writes overlapping memory"
         )
 
     scratch_size = _required_scratch_size(input_shape_per_dir, output_shape_per_dir, op_kind)
@@ -641,14 +642,14 @@ def _prepare_apply_many_call(  # noqa: PLR0912, PLR0913, PLR0915
     expected_out_shape = (n_cells, *per_cell_out)
     _validate_operand(operand, expected_operand, dtype)
     out = _allocate_or_validate_out(out, expected_out_shape, dtype)
-    if op_kind in ("MT_K_M", "M_K_MT") and np.shares_memory(operand, out):
+    # Uniform across op kinds, for the reason given in ``_prepare_apply_call``.
+    if np.shares_memory(operand, out):
         all_identity = n_cells == 0 or all(
             bool(is_identity_masks[k][cell_indices[:, k]].all()) for k in range(d)
         )
         if not all_identity:
             raise ValueError(
-                "out must not alias the operand (K) for bilateral operations; "
-                "the kernel reads and writes overlapping memory"
+                "out must not alias the operand; the kernel reads and writes overlapping memory"
             )
 
     scratch_size = _required_scratch_size(input_shape_per_dir, output_shape_per_dir, op_kind)
