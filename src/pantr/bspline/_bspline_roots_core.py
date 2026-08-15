@@ -40,9 +40,10 @@ from .._numba_compat import nb_jit
 _STATUS_STAGNATED: int = 1
 """The iteration reached a point it will not leave.
 
-Covers the three stopping rules: an iterate repeated exactly, the last ``degree``
-iterates spanned less than ``tol``, and an iterate reached the right end of its
-Greville interval, where every value of ``lam`` gives the same point.
+Covers the three stopping rules: an iterate repeated exactly with Corollary 14's
+collapsed knot run behind it, the last ``degree`` iterates spanned less than ``tol``,
+and an iterate reached the right end of its Greville interval, where every value of
+``lam`` gives the same point.
 """
 
 _STATUS_VANISHED: int = 2
@@ -520,12 +521,24 @@ def _track_zero(  # noqa: PLR0913
         # spline jumping across the axis rather than meeting it.
         #
         # Either way the conclusion is tested rather than assumed, so the two
-        # cases need no separating: reaching this branch means the knot run at x
-        # has multiplicity at least `degree`, and `coeffs[index]` is then exactly
-        # the value of the spline immediately to the right of the run, with no
-        # positional error to inflate it. Refining instead would insert a knot
-        # into a run the method keeps at multiplicity at most `degree`, and
-        # divide by a zero-length span.
+        # cases need no separating. Reaching this branch means `x` is exactly the
+        # knot `knots[index + degree]` and the run ending there has multiplicity
+        # at least `degree`, so exactly one basis function is non-zero at x on
+        # the side the tracking came from and `coeffs[index]` is the value of the
+        # spline there: the right limit when the run reaches back to `index`, the
+        # left limit when it starts past it, and both at once where the spline is
+        # continuous. Refining instead would insert a knot into a run the method
+        # keeps at multiplicity at most `degree`, and divide by a zero-length
+        # span.
+        #
+        # It is a coefficient rather than an evaluation, but that does not make
+        # it exact and it gets the same threshold as every other exit. The window
+        # it belongs to was refined by up to a few hundred Boehm insertions whose
+        # alphas are differences of knots, so it carries the coordinate's own
+        # resolution: on the unit domain moved to 1e6 the coefficient at a zero
+        # sitting on a knot comes out at 2e-11, eleven thousand times `zero_tol`
+        # and comfortably inside what the parametric tolerance allows. Only the
+        # two domain endpoints, read off the *unrefined* input, are free of it.
         if x >= knots[index + degree]:
             return x, _STATUS_STAGNATED, abs(coeffs[index]), num_coeffs, index
 
@@ -578,20 +591,20 @@ def _morken_reimers_roots(  # noqa: PLR0912, PLR0913, PLR0915
     """Compute every zero of a scalar spline by the Mørken-Reimers method.
 
     Scans the control polygon left to right and tracks each sign change. What
-    the polygon supplies is a *place to look*, never a certificate: the
-    tracking stops for three different reasons, none of which implies that the
-    point it stopped at is a zero, so every iterate is reported only when
-    ``|f(x)| <= root_tol``. It is what separates a tangential zero, where the
-    two sign changes bracketing it collapse, from a false warning of the
+    the polygon supplies is a *place to look*, never a certificate: the tracking
+    stops for three different reasons, none of which implies that the point it
+    stopped at is a zero, so every iterate is reported only when
+    ``|f(x)| <= root_tol``. That test is what separates a tangential zero, where
+    the two sign changes bracketing it collapse, from a false warning of the
     variation-diminishing bound; what rejects a sign change across a knot of
     multiplicity ``degree + 1``, where the spline is C^-1 and jumps across the
     axis without reaching it; and what rejects an iteration that stopped moving
     somewhere other than a zero.
 
-    The two domain endpoints are decided by ``zero_tol`` instead, on the
-    coefficient an open knot vector interpolates there: that is the value of the
-    spline, carrying no location error at all, so only the evaluation term
-    applies.
+    The two domain endpoints are decided by the tighter ``zero_tol`` instead, on
+    the coefficient an open knot vector interpolates there. That coefficient
+    comes from the input untouched, so unlike everything the tracking produces it
+    carries no positional error at all and only the evaluation term applies.
 
     Args:
         knots (npt.NDArray[Any]): Open (clamped) knot vector of shape
@@ -599,12 +612,13 @@ def _morken_reimers_roots(  # noqa: PLR0912, PLR0913, PLR0915
         degree (int): Polynomial degree, at least 1.
         coeffs (npt.NDArray[Any]): B-spline coefficients of the scalar spline.
         tol (float): Relative stagnation tolerance for the iterates.
-        zero_tol (float): Absolute residual below which an exactly located value
-            counts as zero, that is the error of evaluating the spline.
-        root_tol (float): Absolute residual below which a *tracked* iterate
-            counts as a zero. Larger than ``zero_tol`` by what the parametric
-            tolerance the iteration stops at leaves behind, and derived in
-            :func:`pantr.bspline._bspline_roots._find_roots_impl`.
+        zero_tol (float): Absolute residual below which a value taken from the
+            unrefined input counts as zero, that is the error of evaluating the
+            spline. Used for the two domain endpoints and for the split barrier.
+        root_tol (float): Absolute residual below which an iterate the tracking
+            produced counts as a zero. Larger than ``zero_tol`` by what the
+            parametric tolerance the iteration stops at leaves behind, and
+            derived in :func:`pantr.bspline._bspline_roots._find_roots_impl`.
         max_insertions (int): Insertion budget per zero.
 
     Returns:
@@ -613,8 +627,10 @@ def _morken_reimers_roots(  # noqa: PLR0912, PLR0913, PLR0915
         ``roots`` are valid, sorted ascending. ``truncated`` counts the reported
         zeros whose insertion budget ran out first, so that they sit at the last
         iterate reached rather than at a stagnated one; ``abandoned`` counts the
-        sign changes whose budget ran out without the residual ever certifying
-        them, each of which may be a zero this call does not report.
+        sign changes left without a zero to show for them, whether because the
+        budget ran out before the residual certified one or because the working
+        arrays had no room to track them, each of which may be a zero this call
+        does not report.
 
     Note:
         Inputs are assumed to be correct (no validation performed).
@@ -688,18 +704,21 @@ def _morken_reimers_roots(  # noqa: PLR0912, PLR0913, PLR0915
 
         # The residual, and nothing else, is what makes an iterate a zero. The
         # three ways the tracking can stop are three provenances, not three
-        # entitlements: the polygon lost its sign change, the iteration stopped
-        # moving, or the budget ran out, and each of them can stop at a point
-        # where the spline does not vanish. The theory that says otherwise holds
-        # in exact arithmetic, where a coefficient reaches zero only near a zero
-        # of the spline; in floating point it can reach zero for reasons of its
-        # own, so the conclusion is tested rather than inherited.
+        # entitlements: the iteration stopped moving, the polygon lost its sign
+        # change, or the budget ran out, and each of them can stop where the
+        # spline does not vanish. The theory that says otherwise holds in exact
+        # arithmetic, where a coefficient reaches zero only near a zero of the
+        # spline; in floating point it can reach zero for reasons of its own, so
+        # the conclusion is tested rather than inherited.
         #
-        # `root_tol` rather than `zero_tol`, because the iteration stops at a
-        # *parametric* resolution: a zero located to that much leaves `|f'|`
-        # times it behind however exactly f is then evaluated, and testing the
-        # evaluation error alone would reject the genuine zeros of a steep
-        # spline.
+        # `root_tol` and not `zero_tol`, for every one of them alike. The
+        # iteration stops at a *parametric* resolution, so a correctly located
+        # zero leaves `|f'|` times that behind however exactly f is then
+        # evaluated, and the same is true of a residual read off a coefficient of
+        # the refined window, since the insertions that produced it take
+        # differences of knots and so carry the coordinate's resolution too. Only
+        # the two domain endpoints below, taken from the unrefined input, are
+        # free of it.
         certified = residual <= root_tol
 
         if status == _STATUS_BUDGET:

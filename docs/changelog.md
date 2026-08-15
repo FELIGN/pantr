@@ -99,7 +99,10 @@
   threshold a tracked iterate is tested against now carries the term the
   parametric tolerance itself allows, `|f'| * 2 * tol * scale`, alongside the
   evaluation error: testing the evaluation error alone rejects the correctly
-  located zeros of a steep spline.
+  located zeros of a steep spline. A side effect worth knowing: from degree 20 a
+  double root came back as the two sign changes bracketing it, so a caller
+  counting zeros got two where the answer is one. One of the pair was an
+  uncertified budget-limited iterate and is now dropped, leaving the count right.
 - The merge that collapses several reports of one zero could return a point
   between two distinct zeros. Reports are joined into a run on the *larger* of
   two merge radii, and the radius is capped at

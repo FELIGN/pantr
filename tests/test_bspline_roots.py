@@ -70,6 +70,22 @@ own root-quality invariant applies to the same two terms. It buys nothing agains
 this guards, which exceeds the bound by eleven orders of magnitude.
 """
 
+_SLOPE_SAMPLES: int = 4001
+"""Grid points used to estimate ``max |f'|`` independently of the implementation.
+
+The estimate only has to be within the safety factor of the true supremum, and it is
+taken on top of every knot and both sides of it, which is where a spline's slope peaks.
+Four thousand points on the families it is used with put it within 1 % of the hodograph
+bound.
+"""
+
+_SLOPE_SAMPLE_NUDGE: float = 1.0e-9
+"""Offset, relative to the coordinate scale, at which the slope is sampled beside a knot.
+
+Small enough to sit inside the smallest knot interval used here (``1 / 8`` of the
+domain), large enough to survive the rounding of adding it to a coordinate at ``1e6``.
+"""
+
 _PARITY_RTOL: float = 1e-10
 """
 Agreement required between this method and extraction plus Bernstein root finding.
@@ -122,8 +138,12 @@ def _polynomial_coefficients(
     afterwards. Building it directly on a domain around ``1e3`` instead loses it entirely,
     the power basis then cancelling terms of order ``1e15`` down to a result of order
     ``1e-5``.
+
+    Fewer roots than ``degree`` is allowed and puts a polynomial of lower degree in the
+    space, its leading power coefficients being zero.
     """
     power = np.poly(np.asarray(roots, dtype=np.float64))[::-1]
+    power = np.concatenate((power, np.zeros(degree + 1 - power.size, dtype=np.float64)))
     binomials = np.array([math.comb(degree, k) for k in range(degree + 1)], dtype=np.float64)
     out = np.empty(len(knots) - degree - 1, dtype=np.float64)
     for j in range(out.shape[0]):
@@ -157,22 +177,37 @@ def _bezier_reference_roots(
     return out
 
 
-def _hodograph_slope_bound(
-    coeffs: npt.NDArray[np.float64],
-    knots: npt.NDArray[np.float64],
-    degree: int,
-) -> float:
-    """Bound ``|f'|`` over the whole domain from the hodograph coefficients.
+def _sampled_slope(spline: Bspline, knots: npt.NDArray[np.float64], degree: int) -> float:
+    """Estimate ``max |f'|`` over the domain by sampling the derivative.
 
-    The derivative of a spline is the spline whose coefficients are
-    ``degree * (c[i] - c[i-1]) / (t[i+degree] - t[i])``, and a spline never leaves the
-    range of its own coefficients, so the largest such difference quotient bounds ``|f'|``
-    everywhere. A zero-length denominator is a C^-1 knot, where the spline jumps and no
-    finite slope describes it, and is skipped.
+    Deliberately *not* the hodograph difference quotient the implementation derives its
+    own threshold from: a bound recomputed by the same formula would move with a bug in
+    it, and the tolerance it feeds would then stretch to cover the very defect the
+    assertion is meant to catch. This goes through :meth:`Bspline.evaluate_derivatives`
+    instead, which reaches the derivative by a different route.
+
+    Sampling gives a lower estimate of the supremum, so the bound built on it is if
+    anything too tight; the sample includes every knot and both sides of it, which is
+    where a spline's slope peaks, and the tests using it carry ``_RESIDUAL_SAFETY``.
     """
-    gaps = knots[degree + 1 : coeffs.shape[0] + degree] - knots[1 : coeffs.shape[0]]
-    quotients = np.abs(np.diff(coeffs))[gaps > 0.0] / gaps[gaps > 0.0]
-    return float(degree * quotients.max()) if quotients.size else 0.0
+    unique = np.unique(knots)
+    nudge = _SLOPE_SAMPLE_NUDGE * max(float(unique[-1] - unique[0]), float(np.abs(knots).max()))
+    points = np.unique(
+        np.clip(
+            np.concatenate(
+                (
+                    np.linspace(unique[0], unique[-1], _SLOPE_SAMPLES),
+                    unique,
+                    unique + nudge,
+                    unique - nudge,
+                )
+            ),
+            unique[0],
+            unique[-1],
+        )
+    )
+    values = np.asarray(spline.evaluate_derivatives(points, [1]), dtype=np.float64)
+    return float(np.abs(values).max())
 
 
 def _zero_tol(coeffs: npt.NDArray[np.float64], degree: int) -> float:
@@ -180,21 +215,20 @@ def _zero_tol(coeffs: npt.NDArray[np.float64], degree: int) -> float:
     return float(np.abs(coeffs).max()) * max((degree + 1) * 4.0 * _EPS, 1e-15)
 
 
-def _root_tol(
-    coeffs: npt.NDArray[np.float64],
-    knots: npt.NDArray[np.float64],
-    degree: int,
-) -> float:
-    """Return the residual threshold ``find_roots`` allows a *tracked* iterate.
+def _root_tol(spline: Bspline, coeffs: npt.NDArray[np.float64], degree: int) -> float:
+    """Return the residual threshold ``find_roots`` allows a *located* iterate.
 
     Larger than :func:`_zero_tol` by the value the spline reaches at the parametric
-    resolution the iteration stops at, ``|f'| * 2 * tol * scale``.
+    resolution the iteration stops at, ``|f'| * 2 * tol * scale``, with ``|f'|`` taken
+    from :func:`_sampled_slope` rather than from the implementation's own formula.
     """
+    knots = np.asarray(spline.space.spaces[0].knots, dtype=np.float64)
     num_coeffs = coeffs.shape[0]
     scale = max(abs(float(knots[degree])), abs(float(knots[num_coeffs])))
     scale = max(scale, float(knots[num_coeffs] - knots[degree]))
-    slope = _hodograph_slope_bound(coeffs, knots, degree)
-    return _zero_tol(coeffs, degree) + 2.0 * slope * _STRICT_TOL * scale
+    return _zero_tol(coeffs, degree) + 2.0 * _sampled_slope(spline, knots, degree) * (
+        _STRICT_TOL * scale
+    )
 
 
 # --- Analytic cases -------------------------------------------------------------------
@@ -426,13 +460,15 @@ def test_no_returned_value_escapes_the_residual_certificate() -> None:
     de Boor evaluation error, ``coeff_scale * (degree + 1) * 4 * eps``. The second is the
     value the spline reaches at the parametric resolution the iteration stops at: ``tol``
     is documented as a *relative parametric* tolerance on ``max(|x|, L)``, and a zero
-    located to ``dt`` leaves ``|f'| * dt``. ``|f'|`` is bounded from the hodograph of the
-    input rather than read back out of the solver, and the residual is evaluated through
-    the public :meth:`Bspline.evaluate`, so neither side of the comparison comes from the
-    kernel under test. The safety factor is the eight used elsewhere in this file.
+    located to ``dt`` leaves ``|f'| * dt``. Neither side of the comparison is computed the
+    way the solver computes it: the residual goes through the public
+    :meth:`Bspline.evaluate`, and ``|f'|`` through :func:`_sampled_slope`, which samples
+    :meth:`Bspline.evaluate_derivatives` rather than re-deriving the hodograph difference
+    quotient the threshold inside ``find_roots`` is built from. The safety factor is the
+    eight used elsewhere in this file.
 
     Against the defect it pins, the margin is not marginal: the worst value the old code
-    returned here leaves ``2.08e-2`` against a bound of ``1.99e-13``.
+    returned here leaves ``2.08e-2`` against a bound of ``1.99e-13``, a factor of 6.2e11.
     """
     worst = 0.0
     for degree in (1, 2, 3, 5, 8, 15):
@@ -454,7 +490,7 @@ def test_no_returned_value_escapes_the_residual_certificate() -> None:
                         continue
 
                     values = np.abs(np.asarray(spline.evaluate(roots), dtype=np.float64))
-                    slope = _hodograph_slope_bound(coeffs, knots, degree)
+                    slope = _sampled_slope(spline, knots, degree)
                     bound = _zero_tol(coeffs, degree) + slope * _STRICT_TOL * np.maximum(
                         np.abs(roots), span
                     )
@@ -788,7 +824,78 @@ def test_regression_merging_never_invents_a_root_between_two_real_ones() -> None
 
     residuals = np.abs(np.asarray(spline.evaluate(found), dtype=np.float64).reshape(-1))
     assert found.shape == (3,)
-    assert float(residuals.max()) <= _RESIDUAL_SAFETY * _root_tol(coeffs, knots, degree)
+    assert float(residuals.max()) <= _RESIDUAL_SAFETY * _root_tol(spline, coeffs, degree)
+
+
+def test_a_one_sided_zero_at_a_jump_is_reported_at_the_knot() -> None:
+    """A zero of the left piece at a C^-1 knot is a root, though evaluating gives the jump.
+
+    The counterpart of ``test_regression_a_jump_across_the_axis_is_not_a_root``: there the
+    spline crossed the axis without touching it and the knot is not a zero; here the left
+    piece *reaches* zero at the knot before the spline jumps to -2, so the knot is a zero
+    of that piece and is reported. The documented consequence, which this pins, is that
+    :meth:`Bspline.evaluate` at such a root returns the right limit, so its residual is the
+    whole jump. Both routes agree, which is what says the report is the convention and not
+    an accident of this method: the Bézier route sees a segment whose last Bernstein
+    coefficient is exactly zero.
+
+    The data is the worst residual over 960 random splines with interior multiplicities
+    drawn up to ``degree + 1``, and it behaves identically before and after the certificate
+    work.
+    """
+    degree = 5
+    knots = _open_knots(
+        degree,
+        np.array([0.0, 0.123541192295, 0.338252602594, 0.477533677605, 1.0]),
+        np.array([1, degree + 1, 3]),
+    )
+    coeffs = np.array(
+        [1.0, 0.5, -1.0, 1.5, -0.5, 2.0, 0.0, -2.0, -1.5, -1.5, -0.5, 0.5, -0.0, 1.0, -1.0, -3.0]
+    )
+    spline = _spline(knots, coeffs, degree)
+    jump_knot = 0.338252602594
+
+    # Preconditions: the knot is C^-1, the left piece reaches zero there, and the right
+    # piece does not.
+    assert int(np.sum(knots == jump_knot)) == degree + 1
+    sides = np.asarray(spline.evaluate(np.array([jump_knot - 1e-13, jump_knot]))).reshape(-1)
+    assert abs(float(sides[0])) < 1e-11
+    assert float(sides[1]) == pytest.approx(-2.0)
+
+    found = find_roots(spline)
+
+    assert float(np.abs(found - jump_knot).min()) <= _ROOT_ULPS * _EPS
+    expected = _bezier_reference_roots(spline, knots)
+    assert found.shape == expected.shape
+    np.testing.assert_allclose(found, expected, rtol=0.0, atol=_PARITY_RTOL)
+
+
+@pytest.mark.parametrize("degree", [20, 25])
+def test_regression_a_double_root_at_high_degree_is_one_root_not_two(degree: int) -> None:
+    """A caller counting the zeros of ``(x - 1/2) ** 2`` used to get two of them.
+
+    At degree 20 and above the two sign changes bracketing the double root were both
+    reported, at ``0.49999992`` and ``0.50000008`` for degree 20 and ``0.49999985`` and
+    ``0.50000015`` for degree 25, so the count was wrong where the positions were not:
+    the pair straddles the zero and each is inside the half-width the problem allows.
+
+    One of the two came from a tracking that had run out of insertions, and used to be
+    accepted without its residual ever being looked at. Certifying it removes it, which
+    leaves the other -- itself a genuine report -- alone. The count is what this pins,
+    since the positions were never the complaint.
+    """
+    knots = _open_knots(degree, np.linspace(0.0, 1.0, 6))
+    coeffs = _polynomial_coefficients(knots, degree, (0.5, 0.5))
+    spline = _spline(knots, coeffs, degree)
+
+    # The remaining sign change of the pair does not converge inside the budget either,
+    # and saying so is the honest report: the zero is found, its twin is not certified.
+    with pytest.warns(RuntimeWarning, match="may be missing a root"):
+        found = find_roots(spline)
+
+    assert found.shape == (1,)
+    half_width = math.sqrt(2.0 * _zero_tol(coeffs, degree) / 2.0)
+    assert abs(float(found[0]) - 0.5) <= _MULTIPLE_ROOT_SAFETY * half_width
 
 
 # --- Kernels --------------------------------------------------------------------------
@@ -931,10 +1038,16 @@ def test_kernel_reports_a_zero_whose_budget_ran_out() -> None:
     degree = 3
     knots = _open_knots(degree, np.linspace(0.0, 1.0, 6))
     coeffs = _polynomial_coefficients(knots, degree, (0.2, 0.5, 0.9))
-    zero_tol = _zero_tol(coeffs, degree)
+    spline = _spline(knots, coeffs, degree)
 
     _, _, truncated, abandoned = _morken_reimers_roots(
-        knots, degree, coeffs, 1e-15, zero_tol, _root_tol(coeffs, knots, degree), 1
+        knots,
+        degree,
+        coeffs,
+        1e-15,
+        _zero_tol(coeffs, degree),
+        _root_tol(spline, coeffs, degree),
+        1,
     )
 
     assert truncated + abandoned > 0

@@ -92,12 +92,16 @@ levels, so the bound has the same shape.
 _STOP_SLACK: float = 2.0
 """How far a reported zero may sit from the true one, in units of the stopping spread.
 
-The tracking stops when the last ``degree`` iterates span less than ``tol * scale``,
-so the last iterate is within that spread of the limit, plus at most one further step
-of the same size. Two of them is therefore the parametric error a reported zero carries
-by construction, and it is the factor
-``test_residual_at_every_root_is_within_the_evaluation_bound`` already measures the
-residual against.
+The tracking stops when the last ``degree`` iterates span less than ``tol * scale``.
+Mørken and Reimers bound the *convergence rate* but not the distance from the last
+iterate to the limit at an arbitrary stopping point, so this is **observed, not
+proved**: the spread bounds how far the iterates still move, and one further step of
+the same size covers the tail. Two is what
+``test_residual_at_every_root_is_within_the_evaluation_bound`` measures the residual
+against over 240 random splines at four parametric scales, and what
+``test_no_returned_value_escapes_the_residual_certificate`` clears by a factor of five
+on the families that break this method. Being an estimate, it is used with the safety
+factors those tests carry rather than as a bound in its own right.
 """
 
 
@@ -218,7 +222,17 @@ def _slope_bound(
     only at a knot of multiplicity ``degree + 1``, where the spline jumps and no finite
     slope describes it; an infinite bound there would turn the residual test into an
     unconditional accept, which is the defect this whole threshold exists to prevent, and
-    the jump itself is rejected on its own residual.
+    the jump itself is rejected on its own residual. At least one denominator is always
+    positive: an open knot vector carries exactly ``degree + 1`` copies of the start, so
+    ``knots[degree + 1] > knots[1]``.
+
+    The bound is over the whole domain, where the threshold it feeds is applied at one
+    zero at a time. A spline with one steep region therefore gets a threshold as loose
+    everywhere as that region needs, which errs towards accepting rather than towards
+    rejecting a genuine zero. Sharpening it to the knot span holding the zero is a
+    tolerance-policy question and is *not* a matter of computing the same quantity on the
+    working window: after a hundred insertions the local knot gaps there are degenerate
+    and the same formula returns a bound larger than the spline's own range.
 
     Args:
         coeffs (npt.NDArray[np.float64]): Scalar B-spline coefficients.
@@ -226,14 +240,12 @@ def _slope_bound(
         degree (int): Polynomial degree, at least 1.
 
     Returns:
-        float: An upper bound on ``|f'|`` over the domain, or ``0.0`` for a spline whose
-        coefficients are all equal.
+        float: An upper bound on ``|f'|`` over the domain. Zero for a spline whose
+        coefficients are all equal, which is the correct bound for a constant.
     """
     num_coeffs = coeffs.shape[0]
     gaps = knots[degree + 1 : num_coeffs + degree] - knots[1:num_coeffs]
     usable = gaps > 0.0
-    if not bool(np.any(usable)):
-        return 0.0
     quotients = np.abs(np.diff(coeffs))[usable] / gaps[usable]
     return float(degree * quotients.max())
 
@@ -510,6 +522,14 @@ def find_roots(
         a zero of even multiplicity is reported, since it does not change the
         sign of the spline and the sign changes bracketing it vanish under
         refinement.
+
+        At a knot of multiplicity ``degree + 1`` the spline is discontinuous, and
+        a zero of the piece on either side is reported at the knot. Evaluating
+        there returns the *right* limit, so such a root can show a residual as
+        large as the jump when the zero belongs to the left piece. Extracting the
+        Bézier segments and solving each of them
+        (:func:`pantr.bezier.find_roots`) reports the same knot for the same
+        reason.
 
     Example:
         >>> import numpy as np
