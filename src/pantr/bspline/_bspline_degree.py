@@ -248,7 +248,14 @@ def _degree_reduce_bspline(bspline: Bspline, degree_decrements: tuple[int, ...])
                         tol,
                     )
 
-                m_bdy_new = m_bdy - dec
+                # Same floor as the interior breakpoints in
+                # ``_coarsen_knots_after_reduction``: a breakpoint that has to be
+                # present cannot drop below multiplicity 1, and the smoothness the
+                # subtraction asks for there (C^{new_degree} or better) is already
+                # implied by multiplicity 1.  Without it the seam of a maximally
+                # smooth periodic spline (``m_bdy = 1``) asks for multiplicity 0 and
+                # the reduction fails on a knot vector it never had to build.
+                m_bdy_new = max(1, m_bdy - dec)
                 per_knots, new_pts_2d = _to_periodic_bspline_1d_impl(
                     new_knots, new_degree, new_pts_2d, m_bdy_new, tol
                 )

@@ -927,6 +927,39 @@ class TestBsplineReduceDegreeDiscontinuous:
         assert new_knots.shape[0] == new_ctrl.shape[0] + new_degree + 1
 
 
+class TestBsplineReduceDegreePeriodicSeam:
+    """The seam multiplicity is floored at 1, exactly as interior knots are."""
+
+    def test_maximally_smooth_periodic_spline_reduces(self) -> None:
+        """``m_bdy = 1`` used to ask for multiplicity 0 and fail on the knot vector.
+
+        The subtraction ``m_bdy - dec`` reaches 0 for a maximally smooth periodic
+        spline; multiplicity 0 means "no breakpoint at the seam", which the
+        periodic knot-vector builder cannot express.  Flooring at 1 asks for less
+        smoothness than the seam already has, which is always representable.
+        """
+        knots = create_uniform_periodic_knots(num_intervals=6, degree=2)
+        space = BsplineSpace([BsplineSpace1D(knots, 2, periodic=True)])
+        rng = np.random.default_rng(14)
+        bsp = Bspline(space, rng.standard_normal((space.num_total_basis, 1)))
+
+        reduced = bsp.reduce_degree(1)
+
+        assert reduced.degree == (1,)
+        assert reduced.space.spaces[0].periodic
+        assert reduced.control_points.shape[0] == reduced.space.spaces[0].num_basis
+
+    def test_degree_one_still_rejects_the_degree_zero_periodic_result(self) -> None:
+        """Reducing to degree 0 stays rejected: no ghost knots, no periodic form."""
+        knots = create_uniform_periodic_knots(num_intervals=6, degree=1)
+        space = BsplineSpace([BsplineSpace1D(knots, 1, periodic=True)])
+        rng = np.random.default_rng(15)
+        bsp = Bspline(space, rng.standard_normal((space.num_total_basis, 1)))
+
+        with pytest.raises(ValueError, match=r"boundary multiplicity in \[1, degree\]"):
+            bsp.reduce_degree(1)
+
+
 class TestBsplineReduceDegreeErrors:
     """Test that invalid inputs raise appropriate errors."""
 
