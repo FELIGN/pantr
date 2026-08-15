@@ -100,6 +100,62 @@ def _evaluate_Bspline_basis_combine_1D(  # noqa: PLR0913
     return out
 
 
+def _normalize_eval_points(
+    pts: npt.ArrayLike,
+    dim: int,
+    dtype: npt.DTypeLike,
+) -> npt.NDArray[np.float32 | np.float64]:
+    """Coerce and validate a user-supplied array of evaluation points.
+
+    Establishes the shape and dtype the Layer-3 evaluation kernels assume. Without
+    it, a ``(n_pts, 1)`` array reached the Cox-de Boor kernel and failed there with a
+    ``numba.core.errors.TypingError`` (``int()`` of a length-1 array in
+    :func:`~pantr.bspline._bspline_basis_core._find_span_and_first_basis_point`), and
+    an array-like such as a plain list failed even earlier on a missing ``.dtype``
+    attribute, before reaching any validation at all.
+
+    For ``dim == 1`` both ``(n_pts,)`` and ``(n_pts, 1)`` are accepted and normalized
+    to ``(n_pts,)``. A column of points is what the general ``(n_pts, dim)``
+    convention degenerates to at ``dim == 1``, and it is the shape the library's own
+    documented example uses, so it is normalized rather than rejected.
+
+    Args:
+        pts (npt.ArrayLike): Evaluation points, or anything ``np.asarray`` accepts.
+        dim (int): Parametric dimension of the B-spline.
+        dtype (npt.DTypeLike): Required dtype, i.e. the B-spline's own.
+
+    Returns:
+        npt.NDArray[np.float32 | np.float64]: C-contiguous array of shape
+        ``(n_pts,)`` when ``dim == 1`` and ``(n_pts, dim)`` otherwise. The input is
+        returned unchanged when it already satisfies both, so the common path copies
+        nothing.
+
+    Raises:
+        ValueError: If ``pts`` cannot be converted to an array, if its shape is not
+            one of the accepted forms, or if its dtype differs from ``dtype``.
+    """
+    try:
+        arr = np.asarray(pts)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"pts could not be converted to an array: {exc}") from exc
+
+    if dim == 1:
+        if arr.ndim == 2 and arr.shape[1] == 1:  # noqa: PLR2004
+            arr = np.ascontiguousarray(arr).reshape(-1)
+        elif arr.ndim != 1:
+            raise ValueError(
+                f"pts must have shape (n_pts,) or (n_pts, 1) for a 1D B-spline; "
+                f"got shape {arr.shape}"
+            )
+    elif arr.ndim != 2 or arr.shape[1] != dim:  # noqa: PLR2004
+        raise ValueError(f"pts must be a 2D array with {dim} columns; got shape {arr.shape}")
+
+    if arr.dtype != dtype:
+        raise ValueError("Points dtype must match B-spline dtype")
+
+    return np.ascontiguousarray(arr)
+
+
 def _check_pts_in_domain_1d(
     spline_1d: BsplineSpace1D,
     pts: npt.NDArray[np.float32 | np.float64],
@@ -126,7 +182,7 @@ def _check_pts_in_domain_1d(
 
 def _evaluate_Bspline_1D(
     spline: Bspline,
-    pts: npt.NDArray[np.float32 | np.float64] | PointsLattice,
+    pts: npt.ArrayLike | PointsLattice,
     out: npt.NDArray[np.float32 | np.float64] | None = None,
 ) -> npt.NDArray[np.float32 | np.float64]:
     """Evaluate the 1D B-spline at the given points.
@@ -137,9 +193,9 @@ def _evaluate_Bspline_1D(
     Args:
         spline (Bspline): A 1D B-spline object containing space, control points,
             and rational flag.
-        pts (npt.NDArray[np.float32 | np.float64] | PointsLattice): Evaluation
-            points. If a PointsLattice, must be 1D. Otherwise must be a 1D array
-            of shape (n_pts,) matching the B-spline's dtype.
+        pts (npt.ArrayLike | PointsLattice): Evaluation
+            points. If a PointsLattice, must be 1D. Otherwise an array-like of
+            shape (n_pts,) or (n_pts, 1), with dtype matching the B-spline's.
         out (npt.NDArray[np.float32 | np.float64] | None): Optional output array
             where the result will be stored. If None, a new array is allocated.
             Must have shape (n_pts, rank) and dtype matching the B-spline.
@@ -153,7 +209,8 @@ def _evaluate_Bspline_1D(
 
     Raises:
         ValueError: If the B-spline is not 1D, if the points lattice is not 1D,
-            or if the points dtype does not match the B-spline dtype.
+            or if the points have an unusable shape or a dtype that does not match
+            the B-spline dtype.
     """
     if spline.dim != 1:
         raise ValueError("B-spline must be 1D")
@@ -165,10 +222,7 @@ def _evaluate_Bspline_1D(
             raise ValueError("Points lattice must be 1D")
         pts_array = pts._pts_per_dir[0]
     else:
-        pts_array = pts
-
-    if pts_array.dtype != spline.dtype:
-        raise ValueError("Points dtype must match B-spline dtype")
+        pts_array = _normalize_eval_points(pts, 1, spline.dtype)
 
     spline_1D = spline.space.spaces[0]
     _check_pts_in_domain_1d(spline_1D, pts_array)
@@ -466,7 +520,7 @@ def _evaluate_Bspline_deriv_1D_non_rational(
 
 def _evaluate_Bspline_deriv_1D(
     spline: Bspline,
-    pts: npt.NDArray[np.float32 | np.float64] | PointsLattice,
+    pts: npt.ArrayLike | PointsLattice,
     n_deriv: int,
     out: npt.NDArray[np.float32 | np.float64] | None = None,
 ) -> npt.NDArray[np.float32 | np.float64]:
@@ -479,9 +533,10 @@ def _evaluate_Bspline_deriv_1D(
     Args:
         spline (Bspline): A 1D B-spline object containing space, control points,
             and rational flag.
-        pts (npt.NDArray[np.float32 | np.float64] | PointsLattice): Evaluation
+        pts (npt.ArrayLike | PointsLattice): Evaluation
             points. If a :class:`~pantr.quad.PointsLattice`, must be 1D. Otherwise
-            must be a 1D array of shape ``(n_pts,)`` matching the B-spline's dtype.
+            an array-like of shape ``(n_pts,)`` or ``(n_pts, 1)``, with dtype
+            matching the B-spline's.
         n_deriv (int): The derivative order to return. Must be >= 0.
         out (npt.NDArray[np.float32 | np.float64] | None): Optional pre-allocated
             output array with shape ``(n_pts,)`` for scalar or ``(n_pts, rank)``
@@ -495,8 +550,8 @@ def _evaluate_Bspline_deriv_1D(
 
     Raises:
         ValueError: If the B-spline is not 1D, if ``n_deriv < 0``, if the
-            points lattice is not 1D, or if the points dtype does not match the
-            B-spline dtype.
+            points lattice is not 1D, or if the points have an unusable shape or a
+            dtype that does not match the B-spline dtype.
     """
     if spline.dim != 1:
         raise ValueError("B-spline must be 1D")
@@ -509,10 +564,7 @@ def _evaluate_Bspline_deriv_1D(
             raise ValueError("Points lattice must be 1D")
         pts_array = pts._pts_per_dir[0]
     else:
-        pts_array = pts
-
-    if pts_array.dtype != spline.dtype:
-        raise ValueError("Points dtype must match B-spline dtype")
+        pts_array = _normalize_eval_points(pts, 1, spline.dtype)
 
     spline_1D = spline.space.spaces[0]
     _check_pts_in_domain_1d(spline_1D, pts_array)
@@ -924,7 +976,7 @@ def _evaluate_Bspline_deriv_multi_dim_non_rational(
 
 def _evaluate_Bspline_deriv_multi_dim(
     spline: Bspline,
-    pts: npt.NDArray[np.float32 | np.float64] | PointsLattice,
+    pts: npt.ArrayLike | PointsLattice,
     orders: Sequence[int],
     out: npt.NDArray[np.float32 | np.float64] | None = None,
 ) -> npt.NDArray[np.float32 | np.float64]:
@@ -934,7 +986,7 @@ def _evaluate_Bspline_deriv_multi_dim(
 
     Args:
         spline (Bspline): A multi-dimensional B-spline (``dim >= 2``).
-        pts (npt.NDArray[np.float32 | np.float64] | PointsLattice): Evaluation
+        pts (npt.ArrayLike | PointsLattice): Evaluation
             points. Either a 2-D array of shape ``(n_pts, dim)`` or a
             :class:`~pantr.quad.PointsLattice`.
         orders (Sequence[int]): One non-negative integer per parametric direction.
@@ -966,6 +1018,7 @@ def _evaluate_Bspline_deriv_multi_dim(
 
     dtype = spline.dtype
     pts_base_shape: tuple[int, ...]
+    pts_arg: npt.NDArray[np.float32 | np.float64] | PointsLattice
     if isinstance(pts, PointsLattice):
         if pts.dim != dim:
             raise ValueError(
@@ -974,25 +1027,23 @@ def _evaluate_Bspline_deriv_multi_dim(
         if pts.dtype != dtype:
             raise ValueError("Points dtype must match B-spline dtype")
         pts_base_shape = tuple(int(p.shape[0]) for p in pts.pts_per_dir)
+        pts_arg = pts
     else:
-        if pts.ndim != 2 or pts.shape[1] != dim:  # noqa: PLR2004
-            raise ValueError(f"pts must be a 2D array with {dim} columns")
-        if pts.dtype != dtype:
-            raise ValueError("Points dtype must match B-spline dtype")
-        pts_base_shape = (pts.shape[0],)
+        pts_arg = _normalize_eval_points(pts, dim, dtype)
+        pts_base_shape = (pts_arg.shape[0],)
 
     if spline.is_rational:
         return _evaluate_Bspline_deriv_multi_dim_rational(
-            spline, pts, orders_tuple, pts_base_shape, out
+            spline, pts_arg, orders_tuple, pts_base_shape, out
         )
     return _evaluate_Bspline_deriv_multi_dim_non_rational(
-        spline, pts, orders_tuple, pts_base_shape, out
+        spline, pts_arg, orders_tuple, pts_base_shape, out
     )
 
 
 def _evaluate_Bspline_deriv(
     spline: Bspline,
-    pts: npt.NDArray[np.float32 | np.float64] | PointsLattice,
+    pts: npt.ArrayLike | PointsLattice,
     orders: Sequence[int],
     out: npt.NDArray[np.float32 | np.float64] | None = None,
 ) -> npt.NDArray[np.float32 | np.float64]:
@@ -1000,7 +1051,7 @@ def _evaluate_Bspline_deriv(
 
     Args:
         spline (Bspline): The B-spline object.
-        pts (npt.NDArray[np.float32 | np.float64] | PointsLattice): Evaluation
+        pts (npt.ArrayLike | PointsLattice): Evaluation
             points.
         orders (Sequence[int]): One non-negative derivative order per parametric
             direction. ``len(orders)`` must equal ``spline.dim``.
@@ -1155,7 +1206,7 @@ def _evaluate_Bspline_multi_dim_pts_array(
 
 def _evaluate_Bspline_multi_dim(
     spline: Bspline,
-    pts: npt.NDArray[np.float32 | np.float64] | PointsLattice,
+    pts: npt.ArrayLike | PointsLattice,
     out: npt.NDArray[np.float32 | np.float64] | None = None,
 ) -> npt.NDArray[np.float32 | np.float64]:
     """Evaluate a multi-dimensional B-spline at the given points.
@@ -1166,7 +1217,7 @@ def _evaluate_Bspline_multi_dim(
 
     Args:
         spline (Bspline): A multi-dimensional B-spline object (``dim >= 2``).
-        pts (npt.NDArray[np.float32 | np.float64] | PointsLattice): Evaluation
+        pts (npt.ArrayLike | PointsLattice): Evaluation
             points. Either a :class:`~pantr.quad.PointsLattice` (one 1D array
             per parametric direction) or a 2D array of shape
             ``(n_pts, spline.dim)`` containing row-wise parameter coordinates.
@@ -1211,15 +1262,12 @@ def _evaluate_Bspline_multi_dim(
         _evaluate_Bspline_multi_dim_lattice(cp, spline.space.spaces, pts, out_array)
 
     else:
-        if pts.ndim != 2 or pts.shape[1] != dim:  # noqa: PLR2004
-            raise ValueError(f"pts must be a 2D array with {dim} columns")
-        if pts.dtype != dtype:
-            raise ValueError("Points dtype must match B-spline dtype")
+        pts_array = _normalize_eval_points(pts, dim, dtype)
 
-        expected_shape = (pts.shape[0], cp.shape[-1])
+        expected_shape = (pts_array.shape[0], cp.shape[-1])
         out_array = _allocate_or_validate_out(out, expected_shape, dtype)
 
-        _evaluate_Bspline_multi_dim_pts_array(cp, spline.space.spaces, pts, out_array)
+        _evaluate_Bspline_multi_dim_pts_array(cp, spline.space.spaces, pts_array, out_array)
 
     if spline.is_rational:
         out_array[..., :-1] = out_array[..., :-1] / out_array[..., -1:]
@@ -1230,14 +1278,14 @@ def _evaluate_Bspline_multi_dim(
 
 def _evaluate_Bspline(
     spline: Bspline,
-    pts: npt.NDArray[np.float32 | np.float64] | PointsLattice,
+    pts: npt.ArrayLike | PointsLattice,
     out: npt.NDArray[np.float32 | np.float64] | None = None,
 ) -> npt.NDArray[np.float32 | np.float64]:
     """Evaluate the B-spline at the given points, dispatching on parametric dimension.
 
     Args:
         spline (Bspline): The B-spline object.
-        pts (npt.NDArray[np.float32 | np.float64] | PointsLattice): The points at which
+        pts (npt.ArrayLike | PointsLattice): The points at which
             to evaluate the B-spline.
         out (npt.NDArray[np.float32 | np.float64] | None): Optional pre-allocated output
             array. Defaults to None.

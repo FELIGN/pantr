@@ -17,6 +17,7 @@ from typing import TYPE_CHECKING
 import numpy as np
 import numpy.typing as npt
 
+from ..bspline._bspline_degree_core import _check_bincoeff_envelope
 from ._bezier_core import _scalar_bernstein_product_1d_core
 from ._bezier_product import _bernstein_product_coefficients_nd
 
@@ -46,6 +47,9 @@ def _compose_bezier(outer: Bezier, inner: Bezier) -> Bezier:
         TypeError: If either operand is rational.
         ValueError: If ``inner.rank != outer.dim``.
         ValueError: If the operands have different dtypes.
+        ValueError: If a 1D inner Bézier would drive the composed degree past the
+            exactness envelope of the binomial-coefficient kernel (see
+            :data:`~pantr.bspline._bspline_degree_core._BINCOEFF_MAX_N`).
     """
     if outer.is_rational:
         raise TypeError("Composition is not supported for rational Béziers (outer is rational).")
@@ -58,6 +62,32 @@ def _compose_bezier(outer: Bezier, inner: Bezier) -> Bezier:
         )
     if outer.dtype != inner.dtype:
         raise ValueError(f"Operands must have the same dtype. Got {outer.dtype} and {inner.dtype}.")
+
+    # A 1D inner reparametrization routes the Bernstein products through
+    # ``_scalar_bernstein_product_1d_core``, whose ``C(r, k)`` with ``r = p + q``
+    # reaches the largest product degree formed.  That is the full composed degree
+    # ``sum(outer.degree) * inner.degree[0]``: the per-direction power ladder in
+    # ``_compute_scalar_powers`` climbs to ``outer.degree[d] * inner.degree[0]``, and
+    # the cross-direction accumulation in ``_compose_impl`` then multiplies the
+    # per-direction bases together.  The envelope is therefore *multiplicative* in the
+    # operands and binds at far lower input degrees than degree elevation's additive
+    # one: an outer of degree 6 composed with an inner of degree 11 already asks for
+    # ``C(66, k)``, and was measured off by 30.4 composing the identity with itself.
+    #
+    # Two configurations are exposure-free and deliberately left uncapped:
+    #   * an nD inner, which takes ``_bernstein_product_coefficients_nd`` instead --
+    #     built on arbitrary-precision ``math.comb``, so it cannot wrap;
+    #   * a *1D* outer of degree <= 1, for which no product is formed at all (the power
+    #     ladder needs degree >= 2 and there is no second direction to multiply into),
+    #     so ``_bincoeff`` is never called. Verified: a degree-1 outer composed with a
+    #     degree-70 inner reproduces the identity to 1.0e-15.
+    # A degree-(1, 1) *2D* outer is not exempt: the cross-direction product runs, and
+    # it was measured off by 2.019 at a composed degree of 62.
+    if inner.dim == 1 and (outer.dim > 1 or outer.degree[0] > 1):
+        composed = sum(outer.degree) * inner.degree[0]
+        _check_bincoeff_envelope(
+            composed, f"Composition to degree {composed} with a 1D inner Bézier"
+        )
 
     return _compose_impl(outer, inner)
 

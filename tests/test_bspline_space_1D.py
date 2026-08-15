@@ -327,6 +327,65 @@ class TestBsplineSpace1DMethods:
         expected = np.array([False, True, True, False])
         np.testing.assert_array_equal(result, expected)
 
+    @pytest.mark.parametrize(
+        "knots",
+        [
+            [0.0, 0.25, 0.5, 0.75, 1.0],  # uniform
+            [0.0, 0.1, 0.5, 0.9, 1.0],  # deliberately non-uniform
+        ],
+    )
+    def test_get_cardinal_intervals_degree_zero(self, knots: list[float]) -> None:
+        """Degree 0 with simple knots: all cardinal, and nothing read out of bounds.
+
+        The comparison window inside the kernel spans ``2 * degree - 1`` knot
+        intervals, so at ``degree == 0`` it is empty and its centre index
+        ``degree - 1 == -1`` addressed a zero-length array. With the window empty
+        the equal-length condition holds vacuously, so knot spacing does not enter
+        and both a uniform and a deliberately non-uniform vector answer all-``True``.
+        """
+        spline = BsplineSpace1D(knots, 0)
+        result = spline.get_cardinal_intervals()
+
+        assert result.shape == (len(knots) - 1,)
+        np.testing.assert_array_equal(result, np.ones(len(knots) - 1, dtype=np.bool_))
+
+    def test_get_cardinal_intervals_degree_zero_repeated_knot(self) -> None:
+        """Degree 0 is still subject to the multiplicity gate, at every degree.
+
+        "The length condition is vacuous at degree 0" does not mean "every interval
+        is cardinal": the pre-existing gate requiring both bounding knots to be
+        simple still applies, so the two intervals touching a repeated interior knot
+        are reported non-cardinal. Pins that distinction, which is easy to overstate
+        in prose.
+        """
+        spline = BsplineSpace1D([0.0, 0.25, 0.25, 0.5, 1.0], 0, snap_knots=False)
+
+        np.testing.assert_array_equal(spline.get_cardinal_intervals(), [False, False, True])
+
+    @pytest.mark.parametrize(
+        ("knots", "n_intervals"),
+        [
+            ([0.0, 0.25, 0.5, 0.75, 1.0], 4),
+            # Repeated interior knot: some cardinal flags come back False, and the
+            # zero-length span it creates is collapsed, so there are 3 intervals.
+            ([0.0, 0.25, 0.25, 0.5, 1.0], 3),
+        ],
+    )
+    def test_tabulate_cardinal_extraction_operators_degree_zero(
+        self, knots: list[float], n_intervals: int
+    ) -> None:
+        """Degree-0 cardinal extraction operators are 1x1 identities either way.
+
+        Whatever the cardinal flags say, a degree-0 space has one basis function per
+        interval, so the operator has no freedom. That is what makes the flag's
+        treatment of repeated knots harmless in practice.
+        """
+        spline = BsplineSpace1D(knots, 0, snap_knots=False)
+        ops = spline.tabulate_cardinal_extraction_operators()
+
+        assert spline.get_cardinal_intervals().shape == (n_intervals,)
+        np.testing.assert_array_equal(ops, np.ones((n_intervals, 1, 1)))
+
 
 class TestBsplineSpace1DWithKnotGenerators:
     """Test BsplineSpace1D with knot vector generators."""

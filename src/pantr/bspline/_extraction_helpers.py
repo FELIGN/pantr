@@ -440,16 +440,17 @@ def _prepare_apply_call(  # noqa: PLR0913 -- each arg reflects a distinct kernel
     )
     _validate_operand(operand, expected_in_shape, dtype)
     out = _allocate_or_validate_out(out, expected_out_shape, dtype)
-    # When every direction is identity the bilateral kernel is a pure copy, so
-    # aliasing out=K is safe.  Only raise for the general (non-identity) case.
-    if (
-        op_kind in ("MT_K_M", "M_K_MT")
-        and not all(is_identity_per_dir)
-        and np.shares_memory(operand, out)
-    ):
+    # No op kind may alias its operand: every kernel reads and writes overlapping
+    # memory.  The guard is uniform on purpose.  Whether a particular contraction
+    # survives aliasing depends on the parametric dimension and on which directions
+    # happen to be identity -- an in-place ``apply`` is corrupted in 1D (measured up
+    # to 1.1 absolute on a degree-3 Bezier target) yet survives in 2D, where the
+    # intermediate lands in the scratch buffer.  That is not a contract a caller can
+    # reason about, so it is not one to offer.  The one exemption is the all-identity
+    # case, where every kernel degenerates to a straight copy.
+    if not all(is_identity_per_dir) and np.shares_memory(operand, out):
         raise ValueError(
-            "out must not alias the operand (K) for bilateral operations; "
-            "the kernel reads and writes overlapping memory"
+            "out must not alias the operand; the kernel reads and writes overlapping memory"
         )
 
     scratch_size = _required_scratch_size(input_shape_per_dir, output_shape_per_dir, op_kind)
@@ -543,9 +544,12 @@ def _prepare_apply_many_call(  # noqa: PLR0912, PLR0913, PLR0915
             containing only non-identity rows. Length must equal ``d``.
         idx_maps_1d (tuple[npt.NDArray[np.intp], ...]): Per-direction compact
             index maps of shape ``(n_el_k,)``; ``idx_maps_1d[k][e]`` is the row
-            index into ``ops_1d[k]`` for element ``e`` (0 for identity elements,
-            unused; the kernel short-circuits on ``is_identity_masks``). Length
-            must equal ``d``.
+            index into ``ops_1d[k]`` for element ``e``, conventionally 0 for
+            identity elements. Every entry must lie in ``[0, n_compact_k)``,
+            including the identity ones: the batch kernels fetch
+            ``ops_1d[k][idx_maps_1d[k][e]]`` as an argument, so the row is read
+            before ``is_identity_masks`` can short-circuit on it. Length must
+            equal ``d``.
         is_identity_masks (tuple[npt.NDArray[np.bool_], ...]): Full per-direction
             identity mask arrays of shape ``(n_el_k,)``. Length must equal ``d``.
         cell_indices (npt.NDArray[np.intp]): Per-direction element indices,
@@ -601,12 +605,21 @@ def _prepare_apply_many_call(  # noqa: PLR0912, PLR0913, PLR0915
                 f"idx_maps_1d[{k}] has length {idx_map.shape[0]}, "
                 f"expected {n_el_k} to match is_identity_masks[{k}]"
             )
-        non_id_vals = idx_map[~mask]
-        if len(non_id_vals) > 0 and int(non_id_vals.max()) >= int(op.shape[0]):
-            raise ValueError(
-                f"idx_maps_1d[{k}] contains out-of-range values for ops_1d[{k}]: "
-                f"max value {int(non_id_vals.max())} >= n_compact_{k}={int(op.shape[0])}"
-            )
+        # Both bounds, and over *every* entry rather than only the non-identity ones.
+        # The batch kernels index the operator stack before the identity mask can
+        # short-circuit anything -- ``apply_kron_apply_many_1d`` evaluates
+        # ``ops_0[idx_map_0[i0]]`` as an argument to ``apply_kron_1d``, so the row is
+        # fetched whatever ``is_id_0[i0]`` says -- and a negative index is legal in
+        # NumPy but reads outside the array in a kernel compiled without bounds
+        # checking. This mirrors the ``cell_indices`` check below.
+        if idx_map.shape[0] > 0:
+            lo, hi = int(idx_map.min()), int(idx_map.max())
+            n_compact_k = int(op.shape[0])
+            if lo < 0 or hi >= n_compact_k:
+                raise ValueError(
+                    f"idx_maps_1d[{k}] contains values outside [0, {n_compact_k}) "
+                    f"for ops_1d[{k}]: range is [{lo}, {hi}]"
+                )
 
     if cell_indices.ndim != 2:  # noqa: PLR2004
         raise ValueError(f"cell_indices must be 2D; got ndim={cell_indices.ndim}")
@@ -629,14 +642,14 @@ def _prepare_apply_many_call(  # noqa: PLR0912, PLR0913, PLR0915
     expected_out_shape = (n_cells, *per_cell_out)
     _validate_operand(operand, expected_operand, dtype)
     out = _allocate_or_validate_out(out, expected_out_shape, dtype)
-    if op_kind in ("MT_K_M", "M_K_MT") and np.shares_memory(operand, out):
+    # Uniform across op kinds, for the reason given in ``_prepare_apply_call``.
+    if np.shares_memory(operand, out):
         all_identity = n_cells == 0 or all(
             bool(is_identity_masks[k][cell_indices[:, k]].all()) for k in range(d)
         )
         if not all_identity:
             raise ValueError(
-                "out must not alias the operand (K) for bilateral operations; "
-                "the kernel reads and writes overlapping memory"
+                "out must not alias the operand; the kernel reads and writes overlapping memory"
             )
 
     scratch_size = _required_scratch_size(input_shape_per_dir, output_shape_per_dir, op_kind)

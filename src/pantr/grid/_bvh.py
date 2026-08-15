@@ -53,6 +53,106 @@ if TYPE_CHECKING:
     from ..geometry import AABB
 
 
+def _check_tree_structure(
+    node_left: npt.NDArray[np.int64],
+    node_right: npt.NDArray[np.int64],
+    node_cell: npt.NDArray[np.int64],
+    n_nodes: int,
+    n_cells: int,
+) -> None:
+    """Check that the node arrays encode a tree the traversal kernels can walk.
+
+    The kernels in :mod:`pantr.grid._bvh_core` decide "leaf or internal" from
+    ``node_cell`` alone (``node_cell[i] < 0`` means internal) and then push
+    ``node_left[i]`` and ``node_right[i]`` unconditionally, without testing either
+    against ``-1``. So the two encodings of leafness have to agree, and an internal
+    node's children have to be real indices: a child left at ``-1``, or any other
+    negative value, wraps to the end of the node array rather than raising, and
+    silently corrupts the query result.
+
+    Args:
+        node_left (npt.NDArray[np.int64]): Left-child indices; ``-1`` on leaves.
+        node_right (npt.NDArray[np.int64]): Right-child indices; ``-1`` on leaves.
+        node_cell (npt.NDArray[np.int64]): Leaf cell ids; ``-1`` on internal nodes.
+        n_nodes (int): Number of nodes, i.e. the valid child-index range.
+        n_cells (int): Number of indexed cells, i.e. the valid cell-id range.
+
+    Raises:
+        ValueError: If ``node_cell`` and the child pointers disagree about which
+            nodes are leaves, if an internal node's child index lies outside
+            ``[0, n_nodes)``, or if a leaf's cell id lies outside ``[0, n_cells)``.
+    """
+    is_leaf = node_cell >= 0
+    if not np.array_equal(is_leaf, (node_left == -1) & (node_right == -1)):
+        raise ValueError(
+            "BVH: node_cell and the child pointers disagree about which nodes are "
+            "leaves. A node is a leaf iff node_cell >= 0, and exactly then must "
+            "node_left and node_right both be -1."
+        )
+    internal = ~is_leaf
+    for arr, name in ((node_left, "node_left"), (node_right, "node_right")):
+        child = arr[internal]
+        if child.size > 0 and (int(child.min()) < 0 or int(child.max()) >= n_nodes):
+            raise ValueError(
+                f"BVH: {name} contains values outside [0, {n_nodes}) on internal nodes: "
+                f"range is [{int(child.min())}, {int(child.max())}]."
+            )
+    leaf_cells = node_cell[is_leaf]
+    if leaf_cells.size > 0 and int(leaf_cells.max()) >= n_cells:
+        raise ValueError(
+            f"BVH: node_cell contains values outside [0, {n_cells}) on leaves: "
+            f"maximum is {int(leaf_cells.max())}."
+        )
+
+
+def _max_tree_depth(
+    node_left: npt.NDArray[np.int64],
+    node_right: npt.NDArray[np.int64],
+    limit: int,
+) -> int:
+    """Measure a BVH node array's maximum root-to-leaf depth, capped at ``limit``.
+
+    Walks from the root (node ``0``) with an explicit Python ``list`` as the
+    traversal stack. That list has to be unbounded: the depth is precisely the
+    unknown quantity being checked, so a fixed-size buffer would reproduce the very
+    bug this function exists to catch.
+
+    The walk stops as soon as it finds a path deeper than ``limit``, which is all the
+    caller needs to know and which also makes it terminate on a node array that is
+    not a tree. A cyclic child pointer would otherwise grow the stack without bound,
+    and a validator that hangs is worse than the out-of-bounds write it replaces.
+
+    Args:
+        node_left (npt.NDArray[np.int64]): Left-child indices; ``-1`` on
+            leaves. Shape ``(n_nodes,)``.
+        node_right (npt.NDArray[np.int64]): Right-child indices; ``-1`` on
+            leaves. Shape ``(n_nodes,)``.
+        limit (int): Depth beyond which the exact value no longer matters.
+
+    Returns:
+        int: Number of nodes on the longest root-to-leaf path, the root counting as
+        depth ``1``; ``0`` for empty node arrays. A returned value greater than
+        ``limit`` means only "deeper than ``limit``", not the true maximum.
+    """
+    n_nodes = node_left.shape[0]
+    if n_nodes == 0:
+        return 0
+    stack: list[tuple[int, int]] = [(0, 1)]
+    max_depth = 0
+    while stack:
+        node, depth = stack.pop()
+        max_depth = max(max_depth, depth)
+        if max_depth > limit:
+            return max_depth
+        left = int(node_left[node])
+        right = int(node_right[node])
+        if left != -1:
+            stack.append((left, depth + 1))
+        if right != -1:
+            stack.append((right, depth + 1))
+    return max_depth
+
+
 class BVH:
     """Bounding-volume hierarchy indexing a fixed collection of AABBs.
 
@@ -112,8 +212,12 @@ class BVH:
 
         Raises:
             TypeError: If any array has the wrong dtype.
-            ValueError: If shapes are inconsistent, ``ndim`` is ``< 1``, or
-                ``n_nodes != 2 * n_cells - 1`` (``0`` when ``n_cells == 0``).
+            ValueError: If shapes are inconsistent, ``ndim`` is ``< 1``,
+                ``n_nodes != 2 * n_cells - 1`` (``0`` when ``n_cells == 0``), if
+                ``node_cell`` and the child pointers disagree about which nodes are
+                leaves, if an internal node's children or a leaf's cell id are out of
+                range, or if the tree's root-to-leaf depth exceeds the traversal
+                kernels' stack depth (``_BVH_STACK_DEPTH``).
         """
         if node_lo.dtype != np.float64 or node_hi.dtype != np.float64:
             raise TypeError(
@@ -143,6 +247,23 @@ class BVH:
             raise ValueError(
                 f"BVH: n_cells={n_cells_int} implies n_nodes={expected_nodes}; "
                 f"got node arrays with {n_nodes} rows."
+            )
+        # Runs before the depth walk below, which indexes the children itself.
+        _check_tree_structure(node_left, node_right, node_cell, n_nodes, n_cells_int)
+
+        # Guard the fixed-depth traversal stack in :mod:`pantr.grid._bvh_core`, whose
+        # kernels push unconditionally.  Unlike from_cell_bounds -- whose median split
+        # keeps the tree balanced, so depth follows from n_cells -- this constructor
+        # takes arbitrary node arrays, and an unbalanced one overflows that stack with
+        # an out-of-bounds write on the first query.  A depth-d traversal occupies at
+        # most d slots, so depth == _BVH_STACK_DEPTH still fits.
+        tree_depth = _max_tree_depth(node_left, node_right, _BVH_STACK_DEPTH)
+        if tree_depth > _BVH_STACK_DEPTH:
+            raise ValueError(
+                f"BVH: the given node arrays encode a tree of depth {tree_depth} or more, "
+                f"exceeding the stack depth {_BVH_STACK_DEPTH} that the traversal kernels "
+                f"allow. Build the tree more evenly, or use BVH.from_cell_bounds, whose "
+                f"median split keeps the depth logarithmic in the cell count."
             )
         self._node_lo = np.ascontiguousarray(node_lo, dtype=np.float64)
         self._node_hi = np.ascontiguousarray(node_hi, dtype=np.float64)

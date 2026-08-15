@@ -76,6 +76,42 @@
   endpoint condition and still returns the mean of the control points.
 
 ### Fixed
+- Knot comparisons went through `np.isclose(a, b, atol=tol)` at 26 sites across
+  seven modules. Setting `atol` does not clear `rtol`, which stays at NumPy's
+  default `1e-5`, so the effective test was `|a - b| <= tol + 1e-5 * |b|`: on a
+  domain of length 1 placed at `1e6` the tolerance was 10, not the `1e-15` the
+  space reports. The consequences were a periodic space reporting the wrong
+  number of basis functions, the in-domain gate admitting points ten domain
+  lengths outside, `remove_knots` removing a different knot than the one asked
+  for, `split` and `restrict` returning a piece that no longer interpolated its
+  own end control point, and the exact extraction operator being discarded in
+  favour of the identity on a knot vector that was near-uniform but not uniform.
+  On a *translated* periodic domain it was also memory-unsafe: degree elevation
+  indexed out of bounds, unchecked under `nopython`. All 26 now compare
+  absolutely.
+- Degree operations had no upper bound, while the exact-integer binomial
+  recurrence they rely on overflows `int64` at `n = 62` — silently, since
+  `nopython` does not trap it. `Bspline.elevate_degree`, `Bezier.elevate_degree`
+  and Bézier composition returned corrupted control points from that degree on,
+  where degree elevation must leave the curve pointwise unchanged. Two paths
+  nobody would associate with degree elevation reach the same recurrence and are
+  now capped too: `Bspline.derivative` on a rational spline, and
+  `Bezier.minimize_degree`.
+- Evaluating a 1D `Bspline` at points shaped `(n, 1)` — the shape the
+  `(n_pts, dim)` convention implies, and the one this project's own docstring
+  example uses — raised a Numba typing error from inside the kernel instead of
+  being accepted. Points are now normalised before they reach any kernel, on all
+  four entry points, and array-likes are coerced rather than failing on a
+  missing `dtype` attribute.
+- `SpanwiseElementExtraction.apply` and `apply_transpose` accepted an `out=`
+  array aliasing their input and returned a silently wrong result; the alias
+  check existed only for the two bilateral op kinds. `idx_map` was checked
+  against its upper bound only, and only for non-identity entries, so a negative
+  index reached the kernel and read out of bounds.
+- `get_cardinal_intervals` on a degree-0 space read past the end of an empty
+  array. `BVH` accepted node arrays deeper than the fixed traversal stack its own
+  query kernels assume, and node arrays whose leaf markers and child pointers
+  disagreed; both are rejected at construction now.
 - `Bspline.reduce_degree` wrote past the end of its output buffers whenever the
   reduced Bézier form needed more control points than `len(knots)` allowed —
   from 13 elements on at degree 4, 8 at degree 5, 5 at degree 8, on the open,

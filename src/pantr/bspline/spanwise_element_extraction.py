@@ -496,7 +496,8 @@ class SpanwiseElementExtraction:
                 ``(prod(input_shape_per_dir),)``.
             cell_idx (CellIndex): Element index (flat or per-direction).
             out (npt.NDArray[np.float32 | np.float64] | None): Optional output
-                array of shape ``(prod(output_shape_per_dir),)``. Allocated
+                array of shape ``(prod(output_shape_per_dir),)``. Must not
+                alias ``v``. Allocated
                 if ``None``.
             scratch (npt.NDArray[np.float32 | np.float64] | None): Optional
                 scratch buffer. Allocated if ``None``.
@@ -526,7 +527,8 @@ class SpanwiseElementExtraction:
                 ``(prod(output_shape_per_dir),)``.
             cell_idx (CellIndex): Element index.
             out (npt.NDArray[np.float32 | np.float64] | None): Optional output
-                array of shape ``(prod(input_shape_per_dir),)``.
+                array of shape ``(prod(input_shape_per_dir),)``. Must not
+                alias ``w``.
             scratch (npt.NDArray[np.float32 | np.float64] | None): Optional
                 scratch buffer.
 
@@ -870,7 +872,8 @@ class SpanwiseElementExtraction:
                 shape ``(n_cells,)`` or per-direction 2-D array of shape
                 ``(n_cells, d)``.
             out (npt.NDArray[np.float32 | np.float64] | None): Optional output
-                array of shape ``(n_cells, N_out)``. Allocated if ``None``.
+                array of shape ``(n_cells, N_out)``. Must not alias ``v``.
+                Allocated if ``None``.
             scratch (npt.NDArray[np.float32 | np.float64] | None): Optional
                 per-cell scratch array of shape ``(n_cells, s)`` with
                 ``s >= scratch_size_per_cell``. Allocated if ``None``.
@@ -900,7 +903,8 @@ class SpanwiseElementExtraction:
                 ``N_out = prod(output_shape_per_dir)``.
             cell_indices (CellIndicesBatch): Cell indices — flat or per-direction.
             out (npt.NDArray[np.float32 | np.float64] | None): Optional output
-                array of shape ``(n_cells, N_in)``. Allocated if ``None``.
+                array of shape ``(n_cells, N_in)``. Must not alias ``w``.
+                Allocated if ``None``.
             scratch (npt.NDArray[np.float32 | np.float64] | None): Optional
                 per-cell scratch array. Allocated if ``None``.
 

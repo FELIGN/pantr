@@ -305,3 +305,76 @@ class TestToleranceRejection:
         knots = result.space.spaces[0].knots
         count = np.sum(np.isclose(knots, 0.5, atol=1e-14))
         assert count == 1
+
+
+class TestRemoveKnotKernelPrecondition:
+    """The Layer-2 cap on ``num`` is what keeps the kernel's scratch buffer in bounds.
+
+    ``_remove_knot_1d_core`` sizes ``temp`` as ``(2 * degree + 1, rank)`` once, and
+    each removal pass writes two rows further out, so it stays in bounds only while
+    ``2 * num <= degree + multiplicity``. Nothing inside the kernel enforces that --
+    Layer 3 validates nothing by contract -- and Numba compiles without bounds
+    checking, so exceeding it corrupts memory silently rather than raising.
+
+    ``_remove_knot_bspline_1d_impl`` establishes the precondition by clamping ``num``
+    to ``min(multiplicity, degree)``, which implies it. These tests pin that clamp:
+    if it were dropped, a caller-supplied ``num`` would reach the kernel unbounded.
+    """
+
+    @staticmethod
+    def _curve_with_multiplicity(degree: int, s: int, n_int: int = 6) -> Bspline:
+        """Open degree-``p`` curve on ``[0, n_int]`` carrying knot 3.0 at multiplicity ``s``."""
+        interior: list[float] = []
+        for x in range(1, n_int):
+            interior += [float(x)] * (s if x == 3 else 1)
+        knots = np.concatenate(
+            [
+                np.zeros(degree + 1),
+                np.array(interior, dtype=float),
+                np.full(degree + 1, float(n_int)),
+            ]
+        )
+        space = BsplineSpace([BsplineSpace1D(knots, degree)])
+        n_basis = space.spaces[0].num_basis
+        ctrl = np.stack(
+            [np.linspace(0.0, 1.0, n_basis), np.linspace(0.0, 1.0, n_basis) ** 2], axis=1
+        )
+        return Bspline(space, ctrl)
+
+    @pytest.mark.parametrize(
+        ("degree", "s"),
+        [(2, 1), (2, 2), (3, 1), (3, 2), (3, 3), (4, 1), (4, 2), (4, 3)],
+    )
+    @pytest.mark.parametrize("requested_num", [1, 5, 100])
+    def test_public_removal_never_exceeds_the_kernel_bound(
+        self, degree: int, s: int, requested_num: int
+    ) -> None:
+        """However large a ``num`` the caller asks for, the kernel stays in bounds.
+
+        The removals actually performed must satisfy ``2 * removals <= degree + s``.
+        Verified under ``NUMBA_BOUNDSCHECK=1`` that this is exactly where the kernel
+        starts writing out of bounds when called directly: e.g. degree 2 with
+        ``s == 1`` raises at ``num == 2``, and degree 4 with ``s == 2`` at ``num == 4``.
+        """
+        curve = self._curve_with_multiplicity(degree, s)
+        before = int(np.sum(np.abs(np.asarray(curve.space.spaces[0].knots) - 3.0) <= 1e-14))
+
+        result = curve.remove_knots(3.0, num=requested_num, tol=1e30)
+
+        after = int(np.sum(np.abs(np.asarray(result.space.spaces[0].knots) - 3.0) <= 1e-14))
+        removals = before - after
+        assert 0 <= removals <= min(s, degree)
+        assert 2 * removals <= degree + s
+
+    def test_removal_still_reaches_the_full_multiplicity(self) -> None:
+        """The cap must not be so tight that a legitimate full removal is blocked.
+
+        Guards against "fixing" the precondition by clamping ``num`` to something
+        smaller: with ``tol`` wide open, all ``s`` copies must still come out.
+        """
+        curve = self._curve_with_multiplicity(degree=3, s=3)
+
+        result = curve.remove_knots(3.0, tol=1e30)
+
+        knots = np.asarray(result.space.spaces[0].knots)
+        assert int(np.sum(np.abs(knots - 3.0) <= 1e-14)) == 0

@@ -25,7 +25,7 @@ import numpy as np
 import numpy.typing as npt
 
 from .._array_utils import _flatten_along_axis, _unflatten_along_axis
-from ..bspline._bspline_degree_core import _apply_reduction_operator
+from ..bspline._bspline_degree_core import _apply_reduction_operator, _check_bincoeff_envelope
 from ._bezier_core import _degree_elevate_bezier_1d_core
 
 if TYPE_CHECKING:
@@ -72,6 +72,11 @@ def _degree_elevate_bezier(
         ~pantr.bezier.Bezier: New Bézier with elevated degrees and updated
         control points.
 
+    Raises:
+        ValueError: If an elevated degree would exceed the exactness envelope of the
+            binomial-coefficient kernel (see
+            :data:`~pantr.bspline._bspline_degree_core._BINCOEFF_MAX_N`).
+
     Note:
         Inputs are assumed to be validated by the caller (Layer 1).
     """
@@ -79,6 +84,15 @@ def _degree_elevate_bezier(
 
     ctrl: npt.NDArray[np.float32 | np.float64] = bezier.control_points
     degrees = bezier.degree
+
+    # ``_degree_elevate_bezier_1d_core`` builds its coefficient table from
+    # ``C(p + inc, i)``, so the elevated degree is what has to stay in range.
+    for d in range(bezier.dim):
+        if increments[d] > 0:
+            elevated = degrees[d] + increments[d]
+            _check_bincoeff_envelope(
+                elevated, f"Degree elevation to degree {elevated} in direction {d}"
+            )
 
     for d in range(bezier.dim):
         inc = increments[d]
@@ -486,8 +500,21 @@ def _minimize_degree_bezier(
         ~pantr.bezier.Bezier: A new Bézier with the lowest degree that
         preserves accuracy within ``tol``.  If no reduction is possible,
         returns a copy of the input.
+
+    Raises:
+        ValueError: If a direction's degree exceeds the exactness envelope of the
+            binomial-coefficient kernel (see
+            :data:`~pantr.bspline._bspline_degree_core._BINCOEFF_MAX_N`).
     """
     from . import Bezier as BezierCls  # noqa: PLC0415
+
+    # Each trial re-elevates from ``degree - 1`` back to ``degree``, starting at the
+    # direction's own degree, so that degree bounds the coefficients needed.  Corrupted
+    # coefficients would not merely lose accuracy here: they feed the round-trip error
+    # measure, and so the accept/reject verdict itself.
+    for d, p in enumerate(bezier.degree):
+        if p >= 1:
+            _check_bincoeff_envelope(p, f"Degree minimization of a degree-{p} direction {d}")
 
     ctrl: npt.NDArray[np.floating[Any]] = bezier.control_points  # (*orders, rank)
     rank = ctrl.shape[-1]

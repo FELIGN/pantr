@@ -178,14 +178,17 @@ class Bspline:
 
     def evaluate(
         self,
-        pts: npt.NDArray[np.float32 | np.float64] | PointsLattice,
+        pts: npt.ArrayLike | PointsLattice,
         out: npt.NDArray[np.float32 | np.float64] | None = None,
     ) -> npt.NDArray[np.float32 | np.float64]:
         """Evaluate the B-spline at the given points.
 
         Args:
-            pts (npt.NDArray[np.float32 | np.float64] | PointsLattice): The
-                parametric points at which to evaluate the B-spline.
+            pts (npt.ArrayLike | PointsLattice): The
+                parametric points at which to evaluate the B-spline, shaped
+                ``(n_pts, dim)`` or, for a 1D B-spline, either ``(n_pts,)`` or
+                ``(n_pts, 1)``. Array-likes are converted; the dtype must match
+                the B-spline's.
             out (npt.NDArray[np.float32 | np.float64] | None): Optional output
                 array where the result will be stored. If None, a new array is
                 allocated. This follows NumPy's style for output arrays.
@@ -196,14 +199,15 @@ class Bspline:
             points.
 
         Raises:
-            ValueError: If the points dtype does not match the B-spline dtype,
-                or if `out` has incorrect shape or dtype.
+            ValueError: If the points have an unusable shape, if their dtype does
+                not match the B-spline dtype, or if `out` has incorrect shape or
+                dtype.
         """
         return _evaluate_Bspline(self, pts, out)
 
     def evaluate_derivatives(
         self,
-        pts: npt.NDArray[np.float32 | np.float64] | PointsLattice,
+        pts: npt.ArrayLike | PointsLattice,
         orders: int | Sequence[int],
         out: npt.NDArray[np.float32 | np.float64] | None = None,
     ) -> npt.NDArray[np.float32 | np.float64]:
@@ -215,13 +219,13 @@ class Bspline:
         the returned values are derivatives of the projected mapping.
 
         Args:
-            pts (npt.NDArray[np.float32 | np.float64] | PointsLattice): The
-                parametric points at which to evaluate. For 1D B-splines, must
-                be a 1D array of shape ``(n_pts,)`` or a 1D
+            pts (npt.ArrayLike | PointsLattice): The
+                parametric points at which to evaluate. For 1D B-splines, an
+                array of shape ``(n_pts,)`` or ``(n_pts, 1)``, or a 1D
                 :class:`~pantr.quad.PointsLattice`. For multi-dimensional
-                B-splines, must be a 2D array of shape ``(n_pts, dim)`` or a
+                B-splines, a 2D array of shape ``(n_pts, dim)`` or a
                 :class:`~pantr.quad.PointsLattice` with matching dimension.
-                The dtype must match the B-spline dtype.
+                Array-likes are converted; the dtype must match the B-spline's.
             orders (int | Sequence[int]): Derivative order(s). A single
                 ``int`` is broadcast to all ``self.dim`` directions. A sequence
                 must contain one non-negative integer per parametric direction

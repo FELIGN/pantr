@@ -13,7 +13,11 @@ import numpy as np
 import numpy.typing as npt
 
 from .._array_utils import _flatten_along_axis, _unflatten_along_axis
-from ._bspline_degree_core import _degree_elevate_1d_core, _degree_reduce_1d_core
+from ._bspline_degree_core import (
+    _check_bincoeff_envelope,
+    _degree_elevate_1d_core,
+    _degree_reduce_1d_core,
+)
 from ._bspline_knot_insertion import _to_open_bspline_1d_impl, _to_periodic_bspline_1d_impl
 from ._bspline_knot_removal import _remove_knot_bspline_1d_impl
 from ._bspline_knots import _get_unique_knots_and_multiplicity_impl
@@ -33,9 +37,23 @@ def _degree_elevate_bspline(bspline: Bspline, degree_increments: tuple[int, ...]
 
     Returns:
         Bspline: New B-spline with elevated degrees.
+
+    Raises:
+        ValueError: If an elevated degree would exceed the exactness envelope of the
+            binomial-coefficient kernel (see
+            :data:`~pantr.bspline._bspline_degree_core._BINCOEFF_MAX_N`).
     """
     dim = bspline.dim
     ctrl = bspline.control_points
+
+    # ``_degree_elevate_1d_core`` builds its Bezier coefficient table from
+    # ``C(degree + inc, i)``, so the elevated degree is what has to stay in range.
+    for i in range(dim):
+        if degree_increments[i] > 0:
+            elevated = bspline.space.spaces[i].degree + degree_increments[i]
+            _check_bincoeff_envelope(
+                elevated, f"Degree elevation to degree {elevated} in direction {i}"
+            )
 
     # Bspline variables
     orig_is_rational = bspline.is_rational

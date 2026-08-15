@@ -263,8 +263,8 @@ def _get_boundary_mults(
     p = space_1d.degree
     a = float(knots[p])
     b = float(knots[-p - 1])
-    m_left = int(np.sum(np.isclose(knots[: p + 1], a, atol=tol)))
-    m_right = int(np.sum(np.isclose(knots[-p - 1 :], b, atol=tol)))
+    m_left = int(np.sum(np.abs(knots[: p + 1] - a) <= tol))
+    m_right = int(np.sum(np.abs(knots[-p - 1 :] - b) <= tol))
     return m_left, m_right
 
 

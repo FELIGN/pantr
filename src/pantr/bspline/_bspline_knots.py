@@ -72,7 +72,7 @@ def _get_multiplicity_of_first_knot_in_domain_impl(
         Inputs are assumed to be correct (no validation performed).
     """
     first_knot = knots[degree]
-    return int(np.sum(np.isclose(knots[: degree + 1], first_knot, atol=tol)))
+    return int(np.sum(np.abs(knots[: degree + 1] - first_knot) <= tol))
 
 
 @nb_jit(
@@ -168,9 +168,24 @@ def _is_in_domain_impl(
         Inputs are assumed to be correct (no validation performed).
     """
     knot_begin, knot_end = knots[degree], knots[-degree - 1]
+    # ``tol`` is an absolute tolerance, so the admitted band is exactly ``tol`` wide at
+    # each end.  ``np.isclose`` would carry its default ``rtol=1e-5`` and, since the
+    # rtol leg attaches to the second operand, accept an overshoot of
+    # ``1e-5 * |knot_end|`` at the right end while rejecting ``tol``-sized undershoot
+    # at a left end sitting at zero -- an asymmetry that is an accident of argument
+    # order.
+    #
+    # The difference is formed first and only then compared against ``tol``.  Shifting
+    # the bound instead (``pts <= knot_end + tol``) reads more directly but is not the
+    # same predicate in floating point: ``knot_end + tol`` rounds to the nearest
+    # representable value, so once ``tol`` drops below ``ulp(knot_end)`` the effective
+    # tolerance becomes ``ulp(knot_end)`` rather than ``tol`` -- 1.16e-10 instead of a
+    # requested 1e-10 on a domain ending at 1e6.  Subtracting first is exact here
+    # (Sterbenz, for the nearby points that decide the boundary), so the band stays
+    # ``tol`` wide at every scale.
     return np.logical_and(  # type: ignore[no-any-return]
-        (knot_begin < pts) | np.isclose(knot_begin, pts, atol=tol),
-        (pts < knot_end) | np.isclose(pts, knot_end, atol=tol),
+        (knot_begin < pts) | (np.abs(knot_begin - pts) <= tol),
+        (pts < knot_end) | (np.abs(pts - knot_end) <= tol),
     )
 
 
@@ -260,6 +275,11 @@ def _get_Bspline_cardinal_intervals_1D_core(
     In the case of open knot vectors, this definition automatically
     discards the first degree-1 and the last degree-1 intervals.
 
+    At ``degree == 0`` there are no neighbouring intervals to compare against, so the
+    equal-length condition holds vacuously and only the multiplicity gate below
+    decides the answer; see the in-body comment for why that is consistent with the
+    geometry.
+
     Args:
         knots (npt.NDArray[np.float32 | np.float64]): B-spline knot vector.
         degree (int): B-spline degree.
@@ -289,10 +309,22 @@ def _get_Bspline_cardinal_intervals_1D_core(
     # This would require to compute knot_id differently.
     for elem_id in range(num_intervals):
         if mult[elem_id] == 1 and mult[elem_id + 1] == 1:
-            local_knots = knots[knot_id - degree + 1 : knot_id + degree + 1]
-            lengths = np.diff(local_knots)
-            if np.all(np.isclose(lengths, lengths[degree - 1], atol=tol)):
+            if degree == 0:
+                # The comparison window below spans ``2 * degree - 1`` knot intervals
+                # and its reference is the centre entry ``degree - 1``; at degree 0 the
+                # window is empty and that index addressed a zero-length array.  There
+                # is nothing to compare, so the length condition holds vacuously and
+                # this interval is cardinal -- it already passed the multiplicity gate
+                # above, which still applies at degree 0.  Consistent with the geometry
+                # either way: a degree-0 space has one basis function per interval, so
+                # its cardinal extraction operator is the 1x1 identity on every
+                # interval whatever this flag says.
                 out[elem_id] = np.True_
+            else:
+                local_knots = knots[knot_id - degree + 1 : knot_id + degree + 1]
+                lengths = np.diff(local_knots)
+                if np.all(np.abs(lengths - lengths[degree - 1]) <= tol):
+                    out[elem_id] = np.True_
 
         knot_id += mult[elem_id + 1]
 
@@ -602,8 +634,11 @@ def _find_knot_index_and_multiplicity(
         knots, degree, tol, in_domain=False
     )
 
-    # Find the matching unique knot.
-    matches = np.where(np.isclose(unique_knots, knot_value, atol=tol))[0]
+    # Find the matching unique knot.  The comparison is absolute: ``np.isclose`` would
+    # keep its default ``rtol=1e-5`` and match a knot up to ``1e-5 * |knot_value|``
+    # away, so a removal request would silently target a different knot (10.0 away at
+    # a knot value of 1e6).
+    matches = np.where(np.abs(unique_knots - knot_value) <= tol)[0]
     if len(matches) == 0:
         raise ValueError(f"Knot value {knot_value} not found in knot vector (tolerance={tol}).")
 
