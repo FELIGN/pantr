@@ -320,6 +320,109 @@ def test_ctor_rejects_a_cyclic_node_graph_without_hanging() -> None:
         BVH(node_lo, node_hi, node_left, node_right, node_cell, n_cells=4)
 
 
+def _three_leaf_arrays() -> tuple[
+    npt.NDArray[np.float64],
+    npt.NDArray[np.float64],
+    npt.NDArray[np.int64],
+    npt.NDArray[np.int64],
+    npt.NDArray[np.int64],
+]:
+    """Raw node arrays of a valid 3-leaf BVH, taken from ``from_cell_bounds`` itself."""
+    lo = np.array([[0.0], [1.0], [2.0]])
+    hi = np.array([[1.0], [2.0], [3.0]])
+    ref = BVH.from_cell_bounds(lo, hi)
+    return (
+        np.array(ref.node_lo, dtype=np.float64),
+        np.array(ref.node_hi, dtype=np.float64),
+        np.array(ref.node_left, dtype=np.int64),
+        np.array(ref.node_right, dtype=np.int64),
+        np.array(ref.node_cell, dtype=np.int64),
+    )
+
+
+def test_ctor_accepts_a_well_formed_hand_built_tree() -> None:
+    """The consistency checks must not reject a tree the library itself produced."""
+    node_lo, node_hi, node_left, node_right, node_cell = _three_leaf_arrays()
+
+    bvh = BVH(node_lo, node_hi, node_left, node_right, node_cell, n_cells=3)
+
+    assert sorted(int(c) for c in bvh.query_aabb(AABB([0.5], [0.6]))) == [0]
+
+
+def test_ctor_rejects_internal_node_with_a_missing_child() -> None:
+    """An "internal" node whose child is -1 must be rejected at construction.
+
+    The traversal kernels decide leaf-vs-internal from ``node_cell`` alone and then
+    push both children without checking either against -1, so a -1 child index wraps
+    to the last row of the node array. Before this check the tree constructed
+    cleanly and the query silently returned the wrong cells: this arrangement gave
+    ``[]`` where the correct answer is ``[0]``.
+
+    With only *one* child cleared the node still does not look like a leaf, so the
+    leaf-consistency check passes it on and the child-range check is what rejects
+    it. Either is fine; what matters is that it no longer constructs.
+    """
+    node_lo, node_hi, node_left, node_right, node_cell = _three_leaf_arrays()
+    internal = int(np.where(node_cell < 0)[0][0])
+    node_left[internal] = -1
+
+    with pytest.raises(ValueError, match=r"node_left contains values outside"):
+        BVH(node_lo, node_hi, node_left, node_right, node_cell, n_cells=3)
+
+
+def test_ctor_rejects_leaf_marked_internal() -> None:
+    """The mirror case: a node with children but a non-negative ``node_cell``."""
+    node_lo, node_hi, node_left, node_right, node_cell = _three_leaf_arrays()
+    leaf = int(np.where(node_cell >= 0)[0][0])
+    node_cell[leaf] = -1
+
+    with pytest.raises(ValueError, match="disagree about which nodes are leaves"):
+        BVH(node_lo, node_hi, node_left, node_right, node_cell, n_cells=3)
+
+
+def test_ctor_rejects_out_of_range_child_index() -> None:
+    """A child index outside ``[0, n_nodes)`` must be rejected, negatives included.
+
+    A negative other than -1 passes the leaf-consistency check (the node still does
+    not look like a leaf) but still wraps when the kernel indexes with it.
+    """
+    node_lo, node_hi, node_left, node_right, node_cell = _three_leaf_arrays()
+    internal = int(np.where(node_cell < 0)[0][0])
+    node_right[internal] = -5
+
+    with pytest.raises(ValueError, match=r"node_right contains values outside"):
+        BVH(node_lo, node_hi, node_left, node_right, node_cell, n_cells=3)
+
+
+def test_ctor_rejects_out_of_range_leaf_cell_id() -> None:
+    """A leaf naming a cell id beyond ``n_cells`` must be rejected."""
+    node_lo, node_hi, node_left, node_right, node_cell = _three_leaf_arrays()
+    leaf = int(np.where(node_cell >= 0)[0][0])
+    node_cell[leaf] = 42
+
+    with pytest.raises(ValueError, match=r"node_cell contains values outside"):
+        BVH(node_lo, node_hi, node_left, node_right, node_cell, n_cells=3)
+
+
+def test_from_cell_bounds_always_satisfies_the_consistency_invariant() -> None:
+    """Every tree the builder produces must pass the new checks, at every size.
+
+    Guards the checks against being stricter than the library's own producer.
+    """
+    for n in range(1, 60):
+        lo = np.arange(n, dtype=np.float64).reshape(-1, 1)
+        tree = BVH.from_cell_bounds(lo, lo + 1.0)
+        # Round-tripping the raw arrays back through __init__ runs every check.
+        BVH(
+            np.array(tree.node_lo, dtype=np.float64),
+            np.array(tree.node_hi, dtype=np.float64),
+            np.array(tree.node_left, dtype=np.int64),
+            np.array(tree.node_right, dtype=np.int64),
+            np.array(tree.node_cell, dtype=np.int64),
+            n_cells=n,
+        )
+
+
 def test_stack_overflow_guard(monkeypatch: pytest.MonkeyPatch) -> None:
     """from_cell_bounds raises when the tree depth would overflow the kernel stack."""
     import pantr.grid._bvh as _bvh_mod  # noqa: PLC0415

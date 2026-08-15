@@ -53,6 +53,58 @@ if TYPE_CHECKING:
     from ..geometry import AABB
 
 
+def _check_tree_structure(
+    node_left: npt.NDArray[np.int64],
+    node_right: npt.NDArray[np.int64],
+    node_cell: npt.NDArray[np.int64],
+    n_nodes: int,
+    n_cells: int,
+) -> None:
+    """Check that the node arrays encode a tree the traversal kernels can walk.
+
+    The kernels in :mod:`pantr.grid._bvh_core` decide "leaf or internal" from
+    ``node_cell`` alone (``node_cell[i] < 0`` means internal) and then push
+    ``node_left[i]`` and ``node_right[i]`` unconditionally, without testing either
+    against ``-1``. So the two encodings of leafness have to agree, and an internal
+    node's children have to be real indices: a child left at ``-1``, or any other
+    negative value, wraps to the end of the node array rather than raising, and
+    silently corrupts the query result.
+
+    Args:
+        node_left (npt.NDArray[np.int64]): Left-child indices; ``-1`` on leaves.
+        node_right (npt.NDArray[np.int64]): Right-child indices; ``-1`` on leaves.
+        node_cell (npt.NDArray[np.int64]): Leaf cell ids; ``-1`` on internal nodes.
+        n_nodes (int): Number of nodes, i.e. the valid child-index range.
+        n_cells (int): Number of indexed cells, i.e. the valid cell-id range.
+
+    Raises:
+        ValueError: If ``node_cell`` and the child pointers disagree about which
+            nodes are leaves, if an internal node's child index lies outside
+            ``[0, n_nodes)``, or if a leaf's cell id lies outside ``[0, n_cells)``.
+    """
+    is_leaf = node_cell >= 0
+    if not np.array_equal(is_leaf, (node_left == -1) & (node_right == -1)):
+        raise ValueError(
+            "BVH: node_cell and the child pointers disagree about which nodes are "
+            "leaves. A node is a leaf iff node_cell >= 0, and exactly then must "
+            "node_left and node_right both be -1."
+        )
+    internal = ~is_leaf
+    for arr, name in ((node_left, "node_left"), (node_right, "node_right")):
+        child = arr[internal]
+        if child.size > 0 and (int(child.min()) < 0 or int(child.max()) >= n_nodes):
+            raise ValueError(
+                f"BVH: {name} contains values outside [0, {n_nodes}) on internal nodes: "
+                f"range is [{int(child.min())}, {int(child.max())}]."
+            )
+    leaf_cells = node_cell[is_leaf]
+    if leaf_cells.size > 0 and int(leaf_cells.max()) >= n_cells:
+        raise ValueError(
+            f"BVH: node_cell contains values outside [0, {n_cells}) on leaves: "
+            f"maximum is {int(leaf_cells.max())}."
+        )
+
+
 def _max_tree_depth(
     node_left: npt.NDArray[np.int64],
     node_right: npt.NDArray[np.int64],
@@ -161,9 +213,11 @@ class BVH:
         Raises:
             TypeError: If any array has the wrong dtype.
             ValueError: If shapes are inconsistent, ``ndim`` is ``< 1``,
-                ``n_nodes != 2 * n_cells - 1`` (``0`` when ``n_cells == 0``), or
-                the tree's root-to-leaf depth exceeds the traversal kernels'
-                stack depth (``_BVH_STACK_DEPTH``).
+                ``n_nodes != 2 * n_cells - 1`` (``0`` when ``n_cells == 0``), if
+                ``node_cell`` and the child pointers disagree about which nodes are
+                leaves, if an internal node's children or a leaf's cell id are out of
+                range, or if the tree's root-to-leaf depth exceeds the traversal
+                kernels' stack depth (``_BVH_STACK_DEPTH``).
         """
         if node_lo.dtype != np.float64 or node_hi.dtype != np.float64:
             raise TypeError(
@@ -194,6 +248,9 @@ class BVH:
                 f"BVH: n_cells={n_cells_int} implies n_nodes={expected_nodes}; "
                 f"got node arrays with {n_nodes} rows."
             )
+        # Runs before the depth walk below, which indexes the children itself.
+        _check_tree_structure(node_left, node_right, node_cell, n_nodes, n_cells_int)
+
         # Guard the fixed-depth traversal stack in :mod:`pantr.grid._bvh_core`, whose
         # kernels push unconditionally.  Unlike from_cell_bounds -- whose median split
         # keeps the tree balanced, so depth follows from n_cells -- this constructor
