@@ -582,6 +582,12 @@ def _make_bspline_1d(knots: list[float], degree: int, ctrl: list[list[float]]) -
     return Bspline(space, np.array(ctrl))
 
 
+def _bspline_multiplicity(spline: Bspline, xi: float) -> int:
+    """Multiplicity of the breakpoint ``xi`` in a 1D spline's knot vector."""
+    knots = spline.space.spaces[0].knots
+    return int(np.count_nonzero(np.abs(knots - xi) <= 1.0e-12))
+
+
 class TestBsplineReduceDegreeRoundTrip:
     """Elevate by t then reduce by t should recover the original geometry."""
 
@@ -837,6 +843,88 @@ class TestBsplineReduceDegreePeriodic:
         orig = bsp.to_open_bspline().evaluate(pts)
         red = reduced.to_open_bspline().evaluate(pts)
         np.testing.assert_allclose(orig, red, atol=1e-11)
+
+
+class TestBsplineReduceDegreeDiscontinuous:
+    """Reduction preserves smoothness, so a C^-1 knot stays C^-1.
+
+    A breakpoint of multiplicity ``m`` is ``C^{p-m}``, and ``C^{p-m} =
+    C^{(p-t)-(m-t)}``, so the reduced multiplicity is ``m - t``.  At ``m = p + 1``
+    that is ``new_degree + 1``: clamping it at ``new_degree`` asks for a C0 space
+    where the function jumps, and the reduction stops being exact on curves that
+    reduce exactly.
+    """
+
+    @pytest.mark.parametrize("degree", [2, 3, 4, 5])
+    def test_exactly_reducible_curve_with_a_jump(self, degree: int) -> None:
+        """A degree-elevated C^-1 spline reduces back to itself, not to a C0 fit."""
+        knots = np.concatenate([np.zeros(degree), np.full(degree, 0.5), np.ones(degree)]).tolist()
+        rng = np.random.default_rng(degree)
+        base = _make_bspline_1d(knots, degree - 1, rng.standard_normal((2 * degree, 1)).tolist())
+        assert _bspline_multiplicity(base, 0.5) == degree  # (degree - 1) + 1: C^-1
+
+        elevated = base.elevate_degree(1)
+        reduced = elevated.reduce_degree(1)
+
+        assert reduced.degree == (degree - 1,)
+        assert _bspline_multiplicity(reduced, 0.5) == degree
+
+        pts = np.linspace(0.0, 1.0, 97)[1:-1] + 1.0e-7
+        scale = float(np.max(np.abs(base.control_points)))
+        np.testing.assert_allclose(
+            reduced.evaluate(pts),
+            base.evaluate(pts),
+            rtol=0.0,
+            atol=_ROUND_TRIP_FACTOR * (degree + 1) * _EPS * scale,
+        )
+
+    def test_mixed_multiplicities_keep_their_continuity(self) -> None:
+        """A C^-1 knot alongside smooth and C^0 ones: each loses exactly the decrement."""
+        degree = 4
+        knots = np.concatenate(
+            [
+                np.zeros(degree + 1),
+                [0.25],
+                np.full(degree + 1, 0.5),
+                np.full(degree, 0.75),
+                np.ones(degree + 1),
+            ]
+        ).tolist()
+        rng = np.random.default_rng(4321)
+        n_basis = len(knots) - degree - 1
+        bsp = _make_bspline_1d(knots, degree, rng.standard_normal((n_basis, 2)).tolist())
+
+        reduced = bsp.reduce_degree(1)
+
+        assert reduced.degree == (3,)
+        assert _bspline_multiplicity(reduced, 0.25) == 1
+        assert _bspline_multiplicity(reduced, 0.5) == 4  # new_degree + 1: still a jump
+        assert _bspline_multiplicity(reduced, 0.75) == 3
+        space_1d = reduced.space.spaces[0]
+        assert reduced.control_points.shape[0] == space_1d.num_basis
+
+    def test_kernel_output_sizing_accounts_for_the_jumps(self) -> None:
+        """The Bézier form holds one extra control point and knot per C^-1 breakpoint."""
+        degree, dec = 3, 1
+        knots = np.concatenate(
+            [np.zeros(degree + 1), np.full(4, 0.3), [0.6], np.full(4, 0.8), np.ones(degree + 1)]
+        )
+        rng = np.random.default_rng(99)
+        n_basis = len(knots) - degree - 1
+        bsp = _make_bspline_1d(knots.tolist(), degree, rng.standard_normal((n_basis, 1)).tolist())
+
+        new_ctrl, new_knots = _degree_reduce_1d_core(
+            degree,
+            bsp.control_points,
+            bsp.space.spaces[0].knots,
+            dec,
+            _interpolating_reduction_operator(degree, dec),
+        )
+
+        new_degree = degree - dec
+        n_seg, n_jump = 4, 2
+        assert new_ctrl.shape[0] == n_seg * new_degree + 1 + n_jump
+        assert new_knots.shape[0] == new_ctrl.shape[0] + new_degree + 1
 
 
 class TestBsplineReduceDegreeErrors:

@@ -383,7 +383,7 @@ def _degree_reduce_1d_core(  # noqa: PLR0912, PLR0915
     Decomposes the B-spline into Bézier segments by iterating through knot
     spans (same alpha-blending as the elevation kernel), applies the reduction
     operator to each segment, and stitches the results into a B-spline in Bézier
-    form (C0 at every interior breakpoint).
+    form.
 
     Because the operator interpolates the segment endpoints, the last control
     point of one reduced segment and the first of the next are both the shared
@@ -391,6 +391,13 @@ def _degree_reduce_1d_core(  # noqa: PLR0912, PLR0915
     therefore written once and the stitch is exactly C0; no averaging of the two
     sides is involved, and neither segment is perturbed away from its own
     optimum.
+
+    That argument needs a breakpoint the original spline is continuous at.  Where
+    it is not — an interior knot of multiplicity ``degree + 1`` — the two segments
+    have different endpoint values, both are kept, and the breakpoint carries
+    multiplicity ``new_degree + 1`` so that the reduced spline jumps where the
+    original does.  Reduction preserves smoothness, exactly as elevation does:
+    ``C^{degree - m} = C^{new_degree - (m - t)}``.
 
     Args:
         degree (int): Original degree.
@@ -402,8 +409,8 @@ def _degree_reduce_1d_core(  # noqa: PLR0912, PLR0915
 
     Returns:
         tuple[npt.NDArray[Any], npt.NDArray[Any]]: ``(reduced_ctrl, reduced_knots)``
-        in Bézier form — all interior breakpoints have multiplicity ``new_degree``
-        (C0 continuity).
+        in Bézier form — every interior breakpoint has multiplicity ``new_degree``,
+        or ``new_degree + 1`` where the input was discontinuous.
 
     Note:
         Inputs are assumed to be correct (no validation performed).
@@ -425,21 +432,28 @@ def _degree_reduce_1d_core(  # noqa: PLR0912, PLR0915
 
     # Size the output arrays from the number of Bézier segments the sweep below
     # will produce, counted with that sweep's own advance rule.  The reduced
-    # spline is in Bézier form, so it has exactly ``n_seg * new_deg + 1`` control
-    # points and ``n_seg * new_deg + new_deg + 2`` knots.  (A bound expressed in
-    # terms of ``len(knots)`` alone is not an upper bound: it fails from 8
-    # elements on at degree 5, and the kernel then writes past the end.)
+    # spline is in Bézier form, so it has ``n_seg * new_deg + 1`` control points
+    # and ``n_seg * new_deg + new_deg + 2`` knots, plus one of each per interior
+    # breakpoint of multiplicity ``d + 1``: there the reduced spline is
+    # discontinuous, the junction is not shared, and the breakpoint carries
+    # ``new_deg + 1`` knots.  (A bound expressed in terms of ``len(knots)`` alone
+    # is not an upper bound: it fails from 8 elements on at degree 5, and the
+    # kernel then writes past the end.)
     n_seg = 0
+    n_jump = 0
     scan = d + 1
     while scan < m:
+        run_start = scan
         while scan < m and knots[scan] == knots[scan + 1]:
             scan += 1
+        if scan < m and scan - run_start + 1 > d:
+            n_jump += 1
         n_seg += 1
         scan += 1
 
     # Both outputs follow their own input's dtype, as in the elevation kernel.
-    oc = np.empty((n_seg * new_deg + 1, rank), dtype=ctrl.dtype)
-    ok = np.empty(n_seg * new_deg + new_deg + 2, dtype=knots.dtype)
+    oc = np.empty((n_seg * new_deg + 1 + n_jump, rank), dtype=ctrl.dtype)
+    ok = np.empty(n_seg * new_deg + new_deg + 2 + n_jump, dtype=knots.dtype)
 
     # Initialise: first boundary knots and first Bézier segment.
     ua = knots[0]
@@ -463,7 +477,7 @@ def _degree_reduce_1d_core(  # noqa: PLR0912, PLR0915
             b += 1
         mul = b - i + 1
         ub = knots[b]
-        oldr = r  # noqa: F841
+        oldr = r
         r = d - mul
 
         # Extract Bézier control points for the current span.
@@ -486,18 +500,22 @@ def _degree_reduce_1d_core(  # noqa: PLR0912, PLR0915
         # --- Reduce the current Bézier segment ---
         _apply_reduction_operator(reduction_operator, bpts, rbpts)
 
-        # The first segment contributes all of its control points; every later
-        # one skips its first, which the previous segment already wrote with the
-        # identical value.
-        start = 0 if cind == 0 else 1
+        # The first segment contributes all of its control points; every later one
+        # skips its first, which the previous segment already wrote with the
+        # identical value.  ``oldr < 0`` says the previous breakpoint had
+        # multiplicity ``d + 1``, so there is no shared value to skip: the two
+        # sides of a jump are different numbers and both belong in the output.
+        start = 0 if (cind == 0 or oldr < 0) else 1
         for j in range(start, new_deg + 1):
             for ii in range(rank):
                 oc[cind, ii] = rbpts[j, ii]
             cind += 1
 
-        # Write interior breakpoint knots (multiplicity = new_deg for C0).
+        # Write the previous interior breakpoint: multiplicity new_deg for a C0
+        # junction, new_deg + 1 where the spline jumps.
         if a != d:
-            for _i in range(new_deg):
+            n_write = new_deg + 1 if oldr < 0 else new_deg
+            for _i in range(n_write):
                 ok[kind] = ua
                 kind += 1
 
