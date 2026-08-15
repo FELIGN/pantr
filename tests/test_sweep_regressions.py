@@ -17,11 +17,13 @@ boundary-multiplicity precondition; and the degree-elevation counter mismatch, c
 emitting the unshared Bézier coefficient at a C^-1 knot and by letting the segment sweep
 reach the final span of a degree-0 knot vector.
 
-Six remain open. Three are the tolerance workstream's. The other three come from the
-August 2026 triage of the full profile's 496 findings, which collapsed them into a
-handful of mechanisms: a root finder that returns a value that is not a root, a
-restriction that silently returns a shorter domain than it was asked for, and a Lagrange
-extraction that cannot be built on a degree-0 space its two sibling extractions handle.
+Eight remain open. Three are the tolerance workstream's. The other five come from the
+August 2026 triage of the full profile's 496 findings, which collapsed them into a dozen
+mechanisms: a root finder that certifies a value that is not a root, a restriction that
+silently returns a shorter domain than it was asked for, a Lagrange extraction that cannot
+be built on a degree-0 space its two sibling extractions handle, a change of basis that
+reports numpy's `LinAlgError` for a legal degree, and a unique-knot accessor that returns
+knots the space does not contain.
 
 One test per **root cause**, not per symptom: several of these root causes have many
 triggering combinations, and each test names them in a comment rather than repeating
@@ -671,8 +673,8 @@ def test_find_roots_returns_only_genuine_roots() -> None:
     # `|f'| * dt`; the hodograph bounds `|f'|` by `degree * max|delta c| / h_min`
     # = 3 * 2 / 0.25 = 24, and the documented stopping scale here is the domain length 1.
     # A safety factor of 8 covers the unmodelled constants of both, as elsewhere in this
-    # suite. The result is 3.1e-13, against an observed residual of 2.1e-2 -- eleven
-    # orders of magnitude, so no reasonable sharpening of this bound changes the verdict.
+    # suite. The result is 1.99e-13, against an observed residual of 2.1e-2 -- a factor of
+    # 1.05e11, so no reasonable sharpening of this bound changes the verdict.
     eps = get_machine_epsilon(np.float64)
     slope_bound = degree * 2.0 / 0.25
     bound = 8.0 * ((degree + 1) * eps + slope_bound * 1e-15)
@@ -874,3 +876,74 @@ def test_cardinal_change_of_basis_reports_its_own_conditioning_limit() -> None:
         )
         raise
     assert np.asarray(matrix).shape == (degree + 1, degree + 1)
+
+
+# ---------------------------------------------------------------------------
+# The unique-knot accessor returns knots the space does not contain
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason="_get_unique_knots_and_multiplicity_impl returns the tolerance-grid-rounded "
+    "knots instead of the originals it already indexed, so a breakpoint is relocated "
+    "whenever the absolute grid is coarse relative to the knot spacing",
+)
+def test_unique_knots_are_knots_of_the_space() -> None:
+    # `get_unique_knots_and_multiplicity` is meant to *report* the distinct knots of a
+    # space. It reports different numbers. On a float32 space over [0, 1e-6] whose stored
+    # interior knots are 2.5e-7, 5.0e-7 and 7.5e-7, the accessor answers 2.0e-7, 5.0e-7
+    # and 8.0e-7 -- each moved by 20% of its own value, to a knot the space does not have.
+    #
+    # `_get_unique_knots_and_multiplicity_impl` (`_bspline_knots.py:107-110, 138`) rounds
+    # onto a grid of width `tol` to decide which knots are the same,
+    #
+    #     scale = dtype.type(1.0 / tol)
+    #     rounded_knots = np.round(knots * scale) / scale
+    #
+    # and then returns `rounded_knots[unique_rounded_knots_ids]` -- the rounded values --
+    # although `unique_rounded_knots_ids` already indexes the *original* array and
+    # `knots[...]` would have returned the knots themselves. Its sibling `_snap_knots`
+    # (`_bspline_space_1d.py:207-218`) does the same grouping and deliberately does not
+    # make this mistake: it writes back `np.mean(self._knots[mask])`, with a comment about
+    # the care being taken. The two helpers implement one idea and disagree.
+    #
+    # `tol` here is the space's absolute tolerance (`get_strict(float32) = 1e-7`), so the
+    # grid is coarse compared with a 2.5e-7 spacing and 2.5 rounds to 2 while 7.5 rounds
+    # to 8. Nothing about the input is unrepresentable: the float32 ulp at 2.5e-7 is
+    # 1.7e-14, seven orders of magnitude finer than the movement.
+    #
+    # The float64 face is milder and still wrong: 2.5e-07 comes back as
+    # 2.5000000000000004e-07, because `round(x * scale) / scale` is not the identity even
+    # when the grouping changes nothing. The accessor never returns the array it was
+    # given.
+    #
+    # Consequences, and why this outranks a reporting nuisance. The helper feeds
+    # `to_beziers`, knot insertion and removal, quasi-interpolation, and the product's
+    # breakpoint mesh. The last is what the sweep found: `Bspline.multiply` builds the
+    # product knot vector from these relocated breakpoints, so squaring a degree-2 float32
+    # spline on [0, 1e-6] returns a curve whose interior knots sit at 0.2/0.5/0.8 of the
+    # domain instead of 0.25/0.5/0.75, and which is wrong by 8.0e-2 *relative* at points
+    # nowhere near a knot. Silent, through the public API. The same operands in float64,
+    # and the same float32 operands on the unit domain, are exact to rounding -- so this
+    # is the absolute-tolerance-versus-coordinate-magnitude family, and belongs with that
+    # workstream rather than being fixed here.
+    #
+    # Found only after the probe's product invariant stopped sampling at the C^-1
+    # breakpoint: the 8% error had been sitting underneath a 15-40% artifact.
+    hi = 1e-6
+    knots = np.array([0.0, 0.0, 0.0, 0.25 * hi, 0.5 * hi, 0.75 * hi, hi, hi, hi], dtype=np.float32)
+    space = BsplineSpace1D(knots, 2)
+    stored = np.asarray(space.knots, dtype=np.float64)
+    assert np.array_equal(np.asarray(space.knots), knots), (
+        "precondition: construction leaves these knots alone -- they do not share a "
+        "snapping cell, so this is not the already-pinned `_snap_knots` merge"
+    )
+
+    unique, _ = space.get_unique_knots_and_multiplicity(in_domain=True)
+    reported = np.asarray(unique, dtype=np.float64)
+    missing = [float(x) for x in reported if not np.any(stored == np.float32(x))]
+    assert not missing, (
+        f"get_unique_knots_and_multiplicity reported {reported.tolist()}, which contains "
+        f"{missing} -- values that are not knots of the space {np.unique(stored).tolist()}"
+    )
