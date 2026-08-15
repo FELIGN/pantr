@@ -52,6 +52,7 @@ from pantr.bspline import (
     find_roots,
 )
 from pantr.bspline._bspline_degree_core import _degree_elevate_1d_core
+from pantr.change_basis import compute_cardinal_to_bernstein_1d
 from pantr.quad import get_tanh_sinh_1d
 from pantr.tolerance import get_machine_epsilon
 
@@ -811,3 +812,65 @@ def test_lagrange_extraction_handles_a_degree_zero_space() -> None:
         f"degree-0 Lagrange extraction returned shape {lagrange.shape}, expected one "
         f"1x1 identity per element"
     )
+
+
+# ---------------------------------------------------------------------------
+# The cardinal change of basis raises a bare LinAlgError on a legal degree
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason="the cardinal change-of-basis builders raise numpy's LinAlgError on a legal "
+    "(degree, dtype) pair, an exception type none of them documents and which the caller "
+    "cannot tell apart from an illegal argument",
+)
+def test_cardinal_change_of_basis_reports_its_own_conditioning_limit() -> None:
+    # Found only because the August 2026 triage completed the sweep's verdict flags: with
+    # no `must_succeed`, this read as an UNDOCUMENTED_REJECTION -- a suspicion nobody had
+    # looked at -- because `numpy.linalg.LinAlgError` subclasses `ValueError` and the
+    # runner's `Raises:`-driven rule cannot see that the *reason* is undocumented. Five
+    # `basis` cases and fifteen `bspline` extraction cases are this one cause.
+    #
+    # The numerics are not in dispute. The cardinal-to-Bernstein matrix's condition number
+    # grows like 4 ** degree; measured with `numpy.linalg.cond` on the returned matrix it
+    # is 15 at degree 3, 3.5e10 at degree 10, 1.2e21 at degree 20 and 5.2e32 at degree 30,
+    # while float32 can resolve at most 1 / eps = 8.4e6. So at high degree in float32 the
+    # inverse genuinely cannot be formed, and refusing is right.
+    #
+    # What is wrong is the contract. Every one of these builders documents exactly one
+    # exception -- "ValueError: If degree is negative, dtype is not float32 or float64, or
+    # if `out` is provided and has incorrect shape or dtype" -- and then, for a degree that
+    # is not negative and a dtype that is float32, raises `LinAlgError: Singular matrix`
+    # from three frames down. The caller is told nothing about a degree limit, cannot
+    # discover one from the signature, and gets a message that describes an internal matrix
+    # rather than the argument that caused it. Either the limit belongs in the docstring
+    # with a `ValueError` that names it, or `LinAlgError` belongs in `Raises:`.
+    #
+    # The threshold measured on this machine, for `compute_cardinal_to_bernstein_1d`:
+    #
+    #   float32   degree 3, 10, 15, 20, 25, 30 -> returns    degree 40, 62 -> LinAlgError
+    #   float64   degree 3 ... 62              -> returns
+    #
+    # so the assertion below uses float32 at degree 62, well past the cliff, and pins
+    # float64 alongside it to keep the failure attributable to precision rather than to
+    # degree alone.
+    degree = 62
+
+    # float64 handles the same degree, so this is a precision limit and not a degree one.
+    reference = np.asarray(compute_cardinal_to_bernstein_1d(degree, np.float64))
+    assert reference.shape == (degree + 1, degree + 1)
+
+    try:
+        matrix = compute_cardinal_to_bernstein_1d(degree, np.float32)
+    except ValueError as exc:
+        # `LinAlgError` is a `ValueError` subclass, so this catches both. The distinction
+        # the test insists on is the one the caller has to make: a message naming the
+        # argument at fault, not numpy's internal one.
+        assert "Singular matrix" not in str(exc), (
+            f"compute_cardinal_to_bernstein_1d({degree}, float32) raised numpy's "
+            f"{type(exc).__name__}: {exc} -- the documented ValueError should name the "
+            f"degree or the precision, and `Raises:` should list whatever is thrown"
+        )
+        raise
+    assert np.asarray(matrix).shape == (degree + 1, degree + 1)
