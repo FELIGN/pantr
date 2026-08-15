@@ -3,11 +3,14 @@
 This module provides :func:`_multiply_bspline_nd`, which computes the exact
 pointwise product of two N-dimensional tensor-product B-splines via Bézier
 extraction and the Bernstein product formula.  The result lives in the product
-space of degree ``p_d + q_d`` per direction *d* with **optimal continuity**:
-each interior knot's multiplicity equals ``max(m_f(ξ) + q_d, m_g(ξ) + p_d)``.
+space of degree ``p_d + q_d`` per direction *d*, with the **minimal** interior
+multiplicities computed direction by direction by
+:func:`~pantr.bspline._bspline_product._product_multiplicities`; that module's
+docstring carries the formula, its derivation and its hypotheses.
 
 Works for non-rational and rational (NURBS) splines of any parametric
-dimension, and correctly preserves per-direction boundary structure
+dimension, including operands that are :math:`C^{-1}` in one or more
+directions, and correctly preserves per-direction boundary structure
 (open / periodic / non-open).
 """
 
@@ -24,12 +27,13 @@ from .._control_points_utils import _append_unit_weight_column
 from ..bezier._bezier_product import _bernstein_product_coefficients_nd
 from ._bspline_knots import _get_Bspline_num_basis_1D_impl, _get_unique_knots_and_multiplicity_impl
 from ._bspline_product import (
+    _bezier_element_offsets,
+    _bezier_mults,
     _build_product_knot_vector,
+    _build_product_mesh,
     _get_boundary_mults,
-    _get_interior_breakpoints_and_mults,
     _knots_for_full_bezier,
-    _lookup_mults_in_space,
-    _merge_interior_breakpoints,
+    _ProductMesh,
 )
 from ._bspline_space_1d import BsplineSpace1D
 from ._bspline_space_nd import BsplineSpace
@@ -38,63 +42,40 @@ if TYPE_CHECKING:
     from . import Bspline
 
 
-def _extract_bezier_patch(
-    ctrl: npt.NDArray[np.float32 | np.float64],
+def _bezier_patch_slices(
     element_idx: tuple[int, ...],
     degrees: tuple[int, ...],
-) -> npt.NDArray[np.float32 | np.float64]:
-    """Extract Bézier patch control points for a given element multi-index.
+    offsets: list[npt.NDArray[np.int_]],
+) -> tuple[slice, ...]:
+    """Index the control points of one element in a Bézier-form tensor-product spline.
 
-    In a full-Bézier representation, each direction *d* has control points
-    laid out as ``n_elements_d * degree_d + 1`` entries.  Element ``e_d``
-    occupies indices ``[e_d * degree_d, e_d * degree_d + degree_d + 1)``.
+    Element ``e_d`` of direction *d* owns ``degree_d + 1`` consecutive control
+    points starting at ``offsets[d][e_d]``.  The offsets are cumulative rather
+    than a fixed ``e_d * degree_d`` stride, because a :math:`C^{-1}` breakpoint
+    keeps multiplicity ``degree_d + 1`` in Bézier form and its two elements then
+    share no control point.
+
+    The same slices index the operands' control points for reading and the
+    product's for writing.  Where two elements do share a control point the two
+    writes carry the same value, so overwriting is safe.
 
     Args:
-        ctrl (npt.NDArray[np.float32 | np.float64]): Full-Bézier control
-            point array of shape ``(n_0, ..., n_{D-1}, rank)``.
         element_idx (tuple[int, ...]): Per-direction element index.
         degrees (tuple[int, ...]): Per-direction polynomial degrees.
+        offsets (list[npt.NDArray[np.int_]]): Per-direction element offsets, from
+            :func:`~pantr.bspline._bspline_product._bezier_element_offsets`.
 
     Returns:
-        npt.NDArray[np.float32 | np.float64]: Bézier patch control points
-        of shape ``(degree_0+1, ..., degree_{D-1}+1, rank)``.
+        tuple[slice, ...]: One slice per parametric direction; the trailing rank
+        axis is left untouched.
 
     Note:
         Inputs are assumed to be correct (no validation performed).
     """
-    slices = tuple(
-        slice(e * deg, e * deg + deg + 1) for e, deg in zip(element_idx, degrees, strict=True)
+    return tuple(
+        slice(int(offsets[d][e]), int(offsets[d][e]) + deg + 1)
+        for d, (e, deg) in enumerate(zip(element_idx, degrees, strict=True))
     )
-    return ctrl[slices]
-
-
-def _place_bezier_patch(
-    ctrl_out: npt.NDArray[np.float32 | np.float64],
-    patch: npt.NDArray[np.float32 | np.float64],
-    element_idx: tuple[int, ...],
-    degrees: tuple[int, ...],
-) -> None:
-    """Place product Bézier patch into the full-Bézier control point array.
-
-    Writes the patch control points into the correct location.  At shared
-    boundaries between adjacent elements, the values are identical, so
-    overwriting is safe.
-
-    Args:
-        ctrl_out (npt.NDArray[np.float32 | np.float64]): Output full-Bézier
-            control point array (modified in-place).
-        patch (npt.NDArray[np.float32 | np.float64]): Bézier patch control
-            points to place.
-        element_idx (tuple[int, ...]): Per-direction element index.
-        degrees (tuple[int, ...]): Per-direction product degrees.
-
-    Note:
-        Inputs are assumed to be correct (no validation performed).
-    """
-    slices = tuple(
-        slice(e * deg, e * deg + deg + 1) for e, deg in zip(element_idx, degrees, strict=True)
-    )
-    ctrl_out[slices] = patch
 
 
 def _project_to_optimal_nd(
@@ -103,18 +84,18 @@ def _project_to_optimal_nd(
     knots_opt_per_dir: list[npt.NDArray[np.float32 | np.float64]],
     degrees_sum: tuple[int, ...],
 ) -> npt.NDArray[np.float32 | np.float64]:
-    """Project full-Bézier control points to optimal-continuity space per direction.
+    """Re-express Bézier-form control points on the minimal knot vectors, per direction.
 
-    Applies the Oslo-based least-squares projection direction by direction.
-    For each direction *d*, the Oslo matrix mapping optimal → full-Bézier is
-    computed, and the inverse (least-squares) solve reduces the control point
-    count along that axis.
+    Applies the Oslo-based solve direction by direction.  For each direction *d*
+    the Oslo matrix mapping minimal → Bézier is computed; since the minimal knot
+    vector is a subsequence of the Bézier one, that matrix has full column rank
+    and the least-squares solve is an exact change of representation.
 
     Args:
-        ctrl_full (npt.NDArray[np.float32 | np.float64]): Full-Bézier control
+        ctrl_full (npt.NDArray[np.float32 | np.float64]): Bézier-form control
             points of shape ``(n_full_0, ..., n_full_{D-1}, rank)``.
-        knots_full_per_dir (list[npt.NDArray]): Full-Bézier knot vector per direction.
-        knots_opt_per_dir (list[npt.NDArray]): Optimal knot vector per direction.
+        knots_full_per_dir (list[npt.NDArray]): Bézier-form knot vector per direction.
+        knots_opt_per_dir (list[npt.NDArray]): Minimal knot vector per direction.
         degrees_sum (tuple[int, ...]): Product degree per direction.
 
     Returns:
@@ -141,11 +122,11 @@ def _project_to_optimal_nd(
 
 
 def _multiply_nonrational_nd(f: Bspline, g: Bspline) -> Bspline:  # noqa: PLR0915
-    """Multiply two non-rational nD B-splines with optimal-continuity output.
+    """Multiply two non-rational nD B-splines with minimal-multiplicity output.
 
-    Refines both operands to full-Bézier form in all directions, applies the
-    nD Bernstein product formula element by element, then projects the result
-    to optimal continuity via per-direction Oslo solves.
+    Refines both operands to Bézier form in all directions, applies the nD
+    Bernstein product formula element by element, then re-expresses the result on
+    the minimal knot vectors via per-direction Oslo solves.
 
     Args:
         f (~pantr.bspline.Bspline): First non-rational nD B-spline operand.
@@ -173,65 +154,66 @@ def _multiply_nonrational_nd(f: Bspline, g: Bspline) -> Bspline:  # noqa: PLR091
     tol = max(float(s.tolerance) for s in (*spaces_f, *spaces_g))
 
     # --- Per-direction breakpoint analysis ---
-    all_bp_per_dir: list[npt.NDArray[np.float32 | np.float64]] = []
-    product_mults_per_dir: list[npt.NDArray[np.int_]] = []
+    meshes: list[_ProductMesh] = []
+    bezier_mults_h_per_dir: list[npt.NDArray[np.int_]] = []
+    offsets_f_per_dir: list[npt.NDArray[np.int_]] = []
+    offsets_g_per_dir: list[npt.NDArray[np.int_]] = []
+    offsets_h_per_dir: list[npt.NDArray[np.int_]] = []
     knots_f_ins_per_dir: list[npt.NDArray[np.float32 | np.float64] | None] = []
     knots_g_ins_per_dir: list[npt.NDArray[np.float32 | np.float64] | None] = []
 
     for d in range(ndim):
-        bp_f, mf = _get_interior_breakpoints_and_mults(spaces_f[d], tol)
-        bp_g, mg = _get_interior_breakpoints_and_mults(spaces_g[d], tol)
+        mesh = _build_product_mesh(spaces_f[d], spaces_g[d], tol)
+        meshes.append(mesh)
 
-        all_bp, product_mults = _merge_interior_breakpoints(
-            bp_f, mf, bp_g, mg, degrees_f[d], degrees_g[d], tol
-        )
-        all_bp_per_dir.append(all_bp)
-        product_mults_per_dir.append(product_mults)
+        bezier_mults_h = _bezier_mults(degrees_sum[d], mesh.product_mults)
+        bezier_mults_h_per_dir.append(bezier_mults_h)
+        offsets_f_per_dir.append(_bezier_element_offsets(_bezier_mults(degrees_f[d], mesh.mults_f)))
+        offsets_g_per_dir.append(_bezier_element_offsets(_bezier_mults(degrees_g[d], mesh.mults_g)))
+        offsets_h_per_dir.append(_bezier_element_offsets(bezier_mults_h))
 
-        mults_in_f = _lookup_mults_in_space(all_bp, bp_f, mf, tol)
-        mults_in_g = _lookup_mults_in_space(all_bp, bp_g, mg, tol)
-
-        knots_f_d = _knots_for_full_bezier(spaces_f[d], all_bp, mults_in_f, tol)
-        knots_g_d = _knots_for_full_bezier(spaces_g[d], all_bp, mults_in_g, tol)
+        knots_f_d = _knots_for_full_bezier(spaces_f[d], mesh.breakpoints, mesh.mults_f)
+        knots_g_d = _knots_for_full_bezier(spaces_g[d], mesh.breakpoints, mesh.mults_g)
         knots_f_ins_per_dir.append(knots_f_d if knots_f_d.size > 0 else None)
         knots_g_ins_per_dir.append(knots_g_d if knots_g_d.size > 0 else None)
 
-    # --- Refine both operands to full-Bézier ---
+    # --- Refine both operands to Bézier form ---
     if any(k is not None for k in knots_f_ins_per_dir):
         f = f.insert_knots(knots_f_ins_per_dir)
     if any(k is not None for k in knots_g_ins_per_dir):
         g = g.insert_knots(knots_g_ins_per_dir)
 
     # --- Element-wise nD Bernstein product ---
-    n_elements_per_dir = tuple(int(bp.size) + 1 for bp in all_bp_per_dir)
+    n_elements_per_dir = tuple(int(mesh.breakpoints.size) + 1 for mesh in meshes)
     rank = f.control_points.shape[-1]
-    full_shape = tuple(ne * rd + 1 for ne, rd in zip(n_elements_per_dir, degrees_sum, strict=True))
+    full_shape = tuple(
+        int(off[-1]) + rd + 1 for off, rd in zip(offsets_h_per_dir, degrees_sum, strict=True)
+    )
     ctrl_h_bezier = np.empty((*full_shape, rank), dtype=dtype)
 
     for elem_idx in itertools.product(*(range(ne) for ne in n_elements_per_dir)):
-        patch_f = _extract_bezier_patch(f.control_points, elem_idx, degrees_f)
-        patch_g = _extract_bezier_patch(g.control_points, elem_idx, degrees_g)
-        product_patch = _bernstein_product_coefficients_nd(patch_f, patch_g)
-        _place_bezier_patch(ctrl_h_bezier, product_patch, elem_idx, degrees_sum)
+        patch_f = f.control_points[_bezier_patch_slices(elem_idx, degrees_f, offsets_f_per_dir)]
+        patch_g = g.control_points[_bezier_patch_slices(elem_idx, degrees_g, offsets_g_per_dir)]
+        slices_h = _bezier_patch_slices(elem_idx, degrees_sum, offsets_h_per_dir)
+        ctrl_h_bezier[slices_h] = _bernstein_product_coefficients_nd(patch_f, patch_g)
 
-    # --- Build product knot vectors (full-Bézier and optimal) ---
+    # --- Build the product knot vectors (Bézier form and minimal) ---
     knots_full_per_dir: list[npt.NDArray[np.float32 | np.float64]] = []
     knots_opt_per_dir: list[npt.NDArray[np.float32 | np.float64]] = []
     needs_projection = False
 
     for d in range(ndim):
         domain_d = spaces_f[d].domain
-        full_mults_d = np.full(all_bp_per_dir[d].size, degrees_sum[d], dtype=np.int_)
         t_full_d = _build_product_knot_vector(
-            domain_d, all_bp_per_dir[d], full_mults_d, degrees_sum[d], dtype
+            domain_d, meshes[d].breakpoints, bezier_mults_h_per_dir[d], degrees_sum[d], dtype
         )
         t_opt_d = _build_product_knot_vector(
-            domain_d, all_bp_per_dir[d], product_mults_per_dir[d], degrees_sum[d], dtype
+            domain_d, meshes[d].breakpoints, meshes[d].product_mults, degrees_sum[d], dtype
         )
         knots_full_per_dir.append(t_full_d)
         knots_opt_per_dir.append(t_opt_d)
 
-        if all_bp_per_dir[d].size > 0 and not np.all(product_mults_per_dir[d] == degrees_sum[d]):
+        if not np.array_equal(meshes[d].product_mults, bezier_mults_h_per_dir[d]):
             needs_projection = True
 
     # --- Project to optimal continuity if needed ---

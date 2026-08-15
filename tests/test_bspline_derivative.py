@@ -464,6 +464,35 @@ class TestKeepDegreeNonRational:
         pts = eval_pts()
         np.testing.assert_allclose(d_keep.evaluate(pts), d_ref.evaluate(pts), atol=1e-12)
 
+    @pytest.mark.parametrize("degree", [1, 2, 3, 4])
+    def test_1d_with_a_c0_interior_knot(self, degree: int) -> None:
+        """A C^0 interior knot is the ordinary case, and it used to raise.
+
+        ``keep_degree=True`` differentiates to ``degree - 1`` and elevates back,
+        so a knot of multiplicity ``degree`` in the original space is a knot of
+        multiplicity ``(degree - 1) + 1`` in the space handed to the elevation
+        kernel: exactly the discontinuous case that kernel mishandled, which made
+        this raise for every C^0-knotted spline. The derivative of a C^0 function
+        jumps, so the result must carry multiplicity ``degree + 1`` there.
+        """
+        knots = [0.0] * (degree + 1) + [0.5] * degree + [1.0] * (degree + 1)
+        rng = np.random.default_rng(degree)
+        n_basis = len(knots) - degree - 1
+        f = make_bspline_1d(knots, degree, rng.standard_normal((n_basis, 2)).tolist())
+
+        f_prime = f.derivative(keep_degree=True)
+
+        space_d = f_prime.space.spaces[0]
+        assert space_d.degree == degree
+        assert f_prime.control_points.shape[0] == space_d.num_basis
+        assert int(np.count_nonzero(np.abs(np.asarray(space_d.knots) - 0.5) <= 1e-12)) == degree + 1
+
+        # Off the jump, it is still the derivative.
+        pts = np.array([0.07, 0.23, 0.4999, 0.5001, 0.71, 0.93])
+        np.testing.assert_allclose(
+            f_prime.evaluate(pts), f.evaluate_derivatives(pts, 1), atol=1e-11
+        )
+
     def test_vector_valued(self) -> None:
         """Vector-valued B-spline with keep_degree."""
         knots = [0.0, 0.0, 0.0, 0.5, 1.0, 1.0, 1.0]

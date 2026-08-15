@@ -7,13 +7,16 @@ XPASS failure, and the marker comes off, promoting the test to a permanent guard
 same data. That is the convention ``tests/test_review_regressions.py`` follows for the
 June 2026 review, whose markers have all since been removed.
 
-Five markers have already come off here: the domain-membership test, closed by the
+Six markers have already come off here: the domain-membership test, closed by the
 ``np.isclose`` tolerance-leak fix in #289; the tanh-sinh endpoint test, closed by
 truncating the rule where the endpoint gap stops being resolvable; the Lagrange
 reproducibility test, closed by seeding the barycentric node permutation; the float32
 degree-elevation test, closed by allocating the kernels' knot output in the input's dtype;
-and the periodic degree-reduction hang, closed by enforcing the periodic conversion's own
-boundary-multiplicity precondition. Four remain open.
+the periodic degree-reduction hang, closed by enforcing the periodic conversion's own
+boundary-multiplicity precondition; and the degree-elevation counter mismatch, closed by
+emitting the unshared Bézier coefficient at a C^-1 knot and by letting the segment sweep
+reach the final span of a degree-0 knot vector. Three remain open, all in the tolerance
+workstream.
 
 One test per **root cause**, not per symptom: several of these root causes have many
 triggering combinations, and each test names them in a comment rather than repeating
@@ -88,34 +91,32 @@ open; once fixed the call returns in milliseconds and the budget is never reache
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="_degree_elevate_1d_core returns a knot vector and control points that "
-    "disagree once any interior knot has multiplicity degree + 1",
-)
 def test_degree_elevation_outputs_are_mutually_consistent() -> None:
-    # `_degree_elevate_1d_core` returns (control_points, knots), which are only usable
-    # together when `control_points.shape[0] == knots.size - new_degree - 1`. Those two
+    # FIXED, and kept as a regression guard with its original triggering data per this
+    # repository's convention that the fix PR un-xfails the tests it closes. It took two
+    # changes, not one: what looked like a single defect with two faces is two defects
+    # that happened to share a symptom.
+    #
+    # What it was: `_degree_elevate_1d_core` returns (control_points, knots), usable
+    # together only when `control_points.shape[0] == knots.size - new_degree - 1`. Those
     # come from counters `cind` and `kind` maintained independently through the
-    # Piegl-Tiller A5.9 walk and combined in a single return
-    # (`_bspline_degree_core.py:253`), and they diverge.
+    # Piegl-Tiller A5.9 walk, and they diverged by the number of interior knots at
+    # multiplicity degree + 1 (1, 2 and 3 such knots gave deficit 1, 2, 3, and raising the
+    # increment did not change it).
     #
-    # **Measured**: the deficit equals the number of interior knots at multiplicity
-    # degree + 1 (1, 2 and 3 such knots give deficit 1, 2, 3) and does not grow with the
-    # increment (an increment of 2 still gives deficit 1).
-    # **Inferred, not verified against the published algorithm**: A5.9 walks Bezier
-    # segments joined at interior knots of multiplicity at most `degree`, so adjacent
-    # segments share an endpoint; at multiplicity degree + 1 they share nothing and the
-    # shared point is subtracted anyway. Anyone fixing this should trace the `lbz`/`rbz`
-    # bookkeeping rather than take that sentence on trust.
+    # The mechanism the original note recorded as *inferred* is now traced and confirmed,
+    # for degree >= 1: `lbz` is the index of the first elevated Bezier coefficient a
+    # segment contributes, and it started at 1 because A5.9 assumes the previous segment
+    # already wrote the shared junction coefficient. At multiplicity degree + 1 the two
+    # segments share nothing, so coefficient 0 was dropped -- one control point per jump,
+    # while the knot writer emitted the correct `mul + t` knots.
     #
-    # Two faces, one cause:
-    #   * degree >= 1 -- the knot vector is right and the points are short, so
-    #     `Bspline.__init__` rejects the result with a message about the *caller's*
-    #     control-point count.
-    #   * degree 0 -- every interior knot has multiplicity 1 = degree + 1, so the whole
-    #     vector is pathological, both outputs come out short, the sizes agree by
-    #     accident, and the wrong answer is returned silently (see the second half).
+    # Degree 0 had a *second*, independent cause that the deficit arithmetic hid: the
+    # sweep ran `while b < m`, and for degree >= 1 the closing block of `degree + 1` equal
+    # knots lets the inner run scan reach `m` by itself. At degree 0 that block is a
+    # single knot, the scan cannot advance, and the last segment was never processed nor
+    # the closing knots written -- so the knot vector kept its trailing zeros and the
+    # domain collapsed to a point. Both halves below pin both fixes.
     for degree, mult in ((1, 2), (2, 3), (3, 4), (0, 1)):
         knots = np.concatenate(
             [np.full(degree + 1, 0.0), np.full(mult, 0.5), [0.75], np.full(degree + 1, 1.0)]
@@ -135,12 +136,17 @@ def test_degree_elevation_outputs_are_mutually_consistent() -> None:
         )
 
     # The silent face, entirely through public API: a degree-0 spline on [0, 1] with two
-    # control points comes back with a collapsed domain and a duplicated control point.
+    # control points came back with a collapsed domain and a duplicated control point.
     spline = _scalar_spline(np.array([0.0, 0.5, 1.0]), 0, [1.0, 2.0])
     elevated = spline.elevate_degree(1)
     elevated_knots = np.asarray(elevated.space.spaces[0].knots)
     assert elevated_knots[-1] > elevated_knots[0], (
         f"degree elevation collapsed the domain to a point: {elevated_knots.tolist()}"
+    )
+    # ... and it is still the same step function, off the jump.
+    pts = np.array([0.1, 0.4999, 0.5001, 0.9])
+    np.testing.assert_array_equal(
+        np.asarray(elevated.evaluate(pts)).ravel(), np.array([1.0, 1.0, 2.0, 2.0])
     )
 
 

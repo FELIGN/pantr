@@ -208,6 +208,60 @@
   down beside it. Reducing a periodic spline to degree 0 has no answer in this
   representation, an empty `[1, degree]` meaning no ghost knots and nothing to
   wrap; `to_open_bspline().reduce_degree(1)` does it in the open form.
+- `Bspline.multiply` built the product space from `max(m_f + q, m_g + p)` at a
+  breakpoint both operands share and from a hardcoded `p + q` at one only a
+  single operand carries. The second form assumes the present operand has
+  multiplicity `p`, a hypothesis the module never stated, and it is wrong in both
+  directions. Against a discontinuous operand (multiplicity `degree + 1`, which
+  `subdivide(n, regularity=-1)` produces) the knot vector came out one knot
+  short, the intermediate Bézier space did not contain the product, and the
+  underdetermined Oslo system returned a least-squares vector unrelated to it:
+  multiplying such a spline by the constant 1 gave a different function.
+  Exhaustive over `p, q <= 3` with multiplicities up to `degree + 1`, 45 of 81
+  configurations were wrong, every one of them with a discontinuous operand.
+  Below multiplicity `p` the same line asked for up to `p - m_f` knots more than
+  the product needs, so the ordinary continuous case now yields a smaller space
+  as well: degree 4 times degree 1 across a C^3 knot builds 8 control points
+  where it built 11. The rule that replaces both, minimal by Curry-Schoenberg, is
+  `(p + q) - min(s_f, s_g)` with `s = degree - m` the smoothness of an operand
+  there and `s = +inf` where it has no knot at all. It now lives in one function
+  that the 1D and tensor-product paths both call.
+- `Bspline.elevate_degree` returned control points and a knot vector that
+  disagreed on how many basis functions the elevated space has, by one per
+  interior knot of multiplicity `degree + 1`. Piegl-Tiller A5.9 starts each
+  segment at its second elevated coefficient because the segment before it
+  already wrote the shared junction value; where the spline is discontinuous the
+  two segments share nothing and that coefficient was dropped. At degree 0 a
+  second cause compounded it: the segment sweep relied on the closing block of
+  `degree + 1` equal knots to reach the end of the knot vector, which at degree 0
+  is a single knot, so the last segment and the closing knots were never written
+  and the elevated spline came back on a domain collapsed to a point, without an
+  error.
+- `Bspline.derivative(direction, keep_degree=True)` raised
+  `ValueError: The number of control points must be a multiple of the number of
+  basis functions` for every spline with a C⁰ interior knot, which is the
+  ordinary Bézier-element mesh rather than an exotic input. It differentiates to
+  `degree - 1` and elevates back, so a knot of multiplicity `degree` becomes one
+  of multiplicity `(degree - 1) + 1` in the space handed to the elevation kernel:
+  the discontinuous case fixed above. It now returns the derivative, which is
+  itself discontinuous there, carrying multiplicity `degree + 1`.
+- `Bspline.reduce_degree` fitted a discontinuous knot into a C^0 space. Reduction
+  preserves smoothness, so multiplicity `m` becomes `m - t`; the target was
+  clamped at `new_degree`, one short of the `new_degree + 1` a jump needs, and
+  the kernel underneath merged the two sides of every junction into one control
+  point on the strength of an endpoint-interpolation argument that holds only
+  where the original spline is continuous. On input built to be exactly
+  reducible, the reduced curve now reproduces it to 4.4e-16 or better at degrees
+  2 to 4, where the errors were 5.7e-01, 1.0e+00 and 4.9e-01.
+- `Bspline.reduce_degree` on a maximally smooth periodic spline asked the
+  periodic conversion for a seam multiplicity of `m_bdy - decrement`, which is 0,
+  while interior breakpoints three lines away were already floored at 1. It now
+  uses the same floor, which asks for less smoothness than the seam already has
+  and is therefore always representable, and a maximally smooth periodic
+  quadratic reduces to degree 1. From degree 3 the call still fails, because the
+  segment-wise reduction does not preserve C^1 across the seam, but on the
+  residual test that says so rather than on the knot vector. The degree-0
+  rejection above is unaffected and now fires only where its reasoning applies.
 
 ## 0.6.0 (2026-06-24)
 

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import numpy as np
+import numpy.typing as npt
 import pytest
 
 from pantr.bspline import Bspline, BsplineSpace, BsplineSpace1D, create_uniform_periodic_knots
@@ -239,3 +240,100 @@ class TestPeriodicBsplineElevateDegree:
         orig = bsp.to_open_bspline().evaluate(pts)
         elev = elevated.to_open_bspline().evaluate(pts)
         np.testing.assert_allclose(orig, elev, atol=1e-12)
+
+
+# ---------------------------------------------------------------------------
+# Discontinuous (C^-1) knots: elevation preserves smoothness, so m -> m + t
+# ---------------------------------------------------------------------------
+
+
+def _open_knots(degree: int, interior: list[tuple[float, int]]) -> npt.NDArray[np.float64]:
+    """Build a clamped knot vector on ``[0, 1]`` from interior (value, multiplicity) pairs."""
+    parts = [np.zeros(degree + 1)]
+    for xi, mult in interior:
+        parts.append(np.full(mult, xi))
+    parts.append(np.ones(degree + 1))
+    return np.concatenate(parts)
+
+
+def _random_bspline(degree: int, interior: list[tuple[float, int]], seed: int) -> Bspline:
+    """Create an open 1D B-spline on the given breakpoint structure."""
+    knots = _open_knots(degree, interior)
+    space = BsplineSpace([BsplineSpace1D(knots, degree)])
+    rng = np.random.default_rng(seed)
+    return Bspline(space, rng.standard_normal((space.num_total_basis, 1)))
+
+
+def _multiplicity(spline: Bspline, xi: float) -> int:
+    """Multiplicity of the breakpoint ``xi`` in a 1D spline's knot vector."""
+    knots = spline.space.spaces[0].knots
+    return int(np.count_nonzero(np.abs(knots - xi) <= 1.0e-12))
+
+
+class TestElevateDegreeDiscontinuous:
+    """Elevation preserves smoothness, including where the spline has none.
+
+    A breakpoint of multiplicity ``m`` carries smoothness ``C^{p-m}``, and the
+    elevated spline is the same function, so its multiplicity must become
+    ``m + t``.  At ``m = p + 1`` the two Bézier segments meeting there share no
+    control point, which is what Piegl & Tiller A5.9's bookkeeping assumed away;
+    at degree 0 *every* interior breakpoint is of that kind.
+    """
+
+    @pytest.mark.parametrize("degree", [0, 1, 2, 3, 4])
+    @pytest.mark.parametrize("increment", [1, 2])
+    @pytest.mark.parametrize("n_jumps", [1, 2, 3])
+    def test_multiplicity_and_geometry(self, degree: int, increment: int, n_jumps: int) -> None:
+        """Every C^-1 breakpoint goes to ``degree + 1 + increment``, the curve is unchanged."""
+        breaks = [(round(0.2 + 0.2 * k, 10), degree + 1) for k in range(n_jumps)]
+        bsp = _random_bspline(degree, breaks, seed=11 * degree + increment + n_jumps)
+
+        elevated = bsp.elevate_degree(increment)
+
+        assert elevated.degree == (degree + increment,)
+        for xi, mult in breaks:
+            assert _multiplicity(elevated, xi) == mult + increment
+
+        space_1d = elevated.space.spaces[0]
+        assert elevated.control_points.shape[0] == space_1d.num_basis
+
+        # Stay off the jumps: the value there is a one-sided convention.
+        pts = np.linspace(0.0, 1.0, 97)[1:-1] + 1.0e-7
+        np.testing.assert_allclose(elevated.evaluate(pts), bsp.evaluate(pts), atol=1e-12)
+
+    def test_degree_zero_keeps_its_domain(self) -> None:
+        """A piecewise constant elevates to the same step function, not to a point.
+
+        The kernel used to leave the closing knots of a degree-0 knot vector
+        unwritten, collapsing the domain to ``(0, 0)`` with no error raised.
+        """
+        knots = np.array([0.0, 0.25, 0.6, 1.0])
+        space = BsplineSpace([BsplineSpace1D(knots, 0)])
+        bsp = Bspline(space, np.array([[2.0], [-1.0], [3.0]]))
+
+        elevated = bsp.elevate_degree(2)
+
+        space_1d = elevated.space.spaces[0]
+        assert elevated.degree == (2,)
+        assert (float(space_1d.domain[0]), float(space_1d.domain[1])) == (0.0, 1.0)
+        np.testing.assert_allclose(
+            space_1d.knots,
+            [0.0, 0.0, 0.0, 0.25, 0.25, 0.25, 0.6, 0.6, 0.6, 1.0, 1.0, 1.0],
+        )
+        # Elevating a constant repeats its value on every coefficient of the segment.
+        np.testing.assert_array_equal(
+            elevated.control_points,
+            np.array([[2.0], [2.0], [2.0], [-1.0], [-1.0], [-1.0], [3.0], [3.0], [3.0]]),
+        )
+
+    def test_mixed_multiplicities(self) -> None:
+        """Smooth, C^0 and C^-1 breakpoints in one spline all shift by the increment."""
+        breaks = [(0.25, 1), (0.5, 4), (0.75, 3)]
+        bsp = _random_bspline(3, breaks, seed=7)
+
+        elevated = bsp.elevate_degree(2)
+
+        for xi, mult in breaks:
+            assert _multiplicity(elevated, xi) == mult + 2
+        pts = np.linspace(0.0, 1.0, 97)[1:-1] + 1.0e-7
+        np.testing.assert_allclose(elevated.evaluate(pts), bsp.evaluate(pts), atol=1e-12)

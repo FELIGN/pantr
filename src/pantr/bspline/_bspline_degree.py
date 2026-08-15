@@ -128,11 +128,17 @@ def _coarsen_knots_after_reduction(  # noqa: PLR0913
 ) -> tuple[npt.NDArray[np.float32 | np.float64], npt.NDArray[np.float32 | np.float64]]:
     """Remove excess knots from a Bézier-form B-spline after degree reduction.
 
-    After degree reduction the output is in Bézier form (all interior
-    breakpoints have multiplicity ``new_degree``).  This function removes
-    excess copies of each interior knot so that the final multiplicity is
-    ``max(1, m_i - t)`` where ``m_i`` is the original multiplicity and ``t``
-    is the degree decrement, restoring the original continuity structure.
+    After degree reduction the output is in Bézier form: every interior
+    breakpoint has multiplicity ``new_degree``, or ``new_degree + 1`` where the
+    original spline was discontinuous.  This function removes excess copies of
+    each interior knot so that the final multiplicity is ``max(1, m_i - t)``,
+    with ``m_i`` the original multiplicity and ``t`` the degree decrement, which
+    restores the original continuity ``C^{p - m_i} = C^{(p - t) - (m_i - t)}``.
+
+    A discontinuous breakpoint (``m_i = p + 1``) therefore keeps multiplicity
+    ``new_degree + 1`` and nothing is removed there.  Clamping the target at
+    ``new_degree`` instead would ask for a C0 space where the function jumps, and
+    the reduction would silently stop being exact on curves that reduce exactly.
 
     Args:
         knots: Knot vector of the Bézier-form reduced B-spline.
@@ -147,12 +153,15 @@ def _coarsen_knots_after_reduction(  # noqa: PLR0913
     Returns:
         tuple: ``(coarsened_knots, coarsened_ctrl)``.
     """
+    orig_degree = new_degree + degree_decrement
     for idx in range(len(orig_unique_knots)):
         knot_val = float(orig_unique_knots[idx])
         m_orig = int(orig_mults[idx])
         target_mult = max(1, m_orig - degree_decrement)
-        # Current multiplicity in the Bézier form is new_degree.
-        num_to_remove = new_degree - target_mult
+        # Multiplicity in the Bézier form: new_degree, or new_degree + 1 at a knot
+        # the original spline was discontinuous at.
+        bezier_mult = new_degree + 1 if m_orig > orig_degree else new_degree
+        num_to_remove = bezier_mult - target_mult
         if num_to_remove <= 0:
             continue
         # Use a large tolerance for deviation since reduction is approximate.
@@ -239,7 +248,14 @@ def _degree_reduce_bspline(bspline: Bspline, degree_decrements: tuple[int, ...])
                         tol,
                     )
 
-                m_bdy_new = m_bdy - dec
+                # Same floor as the interior breakpoints in
+                # ``_coarsen_knots_after_reduction``: a breakpoint that has to be
+                # present cannot drop below multiplicity 1, and the smoothness the
+                # subtraction asks for there (C^{new_degree} or better) is already
+                # implied by multiplicity 1.  Without it the seam of a maximally
+                # smooth periodic spline (``m_bdy = 1``) asks for multiplicity 0 and
+                # the reduction fails on a knot vector it never had to build.
+                m_bdy_new = max(1, m_bdy - dec)
                 per_knots, new_pts_2d = _to_periodic_bspline_1d_impl(
                     new_knots, new_degree, new_pts_2d, m_bdy_new, tol
                 )

@@ -71,6 +71,27 @@ def _eval_2d_product(f: Bspline, g: Bspline, h: Bspline, n: int = 21, atol: floa
     np.testing.assert_allclose(h_vals, f_vals * g_vals, atol=atol)
 
 
+def _eval_2d_product_off_breakpoints(
+    f: Bspline, g: Bspline, h: Bspline, breakpoint_value: float, n: int = 21
+) -> None:
+    """Assert h == f*g on a 2D lattice that avoids a discontinuity.
+
+    The value of a C^-1 spline *at* its jump is a one-sided convention, not a
+    property the product has to reproduce: ``f * g`` and ``h`` live on knot
+    vectors of different degrees and need not resolve the same side there.
+    """
+    axes = []
+    for direction in range(2):
+        dom = f.space.spaces[direction].domain
+        pts = _eval_lattice_pts(n, float(dom[0]), float(dom[1]))[1:-1]
+        axes.append(pts[np.abs(pts - breakpoint_value) > 1e-9])
+    lattice = PointsLattice(axes)
+
+    np.testing.assert_allclose(
+        h.evaluate(lattice), f.evaluate(lattice) * g.evaluate(lattice), atol=1e-10
+    )
+
+
 def _eval_3d_product(f: Bspline, g: Bspline, h: Bspline, n: int = 11, atol: float = 1e-10) -> None:
     """Assert h == f*g by evaluating on a 3D lattice at interior points.
 
@@ -479,6 +500,57 @@ class TestOptimalContinuity2D:
         assert h.space.num_basis == (8, 8)
 
         _eval_2d_product(f, g, h)
+
+
+class TestDiscontinuousOperand2D:
+    """A C^-1 operand in one or both directions of a tensor-product product.
+
+    The per-element windows into the control points run over cumulative offsets
+    rather than a fixed ``degree`` stride, because a C^-1 breakpoint keeps
+    multiplicity ``degree + 1`` in Bézier form and its two elements then share no
+    control point.  That is a per-direction property, so it has to hold when only
+    one direction is discontinuous as well as when both are.
+    """
+
+    def test_c_minus_one_in_one_direction(self) -> None:
+        """Direction u is C^-1 at 0.5 and v is smooth: only u reaches p + q + 1."""
+        knots_u = [0.0, 0.0, 0.0, 0.5, 0.5, 0.5, 1.0, 1.0, 1.0]  # degree 2, mult 3
+        knots_v = [0.0, 0.0, 0.0, 0.5, 1.0, 1.0, 1.0]  # degree 2, mult 1
+        s_u, s_v = _make_space_1d(knots_u, 2), _make_space_1d(knots_v, 2)
+        s_g = _make_space_1d([0.0, 0.0, 0.5, 1.0, 1.0], 1)  # degree 1, mult 1
+
+        rng = np.random.default_rng(60)
+        f = _make_2d_bspline(s_u, s_v, rng.standard_normal((s_u.num_basis, s_v.num_basis, 1)))
+        g = _make_2d_bspline(s_g, s_v, rng.standard_normal((s_g.num_basis, s_v.num_basis, 1)))
+
+        h = f * g
+        assert h.degree == (3, 4)
+
+        bp_u, mults_u = _get_interior_mults(h.space.spaces[0])
+        np.testing.assert_allclose(bp_u, [0.5], atol=1e-12)
+        assert int(mults_u[0]) == 4  # max(3 + 1, 1 + 2) = p + q + 1: the product jumps
+        bp_v, mults_v = _get_interior_mults(h.space.spaces[1])
+        np.testing.assert_allclose(bp_v, [0.5], atol=1e-12)
+        assert int(mults_v[0]) == 3  # max(1 + 2, 1 + 2)
+
+        _eval_2d_product_off_breakpoints(f, g, h, 0.5)
+
+    def test_c_minus_one_in_both_directions(self) -> None:
+        """Both directions discontinuous, with a different degree in each operand."""
+        s_f = _make_space_1d([0.0, 0.0, 0.5, 0.5, 1.0, 1.0], 1)  # degree 1, mult 2
+        s_g = _make_space_1d([0.0, 0.0, 0.0, 0.5, 0.5, 0.5, 1.0, 1.0, 1.0], 2)
+
+        rng = np.random.default_rng(61)
+        f = _make_2d_bspline(s_f, s_f, rng.standard_normal((s_f.num_basis, s_f.num_basis, 1)))
+        g = _make_2d_bspline(s_g, s_g, rng.standard_normal((s_g.num_basis, s_g.num_basis, 1)))
+
+        h = f * g
+        assert h.degree == (3, 3)
+        for direction in range(2):
+            _, mults = _get_interior_mults(h.space.spaces[direction])
+            assert int(mults[0]) == 4  # max(2 + 2, 3 + 1)
+
+        _eval_2d_product_off_breakpoints(f, g, h, 0.5)
 
 
 # ---------------------------------------------------------------------------
