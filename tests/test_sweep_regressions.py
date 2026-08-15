@@ -7,11 +7,12 @@ XPASS failure, and the marker comes off, promoting the test to a permanent guard
 same data. That is the convention ``tests/test_review_regressions.py`` follows for the
 June 2026 review, whose markers have all since been removed.
 
-Three markers have already come off here: the domain-membership test, closed by the
+Four markers have already come off here: the domain-membership test, closed by the
 ``np.isclose`` tolerance-leak fix in #289; the tanh-sinh endpoint test, closed by
-truncating the rule where the endpoint gap stops being resolvable; and the Lagrange
-reproducibility test, closed by seeding the barycentric node permutation. Six remain
-open.
+truncating the rule where the endpoint gap stops being resolvable; the Lagrange
+reproducibility test, closed by seeding the barycentric node permutation; and the float32
+degree-elevation test, closed by allocating the kernels' knot output in the input's dtype.
+Five remain open.
 
 One test per **root cause**, not per symptom: several of these root causes have many
 triggering combinations, and each test names them in a comment rather than repeating
@@ -142,27 +143,31 @@ def test_degree_elevation_outputs_are_mutually_consistent() -> None:
     )
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="_degree_elevate_1d_core allocates its knot output as float64 regardless of "
-    "the input dtype, so degree elevation is unusable in float32",
-)
 def test_degree_elevation_preserves_float32() -> None:
-    # `_bspline_degree_core.py:136-137` allocates the two outputs with different dtypes:
-    # `ik = np.zeros(max_new_knots, dtype=np.float64)` is hardcoded, while
-    # `ic = np.zeros(..., dtype=ctrl.dtype)` follows the input. The knot vector therefore
-    # comes back float64 while the control points stay float32, and the two faces of that
-    # are:
-    #   * clamped -- `Bspline.__init__` rejects the pair, so `elevate_degree` raises for
+    # FIXED by allocating the kernel's knot output in the knot vector's own dtype, in both
+    # `_degree_elevate_1d_core` and `_degree_reduce_1d_core`. Kept as a regression guard
+    # with its original triggering data, per this repository's convention that the fix PR
+    # un-xfails the tests it closes.
+    #
+    # What it was: the elevation kernel allocated its two outputs with different dtypes,
+    # `ik = np.zeros(max_new_knots, dtype=np.float64)` hardcoded while
+    # `ic = np.zeros(..., dtype=ctrl.dtype)` followed the input. The knot vector therefore
+    # came back float64 while the control points stayed float32, and the two faces of that
+    # were:
+    #   * clamped -- `Bspline.__init__` rejected the pair, so `elevate_degree` raised for
     #     **every** float32 spline, at every degree and every knot count. Measured on
-    #     degrees 1-3 with 3, 4 and 6 breakpoints: nine for nine.
-    #   * periodic -- the round trip through open form converts the control points too, so
-    #     both come back float64 and the call *succeeds*, silently discarding the
+    #     degrees 1-3 with 3, 4 and 6 breakpoints: nine for nine. The message blamed the
+    #     caller's control points for the kernel's own hardcoded dtype.
+    #   * periodic -- the round trip through open form converted the control points too, so
+    #     both came back float64 and the call *succeeded*, silently discarding the
     #     caller's choice of precision.
     #
-    # The second face is what makes this worth a test rather than a bug report: a silent
+    # The second face is what made this worth a test rather than a bug report: a silent
     # dtype promotion is invisible until something downstream compares dtypes, and it
     # doubles memory and halves throughput without a word.
+    #
+    # `_degree_reduce_1d_core` carried the identical hardcoded allocation and raised the
+    # identical error, so the third assertion below covers the round trip.
     knots = np.array([0.0, 0.0, 0.0, 0.5, 1.0, 1.0, 1.0], dtype=np.float32)
     clamped = _scalar_spline(knots, 2, [1.0, 2.0, 3.0, 4.0])
     assert np.dtype(clamped.dtype) == np.float32, "precondition: the spline is float32"
@@ -178,16 +183,44 @@ def test_degree_elevation_preserves_float32() -> None:
 
     # Face two: on a periodic space it succeeds and silently promotes. Kept in the same
     # test because it is the same allocation, and separating them would imply two fixes.
+    #
+    # The control-point count is corrected here: as written when the marker went on, this
+    # half built five control points on a space that has three basis functions, so it
+    # raised from the `Bspline` constructor before reaching any dtype at all. A strict
+    # xfail is satisfied by *any* failure, so the marker hid the fact that this half was
+    # never exercising the bug. The knot vector is the original one; only the count
+    # changes, and the precondition below now pins it.
     periodic_knots = (np.arange(-2, 6, dtype=np.float64) / 3.0).astype(np.float32)
+    periodic_space = BsplineSpace1D(periodic_knots, 2, periodic=True)
+    assert periodic_space.num_basis == periodic_knots.size - 2 * 2 - 1, (
+        f"precondition: 8 knots at degree 2 give 8 - 2 * 2 - 1 = 3 periodic basis "
+        f"functions, got {periodic_space.num_basis}"
+    )
     periodic = Bspline(
-        BsplineSpace([BsplineSpace1D(periodic_knots, 2, periodic=True)]),
-        np.arange(5, dtype=np.float32).reshape(5, 1),
+        BsplineSpace([periodic_space]),
+        np.arange(periodic_space.num_basis, dtype=np.float32).reshape(-1, 1),
     )
     promoted = periodic.elevate_degree(1)
     assert np.dtype(promoted.dtype) == np.float32, (
         f"degree elevation silently promoted a periodic float32 spline to "
         f"{np.dtype(promoted.dtype).name}"
     )
+
+    # The sibling kernel had the same hardcoded allocation, so the round trip back down
+    # is what shows both are fixed. Elevation followed by reduction returns the original
+    # spline, so the values are asserted too and not only the dtype.
+    reduced = elevated.reduce_degree(1)
+    assert np.dtype(reduced.dtype) == np.float32, (
+        f"degree reduction changed the dtype from float32 to {np.dtype(reduced.dtype).name}"
+    )
+    sample = np.linspace(0.0, 1.0, 17, dtype=np.float32).reshape(-1, 1)
+    before = np.asarray(clamped.evaluate(sample), dtype=np.float64)
+    after = np.asarray(reduced.evaluate(sample), dtype=np.float64)
+    # Elevating then reducing is exact in exact arithmetic, so the only error is float32
+    # rounding through the two kernels: `degree + 1` convex combinations each way, on
+    # values up to 4.
+    tolerance = 2.0 * (2 + 1) * get_machine_epsilon(np.float32) * float(np.abs(before).max())
+    assert float(np.max(np.abs(before - after))) <= tolerance
 
 
 # ---------------------------------------------------------------------------

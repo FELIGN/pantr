@@ -177,6 +177,16 @@
   a Lagrange target all inherited it. The permutation is now seeded from a
   recorded constant, which also makes the `degree + 1` cardinal functions share
   one set of weights instead of drawing their own.
+- `Bspline.elevate_degree` and `Bspline.reduce_degree` were unusable on every
+  float32 spline. Both kernels allocated the two halves of their return with
+  different dtypes: the control points followed the input while the knot vector
+  was hardcoded float64. On a clamped space the `Bspline` constructor then
+  rejected the mismatched pair with a message about the *caller's* control
+  points, at every degree and every knot count; on a periodic space the round
+  trip through open form converted the control points as well, so the call
+  succeeded and silently discarded the caller's choice of precision, doubling
+  memory and halving throughput without a word. Both knot outputs now follow the
+  input knot vector's dtype.
 
 ## 0.6.0 (2026-06-24)
 
