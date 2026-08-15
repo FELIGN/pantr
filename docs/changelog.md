@@ -130,6 +130,21 @@
   partition of unity. The guard now tests against exact zero, which is
   scale-invariant by construction because knot vectors already snap
   near-duplicate knots to one bitwise value.
+- `find_roots` reported a root at every interior knot of multiplicity
+  `degree + 1` whose two straddling coefficients change sign, where the spline
+  is C^-1 and jumps across the axis without ever reaching it. The tracking cited
+  Mørken-Reimers Lemma 3, whose conclusion `c[a] = 0` rests on the iterate lying
+  in the half-open interval between two consecutive Greville abscissae, and that
+  interval is empty at precisely that multiplicity: the secant through the two
+  coefficients is vertical there, so its zero is the knot for every `lambda` and
+  nothing forces the coefficient to vanish. The fabricated root then took a real
+  one with it, since reporting it split the spline at the jump and pinned the
+  coefficient on the far side to zero as the split barrier, destroying the sign
+  change that bracketed the next zero. On a quadratic split once at C^-1 the
+  reported set was `[0.40269975, 0.5]` where the zeros are `0.40269975` and
+  `0.61721778`. The lemma's hypothesis is now tested on the knot vector, which
+  needs no tolerance, and a jump is rejected by the same residual test that
+  already separates a tangential zero from a false sign change.
 
 ## 0.6.0 (2026-06-24)
 

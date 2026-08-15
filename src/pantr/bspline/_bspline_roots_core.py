@@ -33,7 +33,13 @@ _STATUS_CONVERGED: int = 1
 """The iterates stagnated, or repeated exactly, at a zero of the spline."""
 
 _STATUS_CANDIDATE: int = 2
-"""The sign change vanished; the last iterate is a tangential-zero candidate."""
+"""The polygon cannot certify the last iterate; its residual decides.
+
+Reached when the tracked sign change vanished under refinement, which is either a
+tangential zero or a false warning of the variation-diminishing bound, and when the
+iterate reached a knot of multiplicity ``degree + 1``, where the spline jumps and the
+sign change need not bracket a zero at all.
+"""
 
 _STATUS_BUDGET: int = 3
 """The insertion budget ran out before the iterates stagnated."""
@@ -278,6 +284,7 @@ def _track_zero(  # noqa: PLR0913
     degree: int,
     index: int,
     tol: float,
+    zero_tol: float,
     domain_length: float,
     max_insertions: int,
     iterates: npt.NDArray[Any],
@@ -303,6 +310,8 @@ def _track_zero(  # noqa: PLR0913
         index (int): Zero index to track, inside the window. The caller
             guarantees that :func:`_is_zero_index` holds for it.
         tol (float): Relative stagnation tolerance.
+        zero_tol (float): Absolute residual below which a coefficient counts as
+            zero.
         domain_length (float): Length of the spline's parametric domain, used as
             a floor for the tolerance scale.
         max_insertions (int): Insertion budget for this zero.
@@ -360,9 +369,32 @@ def _track_zero(  # noqa: PLR0913
         if num_iterates > 0 and x == previous_x:
             return x, _STATUS_CONVERGED, 0.0, num_coeffs, index
 
-        # The spline is disconnected at x, so f(x) = 0 exactly (their Lemma 3).
+        # Their Lemma 3: an iterate that reaches the right end of its Greville
+        # interval carries `coeffs[index] = 0`, hence f(x) = 0.
+        #
+        # The lemma places x in `(knot_average(index - 1), knot_average(index)]`,
+        # and that interval is empty exactly when the two abscissae coincide,
+        # which happens exactly when `knots[index] == knots[index + degree]`,
+        # that is when the knot run at x carries multiplicity `degree + 1` and
+        # the spline is C^-1 there. The hypothesis is therefore a property of the
+        # knot vector alone: the test below is structural and needs no tolerance,
+        # and it leaves every other spline on the path it already took.
+        #
+        # In that one excluded case the secant through the two coefficients is
+        # vertical, its zero is x for every `lam`, and nothing forces
+        # `coeffs[index]` to vanish; the sign change is then the spline jumping
+        # across the axis rather than meeting it. So test the lemma's conclusion
+        # instead of assuming it. At an exact C^-1 knot `coeffs[index]` is the
+        # value of the spline immediately to the right of the run, with no
+        # positional error to inflate it, so comparing it against the residual
+        # threshold is dimensionally sound.
         if x >= knots[index + degree]:
-            return x, _STATUS_CONVERGED, 0.0, num_coeffs, index
+            if knots[index] < knots[index + degree] or abs(coeffs[index]) <= zero_tol:
+                return x, _STATUS_CONVERGED, 0.0, num_coeffs, index
+            # Hand the jump to the caller's residual test, which rejects it.
+            # Refining instead would insert a knot into a run the method keeps at
+            # multiplicity at most `degree`, and divide by a zero-length span.
+            return x, _STATUS_CANDIDATE, abs(coeffs[index]), num_coeffs, index
 
         iterates[num_iterates % degree] = x
         previous_x = x
@@ -419,7 +451,9 @@ def _morken_reimers_roots(  # noqa: PLR0912, PLR0913
     ``|f(x)| <= zero_tol``, which is also how the two domain endpoints are
     tested. Zeros of even multiplicity have no sign change in the limit and
     cannot be certified by the polygon alone, so they are reported through that
-    residual test only.
+    residual test only. A sign change across a knot of multiplicity
+    ``degree + 1``, where the spline is C^-1 and jumps across the axis without
+    reaching it, is rejected by that same test.
 
     Args:
         knots (npt.NDArray[Any]): Open (clamped) knot vector of shape
@@ -497,6 +531,7 @@ def _morken_reimers_roots(  # noqa: PLR0912, PLR0913
             degree,
             index,
             tol,
+            zero_tol,
             domain_length,
             max_insertions,
             iterates,
@@ -508,7 +543,9 @@ def _morken_reimers_roots(  # noqa: PLR0912, PLR0913
 
         # A polygon that lost its sign change is at a zero of even multiplicity if
         # the spline vanishes there, and at a false warning of the
-        # variation-diminishing bound otherwise.
+        # variation-diminishing bound otherwise. A sign change straddling a knot
+        # of multiplicity `degree + 1` arrives here as well, and the same test
+        # rejects it: the spline jumps across the axis without ever reaching it.
         accepted = residual <= zero_tol if status == _STATUS_CANDIDATE else True
 
         # The sweep is strictly left to right, so an iterate that did not pass

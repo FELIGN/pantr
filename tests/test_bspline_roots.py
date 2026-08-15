@@ -519,6 +519,27 @@ _MISSED_COEFFS = np.array(
 _MISSED_ROOT = 0.611347358111781
 """The zero the lost-root case used to drop, located by the Bézier route."""
 
+_JUMP_KNOTS = np.array([0.0, 0.0, 0.0, 0.5, 0.5, 0.5, 1.0, 1.0, 1.0])
+"""Knot vector of the C^-1 case: ``BsplineSpace1D(_open_knots(2, [0, 1])).subdivide(2, -1)``.
+
+The interior knot carries multiplicity ``degree + 1``, which is the only multiplicity at
+which the two Greville abscissae ``t[index-1]`` and ``t[index]`` coincide.
+"""
+
+_JUMP_COEFFS = np.array([-1.0, -0.5, 0.3, -0.4, 0.5, 1.0])
+"""Coefficients of the C^-1 case: the pair straddling the break changes sign, 0.3 to -0.4."""
+
+_JUMP_ROOTS = np.array(
+    [0.5 * (math.sqrt(2.2) - 1.0) / 0.6, 0.5 + 0.5 * (9.0 - math.sqrt(65.0)) / 4.0]
+)
+"""The two zeros of the C^-1 case in closed form, 0.40269975 and 0.61721778.
+
+Each Bézier piece is a quadratic that can be solved by hand, which is what makes this an
+independent oracle rather than a second run of the method. Left piece, in ``u = 2t``:
+``0.3u^2 + u - 1``, so ``u = (sqrt(2.2) - 1) / 0.6``. Right piece, in ``v = 2t - 1``:
+``-0.4v^2 + 1.8v - 0.4``, so ``v = (9 - sqrt(65)) / 4``. Both are the root inside ``[0, 1]``.
+"""
+
 
 def test_regression_repeated_knots_do_not_divide_by_zero() -> None:
     """Knots piled to within an ulp used to send a span search off the front of the buffer.
@@ -565,6 +586,38 @@ def test_regression_no_root_is_lost_after_a_rejected_sign_change() -> None:
     expected = _bezier_reference_roots(spline, knots)
     assert found.shape == expected.shape
     np.testing.assert_allclose(found, expected, rtol=0.0, atol=_PARITY_RTOL)
+
+
+def test_regression_a_jump_across_the_axis_is_not_a_root() -> None:
+    """A C^-1 knot used to be reported as a zero, and to swallow the next genuine one.
+
+    The tracking stopped and declared ``f(x) = 0`` whenever an iterate reached the right end
+    of its Greville interval, citing Mørken-Reimers Lemma 3. The lemma places its ``x`` in
+    the half-open interval ``(t[index-1], t[index]]``, which is empty when the two abscissae
+    coincide, and they coincide exactly when the knot run at ``x`` has multiplicity
+    ``degree + 1``. There the secant through the two coefficients is vertical, its zero is
+    ``x`` for every ``lambda``, and nothing forces the coefficient to vanish.
+
+    So on the spline below the break at 0.5 was reported as a root although the spline jumps
+    from ``+0.3`` to ``-0.4`` there. Reporting it then split the spline at 0.5 and pinned the
+    coefficient ``-0.4`` to zero as the split barrier, which destroyed the sign change
+    bracketing the genuine zero at 0.61721778 and lost it. One fabricated root and one lost
+    root, from one cause, which is why both halves are asserted here.
+    """
+    space = BsplineSpace1D(_JUMP_KNOTS, 2)
+    spline = _spline(_JUMP_KNOTS, _JUMP_COEFFS, 2)
+
+    # Precondition: the interior knot is C^-1, the only case the lemma does not cover.
+    unique, mults = space.get_unique_knots_and_multiplicity(in_domain=True)
+    assert int(mults[np.searchsorted(unique, 0.5)]) == space.degree + 1
+
+    # Precondition: the spline really does jump across the axis at the break.
+    jump = spline.evaluate(np.array([[0.5 - 1e-9], [0.5 + 1e-9]])).reshape(-1)
+    assert jump[0] > 0.0 > jump[1]
+
+    found = find_roots(spline)
+
+    np.testing.assert_allclose(found, _JUMP_ROOTS, rtol=0.0, atol=_ROOT_ULPS * _EPS)
 
 
 # --- Kernels --------------------------------------------------------------------------
