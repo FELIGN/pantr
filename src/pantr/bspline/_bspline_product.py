@@ -668,8 +668,9 @@ def _multiply_nonrational_1d(f: Bspline, g: Bspline) -> Bspline:
     space_full = BsplineSpace([BsplineSpace1D(T_full, r)])
     h_full = Bspline(space_full, ctrl_h_bezier, is_rational=False)
 
-    # Nothing to remove when the product is already no smoother than C^0 everywhere.
-    if all_bp.size == 0 or np.array_equal(product_mults, bezier_mults_h):
+    # Nothing to remove when the product is already no smoother than C^0 everywhere
+    # (which includes the single-element case, where both arrays are empty).
+    if np.array_equal(product_mults, bezier_mults_h):
         return h_full
 
     T_opt = _build_product_knot_vector(domain, all_bp, product_mults, r, dtype)

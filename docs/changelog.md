@@ -237,6 +237,14 @@
   is a single knot, so the last segment and the closing knots were never written
   and the elevated spline came back on a domain collapsed to a point, without an
   error.
+- `Bspline.derivative(direction, keep_degree=True)` raised
+  `ValueError: The number of control points must be a multiple of the number of
+  basis functions` for every spline with a C⁰ interior knot, which is the
+  ordinary Bézier-element mesh rather than an exotic input. It differentiates to
+  `degree - 1` and elevates back, so a knot of multiplicity `degree` becomes one
+  of multiplicity `(degree - 1) + 1` in the space handed to the elevation kernel:
+  the discontinuous case fixed above. It now returns the derivative, which is
+  itself discontinuous there, carrying multiplicity `degree + 1`.
 - `Bspline.reduce_degree` fitted a discontinuous knot into a C^0 space. Reduction
   preserves smoothness, so multiplicity `m` becomes `m - t`; the target was
   clamped at `new_degree`, one short of the `new_degree + 1` a jump needs, and

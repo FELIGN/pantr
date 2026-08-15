@@ -717,6 +717,26 @@ class TestProductMultiplicityRule:
             h.evaluate(pts), f.evaluate(pts) * g.evaluate(pts), rtol=1e-11, atol=1e-11
         )
 
+    def test_float32_keeps_the_rule_and_the_dtype(self) -> None:
+        """The multiplicity rule is integer arithmetic; float32 changes only the values."""
+        f = make_bspline(
+            _open_knots(2, [(0.5, 3)]),
+            2,
+            [[1.0], [2.0], [3.0], [-1.0], [0.5], [2.0]],
+            dtype=np.float32,
+        )
+        g = make_bspline(_open_knots(1, [(0.5, 1)]), 1, [[1.0], [2.0], [0.5]], dtype=np.float32)
+
+        h = f.multiply(g)
+
+        assert np.dtype(h.dtype) == np.float32
+        assert _interior_mult(h, 0.5) == 4
+
+        pts = eval_pts()[1:-1].astype(np.float32) + np.float32(1.0e-5)
+        np.testing.assert_allclose(
+            h.evaluate(pts), f.evaluate(pts) * g.evaluate(pts), rtol=1e-5, atol=1e-5
+        )
+
     def test_rational_operands_with_a_jump(self) -> None:
         """The homogeneous-coordinate path carries a C^-1 operand through as well."""
         f = make_bspline(
@@ -741,6 +761,33 @@ class TestProductMultiplicityRule:
         np.testing.assert_allclose(
             h.evaluate(pts), f.evaluate(pts) * g.evaluate(pts), rtol=1e-11, atol=1e-11
         )
+
+    def test_degree_zero_operands_on_different_meshes(self) -> None:
+        """Every breakpoint of a degree-0 spline is C^-1, and it may miss the other's.
+
+        The element windows are cumulative offsets over the Bézier multiplicities,
+        which at degree 0 are 1 where the operand has a knot and 0 where it does
+        not: an operand that is constant across a breakpoint the other introduces
+        contributes the same coefficient to both elements.
+        """
+        f = make_bspline([0.0, 0.25, 0.6, 1.0], 0, [[2.0], [-3.0], [5.0]])
+        g = make_bspline([0.0, 0.4, 1.0], 0, [[7.0], [-1.0]])
+
+        h = f.multiply(g)
+
+        assert h.degree == (0,)
+        # The breakpoints come back within an ulp rather than exactly: the unique-knot
+        # helper returns the value rounded onto its 1/tolerance grouping grid, not the
+        # knot it grouped. That is a separate, pre-existing defect; what this test pins
+        # is the element structure and the products.
+        np.testing.assert_allclose(
+            h.space.spaces[0].knots,
+            [0.0, 0.25, 0.4, 0.6, 1.0],
+            rtol=8.0 * float(np.finfo(np.float64).eps),
+            atol=0.0,
+        )
+        # Piecewise constant products: 2*7, -3*7, -3*-1, 5*-1.
+        np.testing.assert_array_equal(h.control_points, np.array([[14.0], [-21.0], [3.0], [-5.0]]))
 
     def test_product_multiplicities_formula(self) -> None:
         """Unit-test the rule itself, including the absent-operand convention."""

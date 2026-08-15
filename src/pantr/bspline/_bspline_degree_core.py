@@ -125,9 +125,11 @@ def _degree_elevate_1d_core(  # noqa: PLR0912, PLR0915
     Elevation preserves smoothness: a breakpoint where the spline is
     :math:`C^{s}` stays :math:`C^{s}`, so its multiplicity goes from ``m`` to
     ``m + t``, which is what the knot-writing step emits.  That includes
-    ``m = degree + 1``, a :math:`C^{-1}` breakpoint, where the two adjacent
-    Bézier segments share no control point and the segment after it therefore
-    contributes all ``degree + t + 1`` of its coefficients.
+    ``m = degree + 1``, a :math:`C^{-1}` breakpoint: the two adjacent Bézier
+    segments share no control point there, so the segment after it starts
+    contributing at its own coefficient 0 rather than at 1.  How many of its
+    coefficients that pass writes still depends on the breakpoint that *closes*
+    the segment, through ``rbz``, exactly as in the published algorithm.
 
     Args:
         degree (int): Original degree.

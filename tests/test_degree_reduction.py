@@ -942,12 +942,21 @@ class TestBsplineReduceDegreePeriodicSeam:
         space = BsplineSpace([BsplineSpace1D(knots, 2, periodic=True)])
         rng = np.random.default_rng(14)
         bsp = Bspline(space, rng.standard_normal((space.num_total_basis, 1)))
+        assert _bspline_multiplicity(bsp, 0.0) == 1  # precondition: maximally smooth seam
 
         reduced = bsp.reduce_degree(1)
 
         assert reduced.degree == (1,)
         assert reduced.space.spaces[0].periodic
         assert reduced.control_points.shape[0] == reduced.space.spaces[0].num_basis
+        assert _bspline_multiplicity(reduced, 0.0) == 1  # floored, not 1 - 1 = 0
+        assert reduced.space.spaces[0].num_basis == 6
+
+        # It is an approximation, but a periodic one that stays near the original.
+        pts = np.linspace(0.01, 0.99, 61)
+        original = bsp.to_open_bspline().evaluate(pts)
+        got = reduced.to_open_bspline().evaluate(pts)
+        assert float(np.max(np.abs(got - original))) < 0.5 * float(np.max(np.abs(original)))
 
     def test_degree_one_still_rejects_the_degree_zero_periodic_result(self) -> None:
         """Reducing to degree 0 stays rejected: no ghost knots, no periodic form."""
