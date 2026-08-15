@@ -7,9 +7,11 @@ XPASS failure, and the marker comes off, promoting the test to a permanent guard
 same data. That is the convention ``tests/test_review_regressions.py`` follows for the
 June 2026 review, whose markers have all since been removed.
 
-Two markers have already come off here: the domain-membership test, closed by the
-``np.isclose`` tolerance-leak fix in #289, and the tanh-sinh endpoint test, closed by
-truncating the rule where the endpoint gap stops being resolvable. Seven remain open.
+Three markers have already come off here: the domain-membership test, closed by the
+``np.isclose`` tolerance-leak fix in #289; the tanh-sinh endpoint test, closed by
+truncating the rule where the endpoint gap stops being resolvable; and the Lagrange
+reproducibility test, closed by seeding the barycentric node permutation. Six remain
+open.
 
 One test per **root cause**, not per symptom: several of these root causes have many
 triggering combinations, and each test names them in a comment rather than repeating
@@ -334,30 +336,31 @@ def test_snapping_keeps_knots_the_format_can_resolve() -> None:
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="tabulate_lagrange_1d builds a scipy BarycentricInterpolator without the rng "
-    "argument, so an unseeded global RNG permutes the nodes and the result changes "
-    "between calls",
-)
 def test_lagrange_tabulation_is_reproducible() -> None:
-    # `_basis_lagrange.py:104` constructs `BarycentricInterpolator(nodes_sorted, y_sorted)`
-    # with no `rng`. scipy then draws from the unseeded global `numpy.random` state and
-    # applies `rng.permutation(n)` to the nodes before computing the barycentric weights
-    # (`scipy/interpolate/_polyint.py:708-734`); its own documentation says "Specify `rng`
-    # for repeatable interpolation".
+    # FIXED by passing a fixed seed to the scipy interpolator
+    # (`_basis_lagrange._BARYCENTRIC_SEED`). Kept as a regression guard with its original
+    # triggering data, per this repository's convention that the fix PR un-xfails the
+    # tests it closes.
     #
-    # So the same call returns different values in different processes. This is not
-    # floating-point nondeterminism with a bound one could derive -- it is an unseeded
-    # RNG, and the spread grows with degree: about 1 ulp at degree 3-5, 4.18 absolute on a
+    # What it was: `_tabulate_lagrange_basis_1D_core` constructed
+    # `BarycentricInterpolator(nodes_sorted, y_sorted)` with no `rng`. scipy then drew
+    # from the unseeded global `numpy.random` state and applied `rng.permutation(n)` to
+    # the nodes before computing the barycentric weights; its own documentation says
+    # "Specify `rng` for repeatable interpolation".
+    #
+    # So the same call returned different values in different processes. This was not
+    # floating-point nondeterminism with a bound one could derive -- it was an unseeded
+    # RNG, and the spread grew with degree: about 1 ulp at degree 3-5, 4.18 absolute on a
     # value scale of 3.75e7 at degree 62 (relative 1.1e-7), and `inf` versus 1e16 across
     # separate processes at degree 62 evaluated outside [0, 1]. Everything downstream
-    # inherits it: `tabulate_lagrange`, `compute_lagrange_to_bernstein_1d`,
+    # inherited it: `tabulate_lagrange`, `compute_lagrange_to_bernstein_1d`,
     # `tabulate_Lagrange_extraction_operators`, and `SpanwiseElementExtraction` with the
     # Lagrange target.
     #
-    # Reseeding the global state is what makes the failure deterministic here; in
-    # production the seeds differ because nobody set one.
+    # Reseeding the global state is what made the failure deterministic here; in
+    # production the seeds differed because nobody set one. The assertions are kept as
+    # they were, including the derived bound at degree 62, but the result is now bitwise
+    # identical and the bound has ceased to be the binding constraint.
     pts = np.array([0.1, 0.5, 0.9])
 
     # The legacy global state is the point: it is what scipy draws from.

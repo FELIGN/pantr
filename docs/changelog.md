@@ -164,6 +164,19 @@
   rescaled weights summing to `1` only up to rounding. Measured over Gauss-
   Legendre rules of 1 to 40 points per direction, `|sum - 1|` reaches 2 ulp in
   1D, 3 ulp in 2D and 4 ulp in 3D. The docstring now says that.
+- Lagrange tabulation was not reproducible between processes. SciPy's
+  `BarycentricInterpolator` permutes the nodes before forming the barycentric
+  weights, which is Berrut and Trefethen's remedy against the product over- or
+  underflowing, and it was built without the `rng` argument, so the permutation
+  came from the unseeded global NumPy state. Two runs of the same call differed
+  by 1.6e-16 to 1.5e-15 relative at degrees 3 to 12, by 4.18 absolute on a value
+  scale of 3.75e7 at degree 62, and by `inf` against 1e16 evaluated outside
+  `[0, 1]`. That is an unseeded generator, not floating-point nondeterminism
+  with a bound. `tabulate_lagrange`, `compute_lagrange_to_bernstein_1d`,
+  `tabulate_Lagrange_extraction_operators` and `SpanwiseElementExtraction` with
+  a Lagrange target all inherited it. The permutation is now seeded from a
+  recorded constant, which also makes the `degree + 1` cardinal functions share
+  one set of weights instead of drawing their own.
 
 ## 0.6.0 (2026-06-24)
 
