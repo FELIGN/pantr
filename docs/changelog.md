@@ -145,6 +145,25 @@
   `0.61721778`. The lemma's hypothesis is now tested on the knot vector, which
   needs no tolerance, and a jump is rejected by the same residual test that
   already separates a tangential zero from a false sign change.
+- `get_tanh_sinh_1d` returned `inf` for `1/sqrt(x)` — the integrand a
+  double-exponential rule exists for — at every `n_pts >= 45`, and raising the
+  point count therefore turned a correct answer into `inf`. A node whose
+  distance to the endpoint had underflowed was moved *onto* the endpoint and
+  kept, with a nonzero weight, and from `n_pts = 53` a second node landed on the
+  same boundary and was returned twice. The rule is now truncated there instead:
+  generation stops at the last node whose gap survives the mapping onto `[0, 1]`
+  in the requested dtype, which is one machine epsilon. The discarded weight is
+  at most `pi * cosh(t) * gap`, measured at `8.2e-15` against a weight sum of
+  `2`, so a smooth integrand is unchanged; a singular one now converges to the
+  truncation floor, `2e-8` for `x**-0.5` and `4e-15` for `log(x)`, both stated
+  in the docstring. Returning fewer nodes than requested was already documented.
+  In `float32` the cast onto `[0, 1]` collapsed a node onto `1.0` from
+  `n_pts = 19`, which the dtype-aware threshold also closes.
+- `QuadratureRule` claimed its factory-built rules integrate the constant `1`
+  exactly. They do not, and cannot: dividing by a computed sum leaves the
+  rescaled weights summing to `1` only up to rounding. Measured over Gauss-
+  Legendre rules of 1 to 40 points per direction, `|sum - 1|` reaches 2 ulp in
+  1D, 3 ulp in 2D and 4 ulp in 3D. The docstring now says that.
 
 ## 0.6.0 (2026-06-24)
 

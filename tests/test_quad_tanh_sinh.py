@@ -11,7 +11,7 @@ import numpy.typing as npt
 import pytest
 
 from pantr.quad import get_tanh_sinh_1d
-from pantr.tolerance import get_conservative
+from pantr.tolerance import get_conservative, get_machine_epsilon
 
 # Golden node/weight values for ``get_tanh_sinh_1d``. Provenance: captured from
 # the pre-refactor implementation on ``main`` (commit 71ede9a, the original
@@ -209,23 +209,53 @@ class TestTanhSinhOddEven:
         assert not np.any(np.isclose(nodes, 0.5, atol=1e-14))
 
 
+def _resolvable(golden_nodes: npt.NDArray[np.float64]) -> npt.NDArray[np.bool_]:
+    """Select the golden nodes whose distance to an endpoint survives float64.
+
+    The reference rule moved a node onto the boundary once its endpoint gap
+    underflowed, and the affine map onto ``[0, 1]`` collapsed a few more onto
+    ``1.0`` on its own. Those are exactly the nodes the current rule declines to
+    emit, so this predicate turns the golden arrays into the expected answer.
+
+    Args:
+        golden_nodes (npt.NDArray[np.float64]): Golden nodes on ``[0, 1]``.
+
+    Returns:
+        npt.NDArray[np.bool_]: True where ``min(x, 1 - x)`` is at least half an
+        ``eps``, the smallest gap ``1 - x`` can carry and stay below ``1``.
+    """
+    gap = np.minimum(golden_nodes, 1.0 - golden_nodes)
+    return np.asarray(gap >= 0.5 * get_machine_epsilon(np.float64))
+
+
 class TestTanhSinhGoldenValues:
     """Golden-value regression guarding the lepard consumer contract.
 
     ``pantr.quad.get_tanh_sinh_1d`` is imported by the lepard project, which
     feeds the returned nodes/weights straight into its implicit-quadrature
     kernels. The values must therefore stay numerically identical across
-    refactors. These tests pin the node/weight arrays (and the effective node
-    count after endpoint snapping) for a representative range of ``n_pts``.
+    refactors. These tests pin the node/weight arrays and the effective node
+    count for a representative range of ``n_pts``.
+
+    One deliberate divergence from the reference rule is asserted rather than
+    excused. The reference snapped a node onto ``0`` or ``1`` once its endpoint
+    gap underflowed and kept it, with a nonzero weight and sometimes duplicated,
+    which made ``1/sqrt(x)`` -- the integrand the rule exists for -- come back as
+    ``inf`` from ``n_pts = 45`` on. The rule now stops there instead. Everything
+    the reference placed legitimately is still reproduced, and
+    :func:`_resolvable` says exactly which entries went: at the fourteen point
+    counts below, the current nodes and weights equal the golden arrays
+    restricted by that predicate, to 2.2e-16 and 1.1e-16 respectively.
     """
 
     @pytest.mark.parametrize("n_pts", _GOLDEN_N_PTS)
     def test_nodes_weights_match_golden(self, n_pts: int) -> None:
-        """Nodes and weights reproduce the captured golden arrays to tolerance."""
+        """Nodes and weights reproduce the resolvable part of the golden arrays."""
         golden = np.load(_GOLDEN_PATH)
         nodes, weights = get_tanh_sinh_1d(n_pts)
-        golden_nodes = golden[f"nodes_{n_pts}"]
-        golden_weights = golden[f"weights_{n_pts}"]
+        keep = _resolvable(golden[f"nodes_{n_pts}"])
+        golden_nodes = golden[f"nodes_{n_pts}"][keep]
+        golden_weights = golden[f"weights_{n_pts}"][keep]
         assert nodes.shape == golden_nodes.shape
         assert weights.shape == golden_weights.shape
         nptest.assert_allclose(nodes, golden_nodes, rtol=0.0, atol=5e-15)
@@ -233,7 +263,10 @@ class TestTanhSinhGoldenValues:
 
     @pytest.mark.parametrize("n_pts", _GOLDEN_N_PTS)
     def test_effective_node_count_matches_golden(self, n_pts: int) -> None:
-        """Endpoint snapping yields the same effective node count as the reference."""
+        """Truncation drops the reference's unresolvable nodes and nothing else."""
         golden = np.load(_GOLDEN_PATH)
         nodes, _ = get_tanh_sinh_1d(n_pts)
-        assert nodes.shape[0] == golden[f"nodes_{n_pts}"].shape[0]
+        golden_nodes = golden[f"nodes_{n_pts}"]
+        assert nodes.shape[0] == int(np.count_nonzero(_resolvable(golden_nodes)))
+        # 2, 3 and 4 entries go at n_pts 50, 100 and 200; none at any smaller count.
+        assert nodes.shape[0] == golden_nodes.shape[0] or n_pts in (50, 100, 200)

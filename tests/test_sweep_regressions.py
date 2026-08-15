@@ -7,8 +7,9 @@ XPASS failure, and the marker comes off, promoting the test to a permanent guard
 same data. That is the convention ``tests/test_review_regressions.py`` follows for the
 June 2026 review, whose markers have all since been removed.
 
-One marker has already come off here: the domain-membership test, closed by the
-``np.isclose`` tolerance-leak fix in #289. Eight remain open.
+Two markers have already come off here: the domain-membership test, closed by the
+``np.isclose`` tolerance-leak fix in #289, and the tanh-sinh endpoint test, closed by
+truncating the rule where the endpoint gap stops being resolvable. Seven remain open.
 
 One test per **root cause**, not per symptom: several of these root causes have many
 triggering combinations, and each test names them in a comment rather than repeating
@@ -22,6 +23,7 @@ about this exact input and nothing else.
 
 from __future__ import annotations
 
+import math
 import signal
 from types import FrameType
 
@@ -50,6 +52,22 @@ def _scalar_spline(knots: np.ndarray, degree: int, values: list[float]) -> Bspli
 class _CallTimeout(RuntimeError):
     """Raised by :func:`_deadline` when the guarded call does not return in time."""
 
+
+_TANH_SINH_TAIL: float = 8.0 * math.sqrt(get_machine_epsilon(np.float64))
+"""Accuracy floor of a tanh-sinh rule on ``x**-0.5``, from its truncation gap.
+
+The rule is truncated where the distance from a node to the endpoint stops being
+representable, so it covers ``[delta, 1 - delta]`` and misses the tail
+``int_0^delta x**-0.5 dx = 2 * sqrt(delta)``. The truncation guarantees only
+``delta >= eps / 2``; the last node kept sits wherever the step ``h`` puts it, so
+``delta`` is a few times that and the floor is a few times ``sqrt(2 * eps) = 2.1e-8``.
+Measured over ``n_pts`` from 45 to 400, the error runs from 4.1e-9 to 4.8e-8, the
+largest corresponding to ``delta = 5.3 * eps / 2``.
+
+``8 * sqrt(eps) = 1.2e-7`` therefore leaves a factor 2.5 over the worst case measured,
+while still failing by six orders of magnitude on the bug this pins, which returned
+``inf``.
+"""
 
 _HANG_BUDGET_SECONDS = 2.0
 """Budget for a call that must terminate promptly.
@@ -376,23 +394,23 @@ def test_lagrange_tabulation_is_reproducible() -> None:
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="get_tanh_sinh_1d snaps near-endpoint nodes onto 0 and 1 but keeps them, with "
-    "a nonzero weight and sometimes duplicated, so the rule evaluates at the endpoints",
-)
 def test_tanh_sinh_nodes_are_interior_and_distinct() -> None:
-    # A double-exponential rule exists to avoid evaluating at the endpoints:
-    # `get_tanh_sinh_1d`'s own docstring (`quad.py:370-372`) advertises it as "well suited
-    # for integrands with endpoint singularities". Nodes that underflow to the boundary
-    # are snapped there, which the docstring records only as making the returned count
-    # smaller (`:373-375`) -- but the snapped node is *kept*, with a nonzero weight
-    # (6.5e-17 at n_pts = 110), and from n_pts = 53 a second node snaps onto the same
-    # boundary and is returned twice.
+    # FIXED by truncating the rule where the endpoint gap stops being resolvable, instead
+    # of snapping the node onto the boundary and keeping it. Kept as a regression guard
+    # with its original triggering data, per this repository's convention that the fix PR
+    # un-xfails the tests it closes.
     #
-    # Consequence: for f(x) = 1/sqrt(x), the advertised use case, the rule returns `inf`
-    # rather than 2.0 at every n_pts >= 45. Weights still sum to 1 throughout, so the
-    # module's own doctest cannot see it.
+    # What it was: a double-exponential rule exists to avoid evaluating at the endpoints,
+    # and `get_tanh_sinh_1d`'s own docstring advertises it as "well suited for integrands
+    # with endpoint singularities". Nodes that underflowed to the boundary were snapped
+    # there, which the docstring recorded only as making the returned count smaller -- but
+    # the snapped node was *kept*, with a nonzero weight (6.5e-17 at n_pts = 110), and from
+    # n_pts = 53 a second node snapped onto the same boundary and was returned twice.
+    #
+    # Consequence: for f(x) = 1/sqrt(x), the advertised use case, the rule returned `inf`
+    # rather than 2.0 at every n_pts >= 45. Weights still summed to 1 throughout, so the
+    # module's own doctest could not see it. Raising the point count turned a correct
+    # answer into `inf`: n_pts = 33 gave 2.0, n_pts = 49 and 129 gave `inf`.
     for n_pts in (45, 53, 110, 129):
         nodes, weights = get_tanh_sinh_1d(n_pts)
         interior = np.count_nonzero((nodes <= 0.0) | (nodes >= 1.0))
@@ -402,6 +420,13 @@ def test_tanh_sinh_nodes_are_interior_and_distinct() -> None:
         )
         assert np.unique(nodes).size == nodes.size, (
             f"n_pts {n_pts}: {nodes.size - np.unique(nodes).size} duplicated nodes"
+        )
+        # The consequence, asserted directly: the advertised integrand is finite and
+        # correct. The floor is the neglected tail `2 * sqrt(delta)` with `delta ~ eps / 2`
+        # the truncation gap, which is 2.1e-8 and is what the rule can reach in float64.
+        singular = float(np.sum(weights / np.sqrt(nodes)))
+        assert abs(singular - 2.0) <= _TANH_SINH_TAIL, (
+            f"n_pts {n_pts}: integral of x**-0.5 is {singular}, not 2.0"
         )
 
 
