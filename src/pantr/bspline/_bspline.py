@@ -184,7 +184,7 @@ class Bspline:
         """Evaluate the B-spline at the given points.
 
         Args:
-            pts (npt.NDArray[np.float32 | np.float64] | PointsLattice): The
+            pts (npt.ArrayLike | PointsLattice): The
                 parametric points at which to evaluate the B-spline, shaped
                 ``(n_pts, dim)`` or, for a 1D B-spline, either ``(n_pts,)`` or
                 ``(n_pts, 1)``. Array-likes are converted; the dtype must match
@@ -219,7 +219,7 @@ class Bspline:
         the returned values are derivatives of the projected mapping.
 
         Args:
-            pts (npt.NDArray[np.float32 | np.float64] | PointsLattice): The
+            pts (npt.ArrayLike | PointsLattice): The
                 parametric points at which to evaluate. For 1D B-splines, an
                 array of shape ``(n_pts,)`` or ``(n_pts, 1)``, or a 1D
                 :class:`~pantr.quad.PointsLattice`. For multi-dimensional

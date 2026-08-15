@@ -494,11 +494,14 @@ class BsplineSpace1D:
         In the case of open knot vectors, this definition automatically
         discards the first degree-1 and the last degree-1 intervals.
 
-        At ``degree == 0`` the condition ranges over an empty set of neighbouring
-        intervals, so every interval is cardinal irrespective of the knot spacing.
-        That is the geometrically correct answer as well: a degree-0 space carries
-        one basis function per interval and its cardinal extraction operator is the
-        1x1 identity everywhere.
+        At ``degree == 0`` the equal-length condition ranges over an empty set of
+        neighbouring intervals, so it holds vacuously and the knot spacing does not
+        affect the answer. What remains is the multiplicity gate that applies at every
+        degree: an interval is reported cardinal unless one of the two knots bounding
+        it is repeated. Either way this is consistent with the geometry, since a
+        degree-0 space carries one basis function per interval and its cardinal
+        extraction operator is the 1x1 identity on every interval regardless of the
+        flag.
 
         Args:
             out (npt.NDArray[bool] | None): Optional output array where the result will be

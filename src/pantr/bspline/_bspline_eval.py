@@ -193,7 +193,7 @@ def _evaluate_Bspline_1D(
     Args:
         spline (Bspline): A 1D B-spline object containing space, control points,
             and rational flag.
-        pts (npt.NDArray[np.float32 | np.float64] | PointsLattice): Evaluation
+        pts (npt.ArrayLike | PointsLattice): Evaluation
             points. If a PointsLattice, must be 1D. Otherwise an array-like of
             shape (n_pts,) or (n_pts, 1), with dtype matching the B-spline's.
         out (npt.NDArray[np.float32 | np.float64] | None): Optional output array
@@ -533,7 +533,7 @@ def _evaluate_Bspline_deriv_1D(
     Args:
         spline (Bspline): A 1D B-spline object containing space, control points,
             and rational flag.
-        pts (npt.NDArray[np.float32 | np.float64] | PointsLattice): Evaluation
+        pts (npt.ArrayLike | PointsLattice): Evaluation
             points. If a :class:`~pantr.quad.PointsLattice`, must be 1D. Otherwise
             an array-like of shape ``(n_pts,)`` or ``(n_pts, 1)``, with dtype
             matching the B-spline's.
@@ -986,7 +986,7 @@ def _evaluate_Bspline_deriv_multi_dim(
 
     Args:
         spline (Bspline): A multi-dimensional B-spline (``dim >= 2``).
-        pts (npt.NDArray[np.float32 | np.float64] | PointsLattice): Evaluation
+        pts (npt.ArrayLike | PointsLattice): Evaluation
             points. Either a 2-D array of shape ``(n_pts, dim)`` or a
             :class:`~pantr.quad.PointsLattice`.
         orders (Sequence[int]): One non-negative integer per parametric direction.
@@ -1051,7 +1051,7 @@ def _evaluate_Bspline_deriv(
 
     Args:
         spline (Bspline): The B-spline object.
-        pts (npt.NDArray[np.float32 | np.float64] | PointsLattice): Evaluation
+        pts (npt.ArrayLike | PointsLattice): Evaluation
             points.
         orders (Sequence[int]): One non-negative derivative order per parametric
             direction. ``len(orders)`` must equal ``spline.dim``.
@@ -1217,7 +1217,7 @@ def _evaluate_Bspline_multi_dim(
 
     Args:
         spline (Bspline): A multi-dimensional B-spline object (``dim >= 2``).
-        pts (npt.NDArray[np.float32 | np.float64] | PointsLattice): Evaluation
+        pts (npt.ArrayLike | PointsLattice): Evaluation
             points. Either a :class:`~pantr.quad.PointsLattice` (one 1D array
             per parametric direction) or a 2D array of shape
             ``(n_pts, spline.dim)`` containing row-wise parameter coordinates.
@@ -1285,7 +1285,7 @@ def _evaluate_Bspline(
 
     Args:
         spline (Bspline): The B-spline object.
-        pts (npt.NDArray[np.float32 | np.float64] | PointsLattice): The points at which
+        pts (npt.ArrayLike | PointsLattice): The points at which
             to evaluate the B-spline.
         out (npt.NDArray[np.float32 | np.float64] | None): Optional pre-allocated output
             array. Defaults to None.
