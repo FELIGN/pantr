@@ -1224,6 +1224,71 @@ def test_idx_maps_1d_validation_in_prepare_many_call() -> None:
         )
 
 
+def _one_dir_apply_many_args(
+    idx_map: npt.NDArray[np.intp],
+    is_identity: npt.NDArray[np.bool_],
+) -> tuple[Any, ...]:
+    """Build a minimal 1-direction ``_prepare_apply_many_call`` argument tuple.
+
+    A 2-row operator stack over 3 elements, so the only valid ``idx_map`` entries
+    are 0 and 1. Two cells, both addressing element 2 -- the element whose
+    ``idx_map`` entry the tests below poison.
+    """
+    ops_1d = (np.zeros((2, 3, 3), dtype=np.float64),)
+    cell_indices = np.array([[2], [2]], dtype=np.intp)
+    operand = np.zeros((2, 3), dtype=np.float64)
+    return (ops_1d, (idx_map,), (is_identity,), cell_indices, operand, None, None, "apply")
+
+
+def test_idx_map_negative_value_rejected() -> None:
+    """A negative ``idx_map`` entry must be rejected, even on an identity element.
+
+    ``idx_map = [0, 1, -5]`` against a 2-operator stack: the old check looked only
+    at the *upper* bound and only at the non-identity entries, so a negative value
+    on an identity-flagged element passed validation entirely. It then reached the
+    kernel, which raised ``IndexError`` with the JIT disabled and read out of bounds
+    under real JIT -- a negative index is legal in NumPy but not in a kernel
+    compiled without bounds checking, and will be undefined behaviour once ported.
+
+    The entry is on an identity element deliberately: the batch kernels fetch
+    ``ops_0[idx_map_0[i0]]`` as an *argument* to ``apply_kron_1d``, so the row is
+    read before the identity mask can short-circuit on it.
+    """
+    idx_map = np.array([0, 1, -5], dtype=np.intp)
+    is_identity = np.array([False, False, True])
+
+    with pytest.raises(ValueError, match=r"outside \[0, 2\)"):
+        _prepare_apply_many_call(*_one_dir_apply_many_args(idx_map, is_identity))
+
+
+def test_idx_map_too_large_value_on_identity_element_rejected() -> None:
+    """An over-range entry on an identity element must be rejected too.
+
+    The old upper-bound check filtered by ``~mask`` first, so this slipped through
+    for the same reason as the negative case above.
+    """
+    idx_map = np.array([0, 1, 7], dtype=np.intp)
+    is_identity = np.array([False, False, True])
+
+    with pytest.raises(ValueError, match=r"outside \[0, 2\)"):
+        _prepare_apply_many_call(*_one_dir_apply_many_args(idx_map, is_identity))
+
+
+def test_idx_map_in_range_values_accepted() -> None:
+    """Valid entries must still pass, identity-flagged or not.
+
+    Guards against the tightened check simply rejecting everything, and pins the
+    convention that identity elements carry 0.
+    """
+    idx_map = np.array([0, 1, 0], dtype=np.intp)
+    is_identity = np.array([False, False, True])
+
+    kernel, args, out = _prepare_apply_many_call(*_one_dir_apply_many_args(idx_map, is_identity))
+
+    assert out.shape == (2, 3)
+    kernel(*args)
+
+
 # ---------------------------------------------------------------- struct view
 
 
