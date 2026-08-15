@@ -9,6 +9,7 @@ import pytest
 from pantr.bspline import Bspline, BsplineSpace, BsplineSpace1D, create_uniform_periodic_knots
 from pantr.bspline._bspline_basis_core import _compute_basis_nurbs_book_impl
 from pantr.bspline._bspline_knots import _get_unique_knots_and_multiplicity_impl
+from pantr.bspline._bspline_product import _product_multiplicities
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -586,3 +587,167 @@ class TestNonOpenProduct:
         pts = eval_pts()[1:-1]
         expected = f.evaluate(pts) * g.evaluate(pts)
         np.testing.assert_allclose(h.evaluate(pts), expected, atol=1e-11)
+
+
+# ---------------------------------------------------------------------------
+# Product multiplicity rule (shared, unshared and discontinuous breakpoints)
+# ---------------------------------------------------------------------------
+
+
+def _interior_mult(spline: Bspline, xi: float) -> int:
+    """Return the multiplicity of interior breakpoint ``xi`` in a 1D spline."""
+    space_1d = spline.space.spaces[0]
+    unique, mults = _get_unique_knots_and_multiplicity_impl(
+        space_1d.knots, space_1d.degree, float(space_1d.tolerance), in_domain=True
+    )
+    matches = np.flatnonzero(np.abs(unique - xi) <= float(space_1d.tolerance))
+    assert matches.size == 1, f"breakpoint {xi} not found in {unique}"
+    return int(mults[matches[0]])
+
+
+def _open_knots(degree: int, interior: list[tuple[float, int]]) -> list[float]:
+    """Build a clamped knot vector on ``[0, 1]`` from interior (value, multiplicity) pairs."""
+    knots = [0.0] * (degree + 1)
+    for xi, mult in interior:
+        knots.extend([xi] * mult)
+    knots.extend([1.0] * (degree + 1))
+    return knots
+
+
+class TestProductMultiplicityRule:
+    """The interior multiplicity of the product follows the smoothness rule.
+
+    The product of splines of smoothness ``s_f`` and ``s_g`` at a breakpoint is
+    ``C^{min(s_f, s_g)}`` there, so its multiplicity is
+    ``(p + q) - min(s_f, s_g)``, with ``s = degree - m`` and ``s = +inf`` for an
+    operand that has no knot at that breakpoint.  Discontinuous (``m = p + 1``)
+    operands are inside that rule, not an exception to it.
+    """
+
+    def test_multiplying_by_the_constant_one_returns_the_operand(self) -> None:
+        """``f * 1`` must be ``f``, including across a C^-1 jump.
+
+        ``f`` is the degree-1 spline that jumps from 2 to 3 at 0.5; ``g`` is the
+        constant 1.  Reading the unshared breakpoint 0.5 as ``p + q`` instead of
+        ``m_f + q`` builds multiplicity 2 where 3 is needed, and the product then
+        interpolates across the jump instead of reproducing it.
+        """
+        f = make_bspline([0.0, 0.0, 0.5, 0.5, 1.0, 1.0], 1, [[1.0], [2.0], [3.0], [4.0]])
+        g = make_bspline([0.0, 0.0, 1.0, 1.0], 1, [[1.0], [1.0]])
+
+        h = f.multiply(g)
+
+        assert h.degree == (2,)
+        assert _interior_mult(h, 0.5) == 3
+
+        # f is 1 + 2x on [0, 0.5) and 2 + 2x on (0.5, 1]; the product is exact and
+        # every control point is dyadic, so it is reproduced bit for bit.
+        np.testing.assert_array_equal(
+            h.control_points, np.array([[1.0], [1.5], [2.0], [3.0], [3.5], [4.0]])
+        )
+        pts = np.array([0.1, 0.25, 0.4999, 0.5001, 0.6, 0.9])
+        np.testing.assert_allclose(h.evaluate(pts), f.evaluate(pts), atol=1e-15)
+
+    def test_product_of_discontinuous_operands_keeps_the_jump(self) -> None:
+        """A C^-1 operand gives a C^-1 product with the same one-sided limits."""
+        f = make_bspline(_open_knots(2, [(0.5, 3)]), 2, [[1.0], [2.0], [3.0], [-1.0], [0.5], [2.0]])
+        g = make_bspline(_open_knots(1, [(0.5, 1)]), 1, [[1.0], [2.0], [0.5]])
+
+        h = f.multiply(g)
+
+        assert h.degree == (3,)
+        assert _interior_mult(h, 0.5) == 4  # p + q + 1: the product jumps too
+
+        # One-sided limits: f jumps 3 -> -1 and g is continuous with g(0.5) = 2.
+        eps = 1e-9
+        pts = np.array([0.5 - eps, 0.5 + eps])
+        np.testing.assert_allclose(h.evaluate(pts), f.evaluate(pts) * g.evaluate(pts), atol=1e-11)
+        np.testing.assert_allclose(h.evaluate(pts).ravel(), [6.0, -2.0], atol=1e-7)
+
+    def test_unshared_breakpoint_uses_the_minimal_multiplicity(self) -> None:
+        """A breakpoint carried by one operand alone gets ``m_f + q``, not ``p + q``.
+
+        ``f`` is C^3 at 0.5 (degree 4, multiplicity 1) and ``g`` has no knot
+        there, so the product is C^3 as well: multiplicity ``1 + 1 = 2`` in the
+        degree-5 product space, giving 8 control points rather than the 11 a
+        ``p + q`` multiplicity would need.
+        """
+        f = make_bspline(_open_knots(4, [(0.5, 1)]), 4, [[1.0], [2.0], [-1.0], [3.0], [0.5], [2.5]])
+        g = make_bspline(_open_knots(1, []), 1, [[2.0], [-1.0]])
+
+        h = f.multiply(g)
+
+        assert h.degree == (5,)
+        assert _interior_mult(h, 0.5) == 2
+        assert h.space.num_total_basis == 8
+
+        pts = eval_pts()
+        np.testing.assert_allclose(h.evaluate(pts), f.evaluate(pts) * g.evaluate(pts), atol=1e-11)
+
+    @pytest.mark.parametrize("degree_f", [1, 2, 3])
+    @pytest.mark.parametrize("degree_g", [1, 2, 3])
+    @pytest.mark.parametrize("shift_f", [0, 1])
+    @pytest.mark.parametrize("shift_g", [0, 1])
+    def test_multiplicity_and_values_over_the_smoothness_range(
+        self, degree_f: int, degree_g: int, shift_f: int, shift_g: int
+    ) -> None:
+        """Sweep the two most-singular multiplicities of each operand, C^0 and C^-1."""
+        mult_f = degree_f + shift_f
+        mult_g = degree_g + shift_g
+        rng = np.random.default_rng(1234 + 100 * degree_f + 10 * degree_g + shift_f)
+
+        knots_f = _open_knots(degree_f, [(0.5, mult_f)])
+        knots_g = _open_knots(degree_g, [(0.5, mult_g)])
+        ctrl_f = rng.standard_normal((len(knots_f) - degree_f - 1, 1)).tolist()
+        ctrl_g = rng.standard_normal((len(knots_g) - degree_g - 1, 1)).tolist()
+        f = make_bspline(knots_f, degree_f, ctrl_f)
+        g = make_bspline(knots_g, degree_g, ctrl_g)
+
+        h = f.multiply(g)
+
+        degree_h = degree_f + degree_g
+        expected = degree_h - min(degree_f - mult_f, degree_g - mult_g)
+        assert h.degree == (degree_h,)
+        assert _interior_mult(h, 0.5) == expected
+
+        # Stay off the breakpoint: the value of a C^-1 spline exactly at its jump
+        # is a one-sided convention, not a property the product has to match.
+        pts = eval_pts()[1:-1] + 1.0e-7
+        np.testing.assert_allclose(
+            h.evaluate(pts), f.evaluate(pts) * g.evaluate(pts), rtol=1e-11, atol=1e-11
+        )
+
+    def test_rational_operands_with_a_jump(self) -> None:
+        """The homogeneous-coordinate path carries a C^-1 operand through as well."""
+        f = make_bspline(
+            _open_knots(2, [(0.5, 3)]),
+            2,
+            [[1.0, 1.0], [2.0, 2.0], [3.0, 1.5], [-1.0, 1.0], [0.5, 2.0], [2.0, 1.0]],
+            is_rational=True,
+        )
+        g = make_bspline(
+            _open_knots(1, [(0.5, 1)]),
+            1,
+            [[1.0, 2.0], [2.0, 1.0], [0.5, 3.0]],
+            is_rational=True,
+        )
+
+        h = f.multiply(g)
+
+        assert h.is_rational
+        assert _interior_mult(h, 0.5) == 4
+
+        pts = eval_pts()[1:-1] + 1.0e-7
+        np.testing.assert_allclose(
+            h.evaluate(pts), f.evaluate(pts) * g.evaluate(pts), rtol=1e-11, atol=1e-11
+        )
+
+    def test_product_multiplicities_formula(self) -> None:
+        """Unit-test the rule itself, including the absent-operand convention."""
+        # p = 4, q = 1.  Columns: shared C^0, f-only C^3, g-only C^0, both C^-1.
+        mults_f = np.array([4, 1, 0, 5], dtype=np.int_)
+        mults_g = np.array([1, 0, 1, 2], dtype=np.int_)
+        np.testing.assert_array_equal(
+            _product_multiplicities(mults_f, mults_g, 4, 1),
+            np.array([5, 2, 5, 6], dtype=np.int_),
+        )
