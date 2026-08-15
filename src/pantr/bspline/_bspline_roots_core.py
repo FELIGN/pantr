@@ -747,7 +747,7 @@ def _morken_reimers_roots(  # noqa: PLR0912, PLR0913, PLR0915
 def _merge_roots(
     roots: npt.NDArray[np.float64],
     radii: npt.NDArray[np.float64],
-) -> tuple[npt.NDArray[np.float64], int]:
+) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.int64], int]:
     """Merge runs of ascending roots that lie within their own merge radii.
 
     The scan reports one root per sign change of the control polygon, and a zero
@@ -756,13 +756,20 @@ def _merge_roots(
     not exceed the larger of the two radii; each run is replaced by its midpoint,
     which for a bracketed tangential zero is the better estimate of the two.
 
+    A midpoint is a value nobody tracked, so the run each input joined is
+    reported alongside it: the caller cannot certify the midpoint from here, and
+    without the labels it could not put a run back the way it found it when the
+    certificate fails.
+
     Args:
         roots (npt.NDArray[np.float64]): Ascending root candidates.
         radii (npt.NDArray[np.float64]): Per-root merge radius, same length.
 
     Returns:
-        tuple[npt.NDArray[np.float64], int]: ``(merged, n_merged)`` where only
-        the first ``n_merged`` entries are valid.
+        tuple[npt.NDArray[np.float64], npt.NDArray[np.int64], int]: ``(merged,
+        labels, n_merged)`` where only the first ``n_merged`` entries of
+        ``merged`` are valid, and ``labels[i]`` is the index in ``merged`` of the
+        run that ``roots[i]`` joined.
 
     Note:
         Inputs are assumed to be correct (no validation performed).
@@ -770,12 +777,14 @@ def _merge_roots(
     """
     count = roots.shape[0]
     merged = np.empty(max(count, 1), dtype=np.float64)
+    labels = np.empty(count, dtype=np.int64)
     if count == 0:
-        return merged, 0
+        return merged, labels, 0
 
     n_merged = 0
     run_start = roots[0]
     run_end = roots[0]
+    labels[0] = 0
     for i in range(1, count):
         if roots[i] - run_end <= max(radii[i], radii[i - 1]):
             run_end = roots[i]
@@ -784,9 +793,10 @@ def _merge_roots(
             n_merged += 1
             run_start = roots[i]
             run_end = roots[i]
+        labels[i] = n_merged
     merged[n_merged] = 0.5 * (run_start + run_end)
     n_merged += 1
-    return merged, n_merged
+    return merged, labels, n_merged
 
 
 def _warmup_numba_functions() -> None:
@@ -798,7 +808,7 @@ def _warmup_numba_functions() -> None:
     knots = np.array([0.0, 0.0, 0.0, 0.0, 0.5, 1.0, 1.0, 1.0, 1.0], dtype=np.float64)
     coeffs = np.array([-1.0, -0.5, 0.5, 1.0, 2.0], dtype=np.float64)
     roots, count, _, _ = _morken_reimers_roots(knots, 3, coeffs, 1e-15, 1e-14, 1e-13, 64)
-    _merge_roots(roots[:count], np.full(count, 1e-15, dtype=np.float64))
+    _merge_roots(np.ascontiguousarray(roots[:count]), np.full(count, 1e-15, dtype=np.float64))
 
 
 __all__ = [

@@ -100,6 +100,17 @@
   parametric tolerance itself allows, `|f'| * 2 * tol * scale`, alongside the
   evaluation error: testing the evaluation error alone rejects the correctly
   located zeros of a steep spline.
+- The merge that collapses several reports of one zero could return a point
+  between two distinct zeros. Reports are joined into a run on the *larger* of
+  two merge radii, and the radius is capped at
+  `domain_length * (degree! * zero_tol / coeff_scale) ** (1 / degree)`, which
+  *grows* with degree — 0.114 at degree 9, 0.767 at 15, past the whole domain
+  from 17 — so at high degree one radius joined every later root into its run.
+  On a degree-15 spline with a C⁰ interior knot the three zeros found, each with
+  a residual of 1e-17, came back as their midpoint alone, where the spline is
+  `-0.64`. A merged midpoint is a value nobody tracked, so it now takes the same
+  residual test as the reports it replaces, and a run whose midpoint fails is
+  left as the separate roots it was. The radius policy itself is unchanged.
 - Knot comparisons went through `np.isclose(a, b, atol=tol)` at 26 sites across
   seven modules. Setting `atol` does not clear `rtol`, which stays at NumPy's
   default `1e-5`, so the effective test was `|a - b| <= tol + 1e-5 * |b|`: on a

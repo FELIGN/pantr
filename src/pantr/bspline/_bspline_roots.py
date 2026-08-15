@@ -294,6 +294,45 @@ def _merge_radii(  # noqa: PLR0913
     return np.asarray(np.maximum(np.minimum(radius, cap), floor), dtype=np.float64)
 
 
+def _merge_certified(
+    numerator: Bspline,
+    roots: npt.NDArray[np.float64],
+    radii: npt.NDArray[np.float64],
+    *,
+    root_tol: float,
+) -> npt.NDArray[np.float64]:
+    """Collapse repeated reports of one zero, keeping only the merges that are zeros.
+
+    The midpoint of a run is a value nobody tracked, so it inherits no certificate from
+    the reports it replaces and takes the same residual test they did. Where it fails,
+    the run was not one zero seen several times: the reports are kept as they were, each
+    already certified on its own.
+
+    Without that test a single over-wide radius is enough to return a value that is not a
+    root, which is what happens at high degree: the cap ``domain_length * (degree! *
+    zero_tol / coeff_scale) ** (1 / degree)`` grows with degree and passes the whole
+    domain around degree 17, and runs are joined on the *larger* of two radii, so one
+    such radius joins every later root into its own run.
+
+    Args:
+        numerator (Bspline): Scalar, non-rational spline whose zeros are sought.
+        roots (npt.NDArray[np.float64]): Ascending root candidates.
+        radii (npt.NDArray[np.float64]): Per-root merge radius, same length.
+        root_tol (float): Residual below which a value counts as a zero.
+
+    Returns:
+        npt.NDArray[np.float64]: Ascending roots, with every certified run collapsed to
+        its midpoint and every other run left as it was.
+    """
+    merged, labels, n_merged = _merge_roots(roots, radii)
+    merged = merged[:n_merged]
+    residuals = np.abs(np.asarray(numerator.evaluate(merged), dtype=np.float64).reshape(-1))
+    certified = residuals <= root_tol
+    if bool(np.all(certified)):
+        return np.ascontiguousarray(merged)
+    return np.sort(np.concatenate((merged[certified], roots[~certified[labels]])))
+
+
 def _find_roots_impl(
     bspline: Bspline,
     *,
@@ -383,8 +422,7 @@ def _find_roots_impl(
             domain_length=domain_length,
             tol=resolved_tol,
         )
-        merged, n_merged = _merge_roots(roots, radii)
-        roots = np.ascontiguousarray(merged[:n_merged])
+        roots = _merge_certified(numerator, roots, radii, root_tol=root_tol)
 
     roots.flags.writeable = False
     return roots
