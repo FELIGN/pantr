@@ -13,7 +13,11 @@ Run it through the launcher, which puts ``src`` and ``tools`` on the path::
     conda run -n pantr python tools/sweep.py --profile full --journal sweep.jsonl
 
 Exit codes: ``0`` no bugs found, ``1`` bugs found, ``3`` the harness itself is
-unusable (the bounds-check canary did not fire).
+unusable (the bounds-check canary did not fire), ``4`` the run did not complete
+because a probe generator raised while building a case. ``4`` is deliberately
+distinct from ``1``: an incomplete run's counts mean nothing, and reading a
+truncation as "some findings, run finished" is the one mistake that would make a
+clean report untrustworthy.
 """
 
 from __future__ import annotations
@@ -34,6 +38,7 @@ _REEXEC_FLAG: Final = "PANTR_SWEEP_CONFIGURED"
 EXIT_CLEAN: Final = 0
 EXIT_FINDINGS: Final = 1
 EXIT_HARNESS_UNUSABLE: Final = 3
+EXIT_INCOMPLETE: Final = 4
 
 
 def _launcher_path() -> pathlib.Path:
@@ -131,6 +136,13 @@ def _report(summary: Summary, stream: TextIO) -> None:
         stream (TextIO): Text stream to print to.
     """
     print(f"\n{'=' * 78}", file=stream)
+    if summary.aborted is not None:
+        print(
+            f"RUN INCOMPLETE: {summary.aborted}\n"
+            "The counts below cover only the cases built before the failure and mean "
+            "nothing as a coverage claim.",
+            file=stream,
+        )
     print(f"cases run: {summary.total}", file=stream)
     for name, count in summary.counts.items():
         print(f"  {name:24s} {count}", file=stream)
@@ -227,6 +239,8 @@ def main(argv: list[str] | None = None) -> int:
             journal.close()
 
     _report(summary, sys.stderr)
+    if summary.aborted is not None:
+        return EXIT_INCOMPLETE
     return EXIT_FINDINGS if summary.counts[Verdict.BUG.name] else EXIT_CLEAN
 
 

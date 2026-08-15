@@ -103,6 +103,17 @@ the values being compared and the check would assert nothing.
 _PAIR: Final = 2
 """Length of the ``(basis, first_basis)`` and ``(left, right)`` two-returns checked here."""
 
+_ILLEGAL_KNOT_FAMILIES: Final = frozenset({"unsorted", "with_nan", "too_short"})
+"""Knot families from :func:`adversarial_sweep._axes.knot_specs` that must be refused.
+
+Each violates a stated precondition: not non-decreasing, not finite, or shorter than
+``2 * degree + 2``. They are flagged ``must_reject`` so that an entry point which quietly
+started *accepting* one would be a finding rather than an ``OK``. ``all_equal`` is
+deliberately absent: a knot vector of identical values is non-decreasing and long enough,
+so it is legal, and it builds a degenerate space with an empty domain. So is
+``over_clamped_left``, which merely exceeds the usual boundary multiplicity.
+"""
+
 _BINCOEFF_SAFE_DEGREE: Final = 61
 """Highest combined degree at which ``_bincoeff``'s exact-integer recurrence is sound.
 
@@ -362,6 +373,13 @@ def _reproduces(
 ) -> Predicate:
     """Build a predicate requiring a derived spline to reproduce a reference pointwise.
 
+    The reference is evaluated **inside** the predicate, not here. Evaluating it at
+    build time puts a pantr call in a generator body, where an exception aborts
+    enumeration instead of being classified -- which is exactly what happened while this
+    module was being written: a periodic float32 spline whose degree elevation silently
+    returned float64 made the reference reject the float32 sample points and truncated a
+    13341-case run.
+
     Args:
         reference (Bspline): The spline whose values the result must reproduce.
         pts (npt.NDArray[np.floating[Any]]): Parameters at which to compare.
@@ -370,11 +388,16 @@ def _reproduces(
     Returns:
         Predicate: Check for :func:`adversarial_sweep._core.custom`.
     """
-    expected = np.asarray(reference.evaluate(pts), dtype=np.float64)
 
     def predicate(result: object) -> str | None:
         if not isinstance(result, Bspline | Bezier):
             return f"expected a spline, got {type(result).__name__}"
+        if np.dtype(result.dtype) != np.dtype(reference.dtype):
+            return (
+                f"dtype changed: reference is {np.dtype(reference.dtype).name}, "
+                f"result is {np.dtype(result.dtype).name}"
+            )
+        expected = np.asarray(reference.evaluate(pts), dtype=np.float64)
         got = np.asarray(result.evaluate(pts.astype(result.dtype)), dtype=np.float64)
         if got.shape != expected.shape:
             return f"shape {got.shape} != reference {expected.shape}"
@@ -722,14 +745,16 @@ def _product_agreement(
     Returns:
         Predicate: Check for :func:`adversarial_sweep._core.custom`.
     """
-    values = np.asarray(scalar.evaluate(pts), dtype=np.float64)
-    expected = values * values
-    scale = max(float(np.max(np.abs(values))) if values.size else 1.0, 1.0)
-    tol = _fixture_tolerance(fixture, scale) * scale
 
     def predicate(result: object) -> str | None:
         if not isinstance(result, Bspline):
             return f"expected a Bspline, got {type(result).__name__}"
+        # Evaluated here rather than at build time, so a factor that refuses to evaluate
+        # is classified as a finding instead of aborting enumeration.
+        values = np.asarray(scalar.evaluate(pts), dtype=np.float64)
+        expected = values * values
+        scale = max(float(np.max(np.abs(values))) if values.size else 1.0, 1.0)
+        tol = _fixture_tolerance(fixture, scale) * scale
         got = np.asarray(result.evaluate(pts.astype(result.dtype)), dtype=np.float64)
         if got.shape != expected.shape:
             return f"shape {got.shape} != pointwise product {expected.shape}"
@@ -764,6 +789,41 @@ def _bitwise_control_points(expected: npt.NDArray[np.floating[Any]]) -> Predicat
         if not np.array_equal(got, expected):
             worst = float(np.max(np.abs(got.astype(np.float64) - expected.astype(np.float64))))
             return f"control points not restored bitwise, max|diff| = {worst:.3e}"
+        return None
+
+    return predicate
+
+
+def _interval_count(expected: int, degree: int) -> Predicate:
+    """Build a predicate requiring a knot vector to carry the requested interval count.
+
+    Counted **inside the domain** ``[knots[degree], knots[-degree-1]]``, which is the only
+    definition that fits all three factories: a periodic or cardinal vector deliberately
+    extends ``degree`` further spans beyond each end, so counting spans across the whole
+    array would report ``1 + 2 * degree`` for a one-interval request and flag correct
+    behavior. This is the weakest reading of what the factories promise, and it is the one
+    that separates them at ``n = 0``.
+
+    Args:
+        expected (int): Number of intervals requested.
+        degree (int): Polynomial degree, which locates the domain within the vector.
+
+    Returns:
+        Predicate: Check for :func:`adversarial_sweep._core.custom`.
+    """
+
+    def predicate(result: object) -> str | None:
+        knots = np.asarray(result, dtype=np.float64).ravel()
+        if not np.all(np.isfinite(knots)):
+            bad = int(np.count_nonzero(~np.isfinite(knots)))
+            return f"{bad}/{knots.size} non-finite knots: {knots.tolist()}"
+        if knots.size < 2 * degree + 2:
+            return f"{knots.size} knots is below the minimum {2 * degree + 2}: {knots.tolist()}"
+        lo, hi = knots[degree], knots[knots.size - degree - 1]
+        inside = np.unique(knots[(knots >= lo) & (knots <= hi)])
+        got = int(inside.size) - 1
+        if got != expected:
+            return f"asked for {expected} intervals, domain has {got}: {knots.tolist()}"
         return None
 
     return predicate
@@ -1069,6 +1129,7 @@ def _construction_cases(profile: Profile) -> Iterator[Case]:
                         "dtype": dtype,
                         "domain": list(domain),
                     }
+                    illegal = spec.name in _ILLEGAL_KNOT_FAMILIES
                     yield Case(
                         GROUP,
                         f"space1d_{spec.name}_{tag}",
@@ -1077,6 +1138,7 @@ def _construction_cases(profile: Profile) -> Iterator[Case]:
                             spec.knots, degree, periodic=spec.periodic
                         ),
                         params,
+                        must_reject=illegal,
                         arrays={"knots": np.asarray(spec.knots)},
                     )
                     if profile is not Profile.FULL:
@@ -1091,6 +1153,7 @@ def _construction_cases(profile: Profile) -> Iterator[Case]:
                             spec.knots, degree, periodic=spec.periodic, snap_knots=False
                         ),
                         {**params, "snap_knots": False},
+                        must_reject=illegal,
                     )
 
 
@@ -1837,18 +1900,32 @@ def _factory_cases(profile: Profile) -> Iterator[Case]:
                     params,
                     invariants=(custom("knots-non-decreasing", _non_decreasing),),
                 )
-                # Zero and one interval: the count corners the factories must either
-                # accept cleanly or reject.
-                for n_intervals in (0, 1):
-                    yield Case(
-                        GROUP,
-                        f"uniform_open_knots_{tag}_n{n_intervals}",
-                        create_uniform_open_knots,
-                        lambda degree=degree, n=n_intervals, domain=domain, dtype=dtype: (
-                            create_uniform_open_knots(n, degree, domain=domain, dtype=dtype)
-                        ),
-                        {**params, "n_intervals": n_intervals},
-                    )
+                # The count corners. `must_reject` is deliberately *not* used for zero:
+                # `create_uniform_open_knots` documents `num_intervals` as "must be
+                # non-negative", so refusing it is not the contract. What is asserted
+                # instead is that whatever comes back is a usable knot vector with the
+                # requested number of intervals -- which is where the three factories
+                # part company (see `_interval_count`).
+                for factory in (
+                    create_uniform_open_knots,
+                    create_uniform_periodic_knots,
+                    create_cardinal_knots,
+                ):
+                    for n_intervals in (0, 1):
+                        yield Case(
+                            GROUP,
+                            f"{factory.__name__}_{tag}_n{n_intervals}",
+                            factory,
+                            lambda factory=factory, degree=degree, n=n_intervals, dtype=dtype: (
+                                factory(n, degree, dtype=dtype)
+                            ),
+                            {**params, "n_intervals": n_intervals, "factory": factory.__name__},
+                            invariants=(
+                                custom("knots-non-decreasing", _non_decreasing),
+                                custom("interval-count", _interval_count(n_intervals, degree)),
+                            ),
+                            must_succeed=n_intervals == 1,
+                        )
 
     if profile is not Profile.FULL:
         return
@@ -1982,6 +2059,7 @@ def _thb_cases(profile: Profile) -> Iterator[Case]:
                     type(space).refine,
                     lambda space=space: space.refine([space.grid.num_cells]),
                     params,
+                    must_reject=True,
                 )
 
 

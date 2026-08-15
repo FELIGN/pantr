@@ -120,6 +120,12 @@ class Case:
             rejection and the sweep says nothing. That is not hypothetical -- it hid an
             internal control-point/knot-vector inconsistency in degree elevation behind
             the ``ValueError`` that documents a negative increment.
+        must_reject (bool): The mirror image, for a case built to be *refused* -- a
+            malformed knot vector, a negative point count, a coordinate outside the unit
+            cube. Then *returning* is the finding. Without it such a case is graded only
+            on whether the result is finite, so an entry point that silently started
+            accepting nonsense and producing a plausible number would read as ``OK``:
+            the input family's intent lives in a comment and nothing checks it.
         finite_inputs (bool): Whether every input is finite. When ``False`` the
             automatic finiteness check on the result is skipped.
         arrays (Mapping[str, npt.NDArray[Any]]): Input arrays to persist under
@@ -134,8 +140,20 @@ class Case:
     params: Mapping[str, Any] = dataclasses.field(default_factory=dict)
     invariants: tuple[Invariant, ...] = ()
     must_succeed: bool = False
+    must_reject: bool = False
     finite_inputs: bool = True
     arrays: Mapping[str, npt.NDArray[Any]] = dataclasses.field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        """Reject a case that claims its input is both legal and illegal.
+
+        Raises:
+            ValueError: If both ``must_succeed`` and ``must_reject`` are set.
+        """
+        if self.must_succeed and self.must_reject:
+            raise ValueError(
+                f"case {self.group}/{self.label} sets both must_succeed and must_reject"
+            )
 
 
 @dataclasses.dataclass(frozen=True, slots=True)
@@ -188,12 +206,18 @@ class Summary(NamedTuple):
             *returning* normally. NumPy reports int64 overflow, division by zero and
             invalid operations as ``RuntimeWarning``, so an ``OK`` case that warned is
             the cheapest available lead on a silent numerical fault.
+        aborted (str | None): Set when *enumeration* failed, i.e. a probe generator
+            raised while building a case rather than while running one. The cases after
+            it never execute, so the run is incomplete and its counts mean nothing --
+            which is why it gets its own exit code instead of being folded into the
+            findings.
     """
 
     counts: dict[str, int]
     findings: tuple[Outcome, ...]
     suspected: tuple[Outcome, ...]
     warned: tuple[Outcome, ...] = ()
+    aborted: str | None = None
 
     @property
     def total(self) -> int:
@@ -513,6 +537,12 @@ def classify(case: Case, exc: Exception) -> tuple[Verdict, str, str]:
 def run_case(index: int, case: Case) -> Outcome:
     """Execute one case and classify the outcome.
 
+    An invariant that *raises* is caught and reported, not allowed to propagate. A
+    predicate usually raises because the probe is wrong, but the whole point of the
+    surrounding machinery is that no single case can end the run, and an uncaught
+    exception here would do exactly that: the remaining cases never execute and the
+    process exit status is indistinguishable from "findings were reported".
+
     Args:
         index (int): Position of the case in the sweep.
         case (Case): The case to run.
@@ -529,11 +559,31 @@ def run_case(index: int, case: Case) -> Outcome:
             if verdict is Verdict.BUG:
                 detail = f"{detail}\n{_short_traceback(exc)}"
             return Outcome(index, case, verdict, kind, detail, _warning_names(caught))
+        if case.must_reject:
+            return Outcome(
+                index,
+                case,
+                Verdict.BUG,
+                "must-reject:returned",
+                f"input built to be refused was accepted, returning {type(result).__name__}",
+                _warning_names(caught),
+            )
         checks = [*case.invariants]
         if case.finite_inputs:
             checks.append(finite_result())
         for check in checks:
-            outcome = check(result)
+            try:
+                outcome = check(result)
+            except Exception as exc:  # a predicate must never end the run
+                return Outcome(
+                    index,
+                    case,
+                    Verdict.BUG,
+                    f"invariant-raised:{type(exc).__name__}",
+                    f"an invariant raised instead of returning a verdict: {exc}\n"
+                    f"{_short_traceback(exc)}",
+                    _warning_names(caught),
+                )
             if outcome.failure is not None:
                 return Outcome(
                     index,
@@ -561,6 +611,14 @@ def run_sweep(  # noqa: PLR0913 -- five keyword-only knobs, each one CLI flag
     so a hang or a hard crash (which an unchecked Numba kernel can produce) still
     identifies the case that caused it.
 
+    Failures while *building* a case are caught too, and reported through
+    :attr:`Summary.aborted`. A probe generator that raises cannot be resumed -- Python
+    closes it -- so the run genuinely ends there; what must not happen is that it ends
+    with a bare traceback and an exit status a caller cannot tell apart from "findings
+    were reported". This is not hypothetical: an invariant factory that evaluated its
+    reference eagerly, at build time rather than in the returned closure, truncated a
+    13341-case run silently.
+
     Args:
         cases (Iterable[Case]): The cases to run, in order.
         journal (TextIO): Text stream receiving one JSON record per case.
@@ -571,15 +629,29 @@ def run_sweep(  # noqa: PLR0913 -- five keyword-only knobs, each one CLI flag
             plus its float outputs as ``.npz`` for reuse as parity fixtures.
 
     Returns:
-        Summary: Per-verdict counts and the findings.
+        Summary: Per-verdict counts, the findings, and the abort reason if enumeration
+            failed.
     """
     counts: dict[str, int] = {verdict.name: 0 for verdict in Verdict}
     findings: list[Outcome] = []
     suspected: list[Outcome] = []
     warned: list[Outcome] = []
     executed = 0
+    aborted: str | None = None
 
-    for index, case in enumerate(cases):
+    iterator = iter(cases)
+    index = -1
+    while True:
+        index += 1
+        try:
+            case = next(iterator)
+        except StopIteration:
+            break
+        except Exception as exc:  # a probe generator must not end the run silently
+            aborted = f"{type(exc).__name__} while building case {index}: {exc}"
+            print(f"[sweep] ENUMERATION ABORTED: {aborted}", file=progress, flush=True)
+            print(f"{_short_traceback(exc, depth=6)}", file=progress, flush=True)
+            break
         if index < start_index:
             continue
         if max_cases is not None and executed >= max_cases:
@@ -598,7 +670,7 @@ def run_sweep(  # noqa: PLR0913 -- five keyword-only knobs, each one CLI flag
         if dump_dir is not None and case.arrays:
             _dump_case(dump_dir, outcome)
 
-    return Summary(counts, tuple(findings), tuple(suspected), tuple(warned))
+    return Summary(counts, tuple(findings), tuple(suspected), tuple(warned), aborted)
 
 
 def _dump_case(dump_dir: Path, outcome: Outcome) -> None:

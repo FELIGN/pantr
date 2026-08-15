@@ -23,7 +23,13 @@ import numpy as np
 import pytest
 
 from pantr.basis import LagrangeVariant, tabulate_lagrange_1d
-from pantr.bspline import Bspline, BsplineSpace, BsplineSpace1D
+from pantr.bspline import (
+    Bspline,
+    BsplineSpace,
+    BsplineSpace1D,
+    create_uniform_open_knots,
+    create_uniform_periodic_knots,
+)
 from pantr.bspline._bspline_degree_core import _degree_elevate_1d_core
 from pantr.quad import get_tanh_sinh_1d
 from pantr.tolerance import get_machine_epsilon
@@ -47,14 +53,19 @@ def _scalar_spline(knots: np.ndarray, degree: int, values: list[float]) -> Bspli
 )
 def test_degree_elevation_outputs_are_mutually_consistent() -> None:
     # `_degree_elevate_1d_core` returns (control_points, knots), which are only usable
-    # together when `control_points.shape[0] == knots.size - new_degree - 1`. The counters
-    # `cind` and `kind` that produce them (`_bspline_degree_core.py:253`) are maintained
-    # independently through Piegl-Tiller A5.9, whose Bezier-segment walk assumes adjacent
-    # segments *share* an endpoint. At interior multiplicity degree + 1 the spline is
-    # discontinuous and they share nothing, so one control point per such knot is lost.
+    # together when `control_points.shape[0] == knots.size - new_degree - 1`. Those two
+    # come from counters `cind` and `kind` maintained independently through the
+    # Piegl-Tiller A5.9 walk and combined in a single return
+    # (`_bspline_degree_core.py:253`), and they diverge.
     #
-    # The deficit equals the number of C^-1 interior knots (measured: 1, 2 and 3 such
-    # knots give deficit 1, 2, 3) and does not grow with the increment.
+    # **Measured**: the deficit equals the number of interior knots at multiplicity
+    # degree + 1 (1, 2 and 3 such knots give deficit 1, 2, 3) and does not grow with the
+    # increment (an increment of 2 still gives deficit 1).
+    # **Inferred, not verified against the published algorithm**: A5.9 walks Bezier
+    # segments joined at interior knots of multiplicity at most `degree`, so adjacent
+    # segments share an endpoint; at multiplicity degree + 1 they share nothing and the
+    # shared point is subtracted anyway. Anyone fixing this should trace the `lbz`/`rbz`
+    # bookkeeping rather than take that sentence on trust.
     #
     # Two faces, one cause:
     #   * degree >= 1 -- the knot vector is right and the points are short, so
@@ -91,6 +102,54 @@ def test_degree_elevation_outputs_are_mutually_consistent() -> None:
     )
 
 
+@pytest.mark.xfail(
+    strict=True,
+    reason="_degree_elevate_1d_core allocates its knot output as float64 regardless of "
+    "the input dtype, so degree elevation is unusable in float32",
+)
+def test_degree_elevation_preserves_float32() -> None:
+    # `_bspline_degree_core.py:136-137` allocates the two outputs with different dtypes:
+    # `ik = np.zeros(max_new_knots, dtype=np.float64)` is hardcoded, while
+    # `ic = np.zeros(..., dtype=ctrl.dtype)` follows the input. The knot vector therefore
+    # comes back float64 while the control points stay float32, and the two faces of that
+    # are:
+    #   * clamped -- `Bspline.__init__` rejects the pair, so `elevate_degree` raises for
+    #     **every** float32 spline, at every degree and every knot count. Measured on
+    #     degrees 1-3 with 3, 4 and 6 breakpoints: nine for nine.
+    #   * periodic -- the round trip through open form converts the control points too, so
+    #     both come back float64 and the call *succeeds*, silently discarding the
+    #     caller's choice of precision.
+    #
+    # The second face is what makes this worth a test rather than a bug report: a silent
+    # dtype promotion is invisible until something downstream compares dtypes, and it
+    # doubles memory and halves throughput without a word.
+    knots = np.array([0.0, 0.0, 0.0, 0.5, 1.0, 1.0, 1.0], dtype=np.float32)
+    clamped = _scalar_spline(knots, 2, [1.0, 2.0, 3.0, 4.0])
+    assert np.dtype(clamped.dtype) == np.float32, "precondition: the spline is float32"
+
+    # Face one: it does not work at all.
+    try:
+        elevated = clamped.elevate_degree(1)
+    except ValueError as exc:
+        pytest.fail(f"degree elevation of a clamped float32 spline raised: {exc}")
+    assert np.dtype(elevated.dtype) == np.float32, (
+        f"degree elevation changed the dtype from float32 to {np.dtype(elevated.dtype).name}"
+    )
+
+    # Face two: on a periodic space it succeeds and silently promotes. Kept in the same
+    # test because it is the same allocation, and separating them would imply two fixes.
+    periodic_knots = (np.arange(-2, 6, dtype=np.float64) / 3.0).astype(np.float32)
+    periodic = Bspline(
+        BsplineSpace([BsplineSpace1D(periodic_knots, 2, periodic=True)]),
+        np.arange(5, dtype=np.float32).reshape(5, 1),
+    )
+    promoted = periodic.elevate_degree(1)
+    assert np.dtype(promoted.dtype) == np.float32, (
+        f"degree elevation silently promoted a periodic float32 spline to "
+        f"{np.dtype(promoted.dtype).name}"
+    )
+
+
 # ---------------------------------------------------------------------------
 # Tolerance policy: np.isclose keeps its default rtol
 # ---------------------------------------------------------------------------
@@ -109,11 +168,13 @@ def test_out_of_domain_points_are_rejected_at_large_knot_magnitude() -> None:
     # that admits points up to 10.00001 outside -- ten domain lengths -- while the space's
     # stated tolerance is 1e-15.
     #
-    # This is one root cause with 27 sites: every `np.isclose(..., atol=tol)` in
+    # This is one root cause with 26 sites: every `np.isclose(..., atol=tol)` in
     # `pantr.bspline` leaves `rtol` at its default, across `_bspline_restrict.py` (10),
     # `_bspline_knots.py` (5), `_bspline_knot_insertion.py` (4),
-    # `_bspline_space_1d.py` (3), `_bspline_product.py` (2),
-    # `_bspline_knot_removal.py` (2) and `_bspline_split.py` (1). Consequences already
+    # `_bspline_knot_removal.py` (2), `_bspline_product.py` (2),
+    # `_bspline_space_1d.py` (2) and `_bspline_split.py` (1) -- not one of them passes
+    # `rtol`. (A 27th call, in `_bspline_quasi_interpolation.py`, is inside a doctest and
+    # so not a library site.) Consequences already
     # measured, all at |knot| ~ 1e6: `tabulate_basis` accepts a point 10 units outside a
     # unit-length domain and returns a polynomial extrapolation (max|B| = 640 at degree 2,
     # 4.3e43 at degree 62) instead of raising; `remove_knots` refuses to remove the
@@ -145,14 +206,18 @@ def test_snapping_preserves_a_run_of_identical_knots() -> None:
     # `_snap_knots` (`_bspline_space_1d.py:215`) replaces every group of knots that round
     # to the same grid point by `np.mean(group, dtype=self.dtype)`. For a clamped end the
     # group is `degree + 1` copies of one value, so the mean must be that value exactly.
-    # It is not: numpy's pairwise summation of 63 copies loses the low bits once
-    # `(degree + 1) * |knot|` passes the format's exact-integer range (2^24 for float32,
-    # 2^53 for float64), and the knot moves by 0.125.
+    # It is not: the summation loses the low bits once `(degree + 1) * |knot|` passes the
+    # format's exact-integer range (2^24 for float32, 2^53 for float64), and the knot
+    # moves by 0.125. The consequence is that the space's *reported domain* differs from
+    # the one the caller asked for, silently.
     #
-    # The consequence is that the space's *reported domain* differs from the one the
-    # caller asked for, silently: float32 at |knot| ~ 1e6 and float64 at |knot| ~ 1e15,
-    # both at degree 62. Degree <= 15 is unaffected at those magnitudes, because numpy
-    # sums a run of 16 or fewer terms exactly.
+    # Which run lengths survive is **not** a clean rule, and it is worth not pretending
+    # otherwise: it falls out of NumPy's pairwise-summation blocking interacting with the
+    # value's own bit pattern. Measured for float64 at 1e15 + 1, runs of 11, 13, 14, 15,
+    # 18-23 and 26-31 copies are already inexact while 12, 16, 17, 24, 25 and 32 are
+    # exact. So this bites from **degree 10** in float64 at that magnitude, and the two
+    # degrees asserted below are simply the ones the sweep happened to visit -- do not
+    # read them as a threshold.
     for dtype, base in ((np.float32, 1e6), (np.float64, 1e15)):
         degree = 62
         hi = np.asarray(base + 1.0, dtype=dtype)
@@ -293,4 +358,47 @@ def test_tanh_sinh_nodes_are_interior_and_distinct() -> None:
         )
         assert np.unique(nodes).size == nodes.size, (
             f"n_pts {n_pts}: {nodes.size - np.unique(nodes).size} duplicated nodes"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Zero intervals is documented as legal and produces a malformed knot vector
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason="num_intervals=0 is documented as legal but the knot-vector factories either "
+    "return NaN and inf or silently produce one interval instead of none",
+)
+def test_knot_factories_agree_on_zero_intervals() -> None:
+    # `create_uniform_open_knots` and `create_uniform_periodic_knots` both document
+    # `num_intervals` as "must be non-negative" and both validate only `>= 0`, so zero is
+    # inside their stated contract. `create_cardinal_knots` rejects it with
+    # "num_intervals must be at least 1". Three factories in one module, two answers to
+    # whether the input is legal, and neither of the accepting two returns a usable vector:
+    #
+    #   create_uniform_periodic_knots(0, 1) -> [nan, 0.0, inf]
+    #   create_uniform_periodic_knots(0, 3) -> [nan, nan, nan, 0.0, inf, inf, inf]
+    #   create_uniform_open_knots(0, 3)     -> [0,0,0,0, 1,1,1,1]   (one interval, not zero)
+    #
+    # The periodic case comes from `np.linspace` over a zero-length span with a division by
+    # the interval count; it emits only `RuntimeWarning: invalid value encountered in add`,
+    # which nothing raises on, and the caller receives a knot vector full of NaN and inf.
+    # `BsplineSpace1D` then rejects it for the wrong reason ("at least 2*degree+2
+    # elements"), so the origin of the NaN is never reported.
+    #
+    # Either answer would be defensible -- reject zero as the cardinal factory does, or
+    # return an empty-domain vector -- but the three must agree, and none may return NaN.
+    for degree in (1, 2, 3):
+        periodic = np.asarray(create_uniform_periodic_knots(0, degree))
+        assert np.all(np.isfinite(periodic)), (
+            f"create_uniform_periodic_knots(0, {degree}) returned non-finite knots: "
+            f"{periodic.tolist()}"
+        )
+        open_knots = np.asarray(create_uniform_open_knots(0, degree))
+        spans = int(np.unique(open_knots).size) - 1
+        assert spans == 0, (
+            f"create_uniform_open_knots(0, {degree}) returned {spans} interval(s): "
+            f"{open_knots.tolist()}"
         )
