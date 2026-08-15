@@ -662,6 +662,44 @@ def _evaluate_cases(profile: Profile) -> Iterator[Case]:
     )
 
 
+def _derivative_overflows(
+    dtype: np.dtype[np.float32 | np.float64], order: int, *, rational: bool
+) -> bool:
+    """Decide whether a derivative of this order must overflow the format.
+
+    A *rational* Bezier's ``k``-th derivative comes out of the quotient rule applied ``k``
+    times, so it carries a ``k!`` factor from the repeated differentiation of ``1 / w``,
+    and its magnitude therefore grows at least factorially in the order regardless of how
+    tame the control points are. Once ``k!`` passes the format's largest finite value the
+    true answer is unrepresentable and ``inf`` is the correct result, not a defect: at
+    degree 62, order 62, the float64 computation of the very same derivative peaks at
+    **6.5e149** against a float32 maximum of 3.4e38.
+
+    That threshold is why only the rational cases fail. A *polynomial* Bezier's ``k``-th
+    derivative is a finite difference scaled by ``n! / (n - k)!``, which vanishes
+    identically past ``k = n``; measured at degree 62, order 62 it peaks at 7.1e36, inside
+    float32's range, and the non-rational cases are all finite.
+
+    The threshold is derived rather than tuned: it is the smallest ``k`` whose factorial
+    the format cannot hold. For ``float32`` that is 35, since ``34! = 3.0e38`` still fits
+    under the maximum 3.4e38 and ``35! = 1.0e40`` does not; for ``float64`` it is 171,
+    beyond any order this module sweeps, so ``float64`` is never exempted. The comparison
+    is computed rather than written down, so the boundary cannot drift.
+
+    Args:
+        dtype (np.dtype[np.float32 | np.float64]): Working precision.
+        order (int): Derivative order requested.
+        rational (bool): Whether the Bezier is rational.
+
+    Returns:
+        bool: ``True`` when a non-finite result is arithmetic rather than a finding.
+    """
+    if not rational:
+        return False
+    largest = float(np.finfo(dtype).max)
+    return math.factorial(order) > largest
+
+
 def _evaluate_derivatives_cases(profile: Profile) -> Iterator[Case]:
     """Yield :meth:`~pantr.bezier.Bezier.evaluate_derivatives` cases.
 
@@ -707,6 +745,7 @@ def _evaluate_derivatives_cases(profile: Profile) -> Iterator[Case]:
                             "order": order,
                         },
                         arrays={"control_points": cp},
+                        finite_inputs=not _derivative_overflows(dtype, order, rational=rational),
                         must_succeed=True,
                     )
 
