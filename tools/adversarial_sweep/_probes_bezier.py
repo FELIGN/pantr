@@ -49,7 +49,15 @@ from pantr.quad import PointsLattice
 from pantr.tolerance import get_default, get_machine_epsilon
 from pantr.transform import AffineTransform
 
-from ._axes import Profile, coeff_specs, degrees, dtypes, point_specs, rng
+from ._axes import (
+    EXTRAPOLATION_POINT_FAMILIES,
+    Profile,
+    coeff_specs,
+    degrees,
+    dtypes,
+    point_specs,
+    rng,
+)
 from ._core import Case, custom, expected_shape
 
 if TYPE_CHECKING:
@@ -88,18 +96,6 @@ def _rank_dim_combos(profile: Profile) -> tuple[tuple[int, int], ...]:
     return _RANK_DIM_SMOKE if profile is Profile.SMOKE else _RANK_DIM_FULL
 
 
-_EXTRAPOLATION_POINT_FAMILIES: Final = frozenset(
-    {"just_outside_right", "just_outside_left", "far_outside", "just_outside"}
-)
-"""Point families that deliberately evaluate outside ``[0, 1]``.
-
-Bernstein basis functions extrapolate like ``O(t ** n)``, so at a fixed
-off-domain parameter a high enough degree overflows even before any
-implementation defect is involved; these families are excluded from the
-automatic finiteness check rather than asserted finite at every degree.
-"""
-
-
 _MAGNITUDE_FULL: Final = (
     ("scale1", 1.0, 0.0),
     ("scale1e-6", 1e-6, 0.0),
@@ -112,6 +108,17 @@ tolerance derived from a coordinate's own magnitude instead of the control
 polygon's diagonal."""
 
 _MAGNITUDE_SMOKE: Final = (("scale1", 1.0, 0.0),)
+
+_BINCOEFF_MAX_DEGREE: Final = 61
+"""Highest degree at which ``_bincoeff``'s exact-integer recurrence is sound.
+
+Mirrors ``_BINCOEFF_MAX_N`` (``_bspline_degree_core.py:21``), which is what
+``_check_bincoeff_envelope`` grades against. Three ``Bezier`` operations enforce it --
+``elevate_degree`` (on the *elevated* degree), ``minimize_degree`` (on the operand's own
+degree) and ``compose`` (on the combined degree) -- and none of the three mentions it in
+its public ``Raises:`` section, so the verdict flags have to know it independently.
+``reduce_degree``, ``multiply``, ``derivative``, ``evaluate``, ``split``, ``restrict`` and
+``slice`` do not use ``_bincoeff`` at all and carry no such ceiling."""
 
 
 def _magnitude_variants(profile: Profile) -> tuple[tuple[str, float, float], ...]:
@@ -392,15 +399,23 @@ def _construct_cases(profile: Profile) -> Iterator[Case]:
                             ),
                         ),
                         arrays={"control_points": cp},
+                        # `_random_control_points` builds `(*(degree + 1,) * dim, rank)`
+                        # with rank >= 1 and every direction non-empty, which is the whole
+                        # of the constructor's stated contract. No maximum degree is
+                        # documented anywhere on `Bezier`, so degree 62 is legal too.
+                        must_succeed=True,
                     )
 
-    # Malformed / edge-case constructions: documented rejections or corners.
+    # Malformed / edge-case constructions. The first three violate one of the two
+    # documented `Raises:` clauses -- "fewer than 1 entry in any parametric direction"
+    # and "rank smaller than 1" -- so returning would be the finding.
     yield Case(
         GROUP,
         "construct_empty_cp",
         Bezier,
         lambda: Bezier(np.zeros((0, 2), dtype=np.float64)),
         {"kind": "empty"},
+        must_reject=True,
     )
     yield Case(
         GROUP,
@@ -408,6 +423,7 @@ def _construct_cases(profile: Profile) -> Iterator[Case]:
         Bezier,
         lambda: Bezier(np.float64(1.0)),
         {"kind": "0d-scalar"},
+        must_reject=True,
     )
     yield Case(
         GROUP,
@@ -415,7 +431,11 @@ def _construct_cases(profile: Profile) -> Iterator[Case]:
         Bezier,
         lambda: Bezier(np.zeros((3, 0), dtype=np.float64)),
         {"kind": "rank-zero"},
+        must_reject=True,
     )
+    # The remaining three are conveniences the `control_points` docstring promises
+    # outright: "A 1D input of shape (n,) is reshaped to (n, 1) (scalar field). Integer
+    # arrays are cast to float64" -- and, by omission, float32 is left alone.
     yield Case(
         GROUP,
         "construct_1d_list_reshape",
@@ -424,6 +444,7 @@ def _construct_cases(profile: Profile) -> Iterator[Case]:
         {"kind": "1d-list"},
         invariants=(expected_shape(()),),
         finite_inputs=False,  # predicate below checks rank/dim, not the raw result
+        must_succeed=True,
     )
     yield Case(
         GROUP,
@@ -437,6 +458,7 @@ def _construct_cases(profile: Profile) -> Iterator[Case]:
                 lambda r: None if r.dtype == np.float64 else f"got dtype {r.dtype}",
             ),
         ),
+        must_succeed=True,
     )
     float32_cp = np.array([[0.0, 0.0], [1.0, 1.0], [2.0, 0.0]], dtype=np.float32)
     yield Case(
@@ -452,6 +474,7 @@ def _construct_cases(profile: Profile) -> Iterator[Case]:
             ),
         ),
         arrays={"control_points": float32_cp},
+        must_succeed=True,
     )
 
 
@@ -540,7 +563,12 @@ def _evaluate_cases(profile: Profile) -> Iterator[Case]:
                     # eventually float64) well before any implementation error
                     # is involved -- nothing in `evaluate`'s contract promises
                     # a finite answer for these families at every degree.
-                    finite_expected = finite and name not in _EXTRAPOLATION_POINT_FAMILIES
+                    finite_expected = finite and name not in EXTRAPOLATION_POINT_FAMILIES
+                    # Every family here has the shape and dtype `evaluate` asks for, and
+                    # `evaluate` states no domain at all for `pts` -- there is no
+                    # rejection clause an out-of-domain, empty or `NaN` point could
+                    # trip. So the call must *return*; whether the value it returns is
+                    # finite is a separate question, settled by `finite_inputs` above.
                     yield Case(
                         GROUP,
                         f"evaluate_{tag}_{name}",
@@ -555,6 +583,7 @@ def _evaluate_cases(profile: Profile) -> Iterator[Case]:
                         },
                         finite_inputs=finite_expected,
                         arrays={"control_points": cp, "pts": pts},
+                        must_succeed=True,
                     )
 
                 if profile is Profile.FULL:
@@ -585,9 +614,11 @@ def _evaluate_cases(profile: Profile) -> Iterator[Case]:
                             "rational": True,
                         },
                         arrays={"control_points": cp_rat, "pts": interior_pts},
+                        must_succeed=True,
                     )
 
-    # Dtype-mismatch and out-of-range direction: documented rejections.
+    # Dtype-mismatch: documented rejection, "If the points dtype does not match the
+    # Bézier dtype".
     bezier64 = Bezier(_random_control_points(1, 1, 3, np.dtype(np.float64), offset=2900))
     pts32 = np.array([0.5], dtype=np.float32)
     yield Case(
@@ -596,6 +627,7 @@ def _evaluate_cases(profile: Profile) -> Iterator[Case]:
         Bezier.evaluate,
         lambda: bezier64.evaluate(pts32),
         {"kind": "dtype-mismatch"},
+        must_reject=True,
     )
 
     # out= round trip: correct shape/dtype accepted and filled bit-identically.
@@ -617,6 +649,7 @@ def _evaluate_cases(profile: Profile) -> Iterator[Case]:
                 else "out= result differs from the freshly-allocated result",
             ),
         ),
+        must_succeed=True,
     )
     bad_out = np.empty((3, 7), dtype=np.float64)
     yield Case(
@@ -625,7 +658,46 @@ def _evaluate_cases(profile: Profile) -> Iterator[Case]:
         Bezier.evaluate,
         lambda: bezier_out.evaluate(pts_out, out=bad_out),
         {"kind": "out-wrong-shape"},
+        must_reject=True,  # "or if out has incorrect shape or dtype"
     )
+
+
+def _derivative_overflows(
+    dtype: np.dtype[np.float32 | np.float64], order: int, *, rational: bool
+) -> bool:
+    """Decide whether a derivative of this order must overflow the format.
+
+    A *rational* Bezier's ``k``-th derivative comes out of the quotient rule applied ``k``
+    times, so it carries a ``k!`` factor from the repeated differentiation of ``1 / w``,
+    and its magnitude therefore grows at least factorially in the order regardless of how
+    tame the control points are. Once ``k!`` passes the format's largest finite value the
+    true answer is unrepresentable and ``inf`` is the correct result, not a defect: at
+    degree 62, order 62, the float64 computation of the very same derivative peaks at
+    **6.5e149** against a float32 maximum of 3.4e38.
+
+    That threshold is why only the rational cases fail. A *polynomial* Bezier's ``k``-th
+    derivative is a finite difference scaled by ``n! / (n - k)!``, which vanishes
+    identically past ``k = n``; measured at degree 62, order 62 it peaks at 7.1e36, inside
+    float32's range, and the non-rational cases are all finite.
+
+    The threshold is derived rather than tuned: it is the smallest ``k`` whose factorial
+    the format cannot hold. For ``float32`` that is 35, since ``34! = 3.0e38`` still fits
+    under the maximum 3.4e38 and ``35! = 1.0e40`` does not; for ``float64`` it is 171,
+    beyond any order this module sweeps, so ``float64`` is never exempted. The comparison
+    is computed rather than written down, so the boundary cannot drift.
+
+    Args:
+        dtype (np.dtype[np.float32 | np.float64]): Working precision.
+        order (int): Derivative order requested.
+        rational (bool): Whether the Bezier is rational.
+
+    Returns:
+        bool: ``True`` when a non-finite result is arithmetic rather than a finding.
+    """
+    if not rational:
+        return False
+    largest = float(np.finfo(dtype).max)
+    return math.factorial(order) > largest
 
 
 def _evaluate_derivatives_cases(profile: Profile) -> Iterator[Case]:
@@ -653,6 +725,12 @@ def _evaluate_derivatives_cases(profile: Profile) -> Iterator[Case]:
                     if order == 0 and degree == 0:
                         continue
                     tag = f"p{degree}_{dtype}_{'rat' if rational else 'nonrat'}_o{order}"
+                    # `orders` reaches `degree + 3` deliberately. That is legal: the
+                    # only stated precondition is "one non-negative integer per
+                    # parametric direction", with no cap relative to the degree, so an
+                    # order past the degree must return the zero derivative rather than
+                    # refuse. Unlike `derivative`, which *does* document a refusal at
+                    # degree 0, this method documents none.
                     yield Case(
                         GROUP,
                         f"evaluate_derivatives_{tag}",
@@ -667,9 +745,12 @@ def _evaluate_derivatives_cases(profile: Profile) -> Iterator[Case]:
                             "order": order,
                         },
                         arrays={"control_points": cp},
+                        finite_inputs=not _derivative_overflows(dtype, order, rational=rational),
+                        must_succeed=True,
                     )
 
-    # Mismatched orders length and negative order: documented rejections.
+    # Mismatched orders length and negative order: documented rejections, "If
+    # len(orders) != self.dim, if any order is negative, ...".
     cp_bad = _random_control_points(1, 2, 2, np.dtype(np.float64), offset=3900)
     bezier_bad = Bezier(cp_bad)
     pts_bad = np.array([[0.2, 0.3]], dtype=np.float64)
@@ -679,6 +760,7 @@ def _evaluate_derivatives_cases(profile: Profile) -> Iterator[Case]:
         Bezier.evaluate_derivatives,
         lambda: bezier_bad.evaluate_derivatives(pts_bad, [1, 2, 3]),
         {"kind": "orders-length-mismatch"},
+        must_reject=True,
     )
     yield Case(
         GROUP,
@@ -686,6 +768,7 @@ def _evaluate_derivatives_cases(profile: Profile) -> Iterator[Case]:
         Bezier.evaluate_derivatives,
         lambda: bezier_bad.evaluate_derivatives(pts_bad, [-1, 0]),
         {"kind": "negative-order"},
+        must_reject=True,
     )
 
 
@@ -744,9 +827,17 @@ def _elevate_degree_cases(profile: Profile) -> Iterator[Case]:
                             ),
                         ),
                         arrays={"control_points": cp},
+                        # The swept degrees stop at 15 and the increments at 5, so the
+                        # highest elevated degree is 20 -- well inside the exactness
+                        # envelope of the binomial-coefficient kernel
+                        # (`_BINCOEFF_MAX_N = 61`, `_bspline_degree_core.py:21`), which
+                        # is the only ceiling `elevate_degree` has. Nothing here may
+                        # therefore refuse.
+                        must_succeed=True,
                     )
 
-    # Documented rejections: negative increment, all-zero increments, length mismatch.
+    # Documented rejections: "If any degree increment is negative", "If all degree
+    # increments are zero", "If the number of increments does not match the dimension".
     cp_nd = _random_control_points(1, 2, 2, np.dtype(np.float64), offset=4900)
     bezier_nd = Bezier(cp_nd)
     yield Case(
@@ -755,6 +846,7 @@ def _elevate_degree_cases(profile: Profile) -> Iterator[Case]:
         Bezier.elevate_degree,
         lambda: bezier_nd.elevate_degree(-1),
         {"kind": "negative-increment"},
+        must_reject=True,
     )
     yield Case(
         GROUP,
@@ -762,6 +854,7 @@ def _elevate_degree_cases(profile: Profile) -> Iterator[Case]:
         Bezier.elevate_degree,
         lambda: bezier_nd.elevate_degree([0, 0]),
         {"kind": "all-zero-increments"},
+        must_reject=True,
     )
     yield Case(
         GROUP,
@@ -769,6 +862,7 @@ def _elevate_degree_cases(profile: Profile) -> Iterator[Case]:
         Bezier.elevate_degree,
         lambda: bezier_nd.elevate_degree([1, 1, 1]),
         {"kind": "length-mismatch"},
+        must_reject=True,
     )
 
 
@@ -875,9 +969,18 @@ def _reduce_degree_cases(profile: Profile) -> Iterator[Case]:
                         },
                         invariants=(invariant,),
                         arrays={"control_points": cp},
+                        # `dec` never exceeds `degree` and is never zero or negative, so
+                        # none of the four documented refusals applies. Degree 62 is
+                        # legal here even though it is not for `elevate_degree`:
+                        # `_degree_reduce_bezier` is built from exact `Fraction` and
+                        # `math.comb` arithmetic and never touches `_bincoeff`, so it
+                        # carries no envelope check. Verified: degree 62 reduces, while
+                        # elevating a degree-61 curve raises.
+                        must_succeed=True,
                     )
 
-    # Documented rejections: decrement exceeds degree, negative, all-zero.
+    # Documented rejections: "If any decrement exceeds the current degree in that
+    # direction", "If any degree decrement is negative", "If all decrements are zero".
     cp = _random_control_points(1, 1, 3, np.dtype(np.float64), offset=5900)
     bezier = Bezier(cp)
     yield Case(
@@ -886,6 +989,7 @@ def _reduce_degree_cases(profile: Profile) -> Iterator[Case]:
         Bezier.reduce_degree,
         lambda: bezier.reduce_degree(4),
         {"kind": "decrement-exceeds-degree"},
+        must_reject=True,
     )
     yield Case(
         GROUP,
@@ -893,6 +997,7 @@ def _reduce_degree_cases(profile: Profile) -> Iterator[Case]:
         Bezier.reduce_degree,
         lambda: bezier.reduce_degree(-1),
         {"kind": "negative-decrement"},
+        must_reject=True,
     )
     yield Case(
         GROUP,
@@ -900,6 +1005,7 @@ def _reduce_degree_cases(profile: Profile) -> Iterator[Case]:
         Bezier.reduce_degree,
         lambda: bezier.reduce_degree(0),
         {"kind": "all-zero-decrement"},
+        must_reject=True,
     )
 
 
@@ -938,6 +1044,11 @@ def _degree_reduction_error_cases(profile: Profile) -> Iterator[Case]:
                         else f"error {r!r} not in [0, {tol:.3e}]",
                     ),
                 ),
+                # `error_degrees` stops at 15, so the internal re-elevation back to the
+                # original degree stays inside the binomial envelope. It would not at
+                # degree 62: `degree_reduction_error` re-elevates, and elevating a
+                # degree-61 curve already raises. Keep the cap if this sweep widens.
+                must_succeed=True,
             )
             generic_decs = range(1, degree + 1) if profile is Profile.FULL else (1,)
             for dec in generic_decs:
@@ -955,6 +1066,7 @@ def _degree_reduction_error_cases(profile: Profile) -> Iterator[Case]:
                             lambda r: None if (np.isfinite(r) and r >= 0.0) else f"got {r!r}",
                         ),
                     ),
+                    must_succeed=True,  # `dec <= degree <= 15`, as above
                 )
 
 
@@ -974,6 +1086,18 @@ def _minimize_degree_cases(profile: Profile) -> Iterator[Case]:
         for degree in degrees(profile):
             if degree == 0:
                 continue
+            # `minimize_degree` checks every direction against the binomial-coefficient
+            # envelope before doing anything (`_bezier_degree.py:515-517`), so a
+            # degree-62 operand is refused outright -- verified: degree 61 minimizes,
+            # degree 62 raises. That refusal is correct (past 61 `_bincoeff` wraps
+            # int64 and the answer would be silently wrong), which is why it is graded
+            # `must_reject` rather than left unflagged. What is *missing* is the
+            # documentation: `Bezier.minimize_degree` has no `Raises:` section at all,
+            # while the Layer-2 function it calls documents this exact `ValueError`. So
+            # the sweep will report the refusal as an undocumented rejection -- a
+            # suspicion, not a bug -- which is the right strength of claim for a
+            # docstring gap, while a *return* at degree 62 would be graded a bug.
+            over_envelope = degree > _BINCOEFF_MAX_DEGREE
             cp = _random_control_points(1, 1, degree, dtype, offset=7000 + degree)
             bezier = Bezier(cp)
             yield Case(
@@ -991,6 +1115,8 @@ def _minimize_degree_cases(profile: Profile) -> Iterator[Case]:
                     ),
                 ),
                 arrays={"control_points": cp},
+                must_succeed=not over_envelope,
+                must_reject=over_envelope,
             )
             if profile is Profile.FULL:
                 # A genuinely reducible curve: a straight line elevated to `degree`.
@@ -1010,6 +1136,8 @@ def _minimize_degree_cases(profile: Profile) -> Iterator[Case]:
                             else f"got degree {r.degree[0]} > original {degree}",
                         ),
                     ),
+                    must_succeed=not over_envelope,
+                    must_reject=over_envelope,
                 )
     yield Case(
         GROUP,
@@ -1019,6 +1147,7 @@ def _minimize_degree_cases(profile: Profile) -> Iterator[Case]:
             tol=1e-3
         ),
         {"kind": "explicit-tol"},
+        must_succeed=True,  # degree 15, and `tol` has no documented range
     )
 
 
@@ -1080,10 +1209,17 @@ def _split_cases(profile: Profile) -> Iterator[Case]:
                             ),
                         ),
                         arrays={"control_points": cp},
+                        # Every swept value is strictly inside (0, 1) and the direction
+                        # is 0 on a 1-D Bézier, which is the whole of `split`'s stated
+                        # contract. Degree 0 is not swept here, but it would be legal
+                        # too: splitting a constant returns the same constant twice.
+                        must_succeed=True,
                     )
 
     cp_1d = _random_control_points(1, 1, 3, np.dtype(np.float64), offset=8900)
     bezier_1d = Bezier(cp_1d)
+    # "Must lie strictly inside (0, 1)", so both endpoints are documented refusals --
+    # the one place in this module where a *closed* bound would be wrong.
     for boundary_value, tag in ((0.0, "left"), (1.0, "right")):
         yield Case(
             GROUP,
@@ -1093,6 +1229,7 @@ def _split_cases(profile: Profile) -> Iterator[Case]:
                 0, boundary_value
             ),
             {"kind": f"boundary-{tag}", "value": boundary_value},
+            must_reject=True,
         )
     yield Case(
         GROUP,
@@ -1100,6 +1237,7 @@ def _split_cases(profile: Profile) -> Iterator[Case]:
         Bezier.split,
         lambda: bezier_1d.split(1, 0.5),
         {"kind": "direction-out-of-range"},
+        must_reject=True,  # "If direction is out of range [0, dim)"
     )
 
 
@@ -1173,6 +1311,9 @@ def _restrict_cases(profile: Profile) -> Iterator[Case]:
                     ),
                 ),
                 arrays={"control_points": cp},
+                # (0.2, 0.8) is inside [0, 1] with lower < upper and genuinely
+                # restricts, so none of the four documented refusals applies.
+                must_succeed=True,
             )
 
     cp_1d = _random_control_points(1, 1, 2, np.dtype(np.float64), offset=9900)
@@ -1183,6 +1324,7 @@ def _restrict_cases(profile: Profile) -> Iterator[Case]:
         Bezier.restrict,
         lambda: bezier_1d.restrict((0.4, 0.4)),
         {"kind": "zero-width"},
+        must_reject=True,  # "lower >= upper"
     )
     yield Case(
         GROUP,
@@ -1190,6 +1332,7 @@ def _restrict_cases(profile: Profile) -> Iterator[Case]:
         Bezier.restrict,
         lambda: bezier_1d.restrict((-0.1, 0.5)),
         {"kind": "out-of-domain"},
+        must_reject=True,  # "bounds outside [0, 1]"
     )
 
 
@@ -1232,6 +1375,10 @@ def _compose_cases(profile: Profile) -> Iterator[Case]:
                 {"outer_degree": p, "inner_degree": q, "dtype": str(dtype), "kind": "1d-inner"},
                 invariants=(_compose_invariant(ts, expected, tol),),
                 arrays={"outer_control_points": outer_cp, "inner_control_points": inner_cp},
+                # Non-rational, matching dtypes, and `inner.rank == outer.dim == 1`:
+                # all three documented refusals are avoided. The combined degree `p * q`
+                # peaks at 10 here, far inside the binomial envelope.
+                must_succeed=True,
             )
 
         if profile is Profile.FULL:
@@ -1255,6 +1402,11 @@ def _compose_cases(profile: Profile) -> Iterator[Case]:
                 {"outer_degree": 30, "inner_degree": 3, "dtype": str(dtype), "kind": "nd-inner"},
                 invariants=(_compose_invariant(ts_nd, expected_nd, tol_nd),),
                 arrays={"outer_control_points": outer_cp_nd, "inner_control_points": inner_cp_nd},
+                # Combined degree 90 and still `must_succeed`: the envelope guard is
+                # conditioned on `inner.dim == 1` (`_bezier_compose.py:86-90`), and this
+                # inner is 2-D, so the composition takes the `math.comb` nD path, which
+                # is exact at any degree and carries no ceiling.
+                must_succeed=True,
             )
 
             # Boundary marker: combined degree exactly 61, one below the known
@@ -1281,9 +1433,17 @@ def _compose_cases(profile: Profile) -> Iterator[Case]:
                     "outer_control_points": outer_boundary_cp,
                     "inner_control_points": inner_boundary_cp,
                 },
+                # Worth being precise about what this case does and does not prove: the
+                # combined degree is 61, but a degree-1 1-D outer is *exempt* from the
+                # envelope check altogether (`_bezier_compose.py:86-90` requires
+                # `outer.dim > 1 or outer.degree[0] > 1`), so this never reaches the
+                # guard. It documents that a degree-1 outer composes with an arbitrarily
+                # high-degree inner, not that the cliff is at 62.
+                must_succeed=True,
             )
 
-    # Documented rejections.
+    # Documented rejections: "TypeError: If either Bézier is rational", "ValueError: If
+    # inner.rank != self.dim", "ValueError: If the operands have different dtypes".
     outer_rat_cp = _random_control_points(
         1, 1, 2, np.dtype(np.float64), offset=10900, rational=True
     )
@@ -1296,6 +1456,7 @@ def _compose_cases(profile: Profile) -> Iterator[Case]:
         Bezier.compose,
         lambda: outer_rat.compose(inner_plain),
         {"kind": "rational-outer"},
+        must_reject=True,
     )
     outer_plain = Bezier(_random_control_points(1, 1, 2, np.dtype(np.float64), offset=10902))
     inner_rank_mismatch = Bezier(
@@ -1307,6 +1468,7 @@ def _compose_cases(profile: Profile) -> Iterator[Case]:
         Bezier.compose,
         lambda: outer_plain.compose(inner_rank_mismatch),
         {"kind": "rank-mismatch"},
+        must_reject=True,
     )
     outer_f32 = Bezier(_random_control_points(1, 1, 2, np.dtype(np.float32), offset=10904))
     inner_f64 = Bezier(_random_control_points(1, 1, 2, np.dtype(np.float64), offset=10905))
@@ -1316,6 +1478,7 @@ def _compose_cases(profile: Profile) -> Iterator[Case]:
         Bezier.compose,
         lambda: outer_f32.compose(inner_f64),
         {"kind": "dtype-mismatch"},
+        must_reject=True,
     )
 
 
@@ -1393,6 +1556,10 @@ def _multiply_cases(profile: Profile) -> Iterator[Case]:
                         ),
                     ),
                     arrays={"f_control_points": cp_f, "g_control_points": cp_g},
+                    # Matching dtype, dim and rank, which is the whole of `multiply`'s
+                    # contract. No degree ceiling applies: the product is an exact
+                    # `math.comb` convolution and never touches `_bincoeff`.
+                    must_succeed=True,
                 )
 
     f_operator = Bezier.__mul__
@@ -1417,6 +1584,7 @@ def _multiply_cases(profile: Profile) -> Iterator[Case]:
                 ),
             ),
         ),
+        must_succeed=True,
     )
 
     rank_mismatch = Bezier(_random_control_points(2, 1, 2, np.dtype(np.float64), offset=11902))
@@ -1426,6 +1594,7 @@ def _multiply_cases(profile: Profile) -> Iterator[Case]:
         Bezier.multiply,
         lambda: f64.multiply(rank_mismatch),
         {"kind": "rank-mismatch"},
+        must_reject=True,  # "different dimensions, dtypes, or ranks"
     )
     f32 = Bezier(_random_control_points(1, 1, 2, np.dtype(np.float32), offset=11903))
     yield Case(
@@ -1434,6 +1603,7 @@ def _multiply_cases(profile: Profile) -> Iterator[Case]:
         Bezier.multiply,
         lambda: f64.multiply(f32),
         {"kind": "dtype-mismatch"},
+        must_reject=True,
     )
 
 
@@ -1507,6 +1677,10 @@ def _derivative_cases(profile: Profile) -> Iterator[Case]:
                                 ),
                             ),
                             arrays={"control_points": cp},
+                            # `derivative` documents exactly two refusals -- an
+                            # out-of-range direction and a degree-0 direction -- and
+                            # `derivative_degrees` starts at 1, so neither applies.
+                            must_succeed=True,
                         )
 
     cp_const = _random_control_points(1, 2, 0, np.dtype(np.float64), offset=12900)
@@ -1517,6 +1691,10 @@ def _derivative_cases(profile: Profile) -> Iterator[Case]:
         Bezier.derivative,
         lambda: bezier_const.derivative(direction=0),
         {"kind": "degree-zero-direction"},
+        # "ValueError: If the degree in the given direction is 0." `derivative` is the
+        # only operation in this module with a documented degree-0 refusal, which is why
+        # degree 0 is `must_succeed` everywhere else and `must_reject` here.
+        must_reject=True,
     )
     yield Case(
         GROUP,
@@ -1524,6 +1702,7 @@ def _derivative_cases(profile: Profile) -> Iterator[Case]:
         Bezier.derivative,
         lambda: bezier_const.derivative(direction=5),
         {"kind": "direction-out-of-range"},
+        must_reject=True,  # "If direction is out of range [0, dim)"
     )
 
 
@@ -1678,6 +1857,11 @@ def _root_finding_cases(profile: Profile) -> Iterator[Case]:
                 {"n_roots": n, "dtype": str(dtype), "kind": "well-separated"},
                 invariants=(_roots_bounded_invariant(bezier),),
                 arrays={"coefficients": coeff},
+                # `find_roots` refuses exactly four things: a non-Bezier, `dim != 1`,
+                # `rank != 1`, and a non-positive `tol` (plus uneven degrees in batch
+                # mode). Every crossing in this function is a scalar 1-D curve at the
+                # default `tol`, so none applies and any exception is a finding.
+                must_succeed=True,
             )
 
         if profile is Profile.FULL:
@@ -1692,6 +1876,7 @@ def _root_finding_cases(profile: Profile) -> Iterator[Case]:
                     {"n_roots": n, "dtype": str(dtype), "kind": "clustered-known-dedup-edge-case"},
                     invariants=(_roots_bounded_invariant(bezier),),
                     arrays={"coefficients": coeff},
+                    must_succeed=True,
                 )
 
         # Degenerate: identically zero (every point is a root).
@@ -1703,6 +1888,11 @@ def _root_finding_cases(profile: Profile) -> Iterator[Case]:
             find_roots,
             lambda zero_bezier=zero_bezier: find_roots(zero_bezier),
             {"dtype": str(dtype), "kind": "identically-zero"},
+            # An identically-zero polynomial is a legal scalar 1-D curve, so the call
+            # must return. *What* it should return is genuinely unspecified -- every
+            # point is a root, and the docstring says only "Empty if no roots exist" --
+            # so no invariant is asserted, deliberately.
+            must_succeed=True,
         )
 
         for degree in (3, 15) if profile is Profile.FULL else (3,):
@@ -1724,6 +1914,7 @@ def _root_finding_cases(profile: Profile) -> Iterator[Case]:
                     ),
                 ),
                 arrays={"control_points": mono_cp},
+                must_succeed=True,
             )
 
             no_cross_cp = _monotone_control_points(degree, dtype, sign_change=False)
@@ -1743,7 +1934,10 @@ def _root_finding_cases(profile: Profile) -> Iterator[Case]:
                     ),
                 ),
                 finite_inputs=False,
+                # `NaN` is the documented *return* for "no sign change across the
+                # interval", not a refusal, so this must succeed too.
                 arrays={"control_points": no_cross_cp},
+                must_succeed=True,
             )
 
         if profile is Profile.FULL:
@@ -1764,6 +1958,7 @@ def _root_finding_cases(profile: Profile) -> Iterator[Case]:
                         lambda r, batch=batch: _batch_roots_failure(r, batch),
                     ),
                 ),
+                must_succeed=True,  # a uniform-degree batch, which batch mode requires
             )
             mono_batch = [
                 Bezier(_monotone_control_points(4, dtype, sign_change=True)) for _ in range(3)
@@ -1775,15 +1970,19 @@ def _root_finding_cases(profile: Profile) -> Iterator[Case]:
                 lambda mono_batch=mono_batch: find_monotone_root(mono_batch),
                 {"n_polys": len(mono_batch), "dtype": str(dtype), "kind": "batch"},
                 invariants=(expected_shape((len(mono_batch),)),),
+                must_succeed=True,
             )
 
-    # Documented rejections.
+    # Documented rejections: "TypeError: If bezier is not a Bezier instance (or sequence
+    # thereof)" and "ValueError: If any Bezier has dim != 1 or rank != 1, or tol is not
+    # positive. In batch mode, also raised if degrees are not uniform."
     yield Case(
         GROUP,
         "find_roots_wrong_type",
         find_roots,
         lambda: find_roots(42),
         {"kind": "not-a-bezier"},
+        must_reject=True,
     )
     surface = Bezier(_random_control_points(1, 2, 2, np.dtype(np.float64), offset=13900))
     yield Case(
@@ -1792,6 +1991,7 @@ def _root_finding_cases(profile: Profile) -> Iterator[Case]:
         find_roots,
         lambda: find_roots(surface),
         {"kind": "dim-not-1"},
+        must_reject=True,
     )
     vector_curve = Bezier(_random_control_points(2, 1, 2, np.dtype(np.float64), offset=13901))
     yield Case(
@@ -1800,6 +2000,7 @@ def _root_finding_cases(profile: Profile) -> Iterator[Case]:
         find_roots,
         lambda: find_roots(vector_curve),
         {"kind": "rank-not-1"},
+        must_reject=True,
     )
     scalar_curve = Bezier(_random_control_points(1, 1, 2, np.dtype(np.float64), offset=13902))
     yield Case(
@@ -1808,6 +2009,7 @@ def _root_finding_cases(profile: Profile) -> Iterator[Case]:
         find_roots,
         lambda: find_roots(scalar_curve, tol=0.0),
         {"kind": "nonpositive-tol"},
+        must_reject=True,
     )
     uneven_batch = [
         Bezier(_random_control_points(1, 1, 2, np.dtype(np.float64), offset=13903)),
@@ -1819,6 +2021,7 @@ def _root_finding_cases(profile: Profile) -> Iterator[Case]:
         find_roots,
         lambda: find_roots(uneven_batch),
         {"kind": "uneven-batch-degree"},
+        must_reject=True,
     )
 
 
@@ -1915,6 +2118,9 @@ def _reverse_permute_transform_cases(profile: Profile) -> Iterator[Case]:
                         {"rank": rank, "dim": dim, "degree": degree, "dtype": str(dtype)},
                         invariants=(_double_op_identity_invariant(cp),),
                         arrays={"control_points": cp},
+                        # `reverse` refuses only an out-of-range direction, and
+                        # `direction` runs over `range(dim)`.
+                        must_succeed=True,
                     )
                     fresh = Bezier(cp.copy())
                     yield Case(
@@ -1931,6 +2137,7 @@ def _reverse_permute_transform_cases(profile: Profile) -> Iterator[Case]:
                                 lambda r: None if r is None else f"expected None, got {r!r}",
                             ),
                         ),
+                        must_succeed=True,
                     )
 
                 if dim >= 2:  # noqa: PLR2004
@@ -1946,6 +2153,9 @@ def _reverse_permute_transform_cases(profile: Profile) -> Iterator[Case]:
                         {"rank": rank, "dim": dim, "degree": degree, "dtype": str(dtype)},
                         invariants=(_double_op_identity_invariant(cp),),
                         arrays={"control_points": cp},
+                        # A transposition of two directions is a valid permutation of
+                        # `range(dim)`, the only thing `permute_directions` checks.
+                        must_succeed=True,
                     )
                     fresh_perm = Bezier(cp.copy())
                     yield Case(
@@ -1962,6 +2172,7 @@ def _reverse_permute_transform_cases(profile: Profile) -> Iterator[Case]:
                                 lambda r: None if r is None else f"expected None, got {r!r}",
                             ),
                         ),
+                        must_succeed=True,
                     )
 
                 identity = AffineTransform.identity(rank)
@@ -1980,6 +2191,9 @@ def _reverse_permute_transform_cases(profile: Profile) -> Iterator[Case]:
                         ),
                     ),
                     arrays={"control_points": cp},
+                    # Built at the Bézier's own geometric rank, the only thing
+                    # `transform` checks.
+                    must_succeed=True,
                 )
                 fresh_transform = Bezier(cp.copy())
                 yield Case(
@@ -1996,6 +2210,7 @@ def _reverse_permute_transform_cases(profile: Profile) -> Iterator[Case]:
                             lambda r: None if r is None else f"expected None, got {r!r}",
                         ),
                     ),
+                    must_succeed=True,
                 )
 
                 if profile is Profile.FULL:
@@ -2007,6 +2222,11 @@ def _reverse_permute_transform_cases(profile: Profile) -> Iterator[Case]:
                         lambda bezier=bezier, singular=singular: bezier.transform(singular),
                         {"rank": rank, "dim": dim, "kind": "singular-matrix"},
                         arrays={"control_points": cp},
+                        # A singular affine map is legal and undocumented as special:
+                        # `transform` checks only the matrix's shape and never its
+                        # rank, so collapsing the geometry onto a lower-dimensional
+                        # subspace is an ordinary result, not a refusal.
+                        must_succeed=True,
                     )
 
     cp_1d = _random_control_points(1, 1, 2, np.dtype(np.float64), offset=14900)
@@ -2017,6 +2237,7 @@ def _reverse_permute_transform_cases(profile: Profile) -> Iterator[Case]:
         Bezier.reverse,
         lambda: bezier_1d.reverse(3),
         {"kind": "direction-out-of-range"},
+        must_reject=True,  # "If direction is out of range [0, dim)"
     )
     cp_2d = _random_control_points(1, 2, 2, np.dtype(np.float64), offset=14901)
     bezier_2d = Bezier(cp_2d)
@@ -2026,6 +2247,7 @@ def _reverse_permute_transform_cases(profile: Profile) -> Iterator[Case]:
         Bezier.permute_directions,
         lambda: bezier_2d.permute_directions([0, 0]),
         {"kind": "invalid-permutation"},
+        must_reject=True,  # "If permutation is not a valid permutation of range(dim)"
     )
     yield Case(
         GROUP,
@@ -2033,6 +2255,7 @@ def _reverse_permute_transform_cases(profile: Profile) -> Iterator[Case]:
         Bezier.transform,
         lambda: bezier_2d.transform(AffineTransform.identity(3)),
         {"kind": "dimension-mismatch"},
+        must_reject=True,  # "If the transform dimension does not match the geometric rank"
     )
 
 
@@ -2072,6 +2295,9 @@ def _slice_boundary_cases(profile: Profile) -> Iterator[Case]:
                             "value": value,
                         },
                         arrays={"control_points": cp},
+                        # `slice` documents a *closed* bound, "Must lie within [0, 1]",
+                        # unlike `split`'s open one, so 0.0 and 1.0 are legal here.
+                        must_succeed=True,
                     )
                 for side in (0, 1):
                     yield Case(
@@ -2095,6 +2321,7 @@ def _slice_boundary_cases(profile: Profile) -> Iterator[Case]:
                             ),
                         ),
                         arrays={"control_points": cp},
+                        must_succeed=True,  # axis 0 < dim, side in {0, 1}
                     )
 
     cp_1d = _random_control_points(1, 1, 2, np.dtype(np.float64), offset=15900)
@@ -2105,6 +2332,7 @@ def _slice_boundary_cases(profile: Profile) -> Iterator[Case]:
         Bezier.slice,
         lambda: bezier_1d.slice(0, 1.5),
         {"kind": "value-out-of-range"},
+        must_reject=True,  # "If value is outside [0, 1]"
     )
     yield Case(
         GROUP,
@@ -2112,6 +2340,7 @@ def _slice_boundary_cases(profile: Profile) -> Iterator[Case]:
         Bezier.slice,
         lambda: bezier_1d.slice(2, 0.5),
         {"kind": "axis-out-of-range"},
+        must_reject=True,  # "If axis is out of range"
     )
     yield Case(
         GROUP,
@@ -2119,6 +2348,7 @@ def _slice_boundary_cases(profile: Profile) -> Iterator[Case]:
         Bezier.boundary,
         lambda: bezier_1d.boundary(0, 2),
         {"kind": "invalid-side"},
+        must_reject=True,  # "If side is not 0 or 1"
     )
 
 
@@ -2187,6 +2417,9 @@ def _collapse_along_axis_cases(profile: Profile) -> Iterator[Case]:
                             ),
                         ),
                         arrays={"control_points": cp},
+                        # `dim >= 2`, `axis` in range, `len(values) == dim - 1`, and
+                        # every value in [0, 1]: all four documented refusals avoided.
+                        must_succeed=True,
                     )
 
     cp_1d = _random_control_points(1, 1, 2, np.dtype(np.float64), offset=16900)
@@ -2197,6 +2430,7 @@ def _collapse_along_axis_cases(profile: Profile) -> Iterator[Case]:
         Bezier.collapse_along_axis,
         lambda: bezier_1d.collapse_along_axis(0, []),
         {"kind": "dim-less-than-2"},
+        must_reject=True,  # "collapse_along_axis requires dim >= 2"
     )
     cp_2d = _random_control_points(1, 2, 2, np.dtype(np.float64), offset=16901)
     bezier_2d = Bezier(cp_2d)
@@ -2206,6 +2440,7 @@ def _collapse_along_axis_cases(profile: Profile) -> Iterator[Case]:
         Bezier.collapse_along_axis,
         lambda: bezier_2d.collapse_along_axis(0, [0.2, 0.3]),
         {"kind": "values-length-mismatch"},
+        must_reject=True,  # "values must have length dim - 1"
     )
     yield Case(
         GROUP,
@@ -2213,6 +2448,7 @@ def _collapse_along_axis_cases(profile: Profile) -> Iterator[Case]:
         Bezier.collapse_along_axis,
         lambda: bezier_2d.collapse_along_axis(0, [1.5]),
         {"kind": "value-out-of-range"},
+        must_reject=True,  # "All values must be in [0, 1]"
     )
 
 
@@ -2253,6 +2489,10 @@ def _to_bspline_cases(profile: Profile) -> Iterator[Case]:
                         ),
                     ),
                     arrays={"control_points": cp},
+                    # `to_bspline` documents no refusal at all, and the vector it builds
+                    # is Bézier-like by construction, which is the one thing
+                    # `create_from_bspline` checks. Degree 0 is swept and is legal.
+                    must_succeed=True,
                 )
 
     non_bezier_space = BsplineSpace(
@@ -2267,6 +2507,7 @@ def _to_bspline_cases(profile: Profile) -> Iterator[Case]:
         create_from_bspline,
         lambda: create_from_bspline(non_bezier_bspline),
         {"kind": "not-bezier-like-knots"},
+        must_reject=True,  # "If the B-spline does not have Bezier-like knots"
     )
 
 
@@ -2309,6 +2550,10 @@ def _interpolate_fit_cases(profile: Profile) -> Iterator[Case]:
                         lambda r, k=k: _monomial_reproduction_failure(r, k),
                     ),
                 ),
+                # `degree` defaults to `n_pts - 1`, so `degree < n_pts` holds for every
+                # swept count including 1, the callable returns the documented shape,
+                # and the nodes are consistent -- all three refusals avoided.
+                must_succeed=True,
             )
 
             if profile is Profile.FULL and n_pts >= 3:  # noqa: PLR2004
@@ -2321,6 +2566,7 @@ def _interpolate_fit_cases(profile: Profile) -> Iterator[Case]:
                         func, n_pts, degree=low_degree
                     ),
                     {"n_pts": n_pts, "degree": low_degree, "kind": "least-squares"},
+                    must_succeed=True,  # `low_degree = n_pts - 2 < n_pts`
                 )
 
     monomial_invariant_k2 = custom(
@@ -2337,6 +2583,7 @@ def _interpolate_fit_cases(profile: Profile) -> Iterator[Case]:
             lambda values=values, node_arr=node_arr: fit_bezier(values, node_arr),
             {"n_pts": n_pts, "nodes": nodes_kind},
             invariants=(monomial_invariant_k2,),
+            must_succeed=True,  # tensor-product nodes, so `degree` is optional
         )
 
     generator = rng(18000)
@@ -2350,6 +2597,9 @@ def _interpolate_fit_cases(profile: Profile) -> Iterator[Case]:
         {"n_pts": 12, "degree": 3, "kind": "scattered"},
         invariants=(monomial_invariant_k2,),
         arrays={"pts": scattered_pts, "values": scattered_values},
+        # Scattered nodes with an explicit `degree`, and 4 coefficients for 12 samples,
+        # so the system is overdetermined rather than underdetermined.
+        must_succeed=True,
     )
 
     yield Case(
@@ -2358,6 +2608,7 @@ def _interpolate_fit_cases(profile: Profile) -> Iterator[Case]:
         fit_bezier,
         lambda: fit_bezier(scattered_values, scattered_pts),
         {"kind": "scattered-missing-degree"},
+        must_reject=True,  # "degree is required for scattered (non-tensor-product) nodes"
     )
     yield Case(
         GROUP,
@@ -2365,6 +2616,7 @@ def _interpolate_fit_cases(profile: Profile) -> Iterator[Case]:
         interpolate_bezier,
         lambda: interpolate_bezier(func, 4, degree=5),
         {"kind": "degree-exceeds-n_pts"},
+        must_reject=True,  # "degree >= n_pts"
     )
     yield Case(
         GROUP,
@@ -2372,6 +2624,7 @@ def _interpolate_fit_cases(profile: Profile) -> Iterator[Case]:
         interpolate_bezier,
         lambda: interpolate_bezier(lambda lattice: np.zeros(3), 5),
         {"kind": "bad-return-shape"},
+        must_reject=True,  # "the callable returns an unexpected shape"
     )
 
 
@@ -2432,6 +2685,17 @@ def _de_casteljau_kernel_cases(profile: Profile) -> Iterator[Case]:
                 lambda coeff=coeff: _de_casteljau_eval_scalar(coeff, 0.5),
                 {"length": length, "dtype": str(dtype), "t": 0.5},
                 arrays={"coeff": coeff},
+                # `length == 0` is the one case in this module that is deliberately
+                # *outside* the contract and so carries neither flag. This is a Layer-3
+                # kernel whose docstring says "Inputs are assumed to be correct (no
+                # validation performed)", so it owes a zero-length array nothing: the
+                # bounds-check hit it produces is the sweep proving the harness is live
+                # on a real pantr kernel, and a record for the port that this call site
+                # needs its own guard -- not a defect in the kernel. Flagging it either
+                # way would be a false claim, and neither flag could change the verdict
+                # anyway: `_core.classify` reports a Numba out-of-bounds access before
+                # it consults them. The other lengths are in contract.
+                must_succeed=length > 0,
             )
 
         coeff5 = np.linspace(-1.0, 1.0, 5, dtype=dtype)
@@ -2444,6 +2708,10 @@ def _de_casteljau_kernel_cases(profile: Profile) -> Iterator[Case]:
                 {"t": t, "dtype": str(dtype)},
                 finite_inputs=finite,
                 arrays={"coeff": coeff5},
+                # The kernel restricts `t` to nothing at all -- de Casteljau is a
+                # polynomial evaluation valid for any real parameter -- so an
+                # out-of-domain or non-finite `t` must still return.
+                must_succeed=True,
             )
 
 
@@ -2474,6 +2742,9 @@ def _bernstein_interpolate_kernel_cases(profile: Profile) -> Iterator[Case]:
                 lambda f=f: _bernstein_interpolate(f),
                 {"shape": shape, "dtype": str(dtype)},
                 arrays={"f": f},
+                # Well-formed 1-D sample arrays: `_bernstein_interpolate` validates
+                # nothing, but nothing here violates its implicit shape contract either.
+                must_succeed=True,
             )
 
         zeros = np.zeros(8, dtype=dtype)
@@ -2483,6 +2754,7 @@ def _bernstein_interpolate_kernel_cases(profile: Profile) -> Iterator[Case]:
             _bernstein_interpolate,
             lambda zeros=zeros: _bernstein_interpolate(zeros),
             {"kind": "all-zeros", "dtype": str(dtype)},
+            must_succeed=True,
         )
 
         if profile is Profile.FULL:
@@ -2495,6 +2767,7 @@ def _bernstein_interpolate_kernel_cases(profile: Profile) -> Iterator[Case]:
                 lambda outlier=outlier: _bernstein_interpolate(outlier),
                 {"kind": "huge-outlier-among-tiny", "dtype": str(dtype)},
                 arrays={"f": outlier},
+                must_succeed=True,
             )
 
         nan_f = np.linspace(0.0, 1.0, 8, dtype=dtype)
@@ -2507,6 +2780,10 @@ def _bernstein_interpolate_kernel_cases(profile: Profile) -> Iterator[Case]:
             {"kind": "nan", "dtype": str(dtype)},
             finite_inputs=False,
             arrays={"f": nan_f},
+            # No finiteness precondition is stated anywhere on this helper, so a `NaN`
+            # sample is unspecified rather than illegal: it must return, and what it
+            # returns is not graded (`finite_inputs=False`).
+            must_succeed=True,
         )
 
         f_2d = rng(19000).uniform(0.0, 1.0, (5, 4)).astype(dtype)
@@ -2517,6 +2794,7 @@ def _bernstein_interpolate_kernel_cases(profile: Profile) -> Iterator[Case]:
             lambda f_2d=f_2d: _bernstein_interpolate(f_2d),
             {"shape": (5, 4), "dtype": str(dtype)},
             arrays={"f": f_2d},
+            must_succeed=True,
         )
 
         if profile is Profile.FULL:
@@ -2528,6 +2806,7 @@ def _bernstein_interpolate_kernel_cases(profile: Profile) -> Iterator[Case]:
                 lambda f_3d=f_3d: _bernstein_interpolate(f_3d),
                 {"shape": (3, 3, 3), "dtype": str(dtype)},
                 arrays={"f": f_3d},
+                must_succeed=True,
             )
 
 
@@ -2563,6 +2842,11 @@ def _coeff_family_cases(profile: Profile) -> Iterator[Case]:
                     lambda bezier=bezier, pts=pts: bezier.evaluate(pts),
                     {"degree": degree, "dtype": str(dtype), "family": spec.name},
                     arrays={"control_points": spec.values},
+                    # Degenerate *geometry* is not an illegal input: a collapsed,
+                    # collinear or identically-zero control polygon is a well-formed
+                    # array of the right shape and dtype, and `evaluate` states no
+                    # condition on the values. Every family here must return.
+                    must_succeed=True,
                 )
 
 
@@ -2606,6 +2890,13 @@ def _rational_weight_cases(profile: Profile) -> Iterator[Case]:
                 {"weight": weight_name, "dtype": str(dtype)},
                 finite_inputs=False,
                 arrays={"control_points": cp},
+                # Deliberately unflagged, and the docstring above says why: a zero,
+                # negative or near-threshold weight is neither validated by the
+                # constructor nor documented as rejected by `evaluate`, so both a
+                # refusal and a returned `inf` are defensible. Asserting either would
+                # be inventing the contract rather than grading against it. The one
+                # thing that would settle it is a `Raises:` entry or a stated
+                # positivity precondition on the weights; neither exists.
             )
 
 

@@ -1,5 +1,13 @@
 """Probes for :mod:`pantr.geometry` and :mod:`pantr.transform`.
 
+Every case carries ``must_succeed`` or ``must_reject``: both classes state closed
+``Raises:`` lists, so each input is on one side of a stated clause or the other, and
+nothing here is a genuine contract boundary. Two verdicts are worth stating up front
+because they read as errors and are not: an **inverted** box (``hi < lo``) is legal and
+is how :class:`~pantr.geometry.AABB` represents the empty set, and an **infinite** corner
+is legal too, since the constructor documents its arguments as "array-like of
+finite-or-infinite floats" and rejects only ``NaN``.
+
 Both are pure NumPy, so the yield here is contract violations and translation
 sensitivity rather than Numba overruns: the bounding-box invariants that matter are
 that a transformed box still encloses the images of every corner, and that
@@ -97,6 +105,7 @@ def _aabb_cases(profile: Profile) -> Iterator[Case]:
                 lambda lo=lo, hi=hi: AABB(lo, hi),
                 {"ndim": ndim, "lo": lo_val, "hi": hi_val},
                 arrays={"lo": lo, "hi": hi},
+                must_succeed=True,
             )
             yield Case(
                 GROUP,
@@ -104,6 +113,7 @@ def _aabb_cases(profile: Profile) -> Iterator[Case]:
                 AABB,
                 lambda lo=lo: AABB(lo, lo),
                 {"ndim": ndim, "lo": lo_val, "kind": "collapsed"},
+                must_succeed=True,  # a zero-volume box is a box
             )
             yield Case(
                 GROUP,
@@ -111,6 +121,10 @@ def _aabb_cases(profile: Profile) -> Iterator[Case]:
                 AABB,
                 lambda lo=lo, hi=hi: AABB(hi, lo),
                 {"ndim": ndim, "kind": "inverted"},
+                # Legal, and deliberately so: the `Raises:` list covers shape mismatch,
+                # `NaN` and `ndim < 1` and says nothing about ordering, because an
+                # inverted box is how `is_empty()` reports the empty set.
+                must_succeed=True,
             )
 
             box = AABB(lo, hi)
@@ -125,6 +139,7 @@ def _aabb_cases(profile: Profile) -> Iterator[Case]:
                 invariants=(
                     custom("center-inside", lambda r: None if r else "center reported out"),
                 ),
+                must_succeed=True,  # a length-`ndim`, NaN-free point
             )
             yield Case(
                 GROUP,
@@ -145,6 +160,7 @@ def _aabb_cases(profile: Profile) -> Iterator[Case]:
                         else f"union {r} does not enclose both inputs",
                     ),
                 ),
+                must_succeed=True,  # matching `ndim`, the only thing `union` checks
             )
             yield Case(
                 GROUP,
@@ -164,6 +180,7 @@ def _aabb_cases(profile: Profile) -> Iterator[Case]:
                         else f"intersection {r} escapes both inputs",
                     ),
                 ),
+                must_succeed=True,  # matching `ndim`, as above
             )
             yield Case(
                 GROUP,
@@ -171,6 +188,9 @@ def _aabb_cases(profile: Profile) -> Iterator[Case]:
                 AABB.pad,
                 lambda box=box, lo=lo, hi=hi: box.pad(-0.75 * float(np.max(hi - lo))),
                 {"ndim": ndim, "kind": "pad-collapses-box"},
+                # Padding a box out of existence yields an inverted box, which is legal
+                # (see the `aabb_inverted` note above), not a refusal.
+                must_succeed=True,
             )
 
             if profile is Profile.FULL:
@@ -183,6 +203,7 @@ def _aabb_cases(profile: Profile) -> Iterator[Case]:
                     lambda nan_lo=nan_lo, hi=hi: AABB(nan_lo, hi),
                     {"ndim": ndim, "kind": "nan"},
                     finite_inputs=False,
+                    must_reject=True,  # "If the shapes mismatch, contain a NaN, ..."
                 )
                 inf_hi = hi.copy()
                 inf_hi[0] = np.inf
@@ -193,6 +214,10 @@ def _aabb_cases(profile: Profile) -> Iterator[Case]:
                     lambda lo=lo, inf_hi=inf_hi: AABB(lo, inf_hi),
                     {"ndim": ndim, "kind": "inf"},
                     finite_inputs=False,
+                    # An infinite corner is legal: the constructor documents
+                    # "finite-or-infinite floats" and rejects only `NaN`. This is the
+                    # case that makes `AABB.unbounded` expressible.
+                    must_succeed=True,
                 )
                 yield Case(
                     GROUP,
@@ -200,6 +225,7 @@ def _aabb_cases(profile: Profile) -> Iterator[Case]:
                     AABB,
                     lambda lo=lo, ndim=ndim: AABB(lo, np.zeros(ndim + 1)),
                     {"ndim": ndim, "kind": "shape-mismatch"},
+                    must_reject=True,  # "If the shapes mismatch, ..."
                 )
                 yield Case(
                     GROUP,
@@ -215,6 +241,7 @@ def _aabb_cases(profile: Profile) -> Iterator[Case]:
                             else f"from_bounds(as_bounds()) != original: {r} vs {box}",
                         ),
                     ),
+                    must_succeed=True,
                 )
 
                 # Transformed enclosure: the invariant a translated domain breaks first.
@@ -231,6 +258,7 @@ def _aabb_cases(profile: Profile) -> Iterator[Case]:
                         custom("encloses-corners", _encloses_transformed_corners(lo, hi, affine)),
                     ),
                     arrays={"lo": lo, "hi": hi, "matrix": matrix, "offset": affine.offset},
+                    must_succeed=True,
                 )
                 singular = np.zeros((ndim, ndim))
                 yield Case(
@@ -241,6 +269,9 @@ def _aabb_cases(profile: Profile) -> Iterator[Case]:
                         AffineTransform(singular, np.zeros(ndim))
                     ),
                     {"ndim": ndim, "kind": "singular-matrix"},
+                    # Transforming *by* a singular map is legal -- nothing inverts it --
+                    # unlike `AffineTransform.inverse`, which documents a refusal.
+                    must_succeed=True,
                 )
 
     for ndim in (0, -1):
@@ -251,6 +282,7 @@ def _aabb_cases(profile: Profile) -> Iterator[Case]:
             lambda ndim=ndim: AABB.unbounded(ndim),
             {"ndim": ndim},
             finite_inputs=False,
+            must_reject=True,  # "... or the implied ndim is less than 1"
         )
         yield Case(
             GROUP,
@@ -259,6 +291,7 @@ def _aabb_cases(profile: Profile) -> Iterator[Case]:
             lambda ndim=ndim: AABB.empty(ndim),
             {"ndim": ndim},
             finite_inputs=False,
+            must_reject=True,  # as above
         )
 
 
@@ -280,6 +313,7 @@ def _transform_cases(profile: Profile) -> Iterator[Case]:
             AffineTransform.identity,
             lambda ndim=ndim: AffineTransform.identity(ndim),
             {"ndim": ndim},
+            must_succeed=True,
         )
         yield Case(
             GROUP,
@@ -287,6 +321,7 @@ def _transform_cases(profile: Profile) -> Iterator[Case]:
             AffineTransform.inverse,
             lambda ndim=ndim: AffineTransform(np.zeros((ndim, ndim))).inverse,
             {"ndim": ndim, "kind": "singular"},
+            must_reject=True,  # "ValueError: If the matrix is singular."
         )
         yield Case(
             GROUP,
@@ -294,6 +329,7 @@ def _transform_cases(profile: Profile) -> Iterator[Case]:
             AffineTransform,
             lambda ndim=ndim: AffineTransform(np.zeros((ndim, ndim + 1))),
             {"ndim": ndim, "kind": "non-square"},
+            must_reject=True,  # "If *matrix* is not 2-D or not square."
         )
         yield Case(
             GROUP,
@@ -301,6 +337,7 @@ def _transform_cases(profile: Profile) -> Iterator[Case]:
             AffineTransform.scaling,
             lambda ndim=ndim: AffineTransform.scaling(np.zeros(ndim)),
             {"ndim": ndim, "kind": "zero-factor"},
+            must_reject=True,  # "If any factor is non-finite or zero (singular transform)."
         )
         yield Case(
             GROUP,
@@ -309,6 +346,12 @@ def _transform_cases(profile: Profile) -> Iterator[Case]:
             lambda eye=eye, ndim=ndim: AffineTransform(eye, np.full(ndim, np.nan)),
             {"ndim": ndim, "kind": "nan-translation"},
             finite_inputs=False,
+            # `__init__` refuses only a non-square matrix and a translation of the wrong
+            # length; a non-finite translation is unspecified, not illegal. Note the
+            # asymmetry with `rotation_2d` and `scaling`, which *do* document a
+            # finiteness refusal -- one more reason to grade each entry point from its
+            # own docstring rather than from a class-wide habit.
+            must_succeed=True,
         )
 
         if profile is not Profile.FULL:
@@ -333,6 +376,7 @@ def _transform_cases(profile: Profile) -> Iterator[Case]:
                     ),
                 ),
                 arrays={"matrix": matrix, "offset": offset},
+                must_succeed=True,  # `matrix` is diagonally dominant, so not singular
             )
         yield Case(
             GROUP,
@@ -341,6 +385,7 @@ def _transform_cases(profile: Profile) -> Iterator[Case]:
             lambda: AffineTransform.rotation_2d(np.nan),
             {"kind": "nan-angle"},
             finite_inputs=False,
+            must_reject=True,  # "ValueError: If *angle* is non-finite."
         )
         yield Case(
             GROUP,
@@ -348,6 +393,7 @@ def _transform_cases(profile: Profile) -> Iterator[Case]:
             AffineTransform.mirror,
             lambda ndim=ndim: AffineTransform.mirror(np.zeros(ndim)),
             {"ndim": ndim, "kind": "zero-normal"},
+            must_reject=True,  # "ValueError: If *normal* is zero or non-finite."
         )
 
 

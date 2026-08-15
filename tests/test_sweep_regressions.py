@@ -15,8 +15,15 @@ degree-elevation test, closed by allocating the kernels' knot output in the inpu
 the periodic degree-reduction hang, closed by enforcing the periodic conversion's own
 boundary-multiplicity precondition; and the degree-elevation counter mismatch, closed by
 emitting the unshared Bézier coefficient at a C^-1 knot and by letting the segment sweep
-reach the final span of a degree-0 knot vector. Three remain open, all in the tolerance
-workstream.
+reach the final span of a degree-0 knot vector.
+
+Eight remain open. Three are the tolerance workstream's. The other five come from the
+August 2026 triage of the full profile's 496 findings, which collapsed them into a dozen
+mechanisms: a root finder that certifies a value that is not a root, a restriction that
+silently returns a shorter domain than it was asked for, a Lagrange extraction that cannot
+be built on a degree-0 space its two sibling extractions handle, a change of basis that
+reports numpy's `LinAlgError` for a legal degree, and a unique-knot accessor that returns
+knots the space does not contain.
 
 One test per **root cause**, not per symptom: several of these root causes have many
 triggering combinations, and each test names them in a comment rather than repeating
@@ -44,8 +51,10 @@ from pantr.bspline import (
     BsplineSpace1D,
     create_uniform_open_knots,
     create_uniform_periodic_knots,
+    find_roots,
 )
 from pantr.bspline._bspline_degree_core import _degree_elevate_1d_core
+from pantr.change_basis import compute_cardinal_to_bernstein_1d
 from pantr.quad import get_tanh_sinh_1d
 from pantr.tolerance import get_machine_epsilon
 
@@ -601,3 +610,340 @@ def test_reduce_degree_terminates_on_a_periodic_linear_spline() -> None:
     reduced = spline.to_open_bspline().reduce_degree(1)
     assert reduced.degree[0] == 0
     assert not reduced.space.spaces[0].periodic
+
+
+# ---------------------------------------------------------------------------
+# The root finder certifies a value that is not a root
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason="find_roots accepts a _STATUS_CONVERGED iterate without ever checking its "
+    "residual, so a coincidentally-near-zero intermediate coefficient is certified as a "
+    "root",
+)
+def test_find_roots_returns_only_genuine_roots() -> None:
+    # The most serious finding of the August 2026 triage: `find_roots` returns a
+    # parameter at which the spline is not zero, silently, through the public API, on a
+    # perfectly ordinary clamped cubic on the unit domain. Nothing warns.
+    #
+    # The data below is a degree-3 clamped uniform spline on [0, 1] with four intervals
+    # and control points alternating +1/-1. It has exactly six sign changes. `find_roots`
+    # returns six values; four of them are roots to 1e-16, and two -- 0.375 and 0.625 --
+    # are not roots at all. The true zeros nearest them are at 0.369 and 0.630995, so the
+    # returned values are off by about 0.006 in the parameter and leave a residual of
+    # 0.0208 on a curve whose values are bounded by 1.
+    #
+    # The mechanism, traced through a line-for-line pure-Python mirror of
+    # `_bspline_roots_core.py` that reproduces the same wrong roots bit for bit:
+    # `_track_zero` treats a repeated iterate (`x == previous_x`) as a certificate of
+    # convergence, per Morken-Reimers Lemma 13/Corollary 14, and `_morken_reimers_roots`
+    # then gates acceptance on
+    #
+    #     accepted = residual <= zero_tol if status == _STATUS_CANDIDATE else True
+    #
+    # so for `_STATUS_CONVERGED` the residual is hard-coded to 0.0 and never compared
+    # against the actual function value. Here the first secant estimate lands on 0.375, a
+    # single Boehm insertion there produces a control coefficient that is exactly 0.0 for
+    # an algebraic reason (the symmetric alternating coefficients on exact rational
+    # Greville abscissae), the next iterate is therefore 0.375 again, and the fixed-point
+    # test fires after one step -- far from convergence. That is a theorem valid in exact
+    # arithmetic applied to a floating-point iteration where a coefficient can reach zero
+    # for reasons unrelated to being near a root.
+    #
+    # Distinct from the fabricated root closed in #291, which guarded the
+    # `x >= knots[index + degree]` branch at a C^-1 knot of multiplicity degree + 1. This
+    # knot vector has only simple interior knots and never reaches that branch.
+    #
+    # It is not a tolerance artifact and does not scale away: the same construction on
+    # [0, 5] returns 3.125 with the same residual 0.0208 against a true zero at
+    # 3.154997195131751.
+    degree = 3
+    knots = np.array([0.0, 0.0, 0.0, 0.0, 0.25, 0.5, 0.75, 1.0, 1.0, 1.0, 1.0])
+    spline = _scalar_spline(knots, degree, [1.0, -1.0, 1.0, -1.0, 1.0, -1.0, 1.0])
+
+    roots = np.asarray(find_roots(spline), dtype=np.float64).ravel()
+    assert roots.size, "precondition: the sign-alternating spline has roots to find"
+
+    # The bound is the two terms a returned root may legitimately carry, and nothing
+    # else. Evaluation: de Boor over `degree + 1` stages on coefficients of magnitude 1,
+    # so `4 * eps`. Location: `find_roots` documents `tol` as a *parametric* tolerance
+    # defaulting to `get_strict(float64) = 1e-15`, and a root located to `dt` leaves
+    # `|f'| * dt`; the hodograph bounds `|f'|` by `degree * max|delta c| / h_min`
+    # = 3 * 2 / 0.25 = 24, and the documented stopping scale here is the domain length 1.
+    # A safety factor of 8 covers the unmodelled constants of both, as elsewhere in this
+    # suite. The result is 1.99e-13, against an observed residual of 2.1e-2 -- a factor of
+    # 1.05e11, so no reasonable sharpening of this bound changes the verdict.
+    eps = get_machine_epsilon(np.float64)
+    slope_bound = degree * 2.0 / 0.25
+    bound = 8.0 * ((degree + 1) * eps + slope_bound * 1e-15)
+    residuals = np.abs(np.asarray(spline.evaluate(roots), dtype=np.float64).ravel())
+    worst = float(np.max(residuals))
+    assert worst <= bound, (
+        f"find_roots returned {roots.tolist()}; |f| there is {residuals.tolist()}, "
+        f"and the largest exceeds the derived bound {bound:.3e}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Restriction silently returns a shorter domain than it was asked for
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason="restrict adds an absolute 1e-15 to the upper bound to step past its last "
+    "copy, and that addition is a no-op once the bound reaches 16, so searchsorted "
+    "lands one clamp too early and the top of the window is cut off",
+)
+def test_restrict_spans_the_requested_window() -> None:
+    # A silent wrong answer through the public API, and the reason it stayed hidden is
+    # worth as much as the bug: `Bspline.restrict` carried no invariant in the sweep, so
+    # the case was graded only on whether it raised.
+    #
+    # `_restrict_bspline_impl` (`_bspline_restrict.py`, the extraction step) locates the
+    # end of the restricted knot vector with
+    #
+    #     i_end = int(np.searchsorted(refined_knots, b_new + tol)) - 1
+    #
+    # The `+ tol` exists to step past the last of the `degree + 1` copies of `b_new` that
+    # the preceding insertion produced. But `tol` is the space's *absolute* tolerance,
+    # `get_strict(float64) = 1e-15`, and `b_new + 1e-15 == b_new` exactly once half an ulp
+    # of `b_new` exceeds 1e-15 -- which is at `|b_new| = 16`, since ulp(x) is 1.78e-15 on
+    # [8, 16) and 3.55e-15 on [16, 32). Past that the search finds the *first* copy
+    # instead of one past the last, and `degree + 1` knots are dropped from the top.
+    #
+    # The threshold is exact and was bisected: on [0, span] with four intervals and the
+    # window at 25%/75%, span 20 (upper bound 15) is correct and span 24 (upper bound 18)
+    # is not.
+    #
+    # Two faces, and only the loud one was visible before:
+    #   * few intervals  -- the truncated vector falls below `2 * degree + 2` and
+    #     `BsplineSpace1D` raises "knots must have at least 2*degree+2 elements", blaming
+    #     the knot count for an index computed one place too low. 30 sweep findings.
+    #   * many intervals -- enough knots survive, and the call *returns a spline over the
+    #     wrong domain*. This is the half the test pins first.
+    #
+    # Attribution: this is the absolute-tolerance-versus-coordinate-magnitude family that
+    # already owns two open tests in this file, so the fix belongs with that workstream.
+    # It is recorded separately because the site and the failure mode are different --
+    # index arithmetic on a knot search, not a snapping merge -- and because a correction
+    # to `_snap_knots` would not touch it.
+    degree = 2
+    span = 100.0
+    n_intervals = 20
+    breaks = np.linspace(0.0, span, n_intervals + 1)
+    knots = np.concatenate([np.full(degree, 0.0), breaks, np.full(degree, span)])
+    space = BsplineSpace1D(knots, degree)
+    n_basis = space.num_basis
+    curve = Bspline(
+        BsplineSpace([space]), np.linspace(0.0, 1.0, n_basis, dtype=np.float64).reshape(-1, 1)
+    )
+
+    lower, upper = 0.25 * span, 0.75 * span
+    assert upper > 16.0, "precondition: the upper bound is past the 16.0 threshold"
+
+    restricted = curve.restrict((lower, upper))
+    restricted_knots = np.asarray(restricted.space.spaces[0].knots, dtype=np.float64)
+    got_upper = float(restricted_knots[restricted_knots.size - degree - 1])
+    # The endpoints are exactly representable here (25.0 and 75.0 are dyadic), so this is
+    # an equality, not a tolerance.
+    assert got_upper == upper, (
+        f"restrict((({lower}, {upper}))) returned a domain ending at {got_upper}, "
+        f"{upper - got_upper} short of the window that was asked for"
+    )
+
+    # The loud face, on the same mechanism with fewer intervals: the truncated vector is
+    # too short and the constructor blames the caller's knot count.
+    coarse_breaks = np.linspace(0.0, span, 5)
+    coarse_knots = np.concatenate([np.full(degree, 0.0), coarse_breaks, np.full(degree, span)])
+    coarse_space = BsplineSpace1D(coarse_knots, degree)
+    coarse_n = coarse_space.num_basis
+    coarse = Bspline(
+        BsplineSpace([coarse_space]),
+        np.linspace(0.0, 1.0, coarse_n, dtype=np.float64).reshape(-1, 1),
+    )
+    coarse_restricted = coarse.restrict((lower, upper))
+    assert coarse_restricted.space.spaces[0].num_basis > 0
+
+
+# ---------------------------------------------------------------------------
+# Lagrange extraction is the only one of the three that a degree-0 space defeats
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason="tabulate_Lagrange_extraction_operators reaches a change-of-basis builder "
+    "that requires degree >= 1, while the Bezier and cardinal extractions of the same "
+    "degree-0 space both succeed",
+)
+def test_lagrange_extraction_handles_a_degree_zero_space() -> None:
+    # A degree-0 `BsplineSpace1D` is legal -- the constructor accepts it, and it is what
+    # `subdivide(n, regularity=-1)` produces -- and two of its three extraction operators
+    # are perfectly happy with it. The third is not: it reaches
+    # `compute_lagrange_to_bernstein_1d`, whose documented precondition is "Must be at
+    # least 1", and the `ValueError` that surfaces ("Degree must at least 1", the
+    # message's own grammar) names a degree the caller never passed.
+    #
+    # This is a contract inconsistency rather than a numerical defect: the extraction of
+    # a piecewise-constant space is well defined -- the Lagrange basis of degree 0 is the
+    # single constant function 1, so every element operator is the 1x1 identity -- and
+    # nothing about the mathematics forces a refusal. Either the operator should be that
+    # identity, or `tabulate_Lagrange_extraction_operators` should document a degree
+    # floor its two siblings do not have. It does neither.
+    #
+    # 22 of the sweep's findings are this, spread across both dtypes and every domain, and
+    # they are all one cause: `degree == 0`. (A 23rd finding on the same entry point at
+    # degree 62 in float32 is *not* this mechanism -- it is the float32 knot-collapse
+    # already pinned by `test_snapping_keeps_knots_the_format_can_resolve` -- which is why
+    # the assertion below is at degree 0 only.)
+    space = BsplineSpace1D(np.array([0.0, 0.25, 0.5, 0.75, 1.0]), 0)
+    assert space.num_intervals == 4, "precondition: four piecewise-constant elements"
+
+    # The two that work, asserted first so a regression in them cannot be mistaken for
+    # this bug.
+    bezier = np.asarray(space.tabulate_Bezier_extraction_operators())
+    assert bezier.shape == (4, 1, 1)
+    cardinal = np.asarray(space.tabulate_cardinal_extraction_operators())
+    assert cardinal.shape[0] == 4
+
+    lagrange = np.asarray(space.tabulate_Lagrange_extraction_operators())
+    assert lagrange.shape == (4, 1, 1), (
+        f"degree-0 Lagrange extraction returned shape {lagrange.shape}, expected one "
+        f"1x1 identity per element"
+    )
+
+
+# ---------------------------------------------------------------------------
+# The cardinal change of basis raises a bare LinAlgError on a legal degree
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason="the cardinal change-of-basis builders raise numpy's LinAlgError on a legal "
+    "(degree, dtype) pair, an exception type none of them documents and which the caller "
+    "cannot tell apart from an illegal argument",
+)
+def test_cardinal_change_of_basis_reports_its_own_conditioning_limit() -> None:
+    # Found only because the August 2026 triage completed the sweep's verdict flags: with
+    # no `must_succeed`, this read as an UNDOCUMENTED_REJECTION -- a suspicion nobody had
+    # looked at -- because `numpy.linalg.LinAlgError` subclasses `ValueError` and the
+    # runner's `Raises:`-driven rule cannot see that the *reason* is undocumented. Five
+    # `basis` cases and fifteen `bspline` extraction cases are this one cause.
+    #
+    # The numerics are not in dispute. The cardinal-to-Bernstein matrix's condition number
+    # grows like 4 ** degree; measured with `numpy.linalg.cond` on the returned matrix it
+    # is 15 at degree 3, 3.5e10 at degree 10, 1.2e21 at degree 20 and 5.2e32 at degree 30,
+    # while float32 can resolve at most 1 / eps = 8.4e6. So at high degree in float32 the
+    # inverse genuinely cannot be formed, and refusing is right.
+    #
+    # What is wrong is the contract. Every one of these builders documents exactly one
+    # exception -- "ValueError: If degree is negative, dtype is not float32 or float64, or
+    # if `out` is provided and has incorrect shape or dtype" -- and then, for a degree that
+    # is not negative and a dtype that is float32, raises `LinAlgError: Singular matrix`
+    # from three frames down. The caller is told nothing about a degree limit, cannot
+    # discover one from the signature, and gets a message that describes an internal matrix
+    # rather than the argument that caused it. Either the limit belongs in the docstring
+    # with a `ValueError` that names it, or `LinAlgError` belongs in `Raises:`.
+    #
+    # The threshold measured on this machine, for `compute_cardinal_to_bernstein_1d`:
+    #
+    #   float32   degree 3, 10, 15, 20, 25, 30 -> returns    degree 40, 62 -> LinAlgError
+    #   float64   degree 3 ... 62              -> returns
+    #
+    # so the assertion below uses float32 at degree 62, well past the cliff, and pins
+    # float64 alongside it to keep the failure attributable to precision rather than to
+    # degree alone.
+    degree = 62
+
+    # float64 handles the same degree, so this is a precision limit and not a degree one.
+    reference = np.asarray(compute_cardinal_to_bernstein_1d(degree, np.float64))
+    assert reference.shape == (degree + 1, degree + 1)
+
+    try:
+        matrix = compute_cardinal_to_bernstein_1d(degree, np.float32)
+    except ValueError as exc:
+        # `LinAlgError` is a `ValueError` subclass, so this catches both. The distinction
+        # the test insists on is the one the caller has to make: a message naming the
+        # argument at fault, not numpy's internal one.
+        assert "Singular matrix" not in str(exc), (
+            f"compute_cardinal_to_bernstein_1d({degree}, float32) raised numpy's "
+            f"{type(exc).__name__}: {exc} -- the documented ValueError should name the "
+            f"degree or the precision, and `Raises:` should list whatever is thrown"
+        )
+        raise
+    assert np.asarray(matrix).shape == (degree + 1, degree + 1)
+
+
+# ---------------------------------------------------------------------------
+# The unique-knot accessor returns knots the space does not contain
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason="_get_unique_knots_and_multiplicity_impl returns the tolerance-grid-rounded "
+    "knots instead of the originals it already indexed, so a breakpoint is relocated "
+    "whenever the absolute grid is coarse relative to the knot spacing",
+)
+def test_unique_knots_are_knots_of_the_space() -> None:
+    # `get_unique_knots_and_multiplicity` is meant to *report* the distinct knots of a
+    # space. It reports different numbers. On a float32 space over [0, 1e-6] whose stored
+    # interior knots are 2.5e-7, 5.0e-7 and 7.5e-7, the accessor answers 2.0e-7, 5.0e-7
+    # and 8.0e-7 -- each moved by 20% of its own value, to a knot the space does not have.
+    #
+    # `_get_unique_knots_and_multiplicity_impl` (`_bspline_knots.py:107-110, 138`) rounds
+    # onto a grid of width `tol` to decide which knots are the same,
+    #
+    #     scale = dtype.type(1.0 / tol)
+    #     rounded_knots = np.round(knots * scale) / scale
+    #
+    # and then returns `rounded_knots[unique_rounded_knots_ids]` -- the rounded values --
+    # although `unique_rounded_knots_ids` already indexes the *original* array and
+    # `knots[...]` would have returned the knots themselves. Its sibling `_snap_knots`
+    # (`_bspline_space_1d.py:207-218`) does the same grouping and deliberately does not
+    # make this mistake: it writes back `np.mean(self._knots[mask])`, with a comment about
+    # the care being taken. The two helpers implement one idea and disagree.
+    #
+    # `tol` here is the space's absolute tolerance (`get_strict(float32) = 1e-7`), so the
+    # grid is coarse compared with a 2.5e-7 spacing and 2.5 rounds to 2 while 7.5 rounds
+    # to 8. Nothing about the input is unrepresentable: the float32 ulp at 2.5e-7 is
+    # 1.7e-14, seven orders of magnitude finer than the movement.
+    #
+    # The float64 face is milder and still wrong: 2.5e-07 comes back as
+    # 2.5000000000000004e-07, because `round(x * scale) / scale` is not the identity even
+    # when the grouping changes nothing. The accessor never returns the array it was
+    # given.
+    #
+    # Consequences, and why this outranks a reporting nuisance. The helper feeds
+    # `to_beziers`, knot insertion and removal, quasi-interpolation, and the product's
+    # breakpoint mesh. The last is what the sweep found: `Bspline.multiply` builds the
+    # product knot vector from these relocated breakpoints, so squaring a degree-2 float32
+    # spline on [0, 1e-6] returns a curve whose interior knots sit at 0.2/0.5/0.8 of the
+    # domain instead of 0.25/0.5/0.75, and which is wrong by 8.0e-2 *relative* at points
+    # nowhere near a knot. Silent, through the public API. The same operands in float64,
+    # and the same float32 operands on the unit domain, are exact to rounding -- so this
+    # is the absolute-tolerance-versus-coordinate-magnitude family, and belongs with that
+    # workstream rather than being fixed here.
+    #
+    # Found only after the probe's product invariant stopped sampling at the C^-1
+    # breakpoint: the 8% error had been sitting underneath a 15-40% artifact.
+    hi = 1e-6
+    knots = np.array([0.0, 0.0, 0.0, 0.25 * hi, 0.5 * hi, 0.75 * hi, hi, hi, hi], dtype=np.float32)
+    space = BsplineSpace1D(knots, 2)
+    stored = np.asarray(space.knots, dtype=np.float64)
+    assert np.array_equal(np.asarray(space.knots), knots), (
+        "precondition: construction leaves these knots alone -- they do not share a "
+        "snapping cell, so this is not the already-pinned `_snap_knots` merge"
+    )
+
+    unique, _ = space.get_unique_knots_and_multiplicity(in_domain=True)
+    reported = np.asarray(unique, dtype=np.float64)
+    missing = [float(x) for x in reported if not np.any(stored == np.float32(x))]
+    assert not missing, (
+        f"get_unique_knots_and_multiplicity reported {reported.tolist()}, which contains "
+        f"{missing} -- values that are not knots of the space {np.unique(stored).tolist()}"
+    )

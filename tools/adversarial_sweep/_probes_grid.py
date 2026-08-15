@@ -274,6 +274,12 @@ def _locate_roundtrip_case(
             return f"locate_many mismatch at cids {bad[:5].tolist()}"
         return None
 
+    # Being outside the grid is a documented *return value*, not a refusal:
+    # `locate` documents "Non-finite coordinates (NaN or infinity) are outside
+    # every cell" and returns None, and `locate_many` documents "-1 for points
+    # outside the grid (including points with NaN or infinite coordinates)". So
+    # every case in this helper must return; the returned value is what the
+    # invariants grade.
     yield Case(
         GROUP,
         f"{group_tag}_locate_roundtrip",
@@ -281,6 +287,7 @@ def _locate_roundtrip_case(
         run_roundtrip,
         params,
         invariants=(custom("locate-roundtrip", check_roundtrip),),
+        must_succeed=True,
     )
 
     # The domain's own lower corner, not an arbitrary cell's bounds: after refinement
@@ -305,6 +312,7 @@ def _locate_roundtrip_case(
         lambda outside=outside: grid.locate(outside),
         {**params, "kind": "far-outside"},
         invariants=(custom("outside-is-none", check_none),),
+        must_succeed=True,
     )
 
     if profile is Profile.FULL:
@@ -319,6 +327,7 @@ def _locate_roundtrip_case(
                 {**params, "kind": name},
                 invariants=(custom(f"{name}-is-none", check_none),),
                 finite_inputs=False,
+                must_succeed=True,
             )
 
     def check_all_outside(result: object) -> str | None:
@@ -337,6 +346,7 @@ def _locate_roundtrip_case(
         {**params, "kind": "nan-inf-batch"},
         invariants=(custom("nonfinite-is-minus-one", check_all_outside),),
         finite_inputs=False,
+        must_succeed=True,
     )
 
 
@@ -363,6 +373,10 @@ def _tp_construction_cases(profile: Profile) -> Iterator[Case]:
             grid = _tp_grid(ndim, domain, n_per_axis)
             params = {"ndim": ndim, "domain": domain, "n_per_axis": n_per_axis}
 
+            # Uniform breakpoints from np.linspace are strictly increasing, finite,
+            # and have >= 2 entries per axis -- every precondition __init__ states --
+            # and collect_cell_bounds documents no Raises: at all, so all three below
+            # are legal by construction.
             yield Case(
                 GROUP,
                 f"tp_construct_{tag}",
@@ -377,6 +391,7 @@ def _tp_construction_cases(profile: Profile) -> Iterator[Case]:
                         else f"num_cells={r.num_cells}, expected {n**ndim}",
                     ),
                 ),
+                must_succeed=True,
             )
 
             dom_lo, dom_hi = grid.bounds[:, 0].copy(), grid.bounds[:, 1].copy()
@@ -389,6 +404,7 @@ def _tp_construction_cases(profile: Profile) -> Iterator[Case]:
                 invariants=(
                     custom("cell-tiling", _tiling_predicate(dom_lo, dom_hi, grid.num_cells)),
                 ),
+                must_succeed=True,
             )
             yield Case(
                 GROUP,
@@ -407,19 +423,32 @@ def _tp_construction_cases(profile: Profile) -> Iterator[Case]:
                         ),
                     ),
                 ),
+                must_succeed=True,
             )
 
     if profile is not Profile.FULL:
         return
 
-    # Malformed constructions: each must be a documented rejection, not a finding.
-    yield Case(GROUP, "tp_empty_breakpoints", TensorProductGrid, lambda: TensorProductGrid([]), {})
+    # Malformed constructions: each is a documented rejection ("ValueError: If
+    # breakpoints is empty, any axis has fewer than two entries, or any axis is
+    # non-finite or not strictly increasing.", `_tensor_product_grid.py:86-89`).
+    # tp_flat_axis ([0, 0, 1]) is caught by the same strictly-increasing clause,
+    # not a separate one.
+    yield Case(
+        GROUP,
+        "tp_empty_breakpoints",
+        TensorProductGrid,
+        lambda: TensorProductGrid([]),
+        {},
+        must_reject=True,
+    )
     yield Case(
         GROUP,
         "tp_too_short_axis",
         TensorProductGrid,
         lambda: TensorProductGrid([np.array([0.0])]),
         {},
+        must_reject=True,
     )
     yield Case(
         GROUP,
@@ -428,6 +457,7 @@ def _tp_construction_cases(profile: Profile) -> Iterator[Case]:
         lambda: TensorProductGrid([np.array([0.0, np.nan, 1.0])]),
         {},
         finite_inputs=False,
+        must_reject=True,
     )
     yield Case(
         GROUP,
@@ -435,6 +465,7 @@ def _tp_construction_cases(profile: Profile) -> Iterator[Case]:
         TensorProductGrid,
         lambda: TensorProductGrid([np.array([0.0, 1.0, 0.5])]),
         {},
+        must_reject=True,
     )
     yield Case(
         GROUP,
@@ -442,6 +473,7 @@ def _tp_construction_cases(profile: Profile) -> Iterator[Case]:
         TensorProductGrid,
         lambda: TensorProductGrid([np.array([0.0, 0.0, 1.0])]),
         {},
+        must_reject=True,
     )
 
 
@@ -464,6 +496,9 @@ def _tp_uniformity_cases(profile: Profile) -> Iterator[Case]:
         tag = _grid_tag(2, domain)
         breakpoints = _uniform_breakpoints(2, domain, 4)
         exact_grid = TensorProductGrid(breakpoints)
+        # Both grids below are validly constructed and `is_uniform` is a property
+        # with no `Raises:`; the True/False verdict is graded by the invariant,
+        # not by the flag.
         yield Case(
             GROUP,
             f"tp_is_uniform_true_{tag}",
@@ -476,6 +511,7 @@ def _tp_uniformity_cases(profile: Profile) -> Iterator[Case]:
                     lambda r: None if r else "exactly-spaced grid reported non-uniform",
                 ),
             ),
+            must_succeed=True,
         )
 
         span = domain[1] - domain[0]
@@ -505,6 +541,7 @@ def _tp_uniformity_cases(profile: Profile) -> Iterator[Case]:
                 ),
             ),
             arrays={"breakpoints_axis0": perturbed[0]},
+            must_succeed=True,
         )
 
 
@@ -566,6 +603,9 @@ def _tp_neighbor_cases(profile: Profile) -> Iterator[Case]:
                             )
                 return None
 
+            # The thunk is a placeholder (`lambda: None`); the real calls happen
+            # inside the invariant, so `must_succeed` guards this case against a
+            # future refactor rather than grading anything today.
             yield Case(
                 GROUP,
                 f"tp_neighbor_symmetry_{tag}",
@@ -573,17 +613,20 @@ def _tp_neighbor_cases(profile: Profile) -> Iterator[Case]:
                 lambda: None,
                 {"ndim": ndim, "domain": domain},
                 invariants=(custom("neighbor-symmetry", check_symmetry),),
+                must_succeed=True,
             )
 
     if profile is not Profile.FULL:
         return
     grid = _tp_grid(2, (0.0, 1.0), 2)
+    # "IndexError: If cid or lfid is out of range."
     yield Case(
         GROUP,
         "tp_neighbor_lfid_out_of_range",
         TensorProductGrid.neighbor_across_facet,
         lambda: grid.neighbor_across_facet(0, 4),
         {"kind": "lfid-oob"},
+        must_reject=True,
     )
     yield Case(
         GROUP,
@@ -591,6 +634,7 @@ def _tp_neighbor_cases(profile: Profile) -> Iterator[Case]:
         TensorProductGrid.neighbor_across_facet,
         lambda: grid.neighbor_across_facet(grid.num_cells, 0),
         {"kind": "cid-oob"},
+        must_reject=True,
     )
 
 
@@ -629,6 +673,7 @@ def _tp_restrict_cases(profile: Profile) -> Iterator[Case]:
     if profile is Profile.FULL:
         selectors["single_center"] = np.array([grid.num_cells // 2])
         selectors["two_opposite_corners"] = np.array([0, grid.num_cells - 1])
+    # All ids below are in [0, num_cells).
     for name, ids in selectors.items():
         yield Case(
             GROUP,
@@ -637,12 +682,18 @@ def _tp_restrict_cases(profile: Profile) -> Iterator[Case]:
             lambda ids=ids: grid.restrict(ids),
             {"kind": name, "n_ids": int(ids.size)},
             invariants=(custom("restrict-is-pure-slice", check_exact_slice),),
+            must_succeed=True,
         )
 
     if profile is not Profile.FULL:
         return
     yield Case(
-        GROUP, "tp_restrict_empty", TensorProductGrid.restrict, lambda: grid.restrict([]), {}
+        GROUP,
+        "tp_restrict_empty",
+        TensorProductGrid.restrict,
+        lambda: grid.restrict([]),
+        {},
+        must_reject=True,  # "ValueError: If cell_ids is empty."
     )
     yield Case(
         GROUP,
@@ -650,6 +701,8 @@ def _tp_restrict_cases(profile: Profile) -> Iterator[Case]:
         TensorProductGrid.restrict,
         lambda: grid.restrict([grid.num_cells]),
         {},
+        # "IndexError: If any cell id is out of range [0, num_cells)."
+        must_reject=True,
     )
     yield Case(
         GROUP,
@@ -657,6 +710,7 @@ def _tp_restrict_cases(profile: Profile) -> Iterator[Case]:
         TensorProductGrid.restrict,
         lambda: grid.restrict(np.array([0.5])),
         {},
+        must_reject=True,  # "TypeError: If cell_ids is not integer-valued."
     )
 
 
@@ -683,6 +737,7 @@ def _uniform_grid_factory_cases(profile: Profile) -> Iterator[Case]:
                     lambda r: None if r.num_cells == 1 else f"num_cells={r.num_cells}, expected 1",
                 ),
             ),
+            must_succeed=True,
         )
         if profile is Profile.FULL and ndim > 1:
             anisotropic = tuple(range(2, 2 + ndim))
@@ -700,12 +755,21 @@ def _uniform_grid_factory_cases(profile: Profile) -> Iterator[Case]:
                         else f"cells_per_axis={r.cells_per_axis}, expected {anisotropic}",
                     ),
                 ),
+                must_succeed=True,
             )
 
     if profile is not Profile.FULL:
         return
+    # "ValueError: If bounds does not have shape (ndim, 2), any axis has lo >= hi,
+    # cells has the wrong length, or any count is < 1." The degenerate and
+    # inverted cases below are both caught by the single `lo >= hi` clause.
     yield Case(
-        GROUP, "uniform_grid_zero_cells", uniform_grid, lambda: uniform_grid([[0.0, 1.0]], 0), {}
+        GROUP,
+        "uniform_grid_zero_cells",
+        uniform_grid,
+        lambda: uniform_grid([[0.0, 1.0]], 0),
+        {},
+        must_reject=True,
     )
     yield Case(
         GROUP,
@@ -713,6 +777,7 @@ def _uniform_grid_factory_cases(profile: Profile) -> Iterator[Case]:
         uniform_grid,
         lambda: uniform_grid([[1.0, 1.0]], 2),
         {},
+        must_reject=True,
     )
     yield Case(
         GROUP,
@@ -720,6 +785,7 @@ def _uniform_grid_factory_cases(profile: Profile) -> Iterator[Case]:
         uniform_grid,
         lambda: uniform_grid([[1.0, 0.0]], 2),
         {},
+        must_reject=True,
     )
     yield Case(
         GROUP,
@@ -727,6 +793,7 @@ def _uniform_grid_factory_cases(profile: Profile) -> Iterator[Case]:
         uniform_grid,
         lambda: uniform_grid([[0.0, 1.0], [0.0, 1.0]], [2, 2, 2]),
         {},
+        must_reject=True,
     )
     yield Case(
         GROUP,
@@ -734,6 +801,7 @@ def _uniform_grid_factory_cases(profile: Profile) -> Iterator[Case]:
         uniform_grid,
         lambda: uniform_grid(np.zeros((2, 3)), 2),
         {},
+        must_reject=True,
     )
 
 
@@ -756,6 +824,7 @@ def _tensor_product_from_space_cases(profile: Profile) -> Iterator[Case]:
         tensor_product_grid,
         lambda space=space: tensor_product_grid(space),
         {"kind": "clamped"},
+        must_succeed=True,
     )
     periodic_knots = np.arange(-2, 6, dtype=np.float64)
     periodic = BsplineSpace1D(periodic_knots, 2, periodic=True)
@@ -766,6 +835,7 @@ def _tensor_product_from_space_cases(profile: Profile) -> Iterator[Case]:
         tensor_product_grid,
         lambda periodic_space=periodic_space: tensor_product_grid(periodic_space),
         {"kind": "periodic-axis"},
+        must_reject=True,  # "ValueError: If any direction of space is periodic."
     )
 
 
@@ -819,10 +889,12 @@ def _hier_construction_cases(profile: Profile) -> Iterator[Case]:
                         else f"num_cells={r.num_cells}, expected {root.num_cells}",
                     ),
                 ),
+                must_succeed=True,
             )
         if profile is Profile.FULL and ndim >= 2:  # noqa: PLR2004 -- anisotropic factor needs 2 axes
             # Alternate 2/1 per axis so every ndim gets a genuinely mixed factor
-            # (a factor of 1 means "no subdivision on that axis", which is legal).
+            # (a factor of 1 on an axis prevents subdivision in that direction,
+            # which is explicitly legal).
             anisotropic = tuple(2 if k % 2 == 0 else 1 for k in range(ndim))
             yield Case(
                 GROUP,
@@ -830,20 +902,28 @@ def _hier_construction_cases(profile: Profile) -> Iterator[Case]:
                 HierarchicalGrid,
                 lambda root=root, anisotropic=anisotropic: HierarchicalGrid(root, anisotropic),
                 {"ndim": ndim, "factor": anisotropic},
+                must_succeed=True,
             )
 
     if profile is not Profile.FULL:
         return
     root2 = _tp_grid(2, (0.0, 1.0), 2)
     yield Case(
-        GROUP, "hier_bad_root_type", HierarchicalGrid, lambda: HierarchicalGrid(object(), 2), {}
+        GROUP,
+        "hier_bad_root_type",
+        HierarchicalGrid,
+        lambda: HierarchicalGrid(object(), 2),
+        {},
+        must_reject=True,  # "TypeError: If root is not a TensorProductGrid."
     )
+    # "ValueError: If factor has the wrong length or any entry is < 1."
     yield Case(
         GROUP,
         "hier_factor_wrong_length",
         HierarchicalGrid,
         lambda: HierarchicalGrid(root2, (2, 2, 2)),
         {},
+        must_reject=True,
     )
     yield Case(
         GROUP,
@@ -851,6 +931,7 @@ def _hier_construction_cases(profile: Profile) -> Iterator[Case]:
         HierarchicalGrid,
         lambda: HierarchicalGrid(root2, 0),
         {},
+        must_reject=True,
     )
 
 
@@ -889,6 +970,9 @@ def _hier_refine_coarsen_cases(profile: Profile) -> Iterator[Case]:
                     else f"max_level={r.max_level}, expected {target_level}",
                 ),
             ),
+            # Each step refines an existing level with lo < hi inside the level's
+            # domain.
+            must_succeed=True,
         )
 
     if profile is not Profile.FULL:
@@ -918,6 +1002,9 @@ def _hier_refine_coarsen_cases(profile: Profile) -> Iterator[Case]:
                 else f"num_cells changed {r[0]} -> {r[1]} on a no-op refine",
             ),
         ),
+        # "If the intersection with active blocks at level is empty, the call is
+        # a silent no-op."
+        must_succeed=True,
     )
 
     # Coarsen exactly undoes a matching refine.
@@ -944,16 +1031,20 @@ def _hier_refine_coarsen_cases(profile: Profile) -> Iterator[Case]:
                 else f"num_cells {r[0]} -> refine -> coarsen -> {r[1]}",
             ),
         ),
+        must_succeed=True,
     )
 
     root3 = _tp_grid(2, (0.0, 1.0), 2)
     grid3 = HierarchicalGrid(root3, 2)
+    # "ValueError: If level is out of range, lo/hi have the wrong length, any
+    # lo[k] >= hi[k], or [lo, hi) falls entirely outside the level-level domain."
     yield Case(
         GROUP,
         "hier_refine_level_out_of_range",
         HierarchicalGrid.refine,
         lambda: grid3.refine(5, (0, 0), (1, 1)),
         {"kind": "level-oob"},
+        must_reject=True,
     )
     yield Case(
         GROUP,
@@ -961,6 +1052,7 @@ def _hier_refine_coarsen_cases(profile: Profile) -> Iterator[Case]:
         HierarchicalGrid.refine,
         lambda: grid3.refine(0, (1, 1), (1, 1)),
         {"kind": "lo-ge-hi"},
+        must_reject=True,
     )
     yield Case(
         GROUP,
@@ -968,6 +1060,8 @@ def _hier_refine_coarsen_cases(profile: Profile) -> Iterator[Case]:
         HierarchicalGrid.coarsen,
         lambda: (grid3.refine(0, (0, 0), (1, 1)), grid3.coarsen(0, (0, 0), (2, 2)))[-1],
         {"kind": "partially-refined-region"},
+        # "...or the region is not fully refined to exactly level level+1."
+        must_reject=True,
     )
     yield Case(
         GROUP,
@@ -975,6 +1069,7 @@ def _hier_refine_coarsen_cases(profile: Profile) -> Iterator[Case]:
         HierarchicalGrid.refine_cells,
         lambda: grid3.refine_cells([grid3.num_cells]),
         {"kind": "cid-oob"},
+        must_reject=True,  # "IndexError: If any id in cell_ids is out of range."
     )
 
 
@@ -997,7 +1092,9 @@ def _hier_bounds_cases(profile: Profile) -> Iterator[Case]:
             params = {"ndim": ndim, "target_level": target_level}
 
             # `collect_cell_bounds` docstring claims exact agreement with `cell_bounds`
-            # (`_hierarchical_grid.py:1420-1421`): bitwise check.
+            # (`_hierarchical_grid.py:1420-1421`): bitwise check. All three cases below
+            # run on a validly refined grid and none of the three methods documents a
+            # `Raises:` section.
             yield Case(
                 GROUP,
                 f"hier_collect_vs_percell_{tag}",
@@ -1010,6 +1107,7 @@ def _hier_bounds_cases(profile: Profile) -> Iterator[Case]:
                         _collect_vs_percell_predicate(grid, exact=True),
                     ),
                 ),
+                must_succeed=True,
             )
 
             dom_lo, dom_hi = root.bounds[:, 0].copy(), root.bounds[:, 1].copy()
@@ -1022,6 +1120,7 @@ def _hier_bounds_cases(profile: Profile) -> Iterator[Case]:
                 invariants=(
                     custom("cell-tiling", _tiling_predicate(dom_lo, dom_hi, grid.num_cells)),
                 ),
+                must_succeed=True,
             )
 
             # `export_cells` docstring (`_hierarchical_grid.py:1502-1516`) claims only
@@ -1034,6 +1133,7 @@ def _hier_bounds_cases(profile: Profile) -> Iterator[Case]:
                 grid.export_cells,
                 params,
                 invariants=(custom("export-cells-bound", _export_cells_predicate(grid)),),
+                must_succeed=True,
             )
 
 
@@ -1123,6 +1223,7 @@ def _hier_mask_cases(profile: Profile) -> Iterator[Case]:
             lambda level=level: grid.active_leaf_mask(level),
             {"level": level},
             invariants=(expected_shape(grid.level_cells_per_axis(level)),),
+            must_succeed=True,
         )
         yield Case(
             GROUP,
@@ -1131,16 +1232,24 @@ def _hier_mask_cases(profile: Profile) -> Iterator[Case]:
             lambda level=level: grid.subdomain_mask(level),
             {"level": level},
             invariants=(expected_shape(grid.level_cells_per_axis(level)),),
+            must_succeed=True,
         )
 
     if profile is not Profile.FULL:
         return
+    # This looks like an out-of-range case and is not: `level_cells_per_axis`
+    # documents "Must be >= 0; values above max_level are accepted and return
+    # the geometrically valid count", and its only `Raises:` is "ValueError: If
+    # level < 0". So `must_succeed`, in deliberate contrast with
+    # `active_leaf_mask`/`subdomain_mask` right below, which DO require
+    # level <= max_level.
     yield Case(
         GROUP,
         "hier_level_cells_per_axis_above_max",
         HierarchicalGrid.level_cells_per_axis,
         lambda: grid.level_cells_per_axis(grid.max_level + 5),
         {"kind": "above-max-level"},
+        must_succeed=True,
     )
     yield Case(
         GROUP,
@@ -1148,6 +1257,7 @@ def _hier_mask_cases(profile: Profile) -> Iterator[Case]:
         HierarchicalGrid.level_cells_per_axis,
         lambda: grid.level_cells_per_axis(-1),
         {"kind": "negative-level"},
+        must_reject=True,  # "ValueError: If level < 0."
     )
     yield Case(
         GROUP,
@@ -1155,6 +1265,7 @@ def _hier_mask_cases(profile: Profile) -> Iterator[Case]:
         HierarchicalGrid.active_leaf_mask,
         lambda: grid.active_leaf_mask(grid.max_level + 1),
         {"kind": "above-max-level"},
+        must_reject=True,  # "ValueError: If level is outside [0, max_level]."
     )
 
 
@@ -1199,6 +1310,9 @@ def _hier_hanging_neighbor_cases(profile: Profile) -> Iterator[Case]:
                         )
         return None
 
+    # The thunk is a placeholder (`lambda: None`); the real calls happen inside
+    # the invariant, so `must_succeed` guards this case against a future
+    # refactor rather than grading anything today.
     yield Case(
         GROUP,
         "hier_hanging_neighbors_touch",
@@ -1206,6 +1320,7 @@ def _hier_hanging_neighbor_cases(profile: Profile) -> Iterator[Case]:
         lambda: None,
         {"kind": "geometric-adjacency"},
         invariants=(custom("hanging-neighbors-touch", check_touching),),
+        must_succeed=True,
     )
 
 
@@ -1243,12 +1358,19 @@ def _hier_restrict_cases(profile: Profile) -> Iterator[Case]:
                     else f"expected HierarchicalGrid, got {type(r.grid).__name__}",  # type: ignore[attr-defined]
                 ),
             ),
+            must_succeed=True,
         )
 
     if profile is not Profile.FULL:
         return
+    # Same documented clauses as TensorProductGrid.restrict.
     yield Case(
-        GROUP, "hier_restrict_empty", HierarchicalGrid.restrict, lambda: grid.restrict([]), {}
+        GROUP,
+        "hier_restrict_empty",
+        HierarchicalGrid.restrict,
+        lambda: grid.restrict([]),
+        {},
+        must_reject=True,
     )
     yield Case(
         GROUP,
@@ -1256,6 +1378,7 @@ def _hier_restrict_cases(profile: Profile) -> Iterator[Case]:
         HierarchicalGrid.restrict,
         lambda: grid.restrict([grid.num_cells]),
         {},
+        must_reject=True,
     )
 
 
@@ -1285,6 +1408,7 @@ def _hierarchical_grid_factory_case(profile: Profile) -> Iterator[Case]:
                 else f"num_cells={r.num_cells}, expected {root.num_cells}",
             ),
         ),
+        must_succeed=True,
     )
 
 
@@ -1359,6 +1483,9 @@ def _bvh_from_grid_cases(profile: Profile) -> Iterator[Case]:
         boxes["shared_face"] = face_box
         boxes["zero_volume_point"] = AABB(cell_lo[0], cell_lo[0])
         boxes["entirely_outside"] = AABB(domain_lo - 10.0, domain_lo - 5.0)
+    # `query_aabb`'s only documented `Raises:` is "ValueError: If aabb.ndim !=
+    # self.ndim", and every box here is built at the grid's own ndim. An
+    # unbounded (inf) box is a legal AABB.
     for name, box in boxes.items():
         yield Case(
             GROUP,
@@ -1367,6 +1494,7 @@ def _bvh_from_grid_cases(profile: Profile) -> Iterator[Case]:
             lambda box=box: grid.query_aabb(box),
             {"kind": name},
             invariants=(custom("query-completeness", _bvh_query_predicate(cell_lo, cell_hi, box)),),
+            must_succeed=True,
         )
 
 
@@ -1391,13 +1519,16 @@ def _bvh_direct_construction_cases(profile: Profile) -> Iterator[Case]:
         BVH,
         lambda: BVH(lo.astype(np.float32), hi, idx, idx, cell, n_cells=1),
         {"kind": "wrong-dtype"},
+        must_reject=True,  # "TypeError: If any array has the wrong dtype."
     )
+    # "ValueError: If shapes are inconsistent, ... n_nodes != 2 * n_cells - 1 ..."
     yield Case(
         GROUP,
         "bvh_direct_shape_mismatch",
         BVH,
         lambda: BVH(lo, np.ones((2, 2)), idx, idx, cell, n_cells=1),
         {"kind": "shape-mismatch"},
+        must_reject=True,
     )
     yield Case(
         GROUP,
@@ -1405,6 +1536,7 @@ def _bvh_direct_construction_cases(profile: Profile) -> Iterator[Case]:
         BVH,
         lambda: BVH(lo, hi, idx, idx, cell, n_cells=2),
         {"kind": "n-nodes-mismatch"},
+        must_reject=True,
     )
 
 
@@ -1457,6 +1589,8 @@ def _bvh_degenerate_cases(profile: Profile) -> Iterator[Case]:
         configs["line_arrangement"] = (line_lo, line_hi)
 
     query = AABB(np.array([0.4, 0.4]), np.array([0.6, 0.6]))
+    # Every config here satisfies hi >= lo, is finite, and has ndim >= 1;
+    # `n_cells == 0` is explicitly legal and returns an empty tree.
     for name, (lo, hi) in configs.items():
         yield Case(
             GROUP,
@@ -1470,6 +1604,7 @@ def _bvh_degenerate_cases(profile: Profile) -> Iterator[Case]:
                     _bvh_n_nodes_predicate(int(lo.shape[0])),
                 ),
             ),
+            must_succeed=True,
         )
         if lo.shape[0] > 0:
             yield Case(
@@ -1479,6 +1614,7 @@ def _bvh_degenerate_cases(profile: Profile) -> Iterator[Case]:
                 lambda lo=lo, hi=hi: BVH.from_cell_bounds(lo, hi).query_aabb(query),
                 {"kind": name, "n_cells": int(lo.shape[0])},
                 invariants=(custom("query-completeness", _bvh_query_predicate(lo, hi, query)),),
+                must_succeed=True,
             )
 
     if profile is not Profile.FULL:
@@ -1491,7 +1627,15 @@ def _bvh_degenerate_cases(profile: Profile) -> Iterator[Case]:
         BVH.from_cell_bounds,
         lambda: BVH.from_cell_bounds(bad_lo, bad_hi),
         {"kind": "hi-below-lo"},
+        # "ValueError: If shapes are inconsistent, ndim is < 1, any cell has
+        # hi < lo, ..."
+        must_reject=True,
     )
+    # Still `must_reject`, though the code rejects non-finite corners at
+    # `_bvh.py:322-326` while `from_cell_bounds`'s `Raises:` section does not
+    # list non-finiteness. A NaN corner is not a box, so refusing it is right
+    # and returning would be the finding -- what is missing is the `Raises:`
+    # entry, a documentation gap rather than a reason to withhold the flag.
     yield Case(
         GROUP,
         "bvh_from_cell_bounds_nonfinite",
@@ -1499,6 +1643,7 @@ def _bvh_degenerate_cases(profile: Profile) -> Iterator[Case]:
         lambda: BVH.from_cell_bounds(np.array([[np.nan, 0.0]]), np.array([[1.0, 1.0]])),
         {"kind": "nan"},
         finite_inputs=False,
+        must_reject=True,
     )
 
 
@@ -1531,6 +1676,7 @@ def _partition_direct_cases(profile: Profile) -> Iterator[Case]:
                 else "rank 0 does not own every cell",
             ),
         ),
+        must_succeed=True,
     )
     owner_one_each = np.arange(5, dtype=np.int32)
     yield Case(
@@ -1547,16 +1693,20 @@ def _partition_direct_cases(profile: Profile) -> Iterator[Case]:
                 else "some rank does not own exactly one cell",
             ),
         ),
+        must_succeed=True,
     )
 
     if profile is not Profile.FULL:
         return
+    # "ValueError: If n_parts < 1, cell_owner is not 1D integer, or any owner is
+    # outside [-1, n_parts)."
     yield Case(
         GROUP,
         "partition_direct_zero_parts",
         Partition,
         lambda: Partition(np.zeros(3, dtype=np.int32), 0),
         {},
+        must_reject=True,
     )
     yield Case(
         GROUP,
@@ -1564,6 +1714,7 @@ def _partition_direct_cases(profile: Profile) -> Iterator[Case]:
         Partition,
         lambda: Partition(np.array([0, 1, 2], dtype=np.int32), 2),
         {},
+        must_reject=True,
     )
     yield Case(
         GROUP,
@@ -1571,6 +1722,7 @@ def _partition_direct_cases(profile: Profile) -> Iterator[Case]:
         Partition,
         lambda: Partition(np.array([0.0, 1.0]), 2),
         {},
+        must_reject=True,
     )
     part = Partition(np.array([0, 1], dtype=np.int32), 2)
     yield Case(
@@ -1579,6 +1731,7 @@ def _partition_direct_cases(profile: Profile) -> Iterator[Case]:
         Partition.owned_cells,
         lambda: part.owned_cells(5),
         {"kind": "rank-oob"},
+        must_reject=True,  # "ValueError: If rank is outside [0, n_parts)."
     )
 
 
@@ -1645,6 +1798,8 @@ def _partition_grid_cases(profile: Profile) -> Iterator[Case]:
     grid = uniform_grid([[0.0, 1.0], [0.0, 1.0]], [3, 3])
     backends = ("block", "rcb", "auto") if profile is Profile.FULL else ("auto",)
     for backend in backends:
+        # The grid is 3x3 = 9 cells and 9 = 3 * 3 factors onto the two axes, so
+        # even the "block" backend is satisfiable here.
         yield Case(
             GROUP,
             f"partition_grid_n_parts_eq_n_cells_{backend}",
@@ -1655,6 +1810,7 @@ def _partition_grid_cases(profile: Profile) -> Iterator[Case]:
                 custom("every-rank-nonempty", _every_rank_nonempty_predicate(grid.num_cells)),
                 custom("partitions-active-set", _partition_active_predicate(grid.num_cells, None)),
             ),
+            must_succeed=True,
         )
         yield Case(
             GROUP,
@@ -1666,6 +1822,7 @@ def _partition_grid_cases(profile: Profile) -> Iterator[Case]:
                 custom("every-rank-nonempty", _every_rank_nonempty_predicate(1)),
                 custom("partitions-active-set", _partition_active_predicate(1, None)),
             ),
+            must_succeed=True,
         )
 
     if profile is not Profile.FULL:
@@ -1680,13 +1837,19 @@ def _partition_grid_cases(profile: Profile) -> Iterator[Case]:
         lambda: partition_grid(grid, 1, backend="rcb", cell_active=active),
         {"backend": "rcb", "n_parts": 1, "kind": "all-but-one-inactive"},
         invariants=(custom("partitions-active-set", _partition_active_predicate(1, active)),),
+        must_succeed=True,
     )
+    # "ValueError: If n_parts < 1; if backend is unknown; if 'block' is used on
+    # a non-TensorProductGrid or with weights/activity; if n_parts cannot be
+    # factored onto the axes ('block'); ... or if n_parts exceeds the number of
+    # active cells ('rcb')."
     yield Case(
         GROUP,
         "partition_grid_zero_parts",
         partition_grid,
         lambda: partition_grid(grid, 0),
         {},
+        must_reject=True,
     )
     yield Case(
         GROUP,
@@ -1694,6 +1857,7 @@ def _partition_grid_cases(profile: Profile) -> Iterator[Case]:
         partition_grid,
         lambda: partition_grid(grid, 2, backend="nope"),
         {},
+        must_reject=True,
     )
     yield Case(
         GROUP,
@@ -1701,6 +1865,7 @@ def _partition_grid_cases(profile: Profile) -> Iterator[Case]:
         partition_grid,
         lambda: partition_grid(grid, 3, backend="block", cell_weights=np.ones(grid.num_cells)),
         {},
+        must_reject=True,
     )
     yield Case(
         GROUP,
@@ -1708,6 +1873,7 @@ def _partition_grid_cases(profile: Profile) -> Iterator[Case]:
         partition_grid,
         lambda: partition_grid(grid, 5, backend="block"),
         {"kind": "prime-part-count"},
+        must_reject=True,
     )
     yield Case(
         GROUP,
@@ -1715,6 +1881,7 @@ def _partition_grid_cases(profile: Profile) -> Iterator[Case]:
         partition_grid,
         lambda: partition_grid(grid, grid.num_cells + 1, backend="rcb"),
         {"kind": "n_parts-too-large"},
+        must_reject=True,
     )
     yield Case(
         GROUP,
@@ -1728,6 +1895,7 @@ def _partition_grid_cases(profile: Profile) -> Iterator[Case]:
                 _every_rank_nonempty_predicate(3),
             ),
         ),
+        must_succeed=True,  # "'rcb' accepts any grid."
     )
 
 
@@ -1818,6 +1986,8 @@ def _overlay_cases(profile: Profile) -> Iterator[Case]:
             ) -> tuple[TensorProductGrid, TensorProductGrid]:
                 return overlay(grid_a, grid_b), overlay(grid_b, grid_a)
 
+            # Both grids share ndim and the identical domain, so the per-axis
+            # intersection is the whole domain.
             yield Case(
                 GROUP,
                 f"overlay_symmetry_{tag}",
@@ -1825,6 +1995,7 @@ def _overlay_cases(profile: Profile) -> Iterator[Case]:
                 run,
                 {"ndim": ndim, "domain": domain},
                 invariants=(custom("overlay-symmetric", _overlay_symmetry_predicate()),),
+                must_succeed=True,
             )
             yield Case(
                 GROUP,
@@ -1838,21 +2009,39 @@ def _overlay_cases(profile: Profile) -> Iterator[Case]:
                         _overlay_containment_predicate(grid_a, grid_b),
                     ),
                 ),
+                must_succeed=True,
             )
 
     if profile is not Profile.FULL:
         return
     a = _tp_grid(2, (0.0, 1.0), 2)
     b = _tp_grid(2, (2.0, 3.0), 2)
+    # "ValueError: If the grids have different ndim, or if their domains do not
+    # overlap on some axis"
     yield Case(
-        GROUP, "overlay_disjoint_domains", overlay, lambda: overlay(a, b), {"kind": "disjoint"}
+        GROUP,
+        "overlay_disjoint_domains",
+        overlay,
+        lambda: overlay(a, b),
+        {"kind": "disjoint"},
+        must_reject=True,
     )
     c = _tp_grid(3, (0.0, 1.0), 2)
     yield Case(
-        GROUP, "overlay_ndim_mismatch", overlay, lambda: overlay(a, c), {"kind": "ndim-mismatch"}
+        GROUP,
+        "overlay_ndim_mismatch",
+        overlay,
+        lambda: overlay(a, c),
+        {"kind": "ndim-mismatch"},
+        must_reject=True,
     )
     yield Case(
-        GROUP, "overlay_wrong_type", overlay, lambda: overlay(a, object()), {"kind": "wrong-type"}
+        GROUP,
+        "overlay_wrong_type",
+        overlay,
+        lambda: overlay(a, object()),
+        {"kind": "wrong-type"},
+        must_reject=True,  # "TypeError: If either argument is not a TensorProductGrid."
     )
 
 
@@ -1891,6 +2080,7 @@ def _tags_cases(profile: Profile) -> Iterator[Case]:
         cell_round_trip,
         {"kind": "round-trip"},
         invariants=(custom("round-trip-values", check_cell_round_trip),),
+        must_succeed=True,
     )
 
     def cell_overflow() -> npt.NDArray[Any]:
@@ -1898,12 +2088,17 @@ def _tags_cases(profile: Profile) -> Iterator[Case]:
         tags.set("big", np.array([0]), np.array([1000]))
         return tags.to_dense("big", dtype=np.int8)
 
+    # "OverflowError: If any stored value cannot be represented exactly in
+    # dtype". `must_reject` is still the right flag for a non-ValueError
+    # rejection: it grades *returning*, and silently truncating 1000 to an
+    # int8 is exactly the finding.
     yield Case(
         GROUP,
         "cell_tags_to_dense_overflow",
         CellTags.to_dense,
         cell_overflow,
         {"kind": "int8-overflow"},
+        must_reject=True,
     )
 
     facets_per_cell = 4
@@ -1929,6 +2124,7 @@ def _tags_cases(profile: Profile) -> Iterator[Case]:
         facet_round_trip,
         {"kind": "round-trip"},
         invariants=(custom("round-trip-values", check_facet_round_trip),),
+        must_succeed=True,
     )
 
     def facet_overflow() -> npt.NDArray[Any]:
@@ -1942,16 +2138,20 @@ def _tags_cases(profile: Profile) -> Iterator[Case]:
         FacetTags.to_dense,
         facet_overflow,
         {"kind": "int8-overflow"},
+        must_reject=True,
     )
 
     if profile is not Profile.FULL:
         return
+    # "ValueError: If ids is not 1-D, contains duplicates, or has an id out of
+    # range"
     yield Case(
         GROUP,
         "cell_tags_duplicate_ids",
         CellTags.set,
         lambda: CellTags(num_cells).set("dup", np.array([1, 1]), np.array([1, 2])),
         {"kind": "duplicate-ids"},
+        must_reject=True,
     )
     yield Case(
         GROUP,
@@ -1959,7 +2159,10 @@ def _tags_cases(profile: Profile) -> Iterator[Case]:
         CellTags.set,
         lambda: CellTags(num_cells).set("oob", np.array([num_cells]), np.array([1])),
         {"kind": "id-oob"},
+        must_reject=True,
     )
+    # "ValueError: If keys does not have shape (M, 2), contains a duplicate or
+    # out-of-range key, ..."
     yield Case(
         GROUP,
         "facet_tags_lfid_out_of_range",
@@ -1968,6 +2171,7 @@ def _tags_cases(profile: Profile) -> Iterator[Case]:
             "oob", np.array([[0, facets_per_cell]]), np.array([1])
         ),
         {"kind": "lfid-oob"},
+        must_reject=True,
     )
     yield Case(
         GROUP,
@@ -1977,6 +2181,7 @@ def _tags_cases(profile: Profile) -> Iterator[Case]:
             "dup", np.array([[0, 0], [0, 0]]), np.array([1, 2])
         ),
         {"kind": "duplicate-keys"},
+        must_reject=True,
     )
 
 
@@ -2071,6 +2276,9 @@ def _cell_quadrature_cases(profile: Profile) -> Iterator[Case]:
             "single_cell": np.array([0]),
             "empty_selection": np.zeros(0, dtype=np.int64),
         }
+        # The empty selection is an explicitly-typed empty int64 array, which
+        # vacuously satisfies "each in [0, num_cells)"; all three below are
+        # legal.
         for name, ids in selectors.items():
             expected_lo = cell_lo_all if ids is None else cell_lo_all[ids]
             expected_hi = cell_hi_all if ids is None else cell_hi_all[ids]
@@ -2094,18 +2302,22 @@ def _cell_quadrature_cases(profile: Profile) -> Iterator[Case]:
                 )
                 if name != "empty_selection"
                 else (),
+                must_succeed=True,
             )
 
     if profile is not Profile.FULL:
         return
     grid2 = _tp_grid(2, (0.0, 1.0), 2)
     rule3 = gauss_legendre_quadrature(3, 2)
+    # "ValueError: If rule.ndim != grid.ndim, cells is not a 1D integer
+    # array-like, or any id is outside [0, num_cells)."
     yield Case(
         GROUP,
         "cell_quadrature_ndim_mismatch",
         cell_quadrature,
         lambda: cell_quadrature(grid2, rule3),
         {"kind": "ndim-mismatch"},
+        must_reject=True,
     )
     yield Case(
         GROUP,
@@ -2115,6 +2327,7 @@ def _cell_quadrature_cases(profile: Profile) -> Iterator[Case]:
             grid2, gauss_legendre_quadrature(2, 2), np.array([grid2.num_cells])
         ),
         {"kind": "cell-oob"},
+        must_reject=True,
     )
     yield Case(
         GROUP,
@@ -2122,6 +2335,7 @@ def _cell_quadrature_cases(profile: Profile) -> Iterator[Case]:
         cell_quadrature,
         lambda: cell_quadrature(grid2, gauss_legendre_quadrature(2, 2), np.array([0.5])),
         {"kind": "non-integer-cells"},
+        must_reject=True,
     )
 
 

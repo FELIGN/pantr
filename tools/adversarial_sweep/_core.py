@@ -562,6 +562,16 @@ bytecode boundary, so it interrupts a hang in a Layer-2 Python loop but **not** 
 a compiled ``nopython`` kernel, which does not return to the interpreter. A kernel that
 spins forever still hangs the sweep, and the progress line printed before each case is
 what identifies it.
+
+**The same limitation makes a slow *library* call indistinguishable from a hang, and a
+reader must not read a timeout as non-termination.** A long-running call into LAPACK or any
+other C extension does not return to the interpreter either, so both attempts run to
+completion and the retry that separates "slow" from "stuck" everywhere else cannot separate
+them here. Measured: ``Bspline.multiply`` on a degree-62 periodic spline reaches a dense
+``numpy.linalg.lstsq`` over the product space at degree 124 and **returns after 78 s**,
+having been reported as "did not terminate, on two attempts". It is slow, not stuck. Before
+recording a timeout as a hang, re-run the case with a generous budget and a
+``faulthandler`` traceback and see where it actually sits.
 """
 
 
