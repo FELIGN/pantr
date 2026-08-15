@@ -29,15 +29,20 @@ harness *could* have caught an out-of-bounds access before any result is trusted
 
 from __future__ import annotations
 
+import contextlib
 import dataclasses
 import enum
 import json
 import re
+import signal
 import sys
 import traceback
 import warnings
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from typing import TYPE_CHECKING, Any, Final, NamedTuple, TextIO
+
+if TYPE_CHECKING:
+    from contextlib import AbstractContextManager
 
 import numpy as np
 
@@ -534,6 +539,60 @@ def classify(case: Case, exc: Exception) -> tuple[Verdict, str, str]:
     return Verdict.BUG, f"unexpected:{name}", f"{name}: {message}"
 
 
+class CaseTimeout(RuntimeError):
+    """Raised when a case exceeds :data:`CASE_TIMEOUT_SECONDS`."""
+
+
+CASE_TIMEOUT_SECONDS: Final = 30.0
+"""Wall-clock budget for one case, after which it is reported as a hang.
+
+Non-termination is one of the outcomes this sweep hunts, and it needs a budget because
+the alternative is that the *sweep* hangs and nobody runs it again. Thirty seconds is far
+above what any case here legitimately needs -- the slowest, a degree-62 tabulation, is
+milliseconds -- so a case that trips it is not slow, it is stuck. That is not
+hypothetical: ``Bspline.reduce_degree(1)`` never returns on a degree-1 *periodic* spline,
+which stalled a 25952-case run indefinitely.
+
+**Limitation, stated because it matters for the port:** the alarm is delivered at a Python
+bytecode boundary, so it interrupts a hang in a Layer-2 Python loop but **not** one inside
+a compiled ``nopython`` kernel, which does not return to the interpreter. A kernel that
+spins forever still hangs the sweep, and the progress line printed before each case is
+what identifies it.
+"""
+
+
+def _timeout_guard(seconds: float) -> AbstractContextManager[None]:
+    """Build a context manager that raises :class:`CaseTimeout` after ``seconds``.
+
+    Falls back to doing nothing where ``SIGALRM`` is unavailable (Windows), since a sweep
+    without the guard is still worth running.
+
+    Args:
+        seconds (float): Wall-clock budget.
+
+    Returns:
+        AbstractContextManager[None]: The guard.
+    """
+    if not hasattr(signal, "SIGALRM"):
+        return contextlib.nullcontext()
+
+    @contextlib.contextmanager
+    def guard() -> Iterator[None]:
+        def on_alarm(signum: int, frame: object) -> None:
+            del signum, frame
+            raise CaseTimeout(f"no return after {seconds:g} s")
+
+        previous = signal.signal(signal.SIGALRM, on_alarm)
+        signal.setitimer(signal.ITIMER_REAL, seconds)
+        try:
+            yield
+        finally:
+            signal.setitimer(signal.ITIMER_REAL, 0.0)
+            signal.signal(signal.SIGALRM, previous)
+
+    return guard()
+
+
 def run_case(index: int, case: Case) -> Outcome:
     """Execute one case and classify the outcome.
 
@@ -541,7 +600,8 @@ def run_case(index: int, case: Case) -> Outcome:
     predicate usually raises because the probe is wrong, but the whole point of the
     surrounding machinery is that no single case can end the run, and an uncaught
     exception here would do exactly that: the remaining cases never execute and the
-    process exit status is indistinguishable from "findings were reported".
+    process exit status is indistinguishable from "findings were reported". A case that
+    does not return within :data:`CASE_TIMEOUT_SECONDS` is reported the same way.
 
     Args:
         index (int): Position of the case in the sweep.
@@ -553,7 +613,17 @@ def run_case(index: int, case: Case) -> Outcome:
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
         try:
-            result = case.run()
+            with _timeout_guard(CASE_TIMEOUT_SECONDS):
+                result = case.run()
+        except CaseTimeout as exc:
+            return Outcome(
+                index,
+                case,
+                Verdict.BUG,
+                "timeout",
+                f"the call did not terminate: {exc}",
+                _warning_names(caught),
+            )
         except Exception as exc:  # a sweep classifies whatever comes out, by design
             verdict, kind, detail = classify(case, exc)
             if verdict is Verdict.BUG:

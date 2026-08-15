@@ -19,6 +19,9 @@ about this exact input and nothing else.
 
 from __future__ import annotations
 
+import signal
+from types import FrameType
+
 import numpy as np
 import pytest
 
@@ -39,6 +42,20 @@ def _scalar_spline(knots: np.ndarray, degree: int, values: list[float]) -> Bspli
     """Build a scalar 1D B-spline on the given knot vector."""
     space = BsplineSpace([BsplineSpace1D(knots, degree)])
     return Bspline(space, np.asarray(values, dtype=knots.dtype).reshape(-1, 1))
+
+
+class _CallTimeout(RuntimeError):
+    """Raised by :func:`_deadline` when the guarded call does not return in time."""
+
+
+_HANG_BUDGET_SECONDS = 2.0
+"""Budget for a call that must terminate promptly.
+
+Derived from the working case rather than picked: the same reduction on the *clamped*
+equivalent of the knot vector below returns in 0.003 s, so this is 600 times the observed
+cost and cannot fire on a slow machine. It is the price the suite pays while the bug is
+open; once fixed the call returns in milliseconds and the budget is never reached.
+"""
 
 
 # ---------------------------------------------------------------------------
@@ -402,3 +419,59 @@ def test_knot_factories_agree_on_zero_intervals() -> None:
             f"create_uniform_open_knots(0, {degree}) returned {spans} interval(s): "
             f"{open_knots.tolist()}"
         )
+
+
+# ---------------------------------------------------------------------------
+# Degree reduction never returns on a periodic linear spline
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.skipif(not hasattr(signal, "SIGALRM"), reason="needs SIGALRM to bound the call")
+@pytest.mark.xfail(
+    strict=True,
+    reason="Bspline.reduce_degree(1) does not terminate on a degree-1 periodic spline",
+)
+def test_reduce_degree_terminates_on_a_periodic_linear_spline() -> None:
+    # Found by the sweep the hard way: it stalled a 25952-case run indefinitely, which is
+    # why the harness now bounds every case (`_core.CASE_TIMEOUT_SECONDS`).
+    #
+    # The trigger is exact and narrow -- periodic **and** degree 1 **and** `reduce_degree`:
+    #
+    #   degree 1, periodic,   2 / 3 / 4 / 8 intervals    -> never returns
+    #   degree 1, same knots, periodic=False             -> returns in 0.003 s
+    #   degree 1, periodic,   domain [0, 1e-6] or [0, 1] -> never returns (scale is not it)
+    #   degree 0, periodic                               -> documented ValueError (the
+    #                                                       decrement exceeds the degree)
+    #   degree 2 and 3, periodic                         -> documented ValueError (residual
+    #                                                       exceeds tolerance)
+    #
+    # So it is not a slow path, and not a tolerance loop that eventually gives up: the
+    # degrees on either side terminate, and only the periodic form of degree 1 spins. A
+    # non-terminating public call is the worst outcome in this codebase's own triage, and
+    # for the C++ port an infinite loop in a numerical routine is unrecoverable.
+    knots = np.asarray(create_uniform_periodic_knots(4, 1), dtype=np.float64)
+    space = BsplineSpace1D(knots, 1, periodic=True)
+    spline = Bspline(
+        BsplineSpace([space]),
+        np.linspace(-1.0, 1.0, 2 * space.num_basis).reshape(space.num_basis, 2),
+    )
+
+    def _expire(signum: int, frame: FrameType | None) -> None:
+        del signum, frame
+        raise _CallTimeout
+
+    previous = signal.signal(signal.SIGALRM, _expire)
+    signal.setitimer(signal.ITIMER_REAL, _HANG_BUDGET_SECONDS)
+    try:
+        spline.reduce_degree(1)
+    except _CallTimeout:
+        pytest.fail(
+            f"reduce_degree(1) on a degree-1 periodic spline did not return within "
+            f"{_HANG_BUDGET_SECONDS} s; the clamped equivalent takes 0.003 s"
+        )
+    except ValueError:
+        # A clean refusal would be a fix, not a failure: the point is that it terminates.
+        pass
+    finally:
+        signal.setitimer(signal.ITIMER_REAL, 0.0)
+        signal.signal(signal.SIGALRM, previous)
