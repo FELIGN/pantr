@@ -27,6 +27,7 @@ import os
 import pathlib
 import sys
 import tempfile
+import time
 from typing import TYPE_CHECKING, Final, TextIO
 
 if TYPE_CHECKING:
@@ -128,6 +129,30 @@ def _build_parser(group_names: tuple[str, ...]) -> argparse.ArgumentParser:
     return parser
 
 
+def _pay_jit_compilation() -> None:
+    """Compile pantr's kernels before the timed loop starts, not inside a case.
+
+    pantr compiles its kernels on a background thread at import and exposes a barrier to
+    wait on. Waiting here moves that cost outside every case's budget, so the first case
+    to touch a kernel is not charged for it -- which under ``NUMBA_BOUNDSCHECK=1`` on a
+    fresh cache is the difference between milliseconds and tens of seconds.
+
+    This is a mitigation, not the fix: the warmup covers only the kernels it touches, and
+    any other still pays on first use. :func:`adversarial_sweep._core._call_with_budget`
+    is what actually keeps a slow compile from being reported as a hang.
+    """
+    from pantr._numba_compat import wait_for_jit_warmup  # noqa: PLC0415 -- after the re-exec
+
+    start = time.perf_counter()
+    wait_for_jit_warmup()
+    print(
+        f"[sweep] pantr JIT warmup complete in {time.perf_counter() - start:.1f} s "
+        "(paid outside every case budget)",
+        file=sys.stderr,
+        flush=True,
+    )
+
+
 def _report(summary: Summary, stream: TextIO) -> None:
     """Print the human-readable summary and every finding.
 
@@ -214,6 +239,8 @@ def main(argv: list[str] | None = None) -> int:
     except CanaryError as exc:
         print(f"[sweep] CANARY FAILED: {exc}", file=sys.stderr, flush=True)
         return EXIT_HARNESS_UNUSABLE
+
+    _pay_jit_compilation()
 
     profile = Profile.SMOKE if args.profile == "smoke" else Profile.FULL
     groups = tuple(args.group) if args.group else tuple(GROUPS)

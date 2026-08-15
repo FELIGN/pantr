@@ -544,14 +544,18 @@ class CaseTimeout(RuntimeError):
 
 
 CASE_TIMEOUT_SECONDS: Final = 30.0
-"""Wall-clock budget for one case, after which it is reported as a hang.
+"""Wall-clock budget for **one attempt** at a case; two expiries make it a hang.
 
 Non-termination is one of the outcomes this sweep hunts, and it needs a budget because
-the alternative is that the *sweep* hangs and nobody runs it again. Thirty seconds is far
-above what any case here legitimately needs -- the slowest, a degree-62 tabulation, is
-milliseconds -- so a case that trips it is not slow, it is stuck. That is not
+the alternative is that the *sweep* hangs and nobody runs it again. That is not
 hypothetical: ``Bspline.reduce_degree(1)`` never returns on a degree-1 *periodic* spline,
-which stalled a 25952-case run indefinitely.
+and stalled a 25952-case run indefinitely.
+
+The value is deliberately **not** load-bearing, because it cannot be: a budget that
+separates "slow" from "stuck" by magnitude alone has to be tuned to a machine, and the
+first call into any kernel pays LLVM codegen that is far larger than the work itself
+(16.6 s against 0.000 s here). :func:`_call_with_budget` does the separating instead, by
+retrying once; thirty seconds is then merely a generous allowance for one compile.
 
 **Limitation, stated because it matters for the port:** the alarm is delivered at a Python
 bytecode boundary, so it interrupts a hang in a Layer-2 Python loop but **not** one inside
@@ -593,6 +597,43 @@ def _timeout_guard(seconds: float) -> AbstractContextManager[None]:
     return guard()
 
 
+def _call_with_budget(case: Case) -> Any:  # noqa: ANN401 -- returns whatever the entry point does
+    """Run a case's thunk under the timeout, retrying once if the first attempt expires.
+
+    The retry is what makes the budget's absolute value stop mattering, and it is not an
+    optimization -- without it the harness reports a *hang* that is really a slow compile.
+    The first call into any Numba kernel pays LLVM codegen, and under
+    ``NUMBA_BOUNDSCHECK=1`` on a fresh cache that is expensive: measured at **16.6 s** for
+    the first ``tabulate_bernstein_1d`` call on the development machine against **0.000 s**
+    for the second, a ratio of 8.7e5. Whichever case happens to reach a kernel first is
+    charged the whole of it, so on a machine slower at codegen a perfectly healthy case
+    blows any fixed budget -- which is exactly what happened on CI, where a degree-0
+    Bernstein tabulation was reported as a 30 s hang.
+
+    Retrying separates the two by observation rather than by a constant tuned to one
+    machine: compilation is paid once, so the second attempt is fast, while a genuine
+    non-termination expires again. The cost is that a real hang takes
+    ``2 * CASE_TIMEOUT_SECONDS`` to report, which is the right trade -- hangs are rare and
+    a false one is far more expensive than a slow one.
+
+    Args:
+        case (Case): The case to run.
+
+    Returns:
+        Any: Whatever the entry point returned.
+
+    Raises:
+        CaseTimeout: If the call expires twice, i.e. it genuinely does not terminate.
+    """
+    try:
+        with _timeout_guard(CASE_TIMEOUT_SECONDS):
+            return case.run()
+    except CaseTimeout:
+        pass
+    with _timeout_guard(CASE_TIMEOUT_SECONDS):
+        return case.run()
+
+
 def run_case(index: int, case: Case) -> Outcome:
     """Execute one case and classify the outcome.
 
@@ -601,7 +642,8 @@ def run_case(index: int, case: Case) -> Outcome:
     surrounding machinery is that no single case can end the run, and an uncaught
     exception here would do exactly that: the remaining cases never execute and the
     process exit status is indistinguishable from "findings were reported". A case that
-    does not return within :data:`CASE_TIMEOUT_SECONDS` is reported the same way.
+    does not terminate is reported the same way, on the terms
+    :func:`_call_with_budget` sets.
 
     Args:
         index (int): Position of the case in the sweep.
@@ -613,15 +655,14 @@ def run_case(index: int, case: Case) -> Outcome:
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
         try:
-            with _timeout_guard(CASE_TIMEOUT_SECONDS):
-                result = case.run()
+            result = _call_with_budget(case)
         except CaseTimeout as exc:
             return Outcome(
                 index,
                 case,
                 Verdict.BUG,
                 "timeout",
-                f"the call did not terminate: {exc}",
+                f"the call did not terminate, on two attempts: {exc}",
                 _warning_names(caught),
             )
         except Exception as exc:  # a sweep classifies whatever comes out, by design
