@@ -316,3 +316,50 @@ jobs:
         run: |
           . .venv/bin/activate
           mpiexec --oversubscribe -n 3 python -m pytest tests/mpi/ --no-cov -p no:cacheprovider
+
+  adversarial-sweep:
+    name: Adversarial sweep (Numba bounds check)
+    needs: [lint, type-check]
+    runs-on: ubuntu-latest
+    # The only job that compiles the Layer-3 kernels with bounds checking on. It needs a
+    # job of its own because NUMBA_BOUNDSCHECK is not part of the Numba cache key, so it is
+    # silently ignored for a cache=True kernel that was already compiled without it -- and
+    # every pantr kernel is cache=True. The test hands the sweep a fresh cache directory
+    # per run, which means recompiling everything it touches, hence the separate job rather
+    # than a step in `tests`. PANTR_RUN_SWEEP enables the otherwise-skipped test.
+    env:
+      PANTR_RUN_SWEEP: "1"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Python
+        id: setup-python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: "pip"
+          cache-dependency-path: |
+            pyproject.toml
+
+      - name: Cache virtualenv
+        id: cache-venv
+        uses: actions/cache@v5
+        with:
+          path: .venv
+          key: ${{ runner.os }}-venv-${{ steps.setup-python.outputs.python-version }}-sweep-${{ hashFiles('pyproject.toml') }}
+          restore-keys: |
+            ${{ runner.os }}-venv-${{ steps.setup-python.outputs.python-version }}-sweep-
+
+      - name: Create venv and install (on cache miss)
+        if: steps.cache-venv.outputs.cache-hit != 'true'
+        run: |
+          python -m venv .venv
+          . .venv/bin/activate
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+
+      - name: Run the bounds-checked smoke sweep
+        run: |
+          . .venv/bin/activate
+          python -m pytest tests/test_adversarial_sweep.py -v --no-cov -p no:cacheprovider
