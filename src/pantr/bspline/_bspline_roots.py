@@ -19,13 +19,19 @@ from the *input* dtype: a float32 spline carries float32-level information, and
 a residual below that level cannot be distinguished from zero no matter how the
 iteration is carried out.
 
-**What is found.** Every zero where the spline changes sign is found; that is
-the guarantee the control polygon supports, since a spline whose coefficients
-have no sign change has no zeros at all. A zero of even multiplicity does not
-change the sign of the spline, so the sign changes that bracket it disappear
-under refinement and it cannot be certified from the polygon alone. Those are
-reported through a residual test instead (``|f(x)| <= zero_tol``), which is the
-same test that decides the two domain endpoints.
+**What is found.** The control polygon says where to look: a spline whose
+coefficients have no sign change has no zeros at all, so every zero where the
+spline changes sign is bracketed by a sign change and is searched for. What it
+does not do is certify. The tracking of a sign change stops for three different
+reasons, and none of them implies that the point it stopped at is a zero, so a
+value reaches the result only when its residual ``|f(x)|`` is within what a zero
+may legitimately leave behind: the error of evaluating the spline, plus the value
+the spline reaches at the parametric resolution the iteration stops at,
+``|f'| * 2 * tol * scale``. That residual test is the only way a zero of even
+multiplicity can be reported at all, since the sign changes bracketing it
+disappear under refinement. The two domain endpoints are decided on the
+evaluation error alone, being read straight off a coefficient with no location
+error to allow for.
 """
 
 from __future__ import annotations
@@ -58,10 +64,17 @@ _INSERTIONS_PER_DEGREE: int = 8
 """Extra insertions granted per unit of degree.
 
 The error is quadratic once per ``degree - 1`` insertions and not once per
-insertion (Mørken-Reimers, Theorem 22), so a simple zero needs roughly six
-quadratic steps of ``degree - 1`` insertions each to reach machine precision.
-Eight per degree leaves a margin over the worst case measured on random splines
-(173 insertions at degree 25, against a budget of 256).
+insertion (Mørken-Reimers, Theorem 22), so a zero the theorem covers needs
+roughly six quadratic steps of ``degree - 1`` insertions each to reach machine
+precision. Eight per degree leaves a margin over the worst case measured on
+random splines (173 insertions at degree 25, against a budget of 256).
+
+The theorem's hypotheses are ``f'(z) != 0`` **and** ``f''(z) != 0``, not simplicity
+alone: a simple zero with a vanishing second derivative is outside it, and so is
+every multiple zero. Nothing rests on the hypotheses holding, since the budget is
+soft -- exhausting it stops the tracking with ``_STATUS_BUDGET`` and leaves the
+residual to decide -- but the quadratic-step count that sizes the budget is only
+justified where they do.
 """
 
 _CURVATURE_DEGREE: int = 2
@@ -74,6 +87,21 @@ Matches the factor applied to the de Casteljau bound in
 ``pantr.bezier._clipping_core``; de Boor's algorithm combines the same
 ``degree + 1`` coefficients through the same number of convex-combination
 levels, so the bound has the same shape.
+"""
+
+_STOP_SLACK: float = 2.0
+"""How far a reported zero may sit from the true one, in units of the stopping spread.
+
+The tracking stops when the last ``degree`` iterates span less than ``tol * scale``.
+Mørken and Reimers bound the *convergence rate* but not the distance from the last
+iterate to the limit at an arbitrary stopping point, so this is **observed, not
+proved**: the spread bounds how far the iterates still move, and one further step of
+the same size covers the tail. Two is what
+``test_residual_at_every_root_is_within_the_evaluation_bound`` measures the residual
+against over 240 random splines at four parametric scales, and what
+``test_no_returned_value_escapes_the_residual_certificate`` clears by a factor of five
+on the families that break this method. Being an estimate, it is used with the safety
+factors those tests carry rather than as a bound in its own right.
 """
 
 
@@ -178,6 +206,50 @@ def _check_connected(
         raise ValueError(msg)
 
 
+def _slope_bound(
+    coeffs: npt.NDArray[np.float64],
+    knots: npt.NDArray[np.float64],
+    degree: int,
+) -> float:
+    """Bound ``|f'|`` over the whole parametric domain, from the hodograph.
+
+    The derivative of a spline is the spline of degree ``degree - 1`` whose
+    coefficients are ``degree * (c[i] - c[i-1]) / (t[i+degree] - t[i])``, and a spline
+    never leaves the range of its own coefficients, so the largest of those difference
+    quotients bounds ``|f'|`` everywhere.
+
+    A zero-length denominator is skipped rather than read as an infinite slope. It occurs
+    only at a knot of multiplicity ``degree + 1``, where the spline jumps and no finite
+    slope describes it; an infinite bound there would turn the residual test into an
+    unconditional accept, which is the defect this whole threshold exists to prevent, and
+    the jump itself is rejected on its own residual. At least one denominator is always
+    positive: an open knot vector carries exactly ``degree + 1`` copies of the start, so
+    ``knots[degree + 1] > knots[1]``.
+
+    The bound is over the whole domain, where the threshold it feeds is applied at one
+    zero at a time. A spline with one steep region therefore gets a threshold as loose
+    everywhere as that region needs, which errs towards accepting rather than towards
+    rejecting a genuine zero. Sharpening it to the knot span holding the zero is a
+    tolerance-policy question and is *not* a matter of computing the same quantity on the
+    working window: after a hundred insertions the local knot gaps there are degenerate
+    and the same formula returns a bound larger than the spline's own range.
+
+    Args:
+        coeffs (npt.NDArray[np.float64]): Scalar B-spline coefficients.
+        knots (npt.NDArray[np.float64]): Open knot vector.
+        degree (int): Polynomial degree, at least 1.
+
+    Returns:
+        float: An upper bound on ``|f'|`` over the domain. Zero for a spline whose
+        coefficients are all equal, which is the correct bound for a constant.
+    """
+    num_coeffs = coeffs.shape[0]
+    gaps = knots[degree + 1 : num_coeffs + degree] - knots[1:num_coeffs]
+    usable = gaps > 0.0
+    quotients = np.abs(np.diff(coeffs))[usable] / gaps[usable]
+    return float(degree * quotients.max())
+
+
 def _merge_radii(  # noqa: PLR0913
     numerator: Bspline,
     roots: npt.NDArray[np.float64],
@@ -234,6 +306,45 @@ def _merge_radii(  # noqa: PLR0913
     return np.asarray(np.maximum(np.minimum(radius, cap), floor), dtype=np.float64)
 
 
+def _merge_certified(
+    numerator: Bspline,
+    roots: npt.NDArray[np.float64],
+    radii: npt.NDArray[np.float64],
+    *,
+    root_tol: float,
+) -> npt.NDArray[np.float64]:
+    """Collapse repeated reports of one zero, keeping only the merges that are zeros.
+
+    The midpoint of a run is a value nobody tracked, so it inherits no certificate from
+    the reports it replaces and takes the same residual test they did. Where it fails,
+    the run was not one zero seen several times: the reports are kept as they were, each
+    already certified on its own.
+
+    Without that test a single over-wide radius is enough to return a value that is not a
+    root, which is what happens at high degree: the cap ``domain_length * (degree! *
+    zero_tol / coeff_scale) ** (1 / degree)`` grows with degree and passes the whole
+    domain around degree 17, and runs are joined on the *larger* of two radii, so one
+    such radius joins every later root into its own run.
+
+    Args:
+        numerator (Bspline): Scalar, non-rational spline whose zeros are sought.
+        roots (npt.NDArray[np.float64]): Ascending root candidates.
+        radii (npt.NDArray[np.float64]): Per-root merge radius, same length.
+        root_tol (float): Residual below which a value counts as a zero.
+
+    Returns:
+        npt.NDArray[np.float64]: Ascending roots, with every certified run collapsed to
+        its midpoint and every other run left as it was.
+    """
+    merged, labels, n_merged = _merge_roots(roots, radii)
+    merged = merged[:n_merged]
+    residuals = np.abs(np.asarray(numerator.evaluate(merged), dtype=np.float64).reshape(-1))
+    certified = residuals <= root_tol
+    if bool(np.all(certified)):
+        return np.ascontiguousarray(merged)
+    return np.sort(np.concatenate((merged[certified], roots[~certified[labels]])))
+
+
 def _find_roots_impl(
     bspline: Bspline,
     *,
@@ -276,15 +387,38 @@ def _find_roots_impl(
     zero_tol = coeff_scale * max((degree + 1) * _ZERO_TOL_SAFETY * epsilon, resolved_tol)
     _check_connected(coeffs, knots, degree, zero_tol)
 
-    wait_for_jit_warmup()
-    raw, count, truncated = _morken_reimers_roots(
-        knots, degree, coeffs, resolved_tol, zero_tol, _max_insertions(degree)
+    # What a *tracked* iterate may leave behind, as opposed to a value read straight off
+    # a coefficient. `zero_tol` is the error of evaluating the spline, and on its own it
+    # rejects the genuine zeros of a steep one: the iteration stops at a parametric
+    # resolution of `_STOP_SLACK * tol * scale`, and a zero located to that much leaves
+    # `|f'|` times it behind however exactly the spline is then evaluated. Both terms are
+    # values of the spline, so the sum transforms correctly under a change of either
+    # scale: the second is a slope times a length.
+    domain_length = float(knots[coeffs.shape[0]] - knots[degree])
+    parametric_scale = max(abs(float(knots[degree])), abs(float(knots[coeffs.shape[0]])))
+    parametric_scale = max(parametric_scale, domain_length)
+    root_tol = zero_tol + _STOP_SLACK * _slope_bound(coeffs, knots, degree) * (
+        resolved_tol * parametric_scale
     )
+
+    wait_for_jit_warmup()
+    raw, count, truncated, abandoned = _morken_reimers_roots(
+        knots, degree, coeffs, resolved_tol, zero_tol, root_tol, _max_insertions(degree)
+    )
+    budget = _max_insertions(degree)
     if truncated > 0:
         warnings.warn(
             f"{truncated} of {count} roots exhausted their insertion budget of "
-            f"{_max_insertions(degree)} before the iterates stagnated; they are "
-            "reported at the last iterate reached",
+            f"{budget} before the iterates stagnated; they are reported at the last "
+            "iterate reached, so they may be less accurate than tol asks for",
+            RuntimeWarning,
+            stacklevel=3,
+        )
+    if abandoned > 0:
+        warnings.warn(
+            f"{abandoned} sign changes exhausted their insertion budget of {budget} "
+            f"without the residual ever falling to {root_tol:.3e}, so they are not "
+            "reported; the result may be missing a root",
             RuntimeWarning,
             stacklevel=3,
         )
@@ -297,11 +431,10 @@ def _find_roots_impl(
             roots,
             zero_tol=zero_tol,
             coeff_scale=coeff_scale,
-            domain_length=float(knots[coeffs.shape[0]] - knots[degree]),
+            domain_length=domain_length,
             tol=resolved_tol,
         )
-        merged, n_merged = _merge_roots(roots, radii)
-        roots = np.ascontiguousarray(merged[:n_merged])
+        roots = _merge_certified(numerator, roots, radii, root_tol=root_tol)
 
     roots.flags.writeable = False
     return roots
@@ -372,15 +505,31 @@ def find_roots(
 
     Warns:
         RuntimeWarning: If a zero exhausted its insertion budget before the
-            iterates stagnated. The last iterate reached is reported.
+            iterates stagnated, in which case the last iterate reached is
+            reported and may be less accurate than ``tol`` asks for; and,
+            separately, if a sign change exhausted that budget without its
+            residual ever certifying it, in which case it is not reported at all
+            and the result may be missing a root.
 
     Note:
-        Zeros where the spline changes sign are always found. A zero of even
-        multiplicity does not change the sign of the spline, so the sign changes
-        of the control polygon that bracket it vanish under refinement and it
-        cannot be certified from the polygon; it is reported only when the
-        residual there satisfies ``|f(x)| <= zero_tol``, with ``zero_tol`` the
-        de Boor evaluation-error bound of the spline.
+        A value is reported only when the residual there is within what a zero
+        may legitimately leave behind: the de Boor evaluation-error bound of the
+        spline, plus ``|f'| * 2 * tol * scale``, the value the spline reaches at
+        the parametric resolution the iteration stops at. The control polygon
+        says where to look and never certifies on its own: the tracking of a sign
+        change stops for three different reasons, and none of them implies that
+        the point it stopped at is a zero. The residual test is also the only way
+        a zero of even multiplicity is reported, since it does not change the
+        sign of the spline and the sign changes bracketing it vanish under
+        refinement.
+
+        At a knot of multiplicity ``degree + 1`` the spline is discontinuous, and
+        a zero of the piece on either side is reported at the knot. Evaluating
+        there returns the *right* limit, so such a root can show a residual as
+        large as the jump when the zero belongs to the left piece. Extracting the
+        Bézier segments and solving each of them
+        (:func:`pantr.bezier.find_roots`) reports the same knot for the same
+        reason.
 
     Example:
         >>> import numpy as np

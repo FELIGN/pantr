@@ -7,23 +7,24 @@ XPASS failure, and the marker comes off, promoting the test to a permanent guard
 same data. That is the convention ``tests/test_review_regressions.py`` follows for the
 June 2026 review, whose markers have all since been removed.
 
-Six markers have already come off here: the domain-membership test, closed by the
+Seven markers have already come off here: the domain-membership test, closed by the
 ``np.isclose`` tolerance-leak fix in #289; the tanh-sinh endpoint test, closed by
 truncating the rule where the endpoint gap stops being resolvable; the Lagrange
 reproducibility test, closed by seeding the barycentric node permutation; the float32
 degree-elevation test, closed by allocating the kernels' knot output in the input's dtype;
 the periodic degree-reduction hang, closed by enforcing the periodic conversion's own
-boundary-multiplicity precondition; and the degree-elevation counter mismatch, closed by
+boundary-multiplicity precondition; the degree-elevation counter mismatch, closed by
 emitting the unshared Bézier coefficient at a C^-1 knot and by letting the segment sweep
-reach the final span of a degree-0 knot vector.
+reach the final span of a degree-0 knot vector; and the root finder that certified a value
+that is not a root, closed by evaluating the residual on every exit of the tracking and by
+holding the repeated-iterate stop to Corollary 14's actual hypothesis.
 
-Eight remain open. Three are the tolerance workstream's. The other five come from the
+Seven remain open. Three are the tolerance workstream's. The other four come from the
 August 2026 triage of the full profile's 496 findings, which collapsed them into a dozen
-mechanisms: a root finder that certifies a value that is not a root, a restriction that
-silently returns a shorter domain than it was asked for, a Lagrange extraction that cannot
-be built on a degree-0 space its two sibling extractions handle, a change of basis that
-reports numpy's `LinAlgError` for a legal degree, and a unique-knot accessor that returns
-knots the space does not contain.
+mechanisms: a restriction that silently returns a shorter domain than it was asked for, a
+Lagrange extraction that cannot be built on a degree-0 space its two sibling extractions
+handle, a change of basis that reports numpy's `LinAlgError` for a legal degree, and a
+unique-knot accessor that returns knots the space does not contain.
 
 One test per **root cause**, not per symptom: several of these root causes have many
 triggering combinations, and each test names them in a comment rather than repeating
@@ -617,47 +618,54 @@ def test_reduce_degree_terminates_on_a_periodic_linear_spline() -> None:
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="find_roots accepts a _STATUS_CONVERGED iterate without ever checking its "
-    "residual, so a coincidentally-near-zero intermediate coefficient is certified as a "
-    "root",
-)
 def test_find_roots_returns_only_genuine_roots() -> None:
-    # The most serious finding of the August 2026 triage: `find_roots` returns a
-    # parameter at which the spline is not zero, silently, through the public API, on a
-    # perfectly ordinary clamped cubic on the unit domain. Nothing warns.
+    # FIXED, and kept as a regression guard with its original triggering data per this
+    # repository's convention that the fix PR un-xfails the tests it closes. It took two
+    # changes, and the second is what keeps the first from being a cure worse than the
+    # disease.
+    #
+    # What it was, the most serious finding of the August 2026 triage: `find_roots`
+    # returned a parameter at which the spline is not zero, silently, through the public
+    # API, on a perfectly ordinary clamped cubic on the unit domain. Nothing warned.
     #
     # The data below is a degree-3 clamped uniform spline on [0, 1] with four intervals
     # and control points alternating +1/-1. It has exactly six sign changes. `find_roots`
-    # returns six values; four of them are roots to 1e-16, and two -- 0.375 and 0.625 --
-    # are not roots at all. The true zeros nearest them are at 0.369 and 0.630995, so the
-    # returned values are off by about 0.006 in the parameter and leave a residual of
+    # returned six values; four of them were roots to 1e-16, and two -- 0.375 and 0.625 --
+    # were not roots at all. The true zeros nearest them are at 0.369 and 0.630995, so the
+    # returned values were off by about 0.006 in the parameter and left a residual of
     # 0.0208 on a curve whose values are bounded by 1.
     #
     # The mechanism, traced through a line-for-line pure-Python mirror of
-    # `_bspline_roots_core.py` that reproduces the same wrong roots bit for bit:
-    # `_track_zero` treats a repeated iterate (`x == previous_x`) as a certificate of
+    # `_bspline_roots_core.py` that reproduced the same wrong roots bit for bit:
+    # `_track_zero` treated a repeated iterate (`x == previous_x`) as a certificate of
     # convergence, per Morken-Reimers Lemma 13/Corollary 14, and `_morken_reimers_roots`
-    # then gates acceptance on
+    # then gated acceptance on
     #
     #     accepted = residual <= zero_tol if status == _STATUS_CANDIDATE else True
     #
-    # so for `_STATUS_CONVERGED` the residual is hard-coded to 0.0 and never compared
+    # so for `_STATUS_CONVERGED` the residual was hard-coded to 0.0 and never compared
     # against the actual function value. Here the first secant estimate lands on 0.375, a
     # single Boehm insertion there produces a control coefficient that is exactly 0.0 for
     # an algebraic reason (the symmetric alternating coefficients on exact rational
     # Greville abscissae), the next iterate is therefore 0.375 again, and the fixed-point
-    # test fires after one step -- far from convergence. That is a theorem valid in exact
+    # test fired after one step -- far from convergence. That is a theorem valid in exact
     # arithmetic applied to a floating-point iteration where a coefficient can reach zero
     # for reasons unrelated to being near a root.
+    #
+    # The fix makes every exit of `_track_zero` hand back `|f(x)|` and gates acceptance on
+    # that residual uniformly, so a status records how the iteration stopped and never
+    # whether the value may be reported. On its own that only makes the answer sound: it
+    # drops 0.375 and 0.625 and reports four roots where there are six. The second change
+    # restores the two: the repeated-iterate stop now tests Corollary 14's actual
+    # hypothesis, `degree - 1` active knots collapsed onto the iterate, rather than the
+    # bare repetition that a nearly horizontal control-polygon secant also produces.
     #
     # Distinct from the fabricated root closed in #291, which guarded the
     # `x >= knots[index + degree]` branch at a C^-1 knot of multiplicity degree + 1. This
     # knot vector has only simple interior knots and never reaches that branch.
     #
-    # It is not a tolerance artifact and does not scale away: the same construction on
-    # [0, 5] returns 3.125 with the same residual 0.0208 against a true zero at
+    # It was not a tolerance artifact and did not scale away: the same construction on
+    # [0, 5] returned 3.125 with the same residual 0.0208 against a true zero at
     # 3.154997195131751.
     degree = 3
     knots = np.array([0.0, 0.0, 0.0, 0.0, 0.25, 0.5, 0.75, 1.0, 1.0, 1.0, 1.0])
@@ -684,6 +692,23 @@ def test_find_roots_returns_only_genuine_roots() -> None:
         f"find_roots returned {roots.tolist()}; |f| there is {residuals.tolist()}, "
         f"and the largest exceeds the derived bound {bound:.3e}"
     )
+
+    # Guard the other side too, which the original xfail did not: an xfail is satisfied by
+    # *any* failure, so returning four roots instead of six would have satisfied it while
+    # losing two genuine zeros. The six below were obtained independently of this method,
+    # by a two-million-point sign scan of the spline followed by bisection to convergence;
+    # `1e-15` is the parametric tolerance `find_roots` documents, and the domain length is
+    # 1, so a root is placed to that much and the comparison needs no safety factor beyond
+    # the eight this suite uses elsewhere.
+    expected = [
+        0.06279438346444505,
+        0.200641357614461,
+        0.36900056097364975,
+        0.6309994390263503,
+        0.799358642385539,
+        0.9372056165355549,
+    ]
+    np.testing.assert_allclose(roots, expected, rtol=0.0, atol=8.0 * 1e-15)
 
 
 # ---------------------------------------------------------------------------
