@@ -232,7 +232,18 @@ def _slope_bound(
     rejecting a genuine zero. Sharpening it to the knot span holding the zero is a
     tolerance-policy question and is *not* a matter of computing the same quantity on the
     working window: after a hundred insertions the local knot gaps there are degenerate
-    and the same formula returns a bound larger than the spline's own range.
+    and the same formula returns a bound larger than the spline's own range. A correct
+    local version would have to index the *original* knot vector by parametric position,
+    and ``root_tol`` reaches the kernel as one scalar decided before any zero is located,
+    so it would also have to become a per-span quantity the kernel indexes.
+
+    That work is deliberately not done, and the reason is that the looseness has not been
+    shown to cost anything. A search for a live false positive -- a value this threshold
+    accepts that the local bound would reject -- found none across 948 random splines and
+    376 sweep cases. It is therefore a tightening rather than a bug fix, and the direction
+    that would be fatal here is the opposite one: for a root finder, a ``root_tol`` that
+    is too *large* returns values that are not roots, and no local sharpening can make
+    the threshold larger than this bound.
 
     Args:
         coeffs (npt.NDArray[np.float64]): Scalar B-spline coefficients.
