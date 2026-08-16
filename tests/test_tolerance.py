@@ -1,15 +1,21 @@
-"""Tests for tolerance utilities."""
+"""Tests for tolerance utilities.
+
+The presets are **dimensionless relative** tolerances, ``K * eps(dtype)`` with a
+safety factor ``K`` that is the same in every precision. The tests below pin that
+shape rather than a table of twelve numbers: the constancy of ``K`` across dtypes,
+the ordering of the three tiers, ``K`` being an exact power of two, and every
+preset being at least one epsilon (the defect the previous table had -- its strict
+float16 and float32 entries were *below* one ulp at 1.0, so they asked for bitwise
+equality). The two dtypes the library actually uses are additionally pinned to
+their literal values, so a silent drift in ``K`` is caught.
+"""
 
 from __future__ import annotations
 
-import importlib
-import sys
-import types
-from typing import Any, cast
+from typing import Any
 
 import numpy as np
 import pytest
-from numpy import typing as npt
 
 from pantr.tolerance import (
     get_conservative,
@@ -19,76 +25,114 @@ from pantr.tolerance import (
     get_strict,
 )
 
-tol_mod = sys.modules["pantr.tolerance"]
+DTYPES: tuple[Any, ...] = (np.float16, np.float32, np.float64, np.longdouble)
+"""Every floating dtype the tolerance module accepts."""
 
-NO_LONGDOUBLE = np.dtype(np.longdouble) == np.dtype(np.float64)
+PRESETS: tuple[tuple[str, Any, float], ...] = (
+    ("strict", get_strict, 4.0),
+    ("default", get_default, 64.0),
+    ("conservative", get_conservative, 4096.0),
+)
+"""Each preset with the number of machine epsilons its docstring claims."""
 
-DEFAULT_TOL_F32: float = 1e-6
-DEFAULT_TOL_F64: float = 1e-12
-DEFAULT_TOL_LD: float = DEFAULT_TOL_F64 if NO_LONGDOUBLE else 1e-15
+STRICT_TOL_F32: float = 4.76837158203125e-07
+"""``4 * eps(float32)``, written out so a change to the factor is visible here."""
 
-STRICT_TOL_F64: float = 1e-15
-STRICT_TOL_LD: float = STRICT_TOL_F64 if NO_LONGDOUBLE else 1e-18
+STRICT_TOL_F64: float = 8.881784197001252e-16
+"""``4 * eps(float64)``."""
 
-CONSERVATIVE_TOL_F64: float = 1e-10
-CONSERVATIVE_TOL_LD: float = CONSERVATIVE_TOL_F64 if NO_LONGDOUBLE else 1e-12
+DEFAULT_TOL_F32: float = 7.62939453125e-06
+"""``64 * eps(float32)``."""
+
+DEFAULT_TOL_F64: float = 1.4210854715202004e-14
+"""``64 * eps(float64)``."""
+
+CONSERVATIVE_TOL_F32: float = 0.00048828125
+"""``4096 * eps(float32)``."""
+
+CONSERVATIVE_TOL_F64: float = 9.094947017729282e-13
+"""``4096 * eps(float64)``."""
 
 
 class TestTolerance:
     """Test suite for tolerance utilities."""
 
     @pytest.mark.parametrize(
-        ("dtype", "expected"),
+        ("getter", "dtype", "expected"),
         [
-            (np.float16, 1e-3),
-            (np.float32, 1e-6),
-            ("float64", 1e-12),
-            (np.longdouble, 1e-12 if NO_LONGDOUBLE else 1e-15),
+            (get_strict, np.float32, STRICT_TOL_F32),
+            (get_strict, "float64", STRICT_TOL_F64),
+            (get_default, np.float32, DEFAULT_TOL_F32),
+            (get_default, "float64", DEFAULT_TOL_F64),
+            (get_conservative, np.float32, CONSERVATIVE_TOL_F32),
+            (get_conservative, "float64", CONSERVATIVE_TOL_F64),
         ],
     )
-    def test_get_default_tolerance(
-        self, dtype: np.dtype[np.floating[Any]] | type[np.floating[Any]], expected: float
+    def test_preset_values_for_the_supported_dtypes(
+        self, getter: Any, dtype: Any, expected: float
     ) -> None:
-        """Test get_default with various dtypes."""
-        assert get_default(dtype) == expected
+        """The two dtypes the library uses resolve to their pinned literal values."""
+        assert getter(dtype) == expected
 
-    @pytest.mark.parametrize(
-        ("dtype", "expected"),
-        [
-            (np.float16, 1e-4),
-            (np.float32, 1e-7),
-            ("float64", 1e-15),
-            (np.longdouble, 1e-15 if NO_LONGDOUBLE else 1e-18),
-        ],
-    )
-    def test_get_strict_tolerance(
-        self, dtype: np.dtype[np.floating[Any]] | type[np.floating[Any]], expected: float
+    @pytest.mark.parametrize(("name", "getter", "eps_factor"), PRESETS)
+    def test_preset_is_a_constant_number_of_epsilons(
+        self, name: str, getter: Any, eps_factor: float
     ) -> None:
-        """Test get_strict with various dtypes."""
-        assert get_strict(dtype) == expected
+        """Every dtype gets the *same* safety factor -- the property the old table lacked.
 
-    @pytest.mark.parametrize(
-        ("dtype", "expected"),
-        [
-            (np.float16, 1e-2),
-            (np.float32, 1e-5),
-            ("float64", 1e-10),
-            (np.longdouble, 1e-10 if NO_LONGDOUBLE else 1e-12),
-        ],
-    )
-    def test_get_conservative_tolerance(
-        self, dtype: np.dtype[np.floating[Any]] | type[np.floating[Any]], expected: float
-    ) -> None:
-        """Test get_conservative with various dtypes."""
-        assert get_conservative(dtype) == expected
+        The shipped table was 0.10/0.84/4.50 epsilons of strict for float16/float32/
+        float64, so "strict" meant something different in each precision and two of the
+        three were below one rounding.
+        """
+        for dtype in DTYPES:
+            eps = float(np.finfo(dtype).eps)
+            assert getter(dtype) == eps_factor * eps, (
+                f"{name}({np.dtype(dtype).name}) is "
+                f"{getter(dtype) / eps:g} epsilons, not {eps_factor:g}"
+            )
 
-    @pytest.mark.parametrize(
-        "dtype",
-        [np.float16, np.float32, "float64", np.longdouble],
-    )
-    def test_get_machine_epsilon(
-        self, dtype: np.dtype[np.floating[Any]] | type[np.floating[Any]]
+    @pytest.mark.parametrize(("name", "getter", "eps_factor"), PRESETS)
+    def test_safety_factor_is_an_exact_power_of_two(
+        self, name: str, getter: Any, eps_factor: float
     ) -> None:
+        """``K`` is a power of two, so it is exact in every format and in C++."""
+        assert eps_factor == 2.0 ** round(np.log2(eps_factor)), name
+        for dtype in DTYPES:
+            ratio = getter(dtype) / float(np.finfo(dtype).eps)
+            assert ratio == eps_factor
+
+    @pytest.mark.parametrize("dtype", DTYPES)
+    def test_every_preset_admits_at_least_one_rounding(self, dtype: Any) -> None:
+        """No preset may fall below one ulp at 1.0, which would demand bitwise equality."""
+        eps = float(np.finfo(dtype).eps)
+        for name, getter, _ in PRESETS:
+            assert getter(dtype) >= eps, (
+                f"{name}({np.dtype(dtype).name}) = {getter(dtype):g} is below one "
+                f"epsilon ({eps:g}): it asks for bitwise equality, not a tolerance"
+            )
+
+    @pytest.mark.parametrize("dtype", DTYPES)
+    def test_the_three_tiers_are_ordered(self, dtype: Any) -> None:
+        """Strict is tighter than default, which is tighter than conservative."""
+        assert get_strict(dtype) < get_default(dtype) < get_conservative(dtype)
+
+    def test_longdouble_needs_no_platform_branch(self) -> None:
+        """``longdouble`` follows the same formula whether or not it aliases float64.
+
+        The previous table carried a separate longdouble column and an import-time
+        branch on ``np.dtype(np.longdouble) == np.dtype(np.float64)``. Reading the
+        epsilon from the platform removes both: where longdouble *is* float64 the two
+        answers coincide because the two epsilons do.
+        """
+        eps = float(np.finfo(np.longdouble).eps)
+        assert get_strict(np.longdouble) == 4.0 * eps
+        assert get_strict(np.dtype(np.longdouble)) == 4.0 * eps
+        assert get_strict("longdouble") == 4.0 * eps
+        if np.dtype(np.longdouble) == np.dtype(np.float64):
+            assert get_strict(np.longdouble) == get_strict(np.float64)
+
+    @pytest.mark.parametrize("dtype", DTYPES)
+    def test_get_machine_epsilon(self, dtype: Any) -> None:
         """Test get_machine_epsilon against np.finfo."""
         assert get_machine_epsilon(dtype) == np.finfo(dtype).eps
 
@@ -104,7 +148,7 @@ class TestTolerance:
             get_machine_epsilon(np.uint8)
 
     def test_get_tolerance_info(self) -> None:
-        """Test the get_info dictionary."""
+        """Test get_info returns the expected structure and values."""
         dtype = np.float64
         info = get_info(dtype)
 
@@ -120,17 +164,17 @@ class TestTolerance:
         assert info["min_value"] == np.finfo(dtype).tiny
 
     def test_get_tolerance_info_string_dtype(self) -> None:
-        """Test get_info with a string dtype."""
+        """Test get_info with a string dtype preserves the original representation."""
         dtype_str = "float32"
-        info = get_info(dtype_str)
         finfo = np.finfo(dtype_str)
+        info = get_info(dtype_str)
 
         assert info["dtype"] == dtype_str
         assert info["machine_epsilon"] == finfo.eps
         assert info["default_tolerance"] == DEFAULT_TOL_F32
 
     def test_tolerance_info_keys(self) -> None:
-        """Test that get_info returns all expected keys."""
+        """Test that get_info returns exactly the documented keys."""
         info = get_info(np.float32)
         expected_keys = {
             "dtype",
@@ -146,94 +190,12 @@ class TestTolerance:
         }
         assert set(info.keys()) == expected_keys
 
-    def test_longdouble_else_branch_with_dtype_object(self) -> None:
-        """Ensure the np.dtype(np.longdouble) path hits the else-branch."""
-        dt = np.dtype(np.longdouble)
-        assert get_default(dt) == DEFAULT_TOL_LD
-        assert get_strict(dt) == STRICT_TOL_LD
-        assert get_conservative(dt) == CONSERVATIVE_TOL_LD
+    def test_half_precision_conservative_tier_saturates(self) -> None:
+        """float16 cannot absorb 4096 roundings, and the module says so rather than clipping.
 
-    def test_import_non_alias_longdouble_branch_executes(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """Force the import-time non-alias branch to execute to improve coverage.
-
-        This replaces the 'numpy' module temporarily with a minimal stub so that
-        dtype(np.longdouble) != dtype(np.float64) holds during module reload.
+        11 significant bits give ``eps = 9.77e-4``, so the conservative tier is 4.0 -- a
+        relative tolerance above one, which accepts everything. Asserted here so the
+        documented edge cannot drift into a silent clamp.
         """
-        # Save original numpy
-        real_numpy = sys.modules.get("numpy")
-
-        # Build a minimal fake numpy module sufficient for the import-time check
-        fake_numpy = types.ModuleType("numpy")
-
-        class _FakeDType:
-            def __init__(self, token: object) -> None:
-                self._token = token
-
-            def __eq__(self, other: object) -> bool:
-                return isinstance(other, _FakeDType) and self._token is other._token
-
-            def __hash__(self) -> int:
-                return hash(self._token)
-
-        class _FakeFloating:
-            @classmethod
-            def __class_getitem__(cls: type[_FakeFloating], _item: object) -> type[_FakeFloating]:
-                return cls
-
-        class _FakeDTypeClass:
-            def __call__(self, x: object) -> _FakeDType:
-                return _FakeDType(x)
-
-            @classmethod
-            def __class_getitem__(
-                cls: type[_FakeDTypeClass], _item: object
-            ) -> type[_FakeDTypeClass]:
-                return cls
-
-        # distinct tokens so dtype(longdouble) != dtype(float64)
-        fake_numpy.float16 = object()  # type: ignore[attr-defined]
-        fake_numpy.float32 = object()  # type: ignore[attr-defined]
-        fake_numpy.float64 = object()  # type: ignore[attr-defined]
-        fake_numpy.longdouble = object()  # type: ignore[attr-defined]
-        fake_numpy.floating = _FakeFloating  # type: ignore[attr-defined]
-
-        def _fake_dtype(x: object) -> _FakeDType:
-            return _FakeDType(x)
-
-        fake_numpy.dtype = _FakeDTypeClass()  # type: ignore[attr-defined]
-        # Provide attribute used by "from numpy import typing as npt"
-        fake_numpy.typing = types.SimpleNamespace()  # type: ignore[attr-defined]
-
-        # Install fake numpy and reload tolerance to execute the else-branch
-        sys.modules["numpy"] = fake_numpy
-
-        try:
-            importlib.reload(tol_mod)
-            # Sanity check that module loaded and presets exist
-            assert hasattr(tol_mod, "_TOLERANCE_PRESETS")
-        finally:
-            # Restore real numpy and reload the module back to normal
-            if real_numpy is not None:
-                sys.modules["numpy"] = real_numpy
-            importlib.reload(tol_mod)
-
-    def test_get_tolerance_else_branch_via_monkeypatch(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """Hit the fallback longdouble branch in _get_tolerance to cover line 92."""
-
-        class _FakeEnsuredDType:
-            # A fake ensured dtype whose .type won't match float16/32/64
-            def __init__(self) -> None:
-                self.type = object()
-
-        monkeypatch.setattr(tol_mod, "_ensure_float_dtype", lambda _d: _FakeEnsuredDType())
-
-        # Pass a non-string, non-longdouble sentinel so special-casing is skipped
-        sentinel = cast(npt.DTypeLike, object())
-        result = get_default(sentinel)
-        # Should equal the longdouble tolerance for the default preset
-        expected = DEFAULT_TOL_LD
-        assert result == expected
+        assert get_conservative(np.float16) == 4.0
+        assert get_default(np.float16) < 1.0

@@ -50,6 +50,22 @@
   matrix rather than by sampling.
 
 ### Changed
+- **`pantr.tolerance`'s presets are now dimensionless relative tolerances.**
+  `get_strict`, `get_default` and `get_conservative` return `K * eps(dtype)` with
+  `K` equal to 4, 64 and 4096 — an acknowledged safety factor, stated, a power of
+  two, and the *same* in every precision. The previous table was a fixed value per
+  dtype, and in units of that dtype's own epsilon it was neither constant nor
+  ordered the same way: strict was 0.10 eps in float16, 0.84 in float32 and 4.5 in
+  float64, so `get_strict` demanded bitwise equality in the two smaller formats
+  while allowing four roundings in the largest. The module docstring called the
+  presets absolute while `Bspline.locate` and both root finders were already
+  multiplying them by a magnitude; that ambiguity is what this change removes. A
+  preset is now unusable on its own — multiply it by the magnitude of the quantity
+  being compared, and name that magnitude at the call site. Numerically:
+  `get_default(float64)` moves from 1e-12 to 1.42e-14 and `get_conservative`
+  from 1e-10 to 9.09e-13, while `get_strict(float32)` moves from 1e-7 to 4.77e-7.
+  The per-dtype table and its platform branch on whether `longdouble` aliases
+  `float64` are gone: reading the epsilon from the platform makes both unnecessary.
 - `pantr.grid.overlay` merges breakpoints closer than the default *relative*
   tolerance times the axis's own magnitude -- the intersection window and the
   coordinates bounding it -- instead of against a bare `float64` constant. A
