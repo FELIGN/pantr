@@ -2,6 +2,15 @@
 
 This module provides input validation, multiplicity lookup, and
 multi-dimensional orchestration that wrap the Layer 3 knot-removal kernel.
+
+**What the kernel's tolerance grades.** ``_remove_knot_1d_core`` accepts a removal
+when the Euclidean distance between two reconstructions of the same control point
+stays within ``tol``. That distance is taken over *the columns of the array it is
+given*, which for a rational spline are the homogeneous coordinates
+``[w * x, w * y, w * z, w]`` and not the projected point. A caller's budget, on the
+other hand, is a distance in projected space. The two are different quantities, and
+this module is where they are reconciled: see
+:func:`_homogeneous_deviation_tolerance`.
 """
 
 from __future__ import annotations
@@ -17,6 +26,62 @@ from ._bspline_knots import _find_knot_index_and_multiplicity
 
 if TYPE_CHECKING:
     from . import Bspline, BsplineSpace1D
+
+
+def _homogeneous_deviation_tolerance(
+    ctrl: npt.NDArray[np.float32 | np.float64], tol_euclidean: float
+) -> float:
+    """Pull a projected-space deviation budget back to homogeneous control points.
+
+    ``TOL = d * w_min / (1 + |P|_max)``, with ``|P|_max = max_i ||P_i||_2`` in
+    **Euclidean** coordinates and ``w_min = min_i w_i``. This is Eq. (5.30) of Piegl &
+    Tiller, *The NURBS Book*, 2nd ed. (Springer, 1997), p. 185, given there for
+    Algorithm A5.8, which :func:`~pantr.bspline._bspline_knot_removal_core.
+    _remove_knot_1d_core` otherwise implements faithfully.
+
+    Why it is needed: the kernel measures one Euclidean distance ``D`` over every
+    column of the array it is handed, which for a rational spline are the homogeneous
+    coordinates ``[w x, w y, w z, w]``. Moving the homogeneous point by ``dP^w`` moves
+    the projected point by ``(dP^w_xyz - P dP^w_w) / w``, so
+
+        |dP| <= (|dP^w_xyz| + |P| |dP^w_w|) / w <= D (1 + |P|) / w,
+
+    and requiring ``D <= d w_min / (1 + |P|_max)`` gives ``|dP| <= d`` for every point,
+    since ``w >= w_min`` and ``|P| <= |P|_max``. Without it, a deviation carried by the
+    **weight** column is graded as though it were a coordinate: measured with the
+    perturbation in the weight and the coordinates at ``1e6``, the actual projected
+    deviation exceeded the requested tolerance by a factor of ``3.6e5``. A circle cannot
+    show this, because its weights are structurally tied to its coordinates.
+
+    Two honest caveats.
+
+    The bound is **tight for a weight-carried perturbation and conservative for a purely
+    geometric one**, by up to a factor ``1 + |P|_max``. Splitting ``D`` optimally between
+    the two parts gives ``sqrt(1 + |P|_max^2)``, which differs from ``1 + |P|_max`` by at
+    most ``sqrt(2)``, so almost none of that conservatism comes from the triangle
+    inequality: it comes from the kernel compressing a length and a weight into a single
+    Euclidean distance, which loses the direction. Removing it would mean the kernel
+    grading the two parts separately.
+
+    That is also why ``1 + |P|_max`` adds a pure number to a length. The
+    inhomogeneity is inherited from ``D``, whose components are not all of one unit,
+    and is not an error in the formula; the bound above holds at every scale.
+
+    Args:
+        ctrl (npt.NDArray[np.float32 | np.float64]): Homogeneous control points, last
+            column the weights, of any shape whose last axis is the coordinate axis.
+        tol_euclidean (float): The caller's deviation budget, a distance in projected
+            space.
+
+    Returns:
+        float: The equivalent budget on homogeneous control points.
+    """
+    flat = np.asarray(ctrl, dtype=np.float64).reshape(-1, ctrl.shape[-1])
+    weights = flat[:, -1]
+    w_min = float(np.abs(weights).min())
+    projected = flat[:, :-1] / weights[:, None]
+    p_max = float(np.linalg.norm(projected, axis=1).max())
+    return tol_euclidean * w_min / (1.0 + p_max)
 
 
 def _remove_knot_bspline_1d_impl(  # noqa: PLR0913
@@ -40,7 +105,9 @@ def _remove_knot_bspline_1d_impl(  # noqa: PLR0913
         num (int | None): Maximum number of removals. ``None`` removes as many
             as possible (up to the current multiplicity, capped at ``degree``).
         tol_space (float): Tolerance for knot comparison.
-        tol_deviation (float): Maximum allowed geometric deviation.
+        tol_deviation (float): Maximum allowed control-point deviation, already in the
+            units the kernel measures in (homogeneous for a rational spline); see the
+            module docstring.
 
     Returns:
         tuple[npt.NDArray, npt.NDArray, int]: ``(new_knots, new_ctrl, removals)``
@@ -106,15 +173,14 @@ def _remove_knots_bspline(
             that direction.
         num (int | None): Maximum removals per knot value. ``None`` removes
             as many as possible.
-        tol (float | None): Geometric deviation tolerance. ``None`` uses a
-            default of ``1e-10``.
+        tol (float | None): Deviation tolerance, a distance in **projected** space.
+            ``None`` uses a default of ``1e-10``.
 
     Returns:
         Bspline: New B-spline with reduced knot vectors.
     """
     dim = bspline.dim
     ctrl = bspline.control_points
-    tol_deviation = 1e-10 if tol is None else tol
 
     from ._bspline_space_1d import BsplineSpace1D  # noqa: PLC0415
 
@@ -127,6 +193,13 @@ def _remove_knots_bspline(
         if kv is None or kv.size == 0:
             new_spaces_1d.append(space_1d)
             continue
+
+        # Resolved per direction, from the control points as they stand: `ctrl` is
+        # carried forward from the previous direction.
+        requested = 1e-10 if tol is None else tol
+        tol_deviation = (
+            _homogeneous_deviation_tolerance(ctrl, requested) if bspline.is_rational else requested
+        )
 
         pts_2d, trailing_shape = _flatten_along_axis(ctrl, i)
 

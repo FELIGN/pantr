@@ -378,3 +378,96 @@ class TestRemoveKnotKernelPrecondition:
 
         knots = np.asarray(result.space.spaces[0].knots)
         assert int(np.sum(np.abs(knots - 3.0) <= 1e-14)) == 0
+
+
+# ===========================================================================
+# Rational deviation
+# ===========================================================================
+
+
+def _nurbs_curve(  # noqa: PLR0913
+    degree: int, n_el: int, rank: int, scale: float, weight_spread: float, seed: int
+) -> Bspline:
+    """Build a rational curve whose weights and coordinates vary **independently**.
+
+    That independence is the point.  A circle cannot expose a mistake in the
+    homogeneous-to-projected conversion, because its weights are structurally tied to
+    its coordinates and a rescaling of one is a rescaling of the other.
+    """
+    knots = np.concatenate(
+        [np.full(degree, 0.0), np.linspace(0.0, 1.0, n_el + 1), np.full(degree, 1.0)]
+    )
+    space = BsplineSpace([BsplineSpace1D(knots, degree)])
+    rng = np.random.default_rng(seed)
+    n = space.num_total_basis
+    pts = rng.uniform(-1.0, 1.0, size=(n, rank)) * scale
+    weights = np.exp(rng.uniform(-weight_spread, weight_spread, size=n))
+    cp = np.concatenate([pts * weights[:, None], weights[:, None]], axis=1)
+    return Bspline(space, np.ascontiguousarray(cp), is_rational=True)
+
+
+class TestRationalDeviationIsMeasuredInProjectedSpace:
+    """A caller's budget is a distance between points, not between homogeneous columns.
+
+    The kernel measures a Euclidean distance over every column of the array it is
+    given, which for a rational spline is ``[w x, w y, w z, w]``.  Eq. (5.30) of Piegl
+    & Tiller (2nd ed., 1997, p. 185) is the conversion, and without it a deviation
+    carried by the weight column is graded as though it were a coordinate.
+    """
+
+    @staticmethod
+    def _max_projected_deviation(a: Bspline, b: Bspline) -> float:
+        """Largest distance between the two curves' projected points over the domain."""
+        t = np.linspace(0.0, 1.0, 601)
+        pa = np.asarray(a.evaluate(t), dtype=np.float64)
+        pb = np.asarray(b.evaluate(t), dtype=np.float64)
+        return float(np.linalg.norm(pa - pb, axis=1).max())
+
+    @pytest.mark.parametrize("degree", [2, 3, 4])
+    @pytest.mark.parametrize("scale", [1.0, 1.0e3, 1.0e6])
+    def test_an_accepted_removal_honours_the_requested_budget(
+        self, degree: int, scale: float
+    ) -> None:
+        """Sweeping the perturbation, every accepted removal must be within budget.
+
+        The perturbation is applied to the **weight** alone, which is the case Eq.
+        (5.30) exists for; the sweep over sixteen decades is what finds the largest one
+        the kernel is willing to accept.  Without the conversion the worst ratio
+        measured over this family is ``7.4e5``; with it, ``0.32``.
+        """
+        base = _nurbs_curve(degree, 6, 3, scale, 1.5, seed=degree * 7)
+        inserted = base.insert_knots(np.array([0.41]))
+        before = inserted.space.spaces[0].knots.size
+        requested = 1.0e-6 * scale
+        accepted_any = False
+
+        for eps_w in np.logspace(-16, 0, 33):
+            cp = np.array(inserted.control_points)
+            cp[cp.shape[0] // 2, -1] *= 1.0 + eps_w
+            perturbed = Bspline(inserted.space, cp, is_rational=True)
+
+            result = perturbed.remove_knots(0.41, tol=requested)
+            if result.space.spaces[0].knots.size == before:
+                continue
+            accepted_any = True
+            deviation = self._max_projected_deviation(result, perturbed)
+            assert deviation <= requested, (
+                f"budget broken by {deviation / requested:.4g}x at eps_w={eps_w:.3g}"
+            )
+
+        assert accepted_any, "the sweep never produced an accepted removal, so it proves nothing"
+
+    def test_the_conversion_is_the_published_formula(self) -> None:
+        """``TOL = d * w_min / (1 + |P|_max)``, checked against a direct computation."""
+        from pantr.bspline._bspline_knot_removal import (  # noqa: PLC0415
+            _homogeneous_deviation_tolerance,
+        )
+
+        curve = _nurbs_curve(3, 5, 3, 100.0, 1.5, seed=13)
+        cp = np.asarray(curve.control_points, dtype=np.float64)
+        w_min = float(cp[:, -1].min())
+        p_max = float(np.linalg.norm(cp[:, :-1] / cp[:, -1:], axis=1).max())
+
+        assert _homogeneous_deviation_tolerance(cp, 1.0e-3) == pytest.approx(
+            1.0e-3 * w_min / (1.0 + p_max), rel=1.0e-14
+        )

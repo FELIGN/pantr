@@ -558,7 +558,9 @@ class Bspline:
                 value. ``None`` (default) removes as many as possible (up to
                 the current multiplicity, capped at the degree).
             tol (float | None): Maximum allowed geometric deviation for each
-                removal step. ``None`` (default) uses ``1e-10``.
+                removal step, as a distance in the B-spline's own physical units
+                (projected coordinates, for a rational B-spline). ``None`` (default)
+                uses ``1e-10``.
 
         Returns:
             Bspline: New B-spline with the same geometry (within tolerance)
