@@ -77,6 +77,25 @@ class TestCardinalBspline:
         # computation, and pinning their digits would be pinning noise.
         nptest.assert_allclose(res, exp, rtol=get_strict(np.float64), atol=get_strict(np.float64))
 
+        # That `atol` is twenty-one orders above the two entries at the span ends, so
+        # it says nothing about them. They are the whole reason for sampling at
+        # `+/- tol`: the point is *outside*, so the outermost basis function must be
+        # small, negative -- and not clamped to zero, which is what treating the point
+        # as the boundary would produce. Checked relatively, against `-tol**3 / 6`,
+        # which both of them are: at `-tol` the last basis function is `u**3 / 6` and
+        # at `1 + tol` the first is `(1 - u)**3 / 6`.
+        #
+        # 5% is as tight as this can be, and the reason is worth stating: a value of
+        # order `tol**3` is being produced by a recurrence whose inputs are O(1), so
+        # its relative accuracy is limited by how exactly those inputs reproduce `u`,
+        # not by the recurrence. The measured deviation is 1/64 at `-tol` and nothing
+        # at `1 + tol`. That is still four orders of margin over what this is for --
+        # separating a cubic extrapolation from a clamp to zero.
+        for row, col in ((1, 3), (2, 0)):
+            outside = float(res[row, col])
+            assert outside < 0.0, f"row {row} was clamped to {outside!r} instead of extrapolating"
+            nptest.assert_allclose(outside, -(tol**3) / 6.0, rtol=0.05)
+
         # Extrapolation, not clamping: outside the span the polynomials leave [0, 1].
         assert res[0].min() < 0.0
         assert res[3].max() > 1.0

@@ -84,7 +84,7 @@ class BsplineSpace1D:
     Attributes:
         _tol (float): Absolute tolerance for parametric comparisons on this space,
             in the units of its knots. Derived once at construction by
-            :func:`~pantr.bspline._bspline_knots._knot_tolerance` as
+            ``_bspline_knots._knot_tolerance`` as
             ``8 * eps(dtype) * max(span, |knots[0]|, |knots[-1]|)``, so it tracks
             the knot vector's own magnitude instead of being a per-dtype constant.
         _knots (npt.NDArray[np.float32 | np.float64]): Knot vector defining the B-spline.
@@ -204,7 +204,9 @@ class BsplineSpace1D:
         a fresh rounding: over ``degree + 1`` identical copies at large magnitude
         ``np.mean`` is not even the identity, so it moved the reported domain.
 
-        It modifies the knot vector in place.
+        It replaces :attr:`_knots` with the collapsed vector, of the same length,
+        dtype and ordering. Called once from ``__init__``, before the array is
+        frozen read-only.
         """
         unique, mult = _get_unique_knots_and_multiplicity_impl(
             self._knots, self._degree, self._tol, False

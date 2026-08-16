@@ -36,12 +36,14 @@ spline to an exact ``float64`` copy first -- casting float32 coefficients to flo
 exact, so the promoted spline is the same mapping. The reason is margin, not
 impossibility: the residual of a ``float32`` evaluation cannot be resolved below
 ``1 - 3 * eps32 * scale`` (measured over supports from 6 to 125 control points), while
-:func:`pantr.tolerance.get_default` for ``float32`` is ``1e-6``, i.e. ``8.4 * eps32``.
-That is under one decade of headroom, against roughly ``2e3`` for ``float64``, and
-iterating in float32 would additionally quantize the parametric iterate at ``eps32``.
-Promotion removes both for the price of one exact cast. The returned coordinates invert
-the promoted mapping to float64 accuracy; evaluating them on the original ``float32``
-spline reproduces the query point to float32 accuracy only.
+:func:`pantr.tolerance.get_default` is ``64 * eps`` in every format. Iterating in
+float32 would therefore leave between one and two decades of headroom, and would
+additionally quantize the parametric iterate at ``eps32``. Promotion removes both for
+the price of one exact cast: the arithmetic floor becomes ``1 - 3 * eps64 * scale``,
+which for a float32 caller is eight orders below the threshold it asks for, so what
+limits the answer is the precision the caller's data carries and not the solver. The
+returned coordinates invert the promoted mapping to float64 accuracy; evaluating them
+on the original ``float32`` spline reproduces the query point to float32 accuracy only.
 
 v1 inverts square maps only (``rank == dim``): planar and volumetric geometry maps. An
 embedded curve or surface (``rank > dim``) needs a Gauss-Newton closest-point solve,
@@ -199,10 +201,18 @@ def _geometric_scale(lo: npt.NDArray[np.float64], hi: npt.NDArray[np.float64]) -
 
     Using the diagonal alone silently makes the tolerance unreachable for a geometry far
     from the origin -- a patch of diameter 1 sitting at ``x = 1e6`` has a residual floor
-    around ``1e-10`` while ``1e-12 * 1`` would be demanded -- so the scale is the
-    maximum of the two. With :func:`pantr.tolerance.get_default` for ``float64``
-    (``1e-12``, i.e. ``4.5e3 * eps``) the resulting threshold sits about two orders of
-    magnitude above that floor.
+    around ``1e-10`` while ``eps * 1`` would be demanded -- so the scale is the maximum
+    of the two.
+
+    The margin that leaves is thin and worth stating rather than assuming.
+    :func:`pantr.tolerance.get_default` is ``64 * eps``, so the threshold is
+    ``64 * eps * scale`` while the floor above is ``C * eps * max|coordinate|`` with
+    ``C`` of the order of ``prod(degree + 1)``. Measured on warped tensor-product maps in
+    1 to 3 directions at degrees 1 to 5, with the geometry translated to ``x = 1e6``: the
+    worst residual over 40 query points reaches ``60 * eps * scale``, against a threshold
+    of ``64``. Every point is still located -- ``C`` is a pessimistic count, since the de
+    Boor sum is a convex combination and its roundings do not all add -- but a caller with
+    a worse-conditioned map should pass ``tol`` explicitly rather than rely on 6 percent.
 
     A geometry with no length at all (every control point identical, at the origin)
     falls back to ``1.0``: there is no scale to read off it, and the tolerance must stay

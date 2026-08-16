@@ -95,10 +95,17 @@ class TestTolerance:
     def test_safety_factor_is_an_exact_power_of_two(
         self, name: str, getter: Any, eps_factor: float
     ) -> None:
-        """``K`` is a power of two, so it is exact in every format and in C++."""
-        assert eps_factor == 2.0 ** round(np.log2(eps_factor)), name
+        """``K`` is a power of two, so it is exact in every format and in C++.
+
+        Read back out of the module rather than checked against the table above, so
+        the assertion is about what ``pantr.tolerance`` returns and not about this
+        file's own literals.
+        """
         for dtype in DTYPES:
             ratio = getter(dtype) / float(np.finfo(dtype).eps)
+            assert ratio == 2.0 ** round(np.log2(ratio)), (
+                f"{name}({np.dtype(dtype).name}) is {ratio:g} epsilons, not a power of two"
+            )
             assert ratio == eps_factor
 
     @pytest.mark.parametrize("dtype", DTYPES)

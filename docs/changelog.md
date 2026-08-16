@@ -71,8 +71,8 @@
   doubled for one extra rounding upstream, scaled by the parametric magnitude every
   comparison in the B-spline layer is relative to. Previously it was the bare
   per-dtype constant, so the same absolute band meant four ulp on a unit domain,
-  nothing at all from `|knot| ≈ 5` upward, and the whole domain on `[0, 1e-6]` in
-  float32. Everything downstream that takes `space.tolerance` — domain membership,
+  nothing at all from `|knot| ≈ 5` upward, and half the breakpoints of a
+  twenty-interval float32 mesh on `[0, 1e-6]`, which then reported ten. Everything downstream that takes `space.tolerance` — domain membership,
   knot matching, cardinal interval lengths, knot insertion and removal, products,
   degree changes — becomes scale-covariant with it. `detect_interfaces` is the one
   caller that wanted the dimensionless factor instead and now takes it from

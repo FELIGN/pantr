@@ -121,6 +121,34 @@ def test_overlay_merge_verdict_is_scale_covariant(lam: float) -> None:
     assert far.breakpoints[0].shape[0] == 4
 
 
+def test_overlay_tolerance_follows_the_offset_not_only_the_window() -> None:
+    """A short window far from the origin is graded on the coordinates, not its length.
+
+    The other covariance test rescales both the window and its position together, so
+    the window always dominates ``max(hi - lo, |lo|, |hi|)``. This is the other branch:
+    a window of 400 ulp sitting at 1e10, where the *offset* sets the tolerance
+    (``get_default(float64) * 1e10 = 1.42e-4``, about 75 ulp there). An interior
+    breakpoint further than that from both ends survives; one closer to an end than
+    that is folded into it, which is what merging means and not a loss -- the end is
+    emitted regardless.
+    """
+    lo = 1e10
+    ulp = float(np.spacing(lo))
+    hi = lo + 400.0 * ulp
+    plain = TensorProductGrid([[lo, hi]])
+
+    kept = overlay(TensorProductGrid([[lo, lo + 200.0 * ulp, hi]]), plain)
+    assert kept.breakpoints[0].shape[0] == 3, (
+        "a breakpoint 200 ulp from both ends is outside the ~75 ulp tolerance and must survive"
+    )
+
+    folded = overlay(TensorProductGrid([[lo, lo + 30.0 * ulp, hi]]), plain)
+    assert folded.breakpoints[0].shape[0] == 2, (
+        "a breakpoint 30 ulp from the lower end is inside the tolerance and must fold into it"
+    )
+    nptest.assert_array_equal(folded.breakpoints[0], [lo, hi])
+
+
 def test_overlay_ndim_mismatch_raises() -> None:
     """Mismatched ndim is a ValueError."""
     with pytest.raises(ValueError, match="share ndim"):

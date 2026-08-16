@@ -90,7 +90,9 @@ def _joint_tolerances(patch_a: Bspline, patch_b: Bspline, tol: float | None) -> 
     # patch's own knot magnitude, and none of the three quantities compared here is
     # a parametric coordinate of a single patch. What is wanted is the bare
     # dimensionless factor, which each leg below scales by the magnitude that
-    # applies to it.
+    # applies to it. The strict tier is what ``space.tolerance`` was built from
+    # before, so this keeps the tier the interface check has always used and only
+    # stops it travelling through a quantity that has since acquired units.
     relative = (
         max(get_strict(patch_a.space.dtype), get_strict(patch_b.space.dtype))
         if tol is None

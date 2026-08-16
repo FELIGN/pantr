@@ -17,17 +17,17 @@ Each preset is ``K * eps(dtype)``. ``K`` is an acknowledged safety factor, state
 rather than tuned, and a power of two so that it is exact in every format and
 carries no decimal literal to mistranscribe:
 
-======================  ======  ==========================================
+======================  ======  =============================================
 preset                  ``K``   what it pays for
-======================  ======  ==========================================
-:func:`get_strict`           4  a handful of roundings: one comparison, one
-                                subtraction, one convex combination
-:func:`get_default`         64  a short algorithm (about 16 operations) plus
+======================  ======  =============================================
+``get_strict``               4  a handful of roundings: one subtraction and
+                                one convex combination, then a difference
+``get_default``             64  a short algorithm (about 16 operations) plus
                                 build slack: FMA contraction, vector width,
                                 libm
-:func:`get_conservative`  4096  a long accumulation, or a condition number up
-                                to about 1e3, with headroom
-======================  ======  ==========================================
+``get_conservative``      4096  a long accumulation, or a condition number
+                                up to about 1e3, with headroom
+======================  ======  =============================================
 
 ``K`` being constant across dtypes is what makes the three presets mean the same
 thing in every precision: ``get_strict`` is four roundings whether the roundings
@@ -103,9 +103,11 @@ def _ensure_float_dtype(dtype: npt.DTypeLike) -> np.dtype[np.floating[Any]]:
 _STRICT_EPS_FACTOR: Final[float] = 4.0
 """Machine epsilons a :func:`get_strict` comparison allows for.
 
-A handful of roundings and nothing more: one comparison, one subtraction, one
-convex combination. Three roundings bound the error of an affine map evaluated in
-the obvious way, and four is that rounded up to a power of two.
+A handful of roundings and nothing more. Four is the count for the shape this tier
+is meant for: a value reached by one convex combination -- a subtract, a multiply
+and an add, three roundings -- and then differenced against another such value,
+which is the fourth. (The comparison itself is exact in IEEE-754 and costs
+nothing.) Four is also already a power of two, so nothing is rounded up here.
 """
 
 _DEFAULT_EPS_FACTOR: Final[float] = 64.0
@@ -163,10 +165,10 @@ def get_default(dtype: npt.DTypeLike) -> float:
         ValueError: If dtype is not a supported floating-point type.
 
     Example:
-        >>> get_default(np.float32) / float(np.finfo(np.float32).eps)
-        64.0
         >>> get_default("float64")
         1.4210854715202004e-14
+        >>> get_default(np.float32) / float(np.finfo(np.float32).eps)
+        64.0
     """
     return _relative_tolerance(dtype, _DEFAULT_EPS_FACTOR)
 
@@ -191,6 +193,8 @@ def get_strict(dtype: npt.DTypeLike) -> float:
     Example:
         >>> get_strict("float64")
         8.881784197001252e-16
+        >>> get_strict(np.float32) / float(np.finfo(np.float32).eps)
+        4.0
     """
     return _relative_tolerance(dtype, _STRICT_EPS_FACTOR)
 
@@ -215,6 +219,8 @@ def get_conservative(dtype: npt.DTypeLike) -> float:
     Example:
         >>> get_conservative("float64")
         9.094947017729282e-13
+        >>> get_conservative(np.float32) / float(np.finfo(np.float32).eps)
+        4096.0
     """
     return _relative_tolerance(dtype, _CONSERVATIVE_EPS_FACTOR)
 
