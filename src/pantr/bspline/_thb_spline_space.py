@@ -24,6 +24,7 @@ import numpy as np
 from scipy import sparse
 
 from ..grid import HierarchicalGrid, hierarchical_grid, tensor_product_grid
+from ..tolerance import get_strict
 from ._bspline_knot_insertion_core import _compute_oslo_matrix_1d_core
 from ._bspline_space_nd import BsplineSpace
 from ._thb_eval_core import _combine_tp_values
@@ -86,6 +87,64 @@ _EINSUM_MAX_DIM = 24
 ``string.ascii_lowercase`` provides 26 letters; the einsum needs ``dim`` letters for the
 coefficient axes plus one for the point axis, leaving a safe ceiling of 24 dimensions.
 """
+
+_CELL_MEMBERSHIP_SAFETY: float = 2.0
+"""Extra factor on the strict tier for deciding that a point lies in a cell.
+
+Together with :func:`~pantr.tolerance.get_strict` this is ``8 * eps``, the same rule and
+the same number as :func:`~pantr.bspline._bspline_knots._knot_tolerance` -- deliberately,
+because it is the same question. A cell boundary is a parametric coordinate, and asking
+whether a point has fallen off it is asking whether two parametric coordinates are the
+same one.
+
+What has to be covered is the caller's route to the point. A point *in* cell
+``[lo, hi]`` is almost always formed as ``lo + xi * (hi - lo)`` for some ``xi`` in
+``[0, 1]``: a subtraction, a multiplication and an addition, three roundings, each on a
+quantity no larger than ``max(|lo|, |hi|)``, so the computed point sits within
+``3 * eps * max(|lo|, |hi|)`` of the exact one. The bounds themselves arrive from
+:meth:`~pantr.grid.HierarchicalGrid.cell_bounds`, which subdivides the axis by the same
+kind of arithmetic and at the same magnitude. Four epsilons cover either route and eight
+covers both plus an FMA contraction, which is the doubling
+:data:`~pantr.bspline._bspline_knots._KNOT_MERGE_SAFETY` applies for the same reason.
+
+The magnitude it multiplies is the **cell's own**, not the axis's: see
+:func:`_cell_membership_tolerance`.
+"""
+
+
+def _cell_membership_tolerance(
+    cell_lo: npt.NDArray[np.float64], cell_hi: npt.NDArray[np.float64]
+) -> npt.NDArray[np.float64]:
+    """Get the per-axis absolute slack allowed at a cell boundary.
+
+    ``_CELL_MEMBERSHIP_SAFETY * get_strict(float64) * max(|lo|, |hi|, hi - lo)`` per
+    axis, i.e. ``8 * eps`` times the cell's own magnitude. The magnitude is exactly
+    what :func:`~pantr.bspline._bspline_knots._knot_scale` computes, applied to the
+    two-element vector ``[lo, hi]`` rather than to a whole knot vector.
+
+    The scale is the **cell's**, not the axis's, and the difference is not cosmetic.
+    A point in the cell is formed from ``lo`` and ``hi``, so its round-off is relative
+    to those two coordinates; a cell of width ``1e-3`` on a domain reaching ``1e6``
+    would, on the axis scale, accept a point half a billion cell-widths outside. The
+    coordinate terms ``|lo|`` and ``|hi|`` are what carry the case of a *narrow* cell
+    far from the origin, where the width alone would demand agreement the arithmetic
+    that produced the bounds cannot deliver.
+
+    No floor is applied, for the reason
+    :func:`~pantr.bspline._bspline_knots._knot_scale` gives: a floor of one would be a
+    physical choice this layer is not entitled to make, and it destroys covariance on
+    a domain smaller than one unit.
+
+    Args:
+        cell_lo (npt.NDArray[np.float64]): Per-axis lower cell bound, shape ``(dim,)``.
+        cell_hi (npt.NDArray[np.float64]): Per-axis upper cell bound, same shape.
+
+    Returns:
+        npt.NDArray[np.float64]: Per-axis absolute tolerance, shape ``(dim,)``, in the
+        units of the parametric coordinates.
+    """
+    scale = np.maximum(np.maximum(np.abs(cell_lo), np.abs(cell_hi)), cell_hi - cell_lo)
+    return np.asarray(_CELL_MEMBERSHIP_SAFETY * get_strict(np.float64) * scale, dtype=np.float64)
 
 
 def _check_out_array(
@@ -1075,8 +1134,10 @@ class THBSplineSpace:
         Args:
             cid (int): Active cell flat id in ``[0, grid.num_cells)``.
             pts (npt.ArrayLike): Parametric points of shape ``(..., dim)`` lying in
-                cell ``cid``.  A tolerance of ``1e-12`` is applied at the cell
-                boundary; points further outside raise :class:`ValueError`.
+                cell ``cid``.  Per axis, ``8 * eps * max(|lo|, |hi|, hi - lo)`` of slack
+                is allowed at the cell boundary (see
+                :func:`_cell_membership_tolerance`); points further outside raise
+                :class:`ValueError`.
             orders (tuple[int, ...]): Per-direction derivative orders.
             out_basis (npt.NDArray[np.float64] | None): Optional output array of shape
                 ``(..., K)`` with ``K = active_basis(cid).size``.  Allocated when
@@ -1109,10 +1170,11 @@ class THBSplineSpace:
         flat_pts = pts_arr.reshape(num_pts, self.dim)
 
         cell_lo, cell_hi = self._grid.cell_bounds(cid)
-        _tol = 1e-12
-        if not (np.all(flat_pts >= cell_lo - _tol) and np.all(flat_pts <= cell_hi + _tol)):
+        tol = _cell_membership_tolerance(cell_lo, cell_hi)
+        if not (np.all(flat_pts >= cell_lo - tol) and np.all(flat_pts <= cell_hi + tol)):
             raise ValueError(
-                f"pts must lie inside cell {cid!r} with bounds lo={cell_lo}, hi={cell_hi}."
+                f"pts must lie inside cell {cid!r} with bounds lo={cell_lo}, hi={cell_hi} "
+                f"(slack {tol})."
             )
 
         out_shape = (*lead, n_active)
@@ -1184,7 +1246,8 @@ class THBSplineSpace:
         Args:
             cid (int): Active cell flat id in ``[0, grid.num_cells)``.
             pts (npt.ArrayLike): Parametric points of shape ``(..., dim)`` lying in
-                cell ``cid``.  Points outside the cell's bounds raise
+                cell ``cid``.  Per axis, ``8 * eps * max(|lo|, |hi|, hi - lo)`` of
+                slack is allowed at the boundary; points further outside raise
                 :class:`ValueError`.
             out_basis (npt.NDArray[np.float64] | None): Optional output array of shape
                 ``(..., K)`` with ``K = active_basis(cid).size``.  Allocated when
@@ -1226,7 +1289,8 @@ class THBSplineSpace:
         Args:
             cid (int): Active cell flat id in ``[0, grid.num_cells)``.
             pts (npt.ArrayLike): Parametric points of shape ``(..., dim)`` lying in
-                cell ``cid``.  Points outside the cell's bounds raise
+                cell ``cid``.  Per axis, ``8 * eps * max(|lo|, |hi|, hi - lo)`` of
+                slack is allowed at the boundary; points further outside raise
                 :class:`ValueError`.
             orders (int | Sequence[int]): Per-direction derivative orders.  A scalar
                 is broadcast to every direction.  Each entry must be ``>= 0``; orders

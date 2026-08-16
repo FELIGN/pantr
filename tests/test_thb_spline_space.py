@@ -1291,6 +1291,65 @@ class TestProlongation:
             coarse.prolongation_to(_grid_1d())  # type: ignore[arg-type]
 
 
+class TestCellMembershipTolerance:
+    """A point on a cell boundary is inside it, at every coordinate magnitude.
+
+    The old bare ``1e-12`` rejected a point one ulp outside once the parametric domain
+    reached ``1e6``, and accepted some 9000 ulp of slop on ``[0, 1]``.  The replacement
+    is ``8 * eps * max(|lo|, |hi|, hi - lo)`` per axis.
+    """
+
+    @staticmethod
+    def _space(lo: float, hi: float) -> THBSplineSpace:
+        """A degree-2 THB space with four root cells on ``[lo, hi]``."""
+        knots = np.concatenate([[lo] * 3, np.linspace(lo, hi, 5)[1:-1], [hi] * 3])
+        root = BsplineSpace([BsplineSpace1D(knots, 2)])
+        return THBSplineSpace(root, hierarchical_grid(uniform_grid([[lo, hi]], 4), 2))
+
+    @pytest.mark.parametrize("lam", [1.0e-6, 1.0, 1.0e6, 1.0e9])
+    def test_a_point_one_ulp_outside_the_cell_is_accepted(self, lam: float) -> None:
+        """This is the case the fixed tolerance lost above ``lam = 1e6``."""
+        thb = self._space(0.0, lam)
+        lo, hi = thb.grid.cell_bounds(1)
+        for outside in (np.nextafter(lo[0], -np.inf), np.nextafter(hi[0], np.inf)):
+            values, _ = thb.tabulate_basis(1, np.array([[outside]]))
+            assert np.all(np.isfinite(values))
+
+    @pytest.mark.parametrize("lam", [1.0e-6, 1.0, 1.0e6, 1.0e9])
+    def test_a_point_a_hundredth_of_a_cell_outside_is_rejected(self, lam: float) -> None:
+        """And this is the case the fixed tolerance let through on a small domain.
+
+        A hundredth of the cell width is enormous next to ``8 * eps``, so the verdict is
+        the same at every scale -- which the absolute constant could not manage, having
+        accepted about 9000 ulp on ``[0, 1]`` and rejected 1 ulp at ``1e6``.
+        """
+        thb = self._space(0.0, lam)
+        lo, hi = thb.grid.cell_bounds(1)
+        width = float(hi[0] - lo[0])
+        for outside in (float(lo[0]) - 0.01 * width, float(hi[0]) + 0.01 * width):
+            with pytest.raises(ValueError, match="must lie inside cell"):
+                thb.tabulate_basis(1, np.array([[outside]]))
+
+    def test_the_slack_tracks_the_cell_and_not_the_axis(self) -> None:
+        """A narrow cell far from the origin gets the coordinate's slack, not the width's.
+
+        Its width is a millionth of the domain, so a width-only rule would demand
+        agreement a million times finer than the arithmetic that produced the bound can
+        deliver; the ``|lo|``/``|hi|`` terms are what prevent that.
+        """
+        from pantr.bspline._thb_spline_space import (  # noqa: PLC0415
+            _cell_membership_tolerance,
+        )
+
+        eps = float(np.finfo(np.float64).eps)
+        narrow_far = _cell_membership_tolerance(np.array([1.0e6]), np.array([1.0e6 + 1.0e-6]))
+        assert narrow_far[0] == pytest.approx(8.0 * eps * 1.0e6, rel=1.0e-12)
+        # And it stays proportional under a change of scale.
+        unit = _cell_membership_tolerance(np.array([0.0]), np.array([1.0]))
+        scaled = _cell_membership_tolerance(np.array([0.0]), np.array([1.0e6]))
+        assert scaled[0] == pytest.approx(1.0e6 * unit[0], rel=1.0e-12)
+
+
 def _assert_same_field(
     coarse: THBSplineSpace,
     fine: THBSplineSpace,
