@@ -66,6 +66,18 @@
   from 1e-10 to 9.09e-13, while `get_strict(float32)` moves from 1e-7 to 4.77e-7.
   The per-dtype table and its platform branch on whether `longdouble` aliases
   `float64` are gone: reading the epsilon from the platform makes both unnecessary.
+- **`BsplineSpace1D.tolerance` now carries the knot vector's own magnitude.** It is
+  `8 * eps(dtype) * max(span, |knots[0]|, |knots[-1]|)` — the strict preset,
+  doubled for one extra rounding upstream, scaled by the parametric magnitude every
+  comparison in the B-spline layer is relative to. Previously it was the bare
+  per-dtype constant, so the same absolute band meant four ulp on a unit domain,
+  nothing at all from `|knot| ≈ 5` upward, and the whole domain on `[0, 1e-6]` in
+  float32. Everything downstream that takes `space.tolerance` — domain membership,
+  knot matching, cardinal interval lengths, knot insertion and removal, products,
+  degree changes — becomes scale-covariant with it. `detect_interfaces` is the one
+  caller that wanted the dimensionless factor instead and now takes it from
+  `pantr.tolerance` directly, since none of the three quantities it compares is a
+  parametric coordinate of a single patch.
 - `pantr.grid.overlay` merges breakpoints closer than the default *relative*
   tolerance times the axis's own magnitude -- the intersection window and the
   coordinates bounding it -- instead of against a bare `float64` constant. A
@@ -104,6 +116,32 @@
   endpoint condition and still returns the mean of the control points.
 
 ### Fixed
+- Knot snapping merged the wrong knots, and from `|knot| ≈ 5` upward merged none
+  at all. `BsplineSpace1D._snap_knots` rounded onto a grid of width `tolerance`,
+  which was an absolute per-dtype constant: at knot 1.0 the grid was 4.5 ulp wide
+  and it narrowed relative to the knots as they grew, so two knots one ulp apart
+  stopped merging at base 5 and the detected multiplicity dropped — a cubic asked
+  for multiplicity 2 (C¹) silently became C². A rounding *grid* is also wrong in
+  principle: two values one ulp apart can straddle a grid line and never merge,
+  for any spacing. Knots are now grouped by relative gap — a class ends where the
+  step to the next knot exceeds `8 * eps * max(span, |knots[0]|, |knots[-1]|)`,
+  three roundings of an affine map of the span with 2.7x over it — and every
+  member of a class takes the class's *first* knot. Choosing rather than averaging
+  makes snapping idempotent and keeps the stored values ones the caller supplied;
+  `np.mean` over `degree + 1` identical copies is not even the identity at large
+  magnitude, and it was moving the reported domain (`1000001.0` came back as
+  `1000000.875` in float32).
+- `get_unique_knots_and_multiplicity` reported knots the space does not contain.
+  The helper behind it rounded the knots onto the tolerance grid to decide which
+  were the same and then returned the *rounded* values, although the indices it
+  had built already pointed at the originals. On a float32 space over `[0, 1e-6]`
+  with interior knots at 2.5e-7, 5.0e-7 and 7.5e-7 it answered 2.0e-7, 5.0e-7 and
+  8.0e-7. `Bspline.multiply` builds the product's breakpoint mesh from this
+  accessor, so squaring such a spline returned a curve wrong by 8% relative at
+  points nowhere near a knot; `to_beziers`, knot insertion and removal and
+  quasi-interpolation all read the same helper. The accessor now returns stored
+  knots, and `_snap_knots` is implemented on top of it, so the space and its own
+  accessor can no longer disagree about which knots are the same knot.
 - `pantr.bspline.find_roots` returned values that are not roots, silently, on
   ordinary input: a clamped cubic on `[0, 1]` with control points alternating
   `+1, -1` gave back `0.375` and `0.625`, where the spline is `0.0208` rather
@@ -188,8 +226,14 @@
   absolute tolerance, which is scale-dependent: on a small enough domain a
   genuinely non-empty knot span fell below it and was zeroed, breaking the
   partition of unity. The guard now tests against exact zero, which is
-  scale-invariant by construction because knot vectors already snap
-  near-duplicate knots to one bitwise value.
+  scale-invariant by construction. What makes the exact test safe is the shape of
+  the recurrence, not the knot vector: the denominator is the sum of the two
+  non-negative terms the step then multiplies the quotient by, so the two weights
+  are a convex combination and a tiny denominator cancels against an equally tiny
+  numerator. (An earlier version of this entry justified it by claiming that knot
+  snapping stores equal knots bitwise identical. Snapping does that, but the guard
+  never needed it: with snapping off and two interior knots separated by 0 to
+  64 ulp, `max|N|` is 1.0 exactly and the partition of unity holds to 6.7e-16.)
 - `find_roots` reported a root at every interior knot of multiplicity
   `degree + 1` whose two straddling coefficients change sign, where the spline
   is C^-1 and jumps across the axis without ever reaching it. The tracking cited

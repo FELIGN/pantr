@@ -84,12 +84,15 @@ class BsplineSpace:
 
     @functools.cached_property
     def tolerance(self) -> float:
-        """Get the tolerance value used for numerical comparisons.
+        """Get the absolute tolerance used for parametric comparisons on this space.
 
-        It is the maximum tolerance of the B-spline spaces.
+        The largest of the univariate spaces' tolerances, each of which already
+        carries its own direction's knot magnitude (see
+        :attr:`~pantr.bspline.BsplineSpace1D.tolerance`). Taking the largest is the
+        conservative choice when the directions are scaled differently.
 
         Returns:
-            float: The tolerance value.
+            float: The absolute parametric tolerance.
         """
         return max(space.tolerance for space in self._spaces)
 

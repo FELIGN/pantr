@@ -3,17 +3,82 @@
 This module provides functions for validating, analyzing, and querying
 B-spline knot vectors including multiplicity computation, domain checks,
 cardinal interval identification, and knot vector generation utilities.
+
+Every ``tol`` argument in this module is an **absolute** parametric length, in the
+units of the knot vector itself. :func:`_knot_tolerance` is what turns the
+dimensionless presets of :mod:`pantr.tolerance` into one, by multiplying by the
+knot vector's own magnitude; :class:`~pantr.bspline.BsplineSpace1D` calls it once
+at construction and hands the result to everything below.
 """
 
 from __future__ import annotations
 
-from typing import Any, cast
+from typing import Any, Final, cast
 
 import numpy as np
 import numpy.typing as npt
 
 from .._numba_compat import nb_jit
 from ..basis._basis_utils import _validate_float_dtype, _validate_out_array
+from ..tolerance import get_strict
+
+_KNOT_MERGE_SAFETY: Final[float] = 2.0
+"""Extra factor on the strict tier for deciding that two knots are the same knot.
+
+Two knots a caller means to be equal but obtains by different routes -- a uniform
+``a + i * h`` against a barycentric ``(a * (n - i) + b * i) / n``, a refinement, a
+reparametrization, a Bezier split -- are each an affine map ``a + t * (b - a)`` of
+the knot span evaluated in at most three operations, so they differ by at most
+``3 * eps * scale`` with ``scale`` the magnitude :func:`_knot_scale` returns.
+:func:`~pantr.tolerance.get_strict` covers four roundings; doubling it to eight
+leaves about 2.7x over that bound for an FMA contraction, a different vector
+width, and one extra rounding upstream.
+"""
+
+
+def _knot_scale(knots: npt.NDArray[np.float32 | np.float64]) -> float:
+    """Get the magnitude a parametric comparison on a knot vector is relative to.
+
+    The span alone is not enough: on a knot vector based at 1e6 a knot difference
+    is formed from two coordinates of that size, so it carries an absolute error
+    of ``eps * 1e6`` however short the span is. The coordinate magnitudes are
+    therefore taken alongside the span, and the largest wins.
+
+    No floor is applied. A floor of 1.0 would be a physical choice this module is
+    not entitled to make, and it would destroy scale covariance on a domain
+    smaller than one unit -- exactly the case (``[0, 1e-6]``) where the previous
+    absolute tolerance merged every knot in the vector.
+
+    Args:
+        knots (npt.NDArray[np.float32 | np.float64]): Non-decreasing knot vector.
+
+    Returns:
+        float: ``max(span, |knots[0]|, |knots[-1]|)``, zero only for a knot vector
+        that is identically zero.
+    """
+    lo, hi = float(knots[0]), float(knots[-1])
+    return max(hi - lo, abs(lo), abs(hi))
+
+
+def _knot_tolerance(knots: npt.NDArray[np.float32 | np.float64]) -> float:
+    """Get the absolute tolerance for comparing parametric coordinates of a knot vector.
+
+    ``_KNOT_MERGE_SAFETY * get_strict(dtype) * _knot_scale(knots)``, i.e.
+    ``8 * eps * scale``. Every parametric comparison the B-spline layer makes --
+    are these two knots one knot, is this point inside the domain, are these two
+    knot intervals the same length -- is a comparison of quantities of that
+    magnitude, so they all share this one number.
+
+    Args:
+        knots (npt.NDArray[np.float32 | np.float64]): Non-decreasing knot vector.
+
+    Returns:
+        float: Absolute parametric tolerance, in the units of ``knots``.
+
+    Raises:
+        ValueError: If the knot dtype is not a supported floating-point type.
+    """
+    return _KNOT_MERGE_SAFETY * get_strict(knots.dtype) * _knot_scale(knots)
 
 
 @nb_jit(
@@ -88,10 +153,32 @@ def _get_unique_knots_and_multiplicity_impl(
 ) -> tuple[npt.NDArray[np.float32 | np.float64], npt.NDArray[np.int_]]:
     """Get unique knots and their multiplicities.
 
+    Knots are grouped by *gap*: the vector is non-decreasing, so one pass suffices,
+    and a class ends where the step to the next knot exceeds ``tol``. Every member
+    of a class is represented by the class's **first** knot, chosen rather than
+    averaged, so the values returned are knots the vector actually contains and
+    the grouping is idempotent -- regrouping the represented vector reproduces it.
+    An average would be a fresh rounding, and could place two adjacent classes'
+    representatives a single ulp apart.
+
+    Grouping by gap rather than by a rounding grid is what makes the answer depend
+    on the knots and not on where they sit relative to an origin: two values one
+    ulp apart can straddle a grid line and never merge, for any grid spacing.
+
+    The cost of the gap rule is chaining -- ``n`` knots each within ``tol`` of the
+    next collapse into one class however far apart the ends are. That is accepted
+    rather than capped: a class-width cap would break the idempotence above, since
+    a class split by the cap leaves two representatives that may be within ``tol``
+    of each other and would merge on the next pass. Chaining needs every step of
+    the chain to sit at the format's noise floor, which is a mesh that has already
+    stopped being resolvable.
+
     Args:
         knots (npt.NDArray[np.float32 | np.float64]): B-spline knot vector.
         degree (int): B-spline degree.
-        tol (float): Tolerance for numerical comparisons.
+        tol (float): **Absolute** parametric tolerance: consecutive knots closer
+            than this are one knot. See :func:`_knot_tolerance` for how it is
+            derived from the knot vector's own magnitude.
         in_domain (bool): If True, only consider knots in the domain.
             Defaults to False.
 
@@ -99,45 +186,41 @@ def _get_unique_knots_and_multiplicity_impl(
         tuple[npt.NDArray[np.float32 | np.float64], npt.NDArray[np.int_]]: Tuple of
             (unique_knots, multiplicities) where unique_knots contains the distinct knot values
             and multiplicities contains the corresponding multiplicity counts. Both arrays have
-            the same length.
+            the same length. With ``in_domain=False`` the multiplicities sum to
+            ``knots.size``, so ``np.repeat(unique_knots, multiplicities)`` rebuilds
+            the whole vector with each class collapsed onto its representative.
 
     Note:
         Inputs are assumed to be correct (no validation performed).
     """
-    # Round to tolerance precision for grouping
-    dtype = knots.dtype
-    scale = dtype.type(1.0 / tol)
-    rounded_knots = np.round(knots * scale) / scale
-
     n = knots.size
-    # unique_rounded_knots = np.empty(n, dtype=rounded_knots.dtype)
-    unique_rounded_knots_ids = np.empty(n, dtype=np.int_)
+    # Index of the first knot of each class, and how many knots the class holds.
+    first_ids = np.empty(n, dtype=np.int_)
     mult = np.zeros(n, dtype=np.int_)
 
-    if in_domain:
-        rknot_0, rknot_1 = rounded_knots[degree], rounded_knots[-degree - 1]
-    else:
-        rknot_0, rknot_1 = rounded_knots[0], rounded_knots[-1]
+    # The class containing the first and the last knot of the domain. Their whole
+    # class is reported, clamped copies outside the domain included, which is what
+    # the multiplicity of a boundary knot means.
+    lo_index, hi_index = degree, n - degree - 1
+    lo_class, hi_class = 0, 0
 
-    j = -1
-    last_rknot = np.nan
-
-    for i, rknot in enumerate(rounded_knots):
-        if rknot < rknot_0:
-            continue
-        elif rknot > rknot_1:
-            break
-
-        if rknot == last_rknot:
-            mult[j] += 1
-        else:
+    j = 0
+    first_ids[0] = 0
+    mult[0] = 1
+    for i in range(1, n):
+        if knots[i] - knots[i - 1] > tol:
             j += 1
-            last_rknot = rknot
-            unique_rounded_knots_ids[j] = i
-            mult[j] = 1
+            first_ids[j] = i
+        mult[j] += 1
+        if i == lo_index:
+            lo_class = j
+        if i == hi_index:
+            hi_class = j
 
-    unique_knots = rounded_knots[unique_rounded_knots_ids[: j + 1]]
-    mults = mult[: j + 1]
+    lo, hi = (lo_class, hi_class) if in_domain else (0, j)
+
+    unique_knots = knots[first_ids[lo : hi + 1]]
+    mults = mult[lo : hi + 1]
     return unique_knots, mults
 
 
