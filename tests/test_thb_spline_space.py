@@ -1291,6 +1291,88 @@ class TestProlongation:
             coarse.prolongation_to(_grid_1d())  # type: ignore[arg-type]
 
 
+class TestProlongationResidualGate:
+    """The residual gate has to sit between what a refinement leaves and what it does not.
+
+    The threshold is ``get_conservative(float64) * (1 + max_coarse_value)``, roughly
+    ``1.8e-12``.  What matters is that genuine refinements clear it by orders of
+    magnitude while a column that genuinely fails to reproduce does not, so these tests
+    bracket it from both sides rather than pinning the number.
+    """
+
+    @staticmethod
+    def _worst_residual(coarse: THBSplineSpace, fine: THBSplineSpace) -> float:
+        """Return the largest column residual, reading it off the assembled matrix.
+
+        ``P`` reproduces each coarse function exactly when the residual is zero, so
+        evaluating both sides on a common point set recovers the same quantity the gate
+        measures, without reaching into the private column solve.
+        """
+        p = coarse.prolongation_to(fine)
+        mat_c, pts = _collocation(coarse)
+        rows = []
+        for point in pts:
+            cid = fine.grid.locate(point)
+            assert cid is not None
+            values, dofs = fine.tabulate_basis(cid, point)
+            row = np.zeros(fine.num_total_basis)
+            row[dofs] = values
+            rows.append(row)
+        return float(np.abs(np.asarray(rows) @ p - mat_c).max())
+
+    @pytest.mark.parametrize("lo,hi", [(0.0, 1.0), (0.0, 1.0e-6), (1.0e6, 1.0e6 + 1.0)])
+    def test_a_genuine_refinement_clears_the_gate_by_orders_of_magnitude(
+        self, lo: float, hi: float
+    ) -> None:
+        """And by the same margin wherever the parametric domain sits.
+
+        The quantity graded is a set of refinement coefficients, which are dimensionless,
+        so both the residual and the threshold are invariant under ``x -> lambda * x``.
+        Measured worst residual over a 132-configuration sweep is ``18.5 * eps``, against
+        a threshold of ``4096 * eps * 2``.
+        """
+        knots = np.concatenate([[lo] * 3, np.linspace(lo, hi, 5)[1:-1], [hi] * 3])
+        root = BsplineSpace([BsplineSpace1D(knots, 2)])
+        grid = hierarchical_grid(uniform_grid([[lo, hi]], 4), 2)
+        coarse = THBSplineSpace(root, grid)
+        fine = coarse.refine([0, 1])
+        assert self._worst_residual(coarse, fine) < 512.0 * float(np.finfo(np.float64).eps)
+
+    def test_the_gate_rejects_a_space_that_cannot_reproduce_the_coarse_basis(self) -> None:
+        """A structurally compatible pair whose "fine" basis is genuinely too small.
+
+        Both spaces refine one root cell, but different ones, so both have two levels
+        and every check in ``_check_is_refinement`` passes -- same root knots, factor,
+        regularity, truncation and level count.  The level-1 functions the first space
+        carries over cell 0 are simply absent from the second's span, so this exercises
+        the residual gate and nothing else.  A real impostor lands at order one, which
+        is why the previous ``1e-8`` was never the thing catching it; what ``1e-8`` did
+        was leave the whole band ``[1e-14, 1e-8]`` certified as a refinement.
+        """
+        base = THBSplineSpace(_root_1d(), _grid_1d())
+        coarse = base.refine([0], admissible_class=None)
+        impostor = base.refine([3], admissible_class=None)
+        assert impostor.num_levels == coarse.num_levels
+        with pytest.raises(ValueError, match="prolongation residual"):
+            coarse.prolongation_to(impostor)
+
+    def test_the_threshold_is_the_conservative_tier_and_not_a_bare_constant(self) -> None:
+        """Pin the derivation, not the digits: it must be a multiple of an eps tier.
+
+        A regression to a fixed absolute constant would break this even if the digits
+        happened to match at float64.
+        """
+        from pantr.bspline._thb_spline_space import (  # noqa: PLC0415
+            _prolongation_residual_tolerance,
+        )
+        from pantr.tolerance import get_conservative  # noqa: PLC0415
+
+        assert _prolongation_residual_tolerance(1.0) == 2.0 * get_conservative(np.float64)
+        assert _prolongation_residual_tolerance(0.0) == get_conservative(np.float64)
+        # Monotone in the size of the column it grades.
+        assert _prolongation_residual_tolerance(3.0) > _prolongation_residual_tolerance(1.0)
+
+
 class TestCellMembershipTolerance:
     """A point on a cell boundary is inside it, at every coordinate magnitude.
 

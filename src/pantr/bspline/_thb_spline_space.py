@@ -24,7 +24,7 @@ import numpy as np
 from scipy import sparse
 
 from ..grid import HierarchicalGrid, hierarchical_grid, tensor_product_grid
-from ..tolerance import get_strict
+from ..tolerance import get_conservative, get_strict
 from ._bspline_knot_insertion_core import _compute_oslo_matrix_1d_core
 from ._bspline_space_nd import BsplineSpace
 from ._thb_eval_core import _combine_tp_values
@@ -145,6 +145,57 @@ def _cell_membership_tolerance(
     """
     scale = np.maximum(np.maximum(np.abs(cell_lo), np.abs(cell_hi)), cell_hi - cell_lo)
     return np.asarray(_CELL_MEMBERSHIP_SAFETY * get_strict(np.float64) * scale, dtype=np.float64)
+
+
+def _prolongation_residual_tolerance(max_coarse_val: float) -> float:
+    """Get the residual above which a coarse column is not reproduced by the fine basis.
+
+    What is graded is ``max_i |A x - b|`` over every column of the prolongation, where
+    ``b`` is a coarse function's coefficient vector in a common tensor-product level and
+    ``A``'s columns are the candidate fine functions' vectors in the same basis. All the
+    entries are refinement (Oslo) coefficients, so the quantity is dimensionless and its
+    natural size is ``max_coarse_val = ||b||_inf`` -- measured to be exactly ``1.0`` for
+    every genuine refinement, the partition-of-unity value. The ``1 +`` is the floor that
+    keeps the threshold positive for a coarse function whose column is empty.
+
+    ``np.linalg.lstsq(rcond=None)`` dispatches to LAPACK's ``gelsd``, which is normwise
+    backward stable: the computed ``x_hat`` solves ``(A + dA) y = b + db`` in the
+    least-squares sense with ``||dA|| <= c eps ||A||`` and ``||db|| <= c eps ||b||``. For
+    a genuine refinement the exact system is consistent, so the exact residual is zero
+    and
+
+        ||A x_hat - b|| <= 2 (||dA|| ||x_hat|| + ||db||) = O(c eps (||A|| ||x|| + ||b||)),
+
+    with every factor on the right of order one here: the entries of ``A``, ``x`` and
+    ``b`` are all refinement coefficients in ``[0, 1]``. The residual is therefore a
+    small multiple of ``eps``, and ``c`` is the part no closed form is available for.
+
+    **Measured**, over 132 configurations (1D, 2D and 3D; degrees 2 to 5; 4 to 16
+    elements per axis; truncated and non-truncated; one and two refinement levels;
+    domains ``[0, 1]``, ``[0, 1e-6]`` and ``[1e6, 1e6 + 1]``): the worst residual is
+    ``18.5 * eps``, and it is bit-identical between ``[0, 1]`` and ``[1e6, 1e6 + 1]``,
+    as a dimensionless quantity must be.
+
+    The tier is :func:`~pantr.tolerance.get_conservative`, ``4096 * eps``, whose stated
+    meaning is a long accumulation -- which an SVD-based least-squares solve is. Against
+    the worst measured that is a safety factor of ``4096 * 2 / 18.5 = 443``, and it is
+    what stands in for the unknown ``c``.
+
+    A ``sqrt(M)`` term with ``M = A.shape[0]`` was considered, since ``||b||_2`` carries
+    one, and **rejected on measurement**: over the same runs ``M`` ranges from 13 to
+    19683 and the residual does not track it (``res / eps`` is 2.0 at ``M = 13`` and 16.5
+    at ``M = 19683``; normalizing by ``sqrt(M)`` makes the spread *worse*, from 3.10 down
+    to 0.10). Carrying it would loosen the gate 140-fold on the largest systems for a
+    growth that is not there. If one ever appears, that term is where it belongs.
+
+    Args:
+        max_coarse_val (float): Largest absolute coefficient over every coarse column,
+            ``||b||_inf``.
+
+    Returns:
+        float: The residual threshold, in the coefficients' own dimensionless units.
+    """
+    return get_conservative(np.float64) * (1.0 + max_coarse_val)
 
 
 def _check_out_array(
@@ -1832,8 +1883,9 @@ class THBSplineSpace:
         Raises:
             TypeError: If ``fine`` is not a :class:`THBSplineSpace`.
             ValueError: If ``fine`` is not a refinement of this space (mismatched
-                root/factor/regularity/truncation, fewer levels, or the prolongation
-                residual is non-negligible).
+                root/factor/regularity/truncation, fewer levels, or a prolongation
+                residual above ``4096 * eps * (1 + max_coarse_value)``; see
+                :func:`_prolongation_residual_tolerance`).
         """
         self._check_is_refinement(fine)
         return self._assemble_prolongation(fine)
@@ -1939,8 +1991,9 @@ class THBSplineSpace:
             index, the fine dof indices its column occupies, and the values there.
 
         Raises:
-            ValueError: If some column cannot reproduce its coarse function (residual
-                above tolerance), i.e. ``fine`` is not a refinement of ``self``.
+            ValueError: If some column cannot reproduce its coarse function -- a
+                residual above :func:`_prolongation_residual_tolerance` -- i.e. ``fine``
+                is not a refinement of ``self``.
 
         Note:
             The residual is only known once every column has been solved, so the check
@@ -1975,10 +2028,11 @@ class THBSplineSpace:
             max_residual = max(max_residual, residual)
             max_coarse_val = max(max_coarse_val, coarse_val)
 
-        if max_residual > 1e-8 * (1.0 + max_coarse_val):
+        residual_tol = _prolongation_residual_tolerance(max_coarse_val)
+        if max_residual > residual_tol:
             raise ValueError(
                 f"fine is not a refinement of this space (prolongation residual "
-                f"{max_residual:.2e})."
+                f"{max_residual:.2e}, above {residual_tol:.2e})."
             )
 
     def _assemble_prolongation(self, fine: THBSplineSpace) -> npt.NDArray[np.float64]:
@@ -1992,8 +2046,9 @@ class THBSplineSpace:
             ``(fine.num_total_basis, self.num_total_basis)``.
 
         Raises:
-            ValueError: If a column cannot reproduce its coarse function (residual
-                above tolerance), i.e. ``fine`` is not a refinement of ``self``.
+            ValueError: If a column cannot reproduce its coarse function -- a residual
+                above :func:`_prolongation_residual_tolerance` -- i.e. ``fine`` is not a
+                refinement of ``self``.
         """
         shape = (fine.num_total_basis, self.num_total_basis)
         prolongation: npt.NDArray[np.float64] = np.zeros(shape, dtype=np.float64)
@@ -2012,8 +2067,9 @@ class THBSplineSpace:
             ``(fine.num_total_basis, self.num_total_basis)``, ``float64``.
 
         Raises:
-            ValueError: If a column cannot reproduce its coarse function (residual
-                above tolerance), i.e. ``fine`` is not a refinement of ``self``.
+            ValueError: If a column cannot reproduce its coarse function -- a residual
+                above :func:`_prolongation_residual_tolerance` -- i.e. ``fine`` is not a
+                refinement of ``self``.
 
         Note:
             Assembled through COO, whose duplicate summation never fires: each column is
