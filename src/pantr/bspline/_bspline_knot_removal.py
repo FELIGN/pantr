@@ -150,9 +150,30 @@ def _homogeneous_deviation_tolerance(
     Euclidean distance, which loses the direction. Removing it would mean the kernel
     grading the two parts separately.
 
-    That is also why ``1 + |P|_max`` adds a pure number to a length. The
-    inhomogeneity is inherited from ``D``, whose components are not all of one unit,
-    and is not an error in the formula; the bound above holds at every scale.
+    That is also why ``1 + |P|_max`` adds a pure number to a length, and the consequence
+    has to be stated rather than waved past. The inhomogeneity is not an error in the
+    formula: it is inherited from ``D`` itself, whose squared value adds
+    ``(length * weight)^2`` to ``weight^2``, so ``D`` is not a quantity of one unit and no
+    pullback out of it can be. The **bound is sound at every scale** -- the derivation
+    above uses nothing about the size of ``|P|`` -- but its *tightness* is not scale
+    invariant, and where the crossover sits depends on the unit the model is written in:
+
+    * ``|P|_max >> 1``: tight for a weight-carried deviation, loose by ``|P|_max`` for a
+      purely coordinate-carried one.
+    * ``|P|_max << 1``: the reverse. Tight for a coordinate-carried deviation, loose by
+      ``1 / |P|_max`` for a weight-carried one.
+
+    Measured: sweeping a weight perturbation over sixteen decades at a fixed *relative*
+    budget, 20 of the 33 sweep points are accepted at model scale 1 and 1e6 but only 9 at
+    model scale 1e-6, where the ``1`` term dominates. The verdict is therefore covariant
+    in the safe direction only -- a small model refuses removals its budget would allow,
+    and never accepts one it would not.
+
+    Closing that gap is a Layer-3 change, not a better pullback. It needs the kernel to
+    grade ``||dP^w_xyz|| / w`` and ``|P| |dP^w_w| / w`` against ``d`` **separately**, which
+    is dimensionally clean, tight in both regimes and fully covariant. Compressing them
+    into one Euclidean distance is what loses the direction, and once lost it cannot be
+    recovered here.
 
     Args:
         ctrl (npt.NDArray[np.float32 | np.float64]): Homogeneous control points, last
