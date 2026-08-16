@@ -404,9 +404,9 @@ def test_detect_l_shape_has_two_interfaces() -> None:
 def test_detect_scale_invariance() -> None:
     """Detection survives a large uniform rescaling of the geometry.
 
-    The geometric tolerance is scaled by the joint bounding-box diagonal, so a
-    problem measured in different units must give the same topology. An absolute
-    epsilon would quietly stop matching here.
+    The geometric tolerance is scaled by the size of the geometry, so a problem
+    measured in different units must give the same topology. An absolute epsilon
+    would quietly stop matching here.
     """
     space = _anisotropic_space_2d()
     for scale in (1e-4, 1.0, 1e5):
@@ -415,6 +415,48 @@ def test_detect_scale_invariance() -> None:
         assert detect_interfaces([first, second]) == (
             Interface(patch_a=0, face_a=1, patch_b=1, face_b=0, axis_map=(1,), flips=(False,)),
         ), f"failed at scale {scale}"
+
+
+def test_detect_translation_invariance() -> None:
+    """Detection survives moving the geometry far from the origin.
+
+    Rescaling and translating are different tests, and the joint bounding-box diagonal
+    alone tracks only the first. Two unit patches at ``x = 1e6`` keep a diagonal of
+    order one, while every coordinate difference is now formed from numbers of order
+    ``1e6`` and so carries an absolute error of ``eps * 1e6``; a diagonal-only
+    tolerance of ``2.5e-18`` sits eight orders below that noise floor. Taking the
+    largest coordinate magnitude alongside the diagonal is what fixes it.
+
+    The second patch is displaced by **one ulp of the coordinate magnitude**, which is
+    what makes this test discriminating rather than decorative. Two patches built by
+    the same expression have bitwise equal face coordinates and match under any
+    tolerance at all, including a hopeless one; two patches that reached the same face
+    by different arithmetic differ by a rounding at their own magnitude, and that is
+    the gap the diagonal-only rule refuses to forgive.
+    """
+    space = _anisotropic_space_2d()
+    expected = (Interface(patch_a=0, face_a=1, patch_b=1, face_b=0, axis_map=(1,), flips=(False,)),)
+    for shift in (0.0, 1.0e3, 1.0e6, 1.0e9):
+        one_ulp = float(np.spacing(shift)) if shift > 0.0 else 0.0
+        first = Bspline(space, _lattice_patch(space).control_points + shift)
+        second = Bspline(
+            space, _lattice_patch(space, offset=[1.0, 0.0]).control_points + shift + one_ulp
+        )
+        assert detect_interfaces([first, second]) == expected, f"failed at shift {shift}"
+
+
+def test_detect_keeps_separate_patches_separate_far_from_the_origin() -> None:
+    """The looser tolerance far from the origin must not start inventing interfaces.
+
+    The magnitude term multiplies the geometric tolerance by ``1e6`` at this offset,
+    so the guard worth having is that a genuine gap is still a gap: these two patches
+    are a whole patch-width apart and must stay unmatched.
+    """
+    space = _anisotropic_space_2d()
+    shift = 1.0e6
+    first = Bspline(space, _lattice_patch(space).control_points + shift)
+    apart = Bspline(space, _lattice_patch(space, offset=[2.0, 0.0]).control_points + shift)
+    assert detect_interfaces([first, apart]) == ()
 
 
 def test_detect_requires_common_dim() -> None:

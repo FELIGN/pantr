@@ -62,7 +62,8 @@ class _Tolerances(NamedTuple):
 
     Attributes:
         geometric (float): For control-point coordinates. The relative tolerance
-            scaled by the joint bounding-box diagonal, so it tracks problem size.
+            scaled by ``max(joint bounding-box diagonal, largest |coordinate|)``, so
+            it tracks both the size of the problem and where it sits.
         parametric (float): For knot vectors already normalized to ``[0, 1]``.
             Dimensionless, so it is the bare relative tolerance.
         weight (float): For rational weights. Scaled by the largest weight in play
@@ -107,9 +108,20 @@ def _joint_tolerances(patch_a: Bspline, patch_b: Bspline, tol: float | None) -> 
     )
     extent = np.asarray(coords.max(axis=0) - coords.min(axis=0), dtype=np.float64)
     diagonal = float(np.linalg.norm(extent))
-    # A degenerate joint bounding box (both patches a single point) leaves no scale
-    # to borrow, so fall back to the bare relative tolerance rather than to zero.
-    geometric = relative * diagonal if diagonal > 0.0 else relative
+    # The diagonal alone is not the scale a coordinate comparison is relative to. Two
+    # small patches meeting at x = 1e6 have a diagonal of order one while the difference
+    # of two of their coordinates is formed from numbers of order 1e6, so it carries an
+    # absolute error of eps * 1e6 however short the diagonal is; grading against the
+    # diagonal there asks for agreement eight orders below the noise floor. The largest
+    # coordinate magnitude is therefore taken alongside it and the larger wins -- the
+    # same rule, for the same reason, as `_knot_scale` in the B-spline layer and
+    # `_geometric_scale` in point inversion.
+    magnitude = float(np.abs(coords).max()) if coords.size else 0.0
+    scale = max(diagonal, magnitude)
+    # A degenerate joint bounding box (both patches a single point, at the origin)
+    # leaves no scale to borrow, so fall back to the bare relative tolerance rather
+    # than to zero.
+    geometric = relative * scale if scale > 0.0 else relative
 
     weight_scale = 1.0
     if patch_a.is_rational or patch_b.is_rational:
