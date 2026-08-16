@@ -94,8 +94,7 @@ def create_coons_surface(
         ValueError: If any curve is not 1D.
         ValueError: If corner points are not geometrically consistent, i.e. two curves
             disagree at a shared corner by more than ``4096 * eps`` times the largest
-            absolute coordinate over all eight corner values (see
-            :func:`_verify_corners_2d`).
+            absolute coordinate over all eight corner values.
     """
     (c_v0, c_v1), (c_u0, c_u1) = curves
 

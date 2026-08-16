@@ -1884,8 +1884,8 @@ class THBSplineSpace:
             TypeError: If ``fine`` is not a :class:`THBSplineSpace`.
             ValueError: If ``fine`` is not a refinement of this space (mismatched
                 root/factor/regularity/truncation, fewer levels, or a prolongation
-                residual above ``4096 * eps * (1 + max_coarse_value)``; see
-                :func:`_prolongation_residual_tolerance`).
+                residual above ``4096 * eps * (1 + max_coarse_value)``, where
+                ``max_coarse_value`` is the largest coefficient of any coarse column).
         """
         self._check_is_refinement(fine)
         return self._assemble_prolongation(fine)
