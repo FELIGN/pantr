@@ -50,6 +50,12 @@
   matrix rather than by sampling.
 
 ### Changed
+- `pantr.grid.overlay` merges breakpoints closer than the default *relative*
+  tolerance times the axis's own magnitude -- the intersection window and the
+  coordinates bounding it -- instead of against a bare `float64` constant. A
+  window of length 1 sitting at 1e6 resolves its breakpoints no better than
+  `eps * 1e6` however short it is, and the merge verdict is now the same on
+  `[0, 1]` as on any rescaling of it.
 - The minimum supported SciPy is now 1.15, raised from 1.11. Lagrange tabulation
   seeds the node permutation SciPy's `BarycentricInterpolator` applies, and the
   `rng` argument that makes that possible arrived in 1.15. Earlier versions

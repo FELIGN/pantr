@@ -79,9 +79,14 @@ def test_overlay_restricts_to_domain_intersection() -> None:
 
 
 def test_overlay_merges_near_coincident_breakpoints() -> None:
-    """Breakpoints closer than the float64 tolerance collapse into one."""
+    """Breakpoints closer than the tolerance collapse into one.
+
+    The merge tolerance is ``get_default(float64) * window = 1.42e-14`` here, so
+    the separation below is well inside it (9 ulp at 0.5) while remaining a
+    perfectly representable pair.
+    """
     a = TensorProductGrid([[0.0, 0.5, 1.0]])
-    b = TensorProductGrid([[0.0, 0.5 + 1e-13, 1.0]])
+    b = TensorProductGrid([[0.0, 0.5 + 1e-15, 1.0]])
     result = overlay(a, b)
     nptest.assert_allclose(result.breakpoints[0], [0.0, 0.5, 1.0])
 
@@ -92,6 +97,28 @@ def test_overlay_keeps_distinct_close_breakpoints() -> None:
     b = TensorProductGrid([[0.0, 0.5 + 1e-3, 1.0]])
     result = overlay(a, b)
     assert result.breakpoints[0].shape[0] == 4
+
+
+@pytest.mark.parametrize("lam", [1e-6, 1.0, 1e6])
+def test_overlay_merge_verdict_is_scale_covariant(lam: float) -> None:
+    """The same breakpoints in units of ``lam`` get the same verdict at every ``lam``.
+
+    The tolerance is relative to the axis's own magnitude, so a separation of
+    ``1e-15 * lam`` merges and one of ``1e-3 * lam`` does not, whatever ``lam`` is.
+    An absolute tolerance merged everything at ``lam = 1e-6`` and nothing at
+    ``lam = 1e6``.
+    """
+    near = overlay(
+        TensorProductGrid([[0.0, 0.5 * lam, 1.0 * lam]]),
+        TensorProductGrid([[0.0, 0.5 * lam + 1e-15 * lam, 1.0 * lam]]),
+    )
+    assert near.breakpoints[0].shape[0] == 3
+
+    far = overlay(
+        TensorProductGrid([[0.0, 0.5 * lam, 1.0 * lam]]),
+        TensorProductGrid([[0.0, 0.5 * lam + 1e-3 * lam, 1.0 * lam]]),
+    )
+    assert far.breakpoints[0].shape[0] == 4
 
 
 def test_overlay_ndim_mismatch_raises() -> None:
