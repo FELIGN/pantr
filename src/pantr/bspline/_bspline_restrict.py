@@ -27,10 +27,15 @@ because each is what makes one number enough:
 knot vector, then applied to the *refined* one after boundary insertion. Knot
 insertion never changes the first or last knot, so ``_knot_scale`` is identical for
 both and the tolerance means the same thing on either side. The one stage that does
-change the endpoints is the periodic-to-open conversion, which clamps the vector to
-its own domain and can only *shrink* the scale (by the ratio of the padded extent to
-the domain, at most a small factor). The inherited tolerance is then conservative
-rather than tight, which is the safe direction for a merge test.
+change the endpoints is the periodic-to-open conversion, which trims the ghost knots
+and leaves the vector spanning ``[a, b] = [knots[p], knots[-p - 1]]``. That can only
+*shrink* the scale, and the three-line argument is worth writing down rather than
+asserting: ``[a, b]`` is contained in ``[knots[0], knots[-1]]``, so ``b - a`` is at
+most the original span; and the largest absolute value on a real interval is attained
+at an endpoint, so ``|a|`` and ``|b|`` are both at most
+``max(|knots[0]|, |knots[-1]|)``. Each of the three terms of ``_knot_scale`` therefore
+only decreases. The inherited tolerance is then conservative rather than tight, which
+is the safe direction for a merge test.
 
 **The extraction offsets widen, and that direction is deliberate.** The sub-vector
 is cut with ``searchsorted(refined_knots, a_new - tol)`` and

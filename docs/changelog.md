@@ -146,11 +146,17 @@
   absolute `1e-10`, a geometric budget wearing no units: the same exactly-removable knot
   came out at geometry scale 1e-6, 1 and 1e3 and was silently refused at 1e6 and 1e9. It
   now means *remove only what is exact to round-off*, `8 * (degree + 1) * eps *
-  max(bbox diagonal, largest |P_i|)`, which is the one default needing no arbitrary
-  constant. Measured over 105 cases (degrees 1–7, ranks 1–3, geometry scales 1e-6 to 1e9)
-  by bisecting for the smallest budget that still removes a just-inserted knot: the
-  largest distance observed is 0.84 eps × scale, and the tightest margin anywhere in the
-  set is a factor of 48. **This is a behaviour change** — a knot whose removal costs up to
+  max(bbox diagonal, largest |P_i|) * sqrt(n)`, which is the one default needing no
+  arbitrary constant. Measured over 105 cases (degrees 1–7, ranks 1–3, geometry scales
+  1e-6 to 1e9) by bisecting for the smallest budget that still removes a just-inserted
+  knot: the largest distance observed is 0.84 eps × scale, and the tightest margin
+  anywhere in the set is a factor of 48. The `sqrt(n)` is what the *other* directions
+  add: on a surface or a volume the removal test is handed a slice with every other
+  direction's control points flattened into it, so its single Euclidean distance spans
+  `n` control points rather than one, and stacking `n` blocks each of norm at most `e`
+  reaches `sqrt(n) · e`. Without that term the default silently refuses an exactly
+  redundant knot once `n` is large enough — measured on a degree-3 volume, from
+  `n = 124609` upward. **This is a behaviour change** — a knot whose removal costs up to
   1e-10 of geometry used to come out and no longer does. Trading geometry for a shorter
   knot vector is a price only the caller can set, so it has to be asked for.
 - **A rational knot-removal budget is converted before it reaches the kernel.** The kernel

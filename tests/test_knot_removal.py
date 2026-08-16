@@ -453,7 +453,7 @@ class TestDefaultToleranceIsARoundOffFloor:
         # distance A5.8 measures is an upper bound on the curve deviation, so the two
         # curves must agree to within the very floor that admitted the removal --
         # a bound derived from the geometry rather than a round number.
-        floor = _roundoff_deviation_floor(np.asarray(inserted.control_points), degree)
+        floor = _roundoff_deviation_floor(np.asarray(inserted.control_points), degree, 1)
         t = np.linspace(0.0, 1.0, 401)
         deviation = float(
             np.linalg.norm(
@@ -485,8 +485,8 @@ class TestDefaultToleranceIsARoundOffFloor:
         )
 
         cp = _random_curve(3, 5, 3, 1.0, seed=4).control_points
-        unit = _roundoff_deviation_floor(np.asarray(cp), 3)
-        scaled = _roundoff_deviation_floor(np.asarray(cp) * 1.0e6, 3)
+        unit = _roundoff_deviation_floor(np.asarray(cp), 3, 1)
+        scaled = _roundoff_deviation_floor(np.asarray(cp) * 1.0e6, 3, 1)
         assert scaled == pytest.approx(1.0e6 * unit, rel=1.0e-12)
 
     def test_the_floor_grows_with_degree_and_is_a_multiple_of_eps(self) -> None:
@@ -500,7 +500,10 @@ class TestDefaultToleranceIsARoundOffFloor:
         eps = float(np.finfo(np.float64).eps)
         for degree in (1, 3, 7):
             expected = 8.0 * (degree + 1) * eps * _control_point_scale(cp)
-            assert _roundoff_deviation_floor(cp, degree) == pytest.approx(expected, rel=1.0e-14)
+            assert _roundoff_deviation_floor(cp, degree, 1) == pytest.approx(expected, rel=1e-14)
+        # And the stacking factor is a square root, not a factor of one or of n.
+        base = _roundoff_deviation_floor(cp, 3, 1)
+        assert _roundoff_deviation_floor(cp, 3, 10_000) == pytest.approx(100.0 * base, rel=1e-14)
 
 
 class TestRationalDeviationIsMeasuredInProjectedSpace:
@@ -585,3 +588,104 @@ class TestRationalDeviationIsMeasuredInProjectedSpace:
         assert _homogeneous_deviation_tolerance(cp, 1.0e-3) == pytest.approx(
             1.0e-3 * w_min / (1.0 + p_max), rel=1.0e-14
         )
+
+
+class TestTheFloorSpansEveryStackedControlPoint:
+    """The kernel grades a whole slice at once, so the floor has to as well.
+
+    ``_flatten_along_axis`` collapses every direction but the one being reduced into the
+    trailing axis, so A5.8's single Euclidean distance runs over ``prod(other basis
+    counts)`` control points rather than one.  A per-point floor is then too tight by the
+    ``sqrt`` of that count, and the symptom is silent: an exactly redundant knot is simply
+    not removed, with no error and no warning.
+    """
+
+    @staticmethod
+    def _volume(degree: int, n_removal: int, n_side: int, rank: int, seed: int) -> Bspline:
+        """Build a 3D volume with ``n_side`` elements in each non-removal direction."""
+
+        def kv(n: int) -> npt.NDArray[np.float64]:
+            return np.concatenate(
+                [np.full(degree, 0.0), np.linspace(0.0, 1.0, n + 1), np.full(degree, 1.0)]
+            )
+
+        space = BsplineSpace(
+            [BsplineSpace1D(kv(n_removal), degree)]
+            + [BsplineSpace1D(kv(n_side), degree) for _ in range(2)]
+        )
+        rng = np.random.default_rng(seed)
+        cp = rng.uniform(-1.0, 1.0, size=(*space.num_basis, rank))
+        return Bspline(space, np.ascontiguousarray(cp))
+
+    @pytest.mark.parametrize("n_side", [2, 20, 200, 400])
+    def test_a_redundant_knot_comes_out_of_a_volume_however_wide_the_slice(
+        self, n_side: int
+    ) -> None:
+        """Measured: without the sqrt this refused from ``num_stacked = 124609`` upward.
+
+        ``n_side = 400`` puts ``num_stacked`` at 162409, comfortably past that threshold,
+        while ``n_side = 2`` keeps the curve-like regime the per-point floor was derived
+        and measured in.  Both must remove the knot.
+        """
+        vol = self._volume(3, 5, n_side, 3, seed=n_side)
+        inserted = vol.insert_knots([np.array([0.37]), None, None])
+        before = inserted.space.spaces[0].knots.size
+
+        result = inserted.remove_knots([np.array([0.37]), None, None])
+
+        assert result.space.spaces[0].knots.size == before - 1
+
+    def test_a_knot_a_volume_genuinely_needs_still_stays(self) -> None:
+        """The sqrt must widen the floor, not turn it into a licence.
+
+        Its whole job is to track what the aggregate distance of an *exact* removal
+        reaches; a knot carrying real geometry is orders above that at any slice width.
+        """
+        vol = self._volume(3, 5, 20, 3, seed=5)
+        before = vol.space.spaces[0].knots.size
+
+        result = vol.remove_knots([np.array([0.4]), None, None])
+
+        assert result.space.spaces[0].knots.size == before
+
+    def test_the_stacking_count_is_the_other_directions_and_not_this_one(self) -> None:
+        """A surface removed along its *short* axis stacks the long axis, and vice versa.
+
+        Getting the two the wrong way round would pass a square 2D test and fail an
+        oblong one, so the fixture here is deliberately lopsided.
+        """
+
+        def kv(n: int, degree: int = 3) -> npt.NDArray[np.float64]:
+            return np.concatenate(
+                [np.full(degree, 0.0), np.linspace(0.0, 1.0, n + 1), np.full(degree, 1.0)]
+            )
+
+        space = BsplineSpace([BsplineSpace1D(kv(4), 3), BsplineSpace1D(kv(4000), 3)])
+        rng = np.random.default_rng(31)
+        srf = Bspline(
+            space, np.ascontiguousarray(rng.uniform(-1.0, 1.0, size=(*space.num_basis, 3)))
+        )
+        for axis in (0, 1):
+            values: list[npt.NDArray[np.float64] | None] = [None, None]
+            values[axis] = np.array([0.37])
+            inserted = srf.insert_knots(values)
+            before = inserted.space.spaces[axis].knots.size
+            result = inserted.remove_knots(values)
+            assert result.space.spaces[axis].knots.size == before - 1, f"failed on axis {axis}"
+
+
+class TestRationalRemovalRejectsDegenerateWeights:
+    """A zero weight has no projected point, so the conversion cannot be done at all.
+
+    Left unguarded it divided by zero, raised a `RuntimeWarning` and returned a
+    tolerance of exactly 0.0, which silently blocks every removal in the direction.
+    """
+
+    def test_a_zero_weight_raises_rather_than_silently_blocking(self) -> None:
+        curve = _nurbs_curve(3, 5, 3, 1.0, 1.0, seed=17)
+        cp = np.array(curve.control_points)
+        cp[2, -1] = 0.0
+        degenerate = Bspline(curve.space, cp, is_rational=True)
+
+        with pytest.raises(ValueError, match="strictly positive weights"):
+            degenerate.remove_knots(0.4, tol=1.0e-6)

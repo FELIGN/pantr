@@ -124,12 +124,18 @@ class TestCoonsCornerToleranceScaleCovariance:
         srf = create_coons_surface(((c_v0, c_v1), (c_u0, c_u1)))
         assert srf.dim == 2
 
-    @pytest.mark.parametrize("scale", [1.0e-6, 1.0e-3, 1.0, 1.0e3, 1.0e6, 1.0e9])
+    @pytest.mark.parametrize(
+        "scale", [1.0e-9, 1.0e-8, 1.0e-7, 1.0e-6, 1.0e-3, 1.0, 1.0e3, 1.0e6, 1.0e9]
+    )
     def test_a_relative_corner_gap_is_rejected_at_every_scale(self, scale: float) -> None:
         """And this is the direction it failed in on a small model.
 
         A gap of one part per million of the model size is a real modelling mistake at
-        any scale; the absolute constant accepted it once ``scale`` fell below ``1e-6``.
+        any scale; the absolute constant accepted it once the *absolute* gap fell below
+        ``1e-12``, i.e. from ``scale = 1e-6`` down.  The list has to reach ``1e-9`` to
+        pin that: at exactly ``1e-6`` the product ``1e-6 * 1e-6`` rounds a hair above
+        ``1e-12`` and the old code still rejected, so a range stopping there passes on
+        the unfixed code and proves nothing.
         """
         c_v0, c_v1, c_u0, c_u1 = self._square(scale, corner_shift=1.0e-6 * scale)
         with pytest.raises(ValueError, match="mismatch"):

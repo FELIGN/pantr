@@ -15,6 +15,7 @@ this module is where they are reconciled: see
 
 from __future__ import annotations
 
+import math
 from typing import TYPE_CHECKING, Final
 
 import numpy as np
@@ -53,6 +54,9 @@ for the smallest budget that still removes it: the largest observed distance is
 whole set is a factor of 48. There is no trend with degree (the worst case is at
 degree 4), so the ``degree + 1`` is headroom the derivation asks for rather than a
 term fitted to the data.
+
+All of that describes **one** control point, which is what a curve has per index. See
+:func:`_roundoff_deviation_floor` for the ``sqrt`` that a surface or a volume adds.
 """
 
 
@@ -83,12 +87,15 @@ def _control_point_scale(ctrl: npt.NDArray[np.float32 | np.float64]) -> float:
     return max(diagonal, magnitude)
 
 
-def _roundoff_deviation_floor(ctrl: npt.NDArray[np.float32 | np.float64], degree: int) -> float:
+def _roundoff_deviation_floor(
+    ctrl: npt.NDArray[np.float32 | np.float64], degree: int, num_stacked: int
+) -> float:
     """Get the deviation budget that admits exactly the removals round-off allows.
 
-    ``_REMOVAL_FLOOR_SAFETY * get_strict(dtype) * (degree + 1) * scale``, i.e.
-    ``8 * (degree + 1) * eps`` times :func:`_control_point_scale`; the derivation and
-    the measurement are in :data:`_REMOVAL_FLOOR_SAFETY`.
+    ``_REMOVAL_FLOOR_SAFETY * get_strict(dtype) * (degree + 1) * sqrt(num_stacked) *
+    scale``: ``8 * (degree + 1) * eps`` times :func:`_control_point_scale` for one
+    control point (derivation and measurement in :data:`_REMOVAL_FLOOR_SAFETY`), times
+    a ``sqrt`` for how many control points the kernel grades at once.
 
     This is the default budget, and it is deliberately *not* a geometric one. A knot
     that a spline does not actually need is removable exactly, and the only thing
@@ -98,6 +105,27 @@ def _roundoff_deviation_floor(ctrl: npt.NDArray[np.float32 | np.float64], degree
     arbitrary constant. Anything looser is a statement about how much geometry the
     caller is willing to lose, which only the caller can make.
 
+    **Why ``sqrt(num_stacked)``.** For a curve the kernel compares one control point
+    against one control point. For a surface or a volume it does not:
+    :func:`~pantr._array_utils._flatten_along_axis` collapses every *other* direction
+    into the trailing axis first, so the single Euclidean distance A5.8 computes runs
+    over ``num_stacked`` control points at once. Stacking is exactly what a 2-norm
+    aggregates -- ``|| (d_1, ..., d_n) || = sqrt(sum ||d_k||^2) <= sqrt(n) * max_k
+    ||d_k||`` -- so a slice whose every point is at its own per-point floor lands at
+    ``sqrt(num_stacked)`` times that floor. This is a bound, not a statistical estimate:
+    it holds however the per-point errors are correlated. Without it the default is too
+    tight by that factor on anything but a curve, and it *silently* refuses an exactly
+    redundant knot: measured on a degree-3 volume with 5 elements in the removal
+    direction, a just-inserted knot came out up to ``num_stacked = 91809`` and was
+    refused from ``124609`` upward, with no error and no warning.
+
+    What the aggregate cannot see is *which* point moved. A slice could in principle
+    spend the whole budget on one control point, which would then sit
+    ``sqrt(num_stacked)`` above its own floor. Grading per point instead would need the
+    kernel to return a per-point distance rather than one scalar. In practice the
+    reconstructions share their weights and run on data of one magnitude, so the error
+    is spread across the slice rather than concentrated.
+
     It is expressed in the units the kernel measures in, so for a rational spline it is
     a homogeneous distance and does **not** go through
     :func:`_homogeneous_deviation_tolerance`: a floor is a statement about the
@@ -105,14 +133,18 @@ def _roundoff_deviation_floor(ctrl: npt.NDArray[np.float32 | np.float64], degree
 
     Args:
         ctrl (npt.NDArray[np.float32 | np.float64]): Control points as the kernel will
-            see them, homogeneous for a rational spline.
+            see them, homogeneous for a rational spline, with the coordinate axis last.
         degree (int): Polynomial degree in the direction being reduced.
+        num_stacked (int): How many control points the kernel's distance spans, i.e. the
+            product of the basis counts of every direction *except* the one being
+            reduced. One for a curve.
 
     Returns:
         float: Absolute deviation budget, in the units of ``ctrl``.
     """
     scale = _control_point_scale(ctrl)
-    return _REMOVAL_FLOOR_SAFETY * get_strict(ctrl.dtype) * (degree + 1) * scale
+    per_point = _REMOVAL_FLOOR_SAFETY * get_strict(ctrl.dtype) * (degree + 1) * scale
+    return per_point * math.sqrt(num_stacked)
 
 
 def _homogeneous_deviation_tolerance(
@@ -141,6 +173,9 @@ def _homogeneous_deviation_tolerance(
     show this, because its weights are structurally tied to its coordinates.
 
     Two honest caveats.
+
+    ``w_min = min_i w_i``, and weights are required strictly positive (see ``Raises``),
+    so it is a minimum and not a minimum of absolute values.
 
     The bound is **tight for a weight-carried perturbation and conservative for a purely
     geometric one**, by up to a factor ``1 + |P|_max``. Splitting ``D`` optimally between
@@ -183,10 +218,24 @@ def _homogeneous_deviation_tolerance(
 
     Returns:
         float: The equivalent budget on homogeneous control points.
+
+    Raises:
+        ValueError: If any weight is non-positive. The conversion divides by the weights
+            to recover ``|P|_max``, and a zero weight has no projected point to convert
+            to; the same precondition is checked by
+            :func:`~pantr.bspline._bspline_locate._locate_impl` and
+            :func:`~pantr.bspline.find_roots`, and stating it here is what keeps a
+            degenerate weight from silently producing ``TOL = 0`` and refusing every
+            removal in the direction.
     """
     flat = np.asarray(ctrl, dtype=np.float64).reshape(-1, ctrl.shape[-1])
     weights = flat[:, -1]
-    w_min = float(np.abs(weights).min())
+    w_min = float(weights.min())
+    if w_min <= 0.0:
+        raise ValueError(
+            f"Knot removal with an explicit tolerance needs strictly positive weights to "
+            f"convert the tolerance into homogeneous coordinates; the smallest is {w_min}."
+        )
     projected = flat[:, :-1] / weights[:, None]
     p_max = float(np.linalg.norm(projected, axis=1).max())
     return tol_euclidean * w_min / (1.0 + p_max)
@@ -303,12 +352,19 @@ def _remove_knots_bspline(
             new_spaces_1d.append(space_1d)
             continue
 
-        # Resolved per direction, from the control points as they stand: the degree and
-        # the control-point scale both differ between directions, and `ctrl` is carried
-        # forward from the previous one.
+        # Resolved per direction, from the control points as they stand: the degree, the
+        # control-point scale and the number of stacked points all differ between
+        # directions, and `ctrl` is carried forward from the previous one.
         if tol is None:
-            tol_deviation = _roundoff_deviation_floor(ctrl, space_1d.degree)
+            # How many control points the kernel's one Euclidean distance will span:
+            # every direction but this one. See `_roundoff_deviation_floor`.
+            num_stacked = int(np.prod(ctrl.shape[:-1])) // ctrl.shape[i]
+            tol_deviation = _roundoff_deviation_floor(ctrl, space_1d.degree, num_stacked)
         elif bspline.is_rational:
+            # Not scaled by `num_stacked`: an explicit budget is a promise about each
+            # control point, and widening the aggregate would let one point absorb the
+            # whole of it. Grading the stacked distance against the per-point budget is
+            # conservative, which is the sound direction for a caller's own bound.
             tol_deviation = _homogeneous_deviation_tolerance(ctrl, tol)
         else:
             tol_deviation = tol

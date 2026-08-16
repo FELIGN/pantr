@@ -1336,6 +1336,9 @@ class TestProlongationResidualGate:
         grid = hierarchical_grid(uniform_grid([[lo, hi]], 4), 2)
         coarse = THBSplineSpace(root, grid)
         fine = coarse.refine([0, 1])
+        # 512 eps: about 28x the worst residual the 132-configuration sweep measured
+        # (18.5 eps) and 16x below the gate itself (8192 eps at max_coarse_value = 1), so
+        # it fails on a real loss of accuracy without tracking the gate it is checking.
         assert self._worst_residual(coarse, fine) < 512.0 * float(np.finfo(np.float64).eps)
 
     def test_the_gate_rejects_a_space_that_cannot_reproduce_the_coarse_basis(self) -> None:

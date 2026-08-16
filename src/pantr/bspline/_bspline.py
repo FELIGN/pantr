@@ -565,9 +565,12 @@ class Bspline:
             tol (float | None): Maximum allowed geometric deviation for each
                 removal step, as a distance in the B-spline's own physical units
                 (projected coordinates, for a rational B-spline). ``None`` (default)
-                derives the round-off floor ``8 * (degree + 1) * eps * scale``, with
-                ``scale = max(control-net bounding-box diagonal, largest ||P_i||)``,
-                so a knot is removed only when doing so is exact to the arithmetic.
+                derives the round-off floor ``8 * (degree + 1) * eps * scale *
+                sqrt(n)``, with ``scale = max(control-net bounding-box diagonal, largest
+                ||P_i||)`` and ``n`` the number of control points the removal test spans
+                at once (one for a curve, the product of the other directions' basis
+                counts for a surface or a volume), so a knot is removed only when doing
+                so is exact to the arithmetic.
 
         Returns:
             Bspline: New B-spline with the same geometry (within tolerance)

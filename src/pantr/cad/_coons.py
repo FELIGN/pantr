@@ -16,27 +16,6 @@ from ._operations import create_ruled
 from ._primitives import _linear_space_1d, create_bilinear, create_trilinear
 from ._validation import _promote_to_rational
 
-_CORNER_MATCH_TIER = get_conservative
-"""Which :mod:`pantr.tolerance` tier grades a corner mismatch.
-
-The conservative tier, ``4096 * eps``, and the choice is about what this check is
-*for*. Both curves meeting at a corner read it straight off a clamped control point,
-and knot insertion and degree elevation both leave a clamped endpoint untouched, so
-:func:`~pantr.cad.make_compat` does not move it: two curves that genuinely share a
-corner produce **bitwise equal** values, and no tolerance at all is needed for them.
-The slack exists only for a corner the caller *computed* rather than copied, by an
-intersection, a reparametrization or a transform, and the length of that chain is not
-something this function can see.
-
-So the threshold is not sized against a known accumulation; it is sized to catch the
-mistake the check exists for. That mistake is curves given in the wrong order or the
-wrong orientation, which misses by a fraction of the patch, not by epsilons. Failing
-in the other direction is the expensive one: a ``ValueError`` on a geometrically
-perfect patch. The conservative tier is the widest the table sanctions without a
-derivation of its own, and at unit scale it lands on ``9.1e-13``, within a factor of
-1.1 of the ``1e-12`` this check used before it acquired a scale.
-"""
-
 
 def _combine_control_points(
     bsplines: list[Bspline],
@@ -144,8 +123,22 @@ def _verify_corners_2d(
 ) -> None:
     """Verify that corner points from u-curves match v-curves.
 
-    The tolerance is ``_CORNER_MATCH_TIER(float64) * scale`` with ``scale`` the largest
+    The tolerance is ``get_conservative(float64) * scale`` with ``scale`` the largest
     absolute coordinate over **all eight** corner values, not just the pair under test.
+
+    **Why the conservative tier.** Both curves meeting at a corner read it straight off a
+    clamped control point, and neither knot insertion nor degree elevation moves a clamped
+    endpoint, so :func:`~pantr.cad.make_compat` leaves it alone: two curves that genuinely
+    share a corner produce **bitwise equal** values and need no tolerance at all. The slack
+    exists only for a corner the caller *computed* rather than copied -- an intersection, a
+    reparametrization, a transform -- and the length of that chain is not something this
+    function can see. So the threshold is not sized against a known accumulation; it is
+    sized to catch the mistake the check exists for, which is curves given in the wrong
+    order or the wrong orientation, missing by a fraction of the patch rather than by
+    epsilons. Failing the other way is the expensive one: a ``ValueError`` on a
+    geometrically perfect patch. The conservative tier is the widest the table sanctions
+    without a derivation of its own, and at unit scale it lands on ``9.1e-13``, within a
+    factor of 1.1 of the ``1e-12`` this check used before it acquired a scale.
     Taking it over all eight is what makes the verdict independent of which corner
     happens to sit at the origin: a corner at ``(0, 0, 0)`` supplies no scale of its
     own, and grading it against zero would demand bitwise agreement of a coordinate the
@@ -184,7 +177,7 @@ def _verify_corners_2d(
     # No floor: eight corners all at the origin have no scale, and are also bitwise
     # equal, so a zero tolerance is the right answer there rather than a hazard.
     scale = max(float(np.abs(corner).max()) for _, pu, qv in pairs for corner in (pu, qv))
-    tol = _CORNER_MATCH_TIER(np.float64) * scale
+    tol = get_conservative(np.float64) * scale
 
     for label, pu, qv in pairs:
         gap = float(np.abs(pu - qv).max())

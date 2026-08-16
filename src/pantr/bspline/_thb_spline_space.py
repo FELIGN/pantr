@@ -18,7 +18,7 @@ from __future__ import annotations
 import copy
 import itertools
 import string
-from typing import TYPE_CHECKING, NamedTuple
+from typing import TYPE_CHECKING, Final, NamedTuple
 
 import numpy as np
 from scipy import sparse
@@ -88,7 +88,7 @@ _EINSUM_MAX_DIM = 24
 coefficient axes plus one for the point axis, leaving a safe ceiling of 24 dimensions.
 """
 
-_CELL_MEMBERSHIP_SAFETY: float = 2.0
+_CELL_MEMBERSHIP_SAFETY: Final[float] = 2.0
 """Extra factor on the strict tier for deciding that a point lies in a cell.
 
 Together with :func:`~pantr.tolerance.get_strict` this is ``8 * eps``, the same rule and
@@ -158,23 +158,38 @@ def _prolongation_residual_tolerance(max_coarse_val: float) -> float:
     every genuine refinement, the partition-of-unity value. The ``1 +`` is the floor that
     keeps the threshold positive for a coarse function whose column is empty.
 
-    ``np.linalg.lstsq(rcond=None)`` dispatches to LAPACK's ``gelsd``, which is normwise
-    backward stable: the computed ``x_hat`` solves ``(A + dA) y = b + db`` in the
-    least-squares sense with ``||dA|| <= c eps ||A||`` and ``||db|| <= c eps ||b||``. For
-    a genuine refinement the exact system is consistent, so the exact residual is zero
-    and
+    ``np.linalg.lstsq(rcond=None)`` dispatches to LAPACK's ``gelsd``, whose normwise
+    backward stability is the standard result for an SVD-based least-squares solve
+    (Golub & Van Loan, *Matrix Computations*, 4th ed., section 5.5; Higham, *Accuracy and
+    Stability of Numerical Algorithms*, 2nd ed., chapter 20): the computed ``x_hat`` is
+    the exact least-squares solution of ``(A + dA) y ~= b + db`` with
+    ``||dA|| <= c eps ||A||`` and ``||db|| <= c eps ||b||``.
 
-        ||A x_hat - b|| <= 2 (||dA|| ||x_hat|| + ||db||) = O(c eps (||A|| ||x|| + ||b||)),
+    The step from that to a residual bound is worth spelling out, because ``x_hat`` does
+    *not* satisfy the perturbed system exactly -- a least-squares solution leaves its own
+    residual ``r_pert``. Writing ``x`` for the exact solution of the unperturbed system,
+    which for a genuine refinement is consistent (``A x = b``), and using ``x`` as a trial
+    vector for the perturbed minimisation:
 
-    with every factor on the right of order one here: the entries of ``A``, ``x`` and
-    ``b`` are all refinement coefficients in ``[0, 1]``. The residual is therefore a
-    small multiple of ``eps``, and ``c`` is the part no closed form is available for.
+        ||r_pert|| <= ||(A + dA) x - (b + db)|| = ||dA x - db|| <= ||dA|| ||x|| + ||db||,
+        ||A x_hat - b|| <= ||r_pert|| + ||dA|| ||x_hat|| + ||db||
+                        <= 2 (||dA|| max(||x||, ||x_hat||) + ||db||),
+
+    which is ``O(c eps (||A|| ||x|| + ||b||))``. The factor of two is that argument's, not
+    a safety pad. Every factor on the right is of order one here: the entries of ``A``,
+    ``x`` and ``b`` are all refinement coefficients in ``[0, 1]``. The residual is
+    therefore a small multiple of ``eps``, and ``c`` is the part no closed form is
+    available for. The code grades ``max_i |A x - b|``, an infinity norm, which is at most
+    the two-norm the bound is stated in, so the bound covers it.
 
     **Measured**, over 132 configurations (1D, 2D and 3D; degrees 2 to 5; 4 to 16
     elements per axis; truncated and non-truncated; one and two refinement levels;
     domains ``[0, 1]``, ``[0, 1e-6]`` and ``[1e6, 1e6 + 1]``): the worst residual is
-    ``18.5 * eps``, and it is bit-identical between ``[0, 1]`` and ``[1e6, 1e6 + 1]``,
-    as a dimensionless quantity must be.
+    ``18.5 * eps``. It came out bit-identical between ``[0, 1]`` and ``[1e6, 1e6 + 1]``
+    in every one of those configurations, which is a stronger statement than the
+    quantity's dimensionlessness requires -- that only forces the residual to be
+    *comparable* across scales, not bitwise equal -- so it is reported as observed and
+    nothing is built on it.
 
     The tier is :func:`~pantr.tolerance.get_conservative`, ``4096 * eps``, whose stated
     meaning is a long accumulation -- which an SVD-based least-squares solve is. Against
