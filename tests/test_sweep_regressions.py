@@ -7,7 +7,7 @@ XPASS failure, and the marker comes off, promoting the test to a permanent guard
 same data. That is the convention ``tests/test_review_regressions.py`` follows for the
 June 2026 review, whose markers have all since been removed.
 
-Seven markers have already come off here: the domain-membership test, closed by the
+Eleven markers have already come off here: the domain-membership test, closed by the
 ``np.isclose`` tolerance-leak fix in #289; the tanh-sinh endpoint test, closed by
 truncating the rule where the endpoint gap stops being resolvable; the Lagrange
 reproducibility test, closed by seeding the barycentric node permutation; the float32
@@ -17,14 +17,16 @@ boundary-multiplicity precondition; the degree-elevation counter mismatch, close
 emitting the unshared Bézier coefficient at a C^-1 knot and by letting the segment sweep
 reach the final span of a degree-0 knot vector; and the root finder that certified a value
 that is not a root, closed by evaluating the residual on every exit of the tracking and by
-holding the repeated-iterate stop to Corollary 14's actual hypothesis.
+holding the repeated-iterate stop to Corollary 14's actual hypothesis; and four closed
+together by the tolerance-semantics pass -- the two knot-snapping tests and the unique-knot
+accessor directly, and the restriction that returned a shorter domain than asked for as a
+consequence, since its ``b_new + tol`` step ceased to be a no-op once ``tol`` carried the
+knot vector's magnitude.
 
-Seven remain open. Three are the tolerance workstream's. The other four come from the
-August 2026 triage of the full profile's 496 findings, which collapsed them into a dozen
-mechanisms: a restriction that silently returns a shorter domain than it was asked for, a
-Lagrange extraction that cannot be built on a degree-0 space its two sibling extractions
-handle, a change of basis that reports numpy's `LinAlgError` for a legal degree, and a
-unique-knot accessor that returns knots the space does not contain.
+Three remain open, all from the August 2026 triage of the full profile: knot-vector
+factories that disagree with their own documentation at zero intervals, a Lagrange
+extraction that cannot be built on a degree-0 space its two sibling extractions handle, and
+a change of basis that reports numpy's `LinAlgError` for a legal degree.
 
 One test per **root cause**, not per symptom: several of these root causes have many
 triggering combinations, and each test names them in a comment rather than repeating
@@ -298,7 +300,18 @@ def test_out_of_domain_points_are_rejected_at_large_knot_magnitude() -> None:
     lo, hi = 1e6, 1e6 + 1.0
     knots = np.concatenate([np.full(3, lo), [lo + 0.5], np.full(3, hi)])
     space = BsplineSpace1D(knots, 2)
-    assert float(space.tolerance) < 1e-9, "precondition: the space carries a strict tolerance"
+    # Two-sided, and stating it that way is what makes it survive a change in how the
+    # tolerance is derived: it must be at least one ulp of the endpoint (below that the
+    # endpoint is not resolvable and legitimate in-domain points get rejected) and far
+    # below the domain length (above that the rejection this test asks for stops
+    # happening). It used to read `< 1e-9`, which was the old per-dtype constant seen
+    # through this fixture rather than a property of it.
+    endpoint_ulp = float(np.spacing(hi))
+    assert endpoint_ulp <= float(space.tolerance) < 1e-3 * (hi - lo), (
+        f"precondition: the tolerance ({float(space.tolerance):.3e}) must resolve the "
+        f"endpoint (ulp {endpoint_ulp:.3e}) without approaching the domain length "
+        f"({hi - lo:g})"
+    )
 
     with pytest.raises(ValueError, match="outside the knot vector domain"):
         # 10 domain lengths past the right end.
@@ -318,18 +331,19 @@ def test_out_of_domain_points_are_rejected_at_large_knot_magnitude() -> None:
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="_snap_knots averages each group of equal knots, and np.mean over a run of "
-    "degree + 1 identical knots is not the identity at large coordinate magnitude",
-)
 def test_snapping_preserves_a_run_of_identical_knots() -> None:
-    # `_snap_knots` (`_bspline_space_1d.py:215`) replaces every group of knots that round
-    # to the same grid point by `np.mean(group, dtype=self.dtype)`. For a clamped end the
-    # group is `degree + 1` copies of one value, so the mean must be that value exactly.
-    # It is not: the summation loses the low bits once `(degree + 1) * |knot|` passes the
+    # FIXED by electing each group's *first* knot as its representative instead of the
+    # group's mean (`BsplineSpace1D._snap_knots`). Kept as a regression guard with its
+    # original triggering data, per this repository's convention that the fix PR un-xfails
+    # the tests it closes. Choosing rather than averaging is also what makes snapping
+    # idempotent, which is the property the exact `denom == 0.0` Cox-de Boor guard wants.
+    #
+    # What it was: `_snap_knots` replaced every group of knots that round to the same grid
+    # point by `np.mean(group, dtype=self.dtype)`. For a clamped end the group is
+    # `degree + 1` copies of one value, so the mean must be that value exactly.
+    # It was not: the summation loses the low bits once `(degree + 1) * |knot|` passes the
     # format's exact-integer range (2^24 for float32, 2^53 for float64), and the knot
-    # moves by 0.125. The consequence is that the space's *reported domain* differs from
+    # moved by 0.125. The consequence was that the space's *reported domain* differed from
     # the one the caller asked for, silently.
     #
     # Which run lengths survive is **not** a clean rule, and it is worth not pretending
@@ -339,43 +353,127 @@ def test_snapping_preserves_a_run_of_identical_knots() -> None:
     # exact. So this bites from **degree 10** in float64 at that magnitude, and the two
     # degrees asserted below are simply the ones the sweep happened to visit -- do not
     # read them as a threshold.
-    for dtype, base in ((np.float32, 1e6), (np.float64, 1e15)):
+    #
+    # One thing moved when the fix landed, and only one: the domain's *lower* end. The
+    # original fixture ran from `base` to `base + 1`, which the merge tolerance now
+    # (correctly) swallows whole -- at float32 a span of 1 sitting at 1e6 is 16 ulp wide,
+    # so every knot in it is within `8 * eps * 1e6 = 0.95` of every other and the whole
+    # vector is one knot. That is a different phenomenon and it is asserted separately in
+    # `test_a_domain_below_its_own_resolution_collapses`. The run values that trigger
+    # *this* bug -- 1000001.0 and 1000000000000001.0, whose means over 63 copies are
+    # 1000000.875 and 1000000000000000.9 -- are unchanged; the lower end simply moves to
+    # zero so the span is resolvable and the knots stay distinct.
+    cases: tuple[tuple[type[np.floating], float], ...] = ((np.float32, 1e6), (np.float64, 1e15))
+    for dtype, base in cases:
         degree = 62
         hi = np.asarray(base + 1.0, dtype=dtype)
+        mid = np.asarray(0.5 * float(hi), dtype=dtype)
         raw = np.concatenate(
             [
-                np.full(degree + 1, base, dtype=dtype),
-                [np.asarray(base + 0.5, dtype=dtype)],
+                np.full(degree + 1, 0.0, dtype=dtype),
+                [mid],
                 np.full(degree + 1, hi, dtype=dtype),
             ]
+        )
+        run = np.full(degree + 1, hi, dtype=dtype)
+        assert float(np.mean(run, dtype=dtype)) != float(hi), (
+            f"{np.dtype(dtype).name}: precondition -- averaging the run must still be "
+            f"inexact, or this fixture no longer reaches the bug"
         )
         stored = np.asarray(BsplineSpace1D(raw, degree).knots)
         assert stored[-1] == hi, (
             f"{np.dtype(dtype).name}: snapping moved a run of {degree + 1} identical "
             f"knots from {float(hi)!r} to {float(stored[-1])!r}"
         )
+        assert stored[degree + 1] == mid, (
+            f"{np.dtype(dtype).name}: the interior knot must stay where it was, at "
+            f"{float(mid)!r}, not {float(stored[degree + 1])!r}"
+        )
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="the knot-snapping grid is an absolute tolerance, so on a small domain it "
-    "merges knots the format resolves easily and the space silently loses intervals",
-)
+def test_a_domain_below_its_own_resolution_is_refused() -> None:
+    """A knot vector whose spacing is inside its own coordinate noise is rejected.
+
+    Not a defect but the contract, and the one thing the merge rule takes away. The
+    tolerance is ``8 * eps * max(span, |knots[0]|, |knots[-1]|)``, so a mesh of ``n``
+    intervals over a span ``s`` at offset ``x`` survives only while
+    ``s / n > 8 * eps * max(s, |x|)``; once ``|x|`` dominates that fails at
+    ``|x| / s = 1 / (8 * eps * n)``, about ``5.2e5 / n`` in float32.
+
+    ``[1e6, 1e6 + 1]`` in float32 is past it: the ulp there is 0.0625, so the whole
+    window holds 16 representable coordinates and an interior knot computed by any route
+    is uncertain by ``eps * 1e6 = 0.06``, six percent of the span. No threshold keeps
+    such a mesh *and* merges two routes to one knot, so the space cannot be built, and
+    saying so beats collapsing silently -- which is what an earlier version of this
+    change did, and what turned 525 sweep cases into opaque failures deep in the
+    kernels. The same vector in float64 keeps every knot, which is the point: what
+    decides is the format's resolution at that magnitude, not the magnitude.
+    """
+    degree = 2
+    lo, hi = 1e6, 1e6 + 1.0
+    raw = [lo] * (degree + 1) + [lo + 0.5] + [hi] * (degree + 1)
+
+    with pytest.raises(ValueError, match="collapsed every knot") as excinfo:
+        BsplineSpace1D(np.asarray(raw, dtype=np.float32), degree)
+    message = str(excinfo.value)
+    # The message has to let the reader act without opening our source.
+    assert "float32" in message, message
+    assert "0.5 apart" in message, message
+    assert "Use float64" in message, message
+
+    resolved = BsplineSpace1D(np.asarray(raw, dtype=np.float64), degree)
+    assert np.array_equal(np.asarray(resolved.knots), np.asarray(raw, dtype=np.float64)), (
+        "the same vector in float64 resolves easily and must be left alone"
+    )
+    assert resolved.num_intervals == 2
+
+
+def test_an_already_degenerate_knot_vector_is_still_accepted() -> None:
+    """The refusal fires only when *snapping* destroyed the mesh, not when it arrived flat.
+
+    A caller who passes a knot vector that is already a single repeated value asked for
+    exactly that and gets it, at any magnitude and in either dtype. Distinguishing the
+    two is what keeps the new rejection from being a general ban on degenerate spaces:
+    the case worth refusing is the one the caller could not see coming.
+    """
+    for dtype in (np.float32, np.float64):
+        for value in (0.0, 1.0, 1e6, -3.5):
+            space = BsplineSpace1D(np.full(8, value, dtype=dtype), 3)
+            assert space.num_intervals == 0
+            assert np.all(np.asarray(space.knots) == dtype(value))
+
+    # And `snap_knots=False` bypasses merging and the check together, as documented.
+    lo, hi = 1e6, 1e6 + 1.0
+    raw = np.asarray([lo, lo, lo, lo + 0.5, hi, hi, hi], dtype=np.float32)
+    kept = BsplineSpace1D(raw, 2, snap_knots=False)
+    assert np.array_equal(np.asarray(kept.knots), raw)
+
+
 def test_snapping_keeps_knots_the_format_can_resolve() -> None:
-    # `_snap_knots` rounds onto a grid of width `tolerance`, which is absolute
-    # (`get_strict(float32) = 1e-7`, `get_strict(float64) = 1e-15`) while the quantity it
-    # grades -- a gap between knots -- carries the domain's scale. On `[0, 1e-6]` with 20
-    # equal intervals the spacing is 5e-8, below the float32 grid, so half the knots are
-    # merged and the space reports 10 intervals instead of 20. The float32 ulp at 1e-6 is
-    # 6e-14, so the format resolves those knots with six orders to spare: nothing about
-    # the input is unrepresentable.
+    # FIXED by deriving the snapping tolerance from the knot vector's own magnitude
+    # instead of from the dtype alone (`_bspline_knots._knot_tolerance`), and by grouping
+    # knots by relative gap rather than by rounding them onto a grid. Kept as a regression
+    # guard with its original triggering data, per this repository's convention that the
+    # fix PR un-xfails the tests it closes.
     #
-    # This is the small-domain face of an already-recorded tolerance-policy defect whose
-    # large-domain face is that from |knot| ~ 5 upward the same grid merges nothing at all.
-    # Further consequences measured at degree 62 on `[0, 1e-6]` in float32, where a
-    # periodic knot vector of 63 intervals collapses to 10: zero-length spans make
+    # What it was: `_snap_knots` rounded onto a grid of width `tolerance`, which was
+    # absolute (`get_strict(float32) = 1e-7`, `get_strict(float64) = 1e-15`) while the
+    # quantity it grades -- a gap between knots -- carries the domain's scale. On
+    # `[0, 1e-6]` with 20 equal intervals the spacing is 5e-8, below the float32 grid, so
+    # half the knots were merged and the space reported 10 intervals instead of 20. The
+    # float32 ulp at 1e-6 is 6e-14, so the format resolves those knots with six orders to
+    # spare: nothing about the input is unrepresentable.
+    #
+    # It was the small-domain face of one defect whose large-domain face was that from
+    # |knot| ~ 5 upward the same grid merged nothing at all, not even a 1-ulp discrepancy.
+    # The tolerance is now `8 * eps * max(span, |knots[0]|, |knots[-1]|)`, which here is
+    # 7.6e-12 against a spacing of 5e-8, so the intervals survive with four orders to
+    # spare and would survive equally at any other domain scale.
+    #
+    # Further consequences that were measured at degree 62 on `[0, 1e-6]` in float32,
+    # where a periodic knot vector of 63 intervals collapsed to 10: zero-length spans made
     # `tabulate_Bezier_extraction_operators` raise a bare `ZeroDivisionError`, and the
-    # basis sums to 0 instead of 1 at the right endpoint.
+    # basis summed to 0 instead of 1 at the right endpoint.
     n_intervals = 20
     hi = 1e-6
     breaks = np.linspace(0.0, hi, n_intervals + 1, dtype=np.float32)
@@ -716,13 +814,20 @@ def test_find_roots_returns_only_genuine_roots() -> None:
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="restrict adds an absolute 1e-15 to the upper bound to step past its last "
-    "copy, and that addition is a no-op once the bound reaches 16, so searchsorted "
-    "lands one clamp too early and the top of the window is cut off",
-)
 def test_restrict_spans_the_requested_window() -> None:
+    # FIXED, though not at this site: `tol` here is `space.tolerance`, which now carries
+    # the knot vector's own magnitude (`8 * eps * max(span, |knots[0]|, |knots[-1]|)`)
+    # instead of a per-dtype constant. Since one ulp of any coordinate in the vector is at
+    # most `eps * scale`, the addition below now always moves the bound by at least eight
+    # ulp and can no longer be a no-op at any magnitude -- which is the whole mechanism
+    # this test pinned. It also steps no further than intended, because distinct knots are
+    # now separated by more than that same tolerance by construction. Kept as a regression
+    # guard with its original triggering data, per this repository's convention that the
+    # fix PR un-xfails the tests it closes.
+    #
+    # The site's own tolerance policy was not otherwise revisited, so if `restrict` grows
+    # a tolerance of its own this guard is what will catch a return of the mechanism.
+    #
     # A silent wrong answer through the public API, and the reason it stayed hidden is
     # worth as much as the bug: `Bspline.restrict` carried no invariant in the sweep, so
     # the case was graded only on whether it raised.
@@ -908,40 +1013,41 @@ def test_cardinal_change_of_basis_reports_its_own_conditioning_limit() -> None:
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="_get_unique_knots_and_multiplicity_impl returns the tolerance-grid-rounded "
-    "knots instead of the originals it already indexed, so a breakpoint is relocated "
-    "whenever the absolute grid is coarse relative to the knot spacing",
-)
 def test_unique_knots_are_knots_of_the_space() -> None:
-    # `get_unique_knots_and_multiplicity` is meant to *report* the distinct knots of a
-    # space. It reports different numbers. On a float32 space over [0, 1e-6] whose stored
-    # interior knots are 2.5e-7, 5.0e-7 and 7.5e-7, the accessor answers 2.0e-7, 5.0e-7
-    # and 8.0e-7 -- each moved by 20% of its own value, to a knot the space does not have.
+    # FIXED by grouping knots by relative gap and returning the class's first *stored*
+    # knot, and by rebuilding `_snap_knots` on top of the same helper so the two can no
+    # longer disagree. Kept as a regression guard with its original triggering data, per
+    # this repository's convention that the fix PR un-xfails the tests it closes.
     #
-    # `_get_unique_knots_and_multiplicity_impl` (`_bspline_knots.py:107-110, 138`) rounds
+    # What it was: `get_unique_knots_and_multiplicity` is meant to *report* the distinct
+    # knots of a space, and it reported different numbers. On a float32 space over
+    # [0, 1e-6] whose stored interior knots are 2.5e-7, 5.0e-7 and 7.5e-7, the accessor
+    # answered 2.0e-7, 5.0e-7 and 8.0e-7 -- each moved by 20% of its own value, to a knot
+    # the space does not have.
+    #
+    # `_get_unique_knots_and_multiplicity_impl` rounded
     # onto a grid of width `tol` to decide which knots are the same,
     #
     #     scale = dtype.type(1.0 / tol)
     #     rounded_knots = np.round(knots * scale) / scale
     #
-    # and then returns `rounded_knots[unique_rounded_knots_ids]` -- the rounded values --
-    # although `unique_rounded_knots_ids` already indexes the *original* array and
+    # and then returned `rounded_knots[unique_rounded_knots_ids]` -- the rounded values --
+    # although `unique_rounded_knots_ids` already indexed the *original* array and
     # `knots[...]` would have returned the knots themselves. Its sibling `_snap_knots`
-    # (`_bspline_space_1d.py:207-218`) does the same grouping and deliberately does not
-    # make this mistake: it writes back `np.mean(self._knots[mask])`, with a comment about
-    # the care being taken. The two helpers implement one idea and disagree.
+    # did the same grouping and deliberately did not make this mistake: it wrote back
+    # `np.mean(self._knots[mask])`, with a comment about the care being taken. Two
+    # implementations of one idea, disagreeing. There is now one: `_snap_knots` calls this
+    # helper and repeats its classes, so the space and its accessor cannot diverge.
     #
-    # `tol` here is the space's absolute tolerance (`get_strict(float32) = 1e-7`), so the
-    # grid is coarse compared with a 2.5e-7 spacing and 2.5 rounds to 2 while 7.5 rounds
-    # to 8. Nothing about the input is unrepresentable: the float32 ulp at 2.5e-7 is
-    # 1.7e-14, seven orders of magnitude finer than the movement.
+    # `tol` was the space's absolute tolerance (`get_strict(float32) = 1e-7`), so the
+    # grid was coarse compared with a 2.5e-7 spacing and 2.5 rounded to 2 while 7.5
+    # rounded to 8. Nothing about the input is unrepresentable: the float32 ulp at 2.5e-7
+    # is 1.7e-14, seven orders of magnitude finer than the movement.
     #
-    # The float64 face is milder and still wrong: 2.5e-07 comes back as
+    # The float64 face was milder and still wrong: 2.5e-07 came back as
     # 2.5000000000000004e-07, because `round(x * scale) / scale` is not the identity even
-    # when the grouping changes nothing. The accessor never returns the array it was
-    # given.
+    # when the grouping changes nothing. The accessor never returned the array it was
+    # given; it now returns entries of it.
     #
     # Consequences, and why this outranks a reporting nuisance. The helper feeds
     # `to_beziers`, knot insertion and removal, quasi-interpolation, and the product's
@@ -950,9 +1056,9 @@ def test_unique_knots_are_knots_of_the_space() -> None:
     # spline on [0, 1e-6] returns a curve whose interior knots sit at 0.2/0.5/0.8 of the
     # domain instead of 0.25/0.5/0.75, and which is wrong by 8.0e-2 *relative* at points
     # nowhere near a knot. Silent, through the public API. The same operands in float64,
-    # and the same float32 operands on the unit domain, are exact to rounding -- so this
-    # is the absolute-tolerance-versus-coordinate-magnitude family, and belongs with that
-    # workstream rather than being fixed here.
+    # and the same float32 operands on the unit domain, were exact to rounding -- which is
+    # what identified it as the absolute-tolerance-versus-coordinate-magnitude family it
+    # was fixed with.
     #
     # Found only after the probe's product invariant stopped sampling at the C^-1
     # breakpoint: the 8% error had been sitting underneath a 15-40% artifact.

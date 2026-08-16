@@ -14,7 +14,6 @@ import numpy as np
 from numpy import typing as npt
 
 from ..basis import LagrangeVariant
-from ..tolerance import get_strict
 from ._bspline_basis_core import (
     _tabulate_Bspline_basis_1D_impl,
     _tabulate_Bspline_basis_deriv_1D_impl,
@@ -29,9 +28,11 @@ from ._bspline_knot_insertion import (
     _compute_uniform_subdivision_knots,
 )
 from ._bspline_knots import (
+    _check_snapping_kept_an_interval,
     _get_Bspline_cardinal_intervals_1D_impl,
     _get_Bspline_num_basis_1D_impl,
     _get_unique_knots_and_multiplicity_impl,
+    _knot_tolerance,
 )
 
 
@@ -63,8 +64,10 @@ def _cached_unique_knots_and_multiplicity(
     knots_bytes, dtype_str, size = knots_repr
     dtype = np.dtype(dtype_str)
     knots = np.frombuffer(knots_bytes, dtype=dtype, count=size).copy()
-    tol_value = dtype.type(tol)
-    unique, mults = _get_unique_knots_and_multiplicity_impl(knots, degree, tol_value, in_domain)
+    # ``tol`` goes in unrounded, exactly as ``BsplineSpace1D._snap_knots`` passes it, so
+    # the space and its own accessor apply one predicate rather than two that differ in
+    # the last bits of the threshold.
+    unique, mults = _get_unique_knots_and_multiplicity_impl(knots, degree, tol, in_domain)
     # The same arrays are returned to every caller; freeze them so a caller
     # mutation cannot poison the cache.
     unique.flags.writeable = False
@@ -80,7 +83,11 @@ class BsplineSpace1D:
     and access various properties of the B-spline.
 
     Attributes:
-        _tol (np.float32 | np.float64): Tolerance value for numerical comparisons.
+        _tol (float): Absolute tolerance for parametric comparisons on this space,
+            in the units of its knots. Derived once at construction by
+            ``_bspline_knots._knot_tolerance`` as
+            ``8 * eps(dtype) * max(span, |knots[0]|, |knots[-1]|)``, so it tracks
+            the knot vector's own magnitude instead of being a per-dtype constant.
         _knots (npt.NDArray[np.float32 | np.float64]): Knot vector defining the B-spline.
         _degree (int): Polynomial degree of the B-spline.
         _periodic (bool): Whether the B-spline is periodic.
@@ -109,8 +116,13 @@ class BsplineSpace1D:
                 Defaults to True.
 
         Raises:
-            ValueError: If degree is negative, knots are insufficient, or
-                knots are not non-decreasing.
+            ValueError: If degree is negative, knots are insufficient, or knots are
+                not non-decreasing; or if ``snap_knots`` is set and snapping
+                collapses a knot vector that had more than one distinct knot onto a
+                single point, which means the requested spacing is finer than the
+                dtype resolves at that coordinate magnitude. A vector that was
+                already degenerate is accepted unchanged, and ``snap_knots=False``
+                bypasses both the merging and this check.
             TypeError: If knots cannot be converted to a numpy array.
         """
         BsplineSpace1D._validate_input(knots, degree, periodic)
@@ -124,13 +136,17 @@ class BsplineSpace1D:
             knots_arr = knots_arr.copy()
         self._knots = knots_arr
 
-        self._tol = BsplineSpace1D._get_tolerance(self.dtype)
+        # Derived from the knots, not from the dtype alone: the presets in
+        # ``pantr.tolerance`` are dimensionless, and the magnitude a parametric
+        # comparison on this space is relative to is the knot vector's own extent.
+        self._tol = _knot_tolerance(self._knots)
 
         self._degree = int(degree)
         self._periodic = bool(periodic)
 
         if snap_knots:
             self._snap_knots()
+            _check_snapping_kept_an_interval(knots_arr, self._knots, self._tol)
 
         self._knots.flags.writeable = False
 
@@ -163,9 +179,6 @@ class BsplineSpace1D:
         if np.issubdtype(knots.dtype, np.integer):
             knots = knots.astype(np.float64)
 
-        dtype = knots.dtype
-        tol = BsplineSpace1D._get_tolerance(dtype)
-
         if not isinstance(knots, np.ndarray) or knots.ndim != 1:
             raise TypeError("knots must be a 1D numpy array or Python list")
 
@@ -178,44 +191,34 @@ class BsplineSpace1D:
         if not np.all(np.diff(knots) >= 0):
             raise ValueError("knots must be non-decreasing")
 
+        # Derived only here, after the shape and ordering checks: the tolerance
+        # reads the endpoints, so it needs a vector that has them.
+        tol = _knot_tolerance(knots)
         num_basis = _get_Bspline_num_basis_1D_impl(knots, degree, periodic, tol)
         if num_basis < (degree + 1):
             raise ValueError("Not enough knots for the specified degree")
 
-    @staticmethod
-    def _get_tolerance(dtype: npt.DTypeLike) -> float:
-        """Create tolerance value based on data type.
-
-        Right now, strict tolerance is used.
-
-        Args:
-            dtype (np.dtype): NumPy data type.
-
-        Returns:
-            float: Tolerance value appropriate for the given data type.
-        """
-        return float(get_strict(dtype))
-
     def _snap_knots(self) -> None:
-        """Snap knots within tolerance to avoid numerical precision issues.
+        """Collapse each group of knots meant to be one knot onto a single stored value.
 
-        This method rounds knots to a precision determined by the stored tolerance
-        and then averages any knots that are close together.
+        The grouping is delegated to :func:`_get_unique_knots_and_multiplicity_impl`
+        and the vector rebuilt from the classes it reports, so the space and its own
+        accessor cannot disagree about which knots are the same knot -- two
+        implementations of one idea is how they came to disagree before.
 
-        It modifies the knot vector in place.
+        The representative is the class's *first* knot, chosen and not averaged, so
+        snapping returns values the caller supplied and is idempotent. Averaging is
+        a fresh rounding: over ``degree + 1`` identical copies at large magnitude
+        ``np.mean`` is not even the identity, so it moved the reported domain.
+
+        It replaces :attr:`_knots` with the collapsed vector, of the same length,
+        dtype and ordering. Called once from ``__init__``, before the array is
+        frozen read-only.
         """
-        scale = 1.0 / self._tol
-        rounded = np.round(self._knots * scale) / scale
-        unique_vals = np.unique(rounded)
-
-        snapped_knots = self._knots.copy()
-        for val in unique_vals:
-            # Exact match on the rounded values: knots are merged only when they
-            # round to the same tolerance-grid point.  (np.isclose would compare
-            # with its default rtol=1e-5 and merge far-apart knots.)
-            mask = rounded == val
-            snapped_knots[mask] = np.mean(self._knots[mask], dtype=self.dtype)
-        self._knots = snapped_knots
+        unique, mult = _get_unique_knots_and_multiplicity_impl(
+            self._knots, self._degree, self._tol, False
+        )
+        self._knots = np.repeat(unique, mult)
 
     @property
     def degree(self) -> int:
@@ -246,10 +249,22 @@ class BsplineSpace1D:
 
     @property
     def tolerance(self) -> float:
-        """Get the tolerance value used for numerical comparisons.
+        """Get the absolute tolerance used for parametric comparisons on this space.
+
+        It is in the units of the knot vector, being the dimensionless strict
+        preset of :mod:`pantr.tolerance` scaled by the knot vector's own magnitude
+        (``max(span, |knots[0]|, |knots[-1]|)``) and doubled for one extra rounding
+        upstream. Two knots closer than this are the same knot, a point within this
+        of an end is inside the domain, and two knot intervals differing by less
+        than this are the same length.
+
+        Being an absolute parametric length, it is *not* the factor to scale a
+        physical coordinate or a spline coefficient by; take the dimensionless
+        preset from :mod:`pantr.tolerance` for those and scale it by the magnitude
+        that applies.
 
         Returns:
-            float: The tolerance value.
+            float: The absolute parametric tolerance.
         """
         return self._tol
 

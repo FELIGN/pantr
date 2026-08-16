@@ -35,9 +35,11 @@ def overlay(grid_a: TensorProductGrid, grid_b: TensorProductGrid) -> TensorProdu
 
     The overlay's per-axis breakpoints are the sorted union of both inputs'
     breakpoint arrays restricted to the intersection of their domains.
-    Breakpoints closer than the default ``float64`` tolerance
-    (:func:`pantr.tolerance.get_default`) are merged into one. The result is the
-    coarsest :class:`TensorProductGrid` that refines both inputs.
+    Breakpoints closer than the default *relative* tolerance
+    (:func:`pantr.tolerance.get_default`) times the axis's own magnitude -- the
+    intersection window and the coordinates bounding it -- are merged into one, so
+    the merge behaves the same on ``[0, 1]`` as on ``[1e6, 1e6 + 1]``. The result
+    is the coarsest :class:`TensorProductGrid` that refines both inputs.
 
     Args:
         grid_a (TensorProductGrid): First input grid.
@@ -71,13 +73,18 @@ def overlay(grid_a: TensorProductGrid, grid_b: TensorProductGrid) -> TensorProdu
         )
     if grid_a.ndim != grid_b.ndim:
         raise ValueError(f"overlay(): grids must share ndim; got {grid_a.ndim} vs {grid_b.ndim}.")
-    atol = get_default(np.float64)
+    relative = get_default(np.float64)
     merged: list[npt.NDArray[np.float64]] = []
     for d in range(grid_a.ndim):
         ba = grid_a.breakpoints[d]
         bb = grid_b.breakpoints[d]
         lo = max(float(ba[0]), float(bb[0]))
         hi = min(float(ba[-1]), float(bb[-1]))
+        # ``relative`` is dimensionless; the magnitude a breakpoint comparison on this
+        # axis is relative to is the intersection window, taken together with the
+        # coordinates bounding it -- a window of length 1 sitting at 1e6 resolves its
+        # breakpoints no better than ``eps * 1e6``, however short the window is.
+        atol = relative * max(hi - lo, abs(lo), abs(hi))
         if hi - lo <= atol:
             raise ValueError(
                 f"overlay(): domains do not overlap on axis {d}; grid_a extent "

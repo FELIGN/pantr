@@ -49,7 +49,59 @@
   `Bezier.reduce_degree` would introduce, computed through the Bernstein mass
   matrix rather than by sampling.
 
+### Rejected where it used to be accepted
+- **A knot vector whose spacing is finer than its dtype resolves at its own coordinate
+  magnitude is now refused at construction**, where it used to be accepted and then
+  silently behave as if it had no intervals. `BsplineSpace1D` raises a `ValueError`
+  naming the dtype, the coordinate magnitude, the merge tolerance in ulp and the closest
+  pair of knots you supplied, and suggesting float64, a domain nearer the origin, or a
+  coarser mesh. Concretely: float32 on `[1e6, 1e6 + 1]` with more than one interval. The
+  ulp there is 0.0625, so a four-interval mesh spaces breakpoints 0.25 apart while
+  telling two knots apart at that magnitude needs 0.48 — an interior knot computed by any
+  route is uncertain by 6% of the window, and no tolerance both keeps the mesh and merges
+  two routes to the same knot. The previous release kept the mesh only by never merging
+  anything (its tolerance there was 1.6e-6 ulp), so the knots it stored were noise.
+  Reachable in float64 too, but only from `|offset| / span ≈ 1.4e14` at four intervals,
+  where the window is 8 ulp wide. Two things are deliberately *not* refused: a knot vector
+  that was already a single repeated value, which is what the caller asked for and comes
+  back untouched, and anything built with `snap_knots=False`, which bypasses the merging
+  and the check together.
+
 ### Changed
+- **`pantr.tolerance`'s presets are now dimensionless relative tolerances.**
+  `get_strict`, `get_default` and `get_conservative` return `K * eps(dtype)` with
+  `K` equal to 4, 64 and 4096 — an acknowledged safety factor, stated, a power of
+  two, and the *same* in every precision. The previous table was a fixed value per
+  dtype, and in units of that dtype's own epsilon it was neither constant nor
+  ordered the same way: strict was 0.10 eps in float16, 0.84 in float32 and 4.5 in
+  float64, so `get_strict` demanded bitwise equality in the two smaller formats
+  while allowing four roundings in the largest. The module docstring called the
+  presets absolute while `Bspline.locate` and both root finders were already
+  multiplying them by a magnitude; that ambiguity is what this change removes. A
+  preset is now unusable on its own — multiply it by the magnitude of the quantity
+  being compared, and name that magnitude at the call site. Numerically:
+  `get_default(float64)` moves from 1e-12 to 1.42e-14 and `get_conservative`
+  from 1e-10 to 9.09e-13, while `get_strict(float32)` moves from 1e-7 to 4.77e-7.
+  The per-dtype table and its platform branch on whether `longdouble` aliases
+  `float64` are gone: reading the epsilon from the platform makes both unnecessary.
+- **`BsplineSpace1D.tolerance` now carries the knot vector's own magnitude.** It is
+  `8 * eps(dtype) * max(span, |knots[0]|, |knots[-1]|)` — the strict preset,
+  doubled for one extra rounding upstream, scaled by the parametric magnitude every
+  comparison in the B-spline layer is relative to. Previously it was the bare
+  per-dtype constant, so the same absolute band meant four ulp on a unit domain,
+  nothing at all from `|knot| ≈ 5` upward, and half the breakpoints of a
+  twenty-interval float32 mesh on `[0, 1e-6]`, which then reported ten. Everything downstream that takes `space.tolerance` — domain membership,
+  knot matching, cardinal interval lengths, knot insertion and removal, products,
+  degree changes — becomes scale-covariant with it. `detect_interfaces` is the one
+  caller that wanted the dimensionless factor instead and now takes it from
+  `pantr.tolerance` directly, since none of the three quantities it compares is a
+  parametric coordinate of a single patch.
+- `pantr.grid.overlay` merges breakpoints closer than the default *relative*
+  tolerance times the axis's own magnitude -- the intersection window and the
+  coordinates bounding it -- instead of against a bare `float64` constant. A
+  window of length 1 sitting at 1e6 resolves its breakpoints no better than
+  `eps * 1e6` however short it is, and the merge verdict is now the same on
+  `[0, 1]` as on any rescaling of it.
 - The minimum supported SciPy is now 1.15, raised from 1.11. Lagrange tabulation
   seeds the node permutation SciPy's `BarycentricInterpolator` applies, and the
   `rng` argument that makes that possible arrived in 1.15. Earlier versions
@@ -82,6 +134,32 @@
   endpoint condition and still returns the mean of the control points.
 
 ### Fixed
+- Knot snapping merged the wrong knots, and from `|knot| ≈ 5` upward merged none
+  at all. `BsplineSpace1D._snap_knots` rounded onto a grid of width `tolerance`,
+  which was an absolute per-dtype constant: at knot 1.0 the grid was 4.5 ulp wide
+  and it narrowed relative to the knots as they grew, so two knots one ulp apart
+  stopped merging at base 5 and the detected multiplicity dropped — a cubic asked
+  for multiplicity 2 (C¹) silently became C². A rounding *grid* is also wrong in
+  principle: two values one ulp apart can straddle a grid line and never merge,
+  for any spacing. Knots are now grouped by relative gap — a class ends where the
+  step to the next knot exceeds `8 * eps * max(span, |knots[0]|, |knots[-1]|)`,
+  three roundings of an affine map of the span with 2.7x over it — and every
+  member of a class takes the class's *first* knot. Choosing rather than averaging
+  makes snapping idempotent and keeps the stored values ones the caller supplied;
+  `np.mean` over `degree + 1` identical copies is not even the identity at large
+  magnitude, and it was moving the reported domain (`1000001.0` came back as
+  `1000000.875` in float32).
+- `get_unique_knots_and_multiplicity` reported knots the space does not contain.
+  The helper behind it rounded the knots onto the tolerance grid to decide which
+  were the same and then returned the *rounded* values, although the indices it
+  had built already pointed at the originals. On a float32 space over `[0, 1e-6]`
+  with interior knots at 2.5e-7, 5.0e-7 and 7.5e-7 it answered 2.0e-7, 5.0e-7 and
+  8.0e-7. `Bspline.multiply` builds the product's breakpoint mesh from this
+  accessor, so squaring such a spline returned a curve wrong by 8% relative at
+  points nowhere near a knot; `to_beziers`, knot insertion and removal and
+  quasi-interpolation all read the same helper. The accessor now returns stored
+  knots, and `_snap_knots` is implemented on top of it, so the space and its own
+  accessor can no longer disagree about which knots are the same knot.
 - `pantr.bspline.find_roots` returned values that are not roots, silently, on
   ordinary input: a clamped cubic on `[0, 1]` with control points alternating
   `+1, -1` gave back `0.375` and `0.625`, where the spline is `0.0208` rather
@@ -166,8 +244,14 @@
   absolute tolerance, which is scale-dependent: on a small enough domain a
   genuinely non-empty knot span fell below it and was zeroed, breaking the
   partition of unity. The guard now tests against exact zero, which is
-  scale-invariant by construction because knot vectors already snap
-  near-duplicate knots to one bitwise value.
+  scale-invariant by construction. What makes the exact test safe is the shape of
+  the recurrence, not the knot vector: the denominator is the sum of the two
+  non-negative terms the step then multiplies the quotient by, so the two weights
+  are a convex combination and a tiny denominator cancels against an equally tiny
+  numerator. (An earlier version of this entry justified it by claiming that knot
+  snapping stores equal knots bitwise identical. Snapping does that, but the guard
+  never needed it: with snapping off and two interior knots separated by 0 to
+  64 ulp, `max|N|` is 1.0 exactly and the partition of unity holds to 6.7e-16.)
 - `find_roots` reported a root at every interior knot of multiplicity
   `degree + 1` whose two straddling coefficients change sign, where the spline
   is C^-1 and jumps across the axis without ever reaching it. The tracking cited

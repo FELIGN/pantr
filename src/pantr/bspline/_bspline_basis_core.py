@@ -197,16 +197,25 @@ def _basis_funcs_point(
         denominator is a sum of two knot differences and is always ``>= 0`` for a
         non-decreasing knot vector; it is treated as zero (and the corresponding
         term dropped) exactly when ``denom == 0`` (Piegl & Tiller A2.2's textbook
-        guard). Because IEEE-754 subtraction is antisymmetric, ``denom`` is exactly
-        ``0.0`` whenever the two knots it comes from are stored bitwise identical.
-        This holds for knots meant to be equal when the space was constructed with
-        the default ``snap_knots=True``, which snaps near-duplicate knots (within
-        tolerance) to a single bitwise value (see ``BsplineSpace1D._snap_knots``);
-        callers that build a knot vector with ``snap_knots=False`` (or bypass
-        :class:`~pantr.bspline.BsplineSpace1D` and call this kernel directly) are
-        responsible for the knot vector's own consistency. No tolerance parameter
-        is needed here regardless: the exact-zero test is scale-invariant by
-        construction, so this guard is unaffected by the knot vector's parametric
+        guard). No tolerance is needed, and -- contrary to what this note used to
+        claim -- the guard does **not** rest on knots meant to be equal being
+        stored bitwise identical.
+
+        What makes it sound is the shape of the step. ``denom`` is
+        ``right[r + 1] + left[j - r]``, the sum of the two non-negative terms the
+        step then multiplies ``temp = N[r] / denom`` by, so the two contributions
+        carry weights ``right[r + 1] / denom`` and ``left[j - r] / denom``, which
+        are non-negative and add to one up to a single rounding. A denominator
+        small enough to make ``temp`` large is multiplied straight back by factors
+        no larger than itself, so each contribution stays bounded by ``N[r]``.
+        Near-duplicate knots cost accuracy in that ratio, not boundedness.
+        Measured with ``snap_knots=False`` and two interior knots separated by 0 to
+        64 ulp, at degrees 1 to 5 and knot bases 1.0 and 1e6: ``max|N|`` is 1.0
+        exactly and the partition of unity holds to 6.7e-16.
+
+        ``denom == 0`` is reached only when both terms are exactly zero, which is
+        what an empty knot span is, and the test is scale-invariant by
+        construction, so the guard is unaffected by the knot vector's parametric
         span (shift or scale).
         For general use, call :func:`_tabulate_Bspline_basis_1D_impl` instead.
     """
@@ -375,17 +384,15 @@ def _basis_derivs_point(  # noqa: PLR0913
         denominator ``ndu[j, r]`` is a sum of two knot differences and is always
         ``>= 0`` for a non-decreasing knot vector; it is treated as zero (and the
         corresponding term dropped) exactly when ``denom == 0`` (Piegl & Tiller
-        A2.3's textbook guard). Because IEEE-754 subtraction is antisymmetric,
-        ``denom`` is exactly ``0.0`` whenever the two knots it comes from are
-        stored bitwise identical. This holds for knots meant to be equal when the
-        space was constructed with the default ``snap_knots=True``, which snaps
-        near-duplicate knots (within tolerance) to a single bitwise value (see
-        ``BsplineSpace1D._snap_knots``); callers that build a knot vector with
-        ``snap_knots=False`` (or bypass :class:`~pantr.bspline.BsplineSpace1D` and
-        call this kernel directly) are responsible for the knot vector's own
-        consistency. No tolerance parameter is needed here regardless: the
-        exact-zero test is scale-invariant by construction, so this guard is
-        unaffected by the knot vector's parametric span (shift or scale).
+        A2.3's textbook guard). No tolerance is needed, and the guard does **not**
+        rest on knots meant to be equal being stored bitwise identical: as in
+        :func:`_basis_funcs_point`, each ``ndu[j, r]`` divides a quantity that is
+        then multiplied by two non-negative terms summing to that same denominator,
+        so a small denominator cancels against an equally small numerator and the
+        term stays bounded. ``denom == 0`` is reached only when both terms are
+        exactly zero, which is what an empty knot span is, and the exact-zero test
+        is scale-invariant by construction, so this guard is unaffected by the knot
+        vector's parametric span (shift or scale).
         For general use, call :func:`_tabulate_Bspline_basis_deriv_1D_impl` instead.
     """
     order = degree + 1

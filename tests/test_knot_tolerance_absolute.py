@@ -1,11 +1,19 @@
 """Knot-layer predicates must use an absolute tolerance, not ``np.isclose``.
 
-Every tolerance in :mod:`pantr.tolerance` is documented as **absolute**: a fixed
-value per dtype, independent of the magnitude of the values compared. But
-``np.isclose(a, b, atol=tol)`` keeps numpy's default ``rtol=1e-5``, so the test it
-actually performs is ``|a - b| <= tol + 1e-5 * |b|``. Every knot-layer predicate
-written that way therefore widened by ``1e-5`` times the operand magnitude, which
-is harmless on a unit domain and catastrophic on a large one.
+Every knot-layer predicate grades a parametric length against
+:attr:`~pantr.bspline.BsplineSpace1D.tolerance`, which is **absolute**: it already
+carries the knot vector's own magnitude, so the comparison must be a plain
+``|a - b| <= tol`` and nothing else. But ``np.isclose(a, b, atol=tol)`` keeps
+numpy's default ``rtol=1e-5``, so the test it actually performs is
+``|a - b| <= tol + 1e-5 * |b|``. Every predicate written that way therefore widened
+by ``1e-5`` times the operand magnitude -- a second, undeclared relative term on top
+of the derived one -- which is harmless on a unit domain and catastrophic on a large
+one.
+
+(The presets in :mod:`pantr.tolerance` are dimensionless relative factors; it is
+``_bspline_knots._knot_tolerance`` that turns one into the absolute length this file
+is about. ``TestDerivedKnotTolerance`` at the end pins that derivation and the
+properties the knot layer rests on.)
 
 Two further properties of the leak are worth pinning, because they are what makes
 it hard to spot:
@@ -39,6 +47,7 @@ from pantr.bspline import (
 )
 from pantr.bspline._bspline_knots import (
     _find_knot_index_and_multiplicity,
+    _get_unique_knots_and_multiplicity_impl,
     _is_in_domain_impl,
 )
 from pantr.bspline._bspline_product import _get_boundary_mults
@@ -456,3 +465,135 @@ class TestTHBRootBounds:
         space = THBSplineSpace(root, grid)
 
         assert space.dim == 1
+
+
+class TestDerivedKnotTolerance:
+    """The absolute knot tolerance itself: its formula, and what rests on it.
+
+    Everything above tests a *consequence* of ``BsplineSpace1D.tolerance``. These
+    test the quantity, so that a one-line slip in the formula -- dropping the
+    coordinate-magnitude term, taking a ``min`` where a ``max`` belongs -- surfaces
+    here rather than several steps downstream as a puzzling merge verdict.
+    """
+
+    @staticmethod
+    @pytest.mark.parametrize(
+        ("dtype", "knots", "expected_scale", "why"),
+        [
+            (np.float64, [0.0, 0.0, 0.0, 1.0, 2.0, 2.0, 2.0], 2.0, "span wins"),
+            (np.float64, [-3.0, -3.0, -3.0, -2.0, -1.0, -1.0, -1.0], 3.0, "|knots[0]| wins"),
+            (
+                np.float64,
+                [1e6, 1e6, 1e6, 1e6 + 0.5, 1e6 + 1, 1e6 + 1, 1e6 + 1],
+                1e6 + 1.0,
+                "|knots[-1]| wins over a span of 1",
+            ),
+            (np.float32, [0.0, 0.0, 0.0, 0.5, 1.0, 1.0, 1.0], 1.0, "the same in float32"),
+        ],
+    )
+    def test_tolerance_is_eight_epsilons_of_the_knot_magnitude(
+        dtype: type[np.floating], knots: list[float], expected_scale: float, why: str
+    ) -> None:
+        """``tolerance == 8 * eps(dtype) * max(span, |knots[0]|, |knots[-1]|)``.
+
+        ``expected_scale`` is written out per case rather than computed by the
+        helper under test, so the two cannot agree by sharing a bug.
+        """
+        space = BsplineSpace1D(np.asarray(knots, dtype=dtype), 2)
+        eps = float(np.finfo(dtype).eps)
+        assert space.tolerance == 8.0 * eps * expected_scale, why
+
+    @staticmethod
+    @pytest.mark.parametrize("lam", [1e-6, 1.0, 1e6])
+    @pytest.mark.parametrize("dtype", [np.float32, np.float64])
+    def test_merge_verdict_is_scale_covariant(dtype: type[np.floating], lam: float) -> None:
+        """The same gap-to-domain ratio gets the same verdict at every scale.
+
+        This is the central claim of the derived tolerance, and it is the one the
+        previous absolute constant failed: it merged every knot of this fixture at
+        ``lam = 1e-6`` and none of them at ``lam = 1e6``.
+        """
+        for ratio, want in ((1e-15, [3, 2, 3]), (1e-3, [3, 1, 1, 3])):
+            mid = dtype(0.5 * lam)
+            knots = np.asarray(
+                [0.0, 0.0, 0.0, mid, dtype(float(mid) * (1.0 + ratio)), lam, lam, lam],
+                dtype=dtype,
+            )
+            space = BsplineSpace1D(knots, 2)
+            _, mult = space.get_unique_knots_and_multiplicity()
+            assert mult.tolist() == want, (
+                f"gap ratio {ratio:g} at lam={lam:g} in {np.dtype(dtype).name} gave "
+                f"multiplicities {mult.tolist()}, expected {want}"
+            )
+
+    @staticmethod
+    def test_snapping_is_idempotent() -> None:
+        """Snapping a snapped vector must not move it again, bit for bit.
+
+        The exact ``denom == 0.0`` Cox-de Boor guard wants a knot vector that is a
+        fixed point of the grouping, and electing each class's first knot rather
+        than its mean is what delivers one. An average would be a fresh rounding
+        and could place two neighbouring representatives back within tolerance.
+        """
+        base = 1000.0
+        eps = float(np.finfo(np.float64).eps)
+        near = 8.0 * eps * base * 0.25  # a quarter of the merge tolerance
+        raw = np.array(
+            [
+                0.0,
+                0.0,
+                0.0,
+                250.0,
+                250.0 + near,
+                250.0 + 2 * near,
+                500.0,
+                750.0 - near,
+                750.0,
+                base,
+                base,
+                base,
+            ],
+            dtype=np.float64,
+        )
+        once = np.asarray(BsplineSpace1D(raw, 2).knots)
+        assert not np.array_equal(once, raw), "precondition: the fixture must actually merge"
+
+        twice = np.asarray(BsplineSpace1D(once, 2).knots)
+        assert np.array_equal(once, twice), (
+            f"snapping moved an already-snapped vector: {once.tolist()} -> {twice.tolist()}"
+        )
+
+    @staticmethod
+    @pytest.mark.parametrize("dtype", [np.float32, np.float64])
+    def test_classes_partition_the_knot_vector(dtype: type[np.floating]) -> None:
+        """``np.repeat(unique, mults)`` rebuilds the whole vector, which ``_snap_knots`` needs.
+
+        ``BsplineSpace1D._snap_knots`` *is* that ``np.repeat``, so if the
+        multiplicities stopped summing to ``knots.size`` the space would silently
+        change length. Checked directly on the kernel, with ``in_domain=False``.
+        """
+        raw = np.asarray([0.0, 0.0, 0.0, 0.25, 0.5, 0.5, 0.75, 1.0, 1.0, 1.0], dtype=dtype)
+        space = BsplineSpace1D(raw, 2)
+        knots = np.asarray(space.knots)
+        unique, mults = _get_unique_knots_and_multiplicity_impl(
+            knots, space.degree, space.tolerance, False
+        )
+        assert int(mults.sum()) == knots.size
+        assert np.array_equal(np.repeat(np.asarray(unique), mults), knots)
+        assert np.all(np.isin(np.asarray(unique), knots)), "reported knots must be stored knots"
+
+    @staticmethod
+    def test_a_knot_vector_with_no_scale_compares_exactly() -> None:
+        """An identically-zero knot vector leaves no magnitude to be relative to.
+
+        ``_knot_scale`` returns 0.0 and the tolerance with it, so grouping falls back
+        to exact equality. That is the only defensible answer -- there is no scale to
+        read off the input -- and the vector is all one knot either way. Pinned
+        because a zero tolerance is the kind of degenerate value that invites a
+        well-meaning floor.
+        """
+        space = BsplineSpace1D(np.zeros(8, dtype=np.float64), 3)
+        assert space.tolerance == 0.0
+        unique, mults = space.get_unique_knots_and_multiplicity()
+        assert unique.tolist() == [0.0]
+        assert mults.tolist() == [8]

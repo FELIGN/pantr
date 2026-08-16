@@ -19,6 +19,7 @@ from typing import TYPE_CHECKING, NamedTuple
 import numpy as np
 import numpy.typing as npt
 
+from ..tolerance import get_strict
 from ._interface import Interface, face_axis_side, tangential_axes
 from ._match import match_face_cps
 
@@ -79,13 +80,24 @@ def _joint_tolerances(patch_a: Bspline, patch_b: Bspline, tol: float | None) -> 
     Args:
         patch_a (Bspline): First patch.
         patch_b (Bspline): Second patch.
-        tol (float | None): Relative tolerance override, or ``None`` to take the
-            larger of the two spaces' own tolerances.
+        tol (float | None): Dimensionless relative tolerance override, or ``None``
+            for the strict preset of the patches' own dtypes.
 
     Returns:
         _Tolerances: The three derived absolute tolerances.
     """
-    relative = max(patch_a.space.tolerance, patch_b.space.tolerance) if tol is None else float(tol)
+    # Not ``space.tolerance``: that is an *absolute* parametric length carrying the
+    # patch's own knot magnitude, and none of the three quantities compared here is
+    # a parametric coordinate of a single patch. What is wanted is the bare
+    # dimensionless factor, which each leg below scales by the magnitude that
+    # applies to it. The strict tier is what ``space.tolerance`` was built from
+    # before, so this keeps the tier the interface check has always used and only
+    # stops it travelling through a quantity that has since acquired units.
+    relative = (
+        max(get_strict(patch_a.space.dtype), get_strict(patch_b.space.dtype))
+        if tol is None
+        else float(tol)
+    )
     rank = patch_a.rank
     coords = np.concatenate(
         [
@@ -287,8 +299,8 @@ def verify_interface(
     Args:
         patches (Sequence[Bspline]): The patches the interface refers to.
         interface (Interface): The interface to verify.
-        tol (float | None): Relative tolerance override. Defaults to the larger of
-            the two spaces' own tolerances.
+        tol (float | None): Dimensionless relative tolerance override. Defaults to
+            the strict preset of the two patches' dtypes.
 
     Returns:
         bool: ``True`` if the interface holds.
@@ -320,8 +332,8 @@ def detect_interfaces(
     Args:
         patches (Sequence[Bspline]): The patches to inspect. All must share the same
             parametric dimension.
-        tol (float | None): Relative tolerance override. Defaults, per pair, to the
-            larger of the two spaces' own tolerances; it is scaled by the joint
+        tol (float | None): Dimensionless relative tolerance override. Defaults, per
+            pair, to the strict preset of the two dtypes; it is scaled by the joint
             bounding-box diagonal for coordinates and used bare for knots.
 
     Returns:

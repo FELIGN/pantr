@@ -15,11 +15,14 @@ that specific failure mode.
 
 The final fix drops the tolerance from the guard entirely and uses the textbook
 exact-zero test (``denom == 0.0``, Piegl & Tiller A2.2/A2.3), which is scale-invariant
-by construction. This is safe because
-:class:`~pantr.bspline.BsplineSpace1D` already snaps near-duplicate knots (within
-tolerance) to a single bitwise value at construction time
-(``BsplineSpace1D._snap_knots``), so two knots meant to be equal always produce an
-exactly-zero Cox-de Boor denominator (IEEE-754 subtraction is antisymmetric).
+by construction. It is safe for a reason that has nothing to do with knot snapping:
+the denominator is the sum of the two non-negative terms the recurrence then
+multiplies the quotient by, so those two weights form a convex combination and a
+tiny denominator cancels against an equally tiny numerator. Verified directly with
+``snap_knots=False`` and interior knots 0 to 64 ulp apart; see the note on
+``_basis_funcs_point``. (This paragraph used to justify the guard by claiming that
+snapping stores equal knots bitwise identical. It does, but the guard never rested
+on it.)
 
 Note on the (scale, shift) grid in the affine-invariance tests below: combining the
 smallest scale (``1e-12``) with the largest shift (``1e3``) is deliberately *not*
@@ -71,51 +74,105 @@ class TestGradedKnotVectorLocalSpacing:
     """Regression guard for the global-span-scaling failure mode found in review.
 
     An earlier version of this fix scaled ``tol`` by the knot vector's *global*
-    span (``knots[-1] - knots[0]``) instead of using an exact-zero test. That
-    incorrectly zeroed genuinely distinct, non-repeated local knot gaps whenever
-    the domain was large relative to local spacing -- an entirely ordinary
-    graded/refined knot vector, not an extreme edge case. These tests pin down
-    that the final (exact-zero) guard does not reintroduce that regression.
+    span (``knots[-1] - knots[0]``) inside the Cox-de Boor guard instead of using
+    an exact-zero test. That incorrectly zeroed genuinely distinct, non-repeated
+    local knot gaps on a domain large relative to the local spacing. What made it
+    a defect was the *disagreement* it created: the guard dropped the contribution
+    of a span that :meth:`BsplineSpace1D.get_unique_knots_and_multiplicity` was
+    still reporting as non-empty, so the basis lost mass on a space that claimed
+    to have an interval there.
+
+    Two things are pinned below, and the distinction between them is the point.
+
+    * A gap the format resolves must survive, both in the reported multiplicity
+      and in the basis. That is the original regression, and it is asserted at a
+      gap comfortably above the merge threshold.
+    * A gap *below* the threshold is merged at construction, and everything then
+      agrees about it -- the stored knots, the multiplicity, and the basis. The two
+      fixtures this class originally used sat at 8.2 and 3.0 ulp of the knot they
+      straddled, which is inside the noise of computing that knot at all; they are
+      kept here with their expectations re-derived, as the merged-and-consistent
+      case.
     """
 
-    def test_large_domain_small_local_gap_float64(self) -> None:
-        """A non-repeated, locally tiny knot gap on a huge domain must not be zeroed.
+    def test_resolvable_gap_on_a_huge_domain_survives_float64(self) -> None:
+        """A local gap the format resolves must not be collapsed, however large the domain.
 
-        Domain ``[0, 1e12]`` with an interior knot pair ``5e11`` apart from
-        ``5e11`` by only ``5e-4`` (ratio to the domain ``~5e-16``): the pair is
-        *not* repeated, and :meth:`BsplineSpace1D.get_unique_knots_and_multiplicity`
-        agrees (multiplicity 1 each), so the guard must not collapse it.
+        Domain ``[0, 1e12]``; the interior pair straddles ``5e11`` with a gap of
+        ``1e-2``. The float64 ulp at ``5e11`` is 6.1e-5, so that is 164 ulp, and it
+        is 5.6x the ``8 * eps * span = 1.78e-3`` merge threshold. A grading ratio of
+        1e-14 against the domain: far past anything a real adaptive mesh reaches,
+        which is the point -- the threshold does not eat ordinary refinement.
         """
-        knots = np.array([0.0, 0.0, 0.0, 5e11, 5e11 + 5e-4, 1e12, 1e12, 1e12], dtype=np.float64)
+        knots = np.array([0.0, 0.0, 0.0, 5e11, 5e11 + 1e-2, 1e12, 1e12, 1e12], dtype=np.float64)
         space = BsplineSpace1D(knots, 2)
 
-        # Endpoints are open (multiplicity degree+1 = 3); the two interior knots
-        # (5e11 and 5e11 + 5e-4) are genuinely distinct, multiplicity 1 each.
+        assert np.array_equal(np.asarray(space.knots), knots), "the pair must stay distinct"
         _, mult = space.get_unique_knots_and_multiplicity()
         np.testing.assert_array_equal(mult, [3, 1, 1, 3])
 
-        basis, _ = space.tabulate_basis(np.array([5e11 + 2.5e-4], dtype=np.float64))
+        basis, _ = space.tabulate_basis(np.array([5e11 + 5e-3], dtype=np.float64))
         assert np.all(np.isfinite(basis))
         np.testing.assert_allclose(basis.sum(axis=-1), 1.0, rtol=1e-9)
 
-    def test_ordinary_domain_graded_refinement_float32(self) -> None:
-        """A routine float32 grading ratio on an unremarkable domain must not be zeroed.
+    def test_resolvable_gap_on_an_ordinary_domain_survives_float32(self) -> None:
+        """The same, in float32 on an unremarkable domain.
 
-        Domain ``[0, 1000]`` (nothing extreme) with an interior gap of ``~9.15e-5``
-        (grading ratio ``~1e-7`` relative to the domain), well within ordinary
-        adaptive-refinement territory for float32.
+        Domain ``[0, 1000]`` with an interior gap of ``1e-2`` at ``500``: 328 ulp
+        there, and 10.5x the ``8 * eps * span = 9.54e-4`` threshold.
         """
         knots = np.array(
-            [0.0, 0.0, 0.0, 500.0, 500.0 + 9.15e-5, 1000.0, 1000.0, 1000.0], dtype=np.float32
+            [0.0, 0.0, 0.0, 500.0, 500.0 + 1e-2, 1000.0, 1000.0, 1000.0], dtype=np.float32
         )
         space = BsplineSpace1D(knots, 2)
 
+        assert np.array_equal(np.asarray(space.knots), knots), "the pair must stay distinct"
         _, mult = space.get_unique_knots_and_multiplicity()
         np.testing.assert_array_equal(mult, [3, 1, 1, 3])
 
-        basis, _ = space.tabulate_basis(np.array([500.0 + 4.6e-5], dtype=np.float32))
+        basis, _ = space.tabulate_basis(np.array([500.0 + 5e-3], dtype=np.float32))
         assert np.all(np.isfinite(basis))
         np.testing.assert_allclose(basis.sum(axis=-1), 1.0, rtol=1e-4)
+
+    @pytest.mark.parametrize(
+        ("dtype", "domain", "knot", "gap", "gap_in_ulp"),
+        [
+            (np.float64, 1e12, 5e11, 5e-4, 8.2),
+            (np.float32, 1000.0, 500.0, 9.15e-5, 3.0),
+        ],
+    )
+    def test_a_gap_below_the_threshold_merges_consistently(
+        self, dtype: type[np.floating], domain: float, knot: float, gap: float, gap_in_ulp: float
+    ) -> None:
+        """A sub-threshold gap becomes one knot everywhere at once, not just in the guard.
+
+        These are the two fixtures this class used to assert stayed distinct. At
+        8.2 and 3.0 ulp of the knot they straddle they are inside the rounding of
+        computing that knot by any route, so the construction-time grouping merges
+        them. What matters -- and what the rejected in-guard scaling got wrong -- is
+        that nothing is left disagreeing afterwards: the stored knot vector, the
+        reported multiplicity and the basis all describe the same space.
+        """
+        knots = np.array([0.0, 0.0, 0.0, knot, knot + gap, domain, domain, domain], dtype=dtype)
+        eps = float(np.finfo(dtype).eps)
+        assert gap < 8.0 * eps * domain, "precondition: the gap is below the merge threshold"
+        assert gap / float(np.spacing(dtype(knot))) == pytest.approx(gap_in_ulp, rel=0.05)
+
+        space = BsplineSpace1D(knots, 2)
+
+        stored = np.asarray(space.knots)
+        assert stored[3] == stored[4] == dtype(knot), "merged onto the first of the pair"
+
+        unique, mult = space.get_unique_knots_and_multiplicity()
+        np.testing.assert_array_equal(mult, [3, 2, 3])
+        assert np.all(np.isin(np.asarray(unique), stored)), "reported knots are stored knots"
+        assert np.repeat(np.asarray(unique), mult).tolist() == stored.tolist()
+
+        basis, _ = space.tabulate_basis(np.array([knot + 0.25 * domain], dtype=dtype))
+        assert np.all(np.isfinite(basis))
+        np.testing.assert_allclose(
+            basis.sum(axis=-1), 1.0, rtol=1e-9 if dtype is np.float64 else 1e-4
+        )
 
 
 # ---------------------------------------------------------------------------

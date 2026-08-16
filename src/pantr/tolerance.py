@@ -1,29 +1,63 @@
-"""Tolerance utilities for floating-point comparisons in IGA applications.
+"""Relative tolerances for floating-point comparisons in IGA applications.
 
-The presets returned here (:func:`get_default`, :func:`get_strict`,
-:func:`get_conservative`) are **absolute** tolerances: a fixed value per dtype,
-independent of the magnitude of the values being compared. This is used for
-knot-multiplicity detection (grouping near-duplicate knot values, e.g.
-``_get_unique_knots_and_multiplicity_impl``) and for canonicalizing near-duplicate
-knots to a single bitwise value at construction time
-(``BsplineSpace1D._snap_knots``).
+The presets returned here (:func:`get_strict`, :func:`get_default`,
+:func:`get_conservative`) are **dimensionless relative** tolerances: a number of
+machine epsilons, the *same* number for every dtype. They carry no units and no
+scale of their own, so none of them is usable as a comparison on its own.
 
-Kernels that compare a *difference of two knots* against zero -- e.g. the Cox-de
-Boor recurrence denominator guard in ``pantr.bspline._bspline_basis_core``
-(``_basis_funcs_point``, ``_basis_derivs_point``) -- do **not** take a tolerance
-at all: they use an exact ``denom == 0.0`` test, which is scale-invariant by
-construction (unlike a tolerance-based guard). This is safe whenever any two knots
-meant to be equal are stored bitwise identical, so IEEE-754 subtraction makes their
-difference exactly zero -- the default ``snap_knots=True`` construction path
-guarantees this by snapping near-duplicate knots together; callers that opt out of
-snapping (``snap_knots=False``) or call the kernels directly are responsible for
-the knot vector's own consistency.
+A call site turns one into a comparison by multiplying it by the magnitude of the
+quantity it is actually comparing, and by naming that magnitude where it does so:
+``max(|a|, |b|)`` for two values, ``knots[-1] - knots[0]`` for a knot gap, the
+bounding-box diagonal for a physical coordinate, ``max|c|`` for a spline
+coefficient. The floor near zero is that same product -- a relative test can never
+accept ``a = 0`` against a tiny ``b``, so a floor is genuinely needed, but the
+problem supplies its scale, never the dtype.
+
+Each preset is ``K * eps(dtype)``. ``K`` is an acknowledged safety factor, stated
+rather than tuned, and a power of two so that it is exact in every format and
+carries no decimal literal to mistranscribe:
+
+======================  ======  =============================================
+preset                  ``K``   what it pays for
+======================  ======  =============================================
+``get_strict``               4  a handful of roundings: one subtraction and
+                                one convex combination, then a difference
+``get_default``             64  a short algorithm (about 16 operations) plus
+                                build slack: FMA contraction, vector width,
+                                libm
+``get_conservative``      4096  a long accumulation, or a condition number
+                                up to about 1e3, with headroom
+======================  ======  =============================================
+
+``K`` being constant across dtypes is what makes the three presets mean the same
+thing in every precision: ``get_strict`` is four roundings whether the roundings
+are float32's or float64's.
+
+The one place that uniformity has a visible edge is ``float16``, which carries 11
+significant bits and therefore cannot absorb 4096 roundings at all:
+``get_conservative(np.float16)`` is 4.0, a relative tolerance above one, which
+accepts everything. That is the honest answer -- a long accumulation in half
+precision retains no digits -- and it is reported rather than clipped. Nothing in
+pantr reaches it: the B-spline layer accepts only float32 and float64
+(``BsplineSpace1D`` rejects the rest at construction).
+
+Kernels that compare a *difference of two knots* against zero -- the Cox-de Boor
+recurrence denominator guard in ``pantr.bspline._bspline_basis_core``
+(``_basis_funcs_point``, ``_basis_derivs_point``) -- take no tolerance at all and
+use an exact ``denom == 0.0`` test. What makes that sound is the shape of the
+recurrence, not the knot vector: ``denom`` is the sum of the two non-negative
+terms the step then divides by, so the two weights ``right / denom`` and
+``left / denom`` are non-negative and sum to one up to a single rounding. A
+denominator small enough to make the quotient large is multiplied straight back by
+factors no larger than itself, and the term stays bounded by the basis value it
+came from. Near-duplicate knots therefore cost accuracy in that ratio, not
+boundedness, and the guard needs no tolerance and no bitwise-identical knots.
 """
 
 from __future__ import annotations
 
 from functools import cache
-from typing import Any, NamedTuple, TypedDict
+from typing import Any, Final, TypedDict
 
 import numpy as np
 from numpy import typing as npt
@@ -66,118 +100,129 @@ def _ensure_float_dtype(dtype: npt.DTypeLike) -> np.dtype[np.floating[Any]]:
     return _ensure_float_dtype_by_name(dtype_obj.name)
 
 
-class _TolerancePreset(NamedTuple):
-    """A named tuple to hold tolerance values for different floating-point types."""
+_STRICT_EPS_FACTOR: Final[float] = 4.0
+"""Machine epsilons a :func:`get_strict` comparison allows for.
 
-    float16: float
-    float32: float
-    float64: float
-    longdouble: float
+A handful of roundings and nothing more. Four is the count for the shape this tier
+is meant for: a value reached by one convex combination -- a subtract, a multiply
+and an add, three roundings -- and then differenced against another such value,
+which is the fourth. (The comparison itself is exact in IEEE-754 and costs
+nothing.) Four is also already a power of two, so nothing is rounded up here.
+"""
+
+_DEFAULT_EPS_FACTOR: Final[float] = 64.0
+"""Machine epsilons a :func:`get_default` comparison allows for.
+
+A short algorithm -- on the order of 16 operations, whose worst-case accumulation
+is ``16 * eps`` -- plus build slack: an FMA contraction, a different vector width
+and a different libm each move the last bits without changing the algorithm.
+Four times the accumulation bound covers that, and 64 is the power of two it
+lands on.
+"""
+
+_CONSERVATIVE_EPS_FACTOR: Final[float] = 4096.0
+"""Machine epsilons a :func:`get_conservative` comparison allows for.
+
+A long accumulation, or a problem whose condition number reaches about 1e3: the
+error is then ``cond * eps`` rather than an operation count times ``eps``, and
+4096 leaves a factor of four over that on top of the same build slack the default
+tier allows. Past this the tolerance stops being a safety factor and starts
+hiding the answer, so a site that needs more needs a derivation of its own.
+"""
 
 
-# This is platform dependent.
-if np.dtype(np.longdouble) == np.dtype(np.float64):
-    _TOLERANCE_PRESETS = {
-        "default": _TolerancePreset(1e-3, 1e-6, 1e-12, 1e-12),
-        "strict": _TolerancePreset(1e-4, 1e-7, 1e-15, 1e-15),
-        "conservative": _TolerancePreset(1e-2, 1e-5, 1e-10, 1e-10),
-    }
-else:
-    _TOLERANCE_PRESETS = {
-        "default": _TolerancePreset(1e-3, 1e-6, 1e-12, 1e-15),
-        "strict": _TolerancePreset(1e-4, 1e-7, 1e-15, 1e-18),
-        "conservative": _TolerancePreset(1e-2, 1e-5, 1e-10, 1e-12),
-    }
-
-
-def _get_tolerance(
-    dtype: npt.DTypeLike,
-    preset: _TolerancePreset,
-) -> float:
-    """Get the tolerance value for a specific dtype from a preset.
+def _relative_tolerance(dtype: npt.DTypeLike, eps_factor: float) -> float:
+    """Scale a dimensionless safety factor by a dtype's machine epsilon.
 
     Args:
         dtype (npt.DTypeLike): NumPy floating-point data type.
-        preset (_TolerancePreset): A named tuple containing tolerance values.
+        eps_factor (float): Number of machine epsilons the tolerance allows for.
 
     Returns:
-        float: Tolerance value for the given dtype.
+        float: The dimensionless relative tolerance ``eps_factor * eps(dtype)``.
 
     Raises:
         ValueError: If dtype is not a supported floating-point type.
     """
-    dtype_obj = _ensure_float_dtype(dtype)
-
-    # Respect an explicit request for np.longdouble even on platforms where it
-    # aliases float64 (e.g., macOS, Windows). The tests expect semantic intent,
-    # not platform aliasing.
-    if dtype is np.longdouble or (
-        isinstance(dtype, str) and dtype.lower().replace(" ", "") == "longdouble"
-    ):
-        return preset.longdouble
-
-    if dtype_obj.type == np.float16:
-        return preset.float16
-    elif dtype_obj.type == np.float32:
-        return preset.float32
-    elif dtype_obj.type == np.float64:
-        return preset.float64
-    else:  # if dtype_obj.type == np.longdouble:
-        return preset.longdouble
+    return eps_factor * float(np.finfo(_ensure_float_dtype(dtype)).eps)
 
 
 def get_default(dtype: npt.DTypeLike) -> float:
-    """Get a reasonable default tolerance for floating-point comparisons.
+    """Get the default relative tolerance for floating-point comparisons.
+
+    ``_DEFAULT_EPS_FACTOR * eps(dtype)``: the tier for a short algorithm plus build
+    slack. Dimensionless -- multiply it by the magnitude of the quantity being
+    compared, and name that magnitude at the call site.
 
     Args:
         dtype (npt.DTypeLike): NumPy floating-point data type or numpy scalar
             type.
 
     Returns:
-        float: Recommended tolerance value for the given dtype.
+        float: Relative tolerance for the given dtype.
 
     Raises:
         ValueError: If dtype is not a supported floating-point type.
 
     Example:
-        >>> get_default(np.float32)
-        1e-06
         >>> get_default("float64")
-        1e-12
+        1.4210854715202004e-14
+        >>> get_default(np.float32) / float(np.finfo(np.float32).eps)
+        64.0
     """
-    return _get_tolerance(dtype, _TOLERANCE_PRESETS["default"])
+    return _relative_tolerance(dtype, _DEFAULT_EPS_FACTOR)
 
 
 def get_strict(dtype: npt.DTypeLike) -> float:
-    """Get a strict tolerance for high-precision floating-point comparisons.
+    """Get the strict relative tolerance for high-precision comparisons.
+
+    ``_STRICT_EPS_FACTOR * eps(dtype)``: the tier for a handful of roundings, used
+    where a quantity is expected to agree to within the format's own noise.
+    Dimensionless -- multiply it by the magnitude of the quantity being compared,
+    and name that magnitude at the call site.
 
     Args:
         dtype (npt.DTypeLike): NumPy floating-point data type.
 
     Returns:
-        float: Strict tolerance value for the given dtype. Typically used for
-            parametric coordinates requiring high precision.
+        float: Relative tolerance for the given dtype.
 
     Raises:
         ValueError: If dtype is not a supported floating-point type.
+
+    Example:
+        >>> get_strict("float64")
+        8.881784197001252e-16
+        >>> get_strict(np.float32) / float(np.finfo(np.float32).eps)
+        4.0
     """
-    return _get_tolerance(dtype, _TOLERANCE_PRESETS["strict"])
+    return _relative_tolerance(dtype, _STRICT_EPS_FACTOR)
 
 
 def get_conservative(dtype: npt.DTypeLike) -> float:
-    """Get a conservative tolerance for robust floating-point comparisons.
+    """Get the conservative relative tolerance for robust comparisons.
+
+    ``_CONSERVATIVE_EPS_FACTOR * eps(dtype)``: the tier for a long accumulation or
+    a moderately ill-conditioned step, used where robustness matters more than
+    resolving power. Dimensionless -- multiply it by the magnitude of the quantity
+    being compared, and name that magnitude at the call site.
 
     Args:
         dtype (npt.DTypeLike): NumPy floating-point data type.
 
     Returns:
-        float: Conservative tolerance value for the given dtype. Used when
-            robustness is more important than precision.
+        float: Relative tolerance for the given dtype.
 
     Raises:
         ValueError: If dtype is not a supported floating-point type.
+
+    Example:
+        >>> get_conservative("float64")
+        9.094947017729282e-13
+        >>> get_conservative(np.float32) / float(np.finfo(np.float32).eps)
+        4096.0
     """
-    return _get_tolerance(dtype, _TOLERANCE_PRESETS["conservative"])
+    return _relative_tolerance(dtype, _CONSERVATIVE_EPS_FACTOR)
 
 
 def get_machine_epsilon(dtype: npt.DTypeLike) -> float:
@@ -202,7 +247,11 @@ def get_machine_epsilon(dtype: npt.DTypeLike) -> float:
 
 
 class ToleranceInfo(TypedDict):
-    """A TypedDict holding comprehensive tolerance and precision information."""
+    """A TypedDict holding comprehensive tolerance and precision information.
+
+    The three tolerance entries are the **dimensionless relative** presets, not
+    absolute bounds; see the module docstring.
+    """
 
     dtype: npt.DTypeLike
     machine_epsilon: float
@@ -226,8 +275,8 @@ def get_info(
 
     Returns:
         ToleranceInfo: Dictionary containing tolerance information including
-            machine epsilon, default/strict/conservative tolerances, precision
-            bits, and min/max values for the dtype.
+            machine epsilon, the default/strict/conservative *relative*
+            tolerances, precision bits, and min/max values for the dtype.
 
     Raises:
         ValueError: If dtype is not a supported floating-point type.

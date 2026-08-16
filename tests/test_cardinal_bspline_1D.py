@@ -8,7 +8,7 @@ import numpy.typing as npt
 import pytest
 
 from pantr.basis import tabulate_cardinal_bspline_1d
-from pantr.tolerance import get_default
+from pantr.tolerance import get_default, get_strict
 
 
 class TestCardinalBspline:
@@ -43,27 +43,62 @@ class TestCardinalBspline:
         assert np.all(res >= -get_default(res.dtype))
 
     def test_outside_span(self) -> None:
+        """Points off the central span extrapolate the cubic polynomials, they are not clamped.
+
+        Checked against the closed form of the four uniform cubic B-splines on the
+        central span rather than against frozen digits, which is an independent
+        oracle (the kernel runs a de Boor recurrence) and does not move when a
+        tolerance preset does. Two of the sampled points sit ``get_default`` outside
+        the span -- dimensionally sound here because the span is ``[0, 1]``, so the
+        dimensionless preset is already in the units of the parameter.
+        """
         tol = get_default(np.float64)
-        pts = np.array(
-            [
-                -0.5,
-                -tol,
-                1.0 + tol,
-                2.0,
-            ],
-            dtype=np.float64,
-        )
+        pts = np.array([-0.5, -tol, 1.0 + tol, 2.0], dtype=np.float64)
         res = tabulate_cardinal_bspline_1d(3, pts)
-        exp = np.array(
-            [
-                [5.62500000e-01, 3.54166667e-01, 1.04166667e-01, -2.08333333e-02],
-                [1.66666667e-01, 6.66666667e-01, 1.66666667e-01, -1.66674107e-37],
-                [-1.66711121e-37, 1.66666667e-01, 6.66666667e-01, 1.66666667e-01],
-                [-1.66666667e-01, 6.66666667e-01, -8.33333333e-01, 1.33333333e00],
-            ],
-            dtype=np.float64,
+
+        u = pts
+        exp = (
+            np.stack(
+                [
+                    (1.0 - u) ** 3,
+                    3.0 * u**3 - 6.0 * u**2 + 4.0,
+                    -3.0 * u**3 + 3.0 * u**2 + 3.0 * u + 1.0,
+                    u**3,
+                ],
+                axis=-1,
+            )
+            / 6.0
         )
-        nptest.assert_allclose(res, exp)
+
+        # The basis values are O(1) and reach the output through `degree + 1` levels
+        # of convex combination, so the strict preset -- four roundings -- times that
+        # magnitude is the bound. It is an absolute bound because the two entries
+        # nearest the span ends are ~1e-43, far below the noise of an O(1)
+        # computation, and pinning their digits would be pinning noise.
+        nptest.assert_allclose(res, exp, rtol=get_strict(np.float64), atol=get_strict(np.float64))
+
+        # That `atol` is twenty-one orders above the two entries at the span ends, so
+        # it says nothing about them. They are the whole reason for sampling at
+        # `+/- tol`: the point is *outside*, so the outermost basis function must be
+        # small, negative -- and not clamped to zero, which is what treating the point
+        # as the boundary would produce. Checked relatively, against `-tol**3 / 6`,
+        # which both of them are: at `-tol` the last basis function is `u**3 / 6` and
+        # at `1 + tol` the first is `(1 - u)**3 / 6`.
+        #
+        # 5% is as tight as this can be, and the reason is worth stating: a value of
+        # order `tol**3` is being produced by a recurrence whose inputs are O(1), so
+        # its relative accuracy is limited by how exactly those inputs reproduce `u`,
+        # not by the recurrence. The measured deviation is 1/64 at `-tol` and nothing
+        # at `1 + tol`. That is still four orders of margin over what this is for --
+        # separating a cubic extrapolation from a clamp to zero.
+        for row, col in ((1, 3), (2, 0)):
+            outside = float(res[row, col])
+            assert outside < 0.0, f"row {row} was clamped to {outside!r} instead of extrapolating"
+            nptest.assert_allclose(outside, -(tol**3) / 6.0, rtol=0.05)
+
+        # Extrapolation, not clamping: outside the span the polynomials leave [0, 1].
+        assert res[0].min() < 0.0
+        assert res[3].max() > 1.0
 
     def test_dtype_preservation(self) -> None:
         pts32 = np.array([0.0, 0.25, 0.5], dtype=np.float32)
