@@ -546,6 +546,11 @@ class Bspline:
         possible when ``num=None``), provided the geometric deviation stays
         within *tol*.
 
+        With no ``tol`` the operation is **lossless**: only knots the spline does not
+        actually need are removed, to within the round-off of the reconstruction that
+        decides it. Removing a knot at the cost of a geometric error is a trade only
+        the caller can price, so it has to be asked for by passing a ``tol``.
+
         Args:
             knot_values (float | npt.ArrayLike | Sequence[npt.ArrayLike | None]):
                 For a 1D B-spline, a single float or a 1D array-like of
@@ -560,7 +565,9 @@ class Bspline:
             tol (float | None): Maximum allowed geometric deviation for each
                 removal step, as a distance in the B-spline's own physical units
                 (projected coordinates, for a rational B-spline). ``None`` (default)
-                uses ``1e-10``.
+                derives the round-off floor ``8 * (degree + 1) * eps * scale``, with
+                ``scale = max(control-net bounding-box diagonal, largest ||P_i||)``,
+                so a knot is removed only when doing so is exact to the arithmetic.
 
         Returns:
             Bspline: New B-spline with the same geometry (within tolerance)

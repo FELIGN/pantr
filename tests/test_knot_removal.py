@@ -381,8 +381,19 @@ class TestRemoveKnotKernelPrecondition:
 
 
 # ===========================================================================
-# Rational deviation
+# The default tolerance
 # ===========================================================================
+
+
+def _random_curve(degree: int, n_el: int, rank: int, scale: float, seed: int) -> Bspline:
+    """Build an open curve of the given degree whose control net has size ``scale``."""
+    knots = np.concatenate(
+        [np.full(degree, 0.0), np.linspace(0.0, 1.0, n_el + 1), np.full(degree, 1.0)]
+    )
+    space = BsplineSpace([BsplineSpace1D(knots, degree)])
+    rng = np.random.default_rng(seed)
+    cp = rng.uniform(-1.0, 1.0, size=(space.num_total_basis, rank)) * scale
+    return Bspline(space, np.ascontiguousarray(cp))
 
 
 def _nurbs_curve(  # noqa: PLR0913
@@ -404,6 +415,92 @@ def _nurbs_curve(  # noqa: PLR0913
     weights = np.exp(rng.uniform(-weight_spread, weight_spread, size=n))
     cp = np.concatenate([pts * weights[:, None], weights[:, None]], axis=1)
     return Bspline(space, np.ascontiguousarray(cp), is_rational=True)
+
+
+class TestDefaultToleranceIsARoundOffFloor:
+    """With no ``tol``, removal is lossless and its verdict is scale covariant.
+
+    The old default was an absolute ``1e-10``, which is a geometric budget wearing no
+    units: the same exactly-removable knot came out at geometry scale 1e-6, 1 and 1e3
+    and was silently refused at 1e6 and 1e9.  The default is now
+    ``8 * (degree + 1) * eps * scale`` with ``scale = max(bbox diagonal, max ||P_i||)``,
+    which admits exactly what the reconstruction arithmetic cannot distinguish from an
+    exact removal.
+    """
+
+    @pytest.mark.parametrize("scale", [1.0e-6, 1.0, 1.0e3, 1.0e6, 1.0e9])
+    @pytest.mark.parametrize("degree", [1, 2, 3, 4, 5, 6, 7])
+    def test_an_exactly_removable_knot_comes_out_at_every_geometry_scale(
+        self, degree: int, scale: float
+    ) -> None:
+        """A just-inserted knot is redundant by construction, so it must always go.
+
+        This is the case the absolute default lost above scale 1e6, where one ulp of a
+        coordinate already exceeds ``1e-10``.
+        """
+        from pantr.bspline._bspline_knot_removal import (  # noqa: PLC0415
+            _roundoff_deviation_floor,
+        )
+
+        curve = _random_curve(degree, 5, 3, scale, seed=degree)
+        inserted = curve.insert_knots(np.array([0.37]))
+        before = inserted.space.spaces[0].knots.size
+
+        result = inserted.remove_knots(0.37)
+
+        assert result.space.spaces[0].knots.size == before - 1
+        # And the removal delivered what the budget promised.  The control-point
+        # distance A5.8 measures is an upper bound on the curve deviation, so the two
+        # curves must agree to within the very floor that admitted the removal --
+        # a bound derived from the geometry rather than a round number.
+        floor = _roundoff_deviation_floor(np.asarray(inserted.control_points), degree)
+        t = np.linspace(0.0, 1.0, 401)
+        deviation = float(
+            np.linalg.norm(
+                np.asarray(result.evaluate(t)) - np.asarray(inserted.evaluate(t)), axis=1
+            ).max()
+        )
+        assert deviation <= floor
+
+    @pytest.mark.parametrize("scale", [1.0e-6, 1.0, 1.0e3, 1.0e6, 1.0e9])
+    def test_a_knot_the_curve_genuinely_needs_stays_at_every_geometry_scale(
+        self, scale: float
+    ) -> None:
+        """The other half of the verdict: the default must not become a licence.
+
+        Scale covariance is only worth having if both answers travel, so this pins the
+        rejection at the same five scales as the acceptance above.
+        """
+        curve = _random_curve(3, 5, 3, scale, seed=99)
+        before = curve.space.spaces[0].knots.size
+
+        result = curve.remove_knots(0.4)
+
+        assert result.space.spaces[0].knots.size == before
+
+    def test_the_floor_is_proportional_to_the_control_net(self) -> None:
+        """Rescaling the geometry rescales the floor by the same factor."""
+        from pantr.bspline._bspline_knot_removal import (  # noqa: PLC0415
+            _roundoff_deviation_floor,
+        )
+
+        cp = _random_curve(3, 5, 3, 1.0, seed=4).control_points
+        unit = _roundoff_deviation_floor(np.asarray(cp), 3)
+        scaled = _roundoff_deviation_floor(np.asarray(cp) * 1.0e6, 3)
+        assert scaled == pytest.approx(1.0e6 * unit, rel=1.0e-12)
+
+    def test_the_floor_grows_with_degree_and_is_a_multiple_of_eps(self) -> None:
+        """Pin the derivation, not the digits: ``8 * (degree + 1) * eps * scale``."""
+        from pantr.bspline._bspline_knot_removal import (  # noqa: PLC0415
+            _control_point_scale,
+            _roundoff_deviation_floor,
+        )
+
+        cp = np.asarray(_random_curve(3, 5, 3, 1.0, seed=4).control_points)
+        eps = float(np.finfo(np.float64).eps)
+        for degree in (1, 3, 7):
+            expected = 8.0 * (degree + 1) * eps * _control_point_scale(cp)
+            assert _roundoff_deviation_floor(cp, degree) == pytest.approx(expected, rel=1.0e-14)
 
 
 class TestRationalDeviationIsMeasuredInProjectedSpace:
@@ -456,6 +553,23 @@ class TestRationalDeviationIsMeasuredInProjectedSpace:
             )
 
         assert accepted_any, "the sweep never produced an accepted removal, so it proves nothing"
+
+    @pytest.mark.parametrize("scale", [1.0e-6, 1.0, 1.0e6])
+    def test_a_redundant_knot_still_comes_out_of_a_rational_curve(self, scale: float) -> None:
+        """The conversion must not make the default unreachable for a NURBS.
+
+        The round-off floor is deliberately *not* pulled back: it is a statement about
+        the arithmetic, and the arithmetic runs in homogeneous coordinates.  Pulling it
+        back would divide it by ``1 + |P|_max`` and refuse exact removals on any model
+        bigger than a unit.
+        """
+        base = _nurbs_curve(3, 5, 3, scale, 1.5, seed=21)
+        inserted = base.insert_knots(np.array([0.37]))
+        before = inserted.space.spaces[0].knots.size
+
+        result = inserted.remove_knots(0.37)
+
+        assert result.space.spaces[0].knots.size == before - 1
 
     def test_the_conversion_is_the_published_formula(self) -> None:
         """``TOL = d * w_min / (1 + |P|_max)``, checked against a direct computation."""

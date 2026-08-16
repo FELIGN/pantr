@@ -15,17 +15,104 @@ this module is where they are reconciled: see
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Final
 
 import numpy as np
 import numpy.typing as npt
 
 from .._array_utils import _flatten_along_axis, _unflatten_along_axis
+from ..tolerance import get_strict
 from ._bspline_knot_removal_core import _remove_knot_1d_core
 from ._bspline_knots import _find_knot_index_and_multiplicity
 
 if TYPE_CHECKING:
     from . import Bspline, BsplineSpace1D
+
+_REMOVAL_FLOOR_SAFETY: Final[float] = 2.0
+"""Extra factor on the strict tier for the round-off floor of an exact removal.
+
+With :func:`~pantr.tolerance.get_strict` this is ``8 * eps``, and it is applied per
+step of the reconstruction chain: the floor is
+``8 * (degree + 1) * eps * control-point scale``.
+
+**Shape.** Removing a knot once runs Algorithm A5.8's two one-sided reconstructions
+towards each other, at most ``degree + 1`` control points from each side, and reads
+off how far apart they land. Each step is one divided difference of the previous
+result, so an ``eps``-sized error enters at every one of the ``degree + 1`` of them
+and the largest quantity any of them handles is the control-point scale. The steps
+are *not* convex combinations -- the ``1 / alpha`` in the recurrence can amplify --
+so this is an operation count and not a proved bound; the eight epsilons per step are
+the same doubling of the strict tier that
+:data:`~pantr.bspline._bspline_knots._KNOT_MERGE_SAFETY` applies, covering an FMA
+contraction and a differing summation order on top of the count.
+
+**Measured**, over 105 cases (degrees 1 to 7, ranks 1 to 3, geometry scales ``1e-6``
+to ``1e9``), taking an exactly removable knot -- one just inserted -- and bisecting
+for the smallest budget that still removes it: the largest observed distance is
+``0.84 * eps * scale``, and the tightest margin against ``8 * (degree + 1)`` over the
+whole set is a factor of 48. There is no trend with degree (the worst case is at
+degree 4), so the ``degree + 1`` is headroom the derivation asks for rather than a
+term fitted to the data.
+"""
+
+
+def _control_point_scale(ctrl: npt.NDArray[np.float32 | np.float64]) -> float:
+    """Get the magnitude a control-point distance is relative to.
+
+    ``max(bounding-box diagonal, largest ||P_i||)`` over the rows of ``ctrl``, the same
+    pairing of extent and coordinate magnitude that
+    :func:`~pantr.bspline._bspline_knots._knot_scale` makes in parametric space and
+    :func:`~pantr.bspline._bspline_locate._geometric_scale` in physical space. The
+    extent alone is not enough: a small part sitting at ``x = 1e6`` has control points
+    whose differences carry an absolute error of ``eps * 1e6`` however small the part
+    is.
+
+    Computed on the array as given, so for a rational spline it is the scale of the
+    *homogeneous* control points, which is the space the kernel measures in.
+
+    Args:
+        ctrl (npt.NDArray[np.float32 | np.float64]): Control points, of any shape whose
+            last axis is the coordinate axis.
+
+    Returns:
+        float: The scale, zero only for a control net that is identically zero.
+    """
+    flat = np.asarray(ctrl, dtype=np.float64).reshape(-1, ctrl.shape[-1])
+    diagonal = float(np.linalg.norm(flat.max(axis=0) - flat.min(axis=0)))
+    magnitude = float(np.linalg.norm(flat, axis=1).max())
+    return max(diagonal, magnitude)
+
+
+def _roundoff_deviation_floor(ctrl: npt.NDArray[np.float32 | np.float64], degree: int) -> float:
+    """Get the deviation budget that admits exactly the removals round-off allows.
+
+    ``_REMOVAL_FLOOR_SAFETY * get_strict(dtype) * (degree + 1) * scale``, i.e.
+    ``8 * (degree + 1) * eps`` times :func:`_control_point_scale`; the derivation and
+    the measurement are in :data:`_REMOVAL_FLOOR_SAFETY`.
+
+    This is the default budget, and it is deliberately *not* a geometric one. A knot
+    that a spline does not actually need is removable exactly, and the only thing
+    standing between it and a bit-for-bit reconstruction is the round-off of the
+    reconstruction itself. A budget at that level therefore means "remove what is
+    genuinely redundant and nothing else", which is the one default that needs no
+    arbitrary constant. Anything looser is a statement about how much geometry the
+    caller is willing to lose, which only the caller can make.
+
+    It is expressed in the units the kernel measures in, so for a rational spline it is
+    a homogeneous distance and does **not** go through
+    :func:`_homogeneous_deviation_tolerance`: a floor is a statement about the
+    arithmetic, and the arithmetic happens in homogeneous coordinates.
+
+    Args:
+        ctrl (npt.NDArray[np.float32 | np.float64]): Control points as the kernel will
+            see them, homogeneous for a rational spline.
+        degree (int): Polynomial degree in the direction being reduced.
+
+    Returns:
+        float: Absolute deviation budget, in the units of ``ctrl``.
+    """
+    scale = _control_point_scale(ctrl)
+    return _REMOVAL_FLOOR_SAFETY * get_strict(ctrl.dtype) * (degree + 1) * scale
 
 
 def _homogeneous_deviation_tolerance(
@@ -174,7 +261,8 @@ def _remove_knots_bspline(
         num (int | None): Maximum removals per knot value. ``None`` removes
             as many as possible.
         tol (float | None): Deviation tolerance, a distance in **projected** space.
-            ``None`` uses a default of ``1e-10``.
+            ``None`` uses the round-off floor of :func:`_roundoff_deviation_floor`,
+            which removes what is redundant to within the arithmetic and nothing more.
 
     Returns:
         Bspline: New B-spline with reduced knot vectors.
@@ -194,12 +282,15 @@ def _remove_knots_bspline(
             new_spaces_1d.append(space_1d)
             continue
 
-        # Resolved per direction, from the control points as they stand: `ctrl` is
-        # carried forward from the previous direction.
-        requested = 1e-10 if tol is None else tol
-        tol_deviation = (
-            _homogeneous_deviation_tolerance(ctrl, requested) if bspline.is_rational else requested
-        )
+        # Resolved per direction, from the control points as they stand: the degree and
+        # the control-point scale both differ between directions, and `ctrl` is carried
+        # forward from the previous one.
+        if tol is None:
+            tol_deviation = _roundoff_deviation_floor(ctrl, space_1d.degree)
+        elif bspline.is_rational:
+            tol_deviation = _homogeneous_deviation_tolerance(ctrl, tol)
+        else:
+            tol_deviation = tol
 
         pts_2d, trailing_shape = _flatten_along_axis(ctrl, i)
 
