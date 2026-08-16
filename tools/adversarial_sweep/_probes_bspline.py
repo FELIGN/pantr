@@ -990,6 +990,17 @@ def _try_space(
     Fixture enumeration must not raise: an illegal knot vector is covered as a
     *construction* case elsewhere, and here it simply yields no fixture.
 
+    One family leaves the sweep through this door rather than being graded, and it is
+    worth naming so the drop in case count is not read as coverage lost by accident. On
+    a float32 domain ``[1e6, 1e6 + 1]`` the ulp is 0.0625, so any mesh of more than one
+    interval spaces its breakpoints under 0.5 apart, while telling two knots apart at
+    that magnitude needs 0.48 -- ``BsplineSpace1D`` refuses such a vector rather than
+    build a space with no resolvable interval. The refusal itself is still swept, as a
+    ``space1d_*`` construction case that grades ``DOCUMENTED_REJECTION`` off the
+    constructor's own ``Raises:`` section; what is not swept is the operations that
+    would have run on the space, because there is no space. Single-interval members of
+    the same family do still build, which is why this cannot be a per-domain exclusion.
+
     Args:
         knots (npt.NDArray[np.floating[Any]]): The knot vector.
         degree (int): Polynomial degree.
@@ -1243,6 +1254,19 @@ def _construction_cases(profile: Profile) -> Iterator[Case]:
                         "domain": list(domain),
                     }
                     illegal = spec.name in _ILLEGAL_KNOT_FAMILIES
+                    # Deliberately neither flag beyond `illegal`. A legal knot vector
+                    # here has *two* admissible outcomes and which one applies depends
+                    # on the vector, not on the family: it builds, or -- when the mesh
+                    # is finer than the dtype resolves at that coordinate magnitude,
+                    # which on float32 `[1e6, 1e6 + 1]` is every mesh past a single
+                    # interval -- the constructor refuses it. That refusal is a
+                    # contract boundary, not a finding, and the docstring-driven rule
+                    # grades it `DOCUMENTED_REJECTION` off the constructor's own
+                    # `Raises:` section. `must_succeed` would call the refusal a bug
+                    # and `must_reject` would call the successful build one, so both
+                    # are wrong; asserting either per-family would need this file to
+                    # recompute the merge rule, which is the mirror the sweep exists
+                    # to avoid.
                     yield Case(
                         GROUP,
                         f"space1d_{spec.name}_{tag}",

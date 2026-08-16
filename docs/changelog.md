@@ -49,6 +49,24 @@
   `Bezier.reduce_degree` would introduce, computed through the Bernstein mass
   matrix rather than by sampling.
 
+### Rejected where it used to be accepted
+- **A knot vector whose spacing is finer than its dtype resolves at its own coordinate
+  magnitude is now refused at construction**, where it used to be accepted and then
+  silently behave as if it had no intervals. `BsplineSpace1D` raises a `ValueError`
+  naming the dtype, the coordinate magnitude, the merge tolerance in ulp and the closest
+  pair of knots you supplied, and suggesting float64, a domain nearer the origin, or a
+  coarser mesh. Concretely: float32 on `[1e6, 1e6 + 1]` with more than one interval. The
+  ulp there is 0.0625, so a four-interval mesh spaces breakpoints 0.25 apart while
+  telling two knots apart at that magnitude needs 0.48 — an interior knot computed by any
+  route is uncertain by 6% of the window, and no tolerance both keeps the mesh and merges
+  two routes to the same knot. The previous release kept the mesh only by never merging
+  anything (its tolerance there was 1.6e-6 ulp), so the knots it stored were noise.
+  Reachable in float64 too, but only from `|offset| / span ≈ 1.4e14` at four intervals,
+  where the window is 8 ulp wide. Two things are deliberately *not* refused: a knot vector
+  that was already a single repeated value, which is what the caller asked for and comes
+  back untouched, and anything built with `snap_knots=False`, which bypasses the merging
+  and the check together.
+
 ### Changed
 - **`pantr.tolerance`'s presets are now dimensionless relative tolerances.**
   `get_strict`, `get_default` and `get_conservative` return `K * eps(dtype)` with

@@ -391,38 +391,62 @@ def test_snapping_preserves_a_run_of_identical_knots() -> None:
         )
 
 
-def test_a_domain_below_its_own_resolution_collapses() -> None:
-    """A knot vector whose span is inside its own coordinate noise becomes one knot.
+def test_a_domain_below_its_own_resolution_is_refused() -> None:
+    """A knot vector whose spacing is inside its own coordinate noise is rejected.
 
-    Not a defect but the contract, recorded because it is the one thing the merge rule
-    takes away. The tolerance is ``8 * eps * max(span, |knots[0]|, |knots[-1]|)``, so the
-    span itself is swallowed once ``offset / span`` exceeds ``1 / (8 * eps)`` -- about
-    5.2e5 in float32 and 5.6e14 in float64.
+    Not a defect but the contract, and the one thing the merge rule takes away. The
+    tolerance is ``8 * eps * max(span, |knots[0]|, |knots[-1]|)``, so a mesh of ``n``
+    intervals over a span ``s`` at offset ``x`` survives only while
+    ``s / n > 8 * eps * max(s, |x|)``; once ``|x|`` dominates that fails at
+    ``|x| / s = 1 / (8 * eps * n)``, about ``5.2e5 / n`` in float32.
 
-    ``[1e6, 1e6 + 1]`` in float32 is past that: the ulp there is 0.0625, so the whole
-    domain holds 16 representable coordinates and an interior knot computed by any route
-    is uncertain by ``eps * 1e6 = 0.06``, six percent of the span. There is no mesh to
-    resolve, and the space says so by collapsing rather than by pretending the knots are
-    distinct. The same vector in float64 keeps every knot, which is the point: what
+    ``[1e6, 1e6 + 1]`` in float32 is past it: the ulp there is 0.0625, so the whole
+    window holds 16 representable coordinates and an interior knot computed by any route
+    is uncertain by ``eps * 1e6 = 0.06``, six percent of the span. No threshold keeps
+    such a mesh *and* merges two routes to one knot, so the space cannot be built, and
+    saying so beats collapsing silently -- which is what an earlier version of this
+    change did, and what turned 525 sweep cases into opaque failures deep in the
+    kernels. The same vector in float64 keeps every knot, which is the point: what
     decides is the format's resolution at that magnitude, not the magnitude.
     """
     degree = 2
     lo, hi = 1e6, 1e6 + 1.0
     raw = [lo] * (degree + 1) + [lo + 0.5] + [hi] * (degree + 1)
 
-    collapsed = BsplineSpace1D(np.asarray(raw, dtype=np.float32), degree)
-    stored32 = np.asarray(collapsed.knots)
-    assert np.all(stored32 == np.float32(lo)), (
-        f"float32 [{lo}, {hi}] spans {(hi - lo) / float(np.spacing(np.float32(hi))):.0f} "
-        f"ulp, below the {8 * float(np.finfo(np.float32).eps) * hi:.3g} merge tolerance, "
-        f"so it must collapse; got {stored32.tolist()}"
-    )
+    with pytest.raises(ValueError, match="collapsed every knot") as excinfo:
+        BsplineSpace1D(np.asarray(raw, dtype=np.float32), degree)
+    message = str(excinfo.value)
+    # The message has to let the reader act without opening our source.
+    assert "float32" in message, message
+    assert "0.5 apart" in message, message
+    assert "Use float64" in message, message
 
     resolved = BsplineSpace1D(np.asarray(raw, dtype=np.float64), degree)
     assert np.array_equal(np.asarray(resolved.knots), np.asarray(raw, dtype=np.float64)), (
         "the same vector in float64 resolves easily and must be left alone"
     )
     assert resolved.num_intervals == 2
+
+
+def test_an_already_degenerate_knot_vector_is_still_accepted() -> None:
+    """The refusal fires only when *snapping* destroyed the mesh, not when it arrived flat.
+
+    A caller who passes a knot vector that is already a single repeated value asked for
+    exactly that and gets it, at any magnitude and in either dtype. Distinguishing the
+    two is what keeps the new rejection from being a general ban on degenerate spaces:
+    the case worth refusing is the one the caller could not see coming.
+    """
+    for dtype in (np.float32, np.float64):
+        for value in (0.0, 1.0, 1e6, -3.5):
+            space = BsplineSpace1D(np.full(8, value, dtype=dtype), 3)
+            assert space.num_intervals == 0
+            assert np.all(np.asarray(space.knots) == dtype(value))
+
+    # And `snap_knots=False` bypasses merging and the check together, as documented.
+    lo, hi = 1e6, 1e6 + 1.0
+    raw = np.asarray([lo, lo, lo, lo + 0.5, hi, hi, hi], dtype=np.float32)
+    kept = BsplineSpace1D(raw, 2, snap_knots=False)
+    assert np.array_equal(np.asarray(kept.knots), raw)
 
 
 def test_snapping_keeps_knots_the_format_can_resolve() -> None:

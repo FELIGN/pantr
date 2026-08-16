@@ -28,6 +28,7 @@ from ._bspline_knot_insertion import (
     _compute_uniform_subdivision_knots,
 )
 from ._bspline_knots import (
+    _check_snapping_kept_an_interval,
     _get_Bspline_cardinal_intervals_1D_impl,
     _get_Bspline_num_basis_1D_impl,
     _get_unique_knots_and_multiplicity_impl,
@@ -115,8 +116,13 @@ class BsplineSpace1D:
                 Defaults to True.
 
         Raises:
-            ValueError: If degree is negative, knots are insufficient, or
-                knots are not non-decreasing.
+            ValueError: If degree is negative, knots are insufficient, or knots are
+                not non-decreasing; or if ``snap_knots`` is set and snapping
+                collapses a knot vector that had more than one distinct knot onto a
+                single point, which means the requested spacing is finer than the
+                dtype resolves at that coordinate magnitude. A vector that was
+                already degenerate is accepted unchanged, and ``snap_knots=False``
+                bypasses both the merging and this check.
             TypeError: If knots cannot be converted to a numpy array.
         """
         BsplineSpace1D._validate_input(knots, degree, periodic)
@@ -140,6 +146,7 @@ class BsplineSpace1D:
 
         if snap_knots:
             self._snap_knots()
+            _check_snapping_kept_an_interval(knots_arr, self._knots, self._tol)
 
         self._knots.flags.writeable = False
 

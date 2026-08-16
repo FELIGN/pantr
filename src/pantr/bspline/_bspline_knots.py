@@ -97,6 +97,64 @@ def _knot_tolerance(knots: npt.NDArray[np.float32 | np.float64]) -> float:
     return _KNOT_MERGE_SAFETY * get_strict(knots.dtype) * _knot_scale(knots)
 
 
+def _check_snapping_kept_an_interval(
+    raw: npt.NDArray[np.float32 | np.float64],
+    snapped: npt.NDArray[np.float32 | np.float64],
+    tol: float,
+) -> None:
+    """Reject a knot vector that snapping collapsed onto a single point.
+
+    A caller who passes a genuinely degenerate vector -- every knot already the same
+    value -- gets it back untouched and no error, because that is what was asked for.
+    What is refused is the case the caller cannot see coming: the knots *were*
+    distinct, and the merge rule found none of them distinguishable at their own
+    magnitude, so the space would carry no interval and every operation on it would
+    fail on an empty domain with a message about something else.
+
+    This is reachable, and the arithmetic that makes it so is not a defect. Two knots
+    obtained by different routes differ by up to ``4 * eps * scale``, so telling them
+    apart needs a tolerance at least that wide; a mesh of ``n`` intervals over a span
+    ``s`` at offset ``x`` survives only while ``s / n > 8 * eps * max(s, |x|)``. When
+    ``|x|`` dominates, that fails once ``|x| / s`` reaches ``1 / (8 * eps * n)`` --
+    about ``5.2e5 / n`` in float32 and ``5.6e14 / n`` in float64. Past it no threshold
+    satisfies both requirements at once, because an interior knot is then uncertain by
+    a sizeable fraction of the span. Saying so is the only honest answer.
+
+    Args:
+        raw (npt.NDArray[np.float32 | np.float64]): The knot vector as supplied,
+            non-decreasing, before snapping.
+        snapped (npt.NDArray[np.float32 | np.float64]): The same vector afterwards.
+        tol (float): The absolute tolerance snapping used, from :func:`_knot_tolerance`.
+
+    Raises:
+        ValueError: If ``raw`` held more than one distinct knot while ``snapped``
+            holds only one.
+    """
+    # Both vectors are non-decreasing, so "all knots identical" is exactly
+    # "first equals last", tested bitwise and needing no tolerance of its own.
+    if raw[0] == raw[-1] or snapped[0] != snapped[-1]:
+        return
+
+    name = raw.dtype.name
+    scale = _knot_scale(raw)
+    ulp = float(np.spacing(raw.dtype.type(scale)))
+    gaps = np.diff(np.asarray(raw, dtype=np.float64))
+    closest = float(gaps[gaps > 0.0].min())
+    # Widening the format is only a remedy if there is a wider one to move to.
+    remedy = (
+        "Use float64, move the domain nearer the origin, or coarsen the mesh."
+        if raw.dtype.type is np.float32
+        else "Move the domain nearer the origin, or coarsen the mesh."
+    )
+    raise ValueError(
+        f"knot snapping collapsed every knot onto {float(snapped[0])!r}: in {name} at "
+        f"|coordinate| ~ {scale:.3g} two knots are the same knot unless they differ by "
+        f"more than {tol:.3g} ({tol / ulp:.0f} ulp there), and the closest pair in "
+        f"[{float(raw[0])!r}, {float(raw[-1])!r}] is {closest:.3g} apart. This mesh is "
+        f"finer than {name} resolves at that magnitude. {remedy}"
+    )
+
+
 @nb_jit(
     nopython=True,
     cache=True,
@@ -782,6 +840,7 @@ def _warmup_numba_functions() -> None:
 
 
 __all__ = [
+    "_check_snapping_kept_an_interval",
     "_check_spline_info",
     "_count_multiplicity",
     "_find_knot_index_and_multiplicity",
@@ -793,5 +852,7 @@ __all__ = [
     "_get_multiplicity_of_first_knot_in_domain_impl",
     "_get_unique_knots_and_multiplicity_impl",
     "_is_in_domain_impl",
+    "_knot_scale",
+    "_knot_tolerance",
     "_validate_knot_input",
 ]
