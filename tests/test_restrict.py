@@ -269,6 +269,98 @@ class TestBsplineRestrictND:
         np.testing.assert_allclose(r.evaluate(lattice), f.evaluate(lattice), atol=1e-13)
 
 
+class TestBsplineRestrictScaleCovariance:
+    """The verdicts restrict reaches must not depend on where the domain sits.
+
+    Restriction adds no tolerance of its own: every comparison it makes is a knot
+    identity question answered by ``BsplineSpace1D.tolerance``, an absolute
+    parametric length derived from the knot vector's own magnitude. These tests pin
+    the property that follows: send ``x -> lambda * x`` and nothing changes but the
+    coordinates.
+    """
+
+    @staticmethod
+    def _shifted(lo: float, span: float, degree: int = 3, n_intervals: int = 5) -> Bspline:
+        """Build an open 1D B-spline on ``[lo, lo + span]`` with a fixed control polygon."""
+        interior = np.linspace(lo, lo + span, n_intervals + 1)[1:-1]
+        knots = np.concatenate([[lo] * (degree + 1), interior, [lo + span] * (degree + 1)])
+        space = BsplineSpace([BsplineSpace1D(knots, degree)])
+        rng = np.random.default_rng(11)
+        return Bspline(space, rng.random((space.num_total_basis, 2)))
+
+    @pytest.mark.parametrize("lam", [1.0e-6, 1.0, 1.0e6, 1.0e9])
+    def test_restriction_keeps_the_whole_boundary_group(self, lam: float) -> None:
+        """The extraction must not truncate the clamped end at any coordinate magnitude.
+
+        ``searchsorted(refined_knots, b_new + tol)`` is what cuts the sub-vector, and
+        with the previous fixed ``1e-12`` the offset was absorbed by ``b_new`` itself
+        once one ulp of the coordinate exceeded it (at ``lam = 1e6`` an ulp is about
+        ``1.2e-10``), so the cut fell before the first copy of ``b_new`` and the last
+        ``degree + 1`` knots were dropped. A tolerance of ``8 * eps * scale`` is at
+        least four ulp of any coordinate present, so the offset always bites.
+        """
+        f = self._shifted(0.0, lam)
+        degree = f.degree[0]
+        r = f.restrict((0.2 * lam, 0.6 * lam))
+
+        lo, hi = r.space.domain[0]
+        assert lo == pytest.approx(0.2 * lam, rel=1.0e-14)
+        assert hi == pytest.approx(0.6 * lam, rel=1.0e-14)
+        # Clamped at both ends: the boundary group survived the cut intact.  Counted
+        # through the space's own notion of knot identity, not bitwise: a boundary that
+        # coincides with an existing knot keeps that knot's stored representative, which
+        # may differ from the requested bound in the last bit.
+        _, mult = r.space.spaces[0].get_unique_knots_and_multiplicity()
+        assert mult[0] == degree + 1
+        assert mult[-1] == degree + 1
+        assert r.space.spaces[0].knots.size == mult.sum()
+
+    @pytest.mark.parametrize("lam", [1.0e-6, 1.0, 1.0e6, 1.0e9])
+    def test_the_restricted_map_still_agrees_with_the_original(self, lam: float) -> None:
+        """Restriction is exact geometry, so the two evaluate alike at every scale."""
+        f = self._shifted(0.0, lam)
+        r = f.restrict((0.2 * lam, 0.6 * lam))
+        pts = np.linspace(0.2 * lam, 0.6 * lam, 50)
+        np.testing.assert_allclose(r.evaluate(pts), f.evaluate(pts), atol=0.0, rtol=1.0e-12)
+
+    @pytest.mark.parametrize("lam", [1.0e-6, 1.0, 1.0e6, 1.0e9])
+    def test_a_bound_one_ulp_outside_the_domain_is_still_the_domain(self, lam: float) -> None:
+        """One ulp of slack is forgiven wherever the domain sits.
+
+        The bound is snapped onto the endpoint rather than rejected, so the right
+        insertion is skipped exactly as it is for the endpoint itself.
+        """
+        f = self._shifted(0.0, lam)
+        just_outside = float(np.nextafter(lam, np.inf))
+        r = f.restrict((0.4 * lam, just_outside))
+        assert r.space.domain[0][1] == pytest.approx(lam, rel=1.0e-15)
+
+    def test_an_offset_domain_reaches_the_same_verdicts_as_a_centered_one(self) -> None:
+        """Translating the knot vector changes the arithmetic, not what restrict decides.
+
+        Only the *verdicts* are covariant.  The control points are not expected to
+        agree bitwise: at an offset of ``1e6`` the insertion weights are formed from
+        coordinates of that magnitude, so they carry a relative error of about
+        ``eps * 1e6 / span = 2.2e-10``, and the control points inherit it.  Measured
+        agreement here is ``2.9e-10`` relative, which is that figure and not a defect;
+        what must be identical is the knot structure the two runs produce.
+        """
+        base = self._shifted(0.0, 1.0)
+        moved = self._shifted(1.0e6, 1.0)
+        r_base = base.restrict((0.2, 0.6))
+        r_moved = moved.restrict((1.0e6 + 0.2, 1.0e6 + 0.6))
+
+        _, mult_base = r_base.space.spaces[0].get_unique_knots_and_multiplicity()
+        _, mult_moved = r_moved.space.spaces[0].get_unique_knots_and_multiplicity()
+        np.testing.assert_array_equal(mult_moved, mult_base)
+        assert r_moved.control_points.shape == r_base.control_points.shape
+        # The insertion-weight error above, with a factor of four for the chain.
+        weight_error = 4.0 * np.finfo(np.float64).eps * 1.0e6
+        np.testing.assert_allclose(
+            r_moved.control_points, r_base.control_points, rtol=weight_error, atol=0.0
+        )
+
+
 # ---------------------------------------------------------------------------
 # Bezier.restrict
 # ---------------------------------------------------------------------------

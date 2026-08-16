@@ -5,6 +5,52 @@ domain of a B-spline. The core logic inserts knots at the new boundaries until t
 reach multiplicity ``degree + 1``, then extracts the relevant knot sub-vector and
 control points. An optimization skips insertion when a bound coincides with an
 already-open domain endpoint.
+
+Tolerance policy
+----------------
+
+Restriction introduces **no tolerance of its own**, and that is the policy rather
+than an omission. Every comparison it makes is between two parametric coordinates
+of one knot vector -- a requested bound against a domain endpoint, against an
+existing knot, against the refined vector -- so every one of them is the question
+:func:`~pantr.bspline._bspline_knots._knot_tolerance` already answers: *are these
+two values the same knot?* The single ``tol`` threaded through this module is
+:attr:`~pantr.bspline.BsplineSpace1D.tolerance`, the absolute parametric length
+``8 * eps * max(span, |knots[0]|, |knots[-1]|)`` that the space derived once at
+construction. Introducing a second number here would be inventing a second notion
+of knot identity for the same vector.
+
+Three properties of that inheritance are load-bearing and are worth stating,
+because each is what makes one number enough:
+
+**The scale does not move between the stages.** ``tol`` is derived from the input
+knot vector, then applied to the *refined* one after boundary insertion. Knot
+insertion never changes the first or last knot, so ``_knot_scale`` is identical for
+both and the tolerance means the same thing on either side. The one stage that does
+change the endpoints is the periodic-to-open conversion, which clamps the vector to
+its own domain and can only *shrink* the scale (by the ratio of the padded extent to
+the domain, at most a small factor). The inherited tolerance is then conservative
+rather than tight, which is the safe direction for a merge test.
+
+**The extraction offsets widen, and that direction is deliberate.** The sub-vector
+is cut with ``searchsorted(refined_knots, a_new - tol)`` and
+``searchsorted(refined_knots, b_new + tol) - 1``: both move the cut *away* from the
+interval, so a boundary knot can never be dropped by a coordinate landing a rounding
+short of its own value. This is what the previous absolute tolerance got wrong. At a
+domain based at ``1e6`` one ulp of the bound is about ``1.2e-10``, so the old fixed
+``1e-12`` was absorbed entirely by ``b_new + tol == b_new`` and the cut fell before
+the first copy of ``b_new``, silently truncating the last ``degree + 1`` knots. A
+tolerance of ``8 * eps * scale`` is at least four ulp of any coordinate in the
+vector, so the offset always changes the value it is added to and the cut always
+lands past the whole boundary group.
+
+**Widening cannot over-collect.** :class:`~pantr.bspline.BsplineSpace1D` snaps its
+knots by the same rule, so two *distinct* stored knots differ by more than ``tol``
+and a cut widened by ``tol`` cannot reach the next one. The one configuration where
+that is not enough is a bound falling between two distinct knots less than
+``2 * tol`` apart, which requires a mesh already at the format's resolution floor
+for its magnitude -- the regime
+:func:`~pantr.bspline._bspline_knots._check_snapping_kept_an_interval` reports on.
 """
 
 from __future__ import annotations
@@ -33,12 +79,18 @@ def _validate_restrict_bounds(
 ) -> tuple[float, float]:
     """Validate and snap restriction bounds for a 1D B-spline.
 
+    A bound within ``tol`` of a domain endpoint *is* that endpoint: it is accepted
+    rather than rejected as out of range, and then snapped onto the stored value so
+    the rest of the algorithm compares bitwise.
+
     Args:
-        knots: Knot vector.
-        degree: Polynomial degree.
-        tol: Knot comparison tolerance.
-        a_new: Requested left bound.
-        b_new: Requested right bound.
+        knots (npt.NDArray[np.float32 | np.float64]): Knot vector.
+        degree (int): Polynomial degree.
+        tol (float): Absolute parametric tolerance, from
+            :attr:`~pantr.bspline.BsplineSpace1D.tolerance`; see the module
+            docstring for why restriction adds nothing to it.
+        a_new (float): Requested left bound.
+        b_new (float): Requested right bound.
 
     Returns:
         tuple[float, float]: Snapped ``(a_new, b_new)`` bounds.
@@ -79,11 +131,15 @@ def _compute_boundary_knots_to_insert(
     Skips insertion when the boundary coincides with an already-open domain endpoint.
 
     Args:
-        knots: Knot vector (must be non-periodic/open-compatible).
-        degree: Polynomial degree.
-        tol: Knot comparison tolerance.
-        a_new: Left bound of the restricted domain.
-        b_new: Right bound of the restricted domain.
+        knots (npt.NDArray[np.float32 | np.float64]): Knot vector (must be
+            non-periodic/open-compatible).
+        degree (int): Polynomial degree.
+        tol (float): Absolute parametric tolerance, from
+            :attr:`~pantr.bspline.BsplineSpace1D.tolerance`. It decides which
+            existing knots already *are* the boundary, and so how many copies the
+            boundary is short of multiplicity ``degree + 1``.
+        a_new (float): Left bound of the restricted domain.
+        b_new (float): Right bound of the restricted domain.
 
     Returns:
         npt.NDArray: 1D array of knot values to insert (may be empty).
@@ -140,12 +196,17 @@ def _restrict_bspline_1d_impl(  # noqa: PLR0913
     :func:`_to_open_bspline_1d_impl`.
 
     Args:
-        knots: Knot vector of shape ``(len(knots),)``.
-        degree: Polynomial degree.
-        ctrl_2d: Control point matrix of shape ``(n, rank)``.
-        periodic: Whether the spline is periodic.
-        tol: Knot comparison tolerance.
-        bounds: ``(a_new, b_new)`` — left and right bounds of the restricted domain.
+        knots (npt.NDArray[np.float32 | np.float64]): Knot vector of shape
+            ``(len(knots),)``.
+        degree (int): Polynomial degree.
+        ctrl_2d (npt.NDArray[np.float32 | np.float64]): Control point matrix of
+            shape ``(n, rank)``.
+        periodic (bool): Whether the spline is periodic.
+        tol (float): Absolute parametric tolerance, from
+            :attr:`~pantr.bspline.BsplineSpace1D.tolerance`, serving every
+            comparison here; see the module docstring for the policy.
+        bounds (tuple[float, float]): ``(a_new, b_new)``, the left and right bounds
+            of the restricted domain.
 
     Returns:
         tuple[npt.NDArray, npt.NDArray]: ``(restricted_knots, restricted_ctrl)``
@@ -177,9 +238,12 @@ def _restrict_bspline_1d_impl(  # noqa: PLR0913
     else:
         refined_knots, refined_ctrl = knots, ctrl_2d
 
-    # Extract the sub-region [a_new, b_new].
-    # After insertion, a_new has multiplicity p+1 starting at index i_start,
-    # and b_new has multiplicity p+1 ending at index i_end.
+    # Extract the sub-region [a_new, b_new]. After insertion, a_new has multiplicity
+    # p+1 starting at index i_start, and b_new has multiplicity p+1 ending at i_end.
+    # Both offsets widen the cut away from the interval, so a boundary knot cannot be
+    # dropped by a coordinate landing a rounding short of its own value, and `tol` is
+    # at least four ulp of any coordinate here so the offset is never absorbed; see
+    # the module docstring.
     i_start = int(np.searchsorted(refined_knots, a_new - tol))
     i_end = int(np.searchsorted(refined_knots, b_new + tol)) - 1
 
