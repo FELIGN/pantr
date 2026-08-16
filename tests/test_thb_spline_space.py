@@ -1375,6 +1375,15 @@ class TestProlongationResidualGate:
         # Monotone in the size of the column it grades.
         assert _prolongation_residual_tolerance(3.0) > _prolongation_residual_tolerance(1.0)
 
+        # And the band the old `1e-8` wrongly certified is closed from both ends. Neither
+        # direction test above lands near the threshold -- a genuine refinement sits at
+        # ~18.5 eps and a real impostor at order one -- so this is what pins the
+        # threshold's calibration rather than merely its existence.
+        eps = float(np.finfo(np.float64).eps)
+        gate = _prolongation_residual_tolerance(1.0)
+        assert gate < 1.0e-11, "a residual of 1e-10 must no longer pass as a refinement"
+        assert gate > 100.0 * eps, "the worst measured genuine refinement (18.5 eps) must clear"
+
 
 class TestCellMembershipTolerance:
     """A point on a cell boundary is inside it, at every coordinate magnitude.
@@ -1396,9 +1405,18 @@ class TestCellMembershipTolerance:
         """This is the case the fixed tolerance lost above ``lam = 1e6``."""
         thb = self._space(0.0, lam)
         lo, hi = thb.grid.cell_bounds(1)
-        for outside in (np.nextafter(lo[0], -np.inf), np.nextafter(hi[0], np.inf)):
-            values, _ = thb.tabulate_basis(1, np.array([[outside]]))
-            assert np.all(np.isfinite(values))
+        width = float(hi[0] - lo[0])
+        for edge, outside in (
+            (lo[0], np.nextafter(lo[0], -np.inf)),
+            (hi[0], np.nextafter(hi[0], np.inf)),
+        ):
+            values, dofs = thb.tabulate_basis(1, np.array([[outside]]))
+            # Not merely "no exception": the values must be the ones the boundary itself
+            # gives, to within the slope of a basis function over one ulp of the cell.
+            inside, dofs_in = thb.tabulate_basis(1, np.array([[float(edge)]]))
+            np.testing.assert_array_equal(dofs, dofs_in)
+            np.testing.assert_allclose(values, inside, atol=1.0e-9 / max(width, 1.0e-300))
+            assert values.sum() == pytest.approx(1.0, abs=1.0e-12)
 
     @pytest.mark.parametrize("lam", [1.0e-6, 1.0, 1.0e6, 1.0e9])
     def test_a_point_a_hundredth_of_a_cell_outside_is_rejected(self, lam: float) -> None:
@@ -1414,6 +1432,63 @@ class TestCellMembershipTolerance:
         for outside in (float(lo[0]) - 0.01 * width, float(hi[0]) + 0.01 * width):
             with pytest.raises(ValueError, match="must lie inside cell"):
                 thb.tabulate_basis(1, np.array([[outside]]))
+
+    def test_the_band_the_old_constant_wrongly_accepted_is_now_closed(self) -> None:
+        """A point 1e-13 outside a unit-domain cell: accepted before, rejected now.
+
+        The direction tests above bracket the verdict widely -- one ulp in, one percent
+        of a cell out -- and both of them pass against the old fixed ``1e-12`` as well.
+        This is the marginal case that does not: on ``[0, 1]`` a cell is 0.25 wide, so
+        the derived slack is ``8 * eps * 0.25 = 4.4e-16`` while the constant allowed
+        ``1e-12``, some 9000 ulp. A point at 1e-13 sits squarely inside that gap.
+        """
+        thb = self._space(0.0, 1.0)
+        lo, _ = thb.grid.cell_bounds(1)
+        with pytest.raises(ValueError, match="must lie inside cell"):
+            thb.tabulate_basis(1, np.array([[float(lo[0]) - 1.0e-13]]))
+
+    def test_the_tolerance_stays_below_the_constant_it_replaced_on_a_unit_domain(
+        self,
+    ) -> None:
+        """And by the margin the class docstring claims: about four orders of magnitude.
+
+        Stated as an inequality against the old constant rather than as digits, so it
+        survives a change of tier but not a reversion to an absolute band.
+        """
+        from pantr.bspline._thb_spline_space import (  # noqa: PLC0415
+            _cell_membership_tolerance,
+        )
+
+        tol = _cell_membership_tolerance(np.array([0.0]), np.array([0.25]))[0]
+        assert tol < 1.0e-12 / 1000.0
+        # But not so tight that a point formed as `lo + xi * (hi - lo)` cannot survive:
+        # three roundings at this magnitude is 3 * eps * 0.25.
+        assert tol > 3.0 * float(np.finfo(np.float64).eps) * 0.25
+
+    def test_a_float32_root_space_is_still_graded_in_float64(self) -> None:
+        """Pins the claim `_cell_membership_tolerance`'s docstring makes to justify its dtype.
+
+        It hardcodes ``get_strict(np.float64)`` rather than reading the root space's
+        dtype, on the grounds that ``cell_bounds`` is float64 whatever the root space is
+        made of and the query points are cast to float64 before the comparison. If
+        either half were false the tolerance would be wrong by eight orders of
+        magnitude, so both are checked here rather than trusted.
+        """
+        knots = np.concatenate([[0.0] * 3, np.linspace(0.0, 1.0, 5)[1:-1], [1.0] * 3]).astype(
+            np.float32
+        )
+        root = BsplineSpace([BsplineSpace1D(knots, 2)])
+        assert root.dtype == np.float32
+        thb = THBSplineSpace(root, hierarchical_grid(uniform_grid([[0.0, 1.0]], 4), 2))
+        lo, hi = thb.grid.cell_bounds(1)
+        assert lo.dtype == np.float64
+        assert hi.dtype == np.float64
+        # And the float64 slack is what is actually applied: one float64 ulp is accepted,
+        # while the float32-sized slop the root dtype would have bought is not.
+        values, _ = thb.tabulate_basis(1, np.array([[float(np.nextafter(lo[0], -np.inf))]]))
+        assert np.all(np.isfinite(values))
+        with pytest.raises(ValueError, match="must lie inside cell"):
+            thb.tabulate_basis(1, np.array([[float(lo[0]) - 1.0e-9]]))
 
     def test_the_slack_tracks_the_cell_and_not_the_axis(self) -> None:
         """A narrow cell far from the origin gets the coordinate's slack, not the width's.

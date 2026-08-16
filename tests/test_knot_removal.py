@@ -557,8 +557,11 @@ class TestRationalDeviationIsMeasuredInProjectedSpace:
 
         assert accepted_any, "the sweep never produced an accepted removal, so it proves nothing"
 
-    @pytest.mark.parametrize("scale", [1.0e-6, 1.0, 1.0e6])
-    def test_a_redundant_knot_still_comes_out_of_a_rational_curve(self, scale: float) -> None:
+    @pytest.mark.parametrize("scale", [1.0e-6, 1.0, 1.0e6, 1.0e9])
+    @pytest.mark.parametrize("degree", [3, 4, 6, 7])
+    def test_a_redundant_knot_still_comes_out_of_a_rational_curve(
+        self, degree: int, scale: float
+    ) -> None:
         """The conversion must not make the default unreachable for a NURBS.
 
         The round-off floor is deliberately *not* pulled back: it is a statement about
@@ -566,7 +569,7 @@ class TestRationalDeviationIsMeasuredInProjectedSpace:
         back would divide it by ``1 + |P|_max`` and refuse exact removals on any model
         bigger than a unit.
         """
-        base = _nurbs_curve(3, 5, 3, scale, 1.5, seed=21)
+        base = _nurbs_curve(degree, 5, 3, scale, 1.5, seed=21)
         inserted = base.insert_knots(np.array([0.37]))
         before = inserted.space.spaces[0].knots.size
 
@@ -649,11 +652,33 @@ class TestTheFloorSpansEveryStackedControlPoint:
         assert result.space.spaces[0].knots.size == before
 
     def test_the_stacking_count_is_the_other_directions_and_not_this_one(self) -> None:
-        """A surface removed along its *short* axis stacks the long axis, and vice versa.
+        """Asserted on the count itself, because no behavioural test can catch this.
 
-        Getting the two the wrong way round would pass a square 2D test and fail an
-        oblong one, so the fixture here is deliberately lopsided.
+        Taking the reduced axis instead of the others is the natural way to get this
+        wrong.  It cannot be caught through ``remove_knots``: the floor carries a 48x
+        margin over the measured worst case, so *any* positive multiplier still admits
+        an exactly redundant knot.  Mutating the production line to ``ctrl.shape[axis]``
+        was confirmed to leave a round-trip test passing at 4-vs-4000 and at
+        4-vs-400000.  So the count is asserted directly, on a deliberately lopsided
+        control net where the two candidate answers differ by three orders of magnitude.
         """
+        from pantr.bspline._bspline_knot_removal import (  # noqa: PLC0415
+            _num_stacked_control_points,
+        )
+
+        ctrl = np.zeros((7, 4003, 3))  # 7 basis functions along axis 0, 4003 along axis 1
+        assert _num_stacked_control_points(ctrl, 0) == 4003
+        assert _num_stacked_control_points(ctrl, 1) == 7
+        # A curve stacks nothing, so the floor is exactly the per-point one.
+        assert _num_stacked_control_points(np.zeros((9, 3)), 0) == 1
+        # And a volume stacks the product of the two it is not reducing.
+        vol = np.zeros((5, 6, 7, 3))
+        assert _num_stacked_control_points(vol, 0) == 42
+        assert _num_stacked_control_points(vol, 1) == 35
+        assert _num_stacked_control_points(vol, 2) == 30
+
+    def test_a_lopsided_surface_stays_lossless_along_either_axis(self) -> None:
+        """The behavioural half: whichever axis is reduced, the redundant knot goes."""
 
         def kv(n: int, degree: int = 3) -> npt.NDArray[np.float64]:
             return np.concatenate(

@@ -87,6 +87,30 @@ def _control_point_scale(ctrl: npt.NDArray[np.float32 | np.float64]) -> float:
     return max(diagonal, magnitude)
 
 
+def _num_stacked_control_points(ctrl: npt.NDArray[np.float32 | np.float64], axis: int) -> int:
+    """Count the control points the kernel's one distance will span, reducing ``axis``.
+
+    :func:`~pantr._array_utils._flatten_along_axis` moves ``axis`` to the front and
+    flattens everything after it, so the kernel sees ``(ctrl.shape[axis], rest)`` and its
+    Euclidean distance runs over every control point of every *other* direction at once.
+    That count is the product of the basis counts excluding ``axis`` -- one for a curve.
+
+    Kept as its own function because getting it the wrong way round (taking the reduced
+    axis instead of the others) is a mistake no behavioural test can catch: the floor
+    carries a 48x margin, so any positive multiplier still admits the removal. Only a
+    direct assertion on this number can.
+
+    Args:
+        ctrl (npt.NDArray[np.float32 | np.float64]): Control points shaped
+            ``(*num_basis, rank)``, coordinate axis last.
+        axis (int): The parametric direction being reduced.
+
+    Returns:
+        int: The number of stacked control points, at least one.
+    """
+    return int(np.prod(ctrl.shape[:-1])) // int(ctrl.shape[axis])
+
+
 def _roundoff_deviation_floor(
     ctrl: npt.NDArray[np.float32 | np.float64], degree: int, num_stacked: int
 ) -> float:
@@ -356,10 +380,9 @@ def _remove_knots_bspline(
         # control-point scale and the number of stacked points all differ between
         # directions, and `ctrl` is carried forward from the previous one.
         if tol is None:
-            # How many control points the kernel's one Euclidean distance will span:
-            # every direction but this one. See `_roundoff_deviation_floor`.
-            num_stacked = int(np.prod(ctrl.shape[:-1])) // ctrl.shape[i]
-            tol_deviation = _roundoff_deviation_floor(ctrl, space_1d.degree, num_stacked)
+            tol_deviation = _roundoff_deviation_floor(
+                ctrl, space_1d.degree, _num_stacked_control_points(ctrl, i)
+            )
         elif bspline.is_rational:
             # Not scaled by `num_stacked`: an explicit budget is a promise about each
             # control point, and widening the aggregate would let one point absorb the
