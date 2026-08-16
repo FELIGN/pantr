@@ -135,6 +135,15 @@ def _cell_membership_tolerance(
     physical choice this layer is not entitled to make, and it destroys covariance on
     a domain smaller than one unit.
 
+    The dtype is ``float64`` and not the root space's, which is where this departs from
+    :func:`~pantr.bspline._bspline_knots._knot_tolerance`'s ``get_strict(knots.dtype)``.
+    The reason is that it grades different objects: ``cell_bounds`` returns ``float64``
+    whatever the root space is made of, and :meth:`THBSplineSpace._tabulate_orders` casts
+    the query points to ``float64`` before the comparison, so ``float64`` *is* the
+    precision of both sides here. A caller whose points carry only ``float32``
+    information should widen them before asking, rather than have the containment check
+    widened by eight million for everyone.
+
     Args:
         cell_lo (npt.NDArray[np.float64]): Per-axis lower cell bound, shape ``(dim,)``.
         cell_hi (npt.NDArray[np.float64]): Per-axis upper cell bound, same shape.
