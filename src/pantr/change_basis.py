@@ -111,9 +111,8 @@ def compute_bernstein_to_lagrange_1d(
     r"""Construct the matrix mapping Bernstein basis evaluations to Lagrange basis evaluations.
 
     The inverse direction of :func:`compute_lagrange_to_bernstein_1d`: with ``C`` from
-    that function, this returns the matrix solving ``C @ result = I``, computed by one
-    LU solve against the identity (:func:`numpy.linalg.solve`). No explicit inverse is
-    formed.
+    that function, this returns ``L`` solving ``C @ L = I``, computed by one LU solve
+    against the identity (:func:`numpy.linalg.solve`). No explicit inverse is formed.
 
     Note:
         Both Bernstein and Lagrange bases follow the standard ordering
@@ -128,13 +127,15 @@ def compute_bernstein_to_lagrange_1d(
     Warning:
         $\kappa(C)$ grows with degree and with the node family: with the default
         equispaced nodes it is ``1.2e1`` at degree 4, ``4.6e2`` at degree 8 and
-        ``3.0e3`` at degree 10, so the attainable accuracy of the result, by any
-        algorithm, is bounded by roughly $\kappa(C)\varepsilon$. In float64 the round
-        trip $\lVert C B - I \rVert_2$ holds to ``3e-16`` at degree 4, ``1e-14`` at
-        degree 8 and ``1e-13`` at degree 10. In float32 the same bound stays below 0.1
-        through degree 11 for equispaced nodes and through degree 14 for the Gauss and
-        Chebyshev variants, so unlike the other two pairs this one remains usable in
-        single precision over the whole range of practical degrees.
+        ``3.0e3`` at degree 10, so the attainable accuracy of ``L``, by any algorithm,
+        is bounded by roughly $\kappa(C)\varepsilon$. In float64 the round trip
+        $\lVert C L - I \rVert_2$ holds to ``3e-16`` at degree 4, ``1e-14`` at degree 8
+        and ``1e-13`` at degree 10. In float32 the same bound stays below 0.1 through
+        degree 11 for equispaced nodes and through degree 14 for the Gauss and
+        Chebyshev variants, and over those ranges the measured round trip never exceeds
+        ``1.1e-4`` (worst case Gauss-Legendre at degree 14; below ``7.5e-5`` for every
+        variant through degree 11), so unlike the other two pairs this one remains
+        usable in single precision over the whole range of practical degrees.
 
     Args:
         degree (int): Polynomial degree. Must be at least 1.
@@ -148,8 +149,8 @@ def compute_bernstein_to_lagrange_1d(
             if provided. This follows NumPy's style for output arrays. Defaults to None.
 
     Returns:
-        npt.NDArray[np.float32 | np.float64]: (degree+1, degree+1) transformation matrix C such that
-            C @ [Bernstein values] = [Lagrange values]. If `out` was provided,
+        npt.NDArray[np.float32 | np.float64]: (degree+1, degree+1) transformation matrix L such
+            that ``L @ [Bernstein values] = [Lagrange values]``. If `out` was provided,
             returns the same array.
 
     Raises:
@@ -269,8 +270,8 @@ def compute_bernstein_to_cardinal_1d(
             if provided. This follows NumPy's style for output arrays. Defaults to None.
 
     Returns:
-        npt.NDArray[np.float32 | np.float64]: (degree+1, degree+1) transformation matrix C such that
-            C @ [Bernstein values] = [cardinal values]. If `out` was provided,
+        npt.NDArray[np.float32 | np.float64]: (degree+1, degree+1) transformation matrix A such
+            that ``A @ [Bernstein values] = [cardinal values]``. If `out` was provided,
             returns the same array.
 
     Raises:
@@ -318,14 +319,17 @@ def compute_cardinal_to_bernstein_1d(
         any algorithm, is bounded by roughly $\kappa(A)\varepsilon$. In float64 the
         returned matrix reproduces the Bernstein basis to about ``4e-15`` through
         degree 4, ``3e-13`` at degree 6, ``3e-11`` at degree 8 and ``2e-8`` at degree
-        10, and the round trip holds to the same order; in float32 the bound exceeds
-        0.1 from degree 7 on, so the result is meaningless beyond degree 6. This is a
+        10, and the round trip holds to the same order. In float32 the same bound
+        exceeds 0.1 from degree 7 on, so nothing is certified past degree 6; measured,
+        the round trip is still only ``7e-3`` at degree 8 but reaches ``1.3`` at degree
+        9, so the result carries no information at all from degree 9. This is a
         property of the two bases, not of the implementation.
 
-        Far past that point the entries themselves stop being representable: in
-        float32 the exact inverse exceeds the format's range from degree 34 (``6.8e40``
-        at degree 36 against a maximum of ``3.4e38``), so the result contains
-        infinities and NumPy reports an overflow.
+        Far past that point the entries themselves stop being representable: from
+        degree 34 the float32 result contains infinities and NumPy reports an overflow,
+        the true inverse having outgrown the format's range. How far it has outgrown it
+        is not something float64 can be asked, since $\kappa(A)$ passes $1/\varepsilon$
+        for float64 by degree 16.
 
     Args:
         degree (int): Polynomial degree. Must be non-negative.
@@ -337,8 +341,8 @@ def compute_cardinal_to_bernstein_1d(
             if provided. This follows NumPy's style for output arrays. Defaults to None.
 
     Returns:
-        npt.NDArray[np.float32 | np.float64]: (degree+1, degree+1) transformation matrix C such that
-            C @ [cardinal values] = [Bernstein values]. If `out` was provided,
+        npt.NDArray[np.float32 | np.float64]: (degree+1, degree+1) transformation matrix B such
+            that ``B @ [cardinal values] = [Bernstein values]``. If `out` was provided,
             returns the same array.
 
     Raises:
