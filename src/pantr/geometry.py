@@ -192,7 +192,8 @@ class AABB:
 
         Returns:
             bool: ``True`` when both corner arrays are element-wise equal
-            (``+inf == +inf`` and ``-inf == -inf`` as usual).
+            (``+inf == +inf`` and ``-inf == -inf`` as usual, and ``-0.0 == 0.0``,
+            which :meth:`__hash__` normalizes away to stay compatible).
 
         Note:
             Returns :data:`NotImplemented` for non-:class:`AABB` ``other`` so
@@ -203,12 +204,21 @@ class AABB:
         return bool(np.array_equal(self.lo, other.lo) and np.array_equal(self.hi, other.hi))
 
     def __hash__(self) -> int:
-        """Hash based on the immutable corner bytes.
+        """Hash the corner bytes, with signed zero normalized to ``+0.0``.
+
+        The bounds are hashed as bytes, so the raw bit patterns of ``-0.0`` and
+        ``+0.0`` would hash differently even though :meth:`__eq__` considers them
+        equal. Adding ``0.0`` maps ``-0.0`` to ``+0.0`` and leaves every other
+        value bitwise untouched (both infinities included), which brings the two
+        methods back into agreement: ``-0.0`` and ``+0.0`` are the only distinct
+        ``float64`` patterns that compare equal, and NaN -- the other case where
+        bitwise and IEEE comparison differ -- is rejected by :meth:`__init__`.
+        Only the hash is normalized; the stored bounds keep the sign given.
 
         Returns:
-            int: Hash compatible with :meth:`__eq__`; equal AABBs hash equal.
+            int: Hash of the normalized corner bytes; equal AABBs hash equal.
         """
-        return hash((self.lo.tobytes(), self.hi.tobytes()))
+        return hash(((self.lo + 0.0).tobytes(), (self.hi + 0.0).tobytes()))
 
     @property
     def ndim(self) -> int:
