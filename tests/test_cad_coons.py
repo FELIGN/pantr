@@ -493,6 +493,44 @@ class TestCoonsVolumeFaceConsistency:
         faces[4] = self._bezier_patch(w0, 2, 1)
         return self._pairs(faces)
 
+    def _cube_with_a_far_interior_point(self, reach: float, corner_lift: float) -> _FacePairs:
+        """Build unit-cube faces whose shared ``v = 1, w = 0`` edge bulges *consistently*.
+
+        ``face_v1`` and ``face_w0`` both become bidegree ``(2, 1)`` carrying the **same**
+        interior control point ``(0.5, 1, reach)`` on the edge they share, so the faces stay
+        mutually consistent however large *reach* is.  What it changes is the *scale* the edge
+        comparison derives: that scale is the largest coordinate over all twelve compared
+        edges, so a distant-but-legitimate control point widens the edge tolerance for every
+        other edge too.  The eight corners are untouched by it and stay ``O(1)``.
+
+        Args:
+            reach (float): Out-of-plane position of the shared interior control point.
+            corner_lift (float): Displacement along *z* of ``face_w0``'s ``(u=1, v=0)``
+                corner, which the other two faces meeting there do not receive.
+
+        Returns:
+            _FacePairs: Six faces, consistent iff ``corner_lift == 0``.
+        """
+        faces = [create_bilinear(a) for a in self._cube_face_corners()]
+        w0 = np.array(  # indexed (u, v)
+            [
+                [[0.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+                [[0.5, 0.0, 0.0], [0.5, 1.0, reach]],
+                [[1.0, 0.0, 0.0], [1.0, 1.0, 0.0]],
+            ]
+        )
+        v1 = np.array(  # indexed (u, w); its w = 0 column repeats w0's interior point
+            [
+                [[0.0, 1.0, 0.0], [0.0, 1.0, 1.0]],
+                [[0.5, 1.0, reach], [0.5, 1.0, 1.0]],
+                [[1.0, 1.0, 0.0], [1.0, 1.0, 1.0]],
+            ]
+        )
+        w0[2][0][2] += corner_lift
+        faces[3] = self._bezier_patch(v1, 2, 1)
+        faces[4] = self._bezier_patch(w0, 2, 1)
+        return self._pairs(faces)
+
     @staticmethod
     def _reported_numbers(message: str) -> tuple[float, float, float]:
         """Parse the gap, tolerance and scale a mismatch message reports.
@@ -574,6 +612,54 @@ class TestCoonsVolumeFaceConsistency:
         message = str(excinfo.value)
         assert "face_v1" in message, message
         assert "face_w0" in message, message
+
+    def test_an_edge_interior_disagreement_is_graded_at_the_edge_tolerance(self) -> None:
+        """The edge check's own tolerance must be the boundary, not merely large enough.
+
+        The corner check has a scale sweep of its own; this is the edge check's counterpart,
+        on a defect that moves only an edge's interior so no corner comparison can reach it.
+        A quarter of the tolerance is accepted and four times it is refused, which pins the
+        magnitude rather than only the gross-mismatch behaviour the sibling tests exercise.
+        """
+        tol = float(get_conservative(np.float64))
+
+        faces = self._cube_with_quadratic_w0(0.25 * tol)
+        gaps = _face_interpolation_gaps(create_coons_volume(faces), faces)
+        assert max(gaps.values()) <= tol, gaps
+
+        with pytest.raises(ValueError, match=r"Edge u_v1_w0 mismatch"):
+            create_coons_volume(self._cube_with_quadratic_w0(4.0 * tol))
+
+    def test_a_corner_defect_survives_an_edge_scale_widened_by_a_distant_control_point(
+        self,
+    ) -> None:
+        """The corner check is not redundant: it grades at a scale the edge check cannot.
+
+        Both checks derive their tolerance from the largest coordinate over everything they
+        grade, but they grade different populations.  A legitimate control point far from the
+        model's corners widens the *edge* tolerance without touching the *corner* one, so a
+        small genuine corner defect can sit below the edge tolerance and above the corner one.
+
+        Here a consistent interior point at ``z = 1e6`` on the edge ``face_v1`` and
+        ``face_w0`` share takes the edge tolerance to about ``9e-7`` while the corners stay at
+        ``O(1)``, so the corner tolerance stays at about ``9e-13``.  A ``1e-8`` corner
+        disagreement then falls between the two.  Verified by construction: with the corner
+        comparison removed, this input is accepted and the resulting volume misses a face.
+
+        The same defect at ``reach = 1`` is caught by *either* check, which is why the rest of
+        the suite passes with the corner comparison deleted and why this case is needed.
+        """
+        assert create_coons_volume(self._cube_with_a_far_interior_point(1e6, 0.0)) is not None
+
+        # At unit scale either check reaches the defect, so only that it is refused matters.
+        with pytest.raises(ValueError):
+            create_coons_volume(self._cube_with_a_far_interior_point(1.0, 1e-8))
+
+        # The discriminating case: the edge tolerance is now ~1e-6, so only the corner
+        # comparison can still see a 1e-8 disagreement. Remove it and this input is accepted.
+        with pytest.raises(ValueError, match=r"^Corner ") as excinfo:
+            create_coons_volume(self._cube_with_a_far_interior_point(1e6, 1e-8))
+        assert "face_w0" in str(excinfo.value), str(excinfo.value)
 
     def test_a_degree_mismatch_along_a_shared_edge_is_accepted(self) -> None:
         """A consistent volume must not be refused for how its faces are represented.
