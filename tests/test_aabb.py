@@ -256,23 +256,36 @@ def test_aabb_hash_agrees_with_eq_on_signed_zero() -> None:
 
 
 def test_aabb_hash_survives_signed_zero_from_union_and_intersect() -> None:
-    # `np.minimum(-0.0, 0.0)` is -0.0, so a single -0.0 bound in one operand
-    # propagates into every union that touches it, and `intersect`'s
-    # `np.maximum` does the same for `hi`. These are the library's own paths to
-    # a signed-zero bound, so the invariant must hold on computed results and
-    # not only on hand-built boxes.
+    # `union` and `intersect` are the library's own routes to a computed bound,
+    # so the invariant has to hold on the boxes they produce and not only on
+    # hand-built ones.
+    #
+    # Getting a -0.0 into a computed result portably takes care. IEEE 754 leaves
+    # the sign unspecified when min/max receive -0.0 and +0.0, and numpy differs
+    # across versions, so `min(-0.0, 0.0)` must not be pinned either way. No
+    # choice of operands forces the tie, since -0.0 and +0.0 always compare
+    # equal. Giving *both* operands the same -0.0 bound removes the tie: the
+    # minimum of two equal values is that value on any implementation.
     clean = AABB(lo=[0.0, 0.0], hi=[1.0, 1.0])
-    united = AABB(lo=[-0.0, 0.0], hi=[1.0, 1.0]).union(clean)
+    united = AABB(lo=[-0.0, 0.0], hi=[1.0, 1.0]).union(AABB(lo=[-0.0, 0.5], hi=[1.0, 1.0]))
     assert np.signbit(united.lo[0])
     assert united == clean
     assert hash(united) == hash(clean)
 
     upper = AABB(lo=[-1.0, -1.0], hi=[0.0, 1.0])
-    intersected = AABB(lo=[-1.0, -1.0], hi=[-0.0, 1.0]).intersect(upper)
+    intersected = AABB(lo=[-1.0, -1.0], hi=[-0.0, 1.0]).intersect(
+        AABB(lo=[-1.0, -1.0], hi=[-0.0, 2.0])
+    )
     assert intersected is not None
     assert np.signbit(intersected.hi[0])
     assert intersected == upper
     assert hash(intersected) == hash(upper)
+
+    # The mixed-sign tie itself: the sign of the result is numpy's business, but
+    # the hash invariant must hold whichever way it goes.
+    tied = AABB(lo=[-0.0, 0.0], hi=[1.0, 1.0]).union(clean)
+    assert tied == clean
+    assert hash(tied) == hash(clean)
 
 
 def test_aabb_hash_distinguishes_opposite_infinities() -> None:
