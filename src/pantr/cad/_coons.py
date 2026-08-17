@@ -6,6 +6,9 @@ and :func:`create_coons_volume` (trilinear blending from 6 boundary faces).
 
 from __future__ import annotations
 
+from itertools import combinations
+from typing import NamedTuple
+
 import numpy as np
 from numpy import typing as npt
 
@@ -15,6 +18,45 @@ from ._compat import make_compat
 from ._operations import create_ruled
 from ._primitives import _linear_space_1d, create_bilinear, create_trilinear
 from ._validation import _promote_to_rational
+
+_DIRECTION_NAMES = ("u", "v", "w")
+"""tuple[str, str, str]: Names of a Coons volume's parametric directions, in axis order."""
+
+
+class _EdgeReadings(NamedTuple):
+    """One edge of a Coons volume, as read off each of the two faces that carry it.
+
+    Two faces share a whole edge, so each of the twelve edges can be read twice, and the
+    two readings must agree for the volume to interpolate both faces.
+
+    Attributes:
+        label (str): Edge name, ``{free}_{fixed}{side}_{fixed}{side}`` (e.g. ``w_u0_v1``).
+        face_a (str): Name of the first face carrying the edge (e.g. ``face_u0``).
+        curve_a (Bspline): The edge as ``face_a`` sees it.
+        face_b (str): Name of the second face carrying the edge.
+        curve_b (Bspline): The edge as ``face_b`` sees it.
+        corners (tuple[str, str]): Labels of the volume corners at the low and high ends
+            of the edge, in the ``(i,j,k)`` form of :func:`_corner_label`.
+    """
+
+    label: str
+    face_a: str
+    curve_a: Bspline
+    face_b: str
+    curve_b: Bspline
+    corners: tuple[str, str]
+
+
+def _corner_label(sides: tuple[int, int, int]) -> str:
+    """Name a corner of a Coons volume by the side it occupies in each direction.
+
+    Args:
+        sides (tuple[int, int, int]): Side (0 or 1) along u, v and w.
+
+    Returns:
+        str: Corner label ``"(i,j,k)"``, matching the ``"(i,j)"`` form of the 2D messages.
+    """
+    return f"({sides[0]},{sides[1]},{sides[2]})"
 
 
 def _combine_control_points(
@@ -207,6 +249,12 @@ def create_coons_volume(
 
     Edges and corners are derived automatically from face boundaries.
 
+    The six faces are not independent data: each of the twelve edges is shared by two of
+    them and each of the eight corners by three, so they have to agree where they meet.
+    Faces that do not are refused rather than blended, because the formula spreads the
+    inconsistency over the volume and the result then misses faces the caller supplied
+    correctly.
+
     Face labelling convention:
 
     - ``faces[0] = (face_u0, face_u1)``: faces at u=0 and u=1,
@@ -220,10 +268,21 @@ def create_coons_volume(
         faces: Three pairs of opposite boundary faces.
 
     Returns:
-        Bspline: A 3D (trivariate) B-spline volume.
+        Bspline: A 3D (trivariate) B-spline volume.  Because it returns rather than raising,
+        the six faces agree where they meet, and the volume therefore restricts to each of
+        them on the corresponding boundary.  That interpolation is exact in exact arithmetic;
+        the floating-point residual is **observed** to stay near ``1e-15`` relative, three
+        orders below the tolerance the checks below use, and is not a proved bound.
 
     Raises:
         ValueError: If any face is not a 2D B-spline.
+        ValueError: If two faces meeting at a corner of the volume disagree there by more
+            than ``4096 * eps`` times the largest absolute coordinate over all
+            twenty-four corner readings -- the same tier and the same scale rule as
+            :func:`create_coons_surface`, derived in ``_verify_corners_3d``.
+        ValueError: If two faces sharing an edge disagree along it by more than
+            ``4096 * eps`` times the largest absolute control-point coordinate over the
+            twelve compared edges, derived in ``_verify_edges_3d``.
     """
     (face_u0, face_u1), (face_v0, face_v1), (face_w0, face_w1) = faces
 
@@ -236,8 +295,14 @@ def create_coons_volume(
     face_v0, face_v1 = make_compat(face_v0, face_v1)
     face_w0, face_w1 = make_compat(face_w0, face_w1)
 
-    # Extract edges from faces
-    edges = _extract_edges((face_u0, face_u1), (face_v0, face_v1), (face_w0, face_w1))
+    # Read every edge from both faces that carry it, and refuse faces that disagree
+    edge_readings = _extract_edge_pairs((face_u0, face_u1), (face_v0, face_v1), (face_w0, face_w1))
+    _verify_corners_3d(edge_readings)
+    _verify_edges_3d(edge_readings)
+
+    # The construction reads each edge from the first of its two carriers; the other
+    # reading is only there to be checked against, and by now is known to agree.
+    edges = {r.label: r.curve_a for r in edge_readings}
 
     # Extract corners from edges
     corners = _extract_corners(edges)
@@ -286,51 +351,187 @@ def create_coons_volume(
     return Bspline(r_u.space, cp, is_rational=is_rational)
 
 
-def _extract_edges(
+def _extract_edge_pairs(
     u_faces: tuple[Bspline, Bspline],
     v_faces: tuple[Bspline, Bspline],
     w_faces: tuple[Bspline, Bspline],
-) -> dict[str, Bspline]:
-    """Extract 12 edges from 6 faces.
+) -> tuple[_EdgeReadings, ...]:
+    """Extract the 12 edges of the volume, each from both faces that carry it.
 
-    Each edge is extracted from the first face that contains it.
-    Edge naming: ``{free_param}_{fixed1}_{fixed2}``.
+    An edge free in direction *f* is fixed in the other two, and the face pair of either
+    fixed direction carries it: the edge free in *w* at ``u=i, v=j`` is a boundary of
+    ``face_u{i}`` and a boundary of ``face_v{j}``.  ``curve_a`` is the reading from the
+    face of the lower fixed direction, which is the one the construction goes on to use,
+    and reproduces what this function returned before it read the w-faces at all.
+
+    Within a face the two surviving directions keep their volume order, so a fixed
+    direction sits at face axis 0 when it precedes *f* and at face axis 1 when it follows.
 
     Args:
         u_faces: ``(face_u0, face_u1)`` at u=0 and u=1, parameterized by (v, w).
         v_faces: ``(face_v0, face_v1)`` at v=0 and v=1, parameterized by (u, w).
-        w_faces: Not used for edge extraction but reserved for future validation.
+        w_faces: ``(face_w0, face_w1)`` at w=0 and w=1, parameterized by (u, v).
 
     Returns:
-        dict[str, Bspline]: Dictionary of 12 named edge curves.
+        tuple[_EdgeReadings, ...]: The 12 edges, ordered by free direction w, then v,
+        then u, and named as :func:`_extract_corners` and the blend volumes expect.
     """
-    face_u0, face_u1 = u_faces
-    face_v0, face_v1 = v_faces
+    face_pairs = (u_faces, v_faces, w_faces)
 
     # All faces are 2D, so boundary() returns Bspline (not ndarray).
-    # We cast to satisfy mypy.
+    # We assert to satisfy mypy.
     def _bdy(face: Bspline, ax: int, side: int) -> Bspline:
         result = face.boundary(ax, side)
         assert isinstance(result, Bspline)
         return result
 
-    return {
-        # w-edges (free=w): from face_u (v,w) boundaries at v=0,1
-        "w_u0_v0": _bdy(face_u0, 0, 0),
-        "w_u0_v1": _bdy(face_u0, 0, 1),
-        "w_u1_v0": _bdy(face_u1, 0, 0),
-        "w_u1_v1": _bdy(face_u1, 0, 1),
-        # v-edges (free=v): from face_u (v,w) boundaries at w=0,1
-        "v_u0_w0": _bdy(face_u0, 1, 0),
-        "v_u0_w1": _bdy(face_u0, 1, 1),
-        "v_u1_w0": _bdy(face_u1, 1, 0),
-        "v_u1_w1": _bdy(face_u1, 1, 1),
-        # u-edges (free=u): from face_v (u,w) boundaries at w=0,1
-        "u_v0_w0": _bdy(face_v0, 1, 0),
-        "u_v0_w1": _bdy(face_v0, 1, 1),
-        "u_v1_w0": _bdy(face_v1, 1, 0),
-        "u_v1_w1": _bdy(face_v1, 1, 1),
-    }
+    readings: list[_EdgeReadings] = []
+    for free in (2, 1, 0):
+        axis_a, axis_b = (axis for axis in range(3) if axis != free)
+        name_free, name_a, name_b = (_DIRECTION_NAMES[d] for d in (free, axis_a, axis_b))
+        face_axis_a = 0 if axis_b < free else 1
+        face_axis_b = 0 if axis_a < free else 1
+        for side_a in (0, 1):
+            for side_b in (0, 1):
+                sides = [0, 0, 0]
+                sides[axis_a], sides[axis_b] = side_a, side_b
+                ends = []
+                for end in (0, 1):
+                    sides[free] = end
+                    ends.append(_corner_label((sides[0], sides[1], sides[2])))
+                readings.append(
+                    _EdgeReadings(
+                        label=f"{name_free}_{name_a}{side_a}_{name_b}{side_b}",
+                        face_a=f"face_{name_a}{side_a}",
+                        curve_a=_bdy(face_pairs[axis_a][side_a], face_axis_a, side_b),
+                        face_b=f"face_{name_b}{side_b}",
+                        curve_b=_bdy(face_pairs[axis_b][side_b], face_axis_b, side_a),
+                        corners=(ends[0], ends[1]),
+                    )
+                )
+    return tuple(readings)
+
+
+def _verify_corners_3d(edges: tuple[_EdgeReadings, ...]) -> None:
+    """Verify that the three faces meeting at each corner of the volume agree there.
+
+    The tolerance is :func:`_verify_corners_2d`'s, which is where its derivation lives:
+    ``get_conservative(float64)`` times the largest absolute coordinate over **all**
+    corner readings, so the verdict does not depend on which corner sits at the origin.
+    Three faces meet at a corner of a volume rather than two curves at a corner of a
+    patch, so the scale is taken over twenty-four readings instead of eight and each
+    corner is graded by three comparisons instead of one; nothing else changes.
+
+    The w-faces are the reason this exists.  Every edge, and so every corner, used to be
+    read off the u- and v-faces alone, which agree with themselves by construction, so a
+    w-face contradicting them was never compared with anything.
+
+    Args:
+        edges (tuple[_EdgeReadings, ...]): The 12 edges of the volume, read from both
+            carriers, as :func:`_extract_edge_pairs` returns them.
+
+    Raises:
+        ValueError: If two faces meeting at a corner disagree there by more than the
+            tolerance.
+    """
+    # Each (corner, face) pair is an endpoint of two of the twelve edges; read it once.
+    readings: dict[tuple[str, str], npt.NDArray[np.float64]] = {}
+    for edge in edges:
+        for end, corner in enumerate(edge.corners):
+            for face, curve in ((edge.face_a, edge.curve_a), (edge.face_b, edge.curve_b)):
+                if (corner, face) not in readings:
+                    readings[corner, face] = np.asarray(curve.boundary(0, end), dtype=np.float64)
+
+    # No floor: corners all at the origin have no scale, and are also bitwise equal,
+    # so a zero tolerance is the right answer there rather than a hazard.
+    scale = max(float(np.abs(point).max()) for point in readings.values())
+    tol = get_conservative(np.float64) * scale
+
+    for sides in np.ndindex(2, 2, 2):
+        corner = _corner_label((int(sides[0]), int(sides[1]), int(sides[2])))
+        meeting = tuple(f"face_{name}{s}" for name, s in zip(_DIRECTION_NAMES, sides, strict=True))
+        for face_a, face_b in combinations(meeting, 2):
+            point_a, point_b = readings[corner, face_a], readings[corner, face_b]
+            gap = float(np.abs(point_a - point_b).max())
+            if gap > tol:
+                raise ValueError(
+                    f"Corner {corner} mismatch: {face_a} gives {point_a}, "
+                    f"{face_b} gives {point_b} "
+                    f"(gap {gap:.3e}, above {tol:.3e} at corner scale {scale:.3e})."
+                )
+
+
+def _verify_edges_3d(edges: tuple[_EdgeReadings, ...]) -> None:
+    """Verify that the two faces sharing each edge of the volume agree along all of it.
+
+    Agreeing at the eight corners is necessary but not sufficient: two faces share a whole
+    edge, and a volume built from faces that meet only at the endpoints of a shared edge
+    misses one of them by the size of the disagreement in between.  Agreeing on all twelve
+    edges *is* sufficient, and a face's interior is free: displacing an interior control
+    point of one face by half the model size leaves all six faces interpolated to ``2e-15``.
+    That is the classical compatibility condition for transfinite interpolation, observed
+    here rather than proved.
+
+    Made compatible, the two readings span the same space, where a spline is determined by
+    its control points; comparing those is therefore an exact comparison of the two curves
+    and needs no sampling.  The tolerance is :func:`_verify_corners_2d`'s tier and rule
+    applied to what is graded here, which is a control-point coefficient rather than a
+    point on the curve: ``get_conservative(float64)`` times the largest absolute
+    control-point coordinate over all twelve compared edges.
+
+    **Why any slack at all.** Two readings of a genuinely shared edge are usually **bitwise
+    equal**, and not only when the two faces store it identically: reaching the common space
+    runs the same degree elevation and knot insertion on the same coefficients, so the
+    roundoff is the same on both sides and cancels.  Measured on a shared edge arriving at
+    degree 1 from one face and degree 2 from the other, and on one arriving with different
+    knot vectors, the gap was exactly zero in both cases.  So the threshold is not sized
+    against that roundoff.  As in two dimensions it exists for face data the caller
+    *computed* rather than copied -- a transform, an intersection, a reparametrization --
+    and is sized to catch faces given in the wrong order or the wrong orientation, which
+    miss by a fraction of the model rather than by epsilons.
+
+    For non-rational faces the convex-hull property makes the control-point gap an upper
+    bound on the geometric gap, so the number reported is a distance in space.  For rational
+    faces it is not: the comparison is of **homogeneous** control points, which is what the
+    seven-term formula combines, and turning that into a distance would need a lower bound
+    on the weights that this function does not compute.  Comparing them is still the right
+    test -- scaling one face's homogeneous control points by a constant leaves its geometry
+    untouched yet made the volume miss four of the six faces by 17% of the model before this
+    check existed -- but the reported gap is then a coefficient gap, not a distance.
+
+    Args:
+        edges (tuple[_EdgeReadings, ...]): The 12 edges of the volume, read from both
+            carriers, as :func:`_extract_edge_pairs` returns them.
+
+    Raises:
+        ValueError: If two faces sharing an edge disagree along it by more than the
+            tolerance.
+    """
+    compared: list[tuple[_EdgeReadings, npt.NDArray[np.float64], npt.NDArray[np.float64]]] = []
+    for edge in edges:
+        curve_a, curve_b = edge.curve_a, edge.curve_b
+        if curve_a.is_rational or curve_b.is_rational:
+            curve_a, curve_b = _promote_to_rational(curve_a), _promote_to_rational(curve_b)
+        curve_a, curve_b = make_compat(curve_a, curve_b)
+        compared.append(
+            (
+                edge,
+                np.asarray(curve_a.control_points, dtype=np.float64),
+                np.asarray(curve_b.control_points, dtype=np.float64),
+            )
+        )
+
+    scale = max(float(np.abs(cp).max()) for _, cp_a, cp_b in compared for cp in (cp_a, cp_b))
+    tol = get_conservative(np.float64) * scale
+
+    for edge, cp_a, cp_b in compared:
+        gap = float(np.abs(cp_a - cp_b).max())
+        if gap > tol:
+            raise ValueError(
+                f"Edge {edge.label} mismatch: {edge.face_a} and {edge.face_b} disagree "
+                f"along the edge they share "
+                f"(gap {gap:.3e}, above {tol:.3e} at edge scale {scale:.3e})."
+            )
 
 
 def _extract_corners(edges: dict[str, Bspline]) -> npt.NDArray[np.float64]:
