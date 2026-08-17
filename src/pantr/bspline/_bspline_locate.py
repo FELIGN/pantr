@@ -12,17 +12,38 @@ The inversion has two stages:
    every weight is positive. Those per-cell boxes are indexed by a
    :class:`pantr.grid.BVH`, so the cells that can contain a query point are found by a
    tree descent instead of by trying Newton on every cell.
-2. **Newton.** Per candidate cell, Newton's method on ``F(xi) - x = 0`` starting from
-   the cell's parametric midpoint, with the Jacobian assembled column by column from
-   :meth:`~pantr.bspline.Bspline.evaluate_derivatives` (already rational-aware through
-   the generalized quotient rule). Iterates are clamped to the parametric domain box,
-   so an iterate may migrate out of its candidate cell: the candidate box is a superset
-   test, never a constraint on the solution.
+2. **Newton.** Per candidate cell, a damped Newton's method on ``F(xi) - x = 0`` starting
+   from the cell's parametric midpoint and, if that does not converge, from the cell
+   corner whose image is nearest the query. The Jacobian is assembled column by column
+   from :meth:`~pantr.bspline.Bspline.evaluate_derivatives` (already rational-aware
+   through the generalized quotient rule). Iterates are clamped to the parametric domain
+   box, so an iterate may migrate out of its candidate cell: the candidate box is a
+   superset test, never a constraint on the solution.
+
+   The damping is a backtracking line search, and it is what makes the iteration usable
+   away from the basin of attraction: an undamped Newton step is only guaranteed to
+   reduce the residual near a root, and out there it can be arbitrarily longer than the
+   residual it is trying to remove. Accepting such a step and then clamping the result to
+   the domain box does not merely waste an iteration, it can be *periodic* -- the clamp
+   maps two off-basin iterates onto each other -- and then no iteration budget and no
+   tolerance recovers the point. Requiring each accepted step to reduce the residual
+   removes both failure modes at once, and makes the residual of the accepted iterates a
+   monotonically non-increasing sequence.
+
+   What damping cannot do is change which root the iteration finds. A monotone method
+   descends into whichever basin it starts in, and on a mapping that folds, the residual
+   has minima on the domain boundary that are not roots; a start that descends into one of
+   those is stuck there legitimately. That is what the second start is for, and why it is a
+   *different point of the same cell* rather than a longer iteration.
 
 Newton runs on the whole batch of points at once: one candidate slot per round, and
 within a round one evaluator call per Jacobian column for all still-active points
-together. The number of Python-level calls into the evaluators is therefore
-``O(rounds * max_iter * dim)``, independent of the number of query points.
+together, plus one per backtracking level for the points still searching at that level.
+The number of Python-level calls into the evaluators is therefore
+``O(rounds * starts * max_iter * (dim + halvings))``, independent of the number of query
+points, with ``starts`` at most two, ``halvings`` at most ``1 + _MAX_STEP_HALVINGS`` and
+equal to one wherever the full Newton step is accepted, and the second start costing a
+further ``2 ** dim`` evaluations for the points that need it.
 
 What is guaranteed is ``F(ref_coords[i]) == points[i]`` within the tolerance, and *not*
 that ``ref_coords[i]`` is any particular preimage. A mapping whose Jacobian determinant
@@ -77,7 +98,82 @@ rounding noise and the solve returns an arbitrary step. The test is a ratio, so 
 invariant under scaling the geometry or the parametrization. It is deliberately
 permissive -- it only rejects a Jacobian whose condition number reaches ``1 / (dim *
 eps)`` -- because a merely ill-conditioned Jacobian still gives a usable step, and the
-clamp to the parametric domain box already bounds an overlong one.
+line search below rejects an overlong one.
+"""
+
+_ARMIJO_DECREASE: float = 1.0e-4
+"""
+Fraction of its own size the residual norm must lose per unit step length, to be accepted.
+
+A damped step ``lam * delta`` passes when ``||F(xi - lam * delta) - x|| <= (1 -
+_ARMIJO_DECREASE * lam) * ||F(xi) - x||``: the Armijo sufficient-decrease rule, applied to
+the merit function ``||F - x||`` whose descent direction the exact Newton step is (with
+``delta = J^-1 r`` one has ``d/dlam ||F(xi - lam * delta) - x||`` at ``lam = 0`` equal to
+``-||r||``, so a decrease of ``lam * ||r||`` is what the linear model promises and this
+constant is the fraction of it that must actually materialize).
+
+**Why any value in ``(0, 1)`` terminates.** Expanding to second order,
+``F(xi - lam * delta) - x = (1 - lam) * r + O(lam^2 * M * ||delta||^2)`` with ``M`` a bound
+on the second derivatives, so the test holds as soon as
+``lam <= 2 * (1 - _ARMIJO_DECREASE) * ||r|| / (M * ||delta||^2)``; the halving loop
+therefore ends after finitely many trials wherever the Jacobian is nonsingular and the
+iterate is interior. See :data:`_MAX_STEP_HALVINGS` for how many that is.
+
+**Why this magnitude.** The constant trades how much of Newton's own step is admitted
+against how much progress an accepted step must show, and both ends are one-sided:
+
+- It must be small enough never to reject the asymptotic step. Newton converges
+  quadratically near a root, ``||r_next|| ~ K * ||r||^2``, which beats
+  ``(1 - _ARMIJO_DECREASE) * ||r||`` by orders of magnitude the moment ``||r||`` is small,
+  so ``lam == 1`` is accepted throughout the endgame and the observed convergence rate is
+  Newton's own. A constant near one would instead veto perfectly good steps.
+- It must stay far above the noise of the comparison. The two norms being compared differ
+  by the relative amount ``_ARMIJO_DECREASE * lam``, and each carries a rounding error of
+  order ``eps``, so a constant approaching ``eps`` would let rounding decide the test.
+  ``1e-4`` sits twelve decades above ``eps`` at ``lam == 1``, and nine decades above it at
+  the smallest step length :data:`_MAX_STEP_HALVINGS` admits.
+
+``1e-4`` is also the value the line-search literature settles on for exactly this rule, so
+nothing here is unconventional; what matters for this library is that both bounds above are
+satisfied with decades to spare, which makes the choice insensitive.
+"""
+
+_MAX_STEP_HALVINGS: int = 8
+"""
+Number of times a Newton step may be halved before its candidate cell is abandoned.
+
+The smallest step length tried is ``2 ** -_MAX_STEP_HALVINGS``, about ``3.9e-3``.
+
+**What a sufficient condition would ask for.** By the expansion in
+:data:`_ARMIJO_DECREASE`, the test accepts once ``lam <= 2 * (1 - _ARMIJO_DECREASE) *
+||r|| / (M * ||delta||^2)``, and with ``||delta|| <= ||J^-1|| * ||r||`` a sufficient
+condition is ``lam <= 2 / (M * ||J^-1||^2 * ||r||)``. Reading the factors off a spline map
+of geometric scale ``S`` over a parametric domain of unit extent -- ``||r|| <= S``,
+``||J^-1|| ~ cond(J) / S``, and ``M ~ C * S`` with ``C`` the map's parametric curvature
+factor -- gives ``lam <= 2 / (C * cond(J)^2)``, in which the scale cancels. That is the
+right shape (the halvings needed are a property of the map, not of its units) but a very
+loose bound, since it takes the worst case of three independent factors at once: it would
+demand 26 halvings for a map with ``C ~ 100`` and ``cond(J) ~ 1e3``, and such a step is
+never what decides whether a query is found.
+
+**So the magnitude comes from measurement, with the margin stated.** Over the warped-map
+sweep in ``tests/test_bspline_locate.py`` -- 2400 queries, 60 configurations, dimensions 1
+to 3, degrees 1 to 5, at unit scale and at an offset of ``1e6``, on mappings that fold --
+the smallest budget that loses no point is **2**: at 1 the sweep loses 2 queries and at 0 it
+loses 6. This budget is four doublings of step length beyond that, and covers every point
+where ``C * cond(J)^2 <= 2 ** (_MAX_STEP_HALVINGS + 1)``.
+
+**The cost is why it is not larger.** A candidate that will never converge spends its whole
+budget before being abandoned, so the budget sets the price of a doomed solve, and doomed
+solves are the common case for a query that is off the mapping's image. Against the
+undamped iteration this fix replaces, measured on the sweep above: at this budget, queries
+on the image cost 5 % more and queries off it 31 % *less* (the early abandonment more than
+pays for the line search); at a budget of 30 both cost about three times more.
+
+Exhausting the budget abandons that candidate cell rather than stepping anyway. It is not a
+verdict on the query: the second start of :func:`_nearest_corner_starts` and the remaining
+candidate cells are tried afterwards, and only a query that fails all of them is reported
+not found.
 """
 
 
@@ -267,6 +363,34 @@ def _build_context(spline: Bspline) -> _LocateContext:
     )
 
 
+def _cell_parametric_bounds(
+    space: BsplineSpace, cell_ids: npt.NDArray[np.int64]
+) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64]]:
+    """Return the parametric box of each of the given knot-span cells.
+
+    Args:
+        space (BsplineSpace): The space the cells belong to, with no periodic direction.
+        cell_ids (npt.NDArray[np.int64]): Flat cell ids in C-order over
+            ``space.num_intervals``, shape ``(n,)``.
+
+    Returns:
+        tuple[npt.NDArray[np.float64], npt.NDArray[np.float64]]: ``(lo, hi)``, both of
+        shape ``(n, space.dim)``: the consecutive breakpoints bracketing each cell in each
+        parametric direction.
+    """
+    multi = np.unravel_index(cell_ids, space.num_intervals)
+    lo = np.empty((cell_ids.shape[0], space.dim), dtype=np.float64)
+    hi = np.empty_like(lo)
+    for axis, sub in enumerate(space.spaces):
+        breakpoints = np.asarray(
+            sub.get_unique_knots_and_multiplicity(in_domain=True)[0], dtype=np.float64
+        )
+        index = multi[axis]
+        lo[:, axis] = breakpoints[index]
+        hi[:, axis] = breakpoints[index + 1]
+    return lo, hi
+
+
 def _cell_midpoints(
     space: BsplineSpace, cell_ids: npt.NDArray[np.int64]
 ) -> npt.NDArray[np.float64]:
@@ -280,15 +404,56 @@ def _cell_midpoints(
     Returns:
         npt.NDArray[np.float64]: Shape ``(n, space.dim)`` parametric midpoints.
     """
-    multi = np.unravel_index(cell_ids, space.num_intervals)
-    out = np.empty((cell_ids.shape[0], space.dim), dtype=np.float64)
-    for axis, sub in enumerate(space.spaces):
-        breakpoints = np.asarray(
-            sub.get_unique_knots_and_multiplicity(in_domain=True)[0], dtype=np.float64
+    lo, hi = _cell_parametric_bounds(space, cell_ids)
+    return 0.5 * (lo + hi)
+
+
+def _nearest_corner_starts(
+    spline: Bspline,
+    cell_ids: npt.NDArray[np.int64],
+    targets: npt.NDArray[np.float64],
+) -> npt.NDArray[np.float64]:
+    """Return the corner of each cell whose image is nearest that cell's query point.
+
+    The second starting guess for a candidate cell whose midpoint start did not converge.
+    A monotone iteration can only reach the root whose basin it starts in, and a cell
+    midpoint is one guess out of many: on a mapping that folds, the residual has minima on
+    the domain boundary that a midpoint start can descend into and then never leave, while
+    another point of the *same* cell descends into the root instead (measured). Retrying
+    matters most exactly where the candidate loop cannot help -- a query with a single
+    candidate cell otherwise gets one Newton solve and no fallback at all.
+
+    Among the cell's ``2 ** dim`` corners, the one with the nearest image is the one that
+    starts the iteration at the smallest residual, which is the only ordering the merit
+    function gives. The corners are visited one at a time rather than materialized
+    together, so the cost is ``2 ** dim`` map evaluations and ``O(n * dim)`` memory.
+
+    Args:
+        spline (Bspline): A ``float64`` spline with ``rank == dim``, non-periodic.
+        cell_ids (npt.NDArray[np.int64]): One candidate cell per query point, as flat ids
+            in C-order over ``space.num_intervals``, shape ``(n,)``.
+        targets (npt.NDArray[np.float64]): The query points, shape ``(n, rank)``.
+
+    Returns:
+        npt.NDArray[np.float64]: Shape ``(n, dim)`` parametric starting guesses.
+    """
+    lo, hi = _cell_parametric_bounds(spline.space, cell_ids)
+    dim = lo.shape[1]
+    axes = np.arange(dim)
+    best = np.empty_like(lo)
+    best_distance = np.full(cell_ids.shape[0], np.inf, dtype=np.float64)
+
+    for corner in range(1 << dim):
+        take_hi = ((corner >> axes) & 1).astype(np.bool_)
+        candidate = np.where(take_hi, hi, lo)
+        distance = np.asarray(
+            np.linalg.norm(_eval_map(spline, candidate) - targets, axis=1), dtype=np.float64
         )
-        index = multi[axis]
-        out[:, axis] = 0.5 * (breakpoints[index] + breakpoints[index + 1])
-    return out
+        closer = distance < best_distance
+        best[closer] = candidate[closer]
+        best_distance[closer] = distance[closer]
+
+    return best
 
 
 def _eval_map(spline: Bspline, xi: npt.NDArray[np.float64]) -> npt.NDArray[np.float64]:
@@ -335,6 +500,99 @@ def _eval_jacobian(spline: Bspline, xi: npt.NDArray[np.float64]) -> npt.NDArray[
     return out
 
 
+class _NewtonState(NamedTuple):
+    """The state of the batched Newton iteration, one row per query point.
+
+    Three invariants hold on entry to and exit from every step, for every row ``i``:
+    ``lo <= xi[i] <= hi``, ``residual[i] == F(xi[i]) - target[i]``, and ``res_norm[i] ==
+    ||residual[i]||``. Carrying the residual next to the iterate is what lets one map
+    evaluation serve both the line search's acceptance test and the next round's Newton
+    direction, so the damping costs no evaluation at all wherever the full step is
+    accepted; carrying the box is what makes staying inside it the state's own business.
+
+    :func:`_accept_damped_step` writes into the three arrays in place, at the rows it
+    advanced, in the same ``out``-argument style the rest of Layer 2 uses. ``lo`` and ``hi``
+    are fixed for the whole solve.
+
+    Attributes:
+        xi (npt.NDArray[np.float64]): Current parametric iterates, shape ``(n, dim)``.
+        residual (npt.NDArray[np.float64]): ``F(xi) - targets``, shape ``(n, rank)``.
+        res_norm (npt.NDArray[np.float64]): Row 2-norms of ``residual``, shape ``(n,)``.
+        lo (npt.NDArray[np.float64]): Lower corner of the parametric domain box, shape
+            ``(dim,)``.
+        hi (npt.NDArray[np.float64]): Upper corner of the same box, shape ``(dim,)``.
+    """
+
+    xi: npt.NDArray[np.float64]
+    residual: npt.NDArray[np.float64]
+    res_norm: npt.NDArray[np.float64]
+    lo: npt.NDArray[np.float64]
+    hi: npt.NDArray[np.float64]
+
+
+def _accept_damped_step(
+    spline: Bspline,
+    targets: npt.NDArray[np.float64],
+    state: _NewtonState,
+    active: npt.NDArray[np.int64],
+    delta: npt.NDArray[np.float64],
+) -> npt.NDArray[np.bool_]:
+    """Take the longest damped Newton step that reduces the residual, per active point.
+
+    A backtracking line search on the merit function ``||F(xi) - x||``: the full step is
+    tried first and then halved until it satisfies the Armijo test ``||F(xi - lam * delta)
+    - x|| <= (1 - _ARMIJO_DECREASE * lam) * ||F(xi) - x||``, up to
+    :data:`_MAX_STEP_HALVINGS` halvings.
+
+    The trial iterate is clipped to the parametric domain box, so the search runs along the
+    projected path ``lam -> clip(xi - lam * delta)`` rather than along the ray. That path
+    still tends to ``xi`` as ``lam`` does, so shortening the step remains meaningful on the
+    boundary; a direction that leaves the box along the whole path is rejected at every
+    ``lam``, which is the correct answer for a point whose Newton direction only points out
+    of the domain.
+
+    One map evaluation per halving level serves every point still searching at that level,
+    so a round in which every point accepts its full step costs a single evaluation.
+
+    Args:
+        spline (Bspline): A ``float64`` spline with ``rank == dim``, non-periodic.
+        targets (npt.NDArray[np.float64]): Physical query points, shape ``(n, rank)``.
+        state (_NewtonState): The iteration state; its three arrays are updated in place at
+            the rows of ``active`` that accept a step, and left untouched at the others.
+        active (npt.NDArray[np.int64]): Row indices to step, shape ``(m,)``.
+        delta (npt.NDArray[np.float64]): Undamped Newton steps ``J^-1 * residual`` for
+            those rows, shape ``(m, dim)``, in the order of ``active``.
+
+    Returns:
+        npt.NDArray[np.bool_]: Shape ``(m,)``, True where a step was accepted. A False
+        entry means the line search was exhausted, and its point is at a residual minimum
+        no Newton step from it improves on.
+    """
+    accepted = np.zeros(active.size, dtype=np.bool_)
+    searching = np.arange(active.size, dtype=np.int64)
+    step_length = 1.0
+
+    for _ in range(_MAX_STEP_HALVINGS + 1):
+        rows = active[searching]
+        trial_xi = np.clip(state.xi[rows] - step_length * delta[searching], state.lo, state.hi)
+        trial_residual = _eval_map(spline, trial_xi) - targets[rows]
+        trial_norm = np.asarray(np.linalg.norm(trial_residual, axis=1), dtype=np.float64)
+
+        passes = trial_norm <= (1.0 - _ARMIJO_DECREASE * step_length) * state.res_norm[rows]
+        advanced = rows[passes]
+        state.xi[advanced] = trial_xi[passes]
+        state.residual[advanced] = trial_residual[passes]
+        state.res_norm[advanced] = trial_norm[passes]
+        accepted[searching[passes]] = True
+
+        searching = searching[~passes]
+        if searching.size == 0:
+            break
+        step_length *= 0.5
+
+    return accepted
+
+
 def _newton_refine(
     spline: Bspline,
     targets: npt.NDArray[np.float64],
@@ -342,13 +600,25 @@ def _newton_refine(
     tol_phys: float,
     max_iter: int,
 ) -> tuple[npt.NDArray[np.bool_], npt.NDArray[np.float64]]:
-    """Run a batched Newton inversion, one starting guess per target point.
+    """Run a batched damped Newton inversion, one starting guess per target point.
 
-    Every point is iterated independently but evaluated collectively: each round drops
-    the points that have converged and the points whose Jacobian has become
-    rank-deficient, then takes one Newton step for the rest. Iterates are clamped to the
-    parametric domain box, which both keeps them inside the evaluators' legal input
-    range and bounds an overlong step from an ill-conditioned Jacobian.
+    Every point is iterated independently but evaluated collectively: each round drops the
+    points that have converged, the points whose Jacobian has become rank-deficient, and
+    the points whose line search was exhausted, then takes one damped Newton step for the
+    rest. Iterates are clamped to the parametric domain box, which keeps them inside the
+    evaluators' legal input range; it is :func:`_accept_damped_step`, not the clamp, that
+    bounds an overlong step from an ill-conditioned Jacobian.
+
+    Because every accepted step reduces the residual, the residuals of the iterates form a
+    monotonically non-increasing sequence. It is in fact strictly decreasing, hence free of
+    cycles, for every residual in the normal range: the accepted step satisfies ``||r_next||
+    <= (1 - _ARMIJO_DECREASE * lam) * ||r||`` and that bound is below ``||r||`` whenever
+    ``_ARMIJO_DECREASE * lam`` exceeds the rounding of the product, which it does by nine
+    decades at the smallest step length admitted. The one gap is a *subnormal* residual,
+    where the relative spacing is large enough that the product can round back to ``||r||``;
+    that is 300 decades below any threshold except a subnormal ``tol``. So a point that is
+    not converging exhausts its line search and is abandoned, instead of cycling until the
+    iteration budget runs out.
 
     Args:
         spline (Bspline): A ``float64`` spline with ``rank == dim``, non-periodic.
@@ -357,44 +627,53 @@ def _newton_refine(
             ``(n, dim)``.
         tol_phys (float): Convergence threshold on ``||F(xi) - x||_2``, a distance in
             physical units.
-        max_iter (int): Maximum number of Newton steps. The residual is tested once more
-            after the last step, so a point converging on step ``max_iter`` is reported.
+        max_iter (int): Maximum number of accepted Newton steps. The residual is tested
+            once more after the last step, so a point converging on step ``max_iter`` is
+            reported. The extra map evaluations a line search makes are not steps.
 
     Returns:
         tuple[npt.NDArray[np.bool_], npt.NDArray[np.float64]]: ``(converged, xi)``.
-        ``converged`` has shape ``(n,)``; ``xi`` has shape ``(n, dim)`` and is only
-        meaningful where ``converged`` is True.
+        ``converged`` has shape ``(n,)``; ``xi`` has shape ``(n, dim)`` and holds each
+        point's last accepted iterate, which is a solution only where ``converged`` is
+        True.
     """
     dim = xi_start.shape[1]
     domain = np.asarray(spline.space.domain, dtype=np.float64)
     lo, hi = domain[:, 0], domain[:, 1]
 
     xi = np.clip(xi_start, lo, hi)
-    converged = np.zeros(xi.shape[0], dtype=np.bool_)
-    active = np.arange(xi.shape[0], dtype=np.int64)
+    residual = _eval_map(spline, xi) - targets
+    state = _NewtonState(
+        xi=xi,
+        residual=residual,
+        res_norm=np.asarray(np.linalg.norm(residual, axis=1), dtype=np.float64),
+        lo=lo,
+        hi=hi,
+    )
+    converged = state.res_norm <= tol_phys
+    active = np.arange(xi.shape[0], dtype=np.int64)[~converged]
 
-    for step in range(max_iter + 1):
-        xi_active = xi[active]
-        residual = _eval_map(spline, xi_active) - targets[active]
-        done = np.linalg.norm(residual, axis=1) <= tol_phys
-        converged[active[done]] = True
-        active, xi_active, residual = active[~done], xi_active[~done], residual[~done]
-        if step == max_iter or active.size == 0:
+    for _ in range(max_iter):
+        if active.size == 0:
             break
 
-        jacobian = _eval_jacobian(spline, xi_active)
+        jacobian = _eval_jacobian(spline, state.xi[active])
         singular_values = np.asarray(np.linalg.svd(jacobian, compute_uv=False), dtype=np.float64)
         healthy = singular_values[:, -1] > (dim * _JACOBIAN_RANK_REL_TOL * singular_values[:, 0])
         active = active[healthy]
         if active.size == 0:
             break
         delta = np.asarray(
-            np.linalg.solve(jacobian[healthy], residual[healthy][..., np.newaxis]),
+            np.linalg.solve(jacobian[healthy], state.residual[active][..., np.newaxis]),
             dtype=np.float64,
         )[..., 0]
-        xi[active] = np.clip(xi_active[healthy] - delta, lo, hi)
 
-    return converged, xi
+        active = active[_accept_damped_step(spline, targets, state, active, delta)]
+        done = state.res_norm[active] <= tol_phys
+        converged[active[done]] = True
+        active = active[~done]
+
+    return converged, state.xi
 
 
 def _validate_points(points: npt.ArrayLike, rank: int) -> npt.NDArray[np.float64]:
@@ -504,13 +783,26 @@ def _locate_impl(
         if not batch:
             break
         index = np.asarray(batch, dtype=np.int64)
-        starts = _cell_midpoints(
-            context.spline.space, np.asarray([candidates[i][slot] for i in batch], dtype=np.int64)
-        )
+        cells = np.asarray([candidates[i][slot] for i in batch], dtype=np.int64)
+
+        starts = _cell_midpoints(context.spline.space, cells)
         converged, xi = _newton_refine(context.spline, pts[index], starts, tol_phys, max_iter)
-        hits = index[converged]
-        ref_coords[hits] = xi[converged]
-        found.extend(int(i) for i in hits)
+        ref_coords[index[converged]] = xi[converged]
+
+        # Second start for the candidates the midpoint could not resolve; see
+        # _nearest_corner_starts. It can only turn a "not found" into a solution that
+        # passes the same residual test, never loosen what "found" means.
+        retry = ~converged
+        if bool(np.any(retry)):
+            retry_index, retry_cells = index[retry], cells[retry]
+            corner_starts = _nearest_corner_starts(context.spline, retry_cells, pts[retry_index])
+            retried, xi = _newton_refine(
+                context.spline, pts[retry_index], corner_starts, tol_phys, max_iter
+            )
+            ref_coords[retry_index[retried]] = xi[retried]
+            converged[retry] = retried
+
+        found.extend(int(i) for i in index[converged])
         resolved = set(found)
         pending = [i for i in pending if i not in resolved]
         slot += 1

@@ -15,6 +15,7 @@ from pantr.bspline._bspline_locate import (
     _geometric_scale,
     _locate_context,
     _LocateContext,
+    _nearest_corner_starts,
     _newton_refine,
 )
 from pantr.geometry import AABB
@@ -516,12 +517,16 @@ class TestCandidateCells:
         assert cell_ids.tolist() == [-1]
         assert bool(np.all(np.isnan(ref_coords)))
 
-    def test_off_image_query_exhausts_the_iteration_budget(self) -> None:
+    def test_off_image_query_ends_by_stalling_not_by_the_rank_guard(self) -> None:
         """The other way a candidate fails: a healthy Jacobian that never converges.
 
-        ``(0.75, 0.25)`` is also outside the triangle, but the iterate settles at
-        ``(1, 0.25)`` with a well-conditioned Jacobian, so it is the iteration budget that
-        ends the attempt rather than the rank guard.
+        ``(0.75, 0.25)`` is also outside the triangle, but the iterate settles near
+        ``(1, 0.25)`` with a well-conditioned Jacobian, so what ends the attempt is not the
+        rank guard. It used to be the iteration budget, burnt one full step at a time; it is
+        now the line search, which cannot reduce a residual whose minimum over the domain is
+        the distance from the query to the image, and abandons the candidate instead
+        (measured: the midpoint start exits through the line search, the corner start
+        through the rank guard).
         """
         spline = _collapsed_edge_patch()
 
@@ -681,6 +686,54 @@ class TestNewtonGlobalization:
         residuals = np.linalg.norm(_evaluate_at(spline, ref_coords) - points, axis=1)
         assert residuals.max() <= tol, f"worst residual {residuals.max():.3e} over tol {tol:.3e}"
         _assert_cell_contains(spline, cell_ids, ref_coords)
+
+    def test_a_second_start_is_what_recovers_a_boundary_minimum(self) -> None:
+        """The one point in the sweep the line search alone cannot reach, and why.
+
+        A monotone iteration from cell 32's midpoint descends to ``(1, 0.4059)``, which is
+        the minimum of the residual along the ``u == 1`` face of the domain: the only
+        descent direction there points out of the box, and moving inward raises the
+        residual, so the root at ``u == 0.9485`` sits behind a ridge in a different basin.
+        Damping cannot cross that ridge -- no monotone method can -- and the corner start
+        does, which is what this pins.
+        """
+        spline = _warped_patch()
+        xi_true = np.array([[0.9485013, 0.34608885]])
+        target = _evaluate_at(spline, xi_true)
+        context = _locate_context(spline)
+        tol = get_default(spline.dtype) * context.scale
+        candidates = np.sort(context.bvh.query_aabb(AABB(target[0], target[0]).pad(tol)))
+        assert candidates.tolist() == [32], "the premise: one candidate, so there is no fallback"
+
+        from_midpoint = _newton_refine(
+            spline, target, _cell_midpoints(spline.space, candidates), tol, 40
+        )
+        from_corner = _newton_refine(
+            spline, target, _nearest_corner_starts(spline, candidates, target), tol, 40
+        )
+
+        assert not bool(from_midpoint[0][0]), "the midpoint start is expected to jam"
+        np.testing.assert_allclose(from_midpoint[1][0], [1.0, 0.405897], atol=1e-6, rtol=0.0)
+        assert bool(from_corner[0][0]), "the corner start must recover the root"
+        np.testing.assert_allclose(
+            from_corner[1], xi_true, atol=_XI_REL_ATOL * context.scale, rtol=0.0
+        )
+        assert spline.locate(target)[0].tolist() == [32]
+
+    def test_a_second_start_cannot_invent_a_solution(self) -> None:
+        """Retrying widens what is reached, never what counts as reached.
+
+        Both queries are off the mapping's image, so no start can drive the residual under
+        the threshold; the extra solve must leave them reported as not found. This is the
+        guard on the one way a second start could do harm.
+        """
+        annulus = _quarter_annulus()
+        holes = np.array([[0.2, 0.2], [0.5, 0.5]])
+
+        cell_ids, ref_coords = annulus.locate(holes)
+
+        assert cell_ids.tolist() == [-1, -1]
+        assert bool(np.all(np.isnan(ref_coords)))
 
 
 class TestToleranceScaling:
