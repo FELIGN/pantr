@@ -47,6 +47,19 @@ The local suite passing is necessary but not sufficient. Known traps:
   whatever is local. Be defensive with numpy typing: never a bare `np.ndarray`, and wrap the result
   of `np.einsum` / `np.tensordot` with `np.asarray(..., dtype=np.float64)` where the dtype matters —
   those return `Any` in some stub versions and the annotation silently degrades.
+- **Local numpy *behavior* also differs from the CI matrix, not just the stubs.** Anything IEEE 754
+  leaves unspecified can differ by numpy version, and the test matrix will find it. Measured:
+  `np.minimum(-0.0, 0.0)` returns `-0.0` on numpy 2.4.6 but `+0.0` on the 3.14 job, so a test
+  asserting the sign of a min/max tie passes locally and fails there. Never assert that sign — and
+  note the tie cannot be forced, since `-0.0` and `+0.0` always compare equal. To exercise a
+  signed-zero path deterministically, give *both* operands the same `-0.0`: the minimum of two
+  equal values is that value on any implementation.
+- **`fail-fast` makes one failing matrix leg look like three.** When a leg genuinely fails, its
+  siblings are canceled, and `gh pr checks` prints cancellations as `fail` too. Before concluding
+  there are N defects, check each job's steps
+  (`gh api repos/FELIGN/pantr/actions/jobs/<id> --jq '.steps[]'`) and find the one that actually
+  failed. This is a different trap from the `cancel-in-progress` one below, which comes from
+  pushing twice.
 - **The CI test job is headless.** pyvista/VTK tests must never call `.show()` or `pantr.viz.plot()`
   (`src/pantr/viz/_scene.py:292`) — they force a render and segfault without a display. Build the
   scene with `Scene.to_plotter()` (`src/pantr/viz/_scene.py:187`) instead. The coverage run has
