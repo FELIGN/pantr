@@ -130,7 +130,10 @@ def compute_bernstein_to_lagrange_1d(
         ``3.0e3`` at degree 10, so the attainable accuracy of ``L``, by any algorithm,
         is bounded by roughly :math:`\kappa(C)\varepsilon`. In float64 the round trip
         :math:`\lVert C L - I \rVert_2` holds to ``3e-16`` at degree 4, ``1e-14`` at degree 8
-        and ``1e-13`` at degree 10. In float32 the same bound stays below 0.1 through
+        and ``1e-13`` at degree 10. The crossing degrees below are quoted for
+        :math:`64\,\kappa(C)\varepsilon`, the bound with the safety factor the accuracy
+        tests apply; the bare :math:`\kappa(C)\varepsilon` crosses several degrees later.
+        In float32 that bound stays below 0.1 through
         degree 11 for equispaced nodes and through degree 14 for the Gauss and
         Chebyshev variants, and over those ranges the measured round trip never exceeds
         ``1.1e-4`` (worst case Gauss-Legendre at degree 14; below ``7.5e-5`` for every
@@ -319,8 +322,10 @@ def compute_cardinal_to_bernstein_1d(
         any algorithm, is bounded by roughly :math:`\kappa(A)\varepsilon`. In float64 the
         returned matrix reproduces the Bernstein basis to about ``4e-15`` through
         degree 4, ``3e-13`` at degree 6, ``3e-11`` at degree 8 and ``2e-8`` at degree
-        10, and the round trip holds to the same order. In float32 the same bound
-        exceeds 0.1 from degree 7 on, so nothing is certified past degree 6; measured,
+        10, and the round trip holds to the same order. In float32
+        :math:`64\,\kappa(A)\varepsilon` -- the bound with the safety factor the accuracy
+        tests apply -- exceeds 0.1 from degree 7 on, so nothing is certified past degree
+        6; the bare :math:`\kappa(A)\varepsilon` crosses one degree later. Measured,
         the round trip is still only ``7e-3`` at degree 8 but reaches ``1.3`` at degree
         9, so the result carries no information at all from degree 9. This is a
         property of the two bases, not of the implementation.

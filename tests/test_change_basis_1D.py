@@ -57,21 +57,25 @@ One half of the bound is derived and the other is observed, and the difference m
 such bound: from ``B = A^-1 (I + R)`` one gets ``B A - I = A^-1 R A``, hence only
 ``||B A - I|| <= cond(A) * ||A B - I|| <= 4n * cond(A)**2 * eps``. Holding the reversed
 product to this same tier is therefore a *stronger, empirical* claim. It is verified
-here through degree 12 and is expected to fail past degree ~19, so extending any
-parametrization beyond that needs this constant revisited rather than trusted.
+here through degree 11 -- the ceiling of the derivation above, and the highest degree any
+parametrization in this file reaches -- and is expected to fail past degree ~19, so
+extending any parametrization beyond that needs this constant revisited rather than
+trusted.
 
 Measured margins (``atol`` over observed), worst over the degrees actually tested:
 
-* 211x for the Bernstein/cardinal forward product, whose ratio to ``cond(A) * eps``
-  peaks at 0.30 (degree 8) and 0.43 at degree 11;
-* **40.6x** for the Lagrange/Bernstein *reversed* product, whose ratio peaks at 1.58
-  (equispaced, degree 10) -- the binding case, and the reason the claim above is
-  flagged as observed;
+* 151x for the Bernstein/cardinal forward product, whose ratio to ``cond(A) * eps``
+  peaks at 0.43 (degree 11), having been 0.30 at degree 8;
+* **31x** for the Lagrange/Bernstein *reversed* product, whose ratio peaks at 2.04
+  (Chebyshev 1st, degree 11) -- the binding case, and the reason the claim above is
+  flagged as observed. Equispaced at degree 10, 1.58, is not the worst: the peak moves
+  to Chebyshev at the top of the tested range, so the binding variant is not fixed
+  across degrees and a narrower parametrization would have found a smaller ratio;
 * 6.2x for biorthogonality at degree 8, which contracts the duals against a
   ``2 * degree + 2`` point rule, accumulating on top of the solve.
 
 Re-running the same inversions through five different LAPACK entry points moves the
-binding ratio by 2.4x, which brings the worst effective margin to about 17x. The
+binding ratio by 2.4x, which brings the worst effective margin to about **13x**. The
 looseness is thus known, fixed, and never runs the other way.
 
 The constant stays local rather than becoming ``pantr.tolerance.get_default(dtype) *
@@ -342,7 +346,7 @@ class TestBernsteinToLagrangeBasisOperator:
             LagrangeVariant.CHEBYSHEV_2ND,
         ],
     )
-    @pytest.mark.parametrize("degree", [1, 4, 7, 10])
+    @pytest.mark.parametrize("degree", [1, 4, 7, 10, 11])
     def test_roundtrip_tracks_conditioning(self, degree: int, variant: LagrangeVariant) -> None:
         """Both products of the pair must be the identity to ``K * cond(C) * eps``.
 
@@ -399,7 +403,7 @@ class TestCardinalToBernsteinRoundTrip:
     no correct digits at all by degree 9.
     """
 
-    @pytest.mark.parametrize("degree", range(11))
+    @pytest.mark.parametrize("degree", range(12))
     def test_roundtrip_tracks_conditioning_not_its_square(self, degree: int) -> None:
         """Both products of the pair must be the identity to ``K * cond(A) * eps``.
 
@@ -415,7 +419,7 @@ class TestCardinalToBernsteinRoundTrip:
         assert _identity_residual(forward, inverse) <= atol
         assert _identity_residual(inverse, forward) <= atol
 
-    @pytest.mark.parametrize("degree", range(11))
+    @pytest.mark.parametrize("degree", range(12))
     def test_inverse_map_reproduces_bernstein_basis(self, degree: int) -> None:
         """``B @ cardinal(x)`` must equal ``bernstein(x)`` at arbitrary points.
 
@@ -482,7 +486,7 @@ class TestCardinalToBernsteinRoundTrip:
         atol = _conditioning_atol(compute_bernstein_to_cardinal_1d(degree), np.float32)
         assert _identity_residual(forward, inverse) <= atol
 
-    @pytest.mark.parametrize("degree", range(11))
+    @pytest.mark.parametrize("degree", range(12))
     def test_cached_matrix_round_trips_like_the_builder(self, degree: int) -> None:
         """The cached hot-path matrix must be the same inverse the builder returns.
 
@@ -985,6 +989,7 @@ class TestLegendreCardinalBasisOperators:
         np.testing.assert_allclose(
             inverse @ forward,
             np.eye(degree + 1, dtype=np.float32),
+            rtol=0,
             atol=_conditioning_atol(compute_legendre_to_cardinal_1d(degree), np.float32),
         )
 
@@ -1024,6 +1029,7 @@ class TestLegendreCardinalBasisOperators:
         np.testing.assert_allclose(
             gram,
             np.eye(degree + 1),
+            rtol=0,
             atol=_conditioning_atol(compute_legendre_to_cardinal_1d(degree)),
         )
 
@@ -1041,6 +1047,7 @@ class TestLegendreCardinalBasisOperators:
         np.testing.assert_allclose(
             duals[:, 0],
             np.ones(degree + 1),
+            rtol=0,
             atol=_conditioning_atol(compute_legendre_to_cardinal_1d(degree)),
         )
 
