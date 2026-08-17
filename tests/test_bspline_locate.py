@@ -10,10 +10,15 @@ import pytest
 
 from pantr.bspline import Bspline, BsplineSpace, BsplineSpace1D
 from pantr.bspline._bspline_locate import (
+    _cell_midpoints,
     _cell_physical_bounds,
     _geometric_scale,
+    _locate_context,
     _LocateContext,
+    _newton_refine,
 )
+from pantr.geometry import AABB
+from pantr.tolerance import get_default
 from pantr.transform import AffineTransform
 
 _XI_REL_ATOL: float = 1e-10
@@ -38,6 +43,20 @@ The convergence threshold is :func:`pantr.tolerance.get_default` for ``float32``
 (``1e-6``) times the geometric scale, so the coordinate error is four orders of magnitude
 larger than in the ``float64`` case. Measured worst case over the cases below:
 ``5.2e-6``; the ``1e-4`` leaves a factor of 19.
+"""
+
+_CYCLING_PARAMETER: npt.NDArray[np.float64] = np.array([[0.05411231, 0.64513102]])
+"""
+The parameter whose image an undamped Newton iteration could not recover.
+
+An ordinary interior point of :func:`_warped_patch`'s default geometry, kept as the exact
+triggering datum rather than re-searched for. Its image has one candidate cell, 3, which
+is the cell that contains it, so there is no second start to fall back on. From that
+cell's midpoint the second undamped step is 67 times longer than the residual it removes;
+the iterate leaves the basin and the clamp to the parametric domain then pins it in a
+period-2 cycle between ``(1, 1)`` and ``(0.403985, 0.995004)``, whose residual is
+``0.77``. Being periodic rather than slow is what made the iteration budget useless, and
+a residual seven decades above any plausible threshold is what made the tolerance useless.
 """
 
 
@@ -104,6 +123,33 @@ def _perturbed_patch(
     cp = np.stack(mesh, axis=-1) if dim > 1 else mesh[0][:, np.newaxis]
     cp = cp + 0.12 * rng.uniform(-1.0, 1.0, size=cp.shape)
     return Bspline(BsplineSpace(spaces), np.ascontiguousarray(cp.astype(dtype)))
+
+
+def _warped_patch(dim: int = 2, degree: int = 1, n_elem: int = 6, offset: float = 0.0) -> Bspline:
+    """Return the identity map of the unit box plus a smooth 15 % sinusoidal warp.
+
+    Control points sit on a uniform lattice of the unit box and are displaced in every
+    coordinate by ``0.15 * sin(2 * pi * sum(coords))``, then translated by ``offset``.
+
+    The defaults are the exact geometry the undamped Newton iteration diverged on: a
+    degree-1 bivariate map on 6 uniform elements at unit scale.
+
+    The warp is smooth and the Jacobian is well conditioned along it, but the family is
+    **not** injective for ``dim >= 2``, which is worth knowing before reading a result off
+    it. The displacement field ``y + a * sin(2 * pi * sum(y))`` has Jacobian
+    ``I + 2 * pi * a * cos(2 * pi * sum(y)) * ones``, whose eigenvalues are 1 and
+    ``1 + 2 * pi * a * dim * cos(...)``; at ``a == 0.15`` the second turns negative once
+    ``dim >= 2``. Measured over the family: ``det J`` reaches ``-0.56`` at ``dim == 2`` and
+    ``-1.34`` at ``dim == 3``. So a query built from this family has a preimage by
+    construction, but not a unique one, and only ``F(ref_coords) == points`` may be asserted
+    of what comes back.
+    """
+    knots = np.concatenate([np.zeros(degree), np.linspace(0.0, 1.0, n_elem + 1), np.ones(degree)])
+    space = BsplineSpace([BsplineSpace1D(knots, degree) for _ in range(dim)])
+    axes = [np.linspace(0.0, 1.0, n) for n in space.num_basis]
+    cp = np.stack(np.meshgrid(*axes, indexing="ij"), axis=-1)
+    cp = cp + 0.15 * np.sin(2.0 * np.pi * cp.sum(axis=-1))[..., None] + offset
+    return Bspline(space, np.ascontiguousarray(cp))
 
 
 def _folded_patch() -> Bspline:
@@ -540,6 +586,101 @@ class TestIdentityMap:
         cell_ids, _ = spline.locate(xi_true, max_iter=1)
 
         assert np.all(cell_ids >= 0)
+
+
+class TestNewtonGlobalization:
+    """A Newton step that does not reduce the residual is rejected, so no iterate cycles."""
+
+    def test_the_cycling_point_is_found_at_every_tolerance_and_budget(self) -> None:
+        """The undamped iteration lost this point at every setting; the damped one must not.
+
+        Neither knob could recover it before: not a tolerance seven decades above the
+        default tier, and not ten times the iteration budget. That is the signature of a
+        cycle rather than of slow convergence, and it is why both axes are swept here.
+        """
+        spline = _warped_patch()
+        target = _evaluate_at(spline, _CYCLING_PARAMETER)
+        scale = _scale_of(spline)
+
+        for factor in (64.0, 4096.0, 1.0e9):
+            for max_iter in (20, 200):
+                tol = factor * float(np.finfo(np.float64).eps) * scale
+                cell_ids, ref_coords = spline.locate(target, tol=tol, max_iter=max_iter)
+                assert cell_ids.tolist() == [3], f"lost at tol={factor}*eps*scale, {max_iter=}"
+                residual = np.linalg.norm(_evaluate_at(spline, ref_coords) - target)
+                assert residual <= tol
+
+    def test_the_recovered_parameter_is_the_preimage(self) -> None:
+        """The answer is the parameter the target was built from, not merely some root."""
+        spline = _warped_patch()
+        target = _evaluate_at(spline, _CYCLING_PARAMETER)
+        assert np.all(_jacobian_determinants(spline, _CYCLING_PARAMETER) > 0.0)
+
+        cell_ids, ref_coords = spline.locate(target)
+
+        np.testing.assert_allclose(
+            ref_coords, _CYCLING_PARAMETER, atol=_XI_REL_ATOL * _scale_of(spline), rtol=0.0
+        )
+        _assert_cell_contains(spline, cell_ids, ref_coords)
+
+    def test_the_residual_never_increases_over_the_accepted_iterates(self) -> None:
+        """Monotonicity, read off the iteration itself rather than assumed.
+
+        Budget ``k`` returns the iterate after at most ``k`` accepted steps, so sweeping
+        ``k`` and evaluating the residual at what comes back walks the accepted sequence
+        without needing a hook into the solver. Undamped, the sequence rises from
+        ``1.05e-2`` to ``7.3e-1`` at the third step and then oscillates.
+        """
+        spline = _warped_patch()
+        target = _evaluate_at(spline, _CYCLING_PARAMETER)
+        context = _locate_context(spline)
+        tol = get_default(spline.dtype) * context.scale
+        candidates = np.sort(context.bvh.query_aabb(AABB(target[0], target[0]).pad(tol)))
+        assert candidates.tolist() == [3], "the premise: one candidate, so there is no fallback"
+        start = _cell_midpoints(spline.space, candidates)
+
+        norms = [
+            float(
+                np.linalg.norm(
+                    _evaluate_at(spline, _newton_refine(spline, target, start, tol, k)[1]) - target
+                )
+            )
+            for k in range(1, 13)
+        ]
+
+        assert np.all(np.diff(norms) <= 0.0), f"residual increased over the iterates: {norms}"
+        assert norms[-1] <= tol, f"did not converge within 12 steps: {norms}"
+
+    @pytest.mark.parametrize("offset", [0.0, 1.0e6])
+    @pytest.mark.parametrize("n_elem", [3, 6])
+    @pytest.mark.parametrize("degree", [1, 2, 3, 4, 5])
+    @pytest.mark.parametrize("dim", [1, 2, 3])
+    def test_the_warped_family_loses_no_point_that_has_a_preimage(
+        self, dim: int, degree: int, n_elem: int, offset: float
+    ) -> None:
+        """Every point built by evaluating the map is recovered, across the whole family.
+
+        Sampling the parameter first and mapping it forward is what makes "has a preimage"
+        a fact about each query rather than a hope: the preimage is the parameter the
+        target was made from. It is *a* preimage that is required back, not that one --
+        this family folds for every ``dim >= 2`` member (measured: ``det J`` reaches
+        ``-0.56`` at ``dim == 2``), and a folded mapping sends several parameters to one
+        point. The offset column is there because the residual floor follows the coordinate
+        magnitude, so a family that converges at unit scale can still lose points at
+        ``1e6``.
+        """
+        spline = _warped_patch(dim, degree, n_elem, offset)
+        xi_true = _sample_parametric(spline, 40, seed=1000 * dim + 10 * degree + n_elem)
+        points = _evaluate_at(spline, xi_true)
+        tol = get_default(spline.dtype) * _scale_of(spline)
+
+        cell_ids, ref_coords = spline.locate(points)
+
+        lost = np.flatnonzero(cell_ids < 0)
+        assert lost.size == 0, f"lost {lost.size} of 40 points: {xi_true[lost]}"
+        residuals = np.linalg.norm(_evaluate_at(spline, ref_coords) - points, axis=1)
+        assert residuals.max() <= tol, f"worst residual {residuals.max():.3e} over tol {tol:.3e}"
+        _assert_cell_contains(spline, cell_ids, ref_coords)
 
 
 class TestToleranceScaling:
