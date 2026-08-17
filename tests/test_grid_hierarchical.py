@@ -693,6 +693,131 @@ class TestHierarchicalGridCoarsen:
             g.coarsen(0, [0, 0], [4, 4])  # 1D grid, 2D lo/hi
 
 
+class TestCoarsenIsNotAnUnconditionalInverse:
+    """`coarsen` demotes its whole box, so it inverts `refine` only conditionally.
+
+    `refine` promotes just the currently-active part of its box (union semantics), so it
+    is not injective on the grid state and no single `coarsen` can invert it.  These
+    tests pin both the conditional inverse and the consequence when the hypothesis
+    fails, with the cell counts of the reproduction hardcoded.
+    """
+
+    def test_coarsen_inverts_refine_of_an_entirely_active_region_1d(self) -> None:
+        """One refine of an all-active box, then coarsen, restores the grid exactly."""
+        g = _grid_1d(6, 2)
+        assert g.num_cells == 6
+        g.refine(0, [0], [2])
+        assert g.num_cells == 8
+        g.coarsen(0, [0], [2])
+        assert g.num_cells == 6
+
+    def test_coarsen_inverts_refine_disjoint_from_an_earlier_one_1d(self) -> None:
+        """Two disjoint refines: coarsening the second is still exact."""
+        g = _grid_1d(6, 2)
+        g.refine(0, [0], [2])
+        g.refine(0, [3], [5])
+        assert g.num_cells == 10
+        g.coarsen(0, [3], [5])
+        assert g.num_cells == 8
+
+    def test_coarsen_after_overlapping_refines_demotes_the_whole_box_1d(self) -> None:
+        """Coarsening a box built by overlapping refines also removes older children.
+
+        The second refine promotes cell 2 alone, because cell 1 was already refined by
+        the first one.  `coarsen` then demotes the *whole* box, so it also removes
+        cell 1's children and the grid ends at 7 cells, not the 8 it had before the
+        second refine.  That is `coarsen`'s documented contract (it demotes the box it
+        is given), **not** a defect to "fix" by changing this number: the route that
+        cannot lose refinement is the cell-id API, where the caller names every cell
+        being destroyed (:meth:`HierarchicalGrid.refine_cells`,
+        :meth:`~pantr.bspline.THBSplineSpace.coarsen`).
+        """
+        g = _grid_1d(6, 2)
+        g.refine(0, [0], [2])
+        assert g.num_cells == 8
+        g.refine(0, [1], [3])
+        assert g.num_cells == 9
+        g.coarsen(0, [1], [3])
+        assert g.num_cells == 7
+        assert g.active_blocks(0) == (((1,), (6,)),)
+        assert g.active_blocks(1) == (((0,), (2,)),)
+
+    def test_coarsen_inverts_refine_of_an_entirely_active_region_2d_non_dyadic(self) -> None:
+        """The 2D control on a non-dyadic factor: single refine, then coarsen, is exact."""
+        g = _grid_2d(3, 3)
+        assert g.num_cells == 9
+        g.refine(0, [1, 1], [3, 3])
+        assert g.num_cells == 41
+        g.coarsen(0, [1, 1], [3, 3])
+        assert g.num_cells == 9
+
+    def test_coarsen_after_overlapping_refines_demotes_the_whole_box_2d_non_dyadic(self) -> None:
+        """The 2D non-dyadic counterpart: cell (1, 1)'s 9 children become 1 cell again.
+
+        Same contract as the 1D case above, on ``factor = 3`` so a factor-dependent
+        regression cannot hide: 41 would mean `coarsen` had inverted the second refine.
+        """
+        g = _grid_2d(3, 3)
+        g.refine(0, [0, 0], [2, 2])
+        assert g.num_cells == 41
+        g.refine(0, [1, 1], [3, 3])
+        assert g.num_cells == 65
+        g.coarsen(0, [1, 1], [3, 3])
+        assert g.num_cells == 33
+
+    def test_refine_undoes_coarsen_unconditionally(self) -> None:
+        """The other direction holds with no hypothesis: refine always undoes coarsen."""
+        g = _grid_1d(6, 2)
+        g.refine(0, [0], [2])
+        g.refine(0, [1], [3])
+        before = _grid_snapshot(g)
+        g.coarsen(0, [1], [3])
+        g.refine(0, [1], [3])
+        assert _grid_snapshot(g) == before
+
+    def test_coarsen_names_cells_that_are_still_leaves(self) -> None:
+        """The refusal names the box cells that have no children to remove."""
+        g = _grid_1d(4, 2)
+        g.refine(0, [0], [1])  # only cell 0 is refined
+        with pytest.raises(ValueError, match="still active leaves at level 0") as excinfo:
+            g.coarsen(0, [0], [2])
+        named = str(excinfo.value).split("still active leaves at level 0")[1]
+        assert "(1,)" in named
+        assert "refined beyond" not in str(excinfo.value)
+        # What the message says is true of the state: cell 1 is a leaf, cell 0 is not.
+        assert g.is_active_leaf(0, (1,))
+        assert not g.is_active_leaf(0, (0,))
+
+    def test_coarsen_names_cells_refined_beyond_the_target_level(self) -> None:
+        """The refusal names the box cells whose children are themselves refined."""
+        g = _grid_1d(4, 2)
+        g.refine(0, [0], [2])
+        g.refine(1, [0], [2])  # cell 0's children go on to level 2
+        with pytest.raises(ValueError, match="refined beyond level 1") as excinfo:
+            g.coarsen(0, [0], [2])
+        named = str(excinfo.value).split("refined beyond level 1")[1]
+        assert "(0,)" in named
+        assert "still active leaves" not in str(excinfo.value)
+        # True of the state: cell 0's children are not leaves at level 1, but at level 2.
+        assert not g.is_active_leaf(1, (0,))
+        assert g.is_active_leaf(2, (0,))
+
+    def test_coarsen_names_cells_absent_at_the_requested_level(self) -> None:
+        """The refusal names box cells that a coarser active leaf covers."""
+        g = _grid_1d(4, 2)
+        g.refine(0, [0], [2])
+        g.refine(1, [0], [2])  # max_level 2, so coarsening level 1 is in range
+        with pytest.raises(ValueError, match="covered by a coarser active leaf") as excinfo:
+            g.coarsen(1, [4], [6])  # level-1 cells 4, 5 sit inside level-0 leaf cell 2
+        named = str(excinfo.value).split("covered by a coarser active leaf")[1]
+        assert "(4,)" in named
+        assert "(5,)" in named
+        # True of the state: cell 2 is a level-0 leaf, so level-1 cells 4, 5 do not exist.
+        assert g.is_active_leaf(0, (2,))
+        assert not g.is_active_leaf(1, (4,))
+        assert not g.is_active_leaf(1, (5,))
+
+
 # ──────────────────────────────────────────────────────────────────────────────
 # restrict
 # ──────────────────────────────────────────────────────────────────────────────
