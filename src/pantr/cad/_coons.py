@@ -268,17 +268,21 @@ def create_coons_volume(
         faces: Three pairs of opposite boundary faces.
 
     Returns:
-        Bspline: A 3D (trivariate) B-spline volume.
+        Bspline: A 3D (trivariate) B-spline volume.  Because it returns rather than raising,
+        the six faces agree where they meet, and the volume therefore restricts to each of
+        them on the corresponding boundary.  That interpolation is exact in exact arithmetic;
+        the floating-point residual is **observed** to stay near ``1e-15`` relative, three
+        orders below the tolerance the checks below use, and is not a proved bound.
 
     Raises:
         ValueError: If any face is not a 2D B-spline.
         ValueError: If two faces meeting at a corner of the volume disagree there by more
             than ``4096 * eps`` times the largest absolute coordinate over all
             twenty-four corner readings -- the same tier and the same scale rule as
-            :func:`create_coons_surface`, see :func:`_verify_corners_3d`.
+            :func:`create_coons_surface`, derived in ``_verify_corners_3d``.
         ValueError: If two faces sharing an edge disagree along it by more than
             ``4096 * eps`` times the largest absolute control-point coordinate over the
-            twelve compared edges, see :func:`_verify_edges_3d`.
+            twelve compared edges, derived in ``_verify_edges_3d``.
     """
     (face_u0, face_u1), (face_v0, face_v1), (face_w0, face_w1) = faces
 
@@ -462,25 +466,38 @@ def _verify_edges_3d(edges: tuple[_EdgeReadings, ...]) -> None:
 
     Agreeing at the eight corners is necessary but not sufficient: two faces share a whole
     edge, and a volume built from faces that meet only at the endpoints of a shared edge
-    misses one of them by the size of the disagreement in between.
+    misses one of them by the size of the disagreement in between.  Agreeing on all twelve
+    edges *is* sufficient, and a face's interior is free: displacing an interior control
+    point of one face by half the model size leaves all six faces interpolated to ``2e-15``.
+    That is the classical compatibility condition for transfinite interpolation, observed
+    here rather than proved.
 
     Made compatible, the two readings span the same space, where a spline is determined by
     its control points; comparing those is therefore an exact comparison of the two curves
     and needs no sampling.  The tolerance is :func:`_verify_corners_2d`'s tier and rule
     applied to what is graded here, which is a control-point coefficient rather than a
     point on the curve: ``get_conservative(float64)`` times the largest absolute
-    control-point coordinate over all twelve compared edges.  It has to absorb the
-    roundoff of the degree elevation and knot insertion :func:`~pantr.cad.make_compat`
-    performs to reach the common space -- two readings of the same edge given in the same
-    representation are bitwise equal and need no tolerance at all -- and, as in two
-    dimensions, it is sized to catch faces given in the wrong order or the wrong
-    orientation rather than against a proved bound for that roundoff.
+    control-point coordinate over all twelve compared edges.
 
-    By the convex-hull property the control-point gap bounds the geometric gap from above,
-    so the number reported is an upper bound on how far the two faces are apart in space.
+    **Why any slack at all.** Two readings of a genuinely shared edge are usually **bitwise
+    equal**, and not only when the two faces store it identically: reaching the common space
+    runs the same degree elevation and knot insertion on the same coefficients, so the
+    roundoff is the same on both sides and cancels.  Measured on a shared edge arriving at
+    degree 1 from one face and degree 2 from the other, and on one arriving with different
+    knot vectors, the gap was exactly zero in both cases.  So the threshold is not sized
+    against that roundoff.  As in two dimensions it exists for face data the caller
+    *computed* rather than copied -- a transform, an intersection, a reparametrization --
+    and is sized to catch faces given in the wrong order or the wrong orientation, which
+    miss by a fraction of the model rather than by epsilons.
 
-    Rational faces are compared in homogeneous coordinates, which is what the seven-term
-    formula combines.
+    For non-rational faces the convex-hull property makes the control-point gap an upper
+    bound on the geometric gap, so the number reported is a distance in space.  For rational
+    faces it is not: the comparison is of **homogeneous** control points, which is what the
+    seven-term formula combines, and turning that into a distance would need a lower bound
+    on the weights that this function does not compute.  Comparing them is still the right
+    test -- scaling one face's homogeneous control points by a constant leaves its geometry
+    untouched yet made the volume miss four of the six faces by 17% of the model before this
+    check existed -- but the reported gap is then a coefficient gap, not a distance.
 
     Args:
         edges (tuple[_EdgeReadings, ...]): The 12 edges of the volume, read from both

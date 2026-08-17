@@ -11,6 +11,7 @@ from numpy.testing import assert_allclose
 
 from pantr.bspline import Bspline, BsplineSpace, BsplineSpace1D
 from pantr.cad import create_bilinear, create_coons_surface, create_coons_volume, create_line
+from pantr.cad._coons import _extract_edge_pairs
 from pantr.tolerance import get_conservative
 
 _RANK_3D = 3
@@ -416,6 +417,31 @@ class TestCoonsVolumeFaceConsistency:
         arrays[face][corner][2] += lift
         return self._pairs([create_bilinear(a) for a in arrays])
 
+    def _hexahedron(self, corners: npt.NDArray[np.float64]) -> _FacePairs:
+        """Build the six bilinear faces of the hexahedron with the given eight corners.
+
+        Faces sharing an edge take identical control points there by construction, so any
+        eight corners give a consistent set, however skewed.
+
+        Args:
+            corners (npt.NDArray[np.float64]): Shape ``(2, 2, 2, 3)``, indexed
+                ``[i][j][k]`` by the side along u, v and w.
+
+        Returns:
+            _FacePairs: Six mutually consistent bilinear faces.
+        """
+        p = corners
+        return self._pairs(
+            [
+                create_bilinear(p[0]),
+                create_bilinear(p[1]),
+                create_bilinear(p[:, 0]),
+                create_bilinear(p[:, 1]),
+                create_bilinear(p[:, :, 0]),
+                create_bilinear(p[:, :, 1]),
+            ]
+        )
+
     @staticmethod
     def _bezier_patch(
         control_points: npt.NDArray[np.float64], degree_u: int, degree_v: int
@@ -553,8 +579,11 @@ class TestCoonsVolumeFaceConsistency:
         """A consistent volume must not be refused for how its faces are represented.
 
         ``face_w0`` is bidegree ``(2, 1)`` while its neighbours are ``(1, 1)``, so
-        ``make_compat`` has to elevate before the edges can be compared, and the check
-        has to absorb the roundoff of doing so.
+        ``make_compat`` has to elevate one reading of each shared u-edge and not the other
+        before they can be compared.  The measured control-point gap is nevertheless exactly
+        zero: the elevation runs on coefficients that already agree, so whatever it rounds it
+        rounds identically on both sides.  What this pins is therefore representation
+        independence, not the tolerance.
         """
         faces = self._cube_with_quadratic_w0(0.0)
         gaps = _face_interpolation_gaps(create_coons_volume(faces), faces)
@@ -563,8 +592,9 @@ class TestCoonsVolumeFaceConsistency:
     def test_a_knot_mismatch_along_a_shared_edge_is_accepted(self) -> None:
         """Refining one face changes its control points but not the geometry.
 
-        The shared edges then carry different knot vectors, which ``make_compat`` merges;
-        the check must still find them equal.
+        The shared edges then carry different knot vectors, which ``make_compat`` merges.
+        As with the degree mismatch above, the resulting gap is exactly zero rather than a
+        rounding, so this pins representation independence.
         """
         u0, u1, v0, v1, w0, w1 = _flatten_faces(self._cube())
         faces = self._pairs([u0, u1, v0, v1, w0.insert_knots([[0.25, 0.5], [0.5]]), w1])
@@ -583,16 +613,7 @@ class TestCoonsVolumeFaceConsistency:
                 [[[4.0, 0.3, -0.1], [3.6, 0.2, 3.1]], [[4.2, 1.8, 0.4], [3.9, 2.1, 2.8]]],
             ]
         )
-        faces = self._pairs(
-            [
-                create_bilinear(p[0]),
-                create_bilinear(p[1]),
-                create_bilinear(p[:, 0]),
-                create_bilinear(p[:, 1]),
-                create_bilinear(p[:, :, 0]),
-                create_bilinear(p[:, :, 1]),
-            ]
-        )
+        faces = self._hexahedron(p)
         gaps = _face_interpolation_gaps(create_coons_volume(faces), faces)
         assert max(gaps.values()) <= get_conservative(np.float64) * float(np.abs(p).max()), gaps
 
@@ -629,3 +650,169 @@ class TestCoonsVolumeFaceConsistency:
         refused = self._cube_with_lifted_corner(face=4, corner=(1, 1), lift=4.0 * tol, scale=scale)
         with pytest.raises(ValueError, match="mismatch"):
             create_coons_volume(refused)
+
+    def test_both_scales_come_from_all_the_readings_not_the_one_under_test(self) -> None:
+        """A short edge next to the origin is graded like the rest of the model.
+
+        This is the 3D counterpart of
+        :meth:`TestCoonsCornerToleranceScaleCovariance.test_the_scale_comes_from_all_eight_corners_not_the_pair_under_test`,
+        and it pins both new scales at once.  The hexahedron spans ``1e6`` but one of its
+        twelve edges runs from the origin to ``(0, 0, 1)``, and one face's reading of that
+        edge's far end is displaced by ``1e-9``.  Against the model that is ``1e-15``
+        relative, far below the tolerance, and must be accepted; against the edge's own
+        magnitude, or against the three readings at that corner, it is ``1e-9`` relative and
+        would be refused.  Without this, deriving either scale locally passes every other
+        test in the file.
+        """
+        big, displacement = 1.0e6, 1.0e-9
+        p = np.array(
+            [
+                [[[0.0, 0.0, 0.0], [0.0, 0.0, 1.0]], [[0.0, big, 0.0], [0.0, big, big]]],
+                [[[big, 0.0, 0.0], [big, 0.0, big]], [[big, big, 0.0], [big, big, big]]],
+            ]
+        )
+        faces = _flatten_faces(self._hexahedron(p))
+        # face_u0 is indexed (v, w), so [0, 1] is its reading of the corner (0, 0, 1)
+        corners = np.array(faces[0].control_points)
+        corners[0, 1, 0] += displacement
+        faces[0] = Bspline(faces[0].space, corners)
+
+        pairs = self._pairs(faces)
+        gaps = _face_interpolation_gaps(create_coons_volume(pairs), pairs)
+        assert max(gaps.values()) <= get_conservative(np.float64) * big, gaps
+
+    def test_a_face_interior_is_free_provided_the_shared_edges_agree(self) -> None:
+        """Only the boundary of a face is shared, so only the boundary has to agree.
+
+        ``face_w0`` is the exact degree elevation of the bilinear face to bidegree
+        ``(2, 2)`` with its single interior control point displaced by half the model size.
+        Every shared edge is untouched, and all six faces are still interpolated -- which is
+        why comparing the twelve edges is the right condition and comparing whole faces
+        would be wrong.
+        """
+        p = np.array(
+            [
+                [[[0.0, 0.0, 0.0], [0.1, -0.2, 3.0]], [[-0.3, 2.0, 0.2], [0.4, 2.3, 2.7]]],
+                [[[4.0, 0.3, -0.1], [3.6, 0.2, 3.1]], [[4.2, 1.8, 0.4], [3.9, 2.1, 2.8]]],
+            ]
+        )
+        faces = _flatten_faces(self._hexahedron(p))
+        elevated = faces[4].elevate_degree([1, 1])
+        corners = np.array(elevated.control_points)
+        corners[1, 1, 2] += 2.0
+        faces[4] = Bspline(elevated.space, corners)
+
+        pairs = self._pairs(faces)
+        gaps = _face_interpolation_gaps(create_coons_volume(pairs), pairs)
+        assert max(gaps.values()) <= get_conservative(np.float64) * float(np.abs(p).max()), gaps
+
+    # -- rational faces ---------------------------------------------------------------
+
+    @staticmethod
+    def _weighted(face: Bspline, factor: float) -> Bspline:
+        """Return the same rational map with homogeneous control points scaled by *factor*.
+
+        Multiplying homogeneous control points by a constant cancels in the projection, so
+        the surface is unchanged whatever *factor* is.  What does not cancel is the seven-term
+        Coons formula, which sums homogeneous control points across the terms.
+
+        Args:
+            face (Bspline): A non-rational surface.
+            factor (float): Scale applied to the homogeneous control points.
+
+        Returns:
+            Bspline: A rational surface describing the same map as *face*.
+        """
+        cp = np.asarray(face.control_points, dtype=np.float64)
+        homogeneous = np.concatenate([cp, np.ones((*cp.shape[:-1], 1))], axis=-1) * factor
+        return Bspline(face.space, homogeneous, is_rational=True)
+
+    def test_a_rational_face_with_unit_weights_is_accepted(self) -> None:
+        """Promoting one face to a NURBS with unit weights changes nothing."""
+        faces = _flatten_faces(self._cube())
+        original = faces[4]
+        faces[4] = self._weighted(original, 1.0)
+        grid = np.array([[a, b] for a in _FACE_SAMPLES for b in _FACE_SAMPLES])
+        assert_allclose(faces[4].evaluate(grid), original.evaluate(grid), atol=1e-15)
+
+        pairs = self._pairs(faces)
+        gaps = _face_interpolation_gaps(create_coons_volume(pairs), pairs)
+        assert max(gaps.values()) <= get_conservative(np.float64), gaps
+
+    def test_a_rational_face_whose_weights_disagree_with_its_neighbours_is_refused(self) -> None:
+        """The same surface, weighted differently, is still an inconsistency here.
+
+        Scaling ``face_w0``'s homogeneous control points leaves its geometry identical -- the
+        assertion below says so -- but the formula combines homogeneous control points, and
+        before this check that input produced a volume missing four of the six faces by 17%
+        of the model.  It is refused as an edge disagreement, which is what it is.
+        """
+        faces = _flatten_faces(self._cube())
+        original = faces[4]
+        faces[4] = self._weighted(original, 2.0)
+        grid = np.array([[a, b] for a in _FACE_SAMPLES for b in _FACE_SAMPLES])
+        assert_allclose(faces[4].evaluate(grid), original.evaluate(grid), atol=1e-15)
+
+        with pytest.raises(ValueError, match=r"Edge \w+ mismatch") as excinfo:
+            create_coons_volume(self._pairs(faces))
+        assert "face_w0" in str(excinfo.value)
+
+    # -- the twelve edges are read from the right faces --------------------------------
+
+    def test_the_twelve_edges_are_read_from_the_two_faces_that_carry_them(self) -> None:
+        """Pin the edge table itself, since the axis arithmetic that builds it is terse.
+
+        An edge read from the wrong face axis or the wrong side would compare two *different*
+        edges, which both accepts real disagreements and rejects sound input.  The expected
+        table is derived here from the labelling convention alone: an edge free in one
+        direction is fixed in the other two, and is carried by the face pair of each.  The
+        assertion on the ``(corner, face)`` set is the one that rules out the original bug's
+        blind spot, where corners were only ever read from the u- and v-faces.
+        """
+        p = np.array(
+            [
+                [[[0.0, 0.0, 0.0], [0.1, -0.2, 3.0]], [[-0.3, 2.0, 0.2], [0.4, 2.3, 2.7]]],
+                [[[4.0, 0.3, -0.1], [3.6, 0.2, 3.1]], [[4.2, 1.8, 0.4], [3.9, 2.1, 2.8]]],
+            ]
+        )
+        expected: dict[str, tuple[str, str, str, str]] = {}
+        for a in (0, 1):
+            for b in (0, 1):
+                expected[f"w_u{a}_v{b}"] = (
+                    f"face_u{a}",
+                    f"face_v{b}",
+                    f"({a},{b},0)",
+                    f"({a},{b},1)",
+                )
+                expected[f"v_u{a}_w{b}"] = (
+                    f"face_u{a}",
+                    f"face_w{b}",
+                    f"({a},0,{b})",
+                    f"({a},1,{b})",
+                )
+                expected[f"u_v{a}_w{b}"] = (
+                    f"face_v{a}",
+                    f"face_w{b}",
+                    f"(0,{a},{b})",
+                    f"(1,{a},{b})",
+                )
+
+        readings = _extract_edge_pairs(*self._hexahedron(p))
+        assert {r.label for r in readings} == set(expected)
+        for r in readings:
+            assert (r.face_a, r.face_b, *r.corners) == expected[r.label], r.label
+            assert r.face_a != r.face_b, r.label
+            # both readings really are that edge: their ends are the corners the label names
+            for curve in (r.curve_a, r.curve_b):
+                for end, corner in enumerate(r.corners):
+                    i, j, k = (int(c) for c in corner.strip("()").split(","))
+                    assert_allclose(np.asarray(curve.boundary(0, end)), p[i][j][k], atol=0.0)
+
+        pairs_seen = {(c, f) for r in readings for c in r.corners for f in (r.face_a, r.face_b)}
+        assert pairs_seen == {
+            (f"({i},{j},{k})", f"face_{name}{side}")
+            for i in (0, 1)
+            for j in (0, 1)
+            for k in (0, 1)
+            for name, side in (("u", i), ("v", j), ("w", k))
+        }
