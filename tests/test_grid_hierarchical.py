@@ -691,6 +691,18 @@ def _obstacles_by_cellwise_walk(
     return blocked
 
 
+_REFUSAL_REASONS = (
+    "still active leaves",
+    "refined beyond",
+    "covered by a coarser active leaf",
+)
+"""The three reasons `coarsen`'s refusal can give, as they appear in its message.
+
+Used to assert a randomized sweep actually exercised all three rather than grading
+whichever one its draws happened to reach.
+"""
+
+
 def _cells_named_in(message: str) -> set[tuple[int, ...]]:
     """Return the cell indices a `coarsen` refusal names, excluding its region prefix."""
     listing = message.split("Offending cells", 1)[1] if "Offending cells" in message else ""
@@ -834,6 +846,10 @@ class TestCoarsenIsNotAnUnconditionalInverse:
         assert g.num_cells == 65
         g.coarsen(0, [1, 1], [3, 3])
         assert g.num_cells == 33
+        # The shape, not only the count: dropping the block merge on reactivation leaves
+        # 33 cells in a structurally different partition, which the count alone misses.
+        assert g.active_blocks(0) == (((0, 2), (1, 3)), ((1, 1), (3, 3)), ((2, 0), (3, 1)))
+        assert g.active_blocks(1) == (((0, 0), (3, 6)), ((3, 0), (6, 3)))
 
     def test_refine_undoes_coarsen_unconditionally(self) -> None:
         """The other direction holds with no hypothesis: refine always undoes coarsen."""
@@ -887,12 +903,20 @@ class TestCoarsenIsNotAnUnconditionalInverse:
         The message is built from the block lists with per-axis scaling; the oracle here
         instead asks :meth:`~pantr.grid.HierarchicalGrid.is_active_leaf` cell by cell, so
         the two disagree if the scaling is wrong for a non-dyadic or anisotropic factor.
+
+        The draw count is not arbitrary. At 24 draws this seed leaves three of the four
+        parametrizations never reaching one of the three refusal reasons, so the sweep
+        graded less than it appears to; 96 is the first count at which all four reach all
+        three, which is what the tally at the end asserts. Raising it further only repeats
+        coverage, except that it also exercises the truncated-listing branch more often
+        (never reachable in 1D, where a drawn region spans at most three cells).
         """
         root = uniform_grid([[0.0, 1.0]] * len(cells_per_axis), cells_per_axis)
         g = hierarchical_grid(root, factor)
         rng = np.random.default_rng(4)
         checked = 0
-        for _ in range(24):
+        reasons_seen: set[str] = set()
+        for _ in range(96):
             coarsening = g.max_level > 0 and rng.random() >= 0.6
             level = int(rng.integers(0, g.max_level if coarsening else g.max_level + 1))
             extent = g.level_cells_per_axis(level)
@@ -914,10 +938,17 @@ class TestCoarsenIsNotAnUnconditionalInverse:
                     assert named <= expected  # truncated: a subset, never an invention
                 else:
                     assert named == expected, f"named {sorted(named)}, blocked {sorted(expected)}"
+                reasons_seen |= {phrase for phrase in _REFUSAL_REASONS if phrase in str(exc)}
                 checked += 1
             else:
                 assert not expected, "coarsened a region the oracle finds blocked"
         assert checked, "the sweep never exercised a refusal"
+        # Without this the sweep can grade only one or two of the three reasons and still
+        # report success, which is how a per-axis scaling bug in an unexercised branch
+        # would survive: the message path is the only place that scaling is used.
+        assert reasons_seen == set(_REFUSAL_REASONS), (
+            f"the sweep never exercised {sorted(set(_REFUSAL_REASONS) - reasons_seen)}"
+        )
 
     def test_coarsen_names_exactly_the_cap_without_a_remainder(self) -> None:
         """A listing landing exactly on the cap must not claim a remainder."""
