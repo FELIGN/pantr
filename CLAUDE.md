@@ -67,6 +67,20 @@ The local suite passing is necessary but not sufficient. Known traps:
 - **A missing optional dependency skips tests silently.** If `pyvista` or `mpi4py` is absent
   locally, the tests that need them skip without complaint — install them before trusting a local
   green.
+- **A new Layer 2 entry point over `parallel=True` kernels must call
+  `pantr._numba_compat.wait_for_jit_warmup()` first**, as `basis/_basis_1D.py`,
+  `bspline/_bspline_roots.py` and `bezier/_find_roots.py` do. `__init__.py` compiles on a
+  background thread, and Numba's default workqueue layer is not safe against a concurrent parallel
+  call from another thread: the process **aborts** (`Fatal Python error: Aborted`) rather than
+  raising, taking the whole run with it. Three things hide it from a local green — a full-file run
+  usually gives the warmup time to finish during the first test's own compilation, a warm Numba
+  cache shortens the window to nothing, and the abort needs a *fast* test that reaches kernels
+  early. `make test` is `pytest -n auto`, so every xdist worker imports and starts immediately,
+  which is exactly the racing pattern. Measured: a new 60-case `locate` sweep aborted 4 of 4 runs
+  as the first thing in a process, serially and under `-n 4`, and 0 of 4 with the barrier. **Run a
+  new kernel-heavy test file on its own** (`pytest tests/test_x.py -k ...`) before trusting it, and
+  test the barrier by asserting it is *called* — no in-process test can observe the race, since the
+  barrier is a once-per-process event.
 - **`pythonpath = src` covers pytest only.** Anything that imports `pantr` outside the pytest
   process — `lint-imports`, a test that spawns a subprocess — resolves the *installed* package
   instead. Two consequences: those commands need `PYTHONPATH=src` to see the current worktree, and a
