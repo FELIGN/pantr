@@ -436,12 +436,16 @@ def _nearest_corner_starts(
         targets (npt.NDArray[np.float64]): The query points, shape ``(n, rank)``.
 
     Returns:
-        npt.NDArray[np.float64]: Shape ``(n, dim)`` parametric starting guesses.
+        npt.NDArray[np.float64]: Shape ``(n, dim)`` parametric starting guesses, each a
+        corner of its own cell. That postcondition is why the search starts from a corner
+        rather than from an empty buffer: a mapping whose evaluation is not finite (nothing
+        rejects a non-finite control point at construction) makes every distance ``nan`` and
+        every comparison below False, and an empty buffer would then be returned unwritten.
     """
     lo, hi = _cell_parametric_bounds(spline.space, cell_ids)
     dim = lo.shape[1]
     axes = np.arange(dim)
-    best = np.empty_like(lo)
+    best = lo.copy()
     best_distance = np.full(cell_ids.shape[0], np.inf, dtype=np.float64)
 
     for corner in range(1 << dim):

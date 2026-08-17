@@ -12,6 +12,7 @@ import pytest
 from pantr.bspline import Bspline, BsplineSpace, BsplineSpace1D
 from pantr.bspline._bspline_locate import (
     _cell_midpoints,
+    _cell_parametric_bounds,
     _cell_physical_bounds,
     _geometric_scale,
     _locate_context,
@@ -720,6 +721,27 @@ class TestNewtonGlobalization:
             from_corner[1], xi_true, atol=_XI_REL_ATOL * context.scale, rtol=0.0
         )
         assert spline.locate(target)[0].tolist() == [32]
+
+    def test_the_second_start_is_always_a_corner_of_its_own_cell(self) -> None:
+        """The postcondition holds even when no corner can be ranked.
+
+        The nearest-image search keeps the best corner seen so far, and a mapping that
+        evaluates to ``nan`` -- nothing rejects a non-finite control point at construction --
+        makes every distance ``nan`` and every "is this closer" comparison False. Starting
+        the search from a real corner rather than an empty buffer is what keeps the answer a
+        point of the cell instead of whatever the allocator returned.
+        """
+        spline = _warped_patch()
+        cells = np.array([0, 17, 35], dtype=np.int64)
+        lo, hi = _cell_parametric_bounds(spline.space, cells)
+
+        finite = _nearest_corner_starts(spline, cells, _evaluate_at(spline, 0.5 * (lo + hi)))
+        unrankable = _nearest_corner_starts(spline, cells, np.full((3, 2), np.nan))
+
+        for starts in (finite, unrankable):
+            assert np.all(np.isfinite(starts))
+            assert np.all((starts == lo) | (starts == hi)), "a start must be a cell corner"
+            assert np.all(lo <= starts) and np.all(starts <= hi)
 
     def test_a_second_start_cannot_invent_a_solution(self) -> None:
         """Retrying widens what is reached, never what counts as reached.
