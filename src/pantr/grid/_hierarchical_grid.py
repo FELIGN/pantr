@@ -15,7 +15,10 @@ small list of ``(lo, hi)`` index pairs per level.  Memory is therefore
 *Union semantics.*  Calling :meth:`refine` with a region that overlaps an
 already-refined area is silently correct: only the currently-active portion of
 the region is refined.  Since the children of newly-active cells are always
-disjoint from existing level blocks, no deduplication is needed.
+disjoint from existing level blocks, no deduplication is needed.  Refining only
+part of a box is what makes :meth:`refine` non-injective on the grid state, so
+:meth:`coarsen` inverts it conditionally rather than always; both docstrings
+state the hypothesis.
 
 *No balance constraint.*  :meth:`refine` imposes no 2:1 grading: cells of any
 two levels may share a facet.  Facet adjacency (:meth:`neighbor_across_facet`,
@@ -54,6 +57,25 @@ if TYPE_CHECKING:
 # A Block is a pair (lo, hi) of per-direction inclusive-start / exclusive-end
 # integer index tuples, all at the coordinate system of a specific level.
 _Block = tuple[tuple[int, ...], tuple[int, ...]]
+
+_MAX_NAMED_CELLS: int = 6
+"""
+Cells spelled out per reason when :meth:`HierarchicalGrid.coarsen` refuses a region.
+
+Enough to show the pattern of the offending set while keeping the message readable when
+a large region is rejected; the remainder is reported as a count.
+"""
+
+_MAX_DIAGNOSED_CELLS: int = 1 << 20
+"""
+Region size above which :meth:`HierarchicalGrid.coarsen`'s refusal skips naming cells.
+
+The diagnostic materializes three boolean masks shaped like the region, so the cap is a
+memory budget: at this size they cost 3 MiB together.  A region may legitimately be far
+larger than the grid is (level ``l`` has ``factor ** l`` cells per root cell, whether or
+not they exist), and enumerating cells that mostly do not exist would help nobody, so
+past the cap the message reports the region's extent instead.
+"""
 
 
 # ---------------------------------------------------------------------------
@@ -231,6 +253,54 @@ def _normalize_blocks(blocks: list[_Block]) -> list[_Block]:
             new_blocks.append(merged)
         blocks = new_blocks
     return sorted(blocks)
+
+
+def _mark_region_cells(
+    mask: npt.NDArray[np.bool_],
+    lo: tuple[int, ...],
+    hi: tuple[int, ...],
+    block: _Block,
+) -> None:
+    r"""Set the cells of ``mask`` that ``block`` covers inside the region ``[lo, hi)``.
+
+    ``mask`` is indexed relative to ``lo``, so its shape is ``hi[k] - lo[k]`` per axis
+    ``k``.  A block that misses the region leaves ``mask`` untouched.
+
+    Args:
+        mask (npt.NDArray[np.bool\_]): Region-shaped mask, written in place.
+        lo (tuple[int, ...]): Region lower bound (inclusive).
+        hi (tuple[int, ...]): Region upper bound (exclusive).
+        block (_Block): Rectangle to mark, in the same coordinates as ``lo``/``hi``.
+    """
+    inter = _rect_intersect(block[0], block[1], lo, hi)
+    if inter is None:
+        return
+    i_lo, i_hi = inter
+    mask[tuple(slice(a - o, b - o) for a, b, o in zip(i_lo, i_hi, lo, strict=False))] = True
+
+
+def _name_marked_cells(mask: npt.NDArray[np.bool_], origin: tuple[int, ...]) -> str:
+    r"""Render the marked cells of a region-shaped mask as absolute index tuples.
+
+    At most :data:`_MAX_NAMED_CELLS` cells are spelled out; any remainder is summarized
+    as a count so a large rejected region still yields a readable message.
+
+    Args:
+        mask (npt.NDArray[np.bool\_]): Region-shaped mask of cells to name.
+        origin (tuple[int, ...]): Index of the region's first cell, added to every
+            mask index so the names are in the level's own coordinates.
+
+    Returns:
+        str: Comma-separated index tuples, followed by ``and N more`` when the listing
+        was truncated.
+    """
+    marked = np.argwhere(mask)
+    named = ", ".join(
+        str(tuple(int(i) + int(o) for i, o in zip(row, origin, strict=False)))
+        for row in marked[:_MAX_NAMED_CELLS]
+    )
+    hidden = int(marked.shape[0]) - _MAX_NAMED_CELLS
+    return f"{named} and {hidden} more" if hidden > 0 else named
 
 
 # ---------------------------------------------------------------------------
@@ -1222,9 +1292,26 @@ class HierarchicalGrid(Grid):
         """Refine the rectangular region ``[lo, hi)`` at ``level`` to ``level+1``.
 
         Union semantics: only the currently-active portion of ``[lo, hi)`` is
-        refined.  If the intersection with active blocks at ``level`` is empty,
-        the call is a silent no-op.  Overlapping calls therefore safely extend
-        the refined region.
+        refined, leaving cells that are already deeper untouched.  If the
+        intersection with active blocks at ``level`` is empty, the call is a
+        silent no-op.  Overlapping calls therefore safely extend the refined
+        region.
+
+        That convenience costs invertibility.  Promoting only part of a box sends
+        several distinct grids to the same result, so :meth:`refine` is **not
+        injective** on the grid state and no single :meth:`coarsen` can undo it in
+        general: ``coarsen(level, lo, hi)`` reverses this call only when every cell
+        of ``[lo, hi)`` was an active leaf at ``level`` beforehand.  When it was
+        not, the paired :meth:`coarsen` either refuses the box, if part of it now
+        sits deeper than ``level+1``, or demotes all of it, including the cells this
+        call left alone, and so removes children an earlier :meth:`refine` created.
+        Where that must not happen, name the cells rather than a box on
+        the side that destroys them: :meth:`~pantr.bspline.THBSplineSpace.coarsen`
+        reactivates a parent only when all of its children are named active
+        leaves, so nothing the caller did not name is removed.  (:meth:`refine_cells`
+        also marks by id, but it refines the bounding box of the ids given at each
+        level, so it can promote a cell the caller did not mark; that costs nothing,
+        since refining removes no cell.)
 
         After the call all flat cell ids are **reassigned** (the BVH, cell tags,
         and facet tags are also invalidated).
@@ -1333,14 +1420,31 @@ class HierarchicalGrid(Grid):
         lo: Sequence[int],
         hi: Sequence[int],
     ) -> None:
-        """Coarsen the rectangular region ``[lo, hi)`` at ``level`` (inverse of refine).
+        """Demote the rectangular region ``[lo, hi)`` from ``level+1`` back to ``level``.
 
         Reactivates the level-``level`` cells in ``[lo, hi)`` and removes their
         level-``(level+1)`` children.  The region must be **fully refined to exactly
         level ``level+1``**: every child cell in ``[lo*factor, hi*factor)`` must be an
         active leaf at ``level+1`` (none further refined, none still a leaf at
-        ``level``).  Calling :meth:`coarsen` with the same arguments as a preceding
-        :meth:`refine` exactly restores the grid.
+        ``level``); otherwise the call raises and the message names the cells that
+        break it.
+
+        The **whole** box is demoted, while :meth:`refine` promotes only the box's
+        currently-active portion.  :meth:`refine` is therefore not injective on the
+        grid state, and this call inverts it **only when every cell of ``[lo, hi)``
+        was an active leaf at ``level`` before that refine**.  When it was not, this
+        call either refuses the box, as above, or removes children an earlier
+        :meth:`refine` created: after ``refine(l, A)`` and an overlapping
+        ``refine(l, B)``, ``coarsen(l, B)`` demotes all of ``B``, including the part
+        of ``A`` that lies inside it.  It is demoting exactly the box it was given,
+        but it is not undoing the second refine.  To coarsen without risking
+        refinement the caller did not mean to lose, mark cells by id:
+        :meth:`~pantr.bspline.THBSplineSpace.coarsen` reactivates a parent only when
+        all of its children are named active leaves.
+
+        The opposite order carries no hypothesis: coarsening leaves the whole box
+        active at ``level``, so ``refine(level, lo, hi)`` always undoes
+        ``coarsen(level, lo, hi)``.
 
         After the call all flat cell ids are **reassigned** (the BVH, cell tags, and
         facet tags are invalidated).
@@ -1397,9 +1501,17 @@ class HierarchicalGrid(Grid):
             covered += _block_size(*inter)
             new_finer.extend(_peel(block_lo, block_hi, *inter))
         if covered != child_size:
+            region_cells = _block_size(lo_t, hi_t)
+            if region_cells > _MAX_DIAGNOSED_CELLS:
+                detail = f" The region spans {region_cells} cells, too many to name."
+            else:
+                obstacles = self._coarsen_obstacles(level, lo_t, hi_t)
+                detail = (
+                    f" Offending cells in level-{level} indices: {obstacles}." if obstacles else ""
+                )
             raise ValueError(
                 f"cannot coarsen [{lo_t}, {hi_t}) at level {level}: the region is not "
-                f"fully refined to exactly level {level + 1}."
+                f"fully refined to exactly level {level + 1}.{detail}"
             )
 
         self._blocks[level + 1] = _normalize_blocks(new_finer)
@@ -1407,6 +1519,83 @@ class HierarchicalGrid(Grid):
         while len(self._blocks) > 1 and not self._blocks[-1]:
             self._blocks.pop()
         self._rebuild()
+
+    def _coarsen_obstacles(
+        self,
+        level: int,
+        lo: tuple[int, ...],
+        hi: tuple[int, ...],
+    ) -> str:
+        """Name the cells of ``[lo, hi)`` that stop it being demoted from ``level+1``.
+
+        A cell of the region blocks :meth:`coarsen` in exactly one of three ways: it is
+        still an active leaf at ``level`` (so it has no children to remove), it is
+        refined past ``level+1`` (so its children are not leaves either), or it is not
+        present at ``level`` at all because a coarser active leaf covers it.  Each class
+        is read off the block lists: active leaves from ``_blocks[level]``, hidden cells
+        from the coarser blocks scaled up to ``level``, and over-refined cells from the
+        deeper blocks scaled down to ``level``.
+
+        Args:
+            level (int): Level whose cells were to be reactivated.
+            lo (tuple[int, ...]): Region lower bound (inclusive), level-``level``
+                coordinates.
+            hi (tuple[int, ...]): Region upper bound (exclusive), level-``level``
+                coordinates.
+
+        Returns:
+            str: Semicolon-separated clauses, each a reason followed by the offending
+            cells; empty when every cell of the region is refined to exactly
+            ``level+1``, which is when :meth:`coarsen` accepts it.
+
+        Note:
+            Reached only from the failing path of :meth:`coarsen`, so it favours a
+            precise message over speed and allocates one region-shaped boolean array
+            per reason.  The caller keeps the region within
+            :data:`_MAX_DIAGNOSED_CELLS` so those arrays stay small.
+        """
+        shape = tuple(h - lo_k for lo_k, h in zip(lo, hi, strict=False))
+        still_leaf = np.zeros(shape, dtype=np.bool_)
+        over_refined = np.zeros(shape, dtype=np.bool_)
+        hidden = np.zeros(shape, dtype=np.bool_)
+
+        for block in self._blocks[level]:
+            _mark_region_cells(still_leaf, lo, hi, block)
+        for coarser in range(level):
+            up = tuple(f ** (level - coarser) for f in self._factor)
+            for b_lo, b_hi in self._blocks[coarser]:
+                _mark_region_cells(
+                    hidden,
+                    lo,
+                    hi,
+                    (
+                        tuple(a * s for a, s in zip(b_lo, up, strict=False)),
+                        tuple(b * s for b, s in zip(b_hi, up, strict=False)),
+                    ),
+                )
+        for deeper in range(level + 2, len(self._blocks)):
+            down = tuple(f ** (deeper - level) for f in self._factor)
+            for b_lo, b_hi in self._blocks[deeper]:
+                # Floor the start and ceil the end: a level-`level` cell holding any
+                # part of a deeper block has a descendant below level+1.
+                _mark_region_cells(
+                    over_refined,
+                    lo,
+                    hi,
+                    (
+                        tuple(a // s for a, s in zip(b_lo, down, strict=False)),
+                        tuple(-(-b // s) for b, s in zip(b_hi, down, strict=False)),
+                    ),
+                )
+
+        reasons = (
+            (still_leaf, f"still active leaves at level {level}, with no children to remove"),
+            (over_refined, f"refined beyond level {level + 1}"),
+            (hidden, f"covered by a coarser active leaf and absent at level {level}"),
+        )
+        return "; ".join(
+            f"{reason}: {_name_marked_cells(mask, lo)}" for mask, reason in reasons if mask.any()
+        )
 
     # ------------------------------------------------------------------
     # Overrides for BVH efficiency

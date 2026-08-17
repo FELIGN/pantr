@@ -1737,12 +1737,20 @@ class TestCoarsen:
         fine = coarse.refine([0, 1])
         back = fine.coarsen(_cells_at_level(fine, 1))
         assert _active_indices(back) == _active_indices(coarse)
+        # The cell-id API is injective, so the mesh itself comes back, not just the
+        # function space: unlike the box API, no refinement can be lost on the way.
+        assert (coarse.grid.num_cells, fine.grid.num_cells) == (4, 6)
+        assert back.grid.num_cells == coarse.grid.num_cells
+        assert back.grid.max_level == coarse.grid.max_level == 0
 
     def test_coarsen_inverts_refine_2d(self) -> None:
         coarse = THBSplineSpace(_root_2d(), _grid_2d())
         fine = coarse.refine([0], admissible_class=None)
         back = fine.coarsen(_cells_at_level(fine, 1), admissible_class=None)
         assert _active_indices(back) == _active_indices(coarse)
+        assert (coarse.grid.num_cells, fine.grid.num_cells) == (16, 19)
+        assert back.grid.num_cells == coarse.grid.num_cells
+        assert back.grid.max_level == coarse.grid.max_level == 0
 
     def test_coarsen_partition_of_unity(self) -> None:
         coarse = THBSplineSpace(_root_2d(), _grid_2d())
