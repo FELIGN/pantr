@@ -89,6 +89,81 @@ class TestCoonsSurface:
             create_coons_surface(((c_v0, c_v1), (c_u0, c_u1)))
 
 
+class TestCoonsCornerToleranceScaleCovariance:
+    """The corner check must reach the same verdict at every model scale.
+
+    Its tolerance is ``4096 * eps`` times the largest absolute coordinate over all
+    eight corner values.  Before, a fixed ``atol=1e-12`` rejected a one-ulp mismatch
+    on a metre-scale part measured in microns, and accepted a ``1e-9`` relative gap
+    on a micron-scale one.
+    """
+
+    @staticmethod
+    def _square(scale: float, corner_shift: float = 0.0) -> tuple[Bspline, ...]:
+        """Build the four boundary curves of a square of side ``scale``.
+
+        ``corner_shift`` displaces the start of the v1 curve, so it is the single
+        corner inconsistency under test.
+        """
+        s = scale
+        c_u0 = create_line([0, 0, 0], [s, 0, 0])
+        c_u1 = create_line([0, s, 0], [s, s, 0])
+        c_v0 = create_line([0, 0, 0], [0, s, 0])
+        c_v1 = create_line([s + corner_shift, 0, 0], [s, s, 0])
+        return c_v0, c_v1, c_u0, c_u1
+
+    @pytest.mark.parametrize("scale", [1.0e-6, 1.0e-3, 1.0, 1.0e3, 1.0e6, 1.0e9])
+    def test_a_one_ulp_corner_mismatch_is_accepted_at_every_scale(self, scale: float) -> None:
+        """A geometrically perfect patch must never be refused for a last-bit disagreement.
+
+        This is the direction the absolute constant failed in: at ``scale >= 1e6`` one
+        ulp of the coordinate already exceeds ``1e-12``.
+        """
+        shift = float(np.nextafter(scale, np.inf) - scale)
+        c_v0, c_v1, c_u0, c_u1 = self._square(scale, corner_shift=shift)
+        srf = create_coons_surface(((c_v0, c_v1), (c_u0, c_u1)))
+        assert srf.dim == 2
+
+    @pytest.mark.parametrize(
+        "scale", [1.0e-9, 1.0e-8, 1.0e-7, 1.0e-6, 1.0e-3, 1.0, 1.0e3, 1.0e6, 1.0e9]
+    )
+    def test_a_relative_corner_gap_is_rejected_at_every_scale(self, scale: float) -> None:
+        """And this is the direction it failed in on a small model.
+
+        A gap of one part per million of the model size is a real modelling mistake at
+        any scale; the absolute constant accepted it once the *absolute* gap fell below
+        ``1e-12``, i.e. from ``scale = 1e-6`` down.  The list has to reach ``1e-9`` to
+        pin that: at exactly ``1e-6`` the product ``1e-6 * 1e-6`` rounds a hair above
+        ``1e-12`` and the old code still rejected, so a range stopping there passes on
+        the unfixed code and proves nothing.
+        """
+        c_v0, c_v1, c_u0, c_u1 = self._square(scale, corner_shift=1.0e-6 * scale)
+        with pytest.raises(ValueError, match="mismatch"):
+            create_coons_surface(((c_v0, c_v1), (c_u0, c_u1)))
+
+    def test_the_scale_comes_from_all_eight_corners_not_the_pair_under_test(self) -> None:
+        """A patch touching the origin is graded like the rest of the patch.
+
+        The ``(0, 0)`` corner supplies no magnitude of its own.  Reading the scale off
+        only the pair being compared would grade it against zero and demand bitwise
+        agreement there while allowing ``4096 * eps * s`` at the other three.
+        """
+        s = 1.0e6
+        c_u0 = create_line([float(np.nextafter(0.0, 1.0)), 0, 0], [s, 0, 0])
+        c_u1 = create_line([0, s, 0], [s, s, 0])
+        c_v0 = create_line([0, 0, 0], [0, s, 0])
+        c_v1 = create_line([s, 0, 0], [s, s, 0])
+        srf = create_coons_surface(((c_v0, c_v1), (c_u0, c_u1)))
+        assert srf.dim == 2
+
+    @pytest.mark.parametrize("scale", [1.0e-6, 1.0, 1.0e9])
+    def test_a_gross_mismatch_is_still_caught_at_every_scale(self, scale: float) -> None:
+        """The mistake the check exists for: a curve given in the wrong place."""
+        c_v0, c_v1, c_u0, c_u1 = self._square(scale, corner_shift=scale)
+        with pytest.raises(ValueError, match="mismatch"):
+            create_coons_surface(((c_v0, c_v1), (c_u0, c_u1)))
+
+
 class TestCoonsVolume:
     """Test the coons_volume function."""
 

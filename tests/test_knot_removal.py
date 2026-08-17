@@ -378,3 +378,339 @@ class TestRemoveKnotKernelPrecondition:
 
         knots = np.asarray(result.space.spaces[0].knots)
         assert int(np.sum(np.abs(knots - 3.0) <= 1e-14)) == 0
+
+
+# ===========================================================================
+# The default tolerance
+# ===========================================================================
+
+
+def _random_curve(degree: int, n_el: int, rank: int, scale: float, seed: int) -> Bspline:
+    """Build an open curve of the given degree whose control net has size ``scale``."""
+    knots = np.concatenate(
+        [np.full(degree, 0.0), np.linspace(0.0, 1.0, n_el + 1), np.full(degree, 1.0)]
+    )
+    space = BsplineSpace([BsplineSpace1D(knots, degree)])
+    rng = np.random.default_rng(seed)
+    cp = rng.uniform(-1.0, 1.0, size=(space.num_total_basis, rank)) * scale
+    return Bspline(space, np.ascontiguousarray(cp))
+
+
+def _nurbs_curve(  # noqa: PLR0913
+    degree: int, n_el: int, rank: int, scale: float, weight_spread: float, seed: int
+) -> Bspline:
+    """Build a rational curve whose weights and coordinates vary **independently**.
+
+    That independence is the point.  A circle cannot expose a mistake in the
+    homogeneous-to-projected conversion, because its weights are structurally tied to
+    its coordinates and a rescaling of one is a rescaling of the other.
+    """
+    knots = np.concatenate(
+        [np.full(degree, 0.0), np.linspace(0.0, 1.0, n_el + 1), np.full(degree, 1.0)]
+    )
+    space = BsplineSpace([BsplineSpace1D(knots, degree)])
+    rng = np.random.default_rng(seed)
+    n = space.num_total_basis
+    pts = rng.uniform(-1.0, 1.0, size=(n, rank)) * scale
+    weights = np.exp(rng.uniform(-weight_spread, weight_spread, size=n))
+    cp = np.concatenate([pts * weights[:, None], weights[:, None]], axis=1)
+    return Bspline(space, np.ascontiguousarray(cp), is_rational=True)
+
+
+class TestDefaultToleranceIsARoundOffFloor:
+    """With no ``tol``, removal is lossless and its verdict is scale covariant.
+
+    The old default was an absolute ``1e-10``, which is a geometric budget wearing no
+    units: the same exactly-removable knot came out at geometry scale 1e-6, 1 and 1e3
+    and was silently refused at 1e6 and 1e9.  The default is now
+    ``8 * (degree + 1) * eps * scale`` with ``scale = max(bbox diagonal, max ||P_i||)``,
+    which admits exactly what the reconstruction arithmetic cannot distinguish from an
+    exact removal.
+    """
+
+    @pytest.mark.parametrize("scale", [1.0e-6, 1.0, 1.0e3, 1.0e6, 1.0e9])
+    @pytest.mark.parametrize("degree", [1, 2, 3, 4, 5, 6, 7])
+    def test_an_exactly_removable_knot_comes_out_at_every_geometry_scale(
+        self, degree: int, scale: float
+    ) -> None:
+        """A just-inserted knot is redundant by construction, so it must always go.
+
+        This is the case the absolute default lost above scale 1e6, where one ulp of a
+        coordinate already exceeds ``1e-10``.
+        """
+        from pantr.bspline._bspline_knot_removal import (  # noqa: PLC0415
+            _roundoff_deviation_floor,
+        )
+
+        curve = _random_curve(degree, 5, 3, scale, seed=degree)
+        inserted = curve.insert_knots(np.array([0.37]))
+        before = inserted.space.spaces[0].knots.size
+
+        result = inserted.remove_knots(0.37)
+
+        assert result.space.spaces[0].knots.size == before - 1
+        # And the removal delivered what the budget promised.  The control-point
+        # distance A5.8 measures is an upper bound on the curve deviation, so the two
+        # curves must agree to within the very floor that admitted the removal --
+        # a bound derived from the geometry rather than a round number.
+        floor = _roundoff_deviation_floor(np.asarray(inserted.control_points), degree, 1)
+        t = np.linspace(0.0, 1.0, 401)
+        deviation = float(
+            np.linalg.norm(
+                np.asarray(result.evaluate(t)) - np.asarray(inserted.evaluate(t)), axis=1
+            ).max()
+        )
+        assert deviation <= floor
+
+    @pytest.mark.parametrize("scale", [1.0e-6, 1.0, 1.0e3, 1.0e6, 1.0e9])
+    def test_a_knot_the_curve_genuinely_needs_stays_at_every_geometry_scale(
+        self, scale: float
+    ) -> None:
+        """The other half of the verdict: the default must not become a licence.
+
+        Scale covariance is only worth having if both answers travel, so this pins the
+        rejection at the same five scales as the acceptance above.
+        """
+        curve = _random_curve(3, 5, 3, scale, seed=99)
+        before = curve.space.spaces[0].knots.size
+
+        result = curve.remove_knots(0.4)
+
+        assert result.space.spaces[0].knots.size == before
+
+    def test_the_floor_is_proportional_to_the_control_net(self) -> None:
+        """Rescaling the geometry rescales the floor by the same factor."""
+        from pantr.bspline._bspline_knot_removal import (  # noqa: PLC0415
+            _roundoff_deviation_floor,
+        )
+
+        cp = _random_curve(3, 5, 3, 1.0, seed=4).control_points
+        unit = _roundoff_deviation_floor(np.asarray(cp), 3, 1)
+        scaled = _roundoff_deviation_floor(np.asarray(cp) * 1.0e6, 3, 1)
+        assert scaled == pytest.approx(1.0e6 * unit, rel=1.0e-12)
+
+    def test_the_floor_grows_with_degree_and_is_a_multiple_of_eps(self) -> None:
+        """Pin the derivation, not the digits: ``8 * (degree + 1) * eps * scale``."""
+        from pantr.bspline._bspline_knot_removal import (  # noqa: PLC0415
+            _control_point_scale,
+            _roundoff_deviation_floor,
+        )
+
+        cp = np.asarray(_random_curve(3, 5, 3, 1.0, seed=4).control_points)
+        eps = float(np.finfo(np.float64).eps)
+        for degree in (1, 3, 7):
+            expected = 8.0 * (degree + 1) * eps * _control_point_scale(cp)
+            assert _roundoff_deviation_floor(cp, degree, 1) == pytest.approx(expected, rel=1e-14)
+        # And the stacking factor is a square root, not a factor of one or of n.
+        base = _roundoff_deviation_floor(cp, 3, 1)
+        assert _roundoff_deviation_floor(cp, 3, 10_000) == pytest.approx(100.0 * base, rel=1e-14)
+
+
+class TestRationalDeviationIsMeasuredInProjectedSpace:
+    """A caller's budget is a distance between points, not between homogeneous columns.
+
+    The kernel measures a Euclidean distance over every column of the array it is
+    given, which for a rational spline is ``[w x, w y, w z, w]``.  Eq. (5.30) of Piegl
+    & Tiller (2nd ed., 1997, p. 185) is the conversion, and without it a deviation
+    carried by the weight column is graded as though it were a coordinate.
+    """
+
+    @staticmethod
+    def _max_projected_deviation(a: Bspline, b: Bspline) -> float:
+        """Largest distance between the two curves' projected points over the domain."""
+        t = np.linspace(0.0, 1.0, 601)
+        pa = np.asarray(a.evaluate(t), dtype=np.float64)
+        pb = np.asarray(b.evaluate(t), dtype=np.float64)
+        return float(np.linalg.norm(pa - pb, axis=1).max())
+
+    @pytest.mark.parametrize("degree", [2, 3, 4])
+    @pytest.mark.parametrize("scale", [1.0, 1.0e3, 1.0e6])
+    def test_an_accepted_removal_honours_the_requested_budget(
+        self, degree: int, scale: float
+    ) -> None:
+        """Sweeping the perturbation, every accepted removal must be within budget.
+
+        The perturbation is applied to the **weight** alone, which is the case Eq.
+        (5.30) exists for; the sweep over sixteen decades is what finds the largest one
+        the kernel is willing to accept.  Without the conversion the worst ratio
+        measured over this family is ``7.4e5``; with it, ``0.32``.
+        """
+        base = _nurbs_curve(degree, 6, 3, scale, 1.5, seed=degree * 7)
+        inserted = base.insert_knots(np.array([0.41]))
+        before = inserted.space.spaces[0].knots.size
+        requested = 1.0e-6 * scale
+        accepted_any = False
+
+        for eps_w in np.logspace(-16, 0, 33):
+            cp = np.array(inserted.control_points)
+            cp[cp.shape[0] // 2, -1] *= 1.0 + eps_w
+            perturbed = Bspline(inserted.space, cp, is_rational=True)
+
+            result = perturbed.remove_knots(0.41, tol=requested)
+            if result.space.spaces[0].knots.size == before:
+                continue
+            accepted_any = True
+            deviation = self._max_projected_deviation(result, perturbed)
+            assert deviation <= requested, (
+                f"budget broken by {deviation / requested:.4g}x at eps_w={eps_w:.3g}"
+            )
+
+        assert accepted_any, "the sweep never produced an accepted removal, so it proves nothing"
+
+    @pytest.mark.parametrize("scale", [1.0e-6, 1.0, 1.0e6, 1.0e9])
+    @pytest.mark.parametrize("degree", [3, 4, 6, 7])
+    def test_a_redundant_knot_still_comes_out_of_a_rational_curve(
+        self, degree: int, scale: float
+    ) -> None:
+        """The conversion must not make the default unreachable for a NURBS.
+
+        The round-off floor is deliberately *not* pulled back: it is a statement about
+        the arithmetic, and the arithmetic runs in homogeneous coordinates.  Pulling it
+        back would divide it by ``1 + |P|_max`` and refuse exact removals on any model
+        bigger than a unit.
+        """
+        base = _nurbs_curve(degree, 5, 3, scale, 1.5, seed=21)
+        inserted = base.insert_knots(np.array([0.37]))
+        before = inserted.space.spaces[0].knots.size
+
+        result = inserted.remove_knots(0.37)
+
+        assert result.space.spaces[0].knots.size == before - 1
+
+    def test_the_conversion_is_the_published_formula(self) -> None:
+        """``TOL = d * w_min / (1 + |P|_max)``, checked against a direct computation."""
+        from pantr.bspline._bspline_knot_removal import (  # noqa: PLC0415
+            _homogeneous_deviation_tolerance,
+        )
+
+        curve = _nurbs_curve(3, 5, 3, 100.0, 1.5, seed=13)
+        cp = np.asarray(curve.control_points, dtype=np.float64)
+        w_min = float(cp[:, -1].min())
+        p_max = float(np.linalg.norm(cp[:, :-1] / cp[:, -1:], axis=1).max())
+
+        assert _homogeneous_deviation_tolerance(cp, 1.0e-3) == pytest.approx(
+            1.0e-3 * w_min / (1.0 + p_max), rel=1.0e-14
+        )
+
+
+class TestTheFloorSpansEveryStackedControlPoint:
+    """The kernel grades a whole slice at once, so the floor has to as well.
+
+    ``_flatten_along_axis`` collapses every direction but the one being reduced into the
+    trailing axis, so A5.8's single Euclidean distance runs over ``prod(other basis
+    counts)`` control points rather than one.  A per-point floor is then too tight by the
+    ``sqrt`` of that count, and the symptom is silent: an exactly redundant knot is simply
+    not removed, with no error and no warning.
+    """
+
+    @staticmethod
+    def _volume(degree: int, n_removal: int, n_side: int, rank: int, seed: int) -> Bspline:
+        """Build a 3D volume with ``n_side`` elements in each non-removal direction."""
+
+        def kv(n: int) -> npt.NDArray[np.float64]:
+            return np.concatenate(
+                [np.full(degree, 0.0), np.linspace(0.0, 1.0, n + 1), np.full(degree, 1.0)]
+            )
+
+        space = BsplineSpace(
+            [BsplineSpace1D(kv(n_removal), degree)]
+            + [BsplineSpace1D(kv(n_side), degree) for _ in range(2)]
+        )
+        rng = np.random.default_rng(seed)
+        cp = rng.uniform(-1.0, 1.0, size=(*space.num_basis, rank))
+        return Bspline(space, np.ascontiguousarray(cp))
+
+    @pytest.mark.parametrize("n_side", [2, 20, 200, 400])
+    def test_a_redundant_knot_comes_out_of_a_volume_however_wide_the_slice(
+        self, n_side: int
+    ) -> None:
+        """Measured: without the sqrt this refused from ``num_stacked = 124609`` upward.
+
+        ``n_side = 400`` puts ``num_stacked`` at 162409, comfortably past that threshold,
+        while ``n_side = 2`` keeps the curve-like regime the per-point floor was derived
+        and measured in.  Both must remove the knot.
+        """
+        vol = self._volume(3, 5, n_side, 3, seed=n_side)
+        inserted = vol.insert_knots([np.array([0.37]), None, None])
+        before = inserted.space.spaces[0].knots.size
+
+        result = inserted.remove_knots([np.array([0.37]), None, None])
+
+        assert result.space.spaces[0].knots.size == before - 1
+
+    def test_a_knot_a_volume_genuinely_needs_still_stays(self) -> None:
+        """The sqrt must widen the floor, not turn it into a licence.
+
+        Its whole job is to track what the aggregate distance of an *exact* removal
+        reaches; a knot carrying real geometry is orders above that at any slice width.
+        """
+        vol = self._volume(3, 5, 20, 3, seed=5)
+        before = vol.space.spaces[0].knots.size
+
+        result = vol.remove_knots([np.array([0.4]), None, None])
+
+        assert result.space.spaces[0].knots.size == before
+
+    def test_the_stacking_count_is_the_other_directions_and_not_this_one(self) -> None:
+        """Asserted on the count itself, because no behavioural test can catch this.
+
+        Taking the reduced axis instead of the others is the natural way to get this
+        wrong.  It cannot be caught through ``remove_knots``: the floor carries a 48x
+        margin over the measured worst case, so *any* positive multiplier still admits
+        an exactly redundant knot.  Mutating the production line to ``ctrl.shape[axis]``
+        was confirmed to leave a round-trip test passing at 4-vs-4000 and at
+        4-vs-400000.  So the count is asserted directly, on a deliberately lopsided
+        control net where the two candidate answers differ by three orders of magnitude.
+        """
+        from pantr.bspline._bspline_knot_removal import (  # noqa: PLC0415
+            _num_stacked_control_points,
+        )
+
+        ctrl = np.zeros((7, 4003, 3))  # 7 basis functions along axis 0, 4003 along axis 1
+        assert _num_stacked_control_points(ctrl, 0) == 4003
+        assert _num_stacked_control_points(ctrl, 1) == 7
+        # A curve stacks nothing, so the floor is exactly the per-point one.
+        assert _num_stacked_control_points(np.zeros((9, 3)), 0) == 1
+        # And a volume stacks the product of the two it is not reducing.
+        vol = np.zeros((5, 6, 7, 3))
+        assert _num_stacked_control_points(vol, 0) == 42
+        assert _num_stacked_control_points(vol, 1) == 35
+        assert _num_stacked_control_points(vol, 2) == 30
+
+    def test_a_lopsided_surface_stays_lossless_along_either_axis(self) -> None:
+        """The behavioural half: whichever axis is reduced, the redundant knot goes."""
+
+        def kv(n: int, degree: int = 3) -> npt.NDArray[np.float64]:
+            return np.concatenate(
+                [np.full(degree, 0.0), np.linspace(0.0, 1.0, n + 1), np.full(degree, 1.0)]
+            )
+
+        space = BsplineSpace([BsplineSpace1D(kv(4), 3), BsplineSpace1D(kv(4000), 3)])
+        rng = np.random.default_rng(31)
+        srf = Bspline(
+            space, np.ascontiguousarray(rng.uniform(-1.0, 1.0, size=(*space.num_basis, 3)))
+        )
+        for axis in (0, 1):
+            values: list[npt.NDArray[np.float64] | None] = [None, None]
+            values[axis] = np.array([0.37])
+            inserted = srf.insert_knots(values)
+            before = inserted.space.spaces[axis].knots.size
+            result = inserted.remove_knots(values)
+            assert result.space.spaces[axis].knots.size == before - 1, f"failed on axis {axis}"
+
+
+class TestRationalRemovalRejectsDegenerateWeights:
+    """A zero weight has no projected point, so the conversion cannot be done at all.
+
+    Left unguarded it divided by zero, raised a `RuntimeWarning` and returned a
+    tolerance of exactly 0.0, which silently blocks every removal in the direction.
+    """
+
+    def test_a_zero_weight_raises_rather_than_silently_blocking(self) -> None:
+        curve = _nurbs_curve(3, 5, 3, 1.0, 1.0, seed=17)
+        cp = np.array(curve.control_points)
+        cp[2, -1] = 0.0
+        degenerate = Bspline(curve.space, cp, is_rational=True)
+
+        with pytest.raises(ValueError, match="strictly positive weights"):
+            degenerate.remove_knots(0.4, tol=1.0e-6)

@@ -204,19 +204,34 @@ def _geometric_scale(lo: npt.NDArray[np.float64], hi: npt.NDArray[np.float64]) -
     around ``1e-10`` while ``eps * 1`` would be demanded -- so the scale is the maximum
     of the two.
 
-    The margin that leaves is thin and worth stating rather than assuming.
-    :func:`pantr.tolerance.get_default` is ``64 * eps``, so the threshold is
-    ``64 * eps * scale`` while the floor above is ``C * eps * max|coordinate|`` with
-    ``C`` of the order of ``prod(degree + 1)``. Measured on warped tensor-product maps in
-    1 to 3 directions at degrees 1 to 5, with the geometry translated to ``x = 1e6``: the
-    worst residual over 40 query points reaches ``60 * eps * scale``, against a threshold
-    of ``64``. Every point is still located -- ``C`` is a pessimistic count, since the de
-    Boor sum is a convex combination and its roundings do not all add -- but a caller with
-    a worse-conditioned map should pass ``tol`` explicitly rather than rely on 6 percent.
+    **What the default tier buys, measured.** :func:`pantr.tolerance.get_default` is
+    ``64 * eps``, and an earlier reading of this called that a six percent margin over an
+    arithmetic floor: the worst residual observed came out at ``60 * eps * scale`` against
+    a threshold of 64. That reading is wrong, and the way it is wrong matters, because a
+    thin margin invites loosening the tier and loosening the tier here is the one thing
+    that costs accuracy outright.
 
-    A geometry with no length at all (every control point identical, at the origin)
-    falls back to ``1.0``: there is no scale to read off it, and the tolerance must stay
-    positive.
+    The iteration *stops* at the threshold, so the residuals of the points it returns are
+    censored by it and ``60`` was the ceiling, not a floor. Re-measured at six thresholds
+    from ``2`` to ``4096`` epsilons, on 3960 mildly warped and 5520 strongly warped query
+    points (degrees 1 to 5 in 1 to 3 directions, at scales 1 and ``1e6``, with the targets
+    pushed a few ulp off the machine-exact image so the exact preimage is not a solution):
+    the worst achieved residual tracks whatever threshold is set, to within one part in a
+    hundred, at every one of them. Nothing was lost even at ``4 * eps * scale``.
+
+    Two consequences. The threshold is an **accuracy contract**, not a safety margin, so
+    moving to a looser tier would degrade the returned coordinates one-for-one and buy no
+    robustness. And ``C ~ prod(degree + 1)`` is not the operative floor: the residual shows
+    no dependence on ``prod(degree + 1)`` across 3 to 125. The default tier stays, now for
+    a stated reason rather than by a margin that was an artifact of the measurement.
+
+    A geometry with no length at all -- every control point identical, *at the origin* --
+    falls back to ``1.0``: there is nothing to read a scale off, and the tolerance must
+    stay positive. That fallback is deliberately not a floor of one. A floor would make the
+    tolerance stop shrinking below unit size, so a model in metres and the same model in
+    kilometres would be held to different relative accuracies, which is exactly the
+    non-covariance the rest of this derivation exists to remove. A degenerate geometry
+    sitting *away* from the origin has a magnitude and uses it.
 
     Args:
         lo (npt.NDArray[np.float64]): Per-cell box lower corners, shape
@@ -230,7 +245,8 @@ def _geometric_scale(lo: npt.NDArray[np.float64], hi: npt.NDArray[np.float64]) -
     box_hi = hi.max(axis=0)
     diagonal = float(np.linalg.norm(box_hi - box_lo))
     magnitude = float(max(np.abs(box_lo).max(), np.abs(box_hi).max()))
-    return max(diagonal, magnitude, 1.0)
+    scale = max(diagonal, magnitude)
+    return scale if scale > 0.0 else 1.0
 
 
 def _build_context(spline: Bspline) -> _LocateContext:

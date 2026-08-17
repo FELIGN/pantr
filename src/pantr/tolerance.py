@@ -128,6 +128,20 @@ error is then ``cond * eps`` rather than an operation count times ``eps``, and
 4096 leaves a factor of four over that on top of the same build slack the default
 tier allows. Past this the tolerance stops being a safety factor and starts
 hiding the answer, so a site that needs more needs a derivation of its own.
+
+Both readings are in use. The long-accumulation one grades the prolongation
+residual of a THB refinement, an SVD least-squares solve whose backward-stability
+constant has no closed form
+(``pantr.bspline._thb_spline_space._prolongation_residual_tolerance``); the
+robustness one grades a Coons patch's corner match, where the caller's chain to
+the corner is unbounded and a false rejection costs more than a false accept
+(``pantr.cad._coons``).
+
+The ``1e3`` is this tier's boundary and not a statement about the library. pantr
+does contain a step past it -- ``pantr.change_basis`` documents a cardinal-to-
+Legendre condition number of ``3.0e8`` at degree 8 -- and that step accordingly
+reports the accuracy it actually attains per degree rather than borrowing a
+preset.
 """
 
 

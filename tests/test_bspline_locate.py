@@ -599,6 +599,56 @@ class TestToleranceScaling:
         assert annulus.locate(points, max_iter=1)[0].tolist() == [-1, -1]
         assert annulus.locate(points, max_iter=30)[0].tolist() == [0, 0]
 
+    @pytest.mark.parametrize("lam", [1.0e-9, 1.0e-6, 1.0e-3, 1.0, 1.0e3, 1.0e6])
+    def test_the_scale_is_proportional_to_the_geometry_at_every_size(self, lam: float) -> None:
+        """No floor at one: a model in metres and in kilometres get the same relative bar.
+
+        ``max(diagonal, magnitude, 1.0)`` clamped the scale for any geometry smaller than
+        a unit, so a millimetre-scale part was held to a thousand times the relative
+        accuracy of a metre-scale one, and the tolerance stopped being covariant exactly
+        where the rest of this overhaul made it so.
+        """
+        scaled = _quarter_annulus(r_in=lam, r_out=2.0 * lam)
+        assert _scale_of(scaled) == pytest.approx(lam * _scale_of(_quarter_annulus()), rel=1e-12)
+
+    @pytest.mark.parametrize("lam", [1.0e-9, 1.0e-6, 1.0, 1.0e6])
+    def test_a_small_geometry_still_inverts(self, lam: float) -> None:
+        """Removing the floor tightens the bar on a sub-unit model; it must still be met.
+
+        This is the direction worth guarding. The old floor made the threshold *looser*
+        than the geometry warranted below unit size, so nothing down there had ever been
+        required to converge to its own scale.
+        """
+        spline = _quarter_annulus(r_in=lam, r_out=2.0 * lam)
+        xi_true = _sample_parametric(spline, 100, seed=23)
+        points = _evaluate_at(spline, xi_true)
+
+        cell_ids, ref_coords = spline.locate(points)
+
+        assert np.all(cell_ids == 0)
+        np.testing.assert_allclose(ref_coords, xi_true, atol=_XI_REL_ATOL, rtol=0.0)
+
+    def test_a_geometry_with_no_extent_at_the_origin_still_gets_a_positive_scale(self) -> None:
+        """The one case with nothing to read a scale off keeps the fallback of one.
+
+        Every control point identical and at the origin leaves both the diagonal and the
+        coordinate magnitude at zero, and a tolerance of zero would be unusable.
+        """
+        sub = BsplineSpace1D(np.array([0.0, 0.0, 1.0, 1.0]), 1)
+        point_map = Bspline(BsplineSpace([sub, sub]), np.zeros((2, 2, 2), dtype=np.float64))
+        assert _scale_of(point_map) == 1.0
+
+    def test_a_geometry_with_no_extent_away_from_the_origin_uses_its_magnitude(self) -> None:
+        """A degenerate geometry that is somewhere still has a somewhere to be graded at.
+
+        The old floor rounded this up to one whenever the magnitude was smaller, which is
+        the same non-covariance in a corner case.
+        """
+        sub = BsplineSpace1D(np.array([0.0, 0.0, 1.0, 1.0]), 1)
+        cp = np.full((2, 2, 2), 1.0e-6, dtype=np.float64)
+        point_map = Bspline(BsplineSpace([sub, sub]), cp)
+        assert _scale_of(point_map) == pytest.approx(1.0e-6, rel=1e-12)
+
 
 class TestCellPhysicalBounds:
     """The per-cell physical boxes match an independent brute-force oracle."""

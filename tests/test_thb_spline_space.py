@@ -1291,6 +1291,225 @@ class TestProlongation:
             coarse.prolongation_to(_grid_1d())  # type: ignore[arg-type]
 
 
+class TestProlongationResidualGate:
+    """The residual gate has to sit between what a refinement leaves and what it does not.
+
+    The threshold is ``get_conservative(float64) * (1 + max_coarse_value)``, roughly
+    ``1.8e-12``.  What matters is that genuine refinements clear it by orders of
+    magnitude while a column that genuinely fails to reproduce does not, so these tests
+    bracket it from both sides rather than pinning the number.
+    """
+
+    @staticmethod
+    def _worst_residual(coarse: THBSplineSpace, fine: THBSplineSpace) -> float:
+        """Return the largest column residual, reading it off the assembled matrix.
+
+        ``P`` reproduces each coarse function exactly when the residual is zero, so
+        evaluating both sides on a common point set recovers the same quantity the gate
+        measures, without reaching into the private column solve.
+        """
+        p = coarse.prolongation_to(fine)
+        mat_c, pts = _collocation(coarse)
+        rows = []
+        for point in pts:
+            cid = fine.grid.locate(point)
+            assert cid is not None
+            values, dofs = fine.tabulate_basis(cid, point)
+            row = np.zeros(fine.num_total_basis)
+            row[dofs] = values
+            rows.append(row)
+        return float(np.abs(np.asarray(rows) @ p - mat_c).max())
+
+    @pytest.mark.parametrize("lo,hi", [(0.0, 1.0), (0.0, 1.0e-6), (1.0e6, 1.0e6 + 1.0)])
+    def test_a_genuine_refinement_clears_the_gate_by_orders_of_magnitude(
+        self, lo: float, hi: float
+    ) -> None:
+        """And by the same margin wherever the parametric domain sits.
+
+        The quantity graded is a set of refinement coefficients, which are dimensionless,
+        so both the residual and the threshold are invariant under ``x -> lambda * x``.
+        Measured worst residual over a 132-configuration sweep is ``18.5 * eps``, against
+        a threshold of ``4096 * eps * 2``.
+        """
+        knots = np.concatenate([[lo] * 3, np.linspace(lo, hi, 5)[1:-1], [hi] * 3])
+        root = BsplineSpace([BsplineSpace1D(knots, 2)])
+        grid = hierarchical_grid(uniform_grid([[lo, hi]], 4), 2)
+        coarse = THBSplineSpace(root, grid)
+        fine = coarse.refine([0, 1])
+        # 512 eps: about 28x the worst residual the 132-configuration sweep measured
+        # (18.5 eps) and 16x below the gate itself (8192 eps at max_coarse_value = 1), so
+        # it fails on a real loss of accuracy without tracking the gate it is checking.
+        assert self._worst_residual(coarse, fine) < 512.0 * float(np.finfo(np.float64).eps)
+
+    def test_the_gate_rejects_a_space_that_cannot_reproduce_the_coarse_basis(self) -> None:
+        """A structurally compatible pair whose "fine" basis is genuinely too small.
+
+        Both spaces refine one root cell, but different ones, so both have two levels
+        and every check in ``_check_is_refinement`` passes -- same root knots, factor,
+        regularity, truncation and level count.  The level-1 functions the first space
+        carries over cell 0 are simply absent from the second's span, so this exercises
+        the residual gate and nothing else.  A real impostor lands at order one, which
+        is why the previous ``1e-8`` was never the thing catching it; what ``1e-8`` did
+        was leave the whole band ``[1e-14, 1e-8]`` certified as a refinement.
+        """
+        base = THBSplineSpace(_root_1d(), _grid_1d())
+        coarse = base.refine([0], admissible_class=None)
+        impostor = base.refine([3], admissible_class=None)
+        assert impostor.num_levels == coarse.num_levels
+        with pytest.raises(ValueError, match="prolongation residual"):
+            coarse.prolongation_to(impostor)
+
+    def test_the_threshold_is_the_conservative_tier_and_not_a_bare_constant(self) -> None:
+        """Pin the derivation, not the digits: it must be a multiple of an eps tier.
+
+        A regression to a fixed absolute constant would break this even if the digits
+        happened to match at float64.
+        """
+        from pantr.bspline._thb_spline_space import (  # noqa: PLC0415
+            _prolongation_residual_tolerance,
+        )
+        from pantr.tolerance import get_conservative  # noqa: PLC0415
+
+        assert _prolongation_residual_tolerance(1.0) == 2.0 * get_conservative(np.float64)
+        assert _prolongation_residual_tolerance(0.0) == get_conservative(np.float64)
+        # Monotone in the size of the column it grades.
+        assert _prolongation_residual_tolerance(3.0) > _prolongation_residual_tolerance(1.0)
+
+        # And the band the old `1e-8` wrongly certified is closed from both ends. Neither
+        # direction test above lands near the threshold -- a genuine refinement sits at
+        # ~18.5 eps and a real impostor at order one -- so this is what pins the
+        # threshold's calibration rather than merely its existence.
+        eps = float(np.finfo(np.float64).eps)
+        gate = _prolongation_residual_tolerance(1.0)
+        assert gate < 1.0e-11, "a residual of 1e-10 must no longer pass as a refinement"
+        assert gate > 100.0 * eps, "the worst measured genuine refinement (18.5 eps) must clear"
+
+
+class TestCellMembershipTolerance:
+    """A point on a cell boundary is inside it, at every coordinate magnitude.
+
+    The old bare ``1e-12`` rejected a point one ulp outside once the parametric domain
+    reached ``1e6``, and accepted some 9000 ulp of slop on ``[0, 1]``.  The replacement
+    is ``8 * eps * max(|lo|, |hi|, hi - lo)`` per axis.
+    """
+
+    @staticmethod
+    def _space(lo: float, hi: float) -> THBSplineSpace:
+        """A degree-2 THB space with four root cells on ``[lo, hi]``."""
+        knots = np.concatenate([[lo] * 3, np.linspace(lo, hi, 5)[1:-1], [hi] * 3])
+        root = BsplineSpace([BsplineSpace1D(knots, 2)])
+        return THBSplineSpace(root, hierarchical_grid(uniform_grid([[lo, hi]], 4), 2))
+
+    @pytest.mark.parametrize("lam", [1.0e-6, 1.0, 1.0e6, 1.0e9])
+    def test_a_point_one_ulp_outside_the_cell_is_accepted(self, lam: float) -> None:
+        """This is the case the fixed tolerance lost above ``lam = 1e6``."""
+        thb = self._space(0.0, lam)
+        lo, hi = thb.grid.cell_bounds(1)
+        width = float(hi[0] - lo[0])
+        for edge, outside in (
+            (lo[0], np.nextafter(lo[0], -np.inf)),
+            (hi[0], np.nextafter(hi[0], np.inf)),
+        ):
+            values, dofs = thb.tabulate_basis(1, np.array([[outside]]))
+            # Not merely "no exception": the values must be the ones the boundary itself
+            # gives, to within the slope of a basis function over one ulp of the cell.
+            inside, dofs_in = thb.tabulate_basis(1, np.array([[float(edge)]]))
+            np.testing.assert_array_equal(dofs, dofs_in)
+            np.testing.assert_allclose(values, inside, atol=1.0e-9 / max(width, 1.0e-300))
+            assert values.sum() == pytest.approx(1.0, abs=1.0e-12)
+
+    @pytest.mark.parametrize("lam", [1.0e-6, 1.0, 1.0e6, 1.0e9])
+    def test_a_point_a_hundredth_of_a_cell_outside_is_rejected(self, lam: float) -> None:
+        """And this is the case the fixed tolerance let through on a small domain.
+
+        A hundredth of the cell width is enormous next to ``8 * eps``, so the verdict is
+        the same at every scale -- which the absolute constant could not manage, having
+        accepted about 9000 ulp on ``[0, 1]`` and rejected 1 ulp at ``1e6``.
+        """
+        thb = self._space(0.0, lam)
+        lo, hi = thb.grid.cell_bounds(1)
+        width = float(hi[0] - lo[0])
+        for outside in (float(lo[0]) - 0.01 * width, float(hi[0]) + 0.01 * width):
+            with pytest.raises(ValueError, match="must lie inside cell"):
+                thb.tabulate_basis(1, np.array([[outside]]))
+
+    def test_the_band_the_old_constant_wrongly_accepted_is_now_closed(self) -> None:
+        """A point 1e-13 outside a unit-domain cell: accepted before, rejected now.
+
+        The direction tests above bracket the verdict widely -- one ulp in, one percent
+        of a cell out -- and both of them pass against the old fixed ``1e-12`` as well.
+        This is the marginal case that does not: on ``[0, 1]`` a cell is 0.25 wide, so
+        the derived slack is ``8 * eps * 0.25 = 4.4e-16`` while the constant allowed
+        ``1e-12``, some 9000 ulp. A point at 1e-13 sits squarely inside that gap.
+        """
+        thb = self._space(0.0, 1.0)
+        lo, _ = thb.grid.cell_bounds(1)
+        with pytest.raises(ValueError, match="must lie inside cell"):
+            thb.tabulate_basis(1, np.array([[float(lo[0]) - 1.0e-13]]))
+
+    def test_the_tolerance_stays_below_the_constant_it_replaced_on_a_unit_domain(
+        self,
+    ) -> None:
+        """And by the margin the class docstring claims: about four orders of magnitude.
+
+        Stated as an inequality against the old constant rather than as digits, so it
+        survives a change of tier but not a reversion to an absolute band.
+        """
+        from pantr.bspline._thb_spline_space import (  # noqa: PLC0415
+            _cell_membership_tolerance,
+        )
+
+        tol = _cell_membership_tolerance(np.array([0.0]), np.array([0.25]))[0]
+        assert tol < 1.0e-12 / 1000.0
+        # But not so tight that a point formed as `lo + xi * (hi - lo)` cannot survive:
+        # three roundings at this magnitude is 3 * eps * 0.25.
+        assert tol > 3.0 * float(np.finfo(np.float64).eps) * 0.25
+
+    def test_a_float32_root_space_is_still_graded_in_float64(self) -> None:
+        """Pins the claim `_cell_membership_tolerance`'s docstring makes to justify its dtype.
+
+        It hardcodes ``get_strict(np.float64)`` rather than reading the root space's
+        dtype, on the grounds that ``cell_bounds`` is float64 whatever the root space is
+        made of and the query points are cast to float64 before the comparison. If
+        either half were false the tolerance would be wrong by eight orders of
+        magnitude, so both are checked here rather than trusted.
+        """
+        knots = np.concatenate([[0.0] * 3, np.linspace(0.0, 1.0, 5)[1:-1], [1.0] * 3]).astype(
+            np.float32
+        )
+        root = BsplineSpace([BsplineSpace1D(knots, 2)])
+        assert root.dtype == np.float32
+        thb = THBSplineSpace(root, hierarchical_grid(uniform_grid([[0.0, 1.0]], 4), 2))
+        lo, hi = thb.grid.cell_bounds(1)
+        assert lo.dtype == np.float64
+        assert hi.dtype == np.float64
+        # And the float64 slack is what is actually applied: one float64 ulp is accepted,
+        # while the float32-sized slop the root dtype would have bought is not.
+        values, _ = thb.tabulate_basis(1, np.array([[float(np.nextafter(lo[0], -np.inf))]]))
+        assert np.all(np.isfinite(values))
+        with pytest.raises(ValueError, match="must lie inside cell"):
+            thb.tabulate_basis(1, np.array([[float(lo[0]) - 1.0e-9]]))
+
+    def test_the_slack_tracks_the_cell_and_not_the_axis(self) -> None:
+        """A narrow cell far from the origin gets the coordinate's slack, not the width's.
+
+        Its width is a millionth of the domain, so a width-only rule would demand
+        agreement a million times finer than the arithmetic that produced the bound can
+        deliver; the ``|lo|``/``|hi|`` terms are what prevent that.
+        """
+        from pantr.bspline._thb_spline_space import (  # noqa: PLC0415
+            _cell_membership_tolerance,
+        )
+
+        eps = float(np.finfo(np.float64).eps)
+        narrow_far = _cell_membership_tolerance(np.array([1.0e6]), np.array([1.0e6 + 1.0e-6]))
+        assert narrow_far[0] == pytest.approx(8.0 * eps * 1.0e6, rel=1.0e-12)
+        # And it stays proportional under a change of scale.
+        unit = _cell_membership_tolerance(np.array([0.0]), np.array([1.0]))
+        scaled = _cell_membership_tolerance(np.array([0.0]), np.array([1.0e6]))
+        assert scaled[0] == pytest.approx(1.0e6 * unit[0], rel=1.0e-12)
+
+
 def _assert_same_field(
     coarse: THBSplineSpace,
     fine: THBSplineSpace,

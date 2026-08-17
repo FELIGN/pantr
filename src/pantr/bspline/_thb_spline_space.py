@@ -18,12 +18,13 @@ from __future__ import annotations
 import copy
 import itertools
 import string
-from typing import TYPE_CHECKING, NamedTuple
+from typing import TYPE_CHECKING, Final, NamedTuple
 
 import numpy as np
 from scipy import sparse
 
 from ..grid import HierarchicalGrid, hierarchical_grid, tensor_product_grid
+from ..tolerance import get_conservative, get_strict
 from ._bspline_knot_insertion_core import _compute_oslo_matrix_1d_core
 from ._bspline_space_nd import BsplineSpace
 from ._thb_eval_core import _combine_tp_values
@@ -86,6 +87,139 @@ _EINSUM_MAX_DIM = 24
 ``string.ascii_lowercase`` provides 26 letters; the einsum needs ``dim`` letters for the
 coefficient axes plus one for the point axis, leaving a safe ceiling of 24 dimensions.
 """
+
+_CELL_MEMBERSHIP_SAFETY: Final[float] = 2.0
+"""Extra factor on the strict tier for deciding that a point lies in a cell.
+
+Together with :func:`~pantr.tolerance.get_strict` this is ``8 * eps``, the same rule and
+the same number as :func:`~pantr.bspline._bspline_knots._knot_tolerance` -- deliberately,
+because it is the same question. A cell boundary is a parametric coordinate, and asking
+whether a point has fallen off it is asking whether two parametric coordinates are the
+same one.
+
+What has to be covered is the caller's route to the point. A point *in* cell
+``[lo, hi]`` is almost always formed as ``lo + xi * (hi - lo)`` for some ``xi`` in
+``[0, 1]``: a subtraction, a multiplication and an addition, three roundings, each on a
+quantity no larger than ``max(|lo|, |hi|)``, so the computed point sits within
+``3 * eps * max(|lo|, |hi|)`` of the exact one. The bounds themselves arrive from
+:meth:`~pantr.grid.HierarchicalGrid.cell_bounds`, which subdivides the axis by the same
+kind of arithmetic and at the same magnitude. Four epsilons cover either route and eight
+covers both plus an FMA contraction, which is the doubling
+:data:`~pantr.bspline._bspline_knots._KNOT_MERGE_SAFETY` applies for the same reason.
+
+The magnitude it multiplies is the **cell's own**, not the axis's: see
+:func:`_cell_membership_tolerance`.
+"""
+
+
+def _cell_membership_tolerance(
+    cell_lo: npt.NDArray[np.float64], cell_hi: npt.NDArray[np.float64]
+) -> npt.NDArray[np.float64]:
+    """Get the per-axis absolute slack allowed at a cell boundary.
+
+    ``_CELL_MEMBERSHIP_SAFETY * get_strict(float64) * max(|lo|, |hi|, hi - lo)`` per
+    axis, i.e. ``8 * eps`` times the cell's own magnitude. The magnitude is exactly
+    what :func:`~pantr.bspline._bspline_knots._knot_scale` computes, applied to the
+    two-element vector ``[lo, hi]`` rather than to a whole knot vector.
+
+    The scale is the **cell's**, not the axis's, and the difference is not cosmetic.
+    A point in the cell is formed from ``lo`` and ``hi``, so its round-off is relative
+    to those two coordinates; a cell of width ``1e-3`` on a domain reaching ``1e6``
+    would, on the axis scale, accept a point half a billion cell-widths outside. The
+    coordinate terms ``|lo|`` and ``|hi|`` are what carry the case of a *narrow* cell
+    far from the origin, where the width alone would demand agreement the arithmetic
+    that produced the bounds cannot deliver.
+
+    No floor is applied, for the reason
+    :func:`~pantr.bspline._bspline_knots._knot_scale` gives: a floor of one would be a
+    physical choice this layer is not entitled to make, and it destroys covariance on
+    a domain smaller than one unit.
+
+    The dtype is ``float64`` and not the root space's, which is where this departs from
+    :func:`~pantr.bspline._bspline_knots._knot_tolerance`'s ``get_strict(knots.dtype)``.
+    The reason is that it grades different objects: ``cell_bounds`` returns ``float64``
+    whatever the root space is made of, and :meth:`THBSplineSpace._tabulate_orders` casts
+    the query points to ``float64`` before the comparison, so ``float64`` *is* the
+    precision of both sides here. A caller whose points carry only ``float32``
+    information should widen them before asking, rather than have the containment check
+    widened by eight million for everyone.
+
+    Args:
+        cell_lo (npt.NDArray[np.float64]): Per-axis lower cell bound, shape ``(dim,)``.
+        cell_hi (npt.NDArray[np.float64]): Per-axis upper cell bound, same shape.
+
+    Returns:
+        npt.NDArray[np.float64]: Per-axis absolute tolerance, shape ``(dim,)``, in the
+        units of the parametric coordinates.
+    """
+    scale = np.maximum(np.maximum(np.abs(cell_lo), np.abs(cell_hi)), cell_hi - cell_lo)
+    return np.asarray(_CELL_MEMBERSHIP_SAFETY * get_strict(np.float64) * scale, dtype=np.float64)
+
+
+def _prolongation_residual_tolerance(max_coarse_val: float) -> float:
+    """Get the residual above which a coarse column is not reproduced by the fine basis.
+
+    What is graded is ``max_i |A x - b|`` over every column of the prolongation, where
+    ``b`` is a coarse function's coefficient vector in a common tensor-product level and
+    ``A``'s columns are the candidate fine functions' vectors in the same basis. All the
+    entries are refinement (Oslo) coefficients, so the quantity is dimensionless and its
+    natural size is ``max_coarse_val = ||b||_inf`` -- measured to be exactly ``1.0`` for
+    every genuine refinement, the partition-of-unity value. The ``1 +`` is the floor that
+    keeps the threshold positive for a coarse function whose column is empty.
+
+    ``np.linalg.lstsq(rcond=None)`` dispatches to LAPACK's ``gelsd``, whose normwise
+    backward stability is the standard result for an SVD-based least-squares solve
+    (Golub & Van Loan, *Matrix Computations*, 4th ed., section 5.5; Higham, *Accuracy and
+    Stability of Numerical Algorithms*, 2nd ed., chapter 20): the computed ``x_hat`` is
+    the exact least-squares solution of ``(A + dA) y ~= b + db`` with
+    ``||dA|| <= c eps ||A||`` and ``||db|| <= c eps ||b||``.
+
+    The step from that to a residual bound is worth spelling out, because ``x_hat`` does
+    *not* satisfy the perturbed system exactly -- a least-squares solution leaves its own
+    residual ``r_pert``. Writing ``x`` for the exact solution of the unperturbed system,
+    which for a genuine refinement is consistent (``A x = b``), and using ``x`` as a trial
+    vector for the perturbed minimisation:
+
+        ||r_pert|| <= ||(A + dA) x - (b + db)|| = ||dA x - db|| <= ||dA|| ||x|| + ||db||,
+        ||A x_hat - b|| <= ||r_pert|| + ||dA|| ||x_hat|| + ||db||
+                        <= 2 (||dA|| max(||x||, ||x_hat||) + ||db||),
+
+    which is ``O(c eps (||A|| ||x|| + ||b||))``. The factor of two is that argument's, not
+    a safety pad. Every factor on the right is of order one here: the entries of ``A``,
+    ``x`` and ``b`` are all refinement coefficients in ``[0, 1]``. The residual is
+    therefore a small multiple of ``eps``, and ``c`` is the part no closed form is
+    available for. The code grades ``max_i |A x - b|``, an infinity norm, which is at most
+    the two-norm the bound is stated in, so the bound covers it.
+
+    **Measured**, over 132 configurations (1D, 2D and 3D; degrees 2 to 5; 4 to 16
+    elements per axis; truncated and non-truncated; one and two refinement levels;
+    domains ``[0, 1]``, ``[0, 1e-6]`` and ``[1e6, 1e6 + 1]``): the worst residual is
+    ``18.5 * eps``. It came out bit-identical between ``[0, 1]`` and ``[1e6, 1e6 + 1]``
+    in every one of those configurations, which is a stronger statement than the
+    quantity's dimensionlessness requires -- that only forces the residual to be
+    *comparable* across scales, not bitwise equal -- so it is reported as observed and
+    nothing is built on it.
+
+    The tier is :func:`~pantr.tolerance.get_conservative`, ``4096 * eps``, whose stated
+    meaning is a long accumulation -- which an SVD-based least-squares solve is. Against
+    the worst measured that is a safety factor of ``4096 * 2 / 18.5 = 443``, and it is
+    what stands in for the unknown ``c``.
+
+    A ``sqrt(M)`` term with ``M = A.shape[0]`` was considered, since ``||b||_2`` carries
+    one, and **rejected on measurement**: over the same runs ``M`` ranges from 13 to
+    19683 and the residual does not track it (``res / eps`` is 2.0 at ``M = 13`` and 16.5
+    at ``M = 19683``; normalizing by ``sqrt(M)`` makes the spread *worse*, from 3.10 down
+    to 0.10). Carrying it would loosen the gate 140-fold on the largest systems for a
+    growth that is not there. If one ever appears, that term is where it belongs.
+
+    Args:
+        max_coarse_val (float): Largest absolute coefficient over every coarse column,
+            ``||b||_inf``.
+
+    Returns:
+        float: The residual threshold, in the coefficients' own dimensionless units.
+    """
+    return get_conservative(np.float64) * (1.0 + max_coarse_val)
 
 
 def _check_out_array(
@@ -1075,8 +1209,10 @@ class THBSplineSpace:
         Args:
             cid (int): Active cell flat id in ``[0, grid.num_cells)``.
             pts (npt.ArrayLike): Parametric points of shape ``(..., dim)`` lying in
-                cell ``cid``.  A tolerance of ``1e-12`` is applied at the cell
-                boundary; points further outside raise :class:`ValueError`.
+                cell ``cid``.  Per axis, ``8 * eps * max(|lo|, |hi|, hi - lo)`` of slack
+                is allowed at the cell boundary (see
+                :func:`_cell_membership_tolerance`); points further outside raise
+                :class:`ValueError`.
             orders (tuple[int, ...]): Per-direction derivative orders.
             out_basis (npt.NDArray[np.float64] | None): Optional output array of shape
                 ``(..., K)`` with ``K = active_basis(cid).size``.  Allocated when
@@ -1109,10 +1245,11 @@ class THBSplineSpace:
         flat_pts = pts_arr.reshape(num_pts, self.dim)
 
         cell_lo, cell_hi = self._grid.cell_bounds(cid)
-        _tol = 1e-12
-        if not (np.all(flat_pts >= cell_lo - _tol) and np.all(flat_pts <= cell_hi + _tol)):
+        tol = _cell_membership_tolerance(cell_lo, cell_hi)
+        if not (np.all(flat_pts >= cell_lo - tol) and np.all(flat_pts <= cell_hi + tol)):
             raise ValueError(
-                f"pts must lie inside cell {cid!r} with bounds lo={cell_lo}, hi={cell_hi}."
+                f"pts must lie inside cell {cid!r} with bounds lo={cell_lo}, hi={cell_hi} "
+                f"(slack {tol})."
             )
 
         out_shape = (*lead, n_active)
@@ -1184,7 +1321,8 @@ class THBSplineSpace:
         Args:
             cid (int): Active cell flat id in ``[0, grid.num_cells)``.
             pts (npt.ArrayLike): Parametric points of shape ``(..., dim)`` lying in
-                cell ``cid``.  Points outside the cell's bounds raise
+                cell ``cid``.  Per axis, ``8 * eps * max(|lo|, |hi|, hi - lo)`` of
+                slack is allowed at the boundary; points further outside raise
                 :class:`ValueError`.
             out_basis (npt.NDArray[np.float64] | None): Optional output array of shape
                 ``(..., K)`` with ``K = active_basis(cid).size``.  Allocated when
@@ -1226,7 +1364,8 @@ class THBSplineSpace:
         Args:
             cid (int): Active cell flat id in ``[0, grid.num_cells)``.
             pts (npt.ArrayLike): Parametric points of shape ``(..., dim)`` lying in
-                cell ``cid``.  Points outside the cell's bounds raise
+                cell ``cid``.  Per axis, ``8 * eps * max(|lo|, |hi|, hi - lo)`` of
+                slack is allowed at the boundary; points further outside raise
                 :class:`ValueError`.
             orders (int | Sequence[int]): Per-direction derivative orders.  A scalar
                 is broadcast to every direction.  Each entry must be ``>= 0``; orders
@@ -1768,8 +1907,9 @@ class THBSplineSpace:
         Raises:
             TypeError: If ``fine`` is not a :class:`THBSplineSpace`.
             ValueError: If ``fine`` is not a refinement of this space (mismatched
-                root/factor/regularity/truncation, fewer levels, or the prolongation
-                residual is non-negligible).
+                root/factor/regularity/truncation, fewer levels, or a prolongation
+                residual above ``4096 * eps * (1 + max_coarse_value)``, where
+                ``max_coarse_value`` is the largest coefficient of any coarse column).
         """
         self._check_is_refinement(fine)
         return self._assemble_prolongation(fine)
@@ -1875,8 +2015,9 @@ class THBSplineSpace:
             index, the fine dof indices its column occupies, and the values there.
 
         Raises:
-            ValueError: If some column cannot reproduce its coarse function (residual
-                above tolerance), i.e. ``fine`` is not a refinement of ``self``.
+            ValueError: If some column cannot reproduce its coarse function -- a
+                residual above :func:`_prolongation_residual_tolerance` -- i.e. ``fine``
+                is not a refinement of ``self``.
 
         Note:
             The residual is only known once every column has been solved, so the check
@@ -1911,10 +2052,11 @@ class THBSplineSpace:
             max_residual = max(max_residual, residual)
             max_coarse_val = max(max_coarse_val, coarse_val)
 
-        if max_residual > 1e-8 * (1.0 + max_coarse_val):
+        residual_tol = _prolongation_residual_tolerance(max_coarse_val)
+        if max_residual > residual_tol:
             raise ValueError(
                 f"fine is not a refinement of this space (prolongation residual "
-                f"{max_residual:.2e})."
+                f"{max_residual:.2e}, above {residual_tol:.2e})."
             )
 
     def _assemble_prolongation(self, fine: THBSplineSpace) -> npt.NDArray[np.float64]:
@@ -1928,8 +2070,9 @@ class THBSplineSpace:
             ``(fine.num_total_basis, self.num_total_basis)``.
 
         Raises:
-            ValueError: If a column cannot reproduce its coarse function (residual
-                above tolerance), i.e. ``fine`` is not a refinement of ``self``.
+            ValueError: If a column cannot reproduce its coarse function -- a residual
+                above :func:`_prolongation_residual_tolerance` -- i.e. ``fine`` is not a
+                refinement of ``self``.
         """
         shape = (fine.num_total_basis, self.num_total_basis)
         prolongation: npt.NDArray[np.float64] = np.zeros(shape, dtype=np.float64)
@@ -1948,8 +2091,9 @@ class THBSplineSpace:
             ``(fine.num_total_basis, self.num_total_basis)``, ``float64``.
 
         Raises:
-            ValueError: If a column cannot reproduce its coarse function (residual
-                above tolerance), i.e. ``fine`` is not a refinement of ``self``.
+            ValueError: If a column cannot reproduce its coarse function -- a residual
+                above :func:`_prolongation_residual_tolerance` -- i.e. ``fine`` is not a
+                refinement of ``self``.
 
         Note:
             Assembled through COO, whose duplicate summation never fires: each column is

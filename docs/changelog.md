@@ -96,6 +96,79 @@
   caller that wanted the dimensionless factor instead and now takes it from
   `pantr.tolerance` directly, since none of the three quantities it compares is a
   parametric coordinate of a single patch.
+- **The individual sites that still carried a bare constant now derive one.** The
+  presets above made a tolerance mean something; these are the places that could not be
+  re-derived until it did. Each grades a named quantity, scales by that quantity's own
+  magnitude, and states its safety factor in an attribute docstring:
+  - **The THB refinement gate** certified a candidate whenever the worst prolongation
+    residual stayed under `1e-8 * (1 + max_coarse_value)`. The shape was right — the
+    residual is compared against the size of the coarse column it reproduces — but the
+    constant was wrong by seven decades, so an impostor whose residual landed anywhere in
+    `[1e-14, 1e-8]` was certified and `prolongation_to` returned a matrix that does not
+    prolong. It is now `4096 * eps * (1 + max_coarse_value)`, the conservative tier
+    standing in for the backward-stability constant of the `gelsd` least-squares solve,
+    which has no closed form. Measured over 132 configurations (1D/2D/3D, degrees 2–5,
+    truncated and not, one and two refinement levels, three domain scales) the worst
+    residual is 18.5 eps, so the gate keeps a safety factor of 443 while tightening
+    1.1e4-fold. A `sqrt(M)` growth term was tried and dropped on measurement: `M` spans
+    13 to 19683 with no trend in the residual.
+  - **THB cell membership** allowed a fixed `1e-12` of slack at a cell boundary, which
+    rejected a point one ulp outside once the parametric domain reached 1e6 and accepted
+    some 9000 ulp of slop on `[0, 1]`. It is now `8 * eps * max(|lo|, |hi|, hi - lo)` per
+    axis: the same rule, and the same number, the knot layer uses for the same question.
+  - **The Coons corner check** decided a `ValueError` with `atol=1e-12, rtol=0`. Across
+    twelve decades that rejects a one-ulp corner mismatch at model size 1e6 — a
+    micron-unit model of a metre-scale part failing on a geometrically perfect patch —
+    while accepting a 1e-9 *relative* gap at 1e-6. It is now `4096 * eps` times the
+    largest absolute coordinate over **all eight** corner values, so the verdict does not
+    depend on which corner sits at the origin.
+  - **`Bspline.locate`'s geometric scale** no longer floors at 1.0. The floor held a
+    millimetre-scale part to a thousand times the relative accuracy of a metre-scale one;
+    the fallback to 1.0 now fires only for a geometry with no extent *at the origin*,
+    which is the one case with no scale to read. The docstring's account of the default
+    tier is corrected with it: the `60 * eps * scale` it cited as a six percent margin was
+    a censored measurement, since the iteration stops at the threshold. Re-measured at six
+    thresholds from 2 to 4096 epsilons over 9480 query points, the achieved residual
+    tracks whatever threshold is set and nothing is lost even at `4 * eps * scale`, so the
+    threshold is an accuracy contract rather than a safety margin, and loosening the tier
+    would cost accuracy one for one.
+  - **`multipatch`'s joint geometric tolerance** was `relative * diagonal`, which tracks
+    how big the geometry is but not where it sits: two unit patches meeting at 1e6 were
+    graded at 2.5e-18, eight orders below their own noise floor. It now takes
+    `max(diagonal, largest |coordinate|)`.
+  - **`Bspline.restrict`** gains no constant, which is its policy and is now written
+    down: every comparison it makes is a knot-identity question that
+    `BsplineSpace1D.tolerance` already answers, and the module docstring records the three
+    properties making one number enough — insertion preserves the endpoints, the
+    extraction offsets widen away from the interval, and the snapping invariant stops the
+    widening over-collecting.
+- **`Bspline.remove_knots` is now lossless by default.** `tol=None` used to mean an
+  absolute `1e-10`, a geometric budget wearing no units: the same exactly-removable knot
+  came out at geometry scale 1e-6, 1 and 1e3 and was silently refused at 1e6 and 1e9. It
+  now means *remove only what is exact to round-off*, `8 * (degree + 1) * eps *
+  max(bbox diagonal, largest |P_i|) * sqrt(n)`, which is the one default needing no
+  arbitrary constant. Measured over 105 cases (degrees 1–7, ranks 1–3, geometry scales
+  1e-6 to 1e9) by bisecting for the smallest budget that still removes a just-inserted
+  knot: the largest distance observed is 0.84 eps × scale, and the tightest margin
+  anywhere in the set is a factor of 48. The `sqrt(n)` is what the *other* directions
+  add: on a surface or a volume the removal test is handed a slice with every other
+  direction's control points flattened into it, so its single Euclidean distance spans
+  `n` control points rather than one, and stacking `n` blocks each of norm at most `e`
+  reaches `sqrt(n) · e`. Without that term the default silently refuses an exactly
+  redundant knot once `n` is large enough — measured on a degree-3 volume, from
+  `n = 124609` upward. **This is a behaviour change** — a knot whose removal costs up to
+  1e-10 of geometry used to come out and no longer does. Trading geometry for a shorter
+  knot vector is a price only the caller can set, so it has to be asked for.
+- **A rational knot-removal budget is converted before it reaches the kernel.** The kernel
+  measures a Euclidean distance over every column of the array it is given, which for a
+  NURBS is the homogeneous `[w·x, w·y, w·z, w]`, while the caller's budget is a distance
+  in projected space. Eq. (5.30) of Piegl & Tiller (2nd ed., 1997, p. 185),
+  `TOL = d · w_min / (1 + |P|_max)`, is now applied. Without it a deviation carried by the
+  **weight** column is graded as though it were a coordinate: sweeping a weight
+  perturbation over sixteen decades with the coordinates at 1e6, the worst projected
+  deviation an accepted removal produced was 7.4e5 times the requested budget; with the
+  conversion, 0.32. A circle cannot show this, its weights being structurally tied to its
+  coordinates, so the tests vary weights and coordinates independently.
 - `pantr.grid.overlay` merges breakpoints closer than the default *relative*
   tolerance times the axis's own magnitude -- the intersection window and the
   coordinates bounding it -- instead of against a bare `float64` constant. A

@@ -10,6 +10,7 @@ import numpy as np
 from numpy import typing as npt
 
 from ..bspline import Bspline, BsplineSpace, BsplineSpace1D
+from ..tolerance import get_conservative
 from ._compat import make_compat
 from ._operations import create_ruled
 from ._primitives import _linear_space_1d, create_bilinear, create_trilinear
@@ -70,7 +71,9 @@ def create_coons_surface(
 
     Raises:
         ValueError: If any curve is not 1D.
-        ValueError: If corner points are not geometrically consistent.
+        ValueError: If corner points are not geometrically consistent, i.e. two curves
+            disagree at a shared corner by more than ``4096 * eps`` times the largest
+            absolute coordinate over all eight corner values.
     """
     (c_v0, c_v1), (c_u0, c_u1) = curves
 
@@ -120,10 +123,41 @@ def _verify_corners_2d(
 ) -> None:
     """Verify that corner points from u-curves match v-curves.
 
+    The tolerance is ``get_conservative(float64) * scale`` with ``scale`` the largest
+    absolute coordinate over **all eight** corner values, not just the pair under test.
+
+    **Why the conservative tier.** Both curves meeting at a corner read it straight off a
+    clamped control point, and neither knot insertion nor degree elevation moves a clamped
+    endpoint, so :func:`~pantr.cad.make_compat` leaves it alone: two curves that genuinely
+    share a corner produce **bitwise equal** values and need no tolerance at all. The slack
+    exists only for a corner the caller *computed* rather than copied -- an intersection, a
+    reparametrization, a transform -- and the length of that chain is not something this
+    function can see. So the threshold is not sized against a known accumulation; it is
+    sized to catch the mistake the check exists for, which is curves given in the wrong
+    order or the wrong orientation, missing by a fraction of the patch rather than by
+    epsilons. Failing the other way is the expensive one: a ``ValueError`` on a
+    geometrically perfect patch. The conservative tier is the widest the table sanctions
+    without a derivation of its own, and at unit scale it lands on ``9.1e-13``, within a
+    factor of 1.1 of the ``1e-12`` this check used before it acquired a scale.
+    Taking it over all eight is what makes the verdict independent of which corner
+    happens to sit at the origin: a corner at ``(0, 0, 0)`` supplies no scale of its
+    own, and grading it against zero would demand bitwise agreement of a coordinate the
+    caller may well have computed.
+
+    A fixed absolute tolerance cannot do this. Measured across twelve decades of
+    ``1e-12 / L``, a one-ulp corner mismatch was rejected at ``L >= 1e6`` -- a
+    micron-unit model of a metre-scale part failing on a geometrically perfect patch --
+    while a ``1e-9`` *relative* gap was accepted at ``L = 1e-6``.
+
+    ``np.allclose(..., rtol=0)`` is deliberately not used: with ``rtol`` zeroed it is
+    exactly ``max|pu - qv| <= atol``, so it buys nothing over writing that, and it hides
+    which of the two comparisons is doing the work.
+
     Args:
-        u_corners: Corners (p00, p10, p01, p11) extracted from u-curves.
-        c_v0: Left boundary curve (v-direction at u=0).
-        c_v1: Right boundary curve (v-direction at u=1).
+        u_corners (tuple[npt.NDArray[np.float64], ...]): Corners
+            ``(p00, p10, p01, p11)`` extracted from u-curves.
+        c_v0 (Bspline): Left boundary curve (v-direction at u=0).
+        c_v1 (Bspline): Right boundary curve (v-direction at u=1).
 
     Raises:
         ValueError: If any pair of corners does not match.
@@ -134,15 +168,24 @@ def _verify_corners_2d(
     q10 = np.asarray(c_v1.boundary(0, 0), dtype=np.float64)
     q11 = np.asarray(c_v1.boundary(0, 1), dtype=np.float64)
 
-    tol = 1e-12
-    for label, pu, qv in [
+    pairs = [
         ("(0,0)", p00, q00),
         ("(1,0)", p10, q10),
         ("(0,1)", p01, q01),
         ("(1,1)", p11, q11),
-    ]:
-        if not np.allclose(pu, qv, atol=tol, rtol=0):
-            raise ValueError(f"Corner {label} mismatch: u-curve gives {pu}, v-curve gives {qv}.")
+    ]
+    # No floor: eight corners all at the origin have no scale, and are also bitwise
+    # equal, so a zero tolerance is the right answer there rather than a hazard.
+    scale = max(float(np.abs(corner).max()) for _, pu, qv in pairs for corner in (pu, qv))
+    tol = get_conservative(np.float64) * scale
+
+    for label, pu, qv in pairs:
+        gap = float(np.abs(pu - qv).max())
+        if gap > tol:
+            raise ValueError(
+                f"Corner {label} mismatch: u-curve gives {pu}, v-curve gives {qv} "
+                f"(gap {gap:.3e}, above {tol:.3e} at corner scale {scale:.3e})."
+            )
 
 
 def create_coons_volume(
