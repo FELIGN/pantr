@@ -248,10 +248,31 @@ def test_aabb_hash_agrees_with_eq_on_signed_zero() -> None:
     d = AABB(np.array([-1.0, -1.0]), np.array([-0.0, 0.0]))
     assert c == d
     assert hash(c) == hash(d)
-    # Normalization is confined to the hash: the stored bounds keep the sign
-    # they were given, so `repr` and the exposed arrays are unchanged.
+    # Normalization is confined to the hash: the stored bounds, and everything
+    # read off them, keep the sign they were given.
     assert np.signbit(b.lo[0])
     assert np.signbit(d.hi[0])
+    assert repr(b) == "AABB(lo=[-0.0, 0.0], hi=[1.0, 1.0])"
+
+
+def test_aabb_hash_survives_signed_zero_from_union_and_intersect() -> None:
+    # `np.minimum(-0.0, 0.0)` is -0.0, so a single -0.0 bound in one operand
+    # propagates into every union that touches it, and `intersect`'s
+    # `np.maximum` does the same for `hi`. These are the library's own paths to
+    # a signed-zero bound, so the invariant must hold on computed results and
+    # not only on hand-built boxes.
+    clean = AABB(lo=[0.0, 0.0], hi=[1.0, 1.0])
+    united = AABB(lo=[-0.0, 0.0], hi=[1.0, 1.0]).union(clean)
+    assert np.signbit(united.lo[0])
+    assert united == clean
+    assert hash(united) == hash(clean)
+
+    upper = AABB(lo=[-1.0, -1.0], hi=[0.0, 1.0])
+    intersected = AABB(lo=[-1.0, -1.0], hi=[-0.0, 1.0]).intersect(upper)
+    assert intersected is not None
+    assert np.signbit(intersected.hi[0])
+    assert intersected == upper
+    assert hash(intersected) == hash(upper)
 
 
 def test_aabb_hash_distinguishes_opposite_infinities() -> None:
