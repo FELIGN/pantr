@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+import itertools
+import re
+from typing import TYPE_CHECKING
+
 import numpy as np
 import numpy.testing as np_testing
 import pytest
@@ -16,13 +20,20 @@ from pantr.grid import (
     uniform_grid,
 )
 from pantr.grid._hierarchical_grid import (
+    _MAX_DIAGNOSED_CELLS,
+    _MAX_NAMED_CELLS,
     _block_size,
     _in_block,
+    _mark_region_cells,
+    _name_marked_cells,
     _normalize_blocks,
     _peel,
     _rect_intersect,
     _try_merge,
 )
+
+if TYPE_CHECKING:
+    from collections.abc import Sequence
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Helper
@@ -93,6 +104,34 @@ class TestBlockHelpers:
     def test_normalize_merges_adjacent(self) -> None:
         blocks: list[tuple[tuple[int, ...], tuple[int, ...]]] = [((0,), (3,)), ((3,), (7,))]
         assert _normalize_blocks(blocks) == [((0,), (7,))]
+
+    def test_mark_region_cells_marks_only_the_overlap(self) -> None:
+        mask = np.zeros((4, 3), dtype=np.bool_)
+        _mark_region_cells(mask, (2, 1), (6, 4), ((4, 0), (9, 3)))  # partly outside
+        expected = np.zeros((4, 3), dtype=np.bool_)
+        expected[2:4, 0:2] = True  # region rows 2-3 (cells 4-5), columns 0-1 (cells 1-2)
+        np_testing.assert_array_equal(mask, expected)
+
+    def test_mark_region_cells_ignores_a_disjoint_block(self) -> None:
+        mask = np.zeros((3,), dtype=np.bool_)
+        _mark_region_cells(mask, (0,), (3,), ((5,), (8,)))
+        assert not mask.any()
+
+    def test_name_marked_cells_offsets_by_the_origin(self) -> None:
+        mask = np.zeros((4,), dtype=np.bool_)
+        mask[[1, 3]] = True
+        assert _name_marked_cells(mask, (10,)) == "(11,), (13,)"
+
+    def test_name_marked_cells_counts_the_remainder(self) -> None:
+        mask = np.ones((_MAX_NAMED_CELLS + 2,), dtype=np.bool_)
+        named = _name_marked_cells(mask, (0,))
+        assert named.count("), (") == _MAX_NAMED_CELLS - 1
+        assert named.endswith("and 2 more")
+
+    def test_name_marked_cells_2d(self) -> None:
+        mask = np.zeros((2, 2), dtype=np.bool_)
+        mask[1, 0] = True
+        assert _name_marked_cells(mask, (3, 7)) == "(4, 7)"
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -630,8 +669,39 @@ def _grid_snapshot(g: HierarchicalGrid) -> tuple[object, ...]:
     return (g.num_cells, g.max_level, tuple(g.active_blocks(lv) for lv in range(g.max_level + 1)))
 
 
+def _obstacles_by_cellwise_walk(
+    g: HierarchicalGrid,
+    level: int,
+    lo: Sequence[int],
+    hi: Sequence[int],
+) -> set[tuple[int, ...]]:
+    """Return the cells of ``[lo, hi)`` that cannot be demoted, found cell by cell.
+
+    An independent oracle for `coarsen`'s refusal: it uses only `is_active_leaf`, so it
+    shares no arithmetic with the block scaling the error message is built from.
+    """
+    blocked: set[tuple[int, ...]] = set()
+    for cell in itertools.product(*[range(a, b) for a, b in zip(lo, hi, strict=True)]):
+        children = [
+            tuple(cell[k] * g.factor[k] + off[k] for k in range(g.ndim))
+            for off in itertools.product(*(range(g.factor[k]) for k in range(g.ndim)))
+        ]
+        if not all(g.is_active_leaf(level + 1, child) for child in children):
+            blocked.add(cell)
+    return blocked
+
+
+def _cells_named_in(message: str) -> set[tuple[int, ...]]:
+    """Return the cell indices a `coarsen` refusal names, excluding its region prefix."""
+    listing = message.split("Offending cells", 1)[1] if "Offending cells" in message else ""
+    return {
+        tuple(int(value) for value in match.group(1).split(","))
+        for match in re.finditer(r"\((\d+(?:,\s*\d+)*),?\)", listing)
+    }
+
+
 class TestHierarchicalGridCoarsen:
-    """Tests for the coarsen method (inverse of refine)."""
+    """Tests for the coarsen method: argument validation and the accepted cases."""
 
     def test_coarsen_inverts_refine_1d(self) -> None:
         g = _grid_1d(4, 2)
@@ -801,6 +871,135 @@ class TestCoarsenIsNotAnUnconditionalInverse:
         # True of the state: cell 0's children are not leaves at level 1, but at level 2.
         assert not g.is_active_leaf(1, (0,))
         assert g.is_active_leaf(2, (0,))
+
+    @pytest.mark.parametrize(
+        ("cells_per_axis", "factor"),
+        [([6], 3), ([4, 3], (2, 3)), ([3, 3], 2), ([2, 3, 2], (2, 1, 3))],
+        ids=["1d-non-dyadic", "2d-anisotropic", "2d-dyadic", "3d-anisotropic"],
+    )
+    def test_named_cells_match_a_cellwise_oracle(
+        self,
+        cells_per_axis: list[int],
+        factor: int | tuple[int, ...],
+    ) -> None:
+        """Every refusal names exactly the cells a cellwise walk finds, and no others.
+
+        The message is built from the block lists with per-axis scaling; the oracle here
+        instead asks :meth:`~pantr.grid.HierarchicalGrid.is_active_leaf` cell by cell, so
+        the two disagree if the scaling is wrong for a non-dyadic or anisotropic factor.
+        """
+        root = uniform_grid([[0.0, 1.0]] * len(cells_per_axis), cells_per_axis)
+        g = hierarchical_grid(root, factor)
+        rng = np.random.default_rng(4)
+        checked = 0
+        for _ in range(24):
+            coarsening = g.max_level > 0 and rng.random() >= 0.6
+            level = int(rng.integers(0, g.max_level if coarsening else g.max_level + 1))
+            extent = g.level_cells_per_axis(level)
+            lo = [int(rng.integers(0, n)) for n in extent]
+            hi = [
+                int(rng.integers(a + 1, min(a + 3, n) + 1)) for a, n in zip(lo, extent, strict=True)
+            ]
+            if not coarsening:
+                g.refine(level, lo, hi)
+                continue
+            expected = _obstacles_by_cellwise_walk(g, level, lo, hi)
+            try:
+                g.coarsen(level, lo, hi)
+            except ValueError as exc:
+                assert expected, f"refused a region the oracle finds coarsenable: {exc}"
+                named = _cells_named_in(str(exc))
+                assert named, f"refused without naming a cell: {exc}"
+                if "more" in str(exc):
+                    assert named <= expected  # truncated: a subset, never an invention
+                else:
+                    assert named == expected, f"named {sorted(named)}, blocked {sorted(expected)}"
+                checked += 1
+            else:
+                assert not expected, "coarsened a region the oracle finds blocked"
+        assert checked, "the sweep never exercised a refusal"
+
+    def test_coarsen_names_exactly_the_cap_without_a_remainder(self) -> None:
+        """A listing landing exactly on the cap must not claim a remainder."""
+        g = _grid_1d(8, 2)
+        g.refine(0, [0], [1])  # cells 1..6 of the box below are leaves: exactly the cap
+        with pytest.raises(ValueError) as excinfo:
+            g.coarsen(0, [0], [1 + _MAX_NAMED_CELLS])
+        message = str(excinfo.value)
+        assert "more" not in message
+        named = message.split("with no children to remove: ")[1]
+        assert named.count("), (") == _MAX_NAMED_CELLS - 1
+        # One cell further, the remainder is reported rather than dropped.
+        with pytest.raises(ValueError, match="and 1 more"):
+            g.coarsen(0, [0], [2 + _MAX_NAMED_CELLS])
+
+    def test_coarsen_truncates_a_long_list_of_offending_cells(self) -> None:
+        """A large rejected region names a few cells and counts the rest."""
+        g = _grid_2d(6, 2)
+        g.refine(0, [0, 0], [1, 1])  # 1 of the 36 level-0 cells is refined
+        with pytest.raises(ValueError) as excinfo:
+            g.coarsen(0, [0, 0], [6, 6])
+        message = str(excinfo.value)
+        named = message.split("with no children to remove: ")[1]
+        assert named.count("), (") == _MAX_NAMED_CELLS - 1  # exactly the cap is spelled out
+        assert f"and {36 - 1 - _MAX_NAMED_CELLS} more" in message
+
+    def test_coarsen_reports_extent_instead_of_cells_for_a_huge_region(self) -> None:
+        """A region far larger than the grid is described, not enumerated.
+
+        Level ``l`` has ``factor ** l`` cells per root cell whether or not they exist, so
+        a deep level admits an in-bounds region with more cells than the grid has.
+        Naming them would need a mask per cell, so past the budget the message reports
+        the extent and the refusal stays a `ValueError` rather than an out-of-memory.
+        """
+        g = _grid_1d(2, 2)
+        for level in range(21):
+            g.refine(level, [0], [1])  # deepen without growing the grid
+        region = g.level_cells_per_axis(20)[0]
+        assert region > _MAX_DIAGNOSED_CELLS
+        with pytest.raises(ValueError, match=f"spans {region} cells, too many to name"):
+            g.coarsen(20, [0], [region])
+
+    def test_coarsen_names_offending_cells_with_an_anisotropic_factor(self) -> None:
+        """The per-axis factor is respected when locating the offending cells."""
+        g = hierarchical_grid(uniform_grid([[0.0, 1.0], [0.0, 1.0]], [2, 2]), (2, 3))
+        assert g.factor == (2, 3)
+        g.refine(0, [0, 0], [2, 2])  # every level-0 cell -> level 1
+        g.refine(1, [0, 0], [1, 1])  # level-1 cell (0, 0) -> level 2
+        with pytest.raises(ValueError, match="refined beyond level 1") as excinfo:
+            g.coarsen(0, [0, 0], [2, 2])
+        named = str(excinfo.value).split("refined beyond level 1")[1]
+        assert "(0, 0)" in named
+        # Only cell (0, 0) owns the level-2 cells, so no other cell may be named.
+        assert named.count("(") == 1
+        assert g.is_active_leaf(2, (0, 0))
+        assert g.is_active_leaf(1, (1, 0))
+
+    def test_coarsen_names_every_reason_and_only_offending_cells(self) -> None:
+        """One box, all three reasons, and a coarsenable cell left unnamed.
+
+        Level-1 cell 0 is refined past level 2, cells 4-7 are still leaves, cells 8-11
+        sit inside level-0 leaves, and cell 1 is refined to exactly level 2, so it must
+        not appear anywhere in the message.
+        """
+        g = _grid_1d(8, 2)
+        g.refine(0, [0], [4])  # level-1 cells 0..7
+        g.refine(1, [0], [4])  # level-1 cells 0..3 -> level-2 cells 0..7
+        g.refine(2, [0], [2])  # level-2 cells 0, 1 -> level 3
+        with pytest.raises(ValueError) as excinfo:
+            g.coarsen(1, [0], [12])
+        message = str(excinfo.value)
+        assert "still active leaves at level 1" in message
+        assert "refined beyond level 2" in message
+        assert "covered by a coarser active leaf" in message
+        assert "(0,)" in message.split("refined beyond level 2")[1]
+        assert "(1,)" not in message.split("Offending cells")[1]
+        # True of the state: cell 0 has a level-3 descendant, cell 1's children are
+        # level-2 leaves, cells 4 and 8 are a level-1 leaf and a hidden cell.
+        assert g.is_active_leaf(3, (0,))
+        assert g.is_active_leaf(2, (2,))
+        assert g.is_active_leaf(1, (4,))
+        assert not g.is_active_leaf(1, (8,))
 
     def test_coarsen_names_cells_absent_at_the_requested_level(self) -> None:
         """The refusal names box cells that a coarser active leaf covers."""
