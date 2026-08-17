@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sys
 from collections.abc import Callable
 
 import numpy as np
@@ -842,6 +843,52 @@ class TestToleranceScaling:
         cp = np.full((2, 2, 2), 1.0e-6, dtype=np.float64)
         point_map = Bspline(BsplineSpace([sub, sub]), cp)
         assert _scale_of(point_map) == pytest.approx(1.0e-6, rel=1e-12)
+
+
+class TestNumbaWarmup:
+    """``locate`` waits for the import-time JIT warmup, as its sibling entry points do."""
+
+    def test_the_barrier_runs_before_any_kernel_call(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """``locate`` calls the warmup barrier, and calls it before it evaluates anything.
+
+        ``pantr/__init__.py`` compiles its kernels on a background thread, and Numba's
+        default workqueue threading layer is not safe against a concurrent ``parallel=True``
+        call from another thread: the process *aborts* rather than raising, which takes the
+        whole session with it. Every other Layer 2 entry point over parallel kernels calls
+        :func:`pantr._numba_compat.wait_for_jit_warmup` first; ``locate`` did not, and
+        inverting a batch evaluates often enough to land in the window. Measured before the
+        barrier: 4 of 4 runs of this module's 60-case sweep aborted with ``Fatal Python
+        error: Aborted`` when it was the first thing a process did, both serially and under
+        ``pytest -n 4``; after it, 0 of 4.
+
+        Asserting the *call* rather than the absence of the crash is deliberate. The barrier
+        is a once-per-process event, so by the time any in-process test runs the warmup is
+        long finished and no in-process check can observe the race; and a subprocess that
+        merely inverts a batch does not reproduce it either once the Numba cache is warm
+        (measured: 8 of 8 clean without the barrier). What is worth pinning is therefore the
+        contract, which this does deterministically: delete the call and this test fails.
+        """
+        calls: list[str] = []
+        module = sys.modules["pantr.bspline._bspline_locate"]
+        real_eval_map = module._eval_map
+
+        def _record_barrier() -> None:
+            calls.append("barrier")
+
+        def _record_eval(spline: Bspline, xi: npt.NDArray[np.float64]) -> npt.NDArray[np.float64]:
+            calls.append("evaluate")
+            return np.asarray(real_eval_map(spline, xi), dtype=np.float64)
+
+        monkeypatch.setattr(module, "wait_for_jit_warmup", _record_barrier)
+        monkeypatch.setattr(module, "_eval_map", _record_eval)
+
+        spline = _warped_patch()
+        spline.locate(_evaluate_at(spline, _CYCLING_PARAMETER))
+
+        assert "barrier" in calls, "locate must wait for the JIT warmup"
+        assert calls.index("barrier") < calls.index("evaluate"), (
+            f"the barrier must precede the first kernel call; got {calls[:3]}"
+        )
 
 
 class TestCellPhysicalBounds:

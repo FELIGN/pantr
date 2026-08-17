@@ -77,6 +77,7 @@ from typing import TYPE_CHECKING, NamedTuple
 
 import numpy as np
 
+from .._numba_compat import wait_for_jit_warmup
 from ..geometry import AABB
 from ..grid import BVH, tensor_product_grid
 from ..tolerance import get_default
@@ -707,6 +708,48 @@ def _validate_points(points: npt.ArrayLike, rank: int) -> npt.NDArray[np.float64
     return np.ascontiguousarray(pts)
 
 
+def _validate_invertible(spline: Bspline, tol: float | None, max_iter: int) -> None:
+    """Check everything about an inversion request that does not depend on the query points.
+
+    Args:
+        spline (Bspline): The spline to invert.
+        tol (float | None): The caller's convergence threshold, or ``None`` for the default.
+        max_iter (int): The caller's iteration budget.
+
+    Raises:
+        NotImplementedError: If ``rank > dim`` (an embedded curve or surface).
+        ValueError: If ``rank < dim``, any direction is periodic, a rational spline has a
+            non-positive weight, ``max_iter < 1``, or ``tol`` is given and is not positive
+            and finite.
+    """
+    dim, rank = spline.dim, spline.rank
+    if rank > dim:
+        raise NotImplementedError(
+            f"locate: embedded geometries (rank {rank} > dim {dim}) need a Gauss-Newton "
+            "closest-point solve, which is not implemented; only square maps "
+            "(rank == dim) can be inverted."
+        )
+    if rank < dim:
+        raise ValueError(
+            f"locate: a B-spline mapping cannot be inverted with fewer physical "
+            f"coordinates than parametric directions; got rank {rank} < dim {dim}."
+        )
+    for axis, sub in enumerate(spline.space.spaces):
+        if sub.periodic:
+            raise ValueError(f"locate: periodic B-spline spaces are not supported (axis {axis}).")
+    if spline.is_rational and not bool(
+        np.all(np.asarray(spline.control_points[..., -1], dtype=np.float64) > 0.0)
+    ):
+        raise ValueError(
+            "locate: every NURBS weight must be strictly positive; the convex-hull "
+            "property the candidate search relies on does not hold otherwise."
+        )
+    if max_iter < 1:
+        raise ValueError(f"locate: max_iter must be >= 1; got {max_iter}.")
+    if tol is not None and not (float(tol) > 0.0 and np.isfinite(tol)):
+        raise ValueError(f"locate: tol must be positive and finite; got {tol}.")
+
+
 def _locate_impl(
     spline: Bspline,
     points: npt.ArrayLike,
@@ -736,34 +779,17 @@ def _locate_impl(
         NotImplementedError: If ``rank > dim`` (an embedded curve or surface).
         ValueError: If ``rank < dim``, any direction is periodic, a rational spline has
             a non-positive weight, ``points`` has a bad shape or a non-finite entry,
-            ``max_iter < 1``, or ``tol`` is given and is not positive and finite.
+            ``max_iter < 1``, or ``tol`` is given and is not positive and finite. See
+            :func:`_validate_invertible` and :func:`_validate_points`.
     """
     dim, rank = spline.dim, spline.rank
-    if rank > dim:
-        raise NotImplementedError(
-            f"locate: embedded geometries (rank {rank} > dim {dim}) need a Gauss-Newton "
-            "closest-point solve, which is not implemented; only square maps "
-            "(rank == dim) can be inverted."
-        )
-    if rank < dim:
-        raise ValueError(
-            f"locate: a B-spline mapping cannot be inverted with fewer physical "
-            f"coordinates than parametric directions; got rank {rank} < dim {dim}."
-        )
-    for axis, sub in enumerate(spline.space.spaces):
-        if sub.periodic:
-            raise ValueError(f"locate: periodic B-spline spaces are not supported (axis {axis}).")
-    if spline.is_rational and not bool(
-        np.all(np.asarray(spline.control_points[..., -1], dtype=np.float64) > 0.0)
-    ):
-        raise ValueError(
-            "locate: every NURBS weight must be strictly positive; the convex-hull "
-            "property the candidate search relies on does not hold otherwise."
-        )
-    if max_iter < 1:
-        raise ValueError(f"locate: max_iter must be >= 1; got {max_iter}.")
-    if tol is not None and not (float(tol) > 0.0 and np.isfinite(tol)):
-        raise ValueError(f"locate: tol must be positive and finite; got {tol}.")
+    _validate_invertible(spline, tol, max_iter)
+
+    # Ensure background JIT compilation is complete before calling Numba kernels that use
+    # parallel=True (avoids concurrent-compilation crash), as the other Layer 2 entry points
+    # over parallel kernels do. The inversion evaluates the mapping many times in quick
+    # succession, so it hits the window the import-time warmup thread leaves open.
+    wait_for_jit_warmup()
 
     pts = _validate_points(points, rank)
     context = _locate_context(spline)
