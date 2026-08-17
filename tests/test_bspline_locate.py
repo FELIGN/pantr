@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sys
 from collections.abc import Callable
 
 import numpy as np
@@ -10,10 +11,17 @@ import pytest
 
 from pantr.bspline import Bspline, BsplineSpace, BsplineSpace1D
 from pantr.bspline._bspline_locate import (
+    _cell_midpoints,
+    _cell_parametric_bounds,
     _cell_physical_bounds,
     _geometric_scale,
+    _locate_context,
     _LocateContext,
+    _nearest_corner_starts,
+    _newton_refine,
 )
+from pantr.geometry import AABB
+from pantr.tolerance import get_default
 from pantr.transform import AffineTransform
 
 _XI_REL_ATOL: float = 1e-10
@@ -38,6 +46,20 @@ The convergence threshold is :func:`pantr.tolerance.get_default` for ``float32``
 (``1e-6``) times the geometric scale, so the coordinate error is four orders of magnitude
 larger than in the ``float64`` case. Measured worst case over the cases below:
 ``5.2e-6``; the ``1e-4`` leaves a factor of 19.
+"""
+
+_CYCLING_PARAMETER: npt.NDArray[np.float64] = np.array([[0.05411231, 0.64513102]])
+"""
+The parameter whose image an undamped Newton iteration could not recover.
+
+An ordinary interior point of :func:`_warped_patch`'s default geometry, kept as the exact
+triggering datum rather than re-searched for. Its image has one candidate cell, 3, which
+is the cell that contains it, so there is no second start to fall back on. From that
+cell's midpoint the second undamped step is 67 times longer than the residual it removes;
+the iterate leaves the basin and the clamp to the parametric domain then pins it in a
+period-2 cycle between ``(1, 1)`` and ``(0.403985, 0.995004)``, whose residual is
+``0.77``. Being periodic rather than slow is what made the iteration budget useless, and
+a residual seven decades above any plausible threshold is what made the tolerance useless.
 """
 
 
@@ -104,6 +126,33 @@ def _perturbed_patch(
     cp = np.stack(mesh, axis=-1) if dim > 1 else mesh[0][:, np.newaxis]
     cp = cp + 0.12 * rng.uniform(-1.0, 1.0, size=cp.shape)
     return Bspline(BsplineSpace(spaces), np.ascontiguousarray(cp.astype(dtype)))
+
+
+def _warped_patch(dim: int = 2, degree: int = 1, n_elem: int = 6, offset: float = 0.0) -> Bspline:
+    """Return the identity map of the unit box plus a smooth 15 % sinusoidal warp.
+
+    Control points sit on a uniform lattice of the unit box and are displaced in every
+    coordinate by ``0.15 * sin(2 * pi * sum(coords))``, then translated by ``offset``.
+
+    The defaults are the exact geometry the undamped Newton iteration diverged on: a
+    degree-1 bivariate map on 6 uniform elements at unit scale.
+
+    The warp is smooth and the Jacobian is well conditioned along it, but the family is
+    **not** injective for ``dim >= 2``, which is worth knowing before reading a result off
+    it. The displacement field ``y + a * sin(2 * pi * sum(y))`` has Jacobian
+    ``I + 2 * pi * a * cos(2 * pi * sum(y)) * ones``, whose eigenvalues are 1 and
+    ``1 + 2 * pi * a * dim * cos(...)``; at ``a == 0.15`` the second turns negative once
+    ``dim >= 2``. Measured over the family: ``det J`` reaches ``-0.56`` at ``dim == 2`` and
+    ``-1.34`` at ``dim == 3``. So a query built from this family has a preimage by
+    construction, but not a unique one, and only ``F(ref_coords) == points`` may be asserted
+    of what comes back.
+    """
+    knots = np.concatenate([np.zeros(degree), np.linspace(0.0, 1.0, n_elem + 1), np.ones(degree)])
+    space = BsplineSpace([BsplineSpace1D(knots, degree) for _ in range(dim)])
+    axes = [np.linspace(0.0, 1.0, n) for n in space.num_basis]
+    cp = np.stack(np.meshgrid(*axes, indexing="ij"), axis=-1)
+    cp = cp + 0.15 * np.sin(2.0 * np.pi * cp.sum(axis=-1))[..., None] + offset
+    return Bspline(space, np.ascontiguousarray(cp))
 
 
 def _folded_patch() -> Bspline:
@@ -470,12 +519,16 @@ class TestCandidateCells:
         assert cell_ids.tolist() == [-1]
         assert bool(np.all(np.isnan(ref_coords)))
 
-    def test_off_image_query_exhausts_the_iteration_budget(self) -> None:
+    def test_off_image_query_ends_by_stalling_not_by_the_rank_guard(self) -> None:
         """The other way a candidate fails: a healthy Jacobian that never converges.
 
-        ``(0.75, 0.25)`` is also outside the triangle, but the iterate settles at
-        ``(1, 0.25)`` with a well-conditioned Jacobian, so it is the iteration budget that
-        ends the attempt rather than the rank guard.
+        ``(0.75, 0.25)`` is also outside the triangle, but the iterate settles near
+        ``(1, 0.25)`` with a well-conditioned Jacobian, so what ends the attempt is not the
+        rank guard. It used to be the iteration budget, burnt one full step at a time; it is
+        now the line search, which cannot reduce a residual whose minimum over the domain is
+        the distance from the query to the image, and abandons the candidate instead
+        (measured: the midpoint start exits through the line search, the corner start
+        through the rank guard).
         """
         spline = _collapsed_edge_patch()
 
@@ -540,6 +593,170 @@ class TestIdentityMap:
         cell_ids, _ = spline.locate(xi_true, max_iter=1)
 
         assert np.all(cell_ids >= 0)
+
+
+class TestNewtonGlobalization:
+    """A Newton step that does not reduce the residual is rejected, so no iterate cycles."""
+
+    def test_the_cycling_point_is_found_at_every_tolerance_and_budget(self) -> None:
+        """The undamped iteration lost this point at every setting; the damped one must not.
+
+        Neither knob could recover it before: not a tolerance seven decades above the
+        default tier, and not ten times the iteration budget. That is the signature of a
+        cycle rather than of slow convergence, and it is why both axes are swept here.
+        """
+        spline = _warped_patch()
+        target = _evaluate_at(spline, _CYCLING_PARAMETER)
+        scale = _scale_of(spline)
+
+        for factor in (64.0, 4096.0, 1.0e9):
+            for max_iter in (20, 200):
+                tol = factor * float(np.finfo(np.float64).eps) * scale
+                cell_ids, ref_coords = spline.locate(target, tol=tol, max_iter=max_iter)
+                assert cell_ids.tolist() == [3], f"lost at tol={factor}*eps*scale, {max_iter=}"
+                residual = np.linalg.norm(_evaluate_at(spline, ref_coords) - target)
+                assert residual <= tol
+
+    def test_the_recovered_parameter_is_the_preimage(self) -> None:
+        """The answer is the parameter the target was built from, not merely some root."""
+        spline = _warped_patch()
+        target = _evaluate_at(spline, _CYCLING_PARAMETER)
+        assert np.all(_jacobian_determinants(spline, _CYCLING_PARAMETER) > 0.0)
+
+        cell_ids, ref_coords = spline.locate(target)
+
+        np.testing.assert_allclose(
+            ref_coords, _CYCLING_PARAMETER, atol=_XI_REL_ATOL * _scale_of(spline), rtol=0.0
+        )
+        _assert_cell_contains(spline, cell_ids, ref_coords)
+
+    def test_the_residual_never_increases_over_the_accepted_iterates(self) -> None:
+        """Monotonicity, read off the iteration itself rather than assumed.
+
+        Budget ``k`` returns the iterate after at most ``k`` accepted steps, so sweeping
+        ``k`` and evaluating the residual at what comes back walks the accepted sequence
+        without needing a hook into the solver. Undamped, the sequence rises from
+        ``1.05e-2`` to ``7.3e-1`` at the third step and then oscillates.
+        """
+        spline = _warped_patch()
+        target = _evaluate_at(spline, _CYCLING_PARAMETER)
+        context = _locate_context(spline)
+        tol = get_default(spline.dtype) * context.scale
+        candidates = np.sort(context.bvh.query_aabb(AABB(target[0], target[0]).pad(tol)))
+        assert candidates.tolist() == [3], "the premise: one candidate, so there is no fallback"
+        start = _cell_midpoints(spline.space, candidates)
+
+        norms = [
+            float(
+                np.linalg.norm(
+                    _evaluate_at(spline, _newton_refine(spline, target, start, tol, k)[1]) - target
+                )
+            )
+            for k in range(1, 13)
+        ]
+
+        assert np.all(np.diff(norms) <= 0.0), f"residual increased over the iterates: {norms}"
+        assert norms[-1] <= tol, f"did not converge within 12 steps: {norms}"
+
+    @pytest.mark.parametrize("offset", [0.0, 1.0e6])
+    @pytest.mark.parametrize("n_elem", [3, 6])
+    @pytest.mark.parametrize("degree", [1, 2, 3, 4, 5])
+    @pytest.mark.parametrize("dim", [1, 2, 3])
+    def test_the_warped_family_loses_no_point_that_has_a_preimage(
+        self, dim: int, degree: int, n_elem: int, offset: float
+    ) -> None:
+        """Every point built by evaluating the map is recovered, across the whole family.
+
+        Sampling the parameter first and mapping it forward is what makes "has a preimage"
+        a fact about each query rather than a hope: the preimage is the parameter the
+        target was made from. It is *a* preimage that is required back, not that one --
+        this family folds for every ``dim >= 2`` member (measured: ``det J`` reaches
+        ``-0.56`` at ``dim == 2``), and a folded mapping sends several parameters to one
+        point. The offset column is there because the residual floor follows the coordinate
+        magnitude, so a family that converges at unit scale can still lose points at
+        ``1e6``.
+        """
+        spline = _warped_patch(dim, degree, n_elem, offset)
+        xi_true = _sample_parametric(spline, 40, seed=1000 * dim + 10 * degree + n_elem)
+        points = _evaluate_at(spline, xi_true)
+        tol = get_default(spline.dtype) * _scale_of(spline)
+
+        cell_ids, ref_coords = spline.locate(points)
+
+        lost = np.flatnonzero(cell_ids < 0)
+        assert lost.size == 0, f"lost {lost.size} of 40 points: {xi_true[lost]}"
+        residuals = np.linalg.norm(_evaluate_at(spline, ref_coords) - points, axis=1)
+        assert residuals.max() <= tol, f"worst residual {residuals.max():.3e} over tol {tol:.3e}"
+        _assert_cell_contains(spline, cell_ids, ref_coords)
+
+    def test_a_second_start_is_what_recovers_a_boundary_minimum(self) -> None:
+        """The one point in the sweep the line search alone cannot reach, and why.
+
+        A monotone iteration from cell 32's midpoint descends to ``(1, 0.4059)``, which is
+        the minimum of the residual along the ``u == 1`` face of the domain: the only
+        descent direction there points out of the box, and moving inward raises the
+        residual, so the root at ``u == 0.9485`` sits behind a ridge in a different basin.
+        Damping cannot cross that ridge -- no monotone method can -- and the corner start
+        does, which is what this pins.
+        """
+        spline = _warped_patch()
+        xi_true = np.array([[0.9485013, 0.34608885]])
+        target = _evaluate_at(spline, xi_true)
+        context = _locate_context(spline)
+        tol = get_default(spline.dtype) * context.scale
+        candidates = np.sort(context.bvh.query_aabb(AABB(target[0], target[0]).pad(tol)))
+        assert candidates.tolist() == [32], "the premise: one candidate, so there is no fallback"
+
+        from_midpoint = _newton_refine(
+            spline, target, _cell_midpoints(spline.space, candidates), tol, 40
+        )
+        from_corner = _newton_refine(
+            spline, target, _nearest_corner_starts(spline, candidates, target), tol, 40
+        )
+
+        assert not bool(from_midpoint[0][0]), "the midpoint start is expected to jam"
+        np.testing.assert_allclose(from_midpoint[1][0], [1.0, 0.405897], atol=1e-6, rtol=0.0)
+        assert bool(from_corner[0][0]), "the corner start must recover the root"
+        np.testing.assert_allclose(
+            from_corner[1], xi_true, atol=_XI_REL_ATOL * context.scale, rtol=0.0
+        )
+        assert spline.locate(target)[0].tolist() == [32]
+
+    def test_the_second_start_is_always_a_corner_of_its_own_cell(self) -> None:
+        """The postcondition holds even when no corner can be ranked.
+
+        The nearest-image search keeps the best corner seen so far, and a mapping that
+        evaluates to ``nan`` -- nothing rejects a non-finite control point at construction --
+        makes every distance ``nan`` and every "is this closer" comparison False. Starting
+        the search from a real corner rather than an empty buffer is what keeps the answer a
+        point of the cell instead of whatever the allocator returned.
+        """
+        spline = _warped_patch()
+        cells = np.array([0, 17, 35], dtype=np.int64)
+        lo, hi = _cell_parametric_bounds(spline.space, cells)
+
+        finite = _nearest_corner_starts(spline, cells, _evaluate_at(spline, 0.5 * (lo + hi)))
+        unrankable = _nearest_corner_starts(spline, cells, np.full((3, 2), np.nan))
+
+        for starts in (finite, unrankable):
+            assert np.all(np.isfinite(starts))
+            assert np.all((starts == lo) | (starts == hi)), "a start must be a cell corner"
+            assert np.all(lo <= starts) and np.all(starts <= hi)
+
+    def test_a_second_start_cannot_invent_a_solution(self) -> None:
+        """Retrying widens what is reached, never what counts as reached.
+
+        Both queries are off the mapping's image, so no start can drive the residual under
+        the threshold; the extra solve must leave them reported as not found. This is the
+        guard on the one way a second start could do harm.
+        """
+        annulus = _quarter_annulus()
+        holes = np.array([[0.2, 0.2], [0.5, 0.5]])
+
+        cell_ids, ref_coords = annulus.locate(holes)
+
+        assert cell_ids.tolist() == [-1, -1]
+        assert bool(np.all(np.isnan(ref_coords)))
 
 
 class TestToleranceScaling:
@@ -648,6 +865,91 @@ class TestToleranceScaling:
         cp = np.full((2, 2, 2), 1.0e-6, dtype=np.float64)
         point_map = Bspline(BsplineSpace([sub, sub]), cp)
         assert _scale_of(point_map) == pytest.approx(1.0e-6, rel=1e-12)
+
+
+class TestNearCriticalJacobian:
+    """A long Newton step is capped, not walked back one halving at a time."""
+
+    def test_a_monotone_map_with_a_near_critical_jacobian_is_found(self) -> None:
+        """The step-length cap earns its place: without it this query is reported not found.
+
+        A strictly monotone degree-5 map, so the preimage is unique and ``-1`` is unambiguously
+        wrong. Its derivative ``F'(xi) = eta + a * xi**2 * (xi - 1/2)**2`` with ``eta = 1e-4``
+        and ``a = 100`` is near-critical at ``xi == 0`` and ``xi == 1/2``, which are exactly the
+        two points the solver starts from -- the cell corner and the cell midpoint -- so both
+        starts begin where ``||J^-1 r||`` is enormous. ``sigma_min`` is ``1e-4`` there, fifteen
+        orders clear of the rank guard, so nothing about this is degenerate.
+
+        Uncapped, the line search spends its budget shortening a step 300 domain extents long:
+        11 halvings were needed where 8 were allowed, and ``locate`` returned ``-1`` at library
+        defaults. Capping the first trial at one domain extent drops the requirement to 2.
+        """
+        knots = np.array([0.0] * 6 + [1.0] * 6)
+        control_points = np.array(
+            [
+                [0.0],
+                [2.0e-5],
+                [4.0e-5],
+                [0.8333933333333333],
+                [-1.6665866666666664],
+                [3.333433333333334],
+            ]
+        )
+        spline = Bspline(BsplineSpace([BsplineSpace1D(knots, 5)]), control_points)
+        query = np.array([0.03308666666666668])  # F(0.2), to the last bit
+
+        cell_ids, ref_coords = spline.locate(query)
+
+        assert cell_ids.tolist() == [0], "a strictly monotone map must not lose its own image"
+        np.testing.assert_allclose(ref_coords, [[0.2]], atol=1e-12, rtol=0.0)
+        derivative = np.asarray(spline.evaluate_derivatives(np.linspace(0.0, 1.0, 1001), [1]))
+        assert derivative.min() > 0.0, "fixture must be strictly monotone"
+
+
+class TestNumbaWarmup:
+    """``locate`` waits for the import-time JIT warmup, as its sibling entry points do."""
+
+    def test_the_barrier_runs_before_any_kernel_call(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """``locate`` calls the warmup barrier, and calls it before it evaluates anything.
+
+        ``pantr/__init__.py`` compiles its kernels on a background thread, and Numba's
+        default workqueue threading layer is not safe against a concurrent ``parallel=True``
+        call from another thread: the process *aborts* rather than raising, which takes the
+        whole session with it. Every other Layer 2 entry point over parallel kernels calls
+        :func:`pantr._numba_compat.wait_for_jit_warmup` first; ``locate`` did not, and
+        inverting a batch evaluates often enough to land in the window. Measured before the
+        barrier: 4 of 4 runs of this module's 60-case sweep aborted with ``Fatal Python
+        error: Aborted`` when it was the first thing a process did, both serially and under
+        ``pytest -n 4``; after it, 0 of 4.
+
+        Asserting the *call* rather than the absence of the crash is deliberate. The barrier
+        is a once-per-process event, so by the time any in-process test runs the warmup is
+        long finished and no in-process check can observe the race; and a subprocess that
+        merely inverts a batch does not reproduce it either once the Numba cache is warm
+        (measured: 8 of 8 clean without the barrier). What is worth pinning is therefore the
+        contract, which this does deterministically: delete the call and this test fails.
+        """
+        calls: list[str] = []
+        module = sys.modules["pantr.bspline._bspline_locate"]
+        real_eval_map = module._eval_map
+
+        def _record_barrier() -> None:
+            calls.append("barrier")
+
+        def _record_eval(spline: Bspline, xi: npt.NDArray[np.float64]) -> npt.NDArray[np.float64]:
+            calls.append("evaluate")
+            return np.asarray(real_eval_map(spline, xi), dtype=np.float64)
+
+        monkeypatch.setattr(module, "wait_for_jit_warmup", _record_barrier)
+        monkeypatch.setattr(module, "_eval_map", _record_eval)
+
+        spline = _warped_patch()
+        spline.locate(_evaluate_at(spline, _CYCLING_PARAMETER))
+
+        assert "barrier" in calls, "locate must wait for the JIT warmup"
+        assert calls.index("barrier") < calls.index("evaluate"), (
+            f"the barrier must precede the first kernel call; got {calls[:3]}"
+        )
 
 
 class TestCellPhysicalBounds:
