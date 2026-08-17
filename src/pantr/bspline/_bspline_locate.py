@@ -20,15 +20,16 @@ The inversion has two stages:
    box, so an iterate may migrate out of its candidate cell: the candidate box is a
    superset test, never a constraint on the solution.
 
-   The damping is a backtracking line search, and it is what makes the iteration usable
-   away from the basin of attraction: an undamped Newton step is only guaranteed to
-   reduce the residual near a root, and out there it can be arbitrarily longer than the
-   residual it is trying to remove. Accepting such a step and then clamping the result to
-   the domain box does not merely waste an iteration, it can be *periodic* -- the clamp
-   maps two off-basin iterates onto each other -- and then no iteration budget and no
-   tolerance recovers the point. Requiring each accepted step to reduce the residual
-   removes both failure modes at once, and makes the residual of the accepted iterates a
-   monotonically non-increasing sequence.
+   The damping is a backtracking line search over a step first capped to one parametric
+   domain extent, and it is what makes the iteration usable away from the basin of
+   attraction: an undamped Newton step is only guaranteed to reduce the residual near a
+   root, and out there it can be arbitrarily longer than the residual it is trying to
+   remove -- longer, in fact, than the domain the answer has to lie in. Accepting such a
+   step and then clamping the result to the domain box does not merely waste an iteration,
+   it can be *periodic* -- the clamp maps two off-basin iterates onto each other -- and
+   then no iteration budget and no tolerance recovers the point. Requiring each accepted
+   step to reduce the residual removes both failure modes at once, and makes the residual
+   of the accepted iterates a monotonically non-increasing sequence.
 
    What damping cannot do is change which root the iteration finds. A monotone method
    descends into whichever basin it starts in, and on a mapping that folds, the residual
@@ -95,11 +96,20 @@ Relative threshold at which a Newton Jacobian counts as rank-deficient.
 A candidate is abandoned when ``sigma_min <= dim * _JACOBIAN_RANK_REL_TOL * sigma_max``,
 which is the rule and the magnitude :func:`numpy.linalg.matrix_rank` uses by default
 (``max(M, N) * eps * sigma_max``): below it the null direction is indistinguishable from
-rounding noise and the solve returns an arbitrary step. The test is a ratio, so it is
-invariant under scaling the geometry or the parametrization. It is deliberately
-permissive -- it only rejects a Jacobian whose condition number reaches ``1 / (dim *
-eps)`` -- because a merely ill-conditioned Jacobian still gives a usable step, and the
-line search below rejects an overlong one.
+rounding noise and the solve returns an arbitrary step. It is deliberately permissive -- it only
+rejects a Jacobian whose condition number reaches ``1 / (dim * eps)`` -- because a merely
+ill-conditioned Jacobian still gives a usable step, and :data:`_MAX_STEP_EXTENTS` bounds an
+overlong one.
+
+The test is a ratio, so it is invariant under scaling the geometry, and under scaling the
+parametrization **isotropically**. It is *not* invariant under scaling the parametric directions
+independently, which is no more exotic than a different knot-vector span per direction: the
+Jacobian is right-multiplied by a diagonal matrix, and only a scalar multiple of a signed
+permutation leaves singular values alone. Exactly, ``J = diag(1, 100 * eps)`` passes against a
+threshold of ``2 * eps``, while under ``T = diag(1, eps / 100)`` the same map has ratio ``eps**2``
+and is rejected as rank-deficient. This bites only where the Jacobian already sits near the
+guard, so it changes no verdict this library has been observed to reach, but the invariance is
+narrower than it looks.
 """
 
 _ARMIJO_DECREASE: float = 1.0e-4
@@ -113,12 +123,40 @@ the merit function ``||F - x||`` whose descent direction the exact Newton step i
 ``-||r||``, so a decrease of ``lam * ||r||`` is what the linear model promises and this
 constant is the fraction of it that must actually materialize).
 
-**Why any value in ``(0, 1)`` terminates.** Expanding to second order,
-``F(xi - lam * delta) - x = (1 - lam) * r + O(lam^2 * M * ||delta||^2)`` with ``M`` a bound
-on the second derivatives, so the test holds as soon as
-``lam <= 2 * (1 - _ARMIJO_DECREASE) * ||r|| / (M * ||delta||^2)``; the halving loop
-therefore ends after finitely many trials wherever the Jacobian is nonsingular and the
-iterate is interior. See :data:`_MAX_STEP_HALVINGS` for how many that is.
+**When a step is accepted at all.** Let ``dtilde`` be ``delta`` with every coordinate zeroed
+that the clip holds fixed (coordinate ``k`` is held when ``xi[k]`` lies on the domain face
+that ``-delta[k]`` points out of), and let ``Jv`` be the Jacobian of the polynomial piece the
+segment ``xi - t * dtilde`` enters for small ``t > 0``. Some small enough ``lam`` passes if and
+only if
+
+    <r, Jv @ dtilde>  >  _ARMIJO_DECREASE * ||r||^2,
+
+and under the reverse strict inequality every sufficiently small ``lam`` *fails*, so an
+exhausted search is a statement about the point and not about the budget. Only the product
+``Jv @ dtilde`` is well defined, not ``Jv`` itself: a step along a cell face has two pieces to
+choose between and they agree on that product, not on the transverse columns.
+
+**An iterate in the open interior of a knot-span cell, with no coordinate held, always
+passes.** There ``Jv == J``, the left-hand side is ``||r||^2``, and the test holds with
+``_ARMIJO_DECREASE < 1`` to spare. This needs only differentiability of the map at that one
+point together with a nonsingular Jacobian -- no second derivative and no bound on one, which
+is why a degree-1 map having no global bound on its second derivatives is not a threat to
+termination. A second-derivative bound buys a step *length* rather than existence, and only
+for ``lam`` short enough to keep the trial point inside the cell it was derived on; see
+:data:`_MAX_STEP_EXTENTS`, which bounds that length by construction instead.
+
+**An iterate on a knot line where the map is only C0** -- a simple interior knot at degree 1,
+or any knot of multiplicity at least the degree -- can fail at every ``lam``. The span search
+is right-closed, so ``J`` is the right-hand derivative; when the step goes left, ``Jv`` is the
+left-hand one and the criterion becomes ``rho > _ARMIJO_DECREASE`` with ``rho`` the ratio of
+the two directional derivatives along the step. A kink across which that derivative shrinks by
+more than ``1 / _ARMIJO_DECREASE == 1e4`` therefore has every step rejected *while the residual
+is still strictly decreasing along all of them*, and the candidate is abandoned. Measured at
+degree 1 with slopes ``2e-5`` and ``1.99998``, and at degree 3 across a triple interior knot: no
+budget up to 40 converges, and moving the iterate one ulp off the knot converges at 8. The
+configuration is reachable rather than hypothetical, since :func:`_nearest_corner_starts`
+returns cell corners and those are knot values. It is a known limitation of a monotone line
+search on a C0 join, not something a larger budget fixes.
 
 **Why this magnitude.** The constant trades how much of Newton's own step is admitted
 against how much progress an accepted step must show, and both ends are one-sided:
@@ -134,47 +172,93 @@ against how much progress an accepted step must show, and both ends are one-side
   ``1e-4`` sits twelve decades above ``eps`` at ``lam == 1``, and nine decades above it at
   the smallest step length :data:`_MAX_STEP_HALVINGS` admits.
 
-``1e-4`` is also the value the line-search literature settles on for exactly this rule, so
-nothing here is unconventional; what matters for this library is that both bounds above are
-satisfied with decades to spare, which makes the choice insensitive.
+``1e-4`` is also the established value for exactly this rule -- sufficient decrease tested on
+``||F||`` itself, for Newton on ``F(x) = 0`` -- in C. T. Kelley, *Iterative Methods for Linear
+and Nonlinear Equations*, SIAM, 1995, Eq. (8.1) and Algorithm 8.2.1. That attribution is worth
+being precise about, because the far more widely cited ``1e-4`` belongs to a *different* test:
+sufficient decrease on the squared merit function with a gradient inner product (Nocedal and
+Wright, *Numerical Optimization*, 2nd ed., Eq. (3.4)), which is the form PETSc's
+``SNESLINESEARCHBT`` and SciPy's ``scalar_search_armijo`` default to, and the form Kelley says
+he took the number from. So the choice is conventional, but checking it against the Armijo
+literature at large finds the squared form rather than this one.
+
+What matters for this library either way is that both bounds above are satisfied with decades to
+spare, which makes the choice insensitive.
+"""
+
+_MAX_STEP_EXTENTS: float = 1.0
+"""
+Longest first trial step of the line search, in parametric domain extents per direction.
+
+The Newton step is not tried at full length when it is longer than this; the search starts at
+``_MAX_STEP_EXTENTS / max(reach, _MAX_STEP_EXTENTS)`` instead, where ``reach`` is
+``max_k |delta_k| / (hi_k - lo_k)``. It is a trust region, and it is what keeps the halvings
+below :data:`_MAX_STEP_HALVINGS` a bounded requirement rather than a hope.
+
+**Why a cap is needed at all.** The step ``delta = J^-1 r`` grows like ``1 / sigma_min(J)``, so a
+merely ill-conditioned Jacobian -- one nowhere near the rank guard -- produces a step orders of
+magnitude longer than the domain it has to land in. The line search then spends its whole budget
+walking that step back inside, and the halvings needed grow like ``log2(||delta|| / L)`` with
+``L`` the domain extent (measured across ~30 witnesses spanning degrees 1-5, dimensions 1-3 and
+five decades of ``sigma_min``: ``log2(||delta|| / L) + 1.5`` to ``3``). Since ``||delta||`` is
+unbounded over legal inputs, no fixed budget covers that, and exhausting it abandons a candidate
+that was converging. Measured before this cap existed: a strictly monotone degree-5 map whose
+``sigma_min`` is ``1e-4`` -- fifteen orders clear of the rank guard -- was reported *not found*
+with library defaults, needing 11 halvings where the budget allowed 8.
+
+**Why one extent.** A step longer than the domain cannot be a step toward a solution *inside* the
+domain, whatever the linear model says: the clip truncates it anyway, so the only thing its extra
+length changes is how many halvings are needed to discover that. Capping at one extent removes
+exactly the ``log2(||delta|| / L)`` term and leaves the 1.5-to-3 halvings the curvature itself
+demands. On the witness above it cut the requirement from 11 halvings to 2. Nothing is lost near
+the root, where Newton's step is short and the cap is inactive, so the asymptotic rate is
+untouched.
+
+**Why per direction, normalized by each direction's own extent.** ``max_k |delta_k| / (hi_k -
+lo_k)`` is invariant under scaling the parametric directions independently, which is nothing more
+exotic than a different knot-vector span per direction; a cap on ``||delta||_2`` against a single
+length would not be, and would tighten or loosen with the aspect ratio of the domain box.
 """
 
 _MAX_STEP_HALVINGS: int = 8
 """
 Number of times a Newton step may be halved before its candidate cell is abandoned.
 
-The smallest step length tried is ``2 ** -_MAX_STEP_HALVINGS``, about ``3.9e-3``.
+The shortest step length tried is ``2 ** -_MAX_STEP_HALVINGS`` of the first one, and the first
+one is itself bounded by :data:`_MAX_STEP_EXTENTS`. That pairing is the whole point: without the
+cap the halvings needed grow like ``log2(||delta|| / L)`` -- ``||delta|| = ||J^-1 r||`` and ``L``
+the domain extent -- which is unbounded over legal inputs, so **no** fixed budget is correct and
+a converging solve gets abandoned. With the cap that term is gone and what remains is set by the
+map's curvature, which is bounded on any given geometry.
 
-**What a sufficient condition would ask for.** By the expansion in
-:data:`_ARMIJO_DECREASE`, the test accepts once ``lam <= 2 * (1 - _ARMIJO_DECREASE) *
-||r|| / (M * ||delta||^2)``, and with ``||delta|| <= ||J^-1|| * ||r||`` a sufficient
-condition is ``lam <= 2 / (M * ||J^-1||^2 * ||r||)``. Reading the factors off a spline map
-of geometric scale ``S`` over a parametric domain of unit extent -- ``||r|| <= S``,
-``||J^-1|| ~ cond(J) / S``, and ``M ~ C * S`` with ``C`` the map's parametric curvature
-factor -- gives ``lam <= 2 / (C * cond(J)^2)``, in which the scale cancels. That is the
-right shape (the halvings needed are a property of the map, not of its units) but a very
-loose bound, since it takes the worst case of three independent factors at once: it would
-demand 26 halvings for a map with ``C ~ 100`` and ``cond(J) ~ 1e3``, and such a step is
-never what decides whether a query is found.
+**Measured requirement, with the cap in place.** Every query converges at a budget of **2**:
+across the warped-map sweep in ``tests/test_bspline_locate.py`` (2400 queries, 60
+configurations, dimensions 1 to 3, degrees 1 to 5, unit scale and an offset of ``1e6``, on
+mappings that fold), and across 27 near-critical configurations spanning ``sigma_min`` from
+``1e-3`` to ``1e-5`` and raw Newton steps up to ``7e5`` domain extents. At a budget of 1 the
+sweep loses 2 queries and at 0 it loses 6. This budget is four doublings beyond that.
 
-**So the magnitude comes from measurement, with the margin stated.** Over the warped-map
-sweep in ``tests/test_bspline_locate.py`` -- 2400 queries, 60 configurations, dimensions 1
-to 3, degrees 1 to 5, at unit scale and at an offset of ``1e6``, on mappings that fold --
-the smallest budget that loses no point is **2**: at 1 the sweep loses 2 queries and at 0 it
-loses 6. This budget is four doublings of step length beyond that, and covers every point
-where ``C * cond(J)^2 <= 2 ** (_MAX_STEP_HALVINGS + 1)``.
+**What the budget does *not* cover, stated plainly.** A single candidate solve can need more:
+on the folding sweep family, solves converge using up to **15** halvings, and that number is
+real rather than an artifact of the ceiling -- the depth histogram is identical at budgets 16
+and 24, so it has genuinely stopped. Those deep solves are not what decides a query, because
+another candidate cell or the second start reaches the root first, which is why the sweep loses
+nothing from a budget of 2 upward. But that redundancy is a property of the candidate list, not
+headroom in the line search, and it should not be read as margin: **the honest statement is that
+a solve needing more than 8 halvings is abandoned, and a query all of whose candidates and both
+starts need more than 8 would be lost.** Nothing measured exhibits one.
 
-**The cost is why it is not larger.** A candidate that will never converge spends its whole
-budget before being abandoned, so the budget sets the price of a doomed solve, and doomed
-solves are the common case for a query that is off the mapping's image. Against the
-undamped iteration this fix replaces, measured on the sweep above: at this budget, queries
-on the image cost 5 % more and queries off it 31 % *less* (the early abandonment more than
-pays for the line search); at a budget of 30 both cost about three times more.
+**Cost is what stops it being larger.** A candidate that will never converge spends its whole
+budget before being abandoned, and doomed candidates are the common case for a query off the
+mapping's image. Measured against the undamped iteration this replaces: at this budget, queries
+on the image cost 10 % more and queries off it 31 % *less*, the early abandonment more than
+paying for the search. At 12 the on-image case costs about twice the undamped baseline, to cover
+solves whose queries are already found.
 
 Exhausting the budget abandons that candidate cell rather than stepping anyway. It is not a
 verdict on the query: the second start of :func:`_nearest_corner_starts` and the remaining
-candidate cells are tried afterwards, and only a query that fails all of them is reported
-not found.
+candidate cells are tried afterwards, and only a query that fails all of them is reported not
+found.
 """
 
 
@@ -549,15 +633,20 @@ def _accept_damped_step(
     - x|| <= (1 - _ARMIJO_DECREASE * lam) * ||F(xi) - x||``, up to
     :data:`_MAX_STEP_HALVINGS` halvings.
 
-    The trial iterate is clipped to the parametric domain box, so the search runs along the
-    projected path ``lam -> clip(xi - lam * delta)`` rather than along the ray. That path
-    still tends to ``xi`` as ``lam`` does, so shortening the step remains meaningful on the
-    boundary; a direction that leaves the box along the whole path is rejected at every
-    ``lam``, which is the correct answer for a point whose Newton direction only points out
-    of the domain.
+    The first trial is shortened to at most :data:`_MAX_STEP_EXTENTS` domain extents in every
+    parametric direction, so an overlong step from an ill-conditioned Jacobian is capped rather
+    than halved back down one level at a time.
 
-    One map evaluation per halving level serves every point still searching at that level,
-    so a round in which every point accepts its full step costs a single evaluation.
+    The trial iterate is clipped to the parametric domain box, so the search runs along the
+    projected path ``lam -> clip(xi - lam * delta)`` rather than along the ray. That path still
+    tends to ``xi`` as ``lam`` does (``clip`` is 1-Lipschitz and fixes ``xi``, so
+    ``||p(lam) - xi|| <= lam * ||delta||``), which is what keeps shortening the step meaningful
+    on the boundary. What is rejected at *every* ``lam`` is a **constant** projected path -- every
+    coordinate either held by the clip or already zero in ``delta`` -- and not merely a direction
+    that leaves the box, which with only some coordinates held still moves and can be accepted.
+
+    One map evaluation per halving level serves every point still searching at that level, so a
+    round in which every point accepts its first step costs a single evaluation.
 
     Args:
         spline (Bspline): A ``float64`` spline with ``rank == dim``, non-periodic.
@@ -569,17 +658,30 @@ def _accept_damped_step(
             those rows, shape ``(m, dim)``, in the order of ``active``.
 
     Returns:
-        npt.NDArray[np.bool_]: Shape ``(m,)``, True where a step was accepted. A False
-        entry means the line search was exhausted, and its point is at a residual minimum
-        no Newton step from it improves on.
+        npt.NDArray[np.bool_]: Shape ``(m,)``, True where a step was accepted. A False entry
+        means the line search was exhausted: either no step length short enough was reachable
+        within :data:`_MAX_STEP_HALVINGS`, or none exists at all because the criterion in
+        :data:`_ARMIJO_DECREASE` fails. In one dimension an exhausted point on the boundary
+        really is the constrained minimum -- the merit gradient ``J * r == J^2 * delta`` carries
+        ``sign(delta)``, which points out of the box. In two or more it need not be, because
+        ``sign(delta[k])`` need not agree with ``sign((J.T @ J @ delta)[k])``: a bilinear map
+        with ``J.T @ J == [[5, -2], [-2, 1]]`` and ``cond(J) == 5.83`` is abandoned at a corner
+        while its residual still decreases into the box (measured). So a False entry means this
+        candidate made no progress, not that the point is a minimum of the residual.
     """
+    reach = np.max(np.abs(delta) / (state.hi - state.lo), axis=1)
+    first = _MAX_STEP_EXTENTS / np.maximum(reach, _MAX_STEP_EXTENTS)
+
     accepted = np.zeros(active.size, dtype=np.bool_)
     searching = np.arange(active.size, dtype=np.int64)
-    step_length = 1.0
+    shrink = 1.0
 
     for _ in range(_MAX_STEP_HALVINGS + 1):
         rows = active[searching]
-        trial_xi = np.clip(state.xi[rows] - step_length * delta[searching], state.lo, state.hi)
+        step_length = shrink * first[searching]
+        trial_xi = np.clip(
+            state.xi[rows] - step_length[:, np.newaxis] * delta[searching], state.lo, state.hi
+        )
         trial_residual = _eval_map(spline, trial_xi) - targets[rows]
         trial_norm = np.asarray(np.linalg.norm(trial_residual, axis=1), dtype=np.float64)
 
@@ -593,7 +695,7 @@ def _accept_damped_step(
         searching = searching[~passes]
         if searching.size == 0:
             break
-        step_length *= 0.5
+        shrink *= 0.5
 
     return accepted
 

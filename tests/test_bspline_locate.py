@@ -867,6 +867,45 @@ class TestToleranceScaling:
         assert _scale_of(point_map) == pytest.approx(1.0e-6, rel=1e-12)
 
 
+class TestNearCriticalJacobian:
+    """A long Newton step is capped, not walked back one halving at a time."""
+
+    def test_a_monotone_map_with_a_near_critical_jacobian_is_found(self) -> None:
+        """The step-length cap earns its place: without it this query is reported not found.
+
+        A strictly monotone degree-5 map, so the preimage is unique and ``-1`` is unambiguously
+        wrong. Its derivative ``F'(xi) = eta + a * xi**2 * (xi - 1/2)**2`` with ``eta = 1e-4``
+        and ``a = 100`` is near-critical at ``xi == 0`` and ``xi == 1/2``, which are exactly the
+        two points the solver starts from -- the cell corner and the cell midpoint -- so both
+        starts begin where ``||J^-1 r||`` is enormous. ``sigma_min`` is ``1e-4`` there, fifteen
+        orders clear of the rank guard, so nothing about this is degenerate.
+
+        Uncapped, the line search spends its budget shortening a step 300 domain extents long:
+        11 halvings were needed where 8 were allowed, and ``locate`` returned ``-1`` at library
+        defaults. Capping the first trial at one domain extent drops the requirement to 2.
+        """
+        knots = np.array([0.0] * 6 + [1.0] * 6)
+        control_points = np.array(
+            [
+                [0.0],
+                [2.0e-5],
+                [4.0e-5],
+                [0.8333933333333333],
+                [-1.6665866666666664],
+                [3.333433333333334],
+            ]
+        )
+        spline = Bspline(BsplineSpace([BsplineSpace1D(knots, 5)]), control_points)
+        query = np.array([0.03308666666666668])  # F(0.2), to the last bit
+
+        cell_ids, ref_coords = spline.locate(query)
+
+        assert cell_ids.tolist() == [0], "a strictly monotone map must not lose its own image"
+        np.testing.assert_allclose(ref_coords, [[0.2]], atol=1e-12, rtol=0.0)
+        derivative = np.asarray(spline.evaluate_derivatives(np.linspace(0.0, 1.0, 1001), [1]))
+        assert derivative.min() > 0.0, "fixture must be strictly monotone"
+
+
 class TestNumbaWarmup:
     """``locate`` waits for the import-time JIT warmup, as its sibling entry points do."""
 
