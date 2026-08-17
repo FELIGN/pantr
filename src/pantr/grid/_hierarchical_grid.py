@@ -1302,9 +1302,10 @@ class HierarchicalGrid(Grid):
         injective** on the grid state and no single :meth:`coarsen` can undo it in
         general: ``coarsen(level, lo, hi)`` reverses this call only when every cell
         of ``[lo, hi)`` was an active leaf at ``level`` beforehand.  When it was
-        not, the paired :meth:`coarsen` demotes the whole box, including the cells
-        this call left alone, and so removes children an earlier :meth:`refine`
-        created.  Where that must not happen, name the cells rather than a box on
+        not, the paired :meth:`coarsen` either refuses the box, if part of it now
+        sits deeper than ``level+1``, or demotes all of it, including the cells this
+        call left alone, and so removes children an earlier :meth:`refine` created.
+        Where that must not happen, name the cells rather than a box on
         the side that destroys them: :meth:`~pantr.bspline.THBSplineSpace.coarsen`
         reactivates a parent only when all of its children are named active
         leaves, so nothing the caller did not name is removed.  (:meth:`refine_cells`
@@ -1419,7 +1420,7 @@ class HierarchicalGrid(Grid):
         lo: Sequence[int],
         hi: Sequence[int],
     ) -> None:
-        """Demote the rectangular region ``[lo, hi)`` at ``level`` back to ``level``.
+        """Demote the rectangular region ``[lo, hi)`` from ``level+1`` back to ``level``.
 
         Reactivates the level-``level`` cells in ``[lo, hi)`` and removes their
         level-``(level+1)`` children.  The region must be **fully refined to exactly
@@ -1432,13 +1433,14 @@ class HierarchicalGrid(Grid):
         currently-active portion.  :meth:`refine` is therefore not injective on the
         grid state, and this call inverts it **only when every cell of ``[lo, hi)``
         was an active leaf at ``level`` before that refine**.  When it was not, this
-        call removes children an earlier :meth:`refine` created: after
-        ``refine(l, A)`` and an overlapping ``refine(l, B)``, ``coarsen(l, B)``
-        demotes all of ``B``, including the part of ``A`` that lies inside it.  It is
-        demoting exactly the box it was given, but it is not undoing the second
-        refine.  To coarsen without risking refinement the caller did not mean to
-        lose, mark cells by id: :meth:`~pantr.bspline.THBSplineSpace.coarsen`
-        reactivates a parent only when all of its children are named active leaves.
+        call either refuses the box, as above, or removes children an earlier
+        :meth:`refine` created: after ``refine(l, A)`` and an overlapping
+        ``refine(l, B)``, ``coarsen(l, B)`` demotes all of ``B``, including the part
+        of ``A`` that lies inside it.  It is demoting exactly the box it was given,
+        but it is not undoing the second refine.  To coarsen without risking
+        refinement the caller did not mean to lose, mark cells by id:
+        :meth:`~pantr.bspline.THBSplineSpace.coarsen` reactivates a parent only when
+        all of its children are named active leaves.
 
         The opposite order carries no hypothesis: coarsening leaves the whole box
         active at ``level``, so ``refine(level, lo, hi)`` always undoes
