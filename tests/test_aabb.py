@@ -234,6 +234,42 @@ def test_aabb_equality_and_hash() -> None:
     assert a != "not an AABB"
 
 
+def test_aabb_hash_agrees_with_eq_on_signed_zero() -> None:
+    # __eq__ is IEEE value equality, so -0.0 == 0.0; the hash must follow suit,
+    # otherwise equal boxes occupy two set slots and a dict lookup misses.
+    a = AABB(np.array([0.0, 0.0]), np.array([1.0, 1.0]))
+    b = AABB(np.array([-0.0, 0.0]), np.array([1.0, 1.0]))
+    assert a == b
+    assert hash(a) == hash(b)
+    assert len({a, b}) == 1
+    assert ({a: 1}).get(b) == 1
+    # Both corners are normalized, not just `lo`.
+    c = AABB(np.array([-1.0, -1.0]), np.array([0.0, 0.0]))
+    d = AABB(np.array([-1.0, -1.0]), np.array([-0.0, 0.0]))
+    assert c == d
+    assert hash(c) == hash(d)
+    # Normalization is confined to the hash: the stored bounds keep the sign
+    # they were given, so `repr` and the exposed arrays are unchanged.
+    assert np.signbit(b.lo[0])
+    assert np.signbit(d.hi[0])
+
+
+def test_aabb_hash_distinguishes_opposite_infinities() -> None:
+    # The signed-zero normalization must leave every other value alone: an
+    # unbounded box and its hand-built twin agree, while boxes differing only in
+    # the sign of an infinite bound stay distinct under both == and hash.
+    unbounded = AABB.unbounded(2)
+    assert unbounded == AABB(lo=[-np.inf, -np.inf], hi=[np.inf, np.inf])
+    assert hash(unbounded) == hash(AABB(lo=[-np.inf, -np.inf], hi=[np.inf, np.inf]))
+    assert AABB.empty(2) == AABB(lo=[np.inf, np.inf], hi=[-np.inf, -np.inf])
+    assert hash(AABB.empty(2)) == hash(AABB(lo=[np.inf, np.inf], hi=[-np.inf, -np.inf]))
+    flipped = AABB(lo=[np.inf, -np.inf], hi=[np.inf, np.inf])
+    assert unbounded != flipped
+    assert hash(unbounded) != hash(flipped)
+    assert unbounded != AABB.empty(2)
+    assert hash(unbounded) != hash(AABB.empty(2))
+
+
 def test_aabb_empty_factory() -> None:
     e = AABB.empty(3)
     assert e.is_empty()
