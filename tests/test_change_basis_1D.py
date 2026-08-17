@@ -36,12 +36,26 @@ _COND_SAFETY_FACTOR = 64
 """
 Safety factor multiplying the first-order error bound ``cond(A) * eps``.
 
-The bound itself is the standard one for a linear solve. The factor covers what it
-does not model: the biorthogonality check contracts the duals against a quadrature
-rule, so its error accumulates over ``2 * degree + 2`` points on top of the solve.
-Measured margins with this factor range from 6x (degree 8, biorthogonality) to
-several hundred (low degrees), i.e. it is never looser than needed by more than two
-orders and never tighter than the phenomenon.
+The bound itself is the standard one for a linear solve: a matrix inverted by LU with
+partial pivoting yields a computed ``B`` whose identity residual obeys
+``||A B - I||_2 <= c * n * rho * eps * cond(A)``, with ``n = degree + 1``, ``rho`` the
+growth factor (about 1 for every matrix here) and ``c`` a small constant. Two things
+the bound does not model set the factor:
+
+* the worst-case dimension factor ``n``, which reaches 11 over the degrees tested;
+* build slack -- an FMA contraction, a different vector width, a different LAPACK --
+  worth about 4x, the same allowance :func:`pantr.tolerance.get_default` makes.
+
+``4 * 11 = 44`` rounds up to 64, so this factor is deliberately *not* tighter than the
+algorithm's own error bound; it is also exactly ``get_default``'s factor, so the whole
+file grades conditioning-limited quantities at one tier.
+
+Measured margins with this factor: 6x for biorthogonality at degree 8 (which contracts
+the duals against a ``2 * degree + 2`` point rule, accumulating on top of the solve),
+and 150x for the Bernstein and Lagrange round trips, whose observed residual is at most
+``0.43 * cond(A) * eps`` across degrees 0-12 in both float32 and float64 -- i.e. the
+worst-case dimension factor does not materialise. The looseness is therefore known and
+fixed rather than tuned, and never runs the other way.
 """
 
 _ROUNDOFF_FACTOR = 64
@@ -64,28 +78,57 @@ degree 8, so the single-map factor of 64 would leave only 5x; 256 restores ~21x.
 """
 
 
-def _conditioning_atol(degree: int, dtype: npt.DTypeLike = np.float64) -> float:
-    """Return the attainable accuracy for inverting the Legendre-to-cardinal map.
+def _conditioning_atol(
+    forward: npt.NDArray[np.float32 | np.float64],
+    dtype: npt.DTypeLike = np.float64,
+) -> float:
+    """Return the attainable accuracy for inverting a change-of-basis map.
 
-    The cardinal-to-Legendre direction requires solving with a matrix whose
-    condition number grows steeply with degree (``1.1e3`` at degree 4, ``3.0e8`` at
-    degree 8), so no algorithm can do better than roughly ``cond(A) * eps``. Tests
-    of that direction, of the duals built from it, and of biorthogonality are all
-    bounded by this quantity rather than by a flat tolerance.
+    Every pair in this module builds one direction directly and obtains the other by
+    an LU solve against the identity. The inverse direction therefore cannot do
+    better than roughly ``cond(forward) * eps``, whatever the algorithm, and that
+    quantity spans many orders of magnitude across the degrees tested (``1.1e3`` at
+    degree 4 for the Legendre pair, ``3.0e8`` at degree 8). Tests of an inverse
+    direction, of anything built from one, and of biorthogonality are all bounded by
+    this rather than by a flat tolerance.
 
-    The condition number is always taken from the float64 matrix: it is a property
-    of the two bases, not of the dtype the result is stored in.
+    Pass the **float64** matrix even when grading a float32 result: the condition
+    number is a property of the two bases, not of the dtype the result is stored in,
+    and estimating it in float32 would itself be conditioning-limited.
 
     Args:
-        degree (int): Polynomial degree.
+        forward (npt.NDArray[np.float32 | np.float64]): The directly-built direction
+            of the pair, whose conditioning bounds the inverse direction.
         dtype (npt.DTypeLike): Dtype whose machine epsilon sets the noise floor.
             Defaults to np.float64.
 
     Returns:
         float: Absolute tolerance for identities involving the inverse map.
     """
-    cond = float(np.linalg.cond(compute_legendre_to_cardinal_1d(degree)))
+    cond = float(np.linalg.cond(np.asarray(forward, dtype=np.float64)))
     return _COND_SAFETY_FACTOR * cond * get_machine_epsilon(dtype)
+
+
+def _identity_residual(
+    left: npt.NDArray[np.float32 | np.float64],
+    right: npt.NDArray[np.float32 | np.float64],
+) -> float:
+    """Return the spectral norm of ``left @ right - I``.
+
+    Both operands are promoted to float64 before the product so that the residual
+    measures the error carried by the two matrices, not the error of the check
+    itself. That matters for the float32 assertions, where a float32 product would
+    add a rounding of its own at the very magnitude being graded.
+
+    Args:
+        left (npt.NDArray[np.float32 | np.float64]): Left factor of the product.
+        right (npt.NDArray[np.float32 | np.float64]): Right factor of the product.
+
+    Returns:
+        float: ``||left @ right - I||_2``, the quantity ticket #300 tabulates.
+    """
+    product = np.asarray(left, dtype=np.float64) @ np.asarray(right, dtype=np.float64)
+    return float(np.linalg.norm(product - np.eye(product.shape[0]), ord=2))
 
 
 class TestLagrangeToBernsteinBasisOperator:
@@ -264,6 +307,113 @@ class TestBernsteinToLagrangeBasisOperator:
 
         C_inv = compute_lagrange_to_bernstein_1d(degree, variant)
         np.testing.assert_array_almost_equal(lagranges @ C_inv.T, bernsteins)
+
+    @pytest.mark.parametrize(
+        "variant",
+        [
+            LagrangeVariant.EQUISPACES,
+            LagrangeVariant.GAUSS_LEGENDRE,
+            LagrangeVariant.GAUSS_LOBATTO_LEGENDRE,
+            LagrangeVariant.CHEBYSHEV_1ST,
+            LagrangeVariant.CHEBYSHEV_2ND,
+        ],
+    )
+    @pytest.mark.parametrize("degree", [1, 4, 7, 10])
+    def test_roundtrip_tracks_conditioning(self, degree: int, variant: LagrangeVariant) -> None:
+        """Both products of the pair must be the identity to ``K * cond(C) * eps``.
+
+        The same derived bound the Bernstein<->cardinal and Legendre<->cardinal pairs
+        are held to, so all three inverse pairs in this module are graded alike. This
+        pair is far better conditioned than the other two -- ``cond(C)`` reaches only
+        ``3.0e3`` at degree 10 with the worst (equispaced) nodes -- so the bound stays
+        near the noise floor and the test pins that rather than rescuing it.
+        """
+        forward = compute_lagrange_to_bernstein_1d(degree, variant)
+        inverse = compute_bernstein_to_lagrange_1d(degree, variant)
+        atol = _conditioning_atol(forward)
+
+        assert _identity_residual(forward, inverse) <= atol
+        assert _identity_residual(inverse, forward) <= atol
+
+
+class TestCardinalToBernsteinRoundTrip:
+    """Pin the Bernstein<->cardinal pair to the accuracy its conditioning allows.
+
+    Regression tests for ticket #300: the two directions used to be independent Gram
+    projections, and the inverse one solved against the *cardinal* Gram matrix, whose
+    condition number is ``cond(A)**2`` times the Bernstein Gram matrix's. The round
+    trip therefore tracked ``cond(A)**2 * eps`` instead of ``cond(A) * eps`` and had
+    no correct digits at all by degree 9.
+    """
+
+    @pytest.mark.parametrize("degree", range(11))
+    def test_roundtrip_tracks_conditioning_not_its_square(self, degree: int) -> None:
+        """Both products of the pair must be the identity to ``K * cond(A) * eps``.
+
+        This is the ticket's discriminating measurement. From degree 5 on, the bound
+        sits below ``cond(A)**2 * eps`` by more than the safety factor, so passing it
+        rules out the squared law rather than merely tolerating problem conditioning:
+        at degree 8 the bound is ``2.8e-8`` while ``cond(A)**2 * eps`` is ``8.4e-4``.
+        """
+        forward = compute_bernstein_to_cardinal_1d(degree)
+        inverse = compute_cardinal_to_bernstein_1d(degree)
+        atol = _conditioning_atol(forward)
+
+        assert _identity_residual(forward, inverse) <= atol
+        assert _identity_residual(inverse, forward) <= atol
+
+    @pytest.mark.parametrize("degree", range(11))
+    def test_inverse_map_reproduces_bernstein_basis(self, degree: int) -> None:
+        """``B @ cardinal(x)`` must equal ``bernstein(x)`` at arbitrary points.
+
+        The property the matrix is defined by, and the one a caller moving
+        coefficients between the two representations actually depends on. Checked away
+        from the quadrature nodes used to build the pair, so a rule that happened to be
+        exact only at its own nodes would not pass. The bound is the same
+        conditioning-limited one: the map amplifies the ``O(1)`` cardinal values by
+        ``||A^-1||`` and cancels back down to ``O(1)``.
+        """
+        rng = np.random.default_rng(20260817 + degree)
+        pts = rng.random(200)
+
+        result = (
+            compute_cardinal_to_bernstein_1d(degree) @ tabulate_cardinal_bspline_1d(degree, pts).T
+        )
+
+        np.testing.assert_allclose(
+            result,
+            tabulate_bernstein_1d(degree, pts).T,
+            atol=_conditioning_atol(compute_bernstein_to_cardinal_1d(degree)),
+        )
+
+    @pytest.mark.parametrize("degree", range(7))
+    def test_roundtrip_float32(self, degree: int) -> None:
+        """The pair round-trips in float32 over the degrees where the bound is meaningful.
+
+        From degree 7 on the derived bound ``_COND_SAFETY_FACTOR * cond(A) * eps32``
+        exceeds 0.1 (``0.98`` at degree 7 against ``0.076`` at degree 6) and the
+        assertion would be vacuous, so those degrees are deliberately not claimed.
+        """
+        forward = compute_bernstein_to_cardinal_1d(degree, dtype=np.float32)
+        inverse = compute_cardinal_to_bernstein_1d(degree, dtype=np.float32)
+        assert forward.dtype == np.float32
+        assert inverse.dtype == np.float32
+
+        atol = _conditioning_atol(compute_bernstein_to_cardinal_1d(degree), np.float32)
+        assert _identity_residual(forward, inverse) <= atol
+
+    @pytest.mark.parametrize("degree", range(11))
+    def test_cached_matrix_round_trips_like_the_builder(self, degree: int) -> None:
+        """The cached hot-path matrix must be the same inverse the builder returns.
+
+        The extraction operators consume the cached copy rather than the builder, so
+        the accuracy pinned above has to reach them unchanged.
+        """
+        cached = _cached_cardinal_to_bernstein_matrix(degree, np.dtype(np.float64))
+        forward = compute_bernstein_to_cardinal_1d(degree)
+
+        np.testing.assert_array_equal(cached, compute_cardinal_to_bernstein_1d(degree))
+        assert _identity_residual(forward, cached) <= _conditioning_atol(forward)
 
 
 class TestCardinalToBernsteinBasisOperator:
@@ -733,7 +883,7 @@ class TestLegendreCardinalBasisOperators:
         forward = compute_legendre_to_cardinal_1d(degree)
         inverse = compute_cardinal_to_legendre_1d(degree)
         identity = np.eye(degree + 1)
-        atol = _conditioning_atol(degree)
+        atol = _conditioning_atol(forward)
 
         np.testing.assert_allclose(inverse @ forward, identity, atol=atol)
         np.testing.assert_allclose(forward @ inverse, identity, atol=atol)
@@ -742,8 +892,9 @@ class TestLegendreCardinalBasisOperators:
     def test_roundtrip_float32(self, degree: int) -> None:
         """The pair round-trips in float32 over the degrees where the bound is meaningful.
 
-        Beyond degree 5 the derived bound ``cond(A) * eps32`` exceeds 0.1 and the
-        assertion would be vacuous, so those degrees are deliberately not claimed.
+        From degree 5 on the derived bound ``_COND_SAFETY_FACTOR * cond(A) * eps32``
+        exceeds 0.1 and the assertion would be vacuous, so those degrees are
+        deliberately not claimed.
         """
         forward = compute_legendre_to_cardinal_1d(degree, dtype=np.float32)
         inverse = compute_cardinal_to_legendre_1d(degree, dtype=np.float32)
@@ -753,7 +904,7 @@ class TestLegendreCardinalBasisOperators:
         np.testing.assert_allclose(
             inverse @ forward,
             np.eye(degree + 1, dtype=np.float32),
-            atol=_conditioning_atol(degree, np.float32),
+            atol=_conditioning_atol(compute_legendre_to_cardinal_1d(degree), np.float32),
         )
 
     @pytest.mark.parametrize("degree", range(9))
@@ -788,7 +939,11 @@ class TestLegendreCardinalBasisOperators:
 
         gram = (duals @ (legendre.T * weights)) @ cardinal
 
-        np.testing.assert_allclose(gram, np.eye(degree + 1), atol=_conditioning_atol(degree))
+        np.testing.assert_allclose(
+            gram,
+            np.eye(degree + 1),
+            atol=_conditioning_atol(compute_legendre_to_cardinal_1d(degree)),
+        )
 
     @pytest.mark.parametrize("degree", range(9))
     def test_dual_integrates_to_one(self, degree: int) -> None:
@@ -802,7 +957,9 @@ class TestLegendreCardinalBasisOperators:
         duals = compute_cardinal_dual_legendre_coeffs_1d(degree)
 
         np.testing.assert_allclose(
-            duals[:, 0], np.ones(degree + 1), atol=_conditioning_atol(degree)
+            duals[:, 0],
+            np.ones(degree + 1),
+            atol=_conditioning_atol(compute_legendre_to_cardinal_1d(degree)),
         )
 
     @pytest.mark.parametrize("degree", range(9))
