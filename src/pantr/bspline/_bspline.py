@@ -287,8 +287,11 @@ class Bspline:
             tol (float | None): Convergence threshold on ``||F(xi) - x||_2``, as an
                 absolute distance in physical units. ``None`` (default) uses
                 :func:`pantr.tolerance.get_default` for this B-spline's dtype, scaled by
-                the geometry's own size: the larger of its control-point bounding-box
-                diagonal and its largest coordinate magnitude. Defaults to None.
+                the largest of three lengths: the control-point bounding-box diagonal, the
+                largest coordinate magnitude, and the physical length one ulp of a
+                parametric coordinate spans. The last is what keeps the threshold
+                reachable for a knot vector far from the parametric origin, whose
+                coordinates a float64 resolves only to ``eps * |xi|``. Defaults to None.
             max_iter (int): Maximum number of Newton steps per candidate cell.
                 Defaults to 30.
 
@@ -308,7 +311,10 @@ class Bspline:
             ValueError: If ``rank < dim``, any direction is periodic, a rational
                 B-spline has a non-positive weight, ``points`` has the wrong shape or a
                 non-finite entry, ``max_iter < 1``, or ``tol`` is not positive and
-                finite.
+                finite. Also when ``tol`` is ``None`` and the knot vector sits so far
+                from the parametric origin that one ulp of a coordinate moves the image
+                by more than the geometry's own size, since no default threshold can
+                mean anything there; pass an explicit ``tol`` to ask anyway.
 
         Note:
             What is guaranteed is that ``evaluate(ref_coords[i])`` reproduces
@@ -327,6 +333,17 @@ class Bspline:
             below the ``float32`` tolerance preset. Evaluating the returned coordinates
             on the original ``float32`` B-spline therefore reproduces the query point to
             ``float32`` accuracy only.
+
+            The default threshold grows with how far the knot vector sits from the
+            parametric origin, because that is how far one ulp of a coordinate moves the
+            image. A "found" verdict on such a geometry therefore asserts less than the
+            same verdict on one parametrized from the origin. It stays a small fraction of
+            the geometry for any ordinary knot vector; at a reach of ``1e13`` -- a knot
+            span ten trillion times further from the origin than it is wide -- it reaches
+            ``0.14`` of the bounding-box diagonal, and a point ten percent outside the
+            image is reported found. Past ``1 / (64 * eps)`` the default is refused
+            outright rather than served. Pass an explicit ``tol`` wherever the distance
+            matters more than the default's derivation.
 
         Example:
             >>> cell_ids, ref_coords = surface.locate(surface.evaluate(pts))
