@@ -1223,13 +1223,12 @@ class TestCoarsenCells:
     def test_destroys_only_the_named_children_after_overlapping_refines(self) -> None:
         """The cell-exact counterpart of the box contrast test above.
 
-        Same reproduction as
-        `TestCoarsenIsNotAnUnconditionalInverse.test_coarsen_after_overlapping_refines_
-        demotes_the_whole_box_1d`, where `coarsen(0, [1], [3])` ends at 7 cells because
-        it demotes the whole box.  Naming only the children the second refine created
-        gives back the 8-cell state that preceded it; naming all four children of
-        level-0 cells 1 and 2 gives the box call's 7.  The difference between the two
-        numbers is precisely what the caller controls by naming cells.
+        Same reproduction as `TestCoarsenIsNotAnUnconditionalInverse`'s box-overlap test,
+        where `coarsen(0, [1], [3])` ends at 7 cells because it demotes the whole box.
+        Naming only the children the second refine created gives back the 8-cell state
+        that preceded it; naming all four children of level-0 cells 1 and 2 gives the
+        box call's 7.  The difference between the two numbers is precisely what the
+        caller controls by naming cells.
         """
         g = _grid_1d(6, 2)
         g.refine(0, [0], [2])
@@ -1334,14 +1333,14 @@ class TestCoarsenCells:
             pool = [c for c in range(g.num_cells) if g.cell_level(c) >= 1]
             if not pool:
                 continue
-            marked_ids = rng.choice(
+            pool_idx = rng.choice(
                 len(pool), size=int(rng.integers(1, len(pool) + 1)), replace=False
             )
             marked = {
-                (g.cell_level(pool[int(i)]), g.cell_multi_index(pool[int(i)])) for i in marked_ids
+                (g.cell_level(pool[int(i)]), g.cell_multi_index(pool[int(i)])) for i in pool_idx
             }
             before = _active_cells(g)
-            g.coarsen_cells([pool[int(i)] for i in marked_ids])
+            g.coarsen_cells([pool[int(i)] for i in pool_idx])
             after = _active_cells(g)
             assert before - marked <= after, "removed a cell that was not named"
             for level, midx in after - before:
