@@ -212,8 +212,15 @@ class Bezier:
                 negative, or if the points dtype does not match the Bézier dtype.
 
         Example:
-            >>> result = bezier.evaluate_derivatives(pts, 2)
-            >>> result = bezier.evaluate_derivatives(pts, [1, 2])
+            >>> import numpy as np
+            >>> f = Bezier(np.array([[0.0], [2.0]]))  # f(t) = 2t
+            >>> np.allclose(f.evaluate_derivatives(np.array([0.3, 0.7]), 1), [2.0, 2.0])
+            True
+            >>> cp = np.zeros((2, 2, 1))
+            >>> cp[1, 1, 0] = 1.0  # f(u, v) = u * v
+            >>> surf = Bezier(cp)
+            >>> np.allclose(surf.evaluate_derivatives(np.array([[0.3, 0.4]]), [1, 1]), [1.0])
+            True
         """
         orders_seq: Sequence[int] = [orders] * self.dim if isinstance(orders, int) else orders
         return _evaluate_bezier_deriv(self, pts, orders_seq, out)
@@ -253,9 +260,15 @@ class Bezier:
             ValueError: If the degree in the given direction is 0.
 
         Example:
-            >>> f_prime = f.derivative()
-            >>> df_dv = surface.derivative(direction=1)
-            >>> f_prime_same_deg = f.derivative(keep_degree=True)
+            >>> import numpy as np
+            >>> f = Bezier(np.array([[0.0], [0.0], [1.0]]))  # Bernstein form of t**2
+            >>> fp = f.derivative()
+            >>> fp.degree
+            (1,)
+            >>> np.allclose(fp.evaluate(np.array([0.3])), [0.6])
+            True
+            >>> f.derivative(keep_degree=True).degree
+            (2,)
         """
         if direction < 0 or direction >= self.dim:
             raise ValueError(f"direction must be in [0, {self.dim}), got {direction}.")
@@ -493,8 +506,16 @@ class Bezier:
                 or ranks.
 
         Example:
+            >>> import numpy as np
+            >>> f = Bezier(np.array([[0.0], [1.0]]))  # f(t) = t
+            >>> g = Bezier(np.array([[0.0], [1.0]]))  # g(t) = t
             >>> h = f.multiply(g)
-            >>> h2 = f * g
+            >>> h.degree
+            (2,)
+            >>> np.allclose(h.evaluate(np.array([0.5])), [0.25])
+            True
+            >>> np.allclose((f * g).control_points, h.control_points)
+            True
         """
         return _multiply_bezier(self, other)
 
@@ -561,8 +582,14 @@ class Bezier:
             ValueError: If ``direction`` is out of range ``[0, dim)``.
 
         Example:
-            >>> rev = bezier.reverse(direction=0)
-            >>> bezier.reverse(direction=1, in_place=True)
+            >>> import numpy as np
+            >>> f = Bezier(np.array([[0.0], [1.0]]))  # f(t) = t
+            >>> rev = f.reverse()
+            >>> np.allclose(rev.evaluate(np.array([0.3])), [0.7])  # rev(t) = 1 - t
+            True
+            >>> f.reverse(in_place=True)  # mutates in place, returns None
+            >>> np.allclose(f.evaluate(np.array([0.3])), [0.7])
+            True
         """
         if direction < 0 or direction >= self.dim:
             raise ValueError(f"direction must be in [0, {self.dim}), got {direction}.")
@@ -608,7 +635,12 @@ class Bezier:
                 ``range(dim)``.
 
         Example:
-            >>> surface.permute_directions([1, 0])  # swap u ↔ v
+            >>> import numpy as np
+            >>> surf = Bezier(np.zeros((2, 3, 1)))
+            >>> surf.degree
+            (1, 2)
+            >>> surf.permute_directions([1, 0]).degree  # swap u <-> v
+            (2, 1)
         """
         perm = list(permutation)
         if sorted(perm) != list(range(self.dim)):
@@ -662,9 +694,13 @@ class Bezier:
                 geometric rank of the Bézier.
 
         Example:
+            >>> import numpy as np
             >>> from pantr.transform import AffineTransform
+            >>> curve = Bezier(np.array([[0.0, 0.0], [1.0, 1.0]]))  # rank 2
             >>> T = AffineTransform.translation([1.0, 2.0])
-            >>> shifted = bezier.transform(T)
+            >>> shifted = curve.transform(T)
+            >>> np.allclose(shifted.control_points, [[1.0, 2.0], [2.0, 3.0]])
+            True
         """
         new_cp = _apply_affine_to_control_points(
             self._control_points,
@@ -770,8 +806,13 @@ class Bezier:
             ValueError: If ``value`` is not strictly inside ``(0, 1)``.
 
         Example:
+            >>> import numpy as np
+            >>> curve = Bezier(np.array([[0.0], [1.0]]))  # f(t) = t
             >>> left, right = curve.split(0, 0.5)
-            >>> left, right = surface.split(1, 0.3)
+            >>> np.allclose(left.evaluate(np.array([1.0])), [0.5])
+            True
+            >>> np.allclose(right.evaluate(np.array([0.0])), [0.5])
+            True
         """
         if direction < 0 or direction >= self.dim:
             raise ValueError(f"direction must be in [0, {self.dim}), got {direction}.")
@@ -812,10 +853,16 @@ class Bezier:
             ValueError: If ``value`` is outside ``[0, 1]``.
 
         Example:
-            >>> # Slice a surface at v=0.5 to get a curve
-            >>> curve = surface.slice(1, 0.5)
-            >>> # Composable: surface -> curve -> point
-            >>> pt = surface.slice(1, 0.5).slice(0, 0.2)
+            >>> import numpy as np
+            >>> cp = np.zeros((2, 2, 1))
+            >>> cp[1, 1, 0] = 1.0  # f(u, v) = u * v
+            >>> surf = Bezier(cp)
+            >>> curve = surf.slice(1, 0.5)  # fix v=0.5: curve(u) = 0.5u
+            >>> curve.dim
+            1
+            >>> pt = surf.slice(1, 0.5).slice(0, 0.2)  # surface -> curve -> point
+            >>> np.allclose(pt, [0.1])
+            True
         """
         if axis < 0 or axis >= self.dim:
             raise ValueError(f"axis must be in [0, {self.dim}), got {axis}.")
@@ -846,8 +893,13 @@ class Bezier:
             ValueError: If ``side`` is not 0 or 1.
 
         Example:
-            >>> # Extract left boundary of a surface along direction 0
-            >>> left_curve = surface.boundary(0, 0)
+            >>> import numpy as np
+            >>> cp = np.zeros((2, 2, 1))
+            >>> cp[1, 1, 0] = 1.0  # f(u, v) = u * v
+            >>> surf = Bezier(cp)
+            >>> right_edge = surf.boundary(0, 1)  # u = 1: f(1, v) = v
+            >>> np.allclose(right_edge.evaluate(np.array([0.7])), [0.7])
+            True
         """
         if side not in (0, 1):
             raise ValueError(f"side must be 0 or 1, got {side}.")
@@ -894,8 +946,15 @@ class Bezier:
             ValueError: If any value is outside ``[0, 1]``.
 
         Example:
-            >>> # Collapse a 3D volume along axis 1 at (u=0.3, w=0.7)
-            >>> curve = volume.collapse_along_axis(1, [0.3, 0.7])
+            >>> import numpy as np
+            >>> cp = np.zeros((2, 2, 2, 1))
+            >>> cp[1, 1, 1, 0] = 1.0  # f(u, v, w) = u * v * w
+            >>> vol = Bezier(cp)
+            >>> curve = vol.collapse_along_axis(1, [0.3, 0.7])  # fix u=0.3, w=0.7
+            >>> curve.degree
+            (1,)
+            >>> np.allclose(curve.evaluate(np.array([0.5])), [0.3 * 0.5 * 0.7])
+            True
         """
         if self.dim < 2:  # noqa: PLR2004
             raise ValueError("collapse_along_axis requires dim >= 2.")
