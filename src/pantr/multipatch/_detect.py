@@ -114,8 +114,10 @@ def _joint_tolerances(patch_a: Bspline, patch_b: Bspline, tol: float | None) -> 
     # absolute error of eps * 1e6 however short the diagonal is; grading against the
     # diagonal there asks for agreement eight orders below the noise floor. The largest
     # coordinate magnitude is therefore taken alongside it and the larger wins -- the
-    # same rule, for the same reason, as `_knot_scale` in the B-spline layer and
-    # `_geometric_scale` in point inversion.
+    # same rule, for the same reason, as `_knot_scale` in the B-spline layer and as the
+    # physical half of `_geometric_scale` in point inversion. That one carries a third
+    # length for what its parametrization resolves, which has no counterpart here: this
+    # grades a distance between two physical corner coordinates.
     magnitude = float(np.abs(coords).max()) if coords.size else 0.0
     scale = max(diagonal, magnitude)
     # A degenerate joint bounding box (both patches a single point, at the origin)

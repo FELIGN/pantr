@@ -274,13 +274,21 @@ class _LocateContext(NamedTuple):
             when it is already ``float64``, otherwise an exact promoted copy.
         bvh (BVH): Hierarchy over the per-cell physical control-point boxes, with cell
             ids flat in C-order over ``space.num_intervals``.
-        scale (float): The geometric scale the default tolerance is expressed in; see
-            :func:`_geometric_scale`.
+        scale (float): The length the default tolerance is expressed in, covering the
+            geometry's size, its distance from the origin, and what its parametrization
+            can resolve; see :func:`_geometric_scale`.
+        diagonal (float): The geometry's own bounding-box diagonal, kept alongside the
+            scale it feeds because :func:`_locate_impl` grades the parametric term against
+            it before accepting a default threshold.
+        parametric (float): The parametric length from :func:`_parametric_scale`, kept for
+            the same comparison.
     """
 
     spline: Bspline
     bvh: BVH
     scale: float
+    diagonal: float
+    parametric: float
 
 
 def _physical_control_points(spline: Bspline) -> npt.NDArray[np.float64]:
@@ -368,22 +376,213 @@ def _cell_physical_bounds(
     return lo.reshape(n_cells, rank), hi.reshape(n_cells, rank)
 
 
-def _geometric_scale(lo: npt.NDArray[np.float64], hi: npt.NDArray[np.float64]) -> float:
+def _parametric_reach(domain: npt.NDArray[np.float64]) -> npt.NDArray[np.float64]:
+    """Return, per direction, how far the parametric box sits from the origin in its own widths.
+
+    ``max(|lo_k|, |hi_k|) / (hi_k - lo_k)``: the dimensionless factor by which the
+    representable parameters around the box are coarser, *relative to the extent they have
+    to resolve*, than they would be on a box touching the origin. It is one for a knot
+    vector spanning ``[0, L]``, one half for one spanning ``[-a, a]``, and grows linearly
+    once the box is further from the origin than it is wide. :func:`_geometric_scale` is
+    where it is used and where the argument for it is written down.
+
+    Returned per direction rather than reduced here, because it is only meaningful paired
+    with *that same direction's* physical span: reducing first would pair the worst-offset
+    direction with another direction's stretch, which on an anisotropic domain over-loosens
+    the threshold by exactly the ratio between them -- a factor of ``1e6`` on a map whose
+    second direction has a ``1e-6`` image extent, on geometry the physical-only threshold
+    inverted without losing anything. See :func:`_parametric_scale`.
+
+    A direction with no extent contributes nothing rather than dividing by zero. Such a
+    direction carries no knot span, hence no cell for the inversion to place anything in,
+    and an infinite scale would report every query *found* -- the opposite failure to the
+    one the reach exists to remove, and the worse of the two. The test is for an exact zero,
+    which is narrower than the B-spline layer's own notion of a vanishing extent
+    (``8 * eps * scale``): a positive extent below that is possible only through
+    ``snap_knots=False``, and is a knot vector whose own layer would not vouch for it.
+
+    Args:
+        domain (npt.NDArray[np.float64]): The parametric box, shape ``(dim, 2)``, as
+            :attr:`pantr.bspline.BsplineSpace.domain` returns it.
+
+    Returns:
+        npt.NDArray[np.float64]: Shape ``(dim,)``, non-negative and finite.
+    """
+    lo, hi = domain[:, 0], domain[:, 1]
+    extent = hi - lo
+    magnitude = np.maximum(np.abs(lo), np.abs(hi))
+    return np.divide(magnitude, extent, out=np.zeros_like(extent), where=extent > 0.0)
+
+
+def _net_span_per_direction(spline: Bspline) -> npt.NDArray[np.float64]:
+    """Return the physical length each parametric direction sweeps, one entry per direction.
+
+    For direction ``k``, the diagonal of the bounding box of one line of the control net
+    along ``k``, maximised over the transverse indices. This is the factor that supplies
+    ``sigma_max`` in :func:`_geometric_scale`'s derivation: it stands for ``L_k *
+    ||J e_k||``, the physical length a full traverse of direction ``k`` covers.
+
+    **Exact for an affine map.** The net line is then a straight segment, whose coordinate
+    box has sides ``|B_i - A_i|`` and therefore diagonal exactly ``||B - A||``; and ``B - A``
+    is ``L_k * J e_k``, because an open knot vector's Greville abscissae span the full
+    parametric extent and linear precision reproduces the affine map on them.
+
+    **Why the box of the line and not its chord.** The chord ``||P_last - P_first||`` is also
+    exact for an affine map and cheaper, but it vanishes on a direction that doubles back --
+    a folded map whose net returns to where it started -- and a zero there would delete the
+    parametric term exactly where the map is hardest, reintroducing the defect this exists to
+    remove. The bounding box measures the excursion instead of the displacement, so it is
+    never smaller than the chord and never larger than the geometry's own diagonal (the line
+    lies inside the control-point box).
+
+    Args:
+        spline (Bspline): A ``float64`` spline; rational splines are read through their
+            projected control points, as the rest of this module does.
+
+    Returns:
+        npt.NDArray[np.float64]: Shape ``(dim,)``, non-negative.
+    """
+    cp = _physical_control_points(spline)
+    spans = np.empty(spline.dim, dtype=np.float64)
+    for axis in range(spline.dim):
+        line_extent = cp.max(axis=axis) - cp.min(axis=axis)
+        spans[axis] = float(np.linalg.norm(line_extent, axis=-1).max())
+    return spans
+
+
+def _parametric_scale(spline: Bspline) -> float:
+    """Return the physical length the parametrization's own resolution puts a floor at.
+
+    ``max_k [ reach_k * net_span_k ]``, pulled into the format the *iterate* carries. The
+    pairing is per direction and the maximum is taken over the products, never over the two
+    factors separately; :func:`_parametric_reach` says what goes wrong otherwise.
+
+    **The precision ratio.** The inversion always iterates in ``float64``, whatever the
+    caller's spline carries -- see this module's precision contract. So one ulp of a
+    parametric coordinate is ``eps64 * |xi|`` even for a ``float32`` caller, while
+    :func:`_locate_impl` multiplies this length by ``get_default(spline.dtype)``, which is
+    ``64 * eps32`` there. Handing that tier a ``float64`` quantization would overshoot by
+    ``eps32 / eps64``, a factor of ``5.4e8``, and it shows: an otherwise ordinary
+    ``float32`` patch of unit size at a parametric offset of ``1e5`` would be given a
+    threshold of ``0.76`` of its own diameter, so a query half a diameter outside its image
+    would be reported found. Multiplying by ``eps64 / eps(dtype)`` cancels the caller's
+    format back out, leaving ``64 * eps64 * reach * span`` in every format. The ratio is
+    exactly ``1.0`` for a ``float64`` spline, which is the common path.
+
+    The two physical lengths in :func:`_geometric_scale` are deliberately *not* treated this
+    way. They grade the caller's own data, whose precision really is the caller's format;
+    this one grades the solver's iterate, whose precision is not.
+
+    Args:
+        spline (Bspline): The spline being inverted, before promotion, so that its dtype is
+            the caller's.
+
+    Returns:
+        float: A physical length, non-negative and finite.
+    """
+    domain = np.asarray(spline.space.domain, dtype=np.float64)
+    products = _parametric_reach(domain) * _net_span_per_direction(spline)
+    precision_ratio = float(np.finfo(np.float64).eps) / float(np.finfo(spline.dtype).eps)
+    return precision_ratio * float(products.max())
+
+
+def _geometric_scale(
+    lo: npt.NDArray[np.float64],
+    hi: npt.NDArray[np.float64],
+    parametric: float,
+) -> float:
     """Return the length the default convergence tolerance is a multiple of.
 
-    Two lengths matter and the larger one has to win:
+    Three lengths matter and the largest one has to win:
 
     - the **diagonal** of the geometry's bounding box, which is what makes a residual
-      threshold a *relative* accuracy statement about the mapping; and
+      threshold a *relative* accuracy statement about the mapping;
     - the largest coordinate **magnitude** present, because the computed residual
       ``F(xi) - x`` cannot be resolved below ``~C * eps * max|coordinate|`` (the de Boor
       sum accumulates ``C`` roundings, of the order of ``prod(degree + 1)``), whatever
-      the box's extent is.
+      the box's extent is; and
+    - the **parametric** length of :func:`_parametric_scale`, because a parametric
+      coordinate is a float64 too and the residual cannot be resolved below what one ulp
+      of it produces.
 
     Using the diagonal alone silently makes the tolerance unreachable for a geometry far
     from the origin -- a patch of diameter 1 sitting at ``x = 1e6`` has a residual floor
     around ``1e-10`` while ``eps * 1`` would be demanded -- so the scale is the maximum
-    of the two.
+    of them all.
+
+    **The parametric term.** The first two lengths are properties of the image alone, and
+    a threshold built from them is equally unreachable whenever the *parametrization*
+    cannot resolve the geometry that finely. One ulp of a parametric coordinate is ``eps *
+    |xi_k|``, which the map turns into a physical displacement of ``eps * |xi_k| * ||J
+    e_k||``, so no representable parameter drives the residual below about half the
+    largest such step, however good the solver is. That is a floor of exactly the kind the
+    ``magnitude`` term already covers, and it is invisible to both of the other lengths:
+    translating the knot vector changes it and changes neither of them. Measured on a
+    unit-width span carrying the exactly affine map ``F(xi) = xi - offset``, against the
+    threshold the two physical lengths alone give: the floor is ``0.008`` of it at offset
+    zero, ``0.504`` at ``1e2``, ``4.0`` at ``1e3`` and ``4096`` at ``1e6``, and every
+    query is lost from ``1e3`` upward.
+
+    Splitting that floor at the parametric extent ``L_k = hi_k - lo_k`` separates what can
+    be read off the space from what cannot::
+
+        eps * |xi_k| * ||J e_k||  ==  eps * (|xi_k| / L_k) * (L_k * ||J e_k||)
+
+    The first factor is the reach of :func:`_parametric_reach`. The second is the physical
+    length a full traverse of direction ``k`` sweeps, and **the control net's span along
+    that direction supplies it** -- that is where ``sigma_max`` enters, through
+    :func:`_net_span_per_direction`, exactly for an affine map. The product is formed **per
+    direction and maximised afterwards**. Maximising the two factors separately, as an
+    earlier form of this did, pairs the worst-offset direction with a different direction's
+    stretch: measured on an affine map whose second direction sits at offset ``1e6`` while
+    its image extent shrinks, that inflates the threshold to ``2.4e6`` times the attainable
+    floor once the extent reaches ``1e-4``, on geometry the two physical lengths alone had
+    inverted without losing anything. With the product formed per direction the ratio stays
+    at ``244`` across all four decades of extent. Shrinking the extent further keeps
+    widening the gap, but stops being worth quoting a number for: the floor falls below one
+    ulp of unity, where which representable point is sampled moves it by a factor of a few.
+    The *term's* own inflation there is exact and needs no measurement -- it is
+    ``diagonal / net_span_1``, so ``1e6`` at an extent of ``1e-6``.
+
+    **What the substitution assumes, and what the tier absorbs.** A map whose local stretch
+    exceeds the average over its own direction has a floor above this length, by the
+    amplification ``A = max_k L_k * sup||J e_k|| / net_span_k``. The floor is a half ulp and
+    the tier is ``64 * eps``, so the gap is absorbed to ``A`` of order ``100``: measured on a
+    degree-1 monotone family carrying half its rise in a single span, floor over threshold
+    is ``0.13`` at ``A == 32`` and ``0.53`` at ``A == 128``, passing one between ``A == 128``
+    and ``A == 256``.
+
+    Three things about that limit, so it is not read as more than it is. It is **not new**:
+    the physical ``diagonal`` has always stood in for stretch the same way, and the identical
+    sweep at reach one -- where this term is inactive -- also loses queries once ``A``
+    reaches a few hundred. ``A`` is **unbounded** over legal inputs, rationals included, so
+    this term is a mitigation and not a guarantee. And past the limit the queries are lost
+    against the *physical-only* threshold too, by decades more, so what remains is a residue
+    of the same defect rather than anything the cure introduced.
+
+    **Why the reach and not the parametric magnitude alone.** Dividing by the extent is
+    what keeps the threshold covariant. Under ``xi -> lam * xi`` the coordinate magnitude
+    grows by ``lam`` while the Jacobian shrinks by it, so the physical floor is unchanged
+    and the threshold must be too; a term reading ``max|xi_k|`` without the extent would
+    scale with ``lam``, and a pure reparametrization would change the accuracy demanded of
+    an answer that did not move.
+
+    **Why it multiplies a span and not the magnitude.** The parametric floor is a statement
+    about stretch, and only a span measures stretch: a constant map has ``J == 0`` and no
+    parametric floor at all whatever its coordinates are, and reading the magnitude there
+    would invent one. It is also what holds the term at its floor for ordinary geometry --
+    reach is one for a knot vector spanning ``[0, L]`` and one half for ``[-a, a]``, and no
+    net span exceeds the diagonal, so the term cannot be what decides the maximum.
+    **Bitwise** for the common case, not merely to within a rounding: on a map whose net
+    span along the widest direction *is* the diagonal, ``[0, L]`` gives ``reach == L / L``,
+    exactly ``1.0`` in IEEE arithmetic, and ``1.0 * diagonal`` is exactly ``diagonal``, so
+    the three-way maximum is the two-way one bit for bit. Where the net span is shorter the
+    term is strictly smaller and the maximum returns the physical value unchanged anyway.
+    Nothing parametrized from the origin is held to a different bar than it was.
+
+    An offset that is neither zero nor large does loosen the threshold, and is meant to: a
+    knot vector spanning ``[1, 2]`` has reach two, so its bar doubles, because its floor
+    doubles too.
 
     **What the default tier buys, measured.** :func:`pantr.tolerance.get_default` is
     ``64 * eps``, and an earlier reading of this called that a six percent margin over an
@@ -418,6 +617,7 @@ def _geometric_scale(lo: npt.NDArray[np.float64], hi: npt.NDArray[np.float64]) -
         lo (npt.NDArray[np.float64]): Per-cell box lower corners, shape
             ``(n_cells, rank)``.
         hi (npt.NDArray[np.float64]): Per-cell box upper corners, same shape.
+        parametric (float): The parametric length from :func:`_parametric_scale`.
 
     Returns:
         float: The geometric scale, strictly positive.
@@ -426,7 +626,7 @@ def _geometric_scale(lo: npt.NDArray[np.float64], hi: npt.NDArray[np.float64]) -
     box_hi = hi.max(axis=0)
     diagonal = float(np.linalg.norm(box_hi - box_lo))
     magnitude = float(max(np.abs(box_lo).max(), np.abs(box_hi).max()))
-    scale = max(diagonal, magnitude)
+    scale = max(diagonal, magnitude, parametric)
     return scale if scale > 0.0 else 1.0
 
 
@@ -443,8 +643,16 @@ def _build_context(spline: Bspline) -> _LocateContext:
     """
     spline_64 = _promote_to_float64(spline)
     lo, hi = _cell_physical_bounds(spline_64)
+    # Read from the caller's spline, not the promoted one: the precision ratio it applies
+    # has to see the format the caller's tier will be taken from.
+    parametric = _parametric_scale(spline)
+    box_lo, box_hi = lo.min(axis=0), hi.max(axis=0)
     return _LocateContext(
-        spline=spline_64, bvh=BVH.from_cell_bounds(lo, hi), scale=_geometric_scale(lo, hi)
+        spline=spline_64,
+        bvh=BVH.from_cell_bounds(lo, hi),
+        scale=_geometric_scale(lo, hi, parametric),
+        diagonal=float(np.linalg.norm(box_hi - box_lo)),
+        parametric=parametric,
     )
 
 
@@ -757,6 +965,11 @@ def _newton_refine(
         lo=lo,
         hi=hi,
     )
+    # Tested before the first step, so a starting guess already inside the threshold is
+    # returned untouched. That is what makes the threshold a stopping rule and not only an
+    # acceptance rule: under a large one -- a geometry far from either origin -- the cell
+    # midpoint can pass here, and the coordinate that comes back is then accurate to the
+    # threshold rather than to what the map could have delivered.
     converged = state.res_norm <= tol_phys
     active = np.arange(xi.shape[0], dtype=np.int64)[~converged]
 
@@ -856,6 +1069,65 @@ def _validate_invertible(spline: Bspline, tol: float | None, max_iter: int) -> N
         raise ValueError(f"locate: tol must be positive and finite; got {tol}.")
 
 
+def _default_tolerance(spline: Bspline, context: _LocateContext) -> float:
+    """Return the default convergence threshold, or refuse a parametrization that has none.
+
+    ``get_default(dtype) * scale``, with ``scale`` from :func:`_geometric_scale`, except
+    that a parametrization whose own resolution would demand a threshold larger than the
+    geometry it grades is refused instead of served.
+
+    **Why refuse rather than clamp.** Past that point the answer carries no information: a
+    "found" verdict admitting more than a whole diameter of error says only that the query
+    was somewhere near the model. Clamping the scale back would restore an accuracy that
+    *cannot be attained*, which is precisely the defect the parametric term exists to
+    remove -- the same bug, relocated to the far end of the range rather than fixed. So the
+    only honest answers are to serve a meaningless threshold or to say so, and this library
+    already says so elsewhere: :func:`pantr.bspline._bspline_knots._check_snapping_kept_an_interval`
+    refuses a knot vector whose mesh the format cannot resolve, and names the same remedy.
+
+    **Where the line is.** ``get_default(dtype) * parametric > diagonal``: the one place no
+    constant has to be invented, since it compares two lengths the geometry itself supplies
+    and is therefore covariant under scaling the geometry and invariant under scaling the
+    parametrization. It fires only above a reach of ``1 / (64 * eps)``, about ``7e13`` --
+    a knot span sitting seventy trillion times further from the parametric origin than it
+    is wide, and within a factor of eight of what the knot layer refuses outright.
+
+    **What it deliberately does not cover.** Below that line the threshold can still be a
+    sizeable fraction of the geometry: a reach of ``1e13`` buys ``0.14`` of a diameter, at
+    which a query ten percent outside the image is reported found. That is a real loss of
+    meaning and it is stated in :meth:`pantr.bspline.Bspline.locate`'s docstring rather
+    than legislated here, because every candidate line below ``1`` is a number someone
+    picked. The physical half of the scale is left alone entirely: a small geometry far
+    from the origin has always been graded this way, and that behaviour is correct.
+
+    An explicit ``tol`` is never refused. A caller who names a threshold has taken
+    responsibility for what it means, and may well be asking a proximity question rather
+    than an inversion one.
+
+    Args:
+        spline (Bspline): The spline being inverted, whose dtype sets the tolerance tier.
+        context (_LocateContext): Its cached inversion state.
+
+    Returns:
+        float: The default threshold on ``||F(xi) - x||_2``, strictly positive.
+
+    Raises:
+        ValueError: If the parametric term alone would put the threshold above the
+            geometry's own bounding-box diagonal.
+    """
+    tier = get_default(spline.dtype)
+    if tier * context.parametric > context.diagonal:
+        raise ValueError(
+            "locate: this knot vector sits so far from the parametric origin that one ulp "
+            "of a parametric coordinate moves the image by more than the geometry's own "
+            f"size ({tier * context.parametric:.3e} against a bounding-box diagonal of "
+            f"{context.diagonal:.3e}), so no residual threshold can mean anything. Move "
+            "the knot vector nearer the parametric origin, or pass an explicit tol to say "
+            "what distance you want."
+        )
+    return tier * context.scale
+
+
 def _locate_impl(
     spline: Bspline,
     points: npt.ArrayLike,
@@ -886,7 +1158,9 @@ def _locate_impl(
         ValueError: If ``rank < dim``, any direction is periodic, a rational spline has
             a non-positive weight, ``points`` has a bad shape or a non-finite entry,
             ``max_iter < 1``, or ``tol`` is given and is not positive and finite. See
-            :func:`_validate_invertible` and :func:`_validate_points`.
+            :func:`_validate_invertible` and :func:`_validate_points`. Also if ``tol`` is
+            ``None`` and the parametrization cannot support any meaningful threshold; see
+            :func:`_default_tolerance`.
     """
     dim, rank = spline.dim, spline.rank
     _validate_invertible(spline, tol, max_iter)
@@ -899,13 +1173,20 @@ def _locate_impl(
 
     pts = _validate_points(points, rank)
     context = _locate_context(spline)
-    tol_phys = float(tol) if tol is not None else get_default(spline.dtype) * context.scale
+    tol_phys = float(tol) if tol is not None else _default_tolerance(spline, context)
 
     n_pts = pts.shape[0]
     cell_ids = np.full(n_pts, -1, dtype=np.int64)
     ref_coords = np.full((n_pts, dim), np.nan, dtype=np.float64)
 
     # Candidates per point, in ascending cell id: the order the rounds below try them in.
+    # The pad is the threshold itself, so a geometry whose threshold is large -- far from
+    # the physical origin, or far from the parametric one -- returns more candidate cells
+    # per query. That costs solves, never correctness: every extra candidate still has to
+    # pass the same residual test. Measured on a 16x16-cell patch, mean candidates per
+    # query: 4.0 (of 256) at parametric offsets up to 1e9, 7.0 at 1e11, 57.1 at 1e13 --
+    # the blow-up starting only where the verdict is already near-meaningless and
+    # _default_tolerance is about to refuse outright.
     candidates = [np.sort(context.bvh.query_aabb(AABB(x, x).pad(tol_phys))) for x in pts]
     pending = [i for i, cand in enumerate(candidates) if cand.size > 0]
     found: list[int] = []

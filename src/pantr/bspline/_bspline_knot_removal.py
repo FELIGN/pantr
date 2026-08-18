@@ -65,11 +65,15 @@ def _control_point_scale(ctrl: npt.NDArray[np.float32 | np.float64]) -> float:
 
     ``max(bounding-box diagonal, largest ||P_i||)`` over the rows of ``ctrl``, the same
     pairing of extent and coordinate magnitude that
-    :func:`~pantr.bspline._bspline_knots._knot_scale` makes in parametric space and
-    :func:`~pantr.bspline._bspline_locate._geometric_scale` in physical space. The
-    extent alone is not enough: a small part sitting at ``x = 1e6`` has control points
-    whose differences carry an absolute error of ``eps * 1e6`` however small the part
-    is.
+    :func:`~pantr.bspline._bspline_knots._knot_scale` makes in parametric space and that
+    :func:`~pantr.bspline._bspline_locate._geometric_scale` makes for the physical half
+    of its own scale. The extent alone is not enough: a small part sitting at ``x = 1e6``
+    has control points whose differences carry an absolute error of ``eps * 1e6`` however
+    small the part is.
+
+    The third length that inversion's scale carries -- what the *parametrization* can
+    resolve -- has no counterpart here. Knot removal grades a distance between control
+    points, which no parametric coordinate enters.
 
     Computed on the array as given, so for a rational spline it is the scale of the
     *homogeneous* control points, which is the space the kernel measures in.
