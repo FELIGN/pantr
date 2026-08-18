@@ -246,7 +246,10 @@ def _verify_corners_2d(
     carries that derivation.  At float64 the tier is ``9.09e-13`` relative while one
     float32 ulp at magnitude 1 is ``1.19e-07``, so a float32 patch whose corner is as
     close as its format allows was refused for a disagreement it cannot even express, by a
-    factor of ``5.4e5``.
+    factor of ``eps32 / (4096 eps64) = 2**17 = 131072``.  (Pantr issue 319 states ``5.4e5``
+    here; that is the ratio of the two *epsilons* divided by 4096 done the wrong way round
+    -- ``eps32 / eps64`` is ``2**29 = 5.4e8`` -- and the figure against the *tier* is
+    ``1.3e5``.  ``test_the_float32_tier_is_the_only_one_a_float32_corner_can_clear`` pins it.)
 
     **One column group, because these are points and not coefficients.**
     :meth:`~pantr.bspline.Bspline.boundary` projects a rational curve down to a point, so
@@ -611,9 +614,9 @@ def _verify_edges_3d(edges: tuple[_EdgeReadings, ...]) -> None:
     **The tier is read at the readings' own precision**, not at float64, for the reason
     :func:`~pantr.cad._validation._coarsest_dtype` gives: at float64 it is ``9.09e-13``
     relative, while one float32 ulp at magnitude 1 is ``1.19e-07``, so a float32 model was
-    graded ``5.4e5`` tighter than anything it can express.  The coarsest of the compared
-    readings decides, matching the scale's population; that is never below the per-edge
-    floor, so no genuinely shared edge is refused by it.
+    graded ``2**17 = 131072`` times tighter than anything it can express.  The coarsest of
+    the compared readings decides, matching the scale's population; that is never below the
+    per-edge floor, so no genuinely shared edge is refused by it.
 
     **Why any slack at all.** Two readings of a genuinely shared edge are usually **bitwise
     equal**, and not only when the two faces store it identically: reaching the common space

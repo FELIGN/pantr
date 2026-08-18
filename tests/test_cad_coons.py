@@ -1199,7 +1199,7 @@ class TestCoonsPrecisionAndColumnScale:
 
     1. the tier was read at float64 whatever the inputs carried, so a **float32 model was
        refused for a disagreement it cannot express** -- one float32 ulp at magnitude 1 is
-       ``1.19e-07`` against a bar of ``9.09e-13``, tighter by ``5.4e5``;
+       ``1.19e-07`` against a bar of ``9.09e-13``, tighter by ``2**17 = 131072``;
     2. the rational edge comparison took one magnitude over a homogeneous control row,
        mixing coordinates (length times weight) with weights (dimensionless), so a
        **weight error was graded against the model's length** and was accepted once the
@@ -1260,11 +1260,25 @@ class TestCoonsPrecisionAndColumnScale:
         because in each the corner is one ulp of *that* format out -- one ulp at magnitude
         1 being the format's machine epsilon by definition -- while the tier is 4096 of
         them.  float64 accepted it and float32 did not, reporting a corner mismatch that
-        is not one and was ``5.4e5`` below anything float32 can express.
+        is not one and was ``2**17 = 131072`` times below anything float32 can express.
         """
         curves = self._unit_square_curves(dtype, get_machine_epsilon(dtype))
         surface = create_coons_surface(curves)
         assert np.dtype(surface.control_points.dtype) == np.dtype(dtype)
+
+    def test_the_float32_tier_is_the_only_one_a_float32_corner_can_clear(self) -> None:
+        """Pin the ratio the docstrings quote, because a number in prose rots silently.
+
+        Pantr issue 319 states the float64 tier is ``5.4e5`` times tighter than one float32
+        ulp at magnitude 1.  It is not: ``5.4e8`` is ``eps32 / eps64``, and dividing that by
+        the tier's own factor of 4096 gives ``2**17 = 131072``, so the figure against the
+        *tier* is ``1.3e5``.  Both docstrings quoted the ticket's number until this test was
+        written.  Nothing else in the suite would notice, since the code never computes the
+        ratio -- which is exactly why it is asserted here rather than left as prose.
+        """
+        one_float32_ulp = get_machine_epsilon(np.float32)
+        assert one_float32_ulp / get_conservative(np.float64) == 2**17
+        assert get_machine_epsilon(np.float32) / get_machine_epsilon(np.float64) == 2**29
 
     @pytest.mark.parametrize("dtype", [np.float32, np.float64])
     def test_a_corner_a_thousand_ulps_out_is_refused_in_either_precision(
