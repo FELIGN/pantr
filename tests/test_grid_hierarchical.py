@@ -658,6 +658,37 @@ class TestActiveSetAccessors:
         assert not g.is_active_leaf(0, (-1, 0))  # negative index
         assert not g.is_active_leaf(5, (0, 0))  # nonexistent level
 
+    def test_cell_id_inverts_cell_level_and_multi_index(self) -> None:
+        """`cell_id` round-trips every active leaf, at every level, in both directions."""
+        g = _grid_2d(4, 2)
+        g.refine(0, [0, 0], [2, 2])
+        g.refine(1, [0, 0], [2, 2])
+        assert g.max_level == 2
+        for cid in range(g.num_cells):
+            assert g.cell_id(g.cell_level(cid), g.cell_multi_index(cid)) == cid
+
+    def test_cell_id_none_for_cells_that_are_not_active_leaves(self) -> None:
+        """The `None` cases are exactly `is_active_leaf`'s `False` cases."""
+        g = _grid_1d(4, 2)
+        g.refine(0, [0], [2])  # level-0 leaves at [2, 4); level-1 leaves at [0, 4)
+        assert g.cell_id(0, (0,)) is None  # refined away
+        assert g.cell_id(0, (-1,)) is None  # negative index
+        assert g.cell_id(0, (9,)) is None  # past the level's extent
+        assert g.cell_id(1, (0, 0)) is None  # wrong ndim
+        assert g.cell_id(5, (0,)) is None  # nonexistent level
+        assert g.cell_id(-1, (0,)) is None  # negative level
+
+    def test_cell_id_is_resolved_afresh_after_a_mutation(self) -> None:
+        """Ids move under refinement; the `(level, midx)` pair does not."""
+        g = _grid_1d(4, 2)
+        g.refine(0, [3], [4])  # refine the last root cell
+        before = g.cell_id(0, (0,))
+        g.refine(0, [0], [1])  # ids shift: level-0 loses a cell, level-1 gains two
+        assert before == 0
+        assert g.cell_id(0, (0,)) is None  # cell (0, 0) is gone, its id belongs elsewhere
+        assert g.cell_id(0, (1,)) == 0
+        assert g.cell_id(1, (0,)) == 2
+
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Coarsening

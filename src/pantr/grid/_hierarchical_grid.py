@@ -1158,6 +1158,29 @@ class HierarchicalGrid(Grid):
         _, midx = self._decode_flat_id(cid)
         return midx
 
+    def cell_id(self, level: int, midx: Sequence[int]) -> int | None:
+        """Return the flat id of the active leaf ``(level, midx)``, or ``None``.
+
+        The inverse of :meth:`cell_level` and :meth:`cell_multi_index` taken together.
+        Because :meth:`refine` and :meth:`coarsen` reassign every flat id, a caller that
+        must track cells across a mutation keeps them as ``(level, midx)`` pairs -- which
+        are stable -- and resolves them back to ids here, once per mutation.
+
+        Args:
+            level (int): Hierarchy level.
+            midx (Sequence[int]): Per-axis index in level-``level`` coordinates.
+
+        Returns:
+            int | None: The flat cell id when ``(level, midx)`` is currently an active
+            (leaf) cell, else ``None`` -- out of range, not yet created, or refined away.
+        """
+        if level < 0 or level >= len(self._blocks):
+            return None
+        midx_t = tuple(int(i) for i in midx)
+        if len(midx_t) != self.ndim or any(i < 0 for i in midx_t):
+            return None
+        return self._encode_midx(level, midx_t)
+
     def is_active_leaf(self, level: int, midx: Sequence[int]) -> bool:
         """Return whether ``(level, midx)`` is an active (leaf) cell.
 
@@ -1170,12 +1193,7 @@ class HierarchicalGrid(Grid):
             active (a leaf); ``False`` if it is out of range, not yet created, or has
             been refined away.
         """
-        if level < 0 or level >= len(self._blocks):
-            return False
-        midx_t = tuple(int(i) for i in midx)
-        if len(midx_t) != self.ndim or any(i < 0 for i in midx_t):
-            return False
-        return self._encode_midx(level, midx_t) is not None
+        return self.cell_id(level, midx) is not None
 
     # ------------------------------------------------------------------
     # Active-set accessors
