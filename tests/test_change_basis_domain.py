@@ -8,12 +8,12 @@ in exact rational (or high-precision decimal) arithmetic at that degree and at t
 it.
 
 Asking :func:`numpy.linalg.cond` for the same number does not settle it, and not because that
-estimator is weak: applied to the *exact* matrix it agrees with the exact
-:math:`\kappa_\infty` to five digits even at :math:`4 \times 10^{17}`. The trouble is the
-matrix. The Bernstein-to-cardinal matrix pantr forms is itself the output of a Gram solve, so
-near the boundary it is no longer the matrix the domain is about, and its computed
-:math:`\kappa_\infty` comes out 8.6 times too large at degree 13 and 4.9 times too small at
-degree 15 -- either of which moves the crossing by a degree.
+estimator is weak: applied to the *exact* matrix it tracks the exact :math:`\kappa_\infty` to
+five digits at :math:`1.1 \times 10^{16}` and still to four at :math:`3.7 \times 10^{17}`.
+The trouble is the matrix. The Bernstein-to-cardinal matrix pantr forms is itself the output
+of a Gram solve, so near the boundary it is no longer the matrix the domain is about, and its
+computed :math:`\kappa_\infty` comes out 8.6 times too large at degree 13 and 4.9 times too
+small at degree 15 -- either of which moves the crossing by a degree.
 
 The exact matrices are built from closed forms rather than from pantr's own tabulations, so
 the derivation is independent of the code it grades: the cardinal B-splines from their
@@ -679,3 +679,23 @@ def test_extraction_degrees_stay_inside_the_domain() -> None:
     highest_extraction_degree = 4
     assert _CARDINAL_TO_BERNSTEIN_MAX_DEGREE.float32 >= highest_extraction_degree
     assert _CARDINAL_TO_BERNSTEIN_MAX_DEGREE.float64 >= highest_extraction_degree
+
+
+def test_a_pathological_degree_is_refused_before_anything_is_allocated() -> None:
+    """The refusal must not be preceded by an attempt to allocate the matrix.
+
+    ``_validate_degree_in_domain`` runs before ``_prepare_square_out``. Without that
+    ordering a degree of 100000 would ask NumPy for a 10^10-entry array first, and the
+    caller would meet ``MemoryError`` -- an undocumented failure of exactly the kind this
+    domain exists to remove -- instead of the ``ValueError`` that names the argument.
+    """
+    with pytest.raises(ValueError, match="outside the supported domain"):
+        compute_cardinal_to_bernstein_1d(100_000, np.float64)
+
+
+def test_the_per_variant_limit_table_cannot_be_mutated() -> None:
+    """A shared lookup table must not be writable; ``Final`` only stops rebinding."""
+    with pytest.raises(TypeError):
+        _BERNSTEIN_TO_LAGRANGE_MAX_DEGREE[LagrangeVariant.EQUISPACES] = _DegreeLimit(  # type: ignore[index]
+            float32=99, float64=99
+        )

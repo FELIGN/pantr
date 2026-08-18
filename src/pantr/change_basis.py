@@ -46,27 +46,33 @@ domain replaces. Inside the domain the inverse obeys
 1 / (\varepsilon \lVert M \rVert_\infty)`, and :math:`\lVert M \rVert_\infty \ge 0.036`
 over every supported range here, so no entry of an inverse can exceed
 :math:`2.3 \times 10^{8}` in float32 -- thirty orders of magnitude below that format's
-overflow threshold. And a matrix that is not singular to working precision does not
-produce the exactly zero pivot :class:`numpy.linalg.LinAlgError` reports. Measured, both
-occur only in float32 and only for the two cardinal pairs, and the first of each is at least
-twenty-six degrees past the boundary.
+overflow threshold. The exactly zero pivot :class:`numpy.linalg.LinAlgError` reports is not
+ruled out by that inequality -- the perturbation bound constrains the *exact* matrix, not the
+one pantr forms -- but it is not observed anywhere near the boundary either. Measured, both
+failures occur only in float32 and only in the cardinal-to-Bernstein and cardinal-to-Legendre
+directions: the first infinity is 26 degrees past the boundary in both, and the first
+``LinAlgError`` 29 and 32 degrees past.
 
 The :math:`\kappa_\infty` values behind the tabulated limits come from matrices rebuilt in
 exact rational (or 60-digit decimal) arithmetic from closed forms, rather than from the
 matrices pantr computes. That distinction is load-bearing for the Bernstein/cardinal pair,
 whose forward matrix is itself the output of a Gram solve and so is not exact: near the
-boundary, :func:`numpy.linalg.cond` applied to the matrix pantr forms reports 8.6 times too
-much at degree 13 and 4.9 times too little at degree 15, either of which moves the crossing.
-Applied to the *exact* matrix that same call is accurate to five digits even at
-:math:`4 \times 10^{17}`, so it is the matrix and not the estimator that is at fault.
-Rebuilding from closed forms also keeps the derivation independent of the code it grades. It
-runs as a test, ``tests/test_change_basis_domain.py``, so the tabulated degrees are checked
-rather than asserted.
+boundary, ``numpy.linalg.cond(M, numpy.inf)`` applied to the matrix pantr forms reports 8.6
+times too much at degree 13 and 4.9 times too little at degree 15, either of which moves the
+crossing. (The norm has to be named: :func:`numpy.linalg.cond` defaults to the 2-norm, and
+the criterion here is stated throughout in the infinity norm the perturbation bound uses.)
+Applied to the *exact* matrix the same call tracks :math:`\kappa_\infty` to five digits at
+:math:`1.1 \times 10^{16}` and still to four at :math:`3.7 \times 10^{17}`, so it is the
+matrix and not the estimator that is at fault. Rebuilding from closed forms also keeps the
+derivation independent of the code it grades. It runs as a test,
+``tests/test_change_basis_domain.py``, so the tabulated degrees are checked rather than
+asserted.
 """
 
 import functools
 from collections.abc import Callable, Mapping
 from math import comb
+from types import MappingProxyType
 from typing import Final, NamedTuple
 
 import numpy as np
@@ -142,13 +148,15 @@ conditioning does bound the result and no fidelity cap is needed: the measured e
 the two limits is ``1.7e-4`` (float32, degree 6) and ``1.3e-5`` (float64, degree 12).
 """
 
-_BERNSTEIN_TO_LAGRANGE_MAX_DEGREE: Final[Mapping[LagrangeVariant, _DegreeLimit]] = {
-    LagrangeVariant.EQUISPACES: _DegreeLimit(float32=17, float64=37),
-    LagrangeVariant.GAUSS_LEGENDRE: _DegreeLimit(float32=22, float64=51),
-    LagrangeVariant.GAUSS_LOBATTO_LEGENDRE: _DegreeLimit(float32=23, float64=52),
-    LagrangeVariant.CHEBYSHEV_1ST: _DegreeLimit(float32=23, float64=52),
-    LagrangeVariant.CHEBYSHEV_2ND: _DegreeLimit(float32=23, float64=52),
-}
+_BERNSTEIN_TO_LAGRANGE_MAX_DEGREE: Final[Mapping[LagrangeVariant, _DegreeLimit]] = MappingProxyType(
+    {
+        LagrangeVariant.EQUISPACES: _DegreeLimit(float32=17, float64=37),
+        LagrangeVariant.GAUSS_LEGENDRE: _DegreeLimit(float32=22, float64=51),
+        LagrangeVariant.GAUSS_LOBATTO_LEGENDRE: _DegreeLimit(float32=23, float64=52),
+        LagrangeVariant.CHEBYSHEV_1ST: _DegreeLimit(float32=23, float64=52),
+        LagrangeVariant.CHEBYSHEV_2ND: _DegreeLimit(float32=23, float64=52),
+    }
+)
 r"""Supported degrees of :func:`compute_bernstein_to_lagrange_1d`, per node family.
 
 Governing matrix: ``C``, the Lagrange-to-Bernstein matrix this builder inverts, whose
@@ -168,34 +176,41 @@ matrix pantr actually forms rather than an idealized one.
 
 def _validate_degree_in_domain(
     degree: int,
-    dtype: np.dtype[np.float32 | np.float64],
+    dtype: npt.DTypeLike,
     max_degree: _DegreeLimit,
     builder: str,
 ) -> None:
     """Refuse a ``(degree, dtype)`` pair outside a builder's supported domain.
 
     See the module docstring for what sets the boundary. This is a pure precondition:
-    inside the domain it does nothing at all, so it cannot perturb a returned matrix.
+    inside the domain it does nothing at all, so it cannot perturb a returned matrix. It runs
+    *before* the output array is allocated, so a degree far outside the domain is refused with
+    this message rather than by whatever the allocation of a huge array would raise.
 
     Args:
         degree (int): Polynomial degree the caller asked for.
-        dtype (np.dtype[np.float32 | np.float64]): Already-validated output dtype.
+        dtype (npt.DTypeLike): Output dtype; validated here, since this runs before the
+            output array exists.
         max_degree (_DegreeLimit): Largest supported degree per format.
         builder (str): Name of the calling builder, quoted in the message so the caller is
             told which function refused rather than only that some matrix was singular.
 
     Raises:
-        ValueError: If ``degree`` exceeds what ``dtype`` supports.
+        ValueError: If ``dtype`` is not float32/float64, or ``degree`` exceeds what that
+            dtype supports.
     """
-    limit = max_degree.float32 if dtype == np.float32 else max_degree.float64
+    _validate_float_dtype(dtype)
+    resolved = np.dtype(dtype)
+    limit = max_degree.float32 if resolved == np.float32 else max_degree.float64
     if degree <= limit:
         return
     raise ValueError(
-        f"{builder}: degree {degree} is outside the supported domain for {dtype.name} "
+        f"{builder}: degree {degree} is outside the supported domain for {resolved.name} "
         f"(supported: degree <= {max_degree.float32} in float32, "
         f"degree <= {max_degree.float64} in float64). Past that degree the matrix this "
-        f"builder solves with is singular to working precision, so the result would carry "
-        f"no correct digit; see the pantr.change_basis module docstring for the derivation."
+        f"builder solves with is singular to working precision, so the error bound on the "
+        f"result reaches 100% and guarantees no correct digit; see the pantr.change_basis "
+        f"module docstring for the derivation."
     )
 
 
@@ -340,17 +355,17 @@ def compute_bernstein_to_lagrange_1d(
     """
     if degree < 1:
         raise ValueError("Degree must at least 1")
-    out = _prepare_square_out(degree, dtype, out)
     # `LagrangeVariant(...)` rather than a bare lookup: an unrecognized variant would
     # otherwise leave this function through `KeyError`, which is exactly the kind of
     # undocumented exception type the domain exists to stop escaping.
     variant = LagrangeVariant(lagrange_variant)
     _validate_degree_in_domain(
         degree,
-        out.dtype,
+        dtype,
         _BERNSTEIN_TO_LAGRANGE_MAX_DEGREE[variant],
         f"compute_bernstein_to_lagrange_1d with {variant.name} nodes",
     )
+    out = _prepare_square_out(degree, dtype, out)
 
     forward = compute_lagrange_to_bernstein_1d(degree, lagrange_variant, dtype)
     out[:] = np.linalg.solve(forward, np.eye(degree + 1, dtype=out.dtype))
@@ -451,6 +466,16 @@ def compute_bernstein_to_cardinal_1d(
     polynomials up to degree ``2 * degree + 1`` exactly, while every inner product
     formed here is between two polynomials of degree ``degree``.
 
+    Warning:
+        Accuracy is set by the Bernstein Gram matrix this projection solves with, whose
+        condition number grows like :math:`4^p`: :math:`\kappa_\infty(G_{\mathrm{bern}})` is
+        ``1.7e2`` at degree 4, ``3.4e4`` at degree 8 and ``7.3e6`` at degree 12. Measured
+        against the exact rational answer, the returned matrix is within ``2.4e-6`` relative
+        at degree 4 and ``5.3e-2`` at degree 12 in float32, and within ``1.7e-15`` at degree
+        4 in float64. This direction is much better behaved than its inverse -- see
+        :func:`compute_cardinal_to_bernstein_1d` -- which is why it carries the larger
+        domain of the pair.
+
     Args:
         degree (int): Polynomial degree. Must be non-negative.
         dtype (npt.DTypeLike): Floating point type for the output matrix.
@@ -476,13 +501,13 @@ def compute_bernstein_to_cardinal_1d(
     """
     if degree < 0:
         raise ValueError("Degree must be non-negative")
-    out = _prepare_square_out(degree, dtype, out)
     _validate_degree_in_domain(
         degree,
-        out.dtype,
+        dtype,
         _BERNSTEIN_TO_CARDINAL_MAX_DEGREE,
         "compute_bernstein_to_cardinal_1d",
     )
+    out = _prepare_square_out(degree, dtype, out)
 
     return _compute_change_basis_1D(
         new_basis_eval=functools.partial(tabulate_bernstein_1d, degree),
@@ -567,13 +592,13 @@ def compute_cardinal_to_bernstein_1d(
     """
     if degree < 0:
         raise ValueError("Degree must be non-negative")
-    out = _prepare_square_out(degree, dtype, out)
     _validate_degree_in_domain(
         degree,
-        out.dtype,
+        dtype,
         _CARDINAL_TO_BERNSTEIN_MAX_DEGREE,
         "compute_cardinal_to_bernstein_1d",
     )
+    out = _prepare_square_out(degree, dtype, out)
 
     forward = compute_bernstein_to_cardinal_1d(degree, dtype)
     out[:] = np.linalg.solve(forward, np.eye(degree + 1, dtype=out.dtype))
@@ -712,13 +737,13 @@ def compute_cardinal_to_legendre_1d(
     """
     if degree < 0:
         raise ValueError("Degree must be non-negative")
-    out = _prepare_square_out(degree, dtype, out)
     _validate_degree_in_domain(
         degree,
-        out.dtype,
+        dtype,
         _CARDINAL_TO_LEGENDRE_MAX_DEGREE,
         "compute_cardinal_to_legendre_1d",
     )
+    out = _prepare_square_out(degree, dtype, out)
 
     forward = compute_legendre_to_cardinal_1d(degree, dtype)
     out[:] = np.linalg.solve(forward, np.eye(degree + 1, dtype=out.dtype))
@@ -796,13 +821,13 @@ def compute_cardinal_dual_legendre_coeffs_1d(
     """
     if degree < 0:
         raise ValueError("Degree must be non-negative")
-    out = _prepare_square_out(degree, dtype, out)
     _validate_degree_in_domain(
         degree,
-        out.dtype,
+        dtype,
         _CARDINAL_TO_LEGENDRE_MAX_DEGREE,
         "compute_cardinal_dual_legendre_coeffs_1d",
     )
+    out = _prepare_square_out(degree, dtype, out)
 
     out[:] = compute_cardinal_to_legendre_1d(degree, dtype).T
     return out
@@ -822,6 +847,11 @@ def compute_monomial_to_bernstein_1d(
 
     The entries are ``M[i, j] = C(i, j) / C(degree, j)`` for ``j <= i``, else
     ``0``, where ``C(n, k)`` is the binomial coefficient.
+
+    Note:
+        This builder carries no degree limit in either dtype, and so appears in no row of
+        the module docstring's domain table: the entries come straight from a closed form
+        and no linear solve is involved at any degree.
 
     Args:
         degree (int): Polynomial degree. Must be non-negative.
