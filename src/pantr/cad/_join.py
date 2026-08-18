@@ -5,41 +5,13 @@ Provides :func:`join` for C0-concatenation of B-splines.
 
 from __future__ import annotations
 
-from typing import NamedTuple
-
 import numpy as np
 from numpy import typing as npt
 
 from ..bspline import Bspline, BsplineSpace, BsplineSpace1D
 from ..tolerance import get_conservative
 from ._compat import _remap_bspline, make_compat
-from ._validation import _promote_to_rational
-
-
-class _ColumnGroup(NamedTuple):
-    """One group of control-point columns that share a physical dimension.
-
-    A rational control point carries homogeneous coordinates, whose units are length times
-    weight, beside a dimensionless weight.  Grading both against one magnitude makes the
-    verdict depend on where the model sits, so each group is graded against its own.
-
-    Attributes:
-        name (str): What the group holds, as the error message names it.
-        columns (slice): The columns of a control-point array the group covers.
-    """
-
-    name: str
-    columns: slice
-
-
-_EUCLIDEAN_COLUMNS = (_ColumnGroup("coordinate", slice(None)),)
-"""tuple[_ColumnGroup, ...]: Column groups of a non-rational row -- all coordinates."""
-
-_HOMOGENEOUS_COLUMNS = (
-    _ColumnGroup("coordinate", slice(0, -1)),
-    _ColumnGroup("weight", slice(-1, None)),
-)
-"""tuple[_ColumnGroup, ...]: Column groups of a rational row -- coordinates, then weight."""
+from ._validation import _coarsest_dtype, _column_groups, _promote_to_rational
 
 
 def _prepare_for_join(
@@ -231,9 +203,8 @@ def _verify_shared_boundary(
         ValueError: If the two rows disagree anywhere on the shared face, in either column
             group, by more than that group's tolerance.
     """
-    coarser = max(row1.dtype, row2.dtype, key=lambda d: float(np.finfo(d).eps))
-    tier = get_conservative(coarser)
-    groups = _HOMOGENEOUS_COLUMNS if is_rational else _EUCLIDEAN_COLUMNS
+    tier = get_conservative(_coarsest_dtype(row1, row2))
+    groups = _column_groups(is_rational=is_rational)
 
     # Coordinates first: a seam given in the wrong place fails there, and it is the more
     # informative half to report when both groups are out.

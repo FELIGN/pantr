@@ -17,7 +17,12 @@ from ..tolerance import get_conservative
 from ._compat import make_compat
 from ._operations import create_ruled
 from ._primitives import _linear_space_1d, create_bilinear
-from ._validation import _promote_to_rational
+from ._validation import (
+    _coarsest_dtype,
+    _column_groups,
+    _ColumnGroup,
+    _promote_to_rational,
+)
 
 _DIRECTION_NAMES = ("u", "v", "w")
 """tuple[str, str, str]: Names of a Coons volume's parametric directions, in axis order."""
@@ -47,6 +52,28 @@ class _EdgeReadings(NamedTuple):
     corners: tuple[str, str]
 
 
+class _ComparedEdge(NamedTuple):
+    """One edge's two readings, made comparable, with the column groups that grade them.
+
+    Rationality is decided per edge, not per volume: an edge shared by two polynomial
+    faces is compared in three columns of coordinates, while one carried by a rational
+    face is promoted and compared in four, the last of which is a weight.  The groups
+    travel with the arrays because a mixed model has both kinds at once, and a weight
+    column must never be graded against a coordinate magnitude.
+
+    Attributes:
+        edge (_EdgeReadings): The edge, for the labels the mismatch message names.
+        cp_a (npt.NDArray[np.float32 | np.float64]): ``face_a``'s reading, made compatible.
+        cp_b (npt.NDArray[np.float32 | np.float64]): ``face_b``'s reading, same space.
+        groups (tuple[_ColumnGroup, ...]): The column groups of these two arrays.
+    """
+
+    edge: _EdgeReadings
+    cp_a: npt.NDArray[np.float32 | np.float64]
+    cp_b: npt.NDArray[np.float32 | np.float64]
+    groups: tuple[_ColumnGroup, ...]
+
+
 def _corner_label(sides: tuple[int, int, int]) -> str:
     """Name a corner of a Coons volume by the side it occupies in each direction.
 
@@ -62,11 +89,22 @@ def _corner_label(sides: tuple[int, int, int]) -> str:
 def _combine_control_points(
     bsplines: list[Bspline],
     signs: list[int],
-) -> tuple[npt.NDArray[np.float64], bool]:
+) -> tuple[npt.NDArray[np.float32 | np.float64], bool]:
     """Linearly combine control points of compatible B-splines.
 
+    The sum is accumulated in the **first** B-spline's precision, because the caller gives
+    the result that B-spline's space and :class:`~pantr.bspline.Bspline` refuses control
+    points whose dtype does not match their space.  Accumulating in float64 and handing
+    back float64 coefficients for a float32 model would therefore not build at all, and
+    would in any case be a precision escalation no other pantr operation performs -- both
+    :func:`~pantr.cad.create_ruled` and :func:`~pantr.cad.make_compat` stay in the dtype
+    they were given.  A term built here rather than derived from the caller's data may
+    still arrive at float64 (the corner interpolant of a patch does), and is read down
+    into the accumulator; nothing in the sum is promoted.
+
     Args:
-        bsplines: B-splines that share the same space (after compat).
+        bsplines: B-splines that share the same space (after compat).  The first one
+            decides the precision of the result.
         signs: Coefficients (+1 or -1) for each B-spline.
 
     Returns:
@@ -76,9 +114,9 @@ def _combine_control_points(
     if is_rational:
         bsplines = [_promote_to_rational(b) for b in bsplines]
 
-    cp = np.zeros_like(bsplines[0].control_points, dtype=np.float64)
+    cp = np.zeros_like(bsplines[0].control_points)
     for b, s in zip(bsplines, signs, strict=True):
-        cp += s * b.control_points.astype(np.float64)
+        cp += s * b.control_points.astype(cp.dtype, copy=False)
     return cp, is_rational
 
 
@@ -115,7 +153,9 @@ def create_coons_surface(
         ValueError: If any curve is not 1D.
         ValueError: If corner points are not geometrically consistent, i.e. two curves
             disagree at a shared corner by more than ``4096 * eps`` times the largest
-            absolute coordinate over all eight corner values.
+            absolute coordinate over all eight corner values, with ``eps`` read at the
+            **coarsest** of the four curves' precisions rather than at float64, so that a
+            float32 model is graded against something float32 can express.
     """
     (c_v0, c_v1), (c_u0, c_u1) = curves
 
@@ -127,11 +167,12 @@ def create_coons_surface(
     c_u0, c_u1 = make_compat(c_u0, c_u1)
     c_v0, c_v1 = make_compat(c_v0, c_v1)
 
-    # Extract and verify corner points
-    p00 = np.asarray(c_u0.boundary(0, 0), dtype=np.float64)
-    p10 = np.asarray(c_u0.boundary(0, 1), dtype=np.float64)
-    p01 = np.asarray(c_u1.boundary(0, 0), dtype=np.float64)
-    p11 = np.asarray(c_u1.boundary(0, 1), dtype=np.float64)
+    # Extract and verify corner points.  These are read in the curves' own precision,
+    # not float64: it is the precision the disagreement is graded at.
+    p00 = np.asarray(c_u0.boundary(0, 0))
+    p10 = np.asarray(c_u0.boundary(0, 1))
+    p01 = np.asarray(c_u1.boundary(0, 0))
+    p11 = np.asarray(c_u1.boundary(0, 1))
 
     _verify_corners_2d((p00, p10, p01, p11), c_v0, c_v1)
 
@@ -155,18 +196,19 @@ def create_coons_surface(
 
 def _verify_corners_2d(
     u_corners: tuple[
-        npt.NDArray[np.float64],
-        npt.NDArray[np.float64],
-        npt.NDArray[np.float64],
-        npt.NDArray[np.float64],
+        npt.NDArray[np.float32 | np.float64],
+        npt.NDArray[np.float32 | np.float64],
+        npt.NDArray[np.float32 | np.float64],
+        npt.NDArray[np.float32 | np.float64],
     ],
     c_v0: Bspline,
     c_v1: Bspline,
 ) -> None:
     """Verify that corner points from u-curves match v-curves.
 
-    The tolerance is ``get_conservative(float64) * scale`` with ``scale`` the largest
-    absolute coordinate over **all eight** corner values, not just the pair under test.
+    The tolerance is ``get_conservative(dtype) * scale`` with ``scale`` the largest
+    absolute coordinate over **all eight** corner values, not just the pair under test,
+    and ``dtype`` the coarsest of the eight readings' own precisions.
 
     **Why the conservative tier.** Both curves meeting at a corner read it straight off a
     clamped control point, and neither knot insertion nor degree elevation moves a clamped
@@ -195,9 +237,24 @@ def _verify_corners_2d(
     exactly ``max|pu - qv| <= atol``, so it buys nothing over writing that, and it hides
     which of the two comparisons is doing the work.
 
+    **The tier is read at the readings' own precision**, not at float64, because pantr's
+    B-spline layer accepts float32 as well; :func:`~pantr.cad._validation._coarsest_dtype`
+    carries that derivation.  At float64 the tier is ``9.09e-13`` relative while one
+    float32 ulp at magnitude 1 is ``1.19e-07``, so a float32 patch whose corner is as
+    close as its format allows was refused for a disagreement it cannot even express, by a
+    factor of ``5.4e5``.
+
+    **One column group, because these are points and not coefficients.**
+    :meth:`~pantr.bspline.Bspline.boundary` projects a rational curve down to a point, so
+    all eight readings are physical coordinates in one physical dimension and there is
+    nothing here to separate.  Where a comparison does mix dimensions -- homogeneous
+    coefficients against weights -- it is :func:`_verify_edges_3d`, which splits them.
+    A weight disagreement at a corner of a volume is therefore caught there rather than
+    here, and a rational Coons *patch* has no weight comparison of its own.
+
     Args:
-        u_corners (tuple[npt.NDArray[np.float64], ...]): Corners
-            ``(p00, p10, p01, p11)`` extracted from u-curves.
+        u_corners (tuple[npt.NDArray[np.float32 | np.float64], ...]): Corners
+            ``(p00, p10, p01, p11)`` extracted from u-curves, in the curves' own dtype.
         c_v0 (Bspline): Left boundary curve (v-direction at u=0).
         c_v1 (Bspline): Right boundary curve (v-direction at u=1).
 
@@ -205,10 +262,10 @@ def _verify_corners_2d(
         ValueError: If any pair of corners does not match.
     """
     p00, p10, p01, p11 = u_corners
-    q00 = np.asarray(c_v0.boundary(0, 0), dtype=np.float64)
-    q01 = np.asarray(c_v0.boundary(0, 1), dtype=np.float64)
-    q10 = np.asarray(c_v1.boundary(0, 0), dtype=np.float64)
-    q11 = np.asarray(c_v1.boundary(0, 1), dtype=np.float64)
+    q00 = np.asarray(c_v0.boundary(0, 0))
+    q01 = np.asarray(c_v0.boundary(0, 1))
+    q10 = np.asarray(c_v1.boundary(0, 0))
+    q11 = np.asarray(c_v1.boundary(0, 1))
 
     pairs = [
         ("(0,0)", p00, q00),
@@ -218,8 +275,9 @@ def _verify_corners_2d(
     ]
     # No floor: eight corners all at the origin have no scale, and are also bitwise
     # equal, so a zero tolerance is the right answer there rather than a hazard.
-    scale = max(float(np.abs(corner).max()) for _, pu, qv in pairs for corner in (pu, qv))
-    tol = get_conservative(np.float64) * scale
+    readings = [corner for _, pu, qv in pairs for corner in (pu, qv)]
+    scale = max(float(np.abs(corner).max()) for corner in readings)
+    tol = get_conservative(_coarsest_dtype(*readings)) * scale
 
     for label, pu, qv in pairs:
         gap = float(np.abs(pu - qv).max())
@@ -300,8 +358,12 @@ def create_coons_volume(
             twenty-four corner readings -- the same tier and the same scale rule as
             :func:`create_coons_surface`, derived in ``_verify_corners_3d``.
         ValueError: If two faces sharing an edge disagree along it by more than
-            ``4096 * eps`` times the largest absolute control-point coordinate over the
-            twelve compared edges, derived in ``_verify_edges_3d``.
+            ``4096 * eps`` times that column group's own magnitude over the twelve
+            compared edges: the largest absolute homogeneous coordinate for the
+            coordinate columns, and the largest absolute weight for the weight column of
+            a rational edge, derived in ``_verify_edges_3d``.  Both tolerances read
+            ``eps`` at the coarsest of the compared readings' precisions rather than at
+            float64.
         ValueError: If the blend of rational faces carries a control weight that is not
             above zero, so that the weight field of the result cannot be certified
             positive.  The bound is ``w(u) >= min_i w_i`` and is sufficient rather than
@@ -446,11 +508,13 @@ def _verify_corners_3d(edges: tuple[_EdgeReadings, ...]) -> None:
     """Verify that the three faces meeting at each corner of the volume agree there.
 
     The tolerance is :func:`_verify_corners_2d`'s, which is where its derivation lives:
-    ``get_conservative(float64)`` times the largest absolute coordinate over **all**
-    corner readings, so the verdict does not depend on which corner sits at the origin.
-    Three faces meet at a corner of a volume rather than two curves at a corner of a
-    patch, so the scale is taken over twenty-four readings instead of eight and each
-    corner is graded by three comparisons instead of one; nothing else changes.
+    the conservative tier, read at the coarsest of the readings' own precisions, times the
+    largest absolute coordinate over **all** corner readings, so the verdict does not
+    depend on which corner sits at the origin.  Three faces meet at a corner of a volume
+    rather than two curves at a corner of a patch, so the scale is taken over twenty-four
+    readings instead of eight and each corner is graded by three comparisons instead of
+    one; nothing else changes, including that these are projected points and so carry one
+    physical dimension between them.
 
     The w-faces are the reason this exists.  Every edge, and so every corner, used to be
     read off the u- and v-faces alone, which agree with themselves by construction, so a
@@ -465,17 +529,17 @@ def _verify_corners_3d(edges: tuple[_EdgeReadings, ...]) -> None:
             tolerance.
     """
     # Each (corner, face) pair is an endpoint of two of the twelve edges; read it once.
-    readings: dict[tuple[str, str], npt.NDArray[np.float64]] = {}
+    readings: dict[tuple[str, str], npt.NDArray[np.float32 | np.float64]] = {}
     for edge in edges:
         for end, corner in enumerate(edge.corners):
             for face, curve in ((edge.face_a, edge.curve_a), (edge.face_b, edge.curve_b)):
                 if (corner, face) not in readings:
-                    readings[corner, face] = np.asarray(curve.boundary(0, end), dtype=np.float64)
+                    readings[corner, face] = np.asarray(curve.boundary(0, end))
 
     # No floor: corners all at the origin have no scale, and are also bitwise equal,
     # so a zero tolerance is the right answer there rather than a hazard.
     scale = max(float(np.abs(point).max()) for point in readings.values())
-    tol = get_conservative(np.float64) * scale
+    tol = get_conservative(_coarsest_dtype(*readings.values())) * scale
 
     for sides in np.ndindex(2, 2, 2):
         corner = _corner_label((int(sides[0]), int(sides[1]), int(sides[2])))
@@ -506,8 +570,42 @@ def _verify_edges_3d(edges: tuple[_EdgeReadings, ...]) -> None:
     its control points; comparing those is therefore an exact comparison of the two curves
     and needs no sampling.  The tolerance is :func:`_verify_corners_2d`'s tier and rule
     applied to what is graded here, which is a control-point coefficient rather than a
-    point on the curve: ``get_conservative(float64)`` times the largest absolute
-    control-point coordinate over all twelve compared edges.
+    point on the curve: the conservative tier times the largest absolute coefficient over
+    all twelve compared edges.
+
+    **Each column group is graded against its own magnitude.**  A rational edge is compared
+    as homogeneous control points, whose coordinate columns carry units of length times
+    weight beside a dimensionless weight.  One magnitude over the whole row would grade a
+    weight against a threshold proportional to the model's *length*, which is dimensionally
+    wrong and destroys scale invariance: sending ``x -> lambda x`` scales the coordinates
+    and leaves the weights alone, so the verdict on a weight drifts with the size of the
+    model.  Measured on the cube of side ``s`` with two rational faces, a weight displaced
+    by four times the tier was refused at ``s = 1`` and **accepted at every ``s >= 1e2``**
+    -- the failure this check exists to stop, reappearing on the rational path once the
+    model is large.  Grading the coordinate columns against ``max|X|`` and the weight
+    column against ``max|w|`` restores it: under ``x -> lambda x`` both group scales and
+    both group gaps carry ``lambda``, and under a global weight rescale ``w -> mu w`` the
+    homogeneous coordinates ``X = w x`` carry ``mu`` alongside the weights, so both groups
+    carry it too.  It does not disarm the check a one-sided rescale exists to catch: that
+    still leaves ``gap_w = (mu - 1) w`` against ``tier * max(w, mu w)``, and is refused.
+    The weight column's own roundoff floor against ``max|w|`` is ``<= 3.2 eps``,
+    independent of magnitude, degree and refinement, so the tier clears it by about 1290.
+    :func:`~pantr.cad._join._verify_shared_boundary` carries those measurements; this is
+    the same rule on the same kind of comparison.
+
+    **Each group's scale spans the whole model, and only the edges that carry the group.**
+    The scale population is all twelve edges, as it is for the corners, so the verdict does
+    not depend on which edge happens to sit at the origin.  But an edge shared by two
+    polynomial faces has no weight column, so it contributes to the coordinate scale and
+    says nothing about the weights -- which is what keeps a mixed model's weight tolerance
+    from being set by unit weights the caller never supplied.
+
+    **The tier is read at the readings' own precision**, not at float64, for the reason
+    :func:`~pantr.cad._validation._coarsest_dtype` gives: at float64 it is ``9.09e-13``
+    relative, while one float32 ulp at magnitude 1 is ``1.19e-07``, so a float32 model was
+    graded ``5.4e5`` tighter than anything it can express.  The coarsest of the compared
+    readings decides, matching the scale's population; that is never below the per-edge
+    floor, so no genuinely shared edge is refused by it.
 
     **Why any slack at all.** Two readings of a genuinely shared edge are usually **bitwise
     equal**, and not only when the two faces store it identically: reaching the common space
@@ -525,43 +623,57 @@ def _verify_edges_3d(edges: tuple[_EdgeReadings, ...]) -> None:
     faces it is not: the comparison is of **homogeneous** control points, which is what the
     seven-term formula combines, and turning that into a distance would need a lower bound
     on the weights that this function does not compute.  Comparing them is still the right
-    test -- scaling one face's homogeneous control points by a constant leaves its geometry
-    untouched yet made the volume miss four of the six faces by 17% of the model before this
-    check existed -- but the reported gap is then a coefficient gap, not a distance.
+    test -- scaling one face's homogeneous control points by 2 leaves its geometry bitwise
+    untouched yet, with this check disabled, makes the volume miss each of the four faces
+    adjacent to it by 17% of the model -- but the reported gap is then a coefficient gap,
+    not a distance, and for the weight group it is not even a length.
 
     Args:
         edges (tuple[_EdgeReadings, ...]): The 12 edges of the volume, read from both
             carriers, as :func:`_extract_edge_pairs` returns them.
 
     Raises:
-        ValueError: If two faces sharing an edge disagree along it by more than the
-            tolerance.
+        ValueError: If two faces sharing an edge disagree along it, in either column
+            group, by more than that group's tolerance.
     """
-    compared: list[tuple[_EdgeReadings, npt.NDArray[np.float64], npt.NDArray[np.float64]]] = []
+    compared: list[_ComparedEdge] = []
     for edge in edges:
         curve_a, curve_b = edge.curve_a, edge.curve_b
-        if curve_a.is_rational or curve_b.is_rational:
+        is_rational = curve_a.is_rational or curve_b.is_rational
+        if is_rational:
             curve_a, curve_b = _promote_to_rational(curve_a), _promote_to_rational(curve_b)
         curve_a, curve_b = make_compat(curve_a, curve_b)
         compared.append(
-            (
-                edge,
-                np.asarray(curve_a.control_points, dtype=np.float64),
-                np.asarray(curve_b.control_points, dtype=np.float64),
+            _ComparedEdge(
+                edge=edge,
+                cp_a=np.asarray(curve_a.control_points),
+                cp_b=np.asarray(curve_b.control_points),
+                groups=_column_groups(is_rational=is_rational),
             )
         )
 
-    scale = max(float(np.abs(cp).max()) for _, cp_a, cp_b in compared for cp in (cp_a, cp_b))
-    tol = get_conservative(np.float64) * scale
+    tier = get_conservative(_coarsest_dtype(*(cp for c in compared for cp in (c.cp_a, c.cp_b))))
+    # No floor: a group whose readings are all zero has no scale, and is also bitwise
+    # equal, so a zero tolerance is the right answer there rather than a hazard.  Only
+    # the edges that carry a group contribute to its scale: an edge shared by two
+    # polynomial faces has no weight column and says nothing about the weights.
+    scales: dict[str, float] = {}
+    for c in compared:
+        for group in c.groups:
+            magnitude = max(float(np.abs(cp[..., group.columns]).max()) for cp in (c.cp_a, c.cp_b))
+            scales[group.name] = max(scales.get(group.name, 0.0), magnitude)
 
-    for edge, cp_a, cp_b in compared:
-        gap = float(np.abs(cp_a - cp_b).max())
-        if gap > tol:
-            raise ValueError(
-                f"Edge {edge.label} mismatch: {edge.face_a} and {edge.face_b} disagree "
-                f"along the edge they share "
-                f"(gap {gap:.3e}, above {tol:.3e} at edge scale {scale:.3e})."
-            )
+    for c in compared:
+        for group in c.groups:
+            gap = float(np.abs(c.cp_a[..., group.columns] - c.cp_b[..., group.columns]).max())
+            scale = scales[group.name]
+            tol = tier * scale
+            if gap > tol:
+                raise ValueError(
+                    f"Edge {c.edge.label} mismatch: {c.edge.face_a} and {c.edge.face_b} "
+                    f"disagree along the edge they share "
+                    f"(gap {gap:.3e}, above {tol:.3e} at edge {group.name} scale {scale:.3e})."
+                )
 
 
 def _verify_positive_weights(volume: Bspline) -> None:
@@ -752,14 +864,16 @@ def _build_bilinear_volume(
     n_free = cp.shape[0]
     rank_full = cp.shape[-1]
 
-    # Shape: (2, 2, n_free, rank_full) = (bilinear_0, bilinear_1, free, rank)
-    new_cp = np.empty((2, 2, n_free, rank_full), dtype=np.float64)
+    # Shape: (2, 2, n_free, rank_full) = (bilinear_0, bilinear_1, free, rank).  The dtype
+    # is the edges' own: the free direction reuses their space, and a BsplineSpace whose
+    # directions disagree on precision is refused at construction.
+    new_cp = np.empty((2, 2, n_free, rank_full), dtype=cp.dtype)
     new_cp[0, 0] = e_00.control_points
     new_cp[1, 0] = e_10.control_points
     new_cp[0, 1] = e_01.control_points
     new_cp[1, 1] = e_11.control_points
 
-    lin = _linear_space_1d()
+    lin = _linear_space_1d(dtype=cp.dtype)
     spaces_raw = [
         BsplineSpace1D(lin.knots.copy(), degree=1),
         BsplineSpace1D(lin.knots.copy(), degree=1),
