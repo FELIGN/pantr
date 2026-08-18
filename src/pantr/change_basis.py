@@ -104,22 +104,25 @@ class _DegreeLimit(NamedTuple):
     float64: int
 
 
-_CARDINAL_TO_BERNSTEIN_MAX_DEGREE: Final = _DegreeLimit(float32=8, float64=12)
+_CARDINAL_TO_BERNSTEIN_MAX_DEGREE: Final = _DegreeLimit(float32=8, float64=14)
 r"""Supported degrees of :func:`compute_cardinal_to_bernstein_1d`.
 
 Governing matrix: ``A``, the Bernstein-to-cardinal matrix this builder inverts.
 :math:`\kappa_\infty(A) \varepsilon` is ``0.46`` at degree 8 against ``6.7`` at degree 9 in
 float32, and ``0.091`` at degree 14 against ``2.4`` at degree 15 in float64.
 
-The float64 entry is 12 rather than the 14 that inequality allows, and this is the one
-place in the module where conditioning is not the binding criterion. ``A`` is not exact
-here: it comes out of :func:`compute_bernstein_to_cardinal_1d`'s own Gram solve and so
-carries a relative error of order :math:`\kappa_\infty(G_{\mathrm{bern}}) \varepsilon`,
-which makes :math:`\kappa_\infty(A) \varepsilon` not an error bound for what this builder
-returns. Measured against the exact rational inverse, the returned matrix is still within
-``4.3e-2`` relative at degree 12 and is off by ``9.6`` -- 960% -- at degree 13, so 12 is
-the last degree that carries information. Float32 needs no such cap: its measured error at
-degree 8 is ``0.90``, just inside, and its conditioning limit is 8 as well.
+This builder is the one whose *accuracy* the solvability criterion does not bound, and the
+distinction matters enough to state here rather than only in the ``Warning:``. ``A`` is not
+exact: it comes out of :func:`compute_bernstein_to_cardinal_1d`'s own Gram solve, so it
+carries a relative error of order :math:`\kappa_\infty(G_{\mathrm{bern}}) \varepsilon`, and
+inverting a perturbed matrix multiplies that by :math:`\kappa_\infty(A)`. The bound on what
+is returned is therefore the *product*
+:math:`\kappa_\infty(A) \kappa_\infty(G_{\mathrm{bern}}) \varepsilon`, which reaches 100%
+after degree 5 in float32 and after degree 10 in float64 -- well inside the domain. Those
+two degrees are exact and platform-independent, and they are the honest accuracy statement;
+they are deliberately *not* the domain, because the product bound is provably pessimistic
+here (at degree 11 in float64 it stands at ``9.2`` while the returned matrix is accurate to
+``3e-4``), so enforcing it would refuse results with four good digits.
 """
 
 _BERNSTEIN_TO_CARDINAL_MAX_DEGREE: Final = _DegreeLimit(float32=12, float64=26)
@@ -130,8 +133,9 @@ projection solves with, whose condition number grows like :math:`4^p`.
 :math:`\kappa_\infty(G_{\mathrm{bern}}) \varepsilon` is ``0.87`` at degree 12 against
 ``3.2`` at degree 13 in float32, and ``0.30`` at degree 26 against ``1.17`` at degree 27 in
 float64. Measured against the exact rational answer, the returned matrix is still within
-``5.3e-2`` relative at degree 12 in float32, so conditioning is not optimistic here and no
-fidelity cap is needed.
+``5.3e-2`` relative at degree 12 in float32. That measurement only corroborates the
+criterion here; it does not set the limit, and no limit in this module is set by a measured
+quantity.
 """
 
 _CARDINAL_TO_LEGENDRE_MAX_DEGREE: Final = _DegreeLimit(float32=6, float64=12)
@@ -143,9 +147,8 @@ Shared by :func:`compute_cardinal_to_legendre_1d` and
 Governing matrix: ``A``, the Legendre-to-cardinal matrix the first of the two inverts.
 :math:`\kappa_\infty(A) \varepsilon` is ``0.068`` at degree 6 against ``1.6`` at degree 7
 in float32, and ``0.17`` at degree 12 against ``8.2`` at degree 13 in float64. Unlike the
-Bernstein pair, ``A`` here *is* accurate -- its Gram matrix is the identity -- so
-conditioning does bound the result and no fidelity cap is needed: the measured error at
-the two limits is ``1.7e-4`` (float32, degree 6) and ``1.3e-5`` (float64, degree 12).
+Bernstein pair, ``A`` here *is* accurate -- its Gram matrix is the identity -- so the
+solvability criterion bounds the accuracy too, and no separate accuracy statement is needed.
 """
 
 _BERNSTEIN_TO_LAGRANGE_MAX_DEGREE: Final[Mapping[LagrangeVariant, _DegreeLimit]] = MappingProxyType(
@@ -560,6 +563,14 @@ def compute_cardinal_to_bernstein_1d(
         is not something float64 can be asked, since :math:`\kappa(A)` passes :math:`1/\varepsilon`
         for float64 by degree 16.
 
+        The float64 domain runs to degree 14, past both of those: what the domain asserts is
+        that the inversion is still *defined*, never that the result is accurate. The bound
+        on the accuracy is the product
+        :math:`\kappa_\infty(A) \kappa_\infty(G_{\mathrm{bern}}) \varepsilon`, because ``A``
+        itself arrives from a Gram solve rather than exactly; it passes 100% after degree 5
+        in float32 and after degree 10 in float64. Both figures come from exact arithmetic
+        and hold on any platform.
+
     Args:
         degree (int): Polynomial degree. Must be non-negative.
         dtype (npt.DTypeLike): Floating point type for the output matrix.
@@ -578,7 +589,7 @@ def compute_cardinal_to_bernstein_1d(
         ValueError: If degree is negative, dtype is not float32 or float64, if `out` is
             provided and has incorrect shape or dtype, or if the
             ``(degree, dtype)`` pair is outside the supported domain:
-            degree at most 8 in float32 and at most 12 in float64.
+            degree at most 8 in float32 and at most 14 in float64.
             The domain is where the solve is still defined, not where the result is
             still accurate; see the module docstring for the derivation, and the
             ``Warning:`` above for the accuracy attained inside it.
