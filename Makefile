@@ -24,16 +24,22 @@ test:
 # `pytest` run should stay the fast inner loop. No coverage and no xdist: the whole
 # set runs in under a second, and worker startup would dominate.
 #
-# NUMBA_DISABLE_JIT=1 is deliberate, for two reasons. It removes this run from the
-# concurrent-compilation abort class entirely: with JIT off, `prange` is `range` and
-# no Numba threading layer is ever entered, so nothing here can race the background
-# warmup thread started by pantr/__init__.py. Today the race does not fire (measured:
-# 0 aborts in 44 runs, 24 cold-cache and 20 warm), but only because collection order
-# happens to reach a `wait_for_jit_warmup()` call site first -- reorder the modules or
-# drop those examples and the protection is gone. It also makes the run 28x faster
-# (0.9s against 24s cold). The compiled path is what `test` covers; this target checks
-# that the documentation matches the code, and the values it asserts go through
-# np.allclose or .tolist(), which do not depend on JIT-vs-interpreter rounding.
+# NUMBA_DISABLE_JIT=1 is deliberate. With JIT off, `prange` is `range` and no Numba
+# threading layer is ever entered, so this run cannot race the background warmup thread
+# that pantr/__init__.py starts: the concurrent-compilation abort class is structurally
+# absent here, not merely improbable. It is also 28x faster (0.9s against 24s cold),
+# which matters now that `pre-pull-request` depends on it.
+#
+# Historical note, so nobody "restores" the JIT here: the JIT-enabled run this replaced
+# measured 0 aborts in 44 runs (24 cold-cache, 20 warm), but was safe only because
+# pytest happens to collect basis/_basis_1D.py early and its examples reach a
+# `wait_for_jit_warmup()` call site before any unguarded kernel. Reordering the modules
+# or dropping those examples would have removed that protection silently.
+#
+# What this gives up is the compiled path, which is `test`'s job over the whole suite.
+# This target checks that the documentation matches the code, and the values it asserts
+# go through np.allclose or .tolist(), neither of which depends on JIT-vs-interpreter
+# rounding.
 doctest:
 	NUMBA_DISABLE_JIT=1 pytest --doctest-modules src/pantr
 

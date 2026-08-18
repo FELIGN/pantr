@@ -513,13 +513,13 @@ class BsplineSpace1D:
         before the interval, the interval itself, and the ``degree - 1`` spans after it
         -- all have the interval's own length, to within the space tolerance.
 
-        Those ``2 * degree`` knots are exactly the ones the de Boor recursion reads to
-        evaluate on that span: the recursion touches ``u_i`` and ``u_(i+degree+1-r)``
-        for ``i = k-degree+r, ..., k`` at level ``r``, whose indices run from
-        ``k-degree+1`` to ``k+degree`` and no further. So the window carries all the
-        knot information the ``degree + 1`` functions restricted to that interval
-        depend on, and equal spacing across it is what makes the restriction coincide
-        with the cardinal (uniform-knot) one.
+        Those ``2 * degree`` knots are exactly the ones an evaluation on that span
+        reads. The standard basis-function recurrence works up from level ``1`` to
+        ``degree``, and at level ``j`` it references only ``u_(k+1-j)`` and ``u_(k+j)``;
+        across all levels those indices sweep ``k-degree+1`` through ``k+degree`` and no
+        further. So the window holds every knot the ``degree + 1`` functions restricted
+        to that interval depend on, and equal spacing across it is what makes those
+        restrictions coincide with the cardinal (uniform-knot) ones.
 
         In the case of open knot vectors, this definition automatically
         discards the first degree-1 and the last degree-1 intervals: the repeated
@@ -562,12 +562,17 @@ class BsplineSpace1D:
             >>> bspline.get_cardinal_intervals().tolist()
             [False, True, True, True, False, False]
 
-            Degree 3 over the domain ``[3, 5]``: the irregular span ``[7, 10]`` sits
-            outside the two-span window of both intervals, so neither is affected.
+            Degree 3 over the domain ``[3, 5]``: the window reaches two spans past
+            each interval, so the irregular span ``[7, 10]`` falls outside both and
+            neither interval is affected.
 
             >>> bspline = BsplineSpace1D([0, 1, 2, 3, 4, 5, 6, 7, 10], 3)
             >>> bspline.get_cardinal_intervals().tolist()
             [True, True]
+
+        References:
+            The recurrence whose knot footprint sets this window is Algorithm A2.2
+            of :cite:p:`piegl1997nurbs`.
         """
         return _get_Bspline_cardinal_intervals_1D_impl(
             self._knots, self._degree, self._tol, out=out

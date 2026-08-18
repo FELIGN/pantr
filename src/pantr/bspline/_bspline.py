@@ -747,10 +747,10 @@ class Bspline:
             >>> from pantr.bspline import create_uniform_space
             >>> spline = Bspline(create_uniform_space(2, 3), np.arange(5.0).reshape(5, 1))
             >>> left, right = spline.split(0, 0.5)
-            >>> tuple(float(x) for x in left.space.spaces[0].domain)
-            (0.0, 0.5)
-            >>> tuple(float(x) for x in right.space.spaces[0].domain)
-            (0.5, 1.0)
+            >>> np.allclose(left.space.spaces[0].domain, [0.0, 0.5])
+            True
+            >>> np.allclose(right.space.spaces[0].domain, [0.5, 1.0])
+            True
         """
         if direction < 0 or direction >= self.dim:
             raise ValueError(f"direction must be in [0, {self.dim}), got {direction}.")
