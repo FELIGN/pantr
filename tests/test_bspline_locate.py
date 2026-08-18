@@ -15,9 +15,11 @@ from pantr.bspline._bspline_locate import (
     _cell_midpoints,
     _cell_parametric_bounds,
     _cell_physical_bounds,
+    _default_tolerance,
     _geometric_scale,
     _locate_context,
     _LocateContext,
+    _LocateThresholds,
     _nearest_corner_starts,
     _newton_refine,
     _parametric_reach,
@@ -384,6 +386,21 @@ def _parametric_ulp_image(spline: Bspline) -> float:
     threshold does and carries no constant of its own.
     """
     return float(np.finfo(np.float64).eps) * _parametric_scale(spline)
+
+
+def _first_candidates(
+    context: _LocateContext, targets: npt.NDArray[np.float64], thresholds: _LocateThresholds
+) -> npt.NDArray[np.int64]:
+    """Return the first candidate cell of each target, as ``_locate_impl``'s first round does.
+
+    Lets a test drive :func:`_newton_refine` from the same starting guesses the solver uses
+    without reaching into it, so a comparison between two threshold policies varies the
+    policy alone.
+    """
+    return np.asarray(
+        [np.sort(context.bvh.query_aabb(AABB(x, x).pad(thresholds.accept)))[0] for x in targets],
+        dtype=np.int64,
+    )
 
 
 def _physical_only_scale(spline: Bspline) -> float:
@@ -871,7 +888,11 @@ class TestNewtonGlobalization:
         norms = [
             float(
                 np.linalg.norm(
-                    _evaluate_at(spline, _newton_refine(spline, target, start, tol, k)[1]) - target
+                    _evaluate_at(
+                        spline,
+                        _newton_refine(spline, target, start, _LocateThresholds(tol, tol), k)[1],
+                    )
+                    - target
                 )
             )
             for k in range(1, 13)
@@ -929,11 +950,12 @@ class TestNewtonGlobalization:
         candidates = np.sort(context.bvh.query_aabb(AABB(target[0], target[0]).pad(tol)))
         assert candidates.tolist() == [32], "the premise: one candidate, so there is no fallback"
 
+        thresholds = _LocateThresholds(tol, tol)
         from_midpoint = _newton_refine(
-            spline, target, _cell_midpoints(spline.space, candidates), tol, 40
+            spline, target, _cell_midpoints(spline.space, candidates), thresholds, 40
         )
         from_corner = _newton_refine(
-            spline, target, _nearest_corner_starts(spline, candidates, target), tol, 40
+            spline, target, _nearest_corner_starts(spline, candidates, target), thresholds, 40
         )
 
         assert not bool(from_midpoint[0][0]), "the midpoint start is expected to jam"
@@ -1520,6 +1542,150 @@ class TestStoppingVersusAcceptance:
             f"parametric-resolution bound of {bound:.3e}"
         )
         _assert_cell_contains(spline, cell_ids, ref_coords)
+
+    def test_a_start_between_the_two_bars_is_refined_instead_of_returned(self) -> None:
+        """The stopping rule is the tight one: an iterate inside the loose bar keeps going.
+
+        A starting guess a few ulps off the true preimage already satisfies the acceptance
+        threshold, so under a single threshold it is returned untouched -- that is exactly
+        how the accuracy was lost. Under the split it is refined until it meets the stopping
+        one, which the same call with both thresholds set to the loose value shows it does
+        not do of its own accord.
+        """
+        spline = _parametrically_offset_patch()
+        context = _locate_context(spline)
+        thresholds = _default_tolerance(spline, context)
+        xi_true = _sample_parametric(spline, 20, seed=17)
+        targets = _evaluate_at(spline, xi_true)
+        start = xi_true.copy()
+        for _ in range(16):
+            start[:, 1] = np.nextafter(start[:, 1], np.inf)
+        start_residual = np.linalg.norm(_evaluate_at(spline, start) - targets, axis=1)
+        assert np.all(start_residual > thresholds.stop), "the premise: above the tight bar"
+        assert np.all(start_residual <= thresholds.accept), "the premise: inside the loose one"
+
+        loose_only = _newton_refine(
+            spline, targets, start, _LocateThresholds(thresholds.accept, thresholds.accept), 30
+        )
+        split = _newton_refine(spline, targets, start, thresholds, 30)
+
+        assert np.all(loose_only[0]) and np.all(split[0]), "both policies report found"
+        assert np.array_equal(loose_only[1], start), "one threshold returns the guess as given"
+        refined = np.linalg.norm(_evaluate_at(spline, split[1]) - targets, axis=1)
+        assert np.all(refined < start_residual), f"not refined: {refined} vs {start_residual}"
+        assert np.all(refined <= thresholds.stop), f"did not reach the tight bar: {refined.max()}"
+
+    def test_a_residual_that_cannot_reach_the_tight_bar_is_still_accepted(self) -> None:
+        """The acceptance rule is the loose one, and it is what keeps the coverage.
+
+        Half-ulp targets have no representable preimage, so *no* iterate reaches the
+        stopping threshold; the verdict has to come from the acceptance one, and it does,
+        for a residual the parametric grid genuinely cannot beat. Driven from a single
+        candidate cell and a single start, which is less than the solver gives itself, so
+        the rows this leaves unconverged are the ones a second start recovers rather than a
+        loss.
+        """
+        spline = _parametrically_offset_patch()
+        context = _locate_context(spline)
+        thresholds = _default_tolerance(spline, context)
+        tight_only = _LocateThresholds(thresholds.stop, thresholds.stop)
+        xi_true = _sample_parametric(spline, 20, seed=17)
+        targets = _half_ulp_targets(spline, xi_true)
+        starts = _cell_midpoints(spline.space, _first_candidates(context, targets, thresholds))
+
+        by_the_tight_bar, _ = _newton_refine(spline, targets, starts, tight_only, 30)
+        converged, xi = _newton_refine(spline, targets, starts, thresholds, 30)
+
+        residuals = np.linalg.norm(_evaluate_at(spline, xi) - targets, axis=1)
+        assert not np.any(by_the_tight_bar), "the premise: no iterate reaches the tight bar"
+        assert np.any(converged), "acceptance at the loose bar recovered nothing"
+        assert np.all(residuals[converged] > thresholds.stop)
+        assert np.all(residuals[converged] <= thresholds.accept)
+        # What one candidate cell from one start leaves, locate's own fallbacks recover.
+        assert np.all(spline.locate(targets)[0] >= 0)
+
+    def test_the_split_never_returns_a_worse_coordinate_than_one_threshold_did(self) -> None:
+        """Coverage may not shrink, checked on the geometry with the widest gap.
+
+        The argument is in :class:`_LocateThresholds`: accepted steps never raise the
+        residual, so lowering the *stopping* test only extends trajectories. This runs both
+        policies from the same starts and pins the two consequences -- residuals no larger,
+        and therefore verdicts no fewer -- on queries on and off the mapping's image.
+        """
+        spline = _parametrically_offset_patch()
+        context = _locate_context(spline)
+        thresholds = _default_tolerance(spline, context)
+        loose = _LocateThresholds(thresholds.accept, thresholds.accept)
+        xi_true = _sample_parametric(spline, 60, seed=321)
+        for targets in (_evaluate_at(spline, xi_true), _half_ulp_targets(spline, xi_true)):
+            starts = _cell_midpoints(spline.space, _first_candidates(context, targets, thresholds))
+
+            single, xi_single = _newton_refine(spline, targets, starts, loose, 30)
+            split, xi_split = _newton_refine(spline, targets, starts, thresholds, 30)
+
+            res_single = np.linalg.norm(_evaluate_at(spline, xi_single) - targets, axis=1)
+            res_split = np.linalg.norm(_evaluate_at(spline, xi_split) - targets, axis=1)
+            assert np.any(single), "the premise: the single threshold finds something here"
+            assert np.all(res_split <= res_single), "the split returned a worse coordinate"
+            assert np.all(split | ~single), "the split lost a query the single threshold found"
+
+    @pytest.mark.parametrize(
+        "factory",
+        [
+            _warped_patch,
+            _quarter_annulus,
+            lambda: _offset_identity_patch(0.0),
+            lambda: _perturbed_patch(2, 3, 2, seed=4),
+        ],
+        ids=["warped", "annulus", "from-origin-affine", "perturbed"],
+    )
+    def test_a_knot_vector_from_the_origin_gets_one_threshold_bit_for_bit(
+        self, factory: Callable[[], Bspline]
+    ) -> None:
+        """The split changes nothing for ordinary geometry, in accuracy or in cost.
+
+        The reach is exactly ``1.0`` for a knot vector spanning ``[0, L]`` and no net span
+        exceeds the diagonal, so the parametric length cannot win the maximum and the two
+        thresholds are the same float. Equal thresholds make the iteration the one that ran
+        before, step for step, which is why no cost measurement is needed here.
+        """
+        spline = factory()
+        thresholds = _default_tolerance(spline, _locate_context(spline))
+
+        assert thresholds.stop == thresholds.accept
+        assert thresholds.stop == get_default(spline.dtype) * _physical_only_scale(spline)
+
+    def test_a_parametric_offset_is_what_separates_them(self) -> None:
+        """The complement of the test above: the gap is real where the reach is.
+
+        Without this the bitwise-equality test could be passing because the split does
+        nothing anywhere.
+        """
+        spline = _parametrically_offset_patch()
+        thresholds = _default_tolerance(spline, _locate_context(spline))
+
+        assert thresholds.stop < thresholds.accept
+        assert thresholds.stop == get_default(spline.dtype) * _physical_only_scale(spline)
+        assert thresholds.accept / thresholds.stop > 1.0e5, "the fixture's gap is decades wide"
+
+    def test_an_explicit_tolerance_governs_stopping_as_well(self) -> None:
+        """A named threshold is not silently refined past, so a proximity query stays cheap.
+
+        The caller who passes ``tol`` has said what distance they mean; answering to eight
+        decades better than that would charge them for accuracy they did not ask for. Pinned
+        by asking for a deliberately coarse one and checking the answers are coarse.
+        """
+        spline = _warped_patch()
+        xi_true = _sample_parametric(spline, 30, seed=5)
+        targets = _evaluate_at(spline, xi_true)
+        default = _default_tolerance(spline, _locate_context(spline)).accept
+
+        cell_ids, ref_coords = spline.locate(targets, tol=1.0e-2)
+
+        assert np.all(cell_ids >= 0)
+        residuals = np.linalg.norm(_evaluate_at(spline, ref_coords) - targets, axis=1)
+        assert residuals.max() <= 1.0e-2, "the threshold asked for must still hold"
+        assert residuals.max() > default, "an explicit tol was refined past, at the caller's cost"
 
 
 class TestNearCriticalJacobian:

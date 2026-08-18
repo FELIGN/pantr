@@ -31,6 +31,13 @@ The inversion has two stages:
    step to reduce the residual removes both failure modes at once, and makes the residual
    of the accepted iterates a monotonically non-increasing sequence.
 
+   Stopping and acceptance are two different thresholds: the iteration runs until the
+   residual is below what the *image* alone entitles the caller to, and a result counts as
+   found once it is below what the *parametrization* can attain. On a knot vector far from
+   the parametric origin those are decades apart, and serving both from one number would
+   hand back the looser of them. :class:`_LocateThresholds` derives the split, and
+   :func:`_default_tolerance` builds the two numbers.
+
    What damping cannot do is change which root the iteration finds. A monotone method
    descends into whichever basin it starts in, and on a mapping that folds, the residual
    has minima on the domain boundary that are not roots; a start that descends into one of
@@ -274,9 +281,13 @@ class _LocateContext(NamedTuple):
             when it is already ``float64``, otherwise an exact promoted copy.
         bvh (BVH): Hierarchy over the per-cell physical control-point boxes, with cell
             ids flat in C-order over ``space.num_intervals``.
-        scale (float): The length the default tolerance is expressed in, covering the
-            geometry's size, its distance from the origin, and what its parametrization
-            can resolve; see :func:`_geometric_scale`.
+        scale (float): The length the default *acceptance* threshold is expressed in,
+            covering the geometry's size, its distance from the origin, and what its
+            parametrization can resolve; see :func:`_geometric_scale`. It is
+            ``max(physical, parametric)``.
+        physical (float): The image-only half of that scale, which the default *stopping*
+            threshold is expressed in; see :func:`_physical_scale` and
+            :class:`_LocateThresholds`.
         diagonal (float): The geometry's own bounding-box diagonal, kept alongside the
             scale it feeds because :func:`_locate_impl` grades the parametric term against
             it before accepting a default threshold.
@@ -287,6 +298,7 @@ class _LocateContext(NamedTuple):
     spline: Bspline
     bvh: BVH
     scale: float
+    physical: float
     diagonal: float
     parametric: float
 
@@ -486,6 +498,54 @@ def _parametric_scale(spline: Bspline) -> float:
     return precision_ratio * float(products.max())
 
 
+def _physical_scale(lo: npt.NDArray[np.float64], hi: npt.NDArray[np.float64]) -> float:
+    """Return the length the *accuracy* a returned coordinate is entitled to is a multiple of.
+
+    Two lengths matter and the larger one has to win:
+
+    - the **diagonal** of the geometry's bounding box, which is what makes a residual
+      threshold a *relative* accuracy statement about the mapping;
+    - the largest coordinate **magnitude** present, because the computed residual
+      ``F(xi) - x`` cannot be resolved below ``~C * eps * max|coordinate|`` (the de Boor
+      sum accumulates ``C`` roundings, of the order of ``prod(degree + 1)``), whatever
+      the box's extent is.
+
+    Using the diagonal alone silently makes the tolerance unreachable for a geometry far
+    from the origin -- a patch of diameter 1 sitting at ``x = 1e6`` has a residual floor
+    around ``1e-10`` while ``eps * 1`` would be demanded -- so the scale is the maximum
+    of the two.
+
+    Both are properties of the **image** alone. Nothing about the parametrization enters,
+    which is exactly what makes this the length the accuracy contract is read off:
+    reparametrizing a geometry does not change what a caller may expect of a coordinate it
+    gets back. :func:`_geometric_scale` adds the length the parametrization *can resolve*,
+    which is a different question and gets a different threshold; :class:`_LocateThresholds`
+    is where the two are separated.
+
+    A geometry with no length at all -- every control point identical, *at the origin* --
+    falls back to ``1.0``: there is nothing to read a scale off, and the tolerance must
+    stay positive. That fallback is deliberately not a floor of one. A floor would make the
+    tolerance stop shrinking below unit size, so a model in metres and the same model in
+    kilometres would be held to different relative accuracies, which is exactly the
+    non-covariance the rest of this derivation exists to remove. A degenerate geometry
+    sitting *away* from the origin has a magnitude and uses it.
+
+    Args:
+        lo (npt.NDArray[np.float64]): Per-cell box lower corners, shape
+            ``(n_cells, rank)``.
+        hi (npt.NDArray[np.float64]): Per-cell box upper corners, same shape.
+
+    Returns:
+        float: The physical scale, strictly positive.
+    """
+    box_lo = lo.min(axis=0)
+    box_hi = hi.max(axis=0)
+    diagonal = float(np.linalg.norm(box_hi - box_lo))
+    magnitude = float(max(np.abs(box_lo).max(), np.abs(box_hi).max()))
+    scale = max(diagonal, magnitude)
+    return scale if scale > 0.0 else 1.0
+
+
 def _geometric_scale(
     lo: npt.NDArray[np.float64],
     hi: npt.NDArray[np.float64],
@@ -493,22 +553,9 @@ def _geometric_scale(
 ) -> float:
     """Return the length the default convergence tolerance is a multiple of.
 
-    Three lengths matter and the largest one has to win:
-
-    - the **diagonal** of the geometry's bounding box, which is what makes a residual
-      threshold a *relative* accuracy statement about the mapping;
-    - the largest coordinate **magnitude** present, because the computed residual
-      ``F(xi) - x`` cannot be resolved below ``~C * eps * max|coordinate|`` (the de Boor
-      sum accumulates ``C`` roundings, of the order of ``prod(degree + 1)``), whatever
-      the box's extent is; and
-    - the **parametric** length of :func:`_parametric_scale`, because a parametric
-      coordinate is a float64 too and the residual cannot be resolved below what one ulp
-      of it produces.
-
-    Using the diagonal alone silently makes the tolerance unreachable for a geometry far
-    from the origin -- a patch of diameter 1 sitting at ``x = 1e6`` has a residual floor
-    around ``1e-10`` while ``eps * 1`` would be demanded -- so the scale is the maximum
-    of them all.
+    The larger of two lengths: the physical one of :func:`_physical_scale`, and the
+    **parametric** length of :func:`_parametric_scale`, because a parametric coordinate is
+    a float64 too and the residual cannot be resolved below what one ulp of it produces.
 
     **The parametric term.** The first two lengths are properties of the image alone, and
     a threshold built from them is equally unreachable whenever the *parametrization*
@@ -605,13 +652,17 @@ def _geometric_scale(
     no dependence on ``prod(degree + 1)`` across 3 to 125. The default tier stays, now for
     a stated reason rather than by a margin that was an artifact of the measurement.
 
-    A geometry with no length at all -- every control point identical, *at the origin* --
-    falls back to ``1.0``: there is nothing to read a scale off, and the tolerance must
-    stay positive. That fallback is deliberately not a floor of one. A floor would make the
-    tolerance stop shrinking below unit size, so a model in metres and the same model in
-    kilometres would be held to different relative accuracies, which is exactly the
-    non-covariance the rest of this derivation exists to remove. A degenerate geometry
-    sitting *away* from the origin has a magnitude and uses it.
+    That the achieved residual *tracks* the threshold is also why this length may not be
+    what the iteration stops at. A threshold this one raises to cover what the
+    parametrization can resolve would, as a stopping rule, hand back exactly that much error
+    on geometry whose answer was far more accurate one iteration on. Which of the two
+    thresholds governs stopping and which governs acceptance is settled in
+    :class:`_LocateThresholds`.
+
+    The degenerate fallback lives in :func:`_physical_scale` and covers this function too:
+    the physical scale vanishes only when every control point is identical and at the
+    origin, and such a geometry has no net span in any direction, so ``parametric`` is zero
+    there as well and the maximum is the fallback.
 
     Args:
         lo (npt.NDArray[np.float64]): Per-cell box lower corners, shape
@@ -620,14 +671,10 @@ def _geometric_scale(
         parametric (float): The parametric length from :func:`_parametric_scale`.
 
     Returns:
-        float: The geometric scale, strictly positive.
+        float: The geometric scale, strictly positive and never below
+        :func:`_physical_scale`.
     """
-    box_lo = lo.min(axis=0)
-    box_hi = hi.max(axis=0)
-    diagonal = float(np.linalg.norm(box_hi - box_lo))
-    magnitude = float(max(np.abs(box_lo).max(), np.abs(box_hi).max()))
-    scale = max(diagonal, magnitude, parametric)
-    return scale if scale > 0.0 else 1.0
+    return max(_physical_scale(lo, hi), parametric)
 
 
 def _build_context(spline: Bspline) -> _LocateContext:
@@ -639,7 +686,7 @@ def _build_context(spline: Bspline) -> _LocateContext:
 
     Returns:
         _LocateContext: The promoted spline, the BVH over its per-cell physical boxes,
-        and the geometric scale.
+        and the lengths the two default thresholds are expressed in.
     """
     spline_64 = _promote_to_float64(spline)
     lo, hi = _cell_physical_bounds(spline_64)
@@ -651,6 +698,7 @@ def _build_context(spline: Bspline) -> _LocateContext:
         spline=spline_64,
         bvh=BVH.from_cell_bounds(lo, hi),
         scale=_geometric_scale(lo, hi, parametric),
+        physical=_physical_scale(lo, hi),
         diagonal=float(np.linalg.norm(box_hi - box_lo)),
         parametric=parametric,
     )
@@ -908,21 +956,120 @@ def _accept_damped_step(
     return accepted
 
 
+class _LocateThresholds(NamedTuple):
+    """The two residual thresholds a solve is governed by, with ``stop <= accept``.
+
+    One number cannot do both jobs. ``stop`` is the **accuracy contract** -- what a caller
+    is entitled to expect of a coordinate that comes back -- and ``accept`` is an
+    **attainability** statement: the residual below which no representable parameter can
+    go, so that a query whose exact preimage is unrepresentable is still reported found.
+    Serving both from one number forces the accuracy contract up to the attainability
+    bound, and it forces it all the way: the re-measurement recorded in
+    :func:`_geometric_scale` found the achieved residual tracking whatever threshold is
+    set, to within one part in a hundred, at every tier from ``2`` to ``4096`` epsilons. So
+    :func:`_newton_refine` keeps iterating while the residual is above ``stop``, and takes
+    the verdict at ``accept``.
+
+    **Why only ``accept`` grows with the parametrization.** ``stop`` is
+    ``get_default(dtype) * physical`` with the length of :func:`_physical_scale`, read off
+    the **image** alone; ``accept`` is the same tier times that length maximised against
+    :func:`_parametric_scale`. How finely a float64 parametric coordinate resolves the
+    geometry decides whether a solution *exists* among representable parameters. It says
+    nothing about the accuracy a caller is owed, which is a property of the image and of
+    nothing else -- reparametrizing a geometry may not change what an answer is worth. For
+    a knot vector spanning ``[0, L]`` the two are equal **bit for bit** (the reach is
+    exactly ``1.0`` and no net span exceeds the diagonal), so nothing parametrized from the
+    origin sees any of this, in accuracy or in cost.
+
+    **Coverage cannot shrink, by construction rather than by measurement.** Every accepted
+    step strictly reduces the residual (:data:`_ARMIJO_DECREASE`), so the residuals of the
+    accepted iterates are monotonically non-increasing. Lowering the *stopping* test from
+    ``accept`` to ``stop`` therefore only extends trajectories the single-threshold
+    iteration would have cut short, and a row whose residual once passed ``accept`` still
+    passes it at exit, however many further steps it takes and whether it ends by
+    converging, by exhausting the line search, by meeting the rank guard or by running out
+    of budget. The queries reported found under the split are a superset of those reported
+    found under ``accept`` alone, on every map. No appeal to the redundancy of candidate
+    cells or of the second start is needed.
+
+    **What each verdict certifies.** ``converged`` is a test on the residual the solve
+    actually achieved, taken once at the end, so no coordinate is returned that fails the
+    threshold it is graded against -- including one whose starting guess was already inside
+    ``accept`` and which the iteration then moved.
+
+    **What it buys.** Measured on a warped unit patch whose second direction is
+    parametrized on ``[1e6, 1e6 + 1]`` (degree 3, 4 elements per direction, 60 sampled
+    parameters), where ``stop`` is ``2.53e-14`` and ``accept`` is ``1.47e-08``:
+
+    ==========================  =====================  ======  ===============
+    targets                     policy                 lost    worst residual
+    ==========================  =====================  ======  ===============
+    exact images                ``accept`` alone       0 / 60  ``1.20e-08``
+                                ``stop`` alone         4 / 60  ``2.46e-14``
+                                split                  0 / 60  ``4.99e-11``
+    a half ulp off the image    ``accept`` alone       0 / 60  ``1.19e-08``
+                                ``stop`` alone        60 / 60  --
+                                split                  0 / 60  ``1.88e-10``
+    ==========================  =====================  ======  ===============
+
+    The split has the coverage of the looser threshold and 240 times the accuracy of it,
+    with the median residual on exact images falling from ``3.8e-11`` to ``2.3e-16``. It
+    does **not** reach ``stop`` on every query, and cannot: at this reach one ulp of the
+    parametric coordinate already moves the image by ``2.3e-10``. What it reaches is the
+    parametric grid's own floor -- the half-ulp worst case of ``1.88e-10`` equals, to five
+    digits, the best residual any parameter within two ulps of the true preimage attains.
+
+    **What it costs.** Where the two coincide the code path is identical, and the
+    ``2400``-query warped-map sweep of ``tests/test_bspline_locate.py`` (60 configurations,
+    dimensions 1 to 3, degrees 1 to 5, physical offsets ``0`` and ``1e6``) measures
+    ``1.000x`` map evaluations and ``1.000x`` Jacobians, because a physical offset moves
+    both thresholds together. On the fixture above at parametric offset ``1e6``, where the
+    split is at its widest: ``1.12x`` map evaluations for targets on the image and
+    ``1.61x`` for half-ulp targets, ``1.15x`` and ``1.25x`` Jacobians, and accepted Newton
+    steps rising from 359 to 430 and to 467 over the 60 solves -- the per-solve mode moving
+    from 5 to 6 and 7 and the maximum from 10 to 12, against a default budget of 30.
+    Queries **off** the mapping's image, which dominate the cost of a bad batch, are
+    unchanged at ``1.00x``: they never reach either threshold, so their trajectories are
+    identical. A worst case of ``1.6x`` on the evaluation count, confined to geometry
+    parametrized a million widths from the origin, is what the accuracy above is bought
+    with.
+
+    An explicit ``tol`` sets both. A caller who names a threshold has taken responsibility
+    for what it means and may well be asking a proximity question rather than an inversion
+    one, and refining past it would charge them for accuracy they did not ask for.
+
+    Attributes:
+        stop (float): The residual at or below which the iteration stops, in physical
+            units. The accuracy contract.
+        accept (float): The residual at or below which the result counts as found, in
+            physical units. Never below ``stop``.
+    """
+
+    stop: float
+    accept: float
+
+
 def _newton_refine(
     spline: Bspline,
     targets: npt.NDArray[np.float64],
     xi_start: npt.NDArray[np.float64],
-    tol_phys: float,
+    thresholds: _LocateThresholds,
     max_iter: int,
 ) -> tuple[npt.NDArray[np.bool_], npt.NDArray[np.float64]]:
     """Run a batched damped Newton inversion, one starting guess per target point.
 
     Every point is iterated independently but evaluated collectively: each round drops the
-    points that have converged, the points whose Jacobian has become rank-deficient, and
-    the points whose line search was exhausted, then takes one damped Newton step for the
-    rest. Iterates are clamped to the parametric domain box, which keeps them inside the
-    evaluators' legal input range; it is :func:`_accept_damped_step`, not the clamp, that
-    bounds an overlong step from an ill-conditioned Jacobian.
+    points that have reached ``thresholds.stop``, the points whose Jacobian has become
+    rank-deficient, and the points whose line search was exhausted, then takes one damped
+    Newton step for the rest. Iterates are clamped to the parametric domain box, which
+    keeps them inside the evaluators' legal input range; it is :func:`_accept_damped_step`,
+    not the clamp, that bounds an overlong step from an ill-conditioned Jacobian.
+
+    Stopping and acceptance are two different thresholds and the reason is in
+    :class:`_LocateThresholds`. Only ``thresholds.stop`` ends a trajectory; the verdict is
+    a single test of the residual each point actually achieved against
+    ``thresholds.accept``, applied once at the end and therefore covering the points the
+    loop dropped as well as the ones that stopped.
 
     Because every accepted step reduces the residual, the residuals of the iterates form a
     monotonically non-increasing sequence. It is in fact strictly decreasing, hence free of
@@ -940,17 +1087,18 @@ def _newton_refine(
         targets (npt.NDArray[np.float64]): Physical query points, shape ``(n, rank)``.
         xi_start (npt.NDArray[np.float64]): Starting parametric guesses, shape
             ``(n, dim)``.
-        tol_phys (float): Convergence threshold on ``||F(xi) - x||_2``, a distance in
-            physical units.
-        max_iter (int): Maximum number of accepted Newton steps. The residual is tested
-            once more after the last step, so a point converging on step ``max_iter`` is
-            reported. The extra map evaluations a line search makes are not steps.
+        thresholds (_LocateThresholds): The stopping and acceptance thresholds on
+            ``||F(xi) - x||_2``, both distances in physical units.
+        max_iter (int): Maximum number of accepted Newton steps. Exhausting it is not a
+            verdict: the acceptance test is taken afterwards either way, so a point that
+            reached ``thresholds.accept`` on the way is still reported. The extra map
+            evaluations a line search makes are not steps.
 
     Returns:
         tuple[npt.NDArray[np.bool_], npt.NDArray[np.float64]]: ``(converged, xi)``.
-        ``converged`` has shape ``(n,)``; ``xi`` has shape ``(n, dim)`` and holds each
-        point's last accepted iterate, which is a solution only where ``converged`` is
-        True.
+        ``converged`` has shape ``(n,)`` and is ``||F(xi) - x||_2 <= thresholds.accept``
+        row by row; ``xi`` has shape ``(n, dim)`` and holds each point's last accepted
+        iterate, which is a solution only where ``converged`` is True.
     """
     dim = xi_start.shape[1]
     domain = np.asarray(spline.space.domain, dtype=np.float64)
@@ -965,13 +1113,11 @@ def _newton_refine(
         lo=lo,
         hi=hi,
     )
-    # Tested before the first step, so a starting guess already inside the threshold is
-    # returned untouched. That is what makes the threshold a stopping rule and not only an
-    # acceptance rule: under a large one -- a geometry far from either origin -- the cell
-    # midpoint can pass here, and the coordinate that comes back is then accurate to the
-    # threshold rather than to what the map could have delivered.
-    converged = state.res_norm <= tol_phys
-    active = np.arange(xi.shape[0], dtype=np.int64)[~converged]
+    # Tested before the first step, so a starting guess already inside the stopping
+    # threshold is returned untouched. Under the acceptance one it would not be: on a
+    # geometry far from either origin a cell midpoint can already sit inside that, and
+    # returning it would deliver the bar rather than what the map can resolve.
+    active = np.arange(xi.shape[0], dtype=np.int64)[state.res_norm > thresholds.stop]
 
     for _ in range(max_iter):
         if active.size == 0:
@@ -989,11 +1135,9 @@ def _newton_refine(
         )[..., 0]
 
         active = active[_accept_damped_step(spline, targets, state, active, delta)]
-        done = state.res_norm[active] <= tol_phys
-        converged[active[done]] = True
-        active = active[~done]
+        active = active[state.res_norm[active] > thresholds.stop]
 
-    return converged, state.xi
+    return state.res_norm <= thresholds.accept, state.xi
 
 
 def _validate_points(points: npt.ArrayLike, rank: int) -> npt.NDArray[np.float64]:
@@ -1069,12 +1213,19 @@ def _validate_invertible(spline: Bspline, tol: float | None, max_iter: int) -> N
         raise ValueError(f"locate: tol must be positive and finite; got {tol}.")
 
 
-def _default_tolerance(spline: Bspline, context: _LocateContext) -> float:
-    """Return the default convergence threshold, or refuse a parametrization that has none.
+def _default_tolerance(spline: Bspline, context: _LocateContext) -> _LocateThresholds:
+    """Return the default thresholds, or refuse a parametrization that can carry none.
 
-    ``get_default(dtype) * scale``, with ``scale`` from :func:`_geometric_scale`, except
-    that a parametrization whose own resolution would demand a threshold larger than the
-    geometry it grades is refused instead of served.
+    ``get_default(dtype)`` times each of the two lengths the context carries: the
+    image-only one of :func:`_physical_scale` to stop at, and the one of
+    :func:`_geometric_scale` to accept at. :class:`_LocateThresholds` is where the split
+    itself is derived; this function only assembles the numbers, and refuses a
+    parametrization whose own resolution would demand a threshold larger than the geometry
+    it grades instead of serving it.
+
+    Both are the same tier applied to a length the geometry supplies, so neither introduces
+    a constant, and ``stop <= accept`` holds because :func:`_geometric_scale` is a maximum
+    over :func:`_physical_scale`.
 
     **Why refuse rather than clamp.** Past that point the answer carries no information: a
     "found" verdict admitting more than a whole diameter of error says only that the query
@@ -1109,11 +1260,12 @@ def _default_tolerance(spline: Bspline, context: _LocateContext) -> float:
         context (_LocateContext): Its cached inversion state.
 
     Returns:
-        float: The default threshold on ``||F(xi) - x||_2``, strictly positive.
+        _LocateThresholds: The default thresholds on ``||F(xi) - x||_2``, both strictly
+        positive.
 
     Raises:
-        ValueError: If the parametric term alone would put the threshold above the
-            geometry's own bounding-box diagonal.
+        ValueError: If the parametric term alone would put the acceptance threshold above
+            the geometry's own bounding-box diagonal.
     """
     tier = get_default(spline.dtype)
     if tier * context.parametric > context.diagonal:
@@ -1125,7 +1277,7 @@ def _default_tolerance(spline: Bspline, context: _LocateContext) -> float:
             "the knot vector nearer the parametric origin, or pass an explicit tol to say "
             "what distance you want."
         )
-    return tier * context.scale
+    return _LocateThresholds(stop=tier * context.physical, accept=tier * context.scale)
 
 
 def _locate_impl(
@@ -1141,9 +1293,8 @@ def _locate_impl(
             non-periodic, and, if rational, have strictly positive weights.
         points (npt.ArrayLike): Physical query points; see :func:`_validate_points`.
         tol (float | None): Convergence threshold on ``||F(xi) - x||_2`` as an absolute
-            distance in physical units, or ``None`` for
-            ``pantr.tolerance.get_default(spline.dtype) * scale``, with ``scale`` from
-            :func:`_geometric_scale`.
+            distance in physical units, governing stopping and acceptance alike, or
+            ``None`` for the pair :func:`_default_tolerance` builds.
         max_iter (int): Maximum number of Newton steps per candidate cell.
 
     Returns:
@@ -1173,21 +1324,27 @@ def _locate_impl(
 
     pts = _validate_points(points, rank)
     context = _locate_context(spline)
-    tol_phys = float(tol) if tol is not None else _default_tolerance(spline, context)
+    # An explicit tol governs stopping as well as acceptance; see :class:`_LocateThresholds`.
+    thresholds = (
+        _LocateThresholds(stop=float(tol), accept=float(tol))
+        if tol is not None
+        else _default_tolerance(spline, context)
+    )
 
     n_pts = pts.shape[0]
     cell_ids = np.full(n_pts, -1, dtype=np.int64)
     ref_coords = np.full((n_pts, dim), np.nan, dtype=np.float64)
 
     # Candidates per point, in ascending cell id: the order the rounds below try them in.
-    # The pad is the threshold itself, so a geometry whose threshold is large -- far from
-    # the physical origin, or far from the parametric one -- returns more candidate cells
-    # per query. That costs solves, never correctness: every extra candidate still has to
-    # pass the same residual test. Measured on a 16x16-cell patch, mean candidates per
-    # query: 4.0 (of 256) at parametric offsets up to 1e9, 7.0 at 1e11, 57.1 at 1e13 --
-    # the blow-up starting only where the verdict is already near-meaningless and
-    # _default_tolerance is about to refuse outright.
-    candidates = [np.sort(context.bvh.query_aabb(AABB(x, x).pad(tol_phys))) for x in pts]
+    # The pad is the *acceptance* threshold, which is the one a returned coordinate is
+    # graded against, so no cell that could hold a solution is missed. A geometry whose
+    # threshold is large -- far from the physical origin, or far from the parametric one --
+    # therefore returns more candidate cells per query. That costs solves, never
+    # correctness: every extra candidate still has to pass the same residual test. Measured
+    # on a 16x16-cell patch, mean candidates per query: 4.0 (of 256) at parametric offsets
+    # up to 1e9, 7.0 at 1e11, 57.1 at 1e13 -- the blow-up starting only where the verdict is
+    # already near-meaningless and _default_tolerance is about to refuse outright.
+    candidates = [np.sort(context.bvh.query_aabb(AABB(x, x).pad(thresholds.accept))) for x in pts]
     pending = [i for i, cand in enumerate(candidates) if cand.size > 0]
     found: list[int] = []
     slot = 0
@@ -1199,7 +1356,7 @@ def _locate_impl(
         cells = np.asarray([candidates[i][slot] for i in batch], dtype=np.int64)
 
         starts = _cell_midpoints(context.spline.space, cells)
-        converged, xi = _newton_refine(context.spline, pts[index], starts, tol_phys, max_iter)
+        converged, xi = _newton_refine(context.spline, pts[index], starts, thresholds, max_iter)
         ref_coords[index[converged]] = xi[converged]
 
         # Second start for the candidates the midpoint could not resolve; see
@@ -1210,7 +1367,7 @@ def _locate_impl(
             retry_index, retry_cells = index[retry], cells[retry]
             corner_starts = _nearest_corner_starts(context.spline, retry_cells, pts[retry_index])
             retried, xi = _newton_refine(
-                context.spline, pts[retry_index], corner_starts, tol_phys, max_iter
+                context.spline, pts[retry_index], corner_starts, thresholds, max_iter
             )
             ref_coords[retry_index[retried]] = xi[retried]
             converged[retry] = retried
