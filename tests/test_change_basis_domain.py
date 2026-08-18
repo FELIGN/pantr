@@ -39,12 +39,16 @@ from pantr.change_basis import (
     _BERNSTEIN_TO_LAGRANGE_MAX_DEGREE,
     _CARDINAL_TO_BERNSTEIN_MAX_DEGREE,
     _CARDINAL_TO_LEGENDRE_MAX_DEGREE,
+    _cached_cardinal_to_bernstein_matrix,
     _DegreeLimit,
     compute_bernstein_to_cardinal_1d,
     compute_bernstein_to_lagrange_1d,
     compute_cardinal_dual_legendre_coeffs_1d,
     compute_cardinal_to_bernstein_1d,
     compute_cardinal_to_legendre_1d,
+    compute_lagrange_to_bernstein_1d,
+    compute_legendre_to_cardinal_1d,
+    compute_monomial_to_bernstein_1d,
 )
 
 _EXACT_PRECISION = 60
@@ -566,6 +570,99 @@ def test_ticket_311_overflow_reproduction_now_refuses() -> None:
     """
     with pytest.raises(ValueError, match="outside the supported domain"):
         compute_cardinal_to_bernstein_1d(36, np.float32)
+
+
+_UNLIMITED_BUILDERS: tuple[tuple[str, _Builder], ...] = (
+    ("compute_legendre_to_cardinal_1d", compute_legendre_to_cardinal_1d),
+    ("compute_monomial_to_bernstein_1d", compute_monomial_to_bernstein_1d),
+    *(
+        (
+            f"compute_lagrange_to_bernstein_1d[{variant.name}]",
+            (
+                lambda degree, dtype, variant=variant: compute_lagrange_to_bernstein_1d(
+                    degree, variant, dtype
+                )
+            ),
+        )
+        for variant in LagrangeVariant
+    ),
+)
+"""The builders documented as carrying no degree limit, in either dtype."""
+
+
+@pytest.mark.parametrize(
+    ("name", "builder"), _UNLIMITED_BUILDERS, ids=[case[0] for case in _UNLIMITED_BUILDERS]
+)
+@pytest.mark.parametrize("dtype", _DTYPES, ids=("float32", "float64"))
+def test_builders_without_a_domain_accept_a_high_degree(
+    name: str, builder: _Builder, dtype: _FloatType
+) -> None:
+    """A builder documented as unlimited must stay unlimited.
+
+    The module docstring says these run no solve that could go singular, so they carry no
+    degree limit. Nothing else pins that: extending the domain pattern to one of them by
+    mistake would be an over-restrictive validation on a legitimate call, and every other
+    test here would still pass. Degree 60 is far past every tabulated limit in the module.
+    """
+    degree = 60
+    matrix = np.asarray(builder(degree, dtype))
+    assert matrix.shape == (degree + 1, degree + 1)
+    assert np.all(np.isfinite(matrix)), f"{name} returned non-finite entries at degree {degree}"
+
+
+def test_far_outside_the_domain_still_refuses_cleanly() -> None:
+    """Well past the boundary, not just one degree past, the refusal is still the clean one.
+
+    Degree 40 in float32 is past where the *unguarded* computation starts producing
+    infinities (degree 34 for the Bernstein pair, 32 for the Legendre pair) and, for two of
+    these, past where it starts raising ``LinAlgError`` (37 and 38). The guard has to fire
+    first in every case, or one of those escapes instead.
+    """
+    for builder in (
+        compute_cardinal_to_bernstein_1d,
+        compute_bernstein_to_cardinal_1d,
+        compute_cardinal_to_legendre_1d,
+        compute_cardinal_dual_legendre_coeffs_1d,
+    ):
+        with pytest.raises(ValueError, match="outside the supported domain") as excinfo:
+            builder(40, np.float32)
+        assert not isinstance(excinfo.value, np.linalg.LinAlgError)
+
+
+def test_dtype_is_rejected_before_the_degree_domain() -> None:
+    """An unsupported dtype must still report the dtype, not a domain the dtype has no entry in.
+
+    ``_validate_degree_in_domain`` runs after ``_prepare_square_out``, so the dtype error
+    comes first. That ordering is what lets the domain lookup assume a validated dtype, and
+    nothing else pins it.
+    """
+    with pytest.raises(ValueError, match="dtype must be float32 or float64"):
+        compute_cardinal_to_bernstein_1d(100, np.float16)
+
+
+def test_refusal_leaves_a_caller_supplied_out_untouched() -> None:
+    """Refusing must not scribble in the caller's buffer.
+
+    ``out`` is validated (and so may be a real caller array) before the domain check runs, so
+    the check has to refuse without writing. A sentinel makes that observable.
+    """
+    degree = _CARDINAL_TO_BERNSTEIN_MAX_DEGREE.float32 + 1
+    out = np.full((degree + 1, degree + 1), 7.0, dtype=np.float32)
+    with pytest.raises(ValueError, match="outside the supported domain"):
+        compute_cardinal_to_bernstein_1d(degree, np.float32, out=out)
+    assert np.array_equal(out, np.full_like(out, 7.0)), "the refused call wrote into `out`"
+
+
+def test_cached_wrapper_propagates_the_domain_refusal() -> None:
+    """``functools.lru_cache`` must not swallow or reshape the refusal.
+
+    The extraction paths reach these builders through the cached wrappers, so a caller there
+    has to see the same message a direct call gives.
+    """
+    with pytest.raises(ValueError, match="compute_cardinal_to_bernstein_1d"):
+        _cached_cardinal_to_bernstein_matrix(
+            _CARDINAL_TO_BERNSTEIN_MAX_DEGREE.float32 + 1, np.dtype(np.float32)
+        )
 
 
 def test_extraction_degrees_stay_inside_the_domain() -> None:
