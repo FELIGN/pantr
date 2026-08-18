@@ -37,6 +37,15 @@ _VOLUME_FACE_LABELS = ("u0", "u1", "v0", "v1", "w0", "w1")
 _FACE_SAMPLES = np.linspace(0.0, 1.0, 11)
 """Normalized per-direction samples used to compare a volume's boundary against a face."""
 
+_CurvePairs = tuple[tuple[Bspline, Bspline], tuple[Bspline, Bspline]]
+"""The argument of :func:`~pantr.cad.create_coons_surface`: two pairs of opposite curves."""
+
+_SURFACE_BOUNDARY_LABELS = ("v0", "v1", "u0", "u1")
+"""Flat order of a patch's four boundary curves, matching the pairs of :data:`_CurvePairs`."""
+
+_CURVE_SAMPLES = np.linspace(0.0, 1.0, 21)
+"""Normalized samples used to compare a patch's boundary against the curve supplied."""
+
 
 def _flatten_faces(faces: _FacePairs) -> list[Bspline]:
     """Flatten three pairs of opposite faces into ``(u0, u1, v0, v1, w0, w1)`` order.
@@ -101,14 +110,51 @@ def _face_interpolation_gaps(vol: Bspline, faces: _FacePairs) -> dict[str, float
     return gaps
 
 
+def _boundary_interpolation_gaps(srf: Bspline, curves: _CurvePairs) -> dict[str, float]:
+    """Measure how far a Coons patch's boundary is from each curve it was built from.
+
+    A Coons patch's defining property is that it interpolates all four boundary curves, so
+    every entry must vanish to roundoff.  Flattened, the constructor's pairs are already in
+    ``(axis, side)`` order: entry ``k`` is the boundary at side ``k % 2`` of axis ``k // 2``.
+
+    Args:
+        srf (Bspline): The patch under test.
+        curves (_CurvePairs): The four curves it was built from.
+
+    Returns:
+        dict[str, float]: Boundary label from :data:`_SURFACE_BOUNDARY_LABELS` mapped to
+        ``max |S restricted to that boundary - the curve|`` over :data:`_CURVE_SAMPLES`.
+    """
+    flat = [curve for pair in curves for curve in pair]
+    gaps: dict[str, float] = {}
+    for k, (label, curve) in enumerate(zip(_SURFACE_BOUNDARY_LABELS, flat, strict=True)):
+        axis, free = k // 2, 1 - k // 2
+        srf_params = np.empty((_CURVE_SAMPLES.size, 2))
+        srf_params[:, axis] = _to_domain(srf, axis, np.array([float(k % 2)]))[0]
+        srf_params[:, free] = _to_domain(srf, free, _CURVE_SAMPLES)
+        curve_params = _to_domain(curve, 0, _CURVE_SAMPLES)
+        got = np.asarray(
+            srf.evaluate(np.ascontiguousarray(srf_params, dtype=srf.control_points.dtype)),
+            dtype=np.float64,
+        )
+        want = np.asarray(
+            curve.evaluate(np.ascontiguousarray(curve_params, dtype=curve.control_points.dtype)),
+            dtype=np.float64,
+        )
+        gaps[label] = float(np.linalg.norm(got - want, axis=1).max())
+    return gaps
+
+
 def _reported_numbers(message: str) -> tuple[float, float, float]:
     """Parse the gap, tolerance and scale a mismatch message reports.
 
     Whatever the message says about the tolerance is a claim about the comparison that was
     actually made, so it is worth checking rather than trusting.  The name between ``at``
-    and ``scale`` is the population the tolerance was taken over -- ``corner``, ``edge
-    coordinate``, ``edge weight`` -- and is checked separately by the tests that care which
-    column group decided the verdict.
+    and ``scale`` is the population the tolerance was taken over -- ``corner``, ``corner
+    coordinate``, ``corner weight``, ``edge coordinate``, ``edge weight`` -- and is checked
+    separately by the tests that care which column group decided the verdict.  The bare
+    ``corner`` is the volume's corner check, which compares projected points and so has one
+    physical dimension to name; every homogeneous comparison names its column group.
 
     Args:
         message (str): The ``ValueError`` message.
@@ -273,6 +319,373 @@ class TestCoonsCornerToleranceScaleCovariance:
         c_v0, c_v1, c_u0, c_u1 = self._square(scale, corner_shift=scale)
         with pytest.raises(ValueError, match="mismatch"):
             create_coons_surface(((c_v0, c_v1), (c_u0, c_u1)))
+
+
+class TestCoonsSurfaceHomogeneousCorners:
+    """Curves meeting at a corner of a patch must agree there in **homogeneous** data.
+
+    :meth:`~pantr.bspline.Bspline.boundary` projects, so the corner check compared physical
+    points and a weight never entered it.  Two curves can name the same point of space at a
+    shared corner while supplying different ``(w x, w y, w z, w)`` there -- a homogeneous
+    representation is unique only up to one constant scaling all of a patch's weights -- and
+    the three-term blend, which is formed and subtracted homogeneously, then fails to cancel.
+    Measured on the unit square with a single rational boundary whose weights run 1 to 2, the
+    patch missed one of the four curves it was handed by ``1.714e-01``, 17% of the model,
+    while every corner matched to ``1.110e-16`` (pantr issue 327).
+
+    The corner term is the other half of the same requirement, and the half the ticket did
+    not name.  It used to be read through :meth:`~pantr.bspline.Bspline.boundary` as well and
+    promoted with unit weights, so four curves agreeing homogeneously at every corner still
+    produced a patch that missed them whenever the weight they agreed on was not 1: measured
+    ``2.198e-02`` on a degree-2 model whose corner weights were all 2, with nothing refused.
+    ``create_coons_volume`` never had that defect -- ``_extract_corners`` reads homogeneously
+    and the corner term carries the weight column -- and the patch now takes the same path.
+
+    Where a refusal grades homogeneous data it uses ``_verify_edges_3d``'s rule, coordinate
+    and weight columns in separate scale groups, whose derivation and measurements live in
+    ``pantr.cad._join._verify_shared_boundary``.
+    """
+
+    @staticmethod
+    def _bezier_space(degree: int, dtype: npt.DTypeLike = np.float64) -> BsplineSpace:
+        """Build a clamped single-span space of the given degree on ``[0, 1]``.
+
+        Args:
+            degree (int): Polynomial degree.
+            dtype (npt.DTypeLike): Precision of the knot vector. Defaults to float64.
+
+        Returns:
+            BsplineSpace: A 1D space with ``degree + 1`` basis functions.
+        """
+        knots = np.array([0.0] * (degree + 1) + [1.0] * (degree + 1), dtype=dtype)
+        return BsplineSpace([BsplineSpace1D(knots, degree)])
+
+    @classmethod
+    def _line(cls, a: list[float], b: list[float], dtype: npt.DTypeLike = np.float64) -> Bspline:
+        """Build a polynomial straight-line curve between two points.
+
+        Args:
+            a (list[float]): Start point.
+            b (list[float]): End point.
+            dtype (npt.DTypeLike): Precision of the curve. Defaults to float64.
+
+        Returns:
+            Bspline: A clamped degree-1 non-rational curve on ``[0, 1]``.
+        """
+        return Bspline(cls._bezier_space(1, dtype), np.asarray([a, b], dtype=dtype))
+
+    @classmethod
+    def _rational_line(
+        cls,
+        a: list[float],
+        b: list[float],
+        wa: float,
+        wb: float,
+        dtype: npt.DTypeLike = np.float64,
+    ) -> Bspline:
+        """Build straight-line geometry carrying non-unit weights, as pantr issue 327 does.
+
+        The geometry is the segment from *a* to *b* whatever the weights, since a degree-1
+        rational curve traces the straight line between its projected control points; only
+        the parametrization and the homogeneous coefficients change.
+
+        Args:
+            a (list[float]): Start point.
+            b (list[float]): End point.
+            wa (float): Weight at the start.
+            wb (float): Weight at the end.
+            dtype (npt.DTypeLike): Precision of the curve. Defaults to float64.
+
+        Returns:
+            Bspline: A clamped degree-1 rational curve on ``[0, 1]``.
+        """
+        cp = np.array(
+            [[*(np.asarray(a, float) * wa), wa], [*(np.asarray(b, float) * wb), wb]], dtype=dtype
+        )
+        return Bspline(cls._bezier_space(1, dtype), cp, is_rational=True)
+
+    @classmethod
+    def _rational_arc(
+        cls, points: list[list[float]], weights: tuple[float, float, float]
+    ) -> Bspline:
+        """Build the degree-2 rational curve of the control case of pantr issue 327.
+
+        The first and last weights are the patch corner weights the curve carries; the
+        middle one touches no corner and is unconstrained.
+
+        Args:
+            points (list[list[float]]): The three projected control points.
+            weights (tuple[float, float, float]): Their weights, in the same order.
+
+        Returns:
+            Bspline: A clamped degree-2 rational curve on ``[0, 1]``.
+        """
+        cp = np.array(
+            [[*(np.asarray(p, float) * w), w] for p, w in zip(points, weights, strict=True)]
+        )
+        return Bspline(cls._bezier_space(2), cp, is_rational=True)
+
+    @classmethod
+    def _unit_square_arcs(cls, corner_weight: float, interior_weight: float) -> _CurvePairs:
+        """Build four degree-2 rational curves agreeing homogeneously at every corner.
+
+        Every corner is read by two curves and both give it *corner_weight*, so nothing is
+        inconsistent however far *interior_weight* is from 1.
+
+        Args:
+            corner_weight (float): Weight both curves carry at each of the four corners.
+            interior_weight (float): Weight of every middle control point.
+
+        Returns:
+            _CurvePairs: ``((C_v0, C_v1), (C_u0, C_u1))`` over the unit square.
+        """
+        w = (corner_weight, interior_weight, corner_weight)
+        return (
+            (
+                cls._rational_arc([[0, 0, 0], [0, 0.5, 0], [0, 1, 0]], w),
+                cls._rational_arc([[1, 0, 0], [1, 0.5, 0], [1, 1, 0]], w),
+            ),
+            (
+                cls._rational_arc([[0, 0, 0], [0.5, 0, 0], [1, 0, 0]], w),
+                cls._rational_arc([[0, 1, 0], [0.5, 1, 0], [1, 1, 0]], w),
+            ),
+        )
+
+    @classmethod
+    def _square_with_corner_weight(
+        cls, scale: float, weight_gap: float, dtype: npt.DTypeLike = np.float64
+    ) -> _CurvePairs:
+        """Build a rational square of side *scale* with ``C_u0``'s start weight out by a gap.
+
+        The displaced corner is the one at the origin, so its homogeneous *coordinates* are
+        zero however the weight moves: the coordinate columns agree exactly and only the
+        weight column can decide the verdict.
+
+        Args:
+            scale (float): Side of the square.
+            weight_gap (float): Amount added to that one weight, against weights of 1.
+            dtype (npt.DTypeLike): Precision of all four curves. Defaults to float64.
+
+        Returns:
+            _CurvePairs: Four rational curves, consistent iff ``weight_gap == 0``.
+        """
+        s = scale
+        return (
+            (
+                cls._rational_line([0, 0, 0], [0, s, 0], 1.0, 1.0, dtype),
+                cls._rational_line([s, 0, 0], [s, s, 0], 1.0, 1.0, dtype),
+            ),
+            (
+                cls._rational_line([0, 0, 0], [s, 0, 0], 1.0 + weight_gap, 1.0, dtype),
+                cls._rational_line([0, s, 0], [s, s, 0], 1.0, 1.0, dtype),
+            ),
+        )
+
+    # -- refusing curves that disagree homogeneously -------------------------------------
+
+    def test_the_reproduction_is_refused_at_the_corner_that_disagrees(self) -> None:
+        """Reproduce pantr issue 327: one rational edge whose weights run 1 to 2.
+
+        ``C_v0`` ends at ``(0, 1, 0)`` with weight 2 while ``C_u1`` starts at the same point
+        with weight 1, so the two agree projectively and disagree homogeneously by the whole
+        of the second coordinate.  The patch used to be returned and to miss ``C_u1`` by
+        ``1.714e-01`` while every corner matched to ``1.110e-16``.
+        """
+        curves = (
+            (self._rational_line([0, 0, 0], [0, 1, 0], 1.0, 2.0), self._line([1, 0, 0], [1, 1, 0])),
+            (self._line([0, 0, 0], [1, 0, 0]), self._line([0, 1, 0], [1, 1, 0])),
+        )
+        with pytest.raises(ValueError, match=r"Corner \(0,1\) mismatch") as excinfo:
+            create_coons_surface(curves)
+
+        message = str(excinfo.value)
+        assert "coordinate scale" in message, message
+        gap, tol, scale = _reported_numbers(message)
+        # The homogeneous coordinates of that corner are (0, 2, 0) against (0, 1, 0), and
+        # 2 is the largest homogeneous coordinate over all eight readings.
+        assert gap == pytest.approx(1.0)
+        assert scale == pytest.approx(2.0)
+        assert tol == pytest.approx(get_conservative(np.float64) * 2.0, rel=1e-3)
+
+    def test_four_curves_rational_the_same_way_are_refused_too(self) -> None:
+        """The ticket's variant: all four curves rational with weights running 1 to 2.
+
+        Every corner is then read at weight 1 by one curve and at weight 2 by the other, and
+        two of the four boundaries were missed, by ``7.171e-02`` each.  ``(0,0)`` is the one
+        corner both readings agree on, since a zero coordinate is zero at either weight and
+        both weights there are 1, so ``(1,0)`` is the first refused.
+        """
+        curves = (
+            (
+                self._rational_line([0, 0, 0], [0, 1, 0], 1.0, 2.0),
+                self._rational_line([1, 0, 0], [1, 1, 0], 1.0, 2.0),
+            ),
+            (
+                self._rational_line([0, 0, 0], [1, 0, 0], 1.0, 2.0),
+                self._rational_line([0, 1, 0], [1, 1, 0], 1.0, 2.0),
+            ),
+        )
+        with pytest.raises(ValueError, match=r"Corner \(1,0\) mismatch"):
+            create_coons_surface(curves)
+
+    def test_a_polynomial_curve_meeting_a_rational_one_needs_unit_weight_there(self) -> None:
+        """A polynomial curve promotes with unit weights, so that is the weight it demands.
+
+        The three blend terms are added together and so share one space, and a polynomial
+        curve among rational ones is promoted with weight 1 -- the argument ``_extract_corners``
+        makes for the volume.  The mismatch is put at the origin, where the homogeneous
+        coordinates are zero at any weight, so only the weight column can see it: projecting,
+        as the old check did, gives ``(0, 0, 0)`` on both sides.
+        """
+        curves = (
+            (
+                self._line([0, 0, 0], [0, 1, 0]),
+                self._rational_line([1, 0, 0], [1, 1, 0], 1.0, 1.0),
+            ),
+            (
+                self._rational_line([0, 0, 0], [1, 0, 0], 2.0, 1.0),
+                self._rational_line([0, 1, 0], [1, 1, 0], 1.0, 1.0),
+            ),
+        )
+        with pytest.raises(ValueError, match=r"Corner \(0,0\) mismatch") as excinfo:
+            create_coons_surface(curves)
+        assert "weight scale" in str(excinfo.value), str(excinfo.value)
+
+    # -- a weight is graded against the weights, at every model scale ---------------------
+
+    @pytest.mark.parametrize("scale", [1.0, 1.0e2, 1.0e4, 1.0e6, 1.0e8])
+    def test_a_weight_only_corner_mismatch_is_refused_at_every_model_scale(
+        self, scale: float
+    ) -> None:
+        """A weight is dimensionless and must never be graded against the model's length.
+
+        Four times the tier against weights of 1 is a gross error at any ``scale``.  One
+        magnitude over the homogeneous row would grade it against ``max|w x|``, accepting it
+        from ``scale = 1e2`` up -- the failure ``_verify_shared_boundary`` and
+        ``_verify_edges_3d`` were split into column groups to stop, on the path this ticket
+        brought onto the same rule.
+        """
+        weight_gap = 4.0 * get_conservative(np.float64)
+        with pytest.raises(ValueError, match=r"Corner \(0,0\) mismatch") as excinfo:
+            create_coons_surface(self._square_with_corner_weight(scale, weight_gap))
+
+        message = str(excinfo.value)
+        assert "weight scale" in message, message
+        gap, tol, reported_scale = _reported_numbers(message)
+        assert gap == pytest.approx(weight_gap)
+        # The weight population's own maximum, which the displaced weight itself sets.
+        assert reported_scale == pytest.approx(1.0 + weight_gap)
+        assert tol == pytest.approx(get_conservative(np.float64) * reported_scale, rel=1e-3)
+
+    @pytest.mark.parametrize("scale", [1.0, 1.0e4, 1.0e8])
+    def test_a_weight_within_the_tier_is_accepted_at_every_model_scale(self, scale: float) -> None:
+        """The other side of the same rule: a quarter of the tier must pass everywhere.
+
+        Splitting the columns tightens the weight comparison by the model's size, so it has
+        to be checked that it did not tighten past what a weight can be stored to.
+        """
+        weight_gap = 0.25 * get_conservative(np.float64)
+        surface = create_coons_surface(self._square_with_corner_weight(scale, weight_gap))
+        assert surface.is_rational
+
+    @pytest.mark.parametrize("scale", [1.0e-6, 1.0, 1.0e8])
+    def test_a_consistent_rational_square_is_accepted_at_every_scale(self, scale: float) -> None:
+        """Neither rule may refuse correct input, at any model size.
+
+        The control for both column groups: four rational curves, all weights 1, nothing
+        displaced.  It also pins that the coordinate group's scale still spans the model,
+        since a square of side ``1e8`` is graded against ``1e8`` and not against 1.
+        """
+        curves = self._square_with_corner_weight(scale, 0.0)
+        surface = create_coons_surface(curves)
+        gaps = _boundary_interpolation_gaps(surface, curves)
+        assert max(gaps.values()) <= get_conservative(np.float64) * scale, gaps
+
+    # -- the blend carries the corner weight the curves agreed on ------------------------
+
+    @pytest.mark.parametrize("interior_weight", [1.0, 1.5, 3.0])
+    def test_consistent_corner_weights_reproduce_all_four_boundaries(
+        self, interior_weight: float
+    ) -> None:
+        """Reproduce the control of pantr issue 327: degree-2 curves with weights ``(1, w, 1)``.
+
+        The defect is the inconsistency, not rationality.  Every corner weight is 1 here, so
+        all four curves agree homogeneously and the patch must interpolate all four to
+        roundoff however strongly the interior weight varies.  Measured before this fix and
+        unchanged by it: ``1.11e-16`` at ``w = 1.0`` and ``1.5``, ``2.22e-16`` at ``3.0``.
+        """
+        curves = self._unit_square_arcs(1.0, interior_weight)
+        surface = create_coons_surface(curves)
+        assert surface.is_rational
+        gaps = _boundary_interpolation_gaps(surface, curves)
+        assert max(gaps.values()) <= get_conservative(np.float64), gaps
+
+    @pytest.mark.parametrize("interior_weight", [0.5, 1.0, 3.0])
+    @pytest.mark.parametrize("corner_weight", [0.5, 2.0])
+    def test_a_shared_corner_weight_other_than_one_is_carried_into_the_blend(
+        self, corner_weight: float, interior_weight: float
+    ) -> None:
+        """Agreement between the curves is only half the requirement; the corner term is the other.
+
+        All four curves agree homogeneously at every corner, so nothing is refused -- and the
+        patch still missed them, because the corner term was read projected and promoted with
+        unit weights.  Measured before the fix at ``corner_weight = 2``: ``2.198e-02`` at
+        ``interior_weight = 1``, ``4.013e-02`` at ``0.5`` and ``1.246e-02`` at ``3``.  It
+        reduces to the control above exactly when the shared corner weight is 1, which is why
+        the control could not catch it.
+        """
+        curves = self._unit_square_arcs(corner_weight, interior_weight)
+        surface = create_coons_surface(curves)
+        gaps = _boundary_interpolation_gaps(surface, curves)
+        assert max(gaps.values()) <= get_conservative(np.float64), gaps
+
+    @pytest.mark.parametrize("mu", [0.25, 7.0])
+    def test_rescaling_every_weight_by_one_constant_changes_nothing(self, mu: float) -> None:
+        """A homogeneous representation is unique up to one constant scaling all the weights.
+
+        Multiplying all four curves' homogeneous control points by ``mu`` leaves every curve's
+        geometry bitwise unchanged and leaves the four consistent with each other, so it must
+        be accepted and must still interpolate.  This is the input the check must *not* refuse,
+        and the reason the rule is agreement in homogeneous data rather than equality of
+        weights -- and it is what makes a one-sided rescale, which the tests above refuse, a
+        genuine inconsistency rather than a different spelling of the same patch.  The patch
+        is compared against the curves *before* the rescale, which is the same geometry.
+        """
+
+        def scaled(curve: Bspline) -> Bspline:
+            return Bspline(curve.space, np.asarray(curve.control_points) * mu, is_rational=True)
+
+        (c_v0, c_v1), (c_u0, c_u1) = self._unit_square_arcs(1.0, 1.5)
+        surface = create_coons_surface(((scaled(c_v0), scaled(c_v1)), (scaled(c_u0), scaled(c_u1))))
+        gaps = _boundary_interpolation_gaps(surface, ((c_v0, c_v1), (c_u0, c_u1)))
+        assert max(gaps.values()) <= get_conservative(np.float64), gaps
+
+    def test_a_float32_rational_patch_is_built_and_graded_at_float32(self) -> None:
+        """The tier must reach the weight group at the readings' own precision too.
+
+        A float32 rational patch has to build at float32 -- ``Bspline`` refuses control points
+        whose dtype differs from their space's, so a corner term silently assembled at float64
+        would not build at all -- and its weights have to be graded against something float32
+        can express.  A weight gap of ``1e-6`` lies between the two tiers, so it separates
+        them cleanly: graded at float64 this float32 patch is refused, graded at its own
+        precision it is accepted.  Four float32 tiers is above both and must still be refused.
+        """
+        assert get_conservative(np.float64) < 1.0e-6 < get_conservative(np.float32)
+
+        surface = create_coons_surface(self._square_with_corner_weight(1.0, 0.0, np.float32))
+        assert surface.is_rational
+        assert np.dtype(surface.control_points.dtype) == np.dtype(np.float32)
+        create_coons_surface(self._square_with_corner_weight(1.0, 1.0e-6, np.float32))
+
+        weight_gap = 4.0 * get_conservative(np.float32)
+        with pytest.raises(ValueError, match=r"Corner \(0,0\) mismatch") as excinfo:
+            create_coons_surface(self._square_with_corner_weight(1.0, weight_gap, np.float32))
+        message = str(excinfo.value)
+        assert "weight scale" in message, message
+        gap, tol, scale = _reported_numbers(message)
+        assert gap == pytest.approx(weight_gap, rel=1e-3)
+        assert scale == pytest.approx(1.0 + weight_gap, rel=1e-3)
+        assert tol == pytest.approx(get_conservative(np.float32) * scale, rel=1e-3)
 
 
 class TestCoonsVolume:
