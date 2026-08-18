@@ -16,7 +16,7 @@ from ..bspline import Bspline, BsplineSpace, BsplineSpace1D
 from ..tolerance import get_conservative
 from ._compat import make_compat
 from ._operations import create_ruled
-from ._primitives import _linear_space_1d, create_bilinear, create_trilinear
+from ._primitives import _linear_space_1d, create_bilinear
 from ._validation import _promote_to_rational
 
 _DIRECTION_NAMES = ("u", "v", "w")
@@ -255,6 +255,25 @@ def create_coons_volume(
     inconsistency over the volume and the result then misses faces the caller supplied
     correctly.
 
+    **Rational faces are supported, and the blend is applied in homogeneous space.**  All
+    seven terms are formed from homogeneous coefficients ``(w x, w y, w z, w)`` and the
+    result is projected only when it is evaluated, so the formula stays the linear one
+    above and nothing has to be said about how weights combine under division.  That is
+    what makes the boundary property survive: projection is pointwise, so it commutes with
+    restriction to a face, and a blend whose *homogeneous* restriction to ``u = 0`` is
+    ``face_u0``'s homogeneous data projects to ``face_u0`` itself.  A polynomial face
+    among rational ones is promoted with unit weights, so mixed input takes the same path
+    rather than a third one.
+
+    That argument has a hypothesis, and it is the one the checks below enforce: the faces
+    must agree in **homogeneous** data, weights included, not merely projectively.  A
+    homogeneous representation is unique only up to one constant scaling all of a patch's
+    weights, so two faces can trace the same edge in space while their coefficients differ
+    by a factor, and then the inclusion-exclusion does not cancel.  This is measured rather
+    than feared: scaling one ``w``-face's homogeneous control points by 2 leaves that
+    face's geometry bitwise unchanged yet, with the checks disabled, makes the volume miss
+    each of the four faces adjacent to it by 17% of the model.
+
     Face labelling convention:
 
     - ``faces[0] = (face_u0, face_u1)``: faces at u=0 and u=1,
@@ -283,6 +302,11 @@ def create_coons_volume(
         ValueError: If two faces sharing an edge disagree along it by more than
             ``4096 * eps`` times the largest absolute control-point coordinate over the
             twelve compared edges, derived in ``_verify_edges_3d``.
+        ValueError: If the blend of rational faces carries a control weight that is not
+            above zero, so that the weight field of the result cannot be certified
+            positive.  The bound is ``w(u) >= min_i w_i`` and is sufficient rather than
+            necessary, so this refuses some volumes whose weight field never vanishes;
+            ``_verify_positive_weights`` derives it.
     """
     (face_u0, face_u1), (face_v0, face_v1), (face_w0, face_w1) = faces
 
@@ -304,8 +328,11 @@ def create_coons_volume(
     # reading is only there to be checked against, and by now is known to agree.
     edges = {r.label: r.curve_a for r in edge_readings}
 
-    # Extract corners from edges
-    corners = _extract_corners(edges)
+    # Extract corners from edges, in the space the other six terms are combined in
+    rational_faces = any(
+        f.is_rational for f in (face_u0, face_u1, face_v0, face_v1, face_w0, face_w1)
+    )
+    corners = _extract_corners(edges, is_rational=rational_faces)
 
     # Build 3 ruled volumes
     r_u = create_ruled(face_u0, face_u1).permute_directions([2, 0, 1])
@@ -339,7 +366,7 @@ def create_coons_volume(
     )
 
     # Build trilinear volume
-    t = create_trilinear(corners)
+    t = _build_trilinear_volume(corners, is_rational=rational_faces)
 
     # Make all 7 terms compatible and combine
     r_u, r_v, r_w, b_uv, b_uw, b_vw, t = make_compat(r_u, r_v, r_w, b_uv, b_uw, b_vw, t)
@@ -348,7 +375,10 @@ def create_coons_volume(
         [r_u, r_v, r_w, b_uv, b_uw, b_vw, t],
         [+1, +1, +1, -1, -1, -1, +1],
     )
-    return Bspline(r_u.space, cp, is_rational=is_rational)
+    volume = Bspline(r_u.space, cp, is_rational=is_rational)
+    if is_rational:
+        _verify_positive_weights(volume)
+    return volume
 
 
 def _extract_edge_pairs(
@@ -534,29 +564,154 @@ def _verify_edges_3d(edges: tuple[_EdgeReadings, ...]) -> None:
             )
 
 
-def _extract_corners(edges: dict[str, Bspline]) -> npt.NDArray[np.float64]:
-    """Extract 8 corner points from edges.
+def _verify_positive_weights(volume: Bspline) -> None:
+    """Refuse a rational Coons volume whose weight field is not certified positive.
+
+    A NURBS volume is ``X(u) / w(u)`` and is only defined where its weight field stays
+    away from zero.  Positive weights on the six faces do **not** carry over to the
+    blend: the seven-term formula is an inclusion-exclusion and subtracts three of its
+    terms, so a weight field assembled from strictly positive faces can dip to zero or
+    below inside, and the volume then has a pole the caller never put there.
+
+    **What a control weight settles.**  The result's weight field is
+    ``w(u) = sum_i N_i(u) w_i`` over its own tensor-product B-spline basis, which is
+    non-negative and sums to one on the domain -- a tensor product of non-negative
+    partitions of unity is one -- so
+
+        ``w(u) - min_j w_j = sum_i N_i(u) (w_i - min_j w_j) >= 0``
+
+    for every ``u``.  The weight field therefore never goes below the smallest control
+    weight, and reading the weight column of the **result's** control points bounds it
+    from below without evaluating anything.
+
+    **Sufficient, not necessary, and deliberately so.**  The converse of that inequality
+    is false: ``w(u)`` is a convex combination of the ``w_i`` only at the ends, and in
+    between the basis is strictly positive on more than one coefficient, so a volume
+    whose weight field never comes near zero can still carry a negative control weight
+    and be refused here.  This check is therefore conservative: everything it accepts has
+    a positive weight field, but it does not accept everything that has one.  It reports
+    the bound it can prove rather than pretending to detect the pole itself, which would
+    need a global minimum of ``w`` over the domain.
 
     Args:
-        edges: Dictionary of 12 named edge curves.
+        volume (Bspline): The rational volume just assembled, whose control points carry
+            a trailing weight column.
+
+    Raises:
+        ValueError: If any control weight of *volume* is zero or negative, so that the
+            lower bound no longer keeps the weight field away from zero.
+    """
+    weights = volume.control_points[..., -1]
+    smallest = float(weights.min())
+    if smallest > 0.0:
+        return
+
+    index = tuple(int(i) for i in np.unravel_index(int(np.argmin(weights)), weights.shape))
+    raise ValueError(
+        f"Coons volume weight is not certified positive: control weight {smallest:.3e} "
+        f"at index {index} is not above zero, so the bound w(u) >= min_i w_i no longer "
+        "keeps the blended weight field away from zero and the volume may have a pole. "
+        "The seven-term blend subtracts three of its terms, so positive weights on the "
+        "six faces do not imply positive weights on the volume; supply faces whose "
+        "weights vary less across the model. The test is sufficient, not necessary: a "
+        "volume whose weight field never vanishes can still fail it."
+    )
+
+
+def _homogeneous_endpoint(curve: Bspline, side: int) -> npt.NDArray[np.float32 | np.float64]:
+    """Read one end of a curve as a coefficient, without projecting a rational one.
+
+    :meth:`~pantr.bspline.Bspline.boundary` **projects**: sliced down to a point, a
+    rational curve is divided by its weight and returns ``rank`` components where its
+    coefficients have ``rank + 1``.  Every other term of the Coons blend is combined
+    homogeneously, so a corner read that way is both one component short and in a
+    different space from the terms it is subtracted from.
+
+    Viewing the same coefficients as an ordinary curve of one rank higher is what stops
+    before the division: the de Boor recurrence underneath is linear and does not consult
+    ``is_rational`` (:func:`~pantr.bspline._bspline_slice._slice_bspline` branches on it
+    only for the final ``X / w``), so the arithmetic is identical and the result is the
+    homogeneous corner the blend needs.
+
+    Args:
+        curve (Bspline): A 1-D B-spline, rational or not.
+        side (int): Which end of the domain: ``0`` for the start, ``1`` for the end.
 
     Returns:
-        npt.NDArray[np.float64]: Array of shape ``(2, 2, 2, rank)``.
+        npt.NDArray[np.float32 | np.float64]: The curve's coefficient at that end, of
+        shape ``(rank,)`` when *curve* is non-rational and ``(rank + 1,)`` when it is
+        rational, in *curve*'s own dtype.
     """
-    e = edges["u_v0_w0"]
-    rank = e.control_points.shape[-1]
-    corners = np.zeros((2, 2, 2, rank), dtype=np.float64)
+    homogeneous = Bspline(curve.space, curve.control_points, is_rational=False)
+    return np.asarray(homogeneous.boundary(0, side))
 
-    # Corners from u-edges (boundary of a 1D curve returns ndarray)
-    corners[0, 0, 0] = np.asarray(edges["u_v0_w0"].boundary(0, 0))
-    corners[1, 0, 0] = np.asarray(edges["u_v0_w0"].boundary(0, 1))
-    corners[0, 1, 0] = np.asarray(edges["u_v1_w0"].boundary(0, 0))
-    corners[1, 1, 0] = np.asarray(edges["u_v1_w0"].boundary(0, 1))
-    corners[0, 0, 1] = np.asarray(edges["u_v0_w1"].boundary(0, 0))
-    corners[1, 0, 1] = np.asarray(edges["u_v0_w1"].boundary(0, 1))
-    corners[0, 1, 1] = np.asarray(edges["u_v1_w1"].boundary(0, 0))
-    corners[1, 1, 1] = np.asarray(edges["u_v1_w1"].boundary(0, 1))
+
+def _extract_corners(
+    edges: dict[str, Bspline], *, is_rational: bool
+) -> npt.NDArray[np.float32 | np.float64]:
+    """Extract the volume's 8 corner coefficients from the four edges free in u.
+
+    The array is sized and filled in **one** space, which is what the corner term of the
+    blend needs and what this used to get wrong: it took its width from the edges'
+    coefficients, which are homogeneous for a rational face, and filled it from
+    :meth:`~pantr.bspline.Bspline.boundary`, which projects.  A rational volume then
+    failed with a NumPy broadcast error naming shapes ``(3,)`` and ``(4,)`` rather than
+    anything the caller had supplied (pantr issue 309).  :func:`_homogeneous_endpoint` is
+    the read that stays in the space the width was taken from.
+
+    *is_rational* is the **volume's**, not these four edges': the corner term is one of
+    seven that are added together, so it has to live in the same space as the other six
+    even when the faces that happen to carry the u-edges are polynomial.  Promoting them
+    gives those corners a unit weight, which is the right value exactly when the faces
+    that *are* rational carry a unit weight there too -- and :func:`_verify_edges_3d` has
+    already required that, since it compares each edge's two readings homogeneously and a
+    polynomial reading promotes to weight one.
+
+    Args:
+        edges (dict[str, Bspline]): The 12 named edge curves.
+        is_rational (bool): Whether the volume being built is rational, i.e. whether the
+            corners are wanted as homogeneous coefficients.
+
+    Returns:
+        npt.NDArray[np.float32 | np.float64]: Corner coefficients of shape
+        ``(2, 2, 2, rank)``, indexed ``[i, j, k]`` by side along u, v and w, where
+        ``rank`` counts the weight when *is_rational*.
+    """
+    u_edges = {(j, k): edges[f"u_v{j}_w{k}"] for j in (0, 1) for k in (0, 1)}
+    if is_rational:
+        u_edges = {sides: _promote_to_rational(e) for sides, e in u_edges.items()}
+
+    sample = u_edges[0, 0].control_points
+    corners = np.empty((2, 2, 2, sample.shape[-1]), dtype=sample.dtype)
+    for (j, k), edge in u_edges.items():
+        for i in (0, 1):
+            corners[i, j, k] = _homogeneous_endpoint(edge, i)
     return corners
+
+
+def _build_trilinear_volume(
+    corners: npt.NDArray[np.float32 | np.float64], *, is_rational: bool
+) -> Bspline:
+    """Build the trilinear corner term of the Coons blend from the 8 corner coefficients.
+
+    :func:`~pantr.cad.create_trilinear` cannot serve here, for two reasons that both come
+    from its being a public *geometric* primitive: it caps the rank at three, so it
+    rejects the homogeneous ``(w x, w y, w z, w)`` corner of a rational face, and it
+    builds its space at float64 whatever it was handed, which a float32 model cannot then
+    be combined with.  This is the same construction as :func:`_build_bilinear_volume`'s,
+    one direction further.
+
+    Args:
+        corners (npt.NDArray[np.float32 | np.float64]): Corner coefficients of shape
+            ``(2, 2, 2, rank)``, as :func:`_extract_corners` returns them.
+        is_rational (bool): Whether *corners* carries a trailing weight column.
+
+    Returns:
+        Bspline: A 3D, degree-(1, 1, 1) B-spline volume in (u, v, w) order.
+    """
+    knots = _linear_space_1d(dtype=corners.dtype).knots
+    space = BsplineSpace([BsplineSpace1D(knots.copy(), degree=1) for _ in range(3)])
+    return Bspline(space, corners, is_rational=is_rational)
 
 
 def _build_bilinear_volume(

@@ -10,7 +10,15 @@ from numpy import typing as npt
 from numpy.testing import assert_allclose
 
 from pantr.bspline import Bspline, BsplineSpace, BsplineSpace1D
-from pantr.cad import create_bilinear, create_coons_surface, create_coons_volume, create_line
+from pantr.cad import (
+    create_bilinear,
+    create_circle,
+    create_coons_surface,
+    create_coons_volume,
+    create_extrusion,
+    create_line,
+    create_ruled,
+)
 from pantr.cad._coons import _extract_edge_pairs
 from pantr.tolerance import get_conservative
 
@@ -902,3 +910,302 @@ class TestCoonsVolumeFaceConsistency:
             for k in (0, 1)
             for name, side in (("u", i), ("v", j), ("w", k))
         }
+
+
+class TestCoonsVolumeRationalFaces:
+    """Six rational faces blend like six polynomial ones, because the blend is homogeneous.
+
+    ``create_coons_volume`` used to fail on all-rational faces with a NumPy broadcast
+    error naming shapes ``(3,)`` and ``(4,)`` (pantr issue 309): the corner array was
+    sized from the edges' *homogeneous* coefficients and filled from
+    :meth:`~pantr.bspline.Bspline.boundary`, which **projects**.  Every other term of the
+    seven-term formula was already built homogeneously, so the fix was to read the corner
+    the same way rather than to reopen what the formula means for a NURBS volume.
+
+    What that buys is the boundary property, unchanged: projection is pointwise, so it
+    commutes with restriction to a face, and a blend whose homogeneous restriction to
+    ``u = 0`` is ``face_u0``'s homogeneous data projects to ``face_u0`` itself.  Its
+    hypothesis is that the faces agree **homogeneously**, weights included, which
+    ``_verify_edges_3d`` enforces and ``test_a_face_scaled_in_homogeneous_space_is_refused``
+    pins.
+    """
+
+    @staticmethod
+    def _unit_cube_faces() -> _FacePairs:
+        """Build the six polynomial faces of the unit cube, exactly as pantr issue 309 does.
+
+        Returns:
+            _FacePairs: The reproduction's six bilinear faces.
+        """
+        arrays = [
+            np.array([[[0, 0, 0], [0, 0, 1]], [[0, 1, 0], [0, 1, 1]]], dtype=float),
+            np.array([[[1, 0, 0], [1, 0, 1]], [[1, 1, 0], [1, 1, 1]]], dtype=float),
+            np.array([[[0, 0, 0], [0, 0, 1]], [[1, 0, 0], [1, 0, 1]]], dtype=float),
+            np.array([[[0, 1, 0], [0, 1, 1]], [[1, 1, 0], [1, 1, 1]]], dtype=float),
+            np.array([[[0, 0, 0], [0, 1, 0]], [[1, 0, 0], [1, 1, 0]]], dtype=float),
+            np.array([[[0, 0, 1], [0, 1, 1]], [[1, 0, 1], [1, 1, 1]]], dtype=float),
+        ]
+        u0, u1, v0, v1, w0, w1 = (create_bilinear(a) for a in arrays)
+        return ((u0, u1), (v0, v1), (w0, w1))
+
+    @staticmethod
+    def _as_rational(face: Bspline, factor: float = 1.0) -> Bspline:
+        """Rewrite a polynomial face as a rational one with every weight *factor*.
+
+        Multiplying **all** of a patch's homogeneous coefficients by one constant leaves
+        the projected geometry bitwise unchanged, since ``(k w x) / (k w) = x`` exactly for
+        the powers of two used here.  At ``factor = 1`` this is the reproduction's wrapper.
+
+        Args:
+            face (Bspline): A non-rational face.
+            factor (float): Constant scaling of the homogeneous coefficients.
+                Defaults to 1.0.
+
+        Returns:
+            Bspline: The same geometry, carried rationally.
+        """
+        cp = np.asarray(face.control_points, dtype=np.float64)
+        weights = np.full((*cp.shape[:-1], 1), factor)
+        return Bspline(face.space, np.concatenate([cp * factor, weights], axis=-1), True)
+
+    def _rational_cube_faces(self) -> _FacePairs:
+        """Wrap the reproduction's six faces as rational with all weights 1.
+
+        Returns:
+            _FacePairs: The face set that used to raise a broadcast error.
+        """
+        return tuple(  # type: ignore[return-value]
+            tuple(self._as_rational(f) for f in pair) for pair in self._unit_cube_faces()
+        )
+
+    # -- the reproduction -------------------------------------------------------------
+
+    def test_the_polynomial_control_still_interpolates_all_six_faces(self) -> None:
+        """The reproduction's control must be unaffected: it built before and must still.
+
+        Nothing about the rational path may disturb it, so this checks the property the
+        volume exists for rather than merely that the call returns.
+        """
+        faces = self._unit_cube_faces()
+        gaps = _face_interpolation_gaps(create_coons_volume(faces), faces)
+        assert max(gaps.values()) <= get_conservative(np.float64), gaps
+
+    def test_all_rational_faces_reproduce_the_polynomial_control(self) -> None:
+        """The reproduction's rational face set builds, and to the same geometry.
+
+        Weights are all 1, so the volume is the polynomial one written rationally and the
+        two must agree to roundoff -- an oracle that does not go through the same code.
+        """
+        polynomial = create_coons_volume(self._unit_cube_faces())
+        rational = create_coons_volume(self._rational_cube_faces())
+
+        assert rational.is_rational
+        assert_allclose(np.asarray(rational.control_points)[..., -1], 1.0, atol=0.0)
+
+        pts = np.asarray(
+            [[u, v, w] for u in (0.0, 0.25, 0.5, 1.0) for v in (0.0, 0.5, 0.9) for w in (0.1, 1.0)]
+        )
+        assert_allclose(
+            np.asarray(rational.evaluate(pts)),
+            np.asarray(polynomial.evaluate(pts)),
+            atol=get_conservative(np.float64),
+            rtol=0.0,
+        )
+
+    def test_all_rational_faces_are_interpolated(self) -> None:
+        """The rational volume restricts to each of the six rational faces it was built from."""
+        faces = self._rational_cube_faces()
+        gaps = _face_interpolation_gaps(create_coons_volume(faces), faces)
+        assert max(gaps.values()) <= get_conservative(np.float64), gaps
+
+    def test_mixed_faces_take_the_rational_path_rather_than_a_third_one(self) -> None:
+        """Some faces rational and some not must behave like all-rational, not like a third case.
+
+        Which faces are rational also decides *where* the old crash was reachable: the
+        corners were read off the v-faces alone, so a rational u-face never triggered it
+        while a rational v-face did.  Both are checked here, in both directions.
+        """
+        polynomial = self._unit_cube_faces()
+        rational = self._rational_cube_faces()
+        pts = np.asarray([[0.2, 0.4, 0.6], [0.0, 1.0, 0.5], [1.0, 0.0, 0.0]])
+        want = np.asarray(create_coons_volume(polynomial).evaluate(pts))
+
+        for rational_pair in range(3):
+            faces: _FacePairs = tuple(  # type: ignore[assignment]
+                rational[i] if i == rational_pair else polynomial[i] for i in range(3)
+            )
+            volume = create_coons_volume(faces)
+            assert volume.is_rational, rational_pair
+            assert_allclose(
+                np.asarray(volume.evaluate(pts)),
+                want,
+                atol=get_conservative(np.float64),
+                rtol=0.0,
+                err_msg=f"rational pair {rational_pair}",
+            )
+            gaps = _face_interpolation_gaps(volume, faces)
+            assert max(gaps.values()) <= get_conservative(np.float64), (rational_pair, gaps)
+
+    # -- non-unit weights, against an oracle built by a different code path -------------
+
+    @staticmethod
+    def _quarter_annulus_prism() -> Bspline:
+        """Build a quarter-annulus prism as a NURBS volume, without any Coons machinery.
+
+        The body is a ruled surface between two concentric quarter arcs, extruded along
+        *z*: degree ``(2, 1, 1)``, genuinely rational, with the arcs' middle weights at
+        ``1/sqrt(2)``.  Being degree 1 in *v* and *w* is what makes it an oracle for the
+        blend rather than merely an input to it: the Coons operator is
+        ``P = P_u + P_v + P_w - P_u P_v - P_u P_w - P_v P_w + P_u P_v P_w``, and a body
+        with ``P_v V = P_w V = V`` collapses that sum to ``V`` exactly, so the volume
+        rebuilt from its own six faces must be the body itself.
+
+        Returns:
+            Bspline: The exact NURBS quarter-annulus prism of inner radius 1, outer
+            radius 2 and height 3.
+        """
+        arcs = (
+            create_circle(radius=1.0, angle=np.pi / 2),
+            create_circle(radius=2.0, angle=np.pi / 2),
+        )
+        return create_extrusion(create_ruled(*arcs), [0.0, 0.0, 3.0])
+
+    def test_non_unit_weights_rebuild_an_independently_constructed_volume(self) -> None:
+        """A body with real weights, taken apart and blended back, must come back unchanged.
+
+        The oracle is built by ``create_circle``/``create_ruled``/``create_extrusion``,
+        which share no code with the Coons blend, and its weights are ``1/sqrt(2)`` rather
+        than 1, so unit weights cannot hide a mistake in how the corner term is carried.
+        """
+        oracle = self._quarter_annulus_prism()
+        assert oracle.is_rational
+        weights = np.unique(np.asarray(oracle.control_points)[..., -1])
+        assert weights.min() < 1.0, weights
+
+        boundaries = [oracle.boundary(axis, side) for axis in range(3) for side in (0, 1)]
+        faces: _FacePairs = tuple(  # type: ignore[assignment]
+            (boundaries[2 * axis], boundaries[2 * axis + 1]) for axis in range(3)
+        )
+        volume = create_coons_volume(faces)
+
+        pts = np.asarray(
+            [[u, v, w] for u in (0.0, 0.3, 1.0) for v in (0.0, 0.5, 1.0) for w in (0.0, 0.7, 1.0)]
+        )
+        got = np.asarray(volume.evaluate(pts))
+        assert_allclose(got, np.asarray(oracle.evaluate(pts)), atol=1e-14, rtol=0.0)
+
+    def test_non_unit_weights_land_on_the_analytic_cylinder(self) -> None:
+        """The rebuilt prism's curved faces must lie on the circles they represent exactly.
+
+        This is the check that does not consult pantr at all: a NURBS quarter arc of
+        radius *r* is exact, so every point of the rebuilt inner and outer face must
+        satisfy ``x^2 + y^2 = r^2``.  A corner term carried in the wrong space perturbs
+        the weight field and shows up here as a radius that drifts off *r*.
+        """
+        oracle = self._quarter_annulus_prism()
+        boundaries = [oracle.boundary(axis, side) for axis in range(3) for side in (0, 1)]
+        faces: _FacePairs = tuple(  # type: ignore[assignment]
+            (boundaries[2 * axis], boundaries[2 * axis + 1]) for axis in range(3)
+        )
+        volume = create_coons_volume(faces)
+
+        s = _FACE_SAMPLES
+        for radial, radius in ((0.0, 1.0), (1.0, 2.0)):
+            pts = np.asarray([[u, radial, w] for u in s for w in s])
+            xyz = np.asarray(volume.evaluate(pts))
+            got = np.hypot(xyz[:, 0], xyz[:, 1])
+            assert_allclose(got, radius, atol=get_conservative(np.float64) * radius, rtol=0.0)
+
+    # -- the hypothesis the boundary property rests on ---------------------------------
+
+    def test_a_face_scaled_in_homogeneous_space_is_refused(self) -> None:
+        """Faces must agree homogeneously, not merely projectively, and this shows why.
+
+        Scaling one face's homogeneous control points by 2 leaves its geometry **bitwise**
+        unchanged, so no projected comparison can see it -- yet with the edge check
+        disabled the volume misses each of the four faces adjacent to it by 17% of the
+        model (measured on this exact face set).  The check must therefore refuse it, and
+        must say so about the edge rather than about the geometry.
+        """
+        pairs = self._rational_cube_faces()
+        scaled = self._as_rational(self._unit_cube_faces()[2][0], factor=2.0)
+
+        probe = np.asarray([[0.3, 0.7], [0.0, 1.0]])
+        assert_allclose(
+            np.asarray(scaled.evaluate(probe)),
+            np.asarray(pairs[2][0].evaluate(probe)),
+            atol=0.0,
+        )
+
+        with pytest.raises(ValueError, match=r"Edge .* mismatch"):
+            create_coons_volume((pairs[0], pairs[1], (scaled, pairs[2][1])))
+
+    # -- the weight field the blend produces -------------------------------------------
+
+    @staticmethod
+    def _cube_faces_with_interior_weight(interior: float) -> _FacePairs:
+        """Build unit-cube faces carrying one interior control point of weight *interior*.
+
+        Each face is the same square, refined to a 3x3 control net by an interior knot at
+        0.5 in both directions, with every boundary weight left at 1 so all twelve edges
+        still agree.  Only the middle weight is free, which is the point: a face's
+        interior is the part the consistency checks do not constrain.
+
+        With every face's interior weight at *t*, the blend's interior control weight is
+        ``3t - 3 + 1 = 3t - 2`` -- three ruled terms contributing *t*, three bilinear terms
+        and the corner term contributing 1 -- so it crosses zero at ``t = 2/3`` while every
+        input weight stays strictly positive.
+
+        Args:
+            interior (float): Weight of each face's middle control point.
+
+        Returns:
+            _FacePairs: Six mutually consistent faces with strictly positive weights.
+        """
+        knots = np.array([0.0, 0.0, 0.5, 1.0, 1.0])
+        space = BsplineSpace([BsplineSpace1D(knots.copy(), 1), BsplineSpace1D(knots.copy(), 1)])
+        samples = np.array([0.0, 0.5, 1.0])
+        faces = []
+        for pair in TestCoonsVolumeRationalFaces._unit_cube_faces():
+            for face in pair:
+                corners = np.asarray(face.control_points, dtype=np.float64)
+                net = np.empty((3, 3, 3))
+                for a, u in enumerate(samples):
+                    for b, v in enumerate(samples):
+                        net[a, b] = (
+                            (1 - u) * (1 - v) * corners[0, 0]
+                            + u * (1 - v) * corners[1, 0]
+                            + (1 - u) * v * corners[0, 1]
+                            + u * v * corners[1, 1]
+                        )
+                weights = np.ones((3, 3, 1))
+                weights[1, 1, 0] = interior
+                faces.append(Bspline(space, np.concatenate([net * weights, weights], -1), True))
+        return ((faces[0], faces[1]), (faces[2], faces[3]), (faces[4], faces[5]))
+
+    def test_positive_face_weights_do_not_imply_a_positive_blend(self) -> None:
+        """Strictly positive weights on all six faces can still blend to a negative weight.
+
+        The formula is an inclusion-exclusion and subtracts three of its seven terms, so
+        the weight field is not a convex combination of the faces' weights.  At interior
+        weight 0.5 every input weight is in ``[0.5, 1]`` and the blend's middle control
+        weight is ``3 * 0.5 - 2 = -0.5``; at degree 1 with a knot at 0.5 the middle basis
+        function is the only non-zero one at the centre, so the weight field *itself* is
+        ``-0.5`` there and the volume genuinely has a pole.
+        """
+        with pytest.raises(ValueError, match="weight is not certified positive"):
+            create_coons_volume(self._cube_faces_with_interior_weight(0.5))
+
+    def test_a_positive_blend_of_varying_weights_is_accepted(self) -> None:
+        """The guard must not refuse a weight field that stays positive.
+
+        At interior weight 0.7 the same construction lands on ``3 * 0.7 - 2 = 0.1``: still
+        far from the faces' own weights, still accepted, and the volume still interpolates
+        all six faces.  Without this, refusing everything rational would pass the test above.
+        """
+        faces = self._cube_faces_with_interior_weight(0.7)
+        volume = create_coons_volume(faces)
+        weights = np.asarray(volume.control_points)[..., -1]
+        assert_allclose(weights.min(), 0.1, atol=get_conservative(np.float64))
+        gaps = _face_interpolation_gaps(volume, faces)
+        assert max(gaps.values()) <= get_conservative(np.float64), gaps
