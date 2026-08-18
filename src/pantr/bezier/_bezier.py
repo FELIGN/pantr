@@ -514,7 +514,7 @@ class Bezier:
             (2,)
             >>> np.allclose(h.evaluate(np.array([0.5])), [0.25])
             True
-            >>> np.allclose((f * g).control_points, h.control_points)
+            >>> np.allclose((f * g).evaluate(np.array([0.5])), [0.25])  # same via __mul__
             True
         """
         return _multiply_bezier(self, other)

@@ -253,16 +253,17 @@ class Bspline:
         Example:
             >>> import numpy as np
             >>> from pantr.bspline import create_uniform_space
-            >>> spline = Bspline(create_uniform_space(2, 3), np.arange(5.0).reshape(5, 1))
+            >>> spline = Bspline(create_uniform_space(2, 1), np.array([[0.0], [0.0], [1.0]]))
             >>> pts = np.array([[0.25], [0.75]])
-            >>> spline.evaluate_derivatives(pts, 2).shape  # 1D: 2nd derivative (int shorthand)
-            (2,)
-            >>> spline.evaluate_derivatives(pts, [2]).shape  # 1D: 2nd derivative (sequence form)
-            (2,)
-            >>> srf = Bspline(create_uniform_space(2, [3, 2]), np.zeros((5, 4, 2)))
-            >>> uv = np.array([[0.25, 0.75]])
-            >>> srf.evaluate_derivatives(uv, [1, 2]).shape  # 2D: partial d3f/du dv2
-            (1, 2)
+            >>> np.allclose(spline.evaluate_derivatives(pts, 2), [2.0, 2.0])  # f(t) = t**2
+            True
+            >>> np.allclose(spline.evaluate_derivatives(pts, [2]), [2.0, 2.0])  # sequence form
+            True
+            >>> u_cp, v_cp = np.array([0.0, 0.5, 1.0]), np.array([0.0, 0.0, 1.0])
+            >>> srf = Bspline(create_uniform_space(2, [1, 1]), np.outer(u_cp, v_cp)[..., None])
+            >>> uv = np.array([[0.3, 0.4]])
+            >>> np.allclose(srf.evaluate_derivatives(uv, [1, 2]), [2.0])  # f = u*v**2, d3f/du dv2
+            True
         """
         orders_seq: Sequence[int] = [orders] * self.dim if isinstance(orders, int) else orders
         return _evaluate_Bspline_deriv(self, pts, orders_seq, out)
@@ -399,14 +400,18 @@ class Bspline:
         Example:
             >>> import numpy as np
             >>> from pantr.bspline import create_uniform_space
-            >>> f = Bspline(create_uniform_space(2, 3), np.arange(5.0).reshape(5, 1))
-            >>> f.derivative().degree  # first derivative of a 1D curve
+            >>> f = Bspline(create_uniform_space(2, 1), np.array([[0.0], [0.0], [1.0]]))
+            >>> fp = f.derivative()  # first derivative of a 1D curve; f(t) = t**2
+            >>> fp.degree
             (1,)
+            >>> np.allclose(fp.evaluate(np.array([[0.3]])), [0.6])  # f'(t) = 2t
+            True
             >>> f.derivative().derivative().degree  # second derivative (composable)
             (0,)
             >>> f.derivative(keep_degree=True).degree  # derivative preserving degree
             (2,)
-            >>> srf = Bspline(create_uniform_space(2, [3, 2]), np.zeros((5, 4, 2)))
+            >>> u_cp, v_cp = np.array([0.0, 0.5, 1.0]), np.array([0.0, 0.0, 1.0])
+            >>> srf = Bspline(create_uniform_space(2, [1, 1]), np.outer(u_cp, v_cp)[..., None])
             >>> srf.derivative(direction=1).degree  # partial derivative along direction 1
             (2, 1)
         """
@@ -925,12 +930,15 @@ class Bspline:
         Example:
             >>> import numpy as np
             >>> from pantr.bspline import create_uniform_space
-            >>> f = Bspline(create_uniform_space(2, 3), np.arange(5.0).reshape(5, 1))
-            >>> g = Bspline(create_uniform_space(1, 3), np.arange(4.0).reshape(4, 1))
-            >>> f.multiply(g).degree
-            (3,)
-            >>> (f * g).degree  # equivalent via __mul__
-            (3,)
+            >>> f = Bspline(create_uniform_space(1, 1), np.array([[0.0], [1.0]]))  # f(t) = t
+            >>> g = Bspline(create_uniform_space(1, 1), np.array([[0.0], [1.0]]))  # g(t) = t
+            >>> h = f.multiply(g)
+            >>> h.degree
+            (2,)
+            >>> np.allclose(h.evaluate(np.array([[0.5]])), [0.25])  # (f g)(t) = t**2
+            True
+            >>> np.allclose((f * g).evaluate(np.array([[0.5]])), [0.25])  # same via __mul__
+            True
         """
         if self.dim == 1:
             from ._bspline_product import _multiply_bspline_1d  # noqa: PLC0415
@@ -1057,11 +1065,15 @@ class Bspline:
         Example:
             >>> import numpy as np
             >>> from pantr.bspline import create_uniform_space
-            >>> surface = Bspline(create_uniform_space([2, 1], [3, 2]), np.zeros((5, 3, 2)))
+            >>> space = create_uniform_space([2, 1], [1, 1])
+            >>> surface = Bspline(space, np.arange(6.0).reshape(3, 2, 1))
             >>> surface.degree
             (2, 1)
-            >>> surface.permute_directions([1, 0]).degree  # swap u <-> v
+            >>> swapped = surface.permute_directions([1, 0])  # swap u <-> v
+            >>> swapped.degree
             (1, 2)
+            >>> swapped.control_points[0, 2].tolist()  # was control_points[2, 0]
+            [4.0]
         """
         from .._control_points_utils import _permute_control_points  # noqa: PLC0415
         from ._bspline_space_nd import BsplineSpace  # noqa: PLC0415
@@ -1127,11 +1139,11 @@ class Bspline:
             >>> import numpy as np
             >>> from pantr.bspline import create_uniform_space
             >>> from pantr.transform import AffineTransform
-            >>> spline = Bspline(create_uniform_space(1, 1), np.zeros((2, 2)))
+            >>> spline = Bspline(create_uniform_space(1, 1), np.array([[0.0, 0.0], [1.0, 1.0]]))
             >>> T = AffineTransform.translation([1.0, 2.0])
             >>> shifted = spline.transform(T)
-            >>> shifted.control_points.tolist()
-            [[1.0, 2.0], [1.0, 2.0]]
+            >>> np.allclose(shifted.control_points, [[1.0, 2.0], [2.0, 3.0]])
+            True
         """
         new_cp = _apply_affine_to_control_points(
             self._control_points,
@@ -1259,8 +1271,8 @@ class Bspline:
             >>> volume.slice(2, 0.3).slice(1, 0.5).dim  # and again at v=0.5 to get a curve
             1
             >>> pt = volume.slice(2, 0.3).slice(1, 0.5).slice(0, 0.2)  # composable down to a point
-            >>> np.shape(pt)
-            (3,)
+            >>> np.allclose(pt, volume.evaluate(np.array([[0.2, 0.5, 0.3]])))
+            True
         """
         if axis < 0 or axis >= self.dim:
             raise ValueError(f"axis must be in [0, {self.dim}), got {axis}.")
@@ -1300,11 +1312,14 @@ class Bspline:
         Example:
             >>> import numpy as np
             >>> from pantr.bspline import create_uniform_space
-            >>> surface = Bspline(create_uniform_space([2, 1], [3, 2]), np.zeros((5, 3, 2)))
-            >>> surface.boundary(0, 0).degree  # left boundary along direction 0
-            (1,)
-            >>> surface.boundary(1, 1).degree  # right boundary along direction 1
-            (2,)
+            >>> space = create_uniform_space([2, 1], [1, 1])
+            >>> surface = Bspline(space, np.arange(6.0).reshape(3, 2, 1))
+            >>> left = surface.boundary(0, 0)  # left boundary along direction 0
+            >>> left.degree, left.control_points.ravel().tolist()
+            ((1,), [0.0, 1.0])
+            >>> right = surface.boundary(1, 1)  # right boundary along direction 1
+            >>> right.degree, right.control_points.ravel().tolist()
+            ((2,), [1.0, 3.0, 5.0])
         """
         if side not in (0, 1):
             raise ValueError(f"side must be 0 or 1, got {side}.")
