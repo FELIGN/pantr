@@ -87,6 +87,20 @@ The local suite passing is necessary but not sufficient. Known traps:
   stale editable install (one pointing at a deleted worktree) makes them fail with
   `ModuleNotFoundError` while the rest of the suite passes. Repair it with
   `pip install -e ".[dev]"` **from the main checkout**, never from a worktree.
+- **The local suite cannot see a result that depends on the BLAS implementation.** macOS
+  links numpy against Accelerate while CI runs OpenBLAS, so any quantity round-off
+  dominates can differ between them by orders of magnitude. Measured here: the relative
+  error of one degree-13 matrix inverse was `9.56` locally and `0.0335` on CI, and the
+  local sequence was not even monotone in degree, which is the giveaway that the number is
+  noise rather than error. A threshold fitted to a measurement taken on one machine is not
+  a threshold. Derive the bound from exact arithmetic (conditioning, epsilon, degree) and
+  it transfers; measure it and CI will disagree with you.
+- **`PYTHONPATH=src` relative is not safe under `conda run`.** It resolves against the
+  working directory `conda run` gives the process, which can be the main checkout rather
+  than your worktree, so the command silently exercises the *installed* package instead of
+  the branch — seen as 21 phantom failures against code that was already fixed. Use
+  `PYTHONPATH="$(pwd)/src"`. Plain `pytest` is unaffected, since `pytest.ini`'s
+  `pythonpath = src` resolves against the rootdir.
 - **CI is the finish line, not the push.** After creating a PR, watch it (`gh pr checks <n> --watch`)
   and do not report the work as done until every required check passes. Avoid pushing twice in quick
   succession: `ci.yaml` sets `cancel-in-progress: true`, so a second push cancels the first run's

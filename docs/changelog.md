@@ -19,7 +19,11 @@
 - `Bspline.locate`: point inversion from physical to parametric coordinates,
   batched over all points, returning the cell and the parameters. The default
   tolerance scales with the coordinate magnitude, not only with the bounding-box
-  diagonal, so a geometry far from the origin does not silently lose points.
+  diagonal, so a geometry far from the origin does not silently lose points, and it
+  carries what the *parametrization* can resolve as well: one ulp of a parametric
+  coordinate becomes a physical residual of about `eps * |xi|`, so a knot span far
+  from the origin relative to its width was being held to a residual no representable
+  parameter could reach, and every query on such a patch came back not found.
 - `BsplineSpace.boundary_dofs`: the control-point indices of a boundary slab of
   chosen thickness, on a chosen face.
 - `BsplineSpace.cell_supports` and `BsplineSpace1D.first_basis_per_interval`:
@@ -48,8 +52,27 @@
 - `Bezier.degree_reduction_error`: the exact $L^2$ norm of the error
   `Bezier.reduce_degree` would introduce, computed through the Bernstein mass
   matrix rather than by sampling.
+- `HierarchicalGrid.coarsen_cells`: the cell-exact counterpart of `coarsen`. It groups the
+  ids by parent and demotes a parent only when every one of its children is both an active
+  leaf and named, so it can never destroy a cell the caller did not list, which the box
+  `coarsen` can after two overlapping refines. The box form stays, and stays cheaper for a
+  region known to be uniformly refined. `THBSplineSpace.coarsen` now runs on it and keeps
+  only its admissibility guard, which has to stay a per-parent loop: evaluating it against
+  the frozen input mesh instead of the evolving one changes the result on 94 of 600
+  randomized meshes.
+- `HierarchicalGrid.cell_id`: the flat id of an active leaf given its level and
+  multi-index, or `None`. The inverse of `cell_level` and `cell_multi_index`, and how a
+  caller re-resolves cells after a refine or a coarsen has reassigned ids.
 
 ### Rejected where it used to be accepted
+- **A weight disagreement between two rational Coons faces is refused at every model
+  size.** The edge check took one magnitude over a homogeneous control row, which mixes
+  coordinates (length times weight) with weights (dimensionless), so a weight error was
+  graded against the model's *length* and passed unnoticed once the model was large: a
+  weight off by four times the tolerance was accepted at every coordinate scale from 1e2
+  up, and the volume then missed faces the caller had supplied correctly. Control-point
+  columns are now split into groups that each share a physical dimension and each graded
+  against their own magnitude. The rule lives in one place, shared with `join`.
 - **A knot vector whose spacing is finer than its dtype resolves at its own coordinate
   magnitude is now refused at construction**, where it used to be accepted and then
   silently behave as if it had no intervals. `BsplineSpace1D` raises a `ValueError`
@@ -207,6 +230,22 @@
   endpoint condition and still returns the mean of the control points.
 
 ### Fixed
+- **`create_coons_volume` builds from rational faces** instead of failing with a NumPy
+  shape error. The seven-term blend was already formed from homogeneous coefficients
+  throughout; only the corner read left that space, through `boundary()`, which projects.
+  Corners are now read homogeneously. The boundary property survives projection because
+  projection is pointwise and therefore commutes with restriction to a face, provided the
+  faces agree in *homogeneous* data, weights included, rather than merely projectively. A
+  rational volume is additionally refused when its weight field is not certified positive:
+  the blend is an inclusion-exclusion and subtracts three of its terms, so positive face
+  weights do not imply a positive weight field inside, while `w(u) >= min_i w_i` over a
+  non-negative partition of unity lets the result's own control weights bound it from
+  below. That test is sufficient and not necessary, and says so where it refuses.
+- **The Coons boundary checks are graded at the input's own precision.** The tier was read
+  at float64 whatever the model's dtype, so a float32 patch whose corner is as close as
+  the format allows was refused for a disagreement float32 cannot express, by a factor of
+  `eps32 / (4096 eps64) = 2**17`. `create_coons_surface` also stops promoting a float32
+  model to float64, matching `create_ruled` and `make_compat`.
 - Knot snapping merged the wrong knots, and from `|knot| ≈ 5` upward merged none
   at all. `BsplineSpace1D._snap_knots` rounded onto a grid of width `tolerance`,
   which was an absolute per-dtype constant: at knot 1.0 the grid was 4.5 ulp wide
