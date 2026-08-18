@@ -305,6 +305,8 @@ def interpolate_bspline_distributed(
         :func:`~pantr.bspline.interpolate_bspline`.
 
     Example:
+        Needs a live MPI communicator and several ranks, so it is not run as a doctest.
+
         >>> from mpi4py import MPI  # doctest: +SKIP
         >>> import numpy as np  # doctest: +SKIP
         >>> from pantr.bspline import create_uniform_space  # doctest: +SKIP
@@ -414,6 +416,8 @@ def fit_bspline_distributed(
         ``global_space.dtype``.
 
     Example:
+        Needs a live MPI communicator and several ranks, so it is not run as a doctest.
+
         >>> from mpi4py import MPI  # doctest: +SKIP
         >>> from pantr.bspline import create_greville_lattice  # doctest: +SKIP
         >>> from pantr.bspline import create_uniform_space  # doctest: +SKIP

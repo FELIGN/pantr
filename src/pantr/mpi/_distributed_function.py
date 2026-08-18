@@ -184,6 +184,8 @@ def create_distributed_function(  # noqa: PLR0913 -- public factory mirrors the 
             incompatible with ``comm`` (as raised downstream).
 
     Example:
+        Needs a live MPI communicator and several ranks, so it is not run as a doctest.
+
         >>> from mpi4py import MPI  # doctest: +SKIP
         >>> from pantr.bspline import Bspline, create_uniform_space  # doctest: +SKIP
         >>> from pantr.mpi import create_distributed_function  # doctest: +SKIP

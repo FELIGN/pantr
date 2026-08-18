@@ -93,8 +93,8 @@ def find_roots(
     Example:
         >>> import numpy as np
         >>> from pantr.bezier import Bezier, find_roots
-        >>> find_roots(Bezier([1.0, -1.0]))
-        array([0.5])
+        >>> np.allclose(find_roots(Bezier([1.0, -1.0])), [0.5])
+        True
 
     References:
         Yuksel's monotone-decomposition root finder :cite:p:`yuksel2022roots`

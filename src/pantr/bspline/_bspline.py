@@ -251,12 +251,19 @@ class Bspline:
                 or if ``out`` has incorrect shape or dtype.
 
         Example:
-            >>> # 1D: second derivative (int shorthand)
-            >>> result = spline.evaluate_derivatives(pts, 2)
-            >>> # 1D: second derivative (sequence form)
-            >>> result = spline.evaluate_derivatives(pts, [2])
-            >>> # 2D: partial derivative ∂³f/∂u ∂v²
-            >>> result = spline.evaluate_derivatives(pts, [1, 2])
+            >>> import numpy as np
+            >>> from pantr.bspline import create_uniform_space
+            >>> spline = Bspline(create_uniform_space(2, 1), np.array([[0.0], [0.0], [1.0]]))
+            >>> pts = np.array([[0.25], [0.75]])
+            >>> np.allclose(spline.evaluate_derivatives(pts, 2), [2.0, 2.0])  # f(t) = t**2
+            True
+            >>> np.allclose(spline.evaluate_derivatives(pts, [2]), [2.0, 2.0])  # sequence form
+            True
+            >>> u_cp, v_cp = np.array([0.0, 0.5, 1.0]), np.array([0.0, 0.0, 1.0])
+            >>> srf = Bspline(create_uniform_space(2, [1, 1]), np.outer(u_cp, v_cp)[..., None])
+            >>> uv = np.array([[0.3, 0.4]])
+            >>> np.allclose(srf.evaluate_derivatives(uv, [1, 2]), [2.0])  # f = u*v**2, d3f/du dv2
+            True
         """
         orders_seq: Sequence[int] = [orders] * self.dim if isinstance(orders, int) else orders
         return _evaluate_Bspline_deriv(self, pts, orders_seq, out)
@@ -355,7 +362,16 @@ class Bspline:
             matters more than the default's derivation.
 
         Example:
+            >>> import numpy as np
+            >>> from pantr.bspline import create_uniform_space
+            >>> u, v = np.meshgrid([0.0, 0.5, 1.0], [0.0, 0.5, 1.0], indexing="ij")
+            >>> surface = Bspline(create_uniform_space(1, [2, 2]), np.stack([u, v], axis=-1))
+            >>> pts = np.array([[0.25, 0.75], [0.6, 0.3]])
             >>> cell_ids, ref_coords = surface.locate(surface.evaluate(pts))
+            >>> cell_ids.tolist()
+            [1, 2]
+            >>> np.allclose(ref_coords, pts)
+            True
         """
         return _locate_impl(self, points, tol, max_iter)
 
@@ -391,14 +407,22 @@ class Bspline:
             ValueError: If the degree in the given direction is 0.
 
         Example:
-            >>> # First derivative of a 1D curve
-            >>> f_prime = f.derivative()
-            >>> # Partial derivative of a surface with respect to direction 1
-            >>> df_dv = surface.derivative(direction=1)
-            >>> # Second derivative (composable)
-            >>> f_double_prime = f.derivative().derivative()
-            >>> # Derivative preserving degree
-            >>> f_prime_same_deg = f.derivative(keep_degree=True)
+            >>> import numpy as np
+            >>> from pantr.bspline import create_uniform_space
+            >>> f = Bspline(create_uniform_space(2, 1), np.array([[0.0], [0.0], [1.0]]))
+            >>> fp = f.derivative()  # first derivative of a 1D curve; f(t) = t**2
+            >>> fp.degree
+            (1,)
+            >>> np.allclose(fp.evaluate(np.array([[0.3]])), [0.6])  # f'(t) = 2t
+            True
+            >>> f.derivative().derivative().degree  # second derivative (composable)
+            (0,)
+            >>> f.derivative(keep_degree=True).degree  # derivative preserving degree
+            (2,)
+            >>> u_cp, v_cp = np.array([0.0, 0.5, 1.0]), np.array([0.0, 0.0, 1.0])
+            >>> srf = Bspline(create_uniform_space(2, [1, 1]), np.outer(u_cp, v_cp)[..., None])
+            >>> srf.derivative(direction=1).degree  # partial derivative along direction 1
+            (2, 1)
         """
         if direction < 0 or direction >= self.dim:
             raise ValueError(f"direction must be in [0, {self.dim}), got {direction}.")
@@ -733,8 +757,14 @@ class Bspline:
             ValueError: If ``value`` is not strictly inside the domain.
 
         Example:
+            >>> import numpy as np
+            >>> from pantr.bspline import create_uniform_space
+            >>> spline = Bspline(create_uniform_space(2, 3), np.arange(5.0).reshape(5, 1))
             >>> left, right = spline.split(0, 0.5)
-            >>> left, right = surface.split(1, 0.3)
+            >>> np.allclose(left.space.spaces[0].domain, [0.0, 0.5])
+            True
+            >>> np.allclose(right.space.spaces[0].domain, [0.5, 1.0])
+            True
         """
         if direction < 0 or direction >= self.dim:
             raise ValueError(f"direction must be in [0, {self.dim}), got {direction}.")
@@ -859,6 +889,9 @@ class Bspline:
             ``(3, 2)``.  The Bézier control points are read-only.
 
         Example:
+            >>> import numpy as np
+            >>> from pantr.bspline import create_uniform_space
+            >>> spline = Bspline(create_uniform_space(2, 3), np.arange(5.0).reshape(5, 1))
             >>> beziers = spline.to_beziers()
             >>> beziers.shape
             (3,)
@@ -904,8 +937,17 @@ class Bspline:
             both periodic → periodic, both non-open → non-open, either open → open.
 
         Example:
+            >>> import numpy as np
+            >>> from pantr.bspline import create_uniform_space
+            >>> f = Bspline(create_uniform_space(1, 1), np.array([[0.0], [1.0]]))  # f(t) = t
+            >>> g = Bspline(create_uniform_space(1, 1), np.array([[0.0], [1.0]]))  # g(t) = t
             >>> h = f.multiply(g)
-            >>> h2 = f * g  # equivalent via __mul__
+            >>> h.degree
+            (2,)
+            >>> np.allclose(h.evaluate(np.array([[0.5]])), [0.25])  # (f g)(t) = t**2
+            True
+            >>> np.allclose((f * g).evaluate(np.array([[0.5]])), [0.25])  # same via __mul__
+            True
         """
         if self.dim == 1:
             from ._bspline_product import _multiply_bspline_1d  # noqa: PLC0415
@@ -948,8 +990,15 @@ class Bspline:
             ValueError: If ``direction`` is out of range ``[0, dim)``.
 
         Example:
-            >>> rev = spline.reverse(direction=0)
-            >>> spline.reverse(direction=1, in_place=True)
+            >>> import numpy as np
+            >>> from pantr.bspline import create_uniform_space
+            >>> srf = Bspline(create_uniform_space(1, [1, 1]), np.arange(8.0).reshape(2, 2, 2))
+            >>> rev = srf.reverse(direction=0)
+            >>> rev.control_points[:, 0, 0].tolist()
+            [4.0, 0.0]
+            >>> srf.reverse(direction=1, in_place=True)  # mutates in place, returns None
+            >>> srf.control_points[0, :, 0].tolist()
+            [2.0, 0.0]
         """
         if direction < 0 or direction >= self.dim:
             raise ValueError(f"direction must be in [0, {self.dim}), got {direction}.")
@@ -1023,7 +1072,17 @@ class Bspline:
                 ``range(dim)``.
 
         Example:
-            >>> surface.permute_directions([1, 0])  # swap u ↔ v
+            >>> import numpy as np
+            >>> from pantr.bspline import create_uniform_space
+            >>> space = create_uniform_space([2, 1], [1, 1])
+            >>> surface = Bspline(space, np.arange(6.0).reshape(3, 2, 1))
+            >>> surface.degree
+            (2, 1)
+            >>> swapped = surface.permute_directions([1, 0])  # swap u <-> v
+            >>> swapped.degree
+            (1, 2)
+            >>> swapped.control_points[0, 2].tolist()  # was control_points[2, 0]
+            [4.0]
         """
         from .._control_points_utils import _permute_control_points  # noqa: PLC0415
         from ._bspline_space_nd import BsplineSpace  # noqa: PLC0415
@@ -1086,9 +1145,14 @@ class Bspline:
                 geometric rank of the B-spline.
 
         Example:
+            >>> import numpy as np
+            >>> from pantr.bspline import create_uniform_space
             >>> from pantr.transform import AffineTransform
+            >>> spline = Bspline(create_uniform_space(1, 1), np.array([[0.0, 0.0], [1.0, 1.0]]))
             >>> T = AffineTransform.translation([1.0, 2.0])
             >>> shifted = spline.transform(T)
+            >>> np.allclose(shifted.control_points, [[1.0, 2.0], [2.0, 3.0]])
+            True
         """
         new_cp = _apply_affine_to_control_points(
             self._control_points,
@@ -1207,12 +1271,17 @@ class Bspline:
                 direction.
 
         Example:
-            >>> # Slice a surface at v=0.5 to get a curve
-            >>> curve = surface.slice(1, 0.5)
-            >>> # Slice a volume at w=0.3 to get a surface
-            >>> srf = volume.slice(2, 0.3)
-            >>> # Composable: volume -> surface -> curve -> point
-            >>> pt = volume.slice(2, 0.3).slice(1, 0.5).slice(0, 0.2)
+            >>> import numpy as np
+            >>> from pantr.bspline import create_uniform_space
+            >>> space = create_uniform_space(1, [2, 2, 2])
+            >>> volume = Bspline(space, np.arange(81.0).reshape(3, 3, 3, 3))
+            >>> volume.slice(2, 0.3).dim  # slice a volume at w=0.3 to get a surface
+            2
+            >>> volume.slice(2, 0.3).slice(1, 0.5).dim  # and again at v=0.5 to get a curve
+            1
+            >>> pt = volume.slice(2, 0.3).slice(1, 0.5).slice(0, 0.2)  # composable down to a point
+            >>> np.allclose(pt, volume.evaluate(np.array([[0.2, 0.5, 0.3]])))
+            True
         """
         if axis < 0 or axis >= self.dim:
             raise ValueError(f"axis must be in [0, {self.dim}), got {axis}.")
@@ -1250,10 +1319,16 @@ class Bspline:
             ValueError: If ``side`` is not 0 or 1.
 
         Example:
-            >>> # Extract left boundary of a surface along direction 0
-            >>> left_curve = surface.boundary(0, 0)
-            >>> # Extract right boundary along direction 1
-            >>> right_curve = surface.boundary(1, 1)
+            >>> import numpy as np
+            >>> from pantr.bspline import create_uniform_space
+            >>> space = create_uniform_space([2, 1], [1, 1])
+            >>> surface = Bspline(space, np.arange(6.0).reshape(3, 2, 1))
+            >>> left = surface.boundary(0, 0)  # left boundary along direction 0
+            >>> left.degree, left.control_points.ravel().tolist()
+            ((1,), [0.0, 1.0])
+            >>> right = surface.boundary(1, 1)  # right boundary along direction 1
+            >>> right.degree, right.control_points.ravel().tolist()
+            ((2,), [1.0, 3.0, 5.0])
         """
         if side not in (0, 1):
             raise ValueError(f"side must be 0 or 1, got {side}.")

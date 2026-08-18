@@ -16,6 +16,7 @@ All of these assume the `pantr` env, i.e. prefix with `conda run -n pantr`.
 ```bash
 make pre-pull-request                                       # the full check suite CI runs
 pytest                                                      # run tests (JIT enabled, no coverage)
+make doctest                                                # run the docstring examples under src/pantr
 pytest tests/test_basis.py::test_name -v                    # single test
 pytest tests/ -k "keyword" -v                               # filtered tests
 pytest -m "not slow"                                        # skip the slow-marked tests

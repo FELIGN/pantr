@@ -73,6 +73,8 @@ def create_distributed_space(  # noqa: PLR0913 -- public factory mirrors the par
             with ``comm`` (e.g. ``comm.size`` mismatch), as raised downstream.
 
     Example:
+        Needs a live MPI communicator and several ranks, so it is not run as a doctest.
+
         >>> from mpi4py import MPI  # doctest: +SKIP
         >>> from pantr.bspline import create_uniform_space  # doctest: +SKIP
         >>> from pantr.mpi import create_distributed_space  # doctest: +SKIP

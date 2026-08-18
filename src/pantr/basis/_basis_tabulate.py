@@ -69,11 +69,12 @@ def tabulate_bernstein_1d(
             shape or dtype.
 
     Example:
-        >>> tabulate_bernstein_1d(2, [0.0, 0.5, 0.75, 1.0])
-        array([[1.    , 0.    , 0.    ],
-               [0.25  , 0.5   , 0.25  ],
-               [0.0625, 0.375 , 0.5625],
-               [0.    , 0.    , 1.    ]])
+        >>> import numpy as np
+        >>> np.allclose(
+        ...     tabulate_bernstein_1d(2, [0.0, 0.5, 0.75, 1.0]),
+        ...     [[1.0, 0.0, 0.0], [0.25, 0.5, 0.25], [0.0625, 0.375, 0.5625], [0.0, 0.0, 1.0]],
+        ... )
+        True
     """
     return _tabulate_Bernstein_basis_1D_impl(degree, pts, out=out)
 
@@ -120,10 +121,12 @@ def tabulate_cardinal_bspline_1d(
             shape or dtype.
 
     Example:
-        >>> tabulate_cardinal_bspline_1d(2, [0.0, 0.5, 1.0])
-        array([[0.5  , 0.5  , 0.   ],
-               [0.125, 0.75 , 0.125],
-               [0.   , 0.5  , 0.5  ]])
+        >>> import numpy as np
+        >>> np.allclose(
+        ...     tabulate_cardinal_bspline_1d(2, [0.0, 0.5, 1.0]),
+        ...     [[0.5, 0.5, 0.0], [0.125, 0.75, 0.125], [0.0, 0.5, 0.5]],
+        ... )
+        True
 
     """
     return _tabulate_cardinal_Bspline_basis_1D_impl(degree, pts, out=out)

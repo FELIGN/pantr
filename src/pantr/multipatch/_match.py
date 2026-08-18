@@ -114,8 +114,8 @@ def match_face_cps(  # noqa: PLR0913
         >>> from pantr.bspline import BsplineSpace, BsplineSpace1D
         >>> space = BsplineSpace([BsplineSpace1D([0, 0, 1, 1], 1)] * 2)
         >>> a, b = match_face_cps(space, 1, space, 0, (1,), (False,))
-        >>> a, b
-        (array([2, 3]), array([0, 1]))
+        >>> a.tolist(), b.tolist()
+        ([2, 3], [0, 1])
     """
     if space_a.dim != space_b.dim:
         raise ValueError(

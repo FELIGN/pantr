@@ -83,6 +83,8 @@ def quasi_interpolate_thb_spline_distributed(
         ``float64`` on construction, regardless of ``global_space.dtype``.
 
     Example:
+        Needs a live MPI communicator and several ranks, so it is not run as a doctest.
+
         >>> from mpi4py import MPI  # doctest: +SKIP
         >>> import numpy as np  # doctest: +SKIP
         >>> from pantr.bspline import create_uniform_space, create_thb_space  # doctest: +SKIP

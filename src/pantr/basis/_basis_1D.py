@@ -134,11 +134,12 @@ def _tabulate_Bernstein_basis_1D_impl(
             shape or dtype.
 
     Example:
-        >>> _tabulate_Bernstein_basis_1D_impl(2, [0.0, 0.5, 0.75, 1.0])
-        array([[1.    , 0.    , 0.    ],
-               [0.25  , 0.5   , 0.25  ],
-               [0.0625, 0.375 , 0.5625],
-               [0.    , 0.    , 1.    ]])
+        >>> vals = _tabulate_Bernstein_basis_1D_impl(2, [0.0, 0.5, 0.75, 1.0])
+        >>> np.allclose(
+        ...     vals,
+        ...     [[1.0, 0.0, 0.0], [0.25, 0.5, 0.25], [0.0625, 0.375, 0.5625], [0.0, 0.0, 1.0]],
+        ... )
+        True
     """
     return _tabulate_basis_1D_impl_helper(
         n,
@@ -190,12 +191,9 @@ def _tabulate_cardinal_Bspline_basis_1D_impl(
             shape or dtype.
 
     Example:
-        >>> tabulate_cardinal_bspline_1d(2, [0.0, 0.5, 1.0])
-        array([[0.5    , 0.5    , 0.     ],
-               [0.125  , 0.75   , 0.125  ],
-               [0.03125, 0.6875 , 0.28125],
-               [0.     , 0.5    , 0.5    ]])
-
+        >>> vals = _tabulate_cardinal_Bspline_basis_1D_impl(2, [0.0, 0.5, 1.0])
+        >>> np.allclose(vals, [[0.5, 0.5, 0.0], [0.125, 0.75, 0.125], [0.0, 0.5, 0.5]])
+        True
     """
     return _tabulate_basis_1D_impl_helper(n, t, _tabulate_cardinal_Bspline_basis_1D_core, out)
 

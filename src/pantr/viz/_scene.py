@@ -106,10 +106,12 @@ class Scene:
     create a plotter with :meth:`to_plotter`.
 
     Example:
+        >>> from pantr.cad import create_bilinear, create_line
         >>> scene = Scene()
-        >>> scene.add(surface, color="blue", show_knot_lines=True)
-        >>> scene.add(curve, color="red", show_control_polygon=True)
-        >>> scene.show()
+        >>> scene = scene.add(create_bilinear(), color="blue", show_knot_lines=True)
+        >>> scene = scene.add(create_line([0, 0], [1, 1]), color="red", show_control_polygon=True)
+        >>> # ``show`` opens an interactive render window, so it cannot run headless.
+        >>> scene.show()  # doctest: +SKIP
     """
 
     def __init__(self) -> None:

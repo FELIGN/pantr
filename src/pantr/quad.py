@@ -466,7 +466,7 @@ def get_tanh_sinh_1d(
         True
         >>> bool(((nodes > 0.0) & (nodes < 1.0)).all())
         True
-        >>> abs(weights.sum() - 1.0) < 1e-14
+        >>> bool(abs(weights.sum() - 1.0) < 1e-14)
         True
     """
     _validate_n_pts_and_dtype(n_pts, dtype)

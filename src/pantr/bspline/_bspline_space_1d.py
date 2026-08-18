@@ -369,8 +369,8 @@ class BsplineSpace1D:
 
         Example:
             >>> space = BsplineSpace1D([0, 0, 0, 1, 2, 2, 3, 3, 3], 2)
-            >>> space.first_basis_per_interval()
-            array([0, 1, 3])
+            >>> space.first_basis_per_interval().tolist()
+            [0, 1, 3]
         """
         if self._periodic:
             raise ValueError(
@@ -398,7 +398,8 @@ class BsplineSpace1D:
 
         Example:
             >>> bspline = BsplineSpace1D([0, 0, 0, 1, 2, 2, 2], 2)
-            >>> bspline.domain
+            >>> start, end = bspline.domain
+            >>> float(start), float(end)
             (0.0, 2.0)
         """
         i0, i1 = self._get_domain_indices()
@@ -506,8 +507,23 @@ class BsplineSpace1D:
         An interval is cardinal if has the same length as the degree-1
         previous and the degree-1 next intervals.
 
+        Concretely, an interval ``[u_k, u_(k+1)]`` is cardinal when both conditions
+        hold: neither bounding knot is repeated, and the ``2 * degree - 1`` knot spans
+        of the window ``u_(k-degree+1), ..., u_(k+degree)`` -- the ``degree - 1`` spans
+        before the interval, the interval itself, and the ``degree - 1`` spans after it
+        -- all have the interval's own length, to within the space tolerance.
+
+        Those ``2 * degree`` knots are exactly the ones an evaluation on that span
+        reads. The standard basis-function recurrence works up from level ``1`` to
+        ``degree``, and at level ``j`` it references only ``u_(k+1-j)`` and ``u_(k+j)``;
+        across all levels those indices sweep ``k-degree+1`` through ``k+degree`` and no
+        further. So the window holds every knot the ``degree + 1`` functions restricted
+        to that interval depend on, and equal spacing across it is what makes those
+        restrictions coincide with the cardinal (uniform-knot) ones.
+
         In the case of open knot vectors, this definition automatically
-        discards the first degree-1 and the last degree-1 intervals.
+        discards the first degree-1 and the last degree-1 intervals: the repeated
+        end knots put zero-length spans inside their window.
 
         At ``degree == 0`` the equal-length condition ranges over an empty set of
         neighbouring intervals, so it holds vacuously and the knot spacing does not
@@ -532,17 +548,31 @@ class BsplineSpace1D:
             ValueError: If `out` is provided and has incorrect shape or dtype.
 
         Example:
+            Six unit intervals, degree 2: the window is one span either side, so
+            only the two end intervals see a zero-length span from the repeated
+            end knots.
+
             >>> bspline = BsplineSpace1D([0, 0, 0, 1, 2, 3, 4, 5, 6, 6, 6], 2)
-            >>> bspline.get_cardinal_intervals()
-            array([False, False, True, True, False, False])
+            >>> bspline.get_cardinal_intervals().tolist()
+            [False, True, True, True, True, False]
+
+            Repeating the interior knot 5 disqualifies the two intervals it bounds:
 
             >>> bspline = BsplineSpace1D([0, 0, 0, 1, 2, 3, 4, 5, 5, 6, 6, 6], 2)
-            >>> bspline.get_cardinal_intervals()
-            array([False, False, True, False, False, False])
+            >>> bspline.get_cardinal_intervals().tolist()
+            [False, True, True, True, False, False]
+
+            Degree 3 over the domain ``[3, 5]``: the window reaches two spans past
+            each interval, so the irregular span ``[7, 10]`` falls outside both and
+            neither interval is affected.
 
             >>> bspline = BsplineSpace1D([0, 1, 2, 3, 4, 5, 6, 7, 10], 3)
-            >>> bspline.get_cardinal_intervals()
-            array([True, False])
+            >>> bspline.get_cardinal_intervals().tolist()
+            [True, True]
+
+        References:
+            The recurrence whose knot footprint sets this window is Algorithm A2.2
+            of :cite:p:`piegl1997nurbs`.
         """
         return _get_Bspline_cardinal_intervals_1D_impl(
             self._knots, self._degree, self._tol, out=out
@@ -593,13 +623,21 @@ class BsplineSpace1D:
                 has incorrect shape or dtype.
 
         Example:
+            >>> import numpy as np
             >>> bspline = BsplineSpace1D([0, 0, 0, 0.25, 0.7, 0.7, 1, 1, 1], 2)
-            >>> bspline.tabulate_basis([0.0, 0.5, 0.75, 1.0])
-            (array([[1.        , 0.        , 0.        ],
-                    [0.12698413, 0.5643739 , 0.30864198],
-                    [0.69444444, 0.27777778, 0.02777778],
-                    [0.        , 0.        , 1.        ]]),
-             array([0, 1, 3, 3]))
+            >>> values, first = bspline.tabulate_basis([0.0, 0.5, 0.75, 1.0])
+            >>> np.allclose(
+            ...     values,
+            ...     [
+            ...         [1.0, 0.0, 0.0],
+            ...         [0.12698413, 0.5643739, 0.30864198],
+            ...         [0.69444444, 0.27777778, 0.02777778],
+            ...         [0.0, 0.0, 1.0],
+            ...     ],
+            ... )
+            True
+            >>> first.tolist()
+            [0, 1, 3, 3]
 
         References:
             Basis values are computed with the stable Cox-de Boor recurrence
@@ -658,12 +696,14 @@ class BsplineSpace1D:
                 has incorrect shape or dtype.
 
         Example:
+            >>> import numpy as np
             >>> bspline = BsplineSpace1D([0, 0, 0, 1, 1, 1], 2)
             >>> d, first = bspline.tabulate_basis_derivatives([0.5], n_deriv=1)
             >>> d.shape
             (1, 2, 3)
-            >>> d[0, 1, :]   # first derivatives at x=0.5: B0'=-1, B1'=0, B2'=1
-            array([-1.,  0.,  1.])
+            >>> # first derivatives at x=0.5: B0'=-1, B1'=0, B2'=1
+            >>> np.allclose(d[0, 1, :], [-1.0, 0.0, 1.0])
+            True
         """
         return _tabulate_Bspline_basis_deriv_1D_impl(
             self,
