@@ -1689,6 +1689,52 @@ class TestStoppingVersusAcceptance:
         assert thresholds.stop == get_default(spline.dtype) * _physical_only_scale(spline)
         assert thresholds.accept / thresholds.stop > 1.0e5, "the fixture's gap is decades wide"
 
+    @pytest.mark.parametrize("offset", [0.0, 1.0e2, 1.0e4, 1.0e5])
+    def test_a_float32_spline_never_opens_the_split(self, offset: float) -> None:
+        """A float32 caller gets one threshold at every offset its knot vector can carry.
+
+        Not an accident of these four rows. The acceptance threshold's parametric term is
+        format-independent by construction -- :func:`_parametric_scale` multiplies by
+        ``eps64 / eps(dtype)``, so ``get_default(dtype)`` times it is ``64 * eps64 * reach *
+        span`` in every format -- while the stopping threshold is ``64 * eps(dtype) *
+        physical``. Opening the split therefore needs ``reach * span > (eps(dtype) / eps64)
+        * physical``, and no net span exceeds the bounding-box diagonal, so it needs
+        ``reach > eps32 / eps64 == 5.4e8``. A float32 knot vector of width ``L`` at offset
+        ``c`` needs ``c * eps32 < L`` to resolve its own mesh at all, i.e. ``reach < 1 /
+        eps32 == 8.4e6``, two decades short. The next row up confirms the cut-off is the
+        knot layer's and not this module's.
+
+        So the split is a float64 phenomenon, and deliberately: for a float32 caller the
+        format the *data* carries is already coarser than anything the parametrization
+        quantizes at, which is the same reason the inversion promotes to float64 to iterate.
+        """
+        spline = _offset_identity_patch(offset, degree=2, n_elem=4)
+        knots = np.asarray(spline.space.spaces[0].knots, dtype=np.float32)
+        spline32 = Bspline(
+            BsplineSpace([BsplineSpace1D(knots, 2)]),
+            np.ascontiguousarray(np.asarray(spline.control_points, dtype=np.float32)),
+        )
+        thresholds = _default_tolerance(spline32, _locate_context(spline32))
+
+        assert thresholds.stop == thresholds.accept
+        assert thresholds.stop == get_default(np.float32) * _physical_only_scale(spline32)
+
+    def test_the_float32_offset_that_would_open_the_split_is_refused_first(self) -> None:
+        """The knot layer stops a float32 knot vector before this module has to.
+
+        The complement of the test above, and what makes its argument a statement about
+        every float32 spline rather than about the four offsets sampled: one decade further
+        out the knot vector cannot be built at all, because in float32 at ``1e6`` the mesh
+        collapses onto a single knot.
+        """
+        offset = 1.0e6
+        knots = np.concatenate(
+            [np.full(2, offset), np.linspace(offset, offset + 1.0, 5), np.full(2, offset + 1.0)]
+        ).astype(np.float32)
+
+        with pytest.raises(ValueError, match="collapsed every knot"):
+            BsplineSpace1D(knots, 2)
+
     def test_an_explicit_tolerance_governs_stopping_as_well(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
