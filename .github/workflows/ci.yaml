@@ -177,6 +177,15 @@ jobs:
           . .venv/bin/activate
           make test
 
+      # On the full matrix rather than once, because an example can drift from the code
+      # on any version and a numpy release that prints a value differently breaks it on
+      # one leg only. A step here rather than a job of its own: it reuses this job's venv
+      # and warm Numba cache, costs a few seconds, and wants no coverage.
+      - name: Run doctests
+        run: |
+          . .venv/bin/activate
+          make doctest
+
       - name: Run pytest with coverage
         run: |
           . .venv/bin/activate
