@@ -36,47 +36,88 @@ _COND_SAFETY_FACTOR = 64
 """
 Safety factor multiplying the first-order error bound ``cond(A) * eps``.
 
-The bound is the standard one for inverting by LU with partial pivoting. Higham (ASNA
-2nd ed., Thm 9.4) gives ``|dA| <= gamma_{3n} |L||U|`` for a solve, the ``3n`` covering
-the factorisation and the two triangular solves; the check here then forms ``A @ B``
-itself, adding another ``gamma_n``. With ``gamma_k ~ k * eps`` and the growth factor
-``rho`` measured at 0.75 to 1.15 for every matrix in this file, that is
+**Only one of the two products is bounded, and which one is a property of the
+algorithm, not of the matrices.** Every pair here obtains its inverse direction by
+solving ``A B = I``, which bounds the *right* residual ``||A B - I||`` and says nothing
+about ``||B A - I||``. Du Croz & Higham, *Stability of methods for matrix inversion*,
+IMA J. Numer. Anal. **12** (1992) 1-19 (DOI ``10.1093/imanum/12.1.1``), call this
+Method A -- literally this algorithm, one solve per unit vector under GEPP -- and bound
+it in eq. (3.2) as ``|A X - I| <= c'_n u |L||U||X| + O(u^2)``. Their §4 states the
+principle: *"only one of the left and right residuals is guaranteed to be small; which
+one depends on whether the method is derived by solving AX = I or XA = I."* Measured
+here at degree 28, as ``(forward ratio, reversed ratio)`` in units of ``cond(A) * eps``:
+``numpy.linalg.solve(A, I)`` gives ``(0.11, 1067)``, the transposed solve
+``solve(A.T, I).T`` gives ``(4073, 0.11)``, and ``scipy.linalg.inv`` (LAPACK ``getri``)
+gives ``(1843, 0.13)``. Same matrix throughout: the protection follows the route. Any
+reimplementation must solve on the same side or the docstrings here become true of the
+other product -- a row/column-major transposition is enough to swap it silently. The
+same wrong-parity claim was once in the LINPACK manual; that paper corrects it on p. 16.
 
-    ||A B - I||_2  <=  (3n + n) * rho * cond(A) * eps  ~  4n * cond(A) * eps
+The derived half, for the forward product. With ``|dA| <= gamma_{3n} |L||U|`` (ASNA 2nd
+ed., Thm 9.4, for one right-hand side; the extension to ``n`` columns of the identity is
+eq. (3.2) above), the ``3n`` covering the factorisation and the two triangular solves,
+and the check itself forming ``A @ B`` for another ``gamma_n``:
 
-so at ``n = degree + 1 <= 11`` the first-order requirement is ``44 * cond(A) * eps``.
-64 is the power of two above it. The factor is therefore **1.45x** the algorithm's own
-error bound, not a 4x build allowance on top of it: the allowance for an FMA
-contraction, a different vector width or a different LAPACK lives in the gap between
-that first-order bound and the much smaller values actually observed, not in the 44 to
-64 step. Because ``n`` is baked into a constant, the derivation holds for
-``degree <= 11``; past that the constant would have to be restated.
+    ||A B - I||_2  <=  (3n * rho_norm + n) * cond(A) * eps
 
-One half of the bound is derived and the other is observed, and the difference matters.
-``cond(A) * eps`` bounds ``forward @ inverse``. For the reversed product there is no
-such bound: from ``B = A^-1 (I + R)`` one gets ``B A - I = A^-1 R A``, hence only
-``||B A - I|| <= cond(A) * ||A B - I|| <= 4n * cond(A)**2 * eps``. Holding the reversed
-product to this same tier is therefore a *stronger, empirical* claim. It is verified
-here through degree 11 -- the ceiling of the derivation above, and the highest degree any
-parametrization in this file reaches -- and is expected to fail past degree ~19, so
-extending any parametrization beyond that needs this constant revisited rather than
-trusted.
+with ``rho_norm = || |L||U| ||_2 / ||A||_2``, which is what a *normwise* bound needs --
+not the classical growth factor ``max|u_ij| / max|a_ij|``. The distinction is not
+cosmetic here: over the 46 matrices this file inverts, the classical factor is 0.750 to
+1.155 while ``rho_norm`` runs 1.000 to **2.109** (Gauss-Legendre, degree 10) and grows
+with degree. The highest degree tested is 11, so ``n = 12`` and the first-order
+requirement is ``3 * 12 * 2.109 + 12 ~ 88``.
+
+**So 64 is 0.73x the first-order bound, not above it.** The constant is therefore *not*
+justified by that bound; it is justified by the margins measured below, which sit two
+orders of magnitude under it. Stated plainly because the reverse was claimed before: the
+first-order bound is what the constant would have to clear to be derived, and it does
+not clear it. Because ``n`` is baked in, the derivation is stated for ``degree <= 11``;
+past that it must be recomputed, and ``rho_norm`` grows.
+
+**The reversed product is graded at the same tier, and that is false past degree 20.**
+From ``B = A^-1 (I + R)`` one gets ``B A - I = A^-1 R A``, hence a priori only
+``||B A - I|| <= cond(A) * ||A B - I||``, i.e. a ``cond(A)**2 * eps`` tier. No stronger
+bound exists: the reference above declines to name a size for the unprotected side, and
+its Table 3.2 is a published counterexample. Holding the reversed product to
+``cond(A) * eps`` is an *empirical* claim, true over the degrees tested and false beyond
+them. Measured with the products formed in exact rational arithmetic (forming them in
+float64 costs ``~n * eps * cond(A)``, the very tier being graded), ``||B A - I||_2``
+first exceeds ``64 * cond(A) * eps`` at degree **20** for equispaced and Chebyshev-1st
+nodes (ratios 107 and 117), 21 for Gauss-Lobatto and Chebyshev-2nd, 22 for
+Gauss-Legendre, reaching 4.5e3 by degree 30 while the bound is still meaningful -- it
+stays below 0.1 through degree 32, so there are thirteen degrees where the assertion is
+both meaningful and wrong. The crossing degree moves by about 2 with the LAPACK entry
+point (at degree 20 the ratio is 107 through ``numpy.linalg.solve``, 23 through
+``scipy.linalg.solve``), so a degree cap records one build rather than a bound.
+**Do not extend any parametrization in this file past degree 11 without re-measuring the
+reversed product.** The other two pairs never cross only because ``cond(A)`` grows 20-30x
+per degree against 2.6x, so ``64 * cond(A) * eps`` passes 0.1 -- and the assertion goes
+vacuous -- at degree 13 (Bernstein/cardinal) and 11 (Legendre/cardinal), before the
+reversed product has room to fail.
 
 Measured margins (``atol`` over observed), worst over the degrees actually tested:
 
 * 151x for the Bernstein/cardinal forward product, whose ratio to ``cond(A) * eps``
   peaks at 0.43 (degree 11), having been 0.30 at degree 8;
 * **31x** for the Lagrange/Bernstein *reversed* product, whose ratio peaks at 2.04
-  (Chebyshev 1st, degree 11) -- the binding case, and the reason the claim above is
-  flagged as observed. Equispaced at degree 10, 1.58, is not the worst: the peak moves
-  to Chebyshev at the top of the tested range, so the binding variant is not fixed
-  across degrees and a narrower parametrization would have found a smaller ratio;
+  (Chebyshev 1st, degree 11) -- the binding case. Equispaced at degree 10, 1.58, is not
+  the worst: the peak moves to Chebyshev at the top of the tested range, so the binding
+  variant is not fixed across degrees and a narrower parametrization would have found a
+  smaller ratio;
 * 6.2x for biorthogonality at degree 8, which contracts the duals against a
   ``2 * degree + 2`` point rule, accumulating on top of the solve.
 
-Re-running the same inversions through five different LAPACK entry points moves the
-binding ratio by 2.4x, which brings the worst effective margin to about **13x**. The
-looseness is thus known, fixed, and never runs the other way.
+The residual is route-dependent at order-of-magnitude scale, so the margin depends on
+which routine forms the inverse. Measured on the binding case, ratio of
+``||B A - I||`` to ``cond(A) * eps``: ``scipy.linalg.inv`` 0.16,
+``scipy.linalg.lu_factor``+``lu_solve`` 0.60, ``scipy.linalg.solve`` 0.60,
+``numpy.linalg.solve`` (what this module uses) and ``numpy.linalg.inv`` 2.04 -- these two
+bit-identical, so they are one entry point, not two -- and a QR-based inverse 4.17. The
+worst LU route leaves 64 a margin of **31x**; including the QR route, which is a
+different factorisation and outside the bound derived above, leaves **15x**. Quoting a
+best-to-worst *spread* instead would be meaningless: it is driven by whichever route is
+unusually good, and reads 2042x on the Bernstein/cardinal pair whose worst route is a
+harmless 0.65.
 
 The constant stays local rather than becoming ``pantr.tolerance.get_default(dtype) *
 cond``, for two reasons: ``cond`` is an amplification factor, not "the magnitude of the
@@ -137,6 +178,93 @@ def _conditioning_atol(
     return _COND_SAFETY_FACTOR * cond * get_machine_epsilon(dtype)
 
 
+def _assert_inverse_pair(
+    forward: npt.NDArray[np.float32 | np.float64],
+    inverse: npt.NDArray[np.float32 | np.float64],
+    atol: float,
+) -> None:
+    """Assert both products of an inverse pair, each against what actually bounds it.
+
+    The two directions are *not* the same claim, and grading them alike is what
+    :data:`_COND_SAFETY_FACTOR` documents as the one empirical step in this file:
+
+    * ``forward @ inverse`` is bounded by ``atol`` and that is a derived bound;
+    * ``inverse @ forward`` has no bound of that tier. What it does satisfy, for any
+      matrix, degree, dtype and LAPACK path, is ``||B A - I|| <= cond(A) ||A B - I||``,
+      which follows from the exact identity ``B A - I = A^-1 (A B - I) A`` with no
+      hypothesis at all. That inequality is asserted here as a theorem.
+
+      It is a statement about the *exact* residuals, and both sides are measured in
+      floating point, so the assertion carries an additive allowance for the
+      measurement itself. Forming either product costs at most
+      ``order * eps * ||A||_2 ||B||_2`` (the standard inner-product bound, with
+      ``gamma_k ~ k * eps``), which can inflate the left-hand residual and deflate the
+      right-hand one, giving
+      ``left <= cond(A) * (right + e) + e`` with ``e`` that quantity. Without it the
+      assertion compares two noise-level numbers at low degree, where both residuals
+      are a few ulp and their ratio is meaningless: measured at degree 2 of the
+      Bernstein/cardinal pair, ``5.8e-17`` against a naive right-hand side of
+      ``2.2e-17``. The allowance is negligible where the claim has teeth -- at degree
+      11 of the Lagrange pair it is ``8e-12`` against a bound of ``1.2e-9``.
+
+    Holding the reversed product to ``atol`` as well is kept, because it is the
+    sharper statement wherever it is true and it is what caught the defect ticket #300
+    fixed. But it is an **acceptance threshold, not a tolerance** -- the same
+    distinction ``test_acceptance_thresholds_of_ticket_300`` draws -- so it is asserted
+    last and named as such, and it is false past degree 20 (see
+    :data:`_COND_SAFETY_FACTOR`).
+
+    What each assertion is worth, measured as how close it comes to firing (1.0 fires):
+
+    * the derived forward bound, 0.0002 to 0.007;
+    * the theorem, 0.0000 to 0.0065 -- it has four orders of slack and will not catch a
+      numerical regression. That is not its job. It cannot fire spuriously at any
+      degree, so it is what separates "the empirical tier stopped holding" from "the
+      pair stopped being an inverse pair": past degree 20 the threshold below fails
+      while this still passes, and the two verdicts together say which happened;
+    * the threshold, 0.0009 to 0.032 -- the discriminating one, 31x from firing at the
+      binding case.
+
+    A caveat on what this cannot see. Building the inverse on the *wrong side*
+    (``solve(A.T, I).T``) is caught only where conditioning is large enough to expose
+    it: the forward residual then lands at 1.5e-4, 0.36 and 41 times ``atol`` at degrees
+    2, 8 and 11 of the Bernstein/cardinal pair, so it passes below degree 11 and fails
+    above. The primary defence against a parity slip is therefore the documentation on
+    each builder, not this check.
+
+    Args:
+        forward (npt.NDArray[np.float32 | np.float64]): The directly-built direction.
+        inverse (npt.NDArray[np.float32 | np.float64]): The LU-solved direction.
+        atol (float): The derived bound from :func:`_conditioning_atol`.
+    """
+    a64 = np.asarray(forward, dtype=np.float64)
+    b64 = np.asarray(inverse, dtype=np.float64)
+    right_residual = _identity_residual(forward, inverse)
+    left_residual = _identity_residual(inverse, forward)
+    cond = float(np.linalg.cond(a64))
+    order = forward.shape[0]
+
+    assert right_residual <= atol, f"derived bound on forward @ inverse: {right_residual} > {atol}"
+
+    # A theorem, not a measurement: sound at every degree, dtype and LAPACK path.
+    # `measurement` is what forming either product can itself contribute.
+    measurement = (
+        order
+        * get_machine_epsilon(np.float64)
+        * float(np.linalg.norm(a64, 2))
+        * float(np.linalg.norm(b64, 2))
+    )
+    derived_reversed = cond * (right_residual + measurement) + measurement
+    assert left_residual <= derived_reversed, (
+        f"cond(A) ||A B - I|| does not bound ||B A - I||: {left_residual} > {derived_reversed}"
+    )
+
+    # Acceptance threshold rather than a tolerance; see this function's docstring.
+    assert left_residual <= atol, (
+        f"reversed product above the observed tier: {left_residual} > {atol}"
+    )
+
+
 def _identity_residual(
     left: npt.NDArray[np.float32 | np.float64],
     right: npt.NDArray[np.float32 | np.float64],
@@ -147,6 +275,18 @@ def _identity_residual(
     measures the error carried by the two matrices, not the error of the check
     itself. That matters for the float32 assertions, where a float32 product would
     add a rounding of its own at the very magnitude being graded.
+
+    For a float64 pair there is no higher precision left to promote to, and the
+    check is *not* free there either: forming ``left @ right`` costs about
+    ``n * eps * cond``, which is the tier being graded. Measured on the
+    Bernstein/cardinal forward product at degree 11, the ratio to ``cond(A) * eps``
+    is 0.425 as computed here and 0.056 with the product formed in exact rational
+    arithmetic, so at least 87% of the reported residual is this function's own
+    rounding. The direction is safe -- a check can inflate a residual, never mask
+    one -- so every margin quoted in :data:`_COND_SAFETY_FACTOR` is conservative.
+    But the peak ratios quoted there are properties of this measurement, not of the
+    matrices, and re-deriving the constant from them would build in that slack
+    twice.
 
     Args:
         left (npt.NDArray[np.float32 | np.float64]): Left factor of the product.
@@ -360,8 +500,7 @@ class TestBernsteinToLagrangeBasisOperator:
         inverse = compute_bernstein_to_lagrange_1d(degree, variant)
         atol = _conditioning_atol(forward)
 
-        assert _identity_residual(forward, inverse) <= atol
-        assert _identity_residual(inverse, forward) <= atol
+        _assert_inverse_pair(forward, inverse, atol)
 
     @pytest.mark.parametrize(
         "variant",
@@ -389,8 +528,7 @@ class TestBernsteinToLagrangeBasisOperator:
         assert inverse.dtype == np.float32
 
         atol = _conditioning_atol(compute_lagrange_to_bernstein_1d(degree, variant), np.float32)
-        assert _identity_residual(forward, inverse) <= atol
-        assert _identity_residual(inverse, forward) <= atol
+        _assert_inverse_pair(forward, inverse, atol)
 
 
 class TestCardinalToBernsteinRoundTrip:
@@ -416,8 +554,7 @@ class TestCardinalToBernsteinRoundTrip:
         inverse = compute_cardinal_to_bernstein_1d(degree)
         atol = _conditioning_atol(forward)
 
-        assert _identity_residual(forward, inverse) <= atol
-        assert _identity_residual(inverse, forward) <= atol
+        _assert_inverse_pair(forward, inverse, atol)
 
     @pytest.mark.parametrize("degree", range(12))
     def test_inverse_map_reproduces_bernstein_basis(self, degree: int) -> None:

@@ -476,10 +476,15 @@ def compute_cardinal_to_legendre_1d(
             provided and has incorrect shape or dtype.
 
     Example:
+        Check ``A @ W``, not ``W @ A``. Solving ``A W = I`` bounds the *right*
+        residual only; the left one carries no bound and is measurably worse --
+        ``3.7e-15`` against ``5.1e-16`` already at degree 3, and ``8.4e-8``
+        against ``2.7e-14`` by degree 10. See the ``Warning:`` above.
+
         >>> import numpy as np
         >>> A = compute_legendre_to_cardinal_1d(3)
         >>> W = compute_cardinal_to_legendre_1d(3)
-        >>> np.allclose(W @ A, np.eye(4), atol=1e-13)
+        >>> np.allclose(A @ W, np.eye(4), atol=1e-13)
         True
     """
     if degree < 0:
@@ -512,8 +517,16 @@ def compute_cardinal_dual_legendre_coeffs_1d(
     :math:`\int D_i B_j = \sum_k T_{ik} A_{jk} = (A T^\mathsf{T})_{ji}`, so
     biorthogonality holds exactly when :math:`T^\mathsf{T} = A^{-1}`, i.e.
     :math:`T = A^{-\mathsf{T}}`. No inverse is formed: since
-    :func:`compute_cardinal_to_legendre_1d` returns ``W`` with ``W @ A = I`` from
+    :func:`compute_cardinal_to_legendre_1d` returns ``W`` with ``A @ W = I`` from
     an LU solve, the result is simply ``W.T``.
+
+    The parity matters, and it is the one the derivation needs. Solving
+    ``A W = I`` bounds :math:`\lVert A W - I\rVert` and *not*
+    :math:`\lVert W A - I\rVert`; only one of the two residuals is guaranteed
+    small, and which one follows from the side the system is solved on rather
+    than from the matrices (Du Croz & Higham, *IMA J. Numer. Anal.* **12**
+    (1992) 1-19, §4). The quantity above is :math:`(A T^\mathsf{T})_{ji}`, so it
+    is the bounded one.
 
     Warning:
         Biorthogonality is limited by the same conditioning that bounds ``W`` --
