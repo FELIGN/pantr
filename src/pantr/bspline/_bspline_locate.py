@@ -71,8 +71,15 @@ additionally quantize the parametric iterate at ``eps32``. Promotion removes bot
 the price of one exact cast: the arithmetic floor becomes ``1 - 3 * eps64 * scale``,
 which for a float32 caller is eight orders below the threshold it asks for, so what
 limits the answer is the precision the caller's data carries and not the solver. The
-returned coordinates invert the promoted mapping to float64 accuracy; evaluating them
-on the original ``float32`` spline reproduces the query point to float32 accuracy only.
+returned coordinates invert the promoted mapping to the accuracy the caller's own
+tolerance tier names, ``64 * eps(dtype) * physical`` -- *not* to float64 accuracy, which
+the solver could reach but is never asked for: :func:`_default_tolerance` takes the tier
+from the caller's dtype. Measured on a float32 unit patch at the origin, against targets
+that are exact images of the promoted map: worst residual ``1.07e-05`` against a stopping
+threshold of ``1.08e-05``, where the float64 tier would have demanded ``2.01e-14``. So a
+float32 caller's answer is capped at their declared precision, 5.3e8 above what the
+iteration is capable of, and evaluating it on the original ``float32`` spline reproduces
+the query point to float32 accuracy only.
 
 v1 inverts square maps only (``rank == dim``): planar and volumetric geometry maps. An
 embedded curve or surface (``rank > dim``) needs a Gauss-Newton closest-point solve,
