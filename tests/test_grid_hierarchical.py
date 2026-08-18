@@ -842,9 +842,9 @@ class TestCoarsenIsNotAnUnconditionalInverse:
         cell 1's children and the grid ends at 7 cells, not the 8 it had before the
         second refine.  That is `coarsen`'s documented contract (it demotes the box it
         is given), **not** a defect to "fix" by changing this number: the route that
-        cannot lose refinement is the cell-id API, where the caller names every cell
-        being destroyed (:meth:`HierarchicalGrid.refine_cells`,
-        :meth:`~pantr.bspline.THBSplineSpace.coarsen`).
+        cannot lose refinement is :meth:`HierarchicalGrid.coarsen_cells`, where the
+        caller names every cell being destroyed.  `TestCoarsenCells` below runs this
+        same reproduction through it and gets the 8 back.
         """
         g = _grid_1d(6, 2)
         g.refine(0, [0], [2])
@@ -1080,6 +1080,16 @@ class TestCoarsenIsNotAnUnconditionalInverse:
         assert not g.is_active_leaf(1, (5,))
 
 
+def _caches_live(g: HierarchicalGrid) -> tuple[bool, bool]:
+    """Return whether the BVH and cell-tag caches are currently populated.
+
+    Read through a function on purpose: asserting on ``g._bvh`` directly narrows the
+    attribute, after which mypy declares the opposite assertion later in the same test
+    unreachable and fails the run.
+    """
+    return g._bvh is not None, g._cell_tags is not None
+
+
 def _active_cells(g: HierarchicalGrid) -> set[tuple[int, tuple[int, ...]]]:
     """Return every active leaf as a ``(level, midx)`` pair.
 
@@ -1141,14 +1151,74 @@ class TestCoarsenCells:
         g.coarsen_cells([*children, *children])
         assert (g.num_cells, g.max_level) == (4, 0)
 
-    def test_out_of_range_id_raises(self) -> None:
-        """Out of range is an `IndexError`, as it is for `refine_cells`."""
+    def test_out_of_range_id_raises_before_anything_is_demoted(self) -> None:
+        """Out of range is an `IndexError`, as for `refine_cells`, and nothing has moved.
+
+        Every id is range-checked before the first parent is demoted, so a list whose
+        bad id sits *after* a demotable family leaves the grid exactly as it was rather
+        than half-coarsened.  A per-parent check would leave the first family gone.
+        """
         g = _grid_1d(4, 2)
         with pytest.raises(IndexError, match="out of range"):
             g.coarsen_cells([4])
         with pytest.raises(IndexError, match="out of range"):
             g.coarsen_cells([-1])
         assert _grid_snapshot(g) == (4, 0, ((((0,), (4,)),),))
+
+        g.refine_cells([0])
+        before = _grid_snapshot(g)
+        children = [c for c in range(g.num_cells) if g.cell_level(c) == 1]
+        with pytest.raises(IndexError, match="out of range"):
+            g.coarsen_cells([*children, g.num_cells])
+        assert _grid_snapshot(g) == before
+
+    def test_parents_at_two_levels_are_demoted_deepest_first(self) -> None:
+        """The parent order is observable, so it is pinned rather than left to chance.
+
+        The same set of active cells can be stored as different rectangle partitions:
+        `_normalize_blocks` merges greedily, so what it produces depends on the order
+        the reactivated parents were appended in.  Since flat ids are handed out block
+        by block, the partition decides the id of every cell.
+
+        On this mesh the two orders diverge.  Demoting deepest level first leaves the
+        two level-1 blocks below; demoting shallowest first leaves the identical 18
+        cells as *five* level-1 blocks, and so a different id for most of them.  The
+        cell-set invariants of `test_never_destroys_a_cell_it_was_not_given` cannot see
+        that difference, which is why this pins the blocks themselves.
+        """
+        g = _grid_2d(3, 2)
+        g.refine(0, [0, 1], [2, 3])
+        g.refine(1, [1, 3], [2, 5])
+        g.refine(1, [1, 4], [3, 5])
+        assert (g.num_cells, g.max_level) == (30, 2)
+        g.coarsen_cells([c for c in range(g.num_cells) if g.cell_level(c) >= 1])
+        assert (g.num_cells, g.max_level) == (18, 1)
+        assert g.active_blocks(0) == (((0, 0), (2, 1)), ((1, 1), (2, 2)), ((2, 0), (3, 3)))
+        assert g.active_blocks(1) == (((0, 2), (2, 6)), ((2, 4), (4, 6)))
+
+    def test_coarsen_cells_invalidates_the_bvh_and_the_tags(self) -> None:
+        """Coarsening by id invalidates the same caches the box `coarsen` does.
+
+        Both routes reach `_rebuild`, but only through a `coarsen` call that actually
+        fires: a call that demotes nothing must leave the caches alone, since ids did
+        not move.
+        """
+        g = _grid_1d(4, 2)
+        g.refine_cells([0])
+        g.cell_tags.set("test", [0, 1], 1)
+        _ = g.cell_bvh()
+        children = [c for c in range(g.num_cells) if g.cell_level(c) == 1]
+
+        assert _caches_live(g) == (True, True)
+
+        version = g.version
+        g.coarsen_cells(children[:1])  # partial parent: nothing is demoted
+        assert g.version == version
+        assert _caches_live(g) == (True, True)
+
+        g.coarsen_cells(children)
+        assert g.version > version
+        assert _caches_live(g) == (False, False)
 
     def test_destroys_only_the_named_children_after_overlapping_refines(self) -> None:
         """The cell-exact counterpart of the box contrast test above.
