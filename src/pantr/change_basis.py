@@ -47,16 +47,21 @@ domain replaces. Inside the domain the inverse obeys
 over every supported range here, so no entry of an inverse can exceed
 :math:`2.3 \times 10^{8}` in float32 -- thirty orders of magnitude below that format's
 overflow threshold. And a matrix that is not singular to working precision does not
-produce the exactly zero pivot :class:`numpy.linalg.LinAlgError` reports. Measured, the
-first infinity and the first ``LinAlgError`` appear more than twenty degrees past the
-boundary.
+produce the exactly zero pivot :class:`numpy.linalg.LinAlgError` reports. Measured, both
+occur only in float32 and only for the two cardinal pairs, and the first of each is at least
+twenty-six degrees past the boundary.
 
-The :math:`\kappa_\infty` values behind the tabulated limits are computed in exact rational
-(or 120-digit decimal) arithmetic from the matrices themselves, not with
-:func:`numpy.linalg.cond`: a float64 SVD cannot resolve a condition number near
-:math:`1/\varepsilon`, which is precisely where the boundary sits. That derivation runs as
-a test, ``tests/test_change_basis_domain.py``, so the tabulated degrees are checked rather
-than asserted.
+The :math:`\kappa_\infty` values behind the tabulated limits come from matrices rebuilt in
+exact rational (or 60-digit decimal) arithmetic from closed forms, rather than from the
+matrices pantr computes. That distinction is load-bearing for the Bernstein/cardinal pair,
+whose forward matrix is itself the output of a Gram solve and so is not exact: near the
+boundary, :func:`numpy.linalg.cond` applied to the matrix pantr forms reports 8.6 times too
+much at degree 13 and 4.9 times too little at degree 15, either of which moves the crossing.
+Applied to the *exact* matrix that same call is accurate to five digits even at
+:math:`4 \times 10^{17}`, so it is the matrix and not the estimator that is at fault.
+Rebuilding from closed forms also keeps the derivation independent of the code it grades. It
+runs as a test, ``tests/test_change_basis_domain.py``, so the tabulated degrees are checked
+rather than asserted.
 """
 
 import functools
@@ -336,11 +341,15 @@ def compute_bernstein_to_lagrange_1d(
     if degree < 1:
         raise ValueError("Degree must at least 1")
     out = _prepare_square_out(degree, dtype, out)
+    # `LagrangeVariant(...)` rather than a bare lookup: an unrecognized variant would
+    # otherwise leave this function through `KeyError`, which is exactly the kind of
+    # undocumented exception type the domain exists to stop escaping.
+    variant = LagrangeVariant(lagrange_variant)
     _validate_degree_in_domain(
         degree,
         out.dtype,
-        _BERNSTEIN_TO_LAGRANGE_MAX_DEGREE[lagrange_variant],
-        f"compute_bernstein_to_lagrange_1d with {lagrange_variant.name} nodes",
+        _BERNSTEIN_TO_LAGRANGE_MAX_DEGREE[variant],
+        f"compute_bernstein_to_lagrange_1d with {variant.name} nodes",
     )
 
     forward = compute_lagrange_to_bernstein_1d(degree, lagrange_variant, dtype)

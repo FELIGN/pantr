@@ -5,11 +5,15 @@ This file is where the domain's derivation lives. The limits tabulated in
 each one is the largest degree at which the matrix its builder solves with satisfies
 :math:`\kappa_\infty(M)\,\varepsilon < 1`, and this module recomputes :math:`\kappa_\infty`
 in exact rational (or high-precision decimal) arithmetic at that degree and at the one past
-it. A float64 SVD cannot settle the question, because the boundary is by construction the
-place where a condition number reaches :math:`1/\varepsilon` and a float64 SVD stops
-resolving it -- measured, :func:`numpy.linalg.cond` puts
-:math:`\kappa(A_{\mathrm{bern}\to\mathrm{card}})` at degree 15 nearly nine times below its
-exact value, which is enough to move the boundary by a degree.
+it.
+
+Asking :func:`numpy.linalg.cond` for the same number does not settle it, and not because that
+estimator is weak: applied to the *exact* matrix it agrees with the exact
+:math:`\kappa_\infty` to five digits even at :math:`4 \times 10^{17}`. The trouble is the
+matrix. The Bernstein-to-cardinal matrix pantr forms is itself the output of a Gram solve, so
+near the boundary it is no longer the matrix the domain is about, and its computed
+:math:`\kappa_\infty` comes out 8.6 times too large at degree 13 and 4.9 times too small at
+degree 15 -- either of which moves the crossing by a degree.
 
 The exact matrices are built from closed forms rather than from pantr's own tabulations, so
 the derivation is independent of the code it grades: the cardinal B-splines from their
@@ -441,6 +445,25 @@ def test_cardinal_to_bernstein_float64_limit_is_set_by_fidelity_not_conditioning
         f"degree {refused} is refused, yet the computation it forbids has relative error "
         f"{outside:.3g}: the cap refuses a usable result"
     )
+
+
+def test_unknown_lagrange_variant_raises_value_error_not_key_error() -> None:
+    """An unrecognized node family must not leave the builder through ``KeyError``.
+
+    The domain lookup is keyed by ``LagrangeVariant``, so a bare ``dict[...]`` would turn a
+    bad variant into a ``KeyError`` -- an undocumented exception type, which is the very
+    thing this domain exists to stop escaping. It is coerced through ``LagrangeVariant(...)``
+    instead.
+    """
+    with pytest.raises(ValueError, match="not a valid LagrangeVariant"):
+        compute_bernstein_to_lagrange_1d(3, "not_a_node_family", np.float64)  # type: ignore[arg-type]
+
+    # A plain string naming a real family still works: LagrangeVariant is a StrEnum.
+    from_string = np.asarray(compute_bernstein_to_lagrange_1d(3, "equispaces", np.float64))  # type: ignore[arg-type]
+    from_member = np.asarray(
+        compute_bernstein_to_lagrange_1d(3, LagrangeVariant.EQUISPACES, np.float64)
+    )
+    assert np.array_equal(from_string, from_member)
 
 
 def test_every_lagrange_variant_declares_a_domain() -> None:
