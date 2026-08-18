@@ -9,15 +9,30 @@ import numpy as np
 import numpy.typing as npt
 import pytest
 
+from pantr._numba_compat import wait_for_jit_warmup
 from pantr.bezier import Bezier
 from pantr.bezier._bezier_degree import (
+    _degree_elevate_bezier,
+    _degree_reduce_bezier,
     _elevation_matrix_exact,
     _interpolating_reduction_operator,
     _l2_reduction_operator,
+    _projected_quadrature_size,
+    _projected_relative_deviation,
+    _sample_projected,
     _squared_l2_norm,
+    _tensor_gauss_weights,
 )
 from pantr.bspline import Bspline, BsplineSpace, BsplineSpace1D, create_uniform_periodic_knots
 from pantr.bspline._bspline_degree_core import _degree_reduce_1d_core
+
+# Several tests here reach `Bezier.evaluate` within milliseconds of the process
+# starting, and it dispatches to a `parallel=True` kernel. Numba's default workqueue
+# layer is not safe against that racing `pantr/__init__.py`'s background warmup thread:
+# the interpreter *aborts* rather than raising. Measured on this file with a warm Numba
+# cache, before this barrier was added: 3 of 4 runs aborted. Same mitigation, and the
+# same reason, as `tests/test_bernstein_underflow.py`.
+wait_for_jit_warmup()
 
 _EPS = float(np.finfo(np.float64).eps)
 
@@ -41,6 +56,18 @@ already interpolates.  Measured over degrees 1 to 20 and every decrement, the
 ratio stays in ``[1.002, 4.547]``, the worst cases being reductions to a
 straight line.  A regression that dropped the constraints, or one that solved
 the wrong system, would leave this window immediately.
+"""
+
+_QUADRATURE_AGREEMENT = 1.0e-2
+"""Admissible relative gap between the projected measure and a dense reference.
+
+The rational integrand of the projected deviation is not integrated exactly by any
+Gauss rule, so the accept/reject measure is an estimate; ``_projected_quadrature_size``
+records that over degrees 3 to 20, weight ratios to ``1e2`` and coordinate offsets to
+``1e3`` it agreed with a 2e5-point reference to five decimal digits at the median and
+to within 3% at worst.  1% bounds the case pinned here (measured 3.0e-6) with a wide
+margin while still catching a rule that has stopped resolving the integrand: dropping
+the node count from ``2p + 2`` to ``p + 1`` moves this case to 1.6e-2, outside the bound.
 """
 
 
@@ -552,6 +579,267 @@ class TestBezierMinimizeDegree:
         assert b_min.degree[0] < b_elev.degree[0]
         pts = np.linspace(0.0, 1.0, 10, dtype=np.float64)
         np.testing.assert_allclose(b_min.evaluate(pts), b.evaluate(pts), atol=1e-12)
+
+
+# ---------------------------------------------------------------------------
+# Minimize degree, rational
+# ---------------------------------------------------------------------------
+
+_NUDGED_WEIGHT_NETS: dict[tuple[float, float], list[list[float]]] = {
+    (1.0, 1.0e-6): [
+        [0.0, 0.0, 1.0],
+        [0.09999999999999999, 0.19999999999999998, 0.8666666666666666],
+        [0.22666666666666668, 0.32, 0.7866666666666666],
+        [0.38, 0.36000000000000004, 0.7600007599999999],
+        [0.56, 0.32, 0.7866666666666666],
+        [0.7666666666666666, 0.19999999999999998, 0.8666666666666666],
+        [1.0, 0.0, 1.0],
+    ],
+    (1.0e3, 1.0e-6): [
+        [0.0, 0.0, 1.0],
+        [100.0, 200.0, 0.8666666666666666],
+        [226.66666666666669, 320.0, 0.7866666666666666],
+        [380.0, 360.00000000000006, 0.7600007599999999],
+        [560.0, 320.0, 0.7866666666666666],
+        [766.6666666666666, 200.0, 0.8666666666666666],
+        [1000.0, 0.0, 1.0],
+    ],
+    (1.0e6, 1.0e-6): [
+        [0.0, 0.0, 1.0],
+        [100000.0, 200000.0, 0.8666666666666666],
+        [226666.6666666667, 320000.0, 0.7866666666666666],
+        [380000.0, 360000.00000000006, 0.7600007599999999],
+        [560000.0, 320000.0, 0.7866666666666666],
+        [766666.6666666666, 200000.0, 0.8666666666666666],
+        [1000000.0, 0.0, 1.0],
+    ],
+    (1.0, 1.0e-3): [
+        [0.0, 0.0, 1.0],
+        [0.09999999999999999, 0.19999999999999998, 0.8666666666666666],
+        [0.22666666666666668, 0.32, 0.7866666666666666],
+        [0.38, 0.36000000000000004, 0.7607599999999999],
+        [0.56, 0.32, 0.7866666666666666],
+        [0.7666666666666666, 0.19999999999999998, 0.8666666666666666],
+        [1.0, 0.0, 1.0],
+    ],
+    (1.0e3, 1.0e-3): [
+        [0.0, 0.0, 1.0],
+        [100.0, 200.0, 0.8666666666666666],
+        [226.66666666666669, 320.0, 0.7866666666666666],
+        [380.0, 360.00000000000006, 0.7607599999999999],
+        [560.0, 320.0, 0.7866666666666666],
+        [766.6666666666666, 200.0, 0.8666666666666666],
+        [1000.0, 0.0, 1.0],
+    ],
+    (1.0e6, 1.0e-3): [
+        [0.0, 0.0, 1.0],
+        [100000.0, 200000.0, 0.8666666666666666],
+        [226666.6666666667, 320000.0, 0.7866666666666666],
+        [380000.0, 360000.00000000006, 0.7607599999999999],
+        [560000.0, 320000.0, 0.7866666666666666],
+        [766666.6666666666, 200000.0, 0.8666666666666666],
+        [1000000.0, 0.0, 1.0],
+    ],
+}
+"""Homogeneous control nets of the case in issue #297, keyed by (scale, weight nudge).
+
+Each is the degree-2 rational Bézier through ``(0, 0)``, ``(0.5, 1)``, ``(1, 0)`` with
+weights ``(1, 0.6, 1)``, scaled by ``scale``, elevated to degree 6, and with the middle
+control weight multiplied by ``1 + nudge``.  Elevation is applied *after* scaling, so the
+three scales are not exact multiples of each other in ``float64``; each is written out
+rather than derived, so the triggering data is exactly the data the issue reports.
+
+The perturbation lives entirely in the weight column, which is what makes the case
+diagnostic: a homogeneous norm reads it as ``O(nudge / scale)`` relative while the
+projected deviation it causes is ``O(nudge)`` relative.
+"""
+
+_ELEVATED_ARC_NETS: dict[float, list[list[float]]] = {
+    1.0: [
+        [1.0, 0.0, 1.0],
+        [0.8828427124746191, 0.282842712474619, 0.8828427124746191],
+        [0.7242640687119286, 0.5242640687119285, 0.8242640687119286],
+        [0.5242640687119285, 0.7242640687119286, 0.8242640687119286],
+        [0.282842712474619, 0.8828427124746191, 0.8828427124746191],
+        [0.0, 1.0, 1.0],
+    ],
+    1.0e6: [
+        [1000000.0, 0.0, 1.0],
+        [882842.712474619, 282842.712474619, 0.8828427124746191],
+        [724264.0687119286, 524264.06871192856, 0.8242640687119286],
+        [524264.06871192856, 724264.0687119286, 0.8242640687119286],
+        [282842.712474619, 882842.712474619, 0.8828427124746191],
+        [0.0, 1000000.0, 1.0],
+    ],
+}
+"""Exact quarter circles of radius ``scale``, degree-elevated from 2 to 5.
+
+Reducing these back to degree 2 is exact up to round-off, so they are the curves the
+default tolerance must keep accepting.
+"""
+
+
+def _projected_deviation(source: Bezier, reduced: Bezier) -> tuple[float, float]:
+    """Measure a reduction's deviation and the curve's extent, both in projected space.
+
+    Args:
+        source (Bezier): The Bézier that was minimized.
+        reduced (Bezier): What ``minimize_degree`` returned.
+
+    Returns:
+        tuple[float, float]: The largest projected deviation over a dense parameter
+        sample, and the largest projected magnitude of ``source`` over the same sample.
+    """
+    pts = np.linspace(0.0, 1.0, 801, dtype=np.float64)
+    values = source.evaluate(pts)
+    return (
+        float(np.linalg.norm(reduced.evaluate(pts) - values, axis=1).max()),
+        float(np.linalg.norm(values, axis=1).max()),
+    )
+
+
+class TestBezierMinimizeDegreeRational:
+    """A rational round-trip is graded in projected space, not in homogeneous one (#297)."""
+
+    @pytest.mark.parametrize(("scale", "tol"), [(1.0, 1.0e-6), (1.0e3, 1.0e-9), (1.0e6, 1.0e-12)])
+    def test_accepted_reduction_stays_within_the_requested_budget(
+        self, scale: float, tol: float
+    ) -> None:
+        """No accepted reduction exceeds ``tol`` times the extent of the geometry.
+
+        This is the case reported in issue #297.  Before the fix the reduction from
+        degree 6 to degree 2 was accepted at all three scales, overshooting the budget
+        by a factor of 61 at ``scale = 1e3`` and 6.1e4 at ``scale = 1e6``.
+        """
+        source = Bezier(np.array(_NUDGED_WEIGHT_NETS[scale, 1.0e-6]), is_rational=True)
+        deviation, span = _projected_deviation(source, source.minimize_degree(tol=tol))
+        assert deviation <= tol * span
+
+    def test_reduction_within_budget_is_still_accepted(self) -> None:
+        """A reduction the caller's budget does allow is not refused by the new measure."""
+        source = Bezier(np.array(_NUDGED_WEIGHT_NETS[1.0, 1.0e-6]), is_rational=True)
+        assert source.minimize_degree(tol=1.0e-6).degree == (2,)
+
+    @pytest.mark.parametrize("tol", [1.0e-6, 1.0e-4])
+    def test_verdict_is_scale_invariant(self, tol: float) -> None:
+        """The same geometry written at three coordinate scales gets the same verdict.
+
+        Scaling every coordinate is a similarity, so the *relative* deviation of a
+        reduction is unchanged by it and the accept/reject verdict must be too.  The
+        homogeneous measure is not scale invariant: at ``tol = 1e-6`` it refused the
+        reduction at scale 1 and accepted it at scale 1e3 and 1e6.
+        """
+        degrees = {
+            Bezier(np.array(_NUDGED_WEIGHT_NETS[scale, 1.0e-3]), is_rational=True)
+            .minimize_degree(tol=tol)
+            .degree
+            for scale in (1.0, 1.0e3, 1.0e6)
+        }
+        assert len(degrees) == 1
+
+    def test_weight_carried_deviation_is_refused_at_large_coordinate_scale(self) -> None:
+        """A weight perturbation invisible to the homogeneous measure is now caught.
+
+        At ``scale = 1e6`` the first trial's homogeneous relative error is 1.1e-11
+        against a true projected 7.1e-6, so every trial cleared a ``1e-6`` budget and
+        the accepted degree 6 to 2 reduction moved the curve by 4.9e-5 relative.
+        """
+        source = Bezier(np.array(_NUDGED_WEIGHT_NETS[1.0e6, 1.0e-3]), is_rational=True)
+        assert source.minimize_degree(tol=1.0e-6).degree == (6,)
+
+    @pytest.mark.parametrize("scale", [1.0, 1.0e6])
+    def test_exactly_reducible_curve_still_reduces_at_the_default_tolerance(
+        self, scale: float
+    ) -> None:
+        """An elevated rational curve is recovered by the default tolerance.
+
+        The default is ``1e3 * eps`` on a *relative* error, and the projected round-trip
+        error of an exactly reducible net sits at the round-off floor just as the
+        homogeneous one does, so the default keeps its meaning.
+        """
+        source = Bezier(np.array(_ELEVATED_ARC_NETS[scale]), is_rational=True)
+        assert source.degree == (5,)
+        assert source.minimize_degree().degree == (2,)
+
+    def test_non_rational_measure_is_unchanged(self) -> None:
+        """The same net read as non-rational keeps the exact Bernstein-Gram verdict.
+
+        The weight column is then an ordinary coordinate, so the round-trip error is
+        1.1e-14 relative and a ``1e-12`` budget accepts the reduction.  The fix must not
+        tighten this path.
+        """
+        net = np.array(_NUDGED_WEIGHT_NETS[1.0e6, 1.0e-6])
+        assert Bezier(net, is_rational=False).minimize_degree(tol=1.0e-12).degree == (2,)
+
+    def test_quadrature_measure_agrees_with_a_dense_reference(self) -> None:
+        """The Gauss estimate of the projected deviation matches a dense sample.
+
+        The integrand is rational, so the rule is not exact and the measure is an
+        estimate; this pins how good an estimate.  See
+        :func:`~pantr.bezier._bezier_degree._projected_quadrature_size`.
+        """
+        source = Bezier(np.array(_NUDGED_WEIGHT_NETS[1.0e6, 1.0e-3]), is_rational=True)
+        num_nodes = tuple(_projected_quadrature_size(p) for p in source.degree)
+        trial = _degree_elevate_bezier(_degree_reduce_bezier(source, (1,)), (1,)).control_points
+        estimate = _projected_relative_deviation(
+            _sample_projected(source.control_points, num_nodes),
+            _sample_projected(trial, num_nodes),
+            _tensor_gauss_weights(num_nodes),
+        )
+
+        pts = np.linspace(0.0, 1.0, 200001, dtype=np.float64)
+        values = source.evaluate(pts)
+        difference = Bezier(trial, is_rational=True).evaluate(pts) - values
+        reference = math.sqrt(float(np.sum(difference**2)) / float(np.sum(values**2)))
+
+        assert estimate == pytest.approx(reference, rel=_QUADRATURE_AGREEMENT)
+
+    def test_weight_sign_change_refuses_every_reduction(self) -> None:
+        """A weight function that changes sign has a pole, so nothing reduces.
+
+        Asserting the sampler's verdict as well as the degree is what keeps this from
+        passing for the wrong reason: merely zeroing a control weight leaves ``w(t)``
+        positive everywhere (Bernstein positivity), and the reduction is then refused
+        because the geometry genuinely changed, not because the measure is undefined.
+        A weight of ``-3`` drives ``min w(t)`` to ``-0.46``.
+        """
+        net = np.array(_ELEVATED_ARC_NETS[1.0])
+        net[2, -1] = -3.0
+        num_nodes = tuple(_projected_quadrature_size(p) for p in (5,))
+        assert _sample_projected(net, num_nodes) is None
+        assert Bezier(net, is_rational=True).minimize_degree().degree == (5,)
+
+    def test_two_dimensional_patch_reduces_only_the_redundant_direction(self) -> None:
+        """A rational patch elevated in one direction is reduced in that one alone.
+
+        Sampling a patch contracts the collocation matrix along every parametric axis in
+        turn, which a curve exercises only once; a mistake in that loop would be
+        invisible in the 1D tests.
+        """
+        root_half = 1.0 / math.sqrt(2.0)
+        arc = np.array([[1.0, 0.0, 1.0], [root_half, root_half, root_half], [0.0, 1.0, 1.0]])
+        # Extrude the quarter circle linearly along a third coordinate: the surface is
+        # genuinely quadratic in direction 1 and genuinely linear in direction 0.
+        net = np.stack(
+            [
+                np.column_stack([arc[:, :2], np.zeros(3), arc[:, 2]]),
+                np.column_stack([arc[:, :2], arc[:, 2], arc[:, 2]]),
+            ]
+        )
+        patch = Bezier(net, is_rational=True).elevate_degree((3, 0))
+        assert patch.degree == (4, 2)
+        assert patch.minimize_degree().degree == (1, 2)
+
+    def test_float32_rational_keeps_its_dtype(self) -> None:
+        """A float32 rational Bézier reduces and stays float32.
+
+        The measure is computed in float64 regardless, so what is checked here is that
+        the sampling path accepts a float32 net and does not promote the result.
+        """
+        source = Bezier(np.array(_ELEVATED_ARC_NETS[1.0], dtype=np.float32), is_rational=True)
+        reduced = source.minimize_degree()
+        assert reduced.degree == (2,)
+        assert reduced.control_points.dtype == np.float32
 
 
 # ---------------------------------------------------------------------------

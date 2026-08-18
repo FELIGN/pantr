@@ -12,6 +12,12 @@ Reduction is driven by a *reduction operator* :math:`R`, a dense
 reduced control points are ``R @ ctrl``.  The operator is assembled in exact
 rational arithmetic and rounded to ``float64`` once; see
 :func:`_interpolating_reduction_operator` for why.
+
+Errors are measured in the space the caller budgets in.  For a polynomial Bézier that
+is the exact Bernstein-Gram :math:`L^2` norm of the coefficient difference
+(:func:`_squared_l2_norm`); for a rational one it is the deviation of the *projected*
+mapping, estimated on a Gauss-Legendre grid (:func:`_projected_relative_deviation`),
+because a norm over homogeneous coefficients adds a weight to a weighted coordinate.
 """
 
 from __future__ import annotations
@@ -25,7 +31,9 @@ import numpy as np
 import numpy.typing as npt
 
 from .._array_utils import _flatten_along_axis, _unflatten_along_axis
+from ..basis._basis_core import _tabulate_Bernstein_basis_1D_serial_core
 from ..bspline._bspline_degree_core import _apply_reduction_operator, _check_bincoeff_envelope
+from ..quad import get_gauss_legendre_1d
 from ._bezier_core import _degree_elevate_bezier_1d_core
 
 if TYPE_CHECKING:
@@ -51,6 +59,21 @@ zero. A threshold at the bare ``eps`` level would spuriously reject such curves;
 ``1e3 * eps`` (``~2.2e-13`` for ``float64``) comfortably accepts genuine
 reductions while still rejecting curves whose true degree cannot be lowered
 without visible geometric error.
+
+**For a rational Bézier the factor keeps this meaning verbatim**, because the error it
+bounds is now the relative deviation of the *projected* mapping (see
+:func:`_projected_relative_deviation`) rather than of the homogeneous coefficients.
+Both are relative and both sit at the unit-roundoff floor for an exactly reducible
+curve, so nothing about "three digits of headroom above round-off" changes -- only the
+space the round-off is measured in, which is the space the caller cares about.
+
+Measured, to check that the projected floor really is a round-off floor and not
+something larger: over exactly-reducible rational nets (base degrees 1, 2, 5 elevated by
+1, 3 and 8; weight ratios 1, 10 and 100; coordinate scales 1 and ``1e6``; 20 random nets
+each), the projected round-trip relative deviation of the first trial never exceeded
+``1.55 * eps``, and every net recovered its base degree at this default. That leaves
+about ``650x`` of headroom, against the ``1e3`` the factor nominally provides -- the
+difference being that the floor is a small multiple of ``eps`` rather than exactly one.
 """
 
 
@@ -446,6 +469,183 @@ def _squared_l2_norm(
     return abs(float(np.sum(c * g_c)))
 
 
+def _projected_quadrature_size(degree: int) -> int:
+    r"""Get the Gauss-Legendre node count that grades a rational reduction in one direction.
+
+    ``2 * degree + 2``.
+
+    **Derivation.** Writing the current homogeneous curve as :math:`(A, w)` and the
+    round-tripped one as :math:`(\tilde A, \tilde w)`, the projected difference is
+
+    .. math::
+
+        \tilde C - C = \frac{\tilde A}{\tilde w} - \frac{A}{w}
+                     = \frac{w \tilde A - \tilde w A}{w\, \tilde w} ,
+
+    so the integrand of :math:`\lVert \tilde C - C \rVert_{L^2}^2` is a *rational*
+    function whose numerator is a polynomial of degree :math:`4p` per direction and
+    whose denominator :math:`(w \tilde w)^2` is a polynomial of the same degree,
+    strictly positive on the closed domain whenever the control weights are (Bernstein
+    positivity plus partition of unity). No Gauss rule integrates that exactly.
+
+    An ``n``-node Gauss-Legendre rule is exact for polynomials of degree ``2n - 1``, so
+    ``n = 2p + 1`` is the smallest rule that integrates the *numerator* exactly, i.e.
+    the smallest rule that would be exact if the weights were constant -- which is
+    precisely the non-rational case, where the measure reduces to the Bernstein-Gram
+    value :func:`_squared_l2_norm` computes. This function adds one node of margin.
+
+    What remains is the departure of :math:`1/(w \tilde w)^2` from a polynomial, which
+    is *not* bounded here. Measured instead, against a 2e5-point reference over a
+    battery of degrees ``p in {3, 6, 12, 20}``, weight ratios ``w_max / w_min`` up to
+    ``1e2``, and coordinate offsets up to ``1e3``: the estimate agreed to five decimal
+    digits at the median and to within 3% in the worst case (``p = 3``, weight ratio
+    ``1e2``). The relative form helps -- the same denominators appear in the reference
+    norm, so part of the quadrature error cancels.
+
+    Args:
+        degree (int): Polynomial degree ``p`` in the direction (``>= 0``).
+
+    Returns:
+        int: Number of Gauss-Legendre nodes to use in that direction.
+    """
+    return 2 * degree + 2
+
+
+@functools.lru_cache(maxsize=64)
+def _bernstein_collocation_1d(degree: int, num_nodes: int) -> npt.NDArray[np.float64]:
+    r"""Return the cached, read-only Bernstein values at the Gauss-Legendre nodes.
+
+    Entry ``[k, i]`` is :math:`B_{i,\text{degree}}(t_k)` with ``t_k`` the ``num_nodes``
+    Gauss-Legendre nodes on :math:`[0, 1]`. Sampling a control net is then one
+    ``tensordot`` per parametric direction, the same contraction pattern
+    :func:`_squared_l2_norm` uses with the Gram matrices.
+
+    The values come from the serial Bernstein kernel rather than the parallel one: the
+    batches here are a few dozen points, where the fork/join overhead dominates, and
+    keeping :func:`_minimize_degree_bezier` clear of ``parallel=True`` kernels means it
+    needs no JIT-warmup barrier.
+
+    Args:
+        degree (int): Polynomial degree of the basis (``>= 0``).
+        num_nodes (int): Number of Gauss-Legendre nodes (``>= 1``).
+
+    Returns:
+        npt.NDArray[np.float64]: Read-only ``(num_nodes, degree + 1)`` array.
+    """
+    nodes = np.ascontiguousarray(get_gauss_legendre_1d(num_nodes, np.float64)[0], np.float64)
+    basis = np.empty((num_nodes, degree + 1), dtype=np.float64)
+    _tabulate_Bernstein_basis_1D_serial_core(np.int32(degree), nodes, basis)
+    basis.flags.writeable = False
+    return basis
+
+
+@functools.lru_cache(maxsize=64)
+def _tensor_gauss_weights(num_nodes: tuple[int, ...]) -> npt.NDArray[np.float64]:
+    """Return the cached, read-only tensor-product Gauss-Legendre weights on the unit cube.
+
+    Args:
+        num_nodes (tuple[int, ...]): Node count per parametric direction.
+
+    Returns:
+        npt.NDArray[np.float64]: Read-only array of shape ``num_nodes``.
+    """
+    weights = np.ones((), dtype=np.float64)
+    for n in num_nodes:
+        weights = np.multiply.outer(weights, get_gauss_legendre_1d(n, np.float64)[1])
+    result = np.ascontiguousarray(weights, dtype=np.float64)
+    result.flags.writeable = False
+    return result
+
+
+def _sample_projected(
+    ctrl: npt.NDArray[np.floating[Any]], num_nodes: tuple[int, ...]
+) -> npt.NDArray[np.float64] | None:
+    """Evaluate a homogeneous control net on the Gauss grid and divide out the weights.
+
+    Args:
+        ctrl (npt.NDArray[np.floating[Any]]): Homogeneous control points shaped
+            ``(*orders, rank + 1)``, the last column the weights.
+        num_nodes (tuple[int, ...]): Node count per parametric direction.
+
+    Returns:
+        npt.NDArray[np.float64] | None: Projected points of shape
+        ``(*num_nodes, rank)``, or *None* if any sampled weight is not strictly
+        positive.
+
+    Note:
+        A non-positive sample alongside a positive one means ``w`` changes sign, hence
+        vanishes, hence the mapping has a pole on the domain. A uniformly non-positive
+        weight field has no pole but is not a NURBS, and is refused on the strictly
+        positive weight convention the rest of the library already requires (knot
+        removal, ``locate`` and ``find_roots`` all state it). The converse does **not**
+        hold: a sign change confined strictly between two nodes is not detected. Ruling
+        that out would take the Bernstein convex-hull test on the control weights, which
+        is deliberately not done here -- see :func:`_projected_relative_deviation`.
+    """
+    values = np.asarray(ctrl, dtype=np.float64)
+    for axis in range(values.ndim - 1):
+        basis = _bernstein_collocation_1d(ctrl.shape[axis] - 1, num_nodes[axis])
+        values = np.asarray(
+            np.moveaxis(np.tensordot(basis, values, axes=([1], [axis])), 0, axis), np.float64
+        )
+
+    weights = values[..., -1:]
+    if not bool(np.all(weights > 0.0)):
+        return None
+    return np.asarray(values[..., :-1] / weights, dtype=np.float64)
+
+
+def _projected_relative_deviation(
+    values: npt.NDArray[np.float64] | None,
+    trial_values: npt.NDArray[np.float64] | None,
+    quad_weights: npt.NDArray[np.float64],
+) -> float:
+    r"""Grade a rational trial reduction by its deviation in *projected* space.
+
+    Returns the quadrature estimate of :math:`\lVert \tilde C - C \rVert_{L^2} /
+    \lVert C \rVert_{L^2}`, the relative deviation of the round-tripped mapping from
+    the current one, both taken after dividing out the weights. This is the quantity a
+    caller of :meth:`~pantr.bezier.Bezier.minimize_degree` budgets: grading the
+    homogeneous coefficients instead compares a weight against a weighted coordinate,
+    which are not the same quantity and, away from unit coordinate scale, not even the
+    same order of magnitude.
+
+    Hypotheses: the weights of both nets are strictly positive at the quadrature nodes
+    (checked by :func:`_sample_projected`, which returns *None* otherwise), and the
+    quadrature resolves the integrand -- see :func:`_projected_quadrature_size` for the
+    node count and what it does and does not guarantee.
+
+    The residual risk this leaves is a trial whose weight function dips through zero
+    strictly *between* nodes: the deviation is then unbounded near the pole, and a rule
+    that steps over it can under-report. Requiring the trial's *control* weights to be
+    positive would exclude it outright, by Bernstein positivity, at the cost of also
+    refusing trials whose weights are individually negative but whose weight function
+    never vanishes. That guard is deliberately not taken: this measure is chosen for
+    being tight, and the case needs a weight sign pattern that survives every node while
+    failing in between.
+
+    Args:
+        values (npt.NDArray[np.float64] | None): Projected points of the current curve.
+        trial_values (npt.NDArray[np.float64] | None): Projected points of the
+            round-tripped trial curve.
+        quad_weights (npt.NDArray[np.float64]): Tensor-product quadrature weights.
+
+    Returns:
+        float: The relative projected deviation, or :data:`math.inf` when it cannot be
+        graded, so that the caller rejects the reduction.
+    """
+    if values is None or trial_values is None:
+        return math.inf
+
+    deviation2 = float(np.sum(quad_weights * np.sum((trial_values - values) ** 2, axis=-1)))
+    reference2 = float(np.sum(quad_weights * np.sum(values**2, axis=-1)))
+
+    deviation = math.sqrt(deviation2)
+    if reference2 > 0.0:
+        deviation /= math.sqrt(reference2)
+    return deviation if math.isfinite(deviation) else math.inf
+
+
 def _degree_reduction_l2_error(bezier: Bezier, decrements: tuple[int, ...]) -> float:
     r"""Compute the exact :math:`L^2` error of a degree reduction.
 
@@ -490,6 +690,64 @@ def _minimize_degree_bezier(
     into a single error measure, so a reduction is accepted only when every
     component is preserved.
 
+    **Rational input is graded in projected space.**  A rational control net holds
+    homogeneous coordinates ``[w x, w y, ..., w]``, and an :math:`L^2` norm taken over
+    all of its columns adds a weight to a weighted coordinate.  Those are different
+    quantities, and at coordinate scale ``s`` they differ in magnitude by ``s``: a
+    weight-carried round-trip deviation is measured as ``O(dw / s)`` relative while the
+    projected deviation it actually causes is ``O(dw)`` relative, so the homogeneous
+    measure under-reports by a factor of order ``s``.  Measured on the degree-6 rational
+    curve of issue #297, one weight nudged by ``1e-6``, grading its first trial
+    reduction:
+
+    ===========  ====================  ====================  =============
+    scale        homogeneous measure   projected deviation   under-report
+    ===========  ====================  ====================  =============
+    ``1``        ``6.01e-9``           ``7.12e-9``           ``1.2x``
+    ``1e3``      ``1.10e-11``          ``7.12e-9``           ``646x``
+    ``1e6``      ``1.10e-14``          ``7.12e-9``           ``6.5e5x``
+    ===========  ====================  ====================  =============
+
+    The projected column is constant, as it must be: scaling every coordinate is a
+    similarity and cannot change a *relative* deviation.  The under-report grows by the
+    full ``1e3`` per decade only once ``s`` dominates, since at ``s ~ 1`` the coordinate
+    and weight columns are still comparable -- the same crossover
+    :func:`~pantr.bspline._bspline_knot_removal._homogeneous_deviation_tolerance`
+    describes for the max-norm case.
+
+    So for a rational Bézier the trial is graded by
+    :func:`_projected_relative_deviation`: both the current and the round-tripped nets
+    are evaluated on a tensor Gauss-Legendre grid, the weights are divided out, and the
+    relative :math:`L^2` deviation of the *mappings* is compared against ``tol``.  Under
+    a uniform scaling both the deviation and the reference norm scale by the same
+    factor, so the verdict is scale invariant -- which is exactly the property the
+    homogeneous measure lacks.  (It is *not* translation invariant, because the
+    reference norm is taken about the origin; neither is the non-rational branch, and
+    that is what "relative" has always meant here.)  Two consequences to be aware of:
+
+    * unlike the non-rational branch, the measure is a **quadrature estimate** rather
+      than an exact value -- the integrand is rational, so no Gauss rule is exact on it.
+      :func:`_projected_quadrature_size` gives the node count, the argument for it, and
+      the measured agreement with a dense reference;
+    * a reduction is **refused** whenever a weight is not strictly positive at a
+      quadrature node, on either net, since the mapping then has a pole on the domain
+      and no projected deviation is defined.  A net that violates this is returned
+      unreduced rather than raising.
+
+    The non-rational branch is untouched and still uses the exact Bernstein-Gram value.
+
+    The alternative -- an :math:`L^2` analogue of Piegl & Tiller Eq. (5.30), bounding
+    the projected deviation by the homogeneous one -- was prototyped and rejected.  The
+    exact identity is ``dC = (dA - C dw) / (w + dw)``, whose numerator is invariant
+    under translating the model; the triangle inequality ``|dA - C dw| <= |dA| +
+    |C| |dw|`` is not, and it discards precisely the cancellation that keeps the true
+    deviation small.  So on geometry that is not centred on the origin the bound is
+    conservative by three to four orders of magnitude: measured median ``790x`` to
+    ``1235x`` at a weight ratio of only 2 and a coordinate offset of ``1e3``.
+    Recentring the bound at the control-net centroid restores that invariance but still
+    leaves ``12x`` to ``85x`` at a weight ratio of ``1e2``, which would silently make
+    ``minimize_degree`` refuse reductions the caller asked for.
+
     Args:
         bezier (~pantr.bezier.Bezier): The Bézier to simplify.
         tol (float | None): Relative tolerance for accepting a degree
@@ -532,6 +790,14 @@ def _minimize_degree_bezier(
     result = ctrl
     changed = False
 
+    # A rational net is graded in projected space, so the trials are sampled on one
+    # tensor Gauss grid sized from the *input* degrees.  Degrees only ever fall, so a
+    # grid fixed up front is never coarser than `_projected_quadrature_size` asks for at
+    # the current degree, and it keeps the collocation cache warm across every trial.
+    num_nodes = tuple(_projected_quadrature_size(p) for p in bezier.degree)
+    quad_weights = _tensor_gauss_weights(num_nodes) if bezier.is_rational else None
+    projected = _sample_projected(result, num_nodes) if bezier.is_rational else None
+
     for dim in range(bezier.dim):
         # Each direction shrinks until a reduction is rejected.
         while result.shape[dim] >= 2:  # noqa: PLR2004
@@ -548,17 +814,25 @@ def _minimize_degree_bezier(
                 dim,
             )
 
-            # Relative round-trip L2 error across all components.
-            diff_norm2 = total_squared_norm(elevated - result)
-            orig_norm2 = total_squared_norm(result)
-            rel_error = math.sqrt(diff_norm2)
-            if orig_norm2 > 0.0:
-                rel_error /= math.sqrt(orig_norm2)
+            if quad_weights is not None:
+                # Relative round-trip deviation of the projected mapping.
+                rel_error = _projected_relative_deviation(
+                    projected, _sample_projected(elevated, num_nodes), quad_weights
+                )
+            else:
+                # Relative round-trip L2 error across all components.
+                diff_norm2 = total_squared_norm(elevated - result)
+                orig_norm2 = total_squared_norm(result)
+                rel_error = math.sqrt(diff_norm2)
+                if orig_norm2 > 0.0:
+                    rel_error /= math.sqrt(orig_norm2)
 
             if rel_error >= tol:
                 break
             result = reduced
             changed = True
+            if quad_weights is not None:
+                projected = _sample_projected(result, num_nodes)
 
     if not changed:
         return BezierCls(ctrl.copy(), is_rational=bezier.is_rational)

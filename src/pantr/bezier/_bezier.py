@@ -442,6 +442,15 @@ class Bezier:
         ``tol``.  For vector-valued Bézier, all rank components are
         checked simultaneously.
 
+        For a **rational** Bézier that error is measured on the projected
+        mapping, not on the homogeneous control coefficients, so ``tol`` is a
+        budget on the geometry the caller sees at any coordinate scale.  Two
+        consequences: it is then a quadrature estimate rather than an exact
+        value, accurate to better than 3% of the true relative deviation over
+        degrees 3 to 20 and weight ratios up to 100; and a reduction is refused
+        outright when a weight is not strictly positive on the domain, since the
+        mapping then has a pole and no projected deviation is defined.
+
         Args:
             tol (float | None): Relative tolerance for accepting a degree
                 reduction.  If *None*, uses a default based on machine
