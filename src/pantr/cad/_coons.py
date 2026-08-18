@@ -147,7 +147,11 @@ def create_coons_surface(
             u-direction (bottom/top).  All must be 1D B-splines.
 
     Returns:
-        Bspline: A 2D B-spline surface.
+        Bspline: A 2D B-spline surface, in the precision the curves were given in: a
+        float32 model is returned at float32 rather than promoted, matching
+        :func:`~pantr.cad.create_ruled` and :func:`~pantr.cad.make_compat`.  Curves of
+        *different* precisions are not a supported input and the result then follows
+        ``curves[0][0]``'s.
 
     Raises:
         ValueError: If any curve is not 1D.
@@ -345,7 +349,11 @@ def create_coons_volume(
         faces: Three pairs of opposite boundary faces.
 
     Returns:
-        Bspline: A 3D (trivariate) B-spline volume.  Because it returns rather than raising,
+        Bspline: A 3D (trivariate) B-spline volume, in the precision the faces were given
+        in: a float32 model is returned at float32 rather than promoted, matching
+        :func:`~pantr.cad.create_ruled` and :func:`~pantr.cad.make_compat`.  Faces of
+        *different* precisions are not a supported input and the result then follows
+        ``faces[0][0]``'s.  Because it returns rather than raising,
         the six faces agree where they meet, and the volume therefore restricts to each of
         them on the corresponding boundary.  That interpolation is exact in exact arithmetic;
         the floating-point residual is **observed** to stay near ``1e-15`` relative, three
@@ -665,15 +673,24 @@ def _verify_edges_3d(edges: tuple[_EdgeReadings, ...]) -> None:
 
     for c in compared:
         for group in c.groups:
-            gap = float(np.abs(c.cp_a[..., group.columns] - c.cp_b[..., group.columns]).max())
+            gaps = np.abs(c.cp_a[..., group.columns] - c.cp_b[..., group.columns])
+            gap = float(gaps.max())
             scale = scales[group.name]
             tol = tier * scale
-            if gap > tol:
-                raise ValueError(
-                    f"Edge {c.edge.label} mismatch: {c.edge.face_a} and {c.edge.face_b} "
-                    f"disagree along the edge they share "
-                    f"(gap {gap:.3e}, above {tol:.3e} at edge {group.name} scale {scale:.3e})."
-                )
+            if gap <= tol:
+                continue
+
+            # Name the control point that disagrees most, so the gap reported is the gap
+            # compared, as :func:`~pantr.cad._join._verify_shared_boundary` does for the
+            # same class of mismatch.  The whole coefficient is printed even though one
+            # column group decided the verdict.
+            index = int(np.argmax(gaps.max(axis=-1)))
+            raise ValueError(
+                f"Edge {c.edge.label} mismatch at control point {index}: {c.edge.face_a} "
+                f"gives {c.cp_a[index]}, {c.edge.face_b} gives {c.cp_b[index]}, and they "
+                f"disagree along the edge they share "
+                f"(gap {gap:.3e}, above {tol:.3e} at edge {group.name} scale {scale:.3e})."
+            )
 
 
 def _verify_positive_weights(volume: Bspline) -> None:

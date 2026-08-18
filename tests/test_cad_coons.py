@@ -1348,17 +1348,22 @@ class TestCoonsPrecisionAndColumnScale:
     def _as_rational(face: Bspline) -> Bspline:
         """Rewrite a polynomial face rationally, with every weight 1.
 
+        The precision is the face's own: a ``Bspline`` refuses control points whose dtype
+        differs from its space's, so promoting a float32 face at float64 would not build.
+
         Args:
             face (Bspline): A non-rational face.
 
         Returns:
-            Bspline: The same geometry, carried rationally.
+            Bspline: The same geometry, carried rationally, in *face*'s dtype.
         """
-        cp = np.asarray(face.control_points, dtype=np.float64)
-        weights = np.ones((*cp.shape[:-1], 1))
+        cp = np.asarray(face.control_points)
+        weights = np.ones((*cp.shape[:-1], 1), dtype=cp.dtype)
         return Bspline(face.space, np.concatenate([cp, weights], axis=-1), True)
 
-    def _cube_with_displaced_weight(self, scale: float, gap: float) -> _FacePairs:
+    def _cube_with_displaced_weight(
+        self, scale: float, gap: float, dtype: npt.DTypeLike = np.float64
+    ) -> _FacePairs:
         """Build the ticket's cube with the two w-faces rational and one weight out by *gap*.
 
         Only the w-faces are rational, which is what keeps the reproduction on the
@@ -1370,16 +1375,18 @@ class TestCoonsPrecisionAndColumnScale:
         Args:
             scale (float): Side of the cube.
             gap (float): Amount added to one weight, against weights of 1.
+            dtype (npt.DTypeLike): Precision of the whole model. Defaults to float64.
 
         Returns:
-            _FacePairs: Six faces whose weights disagree at one corner.
+            _FacePairs: Six faces whose weights disagree at one corner, or six consistent
+            ones when ``gap == 0``.
         """
-        pairs = self._cube_faces(np.float64, scale)
+        pairs = self._cube_faces(dtype, scale)
         faces = _flatten_faces(pairs)
         faces[4], faces[5] = self._as_rational(faces[4]), self._as_rational(faces[5])
         cp = np.asarray(faces[4].control_points).copy()
         cp[0, 0, -1] += gap
-        faces[4] = Bspline(faces[4].space, cp, is_rational=True)
+        faces[4] = Bspline(faces[4].space, cp.astype(dtype), is_rational=True)
         u0, u1, v0, v1, w0, w1 = faces
         return ((u0, u1), (v0, v1), (w0, w1))
 
@@ -1496,3 +1503,77 @@ class TestCoonsPrecisionAndColumnScale:
         assert gap == pytest.approx(scale)
         assert reported_scale == pytest.approx(2.0 * scale)
         assert tol == pytest.approx(get_conservative(np.float64) * 2.0 * scale, rel=1e-3)
+
+    @staticmethod
+    def _lifted_corner_faces(dtype: npt.DTypeLike, lift: float) -> _FacePairs:
+        """Build the cube's six faces with ``face_w0``'s ``(u=1, v=1)`` corner lifted.
+
+        The three faces meeting there no longer agree, so the corner check must decide.
+        Only ``face_w0`` carries the displacement, which is the direction pantr issue 301
+        showed was invisible before the w-faces were read at all.
+
+        Args:
+            dtype (npt.DTypeLike): Precision of the knots and control points.
+            lift (float): Displacement along *z* of that corner.
+
+        Returns:
+            _FacePairs: Six faces, consistent iff ``lift == 0``.
+        """
+        pairs = TestCoonsPrecisionAndColumnScale._cube_faces(dtype)
+        faces = _flatten_faces(pairs)
+        cp = np.asarray(faces[4].control_points).copy()
+        cp[1, 1, 2] += lift
+        faces[4] = Bspline(faces[4].space, cp.astype(dtype))
+        u0, u1, v0, v1, w0, w1 = faces
+        return ((u0, u1), (v0, v1), (w0, w1))
+
+    def test_a_float32_volume_grades_its_corners_at_float32(self) -> None:
+        """The tier reaches the volume's corner check too, not only the patch's.
+
+        The pair above pins ``_verify_corners_2d``; this pins ``_verify_corners_3d``, whose
+        population is twenty-four readings rather than eight.  A relative corner gap of
+        ``1e-6`` lies between the two readings of the tier -- above float64's ``9.09e-13``
+        and below float32's ``4.88e-4`` -- so it separates them cleanly: graded at float64
+        this float32 model is refused, graded at its own precision it is accepted.  A gap
+        of ``1e-2`` is above both and must still be refused, and by the float32 tier.
+        """
+        assert get_conservative(np.float64) < 1.0e-6 < get_conservative(np.float32) < 1.0e-2
+
+        volume = create_coons_volume(self._lifted_corner_faces(np.float32, 1.0e-6))
+        assert np.dtype(volume.control_points.dtype) == np.dtype(np.float32)
+
+        with pytest.raises(ValueError, match=r"Corner \(1,1,0\) mismatch") as excinfo:
+            create_coons_volume(self._lifted_corner_faces(np.float32, 1.0e-2))
+        gap, tol, scale = _reported_numbers(str(excinfo.value))
+        assert gap == pytest.approx(1.0e-2, rel=1e-3)
+        assert tol == pytest.approx(get_conservative(np.float32) * scale, rel=1e-3)
+
+    def test_a_float32_rational_volume_is_built_and_graded_at_float32(self) -> None:
+        """Where the two tickets meet: a volume that is rational *and* float32.
+
+        Nothing else covers their intersection.  A rational blend reads its corner term
+        homogeneously (pantr issue 309) and builds it at the corners' own precision
+        (pantr issue 319); a corner term silently promoted to float64 cannot be assembled
+        over a float32 space at all, so this is what would catch it.  The same face set
+        then puts a displaced weight -- which only ``_verify_edges_3d`` can see, the corner
+        check comparing projected points -- on both sides of the float32 tier.
+        """
+        volume = create_coons_volume(self._cube_with_displaced_weight(1.0, 0.0, np.float32))
+        assert volume.is_rational
+        assert np.dtype(volume.control_points.dtype) == np.dtype(np.float32)
+
+        # Between the two tiers: refused if graded at float64, accepted at float32.
+        assert get_conservative(np.float64) < 1.0e-6 < get_conservative(np.float32)
+        create_coons_volume(self._cube_with_displaced_weight(1.0, 1.0e-6, np.float32))
+
+        gap = 4.0 * get_conservative(np.float32)
+        with pytest.raises(ValueError, match=r"Edge \w+ mismatch") as excinfo:
+            create_coons_volume(self._cube_with_displaced_weight(1.0, gap, np.float32))
+        message = str(excinfo.value)
+        assert "weight scale" in message, message
+        reported_gap, tol, scale = _reported_numbers(message)
+        assert reported_gap == pytest.approx(gap, rel=1e-3)
+        # The weight scale is the weight population's own maximum, which the displaced
+        # weight itself raises above 1 -- not the coordinate scale, which is also 1 here.
+        assert scale == pytest.approx(1.0 + gap, rel=1e-3)
+        assert tol == pytest.approx(get_conservative(np.float32) * scale, rel=1e-3)
