@@ -52,8 +52,12 @@ def create_uniform_open_knots(
         ValueError: If any parameter is invalid.
 
     Example:
-        >>> create_uniform_open_knots(2, 2, domain=(0.0, 1.0))
-        array([0., 0., 0., 0.5, 1., 1., 1.])
+        >>> import numpy as np
+        >>> np.allclose(
+        ...     create_uniform_open_knots(2, 2, domain=(0.0, 1.0)),
+        ...     [0.0, 0.0, 0.0, 0.5, 1.0, 1.0, 1.0],
+        ... )
+        True
     """
     start_value: np.float32 | np.float64 | None
     end_value: np.float32 | np.float64 | None
@@ -118,8 +122,12 @@ def create_uniform_periodic_knots(
         ValueError: If any parameter is invalid.
 
     Example:
-        >>> create_uniform_periodic_knots(2, 2, domain=(0.0, 1.0))
-        array([-1. , -0.5,  0. ,  0.5,  1. ,  1.5,  2. ])
+        >>> import numpy as np
+        >>> np.allclose(
+        ...     create_uniform_periodic_knots(2, 2, domain=(0.0, 1.0)),
+        ...     [-1.0, -0.5, 0.0, 0.5, 1.0, 1.5, 2.0],
+        ... )
+        True
     """
     start_value: np.float32 | np.float64 | None
     end_value: np.float32 | np.float64 | None
@@ -202,8 +210,9 @@ def create_cardinal_knots(
         ValueError: If num_intervals < 1, degree < 0, or dtype is not float32/float64.
 
     Example:
-        >>> create_cardinal_knots(2, 2)
-        array([-2., -1.,  0.,  1.,  2.,  3., 4.])
+        >>> import numpy as np
+        >>> np.allclose(create_cardinal_knots(2, 2), [-2.0, -1.0, 0.0, 1.0, 2.0, 3.0, 4.0])
+        True
     """
     if num_intervals < 1:
         raise ValueError("num_intervals must be at least 1")
@@ -253,11 +262,15 @@ def get_greville_abscissae(
             containing one Greville abscissa per basis function.
 
     Example:
+        >>> import numpy as np
         >>> from pantr.bspline import BsplineSpace1D, create_uniform_open_knots
         >>> knots = create_uniform_open_knots(4, 3)
         >>> space = BsplineSpace1D(knots, 3)
-        >>> get_greville_abscissae(space)
-        array([0.  , 0.08333333, 0.25, 0.5 , 0.75, 0.91666667, 1.  ])
+        >>> np.allclose(
+        ...     get_greville_abscissae(space),
+        ...     [0.0, 1 / 12, 0.25, 0.5, 0.75, 11 / 12, 1.0],
+        ... )
+        True
     """
     if not isinstance(space, BsplineSpace1D):
         raise TypeError(f"Expected BsplineSpace1D, got {type(space).__name__}")
@@ -299,13 +312,14 @@ def create_greville_lattice(
         PointsLattice: Tensor-product grid of Greville abscissae.
 
     Example:
+        >>> import numpy as np
         >>> from pantr.bspline import BsplineSpace1D, BsplineSpace, create_uniform_open_knots
         >>> knots = create_uniform_open_knots(2, 2)
         >>> s1d = BsplineSpace1D(knots, 2)
         >>> space = BsplineSpace([s1d, s1d])
         >>> lattice = create_greville_lattice(space)
-        >>> lattice.pts_per_dir[0]
-        array([0. , 0.25, 0.75, 1.  ])
+        >>> np.allclose(lattice.pts_per_dir[0], [0.0, 0.25, 0.75, 1.0])
+        True
     """
     if not isinstance(space, BsplineSpace):
         raise TypeError(f"Expected BsplineSpace, got {type(space).__name__}")

@@ -749,13 +749,21 @@ def _tabulate_Bspline_basis_1D_impl(
             has incorrect shape or dtype.
 
     Example:
+        >>> from pantr.bspline import BsplineSpace1D
         >>> bspline = BsplineSpace1D([0, 0, 0, 0.25, 0.7, 0.7, 1, 1, 1], 2)
-        >>> _tabulate_Bspline_basis_1D_impl(bspline, [0.0, 0.5, 0.75, 1.0])
-        (array([[1.        , 0.        , 0.        ],
-                [0.12698413, 0.5643739 , 0.30864198],
-                [0.69444444, 0.27777778, 0.02777778],
-                [0.        , 0.        , 1.        ]]),
-         array([0, 1, 3, 3]))
+        >>> values, first = _tabulate_Bspline_basis_1D_impl(bspline, [0.0, 0.5, 0.75, 1.0])
+        >>> np.allclose(
+        ...     values,
+        ...     [
+        ...         [1.0, 0.0, 0.0],
+        ...         [0.12698413, 0.5643739, 0.30864198],
+        ...         [0.69444444, 0.27777778, 0.02777778],
+        ...         [0.0, 0.0, 1.0],
+        ...     ],
+        ... )
+        True
+        >>> first.tolist()
+        [0, 1, 3, 3]
     """
     input_shape = np.shape(pts)
     pts = _normalize_points_1D(pts)
@@ -854,6 +862,7 @@ def _tabulate_Bspline_basis_deriv_1D_impl(  # noqa: PLR0913
             incorrect shape or dtype.
 
     Example:
+        >>> from pantr.bspline import BsplineSpace1D
         >>> bspline = BsplineSpace1D([0, 0, 0, 1, 1, 1], 2)
         >>> d, first = _tabulate_Bspline_basis_deriv_1D_impl(bspline, [0.5], n_deriv=1)
         >>> d.shape

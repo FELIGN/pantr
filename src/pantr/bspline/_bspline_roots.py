@@ -548,8 +548,8 @@ def find_roots(
         >>> knots = np.array([0.0, 0.0, 1.0, 2.0, 2.0])
         >>> space = BsplineSpace([BsplineSpace1D(knots, 1)])
         >>> spline = Bspline(space, np.array([[-1.0], [1.0], [3.0]]))
-        >>> find_roots(spline)
-        array([0.5])
+        >>> np.allclose(find_roots(spline), [0.5])
+        True
 
     References:
         The unconditionally convergent knot-insertion method of Mørken and

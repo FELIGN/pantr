@@ -165,6 +165,7 @@ class BsplineSpace:
             bool: True if knots have open ends and only one span.
 
         Example:
+            >>> from pantr.bspline import BsplineSpace1D
             >>> bspline_1D = BsplineSpace1D([1, 1, 1, 3, 3, 3], 2)
             >>> bspline_2D = BsplineSpace([bspline_1D, bspline_1D])
             >>> bspline_2D.has_Bezier_like_knots()
@@ -253,8 +254,8 @@ class BsplineSpace:
             >>> space = BsplineSpace([first, second])
             >>> space.num_basis
             (5, 3)
-            >>> space.cell_supports([0])
-            array([[0, 1, 2, 3, 4, 5, 6, 7, 8]])
+            >>> space.cell_supports([0]).tolist()
+            [[0, 1, 2, 3, 4, 5, 6, 7, 8]]
         """
         return _cell_supports_impl(self, cell_ids)
 
@@ -301,12 +302,12 @@ class BsplineSpace:
             >>> space = BsplineSpace([first, second])
             >>> space.num_basis
             (5, 4)
-            >>> space.boundary_dofs(0, 0)
-            array([0, 1, 2, 3])
-            >>> space.boundary_dofs(1, 0)
-            array([ 0,  4,  8, 12, 16])
-            >>> space.boundary_dofs(1, 1, layers=2)
-            array([ 2,  3,  6,  7, 10, 11, 14, 15, 18, 19])
+            >>> space.boundary_dofs(0, 0).tolist()
+            [0, 1, 2, 3]
+            >>> space.boundary_dofs(1, 0).tolist()
+            [0, 4, 8, 12, 16]
+            >>> space.boundary_dofs(1, 1, layers=2).tolist()
+            [2, 3, 6, 7, 10, 11, 14, 15, 18, 19]
         """
         if any(space.periodic for space in self._spaces):
             raise ValueError("boundary_dofs: periodic B-spline spaces are not supported.")
