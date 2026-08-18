@@ -1324,12 +1324,11 @@ class HierarchicalGrid(Grid):
         sits deeper than ``level+1``, or demotes all of it, including the cells this
         call left alone, and so removes children an earlier :meth:`refine` created.
         Where that must not happen, name the cells rather than a box on
-        the side that destroys them: :meth:`~pantr.bspline.THBSplineSpace.coarsen`
-        reactivates a parent only when all of its children are named active
-        leaves, so nothing the caller did not name is removed.  (:meth:`refine_cells`
-        also marks by id, but it refines the bounding box of the ids given at each
-        level, so it can promote a cell the caller did not mark; that costs nothing,
-        since refining removes no cell.)
+        the side that destroys them: :meth:`coarsen_cells` reactivates a parent only
+        when all of its children are named active leaves, so nothing the caller did
+        not name is removed.  (:meth:`refine_cells` also marks by id, but it refines
+        the bounding box of the ids given at each level, so it can promote a cell the
+        caller did not mark; that costs nothing, since refining removes no cell.)
 
         After the call all flat cell ids are **reassigned** (the BVH, cell tags,
         and facet tags are also invalidated).
@@ -1457,8 +1456,9 @@ class HierarchicalGrid(Grid):
         of ``A`` that lies inside it.  It is demoting exactly the box it was given,
         but it is not undoing the second refine.  To coarsen without risking
         refinement the caller did not mean to lose, mark cells by id:
-        :meth:`~pantr.bspline.THBSplineSpace.coarsen` reactivates a parent only when
-        all of its children are named active leaves.
+        :meth:`coarsen_cells` reactivates a parent only when all of its children are
+        named active leaves.  This box form stays the cheaper call for a region known
+        to be uniformly refined to ``level+1``.
 
         The opposite order carries no hypothesis: coarsening leaves the whole box
         active at ``level``, so ``refine(level, lo, hi)`` always undoes
@@ -1537,6 +1537,66 @@ class HierarchicalGrid(Grid):
         while len(self._blocks) > 1 and not self._blocks[-1]:
             self._blocks.pop()
         self._rebuild()
+
+    def coarsen_cells(self, cell_ids: Sequence[int]) -> None:
+        """Demote every parent whose children are all named in ``cell_ids``.
+
+        The route that destroys only what the caller named.  ``cell_ids`` are grouped
+        by parent cell, and a parent is reactivated -- its children removed -- only when
+        **every one** of its ``prod(factor)`` children is both an active leaf and present
+        in ``cell_ids``.  Three things are therefore skipped silently rather than
+        refused: a parent only some of whose children are named, a parent one of whose
+        children has been refined further, and an id at level 0, which has no parent.  A
+        call that demotes nothing is not an error, and no cell outside ``cell_ids`` is
+        ever removed.
+
+        That is what separates this from :meth:`coarsen`, which demotes the whole box it
+        is given and so can remove children an earlier :meth:`refine` created.  Prefer
+        this call wherever losing unmarked refinement would be a defect; prefer
+        :meth:`coarsen` for a region known to be uniformly refined, where naming one box
+        is cheaper than enumerating its cells (this call demotes one parent at a time, so
+        it repacks the block lists once per parent).
+
+        Parents are processed deepest level first, so ids spanning several levels are
+        handled bottom-up in a single call.
+
+        Note:
+            :meth:`refine_cells` is *not* the mirror of this method: it refines the
+            bounding box of the ids given at each level, so it can promote cells the
+            caller never named.  That costs nothing there, because refining removes no
+            cell, whereas coarsening destroys one.
+
+        Args:
+            cell_ids (Sequence[int]): Flat ids of active leaf cells to coarsen away.
+                Repeated ids and ids at level 0 are ignored.  An empty sequence is a
+                no-op.
+
+        Raises:
+            IndexError: If any id in ``cell_ids`` is out of range.
+
+        References:
+            Coarsening algorithms for adaptive hierarchical-spline meshes
+            :cite:p:`garau2018algorithms`.
+        """
+        marked: set[tuple[int, tuple[int, ...]]] = set()
+        for cid in cell_ids:
+            self._check_cid(int(cid))
+            marked.add(self._decode_flat_id(int(cid)))
+        parents = {
+            (level - 1, tuple(m // f for m, f in zip(midx, self._factor, strict=True)))
+            for level, midx in marked
+            if level >= 1
+        }
+        # Deepest first, then lexicographic, so the outcome does not depend on set order.
+        for parent_level, pmidx in sorted(parents, key=lambda parent: (-parent[0], parent[1])):
+            children = itertools.product(
+                *(range(p * f, (p + 1) * f) for p, f in zip(pmidx, self._factor, strict=True))
+            )
+            if all(
+                (parent_level + 1, child) in marked and self.is_active_leaf(parent_level + 1, child)
+                for child in children
+            ):
+                self.coarsen(parent_level, pmidx, tuple(p + 1 for p in pmidx))
 
     def _coarsen_obstacles(
         self,

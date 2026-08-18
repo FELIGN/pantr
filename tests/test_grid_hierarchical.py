@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import itertools
 import re
 from typing import TYPE_CHECKING
@@ -1077,6 +1078,207 @@ class TestCoarsenIsNotAnUnconditionalInverse:
         assert g.is_active_leaf(0, (2,))
         assert not g.is_active_leaf(1, (4,))
         assert not g.is_active_leaf(1, (5,))
+
+
+def _active_cells(g: HierarchicalGrid) -> set[tuple[int, tuple[int, ...]]]:
+    """Return every active leaf as a ``(level, midx)`` pair.
+
+    Unlike a flat id, the pair survives the reassignment every refine and coarsen
+    performs, so two states of the same grid can be compared cell by cell.
+    """
+    return {(g.cell_level(cid), g.cell_multi_index(cid)) for cid in range(g.num_cells)}
+
+
+class TestCoarsenCells:
+    """`coarsen_cells` destroys exactly the cells it is given, and nothing else."""
+
+    def test_round_trip_with_refine_cells_1d(self) -> None:
+        """Refining one cell and coarsening its children restores the original grid."""
+        g = _grid_1d(4, 2)
+        before = _grid_snapshot(g)
+        assert before == (4, 0, ((((0,), (4,)),),))
+        g.refine_cells([0])
+        assert (g.num_cells, g.max_level) == (5, 1)
+        g.coarsen_cells([c for c in range(g.num_cells) if g.cell_level(c) == 1])
+        assert _grid_snapshot(g) == before
+        assert (g.num_cells, g.max_level, g.active_blocks(0)) == (4, 0, (((0,), (4,)),))
+
+    def test_round_trip_with_refine_cells_2d_non_dyadic(self) -> None:
+        """The 2D control on ``factor = 3``: nine children collapse back to one cell."""
+        g = _grid_2d(3, 3)
+        before = _grid_snapshot(g)
+        g.refine_cells([4])  # the middle root cell
+        assert (g.num_cells, g.max_level) == (17, 1)
+        g.coarsen_cells([c for c in range(g.num_cells) if g.cell_level(c) == 1])
+        assert _grid_snapshot(g) == before
+
+    def test_partial_parent_is_skipped_without_raising(self) -> None:
+        """A parent with only some children named is left exactly as it was."""
+        g = _grid_1d(4, 2)
+        g.refine_cells([0])
+        before = _grid_snapshot(g)
+        children = [c for c in range(g.num_cells) if g.cell_level(c) == 1]
+        assert len(children) == 2
+        g.coarsen_cells(children[:1])  # one of the two children
+        assert _grid_snapshot(g) == before
+
+    def test_level_zero_ids_are_ignored(self) -> None:
+        """A root cell has no parent, so naming it does nothing (and does not raise)."""
+        g = _grid_1d(4, 2)
+        g.refine_cells([0])
+        before = _grid_snapshot(g)
+        g.coarsen_cells([c for c in range(g.num_cells) if g.cell_level(c) == 0])
+        assert _grid_snapshot(g) == before
+
+    def test_empty_and_repeated_ids(self) -> None:
+        """An empty call is a no-op; a repeated id counts once, not twice."""
+        g = _grid_1d(4, 2)
+        g.refine_cells([0])
+        before = _grid_snapshot(g)
+        g.coarsen_cells([])
+        assert _grid_snapshot(g) == before
+        children = [c for c in range(g.num_cells) if g.cell_level(c) == 1]
+        g.coarsen_cells([*children, *children])
+        assert (g.num_cells, g.max_level) == (4, 0)
+
+    def test_out_of_range_id_raises(self) -> None:
+        """Out of range is an `IndexError`, as it is for `refine_cells`."""
+        g = _grid_1d(4, 2)
+        with pytest.raises(IndexError, match="out of range"):
+            g.coarsen_cells([4])
+        with pytest.raises(IndexError, match="out of range"):
+            g.coarsen_cells([-1])
+        assert _grid_snapshot(g) == (4, 0, ((((0,), (4,)),),))
+
+    def test_destroys_only_the_named_children_after_overlapping_refines(self) -> None:
+        """The cell-exact counterpart of the box contrast test above.
+
+        Same reproduction as
+        `TestCoarsenIsNotAnUnconditionalInverse.test_coarsen_after_overlapping_refines_
+        demotes_the_whole_box_1d`, where `coarsen(0, [1], [3])` ends at 7 cells because
+        it demotes the whole box.  Naming only the children the second refine created
+        gives back the 8-cell state that preceded it; naming all four children of
+        level-0 cells 1 and 2 gives the box call's 7.  The difference between the two
+        numbers is precisely what the caller controls by naming cells.
+        """
+        g = _grid_1d(6, 2)
+        g.refine(0, [0], [2])
+        after_first = _grid_snapshot(g)
+        assert g.num_cells == 8
+        g.refine(0, [1], [3])  # only cell 2 is still active, so only cell 2 is promoted
+        assert g.num_cells == 9
+        children_of = {
+            parent: [
+                c
+                for c in range(g.num_cells)
+                if g.cell_level(c) == 1 and g.cell_multi_index(c)[0] // 2 == parent
+            ]
+            for parent in (1, 2)
+        }
+        assert children_of == {1: [5, 6], 2: [7, 8]}
+
+        undo_second = copy.deepcopy(g)
+        undo_second.coarsen_cells(children_of[2])
+        assert undo_second.num_cells == 8
+        assert _grid_snapshot(undo_second) == after_first
+
+        both_parents = copy.deepcopy(g)
+        both_parents.coarsen_cells(children_of[1] + children_of[2])
+        assert both_parents.num_cells == 7
+        assert both_parents.active_blocks(0) == (((1,), (6,)),)
+        assert both_parents.active_blocks(1) == (((0,), (2,)),)
+
+    def test_ids_spanning_two_levels_are_handled_deepest_first(self) -> None:
+        """One call over two levels coarsens the deeper parents before the shallower.
+
+        Level-1 cells 0 and 1 are reborn by the level-2 coarsening, but they were not
+        active leaves when the caller named its cells, so they cannot have been named:
+        their parent (level-0 cell 0) therefore stays refined.  Coarsening never
+        cascades past what the caller could name, which is the point of the method.
+        """
+        g = _grid_1d(4, 2)
+        g.refine(0, [0], [2])  # level-1 cells 0..3
+        g.refine(1, [0], [2])  # level-2 cells 0..3; level-1 leaves are 2, 3
+        assert (g.num_cells, g.max_level) == (8, 2)
+        g.coarsen_cells([c for c in range(g.num_cells) if g.cell_level(c) >= 1])
+        assert (g.num_cells, g.max_level) == (5, 1)
+        assert g.active_blocks(0) == (((1,), (4,)),)  # cell 0 is still refined
+        assert g.active_blocks(1) == (((0,), (2,)),)
+
+    def test_a_shallow_parent_still_goes_when_its_children_are_named(self) -> None:
+        """The deepest-first order is not a restriction on which levels may be named."""
+        g = _grid_1d(4, 2)
+        g.refine(0, [0], [2])  # level-1 cells 0..3
+        g.refine(1, [0], [2])  # level-2 cells 0..3; level-1 leaves are 2, 3
+        # Name the level-2 children of level-1 cell 0 and the level-1 children of
+        # level-0 cell 1: two parents at two different levels, neither nested.
+        marked = [
+            c
+            for c in range(g.num_cells)
+            if (g.cell_level(c) == 2 and g.cell_multi_index(c)[0] < 2)
+            or (g.cell_level(c) == 1 and g.cell_multi_index(c)[0] >= 2)
+        ]
+        g.coarsen_cells(marked)
+        assert g.active_blocks(0) == (((1,), (4,)),)  # level-0 cell 1 reborn
+        assert g.active_blocks(1) == (((0,), (1,)),)  # cell 0 reborn; cell 1 still refined
+        assert g.active_blocks(2) == (((2,), (4,)),)  # cell 1's children survive untouched
+
+    @pytest.mark.parametrize(
+        ("cells_per_axis", "factor"),
+        [([6], 3), ([4, 3], (2, 3)), ([3, 3], 2), ([2, 3, 2], (2, 1, 3))],
+        ids=["1d-non-dyadic", "2d-anisotropic", "2d-dyadic", "3d-anisotropic"],
+    )
+    def test_never_destroys_a_cell_it_was_not_given(
+        self,
+        cells_per_axis: list[int],
+        factor: int | tuple[int, ...],
+    ) -> None:
+        """The guarantee that separates this from the box call, swept over meshes.
+
+        A randomized walk of refinements and cell-id coarsenings checks two invariants
+        after every call: no active leaf outside the named set disappears, and every
+        cell that appears is a parent of named cells.  The box `coarsen` fails the
+        first of these by design, which is what this method exists to avoid.
+
+        The final tally is what stops a method that silently does nothing from passing
+        the two invariants vacuously.  These 60 draws reach three levels and produce
+        between 9 and 15 grid-changing coarsenings per parametrization; the floor is
+        set well below that so a change in numpy's stream cannot turn a real
+        regression into a spurious failure or the reverse.
+        """
+        root = uniform_grid([[0.0, 1.0]] * len(cells_per_axis), cells_per_axis)
+        g = hierarchical_grid(root, factor)
+        rng = np.random.default_rng(11)
+        coarsened = 0
+        for _ in range(60):
+            if g.max_level == 0 or rng.random() < 0.5:
+                level = int(rng.integers(0, g.max_level + 1))
+                extent = g.level_cells_per_axis(level)
+                lo = [int(rng.integers(0, n)) for n in extent]
+                hi = [
+                    int(rng.integers(a + 1, min(a + 3, n) + 1))
+                    for a, n in zip(lo, extent, strict=True)
+                ]
+                g.refine(level, lo, hi)
+                continue
+            pool = [c for c in range(g.num_cells) if g.cell_level(c) >= 1]
+            if not pool:
+                continue
+            marked_ids = rng.choice(
+                len(pool), size=int(rng.integers(1, len(pool) + 1)), replace=False
+            )
+            marked = {
+                (g.cell_level(pool[int(i)]), g.cell_multi_index(pool[int(i)])) for i in marked_ids
+            }
+            before = _active_cells(g)
+            g.coarsen_cells([pool[int(i)] for i in marked_ids])
+            after = _active_cells(g)
+            assert before - marked <= after, "removed a cell that was not named"
+            for level, midx in after - before:
+                child = tuple(m * f for m, f in zip(midx, g.factor, strict=True))
+                assert (level + 1, child) in marked, "revived a cell whose children were not named"
+            coarsened += before != after
+        assert coarsened >= 5, f"the sweep barely coarsened anything ({coarsened} calls changed)"
 
 
 # ──────────────────────────────────────────────────────────────────────────────
