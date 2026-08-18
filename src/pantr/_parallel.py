@@ -128,9 +128,10 @@ def num_threads(n: int, *, limit_blas: bool = False) -> Generator[None, None, No
         the ``with`` block exits.
 
     Example:
+        >>> import pantr
         >>> with pantr.num_threads(1):
-        ...     # all pantr operations run serially here
-        ...     pass
+        ...     pantr.get_num_threads()  # all pantr operations run serially here
+        1
     """
     prev = get_num_threads()
     set_num_threads(n)

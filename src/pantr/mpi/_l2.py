@@ -202,6 +202,8 @@ def l2_project_bspline_distributed(  # noqa: PLR0913
         points to ``global_space.dtype`` rather than raising.
 
     Example:
+        Needs a live MPI communicator and several ranks, so it is not run as a doctest.
+
         >>> from mpi4py import MPI  # doctest: +SKIP
         >>> import numpy as np  # doctest: +SKIP
         >>> from pantr.bspline import create_uniform_space  # doctest: +SKIP
