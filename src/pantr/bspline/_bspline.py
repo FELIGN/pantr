@@ -285,13 +285,17 @@ class Bspline:
                 one point of ``rank`` coordinates, except when ``rank == 1``, where it is
                 ``n`` scalar coordinates.
             tol (float | None): Convergence threshold on ``||F(xi) - x||_2``, as an
-                absolute distance in physical units. ``None`` (default) uses
-                :func:`pantr.tolerance.get_default` for this B-spline's dtype, scaled by
-                the largest of three lengths: the control-point bounding-box diagonal, the
-                largest coordinate magnitude, and the physical length one ulp of a
-                parametric coordinate spans. The last is what keeps the threshold
-                reachable for a knot vector far from the parametric origin, whose
-                coordinates a float64 resolves only to ``eps * |xi|``. Defaults to None.
+                absolute distance in physical units, governing where the iteration stops
+                as well as what counts as found. ``None`` (default) separates the two:
+                :func:`pantr.tolerance.get_default` for this B-spline's dtype times the
+                larger of the control-point bounding-box diagonal and the largest
+                coordinate magnitude is where the iteration stops, and the same tier
+                times that length maximised against the physical length one ulp of a
+                parametric coordinate spans is what counts as found. The second is what
+                keeps the verdict reachable for a knot vector far from the parametric
+                origin, whose coordinates a float64 resolves only to ``eps * |xi|``; the
+                first is what keeps the answer as accurate as the geometry allows anyway.
+                They are equal for a knot vector spanning ``[0, L]``. Defaults to None.
             max_iter (int): Maximum number of Newton steps per candidate cell.
                 Defaults to 30.
 
@@ -302,8 +306,12 @@ class Bspline:
             convention of :func:`pantr.grid.tensor_product_grid` and
             :class:`SpanwiseElementExtraction`. ``ref_coords`` has shape ``(n, dim)``
             and holds *parametric* (not cell-local) coordinates satisfying
-            ``evaluate(ref_coords[i]) == points[i]`` within ``tol``. A point not on the
-            mapping's image gets ``cell_ids[i] = -1`` and ``ref_coords[i] = nan``.
+            ``evaluate(ref_coords[i]) == points[i]`` within ``tol``, or -- when ``tol`` is
+            ``None`` -- within the acceptance threshold described under ``tol`` above. That
+            is the bar a coordinate is certified against and not usually the accuracy it
+            carries, which is the tighter of the two thresholds wherever the map can deliver
+            it. A point not on the mapping's image gets ``cell_ids[i] = -1`` and
+            ``ref_coords[i] = nan``.
 
         Raises:
             NotImplementedError: If ``rank > dim`` (an embedded curve or surface, which
@@ -334,11 +342,12 @@ class Bspline:
             on the original ``float32`` B-spline therefore reproduces the query point to
             ``float32`` accuracy only.
 
-            The default threshold grows with how far the knot vector sits from the
-            parametric origin, because that is how far one ulp of a coordinate moves the
-            image. A "found" verdict on such a geometry therefore asserts less than the
-            same verdict on one parametrized from the origin. It stays a small fraction of
-            the geometry for any ordinary knot vector; at a reach of ``1e13`` -- a knot
+            The default *acceptance* threshold grows with how far the knot vector sits
+            from the parametric origin, because that is how far one ulp of a coordinate
+            moves the image. A "found" verdict on such a geometry therefore asserts less
+            than the same verdict on one parametrized from the origin, though the
+            coordinate itself is still refined as far as the map allows. It stays a small
+            fraction of the geometry for any ordinary knot vector; at a reach of ``1e13`` -- a knot
             span ten trillion times further from the origin than it is wide -- it reaches
             ``0.14`` of the bounding-box diagonal, and a point ten percent outside the
             image is reported found. Past ``1 / (64 * eps)`` the default is refused

@@ -15,9 +15,11 @@ from pantr.bspline._bspline_locate import (
     _cell_midpoints,
     _cell_parametric_bounds,
     _cell_physical_bounds,
+    _default_tolerance,
     _geometric_scale,
     _locate_context,
     _LocateContext,
+    _LocateThresholds,
     _nearest_corner_starts,
     _newton_refine,
     _parametric_reach,
@@ -49,6 +51,37 @@ The convergence threshold is :func:`pantr.tolerance.get_default` for ``float32``
 (``1e-6``) times the geometric scale, so the coordinate error is four orders of magnitude
 larger than in the ``float64`` case. Measured worst case over the cases below:
 ``5.2e-6``; the ``1e-4`` leaves a factor of 19.
+"""
+
+_PARAMETRIC_ULPS_ALLOWED: float = 4.0
+"""
+How many parametric ulps' worth of residual a returned coordinate may carry.
+
+One ulp of a parametric coordinate is ``eps * |xi_k|``, which the map turns into a physical
+displacement of ``eps * |xi_k| * ||J e_k||``; :func:`_parametric_scale` is exactly that
+product with the control net's span standing in for the local stretch, so
+``eps * _parametric_scale(spline)`` is the physical length the parametrization quantizes at
+and no returned coordinate can do better than a fraction of it. The bound is therefore
+``_PARAMETRIC_ULPS_ALLOWED * eps * _parametric_scale(spline)``, which is the acceptance
+threshold divided by ``64 / _PARAMETRIC_ULPS_ALLOWED``.
+
+**Why four.** Two ulps for where the last Newton step lands relative to the true root, and a
+factor of two for the fixture's local stretch against the net-span average the substitution
+uses. Measured over seven seeds on :func:`_parametrically_offset_patch`, the worst residual
+is ``0.33`` of a single ulp's image for targets that are exact images and ``0.85`` for
+targets a half ulp off one, so the bound carries ``4.7`` times its measured requirement
+here; on sibling fixtures (degree 3 at reach ``1e4``, degree 2 on 8 elements at reach
+``1e10``) the half-ulp worst rises to ``1.33`` and the margin falls to ``3.0``. The
+single-threshold policy it replaces exceeds it on 9 of 60 queries in both families with a
+worst case of 52 ulps, so the two policies are separated by any factor from 3 to 16 -- but
+not by every factor below that, since the good policy itself passes 1.33 on a sibling.
+
+**What it is not an oracle for.** The bound calls :func:`_parametric_scale`, the same
+function that builds the acceptance threshold, so it cannot detect an error in *that*
+length -- inflating it threefold leaves every test using this bound green. What it detects
+is the stopping rule, because the residual it grades is produced by the Newton iteration's
+own arithmetic and not by any threshold. :func:`_parametric_scale`'s numeric value is
+pinned independently by :class:`TestParametricStretch`, against hand-derived literals.
 """
 
 _PARAMETRIC_OFFSETS: list[float] = [0.0, 1.0e2, 1.0e3, 1.0e4, 1.0e6]
@@ -161,10 +194,47 @@ def _warped_patch(dim: int = 2, degree: int = 1, n_elem: int = 6, offset: float 
     """
     knots = np.concatenate([np.zeros(degree), np.linspace(0.0, 1.0, n_elem + 1), np.ones(degree)])
     space = BsplineSpace([BsplineSpace1D(knots, degree) for _ in range(dim)])
+    return Bspline(space, np.ascontiguousarray(_warped_lattice(space) + offset))
+
+
+def _warped_lattice(space: BsplineSpace) -> npt.NDArray[np.float64]:
+    """Return the unit-box control lattice of ``space`` under the 15 % sinusoidal warp.
+
+    Shared by :func:`_warped_patch` and :func:`_parametrically_offset_patch` so that the
+    two differ in their *knot vectors* alone and any difference between them is
+    attributable to the parametrization.
+    """
     axes = [np.linspace(0.0, 1.0, n) for n in space.num_basis]
     cp = np.stack(np.meshgrid(*axes, indexing="ij"), axis=-1)
-    cp = cp + 0.15 * np.sin(2.0 * np.pi * cp.sum(axis=-1))[..., None] + offset
-    return Bspline(space, np.ascontiguousarray(cp))
+    return np.asarray(cp + 0.15 * np.sin(2.0 * np.pi * cp.sum(axis=-1))[..., None])
+
+
+def _parametrically_offset_patch(
+    degree: int = 3, n_elem: int = 4, offset: float = 1.0e6
+) -> Bspline:
+    """Return the warped unit patch with direction 1 parametrized on ``[offset, offset + 1]``.
+
+    The geometry is :func:`_warped_patch`'s, so the physical half of the threshold is the
+    one of a unit-sized patch at the origin; only direction 1's knot vector moves. That
+    separates the two halves as far as they go: direction 0 has reach zero and direction 1
+    reach ``offset``, so the acceptance threshold is six decades above the stopping one
+    while the geometry it grades is unchanged.
+
+    A bivariate map rather than a univariate one, and the offset in one direction only,
+    because that is the configuration in which the two thresholds are least alike.
+    """
+    spaces = []
+    for direction_offset in (0.0, offset):
+        knots = np.concatenate(
+            [
+                np.full(degree, direction_offset),
+                np.linspace(direction_offset, direction_offset + 1.0, n_elem + 1),
+                np.full(degree, direction_offset + 1.0),
+            ]
+        )
+        spaces.append(BsplineSpace1D(knots, degree))
+    space = BsplineSpace(spaces)
+    return Bspline(space, np.ascontiguousarray(_warped_lattice(space)))
 
 
 def _folded_patch() -> Bspline:
@@ -316,6 +386,38 @@ def _anisotropic_patch(offset1: float, extent1: float, degree: int = 2, n_elem: 
     return Bspline(BsplineSpace(spaces), np.ascontiguousarray(cp))
 
 
+def _parametric_ulp_image(spline: Bspline) -> float:
+    """Return the resolution floor a returned coordinate is graded against, per ulp.
+
+    The acceptance threshold divided by the tolerance tier, so it moves with the geometry
+    and with the knot vector exactly as the threshold does and carries no constant of its
+    own; :data:`_PARAMETRIC_ULPS_ALLOWED` counts it.
+
+    Taken over *both* lengths and not over the parametric one alone. On a fixture whose
+    parametrization is offset the parametric length wins and the two readings agree, which
+    is every current caller; on one where the physical length wins, the parametric reading
+    would put the bound below the residual floor the coordinates themselves impose and the
+    test would fail for a reason having nothing to do with the parametrization.
+    """
+    scale = _geometric_scale(_physical_only_scale(spline), _parametric_scale(spline))
+    return float(np.finfo(np.float64).eps) * scale
+
+
+def _first_candidates(
+    context: _LocateContext, targets: npt.NDArray[np.float64], thresholds: _LocateThresholds
+) -> npt.NDArray[np.int64]:
+    """Return the first candidate cell of each target, as ``_locate_impl``'s first round does.
+
+    Lets a test drive :func:`_newton_refine` from the same starting guesses the solver uses
+    without reaching into it, so a comparison between two threshold policies varies the
+    policy alone.
+    """
+    return np.asarray(
+        [np.sort(context.bvh.query_aabb(AABB(x, x).pad(thresholds.accept)))[0] for x in targets],
+        dtype=np.int64,
+    )
+
+
 def _physical_only_scale(spline: Bspline) -> float:
     """Return the scale the rule gave before it had a parametric term.
 
@@ -331,8 +433,8 @@ def _physical_only_scale(spline: Bspline) -> float:
 
 
 def _scale_of(spline: Bspline) -> float:
-    """Return the geometric scale the default tolerance is expressed in."""
-    return _geometric_scale(*_cell_physical_bounds(spline), _parametric_scale(spline))
+    """Return the geometric scale the default acceptance threshold is expressed in."""
+    return _geometric_scale(_physical_only_scale(spline), _parametric_scale(spline))
 
 
 def _cache_of(spline: Bspline) -> _LocateContext | None:
@@ -801,7 +903,13 @@ class TestNewtonGlobalization:
         norms = [
             float(
                 np.linalg.norm(
-                    _evaluate_at(spline, _newton_refine(spline, target, start, tol, k)[1]) - target
+                    _evaluate_at(
+                        spline,
+                        _newton_refine(
+                            spline, target, start, _LocateThresholds(stop=tol, accept=tol), k
+                        )[1],
+                    )
+                    - target
                 )
             )
             for k in range(1, 13)
@@ -859,11 +967,12 @@ class TestNewtonGlobalization:
         candidates = np.sort(context.bvh.query_aabb(AABB(target[0], target[0]).pad(tol)))
         assert candidates.tolist() == [32], "the premise: one candidate, so there is no fallback"
 
+        thresholds = _LocateThresholds(stop=tol, accept=tol)
         from_midpoint = _newton_refine(
-            spline, target, _cell_midpoints(spline.space, candidates), tol, 40
+            spline, target, _cell_midpoints(spline.space, candidates), thresholds, 40
         )
         from_corner = _newton_refine(
-            spline, target, _nearest_corner_starts(spline, candidates, target), tol, 40
+            spline, target, _nearest_corner_starts(spline, candidates, target), thresholds, 40
         )
 
         assert not bool(from_midpoint[0][0]), "the midpoint start is expected to jam"
@@ -1391,6 +1500,295 @@ class TestParametricStretch:
         for offset in (1.0e2, 1.0e6, 1.0e10, 1.0e12):
             spline = _offset_identity_patch(offset, degree=1, n_elem=1)
             assert spline.locate(np.array([0.5]))[0].tolist() == [0], f"refused at {offset}"
+
+
+class TestStoppingVersusAcceptance:
+    """One threshold cannot be both the accuracy contract and the attainability bound.
+
+    The physical half of the scale says what accuracy a returned coordinate is entitled to;
+    the parametric half says how far below the residual no *representable* parameter can go.
+    Stopping at the second delivers only the second, and on a knot vector far from the
+    parametric origin the two are six decades apart. These pin that the iteration stops at
+    the tighter one while acceptance stays at the looser one, on the geometry where the gap
+    is widest.
+    """
+
+    def test_the_answer_is_as_accurate_as_the_parametrization_allows(self) -> None:
+        """Targets that are exact images are inverted to the parametric grid, not to the bar.
+
+        Sampling the parameter first and mapping it forward makes the preimage a fact about
+        each query, and it is *representable*, so the attainable residual is zero and
+        anything the solver leaves on the table is the stopping rule's doing. The bound is
+        the parametrization's own quantization; see :data:`_PARAMETRIC_ULPS_ALLOWED`.
+        """
+        spline = _parametrically_offset_patch()
+        xi_true = _sample_parametric(spline, 60, seed=321)
+        targets = _evaluate_at(spline, xi_true)
+        bound = _PARAMETRIC_ULPS_ALLOWED * _parametric_ulp_image(spline)
+
+        cell_ids, ref_coords = spline.locate(targets)
+
+        assert np.all(cell_ids >= 0), f"lost {int(np.sum(cell_ids < 0))} of 60 queries"
+        residuals = np.linalg.norm(_evaluate_at(spline, ref_coords) - targets, axis=1)
+        over = int(np.sum(residuals > bound))
+        assert over == 0, (
+            f"{over} of 60 coordinates stopped short: worst {residuals.max():.3e} over a "
+            f"parametric-resolution bound of {bound:.3e}"
+        )
+        _assert_cell_contains(spline, cell_ids, ref_coords)
+
+    def test_a_target_no_representable_parameter_reaches_is_still_found(self) -> None:
+        """The looser bar keeps its coverage while the tighter one sets the accuracy.
+
+        Half-ulp targets have no exact preimage at all, so the tight threshold alone loses
+        every one of them (measured: 60 of 60). They must still come back found, and with
+        the residual the parametric grid allows rather than the one the acceptance bar does.
+        """
+        spline = _parametrically_offset_patch()
+        xi_true = _sample_parametric(spline, 60, seed=321)
+        targets = _half_ulp_targets(spline, xi_true)
+        bound = _PARAMETRIC_ULPS_ALLOWED * _parametric_ulp_image(spline)
+
+        cell_ids, ref_coords = spline.locate(targets)
+
+        assert np.all(cell_ids >= 0), f"lost {int(np.sum(cell_ids < 0))} of 60 queries"
+        residuals = np.linalg.norm(_evaluate_at(spline, ref_coords) - targets, axis=1)
+        over = int(np.sum(residuals > bound))
+        assert over == 0, (
+            f"{over} of 60 coordinates stopped short: worst {residuals.max():.3e} over a "
+            f"parametric-resolution bound of {bound:.3e}"
+        )
+        _assert_cell_contains(spline, cell_ids, ref_coords)
+
+    def test_a_start_between_the_two_bars_is_refined_instead_of_returned(self) -> None:
+        """The stopping rule is the tight one: an iterate inside the loose bar keeps going.
+
+        A starting guess one ulp off the true preimage already satisfies the acceptance
+        threshold, so under a single threshold it is returned untouched -- that is exactly
+        how the accuracy was lost. Under the split it is refined until it meets the stopping
+        one, which the same call with both thresholds set to the loose value shows it does
+        not do of its own accord.
+
+        **One ulp, not a number picked to work.** The image of one ulp of a parametric
+        coordinate is what :func:`_parametric_scale` measures, and the acceptance threshold
+        is the tolerance tier times that length, so a one-ulp start sits below the loose bar
+        by about the tier itself and far above the tight one. Measured over 20 seeds of 20
+        queries: at worst ``0.025`` of the acceptance threshold (a margin of 40, against the
+        derived 64, the shortfall being this fixture's local stretch over the net-span
+        average) and at least 2178 times the stopping one. Both premises therefore hold by
+        derivation rather than by a constant chosen to make them hold, which is what a
+        premise assertion has to do if its failure is to mean anything.
+        """
+        spline = _parametrically_offset_patch()
+        context = _locate_context(spline)
+        thresholds = _default_tolerance(spline, context)
+        xi_true = _sample_parametric(spline, 20, seed=17)
+        targets = _evaluate_at(spline, xi_true)
+        start = xi_true.copy()
+        start[:, 1] = np.nextafter(start[:, 1], np.inf)
+        start_residual = np.linalg.norm(_evaluate_at(spline, start) - targets, axis=1)
+        assert np.all(start_residual > thresholds.stop), "the premise: above the tight bar"
+        assert np.all(start_residual <= thresholds.accept), "the premise: inside the loose one"
+
+        loose_only = _newton_refine(
+            spline, targets, start, _LocateThresholds(thresholds.accept, thresholds.accept), 30
+        )
+        split = _newton_refine(spline, targets, start, thresholds, 30)
+
+        assert np.all(loose_only[0]) and np.all(split[0]), "both policies report found"
+        assert np.array_equal(loose_only[1], start), "one threshold returns the guess as given"
+        refined = np.linalg.norm(_evaluate_at(spline, split[1]) - targets, axis=1)
+        assert np.all(refined < start_residual), f"not refined: {refined} vs {start_residual}"
+        assert np.all(refined <= thresholds.stop), f"did not reach the tight bar: {refined.max()}"
+
+    def test_a_residual_that_cannot_reach_the_tight_bar_is_still_accepted(self) -> None:
+        """The acceptance rule is the loose one, and it is what keeps the coverage.
+
+        Half-ulp targets have no representable preimage, so *no* iterate reaches the
+        stopping threshold; the verdict has to come from the acceptance one, and it does,
+        for a residual the parametric grid genuinely cannot beat. Driven from a single
+        candidate cell and a single start, which is less than the solver gives itself, so
+        the rows this leaves unconverged are the ones a second start recovers rather than a
+        loss.
+        """
+        spline = _parametrically_offset_patch()
+        context = _locate_context(spline)
+        thresholds = _default_tolerance(spline, context)
+        tight_only = _LocateThresholds(stop=thresholds.stop, accept=thresholds.stop)
+        xi_true = _sample_parametric(spline, 20, seed=17)
+        targets = _half_ulp_targets(spline, xi_true)
+        starts = _cell_midpoints(spline.space, _first_candidates(context, targets, thresholds))
+
+        by_the_tight_bar, _ = _newton_refine(spline, targets, starts, tight_only, 30)
+        converged, xi = _newton_refine(spline, targets, starts, thresholds, 30)
+
+        residuals = np.linalg.norm(_evaluate_at(spline, xi) - targets, axis=1)
+        assert not np.any(by_the_tight_bar), "the premise: no iterate reaches the tight bar"
+        assert np.any(converged), "acceptance at the loose bar recovered nothing"
+        assert np.all(residuals[converged] > thresholds.stop)
+        assert np.all(residuals[converged] <= thresholds.accept)
+        # What one candidate cell from one start leaves, locate's own fallbacks recover.
+        assert np.all(spline.locate(targets)[0] >= 0)
+
+    def test_the_split_never_returns_a_worse_coordinate_than_one_threshold_did(self) -> None:
+        """Coverage may not shrink, checked on the geometry with the widest gap.
+
+        The argument is in :class:`_LocateThresholds`: accepted steps never raise the
+        residual, so lowering the *stopping* test only extends trajectories. This runs both
+        policies from the same starts and pins the two consequences -- residuals no larger,
+        and therefore verdicts no fewer -- on queries on and off the mapping's image.
+        """
+        spline = _parametrically_offset_patch()
+        context = _locate_context(spline)
+        thresholds = _default_tolerance(spline, context)
+        loose = _LocateThresholds(stop=thresholds.accept, accept=thresholds.accept)
+        # Without this the test goes quiet rather than red: were the two bars ever equal,
+        # `loose` would be `thresholds` and every comparison below a run against itself.
+        assert thresholds.stop < thresholds.accept, "the premise: the two policies differ"
+        xi_true = _sample_parametric(spline, 60, seed=321)
+        for targets in (_evaluate_at(spline, xi_true), _half_ulp_targets(spline, xi_true)):
+            starts = _cell_midpoints(spline.space, _first_candidates(context, targets, thresholds))
+
+            single, xi_single = _newton_refine(spline, targets, starts, loose, 30)
+            split, xi_split = _newton_refine(spline, targets, starts, thresholds, 30)
+
+            res_single = np.linalg.norm(_evaluate_at(spline, xi_single) - targets, axis=1)
+            res_split = np.linalg.norm(_evaluate_at(spline, xi_split) - targets, axis=1)
+            assert np.any(single), "the premise: the single threshold finds something here"
+            assert np.all(res_split <= res_single), "the split returned a worse coordinate"
+            assert np.all(split | ~single), "the split lost a query the single threshold found"
+
+    @pytest.mark.parametrize(
+        "factory",
+        [
+            _warped_patch,
+            _quarter_annulus,
+            lambda: _offset_identity_patch(0.0),
+            lambda: _perturbed_patch(2, 3, 2, seed=4),
+        ],
+        ids=["warped", "annulus", "from-origin-affine", "perturbed"],
+    )
+    def test_a_knot_vector_from_the_origin_gets_one_threshold_bit_for_bit(
+        self, factory: Callable[[], Bspline]
+    ) -> None:
+        """The split changes nothing for ordinary geometry, in accuracy or in cost.
+
+        The reach is exactly ``1.0`` for a knot vector spanning ``[0, L]`` and no net span
+        exceeds the diagonal, so the parametric length cannot win the maximum and the two
+        thresholds are the same float. Equal thresholds make the iteration the one that ran
+        before, step for step, which is why no cost measurement is needed here.
+        """
+        spline = factory()
+        thresholds = _default_tolerance(spline, _locate_context(spline))
+
+        assert thresholds.stop == thresholds.accept
+        assert thresholds.stop == get_default(spline.dtype) * _physical_only_scale(spline)
+
+    def test_a_parametric_offset_is_what_separates_them(self) -> None:
+        """The complement of the test above: the gap is real where the reach is.
+
+        Without this the bitwise-equality test could be passing because the split does
+        nothing anywhere.
+        """
+        spline = _parametrically_offset_patch()
+        thresholds = _default_tolerance(spline, _locate_context(spline))
+
+        assert thresholds.stop < thresholds.accept
+        assert thresholds.stop == get_default(spline.dtype) * _physical_only_scale(spline)
+        assert thresholds.accept / thresholds.stop > 1.0e5, "the fixture's gap is decades wide"
+
+    @pytest.mark.parametrize("offset", [0.0, 1.0e2, 1.0e4, 1.0e5])
+    def test_a_float32_spline_never_opens_the_split(self, offset: float) -> None:
+        """A float32 caller gets one threshold at every offset its knot vector can carry.
+
+        Not an accident of these four rows. The acceptance threshold's parametric term is
+        format-independent by construction -- :func:`_parametric_scale` multiplies by
+        ``eps64 / eps(dtype)``, so ``get_default(dtype)`` times it is ``64 * eps64 * reach *
+        span`` in every format -- while the stopping threshold is ``64 * eps(dtype) *
+        physical``. Opening the split therefore needs ``reach * span > (eps(dtype) / eps64)
+        * physical``, and no net span exceeds the bounding-box diagonal, so it needs
+        ``reach > eps32 / eps64 == 5.4e8``. A float32 knot vector of width ``L`` at offset
+        ``c`` needs its two endpoints to be distinct float32s at all: for ``c`` in ``[2**e,
+        2**(e+1))`` the smallest representable gap is ``2**(e-24)`` while ``c < 2**(e+1)``,
+        so ``reach < 2**25 == 3.4e7``. The provable margin is therefore exactly ``2**4 ==
+        16``, a format identity rather than a measured quantity. The knot layer is stricter
+        still -- it snaps at ``8 * eps``, which drops the ceiling by another ``8`` -- and the
+        next test confirms the cut-off is its and not this module's.
+
+        So the split is a float64 phenomenon, and deliberately: for a float32 caller the
+        format the *data* carries is already coarser than anything the parametrization
+        quantizes at, which is the same reason the inversion promotes to float64 to iterate.
+        """
+        spline = _offset_identity_patch(offset, degree=2, n_elem=4)
+        knots = np.asarray(spline.space.spaces[0].knots, dtype=np.float32)
+        spline32 = Bspline(
+            BsplineSpace([BsplineSpace1D(knots, 2)]),
+            np.ascontiguousarray(np.asarray(spline.control_points, dtype=np.float32)),
+        )
+        thresholds = _default_tolerance(spline32, _locate_context(spline32))
+
+        assert thresholds.stop == thresholds.accept
+        assert thresholds.stop == get_default(np.float32) * _physical_only_scale(spline32)
+
+    def test_the_float32_offset_that_would_open_the_split_is_refused_first(self) -> None:
+        """The knot layer stops a float32 knot vector before this module has to.
+
+        The complement of the test above, and what makes its argument a statement about
+        every float32 spline rather than about the four offsets sampled: one decade further
+        out the knot vector cannot be built at all, because in float32 at ``1e6`` the mesh
+        collapses onto a single knot.
+        """
+        offset = 1.0e6
+        knots = np.concatenate(
+            [np.full(2, offset), np.linspace(offset, offset + 1.0, 5), np.full(2, offset + 1.0)]
+        ).astype(np.float32)
+
+        with pytest.raises(ValueError, match="collapsed every knot"):
+            BsplineSpace1D(knots, 2)
+
+    def test_an_explicit_tolerance_governs_stopping_as_well(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A named threshold is not silently refined past, so a proximity query stays cheap.
+
+        The caller who passes ``tol`` has said what distance they mean; answering to eight
+        decades better would charge them for accuracy they did not ask for, and the split is
+        exactly what makes that newly possible.
+
+        Read off the thresholds :func:`_locate_impl` hands the solver rather than off the
+        residual it happens to produce. A residual assertion cannot pin this: on this
+        geometry the internal stopping bar is eleven decades below a coarse ``tol``, so a
+        partial leak of it into ``stop`` still leaves every residual far above anything a
+        residual test could distinguish, and passes. The thresholds themselves are exact.
+        """
+        spline = _warped_patch()
+        targets = _evaluate_at(spline, _sample_parametric(spline, 30, seed=5))
+        seen: list[_LocateThresholds] = []
+        module = sys.modules["pantr.bspline._bspline_locate"]
+
+        def _record(
+            sp: Bspline,
+            pts: npt.NDArray[np.float64],
+            start: npt.NDArray[np.float64],
+            thresholds: _LocateThresholds,
+            max_iter: int,
+        ) -> tuple[npt.NDArray[np.bool_], npt.NDArray[np.float64]]:
+            # The module-level import still names the real function; only the module
+            # attribute the solver looks up is redirected.
+            seen.append(thresholds)
+            return _newton_refine(sp, pts, start, thresholds, max_iter)
+
+        monkeypatch.setattr(module, "_newton_refine", _record)
+
+        cell_ids, ref_coords = spline.locate(targets, tol=1.0e-2)
+
+        assert seen, "the premise: the solver was reached at all"
+        assert all(t == _LocateThresholds(stop=1.0e-2, accept=1.0e-2) for t in seen), (
+            f"an explicit tol must govern both thresholds; got {set(seen)}"
+        )
+        assert np.all(cell_ids >= 0)
+        residuals = np.linalg.norm(_evaluate_at(spline, ref_coords) - targets, axis=1)
+        assert residuals.max() <= 1.0e-2, "the threshold asked for must still hold"
 
 
 class TestNearCriticalJacobian:
