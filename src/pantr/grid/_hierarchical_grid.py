@@ -1557,8 +1557,13 @@ class HierarchicalGrid(Grid):
         is cheaper than enumerating its cells (this call demotes one parent at a time, so
         it repacks the block lists once per parent).
 
-        Parents are processed deepest level first, so ids spanning several levels are
-        handled bottom-up in a single call.
+        Ids spanning several levels are handled in one call, deepest level first.  The
+        order is observable and so is fixed: the reactivated parents are appended to the
+        block lists in that order, the greedy merge in normalization turns that into a
+        rectangle partition, and flat ids are handed out block by block.  Coarsening does
+        **not** cascade, whichever order is used -- a cell reborn by this call was not an
+        active leaf when the caller chose its ids, so it cannot be among them, and its own
+        parent is therefore never complete.
 
         Note:
             :meth:`refine_cells` is *not* the mirror of this method: it refines the
@@ -1573,10 +1578,6 @@ class HierarchicalGrid(Grid):
 
         Raises:
             IndexError: If any id in ``cell_ids`` is out of range.
-
-        References:
-            Coarsening algorithms for adaptive hierarchical-spline meshes
-            :cite:p:`garau2018algorithms`.
         """
         marked: set[tuple[int, tuple[int, ...]]] = set()
         for cid in cell_ids:
@@ -1592,6 +1593,10 @@ class HierarchicalGrid(Grid):
             children = itertools.product(
                 *(range(p * f, (p + 1) * f) for p, f in zip(pmidx, self._factor, strict=True))
             )
+            # The active-leaf test cannot currently fail once a child is in `marked`: every
+            # flat id names an active leaf, and the only call that could destroy one is this
+            # parent's own.  It is kept because that is an argument about the caller, not a
+            # property of this loop, and it is what the documented rule actually says.
             if all(
                 (parent_level + 1, child) in marked and self.is_active_leaf(parent_level + 1, child)
                 for child in children

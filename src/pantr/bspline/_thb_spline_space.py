@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import copy
 import itertools
+import math
 import string
 from typing import TYPE_CHECKING, Final, NamedTuple
 
@@ -1741,14 +1742,11 @@ class THBSplineSpace:
             for level, midx in marked
             if level >= 1
         }
+        num_children = math.prod(factor)
         grid_copy = copy.deepcopy(self._grid)
         # Deepest parent first, so a veto is decided against a mesh whose finer
         # coarsenings have already happened.
         for parent_level, pmidx in sorted(parents, key=lambda pc: -pc[0]):
-            if admissible_class is not None and not self._coarsening_neighborhood_empty(
-                parent_level, pmidx, admissible_class, grid_copy
-            ):
-                continue
             # Name this parent's marked children on the current grid -- every coarsening
             # reassigns flat ids, so they are resolved afresh here rather than kept.
             child_ids: list[int] = []
@@ -1758,8 +1756,19 @@ class THBSplineSpace:
                 cid = grid_copy.cell_id(parent_level + 1, child)
                 if cid is not None and (parent_level + 1, child) in marked:
                     child_ids.append(cid)
-            # coarsen_cells demotes the parent only if all of its children are named,
-            # which is the "all children marked active leaves" rule of Alg. 5.
+            # An incomplete family is one `coarsen_cells` would skip anyway, so leaving
+            # here costs nothing and skips the only expensive test in the loop.  Measured
+            # on a 2050-cell mesh with 1537 cells marked, so most families are incomplete:
+            # 9.4 ms with this line, 19.7 ms without it, 9.6 ms for the pre-refactor loop
+            # this replaces -- which had the same order and which it therefore matches.
+            if len(child_ids) < num_children:
+                continue
+            if admissible_class is not None and not self._coarsening_neighborhood_empty(
+                parent_level, pmidx, admissible_class, grid_copy
+            ):
+                continue
+            # coarsen_cells applies the rule itself -- it demotes the parent only if all
+            # of its children are named active leaves, which is Alg. 5's condition.
             grid_copy.coarsen_cells(child_ids)
         return THBSplineSpace(
             self._root_space,
