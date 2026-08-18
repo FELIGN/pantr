@@ -1,0 +1,676 @@
+r"""Tests for the supported ``(degree, dtype)`` domain of the change-of-basis builders.
+
+This file is where the domain's derivation lives. The limits tabulated in
+``pantr.change_basis`` are not measured with :func:`numpy.linalg.cond` and are not fitted:
+each one is the largest degree at which the matrix its builder solves with satisfies
+:math:`\kappa_\infty(M)\,\varepsilon < 1`, and this module recomputes :math:`\kappa_\infty`
+in exact rational (or high-precision decimal) arithmetic at that degree and at the one past
+it.
+
+Asking :func:`numpy.linalg.cond` for the same number does not settle it, and not because that
+estimator is weak: applied to the *exact* matrix it tracks the exact :math:`\kappa_\infty` to
+five digits at :math:`1.1 \times 10^{16}` and still to four at :math:`3.7 \times 10^{17}`.
+The trouble is the matrix. The Bernstein-to-cardinal matrix pantr forms is itself the output
+of a Gram solve, so near the boundary it is no longer the matrix the domain is about, and its
+computed :math:`\kappa_\infty` comes out 8.6 times too large at degree 13 and 4.9 times too
+small at degree 15 -- either of which moves the crossing by a degree.
+
+The exact matrices are built from closed forms rather than from pantr's own tabulations, so
+the derivation is independent of the code it grades: the cardinal B-splines from their
+explicit truncated-power expansion, the Bernstein Gram matrix from its binomial closed form,
+and the shifted Legendre polynomials from their integer monomial coefficients. The Lagrange
+node families are the exception and are taken from pantr, since the boundary has to describe
+the matrix pantr actually forms.
+"""
+
+from collections.abc import Callable
+from decimal import Decimal, getcontext
+from fractions import Fraction
+from math import comb, factorial
+
+import numpy as np
+import numpy.typing as npt
+import pytest
+
+from pantr.basis import LagrangeVariant
+from pantr.basis._basis_lagrange import _get_lagrange_points
+from pantr.change_basis import (
+    _BERNSTEIN_TO_CARDINAL_MAX_DEGREE,
+    _BERNSTEIN_TO_LAGRANGE_MAX_DEGREE,
+    _CARDINAL_TO_BERNSTEIN_MAX_DEGREE,
+    _CARDINAL_TO_LEGENDRE_MAX_DEGREE,
+    _cached_cardinal_to_bernstein_matrix,
+    _DegreeLimit,
+    compute_bernstein_to_cardinal_1d,
+    compute_bernstein_to_lagrange_1d,
+    compute_cardinal_dual_legendre_coeffs_1d,
+    compute_cardinal_to_bernstein_1d,
+    compute_cardinal_to_legendre_1d,
+    compute_lagrange_to_bernstein_1d,
+    compute_legendre_to_cardinal_1d,
+    compute_monomial_to_bernstein_1d,
+)
+
+_EXACT_PRECISION = 60
+r"""Significant decimal digits carried by the exact-arithmetic derivation.
+
+Gauss-Jordan elimination on a matrix of condition number :math:`\kappa` loses on the order
+of :math:`\log_{10}\kappa` digits, and no :math:`\kappa` reached here exceeds
+:math:`10^{17}` -- the boundary being where :math:`\kappa\varepsilon \approx 1` and
+:math:`1/\varepsilon_{64} = 4.5 \times 10^{15}`. Sixty digits therefore leaves more than
+forty correct, against the one digit the comparison with 1 actually needs. Checked
+directly: the Chebyshev degree-53 case returns the same :math:`\kappa_\infty` at 40, 60 and
+120 digits.
+"""
+
+_FloatType = type[np.float32] | type[np.float64]
+"""Either of the two floating-point formats every builder accepts."""
+
+_DTYPES: tuple[_FloatType, ...] = (np.float32, np.float64)
+"""The two formats, as a parametrization axis."""
+
+_ExactMatrix = list[list[Decimal]]
+"""Square matrix carried at ``_EXACT_PRECISION`` digits."""
+
+getcontext().prec = _EXACT_PRECISION
+
+
+def _max_degree(limit: _DegreeLimit, dtype: _FloatType) -> int:
+    """Select the entry of a ``_DegreeLimit`` that applies to ``dtype``.
+
+    Args:
+        limit (_DegreeLimit): Tabulated limits for one builder.
+        dtype (_FloatType): Output format.
+
+    Returns:
+        int: The largest degree that format supports.
+    """
+    return limit.float32 if dtype is np.float32 else limit.float64
+
+
+# --------------------------------------------------------------------------------------
+# Exact arithmetic: the matrices the builders solve with
+# --------------------------------------------------------------------------------------
+
+
+def _as_decimal(value: Fraction) -> Decimal:
+    """Convert an exact rational to a ``Decimal`` at the ambient precision.
+
+    Args:
+        value (Fraction): Exact rational number.
+
+    Returns:
+        Decimal: The same number, rounded to ``_EXACT_PRECISION`` digits.
+    """
+    return Decimal(value.numerator) / Decimal(value.denominator)
+
+
+def _norm_inf(matrix: _ExactMatrix) -> Decimal:
+    """Compute the induced infinity norm, the largest absolute row sum.
+
+    Args:
+        matrix (_ExactMatrix): Square matrix.
+
+    Returns:
+        Decimal: ``max_i sum_j |matrix[i][j]|``.
+    """
+    return max(sum((abs(entry) for entry in row), Decimal(0)) for row in matrix)
+
+
+def _invert(matrix: _ExactMatrix) -> _ExactMatrix:
+    """Invert a square matrix by Gauss-Jordan elimination with partial pivoting.
+
+    Args:
+        matrix (_ExactMatrix): Square, non-singular matrix.
+
+    Returns:
+        _ExactMatrix: The inverse, at the ambient precision.
+    """
+    size = len(matrix)
+    tableau = [
+        [*matrix[row], *(Decimal(1) if row == col else Decimal(0) for col in range(size))]
+        for row in range(size)
+    ]
+    for col in range(size):
+        pivot_row = max(range(col, size), key=lambda row: abs(tableau[row][col]))
+        tableau[col], tableau[pivot_row] = tableau[pivot_row], tableau[col]
+        pivot = tableau[col][col]
+        tableau[col] = [entry / pivot for entry in tableau[col]]
+        for row in range(size):
+            if row != col and tableau[row][col] != 0:
+                factor = tableau[row][col]
+                tableau[row] = [
+                    entry - factor * pivot_entry
+                    for entry, pivot_entry in zip(tableau[row], tableau[col], strict=True)
+                ]
+    return [row[size:] for row in tableau]
+
+
+def _kappa_inf(matrix: _ExactMatrix) -> Decimal:
+    """Compute ``||M||_inf * ||M^-1||_inf``.
+
+    The infinity norm is the one the perturbation bound for a linear system is usually
+    stated in, which is why the domain uses it rather than the 2-norm
+    :func:`numpy.linalg.cond` returns by default.
+
+    Args:
+        matrix (_ExactMatrix): Square, non-singular matrix.
+
+    Returns:
+        Decimal: The infinity-norm condition number.
+    """
+    return _norm_inf(matrix) * _norm_inf(_invert(matrix))
+
+
+def _cardinal_monomial(degree: int) -> list[list[Fraction]]:
+    r"""Expand the cardinal B-splines of ``degree`` in the monomial basis on ``[0, 1]``.
+
+    Uses the explicit truncated-power form quoted by
+    :func:`~pantr.basis.tabulate_cardinal_bspline_1d`,
+
+    .. math::
+
+        B_{p,i}(t) = \frac{1}{p!} \sum_{j=0}^{p-i} \binom{p+1}{j} (-1)^j (t + p - i - j)^p ,
+
+    whose coefficients are rational, so the expansion is exact.
+
+    Args:
+        degree (int): Polynomial degree.
+
+    Returns:
+        list[list[Fraction]]: Row ``i`` holds the monomial coefficients of the ``i``-th
+        cardinal B-spline, lowest power first.
+    """
+    rows: list[list[Fraction]] = []
+    for index in range(degree + 1):
+        coeffs = [Fraction(0)] * (degree + 1)
+        for term in range(degree - index + 1):
+            shift = degree - index - term
+            sign = Fraction((-1) ** term * comb(degree + 1, term))
+            for power in range(degree + 1):
+                coeffs[power] += sign * comb(degree, power) * Fraction(shift) ** (degree - power)
+        rows.append([coeff / factorial(degree) for coeff in coeffs])
+    return rows
+
+
+def _bernstein_to_cardinal_exact(degree: int) -> _ExactMatrix:
+    """Build ``A`` with ``cardinal = A @ bernstein``, exactly.
+
+    This is what :func:`compute_bernstein_to_cardinal_1d` returns and what
+    :func:`compute_cardinal_to_bernstein_1d` inverts. Obtained by converting each cardinal
+    B-spline's exact monomial expansion into the Bernstein basis with
+    ``t**k = sum_i [C(i,k)/C(p,k)] B_{p,i}(t)``.
+
+    Args:
+        degree (int): Polynomial degree.
+
+    Returns:
+        _ExactMatrix: The ``(degree+1, degree+1)`` matrix.
+    """
+    cardinal = _cardinal_monomial(degree)
+    mono_to_bern = [
+        [
+            Fraction(comb(row, col), comb(degree, col)) if col <= row else Fraction(0)
+            for col in range(degree + 1)
+        ]
+        for row in range(degree + 1)
+    ]
+    return [
+        [
+            _as_decimal(
+                sum(
+                    (
+                        mono_to_bern[col][power] * cardinal[row][power]
+                        for power in range(degree + 1)
+                    ),
+                    Fraction(0),
+                )
+            )
+            for col in range(degree + 1)
+        ]
+        for row in range(degree + 1)
+    ]
+
+
+def _legendre_to_cardinal_exact(degree: int) -> _ExactMatrix:
+    """Build ``A`` with ``cardinal = A @ legendre``, exactly.
+
+    This is what :func:`~pantr.change_basis.compute_legendre_to_cardinal_1d` returns and
+    what :func:`compute_cardinal_to_legendre_1d` inverts. Because the shifted Legendre basis
+    is orthonormal, ``A[j, k]`` is the integral of the ``j``-th cardinal B-spline against
+    the ``k``-th basis function; that integral is rational and the ``sqrt(2k+1)``
+    normalization is carried in decimal.
+
+    Args:
+        degree (int): Polynomial degree.
+
+    Returns:
+        _ExactMatrix: The ``(degree+1, degree+1)`` matrix.
+    """
+    cardinal = _cardinal_monomial(degree)
+    shifted_legendre = [
+        [
+            Fraction((-1) ** (order + power) * comb(order, power) * comb(order + power, power))
+            if power <= order
+            else Fraction(0)
+            for power in range(degree + 1)
+        ]
+        for order in range(degree + 1)
+    ]
+
+    def integral(left: list[Fraction], right: list[Fraction]) -> Fraction:
+        """Integrate the product of two monomial-coefficient vectors over ``[0, 1]``."""
+        return sum(
+            (
+                lhs * rhs / (i + j + 1)
+                for i, lhs in enumerate(left)
+                if lhs
+                for j, rhs in enumerate(right)
+                if rhs
+            ),
+            Fraction(0),
+        )
+
+    return [
+        [
+            _as_decimal(integral(cardinal[row], shifted_legendre[order]))
+            * Decimal(2 * order + 1).sqrt()
+            for order in range(degree + 1)
+        ]
+        for row in range(degree + 1)
+    ]
+
+
+def _bernstein_gram_exact(degree: int) -> _ExactMatrix:
+    """Build the Bernstein Gram matrix on ``[0, 1]``, exactly.
+
+    ``G[i, j] = C(p,i) C(p,j) / ((2p+1) C(2p, i+j))``. This is the matrix
+    :func:`compute_bernstein_to_cardinal_1d`'s projection solves with.
+
+    Args:
+        degree (int): Polynomial degree.
+
+    Returns:
+        _ExactMatrix: The ``(degree+1, degree+1)`` matrix.
+    """
+    return [
+        [
+            _as_decimal(
+                Fraction(
+                    comb(degree, row) * comb(degree, col),
+                    (2 * degree + 1) * comb(2 * degree, row + col),
+                )
+            )
+            for col in range(degree + 1)
+        ]
+        for row in range(degree + 1)
+    ]
+
+
+def _lagrange_to_bernstein_exact(degree: int, variant: LagrangeVariant) -> _ExactMatrix:
+    """Build ``C[i, m] = B_{p,i}(x_m)`` at pantr's own Lagrange nodes, exactly.
+
+    This is what :func:`~pantr.change_basis.compute_lagrange_to_bernstein_1d` returns and
+    what :func:`compute_bernstein_to_lagrange_1d` inverts. The nodes come from pantr, as
+    their exact float64 values, because the domain has to describe the matrix pantr forms.
+
+    Args:
+        degree (int): Polynomial degree.
+        variant (LagrangeVariant): Node family.
+
+    Returns:
+        _ExactMatrix: The ``(degree+1, degree+1)`` matrix.
+    """
+    nodes = [Decimal(float(node)) for node in _get_lagrange_points(variant, degree + 1, np.float64)]
+
+    def power(base: Decimal, exponent: int) -> Decimal:
+        """Raise to a non-negative integer power, with ``base ** 0 == 1`` at ``base == 0``."""
+        return Decimal(1) if exponent == 0 else base**exponent
+
+    return [
+        [
+            Decimal(comb(degree, index)) * power(node, index) * power(1 - node, degree - index)
+            for node in nodes
+        ]
+        for index in range(degree + 1)
+    ]
+
+
+# --------------------------------------------------------------------------------------
+# The derivation: every tabulated limit is the crossing of kappa_inf * eps = 1
+# --------------------------------------------------------------------------------------
+
+_SOLVED_MATRICES: tuple[tuple[str, Callable[[int], _ExactMatrix], _DegreeLimit], ...] = (
+    ("cardinal_to_bernstein", _bernstein_to_cardinal_exact, _CARDINAL_TO_BERNSTEIN_MAX_DEGREE),
+    ("bernstein_to_cardinal", _bernstein_gram_exact, _BERNSTEIN_TO_CARDINAL_MAX_DEGREE),
+    ("cardinal_to_legendre", _legendre_to_cardinal_exact, _CARDINAL_TO_LEGENDRE_MAX_DEGREE),
+    *(
+        (
+            f"bernstein_to_lagrange[{variant.name}]",
+            (lambda degree, variant=variant: _lagrange_to_bernstein_exact(degree, variant)),
+            _BERNSTEIN_TO_LAGRANGE_MAX_DEGREE[variant],
+        )
+        for variant in LagrangeVariant
+    ),
+)
+"""Each solving builder, the matrix it solves with, and the degrees it claims to support."""
+
+
+@pytest.mark.parametrize(
+    ("label", "build", "limit"), _SOLVED_MATRICES, ids=[case[0] for case in _SOLVED_MATRICES]
+)
+@pytest.mark.parametrize("dtype", _DTYPES, ids=("float32", "float64"))
+def test_tabulated_limit_is_the_crossing_of_kappa_eps(
+    label: str,
+    build: Callable[[int], _ExactMatrix],
+    limit: _DegreeLimit,
+    dtype: _FloatType,
+) -> None:
+    """Re-derive each tabulated degree from exact arithmetic.
+
+    The claim under test is that the tabulated degree is the *largest* one satisfying
+    ``kappa_inf(M) * eps(dtype) < 1``: the supported degree has to be inside and the next
+    degree outside. A test asserting only the supported side would pass for any limit small
+    enough, which is why both sides are here.
+    """
+    max_degree = _max_degree(limit, dtype)
+    eps = Decimal(float(np.finfo(dtype).eps))
+
+    inside = _kappa_inf(build(max_degree)) * eps
+    assert inside < 1, (
+        f"{label}/{np.dtype(dtype).name}: kappa_inf * eps = {float(inside):.3g} at the "
+        f"supported degree {max_degree}, so the tabulated limit claims a digit the solve "
+        f"does not retain"
+    )
+
+    outside = _kappa_inf(build(max_degree + 1)) * eps
+    assert outside >= 1, (
+        f"{label}/{np.dtype(dtype).name}: kappa_inf * eps = {float(outside):.3g} at degree "
+        f"{max_degree + 1}, still below 1, so the domain is a degree tighter than the "
+        f"criterion requires and refuses a usable result"
+    )
+
+
+def test_cardinal_to_bernstein_accuracy_bound_is_tighter_than_its_domain() -> None:
+    """The accuracy bound is a product of two exact condition numbers, and is not the domain.
+
+    ``compute_cardinal_to_bernstein_1d`` inverts ``A``, which is itself the output of
+    :func:`compute_bernstein_to_cardinal_1d`'s Gram solve and so carries a relative error of
+    order ``kappa_inf(G_bern) * eps``. Inverting a perturbed matrix multiplies that by
+    ``kappa_inf(A)``, so the bound on what this builder returns is the *product*
+    ``kappa_inf(A) * kappa_inf(G_bern) * eps``, not the single factor that sets the domain.
+
+    Both quantities are exact rational condition numbers, so this test is the same on every
+    platform. An earlier version of it compared the returned matrix against the exact inverse
+    and asserted where that *measured* error crossed 100%; that number turned out to be
+    round-off noise -- non-monotone in degree locally (9.56 at 13, 3.12 at 14, 1.14 at 15)
+    and different by a factor of 285 on another LAPACK -- so it pinned one machine's
+    realization rather than a property of the problem.
+
+    The product bound is also why it is documented and not enforced: it is pessimistic enough
+    that enforcing it would refuse results with four correct digits, which the last assertion
+    here pins.
+    """
+    for dtype, documented_last_accurate_degree in ((np.float32, 5), (np.float64, 10)):
+        eps = Decimal(float(np.finfo(dtype).eps))
+
+        def product_bound(degree: int, eps: Decimal = eps) -> Decimal:
+            return (
+                _kappa_inf(_bernstein_to_cardinal_exact(degree))
+                * _kappa_inf(_bernstein_gram_exact(degree))
+                * eps
+            )
+
+        assert product_bound(documented_last_accurate_degree) < 1
+        assert product_bound(documented_last_accurate_degree + 1) >= 1
+
+        # The domain is strictly larger: it grades solvability, not accuracy.
+        assert _max_degree(_CARDINAL_TO_BERNSTEIN_MAX_DEGREE, dtype) > (
+            documented_last_accurate_degree
+        )
+
+    # Enforcing the product bound would refuse a usable result, which is why it is not the
+    # domain: degree 11 in float64 sits outside it and is still good to four digits.
+    degree = 11
+    exact = _invert(_bernstein_to_cardinal_exact(degree))
+    got = np.asarray(compute_cardinal_to_bernstein_1d(degree, np.float64), dtype=np.float64)
+    residual = [
+        [Decimal(float(got[i][j])) - exact[i][j] for j in range(degree + 1)]
+        for i in range(degree + 1)
+    ]
+    relative_error = float(_norm_inf(residual) / _norm_inf(exact))
+    assert relative_error < 1e-2, (
+        f"degree {degree} in float64 has relative error {relative_error:.3g}; the claim that "
+        f"the product bound is pessimistic rests on this being small"
+    )
+
+
+def test_every_lagrange_variant_declares_a_domain() -> None:
+    """Every node family needs a limit, or it silently receives an unbounded domain."""
+    assert set(_BERNSTEIN_TO_LAGRANGE_MAX_DEGREE) == set(LagrangeVariant)
+
+
+# --------------------------------------------------------------------------------------
+# The contract: what a caller sees at the boundary
+# --------------------------------------------------------------------------------------
+
+_Builder = Callable[[int, _FloatType], npt.NDArray[np.float32 | np.float64]]
+"""A change-of-basis builder reduced to its ``(degree, dtype)`` arguments."""
+
+_BOUNDARY_CASES: tuple[tuple[str, _Builder, _DegreeLimit], ...] = (
+    (
+        "compute_cardinal_to_bernstein_1d",
+        compute_cardinal_to_bernstein_1d,
+        _CARDINAL_TO_BERNSTEIN_MAX_DEGREE,
+    ),
+    (
+        "compute_bernstein_to_cardinal_1d",
+        compute_bernstein_to_cardinal_1d,
+        _BERNSTEIN_TO_CARDINAL_MAX_DEGREE,
+    ),
+    (
+        "compute_cardinal_to_legendre_1d",
+        compute_cardinal_to_legendre_1d,
+        _CARDINAL_TO_LEGENDRE_MAX_DEGREE,
+    ),
+    (
+        "compute_cardinal_dual_legendre_coeffs_1d",
+        compute_cardinal_dual_legendre_coeffs_1d,
+        _CARDINAL_TO_LEGENDRE_MAX_DEGREE,
+    ),
+    *(
+        (
+            "compute_bernstein_to_lagrange_1d",
+            (
+                lambda degree, dtype, variant=variant: compute_bernstein_to_lagrange_1d(
+                    degree, variant, dtype
+                )
+            ),
+            _BERNSTEIN_TO_LAGRANGE_MAX_DEGREE[variant],
+        )
+        for variant in LagrangeVariant
+    ),
+)
+"""Each builder that refuses, with the limits it enforces."""
+
+_BOUNDARY_IDS = [
+    *(case[0] for case in _BOUNDARY_CASES[:4]),
+    *(f"compute_bernstein_to_lagrange_1d[{variant.name}]" for variant in LagrangeVariant),
+]
+"""Readable ids for ``_BOUNDARY_CASES``, distinguishing the five node families."""
+
+
+@pytest.mark.parametrize(("name", "builder", "limit"), _BOUNDARY_CASES, ids=_BOUNDARY_IDS)
+@pytest.mark.parametrize("dtype", _DTYPES, ids=("float32", "float64"))
+def test_boundary_succeeds_inside_and_refuses_outside(
+    name: str,
+    builder: _Builder,
+    limit: _DegreeLimit,
+    dtype: _FloatType,
+) -> None:
+    """The largest supported degree returns a matrix; the next one raises ``ValueError``.
+
+    Both halves matter. Without the first, a domain that refused everything would pass;
+    without the second, one that refused nothing would.
+    """
+    max_degree = _max_degree(limit, dtype)
+
+    matrix = np.asarray(builder(max_degree, dtype))
+    assert matrix.shape == (max_degree + 1, max_degree + 1)
+    assert matrix.dtype == dtype
+    assert np.all(np.isfinite(matrix))
+
+    with pytest.raises(ValueError) as excinfo:
+        builder(max_degree + 1, dtype)
+    assert not isinstance(excinfo.value, np.linalg.LinAlgError), (
+        "numpy's LinAlgError subclasses ValueError; the point of the domain is that the "
+        "caller gets a message about the argument, not about an internal matrix"
+    )
+    message = str(excinfo.value)
+    assert name in message
+    assert str(max_degree + 1) in message
+    assert np.dtype(dtype).name in message
+    assert f"<= {limit.float32} in float32" in message
+    assert f"<= {limit.float64} in float64" in message
+
+
+def test_ticket_311_overflow_reproduction_now_refuses() -> None:
+    """The issue's own reproduction: degree 36 in float32 returned 74 infinities.
+
+    Measured on the parent commit, ``compute_cardinal_to_bernstein_1d(36, np.float32)``
+    returned an array with 74 non-finite entries out of 1369 and emitted
+    ``RuntimeWarning: overflow encountered in cast``. Under this project's
+    ``filterwarnings = error`` that warning would fail this test on its own, so the check
+    below pins the absence of the warning as well as the refusal.
+    """
+    with pytest.raises(ValueError, match="outside the supported domain"):
+        compute_cardinal_to_bernstein_1d(36, np.float32)
+
+
+_UNLIMITED_BUILDERS: tuple[tuple[str, _Builder], ...] = (
+    ("compute_legendre_to_cardinal_1d", compute_legendre_to_cardinal_1d),
+    ("compute_monomial_to_bernstein_1d", compute_monomial_to_bernstein_1d),
+    *(
+        (
+            f"compute_lagrange_to_bernstein_1d[{variant.name}]",
+            (
+                lambda degree, dtype, variant=variant: compute_lagrange_to_bernstein_1d(
+                    degree, variant, dtype
+                )
+            ),
+        )
+        for variant in LagrangeVariant
+    ),
+)
+"""The builders documented as carrying no degree limit, in either dtype."""
+
+
+@pytest.mark.parametrize(
+    ("name", "builder"), _UNLIMITED_BUILDERS, ids=[case[0] for case in _UNLIMITED_BUILDERS]
+)
+@pytest.mark.parametrize("dtype", _DTYPES, ids=("float32", "float64"))
+def test_builders_without_a_domain_accept_a_high_degree(
+    name: str, builder: _Builder, dtype: _FloatType
+) -> None:
+    """A builder documented as unlimited must stay unlimited.
+
+    The module docstring says these run no solve that could go singular, so they carry no
+    degree limit. Nothing else pins that: extending the domain pattern to one of them by
+    mistake would be an over-restrictive validation on a legitimate call, and every other
+    test here would still pass. Degree 60 is far past every tabulated limit in the module.
+    """
+    degree = 60
+    matrix = np.asarray(builder(degree, dtype))
+    assert matrix.shape == (degree + 1, degree + 1)
+    assert np.all(np.isfinite(matrix)), f"{name} returned non-finite entries at degree {degree}"
+
+
+def test_far_outside_the_domain_still_refuses_cleanly() -> None:
+    """Well past the boundary, not just one degree past, the refusal is still the clean one.
+
+    Degree 40 in float32 is past where the *unguarded* computation starts producing
+    infinities (degree 34 for the Bernstein pair, 32 for the Legendre pair) and, for two of
+    these, past where it starts raising ``LinAlgError`` (37 and 38). The guard has to fire
+    first in every case, or one of those escapes instead.
+    """
+    for builder in (
+        compute_cardinal_to_bernstein_1d,
+        compute_bernstein_to_cardinal_1d,
+        compute_cardinal_to_legendre_1d,
+        compute_cardinal_dual_legendre_coeffs_1d,
+    ):
+        with pytest.raises(ValueError, match="outside the supported domain") as excinfo:
+            builder(40, np.float32)
+        assert not isinstance(excinfo.value, np.linalg.LinAlgError)
+
+
+def test_dtype_is_rejected_before_the_degree_domain() -> None:
+    """An unsupported dtype must still report the dtype, not a domain the dtype has no entry in.
+
+    ``_validate_degree_in_domain`` runs after ``_prepare_square_out``, so the dtype error
+    comes first. That ordering is what lets the domain lookup assume a validated dtype, and
+    nothing else pins it.
+    """
+    with pytest.raises(ValueError, match="dtype must be float32 or float64"):
+        compute_cardinal_to_bernstein_1d(100, np.float16)
+
+
+def test_refusal_leaves_a_caller_supplied_out_untouched() -> None:
+    """Refusing must not scribble in the caller's buffer.
+
+    ``out`` is validated (and so may be a real caller array) before the domain check runs, so
+    the check has to refuse without writing. A sentinel makes that observable.
+    """
+    degree = _CARDINAL_TO_BERNSTEIN_MAX_DEGREE.float32 + 1
+    out = np.full((degree + 1, degree + 1), 7.0, dtype=np.float32)
+    with pytest.raises(ValueError, match="outside the supported domain"):
+        compute_cardinal_to_bernstein_1d(degree, np.float32, out=out)
+    assert np.array_equal(out, np.full_like(out, 7.0)), "the refused call wrote into `out`"
+
+
+def test_cached_wrapper_propagates_the_domain_refusal() -> None:
+    """``functools.lru_cache`` must not swallow or reshape the refusal.
+
+    The extraction paths reach these builders through the cached wrappers, so a caller there
+    has to see the same message a direct call gives.
+    """
+    with pytest.raises(ValueError, match="compute_cardinal_to_bernstein_1d"):
+        _cached_cardinal_to_bernstein_matrix(
+            _CARDINAL_TO_BERNSTEIN_MAX_DEGREE.float32 + 1, np.dtype(np.float32)
+        )
+
+
+def test_extraction_degrees_stay_inside_the_domain() -> None:
+    """The Bezier extraction paths are unaffected by the domain (issue #311).
+
+    ``pantr.bspline._bspline_extraction`` and
+    ``pantr.bspline.spanwise_element_extraction`` reach two of these builders through the
+    cached matrices: the Lagrange-to-Bernstein one, which carries no limit, and the
+    cardinal-to-Bernstein one, which does. Their highest tested spline degree is 4, so this
+    asserts the margin rather than re-running those suites: were a future change to tighten
+    the limit below 4, the extraction tests would start failing for a reason that has
+    nothing to do with extraction.
+    """
+    highest_extraction_degree = 4
+    assert _CARDINAL_TO_BERNSTEIN_MAX_DEGREE.float32 >= highest_extraction_degree
+    assert _CARDINAL_TO_BERNSTEIN_MAX_DEGREE.float64 >= highest_extraction_degree
+
+
+def test_a_pathological_degree_is_refused_before_anything_is_allocated() -> None:
+    """The refusal must not be preceded by an attempt to allocate the matrix.
+
+    ``_validate_degree_in_domain`` runs before ``_prepare_square_out``. Without that
+    ordering a degree of 100000 would ask NumPy for a 10^10-entry array first, and the
+    caller would meet ``MemoryError`` -- an undocumented failure of exactly the kind this
+    domain exists to remove -- instead of the ``ValueError`` that names the argument.
+    """
+    with pytest.raises(ValueError, match="outside the supported domain"):
+        compute_cardinal_to_bernstein_1d(100_000, np.float64)
+
+
+def test_the_per_variant_limit_table_cannot_be_mutated() -> None:
+    """A shared lookup table must not be writable; ``Final`` only stops rebinding."""
+    with pytest.raises(TypeError):
+        _BERNSTEIN_TO_LAGRANGE_MAX_DEGREE[LagrangeVariant.EQUISPACES] = _DegreeLimit(  # type: ignore[index]
+            float32=99, float64=99
+        )
