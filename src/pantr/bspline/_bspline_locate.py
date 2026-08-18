@@ -1039,20 +1039,42 @@ class _LocateThresholds(NamedTuple):
     image, which dominate the cost of a bad batch, are unchanged at ``1.00x``: they never
     reach either threshold, so their trajectories are identical. A worst case of ``1.6x`` on
     the evaluation count, confined to geometry parametrized a million widths from the
-    origin, is what the accuracy above is bought with.
+    origin, is what the accuracy above is bought with. Those are this fixture's ratios, not
+    the range's: over 54 configurations (dimensions 1 to 3, degrees 1/3/5, ``n_elem`` 2/6,
+    reach ``1e4``/``1e6``/``1e8``, both target families) the worst measured is ``1.82x`` map
+    evaluations and ``1.53x`` Jacobians.
+
+    **How a solve now ends, which the split changes.** An on-image query used to terminate
+    by the convergence test; under the split it terminates by the line search stalling at
+    the parametric floor, or by ``max_iter``. So the iteration count is no longer bounded by
+    a threshold the map can meet, and ``max_iter`` is the only bound left. Measured, that
+    bound is not close: the maximum accepted steps per solve is 11 against a default budget
+    of 30, and doubling and quadrupling the budget moves neither the step count nor the
+    worst residual (identical to every digit at 30, 60 and 120), so the iteration is
+    stopping because it has run out of progress and not because it has run out of budget.
+    That is measured on the fixtures here rather than derived, and it is the property to
+    re-check if the tier is ever loosened or :data:`_ARMIJO_DECREASE` tightened.
 
     An explicit ``tol`` sets both. A caller who names a threshold has taken responsibility
     for what it means and may well be asking a proximity question rather than an inversion
     one, and refining past it would charge them for accuracy they did not ask for.
 
-    **The ordering is relied on, not enforced.** It holds by construction --
-    :func:`_geometric_scale` is a maximum over :func:`_physical_scale`, and an explicit
-    ``tol`` sets both members to itself -- and :func:`_newton_refine` uses it: it returns
+    **The ordering is relied on, not enforced.** It is not merely constructed but
+    *unbreakable* by rounding: both members are the same positive ``tier`` times a length,
+    :func:`_geometric_scale` is a maximum over :func:`_physical_scale` so the lengths are
+    ordered, and IEEE round-to-nearest multiplication is monotone, so ``a >= b`` gives
+    ``fl(t * a) >= fl(t * b)``. It cannot round the wrong way, and where ``parametric <=
+    physical`` the two are the same expression and bit-identical. An explicit ``tol`` sets
+    both members to itself. :func:`_newton_refine` uses this: it returns
     ``res_norm <= accept`` alone, with no separate record of which rows stopped, because a
     row that stopped at ``stop`` necessarily passes ``accept``. Were ``accept < stop`` ever
     constructed, the loop would end against the larger number and the verdict be taken
     against the smaller, so nearly every query would be reported not found -- a silent
-    collapse of coverage indistinguishable from genuine non-invertibility. No guard is
+    collapse of coverage indistinguishable from genuine non-invertibility. That failure is
+    one-sided, and that is what makes a guard unnecessary rather than merely inconvenient:
+    it costs coverage, which the caller sees as ``-1`` and ``nan``, and can never return a
+    coordinate above ``accept`` (measured by forcing ``stop = k * accept`` for ``k`` to
+    ``1e6``: found drops steadily, rows accepted above ``accept`` stay at zero). No guard is
     added, for the same reason :class:`_NewtonState`'s three invariants carry none: both
     construction sites are in this module and a few lines from the definition. What stands
     in for one is the suite, which pins the relation in both regimes -- equality for a knot
@@ -1364,6 +1386,10 @@ def _locate_impl(
     # on a 16x16-cell patch, mean candidates per query: 4.0 (of 256) at parametric offsets
     # up to 1e9, 7.0 at 1e11, 57.1 at 1e13 -- the blow-up starting only where the verdict is
     # already near-meaningless and _default_tolerance is about to refuse outright.
+    # AABB.pad rounds to nearest rather than outward, so the realized pad falls short by up
+    # to half an ulp of the coordinate. Since eps * x is at least ulp(x), the pad is at least
+    # 64 ulp and the shortfall at most 0.8 % of it -- absorbed by the tier, but it would stop
+    # being negligible if the threshold were ever built from get_strict instead.
     candidates = [np.sort(context.bvh.query_aabb(AABB(x, x).pad(thresholds.accept))) for x in pts]
     pending = [i for i, cand in enumerate(candidates) if cand.size > 0]
     found: list[int] = []
