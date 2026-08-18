@@ -1798,6 +1798,199 @@ class TestCoarsen:
         assert graded.num_total_basis != ungraded.num_total_basis
 
 
+def _thb_snapshot(thb: THBSplineSpace) -> tuple[object, ...]:
+    """Capture everything `coarsen`'s outcome can differ in.
+
+    The full block structure rather than a cell count, because two different
+    partitions can hold the same number of cells, plus the function count so a
+    change that leaves the mesh alone but rebuilds the space differently shows up.
+    """
+    grid = thb.grid
+    return (
+        grid.num_cells,
+        grid.max_level,
+        tuple(grid.active_blocks(lv) for lv in range(grid.max_level + 1)),
+        thb.num_total_basis,
+    )
+
+
+def _mesh_1d_three_levels() -> THBSplineSpace:
+    """Refine the left half, then its left half again, ungraded: levels 0, 1 and 2."""
+    base = THBSplineSpace(_root_1d(), _grid_1d())
+    half = base.refine([0, 1], admissible_class=None)
+    return half.refine(_cells_at_level(half, 1)[:2], admissible_class=None)
+
+
+def _mesh_2d_one_refine() -> THBSplineSpace:
+    """Refine the corner cell of a 4x4 mesh, graded."""
+    return THBSplineSpace(_root_2d(), _grid_2d()).refine([0])
+
+
+def _mesh_2d_nested() -> THBSplineSpace:
+    """Refine the corner cell, then one of its children: levels 0, 1 and 2."""
+    fine = _mesh_2d_one_refine()
+    return fine.refine(_cells_at_level(fine, 1)[:1])
+
+
+class TestCoarsenOutcomesArePinned:
+    """The exact state `coarsen` leaves, scenario by scenario.
+
+    `TestCoarsen` above checks the properties coarsening must have.  These pin the
+    *outcome* — the whole active-block structure and the function count — on meshes
+    chosen so the admissibility guard vetoes everything in some and nothing in
+    others, so that a change to which parents are demoted, or to the order they are
+    demoted in, moves at least one of these tuples.  The values were recorded from
+    the implementation that looped over parents itself, before the grouping moved
+    onto :meth:`~pantr.grid.HierarchicalGrid.coarsen_cells`.
+    """
+
+    @pytest.mark.parametrize(
+        ("mesh", "select", "admissible_class", "expected"),
+        [
+            (
+                _mesh_1d_three_levels,
+                lambda thb: _cells_at_level(thb, 1),
+                2,
+                (8, 2, ((((2,), (4,)),), (((2,), (4,)),), (((0,), (4,)),)), 10),
+            ),
+            (
+                _mesh_1d_three_levels,
+                lambda thb: _cells_at_level(thb, 1),
+                None,
+                (7, 2, ((((1,), (4,)),), (), (((0,), (4,)),)), 9),
+            ),
+            (
+                _mesh_1d_three_levels,
+                lambda thb: _cells_at_level(thb, 2),
+                2,
+                (6, 1, ((((2,), (4,)),), (((0,), (4,)),)), 8),
+            ),
+            (
+                _mesh_1d_three_levels,
+                lambda thb: _cells_at_level(thb, 2),
+                None,
+                (6, 1, ((((2,), (4,)),), (((0,), (4,)),)), 8),
+            ),
+            (
+                _mesh_1d_three_levels,
+                lambda thb: _cells_at_level(thb, 1) + _cells_at_level(thb, 2),
+                None,
+                (5, 1, ((((1,), (4,)),), (((0,), (2,)),)), 7),
+            ),
+            (
+                _mesh_1d_three_levels,
+                lambda thb: _cells_at_level(thb, 2)[:1],
+                None,
+                (8, 2, ((((2,), (4,)),), (((2,), (4,)),), (((0,), (4,)),)), 10),
+            ),
+            (
+                _mesh_2d_one_refine,
+                lambda thb: _cells_at_level(thb, 1),
+                2,
+                (16, 0, ((((0, 0), (4, 4)),),), 36),
+            ),
+            (
+                _mesh_2d_one_refine,
+                lambda thb: _cells_at_level(thb, 1),
+                None,
+                (16, 0, ((((0, 0), (4, 4)),),), 36),
+            ),
+            (
+                _mesh_2d_nested,
+                lambda thb: _cells_at_level(thb, 2),
+                2,
+                (
+                    28,
+                    1,
+                    ((((0, 2), (2, 4)), ((2, 0), (4, 4))), (((0, 0), (4, 4)),)),
+                    48,
+                ),
+            ),
+            (
+                _mesh_2d_nested,
+                lambda thb: _cells_at_level(thb, 2) + _cells_at_level(thb, 1)[:2],
+                None,
+                (
+                    28,
+                    1,
+                    ((((0, 2), (2, 4)), ((2, 0), (4, 4))), (((0, 0), (4, 4)),)),
+                    48,
+                ),
+            ),
+            (
+                _mesh_2d_nested,
+                lambda thb: _cells_at_level(thb, 0)[:3],
+                2,
+                (
+                    31,
+                    2,
+                    (
+                        (((0, 2), (2, 4)), ((2, 0), (4, 4))),
+                        (((0, 1), (1, 4)), ((1, 0), (4, 4))),
+                        (((0, 0), (2, 2)),),
+                    ),
+                    51,
+                ),
+            ),
+            (
+                _mesh_2d_nested,
+                lambda _: [],
+                2,
+                (
+                    31,
+                    2,
+                    (
+                        (((0, 2), (2, 4)), ((2, 0), (4, 4))),
+                        (((0, 1), (1, 4)), ((1, 0), (4, 4))),
+                        (((0, 0), (2, 2)),),
+                    ),
+                    51,
+                ),
+            ),
+        ],
+        ids=[
+            "1d-level1-graded-vetoed",
+            "1d-level1-ungraded",
+            "1d-level2-graded",
+            "1d-level2-ungraded",
+            "1d-two-levels-at-once",
+            "1d-partial-parent",
+            "2d-level1-graded",
+            "2d-level1-ungraded",
+            "2d-nested-level2-graded",
+            "2d-nested-mixed-levels",
+            "2d-level0-ids-only",
+            "2d-empty",
+        ],
+    )
+    def test_coarsen_outcome(
+        self,
+        mesh: Callable[[], THBSplineSpace],
+        select: Callable[[THBSplineSpace], list[int]],
+        admissible_class: int | None,
+        expected: tuple[object, ...],
+    ) -> None:
+        thb = mesh()
+        result = thb.coarsen(select(thb), admissible_class=admissible_class)
+        assert _thb_snapshot(result) == expected
+        # The space is immutable: the mesh it was called on is untouched.
+        assert _thb_snapshot(thb) == _thb_snapshot(mesh())
+
+    def test_the_graded_and_ungraded_pins_actually_differ(self) -> None:
+        """Guard against a table where every graded row happens to match its ungraded twin.
+
+        Without this the whole parametrization could pass with the admissibility guard
+        deleted.  On this mesh the guard vetoes the only coarsening available, so the
+        two rows differ in every component.
+        """
+        thb = _mesh_1d_three_levels()
+        marked = _cells_at_level(thb, 1)
+        graded = _thb_snapshot(thb.coarsen(marked, admissible_class=2))
+        ungraded = _thb_snapshot(thb.coarsen(marked, admissible_class=None))
+        assert graded != ungraded
+        assert graded == _thb_snapshot(thb)  # vetoed: nothing changed at all
+
+
 class TestRestriction:
     """The fine->coarse restriction is the pseudo-inverse of the prolongation."""
 
