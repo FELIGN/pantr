@@ -51,6 +51,28 @@ larger than in the ``float64`` case. Measured worst case over the cases below:
 ``5.2e-6``; the ``1e-4`` leaves a factor of 19.
 """
 
+_PARAMETRIC_ULPS_ALLOWED: float = 4.0
+"""
+How many parametric ulps' worth of residual a returned coordinate may carry.
+
+One ulp of a parametric coordinate is ``eps * |xi_k|``, which the map turns into a physical
+displacement of ``eps * |xi_k| * ||J e_k||``; :func:`_parametric_scale` is exactly that
+product with the control net's span standing in for the local stretch, so
+``eps * _parametric_scale(spline)`` is the physical length the parametrization quantizes at
+and no returned coordinate can do better than a fraction of it. The bound is therefore
+``_PARAMETRIC_ULPS_ALLOWED * eps * _parametric_scale(spline)``, which is the acceptance
+threshold divided by ``64 / _PARAMETRIC_ULPS_ALLOWED``.
+
+**Why four.** Two ulps for where the last Newton step lands relative to the true root, and a
+factor of two for the fixture's local stretch against the net-span average the substitution
+uses. Measured on :func:`_parametrically_offset_patch`: the worst residual is ``0.22`` of a
+single ulp's image for targets that are exact images and ``0.82`` for targets a half ulp off
+one, so the bound carries between five and eighteen times its measured requirement. The
+single-threshold policy it replaces violates it on 9 of 60 queries in both families, with a
+worst case of 52 ulps, so nothing about the number is delicate: no factor between 1 and 16
+separates the two policies differently.
+"""
+
 _PARAMETRIC_OFFSETS: list[float] = [0.0, 1.0e2, 1.0e3, 1.0e4, 1.0e6]
 """
 Parametric offsets of a unit-width knot span, spanning the resolution frontier.
@@ -161,10 +183,47 @@ def _warped_patch(dim: int = 2, degree: int = 1, n_elem: int = 6, offset: float 
     """
     knots = np.concatenate([np.zeros(degree), np.linspace(0.0, 1.0, n_elem + 1), np.ones(degree)])
     space = BsplineSpace([BsplineSpace1D(knots, degree) for _ in range(dim)])
+    return Bspline(space, np.ascontiguousarray(_warped_lattice(space) + offset))
+
+
+def _warped_lattice(space: BsplineSpace) -> npt.NDArray[np.float64]:
+    """Return the unit-box control lattice of ``space`` under the 15 % sinusoidal warp.
+
+    Shared by :func:`_warped_patch` and :func:`_parametrically_offset_patch` so that the
+    two differ in their *knot vectors* alone and any difference between them is
+    attributable to the parametrization.
+    """
     axes = [np.linspace(0.0, 1.0, n) for n in space.num_basis]
     cp = np.stack(np.meshgrid(*axes, indexing="ij"), axis=-1)
-    cp = cp + 0.15 * np.sin(2.0 * np.pi * cp.sum(axis=-1))[..., None] + offset
-    return Bspline(space, np.ascontiguousarray(cp))
+    return np.asarray(cp + 0.15 * np.sin(2.0 * np.pi * cp.sum(axis=-1))[..., None])
+
+
+def _parametrically_offset_patch(
+    degree: int = 3, n_elem: int = 4, offset: float = 1.0e6
+) -> Bspline:
+    """Return the warped unit patch with direction 1 parametrized on ``[offset, offset + 1]``.
+
+    The geometry is :func:`_warped_patch`'s, so the physical half of the threshold is the
+    one of a unit-sized patch at the origin; only direction 1's knot vector moves. That
+    separates the two halves as far as they go: direction 0 has reach zero and direction 1
+    reach ``offset``, so the acceptance threshold is six decades above the stopping one
+    while the geometry it grades is unchanged.
+
+    A bivariate map rather than a univariate one, and the offset in one direction only,
+    because that is the configuration in which the two thresholds are least alike.
+    """
+    spaces = []
+    for direction_offset in (0.0, offset):
+        knots = np.concatenate(
+            [
+                np.full(degree, direction_offset),
+                np.linspace(direction_offset, direction_offset + 1.0, n_elem + 1),
+                np.full(degree, direction_offset + 1.0),
+            ]
+        )
+        spaces.append(BsplineSpace1D(knots, degree))
+    space = BsplineSpace(spaces)
+    return Bspline(space, np.ascontiguousarray(_warped_lattice(space)))
 
 
 def _folded_patch() -> Bspline:
@@ -314,6 +373,17 @@ def _anisotropic_patch(offset1: float, extent1: float, degree: int = 2, n_elem: 
         axes.append((_greville_abscissae(sub) - offset) * extent)
     cp = np.stack(np.meshgrid(*axes, indexing="ij"), axis=-1)
     return Bspline(BsplineSpace(spaces), np.ascontiguousarray(cp))
+
+
+def _parametric_ulp_image(spline: Bspline) -> float:
+    """Return the physical displacement one ulp of a parametric coordinate produces.
+
+    The resolution floor of the parametrization, and the unit
+    :data:`_PARAMETRIC_ULPS_ALLOWED` counts. It is the acceptance threshold divided by the
+    tolerance tier, so it moves with the geometry and with the knot vector exactly as the
+    threshold does and carries no constant of its own.
+    """
+    return float(np.finfo(np.float64).eps) * _parametric_scale(spline)
 
 
 def _physical_only_scale(spline: Bspline) -> float:
@@ -1391,6 +1461,65 @@ class TestParametricStretch:
         for offset in (1.0e2, 1.0e6, 1.0e10, 1.0e12):
             spline = _offset_identity_patch(offset, degree=1, n_elem=1)
             assert spline.locate(np.array([0.5]))[0].tolist() == [0], f"refused at {offset}"
+
+
+class TestStoppingVersusAcceptance:
+    """One threshold cannot be both the accuracy contract and the attainability bound.
+
+    The physical half of the scale says what accuracy a returned coordinate is entitled to;
+    the parametric half says how far below the residual no *representable* parameter can go.
+    Stopping at the second delivers only the second, and on a knot vector far from the
+    parametric origin the two are six decades apart. These pin that the iteration stops at
+    the tighter one while acceptance stays at the looser one, on the geometry where the gap
+    is widest.
+    """
+
+    def test_the_answer_is_as_accurate_as_the_parametrization_allows(self) -> None:
+        """Targets that are exact images are inverted to the parametric grid, not to the bar.
+
+        Sampling the parameter first and mapping it forward makes the preimage a fact about
+        each query, and it is *representable*, so the attainable residual is zero and
+        anything the solver leaves on the table is the stopping rule's doing. The bound is
+        the parametrization's own quantization; see :data:`_PARAMETRIC_ULPS_ALLOWED`.
+        """
+        spline = _parametrically_offset_patch()
+        xi_true = _sample_parametric(spline, 60, seed=321)
+        targets = _evaluate_at(spline, xi_true)
+        bound = _PARAMETRIC_ULPS_ALLOWED * _parametric_ulp_image(spline)
+
+        cell_ids, ref_coords = spline.locate(targets)
+
+        assert np.all(cell_ids >= 0), f"lost {int(np.sum(cell_ids < 0))} of 60 queries"
+        residuals = np.linalg.norm(_evaluate_at(spline, ref_coords) - targets, axis=1)
+        over = int(np.sum(residuals > bound))
+        assert over == 0, (
+            f"{over} of 60 coordinates stopped short: worst {residuals.max():.3e} over a "
+            f"parametric-resolution bound of {bound:.3e}"
+        )
+        _assert_cell_contains(spline, cell_ids, ref_coords)
+
+    def test_a_target_no_representable_parameter_reaches_is_still_found(self) -> None:
+        """The looser bar keeps its coverage while the tighter one sets the accuracy.
+
+        Half-ulp targets have no exact preimage at all, so the tight threshold alone loses
+        every one of them (measured: 60 of 60). They must still come back found, and with
+        the residual the parametric grid allows rather than the one the acceptance bar does.
+        """
+        spline = _parametrically_offset_patch()
+        xi_true = _sample_parametric(spline, 60, seed=321)
+        targets = _half_ulp_targets(spline, xi_true)
+        bound = _PARAMETRIC_ULPS_ALLOWED * _parametric_ulp_image(spline)
+
+        cell_ids, ref_coords = spline.locate(targets)
+
+        assert np.all(cell_ids >= 0), f"lost {int(np.sum(cell_ids < 0))} of 60 queries"
+        residuals = np.linalg.norm(_evaluate_at(spline, ref_coords) - targets, axis=1)
+        over = int(np.sum(residuals > bound))
+        assert over == 0, (
+            f"{over} of 60 coordinates stopped short: worst {residuals.max():.3e} over a "
+            f"parametric-resolution bound of {bound:.3e}"
+        )
+        _assert_cell_contains(spline, cell_ids, ref_coords)
 
 
 class TestNearCriticalJacobian:
