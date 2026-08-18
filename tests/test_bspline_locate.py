@@ -9,6 +9,7 @@ import numpy as np
 import numpy.typing as npt
 import pytest
 
+from pantr._numba_compat import wait_for_jit_warmup
 from pantr.bspline import Bspline, BsplineSpace, BsplineSpace1D
 from pantr.bspline._bspline_locate import (
     _cell_midpoints,
@@ -46,6 +47,15 @@ The convergence threshold is :func:`pantr.tolerance.get_default` for ``float32``
 (``1e-6``) times the geometric scale, so the coordinate error is four orders of magnitude
 larger than in the ``float64`` case. Measured worst case over the cases below:
 ``5.2e-6``; the ``1e-4`` leaves a factor of 19.
+"""
+
+_PARAMETRIC_OFFSETS: list[float] = [0.0, 1.0e2, 1.0e3, 1.0e4, 1.0e6]
+"""
+Parametric offsets of a unit-width knot span, spanning the resolution frontier.
+
+On the fixture below the attainable residual floor is ``0.008`` of the physical-only
+threshold at ``0``, half of it at ``1e2``, and four times it at ``1e3`` -- the first row
+that is impossible to satisfy. At ``1e6`` it is 4096 times the threshold.
 """
 
 _CYCLING_PARAMETER: npt.NDArray[np.float64] = np.array([[0.05411231, 0.64513102]])
@@ -188,6 +198,65 @@ def _collapsed_edge_patch() -> Bspline:
     return Bspline(BsplineSpace([sub, sub]), cp)
 
 
+def _offset_identity_patch(
+    offset: float, degree: int = 2, n_elem: int = 4, dim: int = 1, size: float = 1.0
+) -> Bspline:
+    """Return ``F(xi) = size * (xi - offset)`` on the parametric box ``[offset, offset + 1]``.
+
+    The map is *exactly* affine: the control points are the Greville abscissae less the
+    offset, scaled by ``size``, and linear precision reproduces an affine map exactly. So
+    every singular value of the Jacobian is ``size`` at every point, which is the best
+    conditioned a non-degenerate map can be. Whatever such a patch loses is therefore lost
+    to the parametrization's own resolution and not to conditioning, which is what makes it
+    the fixture for moving the parametric offset while holding the geometry fixed.
+    """
+    knots = np.concatenate(
+        [
+            np.full(degree, offset),
+            np.linspace(offset, offset + 1.0, n_elem + 1),
+            np.full(degree, offset + 1.0),
+        ]
+    )
+    spaces = [BsplineSpace1D(knots, degree) for _ in range(dim)]
+    axes = [size * (_greville_abscissae(sub) - offset) for sub in spaces]
+    mesh = np.meshgrid(*axes, indexing="ij")
+    cp = np.stack(mesh, axis=-1) if dim > 1 else mesh[0][:, np.newaxis]
+    return Bspline(BsplineSpace(spaces), np.ascontiguousarray(cp))
+
+
+def _half_ulp_targets(spline: Bspline, xi_true: npt.NDArray[np.float64]) -> npt.NDArray[np.float64]:
+    """Return targets midway between the images of two consecutive representable parameters.
+
+    The hardest request the parametric grid can carry: the target sits halfway between
+    ``F(xi)`` and ``F(nextafter(xi))``, so no representable parameter maps nearer than half
+    the local image spacing, however good the solver is. Asking for the image of ``xi``
+    itself would instead make the exact preimage a solution and hide the resolution limit
+    entirely.
+    """
+    domain = np.asarray(spline.space.domain, dtype=np.float64)
+    upper = np.nextafter(xi_true, domain[:, 1])
+    return 0.5 * (_evaluate_at(spline, xi_true) + _evaluate_at(spline, upper))
+
+
+def _attainable_floor_1d(
+    spline: Bspline, xi_true: npt.NDArray[np.float64], targets: npt.NDArray[np.float64]
+) -> float:
+    """Return the smallest residual any representable parameter can reach, over the queries.
+
+    Scans each parameter and its two neighbours. On a strictly increasing one-dimensional
+    map that is exhaustive rather than a sample: the residual is unimodal in the parameter,
+    so its minimum over *all* representable parameters is attained at one of the two
+    bracketing the target, and widening the scan cannot lower it.
+    """
+    lo, hi = np.asarray(spline.space.domain, dtype=np.float64)[0]
+    worst = 0.0
+    for xi, target in zip(xi_true[:, 0].tolist(), targets[:, 0].tolist(), strict=True):
+        neighbours = np.array([[np.nextafter(xi, lo)], [xi], [np.nextafter(xi, hi)]])
+        residuals = np.abs(_evaluate_at(spline, neighbours)[:, 0] - target)
+        worst = max(worst, float(residuals.min()))
+    return worst
+
+
 def _scale_of(spline: Bspline) -> float:
     """Return the geometric scale the default tolerance is expressed in."""
     return _geometric_scale(*_cell_physical_bounds(spline))
@@ -215,7 +284,17 @@ def _sample_parametric(
 
 
 def _evaluate_at(spline: Bspline, xi: npt.NDArray[np.float64]) -> npt.NDArray[np.float64]:
-    """Evaluate ``spline`` at ``(n, dim)`` parametric points, always returning ``(n, rank)``."""
+    """Evaluate ``spline`` at ``(n, dim)`` parametric points, always returning ``(n, rank)``.
+
+    Waits for the import-time JIT warmup first, for the reason
+    :class:`TestNumbaWarmup` states: :meth:`Bspline.evaluate` is not itself behind that
+    barrier, so a test that evaluates before it locates is a bare ``parallel=True`` call
+    racing the background compilation thread, and the process *aborts* rather than raising.
+    Measured on this file: a selection whose first act is a burst of evaluations aborted 5
+    of 5 runs without this, and 0 of 5 with it. The barrier is once per process, so every
+    call after the first costs nothing.
+    """
+    wait_for_jit_warmup()
     pts = np.ascontiguousarray((xi[:, 0] if spline.dim == 1 else xi).astype(spline.dtype))
     values = spline.evaluate(pts)
     return np.asarray(values, dtype=np.float64).reshape(xi.shape[0], spline.rank)
@@ -865,6 +944,209 @@ class TestToleranceScaling:
         cp = np.full((2, 2, 2), 1.0e-6, dtype=np.float64)
         point_map = Bspline(BsplineSpace([sub, sub]), cp)
         assert _scale_of(point_map) == pytest.approx(1.0e-6, rel=1e-12)
+
+
+class TestParametricResolution:
+    """The default threshold also follows what the *parametrization* can resolve.
+
+    One ulp of a parametric coordinate is ``eps * |xi|``, which a map of stretch ``sigma``
+    turns into a physical residual of ``eps * |xi| * sigma``. A threshold read off the
+    physical side alone is therefore unreachable for a knot span sitting far from the origin
+    relative to its own width, and every query on such a patch is reported not found although
+    it has a preimage.
+    """
+
+    def test_the_frontier_parametric_offset_is_recovered(self) -> None:
+        """The exact case where the attainable floor first passes the old threshold.
+
+        At an offset of ``1e3`` on a unit-width knot span the smallest residual any
+        representable parameter can reach is four times the threshold the old rule demanded,
+        so all 25 queries were reported not found. Kept as its own test, separate from the
+        sweep, because it is the frontier: a threshold that grew with the offset but too
+        slowly would still pass the ``0`` and ``1e2`` rows and fail here.
+        """
+        spline = _offset_identity_patch(1.0e3)
+        xi_true = _sample_parametric(spline, 25, seed=11, margin=0.05)
+        targets = _half_ulp_targets(spline, xi_true)
+        floor = _attainable_floor_1d(spline, xi_true, targets)
+
+        cell_ids, ref_coords = spline.locate(targets)
+
+        tol = get_default(spline.dtype) * _scale_of(spline)
+        assert floor <= tol, f"the request is impossible: floor {floor:.3e} over tol {tol:.3e}"
+        assert np.all(cell_ids >= 0), f"lost {int(np.sum(cell_ids < 0))} of 25 queries"
+        residuals = np.abs(_evaluate_at(spline, ref_coords)[:, 0] - targets[:, 0])
+        assert residuals.max() <= tol
+
+    @pytest.mark.parametrize("offset", _PARAMETRIC_OFFSETS)
+    def test_a_shifted_knot_span_loses_no_query_that_has_a_preimage(self, offset: float) -> None:
+        """Every offset of the ticket's table, including the ``1e6`` end.
+
+        The geometry is identical in all five rows -- the same unit segment, the same
+        Jacobian of exactly one -- and only the knot vector moves, so a row that loses points
+        can only have lost them to the parametrization.
+        """
+        spline = _offset_identity_patch(offset)
+        xi_true = _sample_parametric(spline, 25, seed=11, margin=0.05)
+        targets = _half_ulp_targets(spline, xi_true)
+
+        cell_ids, ref_coords = spline.locate(targets)
+
+        assert np.all(cell_ids >= 0), f"lost {int(np.sum(cell_ids < 0))} of 25 at offset {offset}"
+        residuals = np.abs(_evaluate_at(spline, ref_coords)[:, 0] - targets[:, 0])
+        assert residuals.max() <= get_default(spline.dtype) * _scale_of(spline)
+
+    @pytest.mark.parametrize("offset", _PARAMETRIC_OFFSETS)
+    def test_the_threshold_stays_above_the_attainable_floor(self, offset: float) -> None:
+        """The derivation, checked directly rather than through the solver.
+
+        What went wrong was not a solver that gave up but a bar set below anything a float64
+        parameter can reach. This measures the bar and the floor separately and asserts the
+        order between them, so it still fails if a future change makes the queries pass for
+        some unrelated reason.
+        """
+        spline = _offset_identity_patch(offset)
+        xi_true = _sample_parametric(spline, 25, seed=11, margin=0.05)
+        targets = _half_ulp_targets(spline, xi_true)
+
+        floor = _attainable_floor_1d(spline, xi_true, targets)
+        tol = get_default(spline.dtype) * _scale_of(spline)
+
+        assert floor <= tol, f"floor {floor:.3e} over tol {tol:.3e} at offset {offset}"
+
+    @pytest.mark.parametrize(
+        ("name", "spline", "expected"),
+        [
+            ("quarter annulus", _quarter_annulus(), 2.8284271247461903),
+            ("warped 2-D degree 1", _warped_patch(), 1.781637023790572),
+            ("warped 3-D degree 3", _warped_patch(dim=3, degree=3, n_elem=3), 2.226234269696677),
+            ("perturbed degree 3 on [0, 4]", _perturbed_patch(3, 4, 2, seed=7), 5.910822971201255),
+            ("folded", _folded_patch(), 2.6704143675085485),
+            ("stretched", _stretched_patch(), 2.27072620893615),
+            (
+                "identity 2-D degree 2",
+                _identity_map([0.0, 0.0, 0.0, 0.5, 1.0, 1.0, 1.0], 2, 2),
+                1.4142135623730951,
+            ),
+        ],
+    )
+    def test_a_knot_vector_starting_at_the_origin_keeps_todays_scale(
+        self, name: str, spline: Bspline, expected: float
+    ) -> None:
+        """Ordinary geometry is held to exactly the bar it was held to before.
+
+        The threshold is an accuracy contract rather than a safety margin, so loosening it
+        degrades every returned coordinate one-for-one. A knot vector spanning ``[0, L]``
+        resolves its own extent to ``eps`` relative -- the parametric term is at its floor
+        there -- and these are the values measured before the term existed.
+        """
+        assert _scale_of(spline) == pytest.approx(expected, rel=1e-15), name
+
+    @pytest.mark.parametrize("half_width", [1.0, 1.0e-3, 1.0e6])
+    def test_a_knot_vector_centred_on_the_origin_keeps_todays_scale(
+        self, half_width: float
+    ) -> None:
+        """A symmetric parametrization resolves its extent better than a one-sided one.
+
+        On ``[-a, a]`` the largest coordinate is half the extent, so the parametric term is
+        half the physical one and can never be what decides the threshold. Pinning this
+        keeps a future form of the term from reading the *extent* where it must read the
+        distance from the origin.
+        """
+        degree, n_elem = 2, 4
+        knots = np.concatenate(
+            [
+                np.full(degree, -half_width),
+                np.linspace(-half_width, half_width, n_elem + 1),
+                np.full(degree, half_width),
+            ]
+        )
+        space = BsplineSpace1D(knots, degree)
+        cp = np.ascontiguousarray(_greville_abscissae(space)[:, np.newaxis])
+        spline = Bspline(BsplineSpace([space]), cp)
+
+        # Diagonal and magnitude of the image ``[-a, a]``: ``2a`` and ``a``.
+        assert _scale_of(spline) == pytest.approx(2.0 * half_width, rel=1e-15)
+
+    @pytest.mark.parametrize("size", [1.0e-3, 1.0, 1.0e3])
+    @pytest.mark.parametrize("offset", [0.0, 1.0e2, 1.0e3, 1.0e6])
+    @pytest.mark.parametrize("dim", [1, 2])
+    def test_the_sweep_over_offsets_and_physical_scales_loses_nothing(
+        self, dim: int, offset: float, size: float
+    ) -> None:
+        """Parametric offset and physical size vary independently; neither may lose a query.
+
+        Two decades of geometry either side of unit size crossed with four parametric
+        offsets. Sampling the parameter first and mapping it forward is what makes "has a
+        preimage" a fact about each query, and the map is injective here, so a ``-1`` would
+        be unambiguously wrong.
+        """
+        spline = _offset_identity_patch(offset, degree=2, n_elem=3, dim=dim, size=size)
+        xi_true = _sample_parametric(spline, 40, seed=int(dim * 977 + np.log10(size + 1.0)))
+        targets = _half_ulp_targets(spline, xi_true)
+
+        cell_ids, ref_coords = spline.locate(targets)
+
+        lost = np.flatnonzero(cell_ids < 0)
+        assert lost.size == 0, f"lost {lost.size} of 40 at {dim=}, {offset=}, {size=}"
+        residuals = np.linalg.norm(_evaluate_at(spline, ref_coords) - targets, axis=1)
+        tol = get_default(spline.dtype) * _scale_of(spline)
+        assert residuals.max() <= tol, f"worst residual {residuals.max():.3e} over tol {tol:.3e}"
+        _assert_cell_contains(spline, cell_ids, ref_coords)
+
+    @pytest.mark.parametrize("lam", [1.0e-6, 1.0e-3, 1.0e3, 1.0e6])
+    def test_the_scale_is_invariant_under_scaling_the_parametrization(self, lam: float) -> None:
+        """Rescaling the knot vector alone changes no physical quantity, so it changes no bar.
+
+        Under ``xi -> lam * xi`` the coordinate magnitude grows by ``lam`` and the Jacobian
+        shrinks by it, so the physical residual a one-ulp parametric step produces is
+        untouched. A term reading the parametric magnitude *without* dividing by the extent
+        would scale the threshold here and break covariance.
+        """
+        base = _offset_identity_patch(1.0e3, degree=2, n_elem=4)
+        knots = lam * np.asarray(base.space.spaces[0].knots, dtype=np.float64)
+        space = BsplineSpace1D(knots, base.space.spaces[0].degree)
+        rescaled = Bspline(BsplineSpace([space]), np.asarray(base.control_points).copy())
+
+        assert _scale_of(rescaled) == pytest.approx(_scale_of(base), rel=1e-12)
+
+    @pytest.mark.parametrize("lam", [1.0e-6, 1.0e-3, 1.0e3, 1.0e6])
+    def test_the_scale_is_proportional_to_the_geometry_at_a_parametric_offset(
+        self, lam: float
+    ) -> None:
+        """Scaling the geometry scales the threshold, offset parametrization included.
+
+        The parametric term is a physical length like the other two, so it must carry the
+        geometry's own factor rather than sit at a fixed size beside it.
+        """
+        unit = _offset_identity_patch(1.0e3, degree=2, n_elem=4, size=1.0)
+        scaled = _offset_identity_patch(1.0e3, degree=2, n_elem=4, size=lam)
+
+        assert _scale_of(scaled) == pytest.approx(lam * _scale_of(unit), rel=1e-12)
+
+    def test_a_parametric_direction_with_no_extent_keeps_the_scale_finite(self) -> None:
+        """A direction with no interval leaves nothing to divide by, and must not divide.
+
+        ``BsplineSpace1D`` accepts ``[a, a, a, a]``: a legal space with zero intervals, whose
+        domain has zero extent. The parametric term reads an extent as a denominator, so this
+        is the one input that could turn the threshold into ``inf`` or ``nan`` -- and an
+        infinite threshold reports every query "found", which is worse than the "not found"
+        this ticket exists to remove.
+
+        Exercised on the scale directly rather than through :meth:`Bspline.locate`, which
+        raises on such a space for an unrelated reason: with no knot-span cell there is no
+        per-cell box to reduce over. Guarding the division here keeps the term total on its
+        own inputs whatever that separate question is settled to.
+        """
+        box_lo = np.array([[0.0, 0.0]])
+        box_hi = np.array([[1.0, 1.0]])
+        domain = np.array([[5.0, 5.0], [0.0, 1.0]])
+
+        scale = _geometric_scale(box_lo, box_hi, domain)
+
+        assert np.isfinite(scale) and scale > 0.0
+        # The zero-extent direction contributes nothing; the ordinary one gives reach 1.
+        assert scale == pytest.approx(_geometric_scale(box_lo, box_hi, domain[1:]), rel=1e-15)
 
 
 class TestNearCriticalJacobian:
