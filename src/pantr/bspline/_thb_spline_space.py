@@ -1691,10 +1691,13 @@ class THBSplineSpace:
 
         A parent cell is reactivated (its children removed) only when **all** of its
         children are marked active leaves, mirroring the coarsening algorithm of
-        Carraturo et al. (2019, Alg. 5).  With ``admissible_class=None`` this is the
-        exact inverse of :meth:`refine`: ``space.refine(cells).coarsen(children_of(cells))``
-        recovers ``space``.  With ``admissible_class=m`` the guard may suppress some
-        coarsenings, so the recovery holds only when the guard permits them all.
+        Carraturo et al. (2019, Alg. 5).  That rule is
+        :meth:`~pantr.grid.HierarchicalGrid.coarsen_cells`, which this method drives one
+        parent at a time so the admissibility guard below can veto a parent without
+        affecting the rest.  With ``admissible_class=None`` this is the exact inverse of
+        :meth:`refine`: ``space.refine(cells).coarsen(children_of(cells))`` recovers
+        ``space``.  With ``admissible_class=m`` the guard may suppress some coarsenings,
+        so the recovery holds only when the guard permits them all.
 
         With ``admissible_class=m`` (the default ``m=2``) a parent is reactivated only
         if its coarsening neighborhood (Def. 3.5) is empty, so the resulting mesh stays
@@ -1739,20 +1742,25 @@ class THBSplineSpace:
             if level >= 1
         }
         grid_copy = copy.deepcopy(self._grid)
+        # Deepest parent first, so a veto is decided against a mesh whose finer
+        # coarsenings have already happened.
         for parent_level, pmidx in sorted(parents, key=lambda pc: -pc[0]):
-            children = [
-                tuple(pmidx[d] * factor[d] + off[d] for d in range(dim))
-                for off in itertools.product(*(range(factor[d]) for d in range(dim)))
-            ]
-            if not all(grid_copy.is_active_leaf(parent_level + 1, c) for c in children):
-                continue
-            if not all((parent_level + 1, c) in marked for c in children):
-                continue
             if admissible_class is not None and not self._coarsening_neighborhood_empty(
                 parent_level, pmidx, admissible_class, grid_copy
             ):
                 continue
-            grid_copy.coarsen(parent_level, list(pmidx), [p + 1 for p in pmidx])
+            # Name this parent's marked children on the current grid -- every coarsening
+            # reassigns flat ids, so they are resolved afresh here rather than kept.
+            child_ids: list[int] = []
+            for child in itertools.product(
+                *(range(pmidx[d] * factor[d], (pmidx[d] + 1) * factor[d]) for d in range(dim))
+            ):
+                cid = grid_copy.cell_id(parent_level + 1, child)
+                if cid is not None and (parent_level + 1, child) in marked:
+                    child_ids.append(cid)
+            # coarsen_cells demotes the parent only if all of its children are named,
+            # which is the "all children marked active leaves" rule of Alg. 5.
+            grid_copy.coarsen_cells(child_ids)
         return THBSplineSpace(
             self._root_space,
             grid_copy,
