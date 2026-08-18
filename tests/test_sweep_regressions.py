@@ -7,7 +7,7 @@ XPASS failure, and the marker comes off, promoting the test to a permanent guard
 same data. That is the convention ``tests/test_review_regressions.py`` follows for the
 June 2026 review, whose markers have all since been removed.
 
-Eleven markers have already come off here: the domain-membership test, closed by the
+Twelve markers have already come off here: the domain-membership test, closed by the
 ``np.isclose`` tolerance-leak fix in #289; the tanh-sinh endpoint test, closed by
 truncating the rule where the endpoint gap stops being resolvable; the Lagrange
 reproducibility test, closed by seeding the barycentric node permutation; the float32
@@ -21,12 +21,13 @@ holding the repeated-iterate stop to Corollary 14's actual hypothesis; and four 
 together by the tolerance-semantics pass -- the two knot-snapping tests and the unique-knot
 accessor directly, and the restriction that returned a shorter domain than asked for as a
 consequence, since its ``b_new + tol`` step ceased to be a no-op once ``tol`` carried the
-knot vector's magnitude.
+knot vector's magnitude; and the change of basis that reported numpy's ``LinAlgError`` for a
+legal degree, closed by giving every builder that solves a declared, documented
+``(degree, dtype)`` domain and a ``ValueError`` that names the argument at fault.
 
-Three remain open, all from the August 2026 triage of the full profile: knot-vector
-factories that disagree with their own documentation at zero intervals, a Lagrange
-extraction that cannot be built on a degree-0 space its two sibling extractions handle, and
-a change of basis that reports numpy's `LinAlgError` for a legal degree.
+Two remain open, both from the August 2026 triage of the full profile: knot-vector
+factories that disagree with their own documentation at zero intervals, and a Lagrange
+extraction that cannot be built on a degree-0 space its two sibling extractions handle.
 
 One test per **root cause**, not per symptom: several of these root causes have many
 triggering combinations, and each test names them in a comment rather than repeating
@@ -947,65 +948,50 @@ def test_lagrange_extraction_handles_a_degree_zero_space() -> None:
 
 
 # ---------------------------------------------------------------------------
-# The cardinal change of basis raises a bare LinAlgError on a legal degree
+# The cardinal change of basis reports its own conditioning limit (fixed)
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="the cardinal change-of-basis builders raise numpy's LinAlgError on a legal "
-    "(degree, dtype) pair, an exception type none of them documents and which the caller "
-    "cannot tell apart from an illegal argument",
-)
 def test_cardinal_change_of_basis_reports_its_own_conditioning_limit() -> None:
-    # Found only because the August 2026 triage completed the sweep's verdict flags: with
-    # no `must_succeed`, this read as an UNDOCUMENTED_REJECTION -- a suspicion nobody had
-    # looked at -- because `numpy.linalg.LinAlgError` subclasses `ValueError` and the
-    # runner's `Raises:`-driven rule cannot see that the *reason* is undocumented. Five
-    # `basis` cases and fifteen `bspline` extraction cases are this one cause.
+    # FIXED by giving every change-of-basis builder that solves a declared, documented
+    # (degree, dtype) domain and a `ValueError` that names the degree, the dtype and the
+    # supported range. Kept as a regression guard with its original triggering data, per
+    # this repository's convention that the fix PR un-xfails the tests it closes. The
+    # domain's derivation lives in `tests/test_change_basis_domain.py`.
     #
-    # The numerics are not in dispute. The cardinal-to-Bernstein matrix's condition number
-    # grows like 4 ** degree; measured with `numpy.linalg.cond` on the returned matrix it
-    # is 15 at degree 3, 3.5e10 at degree 10, 1.2e21 at degree 20 and 5.2e32 at degree 30,
-    # while float32 can resolve at most 1 / eps = 8.4e6. So at high degree in float32 the
-    # inverse genuinely cannot be formed, and refusing is right.
+    # What it was: for a degree that is not negative and a dtype that is float32, the
+    # builders raised `LinAlgError: Singular matrix` from three frames down, an exception
+    # type none of their `Raises:` sections mentioned. `numpy.linalg.LinAlgError` subclasses
+    # `ValueError`, so the sweep's `Raises:`-driven rule could not see that the *reason* was
+    # undocumented, and the case read as an UNDOCUMENTED_REJECTION nobody had looked at.
+    # Five `basis` cases and fifteen `bspline` extraction cases were this one cause.
     #
-    # What is wrong is the contract. Every one of these builders documents exactly one
-    # exception -- "ValueError: If degree is negative, dtype is not float32 or float64, or
-    # if `out` is provided and has incorrect shape or dtype" -- and then, for a degree that
-    # is not negative and a dtype that is float32, raises `LinAlgError: Singular matrix`
-    # from three frames down. The caller is told nothing about a degree limit, cannot
-    # discover one from the signature, and gets a message that describes an internal matrix
-    # rather than the argument that caused it. Either the limit belongs in the docstring
-    # with a `ValueError` that names it, or `LinAlgError` belongs in `Raises:`.
+    # The numerics were never in dispute -- refusing at high degree in float32 is right --
+    # only the contract. The caller was told nothing about a degree limit, could not
+    # discover one from the signature, and got a message describing an internal matrix
+    # rather than the argument that caused it.
     #
-    # The threshold measured on this machine, for `compute_cardinal_to_bernstein_1d`:
-    #
-    #   float32   degree 3, 10, 15, 20, 25, 30 -> returns    degree 40, 62 -> LinAlgError
-    #   float64   degree 3 ... 62              -> returns
-    #
-    # so the assertion below uses float32 at degree 62, well past the cliff, and pins
-    # float64 alongside it to keep the failure attributable to precision rather than to
-    # degree alone.
+    # Two corrections to the record this test used to carry, both re-measured on the parent
+    # commit. `kappa(A)` does not grow like `4 ** degree`: the exact infinity-norm condition
+    # number multiplies by about `2 * degree + 1` from one degree to the next, which is
+    # faster. And the float64 column was wrong to read as "no limit": degree 62 in float64
+    # returned an array, but one whose every digit was noise, which is why it is refused
+    # below alongside float32.
     degree = 62
 
-    # float64 handles the same degree, so this is a precision limit and not a degree one.
-    reference = np.asarray(compute_cardinal_to_bernstein_1d(degree, np.float64))
-    assert reference.shape == (degree + 1, degree + 1)
-
-    try:
-        matrix = compute_cardinal_to_bernstein_1d(degree, np.float32)
-    except ValueError as exc:
-        # `LinAlgError` is a `ValueError` subclass, so this catches both. The distinction
-        # the test insists on is the one the caller has to make: a message naming the
-        # argument at fault, not numpy's internal one.
-        assert "Singular matrix" not in str(exc), (
-            f"compute_cardinal_to_bernstein_1d({degree}, float32) raised numpy's "
-            f"{type(exc).__name__}: {exc} -- the documented ValueError should name the "
-            f"degree or the precision, and `Raises:` should list whatever is thrown"
+    for dtype in (np.float32, np.float64):
+        with pytest.raises(ValueError) as excinfo:
+            compute_cardinal_to_bernstein_1d(degree, dtype)
+        message = str(excinfo.value)
+        assert "Singular matrix" not in message, (
+            f"compute_cardinal_to_bernstein_1d({degree}, {np.dtype(dtype).name}) raised "
+            f"numpy's {type(excinfo.value).__name__}: {message} -- the documented "
+            f"ValueError should name the argument at fault, not an internal matrix"
         )
-        raise
-    assert np.asarray(matrix).shape == (degree + 1, degree + 1)
+        assert "compute_cardinal_to_bernstein_1d" in message
+        assert str(degree) in message
+        assert np.dtype(dtype).name in message
+        assert "outside the supported domain" in message
 
 
 # ---------------------------------------------------------------------------
