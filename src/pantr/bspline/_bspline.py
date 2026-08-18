@@ -306,8 +306,12 @@ class Bspline:
             convention of :func:`pantr.grid.tensor_product_grid` and
             :class:`SpanwiseElementExtraction`. ``ref_coords`` has shape ``(n, dim)``
             and holds *parametric* (not cell-local) coordinates satisfying
-            ``evaluate(ref_coords[i]) == points[i]`` within ``tol``. A point not on the
-            mapping's image gets ``cell_ids[i] = -1`` and ``ref_coords[i] = nan``.
+            ``evaluate(ref_coords[i]) == points[i]`` within ``tol``, or -- when ``tol`` is
+            ``None`` -- within the acceptance threshold described under ``tol`` above. That
+            is the bar a coordinate is certified against and not usually the accuracy it
+            carries, which is the tighter of the two thresholds wherever the map can deliver
+            it. A point not on the mapping's image gets ``cell_ids[i] = -1`` and
+            ``ref_coords[i] = nan``.
 
         Raises:
             NotImplementedError: If ``rank > dim`` (an embedded curve or surface, which

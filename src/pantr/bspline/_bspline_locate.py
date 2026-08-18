@@ -557,11 +557,12 @@ def _geometric_scale(physical: float, parametric: float) -> float:
 
     **The parametric term.** The two lengths behind :func:`_physical_scale` are properties
     of the image alone, and a threshold built from them is equally unreachable whenever the
-    *parametrization* cannot resolve the geometry that finely. One ulp of a parametric coordinate is ``eps *
-    |xi_k|``, which the map turns into a physical displacement of ``eps * |xi_k| * ||J
-    e_k||``, so no representable parameter drives the residual below about half the
-    largest such step, however good the solver is. That is a floor of exactly the kind the
-    ``magnitude`` term already covers, and it is invisible to both of the other lengths:
+    *parametrization* cannot resolve the geometry that finely. One ulp of a parametric
+    coordinate is ``eps * |xi_k|``, which the map turns into a physical displacement of
+    ``eps * |xi_k| * ||J e_k||``, so no representable parameter drives the residual below
+    about half the largest such step, however good the solver is. That is a floor of exactly
+    the kind the ``magnitude`` term already covers, and it is invisible to both of the other
+    lengths:
     translating the knot vector changes it and changes neither of them. Measured on a
     unit-width span carrying the exactly affine map ``F(xi) = xi - offset``, against the
     threshold the two physical lengths alone give: the floor is ``0.008`` of it at offset
@@ -998,16 +999,16 @@ class _LocateThresholds(NamedTuple):
     parametrized on ``[1e6, 1e6 + 1]`` (degree 3, 4 elements per direction, 60 sampled
     parameters), where ``stop`` is ``2.53e-14`` and ``accept`` is ``1.47e-08``:
 
-    ==========================  =====================  ======  ===============
-    targets                     policy                 lost    worst residual
-    ==========================  =====================  ======  ===============
-    exact images                ``accept`` alone       0 / 60  ``1.20e-08``
-                                ``stop`` alone         4 / 60  ``2.46e-14``
-                                split                  0 / 60  ``4.99e-11``
-    a half ulp off the image    ``accept`` alone       0 / 60  ``1.19e-08``
-                                ``stop`` alone        60 / 60  --
-                                split                  0 / 60  ``1.88e-10``
-    ==========================  =====================  ======  ===============
+    ========================  ================  =======  ==============
+    targets                   policy            lost     worst residual
+    ========================  ================  =======  ==============
+    exact images              ``accept`` alone   0 / 60   ``1.20e-08``
+    exact images              ``stop`` alone     4 / 60   ``2.46e-14``
+    exact images              split              0 / 60   ``4.99e-11``
+    a half ulp off the image  ``accept`` alone   0 / 60   ``1.19e-08``
+    a half ulp off the image  ``stop`` alone    60 / 60   --
+    a half ulp off the image  split              0 / 60   ``1.88e-10``
+    ========================  ================  =======  ==============
 
     The split has the coverage of the looser threshold and 240 times the accuracy of it,
     with the median residual on exact images falling from ``3.8e-11`` to ``2.3e-16``. It
@@ -1022,18 +1023,33 @@ class _LocateThresholds(NamedTuple):
     ``1.000x`` map evaluations and ``1.000x`` Jacobians, because a physical offset moves
     both thresholds together. On the fixture above at parametric offset ``1e6``, where the
     split is at its widest: ``1.12x`` map evaluations for targets on the image and
-    ``1.61x`` for half-ulp targets, ``1.15x`` and ``1.25x`` Jacobians, and accepted Newton
-    steps rising from 359 to 430 and to 467 over the 60 solves -- the per-solve mode moving
-    from 5 to 6 and 7 and the maximum from 10 to 12, against a default budget of 30.
-    Queries **off** the mapping's image, which dominate the cost of a bad batch, are
-    unchanged at ``1.00x``: they never reach either threshold, so their trajectories are
-    identical. A worst case of ``1.6x`` on the evaluation count, confined to geometry
-    parametrized a million widths from the origin, is what the accuracy above is bought
-    with.
+    ``1.61x`` for half-ulp targets, and ``1.15x`` and ``1.25x`` Jacobians. Counting instead
+    the *accepted Newton steps* -- one step being one the line search actually took, and one
+    **solve** being one :func:`_newton_refine` row, so one query against one candidate cell
+    from one start, of which those 60 queries make 69 -- the totals go from 350 to 406 and
+    to 398, the median over the solves that step at all from 5 to 6, and the **maximum per
+    solve from 10 to 11**, against a default budget of 30. Queries **off** the mapping's
+    image, which dominate the cost of a bad batch, are unchanged at ``1.00x``: they never
+    reach either threshold, so their trajectories are identical. A worst case of ``1.6x`` on
+    the evaluation count, confined to geometry parametrized a million widths from the
+    origin, is what the accuracy above is bought with.
 
     An explicit ``tol`` sets both. A caller who names a threshold has taken responsibility
     for what it means and may well be asking a proximity question rather than an inversion
     one, and refining past it would charge them for accuracy they did not ask for.
+
+    **The ordering is relied on, not enforced.** It holds by construction --
+    :func:`_geometric_scale` is a maximum over :func:`_physical_scale`, and an explicit
+    ``tol`` sets both members to itself -- and :func:`_newton_refine` uses it: it returns
+    ``res_norm <= accept`` alone, with no separate record of which rows stopped, because a
+    row that stopped at ``stop`` necessarily passes ``accept``. Were ``accept < stop`` ever
+    constructed, the loop would end against the larger number and the verdict be taken
+    against the smaller, so nearly every query would be reported not found -- a silent
+    collapse of coverage indistinguishable from genuine non-invertibility. No guard is
+    added, for the same reason :class:`_NewtonState`'s three invariants carry none: both
+    construction sites are in this module and a few lines from the definition. What stands
+    in for one is the suite, which pins the relation in both regimes -- equality for a knot
+    vector spanning ``[0, L]``, strict inequality at a parametric offset.
 
     Attributes:
         stop (float): The residual at or below which the iteration stops, in physical
