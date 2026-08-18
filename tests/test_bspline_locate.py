@@ -67,12 +67,14 @@ threshold divided by ``64 / _PARAMETRIC_ULPS_ALLOWED``.
 
 **Why four.** Two ulps for where the last Newton step lands relative to the true root, and a
 factor of two for the fixture's local stretch against the net-span average the substitution
-uses. Measured on :func:`_parametrically_offset_patch`: the worst residual is ``0.22`` of a
-single ulp's image for targets that are exact images and ``0.82`` for targets a half ulp off
-one, so the bound carries between five and eighteen times its measured requirement. The
-single-threshold policy it replaces violates it on 9 of 60 queries in both families, with a
-worst case of 52 ulps, so nothing about the number is delicate: no factor between 1 and 16
-separates the two policies differently.
+uses. Measured over seven seeds on :func:`_parametrically_offset_patch`, the worst residual
+is ``0.33`` of a single ulp's image for targets that are exact images and ``0.85`` for
+targets a half ulp off one, so the bound carries ``4.7`` times its measured requirement
+here; on sibling fixtures (degree 3 at reach ``1e4``, degree 2 on 8 elements at reach
+``1e10``) the half-ulp worst rises to ``1.33`` and the margin falls to ``3.0``. The
+single-threshold policy it replaces exceeds it on 9 of 60 queries in both families with a
+worst case of 52 ulps, so the two policies are separated by any factor from 3 to 16 -- but
+not by every factor below that, since the good policy itself passes 1.33 on a sibling.
 
 **What it is not an oracle for.** The bound calls :func:`_parametric_scale`, the same
 function that builds the acceptance threshold, so it cannot detect an error in *that*
@@ -385,14 +387,20 @@ def _anisotropic_patch(offset1: float, extent1: float, degree: int = 2, n_elem: 
 
 
 def _parametric_ulp_image(spline: Bspline) -> float:
-    """Return the physical displacement one ulp of a parametric coordinate produces.
+    """Return the resolution floor a returned coordinate is graded against, per ulp.
 
-    The resolution floor of the parametrization, and the unit
-    :data:`_PARAMETRIC_ULPS_ALLOWED` counts. It is the acceptance threshold divided by the
-    tolerance tier, so it moves with the geometry and with the knot vector exactly as the
-    threshold does and carries no constant of its own.
+    The acceptance threshold divided by the tolerance tier, so it moves with the geometry
+    and with the knot vector exactly as the threshold does and carries no constant of its
+    own; :data:`_PARAMETRIC_ULPS_ALLOWED` counts it.
+
+    Taken over *both* lengths and not over the parametric one alone. On a fixture whose
+    parametrization is offset the parametric length wins and the two readings agree, which
+    is every current caller; on one where the physical length wins, the parametric reading
+    would put the bound below the residual floor the coordinates themselves impose and the
+    test would fail for a reason having nothing to do with the parametrization.
     """
-    return float(np.finfo(np.float64).eps) * _parametric_scale(spline)
+    scale = _geometric_scale(_physical_only_scale(spline), _parametric_scale(spline))
+    return float(np.finfo(np.float64).eps) * scale
 
 
 def _first_candidates(
@@ -1700,9 +1708,12 @@ class TestStoppingVersusAcceptance:
         physical``. Opening the split therefore needs ``reach * span > (eps(dtype) / eps64)
         * physical``, and no net span exceeds the bounding-box diagonal, so it needs
         ``reach > eps32 / eps64 == 5.4e8``. A float32 knot vector of width ``L`` at offset
-        ``c`` needs ``c * eps32 < L`` to resolve its own mesh at all, i.e. ``reach < 1 /
-        eps32 == 8.4e6``, two decades short. The next row up confirms the cut-off is the
-        knot layer's and not this module's.
+        ``c`` needs its two endpoints to be distinct float32s at all: for ``c`` in ``[2**e,
+        2**(e+1))`` the smallest representable gap is ``2**(e-24)`` while ``c < 2**(e+1)``,
+        so ``reach < 2**25 == 3.4e7``. The provable margin is therefore exactly ``2**4 ==
+        16``, a format identity rather than a measured quantity. The knot layer is stricter
+        still -- it snaps at ``8 * eps``, which drops the ceiling by another ``8`` -- and the
+        next test confirms the cut-off is its and not this module's.
 
         So the split is a float64 phenomenon, and deliberately: for a float32 caller the
         format the *data* carries is already coarser than anything the parametrization
