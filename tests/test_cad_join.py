@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Sequence
 
 import numpy as np
 import pytest
@@ -455,3 +456,62 @@ class TestJoinRationalBoundary:
         c2 = create_line([1, 0, 0], [2, 0, 0])
         with pytest.raises(ValueError, match=re.compile("mismatch")):
             join(c1, c2, axis=0)
+
+
+class TestJoinPrecision:
+    """A float32 model must survive a join, in both its knots and its control points."""
+
+    @staticmethod
+    def _line(start: Sequence[float], end: Sequence[float], dtype: npt.DTypeLike) -> Bspline:
+        """Build a clamped degree-1 curve of the given dtype.
+
+        ``create_line`` is float64-only, so a float32 curve has to be built directly.
+
+        Args:
+            start (Sequence[float]): First control point.
+            end (Sequence[float]): Second control point.
+            dtype (npt.DTypeLike): Floating-point dtype of both the space and the points.
+
+        Returns:
+            Bspline: A degree-1 curve on ``[0, 1]``.
+        """
+        knots = np.array([0.0, 0.0, 1.0, 1.0], dtype=dtype)
+        space = BsplineSpace([BsplineSpace1D(knots, 1)])
+        return Bspline(space, np.asarray([start, end], dtype=dtype))
+
+    def test_a_float32_join_keeps_float32(self) -> None:
+        """Joining two float32 curves must produce a float32 result.
+
+        It used to raise ``The control points must have the same dtype as the B-spline
+        space``, and had nothing to do with the seam, which here agrees bitwise: the
+        junction knots were built from a Python float, so the merged knot vector promoted
+        to float64 while the control points stayed float32.
+        """
+        c1 = self._line([0, 0, 0], [1, 0, 0], np.float32)
+        c2 = self._line([1, 0, 0], [2, 0, 0], np.float32)
+        result = join(c1, c2, axis=0)
+        assert result.control_points.dtype == np.float32
+        assert result.space.spaces[0].dtype == np.float32
+
+    @pytest.mark.parametrize("increment", [1, 2, 3])
+    def test_a_float32_join_needing_degree_elevation_keeps_float32(self, increment: int) -> None:
+        """The dtype has to survive what ``_prepare_for_join`` runs, not only the merge.
+
+        The fix reads the incoming knots' dtype, so it is only right if ``elevate_degree``
+        preserves float32 too.  At ``increment >= 1`` the joined degree exceeds 1, which
+        also puts the result through ``_try_remove_junction_knots``.
+        """
+        c1 = self._line([0, 0, 0], [1, 0, 0], np.float32)
+        c2 = self._line([1, 0, 0], [2, 0, 0], np.float32).elevate_degree(increment)
+        result = join(c1, c2, axis=0)
+        assert result.control_points.dtype == np.float32
+        assert result.space.spaces[0].dtype == np.float32
+
+    def test_a_float32_join_needing_knot_insertion_keeps_float32(self) -> None:
+        """And the same for a knot mismatch on the join axis."""
+        c1 = self._line([0, 0, 0], [1, 0, 0], np.float32)
+        c2 = self._line([1, 0, 0], [2, 0, 0], np.float32).insert_knots(
+            np.array([0.5], dtype=np.float32)
+        )
+        result = join(c1, c2, axis=0)
+        assert result.control_points.dtype == np.float32

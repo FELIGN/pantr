@@ -123,11 +123,13 @@ def _concatenate_along_axis(
 
     new_cp = np.concatenate([cp_left, cp_mid_expanded, cp_right], axis=axis)
 
-    # Merge knot vectors
+    # Merge knot vectors.  The junction knots take the incoming knots' dtype: built from a
+    # Python float they would be float64, and concatenating would promote a float32 knot
+    # vector while the control points stayed float32, which BsplineSpace1D refuses.
     u_junction = float(b1.space.spaces[axis].domain[1])
     kl = b1.space.spaces[axis].knots[: -p - 1]
     kr = b2.space.spaces[axis].knots[p + 1 :]
-    kc = np.full(p, u_junction)
+    kc = np.full(p, u_junction, dtype=kl.dtype)
     new_knots = np.concatenate([kl, kc, kr])
 
     spaces = list(b1.space.spaces)
