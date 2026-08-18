@@ -179,8 +179,9 @@ jobs:
 
       # On the full matrix rather than once, because an example can drift from the code
       # on any version and a numpy release that prints a value differently breaks it on
-      # one leg only. A step here rather than a job of its own: it reuses this job's venv
-      # and warm Numba cache, costs a few seconds, and wants no coverage.
+      # one leg only. A step here rather than a job of its own: it reuses this job's
+      # venv, runs in under a second, and wants no coverage. The target sets
+      # NUMBA_DISABLE_JIT=1 -- see the Makefile for why.
       - name: Run doctests
         run: |
           . .venv/bin/activate
