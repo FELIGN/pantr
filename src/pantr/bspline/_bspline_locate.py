@@ -546,20 +546,18 @@ def _physical_scale(lo: npt.NDArray[np.float64], hi: npt.NDArray[np.float64]) ->
     return scale if scale > 0.0 else 1.0
 
 
-def _geometric_scale(
-    lo: npt.NDArray[np.float64],
-    hi: npt.NDArray[np.float64],
-    parametric: float,
-) -> float:
-    """Return the length the default convergence tolerance is a multiple of.
+def _geometric_scale(physical: float, parametric: float) -> float:
+    """Return the length the default *acceptance* threshold is a multiple of.
 
-    The larger of two lengths: the physical one of :func:`_physical_scale`, and the
+    The larger of two lengths: the image-only one of :func:`_physical_scale`, and the
     **parametric** length of :func:`_parametric_scale`, because a parametric coordinate is
     a float64 too and the residual cannot be resolved below what one ulp of it produces.
+    Which of the two thresholds this length serves, and which one
+    :func:`_physical_scale` serves alone, is settled in :class:`_LocateThresholds`.
 
-    **The parametric term.** The first two lengths are properties of the image alone, and
-    a threshold built from them is equally unreachable whenever the *parametrization*
-    cannot resolve the geometry that finely. One ulp of a parametric coordinate is ``eps *
+    **The parametric term.** The two lengths behind :func:`_physical_scale` are properties
+    of the image alone, and a threshold built from them is equally unreachable whenever the
+    *parametrization* cannot resolve the geometry that finely. One ulp of a parametric coordinate is ``eps *
     |xi_k|``, which the map turns into a physical displacement of ``eps * |xi_k| * ||J
     e_k||``, so no representable parameter drives the residual below about half the
     largest such step, however good the solver is. That is a floor of exactly the kind the
@@ -665,16 +663,14 @@ def _geometric_scale(
     there as well and the maximum is the fallback.
 
     Args:
-        lo (npt.NDArray[np.float64]): Per-cell box lower corners, shape
-            ``(n_cells, rank)``.
-        hi (npt.NDArray[np.float64]): Per-cell box upper corners, same shape.
+        physical (float): The image-only length from :func:`_physical_scale`, which already
+            carries the strictly-positive fallback.
         parametric (float): The parametric length from :func:`_parametric_scale`.
 
     Returns:
-        float: The geometric scale, strictly positive and never below
-        :func:`_physical_scale`.
+        float: The geometric scale, strictly positive and never below ``physical``.
     """
-    return max(_physical_scale(lo, hi), parametric)
+    return max(physical, parametric)
 
 
 def _build_context(spline: Bspline) -> _LocateContext:
@@ -693,12 +689,13 @@ def _build_context(spline: Bspline) -> _LocateContext:
     # Read from the caller's spline, not the promoted one: the precision ratio it applies
     # has to see the format the caller's tier will be taken from.
     parametric = _parametric_scale(spline)
+    physical = _physical_scale(lo, hi)
     box_lo, box_hi = lo.min(axis=0), hi.max(axis=0)
     return _LocateContext(
         spline=spline_64,
         bvh=BVH.from_cell_bounds(lo, hi),
-        scale=_geometric_scale(lo, hi, parametric),
-        physical=_physical_scale(lo, hi),
+        scale=_geometric_scale(physical, parametric),
+        physical=physical,
         diagonal=float(np.linalg.norm(box_hi - box_lo)),
         parametric=parametric,
     )

@@ -418,8 +418,8 @@ def _physical_only_scale(spline: Bspline) -> float:
 
 
 def _scale_of(spline: Bspline) -> float:
-    """Return the geometric scale the default tolerance is expressed in."""
-    return _geometric_scale(*_cell_physical_bounds(spline), _parametric_scale(spline))
+    """Return the geometric scale the default acceptance threshold is expressed in."""
+    return _geometric_scale(_physical_only_scale(spline), _parametric_scale(spline))
 
 
 def _cache_of(spline: Bspline) -> _LocateContext | None:
