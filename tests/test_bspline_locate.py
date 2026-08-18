@@ -73,6 +73,13 @@ one, so the bound carries between five and eighteen times its measured requireme
 single-threshold policy it replaces violates it on 9 of 60 queries in both families, with a
 worst case of 52 ulps, so nothing about the number is delicate: no factor between 1 and 16
 separates the two policies differently.
+
+**What it is not an oracle for.** The bound calls :func:`_parametric_scale`, the same
+function that builds the acceptance threshold, so it cannot detect an error in *that*
+length -- inflating it threefold leaves every test using this bound green. What it detects
+is the stopping rule, because the residual it grades is produced by the Newton iteration's
+own arithmetic and not by any threshold. :func:`_parametric_scale`'s numeric value is
+pinned independently by :class:`TestParametricStretch`, against hand-derived literals.
 """
 
 _PARAMETRIC_OFFSETS: list[float] = [0.0, 1.0e2, 1.0e3, 1.0e4, 1.0e6]
@@ -890,7 +897,9 @@ class TestNewtonGlobalization:
                 np.linalg.norm(
                     _evaluate_at(
                         spline,
-                        _newton_refine(spline, target, start, _LocateThresholds(tol, tol), k)[1],
+                        _newton_refine(
+                            spline, target, start, _LocateThresholds(stop=tol, accept=tol), k
+                        )[1],
                     )
                     - target
                 )
@@ -950,7 +959,7 @@ class TestNewtonGlobalization:
         candidates = np.sort(context.bvh.query_aabb(AABB(target[0], target[0]).pad(tol)))
         assert candidates.tolist() == [32], "the premise: one candidate, so there is no fallback"
 
-        thresholds = _LocateThresholds(tol, tol)
+        thresholds = _LocateThresholds(stop=tol, accept=tol)
         from_midpoint = _newton_refine(
             spline, target, _cell_midpoints(spline.space, candidates), thresholds, 40
         )
@@ -1546,11 +1555,21 @@ class TestStoppingVersusAcceptance:
     def test_a_start_between_the_two_bars_is_refined_instead_of_returned(self) -> None:
         """The stopping rule is the tight one: an iterate inside the loose bar keeps going.
 
-        A starting guess a few ulps off the true preimage already satisfies the acceptance
+        A starting guess one ulp off the true preimage already satisfies the acceptance
         threshold, so under a single threshold it is returned untouched -- that is exactly
         how the accuracy was lost. Under the split it is refined until it meets the stopping
         one, which the same call with both thresholds set to the loose value shows it does
         not do of its own accord.
+
+        **One ulp, not a number picked to work.** The image of one ulp of a parametric
+        coordinate is what :func:`_parametric_scale` measures, and the acceptance threshold
+        is the tolerance tier times that length, so a one-ulp start sits below the loose bar
+        by about the tier itself and far above the tight one. Measured over 20 seeds of 20
+        queries: at worst ``0.025`` of the acceptance threshold (a margin of 40, against the
+        derived 64, the shortfall being this fixture's local stretch over the net-span
+        average) and at least 2178 times the stopping one. Both premises therefore hold by
+        derivation rather than by a constant chosen to make them hold, which is what a
+        premise assertion has to do if its failure is to mean anything.
         """
         spline = _parametrically_offset_patch()
         context = _locate_context(spline)
@@ -1558,8 +1577,7 @@ class TestStoppingVersusAcceptance:
         xi_true = _sample_parametric(spline, 20, seed=17)
         targets = _evaluate_at(spline, xi_true)
         start = xi_true.copy()
-        for _ in range(16):
-            start[:, 1] = np.nextafter(start[:, 1], np.inf)
+        start[:, 1] = np.nextafter(start[:, 1], np.inf)
         start_residual = np.linalg.norm(_evaluate_at(spline, start) - targets, axis=1)
         assert np.all(start_residual > thresholds.stop), "the premise: above the tight bar"
         assert np.all(start_residual <= thresholds.accept), "the premise: inside the loose one"
@@ -1588,7 +1606,7 @@ class TestStoppingVersusAcceptance:
         spline = _parametrically_offset_patch()
         context = _locate_context(spline)
         thresholds = _default_tolerance(spline, context)
-        tight_only = _LocateThresholds(thresholds.stop, thresholds.stop)
+        tight_only = _LocateThresholds(stop=thresholds.stop, accept=thresholds.stop)
         xi_true = _sample_parametric(spline, 20, seed=17)
         targets = _half_ulp_targets(spline, xi_true)
         starts = _cell_midpoints(spline.space, _first_candidates(context, targets, thresholds))
@@ -1615,7 +1633,10 @@ class TestStoppingVersusAcceptance:
         spline = _parametrically_offset_patch()
         context = _locate_context(spline)
         thresholds = _default_tolerance(spline, context)
-        loose = _LocateThresholds(thresholds.accept, thresholds.accept)
+        loose = _LocateThresholds(stop=thresholds.accept, accept=thresholds.accept)
+        # Without this the test goes quiet rather than red: were the two bars ever equal,
+        # `loose` would be `thresholds` and every comparison below a run against itself.
+        assert thresholds.stop < thresholds.accept, "the premise: the two policies differ"
         xi_true = _sample_parametric(spline, 60, seed=321)
         for targets in (_evaluate_at(spline, xi_true), _half_ulp_targets(spline, xi_true)):
             starts = _cell_midpoints(spline.space, _first_candidates(context, targets, thresholds))
@@ -1668,24 +1689,49 @@ class TestStoppingVersusAcceptance:
         assert thresholds.stop == get_default(spline.dtype) * _physical_only_scale(spline)
         assert thresholds.accept / thresholds.stop > 1.0e5, "the fixture's gap is decades wide"
 
-    def test_an_explicit_tolerance_governs_stopping_as_well(self) -> None:
+    def test_an_explicit_tolerance_governs_stopping_as_well(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """A named threshold is not silently refined past, so a proximity query stays cheap.
 
         The caller who passes ``tol`` has said what distance they mean; answering to eight
-        decades better than that would charge them for accuracy they did not ask for. Pinned
-        by asking for a deliberately coarse one and checking the answers are coarse.
+        decades better would charge them for accuracy they did not ask for, and the split is
+        exactly what makes that newly possible.
+
+        Read off the thresholds :func:`_locate_impl` hands the solver rather than off the
+        residual it happens to produce. A residual assertion cannot pin this: on this
+        geometry the internal stopping bar is eleven decades below a coarse ``tol``, so a
+        partial leak of it into ``stop`` still leaves every residual far above anything a
+        residual test could distinguish, and passes. The thresholds themselves are exact.
         """
         spline = _warped_patch()
-        xi_true = _sample_parametric(spline, 30, seed=5)
-        targets = _evaluate_at(spline, xi_true)
-        default = _default_tolerance(spline, _locate_context(spline)).accept
+        targets = _evaluate_at(spline, _sample_parametric(spline, 30, seed=5))
+        seen: list[_LocateThresholds] = []
+        module = sys.modules["pantr.bspline._bspline_locate"]
+
+        def _record(
+            sp: Bspline,
+            pts: npt.NDArray[np.float64],
+            start: npt.NDArray[np.float64],
+            thresholds: _LocateThresholds,
+            max_iter: int,
+        ) -> tuple[npt.NDArray[np.bool_], npt.NDArray[np.float64]]:
+            # The module-level import still names the real function; only the module
+            # attribute the solver looks up is redirected.
+            seen.append(thresholds)
+            return _newton_refine(sp, pts, start, thresholds, max_iter)
+
+        monkeypatch.setattr(module, "_newton_refine", _record)
 
         cell_ids, ref_coords = spline.locate(targets, tol=1.0e-2)
 
+        assert seen, "the premise: the solver was reached at all"
+        assert all(t == _LocateThresholds(stop=1.0e-2, accept=1.0e-2) for t in seen), (
+            f"an explicit tol must govern both thresholds; got {set(seen)}"
+        )
         assert np.all(cell_ids >= 0)
         residuals = np.linalg.norm(_evaluate_at(spline, ref_coords) - targets, axis=1)
         assert residuals.max() <= 1.0e-2, "the threshold asked for must still hold"
-        assert residuals.max() > default, "an explicit tol was refined past, at the caller's cost"
 
 
 class TestNearCriticalJacobian:
