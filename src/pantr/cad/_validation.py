@@ -1,13 +1,14 @@
 """Shared validation and conversion helpers for CAD functions.
 
 Provides utility functions used across the ``cad`` subpackage for
-normalizing point arrays and promoting B-splines between rational and
-non-rational representations.
+normalizing point arrays, promoting B-splines between rational and
+non-rational representations, and grading a comparison of control points
+against a tolerance that matches what it compares.
 """
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, NamedTuple
 
 import numpy as np
 
@@ -20,6 +21,74 @@ if TYPE_CHECKING:
 
 _PHYSICAL_DIM = 3
 """int: Default physical dimension for all CAD primitives."""
+
+
+class _ColumnGroup(NamedTuple):
+    """One group of control-point columns that share a physical dimension.
+
+    A rational control point carries homogeneous coordinates, whose units are length times
+    weight, beside a dimensionless weight.  Grading both against one magnitude makes the
+    verdict depend on where the model sits, so each group is graded against its own.
+
+    Attributes:
+        name (str): What the group holds, as the error message names it.
+        columns (slice): The columns of a control-point array the group covers.
+    """
+
+    name: str
+    columns: slice
+
+
+_EUCLIDEAN_COLUMNS = (_ColumnGroup("coordinate", slice(None)),)
+"""tuple[_ColumnGroup, ...]: Column groups of non-rational control points -- coordinates only."""
+
+_HOMOGENEOUS_COLUMNS = (
+    _ColumnGroup("coordinate", slice(0, -1)),
+    _ColumnGroup("weight", slice(-1, None)),
+)
+"""tuple[_ColumnGroup, ...]: Column groups of rational control points -- coordinates, weight."""
+
+
+def _column_groups(*, is_rational: bool) -> tuple[_ColumnGroup, ...]:
+    """Split a control-point array's columns into groups that share one physical dimension.
+
+    A relative tolerance's scale has to span exactly one dimension, so the caller grades
+    each group against its own magnitude: sending ``x -> lambda x`` scales the coordinates
+    and leaves the weights alone, and one magnitude over both would make the verdict on a
+    weight drift with the size of the model.
+
+    Args:
+        is_rational (bool): Whether the array's trailing column is a weight.
+
+    Returns:
+        tuple[_ColumnGroup, ...]: The groups, coordinates first -- data given in the wrong
+        place fails there, and it is the more informative half to report when both are out.
+    """
+    return _HOMOGENEOUS_COLUMNS if is_rational else _EUCLIDEAN_COLUMNS
+
+
+def _coarsest_dtype(
+    *arrays: npt.NDArray[np.float32 | np.float64],
+) -> np.dtype[np.floating[Any]]:
+    """Return the coarsest floating precision among the arrays about to be compared.
+
+    A tolerance tier read at float64 while the data is float32 refuses agreement the
+    inputs cannot express: if the true shared value is ``F``, two stored readings satisfy
+    ``|r1 - r2| <= 0.5 (eps1 + eps2) |F|``, a hard floor on any achievable agreement.
+    Reading the tier at the coarsest precision present clears that floor; taking the
+    *promoted* type instead is backwards by ``eps32 / eps64``, about ``5.4e8``.
+
+    The rule grades by **container** rather than by provenance, so float32-resolution data
+    already copied into a float64 array is graded at float64.
+
+    Args:
+        *arrays (npt.NDArray[np.float32 | np.float64]): The arrays being compared.  At
+            least one is required.
+
+    Returns:
+        np.dtype[np.floating[Any]]: The dtype with the largest machine epsilon.
+    """
+    return max((a.dtype for a in arrays), key=lambda d: float(np.finfo(d).eps))
 
 
 def _pad_to_3d(point: npt.ArrayLike) -> npt.NDArray[np.float64]:

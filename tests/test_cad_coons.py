@@ -10,9 +10,17 @@ from numpy import typing as npt
 from numpy.testing import assert_allclose
 
 from pantr.bspline import Bspline, BsplineSpace, BsplineSpace1D
-from pantr.cad import create_bilinear, create_coons_surface, create_coons_volume, create_line
+from pantr.cad import (
+    create_bilinear,
+    create_circle,
+    create_coons_surface,
+    create_coons_volume,
+    create_extrusion,
+    create_line,
+    create_ruled,
+)
 from pantr.cad._coons import _extract_edge_pairs
-from pantr.tolerance import get_conservative
+from pantr.tolerance import get_conservative, get_machine_epsilon
 
 _RANK_3D = 3
 
@@ -91,6 +99,28 @@ def _face_interpolation_gaps(vol: Bspline, faces: _FacePairs) -> dict[str, float
         want = np.asarray(face.evaluate(face_params), dtype=np.float64)
         gaps[label] = float(np.linalg.norm(got - want, axis=1).max())
     return gaps
+
+
+def _reported_numbers(message: str) -> tuple[float, float, float]:
+    """Parse the gap, tolerance and scale a mismatch message reports.
+
+    Whatever the message says about the tolerance is a claim about the comparison that was
+    actually made, so it is worth checking rather than trusting.  The name between ``at``
+    and ``scale`` is the population the tolerance was taken over -- ``corner``, ``edge
+    coordinate``, ``edge weight`` -- and is checked separately by the tests that care which
+    column group decided the verdict.
+
+    Args:
+        message (str): The ``ValueError`` message.
+
+    Returns:
+        tuple[float, float, float]: ``(gap, tol, scale)`` as printed.
+    """
+    num = r"([-+0-9.eE]+)"
+    found = re.search(rf"gap {num}, above {num} at [a-z -]+ scale {num}", message)
+    assert found is not None, f"unparseable mismatch message: {message!r}"
+    gap, tol, scale = (float(g) for g in found.groups())
+    return gap, tol, scale
 
 
 class TestCoonsSurface:
@@ -531,25 +561,6 @@ class TestCoonsVolumeFaceConsistency:
         faces[4] = self._bezier_patch(w0, 2, 1)
         return self._pairs(faces)
 
-    @staticmethod
-    def _reported_numbers(message: str) -> tuple[float, float, float]:
-        """Parse the gap, tolerance and scale a mismatch message reports.
-
-        Whatever the message says about the tolerance is a claim about the comparison
-        that was actually made, so it is worth checking rather than trusting.
-
-        Args:
-            message (str): The ``ValueError`` message.
-
-        Returns:
-            tuple[float, float, float]: ``(gap, tol, scale)`` as printed.
-        """
-        num = r"([-+0-9.eE]+)"
-        found = re.search(rf"gap {num}, above {num} at [a-z-]+ scale {num}", message)
-        assert found is not None, f"unparseable mismatch message: {message!r}"
-        gap, tol, scale = (float(g) for g in found.groups())
-        return gap, tol, scale
-
     # -- the reproduction -------------------------------------------------------------
 
     def test_the_consistent_cube_is_accepted_and_interpolates_all_six_faces(self) -> None:
@@ -575,7 +586,7 @@ class TestCoonsVolumeFaceConsistency:
             create_coons_volume(faces)
         message = str(excinfo.value)
         assert "face_w0" in message, message
-        gap, tol, scale = self._reported_numbers(message)
+        gap, tol, scale = _reported_numbers(message)
         assert gap == pytest.approx(0.5)
         assert scale == pytest.approx(1.0)
         assert tol == pytest.approx(get_conservative(np.float64), rel=1e-3)
@@ -713,7 +724,7 @@ class TestCoonsVolumeFaceConsistency:
         faces = self._cube_with_lifted_corner(face=4, corner=(1, 1), lift=0.1 * scale, scale=scale)
         with pytest.raises(ValueError, match=r"Corner \(1,1,0\) mismatch") as excinfo:
             create_coons_volume(faces)
-        gap, tol, reported_scale = self._reported_numbers(str(excinfo.value))
+        gap, tol, reported_scale = _reported_numbers(str(excinfo.value))
         assert gap == pytest.approx(0.1 * scale)
         assert reported_scale == pytest.approx(scale)
         assert tol == pytest.approx(get_conservative(np.float64) * scale, rel=1e-3)
@@ -902,3 +913,681 @@ class TestCoonsVolumeFaceConsistency:
             for k in (0, 1)
             for name, side in (("u", i), ("v", j), ("w", k))
         }
+
+
+class TestCoonsVolumeRationalFaces:
+    """Six rational faces blend like six polynomial ones, because the blend is homogeneous.
+
+    ``create_coons_volume`` used to fail on all-rational faces with a NumPy broadcast
+    error naming shapes ``(3,)`` and ``(4,)`` (pantr issue 309): the corner array was
+    sized from the edges' *homogeneous* coefficients and filled from
+    :meth:`~pantr.bspline.Bspline.boundary`, which **projects**.  Every other term of the
+    seven-term formula was already built homogeneously, so the fix was to read the corner
+    the same way rather than to reopen what the formula means for a NURBS volume.
+
+    What that buys is the boundary property, unchanged: projection is pointwise, so it
+    commutes with restriction to a face, and a blend whose homogeneous restriction to
+    ``u = 0`` is ``face_u0``'s homogeneous data projects to ``face_u0`` itself.  Its
+    hypothesis is that the faces agree **homogeneously**, weights included, which
+    ``_verify_edges_3d`` enforces and
+    ``TestCoonsVolumeFaceConsistency.test_a_rational_face_whose_weights_disagree_with_its_neighbours_is_refused``
+    pins.
+    """
+
+    @staticmethod
+    def _unit_cube_faces() -> _FacePairs:
+        """Build the six polynomial faces of the unit cube, exactly as pantr issue 309 does.
+
+        Returns:
+            _FacePairs: The reproduction's six bilinear faces.
+        """
+        arrays = [
+            np.array([[[0, 0, 0], [0, 0, 1]], [[0, 1, 0], [0, 1, 1]]], dtype=float),
+            np.array([[[1, 0, 0], [1, 0, 1]], [[1, 1, 0], [1, 1, 1]]], dtype=float),
+            np.array([[[0, 0, 0], [0, 0, 1]], [[1, 0, 0], [1, 0, 1]]], dtype=float),
+            np.array([[[0, 1, 0], [0, 1, 1]], [[1, 1, 0], [1, 1, 1]]], dtype=float),
+            np.array([[[0, 0, 0], [0, 1, 0]], [[1, 0, 0], [1, 1, 0]]], dtype=float),
+            np.array([[[0, 0, 1], [0, 1, 1]], [[1, 0, 1], [1, 1, 1]]], dtype=float),
+        ]
+        u0, u1, v0, v1, w0, w1 = (create_bilinear(a) for a in arrays)
+        return ((u0, u1), (v0, v1), (w0, w1))
+
+    @staticmethod
+    def _as_rational(face: Bspline, factor: float = 1.0) -> Bspline:
+        """Rewrite a polynomial face as a rational one with every weight *factor*.
+
+        Multiplying **all** of a patch's homogeneous coefficients by one constant leaves
+        the projected geometry bitwise unchanged, since ``(k w x) / (k w) = x`` exactly for
+        the powers of two used here.  At ``factor = 1`` this is the reproduction's wrapper.
+
+        Args:
+            face (Bspline): A non-rational face.
+            factor (float): Constant scaling of the homogeneous coefficients.
+                Defaults to 1.0.
+
+        Returns:
+            Bspline: The same geometry, carried rationally.
+        """
+        cp = np.asarray(face.control_points, dtype=np.float64)
+        weights = np.full((*cp.shape[:-1], 1), factor)
+        return Bspline(face.space, np.concatenate([cp * factor, weights], axis=-1), True)
+
+    def _rational_cube_faces(self) -> _FacePairs:
+        """Wrap the reproduction's six faces as rational with all weights 1.
+
+        Returns:
+            _FacePairs: The face set that used to raise a broadcast error.
+        """
+        return tuple(  # type: ignore[return-value]
+            tuple(self._as_rational(f) for f in pair) for pair in self._unit_cube_faces()
+        )
+
+    # -- the reproduction -------------------------------------------------------------
+
+    def test_the_polynomial_control_still_interpolates_all_six_faces(self) -> None:
+        """The reproduction's control must be unaffected: it built before and must still.
+
+        Nothing about the rational path may disturb it, so this checks the property the
+        volume exists for rather than merely that the call returns.
+        """
+        faces = self._unit_cube_faces()
+        gaps = _face_interpolation_gaps(create_coons_volume(faces), faces)
+        assert max(gaps.values()) <= get_conservative(np.float64), gaps
+
+    def test_all_rational_faces_reproduce_the_polynomial_control(self) -> None:
+        """The reproduction's rational face set builds, and to the same geometry.
+
+        Weights are all 1, so the volume is the polynomial one written rationally and the
+        two must agree to roundoff -- an oracle that does not go through the same code.
+        """
+        polynomial = create_coons_volume(self._unit_cube_faces())
+        rational = create_coons_volume(self._rational_cube_faces())
+
+        assert rational.is_rational
+        assert_allclose(np.asarray(rational.control_points)[..., -1], 1.0, atol=0.0)
+
+        pts = np.asarray(
+            [[u, v, w] for u in (0.0, 0.25, 0.5, 1.0) for v in (0.0, 0.5, 0.9) for w in (0.1, 1.0)]
+        )
+        assert_allclose(
+            np.asarray(rational.evaluate(pts)),
+            np.asarray(polynomial.evaluate(pts)),
+            atol=get_conservative(np.float64),
+            rtol=0.0,
+        )
+
+    def test_all_rational_faces_are_interpolated(self) -> None:
+        """The rational volume restricts to each of the six rational faces it was built from."""
+        faces = self._rational_cube_faces()
+        gaps = _face_interpolation_gaps(create_coons_volume(faces), faces)
+        assert max(gaps.values()) <= get_conservative(np.float64), gaps
+
+    def test_mixed_faces_take_the_rational_path_rather_than_a_third_one(self) -> None:
+        """Some faces rational and some not must behave like all-rational, not like a third case.
+
+        Which faces are rational also decides *where* the old crash was reachable: the
+        corners were read off the v-faces alone, so a rational u-face never triggered it
+        while a rational v-face did.  Both are checked here, in both directions.
+        """
+        polynomial = self._unit_cube_faces()
+        rational = self._rational_cube_faces()
+        pts = np.asarray([[0.2, 0.4, 0.6], [0.0, 1.0, 0.5], [1.0, 0.0, 0.0]])
+        want = np.asarray(create_coons_volume(polynomial).evaluate(pts))
+
+        for rational_pair in range(3):
+            faces: _FacePairs = tuple(  # type: ignore[assignment]
+                rational[i] if i == rational_pair else polynomial[i] for i in range(3)
+            )
+            volume = create_coons_volume(faces)
+            assert volume.is_rational, rational_pair
+            assert_allclose(
+                np.asarray(volume.evaluate(pts)),
+                want,
+                atol=get_conservative(np.float64),
+                rtol=0.0,
+                err_msg=f"rational pair {rational_pair}",
+            )
+            gaps = _face_interpolation_gaps(volume, faces)
+            assert max(gaps.values()) <= get_conservative(np.float64), (rational_pair, gaps)
+
+    # -- non-unit weights, against an oracle built by a different code path -------------
+
+    @staticmethod
+    def _quarter_annulus_prism() -> Bspline:
+        """Build a quarter-annulus prism as a NURBS volume, without any Coons machinery.
+
+        The body is a ruled surface between two concentric quarter arcs, extruded along
+        *z*: degree ``(2, 1, 1)``, genuinely rational, with the arcs' middle weights at
+        ``1/sqrt(2)``.  Being degree 1 in *v* and *w* is what makes it an oracle for the
+        blend rather than merely an input to it: the Coons operator is
+        ``P = P_u + P_v + P_w - P_u P_v - P_u P_w - P_v P_w + P_u P_v P_w``, and a body
+        with ``P_v V = P_w V = V`` collapses that sum to ``V`` exactly, so the volume
+        rebuilt from its own six faces must be the body itself.
+
+        Returns:
+            Bspline: The exact NURBS quarter-annulus prism of inner radius 1, outer
+            radius 2 and height 3.
+        """
+        arcs = (
+            create_circle(radius=1.0, angle=np.pi / 2),
+            create_circle(radius=2.0, angle=np.pi / 2),
+        )
+        return create_extrusion(create_ruled(*arcs), [0.0, 0.0, 3.0])
+
+    def test_non_unit_weights_rebuild_an_independently_constructed_volume(self) -> None:
+        """A body with real weights, taken apart and blended back, must come back unchanged.
+
+        The oracle is built by ``create_circle``/``create_ruled``/``create_extrusion``,
+        which share no code with the Coons blend, and its weights are ``1/sqrt(2)`` rather
+        than 1, so unit weights cannot hide a mistake in how the corner term is carried.
+        """
+        oracle = self._quarter_annulus_prism()
+        assert oracle.is_rational
+        weights = np.unique(np.asarray(oracle.control_points)[..., -1])
+        assert weights.min() < 1.0, weights
+
+        boundaries = [oracle.boundary(axis, side) for axis in range(3) for side in (0, 1)]
+        faces: _FacePairs = tuple(  # type: ignore[assignment]
+            (boundaries[2 * axis], boundaries[2 * axis + 1]) for axis in range(3)
+        )
+        volume = create_coons_volume(faces)
+
+        pts = np.asarray(
+            [[u, v, w] for u in (0.0, 0.3, 1.0) for v in (0.0, 0.5, 1.0) for w in (0.0, 0.7, 1.0)]
+        )
+        got = np.asarray(volume.evaluate(pts))
+        assert_allclose(got, np.asarray(oracle.evaluate(pts)), atol=1e-14, rtol=0.0)
+
+    def test_non_unit_weights_land_on_the_analytic_cylinder(self) -> None:
+        """The rebuilt prism's curved faces must lie on the circles they represent exactly.
+
+        This is the check that does not consult pantr at all: a NURBS quarter arc of
+        radius *r* is exact, so every point of the rebuilt inner and outer face must
+        satisfy ``x^2 + y^2 = r^2``.  A corner term carried in the wrong space perturbs
+        the weight field and shows up here as a radius that drifts off *r*.
+        """
+        oracle = self._quarter_annulus_prism()
+        boundaries = [oracle.boundary(axis, side) for axis in range(3) for side in (0, 1)]
+        faces: _FacePairs = tuple(  # type: ignore[assignment]
+            (boundaries[2 * axis], boundaries[2 * axis + 1]) for axis in range(3)
+        )
+        volume = create_coons_volume(faces)
+
+        s = _FACE_SAMPLES
+        for radial, radius in ((0.0, 1.0), (1.0, 2.0)):
+            pts = np.asarray([[u, radial, w] for u in s for w in s])
+            xyz = np.asarray(volume.evaluate(pts))
+            got = np.hypot(xyz[:, 0], xyz[:, 1])
+            assert_allclose(got, radius, atol=get_conservative(np.float64) * radius, rtol=0.0)
+
+    # -- the weight field the blend produces -------------------------------------------
+
+    @staticmethod
+    def _cube_faces_with_interior_weight(interior: float) -> _FacePairs:
+        """Build unit-cube faces carrying one interior control point of weight *interior*.
+
+        Each face is the same square, refined to a 3x3 control net by an interior knot at
+        0.5 in both directions, with every boundary weight left at 1 so all twelve edges
+        still agree.  Only the middle weight is free, which is the point: a face's
+        interior is the part the consistency checks do not constrain.
+
+        With every face's interior weight at *t*, the blend's interior control weight is
+        ``3t - 3 + 1 = 3t - 2`` -- three ruled terms contributing *t*, three bilinear terms
+        and the corner term contributing 1 -- so it crosses zero at ``t = 2/3`` while every
+        input weight stays strictly positive.
+
+        Args:
+            interior (float): Weight of each face's middle control point.
+
+        Returns:
+            _FacePairs: Six mutually consistent faces with strictly positive weights.
+        """
+        knots = np.array([0.0, 0.0, 0.5, 1.0, 1.0])
+        space = BsplineSpace([BsplineSpace1D(knots.copy(), 1), BsplineSpace1D(knots.copy(), 1)])
+        samples = np.array([0.0, 0.5, 1.0])
+        faces = []
+        for pair in TestCoonsVolumeRationalFaces._unit_cube_faces():
+            for face in pair:
+                corners = np.asarray(face.control_points, dtype=np.float64)
+                net = np.empty((3, 3, 3))
+                for a, u in enumerate(samples):
+                    for b, v in enumerate(samples):
+                        net[a, b] = (
+                            (1 - u) * (1 - v) * corners[0, 0]
+                            + u * (1 - v) * corners[1, 0]
+                            + (1 - u) * v * corners[0, 1]
+                            + u * v * corners[1, 1]
+                        )
+                weights = np.ones((3, 3, 1))
+                weights[1, 1, 0] = interior
+                faces.append(Bspline(space, np.concatenate([net * weights, weights], -1), True))
+        return ((faces[0], faces[1]), (faces[2], faces[3]), (faces[4], faces[5]))
+
+    def test_positive_face_weights_do_not_imply_a_positive_blend(self) -> None:
+        """Strictly positive weights on all six faces can still blend to a negative weight.
+
+        The formula is an inclusion-exclusion and subtracts three of its seven terms, so
+        the weight field is not a convex combination of the faces' weights.  At interior
+        weight 0.5 every input weight is in ``[0.5, 1]`` and the blend's middle control
+        weight is ``3 * 0.5 - 2 = -0.5``; at degree 1 with a knot at 0.5 the middle basis
+        function is the only non-zero one at the centre, so the weight field *itself* is
+        ``-0.5`` there and the volume genuinely has a pole.
+        """
+        with pytest.raises(ValueError, match="weight is not certified positive"):
+            create_coons_volume(self._cube_faces_with_interior_weight(0.5))
+
+    def test_a_positive_blend_of_varying_weights_is_accepted(self) -> None:
+        """The guard must not refuse a weight field that stays positive.
+
+        At interior weight 0.7 the same construction lands on ``3 * 0.7 - 2 = 0.1``: still
+        far from the faces' own weights, still accepted, and the volume still interpolates
+        all six faces.  Without this, refusing everything rational would pass the test above.
+        """
+        faces = self._cube_faces_with_interior_weight(0.7)
+        volume = create_coons_volume(faces)
+        weights = np.asarray(volume.control_points)[..., -1]
+        assert_allclose(weights.min(), 0.1, atol=get_conservative(np.float64))
+        gaps = _face_interpolation_gaps(volume, faces)
+        assert max(gaps.values()) <= get_conservative(np.float64), gaps
+
+
+class TestCoonsPrecisionAndColumnScale:
+    """A comparison is graded at the precision it is made in, against the scale it grades.
+
+    Two independent defects with opposite failure modes lived in the two boundary checks
+    (pantr issue 319):
+
+    1. the tier was read at float64 whatever the inputs carried, so a **float32 model was
+       refused for a disagreement it cannot express** -- one float32 ulp at magnitude 1 is
+       ``1.19e-07`` against a bar of ``9.09e-13``, tighter by ``2**17 = 131072``;
+    2. the rational edge comparison took one magnitude over a homogeneous control row,
+       mixing coordinates (length times weight) with weights (dimensionless), so a
+       **weight error was graded against the model's length** and was accepted once the
+       model was large.
+
+    The corrected rules are ``pantr.cad._join._verify_shared_boundary``'s, which carries
+    their derivations and measurements.
+    """
+
+    # -- mechanism 1: the tier is read at the inputs' own precision ---------------------
+
+    @staticmethod
+    def _line(a: list[float], b: list[float], dtype: npt.DTypeLike) -> Bspline:
+        """Build the ticket's degree-1 two-point curve in a given precision.
+
+        Args:
+            a (list[float]): Start control point.
+            b (list[float]): End control point.
+            dtype (npt.DTypeLike): Precision of both the knots and the control points.
+
+        Returns:
+            Bspline: A clamped linear curve on ``[0, 1]``.
+        """
+        space = BsplineSpace([BsplineSpace1D(np.array([0.0, 0.0, 1.0, 1.0], dtype=dtype), 1)])
+        return Bspline(space, np.asarray([a, b], dtype=dtype))
+
+    def _unit_square_curves(
+        self, dtype: npt.DTypeLike, offset: float
+    ) -> tuple[tuple[Bspline, Bspline], tuple[Bspline, Bspline]]:
+        """Build the ticket's four curves, with the ``(1,0)`` corner displaced by *offset*.
+
+        Args:
+            dtype (npt.DTypeLike): Precision of all four curves.
+            offset (float): Displacement along *x* of ``C_v1``'s start, which ``C_u0``'s
+                end reads as ``1``.
+
+        Returns:
+            tuple: ``((C_v0, C_v1), (C_u0, C_u1))``, as ``create_coons_surface`` takes them.
+        """
+        return (
+            (
+                self._line([0, 0, 0], [0, 1, 0], dtype),
+                self._line([1 + offset, 0, 0], [1, 1, 0], dtype),
+            ),
+            (
+                self._line([0, 0, 0], [1, 0, 0], dtype),
+                self._line([0, 1, 0], [1, 1, 0], dtype),
+            ),
+        )
+
+    @pytest.mark.parametrize("dtype", [np.float32, np.float64])
+    def test_a_corner_one_ulp_out_is_accepted_in_either_precision(
+        self, dtype: npt.DTypeLike
+    ) -> None:
+        """The ticket's reproduction: as close as the format allows must never be refused.
+
+        This is the whole of mechanism 1.  Both precisions must reach the same verdict,
+        because in each the corner is one ulp of *that* format out -- one ulp at magnitude
+        1 being the format's machine epsilon by definition -- while the tier is 4096 of
+        them.  float64 accepted it and float32 did not, reporting a corner mismatch that
+        is not one and was ``2**17 = 131072`` times below anything float32 can express.
+        """
+        curves = self._unit_square_curves(dtype, get_machine_epsilon(dtype))
+        surface = create_coons_surface(curves)
+        assert np.dtype(surface.control_points.dtype) == np.dtype(dtype)
+
+    def test_the_float32_tier_is_the_only_one_a_float32_corner_can_clear(self) -> None:
+        """Pin the ratio the docstrings quote, because a number in prose rots silently.
+
+        Pantr issue 319 states the float64 tier is ``5.4e5`` times tighter than one float32
+        ulp at magnitude 1.  It is not: ``5.4e8`` is ``eps32 / eps64``, and dividing that by
+        the tier's own factor of 4096 gives ``2**17 = 131072``, so the figure against the
+        *tier* is ``1.3e5``.  Both docstrings quoted the ticket's number until this test was
+        written.  Nothing else in the suite would notice, since the code never computes the
+        ratio -- which is exactly why it is asserted here rather than left as prose.
+        """
+        one_float32_ulp = get_machine_epsilon(np.float32)
+        assert one_float32_ulp / get_conservative(np.float64) == 2**17
+        assert get_machine_epsilon(np.float32) / get_machine_epsilon(np.float64) == 2**29
+
+    @pytest.mark.parametrize("dtype", [np.float32, np.float64])
+    def test_a_corner_a_thousand_ulps_out_is_refused_in_either_precision(
+        self, dtype: npt.DTypeLike
+    ) -> None:
+        """Reading the tier at float32 must not amount to accepting everything.
+
+        The tier is ``4096 * eps`` in every format, so the same *relative* mistake is
+        refused in both -- what changes is only what "relative" resolves to.  Without
+        this, a check that accepted its inputs unconditionally would pass the test above.
+        """
+        offset = 1.0e5 * get_machine_epsilon(dtype)
+        curves = self._unit_square_curves(dtype, offset)
+        with pytest.raises(ValueError, match=r"Corner \(1,0\) mismatch") as excinfo:
+            create_coons_surface(curves)
+        gap, tol, scale = _reported_numbers(str(excinfo.value))
+        assert gap == pytest.approx(offset, rel=1e-3)
+        assert scale == pytest.approx(1.0 + offset, rel=1e-3)
+        assert tol == pytest.approx(get_conservative(dtype) * scale, rel=1e-3)
+
+    @staticmethod
+    def _cube_faces(dtype: npt.DTypeLike, scale: float = 1.0) -> _FacePairs:
+        """Build the six consistent faces of the cube ``[0, scale]^3`` in a given precision.
+
+        ``create_bilinear`` builds at float64 unconditionally, so a float32 model has to
+        be assembled directly.
+
+        Args:
+            dtype (npt.DTypeLike): Precision of the knots and control points.
+            scale (float): Side of the cube. Defaults to 1.0.
+
+        Returns:
+            _FacePairs: Six mutually consistent bilinear faces.
+        """
+        knots = np.array([0.0, 0.0, 1.0, 1.0], dtype=dtype)
+        space = BsplineSpace([BsplineSpace1D(knots.copy(), 1), BsplineSpace1D(knots.copy(), 1)])
+        s = scale
+        arrays = [
+            [[[0, 0, 0], [0, 0, s]], [[0, s, 0], [0, s, s]]],
+            [[[s, 0, 0], [s, 0, s]], [[s, s, 0], [s, s, s]]],
+            [[[0, 0, 0], [0, 0, s]], [[s, 0, 0], [s, 0, s]]],
+            [[[0, s, 0], [0, s, s]], [[s, s, 0], [s, s, s]]],
+            [[[0, 0, 0], [0, s, 0]], [[s, 0, 0], [s, s, 0]]],
+            [[[0, 0, s], [0, s, s]], [[s, 0, s], [s, s, s]]],
+        ]
+        f = [Bspline(space, np.asarray(a, dtype=dtype)) for a in arrays]
+        return ((f[0], f[1]), (f[2], f[3]), (f[4], f[5]))
+
+    def test_a_float32_model_survives_the_blend_in_float32(self) -> None:
+        """Reading the tier at float32 is not enough on its own: the blend must build too.
+
+        Grading a float32 patch correctly only moves the failure downstream if the
+        construction still assembles float64 coefficients over a float32 space, which
+        ``Bspline`` refuses outright, or mixes precisions inside one ``BsplineSpace``,
+        which is refused as well.  Both a patch and a volume are checked, since the two
+        hit different builders.
+        """
+        curves = self._unit_square_curves(np.float32, 0.0)
+        surface = create_coons_surface(curves)
+        assert np.dtype(surface.control_points.dtype) == np.dtype(np.float32)
+
+        faces = self._cube_faces(np.float32)
+        volume = create_coons_volume(faces)
+        assert np.dtype(volume.control_points.dtype) == np.dtype(np.float32)
+
+        # ``evaluate`` requires points in the B-spline's own dtype, which is what
+        # ``_face_interpolation_gaps`` cannot supply; check ``face_u0`` directly instead.
+        s = np.asarray(_FACE_SAMPLES, dtype=np.float32)
+        face_params = np.asarray([[v, w] for v in s for w in s], dtype=np.float32)
+        volume_params = np.asarray([[0.0, v, w] for v in s for w in s], dtype=np.float32)
+        assert_allclose(
+            np.asarray(volume.evaluate(volume_params), dtype=np.float64),
+            np.asarray(faces[0][0].evaluate(face_params), dtype=np.float64),
+            atol=get_conservative(np.float32),
+            rtol=0.0,
+        )
+
+    # -- mechanism 2: a weight is graded against the weights ----------------------------
+
+    @staticmethod
+    def _as_rational(face: Bspline) -> Bspline:
+        """Rewrite a polynomial face rationally, with every weight 1.
+
+        The precision is the face's own: a ``Bspline`` refuses control points whose dtype
+        differs from its space's, so promoting a float32 face at float64 would not build.
+
+        Args:
+            face (Bspline): A non-rational face.
+
+        Returns:
+            Bspline: The same geometry, carried rationally, in *face*'s dtype.
+        """
+        cp = np.asarray(face.control_points)
+        weights = np.ones((*cp.shape[:-1], 1), dtype=cp.dtype)
+        return Bspline(face.space, np.concatenate([cp, weights], axis=-1), True)
+
+    def _cube_with_displaced_weight(
+        self, scale: float, gap: float, dtype: npt.DTypeLike = np.float64
+    ) -> _FacePairs:
+        """Build the ticket's cube with the two w-faces rational and one weight out by *gap*.
+
+        Only the w-faces are rational, which is what keeps the reproduction on the
+        pre-existing path rather than on the one pantr issue 309 unblocked.  The displaced
+        control point is the corner at the origin, so its homogeneous *coordinates* are
+        zero however the weight moves: the coordinate columns agree exactly and only the
+        weight column can decide the verdict.
+
+        Args:
+            scale (float): Side of the cube.
+            gap (float): Amount added to one weight, against weights of 1.
+            dtype (npt.DTypeLike): Precision of the whole model. Defaults to float64.
+
+        Returns:
+            _FacePairs: Six faces whose weights disagree at one corner, or six consistent
+            ones when ``gap == 0``.
+        """
+        pairs = self._cube_faces(dtype, scale)
+        faces = _flatten_faces(pairs)
+        faces[4], faces[5] = self._as_rational(faces[4]), self._as_rational(faces[5])
+        cp = np.asarray(faces[4].control_points).copy()
+        cp[0, 0, -1] += gap
+        faces[4] = Bspline(faces[4].space, cp.astype(dtype), is_rational=True)
+        u0, u1, v0, v1, w0, w1 = faces
+        return ((u0, u1), (v0, v1), (w0, w1))
+
+    @pytest.mark.parametrize("scale", [1.0, 1.0e2, 1.0e4, 1.0e6, 1.0e8])
+    def test_a_weight_error_is_refused_at_every_model_scale(self, scale: float) -> None:
+        """The ticket's reproduction: four times the tier against weights of 1, at five sizes.
+
+        A weight is dimensionless, so this is a gross error at any ``scale``.  Graded
+        against one magnitude over the homogeneous row it was refused at ``scale = 1`` and
+        accepted at every larger size -- the failure the edge check exists to stop,
+        reappearing on the rational path once the model is big.
+        """
+        gap = 4.0 * get_conservative(np.float64)
+        with pytest.raises(ValueError, match=r"Edge \w+ mismatch") as excinfo:
+            create_coons_volume(self._cube_with_displaced_weight(scale, gap))
+
+        message = str(excinfo.value)
+        assert "weight scale" in message, message
+        reported_gap, tol, reported_scale = _reported_numbers(message)
+        assert reported_gap == pytest.approx(gap)
+        assert reported_scale == pytest.approx(1.0)
+        assert tol == pytest.approx(get_conservative(np.float64), rel=1e-3)
+
+    @pytest.mark.parametrize("scale", [1.0, 1.0e4, 1.0e8])
+    def test_a_weight_within_the_tier_is_accepted_at_every_model_scale(self, scale: float) -> None:
+        """The other side of the same rule: a quarter of the tier must pass everywhere.
+
+        Splitting the columns tightens the weight comparison by the model's size, so it
+        has to be checked that it did not tighten past what a weight can be stored to.
+        """
+        gap = 0.25 * get_conservative(np.float64)
+        volume = create_coons_volume(self._cube_with_displaced_weight(scale, gap))
+        assert volume.is_rational
+
+    @pytest.mark.parametrize("scale", [1.0, 1.0e4, 1.0e8])
+    def test_a_one_sided_weight_rescale_is_still_refused_at_every_scale(self, scale: float) -> None:
+        """Splitting the groups must not disarm the check the volume gained in pantr issue 307.
+
+        Scaling one face's homogeneous control points by ``mu`` leaves its geometry
+        untouched, so only a homogeneous comparison can see it.  Both groups carry ``mu``,
+        which is exactly why the split preserves the verdict: the weight gap
+        ``(mu - 1) w`` is graded against ``tier * max(w, mu w)`` and is refused.
+        """
+        pairs = self._cube_faces(np.float64, scale)
+        faces = _flatten_faces(pairs)
+        rational = self._as_rational(faces[4])
+        cp = np.asarray(rational.control_points) * 2.0
+        faces[4] = Bspline(rational.space, cp, is_rational=True)
+
+        grid = np.array([[a, b] for a in _FACE_SAMPLES for b in _FACE_SAMPLES])
+        assert_allclose(
+            np.asarray(faces[4].evaluate(grid)),
+            np.asarray(pairs[2][0].evaluate(grid)),
+            atol=0.0,
+        )
+
+        u0, u1, v0, v1, w0, w1 = faces
+        with pytest.raises(ValueError, match=r"Edge \w+ mismatch"):
+            create_coons_volume(((u0, u1), (v0, v1), (w0, w1)))
+
+    @pytest.mark.parametrize("scale", [1.0e-6, 1.0, 1.0e8])
+    def test_a_consistent_rational_cube_is_accepted_at_every_scale(self, scale: float) -> None:
+        """Neither rule may refuse correct input, at any model size.
+
+        The control for both mechanisms: all six faces rational, all weights 1, nothing
+        displaced.  It also pins that the coordinate group's scale still spans the model,
+        since a cube of side ``1e8`` is graded against ``1e8`` and not against 1.
+        """
+        pairs = self._cube_faces(np.float64, scale)
+        faces = _flatten_faces(pairs)
+        rational = [self._as_rational(f) for f in faces]
+        volume = create_coons_volume(
+            (
+                (rational[0], rational[1]),
+                (rational[2], rational[3]),
+                (rational[4], rational[5]),
+            )
+        )
+        gaps = _face_interpolation_gaps(
+            volume,
+            (
+                (rational[0], rational[1]),
+                (rational[2], rational[3]),
+                (rational[4], rational[5]),
+            ),
+        )
+        assert max(gaps.values()) <= get_conservative(np.float64) * scale, gaps
+
+    def test_a_coordinate_error_on_a_rational_edge_names_the_coordinate_group(self) -> None:
+        """The split must leave the coordinate half doing its job, and say which half decided.
+
+        One control point of ``face_w0`` has its **whole homogeneous row** doubled, so the
+        point it projects to is unchanged and the corner comparison, which projects, sees
+        nothing.  What is left is an edge disagreement of ``s`` in the coordinate columns
+        beside one of 1 in the weight column, and it must be reported against the model's
+        length rather than against the weights: the two are not comparable, and reporting
+        the wrong one would tell the caller to look at a quantity that is fine.
+        """
+        scale = 100.0
+        pairs = self._cube_faces(np.float64, scale)
+        faces = _flatten_faces(pairs)
+        faces[4], faces[5] = self._as_rational(faces[4]), self._as_rational(faces[5])
+        cp = np.asarray(faces[4].control_points).copy()
+        cp[1, 1] *= 2.0
+        faces[4] = Bspline(faces[4].space, cp, is_rational=True)
+
+        u0, u1, v0, v1, w0, w1 = faces
+        with pytest.raises(ValueError, match=r"Edge \w+ mismatch") as excinfo:
+            create_coons_volume(((u0, u1), (v0, v1), (w0, w1)))
+
+        message = str(excinfo.value)
+        assert "coordinate scale" in message, message
+        gap, tol, reported_scale = _reported_numbers(message)
+        assert gap == pytest.approx(scale)
+        assert reported_scale == pytest.approx(2.0 * scale)
+        assert tol == pytest.approx(get_conservative(np.float64) * 2.0 * scale, rel=1e-3)
+
+    @staticmethod
+    def _lifted_corner_faces(dtype: npt.DTypeLike, lift: float) -> _FacePairs:
+        """Build the cube's six faces with ``face_w0``'s ``(u=1, v=1)`` corner lifted.
+
+        The three faces meeting there no longer agree, so the corner check must decide.
+        Only ``face_w0`` carries the displacement, which is the direction pantr issue 301
+        showed was invisible before the w-faces were read at all.
+
+        Args:
+            dtype (npt.DTypeLike): Precision of the knots and control points.
+            lift (float): Displacement along *z* of that corner.
+
+        Returns:
+            _FacePairs: Six faces, consistent iff ``lift == 0``.
+        """
+        pairs = TestCoonsPrecisionAndColumnScale._cube_faces(dtype)
+        faces = _flatten_faces(pairs)
+        cp = np.asarray(faces[4].control_points).copy()
+        cp[1, 1, 2] += lift
+        faces[4] = Bspline(faces[4].space, cp.astype(dtype))
+        u0, u1, v0, v1, w0, w1 = faces
+        return ((u0, u1), (v0, v1), (w0, w1))
+
+    def test_a_float32_volume_grades_its_corners_at_float32(self) -> None:
+        """The tier reaches the volume's corner check too, not only the patch's.
+
+        The pair above pins ``_verify_corners_2d``; this pins ``_verify_corners_3d``, whose
+        population is twenty-four readings rather than eight.  A relative corner gap of
+        ``1e-6`` lies between the two readings of the tier -- above float64's ``9.09e-13``
+        and below float32's ``4.88e-4`` -- so it separates them cleanly: graded at float64
+        this float32 model is refused, graded at its own precision it is accepted.  A gap
+        of ``1e-2`` is above both and must still be refused, and by the float32 tier.
+        """
+        assert get_conservative(np.float64) < 1.0e-6 < get_conservative(np.float32) < 1.0e-2
+
+        volume = create_coons_volume(self._lifted_corner_faces(np.float32, 1.0e-6))
+        assert np.dtype(volume.control_points.dtype) == np.dtype(np.float32)
+
+        with pytest.raises(ValueError, match=r"Corner \(1,1,0\) mismatch") as excinfo:
+            create_coons_volume(self._lifted_corner_faces(np.float32, 1.0e-2))
+        gap, tol, scale = _reported_numbers(str(excinfo.value))
+        assert gap == pytest.approx(1.0e-2, rel=1e-3)
+        assert tol == pytest.approx(get_conservative(np.float32) * scale, rel=1e-3)
+
+    def test_a_float32_rational_volume_is_built_and_graded_at_float32(self) -> None:
+        """Where the two tickets meet: a volume that is rational *and* float32.
+
+        Nothing else covers their intersection.  A rational blend reads its corner term
+        homogeneously (pantr issue 309) and builds it at the corners' own precision
+        (pantr issue 319); a corner term silently promoted to float64 cannot be assembled
+        over a float32 space at all, so this is what would catch it.  The same face set
+        then puts a displaced weight -- which only ``_verify_edges_3d`` can see, the corner
+        check comparing projected points -- on both sides of the float32 tier.
+        """
+        volume = create_coons_volume(self._cube_with_displaced_weight(1.0, 0.0, np.float32))
+        assert volume.is_rational
+        assert np.dtype(volume.control_points.dtype) == np.dtype(np.float32)
+
+        # Between the two tiers: refused if graded at float64, accepted at float32.
+        assert get_conservative(np.float64) < 1.0e-6 < get_conservative(np.float32)
+        create_coons_volume(self._cube_with_displaced_weight(1.0, 1.0e-6, np.float32))
+
+        gap = 4.0 * get_conservative(np.float32)
+        with pytest.raises(ValueError, match=r"Edge \w+ mismatch") as excinfo:
+            create_coons_volume(self._cube_with_displaced_weight(1.0, gap, np.float32))
+        message = str(excinfo.value)
+        assert "weight scale" in message, message
+        reported_gap, tol, scale = _reported_numbers(message)
+        assert reported_gap == pytest.approx(gap, rel=1e-3)
+        # The weight scale is the weight population's own maximum, which the displaced
+        # weight itself raises above 1 -- not the coordinate scale, which is also 1 here.
+        assert scale == pytest.approx(1.0 + gap, rel=1e-3)
+        assert tol == pytest.approx(get_conservative(np.float32) * scale, rel=1e-3)
