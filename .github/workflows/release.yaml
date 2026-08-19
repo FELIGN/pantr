@@ -84,7 +84,15 @@ jobs:
       - name: Publish to TestPyPI
         # Pinned to the release/v1 commit SHA (third-party action handling an OIDC
         # token that can publish to PyPI). Bump deliberately; @release/v1 is mutable.
-        uses: pypa/gh-action-pypi-publish@cef221092ed1bacb1cc03d23a2d87d1d172e277b  # release/v1 @ 2026-02-18
+        #
+        # This pin has to keep up with the core metadata version the build emits. The
+        # action verifies the distributions with the twine it ships, and twine rejects a
+        # metadata version its `packaging` does not know: the 2026-02-18 pin carried
+        # twine 6.1.0 / packaging 25.0, which know up to 2.4, so it refused the 0.7.0
+        # wheel with `InvalidDistribution: '2.5' is not a valid metadata version` once
+        # hatchling 1.32.0 made 2.5 its default. v1.14.2 ships twine 7.0.0 /
+        # packaging 26.2, and PyPI itself pins packaging 26.2, so the index accepts 2.5.
+        uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33  # v1.14.2 @ 2026-07-29
         with:
           repository-url: https://test.pypi.org/legacy/
           # Re-running a tag (or a dispatch on the same version) must not fail
@@ -111,7 +119,7 @@ jobs:
 
       - name: Publish to PyPI
         # Pinned to the release/v1 commit SHA; see the TestPyPI step above.
-        uses: pypa/gh-action-pypi-publish@cef221092ed1bacb1cc03d23a2d87d1d172e277b  # release/v1 @ 2026-02-18
+        uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33  # v1.14.2 @ 2026-07-29
 
   github-release:
     name: Create GitHub Release
