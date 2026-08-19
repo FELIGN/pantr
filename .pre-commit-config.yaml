@@ -41,8 +41,19 @@ repos:
         pass_filenames: false
         additional_dependencies: [
           'mypy>=1.10,<2',
-          'numpy>=1.26,<3',
+          # Upper-bounded to match what the project environment resolves.
+          # numpy 2.5 requires Python 3.12 and its stubs use PEP 695 `type`
+          # statements, which mypy cannot parse while mypy.ini asks for 3.11.
+          # Drop the bound once the Python floor moves to 3.12.
+          'numpy>=1.26,<2.5',
           'scipy>=1.11,<2',
-          'numba>=0.63',
+          # Mirrors the pyproject pin, which documents why the upper bound
+          # exists: 0.66 broke mypy's view of get_num_threads and of
+          # config.NUMBA_NUM_THREADS.
+          'numba>=0.63,<0.66',
           'threadpoolctl>=3.0',
+          # tests/test_tutorials.py imports matplotlib.pyplot; without it the
+          # hook's isolated environment cannot resolve it and every commit
+          # touching a .py file fails, while a real mypy run passes.
+          'matplotlib>=3.7,<4',
         ]
