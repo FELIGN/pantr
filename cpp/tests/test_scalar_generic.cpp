@@ -97,6 +97,85 @@ static_assert(std::same_as<pantr::accumulator_t<Dual1>, Dual1>,
 static_assert(std::same_as<pantr::accumulator_t<float>, double>);
 static_assert(std::same_as<pantr::accumulator_t<double>, double>);
 
+static_assert(std::constructible_from<Dual1, double>,
+              "the kernels build constants -- T(1) seeds the recurrence -- so a scalar "
+              "that cannot be constructed from a double is not usable by them");
+static_assert(!std::convertible_to<double, Dual1>,
+              "constructible_from must be satisfied by an EXPLICIT constructor: an "
+              "implicit conversion the other way would let a stray double enter the "
+              "computation silently");
+
+/// A scalar the concept must REJECT, and the reason it exists.
+///
+/// A forward-mode dual built by named factories rather than by a numeric
+/// constructor is a common AD shape: it keeps `Dual d = 3;` from compiling, which
+/// is usually what its author wants. It has the five operators and a `value_of`,
+/// so before `std::constructible_from<T, double>` joined `Real` it satisfied the
+/// concept -- and then failed to compile inside the kernel at `T(1)`, producing a
+/// template error from a header its author did not write.
+///
+/// Pinned here so `Real` is checked to be the kernel's actual contract rather
+/// than a subset of it: it must reject this type *at the constraint*.
+class DualByFactory {
+  public:
+    static constexpr DualByFactory constant(double v) noexcept { return {v, 0.0}; }
+    static constexpr DualByFactory seed(double v) noexcept { return {v, 1.0}; }
+
+    constexpr DualByFactory() noexcept = default;
+
+    constexpr DualByFactory operator-() const noexcept { return {-value_, -derivative_}; }
+    friend constexpr DualByFactory operator+(DualByFactory a, DualByFactory b) noexcept {
+        return {a.value_ + b.value_, a.derivative_ + b.derivative_};
+    }
+    friend constexpr DualByFactory operator-(DualByFactory a, DualByFactory b) noexcept {
+        return {a.value_ - b.value_, a.derivative_ - b.derivative_};
+    }
+    friend constexpr DualByFactory operator*(DualByFactory a, DualByFactory b) noexcept {
+        return {a.value_ * b.value_, a.derivative_ * b.value_ + a.value_ * b.derivative_};
+    }
+    friend constexpr DualByFactory operator/(DualByFactory a, DualByFactory b) noexcept {
+        const double q = a.value_ / b.value_;
+        return {q, (a.derivative_ - q * b.derivative_) / b.value_};
+    }
+    friend constexpr double value_of(DualByFactory x) noexcept { return x.value_; }
+
+  private:
+    constexpr DualByFactory(double value, double derivative) noexcept
+        : value_(value), derivative_(derivative) {}
+
+    double value_ = 0.0;
+    double derivative_ = 0.0;
+};
+
+/// Exercise every operator of the fixture, so that its rejection is known to be
+/// about the missing constructor and nothing else.
+///
+/// This is not decoration. The `static_assert`s below short-circuit on
+/// `constructible_from`, so without a real use the operators are never
+/// instantiated -- Clang says so and refuses the build under `-Werror`
+/// (`-Wunused-function`), which is the correct complaint: a fixture whose
+/// arithmetic is never compiled cannot be claimed to differ from `Real` by one
+/// requirement. Evaluating it here compiles all five, and the expected value is
+/// worked out by hand rather than read off a run.
+///
+/// With `a = (2, 1)` and `b = (3, 0)`: `a + b = (5, 1)`, `a * b = (6, 3)`,
+/// `(a * b) / b = (2, 1)`, so `a + b - (a * b) / b = (3, 0)` and negating gives
+/// `(-3, 0)`.
+constexpr DualByFactory fixture_arithmetic() noexcept {
+    const DualByFactory a = DualByFactory::seed(2.0);
+    const DualByFactory b = DualByFactory::constant(3.0);
+    return -(a + b - a * b / b);
+}
+
+static_assert(value_of(fixture_arithmetic()) == -3.0,
+              "the fixture's operators must be real arithmetic, not placeholders");
+
+static_assert(!pantr::Real<DualByFactory>,
+              "Real must reject a scalar the kernel cannot build a constant of, at the "
+              "constraint rather than thirty lines into a template instantiation");
+static_assert(!std::constructible_from<DualByFactory, double>,
+              "the fixture is only meaningful while this is the reason it is rejected");
+
 // `value_type_t` is an alias template, so nothing checks it until something
 // instantiates it, and it shipped with no instantiation anywhere in the tree.
 //
