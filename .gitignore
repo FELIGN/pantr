@@ -78,3 +78,7 @@ Thumbs.db
 
 # Stray temp dir
 .git_tmp/
+
+# Manuscript sources and figures (unpublished submission; never committed to a
+# public repository)
+paper/
