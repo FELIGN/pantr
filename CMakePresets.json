@@ -1,0 +1,81 @@
+{
+  "version": 6,
+  "cmakeMinimumRequired": { "major": 3, "minor": 25, "patch": 0 },
+  "configurePresets": [
+    {
+      "name": "base",
+      "hidden": true,
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/${presetName}",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "CMAKE_EXPORT_COMPILE_COMMANDS": "ON",
+        "PANTR_WERROR": "ON",
+        "PANTR_BUILD_TESTS": "ON",
+        "PANTR_BUILD_BENCHMARK": "ON",
+        "PANTR_BUILD_PYTHON": "OFF"
+      }
+    },
+    {
+      "name": "gcc",
+      "inherits": "base",
+      "displayName": "GCC (conda-forge)",
+      "description": "The environment's g++. Its own build directory, because probe results are cached in CMakeCache.txt and switching compilers inside one directory yields stale answers.",
+      "cacheVariables": { "CMAKE_CXX_COMPILER": "g++" }
+    },
+    {
+      "name": "clang",
+      "inherits": "base",
+      "displayName": "Clang (conda-forge)",
+      "description": "The environment's clang++. Separate binary directory from the gcc preset, for the same reason.",
+      "cacheVariables": { "CMAKE_CXX_COMPILER": "clang++" }
+    },
+    {
+      "name": "gcc-debug",
+      "inherits": "gcc",
+      "displayName": "GCC, debug with sanitizers",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "CMAKE_CXX_FLAGS_DEBUG": "-g -O0 -fsanitize=address,undefined -fno-omit-frame-pointer",
+        "CMAKE_EXE_LINKER_FLAGS": "-fsanitize=address,undefined"
+      }
+    }
+  ],
+  "buildPresets": [
+    {
+      "name": "gcc",
+      "configurePreset": "gcc",
+      "jobs": 20
+    },
+    {
+      "name": "clang",
+      "configurePreset": "clang",
+      "jobs": 20
+    },
+    {
+      "name": "gcc-debug",
+      "configurePreset": "gcc-debug",
+      "jobs": 20
+    }
+  ],
+  "testPresets": [
+    {
+      "name": "gcc",
+      "configurePreset": "gcc",
+      "output": { "outputOnFailure": true },
+      "execution": { "jobs": 20, "noTestsAction": "error", "stopOnFailure": false }
+    },
+    {
+      "name": "clang",
+      "configurePreset": "clang",
+      "output": { "outputOnFailure": true },
+      "execution": { "jobs": 20, "noTestsAction": "error", "stopOnFailure": false }
+    },
+    {
+      "name": "gcc-debug",
+      "configurePreset": "gcc-debug",
+      "output": { "outputOnFailure": true },
+      "execution": { "jobs": 20, "noTestsAction": "error", "stopOnFailure": false }
+    }
+  ]
+}
