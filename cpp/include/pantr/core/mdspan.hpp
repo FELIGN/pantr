@@ -82,9 +82,9 @@ namespace md = std::experimental;
 /// actually needs a stride.
 ///
 /// One consequence is visible now and is the price of waiting: a non-contiguous
-/// `out` cannot be described by this alias, so `pantr._backend` computes into a
-/// contiguous buffer and copies back, where the numba kernel fills the caller's
-/// array in place.
+/// `out` cannot be described by this alias, so the Python adapter in
+/// `pantr.basis._basis_backend` computes into a contiguous buffer and copies
+/// back, where the numba kernel fills the caller's array in place.
 template <class T, std::size_t Rank>
 using span_nd = md::mdspan<T, md::dextents<std::size_t, Rank>, md::layout_right>;
 

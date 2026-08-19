@@ -3,8 +3,9 @@
 ///
 /// ## No docstrings here
 ///
-/// Every user-visible docstring lives in `src/pantr/_backend.py`, not in a
-/// string literal in this file, and that is deliberate. A docstring written in
+/// Every user-visible docstring lives in the Python layer -- for this kernel,
+/// `src/pantr/basis/` -- and not in a string literal in this file, and that is
+/// deliberate. A docstring written in
 /// C++ is invisible to ruff's pydocstyle rules, to the doctest runner, and to the
 /// docs build, so the project's documentation conventions -- which CLAUDE.md
 /// states in full and enforces in CI -- would silently stop applying to exactly
@@ -81,8 +82,9 @@ using out_matrix = nb::ndarray<T, nb::ndim<2>, nb::c_contig, nb::device::cpu>;
 ///
 /// **This function is Layer 2's C++ half**, and the checks below belong here for
 /// the reason CLAUDE.md gives: a Layer 3 kernel validates nothing, so every
-/// guarantee it relies on is established by its caller. `pantr._backend` is the
-/// Python half of the same layer, but it is not the only caller -- the extension
+/// guarantee it relies on is established by its caller. The adapter in
+/// `pantr.basis._basis_backend` is the Python half of the same layer, but it is
+/// not the only caller -- the extension
 /// is importable, and `pantr._pantr_cpp.tabulate_cardinal_bspline_1d` is a public
 /// attribute of a public module. Measured before these checks existed, one line
 /// of Python reached undefined behaviour twice over: a negative `degree` became
@@ -133,7 +135,7 @@ void tabulate(unsigned degree, const_points<T> points, out_matrix<T> out) {
 }  // namespace
 
 NB_MODULE(_pantr_cpp, m) {
-    m.attr("__doc__") = nb::none();  // the docstring lives in pantr._backend
+    m.attr("__doc__") = nb::none();  // the docstrings live in the Python layer
 
     // `.noconvert()` on `out` is a correctness requirement, not a tuning knob.
     //
