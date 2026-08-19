@@ -177,8 +177,10 @@ using value_type_t = std::remove_cvref_t<detail::value_of_result_t<T>>;
 /// **For the tabulation kernels the reason is PARITY, not accuracy.** numba
 /// promotes float32 intermediates to float64 as a side effect of literal
 /// typing, so a port that computed in `float` throughout disagrees with the
-/// oracle by about one float32 ulp; cpp/include/pantr/basis/cardinal_bspline.hpp
-/// measures that. It is *not* the `sqrt(m) * eps32` argument of
+/// oracle by about one float32 ulp. cpp/include/pantr/basis/cardinal_bspline.hpp
+/// records the numba measurement that establishes the promotion, and
+/// `test_float32_intermediates_are_float64` in tests/test_cpp_parity.py is what
+/// checks the C++ side against it. It is *not* the `sqrt(m) * eps32` argument of
 /// design/large_data_fitting.md: that argument is about a length-`m`
 /// scalar accumulation, and a Cox-de Boor tabulation stores its state back into
 /// the output array at every stage, where the measured float32 error is flat in
@@ -190,9 +192,9 @@ using value_type_t = std::remove_cvref_t<detail::value_of_result_t<T>>;
 template <Real T>
 struct accumulator {
     static_assert(std::same_as<T, value_type_t<T>> || std::same_as<value_type_t<T>, double>,
-                  "a scalar carrying a value component narrower than double has to be "
-                  "widened by rebinding that component, which no scalar here supplies a "
-                  "hook for; specialise pantr::accumulator for it before using it");
+                  "a scalar whose value component is not itself double has to be widened "
+                  "by rebinding that component, which no scalar here supplies a hook for; "
+                  "specialise pantr::accumulator for it before using it");
 
     /// The accumulation type for `T`.
     using type = std::conditional_t<std::same_as<value_type_t<T>, float>, double, T>;

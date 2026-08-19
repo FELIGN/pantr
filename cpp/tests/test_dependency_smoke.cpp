@@ -65,16 +65,18 @@ void mdspan_view_is_row_major() {
 /// checked through the raw storage, so a transposed index would show up as a
 /// wrong flat offset rather than being hidden by a symmetric read-back.
 void at_indexes_a_view_of_every_rank() {
-    std::vector<double> storage(24);
-
-    const pantr::span_nd<double, 1> vec(storage.data(), 4);
+    std::vector<double> line(4);
+    const pantr::span_nd<double, 1> vec(line.data(), 4);
     for (std::size_t i = 0; i < 4; ++i) {
         pantr::at(vec, i) = static_cast<double>(i);
     }
-    for (std::size_t k = 0; k < 4; ++k) {
-        PANTR_CHECK(storage[k] == static_cast<double>(k));
+    for (std::size_t k = 0; k < line.size(); ++k) {
+        PANTR_CHECK(line[k] == static_cast<double>(k));
     }
 
+    // Its own buffer, so that neither rank's check can be satisfied by what the
+    // other wrote.
+    std::vector<double> storage(24);
     const pantr::span_nd<double, 3> cube(storage.data(), 2, 3, 4);
     for (std::size_t i = 0; i < 2; ++i) {
         for (std::size_t j = 0; j < 3; ++j) {

@@ -46,11 +46,12 @@ class CoreKernels(NamedTuple):
     callable because the consumer already needs two of them:
     :func:`pantr.basis._basis_1D._tabulate_basis_1D_impl_helper` dispatches on
     ``_PARALLEL_MIN_NUM_PTS``, calling the serial twin below that many points to
-    avoid a parallel launch that costs more than the work. Cardinal B-spline is
-    the only 1D basis kernel with no twin, so a bare callable happens to fit the
-    one kernel ported so far and would stop fitting at the next one -- the same
-    concept would then have two return shapes, and every consumer would have to
-    know which.
+    avoid a parallel launch that costs more than the work. Bernstein is the only
+    1D basis tabulation that has such a twin today -- cardinal B-spline, Lagrange
+    and Legendre have none -- so a bare callable happens to fit the one kernel
+    ported so far and would stop fitting at Bernstein, which is the obvious next
+    one. The same concept would then have two return shapes, and every consumer
+    would have to know which it got.
 
     Attributes:
         parallel (_BasisCoreFunc): The kernel used for batches of

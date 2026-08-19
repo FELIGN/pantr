@@ -434,6 +434,25 @@ python_checks() {
 
     check "editable install" pip install -e . --no-build-isolation -q
 
+    # An explicit request that cannot be served must FAIL rather than fall back.
+    # This is the rule that makes every A/B measurement in this prototype
+    # trustworthy, so it is asserted rather than assumed -- on both selection
+    # axes, because they are two variables answering two questions and a rule
+    # asserted on one of them says nothing about the other.
+    #
+    # Above the extension check below, and deliberately: neither variable needs
+    # the extension to be built for an unknown value to fail, and the ISA axis is
+    # documented as independent of whether the C++ backend is installed, so
+    # checking it only where the extension exists would not check that.
+    local var
+    for var in PANTR_BACKEND PANTR_ISA_VARIANT; do
+        if env "$var=nonesuch" python -c "import pantr" 2>/dev/null; then
+            record FAIL "unknown $var fails loudly" "import SUCCEEDED"
+        else
+            record PASS "unknown $var fails loudly"
+        fi
+    done
+
     # The extension must be present. Every check below it would otherwise SKIP,
     # and a suite that skips its way to green is the trap CLAUDE.md names: a
     # missing optional dependency skips without complaint.
@@ -443,20 +462,6 @@ python_checks() {
         record FAIL "pantr._pantr_cpp imports" "everything below is meaningless"
         return 0
     fi
-
-    # An explicit request that cannot be served must FAIL rather than fall back.
-    # This is the rule that makes every A/B measurement in this prototype
-    # trustworthy, so it is asserted rather than assumed -- on both selection
-    # axes, because they are two variables answering two questions and a rule
-    # asserted on one of them says nothing about the other.
-    local var
-    for var in PANTR_BACKEND PANTR_ISA_VARIANT; do
-        if env "$var=nonesuch" python -c "import pantr" 2>/dev/null; then
-            record FAIL "unknown $var fails loudly" "import SUCCEEDED"
-        else
-            record PASS "unknown $var fails loudly"
-        fi
-    done
 
     check "parity: C++ vs numba" python -m pytest tests/test_cpp_parity.py -q
 
