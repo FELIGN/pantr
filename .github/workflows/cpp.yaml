@@ -64,7 +64,15 @@ jobs:
 
       - name: Install the toolchain
         run: |
-          sudo apt-get update
+          # Replace the mirror list before touching apt. The runner images point
+          # apt at `mirror+file:/etc/apt/apt-mirrors.txt`, and a dead host inside
+          # that list costs a timeout per index file before the fallback -- the
+          # same step, on identical input, has taken 16 s and 240 s on consecutive
+          # runs here, and once sat past 38 minutes. .github/workflows/ci.yaml
+          # already carries this fix; this workflow was written without it and
+          # stalled in exactly that step on its first run.
+          echo 'https://archive.ubuntu.com/ubuntu/' | sudo tee /etc/apt/apt-mirrors.txt
+          sudo apt-get update -q
           sudo apt-get install -y --no-install-recommends gcc-14 g++-14 ninja-build ccache
 
       # The dominant cost of a cold run. cmake/PantrDependencies.cmake pins full
@@ -131,7 +139,15 @@ jobs:
 
       - name: Install the toolchain
         run: |
-          sudo apt-get update
+          # Replace the mirror list before touching apt. The runner images point
+          # apt at `mirror+file:/etc/apt/apt-mirrors.txt`, and a dead host inside
+          # that list costs a timeout per index file before the fallback -- the
+          # same step, on identical input, has taken 16 s and 240 s on consecutive
+          # runs here, and once sat past 38 minutes. .github/workflows/ci.yaml
+          # already carries this fix; this workflow was written without it and
+          # stalled in exactly that step on its first run.
+          echo 'https://archive.ubuntu.com/ubuntu/' | sudo tee /etc/apt/apt-mirrors.txt
+          sudo apt-get update -q
           sudo apt-get install -y --no-install-recommends gcc-14 g++-14 ninja-build ccache
 
       - name: Set up Python
