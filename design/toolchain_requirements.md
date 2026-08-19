@@ -205,8 +205,18 @@ lines of CMake, and the day it is needed is the day nobody wants to be writing t
    the ported kernel. See the epistemic status above. What remains open is the decision this
    turns into: the filter is now known to reject a compiler that works on the evidence
    available, and this note's own rule says the list may only grow from observed failures.
-2. Which compiler does `manylinux_2_28` provide? If it is older than the gate, the wheel build
-   fails and either the image or the gate has to move.
+2. ~~Which compiler does `manylinux_2_28` provide?~~ **Answered 2026-08-19: GCC 14**, on an
+   AlmaLinux 8 base, and `manylinux_2_34` (AlmaLinux 9) likewise. Both are far above the
+   floor of 10, so neither the image nor the gate has to move and this question closes
+   without consequences. (From the `pypa/manylinux` README rather than from running the
+   image; the margin is wide enough that the distinction does not change the conclusion.)
+
+   The answer does carry one thing nobody was looking for. **`manylinux_2_31`, the armv7l
+   image, ships GCC 9** -- which does not accept `-std=c++20` at all, measured on this
+   machine. So armv7l is not a case of the floor being in the way: it is **out of reach for
+   the C++ backend entirely**, at any floor compatible with the C++20 baseline this note
+   fixes. If pantr ever ships armv7l wheels they are Numba-only, and that is a packaging
+   consequence of `D4` rather than of anything decided here.
 3. Should the gate run in the Python build path too, or only for a direct CMake configure?
    scikit-build-core invokes CMake, so it inherits the gate, but the error surfaces inside a
    `pip install` log where it is much easier to miss.
