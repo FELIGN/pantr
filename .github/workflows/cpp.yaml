@@ -1,0 +1,165 @@
+# The C++ prototype's CI.
+#
+# MANUAL ONLY. There is no `push` and no `pull_request` trigger, and that is
+# deliberate rather than an oversight:
+#
+#   - This is a prototype on a branch that is meant to be abandonable. Wiring it
+#     into every push would spend runner minutes on a tree whose whole purpose is
+#     to be thrown away if the measurements come out badly.
+#   - The prototype's real check is scripts/ci_local.sh, which runs the two
+#     compilers that the port is actually developed against (conda-forge GCC 14
+#     and Clang 18) and measures against the numba oracle in the same
+#     environment. This workflow answers a narrower question: does the tree build
+#     somewhere that is not the development server.
+#   - .github/workflows/ci.yaml triggers on main only, so nothing here fires by
+#     accident on a proto/cpp pull request either.
+#
+# Run it from the Actions tab, or:  gh workflow run cpp.yaml --ref proto/cpp
+
+name: C++ prototype
+
+on:
+  workflow_dispatch:
+    inputs:
+      run_parity:
+        description: "Run the C++/numba parity test (slower: builds the extension)"
+        type: boolean
+        default: true
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  cxx:
+    name: ${{ matrix.name }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    strategy:
+      # No fail-fast: the two compilers are the point of the matrix, and
+      # cancelling one because the other failed loses exactly the comparison
+      # this job exists to make. CLAUDE.md notes that a cancelled leg reads as a
+      # failure in `gh pr checks`, which turns one defect into two.
+      fail-fast: false
+      matrix:
+        include:
+          - name: GCC 14
+            cc: gcc-14
+            cxx: g++-14
+            packages: gcc-14 g++-14
+          - name: Clang 18
+            cc: clang-18
+            cxx: clang++-18
+            packages: clang-18
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Install the compiler
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends ${{ matrix.packages }} ninja-build
+
+      - name: Report the toolchain
+        run: |
+          ${{ matrix.cxx }} --version
+          cmake --version
+          ninja --version
+
+      # Not through CMakePresets: the presets pin `jobs: 20` for the development
+      # server's CPU budget, which is wrong for a 4-CPU runner, and they name the
+      # unversioned `g++` / `clang++` that the matrix is here to vary.
+      #
+      # CMAKE_C_COMPILER is pinned as well as CMAKE_CXX_COMPILER, and it matters
+      # even though pantr itself is C++ only: Eigen's own `project()` enables C, so
+      # a C compiler IS selected, and with only the C++ one pinned it defaulted to
+      # whatever `cc` resolves to. That left the "Clang 18" leg building its C with
+      # GCC while reporting itself as a Clang leg -- a two-row matrix whose rows
+      # were less different than they claimed. `matrix.cc` was already declared for
+      # this and simply never referenced.
+      - name: Configure
+        run: >
+          cmake -S . -B build -G Ninja
+          -DCMAKE_BUILD_TYPE=Release
+          -DCMAKE_C_COMPILER=${{ matrix.cc }}
+          -DCMAKE_CXX_COMPILER=${{ matrix.cxx }}
+          -DPANTR_WERROR=ON
+          -DPANTR_BUILD_TESTS=ON
+          -DPANTR_BUILD_BENCHMARK=ON
+          -DPANTR_BUILD_PYTHON=OFF
+
+      - name: Build
+        run: cmake --build build
+
+      - name: Test
+        run: ctest --test-dir build --output-on-failure
+
+      # Which way the mdspan toggle went is the single most useful line to have
+      # in a log from a machine nobody can inspect afterwards.
+      - name: Report the mdspan implementation
+        if: always()
+        run: |
+          if grep -q '^PANTR_HAS_STD_MDSPAN:INTERNAL=1$' build/CMakeCache.txt; then
+            echo "std::mdspan from the standard library"
+          else
+            echo "Kokkos reference implementation"
+          fi
+
+  parity:
+    name: Parity against the numba oracle
+    if: ${{ inputs.run_parity }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Install the compiler
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends gcc-14 g++-14 ninja-build
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          # The lowest version pyproject.toml declares. The extension is built
+          # here rather than downloaded, so this is also the check that the
+          # nanobind bindings compile against the oldest CPython we claim.
+          python-version: "3.11"
+          cache: "pip"
+          cache-dependency-path: pyproject.toml
+
+      - name: Install pantr with the extension
+        env:
+          CC: gcc-14
+          CXX: g++-14
+        run: pip install -e ".[dev]" -v
+
+      - name: Confirm both backends are available
+        run: |
+          python -c "
+          from pantr._backend import Backend, available_backends
+          got = available_backends()
+          print('available:', [b.name for b in got])
+          assert Backend.CPP in got, 'the C++ extension did not build into this install'
+          "
+
+      - name: Parity
+        run: pytest tests/test_cpp_parity.py -v
+
+      # The acceptance criterion of the infrastructure PR: the pre-existing
+      # suite passes against both backends, not merely a new test written to
+      # agree with the new code.
+      - name: change_basis against both backends
+        run: |
+          for backend in numba cpp; do
+            echo "::group::PANTR_BACKEND=$backend"
+            PANTR_BACKEND=$backend pytest \
+              tests/test_change_basis_1D.py tests/test_change_basis_domain.py -q
+            echo "::endgroup::"
+          done
