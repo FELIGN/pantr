@@ -183,6 +183,14 @@ lines of CMake, and the day it is needed is the day nobody wants to be writing t
   configured with nothing said while a Clang 10 hit a hard stop, same year and same
   standard-library era, neither measured. The floor now means the lowest version actually
   exercised, which is a claim about us rather than about anyone's concepts implementation.
+- **The floor is verified locally and not by CI, deliberately.** `scripts/ci_local.sh`'s
+  `cxx` section builds and runs the tests with `g++-10` and `clang++-10` on every run, so the
+  claim is maintained rather than dated. The GitHub workflow does not: it runs GCC 14 and
+  Clang 18, and `ubuntu-24.04` does not package GCC 10, so covering the floor there would
+  need an older image or a container -- more weight than a prototype should carry. The
+  consequence is worth stating rather than discovering: **the floor is guaranteed by one
+  machine.** Anyone who cannot run `ci_local.sh` is trusting a measurement they cannot
+  reproduce.
 - **Stated from knowledge and explicitly uncertain:** the exact C++20 feature matrix of GCC 10
   and Clang 10, and the version at which Clang's concepts support became reliable. The
   Clang 14 floor above is a starting guess and should be replaced by whatever the probe run on

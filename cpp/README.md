@@ -160,3 +160,9 @@ was refused outright, and that nobody had measured in either direction.
 AppleClang stays exempt: its version numbers do not map to LLVM versions, so any threshold
 applied to it is a row that lies. `-DPANTR_ALLOW_UNTESTED_COMPILER=ON` still opens the gate
 for anyone who knows better, and the floor should rise only from an observed failure.
+
+`scripts/ci_local.sh` builds and tests with both floor compilers on every run, so the table
+above is re-established rather than remembered. **The GitHub workflow does not**: it runs
+GCC 14 and Clang 18, and `ubuntu-24.04` does not package GCC 10. So the floor is guaranteed
+by one machine, and that is a deliberate trade rather than an oversight -- covering it in CI
+needs an older runner image or a container, which is more than this prototype should carry.
