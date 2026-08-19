@@ -65,6 +65,9 @@ def tabulate_bernstein_1d(
         If `out` was provided, returns the same array.
 
     Raises:
+        TypeError: If `pts` or `out` is a `numpy.ma.MaskedArray`. No kernel can honour
+            a mask, and dropping it silently would make the result depend on which
+            backend is selected.
         ValueError: If degree is negative, or if `out` is provided and has incorrect
             shape or dtype.
 
@@ -117,6 +120,9 @@ def tabulate_cardinal_bspline_1d(
         If `out` was provided, returns the same array.
 
     Raises:
+        TypeError: If `pts` or `out` is a `numpy.ma.MaskedArray`. No kernel can honour
+            a mask, and dropping it silently would make the result depend on which
+            backend is selected.
         ValueError: If provided degree is negative, or if `out` is provided and has incorrect
             shape or dtype.
 
@@ -164,6 +170,9 @@ def tabulate_lagrange_1d(
         If `out` was provided, returns the same array.
 
     Raises:
+        TypeError: If `pts` or `out` is a `numpy.ma.MaskedArray`. No kernel can honour
+            a mask, and dropping it silently would make the result depend on which
+            backend is selected.
         ValueError: If provided degree is negative, or if `out` is provided and has incorrect
             shape or dtype.
     """
@@ -197,6 +206,9 @@ def tabulate_legendre_1d(
         If `out` was provided, returns the same array.
 
     Raises:
+        TypeError: If `pts` or `out` is a `numpy.ma.MaskedArray`. No kernel can honour
+            a mask, and dropping it silently would make the result depend on which
+            backend is selected.
         ValueError: If provided degree is negative, or if `out` is provided and has incorrect
             shape or dtype.
     """
@@ -258,6 +270,9 @@ def tabulate_bernstein(
         returns the same array.
 
     Raises:
+        TypeError: If `pts` or `out` is a `numpy.ma.MaskedArray`. No kernel can honour
+            a mask, and dropping it silently would make the result depend on which
+            backend is selected.
         ValueError: If any degree is negative, or if `out` is provided and has incorrect
             shape or dtype.
     """
@@ -301,6 +316,9 @@ def tabulate_cardinal_bspline(
         returns the same array.
 
     Raises:
+        TypeError: If `pts` or `out` is a `numpy.ma.MaskedArray`. No kernel can honour
+            a mask, and dropping it silently would make the result depend on which
+            backend is selected.
         ValueError: If any degree is negative, or if `out` is provided and has incorrect
             shape or dtype.
     """
@@ -346,6 +364,9 @@ def tabulate_lagrange(
         returns the same array.
 
     Raises:
+        TypeError: If `pts` or `out` is a `numpy.ma.MaskedArray`. No kernel can honour
+            a mask, and dropping it silently would make the result depend on which
+            backend is selected.
         ValueError: If any degree is negative, or if `out` is provided and has incorrect
             shape or dtype.
     """

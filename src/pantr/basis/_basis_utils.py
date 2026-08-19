@@ -20,6 +20,40 @@ from .._array_utils import _validate_float_dtype
 __all__ = ["_validate_float_dtype"]
 
 
+def _reject_masked_array(array: npt.ArrayLike, role: str) -> None:
+    """Refuse a masked array, which no kernel below this layer can honour.
+
+    A :class:`numpy.ma.MaskedArray` carries per-element validity that every
+    kernel would silently drop -- and the two backends do not even drop it the
+    same way. Measured on ``tabulate_cardinal_bspline_1d``: Numba refuses the
+    type outright, while the C++ binding accepts it through the buffer protocol,
+    computes on the underlying data and returns plausible numbers for the entries
+    the caller marked invalid. That is precisely the divergence
+    ``pantr._backend`` promises cannot happen: selecting a backend must change
+    how fast the library is, never what it accepts.
+
+    So the mask is refused here, in the layer that owns validation, and the
+    refusal follows Numba, which is the correct behaviour of the two. Other
+    ``ndarray`` subclasses are deliberately not checked: this is the one whose
+    *semantics* are lost, rather than merely its subclass identity.
+
+    Args:
+        array (npt.ArrayLike): The argument to inspect. Anything that is not a
+            masked array passes.
+        role (str): What the argument is, named in the message (e.g. ``points``).
+
+    Raises:
+        TypeError: If ``array`` is a :class:`numpy.ma.MaskedArray`.
+    """
+    if isinstance(array, np.ma.MaskedArray):
+        raise TypeError(
+            f"{role} is a numpy.ma.MaskedArray, which pantr does not accept: the mask "
+            f"would be discarded and the masked entries computed on anyway. Pass "
+            f"`{role}.filled(fill_value)` to choose what those entries hold, or "
+            f"`np.asarray({role})` to drop the mask deliberately."
+        )
+
+
 def _normalize_points_1D(pts: npt.ArrayLike) -> npt.NDArray[np.float32 | np.float64]:
     """Normalize points to a 1D float array for basis function evaluation.
 
@@ -38,7 +72,12 @@ def _normalize_points_1D(pts: npt.ArrayLike) -> npt.NDArray[np.float32 | np.floa
         point dtype. The dtype is preserved from the input if it's already a
         floating point type (float32/float64), otherwise converted to np.float64.
         The array is guaranteed to have exactly one dimension (ndim == 1).
+
+    Raises:
+        TypeError: If ``pts`` is a masked array; see :func:`_reject_masked_array`.
     """
+    _reject_masked_array(pts, "points")
+
     if not isinstance(pts, np.ndarray):
         pts = np.array(pts)
 
@@ -108,8 +147,13 @@ def _validate_out_array(
             ``np.float64``, ``np.bool_``, ``np.int_``).
 
     Raises:
+        TypeError: If ``out`` is a masked array; see :func:`_reject_masked_array`.
+            An ``out`` is the worse half of that divergence -- the C++ backend
+            writes through the mask into the caller's own array.
         ValueError: If the array shape, dtype, or writability does not match.
     """
+    _reject_masked_array(out, "out")
+
     if out.shape != expected_shape:
         raise ValueError(f"Output array has shape {out.shape}, but expected shape {expected_shape}")
     if out.dtype != np.dtype(expected_dtype):
