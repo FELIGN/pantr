@@ -444,14 +444,19 @@ python_checks() {
         return 0
     fi
 
-    # An explicit backend request that cannot be served must FAIL rather than
-    # fall back. This is the rule that makes every A/B measurement in this
-    # prototype trustworthy, so it is asserted rather than assumed.
-    if PANTR_BACKEND=nonesuch python -c "import pantr" 2>/dev/null; then
-        record FAIL "unknown PANTR_BACKEND fails loudly" "import SUCCEEDED"
-    else
-        record PASS "unknown PANTR_BACKEND fails loudly"
-    fi
+    # An explicit request that cannot be served must FAIL rather than fall back.
+    # This is the rule that makes every A/B measurement in this prototype
+    # trustworthy, so it is asserted rather than assumed -- on both selection
+    # axes, because they are two variables answering two questions and a rule
+    # asserted on one of them says nothing about the other.
+    local var
+    for var in PANTR_BACKEND PANTR_ISA_VARIANT; do
+        if env "$var=nonesuch" python -c "import pantr" 2>/dev/null; then
+            record FAIL "unknown $var fails loudly" "import SUCCEEDED"
+        else
+            record PASS "unknown $var fails loudly"
+        fi
+    done
 
     check "parity: C++ vs numba" python -m pytest tests/test_cpp_parity.py -q
 
