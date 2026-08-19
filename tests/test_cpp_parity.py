@@ -942,8 +942,14 @@ def test_degree_one_is_bitwise_exact_in_every_build(cpp_backend: None) -> None:
 def test_float32_intermediates_are_float64(cpp_backend: None) -> None:
     """The float32 path accumulates in float64, and the check can tell the difference.
 
-    ``accumulator_t`` in the C++ header states this decision, and
-    ``design/large_data_fitting.md`` gives its reason. It cannot be checked by the
+    ``pantr::accumulator_t`` in ``cpp/include/pantr/core/scalar.hpp`` states this
+    decision, and the reason it gives is **parity**: numba promotes float32
+    intermediates to float64 as a side effect of literal typing, so a port that
+    computed in ``float`` throughout would disagree with the oracle. It is not the
+    accuracy argument of ``design/large_data_fitting.md``, which is about a
+    length-``m`` scalar accumulation and does not reach a kernel that stores its
+    state back into the output array every stage; that note was amended in this
+    branch to say so. It cannot be checked by the
     float32 parity tolerance: a port accumulating in ``float`` throughout differs by
     about one ulp of float32, and the derived float32 parity bound is
     ``degree`` ulps, so it would wave the bug through for any degree above 2.
@@ -1442,8 +1448,16 @@ def test_an_unavailable_backend_request_never_falls_back(
         pytest.fail("use_backend must refuse an unavailable backend before yielding")
 
     # And the Numba backend is still reachable, i.e. the guard rejects rather than
-    # disabling the selector.
-    assert cardinal_bspline_core(Backend.NUMBA).parallel is not None
+    # disabling the selector. Compared by identity against the kernel itself: that
+    # the returned object is not None says nothing, since a function reference
+    # never is.
+    from pantr.basis._basis_core import (  # noqa: PLC0415
+        _tabulate_cardinal_Bspline_basis_1D_core,
+    )
+
+    assert cardinal_bspline_core(Backend.NUMBA).parallel is (
+        _tabulate_cardinal_Bspline_basis_1D_core
+    )
 
 
 def test_overlapping_use_backend_blocks_in_two_threads_do_not_leak(cpp_backend: None) -> None:

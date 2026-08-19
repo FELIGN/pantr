@@ -23,12 +23,13 @@ cpp/benchmark/                           the kernel alone, no Python
 The Python side of the same prototype:
 
 ```
-src/pantr/_backend.py        PANTR_BACKEND policy: which backends, which one
-src/pantr/basis/_basis_backend.py   the basis kernels of each backend, and the
-                                    adapter that calls the extension
-tests/test_cpp_parity.py     the C++ result against the numba oracle
-scripts/bench_parity.py      both kernels and both entry points, timed
-scripts/ci_local.sh          the whole check, and the gates asserted to fire
+src/pantr/_backend.py                PANTR_BACKEND and PANTR_ISA_VARIANT: which
+                                     implementation, and the rule it never breaks
+src/pantr/basis/_basis_backend.py    the basis kernels of each backend, and the
+                                     adapter that calls the extension
+tests/test_cpp_parity.py             the C++ result against the numba oracle
+scripts/bench_parity.py              both kernels and both entry points, timed
+scripts/ci_local.sh                  the whole check, and the gates asserted to fire
 ```
 
 ## Building it

@@ -43,7 +43,10 @@
 /// fixed at rank 2 while `span_nd` had already been generalised.
 ///
 /// The Kokkos half of that claim is compiled and run at ranks 1, 2 and 3 by
-/// cpp/tests/test_dependency_smoke.cpp. The standard half is not, and cannot be
+/// cpp/tests/test_dependency_smoke.cpp, and separately with
+/// `MDSPAN_USE_BRACKET_OPERATOR` forced on and `MDSPAN_USE_PAREN_OPERATOR` forced
+/// off, which is the configuration the deleted `#if` existed for. The standard
+/// half is not, and cannot be
 /// on this toolchain -- no standard library here ships the header, which is why
 /// the toggle is OFF -- so it rests on the wording of C++23 [mdspan.mdspan]
 /// rather than on a build.
@@ -98,8 +101,9 @@ using span2d = span_nd<T, 2>;
 ///
 /// \param view The view to index.
 /// \param idx One index per dimension of `view`, outermost first. Supplying the
-///        wrong number of them is a compile error rather than an out-of-bounds
-///        access.
+///        wrong number was already a compile error before the `static_assert`,
+///        since every mdspan subscript overload is constrained on the rank; the
+///        assertion only replaces a page of template diagnostics with a sentence.
 /// \return The element, with the reference type the view's accessor yields.
 ///
 /// \note No bounds checking is performed, in either branch of the switch.
