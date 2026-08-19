@@ -9,9 +9,9 @@ are scaled by the cell volume ``prod(hi - lo)`` (the Jacobian determinant of
 to that cell's volume and ``sum_i w_i f(x_i)`` approximates the integral of
 ``f`` over the cell.
 
-This is the uncut/background-cell quadrature bridge: a consumer (for example,
-lepard) takes this rule for interior cells and substitutes its own cut-cell
-rule on cells flagged as cut.
+This is the uncut/background-cell quadrature bridge: a downstream consumer takes
+this rule for interior cells and substitutes its own cut-cell rule on cells
+flagged as cut.
 """
 
 from __future__ import annotations

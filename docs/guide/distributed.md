@@ -200,7 +200,7 @@ partition = partition_grid(grid, comm.size, cell_weights=cost, cell_active=inter
 
 ## Consumer patterns
 
-**Native MPI (e.g. lepard), no dolfinx.** Partition the grid (or coupling graph)
+**Native MPI, no dolfinx.** Partition the grid (or coupling graph)
 directly and build the distributed space:
 
 ```python

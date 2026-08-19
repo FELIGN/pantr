@@ -148,9 +148,9 @@ judgment-heavy work, `implementer` for pinned execution, `scout` for a code map,
 for any new tolerance, `test-writer` and `test-architect` for the suite, `verifier` for a claim that
 one run or quote would settle.
 
-One project-specific rule the shared toolkit cannot know: **`lepard`, a separate and not-yet-public
-consumer, imports pantr *private* symbols** (kernels and helpers under a leading underscore). Before
-deleting or reshaping any symbol, public or private, check that repository for consumers — pantr's
+One project-specific rule the shared toolkit cannot know: **a separate, not-yet-public downstream
+consumer imports pantr *private* symbols** (kernels and helpers under a leading underscore). Before
+deleting or reshaping any symbol, public or private, check that consumer's repository — pantr's
 own CI cannot see breakage there.
 
 ## Architecture
