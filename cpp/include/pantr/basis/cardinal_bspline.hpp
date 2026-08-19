@@ -48,15 +48,16 @@
 /// and only the stores into `out` round to float32.
 ///
 /// That is the right arithmetic and the wrong reason: it is a consequence of
-/// literal typing, not a decision. design/large_data_fitting.md states the
-/// decision independently -- accumulate in float64 even when the data is
-/// float32, because the cost is a scalar accumulator and the alternative loses
-/// relative accuracy of order `sqrt(m) * eps32` on a length-`m` accumulation.
+/// literal typing, not a decision. `pantr::accumulator_t`
+/// (cpp/include/pantr/core/scalar.hpp) writes the decision down, as a
+/// project-wide policy rather than as a property of this kernel.
 ///
-/// `pantr::accumulator_t` writes it down. A C++ kernel that computed a `float`
-/// instantiation entirely in `float` would be a faithful-looking port that
-/// silently disagrees with the oracle by far more than the FMA bound allows,
-/// and the disagreement would be read as a bug in the port.
+/// What justifies it HERE is parity, not accuracy. A `float` instantiation
+/// computed entirely in `float` would be a faithful-looking port that disagrees
+/// with the oracle by about one float32 ulp, and the disagreement would be read
+/// as a bug in the port. The accuracy argument of design/large_data_fitting.md
+/// is a different one and does not reach this kernel -- the trait's own
+/// documentation says why, and that note was amended in this branch to agree.
 
 #include <cstddef>
 #include <span>
@@ -65,23 +66,6 @@
 #include "pantr/core/scalar.hpp"
 
 namespace pantr {
-
-/// The type intermediate quantities are accumulated in.
-///
-/// `double` for `float` storage, for the reason above; the scalar itself
-/// otherwise, so a differentiable type is not silently narrowed or widened.
-template <Real T>
-struct accumulator {
-    using type = T;
-};
-
-template <>
-struct accumulator<float> {
-    using type = double;
-};
-
-template <Real T>
-using accumulator_t = typename accumulator<T>::type;
 
 /// Tabulate the cardinal B-spline basis of `degree` at every point of `points`.
 ///

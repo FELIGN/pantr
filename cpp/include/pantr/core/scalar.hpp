@@ -155,4 +155,56 @@ concept Real =
 template <Real T>
 using value_type_t = std::remove_cvref_t<detail::value_of_result_t<T>>;
 
+/// The type intermediate quantities are accumulated in: `double` for `float`
+/// storage, and the scalar itself otherwise.
+///
+/// ## Why the decision is keyed on the VALUE type
+///
+/// The rule is about the format the arithmetic runs in, and that is a property
+/// of the scalar's value component rather than of the wrapper carrying it.
+/// Keyed on the storage type instead -- as a `template <> struct
+/// accumulator<float>` specialisation -- the same question gets two answers by
+/// accident: it fires for `float` and silently misses every scalar whose value
+/// component is a `float` without being one.
+///
+/// A scalar of that second shape is rejected here rather than answered wrongly.
+/// Widening it means rebinding its value component to `double`, which needs a
+/// hook no scalar in this library supplies; the static assertion says so at the
+/// trait, instead of letting the kernel fail thirty lines into a template.
+///
+/// ## What justifies widening at all
+///
+/// **For the tabulation kernels the reason is PARITY, not accuracy.** numba
+/// promotes float32 intermediates to float64 as a side effect of literal
+/// typing, so a port that computed in `float` throughout disagrees with the
+/// oracle by about one float32 ulp; cpp/include/pantr/basis/cardinal_bspline.hpp
+/// measures that. It is *not* the `sqrt(m) * eps32` argument of
+/// design/large_data_fitting.md: that argument is about a length-`m`
+/// scalar accumulation, and a Cox-de Boor tabulation stores its state back into
+/// the output array at every stage, where the measured float32 error is flat in
+/// the degree. That note was amended in this branch to bound its own rule
+/// accordingly.
+///
+/// Both reasons reach the same policy, which is why the policy lives here in the
+/// core and not in the header of whichever kernel needed it first.
+template <Real T>
+struct accumulator {
+    static_assert(std::same_as<T, value_type_t<T>> || std::same_as<value_type_t<T>, double>,
+                  "a scalar carrying a value component narrower than double has to be "
+                  "widened by rebinding that component, which no scalar here supplies a "
+                  "hook for; specialise pantr::accumulator for it before using it");
+
+    /// The accumulation type for `T`.
+    using type = std::conditional_t<std::same_as<value_type_t<T>, float>, double, T>;
+};
+
+/// The accumulation type of `T`, as an alias.
+///
+/// `cpp/tests/test_scalar_generic.cpp` pins all three answers -- `double` for
+/// `double`, `double` for `float`, and a differentiable scalar for itself -- for
+/// the same reason it pins `value_type_t`: nothing checks an alias template
+/// until something instantiates it.
+template <Real T>
+using accumulator_t = typename accumulator<T>::type;
+
 }  // namespace pantr
