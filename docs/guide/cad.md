@@ -161,6 +161,33 @@ blend volumes from edge quadruples, and $T$ is the trilinear corner
 interpolant.  Edges and corners are extracted automatically from face
 boundaries.
 
+### Rational boundaries, and what the blend requires of them
+
+Both Coons constructors accept rational (NURBS) input, and both apply the blend to
+homogeneous coefficients $(w\,x, w\,y, w\,z, w)$, projecting only at evaluation. That
+is what makes the result pass through the boundaries it was built from: projection is
+pointwise, so it commutes with restriction to a boundary.
+
+The catch is that the argument needs the pieces to agree in *homogeneous* data where they
+meet, weights included, and not merely to trace the same points of space. A homogeneous
+representation is unique only up to one constant scaling **all** of a patch's weights, so
+two curves can name the same corner while carrying different weights there, and the
+inclusion-exclusion then fails to cancel. Input like that is refused, with a `ValueError`
+naming the corner (or, for a volume, the edge) and whether the coordinates or the weights
+disagreed:
+
+```python
+c_v0 = ...  # ends at (0, 1, 0) carrying weight 2
+c_u1 = ...  # starts at (0, 1, 0) carrying weight 1
+create_coons_surface(((c_v0, c_v1), (c_u0, c_u1)))
+# ValueError: Corner (0,1) mismatch: C_u1 gives [0. 1. 0. 1.], C_v0 gives [0. 2. 0. 2.] ...
+```
+
+Rescaling every curve's homogeneous coefficients by the same constant is not a
+disagreement and is accepted; it describes the same patch. A polynomial curve among
+rational ones is promoted with unit weights, so mixed input needs the rational curves to
+carry weight 1 where they meet a polynomial one.
+
 ## Compatibility and assembly
 
 ### make_compat
