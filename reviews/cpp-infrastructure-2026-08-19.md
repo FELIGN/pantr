@@ -225,6 +225,48 @@ Recorded separately because the notes are sealed and the user rules on them.
 6. **`design/isa_dispatch.md` is cited by two notes and does not exist.** Its content appears
    to have been folded into `simd.md`.
 
+## Design questions: ruled on
+
+Decided 2026-08-19, after the review. Four were applied in this PR and four are recorded
+here with their ruling.
+
+**Applied.**
+
+- **Rank-generic `span_nd<T, Rank>`**, with `span2d = span_nd<T, 2>` so no call site moved.
+  The layout stays `layout_right` until a kernel needs a stride.
+- **`std::constructible_from<T, double>` on `Real`**, so the concept is the kernel's contract
+  rather than a subset of it, pinned by a fixture the concept must reject.
+- **The version floor**, set to 10 for GCC and Clang alike from a measurement, and covered by
+  `scripts/ci_local.sh` on every run rather than by a one-off.
+- **A `pull_request` trigger scoped to `proto/cpp`**, after the workflow turned out to be
+  undispatchable, with the run cut to one compiler and cached.
+
+**Approved, not yet applied.** Each is cheaper now, with one kernel, than after the second:
+
+- **A · Move `accumulator_t` to `core/scalar.hpp`** and key it on `value_type_t` rather than
+  on the storage type. It encodes a project-wide policy from a basis-specific header, and
+  the same rule currently answers differently depending on whether the scalar is a built-in.
+- **B · A `CoreKernels(parallel, serial)` record** for the seam, `serial=None` allowed. The
+  consumer already takes a pair and dispatches on `_PARALLEL_MIN_NUM_PTS`; cardinal B-spline
+  is the only basis kernel with no serial twin, which is the only reason a bare callable
+  fits. Porting Bernstein forces a second return shape for one concept.
+- **C · Invert the `_backend` import cycle**: policy in `_backend`, catalogue beside each
+  kernel. Removes two `noqa: PLC0415`, the `TYPE_CHECKING` import and the cycle itself, and
+  lets `lint-imports` hold it with a one-line contract.
+- **D · Make `pantr::at` variadic and drop its `#if`.** Its stated premise is false: Kokkos
+  0.6.0 provides `operator[](const std::array<I, rank()>&)` unconditionally, as C++23 does,
+  so one spelling serves both branches. Removing the branch also makes `at` rank-generic,
+  which is what `span_nd` now needs.
+
+**Still open, and deliberately.**
+
+- Whether `Backend` should be split from an `IsaVariant` axis before `PANTR_BACKEND`'s
+  accepted values become user-facing surface.
+- Whether `pantr._backend` is made public like `pantr._parallel`, or marked explicitly
+  unstable in its own docstring. The recommendation on record is the latter: it is
+  scaffolding for the duration of the port, and CLAUDE.md warns that a downstream consumer
+  already imports pantr private symbols.
+
 ## Design questions left open for the user
 
 Not findings. Each is cheap now and expensive per kernel added.
