@@ -7,8 +7,8 @@ authors:
     given-names: Pablo
     email: pablo.antolin@epfl.ch
     affiliation: "École Polytechnique Fédérale de Lausanne (EPFL)"
-version: 0.6.0
-date-released: "2026-06-13"
+version: 0.7.0
+date-released: "2026-08-19"
 license: MIT
 repository-code: "https://github.com/FELIGN/pantr"
 url: "https://github.com/FELIGN/pantr"

@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.7.0 (2026-08-19)
 
 ### Added
 - `pantr.multipatch`: new subpackage for multi-patch topology. `Interface` and
