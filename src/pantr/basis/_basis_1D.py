@@ -13,12 +13,12 @@ from typing import TYPE_CHECKING
 import numpy as np
 import numpy.typing as npt
 
+from .._backend import cardinal_bspline_core
 from .._numba_compat import wait_for_jit_warmup
 from ._basis_core import (
     _PARALLEL_MIN_NUM_PTS,
     _tabulate_Bernstein_basis_1D_core,
     _tabulate_Bernstein_basis_1D_serial_core,
-    _tabulate_cardinal_Bspline_basis_1D_core,
     _tabulate_Legendre_basis_1D_core,
 )
 from ._basis_lagrange import _tabulate_lagrange_basis_1D_core
@@ -195,7 +195,13 @@ def _tabulate_cardinal_Bspline_basis_1D_impl(
         >>> np.allclose(vals, [[0.5, 0.5, 0.0], [0.125, 0.75, 0.125], [0.0, 0.5, 0.5]])
         True
     """
-    return _tabulate_basis_1D_impl_helper(n, t, _tabulate_cardinal_Bspline_basis_1D_core, out)
+    # The one seam of the C++ port: which implementation of this kernel runs is
+    # chosen per call by pantr._backend, so PANTR_BACKEND=cpp reaches every
+    # caller of this function -- including pantr.change_basis and its existing
+    # tests -- without any of them knowing. Everything below this line, and all
+    # of the Layer 2 validation above it, is shared by both backends, which is
+    # what makes the comparison a comparison of kernels.
+    return _tabulate_basis_1D_impl_helper(n, t, cardinal_bspline_core(), out)
 
 
 def _tabulate_Lagrange_basis_1D_impl(
