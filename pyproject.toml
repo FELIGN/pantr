@@ -1,6 +1,9 @@
 [build-system]
-requires = ["hatchling>=1.27"]
-build-backend = "hatchling.build"
+# scikit-build-core replaces hatchling because the wheel now contains a compiled
+# extension. nanobind is a BUILD requirement, not a runtime one: the extension
+# links it statically (NB_STATIC), so nothing imports nanobind at run time.
+requires = ["scikit-build-core>=0.10", "nanobind>=2.14"]
+build-backend = "scikit_build_core.build"
 
 [project]
 name = "pantr"
@@ -101,16 +104,47 @@ Documentation = "https://pantr.readthedocs.io"
 Source = "https://github.com/FELIGN/pantr"
 Issues = "https://github.com/FELIGN/pantr/issues"
 
-[tool.hatch.build.targets.wheel]
-packages = ["src/pantr"]
+[tool.scikit-build]
+# The pure-Python package ships as it always did; CMake adds the extension
+# alongside it (see cpp/bindings/CMakeLists.txt for the install destination).
+wheel.packages = ["src/pantr"]
+cmake.version = ">=3.25"
+cmake.build-type = "Release"
+# Out of the Python build: the C++ tests and the benchmark are built by
+# CMakePresets, not by pip. Nothing that a `pip install` produces should depend
+# on Eigen having been fetched.
+cmake.define.PANTR_BUILD_PYTHON = "ON"
+cmake.define.PANTR_BUILD_TESTS = "OFF"
+cmake.define.PANTR_BUILD_BENCHMARK = "OFF"
+cmake.define.PANTR_WERROR = "ON"
+# Keep the symbol table in the INSTALLED extension. This prototype exists to be
+# measured, and a stripped module gives `perf` nothing to attribute time to and a
+# segfault nothing to build a backtrace from.
+#
+# It takes both this and NOSTRIP in cpp/bindings/CMakeLists.txt, because there are
+# two strippers and either one is enough on its own. nanobind's
+# `nanobind_add_module` strips at LINK time unless told not to; scikit-build-core
+# strips again at INSTALL time, and its default for that is derived from
+# `cmake.build-type` -- true for Release and MinSizeRel, which is exactly the
+# build being measured. Verified: with NOSTRIP alone the build tree's .so carried
+# 364 symbols while the installed one still reported "no symbols" to `nm`.
+#
+# The cost is disk. It does not change a single generated instruction, so no
+# measurement is affected by its presence.
+install.strip = false
+# A persistent build directory, so an editable rebuild is incremental. Without
+# it every `pip install -e .` reconfigures from scratch and re-clones Eigen,
+# which is the single most painful part of the worktree workflow.
+build-dir = "build/skbuild/{wheel_tag}"
+sdist.exclude = ["build", "design/_memory", ".github"]
 
 # Single source of truth for the version: `__version__` in the package __init__.
 # The explicit pattern is required because the assignment carries a type
-# annotation (`__version__: Final[str] = "..."`), which hatchling's default
-# regex does not match.
-[tool.hatch.version]
-path = "src/pantr/__init__.py"
-pattern = '^__version__[^=]*=\s*"(?P<version>[^"]+)"'
+# annotation (`__version__: Final[str] = "..."`), which no default regex matches.
+[tool.scikit-build.metadata.version]
+provider = "scikit_build_core.metadata.regex"
+input = "src/pantr/__init__.py"
+regex = '^__version__[^=]*=\s*"(?P<value>[^"]+)"'
 
 [tool.importlinter]
 root_package = "pantr"
