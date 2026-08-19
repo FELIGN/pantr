@@ -16,12 +16,15 @@ nothing from the library, and an import-linter contract in ``pyproject.toml``
 keeps it that way.
 
 - :data:`_BasisCoreFunc`: the signature every 1D tabulation kernel has.
-- :func:`cardinal_bspline_core`: the cardinal B-spline kernel of a backend.
+- :class:`CoreKernels`: a tabulation's kernels in one backend, parallel and
+  serial.
+- :func:`cardinal_bspline_core`: the cardinal B-spline kernels of a backend.
 """
 
 from __future__ import annotations
 
 from collections.abc import Callable
+from typing import NamedTuple
 
 import numpy as np
 import numpy.typing as npt
@@ -34,6 +37,31 @@ _BasisCoreFunc = Callable[
     None,
 ]
 """Signature of a 1D basis tabulation core kernel: ``(degree, pts, out) -> None``."""
+
+
+class CoreKernels(NamedTuple):
+    """The kernels implementing one tabulation, in one backend.
+
+    What a catalogue function returns, and it is a record rather than a bare
+    callable because the consumer already needs two of them:
+    :func:`pantr.basis._basis_1D._tabulate_basis_1D_impl_helper` dispatches on
+    ``_PARALLEL_MIN_NUM_PTS``, calling the serial twin below that many points to
+    avoid a parallel launch that costs more than the work. Cardinal B-spline is
+    the only 1D basis kernel with no twin, so a bare callable happens to fit the
+    one kernel ported so far and would stop fitting at the next one -- the same
+    concept would then have two return shapes, and every consumer would have to
+    know which.
+
+    Attributes:
+        parallel (_BasisCoreFunc): The kernel used for batches of
+            ``_PARALLEL_MIN_NUM_PTS`` points or more.
+        serial (_BasisCoreFunc | None): The serial twin, used below that
+            threshold. ``None`` when this tabulation has none, in which case
+            ``parallel`` runs at every batch size. Defaults to None.
+    """
+
+    parallel: _BasisCoreFunc
+    serial: _BasisCoreFunc | None = None
 
 
 def _cpp_cardinal_bspline_core(
@@ -82,8 +110,15 @@ def _cpp_cardinal_bspline_core(
     out[...] = buffer
 
 
-def cardinal_bspline_core(backend: Backend | None = None) -> _BasisCoreFunc:
-    """Return the cardinal B-spline tabulation kernel of the requested backend.
+def cardinal_bspline_core(backend: Backend | None = None) -> CoreKernels:
+    """Return the cardinal B-spline tabulation kernels of the requested backend.
+
+    Neither backend has a serial twin for this tabulation, so ``serial`` is
+    ``None`` in both. The Numba kernel is ``parallel=True`` and pays the launch
+    overhead at every batch size; the C++ one runs on the calling thread.
+    Whether a twin is worth adding is a performance question, and
+    ``design/simd.md`` open question 4 already asks whether the threshold that
+    would select it is derived or measured.
 
     Args:
         backend (Backend | None): The backend to use. ``None`` means the backend
@@ -91,7 +126,7 @@ def cardinal_bspline_core(backend: Backend | None = None) -> _BasisCoreFunc:
             Defaults to None.
 
     Returns:
-        _BasisCoreFunc: The kernel, callable as ``(n, t, out) -> None``.
+        CoreKernels: The kernels, each callable as ``(n, t, out) -> None``.
 
     Raises:
         RuntimeError: If ``backend`` is given and is not available.
@@ -99,8 +134,8 @@ def cardinal_bspline_core(backend: Backend | None = None) -> _BasisCoreFunc:
     chosen = active_backend() if backend is None else backend
 
     if chosen is Backend.NUMBA:
-        return _tabulate_cardinal_Bspline_basis_1D_core
+        return CoreKernels(parallel=_tabulate_cardinal_Bspline_basis_1D_core)
 
     if chosen not in available_backends():
         raise RuntimeError(f"the {chosen.name} backend is not available in this installation")
-    return _cpp_cardinal_bspline_core
+    return CoreKernels(parallel=_cpp_cardinal_bspline_core)

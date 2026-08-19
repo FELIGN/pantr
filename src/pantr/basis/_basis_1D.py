@@ -193,7 +193,10 @@ def _tabulate_cardinal_Bspline_basis_1D_impl(
     # tests -- without any of them knowing. Everything below this line, and all
     # of the Layer 2 validation above it, is shared by both backends, which is
     # what makes the comparison a comparison of kernels.
-    return _tabulate_basis_1D_impl_helper(n, t, cardinal_bspline_core(), out)
+    kernels = cardinal_bspline_core()
+    return _tabulate_basis_1D_impl_helper(
+        n, t, kernels.parallel, out, core_func_serial=kernels.serial
+    )
 
 
 def _tabulate_Lagrange_basis_1D_impl(
