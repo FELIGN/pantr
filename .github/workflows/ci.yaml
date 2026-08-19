@@ -161,6 +161,17 @@ jobs:
 
       - name: Install OpenMPI
         run: |
+          # The runner images point apt at azure.archive.ubuntu.com, which
+          # intermittently stops answering: this step has taken 16 s and 240 s on
+          # identical input, and once ran past 38 minutes without finishing while the
+          # log filled with `Ign` lines for that host. The canonical mirror is a little
+          # slower on a good day and does not do that. Noble keeps its sources in
+          # deb822 format under sources.list.d; older images use sources.list, so both
+          # are rewritten and neither is required to exist.
+          sudo sed -i 's|azure\.archive\.ubuntu\.com|archive.ubuntu.com|g' \
+            /etc/apt/sources.list.d/ubuntu.sources || true
+          sudo sed -i 's|azure\.archive\.ubuntu\.com|archive.ubuntu.com|g' \
+            /etc/apt/sources.list || true
           sudo apt-get update -q
           sudo apt-get install -y libopenmpi-dev openmpi-bin
 
@@ -292,6 +303,17 @@ jobs:
 
       - name: Install OpenMPI
         run: |
+          # The runner images point apt at azure.archive.ubuntu.com, which
+          # intermittently stops answering: this step has taken 16 s and 240 s on
+          # identical input, and once ran past 38 minutes without finishing while the
+          # log filled with `Ign` lines for that host. The canonical mirror is a little
+          # slower on a good day and does not do that. Noble keeps its sources in
+          # deb822 format under sources.list.d; older images use sources.list, so both
+          # are rewritten and neither is required to exist.
+          sudo sed -i 's|azure\.archive\.ubuntu\.com|archive.ubuntu.com|g' \
+            /etc/apt/sources.list.d/ubuntu.sources || true
+          sudo sed -i 's|azure\.archive\.ubuntu\.com|archive.ubuntu.com|g' \
+            /etc/apt/sources.list || true
           sudo apt-get update -q
           sudo apt-get install -y libopenmpi-dev openmpi-bin
 
