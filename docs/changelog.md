@@ -81,7 +81,7 @@
   comparison — and a disagreement raises a `ValueError` naming the corner and the column
   group that decided. Rescaling *every* curve's homogeneous coefficients by one constant
   is not a disagreement and is still accepted; it describes the same patch. Polynomial
-  input is unaffected, byte for byte.
+  input is unaffected.
 - **A weight disagreement between two rational Coons faces is refused at every model
   size.** The edge check took one magnitude over a homogeneous control row, which mixes
   coordinates (length times weight) with weights (dimensionless), so a weight error was
@@ -255,7 +255,14 @@
   corner weight came out as `2w - 1` instead of `w`. It is now read homogeneously and built
   by the same helper the volume's corner term uses (`_build_trilinear_volume` became
   `_build_multilinear_corner_term`, taking its dimension from the corners), so the two
-  paths cannot drift apart again. Polynomial patches are byte-identical to before.
+  paths cannot drift apart again. Polynomial patches at float64 are byte-identical to
+  before. At float32 they are byte-identical too *unless* the corner term needs degree
+  elevation or knot insertion to meet the two ruled terms, in which case they differ by a
+  couple of float32 ulps (measured: 2 ulps, `2.384e-07` at unit scale): the corner term
+  used to be built at float64 whatever the model's dtype and rounded down once at the end,
+  and it is now built in the curves' own precision like every other term. That is the
+  no-promotion rule the previous release adopted for this function, applied to the one term
+  that still escaped it.
 - **A Coons patch from curves carrying two coordinates builds** instead of dying in NumPy
   with `operands could not be broadcast together with shapes (2,2,2) (2,2,3) (2,2,2)`,
   which named nothing the caller had supplied. The corner term no longer goes through

@@ -531,7 +531,7 @@ class TestCoonsSurfaceHomogeneousCorners:
         # 2 is the largest homogeneous coordinate over all eight readings.
         assert gap == pytest.approx(1.0)
         assert scale == pytest.approx(2.0)
-        assert tol == pytest.approx(get_conservative(np.float64) * 2.0, rel=1e-3)
+        assert tol == pytest.approx(get_conservative(np.float64) * 2.0, rel=1e-3, abs=0.0)
 
     def test_four_curves_rational_the_same_way_are_refused_too(self) -> None:
         """The ticket's variant: all four curves rational with weights running 1 to 2.
@@ -598,10 +598,14 @@ class TestCoonsSurfaceHomogeneousCorners:
         message = str(excinfo.value)
         assert "weight scale" in message, message
         gap, tol, reported_scale = _reported_numbers(message)
-        assert gap == pytest.approx(weight_gap)
+        # `abs=0.0` because these are sub-picoscale quantities and `pytest.approx`'s
+        # default absolute tolerance is 1e-12, which alone exceeds the tier being asserted.
+        assert gap == pytest.approx(weight_gap, rel=1e-3, abs=0.0)
         # The weight population's own maximum, which the displaced weight itself sets.
         assert reported_scale == pytest.approx(1.0 + weight_gap)
-        assert tol == pytest.approx(get_conservative(np.float64) * reported_scale, rel=1e-3)
+        assert tol == pytest.approx(
+            get_conservative(np.float64) * reported_scale, rel=1e-3, abs=0.0
+        )
 
     @pytest.mark.parametrize("scale", [1.0, 1.0e4, 1.0e8])
     def test_a_weight_within_the_tier_is_accepted_at_every_model_scale(self, scale: float) -> None:
@@ -685,6 +689,44 @@ class TestCoonsSurfaceHomogeneousCorners:
         surface = create_coons_surface(((scaled(c_v0), scaled(c_v1)), (scaled(c_u0), scaled(c_u1))))
         gaps = _boundary_interpolation_gaps(surface, ((c_v0, c_v1), (c_u0, c_u1)))
         assert max(gaps.values()) <= get_conservative(np.float64), gaps
+
+    def test_the_tier_follows_the_curve_a_corner_was_actually_read_from(self) -> None:
+        """Each of the eight readings must keep the precision it was supplied in.
+
+        The corner term is sized from ``C_u0`` alone, so routing ``C_u1``'s corners through
+        that array widens them to ``C_u0``'s dtype and the tier is then read at float64 for a
+        corner that came off a float32 curve -- refusing it by ``2**17`` more than that curve
+        can express, on input the previous release accepted.  Here the ``(0,1)`` corner is
+        read by ``C_u1``, which is float32, and is out by ``1e-5``: between the two tiers, so
+        it separates them cleanly.  Curves of different precisions are not a supported input,
+        but they are a reachable one, and this is the direction that errs towards accepting.
+        """
+        assert get_conservative(np.float64) < 1.0e-5 < get_conservative(np.float32)
+
+        curves = (
+            (self._line([0, 0, 0], [0, 1, 0]), self._line([1, 0, 0], [1, 1, 0])),
+            (
+                self._line([0, 0, 0], [1, 0, 0]),
+                self._line([1.0e-5, 1, 0], [1, 1, 0], np.float32),
+            ),
+        )
+        surface = create_coons_surface(curves)
+        assert surface.rank == _RANK_3D
+
+        # And reading it at the coarser precision must not amount to accepting anything: a
+        # gap above the float32 tier is still refused, and refused against that tier.
+        gross = (
+            (self._line([0, 0, 0], [0, 1, 0]), self._line([1, 0, 0], [1, 1, 0])),
+            (
+                self._line([0, 0, 0], [1, 0, 0]),
+                self._line([1.0e-2, 1, 0], [1, 1, 0], np.float32),
+            ),
+        )
+        with pytest.raises(ValueError, match=r"Corner \(0,1\) mismatch") as excinfo:
+            create_coons_surface(gross)
+        gap, tol, scale = _reported_numbers(str(excinfo.value))
+        assert gap == pytest.approx(1.0e-2, rel=1e-3)
+        assert tol == pytest.approx(get_conservative(np.float32) * scale, rel=1e-3)
 
     def test_a_float32_rational_patch_is_built_and_graded_at_float32(self) -> None:
         """The tier must reach the weight group at the readings' own precision too.

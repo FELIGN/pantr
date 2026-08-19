@@ -52,6 +52,30 @@ class _EdgeReadings(NamedTuple):
     corners: tuple[str, str]
 
 
+class _CornerReadings(NamedTuple):
+    """One corner of a Coons patch, as read off each of the two curves that carry it.
+
+    Two curves meet at each corner of a patch, so each of the four corners can be read
+    twice, and the two readings must agree -- in homogeneous data, weights included -- for
+    the patch to interpolate both curves.
+
+    Attributes:
+        label (str): Corner name ``"(i,j)"``, by side along u and v.
+        u_curve (str): Name of the u-curve carrying it, as the mismatch message prints it.
+        from_u (npt.NDArray[np.float32 | np.float64]): The corner as ``u_curve`` sees it,
+            in that curve's own precision.
+        v_curve (str): Name of the v-curve carrying it.
+        from_v (npt.NDArray[np.float32 | np.float64]): The corner as ``v_curve`` sees it,
+            in that curve's own precision.
+    """
+
+    label: str
+    u_curve: str
+    from_u: npt.NDArray[np.float32 | np.float64]
+    v_curve: str
+    from_v: npt.NDArray[np.float32 | np.float64]
+
+
 class _ComparedEdge(NamedTuple):
     """One edge's two readings, made comparable, with the column groups that grade them.
 
@@ -209,7 +233,7 @@ def create_coons_surface(
     # refuse v-curves that contradict them there.  These are read in the curves' own
     # precision, not float64: it is the precision the disagreement is graded at.
     corners = _extract_corners_2d((c_u0, c_u1), is_rational=rational_curves)
-    _verify_corners_2d(corners, (c_v0, c_v1), is_rational=rational_curves)
+    _verify_corners_2d((c_u0, c_u1), (c_v0, c_v1), is_rational=rational_curves)
 
     # R0: ruled in v from C_v0 to C_v1, then transpose to (u, v)
     r0 = create_ruled(c_v0, c_v1).permute_directions([1, 0])
@@ -270,7 +294,7 @@ def _extract_corners_2d(
 
 
 def _verify_corners_2d(
-    u_corners: npt.NDArray[np.float32 | np.float64],
+    u_curves: tuple[Bspline, Bspline],
     v_curves: tuple[Bspline, Bspline],
     *,
     is_rational: bool,
@@ -347,12 +371,20 @@ def _verify_corners_2d(
     whole set.  That is what :func:`_extract_corners_2d` needs anyway: the corner term is one
     of three summed in a single space.
 
+    **Each of the eight readings is taken from its own curve**, rather than four of them
+    from :func:`_extract_corners_2d`'s output.  That array is sized from ``C_u0`` alone, so
+    routing ``C_u1``'s corners through it would widen them to ``C_u0``'s dtype and
+    :func:`~pantr.cad._validation._coarsest_dtype` would no longer see the precision they
+    were actually supplied in -- reading the tier at float64 for a float32 curve, and
+    refusing a corner by a factor of ``2**17`` more than that curve can express.  Curves of
+    different precisions are not a supported input, but they are a reachable one, and this
+    is the direction that errs towards accepting them.
+
     Args:
-        u_corners (npt.NDArray[np.float32 | np.float64]): Corner coefficients of shape
-            ``(2, 2, rank)`` read off the u-curves, as :func:`_extract_corners_2d` returns
-            them, in those curves' own dtype.
-        v_curves (tuple[Bspline, Bspline]): ``(C_v0, C_v1)``, the boundaries at ``u = 0`` and
-            ``u = 1``, each free in v, whose own endpoints are compared against *u_corners*.
+        u_curves (tuple[Bspline, Bspline]): ``(C_u0, C_u1)``, the boundaries at ``v = 0``
+            and ``v = 1``, each free in u and already made compatible with each other.
+        v_curves (tuple[Bspline, Bspline]): ``(C_v0, C_v1)``, the boundaries at ``u = 0``
+            and ``u = 1``, each free in v.
         is_rational (bool): Whether the patch being built is rational, i.e. whether the
             readings carry a trailing weight column that has to be graded against the weights.
 
@@ -360,17 +392,20 @@ def _verify_corners_2d(
         ValueError: If any pair of corners does not match, in either column group.
     """
     if is_rational:
+        u_curves = (_promote_to_rational(u_curves[0]), _promote_to_rational(u_curves[1]))
         v_curves = (_promote_to_rational(v_curves[0]), _promote_to_rational(v_curves[1]))
+    c_u0, c_u1 = u_curves
     c_v0, c_v1 = v_curves
 
-    pairs = [
-        ("(0,0)", u_corners[0, 0], _homogeneous_endpoint(c_v0, 0)),
-        ("(1,0)", u_corners[1, 0], _homogeneous_endpoint(c_v1, 0)),
-        ("(0,1)", u_corners[0, 1], _homogeneous_endpoint(c_v0, 1)),
-        ("(1,1)", u_corners[1, 1], _homogeneous_endpoint(c_v1, 1)),
+    read = _homogeneous_endpoint
+    corners = [
+        _CornerReadings("(0,0)", "C_u0", read(c_u0, 0), "C_v0", read(c_v0, 0)),
+        _CornerReadings("(1,0)", "C_u0", read(c_u0, 1), "C_v1", read(c_v1, 0)),
+        _CornerReadings("(0,1)", "C_u1", read(c_u1, 0), "C_v0", read(c_v0, 1)),
+        _CornerReadings("(1,1)", "C_u1", read(c_u1, 1), "C_v1", read(c_v1, 1)),
     ]
     groups = _column_groups(is_rational=is_rational)
-    readings = [corner for _, pu, qv in pairs for corner in (pu, qv)]
+    readings = [r for c in corners for r in (c.from_u, c.from_v)]
     tier = get_conservative(_coarsest_dtype(*readings))
     # No floor: a group whose eight readings are all zero has no scale, and is also bitwise
     # equal, so a zero tolerance is the right answer there rather than a hazard.
@@ -378,16 +413,17 @@ def _verify_corners_2d(
         group.name: max(float(np.abs(r[group.columns]).max()) for r in readings) for group in groups
     }
 
-    for label, pu, qv in pairs:
+    for c in corners:
         # Coordinates first: a curve given in the wrong place fails there, and it is the
         # more informative half to report when both groups are out.
         for group in groups:
-            gap = float(np.abs(pu[group.columns] - qv[group.columns]).max())
+            gap = float(np.abs(c.from_u[group.columns] - c.from_v[group.columns]).max())
             scale = scales[group.name]
             tol = tier * scale
             if gap > tol:
                 raise ValueError(
-                    f"Corner {label} mismatch: u-curve gives {pu}, v-curve gives {qv} "
+                    f"Corner {c.label} mismatch: {c.u_curve} gives {c.from_u}, "
+                    f"{c.v_curve} gives {c.from_v} "
                     f"(gap {gap:.3e}, above {tol:.3e} at corner {group.name} "
                     f"scale {scale:.3e})."
                 )
@@ -464,8 +500,12 @@ def create_coons_volume(
         ValueError: If any face is not a 2D B-spline.
         ValueError: If two faces meeting at a corner of the volume disagree there by more
             than ``4096 * eps`` times the largest absolute coordinate over all
-            twenty-four corner readings -- the same tier and the same scale rule as
-            :func:`create_coons_surface`, derived in ``_verify_corners_3d``.
+            twenty-four corner readings, derived in ``_verify_corners_3d``.  Same tier as
+            :func:`create_coons_surface`, but one undivided scale rather than that
+            function's two column groups: these are **projected** points and so carry one
+            physical dimension between them, while a patch compares homogeneous
+            coefficients.  A weight disagreement on the volume path is caught by
+            ``_verify_edges_3d`` instead, which does split the columns.
         ValueError: If two faces sharing an edge disagree along it by more than
             ``4096 * eps`` times that column group's own magnitude over the twelve
             compared edges: the largest absolute homogeneous coordinate for the
