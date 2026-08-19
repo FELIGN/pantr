@@ -281,6 +281,25 @@ here with their ruling.
 **Nothing from this review is left undecided.** Every finding was applied, and every design
 question was ruled on.
 
+**One follow-up needs a fact nobody here can see.** `CoreKernels(parallel, serial)` is
+unpacked where it reaches `_tabulate_basis_1D_impl_helper`, which still takes
+`core_func` and `core_func_serial` as separate parameters -- so the concept has a record on
+one side of the seam and two parameters on the other. Passing the record straight in is the
+clean end state and touches four call sites, all inside `src/pantr/basis/_basis_1D.py`.
+
+It was not done because that helper is long-standing private surface and CLAUDE.md records
+that a not-yet-public downstream consumer imports pantr private symbols, where pantr's CI
+cannot see the breakage. Two things make this safe to defer rather than urgent: the change
+would break **loudly** (a `TypeError` at the call), and unlike the six decisions above it
+does **not** get more expensive with a second kernel -- four call sites now, four later.
+
+What settles it is one grep in that consumer's repository for
+`_tabulate_basis_1D_impl_helper` (and, while there, `cardinal_bspline_core` and
+`_BasisCoreFunc`, which also moved in this branch). If it does not appear, make the change.
+If it does, the unpacking stays and the reason is recorded rather than rediscovered. The
+natural moment either way is the PR that ports Bernstein, which is the only 1D basis
+tabulation with a serial twin and so the first one to exercise the shape.
+
 ## Design questions left open for the user
 
 Not findings. Each is cheap now and expensive per kernel added.
