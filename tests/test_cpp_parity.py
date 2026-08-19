@@ -178,9 +178,9 @@ import numpy.typing as npt
 import pytest
 
 from pantr import _numba_compat
-from pantr._backend import Backend, active_backend, use_backend
+from pantr._backend import Backend, active_backend, available_backends, use_backend
 from pantr.basis import tabulate_cardinal_bspline_1d
-from pantr.basis._basis_backend import cardinal_bspline_core
+from pantr.basis._basis_backend import CoreKernels, cardinal_bspline_core
 from tests._parity_harness import (
     AccuracyClaim,
     FloatArray,
@@ -641,7 +641,7 @@ def _tabulate(backend: Backend, degree: int, points: FloatArray) -> FloatArray:
         FloatArray: Shape ``(points.size, degree + 1)`` in ``points.dtype``.
     """
     out = np.full((points.size, degree + 1), np.nan, dtype=points.dtype)
-    cardinal_bspline_core(backend)(np.int32(degree), points, out)
+    cardinal_bspline_core(backend).parallel(np.int32(degree), points, out)
     return out
 
 
@@ -1326,6 +1326,33 @@ def test_a_masked_array_is_refused_identically_by_both_backends(
     np.testing.assert_array_equal(results[0], results[1])
 
 
+def test_the_seam_returns_a_kernel_record_for_every_available_backend() -> None:
+    """Every backend answers with the same shape, whether or not it has a serial twin.
+
+    The catalogue's return type is what a consumer dispatches on, so it has to be
+    the same for every kernel and every backend. Cardinal B-spline has no serial
+    twin in either backend, which a bare callable would have fitted -- and would
+    have stopped fitting at the first kernel that has one, giving one concept two
+    return shapes. This pins the record instead, so adding a twin later changes a
+    field rather than a type.
+
+    Runs on whatever backends this installation has, so it is not a C++ test: the
+    invariant is about the seam, and the Numba half of it holds in a Numba-only
+    install too.
+    """
+    for backend in available_backends():
+        kernels = cardinal_bspline_core(backend)
+        assert isinstance(kernels, CoreKernels), (
+            f"{backend.name} did not return a CoreKernels record"
+        )
+        assert callable(kernels.parallel), f"{backend.name} has no parallel kernel"
+        assert kernels.serial is None, (
+            f"{backend.name} reports a serial twin for the cardinal B-spline kernel; "
+            f"if one was added, tests/test_cpp_parity.py must exercise it and "
+            f"pantr.basis._basis_backend.cardinal_bspline_core must say so"
+        )
+
+
 def test_an_unavailable_backend_request_never_falls_back(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1349,7 +1376,7 @@ def test_an_unavailable_backend_request_never_falls_back(
 
     # And the Numba backend is still reachable, i.e. the guard rejects rather than
     # disabling the selector.
-    assert cardinal_bspline_core(Backend.NUMBA) is not None
+    assert cardinal_bspline_core(Backend.NUMBA).parallel is not None
 
 
 def test_overlapping_use_backend_blocks_in_two_threads_do_not_leak(cpp_backend: None) -> None:
