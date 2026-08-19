@@ -14,6 +14,7 @@ jobs:
   lint:
     name: Lint (Ruff)
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     strategy:
       matrix:
         python-version: ["3.11", "3.13", "3.14"]
@@ -73,6 +74,7 @@ jobs:
   type-check:
     name: Type check (mypy)
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     strategy:
       matrix:
         python-version: ["3.11", "3.13", "3.14"]
@@ -123,6 +125,7 @@ jobs:
     name: Tests with coverage
     needs: [lint, type-check]
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     strategy:
       matrix:
         python-version: ["3.11", "3.13", "3.14"]
@@ -161,17 +164,15 @@ jobs:
 
       - name: Install OpenMPI
         run: |
-          # The runner images point apt at azure.archive.ubuntu.com, which
-          # intermittently stops answering: this step has taken 16 s and 240 s on
-          # identical input, and once ran past 38 minutes without finishing while the
-          # log filled with `Ign` lines for that host. The canonical mirror is a little
-          # slower on a good day and does not do that. Noble keeps its sources in
-          # deb822 format under sources.list.d; older images use sources.list, so both
-          # are rewritten and neither is required to exist.
-          sudo sed -i 's|azure\.archive\.ubuntu\.com|archive.ubuntu.com|g' \
-            /etc/apt/sources.list.d/ubuntu.sources || true
-          sudo sed -i 's|azure\.archive\.ubuntu\.com|archive.ubuntu.com|g' \
-            /etc/apt/sources.list || true
+          # The runner images do not name a mirror in sources.list: they point apt at
+          # a mirror *list*, `mirror+file:/etc/apt/apt-mirrors.txt`, whose first entry
+          # is azure.archive.ubuntu.com. That host intermittently stops answering, and
+          # apt then spends a full timeout per index file before falling back to the
+          # canonical mirror -- which is why this step has taken 16 s and 240 s on
+          # identical input, and once sat past 38 minutes with a log full of `Ign`
+          # lines. Replacing the list with a single entry removes the retry round: apt
+          # either reaches the mirror or fails, and does not spend minutes finding out.
+          echo 'https://archive.ubuntu.com/ubuntu/' | sudo tee /etc/apt/apt-mirrors.txt
           sudo apt-get update -q
           sudo apt-get install -y libopenmpi-dev openmpi-bin
 
@@ -214,6 +215,7 @@ jobs:
     name: Build documentation
     needs: [lint, type-check]
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -281,6 +283,7 @@ jobs:
     name: MPI tests (mpiexec)
     needs: [lint, type-check]
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     # The only job that exercises the real distributed stack under multiple ranks. It
     # builds mpi4py from source against the system OpenMPI -- the prebuilt wheels are not
     # guaranteed to match the system launcher's wire protocol. PANTR_RUN_MPI enables the
@@ -303,17 +306,15 @@ jobs:
 
       - name: Install OpenMPI
         run: |
-          # The runner images point apt at azure.archive.ubuntu.com, which
-          # intermittently stops answering: this step has taken 16 s and 240 s on
-          # identical input, and once ran past 38 minutes without finishing while the
-          # log filled with `Ign` lines for that host. The canonical mirror is a little
-          # slower on a good day and does not do that. Noble keeps its sources in
-          # deb822 format under sources.list.d; older images use sources.list, so both
-          # are rewritten and neither is required to exist.
-          sudo sed -i 's|azure\.archive\.ubuntu\.com|archive.ubuntu.com|g' \
-            /etc/apt/sources.list.d/ubuntu.sources || true
-          sudo sed -i 's|azure\.archive\.ubuntu\.com|archive.ubuntu.com|g' \
-            /etc/apt/sources.list || true
+          # The runner images do not name a mirror in sources.list: they point apt at
+          # a mirror *list*, `mirror+file:/etc/apt/apt-mirrors.txt`, whose first entry
+          # is azure.archive.ubuntu.com. That host intermittently stops answering, and
+          # apt then spends a full timeout per index file before falling back to the
+          # canonical mirror -- which is why this step has taken 16 s and 240 s on
+          # identical input, and once sat past 38 minutes with a log full of `Ign`
+          # lines. Replacing the list with a single entry removes the retry round: apt
+          # either reaches the mirror or fails, and does not spend minutes finding out.
+          echo 'https://archive.ubuntu.com/ubuntu/' | sudo tee /etc/apt/apt-mirrors.txt
           sudo apt-get update -q
           sudo apt-get install -y libopenmpi-dev openmpi-bin
 
@@ -353,6 +354,7 @@ jobs:
     name: Adversarial sweep (Numba bounds check)
     needs: [lint, type-check]
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     # The only job that compiles the Layer-3 kernels with bounds checking on. It needs a
     # job of its own because NUMBA_BOUNDSCHECK is not part of the Numba cache key, so it is
     # silently ignored for a cache=True kernel that was already compiled without it -- and
