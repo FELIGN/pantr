@@ -1,30 +1,49 @@
 # The C++ prototype's CI.
 #
-# MANUAL ONLY. There is no `push` and no `pull_request` trigger, and that is
-# deliberate rather than an oversight:
+# It runs on pull requests against `proto/cpp` and nowhere else. Not on `main`,
+# not on pushes to a working branch, and not on every commit of one.
 #
-#   - This is a prototype on a branch that is meant to be abandonable. Wiring it
-#     into every push would spend runner minutes on a tree whose whole purpose is
-#     to be thrown away if the measurements come out badly.
-#   - The prototype's real check is scripts/ci_local.sh, which runs the two
-#     compilers that the port is actually developed against (conda-forge GCC 14
-#     and Clang 18) and measures against the numba oracle in the same
-#     environment. This workflow answers a narrower question: does the tree build
-#     somewhere that is not the development server.
-#   - .github/workflows/ci.yaml triggers on main only, so nothing here fires by
-#     accident on a proto/cpp pull request either.
+# `.github/workflows/ci.yaml` triggers on `main` only, so this branch had no
+# automatic checks at all until this trigger existed. `workflow_dispatch` alone
+# did not fill the gap and could not: GitHub only offers a manual run for a
+# workflow present on the DEFAULT branch, and this file lives on `proto/cpp`, so
+# it was undispatchable from the Actions tab and from `gh` alike. The dispatch
+# trigger is kept because it costs nothing and starts working the day this file
+# reaches `main`, but the pull-request trigger is what actually runs it.
 #
-# Run it from the Actions tab, or:  gh workflow run cpp.yaml --ref proto/cpp
+# ---------------------------------------------------------------------------
+# What this is for, and what it deliberately does not repeat
+# ---------------------------------------------------------------------------
+#
+# One question: does the tree work somewhere that is not the development server?
+# Everything else is answered better locally, by `scripts/ci_local.sh`, which
+# builds four full configurations on every run -- GCC 14, Clang 18, and both
+# floor compilers, GCC 10 and Clang 10.
+#
+# So there is ONE compiler here, not a matrix. A second one would be the fifth
+# build of the same source in a day, at double the wall clock, to answer a
+# question the first already answers. GCC 14 is the choice because it is the
+# environment's own compiler, so a failure here is a difference in the machine
+# rather than in the toolchain.
+#
+# The parity job is the one that earns its place, and if only one job could
+# survive it would be this one rather than the build. It is the only thing that
+# sees what this project's own CLAUDE.md warns cannot be seen locally: numpy's
+# behaviour differs across versions, the BLAS differs across platforms, and both
+# show up as a numerical difference rather than as an error. A second machine is
+# the only instrument for that.
+#
+# The version floor (GCC 10 / Clang 10) is NOT checked here. `ubuntu-24.04` does
+# not package GCC 10, so it would need an older image or a container, and
+# `ci_local.sh` covers it on every run. design/toolchain_requirements.md records
+# that the floor is guaranteed by one machine.
 
 name: C++ prototype
 
 on:
+  pull_request:
+    branches: [proto/cpp]
   workflow_dispatch:
-    inputs:
-      run_parity:
-        description: "Run the C++/numba parity test (slower: builds the extension)"
-        type: boolean
-        default: true
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -35,58 +54,50 @@ permissions:
 
 jobs:
   cxx:
-    name: ${{ matrix.name }}
+    name: GCC 14
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
-    strategy:
-      # No fail-fast: the two compilers are the point of the matrix, and
-      # cancelling one because the other failed loses exactly the comparison
-      # this job exists to make. CLAUDE.md notes that a cancelled leg reads as a
-      # failure in `gh pr checks`, which turns one defect into two.
-      fail-fast: false
-      matrix:
-        include:
-          - name: GCC 14
-            cc: gcc-14
-            cxx: g++-14
-            packages: gcc-14 g++-14
-          - name: Clang 18
-            cc: clang-18
-            cxx: clang++-18
-            packages: clang-18
+    timeout-minutes: 20
 
     steps:
       - name: Checkout
         uses: actions/checkout@v7
 
-      - name: Install the compiler
+      - name: Install the toolchain
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends ${{ matrix.packages }} ninja-build
+          sudo apt-get install -y --no-install-recommends gcc-14 g++-14 ninja-build ccache
 
-      - name: Report the toolchain
-        run: |
-          ${{ matrix.cxx }} --version
-          cmake --version
-          ninja --version
+      # The dominant cost of a cold run. cmake/PantrDependencies.cmake pins full
+      # SHAs and sets GIT_SHALLOW FALSE deliberately -- a shallow fetch of an
+      # arbitrary SHA is not reliably supported -- so an uncached configure clones
+      # all of Eigen's and Kokkos mdspan's history, every job, every run.
+      - name: Cache the fetched dependencies
+        uses: actions/cache@v4
+        with:
+          path: build/_deps
+          key: deps-${{ runner.os }}-${{ hashFiles('cmake/PantrDependencies.cmake') }}
 
-      # Not through CMakePresets: the presets pin `jobs: 20` for the development
+      - name: Cache ccache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ccache
+          key: ccache-cxx-${{ runner.os }}-${{ github.sha }}
+          restore-keys: ccache-cxx-${{ runner.os }}-
+
+      # Not through CMakePresets: they pin `jobs: 20` for the development
       # server's CPU budget, which is wrong for a 4-CPU runner, and they name the
-      # unversioned `g++` / `clang++` that the matrix is here to vary.
+      # unversioned `g++` this job is here to pin.
       #
-      # CMAKE_C_COMPILER is pinned as well as CMAKE_CXX_COMPILER, and it matters
-      # even though pantr itself is C++ only: Eigen's own `project()` enables C, so
-      # a C compiler IS selected, and with only the C++ one pinned it defaulted to
-      # whatever `cc` resolves to. That left the "Clang 18" leg building its C with
-      # GCC while reporting itself as a Clang leg -- a two-row matrix whose rows
-      # were less different than they claimed. `matrix.cc` was already declared for
-      # this and simply never referenced.
+      # CMAKE_C_COMPILER is pinned as well as CMAKE_CXX_COMPILER even though
+      # pantr is C++ only: Eigen's own `project()` enables C, so a C compiler IS
+      # selected, and leaving it unpinned takes whatever `cc` resolves to.
       - name: Configure
         run: >
           cmake -S . -B build -G Ninja
           -DCMAKE_BUILD_TYPE=Release
-          -DCMAKE_C_COMPILER=${{ matrix.cc }}
-          -DCMAKE_CXX_COMPILER=${{ matrix.cxx }}
+          -DCMAKE_C_COMPILER=gcc-14
+          -DCMAKE_CXX_COMPILER=g++-14
+          -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
           -DPANTR_WERROR=ON
           -DPANTR_BUILD_TESTS=ON
           -DPANTR_BUILD_BENCHMARK=ON
@@ -98,8 +109,8 @@ jobs:
       - name: Test
         run: ctest --test-dir build --output-on-failure
 
-      # Which way the mdspan toggle went is the single most useful line to have
-      # in a log from a machine nobody can inspect afterwards.
+      # Which way the mdspan toggle went is the first thing anyone asks of a log
+      # from a machine they cannot inspect afterwards.
       - name: Report the mdspan implementation
         if: always()
         run: |
@@ -111,34 +122,49 @@ jobs:
 
   parity:
     name: Parity against the numba oracle
-    if: ${{ inputs.run_parity }}
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 25
 
     steps:
       - name: Checkout
         uses: actions/checkout@v7
 
-      - name: Install the compiler
+      - name: Install the toolchain
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends gcc-14 g++-14 ninja-build
+          sudo apt-get install -y --no-install-recommends gcc-14 g++-14 ninja-build ccache
 
       - name: Set up Python
         uses: actions/setup-python@v6
         with:
-          # The lowest version pyproject.toml declares. The extension is built
-          # here rather than downloaded, so this is also the check that the
-          # nanobind bindings compile against the oldest CPython we claim.
+          # The lowest version pyproject.toml declares, so this is also the check
+          # that the bindings compile against the oldest CPython we claim.
           python-version: "3.11"
           cache: "pip"
           cache-dependency-path: pyproject.toml
 
+      - name: Cache ccache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ccache
+          key: ccache-parity-${{ runner.os }}-${{ github.sha }}
+          restore-keys: ccache-parity-${{ runner.os }}-
+
+      # `.[dev]` would pull sphinx, pyvista and mpi4py to run pytest. This job
+      # needs pantr's runtime dependencies and a test runner, and nothing else --
+      # it builds no docs, renders nothing and launches no MPI.
+      #
+      # No dependency cache is needed here either: PANTR_BUILD_TESTS is off in
+      # the Python build path, so Eigen is never fetched, and Kokkos mdspan is a
+      # small clone.
       - name: Install pantr with the extension
         env:
           CC: gcc-14
           CXX: g++-14
-        run: pip install -e ".[dev]" -v
+          CMAKE_CXX_COMPILER_LAUNCHER: ccache
+        run: |
+          pip install -e .
+          pip install pytest
 
       - name: Confirm both backends are available
         run: |
@@ -150,11 +176,11 @@ jobs:
           "
 
       - name: Parity
-        run: pytest tests/test_cpp_parity.py -v
+        run: PANTR_REQUIRE_CPP=1 pytest tests/test_cpp_parity.py -q
 
-      # The acceptance criterion of the infrastructure PR: the pre-existing
-      # suite passes against both backends, not merely a new test written to
-      # agree with the new code.
+      # The acceptance criterion of the infrastructure PR: the pre-existing suite
+      # passes against both backends, not merely a new test written to agree with
+      # the new code.
       - name: change_basis against both backends
         run: |
           for backend in numba cpp; do
