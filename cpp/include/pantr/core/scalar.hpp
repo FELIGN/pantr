@@ -114,13 +114,29 @@ using value_of_result_t = decltype(value_of(std::declval<const T&>()));
 /// and ordering are reached through `value_of` instead, and a scalar type is
 /// free not to provide them at all.
 ///
+/// `std::constructible_from<T, double>` is required because the kernels build
+/// constants: `T(1)` seeds the recurrence, and `Acc(0)`, `Acc(1)` and
+/// `Acc(static_cast<double>(k))` appear inside it. Without it the concept was a
+/// strict subset of what a kernel actually needs, so it certified types the
+/// kernel then rejected -- measured with a forward-mode `Dual` built by factory
+/// functions rather than by a numeric constructor, a common AD shape: it
+/// satisfied `Real` and then produced thirty lines of template error from inside
+/// a header its author did not write, which is precisely the failure concepts
+/// exist to prevent.
+///
+/// It does not weaken the Tier B discipline. An *explicit* constructor satisfies
+/// `constructible_from` without opening an implicit conversion, so
+/// `!std::convertible_to<Dual1, double>` and `!std::convertible_to<double,
+/// Dual1>` both still hold; cpp/tests/test_scalar_generic.cpp asserts all three.
+///
 /// Satisfied by `float` and `double`. A forward-mode `Dual<T, N>` satisfies it
-/// by supplying the five arithmetic operators and a `value_of` overload;
-/// cpp/tests/test_scalar_generic.cpp defines one and instantiates the kernel on
-/// it, which is what keeps the claim honest rather than aspirational.
+/// by supplying the five arithmetic operators, a `value_of` overload and a
+/// constructor from `double`; cpp/tests/test_scalar_generic.cpp defines one and
+/// instantiates the kernel on it, which is what keeps the claim honest rather
+/// than aspirational.
 template <class T>
 concept Real =
-    std::copyable<T> && detail::has_value_of<T> &&
+    std::copyable<T> && detail::has_value_of<T> && std::constructible_from<T, double> &&
     requires(T a, T b) {
         { -a } -> std::convertible_to<T>;
         { a + b } -> std::convertible_to<T>;
