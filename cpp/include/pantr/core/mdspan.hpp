@@ -26,12 +26,29 @@
 ///
 /// ## The one API difference the switch has to absorb
 ///
-/// C++23 `std::mdspan` indexes with the multidimensional subscript operator,
-/// `view[i, j]`, which is a C++23 *language* feature and so is not available
-/// under the C++20 baseline at all. Kokkos indexes with `view(i, j)` in C++20
-/// mode. Neither spelling works in both branches, so element access goes
-/// through `pantr::at` rather than through either operator directly.
+/// The two branches disagree on how a pack of indices is spelled. C++23
+/// `std::mdspan` uses the multidimensional subscript operator, `view[i, j]`,
+/// which is a C++23 *language* feature and does not parse under the C++20
+/// baseline at all; Kokkos falls back to `view(i, j)` there. So element access
+/// goes through `pantr::at` rather than through either operator directly.
+///
+/// What `at` uses is a third spelling that both branches accept: a single
+/// `std::array` of indices. C++23 specifies that overload, and Kokkos provides
+/// it UNCONDITIONALLY -- in `__p0009_bits/mdspan.hpp`, outside the
+/// `MDSPAN_USE_BRACKET_OPERATOR` guard that picks between the two spellings
+/// above. So one spelling serves both branches and `at` needs no preprocessor
+/// branch of its own. It carried one until this was checked against the Kokkos
+/// source, on the stated premise that no single spelling could work in both;
+/// that premise was false, and the branch it justified was also what kept `at`
+/// fixed at rank 2 while `span_nd` had already been generalised.
+///
+/// The Kokkos half of that claim is compiled and run at ranks 1, 2 and 3 by
+/// cpp/tests/test_dependency_smoke.cpp. The standard half is not, and cannot be
+/// on this toolchain -- no standard library here ships the header, which is why
+/// the toggle is OFF -- so it rests on the wording of C++23 [mdspan.mdspan]
+/// rather than on a build.
 
+#include <array>
 #include <cstddef>
 
 #if defined(PANTR_HAS_STD_MDSPAN)
@@ -77,14 +94,20 @@ template <class T>
 using span2d = span_nd<T, 2>;
 
 /// Element access, spelled once so the two branches of the switch stay source
-/// compatible. See the note above on why neither operator can be used directly.
-template <class View>
-[[nodiscard]] constexpr decltype(auto) at(const View& view, std::size_t i, std::size_t j) noexcept {
-#if defined(PANTR_HAS_STD_MDSPAN)
-    return view[i, j];
-#else
-    return view(i, j);
-#endif
+/// compatible, at whatever rank the view has.
+///
+/// \param view The view to index.
+/// \param idx One index per dimension of `view`, outermost first. Supplying the
+///        wrong number of them is a compile error rather than an out-of-bounds
+///        access.
+/// \return The element, with the reference type the view's accessor yields.
+///
+/// \note No bounds checking is performed, in either branch of the switch.
+template <class View, class... Idx>
+[[nodiscard]] constexpr decltype(auto) at(const View& view, Idx... idx) noexcept {
+    static_assert(sizeof...(Idx) == View::rank(), "index count must match the view's rank");
+    using I = typename View::index_type;
+    return view[std::array<I, sizeof...(Idx)>{static_cast<I>(idx)...}];
 }
 
 }  // namespace pantr
