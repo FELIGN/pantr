@@ -2,8 +2,8 @@
 
 The extension is a nanobind module, so mypy cannot see into it: without this
 file every use of :mod:`pantr._pantr_cpp` is an ``attr-defined`` error under the
-project's strict configuration, and ``pantr._backend`` is the module that uses
-it. The stub is written by hand rather than generated, because it is fifteen
+project's strict configuration, and the kernel adapters under ``pantr.basis``
+are what use it. The stub is written by hand rather than generated, because it is fifteen
 lines and a generated one would need regenerating on every signature change
 anyway.
 

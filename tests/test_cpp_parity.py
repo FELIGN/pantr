@@ -178,8 +178,9 @@ import numpy.typing as npt
 import pytest
 
 from pantr import _numba_compat
-from pantr._backend import Backend, active_backend, cardinal_bspline_core, use_backend
+from pantr._backend import Backend, active_backend, use_backend
 from pantr.basis import tabulate_cardinal_bspline_1d
+from pantr.basis._basis_backend import cardinal_bspline_core
 from tests._parity_harness import (
     AccuracyClaim,
     FloatArray,
@@ -1183,7 +1184,8 @@ def test_public_api_agrees_across_backends_for_every_input_shape(
     The kernels agreeing says nothing about the adapter between them: shape
     flattening and restoration, the dtype dispatch that picks one of the two
     nanobind overloads, and the ``out`` convention all live in
-    ``pantr.basis._basis_1D`` and ``pantr._backend``, and none of them is exercised
+    ``pantr.basis._basis_1D`` and ``pantr.basis._basis_backend``, and none of them is
+    exercised
     by calling the Layer 3 kernel directly. This is the only test here that runs the
     path a user runs.
     """
@@ -1250,7 +1252,8 @@ def test_a_non_contiguous_out_is_filled_identically_by_both_backends(
     """A strided ``out`` is written, with the same values, whichever backend runs.
 
     This is the regression test for B1, and it pins **one** of the two halves of
-    that fix: the buffering in ``pantr._backend._cpp_cardinal_bspline_core``,
+    that fix: the buffering in
+    ``pantr.basis._basis_backend._cpp_cardinal_bspline_core``,
     which computes into a contiguous temporary and copies back so that the public
     API accepts the same inputs under either ``PANTR_BACKEND``.
 
@@ -1340,13 +1343,13 @@ def test_an_unavailable_backend_request_never_falls_back(
 
     assert _backend.available_backends() == (Backend.NUMBA,)
     with pytest.raises(RuntimeError, match="not available"):
-        _backend.cardinal_bspline_core(Backend.CPP)
+        cardinal_bspline_core(Backend.CPP)
     with pytest.raises(RuntimeError, match="not available"), use_backend(Backend.CPP):
         pytest.fail("use_backend must refuse an unavailable backend before yielding")
 
     # And the Numba backend is still reachable, i.e. the guard rejects rather than
     # disabling the selector.
-    assert _backend.cardinal_bspline_core(Backend.NUMBA) is not None
+    assert cardinal_bspline_core(Backend.NUMBA) is not None
 
 
 def test_overlapping_use_backend_blocks_in_two_threads_do_not_leak(cpp_backend: None) -> None:
@@ -1564,7 +1567,7 @@ def test_the_binding_refuses_a_non_contiguous_out(cpp_backend: None) -> None:
     """A strided ``out`` reaches a ``TypeError``, not a discarded temporary.
 
     This is the half of B1 that lives in the binding, and it needs a direct call
-    to be tested at all: ``pantr._backend._cpp_cardinal_bspline_core`` buffers a
+    to be tested at all: the adapter in ``pantr.basis._basis_backend`` buffers a
     non-contiguous ``out`` before nanobind sees it, so the public-API test cannot
     tell whether ``nb::arg("out").noconvert()`` is present. Verified by removing
     it from a copy of the tree: the rest of the file still passed, and this test

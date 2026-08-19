@@ -34,6 +34,22 @@ One kernel is ported so far, the cardinal B-spline tabulation of
 changes that kernel and nothing else; every other function keeps running its
 Numba implementation regardless. So a suite run under ``PANTR_BACKEND=cpp`` is
 not a C++ run, it is a run in which one kernel is C++.
+
+What is here, and what is not
+-----------------------------
+
+**This module is policy only.** It names the backends, resolves the selection
+and enforces the never-fall-back rule; it holds no kernel and knows of none.
+The map from a selection to the callables lives beside the kernels themselves --
+:mod:`pantr.basis._basis_backend` for the basis kernels, one such module per
+ported package.
+
+That is what keeps the dependency one-directional: a catalogue imports its
+kernels, and its consumers import the policy, so a catalogue placed here would
+close a cycle that only lazy imports could hold open -- one more per kernel
+ported. An import-linter contract in ``pyproject.toml`` forbids this module from
+importing any subpackage of :mod:`pantr`, so the arrangement cannot quietly
+revert.
 """
 
 from __future__ import annotations
@@ -43,21 +59,12 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
 from enum import IntEnum
-from typing import TYPE_CHECKING, Final
-
-import numpy as np
-import numpy.typing as npt
-
-if TYPE_CHECKING:
-    # Imported for typing only: at run time this would be an import cycle, since
-    # pantr.basis._basis_1D is what asks this module which kernel to call.
-    from pantr.basis._basis_1D import _BasisCoreFunc
+from typing import Final
 
 __all__ = [
     "Backend",
     "active_backend",
     "available_backends",
-    "cardinal_bspline_core",
     "use_backend",
 ]
 
@@ -87,10 +94,11 @@ class Backend(IntEnum):
 def _cpp_extension_is_present() -> bool:
     """Report whether the compiled extension was built into this installation.
 
-    Only presence is recorded, not the module object. The kernel adapter imports
-    ``pantr._pantr_cpp`` by name where it calls it, so mypy resolves the call
-    against ``src/pantr/_pantr_cpp.pyi`` and would reject a call that no longer
-    matches the binding. A stored module object would be typed
+    Only presence is recorded, not the module object. Each kernel adapter --
+    :func:`pantr.basis._basis_backend._cpp_cardinal_bspline_core` is the one that
+    exists so far -- imports ``pantr._pantr_cpp`` by name where it calls it, so
+    mypy resolves the call against ``src/pantr/_pantr_cpp.pyi`` and would reject a
+    call that no longer matches the binding. A stored module object would be typed
     :class:`~types.ModuleType`, which accepts any attribute and would keep
     typechecking after the signature changed underneath it.
 
@@ -257,76 +265,3 @@ def use_backend(backend: Backend) -> Iterator[None]:
         yield
     finally:
         _ACTIVE.reset(token)
-
-
-def _cpp_cardinal_bspline_core(
-    n: np.int32,
-    t: npt.NDArray[np.float32 | np.float64],
-    out: npt.NDArray[np.float32 | np.float64],
-) -> None:
-    """Adapt the C++ kernel to the :class:`_BasisCoreFunc` signature.
-
-    The adapter's whole job is that **the public API must behave identically on
-    both backends**, because otherwise an A/B measurement is comparing two
-    contracts rather than two kernels. One difference has to be absorbed here:
-    the numba kernel accepts a non-contiguous ``out`` and fills it, while the
-    C++ binding requires C-contiguous memory and refuses anything else. So a
-    non-contiguous ``out`` is computed into a contiguous buffer and copied back,
-    and the caller sees the numba behaviour either way.
-
-    Refusing instead would be the wrong fix: it would make ``PANTR_BACKEND``
-    change what the library accepts, not just how fast it is.
-
-    Args:
-        n (np.int32): Degree of the basis. Assumed non-negative.
-        t (npt.NDArray[np.float32 | np.float64]): 1D evaluation points.
-        out (npt.NDArray[np.float32 | np.float64]): Output of shape
-            ``(t.size, n + 1)`` and matching dtype. Need not be contiguous.
-
-    Note:
-        No input validation is performed. Shape and dtype are established by the
-        Layer 2 caller; dtype, rank and contiguity are re-checked by nanobind's
-        typed signature, which raises :class:`TypeError` before the kernel runs
-        rather than silently converting -- see the ``.noconvert()`` in
-        ``cpp/bindings/pantr_cpp.cpp`` and why it is a correctness requirement.
-    """
-    from pantr import _pantr_cpp  # noqa: PLC0415  (resolved against the .pyi stub)
-
-    points = np.ascontiguousarray(t)
-    if out.flags["C_CONTIGUOUS"]:
-        _pantr_cpp.tabulate_cardinal_bspline_1d(int(n), points, out)
-        return
-
-    # The uncommon path. The check above is a flag read, so the common case pays
-    # essentially nothing for it; only a caller that actually passes a strided
-    # view pays for the buffer and the copy back.
-    buffer = np.empty_like(out, order="C")
-    _pantr_cpp.tabulate_cardinal_bspline_1d(int(n), points, buffer)
-    out[...] = buffer
-
-
-def cardinal_bspline_core(backend: Backend | None = None) -> _BasisCoreFunc:
-    """Return the cardinal B-spline tabulation kernel of the requested backend.
-
-    Args:
-        backend (Backend | None): The backend to use. ``None`` means the backend
-            currently in effect, per :func:`active_backend`. Defaults to None.
-
-    Returns:
-        _BasisCoreFunc: The kernel, callable as ``(n, t, out) -> None``.
-
-    Raises:
-        RuntimeError: If ``backend`` is given and is not available.
-    """
-    chosen = active_backend() if backend is None else backend
-
-    if chosen is Backend.NUMBA:
-        from pantr.basis._basis_core import (  # noqa: PLC0415  (avoids an import cycle)
-            _tabulate_cardinal_Bspline_basis_1D_core,
-        )
-
-        return _tabulate_cardinal_Bspline_basis_1D_core
-
-    if not _CPP_AVAILABLE:
-        raise RuntimeError(f"the {chosen.name} backend is not available in this installation")
-    return _cpp_cardinal_bspline_core

@@ -166,3 +166,20 @@ source_modules = [
   "pantr.viz",
 ]
 forbidden_modules = ["pantr.mpi"]
+
+# pantr._backend answers "which backend is selected". The map from that answer to
+# the kernels themselves lives beside the kernels (pantr.basis._basis_backend and
+# one such module per ported package), because a catalogue has to import what it
+# hands out and its consumers import the policy -- so a catalogue here would close
+# a cycle that only lazy imports could hold open, one more per kernel ported.
+#
+# Indirect imports are allowed because every module reaches every other through
+# pantr/__init__.py: the probe `import pantr._pantr_cpp` pulls in the root package,
+# whose __init__ imports the library. The rule this contract exists for is about
+# the DIRECT dependency, which is the one a future edit would add.
+[[tool.importlinter.contracts]]
+name = "Backend policy must not import the library it selects for"
+type = "forbidden"
+source_modules = ["pantr._backend"]
+forbidden_modules = ["pantr.*"]
+allow_indirect_imports = true

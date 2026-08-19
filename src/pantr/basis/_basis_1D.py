@@ -7,14 +7,13 @@ output array management.
 
 from __future__ import annotations
 
-from collections.abc import Callable
 from typing import TYPE_CHECKING
 
 import numpy as np
 import numpy.typing as npt
 
-from .._backend import cardinal_bspline_core
 from .._numba_compat import wait_for_jit_warmup
+from ._basis_backend import _BasisCoreFunc, cardinal_bspline_core
 from ._basis_core import (
     _PARALLEL_MIN_NUM_PTS,
     _tabulate_Bernstein_basis_1D_core,
@@ -30,13 +29,6 @@ from ._basis_utils import (
 
 if TYPE_CHECKING:
     from . import LagrangeVariant
-
-
-_BasisCoreFunc = Callable[
-    [np.int32, npt.NDArray[np.float32 | np.float64], npt.NDArray[np.float32 | np.float64]],
-    None,
-]
-"""Signature of a 1D basis tabulation core kernel: ``(degree, pts, out) -> None``."""
 
 
 def _tabulate_basis_1D_impl_helper(
@@ -196,7 +188,7 @@ def _tabulate_cardinal_Bspline_basis_1D_impl(
         True
     """
     # The one seam of the C++ port: which implementation of this kernel runs is
-    # chosen per call by pantr._backend, so PANTR_BACKEND=cpp reaches every
+    # chosen per call by _basis_backend, so PANTR_BACKEND=cpp reaches every
     # caller of this function -- including pantr.change_basis and its existing
     # tests -- without any of them knowing. Everything below this line, and all
     # of the Layer 2 validation above it, is shared by both backends, which is
