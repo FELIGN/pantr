@@ -282,6 +282,41 @@ cxx() {
         check "$preset: ctest" ctest --preset "$preset"
     done
 
+    # The version floor, built rather than merely accepted.
+    #
+    # `gates` above asserts that the floor compilers CONFIGURE. That is the gate's
+    # behaviour, and it is not the claim the floor makes. The floor says version 10
+    # of both families builds this tree and passes its tests, and until that is
+    # re-checked it rests on one manual measurement taken the day the floor was
+    # set: the first commit using something GCC 10 lacks would break the claim with
+    # nothing to notice.
+    #
+    # This is the ONLY place that check exists. .github/workflows/cpp.yaml runs
+    # GCC 14 and Clang 18, and ubuntu-24.04 does not package GCC 10, so covering
+    # the floor there needs an older image or a container -- more weight than a
+    # prototype should carry. design/toolchain_requirements.md records that the
+    # floor is verified locally and not by CI.
+    local floor_cxx floor_name floor_dir
+    for floor_cxx in /usr/bin/g++-10 /usr/bin/clang++-10; do
+        floor_name="$(basename "$floor_cxx")"
+        if [[ ! -x "$floor_cxx" ]]; then
+            record SKIP "floor: $floor_name" "$floor_cxx absent"
+            continue
+        fi
+        floor_dir="$ROOT/build/floor-$floor_name"
+        rm -rf "$floor_dir"
+        # PANTR_ALLOW_UNTESTED_COMPILER is deliberately NOT passed: the floor is
+        # 10, so 10 must configure on its own. If it ever needs the override, the
+        # floor moved and this check is what says so.
+        check "floor: $floor_name configure" \
+            cmake -S "$ROOT" -B "$floor_dir" -G Ninja \
+                  -DCMAKE_BUILD_TYPE=Release \
+                  -DCMAKE_CXX_COMPILER="$floor_cxx" \
+                  -DPANTR_WERROR=ON -DPANTR_BUILD_PYTHON=OFF
+        check "floor: $floor_name build (-Werror)" cmake --build "$floor_dir"
+        check "floor: $floor_name ctest" ctest --test-dir "$floor_dir" --output-on-failure
+    done
+
     # The mdspan toggle is a decision the build makes silently; print which way
     # it went, because "which mdspan am I actually using" is the first question
     # asked when a build behaves oddly.
