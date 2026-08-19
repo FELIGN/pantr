@@ -196,9 +196,9 @@ void low_degrees_match_closed_forms() {
 /// **This test is not the check that `accumulator_t` is wired up**, though an
 /// earlier comment here said it was. It cannot be: partition of unity is
 /// dominated by the float32 stores, and the accumulator's precision barely shows
-/// through them. Measured, by building this same function against a mutant header
-/// with `accumulator<float>::type = float` -- the change that removes the entire
-/// point of `accumulator_t` -- it **passes at every degree from 0 to 20**, with an
+/// through them. Measured, by building this same function against a mutant trait
+/// answering `float` for `float` -- the change that removes the entire point of
+/// `accumulator_t` -- it **passes at every degree from 0 to 20**, with an
 /// observed error between 4.8% and 10% of the bound. It never comes close to
 /// failing, so no re-derivation of the constant would rescue the claim; the
 /// invariant simply does not see the accumulator.
