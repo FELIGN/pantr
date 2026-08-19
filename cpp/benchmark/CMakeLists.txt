@@ -1,0 +1,2 @@
+add_executable(bench_cardinal_bspline bench_cardinal_bspline.cpp)
+target_link_libraries(bench_cardinal_bspline PRIVATE pantr::core)
