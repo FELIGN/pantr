@@ -49,6 +49,7 @@ from pantr.bspline._bspline_knots import (
     _find_knot_index_and_multiplicity,
     _get_unique_knots_and_multiplicity_impl,
     _is_in_domain_impl,
+    _knot_tolerance,
 )
 from pantr.bspline._bspline_product import _get_boundary_mults
 from pantr.bspline._bspline_restrict import (
@@ -591,9 +592,20 @@ class TestDerivedKnotTolerance:
         read off the input -- and the vector is all one knot either way. Pinned
         because a zero tolerance is the kind of degenerate value that invites a
         well-meaning floor.
+
+        Exercised through the knot layer rather than through a space, because
+        ``_knot_scale`` is ``max(span, |knots[0]|, |knots[-1]|)`` and so vanishes only
+        when the whole vector is zero -- which is exactly the zero-interval case
+        ``BsplineSpace1D`` refuses since issue #320. The scale-free regime is
+        therefore reachable in the knot layer and nowhere above it, and that is a
+        property of the derivation worth stating rather than a gap in the test.
         """
-        space = BsplineSpace1D(np.zeros(8, dtype=np.float64), 3)
-        assert space.tolerance == 0.0
-        unique, mults = space.get_unique_knots_and_multiplicity()
+        knots = np.zeros(8, dtype=np.float64)
+        assert _knot_tolerance(knots) == 0.0
+
+        unique, mults = _get_unique_knots_and_multiplicity_impl(knots, 3, 0.0, False)
         assert unique.tolist() == [0.0]
         assert mults.tolist() == [8]
+
+        with pytest.raises(ValueError, match="spans no interval"):
+            BsplineSpace1D(knots, 3)

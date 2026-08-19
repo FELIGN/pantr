@@ -104,12 +104,14 @@ def _check_snapping_kept_an_interval(
 ) -> None:
     """Reject a knot vector that snapping collapsed onto a single point.
 
-    A caller who passes a genuinely degenerate vector -- every knot already the same
-    value -- gets it back untouched and no error, because that is what was asked for.
-    What is refused is the case the caller cannot see coming: the knots *were*
-    distinct, and the merge rule found none of them distinguishable at their own
-    magnitude, so the space would carry no interval and every operation on it would
-    fail on an empty domain with a message about something else.
+    This function refuses one specific cause -- the knots *were* distinct, and the
+    merge rule found none of them distinguishable at their own magnitude -- so that
+    the caller is told the thing they could not see coming. A vector that arrived
+    already flat is not this function's case and passes through it untouched; it is
+    refused a step later by :func:`_check_space_has_an_interval`, which owns the
+    *consequence* both causes share. Keeping the two apart is what lets each message
+    be true: "this mesh is finer than float32 resolves here" is actionable, and false
+    of a vector the caller supplied flat.
 
     This is reachable, and the arithmetic that makes it so is not a defect. Two knots
     obtained by different routes differ by up to ``4 * eps * scale``, so telling them
@@ -152,6 +154,68 @@ def _check_snapping_kept_an_interval(
         f"more than {tol:.3g} ({tol / ulp:.0f} ulp there), and the closest pair in "
         f"[{float(raw[0])!r}, {float(raw[-1])!r}] is {closest:.3g} apart. This mesh is "
         f"finer than {name} resolves at that magnitude. {remedy}"
+    )
+
+
+def _check_space_has_an_interval(
+    knots: npt.NDArray[np.float32 | np.float64],
+    degree: int,
+    num_intervals: int,
+    tol: float,
+) -> None:
+    """Reject a knot vector whose domain is a single point.
+
+    A space with no interval has no cell, and every operation defined over its cells
+    is therefore undefined on it. It was accepted until issue #320, and each consumer
+    then met the degeneracy on its own terms: ``tensor_product_grid`` named the
+    breakpoints, ``Bspline.locate`` surfaced ``numpy``'s zero-size ``min``,
+    ``tabulate_basis_derivatives`` divided by zero, and -- worse than any error --
+    ``Bspline.evaluate`` returned ``0.0`` while ``tabulate_basis`` and
+    ``evaluate_derivatives`` returned ``NaN``. Those three returned a value, so a
+    survey of what *raised* would not have found them, which is why the rule lives
+    here at the one place a space comes into being rather than at each consumer. It
+    is also the rule ``create_cardinal_knots`` has always applied, as
+    ``num_intervals must be at least 1``.
+
+    The predicate is the interval count, not "every knot is the same value". The
+    family is wider than it looks: ``[0, 1, 1, 1, 2]`` at degree 1 holds three
+    distinct values and still has a domain of ``(1.0, 1.0)``, because the domain runs
+    from ``knots[degree]`` to ``knots[-degree-1]`` and an interior knot of high enough
+    multiplicity swallows it whole. Counting intervals catches that case and the flat
+    one together, and it introduces no threshold of its own -- the count is decided by
+    the same knot grouping the space uses everywhere else.
+
+    That grouping splits on ``knots[i] - knots[i-1] > tol``, so it chains: the two
+    domain ends can be further apart than ``tol`` and still fall in one class, through
+    knots between them. The message therefore reports what is actually true of every
+    case it fires on -- each consecutive step across the domain is at most ``tol`` --
+    rather than claiming the two ends are within ``tol`` of each other, which they need
+    not be.
+
+    Args:
+        knots (npt.NDArray[np.float32 | np.float64]): The knot vector, non-decreasing
+            and already snapped if snapping was requested.
+        degree (int): Polynomial degree, which fixes where the domain starts and ends.
+        num_intervals (int): The space's interval count, one less than the number of
+            distinct in-domain knots.
+        tol (float): The absolute tolerance the count was taken at, from
+            :func:`_knot_tolerance`.
+
+    Raises:
+        ValueError: If ``num_intervals`` is zero.
+    """
+    if num_intervals > 0:
+        return
+
+    last = knots.size - degree - 1
+    lo, hi = float(knots[degree]), float(knots[last])
+    raise ValueError(
+        f"knot vector spans no interval: at degree {degree} the domain runs from "
+        f"knots[{degree}] = {lo!r} to knots[{last}] = {hi!r}, and every step between "
+        f"them is at most this vector's tolerance of {tol:.3g}, so its in-domain knots "
+        f"are all one knot, the space has no cell, and nothing can be evaluated, "
+        f"tabulated or located on it. The domain needs two consecutive knots more than "
+        f"{tol:.3g} apart."
     )
 
 
@@ -841,6 +905,7 @@ def _warmup_numba_functions() -> None:
 
 __all__ = [
     "_check_snapping_kept_an_interval",
+    "_check_space_has_an_interval",
     "_check_spline_info",
     "_count_multiplicity",
     "_find_knot_index_and_multiplicity",

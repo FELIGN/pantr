@@ -14,6 +14,12 @@ basis is a degree-``p`` polynomial, and the knot multiplicities control how the 
 join (see [Continuity](#continuity) below). A {class}`~pantr.bspline.BsplineSpace` is a
 tensor product of these 1-D spaces.
 
+Every space has **at least one span**. The domain runs from ``knots[p]`` to
+``knots[-p-1]``, and a vector whose in-domain knots all collapse to a single knot is
+refused at construction with a message saying so. Nothing can be evaluated, tabulated or
+located on a space with no span, so this is checked once where the space is built rather
+than by each operation in its own way.
+
 You rarely type knot vectors by hand. The factories in {mod}`pantr.bspline` build the
 standard families:
 
