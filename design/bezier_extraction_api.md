@@ -9,6 +9,9 @@ operator along axis `d`" primitive from the fitting side (the blocking strategy 
 below is the same one that note needs), and `design/simd.md`, which explains why that
 blocking is what makes vectorization of the shared kernel worth anything at all.
 
+**Validated against:** pantr **0.7.0** (`main`, tag `v0.7.0`), 2026-08-19. Line numbers
+below refer to that tree.
+
 ## The finding
 
 `Bspline.to_beziers()` is all-or-nothing. It has no way to say *"just these cells"*.
@@ -148,7 +151,7 @@ not in the choice of which of two functions to call.
 ### On the convex-hull value bound
 
 This is listed as "pantr already does it" rather than as new work, because pantr already
-computes the *geometric* version of exactly this: `_bspline_locate.py:92` builds a BVH
+computes the *geometric* version of exactly this: `_bspline_locate.py:13` builds a BVH
 over "per-cell physical control-point boxes", which is the convex-hull bound of the
 geometric map on each cell. The scalar-value bound is the same operation at rank 1. What
 is missing is the entry point, not the capability.

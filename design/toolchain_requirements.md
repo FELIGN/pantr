@@ -7,6 +7,9 @@ decisions that live in the same CMake file.
 **Companions:** `design/simd.md` (which flags earn their place) and `design/isa_dispatch.md`
 (how variants are shipped). This note is about whether the build may proceed at all.
 
+**Validated against:** pantr **0.7.0** (`main`, tag `v0.7.0`), 2026-08-19. Line numbers
+below refer to that tree.
+
 ## The decision
 
 **Probe features at configure time. Do not gate on compiler version numbers.**

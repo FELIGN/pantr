@@ -12,6 +12,9 @@ for a different reason.
 analytic derivative rule instead of differentiating an iteration), and the decision that no
 tape-based reverse-mode type ever enters the library.
 
+**Validated against:** pantr **0.7.0** (`main`, tag `v0.7.0`), 2026-08-19. Line numbers
+below refer to that tree.
+
 ## Four flavors, and they need different things
 
 The motivating application is finite-element assembly, with shape and topology optimization

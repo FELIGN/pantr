@@ -7,6 +7,9 @@ hazards that bite. Not GPU, which was assessed separately and declined.
 **Companions:** `design/bezier_extraction_api.md` and `design/large_data_fitting.md`, whose
 shared banded-operator kernel is the main target here.
 
+**Validated against:** pantr **0.7.0** (`main`, tag `v0.7.0`), 2026-08-19. Line numbers
+below refer to that tree.
+
 ## Why this is a different question from the GPU
 
 The GPU was declined because of transport: 537 MB over PCIe costs about 54 ms round trip
@@ -65,13 +68,13 @@ polynomial index.
 
 This is a real tension and it deserves stating properly rather than being papered over.
 
-`src/pantr/bspline/_bspline_basis_core.py:250-260` documents a deliberate decision:
+`src/pantr/bspline/_bspline_basis_core.py:262-269` documents a deliberate decision:
 
 > *Each point's span search and Cox-de Boor evaluation are independent, so both are fused
 > into a single `prange` loop over evaluation points (span search alone does not parallelize
 > well enough on its own to be worth a separate pass ...)*
 
-and the span-search helper is `inline="always"` into the kernel (`:124-133`).
+and the span-search helper is `inline="always"` into the kernel (`:126-132`).
 
 That is the **correct** choice for thread parallelism. A separate span-search pass would be
 a memory-bound pass over all points that parallelizes poorly, so fusing removes it.
@@ -105,7 +108,7 @@ between a parallel and a serial twin at `_PARALLEL_MIN_NUM_PTS`. A block-width d
 the same shape.
 
 Also already available: `first_basis_per_interval()` is computed and **cached**
-(`_bspline_space_1d.py:313-364`, with `writeable = False`), and `tabulate_basis` exposes
+(`_bspline_space_1d.py:341-378`, with `writeable = False`), and `tabulate_basis` exposes
 `out_first_basis` (`:525`). So the per-span first-basis index does not need recomputing to
 drive span-homogeneous blocking.
 
@@ -131,12 +134,50 @@ covers SSE / AVX / AVX-512 / NEON / SVE, one `FetchContent` entry, and compatibl
 C++20 baseline of `D4`. `std::simd` is targeted at C++26 and is not available.
 Hand-rolling one is the alternative and is roughly a few hundred lines.
 
-The multi-ISA dispatch question is already settled as `D13`: compile the extension module
-three times (baseline, `x86-64-v3`, `x86-64-v4`), pick at import with a cpuid probe, with an
-environment override, and keep arm64 as a single module because NEON is the AArch64
-baseline. A sibling project uses exactly this pattern; the full mechanism is written up in a
-separate working note, together with the measurement that has to come first before any of it
-is worth building.
+## Shipping several ISA variants, if it ever proves worth it
+
+The dispatch question is settled in shape: compile the extension module several times
+(baseline, `x86-64-v3`, `x86-64-v4`), pick one at import, and keep arm64 as a single module
+because NEON is the AArch64 architectural baseline and needs no probe.
+
+**But do not build any of it until the measurement in open question 1 says the gap is
+real.** Tripling the shipped extension is paid by every user on every install, including the
+ones on baseline hardware who gain nothing, and it is justified only by a measured
+difference on pantr's own kernels.
+
+When the time comes, four things about this mechanism are non-obvious enough to be worth
+stating in advance, because each of them is a way to get it subtly wrong.
+
+**The feature probe must be a separate module compiled at the toolchain baseline.** This is
+the heart of the design and the reason it is not simply a function inside the extension: you
+cannot ask an AVX-512 module whether AVX-512 is available, because *importing it* may already
+fault. The probe must therefore link no library code, carry no `-march`, and be safe to import
+on any CPU of the target architecture.
+
+**A CPUID feature bit is not sufficient evidence.** The operating system must also have
+enabled the matching vector state in `XCR0`, or the wider registers are not preserved across
+a context switch. So the probe has to check `OSXSAVE` and then `XGETBV` before believing any
+feature bit, and it must **fail closed**: anything it cannot confirm counts as absent. On GCC
+and Clang, `__builtin_cpu_supports` folds this check in already; a hand-rolled MSVC path does
+not and must do it explicitly. Related: a feature *level* like `x86-64-v3` is a bundle, not
+one flag, so testing AVX2 alone would select a module the CPU does not fully implement.
+
+**An explicit override must not fall through to the next candidate.** If an environment
+variable names a variant and that variant is missing, the import should fail rather than
+quietly load a different one. A silent downgrade makes every A/B measurement untrustworthy,
+which is precisely what the override exists to enable.
+
+**The variant set follows the *target* architecture, not the build host.** This bites when
+cross-compiling: on Apple, `CMAKE_SYSTEM_PROCESSOR` still reports the host, so a macOS x86_64
+wheel built on an arm64 runner would otherwise get the arm64 ladder. Whatever the wheel
+builder actually sets for the target architecture has to take precedence, and a universal
+binary cannot carry two ladders at all.
+
+One further rule, which belongs in `design/toolchain_requirements.md` and is repeated here
+because it is easy to violate exactly at this point: any flag participating in a numerical
+claim (floating-point contraction, for instance) must be set on the **interface target** so
+that it reaches every variant. Set per-variant, the variants will disagree numerically with
+one another, and the resulting bug will look like a dispatch bug.
 
 ## Lane widths are not equal, and it changes the expected payoff
 
@@ -192,10 +233,10 @@ another. It is not a performance option, it is a silent correctness change.
 ## Epistemic status
 
 - **Verified by reading the code:** that span search is deliberately fused into the
-  per-point `prange` loop, with the stated reasoning (`_bspline_basis_core.py:250-260`,
-  `:124-133`); that a serial twin is selected below `_PARALLEL_MIN_NUM_PTS`; that
+  per-point `prange` loop, with the stated reasoning (`_bspline_basis_core.py:262-269`,
+  `:126-132`); that a serial twin is selected below `_PARALLEL_MIN_NUM_PTS`; that
   `first_basis_per_interval` is cached and `tabulate_basis` exposes `out_first_basis`
-  (`_bspline_space_1d.py:313-364`, `:525`); and that a sibling project has a SIMD batch
+  (`_bspline_space_1d.py:341-378`, `:598`); and that a sibling project has a SIMD batch
   abstraction, packet kernels, and a fast-math option drawn where described above.
 - **Derived:** the 0.2 flops/byte figure for the contraction kernel, and the arithmetic
   behind the expected gains.

@@ -8,6 +8,9 @@ regular sample grid, the motivating case being a 3D MRI volume.
 `design/user_functions_across_the_boundary.md`, for the case where the samples come from a
 user-supplied function rather than from an image.
 
+**Validated against:** pantr **0.7.0** (`main`, tag `v0.7.0`), 2026-08-19. Line numbers
+below refer to that tree.
+
 ## The use case
 
 A function known only by samples on a regular grid: a 3D image, typically `256³` to

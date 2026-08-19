@@ -31,6 +31,9 @@ renegotiating anything, and pantr publishes no one else's taxonomy.
 **Naming:** the higher-capability nD solver is referred to throughout as *the plugin*. It is
 a separate, privately licensed library and is deliberately not named here.
 
+**Validated against:** pantr **0.7.0** (`main`, tag `v0.7.0`), 2026-08-19. Line numbers
+below refer to that tree.
+
 ## The question
 
 The plugin solves nD polynomial systems robustly and with certificates. pantr can ship a

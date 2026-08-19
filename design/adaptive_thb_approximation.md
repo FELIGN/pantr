@@ -8,6 +8,9 @@ to.
 **Companions:** `design/large_data_fitting.md` for the cost of one fit and for the memory
 model, and `design/user_functions_across_the_boundary.md` for where the samples come from.
 
+**Validated against:** pantr **0.7.0** (`main`, tag `v0.7.0`), 2026-08-19. Line numbers
+below refer to that tree.
+
 ## The loop
 
 1. Fit an approximation on the current THB space.
@@ -157,7 +160,7 @@ accuracy gap against a fit before deciding the loop needs one.
 ## What blocks this today: refinement mutates
 
 `HierarchicalGrid.refine_cells(self, cell_ids: Sequence[int]) -> None`
-(`src/pantr/grid/_hierarchical_grid.py:1298`) returns `None`, so it refines **in place**.
+(`src/pantr/grid/_hierarchical_grid.py:1402`) returns `None`, so it refines **in place**.
 `:453` confirms it: refinement recomputes `_level_base` and `_num_cells` and resets the BVH
 and tags on the existing object.
 
@@ -178,7 +181,7 @@ Two secondary benefits, once refinement is value-returning:
   active set, so the new object can share the parent's immutable data rather than copying
   it, and the cost of returning a value instead of mutating is close to zero.
 
-`refine` (`:1216`) should be checked for the same problem; only `refine_cells` was read.
+`refine` (`:1304`) should be checked for the same problem; only `refine_cells` was read.
 
 ## Memory across iterations
 
@@ -198,7 +201,7 @@ Two secondary benefits, once refinement is value-returning:
 ## Epistemic status
 
 - **Verified by reading the code:** that `refine_cells` returns `None` and therefore mutates
-  (`_hierarchical_grid.py:1298`), and that refinement resets cached state in place (`:453`);
+  (`_hierarchical_grid.py:1402`), and that refinement resets cached state in place (`:453`);
   that `_solve_kronecker` is the tensor-product solve path
   (`_bspline_interpolate.py:154`); that THB quasi-interpolation already exists
   (`_thb_quasi_interpolation.py:49`).
@@ -232,5 +235,5 @@ Two secondary benefits, once refinement is value-returning:
 5. Marking strategy: fixed fraction (refine the worst `θ` of cells, Dörfler-style), fixed
    threshold, or equidistribution? Not discussed here at all, and it changes the number of
    iterations to reach a given accuracy.
-6. Does `refine` (`:1216`) have the same mutation problem as `refine_cells`? Only the latter
+6. Does `refine` (`:1304`) have the same mutation problem as `refine_cells`? Only the latter
    was read.

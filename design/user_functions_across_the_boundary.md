@@ -6,6 +6,9 @@
 does not need to. Motivating case: fitting a spline to a user-defined function.
 **Companion:** `design/large_data_fitting.md`, which covers the fitting itself.
 
+**Validated against:** pantr **0.7.0** (`main`, tag `v0.7.0`), 2026-08-19. Line numbers
+below refer to that tree.
+
 ## The headline
 
 **For fitting, the Python function never crosses into C++.** The evaluation points are
@@ -34,7 +37,7 @@ it is already the contract.
 
 ## The problem with the current contract
 
-The callable receives a `PointsLattice` (`src/pantr/quad.py:405`) and must return a flat
+The callable receives a `PointsLattice` (`src/pantr/quad.py:478`) and must return a flat
 array of shape `(n_total,)` or `(n_total, rank)`, which `:224` then reshapes to
 `grid_shape`. `PointsLattice` offers two ways to get at the coordinates, and **the safe
 one does not scale while the scalable one is not safe.**
@@ -166,7 +169,7 @@ is worth saying in the documentation so that a slow fit is attributed correctly.
   batched call (`:214`); that the return contract is flat `(n_total,)` or
   `(n_total, rank)` reshaped to `grid_shape` (`:213-233`); that `PointsLattice` exposes
   `pts_per_dir` and `get_all_points` and nothing else public
-  (`src/pantr/quad.py:405-478`).
+  (`src/pantr/quad.py:478-615`).
 - **Derived:** the 130 s per-point-callback figure (from roughly 1 µs per call, which is
   the order of magnitude the project's own conventions cite), the 3.2 GB coordinate
   materialization, and the 12 kB figure for the broadcasting contract.
