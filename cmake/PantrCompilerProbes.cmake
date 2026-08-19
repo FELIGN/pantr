@@ -106,28 +106,26 @@ endif()
 # Absent from GCC 14, which is this project's own build compiler, so the Kokkos
 # fallback is the normal path here rather than a precaution.
 #
-# The probe asks TWO questions, because cpp/include/pantr/core/mdspan.hpp needs
-# both answers and they come from different parts of the standard:
+# The probe asks the question its own feature-test macro answers -- does the
+# standard LIBRARY implement P0009? -- and then compiles the one expression the
+# library actually depends on. It used to consult no macro at all and infer the
+# answer from whether the body compiled, which conflates a missing header with a
+# body that does not parse.
 #
-#   __cpp_lib_mdspan   does the standard LIBRARY implement P0009? That macro is
-#                      this question's own feature-test macro, so it answers it
-#                      directly. The probe used not to consult it and inferred the
-#                      answer from whether the body compiled, which conflates a
-#                      missing header with a body that does not parse -- and the
-#                      body did not parse, for the reason immediately below.
-#   view[1, 2]         does the LANGUAGE have the multidimensional subscript?
-#                      `pantr::at` uses exactly this spelling in its
-#                      PANTR_HAS_STD_MDSPAN branch, so a standard library that
-#                      shipped <mdspan> in a mode where this does not parse would
-#                      be of no use: the toggle would turn ON and the build would
-#                      then fail. Under C++20 `view[1, 2]` is the comma operator,
-#                      which indexes a rank-2 mdspan with a single index and does
-#                      not compile.
+# The body indexes through `std::array`, because that is what `pantr::at` does.
+# It used to index with `view[1, 2]`, the C++23 multidimensional subscript, which
+# added a second question -- does the LANGUAGE have that operator? -- that the
+# library no longer needs anyone to answer: the array overload is specified
+# unconditionally in C++23 and provided unconditionally by Kokkos, so `at` uses
+# it in both branches of the switch and parses under C++20 either way. Asking it
+# anyway made the toggle answer OFF under a C++20 baseline no matter what the
+# standard library shipped, which is the correct answer today for the wrong
+# reason and the wrong answer the day one of them changes.
 #
-# Both are C++23 and are gated together, so under the C++20 baseline this probe is
-# a foregone OFF. That is the correct answer -- but it is now reached for a stated
-# reason rather than by accident, it says so in the CMake log, and it will start
-# answering ON by itself on the day the baseline moves.
+# Under the C++20 baseline this probe is still a foregone OFF, because libstdc++
+# defines __cpp_lib_mdspan only in C++23 mode. That is now the single reason, it
+# says so in the CMake log, and it will start answering ON by itself on the day
+# the baseline moves.
 #
 # CMAKE_REQUIRED_FLAGS at the top of this file pins the probe to -std=c++20, and
 # that must be kept in step with the cxx_std_20 in cmake/PantrCompileOptions.cmake.
@@ -141,12 +139,14 @@ check_cxx_source_compiles("
 #  error \"the standard library does not implement P0009 in this language mode\"
 #endif
 #include <mdspan>
+#include <array>
 #include <cstddef>
 int main() {
     double storage[6]{};
     std::mdspan<double, std::dextents<std::size_t, 2>> view(storage, 2, 3);
-    view[1, 2] = 1.0;
-    return view[1, 2] == 1.0 ? 0 : 1;
+    const std::array<std::size_t, 2> ij{1, 2};
+    view[ij] = 1.0;
+    return view[ij] == 1.0 ? 0 : 1;
 }
 " PANTR_HAS_STD_MDSPAN)
 

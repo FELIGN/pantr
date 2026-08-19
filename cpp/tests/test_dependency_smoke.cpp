@@ -49,6 +49,49 @@ void mdspan_view_is_row_major() {
     PANTR_CHECK(view.extent(1) == 3);
 }
 
+/// `pantr::at` indexes a view of any rank, through the one overload both
+/// branches of the mdspan switch provide.
+///
+/// This is a dependency assumption and so belongs in this file: `at` reaches the
+/// element through `operator[](const std::array<index_type, rank()>&)`, which
+/// Kokkos declares outside its `MDSPAN_USE_BRACKET_OPERATOR` guard and C++23
+/// specifies unconditionally. If a future mdspan release moved that overload
+/// behind a guard, `at` would stop compiling and this is where it would show,
+/// with the reason attached.
+///
+/// Ranks 1, 2 and 3 are all exercised because rank is where the assumption is
+/// least uniform: at rank 1 the array overload competes with a single-index one,
+/// and rank 3 is what design/bezier_extraction_api.md needs next. Each rank is
+/// checked through the raw storage, so a transposed index would show up as a
+/// wrong flat offset rather than being hidden by a symmetric read-back.
+void at_indexes_a_view_of_every_rank() {
+    std::vector<double> storage(24);
+
+    const pantr::span_nd<double, 1> vec(storage.data(), 4);
+    for (std::size_t i = 0; i < 4; ++i) {
+        pantr::at(vec, i) = static_cast<double>(i);
+    }
+    for (std::size_t k = 0; k < 4; ++k) {
+        PANTR_CHECK(storage[k] == static_cast<double>(k));
+    }
+
+    const pantr::span_nd<double, 3> cube(storage.data(), 2, 3, 4);
+    for (std::size_t i = 0; i < 2; ++i) {
+        for (std::size_t j = 0; j < 3; ++j) {
+            for (std::size_t k = 0; k < 4; ++k) {
+                pantr::at(cube, i, j, k) = static_cast<double>(12 * i + 4 * j + k);
+            }
+        }
+    }
+    for (std::size_t k = 0; k < storage.size(); ++k) {
+        PANTR_CHECK(storage[k] == static_cast<double>(k));
+    }
+
+    PANTR_CHECK(cube.extent(0) == 2);
+    PANTR_CHECK(cube.extent(1) == 3);
+    PANTR_CHECK(cube.extent(2) == 4);
+}
+
 void eigen_solves_a_banded_spd_system() {
     // A 1D second-difference operator: symmetric positive definite, half
     // bandwidth 1. The same shape of system design/large_data_fitting.md routes
@@ -89,6 +132,7 @@ void eigen_solves_a_banded_spd_system() {
 
 int main() {
     mdspan_view_is_row_major();
+    at_indexes_a_view_of_every_rank();
     eigen_solves_a_banded_spd_system();
     return pantr::test::summary("test_dependency_smoke");
 }
