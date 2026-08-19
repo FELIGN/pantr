@@ -65,6 +65,23 @@
   caller re-resolves cells after a refine or a coarsen has reassigned ids.
 
 ### Rejected where it used to be accepted
+- **Four Coons boundary curves that disagree in homogeneous data at a shared corner are
+  refused.** The patch's corner check read its corners through `boundary()`, which
+  *projects*, so both readings were physical points and agreed exactly whenever the
+  geometry did; the weight never entered the comparison. But a homogeneous representation
+  is unique only up to one constant scaling all of a patch's weights, so two curves can
+  name the same point of space at a corner while supplying different `(w x, w y, w z, w)`
+  there, and the three-term blend — formed homogeneously and projected only on evaluation
+  — then fails to cancel. Measured on a unit square with a single rational boundary whose
+  weights run 1 to 2: every corner matched to `1.1e-16` and the patch missed one of the
+  four curves it had been handed by `1.7e-01`, 17% of the model. Corners are now compared
+  as homogeneous coefficients, with the coordinate and weight columns in separate scale
+  groups so a dimensionless weight is never graded against the model's length — the rule
+  `_verify_shared_boundary` and the volume's edge check already apply to the same kind of
+  comparison — and a disagreement raises a `ValueError` naming the corner and the column
+  group that decided. Rescaling *every* curve's homogeneous coefficients by one constant
+  is not a disagreement and is still accepted; it describes the same patch. Polynomial
+  input is unaffected, byte for byte.
 - **A weight disagreement between two rational Coons faces is refused at every model
   size.** The edge check took one magnitude over a homogeneous control row, which mixes
   coordinates (length times weight) with weights (dimensionless), so a weight error was
@@ -230,6 +247,20 @@
   endpoint condition and still returns the mean of the control points.
 
 ### Fixed
+- **A rational Coons patch carries the corner weight its curves agreed on.** The corner
+  term of `create_coons_surface` was read through `boundary()` and then promoted with unit
+  weights, so four curves agreeing homogeneously at every corner still produced a patch
+  that missed them whenever the weight they agreed on was not 1: measured `2.2e-02` on a
+  degree-2 model whose corner weights were all 2, with nothing refused, and the blend's
+  corner weight came out as `2w - 1` instead of `w`. It is now read homogeneously and built
+  by the same helper the volume's corner term uses (`_build_trilinear_volume` became
+  `_build_multilinear_corner_term`, taking its dimension from the corners), so the two
+  paths cannot drift apart again. Polynomial patches are byte-identical to before.
+- **A Coons patch from curves carrying two coordinates builds** instead of dying in NumPy
+  with `operands could not be broadcast together with shapes (2,2,2) (2,2,3) (2,2,2)`,
+  which named nothing the caller had supplied. The corner term no longer goes through
+  `create_bilinear`, a public *geometric* primitive that zero-pads its corners to rank 3 —
+  the same reason the volume never used `create_trilinear` for its own corner term.
 - **`create_coons_volume` builds from rational faces** instead of failing with a NumPy
   shape error. The seven-term blend was already formed from homogeneous coefficients
   throughout; only the corner read left that space, through `boundary()`, which projects.
