@@ -168,10 +168,17 @@ requirement, so a future release could silently break version single-sourcing.
 **R1-7 · Three spellings of "evaluation points"** across one vertical slice (`pts`, `t`,
 `points`); the adapter uses two of them in eight lines.
 
-**R1-8 · The seam's type was cut to fit the one kernel with no serial twin.**
+**R1-8 · The seam's type was cut to fit a kernel with no serial twin.**
 `_tabulate_basis_1D_impl_helper` takes a *pair* (parallel plus serial) and dispatches on
-`_PARALLEL_MIN_NUM_PTS`. Cardinal B-spline is the only basis kernel with no twin. Porting
-Bernstein next forces a second return shape for the same concept.
+`_PARALLEL_MIN_NUM_PTS`. Porting Bernstein next forces a second return shape for the same
+concept.
+
+*Corrected 2026-08-20.* This finding originally read "cardinal B-spline is the only basis
+kernel with no twin", and that is backwards: **Bernstein is the only 1D basis tabulation
+that has one.** Cardinal B-spline, Lagrange and Legendre all lack a twin, and
+`_basis_1D.py` passes `core_func_serial=` at exactly one of its four call sites. The
+conclusion is unaffected and better supported -- the bare callable fits three of the four
+kernels by coincidence, not one.
 
 ### Suggested and nitpick
 
@@ -247,9 +254,10 @@ here with their ruling.
   on the storage type. It encodes a project-wide policy from a basis-specific header, and
   the same rule currently answers differently depending on whether the scalar is a built-in.
 - **B · A `CoreKernels(parallel, serial)` record** for the seam, `serial=None` allowed. The
-  consumer already takes a pair and dispatches on `_PARALLEL_MIN_NUM_PTS`; cardinal B-spline
-  is the only basis kernel with no serial twin, which is the only reason a bare callable
-  fits. Porting Bernstein forces a second return shape for one concept.
+  consumer already takes a pair and dispatches on `_PARALLEL_MIN_NUM_PTS`, and Bernstein is
+  the only 1D basis tabulation that has a serial twin -- so the bare callable fits the
+  kernel ported so far by coincidence. Porting Bernstein forces a second return shape for
+  one concept. (See the correction under R1-8: this was first written the other way round.)
 - **C · Invert the `_backend` import cycle**: policy in `_backend`, catalogue beside each
   kernel. Removes two `noqa: PLC0415`, the `TYPE_CHECKING` import and the cycle itself, and
   lets `lint-imports` hold it with a one-line contract.
