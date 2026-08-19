@@ -5,6 +5,23 @@ During the port the **Numba implementation stays as the parity oracle**: the C++
 backend is validated against it module by module, with the choice made here, at
 the Python level, rather than at build time.
 
+Unstable
+--------
+
+**This module is scaffolding and carries no compatibility promise.** It exists to
+run two implementations side by side while the port proceeds, and when the port
+ends the reason for it ends too -- so it may be renamed, reshaped or deleted
+without a deprecation cycle, and nothing outside :mod:`pantr` should import it.
+It is deliberately not re-exported from :mod:`pantr` and not listed in the docs
+reference, unlike :mod:`pantr._parallel`, which is maintained to the same
+standard but is meant to outlive the port. Making this one public would commit
+the project to maintaining it past the point where it has a job.
+
+Said plainly because it is known not to be enough: ``CLAUDE.md`` records that a
+downstream consumer already imports pantr's private symbols, where pantr's own CI
+cannot see the breakage. This paragraph is the notice; it is not a promise, and a
+consumer that pins to this module is choosing to track it.
+
 Selection
 ---------
 
