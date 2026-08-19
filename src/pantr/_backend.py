@@ -21,10 +21,31 @@ Unset, the backend is :attr:`Backend.NUMBA`, which is always available.
 that is not available, importing :mod:`pantr` fails, loudly, naming what is
 missing and how to build it. That is deliberate and it is the whole point of the
 rule: a silent downgrade to the other backend would make every A/B measurement
-untrustworthy, and the measurement is what the override exists to enable. The
-same reasoning appears in ``design/simd.md`` for the ISA-variant override, where
-a variant that is requested and missing must fail rather than quietly load
-another.
+untrustworthy, and the measurement is what the override exists to enable.
+
+Two axes, not one
+-----------------
+
+``design/simd.md`` schedules a second choice: ship the extension compiled
+several times (baseline, ``x86-64-v3``, ``x86-64-v4``) and pick one at import.
+That is a **different question** from :class:`Backend`. Which family runs the
+kernel, and which build of that family, are independent -- so they are two enums
+and two variables, :class:`IsaVariant` and ``PANTR_ISA_VARIANT``, under the same
+never-fall-back rule.
+
+Folding the second into the first, as ``CPP_V3`` and ``CPP_V4`` members of
+:class:`Backend`, would multiply :func:`available_backends`, the parse, and
+every ``is Backend.NUMBA`` branch by the product of the two. It is written down
+now rather than when the ladder is built, because the accepted values of an
+environment variable are user-facing the moment anyone puts one in a script:
+adding an axis later is additive, but re-spelling ``PANTR_BACKEND=cpp`` as
+``PANTR_BACKEND=cpp_v3`` is a break. **Today's accepted values are unchanged.**
+
+**No ISA variant is built.** ``design/simd.md`` gates the ladder on a
+measurement, ``cmake/PantrCompileOptions.cmake`` sets no ``-march``, and
+``scripts/ci_local.sh discipline`` asserts that none appears in the build files.
+So :func:`available_isa_variants` reports the baseline alone, and this axis is a
+shape rather than a capability.
 
 Scope
 -----
@@ -59,17 +80,26 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
 from enum import IntEnum
-from typing import Final
+from typing import Final, TypeVar
 
 __all__ = [
     "Backend",
+    "IsaVariant",
     "active_backend",
+    "active_isa_variant",
     "available_backends",
+    "available_isa_variants",
     "use_backend",
 ]
 
 _ENV_VAR: Final[str] = "PANTR_BACKEND"
 """Name of the environment variable that selects the backend."""
+
+_ISA_ENV_VAR: Final[str] = "PANTR_ISA_VARIANT"
+"""Name of the environment variable that selects the ISA variant."""
+
+_Choice = TypeVar("_Choice", bound=IntEnum)
+"""One of the closed sets of choices this module resolves from the environment."""
 
 
 class Backend(IntEnum):
@@ -78,7 +108,7 @@ class Backend(IntEnum):
     An :class:`~enum.IntEnum` rather than a string, per the project's convention
     that a closed set of choices is never stringly typed. The environment
     variable is a string because the operating system offers nothing else; it is
-    a boundary and is converted on the way in by :func:`_parse_backend_name`.
+    a boundary and is converted on the way in by :func:`_parse_choice`.
 
     Attributes:
         NUMBA: The Numba kernels. Always available, and the parity oracle every
@@ -132,64 +162,153 @@ def available_backends() -> tuple[Backend, ...]:
     return (Backend.NUMBA, Backend.CPP)
 
 
-def _parse_backend_name(name: str) -> Backend:
-    """Convert the environment variable's string to a :class:`Backend`.
+class IsaVariant(IntEnum):
+    """Which build of the C++ extension runs: the instruction-set ladder.
 
-    The single place a backend name crosses from text into the type system.
+    A second axis, orthogonal to :class:`Backend`. ``design/simd.md`` settles the
+    shape of the ladder -- compile the extension once per instruction-set level,
+    pick one at import through a probe module compiled at the toolchain baseline
+    -- and gates **building** any of it on a measurement that has been taken but
+    not acted on. So this enum has one member today.
+
+    The two questions are kept apart because they compose rather than combine:
+    folding the ladder into :class:`Backend` as ``CPP_V3`` and ``CPP_V4`` would
+    multiply the parse, the availability list and every branch by the product of
+    the two axes, and it would make ``PANTR_BACKEND``'s accepted values change
+    when the ladder lands. Adding a member here is additive instead.
+
+    Attributes:
+        BASELINE: The extension as it is built today -- no ``-march``, so
+            whatever the compiler's default target is. Always the answer until
+            the ladder is built.
+    """
+
+    BASELINE = 0
+
+
+def available_isa_variants() -> tuple[IsaVariant, ...]:
+    """List the ISA variants this installation can actually load.
+
+    The ladder is not built: ``cmake/PantrCompileOptions.cmake`` sets no
+    ``-march`` and ``scripts/ci_local.sh discipline`` asserts that none appears
+    in the build files, so the one extension that exists is the baseline. When
+    the ladder lands this becomes a probe -- which variant modules were shipped,
+    intersected with what the CPU and the operating system actually support, per
+    ``design/simd.md``.
+
+    Deliberately independent of :func:`available_backends`. A variant describes
+    which build of the C++ family would be used, which is a well-formed answer
+    even where the C++ backend is not installed; coupling them would make
+    ``PANTR_ISA_VARIANT=baseline`` an error on a Numba-only installation, where
+    it is merely inert.
+
+    Returns:
+        tuple[IsaVariant, ...]: The available variants, in ascending enum order.
+            :attr:`IsaVariant.BASELINE` is always present.
+    """
+    return (IsaVariant.BASELINE,)
+
+
+def _parse_choice(value: str, choices: type[_Choice], env_var: str) -> _Choice:
+    """Convert an environment variable's string to one of a closed set of choices.
+
+    The single place a name crosses from text into the type system, for both
+    axes. The variables are strings because the operating system offers nothing
+    else; they are a boundary and are converted here on the way in.
 
     Args:
-        name (str): Value of ``PANTR_BACKEND``, matched case-insensitively and
-            with surrounding whitespace ignored.
+        value (str): Value of the variable, matched case-insensitively and with
+            surrounding whitespace ignored.
+        choices (type[_Choice]): The enum to match against.
+        env_var (str): Name of the variable, for the error message.
 
     Returns:
-        Backend: The named backend.
+        _Choice: The named member.
 
     Raises:
-        ValueError: If ``name`` does not name a backend.
+        ValueError: If ``value`` names no member of ``choices``.
     """
-    normalized = name.strip().lower()
-    for backend in Backend:
-        if backend.name.lower() == normalized:
-            return backend
-    known = ", ".join(sorted(b.name.lower() for b in Backend))
-    raise ValueError(f"{_ENV_VAR}={name!r} does not name a backend. Known backends: {known}.")
+    normalized = value.strip().lower()
+    for choice in choices:
+        if choice.name.lower() == normalized:
+            return choice
+    known = ", ".join(sorted(c.name.lower() for c in choices))
+    raise ValueError(f"{env_var}={value!r} is not one of: {known}.")
 
 
-def _resolve_backend_from_environment() -> Backend:
-    """Read and validate the backend requested by the environment.
+def _resolve_from_environment(
+    env_var: str,
+    choices: type[_Choice],
+    available: tuple[_Choice, ...],
+    default: _Choice,
+    fix_hint: str,
+) -> _Choice:
+    """Read and validate one axis of the selection, refusing to fall back.
+
+    Shared by both axes, because the rule is one rule: an explicit request that
+    cannot be honoured raises rather than quietly running something else. Written
+    once so the two cannot drift apart -- the failure that drift would produce is
+    an A/B measurement of the wrong thing, which looks like a result.
+
+    Args:
+        env_var (str): Name of the environment variable to read.
+        choices (type[_Choice]): The enum it selects from.
+        available (tuple[_Choice, ...]): The members this installation can run.
+        default (_Choice): What an unset variable means.
+        fix_hint (str): Indented lines telling the user what is missing and how
+            to get it, quoted in the failure.
 
     Returns:
-        Backend: The requested backend, or :attr:`Backend.NUMBA` when
-            ``PANTR_BACKEND`` is unset.
+        _Choice: The requested member, or ``default`` when the variable is unset.
 
     Raises:
-        ValueError: If ``PANTR_BACKEND`` does not name a backend.
-        RuntimeError: If it names a backend this installation cannot run. This is
-            raised rather than silently falling back, so that a measurement taken
-            under an explicit request cannot be a measurement of the other
-            backend.
+        ValueError: If the variable names no member of ``choices``.
+        RuntimeError: If it names one this installation cannot run.
     """
-    requested = os.environ.get(_ENV_VAR)
+    requested = os.environ.get(env_var)
     if requested is None:
-        return Backend.NUMBA
+        return default
 
-    backend = _parse_backend_name(requested)
-    if backend in available_backends():
-        return backend
+    chosen = _parse_choice(requested, choices, env_var)
+    if chosen in available:
+        return chosen
 
     raise RuntimeError(
-        f"{_ENV_VAR}={requested!r} was requested but the {backend.name} backend is "
-        f"not available in this installation.\n"
-        f"  The C++ extension pantr._pantr_cpp was not built.\n"
-        f"  Fix: pip install -e . (which builds it through scikit-build-core)\n"
-        f"pantr does not fall back to another backend here: an explicit request "
+        f"{env_var}={requested!r} was requested but {chosen.name} is not available "
+        f"in this installation.\n"
+        f"{fix_hint}\n"
+        f"pantr does not fall back to another choice here: an explicit request "
         f"that silently ran something else would make any A/B measurement taken "
         f"under it meaningless."
     )
 
 
-_PROCESS_DEFAULT: Final[Backend] = _resolve_backend_from_environment()
+_PROCESS_DEFAULT: Final[Backend] = _resolve_from_environment(
+    _ENV_VAR,
+    Backend,
+    available_backends(),
+    Backend.NUMBA,
+    "  The C++ extension pantr._pantr_cpp was not built.\n"
+    "  Fix: pip install -e . (which builds it through scikit-build-core)",
+)
 """The backend every thread and task starts from, resolved once from the environment."""
+
+_ACTIVE_ISA_VARIANT: Final[IsaVariant] = _resolve_from_environment(
+    _ISA_ENV_VAR,
+    IsaVariant,
+    available_isa_variants(),
+    IsaVariant.BASELINE,
+    "  Only the baseline is built: design/simd.md gates the ISA ladder on a\n"
+    "  measurement, and no -march reaches the build.",
+)
+"""The ISA variant in effect, resolved once at import.
+
+A plain constant rather than a :class:`~contextvars.ContextVar`, because there is
+nothing to scope: the variant decides which extension module is *loaded*, so
+changing it inside a running process would mean unloading one binary and
+importing another. :func:`use_backend` has a scoped form because both backends
+are loaded at once and choosing between them is a per-call decision; this is not.
+"""
 
 _ACTIVE: Final[ContextVar[Backend]] = ContextVar("pantr_active_backend", default=_PROCESS_DEFAULT)
 """The backend in effect, per thread and per task.
@@ -221,6 +340,21 @@ def active_backend() -> Backend:
             selection, whatever another thread is doing.
     """
     return _ACTIVE.get()
+
+
+def active_isa_variant() -> IsaVariant:
+    """Report the ISA variant in effect.
+
+    Resolved once at import from ``PANTR_ISA_VARIANT``, and process-wide: unlike
+    the backend, the variant selects which binary is loaded, so it has no scoped
+    override.
+
+    Returns:
+        IsaVariant: The variant selected by ``PANTR_ISA_VARIANT``, or
+            :attr:`IsaVariant.BASELINE` when it is unset. The baseline is the
+            only variant built today.
+    """
+    return _ACTIVE_ISA_VARIANT
 
 
 @contextmanager

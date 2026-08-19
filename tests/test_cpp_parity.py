@@ -178,7 +178,15 @@ import numpy.typing as npt
 import pytest
 
 from pantr import _numba_compat
-from pantr._backend import Backend, active_backend, available_backends, use_backend
+from pantr._backend import (
+    Backend,
+    IsaVariant,
+    active_backend,
+    active_isa_variant,
+    available_backends,
+    available_isa_variants,
+    use_backend,
+)
 from pantr.basis import tabulate_cardinal_bspline_1d
 from pantr.basis._basis_backend import CoreKernels, cardinal_bspline_core
 from tests._parity_harness import (
@@ -1351,6 +1359,65 @@ def test_the_seam_returns_a_kernel_record_for_every_available_backend() -> None:
             f"if one was added, tests/test_cpp_parity.py must exercise it and "
             f"pantr.basis._basis_backend.cardinal_bspline_core must say so"
         )
+
+
+def test_the_isa_variant_is_a_separate_axis_from_the_backend() -> None:
+    """Which family runs, and which build of it, are two questions with two enums.
+
+    The assertion on :class:`Backend`'s members is the load-bearing one. The
+    accepted values of ``PANTR_BACKEND`` are exactly those names, lowercased, and
+    they are user-facing the moment anyone writes one into a script -- so folding
+    the ISA ladder in later as ``cpp_v3`` would break every such script. Splitting
+    the axes now costs nothing and makes that impossible; this pins it.
+    """
+    assert [b.name for b in Backend] == ["NUMBA", "CPP"], (
+        "PANTR_BACKEND's accepted values are the lowercased member names, and "
+        "changing them breaks any script that sets the variable"
+    )
+    assert [v.name for v in IsaVariant] == ["BASELINE"], (
+        "design/simd.md gates building an ISA variant on a measurement; a member "
+        "here without a module to load would make available_isa_variants() lie"
+    )
+    assert available_isa_variants() == (IsaVariant.BASELINE,)
+    assert active_isa_variant() is IsaVariant.BASELINE
+
+
+def test_a_requested_choice_that_is_missing_raises_on_either_axis(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The never-fall-back rule is one rule, and it already holds on the ISA axis.
+
+    The backend half is covered below, through the entry points a caller reaches.
+    The ISA half has no such entry point yet -- one variant exists and it is
+    always available -- so the shared resolver is called directly with the empty
+    availability list that an unbuilt variant will produce. That is the case
+    ``design/simd.md`` says must fail rather than quietly load another module,
+    and testing it now is what keeps the rule from being written twice and
+    drifting when the ladder lands.
+    """
+    from pantr import _backend  # noqa: PLC0415
+
+    monkeypatch.setenv("PANTR_ISA_VARIANT", "baseline")
+    with pytest.raises(RuntimeError, match="does not fall back"):
+        _backend._resolve_from_environment(
+            "PANTR_ISA_VARIANT", IsaVariant, (), IsaVariant.BASELINE, "  nothing is built"
+        )
+
+    monkeypatch.setenv("PANTR_ISA_VARIANT", "x86_64_v3")
+    with pytest.raises(ValueError, match="PANTR_ISA_VARIANT='x86_64_v3' is not one of"):
+        _backend._resolve_from_environment(
+            "PANTR_ISA_VARIANT",
+            IsaVariant,
+            available_isa_variants(),
+            IsaVariant.BASELINE,
+            "",
+        )
+
+    monkeypatch.delenv("PANTR_ISA_VARIANT")
+    unset = _backend._resolve_from_environment(
+        "PANTR_ISA_VARIANT", IsaVariant, available_isa_variants(), IsaVariant.BASELINE, ""
+    )
+    assert unset is IsaVariant.BASELINE, "an unset variable must mean the default"
 
 
 def test_an_unavailable_backend_request_never_falls_back(
