@@ -258,14 +258,20 @@ here with their ruling.
   so one spelling serves both branches. Removing the branch also makes `at` rank-generic,
   which is what `span_nd` now needs.
 
-**Still open, and deliberately.**
+- **E · Split `Backend` from an `IsaVariant` axis.** Two orthogonal questions -- which family
+  and which build of that family -- and folding the second into the first would multiply
+  `available_backends()`, the parse and every `if chosen is Backend.NUMBA` by their product.
+  Deciding it now is free; deciding it later changes the accepted values of an environment
+  variable, which is user-facing surface the moment anyone puts it in a script. The
+  measurement that gated stage 2 has now been taken, so that day is nearer than it was.
+- **F · Mark `pantr._backend` explicitly unstable** in its module docstring: scaffolding for
+  the duration of the port, removable when the port ends. Not made public like
+  `pantr._parallel`, despite being maintained to the same standard -- going public commits
+  to maintaining it past the point where its reason to exist has gone, and CLAUDE.md warns
+  that a downstream consumer already imports pantr private symbols where CI cannot see it.
 
-- Whether `Backend` should be split from an `IsaVariant` axis before `PANTR_BACKEND`'s
-  accepted values become user-facing surface.
-- Whether `pantr._backend` is made public like `pantr._parallel`, or marked explicitly
-  unstable in its own docstring. The recommendation on record is the latter: it is
-  scaffolding for the duration of the port, and CLAUDE.md warns that a downstream consumer
-  already imports pantr private symbols.
+**Nothing from this review is left undecided.** Every finding was applied, and every design
+question was ruled on.
 
 ## Design questions left open for the user
 
