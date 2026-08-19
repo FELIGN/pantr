@@ -170,33 +170,50 @@ gates() {
         record SKIP "concepts gate rejects GCC 9" "/usr/bin/g++-9 absent"
     fi
 
-    # The known-broken-compiler filter, and its documented override. Clang 10
-    # PASSES the concepts probe and compiles this prototype's kernel correctly
-    # (measured), so the filter -- not the probe -- is what keeps it out. Both
-    # halves are asserted: that it rejects, and that the escape hatch works.
-    if [[ -x /usr/bin/clang++-10 ]]; then
-        if cmake -S . -B "$tmp/clang10" -G Ninja \
-                 -DCMAKE_CXX_COMPILER=/usr/bin/clang++-10 \
-                 -DPANTR_BUILD_TESTS=OFF -DPANTR_BUILD_BENCHMARK=OFF \
-                 >"$tmp/clang10.log" 2>&1; then
-            record FAIL "version filter rejects Clang 10" "configure SUCCEEDED"
-        elif grep -q "known-incomplete concepts support" "$tmp/clang10.log"; then
-            record PASS "version filter rejects Clang 10"
-        else
-            record FAIL "version filter rejects Clang 10" "rejected, but not by the filter"
+    # The version floor is 10 for GCC and Clang alike, and 10 is the lowest
+    # version this tree has actually been built and tested with. So the assertion
+    # here is that both of the machine's 2020 compilers are ACCEPTED -- the
+    # opposite of what this check asserted until the floor was measured, when it
+    # sat at 14 for Clang on a guess and at nothing at all for GCC.
+    #
+    # Configuring is not the interesting half. `cxx` below builds the whole tree
+    # with the development toolchains; what these two prove is that the gate does
+    # not stand in the way of a compiler that works, which is the failure mode a
+    # version table produces and the reason this file distrusts them.
+    for _old_cxx in /usr/bin/clang++-10 /usr/bin/g++-10; do
+        _name="$(basename "$_old_cxx")"
+        if [[ ! -x "$_old_cxx" ]]; then
+            record SKIP "$_name is accepted" "$_old_cxx absent"
+            continue
         fi
+        if cmake -S . -B "$tmp/$_name" -G Ninja \
+                 -DCMAKE_CXX_COMPILER="$_old_cxx" \
+                 -DPANTR_BUILD_TESTS=OFF -DPANTR_BUILD_BENCHMARK=OFF \
+                 >"$tmp/$_name.log" 2>&1; then
+            record PASS "$_name is accepted"
+        else
+            record FAIL "$_name is accepted" "the floor rejects a version measured to work"
+            tail -20 "$tmp/$_name.log"
+        fi
+    done
 
-        if cmake -S . -B "$tmp/clang10ovr" -G Ninja \
-                 -DCMAKE_CXX_COMPILER=/usr/bin/clang++-10 \
+    # The override still has to work, because the floor still rejects something
+    # below it and someone will need past it one day. There is no compiler below
+    # 10 on this machine to try it against -- g++ 9.5 is stopped earlier, by the
+    # concepts probe -- so this asserts the flag is at least accepted and does not
+    # itself break a configure.
+    if [[ -x /usr/bin/g++-10 ]]; then
+        if cmake -S . -B "$tmp/override" -G Ninja \
+                 -DCMAKE_CXX_COMPILER=/usr/bin/g++-10 \
                  -DPANTR_ALLOW_UNTESTED_COMPILER=ON \
                  -DPANTR_BUILD_TESTS=OFF -DPANTR_BUILD_BENCHMARK=OFF \
-                 >"$tmp/clang10ovr.log" 2>&1; then
-            record PASS "PANTR_ALLOW_UNTESTED_COMPILER overrides it"
+                 >"$tmp/override.log" 2>&1; then
+            record PASS "PANTR_ALLOW_UNTESTED_COMPILER is honoured"
         else
-            record FAIL "PANTR_ALLOW_UNTESTED_COMPILER overrides it" "still rejected"
+            record FAIL "PANTR_ALLOW_UNTESTED_COMPILER is honoured"
         fi
     else
-        record SKIP "version filter rejects Clang 10" "/usr/bin/clang++-10 absent"
+        record SKIP "PANTR_ALLOW_UNTESTED_COMPILER is honoured" "no old compiler to try"
     fi
 
     # The offline escape. FETCHCONTENT_FULLY_DISCONNECTED with a populated

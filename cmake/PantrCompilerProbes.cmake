@@ -160,28 +160,50 @@ endif()
 # The version floor survives, in a different role.
 # --------------------------------------------------------------------------
 #
-# A probe reports whether something COMPILES, not whether it is CORRECT. Clang
-# 10's concepts support was partial and buggy, so a small probe could plausibly
-# compile on an implementation that then miscompiles the real library.
+# A probe reports whether something COMPILES, not whether it is CORRECT, so a
+# version check stays alongside it. What that check MEANS is the part worth
+# stating, because it changed once already.
 #
-# So a version check stays, but it is no longer the criterion: it is a filter for
-# implementations KNOWN to be broken. This list only grows from an observed
-# failure, never from speculation -- otherwise it becomes the version table this
-# file exists to avoid. Each entry carries its reason and there is an escape for
-# someone who knows better.
-#
-# The Clang 14 floor below is inherited from design/toolchain_requirements.md,
-# where it is recorded as a starting guess rather than a measurement: the
+# It used to read "Clang before 14 has known-incomplete concepts support", which
+# is a claim about Clang that nobody here had evidence for. It came from
+# design/toolchain_requirements.md, which records it as a starting guess: the
 # development server's system Clang 10 is shadowed by the conda environment, so
-# what the probe reports on it was never observed. Replace it the day someone
-# runs the probe on a real Clang between 10 and 14.
-if(CMAKE_CXX_COMPILER_ID MATCHES "Clang"
-   AND NOT CMAKE_CXX_COMPILER_ID STREQUAL "AppleClang"
-   AND CMAKE_CXX_COMPILER_VERSION VERSION_LESS 14
+# it was never actually tried.
+#
+# Measured 2026-08-19, against this tree rather than a toy:
+#
+#   g++ 9.5      rejected, and early -- it does not accept -std=c++20 at all, so
+#                the concepts probe above stops it before this check runs.
+#   g++ 10       configures, builds the whole tree under -Werror with the full
+#                warning set, and passes 3/3 ctest.
+#   clang++ 10   the same, once the override this block used to demand was given.
+#   g++ 14.4, clang++ 18.1.8   the development toolchains, likewise.
+#
+# So the floor is 10 for both families, and it now means THE LOWEST VERSION
+# ACTUALLY EXERCISED rather than a guess about anyone's concepts implementation.
+# "Untested below this" is a claim about us and we can support it; "broken below
+# this" was a claim about the compiler and we could not.
+#
+# The check covers GNU as well as Clang, and that symmetry is the other half of
+# the correction. It was Clang-only because the guess was about Clang's concepts,
+# so a GCC 10 walked in with nothing said while a Clang 10 hit a hard stop --
+# same year, same standard-library era, opposite treatment, neither measured.
+#
+# AppleClang stays excluded deliberately: its version numbers do not map to LLVM
+# versions, so any threshold applied to it is a row that lies.
+#
+# Raise this floor only from an OBSERVED failure, never from speculation, or it
+# becomes the version table this file exists to avoid.
+if((CMAKE_CXX_COMPILER_ID STREQUAL "GNU"
+    OR (CMAKE_CXX_COMPILER_ID MATCHES "Clang"
+        AND NOT CMAKE_CXX_COMPILER_ID STREQUAL "AppleClang"))
+   AND CMAKE_CXX_COMPILER_VERSION VERSION_LESS 10
    AND NOT PANTR_ALLOW_UNTESTED_COMPILER)
   message(FATAL_ERROR
-      "Clang before 14 has known-incomplete concepts support: the probe above "
-      "can pass on it while the real library miscompiles.\n"
+      "pantr has never been built with ${CMAKE_CXX_COMPILER_ID} below version 10. "
+      "Version 10 of both GCC and Clang is measured to build this tree and pass "
+      "its tests; nothing older has been tried, and the probe above cannot tell a "
+      "compiler that miscompiles from one that does not.\n"
       ${PANTR_TOOLCHAIN_REPORT}
       "\n  Override with -DPANTR_ALLOW_UNTESTED_COMPILER=ON at your own risk.")
 endif()

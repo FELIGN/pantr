@@ -175,13 +175,14 @@ lines of CMake, and the day it is needed is the day nobody wants to be writing t
   required and not merely a precaution. CMake 4.4.2, Ninja 1.13.2, ccache 4.13.6.
 - **Measured 2026-08-19, and it answers open question 1 uncomfortably:** the system
   GCC 10 and Clang 10 **both pass the concepts probe**, in the probe's real shape rather
-  than a toy one, and Clang 10 also **compiles and correctly runs** the prototype's kernel
-  (`(1-u)^3/6` at `u = 0.25`, to the last bit). GCC 9 fails, and fails early: it does not
-  accept `-std=c++20` at all. So the probe alone does not keep either 2020 compiler out.
-  The Clang 14 filter does, and it now rests on no observed failure -- which this note's own
-  rule forbids. One kernel is weak evidence about a whole library, so nothing was changed;
-  but the floor has moved from *unverified* to *measured and unsupported*, and that is a
-  different thing to leave in place.
+  than a toy one, and **both build the whole C++ tree under `-Werror` with the full warning
+  set and pass 3/3 ctest** -- not merely the one kernel. GCC 9 fails, and fails early: it
+  does not accept `-std=c++20` at all, so the concepts probe stops it before any version
+  check runs. **Acted on**: the floor is now 10, and it applies to GCC and Clang alike.
+  It had been 14 for Clang, on a guess, and *nothing at all for GCC* -- so a GCC 10
+  configured with nothing said while a Clang 10 hit a hard stop, same year and same
+  standard-library era, neither measured. The floor now means the lowest version actually
+  exercised, which is a claim about us rather than about anyone's concepts implementation.
 - **Stated from knowledge and explicitly uncertain:** the exact C++20 feature matrix of GCC 10
   and Clang 10, and the version at which Clang's concepts support became reliable. The
   Clang 14 floor above is a starting guess and should be replaced by whatever the probe run on
