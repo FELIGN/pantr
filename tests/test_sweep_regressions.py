@@ -429,25 +429,38 @@ def test_a_domain_below_its_own_resolution_is_refused() -> None:
     assert resolved.num_intervals == 2
 
 
-def test_an_already_degenerate_knot_vector_is_still_accepted() -> None:
-    """The refusal fires only when *snapping* destroyed the mesh, not when it arrived flat.
+def test_the_snapping_refusal_does_not_claim_a_vector_that_arrived_flat() -> None:
+    """The *snapping* diagnosis fires only when snapping destroyed the mesh.
 
-    A caller who passes a knot vector that is already a single repeated value asked for
-    exactly that and gets it, at any magnitude and in either dtype. Distinguishing the
-    two is what keeps the new rejection from being a general ban on degenerate spaces:
-    the case worth refusing is the one the caller could not see coming.
+    A vector that arrived flat is refused too -- issue #320 moved that to
+    ``_check_space_has_an_interval``, because a space with no interval has no cell and
+    three of its consumers answered ``0.0`` or ``NaN`` rather than raising. What this
+    test guards is that the two keep their own messages: "this mesh is finer than
+    float32 resolves here" tells a caller who supplied a flat vector something false,
+    and points at a remedy that would not help. ``tests/test_zero_interval_space.py``
+    owns the refusal itself.
     """
     for dtype in (np.float32, np.float64):
         for value in (0.0, 1.0, 1e6, -3.5):
-            space = BsplineSpace1D(np.full(8, value, dtype=dtype), 3)
-            assert space.num_intervals == 0
-            assert np.all(np.asarray(space.knots) == dtype(value))
+            with pytest.raises(ValueError, match="spans no interval"):
+                BsplineSpace1D(np.full(8, value, dtype=dtype), 3)
 
-    # And `snap_knots=False` bypasses merging and the check together, as documented.
+    # `snap_knots=False` still bypasses the merging and the snapping diagnosis: the
+    # stored vector comes back exactly as supplied, unmerged.
     lo, hi = 1e6, 1e6 + 1.0
-    raw = np.asarray([lo, lo, lo, lo + 0.5, hi, hi, hi], dtype=np.float32)
+    raw = np.asarray([lo, lo, lo, lo + 0.5, hi, hi, hi], dtype=np.float64)
     kept = BsplineSpace1D(raw, 2, snap_knots=False)
     assert np.array_equal(np.asarray(kept.knots), raw)
+    assert kept.num_intervals == 2
+
+    # What it does *not* bypass, since #320, is the interval requirement. The same
+    # vector in float32 has a tolerance of 0.954 there, so the three domain knots
+    # chain-merge into one group and the space has no cell -- whether or not the
+    # stored vector was snapped, because the interval count is taken with the same
+    # tolerance either way. Before #320 this constructed, and `snap_knots=False` was
+    # a way to obtain the very space the snapping check exists to refuse.
+    with pytest.raises(ValueError, match="spans no interval"):
+        BsplineSpace1D(raw.astype(np.float32), 2, snap_knots=False)
 
 
 def test_snapping_keeps_knots_the_format_can_resolve() -> None:

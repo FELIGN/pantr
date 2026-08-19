@@ -29,6 +29,7 @@ from ._bspline_knot_insertion import (
 )
 from ._bspline_knots import (
     _check_snapping_kept_an_interval,
+    _check_space_has_an_interval,
     _get_Bspline_cardinal_intervals_1D_impl,
     _get_Bspline_num_basis_1D_impl,
     _get_unique_knots_and_multiplicity_impl,
@@ -82,6 +83,10 @@ class BsplineSpace1D:
     parameters, compute various geometric characteristics of the spline,
     and access various properties of the B-spline.
 
+    An instance always has :attr:`num_intervals` at least 1: a knot vector whose
+    in-domain knots all fall in one class is refused at construction, since such a
+    space has no cell and nothing can be evaluated, tabulated or located on it.
+
     Attributes:
         _tol (float): Absolute tolerance for parametric comparisons on this space,
             in the units of its knots. Derived once at construction by
@@ -117,12 +122,15 @@ class BsplineSpace1D:
 
         Raises:
             ValueError: If degree is negative, knots are insufficient, or knots are
-                not non-decreasing; or if ``snap_knots`` is set and snapping
-                collapses a knot vector that had more than one distinct knot onto a
-                single point, which means the requested spacing is finer than the
-                dtype resolves at that coordinate magnitude. A vector that was
-                already degenerate is accepted unchanged, and ``snap_knots=False``
-                bypasses both the merging and this check.
+                not non-decreasing; if the resulting space would span no interval,
+                i.e. every step between ``knots[degree]`` and ``knots[-degree-1]`` is
+                within :attr:`tolerance`, so the domain is one knot and the space has
+                no cell; or if
+                ``snap_knots`` is set and snapping is what collapsed a knot vector
+                that had more than one distinct knot onto that single point, which
+                means the requested spacing is finer than the dtype resolves at that
+                coordinate magnitude. ``snap_knots=False`` bypasses the merging and
+                the snapping diagnosis, but not the interval requirement.
             TypeError: If knots cannot be converted to a numpy array.
         """
         BsplineSpace1D._validate_input(knots, degree, periodic)
@@ -146,7 +154,12 @@ class BsplineSpace1D:
 
         if snap_knots:
             self._snap_knots()
+            # Runs first: when snapping is what destroyed the mesh, its diagnosis is
+            # the specific one and names the remedy. The check below owns the same
+            # symptom from any other cause, including ``snap_knots=False``.
             _check_snapping_kept_an_interval(knots_arr, self._knots, self._tol)
+
+        _check_space_has_an_interval(self._knots, self._degree, self.num_intervals, self._tol)
 
         self._knots.flags.writeable = False
 
