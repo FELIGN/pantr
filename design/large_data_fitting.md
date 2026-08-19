@@ -307,6 +307,18 @@ blocking discussed in `design/bezier_extraction_api.md`, and the natural unit fo
   across right-hand-side columns, and that is the first thing a profile should confirm or
   refute.
 
+- **Measured 2026-08-19, and it bounds where this note's accumulation rule applies.** The
+  C++ prototype adopted "accumulate in float64 even when the data is float32" for its first
+  ported kernel, a Cox-de Boor tabulation, citing this note. The rule turned out to be right
+  there for a *different* reason than the one given here: that kernel's state vector
+  round-trips through the float32 output array at every stage rather than living in a scalar
+  accumulator, and its measured float32 error is **flat in the degree**, not the
+  `sqrt(m) * eps32` growth of a length-`m` accumulation. What made the widening necessary was
+  parity, not accuracy -- numba's kernel promotes float32 intermediates to float64 as a side
+  effect of literal typing, and a port that computed in `float` throughout disagrees with it
+  by about one float32 ulp. The rule as stated here is for the fitting solves it was written
+  for; a kernel that stores its state in the output array is outside its argument.
+
 ## Open questions
 
 1. Which regimes must be supported: interpolation at full resolution, coarse

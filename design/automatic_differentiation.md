@@ -197,6 +197,27 @@ sacrificing the wrong one.
 - **Not investigated:** how often optimization iterates actually land near a classification
   transition in practice, which is what decides whether the kink is a nuisance or a real
   obstacle for the line search.
+- **Tested 2026-08-19, and the "templates are enough" conclusion needed two repairs before
+  it was true.** The C++ prototype implements the four disciplines and instantiates its
+  kernel on a `Dual` fixture with no equality, no ordering and no conversion to `double`, so
+  the compiler enforces three of them rather than a convention. Two gaps showed up the moment
+  that was compiled rather than argued:
+
+  `value_type_t`, the trait the tiering rests on, **did not compile for any differentiable
+  type**. It spelled its lookup as a qualified call, which suppresses ADL -- the exact
+  mistake discipline 3 exists to prevent, committed inside the header that states it. It had
+  no uses in the tree, so nothing caught it.
+
+  And the scalar concept was a **strict subset of what the kernels require**: they build
+  constants (`T(1)` seeds the recurrence), which the concept did not ask for, so a
+  forward-mode `Dual` built by named factories rather than a numeric constructor -- a common
+  AD shape -- satisfied the concept and then failed inside the kernel with a template error.
+  Fixed by requiring `std::constructible_from<T, double>`, which an *explicit* constructor
+  satisfies without opening an implicit conversion, so the Tier B discipline is unweakened.
+
+  Both are repaired and pinned by static assertions, including one on a fixture the concept
+  must *reject*. The conclusion stands; what this records is that it was not free, and that
+  the parts of it nothing instantiates are the parts that were wrong.
 
 ## Open questions
 

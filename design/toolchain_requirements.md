@@ -4,8 +4,10 @@
 **Date:** 2026-08-19.
 **Scope:** what a compiler must provide to build pantr, how that is checked, and the flag
 decisions that live in the same CMake file.
-**Companions:** `design/simd.md` (which flags earn their place) and `design/isa_dispatch.md`
-(how variants are shipped). This note is about whether the build may proceed at all.
+**Companions:** `design/simd.md`, both for which flags earn their place and, in its
+"Shipping several ISA variants" section, for how variants are shipped. (Earlier drafts cited
+a `design/isa_dispatch.md`; that note was folded into `simd.md` and never existed as a file.)
+This note is about whether the build may proceed at all.
 
 **Validated against:** pantr **0.7.0** (`main`, tag `v0.7.0`), 2026-08-19. Line numbers
 below refer to that tree.
@@ -116,7 +118,7 @@ enforced once:
   offered behind an explicit option.
 - **The floating-point contraction flag goes on the interface target**, not on individual
   targets. Any flag that participates in a numerical claim must reach every variant, or the
-  ISA variants of `design/isa_dispatch.md` will disagree numerically with each other.
+  ISA variants of `design/simd.md` will disagree numerically with each other.
 
 ## CMake 4 is strict about what dependencies declare
 
@@ -159,14 +161,27 @@ lines of CMake, and the day it is needed is the day nobody wants to be writing t
 - **Verified:** that GCC 15.2 lacks `<mdspan>` while the laptop's Clang has it, which is what
   makes mdspan a toggle rather than a gate; that the sibling project gates only on
   `cxx_std_20`, so copying its CMake would not have caught GCC 10.
+- **Corrected 2026-08-19, on the reason rather than the fact:** the absence of `<mdspan>`
+  here is an *implementation gap*, not a consequence of the C++20 baseline.
+  `__cpp_lib_mdspan` is undefined under `-std=gnu++23` as well, so GCC 14's libstdc++ has
+  simply not implemented P0009, and the environment's Clang 18 inherits the absence because
+  it resolves to that same libstdc++ rather than to libc++. The plausible explanation --
+  "a C++23 header hidden by `-std=c++20`" -- predicts that C++23 makes it appear, and
+  measurably it does not.
 - **Measured on the build server (2026-08-19):** the conda environment shadows the system
   GCC 10 and Clang 10 with conda-forge GCC 14 and Clang 18.1.8, and **all three of `g++`,
   `clang++` and `x86_64-conda-linux-gnu-g++` pass a C++20 concepts probe**. `<mdspan>` is
   **absent** there, confirming on the actual build machine that the Kokkos fallback is
   required and not merely a precaution. CMake 4.4.2, Ninja 1.13.2, ccache 4.13.6.
-- **Consequently unanswered and now mostly moot:** what the probe reports on the *system*
-  GCC 10 and Clang 10, since the environment shadows them and the build will not use them.
-  What that would have told us is where the real floor sits.
+- **Measured 2026-08-19, and it answers open question 1 uncomfortably:** the system
+  GCC 10 and Clang 10 **both pass the concepts probe**, in the probe's real shape rather
+  than a toy one, and Clang 10 also **compiles and correctly runs** the prototype's kernel
+  (`(1-u)^3/6` at `u = 0.25`, to the last bit). GCC 9 fails, and fails early: it does not
+  accept `-std=c++20` at all. So the probe alone does not keep either 2020 compiler out.
+  The Clang 14 filter does, and it now rests on no observed failure -- which this note's own
+  rule forbids. One kernel is weak evidence about a whole library, so nothing was changed;
+  but the floor has moved from *unverified* to *measured and unsupported*, and that is a
+  different thing to leave in place.
 - **Stated from knowledge and explicitly uncertain:** the exact C++20 feature matrix of GCC 10
   and Clang 10, and the version at which Clang's concepts support became reliable. The
   Clang 14 floor above is a starting guess and should be replaced by whatever the probe run on
@@ -176,8 +191,11 @@ lines of CMake, and the day it is needed is the day nobody wants to be writing t
 
 ## Open questions
 
-1. What does the probe report on the development server's GCC 10 and Clang 10? That result
-   replaces the guessed Clang 14 floor with a measured one.
+1. ~~What does the probe report on the development server's GCC 10 and Clang 10?~~
+   **Answered 2026-08-19: both pass**, and Clang 10 additionally compiles and correctly runs
+   the ported kernel. See the epistemic status above. What remains open is the decision this
+   turns into: the filter is now known to reject a compiler that works on the evidence
+   available, and this note's own rule says the list may only grow from observed failures.
 2. Which compiler does `manylinux_2_28` provide? If it is older than the gate, the wheel build
    fails and either the image or the gate has to move.
 3. Should the gate run in the Python build path too, or only for a direct CMake configure?

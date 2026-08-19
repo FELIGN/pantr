@@ -143,10 +143,15 @@ numba instead of 1.3x faster, which is the opposite conclusion.
 ## The open question this prototype raises
 
 The version filter rejects Clang below 14, inherited from
-`design/toolchain_requirements.md` where it is recorded as a guess. Measured
+`design/toolchain_requirements.md` where it was recorded as a guess. Measured
 here, Clang 10 and GCC 10 both pass the concepts probe *and* compile and
 correctly run the kernel. That note's own rule is that the filter "should only
 grow from observed failures, never from speculation", and there is no observed
-failure behind this entry. One kernel is weak evidence about a whole library, so
-the filter has not been removed; but it is now known to be untested rather than
-merely unverified, and the note should say so.
+failure behind this entry.
+
+One kernel is weak evidence about a whole library, so the filter has **not** been
+removed. What has changed is what is known about it: the note's open question 1
+is now answered and its epistemic status records the measurement, so the floor
+has moved from *unverified* to *measured and unsupported*. Whoever next needs a
+Clang between 10 and 14 has the evidence to argue with, and the override
+(`-DPANTR_ALLOW_UNTESTED_COMPILER=ON`) to proceed meanwhile.
