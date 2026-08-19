@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.7.0 (2026-08-19)
 
 ### Added
 - `pantr.multipatch`: new subpackage for multi-patch topology. `Interface` and
@@ -23,7 +23,10 @@
   carries what the *parametrization* can resolve as well: one ulp of a parametric
   coordinate becomes a physical residual of about `eps * |xi|`, so a knot span far
   from the origin relative to its width was being held to a residual no representable
-  parameter could reach, and every query on such a patch came back not found.
+  parameter could reach, and every query on such a patch came back not found. That
+  term grades acceptance only: the iteration stops at the image-only length, so the
+  coordinate returned is as accurate as the geometry allows rather than as accurate
+  as the bar it is certified against (see *Changed* below).
 - `BsplineSpace.boundary_dofs`: the control-point indices of a boundary slab of
   chosen thickness, on a chosen face.
 - `BsplineSpace.cell_supports` and `BsplineSpace1D.first_basis_per_interval`:
@@ -102,10 +105,31 @@
   two routes to the same knot. The previous release kept the mesh only by never merging
   anything (its tolerance there was 1.6e-6 ulp), so the knots it stored were noise.
   Reachable in float64 too, but only from `|offset| / span ≈ 1.4e14` at four intervals,
-  where the window is 8 ulp wide. Two things are deliberately *not* refused: a knot vector
-  that was already a single repeated value, which is what the caller asked for and comes
-  back untouched, and anything built with `snap_knots=False`, which bypasses the merging
-  and the check together.
+  where the window is 8 ulp wide. Two things pass *this* check: a knot vector that was
+  already a single repeated value, which is not this check's cause and gets the message
+  below instead, and anything built with `snap_knots=False`, which bypasses the merging
+  and this diagnosis together. Neither escapes the interval requirement below, which
+  `snap_knots=False` could previously be used to evade.
+- **A knot vector whose in-domain knots all fall in one class is refused at
+  construction.** `BsplineSpace1D` accepted it, and each consumer then met the
+  degeneracy on its own terms: `tensor_product_grid` named the breakpoints,
+  `Bspline.locate` surfaced numpy's zero-size `min`, `tabulate_basis_derivatives`
+  divided by zero, and `Bspline.evaluate`, `tabulate_basis` and `evaluate_derivatives`
+  returned `0.0` or `NaN` without raising at all. Those last three are why the rule
+  lives in the constructor rather than in each entry point: they return a value, so a
+  survey of what *raises* would not have found them. The predicate is the interval
+  count, not "every knot is the same value", because the family is wider than it looks:
+  `[0, 1, 1, 1, 2]` at degree 1 holds three distinct values and still has a domain of
+  `(1.0, 1.0)`, the domain running from `knots[degree]` to `knots[-degree-1]`. Counting
+  intervals catches that case together with the flat one and adds no threshold of its
+  own, the count being taken with the tolerance the space already uses everywhere else.
+  `create_cardinal_knots` has always applied the same rule, as `num_intervals must be at
+  least 1`; the direct constructor was the hole. The `ValueError` names both domain ends
+  and the tolerance, and reports a *consecutive step* rather than the span between the
+  ends: knot grouping splits on `knots[i] - knots[i-1] > tol` and therefore chains, so at
+  float32 around 1e6, where the tolerance is 0.954, three knots 0.5 apart in turn merge
+  although the ends are 1.0 apart, and a message claiming the ends are within tolerance
+  would have been false there.
 
 ### Changed
 - **`pantr.tolerance`'s presets are now dimensionless relative tolerances.**
@@ -182,6 +206,27 @@
     properties making one number enough — insertion preserves the endpoints, the
     extraction offsets widen away from the interval, and the snapping invariant stops the
     widening over-collecting.
+- **`Bspline.locate` stops at the accuracy it owes and accepts at what the map can
+  attain.** One number used to do both jobs: the iteration halted as soon as the residual
+  passed it, so the coordinate returned was only ever as accurate as the bar it was
+  graded against. That cost nothing while the bar was small, but once the threshold
+  gained the parametric-resolution term above, geometry parametrized far from the origin
+  earns a legitimately larger bar and stopped early against it, on queries whose exact
+  preimage is representable and whose accuracy was there for the taking. The two
+  questions are now separate, and only one of them grows with the parametrization: the
+  iteration stops at `get_default(dtype)` times the physical length, which is the
+  accuracy contract, while a point is accepted at that same length maximized against
+  what one ulp of a parametric coordinate moves the image, which is an attainability
+  statement, so a query whose exact answer is unrepresentable is still found instead of
+  lost. Neither introduces a constant. Measured on a warped unit patch whose second
+  direction is parametrized on `[1e6, 1e6 + 1]`, 60 queries: the worst residual falls
+  from 1.20e-08 to 4.99e-11 for targets that are exact images, and from 1.19e-08 to
+  1.88e-10 for targets half an ulp off one, with none of the 60 lost either way, against
+  4 of 60 and 60 of 60 lost by the tight threshold used alone. Ordinary geometry pays
+  nothing for it: the two thresholds are the same float bit for bit for any knot vector
+  spanning `[0, L]`, and a 2400-query sweep measures 1.000x map evaluations at physical
+  offsets 0 and 1e6. An explicit `tol` still governs both, so a caller asking a proximity
+  question is not charged for accuracy they did not ask for.
 - **`Bspline.remove_knots` is now lossless by default.** `tol=None` used to mean an
   absolute `1e-10`, a geometric budget wearing no units: the same exactly-removable knot
   came out at geometry scale 1e-6, 1 and 1e3 and was silently refused at 1e6 and 1e9. It
@@ -528,6 +573,26 @@
   segment-wise reduction does not preserve C^1 across the seam, but on the
   residual test that says so rather than on the knot vector. The degree-0
   rejection above is unaffected and now fires only where its reasoning applies.
+
+### Documentation
+- **Every docstring example in `src/pantr` runs, and CI runs them.** `make doctest` is a
+  new target (`pytest --doctest-modules src/pantr`, with `NUMBA_DISABLE_JIT=1`), wired
+  into `make pre-pull-request` and into the CI test job on the full Python matrix, since
+  an example can drift from the code on any version and a numpy release that prints a
+  value differently breaks it on one leg only. Disabling the JIT keeps the run clear of
+  the warmup thread the package starts at import, and takes 0.9 s against 24 s cold.
+  Twenty-one Example blocks across `Bezier` and `Bspline` were pseudo-code over names
+  that never existed, so every one of them raised `NameError` the moment it was run;
+  each now builds its own geometry in a line or two and asserts a characterizing fact.
+  No example matches a printed numpy array any more: values go through `np.allclose`
+  against a short literal and index arrays through `.tolist()`, the convention
+  `change_basis` already used, so a formatting change in numpy cannot break the
+  documentation. Three examples were showing wrong *values* rather than wrong
+  formatting: all three of `BsplineSpace1D.get_cardinal_intervals` (doctest reports only
+  the first failure, which masked the other two) and one in the cardinal tabulation
+  kernel, which also called itself by a name that does not exist in its module. The code
+  was right in each case, and is untouched; `get_cardinal_intervals` now states the rule
+  it implements and why its window is the right one.
 
 ## 0.6.0 (2026-06-24)
 
