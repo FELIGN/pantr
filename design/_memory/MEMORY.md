@@ -1,0 +1,4 @@
+- [Where the decisions live](decisions-pointer.md) — the C++ port's design decisions are in `design/*.md` in this repository; read them before proposing anything about the port.
+- [Naming constraint and licensing](naming-and-licensing.md) — two sibling libraries are private and unpublished; never name them in anything that leaves the machine. Plus the dependency direction the licence plan forbids.
+- [Build machine](build-machine.md) — the shared Linux server, its 20-CPU cap, and the calibration trap that comes with many cores.
+- [nanobind status](nanobind-status.md) — dated: split mode changes the wheel strategy but was unreleased as of 2026-08-19. Re-check before committing to it.
