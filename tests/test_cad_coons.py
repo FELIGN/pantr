@@ -24,6 +24,9 @@ from pantr.tolerance import get_conservative, get_machine_epsilon
 
 _RANK_3D = 3
 
+_RANK_PLANAR = 2
+"""Rank of a B-spline whose control points carry two coordinates rather than three."""
+
 _FacePairs = tuple[
     tuple[Bspline, Bspline],
     tuple[Bspline, Bspline],
@@ -108,6 +111,24 @@ def _face_interpolation_gaps(vol: Bspline, faces: _FacePairs) -> dict[str, float
         want = np.asarray(face.evaluate(face_params), dtype=np.float64)
         gaps[label] = float(np.linalg.norm(got - want, axis=1).max())
     return gaps
+
+
+def _bezier_space_1d(degree: int, dtype: npt.DTypeLike = np.float64) -> BsplineSpace:
+    """Build a clamped single-span 1D space of the given degree on ``[0, 1]``.
+
+    ``create_line`` and ``create_circle`` cover the shapes the geometric tests need; this is
+    for the ones that set control points and weights directly, including at float32, which
+    the public primitives build at float64 unconditionally.
+
+    Args:
+        degree (int): Polynomial degree.
+        dtype (npt.DTypeLike): Precision of the knot vector. Defaults to float64.
+
+    Returns:
+        BsplineSpace: A 1D space with ``degree + 1`` basis functions.
+    """
+    knots = np.array([0.0] * (degree + 1) + [1.0] * (degree + 1), dtype=dtype)
+    return BsplineSpace([BsplineSpace1D(knots, degree)])
 
 
 def _boundary_interpolation_gaps(srf: Bspline, curves: _CurvePairs) -> dict[str, float]:
@@ -228,6 +249,25 @@ class TestCoonsSurface:
         pt = srf.evaluate(np.array([[0.5, 0.5]]))
         assert_allclose(pt, [0.5, 0, 0.5], atol=1e-13)
 
+    def test_planar_rank_2_curves_build_a_rank_2_patch(self) -> None:
+        """Curves that carry two coordinates must blend into a patch that carries two.
+
+        The corner term used to be built by ``create_bilinear``, a public *geometric*
+        primitive that zero-pads its corners to rank 3, so a rank-2 model produced a rank-3
+        term beside two rank-2 ruled surfaces and the sum died in NumPy with
+        ``operands could not be broadcast together with shapes (2,2,2) (2,2,3) (2,2,2)``,
+        naming nothing the caller had supplied.  ``_build_multilinear_corner_term`` takes the
+        rank from the corners, which is the same reason it exists for the volume.
+        """
+        c_v0 = Bspline(_bezier_space_1d(1), np.array([[0.0, 0.0], [0.0, 1.0]]))
+        c_v1 = Bspline(_bezier_space_1d(1), np.array([[1.0, 0.0], [1.0, 1.0]]))
+        c_u0 = Bspline(_bezier_space_1d(1), np.array([[0.0, 0.0], [1.0, 0.0]]))
+        c_u1 = Bspline(_bezier_space_1d(1), np.array([[0.0, 1.0], [1.0, 1.0]]))
+
+        srf = create_coons_surface(((c_v0, c_v1), (c_u0, c_u1)))
+        assert srf.rank == _RANK_PLANAR
+        assert_allclose(srf.evaluate(np.array([[0.25, 0.75]])), [0.25, 0.75], atol=1e-15)
+
     def test_non_1d_curve_raises(self) -> None:
         """Test that a surface as input raises ValueError."""
         srf = create_bilinear()
@@ -346,20 +386,6 @@ class TestCoonsSurfaceHomogeneousCorners:
     ``pantr.cad._join._verify_shared_boundary``.
     """
 
-    @staticmethod
-    def _bezier_space(degree: int, dtype: npt.DTypeLike = np.float64) -> BsplineSpace:
-        """Build a clamped single-span space of the given degree on ``[0, 1]``.
-
-        Args:
-            degree (int): Polynomial degree.
-            dtype (npt.DTypeLike): Precision of the knot vector. Defaults to float64.
-
-        Returns:
-            BsplineSpace: A 1D space with ``degree + 1`` basis functions.
-        """
-        knots = np.array([0.0] * (degree + 1) + [1.0] * (degree + 1), dtype=dtype)
-        return BsplineSpace([BsplineSpace1D(knots, degree)])
-
     @classmethod
     def _line(cls, a: list[float], b: list[float], dtype: npt.DTypeLike = np.float64) -> Bspline:
         """Build a polynomial straight-line curve between two points.
@@ -372,7 +398,7 @@ class TestCoonsSurfaceHomogeneousCorners:
         Returns:
             Bspline: A clamped degree-1 non-rational curve on ``[0, 1]``.
         """
-        return Bspline(cls._bezier_space(1, dtype), np.asarray([a, b], dtype=dtype))
+        return Bspline(_bezier_space_1d(1, dtype), np.asarray([a, b], dtype=dtype))
 
     @classmethod
     def _rational_line(
@@ -402,7 +428,7 @@ class TestCoonsSurfaceHomogeneousCorners:
         cp = np.array(
             [[*(np.asarray(a, float) * wa), wa], [*(np.asarray(b, float) * wb), wb]], dtype=dtype
         )
-        return Bspline(cls._bezier_space(1, dtype), cp, is_rational=True)
+        return Bspline(_bezier_space_1d(1, dtype), cp, is_rational=True)
 
     @classmethod
     def _rational_arc(
@@ -423,7 +449,7 @@ class TestCoonsSurfaceHomogeneousCorners:
         cp = np.array(
             [[*(np.asarray(p, float) * w), w] for p, w in zip(points, weights, strict=True)]
         )
-        return Bspline(cls._bezier_space(2), cp, is_rational=True)
+        return Bspline(_bezier_space_1d(2), cp, is_rational=True)
 
     @classmethod
     def _unit_square_arcs(cls, corner_weight: float, interior_weight: float) -> _CurvePairs:

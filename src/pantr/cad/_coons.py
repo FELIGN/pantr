@@ -16,7 +16,7 @@ from ..bspline import Bspline, BsplineSpace, BsplineSpace1D
 from ..tolerance import get_conservative
 from ._compat import make_compat
 from ._operations import create_ruled
-from ._primitives import _linear_space_1d, create_bilinear
+from ._primitives import _linear_space_1d
 from ._validation import (
     _coarsest_dtype,
     _column_groups,
@@ -98,9 +98,10 @@ def _combine_control_points(
     back float64 coefficients for a float32 model would therefore not build at all, and
     would in any case be a precision escalation no other pantr operation performs -- both
     :func:`~pantr.cad.create_ruled` and :func:`~pantr.cad.make_compat` stay in the dtype
-    they were given.  A term built here rather than derived from the caller's data may
-    still arrive at float64 (the corner interpolant of a patch does), and is read down
-    into the accumulator; nothing in the sum is promoted.
+    they were given.  Every term is built in the precision of the data it was read from,
+    including the corner interpolant, so on supported input the accumulator narrows nothing;
+    the read-down covers curves or faces supplied at *different* precisions, which is not a
+    supported combination and follows the first one's.  Nothing in the sum is promoted.
 
     Args:
         bsplines: B-splines that share the same space (after compat).  The first one
@@ -140,6 +141,29 @@ def create_coons_surface(
         o--------------o
         C_v0   C_u0
 
+    **Rational curves are supported, and the blend is applied in homogeneous space.**  All
+    three terms are formed from homogeneous coefficients ``(w x, w y, w z, w)`` and the
+    result is projected only when it is evaluated, so the formula stays the linear one above
+    and nothing has to be said about how weights combine under division.  That is what makes
+    the boundary property survive: projection is pointwise, so it commutes with restriction
+    to a boundary, and a blend whose *homogeneous* restriction to ``u = 0`` is ``C_v0``'s
+    homogeneous data projects to ``C_v0`` itself.  A polynomial curve among rational ones is
+    promoted with unit weights, so mixed input takes the same path rather than a third one.
+
+    That argument has a hypothesis, and it is the one the corner check enforces: **the four
+    curves must agree in homogeneous data where they meet, weights included, not merely
+    projectively.**  A homogeneous representation is unique only up to one constant scaling
+    all of a patch's weights, so two curves can name the same point of space at a shared
+    corner while their coefficients differ by a factor, and the three-term inclusion-exclusion
+    then does not cancel.  Curves that disagree are **refused** rather than blended, which is
+    the verdict :func:`create_coons_volume` reaches on faces that disagree along a shared
+    edge.  Rescaling *every* curve's homogeneous coefficients by one constant is not a
+    disagreement and is accepted, since it describes the same patch.
+
+    This is measured rather than feared: with a single rational boundary whose weights run 1
+    to 2, every corner matched to ``1.1e-16`` and the patch missed one of the four curves it
+    was handed by 17% of the model (pantr issue 327).
+
     Args:
         curves: ``((C_v0, C_v1), (C_u0, C_u1))`` -- two pairs of
             opposite boundary curves.  ``C_v0`` and ``C_v1`` run in the
@@ -151,15 +175,21 @@ def create_coons_surface(
         float32 model is returned at float32 rather than promoted, matching
         :func:`~pantr.cad.create_ruled` and :func:`~pantr.cad.make_compat`.  Curves of
         *different* precisions are not a supported input and the result then follows
-        ``curves[0][0]``'s.
+        ``curves[0][0]``'s.  Because it returns rather than raising, the four curves agree
+        at every shared corner, and the patch therefore restricts to each of them on the
+        corresponding boundary.  That interpolation is exact in exact arithmetic; the
+        floating-point residual is **observed** to stay near ``1e-16`` relative, three
+        orders below the tolerance the check below uses, and is not a proved bound.
 
     Raises:
         ValueError: If any curve is not 1D.
-        ValueError: If corner points are not geometrically consistent, i.e. two curves
-            disagree at a shared corner by more than ``4096 * eps`` times the largest
-            absolute coordinate over all eight corner values, with ``eps`` read at the
-            **coarsest** of the four curves' precisions rather than at float64, so that a
-            float32 model is graded against something float32 can express.
+        ValueError: If two curves disagree at a shared corner by more than ``4096 * eps``
+            times that column group's own magnitude over all eight corner readings: the
+            largest absolute homogeneous coordinate for the coordinate columns, and the
+            largest absolute weight for the weight column of a rational patch.  ``eps`` is
+            read at the **coarsest** of the eight readings' precisions rather than at
+            float64, so that a float32 model is graded against something float32 can
+            express.  ``_verify_corners_2d`` derives all of it.
     """
     (c_v0, c_v1), (c_u0, c_u1) = curves
 
@@ -171,26 +201,22 @@ def create_coons_surface(
     c_u0, c_u1 = make_compat(c_u0, c_u1)
     c_v0, c_v1 = make_compat(c_v0, c_v1)
 
-    # Extract and verify corner points.  These are read in the curves' own precision,
-    # not float64: it is the precision the disagreement is graded at.
-    p00 = np.asarray(c_u0.boundary(0, 0))
-    p10 = np.asarray(c_u0.boundary(0, 1))
-    p01 = np.asarray(c_u1.boundary(0, 0))
-    p11 = np.asarray(c_u1.boundary(0, 1))
+    # Rationality is the patch's, not each curve's: the three terms are added together and
+    # so have to share one space, in which a polynomial curve carries unit weights.
+    rational_curves = any(c.is_rational for c in (c_u0, c_u1, c_v0, c_v1))
 
-    _verify_corners_2d((p00, p10, p01, p11), c_v0, c_v1)
+    # Read the corners off the u-curves in the space the three terms are combined in, and
+    # refuse v-curves that contradict them there.  These are read in the curves' own
+    # precision, not float64: it is the precision the disagreement is graded at.
+    corners = _extract_corners_2d((c_u0, c_u1), is_rational=rational_curves)
+    _verify_corners_2d(corners, (c_v0, c_v1), is_rational=rational_curves)
 
     # R0: ruled in v from C_v0 to C_v1, then transpose to (u, v)
     r0 = create_ruled(c_v0, c_v1).permute_directions([1, 0])
     # R1: ruled in u from C_u0 to C_u1 (already in (u, v) order)
     r1 = create_ruled(c_u0, c_u1)
     # B: bilinear from corners
-    corners = np.zeros((2, 2, p00.size), dtype=np.float64)
-    corners[0, 0] = p00
-    corners[1, 0] = p10
-    corners[0, 1] = p01
-    corners[1, 1] = p11
-    b = create_bilinear(corners)
+    b = _build_multilinear_corner_term(corners, is_rational=rational_curves)
 
     r0, r1, b = make_compat(r0, r1, b)
 
@@ -198,21 +224,62 @@ def create_coons_surface(
     return Bspline(r0.space, cp, is_rational=is_rational)
 
 
-def _verify_corners_2d(
-    u_corners: tuple[
-        npt.NDArray[np.float32 | np.float64],
-        npt.NDArray[np.float32 | np.float64],
-        npt.NDArray[np.float32 | np.float64],
-        npt.NDArray[np.float32 | np.float64],
-    ],
-    c_v0: Bspline,
-    c_v1: Bspline,
-) -> None:
-    """Verify that corner points from u-curves match v-curves.
+def _extract_corners_2d(
+    u_curves: tuple[Bspline, Bspline], *, is_rational: bool
+) -> npt.NDArray[np.float32 | np.float64]:
+    """Extract a Coons patch's 4 corner coefficients from the two curves free in u.
 
-    The tolerance is ``get_conservative(dtype) * scale`` with ``scale`` the largest
-    absolute coordinate over **all eight** corner values, not just the pair under test,
-    and ``dtype`` the coarsest of the eight readings' own precisions.
+    The array is read and sized in **one** space, which is what the corner term of the blend
+    needs.  :meth:`~pantr.bspline.Bspline.boundary` **projects**, so reading a rational corner
+    through it and promoting the result afterwards gives ``(x, y, z, 1)`` where the other two
+    terms carry ``(w x, w y, w z, w)``; the three-term inclusion-exclusion then fails to
+    cancel and the patch misses the curves it was built from by a fraction of the model.
+    Measured with four curves agreeing homogeneously at every corner and all four corner
+    weights 2, that was 2.2% of the model, with nothing refused (pantr issue 327).
+    :func:`_homogeneous_endpoint` is the read that stays in the space the width was taken
+    from, as it is for the volume's :func:`_extract_corners`.
+
+    *is_rational* is the **patch's**, not these two curves': the corner term is one of three
+    that are added together, so it has to live in the same space as the other two even when
+    the u-curves are polynomial and only a v-curve is rational.  Promoting them gives those
+    corners a unit weight, which is the right value exactly when the rational curves carry a
+    unit weight there too -- and :func:`_verify_corners_2d` requires precisely that, since it
+    compares each corner's two readings homogeneously and a polynomial reading promotes to
+    weight one.
+
+    Args:
+        u_curves (tuple[Bspline, Bspline]): ``(C_u0, C_u1)``, the boundaries at ``v = 0`` and
+            ``v = 1``, each free in u and already made compatible with each other.
+        is_rational (bool): Whether the patch being built is rational, i.e. whether the
+            corners are wanted as homogeneous coefficients.
+
+    Returns:
+        npt.NDArray[np.float32 | np.float64]: Corner coefficients of shape ``(2, 2, rank)``,
+        indexed ``[i, j]`` by side along u and v, where ``rank`` counts the weight when
+        *is_rational*, in ``C_u0``'s own dtype.
+    """
+    if is_rational:
+        u_curves = (_promote_to_rational(u_curves[0]), _promote_to_rational(u_curves[1]))
+
+    sample = u_curves[0].control_points
+    corners = np.empty((2, 2, sample.shape[-1]), dtype=sample.dtype)
+    for j, curve in enumerate(u_curves):
+        for i in (0, 1):
+            corners[i, j] = _homogeneous_endpoint(curve, i)
+    return corners
+
+
+def _verify_corners_2d(
+    u_corners: npt.NDArray[np.float32 | np.float64],
+    v_curves: tuple[Bspline, Bspline],
+    *,
+    is_rational: bool,
+) -> None:
+    """Verify that the corners read off the u-curves match what the v-curves say there.
+
+    The tolerance is ``get_conservative(dtype) * scale`` with ``scale`` that column group's
+    own largest absolute value over **all eight** corner readings, not just the pair under
+    test, and ``dtype`` the coarsest of the eight readings' own precisions.
 
     **Why the conservative tier.** Both curves meeting at a corner read it straight off a
     clamped control point, and neither knot insertion nor degree elevation moves a clamped
@@ -251,48 +318,79 @@ def _verify_corners_2d(
     -- ``eps32 / eps64`` is ``2**29 = 5.4e8`` -- and the figure against the *tier* is
     ``1.3e5``.  ``test_the_float32_tier_is_the_only_one_a_float32_corner_can_clear`` pins it.)
 
-    **One column group, because these are points and not coefficients.**
-    :meth:`~pantr.bspline.Bspline.boundary` projects a rational curve down to a point, so
-    all eight readings are physical coordinates in one physical dimension and there is
-    nothing here to separate.  Where a comparison does mix dimensions -- homogeneous
-    coefficients against weights -- it is :func:`_verify_edges_3d`, which splits them.
-    A weight disagreement at a corner of a volume is therefore caught there rather than
-    here, and a rational Coons *patch* has no weight comparison of its own.
+    **A rational patch is compared homogeneously, in two column groups.**  The three terms
+    of the blend are formed from homogeneous coefficients and projected only on evaluation,
+    which is what makes the boundary property survive projection -- but only if the four
+    curves agree in homogeneous data.  A homogeneous representation is unique just up to one
+    constant scaling all of a patch's weights, so two curves can name the same point of space
+    at a shared corner while supplying different ``(w x, w y, w z, w)`` there, and the
+    three-term inclusion-exclusion then fails to cancel.  Reading the corners through
+    :meth:`~pantr.bspline.Bspline.boundary`, which **projects**, hid exactly that: both
+    readings were physical points and agreed whenever the geometry did, so the weight never
+    entered the comparison.  Measured with a single rational boundary whose weights run 1 to
+    2, every corner matched to ``1.1e-16`` and the patch missed one of the four curves it was
+    handed by 17% of the model (pantr issue 327).  :func:`_homogeneous_endpoint` is the read
+    that stops before the division, and :func:`_extract_corners_2d` is where it happens.
+
+    So a rational reading carries a dimensionless weight beside coordinates in units of
+    length times weight, and **each column group is graded against its own magnitude**.  One
+    magnitude over the whole row would grade a weight against a threshold proportional to the
+    model's *length*, which is dimensionally wrong and destroys scale invariance: sending
+    ``x -> lambda x`` scales the homogeneous coordinates and leaves the weights alone.  That
+    rule, its scale-invariance argument and its measured roundoff floor are
+    :func:`~pantr.cad._join._verify_shared_boundary`'s, and :func:`_verify_edges_3d` applies
+    them to the same kind of comparison; this is the third site and does not restate them.
+    A polynomial patch has one group covering every column and is graded exactly as before.
+
+    Unlike :func:`_verify_edges_3d`, rationality here is the **patch's** and not the corner's,
+    so every one of the eight readings carries both groups and both scale populations are the
+    whole set.  That is what :func:`_extract_corners_2d` needs anyway: the corner term is one
+    of three summed in a single space.
 
     Args:
-        u_corners (tuple[npt.NDArray[np.float32 | np.float64], ...]): Corners
-            ``(p00, p10, p01, p11)`` extracted from u-curves, in the curves' own dtype.
-        c_v0 (Bspline): Left boundary curve (v-direction at u=0).
-        c_v1 (Bspline): Right boundary curve (v-direction at u=1).
+        u_corners (npt.NDArray[np.float32 | np.float64]): Corner coefficients of shape
+            ``(2, 2, rank)`` read off the u-curves, as :func:`_extract_corners_2d` returns
+            them, in those curves' own dtype.
+        v_curves (tuple[Bspline, Bspline]): ``(C_v0, C_v1)``, the boundaries at ``u = 0`` and
+            ``u = 1``, each free in v, whose own endpoints are compared against *u_corners*.
+        is_rational (bool): Whether the patch being built is rational, i.e. whether the
+            readings carry a trailing weight column that has to be graded against the weights.
 
     Raises:
-        ValueError: If any pair of corners does not match.
+        ValueError: If any pair of corners does not match, in either column group.
     """
-    p00, p10, p01, p11 = u_corners
-    q00 = np.asarray(c_v0.boundary(0, 0))
-    q01 = np.asarray(c_v0.boundary(0, 1))
-    q10 = np.asarray(c_v1.boundary(0, 0))
-    q11 = np.asarray(c_v1.boundary(0, 1))
+    if is_rational:
+        v_curves = (_promote_to_rational(v_curves[0]), _promote_to_rational(v_curves[1]))
+    c_v0, c_v1 = v_curves
 
     pairs = [
-        ("(0,0)", p00, q00),
-        ("(1,0)", p10, q10),
-        ("(0,1)", p01, q01),
-        ("(1,1)", p11, q11),
+        ("(0,0)", u_corners[0, 0], _homogeneous_endpoint(c_v0, 0)),
+        ("(1,0)", u_corners[1, 0], _homogeneous_endpoint(c_v1, 0)),
+        ("(0,1)", u_corners[0, 1], _homogeneous_endpoint(c_v0, 1)),
+        ("(1,1)", u_corners[1, 1], _homogeneous_endpoint(c_v1, 1)),
     ]
-    # No floor: eight corners all at the origin have no scale, and are also bitwise
-    # equal, so a zero tolerance is the right answer there rather than a hazard.
+    groups = _column_groups(is_rational=is_rational)
     readings = [corner for _, pu, qv in pairs for corner in (pu, qv)]
-    scale = max(float(np.abs(corner).max()) for corner in readings)
-    tol = get_conservative(_coarsest_dtype(*readings)) * scale
+    tier = get_conservative(_coarsest_dtype(*readings))
+    # No floor: a group whose eight readings are all zero has no scale, and is also bitwise
+    # equal, so a zero tolerance is the right answer there rather than a hazard.
+    scales = {
+        group.name: max(float(np.abs(r[group.columns]).max()) for r in readings) for group in groups
+    }
 
     for label, pu, qv in pairs:
-        gap = float(np.abs(pu - qv).max())
-        if gap > tol:
-            raise ValueError(
-                f"Corner {label} mismatch: u-curve gives {pu}, v-curve gives {qv} "
-                f"(gap {gap:.3e}, above {tol:.3e} at corner scale {scale:.3e})."
-            )
+        # Coordinates first: a curve given in the wrong place fails there, and it is the
+        # more informative half to report when both groups are out.
+        for group in groups:
+            gap = float(np.abs(pu[group.columns] - qv[group.columns]).max())
+            scale = scales[group.name]
+            tol = tier * scale
+            if gap > tol:
+                raise ValueError(
+                    f"Corner {label} mismatch: u-curve gives {pu}, v-curve gives {qv} "
+                    f"(gap {gap:.3e}, above {tol:.3e} at corner {group.name} "
+                    f"scale {scale:.3e})."
+                )
 
 
 def create_coons_volume(
@@ -439,7 +537,7 @@ def create_coons_volume(
     )
 
     # Build trilinear volume
-    t = _build_trilinear_volume(corners, is_rational=rational_faces)
+    t = _build_multilinear_corner_term(corners, is_rational=rational_faces)
 
     # Make all 7 terms compatible and combine
     r_u, r_v, r_w, b_uv, b_uw, b_vw, t = make_compat(r_u, r_v, r_w, b_uv, b_uw, b_vw, t)
@@ -821,28 +919,37 @@ def _extract_corners(
     return corners
 
 
-def _build_trilinear_volume(
+def _build_multilinear_corner_term(
     corners: npt.NDArray[np.float32 | np.float64], *, is_rational: bool
 ) -> Bspline:
-    """Build the trilinear corner term of the Coons blend from the 8 corner coefficients.
+    """Build the corner term of a Coons blend from its ``2**dim`` corner coefficients.
 
-    :func:`~pantr.cad.create_trilinear` cannot serve here, for two reasons that both come
-    from its being a public *geometric* primitive: it caps the rank at three, so it
-    rejects the homogeneous ``(w x, w y, w z, w)`` corner of a rational face, and it
-    builds its space at float64 whatever it was handed, which a float32 model cannot then
-    be combined with.  This is the same construction as :func:`_build_bilinear_volume`'s,
-    one direction further.
+    :func:`~pantr.cad.create_bilinear` and :func:`~pantr.cad.create_trilinear` cannot serve
+    here, for two reasons that both come from their being public *geometric* primitives: they
+    cap the rank at three, so they reject the homogeneous ``(w x, w y, w z, w)`` corner of a
+    rational boundary, and they build their space at float64 whatever they were handed, which
+    a float32 model cannot then be combined with.
+
+    The parametric dimension is read from *corners*, so one construction serves the patch's
+    bilinear term and the volume's trilinear one; both are the construction
+    :func:`_build_bilinear_volume` uses for its two blended directions.  Keeping them one
+    function is what stops the two paths drifting apart, which is how the patch came to
+    build its corner term from projected points while the volume built its from homogeneous
+    ones (pantr issue 327).
 
     Args:
         corners (npt.NDArray[np.float32 | np.float64]): Corner coefficients of shape
-            ``(2, 2, 2, rank)``, as :func:`_extract_corners` returns them.
+            ``(2,) * dim + (rank,)``, as :func:`_extract_corners_2d` and
+            :func:`_extract_corners` return them.
         is_rational (bool): Whether *corners* carries a trailing weight column.
 
     Returns:
-        Bspline: A 3D, degree-(1, 1, 1) B-spline volume in (u, v, w) order.
+        Bspline: A *dim*-dimensional B-spline of degree 1 in every direction, in the axis
+        order *corners* is indexed by and in its precision.
     """
+    dim = corners.ndim - 1
     knots = _linear_space_1d(dtype=corners.dtype).knots
-    space = BsplineSpace([BsplineSpace1D(knots.copy(), degree=1) for _ in range(3)])
+    space = BsplineSpace([BsplineSpace1D(knots.copy(), degree=1) for _ in range(dim)])
     return Bspline(space, corners, is_rational=is_rational)
 
 
