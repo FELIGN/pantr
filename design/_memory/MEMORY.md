@@ -2,3 +2,4 @@
 - [Naming constraint and licensing](naming-and-licensing.md) — two sibling libraries are private and unpublished; never name them in anything that leaves the machine. Plus the dependency direction the licence plan forbids.
 - [Build machine](build-machine.md) — the shared Linux server, its 20-CPU cap, and the calibration trap that comes with many cores.
 - [nanobind status](nanobind-status.md) — split mode verified working and composing with a second compiled variant; the expensive traps are nanobind's build defaults (`-Os`, strip) and what `nb::ndarray` silently converts.
+- [Performance follow-up](performance-followup.md) — wanted later, deliberately deferred in the infrastructure PR; carries what is already measured so it is not re-measured, and what to attack first.
