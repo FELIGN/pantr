@@ -140,18 +140,23 @@ numba instead of 1.3x faster, which is the opposite conclusion.
 - **No wheel strategy.** The stable ABI is deliberately off; split mode is
   probed by `scripts/ci_local.sh` and not adopted.
 
-## The open question this prototype raises
+## The version floor, and how it was set
 
-The version filter rejects Clang below 14, inherited from
-`design/toolchain_requirements.md` where it was recorded as a guess. Measured
-here, Clang 10 and GCC 10 both pass the concepts probe *and* compile and
-correctly run the kernel. That note's own rule is that the filter "should only
-grow from observed failures, never from speculation", and there is no observed
-failure behind this entry.
+Measured here rather than guessed, against this tree rather than a snippet:
 
-One kernel is weak evidence about a whole library, so the filter has **not** been
-removed. What has changed is what is known about it: the note's open question 1
-is now answered and its epistemic status records the measurement, so the floor
-has moved from *unverified* to *measured and unsupported*. Whoever next needs a
-Clang between 10 and 14 has the evidence to argue with, and the override
-(`-DPANTR_ALLOW_UNTESTED_COMPILER=ON`) to proceed meanwhile.
+| compiler | probe | build under `-Werror` | ctest |
+|---|---|---|---|
+| g++ 9.5 | fails (no `-std=c++20`) | -- | -- |
+| g++ 10 | passes | yes | 3/3 |
+| clang++ 10 | passes | yes | 3/3 |
+| g++ 14.4, clang++ 18.1.8 | passes | yes | 3/3 |
+
+So the floor is **10 for GCC and Clang alike**, and it means *the lowest version anyone has
+actually exercised*. It replaces a floor of 14 for Clang, inherited from
+`design/toolchain_requirements.md` as an explicit guess, together with no floor at all for
+GCC -- an asymmetry that let a GCC 10 configure silently while a Clang 10 of the same year
+was refused outright, and that nobody had measured in either direction.
+
+AppleClang stays exempt: its version numbers do not map to LLVM versions, so any threshold
+applied to it is a row that lies. `-DPANTR_ALLOW_UNTESTED_COMPILER=ON` still opens the gate
+for anyone who knows better, and the floor should rise only from an observed failure.
