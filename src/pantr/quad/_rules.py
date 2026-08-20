@@ -441,6 +441,66 @@ def _tanh_sinh_min_gap(dtype: npt.DTypeLike) -> float:
     return get_machine_epsilon(dtype)
 
 
+_LAMBERT_W_HALLEY_STEPS: int = 4
+"""Halley steps used to solve ``w e^w = x`` for the tanh-sinh step size.
+
+Fixed rather than iterated to a residual test, and four rather than three. Both
+choices are derived, and the derivation is in
+``design/quadrature_algorithms.md`` because it turns on a constant defined in
+this module. The short form:
+
+* A residual test is a comparison on the scalar, which the port's AD tiering
+  keeps out of a kernel.
+* The convergence chain in the **absolute** error, with a Lagrange constant
+  ``M <= 0.6886`` over the argument range, reads 0.455, 6.5e-2, 1.1e-4, 4.9e-13,
+  4.5e-38. Three steps miss the unit roundoff and four clear it.
+* The argument that actually decides it is the validity threshold. Bisecting on
+  :data:`_TANH_SINH_DECAY_FACTOR` at ``n = 2``, which is the binding case, three
+  steps reach one unit of roundoff down to 0.5932 and four down to 0.5097. The
+  shipped 0.6 therefore sits 1.1% away from failing with three steps and 18%
+  away with four.
+
+The extra step costs one exponential and one logarithm **per rule**, not per
+node.
+"""
+
+
+def _lambert_w_principal(x: float) -> float:
+    """Solve ``w e^w = x`` on the principal branch by Halley's method.
+
+    Replaces ``scipy.special.lambertw``, which was this module's only use of
+    scipy.
+
+    **Precondition, and it is deliberately not checked here.** ``x`` must be
+    large enough that the starting guess stays on the principal branch. The guess
+    is the large-argument asymptotic form and is branch free, so for a small
+    argument it lands negative and no number of Halley steps recovers: measured,
+    an argument corresponding to a decay factor of 0.50 leaves 2.8e4 units of
+    roundoff after four steps, 0.40 leaves 2.4e16, and below about 0.31 the inner
+    logarithm is not real. The only caller is :func:`_generate_tanh_sinh`, whose
+    argument is ``2 * _TANH_SINH_DECAY_FACTOR * (pi/2) * (n - 1)``, smallest at
+    ``n = 2`` where it is 1.885. ``tests/test_quad_tanh_sinh.py`` pins that
+    coupling, because neither constant records it.
+
+    Args:
+        x (float): The argument. Must be at least about 1.61.
+
+    Returns:
+        float: ``W(x)``, within about one unit of roundoff of ``W``.
+    """
+    log_x = np.log(x)
+    log_log_x = np.log(log_x)
+    w = log_x - log_log_x + log_log_x / log_x
+
+    for _ in range(_LAMBERT_W_HALLEY_STEPS):
+        exp_w = np.exp(w)
+        residual = w * exp_w - x
+        derivative = exp_w * (w + 1.0)
+        w = w - residual / (derivative - (w + 2.0) * residual / (2.0 * w + 2.0))
+
+    return float(w)
+
+
 def _generate_tanh_sinh(
     n: int, dtype: npt.DTypeLike = np.float64
 ) -> tuple[npt.NDArray[np.float64], int]:
@@ -478,18 +538,16 @@ def _generate_tanh_sinh(
     Note:
         Nodes and weights follow the double-exponential formulas of Takahasi &
         Mori (1974), *Publ. RIMS, Kyoto Univ.* 9(3), 721-741; the step-size root
-        is evaluated with :func:`scipy.special.lambertw`.
+        is evaluated by :func:`_lambert_w_principal`.
     """
     if n == 1:
         return np.array([[0.0, 2.0]]), 1
-
-    from scipy.special import lambertw  # noqa: PLC0415
 
     half_pi = 0.5 * np.pi
     # Uniform step in transform space; the argument of W follows from the
     # large-argument truncation balance described in _TANH_SINH_DECAY_FACTOR.
     decay_arg = 2.0 * _TANH_SINH_DECAY_FACTOR * half_pi * (n - 1)
-    h = 2.0 * float(lambertw(decay_arg).real) / n
+    h = 2.0 * _lambert_w_principal(decay_arg) / n
 
     min_gap = _tanh_sinh_min_gap(dtype)
     buf = np.empty((n, 2), dtype=np.float64)  # worst case: n nodes

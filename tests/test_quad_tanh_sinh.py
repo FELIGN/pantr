@@ -10,7 +10,12 @@ import numpy.testing as nptest
 import numpy.typing as npt
 import pytest
 
-from pantr.quad import get_tanh_sinh_1d
+from pantr.quad import (
+    _TANH_SINH_DECAY_FACTOR,
+    _generate_tanh_sinh,
+    get_tanh_sinh_1d,
+)
+from pantr.quad._rules import _lambert_w_principal
 from pantr.tolerance import get_conservative, get_machine_epsilon
 
 # Golden node/weight values for ``get_tanh_sinh_1d``. Provenance: captured from
@@ -23,6 +28,8 @@ from pantr.tolerance import get_conservative, get_machine_epsilon
 # code, so it genuinely tests backward compatibility.
 _GOLDEN_PATH = Path(__file__).parent / "data" / "tanh_sinh_golden.npz"
 _GOLDEN_N_PTS: tuple[int, ...] = (2, 3, 4, 5, 6, 7, 8, 10, 15, 20, 30, 50, 100, 200)
+_UNIT_ROUNDOFF: float = get_machine_epsilon(np.float64) / 2.0
+"""Half an eps, the spacing either side of a rounded float64 result."""
 
 
 class TestTanhSinhValidation:
@@ -332,3 +339,86 @@ class TestTanhSinhGoldenValues:
         assert nodes.shape[0] == int(np.count_nonzero(_resolvable(golden_nodes)))
         # 2, 2 and 4 entries go at n_pts 50, 100 and 200; none at any smaller count.
         assert nodes.shape[0] == golden_nodes.shape[0] or n_pts in (50, 100, 200)
+
+
+class TestLambertWCoupling:
+    """The tanh-sinh decay factor is a precondition of the Lambert W kernel.
+
+    Neither constant records the other, and the failure is silent, so it is
+    pinned here. ``_lambert_w_principal`` starts from the large-argument
+    asymptotic form with no branch, which is what keeps it free of a comparison
+    on the scalar. The price is a domain: for a small enough argument the guess
+    lands off the principal branch and no number of Halley steps recovers.
+
+    ``_TANH_SINH_DECAY_FACTOR`` is what sets the smallest argument the kernel
+    ever sees, through ``2 * factor * (pi/2) * (n - 1)`` at ``n = 2``. So a
+    change to that factor, made for a better discretization error, would produce
+    a silently wrong step size and therefore a silently wrong rule.
+    """
+
+    def test_the_shipped_decay_factor_keeps_the_kernel_in_its_domain(self) -> None:
+        """Four Halley steps reach one unit of roundoff at the smallest argument.
+
+        The binding case is ``n = 2``, where the argument is smallest. Measured
+        by bisection, four steps hold down to a decay factor of 0.5097 and three
+        only to 0.5932, so the shipped 0.6 sits 18% clear with four and 1.1%
+        clear with three. This asserts the shipped value is inside the domain,
+        which is the part a future edit can break.
+        """
+        smallest_argument = 2.0 * _TANH_SINH_DECAY_FACTOR * (np.pi / 2.0) * (2 - 1)
+        assert smallest_argument > 1.61, (
+            "the decay factor puts the Lambert W kernel's smallest argument below "
+            "its validity threshold; the asymptotic start leaves the principal branch"
+        )
+
+        w = _lambert_w_principal(smallest_argument)
+        assert w * np.exp(w) == pytest.approx(smallest_argument, rel=4.0 * _UNIT_ROUNDOFF)
+
+    @pytest.mark.parametrize("n_pts", [2, 3, 5, 17, 100, 400, 1000])
+    def test_the_solver_satisfies_its_own_equation(self, n_pts: int) -> None:
+        """``W e^W = x`` holds to its own conditioning, across the argument range.
+
+        A residual check rather than a comparison against another implementation,
+        so it stays an independent oracle rather than a second opinion. The
+        conditioning of ``w e^w`` at the root is ``(1 + w)``, so a residual of a
+        few units of roundoff is what a correctly rounded root gives.
+
+        Args:
+            n_pts (int): Point count, which sets the argument through the decay
+                factor.
+        """
+        argument = 2.0 * _TANH_SINH_DECAY_FACTOR * (np.pi / 2.0) * (n_pts - 1)
+        w = _lambert_w_principal(argument)
+        residual = abs(w * np.exp(w) - argument)
+        assert residual <= 4.0 * (1.0 + w) * _UNIT_ROUNDOFF * argument
+
+
+class TestGenerateTanhSinhContract:
+    """``_generate_tanh_sinh`` is private and its shape is frozen anyway.
+
+    A separate, not-yet-public consumer imports pantr's private symbols, and this
+    is the one private name in ``quad`` that returns something the public API
+    cannot give: the rule on ``[-1, 1]`` in float64 together with the effective
+    node count. This repository's CI cannot see breakage there, so the shape is
+    asserted here rather than left to a reviewer to notice.
+    """
+
+    @pytest.mark.parametrize("n_pts", [1, 2, 5, 17, 100])
+    @pytest.mark.parametrize("dtype", [np.float32, np.float64])
+    def test_shape_and_frame_are_unchanged(self, n_pts: int, dtype: npt.DTypeLike) -> None:
+        """The return is ``(data, count)`` with ``data`` of shape ``(count, 2)`` on ``[-1, 1]``.
+
+        Args:
+            n_pts (int): Requested number of points.
+            dtype (npt.DTypeLike): The dtype that sets the truncation point.
+        """
+        data, count = _generate_tanh_sinh(n_pts, dtype)
+        assert isinstance(count, int)
+        assert data.dtype == np.float64, "the data is float64 whatever dtype selects"
+        assert data.shape == (count, 2), "columns are [node, weight]"
+        nodes, weights = data[:, 0], data[:, 1]
+        assert np.all(np.abs(nodes) < 1.0), "the frame is [-1, 1], open at both ends"
+        assert np.all(weights > 0.0)
+        assert weights.sum() == pytest.approx(2.0, rel=64.0 * _UNIT_ROUNDOFF), (
+            "the weights carry the measure of [-1, 1], not of [0, 1]"
+        )
