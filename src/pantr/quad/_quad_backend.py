@@ -80,7 +80,7 @@ _ChebyshevNodesFunc = Callable[[int, npt.DTypeLike], npt.NDArray[np.float32 | np
 The only kernel in the package that takes a dtype, and it is a genuine argument
 rather than a formatting one: the Python computes in the storage format, so a
 float32 request is float32 *arithmetic* and not a narrowed float64 result. The
-two were measured to differ on 17% of arguments.
+two were measured to differ on 62% of arguments.
 """
 
 

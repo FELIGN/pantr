@@ -518,7 +518,7 @@ void trap_integrates_linear_function_exactly() {
 // ---------------------------------------------------------------------------
 
 /// `n` values safely below where float loses the resolution to keep the nodes
-/// strictly ascending (measured: ties begin by `n = 10000` for `float`; every
+/// strictly ascending (measured: the first tie is at `n = 7431` for `float`; every
 /// value below is comfortably inside the safe range for both `T`).
 const std::vector<int>& chebyshev_test_sizes() {
     static const std::vector<int> sizes = {2,  3,   4,   5,   6,   7,  9,

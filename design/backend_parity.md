@@ -213,7 +213,8 @@ every failure message, and in both cases carries the actual derivation.
 recurrence magnifies a relative perturbation", which is half of what it must carry: the other
 half is **the magnitude that turns a relative bound into an absolute one**. For the cardinal
 B-spline the two coincide numerically, because every value is in `[0, 1]` and of order one. For
-`quad` they separate visibly -- Gauss-Legendre weights span six decades at n = 700, so the
+`quad` they separate visibly -- Gauss-Legendre weights span two and a half decades at
+n = 700 and their *mapped nodes* span five and a half, so the
 magnitude has to be multiplied in by hand, while the nodes are of order one and do not. **A field
 doing two jobs that happen to coincide in the only consumer is exactly what one consumer cannot
 reveal.**

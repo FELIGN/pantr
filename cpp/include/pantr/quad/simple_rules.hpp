@@ -19,7 +19,10 @@
 /// `pi`, the divide, the cosine, and both halvings -- happens in the *storage*
 /// format. In `float32` that is genuinely `float32` arithmetic: computing in
 /// double and narrowing at the end was measured to differ from a float32 `cos` on
-/// 712 of 4096 arguments, 17%. So `modified_chebyshev_nodes` below is templated
+///  of 4096 arguments, 62%. (A narrower figure, 712 of 4096, appears in an
+/// earlier note and is a different measurement: the cosine alone, handed an
+/// argument both sides already agree on. The formula as a whole is what matters
+/// here, and it separates four times more often.) So `modified_chebyshev_nodes` below is templated
 /// and computes in `T`, and it is the only kernel in this directory that is.
 ///
 /// `get_trapezoidal_1d` is the other way round. `np.linspace` computes in
@@ -90,7 +93,7 @@ inline void trapezoidal(int n, std::span<double> out_nodes, std::span<double> ou
 ///
 /// Computed in `T` rather than in `double`, which is the exception this file's
 /// header explains: the Python's arithmetic is in the storage format and a
-/// double-then-narrow port disagrees with it on 17% of `float32` arguments.
+/// double-then-narrow port disagrees with it on 62% of `float32` arguments.
 ///
 /// \param n Number of nodes. Must be at least 2.
 /// \param out Output of length `n`, written in full, from 0 to 1.
