@@ -135,3 +135,71 @@ def test_the_vacuity_guard_leaves_an_absolute_floor_alone() -> None:
         context="an absolute floor on an exactly zero entry",
     )
     assert deviation.num_differing == 0
+
+
+def test_a_single_rounding_per_stage_gives_a_bound_that_is_not_zero() -> None:
+    """A budget of one float64 rounding per stage must not collapse onto the floor.
+
+    The regression test for a defect the shipped harness carried: the relative
+    growth was computed as ``(1 + per_stage)**stages - 1``, and in float64 that is
+    **exactly zero** whenever ``per_stage`` is one unit of roundoff. ``1 + eps/2``
+    lands on the midpoint between ``1`` and ``1 + eps``, and round-half-to-even
+    carries it back to ``1`` because ``1``'s significand is even, so the power is
+    ``1.0`` at every stage count and the subtraction gives ``0.0``.
+
+    The consequence was a claim saying BOUNDED while asserting bit-for-bit
+    agreement, since all that survived was the underflow floor at about
+    ``1e-323``. The existing vacuity guard did not catch it because it tests
+    ``per_stage == 0``, which is ``1.11e-16`` here and passes: a budget can be
+    non-zero and still produce a zero bound.
+
+    The exact triggering data is ``accumulator_per_stage=1`` with the storage
+    format equal to the accumulator, so the narrowing term is zero and the whole
+    per-stage budget is a single ``u``. Both stage counts below returned ``0.0``
+    before the fix.
+    """
+    floor_scale = 1e-300
+    previous = 0.0
+
+    for stages in (1, 4, 20):
+        claim = bounded_parity(
+            roundings=Roundings(stages=stages, accumulator_per_stage=1, storage_per_stage=0),
+            accumulator=np.float64,
+            storage=np.float64,
+            amplification=np.ones(1),
+            why="one float64 rounding per stage and no narrowing store, the case that "
+            "made the power form evaluate to exactly zero",
+        )
+        tolerance = float(absolute_tolerance(claim)[0])
+
+        assert tolerance > floor_scale, (
+            f"at {stages} stages the tolerance is {tolerance:.3g}, down at the underflow "
+            f"floor rather than at the rounding scale; the relative term evaluated to "
+            f"zero and this BOUNDED claim is asserting bit-for-bit agreement"
+        )
+        assert tolerance > previous, (
+            f"the tolerance did not grow from {previous:.3g} to {tolerance:.3g} when the "
+            f"stage count reached {stages}; a bound that ignores its own stage count is "
+            f"not accumulating anything"
+        )
+        previous = tolerance
+
+
+def test_a_budget_that_reaches_the_runaway_half_is_refused() -> None:
+    """Gamma stops bounding anything once the accumulated budget reaches one half.
+
+    ``gamma_m = m u / (1 - m u)`` is a bound only while ``m u`` is small; at one
+    half it equals 1 and past it the denominator collapses and then changes sign,
+    so the expression stops being an error bound and starts being nonsense. The
+    refusal has to happen on the budget rather than on the quotient, because a
+    negative quotient looks like a small bound.
+    """
+    claim = bounded_parity(
+        roundings=Roundings(stages=2**52, accumulator_per_stage=8, storage_per_stage=0),
+        accumulator=np.float64,
+        storage=np.float64,
+        amplification=np.ones(1),
+        why="a stage count large enough to exhaust the format",
+    )
+    with pytest.raises(ValueError, match="vacuous"):
+        absolute_tolerance(claim)
