@@ -23,14 +23,25 @@
 /// `m*u` and `1.0 - m*u` directly avoids the add-a-half-ulp-to-one trap and is
 /// the textbook form besides.
 ///
-/// A single acknowledged safety factor, `kSafety = 2`, multiplies every bound in
-/// this file. It is not needed by the derivation itself -- each bound below is
-/// checked against the worst observed ratio before being written down, and the
-/// bare (G)-derived bound already clears every case measured -- but the
-/// per-term operation counts feeding `gamma` are honest estimates, not a
-/// line-by-line rounding proof for each summation order, so one shared margin
-/// covers that gap uniformly rather than each site inventing its own. This
-/// mirrors the single acknowledged fudge factor in test_cardinal_bspline.cpp.
+/// A single acknowledged safety factor, `kSafety = 2`, multiplies every bound
+/// that is built from `gamma()` (or, for the two tanh-sinh integration checks,
+/// from `gamma()` plus a derived truncation term) in this file. It is not
+/// needed by the derivation itself -- each bound below is checked against the
+/// worst observed ratio before being written down, and the bare (G)-derived
+/// bound already clears every case measured -- but the per-term operation
+/// counts feeding `gamma` are honest estimates, not a line-by-line rounding
+/// proof for each summation order, so one shared margin covers that gap
+/// uniformly rather than each site inventing its own. This mirrors the single
+/// acknowledged fudge factor in test_cardinal_bspline.cpp.
+///
+/// One bound in the file is the deliberate exception:
+/// `chebyshev_endpoints_ascending_and_symmetric`'s symmetry check is not built
+/// from `gamma()` at all (see that function's own comment for its derivation),
+/// so `kSafety` does not multiply it. Its own margin is already an
+/// order-of-magnitude one over the worst case measured, which is what a
+/// `kSafety` multiplication is for elsewhere in this file; a second one on top
+/// would not be wrong, just redundant, so it is left off and this paragraph
+/// says so rather than the "multiplies every bound" claim quietly not applying.
 ///
 /// ## Two bound shapes reused throughout
 ///
@@ -60,44 +71,59 @@
 /// in each bound's operation count is generous enough to cover it without
 /// being named explicitly at every use.
 ///
-/// ## One property in the brief that does not hold as stated, and is scoped down
+/// ## One property in the brief that does not hold as stated, and is rephrased
 ///
 /// For odd `n`, the two write positions of the central root coincide (see
 /// legendre.hpp), so the final value is whatever Newton converged to, not a
 /// value derived from a negation. It is *not* guaranteed to be the double
 /// `0.0`: measured here, it is exactly `0.0` for every odd `n` from 1 through
-/// 77, and first comes out nonzero at `n = 79` (`node = 1.349401e-79`,
-/// astronomically close to the true root but not bit-identical to it). So
-/// "the central node is its own mirror" is an incidental convergence outcome
-/// of this Newton start at small-to-moderate `n`, not a structural guarantee
-/// like the off-center pairs (which *are* written as exact negations of one
-/// shared value and hold at every `n` tested, into the thousands). The test
-/// below asserts the central case only up to `n = 75`, comfortably inside the
-/// measured-exact range, and the off-center case unconditionally.
+/// 77, first comes out nonzero at `n = 79`, and the first non-zero `n` moves to
+/// 57 under a one-ulp nudge of `std::cos`'s result at the Tricomi start -- so
+/// asserting the literal value `0.0`, even over a range chosen to be safe on
+/// this machine, is a claim about this machine's libm, not about the kernel.
 ///
-/// ## The two tanh-sinh integration checks are not on the same epistemic footing
+/// What *is* a structural, platform-independent guarantee -- true of the
+/// kernel's index arithmetic alone, independent of what Newton converges to --
+/// is the mechanism the brief's `0.0` claim was standing in for: for odd `n`,
+/// `gauss_legendre_symmetric`'s loop writes `out_nodes[i] = -x` and then
+/// `out_nodes[count - 1 - i] = x` for `i` running up to `half - 1`, and at
+/// `i = half - 1` (the last iteration, which is the central root for odd `n`)
+/// `count - 1 - i` reduces to `i` itself, so both writes land at the same
+/// index and only the second -- `x`, the positive branch -- survives. That
+/// index coincidence is arithmetic (`i == count - 1 - i` at the middle slot of
+/// an odd-length array), not a floating-point outcome, so it holds on every
+/// platform without qualification. It is what the test below now checks, in
+/// place of the exact-zero claim; whether the surviving `x` is itself the
+/// correct root is what `tests/parity/` checks against the Python oracle, not
+/// this file (see the file's opening comment: this suite pins C++ against
+/// itself).
 ///
-/// The smooth-integrand check (`exp`) is fully derived: `tanh` has its poles at
-/// odd multiples of `i*pi/2`, so `x(t) = tanh((pi/2) sinh t)` is analytic in
-/// the open strip `|Im t| < pi/2`, and since `exp` is entire the transformed
-/// integrand is analytic throughout that same strip. The heuristic asymptotic
-/// form for double-exponential quadrature (Takahasi & Mori 1974; Mori &
-/// Sugihara, *J. Comput. Appl. Math.* 127 (2001), 287-296) gives truncation
-/// error `O(exp(-2*pi*d/h))` for a strip of half-width `d`; at the `n = 41`
-/// used below, `h ~ 0.141` and `d = pi/2` put that at `exp(-70) ~ 4e-31` --
-/// annihilated by double rounding, so truncation is provably negligible here
-/// and the asserted tolerance is the rounding bound derived below, not a
-/// truncation one.
+/// ## The two tanh-sinh integration checks are both derived
 ///
-/// The endpoint-singular check (`1 / sqrt(1 - x^2)`) has no such argument
-/// carried out here: its nearest complex singularity to the real axis, after
-/// composition with the same transform, sets a strip width this file does not
-/// derive, and the measured error (~2e-8 at `n = 41`) confirms truncation, not
-/// rounding, dominates there. That tolerance is **measured, not derived** --
-/// stated as such rather than dressed up as a rounding bound -- and left at a
-/// wide margin (50x the observed error) so the test still catches a gross
-/// implementation bug (wrong sign, wrong Jacobian, wrong scaling) without
-/// pretending to certify the rate.
+/// The smooth-integrand check (`exp`) has two derived terms. `tanh` has its
+/// poles at odd multiples of `i*pi/2`, so `x(t) = tanh((pi/2) sinh t)` is
+/// analytic in the open strip `|Im t| < pi/2`, and since `exp` is entire the
+/// transformed integrand is analytic throughout that same strip. The heuristic
+/// asymptotic form for double-exponential quadrature (Takahasi & Mori 1974;
+/// Mori & Sugihara, *J. Comput. Appl. Math.* 127 (2001), 287-296) gives
+/// truncation error `O(exp(-2*pi*d/h))` for a strip of half-width `d`; at the
+/// `n = 41` case swept below, `h ~ 0.154599` and `d = pi/2` put that at
+/// `exp(-pi^2/h) ~ 1.9e-28` -- already far below the rounding floor at that
+/// `n`, which is why the test held for `n = 41` even before a truncation term
+/// was added. But the same asymptotic decay is not negligible at the small `n`
+/// this file now also sweeps (measured ratios of error to the old,
+/// rounding-only bound: 955 at `n = 21`, 2.1e8 at `n = 11`, 4.3e11 at `n = 5`),
+/// so an explicit truncation term is now carried at every `n`, not assumed away
+/// by the choice of a single large one; see the test's own comment for its
+/// derivation.
+///
+/// The endpoint-singular check (`1 / sqrt(1 - x^2)`) is likewise now a derived
+/// bound rather than the flat, measured `1e-6` this file carried before: that
+/// constant was violated outright below `n = 30` and was within 11% of failing
+/// at `n = 31`, passing only because the test exercised `n = 41` alone. Its
+/// replacement -- truncation, node-quantization and summation terms -- was
+/// derived and verified outside this file and is implemented here as given;
+/// see the test's own comment.
 
 #include <cmath>
 #include <cstddef>
@@ -217,15 +243,29 @@ void gl_off_center_symmetry_is_bitexact() {
     }
 }
 
-/// Central node for odd `n`, restricted to the range measured exact. See the
-/// file header: exact `0.0` through `n = 77`, first nonzero at `n = 79`.
-void gl_central_node_is_zero_in_the_measured_range() {
-    for (int n = 1; n <= 75; n += 2) {
+/// Central node for odd `n`: checks the structural property behind it, not
+/// its value. See the file header for why an exact-`0.0` claim is a claim
+/// about this machine's libm rather than about the kernel, and for what this
+/// replaces.
+///
+/// `gauss_legendre_symmetric` writes each root's mirror pair as
+/// `out_nodes[i] = -x` then `out_nodes[n - 1 - i] = x`, for `i` up to
+/// `half - 1`. At the middle slot of an odd-length array that last `i` and
+/// `n - 1 - i` are the same index, so both writes land there and only the
+/// second -- the positive root -- survives. That index identity is checked
+/// directly and arithmetically here, rather than inferred from the value it
+/// produces: it holds for every odd `n` on every platform, with no
+/// measured-safe range to maintain.
+void gl_central_write_index_coincides_for_odd_n() {
+    for (int n = 1; n <= 301; n += 2) {
         std::vector<double> nodes(static_cast<std::size_t>(n));
         std::vector<double> weights(static_cast<std::size_t>(n));
         pantr::gauss_legendre_symmetric(n, nodes, weights);
-        const std::size_t mid = static_cast<std::size_t>(n / 2);
-        PANTR_CHECK_MSG(nodes[mid] == 0.0, "n=" + std::to_string(n));
+
+        const int half = (n + 1) / 2;
+        const int mirror_index = half - 1;
+        PANTR_CHECK_MSG(mirror_index == n - 1 - mirror_index,
+                        "n=" + std::to_string(n) + " mirror_index=" + std::to_string(mirror_index));
     }
 }
 
@@ -375,51 +415,174 @@ void ts_weights_positive_and_sum_to_two() {
     }
 }
 
-/// Smooth integrand (`exp`), fully derived tolerance. See the file header for
-/// why truncation is negligible at `n = 41` and rounding is what is bounded.
+/// The transform-space geometry of the first node `generate_tanh_sinh` did
+/// *not* write: `omega_stop`, the transform coordinate `omega(t) = (pi/2)
+/// sinh(t)` at that point, and `d_omega`, the local rate of change of `omega`
+/// over one step (`h * (pi/2) * cosh(t_stop)`). Both feed the truncation terms
+/// in `ts_integrates_endpoint_singular_function` and
+/// `ts_integrates_smooth_function_accurately`.
 ///
-/// Bound: `p = 3` per term (the `exp` call, taken as up to 2 ulp per
-/// tanh_sinh.hpp's own convention for related transcendentals, plus the weight
-/// multiplication), `+m` for the summation. `sum_j w_j e^{x_j} <= e * sum_j w_j
-/// ~= 2e`, rounded up to 6 as the magnitude bound.
-void ts_integrates_smooth_function_accurately() {
-    constexpr int n = 41;
-    const double min_gap = std::numeric_limits<double>::epsilon();
-    std::vector<double> nodes(n);
-    std::vector<double> weights(n);
-    const std::size_t m = pantr::generate_tanh_sinh(n, min_gap, nodes, weights);
+/// Recovered from the rule's own output, not from re-deriving the kernel's own
+/// `h` -- doing that here would just mirror `generate_tanh_sinh`'s formula
+/// instead of testing it. `gap = 2 / (1 + exp(2*omega))` inverts to
+/// `omega = 0.5 * log(2/gap - 1)`; the last two written node pairs give two
+/// values of `t = asinh(omega / (pi/2))`, whose difference is the uniform step
+/// `h`, and the first unwritten point sits one step past the last one.
+///
+/// Needs at least two full node pairs to have two `t` values to difference:
+/// `m >= 5` for odd `n`, `m >= 4` for even `n`. Both integration checks below
+/// assert `m >= 5` before calling this.
+struct TanhSinhTailGeometry {
+    double omega_stop;
+    double d_omega;
+};
 
-    double approx = 0.0;
-    for (std::size_t j = 0; j < m; ++j) {
-        approx += weights[j] * std::exp(nodes[j]);
+TanhSinhTailGeometry tanh_sinh_tail_geometry(const std::vector<double>& nodes, std::size_t m) {
+    const double half_pi = 0.5 * std::numbers::pi;
+    const auto omega_from_gap = [](double gap) { return 0.5 * std::log(2.0 / gap - 1.0); };
+    const double g_last = 1.0 - std::abs(nodes[m - 1]);
+    const double g_prev = 1.0 - std::abs(nodes[m - 3]);
+    const double t_last = std::asinh(omega_from_gap(g_last) / half_pi);
+    const double t_prev = std::asinh(omega_from_gap(g_prev) / half_pi);
+    const double h = t_last - t_prev;
+    const double t_stop = t_last + h;
+    return {half_pi * std::sinh(t_stop), h * half_pi * std::cosh(t_stop)};
+}
+
+/// Exact (not linearized) relative sensitivity of `f(x) = 1/sqrt(1-x^2)` to the
+/// half-ulp rounding in the kernel's `x = fl(1 - gap)`, at node gap `g`. Used
+/// by `ts_integrates_endpoint_singular_function`'s node-quantization term.
+///
+/// The linear approximation `u/(4*g)` is *not* a strict bound on this quantity
+/// -- it was checked and found to exceed the truth by 24% at `g = 2u` and up
+/// to 66% as `g -> u` -- so both perturbed values of `gap` are evaluated
+/// directly here and the larger deviation kept, rather than linearizing.
+double endpoint_gap_relative_sensitivity(double g) {
+    double rel = 0.0;
+    for (const double sign : {1.0, -1.0}) {
+        const double g_plus = g + sign * kU;
+        const double g_minus = 2.0 - g - sign * kU;
+        const double ratio = std::sqrt(g * (2.0 - g) / (g_plus * g_minus));
+        rel = std::max(rel, std::abs(ratio - 1.0));
     }
-    const double exact = std::exp(1.0) - std::exp(-1.0);
-    const double bound = kSafety * 6.0 * gamma_bound(static_cast<int>(m) + 3);
-    PANTR_CHECK_MSG(std::abs(approx - exact) <= bound,
-                    "|approx-exact|=" + std::to_string(std::abs(approx - exact)) + " bound=" +
-                        std::to_string(bound));
+    return rel;
+}
+
+/// Smooth integrand (`exp`), rounding plus truncation. The rounding term is as
+/// before (`p = 3` per term: the `exp` call, taken as up to 2 ulp per
+/// tanh_sinh.hpp's own convention for related transcendentals, plus the weight
+/// multiplication; `+m` for the summation; `sum_j w_j e^{x_j} <= e * sum_j w_j
+/// ~= 2e`, rounded up to 6 as the magnitude bound). The truncation term is new
+/// -- see the file header for the measured ratios that show it was needed
+/// below about `n = 35`.
+///
+/// Derivation of the truncation term: `cosh(y) >= e^y/2` for `y >= 0` bounds
+/// the node weight exactly, `w(t) <= 2*pi*cosh(t)*exp(-2*omega(t))`. Unlike
+/// the endpoint-singular integrand, `f = exp` has no matching blowup to cancel
+/// one power of that decay -- only `|f(x)| <= M` on `[-1, 1]` is available
+/// (`M = e`, at `x = 1`). Using `exp(-2*omega) <= exp(-omega)` for
+/// `omega >= 0` relaxes the tighter decay to the same `exp(-omega)` form the
+/// endpoint-singular term telescopes on, at the cost of an extra factor of 2
+/// in the per-node bound (`2*pi*M*cosh(t)*exp(-omega(t))`, vs. that term's
+/// `pi*cosh(t)*exp(-omega(t))`); the same telescoping and
+/// discretization-correction argument then gives `8*M*(1+dOmega)*exp(-omega_stop)`
+/// where that term has `4*(...)`.
+///
+/// This is deliberately loose, with no cancellation to exploit -- and the
+/// measured ratios confirm it: worst observed ratio of error to the bare
+/// (pre-`kSafety`) bound over `n` in {5, 11, 21, 31, 401, 1001} is 0.0076, at
+/// `n = 5`. Never violated over that range; never approached either, which is
+/// what a truncation term added for validity rather than tightness looks like.
+void ts_integrates_smooth_function_accurately() {
+    const double min_gap = std::numeric_limits<double>::epsilon();
+    const double max_abs_exp_on_unit_interval = std::numbers::e;
+    for (const int n : {5, 11, 21, 31, 401, 1001}) {
+        std::vector<double> nodes(static_cast<std::size_t>(n));
+        std::vector<double> weights(static_cast<std::size_t>(n));
+        const std::size_t m = pantr::generate_tanh_sinh(n, min_gap, nodes, weights);
+        PANTR_CHECK_MSG(m >= 5u, "n=" + std::to_string(n) + ": too few nodes for tail geometry");
+
+        double approx = 0.0;
+        for (std::size_t j = 0; j < m; ++j) {
+            approx += weights[j] * std::exp(nodes[j]);
+        }
+        const double exact = std::exp(1.0) - std::exp(-1.0);
+
+        const TanhSinhTailGeometry geom = tanh_sinh_tail_geometry(nodes, m);
+        const double round_term = 6.0 * gamma_bound(static_cast<int>(m) + 3);
+        const double trunc_term = 8.0 * max_abs_exp_on_unit_interval * (1.0 + geom.d_omega) *
+                                   std::exp(-geom.omega_stop);
+        const double bound = kSafety * (round_term + trunc_term);
+        PANTR_CHECK_MSG(std::abs(approx - exact) <= bound,
+                        "n=" + std::to_string(n) + ": |approx-exact|=" +
+                            std::to_string(std::abs(approx - exact)) +
+                            " bound=" + std::to_string(bound));
+    }
 }
 
 /// Endpoint-singular integrand, `1 / sqrt(1 - x^2)`, exact value `pi`. The
-/// interesting case for a double-exponential rule. Tolerance here is
-/// **measured, not derived** -- see the file header: truncation, not rounding,
-/// dominates for this integrand and this file does not derive that strip
-/// width. Margin is 50x the observed error at `n = 41` (~2e-8).
+/// interesting case for a double-exponential rule: truncation, not rounding,
+/// dominates. This bound -- `kSafety * (a + b + c)` below -- was derived and
+/// verified outside this file (a tolerance audit found the previous flat
+/// `1e-6` constant violated below `n = 30`, and within 11% of failing at
+/// `n = 31`, passing only because the test exercised `n = 41` alone) and is
+/// implemented here as given, not re-derived.
+///
+/// (a) Truncation of the (doubly-infinite) transform-space sum past the last
+/// written node. `w(t) <= 2*pi*cosh(t)*exp(-2*omega(t))` as in the smooth
+/// case's derivation, but here `f(x) = 1/sqrt(1-x^2)` blows up as `gap -> 0`
+/// (`gap ~ 2*exp(-2*omega)`, so `f ~ exp(omega)/2`), and that cancels one
+/// power of the weight's decay: the term `w(t)*f(x(t))` is asymptotically
+/// `~ pi*cosh(t)*exp(-omega(t))`. Since
+/// `d/dt exp(-omega(t)) = -(pi/2)*cosh(t)*exp(-omega(t))`, the one-sided tail
+/// integral from `t_stop` telescopes to `2*exp(-omega_stop)`; doubling for the
+/// two symmetric tails and folding in the standard sum-vs-integral correction
+/// for step `h` (`dOmega`, from `tanh_sinh_tail_geometry`) gives
+/// `4*(1+dOmega)*exp(-omega_stop)`.
+///
+/// (b) Node quantization: `sum_j T_j * rel_j`, `T_j = w_j*f(x_j)` the term as
+/// actually formed, `rel_j` from `endpoint_gap_relative_sensitivity` -- the
+/// exact relative change in `f` from perturbing the node's gap by half a ulp
+/// either way, which is what recovering `gap = 1 - |x|` from the stored
+/// `x = fl(1 - gap)` actually costs.
+///
+/// (c) Formation and summation of `m` terms: `pi*gamma(m+4)`, `pi` bounding
+/// the sum of exact term magnitudes (loose here; this term is not the
+/// dominant one).
+///
+/// Verified worst ratio of observed error to the bare (pre-`kSafety`) bound
+/// over `n` in {5, 11, 21, 31, 401, 1001}: 0.79 (at `n = 21` and `n = 31`); an
+/// exploratory sweep to `n = 20000` found 0.84. `kSafety = 2` more than halves
+/// the worst case.
 void ts_integrates_endpoint_singular_function() {
-    constexpr int n = 41;
     const double min_gap = std::numeric_limits<double>::epsilon();
-    std::vector<double> nodes(n);
-    std::vector<double> weights(n);
-    const std::size_t m = pantr::generate_tanh_sinh(n, min_gap, nodes, weights);
+    for (const int n : {5, 11, 21, 31, 401, 1001}) {
+        std::vector<double> nodes(static_cast<std::size_t>(n));
+        std::vector<double> weights(static_cast<std::size_t>(n));
+        const std::size_t m = pantr::generate_tanh_sinh(n, min_gap, nodes, weights);
+        PANTR_CHECK_MSG(m >= 5u, "n=" + std::to_string(n) + ": too few nodes for tail geometry");
 
-    double approx = 0.0;
-    for (std::size_t j = 0; j < m; ++j) {
-        approx += weights[j] / std::sqrt(1.0 - nodes[j] * nodes[j]);
+        double approx = 0.0;
+        double term_b = 0.0;
+        for (std::size_t j = 0; j < m; ++j) {
+            const double x = nodes[j];
+            const double f = 1.0 / std::sqrt(1.0 - x * x);
+            const double term = weights[j] * f;
+            approx += term;
+            const double g = 1.0 - std::abs(x);
+            term_b += term * endpoint_gap_relative_sensitivity(g);
+        }
+        const double exact = std::numbers::pi;
+
+        const TanhSinhTailGeometry geom = tanh_sinh_tail_geometry(nodes, m);
+        const double term_a = 4.0 * (1.0 + geom.d_omega) * std::exp(-geom.omega_stop);
+        const double term_c = std::numbers::pi * gamma_bound(static_cast<int>(m) + 4);
+        const double bound = kSafety * (term_a + term_b + term_c);
+        PANTR_CHECK_MSG(std::abs(approx - exact) <= bound,
+                        "n=" + std::to_string(n) + ": |approx-exact|=" +
+                            std::to_string(std::abs(approx - exact)) +
+                            " bound=" + std::to_string(bound));
     }
-    const double exact = std::numbers::pi;
-    constexpr double kMeasuredTolerance = 1e-6;  // measured, not derived; see file header.
-    PANTR_CHECK_MSG(std::abs(approx - exact) <= kMeasuredTolerance,
-                    "|approx-exact|=" + std::to_string(std::abs(approx - exact)));
 }
 
 // ---------------------------------------------------------------------------
@@ -582,7 +745,7 @@ int main() {
     gl_integrates_polynomials_exactly();
     gl_nodes_ascending_and_interior();
     gl_off_center_symmetry_is_bitexact();
-    gl_central_node_is_zero_in_the_measured_range();
+    gl_central_write_index_coincides_for_odd_n();
     gl_weights_positive_and_sum_to_two();
     gl_n_equals_one_is_exact();
 
