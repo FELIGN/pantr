@@ -366,7 +366,9 @@ def _modified_chebyshev_nodes_core(
     under NEP 50 every operation after it -- the multiply by ``pi``, the divide,
     the cosine and both halvings -- stays in the storage format.  Computing in
     float64 and narrowing at the end is a different answer: the two were measured
-    to differ on 712 of 4096 float32 arguments, 17%.  The C++ transliteration is
+    to differ on 2523 of 4096 float32 arguments, 62%.  (An earlier note quoted 712 of
+    4096; that is a different measurement, the cosine alone handed an argument both
+    sides already agree on.)  The C++ transliteration is
     templated for exactly this reason and is the only quad kernel that is.
 
     Args:

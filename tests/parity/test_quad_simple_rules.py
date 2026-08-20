@@ -30,12 +30,14 @@ Write `theta = pi i / (n - 1)` and `node = 0.5 - 0.5 c` with `c = cos(theta)`, a
 in binary32, `u = eps32 / 2 = 5.96e-08`.
 
 1. **`theta` is common mode.** It is formed by a multiply and a divide on values
-   both sides compute identically, so it is bit-identical. Measured: 0 of 2130
-   arguments differ, over n from 2 to 1000. Nothing upstream of the cosine
-   contributes to the bound.
+   both sides compute identically, so it is bit-identical. Measured over a
+   twelve-size sweep of 2130 arguments, n from 2 to 1000, in a standalone C++ probe
+   rather than through this file's own `CHEBYSHEV_N_PTS`: 0 differ. Nothing upstream
+   of the cosine contributes to the bound.
 2. **The cosine is the only source.** The two libraries differ by at most
    ``k_libm`` units in the last place of the result. Measured on exactly the
-   arguments this rule forms: 370 of 2130 differ, worst **1 ulp**. One ulp of `c`
+   arguments this rule forms, over that same sweep: 370 of 2130 differ, worst
+   **1 ulp**. One ulp of `c`
    is `2 u |c| <= 2 u`, so `|dc| <= 2 k_libm u` with `k_libm = 1`.
 3. **The halving is exact** -- multiplication by a power of two -- so `0.5 |dc|`
    passes through unrounded, contributing `k_libm u`.
@@ -98,8 +100,10 @@ _LIBM_COSINE_ULP_BUDGET: Final = 1
 """How far the two libraries' ``cos`` may differ, in units in the last place.
 
 Measured on exactly the arguments this rule forms, not quoted from either
-library's documentation: over n from 2 to 1000, 370 of 2130 float32 arguments give
-a different result and the worst difference is 1 ulp.
+library's documentation: over a twelve-size sweep of 2130 float32 arguments, n from 2
+to 1000, 370 give a different result and the worst difference is 1 ulp. The sweep is a
+standalone C++ probe, not this file's `CHEBYSHEV_N_PTS`, which visits 1295 nodes over
+eight sizes; the test below re-measures the same quantity through the shipped rule.
 :func:`test_the_cosine_libraries_differ_by_no_more_than_the_budget` re-measures it,
 so a platform where it is false fails here rather than inside a bound.
 """
@@ -172,7 +176,8 @@ def _chebyshev_claim(nodes: FloatArray, dtype: npt.DTypeLike) -> ParityClaim:
         storage=dtype,
         amplification=amplification,
         why=(
-            "theta is bit-identical (measured: 0 of 2130 arguments differ), the "
+            "theta is bit-identical (measured: 0 of 2130 arguments differ over a "
+            "twelve-size sweep), the "
             "halving by a power of two is exact, and the only source is cos, "
             f"measured to differ by at most {_LIBM_COSINE_ULP_BUDGET} ulp of its own "
             "result. One ulp of c is 2u|c| <= 2u, the exact halving passes 0.5|dc| "

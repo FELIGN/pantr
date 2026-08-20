@@ -23,9 +23,13 @@ this section covers both -- the environment variable it introduced is user-facin
   `PANTR_BACKEND=cpp_v3` would be a break.
 - A C++ implementation of the cardinal B-spline tabulation and of the whole of `pantr.quad`'s
   rule generation: Gauss-Legendre, tanh-sinh, the trapezoidal rule and the modified Chebyshev
-  nodes. Selecting `cpp` is between 1.3 and 60 times faster depending on the rule and the point
-  count; `scripts/bench_quad.py` and `scripts/bench_parity.py` report the figures and say which
-  part of each is the port and which is the call.
+  nodes. How much faster depends strongly on the rule and the point count, and is not a single
+  number: measured on the quadrature rules, from about 1.3x up to about 67x, with the largest
+  gains at small point counts where NumPy's per-operation overhead dominates. The cardinal
+  B-spline kernel is a separate story and not always a gain -- at large point counts and higher
+  degree its entry-level figure falls below 1. `scripts/bench_quad.py` and
+  `scripts/bench_parity.py` report the numbers and say which part of each is the port and which
+  is the call; read them rather than quoting a range from here.
 - `pantr.quad` no longer imports `scipy`. The Lambert W function that sets the tanh-sinh step
   size is solved in the library, by Halley's method on `w e^w = x`, and Gauss-Legendre is
   computed by Newton on the Legendre recurrence rather than through `numpy.polynomial.leggauss`.
@@ -40,9 +44,10 @@ this section covers both -- the environment variable it introduced is user-facin
   compiled is an implementation detail of that side.
 - `pantr.quad` is a package rather than a single module. Every import path is unchanged.
 - Gauss-Legendre nodes and weights, and the tanh-sinh rule, are computed by different code than
-  before. The Gauss-Legendre rule is bit-identical to what `numpy.polynomial.leggauss` returned
-  for the nodes; the weights differ in their last bits, which was traced to the weight formula's
-  own rounding rather than to the root finder, and is irreducible without transliterating numpy
+  before. Against `numpy.polynomial.leggauss` the nodes agree bit for bit at some sizes and
+  differ by up to about half a unit of roundoff at others -- flat in the degree, not growing --
+  and the weights differ in their last bits everywhere, which was traced to the weight formula's
+  own rounding rather than to the root finder and is irreducible without transliterating NumPy
   verbatim. The tanh-sinh rule is unchanged.
 
 

@@ -163,7 +163,7 @@ void trapezoidal(unsigned n, out_vector<double> out_nodes, out_vector<double> ou
 /// other kernel in this directory, the arithmetic is not narrowed at the end
 /// but carried out in the storage format throughout, because a
 /// double-then-narrow port was measured to disagree with a `float32` `cos` on
-/// 17% of arguments. So this wrapper is templated too, and bound twice below.
+/// 62% of arguments. So this wrapper is templated too, and bound twice below.
 template <class T>
 void modified_chebyshev_nodes(unsigned n, out_vector<T> out) {
     if (n < 2) {

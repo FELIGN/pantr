@@ -9,8 +9,10 @@ What is exact and what is not
 
 **Lambert W is BITWISE**, which was not expected. It is built from `log` and `exp`,
 neither correctly rounded and neither pinned by IEEE 754, so the prediction was a
-bounded comparison. Measured: 9 of 9 arguments over the range the rule uses agree
-to the last bit. On the scalar path numpy calls the platform's libm, which is the
+bounded comparison. Measured: every argument this file's own `N_PTS` produces agrees
+to the last bit -- eight of them, not nine, because `n_pts = 1` gives an argument of
+zero, outside the principal branch's domain, and the rule special-cases `n = 1` before
+ever reaching Lambert W. On the scalar path numpy calls the platform's libm, which is the
 same one the C++ links, so there is nothing to differ -- a fact about this
 platform, which is why a test measures it instead of this paragraph asserting it.
 
@@ -44,7 +46,7 @@ A relative perturbation of `omega` is amplified by the exponential:
 by `gap` gives the absolute node error, and **the product is what stays bounded**:
 `gap * 2 omega = 4 omega e^{-2 omega}` to leading order, maximised at `omega = 1/2`
 where it is `4/(2e) = 0.736`. Measured over the rule's own nodes, `sup gap * 2 omega
-= 0.5569`, monotone and saturating. Adding the rounding of `1 - gap` itself gives
+= 0.5569`. Adding the rounding of `1 - gap` itself gives
 
 .. math::
 
@@ -67,8 +69,11 @@ The weight bound, derived -- and it is loose, which is said rather than hidden
     \quad\text{plus the rescaling.}
 
 `omega` does not grow without bound: the rule stops where the gap stops being
-representable, which caps it. Measured `sup 2 omega = 36.33`, saturating from about
-n = 64 on. So the transcendental term is about `77 u` relative.
+representable, which caps it. Measured `sup 2 omega = 36.7368` over `n` from 2 to 1000.
+It does **not** saturate monotonically: it oscillates in roughly `[33.5, 36.74]` once
+`n` exceeds about 60, reaching the supremum repeatedly from `n = 350` on. Bounded is
+what the derivation needs; monotone was a reading of too short a sweep. So the
+transcendental term is about `78 u` relative.
 
 The rescaling `w \cdot 2 / \sum w` adds the summation difference. numpy's pairwise
 sum costs `O(\log m \cdot u)` and a plain accumulation `O(m u)`, both relative to a
@@ -225,7 +230,7 @@ def _weight_claim(nodes: FloatArray, weights: FloatArray, count: int) -> ParityC
         amplification=amplification,
         why=(
             "cosh(omega) carries the same 2 omega amplification as the node, "
-            "squared, without the gap that tamed it; omega saturates at 36.33/2 "
+            "squared, without the gap that tamed it; 2 omega is bounded by 36.7368 "
             "because the rule stops where the endpoint gap stops being "
             "representable. Plus the rescaling, whose sum is pairwise in numpy at "
             "O(log m . u) and plain here at O(m u), so the two differ by at most "
@@ -299,9 +304,21 @@ def test_the_public_rule_agrees_within_the_bound(
 ) -> None:
     """The rule a caller gets agrees, through the shared map and the narrowing.
 
-    The map onto ``[0, 1]`` halves every node and weight, so the bound halves with
-    them; it is rebuilt from the mapped values rather than scaled, which is what
-    keeps it stated in the frame the comparison happens in.
+    The map onto ``[0, 1]`` halves every node and every weight, and the bound is
+    rebuilt from the mapped values rather than scaled, so that it is stated in the
+    frame the comparison happens in.
+
+    **The two bounds do not both halve with the data, and that asymmetry is
+    deliberate rather than an oversight.** The weight bound does, because its
+    amplification is scaled by the weight array it is handed, which is already
+    mapped. The node bound does not: its amplification is built from ``gap`` and
+    ``omega``, which are dimensionless and recovered from the node's *position*
+    rather than its magnitude, so the same number comes out in either frame.
+    Measured, at n = 1000: the observed node difference halves exactly, while the
+    node tolerance is identical across the two frames. The mapped node bound is
+    therefore about twice as loose as the unmapped one. That is the safe
+    direction, and closing it would mean giving the node claim a magnitude term it
+    does not otherwise need; the slack is recorded here instead of being hidden.
 
     Args:
         n_pts (int): Requested number of points.
