@@ -1,4 +1,8 @@
-- [Where the decisions live](decisions-pointer.md) — the C++ port's design decisions are in `design/*.md` in this repository; read them before proposing anything about the port.
+- [Active task](active-task.md) — PR 2 of the C++ port (quad) is MERGED as #337; the four measured parity results, the four follow-ups now filed as #338 to #341, and the one piece of work still waiting.
+- [Where the decisions live](decisions-pointer.md) — the C++ port's design decisions are in `design/*.md` in this repository; both PRs merged, nothing in flight. Read backend_parity.md first before proposing anything about a bound.
 - [Naming constraint and licensing](naming-and-licensing.md) — two sibling libraries are private and unpublished; never name them in anything that leaves the machine. Plus the dependency direction the licence plan forbids.
 - [Build machine](build-machine.md) — the shared Linux server, its 20-CPU cap, and the calibration trap that comes with many cores.
 - [nanobind status](nanobind-status.md) — split mode verified working and composing with multi-ISA; the three mandatory build flags, including the -Os trap that costs a silent 3x.
+- [Performance follow-up](performance-followup.md) — wanted later, deliberately deferred in the infrastructure PR; carries what is already measured so it is not re-measured, and what to attack first.
+- [How to ask me things](asking-style.md) — one question at a time, with concrete options AND an explicit recommendation, and the counter-argument written into the other options.
+- [Reviewing my own measurements](reviewing-my-own-measurements.md) — in numerical work my prose fails far more often than my code, and why; the six checks that would have caught it.
