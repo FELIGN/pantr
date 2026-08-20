@@ -129,9 +129,9 @@ jobs:
           fi
 
   parity:
-    name: Parity against the numba oracle
+    name: Parity against the Python oracle
     runs-on: ubuntu-24.04
-    timeout-minutes: 25
+    timeout-minutes: 40
 
     steps:
       - name: Checkout
@@ -194,14 +194,21 @@ jobs:
       - name: Parity
         run: PANTR_REQUIRE_CPP=1 pytest tests/parity -q
 
-      # The acceptance criterion of the infrastructure PR: the pre-existing suite
-      # passes against both backends, not merely a new test written to agree with
-      # the new code.
-      - name: change_basis against both backends
-        run: |
-          for backend in python cpp; do
-            echo "::group::PANTR_BACKEND=$backend"
-            PANTR_BACKEND=$backend pytest \
-              tests/test_change_basis_1D.py tests/test_change_basis_domain.py -q
-            echo "::endgroup::"
-          done
+      # The acceptance criterion, in the form the criterion is actually written:
+      # the pre-existing suite passes against BOTH backends, not merely a new
+      # test written to agree with the new code.
+      #
+      # The whole suite rather than the modules that reach a ported kernel, and
+      # that is a correction rather than an enlargement. This step used to run
+      # two change_basis files, and a defect that only shows under
+      # PANTR_BACKEND=cpp shipped through it: a cache test asserted an absolute
+      # backend where it meant the ambient one, so it failed under cpp and
+      # asserted nothing under python. scripts/ci_local.sh caught it and this
+      # workflow could not, because a kernel swap breaking something outside the
+      # ported module is exactly what a narrow run misses.
+      #
+      # Only the cpp leg runs here. The python leg is the whole point of the
+      # `tests` job in ci.yaml, and running it twice would buy a second copy of
+      # the same answer for the same minutes.
+      - name: The whole suite against the C++ backend
+        run: PANTR_BACKEND=cpp pytest -q
