@@ -264,8 +264,64 @@ class TestTanhSinhGoldenValues:
         golden_weights = golden[f"weights_{n_pts}"][keep]
         assert nodes.shape == golden_nodes.shape
         assert weights.shape == golden_weights.shape
-        nptest.assert_allclose(nodes, golden_nodes, rtol=0.0, atol=5e-15)
-        nptest.assert_allclose(weights, golden_weights, rtol=0.0, atol=5e-15)
+        # Two comparisons, because one cannot guard this rule. The absolute bound
+        # is what a caller integrating with these weights sees, and it is set to
+        # 1e-15 against a measured worst deviation of 2.2e-16 over these fourteen
+        # counts, a factor 4.5. It was 5e-15, which is 23x the measurement and,
+        # more to the point, larger than 10 of the 382 node distances and 8 of the
+        # 382 weights it is meant to guard: a flat absolute tolerance says nothing
+        # about a quantity whose whole content is that it is small, and the
+        # endpoint cluster being double-exponentially small is the property this
+        # rule exists for. The relative bound covers exactly those, at 1e-13
+        # against a measured 1.3e-14, a factor 8.
+        #
+        # Both are measurements of this implementation against the reference one,
+        # not derivations, and they are deliberately not tightened to the
+        # measurement: the golden file is a compatibility guard for a downstream
+        # consumer, so it must not go red on a libm or numpy version that moves
+        # the last bits. See design/backend_parity.md for what a derived bound on
+        # this rule looks like.
+        nptest.assert_allclose(nodes, golden_nodes, rtol=0.0, atol=1e-15)
+        nptest.assert_allclose(weights, golden_weights, rtol=0.0, atol=1e-15)
+        endpoint_distance = np.minimum(golden_nodes, 1.0 - golden_nodes)
+        nptest.assert_allclose(
+            np.minimum(nodes, 1.0 - nodes), endpoint_distance, rtol=1e-13, atol=0.0
+        )
+        nptest.assert_allclose(weights, golden_weights, rtol=1e-13, atol=0.0)
+
+    def test_an_absolute_tolerance_alone_cannot_guard_the_endpoint_cluster(self) -> None:
+        """A one-ulp move of the outermost node is invisible to any absolute bound.
+
+        This is why the golden comparison carries a relative assertion as well,
+        and it is the whole argument for it, so it is pinned rather than
+        explained. The outermost node sits one ulp below 1, so its distance to
+        the endpoint is 2.2e-16, the smallest a float64 can carry. Moving that
+        node by a single ulp, the smallest change that exists, **doubles** that
+        distance. The absolute deviation is 1.1e-16, which is below any absolute
+        tolerance this test could sensibly use: 5e-15 as it was, 1e-15 as it now
+        is, both blind to it.
+
+        So an absolute bound permits a 50% error in the quantity the rule exists
+        for. A double-exponential rule is what it is because the endpoint cluster
+        is resolved; guarding it with a flat tolerance guards everything except
+        that.
+        """
+        golden = np.load(_GOLDEN_PATH)
+        keep = _resolvable(golden["nodes_200"])
+        nodes = golden["nodes_200"][keep]
+
+        outermost = int(np.argmin(np.minimum(nodes, 1.0 - nodes)))
+        moved = nodes.copy()
+        moved[outermost] = np.nextafter(moved[outermost], 0.0)
+
+        distance = np.minimum(nodes, 1.0 - nodes)
+        assert np.minimum(moved, 1.0 - moved)[outermost] == pytest.approx(
+            2.0 * distance[outermost]
+        ), "one ulp should double the endpoint distance of the outermost node"
+
+        nptest.assert_allclose(moved, nodes, rtol=0.0, atol=1e-15)
+        with pytest.raises(AssertionError):
+            nptest.assert_allclose(np.minimum(moved, 1.0 - moved), distance, rtol=1e-13, atol=0.0)
 
     @pytest.mark.parametrize("n_pts", _GOLDEN_N_PTS)
     def test_effective_node_count_matches_golden(self, n_pts: int) -> None:
