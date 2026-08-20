@@ -415,6 +415,61 @@ discipline() {
     else
         record PASS "no -march in the build files"
     fi
+
+    # The quad kernels stay double-only, except the one that must not be.
+    #
+    # legendre.hpp records the measurement behind this: a rule generator has no
+    # differentiable input (n is an integer), so Tier B never reaches it and
+    # `Real` genericity buys nothing, while instantiating Newton at `float` was
+    # measured to give a 1.46e-3 relative weight error at n = 200 -- so that
+    # kernel, and gauss_legendre_symmetric/lambert_w_principal/tanh_sinh
+    # alongside it, are plain `double`. Conversely `modified_chebyshev_nodes`
+    # in simple_rules.hpp MUST stay templated: the Python computes in the
+    # storage format, and a double-then-narrow port was measured to differ on
+    # 17% of float32 arguments. So exactly one `template <` may appear under
+    # cpp/include/pantr/quad, and it must be the Chebyshev one. This fails
+    # both if a template turns up where it should not and if the one that
+    # should be there disappears.
+    hits="$(grep -rn 'template <' --include='*.hpp' "$ROOT/cpp/include/pantr/quad" 2>/dev/null || true)"
+    hit_count="$(printf '%s\n' "$hits" | grep -c . || true)"
+    if [[ "$hit_count" -eq 1 ]] \
+       && grep -q 'template <' "$ROOT/cpp/include/pantr/quad/simple_rules.hpp" 2>/dev/null; then
+        record PASS "quad stays double-only except modified_chebyshev_nodes"
+    else
+        record FAIL "quad stays double-only except modified_chebyshev_nodes" \
+               "$hit_count template<> site(s) under cpp/include/pantr/quad, expected exactly 1, in simple_rules.hpp"
+        printf '%s\n' "$hits"
+    fi
+
+    # The Newton and Halley step counts agree across the two languages.
+    #
+    # legendre.hpp and lambert_w.hpp both say in prose that their step count
+    # must move together with the Python constant it mirrors or parity is
+    # lost, but nothing enforces that. Extracted straight from both sources
+    # rather than hardcoded here, so this guard does not itself go stale the
+    # way a copied number would.
+    local py_newton cpp_newton py_halley cpp_halley
+    py_newton="$(sed -n -E 's/^_GAUSS_LEGENDRE_NEWTON_STEPS: int = ([0-9]+)$/\1/p' \
+                 "$ROOT/src/pantr/quad/_rules_core.py")"
+    cpp_newton="$(sed -n -E 's/^inline constexpr int gauss_legendre_newton_steps = ([0-9]+);$/\1/p' \
+                  "$ROOT/cpp/include/pantr/quad/legendre.hpp")"
+    py_halley="$(sed -n -E 's/^_LAMBERT_W_HALLEY_STEPS: int = ([0-9]+)$/\1/p' \
+                 "$ROOT/src/pantr/quad/_rules_core.py")"
+    cpp_halley="$(sed -n -E 's/^inline constexpr int lambert_w_halley_steps = ([0-9]+);$/\1/p' \
+                  "$ROOT/cpp/include/pantr/quad/lambert_w.hpp")"
+
+    if [[ -n "$py_newton" && -n "$cpp_newton" && "$py_newton" == "$cpp_newton" ]]; then
+        record PASS "Gauss-Legendre Newton step count agrees (Python=C++=$py_newton)"
+    else
+        record FAIL "Gauss-Legendre Newton step count agrees" \
+               "Python=${py_newton:-<not found>} C++=${cpp_newton:-<not found>}"
+    fi
+    if [[ -n "$py_halley" && -n "$cpp_halley" && "$py_halley" == "$cpp_halley" ]]; then
+        record PASS "Lambert W Halley step count agrees (Python=C++=$py_halley)"
+    else
+        record FAIL "Lambert W Halley step count agrees" \
+               "Python=${py_halley:-<not found>} C++=${cpp_halley:-<not found>}"
+    fi
 }
 
 # --------------------------------------------------------------------------
