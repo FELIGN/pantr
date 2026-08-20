@@ -1356,14 +1356,14 @@ def test_the_binding_refuses_a_negative_degree(cpp_backend: None) -> None:
     )
     for degree in negatives:
         with pytest.raises(TypeError):
-            _pantr_cpp.tabulate_cardinal_bspline_1d(degree, points, np.zeros((4, 1)))
+            _pantr_cpp.tabulate_cardinal_bspline_1d(degree, points, out=np.zeros((4, 1)))
 
     # A non-integer degree is refused by the same mechanism rather than truncated.
     # The type: ignore is the point of the assertion rather than a workaround:
     # `src/pantr/_pantr_cpp.pyi` declares `degree: int`, and this checks that the
     # binding enforces at run time what the stub only promises statically.
     with pytest.raises(TypeError):
-        _pantr_cpp.tabulate_cardinal_bspline_1d(3.0, points, np.zeros((4, 4)))  # type: ignore[arg-type]
+        _pantr_cpp.tabulate_cardinal_bspline_1d(3.0, points, out=np.zeros((4, 4)))  # type: ignore[arg-type]
 
     # The public API is where a user meets this, and there it is a ValueError
     # from Layer 2, identically on both backends.
@@ -1397,13 +1397,13 @@ def test_the_binding_refuses_an_out_of_the_wrong_extent(cpp_backend: None) -> No
     )
     for out in wrong:
         with pytest.raises(ValueError, match="out has shape"):
-            _pantr_cpp.tabulate_cardinal_bspline_1d(degree, points, out)
+            _pantr_cpp.tabulate_cardinal_bspline_1d(degree, points, out=out)
         assert not out.any(), "the binding wrote into an array it went on to reject"
 
     # The positive control. Without it the four assertions above are consistent
     # with a binding that refuses everything.
     accepted = np.zeros((points.size, degree + 1))
-    _pantr_cpp.tabulate_cardinal_bspline_1d(degree, points, accepted)
+    _pantr_cpp.tabulate_cardinal_bspline_1d(degree, points, out=accepted)
     assert accepted.any(), "the correctly shaped call was refused too"
 
 
@@ -1431,7 +1431,7 @@ def test_the_binding_refuses_a_non_contiguous_out(cpp_backend: None) -> None:
     assert not out.flags["C_CONTIGUOUS"], "the case this test exists for is not being built"
 
     with pytest.raises(TypeError):
-        _pantr_cpp.tabulate_cardinal_bspline_1d(2, points, out)
+        _pantr_cpp.tabulate_cardinal_bspline_1d(2, points, out=out)
     assert not out.any(), "the binding wrote into a strided out it should have refused"
 
 

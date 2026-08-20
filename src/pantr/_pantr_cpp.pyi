@@ -37,6 +37,7 @@ on the target there is no rounding difference for a tolerance to absorb.
 def tabulate_cardinal_bspline_1d(
     degree: int,
     points: npt.NDArray[np.float32 | np.float64],
+    *,
     out: npt.NDArray[np.float32 | np.float64],
 ) -> None:
     """Tabulate the cardinal B-spline basis of ``degree`` at ``points``.
@@ -54,7 +55,12 @@ def tabulate_cardinal_bspline_1d(
     * that ``degree`` is a non-negative integer, by that same signature -- the
       C++ parameter is ``unsigned``, so a negative value is rejected by the
       caster and never reaches pantr's code;
-    * that ``out.shape == (points.size, degree + 1)``, in the function body.
+    * that ``out.shape == (points.size, degree + 1)``, in the function body;
+    * that ``out`` is passed by keyword. It is the only output parameter here,
+      so there is nothing within this call to transpose, but the convention is
+      shared with :func:`gauss_legendre_symmetric` and the rest of
+      :mod:`pantr._pantr_cpp`, where two same-typed outputs make a positional
+      call transposable.
 
     Call :func:`pantr.basis.tabulate_cardinal_bspline_1d` for the ordinary path,
     which additionally takes points of any shape and allocates ``out`` for you.
@@ -73,13 +79,15 @@ def tabulate_cardinal_bspline_1d(
             array has the wrong dtype or rank, or if either is not C-contiguous.
             A non-contiguous array is **refused rather than converted**:
             converting an ``out`` would fill a temporary and leave the caller's
-            array untouched, which is why ``.noconvert()`` is on it.
+            array untouched, which is why ``.noconvert()`` is on it. Also raised
+            if ``out`` is passed positionally.
         ValueError: If ``out.shape`` is not ``(points.size, degree + 1)``, or if
             ``degree`` is too large to express as a C ``int``.
     """
 
 def gauss_legendre_symmetric(
     n: int,
+    *,
     out_nodes: npt.NDArray[np.float64],
     out_weights: npt.NDArray[np.float64],
 ) -> None:
@@ -99,7 +107,11 @@ def gauss_legendre_symmetric(
     * that ``n`` is a non-negative integer, by that same signature -- the C++
       parameter is ``unsigned``;
     * that ``n >= 1``, that ``n`` fits a C ``int``, and that both arrays have
-      length exactly ``n``, in the function body.
+      length exactly ``n``, in the function body;
+    * that ``out_nodes`` and ``out_weights`` are passed by keyword, by that same
+      signature. Both outputs share a type, rank, dtype and contiguity, so
+      nothing about a positional call would catch them transposed -- keyword-only
+      makes that a ``TypeError`` instead of a silently wrong answer.
 
     Call :func:`pantr.quad.get_gauss_legendre_1d` for the ordinary path, which
     maps the result onto ``[0, 1]``, narrows to the requested dtype, and
@@ -118,7 +130,8 @@ def gauss_legendre_symmetric(
         TypeError: If either array has a dtype other than float64, the wrong
             rank, or is not C-contiguous. A non-contiguous array is **refused
             rather than converted**, for the reason given on
-            :func:`tabulate_cardinal_bspline_1d`.
+            :func:`tabulate_cardinal_bspline_1d`. Also raised if ``out_nodes``
+            or ``out_weights`` is passed positionally.
         ValueError: If ``n`` is less than 1, if ``n`` is too large to fit a C
             ``int``, or if either array's length is not exactly ``n``.
     """
@@ -163,6 +176,7 @@ def lambert_w_principal(x: float) -> float:
 def generate_tanh_sinh(
     n: int,
     min_gap: float,
+    *,
     out_nodes: npt.NDArray[np.float64],
     out_weights: npt.NDArray[np.float64],
 ) -> int:
@@ -185,7 +199,9 @@ def generate_tanh_sinh(
       and strictly positive (a non-positive value never terminates the
       generation loop by its own test), and that both arrays have length at
       least ``n`` -- not exactly ``n``, since the caller sizes for the worst
-      case -- in the function body.
+      case -- in the function body;
+    * that ``out_nodes`` and ``out_weights`` are passed by keyword, by that same
+      signature, for the reason given on :func:`gauss_legendre_symmetric`.
 
     Call :func:`pantr.quad.get_tanh_sinh_1d` for the ordinary path, which
     derives ``min_gap`` from the requested dtype, maps the result onto
@@ -209,7 +225,8 @@ def generate_tanh_sinh(
         TypeError: If either array has a dtype other than float64, the wrong
             rank, or is not C-contiguous. A non-contiguous array is **refused
             rather than converted**, for the reason given on
-            :func:`tabulate_cardinal_bspline_1d`.
+            :func:`tabulate_cardinal_bspline_1d`. Also raised if ``out_nodes``
+            or ``out_weights`` is passed positionally.
         ValueError: If ``n`` is less than 1, if ``n`` is too large to fit a C
             ``int``, if ``min_gap`` is not finite or not strictly positive, or
             if either array's length is less than ``n``.
@@ -217,6 +234,7 @@ def generate_tanh_sinh(
 
 def trapezoidal(
     n: int,
+    *,
     out_nodes: npt.NDArray[np.float64],
     out_weights: npt.NDArray[np.float64],
 ) -> None:
@@ -235,7 +253,9 @@ def trapezoidal(
       arrays, by nanobind's typed signature, before the body runs;
     * that ``n`` is a non-negative integer, by that same signature;
     * that ``n >= 1``, that ``n`` fits a C ``int``, and that both arrays have
-      length exactly ``n``, in the function body.
+      length exactly ``n``, in the function body;
+    * that ``out_nodes`` and ``out_weights`` are passed by keyword, by that same
+      signature, for the reason given on :func:`gauss_legendre_symmetric`.
 
     Call :func:`pantr.quad.get_trapezoidal_1d` for the ordinary path, which
     narrows to the requested dtype and allocates the arrays for you.
@@ -253,13 +273,15 @@ def trapezoidal(
         TypeError: If either array has a dtype other than float64, the wrong
             rank, or is not C-contiguous. A non-contiguous array is **refused
             rather than converted**, for the reason given on
-            :func:`tabulate_cardinal_bspline_1d`.
+            :func:`tabulate_cardinal_bspline_1d`. Also raised if ``out_nodes``
+            or ``out_weights`` is passed positionally.
         ValueError: If ``n`` is less than 1, if ``n`` is too large to fit a C
             ``int``, or if either array's length is not exactly ``n``.
     """
 
 def modified_chebyshev_nodes(
     n: int,
+    *,
     out: npt.NDArray[np.float32 | np.float64],
 ) -> None:
     """Tabulate the ``n`` modified Chebyshev interpolation nodes on ``[0, 1]``.
@@ -279,7 +301,10 @@ def modified_chebyshev_nodes(
     * that ``n`` is a non-negative integer, by that same signature;
     * that ``n >= 2`` (the kernel divides by ``n - 1``), that ``n`` fits a C
       ``int``, and that ``out`` has length exactly ``n``, in the function
-      body.
+      body;
+    * that ``out`` is passed by keyword, by that same signature -- there is
+      only one output here to transpose against nothing, but the convention is
+      shared uniformly across :mod:`pantr._pantr_cpp`.
 
     Call :func:`pantr.quad.get_modified_chebyshev_nodes_1d` for the ordinary
     path, which allocates ``out`` for you.
@@ -295,7 +320,8 @@ def modified_chebyshev_nodes(
         TypeError: If ``out`` has the wrong dtype or rank, or is not
             C-contiguous. A non-contiguous array is **refused rather than
             converted**, for the reason given on
-            :func:`tabulate_cardinal_bspline_1d`.
+            :func:`tabulate_cardinal_bspline_1d`. Also raised if ``out`` is
+            passed positionally.
         ValueError: If ``n`` is less than 2, if ``n`` is too large to fit a C
             ``int``, or if ``out``'s length is not exactly ``n``.
     """

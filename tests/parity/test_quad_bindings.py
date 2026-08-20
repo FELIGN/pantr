@@ -41,16 +41,34 @@ def _extension() -> Any:
 def _two_output_kernels() -> list[tuple[str, Any]]:
     """List the bindings that write two arrays, which are the ones that can alias.
 
+    Every callable returned here still takes ``(n, nodes, weights)`` positionally
+    -- that shape is this test file's own convention, not the extension's -- and
+    passes ``nodes``/``weights`` to the extension by keyword, since
+    `test_an_output_argument_passed_positionally_is_refused` is what pins that a
+    positional call to the extension itself is now refused.
+
     Returns:
         list[tuple[str, Any]]: Name and a callable taking ``(n, nodes, weights)``.
     """
     extension = _extension()
     return [
-        ("gauss_legendre_symmetric", extension.gauss_legendre_symmetric),
-        ("trapezoidal", extension.trapezoidal),
+        (
+            "gauss_legendre_symmetric",
+            lambda n, nodes, weights: extension.gauss_legendre_symmetric(
+                n, out_nodes=nodes, out_weights=weights
+            ),
+        ),
+        (
+            "trapezoidal",
+            lambda n, nodes, weights: extension.trapezoidal(
+                n, out_nodes=nodes, out_weights=weights
+            ),
+        ),
         (
             "generate_tanh_sinh",
-            lambda n, nodes, weights: extension.generate_tanh_sinh(n, _MIN_GAP, nodes, weights),
+            lambda n, nodes, weights: extension.generate_tanh_sinh(
+                n, _MIN_GAP, out_nodes=nodes, out_weights=weights
+            ),
         ),
     ]
 
@@ -125,6 +143,53 @@ def test_two_outputs_that_overlap_are_refused(cpp_backend: None) -> None:
         with pytest.raises(ValueError, match="overlap"):
             call(6, buffer[:6], buffer[3:9])
         assert name  # every kernel in the family, not just the first
+
+
+def test_an_output_argument_passed_positionally_is_refused(cpp_backend: None) -> None:
+    """The bug this fix closes: a positional output is a `TypeError`, not a transposition.
+
+    Measured before this fix: ``gauss_legendre_symmetric(5, d, c)`` accepted ``d``
+    and ``c`` transposed silently and returned the NODES in ``d``, with no
+    exception anywhere. `test_two_outputs_that_overlap_are_refused` above cannot
+    catch that failure: aliasing requires passing the same array twice, while
+    transposition only requires misremembering an order, and the two output
+    parameters share type, rank, dtype and contiguity, so nothing in nanobind's
+    typed signature can tell them apart by position. Every output parameter
+    across `cpp/bindings/quad.cpp` and `cpp/bindings/basis.cpp` is now
+    keyword-only, so a positional call is refused before the body runs at all --
+    whether or not the positions happen to be transposed.
+
+    Args:
+        cpp_backend (None): Requires the compiled extension.
+    """
+    extension = _extension()
+    nodes = np.empty(5, dtype=np.float64)
+    weights = np.empty(5, dtype=np.float64)
+    with pytest.raises(TypeError):
+        extension.gauss_legendre_symmetric(5, nodes, weights)
+    with pytest.raises(TypeError):
+        extension.trapezoidal(5, nodes, weights)
+    with pytest.raises(TypeError):
+        extension.generate_tanh_sinh(5, _MIN_GAP, nodes, weights)
+
+    single = np.empty(5, dtype=np.float64)
+    with pytest.raises(TypeError):
+        extension.modified_chebyshev_nodes(5, single)
+
+    points = np.linspace(0.0, 1.0, 4)
+    basis_out = np.empty((4, 3), dtype=np.float64)
+    with pytest.raises(TypeError):
+        extension.tabulate_cardinal_bspline_1d(2, points, basis_out)
+
+    # The keyword form is exactly what a positional call could not be trusted to
+    # get right, and it still works: this is the other half of the assertion,
+    # the one `test_a_non_contiguous_output_is_refused_rather_than_silently_discarded`
+    # above pairs with its own positive control.
+    poisoned_nodes = np.full(5, np.nan, dtype=np.float64)
+    poisoned_weights = np.full(5, np.nan, dtype=np.float64)
+    extension.gauss_legendre_symmetric(5, out_nodes=poisoned_nodes, out_weights=poisoned_weights)
+    assert not np.isnan(poisoned_nodes).any(), "the keyword form left a node unwritten"
+    assert not np.isnan(poisoned_weights).any(), "the keyword form left a weight unwritten"
 
 
 def test_disjoint_outputs_are_accepted_and_actually_written(cpp_backend: None) -> None:
@@ -211,7 +276,7 @@ def test_a_threshold_that_cannot_terminate_the_rule_is_refused(
     nodes = np.empty(8, dtype=np.float64)
     weights = np.empty(8, dtype=np.float64)
     with pytest.raises(ValueError):
-        extension.generate_tanh_sinh(8, bad_gap, nodes, weights)
+        extension.generate_tanh_sinh(8, bad_gap, out_nodes=nodes, out_weights=weights)
 
 
 @pytest.mark.parametrize("argument", [0.0, 1.0, 1.6, -5.0, float("nan")])
@@ -245,4 +310,4 @@ def test_the_chebyshev_nodes_refuse_a_count_that_would_divide_by_zero(
     """
     out = np.empty(max(count, 1), dtype=np.float64)
     with pytest.raises(ValueError):
-        _extension().modified_chebyshev_nodes(count, out)
+        _extension().modified_chebyshev_nodes(count, out=out)

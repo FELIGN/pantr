@@ -598,7 +598,9 @@ def test_a_libm_reconstruction_reproduces_the_cpp_tanh_sinh_kernel_bitwise(
         for n in (2, 3, 5, 17, 42, 64, 124, 200, 401, 544, 1000):
             nodes = np.empty(n, dtype=np.float64)
             weights = np.empty(n, dtype=np.float64)
-            count = int(_pantr_cpp.generate_tanh_sinh(n, min_gap, nodes, weights))
+            count = int(
+                _pantr_cpp.generate_tanh_sinh(n, min_gap, out_nodes=nodes, out_weights=weights)
+            )
             matched = False
             for square in (_by_multiplication, _by_libm_pow):
                 built_nodes, built_weights = _reconstruct_cpp_rule(n, min_gap, square)
@@ -650,7 +652,7 @@ def test_the_cpp_square_is_the_libm_pow_the_header_says_it_is(cpp_backend: None)
 
     nodes = np.empty(n, dtype=np.float64)
     weights = np.empty(n, dtype=np.float64)
-    count = int(_pantr_cpp.generate_tanh_sinh(n, min_gap, nodes, weights))
+    count = int(_pantr_cpp.generate_tanh_sinh(n, min_gap, out_nodes=nodes, out_weights=weights))
     _, by_pow = _reconstruct_cpp_rule(n, min_gap, _by_libm_pow)
     _, by_mul = _reconstruct_cpp_rule(n, min_gap, _by_multiplication)
 
@@ -752,7 +754,7 @@ def test_the_binding_refuses_a_min_gap_that_cannot_keep_a_node_off_the_endpoint(
     nodes = np.empty(60, dtype=np.float64)
     weights = np.empty(60, dtype=np.float64)
     with pytest.raises(ValueError, match="min_gap"):
-        _pantr_cpp.generate_tanh_sinh(60, 1e-300, nodes, weights)
+        _pantr_cpp.generate_tanh_sinh(60, 1e-300, out_nodes=nodes, out_weights=weights)
 
 
 def test_a_min_gap_below_the_threshold_puts_nodes_on_the_endpoints(cpp_backend: None) -> None:
@@ -771,7 +773,7 @@ def test_a_min_gap_below_the_threshold_puts_nodes_on_the_endpoints(cpp_backend: 
     n = 60
     nodes = np.empty(n, dtype=np.float64)
     weights = np.empty(n, dtype=np.float64)
-    count = int(_pantr_cpp.generate_tanh_sinh(n, 1e-300, nodes, weights))
+    count = int(_pantr_cpp.generate_tanh_sinh(n, 1e-300, out_nodes=nodes, out_weights=weights))
     on_endpoint = int(np.count_nonzero(np.abs(nodes[:count]) >= 1.0))
     assert on_endpoint > 0, (
         "1e-300 no longer drives a node onto an endpoint, so either the collapse "
@@ -819,7 +821,7 @@ def test_an_emptied_rule_is_reported_the_same_way_by_both_backends(cpp_backend: 
     weights = np.empty(8, dtype=np.float64)
     with warnings.catch_warnings(record=True) as cpp_warnings:
         warnings.simplefilter("always")
-        cpp_count = int(_pantr_cpp.generate_tanh_sinh(8, 1.0, nodes, weights))
+        cpp_count = int(_pantr_cpp.generate_tanh_sinh(8, 1.0, out_nodes=nodes, out_weights=weights))
     with warnings.catch_warnings(record=True) as python_warnings:
         warnings.simplefilter("always")
         _, python_count = _generate_tanh_sinh_core(8, 1.0)
