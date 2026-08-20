@@ -117,9 +117,11 @@ if(PANTR_NANOBIND_SPLIT)
   # GCC 14: without this, `nb_attr.h:78: using arg = arg_t<>` trips -Wshadow and
   # -Werror ends the build.
   nanobind_add_module(_pantr_cpp NOMINSIZE NOSTRIP NB_SUPPRESS_WARNINGS
-                      BACKEND_MODULE nanobind_backend pantr_cpp.cpp)
+                      BACKEND_MODULE nanobind_backend
+                      pantr_cpp.cpp basis.cpp quad.cpp)
 else()
-  nanobind_add_module(_pantr_cpp NB_STATIC NOMINSIZE NOSTRIP pantr_cpp.cpp)
+  nanobind_add_module(_pantr_cpp NB_STATIC NOMINSIZE NOSTRIP
+                      pantr_cpp.cpp basis.cpp quad.cpp)
 endif()
 
 # nanobind's own headers are not -Wshadow clean (measured: 2.14.0 on GCC 14
