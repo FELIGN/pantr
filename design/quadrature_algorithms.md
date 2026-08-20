@@ -108,12 +108,58 @@ by construction, `x = 0.6*pi*(n-1)`, so `x` lies in about `[1.9, 1500]` for `n` 
 **A branch-free asymptotic start and a fixed iteration count, with no convergence test.** The
 fixed count is not a convenience: a residual test is a comparison on the scalar, which is
 Tier B under `design/automatic_differentiation.md`, and it would put data-dependent control
-flow inside a kernel. The count is four rather than three for a reason worth stating, since
-three measures fine: with a measured maximum initial relative error of 0.551, the cubic
-convergence chain with unit constant reads 0.551, 0.166, 4.6e-3, 9.7e-8, 8.9e-22. It closes
-below unit roundoff at the fourth step and only reaches 1e-7 at the third. Three iterations
-would make the guarantee *observed*; four make it *derived*, and the extra cost is one
-exponential and one logarithm **per rule**, not per node.
+flow inside a kernel. The count is **four**, and there are two arguments for it. The second is
+the operative one.
+
+**The convergence chain. PROVED, with one SUPPORTED constant.** Write `f(w) = w e^w - x`, `w*`
+for its root, `e_k = w_k - w*` the **absolute** error, and `u` for the unit roundoff. Halley on
+`f` is Newton on `g = f / sqrt(f')`, and `g'' = f * Phi` with
+`Phi = e^{-w/2} (1+w)^{-5/2} (w^2 + 4w + 6) / 4`. Because `g''` carries `f` as an explicit
+factor, `g''(w*) = 0` holds structurally rather than by cancellation, so applying Lagrange's
+remainder twice gives
+
+    |e_1| <= |e_0|^3 * sup_I |g'''| / (2 |g'(w_0)|)   =:  M |e_0|^3
+
+**Hypotheses.** (H1) `f' > 0` on the interval `I` containing `w_0` and `w*`. Required; it is what
+makes `g` well defined and the Newton step finite. It holds because `x >= 1.885` forces
+`I` inside `[0.37, infinity)`. (H2) `M <= 0.6886`, obtained from a grid over `I` rather than in
+closed form: **SUPPORTED, not proved**, and it is the one gap in this argument. (H3) Real
+arithmetic. The chain is stated in exact arithmetic and compared against `u` only at the end;
+the floating-point evaluation of one Halley step is a separate matter and is not bounded here.
+
+With `e_0 = 0.455`, measured as the largest absolute initial error over the argument range, the
+chain reads `0.455, 6.5e-2, 1.1e-4, 4.9e-13, 4.5e-38`. **Three steps miss `u` and four clear
+it**, and the count is insensitive to `M` anywhere in `[0.28, 1]`, so the gap in (H2) does not
+reach the conclusion.
+
+**The frame, which is where an earlier version of this note was wrong.** `0.455` is an
+**absolute** error and `0.551` is a **relative** one, and they are equal only at the smallest
+`w*`. A chain written in the relative frame needs the relative constant `K(w*) * w*^2`, which is
+not bounded by 1: it is 0.170 at `x = 1.885` and reaches **53.9** at `x = 1e12`. So the earlier
+claim that the chain closes "with unit constant" was true in one frame and false in the other,
+and it reached the right count only because the worst initial error and the worst constant sit
+at opposite ends of the range. A check of the form "is `|e_1| <= K |e_0|^3`?" passes at
+`w* = 5, e = 2.76` while one step reduces the error by a factor of only 2.4 and the four-step
+chain has stopped closing. **REFUTED**, and replaced by the absolute chain above.
+
+**The validity threshold, which is the argument that actually decides the count. SUPPORTED.**
+The branch-free start is `w_0 = L1 - L2 + L2/L1` with `L1 = log(x)`, `L2 = log(L1)`, and it is
+only usable while `x` is large enough to keep `w_0` on the principal branch. Bisecting on the
+decay factor with everything else held fixed, at `n = 2`, which is the binding case because `x`
+is smallest there: **three** steps reach one unit of roundoff down to a decay factor of 0.5932,
+and **four** down to 0.5097. The shipped value is 0.6. So three iterations sit **1.1%** away
+from failing and four sit **18%** away, in a constant whose provenance is unrecorded (see
+below). That margin, not the chain, is why the count is four. The extra step costs one exponential and one logarithm **per rule**,
+not per node.
+
+**A coupling neither constant records, and it is required.** `_TANH_SINH_DECAY_FACTOR` sets the
+smallest argument this kernel ever sees, `x_min = 0.6 * pi * (n - 1)` at `n = 2`. Below a decay
+factor of about 0.51 the start lands negative, off the principal branch, and **no number of
+Halley steps recovers**; below about 0.318, `L2 = log(log(x))` is not real. Measured, varying
+the factor with everything else fixed: at 0.50 the result is 2.8e4 units of roundoff after four
+steps, at 0.40 it is 2.4e16, at 0.32 it is not a number. Neither definition mentions the other
+today, so a change to the decay factor for better discretization error would produce a silently
+wrong step size with no error signal.
 
 ## The three rules that are not ported, and why that is a decision
 
