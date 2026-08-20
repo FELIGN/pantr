@@ -209,6 +209,11 @@ validate it in the cloud.
 
 ### FMA breaks bit-level parity, and that touches `D1`
 
+**Measured caveat first:** at the *baseline* target there is no FMA instruction at all, so
+nothing fuses and parity can be exact and provably so. This hazard applies from
+`-march=x86-64-v3` upward. See `design/build_findings.md` for the disassembly evidence
+and for the two corrections the resulting bound needed.
+
 `a * b + c` fused and unfused differ in the last bits. The project's own rule already says
 bit-exactness is the wrong target, but the **parity tolerance against the Numba backend has
 to absorb the FMA difference explicitly**, and it is derivable: on the order of one ulp per
@@ -243,28 +248,7 @@ another. It is not a performance option, it is a silent correctness change.
 - **Standard platform facts, stated from knowledge and worth a check:** the lane widths
   table; that AVX2 gather costs roughly 5 to 12 cycles and NEON has none; that sustained
   AVX-512 use downclocks on many Intel parts; that Apple Silicon has several NEON pipelines
-  and no SVE. None of these were measured *here*, but see the next item for the third.
-- **Measured 2026-08-19 on the C++ prototype's cardinal B-spline kernel** (GCC 14.4.0,
-  `-O3`, 10^6 points, minimum over repeats), which is the measurement the ISA-variant
-  section gates itself on:
-
-  | target | degree 3 | degree 8 | fused sites |
-  |---|---:|---:|---:|
-  | baseline x86-64 | 10.47 ms | 50.73 ms | 0 |
-  | `-march=x86-64-v3` | 8.69 ms | 40.04 ms | 1 |
-  | `-march=native` (AVX-512 here) | 9.20 ms | 43.69 ms | 1 |
-
-  Three things follow. The gap is **real but modest**, 1.20x to 1.27x, so the ladder is a
-  decision rather than a free win. **`-march=native` is slower than `-march=x86-64-v3`** on
-  this machine, which measures the "AVX-512 can be slower" hazard above on one of pantr's own
-  kernels rather than asserting it. And the ISA introduces **exactly one** fused site, the
-  one the parity bound is derived around, confirming by disassembly that the fused set is
-  determinable from the source -- which is what the `-ffp-contract=on` choice rests on.
-- **Measured, and it corrects nothing here but is worth recording next to the flag
-  discussion:** with no `-march` the target has no FMA instruction at all, so
-  `-ffp-contract=on` fuses nothing and the C++ and numba backends agree **bit for bit**. The
-  parity tolerance this note calls for is therefore dormant on the shipped build and becomes
-  live exactly when the ladder is turned on.
+  and no SVE. None of these were measured here.
 - **Asserted, not measured:** every expected-gain figure in the candidates table. They are
   upper bounds from lane width discounted for loop overhead and dependencies, not
   benchmarks. The purpose of the table is to rank candidates, not to predict outcomes.
@@ -276,9 +260,13 @@ another. It is not a performance option, it is a silent correctness change.
 ## Open questions
 
 1. Does the blocked contraction auto-vectorize? If yes, no batch abstraction is needed at
-   all for the main kernel and xsimd never enters the dependency list.
+   all for the main kernel and xsimd never enters the dependency list. Still open: the
+   first kernel ported has no loop worth vectorizing, so this waits for stage 2.
+0. ~~Does split mode compose with several ISA variants?~~ **Answered, measured.** Two
+   frontends at different `-march` against one backend both import in the same process
+   and both work. See `design/build_findings.md`.
 2. Is the block width `W` a compile-time constant per ISA variant, or a runtime parameter?
-   Compile-time composes with the multi-ISA build below, which already compiles the module
+   Compile-time composes with the `D13` multi-ISA build, which already compiles the module
    once per ISA, and lets the remainder handling be resolved at compile time.
 3. Should scattered-point evaluation be a documented slow path, given that it is the only
    case needing a gather and NEON cannot do one? This is the same
