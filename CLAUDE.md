@@ -23,7 +23,7 @@ pytest -m "not slow"                                        # skip the slow-mark
 NUMBA_DISABLE_JIT=1 pytest --cov=src/pantr --cov-report=xml # coverage (JIT disabled)
 ruff check .                                                # lint
 ruff format .                                               # format
-mypy --config-file mypy.ini src tests                       # type check
+mypy --config-file mypy.ini src tests scripts               # type check
 PYTHONPATH=src lint-imports                                 # import boundaries (core must not import pantr.mpi)
 NUMBA_DISABLE_JIT=1 make docs SPHINXOPTS="-W --keep-going -j auto"  # docs build (matches CI)
 pip install -e ".[dev]"                                     # full dev env (pulls all optional extras)

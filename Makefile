@@ -70,7 +70,7 @@ ruff-format-check:
 
 # Static type checking
 type-check:
-	mypy --config-file mypy.ini src tests
+	mypy --config-file mypy.ini src tests scripts
 
 # Import boundary checks: serial core must not import pantr.mpi.
 # PYTHONPATH=src pins the analysis to this checkout's source: import-linter resolves
