@@ -192,7 +192,7 @@ jobs:
           "
 
       - name: Parity
-        run: PANTR_REQUIRE_CPP=1 pytest tests/test_cpp_parity.py -q
+        run: PANTR_REQUIRE_CPP=1 pytest tests/parity -q
 
       # The acceptance criterion of the infrastructure PR: the pre-existing suite
       # passes against both backends, not merely a new test written to agree with

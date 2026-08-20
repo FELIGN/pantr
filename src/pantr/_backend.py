@@ -348,7 +348,7 @@ that never asked for a backend changes kernel mid-flight. Both are the *only*
 outcome of their interleaving rather than a rare race, and the binding releases
 the GIL specifically so that callers may thread at the Python level, which makes
 this the shape the module invites rather than a pathological one.
-``tests/test_cpp_parity.py`` pins both.
+``tests/parity/test_dispatch.py`` pins both.
 """
 
 

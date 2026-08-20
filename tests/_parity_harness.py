@@ -2,8 +2,8 @@
 
 This module is **infrastructure, not tests**. It is deliberately not named
 ``test_*.py`` so pytest does not collect it, and it is imported by the per-kernel
-parity modules (``tests/test_cpp_parity.py`` today, one more per ported module as
-the port proceeds).
+parity modules under ``tests/parity/`` (``test_basis_cardinal_bspline.py`` today,
+one more per ported module as the port proceeds).
 
 Why it exists
 -------------
@@ -49,7 +49,7 @@ outside, without a second tolerance and without excluding the hard cases.
 
 One way to produce it is a *companion recurrence*: run the kernel's own recurrence
 with every coefficient replaced by its absolute value. See
-``tests/test_cpp_parity.py`` for a worked one.
+``tests/parity/test_basis_cardinal_bspline.py`` for a worked one.
 
 **That recipe is not general, and where it fails it fails silently.** It bounds a
 recurrence whose coefficients form a convex combination, which is the cardinal

@@ -34,8 +34,9 @@
 /// That is what makes the parity bound derivable rather than fitted: a relative
 /// error bound on two non-negative summands is inherited by their sum, so
 /// relative errors propagate additively through the stages instead of being
-/// amplified. The bound itself is derived in tests/test_cpp_parity.py, next to
-/// the assertion that uses it.
+/// amplified. The bound itself is derived in
+/// tests/parity/test_basis_cardinal_bspline.py, next to the assertion that uses
+/// it.
 ///
 /// ## Accumulation type: stated, not inherited
 ///
@@ -143,9 +144,9 @@ void tabulate_cardinal_bspline_1d(int degree, std::span<const T> points, span2d<
                 // fmul then fadd, never fmuladd). So parity is bit-exact on the
                 // shipped build and becomes a one-rounding-per-stage question the
                 // day design/simd.md's stage 2 turns the ISA ladder on.
-                // tests/test_cpp_parity.py selects between the two by reading
-                // `pantr._pantr_cpp.__fp_contract__`, and derives the bound for
-                // the second.
+                // tests/parity/test_basis_cardinal_bspline.py selects between
+                // the two by reading `pantr._pantr_cpp.__fp_contract__`, and
+                // derives the bound for the second.
                 at(out, j, r) = static_cast<T>(saved + nr_old * term);
 
                 saved = nr_old * (Acc(1) - term);

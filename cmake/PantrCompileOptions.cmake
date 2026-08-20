@@ -39,7 +39,8 @@
 #   `on`   is the standard's FP_CONTRACT behaviour: a multiply may be fused into
 #          an add only within a single expression. The set of fused sites is
 #          then determinable by reading the source, which is what makes the
-#          parity bound in tests/test_cpp_parity.py DERIVED rather than fitted.
+#          parity bound in tests/parity/test_basis_cardinal_bspline.py DERIVED
+#          rather than fitted.
 #   `fast` allows contraction across statements, so the fused set depends on
 #          what the optimiser chose to hoist, and no bound written by hand can
 #          be checked against it.

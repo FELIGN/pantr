@@ -463,7 +463,7 @@ python_checks() {
         return 0
     fi
 
-    check "parity: C++ vs numba" python -m pytest tests/test_cpp_parity.py -q
+    check "parity: C++ vs numba" python -m pytest tests/parity -q
 
     # The acceptance criterion: the EXISTING suite passes against both backends.
     # change_basis is the module that reaches the ported kernel, so it is named

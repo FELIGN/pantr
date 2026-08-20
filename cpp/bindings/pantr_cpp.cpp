@@ -163,7 +163,7 @@ NB_MODULE(_pantr_cpp, m) {
 
     // Build provenance, so a measurement can name the binary that produced it
     // rather than the source tree it was built from. `fp_contract` is the one
-    // that matters for the parity bound: see tests/test_cpp_parity.py.
+    // that matters for the parity bound: see tests/parity/test_basis_cardinal_bspline.py.
     m.attr("__compiler__") =
 #if defined(__clang__)
         "clang " __clang_version__;

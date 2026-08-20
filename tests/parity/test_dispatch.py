@@ -1,0 +1,251 @@
+"""Backend-dispatch machinery: the axes, the never-fall-back rule, and use_backend.
+
+Kernel-agnostic tests of `pantr._backend` and the seam it dispatches through --
+which backend and which ISA variant are selected, that a missing choice on either
+axis raises rather than falling back, and that `use_backend`'s ContextVar-backed
+override is scoped correctly across threads. Nothing here asserts on a kernel
+result; the parity/accuracy tests of each ported kernel live in their own
+sibling module under `tests/parity`.
+"""
+
+from __future__ import annotations
+
+import threading
+
+import pytest
+
+from pantr import _numba_compat
+from pantr._backend import (
+    Backend,
+    IsaVariant,
+    active_backend,
+    active_isa_variant,
+    available_isa_variants,
+    use_backend,
+)
+from pantr.basis._basis_backend import cardinal_bspline_core
+from tests._parity_harness import build_provenance, cpp_backend_available, demand_cpp_backend
+
+
+def test_cpp_extension_presence_is_declared() -> None:
+    """Report the extension's presence as a test outcome rather than as silence.
+
+    CLAUDE.md: "A missing optional dependency skips tests silently", and a local
+    green built on such a skip has let real failures through here before. This test
+    exists so that state is always in the report -- a pass when the extension is
+    there, one visible skip with a build hint when it is not, and a failure when
+    ``PANTR_REQUIRE_CPP`` says it had to be.
+    """
+    demand_cpp_backend()
+    assert cpp_backend_available()
+
+
+def test_build_provenance_is_reported(cpp_backend: None) -> None:
+    """Pin the three attributes the parity claim is selected from.
+
+    The claim in :func:`_parity_claim` is conditional on ``__fp_contract__``. A
+    binding that stopped reporting it, or reported an unrecognised value, would send
+    every parity test down whichever branch a default happened to pick, silently.
+    """
+    provenance = build_provenance()
+    assert provenance.compiler, "the extension must name the compiler that built it"
+    assert provenance.fp_contract in {"available", "unavailable-on-target-isa"}, (
+        f"unrecognised __fp_contract__ {provenance.fp_contract!r}: the parity claim is "
+        f"selected from this value and cannot be selected from a value it does not know"
+    )
+    assert isinstance(provenance.has_std_mdspan, bool)
+
+
+def test_jit_warmup_barrier_was_taken() -> None:
+    """Assert the session barrier ran before any kernel call.
+
+    No in-process test can observe the race it prevents (the barrier is a
+    once-per-process event and the failure is an abort, not an exception), so what
+    is testable is that the barrier was taken. CLAUDE.md says exactly this.
+    """
+    assert _numba_compat._warmup_done, (
+        "the session-scoped warmup barrier did not run before the kernel tests; a "
+        "parallel=True kernel called during background compilation aborts the process"
+    )
+
+
+def test_the_isa_variant_is_a_separate_axis_from_the_backend() -> None:
+    """Which family runs, and which build of it, are two questions with two enums.
+
+    The assertion on :class:`Backend`'s members is the load-bearing one. The
+    accepted values of ``PANTR_BACKEND`` are exactly those names, lowercased, and
+    they are user-facing the moment anyone writes one into a script -- so folding
+    the ISA ladder in later as ``cpp_v3`` would break every such script. Splitting
+    the axes now costs nothing and makes that impossible; this pins it.
+    """
+    assert [b.name for b in Backend] == ["PYTHON", "CPP"], (
+        "PANTR_BACKEND's accepted values are the lowercased member names, and "
+        "changing them breaks any script that sets the variable"
+    )
+    assert [v.name for v in IsaVariant] == ["BASELINE"], (
+        "design/simd.md gates building an ISA variant on a measurement; a member "
+        "here without a module to load would make available_isa_variants() lie"
+    )
+    assert available_isa_variants() == (IsaVariant.BASELINE,)
+    assert active_isa_variant() is IsaVariant.BASELINE
+
+
+def test_a_requested_choice_that_is_missing_raises_on_either_axis(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The never-fall-back rule is one rule, and it already holds on the ISA axis.
+
+    The backend half is covered below, through the entry points a caller reaches.
+    The ISA half has no such entry point yet -- one variant exists and it is
+    always available -- so the shared resolver is called directly with the empty
+    availability list that an unbuilt variant will produce. That is the case
+    ``design/simd.md`` says must fail rather than quietly load another module,
+    and testing it now is what keeps the rule from being written twice and
+    drifting when the ladder lands.
+    """
+    from pantr import _backend  # noqa: PLC0415
+
+    monkeypatch.setenv("PANTR_ISA_VARIANT", "baseline")
+    with pytest.raises(RuntimeError, match="does not fall back"):
+        _backend._resolve_from_environment(
+            "PANTR_ISA_VARIANT", IsaVariant, (), IsaVariant.BASELINE, "  nothing is built"
+        )
+
+    monkeypatch.setenv("PANTR_ISA_VARIANT", "x86_64_v3")
+    with pytest.raises(ValueError, match="PANTR_ISA_VARIANT='x86_64_v3' is not one of"):
+        _backend._resolve_from_environment(
+            "PANTR_ISA_VARIANT",
+            IsaVariant,
+            available_isa_variants(),
+            IsaVariant.BASELINE,
+            "",
+        )
+
+    monkeypatch.delenv("PANTR_ISA_VARIANT")
+    unset = _backend._resolve_from_environment(
+        "PANTR_ISA_VARIANT", IsaVariant, available_isa_variants(), IsaVariant.BASELINE, ""
+    )
+    assert unset is IsaVariant.BASELINE, "an unset variable must mean the default"
+
+
+def test_an_unavailable_backend_request_never_falls_back(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An explicit request for a missing backend raises rather than running the other.
+
+    ``pantr._backend`` states this as the reason the selector exists: a silent
+    downgrade makes every A/B measurement a measurement of the wrong thing, and the
+    measurement is what the override is for. It is untestable as written on a
+    machine where both backends exist, so the absence is simulated: the extension
+    handle is removed and the two entry points are asked for it anyway.
+    """
+    from pantr import _backend  # noqa: PLC0415
+
+    monkeypatch.setattr(_backend, "_CPP_AVAILABLE", False)
+
+    assert _backend.available_backends() == (Backend.PYTHON,)
+    with pytest.raises(RuntimeError, match="not available"):
+        cardinal_bspline_core(Backend.CPP)
+    with pytest.raises(RuntimeError, match="not available"), use_backend(Backend.CPP):
+        pytest.fail("use_backend must refuse an unavailable backend before yielding")
+
+    # And the Numba backend is still reachable, i.e. the guard rejects rather than
+    # disabling the selector. Compared by identity against the kernel itself: that
+    # the returned object is not None says nothing, since a function reference
+    # never is.
+    from pantr.basis._basis_core import (  # noqa: PLC0415
+        _tabulate_cardinal_Bspline_basis_1D_core,
+    )
+
+    assert cardinal_bspline_core(Backend.PYTHON).parallel is (
+        _tabulate_cardinal_Bspline_basis_1D_core
+    )
+
+
+def test_overlapping_use_backend_blocks_in_two_threads_do_not_leak(cpp_backend: None) -> None:
+    """Two threads whose ``use_backend`` blocks overlap both restore what they found.
+
+    The lost update, forced deterministically with events rather than sleeps: A
+    enters, B enters while A is inside, A exits, B exits. Against a plain module
+    global, B's saved "previous" is A's override rather than the process default,
+    so B restores the process to A's value on the way out and it stays there --
+    for the rest of the process, with nothing left in scope to put it back.
+
+    That is not a race in the sense of a rare interleaving. It is the *only*
+    outcome of this ordering, which is why the test is deterministic.
+
+    The backend the two threads select is whichever one the process is *not*
+    already on, and the assertion is against the ambient value rather than a named
+    one. Both matter: this file is run under ``PANTR_BACKEND=python`` and under
+    ``PANTR_BACKEND=cpp``, and a fixed backend makes the test assert nothing under
+    one of the two.
+    """
+    ambient = active_backend()
+    other = Backend.PYTHON if ambient is Backend.CPP else Backend.CPP
+    entered_a = threading.Event()
+    entered_b = threading.Event()
+    exited_a = threading.Event()
+    timeout = 10.0
+
+    def first() -> None:
+        with use_backend(other):
+            entered_a.set()
+            assert entered_b.wait(timeout), "the second thread never entered its block"
+        exited_a.set()
+
+    def second() -> None:
+        assert entered_a.wait(timeout), "the first thread never entered its block"
+        with use_backend(other):
+            entered_b.set()
+            assert exited_a.wait(timeout), "the first thread never left its block"
+
+    threads = [threading.Thread(target=first), threading.Thread(target=second)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=timeout)
+        assert not thread.is_alive(), "a thread did not finish; the events deadlocked"
+
+    assert active_backend() is ambient, (
+        f"two use_backend blocks that overlapped have left the process on "
+        f"{active_backend().name} rather than the {ambient.name} it started on, so "
+        f"every later call in this process runs a kernel nobody asked for"
+    )
+
+
+def test_use_backend_does_not_reach_into_another_thread(cpp_backend: None) -> None:
+    """A thread started inside a ``use_backend`` block runs on the process default.
+
+    The other half, and the one that decides an A/B measurement. The binding
+    releases the GIL precisely so a caller can thread at the Python level, so
+    "one thread is inside an override while another is working" is the shape this
+    module invites rather than a pathological one. Against a module global the
+    worker silently switches backend mid-flight, which is exactly the silent
+    downgrade ``pantr._backend`` exists to prevent -- only in the other
+    direction, and without an exception to notice it by.
+
+    The direction asserted here is the deliberate one: an override is scoped to
+    the thread (and the task) that took it, so a thread inherits the process
+    default rather than its spawner's override. :func:`use_backend` says so.
+
+    The override is whichever backend the process is *not* already on, so that
+    the two values being compared always differ. Naming a fixed backend would
+    make this assert nothing whenever ``PANTR_BACKEND`` happened to select it.
+    """
+    ambient = active_backend()
+    other = Backend.PYTHON if ambient is Backend.CPP else Backend.CPP
+    observed: list[Backend] = []
+
+    with use_backend(other):
+        assert active_backend() is other, "the override did not take in its own thread"
+        worker = threading.Thread(target=lambda: observed.append(active_backend()))
+        worker.start()
+        worker.join(timeout=10.0)
+        assert not worker.is_alive(), "the observing thread did not finish"
+
+    assert observed == [ambient], (
+        f"a thread started inside a use_backend({other.name}) block observed "
+        f"{[b.name for b in observed]} rather than the process default "
+        f"{ambient.name}, so the selection is process-wide rather than scoped to "
+        f"the block that took it"
+    )

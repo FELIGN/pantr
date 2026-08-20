@@ -207,8 +207,9 @@ void low_degrees_match_closed_forms() {
 /// `static_assert(std::same_as<pantr::accumulator_t<float>, double>)` in
 /// cpp/tests/test_scalar_generic.cpp, which is a build failure rather than a
 /// tolerance, and `test_float32_intermediates_are_float64` in
-/// tests/test_cpp_parity.py, which compares against an explicit model of the
-/// arithmetic contract in both directions. This one keeps its own smaller job:
+/// tests/parity/test_basis_cardinal_bspline.py, which compares against an
+/// explicit model of the arithmetic contract in both directions. This one
+/// keeps its own smaller job:
 /// the `float` instantiation exists, runs, and is not grossly wrong.
 void float32_instantiation_holds_partition_of_unity() {
     constexpr float kEps32 = std::numeric_limits<float>::epsilon();
