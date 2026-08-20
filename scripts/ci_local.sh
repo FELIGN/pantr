@@ -470,11 +470,11 @@ python_checks() {
     # explicitly; the full suite follows because a kernel swap that breaks
     # something else is exactly what a narrow run would miss.
     local be
-    for be in numba cpp; do
+    for be in python cpp; do
         PANTR_BACKEND=$be check "change_basis on $be" python -m pytest \
             tests/test_change_basis_1D.py tests/test_change_basis_domain.py -q
     done
-    for be in numba cpp; do
+    for be in python cpp; do
         PANTR_BACKEND=$be check "full suite on $be" python -m pytest tests -q -x -m "not slow"
     done
 }

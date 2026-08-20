@@ -134,7 +134,7 @@ def cardinal_bspline_core(backend: Backend | None = None) -> CoreKernels:
     """
     chosen = active_backend() if backend is None else backend
 
-    if chosen is Backend.NUMBA:
+    if chosen is Backend.PYTHON:
         return CoreKernels(parallel=_tabulate_cardinal_Bspline_basis_1D_core)
 
     if chosen not in available_backends():
