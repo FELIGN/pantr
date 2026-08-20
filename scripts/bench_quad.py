@@ -128,22 +128,28 @@ def _bench_kernels(counts: Sequence[int]) -> None:
             (
                 "gauss_legendre",
                 lambda n=count: _gauss_legendre_symmetric_core(n),
-                lambda n=count, x=nodes, w=weights: extension.gauss_legendre_symmetric(n, x, w),
+                lambda n=count, x=nodes, w=weights: extension.gauss_legendre_symmetric(
+                    n, out_nodes=x, out_weights=w
+                ),
             ),
             (
                 "trapezoidal",
                 lambda n=count: _trapezoidal_core(n),
-                lambda n=count, x=nodes, w=weights: extension.trapezoidal(n, x, w),
+                lambda n=count, x=nodes, w=weights: extension.trapezoidal(
+                    n, out_nodes=x, out_weights=w
+                ),
             ),
             (
                 "chebyshev_nodes",
                 lambda n=count: _modified_chebyshev_nodes_core(n, np.float64),
-                lambda n=count, x=nodes: extension.modified_chebyshev_nodes(n, x),
+                lambda n=count, x=nodes: extension.modified_chebyshev_nodes(n, out=x),
             ),
             (
                 "tanh_sinh",
                 lambda n=count: _generate_tanh_sinh_core(n, min_gap),
-                lambda n=count, x=nodes, w=weights: extension.generate_tanh_sinh(n, min_gap, x, w),
+                lambda n=count, x=nodes, w=weights: extension.generate_tanh_sinh(
+                    n, min_gap, out_nodes=x, out_weights=w
+                ),
             ),
         ):
             _report("kernel", rule, count, _microseconds(python_call), _microseconds(cpp_call))
