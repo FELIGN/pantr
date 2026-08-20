@@ -1,10 +1,11 @@
 # Backend parity: what a bound may claim, and in which frame
 
-**Status:** partial, on purpose. The rules below are settled and three further module ports
-inherit them. The verdict on whether the parity harness generalized from one kernel to four
-is deliberately not written yet; it is a deliverable of the `quad` port and belongs here once
-that port's tests exist rather than before.
-**Date:** 2026-08-20.
+**Status:** complete for the two ports that exist. Six rules, each with the failure that produced
+it, and three further module ports inherit them. The verdict on whether the parity harness
+generalized is now written, from the `quad` port's tests rather than predicted before them.
+**Date:** 2026-08-20, amended the same day after a deep review closed two open proofs, refuted a
+bound that was being evaluated in the wrong coordinate, and corrected a factor of two in the
+units.
 **Scope:** how the two backends are compared, and what a comparison is allowed to assert. Not
 which algorithm computes what, which is `design/quadrature_algorithms.md`, and not what may
 cross the boundary, which is `design/cross_backend_types.md`.
@@ -99,18 +100,33 @@ floor on an entry that is genuinely zero, which is what the underflow floor exis
 
 ## Rule 4: a node bound inherits a ratio, not a numerator
 
-This is the subtlest of the five and the one most likely to be got wrong by someone doing the
-obvious thing.
+This is the subtlest of the six and the one most likely to be got wrong by someone doing the
+obvious thing. Rule 6 is its companion: this one is about which quantity a bound inherits, that
+one about which coordinate it is then evaluated in.
 
 **Statement.** Let `P_n` be evaluated in binary64 by the forward three-term recurrence
 `P_k = ((2k-1) x P_{k-1} - (k-1) P_{k-2}) / k`, round to nearest, no FMA, `k < 2^52`, with `P_0`
 and `P_1` exact. Write `C(n, x)` for a bound on `|fl(P_n(x)) - P_n(x)| / u`. Then:
 
-- `sup_x C(n, x)` is **`Theta(n^2)`**. Closed form `C(n, ±1) = (7/4) n^2 + (9/4) n - 4 H_n`.
-  **PROVED** as a closed form by induction; **SUPPORTED** as the supremum.
+- `sup_x C(n, x)` is **`Theta(n^2)`**, attained at the endpoints, with closed form
+  `C(n, ±1) = (7/4) n^2 + (9/4) n - 4 H_n`. **PROVED**, both halves.
 - The ratio `C(n, x_i) / |P'_n(x_i)|` at the Gauss nodes is **bounded by 7/2 uniformly in `n`**.
-  **SUPPORTED**: swept exhaustively over every `n` from 2 to 600 and selectively to 2048, worst
-  value 3.4999940516, monotone, always attained at the outermost node.
+  **PROVED, and non-asymptotically**: `C(n, x_i)/|P'_n(x_i)| = (w_i/2) Σ_i ≤ 7/2 - (3/2) w_i` for
+  every `n ≥ 2` and every node. Measurement had put it at 3.4999940516 over a sweep to n = 2048;
+  the `(3/2) w_i` deficit is exactly the `O(1/n^2)` approach that sweep saw.
+
+**Both were SUPPORTED here until a later pass closed them, and the route is worth recording
+because the obvious one does not work.** The proof goes through a closed form for the recurrence's
+discrete Green's kernel, `g(n,k) = Σ_{m=k}^{n} P_{m-k} P_{n-m} / m`, an identity in `Q[x]` proved
+by Cauchy product against `(1 - 2xz + z²) G² = 1`. From it `|g| ≤ H_n - H_{k-1}` on `[-1, 1]`
+gives the supremum, and Christoffel-Darboux — `Σ_j (2j+1) P_j(x_i)² = 2/w_i`, exactly — gives the
+ratio after AM-GM, with `7/2` forced as `sup_j (coeff of P_j²)/(2j+1)`. **`7/2` is not a fitted
+constant; it is that supremum.**
+
+The earlier attempt asked for an asymptotic argument through the Bessel envelope of `P_k`, and
+that route gives a constant near **6**, not `7/2`, because the constant depends on the
+*oscillation* of `P_k` rather than on its envelope. Christoffel-Darboux escapes it by summing the
+squares in closed form. `|x| ≤ 1` is required: the kernel bound already fails at `x = 1 + 1e-6`.
 
 Both blow up at the same rate in the same place, each carrying `sqrt(n) (1 - x^2)^{-3/4}`, and
 that cancellation is why the node displacement is flat in `n` rather than growing.
@@ -129,9 +145,12 @@ constant measured on the point set the algorithm happens to use is a statistic o
 a bound on the function.
 
 **Practical consequence.** The node displacement is `3.5 u`, flat in `n`, for the `P_n` term
-(`4.5 u` including the update's own rounding). Measured displacement against `leggauss` is
-`0.5 u`, so the provable constant is 7x the observation, which is the honest gap between a bound
-and a measurement and should not be closed by quoting the measurement.
+(`4.5 u` including the update's own rounding). **Units matter here and were once stated wrong in
+this file**: `u = eps/2` throughout, the measured worst displacement against `leggauss` is
+`1.0 u = 0.5 eps`, and an earlier version quoted the `eps` figure while calling it `u`. Every
+margin built on it was therefore overstated by two: the provable constant is **3.5x** the
+observation, not 7x. That is still the honest gap between a bound and a measurement, and it
+should not be closed by quoting the measurement.
 
 ## Rule 5: name the arithmetic, and do not assume no underflow
 
@@ -153,6 +172,44 @@ is never where the derivation was checked.**
 
 Every bound in this tree therefore says which arithmetic it lives in. A statement about the
 reals is not a statement about binary64, and the crossing is where these derivations fail.
+
+## Rule 6: a sensitivity belongs to the coordinate it was derived in, and comparing maxima cannot tell you otherwise
+
+Rules 1 and 2 are about choosing the wrong frame when a bound is **derived**. This one is about
+deriving in the right frame and then **evaluating** in the wrong one, which is harder to see
+because the derivation on the page is correct.
+
+**The instance.** The Gauss-Legendre weight bound uses `A(s) = 2|s| / (1 - s^2)`, the logarithmic
+derivative of the weight, which follows from the Legendre differential equation collapsing to
+`P'' = 2x P' / (1 - x^2)` **at a root of `P_n`**. It is therefore a function of the Legendre
+coordinate. The public entry point returns the rule mapped onto `[0, 1]`, and the claim was built
+from those mapped nodes.
+
+**Substituting `t = (1 + s)/2` into `A` is not a change of frame, it is a different function.**
+`A` is even in `s`; `B(t) = 2t / (1 - t^2)` is not. The map sends *both* singular ends of
+`[-1, 1]` to `t = 0` and `t = 1`, while `B` is singular only at the second, so **half the array
+loses its singularity**. The two cross at `s = -1/3` (from `3s^2 + 7s + 2 = 0`): above it the
+mapped form is looser, below it **tighter**, and the shortfall grows without bound. Measured
+3.9x at n = 2 and 1.9e12 at n = 2000 on the amplification alone.
+
+**How it survived a review, which is the part to carry.** A reviewer compared the two
+amplification arrays by their **maxima** and got `0.9999991`, and reasonably concluded the frames
+might be interchangeable. That number is real and has an exact reason: `w_map B(t) / (w_ref A(s))
+= 1 + (1 - s)/(s(3 + s))`, so the weight halves exactly as the sensitivity doubles at `s -> 1`,
+and both arrays peak at the outermost node where `1 - s = O(1/n^2)`. **The maximum sits at the one
+point where the frame error cancels exactly.** A scalar summary of two arrays is not a comparison
+of two arrays.
+
+**The repair needs no new constant**, which is the tell that the frame was the whole problem: pass
+the `[-1, 1]` nodes for the sensitivity and the mapped weights for the magnitude. The *relative*
+perturbation is frame-invariant, so `w_map (kappa A(s) + 5)` is exactly right. Written in the
+mapped coordinate the correct expression is `|2t - 1| / (2t(1 - t))`: symmetric under
+`t -> 1 - t`, singular at both ends, zero at `t = 1/2`. `B` has none of those three properties.
+
+**And the guard is cheaper than the derivation.** A Gauss rule is symmetric about the origin, so
+any rule of two points or more has a node below `-1/2`. An amplification array built from nodes
+with no negative entry at all is the mapped one, handed over by mistake, and refusing it is one
+line. **Where a bound depends on a frame, make the frame a precondition rather than a convention.**
 
 ## The two corrections the infrastructure PR made, kept here because they generalize
 
@@ -259,10 +316,18 @@ documentation, has to change.
   for the second solution `S` (`S_0 = 0, S_1 = 1`), which is the route that closes because the
   `artanh` in the usual second solution cancels identically and leaves a polynomial kernel. The
   proofs and their runnable checks are in the shared corpus under `proof-techniques/proofs/`,
-  dated 2026-08-20; they were checked step by step by a separate agent, and one interchange step
-  in the supremum argument is named there as unclosed.
-- **SUPPORTED:** the `7/2` ratio bound, swept to n = 2048; the `3.5 u` node displacement; the
-  `Theta(n^2)` growth, fitted at `n^1.936` over all `x`.
+  dated 2026-08-20; they were checked step by step by a separate agent. **Also PROVED, by a later
+  pass:** `sup_x C(n, x) = C(n, ±1)` attained, and the `7/2` ratio bound non-asymptotically, both
+  through the Green's-kernel closed form above.
+- **SUPPORTED:** the `Theta(n^2)` growth as a *fit*, at `n^1.936` over all `x` (the bound itself is
+  now proved); the `2.6` weight-amplification cancellation, monotone and convergent to 2.566323
+  over a sweep to n = 12000, and re-measured by a test.
+- **What was open and is now closed differently than this note once said.** An earlier version of
+  this section said "one interchange step in the supremum argument is named there as unclosed".
+  That was wrong twice: the corpus names **two** unbounded steps, and they belong to the `7/2`
+  **limit** argument, not to the supremum, whose gap was a missing kernel bound and not an
+  interchange at all. Still genuinely open: that `7/2` is the exact *limit* rather than some
+  constant below it. The bound does not depend on the answer.
 - **REFUTED, with the counterexample:** that the recurrence error is `O(n)` (it is `Theta(n^2)`,
   and the measurement that said otherwise sampled the wrong point set); that Higham's relative
   model needs no absolute companion in the subnormal range; that the absolute-value companion

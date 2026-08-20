@@ -87,10 +87,45 @@ Three candidate causes were tested and two are refuted:
   in relative terms.
 
 So the disagreement is **irreducible** without transliterating numpy's expression sequence
-verbatim, which would trade accuracy for mimicry: the survey found numpy's weight formula to
-be the *less* accurate of the two. The port keeps the better formula and states the
-consequence, which is that its weights are a small improvement on the Python's rather than a
-copy of them.
+verbatim, which would trade accuracy for mimicry.
+
+**That "less accurate" was an assertion when it was written, and it is now measured, by three
+orders of magnitude.** A later pass compared both against `mpmath` at 50 digits, which is the
+one check the parity apparatus structurally cannot make: two implementations of the same
+recurrence agree perfectly while both being wrong, and the C++ is a deliberate transliteration.
+Maximum absolute weight error, in units of roundoff:
+
+| n | this port | `leggauss` |
+|---|---|---|
+| 16 | 1.06 | 3.93 |
+| 128 | 1.37 | 56.9 |
+| 1000 | 0.62 | 557 |
+| 2048 | 1.12 | 1005 |
+
+**This port's weight error is flat in `n` and at the arithmetic floor**; numpy's grows. Decomposed
+against truth, the two terms are the exact formula evaluated at the shipped float64 node (0.24 to
+1.25 u) and the float64 evaluation of the formula (0.40 to 1.14 u), both about one unit of
+roundoff. Nothing is being lost anywhere, and no better result is available from float64 nodes.
+The nodes themselves come out at 0.30 to 0.90 u against the exact roots with no trend to n = 2048,
+so "flat in `n`" survives as a measurement against truth and not only against numpy.
+
+So the honest statement is not that the port's weights are "a small improvement". They are near
+the floor while numpy's are up to 900x off it, and the earlier framing of the discrepancy as two
+expressions differing understated which side the difference lives on.
+
+**One consequence for the suite, and it is uncomfortable.**
+`tests/test_quad.py::test_agrees_with_an_independent_implementation` is the only oracle in the
+tree that is not this code, and its bounds are set by *numpy's* error rather than by the port's.
+At n = 1000 the measured difference is 279 u against a 1024 u bound, of which the port contributes
+0.3 u. **The port's weights could degrade by roughly 500x before that test fires.** It is checking
+that the two agree, which is what it says, but a reader could take it for a check that the port is
+accurate, and it is nothing like tight enough for that.
+
+**Also derivable, and now derived.** The `n^2.7` relative growth was a fit. At a root the Legendre
+equation gives `dw/w = 6x dx/(1 - x^2)`, and with `1 - x_max^2 ~ 5.78/n^2` and `dx ~ u/2` the
+predicted relative error is `3 n^2 u / 5.78`, which is 4.8e-10 at n = 2048 against 7.0e-11
+measured, an upper bound behaving as one should. That turns `design/backend_parity.md`'s "an
+absolute bound is the only defensible shape" from a measurement into a derivation.
 
 ## What follows for the bound, stated here and derived elsewhere
 
@@ -148,18 +183,63 @@ only usable while `x` is large enough to keep `w_0` on the principal branch. Bis
 decay factor with everything else held fixed, at `n = 2`, which is the binding case because `x`
 is smallest there: **three** steps reach one unit of roundoff down to a decay factor of 0.5932,
 and **four** down to 0.5097. The shipped value is 0.6. So three iterations sit **1.1%** away
-from failing and four sit **18%** away, in a constant whose provenance is unrecorded (see
-below). That margin, not the chain, is why the count is four. The extra step costs one exponential and one logarithm **per rule**,
+from failing and four sit **18%** away. That margin, not the chain, is why the count is four. The extra step costs one exponential and one logarithm **per rule**,
 not per node.
 
 **A coupling neither constant records, and it is required.** `_TANH_SINH_DECAY_FACTOR` sets the
-smallest argument this kernel ever sees, `x_min = 0.6 * pi * (n - 1)` at `n = 2`. Below a decay
-factor of about 0.51 the start lands negative, off the principal branch, and **no number of
-Halley steps recovers**; below about 0.318, `L2 = log(log(x))` is not real. Measured, varying
-the factor with everything else fixed: at 0.50 the result is 2.8e4 units of roundoff after four
-steps, at 0.40 it is 2.4e16, at 0.32 it is not a number. Neither definition mentions the other
-today, so a change to the decay factor for better discretization error would produce a silently
-wrong step size with no error signal.
+smallest argument this kernel ever sees, `x_min = 0.6 * pi * (n - 1)` at `n = 2`. Measured,
+varying the factor with everything else fixed: at 0.50 the result is 2.8e4 units of roundoff
+after four steps, at 0.40 it is 2.4e16, at 0.32 it is not a number. Neither definition mentions
+the other today, so a change to the decay factor for better discretization error would produce a
+silently wrong step size with no error signal.
+
+**The failure mechanism stated above and in two source files was wrong, and the correct one is
+sharper. REFUTED, with the boundary measured.** Both said the start "lands negative, off the
+principal branch, and no number of Halley steps recovers". Negative is not the boundary: the
+start goes negative at `x = 1.7105` while four steps still converge below that, and Halley
+recovers from a negative start down to about `w_0 = -0.38`. **The true no-recovery boundary is
+`w_0 = -1`, the branch point of `W`** where `W_0` and `W_{-1}` meet, which the start crosses at
+`x = 1.488218`. Measured against it: a twelve-step cliff sits at `x = 1.48823`, agreeing to five
+digits. So the requirement is that the branch-free start land *in the basin*, above the branch
+point; the fixed count of four then demands headroom above that, which is what the 1.61 guard in
+`cpp/bindings/quad.cpp` buys, clearing the four-step cliff at 1.60292 by 0.44%. The
+`log(log(x))` threshold is exactly `x > 1`, i.e. a decay factor of `1/pi = 0.3183`, not "about
+0.318" by measurement.
+
+## Where `_TANH_SINH_DECAY_FACTOR = 0.6` comes from, recorded now that it is known
+
+This note used to call the constant's provenance unrecorded. It is derivable, and the derivation
+names it.
+
+The rule samples `t = (i+1)h` for odd `n` and `(i+1/2)h` for even, so `t_max = h(n-1)/2` exactly.
+Equating the classical double-exponential discretization error `exp(-2 pi d / h)` with the
+truncation error `exp(-(pi/2) e^{t_max})` gives `t_max e^{t_max} = 2d(n-1)`, that is
+`t_max = W(2d(n-1))`. The kernel's own `decay_arg` is `2 c (pi/2) (n-1)`, which is `2d(n-1)`
+with
+
+> **`d = c pi / 2`. The decay factor is the assumed half-width of the strip of analyticity of the
+> transformed integrand, as a fraction of the map's own limit `pi/2`. `0.6` means `d = 0.3 pi`.**
+
+Confirmed two ways. The balance ratio `(2 pi d/h) / ((pi/2) e^{t_max})` comes out at exactly
+`n/(n-1)`: 1.06667 at n = 16, 1.003922 at n = 256. And for `f = 1/(a^2 + x^2)`, whose transformed
+singularity sits at `t* = i asin(atan(a)/(pi/2))`, the predicted optimum `c = (2/pi) Im t*`
+matches the measured argmin at every pole distance tried (0.640 predicted against 0.600 measured
+at `a = 4`, 0.0997 against 0.100 at `a = 0.25`).
+
+**Verdict on the value: near-optimal for what the rule advertises**, with a penalty of at most 3x
+against the per-case optimum on endpoint singularities and on integrands analytic in a wide
+region. It is **poor for a pole within `|Im x| <~ 1`**, where the penalty reaches 1.6e4, and it is
+more conservative than the literature default `d = pi/2` (c = 1) while beating it on every smooth
+case tested. The floor `c >~ 0.51` imposed by the four-step Halley solver means the constant
+**cannot be lowered** to suit a near-pole integrand without also touching the step count. That
+coupling was recorded above in one direction only.
+
+**One inconsistency, measured and deliberately not changed.** The `W` argument uses `(n-1)`,
+correct for `t_max = h(n-1)/2`, while the divisor is `n`. The consistent balance would be
+`h = 2W(2d(n-1))/(n-1)`. So the realized decay factor is `n`-dependent and only approaches the
+nominal 0.6 asymptotically: 0.317 at n = 4, 0.559 at n = 64, 0.587 at n = 256. Head to head the
+shipped `n` divisor is *better* on every smooth integrand at every `n` tested and mildly worse on
+the singular ones at n <= 48, so it stays. But 0.6 is a nominal value, and nothing said so.
 
 ## The three rules that are not ported, and why that is a decision
 
