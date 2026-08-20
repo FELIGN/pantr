@@ -7,14 +7,26 @@ if `W` moved the whole rule would move with it.
 What is exact and what is not
 -----------------------------
 
-**Lambert W is BITWISE**, which was not expected. It is built from `log` and `exp`,
-neither correctly rounded and neither pinned by IEEE 754, so the prediction was a
-bounded comparison. Measured: every argument this file's own `N_PTS` produces agrees
-to the last bit -- eight of them, not nine, because `n_pts = 1` gives an argument of
-zero, outside the principal branch's domain, and the rule special-cases `n = 1` before
-ever reaching Lambert W. On the scalar path numpy calls the platform's libm, which is the
-same one the C++ links, so there is nothing to differ -- a fact about this
-platform, which is why a test measures it instead of this paragraph asserting it.
+**Lambert W is NOT bitwise, and this file said it was.** Every argument the
+sampled `N_PTS` produces does agree to the last bit, which is how the wrong claim
+survived: an exhaustive sweep finds the two backends differing by 1 ulp at
+`n = 124, 246, 252, 417, 477, 559, 646, 675, 783` between 2 and 1000, and at about
+0.4% of degrees overall. The sampled counts hit none of them.
+
+**The mechanism is not libm accuracy, it is the fixed step count.** By the third
+Halley step the iterate has reached the last-bit noise floor where the map stops
+contracting, and it enters a **two-cycle between adjacent doubles**. Which member
+step four returns is then decided by a 1-ulp difference in `exp`, and numpy and
+glibc disagree on about 4.6% of `exp` arguments. Four steps is still the right
+count -- see `_LAMBERT_W_HALLEY_STEPS` -- but it stops at a point the iterate is
+oscillating around rather than at a fixed point.
+
+**This costs the node bound its cleanest hypothesis.** `h = 2 W(x) / n` multiplies
+every transform coordinate, so at those degrees `t` is *not* common mode and the
+two backends sample slightly different grids. The bound below still holds, and the
+degrees where it is tightest are exactly these: the worst ratio anywhere is
+**0.947 for the nodes at n = 14542** and **0.899 for the weights at n = 124**,
+against the 0.43 and 0.29 this file used to quote from an eight-point sweep.
 
 **The rule is BOUNDED**, and here the transcendentals do bite: `np.exp`, `np.sinh`
 and `np.cosh` were measured to disagree with glibc's by up to 2 ulp, on 26% of
@@ -37,9 +49,11 @@ Write `t` for the transform coordinate, `omega = (pi/2) sinh t`, and
 `gap = 2 / (1 + e^{2 omega})`, so the node is `+-(1 - gap)`. Let `u = eps/2` and
 let `k` be the libm budget in units in the last place.
 
-`t` is bit-identical: `h` is bitwise because `W` is, and `t` is `h` times a small
-exact integer or half-integer. So the argument of every transcendental is common
-mode and only the functions themselves differ.
+`t` is bit-identical **at the degrees where `h` is**, since `t` is `h` times a
+small exact integer or half-integer. At the roughly 0.4% of degrees where the two
+backends' `W` differ by one ulp it is not, and the whole grid shifts by a relative
+`2^-53`. Those degrees are where this bound comes closest to being violated, and
+the ratios above are measured there.
 
 A relative perturbation of `omega` is amplified by the exponential:
 `|d gap / gap| <= 2 omega |d omega / omega| + k u <= (2 omega k + k) u`. Multiplying
@@ -358,29 +372,50 @@ def test_the_public_rule_agrees_within_the_bound(
     )
 
 
-@pytest.mark.parametrize("n_pts", (2, 3, 5, 17, 64, 200, 1000))
-def test_the_lambert_w_step_size_is_bitwise(n_pts: int, cpp_backend: None) -> None:
-    """The step size agrees to the last bit, so the whole rule shares a grid.
+def test_the_lambert_w_step_size_agrees_to_one_ulp(cpp_backend: None) -> None:
+    """The step size agrees within a unit in the last place, and not always exactly.
 
-    Not a convenience: ``h`` multiplies every transform coordinate, so a
-    difference here would displace every node by a relative amount rather than by
-    a rounding, and the node bound above assumes ``t`` is common mode.
+    **This test used to assert equality over a handful of sampled counts, and it
+    was wrong.** It sampled ``(2, 3, 5, 17, 64, 200, 1000)``, and the degrees where
+    the two backends differ -- 124, 246, 252, 417, 477, 559, 646, 675, 783 within
+    the same range -- are none of them. So it passed while asserting nothing about
+    any case that fails, which is the failure mode a sampled sweep has and an
+    exhaustive one does not.
 
-    It is measured rather than assumed because ``log`` and ``exp`` are not pinned
-    by IEEE 754. On the scalar path numpy calls the platform's libm, which is the
-    one the C++ links, so the two agree here -- a property of a platform.
+    It now sweeps every count from 2 to 1000 and bounds the disagreement at one
+    ulp. One rather than a derived multiple, because the cause is not accumulated
+    error: by the third Halley step the iterate oscillates between two adjacent
+    doubles, and a 1-ulp difference in ``exp`` decides which of the two step four
+    lands on. A disagreement larger than that would mean the iteration itself had
+    diverged, not that a library rounded differently.
+
+    ``h = 2 W / n`` multiplies every transform coordinate, so this is what bounds
+    how far the two grids can drift apart, and the node bound above depends on it.
 
     Args:
-        n_pts (int): Requested number of points, which sets the argument.
         cpp_backend (None): Requires the compiled extension.
     """
-    argument = 2.0 * _TANH_SINH_DECAY_FACTOR * (0.5 * np.pi) * (n_pts - 1)
-    python, cpp = _both_backends(functools.partial(_lambert_w_principal, argument))
-    assert cpp == python, (
-        f"W({argument!r}) is {cpp!r} in C++ and {python!r} in Python. h = 2 W / n "
-        f"multiplies every transform coordinate, so the two backends are no longer "
-        f"sampling the same grid and the node bound's assumption that t is common "
-        f"mode has failed"
+    differing = []
+    worst_ulp = 0.0
+
+    for n_pts in range(2, 1001):
+        argument = 2.0 * _TANH_SINH_DECAY_FACTOR * (0.5 * np.pi) * (n_pts - 1)
+        python, cpp = _both_backends(functools.partial(_lambert_w_principal, argument))
+        if cpp != python:
+            differing.append(n_pts)
+            worst_ulp = max(worst_ulp, abs(cpp - python) / float(np.spacing(python)))
+
+    assert worst_ulp <= 1.0, (
+        f"the two backends' step sizes differ by up to {worst_ulp:.2f} ulp, past the "
+        f"one ulp the last-bit oscillation can explain, at {len(differing)} of 999 "
+        f"counts. That is a diverged iteration rather than a library rounding "
+        f"difference, and h = 2 W / n multiplies every transform coordinate"
+    )
+    assert differing, (
+        "the two backends now agree at every count from 2 to 1000, where nine "
+        "disagreements were measured. If the platform's libm changed, the node "
+        "bound may be claimable as BITWISE; re-derive it rather than leaving a "
+        "bound nothing exercises"
     )
 
 

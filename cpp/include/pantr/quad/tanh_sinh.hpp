@@ -12,15 +12,32 @@
 ///
 /// ## Two transliteration traps, both measured, both deliberate
 ///
-/// **`pow`, not a multiplication.** The Python writes `np.cosh(omega) ** 2` on a
-/// *scalar*, where numpy does not special-case the exponent and calls libm `pow`.
-/// Measured: `x ** 2` differs from `x * x` by exactly 1 ulp on 163 of 200000
-/// random arguments, and `math.pow` reproduces `x ** 2` exactly, which identifies
-/// the callee. (The *array* path does special-case it, which is why this is easy
-/// to miss.) So `std::pow(c, 2.0)` below is not clumsiness: writing `c * c` --
-/// which is the better numerics, being correctly rounded where `pow` here is not
-/// -- would silently move about 0.08% of the weights. The Python is not corrected
-/// either, because an external consumer pins golden values off this rule.
+/// **`pow` is written, and the compiler does not keep it.** The Python writes
+/// `np.cosh(omega) ** 2` on a *scalar*, where numpy does not special-case the
+/// exponent and calls libm `pow`. Measured: `x ** 2` differs from `x * x` by
+/// exactly 1 ulp on 163 of 200000 random arguments, and `math.pow` reproduces
+/// `x ** 2` exactly, which identifies the callee. (The *array* path does
+/// special-case it, which is why this is easy to miss.) So `std::pow(c, 2.0)`
+/// below is written to match the oracle operation for operation.
+///
+/// **It does not reach the binary, and that was verified rather than assumed.**
+/// GCC folds `pow(c, 2.0)` to a multiplication from `-O1` and clang from `-O2`,
+/// with no fast-math anywhere; `nm -D` on the shipped extension imports
+/// `cos cosf cosh exp log sinh` and **no `pow`**. So this line compiles to `c * c`
+/// and the two backends differ here on about 0.08% of arguments. The BOUNDED
+/// weight claim in `tests/parity/test_quad_tanh_sinh.py` covers it, which is why
+/// nothing failed.
+///
+/// The spelling is kept anyway, for a reason worth stating: `c * c` is the
+/// *correctly rounded* square and glibc's `pow(x, 2.0)` is the one that is a ulp
+/// out, so the compiler is improving the answer. Writing `c * c` here would say
+/// the same thing to the compiler while claiming the port had diverged from its
+/// oracle by choice. Neither side is corrected, because an external consumer pins
+/// golden values off this rule.
+///
+/// The lesson generalises past this line: **a transliteration contract is a claim
+/// about the binary, not about the source**, and only a disassembly or a symbol
+/// table settles it.
 ///
 /// **The rescaling sum is pairwise in numpy and plain here.** `np.sum` uses
 /// pairwise summation with a block size of 128; measured to differ from a plain
@@ -135,8 +152,10 @@ inline std::size_t generate_tanh_sinh(int n, double min_gap, std::span<double> o
         // Odd n samples t = h, 2h, ...; even n offsets by half a step.
         const double t = odd ? (static_cast<double>(i) + 1.0) * h : (static_cast<double>(i) + 0.5) * h;
         const double omega = half_pi * sinh(t);
-        // `pow(c, 2.0)`, not `c * c`. See the file comment: the Python's scalar
-        // `** 2` is libm `pow`, and the two differ by 1 ulp often enough to matter.
+        // Written as `pow(c, 2.0)` to mirror the oracle's scalar `** 2`, which is
+        // libm `pow`. The compiler folds it to a multiplication (verified: no `pow`
+        // in the extension's symbol table), so the two differ here on about 0.08%
+        // of arguments and the BOUNDED weight claim covers it. See the file comment.
         const double weight = half_pi * cosh(t) / pow(cosh(omega), 2.0);
         // gap = 1 - tanh(omega), the node's distance from the +1 endpoint, via the
         // algebraically equal form 2 / (1 + e^{2 omega}). That keeps gap a small
