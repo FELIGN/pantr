@@ -47,9 +47,29 @@ contributions). Making it an array rather than a number is what lets one bound
 cover both the well-conditioned interior of a domain and its badly conditioned
 outside, without a second tolerance and without excluding the hard cases.
 
-The usual way to produce it is a *companion recurrence*: run the kernel's own
-recurrence with every coefficient replaced by its absolute value. See
+One way to produce it is a *companion recurrence*: run the kernel's own recurrence
+with every coefficient replaced by its absolute value. See
 ``tests/test_cpp_parity.py`` for a worked one.
+
+**That recipe is not general, and where it fails it fails silently.** It bounds a
+recurrence whose coefficients form a convex combination, which is the cardinal
+B-spline case it was written for: the absolute values change nothing, because the
+coefficients are already non-negative and sum to one. For an *oscillatory*
+three-term recurrence it is not a bound but a different, exponentially growing
+sequence. Legendre is the case at hand: ``P_k`` and its second solution ``Q_k``
+are both bounded on ``[-1, 1]``, and taking absolute values in
+``((2k-1) x P_{k-1} - (k-1) P_{k-2}) / k`` replaces them by growth like
+``(1 + sqrt(2))**k``. Measured at degree 700 the companion reaches ``1.7e266``.
+
+Nothing in the type system stops that: the amplification is finite and
+non-negative, which is all :func:`bounded_parity` can check. What stops it is
+:func:`assert_parity`, which refuses a bound at least as large as the values being
+compared, because such a bound is satisfied by any result at all.
+
+For a quantity built from a *ratio* of recurrence values, bound the ratio. A
+Gauss-Legendre node's displacement is limited by ``residual / |P'|``, and its
+weight's by the same displacement pushed through ``dw/dx``; both are O(1) objects
+where the companion is not.
 
 The underflow floor
 -------------------
@@ -738,6 +758,59 @@ def _worst_element_report(
     )
 
 
+def _refuse_a_vacuous_bound(
+    tolerance: FloatArray, reference: FloatArray, claim: ParityClaim, context: str
+) -> None:
+    """Refuse a bound so large that no finite result could violate it.
+
+    A tolerance larger than the largest magnitude in the reference array admits
+    *any* value at that element, zero included, so the comparison decides nothing.
+    That is a different failure from a bound being too loose, and it is invisible:
+    the assertion passes, for ever, and reports agreement.
+
+    The check is against the array's **largest** magnitude rather than each
+    element's own. Per element it would reject a legitimate absolute floor on a
+    value that is genuinely near zero, which is the case
+    :func:`underflow_floor` exists to serve. Against the largest, a bound that is
+    meaningful anywhere in the array survives, and only a bound that is
+    meaningless everywhere is refused.
+
+    The bound this catches is not hypothetical, and it comes from following this
+    module's own advice. :func:`bounded_parity` documents the usual way to obtain
+    an amplification as "run the kernel's own recurrence with every coefficient
+    replaced by its absolute value". That is right for a recurrence whose
+    coefficients form a convex combination, which is the cardinal B-spline case it
+    was written for. It is catastrophically wrong for an oscillatory three-term
+    recurrence such as the Legendre one, where taking absolute values replaces two
+    bounded homogeneous solutions by growth like ``(1 + sqrt(2))**k``: measured at
+    degree 700, the companion reaches ``1.7e266``, the tolerance it produces is
+    ``5.3e253``, and ``assert_parity`` then accepts ``1.0`` against ``-1e250``.
+
+    Args:
+        tolerance (FloatArray): The elementwise bound, already broadcast.
+        reference (FloatArray): The oracle values being compared against.
+        claim (ParityClaim): The claim under test, quoted in the message.
+        context (str): What was being computed.
+
+    Raises:
+        AssertionError: If the bound exceeds the largest reference magnitude.
+    """
+    largest = float(np.abs(reference.astype(np.float64)).max(initial=0.0))
+    worst = float(np.asarray(tolerance).max(initial=0.0))
+    if largest > 0.0 and worst >= largest:
+        raise AssertionError(
+            f"{context}: the derived bound is vacuous and nothing was compared.\n"
+            f"  derivation: {claim.why}\n"
+            f"  largest bound {worst:.3e} against largest reference magnitude "
+            f"{largest:.3e}\n"
+            f"  A bound at least as large as the values being compared is satisfied "
+            f"by any result, zero included. Check the amplification: an absolute-value "
+            f"companion recurrence is only a bound for a convex-combination recurrence, "
+            f"and diverges for an oscillatory one. For those, bound the ratio the "
+            f"quantity is actually built from instead."
+        )
+
+
 def assert_parity(
     actual: FloatArray,
     reference: FloatArray,
@@ -796,6 +869,7 @@ def assert_parity(
         return deviation
 
     tolerance = np.broadcast_to(absolute_tolerance(claim), actual.shape)
+    _refuse_a_vacuous_bound(tolerance, reference, claim, context)
     difference = np.abs(actual.astype(np.float64) - reference.astype(np.float64))
     offenders = np.asarray(difference > tolerance)
     with np.errstate(divide="ignore", invalid="ignore"):
