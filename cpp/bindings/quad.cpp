@@ -239,19 +239,30 @@ void register_quad(nb::module_& m) {
     // refused, and for an `out` array that means the kernel fills a temporary
     // that is then discarded while the caller's array comes back untouched, no
     // exception raised anywhere.
-    m.def("gauss_legendre_symmetric", &gauss_legendre_symmetric, nb::arg("n"),
+    //
+    // `nb::kw_only()` before the first output argument is a second, independent
+    // guard, and the one that matters here specifically: every kernel below
+    // takes two same-typed, same-shaped output buffers, so a transposed
+    // positional call (`out_weights` where `out_nodes` belongs) is accepted by
+    // nanobind's typed signature -- the two parameters differ only in name --
+    // and each quantity lands in the wrong array with no exception anywhere.
+    // `refuse_overlapping_outputs` above cannot catch this: aliasing requires
+    // passing the same array twice, transposition only a caller misremembering
+    // an order. Keyword-only closes that path structurally, and every output
+    // parameter across this file and `basis.cpp` carries it uniformly.
+    m.def("gauss_legendre_symmetric", &gauss_legendre_symmetric, nb::arg("n"), nb::kw_only(),
           nb::arg("out_nodes").noconvert(), nb::arg("out_weights").noconvert());
 
     m.def("lambert_w_principal", &lambert_w_principal, nb::arg("x"));
 
     m.def("generate_tanh_sinh", &generate_tanh_sinh, nb::arg("n"), nb::arg("min_gap"),
+          nb::kw_only(), nb::arg("out_nodes").noconvert(), nb::arg("out_weights").noconvert());
+
+    m.def("trapezoidal", &trapezoidal, nb::arg("n"), nb::kw_only(),
           nb::arg("out_nodes").noconvert(), nb::arg("out_weights").noconvert());
 
-    m.def("trapezoidal", &trapezoidal, nb::arg("n"), nb::arg("out_nodes").noconvert(),
-          nb::arg("out_weights").noconvert());
-
     m.def("modified_chebyshev_nodes", &modified_chebyshev_nodes<double>, nb::arg("n"),
-          nb::arg("out").noconvert());
+          nb::kw_only(), nb::arg("out").noconvert());
     m.def("modified_chebyshev_nodes", &modified_chebyshev_nodes<float>, nb::arg("n"),
-          nb::arg("out").noconvert());
+          nb::kw_only(), nb::arg("out").noconvert());
 }

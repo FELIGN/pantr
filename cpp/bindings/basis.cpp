@@ -107,8 +107,14 @@ void register_basis(nb::module_& m) {
     // weaker -- but this prototype exists to measure, and a silent copy of a
     // 10^6-element array inside the timed region would be attributed to the
     // kernel. Better to refuse and make the caller fix the layout.
+    //
+    // `nb::kw_only()` before `out` is a second, independent guard: with only
+    // one output buffer here there is nothing to transpose within this
+    // binding, but the convention has to be uniform before `quad.cpp`'s
+    // two-output kernels are bound, where a positional call silently accepts
+    // `out_nodes` and `out_weights` swapped.
     m.def("tabulate_cardinal_bspline_1d", &tabulate<double>, nb::arg("degree"),
-          nb::arg("points").noconvert(), nb::arg("out").noconvert());
+          nb::arg("points").noconvert(), nb::kw_only(), nb::arg("out").noconvert());
     m.def("tabulate_cardinal_bspline_1d", &tabulate<float>, nb::arg("degree"),
-          nb::arg("points").noconvert(), nb::arg("out").noconvert());
+          nb::arg("points").noconvert(), nb::kw_only(), nb::arg("out").noconvert());
 }

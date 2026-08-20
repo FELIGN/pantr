@@ -121,7 +121,7 @@ def _cpp_gauss_legendre(n: int) -> tuple[npt.NDArray[np.float64], npt.NDArray[np
 
     nodes = np.empty(n, dtype=np.float64)
     weights = np.empty(n, dtype=np.float64)
-    _pantr_cpp.gauss_legendre_symmetric(n, nodes, weights)
+    _pantr_cpp.gauss_legendre_symmetric(n, out_nodes=nodes, out_weights=weights)
     return nodes, weights
 
 
@@ -161,7 +161,9 @@ def _cpp_tanh_sinh(n: int, min_gap: float) -> tuple[npt.NDArray[np.float64], int
 
     nodes = np.empty(n, dtype=np.float64)
     weights = np.empty(n, dtype=np.float64)
-    count = int(_pantr_cpp.generate_tanh_sinh(n, float(min_gap), nodes, weights))
+    count = int(
+        _pantr_cpp.generate_tanh_sinh(n, float(min_gap), out_nodes=nodes, out_weights=weights)
+    )
 
     data = np.empty((count, 2), dtype=np.float64)
     data[:, 0] = nodes[:count]
@@ -183,7 +185,7 @@ def _cpp_trapezoidal(n: int) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.fl
 
     nodes = np.empty(n, dtype=np.float64)
     weights = np.empty(n, dtype=np.float64)
-    _pantr_cpp.trapezoidal(n, nodes, weights)
+    _pantr_cpp.trapezoidal(n, out_nodes=nodes, out_weights=weights)
     return nodes, weights
 
 
@@ -204,7 +206,7 @@ def _cpp_chebyshev_nodes(n: int, dtype: npt.DTypeLike) -> npt.NDArray[np.float32
     from pantr import _pantr_cpp  # noqa: PLC0415  (lazy: the extension is optional)
 
     nodes: npt.NDArray[np.float32 | np.float64] = np.empty(n, dtype=dtype)
-    _pantr_cpp.modified_chebyshev_nodes(n, nodes)
+    _pantr_cpp.modified_chebyshev_nodes(n, out=nodes)
     return nodes
 
 

@@ -100,14 +100,14 @@ def _cpp_cardinal_bspline_core(
 
     points = np.ascontiguousarray(t)
     if out.flags["C_CONTIGUOUS"]:
-        _pantr_cpp.tabulate_cardinal_bspline_1d(int(n), points, out)
+        _pantr_cpp.tabulate_cardinal_bspline_1d(int(n), points, out=out)
         return
 
     # The uncommon path. The check above is a flag read, so the common case pays
     # essentially nothing for it; only a caller that actually passes a strided
     # view pays for the buffer and the copy back.
     buffer = np.empty_like(out, order="C")
-    _pantr_cpp.tabulate_cardinal_bspline_1d(int(n), points, buffer)
+    _pantr_cpp.tabulate_cardinal_bspline_1d(int(n), points, out=buffer)
     out[...] = buffer
 
 

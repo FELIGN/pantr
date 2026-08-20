@@ -212,7 +212,7 @@ def _time_case(degree: int, num_pts: int, repeats: int) -> Timing:
     # The raw binding, not the entry point: same contract as the numba kernel
     # above, so the two are comparable.
     cpp_kernel = _best_of(
-        lambda: _pantr_cpp.tabulate_cardinal_bspline_1d(degree, pts, out), repeats
+        lambda: _pantr_cpp.tabulate_cardinal_bspline_1d(degree, pts, out=out), repeats
     )
 
     with use_backend(Backend.PYTHON):

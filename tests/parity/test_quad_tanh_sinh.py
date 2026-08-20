@@ -440,7 +440,7 @@ def test_the_truncation_threshold_is_shared_rather_than_recomputed(
     min_gap = _tanh_sinh_min_gap(dtype)
     nodes = np.empty(200, dtype=np.float64)
     weights = np.empty(200, dtype=np.float64)
-    count = int(_pantr_cpp.generate_tanh_sinh(200, min_gap, nodes, weights))
+    count = int(_pantr_cpp.generate_tanh_sinh(200, min_gap, out_nodes=nodes, out_weights=weights))
 
     _, expected = _generate_tanh_sinh(200, dtype)
     assert count == expected, (
@@ -449,7 +449,9 @@ def test_the_truncation_threshold_is_shared_rather_than_recomputed(
         f"argument precisely so this cannot happen"
     )
 
-    widened = int(_pantr_cpp.generate_tanh_sinh(200, min_gap * 1e3, nodes, weights))
+    widened = int(
+        _pantr_cpp.generate_tanh_sinh(200, min_gap * 1e3, out_nodes=nodes, out_weights=weights)
+    )
     assert widened < count, (
         f"raising the threshold by three decades did not shorten the rule "
         f"({widened} nodes against {count}), so the kernel is not actually reading "
