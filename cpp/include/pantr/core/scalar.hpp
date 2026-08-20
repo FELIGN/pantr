@@ -179,8 +179,9 @@ using value_type_t = std::remove_cvref_t<detail::value_of_result_t<T>>;
 /// typing, so a port that computed in `float` throughout disagrees with the
 /// oracle by about one float32 ulp. cpp/include/pantr/basis/cardinal_bspline.hpp
 /// records the numba measurement that establishes the promotion, and
-/// `test_float32_intermediates_are_float64` in tests/test_cpp_parity.py is what
-/// checks the C++ side against it. It is *not* the `sqrt(m) * eps32` argument of
+/// `test_float32_intermediates_are_float64` in
+/// tests/parity/test_basis_cardinal_bspline.py is what checks the C++ side
+/// against it. It is *not* the `sqrt(m) * eps32` argument of
 /// design/large_data_fitting.md: that argument is about a length-`m`
 /// scalar accumulation, and a Cox-de Boor tabulation stores its state back into
 /// the output array at every stage, where the measured float32 error is flat in

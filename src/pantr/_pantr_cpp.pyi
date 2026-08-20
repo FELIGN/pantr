@@ -28,7 +28,7 @@ __fp_contract__: Final[str]
 """Whether the target ISA can fuse a multiply-add.
 
 ``"available"`` or ``"unavailable-on-target-isa"``. Read by
-``tests/test_cpp_parity.py`` to choose between asserting bit-exact parity with
+``tests/parity/test_basis_cardinal_bspline.py`` to choose between asserting bit-exact parity with
 the numba oracle and asserting the derived FMA bound: with no fused instruction
 on the target there is no rounding difference for a tolerance to absorb.
 """

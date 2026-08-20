@@ -27,7 +27,7 @@ src/pantr/_backend.py                PANTR_BACKEND and PANTR_ISA_VARIANT: which
                                      implementation, and the rule it never breaks
 src/pantr/basis/_basis_backend.py    the basis kernels of each backend, and the
                                      adapter that calls the extension
-tests/test_cpp_parity.py             the C++ result against the numba oracle
+tests/parity/test_basis_cardinal_bspline.py   the C++ result against the numba oracle
 scripts/bench_parity.py              both kernels and both entry points, timed
 scripts/ci_local.sh                  the whole check, and the gates asserted to fire
 ```
@@ -80,9 +80,9 @@ by disassembly: no `vfmadd` in any object either preset produces, and the one
 `a*b+c` site compiles to `mulsd` + `addsd` on both compilers. Adding `-mfma`
 fuses that site and only that site. numba emits it unfused in both cases. So the
 two backends currently execute an identical sequence of IEEE-754 operations, and
-`tests/test_cpp_parity.py` asserts exactness rather than a tolerance, switching
-to the derived FMA bound when the extension reports `__fp_contract__ ==
-"available"`.
+`tests/parity/test_basis_cardinal_bspline.py` asserts exactness rather than a
+tolerance, switching to the derived FMA bound when the extension reports
+`__fp_contract__ == "available"`.
 
 **Speed, kernel against kernel, single-threaded** (minimum of 5 runs, ms):
 
