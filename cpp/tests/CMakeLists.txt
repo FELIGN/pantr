@@ -4,7 +4,8 @@
 set(PANTR_TEST_SOURCES
     test_dependency_smoke.cpp
     test_cardinal_bspline.cpp
-    test_scalar_generic.cpp)
+    test_scalar_generic.cpp
+    test_quad.cpp)
 
 foreach(_src IN LISTS PANTR_TEST_SOURCES)
   cmake_path(GET _src STEM _name)
