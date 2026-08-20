@@ -78,6 +78,7 @@ from typing import Final, NamedTuple
 import numpy as np
 import numpy.typing as npt
 
+from ._backend import backend_keyed_cache
 from .basis import (
     LagrangeVariant,
     tabulate_bernstein_1d,
@@ -894,7 +895,7 @@ def compute_monomial_to_bernstein_1d(
     return out
 
 
-@functools.lru_cache(maxsize=64)
+@backend_keyed_cache(maxsize=64)
 def _cached_lagrange_to_bernstein_matrix(
     degree: int,
     lagrange_variant: LagrangeVariant,
@@ -928,7 +929,7 @@ def _cached_lagrange_to_bernstein_matrix(
     return mat
 
 
-@functools.lru_cache(maxsize=64)
+@backend_keyed_cache(maxsize=64)
 def _cached_cardinal_to_bernstein_matrix(
     degree: int,
     dtype: np.dtype[np.float32 | np.float64],
@@ -959,7 +960,7 @@ def _cached_cardinal_to_bernstein_matrix(
     return mat
 
 
-@functools.lru_cache(maxsize=64)
+@backend_keyed_cache(maxsize=64)
 def _cached_legendre_to_cardinal_matrix(
     degree: int,
     dtype: np.dtype[np.float32 | np.float64],
@@ -989,7 +990,7 @@ def _cached_legendre_to_cardinal_matrix(
     return mat
 
 
-@functools.lru_cache(maxsize=64)
+@backend_keyed_cache(maxsize=64)
 def _cached_cardinal_to_legendre_matrix(
     degree: int,
     dtype: np.dtype[np.float32 | np.float64],

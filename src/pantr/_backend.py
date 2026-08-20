@@ -92,12 +92,13 @@ revert.
 
 from __future__ import annotations
 
+import functools
 import os
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
 from enum import IntEnum
-from typing import Final, TypeVar
+from typing import Any, Final, ParamSpec, Protocol, TypeVar, cast
 
 __all__ = [
     "Backend",
@@ -416,3 +417,122 @@ def use_backend(backend: Backend) -> Iterator[None]:
         yield
     finally:
         _ACTIVE.reset(token)
+
+
+_P = ParamSpec("_P")
+_R_co = TypeVar("_R_co", covariant=True)
+
+
+class _BackendKeyedCache(Protocol[_P, _R_co]):
+    """The callable :func:`backend_keyed_cache` returns.
+
+    Same call signature as the function it wraps, plus the two attributes
+    :func:`functools.lru_cache` is relied on for elsewhere in the library.
+
+    Attributes:
+        cache_clear (Callable[[], None]): Drop every entry, for every backend.
+        cache_info (Callable[[], Any]): The wrapped cache's hit and miss counts.
+    """
+
+    def __call__(self, *args: _P.args, **kwargs: _P.kwargs) -> _R_co:
+        """Call the wrapped function, keyed on the active backend.
+
+        Args:
+            *args (_P.args): Positional arguments of the wrapped function.
+            **kwargs (_P.kwargs): Keyword arguments of the wrapped function.
+
+        Returns:
+            _R_co: The wrapped function's result for this backend.
+        """
+        ...
+
+    def cache_clear(self) -> None:
+        """Drop every cached entry, for every backend.
+
+        Returns:
+            None
+        """
+        ...
+
+    def cache_info(self) -> Any:  # noqa: ANN401 -- functools._CacheInfo is private
+        """Report the wrapped cache's statistics.
+
+        Returns:
+            Any: The :class:`functools._CacheInfo` named tuple.
+        """
+        ...
+
+
+def backend_keyed_cache(
+    maxsize: int = 128,
+) -> Callable[[Callable[_P, _R_co]], _BackendKeyedCache[_P, _R_co]]:
+    """Memoize a function whose result depends on the active backend.
+
+    A drop-in replacement for :func:`functools.lru_cache` on any function that
+    reaches a backend-dispatched kernel, however indirectly. **The wrapped
+    function's signature does not change**; the backend enters the key inside the
+    decorator, read from the calling thread's context at every lookup.
+
+    Why this is not a tuning choice. A plain :func:`functools.lru_cache` on such a
+    function is keyed on the arguments alone, so the first backend to populate an
+    entry serves every later caller. Two failures follow, and the second is a
+    wrong answer in the library rather than in a test:
+
+    * A parity test that computes a value under one backend and then under the
+      other is handed **the same object twice** and reports agreement it never
+      measured. Measured on ``_cached_lagrange_to_bernstein_matrix``: with one
+      Gauss-Legendre node moved by a single ulp between the two calls, ``A is B``
+      is ``True``, and the matrices differ only once the cache is dropped.
+    * :func:`use_backend` is scoped per thread precisely so callers may thread,
+      and the extension releases the GIL to invite it. A process-wide cache is not
+      scoped at all, so a thread inside a ``use_backend`` block populates entries
+      that a thread outside it then reads.
+
+    Clearing the cache when a :func:`use_backend` block opens and closes fixes the
+    first failure and **not** the second: the entry is fresh, and still computed
+    under whichever backend asked first. Measured, with one thread inside a block
+    and one outside: the thread that entered no block receives the other's value.
+    Keying is what closes both, and it costs one tuple element per lookup.
+
+    Args:
+        maxsize (int): Entries retained, across all backends together. Defaults to
+            128.
+
+    Returns:
+        Callable[[Callable[_P, _R_co]], _BackendKeyedCache[_P, _R_co]]: A decorator
+            producing a cached callable with the same signature as its argument,
+            plus ``cache_clear`` and ``cache_info``.
+
+    Example:
+        >>> from pantr._backend import active_backend, backend_keyed_cache
+        >>> @backend_keyed_cache(maxsize=4)
+        ... def which(degree: int) -> tuple[int, int]:
+        ...     return (int(active_backend()), degree)
+        >>> which(3) == (int(active_backend()), 3)
+        True
+        >>> which.cache_info().currsize
+        1
+    """
+
+    def decorate(function: Callable[_P, _R_co]) -> _BackendKeyedCache[_P, _R_co]:
+        # `Any` rather than the ParamSpec: `lru_cache`'s stub types its arguments
+        # as `Hashable`, which a ParamSpec cannot satisfy. The public wrapper below
+        # carries the real signature, so nothing is lost at a call site.
+        @functools.lru_cache(maxsize=maxsize)
+        def keyed(_backend: Backend, /, *args: Any, **kwargs: Any) -> _R_co:  # noqa: ANN401
+            return function(*args, **kwargs)
+
+        # Same reason as above, at the call site this time: the ParamSpec cannot be
+        # passed through `lru_cache`'s `Hashable`-typed parameters, so the call goes
+        # through a `Callable[..., _R_co]` view of the same object.
+        untyped: Callable[..., _R_co] = keyed
+
+        @functools.wraps(function)
+        def wrapper(*args: _P.args, **kwargs: _P.kwargs) -> _R_co:
+            return untyped(active_backend(), *args, **kwargs)
+
+        wrapper.cache_clear = keyed.cache_clear  # type: ignore[attr-defined]
+        wrapper.cache_info = keyed.cache_info  # type: ignore[attr-defined]
+        return cast("_BackendKeyedCache[_P, _R_co]", wrapper)
+
+    return decorate

@@ -31,6 +31,7 @@ import numpy as np
 import numpy.typing as npt
 
 from .._array_utils import _flatten_along_axis, _unflatten_along_axis
+from .._backend import backend_keyed_cache
 from ..basis._basis_core import _tabulate_Bernstein_basis_1D_serial_core
 from ..bspline._bspline_degree_core import _apply_reduction_operator, _check_bincoeff_envelope
 from ..quad import get_gauss_legendre_1d
@@ -511,7 +512,7 @@ def _projected_quadrature_size(degree: int) -> int:
     return 2 * degree + 2
 
 
-@functools.lru_cache(maxsize=64)
+@backend_keyed_cache(maxsize=64)
 def _bernstein_collocation_1d(degree: int, num_nodes: int) -> npt.NDArray[np.float64]:
     r"""Return the cached, read-only Bernstein values at the Gauss-Legendre nodes.
 
@@ -539,7 +540,7 @@ def _bernstein_collocation_1d(degree: int, num_nodes: int) -> npt.NDArray[np.flo
     return basis
 
 
-@functools.lru_cache(maxsize=64)
+@backend_keyed_cache(maxsize=64)
 def _tensor_gauss_weights(num_nodes: tuple[int, ...]) -> npt.NDArray[np.float64]:
     """Return the cached, read-only tensor-product Gauss-Legendre weights on the unit cube.
 
