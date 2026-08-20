@@ -570,16 +570,44 @@ than a safety margin: dropping it would be claiming one backend rounds perfectly
 def _relative_growth(claim: ParityClaim) -> float:
     """Accumulate a claim's per-stage rounding budget over its stages.
 
+    Uses Higham's closed form ``gamma_m = m u / (1 - m u)`` on the total budget
+    ``m u = stages * per_stage``, rather than the algebraically equivalent
+    ``(1 + per_stage)**stages - 1``.
+
+    **The two are not equivalent in floating point, and the second one is
+    unusable.** ``1 + eps/2`` sits exactly at the midpoint between ``1`` and
+    ``1 + eps``, and round-half-to-even carries it back down to ``1`` because
+    ``1``'s significand is even. So for any float64 budget of one rounding per
+    stage -- ``per_stage = u`` -- the power form evaluates to ``(1.0)**stages -
+    1.0``, which is **exactly zero at every stage count**. The bound then
+    collapses onto the underflow floor alone, about ``1e-323``, and a claim that
+    says BOUNDED asserts bit-for-bit agreement instead. Measured on the shipped
+    implementation before this was changed: one stage and four stages both
+    returned ``0.0``.
+
+    The guard below did not catch it, and the reason is worth keeping: it tests
+    ``per_stage == 0``, which is ``1.11e-16`` here and passes. A budget can be
+    non-zero and still produce a zero bound. Higham's form cannot: its
+    denominator stays near 1 and the quotient is representable.
+
+    That the docstring already said "the standard ``gamma`` of a forward-error
+    analysis" while the code computed something else is the whole of the defect.
+    The standard gamma *is* ``m u / (1 - m u)``, and it is an upper bound on the
+    power form rather than an approximation to it, so nothing that passed before
+    can fail now.
+
     Args:
         claim (ParityClaim): A BOUNDED claim.
 
     Returns:
-        float: The relative factor ``(1 + delta)**stages - 1``, the standard
-            ``gamma`` of a forward-error analysis.
+        float: ``gamma_m = m u / (1 - m u)``, the standard ``gamma`` of a
+            forward-error analysis, with ``m u`` the budget accumulated over the
+            claim's stages.
 
     Raises:
-        ValueError: If the budget is so large that the bound carries no
-            information (a relative bound at or above 1 accepts everything).
+        ValueError: If the budget commits no rounding at all, or is so large that
+            the bound carries no information (a relative bound at or above 1
+            accepts everything).
     """
     assert claim.roundings is not None  # BOUNDED by construction
     assert claim.accumulator is not None
@@ -601,12 +629,21 @@ def _relative_growth(claim: ParityClaim) -> float:
             f"agreement while saying it does not. Use bitwise_parity, which says so and "
             f"reports a violation as one."
         )
-    growth = float((1.0 + per_stage) ** claim.roundings.stages - 1.0)
-    if growth >= 1.0:
+    total = claim.roundings.stages * per_stage
+    if total >= 0.5:
         raise ValueError(
-            f"the rounding budget accumulates to a relative bound of {growth:.3g}, "
-            f"which accepts every finite result. {claim.roundings.stages} stages of "
-            f"{per_stage:.3g} exhaust the format; the comparison would be vacuous."
+            f"the rounding budget accumulates to {total:.3g}, at or past the half "
+            f"where gamma stops being a useful bound and runs away to 1. "
+            f"{claim.roundings.stages} stages of {per_stage:.3g} exhaust the format; "
+            f"the comparison would be vacuous."
+        )
+    growth = total / (1.0 - total)
+    if growth <= 0.0:
+        raise ValueError(
+            f"the rounding budget {claim.roundings} accumulated to a relative bound of "
+            f"{growth!r}, which asserts bit-for-bit agreement while claiming BOUNDED. "
+            f"A positive budget reaching zero here means the arithmetic underflowed; "
+            f"use bitwise_parity if exactness is what is meant."
         )
     return growth
 
