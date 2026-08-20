@@ -665,7 +665,7 @@ def _both_backends(degree: int, points: FloatArray) -> tuple[FloatArray, FloatAr
     """
     return (
         _tabulate(Backend.CPP, degree, points),
-        _tabulate(Backend.NUMBA, degree, points),
+        _tabulate(Backend.PYTHON, degree, points),
     )
 
 
@@ -1021,7 +1021,7 @@ def test_matches_the_exact_rational_oracle(
     points = _oracle_points(dtype)
     exact = _exact_rows(degree, points)
     claim = _accuracy_claim(degree, points, exact)
-    for backend in (Backend.CPP, Backend.NUMBA):
+    for backend in (Backend.CPP, Backend.PYTHON):
         assert_accuracy(
             _tabulate(backend, degree, points),
             exact,
@@ -1150,7 +1150,7 @@ def test_partition_of_unity(degree: int, dtype: npt.DTypeLike, cpp_backend: None
     # The summation's own roundings, bounded by the magnitudes being summed, which
     # is what the amplification array already is.
     tolerance = error.sum(axis=1) + degree * unit_roundoff(np.float64) * amplification.sum(axis=1)
-    for backend in (Backend.CPP, Backend.NUMBA):
+    for backend in (Backend.CPP, Backend.PYTHON):
         sums = _tabulate(backend, degree, points).astype(np.float64).sum(axis=1)
         assert np.all(np.abs(sums - 1.0) <= tolerance), (
             f"{backend.name}, degree {degree}, {np.dtype(dtype).name}: partition of "
@@ -1174,7 +1174,7 @@ def test_reflection_symmetry(degree: int, dtype: npt.DTypeLike, cpp_backend: Non
     _, error = _companion_bounds(degree, points, dtype)
     _, error_mirrored = _companion_bounds(degree, mirrored, dtype)
     tolerance = error + error_mirrored[:, ::-1]
-    for backend in (Backend.CPP, Backend.NUMBA):
+    for backend in (Backend.CPP, Backend.PYTHON):
         direct = _tabulate(backend, degree, points).astype(np.float64)
         reflected = _tabulate(backend, degree, mirrored).astype(np.float64)[:, ::-1]
         assert np.all(np.abs(direct - reflected) <= tolerance), (
@@ -1214,7 +1214,7 @@ def test_public_api_agrees_across_backends_for_every_input_shape(
     for points in inputs:
         with use_backend(Backend.CPP):
             from_cpp = tabulate_cardinal_bspline_1d(degree, points)
-        with use_backend(Backend.NUMBA):
+        with use_backend(Backend.PYTHON):
             from_numba = tabulate_cardinal_bspline_1d(degree, points)
         assert from_cpp.shape == from_numba.shape
         assert from_cpp.dtype == from_numba.dtype
@@ -1245,7 +1245,7 @@ def test_out_argument_is_filled_in_place_by_both_backends(
     points = np.linspace(0.0, 1.0, 7, dtype=dtype)
     degree = 4
     results = []
-    for backend in (Backend.CPP, Backend.NUMBA):
+    for backend in (Backend.CPP, Backend.PYTHON):
         out = np.full((points.size, degree + 1), np.nan, dtype=dtype)
         with use_backend(backend):
             returned = tabulate_cardinal_bspline_1d(degree, points, out=out)
@@ -1284,7 +1284,7 @@ def test_a_non_contiguous_out_is_filled_identically_by_both_backends(
     """
     points = np.linspace(0.0, 1.0, 5)
     results = []
-    for backend in (Backend.NUMBA, Backend.CPP):
+    for backend in (Backend.PYTHON, Backend.CPP):
         out = np.zeros((5, 6))[:, ::2]
         assert not out.flags["C_CONTIGUOUS"]
         with use_backend(backend):
@@ -1320,7 +1320,7 @@ def test_a_masked_array_is_refused_identically_by_both_backends(
     masked_points = np.ma.MaskedArray([0.0, 0.25, 0.5, 1.0], mask=[False, True, False, False])
     degree = 2
 
-    for backend in (Backend.CPP, Backend.NUMBA):
+    for backend in (Backend.CPP, Backend.PYTHON):
         with pytest.raises(TypeError, match="MaskedArray"), use_backend(backend):
             if argument == "points":
                 tabulate_cardinal_bspline_1d(degree, masked_points)
@@ -1334,7 +1334,7 @@ def test_a_masked_array_is_refused_identically_by_both_backends(
     # What is refused is the mask, not the data: the escape the message names
     # works, and the two backends still agree on it.
     results = []
-    for backend in (Backend.CPP, Backend.NUMBA):
+    for backend in (Backend.CPP, Backend.PYTHON):
         with use_backend(backend):
             results.append(tabulate_cardinal_bspline_1d(degree, masked_points.filled(0.0)))
     np.testing.assert_array_equal(results[0], results[1])
@@ -1376,7 +1376,7 @@ def test_the_isa_variant_is_a_separate_axis_from_the_backend() -> None:
     the ISA ladder in later as ``cpp_v3`` would break every such script. Splitting
     the axes now costs nothing and makes that impossible; this pins it.
     """
-    assert [b.name for b in Backend] == ["NUMBA", "CPP"], (
+    assert [b.name for b in Backend] == ["PYTHON", "CPP"], (
         "PANTR_BACKEND's accepted values are the lowercased member names, and "
         "changing them breaks any script that sets the variable"
     )
@@ -1441,7 +1441,7 @@ def test_an_unavailable_backend_request_never_falls_back(
 
     monkeypatch.setattr(_backend, "_CPP_AVAILABLE", False)
 
-    assert _backend.available_backends() == (Backend.NUMBA,)
+    assert _backend.available_backends() == (Backend.PYTHON,)
     with pytest.raises(RuntimeError, match="not available"):
         cardinal_bspline_core(Backend.CPP)
     with pytest.raises(RuntimeError, match="not available"), use_backend(Backend.CPP):
@@ -1455,7 +1455,7 @@ def test_an_unavailable_backend_request_never_falls_back(
         _tabulate_cardinal_Bspline_basis_1D_core,
     )
 
-    assert cardinal_bspline_core(Backend.NUMBA).parallel is (
+    assert cardinal_bspline_core(Backend.PYTHON).parallel is (
         _tabulate_cardinal_Bspline_basis_1D_core
     )
 
@@ -1474,12 +1474,12 @@ def test_overlapping_use_backend_blocks_in_two_threads_do_not_leak(cpp_backend: 
 
     The backend the two threads select is whichever one the process is *not*
     already on, and the assertion is against the ambient value rather than a named
-    one. Both matter: this file is run under ``PANTR_BACKEND=numba`` and under
+    one. Both matter: this file is run under ``PANTR_BACKEND=python`` and under
     ``PANTR_BACKEND=cpp``, and a fixed backend makes the test assert nothing under
     one of the two.
     """
     ambient = active_backend()
-    other = Backend.NUMBA if ambient is Backend.CPP else Backend.CPP
+    other = Backend.PYTHON if ambient is Backend.CPP else Backend.CPP
     entered_a = threading.Event()
     entered_b = threading.Event()
     exited_a = threading.Event()
@@ -1531,7 +1531,7 @@ def test_use_backend_does_not_reach_into_another_thread(cpp_backend: None) -> No
     make this assert nothing whenever ``PANTR_BACKEND`` happened to select it.
     """
     ambient = active_backend()
-    other = Backend.NUMBA if ambient is Backend.CPP else Backend.CPP
+    other = Backend.PYTHON if ambient is Backend.CPP else Backend.CPP
     observed: list[Backend] = []
 
     with use_backend(other):
@@ -1631,7 +1631,7 @@ def test_the_binding_refuses_a_negative_degree(cpp_backend: None) -> None:
 
     # The public API is where a user meets this, and there it is a ValueError
     # from Layer 2, identically on both backends.
-    for backend in (Backend.CPP, Backend.NUMBA):
+    for backend in (Backend.CPP, Backend.PYTHON):
         with pytest.raises(ValueError, match="degree must be non-negative"), use_backend(backend):
             tabulate_cardinal_bspline_1d(-1, points)
 
@@ -1756,7 +1756,7 @@ def test_bitwise_claim_detects_a_one_ulp_difference() -> None:
     every bitwise test above would be certifying nothing.
     """
     points = _span_points(np.float64)
-    reference = _tabulate(Backend.NUMBA, 3, points)
+    reference = _tabulate(Backend.PYTHON, 3, points)
     perturbed = reference.copy()
     perturbed[2, 1] = np.nextafter(perturbed[2, 1], np.float64(np.inf))
     with pytest.raises(AssertionError, match="bitwise parity claimed and violated"):
@@ -1776,7 +1776,7 @@ def test_bounded_branch_admits_a_perturbation_at_the_bound() -> None:
     ``-march=x86-64-v3`` lands. Driving the harness directly exercises it now.
     """
     points = _span_points(np.float64)
-    reference = _tabulate(Backend.NUMBA, 5, points)
+    reference = _tabulate(Backend.PYTHON, 5, points)
     amplification, _ = _companion_bounds(5, points, np.float64)
     claim = bounded_parity(
         roundings=Roundings(stages=5, accumulator_per_stage=2, storage_per_stage=1),
@@ -1798,7 +1798,7 @@ def test_bounded_branch_rejects_a_perturbation_past_the_bound() -> None:
     The other half of the probe. A tolerance nothing can exceed is not a tolerance.
     """
     points = _span_points(np.float64)
-    reference = _tabulate(Backend.NUMBA, 5, points)
+    reference = _tabulate(Backend.PYTHON, 5, points)
     amplification, _ = _companion_bounds(5, points, np.float64)
     claim = bounded_parity(
         roundings=Roundings(stages=5, accumulator_per_stage=2, storage_per_stage=1),

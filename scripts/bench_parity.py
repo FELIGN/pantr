@@ -215,7 +215,7 @@ def _time_case(degree: int, num_pts: int, repeats: int) -> Timing:
         lambda: _pantr_cpp.tabulate_cardinal_bspline_1d(degree, pts, out), repeats
     )
 
-    with use_backend(Backend.NUMBA):
+    with use_backend(Backend.PYTHON):
         numba_entry = _best_of(lambda: tabulate_cardinal_bspline_1d(degree, pts, out=out), repeats)
     with use_backend(Backend.CPP):
         cpp_entry = _best_of(lambda: tabulate_cardinal_bspline_1d(degree, pts, out=out), repeats)

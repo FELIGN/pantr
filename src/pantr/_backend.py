@@ -29,10 +29,10 @@ The environment variable ``PANTR_BACKEND`` chooses the backend for the process:
 
 .. code-block:: console
 
-    PANTR_BACKEND=numba pytest tests/     # the oracle, and the default
-    PANTR_BACKEND=cpp   pytest tests/     # the port
+    PANTR_BACKEND=python pytest tests/     # the oracle, and the default
+    PANTR_BACKEND=cpp    pytest tests/     # the port
 
-Unset, the backend is :attr:`Backend.NUMBA`, which is always available.
+Unset, the backend is :attr:`Backend.PYTHON`, which is always available.
 
 **An explicit request never falls back.** If ``PANTR_BACKEND`` names a backend
 that is not available, importing :mod:`pantr` fails, loudly, naming what is
@@ -52,7 +52,7 @@ never-fall-back rule.
 
 Folding the second into the first, as ``CPP_V3`` and ``CPP_V4`` members of
 :class:`Backend`, would multiply :func:`available_backends`, the parse, and
-every ``is Backend.NUMBA`` branch by the product of the two. It is written down
+every ``is Backend.PYTHON`` branch by the product of the two. It is written down
 now rather than when the ladder is built, because the accepted values of an
 environment variable are user-facing the moment anyone puts one in a script:
 adding an axis later is additive, but re-spelling ``PANTR_BACKEND=cpp`` as
@@ -129,13 +129,17 @@ class Backend(IntEnum):
     a boundary and is converted on the way in by :func:`_parse_choice`.
 
     Attributes:
-        NUMBA: The Numba kernels. Always available, and the parity oracle every
-            C++ result is checked against.
+        PYTHON: The Python implementation, always available and the parity
+            oracle every C++ result is checked against. Named for the language
+            rather than the JIT: this axis names which implementation *family*
+            runs a kernel, and whether a given one happens to be Numba-compiled
+            (as the basis kernels are) or plain NumPy (as ``pantr.quad`` is) is
+            an implementation detail of that family, not a second axis.
         CPP: The C++ prototype, available only when the ``pantr._pantr_cpp``
             extension was built.
     """
 
-    NUMBA = 0
+    PYTHON = 0
     CPP = 1
 
 
@@ -173,11 +177,11 @@ def available_backends() -> tuple[Backend, ...]:
 
     Returns:
         tuple[Backend, ...]: The available backends, in ascending enum order.
-            :attr:`Backend.NUMBA` is always present.
+            :attr:`Backend.PYTHON` is always present.
     """
     if not _CPP_AVAILABLE:
-        return (Backend.NUMBA,)
-    return (Backend.NUMBA, Backend.CPP)
+        return (Backend.PYTHON,)
+    return (Backend.PYTHON, Backend.CPP)
 
 
 class IsaVariant(IntEnum):
@@ -305,7 +309,7 @@ _PROCESS_DEFAULT: Final[Backend] = _resolve_from_environment(
     _ENV_VAR,
     Backend,
     available_backends(),
-    Backend.NUMBA,
+    Backend.PYTHON,
     "  The C++ extension pantr._pantr_cpp was not built.\n"
     "  Fix: pip install -e . (which builds it through scikit-build-core)",
 )
@@ -403,9 +407,9 @@ def use_backend(backend: Backend) -> Iterator[None]:
 
     Example:
         >>> from pantr._backend import Backend, active_backend, use_backend
-        >>> with use_backend(Backend.NUMBA):
+        >>> with use_backend(Backend.PYTHON):
         ...     active_backend()
-        <Backend.NUMBA: 0>
+        <Backend.PYTHON: 0>
     """
     if backend not in available_backends():
         raise RuntimeError(

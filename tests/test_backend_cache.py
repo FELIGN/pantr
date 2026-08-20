@@ -118,7 +118,7 @@ def test_a_memoized_helper_holds_one_entry_per_backend(
         call (Callable[[Any], Any]): Invokes it with arguments it accepts.
     """
     memoized.cache_clear()
-    with use_backend(Backend.NUMBA):
+    with use_backend(Backend.PYTHON):
         call(memoized)
     assert memoized.cache_info().currsize == 1, "the first call did not populate the cache"
 
@@ -147,7 +147,7 @@ def test_a_memoized_helper_returns_a_distinct_object_per_backend(
         call (Callable[[Any], Any]): Invokes it with arguments it accepts.
     """
     memoized.cache_clear()
-    with use_backend(Backend.NUMBA):
+    with use_backend(Backend.PYTHON):
         first = call(memoized)
     with use_backend(Backend.CPP):
         second = call(memoized)
@@ -185,7 +185,7 @@ def test_a_cache_does_not_leak_across_threads() -> None:
     inside_started = threading.Event()
     inside_populated = threading.Event()
     seen: dict[str, tuple[int, int]] = {}
-    other = Backend.CPP if Backend.CPP in available_backends() else Backend.NUMBA
+    other = Backend.CPP if Backend.CPP in available_backends() else Backend.PYTHON
 
     def inside() -> None:
         with use_backend(other):
@@ -205,7 +205,7 @@ def test_a_cache_does_not_leak_across_threads() -> None:
     populate.join(timeout=5.0)
     read.join(timeout=5.0)
 
-    assert seen["value"] == (int(Backend.NUMBA), 7), (
+    assert seen["value"] == (int(Backend.PYTHON), 7), (
         "a thread that entered no use_backend block was served an entry computed "
         "inside one; clearing the caches on entry and exit does not fix this"
     )

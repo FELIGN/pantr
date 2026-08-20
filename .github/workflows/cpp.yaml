@@ -199,7 +199,7 @@ jobs:
       # the new code.
       - name: change_basis against both backends
         run: |
-          for backend in numba cpp; do
+          for backend in python cpp; do
             echo "::group::PANTR_BACKEND=$backend"
             PANTR_BACKEND=$backend pytest \
               tests/test_change_basis_1D.py tests/test_change_basis_domain.py -q
