@@ -177,11 +177,12 @@ def _transform_coordinate(nodes: FloatArray) -> FloatArray:
     return 0.5 * np.log(2.0 / gap - 1.0)
 
 
-def _node_claim(nodes: FloatArray) -> ParityClaim:
+def _node_claim(nodes: FloatArray, dtype: npt.DTypeLike = np.float64) -> ParityClaim:
     """State the parity claim for the tanh-sinh nodes.
 
     Args:
         nodes (FloatArray): The reference nodes on ``[-1, 1]``.
+        dtype (npt.DTypeLike): The format the compared arrays are stored in.
 
     Returns:
         ParityClaim: A BOUNDED claim; the transcendentals prevent exactness.
@@ -191,9 +192,14 @@ def _node_claim(nodes: FloatArray) -> ParityClaim:
     omega = _transform_coordinate(nodes)
     amplification = LIBM_ULP_BUDGET * gap * 2.0 * omega + LIBM_ULP_BUDGET * gap + node
     return bounded_parity(
-        roundings=Roundings(stages=1, accumulator_per_stage=1, storage_per_stage=0),
+        # storage_per_stage = 1, not 0: the kernel computes in float64 and Layer 2
+        # narrows once on the way out, so a float32 result carries that store's
+        # own rounding -- which DOMINATES, since u32 is 5.4e8 times u64. Costs
+        # nothing when the storage is float64, because the harness charges a
+        # store into the accumulator's own format at zero.
+        roundings=Roundings(stages=1, accumulator_per_stage=1, storage_per_stage=1),
         accumulator=np.float64,
-        storage=np.float64,
+        storage=dtype,
         amplification=amplification,
         why=(
             f"the transform coordinate t is bit-identical, because h = 2 W(x)/n is "
@@ -207,13 +213,16 @@ def _node_claim(nodes: FloatArray) -> ParityClaim:
     )
 
 
-def _weight_claim(nodes: FloatArray, weights: FloatArray, count: int) -> ParityClaim:
+def _weight_claim(
+    nodes: FloatArray, weights: FloatArray, count: int, dtype: npt.DTypeLike = np.float64
+) -> ParityClaim:
     """State the parity claim for the tanh-sinh weights.
 
     Args:
         nodes (FloatArray): The reference nodes, which set the amplification.
         weights (FloatArray): The reference weights, which set the magnitude.
         count (int): The node count, which sizes the summation term.
+        dtype (npt.DTypeLike): The format the compared arrays are stored in.
 
     Returns:
         ParityClaim: A BOUNDED claim, deliberately loose; see the module docstring.
@@ -224,9 +233,14 @@ def _weight_claim(nodes: FloatArray, weights: FloatArray, count: int) -> ParityC
     summation = count + np.log2(max(count, 2)) + 1.0
     amplification = w * (transcendental + summation)
     return bounded_parity(
-        roundings=Roundings(stages=1, accumulator_per_stage=1, storage_per_stage=0),
+        # storage_per_stage = 1, not 0: the kernel computes in float64 and Layer 2
+        # narrows once on the way out, so a float32 result carries that store's
+        # own rounding -- which DOMINATES, since u32 is 5.4e8 times u64. Costs
+        # nothing when the storage is float64, because the harness charges a
+        # store into the accumulator's own format at zero.
+        roundings=Roundings(stages=1, accumulator_per_stage=1, storage_per_stage=1),
         accumulator=np.float64,
-        storage=np.float64,
+        storage=dtype,
         amplification=amplification,
         why=(
             "cosh(omega) carries the same 2 omega amplification as the node, "
@@ -333,13 +347,13 @@ def test_the_public_rule_agrees_within_the_bound(
     assert_parity(
         cpp_nodes,
         py_nodes,
-        _node_claim(unmapped),
+        _node_claim(unmapped, dtype),
         context=f"tanh-sinh nodes on [0, 1], n={n_pts}, {dtype}",
     )
     assert_parity(
         cpp_weights,
         py_weights,
-        _weight_claim(unmapped, py_weights, count),
+        _weight_claim(unmapped, py_weights, count, dtype),
         context=f"tanh-sinh weights on [0, 1], n={n_pts}, {dtype}",
     )
 

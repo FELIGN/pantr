@@ -176,20 +176,27 @@ _BOUNDED_BY_FMA: Final[str] = (
 )
 
 
-def _fused_node_claim(nodes: FloatArray) -> ParityClaim:
+def _fused_node_claim(nodes: FloatArray, dtype: npt.DTypeLike = np.float64) -> ParityClaim:
     """State the parity claim for the Gauss-Legendre nodes.
 
     Args:
         nodes (FloatArray): The reference nodes, for their shape.
+        dtype (npt.DTypeLike): The format the compared arrays are **stored** in.
+            Defaults to float64, which is the kernel's own frame.
 
     Returns:
         ParityClaim: The BOUNDED claim for a build that fuses.
     """
     amplification = np.full(np.shape(nodes), NODE_DISPLACEMENT_UNITS, dtype=np.float64)
     return bounded_parity(
-        roundings=Roundings(stages=1, accumulator_per_stage=1, storage_per_stage=0),
+        # storage_per_stage = 1, not 0: the kernel computes in float64 and Layer 2
+        # narrows once on the way out, so a float32 result carries that store's
+        # own rounding -- which DOMINATES, since u32 is 5.4e8 times u64. Costs
+        # nothing when the storage is float64, because the harness charges a
+        # store into the accumulator's own format at zero.
+        roundings=Roundings(stages=1, accumulator_per_stage=1, storage_per_stage=1),
         accumulator=np.float64,
-        storage=np.float64,
+        storage=dtype,
         amplification=amplification,
         why=(
             f"{_BOUNDED_BY_FMA} A node inherits the RATIO C(n, x_i) / |P'_n(x_i)|, "
@@ -204,18 +211,56 @@ def _fused_node_claim(nodes: FloatArray) -> ParityClaim:
     )
 
 
-def _fused_weight_claim(nodes: FloatArray, weights: FloatArray) -> ParityClaim:
+def _fused_weight_claim(
+    reference_nodes: FloatArray, weights: FloatArray, dtype: npt.DTypeLike = np.float64
+) -> ParityClaim:
     """State the parity claim for the Gauss-Legendre weights.
 
+    **``reference_nodes`` must be on ``[-1, 1]``, and that is a precondition
+    rather than a preference.** The sensitivity below is the logarithmic
+    derivative of the weight *at a root of* ``P_n``, so it is a function of the
+    Legendre coordinate. It is **not covariant** under the map onto ``[0, 1]``:
+    ``A(s) = 2|s|/(1 - s^2)`` is even in ``s`` while ``B(t) = 2t/(1 - t^2)`` is
+    not, and the map sends both singular ends to ``t = 0`` and ``t = 1`` while
+    ``B`` is singular only at the second. Half the array would lose its
+    singularity. The two cross at ``s = -1/3``; below it the mapped form is too
+    tight, and the shortfall grows without bound -- measured 3.9x at n = 2 and
+    1.9e12 at n = 2000.
+
+    A comparison of the two arrays' *maxima* does not see this: the weight halves
+    exactly as the sensitivity doubles at ``s -> 1``, so the maxima agree to
+    ``O(1/n^2)``. That coincidence is why the frame error survived one review.
+
+    ``weights`` carries the magnitude and may be in either frame, because the
+    *relative* perturbation is frame-invariant: the map scales weight and
+    tolerance alike.
+
     Args:
-        nodes (FloatArray): The reference nodes, which set the amplification.
-        weights (FloatArray): The reference weights, which set the magnitude.
+        reference_nodes (FloatArray): The nodes on ``[-1, 1]``, which set the
+            amplification. Not the mapped ones.
+        weights (FloatArray): The weights, in the frame the comparison happens
+            in, which set the magnitude.
+        dtype (npt.DTypeLike): The format the compared arrays are **stored** in.
+            Defaults to float64, which is the kernel's own frame.
 
     Returns:
         ParityClaim: The BOUNDED claim for a build that fuses.
+
+    Raises:
+        ValueError: If ``reference_nodes`` is not on ``[-1, 1]``.
     """
-    x = np.abs(np.asarray(nodes, dtype=np.float64))
+    x = np.abs(np.asarray(reference_nodes, dtype=np.float64))
     w = np.abs(np.asarray(weights, dtype=np.float64))
+    # The guard that would have caught the defect this docstring describes. A
+    # Gauss rule is symmetric about the origin, so every rule of two points or
+    # more has a node below -1/2; an array with no negative entry at all is the
+    # mapped one, handed here by mistake.
+    if x.size > 1 and np.min(np.asarray(reference_nodes, dtype=np.float64)) >= 0.0:
+        raise ValueError(
+            "the weight sensitivity is derived at a root of P_n, so it needs the "
+            "nodes on [-1, 1]; this array has no negative entry, so it is the "
+            "rule mapped onto [0, 1]. Un-map it before building the claim"
+        )
     # d(log w)/dx = -2x/(1 - x^2) at a Gauss node, from the Legendre ODE. The
     # amplification array carries magnitude times dimensionless factor, because
     # the comparison happens in an absolute frame on a quantity spanning decades.
@@ -224,9 +269,14 @@ def _fused_weight_claim(nodes: FloatArray, weights: FloatArray) -> ParityClaim:
     sensitivity[interior] = 2.0 * x[interior] / (1.0 - x[interior] * x[interior])
     amplification = w * (NODE_DISPLACEMENT_UNITS * sensitivity + WEIGHT_FORMULA_ROUNDINGS)
     return bounded_parity(
-        roundings=Roundings(stages=1, accumulator_per_stage=1, storage_per_stage=0),
+        # storage_per_stage = 1, not 0: the kernel computes in float64 and Layer 2
+        # narrows once on the way out, so a float32 result carries that store's
+        # own rounding -- which DOMINATES, since u32 is 5.4e8 times u64. Costs
+        # nothing when the storage is float64, because the harness charges a
+        # store into the accumulator's own format at zero.
+        roundings=Roundings(stages=1, accumulator_per_stage=1, storage_per_stage=1),
         accumulator=np.float64,
-        storage=np.float64,
+        storage=dtype,
         amplification=amplification,
         why=(
             f"{_BOUNDED_BY_FMA} A displaced node moves its weight by "
@@ -240,33 +290,38 @@ def _fused_weight_claim(nodes: FloatArray, weights: FloatArray) -> ParityClaim:
     )
 
 
-def _node_claim(nodes: FloatArray) -> ParityClaim:
+def _node_claim(nodes: FloatArray, dtype: npt.DTypeLike = np.float64) -> ParityClaim:
     """Select the node claim this build supports.
 
     Args:
         nodes (FloatArray): The reference nodes.
+        dtype (npt.DTypeLike): The storage format of the compared arrays.
 
     Returns:
         ParityClaim: BITWISE where the build cannot fuse, otherwise BOUNDED.
     """
     if not contraction_may_fuse():
         return bitwise_parity(why=_EXACT_BY_BUILD)
-    return _fused_node_claim(nodes)
+    return _fused_node_claim(nodes, dtype)
 
 
-def _weight_claim(nodes: FloatArray, weights: FloatArray) -> ParityClaim:
+def _weight_claim(
+    reference_nodes: FloatArray, weights: FloatArray, dtype: npt.DTypeLike = np.float64
+) -> ParityClaim:
     """Select the weight claim this build supports.
 
     Args:
-        nodes (FloatArray): The reference nodes.
-        weights (FloatArray): The reference weights.
+        reference_nodes (FloatArray): The nodes on ``[-1, 1]``; see
+            :func:`_fused_weight_claim` for why the frame is a precondition.
+        weights (FloatArray): The weights, in the compared frame.
+        dtype (npt.DTypeLike): The storage format of the compared arrays.
 
     Returns:
         ParityClaim: BITWISE where the build cannot fuse, otherwise BOUNDED.
     """
     if not contraction_may_fuse():
         return bitwise_parity(why=_EXACT_BY_BUILD)
-    return _fused_weight_claim(nodes, weights)
+    return _fused_weight_claim(reference_nodes, weights, dtype)
 
 
 @pytest.mark.parametrize("dtype", DTYPES)
@@ -284,16 +339,21 @@ def test_the_public_rule_agrees_across_backends(
     (py_nodes, py_weights), (cpp_nodes, cpp_weights) = _both_backends(
         functools.partial(get_gauss_legendre_1d, n_pts, dtype)
     )
+    # The weight sensitivity lives in the Legendre coordinate, so the nodes are
+    # un-mapped before the claim is built. See _fused_weight_claim: the mapped
+    # form is not merely looser, it inverts, and is too tight on every node below
+    # -1/3 by a factor that grows without bound in n.
+    reference_nodes = 2.0 * np.asarray(py_nodes, dtype=np.float64) - 1.0
     assert_parity(
         cpp_nodes,
         py_nodes,
-        _node_claim(py_nodes),
+        _node_claim(py_nodes, dtype),
         context=f"Gauss-Legendre nodes on [0, 1], n={n_pts}, {dtype}",
     )
     assert_parity(
         cpp_weights,
         py_weights,
-        _weight_claim(py_nodes, py_weights),
+        _weight_claim(reference_nodes, py_weights, dtype),
         context=f"Gauss-Legendre weights on [0, 1], n={n_pts}, {dtype}",
     )
 
@@ -457,3 +517,70 @@ def test_the_bounded_branch_rejects_a_perturbation_past_its_own_bound(n_pts: int
                 claim,
                 context=f"{name} sensitivity probe, past the bound, n={n_pts}",
             )
+
+
+def test_the_weight_claim_refuses_the_mapped_frame() -> None:
+    """Handing the weight claim mapped nodes is refused rather than quietly accepted.
+
+    The regression test for a defect that shipped in this file. The sensitivity
+    ``2|x|/(1 - x^2)`` is the logarithmic derivative of the weight **at a root of**
+    ``P_n``, so it is a function of the Legendre coordinate, and it is not
+    covariant under the map onto ``[0, 1]``: ``A(s)`` is even in ``s`` while
+    ``B(t) = 2t/(1 - t^2)`` is not, and the map sends both singular ends to
+    ``t = 0`` and ``t = 1`` while ``B`` is singular only at the second. Half the
+    array loses its singularity.
+
+    **A comparison of the two arrays' maxima cannot see this**, which is why it
+    survived a review: the weight halves exactly as the sensitivity doubles at
+    ``s -> 1``, so the maxima agree to ``O(1/n^2)``. The failure is on the
+    negative nodes, and it grows without bound -- the two cross at ``s = -1/3``
+    and the shortfall reaches 1.9e12 at n = 2000.
+
+    Needs no C++ backend: what is under test is the claim's own precondition.
+    """
+    with use_backend(Backend.PYTHON):
+        mapped_nodes, weights = get_gauss_legendre_1d(200, np.float64)
+
+    with pytest.raises(ValueError, match="mapped onto"):
+        _fused_weight_claim(mapped_nodes, weights)
+
+    reference_nodes = 2.0 * np.asarray(mapped_nodes, dtype=np.float64) - 1.0
+    tolerance = absolute_tolerance(_fused_weight_claim(reference_nodes, weights))
+    assert tolerance[0] == pytest.approx(tolerance[-1], rel=1e-6), (
+        "the weight tolerance is not symmetric about the centre of the rule, so "
+        "the sensitivity is being evaluated in a frame where it has lost the "
+        "singularity at one end"
+    )
+
+
+@pytest.mark.parametrize("dtype", DTYPES)
+def test_the_bound_tracks_the_format_the_comparison_happens_in(dtype: npt.DTypeLike) -> None:
+    """A float32 comparison gets a float32-scale bound, not a float64 one.
+
+    The other half of the same defect. ``accumulator`` and ``storage`` were both
+    hard-coded to float64 while the test is parametrized over both formats, and
+    ``storage_per_stage`` was zero, so the narrowing store contributed nothing.
+    The bound came out about 6e7 times **smaller** than one ulp of the array it
+    was compared against: a bitwise assertion wearing BOUNDED clothes, which
+    passes only while the two backends happen to agree exactly and fails by 1e8
+    on the first one-ulp disagreement.
+
+    Args:
+        dtype (npt.DTypeLike): Storage format.
+    """
+    with use_backend(Backend.PYTHON):
+        nodes, _ = get_gauss_legendre_1d(200, dtype)
+
+    tolerance = absolute_tolerance(_fused_node_claim(np.asarray(nodes, dtype=np.float64), dtype))
+    one_ulp = float(np.spacing(np.asarray(nodes).astype(dtype).max()))
+    ratio = float(np.max(tolerance)) / one_ulp
+
+    assert ratio > 1.0, (
+        f"in {np.dtype(dtype)} the bound is {ratio:.3g} of one ulp of the data it "
+        f"compares, so it cannot admit even a single-ulp difference and is a "
+        f"bitwise claim in all but name"
+    )
+    assert ratio < 100.0, (
+        f"in {np.dtype(dtype)} the bound is {ratio:.3g} ulp of the data, wide "
+        f"enough that it would wave through a genuinely wrong port"
+    )
