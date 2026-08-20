@@ -1,5 +1,51 @@
 # Changelog
 
+## Unreleased
+
+The dual-backend prototype on the `proto/cpp` branch. Two pull requests so far: the
+infrastructure, and the `quad` port. The infrastructure landed without a changelog entry, so
+this section covers both -- the environment variable it introduced is user-facing, and the
+`quad` port changes the values it accepts.
+
+### Added
+- **A second implementation of a kernel can now be selected at run time.** `PANTR_BACKEND`
+  chooses which family runs: `python` for the reference implementation, which is also the
+  default and the oracle every other result is checked against, or `cpp` for the compiled
+  extension. `pantr._backend.use_backend` scopes the choice to a thread or a task.
+  **An explicit request never falls back.** Naming a backend the installation cannot run fails
+  at import, loudly, rather than quietly running the other one, because a silent downgrade
+  would make every A/B measurement taken under it untrustworthy.
+- `PANTR_ISA_VARIANT` and `pantr._backend.IsaVariant`, a second and orthogonal axis: which
+  family runs the kernel and which build of that family are separate questions. Only the
+  baseline is built today, so this is a shape rather than a capability; it exists now because
+  the accepted values of an environment variable are user-facing the moment anyone puts one in
+  a script, and adding an axis later is additive where re-spelling `PANTR_BACKEND=cpp` as
+  `PANTR_BACKEND=cpp_v3` would be a break.
+- A C++ implementation of the cardinal B-spline tabulation and of the whole of `pantr.quad`'s
+  rule generation: Gauss-Legendre, tanh-sinh, the trapezoidal rule and the modified Chebyshev
+  nodes. Selecting `cpp` is between 1.3 and 60 times faster depending on the rule and the point
+  count; `scripts/bench_quad.py` and `scripts/bench_parity.py` report the figures and say which
+  part of each is the port and which is the call.
+- `pantr.quad` no longer imports `scipy`. The Lambert W function that sets the tanh-sinh step
+  size is solved in the library, by Halley's method on `w e^w = x`, and Gauss-Legendre is
+  computed by Newton on the Legendre recurrence rather than through `numpy.polynomial.leggauss`.
+  Neither is a reimplementation for its own sake: both are the reference the C++ is checked
+  against, and `leggauss` has no operation-for-operation transliteration.
+
+### Changed
+- **Breaking, for anyone who set the variable.** `PANTR_BACKEND=numba` is now
+  `PANTR_BACKEND=python`, and the old spelling raises rather than being accepted as an alias.
+  The axis names the implementation *family*, and "Numba" was already the wrong name for it:
+  `pantr.quad` contains no Numba at all, and whether a given kernel on that side happens to be
+  compiled is an implementation detail of that side.
+- `pantr.quad` is a package rather than a single module. Every import path is unchanged.
+- Gauss-Legendre nodes and weights, and the tanh-sinh rule, are computed by different code than
+  before. The Gauss-Legendre rule is bit-identical to what `numpy.polynomial.leggauss` returned
+  for the nodes; the weights differ in their last bits, which was traced to the weight formula's
+  own rounding rather than to the root finder, and is irreducible without transliterating numpy
+  verbatim. The tanh-sinh rule is unchanged.
+
+
 ## 0.7.0 (2026-08-19)
 
 ### Added
