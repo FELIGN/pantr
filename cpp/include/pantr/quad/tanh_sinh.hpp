@@ -95,7 +95,11 @@ inline constexpr double tanh_sinh_decay_factor = 0.6;
 ///       nothing here bounds-checks a write and the worst case really does reach
 ///       `n`; and `min_gap > 0`, since a non-positive value never terminates the
 ///       loop by its own test and would leave the rule to run to `n` with nodes
-///       that collapse onto the endpoint when mapped. For general use call
+///       that collapse onto the endpoint when mapped. **`out_nodes` and `out_weights` must not
+///       overlap**: each is written independently, so an aliased pair leaves one
+///       silently overwriting the other. `cpp/bindings/quad.cpp` refuses that at
+///       the boundary and the Python adapters cannot produce it, but a C++ caller
+///       establishes it itself. For general use call
 ///       `pantr.quad.get_tanh_sinh_1d`.
 inline std::size_t generate_tanh_sinh(int n, double min_gap, std::span<double> out_nodes,
                                       std::span<double> out_weights) {

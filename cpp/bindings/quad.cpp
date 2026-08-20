@@ -34,6 +34,43 @@ using out_vector = nb::ndarray<T, nb::ndim<1>, nb::c_contig, nb::device::cpu>;
 /// same guard `tabulate` in `basis.cpp` applies to `degree`.
 constexpr unsigned max_count = static_cast<unsigned>(std::numeric_limits<int>::max());
 
+/// Refuse two output buffers that overlap in memory.
+///
+/// **This is a correctness requirement, not tidiness, and the failure it prevents
+/// is silent.** Every kernel here writes its two outputs independently, so handing
+/// it the same array twice is accepted by nanobind (the two parameters have the
+/// same type, rank, dtype and contiguity) and the second write simply overwrites
+/// the first. Measured before this guard existed:
+/// `gauss_legendre_symmetric(5, same, same)` returned the WEIGHTS in `same`, with
+/// no exception anywhere -- a plausible-looking array of the right shape holding
+/// the wrong quantity.
+///
+/// The Python side could not do this: `pantr.quad`'s Layer 3 returns freshly
+/// allocated arrays and has no `out` parameters at all, so aliasing was
+/// structurally impossible there and became reachable only when the port
+/// introduced out-parameters. The sanctioned callers, the `_cpp_*` adapters in
+/// `pantr.quad._quad_backend`, allocate two fresh arrays per call and cannot
+/// trigger it; this guards the direct-import path that `basis.cpp` documents as a
+/// real one.
+///
+/// Overlap rather than equality: two different views onto one buffer alias just as
+/// destructively as the same object passed twice.
+void refuse_overlapping_outputs(const out_vector<double>& first, const char* first_name,
+                                const out_vector<double>& second, const char* second_name) {
+    const auto* first_begin = first.data();
+    const auto* first_end = first_begin + first.size();
+    const auto* second_begin = second.data();
+    const auto* second_end = second_begin + second.size();
+    if (first_begin < second_end && second_begin < first_end) {
+        throw nb::value_error(
+            (std::string(first_name) + " and " + second_name +
+             " overlap in memory. Each is written independently, so one would "
+             "silently overwrite the other and the result would be neither. Pass "
+             "two separate arrays.")
+                .c_str());
+    }
+}
+
 void gauss_legendre_symmetric(unsigned n, out_vector<double> out_nodes,
                                out_vector<double> out_weights) {
     if (n < 1) {
@@ -57,6 +94,8 @@ void gauss_legendre_symmetric(unsigned n, out_vector<double> out_nodes,
                                std::to_string(n))
                                   .c_str());
     }
+
+    refuse_overlapping_outputs(out_nodes, "out_nodes", out_weights, "out_weights");
 
     const std::span<double> nodes(out_nodes.data(), n);
     const std::span<double> weights(out_weights.data(), n);
@@ -120,6 +159,8 @@ int generate_tanh_sinh(unsigned n, double min_gap, out_vector<double> out_nodes,
                                   .c_str());
     }
 
+    refuse_overlapping_outputs(out_nodes, "out_nodes", out_weights, "out_weights");
+
     const std::span<double> nodes(out_nodes.data(), out_nodes.size());
     const std::span<double> weights(out_weights.data(), out_weights.size());
 
@@ -151,6 +192,8 @@ void trapezoidal(unsigned n, out_vector<double> out_nodes, out_vector<double> ou
                                std::to_string(n))
                                   .c_str());
     }
+
+    refuse_overlapping_outputs(out_nodes, "out_nodes", out_weights, "out_weights");
 
     const std::span<double> nodes(out_nodes.data(), n);
     const std::span<double> weights(out_weights.data(), n);

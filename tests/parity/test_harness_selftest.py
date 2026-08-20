@@ -193,13 +193,28 @@ def test_a_budget_that_reaches_the_runaway_half_is_refused() -> None:
     so the expression stops being an error bound and starts being nonsense. The
     refusal has to happen on the budget rather than on the quotient, because a
     negative quotient looks like a small bound.
+
+    **The budget below is chosen to sit between the old refusal threshold and the
+    new one, and that choice is the whole test.** A first version used a stage
+    count so enormous that the previous implementation's own guard rejected it
+    too, so it passed against the broken code and against the fixed code alike --
+    it pinned the new behaviour without discriminating. Here the accumulated
+    budget is about 0.6: the current form gives ``gamma = 1.5`` and refuses, while
+    the superseded power form gave ``(1 + 8u)^s - 1 = 0.82`` and waved it through
+    as a usable bound. So this fails against the old implementation, which is what
+    makes it a regression test rather than a description.
     """
+    # 8 roundings per stage over this many stages accumulates to 0.6 units of
+    # roundoff, derived rather than searched: stages = 0.6 / (8 u).
+    stages_reaching_six_tenths = 675539944105574
     claim = bounded_parity(
-        roundings=Roundings(stages=2**52, accumulator_per_stage=8, storage_per_stage=0),
+        roundings=Roundings(
+            stages=stages_reaching_six_tenths, accumulator_per_stage=8, storage_per_stage=0
+        ),
         accumulator=np.float64,
         storage=np.float64,
         amplification=np.ones(1),
-        why="a stage count large enough to exhaust the format",
+        why="a budget accumulating past the half where gamma stops bounding anything",
     )
     with pytest.raises(ValueError, match="vacuous"):
         absolute_tolerance(claim)

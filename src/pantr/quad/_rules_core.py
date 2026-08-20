@@ -85,6 +85,15 @@ def _legendre_and_derivative(
     Returns:
         tuple[npt.NDArray[np.float64], npt.NDArray[np.float64]]: ``P_n(x)`` and
             ``P_n'(x)``.
+
+    Note:
+        Inputs are assumed to be correct (no validation performed). Two
+        preconditions are load-bearing: ``n >= 1``, and ``|x| != 1``, because the
+        derivative is formed as ``n (x P_n - P_{n-1}) / (x^2 - 1)`` and that
+        denominator vanishes at the endpoints. Neither can occur through
+        :func:`_gauss_legendre_symmetric_core`, whose every node is interior with
+        the outermost about ``1 - c/n^2`` away.
+        For general use, call :func:`pantr.quad.get_gauss_legendre_1d` instead.
     """
     previous = np.ones_like(x)
     current = x.copy()
@@ -127,6 +136,11 @@ def _gauss_legendre_symmetric_core(
         tuple[npt.NDArray[np.float64], npt.NDArray[np.float64]]: Nodes ascending
             in ``(-1, 1)`` and their weights, summing to 2 up to the rounding of
             that sum.
+
+    Note:
+        Inputs are assumed to be correct (no validation performed). ``n >= 1`` is
+        load-bearing: it sets the loop bounds and the half-count.
+        For general use, call :func:`pantr.quad.get_gauss_legendre_1d` instead.
     """
     if n == 1:
         return np.array([0.0]), np.array([2.0])
@@ -210,6 +224,16 @@ def _lambert_w_principal_core(x: float) -> float:
 
     Returns:
         float: ``W(x)``, within about one unit of roundoff of ``W``.
+
+    Note:
+        Inputs are assumed to be correct (no validation performed), and here that
+        is worth stating twice: the precondition above is not merely unchecked, it
+        fails **silently**. Below about 1.61 the branch-free start lands on the
+        wrong branch and the returned number is wrong rather than absent. The C++
+        binding validates it, because a compiled module is a plausible direct
+        import target; this function is reached only through
+        :func:`_generate_tanh_sinh_core`, which cannot violate it.
+        For general use, call :func:`pantr.quad.get_tanh_sinh_1d` instead.
     """
     log_x = np.log(x)
     log_log_x = np.log(log_x)
@@ -261,6 +285,13 @@ def _generate_tanh_sinh_core(n: int, min_gap: float) -> tuple[npt.NDArray[np.flo
         ``[-1, 1]``, and *m* is the effective node count.
 
     Note:
+        Inputs are assumed to be correct (no validation performed). Two
+        preconditions are load-bearing: ``n >= 1``, and ``min_gap > 0``, since a
+        non-positive threshold never terminates the generation loop by its own
+        test and would leave the rule running to ``n`` with nodes that collapse
+        onto an endpoint when mapped.
+        For general use, call :func:`pantr.quad.get_tanh_sinh_1d` instead.
+
         Nodes and weights follow the double-exponential formulas of Takahasi &
         Mori (1974), *Publ. RIMS, Kyoto Univ.* 9(3), 721-741; the step-size root
         is evaluated by :func:`_lambert_w_principal_core`.

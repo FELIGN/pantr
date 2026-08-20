@@ -67,11 +67,25 @@ shape rather than a capability.
 Scope
 -----
 
-One kernel is ported so far, the cardinal B-spline tabulation of
-:func:`pantr.basis.tabulate_cardinal_bspline_1d`. Selecting the C++ backend
-changes that kernel and nothing else; every other function keeps running its
-Numba implementation regardless. So a suite run under ``PANTR_BACKEND=cpp`` is
-not a C++ run, it is a run in which one kernel is C++.
+Two modules are ported so far, and **selecting the C++ backend changes only what
+they cover**. A suite run under ``PANTR_BACKEND=cpp`` is not a C++ run; it is a
+run in which those kernels are C++ and everything else is unchanged.
+
+* :mod:`pantr.basis` -- the cardinal B-spline tabulation of
+  :func:`pantr.basis.tabulate_cardinal_bspline_1d`, and nothing else in the
+  package.
+* :mod:`pantr.quad` -- four of the seven rule generators: Gauss-Legendre, the
+  trapezoidal rule, the modified Chebyshev nodes and tanh-sinh, together with the
+  Lambert W solve the last of those needs.
+
+**Three public quadrature rules are deliberately never dispatched** and will
+report identical results under either backend:
+:func:`pantr.quad.get_gauss_lobatto_legendre_1d`,
+:func:`pantr.quad.get_chebyshev_gauss_1st_kind_1d` and
+:func:`pantr.quad.get_chebyshev_gauss_2nd_kind_1d` stay on
+:mod:`numpy.polynomial`, for reasons ``design/quadrature_algorithms.md`` records.
+That matters to anyone reading an A/B measurement: bit-identical output from one
+of those three is the switch being a no-op for it, not a parity success.
 
 What is here, and what is not
 -----------------------------

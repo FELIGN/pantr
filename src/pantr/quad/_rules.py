@@ -391,8 +391,6 @@ def _generate_tanh_sinh(
         Nodes and weights follow the double-exponential formulas of Takahasi &
         Mori (1974), *Publ. RIMS, Kyoto Univ.* 9(3), 721-741.
     """
-    if n == 1:
-        return np.array([[0.0, 2.0]]), 1
     return quad_kernels().tanh_sinh(n, _tanh_sinh_min_gap(dtype))
 
 
