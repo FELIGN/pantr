@@ -2,9 +2,10 @@
 
 **This is a prototype and it is meant to be abandonable.** It exists to answer a
 short list of questions about whether a C++ port of pantr is worth doing, with
-measurements rather than opinions. It ports exactly one kernel. If the answers
-had come out badly the right response would have been to delete the branch, and
-nothing here is shaped to make that hard.
+measurements rather than opinions. It ports two modules so far, one per pull
+request: `pantr.basis`'s cardinal B-spline tabulation, and the rule generation of
+`pantr.quad`. If the answers had come out badly the right response would have
+been to delete the branch, and nothing here is shaped to make that hard.
 
 The decisions it implements were taken beforehand and live in `design/*.md` at
 the repository root. This directory implements them; it does not revisit them.
@@ -14,9 +15,14 @@ the repository root. This directory implements them; it does not revisit them.
 ```
 cpp/include/pantr/core/scalar.hpp        the Real concept and value_of (Tier A/B)
 cpp/include/pantr/core/mdspan.hpp        the <mdspan> / Kokkos switch
-cpp/include/pantr/basis/cardinal_bspline.hpp   the one ported kernel
-cpp/bindings/                            the nanobind extension
-cpp/tests/                               ctest: dependencies, the concept, the kernel
+cpp/include/pantr/basis/cardinal_bspline.hpp   the first ported kernel
+cpp/include/pantr/quad/legendre.hpp      Gauss-Legendre by Newton on P_n
+cpp/include/pantr/quad/lambert_w.hpp     the principal branch, by Halley
+cpp/include/pantr/quad/tanh_sinh.hpp     the double-exponential rule
+cpp/include/pantr/quad/simple_rules.hpp  trapezoidal and modified Chebyshev nodes
+cpp/bindings/pantr_cpp.cpp               the module shell and its provenance
+cpp/bindings/basis.cpp, quad.cpp         one register_*(m) per ported package
+cpp/tests/                               ctest: dependencies, the concept, the kernels
 cpp/benchmark/                           the kernel alone, no Python
 ```
 
@@ -27,8 +33,12 @@ src/pantr/_backend.py                PANTR_BACKEND and PANTR_ISA_VARIANT: which
                                      implementation, and the rule it never breaks
 src/pantr/basis/_basis_backend.py    the basis kernels of each backend, and the
                                      adapter that calls the extension
-tests/parity/test_basis_cardinal_bspline.py   the C++ result against the numba oracle
+src/pantr/quad/_quad_backend.py      the same, for the five quadrature kernels
+src/pantr/quad/_rules_core.py        the Python they are transliterated from, which
+                                     stays the parity oracle
+tests/parity/                        each C++ result against its Python oracle
 scripts/bench_parity.py              both kernels and both entry points, timed
+scripts/bench_quad.py                the same, for the quadrature rules
 scripts/ci_local.sh                  the whole check, and the gates asserted to fire
 ```
 
@@ -115,7 +125,12 @@ numba instead of 1.3x faster, which is the opposite conclusion.
 
 ## What it deliberately does not do
 
-- **No second module.** One kernel per PR.
+- **One module per PR.** `pantr.basis` was the first, `pantr.quad` the second.
+  The rule is about the size of a reviewable change, not about a ceiling on the
+  port: what makes a second module cheap is that the infrastructure question was
+  settled by the first, and what makes it worth reviewing separately is that each
+  one brings its own numerical content. `quad` needed two corrections to the
+  parity harness that one consumer could not have revealed.
 - **No `-march`, no SIMD, no ISA variants.** `design/simd.md` makes that stage 2
   and gates it on first measuring the baseline gap against `-march=x86-64-v3`.
   **That measurement is now taken**, at `-O3` on the standalone kernel, 10^6

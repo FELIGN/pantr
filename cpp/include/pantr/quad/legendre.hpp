@@ -119,7 +119,11 @@ inline constexpr int gauss_legendre_newton_steps = 4;
 ///       safety rather than for the answer: `n >= 1`, since it is widened to
 ///       `std::size_t` and a negative value becomes an enormous loop bound; and
 ///       both spans having length exactly `n`, since nothing here bounds-checks a
-///       write. Both are established by the Layer 2 caller. For general use call
+///       write. **`out_nodes` and `out_weights` must not
+///       overlap**: each is written independently, so an aliased pair leaves one
+///       silently overwriting the other. `cpp/bindings/quad.cpp` refuses that at
+///       the boundary and the Python adapters cannot produce it, but a C++ caller
+///       establishes it itself. Both are established by the Layer 2 caller. For general use call
 ///       `pantr.quad.get_gauss_legendre_1d`.
 inline void gauss_legendre_symmetric(int n, std::span<double> out_nodes,
                                      std::span<double> out_weights) {

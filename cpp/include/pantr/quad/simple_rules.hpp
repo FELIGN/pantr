@@ -59,7 +59,11 @@ namespace pantr {
 /// \note No input validation is performed. This is a Layer 3 kernel in the
 ///       layering of CLAUDE.md. Load-bearing preconditions, established by the
 ///       Layer 2 caller: `n >= 1`, and both spans having length exactly `n`, since
-///       nothing here bounds-checks a write. For general use call
+///       nothing here bounds-checks a write. **`out_nodes` and `out_weights` must not
+///       overlap**: each is written independently, so an aliased pair leaves one
+///       silently overwriting the other. `cpp/bindings/quad.cpp` refuses that at
+///       the boundary and the Python adapters cannot produce it, but a C++ caller
+///       establishes it itself. For general use call
 ///       `pantr.quad.get_trapezoidal_1d`.
 inline void trapezoidal(int n, std::span<double> out_nodes, std::span<double> out_weights) {
     if (n == 1) {
