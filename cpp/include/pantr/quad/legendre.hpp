@@ -123,6 +123,14 @@ inline constexpr int gauss_legendre_newton_steps = 4;
 ///       `pantr.quad.get_gauss_legendre_1d`.
 inline void gauss_legendre_symmetric(int n, std::span<double> out_nodes,
                                      std::span<double> out_weights) {
+    // Unqualified, after a using-declaration. `std::cos(x)` would name the
+    // overload directly and suppress ADL, which is how a user-defined scalar's
+    // own overload gets excluded; `scripts/ci_local.sh discipline` enforces the
+    // rule across cpp/include and cpp/bindings. It does not bind here, since
+    // this kernel is double-only by design, but the guard is repository-wide and
+    // an exception in one header is how a rule stops being one.
+    using std::cos;
+
     if (n == 1) {
         out_nodes[0] = 0.0;
         out_weights[0] = 2.0;
@@ -137,7 +145,7 @@ inline void gauss_legendre_symmetric(int n, std::span<double> out_nodes,
         // `n + 0.5` is exact, and the index is a small integer, so the only
         // inexactness in the start is the division and the cosine.
         const double index = static_cast<double>(i + 1);
-        double x = std::cos(std::numbers::pi * (index - 0.25) / (static_cast<double>(n) + 0.5));
+        double x = cos(std::numbers::pi * (index - 0.25) / (static_cast<double>(n) + 0.5));
 
         double value = 0.0;
         double derivative = 0.0;
