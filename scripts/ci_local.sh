@@ -553,18 +553,43 @@ python_checks() {
 splitmode() {
     step "nanobind split mode (pre-release probe)"
 
-    local tmpvenv
-    tmpvenv="$(mktemp -d)/venv"
+    # The probe gets a build directory of its own, and that is load-bearing
+    # rather than tidiness. pyproject sets a PERSISTENT build-dir so an editable
+    # rebuild stays incremental, and a CMake cache is sticky in both directions:
+    #
+    #   * cpp/bindings/CMakeLists.txt finds nanobind through the interpreter and
+    #     writes `nanobind_ROOT` as a normal variable, but find_package records
+    #     the result in the CACHE variable `nanobind_DIR`. On any later
+    #     configure a valid cached <pkg>_DIR wins over <pkg>_ROOT, so the probe
+    #     would silently configure against whichever nanobind the ordinary build
+    #     resolved first -- reporting on 2.x while claiming to test 3.x.
+    #   * PANTR_NANOBIND_SPLIT=ON would likewise stay in that cache and be
+    #     inherited by the NEXT ordinary editable install, which then fails.
+    #     That made `ci_local.sh all` pass once and fail the second time.
+    #
+    # Sharing nothing is the whole fix. See the issue this closes.
+    local probedir tmpvenv probebuild
+    probedir="$(mktemp -d)"
+    tmpvenv="$probedir/venv"
+    probebuild="$probedir/skbuild"
     if ! python -m venv --system-site-packages "$tmpvenv" >/dev/null 2>&1; then
         record SKIP "nanobind split mode" "could not create a probe venv"
+        rm -rf "$probedir"
         return 0
     fi
     # shellcheck disable=SC1091
     source "$tmpvenv/bin/activate"
 
-    if ! pip install -q --pre "nanobind>=3.0.0.dev0" >"$LOGDIR/nb3.log" 2>&1; then
+    # BOTH halves, because that is what split mode is. The frontend links
+    # against the stable ABI and the backend module carries the runtime; with
+    # only the frontend installed the extension builds and then refuses to
+    # import, naming the missing backend. design/_memory/nanobind-status.md
+    # records the pairing that was measured to work.
+    if ! pip install -q --pre "nanobind>=3.0.0.dev0" "nanobind-backend" \
+            >"$LOGDIR/nb3.log" 2>&1; then
         record SKIP "nanobind split mode" "pre-release not installable"
         deactivate || true
+        rm -rf "$probedir"
         return 0
     fi
 
@@ -572,6 +597,7 @@ splitmode() {
     nbver="$(python -c 'import nanobind; print(nanobind.__version__)' 2>/dev/null || echo unknown)"
 
     if pip install -e . --no-build-isolation -q \
+         --config-settings=build-dir="$probebuild" \
          --config-settings=cmake.define.PANTR_NANOBIND_SPLIT=ON >"$LOGDIR/split.log" 2>&1 \
        && python -c "import pantr._pantr_cpp" >>"$LOGDIR/split.log" 2>&1; then
         record PASS "nanobind split mode" "nanobind $nbver"
@@ -579,7 +605,37 @@ splitmode() {
         record WARN "nanobind split mode" "nanobind $nbver: see the log tail below"
         tail -25 "$LOGDIR/split.log"
     fi
+
+    # Which nanobind CMake actually loaded, rather than which one Python could
+    # import. The two disagreeing is precisely the failure above, and the
+    # version line the build prints comes from the interpreter, so it cannot
+    # tell them apart on its own.
+    #
+    # This one is a FAIL rather than a WARN, and the distinction is deliberate:
+    # the step is non-blocking about whether the PRE-RELEASE works, not about
+    # whether the probe measured what it claims. A probe that quietly configured
+    # against a different nanobind reports a verdict on the wrong subject, which
+    # is worse than reporting nothing.
+    #
+    # `|| true` is required, not defensive: `set -euo pipefail` is in force, so
+    # an unmatched grep inside a command substitution would abort the function
+    # before it records anything.
+    local nbcmake
+    # Both levels: pyproject's build-dir carries a `{wheel_tag}` component, but
+    # the override above is a literal path, so the cache lands directly in it.
+    nbcmake="$(grep -hm1 '^nanobind_DIR:' \
+        "$probebuild"/CMakeCache.txt "$probebuild"/*/CMakeCache.txt 2>/dev/null \
+        | cut -d= -f2- || true)"
+    if [ -z "$nbcmake" ]; then
+        record WARN "split probe used the probe's nanobind" "no CMake cache to read"
+    elif [[ "$nbcmake" == "$tmpvenv"/* ]]; then
+        record PASS "split probe used the probe's nanobind"
+    else
+        record FAIL "split probe used the probe's nanobind" "configured against $nbcmake"
+    fi
+
     deactivate || true
+    rm -rf "$probedir"
 }
 
 # --------------------------------------------------------------------------
