@@ -166,16 +166,89 @@ happens for `1 - u` with `u` below about `eps/4`. Widening each computed coeffic
 propagated error makes the companion cover both. Without it the bound could be violated by
 `1/u`, a factor of `2^53`.
 
-## What is deliberately not settled here
+## Did the harness generalize? Yes in vocabulary, no in meaning
 
-**Whether the harness's vocabulary generalized.** `bounded_parity` models a dependency chain
-with a per-stage rounding count. Two of `quad`'s four comparisons are not chains: a Newton fixed
-point is limited by the conditioning of a simple root, and a rule generator's transcendental
-evaluations are limited by what the vendor documents about its own library rather than by
-anything visible in our source. Whether that is expressible as a third budget against a second
-magnitude, or wants a distinct kind, is answered by writing the tests, not by predicting them.
-This section gets written after they exist. A contract three ports inherit should not be sealed
-from one and a half data points.
+This section was left unwritten on purpose until `quad`'s parity tests existed, because a
+contract three more ports inherit should not be sealed from one and a half data points. The
+tests exist now. The answer has three parts and the middle one is the useful one.
+
+### It generalized in vocabulary: no new kind, no new field
+
+All five `quad` comparisons are expressible with what was already there. `bitwise_parity` covers
+Gauss-Legendre on the shipped build, Lambert W, the trapezoidal rule, and the modified Chebyshev
+nodes in float64. `bounded_parity` with `Roundings` and an `amplification` array covers the
+modified Chebyshev nodes in float32, tanh-sinh, and Gauss-Legendre's unreachable FMA branch. **No
+third `ParityKind` was needed and no second magnitude array.**
+
+The proposal for a `bound=` factory taking an elementwise array directly was refused before the
+tests were written, on the grounds that it is one step from laundering a fitted tolerance. **The
+refusal held up, and the reason turned out to be different from the one given.** It is not that
+such a factory is dangerous in itself: what keeps a bound honest is the derivation in `why` plus a
+test asserting the bound is *reached*, and both apply to any constructor. It is that
+`bounded_parity` makes the unit `u` structural. Every bound below is a multiple of a unit of
+roundoff and it is impossible to write one that is not.
+
+### It did not generalize in meaning, and two of the four claims say something they do not mean
+
+`Roundings` is documented as a count along a dependency chain: stages, roundings per stage. That
+is what the cardinal B-spline kernel is. **Two of `quad`'s bounded claims are not chains at all**,
+and both were written as `Roundings(stages=1, accumulator_per_stage=1, storage_per_stage=0)` --
+literally "one rounding" -- with the entire derivation living in `amplification` and `why`:
+
+- **Gauss-Legendre nodes.** The bound is a *ratio*, `C(n, x_i) / |P'_n(x_i)| <= 7/2`, plus one
+  rounding. A ratio is not a rounding count, and no stage count expresses it.
+- **tanh-sinh.** The bound is a libm budget in units in the last place, amplified by
+  `2 omega` through an exponential, plus a summation-order difference between numpy's pairwise
+  sum and a plain accumulation. None of the three is a stage.
+
+So in those two, `Roundings` has been reduced from a count to **a way of writing the unit `u`**.
+A reader who takes the field at its documented word will conclude the Gauss-Legendre kernel
+commits one rounding, which is false: it commits about `5 n` of them and the bound survives
+because they cancel. **This is a real cost and it is recorded rather than fixed**, because the
+alternative -- a constructor whose argument is the bound itself -- is the one that was refused,
+and refusing it is still right. The mitigation is that `why` is mandatory, is quoted verbatim in
+every failure message, and in both cases carries the actual derivation.
+
+`amplification` has the matching problem. Its docstring says "elementwise factor by which the
+recurrence magnifies a relative perturbation", which is half of what it must carry: the other
+half is **the magnitude that turns a relative bound into an absolute one**. For the cardinal
+B-spline the two coincide numerically, because every value is in `[0, 1]` and of order one. For
+`quad` they separate visibly -- Gauss-Legendre weights span six decades at n = 700, so the
+magnitude has to be multiplied in by hand, while the nodes are of order one and do not. **A field
+doing two jobs that happen to coincide in the only consumer is exactly what one consumer cannot
+reveal.**
+
+### Why it had to be touched twice, and why neither was visible at design time
+
+**The vacuous-bound hole.** A bound at least as large as the values it compares was accepted: a
+reference of `-1e250` against an actual of `1.0` passed. Fixed before `quad` needed it, in its own
+commit.
+
+**The gamma form, which is the instructive one.** `_relative_growth` computed
+`(1 + per_stage)**stages - 1`. In binary64 that is **exactly zero** whenever `per_stage` is one
+unit of roundoff, at every stage count: `1 + eps/2` lands on the midpoint between `1` and
+`1 + eps` and round-half-to-even carries it back, because `1`'s significand is even. The claim
+then said BOUNDED while asserting bit-for-bit agreement.
+
+**It was invisible because the only consumer never hit it.** The cardinal B-spline budget is
+`accumulator_per_stage = 2`, so `per_stage = eps`, which added to `1` is representable and the
+expression works. The defect needs *exactly one* rounding per stage -- which is the ordinary shape
+of a kernel that does not narrow, and is the first thing `quad` asked for. And the guard written to
+catch precisely this class tested `per_stage == 0`, which is `1.11e-16` here and passes: **a
+budget can be non-zero and still produce a zero bound.**
+
+The general lesson, and it is the one to carry into the next port: **a single consumer cannot
+distinguish "the vocabulary is right" from "the vocabulary happens to work at this consumer's
+parameter values."** Both defects were in the parameter regions the first consumer did not visit,
+not in the design. The second consumer is where a contract is first tested, and the third will
+find something else.
+
+### What the next port should expect to add
+
+Nothing structural, on this evidence. But **`Roundings` and `amplification` both need their
+docstrings corrected** to say what they actually carry, and a fourth consumer whose bound is again
+neither a chain nor a magnitude would be the point at which the field's meaning, rather than its
+documentation, has to change.
 
 ## Epistemic status
 
