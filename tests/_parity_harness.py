@@ -313,6 +313,17 @@ class Roundings(NamedTuple):
     by format is what makes one budget serve float32 and float64 storage over a
     float64 accumulator, which is the shape every pantr kernel has.
 
+    **This models a dependency chain, and not every bound is one.** A claim whose
+    bound is a derived ratio rather than a count -- the displacement of a Newton
+    root, or a library function's error in units in the last place amplified by
+    something -- has no honest stage count to give. Those are written as
+    ``Roundings(1, 1, 0)``, which reduces this record to a way of spelling the
+    unit ``u`` and puts the whole derivation in ``amplification`` and ``why``.
+    ``design/backend_parity.md`` records that as a known cost of the design: a
+    reader taking the field at its word would conclude such a kernel commits one
+    rounding, when it may commit thousands that cancel. ``why`` is mandatory and
+    is quoted verbatim in every failure message for exactly this reason.
+
     Attributes:
         stages (int): Sequential stages in the recurrence, i.e. the length of the
             dependency chain from an input to an output element. Not the total
@@ -343,8 +354,15 @@ class ParityClaim(NamedTuple):
             accumulated in. None for BITWISE.
         storage (np.dtype[np.floating[Any]] | None): Format the output array
             holds. None for BITWISE.
-        amplification (FloatArray | None): Elementwise factor by which the
-            recurrence magnifies a relative perturbation. None for BITWISE.
+        amplification (FloatArray | None): Elementwise factor the relative
+            budget is multiplied by to reach an absolute tolerance. It carries
+            **two things at once**: the dimensionless amplification the
+            computation applies to a relative perturbation, and the magnitude
+            that converts relative to absolute. They coincide numerically
+            wherever the result is of order one, which is why one array serves
+            both; where the result spans decades, or vanishes while its error
+            does not, the magnitude has to be multiplied in deliberately. See
+            ``design/backend_parity.md`` Rules 2 and 4. None for BITWISE.
         why (str): The derivation, or the reason exactness holds. Quoted verbatim
             in any failure message.
     """
@@ -502,8 +520,11 @@ def bounded_parity(
         roundings (Roundings): The kernel's rounding budget.
         accumulator (npt.DTypeLike): Format intermediates are accumulated in.
         storage (npt.DTypeLike): Format the output array holds.
-        amplification (FloatArray): Elementwise amplification factor, same shape
-            as the result. Must be finite and non-negative.
+        amplification (FloatArray): Elementwise factor the relative budget is
+            multiplied by to reach an absolute tolerance, same shape as the
+            result. Carries the dimensionless amplification **and** the magnitude
+            that converts relative to absolute; the two coincide only where the
+            result is of order one. Must be finite and non-negative.
         why (str): The derivation, in prose, including what makes the
             amplification array correct.
 
