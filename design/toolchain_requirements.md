@@ -4,10 +4,8 @@
 **Date:** 2026-08-19.
 **Scope:** what a compiler must provide to build pantr, how that is checked, and the flag
 decisions that live in the same CMake file.
-**Companions:** `design/simd.md`, both for which flags earn their place and, in its
-"Shipping several ISA variants" section, for how variants are shipped. (Earlier drafts cited
-a `design/isa_dispatch.md`; that note was folded into `simd.md` and never existed as a file.)
-This note is about whether the build may proceed at all.
+**Companions:** `design/simd.md` (which flags earn their place) and `design/isa_dispatch.md`
+(how variants are shipped). This note is about whether the build may proceed at all.
 
 **Validated against:** pantr **0.7.0** (`main`, tag `v0.7.0`), 2026-08-19. Line numbers
 below refer to that tree.
@@ -118,7 +116,7 @@ enforced once:
   offered behind an explicit option.
 - **The floating-point contraction flag goes on the interface target**, not on individual
   targets. Any flag that participates in a numerical claim must reach every variant, or the
-  ISA variants of `design/simd.md` will disagree numerically with each other.
+  ISA variants of `design/isa_dispatch.md` will disagree numerically with each other.
 
 ## CMake 4 is strict about what dependencies declare
 
@@ -139,6 +137,20 @@ declarations rather than discovered: `-DCMAKE_POLICY_VERSION_MINIMUM=3.5`.
 On the useful side of the same version: CMake 4.4 has `FetchContent_Declare(... SYSTEM)`
 (needs 3.25 or newer), which is what keeps a dependency's own warnings from tripping
 `-Werror` in pantr's build.
+
+## Two nanobind flags that are not optional
+
+Both were found by colliding with them, and both are recorded in full in
+`design/build_findings.md`:
+
+- **`NOMINSIZE`** on `nanobind_add_module()`, plus **`install.strip = false`** in
+  `pyproject.toml`. Without them nanobind's own `-Os` lands after the build type's `-O3`
+  and wins, compiling the numerical kernels for size. Measured at **31.4 ms against
+  10.3 ms** on the same source. This is a silent 3x, aimed squarely at the number the port
+  is judged by.
+- **`NB_SUPPRESS_WARNINGS`**. In split mode nanobind adds its includes to the extension
+  target and marks them `SYSTEM` only under that option; without it a `-Wshadow` inside
+  `nb_attr.h` meets `-Werror` and the build dies in a third-party header.
 
 ## The offline escape
 
@@ -161,36 +173,14 @@ lines of CMake, and the day it is needed is the day nobody wants to be writing t
 - **Verified:** that GCC 15.2 lacks `<mdspan>` while the laptop's Clang has it, which is what
   makes mdspan a toggle rather than a gate; that the sibling project gates only on
   `cxx_std_20`, so copying its CMake would not have caught GCC 10.
-- **Corrected 2026-08-19, on the reason rather than the fact:** the absence of `<mdspan>`
-  here is an *implementation gap*, not a consequence of the C++20 baseline.
-  `__cpp_lib_mdspan` is undefined under `-std=gnu++23` as well, so GCC 14's libstdc++ has
-  simply not implemented P0009, and the environment's Clang 18 inherits the absence because
-  it resolves to that same libstdc++ rather than to libc++. The plausible explanation --
-  "a C++23 header hidden by `-std=c++20`" -- predicts that C++23 makes it appear, and
-  measurably it does not.
 - **Measured on the build server (2026-08-19):** the conda environment shadows the system
   GCC 10 and Clang 10 with conda-forge GCC 14 and Clang 18.1.8, and **all three of `g++`,
   `clang++` and `x86_64-conda-linux-gnu-g++` pass a C++20 concepts probe**. `<mdspan>` is
   **absent** there, confirming on the actual build machine that the Kokkos fallback is
   required and not merely a precaution. CMake 4.4.2, Ninja 1.13.2, ccache 4.13.6.
-- **Measured 2026-08-19, and it answers open question 1 uncomfortably:** the system
-  GCC 10 and Clang 10 **both pass the concepts probe**, in the probe's real shape rather
-  than a toy one, and **both build the whole C++ tree under `-Werror` with the full warning
-  set and pass 3/3 ctest** -- not merely the one kernel. GCC 9 fails, and fails early: it
-  does not accept `-std=c++20` at all, so the concepts probe stops it before any version
-  check runs. **Acted on**: the floor is now 10, and it applies to GCC and Clang alike.
-  It had been 14 for Clang, on a guess, and *nothing at all for GCC* -- so a GCC 10
-  configured with nothing said while a Clang 10 hit a hard stop, same year and same
-  standard-library era, neither measured. The floor now means the lowest version actually
-  exercised, which is a claim about us rather than about anyone's concepts implementation.
-- **The floor is verified locally and not by CI, deliberately.** `scripts/ci_local.sh`'s
-  `cxx` section builds and runs the tests with `g++-10` and `clang++-10` on every run, so the
-  claim is maintained rather than dated. The GitHub workflow does not: it runs GCC 14 and
-  Clang 18, and `ubuntu-24.04` does not package GCC 10, so covering the floor there would
-  need an older image or a container -- more weight than a prototype should carry. The
-  consequence is worth stating rather than discovering: **the floor is guaranteed by one
-  machine.** Anyone who cannot run `ci_local.sh` is trusting a measurement they cannot
-  reproduce.
+- **Consequently unanswered and now mostly moot:** what the probe reports on the *system*
+  GCC 10 and Clang 10, since the environment shadows them and the build will not use them.
+  What that would have told us is where the real floor sits.
 - **Stated from knowledge and explicitly uncertain:** the exact C++20 feature matrix of GCC 10
   and Clang 10, and the version at which Clang's concepts support became reliable. The
   Clang 14 floor above is a starting guess and should be replaced by whatever the probe run on
@@ -200,23 +190,10 @@ lines of CMake, and the day it is needed is the day nobody wants to be writing t
 
 ## Open questions
 
-1. ~~What does the probe report on the development server's GCC 10 and Clang 10?~~
-   **Answered 2026-08-19: both pass**, and Clang 10 additionally compiles and correctly runs
-   the ported kernel. See the epistemic status above. What remains open is the decision this
-   turns into: the filter is now known to reject a compiler that works on the evidence
-   available, and this note's own rule says the list may only grow from observed failures.
-2. ~~Which compiler does `manylinux_2_28` provide?~~ **Answered 2026-08-19: GCC 14**, on an
-   AlmaLinux 8 base, and `manylinux_2_34` (AlmaLinux 9) likewise. Both are far above the
-   floor of 10, so neither the image nor the gate has to move and this question closes
-   without consequences. (From the `pypa/manylinux` README rather than from running the
-   image; the margin is wide enough that the distinction does not change the conclusion.)
-
-   The answer does carry one thing nobody was looking for. **`manylinux_2_31`, the armv7l
-   image, ships GCC 9** -- which does not accept `-std=c++20` at all, measured on this
-   machine. So armv7l is not a case of the floor being in the way: it is **out of reach for
-   the C++ backend entirely**, at any floor compatible with the C++20 baseline this note
-   fixes. If pantr ever ships armv7l wheels they are Numba-only, and that is a packaging
-   consequence of `D4` rather than of anything decided here.
+1. What does the probe report on the development server's GCC 10 and Clang 10? That result
+   replaces the guessed Clang 14 floor with a measured one.
+2. Which compiler does `manylinux_2_28` provide? If it is older than the gate, the wheel build
+   fails and either the image or the gate has to move.
 3. Should the gate run in the Python build path too, or only for a direct CMake configure?
    scikit-build-core invokes CMake, so it inherits the gate, but the error surfaces inside a
    `pip install` log where it is much easier to miss.
