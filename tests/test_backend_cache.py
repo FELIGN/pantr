@@ -165,9 +165,17 @@ def test_a_cache_does_not_leak_across_threads() -> None:
     this one, because the entry the outside thread reads is fresh and still
     computed under the inside thread's backend.
 
-    It uses its own decorated function rather than one of the six, so it runs
-    without the C++ extension and reports on the mechanism rather than on any
-    caller.
+    It uses its own decorated function rather than one of the six, so it reports
+    on the mechanism rather than on any caller.
+
+    The two backends are named relative to the **ambient** one rather than
+    absolutely, and that is load-bearing: this file is run under
+    ``PANTR_BACKEND=python`` and under ``PANTR_BACKEND=cpp``, and a fixed pair
+    makes the test fail outright under the second -- a thread that entered no
+    block correctly reads whatever the process default is. Naming the ambient
+    backend as the override would also make the comparison vacuous, since the
+    inside and outside threads would then agree for a reason that has nothing to
+    do with keying.
     """
 
     @backend_keyed_cache(maxsize=8)
@@ -185,7 +193,15 @@ def test_a_cache_does_not_leak_across_threads() -> None:
     inside_started = threading.Event()
     inside_populated = threading.Event()
     seen: dict[str, tuple[int, int]] = {}
-    other = Backend.CPP if Backend.CPP in available_backends() else Backend.PYTHON
+    ambient = active_backend()
+    other = next((backend for backend in available_backends() if backend is not ambient), None)
+    if other is None:
+        pytest.skip(
+            "distinguishing keying from clearing needs two backends to differ; this "
+            "installation has only "
+            f"{ambient.name}, so the outside thread would read the inside thread's "
+            "entry legitimately"
+        )
 
     def inside() -> None:
         with use_backend(other):
@@ -205,7 +221,7 @@ def test_a_cache_does_not_leak_across_threads() -> None:
     populate.join(timeout=5.0)
     read.join(timeout=5.0)
 
-    assert seen["value"] == (int(Backend.PYTHON), 7), (
+    assert seen["value"] == (int(ambient), 7), (
         "a thread that entered no use_backend block was served an entry computed "
         "inside one; clearing the caches on entry and exit does not fix this"
     )
