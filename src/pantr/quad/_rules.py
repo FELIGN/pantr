@@ -91,6 +91,134 @@ def get_trapezoidal_1d(
     return nodes, weights
 
 
+_GAUSS_LEGENDRE_NEWTON_STEPS: int = 4
+"""Newton steps used to place the Gauss-Legendre nodes.
+
+Fixed rather than iterated to a residual test, for two reasons. A test on the
+step is a comparison on the scalar, which the port's AD tiering keeps out of a
+kernel, and it does not terminate reliably anyway: the step oscillates in the
+last bit rather than reaching zero, so a loop waiting for zero runs to whatever
+cap it was given.
+
+Four rather than three, and the count is derived. At a root of ``P_n`` the
+Legendre equation ``(1 - x^2) P'' - 2 x P' + n(n+1) P = 0`` gives
+``P'' = 2 x P' / (1 - x^2)``, so Newton's error constant there is
+
+    C = |P'' / (2 P')| = |x| / (1 - x^2)
+
+which at the outermost node grows like ``n^2 / 5.78``. The asymptotic starting
+guess below is accurate to ``O(1/n^2)`` at that same node, so the **product**
+``C * e_0`` is independent of ``n``: measured 0.0182 at ``n = 6`` and 0.0201 at
+``n = 1000``. Writing ``eps_k = C * e_k`` the Newton recurrence is
+``eps_{k+1} = eps_k^2`` from ``eps_0 = 0.02``, giving 4e-4, 1.6e-7, 2.6e-14,
+6.6e-28. Convergence needs ``eps_k < C * u``; at ``n = 6``, where ``C = 7.145``,
+that threshold is 7.9e-16, which the third step misses and the fourth clears by
+twelve orders.
+
+The prediction is checkable and was checked: the chain puts the third step's
+error at 1.68e-15, which is 7.6 units of roundoff, and three steps measure 7.5.
+Four steps measure 0.5 units of roundoff against `numpy.polynomial.legendre
+.leggauss` over every ``n`` from 1 to 1000 tried, and five and six measure the
+same, so the fourth reaches the fixed point.
+"""
+
+
+def _legendre_and_derivative(
+    n: int, x: npt.NDArray[np.float64]
+) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64]]:
+    """Evaluate ``P_n`` and ``P_n'`` by the three-term recurrence.
+
+    The recurrence and the order its operations are written in are part of this
+    function's contract, not an implementation detail: the C++ backend is an
+    operation-for-operation transliteration of it, and the parity bound on the
+    nodes is derived on the assumption that the two sides evaluate the same
+    expression. Changing the association here changes the last bits of every
+    node.
+
+    The derivative uses ``P_n'(x) = n (x P_n - P_{n-1}) / (x^2 - 1)``, which is
+    singular at the endpoints and is never evaluated there: every Gauss node is
+    interior, and the outermost sits about ``1 - c/n^2`` away.
+
+    Args:
+        n (int): Degree. Must be at least 1.
+        x (npt.NDArray[np.float64]): Points, strictly inside ``(-1, 1)``.
+
+    Returns:
+        tuple[npt.NDArray[np.float64], npt.NDArray[np.float64]]: ``P_n(x)`` and
+            ``P_n'(x)``.
+    """
+    previous = np.ones_like(x)
+    current = x.copy()
+    for k in range(2, n + 1):
+        previous, current = (
+            current,
+            ((2 * k - 1) * x * current - (k - 1) * previous) / k,
+        )
+    derivative = n * (x * current - previous) / (x * x - 1.0)
+    return current, derivative
+
+
+def _gauss_legendre_symmetric(n: int) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64]]:
+    """Compute the ``n``-point Gauss-Legendre rule on ``[-1, 1]`` in float64.
+
+    Newton on ``P_n`` rather than the eigenvalues of the Jacobi matrix. The two
+    are not equally good here and the choice is recorded in
+    ``design/quadrature_algorithms.md``: Newton converges to the root while an
+    eigensolve inherits its sweep's accumulated backward error, so the node error
+    is flat in ``n`` at well under one unit of roundoff instead of growing.
+
+    Only the ``ceil(n/2)`` non-negative roots are computed; the rest follow from
+    ``P_n(-x) = (-1)^n P_n(x)``, and writing each negative node as the exact
+    negation of its partner keeps the rule symmetric to the last bit rather than
+    to a tolerance.
+
+    The result is on ``[-1, 1]`` and in float64 whatever the caller asked for.
+    Mapping onto ``[0, 1]`` and narrowing are
+    :func:`_scale_and_cast_nodes_and_weights`'s job, and keeping them there is
+    deliberate: shared between the two backends, the map is common mode and
+    cancels exactly in a parity comparison instead of contributing its own
+    endpoint conditioning to the bound.
+
+    Args:
+        n (int): Number of points. Must be at least 1.
+
+    Returns:
+        tuple[npt.NDArray[np.float64], npt.NDArray[np.float64]]: Nodes ascending
+            in ``(-1, 1)`` and their weights, summing to 2 up to the rounding of
+            that sum.
+    """
+    if n == 1:
+        return np.array([0.0]), np.array([2.0])
+
+    half = (n + 1) // 2
+    index = np.arange(1, half + 1, dtype=np.float64)
+    # Tricomi's asymptotic approximation to the roots, counted inward from +1.
+    # Its error is O(1/n^2) at the outermost root, which is what makes the step
+    # count above independent of n.
+    nodes = np.cos(np.pi * (index - 0.25) / (n + 0.5))
+
+    for _ in range(_GAUSS_LEGENDRE_NEWTON_STEPS):
+        value, derivative = _legendre_and_derivative(n, nodes)
+        nodes = nodes - value / derivative
+
+    _, derivative = _legendre_and_derivative(n, nodes)
+    weights = 2.0 / ((1.0 - nodes * nodes) * derivative * derivative)
+
+    # `nodes` runs from the largest root down to the smallest, so the ascending
+    # rule is the reversed negatives, then the centre for odd n, then the tail.
+    if n % 2:
+        all_nodes = np.concatenate(
+            [-nodes[: half - 1], nodes[half - 1 : half], nodes[half - 2 :: -1]]
+        )
+        all_weights = np.concatenate(
+            [weights[: half - 1], weights[half - 1 : half], weights[half - 2 :: -1]]
+        )
+    else:
+        all_nodes = np.concatenate([-nodes, nodes[::-1]])
+        all_weights = np.concatenate([weights, weights[::-1]])
+    return all_nodes, all_weights
+
+
 def get_gauss_legendre_1d(
     n_pts: int, dtype: npt.DTypeLike = np.float64
 ) -> tuple[npt.NDArray[np.float32 | np.float64], npt.NDArray[np.float32 | np.float64]]:
@@ -110,11 +238,7 @@ def get_gauss_legendre_1d(
     """
     _validate_n_pts_and_dtype(n_pts, dtype)
 
-    leggauss_t = cast(
-        Callable[[int], tuple[npt.NDArray[np.float64], npt.NDArray[np.float64]]],
-        legendre.leggauss,
-    )
-    nodes, weights = leggauss_t(n_pts)
+    nodes, weights = _gauss_legendre_symmetric(n_pts)
 
     return _scale_and_cast_nodes_and_weights(nodes, weights, dtype)
 

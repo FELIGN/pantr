@@ -26,7 +26,7 @@ from pantr.quad import (
     get_trapezoidal_1d,
     tensor_product_quadrature,
 )
-from pantr.tolerance import get_conservative, get_default, get_strict
+from pantr.tolerance import get_conservative, get_default, get_machine_epsilon, get_strict
 
 
 def _integrate_polynomial_on_unit_interval(
@@ -74,6 +74,51 @@ class TestTrapezoidal:
 
 class TestGaussLegendre:
     """Tests for get_gauss_legendre_1d."""
+
+    @pytest.mark.slow
+    @pytest.mark.parametrize("n_pts", [1, 2, 3, 5, 8, 13, 21, 34, 55, 89, 144, 233, 400])
+    def test_agrees_with_an_independent_implementation(self, n_pts: int) -> None:
+        """The rule stays close to ``numpy.polynomial.legendre.leggauss``.
+
+        This test exists because the implementation stopped calling that
+        function. Removing it removed the only independent Gauss-Legendre in the
+        process, and the C++ backend is an operation-for-operation
+        transliteration of the Python one, so a parity comparison between the two
+        backends cannot see an error they would both make. Something has to
+        compare against a rule this repository did not write.
+
+        numpy's is genuinely independent in its arithmetic while agreeing in
+        method: it takes the eigenvalues of the same symmetric tridiagonal matrix,
+        applies one Newton polish, and evaluates the weights from a different but
+        algebraically equal expression.
+
+        The bounds are measurements of the two implementations against each
+        other, not derivations, and they are stated in the frame each quantity
+        lives in. The nodes agree absolutely, at 0.5 units of roundoff measured
+        over every n from 1 to 1000; 8 leaves a factor 16. The weights agree
+        absolutely and **not** relatively: their smallest entry decays like
+        ``n^-2`` while the difference between two algebraically equal formulas
+        does not, so the relative disagreement grows like ``n^2.7`` and reaches
+        2.5e6 units of roundoff at n = 400. Measured absolute worst is 278 units
+        of roundoff to n = 1000, and 1024 leaves a factor 3.7. See
+        ``design/quadrature_algorithms.md`` for why that difference is the weight
+        formula's own rounding rather than the nodes or the root finder.
+
+        Args:
+            n_pts (int): Number of quadrature points.
+        """
+        from numpy.polynomial import legendre  # noqa: PLC0415
+
+        nodes, weights = get_gauss_legendre_1d(n_pts, np.float64)
+        reference_nodes, reference_weights = legendre.leggauss(n_pts)
+        # Both mapped onto [0, 1], the frame the public rule returns.
+        reference_nodes = (reference_nodes + 1.0) * 0.5
+        reference_weights = reference_weights * 0.5
+
+        unit_roundoff = get_machine_epsilon(np.float64) / 2.0
+        assert nodes.shape == reference_nodes.shape
+        assert np.max(np.abs(nodes - reference_nodes)) <= 8.0 * unit_roundoff
+        assert np.max(np.abs(weights - reference_weights)) <= 1024.0 * unit_roundoff
 
     def test_invalid_n_pts_raises(self) -> None:
         with pytest.raises(ValueError, match="at least 1"):
