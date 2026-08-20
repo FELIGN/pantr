@@ -1863,3 +1863,61 @@ def test_a_budget_that_exhausts_the_format_is_refused() -> None:
     )
     with pytest.raises(ValueError, match="vacuous"):
         absolute_tolerance(claim)
+
+
+def test_a_bound_larger_than_the_values_it_compares_is_refused() -> None:
+    """A finite but enormous amplification cannot buy a passing comparison.
+
+    What it catches: an amplification that is finite and non-negative, so
+    ``bounded_parity`` accepts it, and large enough that no result could violate
+    the bound it produces. The assertion then passes for ever and reports
+    agreement that was never measured, which is worse than a failure because
+    nothing points at it.
+
+    The amplification used here is not invented. It is what this harness's own
+    docstring prescribed until it was corrected: the absolute-value companion of
+    the kernel's recurrence, applied to the Legendre three-term recurrence, whose
+    two homogeneous solutions are bounded on ``[-1, 1]`` while their absolute-value
+    companion grows like ``(1 + sqrt(2))**k``. Measured at degree 700 it reaches
+    ``1.7e266``, and the tolerance that follows is ``5.3e253``.
+    """
+    claim = bounded_parity(
+        roundings=Roundings(stages=700, accumulator_per_stage=2, storage_per_stage=0),
+        accumulator=np.float64,
+        storage=np.float64,
+        amplification=np.array([1.7e266, 1.0]),
+        why="the absolute-value companion of an oscillatory recurrence, which is not a bound",
+    )
+    with pytest.raises(AssertionError, match="vacuous"):
+        assert_parity(
+            np.array([1.0, 0.0]),
+            np.array([-1e250, 0.0]),
+            claim,
+            context="a bound larger than the values it compares",
+        )
+
+
+def test_the_vacuity_guard_leaves_an_absolute_floor_alone() -> None:
+    """A legitimate bound on a value that is genuinely near zero still passes.
+
+    The guard compares against the array's largest magnitude rather than each
+    element's own, and this is the case that forces that choice: an element whose
+    true value is zero is compared under the underflow floor, so its own tolerance
+    exceeds its own magnitude by any factor you like. Checking per element would
+    reject exactly the case :func:`underflow_floor` exists to serve, which is most
+    of a B-spline row.
+    """
+    claim = bounded_parity(
+        roundings=Roundings(stages=4, accumulator_per_stage=2, storage_per_stage=1),
+        accumulator=np.float64,
+        storage=np.float64,
+        amplification=np.array([1.0, 0.0]),
+        why="an ordinary claim over a row whose second entry is exactly zero",
+    )
+    deviation = assert_parity(
+        np.array([0.5, 0.0]),
+        np.array([0.5, 0.0]),
+        claim,
+        context="an absolute floor on an exactly zero entry",
+    )
+    assert deviation.num_differing == 0
