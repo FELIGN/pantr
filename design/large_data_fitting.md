@@ -167,6 +167,42 @@ indirection, which at bandwidth 7 and 262144 right-hand sides is not negligible 
 an order of magnitude either. The escape, if a profile asks for it, is a hand-rolled banded
 Cholesky of roughly 40 lines on the 1D path only: contained, and no API change.
 
+### Two things about Eigen learned before its first use, and neither is about fitting
+
+Eigen was surveyed in August 2026 for a different job, Gauss-Legendre nodes by Golub-Welsch
+in the `quad` port. That port **declined it** and hand-rolled a Newton iteration instead, so
+this note still holds Eigen's first real use. Two findings came out of that survey which are
+facts about the library rather than about quadrature, and this is where whoever next reaches
+for Eigen will look.
+
+**`SelfAdjointEigenSolver::computeFromTridiagonal` is not scale invariant, and it fails
+silently.** Its deflation test (`Eigen/src/Eigenvalues/SelfAdjointEigenSolver.h:509-513` in
+5.0.1) compares `|e_i|` against `eps * sqrt(|d_i| + |d_{i+1}|)`. The left side is homogeneous
+of degree 1 in the matrix scale and the right side of degree one half, so scaling the matrix
+down loosens the criterion without bound. Measured on the Legendre Jacobi matrix scaled by
+`1e-30`, which is 278 decades above `DBL_MIN` so no underflow is involved: **relative node
+error of 150%, with `info()` reporting `Success`**. The dense `compute()` path does not
+suffer it, because it normalizes by the largest coefficient first and multiplies back
+(`:436-446`); the tridiagonal entry point carries the maintainer's own `TODO` about the
+missing scaling at `:457`. The constant in that test was tuned empirically: the commit that
+introduced this form was followed two weeks later by one whose message records that the
+theoretically correct value broke internal tests and was reverted. So a caller who reaches
+for the tridiagonal path, which is the natural one for a matrix that is already tridiagonal,
+must add the normalization itself.
+
+**`sum(w) = 2` is a vacuous health check on that path.** The obvious cheap certificate for a
+Golub-Welsch weight vector holds **even when the iteration does not converge at all**,
+because the weights are read from the first row of an accumulated product of Givens
+rotations, which stays a unit vector however badly the sweep did. Measured: with the
+iteration budget forced to zero, `info()` reports `NoConvergence`, the diagonal is
+untouched, and the weight sum is still exactly 2. Whatever Eigen path this note's solvers
+end up on, **`info()` must be propagated**; there is no numerical signal that substitutes
+for it.
+
+Neither finding touches `SparseMatrix` or `SimplicialLDLT`, which is what the decision above
+actually selects. They are recorded because both were expensive to find and neither is
+visible from the documentation.
+
 ## Full-array copies
 
 `_flatten_along_axis` (`src/pantr/_array_utils.py:37-58`) does `np.moveaxis` followed by
@@ -306,6 +342,16 @@ blocking discussed in `design/bezier_extraction_api.md`, and the natural unit fo
   profile was run. The model predicts that time is dominated by applying dense factors
   across right-hand-side columns, and that is the first thing a profile should confirm or
   refute.
+
+- **Surveyed 2026-08-20, and it is about Eigen rather than about fitting.** The two findings
+  in "Two things about Eigen learned before its first use" were measured while evaluating
+  Eigen for a job this note does not cover, and that job then declined it. The dimensional
+  inconsistency of the deflation test and the `TODO` about the missing scaling were verified
+  by reading Eigen 5.0.1 at the pinned SHA; the 150% relative node error at scale `1e-30`
+  and the weight sum surviving a forced non-convergence were measured by the survey and are
+  taken on its report rather than reproduced here. Neither touches `SparseMatrix` or
+  `SimplicialLDLT`, which is what this note actually selects, so the decision above stands
+  unchanged.
 
 ## Open questions
 
