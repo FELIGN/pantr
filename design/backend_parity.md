@@ -1,14 +1,17 @@
 # Backend parity: what a bound may claim, and in which frame
 
-**Status:** complete for the three ports that exist. Eight rules, each with the failure that produced
-it, and three further module ports inherit them. The verdict on whether the parity harness
+**Status:** complete for the four ports that exist. Nine rules, each with the failure that produced
+it, and the remaining module ports inherit them. The verdict on whether the parity harness
 generalized is now written, from the `quad` port's tests rather than predicted before them.
 **Date:** 2026-08-20, amended the same day after a deep review closed two open proofs,
-refuted a claim and tightened a bound. Amended again 2026-08-21 by the change-of-basis
+refuted a claim and tightened a bound. Amended 2026-08-21 by the change-of-basis
 port: Rule 7 (a liveness guard belongs to the host it was measured on) and Rule 8 (a
 parity claim needs a bound that can say something), and again by that port's own deep
 review, which found Rule 8 overstating its boundary and one of its two margin figures
-invented. Both are corrected in place rather than edited away.
+invented. Both are corrected in place rather than edited away. Amended again the same day by
+the Bézier arithmetic port with Rule 9 (an oracle's accumulation width is a per-kernel fact),
+which is the first rule here that is about reproducing an oracle exactly rather than about
+bounding a difference, because that port is the first whose every kernel can be bit-exact.
 
 **Validated against:** `proto/cpp` at `765d9b9`, plus the `quad` port on `feat/cpp-quad`.
 
@@ -323,6 +326,73 @@ degree 10 and the parity tests accept it, correctly -- any backward-stable LU ha
 admitted, since that is exactly what the bound claims. What the bound must still catch is a
 *wrong* answer, and it does: a `1e-6` relative perturbation of the Gram matrix is caught by all
 five bounded builders and by the margin test.
+
+## Rule 9: an oracle's accumulation width is a per-kernel fact, not a module convention
+
+Added by the Bézier arithmetic port, which is the first module where **every** kernel can be
+bit-exact against its oracle, and therefore the first where reproducing the oracle exactly was
+the whole of the work rather than a bonus on top of a bound.
+
+`_bezier_core.py` holds seven kernels and uses **three different accumulation widths** among
+them, none of them announced:
+
+- the four de Casteljau kernels compute each step in `float64` and round once on the store,
+  because their scalars are Python floats and numba promotes a `float64` scalar against a
+  `float32` array;
+- `_evaluate_bezier_deriv_1d_core` does the opposite. It opens with `dtype = pts.dtype` and
+  allocates the `ndu` table, the `a` ping-pong and the derivative table in it, so at `float32`
+  the entire A2.3 recursion is `float32`;
+- degree elevation and the Bernstein product mix, their coefficient tables being `float64`
+  unconditionally against a destination in the control points' dtype, so each `+=` computes wide
+  and rounds narrow.
+
+**None of this is visible at `float64`, where all three coincide.** Measured on one kernel:
+accumulating narrow where the oracle accumulates wide moves 125 of 630 `float32` values.
+Widening where the oracle narrows is the same error the other way and was caught the same way,
+in `_evaluate_bezier_deriv_1d_core`, by a mutation that failed nine parity cases.
+
+So the rule is procedural rather than mathematical: **read the width off each kernel, one at a
+time, and mutation-test that the parity suite would notice if you got it wrong.** Inferring it
+from the module, or from the kernel next door, is what produces a port that is exact at
+`float64` and quietly wrong at `float32` -- which is the half of the matrix nobody reads first.
+
+### The sharper case, and why measurement rather than reading found it
+
+Within a single kernel, `_evaluate_bezier_1d_core` seeds its two branches from bases of
+different width. Above the mirror threshold it raises `u`, which is the point array's own dtype;
+below it it raises `1 - u`, which the literal `1.0` has already promoted to `float64`. Reading
+the source does not make that leap out, and the consequence is one value in 16224: at degree 17
+and `u = 0.75`, where `0.75^17 = 3^17 / 2^34` needs 27 significand bits, the wide seed survives
+and the narrow one rounds.
+
+A sweep that had used round parameters and a modest degree would have missed it entirely. What
+found it was a case list built to be adversarial about *representability* rather than about
+magnitude.
+
+### The `float32` half is far less contraction-sensitive, and that is a consequence
+
+Three kernels now measured, with `-march=native` against the same build without it:
+
+| kernel | `float64` values moved | `float32` values moved |
+|---|---|---|
+| de Casteljau (slice) | 125 / 630 | 2 / 630 |
+| reduction-operator apply | 237 / 970 | 0 / 970 |
+
+The asymmetry is the wide accumulator doing its job: a fused multiply-add changes the `double`
+intermediate, and the narrowing store to `float32` then discards most of the difference. Worth
+knowing before the ISA ladder of `design/simd.md` lands, because it says the `float64` path is
+where a contraction bound will actually be needed.
+
+### What is NOT here, and it is a real gap
+
+**No parity bound is derived for a fusing build.** Unlike the Bernstein tabulation, every kernel
+in this module contains an `a * b + c * d` site. `tests/parity/test_bezier_arithmetic.py` skips
+rather than weakens when `__fp_contract__` reports a fused multiply-add is available, and says
+so in the skip reason. That is deliberate: a bound written for a branch no host in this project
+can execute would ship untested, and Rule 7 is what licenses deferring it. **It is a
+prerequisite for the ISA ladder, not for the port**, and it should be derived at the same time
+as the ladder rather than in advance of it.
+
 
 ## The two corrections the infrastructure PR made, kept here because they generalize
 

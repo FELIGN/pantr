@@ -45,6 +45,19 @@ user-facing, and the ports change what it affects.
   `compute_lagrange_to_bernstein_1d` with `CHEBYSHEV_2ND` nodes in float32 is the one place
   where the two backends start from *different nodes*, by one unit of roundoff, because that
   node family resolves through a quadrature rule that itself dispatches.
+- A C++ implementation of `pantr.bezier`'s arithmetic: evaluation and its derivatives, degree
+  elevation and reduction, slice, split, restrict, and the Bernstein product. `PANTR_BACKEND=cpp`
+  now reaches `Bezier.evaluate`, `evaluate_derivatives`, `elevate_degree`, `reduce_degree`,
+  `minimize_degree`, `slice`, `split`, `restrict` and `compose`.
+  **Every one of these is bit-for-bit identical between the two backends**, which none of the
+  earlier ports could claim: `quad` runs a different algorithm on each side and `change_basis`
+  puts a dense solve in the middle, while here both sides evaluate the same expressions in the
+  same order. Two things qualify that. It is a property of the **build** rather than of the code,
+  because these kernels contain fused-multiply-add sites and the shipped build targets a baseline
+  ISA that has no such instruction; and the evaluation kernel's seed is a `pow`, which no standard
+  requires to be correctly rounded, so its exactness is measured rather than derived.
+  `Bezier.multiply` is deliberately **not** part of this: it goes through a numpy helper that no
+  kernel backs, and is unaffected by `PANTR_BACKEND`.
 - **Eigen is now a build dependency of the wheel**, where before it was fetched only for the C++
   tests. `pantr.change_basis` needs a dense solve and `pantr.bezier` will need a truncated SVD,
   and neither is a thing to hand-roll. A cold `pip install -e .` goes from 7.56 s to 12.19 s on
