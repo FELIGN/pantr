@@ -83,14 +83,37 @@ Main exports
 This was a single module until the C++ port; it is a package for the reason
 :mod:`pantr.quad` is one, namely that a dispatched module needs somewhere to put
 its catalogue and its Python kernels without either importing the other in a
-circle. The public surface is unchanged, and so is the private one: every name
-that was importable from ``pantr.change_basis`` before still is.
+circle.
+
+**Every pantr name that was importable from ``pantr.change_basis`` before the
+split still is**, public and private alike, and a test pins the list. What is no
+longer reachable is the handful of stdlib and typing names the flat module
+happened to bind -- ``np``, ``npt``, ``comb``, ``functools``, ``Callable``,
+``Final``, ``Mapping``, ``MappingProxyType``, ``NamedTuple`` -- which nothing
+could reasonably have imported from here.
 """
 
 # Re-exported unchanged from what was a single module, because `CLAUDE.md`
 # records that a downstream consumer this repository's CI cannot see imports
 # pantr's private symbols. Splitting `change_basis.py` into a package moves where
 # these are defined; it must not move where they are importable from.
+#
+# The second block is names the flat module bound only because it imported them
+# for its own use. They were reachable as `pantr.change_basis.<name>` and are
+# again. `LagrangeVariant` is the one that matters -- it is a public enum and the
+# declared type of `lagrange_variant` in two of the eight functions below, so a
+# caller had every reason to import it from here. The rest are restored because
+# the cost is a line each and the alternative is guessing which of them the
+# downstream consumer uses. `tests/test_change_basis_reexports.py` pins the set.
+from .._backend import backend_keyed_cache as backend_keyed_cache
+from ..basis import LagrangeVariant as LagrangeVariant
+from ..basis import tabulate_bernstein_1d as tabulate_bernstein_1d
+from ..basis import tabulate_cardinal_bspline_1d as tabulate_cardinal_bspline_1d
+from ..basis import tabulate_legendre_1d as tabulate_legendre_1d
+from ..basis._basis_lagrange import _get_lagrange_points as _get_lagrange_points
+from ..basis._basis_utils import _allocate_or_validate_out as _allocate_or_validate_out
+from ..basis._basis_utils import _validate_float_dtype as _validate_float_dtype
+from ..quad import get_gauss_legendre_1d as get_gauss_legendre_1d
 from ._builders import (
     _BERNSTEIN_TO_CARDINAL_MAX_DEGREE as _BERNSTEIN_TO_CARDINAL_MAX_DEGREE,
 )
