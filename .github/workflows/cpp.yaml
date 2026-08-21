@@ -170,9 +170,14 @@ jobs:
       # needs pantr's runtime dependencies and a test runner, and nothing else --
       # it builds no docs, renders nothing and launches no MPI.
       #
-      # No dependency cache is needed here either: PANTR_BUILD_TESTS is off in
-      # the Python build path, so Eigen is never fetched, and Kokkos mdspan is a
-      # small clone.
+      # There is no dependency cache here, and since the change-of-basis port
+      # that is a cost rather than a non-issue. This comment used to read "Eigen
+      # is never fetched", which was true while PANTR_BUILD_TESTS gated it out of
+      # the Python build path; the shipped extension now includes an Eigen header,
+      # so `pip install -e .` clones it on every run. Measured: this job went from
+      # 5m38s to 6m25s across that change. A FetchContent cache keyed on the
+      # pinned SHAs would return those 47 seconds, and is deliberately left as a
+      # separate decision rather than folded into the port that exposed it.
       - name: Install pantr with the extension
         env:
           CC: gcc-14
