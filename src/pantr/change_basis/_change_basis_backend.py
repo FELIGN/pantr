@@ -46,7 +46,7 @@ from the public surface rather than from either package's habit.
 from __future__ import annotations
 
 from collections.abc import Callable
-from typing import TypeVar
+from typing import Final, TypeVar
 
 import numpy as np
 import numpy.typing as npt
@@ -209,6 +209,30 @@ def _cpp_monomial_to_bernstein(degree: int, out: _Array) -> None:
     out[...] = buffer
 
 
+_cpp_lagrange_to_bernstein: Final[_FromNodesFunc] = _cpp_from_nodes("lagrange_to_bernstein_1d")
+"""The Lagrange-to-Bernstein builder of the C++ backend."""
+
+_cpp_bernstein_to_lagrange: Final[_FromNodesFunc] = _cpp_from_nodes("bernstein_to_lagrange_1d")
+"""The Bernstein-to-Lagrange builder of the C++ backend."""
+
+_cpp_bernstein_to_cardinal: Final[_FromRuleFunc] = _cpp_from_rule("bernstein_to_cardinal_1d")
+"""The Bernstein-to-cardinal builder of the C++ backend."""
+
+_cpp_cardinal_to_bernstein: Final[_FromRuleFunc] = _cpp_from_rule("cardinal_to_bernstein_1d")
+"""The cardinal-to-Bernstein builder of the C++ backend."""
+
+_cpp_legendre_to_cardinal: Final[_FromRuleFunc] = _cpp_from_rule("legendre_to_cardinal_1d")
+"""The Legendre-to-cardinal builder of the C++ backend."""
+
+_cpp_cardinal_to_legendre: Final[_FromRuleFunc] = _cpp_from_rule("cardinal_to_legendre_1d")
+"""The cardinal-to-Legendre builder of the C++ backend."""
+
+_cpp_cardinal_dual_legendre_coeffs: Final[_FromRuleFunc] = _cpp_from_rule(
+    "cardinal_dual_legendre_coeffs_1d"
+)
+"""The cardinal-dual Legendre builder of the C++ backend."""
+
+
 def lagrange_to_bernstein_kernel(backend: Backend | None = None) -> _FromNodesFunc:
     """Get the Lagrange-to-Bernstein kernel of the requested backend.
 
@@ -222,9 +246,7 @@ def lagrange_to_bernstein_kernel(backend: Backend | None = None) -> _FromNodesFu
     Raises:
         RuntimeError: If ``backend`` is given and is not available.
     """
-    return _select(
-        backend, _lagrange_to_bernstein_core, _cpp_from_nodes("lagrange_to_bernstein_1d")
-    )
+    return _select(backend, _lagrange_to_bernstein_core, _cpp_lagrange_to_bernstein)
 
 
 def bernstein_to_lagrange_kernel(backend: Backend | None = None) -> _FromNodesFunc:
@@ -240,9 +262,7 @@ def bernstein_to_lagrange_kernel(backend: Backend | None = None) -> _FromNodesFu
     Raises:
         RuntimeError: If ``backend`` is given and is not available.
     """
-    return _select(
-        backend, _bernstein_to_lagrange_core, _cpp_from_nodes("bernstein_to_lagrange_1d")
-    )
+    return _select(backend, _bernstein_to_lagrange_core, _cpp_bernstein_to_lagrange)
 
 
 def bernstein_to_cardinal_kernel(backend: Backend | None = None) -> _FromRuleFunc:
@@ -258,7 +278,7 @@ def bernstein_to_cardinal_kernel(backend: Backend | None = None) -> _FromRuleFun
     Raises:
         RuntimeError: If ``backend`` is given and is not available.
     """
-    return _select(backend, _bernstein_to_cardinal_core, _cpp_from_rule("bernstein_to_cardinal_1d"))
+    return _select(backend, _bernstein_to_cardinal_core, _cpp_bernstein_to_cardinal)
 
 
 def cardinal_to_bernstein_kernel(backend: Backend | None = None) -> _FromRuleFunc:
@@ -274,7 +294,7 @@ def cardinal_to_bernstein_kernel(backend: Backend | None = None) -> _FromRuleFun
     Raises:
         RuntimeError: If ``backend`` is given and is not available.
     """
-    return _select(backend, _cardinal_to_bernstein_core, _cpp_from_rule("cardinal_to_bernstein_1d"))
+    return _select(backend, _cardinal_to_bernstein_core, _cpp_cardinal_to_bernstein)
 
 
 def legendre_to_cardinal_kernel(backend: Backend | None = None) -> _FromRuleFunc:
@@ -290,7 +310,7 @@ def legendre_to_cardinal_kernel(backend: Backend | None = None) -> _FromRuleFunc
     Raises:
         RuntimeError: If ``backend`` is given and is not available.
     """
-    return _select(backend, _legendre_to_cardinal_core, _cpp_from_rule("legendre_to_cardinal_1d"))
+    return _select(backend, _legendre_to_cardinal_core, _cpp_legendre_to_cardinal)
 
 
 def cardinal_to_legendre_kernel(backend: Backend | None = None) -> _FromRuleFunc:
@@ -306,7 +326,7 @@ def cardinal_to_legendre_kernel(backend: Backend | None = None) -> _FromRuleFunc
     Raises:
         RuntimeError: If ``backend`` is given and is not available.
     """
-    return _select(backend, _cardinal_to_legendre_core, _cpp_from_rule("cardinal_to_legendre_1d"))
+    return _select(backend, _cardinal_to_legendre_core, _cpp_cardinal_to_legendre)
 
 
 def cardinal_dual_legendre_coeffs_kernel(backend: Backend | None = None) -> _FromRuleFunc:
@@ -325,7 +345,7 @@ def cardinal_dual_legendre_coeffs_kernel(backend: Backend | None = None) -> _Fro
     return _select(
         backend,
         _cardinal_dual_legendre_coeffs_core,
-        _cpp_from_rule("cardinal_dual_legendre_coeffs_1d"),
+        _cpp_cardinal_dual_legendre_coeffs,
     )
 
 

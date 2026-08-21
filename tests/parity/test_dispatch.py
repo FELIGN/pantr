@@ -25,6 +25,7 @@ from pantr._backend import (
     use_backend,
 )
 from pantr.basis._basis_backend import cardinal_bspline_core
+from pantr.change_basis import _change_basis_backend as _cb_backend
 from pantr.quad._quad_backend import (
     chebyshev_nodes_kernel,
     gauss_legendre_kernel,
@@ -344,3 +345,93 @@ def test_no_quad_accessor_falls_back_when_the_extension_is_absent(
             assert "not available" in str(exc), f"{name}: raised, but not for that reason: {exc}"
         else:
             pytest.fail(f"{name}: an explicit CPP request was served without the extension")
+
+
+_CHANGE_BASIS_ACCESSORS = (
+    ("lagrange_to_bernstein", _cb_backend.lagrange_to_bernstein_kernel),
+    ("bernstein_to_lagrange", _cb_backend.bernstein_to_lagrange_kernel),
+    ("bernstein_to_cardinal", _cb_backend.bernstein_to_cardinal_kernel),
+    ("cardinal_to_bernstein", _cb_backend.cardinal_to_bernstein_kernel),
+    ("legendre_to_cardinal", _cb_backend.legendre_to_cardinal_kernel),
+    ("cardinal_to_legendre", _cb_backend.cardinal_to_legendre_kernel),
+    ("cardinal_dual_legendre_coeffs", _cb_backend.cardinal_dual_legendre_coeffs_kernel),
+    ("monomial_to_bernstein", _cb_backend.monomial_to_bernstein_kernel),
+)
+"""The change_basis catalogue's eight entry points, named for the failure message."""
+
+
+@pytest.mark.parametrize(
+    ("name", "accessor"),
+    _CHANGE_BASIS_ACCESSORS,
+    ids=[n for n, _ in _CHANGE_BASIS_ACCESSORS],
+)
+def test_a_change_basis_accessor_hands_back_the_python_kernel_itself(
+    name: str, accessor: Callable[[Backend | None], object]
+) -> None:
+    """Each change_basis accessor returns the Python kernel, by identity.
+
+    Args:
+        name (str): The kernel's name, for the failure message.
+        accessor (Callable[[Backend | None], object]): The catalogue entry point.
+    """
+    from pantr.change_basis import _change_basis_core  # noqa: PLC0415
+
+    expected = getattr(_change_basis_core, f"_{name}_core")
+    assert accessor(Backend.PYTHON) is expected, (
+        f"{name}: the catalogue returned something other than the kernel itself"
+    )
+
+
+@pytest.mark.parametrize(
+    ("name", "accessor"),
+    _CHANGE_BASIS_ACCESSORS,
+    ids=[n for n, _ in _CHANGE_BASIS_ACCESSORS],
+)
+def test_a_change_basis_accessor_hands_back_the_same_cpp_adapter_every_call(
+    name: str, accessor: Callable[[Backend | None], object], cpp_backend: None
+) -> None:
+    """Each accessor returns the one C++ adapter, by identity, on every call.
+
+    Identity rather than equality, and it is not pedantry. Seven of these adapters
+    are produced by a factory that closes over a binding name, so building them
+    inside the accessor would hand back a **fresh closure per call** -- correct
+    output, a new object every time, and a small allocation on a path that
+    ``pantr.bspline``'s extraction calls in a loop. They are module-level constants
+    for that reason, and this is the test that keeps them so.
+
+    Args:
+        name (str): The kernel's name, for the failure message.
+        accessor (Callable[[Backend | None], object]): The catalogue entry point.
+        cpp_backend (None): Requires the compiled extension.
+    """
+    del cpp_backend
+    from pantr.change_basis import _change_basis_backend  # noqa: PLC0415
+
+    expected = getattr(_change_basis_backend, f"_cpp_{name}")
+    assert accessor(Backend.CPP) is expected, (
+        f"{name}: the catalogue returned something other than the adapter itself"
+    )
+    assert accessor(Backend.CPP) is accessor(Backend.CPP), (
+        f"{name}: two calls returned two different objects, so the adapter is being "
+        f"rebuilt per call"
+    )
+
+
+def test_no_change_basis_accessor_falls_back_when_the_extension_is_absent(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """All eight accessors refuse an explicit C++ request, not just the first.
+
+    The never-fall-back rule is applied once, in the catalogue's ``_select``, and
+    this asserts the property the eight are meant to share rather than the
+    helper's existence.
+    """
+    from pantr import _backend  # noqa: PLC0415
+
+    monkeypatch.setattr(_backend, "_CPP_AVAILABLE", False)
+    for name, accessor in _CHANGE_BASIS_ACCESSORS:
+        with pytest.raises(RuntimeError, match="not available"):
+            accessor(Backend.CPP)
+        assert accessor(Backend.PYTHON) is not None, (
+            f"{name}: the Python backend must stay available when the extension is not"
+        )
