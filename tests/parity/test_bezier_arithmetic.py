@@ -252,6 +252,48 @@ def test_evaluate_derivatives_is_bitwise(
 
 
 @pytest.mark.parametrize("dtype", DTYPES)
+@pytest.mark.parametrize(("degree", "order"), [(25, 16), (30, 14), (30, 25), (40, 13)])
+def test_derivatives_agree_past_the_factorial_overflow(
+    cpp_backend: None, degree: int, order: int, dtype: npt.DTypeLike
+) -> None:
+    """The two backends agree where A2.3's falling factorial overflows its integer.
+
+    ``fac`` accumulates ``p (p-1) ... (p-k+1)`` in an ``int64`` in both backends, and
+    it overflows: at degree 30 from order 14, at degree 61 from order 11. Every case
+    below is past that point, and every one is reachable through
+    :meth:`Bezier.evaluate_derivatives`, which imposes no ceiling on ``orders``.
+
+    The oracle wraps, because numba does not trap integer overflow. The port must
+    wrap identically, which is why its accumulator is **unsigned**: signed overflow is
+    undefined in C++, and the natural translation was undefined behaviour rather than
+    a merely wrong answer. Confirmed under ``-fsanitize=undefined``, which this
+    repository's ``gcc-debug`` preset enables, so the sanitizer build was aborting on
+    a case the parity suite did not reach.
+
+    Neither backend's answer is *correct* here in any useful sense. What is under test
+    is that they are the same, and that the C++ reaches it by a defined route.
+    """
+    del cpp_backend
+    demand_the_compiled_kernel(dtype)
+    demand_a_non_fusing_build()
+
+    ctrl = _mixed_control_points((degree + 1, 2), dtype, exponents=(-1, 2))
+    points = np.array([0.0, 0.25, 0.5, 1.0], dtype=dtype)
+
+    with use_backend(Backend.PYTHON):
+        reference = Bezier(ctrl).evaluate_derivatives(points, order)
+    with use_backend(Backend.CPP):
+        actual = Bezier(ctrl).evaluate_derivatives(points, order)
+
+    assert_parity(
+        actual,
+        reference,
+        bitwise_parity(why=_DE_CASTELJAU_WHY),
+        context=f"derivatives degree {degree} order {order} {np.dtype(dtype).name}",
+    )
+
+
+@pytest.mark.parametrize("dtype", DTYPES)
 @pytest.mark.parametrize("degree", DEGREES)
 @pytest.mark.parametrize("increment", [1, 2, 5])
 def test_elevate_degree_is_bitwise(
