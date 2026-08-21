@@ -126,7 +126,8 @@ def _degree_elevate_bezier(
         p = degrees[d]
 
         pts_2d, trailing_shape = _flatten_along_axis(ctrl, d)
-        new_pts_2d = _degree_elevate_bezier_1d_core(p, pts_2d, inc)
+        new_pts_2d = np.empty((p + inc + 1, pts_2d.shape[1]), dtype=pts_2d.dtype)
+        _degree_elevate_bezier_1d_core(p, pts_2d, inc, new_pts_2d)
         ctrl = _unflatten_along_axis(new_pts_2d, trailing_shape, d)
 
         # Update degrees for subsequent iterations.
@@ -809,11 +810,11 @@ def _minimize_degree_bezier(
 
             # ... then re-elevate so the trial can be compared to `result`.
             flat_reduced, trailing_reduced = _flatten_along_axis(reduced, dim)
-            elevated = _unflatten_along_axis(
-                _degree_elevate_bezier_1d_core(degree - 1, flat_reduced, 1),
-                trailing_reduced,
-                dim,
+            flat_elevated = np.empty(
+                (flat_reduced.shape[0] + 1, flat_reduced.shape[1]), dtype=flat_reduced.dtype
             )
+            _degree_elevate_bezier_1d_core(degree - 1, flat_reduced, 1, flat_elevated)
+            elevated = _unflatten_along_axis(flat_elevated, trailing_reduced, dim)
 
             if quad_weights is not None:
                 # Relative round-trip deviation of the projected mapping.

@@ -281,6 +281,7 @@ def _product_fn(
         Inputs are assumed to be correct (no validation performed).
     """
     if use_1d_kernel:
-        result_1d = _scalar_bernstein_product_1d_core(a[:, 0], b[:, 0])
+        result_1d = np.empty(a.shape[0] + b.shape[0] - 1, dtype=a.dtype)
+        _scalar_bernstein_product_1d_core(a[:, 0], b[:, 0], result_1d)
         return result_1d[:, np.newaxis]
     return _bernstein_product_coefficients_nd(a, b)

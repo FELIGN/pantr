@@ -242,7 +242,8 @@ def _degree_elevate_bezier_1d_core(
     degree: int,
     ctrl: npt.NDArray[np.float32 | np.float64],
     degree_increment: int,
-) -> npt.NDArray[np.float32 | np.float64]:
+    out: npt.NDArray[np.float32 | np.float64],
+) -> None:
     r"""Degree-elevate a single Bézier segment.
 
     Computes the ``bezalfs`` matrix of Bézier degree elevation coefficients
@@ -260,10 +261,9 @@ def _degree_elevate_bezier_1d_core(
         ctrl (npt.NDArray[np.float32 | np.float64]): Control points of shape
             ``(p+1, rank)``.
         degree_increment (int): Number of degrees to add (``t >= 1``).
-
-    Returns:
-        npt.NDArray[np.float32 | np.float64]: Elevated control points of shape
-        ``(p+t+1, rank)``.
+        out (npt.NDArray[np.float32 | np.float64]): Destination for the elevated
+            control points, shape ``(p+t+1, rank)`` and ``ctrl``'s dtype. Zeroed
+            and then fully written; its previous contents are discarded.
 
     Note:
         Inputs are assumed to be correct (no validation performed).
@@ -292,16 +292,14 @@ def _degree_elevate_bezier_1d_core(
         for j in range(max(0, i - t), mpi + 1):
             bezalfs[j, i] = bezalfs[p - j, ph - i]
 
-    # Apply elevation: new_ctrl[i] = sum_j bezalfs[j, i] * ctrl[j]
-    new_ctrl = np.zeros((ph + 1, rank), dtype=ctrl.dtype)
+    # Apply elevation: out[i] = sum_j bezalfs[j, i] * ctrl[j]
+    out[:, :] = 0.0
     for i in range(ph + 1):
         mpi = min(p, i)
         for j in range(max(0, i - t), mpi + 1):
             coeff = bezalfs[j, i]
             for r in range(rank):
-                new_ctrl[i, r] += coeff * ctrl[j, r]
-
-    return new_ctrl
+                out[i, r] += coeff * ctrl[j, r]
 
 
 @nb_jit(
@@ -500,7 +498,8 @@ def _restrict_bezier_1d_core(  # noqa: PLR0912
 def _scalar_bernstein_product_1d_core(
     a: npt.NDArray[np.float32 | np.float64],
     b: npt.NDArray[np.float32 | np.float64],
-) -> npt.NDArray[np.float32 | np.float64]:
+    out: npt.NDArray[np.float32 | np.float64],
+) -> None:
     r"""Compute the Bernstein product of two scalar 1D Bézier curves.
 
     Given two scalar Bézier curves with control points ``a`` (degree ``p``)
@@ -517,10 +516,9 @@ def _scalar_bernstein_product_1d_core(
             scalar Bézier, shape ``(p + 1,)``.
         b (npt.NDArray[np.float32 | np.float64]): Control points of the second
             scalar Bézier, shape ``(q + 1,)``.
-
-    Returns:
-        npt.NDArray[np.float32 | np.float64]: Product control points of shape
-        ``(p + q + 1,)``.
+        out (npt.NDArray[np.float32 | np.float64]): Destination for the product
+            control points, shape ``(p + q + 1,)`` and ``a``'s dtype. Zeroed and
+            then fully written; its previous contents are discarded.
 
     Note:
         Inputs are assumed to be correct (no validation performed).
@@ -530,7 +528,7 @@ def _scalar_bernstein_product_1d_core(
     q = b.shape[0] - 1
     r = p + q
 
-    out = np.zeros(r + 1, dtype=a.dtype)
+    out[:] = 0.0
 
     for i in range(p + 1):
         ai_scaled = a[i] * _bincoeff(p, i)
@@ -539,8 +537,6 @@ def _scalar_bernstein_product_1d_core(
 
     for k in nb_prange(r + 1):
         out[k] /= _bincoeff(r, k)
-
-    return out
 
 
 def _warmup_numba_functions() -> None:
@@ -559,11 +555,13 @@ def _warmup_numba_functions() -> None:
 
     _evaluate_bezier_1d_core(ctrl_dummy, pts_dummy, out_eval_dummy)
     _evaluate_bezier_deriv_1d_core(ctrl_dummy, pts_dummy, 0, out_deriv_dummy)
-    _degree_elevate_bezier_1d_core(2, ctrl_dummy, 1)
+    out_elevate_dummy = np.empty((4, 2), dtype=np.float64)
+    _degree_elevate_bezier_1d_core(2, ctrl_dummy, 1, out_elevate_dummy)
     _slice_bezier_1d_core(ctrl_dummy, 0.5, out_slice_dummy)
     _split_bezier_1d_core(ctrl_dummy, 0.5, out_split_dummy, out_split_dummy.copy())
     _restrict_bezier_1d_core(ctrl_dummy, 0.2, 0.8, out_split_dummy)
 
     a_dummy = np.array([0.0, 1.0], dtype=np.float64)
     b_dummy = np.array([1.0, 0.0], dtype=np.float64)
-    _scalar_bernstein_product_1d_core(a_dummy, b_dummy)
+    out_product_dummy = np.empty(3, dtype=np.float64)
+    _scalar_bernstein_product_1d_core(a_dummy, b_dummy, out_product_dummy)
