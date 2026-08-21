@@ -111,8 +111,10 @@ wheel.packages = ["src/pantr"]
 cmake.version = ">=3.25"
 cmake.build-type = "Release"
 # Out of the Python build: the C++ tests and the benchmark are built by
-# CMakePresets, not by pip. Nothing that a `pip install` produces should depend
-# on Eigen having been fetched.
+# CMakePresets, not by pip. Eigen is no longer in that category -- the shipped
+# extension includes it (see cmake/PantrDependencies.cmake), so a `pip install`
+# does fetch it, which is what makes the persistent build-dir below load-bearing
+# rather than merely nice.
 cmake.define.PANTR_BUILD_PYTHON = "ON"
 cmake.define.PANTR_BUILD_TESTS = "OFF"
 cmake.define.PANTR_BUILD_BENCHMARK = "OFF"

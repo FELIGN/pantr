@@ -86,28 +86,38 @@ endif()
 # Eigen -- dense and sparse linear algebra.
 # --------------------------------------------------------------------------
 #
-# Not used by the one kernel this prototype ships. It is fetched and compiled
-# against anyway, by cpp/tests/test_dependency_smoke.cpp, because the question
-# this prototype exists to answer is whether the dependency survives pantr's own
-# warning flags and this CMake version -- and a header that is never included
-# answers nothing. design/large_data_fitting.md and
-# design/adaptive_thb_approximation.md both settle on Eigen::SparseMatrix with
-# SimplicialLDLT for the fitting solves, which is what it is here for.
+# A dependency of the shipped extension, fetched unconditionally.
+#
+# It was test-only until the change-of-basis port, on the reasoning that "a
+# dependency a wheel build does not need is a dependency a wheel build cannot
+# fail on". That reasoning held only while nothing shipped needed a solve. Two
+# stage-1 modules do: change_basis inverts four matrices per builder pair
+# (Eigen::PartialPivLU, standing in for numpy's LAPACK gesv), and bezier's
+# interpolation takes an SVD pseudo-inverse of a Bernstein Vandermonde with rank
+# truncation, which is not a thing to hand-roll. Outside stage 1, bspline's
+# lstsq/pinv/eigh sites and the SimplicialLDLT solves that
+# design/large_data_fitting.md and design/adaptive_thb_approximation.md settle
+# on are all waiting behind the same header.
 #
 # Eigen's own CMakeLists is run rather than bypassed, deliberately: bypassing it
 # (SOURCE_SUBDIR pointing at a directory with no CMakeLists) would hide exactly
 # the CMake 4 incompatibility this prototype is meant to measure.
-# Fetched only when the tests are built. Nothing in the installed extension
-# includes an Eigen header, so a `pip install` has no business cloning it -- and
-# a dependency a wheel build does not need is a dependency a wheel build cannot
-# fail on.
-if(PANTR_BUILD_TESTS)
+#
+# GIT_SHALLOW is TRUE here and FALSE for mdspan above, which is a measurement
+# rather than a preference. Eigen is now on the pip path, so every cold editable
+# install pays its clone: measured on the development server, a cold
+# `pip install -e . --no-build-isolation` costs 7.56 s without Eigen, 21.48 s
+# with it cloned deep, and 12.19 s cloned shallow, with the build tree at
+# 6.4 MB / 145 MB / 50 MB respectively. The incremental rebuild is unaffected
+# (2.96 s). Shallow against a pinned commit needs the server to serve an
+# arbitrary SHA; GitLab does, and the checkout was verified to be exactly the
+# SHA below rather than a silent fallback.
 
 FetchContent_Declare(
     eigen
     GIT_REPOSITORY https://gitlab.com/libeigen/eigen.git
     GIT_TAG        bc3b39870ecb690a623a3f49149a358b95c5781d  # tag 5.0.1
-    GIT_SHALLOW    FALSE
+    GIT_SHALLOW    TRUE
     SYSTEM
     EXCLUDE_FROM_ALL)
 
@@ -119,5 +129,3 @@ set(EIGEN_BUILD_LAPACK OFF CACHE BOOL "" FORCE)
 set(EIGEN_BUILD_CMAKE_PACKAGE OFF CACHE BOOL "" FORCE)
 
 FetchContent_MakeAvailable(eigen)
-
-endif()
