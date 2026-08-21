@@ -11,7 +11,10 @@ description = "Polynomial And NURBS Toolkit"
 readme = "README.md"
 requires-python = ">=3.11, <3.15"
 license = "MIT"
-license-files = ["LICENSE"]
+# `licenses/` carries Eigen's own licence files. The extension statically
+# contains Eigen as of 2026-08-21 and Eigen is MPL-2.0, whose section 3.2
+# requires the Executable Form to carry the licence; see licenses/README.md.
+license-files = ["LICENSE", "licenses/README.md", "licenses/eigen/*"]
 authors = [{ name = "Pablo Antolin", email = "pablo.antolin@epfl.ch" }]
 keywords = [
   "nurbs",
