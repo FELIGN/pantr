@@ -266,6 +266,16 @@ def _degree_elevate_bezier_1d_core(
             and then fully written; its previous contents are discarded.
 
     Note:
+        **Matching dtypes is a precondition, and violating it is silent here.**
+        Until this kernel filled a caller's buffer it allocated one with
+        ``dtype=ctrl.dtype``, so a mismatch was unrepresentable. It is now the
+        caller's to get right, and Numba will accept a wider ``out`` and quietly
+        accumulate at that width instead, where the C++ twin raises
+        :class:`TypeError`. Layer 2 establishes the match at every call site the
+        library makes, and :meth:`pantr.bezier.Bezier.evaluate` refuses a
+        mismatched ``out`` identically on both backends; this note is for a caller
+        that reaches the kernel directly.
+
         Inputs are assumed to be correct (no validation performed).
         For general use, call :func:`_bezier_degree._degree_elevate_bezier` instead.
     """
@@ -521,6 +531,12 @@ def _scalar_bernstein_product_1d_core(
             then fully written; its previous contents are discarded.
 
     Note:
+        **Matching dtypes is a precondition, and violating it is silent here.**
+        See :func:`_degree_elevate_bezier_1d_core`'s note: the two kernels lost the
+        same structural guarantee when they stopped allocating their own result,
+        and Numba accepts a wider ``out`` where the C++ twin raises
+        :class:`TypeError`.
+
         Inputs are assumed to be correct (no validation performed).
         For general use, call :func:`_bezier_compose._compose_bezier` instead.
     """

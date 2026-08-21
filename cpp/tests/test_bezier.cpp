@@ -38,15 +38,33 @@
 ///    to argue about. This is the one check here that would catch a wrong
 ///    *formula* rather than a wrong endpoint.
 ///
-/// ## The two bounded cases
+/// ## The bounded cases, and two claims a review refuted
 ///
-/// `product_with_unit` forms `(a_k * C(p,k)) / C(p,k)`, two roundings, so the
-/// result is within `2u` relative of `a_k` and is exact only when the binomial is
-/// a power of two. `derivative_at_the_endpoints` compares against
-/// `p * (c_1 - c_0)`, where the subtraction of two neighbouring control points is
-/// exact by Sterbenz only when they are within a factor of two of each other, so
-/// the control points there are chosen to make it so and the remaining slack is
-/// the A2.3 recursion's own.
+/// `split_reconstructs` and `restrict_agrees` carry real bounds, `8p` and `16p`
+/// times `eps * max|c|`, measured at 31-45x margin to degree 55 across 600
+/// decades. One caveat their derivation omitted: they are computed in `eps` where
+/// the argument is written in `u = eps/2`, an unacknowledged further factor of two.
+/// `cpp/tests/test_cardinal_bspline.cpp` states that substitution explicitly and
+/// this file now does too.
+///
+/// **Two other tolerances here were not bounds at all, and both are gone.**
+///
+/// `product_with_unit` claimed to be "exact only when the binomial is a power of
+/// two". False: exactness holds whenever `a_k * C(p,k)` is representable, which for
+/// integers in `[-9, 9]` is every `p <= 53`. All five swept degrees gave error
+/// exactly zero at binomials 3, 45, 252 and 184756, none a power of two, so the
+/// tolerance had never been consumed. It is an equality now, with its envelope
+/// stated.
+///
+/// `derivative_at_the_endpoints` justified `p * eps * |want|` by Sterbenz exactness
+/// of `c_1 - c_0`. **The kernel never subtracts two control points** -- `ctrl`
+/// enters only as `+= weight * ctrl` -- so the mechanism does not exist. The bound
+/// was also vacuous on its own data (error exactly zero at every swept degree) and
+/// false off it: with `c = 1e6 + i/3` at unit scale it is exceeded 1.7e5 times at
+/// `p = 5`. The scaling was the wrong quantity, because A2.3's roundings act on
+/// contraction terms of size `sum_j |B'_{j,p}| * max|c| <= 2p * max|c|`, not on
+/// `|want| = p * |dc|`. It is now an equality on the exact case and a derived
+/// `2 p^2 eps max|c|` on a case that actually rounds.
 
 #include <cmath>
 #include <cstddef>
@@ -260,9 +278,15 @@ void test_restrict_over_the_full_domain_loses_a_signed_zero_and_an_infinity() {
 }
 
 void test_product_with_the_unit_polynomial_reproduces_its_input() {
-    // `c_k = (a_k * C(p,k)) / C(p,k)`: two roundings, so within 2u relative, and
-    // exact whenever the binomial is a power of two. Anything larger than that is
-    // a wrong scaling rather than rounding.
+    // `c_k = (a_k * C(p,k)) / C(p,k)`, and this is an EQUALITY, not a tolerance.
+    // Both operations are exact whenever `a_k * C(p,k)` is representable: the
+    // multiply lands on an integer below 2^53 and the divide undoes it exactly. For
+    // `|a| <= 9` that holds through `p = 53`, five orders past the largest swept
+    // degree (1.3e6 against 9.0e15). An earlier version asserted `2 * eps * |want|`
+    // and justified it by the binomial being a power of two, which is false and
+    // which made the assertion vacuous: the error is zero at binomials 3, 45, 252
+    // and 184756. A wrong scaling now fails outright rather than inside a tolerance
+    // nothing consumed.
     for (int p : {0, 1, 3, 10, 20}) {
         const Net a = integer_net(static_cast<std::size_t>(p) + 1, 1);
         const std::vector<double> unit{1.0};
@@ -271,22 +295,31 @@ void test_product_with_the_unit_polynomial_reproduces_its_input() {
             std::span<const double>(a.data), std::span<const double>(unit),
             std::span<double>(out));
         for (std::size_t k = 0; k < out.size(); ++k) {
-            const double want = a.data[k];
-            const double slack = 2.0 * kEps * std::abs(want);
-            PANTR_CHECK_MSG(std::abs(out[k] - want) <= slack,
+            PANTR_CHECK_MSG(out[k] == a.data[k],
                             "degree " + std::to_string(p) + " coefficient " +
                                 std::to_string(k) + ": " + std::to_string(out[k]) +
-                                " against " + std::to_string(want));
+                                " against the exact " + std::to_string(a.data[k]));
         }
     }
 }
 
-void test_the_first_derivative_at_the_endpoints() {
-    // `B'(0) = p (c_1 - c_0)` and `B'(1) = p (c_p - c_{p-1})`, exactly in exact
-    // arithmetic. The control points below are consecutive small integers, so
-    // every difference is exact by Sterbenz and all the slack left is the A2.3
-    // recursion's own: at most `p` roundings of a quantity of size `p * |dc|`,
-    // hence the `p` in the tolerance.
+void test_the_first_derivative_at_the_endpoints_is_exact_on_integers() {
+    // `B'(0) = p (c_1 - c_0)` and `B'(1) = p (c_p - c_{p-1})`, and on this data it
+    // is an EQUALITY.
+    //
+    // At `s = 0` and `s = 1` every `ndu` entry collapses to exactly 0 or 1, A2.3's
+    // `a`-recursion forms differences of exact integers, and the falling factorial
+    // is exact integer arithmetic, so the contraction is a sum of exactly
+    // representable integers while `2^{n_deriv} p (p+1) max|c| < 2^53` -- at most
+    // 1080 for the degrees below.
+    //
+    // The version this replaces asserted `p * eps * |want|` and justified it by
+    // Sterbenz exactness of `c_1 - c_0`. That mechanism does not exist: the kernel
+    // never subtracts two control points, only accumulates `weight * ctrl`. The
+    // assertion was also never exercised, since the error was exactly zero at every
+    // swept degree, so the wrong bound sat behind a passing test. See
+    // `test_the_first_derivative_under_cancellation` below for the case that does
+    // round, and the bound that actually holds there.
     for (int p : {1, 2, 5, 9}) {
         const auto rows = static_cast<std::size_t>(p) + 1;
         std::vector<double> values(rows);
@@ -299,13 +332,53 @@ void test_the_first_derivative_at_the_endpoints() {
         pantr::evaluate_bezier_deriv_1d<double>(n.view(), std::span<const double>(pts), 1,
                                                 pantr::span_nd<double, 3>(out.data(), 2, 2, 1));
         const double want = static_cast<double>(p) * 1.0;  // every difference is 1
-        const double slack = static_cast<double>(p) * kEps * std::abs(want);
+        PANTR_CHECK_MSG(out[1] == want, "degree " + std::to_string(p) + ": B'(0) is " +
+                                            std::to_string(out[1]) + ", expected exactly " +
+                                            std::to_string(want));
+        PANTR_CHECK_MSG(out[3] == want, "degree " + std::to_string(p) + ": B'(1) is " +
+                                            std::to_string(out[3]) + ", expected exactly " +
+                                            std::to_string(want));
+    }
+}
+
+void test_the_first_derivative_under_cancellation() {
+    // The case the exact test above cannot reach, and the bound that holds there.
+    //
+    // `c_i = 1e6 + i/3` makes the answer `p/3` while every control point is 1e6, so
+    // the derivative is a difference of large numbers and the roundings act on the
+    // contraction terms rather than on the result. A2.3's derivative basis satisfies
+    // `sum_j |B'_{j,p}(s)| <= 2p`, and the contraction commits at most one rounding
+    // per stage of the recursion, so the absolute error is bounded by
+    //
+    //     |err|  <=  2 * p^2 * eps * max|c|                                    (1)
+    //
+    // which is what the tolerance below is. The bound it replaces, `p * eps *
+    // |want|`, is scaled by the RESULT rather than by the data, and this data is
+    // exactly where those differ: it is exceeded 1.7e5 times at `p = 5`.
+    for (int p : {2, 5, 9, 25}) {
+        const auto rows = static_cast<std::size_t>(p) + 1;
+        std::vector<double> values(rows);
+        double worst_c = 0.0;
+        for (std::size_t i = 0; i < rows; ++i) {
+            values[i] = 1.0e6 + static_cast<double>(i) / 3.0;
+            worst_c = std::max(worst_c, std::abs(values[i]));
+        }
+        const Net n = net(values, rows, 1);
+        const std::vector<double> pts{0.0, 1.0};
+        std::vector<double> out(2 * 2 * 1);
+        pantr::evaluate_bezier_deriv_1d<double>(n.view(), std::span<const double>(pts), 1,
+                                                pantr::span_nd<double, 3>(out.data(), 2, 2, 1));
+        const double want = static_cast<double>(p) / 3.0;
+        const double pd = static_cast<double>(p);
+        const double slack = 2.0 * pd * pd * kEps * worst_c;
         PANTR_CHECK_MSG(std::abs(out[1] - want) <= slack,
-                        "degree " + std::to_string(p) + ": B'(0) is " +
-                            std::to_string(out[1]) + ", expected " + std::to_string(want));
+                        "degree " + std::to_string(p) + ": B'(0) error " +
+                            std::to_string(std::abs(out[1] - want)) + " exceeds " +
+                            std::to_string(slack));
         PANTR_CHECK_MSG(std::abs(out[3] - want) <= slack,
-                        "degree " + std::to_string(p) + ": B'(1) is " +
-                            std::to_string(out[3]) + ", expected " + std::to_string(want));
+                        "degree " + std::to_string(p) + ": B'(1) error " +
+                            std::to_string(std::abs(out[3] - want)) + " exceeds " +
+                            std::to_string(slack));
     }
 }
 
@@ -319,6 +392,12 @@ void test_a_split_reconstructs_the_original_curve() {
     // bounded by `max |c_i|`. Evaluation adds its own `3p` roundings of the same
     // scale, per the Bernstein recurrence's three multiplications per step, and the
     // constant below rounds `4p` up to `8p` to cover the `pow` seed's libm error.
+    //
+    // Written in `eps` while the argument is in `u = eps/2`, so the coded constant
+    // is a further factor of two loose. Stated rather than removed, as
+    // `cpp/tests/test_cardinal_bspline.cpp` states it: measured margin over the
+    // observed worst is 31-45x to degree 55 across 600 decades, so the slack is not
+    // what makes the test pass.
     const std::size_t degree = 9;
     const Net n = integer_net(degree + 1, 1);
     double worst_c = 0.0;
@@ -420,7 +499,8 @@ int main() {
     test_restrict_to_the_full_domain_is_the_identity_on_finite_input();
     test_restrict_over_the_full_domain_loses_a_signed_zero_and_an_infinity();
     test_product_with_the_unit_polynomial_reproduces_its_input();
-    test_the_first_derivative_at_the_endpoints();
+    test_the_first_derivative_at_the_endpoints_is_exact_on_integers();
+    test_the_first_derivative_under_cancellation();
     test_a_split_reconstructs_the_original_curve();
     test_restrict_agrees_with_evaluation_on_the_subinterval();
     test_float32_runs_the_same_structural_identities();
