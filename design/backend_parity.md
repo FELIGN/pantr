@@ -1,14 +1,14 @@
 # Backend parity: what a bound may claim, and in which frame
 
-**Status:** complete for the two ports that exist. Six rules, each with the failure that produced
+**Status:** complete for the three ports that exist. Eight rules, each with the failure that produced
 it, and three further module ports inherit them. The verdict on whether the parity harness
 generalized is now written, from the `quad` port's tests rather than predicted before them.
-**Date:** 2026-08-20, amended the same day after a deep review closed two open proofs, refuted a
-bound that was being evaluated in the wrong coordinate, and corrected a factor of two in the
-units.
-**Scope:** how the two backends are compared, and what a comparison is allowed to assert. Not
-which algorithm computes what, which is `design/quadrature_algorithms.md`, and not what may
-cross the boundary, which is `design/cross_backend_types.md`.
+**Date:** 2026-08-20, amended the same day after a deep review closed two open proofs,
+refuted a claim and tightened a bound. Amended again 2026-08-21 by the change-of-basis
+port: Rule 7 (a liveness guard belongs to the host it was measured on) and Rule 8 (a
+parity claim needs a bound that can say something), and again by that port's own deep
+review, which found Rule 8 overstating its boundary and one of its two margin figures
+invented. Both are corrected in place rather than edited away.
 
 **Validated against:** `proto/cpp` at `765d9b9`, plus the `quad` port on `feat/cpp-quad`.
 
@@ -271,11 +271,31 @@ domain. The two differ per builder and per dtype: for `bernstein_to_cardinal` in
 module accepts degrees to 26 and parity is claimable to 22; for `cardinal_to_bernstein` it
 accepts to 14 and parity reaches 9.
 
-That is not a weakening, and the reason is worth stating plainly, because the instinct is to
-read a smaller tested range as thinner coverage. **Above the accuracy domain the answer has no
-correct digits in either backend.** There is nothing left for a parity claim to be about: two
-implementations agreeing on a quantity that is entirely round-off is not evidence that the port
-is right, and two implementations disagreeing there is not evidence that it is wrong.
+**What that boundary is, stated carefully, because the first version of this rule overstated
+it.** It said "above the accuracy domain the answer has no correct digits in either backend",
+and that is false. Measured against the exact rational matrix, `bernstein_to_cardinal` in
+float64:
+
+| degree | `32 n kappa eps` | true relative error | correct digits | this rule |
+|---|---|---|---|---|
+| 22 | 0.95 | 2.4e-4 | 3.6 | included |
+| 23 | 3.79 | 5.8e-4 | **3.2** | excluded |
+| 26 (top of solvability) | 263 | 4.6e-2 | **1.3** | excluded |
+
+Three digits survive at the first excluded degree and one at the last. Worse for the claim, the
+backends *agree* there: at degree 23 they differ by 1.0e-3 against `kappa eps = 4.9e-3`, so a
+claim carrying `kappa eps` rather than the full constant would be non-vacuous and would pass.
+
+So the honest statement is narrower and is about the constant rather than about the
+mathematics. **The cut is where *this* bound, with *its* constant, stops being able to say
+anything** -- roughly `log10(constant * n)` digits above zero, about three here. Below that cut
+a passing test is evidence; above it the harness refuses the claim, correctly, because a bound
+larger than the values it compares admits any answer including zero.
+
+What follows for a reader is the part that matters: **the excluded degrees are not degrees where
+the port is unchecked because checking is meaningless. They are degrees where this bound is too
+loose to check, and a sharper bound would reach some of them.** That is a limitation to record,
+not a property to claim.
 
 Two obligations come with it.
 
@@ -287,10 +307,13 @@ collapsed or the tabulated domains had moved, and both are findings rather than 
 
 **Measure the margin over the whole domain, not at its top.** At the top degree `kappa` is by
 construction as large as it gets, so the bound is at its loosest there and a margin measured
-only there is misleading. Measured across every degree tested: the bound is between 130 and
-1800 times the observed difference at its tightest point, and between `1e6` and `5e6` times it
-at the top degrees. Reporting only the second number would suggest the bound asserts nothing;
-reporting only the first would suggest it is sharp. Both are in the test's docstring.
+only there is misleading. Measured across every degree tested, per builder in float64, the
+bound is between **130 and 1800** times the observed difference at its tightest point. At the
+top degrees it is far looser, and by an amount that varies over three orders of magnitude
+between builders rather than sitting in a narrow band -- an earlier version of this rule quoted
+"between 1e6 and 5e6" for it, which took the two largest and presented them as the range. Only
+the tightest-point figures are quoted here and in the test's docstring, because they are the
+ones that say whether the bound asserts anything.
 
 ### What this rule does not license
 

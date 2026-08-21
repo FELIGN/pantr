@@ -145,7 +145,9 @@ that has not been estimated.
 
 **Decided (2026-08-19): Eigen supplies the solver in both cases**, so deferring this choice
 is safe. `Eigen::SparseMatrix` with `SimplicialLDLT` covers the level-wise banded systems and
-a global THB system alike, and Eigen is already a required dependency, so adding the sparse
+a global THB system alike, and Eigen is a dependency of the shipped extension as of
+2026-08-21 (it was fetched only for the C++ tests when this was written; see the correction
+in `design/large_data_fitting.md`), so adding the sparse
 path later costs nothing in dependency terms. The real cost of a global fit is assembling the
 THB system, which is new code either way. The decision stays contained behind the API as long
 as the return type does not leak which method produced it.

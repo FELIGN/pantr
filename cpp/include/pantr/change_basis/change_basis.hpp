@@ -117,9 +117,20 @@ void write_out(const eigen_matrix<T>& source, span2d<T> out) {
 
 /// Invert `forward` by one LU solve against the identity.
 ///
-/// The oracle writes `np.linalg.solve(forward, np.eye(n))`, which is a solve with
-/// `n` right-hand sides rather than an explicit inverse, and this is the same
-/// thing: `PartialPivLU::solve` applies the triangular factors to each column.
+/// **This computes an inverse, and saying otherwise was wrong.** The oracle writes
+/// `np.linalg.solve(forward, np.eye(n))`, and an earlier version of this comment
+/// called that "a solve with `n` right-hand sides rather than an explicit inverse".
+/// It is precisely Du Croz and Higham's *Method A* for matrix inversion (IMA J.
+/// Numer. Anal. **12** (1992) 1-19, section 3.1), the distinction their paper and
+/// Higham's ASNA chapter 14 exist to draw, and in numpy 2.4.6 it is bitwise
+/// identical to `numpy.linalg.inv`.
+///
+/// The consequence is a one-sided guarantee, and callers should know which side.
+/// Method A bounds the **right** residual `A X - I` and says nothing about the
+/// left. Measured on the Legendre pair in float64: at degree 6 `||AX-I||` is
+/// 2.8e-15 against `||XA-I||` 4.8e-13; at degree 12, the last degree the module
+/// accepts, 2.7e-13 against **1.2e-4**. The round-trip examples in the Python
+/// docstrings exhibit `A @ B` for that reason, not by preference.
 ///
 /// \param forward The matrix to invert. Must be square.
 /// \return Its inverse.
@@ -217,8 +228,10 @@ void bernstein_to_lagrange_1d(int degree, std::span<const T> lagrange_points, sp
 /// \param quad_weights Quadrature weights, same length as `quad_points`.
 /// \param out Output view of shape `(degree + 1, degree + 1)`.
 ///
-/// \note No input validation is performed. Layer 3; see CLAUDE.md. For general
-///       use call `pantr.change_basis.compute_bernstein_to_cardinal_1d`.
+/// \note No input validation is performed, and the degree domain is Layer 2's.
+///       This builder has one -- 26 in float64, 12 in float32 -- and was the only
+///       one of the eight whose note omitted to say so. Layer 3; see CLAUDE.md. For
+///       general use call `pantr.change_basis.compute_bernstein_to_cardinal_1d`.
 template <std::floating_point T>
 void bernstein_to_cardinal_1d(int degree, std::span<const T> quad_points,
                               std::span<const T> quad_weights, span2d<T> out) {
