@@ -54,7 +54,7 @@ add_library(pantr::core ALIAS pantr_core)
 target_include_directories(pantr_core INTERFACE
     "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/cpp/include>")
 
-target_link_libraries(pantr_core INTERFACE pantr::cxx_flags)
+target_link_libraries(pantr_core INTERFACE pantr::cxx_flags Eigen3::Eigen)
 
 if(PANTR_HAS_STD_MDSPAN)
   target_compile_definitions(pantr_core INTERFACE PANTR_HAS_STD_MDSPAN=1)
