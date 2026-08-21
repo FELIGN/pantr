@@ -174,10 +174,17 @@ jobs:
       # that is a cost rather than a non-issue. This comment used to read "Eigen
       # is never fetched", which was true while PANTR_BUILD_TESTS gated it out of
       # the Python build path; the shipped extension now includes an Eigen header,
-      # so `pip install -e .` clones it on every run. Measured: this job went from
-      # 5m38s to 6m25s across that change. A FetchContent cache keyed on the
-      # pinned SHAs would return those 47 seconds, and is deliberately left as a
-      # separate decision rather than folded into the port that exposed it.
+      # so `pip install -e .` clones it on every run.
+      #
+      # How much that costs is NOT established, and the attempt to establish it is
+      # worth leaving here. Job durations: 5m38s on the last run before the
+      # change, then 6m25s and 7m40s on two runs after it. The 75s between those
+      # two, which ran the same code, is larger than the 47s the first pair would
+      # have attributed to Eigen. So a single run against a single run measures
+      # runner variance, not the clone. The case for a FetchContent cache keyed on
+      # the pinned SHAs rests on the mechanism -- a clone that was not happening
+      # now happens every run -- rather than on a number, and taking it is a
+      # separate decision from the port that exposed it.
       - name: Install pantr with the extension
         env:
           CC: gcc-14
