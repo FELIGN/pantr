@@ -142,21 +142,29 @@ void register_change_basis(nb::module_& m) {
     // caller's buffer untouched, with no error anywhere. On the inputs it refuses
     // a hidden copy inside a timed region.
     //
-    // `nb::kw_only()` before `out` matters more here than it did there. Five of
-    // these take two same-dtype, same-length arrays in a row, and a positional
-    // call that swapped `nodes` and `weights` would type-check, run, and return a
-    // plausible matrix.
+    // `nb::kw_only()` sits before `nodes`, not before `out`, and the difference is
+    // the whole point. Five of these take two same-dtype, same-length arrays in a
+    // row, so a positional call that swapped `nodes` and `weights` would
+    // type-check, run, and return a plausible matrix -- and `check_node_count`
+    // cannot catch it, because the two are the same length by construction.
+    // Making only `out` keyword-only does nothing to that risk.
+    //
+    // An earlier version of this file made exactly that mistake, in a comment that
+    // named the risk correctly one line above the `m.def` calls that left it open.
+    // `cpp/bindings/quad.cpp` had it right already: it puts `nb::kw_only()` before
+    // BOTH `out_nodes` and `out_weights` for the identical two-array shape. This
+    // now matches.
     const auto bind_nodes = [&m](const char* name, auto f64, auto f32) {
-        m.def(name, f64, nb::arg("degree"), nb::arg("nodes").noconvert(), nb::kw_only(),
+        m.def(name, f64, nb::arg("degree"), nb::kw_only(), nb::arg("nodes").noconvert(),
               nb::arg("out").noconvert());
-        m.def(name, f32, nb::arg("degree"), nb::arg("nodes").noconvert(), nb::kw_only(),
+        m.def(name, f32, nb::arg("degree"), nb::kw_only(), nb::arg("nodes").noconvert(),
               nb::arg("out").noconvert());
     };
     const auto bind_rule = [&m](const char* name, auto f64, auto f32) {
-        m.def(name, f64, nb::arg("degree"), nb::arg("nodes").noconvert(),
-              nb::arg("weights").noconvert(), nb::kw_only(), nb::arg("out").noconvert());
-        m.def(name, f32, nb::arg("degree"), nb::arg("nodes").noconvert(),
-              nb::arg("weights").noconvert(), nb::kw_only(), nb::arg("out").noconvert());
+        m.def(name, f64, nb::arg("degree"), nb::kw_only(), nb::arg("nodes").noconvert(),
+              nb::arg("weights").noconvert(), nb::arg("out").noconvert());
+        m.def(name, f32, nb::arg("degree"), nb::kw_only(), nb::arg("nodes").noconvert(),
+              nb::arg("weights").noconvert(), nb::arg("out").noconvert());
     };
 
     bind_nodes("lagrange_to_bernstein_1d",
