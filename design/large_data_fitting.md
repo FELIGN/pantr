@@ -170,7 +170,9 @@ above, because a sparse Cholesky does exploit the band.
 > headers. The decision stands; the argument for it did not. Eigen became a real dependency of
 > the product on 2026-08-21, taken deliberately by the change-of-basis port, whose builders need
 > a dense solve and whose sibling `bezier` needs a truncated SVD pseudo-inverse. The measured
-> cost is in `cmake/PantrDependencies.cmake`. What it leaves on the table is the sparse machinery's index
+> cost is in `cmake/PantrDependencies.cmake`.
+
+What it leaves on the table is the sparse machinery's index
 indirection, which at bandwidth 7 and 262144 right-hand sides is not negligible but is not
 an order of magnitude either. The escape, if a profile asks for it, is a hand-rolled banded
 Cholesky of roughly 40 lines on the 1D path only: contained, and no API change.
