@@ -11,7 +11,12 @@
 ///
 /// The oracle is itself exact over the whole envelope: the largest coefficient in
 /// range is `C(61, 30) = 232714176627630544`, well inside `int64`. So this test
-/// covers *every* `(n, k)` with `n <= 61` rather than sampling.
+/// covers *every* `(n, k)` with `n <= 61` rather than sampling, which is **1953**
+/// pairs.
+///
+/// That number is recorded here because commit `fcf2d7c`'s message says 2016, which
+/// is the sum to `n = 62` rather than to 61. A commit message is history and cannot
+/// be corrected in place, so the right figure lives where a reader will look.
 ///
 /// ## What the other checks would catch
 ///
