@@ -1,5 +1,5 @@
 - [Active task](active-task.md) — change_basis merged; bezier is next, and what its deep review taught about my prose versus my code.
-- [Where the decisions live](decisions-pointer.md) — the C++ port's design decisions are in `design/*.md` in this repository; both PRs merged, nothing in flight. Read backend_parity.md first before proposing anything about a bound.
+- [Where the decisions live](decisions-pointer.md) — the C++ port's design decisions are in `design/*.md`; three modules merged, nothing in flight. Read backend_parity.md before proposing anything about a bound.
 - [Working on proto/cpp](proto-cpp-pr-mechanics.md) — Closes #N never fires, a branch cut from it carries unpushed commits, and its CI is two jobs rather than eight.
 - [What the downstream consumer imports](downstream-consumer-surface.md) — measured at last: the PointsLattice debt is discharged, and bezier is the first port that touches symbols it uses.
 - [Naming constraint and licensing](naming-and-licensing.md) — two sibling libraries are private and unpublished; never name them in anything that leaves the machine. Plus the dependency direction the licence plan forbids.
@@ -7,6 +7,6 @@
 - [nanobind status](nanobind-status.md) — split mode verified working and composing with multi-ISA; the three mandatory build flags, including the -Os trap that costs a silent 3x.
 - [Performance follow-up](performance-followup.md) — wanted later, deliberately deferred in the infrastructure PR; carries what is already measured so it is not re-measured, and what to attack first.
 - [How to ask me things](asking-style.md) — one question at a time, with concrete options AND an explicit recommendation, and the counter-argument written into the other options.
-- [Reviewing my own measurements](reviewing-my-own-measurements.md) — in numerical work my prose fails far more often than my code, and why; the six checks that would have caught it.
+- [Reviewing my own measurements](reviewing-my-own-measurements.md) — my prose fails far more often than my code, three cycles running; what caught it each time, and why lint and tests never will.
 - [Expired guard rationales](expired-guard-rationales.md) — a fence whose stated reason no longer holds is not a constraint; check the reason, not just the guard.
 - [Dispatching agents](dispatching-agents.md) — a brief is not an isolation mechanism; anything that mutates or measures needs its own worktree.

@@ -57,3 +57,33 @@ one would have introduced a host concept where no host was involved.
 Corollary worth keeping: **a guard that fires intermittently is worse than no guard**, because
 it teaches everyone to discount reds.
 
+
+## The change_basis cycle, 2026-08-21: it recurred, and a deep review is what caught it
+
+**Nineteen findings, and almost none was a computation error.** The kernels were bit-exact
+against their oracles, the refactor was behaviour-identical builder by builder, the degree-domain
+derivation survived every number checked. What failed was the prose, again, and this note existed
+before the session started.
+
+- **A fabricated citation.** Three places cited a parity test file that had never existed on any
+  branch, one of them inside a string printed in every failure message. Worse than a dead link:
+  it stood in for a test that should have been written, and the gap it hid was real.
+- **A bound contradicting a PROVED result in the file I was editing.** I derived
+  `2^degree * eps` for the Legendre recurrence from scratch while `design/backend_parity.md`
+  Rule 4 records `Theta(n^2)` as proved, and I was editing that same file to add Rule 8.
+- **The wrong theorem cited**, Higham 9.4 while quoting 9.5's shape minus its `n^2`.
+- **A rule I wrote claiming a property of the mathematics** when it was a limitation of my
+  constant: "no correct digits above the accuracy domain" is false, 3.2 digits survive.
+- **Three false completeness claims** and **two numbers from one run each**, one refuted by the
+  next run.
+
+**What generalises.** Everything above passed ruff, mypy, 37 local checks and the full suite under
+both backends. **None of that machinery reads prose.** The only things that caught them were
+adversarial agents told to attack a specific claim, and in three cases the fix was a measurement
+I could have run in a minute at the time of writing.
+
+**So: when writing a bound, a citation, or a completeness claim, run the check that would refute
+it before writing it down**, not after. And when amending a document, read what it already proves;
+twice this cycle the answer was four directories away or in the same file.
+
+See [[dispatching-agents]] for how to run those adversarial agents without them colliding.
