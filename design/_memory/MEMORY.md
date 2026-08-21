@@ -1,6 +1,7 @@
-- [Active task](active-task.md) — both module PRs and two follow-up PRs merged; the four measured parity results, the tickets #338 to #341 and which are still open, and nothing in flight.
+- [Active task](active-task.md) — both module PRs and five follow-up PRs merged; only #341 is left, plus the parity results and what the follow-ups actually turned out to be.
 - [Where the decisions live](decisions-pointer.md) — the C++ port's design decisions are in `design/*.md` in this repository; both PRs merged, nothing in flight. Read backend_parity.md first before proposing anything about a bound.
 - [Working on proto/cpp](proto-cpp-pr-mechanics.md) — Closes #N never fires there, and a branch cut from it carries whatever is unpushed; both have already cost a surprise.
+- [A downstream check is owed](downstream-check-owed.md) — freezing PointsLattice can break a caller pantr's CI cannot see; the grep has not been run.
 - [Naming constraint and licensing](naming-and-licensing.md) — two sibling libraries are private and unpublished; never name them in anything that leaves the machine. Plus the dependency direction the licence plan forbids.
 - [Build machine](build-machine.md) — the shared Linux server, its 20-CPU cap, and the calibration trap that comes with many cores.
 - [nanobind status](nanobind-status.md) — split mode verified working and composing with multi-ISA; the three mandatory build flags, including the -Os trap that costs a silent 3x.

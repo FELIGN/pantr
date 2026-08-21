@@ -1,6 +1,6 @@
 ---
 name: active-task
-description: The pantr C++ port with both module PRs and two follow-up PRs merged; nothing in flight, three tickets open
+description: The pantr C++ port with both module PRs and five follow-up PRs merged; only #341 left, and one downstream check owed
 metadata:
   node_type: memory
   type: project
@@ -18,14 +18,24 @@ and tanh-sinh is bounded with its node **count** identical. Exactness is a prope
 BUILD, not of the kernels: `-march=native` moves 1994 of 2143 values and `-ffp-contract=off`
 restores them.
 
-**The four follow-ups are FILED**, each root-caused with a verified reproduction, none a
-regression from #337: **#338** `PointsLattice` neither copies nor freezes its arrays while
-`QuadratureRule` in the same package does both; **#339** the basis parity tests assume a
-compiled kernel and fail under `NUMBA_DISABLE_JIT=1`, which is what breaks `make coverage`
-with the extension present; **#340, now CLOSED and fixed by #342,** `ci_local.sh`'s
-split-mode probe shares the persistent build dir, one cause behind both the wrong-nanobind
-resolution and the non-idempotency;
-**#341** an enhancement, not a bug, to keep tanh-sinh's endpoint distance.
+**Three of the four follow-ups are CLOSED**, plus one nobody had filed. #338 `PointsLattice`
+is immutable (#344), #339 the float32 parity claims skip when the JIT is off (#346), #340 the
+split-mode probe has its own build dir (#342). **#341 is the only one left**, and it is an
+enhancement rather than a bug: keeping tanh-sinh's endpoint distance, blocked on an API choice
+and on #250's golden test plus a downstream consumer that takes the output verbatim.
+
+**#345 was not on the list and mattered more than the ones that were.** Six parity tests were
+non-deterministic across CI runs, proven by re-running commit `767f502` unchanged and getting
+`6 failed` then `313 passed`. They asserted that two implementations still *disagree*, which is
+a property of the host, since glibc and numpy both dispatch `exp` on the CPU's features. That is
+now **Rule 7** in `design/backend_parity.md`, and `demand_the_reference_host` is the only
+supported way to write such a guard.
+
+**The distinction between #345 and #339 is worth keeping**, because they look identical and are
+not. Both say the result depends on how the code is run. Repeat the run and they separate: #345
+gave different results on identical input, #339 gave 29 failures three times. Host variation
+gets the reference-host gate; configuration variation means the object under test is not the one
+the bound describes.
 
 Two corrections to what was believed before they were filed, both found by re-checking rather
 than by trusting the note. The tanh-sinh plateau is **not a defect**: the docstring has
