@@ -1,6 +1,6 @@
 ---
 name: decisions-pointer
-description: The C++ port's design decisions live in design/*.md in the repository, not in memory; two modules are ported and nothing is in flight
+description: The C++ port's design decisions live in design/*.md in the repository; three modules are ported and nothing is in flight
 metadata:
   type: project
 ---
@@ -28,13 +28,36 @@ Two decisions that govern everything else:
   `quad`, `transform`, `change_basis`, `bezier`. Roughly 8-10k lines, not 47k. `bspline`,
   THB, extraction, `cad`, `multipatch` and `mpi` stay in Python for now.
 
-**Status, 2026-08-20.** Both PRs are **merged** into `proto/cpp`: the build skeleton (#335)
-and the `quad` module (#337). Nothing is in flight. See [[active-task]].
+**Status, 2026-08-21.** Three module PRs are **merged** into `proto/cpp`: the build skeleton
+(#335), `quad` (#337) and `change_basis` (#347). Nothing is in flight. See [[active-task]].
+
+**Eigen is a dependency of the shipped extension** as of #347, and that is the architectural
+decision this cycle added. It was test-only before, fenced off from `pantr::core` so that taking
+it would have to be deliberate; `change_basis` needs a dense solve and `bezier` needs a truncated
+SVD, both in Stage 1. Measured: a cold editable install goes 7.56 s to 12.19 s and the build tree
+6.4 MB to 50 MB, with `GIT_SHALLOW TRUE` doing most of the saving; the incremental rebuild is
+unchanged. Eigen's licence files are vendored in `licenses/` because the wheel now contains
+compiled MPL-2.0 code -- **but `pyproject.toml` still declares MIT, and whether that should
+change is an open question for Pablo, not a port's call.**
+`design/large_data_fitting.md` had claimed Eigen was already required and that was false;
+corrected in place, along with the same stale premise in
+`design/adaptive_thb_approximation.md`.
+
+**`design/backend_parity.md` now has eight rules**, and #347's own deep review corrected the
+newest one. Rule 8: a parity claim is only defined where the bound can still say something, so
+the parity domain is the accuracy domain and the excluded degrees must be named. Its first
+version also claimed those degrees have no correct digits, which is false, and one of its two
+margin figures was invented.
 
 **Three notes were added by PR 2 and they govern everything ported after it.**
 `design/backend_parity.md` is the one to read first: it states what a bound may claim and in
-which frame, and each of its **six** rules carries the failure that produced it rather than
-the principle it illustrates. Rule 6 is the newest and the least obvious: a sensitivity
+which frame, and each of its **eight** rules carries the failure that produced it rather than
+the principle it illustrates. Rule 8, added 2026-08-21 by the change_basis port, is the one to read before writing any
+parity claim over a solve: a parity claim is only defined where the quantity has digits, so the
+parity domain is the *accuracy* domain and not the *solvability* domain, and the excluded
+degrees have to be named rather than quietly skipped. Rule 7 is the one that changes how CI is read: a bound is a property of
+the code, but whether it is *approached* is a property of the host, so a liveness guard is
+enforced only where its numbers were measured. Rule 6 is the least obvious: a sensitivity
 derived at a distinguished point set is **not** that sensitivity at the image of that set
 under a coordinate map, and comparing the two arrays by their maxima cannot see the
 difference. Its last section now answers whether the harness generalized (yes in vocabulary,

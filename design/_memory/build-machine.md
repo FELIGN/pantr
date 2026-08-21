@@ -30,3 +30,12 @@ Any new threshold must be **derived**, not measured on the development machine.
 laptop), so `svd`, `solve` and `lstsq` differ in the last bits. Parity is reproducibility
 within a derived bound, never bit-exactness, and reference data must be computed live against
 the sibling implementation in the same tree rather than captured from a file.
+
+## The conda env's ruff is out of the pinned range
+
+`pyproject.toml` pins `ruff>=0.12.0,<0.13`; the `pantr` conda env carries **0.16.3**. Newer
+rules make it report findings that do not exist for CI, which resolves the pin: measured
+2026-08-21 at 12 findings in three untouched files. **A lint result from `conda run -n pantr
+ruff` is not the lint CI runs.** The checkout's own `.venv/bin/ruff` has 0.12.12 installed
+for exactly this.
+

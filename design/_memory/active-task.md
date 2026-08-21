@@ -1,72 +1,65 @@
 ---
 name: active-task
-description: The pantr C++ port with both module PRs and five follow-up PRs merged; only #341 left, and one downstream check owed
+description: The pantr C++ port: change_basis merged, three of six Stage 1 modules done, and what the deep review taught
 metadata:
   node_type: memory
   type: project
-  modified: 2026-08-20T23:55:00.000Z
+  modified: 2026-08-21T00:00:00.000Z
 ---
 
-**PR 2 of the C++ port is MERGED**: `pantr.quad`'s rule generation, PR #337 into `proto/cpp`,
-36 commits, CI green. PR 1 was #335. **No work is in flight.** `proto/cpp` is at `8e8f37c`,
-the merge commit; a local checkout can sit well behind it, so fetch before reading its tip.
+**`change_basis` is MERGED** into `proto/cpp` (PR #347, 18 commits, rebase-merged so the SHAs
+differ from the branch's). Nothing is in flight, no worktree, remote has only `main` and
+`proto/cpp`. Three of Stage 1's six modules are ported: `basis` (cardinal B-spline, Bernstein,
+Legendre), `quad`, `change_basis`.
 
-Four measured parity results, since they set expectations for the ports that follow:
-Gauss-Legendre and trapezoidal are **bit-identical** in both storage formats, Lambert W is
-within one ulp, modified Chebyshev is exact in float64 and one unit of roundoff in float32,
-and tanh-sinh is bounded with its node **count** identical. Exactness is a property of the
-BUILD, not of the kernels: `-march=native` moves 1994 of 2143 values and `-ffp-contract=off`
-restores them.
+**`bezier` is the next module, not `geometry` or `transform`.** An earlier brief recommended
+those two for being smallest, from line counts. Each is a **single class** (`AABB`,
+`AffineTransform`) whose arithmetic is over 2- or 3-element arrays, and D2 keeps the class in
+Python, so porting them ports almost nothing. `bezier` is where Eigen's SVD gets used, which is
+half the justification for having taken the dependency.
 
-**Three of the four follow-ups are CLOSED**, plus one nobody had filed. #338 `PointsLattice`
-is immutable (#344), #339 the float32 parity claims skip when the JIT is off (#346), #340 the
-split-mode probe has its own build dir (#342). **#341 is the only one left**, and it is an
-enhancement rather than a bug: keeping tanh-sinh's endpoint distance, blocked on an API choice
-and on #250's golden test plus a downstream consumer that takes the output verbatim.
+**Eigen is now a dependency of the shipped extension**, with its licence files vendored in
+`licenses/`. See [[decisions-pointer]].
 
-**#345 was not on the list and mattered more than the ones that were.** Six parity tests were
-non-deterministic across CI runs, proven by re-running commit `767f502` unchanged and getting
-`6 failed` then `313 passed`. They asserted that two implementations still *disagree*, which is
-a property of the host, since glibc and numpy both dispatch `exp` on the CPU's features. That is
-now **Rule 7** in `design/backend_parity.md`, and `demand_the_reference_host` is the only
-supported way to write such a guard.
+**Rule 8 exists and the next three ports inherit it**, in the corrected form: a parity claim
+needs a bound that can still say something, so the parity domain is where `constant * n * kappa
+* eps < 1`. Its first version claimed the excluded degrees had no correct digits, which is false
+(3.2 digits at the first excluded degree) and was caught by the review, not by me.
 
-**The distinction between #345 and #339 is worth keeping**, because they look identical and are
-not. Both say the result depends on how the code is run. Repeat the run and they separate: #345
-gave different results on identical input, #339 gave 29 failures three times. Host variation
-gets the reference-host gate; configuration variation means the object under test is not the one
-the bound describes.
+**The deep review is the thing to read before the next port**: `reviews/347-2026-08-21.md` in the
+repo. Nineteen findings, and the shape matters more than the list: **the C++ was right and the
+prose about it was wrong, repeatedly**. A fabricated citation to a test that never existed, an
+exponential bound contradicting a PROVED result in the file I was editing, the wrong Higham
+theorem, three false completeness claims, two numbers measured from one run each. See
+[[reviewing-my-own-measurements]], which said exactly this about me before the session started.
 
-Two corrections to what was believed before they were filed, both found by re-checking rather
-than by trusting the note. The tanh-sinh plateau is **not a defect**: the docstring has
-documented and quantified it since #291, and its model predicts the measured error to three
-digits, so it was filed as an enhancement. And the proof that #339 predates the port does
-**not** work by running the old test file unchanged, which fails on API drift instead; it
-needs the mechanical `Backend.NUMBA` to `Backend.PYTHON` rename applied first.
+**Two facts from it worth carrying into `bezier`:**
+- The LU growth factor for these matrices is measured, not assumed: `R <= 3.73` in exact
+  rational arithmetic, `rho` exactly 1. Eigen's `PartialPivLU` has **no tolerance at all** on its
+  path (only `is_exactly_zero`), so the `computeFromTridiagonal` defect class cannot occur there.
+- `np.linalg.solve(A, eye(n))` is Du Croz and Higham's Method A for **inversion**, not a solve,
+  and numpy makes it bitwise identical to `inv`. It bounds `A X - I` and says nothing about
+  `X A - I`: measured 2.7e-13 against 1.2e-4 at the last accepted degree.
 
-**Nothing is waiting.** The `QuadKernels` redesign landed as #343: quad publishes one
-accessor per kernel over a single `_select`, basis keeps its record because there the record
-answers a real need, and **both catalogue rules are now written in
-`design/cross_backend_types.md`** for the three ports that follow. The record's stated
-justification turned out to be false rather than merely unexercised, and the refutation is
-recorded in the module so it is not made again: every rule kernel returns its `(nodes,
-weights)` pair from one call, so the signature already forbade the cross-backend mix the
-record claimed to prevent.
+**The downstream grep is DONE** (2026-08-21) and it changes the plan for `bezier`. Nothing was
+broken by `PointsLattice` or by the package split. But the consumer imports
+`pantr.bezier._root_finding_core._de_casteljau_eval_scalar`, `pantr.bezier._bezier.Bezier` and
+`pantr.grid._bvh_core._BVH_STACK_DEPTH`, all present on `main`. **`bezier` is therefore the first
+port that touches symbols it uses**, and a Numba kernel is exactly what a port reorganises, so
+decide `_de_casteljau_eval_scalar`'s fate deliberately. Full detail in
+[[downstream-consumer-surface]].
 
-One question was deliberately left open, as a non-goal of #343: whether `lambert_w_kernel`
-belongs in the catalogue at all, given that nothing outside the tests calls it. That is about
-which kernels the catalogue holds, not about its shape.
+**The float32 width question is answered, and the answer is that widening is free.** The only
+change_basis function the consumer uses is the one builder that runs no solve, and it never asks
+for float32. So the Gram products and the LU can move to double whenever we want, which also
+raises the float32 degree ceilings (8 to 14, 12 to 26). It is now a decision about pantr alone.
 
-**The backend cache-keying fix is NOT waiting, contrary to what was planned.** It was to be
-its own PR and it shipped inside #337 instead, as commit `b5c562b`. The merged version is
-better than the standalone branch was: the standalone one named the two backends absolutely
-in its threading test, which fails once the suite runs under `PANTR_BACKEND=cpp`, and the
-merged one names them relative to the ambient backend and skips when only one exists. Do not
-go looking for that PR. Verified `14 passed` under each backend.
+**Open and not ours**: #336 (THB extraction performance, outside Stage 1). **Open and ours**:
+#341 (tanh-sinh endpoint distance, an enhancement).
 
-A session-scoped handoff brief carried every directive verbatim, the twenty-nine decisions in
-force, and what the cycle taught. That path does not outlive its session. **The durable
-equivalents are in the repository**: `design/backend_parity.md`, `design/build_findings.md`
-and `design/quadrature_algorithms.md`.
+**One question left for Pablo, deliberately unanswered in the PR**: `pyproject.toml` declares
+`license = "MIT"` while the wheel now contains statically linked MPL-2.0 code. The licence text
+ships, which is required either way; whether the declaration should change is not a port's call.
 
-See [[decisions-pointer]], [[performance-followup]] and [[reviewing-my-own-measurements]].
+See [[decisions-pointer]], [[dispatching-agents]], [[performance-followup]] and
+[[expired-guard-rationales]].

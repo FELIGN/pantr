@@ -32,3 +32,28 @@ work inherits live in docstrings and design notes.
   refusing an array with no negative entry beats a docstring saying "pass the unmapped nodes".
 
 See [[active-task]].
+
+## The same pattern held over the follow-up work, 2026-08-21
+
+Six more inherited claims did not reproduce, two of them written by me the day before. Each was
+caught by running rather than by reading, and each check cost seconds.
+
+- The tanh-sinh accuracy floor was **documented behaviour**, not a defect, and its documented
+  model predicts the measured error to three digits.
+- A ticket I filed named a root cause (storage narrower than the accumulator) that is **not
+  established**; what is measured is only that float64 is bitwise unaffected by the JIT switch
+  and float32 is not.
+- A ticket's own specification was **wrong about its own fix**: copy-and-freeze closes two of
+  three holes, because numpy's writeable flag governs the data and not `shape`.
+- Two "separate defects" were **one** cause; a fix said to be waiting had **already shipped**;
+  a record's stated justification was **false** rather than unexercised.
+
+**And the strongest tool this cycle was repeating a run.** Two failures looked identical, both
+saying the result depends on how the code is run. Repeating separated them: one gave a different
+answer on an unchanged tree (host variation, non-deterministic) and the other gave the same
+answer three times (configuration variation). The remedies are different, and picking the wrong
+one would have introduced a host concept where no host was involved.
+
+Corollary worth keeping: **a guard that fires intermittently is worse than no guard**, because
+it teaches everyone to discount reds.
+
