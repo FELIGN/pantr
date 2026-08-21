@@ -95,13 +95,15 @@ def _make_double_root_coeff(
     r = rng.uniform(0.2, 0.8)
     linear = np.array([-r, 1.0 - r], dtype=np.float64)
     # Square it via Bernstein product
-    squared = _scalar_bernstein_product_1d_core(linear, linear)
+    squared = np.empty(2 * linear.shape[0] - 1, dtype=np.float64)
+    _scalar_bernstein_product_1d_core(linear, linear, squared)
 
     # Multiply by a random cofactor to reach target degree
     remaining = degree - 2
     if remaining > 0:
         cofactor = rng.uniform(0.5, 2.0, remaining + 1).astype(np.float64)
-        result = _scalar_bernstein_product_1d_core(squared, cofactor)
+        result = np.empty(squared.shape[0] + cofactor.shape[0] - 1, dtype=np.float64)
+        _scalar_bernstein_product_1d_core(squared, cofactor, result)
     else:
         result = squared
 
