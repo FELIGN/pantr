@@ -51,6 +51,7 @@
 
 #include <cmath>
 #include <cstddef>
+#include <cstdint>
 #include <span>
 #include <vector>
 
@@ -292,12 +293,25 @@ void evaluate_bezier_deriv_1d(span2d<const T> ctrl, std::span<const T> points, i
             }
         }
 
-        // The falling factorial is exact integer arithmetic in the oracle, and the
-        // promotion it forces against a float32 table is the one place this kernel
-        // leaves T's width.
-        std::int64_t fac = static_cast<std::int64_t>(degree);
+        // The falling factorial, and it is accumulated UNSIGNED on purpose.
+        //
+        // The oracle holds it in a numba `int64`, which wraps on overflow, and it
+        // does overflow: at degree 30 from `n_deriv = 14`, at degree 61 from 11,
+        // both reachable through `Bezier.evaluate_derivatives`. Signed overflow is
+        // undefined in C++ where numba's is merely wrong, so the natural
+        // translation is worse than its original -- confirmed under
+        // `-fsanitize=undefined`, which the repository's own `gcc-debug` preset
+        // enables.
+        //
+        // Unsigned arithmetic is modular by definition and the C++20 conversion
+        // back to `std::int64_t` is the two's-complement reinterpretation, so this
+        // reproduces the oracle's wrapped value bit for bit while being defined.
+        // Widening to `double` would have removed the undefined behaviour and
+        // broken parity instead, since past 2^53 a double rounds where an int64
+        // wraps.
+        std::uint64_t fac = static_cast<std::uint64_t>(degree);
         for (std::size_t k = 1; k <= num_derivs; ++k) {
-            const Acc fac_acc = Acc(static_cast<double>(fac));
+            const Acc fac_acc = Acc(static_cast<double>(static_cast<std::int64_t>(fac)));
             for (std::size_t j = 0; j < order; ++j) {
                 const Acc scaled = static_cast<Acc>(bd_at(k, j)) * fac_acc;
                 for (std::size_t r = 0; r < rank; ++r) {
@@ -306,7 +320,8 @@ void evaluate_bezier_deriv_1d(span2d<const T> ctrl, std::span<const T> points, i
                                        scaled * static_cast<Acc>(at(ctrl, j, r)));
                 }
             }
-            fac *= static_cast<std::int64_t>(degree) - static_cast<std::int64_t>(k);
+            fac *= static_cast<std::uint64_t>(static_cast<std::int64_t>(degree) -
+                                              static_cast<std::int64_t>(k));
         }
     }
 }
