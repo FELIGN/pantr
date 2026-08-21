@@ -34,7 +34,8 @@ user-facing, and the ports change what it affects.
   Legendre tabulations they rest on. `PANTR_BACKEND=cpp` now reaches
   `pantr.basis.tabulate_bernstein_1d`, `pantr.basis.tabulate_legendre_1d` and every
   `pantr.change_basis.compute_*_1d`.
-  **Two of the eight are bit-identical between the backends and six are not**, and the
+  **One of the eight is bit-identical between the backends unconditionally and one more is in
+  every case but a single node family; the other six are not**, and the
   difference is structural rather than a quality gap: the six solve a linear system, and LAPACK
   and Eigen sum the same terms in different orders. The disagreement is bounded by the matrix's
   condition number, which for these bases is tabulated exactly in the module's own
@@ -49,9 +50,6 @@ user-facing, and the ports change what it affects.
   and neither is a thing to hand-roll. A cold `pip install -e .` goes from 7.56 s to 12.19 s on
   the development server and the build tree from 6.4 MB to 50 MB; an incremental rebuild is
   unchanged. Nothing about the installed package's Python dependencies changes.
-- `pantr.change_basis` is a package rather than a single module, so that its dispatch catalogue
-  and its Python kernels have somewhere to live. **Nothing moved on the public surface**: every
-  name it exported is still importable from `pantr.change_basis`, and so is every private one.
 
 - `pantr.quad` no longer imports `scipy`. The Lambert W function that sets the tanh-sinh step
   size is solved in the library, by Halley's method on `w e^w = x`, and Gauss-Legendre is
@@ -60,6 +58,13 @@ user-facing, and the ports change what it affects.
   against, and `leggauss` has no operation-for-operation transliteration.
 
 ### Changed
+- `pantr.change_basis` is a package rather than a single module, so that its dispatch catalogue
+  and its Python kernels have somewhere to live. **Every pantr name importable from
+  `pantr.change_basis` before still is**, public and private alike, and a test now pins that
+  list rather than a docstring asserting it. The only names that stopped being reachable are
+  the stdlib and typing ones the flat module happened to bind (`np`, `comb`, `functools` and
+  the like).
+
 - **Breaking, for anyone who set the variable.** `PANTR_BACKEND=numba` is now
   `PANTR_BACKEND=python`, and the old spelling raises rather than being accepted as an alias.
   The axis names the implementation *family*, and "Numba" was already the wrong name for it:
