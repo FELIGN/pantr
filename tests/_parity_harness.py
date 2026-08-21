@@ -135,6 +135,9 @@ FloatArray = npt.NDArray[np.floating[Any]]
 """Any real-valued NumPy array the backends can produce or consume."""
 
 _REQUIRE_ENV_VAR: Final[str] = "PANTR_REQUIRE_CPP"
+
+_REFERENCE_HOST_ENV_VAR: Final[str] = "PANTR_REFERENCE_HOST"
+"""Marks the machine a liveness guard's numbers were measured on."""
 """Environment variable that turns "the extension is absent" from a skip into a failure."""
 
 _BUILD_HINT: Final[str] = (
@@ -186,6 +189,60 @@ _MISSING_BUT_REQUIRED: Final[str] = (
     f"Numba-only."
 )
 """Message for the one configuration in which a missing extension must fail."""
+
+
+def on_the_reference_host() -> bool:
+    """Report whether this run is on the machine a liveness guard was calibrated on.
+
+    Returns:
+        bool: True when ``PANTR_REFERENCE_HOST`` is set to a non-empty value.
+    """
+    return bool(os.environ.get(_REFERENCE_HOST_ENV_VAR, ""))
+
+
+def demand_the_reference_host(guard: str, measured: str) -> None:
+    """Skip a liveness guard on a machine that cannot enforce its numbers.
+
+    **A bound is a property of the code; whether that bound is still approached is
+    a property of the host.** The two are different claims and only the first
+    transfers. This is what separates them.
+
+    The guards in question assert that a bound is still doing work: that the two
+    backends still disagree somewhere, that the worst observed ratio is still close
+    to the bound, that the Halley iterate still reaches a two-value limit cycle.
+    Each is worth having, because a bound nothing exercises can rot without any
+    test noticing. But each was measured on one machine, and the quantities behind
+    them are chosen at run time by the CPU: glibc dispatches ``exp`` through IFUNC
+    on the processor's features, and numpy dispatches its own loops the same way.
+    A different host gives a different ``exp``, and then two implementations that
+    disagreed by one ulp may agree exactly.
+
+    That is not a regression. It is a better outcome on that host, and failing the
+    build for it teaches everyone to discount a red, which costs more than the
+    guard ever earned. Measured: commit 767f502 was run twice on this project's CI
+    with no change between the runs, and gave ``6 failed, 309 passed, 3 xfailed``
+    and then ``313 passed, 5 xfailed``. Two strict xfails XPASSed in the first and
+    not the second.
+
+    So the guard keeps its teeth where its numbers came from, which
+    ``scripts/ci_local.sh`` marks, and reports rather than fails anywhere else. The
+    correctness assertions in the same tests are **not** gated and run everywhere.
+
+    Args:
+        guard (str): What the guard checks, for the skip reason.
+        measured (str): Where and to what value it was measured, so a reader can
+            re-establish it on a new reference host.
+
+    Raises:
+        Skipped: Via :func:`pytest.skip`, when not on the reference host.
+    """
+    if on_the_reference_host():
+        return
+    pytest.skip(
+        f"{guard} is a property of this host rather than of the code, so it is "
+        f"enforced only where it was calibrated ({measured}). Set "
+        f"{_REFERENCE_HOST_ENV_VAR} to enforce it here; scripts/ci_local.sh does."
+    )
 
 
 def demand_cpp_backend() -> None:

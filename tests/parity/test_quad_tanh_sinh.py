@@ -137,6 +137,7 @@ from tests._parity_harness import (
     Roundings,
     assert_parity,
     bounded_parity,
+    demand_the_reference_host,
 )
 
 DTYPES: Final = (np.float64, np.float32)
@@ -411,6 +412,10 @@ def test_the_lambert_w_step_size_agrees_to_one_ulp(cpp_backend: None) -> None:
         f"counts. That is a diverged iteration rather than a library rounding "
         f"difference, and h = 2 W / n multiplies every transform coordinate"
     )
+    demand_the_reference_host(
+        "whether the two backends' Lambert W step sizes still differ anywhere",
+        "nine disagreements over n from 2 to 1000, on this project's build server",
+    )
     assert differing, (
         "the two backends now agree at every count from 2 to 1000, where nine "
         "disagreements were measured. If the platform's libm changed, the node "
@@ -497,6 +502,10 @@ def test_the_bounds_are_reached_rather_than_idle(cpp_backend: None) -> None:
         worst_node = max(worst_node, node_deviation.max_ratio_to_bound)
         worst_weight = max(worst_weight, weight_deviation.max_ratio_to_bound)
 
+    demand_the_reference_host(
+        "how closely the tanh-sinh node and weight bounds are approached",
+        "worst ratios above 0.1 and 0.05 respectively, on this project's build server",
+    )
     assert worst_node > 0.1, (
         f"the node bound is never approached more closely than {worst_node:.3g} of "
         f"itself, so it is no longer distinguishing a correct port from a wrong one"
