@@ -251,3 +251,49 @@ in float32 differs by exactly one unit of roundoff, because it resolves through
 therefore cannot be bit-identical, and `tests/parity/test_change_basis.py` claims a bound there
 instead of bitwise agreement -- the node gap times `n`, since a Bernstein derivative is bounded
 by the degree.
+
+## What the fourth port added: the record rule finally fired
+
+`pantr.bezier`'s arithmetic is the first module in the tree where the record half of the
+catalogue rule is **used** rather than merely satisfied. Until now every consumer needed exactly
+one kernel per call, so the rule's two branches had one example each and one of them
+(`pantr.basis`) predates the rule. This is the first case decided by the rule rather than
+described by it.
+
+**The consumer is `_minimize_degree_bezier`.** Its greedy search reduces a degree by one and then
+re-elevates the result, inside a single call, so that the round-trip error can be compared
+against a tolerance. Two kernels, one call, so `degree_kernels()` returns a
+`DegreeKernels(elevate, reduce_apply)` and the other six accessors stay bare callables.
+
+The reason is not tidiness. `active_backend()` reads a `ContextVar`, and `use_backend` scopes a
+switch to a thread or a task, so two separate resolutions inside one call can genuinely see
+different answers. A round trip whose reduction was computed by one implementation and whose
+re-elevation by the other is not a round trip, and the error it reports is not the error of
+anything. `_reduce_along_axis` therefore **takes its kernel as an argument** rather than
+resolving one, which is what lets its two callers differ: `_degree_reduce_bezier` needs only the
+reduction and resolves once, while `_minimize_degree_bezier` resolves the pair.
+
+**The mirroring rule needed a judgement this time, and it went the same way.** Bézier's public
+surface is mixed: `evaluate` and `evaluate_derivatives` take `out`, while `split`, `restrict`,
+`elevate_degree` and the rest return new `Bezier` objects. That is not `pantr.quad`'s case, where
+no public function takes a buffer, and the mixture could have been read either way. It goes to
+`pantr.basis`'s convention -- every kernel fills a caller-supplied buffer -- because the methods
+that return an object still hand Layer 2 an array to fill before wrapping it, so a returning
+kernel would introduce exactly the copy the rule exists to prevent.
+
+Two of the seven kernels had to be **changed** to satisfy that: `_degree_elevate_bezier_1d_core`
+and `_scalar_bernstein_product_1d_core` allocated their result with `np.zeros` and returned it.
+Both output shapes are computable by the caller without running the kernel, so the shape
+computation moved to Layer 2 in its own commit, ahead of any C++. Worth stating as a general
+expectation: **the mirroring rule is a constraint on the Python side too, and a port may have to
+fix the oracle's shape before it can mirror it.**
+
+### A third thing the rules still do not cover
+
+`Bezier.multiply` reaches `_bernstein_product_coefficients_nd`, a pure-numpy helper with no
+kernel and no catalogue entry, while the scalar 1D product kernel it resembles is reached only
+from `compose`. Nothing in the catalogue rules says whether a numpy helper that duplicates a
+dispatched kernel's mathematics should itself be dispatched, be routed through the kernel, or be
+left alone. It is left alone here, deliberately and without an argument that it is right. The
+concrete cost is already visible: a parity test aimed at `multiply` exercises none of the ported
+code, which is how it was noticed.
