@@ -2,10 +2,10 @@
 
 ## Unreleased
 
-The dual-backend prototype on the `proto/cpp` branch. Two pull requests so far: the
-infrastructure, and the `quad` port. The infrastructure landed without a changelog entry, so
-this section covers both -- the environment variable it introduced is user-facing, and the
-`quad` port changes the values it accepts.
+The dual-backend prototype on the `proto/cpp` branch. Three module pull requests so far: the
+infrastructure, the `quad` port and the `change_basis` port. The infrastructure landed without a
+changelog entry, so this section covers all of them -- the environment variable it introduced is
+user-facing, and the ports change what it affects.
 
 ### Added
 - **A second implementation of a kernel can now be selected at run time.** `PANTR_BACKEND`
@@ -30,6 +30,29 @@ this section covers both -- the environment variable it introduced is user-facin
   degree its entry-level figure falls below 1. `scripts/bench_quad.py` and
   `scripts/bench_parity.py` report the numbers and say which part of each is the port and which
   is the call; read them rather than quoting a range from here.
+- A C++ implementation of all eight `pantr.change_basis` builders, and of the Bernstein and
+  Legendre tabulations they rest on. `PANTR_BACKEND=cpp` now reaches
+  `pantr.basis.tabulate_bernstein_1d`, `pantr.basis.tabulate_legendre_1d` and every
+  `pantr.change_basis.compute_*_1d`.
+  **Two of the eight are bit-identical between the backends and six are not**, and the
+  difference is structural rather than a quality gap: the six solve a linear system, and LAPACK
+  and Eigen sum the same terms in different orders. The disagreement is bounded by the matrix's
+  condition number, which for these bases is tabulated exactly in the module's own
+  documentation, and it is only meaningful over the degrees where the answer has correct digits
+  in the first place -- a narrower range than the degrees the builders accept.
+  One case is worth knowing about before reading an A/B result:
+  `compute_lagrange_to_bernstein_1d` with `CHEBYSHEV_2ND` nodes in float32 is the one place
+  where the two backends start from *different nodes*, by one unit of roundoff, because that
+  node family resolves through a quadrature rule that itself dispatches.
+- **Eigen is now a build dependency of the wheel**, where before it was fetched only for the C++
+  tests. `pantr.change_basis` needs a dense solve and `pantr.bezier` will need a truncated SVD,
+  and neither is a thing to hand-roll. A cold `pip install -e .` goes from 7.56 s to 12.19 s on
+  the development server and the build tree from 6.4 MB to 50 MB; an incremental rebuild is
+  unchanged. Nothing about the installed package's Python dependencies changes.
+- `pantr.change_basis` is a package rather than a single module, so that its dispatch catalogue
+  and its Python kernels have somewhere to live. **Nothing moved on the public surface**: every
+  name it exported is still importable from `pantr.change_basis`, and so is every private one.
+
 - `pantr.quad` no longer imports `scipy`. The Lambert W function that sets the tanh-sinh step
   size is solved in the library, by Halley's method on `w e^w = x`, and Gauss-Legendre is
   computed by Newton on the Legendre recurrence rather than through `numpy.polynomial.leggauss`.

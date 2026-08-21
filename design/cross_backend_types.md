@@ -210,3 +210,44 @@ the answer.
    older pantr cannot unpickle what a newer one sends. That is a packaging consequence of
    this note's "Python owns the type" rule rather than of anything in it, but it is the kind
    of thing that surfaces as an MPI failure far from its cause.
+
+
+## What the third port added, and what it only confirmed
+
+`pantr.change_basis` was the first module ported after the two catalogue rules were written, so
+it is the first evidence about them that is not the case they were derived from.
+
+**Both rules held without amendment.** No change_basis consumer needs two kernels in one call,
+so the catalogue is eight bare callables over one `_select` rather than a record -- and the
+reason is sharper than "it happens not to need one". Its five inverse builders invert their
+forward matrix *inside* the kernel, on one side of the boundary. Written the other way, as the
+Python module was before the port, `compute_cardinal_to_bernstein_1d` would call
+`compute_bernstein_to_cardinal_1d` and then solve, which under a mixed backend composes a
+Python forward matrix with a C++ solve into a result that is neither backend and that no parity
+claim covers. So the rule about records and the rule about where an inverse is taken are the
+same rule seen twice.
+
+Every public builder here takes `out`, so by the mirroring rule every kernel fills the caller's
+buffer, which is `pantr.basis`'s convention rather than `pantr.quad`'s. That followed from the
+public surface without a judgement call, which is what the rule was for.
+
+**One thing the rules did not cover, and it is about what a kernel may compute rather than what
+it may return.** `compute_lagrange_to_bernstein_1d` picks nodes from one of five families, and
+`pantr._backend` records that two of those five are deliberately never dispatched. A kernel that
+resolved the variant itself would therefore have to either contradict that decision or carry a
+second implementation of two quadrature rules. So the nodes are an argument: Layer 2 resolves the
+variant on the Python side and passes an array, and `LagrangeVariant` never crosses.
+
+That generalises past this module. **A kernel takes as an argument anything whose own dispatch
+decision is not its to make.** The type rule already said the enum stays Python-owned; what is
+new is that the *values it selects* have to cross as data too, because the selection is a policy
+another module owns.
+
+**The visible consequence, which a reader of an A/B measurement needs.** Since the nodes cross
+rather than being recomputed, whatever the node rule does is inside the comparison. Measured over
+the five families: four hand both backends identical arrays in both formats, and `CHEBYSHEV_2ND`
+in float32 differs by exactly one unit of roundoff, because it resolves through
+`get_modified_chebyshev_nodes_1d`, which dispatches. The change-of-basis matrix built on it
+therefore cannot be bit-identical, and `tests/parity/test_change_basis.py` claims a bound there
+instead of bitwise agreement -- the node gap times `n`, since a Bernstein derivative is bounded
+by the degree.

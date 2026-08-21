@@ -97,7 +97,15 @@ Measured: **7.5 s cold** without build isolation, **9.3 s** with it, **2.5 s inc
 What makes it cheap:
 
 - a **persistent `build-dir`** in `pyproject.toml`;
-- **Eigen fetched only when the C++ tests are requested**, not on the pip path.
+- **Eigen fetched only when the C++ tests are requested**, not on the pip path. *No longer
+  true as of 2026-08-21*: the change-of-basis port takes Eigen as a dependency of the shipped
+  extension, so a cold editable install now pays its clone. Measured on this server, cold
+  `pip install -e . --no-build-isolation`: **7.56 s** without Eigen, **21.48 s** with it cloned
+  deep, **12.19 s** cloned shallow, with the build tree at 6.4 MB, 145 MB and 50 MB
+  respectively. The incremental rebuild is unchanged at 2.96 s, so the day-to-day cost is nil
+  and the whole of it lands on a cold worktree. `GIT_SHALLOW TRUE` is therefore on for Eigen and
+  off for mdspan, which is a measurement rather than a preference; the shallow fetch was
+  verified to check out the pinned SHA rather than falling back to a branch tip.
 
 Three things to know before setting the same flow up elsewhere:
 

@@ -160,9 +160,17 @@ the dense path being the *only* path, which is the situation today.
 
 **Decided (2026-08-19): use Eigen's solvers.** Concretely `Eigen::SparseMatrix` with
 `SimplicialLDLT`. Eigen has no dense *banded* solver, so the banded systems go through the
-sparse side, which handles them correctly as a special case. This is zero new dependency
-(Eigen is already required) and it captures most of the 20x to 64x above, because a sparse
-Cholesky does exploit the band. What it leaves on the table is the sparse machinery's index
+sparse side, which handles them correctly as a special case. It captures most of the 20x to 64x
+above, because a sparse Cholesky does exploit the band.
+
+> **Correction, 2026-08-21.** This paragraph originally justified the choice with "this is zero
+> new dependency (Eigen is already required)", and that was false when written. Eigen was
+> fetched only under `PANTR_BUILD_TESTS`, which `pyproject.toml` sets to `OFF`, so a
+> `pip install` never cloned it and nothing in the shipped extension included one of its
+> headers. The decision stands; the argument for it did not. Eigen became a real dependency of
+> the product on 2026-08-21, taken deliberately by the change-of-basis port, whose builders need
+> a dense solve and whose sibling `bezier` needs a truncated SVD pseudo-inverse. The measured
+> cost is in `cmake/PantrDependencies.cmake`. What it leaves on the table is the sparse machinery's index
 indirection, which at bandwidth 7 and 262144 right-hand sides is not negligible but is not
 an order of magnitude either. The escape, if a profile asks for it, is a hand-rolled banded
 Cholesky of roughly 40 lines on the 1D path only: contained, and no API change.
