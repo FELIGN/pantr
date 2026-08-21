@@ -18,30 +18,59 @@ is defined for functions, and two backends cannot own two different classes that
 are then passed between them. Every record in this module -- :class:`QuadKernels`
 and the arrays it hands back -- is Python-owned and stays on this side.
 
-Why one record rather than five catalogue functions
----------------------------------------------------
+One accessor per kernel, and when a record is right instead
+-----------------------------------------------------------
 
-:mod:`pantr.basis._basis_backend` publishes one catalogue function per
-tabulation, because each returns a :class:`~pantr.basis._basis_backend.CoreKernels`
-carrying a parallel kernel and an optional serial twin, and which of the two runs
-is a per-call decision. Quadrature has no such split: a rule generator builds an
-``n``-point rule once and is then cached, so there is nothing to dispatch on
-below a threshold and no twin to carry.
+**The rule, which every module ported after this one inherits: a catalogue
+returns a record when the consumer needs more than one kernel at once, and a
+bare callable when it does not.**
 
-What the five *do* share is that they are ported and shipped as a unit and are
-always taken from the same backend -- a rule whose nodes came from one
-implementation and whose weights came from another would be a bug no test looks
-for. One record makes that impossible to express, and makes "which backend built
-this rule" a single question rather than five.
+:mod:`pantr.basis._basis_backend` needs the record. Its
+:class:`~pantr.basis._basis_backend.CoreKernels` carries a parallel kernel and
+its optional serial twin, and
+:func:`pantr.basis._basis_1D._tabulate_basis_1D_impl_helper` chooses between
+them per call on ``_PARALLEL_MIN_NUM_PTS``. Two kernels reach one consumer, so
+one object carries both.
 
-- :class:`QuadKernels`: the five rule kernels of one backend.
-- :func:`quad_kernels`: the kernels of the requested backend.
+Quadrature has no such split. A rule generator builds an ``n``-point rule once
+and the result is cached, so there is no threshold to dispatch on and no twin to
+carry, and every consumer in :mod:`pantr.quad._rules` takes exactly one kernel.
+Five accessors say that; a five-field record says the opposite, and the two
+shapes then mean nothing, because the same structure would stand for "these
+belong together" in one package and "these happen to live nearby" in the other.
+
+An earlier version of this module argued the record made it impossible to
+express a rule whose nodes came from one backend and whose weights from another.
+That argument does not hold, and it is recorded here so it is not reinvented:
+every rule kernel returns the pair from a single call, so its **signature**
+already forbids the mix. Nor did the record buy atomicity across kernels. The
+catalogue reads :func:`pantr._backend.active_backend` when it is called, so five
+calls behave exactly as five accessors do, and no consumer ever held two fields
+at once for a backend switch to land between.
+
+What a catalogue entry looks like
+---------------------------------
+
+**The entry mirrors its module's public surface**, and the criterion is that
+neither shape introduces a copy between Layer 2 and Layer 3.
+
+:mod:`pantr.basis` takes ``out`` on its public functions, so its kernels take
+the caller's buffer and fill it. No public function in :mod:`pantr.quad` takes
+``out``: every rule getter constructs its arrays and returns them, because a
+rule is built once and cached and there is no caller-owned buffer to fill. So a
+quad kernel allocates and returns. The two conventions differ because the two
+public surfaces differ, not because either drifted.
+
+- :func:`gauss_legendre_kernel`, :func:`lambert_w_kernel`,
+  :func:`tanh_sinh_kernel`, :func:`trapezoidal_kernel`,
+  :func:`chebyshev_nodes_kernel`: one rule kernel each, from the requested
+  backend.
 """
 
 from __future__ import annotations
 
 from collections.abc import Callable
-from typing import NamedTuple
+from typing import TypeVar
 
 import numpy as np
 import numpy.typing as npt
@@ -54,6 +83,9 @@ from ._rules_core import (
     _modified_chebyshev_nodes_core,
     _trapezoidal_core,
 )
+
+_K = TypeVar("_K")
+"""One kernel's signature, so :func:`_select` returns the type it was given."""
 
 _GaussLegendreFunc = Callable[[int], tuple[npt.NDArray[np.float64], npt.NDArray[np.float64]]]
 """Signature of the Gauss-Legendre kernel: ``(n) -> (nodes, weights)`` on ``[-1, 1]``."""
@@ -82,29 +114,6 @@ rather than a formatting one: the Python computes in the storage format, so a
 float32 request is float32 *arithmetic* and not a narrowed float64 result. The
 two were measured to differ on 62% of arguments.
 """
-
-
-class QuadKernels(NamedTuple):
-    """The five quadrature rule kernels, in one backend.
-
-    Attributes:
-        gauss_legendre (_GaussLegendreFunc): Gauss-Legendre nodes and weights on
-            ``[-1, 1]``, in float64 whatever the caller will narrow to.
-        lambert_w (_LambertWFunc): The principal branch of Lambert W, which the
-            tanh-sinh step size is solved from.
-        tanh_sinh (_TanhSinhFunc): The tanh-sinh rule on ``[-1, 1]``, returning
-            its own effective node count.
-        trapezoidal (_TrapezoidalFunc): The trapezoidal rule, already on
-            ``[0, 1]`` and so needing no mapping.
-        chebyshev_nodes (_ChebyshevNodesFunc): The modified Chebyshev
-            interpolation nodes on ``[0, 1]``, computed in the storage format.
-    """
-
-    gauss_legendre: _GaussLegendreFunc
-    lambert_w: _LambertWFunc
-    tanh_sinh: _TanhSinhFunc
-    trapezoidal: _TrapezoidalFunc
-    chebyshev_nodes: _ChebyshevNodesFunc
 
 
 def _cpp_gauss_legendre(n: int) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64]]:
@@ -210,16 +219,21 @@ def _cpp_chebyshev_nodes(n: int, dtype: npt.DTypeLike) -> npt.NDArray[np.float32
     return nodes
 
 
-def quad_kernels(backend: Backend | None = None) -> QuadKernels:
-    """Return the quadrature rule kernels of the requested backend.
+def _select(backend: Backend | None, python_kernel: _K, cpp_kernel: _K) -> _K:
+    """Pick one kernel's implementation for the requested backend.
+
+    The one place the never-fall-back rule is applied for this package, so the
+    five accessors below cannot drift from each other on it.
 
     Args:
         backend (Backend | None): The backend to use. ``None`` means the backend
             currently in effect, per :func:`pantr._backend.active_backend`.
-            Defaults to None.
+        python_kernel (_K): The Python implementation, always available.
+        cpp_kernel (_K): The C++ implementation, available only when the
+            extension was built.
 
     Returns:
-        QuadKernels: The five kernels of that backend.
+        _K: The kernel of the chosen backend.
 
     Raises:
         RuntimeError: If ``backend`` is given and is not available.
@@ -227,20 +241,94 @@ def quad_kernels(backend: Backend | None = None) -> QuadKernels:
     chosen = active_backend() if backend is None else backend
 
     if chosen is Backend.PYTHON:
-        return QuadKernels(
-            gauss_legendre=_gauss_legendre_symmetric_core,
-            lambert_w=_lambert_w_principal_core,
-            tanh_sinh=_generate_tanh_sinh_core,
-            trapezoidal=_trapezoidal_core,
-            chebyshev_nodes=_modified_chebyshev_nodes_core,
-        )
+        return python_kernel
 
     if chosen not in available_backends():
         raise RuntimeError(f"the {chosen.name} backend is not available in this installation")
-    return QuadKernels(
-        gauss_legendre=_cpp_gauss_legendre,
-        lambert_w=_cpp_lambert_w,
-        tanh_sinh=_cpp_tanh_sinh,
-        trapezoidal=_cpp_trapezoidal,
-        chebyshev_nodes=_cpp_chebyshev_nodes,
-    )
+    return cpp_kernel
+
+
+def gauss_legendre_kernel(backend: Backend | None = None) -> _GaussLegendreFunc:
+    """Get the Gauss-Legendre kernel of the requested backend.
+
+    Args:
+        backend (Backend | None): The backend to use. ``None`` means the backend
+            currently in effect. Defaults to None.
+
+    Returns:
+        _GaussLegendreFunc: The kernel, ``(n) -> (nodes, weights)`` on ``[-1, 1]``.
+
+    Raises:
+        RuntimeError: If ``backend`` is given and is not available.
+    """
+    return _select(backend, _gauss_legendre_symmetric_core, _cpp_gauss_legendre)
+
+
+def lambert_w_kernel(backend: Backend | None = None) -> _LambertWFunc:
+    """Get the Lambert W kernel of the requested backend.
+
+    Exposed for its own sake rather than for a consumer: the tanh-sinh kernels
+    each solve their step size internally, so nothing in the library calls this
+    one. It is dispatched so that the two implementations of a function the
+    rules depend on can be compared directly, instead of only through the rule
+    that hides it.
+
+    Args:
+        backend (Backend | None): The backend to use. ``None`` means the backend
+            currently in effect. Defaults to None.
+
+    Returns:
+        _LambertWFunc: The kernel, ``(x) -> W(x)`` on the principal branch.
+
+    Raises:
+        RuntimeError: If ``backend`` is given and is not available.
+    """
+    return _select(backend, _lambert_w_principal_core, _cpp_lambert_w)
+
+
+def tanh_sinh_kernel(backend: Backend | None = None) -> _TanhSinhFunc:
+    """Get the tanh-sinh kernel of the requested backend.
+
+    Args:
+        backend (Backend | None): The backend to use. ``None`` means the backend
+            currently in effect. Defaults to None.
+
+    Returns:
+        _TanhSinhFunc: The kernel, ``(n, min_gap) -> (data, count)``.
+
+    Raises:
+        RuntimeError: If ``backend`` is given and is not available.
+    """
+    return _select(backend, _generate_tanh_sinh_core, _cpp_tanh_sinh)
+
+
+def trapezoidal_kernel(backend: Backend | None = None) -> _TrapezoidalFunc:
+    """Get the trapezoidal kernel of the requested backend.
+
+    Args:
+        backend (Backend | None): The backend to use. ``None`` means the backend
+            currently in effect. Defaults to None.
+
+    Returns:
+        _TrapezoidalFunc: The kernel, ``(n) -> (nodes, weights)`` on ``[0, 1]``.
+
+    Raises:
+        RuntimeError: If ``backend`` is given and is not available.
+    """
+    return _select(backend, _trapezoidal_core, _cpp_trapezoidal)
+
+
+def chebyshev_nodes_kernel(backend: Backend | None = None) -> _ChebyshevNodesFunc:
+    """Get the modified Chebyshev nodes kernel of the requested backend.
+
+    Args:
+        backend (Backend | None): The backend to use. ``None`` means the backend
+            currently in effect. Defaults to None.
+
+    Returns:
+        _ChebyshevNodesFunc: The kernel, ``(n, dtype) -> nodes`` on ``[0, 1]``.
+
+    Raises:
+        RuntimeError: If ``backend`` is given and is not available.
+    """
+    return _select(backend, _modified_chebyshev_nodes_core, _cpp_chebyshev_nodes)
