@@ -50,6 +50,8 @@
 ///
 /// **Unlike Bernstein there is no `pow`.** `sqrt` is the only libm call, and it
 /// is correctly rounded in IEEE 754, so it cannot be a source of disagreement.
+/// That makes this kernel's bitwise parity derivable rather than merely observed;
+/// tests/parity/test_basis_tabulations.py asserts it and says which is which.
 
 #include <cmath>
 #include <cstddef>
