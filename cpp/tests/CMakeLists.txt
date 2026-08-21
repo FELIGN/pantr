@@ -8,7 +8,8 @@ set(PANTR_TEST_SOURCES
     test_bernstein.cpp
     test_legendre.cpp
     test_change_basis.cpp
-    test_quad.cpp)
+    test_quad.cpp
+    test_binomial.cpp)
 
 foreach(_src IN LISTS PANTR_TEST_SOURCES)
   cmake_path(GET _src STEM _name)
