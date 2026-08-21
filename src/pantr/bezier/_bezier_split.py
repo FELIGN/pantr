@@ -16,7 +16,7 @@ from typing import TYPE_CHECKING
 import numpy as np
 
 from .._array_utils import _flatten_along_axis, _unflatten_along_axis
-from ._bezier_core import _split_bezier_1d_core
+from ._bezier_backend import split_core
 
 if TYPE_CHECKING:
     from . import Bezier
@@ -56,7 +56,7 @@ def _split_bezier(
     pts_2d, trailing_shape = _flatten_along_axis(ctrl, direction)
     out_left = np.empty_like(pts_2d)
     out_right = np.empty_like(pts_2d)
-    _split_bezier_1d_core(pts_2d, value, out_left, out_right)
+    split_core()(pts_2d, value, out_left, out_right)
     left_ctrl = _unflatten_along_axis(out_left, trailing_shape, direction)
     right_ctrl = _unflatten_along_axis(out_right, trailing_shape, direction)
 

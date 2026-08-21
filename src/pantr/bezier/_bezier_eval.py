@@ -16,7 +16,7 @@ import numpy as np
 import numpy.typing as npt
 
 from ..basis._basis_utils import _validate_out_array
-from ._bezier_core import _evaluate_bezier_1d_core, _evaluate_bezier_deriv_1d_core
+from ._bezier_backend import evaluate_core, evaluate_deriv_core
 from ._bezier_utils import _tabulate_bernstein_1d_fast
 
 if TYPE_CHECKING:
@@ -98,7 +98,7 @@ def _evaluate_bezier_1d(
 
     # Allocate raw output (includes weight column for rational)
     out_raw = np.empty((n_pts, cp_size), dtype=dtype)
-    _evaluate_bezier_1d_core(ctrl, pts_array, out_raw)
+    evaluate_core()(ctrl, pts_array, out_raw)
 
     result = _project_rational(bezier, out_raw)
 
@@ -403,7 +403,7 @@ def _evaluate_bezier_deriv_1d_non_rational(  # noqa: PLR0913
         npt.NDArray[np.float32 | np.float64]: Derivative values.
     """
     deriv_all = np.empty((n_pts, n_deriv + 1, cp_size), dtype=dtype)
-    _evaluate_bezier_deriv_1d_core(ctrl, pts_array, n_deriv, deriv_all)
+    evaluate_deriv_core()(ctrl, pts_array, n_deriv, deriv_all)
     result = deriv_all[:, n_deriv, :]
 
     if cp_size == 1:
@@ -446,7 +446,7 @@ def _evaluate_bezier_deriv_1d_rational(  # noqa: PLR0913
 
     # Compute all homogeneous derivatives 0..n_deriv
     hom_all = np.empty((n_pts, n_deriv + 1, cp_size), dtype=dtype)
-    _evaluate_bezier_deriv_1d_core(ctrl, pts_array, n_deriv, hom_all)
+    evaluate_deriv_core()(ctrl, pts_array, n_deriv, hom_all)
 
     # Algorithm A4.2 quotient rule
     W = hom_all[:, 0, -1:]  # (n_pts, 1)

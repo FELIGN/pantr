@@ -33,9 +33,9 @@ import numpy.typing as npt
 from .._array_utils import _flatten_along_axis, _unflatten_along_axis
 from .._backend import backend_keyed_cache
 from ..basis._basis_core import _tabulate_Bernstein_basis_1D_serial_core
-from ..bspline._bspline_degree_core import _apply_reduction_operator, _check_bincoeff_envelope
+from ..bspline._bspline_degree_core import _check_bincoeff_envelope
 from ..quad import get_gauss_legendre_1d
-from ._bezier_core import _degree_elevate_bezier_1d_core
+from ._bezier_backend import _ReduceApplyFunc, degree_kernels
 
 if TYPE_CHECKING:
     from . import Bezier
@@ -108,9 +108,10 @@ def _degree_elevate_bezier(
 
     ctrl: npt.NDArray[np.float32 | np.float64] = bezier.control_points
     degrees = bezier.degree
+    elevate = degree_kernels().elevate
 
-    # ``_degree_elevate_bezier_1d_core`` builds its coefficient table from
-    # ``C(p + inc, i)``, so the elevated degree is what has to stay in range.
+    # The elevation kernel builds its coefficient table from ``C(p + inc, i)``,
+    # so the elevated degree is what has to stay in range.
     for d in range(bezier.dim):
         if increments[d] > 0:
             elevated = degrees[d] + increments[d]
@@ -127,7 +128,7 @@ def _degree_elevate_bezier(
 
         pts_2d, trailing_shape = _flatten_along_axis(ctrl, d)
         new_pts_2d = np.empty((p + inc + 1, pts_2d.shape[1]), dtype=pts_2d.dtype)
-        _degree_elevate_bezier_1d_core(p, pts_2d, inc, new_pts_2d)
+        elevate(p, pts_2d, inc, new_pts_2d)
         ctrl = _unflatten_along_axis(new_pts_2d, trailing_shape, d)
 
         # Update degrees for subsequent iterations.
@@ -344,6 +345,7 @@ def _reduce_along_axis(
     ctrl: npt.NDArray[np.float32 | np.float64],
     axis: int,
     operator: npt.NDArray[np.float64],
+    apply_kernel: _ReduceApplyFunc,
 ) -> npt.NDArray[np.float32 | np.float64]:
     """Apply a reduction operator along one axis of a control-point array.
 
@@ -353,6 +355,9 @@ def _reduce_along_axis(
         axis (int): Parametric direction to reduce.
         operator (npt.NDArray[np.float64]): Reduction operator of shape
             ``(new_order, ctrl.shape[axis])``.
+        apply_kernel (_ReduceApplyFunc): The backend's reduction-operator apply.
+            Passed in rather than resolved here so that a caller which also
+            elevates gets both kernels from one backend selection.
 
     Returns:
         npt.NDArray[np.float32 | np.float64]: Control points with ``axis``
@@ -360,7 +365,7 @@ def _reduce_along_axis(
     """
     pts_2d, trailing_shape = _flatten_along_axis(ctrl, axis)
     reduced = np.empty((operator.shape[0], pts_2d.shape[1]), dtype=pts_2d.dtype)
-    _apply_reduction_operator(operator, np.ascontiguousarray(pts_2d), reduced)
+    apply_kernel(operator, np.ascontiguousarray(pts_2d), reduced)
     return _unflatten_along_axis(reduced, trailing_shape, axis)
 
 
@@ -391,6 +396,7 @@ def _degree_reduce_bezier(
     from . import Bezier as BezierCls  # noqa: PLC0415
 
     ctrl: npt.NDArray[np.float32 | np.float64] = bezier.control_points
+    reduce_apply = degree_kernels().reduce_apply
 
     for d in range(bezier.dim):
         dec = decrements[d]
@@ -398,7 +404,7 @@ def _degree_reduce_bezier(
             continue
 
         operator = _interpolating_reduction_operator(bezier.degree[d], dec)
-        ctrl = _reduce_along_axis(ctrl, d, operator)
+        ctrl = _reduce_along_axis(ctrl, d, operator, reduce_apply)
 
     return BezierCls(ctrl, is_rational=bezier.is_rational)
 
@@ -800,20 +806,28 @@ def _minimize_degree_bezier(
     quad_weights = _tensor_gauss_weights(num_nodes) if bezier.is_rational else None
     projected = _sample_projected(result, num_nodes) if bezier.is_rational else None
 
+    # One backend selection for the whole search, and this is the call site that
+    # makes the catalogue hand out a record rather than two callables: each trial
+    # reduces and then re-elevates, and a round trip whose two halves came from
+    # different implementations would not be a round trip.
+    elevate, reduce_apply = degree_kernels()
+
     for dim in range(bezier.dim):
         # Each direction shrinks until a reduction is rejected.
         while result.shape[dim] >= 2:  # noqa: PLR2004
             degree = result.shape[dim] - 1
 
             # Reduce by one along `dim` (all rank components together) ...
-            reduced = _reduce_along_axis(result, dim, _interpolating_reduction_operator(degree, 1))
+            reduced = _reduce_along_axis(
+                result, dim, _interpolating_reduction_operator(degree, 1), reduce_apply
+            )
 
             # ... then re-elevate so the trial can be compared to `result`.
             flat_reduced, trailing_reduced = _flatten_along_axis(reduced, dim)
             flat_elevated = np.empty(
                 (flat_reduced.shape[0] + 1, flat_reduced.shape[1]), dtype=flat_reduced.dtype
             )
-            _degree_elevate_bezier_1d_core(degree - 1, flat_reduced, 1, flat_elevated)
+            elevate(degree - 1, flat_reduced, 1, flat_elevated)
             elevated = _unflatten_along_axis(flat_elevated, trailing_reduced, dim)
 
             if quad_weights is not None:

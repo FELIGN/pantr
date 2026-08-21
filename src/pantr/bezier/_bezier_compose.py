@@ -18,7 +18,7 @@ import numpy as np
 import numpy.typing as npt
 
 from ..bspline._bspline_degree_core import _check_bincoeff_envelope
-from ._bezier_core import _scalar_bernstein_product_1d_core
+from ._bezier_backend import product_core
 from ._bezier_product import _bernstein_product_coefficients_nd
 
 if TYPE_CHECKING:
@@ -282,6 +282,6 @@ def _product_fn(
     """
     if use_1d_kernel:
         result_1d = np.empty(a.shape[0] + b.shape[0] - 1, dtype=a.dtype)
-        _scalar_bernstein_product_1d_core(a[:, 0], b[:, 0], result_1d)
+        product_core()(a[:, 0], b[:, 0], result_1d)
         return result_1d[:, np.newaxis]
     return _bernstein_product_coefficients_nd(a, b)

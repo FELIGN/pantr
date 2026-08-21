@@ -16,7 +16,7 @@ from typing import TYPE_CHECKING
 import numpy as np
 
 from .._array_utils import _flatten_along_axis, _unflatten_along_axis
-from ._bezier_core import _restrict_bezier_1d_core
+from ._bezier_backend import restrict_core
 
 if TYPE_CHECKING:
     from . import Bezier
@@ -28,7 +28,7 @@ def _restrict_bezier(
 ) -> Bezier:
     """Restrict a Bézier to a sub-region of ``[0, 1]^dim``.
 
-    Applies :func:`_restrict_bezier_1d_core` per parametric direction via the
+    Applies the backend's restriction kernel per parametric direction via the
     shared :func:`_flatten_along_axis` / :func:`_unflatten_along_axis` helpers.
     Directions with ``None`` bounds are left unchanged.
 
@@ -49,6 +49,7 @@ def _restrict_bezier(
 
     ctrl = bezier.control_points
     any_restricted = False
+    restrict = restrict_core()
 
     for i, bounds in enumerate(bounds_per_dim):
         if bounds is None:
@@ -64,7 +65,7 @@ def _restrict_bezier(
 
         pts_2d, trailing_shape = _flatten_along_axis(ctrl, i)
         out = np.empty_like(pts_2d)
-        _restrict_bezier_1d_core(pts_2d, lower, upper, out)
+        restrict(pts_2d, lower, upper, out)
         ctrl = _unflatten_along_axis(out, trailing_shape, i)
 
     if not any_restricted:
