@@ -9,12 +9,27 @@
 /// recurrence subtracts, and `|p_i(x)|` reaches `sqrt(2i+1)` at the endpoints.
 /// So the error argument has to carry a growth factor rather than assume none.
 ///
-/// The three-term recurrence `p_i = a_i y p_{i-1} - b_i p_{i-2}` has
-/// `a_i -> 2` and `b_i -> 1` as `i` grows, so an error already present in
-/// `p_{i-1}` is multiplied by `|a_i y| <= 2` at each step, and the worst case
-/// compounds as `2^i`. That bound is attained only at `|y| = 1`, and it is far
-/// too pessimistic to test against: at degree 20 it is `2^20 eps`, about `2e-10`,
-/// which no run comes near.
+/// The naive reading of the three-term recurrence `p_i = a_i y p_{i-1} - b_i p_{i-2}`
+/// is that an error in `p_{i-1}` is multiplied by `|a_i y| <= 2` at each step and so
+/// compounds as `2^i`. **That is wrong, and this file used to assert it.** It is the
+/// classic mistake for a recurrence whose two homogeneous solutions are both bounded:
+/// the growing and decaying parts do not simply multiply.
+///
+/// `design/backend_parity.md` Rule 4 records the correct answer for the Legendre
+/// recurrence as **PROVED, both halves**: the error growth is `Theta(n^2)`, with
+/// closed form `C(n, +-1) = (7/4) n^2 + (9/4) n - 4 H_n`. Deriving an exponential
+/// bound here while a proved quadratic one sat four directories away was the defect;
+/// the tolerances below now carry the right order.
+///
+/// **The order transfers; the constant is not copied.** Rule 4 is about `P_n` on
+/// `[-1, 1]`; this kernel tabulates the *orthonormal shifted* family on `[0, 1]`,
+/// whose normalisation differs, so `7/4` is not this family's constant. What is used
+/// below is `2 i^2`, and its status is: **order derived** from Rule 4, **constant
+/// measured**, not proved. Against a long-double reference of the same recurrence,
+/// worst relative error over 201 points on `[0, 1]`, in units of eps: 3.5 at degree
+/// 4, 8.1 at 8, 11.6 at 16, 23.1 at 32, 71.2 at 64. `2 i^2` sits above every one of
+/// those with between 9x and 1150x in hand, and unlike `2^i` the margin does not
+/// diverge.
 ///
 /// So the claims below are chosen to be ones that hold **without** needing a
 /// sharp forward bound:
@@ -47,11 +62,11 @@ namespace {
 
 constexpr double kEps = std::numeric_limits<double>::epsilon();
 
-/// The compounding bound argued in this file's header: `2^i` growth on an error
-/// of size `eps`, which is the honest worst case for a subtractive three-term
-/// recurrence and is deliberately loose.
+/// The `Theta(i^2)` bound of this file's header: order from Rule 4, constant
+/// measured. Zero at degree 0, where the basis is the constant 1 and exact.
 double recurrence_bound(int degree) {
-    return std::ldexp(1.0, degree) * kEps;
+    const auto d = static_cast<double>(degree);
+    return std::max(1.0, 2.0 * d * d) * kEps;
 }
 
 template <class T>
@@ -158,7 +173,7 @@ void float32_tracks_float64() {
             const double rhs = static_cast<double>(b[j * width + i]);
             const double scale = std::max(1.0, std::abs(lhs));
             PANTR_CHECK(std::abs(lhs - rhs) <=
-                        std::ldexp(1.0, static_cast<int>(i)) * kEps32 * scale);
+                        std::max(1.0, 2.0 * static_cast<double>(i * i)) * kEps32 * scale);
         }
     }
 }
