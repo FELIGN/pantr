@@ -118,7 +118,11 @@ from pantr.quad._rules_core import (
     _TANH_SINH_DECAY_FACTOR,
     _generate_tanh_sinh_core,
 )
-from tests._parity_harness import absolute_tolerance
+from tests._parity_harness import (
+    absolute_tolerance,
+    demand_the_reference_host,
+    on_the_reference_host,
+)
 from tests.parity.test_quad_tanh_sinh import N_PTS as SHIPPED_N_PTS
 from tests.parity.test_quad_tanh_sinh import _node_claim, _weight_claim
 
@@ -330,7 +334,7 @@ def _discriminating_degree(min_gap: float, limit: int = 200) -> int | None:
 
 
 @pytest.mark.xfail(
-    strict=True,
+    strict=on_the_reference_host(),
     reason=(
         "REFUTED. tanh_sinh.hpp and test_quad_tanh_sinh.py both claim the Lambert W "
         "step size is bit-identical across backends; over n from 2 to 1000 it is not, "
@@ -387,6 +391,10 @@ def test_the_halley_iteration_reaches_a_last_bit_limit_cycle(cpp_backend: None) 
     through_numpy = sorted(set(_halley_iterates_numpy(argument, 12)[4:]))
     through_libm = sorted(set(_halley_iterates(argument, 12)[4:]))
 
+    demand_the_reference_host(
+        "whether the numpy Halley iteration reaches a two-value limit cycle",
+        "a cycle of exactly two doubles from step 5 on, on this project's build server",
+    )
     assert len(through_numpy) == 2, (
         f"the numpy iteration was expected to alternate between two doubles at n="
         f"{WORST_WEIGHT_RATIO_DEGREE}; steps 5 to 12 took {len(through_numpy)} distinct "
@@ -474,6 +482,10 @@ def test_the_tanh_sinh_bounds_are_closer_to_failing_than_the_shipped_sweep_recor
         usable = np.asarray(tolerance) > 0.0
         observed[name] = float(np.max(deviation[usable] / np.asarray(tolerance)[usable]))
 
+    demand_the_reference_host(
+        "how closely the recorded weight bound is approached",
+        "0.90 of the bound, on this project's build server",
+    )
     assert observed["weights"] > 0.85, (
         f"the weight bound was approached to {observed['weights']:.3f} of itself at "
         f"n={WORST_WEIGHT_RATIO_DEGREE}, where 0.90 was measured. Below 0.85 either the "
@@ -507,7 +519,7 @@ def test_the_tanh_sinh_bounds_are_closer_to_failing_than_the_shipped_sweep_recor
 
 
 @pytest.mark.xfail(
-    strict=True,
+    strict=on_the_reference_host(),
     reason=(
         "REFUTED, by construction. tanh_sinh.hpp says a count that moved between "
         "backends would be a genuine parity failure rather than a rounding "

@@ -211,6 +211,43 @@ any rule of two points or more has a node below `-1/2`. An amplification array b
 with no negative entry at all is the mapped one, handed over by mistake, and refusing it is one
 line. **Where a bound depends on a frame, make the frame a precondition rather than a convention.**
 
+## Rule 7: a bound is a property of the code; whether it is approached is a property of the host
+
+A bound that nothing exercises can rot without any test noticing, so the parity suite grew
+guards that assert the opposite of a bound: that the two backends still **disagree** somewhere,
+that the worst observed ratio is still close to the bound, that the Halley iterate still reaches
+a two-value limit cycle. Each of those was a good instinct and each was written as a hard
+assertion.
+
+**They are not assertions about this library.** `glibc` selects its `exp` through IFUNC on the
+processor's features, and numpy dispatches its own loops the same way, so which arguments the
+two round differently is a fact about the machine. Change the host and two implementations that
+differed by one ulp can agree exactly. Nothing about the port has changed; the port has got a
+better result on that host, and the suite calls it a failure.
+
+**Measured, and this is what settles it against argument.** Commit `767f502` was run twice on
+this project's CI with nothing changed between the runs. The first gave `6 failed, 309 passed,
+3 xfailed`; the second `313 passed, 5 xfailed`. Two strict `xfail`s XPASSed in the first and not
+the second. Same runner image, same numpy, same numba, same compiler. One of the six failures
+compares numpy against itself with no C++ involved at all, which is what rules out the change
+under review as the cause.
+
+So: **the bound stays a hard assertion everywhere. The liveness guard is enforced only where its
+numbers were measured**, which `scripts/ci_local.sh` marks with `PANTR_REFERENCE_HOST`, and
+reports with a written reason anywhere else. `tests/_parity_harness.py`'s
+`demand_the_reference_host` is the only supported way to write one, for the same reason
+`demand_cpp_backend` is the only supported way to require the extension.
+
+The same applies to an `xfail(strict=True)` whose expected failure is a disagreement between two
+libraries: `strict` becomes `on_the_reference_host()`. An `xfail` whose expected failure is
+structural stays strict, and the two kinds are easy to tell apart because the reason text says
+which it is. Of the five strict `xfail`s in `test_quad_shakedown.py`, two say an XPASS would mean
+the platform's libraries stopped straddling a threshold, and those two are gated; the other
+three are about what a binding accepts and what an emptied rule returns, and stay strict.
+
+**The cost of getting this wrong is not the red.** It is that an intermittent red teaches
+everyone to discount reds, which is worth less than no guard at all.
+
 ## The two corrections the infrastructure PR made, kept here because they generalize
 
 **The underflow floor.** `eta` per rounding, the unhalved smallest subnormal. Without it the

@@ -487,6 +487,25 @@ python_checks() {
     # shellcheck disable=SC1091
     source "$VENV/bin/activate"
 
+    # This script is the calibrated-host runner, so the parity suite's liveness
+    # guards are enforced here and only here.
+    #
+    # Those guards check that a bound is still doing work: that the two backends
+    # still disagree somewhere, that the worst observed ratio is still close to the
+    # bound. Worth having, because a bound nothing exercises can rot unnoticed. But
+    # the quantities behind them are chosen at run time by the CPU, since glibc
+    # dispatches `exp` through IFUNC on the processor's features and numpy
+    # dispatches its own loops the same way, so a different host can make two
+    # implementations agree that used to differ. On GitHub that produced a red from
+    # an unchanged tree: the same commit gave 6 failures on one run and none on a
+    # re-run. Off this variable the guards report instead of failing, and
+    # tests/_parity_harness.py's demand_the_reference_host carries the argument.
+    #
+    # Running this on a machine that is NOT the one those numbers were measured on
+    # will therefore fail them. That is the calibration not transferring, not the
+    # code being wrong; re-measure before changing a number.
+    export PANTR_REFERENCE_HOST=1
+
     check "editable install" pip install -e . --no-build-isolation -q
 
     # An explicit request that cannot be served must FAIL rather than fall back.
