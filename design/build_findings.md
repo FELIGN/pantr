@@ -115,6 +115,45 @@ Three things to know before setting the same flow up elsewhere:
   install pointing at a worktree that is later deleted.
 - `sphinx` is not in the conda environment, so a docs build needs it installed in that venv.
 
+## The Eigen dependency makes an editable install need the network, and that bit within hours
+
+The comment removed when Eigen moved onto the pip path read: *"a dependency a wheel build does
+not need is a dependency a wheel build cannot fail on."* That reasoning was correctly retired as
+an argument against **taking** the dependency, since two stage-1 modules genuinely need a dense
+solve. **The failure mode it named was not retired with it**, and it is worth writing down
+because it was hit the same day, on the machine that had just built the branch four times.
+
+Measured 2026-08-21, repairing a stale editable install in the main checkout:
+
+```
+error: RPC failed; HTTP 403
+CMake Error at eigen-populate-gitclone.cmake:55: Failed to clone repository
+```
+
+GitLab served the same pinned SHA repeatedly earlier that day and then refused, which points at
+rate limiting rather than an outage; the cause was not established. What matters is the shape:
+**before this change `pip install -e .` in a fresh tree touched no network beyond Kokkos mdspan;
+now a GitLab hiccup makes it fail outright.** Nothing about it is specific to this machine.
+
+Two things make it survivable, and both should be known before someone hits it cold:
+
+- **The persistent `build-dir` is now load-bearing rather than a convenience.** An incremental
+  reinstall reuses the fetched Eigen and needs no network at all.
+- **`FETCHCONTENT_SOURCE_DIR_EIGEN` is the documented escape and it works.** Any previously
+  fetched tree serves, including the ones the CMake presets leave under `build/gcc/_deps`:
+
+  ```
+  pip install -e . --no-build-isolation \
+      --config-settings=cmake.define.FETCHCONTENT_SOURCE_DIR_EIGEN=$PWD/build/gcc/_deps/eigen-src
+  ```
+
+  Verify what it points at with `git -C <that path> rev-parse HEAD` against the pin in
+  `cmake/PantrDependencies.cmake`; the escape does not check.
+
+The honest conclusion is not that taking Eigen was wrong. It is that retiring a guard's *reason*
+does not retire the risk the guard described, and the cost should be recorded where the next
+person meets it rather than discovered.
+
 ## The oracle is not always Numba, and that changes what the numbers mean
 
 Measured across the stage-1 modules:
