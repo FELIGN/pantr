@@ -17,10 +17,16 @@ than one kernel at once, a bare callable when it does not.
 :func:`~pantr.bezier._bezier_degree._minimize_degree_bezier` is the consumer that
 needs two. Inside one call it reduces a degree and then re-elevates the result so
 the trial can be compared against the original, so it reaches for the reduction
-apply and the elevation in the same breath. Resolving the backend twice there
-would let a scoped switch on another thread land between the two halves of a
-round trip, and the two halves would then be computed by different
-implementations. :class:`DegreeKernels` makes that unsayable.
+apply and the elevation in the same breath. It therefore resolves once and takes both.
+
+**Not because two resolutions could disagree.** An earlier version of this docstring
+said a scoped switch on another thread could land between them; that is measurably
+false, because a :class:`~contextvars.ContextVar` gives each thread its own context
+and a task runs in a copy, so no sibling's ``set`` is ever observable here. What
+resolving once buys is that the backend is a property of the call rather than of
+each lookup, and that the dependency is stated in a signature rather than read from
+ambient state. :class:`DegreeKernels` is the convenient shape for two kernels always
+fetched together, not a safety mechanism.
 
 The other six call sites use exactly one kernel each, so they get one callable.
 
