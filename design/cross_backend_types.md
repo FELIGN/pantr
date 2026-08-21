@@ -68,6 +68,36 @@ A kernel entry point takes and returns only these:
 Validation, allocation, dtype normalization and the construction of any object stay in
 Python, above the seam, exactly where `CLAUDE.md` already puts Layer 2.
 
+### What the catalogue hands out, and in what shape
+
+Two rules, both settled on 2026-08-21 while reworking `pantr.quad`'s catalogue, and both
+binding on every module ported after it. They exist because the first two ports produced two
+different shapes without either being wrong, and a third port would have had to guess.
+
+**A catalogue returns a record when the consumer needs more than one kernel at once, and a
+bare callable when it does not.** `pantr.basis` needs the record: `CoreKernels` carries a
+parallel kernel and its serial twin, and the consumer picks between them per call on a point
+count. `pantr.quad` does not: a rule is built once and cached, so there is no threshold and
+no twin, and every consumer takes exactly one kernel. Five accessors say that; a five-field
+record says the opposite, and if both shapes are used regardless of need then neither shape
+carries information.
+
+An argument that did not survive, recorded so it is not made again: that bundling the five
+prevented a rule whose nodes came from one backend and whose weights from another. Every rule
+kernel returns the pair from one call, so the signature already forbids that. And a catalogue
+reads the active backend when it is called, so five calls behave exactly as five accessors do.
+
+**A catalogue entry mirrors its module's public surface**, and the criterion is that neither
+shape introduces a copy between Layer 2 and Layer 3. `pantr.basis` takes `out` on its public
+functions, so its kernels take the caller's buffer and fill it. No public function in
+`pantr.quad` takes `out`: every rule getter constructs and returns, because there is no
+caller-owned buffer to fill. So a quad kernel allocates and returns. The two conventions
+differ because the two public surfaces differ, and a module whose public API grows an `out`
+should move its kernels with it.
+
+Note this is a rule about the **catalogue entry**, not about the binding. Both C++ bindings
+below these entries take output buffers, which is the flat-ABI constraint and is unaffected.
+
 ### `dtype` is an output format, not a computation precision
 
 Measured across all seven of `quad`'s rules: for six of them the `dtype` argument selects

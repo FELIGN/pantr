@@ -11,6 +11,7 @@ sibling module under `tests/parity`.
 from __future__ import annotations
 
 import threading
+from collections.abc import Callable
 
 import pytest
 
@@ -24,6 +25,13 @@ from pantr._backend import (
     use_backend,
 )
 from pantr.basis._basis_backend import cardinal_bspline_core
+from pantr.quad._quad_backend import (
+    chebyshev_nodes_kernel,
+    gauss_legendre_kernel,
+    lambert_w_kernel,
+    tanh_sinh_kernel,
+    trapezoidal_kernel,
+)
 from tests._parity_harness import build_provenance, cpp_backend_available, demand_cpp_backend
 
 
@@ -249,3 +257,90 @@ def test_use_backend_does_not_reach_into_another_thread(cpp_backend: None) -> No
         f"{ambient.name}, so the selection is process-wide rather than scoped to "
         f"the block that took it"
     )
+
+
+# The quad catalogue is five accessors rather than one record, and the tests below
+# are what keeps it that way. Identity is the assertion throughout, for the reason
+# the test above gives: that a returned object is not None says nothing about a
+# function reference, and identity also fails if the five are ever re-bundled into
+# a record, since a record is not the function it carries.
+_QUAD_ACCESSORS = (
+    ("gauss_legendre", gauss_legendre_kernel),
+    ("lambert_w", lambert_w_kernel),
+    ("tanh_sinh", tanh_sinh_kernel),
+    ("trapezoidal", trapezoidal_kernel),
+    ("chebyshev_nodes", chebyshev_nodes_kernel),
+)
+"""The quad catalogue's five entry points, named for the failure message."""
+
+
+@pytest.mark.parametrize(("name", "accessor"), _QUAD_ACCESSORS, ids=[n for n, _ in _QUAD_ACCESSORS])
+def test_a_quad_accessor_hands_back_the_python_kernel_itself(
+    name: str, accessor: Callable[[Backend | None], object]
+) -> None:
+    """Each quad accessor returns the Python kernel, by identity, not a wrapper.
+
+    Args:
+        name (str): The kernel's name, for the failure message.
+        accessor (Callable[[Backend | None], object]): The catalogue entry point.
+    """
+    from pantr.quad import _rules_core  # noqa: PLC0415
+
+    expected = {
+        "gauss_legendre": _rules_core._gauss_legendre_symmetric_core,
+        "lambert_w": _rules_core._lambert_w_principal_core,
+        "tanh_sinh": _rules_core._generate_tanh_sinh_core,
+        "trapezoidal": _rules_core._trapezoidal_core,
+        "chebyshev_nodes": _rules_core._modified_chebyshev_nodes_core,
+    }[name]
+    assert accessor(Backend.PYTHON) is expected, (
+        f"{name}: the catalogue returned something other than the kernel itself"
+    )
+
+
+@pytest.mark.parametrize(("name", "accessor"), _QUAD_ACCESSORS, ids=[n for n, _ in _QUAD_ACCESSORS])
+def test_a_quad_accessor_hands_back_the_cpp_adapter_itself(
+    name: str, accessor: Callable[[Backend | None], object], cpp_backend: None
+) -> None:
+    """Each quad accessor returns the C++ adapter, by identity, not a wrapper.
+
+    Args:
+        name (str): The kernel's name, for the failure message.
+        accessor (Callable[[Backend | None], object]): The catalogue entry point.
+        cpp_backend (None): Requires the compiled extension.
+    """
+    from pantr.quad import _quad_backend  # noqa: PLC0415
+
+    expected = {
+        "gauss_legendre": _quad_backend._cpp_gauss_legendre,
+        "lambert_w": _quad_backend._cpp_lambert_w,
+        "tanh_sinh": _quad_backend._cpp_tanh_sinh,
+        "trapezoidal": _quad_backend._cpp_trapezoidal,
+        "chebyshev_nodes": _quad_backend._cpp_chebyshev_nodes,
+    }[name]
+    assert accessor(Backend.CPP) is expected, (
+        f"{name}: the catalogue returned something other than the adapter itself"
+    )
+
+
+def test_no_quad_accessor_falls_back_when_the_extension_is_absent(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """All five quad accessors refuse an explicit C++ request, not just the first.
+
+    The never-fall-back rule is applied once, in the catalogue's ``_select``, so
+    the five cannot drift apart on it. This asserts the property they are meant to
+    share rather than the helper's existence, which would pass just as happily if
+    someone reinstated five separate copies of the check.
+    """
+    from pantr import _backend  # noqa: PLC0415
+
+    monkeypatch.setattr(_backend, "_CPP_AVAILABLE", False)
+
+    for name, accessor in _QUAD_ACCESSORS:
+        try:
+            accessor(Backend.CPP)
+        except RuntimeError as exc:
+            assert "not available" in str(exc), f"{name}: raised, but not for that reason: {exc}"
+        else:
+            pytest.fail(f"{name}: an explicit CPP request was served without the extension")

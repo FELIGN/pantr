@@ -16,7 +16,13 @@ from numpy.polynomial import chebyshev, legendre
 
 from .._array_utils import _validate_float_dtype
 from ..tolerance import get_machine_epsilon
-from ._quad_backend import quad_kernels
+from ._quad_backend import (
+    chebyshev_nodes_kernel,
+    gauss_legendre_kernel,
+    lambert_w_kernel,
+    tanh_sinh_kernel,
+    trapezoidal_kernel,
+)
 
 # Re-exported so the name keeps resolving where it always did. It predates the
 # split of the kernels into ``_rules_core`` for the C++ port, and CLAUDE.md
@@ -91,7 +97,7 @@ def get_trapezoidal_1d(
     """
     _validate_n_pts_and_dtype(n_pts, dtype)
 
-    nodes, weights = quad_kernels().trapezoidal(n_pts)
+    nodes, weights = trapezoidal_kernel()(n_pts)
     return nodes.astype(dtype), weights.astype(dtype)
 
 
@@ -119,7 +125,7 @@ def _gauss_legendre_symmetric(n: int) -> tuple[npt.NDArray[np.float64], npt.NDAr
             in ``(-1, 1)`` and their weights, summing to 2 up to the rounding of
             that sum.
     """
-    return quad_kernels().gauss_legendre(n)
+    return gauss_legendre_kernel()(n)
 
 
 def get_gauss_legendre_1d(
@@ -235,7 +241,7 @@ def get_modified_chebyshev_nodes_1d(
     """
     _validate_n_pts_and_dtype(n_pts, dtype, min_pts=2)
 
-    return quad_kernels().chebyshev_nodes(n_pts, dtype)
+    return chebyshev_nodes_kernel()(n_pts, dtype)
 
 
 def get_chebyshev_gauss_2nd_kind_1d(
@@ -353,7 +359,7 @@ def _lambert_w_principal(x: float) -> float:
     Returns:
         float: ``W(x)``, within about one unit of roundoff of ``W``.
     """
-    return quad_kernels().lambert_w(x)
+    return lambert_w_kernel()(x)
 
 
 def _generate_tanh_sinh(
@@ -391,7 +397,7 @@ def _generate_tanh_sinh(
         Nodes and weights follow the double-exponential formulas of Takahasi &
         Mori (1974), *Publ. RIMS, Kyoto Univ.* 9(3), 721-741.
     """
-    return quad_kernels().tanh_sinh(n, _tanh_sinh_min_gap(dtype))
+    return tanh_sinh_kernel()(n, _tanh_sinh_min_gap(dtype))
 
 
 def get_tanh_sinh_1d(
