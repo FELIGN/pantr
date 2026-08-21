@@ -30,6 +30,7 @@
 /// each contributing a small multiple of `n eps`, rounded up to a power of two.
 /// It is a safety factor and is named as one.
 
+#include <algorithm>
 #include <cmath>
 #include <cstddef>
 #include <limits>
@@ -44,6 +45,9 @@
 #include "pantr/change_basis/change_basis.hpp"
 #include "pantr/core/mdspan.hpp"
 #include "pantr/quad/legendre.hpp"
+
+#include <Eigen/Core>
+#include <Eigen/LU>
 
 namespace {
 
@@ -87,6 +91,68 @@ double kappa_inf(const Matrix& m, const Matrix& inverse, std::size_t n) {
         norm_inv = std::max(norm_inv, row_inv);
     }
     return norm_m * norm_inv;
+}
+
+
+/// `kappa_inf` of the Gram matrix a projected builder actually solves with.
+///
+/// **This, and not `kappa_inf(M)`, is what the bound needs.** An earlier version of
+/// this file sized every tolerance with the condition number of the *result*, which
+/// is a different matrix: measured at degree 8 that is 3.8e8 times too large for
+/// `legendre_to_cardinal`, whose Gram is the identity and whose true kappa is one,
+/// and 3.4e4 times too *small* for `cardinal_to_bernstein` -- a latent false failure
+/// rather than merely a dormant test.
+///
+/// \param basis The new basis tabulated at the quadrature nodes, `(n_quad, n)`.
+/// \param weights The quadrature weights.
+/// \param n The basis size.
+/// \return `||G||_inf ||G^-1||_inf`.
+double gram_kappa(const Matrix& basis, const std::vector<double>& weights, std::size_t n) {
+    using Dense = Eigen::Matrix<double, Eigen::Dynamic, Eigen::Dynamic>;
+    const auto rows = static_cast<Eigen::Index>(weights.size());
+    const auto cols = static_cast<Eigen::Index>(n);
+
+    Dense b(rows, cols);
+    for (Eigen::Index j = 0; j < rows; ++j) {
+        for (Eigen::Index i = 0; i < cols; ++i) {
+            b(j, i) = basis[static_cast<std::size_t>(j) * n + static_cast<std::size_t>(i)];
+        }
+    }
+    Dense weighted = b.transpose();
+    for (Eigen::Index j = 0; j < rows; ++j) {
+        weighted.col(j) *= weights[static_cast<std::size_t>(j)];
+    }
+    const Dense gram = weighted * b;
+    const Dense inverse =
+        Eigen::PartialPivLU<Dense>(gram).solve(Dense::Identity(cols, cols));
+
+    Matrix g(n * n);
+    Matrix gi(n * n);
+    for (std::size_t i = 0; i < n; ++i) {
+        for (std::size_t j = 0; j < n; ++j) {
+            g[i * n + j] = gram(static_cast<Eigen::Index>(i), static_cast<Eigen::Index>(j));
+            gi[i * n + j] = inverse(static_cast<Eigen::Index>(i), static_cast<Eigen::Index>(j));
+        }
+    }
+    return kappa_inf(g, gi, n);
+}
+
+/// Tabulate one basis at the quadrature nodes, flat and row-major.
+///
+/// \param which `'b'` for Bernstein, `'l'` for Legendre.
+/// \param degree Polynomial degree.
+/// \param points Quadrature nodes.
+/// \return The `(points.size(), degree + 1)` values.
+Matrix tabulated_at(char which, int degree, const std::vector<double>& points) {
+    const auto n = static_cast<std::size_t>(degree + 1);
+    Matrix values(points.size() * n, 0.0);
+    const pantr::span2d<double> view(values.data(), points.size(), n);
+    if (which == 'b') {
+        pantr::tabulate_bernstein_1d<double>(degree, std::span<const double>(points), view);
+    } else {
+        pantr::tabulate_legendre_1d<double>(degree, std::span<const double>(points), view);
+    }
+    return values;
 }
 
 /// `max_ij |A B - I|`.
@@ -193,16 +259,16 @@ void the_matrices_actually_change_the_basis() {
         //
         // The tolerance is `||M||_inf * max|A values| * kappa_inf(M) * eps`, and
         // each factor is there for a reason rather than for room: `M` carries a
-        // relative error of order `kappa_inf(M) eps` from its own solve, the
-        // product then scales that by the row sums of `M` and the size of the
-        // vector, and the summation itself contributes `n eps` which is
-        // absorbed into the factor of 16. `kappa_inf` is the real one here --
-        // each matrix's inverse is the sibling builder's output, which this test
-        // already has in hand.
-        const auto check = [&](const Matrix& m, const Matrix& m_inverse,
-                               const std::vector<double>& from,
+        // relative error of order `kappa eps` from its own solve, the product
+        // then scales that by the row sums of `M` and the size of the vector, and
+        // the summation itself contributes `n eps`, absorbed into the factor of
+        // 16. **`kappa` is the condition number of the matrix that builder's
+        // SOLVE used**, passed in per builder, not the condition number of the
+        // result -- those differ by up to eight orders of magnitude and in one
+        // direction the substitution makes the test too strict rather than too
+        // loose.
+        const auto check = [&](const Matrix& m, double kappa, const std::vector<double>& from,
                                const std::vector<double>& to, const char* name) {
-            const double kappa = kappa_inf(m, m_inverse, n);
             double norm_m = 0.0;
             for (std::size_t i = 0; i < n; ++i) {
                 double row = 0.0;
@@ -229,9 +295,19 @@ void the_matrices_actually_change_the_basis() {
             }
         };
 
-        check(b2c, c2b, bern, card, "bernstein_to_cardinal");
-        check(c2b, b2c, card, bern, "cardinal_to_bernstein");
-        check(l2c, c2l, leg, card, "legendre_to_cardinal");
+        // The kappa each builder's own solve carries, not the result's. See
+        // `gram_kappa`.
+        const Matrix bern_at_nodes = tabulated_at('b', degree, rule.points);
+        const Matrix leg_at_nodes = tabulated_at('l', degree, rule.points);
+        const double kappa_gram_bern = gram_kappa(bern_at_nodes, rule.weights, n);
+        const double kappa_gram_leg = gram_kappa(leg_at_nodes, rule.weights, n);
+        const double kappa_b2c_forward = kappa_inf(b2c, c2b, n);
+        const double kappa_l2c_forward = kappa_inf(l2c, c2l, n);
+
+        check(b2c, kappa_gram_bern, bern, card, "bernstein_to_cardinal");
+        check(c2b, kappa_b2c_forward * kappa_gram_bern, card, bern, "cardinal_to_bernstein");
+        check(l2c, kappa_gram_leg, leg, card, "legendre_to_cardinal");
+        check(c2l, kappa_l2c_forward, card, leg, "cardinal_to_legendre");
     }
 }
 
