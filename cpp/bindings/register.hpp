@@ -15,3 +15,6 @@ void register_basis(nanobind::module_& m);
 
 /// Register the `pantr.quad` kernel bindings on `m`.
 void register_quad(nanobind::module_& m);
+
+/// Register the `pantr.change_basis` kernel bindings on `m`.
+void register_change_basis(nanobind::module_& m);

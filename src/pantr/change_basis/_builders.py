@@ -69,28 +69,32 @@ derivation independent of the code it grades. It runs as a test,
 asserted.
 """
 
-import functools
 from collections.abc import Callable, Mapping
-from math import comb
 from types import MappingProxyType
 from typing import Final, NamedTuple
 
 import numpy as np
 import numpy.typing as npt
 
-from ._backend import backend_keyed_cache
-from .basis import (
-    LagrangeVariant,
-    tabulate_bernstein_1d,
-    tabulate_cardinal_bspline_1d,
-    tabulate_legendre_1d,
-)
-from .basis._basis_lagrange import _get_lagrange_points
-from .basis._basis_utils import (
+from .._backend import backend_keyed_cache
+from ..basis import LagrangeVariant
+from ..basis._basis_lagrange import _get_lagrange_points
+from ..basis._basis_utils import (
     _allocate_or_validate_out,
     _validate_float_dtype,
 )
-from .quad import get_gauss_legendre_1d
+from ..quad import get_gauss_legendre_1d
+from ._change_basis_backend import (
+    bernstein_to_cardinal_kernel,
+    bernstein_to_lagrange_kernel,
+    cardinal_dual_legendre_coeffs_kernel,
+    cardinal_to_bernstein_kernel,
+    cardinal_to_legendre_kernel,
+    lagrange_to_bernstein_kernel,
+    legendre_to_cardinal_kernel,
+    monomial_to_bernstein_kernel,
+)
+from ._change_basis_core import _gram_projection
 
 
 class _DegreeLimit(NamedTuple):
@@ -288,7 +292,7 @@ def compute_lagrange_to_bernstein_1d(
     out = _prepare_square_out(degree, dtype, out)
 
     points = _get_lagrange_points(lagrange_variant, degree + 1, dtype)
-    tabulate_bernstein_1d(degree, points, out=out.T)
+    lagrange_to_bernstein_kernel()(degree, points, out)
     return out
 
 
@@ -371,8 +375,8 @@ def compute_bernstein_to_lagrange_1d(
     )
     out = _prepare_square_out(degree, dtype, out)
 
-    forward = compute_lagrange_to_bernstein_1d(degree, lagrange_variant, dtype)
-    out[:] = np.linalg.solve(forward, np.eye(degree + 1, dtype=out.dtype))
+    points = _get_lagrange_points(variant, degree + 1, dtype)
+    bernstein_to_lagrange_kernel()(degree, points, out)
     return out
 
 
@@ -389,63 +393,50 @@ def _compute_change_basis_1D(
 ) -> npt.NDArray[np.float32 | np.float64]:
     """Create a change of basis operator using numerical quadrature.
 
-    This function computes the transformation matrix M that satisfies:
-        old_basis(x) = M @ new_basis(x)
+    Computes the matrix ``M`` with ``old_basis(x) = M @ new_basis(x)``, by solving
+    ``C = G M^T`` with ``G`` the Gram matrix of the new basis and ``C`` the mixed
+    inner-product matrix between the two. Row ``i`` of ``M`` holds the ``i``-th
+    *old* basis function expanded in the *new* basis; the public
+    ``compute_A_to_B_1d`` wrappers document ``M @ [A values] = [B values]`` and so
+    pass ``new_basis_eval=A``, ``old_basis_eval=B``.
 
-    That is, row ``i`` of ``M`` holds the coefficients of the ``i``-th *old* basis
-    function expanded in the *new* basis. Note the direction: the public
-    ``compute_A_to_B_1d`` wrappers document ``M @ [A values] = [B values]`` and
-    therefore pass ``new_basis_eval=A``, ``old_basis_eval=B``.
-
-    The matrix is computed by solving the system C = G M^T where:
-    - G is the Gram matrix of the new basis
-    - C is the mixed inner product matrix between new and old bases
+    **No public builder calls this any more.** Since the C++ port each one calls
+    its own kernel through :mod:`pantr.change_basis._change_basis_backend`, so that
+    an inverse builder inverts a matrix computed on the same side of the boundary
+    rather than composing two backends. This remains because it is a module-level
+    name that was importable from ``pantr.change_basis`` before the package split,
+    and ``CLAUDE.md`` records that a downstream consumer this repository's CI
+    cannot see imports pantr's private symbols. It delegates to the same
+    :func:`~pantr.change_basis._change_basis_core._gram_projection` the Python
+    kernels use, so there is one implementation of the projection rather than two.
 
     Args:
-        new_basis_eval (callable): Function that evaluates the new basis at points.
-        old_basis_eval (callable): Function that evaluates the old basis at points.
-        n_quad_pts (int): Number of quadrature points for numerical integration.
-            Must be positive.
+        new_basis_eval (Callable): Evaluates the new basis at an array of points.
+        old_basis_eval (Callable): Evaluates the old basis at an array of points.
+        n_quad_pts (int): Number of Gauss-Legendre points. Must be positive.
         dtype (npt.DTypeLike): Floating point type for the output matrix.
             Defaults to np.float64.
-        out (npt.NDArray[np.float32 | np.float64] | None): Optional output array
-            where the result will be stored. If None, a new array is allocated.
-            Must have the correct shape and dtype matching the `dtype` parameter
-            if provided. The shape is determined by the number of basis functions
-            in the old and new bases. This follows NumPy's style for output arrays.
-            Defaults to None.
+        out (npt.NDArray[np.float32 | np.float64] | None): Optional output array.
+            Its shape is set by the two bases. Defaults to None.
 
     Returns:
-        npt.NDArray[np.float32 | np.float64]: Change of basis transformation matrix.
-            If `out` was provided, returns the same array.
+        npt.NDArray[np.float32 | np.float64]: The change of basis matrix. If `out`
+            was provided, returns the same array.
 
     Raises:
-        ValueError: If number of quadrature points is not positive, dtype is not float32 or
-            float64, or if `out` is provided and has incorrect shape or dtype.
+        ValueError: If ``n_quad_pts`` is not positive, ``dtype`` is not float32 or
+            float64, or ``out`` has the wrong shape or dtype.
     """
     if n_quad_pts < 1:
         raise ValueError("Number of quadrature points must be positive.")
     _validate_float_dtype(dtype)
 
-    # 1. Get Gauss-Legendre quadrature points and weights for the inner product on [0, 1]
     points, weights = get_gauss_legendre_1d(n_quad_pts, dtype)
-
-    # 2. Pre-evaluate all basis functions at all quadrature points for efficiency
     new_basis = new_basis_eval(points)
     old_basis = old_basis_eval(points)
 
     out = _allocate_or_validate_out(out, (old_basis.shape[1], new_basis.shape[1]), dtype)
-
-    # 3. Compute the Gram matrix G for the new basis B: G_kj = <b_k, b_j>
-    # The inner product <f, g> is approximated by sum(w_m * f(x_m) * g(x_m))
-    weights_diag = np.diag(weights)
-    G = new_basis.T @ weights_diag @ new_basis
-
-    # 4. Compute the mixed inner product matrix C: C_ki = <b_k, a_i>
-    C = new_basis.T @ weights_diag @ old_basis
-
-    # 5. Solve the system C = G M^T for M^T, which means M = (G^-1 C)^T
-    out[:] = np.linalg.solve(G, C).T
+    _gram_projection(new_basis, old_basis, weights, out)
     return out
 
 
@@ -513,13 +504,9 @@ def compute_bernstein_to_cardinal_1d(
     )
     out = _prepare_square_out(degree, dtype, out)
 
-    return _compute_change_basis_1D(
-        new_basis_eval=functools.partial(tabulate_bernstein_1d, degree),
-        old_basis_eval=functools.partial(tabulate_cardinal_bspline_1d, degree),
-        n_quad_pts=degree + 1,
-        dtype=dtype,
-        out=out,
-    )
+    points, weights = get_gauss_legendre_1d(degree + 1, dtype)
+    bernstein_to_cardinal_kernel()(degree, points, weights, out)
+    return out
 
 
 def compute_cardinal_to_bernstein_1d(
@@ -612,8 +599,8 @@ def compute_cardinal_to_bernstein_1d(
     )
     out = _prepare_square_out(degree, dtype, out)
 
-    forward = compute_bernstein_to_cardinal_1d(degree, dtype)
-    out[:] = np.linalg.solve(forward, np.eye(degree + 1, dtype=out.dtype))
+    points, weights = get_gauss_legendre_1d(degree + 1, dtype)
+    cardinal_to_bernstein_kernel()(degree, points, weights, out)
     return out
 
 
@@ -671,13 +658,9 @@ def compute_legendre_to_cardinal_1d(
         raise ValueError("Degree must be non-negative")
     out = _prepare_square_out(degree, dtype, out)
 
-    return _compute_change_basis_1D(
-        new_basis_eval=functools.partial(tabulate_legendre_1d, degree),
-        old_basis_eval=functools.partial(tabulate_cardinal_bspline_1d, degree),
-        n_quad_pts=degree + 1,
-        dtype=dtype,
-        out=out,
-    )
+    points, weights = get_gauss_legendre_1d(degree + 1, dtype)
+    legendre_to_cardinal_kernel()(degree, points, weights, out)
+    return out
 
 
 def compute_cardinal_to_legendre_1d(
@@ -757,8 +740,8 @@ def compute_cardinal_to_legendre_1d(
     )
     out = _prepare_square_out(degree, dtype, out)
 
-    forward = compute_legendre_to_cardinal_1d(degree, dtype)
-    out[:] = np.linalg.solve(forward, np.eye(degree + 1, dtype=out.dtype))
+    points, weights = get_gauss_legendre_1d(degree + 1, dtype)
+    cardinal_to_legendre_kernel()(degree, points, weights, out)
     return out
 
 
@@ -841,7 +824,8 @@ def compute_cardinal_dual_legendre_coeffs_1d(
     )
     out = _prepare_square_out(degree, dtype, out)
 
-    out[:] = compute_cardinal_to_legendre_1d(degree, dtype).T
+    points, weights = get_gauss_legendre_1d(degree + 1, dtype)
+    cardinal_dual_legendre_coeffs_kernel()(degree, points, weights, out)
     return out
 
 
@@ -886,12 +870,7 @@ def compute_monomial_to_bernstein_1d(
     if degree < 0:
         raise ValueError("Degree must be non-negative")
     out = _prepare_square_out(degree, dtype, out)
-    out[:] = 0
-
-    for i in range(degree + 1):
-        for j in range(i + 1):
-            out[i, j] = comb(i, j) / comb(degree, j)
-
+    monomial_to_bernstein_kernel()(degree, out)
     return out
 
 

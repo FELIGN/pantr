@@ -9,7 +9,9 @@
 #include <span>
 #include <string>
 
+#include "pantr/basis/bernstein.hpp"
 #include "pantr/basis/cardinal_bspline.hpp"
+#include "pantr/basis/legendre.hpp"
 #include "pantr/core/mdspan.hpp"
 #include "register.hpp"
 
@@ -55,7 +57,12 @@ using out_matrix = nb::ndarray<T, nb::ndim<2>, nb::c_contig, nb::device::cpu>;
 ///
 /// The cost is three integer comparisons in front of an
 /// `O(points.size() * degree^2)` kernel.
-template <class T>
+///
+/// The kernel is a template parameter rather than a runtime argument so that the
+/// three tabulations share this body without sharing a dispatch: each `m.def`
+/// below instantiates its own copy, and adding a fourth basis cannot accidentally
+/// route to the wrong one.
+template <class T, void (*Kernel)(int, std::span<const T>, pantr::span2d<T>)>
 void tabulate(unsigned degree, const_points<T> points, out_matrix<T> out) {
     constexpr unsigned max_degree = static_cast<unsigned>(std::numeric_limits<int>::max());
     if (degree > max_degree) {
@@ -82,7 +89,7 @@ void tabulate(unsigned degree, const_points<T> points, out_matrix<T> out) {
     // The kernel touches no Python object, so the GIL buys nothing while it
     // runs. Releasing it is what lets a caller thread at the Python level.
     const nb::gil_scoped_release release;
-    pantr::tabulate_cardinal_bspline_1d<T>(static_cast<int>(degree), pts, view);
+    Kernel(static_cast<int>(degree), pts, view);
 }
 
 }  // namespace
@@ -113,8 +120,24 @@ void register_basis(nb::module_& m) {
     // binding, but the convention has to be uniform before `quad.cpp`'s
     // two-output kernels are bound, where a positional call silently accepts
     // `out_nodes` and `out_weights` swapped.
-    m.def("tabulate_cardinal_bspline_1d", &tabulate<double>, nb::arg("degree"),
-          nb::arg("points").noconvert(), nb::kw_only(), nb::arg("out").noconvert());
-    m.def("tabulate_cardinal_bspline_1d", &tabulate<float>, nb::arg("degree"),
-          nb::arg("points").noconvert(), nb::kw_only(), nb::arg("out").noconvert());
+    //
+    // The Bernstein and Legendre tabulations were added for the change-of-basis
+    // builders, which evaluate one or both of them before every Gram solve. They
+    // are bound here rather than in change_basis.cpp because they are
+    // `pantr.basis` kernels and the split follows the Python package, not the
+    // consumer.
+    const auto bind = [&m](const char* name, auto f64, auto f32) {
+        m.def(name, f64, nb::arg("degree"), nb::arg("points").noconvert(), nb::kw_only(),
+              nb::arg("out").noconvert());
+        m.def(name, f32, nb::arg("degree"), nb::arg("points").noconvert(), nb::kw_only(),
+              nb::arg("out").noconvert());
+    };
+
+    bind("tabulate_cardinal_bspline_1d",
+         &tabulate<double, &pantr::tabulate_cardinal_bspline_1d<double>>,
+         &tabulate<float, &pantr::tabulate_cardinal_bspline_1d<float>>);
+    bind("tabulate_bernstein_1d", &tabulate<double, &pantr::tabulate_bernstein_1d<double>>,
+         &tabulate<float, &pantr::tabulate_bernstein_1d<float>>);
+    bind("tabulate_legendre_1d", &tabulate<double, &pantr::tabulate_legendre_1d<double>>,
+         &tabulate<float, &pantr::tabulate_legendre_1d<float>>);
 }

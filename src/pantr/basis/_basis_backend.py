@@ -24,13 +24,18 @@ keeps it that way.
 from __future__ import annotations
 
 from collections.abc import Callable
-from typing import NamedTuple
+from typing import Final, NamedTuple
 
 import numpy as np
 import numpy.typing as npt
 
 from .._backend import Backend, active_backend, available_backends
-from ._basis_core import _tabulate_cardinal_Bspline_basis_1D_core
+from ._basis_core import (
+    _tabulate_Bernstein_basis_1D_core,
+    _tabulate_Bernstein_basis_1D_serial_core,
+    _tabulate_cardinal_Bspline_basis_1D_core,
+    _tabulate_Legendre_basis_1D_core,
+)
 
 _BasisCoreFunc = Callable[
     [np.int32, npt.NDArray[np.float32 | np.float64], npt.NDArray[np.float32 | np.float64]],
@@ -140,3 +145,122 @@ def cardinal_bspline_core(backend: Backend | None = None) -> CoreKernels:
     if chosen not in available_backends():
         raise RuntimeError(f"the {chosen.name} backend is not available in this installation")
     return CoreKernels(parallel=_cpp_cardinal_bspline_core)
+
+
+def _cpp_tabulation_core(binding_name: str) -> _BasisCoreFunc:
+    """Build an adapter from a binding name to the :data:`_BasisCoreFunc` signature.
+
+    The three tabulations share one adapter body because they share one contract:
+    same arguments, same output shape, same absorption of a non-contiguous ``out``.
+    Generating them keeps a single copy of that contract; three near-identical
+    functions is how one of them silently stops absorbing a strided ``out``.
+
+    Args:
+        binding_name (str): Attribute of :mod:`pantr._pantr_cpp` to call.
+
+    Returns:
+        _BasisCoreFunc: The adapter, callable as ``(n, t, out) -> None``.
+    """
+
+    def adapter(
+        n: np.int32,
+        t: npt.NDArray[np.float32 | np.float64],
+        out: npt.NDArray[np.float32 | np.float64],
+    ) -> None:
+        """Tabulate through the C++ binding, absorbing a non-contiguous ``out``.
+
+        Args:
+            n (np.int32): Degree of the basis. Assumed non-negative.
+            t (npt.NDArray[np.float32 | np.float64]): 1D evaluation points.
+            out (npt.NDArray[np.float32 | np.float64]): Output of shape
+                ``(t.size, n + 1)`` and matching dtype. Need not be contiguous.
+
+        Note:
+            No input validation is performed. The contract is
+            :func:`_cpp_cardinal_bspline_core`'s, in full, including why a
+            non-contiguous ``out`` is absorbed rather than refused.
+        """
+        from pantr import _pantr_cpp  # noqa: PLC0415  (resolved against the .pyi stub)
+
+        kernel = getattr(_pantr_cpp, binding_name)
+        points = np.ascontiguousarray(t)
+        if out.flags["C_CONTIGUOUS"]:
+            kernel(int(n), points, out=out)
+            return
+
+        buffer = np.empty_like(out, order="C")
+        kernel(int(n), points, out=buffer)
+        out[...] = buffer
+
+    return adapter
+
+
+_cpp_bernstein_core: Final[_BasisCoreFunc] = _cpp_tabulation_core("tabulate_bernstein_1d")
+"""The Bernstein tabulation of the C++ backend."""
+
+_cpp_legendre_core: Final[_BasisCoreFunc] = _cpp_tabulation_core("tabulate_legendre_1d")
+"""The Legendre tabulation of the C++ backend."""
+
+
+def bernstein_core(backend: Backend | None = None) -> CoreKernels:
+    """Return the Bernstein tabulation kernels of the requested backend.
+
+    **This is the tabulation :class:`CoreKernels` was shaped for.** That class's
+    docstring named Bernstein as the one 1D basis carrying a serial twin and as
+    the obvious next port, and so it is: the Python backend returns both kernels
+    and :func:`pantr.basis._basis_1D._tabulate_basis_1D_impl_helper` picks between
+    them per call on ``_PARALLEL_MIN_NUM_PTS``.
+
+    The C++ backend returns no twin, and that is not an omission. Its kernel runs
+    on the calling thread at every batch size, so there is no parallel launch to
+    avoid below a threshold and nothing for a second entry to select.
+
+    Args:
+        backend (Backend | None): The backend to use. ``None`` means the backend
+            currently in effect, per :func:`pantr._backend.active_backend`.
+            Defaults to None.
+
+    Returns:
+        CoreKernels: The kernels, each callable as ``(n, t, out) -> None``.
+
+    Raises:
+        RuntimeError: If ``backend`` is given and is not available.
+    """
+    chosen = active_backend() if backend is None else backend
+
+    if chosen is Backend.PYTHON:
+        return CoreKernels(
+            parallel=_tabulate_Bernstein_basis_1D_core,
+            serial=_tabulate_Bernstein_basis_1D_serial_core,
+        )
+
+    if chosen not in available_backends():
+        raise RuntimeError(f"the {chosen.name} backend is not available in this installation")
+    return CoreKernels(parallel=_cpp_bernstein_core)
+
+
+def legendre_core(backend: Backend | None = None) -> CoreKernels:
+    """Return the Legendre tabulation kernels of the requested backend.
+
+    Neither backend carries a serial twin, for the reasons
+    :func:`cardinal_bspline_core` gives.
+
+    Args:
+        backend (Backend | None): The backend to use. ``None`` means the backend
+            currently in effect, per :func:`pantr._backend.active_backend`.
+            Defaults to None.
+
+    Returns:
+        CoreKernels: The kernels, each callable as ``(n, t, out) -> None``.
+
+    Raises:
+        RuntimeError: If ``backend`` is given and is not available.
+    """
+    chosen = active_backend() if backend is None else backend
+
+    if chosen is Backend.PYTHON:
+        return CoreKernels(parallel=_tabulate_Legendre_basis_1D_core)
+
+    if chosen not in available_backends():
+        raise RuntimeError(f"the {chosen.name} backend is not available in this installation")
+    return CoreKernels(parallel=_cpp_legendre_core)
