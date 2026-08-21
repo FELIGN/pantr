@@ -16,7 +16,7 @@ from typing import TYPE_CHECKING
 import numpy as np
 
 from .._array_utils import _flatten_along_axis, _unflatten_along_axis
-from ._bezier_backend import restrict_core
+from ._bezier_backend import restrict_kernel
 
 if TYPE_CHECKING:
     from . import Bezier
@@ -49,7 +49,7 @@ def _restrict_bezier(
 
     ctrl = bezier.control_points
     any_restricted = False
-    restrict = restrict_core()
+    restrict = restrict_kernel()
 
     for i, bounds in enumerate(bounds_per_dim):
         if bounds is None:

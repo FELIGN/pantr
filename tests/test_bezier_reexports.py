@@ -69,12 +69,12 @@ defines them is still where they live, and a test that imports one directly, as
 _CATALOGUE = (
     "DegreeKernels",
     "degree_kernels",
-    "evaluate_core",
-    "evaluate_deriv_core",
-    "product_core",
-    "restrict_core",
-    "slice_core",
-    "split_core",
+    "evaluate_kernel",
+    "evaluate_deriv_kernel",
+    "product_kernel",
+    "restrict_kernel",
+    "slice_kernel",
+    "split_kernel",
 )
 """The catalogue's accessors, added by this port."""
 
