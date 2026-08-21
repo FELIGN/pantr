@@ -40,8 +40,10 @@ under a coordinate map, and comparing the two arrays by their maxima cannot see 
 difference. Its last section now answers whether the harness generalized (yes in vocabulary,
 no in meaning) instead of deferring it. `design/build_findings.md`, written by Pablo, is
 where both PRs' build findings live consolidated. `design/cross_backend_types.md` settles that **no type crosses the
-boundary** (types are Python-owned, only arrays and scalars cross) and that `dtype` is an
-output format rather than a computation precision. `design/quadrature_algorithms.md` records
+boundary** (types are Python-owned, only arrays and scalars cross), that `dtype` is an output
+format rather than a computation precision, and, since #343, **the two catalogue rules**: a
+record only when the consumer needs more than one kernel at once, and a catalogue entry that
+mirrors its module's public surface. `design/quadrature_algorithms.md` records
 why Gauss-Legendre is Newton rather than Golub-Welsch, and why Eigen was declined there.
 
 **PR 2 refuted its own brief's premise, and that is the pattern to expect.** The brief assumed

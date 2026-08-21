@@ -1,6 +1,6 @@
 ---
 name: active-task
-description: The pantr C++ port after both PRs merged, the four follow-ups now filed, and the one piece of work still waiting
+description: The pantr C++ port with both module PRs and two follow-up PRs merged; nothing in flight, three tickets open
 metadata:
   node_type: memory
   type: project
@@ -22,8 +22,9 @@ restores them.
 regression from #337: **#338** `PointsLattice` neither copies nor freezes its arrays while
 `QuadratureRule` in the same package does both; **#339** the basis parity tests assume a
 compiled kernel and fail under `NUMBA_DISABLE_JIT=1`, which is what breaks `make coverage`
-with the extension present; **#340** `ci_local.sh`'s split-mode probe shares the persistent
-build dir, one cause behind both the wrong-nanobind resolution and the non-idempotency;
+with the extension present; **#340, now CLOSED and fixed by #342,** `ci_local.sh`'s
+split-mode probe shares the persistent build dir, one cause behind both the wrong-nanobind
+resolution and the non-idempotency;
 **#341** an enhancement, not a bug, to keep tanh-sinh's endpoint distance.
 
 Two corrections to what was believed before they were filed, both found by re-checking rather
@@ -33,9 +34,18 @@ digits, so it was filed as an enhancement. And the proof that #339 predates the 
 **not** work by running the old test file unchanged, which fails on API drift instead; it
 needs the mechanical `Backend.NUMBA` to `Backend.PYTHON` rename applied first.
 
-**One piece of work waiting**: the `QuadKernels` redesign, where the record's stated
-justification is exercised by no call site and the catalogue's signature convention is
-unwritten and inconsistent between the two ports that exist.
+**Nothing is waiting.** The `QuadKernels` redesign landed as #343: quad publishes one
+accessor per kernel over a single `_select`, basis keeps its record because there the record
+answers a real need, and **both catalogue rules are now written in
+`design/cross_backend_types.md`** for the three ports that follow. The record's stated
+justification turned out to be false rather than merely unexercised, and the refutation is
+recorded in the module so it is not made again: every rule kernel returns its `(nodes,
+weights)` pair from one call, so the signature already forbade the cross-backend mix the
+record claimed to prevent.
+
+One question was deliberately left open, as a non-goal of #343: whether `lambert_w_kernel`
+belongs in the catalogue at all, given that nothing outside the tests calls it. That is about
+which kernels the catalogue holds, not about its shape.
 
 **The backend cache-keying fix is NOT waiting, contrary to what was planned.** It was to be
 its own PR and it shipped inside #337 instead, as commit `b5c562b`. The merged version is
