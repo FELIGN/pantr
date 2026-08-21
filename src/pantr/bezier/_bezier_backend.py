@@ -22,7 +22,12 @@ would let a scoped switch on another thread land between the two halves of a
 round trip, and the two halves would then be computed by different
 implementations. :class:`DegreeKernels` makes that unsayable.
 
-The other five call sites use exactly one kernel each, so they get one callable.
+The other six call sites use exactly one kernel each, so they get one callable.
+
+The accessors are named ``*_kernel`` rather than ``*_core``, following
+:mod:`pantr.quad._quad_backend` and :mod:`pantr.change_basis._change_basis_backend`.
+:mod:`pantr.basis._basis_backend` uses ``*_core``, and it is the oldest of the four;
+the two written since converged on ``_kernel`` and this is the third to do so.
 
 What crosses the boundary
 -------------------------
@@ -41,8 +46,8 @@ that do not still hand Layer 2 an array to fill before wrapping it in a
 :class:`~pantr.bezier.Bezier`.
 
 - :class:`DegreeKernels`: the elevation and reduction-apply kernels of one backend.
-- :func:`evaluate_core`, :func:`evaluate_deriv_core`, :func:`slice_core`,
-  :func:`split_core`, :func:`restrict_core`, :func:`product_core`,
+- :func:`evaluate_kernel`, :func:`evaluate_deriv_kernel`, :func:`slice_kernel`,
+  :func:`split_kernel`, :func:`restrict_kernel`, :func:`product_kernel`,
   :func:`degree_kernels`: the accessors.
 """
 
@@ -369,7 +374,7 @@ _CPP_PRODUCT: Final[_ProductFunc] = _cpp_product
 """The Bernstein product of the C++ backend."""
 
 
-def evaluate_core(backend: Backend | None = None) -> _EvaluateFunc:
+def evaluate_kernel(backend: Backend | None = None) -> _EvaluateFunc:
     """Return the fused evaluation kernel of the requested backend.
 
     Args:
@@ -385,7 +390,7 @@ def evaluate_core(backend: Backend | None = None) -> _EvaluateFunc:
     return _select(backend, _evaluate_bezier_1d_core, _CPP_EVALUATE)
 
 
-def evaluate_deriv_core(backend: Backend | None = None) -> _EvaluateDerivFunc:
+def evaluate_deriv_kernel(backend: Backend | None = None) -> _EvaluateDerivFunc:
     """Return the derivative-evaluation kernel of the requested backend.
 
     Args:
@@ -421,7 +426,7 @@ def degree_kernels(backend: Backend | None = None) -> DegreeKernels:
     return _select(backend, _PYTHON_DEGREE_KERNELS, _CPP_DEGREE_KERNELS)
 
 
-def slice_core(backend: Backend | None = None) -> _SliceFunc:
+def slice_kernel(backend: Backend | None = None) -> _SliceFunc:
     """Return the single-parameter de Casteljau kernel of the requested backend.
 
     Args:
@@ -437,7 +442,7 @@ def slice_core(backend: Backend | None = None) -> _SliceFunc:
     return _select(backend, _slice_bezier_1d_core, _CPP_SLICE)
 
 
-def split_core(backend: Backend | None = None) -> _SplitFunc:
+def split_kernel(backend: Backend | None = None) -> _SplitFunc:
     """Return the split kernel of the requested backend.
 
     Args:
@@ -453,7 +458,7 @@ def split_core(backend: Backend | None = None) -> _SplitFunc:
     return _select(backend, _split_bezier_1d_core, _CPP_SPLIT)
 
 
-def restrict_core(backend: Backend | None = None) -> _RestrictFunc:
+def restrict_kernel(backend: Backend | None = None) -> _RestrictFunc:
     """Return the restriction kernel of the requested backend.
 
     Args:
@@ -469,7 +474,7 @@ def restrict_core(backend: Backend | None = None) -> _RestrictFunc:
     return _select(backend, _restrict_bezier_1d_core, _CPP_RESTRICT)
 
 
-def product_core(backend: Backend | None = None) -> _ProductFunc:
+def product_kernel(backend: Backend | None = None) -> _ProductFunc:
     """Return the Bernstein product kernel of the requested backend.
 
     Args:
