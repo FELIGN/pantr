@@ -32,29 +32,71 @@ bases at the quadrature nodes, form ``G = B^T W B`` and ``C = B^T W A``, and sol
 contribute nothing. The other two steps do:
 
 1. **The products.** numpy contracts them with a BLAS ``gemm``, Eigen with its own
-   blocked product. Both sum the same ``n_quad`` terms in different orders, so each
-   perturbs ``G`` and ``C`` by a relative ``n u`` (Higham, *Accuracy and Stability
-   of Numerical Algorithms*, 2nd ed., SIAM 2002, §3.1). The ``W`` factor
-   contributes nothing: multiplying by a diagonal adds only exact zeros to a dot
-   product.
+   blocked product, summing the same ``n_quad`` terms in different orders. There
+   are **two** of them, ``G`` and ``C``, and **both** are amplified by
+   ``kappa_inf`` in the forward error, since a perturbation of the right-hand side
+   enters with the same condition number as one of the matrix. Each costs
+   ``gamma_{n+1}`` (Higham, *Accuracy and Stability of Numerical Algorithms*,
+   2nd ed., SIAM 2002, §3.1; blocking only tightens this, per pp. 62-64).
+
+   The relative size of the perturbation is **not** ``n u`` for every basis, and
+   this is the step that a first version of this file got wrong. Write
+
+       c = || |B|^T W |B| ||_inf / || B^T W B ||_inf
+
+   for the cancellation factor of a Gram matrix. For a **non-negative** basis --
+   Bernstein and every Lagrange family here -- nothing cancels and ``c = 1``
+   exactly. For the **orthonormal Legendre** basis the Gram is the identity by
+   exact quadrature, so every off-diagonal zero is a *cancelled* sum and ``c``
+   grows like ``0.88 n`` (measured 7.95 at degree 8, 18.34 at 20). Higham states
+   the general fact next to the equation cited above, p. 63: high relative accuracy
+   is not guaranteed when ``|x^T y|`` is much smaller than ``|x|^T |y|``. Since
+   ``kappa_inf`` is 1 for that basis, nothing else absorbs it, so ``c`` is computed
+   per builder below rather than assumed.
+
+   The ``W`` factor contributes no *summation* error -- multiplying by a diagonal
+   adds only exact zeros to a dot product -- but it does cost one rounding per
+   entry, which the count above carries.
 
 2. **The solve.** ``numpy.linalg.solve`` is LAPACK ``gesv`` and the port uses
    ``Eigen::PartialPivLU``. Both are LU with partial pivoting and both are backward
-   stable, so each computed solution satisfies ``(A + dA) x = b`` with
-   ``||dA||_inf <= c rho gamma_n ||A||_inf`` and hence a forward error of order
-   ``kappa_inf(A) gamma_{3n}`` (ibid., Thm 9.4).
+   stable. The applicable result is Higham **Thm 9.4**, which is *componentwise*:
+   ``|dA| <= gamma_{3n} |L||U|``, pivoting-agnostic. It is worth naming which
+   theorem this is not: the *normwise* partial-pivoting form,
+   ``||dA||_inf <= n^2 gamma_{3n} rho_n ||A||_inf``, is **Thm 9.5**, and read
+   literally it would put an ``n^2`` in front of everything below. This file used
+   to cite 9.4 and quote 9.5's shape without its ``n^2``; the bound it produced is
+   still sound, but by the componentwise route, and that route needs its own
+   allowance.
 
-Adding the two and writing ``eps = 2 u``, one backend's relative error is at most
-about ``4 n kappa_inf rho u``, i.e. ``2 n kappa_inf rho eps``. The harness doubles
-it, since neither side is the exact answer.
+   The allowance the componentwise route needs is **not** the classical growth
+   factor ``rho_n = max|U|/max|A|`` but
 
-**The constant used below is 32, and ``rho`` is why.** Partial pivoting bounds the
-growth factor only by ``2**(n-1)``, which is worthless here, and in practice it is
-a small number for these matrices. So 32 folds in an allowance of ``rho <= 8`` on
-top of the ``4 n kappa eps``, and that allowance is **argued, not proved**: it is
-the one place in this file where a constant is not derived. What is measured is
-the margin, and `test_the_bound_is_approached_but_not_by_orders_of_magnitude`
-reports it so a future reader can see whether 8 was generous or lucky.
+       R = || |L| |U| ||_inf / ||A||_inf
+
+   which is what Thm 9.4 literally multiplies, and which can exceed ``rho_n`` by up
+   to ``n``.
+
+Adding the two and writing ``eps = 2 u``, the two-sided relative bound is
+
+    (c_G + c_C + 3 R) * n * kappa_inf * eps
+
+with ``c_C = 1`` always (the mixed matrix pairs the new basis against a
+non-negative one) and ``c_G`` as above.
+
+**``R`` is measured, not assumed, and that is new.** Over every matrix these
+builders feed a solve -- Bernstein Gram, Legendre Gram, Legendre-to-cardinal,
+Lagrange-to-Bernstein in all five node families -- in exact rational arithmetic
+across every degree in every solvability domain: ``R <= 3.73`` and the classical
+``rho_n`` is exactly ``1.000``. An independent sweep of 1508 matrices out to degree
+200 through Eigen's own ``matrixLU()`` agrees, and finds ``R`` crossing 8 only near
+degree 160. The allowance used below is **8**, so the margin is 2.1x in domain.
+
+Keeping 8 rather than tightening to 4 is deliberate and was quantified: halving it
+buys **one degree** on three of ten (builder, dtype) pairs, because ``kappa_inf``
+grows geometrically and is what limits the parity domain. What was worth fixing was
+not the size of the allowance but the two errors beside it -- the missing second
+product, and ``c_G``.
 
 Which ``kappa``, per builder
 ----------------------------
@@ -105,14 +147,14 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from decimal import Decimal
-from typing import Final
+from typing import Final, NamedTuple
 
 import numpy as np
 import numpy.typing as npt
 import pytest
 
 from pantr._backend import Backend, use_backend
-from pantr.basis import LagrangeVariant
+from pantr.basis import LagrangeVariant, tabulate_bernstein_1d, tabulate_legendre_1d
 from pantr.basis._basis_lagrange import _get_lagrange_points
 from pantr.change_basis import (
     compute_bernstein_to_cardinal_1d,
@@ -124,6 +166,7 @@ from pantr.change_basis import (
     compute_legendre_to_cardinal_1d,
     compute_monomial_to_bernstein_1d,
 )
+from pantr.quad import get_gauss_legendre_1d
 from tests._parity_harness import (
     Roundings,
     assert_parity,
@@ -139,19 +182,56 @@ from tests.test_change_basis_domain import (
     _legendre_to_cardinal_exact,
 )
 
-_GROWTH_ALLOWANCE: Final = 8
-"""Allowance for the LU growth factor ``rho``; see this module's docstring.
+_LU_ALLOWANCE: Final = 8
+"""Allowance for ``R = || |L||U| ||_inf / ||A||_inf`` in Higham Thm 9.4.
 
-The one constant here that is argued rather than derived. Partial pivoting bounds
-``rho`` only by ``2**(n-1)``, which no test could use, and the measured margin is
-reported by :func:`test_the_bound_is_approached_but_not_by_orders_of_magnitude`.
+**Measured, not argued.** Exact rational arithmetic over every matrix these
+builders factor, across every solvability domain, gives ``R <= 3.73``, with the
+classical growth factor ``rho_n`` exactly ``1.000``; an independent sweep of 1508
+matrices to degree 200 through Eigen's own ``matrixLU()`` agrees and finds ``R``
+crossing 8 only near degree 160. So the margin is 2.1x in domain, and the allowance
+stops covering anything past degree 160 -- which no builder here reaches, and which
+is the caveat to carry if one ever does.
+
+Deliberately not tightened to 4: measured, that buys one degree on three of ten
+(builder, dtype) pairs, because ``kappa_inf`` grows geometrically and is what
+actually limits the parity domain.
 """
 
-_ROUNDINGS_PER_BACKEND: Final = 4
-"""``n u`` from the two products plus ``3 n u`` from the solve; see the docstring."""
+_MIXED_CANCELLATION: Final = 1.0
+"""``c_C``, the cancellation factor of the mixed matrix ``C = B_new^T W B_old``.
 
-_CONSTANT: Final = _GROWTH_ALLOWANCE * _ROUNDINGS_PER_BACKEND
-"""The 32 of ``32 n kappa_inf eps``."""
+Exactly one: ``B_old`` is a cardinal B-spline or Bernstein basis, both non-negative
+on ``[0, 1]``, so no entry of the contraction cancels against another. Unlike
+``c_G`` this does not need computing per builder.
+"""
+
+
+def _gram_cancellation(
+    new_basis: npt.NDArray[np.float64], weights: npt.NDArray[np.float64]
+) -> float:
+    """Compute ``c_G``, the Gram matrix's cancellation factor.
+
+    ``|| |B|^T W |B| ||_inf / || B^T W B ||_inf``. One for a non-negative basis,
+    where nothing cancels; of order ``0.88 n`` for the orthonormal Legendre basis,
+    whose Gram is the identity precisely because its off-diagonal sums cancel. See
+    this module's docstring for why that factor is not absorbed elsewhere.
+
+    Args:
+        new_basis (npt.NDArray[np.float64]): The new basis at the quadrature nodes,
+            shape ``(n_quad, n_new)``.
+        weights (npt.NDArray[np.float64]): The quadrature weights.
+
+    Returns:
+        float: The cancellation factor, at least one.
+    """
+    scaled = new_basis.T * weights
+    gram = scaled @ new_basis
+    magnitude = np.abs(new_basis).T * np.abs(weights) @ np.abs(new_basis)
+    denominator = float(np.abs(gram).sum(axis=1).max())
+    if denominator == 0.0:
+        return 1.0
+    return max(1.0, float(np.abs(magnitude).sum(axis=1).max()) / denominator)
 
 
 def _kappa_for_bernstein_to_cardinal(degree: int) -> Decimal:
@@ -220,15 +300,58 @@ def _kappa_for_bernstein_to_lagrange(degree: int) -> Decimal:
 _Builder = Callable[..., npt.NDArray[np.float32 | np.float64]]
 """A public change-of-basis builder, called as ``(degree, dtype)``."""
 
+
+class _SolvingBuilder(NamedTuple):
+    """One builder whose parity bound is a condition number, and what that bound needs.
+
+    A record rather than a tuple because four parallel fields in a parametrize list
+    is exactly the shape the project's style rules send to a named struct, and
+    because two of the four are only meaningful together.
+
+    Attributes:
+        label (str): The builder's short name, for failure messages.
+        builder (_Builder): The public function, called as ``(degree, dtype=...)``.
+        kappa_of (Callable[[int], Decimal]): Its exact condition number per degree.
+        basis_name (str): The basis its Gram projection uses, for ``c_G``:
+            ``"bernstein"``, ``"legendre"``, or ``"none"``.
+    """
+
+    label: str
+    builder: _Builder
+    kappa_of: Callable[[int], Decimal]
+    basis_name: str
+
+
 _SOLVING_BUILDERS: Final = (
-    ("bernstein_to_cardinal", compute_bernstein_to_cardinal_1d, _kappa_for_bernstein_to_cardinal),
-    ("cardinal_to_bernstein", compute_cardinal_to_bernstein_1d, _kappa_for_cardinal_to_bernstein),
-    ("legendre_to_cardinal", compute_legendre_to_cardinal_1d, _kappa_for_legendre_to_cardinal),
-    ("cardinal_to_legendre", compute_cardinal_to_legendre_1d, _kappa_for_cardinal_to_legendre),
-    (
+    _SolvingBuilder(
+        "bernstein_to_cardinal",
+        compute_bernstein_to_cardinal_1d,
+        _kappa_for_bernstein_to_cardinal,
+        "bernstein",
+    ),
+    _SolvingBuilder(
+        "cardinal_to_bernstein",
+        compute_cardinal_to_bernstein_1d,
+        _kappa_for_cardinal_to_bernstein,
+        "bernstein",
+    ),
+    _SolvingBuilder(
+        "legendre_to_cardinal",
+        compute_legendre_to_cardinal_1d,
+        _kappa_for_legendre_to_cardinal,
+        "legendre",
+    ),
+    _SolvingBuilder(
+        "cardinal_to_legendre",
+        compute_cardinal_to_legendre_1d,
+        _kappa_for_cardinal_to_legendre,
+        "legendre",
+    ),
+    _SolvingBuilder(
         "cardinal_dual_legendre",
         compute_cardinal_dual_legendre_coeffs_1d,
         _kappa_for_cardinal_to_legendre,
+        "legendre",
     ),
 )
 """The five builders whose bound is a condition number, with the kappa each uses.
@@ -238,19 +361,24 @@ degree; it has its own test.
 """
 
 
-def _relative_bound(degree: int, kappa: Decimal, dtype: npt.DTypeLike) -> float:
-    """The relative parity bound ``32 n kappa_inf eps``.
+def _relative_bound(
+    degree: int, kappa: Decimal, dtype: npt.DTypeLike, gram_cancellation: float = 1.0
+) -> float:
+    """The relative parity bound ``(c_G + c_C + 3 R) n kappa_inf eps``.
 
     Args:
         degree (int): Polynomial degree; ``n`` is ``degree + 1``.
         kappa (Decimal): The exact condition number for this builder.
         dtype (npt.DTypeLike): The output dtype.
+        gram_cancellation (float): ``c_G`` for this builder's Gram matrix. One for a
+            non-negative basis. Defaults to 1.0.
 
     Returns:
-        float: The relative bound.
+        float: The two-sided relative bound.
     """
     eps = float(np.finfo(np.dtype(dtype)).eps)
-    return _CONSTANT * (degree + 1) * float(kappa) * eps
+    constant = gram_cancellation + _MIXED_CANCELLATION + 3 * _LU_ALLOWANCE
+    return constant * (degree + 1) * float(kappa) * eps
 
 
 def _node_disagreement(variant: LagrangeVariant, n_pts: int, dtype: npt.DTypeLike) -> float:
@@ -301,11 +429,39 @@ def _amplification_for(relative: float, largest: float, dtype: npt.DTypeLike) ->
     return relative * largest / float(np.finfo(np.dtype(dtype)).eps)
 
 
+def _cancellation_for(new_basis_name: str, degree: int, dtype: npt.DTypeLike) -> float:
+    """``c_G`` for the basis a given builder projects onto, at this degree.
+
+    Computed rather than tabulated, so a non-negative basis returns exactly one by
+    arithmetic instead of by assertion, and the Legendre growth is measured at the
+    degree it is used at.
+
+    Args:
+        new_basis_name (str): ``"bernstein"``, ``"legendre"``, or ``"none"`` for a
+            builder that runs no Gram projection.
+        degree (int): Polynomial degree.
+        dtype (npt.DTypeLike): The dtype the builder was asked for.
+
+    Returns:
+        float: The cancellation factor.
+    """
+    if new_basis_name == "none":
+        return 1.0
+    with use_backend(Backend.PYTHON):
+        points, weights = get_gauss_legendre_1d(degree + 1, dtype)
+        tabulate = tabulate_bernstein_1d if new_basis_name == "bernstein" else tabulate_legendre_1d
+        basis = tabulate(degree, points)
+    return _gram_cancellation(
+        np.asarray(basis, dtype=np.float64), np.asarray(weights, dtype=np.float64)
+    )
+
+
 def _accuracy_domain(
     kappa_of: Callable[[int], Decimal],
     dtype: npt.DTypeLike,
     solvable_to: int,
     first: int = 0,
+    basis_name: str = "none",
 ) -> int:
     """Largest degree at which the parity bound is still below one.
 
@@ -319,6 +475,8 @@ def _accuracy_domain(
         solvable_to (int): The builder's tabulated degree limit for this dtype.
         first (int): Lowest degree to consider. Defaults to 0; the Lagrange pair
             needs 1, since two of its node families are undefined at one point.
+        basis_name (str): Which basis this builder projects onto, for ``c_G``.
+            Defaults to "none".
 
     Returns:
         int: The largest degree with ``32 n kappa_inf eps < 1``, or ``first - 1``
@@ -326,7 +484,8 @@ def _accuracy_domain(
     """
     largest = first - 1
     for degree in range(first, solvable_to + 1):
-        if _relative_bound(degree, kappa_of(degree), dtype) < 1.0:
+        cancellation = _cancellation_for(basis_name, degree, dtype)
+        if _relative_bound(degree, kappa_of(degree), dtype, cancellation) < 1.0:
             largest = degree
         else:
             break
@@ -462,6 +621,21 @@ def test_monomial_to_bernstein_is_bitwise(
 # The six that solve
 # --------------------------------------------------------------------------
 
+_BERNSTEIN_TO_LAGRANGE_SOLVABLE: Final = {
+    LagrangeVariant.EQUISPACES: {"float64": 37, "float32": 17},
+    LagrangeVariant.GAUSS_LEGENDRE: {"float64": 51, "float32": 22},
+    LagrangeVariant.GAUSS_LOBATTO_LEGENDRE: {"float64": 52, "float32": 23},
+    LagrangeVariant.CHEBYSHEV_1ST: {"float64": 52, "float32": 23},
+    LagrangeVariant.CHEBYSHEV_2ND: {"float64": 52, "float32": 23},
+}
+"""Largest degree ``compute_bernstein_to_lagrange_1d`` accepts, per node family.
+
+Read off ``_BERNSTEIN_TO_LAGRANGE_MAX_DEGREE`` in
+:mod:`pantr.change_basis._builders`. One copy, because two tests need it and the
+census below is the one that would silently stop counting if they drifted.
+"""
+
+
 _SOLVABLE_TO: Final = {
     ("bernstein_to_cardinal", "float64"): 26,
     ("bernstein_to_cardinal", "float32"): 12,
@@ -483,13 +657,9 @@ and is capped here at 20 only to bound the test's runtime.
 
 
 @pytest.mark.parametrize("dtype", [np.float64, np.float32])
-@pytest.mark.parametrize(("label", "builder", "kappa_of"), _SOLVING_BUILDERS)
+@pytest.mark.parametrize("entry", _SOLVING_BUILDERS, ids=[e.label for e in _SOLVING_BUILDERS])
 def test_a_solving_builder_agrees_within_its_condition_number(
-    cpp_backend: None,
-    label: str,
-    builder: _Builder,
-    kappa_of: Callable[[int], Decimal],
-    dtype: npt.DTypeLike,
+    cpp_backend: None, entry: _SolvingBuilder, dtype: npt.DTypeLike
 ) -> None:
     """The two backends agree to ``32 n kappa_inf eps``, over the accuracy domain.
 
@@ -499,13 +669,18 @@ def test_a_solving_builder_agrees_within_its_condition_number(
     """
     del cpp_backend
     demand_the_compiled_kernel(dtype)
-    top = _accuracy_domain(kappa_of, dtype, _SOLVABLE_TO[(label, np.dtype(dtype).name)])
+    label, builder, kappa_of, basis_name = entry
+    top = _accuracy_domain(
+        kappa_of, dtype, _SOLVABLE_TO[(label, np.dtype(dtype).name)], basis_name=basis_name
+    )
     assert top >= 0, f"{label}/{np.dtype(dtype).name}: no degree has a usable bound"
 
     for degree in range(top + 1):
         actual, reference = _both_backends(builder, degree, dtype)
         largest = float(np.abs(reference.astype(np.float64)).max(initial=0.0))
-        relative = _relative_bound(degree, kappa_of(degree), dtype)
+        relative = _relative_bound(
+            degree, kappa_of(degree), dtype, _cancellation_for(basis_name, degree, dtype)
+        )
         # The magnitude that turns the relative bound into an absolute one is the
         # array's largest entry, not each entry's own. A solve's forward error is
         # bounded in norm, so an individually tiny entry can still carry an error
@@ -548,13 +723,7 @@ def test_bernstein_to_lagrange_agrees_within_its_condition_number(
     def kappa_of(degree: int) -> Decimal:
         return _kappa_inf(_lagrange_to_bernstein_exact(degree, variant))
 
-    solvable = {
-        LagrangeVariant.EQUISPACES: {"float64": 37, "float32": 17},
-        LagrangeVariant.GAUSS_LEGENDRE: {"float64": 51, "float32": 22},
-        LagrangeVariant.GAUSS_LOBATTO_LEGENDRE: {"float64": 52, "float32": 23},
-        LagrangeVariant.CHEBYSHEV_1ST: {"float64": 52, "float32": 23},
-        LagrangeVariant.CHEBYSHEV_2ND: {"float64": 52, "float32": 23},
-    }[variant][np.dtype(dtype).name]
+    solvable = _BERNSTEIN_TO_LAGRANGE_SOLVABLE[variant][np.dtype(dtype).name]
 
     top = _accuracy_domain(kappa_of, dtype, min(solvable, 20), first=1)
     assert top >= 1, f"{variant.name}/{np.dtype(dtype).name}: no degree has a usable bound"
@@ -597,11 +766,30 @@ def test_the_excluded_degrees_are_named() -> None:
     otherwise records the gap in its own assertion message.
     """
     gaps: list[str] = []
-    for label, _builder, kappa_of in _SOLVING_BUILDERS:
+
+    # The Lagrange pair is not in `_SOLVING_BUILDERS` because it takes a node
+    # family as well as a degree, and it was therefore missing from this census
+    # entirely -- the one builder whose gap nobody was counting.
+    for variant in LagrangeVariant:
+        for dtype in (np.float64, np.float32):
+            name = np.dtype(dtype).name
+            solvable = _BERNSTEIN_TO_LAGRANGE_SOLVABLE[variant][name]
+
+            def kappa_of_variant(degree: int, variant: LagrangeVariant = variant) -> Decimal:
+                return _kappa_inf(_lagrange_to_bernstein_exact(degree, variant))
+
+            top = _accuracy_domain(kappa_of_variant, dtype, solvable, first=1)
+            if top < solvable:
+                gaps.append(
+                    f"bernstein_to_lagrange[{variant.name}]/{name}: parity to {top}, "
+                    f"solvable to {solvable}"
+                )
+
+    for label, _builder, kappa_of, basis_name in _SOLVING_BUILDERS:
         for dtype in (np.float64, np.float32):
             name = np.dtype(dtype).name
             solvable = _SOLVABLE_TO[(label, name)]
-            top = _accuracy_domain(kappa_of, dtype, solvable)
+            top = _accuracy_domain(kappa_of, dtype, solvable, basis_name=basis_name)
             if top < solvable:
                 gaps.append(f"{label}/{name}: parity to {top}, solvable to {solvable}")
 
@@ -631,23 +819,35 @@ def test_the_bound_is_approached_but_not_by_orders_of_magnitude(cpp_backend: Non
     over all perturbation directions, and two implementations of the same algorithm
     do not perturb in the worst one.
 
-    The assertion is global rather than per builder: somewhere in this file's
-    coverage the bound must come within ``1e-4`` of being reached. That threshold
-    sits about 80 times below the measured 7.8e-3, so it is not fitted to the
-    measurement; it is there to fail if the bounds all go vacuous at once, which is
+    The assertion excludes ``legendre_to_cardinal``, and that exclusion is the
+    point rather than a convenience. Its ``kappa`` is the hard-wired constant one,
+    and it also happens to be where the global tightest ratio lands (at degree 2,
+    with ``n = 3``). A gate whose maximum sits there claims to catch a wrong
+    ``kappa`` while never evaluating one, which is the failure this test was
+    written to prevent and was itself committing.
+
+    So the threshold is applied to the builders whose bound actually carries a
+    condition number. It must come within ``1e-4`` of being reached, about 80 times
+    below the measured tightest point among those, so it is not fitted to the
+    measurement; it is there to fail if those bounds go vacuous at once, which is
     what a wrong ``kappa`` or a wrong conversion to absolute would do.
     """
     del cpp_backend
     tightest = 0.0
     where = ""
-    for label, builder, kappa_of in _SOLVING_BUILDERS:
+    tightest_with_kappa = 0.0
+    where_with_kappa = ""
+    for label, builder, kappa_of, basis_name in _SOLVING_BUILDERS:
         for dtype in (np.float64, np.float32):
             name = np.dtype(dtype).name
-            top = _accuracy_domain(kappa_of, dtype, _SOLVABLE_TO[(label, name)])
+            top = _accuracy_domain(
+                kappa_of, dtype, _SOLVABLE_TO[(label, name)], basis_name=basis_name
+            )
             for degree in range(top + 1):
                 actual, reference = _both_backends(builder, degree, dtype)
                 largest = float(np.abs(reference.astype(np.float64)).max(initial=0.0))
-                bound = _relative_bound(degree, kappa_of(degree), dtype) * largest
+                cancellation = _cancellation_for(basis_name, degree, dtype)
+                bound = _relative_bound(degree, kappa_of(degree), dtype, cancellation) * largest
                 observed = float(
                     np.abs(actual.astype(np.float64) - reference.astype(np.float64)).max(
                         initial=0.0
@@ -658,14 +858,19 @@ def test_the_bound_is_approached_but_not_by_orders_of_magnitude(cpp_backend: Non
                 ratio = observed / bound
                 if ratio > tightest:
                     tightest, where = ratio, f"{label}/{name} at degree {degree}"
+                if float(kappa_of(degree)) > 1.0 and ratio > tightest_with_kappa:
+                    tightest_with_kappa = ratio
+                    where_with_kappa = f"{label}/{name} at degree {degree}"
                 assert ratio <= 1.0, (
                     f"{label}/{name} degree {degree}: observed {observed:.3e} against a "
                     f"bound of {bound:.3e}. The parity assertions should have caught this "
                     f"first, so reaching it here means the two disagree about the bound"
                 )
 
-    assert tightest >= 1e-4, (
-        f"the tightest point in this file's whole coverage is {tightest:.3e} of its bound "
-        f"({where}). Every bound here is now loose enough to admit a wrong answer, which is "
-        f"what a mistaken kappa or a mistaken relative-to-absolute conversion looks like"
+    assert tightest_with_kappa >= 1e-4, (
+        f"among the builders whose bound carries a condition number, the tightest point is "
+        f"{tightest_with_kappa:.3e} of its bound ({where_with_kappa}). Every such bound is now "
+        f"loose enough to admit a wrong answer, which is what a mistaken kappa or a mistaken "
+        f"relative-to-absolute conversion looks like. (Global tightest, including the "
+        f"kappa == 1 builder: {tightest:.3e} at {where}.)"
     )
