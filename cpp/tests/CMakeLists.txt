@@ -7,6 +7,7 @@ set(PANTR_TEST_SOURCES
     test_scalar_generic.cpp
     test_bernstein.cpp
     test_legendre.cpp
+    test_change_basis.cpp
     test_quad.cpp)
 
 foreach(_src IN LISTS PANTR_TEST_SOURCES)
