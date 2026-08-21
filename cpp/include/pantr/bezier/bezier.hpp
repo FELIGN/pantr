@@ -8,8 +8,11 @@
 ///
 /// The oracle does not use one width. Reproducing which is which is most of the
 /// work in this file, and getting one wrong is invisible at `float64` and moves
-/// values at `float32`. Measured on the de Casteljau kernel: accumulating in
-/// `float` where the oracle accumulates in `double` moves 125 of 630 values.
+/// values at `float32`. Measured on the de Casteljau kernel at **float32**:
+/// accumulating in `float` where the oracle accumulates in `double` moves 125 of
+/// 630 values. The same count appears further down for a different perturbation at
+/// **float64**; the two are a coincidence of one 630-value grid, not one
+/// measurement quoted twice.
 ///
 ///  1. **`evaluate`, `slice`, `split`, `restrict` accumulate in `double`.** The
 ///     oracle's scalars are Python floats, and numba promotes a `float64` scalar
@@ -63,7 +66,21 @@ namespace pantr {
 
 /// Midpoint at which the evaluation recurrence switches to its mirrored branch.
 ///
-/// Bounds the seed below by `0.5^p`, so it never underflows regardless of degree.
+/// Bounds the seed below by `0.5^p`, which is the largest floor available: the seed
+/// is `min(u, 1-u)^p`, maximised uniquely at one half. Verified by the
+/// underflow-free degree it buys, 1074 against 812 at a threshold of 0.4.
+///
+/// **It does not make the seed underflow-proof, and the oracle's docstring says it
+/// does.** `0.5^p` reaches zero at `p >= 1075` in `float64` and `p >= 150` in
+/// `float32`, with gradual-underflow loss well before either. At `float32` the limit
+/// belongs to the *mirrored* branch specifically, a consequence of the width
+/// asymmetry documented above: this branch forms its seed from `u` at storage width
+/// while the unmirrored one forms it from `1 - u`, which the oracle's literal `1.0`
+/// has already promoted. So the branch that exists to prevent underflow is the one
+/// that underflows first at `float32`, near `p = 127` against `p = 1075`. Faithful
+/// to the oracle and outside any degree pantr reaches; recorded because the sentence
+/// it replaces was wrong.
+///
 /// Mirrors `_bezier_core._MIRROR_THRESHOLD`.
 inline constexpr double kBezierMirrorThreshold = 0.5;
 
@@ -79,6 +96,11 @@ inline constexpr double kBezierMirrorThreshold = 0.5;
 /// \param out Output of shape `(points.size(), rank)`, written in full.
 ///
 /// \note No input validation is performed. This is a Layer 3 kernel.
+///       Two preconditions are load-bearing for memory safety rather than for the
+///       answer: `ctrl` must have at least one row, since the degree is `rows - 1`
+///       widened to `std::size_t` and zero rows become a loop bound of `SIZE_MAX`;
+///       and `out` must have exactly `points.size()` rows and `ctrl.extent(1)`
+///       columns, since nothing here bounds-checks a write.
 ///       For general use call `pantr.bezier.Bezier.evaluate`.
 template <Real T>
 void evaluate_bezier_1d(span2d<const T> ctrl, std::span<const T> points, span2d<T> out) {
@@ -172,6 +194,9 @@ void evaluate_bezier_1d(span2d<const T> ctrl, std::span<const T> points, span2d<
 ///       Unlike its six siblings this kernel computes at `T`'s own width, since
 ///       the oracle allocates every workspace at the point dtype. See the file
 ///       comment.
+///       `ctrl` must have at least one row and `n_deriv` must be non-negative,
+///       both for memory safety: each is widened to `std::size_t` and sizes a
+///       workspace.
 ///       For general use call `pantr.bezier.Bezier.evaluate_derivatives`.
 template <Real T>
 void evaluate_bezier_deriv_1d(span2d<const T> ctrl, std::span<const T> points, int n_deriv,
@@ -403,6 +428,8 @@ void degree_elevate_bezier_1d(int degree, span2d<const T> ctrl, int degree_incre
 /// \param out Output of shape `(n_cols,)`.
 ///
 /// \note No input validation is performed. This is a Layer 3 kernel.
+///       `ctrl` must have at least one row; see `evaluate_bezier_1d`'s note for why
+///       that is a memory-safety precondition rather than a shape convention.
 ///       For general use call `pantr.bezier.Bezier.slice`.
 template <Real T>
 void slice_bezier_1d(span2d<const T> ctrl, accumulator_t<T> value, std::span<T> out) {
@@ -451,6 +478,9 @@ void slice_bezier_1d(span2d<const T> ctrl, accumulator_t<T> value, std::span<T> 
 /// \note No input validation is performed. This is a Layer 3 kernel. Unlike
 ///       `slice_bezier_1d` there are no endpoint shortcuts, matching the oracle:
 ///       a split at 0 or 1 still runs the triangle.
+///       `ctrl` must have at least one row, and `out_left` and `out_right` must not
+///       overlap: each half is written independently, so one buffer passed twice
+///       returns the right half under both names.
 ///       For general use call `pantr.bezier.Bezier.split`.
 template <Real T>
 void split_bezier_1d(span2d<const T> ctrl, accumulator_t<T> value, span2d<T> out_left,
@@ -484,10 +514,23 @@ void split_bezier_1d(span2d<const T> ctrl, accumulator_t<T> value, span2d<T> out
 
 /// Restrict a 1D Bézier to `[lower, upper]`, reparametrized to `[0, 1]`.
 ///
-/// Two de Casteljau passes, ordered so that neither divides by a small number:
-/// if `|upper| >= |lower - 1|` the left pass runs at `upper` and the right at
-/// `lower / upper`, otherwise the right pass runs at `lower` and the left at
-/// `(upper - lower) / (1 - lower)`.
+/// Two de Casteljau passes. If `|upper| >= |lower - 1|` the left pass runs at
+/// `upper` and the right at `lower / upper`, otherwise the right pass runs at
+/// `lower` and the left at `(upper - lower) / (1 - lower)`.
+///
+/// **What the ordering buys is not what the oracle's docstring says.** It reads
+/// "ordered to avoid dividing by a small number", and a small divisor is not itself
+/// a problem, since the division is correctly rounded either way. Measured against
+/// an exact rational reference over fourteen interval shapes including very thin
+/// ones, the chosen ordering ranges from 0.14x to 7x the other's error, in both
+/// directions, all at 0.03 to 1.9 `eps * max|c|`. There is no accuracy story.
+///
+/// What it does buy: for `0 <= lower <= upper <= 1` the divisor is
+/// `max(upper, 1 - lower) >= 1/2`, since `upper < 1/2` forces `1 - lower > 1/2`, so
+/// `tau2` lands in `[0, 1]` with one rounding and the second pass stays a convex
+/// combination. And it keeps the degenerate corners from forming `0/0`:
+/// `lower = upper = 0` and `lower = upper = 1` both return finite values through
+/// this ordering and divide by zero through the other.
 ///
 /// \param ctrl Control points, shape `(degree + 1, n_cols)`.
 /// \param lower Left bound in `[0, 1)`.
@@ -495,6 +538,8 @@ void split_bezier_1d(span2d<const T> ctrl, accumulator_t<T> value, span2d<T> out
 /// \param out Restricted coefficients, shape `(degree + 1, n_cols)`.
 ///
 /// \note No input validation is performed. This is a Layer 3 kernel.
+///       `ctrl` must have at least one row, and `0 <= lower <= upper <= 1`: outside
+///       that the second pass stops being a convex combination.
 ///       For general use call `pantr.bezier.Bezier.restrict`.
 template <Real T>
 void restrict_bezier_1d(span2d<const T> ctrl, accumulator_t<T> lower, accumulator_t<T> upper,
