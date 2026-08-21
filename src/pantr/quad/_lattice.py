@@ -37,9 +37,8 @@ class PointsLattice:
     metadata.
 
     Immutable once constructed: each coordinate array is copied on the way in
-    and the stored copies are read-only, so what
-    :meth:`_validate_pts_per_dir` checked at construction stays true for the
-    object's whole life. :class:`pantr.quad.QuadratureRule` does the same, and
+    and the stored copies are read-only, so what ``_validate_pts_per_dir``
+    checked at construction stays true for the object's whole life. :class:`pantr.quad.QuadratureRule` does the same, and
     for the same reason.
 
     Attributes:
