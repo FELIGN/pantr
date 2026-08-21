@@ -107,9 +107,10 @@ _EVALUATE_WHY = (
     "every operation but the seed is +, -, * or /, evaluated in the oracle's order, "
     "with the running term carried in a register exactly as the oracle carries it. "
     "The seed is pow, which neither C nor IEEE 754 requires to be correctly rounded, "
-    "so this claim is observed rather than derived: measured over 1280384 pairs, the "
-    "platform pow and numba's np.power agree on every argument these degrees form, "
-    "at both widths the two branches seed at. No fused multiply-add on this build"
+    "so this claim is observed rather than derived: over 1280256 pairs, reproducible "
+    "by scripts/measure_bezier_parity.py, the platform powf and numba's np.power "
+    "agree on every argument these degrees form, at both widths the two branches "
+    "seed at. No fused multiply-add on this build"
 )
 
 _BINOMIAL_WHY = (
