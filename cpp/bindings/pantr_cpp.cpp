@@ -62,6 +62,7 @@ NB_MODULE(_pantr_cpp, m) {
 
     register_basis(m);
     register_quad(m);
+    register_change_basis(m);
 
     // Build provenance, so a measurement can name the binary that produced it
     // rather than the source tree it was built from. `fp_contract` is the one

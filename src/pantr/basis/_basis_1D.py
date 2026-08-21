@@ -13,12 +13,14 @@ import numpy as np
 import numpy.typing as npt
 
 from .._numba_compat import wait_for_jit_warmup
-from ._basis_backend import _BasisCoreFunc, cardinal_bspline_core
+from ._basis_backend import (
+    _BasisCoreFunc,
+    bernstein_core,
+    cardinal_bspline_core,
+    legendre_core,
+)
 from ._basis_core import (
     _PARALLEL_MIN_NUM_PTS,
-    _tabulate_Bernstein_basis_1D_core,
-    _tabulate_Bernstein_basis_1D_serial_core,
-    _tabulate_Legendre_basis_1D_core,
 )
 from ._basis_lagrange import _tabulate_lagrange_basis_1D_core
 from ._basis_utils import (
@@ -133,12 +135,14 @@ def _tabulate_Bernstein_basis_1D_impl(
         ... )
         True
     """
+    # Dispatched, exactly as the cardinal B-spline tabulation above is. This is
+    # the one kernel whose two backends differ in SHAPE as well as in speed: the
+    # Python side carries a serial twin and the C++ side is serial throughout, so
+    # the record hands back two entries under PANTR_BACKEND=python and one under
+    # cpp, and the helper below reads whichever it was given.
+    kernels = bernstein_core()
     return _tabulate_basis_1D_impl_helper(
-        n,
-        t,
-        _tabulate_Bernstein_basis_1D_core,
-        out,
-        core_func_serial=_tabulate_Bernstein_basis_1D_serial_core,
+        n, t, kernels.parallel, out, core_func_serial=kernels.serial
     )
 
 
@@ -268,7 +272,10 @@ def _tabulate_Legendre_basis_1D_impl(
         ValueError: If degree is negative, or if `out` is provided and has incorrect
             shape or dtype.
     """
-    return _tabulate_basis_1D_impl_helper(n, t, _tabulate_Legendre_basis_1D_core, out)
+    kernels = legendre_core()
+    return _tabulate_basis_1D_impl_helper(
+        n, t, kernels.parallel, out, core_func_serial=kernels.serial
+    )
 
 
 __all__ = [
