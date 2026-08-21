@@ -494,12 +494,12 @@ def test_compose_is_bitwise(
 
     Driven through :meth:`Bezier.compose` and **not** through
     :meth:`Bezier.multiply`, which is the route a first draft of this test took and
-    which exercises none of the ported code. ``multiply`` goes to
-    ``_bernstein_product_coefficients_nd``, a pure-numpy helper that is not
-    dispatched at all; the scalar 1D product kernel is reached only from
-    ``compose``, and only when the inner map is univariate. The mistake was caught
-    by mutation: reassociating the kernel's accumulation left the ``multiply``
-    version passing.
+    which exercises none of the ported code. For a 1D Bézier ``multiply`` goes to
+    ``_bernstein_product_coefficients`` (and to its ``_nd`` sibling above 1D), both
+    pure-numpy helpers that are not dispatched at all; the scalar 1D product kernel
+    is reached only from ``compose``, and only when the inner map is univariate. The
+    mistake was caught by mutation: reassociating the kernel's accumulation left the
+    ``multiply`` version passing.
 
     A composition runs the kernel many times over -- once per Bernstein basis power
     of the inner map, then again for each tensor term -- so a single case here

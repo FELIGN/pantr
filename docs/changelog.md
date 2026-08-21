@@ -2,9 +2,9 @@
 
 ## Unreleased
 
-The dual-backend prototype on the `proto/cpp` branch. Three module pull requests so far: the
-infrastructure, the `quad` port and the `change_basis` port. The infrastructure landed without a
-changelog entry, so this section covers all of them -- the environment variable it introduced is
+The dual-backend prototype on the `proto/cpp` branch. Four module pull requests so far: the
+infrastructure, the `quad` port, the `change_basis` port and the `bezier` arithmetic port. The
+infrastructure landed without a changelog entry, so this section covers all of them -- the environment variable it introduced is
 user-facing, and the ports change what it affects.
 
 ### Added

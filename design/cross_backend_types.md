@@ -265,13 +265,28 @@ re-elevates the result, inside a single call, so that the round-trip error can b
 against a tolerance. Two kernels, one call, so `degree_kernels()` returns a
 `DegreeKernels(elevate, reduce_apply)` and the other six accessors stay bare callables.
 
-The reason is not tidiness. `active_backend()` reads a `ContextVar`, and `use_backend` scopes a
-switch to a thread or a task, so two separate resolutions inside one call can genuinely see
-different answers. A round trip whose reduction was computed by one implementation and whose
-re-elevation by the other is not a round trip, and the error it reports is not the error of
-anything. `_reduce_along_axis` therefore **takes its kernel as an argument** rather than
-resolving one, which is what lets its two callers differ: `_degree_reduce_bezier` needs only the
-reduction and resolves once, while `_minimize_degree_bezier` resolves the pair.
+**The reason first given for this was wrong, and the correction changes the rule.** The note
+said that `active_backend()` reads a `ContextVar` scoped by `use_backend` to a thread or a task,
+so two resolutions inside one call could see different answers. That inverts the mechanism. A
+`ContextVar` gives each thread its own context and an `asyncio.Task` runs in a **copy** taken at
+creation, so a sibling's `set` can never be observed by another's reads: the property cited as
+the danger is exactly what makes the failure impossible. Measured, 2026-08-21: a sibling thread
+inside `use_backend(CPP)` was observed 0 times in 2000 reads, a sibling task 0 in 2000, and there
+is no `await` or `yield` between the two resolutions to open a same-context path.
+
+So **the rule is not about preventing a divergence.** What resolving once at a Layer 2 entry
+point actually buys is that the backend becomes a property of the call rather than of each
+lookup, that the dependency is stated in a signature instead of read from ambient state, and
+that a kernel invoked in a loop is not re-resolved per iteration -- `Bezier.compose` performs 277
+resolutions in a single call on a 3D map, each a `ContextVar.get()` in front of a kernel measured
+in microseconds.
+
+Stated that way the mechanism generalises and the record does not: `_reduce_along_axis`
+**takes its kernel as an argument** rather than resolving one, which works at any call depth and
+would reach `compose` too, while a record only groups two lookups that happen to be adjacent. So
+read `DegreeKernels` as the convenient shape for two kernels always fetched together, not as the
+thing that enforces anything. Whether the catalogue rule should be restated around entry-point
+resolution rather than around records is an open question this note does not settle.
 
 **The mirroring rule needed a judgement this time, and it went the same way.** Bézier's public
 surface is mixed: `evaluate` and `evaluate_derivatives` take `out`, while `split`, `restrict`,
@@ -290,10 +305,21 @@ fix the oracle's shape before it can mirror it.**
 
 ### A third thing the rules still do not cover
 
-`Bezier.multiply` reaches `_bernstein_product_coefficients_nd`, a pure-numpy helper with no
-kernel and no catalogue entry, while the scalar 1D product kernel it resembles is reached only
-from `compose`. Nothing in the catalogue rules says whether a numpy helper that duplicates a
+`Bezier.multiply` reaches `_bernstein_product_coefficients` for a 1D Bézier and
+`_bernstein_product_coefficients_nd` above that -- both pure-numpy helpers with no kernel and no
+catalogue entry -- while the scalar 1D product kernel they resemble is reached only from
+`compose`. Nothing in the catalogue rules says whether a numpy helper that duplicates a
 dispatched kernel's mathematics should itself be dispatched, be routed through the kernel, or be
-left alone. It is left alone here, deliberately and without an argument that it is right. The
-concrete cost is already visible: a parity test aimed at `multiply` exercises none of the ported
-code, which is how it was noticed.
+left alone.
+
+It is left alone, and unlike an earlier draft of this section that is now an argued position
+rather than an admission of arbitrariness. Routing `multiply` through the kernel would be a
+numerics change, not a refactor: the two 1D implementations differ by about 2 eps because the
+numpy one builds its binomials in the control-point dtype and multiplies by a precomputed
+reciprocal where the kernel builds them in float64 and divides; their domains differ, the numpy
+path staying exact at `p + q = 80` where the kernel is outside its int64 binomial envelope; and
+the helper has a cross-package consumer in `pantr.bspline`. The genuinely open question is the
+other one: of the two 1D products, the dispatched kernel is the less general.
+
+The concrete cost of leaving the rule unstated is already visible: a parity test aimed at
+`multiply` exercised none of the ported code, and only a mutation showed it.
