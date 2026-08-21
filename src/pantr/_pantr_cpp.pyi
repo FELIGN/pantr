@@ -645,3 +645,233 @@ def monomial_to_bernstein_1d(
         ValueError: If ``degree`` is too large to fit a C ``int``, or if ``out`` is
             not the square matrix that degree calls for.
     """
+
+def evaluate_bezier_1d(
+    ctrl: npt.NDArray[np.float32 | np.float64],
+    points: npt.NDArray[np.float32 | np.float64],
+    *,
+    out: npt.NDArray[np.float32 | np.float64],
+) -> None:
+    """Evaluate a 1D Bézier at ``points``, fusing basis and contraction.
+
+    Runs the Bernstein ratio recurrence and contracts each term with the control
+    points in one pass, mirroring about ``u = 1/2`` so the seed cannot underflow
+    at high degree.
+
+    Call :meth:`pantr.bezier.Bezier.evaluate` for the ordinary path, which takes
+    points of any shape and allocates ``out``.
+
+    Args:
+        ctrl (npt.NDArray[np.float32 | np.float64]): Control points of shape
+            ``(degree + 1, rank)``, 2D and C-contiguous.
+        points (npt.NDArray[np.float32 | np.float64]): Evaluation points, 1D and
+            C-contiguous.
+        out (npt.NDArray[np.float32 | np.float64]): Output of shape
+            ``(points.size, rank)``, matching dtype, C-contiguous and writable.
+            Written in full. Keyword-only.
+
+    Raises:
+        TypeError: If any array has the wrong dtype or rank, is not C-contiguous,
+            or if ``out`` is passed positionally.
+        ValueError: If ``out`` is not the shape the other two arguments call for.
+    """
+
+def evaluate_bezier_deriv_1d(
+    ctrl: npt.NDArray[np.float32 | np.float64],
+    points: npt.NDArray[np.float32 | np.float64],
+    n_deriv: int,
+    *,
+    out: npt.NDArray[np.float32 | np.float64],
+) -> None:
+    """Evaluate a 1D Bézier and its derivatives up to order ``n_deriv``.
+
+    Algorithm A2.3 of Piegl & Tiller specialised to Bernstein polynomials.
+
+    Call :meth:`pantr.bezier.Bezier.evaluate_derivatives` for the ordinary path.
+
+    Args:
+        ctrl (npt.NDArray[np.float32 | np.float64]): Control points of shape
+            ``(degree + 1, rank)``, 2D and C-contiguous.
+        points (npt.NDArray[np.float32 | np.float64]): Evaluation points, 1D and
+            C-contiguous.
+        n_deriv (int): Highest derivative order. Must be non-negative and fit a C
+            ``int``.
+        out (npt.NDArray[np.float32 | np.float64]): Output of shape
+            ``(points.size, n_deriv + 1, rank)``, matching dtype, 3D,
+            C-contiguous and writable. Written in full. Keyword-only.
+
+    Raises:
+        TypeError: If any array has the wrong dtype or rank, is not C-contiguous,
+            if ``out`` is passed positionally, or if ``n_deriv`` is negative.
+        ValueError: If ``out`` is not the shape the other arguments call for.
+    """
+
+def degree_elevate_bezier_1d(
+    degree: int,
+    ctrl: npt.NDArray[np.float32 | np.float64],
+    degree_increment: int,
+    *,
+    out: npt.NDArray[np.float32 | np.float64],
+) -> None:
+    """Degree-elevate a single Bézier segment by ``degree_increment``.
+
+    Call :meth:`pantr.bezier.Bezier.elevate_degree` for the ordinary path.
+
+    Args:
+        degree (int): Original degree. Non-negative.
+        ctrl (npt.NDArray[np.float32 | np.float64]): Control points of shape
+            ``(degree + 1, rank)``, 2D and C-contiguous.
+        degree_increment (int): Degrees to add. Non-negative.
+        out (npt.NDArray[np.float32 | np.float64]): Output of shape
+            ``(degree + degree_increment + 1, rank)``, matching dtype,
+            C-contiguous and writable. Written in full. Keyword-only.
+
+    Raises:
+        TypeError: If any array has the wrong dtype or rank, is not C-contiguous,
+            if ``out`` is passed positionally, or if either degree is negative.
+        ValueError: If ``ctrl`` does not have ``degree + 1`` rows, if ``out`` is
+            the wrong shape, or if ``degree + degree_increment`` exceeds the
+            exact-integer binomial envelope of 61.
+    """
+
+def slice_bezier_1d(
+    ctrl: npt.NDArray[np.float32 | np.float64],
+    value: float,
+    *,
+    out: npt.NDArray[np.float32 | np.float64],
+) -> None:
+    """Evaluate a 1D Bézier at a single parameter, per column, by de Casteljau.
+
+    Call :meth:`pantr.bezier.Bezier.slice` for the ordinary path.
+
+    Args:
+        ctrl (npt.NDArray[np.float32 | np.float64]): Control points of shape
+            ``(degree + 1, n_cols)``, 2D and C-contiguous.
+        value (float): Parameter in ``[0, 1]``.
+        out (npt.NDArray[np.float32 | np.float64]): Output of shape
+            ``(n_cols,)``, matching dtype, 1D, C-contiguous and writable.
+            Written in full. Keyword-only.
+
+    Raises:
+        TypeError: If any array has the wrong dtype or rank, is not C-contiguous,
+            or if ``out`` is passed positionally.
+        ValueError: If ``out`` does not have ``ctrl.shape[1]`` entries.
+    """
+
+def split_bezier_1d(
+    ctrl: npt.NDArray[np.float32 | np.float64],
+    value: float,
+    *,
+    out_left: npt.NDArray[np.float32 | np.float64],
+    out_right: npt.NDArray[np.float32 | np.float64],
+) -> None:
+    """Split a 1D Bézier at ``value`` into its two halves.
+
+    The two outputs share a dtype and a shape, so nothing in the type system
+    separates them and a positional call could exchange the halves silently.
+    Both are keyword-only for that reason.
+
+    Call :meth:`pantr.bezier.Bezier.split` for the ordinary path.
+
+    Args:
+        ctrl (npt.NDArray[np.float32 | np.float64]): Control points of shape
+            ``(degree + 1, n_cols)``, 2D and C-contiguous.
+        value (float): Parameter in ``[0, 1]``.
+        out_left (npt.NDArray[np.float32 | np.float64]): Left half, shape
+            ``(degree + 1, n_cols)``, matching dtype, C-contiguous and writable.
+            Written in full. Keyword-only.
+        out_right (npt.NDArray[np.float32 | np.float64]): Right half, same
+            requirements. Keyword-only.
+
+    Raises:
+        TypeError: If any array has the wrong dtype or rank, is not C-contiguous,
+            or if either output is passed positionally.
+        ValueError: If either output is not the shape ``ctrl`` calls for.
+    """
+
+def restrict_bezier_1d(
+    ctrl: npt.NDArray[np.float32 | np.float64],
+    lower: float,
+    upper: float,
+    *,
+    out: npt.NDArray[np.float32 | np.float64],
+) -> None:
+    """Restrict a 1D Bézier to ``[lower, upper]``, reparametrized to ``[0, 1]``.
+
+    Two de Casteljau passes, ordered so that neither divides by a small number.
+
+    Call :meth:`pantr.bezier.Bezier.restrict` for the ordinary path.
+
+    Args:
+        ctrl (npt.NDArray[np.float32 | np.float64]): Control points of shape
+            ``(degree + 1, n_cols)``, 2D and C-contiguous.
+        lower (float): Left bound in ``[0, 1)``.
+        upper (float): Right bound in ``(0, 1]``.
+        out (npt.NDArray[np.float32 | np.float64]): Output of shape
+            ``(degree + 1, n_cols)``, matching dtype, C-contiguous and writable.
+            Written in full. Keyword-only.
+
+    Raises:
+        TypeError: If any array has the wrong dtype or rank, is not C-contiguous,
+            or if ``out`` is passed positionally.
+        ValueError: If ``out`` is not the shape ``ctrl`` calls for.
+    """
+
+def scalar_bernstein_product_1d(
+    a: npt.NDArray[np.float32 | np.float64],
+    b: npt.NDArray[np.float32 | np.float64],
+    *,
+    out: npt.NDArray[np.float32 | np.float64],
+) -> None:
+    """Multiply two scalar 1D Béziers in the Bernstein basis.
+
+    ``c_k = (1 / C(p+q, k)) * sum_i C(p, i) C(q, k-i) a_i b_{k-i}``.
+
+    Args:
+        a (npt.NDArray[np.float32 | np.float64]): Control points of the first
+            curve, 1D and C-contiguous, at least one entry.
+        b (npt.NDArray[np.float32 | np.float64]): Control points of the second
+            curve, same requirements and dtype.
+        out (npt.NDArray[np.float32 | np.float64]): Output of shape
+            ``(a.size + b.size - 1,)``, matching dtype, C-contiguous and
+            writable. Written in full. Keyword-only.
+
+    Raises:
+        TypeError: If any array has the wrong dtype or rank, is not C-contiguous,
+            or if ``out`` is passed positionally.
+        ValueError: If either input is empty, if ``out`` is the wrong length, or
+            if the summed degree exceeds the exact-integer binomial envelope
+            of 61.
+    """
+
+def apply_reduction_operator(
+    operator: npt.NDArray[np.float64],
+    ctrl: npt.NDArray[np.float32 | np.float64],
+    *,
+    out: npt.NDArray[np.float32 | np.float64],
+) -> None:
+    """Apply a dense degree-reduction operator: ``out = operator @ ctrl``.
+
+    Accumulates in ``float64`` regardless of the control points' dtype and rounds
+    once on the write, which is the contract the numba original states and this
+    one keeps. Rows of the operator that pin an endpoint are unit vectors, so
+    those outputs reproduce their inputs bit for bit.
+
+    The operator itself is assembled in exact rational arithmetic on the Python
+    side and converted to ``float64`` before it reaches here.
+
+    Args:
+        operator (npt.NDArray[np.float64]): Reduction operator of shape
+            ``(q + 1, p + 1)``. Always ``float64``, 2D and C-contiguous.
+        ctrl (npt.NDArray[np.float32 | np.float64]): Control points of shape
+            ``(p + 1, rank)``, 2D and C-contiguous.
+        out (npt.NDArray[np.float32 | np.float64]): Output of shape
+            ``(q + 1, rank)``, matching ``ctrl``'s dtype, C-contiguous and
+            writable. Written in full. Keyword-only.
+
+    Raises:
+        TypeError: If any array has the wrong dtype or rank, is not C-contiguous,
+            or if ``out`` is passed positionally.
+        ValueError: If ``ctrl`` does not have as many rows as the operator has
+            columns, or if ``out`` is the wrong shape.
+    """

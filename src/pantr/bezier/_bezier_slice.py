@@ -18,7 +18,7 @@ import numpy as np
 import numpy.typing as npt
 
 from .._array_utils import _flatten_along_axis
-from ._bezier_core import _slice_bezier_1d_core
+from ._bezier_backend import slice_core
 
 if TYPE_CHECKING:
     from . import Bezier
@@ -61,7 +61,7 @@ def _slice_bezier(
 
     # Apply 1D de Casteljau via Numba kernel.
     result_1d = np.empty(pts_2d.shape[1], dtype=pts_2d.dtype)
-    _slice_bezier_1d_core(pts_2d, value, result_1d)
+    slice_core()(pts_2d, value, result_1d)
 
     if bezier.dim == 1:
         # Result is a point.  For rational Béziers, project to physical coords.
