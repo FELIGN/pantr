@@ -32,9 +32,14 @@
 /// overflow and returns a corrupted value; in C++ signed overflow is undefined
 /// behaviour, so the same input is worse here than there. The two callers in
 /// `bezier` are guarded on the Python side by `_check_bincoeff_envelope`, which
-/// runs in Layer 2 before any kernel is entered. `checked_bincoeff` below is for
-/// a C++ caller that has no such guard above it; `bincoeff` is the Layer 3 form
-/// and validates nothing, as Layer 3 does not.
+/// runs in Layer 2 before any kernel is entered, and `cpp/bindings/bezier.cpp`
+/// re-checks it for a caller that reaches the extension directly. `bincoeff` is the
+/// Layer 3 form and validates nothing, as Layer 3 does not.
+///
+/// A `checked_bincoeff` wrapper lived here briefly and was deleted as dead code. It
+/// had no caller, and the binding had independently written the same check with a
+/// different message -- which is the divergence this file's first paragraph warns
+/// about, one layer up. The check now exists once.
 ///
 /// Independently of the integer limit, the `double` return is lossless only
 /// while `C(n, k) <= 2^53`, i.e. up to `n = 56`; `C(57, 28)` is the first past
@@ -44,8 +49,6 @@
 /// rounded operand is all a ratio can use.
 
 #include <cstdint>
-#include <stdexcept>
-#include <string>
 
 namespace pantr::core {
 
@@ -69,8 +72,9 @@ inline constexpr int kBincoeffExactDoubleMaxN = 56;
 ///         correctly rounded above it.
 ///
 /// \note No input validation is performed. Passing `n > kBincoeffMaxN` is
-///       undefined behaviour, not a wrong answer. For general use call
-///       `checked_bincoeff` instead.
+///       undefined behaviour, not a wrong answer. The caller establishes the
+///       envelope; `cpp/bindings/bezier.cpp`'s `require_bincoeff_envelope` is where
+///       the library does so.
 [[nodiscard]] constexpr double bincoeff(int n, int k) noexcept {
     if (k < 0 || k > n) {
         return 0.0;
@@ -81,24 +85,6 @@ inline constexpr int kBincoeffExactDoubleMaxN = 56;
         result = result * static_cast<std::int64_t>(n - kk + i) / static_cast<std::int64_t>(i);
     }
     return static_cast<double>(result);
-}
-
-/// `bincoeff` with the envelope enforced, for a caller with no Layer 2 above it.
-///
-/// \param n Upper index.
-/// \param k Lower index.
-/// \param what Description of the requested operation, used in the message.
-/// \return `C(n, k)`, as `bincoeff`.
-/// \throws std::invalid_argument If `n` exceeds `kBincoeffMaxN`.
-[[nodiscard]] inline double checked_bincoeff(int n, int k, const char* what) {
-    if (n > kBincoeffMaxN) {
-        throw std::invalid_argument(
-            std::string(what) + " needs binomial coefficients up to C(" + std::to_string(n) +
-            ", k), beyond the largest upper index " + std::to_string(kBincoeffMaxN) +
-            " that pantr's exact-integer binomial kernel can compute without an int64 "
-            "overflow.");
-    }
-    return bincoeff(n, k);
 }
 
 }  // namespace pantr::core
