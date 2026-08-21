@@ -248,6 +248,59 @@ three are about what a binding accepts and what an emptied rule returns, and sta
 **The cost of getting this wrong is not the red.** It is that an intermittent red teaches
 everyone to discount reds, which is worth less than no guard at all.
 
+## Rule 8: a parity claim is only defined where the quantity has digits
+
+Added by the change-of-basis port, which is the first module whose kernels **solve a linear
+system**, and the first where Rule 3 turned out to have teeth against a bound that was derived
+correctly.
+
+Five of that module's eight builders invert an ill-conditioned matrix. Both backends are
+backward stable -- LAPACK `gesv` on one side, `Eigen::PartialPivLU` on the other -- so the
+honest bound on their disagreement is the standard one, of order `kappa_inf * eps` times a
+small multiple of the size. That derivation is not in question. What it produces is.
+
+`pantr.change_basis` defines each builder's domain as the degrees where
+`kappa_inf * eps < 1`, which is where the solve is still defined. At the top of that range the
+parity bound is therefore *of order one*, and the values being compared are of order one too, so
+Rule 3's guard fires and refuses the claim. It is right to. A bound as large as the values it
+compares is satisfied by any result, zero included.
+
+**The resolution is not a tighter bound; it is a smaller domain.** Parity is asserted where
+`32 n kappa_inf eps < 1`, which is the **accuracy** domain rather than the **solvability**
+domain. The two differ per builder and per dtype: for `bernstein_to_cardinal` in float64 the
+module accepts degrees to 26 and parity is claimable to 22; for `cardinal_to_bernstein` it
+accepts to 14 and parity reaches 9.
+
+That is not a weakening, and the reason is worth stating plainly, because the instinct is to
+read a smaller tested range as thinner coverage. **Above the accuracy domain the answer has no
+correct digits in either backend.** There is nothing left for a parity claim to be about: two
+implementations agreeing on a quantity that is entirely round-off is not evidence that the port
+is right, and two implementations disagreeing there is not evidence that it is wrong.
+
+Two obligations come with it.
+
+**Name the excluded degrees.** A test that quietly stops where its bound runs out reads as full
+coverage of the module. `tests/parity/test_change_basis.py` carries a test whose only job is to
+enumerate the degrees each builder accepts but this file cannot compare, and which fails if that
+gap is ever empty for every builder at once -- because that would mean either the bound had
+collapsed or the tabulated domains had moved, and both are findings rather than good news.
+
+**Measure the margin over the whole domain, not at its top.** At the top degree `kappa` is by
+construction as large as it gets, so the bound is at its loosest there and a margin measured
+only there is misleading. Measured across every degree tested: the bound is between 130 and
+1800 times the observed difference at its tightest point, and between `1e6` and `5e6` times it
+at the top degrees. Reporting only the second number would suggest the bound asserts nothing;
+reporting only the first would suggest it is sharp. Both are in the test's docstring.
+
+### What this rule does not license
+
+A different but valid algorithm passing is not a failure of the bound. Measured: swapping
+`PartialPivLU` for `FullPivLU` in the C++ Gram projection moves the answer by `1.9e-11` at
+degree 10 and the parity tests accept it, correctly -- any backward-stable LU has to be
+admitted, since that is exactly what the bound claims. What the bound must still catch is a
+*wrong* answer, and it does: a `1e-6` relative perturbation of the Gram matrix is caught by all
+five bounded builders and by the margin test.
+
 ## The two corrections the infrastructure PR made, kept here because they generalize
 
 **The underflow floor.** `eta` per rounding, the unhalved smallest subnormal. Without it the

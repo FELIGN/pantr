@@ -67,16 +67,26 @@ shape rather than a capability.
 Scope
 -----
 
-Two modules are ported so far, and **selecting the C++ backend changes only what
-they cover**. A suite run under ``PANTR_BACKEND=cpp`` is not a C++ run; it is a
-run in which those kernels are C++ and everything else is unchanged.
+Three modules are ported so far, and **selecting the C++ backend changes only
+what they cover**. A suite run under ``PANTR_BACKEND=cpp`` is not a C++ run; it is
+a run in which those kernels are C++ and everything else is unchanged.
 
-* :mod:`pantr.basis` -- the cardinal B-spline tabulation of
-  :func:`pantr.basis.tabulate_cardinal_bspline_1d`, and nothing else in the
-  package.
+* :mod:`pantr.basis` -- three of the 1D tabulations: cardinal B-spline, Bernstein
+  and Legendre. The Lagrange tabulation and everything multidimensional stay on
+  Numba.
 * :mod:`pantr.quad` -- four of the seven rule generators: Gauss-Legendre, the
   trapezoidal rule, the modified Chebyshev nodes and tanh-sinh, together with the
   Lambert W solve the last of those needs.
+* :mod:`pantr.change_basis` -- all eight builders.
+
+**Reading a change_basis result needs one more fact than the others.** Its
+builders take their nodes from :mod:`pantr.quad`, so a call under
+``PANTR_BACKEND=cpp`` gets C++ nodes wherever that rule dispatches and numpy nodes
+where it does not. For :func:`pantr.change_basis.compute_lagrange_to_bernstein_1d`
+that is visible in the answer: with ``CHEBYSHEV_2ND`` nodes in float32 the two
+backends start from arrays that differ by one unit of roundoff, so the matrix
+cannot be bit-identical however faithful the builder is.
+
 
 **Three public quadrature rules are deliberately never dispatched** and will
 report identical results under either backend:
