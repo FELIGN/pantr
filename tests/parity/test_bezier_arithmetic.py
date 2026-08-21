@@ -28,14 +28,25 @@ unconditionally. Accumulating narrow where the oracle accumulates wide moved 125
 **The evaluation kernel's two branches seed from bases of different width.** Above
 the mirror threshold the oracle raises ``u``, which is the point array's own dtype;
 below it it raises ``1 - u``, which the literal ``1.0`` has already promoted to
-float64. One value in 16224 caught that, at degree 17 and ``u = 0.75``, where
-``0.75^17 = 3^17 / 2^34`` needs 27 significand bits.
+float64. A single value in a whole-kernel sweep caught that, at degree 17 and
+``u = 0.75``, where ``0.75^17 = 3^17 / 2^34`` needs 27 significand bits and the wide
+seed survives where the narrow one rounds. Computing the mirrored seed in double is
+still the natural port, and ``scripts/measure_bezier_parity.py`` reports 1305
+differences out of 1280256 if you do it.
 
 **The seed is a ``pow``, so its claim is observed rather than derived.** Neither C
-nor IEEE 754 requires ``pow`` to be correctly rounded. Measured separately over
-1280384 pairs, degrees 1 to 64 across the whole mirrored range: the platform
-``powf`` and numba's ``np.power`` agree on every one. `bernstein.hpp` records the
-same open question with the same answer.
+nor IEEE 754 requires ``pow`` to be correctly rounded, and the mirrored branch raises
+``u`` at storage width, so at float32 the C++ calls ``powf``. Measured over 1280256
+pairs, degrees 1 to 64 across the whole mirrored range: it and numba's ``np.power``
+agree on every one. `bernstein.hpp` records the same open question with the same
+answer.
+
+**Every figure in this docstring is reproducible**, by
+``scripts/measure_bezier_parity.py``. That is a script rather than a test because
+these are counts over particular grids, and a reader deciding whether to believe one
+wants the grid rather than a green tick. It exists because an earlier version of this
+file quoted numbers whose only artifact was a scratch directory that no longer
+exists.
 
 What this file does NOT cover, and it is a real gap
 ---------------------------------------------------
@@ -347,17 +358,34 @@ def test_reduce_degree_is_bitwise(
 
 @pytest.mark.parametrize("dtype", DTYPES)
 @pytest.mark.parametrize("degree", [3, 4, 7, 12])
-def test_minimize_degree_is_bitwise(cpp_backend: None, degree: int, dtype: npt.DTypeLike) -> None:
+@pytest.mark.parametrize("is_rational", [False, True])
+def test_minimize_degree_is_bitwise(
+    cpp_backend: None, degree: int, is_rational: bool, dtype: npt.DTypeLike
+) -> None:
     """The greedy degree search takes the same decisions on both backends.
 
-    This is the one consumer that needs two kernels within a single call, and so
-    the reason `pantr.bezier._bezier_backend` hands out a record for them rather
-    than two callables. It is also the only test here whose output is *discrete*:
-    the search accepts or rejects each trial by comparing a round-trip error
-    against a tolerance, so a one-ulp disagreement in either kernel can change the
-    resulting degree rather than the last bit of a coefficient. Bit-exact control
-    points therefore prove more here than elsewhere -- they prove the two backends
-    took the same path, not only that they landed nearby.
+    This is the one consumer that reaches two dispatched kernels within a single
+    call, which is why `pantr.bezier._bezier_backend` hands out a record for them.
+    It is also the only test here whose output is *discrete*: the search accepts or
+    rejects each trial by comparing a round-trip error against a tolerance, so a
+    disagreement in either kernel can change the resulting degree rather than the
+    last bit of a coefficient. The degree is asserted before the coefficients for
+    that reason.
+
+    **The rational parametrization is not decoration, and its absence was a real
+    gap.** An earlier version swept only the non-rational branch while claiming the
+    test proved the two backends "took the same path". They do not take the same
+    path on a rational net: that branch grades in projected space, so it samples on
+    a tensor Gauss grid and builds a Bernstein collocation matrix, and
+    ``_bernstein_collocation_1d`` takes its nodes from the dispatched
+    :func:`~pantr.quad.get_gauss_legendre_1d` while tabulating them with a kernel
+    imported directly from ``pantr.basis._basis_core``, bypassing that package's
+    catalogue. So under ``PANTR_BACKEND=cpp`` the accept/reject verdict rests on a
+    matrix that is half one backend and half the other.
+
+    That bypass predates this port and is not fixed here. What this parametrization
+    does is make it visible: if the mixed matrix ever moves a verdict, this is the
+    test that says so.
     """
     del cpp_backend
     demand_the_compiled_kernel(dtype)
@@ -366,13 +394,19 @@ def test_minimize_degree_is_bitwise(cpp_backend: None, degree: int, dtype: npt.D
     # A net that is genuinely reducible, so the search has something to find: a
     # quadratic elevated to `degree`, which is exactly recoverable. The lowest
     # degree swept is 3 because elevating by zero is refused.
-    base = _mixed_control_points((3, 2), dtype)
-    ctrl = Bezier(base).elevate_degree(degree - 2).control_points
+    # A rational net needs a weight column, and the weights are kept near one so the
+    # projected geometry stays well conditioned and the search decides on the curve
+    # rather than on a near-singular divide.
+    rank = 3 if is_rational else 2
+    base = _mixed_control_points((3, rank), dtype, exponents=(-1, 2))
+    if is_rational:
+        base[:, -1] = np.array([1.0, 0.8, 1.2], dtype=dtype)
+    ctrl = Bezier(base, is_rational=is_rational).elevate_degree(degree - 2).control_points
 
     with use_backend(Backend.PYTHON):
-        reference = Bezier(ctrl).minimize_degree()
+        reference = Bezier(ctrl, is_rational=is_rational).minimize_degree()
     with use_backend(Backend.CPP):
-        actual = Bezier(ctrl).minimize_degree()
+        actual = Bezier(ctrl, is_rational=is_rational).minimize_degree()
 
     assert actual.degree == reference.degree, (
         f"minimize_degree from {degree} in {np.dtype(dtype).name}: the backends "

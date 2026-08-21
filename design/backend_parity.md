@@ -361,13 +361,23 @@ from the module, or from the kernel next door, is what produces a port that is e
 Within a single kernel, `_evaluate_bezier_1d_core` seeds its two branches from bases of
 different width. Above the mirror threshold it raises `u`, which is the point array's own dtype;
 below it it raises `1 - u`, which the literal `1.0` has already promoted to `float64`. Reading
-the source does not make that leap out, and the consequence is one value in 16224: at degree 17
-and `u = 0.75`, where `0.75^17 = 3^17 / 2^34` needs 27 significand bits, the wide seed survives
-and the narrow one rounds.
+the source does not make that leap out, and the consequence is a single value in a whole-kernel
+sweep: at degree 17 and `u = 0.75`, where `0.75^17 = 3^17 / 2^34` needs 27 significand bits, the
+wide seed survives and the narrow one rounds.
 
 A sweep that had used round parameters and a modest degree would have missed it entirely. What
 found it was a case list built to be adversarial about *representability* rather than about
 magnitude.
+
+### Every figure above is reproducible, and that had to be fixed
+
+An earlier version of this rule quoted counts whose only artifact was a scratch directory. They
+were real, and three were later reproduced exactly by an independent reviewer, but a number
+nobody else can re-derive is a number nobody else can refute, which is the wrong shape for a
+design note. `scripts/measure_bezier_parity.py` now reproduces the sweep counts and the `pow`
+agreement, and prints the rebuild command for the two figures that need `-march=native`.
+`cpp/include/pantr/basis/bernstein.hpp` had been doing this correctly for its own claim all
+along, by pointing at a committed test.
 
 ### The `float32` half is far less contraction-sensitive, and that is a consequence
 
