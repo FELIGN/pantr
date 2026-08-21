@@ -16,7 +16,26 @@
 /// checks below, and each one is in front of a kernel that would otherwise write
 /// past the allocation.
 ///
-/// One is not a shape at all. `degree_elevate` and `scalar_bernstein_product`
+/// Two are not shapes at all.
+///
+/// **A degree inferred from a shape has a floor that nothing else states.** Five
+/// of these kernels take no `degree` argument and compute `ctrl.extent(0) - 1` in
+/// `std::size_t`, so a zero-row `ctrl` underflows to `SIZE_MAX` and the kernel
+/// walks off the allocation. Measured before `require_control_points` existed:
+/// `slice_bezier_1d(np.empty((0, 2)), 0.5, out=...)` exited with SIGSEGV, no
+/// exception. `basis.cpp` avoids this class by taking `degree` as an `unsigned`
+/// the caster refuses to make negative; there is no such argument here, so the
+/// floor has to be checked explicitly.
+///
+/// **A parameter domain the docstring states is a promise.** `value`, `lower` and
+/// `upper` are documented as living in the unit interval, and outside it the
+/// two-pass restriction stops being a sequence of convex combinations. Unchecked,
+/// `slice_bezier_1d(ctrl, 2.5, ...)` extrapolated silently and
+/// `restrict_bezier_1d(ctrl, 0.8, 0.2, ...)` -- the bounds transposed -- returned a
+/// different, plausible Bézier. `lower` and `upper` are adjacent same-typed
+/// positional parameters, so ordering them is what closes that transposition trap.
+///
+/// And `degree_elevate` and `scalar_bernstein_product`
 /// form binomial coefficients, and past `core::kBincoeffMaxN` the exact-integer
 /// recurrence overflows -- undefined behaviour in C++, where the numba original
 /// merely wraps. Python's Layer 2 checks it too, through
@@ -79,6 +98,79 @@ void require_length(const Arr& out, std::size_t n, const char* what) {
     }
 }
 
+/// Raise unless `ctrl` holds at least one control point.
+///
+/// The floor for every kernel that infers its degree from a shape. See the file
+/// comment: below it the subtraction underflows and the kernel is not merely
+/// wrong but undefined.
+template <class Arr>
+void require_control_points(const Arr& ctrl, const char* what) {
+    if (ctrl.shape(0) == 0) {
+        throw nb::value_error(
+            (std::string(what) + " has no rows, but its degree is inferred as "
+             "rows - 1, which needs at least one")
+                .c_str());
+    }
+}
+
+/// Raise unless `value` lies in the closed unit interval.
+///
+/// Written as a conjunction of two comparisons rather than a negated range so a
+/// NaN, which compares false against everything, is refused rather than admitted.
+void require_unit_interval(double value, const char* what) {
+    if (!(value >= 0.0 && value <= 1.0)) {
+        throw nb::value_error((std::string(what) + " must lie in [0, 1], got " +
+                               std::to_string(value))
+                                  .c_str());
+    }
+}
+
+/// Raise unless `0 <= lower <= upper <= 1`.
+///
+/// The ordering is the half that matters: the two bounds are adjacent same-typed
+/// positional parameters, so nothing in the type system stops a transposed call,
+/// and a transposed call returns a different restriction rather than an error.
+void require_ordered_bounds(double lower, double upper) {
+    require_unit_interval(lower, "lower");
+    require_unit_interval(upper, "upper");
+    if (lower > upper) {
+        throw nb::value_error(("lower (" + std::to_string(lower) + ") must not exceed upper (" +
+                               std::to_string(upper) +
+                               "); transposing them returns a different restriction rather "
+                               "than an error")
+                                  .c_str());
+    }
+}
+
+/// Refuse two output buffers that overlap in memory.
+///
+/// The same guard `cpp/bindings/quad.cpp` applies to its two-output rules, and for
+/// the same reason: the two buffers have the same dtype, rank, shape and
+/// contiguity, so nanobind accepts one array passed twice and the second write
+/// overwrites the first. Measured before this existed:
+/// `split_bezier_1d(ctrl, 0.5, out_left=same, out_right=same)` returned the RIGHT
+/// half under both names, with no exception. `nb::kw_only()` closes transposition;
+/// only this closes aliasing.
+///
+/// Overlap rather than equality: two views onto one buffer alias just as
+/// destructively as the same object twice.
+template <class Arr>
+void refuse_overlapping_outputs(const Arr& first, const char* first_name, const Arr& second,
+                                const char* second_name) {
+    const auto* first_begin = first.data();
+    const auto* first_end = first_begin + first.size();
+    const auto* second_begin = second.data();
+    const auto* second_end = second_begin + second.size();
+    if (first_begin < second_end && second_begin < first_end) {
+        throw nb::value_error(
+            (std::string(first_name) + " and " + second_name +
+             " overlap in memory. Each half is written independently, so one would "
+             "silently overwrite the other and the result would be neither. Pass "
+             "two separate arrays.")
+                .c_str());
+    }
+}
+
 /// Raise unless the exact-integer binomial recurrence stays inside its envelope.
 void require_bincoeff_envelope(std::size_t n, const char* what) {
     if (n > static_cast<std::size_t>(pantr::core::kBincoeffMaxN)) {
@@ -93,6 +185,7 @@ void require_bincoeff_envelope(std::size_t n, const char* what) {
 
 template <class T>
 void bind_evaluate(const_mat<T> ctrl, const_vec<T> points, out_mat<T> out) {
+    require_control_points(ctrl, "ctrl");
     const std::size_t num_pts = points.size();
     const std::size_t rank = ctrl.shape(1);
     require_shape(out, num_pts, rank, "out");
@@ -112,6 +205,7 @@ void bind_evaluate_deriv(const_mat<T> ctrl, const_vec<T> points, unsigned n_deri
     if (n_deriv > max_deriv) {
         throw nb::value_error("n_deriv exceeds the largest order the kernel can express");
     }
+    require_control_points(ctrl, "ctrl");
     const std::size_t num_pts = points.size();
     const std::size_t rank = ctrl.shape(1);
     const std::size_t orders = static_cast<std::size_t>(n_deriv) + 1;
@@ -161,6 +255,8 @@ void bind_degree_elevate(unsigned degree, const_mat<T> ctrl, unsigned degree_inc
 
 template <class T>
 void bind_slice(const_mat<T> ctrl, double value, out_vec<T> out) {
+    require_control_points(ctrl, "ctrl");
+    require_unit_interval(value, "value");
     const std::size_t n_cols = ctrl.shape(1);
     require_length(out, n_cols, "out");
 
@@ -173,10 +269,13 @@ void bind_slice(const_mat<T> ctrl, double value, out_vec<T> out) {
 
 template <class T>
 void bind_split(const_mat<T> ctrl, double value, out_mat<T> out_left, out_mat<T> out_right) {
+    require_control_points(ctrl, "ctrl");
+    require_unit_interval(value, "value");
     const std::size_t rows = ctrl.shape(0);
     const std::size_t n_cols = ctrl.shape(1);
     require_shape(out_left, rows, n_cols, "out_left");
     require_shape(out_right, rows, n_cols, "out_right");
+    refuse_overlapping_outputs(out_left, "out_left", out_right, "out_right");
 
     const pantr::span2d<const T> ctrl_view(ctrl.data(), rows, n_cols);
     const pantr::span2d<T> left_view(out_left.data(), rows, n_cols);
@@ -188,6 +287,8 @@ void bind_split(const_mat<T> ctrl, double value, out_mat<T> out_left, out_mat<T>
 
 template <class T>
 void bind_restrict(const_mat<T> ctrl, double lower, double upper, out_mat<T> out) {
+    require_control_points(ctrl, "ctrl");
+    require_ordered_bounds(lower, upper);
     const std::size_t rows = ctrl.shape(0);
     const std::size_t n_cols = ctrl.shape(1);
     require_shape(out, rows, n_cols, "out");
