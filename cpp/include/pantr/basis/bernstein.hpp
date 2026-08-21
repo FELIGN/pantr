@@ -57,7 +57,9 @@
 /// **`pow` is the open question.** The seed is the one transcendental call, and
 /// numba's `np.power` and the platform libm's `pow` are two implementations of
 /// the same function with no shared guarantee. Nothing here claims they agree.
-/// tests/parity/test_basis_bernstein.py measures it and states what it found.
+/// tests/parity/test_basis_tabulations.py measures it and states what it found:
+/// bitwise on every argument tested, which makes this claim observed rather than
+/// derived, unlike the Legendre kernel's.
 
 #include <cmath>
 #include <cstddef>

@@ -28,7 +28,7 @@ The bound
 Both backends compute the same matrix by the same three steps: tabulate the two
 bases at the quadrature nodes, form ``G = B^T W B`` and ``C = B^T W A``, and solve
 ``G M^T = C``. The tabulations are bit-identical (measured; see
-`tests/parity/test_basis_bernstein.py` and its Legendre sibling), so they
+`tests/parity/test_basis_tabulations.py`), so they
 contribute nothing. The other two steps do:
 
 1. **The products.** numpy contracts them with a BLAS ``gemm``, Eigen with its own
@@ -390,7 +390,7 @@ def test_lagrange_to_bernstein_is_bitwise(
                 why=(
                     "the matrix is the Bernstein basis tabulated at the Lagrange nodes and "
                     "transposed. No solve, no product, the tabulation itself is bitwise "
-                    "(tests/parity/test_basis_bernstein.py), and this node family hands "
+                    "(tests/parity/test_basis_tabulations.py), and this node family hands "
                     "both backends the same array"
                 )
             ),
