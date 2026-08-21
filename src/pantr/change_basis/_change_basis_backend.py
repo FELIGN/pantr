@@ -141,10 +141,10 @@ def _cpp_from_nodes(binding_name: str) -> _FromNodesFunc:
         kernel = getattr(_pantr_cpp, binding_name)
         node_array = np.ascontiguousarray(nodes)
         if out.flags["C_CONTIGUOUS"]:
-            kernel(int(degree), node_array, out=out)
+            kernel(int(degree), nodes=node_array, out=out)
             return
         buffer = np.empty_like(out, order="C")
-        kernel(int(degree), node_array, out=buffer)
+        kernel(int(degree), nodes=node_array, out=buffer)
         out[...] = buffer
 
     return adapter
@@ -179,10 +179,10 @@ def _cpp_from_rule(binding_name: str) -> _FromRuleFunc:
         node_array = np.ascontiguousarray(nodes)
         weight_array = np.ascontiguousarray(weights)
         if out.flags["C_CONTIGUOUS"]:
-            kernel(int(degree), node_array, weight_array, out=out)
+            kernel(int(degree), nodes=node_array, weights=weight_array, out=out)
             return
         buffer = np.empty_like(out, order="C")
-        kernel(int(degree), node_array, weight_array, out=buffer)
+        kernel(int(degree), nodes=node_array, weights=weight_array, out=buffer)
         out[...] = buffer
 
     return adapter
