@@ -5,6 +5,8 @@ set(PANTR_TEST_SOURCES
     test_dependency_smoke.cpp
     test_cardinal_bspline.cpp
     test_scalar_generic.cpp
+    test_bernstein.cpp
+    test_legendre.cpp
     test_quad.cpp)
 
 foreach(_src IN LISTS PANTR_TEST_SOURCES)
