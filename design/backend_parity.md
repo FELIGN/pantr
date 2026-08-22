@@ -1,6 +1,6 @@
 # Backend parity: what a bound may claim, and in which frame
 
-**Status:** complete for the four ports that exist. Nine rules, each with the failure that produced
+**Status:** complete for the four ports that exist. Ten rules, each with the failure that produced
 it, and the remaining module ports inherit them. The verdict on whether the parity harness
 generalized is now written, from the `quad` port's tests rather than predicted before them.
 **Date:** 2026-08-20, amended the same day after a deep review closed two open proofs,
@@ -12,6 +12,9 @@ invented. Both are corrected in place rather than edited away. Amended again the
 the Bézier arithmetic port with Rule 9 (an oracle's accumulation width is a per-kernel fact),
 which is the first rule here that is about reproducing an oracle exactly rather than about
 bounding a difference, because that port is the first whose every kernel can be bit-exact.
+Amended 2026-08-22 with Rule 10 (contraction removes one rounding per fused site), which closes
+the gap Rule 9's section declared: the Bézier claims are now conditional on what the build can
+do rather than skipped where it can fuse.
 
 **Validated against:** `proto/cpp` at `765d9b9`, plus the `quad` port on `feat/cpp-quad`.
 
@@ -393,16 +396,106 @@ intermediate, and the narrowing store to `float32` then discards most of the dif
 knowing before the ISA ladder of `design/simd.md` lands, because it says the `float64` path is
 where a contraction bound will actually be needed.
 
-### What is NOT here, and it is a real gap
+### What was NOT here, and was a real gap -- closed 2026-08-22 by Rule 10
 
-**No parity bound is derived for a fusing build.** Unlike the Bernstein tabulation, every kernel
-in this module contains an `a * b + c * d` site. `tests/parity/test_bezier_arithmetic.py` skips
-rather than weakens when `__fp_contract__` reports a fused multiply-add is available, and says
-so in the skip reason. That is deliberate: a bound written for a branch no host in this project
-can execute would ship untested, and Rule 7 is what licenses deferring it. **It is a
-prerequisite for the ISA ladder, not for the port**, and it should be derived at the same time
-as the ladder rather than in advance of it.
+**No parity bound was derived for a fusing build.** Unlike the Bernstein tabulation, every
+kernel in this module contains an `a * b + c * d` site, and
+`tests/parity/test_bezier_arithmetic.py` skipped rather than weakened when `__fp_contract__`
+reported a fused multiply-add. **The reason given for deferring it was refuted**: it read "a
+bound written for a branch no host in this project can execute would ship untested", and
+`tests/parity/test_quad_gauss_legendre.py` had been deriving such a bound and probing it on this
+same non-fusing host since the `quad` port. Three lines of it. Rule 7 licenses conditioning a
+claim on the host; it does not license leaving the other branch unwritten.
 
+Rule 10 is that bound. The three tests that still skip do so for reasons the bound genuinely
+cannot cover -- a discrete verdict, a wrapped factorial, operands not observable from the public
+surface -- and each names its own.
+
+The `float32` asymmetry above survived the derivation and is now explained rather than observed:
+seven of the eight kernels contract in a `float64` accumulator, so only a straddled narrowing
+store carries a difference to a `float32` output.
+
+
+## Rule 10: contraction removes one rounding per fused site, and only the amplification differs
+
+Added by the Bézier arithmetic port's follow-up, which derived the bound Rule 9's section
+deferred. It is the answer to a question the four earlier ports could postpone: what does a
+parity claim say on a build whose target ISA has a fused multiply-add?
+
+**The budget is one line and it is the same for every kernel.** At a fused site the oracle
+computes `fl(a + fl(b*c))` and the C++ backend `fl(a + b*c)`. Writing the first as
+`(a + b*c(1 + d1))(1 + d2)` and the second as `(a + b*c)(1 + d3)` with every `|d| <= u`, the two
+differ by at most
+
+    |b*c| * u * (1 + u)  +  |a + b*c| * 2u,
+
+so **three accumulator roundings per stage**. Where the storage format is narrower than the
+accumulator, the two pre-store values can fall either side of a rounding boundary, and a straddle
+costs one ulp, so **two storage roundings per stage**. In the harness that is
+`Roundings(stages, 3, 2)`, which serves all eight kernels unchanged.
+
+**What differs per kernel is the amplification, and getting it from `max|c|` to something usable
+was the whole of the work.** `max|c|` is a correct magnitude for every convex kernel here and it
+is useless: on a net spanning twelve decades whose output cancels to order one, it bounds a
+`float32` de Casteljau by 25 against values of 0.75, and Rule 3 refuses that. Seven parity cases
+failed exactly that way, all `float32`, all at degree 25 or within 1e-8 of an endpoint.
+
+The fix is the one Rule 3's own failure message prescribes, and it is licensed here because these
+recurrences are convex: **run the same operation on `|c|` and use the result, elementwise.** Every
+weight is non-negative and they sum to one, so the absolute-value companion is exactly the
+magnitude reachable at each output element, and it is tight rather than merely valid. Two kernels
+are not convex and must not use it:
+
+| kernel | stages | amplification |
+|---|---|---|
+| `evaluate`, `slice`, `split` | `p` | the absolute-value companion |
+| `restrict` | `2p`, two passes | the absolute-value companion |
+| `degree_elevate` | `p + 1` | the absolute-value companion |
+| `scalar_bernstein_product` | `min(p,q) + 1` | `sum_i C(p,i)C(q,k-i)|a_i||b_{k-i}| / C(p+q,k)` |
+| reduction apply | `p + 1` | `|R| @ |c|`, since `R` has negative entries |
+| `evaluate_deriv` | `p + 1` | `p!/(p-k)! * 2^k * max|c|`, and the accumulator is the storage |
+
+The derivative amplification follows from `B^(k) = p!/(p-k)! sum_j (Delta^k c)_j B_{j,p-k}` with
+`||Delta^k||_inf <= 2^k`, and it is **attained**: driving the kernel with the identity net gives
+`max_s sum_j |B^(k)_{j,p}(s)| / (p!/(p-k)! 2^k) = 1.0000` for `k` up to 4 over nine degrees.
+
+### The premise the bound rests on, and it is not ours
+
+**The oracle never fuses.** That is not obvious: numba compiles for the host CPU, so on any
+machine with an FMA it could. It does not, because LLVM does not contract without `fastmath`, and
+no pantr kernel sets it. Verified discriminatingly rather than by observing a zero: on this host
+`a * b + c` compiles to no FMA under `fastmath=False` and to one under `fastmath=True`.
+
+That is a property of numba's defaults and could change under us, which would make the bound
+describe the wrong difference -- it assumes the extra rounding is always on the oracle's side.
+`test_the_oracle_does_not_contract_a_multiply_add` pins it.
+
+### What the enumeration cost, and why reading the source was not enough on its own
+
+Fourteen sites fuse. Reading the source predicted fourteen and the disassembly of a
+`-march=native` build found the same fourteen, which is the check being reported rather than a
+coincidence worth relying on next time. What reading alone would **not** have given is the
+*width* of each: seven of the eight kernels contract in a `float64` accumulator whatever the
+storage, so at `float32` only a straddled narrowing store carries the difference out, and they
+barely move. `evaluate_deriv` emits four storage-width FMAs and is the exception -- Rule 9
+reappearing, now on the bounded side.
+
+**Contraction is the only mechanism.** `-march=native` with `-ffp-contract=off` on top restores
+bit-identity exactly while the vectorisation stays, which separates the two the same way the
+`quad` port separated them.
+
+### Two build facts that will outlive this rule
+
+`-DCMAKE_CXX_FLAGS=-ffp-contract=off` **does nothing**: `PantrCompileOptions.cmake` adds
+`-ffp-contract=on` as a target option, which lands after `CMAKE_CXX_FLAGS` and wins. The first
+build made to isolate contraction was byte-identical to the fusing one and only
+`compile_commands.json` showed it.
+
+And **Eigen does not compile under `-march=native` with `PANTR_WERROR=ON`**: its AVX512
+`TrsmKernel.h` trips `-Wmaybe-uninitialized` in its own code. That is a decision waiting for the
+ISA ladder of `design/simd.md`, not for this rule.
+
+`scripts/measure_bezier_fma_bound.py` reproduces every figure above.
 
 ## The two corrections the infrastructure PR made, kept here because they generalize
 
