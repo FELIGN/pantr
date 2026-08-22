@@ -26,3 +26,23 @@ twelve died together, and the three that were not relaunched left their ground u
 has to be stated in the report rather than quietly omitted.
 
 See [[active-task]].
+
+
+## It happened again with worktrees in place, 2026-08-22
+
+Ten agents on the bezier review, three of them in their own worktree. **No collisions this
+time** -- the worktrees worked. But a session limit still killed three at once, including the
+two heaviest, and their ground went unreviewed.
+
+Two things that follow:
+
+- **Give the read-only agents the shared worktree and only isolate the ones that mutate or
+  measure.** Building three extra venvs cost several minutes each; most lenses never needed one.
+- **A session limit is not a collision and worktrees do not help with it.** Stagger the waves:
+  five, then three, then hold the heaviest until the first wave returns. And when one dies,
+  **name the ground it did not cover** in the report and in the artifact. Reporting around a
+  dead lens is how a review that "found nothing there" gets believed.
+
+The compensation is worth knowing: the coordinator answered one of the dead investigator's
+questions itself in three commands, and it turned out to be undefined behaviour in shipped
+code. A dead lens's brief is still a list of good questions.

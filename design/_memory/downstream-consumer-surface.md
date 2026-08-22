@@ -25,9 +25,18 @@ was cheap insurance and correct as policy, but not one of them was in use.
 | `Bezier` | `pantr.bezier._bezier` | yes, but the class is *public* as `pantr.bezier.Bezier`; only the path is private |
 | `_BVH_STACK_DEPTH` | `pantr.grid._bvh_core` | yes, `Final[int] = 128` |
 
-**So `bezier` is the first port that will touch symbols the consumer imports**, unlike `quad` and
-`change_basis`. `grid` too. A Layer 3 Numba kernel is exactly what a port reorganises, so
-`_de_casteljau_eval_scalar` needs deciding deliberately rather than discovering. See
+**`bezier` is the first port to touch symbols the consumer imports**, unlike `quad` and
+`change_basis`. `grid` too.
+
+**Block A of `bezier` shipped without disturbing any of them** (2026-08-22, PR #348): it ported
+the arithmetic, and all three imported symbols live elsewhere. `tests/test_bezier_reexports.py`
+now pins the two bezier ones **by full path**, deliberately, because the path is the fragile
+part: `Bezier` is public under another name and would survive a move of `_bezier.py` while the
+consumer's import would not.
+
+**The decision is still owed, and block B is where it lands.**
+`_de_casteljau_eval_scalar` lives in `_root_finding_core`, which is exactly what block B
+reorganises. Decide it at the start of that PR rather than discovering it. See
 [[active-task]].
 
 **On float32 and the width question: the consumer settles it.** The one function it uses is the
