@@ -28,8 +28,10 @@ Two decisions that govern everything else:
   `quad`, `transform`, `change_basis`, `bezier`. Roughly 8-10k lines, not 47k. `bspline`,
   THB, extraction, `cad`, `multipatch` and `mpi` stay in Python for now.
 
-**Status, 2026-08-21.** Three module PRs are **merged** into `proto/cpp`: the build skeleton
-(#335), `quad` (#337) and `change_basis` (#347). Nothing is in flight. See [[active-task]].
+**Status, 2026-08-22.** Four module PRs are **merged** into `proto/cpp`: the build skeleton
+(#335), `quad` (#337), `change_basis` (#347) and `bezier`'s arithmetic block (#348). Nothing is
+in flight. `bezier` is being ported in three PRs and two remain: root finding, then
+interpolation. See [[active-task]].
 
 **Eigen is a dependency of the shipped extension** as of #347, and that is the architectural
 decision this cycle added. It was test-only before, fenced off from `pantr::core` so that taking
@@ -43,7 +45,11 @@ change is an open question for Pablo, not a port's call.**
 corrected in place, along with the same stale premise in
 `design/adaptive_thb_approximation.md`.
 
-**`design/backend_parity.md` now has eight rules**, and #347's own deep review corrected the
+**`design/backend_parity.md` now has nine rules.** Rule 9, added by the bezier arithmetic port,
+is the first that is about reproducing an oracle *exactly* rather than about bounding a
+difference, because that port is the first whose every kernel can be bit-exact: an oracle's
+accumulation width is a per-kernel fact, not a module convention, and getting it wrong is
+invisible at float64. Before it, and #347's own deep review corrected the
 newest one. Rule 8: a parity claim is only defined where the bound can still say something, so
 the parity domain is the accuracy domain and the excluded degrees must be named. Its first
 version also claimed those degrees have no correct digits, which is false, and one of its two

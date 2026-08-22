@@ -1,65 +1,64 @@
 ---
 name: active-task
-description: The pantr C++ port: change_basis merged, three of six Stage 1 modules done, and what the deep review taught
+description: The pantr C++ port: bezier's arithmetic merged, four of six Stage 1 modules done, and the two bezier blocks still to go
 metadata:
   node_type: memory
   type: project
-  modified: 2026-08-21T00:00:00.000Z
+  modified: 2026-08-22T00:00:00.000Z
 ---
 
-**`change_basis` is MERGED** into `proto/cpp` (PR #347, 18 commits, rebase-merged so the SHAs
-differ from the branch's). Nothing is in flight, no worktree, remote has only `main` and
-`proto/cpp`. Three of Stage 1's six modules are ported: `basis` (cardinal B-spline, Bernstein,
-Legendre), `quad`, `change_basis`.
+**`bezier`'s arithmetic block is MERGED** into `proto/cpp` (PR #348, 16 commits, rebase-merged;
+merged tree verified byte-identical to the tested one). Nothing is in flight, no worktree.
+**Four of Stage 1's six modules are ported**: `basis`, `quad`, `change_basis`, and now block A of
+`bezier`.
 
-**`bezier` is the next module, not `geometry` or `transform`.** An earlier brief recommended
-those two for being smallest, from line counts. Each is a **single class** (`AABB`,
-`AffineTransform`) whose arithmetic is over 2- or 3-element arrays, and D2 keeps the class in
-Python, so porting them ports almost nothing. `bezier` is where Eigen's SVD gets used, which is
-half the justification for having taken the dependency.
+**`bezier` is being ported in three PRs, and two remain.** The split was by risk, not by size:
 
-**Eigen is now a dependency of the shipped extension**, with its licence files vendored in
-`licenses/`. See [[decisions-pointer]].
+- **A, merged.** The arithmetic: evaluate, derivatives, elevate, slice, split, restrict, the
+  Bernstein product, plus the dense reduction-operator apply. Nothing iterative, no solve.
+- **B, next.** Root finding: `_root_finding_core` (7 kernels), `_clipping_core` (2),
+  `_yuksel_core` (4), `_batch_core` (3), `_find_roots`, `_root_finding`. ~1580 lines, 16 kernels,
+  all iterative, so convergence tolerances and **no bit-exactness**. It also holds
+  `_de_casteljau_eval_scalar`, which the downstream consumer imports; decide its fate first.
+- **C, after that.** `_bezier_interpolate`, 756 lines, no kernels, but an SVD with **rank
+  truncation** whose threshold is discontinuous: `sigma >= tol * sigma[0]` decides the rank, so
+  LAPACK and Eigen disagreeing by a few eps on a `sigma` near the filo flips it and the result
+  differs by O(1), not within a bound. The matrices are deterministic per degree, so it is
+  checkable: verify no `sigma` sits within a few eps of the threshold. It also touches
+  `src/pantr/_interpolation_utils.py`, shared with `bspline` and `mpi`.
 
-**Rule 8 exists and the next three ports inherit it**, in the corrected form: a parity claim
-needs a bound that can still say something, so the parity domain is where `constant * n * kappa
-* eps < 1`. Its first version claimed the excluded degrees had no correct digits, which is false
-(3.2 digits at the first excluded degree) and was caught by the review, not by me.
+**Block A is the first port whose whole surface is bit-exact.** `quad` could not (different
+algorithms), `change_basis` could not (a solve). The cost was reproducing three different
+accumulation widths the oracle uses without announcing them, which is now Rule 9 in
+`design/backend_parity.md`.
 
-**The deep review is the thing to read before the next port**: `reviews/347-2026-08-21.md` in the
-repo. Nineteen findings, and the shape matters more than the list: **the C++ was right and the
-prose about it was wrong, repeatedly**. A fabricated citation to a test that never existed, an
-exponential bound contradicting a PROVED result in the file I was editing, the wrong Higham
-theorem, three false completeness claims, two numbers measured from one run each. See
-[[reviewing-my-own-measurements]], which said exactly this about me before the session started.
+**Read `reviews/348-2026-08-21.md` before the next block.** Nineteen findings, and see
+[[reviewing-my-own-measurements]] for the shape: my justifications failed, twice against evidence
+already in this repository.
 
-**Two facts from it worth carrying into `bezier`:**
-- The LU growth factor for these matrices is measured, not assumed: `R <= 3.73` in exact
-  rational arithmetic, `rho` exactly 1. Eigen's `PartialPivLU` has **no tolerance at all** on its
-  path (only `is_exactly_zero`), so the `computeFromTridiagonal` defect class cannot occur there.
-- `np.linalg.solve(A, eye(n))` is Du Croz and Higham's Method A for **inversion**, not a solve,
-  and numpy makes it bitwise identical to `inv`. It bounds `A X - I` and says nothing about
-  `X A - I`: measured 2.7e-13 against 1.2e-4 at the last accepted degree.
+**The one thing deliberately not fixed, and it is a real gap:** no parity bound is derived for a
+build that can fuse a multiply-add. `tests/parity/test_bezier_arithmetic.py` skips all its
+assertions there, so on the first `-march=x86-64-v3` build the module loses 519 of 519 and the
+suite stays green. The reason originally given was refuted, `test_quad_gauss_legendre.py` already
+derives and probes such a bound on this non-fusing host. **It is a prerequisite for the ISA
+ladder of `design/simd.md`**, and the tolerance audit left a derivation sketch per kernel in the
+review artifact.
 
-**The downstream grep is DONE** (2026-08-21) and it changes the plan for `bezier`. Nothing was
-broken by `PointsLattice` or by the package split. But the consumer imports
-`pantr.bezier._root_finding_core._de_casteljau_eval_scalar`, `pantr.bezier._bezier.Bezier` and
-`pantr.grid._bvh_core._BVH_STACK_DEPTH`, all present on `main`. **`bezier` is therefore the first
-port that touches symbols it uses**, and a Numba kernel is exactly what a port reorganises, so
-decide `_de_casteljau_eval_scalar`'s fate deliberately. Full detail in
-[[downstream-consumer-surface]].
+**Ground the deep review never covered**, because a session limit killed three agents: the four
+strings in `tests/parity/test_bezier_arithmetic.py` that justify the bitwise equalities have not
+been adversarially audited, and the accumulation widths were never verified against numba's typed
+IR. Both are worth doing at the start of block B rather than never.
 
-**The float32 width question is answered, and the answer is that widening is free.** The only
-change_basis function the consumer uses is the one builder that runs no solve, and it never asks
-for float32. So the Gram products and the LU can move to double whenever we want, which also
-raises the float32 degree ceilings (8 to 14, 12 to 26). It is now a decision about pantr alone.
+**Two things found and left alone, both pre-existing on `proto/cpp`:**
+- `_bezier_degree.py:35` imports `_tabulate_Bernstein_basis_1D_serial_core` straight from
+  `basis._basis_core`, bypassing that catalogue, so under `PANTR_BACKEND=cpp` the rational degree
+  search's collocation matrix mixes C++ nodes with a Numba tabulation. Now covered by eight
+  rational parity cases; measured, it moves no verdict.
+- `_AUTO_REDUCTION_TOL_FACTOR` is dilation-invariant but not translation-invariant: the same
+  curve reduces to degree 3 at the origin and degree 2 at offset 1e2.
 
-**Open and not ours**: #336 (THB extraction performance, outside Stage 1). **Open and ours**:
-#341 (tanh-sinh endpoint distance, an enhancement).
+**Open and not ours**: #336 (THB extraction performance). **Open and ours**: #341 (tanh-sinh
+endpoint distance).
 
-**One question left for Pablo, deliberately unanswered in the PR**: `pyproject.toml` declares
-`license = "MIT"` while the wheel now contains statically linked MPL-2.0 code. The licence text
-ships, which is required either way; whether the declaration should change is not a port's call.
-
-See [[decisions-pointer]], [[dispatching-agents]], [[performance-followup]] and
-[[expired-guard-rationales]].
+See [[decisions-pointer]], [[proto-cpp-pr-mechanics]], [[dispatching-agents]],
+[[downstream-consumer-surface]] and [[performance-followup]].

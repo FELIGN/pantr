@@ -87,3 +87,42 @@ it before writing it down**, not after. And when amending a document, read what 
 twice this cycle the answer was four directories away or in the same file.
 
 See [[dispatching-agents]] for how to run those adversarial agents without them colliding.
+
+
+## The bezier cycle, 2026-08-22: the prose failed differently, and the tree already knew
+
+Fourth cycle, nineteen findings again, and the kernels right again. **What changed is the
+shape of the failure**: not fabricated citations this time but *justifications*, and three of
+the four I wrote for my own decisions were refuted. Two of them by evidence already sitting in
+this repository.
+
+- **I justified a design decision with a mechanism that does not exist.** The record-shaped
+  catalogue entry was defended by "a `ContextVar` scoped to a thread or task lets two
+  resolutions in one call diverge". That inverts it: each thread gets its own context and a
+  task runs in a copy, so the property I named as the danger is what makes the failure
+  impossible. Measured, 0 of 2000 both ways. The code was harmless; the sentence was in the
+  design note that governs the next ports.
+- **I justified *not* doing work with a problem the tree had already solved.** I skipped
+  deriving a parity bound for a fusing build because "a bound for a branch no host can execute
+  would ship untested". `tests/parity/test_quad_gauss_legendre.py` derives one **and probes it
+  on this same non-fusing host**, three lines of it. I had read that file during the quad port.
+- **A tolerance whose mechanism I asserted without checking.** I claimed Sterbenz exactness of
+  `c_1 - c_0`; the kernel never subtracts two control points. It was vacuous on its own data
+  (error exactly zero) and false off it by 1.7e5.
+- **Figures with no artifact.** Every headline count lived in a scratch directory. Real, three
+  later reproduced exactly by a reviewer, and none re-derivable by anyone else. `bernstein.hpp`
+  had been pointing at a committed test for its own claim since the previous port.
+
+**The new rule, and it is cheap: before writing why a decision is right, grep the tree for a
+sibling that faced it.** Two of the four would have died on one `grep`. This is the same lesson
+as "read what the document already proves", widened from documents to code.
+
+**Second new rule: a measurement quoted in a permanent artifact needs a committed script.** Not
+because the number is likely wrong, but because a number nobody can re-derive is a number
+nobody can refute, which is the wrong shape for a design note.
+
+And one that goes the other way, worth recording so the tally stays honest: **a lens overstated
+a finding and I caught it by measuring.** An agent reported that `PANTR_BACKEND` changes what
+the library accepts. The public API refuses the mismatch identically on both backends; the
+asymmetry exists only for a direct Layer 3 call, where nothing validates by design. Do not
+relay a finding you have not reproduced, in either direction.
