@@ -69,6 +69,15 @@ user-facing, and the ports change what it affects.
   computed by Newton on the Legendre recurrence rather than through `numpy.polynomial.leggauss`.
   Neither is a reimplementation for its own sake: both are the reference the C++ is checked
   against, and `leggauss` has no operation-for-operation transliteration.
+- **The Bézier parity claims now hold on a build that can fuse a multiply-add**, instead of
+  being skipped there. Each claim is selected at run time: exact where the target ISA has no
+  fused multiply-add, which is the shipped configuration, and bounded where it has one. The
+  bound charges three accumulator roundings and two storage roundings per stage of the
+  dependency chain, and differs between kernels only in the magnitude it multiplies. This
+  matters ahead of any build that raises the instruction-set baseline: before it, such a build
+  would have turned every one of those assertions into a skip and left the suite green.
+- `scripts/measure_bezier_fma_bound.py`, which reproduces the bound's slack against whatever
+  extension is installed, and prints how to build one that fuses.
 
 ### Changed
 - `pantr.change_basis` is a package rather than a single module, so that its dispatch catalogue
