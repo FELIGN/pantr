@@ -36,7 +36,10 @@
 /// target that is inert, since base `x86-64` has no FMA instruction; with
 /// `-march=native` it is not, and 125 of 630 `float64` de Casteljau values move.
 /// This is the `__fp_contract__` runtime gate of design/build_findings.md, not a
-/// property of the code, and the parity tests read it rather than assuming it.
+/// property of the code, and the parity tests read it rather than assuming it: they
+/// claim bitwise where the target ISA has no fused multiply-add and bounded where it
+/// has one. Rule 10 of design/backend_parity.md states the bound, and
+/// scripts/measure_bezier_fma_bound.py reproduces its slack.
 ///
 /// The one transcendental is `pow`, seeding the evaluation recurrence.
 /// `cpp/include/pantr/basis/bernstein.hpp` records the same open question and the
