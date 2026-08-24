@@ -818,12 +818,17 @@ class TestBernsteinPinvCache:
 
     @pytest.mark.usefixtures("_clean_pinv_cache")
     def test_a_strided_node_array_agrees_with_its_contiguous_copy(self) -> None:
-        """Keying on the buffer must read the logical values, not the memory layout."""
+        """Keying on the buffer must read the logical values, not the memory layout.
+
+        Equal output is not enough to show that: it would hold even if the strided
+        call missed and recomputed. The cache size pins that the two share one entry.
+        """
         dense = get_modified_chebyshev_nodes_1d(16, np.float64)
         strided = np.repeat(dense, 2)[::2]
         assert not strided.flags.c_contiguous
 
         nptest.assert_array_equal(_build_bernstein_pinv(strided), _build_bernstein_pinv(dense))
+        assert _bernstein_pinv_cached.cache_info().currsize == 1
 
     def test_the_degenerate_single_node_case_still_short_circuits(self) -> None:
         """One node at degree zero returns the one-by-one identity without a solve."""
@@ -832,17 +837,49 @@ class TestBernsteinPinvCache:
         )
 
     @pytest.mark.usefixtures("_clean_pinv_cache")
+    def test_a_different_degree_is_a_different_entry(self) -> None:
+        """The same nodes at two degrees give two matrices, not one reused twice.
+
+        Unlike a wrong dtype or tolerance, a dropped ``degree`` key would usually
+        surface as a shape mismatch somewhere downstream rather than here, which is
+        why it gets its own assertion.
+        """
+        nodes = get_modified_chebyshev_nodes_1d(10, np.float64)
+
+        exact = _build_bernstein_pinv(nodes, None, None)
+        reduced = _build_bernstein_pinv(nodes, None, 4)
+
+        assert exact.shape == (10, 10)
+        assert reduced.shape == (5, 10)
+
+    @pytest.mark.usefixtures("_clean_pinv_cache")
+    def test_the_cached_matrix_is_the_one_the_computation_produces(self) -> None:
+        """A cache hit returns what an uncached build would have, bit for bit.
+
+        The size-guard test below cannot check this: its branch *is* a call to
+        :func:`_compute_bernstein_pinv`, so the two sides agree by construction. This
+        one goes through the cache, where the nodes are rebuilt from their bytes.
+        """
+        nodes = get_modified_chebyshev_nodes_1d(13, np.float64)
+        expected = _compute_bernstein_pinv(nodes, None, None)
+
+        _build_bernstein_pinv(nodes)  # populate
+        nptest.assert_array_equal(_build_bernstein_pinv(nodes), expected)
+
+    @pytest.mark.usefixtures("_clean_pinv_cache")
     def test_a_matrix_too_large_to_hold_is_not_cached(self) -> None:
         """A wide fit against very many nodes computes and discards, rather than retaining.
 
         The shape that pays worst is the one the guard is for: the saving scales with
-        the degree while the retained memory scales with the node count.
+        the degree while the retained memory scales with the node count. The pair
+        straddles the cap so the test pins the boundary rather than one side of it.
         """
         degree = 5
-        n_pts = 2 * _PINV_CACHE_MAX_ELEMENTS // (degree + 1)
-        nodes = np.linspace(0.0, 1.0, n_pts)
+        under = _PINV_CACHE_MAX_ELEMENTS // (degree + 1)
+        over = 2 * under
 
-        pinv = _build_bernstein_pinv(nodes, None, degree)
+        _build_bernstein_pinv(np.linspace(0.0, 1.0, under), None, degree)
+        assert _bernstein_pinv_cached.cache_info().currsize == 1
 
-        assert _bernstein_pinv_cached.cache_info().currsize == 0
-        nptest.assert_array_equal(pinv, _compute_bernstein_pinv(nodes, None, degree))
+        _build_bernstein_pinv(np.linspace(0.0, 1.0, over), None, degree)
+        assert _bernstein_pinv_cached.cache_info().currsize == 1

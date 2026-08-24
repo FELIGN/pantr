@@ -51,7 +51,7 @@ so this is generous for the case the cache exists to serve and small enough to
 bound the pathological one.
 """
 
-_PINV_CACHE_MAX_ELEMENTS: Final[int] = 1 << 16
+_PINV_CACHE_MAX_ELEMENTS: Final[int] = 1 << 14
 """Largest pseudo-inverse that is worth holding on to, in matrix entries.
 
 Entry count alone does not bound memory, because an entry is a whole
@@ -61,10 +61,19 @@ worst: the saving scales with the degree while the memory scales with the node
 count, and such a fit is usually performed once rather than repeatedly.  Above
 this size the factorization is computed and discarded.
 
-The cap itself is a **policy choice, not a derivation**.  It is set so that a
-full cache of ``_PINV_CACHE_SIZE`` float64 entries stays under twenty megabytes,
-and so that every square case this module is accurate at, and any rectangular fit
-of plausible width, still lands inside it.
+**An entry costs about twice the matrix**, because :func:`functools.lru_cache`
+retains the key as well as the value and the key holds the nodes' bytes.  At
+``degree = 0`` the two are the same size, which is the worst case and also the
+shape above.  So the cache *retains* at most about
+``2 * _PINV_CACHE_SIZE * _PINV_CACHE_MAX_ELEMENTS`` float64 values, eight
+megabytes.  That bounds what is held, not the peak: one factorization's own
+workspace is transiently larger than the entry it produces, and no cache policy
+changes that.
+
+The cap itself is a **policy choice, not a derivation**.  It admits every square
+case this module is accurate at with room to spare (the Bernstein Vandermonde is
+outside its accuracy domain well below 128 nodes), and a rectangular fit of any
+plausible width: a degree-5 fit against 2730 nodes still lands inside it.
 """
 
 
@@ -87,9 +96,10 @@ def _bernstein_vandermonde_svd(
 
     Note:
         Unlike :func:`_build_bernstein_pinv`, this factorization is **not**
-        memoized, because nothing in this package calls it: neither public entry
+        memoized, because no production code calls it: neither public entry
         point reaches it, and its only caller, :func:`_bernstein_interpolate`,
-        has no caller here either.  See
+        is itself reached only from the tests and from
+        ``tools/adversarial_sweep``.  See
         ``design/bezier_interpolation_port.md`` for the measurement and for what
         would make memoizing it worthwhile.
 
@@ -238,6 +248,36 @@ def _resolve_nodes(
     return node_list_seq
 
 
+def _resolve_degree(n_pts: int, degree: int | None) -> int:
+    """Resolve the target Bernstein degree, defaulting to exact interpolation.
+
+    Single source of the default so that :func:`_build_bernstein_pinv`'s size
+    guard and :func:`_compute_bernstein_pinv` cannot drift apart: the guard must
+    bound the matrix the computation actually builds.
+
+    Args:
+        n_pts (int): Number of interpolation nodes.
+        degree (int | None): Requested degree, or *None* for ``n_pts - 1``.
+
+    Returns:
+        int: The degree the pseudo-inverse will be built for.
+    """
+    return n_pts - 1 if degree is None else degree
+
+
+def _pinv_size(n_pts: int, degree: int | None) -> int:
+    """Count the entries of the pseudo-inverse for a node count and degree.
+
+    Args:
+        n_pts (int): Number of interpolation nodes.
+        degree (int | None): Requested degree, or *None* for ``n_pts - 1``.
+
+    Returns:
+        int: ``(degree + 1) * n_pts``, the size the cache is bounded on.
+    """
+    return (_resolve_degree(n_pts, degree) + 1) * n_pts
+
+
 def _build_bernstein_pinv(
     nodes: npt.NDArray[np.floating[Any]],
     tol: float | None = None,
@@ -280,8 +320,7 @@ def _build_bernstein_pinv(
         ``(degree + 1, n_pts)``.  Freshly copied and safe to mutate.
     """
     n_pts = nodes.shape[0]
-    deg = n_pts - 1 if degree is None else degree
-    if (deg + 1) * n_pts > _PINV_CACHE_MAX_ELEMENTS:
+    if _pinv_size(n_pts, degree) > _PINV_CACHE_MAX_ELEMENTS:
         return _compute_bernstein_pinv(nodes, tol, degree)
     return _bernstein_pinv_cached(nodes.tobytes(), nodes.dtype, tol, degree).copy()
 
@@ -344,7 +383,7 @@ def _compute_bernstein_pinv(
     """
     n_pts = nodes.shape[0]
     dtype = nodes.dtype
-    deg = n_pts - 1 if degree is None else degree
+    deg = _resolve_degree(n_pts, degree)
 
     if n_pts == 1 and deg == 0:
         return np.ones((1, 1), dtype=dtype)
