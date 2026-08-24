@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-The dual-backend prototype on the `proto/cpp` branch. Four module pull requests so far: the
+The dual-backend prototype on the `proto/cpp` branch. Five module pull requests so far: the
 infrastructure, the `quad` port, the `change_basis` port, the `bezier` arithmetic port and the
 `bezier` root-finding port. The
 infrastructure landed without a changelog entry, so this section covers all of them -- the environment variable it introduced is
@@ -109,6 +109,19 @@ user-facing, and the ports change what it affects.
   writing the obvious thing would break parity on every `float32` input at the degree-1 base case.
 - `scripts/measure_bezier_fma_bound.py`, which reproduces the bound's slack against whatever
   extension is installed, and prints how to build one that fuses.
+
+### Performance
+- **`interpolate_bezier` and `fit_bezier` are several times faster on a tensor-product grid.**
+  Both recovered the Bernstein coefficients through a truncated-SVD pseudo-inverse that they
+  rebuilt from scratch on every call, once per parametric direction, and that factorization was
+  the largest single cost in the call. It is now computed once per distinct set of nodes,
+  tolerance and target degree. Measured with threads pinned, roughly three to eight times
+  faster, the gain growing with the order; a square two-dimensional grid gains twice
+  over, since both directions share one node set. Results are **bitwise identical**, and the
+  matrix is handed out as a fresh copy, so a caller that mutates it still can.
+
+  Fitting to **scattered** points is unchanged: its matrix is built from the caller's own
+  points, so there is nothing to reuse between calls.
 
 ### Changed
 - `pantr.change_basis` is a package rather than a single module, so that its dispatch catalogue
