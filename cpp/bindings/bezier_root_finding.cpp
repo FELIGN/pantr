@@ -86,16 +86,27 @@ void require_coefficients(const Arr& coeff, const char* what) {
     }
 }
 
-/// Raise unless `out` can hold `needed` entries.
+/// Raise unless `out` can hold `needed` entries along `axis`.
 ///
 /// A lower bound rather than an equality: the caller sizes the row by the degree
 /// while a kernel's worst case can be larger, and refusing a buffer that is merely
 /// generous would be wrong.
+///
+/// The axis is explicit because getting it wrong is silent. An earlier version took
+/// `shape(0)` implicitly, which is the right axis for the 1-D outputs and the wrong
+/// one for `find_roots_batch`'s 2-D `out_roots`, whose first axis is the polynomial
+/// count and whose **second** is the row the kernel writes into. The check then
+/// duplicated a constraint already enforced two lines above, the row width went
+/// unchecked, and an undersized buffer was accepted with the per-row count silently
+/// clamped to whatever fitted: a batch with two roots reported one, and with a
+/// zero-width row reported none, both without an error.
 template <class Arr>
-void require_capacity(const Arr& out, std::size_t needed, const char* what) {
-    if (out.shape(0) < needed) {
-        throw nb::value_error((std::string(what) + " holds " + std::to_string(out.shape(0)) +
-                               " entries, but this call can produce " + std::to_string(needed))
+void require_capacity(const Arr& out, std::size_t axis, std::size_t needed, const char* what) {
+    if (out.shape(axis) < needed) {
+        throw nb::value_error((std::string(what) + " holds " +
+                               std::to_string(out.shape(axis)) + " entries along axis " +
+                               std::to_string(axis) + ", but this call can produce " +
+                               std::to_string(needed))
                                   .c_str());
     }
 }
@@ -123,11 +134,11 @@ std::size_t clip_capacity(std::size_t coeff_count) {
 }
 
 template <class T>
-int bind_yuksel_roots(const_vec<T> coeff, double tol, out_vec<double> out) {
+int bind_yuksel_roots(const_vec<T> coeff, double param_tol, out_vec<double> out) {
     require_coefficients(coeff, "coeff");
-    require_tolerance(tol, "tol");
-    require_capacity(out, yuksel_capacity(coeff.shape(0)), "out");
-    return pantr::yuksel_roots<T>(std::span<const T>(coeff.data(), coeff.shape(0)), tol,
+    require_tolerance(param_tol, "param_tol");
+    require_capacity(out, 0, yuksel_capacity(coeff.shape(0)), "out");
+    return pantr::yuksel_roots<T>(std::span<const T>(coeff.data(), coeff.shape(0)), param_tol,
                                   std::span<double>(out.data(), out.shape(0)));
 }
 
@@ -136,13 +147,13 @@ int bind_clip_roots(const_vec<T> coeff, double param_tol, double geom_tol, out_v
     require_coefficients(coeff, "coeff");
     require_tolerance(param_tol, "param_tol");
     require_tolerance(geom_tol, "geom_tol");
-    require_capacity(out, clip_capacity(coeff.shape(0)), "out");
+    require_capacity(out, 0, clip_capacity(coeff.shape(0)), "out");
     return pantr::clip_roots<T>(std::span<const T>(coeff.data(), coeff.shape(0)), param_tol,
                                 geom_tol, std::span<double>(out.data(), out.shape(0)));
 }
 
 template <class T>
-int bind_dedup_roots(const_vec<double> raw_roots, int n_roots, const_vec<T> coeff,
+int bind_dedup_roots(const_vec<T> coeff, const_vec<double> raw_roots, int n_roots,
                      double param_tol, double geom_tol, out_vec<double> out) {
     require_coefficients(coeff, "coeff");
     require_tolerance(param_tol, "param_tol");
@@ -153,7 +164,7 @@ int bind_dedup_roots(const_vec<double> raw_roots, int n_roots, const_vec<T> coef
                                std::to_string(raw_roots.shape(0)))
                                   .c_str());
     }
-    require_capacity(out, static_cast<std::size_t>(n_roots), "out");
+    require_capacity(out, 0, static_cast<std::size_t>(n_roots), "out");
     return pantr::dedup_roots<T>(
         std::span<const double>(raw_roots.data(), raw_roots.shape(0)), n_roots,
         std::span<const T>(coeff.data(), coeff.shape(0)), param_tol, geom_tol,
@@ -161,10 +172,11 @@ int bind_dedup_roots(const_vec<double> raw_roots, int n_roots, const_vec<T> coef
 }
 
 template <class T>
-double bind_solve_monotone_root(const_vec<T> coeff, double tol) {
+double bind_solve_monotone_root(const_vec<T> coeff, double param_tol) {
     require_coefficients(coeff, "coeff");
-    require_tolerance(tol, "tol");
-    return pantr::solve_monotone_root<T>(std::span<const T>(coeff.data(), coeff.shape(0)), tol);
+    require_tolerance(param_tol, "param_tol");
+    return pantr::solve_monotone_root<T>(std::span<const T>(coeff.data(), coeff.shape(0)),
+                                         param_tol);
 }
 
 template <class T>
@@ -183,7 +195,10 @@ void bind_find_roots_batch(const_mat<T> coeffs, double param_tol, double geom_to
                                std::to_string(out_counts.shape(0)))
                                   .c_str());
     }
-    require_capacity(out_roots, 1, "out_roots");
+    // The row the kernel writes into. A degree-n polynomial has at most n roots,
+    // and Layer 2 allocates max(n, 1) so a degree-0 batch still has somewhere to
+    // write nothing.
+    require_capacity(out_roots, 1, yuksel_capacity(coeffs.shape(1)), "out_roots");
     pantr::find_roots_batch<T>(
         pantr::span2d<const T>(coeffs.data(), coeffs.shape(0), coeffs.shape(1)), param_tol,
         geom_tol, pantr::span2d<double>(out_roots.data(), out_roots.shape(0), out_roots.shape(1)),
@@ -191,8 +206,9 @@ void bind_find_roots_batch(const_mat<T> coeffs, double param_tol, double geom_to
 }
 
 template <class T>
-void bind_solve_monotone_root_batch(const_mat<T> coeffs, double tol, out_vec<double> out_roots) {
-    require_tolerance(tol, "tol");
+void bind_solve_monotone_root_batch(const_mat<T> coeffs, double param_tol,
+                                    out_vec<double> out_roots) {
+    require_tolerance(param_tol, "param_tol");
     if (coeffs.shape(1) == 0) {
         throw nb::value_error("coeffs has no columns, but each row's degree is inferred as its "
                               "length minus one, which needs at least one coefficient");
@@ -203,7 +219,7 @@ void bind_solve_monotone_root_batch(const_mat<T> coeffs, double tol, out_vec<dou
                                   .c_str());
     }
     pantr::solve_monotone_root_batch<T>(
-        pantr::span2d<const T>(coeffs.data(), coeffs.shape(0), coeffs.shape(1)), tol,
+        pantr::span2d<const T>(coeffs.data(), coeffs.shape(0), coeffs.shape(1)), param_tol,
         std::span<double>(out_roots.data(), out_roots.shape(0)));
 }
 
@@ -215,45 +231,53 @@ void register_bezier_root_finding(nb::module_& m) {
     // contiguity constraint by filling a temporary and discarding it, so an
     // out-parameter silently does nothing.
     //
-    // `param_tol` and `geom_tol` are adjacent same-typed positional parameters and
-    // transposing them returns a different, plausible root set rather than an
-    // error. They are not made keyword-only because the Numba kernels they stand in
-    // for take them positionally and the catalogue hands out both; the ordering trap
-    // is instead closed one layer up, where `_find_roots.py` passes the same
-    // resolved tolerance to each.
+    // Two traps closed by the signature rather than by a comment, both found by an
+    // audit of this surface against its three siblings.
+    //
+    // `param_tol` and `geom_tol` are adjacent, same-typed, and nothing orders them,
+    // so `require_ordered_bounds` -- the guard `bezier.cpp` uses for `lower`/`upper`
+    // -- has no analogue here. Transposed, they return a different and plausible
+    // root set. An earlier version left them positional on the grounds that the
+    // Numba kernels take them so; that does not bind this signature, since the
+    // catalogue already adapts the return shape and can adapt the call too.
+    //
+    // `dedup_roots` takes the coefficients **first**, as every sibling in this file
+    // and every accessor in the four catalogues does. Its `raw_roots` is always
+    // `float64` and `coeff` frequently is, so a transposed call type-checks, runs,
+    // and merges against the wrong data.
     m.def("yuksel_roots", &bind_yuksel_roots<double>, nb::arg("coeff").noconvert(),
-          nb::arg("tol"), nb::kw_only(), nb::arg("out").noconvert());
-    m.def("yuksel_roots", &bind_yuksel_roots<float>, nb::arg("coeff").noconvert(), nb::arg("tol"),
-          nb::kw_only(), nb::arg("out").noconvert());
+          nb::arg("param_tol"), nb::kw_only(), nb::arg("out").noconvert());
+    m.def("yuksel_roots", &bind_yuksel_roots<float>, nb::arg("coeff").noconvert(),
+          nb::arg("param_tol"), nb::kw_only(), nb::arg("out").noconvert());
 
-    m.def("clip_roots", &bind_clip_roots<double>, nb::arg("coeff").noconvert(),
-          nb::arg("param_tol"), nb::arg("geom_tol"), nb::kw_only(), nb::arg("out").noconvert());
-    m.def("clip_roots", &bind_clip_roots<float>, nb::arg("coeff").noconvert(),
-          nb::arg("param_tol"), nb::arg("geom_tol"), nb::kw_only(), nb::arg("out").noconvert());
+    m.def("clip_roots", &bind_clip_roots<double>, nb::arg("coeff").noconvert(), nb::kw_only(),
+          nb::arg("param_tol"), nb::arg("geom_tol"), nb::arg("out").noconvert());
+    m.def("clip_roots", &bind_clip_roots<float>, nb::arg("coeff").noconvert(), nb::kw_only(),
+          nb::arg("param_tol"), nb::arg("geom_tol"), nb::arg("out").noconvert());
 
-    m.def("dedup_roots", &bind_dedup_roots<double>, nb::arg("raw_roots").noconvert(),
-          nb::arg("n_roots"), nb::arg("coeff").noconvert(), nb::arg("param_tol"),
-          nb::arg("geom_tol"), nb::kw_only(), nb::arg("out").noconvert());
-    m.def("dedup_roots", &bind_dedup_roots<float>, nb::arg("raw_roots").noconvert(),
-          nb::arg("n_roots"), nb::arg("coeff").noconvert(), nb::arg("param_tol"),
-          nb::arg("geom_tol"), nb::kw_only(), nb::arg("out").noconvert());
+    m.def("dedup_roots", &bind_dedup_roots<double>, nb::arg("coeff").noconvert(),
+          nb::arg("raw_roots").noconvert(), nb::arg("n_roots"), nb::kw_only(),
+          nb::arg("param_tol"), nb::arg("geom_tol"), nb::arg("out").noconvert());
+    m.def("dedup_roots", &bind_dedup_roots<float>, nb::arg("coeff").noconvert(),
+          nb::arg("raw_roots").noconvert(), nb::arg("n_roots"), nb::kw_only(),
+          nb::arg("param_tol"), nb::arg("geom_tol"), nb::arg("out").noconvert());
 
     m.def("solve_monotone_root", &bind_solve_monotone_root<double>, nb::arg("coeff").noconvert(),
-          nb::arg("tol"));
+          nb::arg("param_tol"));
     m.def("solve_monotone_root", &bind_solve_monotone_root<float>, nb::arg("coeff").noconvert(),
-          nb::arg("tol"));
+          nb::arg("param_tol"));
 
     m.def("find_roots_batch", &bind_find_roots_batch<double>, nb::arg("coeffs").noconvert(),
-          nb::arg("param_tol"), nb::arg("geom_tol"), nb::kw_only(),
+          nb::kw_only(), nb::arg("param_tol"), nb::arg("geom_tol"),
           nb::arg("out_roots").noconvert(), nb::arg("out_counts").noconvert());
     m.def("find_roots_batch", &bind_find_roots_batch<float>, nb::arg("coeffs").noconvert(),
-          nb::arg("param_tol"), nb::arg("geom_tol"), nb::kw_only(),
+          nb::kw_only(), nb::arg("param_tol"), nb::arg("geom_tol"),
           nb::arg("out_roots").noconvert(), nb::arg("out_counts").noconvert());
 
     m.def("solve_monotone_root_batch", &bind_solve_monotone_root_batch<double>,
-          nb::arg("coeffs").noconvert(), nb::arg("tol"), nb::kw_only(),
+          nb::arg("coeffs").noconvert(), nb::arg("param_tol"), nb::kw_only(),
           nb::arg("out_roots").noconvert());
     m.def("solve_monotone_root_batch", &bind_solve_monotone_root_batch<float>,
-          nb::arg("coeffs").noconvert(), nb::arg("tol"), nb::kw_only(),
+          nb::arg("coeffs").noconvert(), nb::arg("param_tol"), nb::kw_only(),
           nb::arg("out_roots").noconvert());
 }

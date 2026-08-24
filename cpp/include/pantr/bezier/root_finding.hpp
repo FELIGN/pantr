@@ -326,13 +326,19 @@ int count_sign_changes(std::span<const T> coeff) {
 /// already ordered so no sort is needed, then every hull edge is tested against
 /// `y = 0`.
 ///
-/// Two things about the orientation predicate. Its coefficient **differences run at
-/// `T`** and only the integer factor promotes the product, which is numpy's
-/// promotion of `int64` against `float32` and the opposite of what a C++ template
-/// over `T` gives by default; widening the differences first matched only 3541 of
-/// 10000 float32 triples. And on an exactly collinear polygon the predicate is
-/// exactly zero, so `cross >= 0` holds and the vertex is popped: that exact tie is
-/// what contraction destroys. See this file's opening note.
+/// Two widths here, and the second was missed on the first pass. The orientation
+/// predicate's coefficient **differences run at `T`** and only the integer factor
+/// promotes the product, which is numpy's promotion of `int64` against `float32` and
+/// the opposite of what a C++ template over `T` gives by default; widening the
+/// differences first matched only 3541 of 10000 float32 triples. The **edge-crossing
+/// quotient** is at `T` too, for a plainer reason: the oracle reads both endpoints
+/// out of the coefficient array and divides them, and only the multiplication by the
+/// float64 span promotes. That one was written widened and diverged on all 10143
+/// sign-changing float32 edges measured.
+///
+/// And on an exactly collinear polygon the predicate is exactly zero, so `cross >= 0`
+/// holds and the vertex is popped: that exact tie is what contraction destroys. See
+/// this file's opening note.
 ///
 /// \tparam T Coefficient type. Reached with `double` from every call site in the
 ///     library, since the caller passes the widened sub-interval coefficients; the
@@ -388,17 +394,24 @@ bool clip_hull_to_zero(std::span<const T> coeff, std::span<std::int64_t> chain, 
         for (std::ptrdiff_t k = 0; k < size - 1; ++k) {
             const auto ia = static_cast<std::ptrdiff_t>(chain[static_cast<std::size_t>(k)]);
             const auto ib = static_cast<std::ptrdiff_t>(chain[static_cast<std::size_t>(k) + 1]);
-            const auto da = static_cast<double>(coeff[static_cast<std::size_t>(ia)]);
-            const auto db = static_cast<double>(coeff[static_cast<std::size_t>(ib)]);
-            if (da * db < 0.0) {
+            const T da = coeff[static_cast<std::size_t>(ia)];
+            const T db = coeff[static_cast<std::size_t>(ib)];
+            // At T, not at double. The oracle reads both endpoints straight out of
+            // the coefficient array, so the sign test and the quotient are T
+            // operations and only the multiplication by the float64 span promotes.
+            // Widening them first diverges on every one of 10143 sign-changing
+            // float32 edges measured, and the T-width product can underflow to zero
+            // and miss a crossing, which is the same mechanism as FELIGN/pantr#351.
+            if (da * db < T{0}) {
                 const double ta = static_cast<double>(ia) * inv_n;
                 const double tb = static_cast<double>(ib) * inv_n;
-                const double crossing = ta + (-da) / (db - da) * (tb - ta);
+                const T quotient = static_cast<T>(static_cast<T>(-da) / static_cast<T>(db - da));
+                const double crossing = ta + static_cast<double>(quotient) * (tb - ta);
                 t_lo = std::min(t_lo, crossing);
                 t_hi = std::max(t_hi, crossing);
                 found = true;
             }
-            if (da == 0.0) {
+            if (da == T{0}) {
                 const double ta = static_cast<double>(ia) * inv_n;
                 t_lo = std::min(t_lo, ta);
                 t_hi = std::max(t_hi, ta);

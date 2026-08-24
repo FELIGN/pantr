@@ -31,7 +31,10 @@ Five widths follow, three of them not what a C++ author would write by default:
   float64 argument, and **narrows on every store** into the ``coeff.copy()`` buffer;
 * the derivative kernel does the same and then takes ``d1 - d0`` **in float32**;
 * the hull predicate subtracts ``coeff[i] - coeff[j0]`` **in float32** before the
-  integer factor promotes the product;
+  integer factor promotes the product, and the hull's **edge-crossing quotient** is
+  at float32 too, for a different reason: no integer enters it until the span. That
+  second one was missed on the first pass and the C++ was written widened as a
+  result, inert only because the kernel is reached with a float64 buffer;
 * the Yuksel forward difference subtracts **in float32** and widens on the store into
   a ``float64`` array;
 * the degree-1 base case divides ``c0 / (c0 - c1)`` **entirely in float32**. This is
@@ -207,6 +210,30 @@ def _linear_root(coeff: _FloatArray) -> float:
 
 
 @nb_jit(nopython=True, cache=False)
+def _hull_crossing(coeff: _FloatArray, ia: int, ib: int, inv_n: float) -> float:
+    """Reproduce the edge-crossing quotient, ``_root_finding_core.py:290``.
+
+    Args:
+        coeff (_FloatArray): Bernstein coefficients.
+        ia (int): Index of the edge's left vertex.
+        ib (int): Index of its right vertex.
+        inv_n (float): One over the degree.
+
+    Returns:
+        float: The parameter at which the hull edge crosses zero.
+
+    Note:
+        Inputs are assumed to be correct (no validation performed). The caller
+        guarantees the two coefficients have opposite signs.
+    """
+    da = coeff[ia]
+    db = coeff[ib]
+    ta = ia * inv_n
+    tb = ib * inv_n
+    return float(ta + (-da) / (db - da) * (tb - ta))
+
+
+@nb_jit(nopython=True, cache=False)
 def _hull_cross(coeff: _FloatArray, i: int, j0: int, j1: int) -> float:
     """Reproduce the orientation predicate, ``_root_finding_core.py:274``.
 
@@ -367,6 +394,53 @@ def measure_hull_predicate(rng: np.random.Generator) -> list[Verdict]:
     return [
         Verdict(site, "coefficient differences in float32", hits[0], total, differ),
         Verdict(site, "coefficient differences widened first", hits[1], total, differ),
+    ]
+
+
+def measure_hull_crossing(rng: np.random.Generator) -> list[Verdict]:
+    """Measure the width of the hull's edge-crossing quotient.
+
+    A second width in the same kernel as :func:`measure_hull_predicate` and a
+    different one, which is why it is measured separately rather than assumed to
+    follow. The predicate promotes because an integer factor enters; this has no
+    integer factor until the span, so the division stays at the coefficient width and
+    only the multiplication by the float64 span promotes.
+
+    This site was **missed** by the first version of this script, and the C++ was
+    written widened as a result. The error was inert, because the kernel is only ever
+    reached with the float64 subdivision buffer, but the header claims a float
+    instantiation and would have been wrong the day one existed.
+
+    Args:
+        rng (np.random.Generator): Source of the coefficient samples.
+
+    Returns:
+        list[Verdict]: The in-dtype model and the widen-first model.
+    """
+    hits = [0, 0]
+    differ = total = 0
+    for _trial in range(20000):
+        degree = int(rng.integers(2, 20))
+        coeff = rng.standard_normal(degree + 1).astype(_F32)
+        ia, ib = 0, degree
+        if (coeff[ia] > 0) == (coeff[ib] > 0):
+            continue
+        inv_n = 1.0 / degree
+        oracle = bits(_hull_crossing(coeff, ia, ib, inv_n))
+
+        da, db = coeff[ia], coeff[ib]
+        span = ib * inv_n - ia * inv_n
+        in_dtype = bits(ia * inv_n + float(_F32(_F32(-da) / _F32(db - da))) * span)
+        widened = bits(ia * inv_n + (-float(da)) / (float(db) - float(da)) * span)
+
+        total += 1
+        hits = [h + (m == oracle) for h, m in zip(hits, (in_dtype, widened), strict=True)]
+        differ += in_dtype != widened
+
+    site = "_root_finding_core.py:290"
+    return [
+        Verdict(site, "divide in float32, promote at the span", hits[0], total, differ),
+        Verdict(site, "widen both endpoints first", hits[1], total, differ),
     ]
 
 
@@ -832,12 +906,13 @@ def main() -> int:
     Returns:
         int: 0 when every width was confirmed and discriminated, 1 otherwise.
     """
-    seeds = np.random.SeedSequence(_SEED).spawn(9)
+    seeds = np.random.SeedSequence(_SEED).spawn(10)
     verdicts: list[Verdict] = []
     measurements = (
         measure_de_casteljau,
         measure_de_casteljau_derivative,
         measure_hull_predicate,
+        measure_hull_crossing,
         measure_forward_difference,
         measure_linear_base_case,
         measure_the_near_misses,
@@ -846,10 +921,10 @@ def main() -> int:
         verdicts.extend(measure(np.random.default_rng(seed)))
     sound = report(verdicts)
 
-    widened = report_the_float_cast(np.random.default_rng(seeds[6]))
-    measure_the_cube_root(np.random.default_rng(seeds[7]))
+    widened = report_the_float_cast(np.random.default_rng(seeds[7]))
+    measure_the_cube_root(np.random.default_rng(seeds[8]))
     report_minimum_and_maximum()
-    measure_the_hull_under_contraction(np.random.default_rng(seeds[8]))
+    measure_the_hull_under_contraction(np.random.default_rng(seeds[9]))
 
     if widened:
         print("\nfloat() widened after all, so every width above needs re-deriving.")

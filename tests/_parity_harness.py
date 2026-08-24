@@ -488,7 +488,7 @@ class ParityClaim(NamedTuple):
             near an endpoint, and its natural scale is the domain rather than its own
             magnitude. Where a claim carries a scale, the guard takes the larger of
             the two. None otherwise.
-        absolute (FloatArray | None): Elementwise absolute bound, used **only**
+        bound (FloatArray | None): Elementwise absolute bound, used **only**
             by CONVERGED, where the bound is the algorithm's own termination
             criterion and no rounding model produces it. None otherwise. Kept
             separate from ``amplification`` rather than overloading it, because
@@ -504,7 +504,7 @@ class ParityClaim(NamedTuple):
     storage: np.dtype[np.floating[Any]] | None
     amplification: FloatArray | None
     why: str
-    absolute: FloatArray | None = None
+    bound: FloatArray | None = None
     scale: float | None = None
 
 
@@ -739,7 +739,7 @@ def converged_parity(*, bound: FloatArray, scale: float, why: str) -> ParityClai
         storage=None,
         amplification=None,
         why=why,
-        absolute=arr,
+        bound=arr,
         scale=float(scale),
     )
 
@@ -924,13 +924,13 @@ def absolute_tolerance(claim: ParityClaim) -> FloatArray:
         shape = () if claim.amplification is None else claim.amplification.shape
         return np.zeros(shape, dtype=np.float64)
     if claim.kind is ParityKind.CONVERGED:
-        assert claim.absolute is not None  # CONVERGED by construction
+        assert claim.bound is not None  # CONVERGED by construction
         # Already a tolerance rather than an amplification, and **not** doubled:
         # the factor of two turns a one-sided forward-error bound into a two-sided
         # one, and this bound is two-sided to begin with. Each backend's answer is
         # within the criterion of the quantity it converged to, and the criterion
         # is the same one, so the difference is bounded by it directly.
-        return claim.absolute
+        return claim.bound
     assert claim.amplification is not None  # BOUNDED by construction
     relative = _relative_growth(claim) * claim.amplification
     return ONE_SIDED_TO_TWO_SIDED * (relative + _underflow_budget(claim))
