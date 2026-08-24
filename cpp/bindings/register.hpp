@@ -22,6 +22,13 @@ void register_change_basis(nanobind::module_& m);
 /// Register the `pantr.bezier` arithmetic kernel bindings on `m`.
 void register_bezier(nanobind::module_& m);
 
+/// Register the `pantr.grid` kernel bindings on `m`.
+///
+/// One entry point rather than three, unlike the two `pantr.bezier` halves below:
+/// the three grid headers are one port with one parity claim, and the comments
+/// that justify their checks argue from the same place.
+void register_grid(nanobind::module_& m);
+
 /// Register the `pantr.bezier` root-finding kernel bindings on `m`.
 ///
 /// Separate from `register_bezier` because the two halves of the package are
