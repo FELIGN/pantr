@@ -1,19 +1,19 @@
 #!/usr/bin/env python
-"""Reproduce the four measurements behind the decision not to port Bézier interpolation.
+"""Reproduce the five measurements behind the decision not to port Bézier interpolation.
 
 ``design/bezier_interpolation_port.md`` rules that ``_bezier_interpolate.py`` stays in
 Python, and rests that ruling on numbers. This is where they come from.
 
-    OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 \
+    OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 \
         PYTHONPATH="$(pwd)/src" .venv/bin/python \
         scripts/measure_bezier_interpolation_port.py
 
 **Pin the threads.** On a many-core box a threaded LAPACK SVD of a matrix that fits in
 L1 costs orders of magnitude more than the same call on one thread, and varies wildly
-between batches. Section 5 measures that directly; every other section is meaningless
+between batches. Section 6 measures that directly; every other section is meaningless
 without the pin, which is why the script refuses to run unpinned unless told to.
 
-The four measurements
+The five measurements
 ---------------------
 
 1. **What the SVD costs**, as a share of a call, and how many times a call takes one.
@@ -505,7 +505,7 @@ def main() -> int:
     pinned = all(os.environ.get(name) == "1" for name in _THREAD_VARS)
     if not pinned and not args.allow_unpinned:
         print(f"Threads are not pinned ({_thread_setting()}).", file=sys.stderr)
-        print("Timings taken this way are noise; see section 5. Re-run with", file=sys.stderr)
+        print("Timings taken this way are noise; see section 6. Re-run with", file=sys.stderr)
         print(f"  {' '.join(f'{name}=1' for name in _THREAD_VARS)} ...", file=sys.stderr)
         print("or pass --allow-unpinned to measure the artifact deliberately.", file=sys.stderr)
         return 1
