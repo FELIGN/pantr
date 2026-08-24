@@ -124,6 +124,7 @@ __all__ = [
     "bounded_parity",
     "build_provenance",
     "contraction_may_fuse",
+    "converged_parity",
     "cpp_backend_available",
     "demand_cpp_backend",
     "derived_accuracy",
@@ -405,10 +406,20 @@ class ParityKind(IntEnum):
             holds: a tolerance that is never approached asserts nothing.
         BOUNDED: The backends differ, within a bound derived from a rounding
             budget and an elementwise amplification.
+        CONVERGED: The backends differ, within a bound that comes from the
+            **algorithm** rather than from arithmetic: both ran the same
+            convergent iteration to the same termination criterion, so each
+            answer lies within that criterion of the quantity it converged to.
+            Such a bound does not scale with epsilon, does not grow with degree,
+            and would hold between two runs of the *same* backend that happened
+            to take different iteration paths. Added by the root-finding port,
+            which is the first kernel family whose difference is not a rounding
+            difference. See ``design/backend_parity.md`` Rule 11.
     """
 
     BITWISE = 0
     BOUNDED = 1
+    CONVERGED = 2
 
 
 class Roundings(NamedTuple):
@@ -450,11 +461,11 @@ class Roundings(NamedTuple):
 class ParityClaim(NamedTuple):
     """A statement about how far two backends may differ, with its derivation.
 
-    Built by :func:`bitwise_parity` or :func:`bounded_parity`; do not construct it
-    positionally.
+    Built by :func:`bitwise_parity`, :func:`bounded_parity` or
+    :func:`converged_parity`; do not construct it positionally.
 
     Attributes:
-        kind (ParityKind): Which of the two statements is being made.
+        kind (ParityKind): Which of the three statements is being made.
         roundings (Roundings | None): The rounding budget. None for BITWISE.
         accumulator (np.dtype[np.floating[Any]] | None): Format intermediates are
             accumulated in. None for BITWISE.
@@ -469,6 +480,20 @@ class ParityClaim(NamedTuple):
             both; where the result spans decades, or vanishes while its error
             does not, the magnitude has to be multiplied in deliberately. See
             ``design/backend_parity.md`` Rules 2 and 4. None for BITWISE.
+        scale (float | None): The magnitude the quantity is meaningful against,
+            used **only** by CONVERGED. For most kernels a bound is vacuous when it
+            reaches the values it compares, which is what the vacuity guard checks.
+            A quantity confined to a **bounded domain** breaks that premise: a curve
+            parameter near zero is not an ill-determined quantity, it is a parameter
+            near an endpoint, and its natural scale is the domain rather than its own
+            magnitude. Where a claim carries a scale, the guard takes the larger of
+            the two. None otherwise.
+        absolute (FloatArray | None): Elementwise absolute bound, used **only**
+            by CONVERGED, where the bound is the algorithm's own termination
+            criterion and no rounding model produces it. None otherwise. Kept
+            separate from ``amplification`` rather than overloading it, because
+            the two are different quantities: one is dimensionless and gets
+            multiplied by a rounding budget, the other is already a tolerance.
         why (str): The derivation, or the reason exactness holds. Quoted verbatim
             in any failure message.
     """
@@ -479,6 +504,8 @@ class ParityClaim(NamedTuple):
     storage: np.dtype[np.floating[Any]] | None
     amplification: FloatArray | None
     why: str
+    absolute: FloatArray | None = None
+    scale: float | None = None
 
 
 class AccuracyClaim(NamedTuple):
@@ -663,6 +690,60 @@ def bounded_parity(
     )
 
 
+def converged_parity(*, bound: FloatArray, scale: float, why: str) -> ParityClaim:
+    """Claim that two backends agree within their shared termination criterion.
+
+    For an iterative kernel whose difference is **not** a rounding difference. Both
+    backends run the same convergent iteration and stop on the same criterion, so
+    each answer lies within that criterion of the quantity it converged to and the
+    two lie within it of each other. Nothing about floating point enters, which is
+    why this cannot be spelled with :func:`bounded_parity`: that builds its bound
+    from a rounding budget times an amplification, and reaching a given number that
+    way would mean choosing an amplification to produce it, which is the fitted
+    constant the harness exists to make unsayable.
+
+    **What this claim does not cover.** It assumes the two backends converged to the
+    *same* quantity. Where an iteration's control flow can branch differently, that
+    assumption is separate and has to be asserted separately, because no tolerance
+    bounds a changed verdict.
+
+    Args:
+        bound (FloatArray): Elementwise absolute bound, same shape as the result.
+            Normally the iteration's termination tolerance.
+        scale (float): The magnitude the quantity is meaningful against, which for
+            an iterate on a bounded domain is the domain's width rather than the
+            iterate's own value. Required rather than defaulted: getting it wrong is
+            how a vacuous bound passes, and there is no scale that is right for every
+            iteration.
+        why (str): The derivation: which criterion, and why each answer lies within
+            it of what it converged to.
+
+    Returns:
+        ParityClaim: A claim asserting agreement within the algorithmic bound.
+
+    Raises:
+        ValueError: If ``why`` is empty, if the bound is not finite and non-negative,
+            or if the scale is not finite and positive.
+    """
+    if not why.strip():
+        raise ValueError("a converged parity claim must carry its derivation")
+    arr = np.asarray(bound, dtype=np.float64)
+    if not np.all(np.isfinite(arr)) or np.any(arr < 0.0):
+        raise ValueError("the convergence bound must be finite and non-negative")
+    if not (np.isfinite(scale) and scale > 0.0):
+        raise ValueError("the scale must be finite and positive")
+    return ParityClaim(
+        kind=ParityKind.CONVERGED,
+        roundings=None,
+        accumulator=None,
+        storage=None,
+        amplification=None,
+        why=why,
+        absolute=arr,
+        scale=float(scale),
+    )
+
+
 def derived_accuracy(*, bound: FloatArray, why: str) -> AccuracyClaim:
     """Claim an elementwise absolute error bound against an independent oracle.
 
@@ -832,7 +913,8 @@ def absolute_tolerance(claim: ParityClaim) -> FloatArray:
         claim (ParityClaim): The claim.
 
     Returns:
-        FloatArray: Zero everywhere for BITWISE; otherwise
+        FloatArray: Zero everywhere for BITWISE; the stated bound for CONVERGED;
+            otherwise
             ``2 * (gamma * amplification + underflow floor)``, the two halves of
             the rounding model that :func:`underflow_floor` describes. Both are
             doubled for the same reason: neither backend is the exact answer, so
@@ -841,6 +923,14 @@ def absolute_tolerance(claim: ParityClaim) -> FloatArray:
     if claim.kind is ParityKind.BITWISE:
         shape = () if claim.amplification is None else claim.amplification.shape
         return np.zeros(shape, dtype=np.float64)
+    if claim.kind is ParityKind.CONVERGED:
+        assert claim.absolute is not None  # CONVERGED by construction
+        # Already a tolerance rather than an amplification, and **not** doubled:
+        # the factor of two turns a one-sided forward-error bound into a two-sided
+        # one, and this bound is two-sided to begin with. Each backend's answer is
+        # within the criterion of the quantity it converged to, and the criterion
+        # is the same one, so the difference is bounded by it directly.
+        return claim.absolute
     assert claim.amplification is not None  # BOUNDED by construction
     relative = _relative_growth(claim) * claim.amplification
     return ONE_SIDED_TO_TWO_SIDED * (relative + _underflow_budget(claim))
@@ -957,9 +1047,15 @@ def _refuse_a_vacuous_bound(
         context (str): What was being computed.
 
     Raises:
-        AssertionError: If the bound exceeds the largest reference magnitude.
+        AssertionError: If the bound reaches the scale the quantity lives on.
     """
+    # A claim that names its own scale is compared against the larger of the two.
+    # The default premise, that a bound is vacuous once it reaches the values it
+    # compares, fails for a quantity confined to a bounded domain: a curve parameter
+    # near zero is not ill-determined, it is near an endpoint. See ParityClaim.scale.
     largest = float(np.abs(reference.astype(np.float64)).max(initial=0.0))
+    if claim.scale is not None:
+        largest = max(largest, claim.scale)
     worst = float(np.asarray(tolerance).max(initial=0.0))
     if largest > 0.0 and worst >= largest:
         raise AssertionError(
@@ -1049,9 +1145,13 @@ def assert_parity(
         raise AssertionError(
             f"{context}: the backends differ by more than the derived bound.\n"
             f"  derivation: {claim.why}\n"
-            f"  budget: {claim.roundings}, accumulator {claim.accumulator}, "
-            f"storage {claim.storage}\n"
-            f"{_worst_element_report(actual, reference, tolerance, offenders)}"
+            + (
+                ""
+                if claim.roundings is None
+                else f"  budget: {claim.roundings}, accumulator {claim.accumulator}, "
+                f"storage {claim.storage}\n"
+            )
+            + f"{_worst_element_report(actual, reference, tolerance, offenders)}"
         )
     return deviation
 
