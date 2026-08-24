@@ -44,6 +44,9 @@ reading the source first: two in ``evaluate`` (the two accumulation branches), f
 ``evaluate_deriv``, two in ``restrict`` (one per pass) and one each in
 ``degree_elevate``, ``slice``, ``split``, ``scalar_bernstein_product`` and the
 reduction apply. The baseline build contains none, in the whole shared object.
+:func:`report_the_disassembly` re-derives all of that, and the packed-instruction
+counts beside it, rather than quoting them: a review found both had been written into
+permanent artifacts with nothing in the tree able to reproduce either.
 
 Contraction is the only mechanism: ``-march=native`` with contraction genuinely off
 restores bit-identity exactly, 0 of 1260 and 0 of 3616, while the vectorisation stays
@@ -52,24 +55,39 @@ host's ISA and still emits no FMA without ``fastmath``, which
 ``test_the_oracle_does_not_contract_a_multiply_add`` pins.
 
 Slack of the derived bounds, worst case over this sweep, on that build: 6.8x for the
-two de Casteljau kernels, 70x for ``evaluate``, and between those for the rest. At
-float32 only ``evaluate_deriv`` and ``restrict`` move at all -- the other six contract
-in a float64 accumulator and the narrowing store absorbs it -- so ``restrict``'s
-float32 slack reads 883x, which is the bound being honest about a straddle that almost
-never happens rather than the bound being wrong.
+two de Casteljau kernels, 14.5x for the product, 17.9x for elevation, 18.3x and 43.2x
+for the derivative, 26.2x for the reduction apply, 35.8x for ``restrict`` at float64
+and 70x for ``evaluate``. At float32 only ``evaluate_deriv`` and ``restrict`` move at
+all, because the other six contract in a float64 accumulator and the narrowing store
+absorbs it.
+
+**Two things the slack column does not tell you, and both were review findings.** It
+is ``1 / max(diff/tolerance)``, the *tightest* point in the array, so a block whose
+bound is orders of magnitude too loose can only lower that maximum and is structurally
+invisible here. And it is not a fixed safety factor: at float32 it is roughly
+``2 * stages * (amplification / |value|)``, so it grows with the degree by
+construction. ``restrict`` at float32 reads 883x for exactly that reason, one whole
+storage ulp charged at each of ``2p`` stages while a real run straddles a rounding
+boundary once or twice, and not because a straddle is rare in some fixed proportion.
 """
 
 from __future__ import annotations
 
+import re
+import shutil
+import subprocess
 import sys
+import tempfile
 from collections.abc import Callable
-from math import comb, prod
+from math import comb
+from pathlib import Path
 from typing import Any, Final
 
 import numpy as np
 import numpy.typing as npt
 
 from pantr._backend import Backend, available_backends, use_backend
+from pantr.bezier import Bezier
 from pantr.bezier import _bezier_backend as backend
 from pantr.bezier._bezier_degree import _interpolating_reduction_operator
 from tests._parity_harness import (
@@ -79,8 +97,9 @@ from tests._parity_harness import (
     unit_roundoff,
 )
 from tests.parity.test_bezier_arithmetic import (
+    _a23_absolute_rows,
     _Budget,
-    _derivative_scale,
+    _derivative_amplification,
     _fused_claim,
     _mixed_control_points,
     _net_magnitude,
@@ -188,14 +207,8 @@ def _cases(degree: int, dtype: npt.DTypeLike, rng: np.random.Generator) -> list[
             lambda b, o: backend.evaluate_deriv_kernel(b)(ctrl, points, 2, o),
             (len(PARAMS), 3, rank),
             _Budget(
-                degree + 1,
-                np.stack(
-                    [
-                        np.full((len(PARAMS), rank), _derivative_scale(degree, k, magnitude))
-                        for k in range(3)
-                    ],
-                    axis=1,
-                ),
+                2 * degree + 4,
+                np.stack([_derivative_amplification(ctrl, points, k) for k in range(3)], axis=1),
             ),
             dtype,
         ),
@@ -203,7 +216,7 @@ def _cases(degree: int, dtype: npt.DTypeLike, rng: np.random.Generator) -> list[
             "degree_elevate",
             lambda b, o: backend.degree_kernels(b).elevate(degree, ctrl, 2, o),
             (degree + 3, rank),
-            _Budget(degree + 1, np.full((degree + 3, rank), magnitude, dtype=np.float64)),
+            _Budget(min(degree, 2) + 1, np.full((degree + 3, rank), magnitude, dtype=np.float64)),
             np.float64,
         ),
         (
@@ -231,7 +244,7 @@ def _cases(degree: int, dtype: npt.DTypeLike, rng: np.random.Generator) -> list[
             "reduce_apply",
             lambda b, o: backend.degree_kernels(b).reduce_apply(operator, ctrl, o),
             (degree, rank),
-            _Budget(degree + 1, _reduction_amplification(ctrl, degree, 1)),
+            _Budget(degree + 1, _reduction_amplification(ctrl, degree, 1), narrowing_stores=1),
             np.float64,
         ),
     ]
@@ -280,33 +293,197 @@ def measure() -> dict[tuple[str, str], tuple[int, int, float]]:
     return results
 
 
-def derivative_amplification_is_sharp() -> float:
-    """Measure how much of the derivative amplification the basis actually reaches.
+_PROBE_SOURCE: Final = """
+// Instantiate every Bezier kernel at both widths behind a noinline wrapper, so a
+// disassembler can attribute each fused multiply-add to one kernel and one line.
+#include "pantr/bezier/bezier.hpp"
+#include "pantr/core/reduction_operator.hpp"
+using pantr::span2d;
+using pantr::span_nd;
+#define K __attribute__((noinline))
+template <class T> K void k1(span2d<const T> c, std::span<const T> p, span2d<T> o) {
+    pantr::evaluate_bezier_1d<T>(c, p, o); }
+template <class T> K void k2(span2d<const T> c, std::span<const T> p, int n, span_nd<T,3> o) {
+    pantr::evaluate_bezier_deriv_1d<T>(c, p, n, o); }
+template <class T> K void k3(int d, span2d<const T> c, int t, span2d<T> o) {
+    pantr::degree_elevate_bezier_1d<T>(d, c, t, o); }
+template <class T> K void k4(span2d<const T> c, pantr::accumulator_t<T> v, std::span<T> o) {
+    pantr::slice_bezier_1d<T>(c, v, o); }
+template <class T> K void k5(span2d<const T> c, pantr::accumulator_t<T> v, span2d<T> l,
+                             span2d<T> r) { pantr::split_bezier_1d<T>(c, v, l, r); }
+template <class T> K void k6(span2d<const T> c, pantr::accumulator_t<T> a,
+                             pantr::accumulator_t<T> b, span2d<T> o) {
+    pantr::restrict_bezier_1d<T>(c, a, b, o); }
+template <class T> K void k7(std::span<const T> a, std::span<const T> b, std::span<T> o) {
+    pantr::scalar_bernstein_product_1d<T>(a, b, o); }
+template <class T> K void k8(span2d<const double> op, span2d<const T> c, span2d<T> o) {
+    pantr::core::apply_reduction_operator<T>(op, c, o); }
+#define INST(T) \\
+  template void k1<T>(span2d<const T>, std::span<const T>, span2d<T>); \\
+  template void k2<T>(span2d<const T>, std::span<const T>, int, span_nd<T,3>); \\
+  template void k3<T>(int, span2d<const T>, int, span2d<T>); \\
+  template void k4<T>(span2d<const T>, double, std::span<T>); \\
+  template void k5<T>(span2d<const T>, double, span2d<T>, span2d<T>); \\
+  template void k6<T>(span2d<const T>, double, double, span2d<T>); \\
+  template void k7<T>(std::span<const T>, std::span<const T>, std::span<T>); \\
+  template void k8<T>(span2d<const double>, span2d<const T>, span2d<T>);
+INST(float)
+INST(double)
+"""
+"""A translation unit that instantiates all eight kernels, for the disassembly."""
 
-    The order-``k`` block of the bound is ``p!/(p-k)! * 2^k * max|c|``, from
-    ``B^(k) = p!/(p-k)! sum_j (Delta^k c)_j B_{j,p-k}`` and ``||Delta^k||_inf <= 2``.
-    Driving the kernel with the identity net returns the basis derivatives themselves,
-    so ``max_s sum_j |B^(k)_{j,p}(s)|`` divided by that factor says how tight it is. A
-    value below 1 would mean the amplification is loose; above 1 would refute it.
+_FUSED_MNEMONIC: Final = re.compile(r"\bvf(n?)m(add|sub)[a-z0-9]*\b")
+"""x86 fused multiply-add mnemonics, in all their add/subtract/negate spellings."""
+
+_PACKED_ARITHMETIC: Final = re.compile(r"\bv(add|sub|mul|fmadd|fnmadd)[a-z]*p[sd]\b")
+"""Packed floating-point arithmetic, which is how vectorisation shows up.
+
+Named explicitly because a count of "SIMD instructions" is meaningless without it:
+a broader pattern that also caught moves and shuffles gives a number twice as large
+and says nothing about whether the arithmetic was vectorised.
+"""
+
+
+def enumerate_fused_sites(extra_flags: list[str]) -> dict[tuple[str, int], int] | None:
+    """Compile the probe and count fused multiply-adds per source line.
+
+    This is the artifact behind "fourteen sites fuse". A review found that claim, and
+    the packed-instruction counts beside it, quoted from a scratch directory with
+    nothing in the tree to re-derive them -- the same failure Rule 9 of
+    design/backend_parity.md records against itself.
+
+    Args:
+        extra_flags (list[str]): Compiler flags to add, e.g. ``["-march=native"]``.
 
     Returns:
-        float: The largest ratio over the sweep. Measured 1.0000 when written.
+        dict[tuple[str, int], int] | None: Fused instruction count per (file, line),
+            or None if the toolchain is not available.
     """
-    sampled = np.linspace(0.0, 1.0, 401)
+    root = Path(__file__).resolve().parent.parent
+    mdspan = root / "build" / "gcc" / "_deps" / "mdspan-src" / "include"
+    if not shutil.which("g++") or not shutil.which("objdump") or not mdspan.is_dir():
+        return None
+
+    with tempfile.TemporaryDirectory() as scratch:
+        source = Path(scratch) / "probe.cpp"
+        obj = Path(scratch) / "probe.o"
+        source.write_text(_PROBE_SOURCE)
+        compile_command = [
+            "g++", "-std=c++20", "-O3", "-g", "-ffp-contract=on",
+            f"-I{root / 'cpp' / 'include'}", f"-I{mdspan}",
+            *extra_flags, "-c", str(source), "-o", str(obj),
+        ]  # fmt: skip
+        if subprocess.run(compile_command, capture_output=True, check=False).returncode:
+            return None
+        listing = subprocess.run(
+            ["objdump", "-dl", "-C", "--no-show-raw-insn", str(obj)],
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout
+
+    sites: dict[tuple[str, int], int] = {}
+    location: tuple[str, int] | None = None
+    for line in listing.splitlines():
+        source_line = re.match(r"^(/\S+):(\d+)", line)
+        if source_line:
+            location = (Path(source_line.group(1)).name, int(source_line.group(2)))
+            continue
+        mnemonic = re.match(r"^\s+[0-9a-f]+:\s+(\S+)", line)
+        if mnemonic and _FUSED_MNEMONIC.match(mnemonic.group(1)) and location is not None:
+            sites[location] = sites.get(location, 0) + 1
+    return sites
+
+
+def count_packed_arithmetic(extra_flags: list[str]) -> int | None:
+    """Count packed floating-point arithmetic instructions in the probe.
+
+    Used to separate vectorisation from contraction: turning contraction off must not
+    turn vectorisation off, or the isolation argument compares two different things.
+
+    Args:
+        extra_flags (list[str]): Compiler flags to add.
+
+    Returns:
+        int | None: The count, or None if the toolchain is not available.
+    """
+    root = Path(__file__).resolve().parent.parent
+    mdspan = root / "build" / "gcc" / "_deps" / "mdspan-src" / "include"
+    if not shutil.which("g++") or not shutil.which("objdump") or not mdspan.is_dir():
+        return None
+    with tempfile.TemporaryDirectory() as scratch:
+        source = Path(scratch) / "probe.cpp"
+        obj = Path(scratch) / "probe.o"
+        source.write_text(_PROBE_SOURCE)
+        command = [
+            "g++", "-std=c++20", "-O3", "-ffp-contract=on",
+            f"-I{root / 'cpp' / 'include'}", f"-I{mdspan}",
+            *extra_flags, "-c", str(source), "-o", str(obj),
+        ]  # fmt: skip
+        if subprocess.run(command, capture_output=True, check=False).returncode:
+            return None
+        listing = subprocess.run(
+            ["objdump", "-d", str(obj)], capture_output=True, text=True, check=True
+        ).stdout
+    return len(_PACKED_ARITHMETIC.findall(listing))
+
+
+def report_the_disassembly() -> None:
+    """Print the fused-site enumeration and the vectorisation counts."""
+    baseline = enumerate_fused_sites([])
+    fusing = enumerate_fused_sites(["-march=native"])
+    unfused = enumerate_fused_sites(["-march=native", "-ffp-contract=off"])
+    if baseline is None or fusing is None or unfused is None:
+        print("\nno g++/objdump or no fetched mdspan, so the disassembly is not reported")
+        return
+
+    print(f"\nfused sites, baseline target       {sum(baseline.values()):>6}")
+    print(f"fused sites, -march=native         {len(fusing):>6} distinct source lines")
+    print(f"fused sites, and contraction off   {sum(unfused.values()):>6}")
+    for (name, line), count in sorted(fusing.items()):
+        print(f"    {name}:{line:<5} x{count}")
+
+    packed_on = count_packed_arithmetic(["-march=native"])
+    packed_off = count_packed_arithmetic(["-march=native", "-ffp-contract=off"])
+    print(
+        f"\npacked FP arithmetic, -march=native: {packed_on} with contraction, "
+        f"{packed_off} without.\n"
+        f"  Both non-zero, which is the point: turning contraction off leaves the "
+        f"vectorisation\n  in place, so the bit-identity it restores isolates "
+        f"contraction and nothing else.\n"
+        f"  The second number is the larger because each fused instruction becomes two."
+    )
+
+
+def the_a23_majorant_holds() -> tuple[int, int, float]:
+    """Check that the A2.3 majorant bounds the signed basis derivatives it replaces.
+
+    ``tests.parity.test_bezier_arithmetic._a23_absolute_rows`` runs A2.3 with every
+    coefficient replaced by its modulus, which is the standard majorant for a linear
+    recursion with signed coefficients. This is the check that it is one: a violation
+    would mean the derivative kernel's amplification is unsound, and a maximum ratio
+    far below 1 would mean it is loose.
+
+    Returns:
+        tuple[int, int, float]: Entries checked, violations, and the largest ratio of
+            the signed value to its majorant. Measured 0 violations and 1.000000 when
+            written, so the majorant is attained rather than conservative.
+    """
+    sampled = np.linspace(0.0, 1.0, 97)
+    checked = violations = 0
     worst = 0.0
     for degree in DEGREES:
-        orders = min(4, degree)
         identity = np.ascontiguousarray(np.eye(degree + 1))
-        out = np.zeros((sampled.size, orders + 1, degree + 1))
-        with use_backend(Backend.PYTHON):
-            backend.evaluate_deriv_kernel(Backend.PYTHON)(
-                identity, np.ascontiguousarray(sampled), orders, out
-            )
-        for order in range(orders + 1):
-            falling = prod(range(degree - order + 1, degree + 1)) if order else 1
-            reached = float(np.abs(out[:, order, :]).sum(axis=1).max())
-            worst = max(worst, reached / (falling * 2.0**order))
-    return worst
+        for order in range(min(degree, 6) + 1):
+            majorant = _a23_absolute_rows(degree, sampled, order)
+            with use_backend(Backend.PYTHON):
+                driven = Bezier(identity).evaluate_derivatives(sampled, order)
+            signed = np.abs(np.asarray(driven).reshape(sampled.size, degree + 1))
+            checked += signed.size
+            violations += int((signed > majorant * (1.0 + 1e-12)).sum())
+            live = majorant > 0.0
+            worst = max(worst, float(np.max(signed[live] / majorant[live])))
+    return checked, violations, worst
 
 
 def main() -> int:
@@ -341,11 +518,18 @@ def main() -> int:
         print(f"{kernel:<18}{dtype:<10}{moved:>8}{seen:>8}{worst:>14.5f}{slack:>10}")
         exceeded = exceeded or worst > 1.0
 
-    sharpness = derivative_amplification_is_sharp()
+    checked, violations, worst_ratio = the_a23_majorant_holds()
     print(
-        f"\nderivative amplification, reached / derived: {sharpness:.4f}\n"
-        f"  1.0000 means the bound p!/(p-k)! * 2^k is attained rather than conservative."
+        f"\nA2.3 majorant: {violations} violations over {checked} (point, basis) entries, "
+        f"largest |signed| / majorant {worst_ratio:.6f}\n"
+        f"  Must be at most 1. Exactly 1 means the majorant is attained rather than "
+        f"conservative;\n  a violation would mean the derivative kernel's amplification "
+        f"is unsound."
     )
+    if violations:
+        exceeded = True
+
+    report_the_disassembly()
 
     if exceeded:
         print("\nAt least one bound was EXCEEDED. The derivation is wrong, not the build.")
