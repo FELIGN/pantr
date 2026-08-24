@@ -54,6 +54,7 @@ correct on its own is what breaks the equality this file exists to hold.
 
 from __future__ import annotations
 
+from fractions import Fraction
 from typing import Final, NamedTuple
 
 import numpy as np
@@ -101,6 +102,14 @@ return an empty array, they agree, and the test passes **without reaching the de
 at all**. A tolerance below the coefficients is what makes these tests able to fail.
 """
 
+_DBL_EPSILON: Final = 2.2204460492503131e-16
+"""What the kernels use to size their own tolerances, float64 even on the float32 path.
+
+Mirrors ``_root_finding_core._DBL_EPSILON``. Reproducing it rather than deriving one
+from the dtype is the point: :func:`_acceptance_band` has to compute the band the
+algorithm actually uses, not the one it arguably should.
+"""
+
 _BITWISE_WHY: Final = (
     "every operation in the block is a correctly rounded add, subtract, multiply, "
     "divide or compare, and the C++ reproduces the oracle's per-expression widths, "
@@ -112,28 +121,48 @@ _BITWISE_WHY: Final = (
 """Why the two backends are bit-identical where nothing can fuse."""
 
 _FUSED_WHY: Final = (
-    "a root is located only to within the interval where the COMPUTED residual is "
-    "indistinguishable from zero, which has half-width eps_f / |f'(r)| for an "
-    "evaluation whose forward error is eps_f. Two backends whose residuals differ "
-    "within eps_f may return any point of that interval, so their roots differ by at "
-    "most twice it. Below that scale the bracketing tolerance also applies, so the "
-    "bound is the larger of the two. De Casteljau is a convex combination at every "
-    "stage, so it neither amplifies nor cancels and eps_f is (degree + 1) roundings "
-    "at the COEFFICIENT width times the coefficient magnitude -- the coefficient "
-    "width, not float64, because the triangle stores back into a buffer of the input "
-    "dtype at every step. The half-width is capped at eps_f^(1/3), the cluster width "
-    "around a root of multiplicity up to three, which is the same cap and the same "
-    "reasoning _dedup_roots_core uses for its merge radius; without it a double root, "
-    "where f' vanishes, would carry an unbounded tolerance"
+    "the two backends may return any point of the acceptance component around a "
+    "root, that being the connected set where the computed residual is inside the "
+    "band the algorithm itself accepts, so their answers differ by at most that "
+    "component's width. The width is CERTIFIED rather than predicted: the Bernstein "
+    "net is restricted to each flanking interval in exact rational arithmetic and "
+    "the convex-hull property proves the residual stays outside the band there, so "
+    "the component cannot reach past the certified half-width. Nothing local is "
+    "assumed, so there is no curvature hypothesis to fail, no derivative to vanish "
+    "and no multiplicity to bound. The band itself is the algorithm's own zero_tol "
+    "plus the evaluation's forward error at Hermes' corrected gamma_3n. Below that "
+    "scale the bracketing tolerance also applies, so the bound is the larger"
 )
 """Why a fusing build still agrees, and to what.
 
-**An earlier version of this claimed the bound was `param_tol` alone**, derived from
-both backends returning a bracket midpoint. That was fitted to float64 data, where
-``eps_f / |f'|`` is around 1e-15 and ``param_tol`` of 1e-12 hides it. At float32 the
-residual term is four orders larger and dominates: a degree-5 case moved by 2e-8. The
-measurement that produced the wrong bound, 732 float64-heavy results with a worst
-displacement of 4.951e-13, was consistent with it and could not have refuted it.
+**Two earlier versions of this were refuted, and the second failed in a way worth
+keeping.** The first claimed ``param_tol`` alone, fitted to float64 data where the
+other term is around 1e-15 and hidden; at float32 a degree-5 case moved by 2e-8. The
+second predicted the component's half-width as ``eps_f / |f'|`` capped at
+``eps_f^(1/3)``, and an adversarial review took it apart on four counts:
+
+* ``eps_f = (degree + 1) * u * max|c|`` is **false at float64**, by an exact-rational
+  counterexample at degree 1 exceeding it by 1.126x. The literature constant is
+  Mainar and Peña's ``gamma_2n``, corrected by Hermes to ``gamma_3n`` because the
+  original did not charge the rounding of ``1 - t``, which this kernel commits;
+* it used the wrong epsilon entirely. The kernel accepts on ``abs(f) <= zero_tol``,
+  which it computes itself, and for ``f(t) = t - 1/2``, the simplest polynomial in
+  this suite, the acceptance band is **exactly twice** what was claimed;
+* the linearisation needs a curvature hypothesis nobody stated, and there is a
+  measured window at ``|f'| ~ 2*sqrt(eps)`` where it fails by 2.75x and the cap has
+  not yet engaged, the two thresholds being unrelated quantities;
+* the cap is not scale-invariant and is dimensionally wrong. ``eps_f^(1/3)`` has
+  units of ``[f]^(1/3)`` and is compared against ``[t]``; the correct cluster width
+  is ``(eps/|a_m|)^(1/m)``. Measured, a triple root came back **bit-identical over
+  2^60 of coefficient scaling** while the cap moved by a factor of a million. A bound
+  that moves when the bounded quantity does not is not a bound.
+
+Certifying instead of predicting answers all four at once, and it is the review's own
+recommendation. The certificate is scale-invariant because scaling the coefficients
+scales the band with them; dimensionally correct because a half-width is what it
+searches for; and multiplicity-agnostic because no derivative appears. Verified on
+the case the old cap existed for: a triple root certifies at 1.221e-04 for lambda of
+1, 1e6 and 1e-6 alike.
 """
 
 
@@ -156,8 +185,14 @@ def _polynomial(degree: int, dtype: npt.DTypeLike, kind: str) -> npt.NDArray[np.
     elif kind == "sign_changes":
         coeff = np.cos(np.pi * index / max(degree, 1) * 3.0)
     elif kind == "double_root":
-        centre = index / max(degree, 1) - 0.5
-        coeff = centre * centre
+        # The Bernstein coefficients of (t - 1/2)^2, which has a genuine double root
+        # at t = 1/2. NOT `(i/n - 1/2)^2`, which is what this said first and which is
+        # the polynomial (1 - 1/n)(t - 1/2)^2 + 1/(4n): strictly positive, minimum
+        # 1/(4n), and it found zero roots at every degree while its docstring claimed
+        # it reached the bisection branch.
+        n = max(degree, 1)
+        squared = index * (index - 1.0) / (n * (n - 1.0)) if n > 1 else index * 0.0
+        coeff = squared - index / n + 0.25
     elif kind == "wide_range":
         coeff = np.cos(index) * 10.0 ** (index - degree / 2.0)
     elif kind == "endpoint_zeros":
@@ -224,19 +259,145 @@ shipped build.
 """
 
 
+def _restrict_exactly(coeff: npt.NDArray[np.floating], a: Fraction, b: Fraction) -> list[Fraction]:
+    """Bernstein coefficients of the same polynomial on ``[a, b]``, in exact arithmetic.
+
+    Written out here rather than taken from :func:`~pantr.bezier._root_finding_core.
+    _subdivide_scalar`, on purpose: this is the machinery that certifies the kernels,
+    so borrowing one of them would let a bug in it certify itself. Exact rationals
+    rather than float64 for the same reason, and a stronger one: the convex-hull
+    bound below is then a proof rather than an estimate needing its own error term.
+
+    Args:
+        coeff (npt.NDArray[np.floating]): Bernstein coefficients on [0, 1].
+        a (Fraction): Left bound of the sub-interval.
+        b (Fraction): Right bound, strictly greater than ``a``.
+
+    Returns:
+        list[Fraction]: The restricted coefficients, reparametrised to [0, 1].
+    """
+    d = [Fraction(float(c)) for c in coeff]
+    p = len(d) - 1
+    for step in range(1, p + 1):
+        for j in range(p, step - 1, -1):
+            d[j] = d[j] * b + d[j - 1] * (Fraction(1) - b)
+    tau = a / b if b != 0 else Fraction(0)
+    for step in range(1, p + 1):
+        for j in range(p - step + 1):
+            d[j] = d[j] * (Fraction(1) - tau) + d[j + 1] * tau
+    return d
+
+
+def _flank_is_clear(coeff: npt.NDArray[np.floating], a: float, b: float, eps: float) -> bool:
+    """Prove that ``|f| > eps`` everywhere on ``[a, b]``.
+
+    A Bernstein polynomial is a convex combination of its coefficients, so its graph
+    over an interval lies within the range of that interval's own coefficients. If
+    they are all above ``eps`` or all below ``-eps``, no point of the interval can be
+    accepted as a root. Exact, and it needs no derivative, no curvature hypothesis
+    and no knowledge of any multiplicity.
+
+    Args:
+        coeff (npt.NDArray[np.floating]): Bernstein coefficients on [0, 1].
+        a (float): Left bound.
+        b (float): Right bound. An empty or inverted interval is clear vacuously.
+        eps (float): The acceptance band's half-height.
+
+    Returns:
+        bool: True when the interval provably contains no acceptable point.
+    """
+    if a >= b:
+        return True
+    net = _restrict_exactly(coeff, Fraction(a), Fraction(b))
+    return min(net) > Fraction(eps) or max(net) < -Fraction(eps)
+
+
+def _acceptance_band(coeff: npt.NDArray[np.floating], geom_tol: float) -> float:
+    """The half-height of the set of values either backend may accept as zero.
+
+    Two terms, and the first is the algorithm's rather than the arithmetic's.
+    :func:`~pantr.bezier._clipping_core._clip_roots_core` accepts a candidate when
+    ``abs(f_final) <= zero_tol``, and computes ``zero_tol`` itself; that is the
+    quantity, not a forward error invented here. An earlier version of this file used
+    only a forward error and was out by a factor of exactly two on the simplest
+    polynomial in the suite.
+
+    The second is the evaluation's own error, so that a value the kernel computed as
+    inside the band might really be outside it. De Casteljau at storage width commits
+    three roundings per stage at accumulator width and one on the narrowing store,
+    which is Mainar and Peña's ``gamma_2n`` corrected by Hermes to account for the
+    rounding of ``1 - t`` that this kernel commits. Written as the first-order
+    ``n * u_T + 3n * u_64``, which is above the sharp ``2.5n * u`` at float64 and is
+    the storage term alone at float32, where the accumulator part is a relative
+    ``5.6e-9`` correction.
+
+    Args:
+        coeff (npt.NDArray[np.floating]): Bernstein coefficients.
+        geom_tol (float): The geometric tolerance the call ran at.
+
+    Returns:
+        float: The band's half-height, in the units of the coefficients.
+    """
+    degree = coeff.size - 1
+    scale = float(np.max(np.abs(coeff), initial=0.0))
+    zero_tol = max(scale * (degree + 1) * 4.0 * _DBL_EPSILON, geom_tol)
+    evaluation = degree * (unit_roundoff(coeff.dtype) + 3.0 * unit_roundoff(np.float64)) * scale
+    return zero_tol + evaluation
+
+
+def _certified_half_width(
+    coeff: npt.NDArray[np.floating], root: float, left: float, right: float, eps: float
+) -> float | None:
+    """The smallest certifiable half-width of the acceptance component around a root.
+
+    Binary search over the exponent. Certification is monotone in ``h``: a larger
+    half-width leaves smaller flanks to prove clear, so if ``h`` certifies then so
+    does anything larger, and the search is well posed.
+
+    Args:
+        coeff (npt.NDArray[np.floating]): Bernstein coefficients.
+        root (float): The oracle's root, at the centre of the neighbourhood.
+        left (float): Left edge of the neighbourhood, normally the midpoint to the
+            previous root.
+        right (float): Right edge.
+        eps (float): The acceptance band, from :func:`_acceptance_band`.
+
+    Returns:
+        float | None: The half-width, or None when no rung of the ladder certified,
+            which the caller must report rather than absorb.
+    """
+    low, high = 0, 52
+    best: float | None = None
+    while low <= high:
+        middle = (low + high) // 2
+        h = 2.0**-middle
+        if _flank_is_clear(coeff, left, root - h, eps) and _flank_is_clear(
+            coeff, root + h, right, eps
+        ):
+            best, low = h, middle + 1
+        else:
+            high = middle - 1
+    return best
+
+
 def _root_uncertainty(
     coeff: npt.NDArray[np.floating], roots: npt.NDArray[np.float64], param_tol: float
 ) -> npt.NDArray[np.float64]:
     """Elementwise bound on how far two backends' versions of one root may sit apart.
 
-    See :data:`_FUSED_WHY` for the derivation. The derivative is taken from the
-    oracle at the oracle's own roots, which is the only derivative available: an
-    exact one would need the root, which is what is being bounded.
+    Certified rather than predicted. See :data:`_FUSED_WHY` for why the predicted
+    form was withdrawn.
+
+    Each root gets the neighbourhood bounded by the midpoints to its neighbours, so a
+    near-double pair is not asked to separate further than it can. A root whose
+    neighbourhood cannot be certified at any rung gets ``inf``, which the harness's
+    own guard will then refuse as vacuous: that is the intended outcome, since a
+    component nobody could bound is a case with no claim rather than a case that
+    passes.
 
     Args:
-        coeff (npt.NDArray[np.floating]): The polynomial's Bernstein coefficients,
-            whose dtype sets the evaluation's rounding unit.
-        roots (npt.NDArray[np.float64]): The oracle's roots.
+        coeff (npt.NDArray[np.floating]): The polynomial.
+        roots (npt.NDArray[np.float64]): The oracle's roots, ascending.
         param_tol (float): The bracketing tolerance the call ran at.
 
     Returns:
@@ -245,22 +406,21 @@ def _root_uncertainty(
     if roots.size == 0:
         return np.zeros(0, dtype=np.float64)
 
-    degree = coeff.size - 1
-    scale = float(np.max(np.abs(coeff), initial=0.0))
-    residual_error = float(degree + 1) * unit_roundoff(coeff.dtype) * scale
+    eps = _acceptance_band(coeff, param_tol)
+    finite = np.clip(np.nan_to_num(roots, nan=0.5), 0.0, 1.0)
+    order = np.argsort(finite)
+    bound = np.empty(roots.shape, dtype=np.float64)
 
-    inside = np.clip(np.nan_to_num(roots, nan=0.5), 0.0, 1.0).astype(coeff.dtype)
-    with use_backend(Backend.PYTHON):
-        derivative = np.asarray(
-            Bezier(coeff.reshape(-1, 1)).evaluate_derivatives(inside, 1), dtype=np.float64
-        ).reshape(inside.size, -1)[:, 0]
+    for rank, index in enumerate(order):
+        root = float(finite[index])
+        left = 0.0 if rank == 0 else 0.5 * (root + float(finite[order[rank - 1]]))
+        right = 1.0 if rank + 1 == order.size else 0.5 * (root + float(finite[order[rank + 1]]))
+        half = _certified_half_width(coeff, root, left, right, eps)
+        bound[index] = param_tol if half is None else max(param_tol, 2.0 * half)
+        if half is None:
+            bound[index] = np.inf
 
-    slope = np.maximum(np.abs(derivative), np.finfo(np.float64).tiny)
-    # Capped at the multiplicity-three cluster width, exactly as the oracle's own
-    # merge radius is: at a double root the slope vanishes and the ratio diverges.
-    half_width = np.minimum(residual_error / slope, residual_error ** (1.0 / 3.0))
-    bound = np.maximum(np.full(roots.shape, param_tol, dtype=np.float64), 2.0 * half_width)
-    return np.asarray(bound, dtype=np.float64)
+    return bound
 
 
 def _both_backends(
@@ -333,22 +493,28 @@ def _assert_the_same_roots(
     worst = float(bound.max(initial=0.0))
     if worst >= PARAMETER_DOMAIN:
         # Rule 8: a parity claim is only defined where the quantity still has digits.
-        # Here the derived uncertainty covers the whole parameter interval, so there
-        # is nothing left to compare. Named and reported rather than skipped
-        # silently, and asserted to be a float32 phenomenon: the same bound reaching
-        # the domain at float64 would mean the derivation, not the arithmetic, is at
-        # fault.
-        assert case.coeff is not None and case.coeff.dtype == np.float32, (
-            f"{context}: the derived uncertainty {worst:.3e} covers the whole "
-            f"parameter domain at {None if case.coeff is None else case.coeff.dtype}. "
-            f"Outside float32 that is a defect in the derivation rather than a limit "
-            f"of the format."
+        # Two ways to get here and both are honest outcomes rather than escapes. The
+        # certificate may bound the component only by the whole interval, which is
+        # what happens when every coefficient is inside the acceptance band; or it
+        # may fail at every rung, which the caller marks as `inf`. Named and reported
+        # with its number, never absorbed.
+        #
+        # An earlier version asserted the dtype was float32 before allowing the skip,
+        # on the reasoning that a float64 case reaching here would mean the
+        # derivation was wrong. That was a proxy and it was false: the #352 regime
+        # reaches it at float64 for a reason that has nothing to do with the
+        # derivation, since below 1e-30 the oracle reads every coefficient as zero.
+        # `test_the_certificate_bounds_most_of_the_matrix` is the guard that a
+        # newly-slack bound cannot hide behind this branch.
+        reason = (
+            "no rung of the ladder certified it"
+            if not np.isfinite(worst)
+            else f"the certified width {worst:.3e} covers it"
         )
         pytest.skip(
-            f"{context}: outside the parity domain. The derived uncertainty "
-            f"{worst:.3e} covers the whole parameter interval, so the roots carry no "
-            f"digits to compare at this width. Bit-identical on the shipped build, "
-            f"where nothing fuses."
+            f"{context}: outside the parity domain. The acceptance component spans "
+            f"the parameter interval, {reason}, so the roots carry no digits to "
+            f"compare at this width. Bit-identical on the shipped build."
         )
 
     assert_parity(
@@ -643,3 +809,35 @@ def test_a_bound_reaching_the_whole_domain_is_refused() -> None:
     )
     with pytest.raises(AssertionError, match="vacuous"):
         assert_parity(tiny_root, tiny_root, vacuous, context="a bound covering the domain")
+
+
+def test_the_certificate_bounds_most_of_the_matrix(cpp_backend: None) -> None:
+    """The fused branch asserts something, rather than skipping its way to green.
+
+    Every case whose acceptance component cannot be bounded below the parameter
+    interval is skipped, with its reason. That is the right outcome per Rule 8 and it
+    is also a way for a slack bound to disappear quietly, so the rate is pinned here.
+
+    The figure is what the certificate achieves today over the hand-built matrix. A
+    change that moves it is the thing to look at; it is not a number to update.
+    """
+    del cpp_backend
+    certified = total = 0
+    for dtype in DTYPES:
+        for degree in DEGREES:
+            for kind in KINDS:
+                coeff = _polynomial(degree, dtype, kind)
+                with use_backend(Backend.PYTHON):
+                    roots = np.asarray(find_roots(Bezier(coeff.reshape(-1, 1)), tol=TOL))
+                if roots.size == 0:
+                    continue
+                total += 1
+                bound = _root_uncertainty(coeff, roots, TOL)
+                certified += float(bound.max(initial=0.0)) < PARAMETER_DOMAIN
+
+    assert total >= 40, f"only {total} cases have any root, so the rate means little"
+    assert certified >= 0.75 * total, (
+        f"the certificate bounded only {certified} of {total} cases below the "
+        f"parameter interval. Every one that fails is skipped on a fusing build, so "
+        f"a rate this low means the fused claim covers little of the matrix."
+    )

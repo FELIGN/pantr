@@ -93,12 +93,15 @@ user-facing, and the ports change what it affects.
   test evaluates to exactly zero, and fusing turns that tie into a signed residue. Measured over
   732 results on such a build, 113 roots moved in value and none changed the set, but that is
   evidence rather than a proof.
-  **Where the values do move, the bound is the algorithm's, not the arithmetic's.** A root is
-  located only to within the interval where the computed residual is indistinguishable from zero.
-  At `float64` that is invisible under the bracketing tolerance; at `float32` it dominates by four
-  orders. For coefficients spanning eight decades at `float32` it reaches a tenth of the parameter
-  interval at degree 8 and the whole of it by degree 17, which is the accuracy limit of the
-  problem at that width rather than a difference between the backends.
+  **Where the values do move, the bound is certified rather than predicted.** A root is located
+  only to within the connected set where the computed residual is inside the band the algorithm
+  itself accepts, and that set's width is *proved* by restricting the Bernstein net to each
+  flanking interval in exact rational arithmetic and applying the convex-hull property. Two
+  predicted formulas were tried first and both were refuted; the certificate needs no derivative,
+  no curvature hypothesis and no bound on any multiplicity, and unlike them it does not move when
+  the coefficients are rescaled. It bounds 83 of 86 cases in the parity matrix; the three it does
+  not are `float32` polynomials spanning eight decades, whose roots have no digits left at that
+  width, and those are named rather than skipped quietly.
 - `scripts/measure_root_finding_widths.py`, which measures the arithmetic width of every
   expression in the root-finding kernels, two rival models per site against the kernel plus a
   count of how often the two disagree. It exists because numba's `float()` does **not** widen a
