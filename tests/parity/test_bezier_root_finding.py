@@ -42,19 +42,19 @@ results, but 732 results are evidence and not a proof, so the count agreement is
 asserted as its own check and Rule 11 of ``design/backend_parity.md`` records that it
 is measured rather than derived.
 
-One defect is asserted, not worked around
-----------------------------------------
+Two defects were asserted here, and both are now fixed
+-----------------------------------------------------
 
-The oracle still returns a wrong answer in one regime, FELIGN/pantr#352, and the C++
-reproduces it deliberately because the port's contract is parity and not correction.
-The test below names it. **If you are here because it started failing, the fix is in
-both backends and in that test together**; making one side correct on its own is what
-breaks the equality this file exists to hold.
+FELIGN/pantr#351 and #352 were both pinned in this file as wrong answers that the C++
+reproduced deliberately, because the port's contract is parity and not correction.
+Both are now fixed on both sides, and the three tests that pinned the wrong answers
+pin the mathematics instead: no root for a strictly positive polynomial, the one root
+of ``a(1 - 2t)`` at ``t = 1/2``, and that same root at every scale.
 
-FELIGN/pantr#351 was asserted here the same way and is now fixed on both sides, which
-is what that procedure looks like when it is carried out: the oracle stopped forming a
-product to test a sign, the C++ stopped with it, and the two tests that had pinned the
-wrong answer now pin the mathematics instead.
+The procedure those tests were written to force is worth keeping in view, because the
+next such defect will land the same way. **The fix goes into both backends and into
+the test in one change**; making one side correct on its own is what breaks the
+equality this file exists to hold, and relaxing the test instead loses the defect.
 """
 
 from __future__ import annotations
@@ -718,33 +718,38 @@ def test_the_backends_agree_on_the_root_that_is_lost(
 
 
 def test_the_backends_agree_where_the_tolerance_stops_scaling(cpp_backend: None) -> None:
-    """Both backends reproduce FELIGN/pantr#352, at ``float64``.
+    """Both backends put the root of ``a(1 - 2t)`` at ``t = 0.5`` at every scale.
 
-    ``boundary_eps`` carries an absolute ``1e-30`` floor inside an otherwise
-    scale-relative tolerance, so below it every coefficient reads as zero, the
-    endpoints are reported as roots and the real one is lost. Rescaling the same
-    polynomial moves the answer, which is what makes it a defect rather than a limit.
+    This test used to assert the opposite, at ``1e-31``. ``boundary_eps`` carried an
+    absolute ``1e-30`` floor inside an otherwise scale-relative tolerance, so below
+    it every coefficient read as zero, the endpoints came back as roots and the real
+    one was lost. Rescaling the same polynomial moved the answer, which is what made
+    it FELIGN/pantr#352 rather than a precision limit.
 
-    Asserted here for the same reason as #351: the C++ reproduces it, and both sides
-    change together or not at all.
+    Both backends dropped the floor in one change, so the assertion is now the
+    invariance itself: scaling a root-finding problem by a positive constant moves
+    none of its roots. The sweep straddles where the floor used to fire and runs
+    several decades past it, since a fix that merely lowered the floor would pass at
+    ``1e-31`` and fail further down.
     """
     del cpp_backend
     demand_the_compiled_kernel(np.float64)
 
-    for scale, expected in ((1e-29, [0.5]), (1e-31, [0.0, 1.0])):
+    for exponent in (-29, -30, -31, -33, -35):
+        scale = 10.0**exponent
         coeff = np.array([scale, 0.0, -scale], dtype=np.float64)
         reference, actual = _both_backends("roots", coeff, DEFECT_TOL)
         np.testing.assert_allclose(
             reference,
-            expected,
+            [0.5],
             atol=TOL,
-            err_msg=f"the oracle changed at scale {scale:.0e}; if #352 was fixed, fix "
-            "the C++ and this test in the same change",
+            err_msg=f"the oracle lost scale invariance at 1e{exponent}, which is "
+            "FELIGN/pantr#352 back. Fix the oracle rather than this test.",
         )
         _assert_the_same_roots(
             actual,
             reference,
-            f"the #352 regime at scale {scale:.0e}",
+            f"the #352 regime at scale 1e{exponent}",
             Case(coeff, DEFECT_TOL),
         )
 
