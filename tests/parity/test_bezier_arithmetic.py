@@ -63,9 +63,18 @@ At a fused site the oracle computes ``fl(a + fl(b*c))`` and this backend
 ``fl(a + b*c)``, so the two differ by at most ``u|b*c| + 2u|a + b*c|``: three
 accumulator roundings per stage. Where the storage is narrower the two pre-store
 values can fall either side of a rounding boundary, which costs one further ulp, so
-two storage roundings per stage. What differs per kernel is the stage count and the
-magnitude the relative budget multiplies, and those are what the ``_amplification``
-helpers below carry.
+two storage roundings per stage -- once per **narrowing store**, which is once per
+stage for every kernel but the reduction apply, and that one accumulates into a local
+and narrows once per output element.
+
+What differs per kernel is the stage count and the magnitude the relative budget
+multiplies. Five kernels are convex combinations and take the absolute-value
+companion: the same operation run on ``|c|``, elementwise. Three cannot. The product
+carries an explicit convex sum of ``|a_i b_j|``, the reduction apply the absolute row
+action ``|R| @ |c|``, and the derivative kernel the row action of the **majorant of
+A2.3** -- the recursion with every coefficient replaced by its modulus, because it
+differences and so has no companion of its own. Rule 10 of design/backend_parity.md
+records what each of those cost to get wrong.
 
 Fourteen sites fuse, and they were enumerated by disassembling a ``-march=native``
 build rather than by reading the source: two in ``evaluate``, five in
@@ -86,7 +95,7 @@ that drives the product kernel at its own entry point, where the operands are kn
 from __future__ import annotations
 
 from collections.abc import Callable
-from math import comb, prod
+from math import comb
 from typing import Any, Final, NamedTuple
 
 import numpy as np
@@ -108,7 +117,18 @@ from tests._parity_harness import (
 )
 
 _TINY: Final = float(np.finfo(np.float64).tiny)
-"""Smallest positive double, used so an amplification is never exactly zero."""
+"""Floor under an amplification, where a zero would mean something other than zero.
+
+**Not** "so a tolerance is never zero", which was the first reason given and is false:
+the harness's own underflow budget already makes every bounded tolerance strictly
+positive, because it charges `underflow_floor` per accumulator rounding. Measured, the
+floor changes a float32 tolerance not at all and a float64 one by 1e-322.
+
+What it is for is the one place a zero would be a claim rather than a magnitude: an
+output element whose amplification really is zero is one where the derivative is
+identically zero, both backends produce exact zeros by construction, and the honest
+statement is that they agree rather than that they agree to within nothing.
+"""
 
 DTYPES: Final = (np.float64, np.float32)
 """The two storage formats the Bézier layer accepts."""
@@ -219,12 +239,23 @@ _OPERANDS_NOT_OBSERVABLE: Final = (
 )
 
 
+_NO_CHAIN_TO_FUSE: Final = (
+    "the dependency chain has no stages at this degree, so there is no fused site and "
+    "the two backends run the same short-circuit. `bounded_parity` refuses a zero-stage "
+    "budget for exactly this reason, and clamping the count to one instead would permit "
+    "a difference of 2.4e-7 relative where the true difference is zero"
+)
+
 _DE_CASTELJAU_FUSED_WHY: Final = (
-    "every stage is a convex combination (1-t)a + tb with t in [0, 1], so a "
-    "divergence introduced at one stage passes through the remaining ones without "
-    "growing in the max norm and the per-stage injections merely add. max|c| bounds "
-    "the whole triangle, and it is the right magnitude rather than |result|: the "
-    "triangle can cancel to near zero while the error that reached it does not"
+    "every stage is a convex combination (1-t)a + tb with t in [0, 1]. Write D for the "
+    "same triangle run on |c|, which is what the amplification is. The injection at "
+    "stage r is bounded by 3u times the INTERMEDIATE magnitude D_i^r rather than the "
+    "output's, and it reaches the output weighted by B_i^{p-r}(t); the weighted sum "
+    "telescopes, because sum_i B_i^{p-r}(t) D_i^r = D_0^p for every r, so each stage "
+    "contributes 3u times the OUTPUT companion and the stages add. The three roundings "
+    "cover both the fusion difference and the re-rounding of two operands that have "
+    "already diverged, which is first order and not second: correctly rounded "
+    "arithmetic on inputs one ulp apart does not track the gap"
 )
 
 
@@ -263,16 +294,23 @@ def _net_magnitude(*arrays: npt.NDArray[Any]) -> float:
 
 
 class _Budget(NamedTuple):
-    """The two things that differ from kernel to kernel in the fused claim.
+    """What differs from kernel to kernel in the fused claim.
 
     Attributes:
         stages (int): Length of the dependency chain the fused sites sit on.
         amplification (npt.NDArray[np.float64]): Elementwise magnitude the relative
             budget multiplies, matching the compared arrays' shape.
+        narrowing_stores (int | None): How many times the chain rounds down into the
+            storage format. ``None`` means once per stage, which is what a kernel
+            whose workspace is the output array does. The reduction apply is the
+            exception: it accumulates into a local and narrows **once per output
+            element**, outside the loop over the operator row, so charging a store per
+            stage over-counts it by ``p + 1`` and cost up to 52x at float32.
     """
 
     stages: int
     amplification: npt.NDArray[np.float64]
+    narrowing_stores: int | None = None
 
 
 def _sliced_control_points(
@@ -376,6 +414,8 @@ def _parity_claim(
     """
     if not contraction_may_fuse():
         return bitwise_parity(why=bitwise_why)
+    if budget.stages == 0:
+        return bitwise_parity(why=_NO_CHAIN_TO_FUSE)
     return _fused_claim(
         fused_why=fused_why, budget=budget, storage=storage, accumulator=accumulator
     )
@@ -404,12 +444,25 @@ def _fused_claim(
     Returns:
         ParityClaim: The BOUNDED claim.
     """
-    return bounded_parity(
-        roundings=Roundings(
-            stages=max(budget.stages, 1),
+    stores = budget.stages if budget.narrowing_stores is None else budget.narrowing_stores
+    roundings = (
+        Roundings(
+            stages=budget.stages,
             accumulator_per_stage=_ACCUMULATOR_ROUNDINGS_PER_STAGE,
             storage_per_stage=_STORAGE_ROUNDINGS_PER_STAGE,
-        ),
+        )
+        if stores == budget.stages
+        # Collapsed to one stage because the two counts no longer share a
+        # denominator, which `Roundings` documents as the way to spell exactly that.
+        # The chain is still `budget.stages` long and `why` says so.
+        else Roundings(
+            stages=1,
+            accumulator_per_stage=_ACCUMULATOR_ROUNDINGS_PER_STAGE * budget.stages,
+            storage_per_stage=_STORAGE_ROUNDINGS_PER_STAGE * stores,
+        )
+    )
+    return bounded_parity(
+        roundings=roundings,
         accumulator=accumulator,
         storage=storage,
         amplification=budget.amplification,
@@ -431,58 +484,119 @@ def _flat_amplification(shape: tuple[int, ...], magnitude: float) -> npt.NDArray
     return np.full(shape, magnitude, dtype=np.float64)
 
 
-def _derivative_scale(degree: int, order: int, magnitude: float) -> float:
-    """Amplification of the derivative kernel at one derivative order.
+def _a23_absolute_rows(
+    degree: int, points: npt.NDArray[np.float64], order: int
+) -> npt.NDArray[np.float64]:
+    """Majorise every quantity A2.3 forms, by running it with its signs removed.
 
-    See :func:`_derivative_amplification` for the derivation; this is the scalar it
-    is built from, and the public API returns one order at a time rather than the
-    kernel's stack.
+    A2.3 is a **linear** recursion with signed coefficients, and for those the standard
+    majorant is the same recursion with every coefficient replaced by its modulus: each
+    intermediate is then non-negative and bounds the modulus of its signed counterpart,
+    by induction on the recursion. Two lines change from the oracle, both in the ``a``
+    table -- ``a[s2, jj] = a[s1, jj] - a[s1, jj-1]`` becomes a sum, and
+    ``a[s2, k] = -a[s1, k-1]`` drops its negation. The ``ndu`` table is already
+    non-negative for ``s`` in ``[0, 1]``, which is the kernel's domain.
+
+    **This is why the finished row is not enough**, and it is the difference between
+    this kernel and the five convex ones. There the absolute-value companion of the
+    *output* suffices, because each stage's injection reaches the output weighted by a
+    partition of unity and the weighted sum telescopes back to the output companion.
+    A2.3 differences, so its partial sums can exceed what survives to the output, and
+    an amplification built from the finished basis derivatives alone under-states them.
+    Measured: it was exceeded by 4.32x at degree 17, orders 4 and 6, identically at
+    both dtypes, which is the signature of a structural shortfall rather than of
+    rounding. With the signs removed the partial sums are monotone, so the final value
+    majorises every one of them.
 
     Args:
         degree (int): Degree of the curve.
+        points (npt.NDArray[np.float64]): Evaluation points, in ``[0, 1]``.
         order (int): Derivative order.
-        magnitude (float): ``max|c|``.
 
     Returns:
-        float: The amplification, never zero so that a tolerance never vanishes.
+        npt.NDArray[np.float64]: Shape ``(len(points), degree + 1)``; entry ``(i, j)`` majorises
+            ``|B^(order)_{j,degree}(s_i)|`` and every partial sum forming it.
     """
-    if degree < order:
-        return float(np.finfo(np.float64).tiny)
-    falling = prod(range(degree - order + 1, degree + 1)) if order else 1
-    scale = falling * (2.0**order) * magnitude
-    return scale if scale > 0.0 else float(np.finfo(np.float64).tiny)
+    span = degree + 1
+    rows = np.zeros((points.size, span), dtype=np.float64)
+    for pt_id, s in enumerate(np.asarray(points, dtype=np.float64)):
+        ndu = np.zeros((span, span))
+        ndu[0, 0] = 1.0
+        for j in range(1, span):
+            saved = 0.0
+            for rr in range(j):
+                ndu[j, rr] = 1.0
+                temp = ndu[rr, j - 1]
+                ndu[rr, j] = saved + (1.0 - s) * temp
+                saved = s * temp
+            ndu[j, j] = saved
+        if order == 0:
+            rows[pt_id, :] = np.abs(ndu[:, degree])
+            continue
+        basis = np.zeros((order + 1, span))
+        basis[0, :] = ndu[:, degree]
+        a_arr = np.zeros((2, order + 1))
+        for rr in range(span):
+            s1, s2 = 0, 1
+            a_arr[0, 0] = 1.0
+            for k in range(1, order + 1):
+                d = 0.0
+                rk, pk = rr - k, degree - k
+                if rr >= k:
+                    a_arr[s2, 0] = a_arr[s1, 0]
+                    d = a_arr[s2, 0] * ndu[rk, pk]
+                j1 = 1 if rk >= -1 else -rk
+                j2 = k - 1 if (rr - 1) <= pk else degree - rr
+                for jj in range(j1, j2 + 1):
+                    # The oracle subtracts here; the majorant adds.
+                    a_arr[s2, jj] = a_arr[s1, jj] + a_arr[s1, jj - 1]
+                    d += a_arr[s2, jj] * ndu[rk + jj, pk]
+                if rr <= pk:
+                    # The oracle negates here; the majorant does not.
+                    a_arr[s2, k] = a_arr[s1, k - 1]
+                    d += a_arr[s2, k] * ndu[rr, pk]
+                basis[k, rr] = d
+                s1, s2 = s2, s1
+        falling = 1.0
+        for k in range(1, order + 1):
+            falling *= degree - k + 1
+        rows[pt_id, :] = basis[order, :] * falling
+    return rows
 
 
 def _derivative_amplification(
-    shape: tuple[int, ...], degree: int, magnitude: float
+    ctrl: npt.NDArray[Any], points: npt.NDArray[Any], order: int
 ) -> npt.NDArray[np.float64]:
-    """Amplification of the derivative kernel, per derivative order.
+    """Bound each derivative output element by the absolute row action of A2.3.
 
-    The ``k``-th derivative of a Bernstein form is
-    ``p!/(p-k)! * sum_j (Delta^k c)_j B_{j,p-k}``, and ``Delta = shift - identity``
-    has infinity norm 2, so ``|Delta^k c| <= 2^k max|c|`` and the order-``k`` block is
-    bounded by ``p!/(p-k)! * 2^k * max|c|``.
+    The kernel applies a linear operator to the control net, so the magnitude
+    reachable at output element ``(i, r)`` is ``sum_j M_{i,j} |c_{j,r}|`` with ``M``
+    the majorant of :func:`_a23_absolute_rows`. Same ``|R| @ |c|`` shape
+    :func:`_reduction_amplification` uses, and for the same reason: the operator is
+    not a convex combination, so no companion of the output exists.
 
-    **The bound is attained, not merely valid.** Driving the kernel with the identity
-    net gives the basis derivatives themselves, and
-    ``max_s sum_j |B^(k)_{j,p}(s)| / (p!/(p-k)! * 2^k)`` measures exactly 1.0000 for
-    ``k`` up to 4 over nine degrees. ``scripts/measure_bezier_fma_bound.py`` reports
-    that ratio; a value below 1 would mean this amplification is loose and a value
-    above 1 would refute it.
+    **The flat ``p!/(p-k)! * 2^k * max|c|`` this replaces was correct and unusable.**
+    It bounds the operator norm rather than the row and applies the *input* maximum
+    where the comparison happens per output element, so on the parametrization this
+    file already sweeps it made 45 of 280 non-zero float32 values carry a tolerance at
+    least as large as their own magnitude, worst case 1.6e5 times. Rule 3's guard did
+    not fire because it compares the largest tolerance against the largest magnitude,
+    and a flat amplification is sized for exactly that element. That is Rule 6's
+    failure, a scalar summary hiding an elementwise disagreement, committed inside
+    Rule 10.
 
     Args:
-        shape (tuple[int, ...]): Shape of the compared arrays, ``(pts, order + 1,
-            rank)``.
-        degree (int): Degree of the curve.
-        magnitude (float): ``max|c|``.
+        ctrl (npt.NDArray[Any]): The control net, shape ``(p + 1, rank)``.
+        points (npt.NDArray[Any]): The evaluation points.
+        order (int): Derivative order.
 
     Returns:
-        npt.NDArray[np.float64]: The amplification, one value per derivative order.
+        npt.NDArray[np.float64]: The row action, shaped like the compared output.
     """
-    amplification = np.empty(shape, dtype=np.float64)
-    for order in range(shape[1]):
-        amplification[:, order, :] = _derivative_scale(degree, order, magnitude)
-    return amplification
+    degree = np.shape(ctrl)[0] - 1
+    rows = _a23_absolute_rows(degree, np.asarray(points, dtype=np.float64).ravel(), order)
+    action = rows @ np.abs(np.asarray(ctrl, dtype=np.float64))
+    return np.asarray(np.maximum(action, _TINY), dtype=np.float64)
 
 
 def _reduction_amplification(
@@ -597,8 +711,9 @@ def test_evaluate_matches_the_oracle(
                 "it cannot fuse and both backends form bit-identical basis values; "
                 "the disassembly confirms it, with an FMA on the two accumulation "
                 "lines and nowhere else. The single chain is therefore the "
-                "contraction, degree stages of a convex sum, and max|c| bounds every "
-                "partial sum along it as well as the result"
+                "contraction, degree stages of a convex sum, and the absolute-value "
+                "companion is its elementwise magnitude, by the telescoping argument in "
+                "_DE_CASTELJAU_FUSED_WHY"
             ),
             budget=_Budget(
                 degree,
@@ -647,15 +762,15 @@ def test_evaluate_derivatives_matches_the_oracle(
                 "because the oracle allocates every workspace at the point dtype and "
                 "this port follows it. So the accumulator IS the storage here, and it "
                 "is the one kernel whose float32 path a wide accumulator does not "
-                "protect. The ndu table is a de Casteljau triangle and is "
-                "non-expansive; the A2.3 recursion differences it, which is where the "
-                "2^k in the amplification comes from"
+                "protect. The chain is p levels of the ndu triangle, order + 1 in the "
+                "A2.3 accumulation, and p + 1 in the contraction with the net. The "
+                "amplification is the absolute row action of the operator the kernel "
+                "computes, obtained by driving the kernel itself with the identity "
+                "net, which is the same shape reduce_degree uses"
             ),
             budget=_Budget(
-                degree + 1,
-                _flat_amplification(
-                    np.shape(reference), _derivative_scale(degree, order, _net_magnitude(ctrl))
-                ),
+                2 * degree + order + 2,
+                _derivative_amplification(ctrl, points, order),
             ),
             storage=dtype,
             accumulator=dtype,
@@ -733,10 +848,13 @@ def test_elevate_degree_matches_the_oracle(
                 "no addition of it fuses, so the one fused site is the accumulation. "
                 "Its weights are C(p,j)C(t,i-j)/C(p+t,i), non-negative and summing to "
                 "one by Vandermonde's identity, so the output is a convex combination "
-                "of the input net and max|c| bounds the partial sums with it"
+                "of the input net and the absolute-value companion is its elementwise "
+                "magnitude. The chain is min(p, t) + 1 and not p + 1: the accumulation "
+                "into out[i] runs j from max(0, i - t) to min(p, i), which is at most "
+                "min(p, t) + 1 terms however large p is"
             ),
             budget=_Budget(
-                degree + 1,
+                min(degree, increment) + 1,
                 _absolute_companion(
                     lambda net: Bezier(net).elevate_degree(increment).control_points, ctrl
                 ),
@@ -773,10 +891,17 @@ def test_reduce_degree_matches_the_oracle(
                 "one fused site, the dot product of an operator row with the net, so "
                 "the chain is one stage per input coefficient. The operator is the "
                 "only one of the eight that is not a convex combination, which is why "
-                "the amplification is the absolute row action |R| @ |c| rather than "
-                "max|c|"
+                "the amplification is the absolute row action |R| @ |c| rather than a "
+                "companion. And the kernel accumulates into a float64 local and narrows "
+                "ONCE per output element, outside the loop over the row, so the storage "
+                "rounding is charged once rather than once per stage; charging it per "
+                "stage over-counted by p + 1, measured up to 52x at float32"
             ),
-            budget=_Budget(degree + 1, _reduction_amplification(ctrl, degree, decrement)),
+            budget=_Budget(
+                degree + 1,
+                _reduction_amplification(ctrl, degree, decrement),
+                narrowing_stores=1,
+            ),
             storage=dtype,
         ),
         context=f"reduce_degree {degree} by {decrement} {np.dtype(dtype).name}",
@@ -962,9 +1087,11 @@ def test_restrict_matches_the_oracle(
             bitwise_why=_DE_CASTELJAU_WHY,
             fused_why=(
                 f"{_DE_CASTELJAU_FUSED_WHY}. Twice the stages, because this is two "
-                f"passes; the second is convex as well, since the ordering forces the "
-                f"divisor to be at least one half and tau2 therefore lands in [0, 1], "
-                f"which the kernel header derives"
+                f"passes. The second is convex too, and that does not depend on the "
+                f"ordering: lower/upper lies in [0, 1) because lower < upper, and "
+                f"(upper - lower)/(1 - lower) lies in [0, 1] because upper <= 1, in "
+                f"either branch. What the ordering buys is conditioning, which the "
+                f"kernel header derives, not convexity"
             ),
             budget=_Budget(
                 2 * degree,
@@ -1112,39 +1239,40 @@ def test_the_split_binding_refuses_its_outputs_positionally(cpp_backend: None) -
 def _probe_budgets() -> list[tuple[str, _Budget, npt.DTypeLike, npt.DTypeLike]]:
     """Return one representative budget per kernel, for the probes.
 
-    The magnitudes are the ones a real net produces, so a tolerance that came out
-    absurdly small or large here would show up as a failing probe rather than as a
-    number nobody looked at.
+    **Built from the same amplification helpers the claims use**, not from a flat
+    magnitude. An earlier version passed a flat ``max|c|`` to every entry, which meant
+    the probes validated ``absolute_tolerance``'s arithmetic and never touched the
+    amplifications the suite actually relies on -- so the derivative kernel's, which
+    was wrong by up to 1.6e5, went through them untouched.
 
     Returns:
         list: Name, budget, storage and accumulator, one entry per kernel.
     """
     degree = 8
     ctrl = _mixed_control_points((degree + 1, 3), np.float64)
-    magnitude = _net_magnitude(ctrl)
-    flat = _flat_amplification((degree + 1, 3), magnitude)
+    points = np.array(_adversarial_parameters(np.float64), dtype=np.float64)
+    companion = _absolute_companion(lambda net: Bezier(net).elevate_degree(2).control_points, ctrl)
+    triangle = _absolute_companion(
+        lambda net: Bezier(net).restrict((0.1, 0.9)).control_points, ctrl
+    )
+    evaluated = _absolute_companion(lambda net: np.asarray(Bezier(net).evaluate(points)), ctrl)
     return [
-        ("evaluate", _Budget(degree, flat), np.float64, np.float64),
-        ("slice", _Budget(degree, flat), np.float64, np.float64),
-        ("split", _Budget(degree, flat), np.float64, np.float64),
-        ("restrict", _Budget(2 * degree, flat), np.float64, np.float64),
-        ("degree_elevate", _Budget(degree + 1, flat), np.float64, np.float64),
+        ("evaluate", _Budget(degree, evaluated), np.float64, np.float64),
+        ("evaluate float32", _Budget(degree, evaluated), np.float32, np.float64),
+        ("restrict", _Budget(2 * degree, triangle), np.float64, np.float64),
+        ("degree_elevate", _Budget(min(degree, 2) + 1, companion), np.float64, np.float64),
         (
             "reduce_degree",
-            _Budget(degree + 1, _reduction_amplification(ctrl, degree, 1)),
-            np.float64,
+            _Budget(degree + 1, _reduction_amplification(ctrl, degree, 1), narrowing_stores=1),
+            np.float32,
             np.float64,
         ),
         (
             "evaluate_deriv float32",
-            _Budget(
-                degree + 1,
-                _flat_amplification((degree + 1, 3), _derivative_scale(degree, 2, magnitude)),
-            ),
+            _Budget(2 * degree + 4, _derivative_amplification(ctrl, points, 2)),
             np.float32,
             np.float32,
         ),
-        ("evaluate float32", _Budget(degree, flat), np.float32, np.float64),
     ]
 
 
