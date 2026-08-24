@@ -643,5 +643,99 @@ class TestValidateCoeffArray(unittest.TestCase):
         self.assertEqual(result.dtype, np.float32)
 
 
+class TestSignTestUnderflow(unittest.TestCase):
+    """A sign test written as a product must not underflow (FELIGN/pantr#351).
+
+    Six sites in the root-finding kernels ask "do these two values share a sign?"
+    by multiplying and comparing the product against zero. At ``float32`` the
+    product of two operands of magnitude ``a`` is ``a**2``, which falls under
+    that format's minimum subnormal (about ``1e-45``) once ``a`` drops below
+    roughly ``1e-23`` -- while both operands remain perfectly representable.
+    The test then answers as though one operand were zero.
+
+    The cases below sit at that frontier rather than comfortably past it:
+    ``1e-22`` squares to ``1e-44`` and survives, ``1e-23`` squares to ``1e-46``
+    and does not. Each has a ``float64`` control, where the same product is
+    nowhere near underflow.
+    """
+
+    #: Largest coefficient magnitude whose float32 square still underflows.
+    FRONTIER = 1e-23
+
+    def test_monotone_root_not_invented_at_frontier(self) -> None:
+        """No root is reported for a strictly positive Bezier at the frontier."""
+        for dtype in (np.float32, np.float64):
+            with self.subTest(dtype=np.dtype(dtype).name):
+                a = self.FRONTIER
+                # B(t) > 0 on [0, 1]: every control value is positive, so the
+                # convex-hull property forbids a root.
+                bez = Bezier(np.array([[a], [0.5 * a], [2.0 * a]], dtype=dtype))
+                self.assertTrue(math.isnan(find_monotone_root(bez)))
+
+    def test_root_not_lost_at_frontier(self) -> None:
+        """The single root of ``a(1 - 2t)`` survives at the frontier."""
+        for dtype in (np.float32, np.float64):
+            with self.subTest(dtype=np.dtype(dtype).name):
+                a = self.FRONTIER
+                bez = Bezier(np.array([[a], [0.0], [-a]], dtype=dtype))
+                roots = find_roots(bez, tol=1e-40)
+                self.assertEqual(len(roots), 1)
+                self.assertAlmostEqual(roots[0], 0.5, places=10)
+
+    def test_sign_tests_are_scale_invariant_over_decades(self) -> None:
+        """Both faces stay correct across the decades spanning the frontier.
+
+        Scaling a root-finding problem by a positive constant moves no root, so
+        every decade here must give the same answer. The sweep runs from two
+        decades above the frontier to six below, at ``float32``, which is the
+        width that distinguishes a fix of the *test* from one that merely moves
+        the underflow threshold.
+        """
+        for exponent in range(-21, -30, -1):
+            a = 10.0**exponent
+            with self.subTest(a=f"1e{exponent}"):
+                positive = Bezier(np.array([[a], [0.5 * a], [2.0 * a]], dtype=np.float32))
+                self.assertTrue(math.isnan(find_monotone_root(positive)))
+
+                crossing = Bezier(np.array([[a], [0.0], [-a]], dtype=np.float32))
+                roots = find_roots(crossing, tol=1e-40)
+                self.assertEqual(len(roots), 1)
+                self.assertAlmostEqual(roots[0], 0.5, places=10)
+
+
+class TestBoundaryEpsScaleInvariance(unittest.TestCase):
+    """An absolute floor inside a scale-relative tolerance (FELIGN/pantr#352).
+
+    ``_find_roots_at_level`` and ``_yuksel_roots`` grade "is this coefficient
+    zero?" against ``max(scale * eps * 8, 1e-30)``. The first term is relative
+    to the problem's own coefficient range and correct; the second is an
+    absolute floor, and below it every coefficient reads as zero however well
+    separated the coefficients are from each other.
+
+    Scaling a root-finding problem by a positive constant does not move its
+    roots, so this is an invariance being broken rather than a precision limit
+    being reached. The sweep straddles the literal: ``1e-29`` is correct today
+    and ``1e-30`` is not.
+    """
+
+    def test_single_root_is_scale_invariant(self) -> None:
+        """``a(1 - 2t)`` has its only root at ``t = 0.5`` for every ``a != 0``."""
+        for exponent in range(-25, -36, -1):
+            a = 10.0**exponent
+            with self.subTest(a=f"1e{exponent}"):
+                bez = Bezier(np.array([[a], [0.0], [-a]], dtype=np.float64))
+                roots = find_roots(bez, tol=1e-40)
+                self.assertEqual(len(roots), 1)
+                self.assertAlmostEqual(roots[0], 0.5, places=12)
+
+    def test_no_root_is_scale_invariant(self) -> None:
+        """A strictly positive Bezier reports no root at every scale."""
+        for exponent in range(-25, -36, -1):
+            a = 10.0**exponent
+            with self.subTest(a=f"1e{exponent}"):
+                bez = Bezier(np.array([[a], [0.5 * a], [2.0 * a]], dtype=np.float64))
+                self.assertEqual(len(find_roots(bez, tol=1e-40)), 0)
+
+
 if __name__ == "__main__":
     unittest.main()
