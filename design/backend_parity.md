@@ -1,6 +1,6 @@
 # Backend parity: what a bound may claim, and in which frame
 
-**Status:** complete for the four ports that exist. Ten rules, each with the failure that produced
+**Status:** complete for the five ports that exist. Eleven rules, each with the failure that produced
 it, and the remaining module ports inherit them. The verdict on whether the parity harness
 generalized is now written, from the `quad` port's tests rather than predicted before them.
 **Date:** 2026-08-20, amended the same day after a deep review closed two open proofs,
@@ -14,9 +14,14 @@ which is the first rule here that is about reproducing an oracle exactly rather 
 bounding a difference, because that port is the first whose every kernel can be bit-exact.
 Amended 2026-08-22 with Rule 10 (contraction removes one rounding per fused site), which closes
 the gap Rule 9's section declared: the Bézier claims are now conditional on what the build can
-do rather than skipped where it can fuse.
+do rather than skipped where it can fuse. Amended 2026-08-24 by the root-finding port with
+Rule 11 (an exact tie does not survive contraction, and a tie-break is a verdict rather than
+a displacement), and with a section added to Rule 9 recording that numba's `float()` does not
+widen a `float32`, which is the mechanism the three earlier width surprises rest on.
 
-**Validated against:** `proto/cpp` at `765d9b9`, plus the `quad` port on `feat/cpp-quad`.
+**Validated against:** `proto/cpp` at `765d9b9`, the `quad` port on `feat/cpp-quad`, and the
+root-finding port on `feat/cpp-bezier-roots`, whose fused branch was exercised against an
+extension built at `-march=native` rather than reasoned about.
 
 ## The one fact everything else follows from
 
@@ -349,6 +354,34 @@ them, none of them announced:
   unconditionally against a destination in the control points' dtype, so each `+=` computes wide
   and rounds narrow.
 
+**The root-finding port found the mechanism underneath this, and it is worse than a convention
+nobody wrote down.** `float()` does not widen a `float32` in numba's `nopython` mode.
+`float(coeff[0])` reads as a promotion and is a no-op; so does `float(np.min(coeff))`. What
+widens is **type unification across assignments**, so a variable seeded with `0.0` or
+`float("inf")` and later given a `float32` is `float64` throughout, while one that only ever
+holds an array element stays narrow however many `float()` calls surround it.
+
+Six sites in the root-finding block carry a `float()` a reader would take for a cast. None
+promotes, and three of the five widths there follow from that alone. Two consequences worth
+carrying forward:
+
+- **A width cannot be read off the source, and cannot be inferred per kernel or per module.**
+  `_batch_core.py:87` divides in `float64` and `_yuksel_core.py:309` divides the same shape of
+  expression in `float32`; what separates them is whether some *other* assignment forced the
+  variable wider. The transliteration has to go expression by expression.
+- **The destination's dtype says nothing about the width the operation ran at.**
+  `derivs[0, i] = coeff[i + 1] - coeff[i]` writes into a `float64` array and subtracts in
+  `float32`, widening only on the store. The model that widened first reproduced 88 of 4000
+  float32 vectors.
+
+`scripts/measure_root_finding_widths.py` measures every one of these behaviourally, two rival
+models per site against the kernel, and reports how often the two disagree so a match cannot come
+from a check that could not fail. **That script, not a reading of the source, is what a
+transliteration should be written against.** The sharpest case is the degree-1 base case
+`c0 / (c0 - c1)`, where the `float64` model reproduced *none* of 20000 pairs: a C++
+`double root = c0 / (c0 - c1);` breaks parity on every `float32` input, and the difference reads
+as round-off rather than as a defect.
+
 **None of this is visible at `float64`, where all three coincide.** Measured on one kernel:
 accumulating narrow where the oracle accumulates wide moves 125 of 630 `float32` values.
 Widening where the oracle narrows is the same error the other way and was caught the same way,
@@ -641,6 +674,97 @@ Nothing structural, on this evidence. But **`Roundings` and `amplification` both
 docstrings corrected** to say what they actually carry, and a fourth consumer whose bound is again
 neither a chain nor a magnitude would be the point at which the field's meaning, rather than its
 documentation, has to change.
+
+## Rule 11: an exact tie does not survive contraction, and a tie-break is a verdict
+
+Added by the Bézier root-finding port, the first whose kernels are **iterative** and whose
+results carry a discrete verdict as well as a value: how many roots there are, which intervals
+survive, which hull vertices are kept. Rules 1 to 10 all bound a displacement. None of them says
+anything about a count, and a count is what this block can get wrong.
+
+**The mechanism.** The convex-hull clipper's orientation predicate is `a*b - c*d`. On an exactly
+collinear control polygon the two products are equal reals and the expression evaluates to
+**exactly zero**, so `cross >= 0` holds and Andrew's monotone chain pops the vertex. Under
+`-ffp-contract=on` on a target with a fused multiply-add, the compiler may compute
+`fma(a, b, -(c*d))`, which returns the exact residual of the rounding in `c*d`: a tiny nonzero
+value of arbitrary sign. The tie-break becomes a coin toss.
+
+Measured on 200000 constructed collinear triples: 184224 evaluate to exactly zero unfused, and
+fusing flips the branch on **130538**. Measured against the kernel itself, an unfused
+transliteration agrees on all 4800 collinear cases and a fused one on 3833.
+
+A collinear control polygon is not exotic. A degree-elevated linear polynomial, an affine segment
+and a constant all produce one.
+
+**Why this is a different kind of hazard.** Rule 10's contraction bound absorbs a displacement
+because the two backends compute the same quantity to different last bits. Here contraction
+changes which branch is taken, and downstream of a branch the two backends are computing
+different things. No tolerance covers that, and no amplification makes it smaller.
+
+**What follows for a parity claim.** Assert the count on its own, before and separately from any
+numeric comparison. `tests/parity/test_bezier_root_finding.py` does, and its failure message says
+that a changed count is a changed verdict rather than a displaced value. Folding the two together
+is the error to avoid: a bounded claim compares elementwise and cannot see two results of
+different length at all.
+
+**What is measured and what is not.** Over 732 public results on a `-march=native` build, 619
+were identical, 113 moved in value and **zero changed the root set**. That is evidence and not a
+proof: the tie-break demonstrably can flip, so a set change is possible and simply did not occur.
+The count agreement is asserted per case rather than derived.
+
+### The bound where contraction is live, and the two corrections it needed
+
+The displacement is **not** a rounding bound and cannot be spelled as one. A root is located only
+to within the interval where the computed residual is indistinguishable from zero, of half-width
+`eps_f / |f'(r)|`, and below that scale the bracketing tolerance also applies; the bound is the
+larger of the two. `eps_f` is the evaluation's own forward error, at the **coefficient** width,
+and the half-width is capped at `eps_f^(1/3)`, the cluster width around a root of multiplicity up
+to three, which is the same cap and the same reasoning `_dedup_roots_core` already uses for its
+merge radius.
+
+Two corrections got it there, and both are the kind that pass every test until something forces
+the branch to run.
+
+**The first bound was fitted where one term happened to dominate.** Measured over 732
+float64-heavy results, the worst displacement was `4.951e-13` against a `param_tol` of `1e-12`,
+which looked like the bracketing tolerance was the whole bound and looked *tight*, which is
+normally the sign a derivation is right. At `float32` a degree-5 case moved by `2e-8`, four
+orders past it: the residual term is around `1e-15` at `float64` and never shows. A measurement
+cannot refute a bound in a regime where the missing term is invisible.
+
+**The vacuity guard's premise fails for a quantity on a bounded domain.** Rule 3 refuses a bound
+that reaches the values it compares, which is right for a coefficient and wrong for a curve
+parameter: a root at `3.6e-13` is not a quantity with no digits, it is a parameter next to an
+endpoint, and a bound of `1e-12` on it still says something a wrong answer would violate. With
+the root's own magnitude as the scale, two cases were refused as vacuous **while the two backends
+agreed bit for bit**. The harness now lets a claim name the scale its quantity lives on, and the
+guard takes the larger of that and the values.
+
+Where the bound genuinely does reach the whole domain, Rule 8 applies unchanged and the case is
+named: eight decades of coefficient range at `float32` reach a tenth of the interval at degree 8,
+which is weak but still refutable and so is asserted, and `9.5` at degree 17, which covers the
+interval and is skipped with its number in the message.
+
+### A claim kind the harness did not have
+
+None of this can be written with `bounded_parity`, which builds its bound from a rounding budget
+times an amplification. Reaching a given number that way would mean choosing an amplification to
+produce it, which is the fitted constant the harness exists to make unsayable. `ParityKind`
+gained a third member, `CONVERGED`, carrying an absolute bound and the scale its quantity lives
+on.
+
+### The branch that ships unevaluated is the one that is broken
+
+Rule 9's section deferred the fused claim entirely and Rule 10 derived it, but on the shipped
+build neither branch runs: the target carries no `-march`, so nothing fuses and every claim takes
+its bitwise arm. **This port's fused branch shipped broken during development** -- it called
+`bounded_parity` with an argument that function does not take -- and 133 tests passed over it,
+because none of them reached it. It was found by building the extension at `-march=native` and
+running the suite there.
+
+An unexercised claim is not a weak claim, it is an unevaluated one. Building the fusing variant
+and running against it is cheap, the recipe is in `scripts/measure_bezier_fma_bound.py`, and it
+should be part of finishing any port that carries a conditional claim.
 
 ## Epistemic status
 

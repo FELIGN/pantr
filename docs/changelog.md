@@ -3,7 +3,8 @@
 ## Unreleased
 
 The dual-backend prototype on the `proto/cpp` branch. Four module pull requests so far: the
-infrastructure, the `quad` port, the `change_basis` port and the `bezier` arithmetic port. The
+infrastructure, the `quad` port, the `change_basis` port, the `bezier` arithmetic port and the
+`bezier` root-finding port. The
 infrastructure landed without a changelog entry, so this section covers all of them -- the environment variable it introduced is
 user-facing, and the ports change what it affects.
 
@@ -79,6 +80,30 @@ user-facing, and the ports change what it affects.
   where it is not. This
   matters ahead of any build that raises the instruction-set baseline: before it, such a build
   would have turned every one of those assertions into a skip and left the suite green.
+- A C++ implementation of `pantr.bezier`'s **root finding**: Yuksel's monotone decomposition,
+  Bezier clipping, the duplicate merge and both batch entry points. `PANTR_BACKEND=cpp` now
+  reaches `find_roots` and `find_monotone_root`, single and batched.
+  **Bit-for-bit identical between the two backends on the shipped build**, as the arithmetic port
+  is and for the same reason: the target carries no `-march`, so baseline x86-64 has no fused
+  multiply-add and both sides evaluate the same expressions in the same order.
+  Two things are new here and worth knowing.
+  **A root set carries a discrete verdict, not just a value.** How many roots there are is not
+  something a tolerance bounds, so the count is asserted on its own. On a build that *does* fuse,
+  the convex-hull tie-break can flip: on an exactly collinear control polygon the orientation
+  test evaluates to exactly zero, and fusing turns that tie into a signed residue. Measured over
+  732 results on such a build, 113 roots moved in value and none changed the set, but that is
+  evidence rather than a proof.
+  **Where the values do move, the bound is the algorithm's, not the arithmetic's.** A root is
+  located only to within the interval where the computed residual is indistinguishable from zero.
+  At `float64` that is invisible under the bracketing tolerance; at `float32` it dominates by four
+  orders. For coefficients spanning eight decades at `float32` it reaches a tenth of the parameter
+  interval at degree 8 and the whole of it by degree 17, which is the accuracy limit of the
+  problem at that width rather than a difference between the backends.
+- `scripts/measure_root_finding_widths.py`, which measures the arithmetic width of every
+  expression in the root-finding kernels, two rival models per site against the kernel plus a
+  count of how often the two disagree. It exists because numba's `float()` does **not** widen a
+  `float32`, so three of the five widths are narrower than the source reads, and a C++ author
+  writing the obvious thing would break parity on every `float32` input at the degree-1 base case.
 - `scripts/measure_bezier_fma_bound.py`, which reproduces the bound's slack against whatever
   extension is installed, and prints how to build one that fuses.
 
