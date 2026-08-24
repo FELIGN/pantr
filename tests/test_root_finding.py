@@ -22,7 +22,7 @@ from pantr.bezier import (
 )
 from pantr.bezier._clipping_core import (
     _clip_roots_core,
-    _dedup_roots,
+    _dedup_roots_core,
 )
 from pantr.bezier._find_roots import _validate_coeff_array
 from pantr.bezier._root_finding_core import (
@@ -243,7 +243,7 @@ class TestYukselRoots(unittest.TestCase):
 
 
 class TestClipRootsCore(unittest.TestCase):
-    """Tests for :func:`_clip_roots_core` and :func:`_dedup_roots`."""
+    """Tests for :func:`_clip_roots_core` and :func:`_dedup_roots_core`."""
 
     def _find_roots_clip(
         self,
@@ -257,7 +257,11 @@ class TestClipRootsCore(unittest.TestCase):
         if np.all(np.abs(c) <= geom_tol):
             return np.empty(0, dtype=np.float64)
         raw, n = _clip_roots_core(c, param_tol, geom_tol)
-        return _dedup_roots(raw, n, c, param_tol, geom_tol)
+        if n == 0:
+            return np.empty(0, dtype=np.float64)
+        merged, count = _dedup_roots_core(raw, n, c, param_tol, geom_tol)
+        unique: npt.NDArray[np.float64] = merged[:count].copy()
+        return unique
 
     def test_linear_single_root(self) -> None:
         """Degree-1: root at t = 0.2."""

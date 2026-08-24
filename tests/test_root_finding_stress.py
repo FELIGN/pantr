@@ -20,7 +20,7 @@ import pytest
 from numpy import typing as npt
 
 from pantr.bezier import Bezier, find_roots
-from pantr.bezier._clipping_core import _clip_roots_core, _dedup_roots
+from pantr.bezier._clipping_core import _clip_roots_core, _dedup_roots_core
 from pantr.bezier._root_finding_core import _de_casteljau_eval_scalar
 from pantr.bezier._yuksel_core import _yuksel_roots
 
@@ -151,7 +151,11 @@ def _find_roots_clipping(
     if len(coeff) < 2 or np.all(np.abs(coeff) <= tol):
         return np.empty(0, dtype=np.float64)
     raw, count = _clip_roots_core(coeff, tol, tol)
-    return _dedup_roots(raw, count, coeff, tol, tol)
+    if count == 0:
+        return np.empty(0, dtype=np.float64)
+    merged, n_unique = _dedup_roots_core(raw, count, coeff, tol, tol)
+    unique: npt.NDArray[np.float64] = merged[:n_unique].copy()
+    return unique
 
 
 def _assert_roots_valid(

@@ -9,8 +9,8 @@ projection polynomials arising from rational curves with d=9).
 Main exports:
 
 - :func:`_clip_roots_core` -- stack-based iterative clipping loop (Numba-compiled).
-- :func:`_dedup_roots` -- sort and deduplicate raw root candidates with
-  derivative-aware merge radius (plain Python).
+- :func:`_dedup_roots_core` -- sort and deduplicate raw root candidates with
+  derivative-aware merge radius (Numba-compiled).
 
 References:
     T. Nishita, T. W. Sederberg, M. Kakimoto (1990), *Ray Tracing Trimmed
@@ -373,37 +373,6 @@ def _dedup_roots_core(
         count += 1
 
     return out, count
-
-
-def _dedup_roots(
-    raw_roots: npt.NDArray[np.float32 | np.float64],
-    n_roots: int,
-    coeff: npt.NDArray[np.float32 | np.float64],
-    param_tol: float,
-    geom_tol: float,
-) -> npt.NDArray[np.float64]:
-    """Sort and deduplicate raw root candidates (plain-Python wrapper).
-
-    Thin wrapper around :func:`_dedup_roots_core` returning only the valid
-    prefix; see that kernel for the merge-radius logic.
-
-    Args:
-        raw_roots (npt.NDArray[np.float32 | np.float64]): Unsorted array of root
-            candidates. Only the first ``n_roots`` entries are valid.
-        n_roots (int): Number of valid entries in ``raw_roots``.
-        coeff (npt.NDArray[np.float32 | np.float64]): Original Bernstein coefficients
-            (used for derivative evaluation during dedup).
-        param_tol (float): Parametric tolerance.
-        geom_tol (float): Geometric tolerance.
-
-    Returns:
-        npt.NDArray[np.float64]: Sorted, deduplicated array of unique roots.
-    """
-    if n_roots == 0:
-        return np.empty(0, dtype=np.float64)
-    out, count = _dedup_roots_core(raw_roots, n_roots, coeff, param_tol, geom_tol)
-    result: npt.NDArray[np.float64] = out[:count].copy()
-    return result
 
 
 def _warmup_numba_functions() -> None:

@@ -19,5 +19,12 @@ void register_quad(nanobind::module_& m);
 /// Register the `pantr.change_basis` kernel bindings on `m`.
 void register_change_basis(nanobind::module_& m);
 
-/// Register the `pantr.bezier` kernel bindings on `m`.
+/// Register the `pantr.bezier` arithmetic kernel bindings on `m`.
 void register_bezier(nanobind::module_& m);
+
+/// Register the `pantr.bezier` root-finding kernel bindings on `m`.
+///
+/// Separate from `register_bezier` because the two halves of the package are
+/// separate ports with separate parity claims, and the file comments that justify
+/// each one's checks do not belong in the same file.
+void register_bezier_root_finding(nanobind::module_& m);
