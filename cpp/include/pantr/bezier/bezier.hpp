@@ -34,7 +34,10 @@
 /// Every inner step here is `a * b + c * d` or `a * b`, so unlike the Bernstein
 /// tabulation there **are** sites for `-ffp-contract` to fuse. At the baseline
 /// target that is inert, since base `x86-64` has no FMA instruction; with
-/// `-march=native` it is not, and 125 of 630 `float64` de Casteljau values move.
+/// `-march=native` it is not, and 91 of 1260 de Casteljau values move. (An earlier
+/// version of this sentence said 125 of 630 `float64` values, which is the
+/// accumulation-width measurement from further up this file, at `float32`. Wrong
+/// number, wrong dtype and wrong cause.)
 /// This is the `__fp_contract__` runtime gate of design/build_findings.md, not a
 /// property of the code, and the parity tests read it rather than assuming it: they
 /// claim bitwise where the target ISA has no fused multiply-add and bounded where it
