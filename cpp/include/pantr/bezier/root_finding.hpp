@@ -223,12 +223,13 @@ accumulator_t<T> de_casteljau_eval_and_deriv_scalar(std::span<const T> coeff, ac
 /// Mirrors `_root_finding_core._restrict_scalar`. No validation is performed.
 template <Real T>
 void restrict_scalar(std::span<const T> coeff, double lower, double upper, std::span<double> out) {
+    using std::abs;
     const auto p = static_cast<std::ptrdiff_t>(coeff.size()) - 1;
     for (std::ptrdiff_t i = 0; i <= p; ++i) {
         out[static_cast<std::size_t>(i)] = static_cast<double>(coeff[static_cast<std::size_t>(i)]);
     }
 
-    if (std::abs(upper) >= std::abs(lower - 1.0)) {
+    if (abs(upper) >= abs(lower - 1.0)) {
         const double tau = upper;
         for (std::ptrdiff_t step = 1; step <= p; ++step) {
             for (std::ptrdiff_t j = p; j >= step; --j) {
@@ -435,16 +436,17 @@ accumulator_t<T> newton_polish_scalar(std::span<const T> coeff, accumulator_t<T>
                                       accumulator_t<T> lo, accumulator_t<T> hi,
                                       accumulator_t<T> param_tol, std::span<T> work,
                                       accumulator_t<T>& out_f, accumulator_t<T>& out_df) {
+    using std::abs;
     using Acc = accumulator_t<T>;
     Acc df_mid{};
     const Acc f_mid = de_casteljau_eval_and_deriv_scalar<T>(coeff, mid, work, df_mid);
     out_df = df_mid;
-    if (std::abs(df_mid) > static_cast<Acc>(kDblEpsilon)) {
+    if (abs(df_mid) > static_cast<Acc>(kDblEpsilon)) {
         Acc newton = mid - f_mid / df_mid;
         if (lo - param_tol <= newton && newton <= hi + param_tol) {
             newton = std::max(Acc{0}, std::min(Acc{1}, newton));
             const Acc f_newton = static_cast<Acc>(de_casteljau_eval_scalar<T>(coeff, newton, work));
-            if (std::abs(f_newton) <= std::abs(f_mid)) {
+            if (abs(f_newton) <= abs(f_mid)) {
                 out_f = f_newton;
                 return newton;
             }
@@ -473,6 +475,7 @@ accumulator_t<T> newton_polish_scalar(std::span<const T> coeff, accumulator_t<T>
 template <Real T>
 accumulator_t<T> solve_monotone_root_kernel(std::span<const T> coeff, accumulator_t<T> param_tol,
                                             std::span<T> work) {
+    using std::abs;
     using Acc = accumulator_t<T>;
     Acc lo{0};
     Acc hi{1};
@@ -489,7 +492,7 @@ accumulator_t<T> solve_monotone_root_kernel(std::span<const T> coeff, accumulato
     }
 
     Acc x{};
-    if (std::abs(static_cast<Acc>(static_cast<T>(f_hi - f_lo))) > Acc{0}) {
+    if (abs(static_cast<Acc>(static_cast<T>(f_hi - f_lo))) > Acc{0}) {
         // Divide at T, then promote: `(-f_lo) / (f_hi - f_lo)` binds before the
         // multiplication by the double-valued span.
         const T quotient = static_cast<T>(static_cast<T>(-f_lo) / static_cast<T>(f_hi - f_lo));
@@ -514,7 +517,7 @@ accumulator_t<T> solve_monotone_root_kernel(std::span<const T> coeff, accumulato
             break;
         }
 
-        const Acc x_new = std::abs(dfx) > Acc{0} ? x - fx / dfx : Acc{0.5} * (lo + hi);
+        const Acc x_new = abs(dfx) > Acc{0} ? x - fx / dfx : Acc{0.5} * (lo + hi);
         x = (lo < x_new && x_new < hi) ? x_new : Acc{0.5} * (lo + hi);
     }
 
@@ -537,6 +540,7 @@ template <Real T>
 accumulator_t<T> solve_on_interval(std::span<const T> coeff, accumulator_t<T> lo,
                                    accumulator_t<T> hi, accumulator_t<T> f_lo,
                                    accumulator_t<T> tol, std::span<T> work) {
+    using std::abs;
     using Acc = accumulator_t<T>;
     Acc x = Acc{0.5} * (lo + hi);
 
@@ -554,7 +558,7 @@ accumulator_t<T> solve_on_interval(std::span<const T> coeff, accumulator_t<T> lo
             return Acc{0.5} * (lo + hi);
         }
 
-        const Acc x_new = std::abs(dfx) > Acc{0} ? x - fx / dfx : Acc{0.5} * (lo + hi);
+        const Acc x_new = abs(dfx) > Acc{0} ? x - fx / dfx : Acc{0.5} * (lo + hi);
         x = (lo < x_new && x_new < hi) ? x_new : Acc{0.5} * (lo + hi);
     }
 
@@ -581,6 +585,7 @@ accumulator_t<T> solve_on_interval(std::span<const T> coeff, accumulator_t<T> lo
 template <Real T>
 int find_roots_at_level(std::span<const T> coeff, std::span<const double> crit, int n_crit,
                         accumulator_t<T> tol, std::span<double> roots, std::span<T> work) {
+    using std::abs;
     using Acc = accumulator_t<T>;
     const auto n = static_cast<int>(coeff.size()) - 1;
     int count = 0;
@@ -595,7 +600,7 @@ int find_roots_at_level(std::span<const T> coeff, std::span<const double> crit, 
     // problem reads as zero and the endpoints are returned as roots. Rescaling the
     // same polynomial moves the answer, which is the defect.
     const Acc boundary_eps =
-        std::max(static_cast<Acc>(std::abs(scale)) * static_cast<Acc>(kDblEpsilon) * Acc{8},
+        std::max(static_cast<Acc>(abs(scale)) * static_cast<Acc>(kDblEpsilon) * Acc{8},
                  Acc{1e-30});
 
     Acc prev_t{0};
@@ -617,9 +622,9 @@ int find_roots_at_level(std::span<const T> coeff, std::span<const double> crit, 
 
         const T f_curr = f_at_curr;
 
-        if (std::abs(static_cast<Acc>(f_prev)) <= boundary_eps
+        if (abs(static_cast<Acc>(f_prev)) <= boundary_eps
             && (count == 0
-                || std::abs(roots[static_cast<std::size_t>(count) - 1] - prev_t) > tol)) {
+                || abs(roots[static_cast<std::size_t>(count) - 1] - prev_t) > tol)) {
             if (count < n) {
                 roots[static_cast<std::size_t>(count)] = prev_t;
                 ++count;
@@ -645,8 +650,8 @@ int find_roots_at_level(std::span<const T> coeff, std::span<const double> crit, 
         prev_t = curr_t;
     }
 
-    if (std::abs(static_cast<Acc>(f_prev)) <= boundary_eps
-        && (count == 0 || std::abs(roots[static_cast<std::size_t>(count) - 1] - Acc{1}) > tol)
+    if (abs(static_cast<Acc>(f_prev)) <= boundary_eps
+        && (count == 0 || abs(roots[static_cast<std::size_t>(count) - 1] - Acc{1}) > tol)
         && count < n) {
         roots[static_cast<std::size_t>(count)] = 1.0;
         ++count;
@@ -675,6 +680,7 @@ int find_roots_at_level(std::span<const T> coeff, std::span<const double> crit, 
 template <Real T>
 int yuksel_roots(std::span<const T> coeff, accumulator_t<T> tol, std::span<double> roots,
                  std::span<T> work) {
+    using std::abs;
     const auto n = static_cast<int>(coeff.size()) - 1;
     if (n <= 0) {
         return 0;
@@ -763,16 +769,16 @@ int yuksel_roots(std::span<const T> coeff, accumulator_t<T> tol, std::span<doubl
         if (n_crit == 0) {
             const double f_lo = coeff_lev[0];
             const double f_hi = coeff_lev[static_cast<std::size_t>(deg_lev)];
-            const double scale = std::abs(hi_val - lo_val);
+            const double scale = abs(hi_val - lo_val);
             const double boundary_eps = std::max(scale * kDblEpsilon * 8.0, 1e-30);
 
-            if (std::abs(f_lo) <= boundary_eps) {
+            if (abs(f_lo) <= boundary_eps) {
                 crit[0] = 0.0;
                 n_crit = 1;
             } else if (f_lo * f_hi < 0.0) {
                 crit[0] = solve_on_interval<double>(coeff_lev, 0.0, 1.0, f_lo, tol, level_work);
                 n_crit = 1;
-            } else if (std::abs(f_hi) <= boundary_eps) {
+            } else if (abs(f_hi) <= boundary_eps) {
                 crit[0] = 1.0;
                 n_crit = 1;
             } else {
@@ -815,6 +821,7 @@ int yuksel_roots(std::span<const T> coeff, accumulator_t<T> tol, std::span<doubl
 template <Real T>
 int clip_roots_core(std::span<const T> root_coeff, accumulator_t<T> param_tol,
                     accumulator_t<T> geom_tol, std::span<double> roots, std::span<T> work) {
+    using std::abs;
     using Acc = accumulator_t<T>;
     const auto n = static_cast<int>(root_coeff.size()) - 1;
     const int max_roots = 3 * n + 4;
@@ -825,16 +832,16 @@ int clip_roots_core(std::span<const T> root_coeff, accumulator_t<T> param_tol,
     double coeff_scale = 0.0;
     for (int i = 0; i <= n; ++i) {
         coeff_scale =
-            std::max(coeff_scale, static_cast<double>(std::abs(root_coeff[static_cast<std::size_t>(i)])));
+            std::max(coeff_scale, static_cast<double>(abs(root_coeff[static_cast<std::size_t>(i)])));
     }
     const double zero_tol =
         std::max(coeff_scale * static_cast<double>(n + 1) * 4.0 * kDblEpsilon, geom_tol);
 
-    if (std::abs(static_cast<double>(root_coeff[0])) <= zero_tol) {
+    if (abs(static_cast<double>(root_coeff[0])) <= zero_tol) {
         roots[static_cast<std::size_t>(n_roots)] = 0.0;
         ++n_roots;
     }
-    if (std::abs(static_cast<double>(root_coeff[static_cast<std::size_t>(n)])) <= zero_tol) {
+    if (abs(static_cast<double>(root_coeff[static_cast<std::size_t>(n)])) <= zero_tol) {
         roots[static_cast<std::size_t>(n_roots)] = 1.0;
         ++n_roots;
     }
@@ -876,8 +883,8 @@ int clip_roots_core(std::span<const T> root_coeff, accumulator_t<T> param_tol,
             Acc df_mid{};
             mid = newton_polish_scalar<T>(root_coeff, mid, lo, hi, param_tol, work, f_mid, df_mid);
 
-            if (std::abs(f_mid) <= zero_tol) {
-                if (std::abs(df_mid) <= static_cast<Acc>(kDblEpsilon)) {
+            if (abs(f_mid) <= zero_tol) {
+                if (abs(df_mid) <= static_cast<Acc>(kDblEpsilon)) {
                     // Double root: the derivative is useless, so bisect.
                     double a = lo;
                     double b = hi;
@@ -889,7 +896,7 @@ int clip_roots_core(std::span<const T> root_coeff, accumulator_t<T> param_tol,
                         // underflow at float32. Reproduced deliberately; unlike the
                         // other two this one has no verified reproduction, only the
                         // same mechanism.
-                        if (std::abs(fm) < std::abs(fa)) {
+                        if (abs(fm) < abs(fa)) {
                             if (fa * fm <= T{0}) {
                                 b = m;
                             } else {
@@ -910,7 +917,7 @@ int clip_roots_core(std::span<const T> root_coeff, accumulator_t<T> param_tol,
                 }
 
                 const T f_final = de_casteljau_eval_scalar<T>(root_coeff, mid, work);
-                if (std::abs(static_cast<Acc>(f_final)) <= zero_tol && n_roots < max_roots) {
+                if (abs(static_cast<Acc>(f_final)) <= zero_tol && n_roots < max_roots) {
                     roots[static_cast<std::size_t>(n_roots)] = mid;
                     ++n_roots;
                 }
@@ -922,7 +929,7 @@ int clip_roots_core(std::span<const T> root_coeff, accumulator_t<T> param_tol,
         subdivide_scalar<T>(root_coeff, lo, hi, local);
         double local_scale = 0.0;
         for (int i = 0; i <= n; ++i) {
-            local_scale = std::max(local_scale, std::abs(local[static_cast<std::size_t>(i)]));
+            local_scale = std::max(local_scale, abs(local[static_cast<std::size_t>(i)]));
         }
         const double local_zero_tol =
             std::max(local_scale * static_cast<double>(n + 1) * 4.0 * kDblEpsilon, geom_tol);
@@ -943,7 +950,7 @@ int clip_roots_core(std::span<const T> root_coeff, accumulator_t<T> param_tol,
                 Acc df_mid{};
                 const double mid = newton_polish_scalar<T>(root_coeff, 0.5 * (lo + hi), lo, hi,
                                                            Acc{0}, work, f_mid, df_mid);
-                if (std::abs(f_mid) <= zero_tol && n_roots < max_roots) {
+                if (abs(f_mid) <= zero_tol && n_roots < max_roots) {
                     roots[static_cast<std::size_t>(n_roots)] = mid;
                     ++n_roots;
                 }
@@ -953,11 +960,11 @@ int clip_roots_core(std::span<const T> root_coeff, accumulator_t<T> param_tol,
 
         // Step 5: flat within noise.
         if (c_max - c_min <= geom_tol) {
-            if (std::abs(c_min) <= local_zero_tol || std::abs(c_max) <= local_zero_tol
+            if (abs(c_min) <= local_zero_tol || abs(c_max) <= local_zero_tol
                 || c_min * c_max < 0.0) {
                 const double mid = 0.5 * (lo + hi);
                 const T f_mid = de_casteljau_eval_scalar<T>(root_coeff, mid, work);
-                if (std::abs(static_cast<Acc>(f_mid)) <= zero_tol && n_roots < max_roots) {
+                if (abs(static_cast<Acc>(f_mid)) <= zero_tol && n_roots < max_roots) {
                     roots[static_cast<std::size_t>(n_roots)] = mid;
                     ++n_roots;
                 }
@@ -966,11 +973,11 @@ int clip_roots_core(std::span<const T> root_coeff, accumulator_t<T> param_tol,
         }
 
         // Step 6: endpoint roots.
-        if (std::abs(local[0]) <= local_zero_tol && n_roots < max_roots) {
+        if (abs(local[0]) <= local_zero_tol && n_roots < max_roots) {
             roots[static_cast<std::size_t>(n_roots)] = lo;
             ++n_roots;
         }
-        if (std::abs(local[static_cast<std::size_t>(n)]) <= local_zero_tol && n_roots < max_roots) {
+        if (abs(local[static_cast<std::size_t>(n)]) <= local_zero_tol && n_roots < max_roots) {
             roots[static_cast<std::size_t>(n_roots)] = hi;
             ++n_roots;
         }
@@ -1022,7 +1029,7 @@ int clip_roots_core(std::span<const T> root_coeff, accumulator_t<T> param_tol,
             Acc df_mid{};
             const double mid = newton_polish_scalar<T>(root_coeff, 0.5 * (new_lo + new_hi), new_lo,
                                                        new_hi, param_tol, work, f_mid, df_mid);
-            if (std::abs(f_mid) <= zero_tol && n_roots < max_roots) {
+            if (abs(f_mid) <= zero_tol && n_roots < max_roots) {
                 roots[static_cast<std::size_t>(n_roots)] = mid;
                 ++n_roots;
             }
@@ -1087,6 +1094,8 @@ template <Real T>
 int dedup_roots_core(std::span<const double> raw_roots, int n_roots, std::span<const T> coeff,
                      accumulator_t<T> param_tol, accumulator_t<T> geom_tol,
                      std::span<double> out, std::span<T> work) {
+    using std::abs;
+    using std::pow;
     using Acc = accumulator_t<T>;
     if (n_roots == 0) {
         return 0;
@@ -1096,12 +1105,12 @@ int dedup_roots_core(std::span<const double> raw_roots, int n_roots, std::span<c
     double coeff_scale = 0.0;
     for (int i = 0; i <= n; ++i) {
         coeff_scale =
-            std::max(coeff_scale, std::abs(static_cast<double>(coeff[static_cast<std::size_t>(i)])));
+            std::max(coeff_scale, abs(static_cast<double>(coeff[static_cast<std::size_t>(i)])));
     }
     const double zero_tol =
         std::max(coeff_scale * static_cast<double>(n + 1) * 4.0 * kDblEpsilon, geom_tol);
     const double base_dedup = std::max(param_tol * 2.0, zero_tol * 4.0);
-    const double radius_cap = std::pow(zero_tol, 1.0 / 3.0);
+    const double radius_cap = pow(zero_tol, 1.0 / 3.0);
 
     for (int i = 0; i < n_roots; ++i) {
         out[static_cast<std::size_t>(i)] = raw_roots[static_cast<std::size_t>(i)];
@@ -1126,7 +1135,7 @@ int dedup_roots_core(std::span<const double> raw_roots, int n_roots, std::span<c
         Acc df{};
         de_casteljau_eval_and_deriv_scalar<T>(
             coeff, out[static_cast<std::size_t>(count) - 1], work, df);
-        const double local_tol = zero_tol / std::max(std::abs(df), static_cast<Acc>(kDblEpsilon));
+        const double local_tol = zero_tol / std::max(abs(df), static_cast<Acc>(kDblEpsilon));
         if (gap <= std::max(base_dedup, std::min(local_tol * 4.0, radius_cap))) {
             continue;
         }
@@ -1155,6 +1164,7 @@ int dedup_roots_core(std::span<const double> raw_roots, int n_roots, std::span<c
 template <Real T>
 int dispatch_and_find(std::span<const T> coeff, accumulator_t<T> param_tol,
                       accumulator_t<T> geom_tol, std::span<double> out) {
+    using std::abs;
     const auto n = static_cast<int>(coeff.size()) - 1;
     if (n < 1) {
         return 0;
@@ -1162,7 +1172,7 @@ int dispatch_and_find(std::span<const T> coeff, accumulator_t<T> param_tol,
 
     bool all_zero = true;
     for (int i = 0; i <= n; ++i) {
-        if (std::abs(static_cast<accumulator_t<T>>(coeff[static_cast<std::size_t>(i)]))
+        if (abs(static_cast<accumulator_t<T>>(coeff[static_cast<std::size_t>(i)]))
             > geom_tol) {
             all_zero = false;
             break;
@@ -1178,7 +1188,7 @@ int dispatch_and_find(std::span<const T> coeff, accumulator_t<T> param_tol,
         double c_min_nonzero = std::numeric_limits<double>::infinity();
         for (int i = 0; i <= n; ++i) {
             const auto av =
-                static_cast<double>(std::abs(coeff[static_cast<std::size_t>(i)]));
+                static_cast<double>(abs(coeff[static_cast<std::size_t>(i)]));
             c_max = std::max(c_max, av);
             if (av > 0.0 && av < c_min_nonzero) {
                 c_min_nonzero = av;
