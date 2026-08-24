@@ -25,8 +25,9 @@ Supporting utilities (used internally and by the resultant pipeline):
 
 from __future__ import annotations
 
+import functools
 from collections.abc import Callable, Sequence
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any, Final, Literal
 
 import numpy as np
 import numpy.typing as npt
@@ -37,6 +38,34 @@ from ._bezier_utils import _tabulate_bernstein_1d_fast
 
 if TYPE_CHECKING:
     from . import Bezier
+
+
+_PINV_CACHE_SIZE: Final[int] = 32
+"""Entries kept in the Bernstein pseudo-inverse cache.
+
+Keyed by the nodes, the tolerance and the target degree, so this counts *node
+sets*: a caller fitting against many different user-supplied node arrays fills
+it, where one repeatedly using the generated Chebyshev nodes occupies a single
+entry per order.  A handful of distinct node sets is the realistic working set,
+so this is generous for the case the cache exists to serve and small enough to
+bound the pathological one.
+"""
+
+_PINV_CACHE_MAX_ELEMENTS: Final[int] = 1 << 16
+"""Largest pseudo-inverse that is worth holding on to, in matrix entries.
+
+Entry count alone does not bound memory, because an entry is a whole
+``(degree + 1)``-by-``n_pts`` matrix and ``n_pts`` is the caller's to choose.
+A wide, low-degree fit against very many nodes is exactly the shape that pays
+worst: the saving scales with the degree while the memory scales with the node
+count, and such a fit is usually performed once rather than repeatedly.  Above
+this size the factorization is computed and discarded.
+
+The cap itself is a **policy choice, not a derivation**.  It is set so that a
+full cache of ``_PINV_CACHE_SIZE`` float64 entries stays under twenty megabytes,
+and so that every square case this module is accurate at, and any rectangular fit
+of plausible width, still lands inside it.
+"""
 
 
 def _bernstein_vandermonde_svd(
@@ -55,6 +84,14 @@ def _bernstein_vandermonde_svd(
     ``n - 1``.  ``V`` is square (``n`` nodes, ``n`` coefficients), so its SVD
     underlies the truncated pseudo-inverse used to invert the (ill-conditioned
     at high degree) interpolation system.
+
+    Note:
+        Unlike :func:`_build_bernstein_pinv`, this factorization is **not**
+        memoized, because nothing in this package calls it: neither public entry
+        point reaches it, and its only caller, :func:`_bernstein_interpolate`,
+        has no caller here either.  See
+        ``design/bezier_interpolation_port.md`` for the measurement and for what
+        would make memoizing it worthwhile.
 
     Args:
         n (int): Number of nodes/coefficients (degree + 1). Must be >= 1.
@@ -216,6 +253,19 @@ def _build_bernstein_pinv(
     ``degree < len(nodes) - 1``, the Vandermonde is rectangular and the
     pseudo-inverse yields a least-squares fit.
 
+    This is the pseudo-inverse both :func:`interpolate_bezier` and
+    :func:`fit_bezier` reach on every tensor-product call, once per parametric
+    direction, and its truncated SVD is the largest single cost in one.  It is
+    therefore memoized per ``(nodes, tol, degree)`` by
+    :func:`_bernstein_pinv_cached`, keyed on the nodes' bytes rather than the
+    array object so that a regenerated node set hits the same entry, which the
+    default Chebyshev path relies on.  A fresh copy is returned, so the caller
+    keeps the independent, writable array it has always had.
+
+    A matrix larger than ``_PINV_CACHE_MAX_ELEMENTS`` is computed and discarded
+    rather than retained, since holding it would cost more than rebuilding it is
+    likely to save.
+
     Args:
         nodes (npt.NDArray[np.floating[Any]]): 1D interpolation nodes on
             [0, 1], shape ``(n_pts,)``.
@@ -224,6 +274,69 @@ def _build_bernstein_pinv(
         degree (int | None): Polynomial degree of the output Bernstein
             representation.  If *None*, defaults to ``n_pts - 1`` (exact
             interpolation).
+
+    Returns:
+        npt.NDArray[np.floating[Any]]: Pseudo-inverse matrix, shape
+        ``(degree + 1, n_pts)``.  Freshly copied and safe to mutate.
+    """
+    n_pts = nodes.shape[0]
+    deg = n_pts - 1 if degree is None else degree
+    if (deg + 1) * n_pts > _PINV_CACHE_MAX_ELEMENTS:
+        return _compute_bernstein_pinv(nodes, tol, degree)
+    return _bernstein_pinv_cached(nodes.tobytes(), nodes.dtype, tol, degree).copy()
+
+
+@functools.lru_cache(maxsize=_PINV_CACHE_SIZE)
+def _bernstein_pinv_cached(
+    node_bytes: bytes,
+    dtype: np.dtype[np.floating[Any]],
+    tol: float | None,
+    degree: int | None,
+) -> npt.NDArray[np.floating[Any]]:
+    """Memoize :func:`_compute_bernstein_pinv` under a hashable key.
+
+    The matrix is a pure function of the nodes, the truncation tolerance and
+    the target degree, so memoizing it is sound.  The nodes arrive as their
+    bytes because an ndarray is not hashable; together with ``dtype`` they
+    determine the node array, including its length.
+
+    Callers must not mutate the returned matrix, which is the cache's own.
+    :func:`_build_bernstein_pinv` is the entry point that enforces this by
+    handing out copies.
+
+    Args:
+        node_bytes (bytes): The 1D node array's buffer, in C order.
+        dtype (np.dtype[np.floating[Any]]): The node array's floating dtype.
+        tol (float | None): SVD truncation tolerance, or *None* for the
+            dtype-based default.
+        degree (int | None): Target Bernstein degree, or *None* for exact
+            interpolation.
+
+    Returns:
+        npt.NDArray[np.floating[Any]]: Pseudo-inverse matrix, shape
+        ``(degree + 1, n_pts)``.  Owned by the cache; do not mutate.
+    """
+    return _compute_bernstein_pinv(np.frombuffer(node_bytes, dtype=dtype).copy(), tol, degree)
+
+
+def _compute_bernstein_pinv(
+    nodes: npt.NDArray[np.floating[Any]],
+    tol: float | None,
+    degree: int | None,
+) -> npt.NDArray[np.floating[Any]]:
+    """Build the Bernstein pseudo-inverse, without consulting any cache.
+
+    This is the computation :func:`_build_bernstein_pinv` documents; that
+    function is the entry point, and decides whether the result is worth
+    keeping.
+
+    Args:
+        nodes (npt.NDArray[np.floating[Any]]): 1D interpolation nodes on
+            [0, 1], shape ``(n_pts,)``.
+        tol (float | None): SVD truncation tolerance, or *None* for the
+            dtype-based default.
+        degree (int | None): Target Bernstein degree, or *None* for exact
+            interpolation.
 
     Returns:
         npt.NDArray[np.floating[Any]]: Pseudo-inverse matrix, shape

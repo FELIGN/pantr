@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from typing import Any
+from collections.abc import Iterator
+from typing import Any, Final
 
 import numpy as np
 import numpy.testing as nptest
@@ -10,7 +11,14 @@ import numpy.typing as npt
 import pytest
 
 from pantr.bezier import fit_bezier, interpolate_bezier
-from pantr.bezier._bezier_interpolate import _bernstein_interpolate
+from pantr.bezier._bezier_interpolate import (
+    _PINV_CACHE_MAX_ELEMENTS,
+    _bernstein_interpolate,
+    _bernstein_pinv_cached,
+    _bernstein_vandermonde_svd,
+    _build_bernstein_pinv,
+    _compute_bernstein_pinv,
+)
 from pantr.bezier._bezier_utils import _tabulate_bernstein_1d_fast
 from pantr.quad import PointsLattice, get_modified_chebyshev_nodes_1d
 
@@ -697,3 +705,144 @@ class TestFitValidation:
         """Values with wrong number of dims raises ValueError."""
         with pytest.raises(ValueError, match="dimensions"):
             fit_bezier(np.ones((2, 3, 4)), np.array([0.0, 1.0]))
+
+
+# ---------------------------------------------------------------------------
+# _bernstein_vandermonde_svd
+# ---------------------------------------------------------------------------
+
+_SVD_RECONSTRUCTION_FACTOR: Final[float] = 16.0
+"""Safety factor in the SVD reconstruction bound below.
+
+The backward stability of a QR- or divide-and-conquer-based SVD gives
+``||V - U diag(sigma) Vt||_F <= p(n) * eps * ||V||_2`` with ``p`` a low-degree
+polynomial in the dimensions (Demmel, *Applied Numerical Linear Algebra*,
+Thm. 5.5).  The theorem does not pin ``p``, so this factor is an acknowledged
+safety margin over ``p(n) = n`` and **not** a derivation.  ``pantr.tolerance``'s
+relative tolerances are deliberately not reused here: they are dimensionless
+comparison tolerances with no dependence on ``n``, which is the wrong shape for
+the Frobenius norm of an ``n``-by-``n`` residual.
+"""
+
+
+class TestBernsteinVandermondeSvd:
+    """The Bernstein Vandermonde factorization, which had no direct test before."""
+
+    @pytest.mark.parametrize("n", [1, 2, 5, 17, 30])
+    @pytest.mark.parametrize("dtype", [np.float64, np.float32])
+    def test_the_factors_reconstruct_the_vandermonde(
+        self, n: int, dtype: type[np.floating[Any]]
+    ) -> None:
+        """U diag(sigma) Vt returns the matrix that was factorized."""
+        U, sigma, Vt = _bernstein_vandermonde_svd(n, dtype)
+        nodes = get_modified_chebyshev_nodes_1d(max(n, 2), dtype)[:n]
+        expected = _tabulate_bernstein_1d_fast(n - 1, nodes, dtype)
+
+        residual = float(np.linalg.norm(np.asarray(U * sigma) @ Vt - expected))
+        eps = float(np.finfo(dtype).eps)
+        assert residual <= _SVD_RECONSTRUCTION_FACTOR * n * eps * float(sigma[0])
+
+
+# ---------------------------------------------------------------------------
+# _build_bernstein_pinv — memoization
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def _clean_pinv_cache() -> Iterator[None]:
+    """Empty the pseudo-inverse cache around a test that counts its misses.
+
+    Yields:
+        None: The test runs with an empty cache and leaves one behind.
+    """
+    _bernstein_pinv_cached.cache_clear()
+    yield
+    _bernstein_pinv_cached.cache_clear()
+
+
+class TestBernsteinPinvCache:
+    """The memoized Bernstein pseudo-inverse, which both entry points reach."""
+
+    def test_mutating_a_result_does_not_corrupt_the_cache(self) -> None:
+        """The caller owns what it gets, so a later call is unaffected by its edits."""
+        nodes = get_modified_chebyshev_nodes_1d(7, np.float64)
+        pristine = _build_bernstein_pinv(nodes).copy()
+
+        _build_bernstein_pinv(nodes)[...] += 1.0
+
+        nptest.assert_array_equal(_build_bernstein_pinv(nodes), pristine)
+
+    @pytest.mark.usefixtures("_clean_pinv_cache")
+    def test_a_repeated_node_set_factorizes_only_once(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Equal nodes hit the same entry even when they are distinct array objects."""
+        calls = 0
+        real_svd = np.linalg.svd
+
+        def counting_svd(*args: Any, **kwargs: Any) -> Any:
+            nonlocal calls
+            calls += 1
+            return real_svd(*args, **kwargs)
+
+        monkeypatch.setattr(np.linalg, "svd", counting_svd)
+        for _ in range(4):
+            _build_bernstein_pinv(get_modified_chebyshev_nodes_1d(12, np.float64))
+
+        assert calls == 1
+
+    @pytest.mark.usefixtures("_clean_pinv_cache")
+    def test_the_same_bytes_in_a_different_dtype_do_not_collide(self) -> None:
+        """Two node arrays sharing a buffer length are still distinct cache keys.
+
+        Four ``float32`` nodes and two ``float64`` nodes occupy the same sixteen
+        bytes, so a key made of the buffer alone would confuse them.  The dtype is
+        part of the key for exactly this reason.
+        """
+        wide = np.array([0.0, 1.0], dtype=np.float64)
+        narrow = np.frombuffer(wide.tobytes(), dtype=np.float32).copy()
+        assert wide.tobytes() == narrow.tobytes()
+
+        assert _build_bernstein_pinv(wide).shape == (2, 2)
+        assert _build_bernstein_pinv(narrow).shape == (4, 4)
+
+    @pytest.mark.usefixtures("_clean_pinv_cache")
+    def test_a_different_tolerance_is_a_different_entry(self) -> None:
+        """Truncating at a tolerance that discards singular values changes the result."""
+        nodes = get_modified_chebyshev_nodes_1d(12, np.float64)
+
+        default = _build_bernstein_pinv(nodes)
+        blunt = _build_bernstein_pinv(nodes, 0.5)
+
+        assert not np.array_equal(default, blunt)
+
+    @pytest.mark.usefixtures("_clean_pinv_cache")
+    def test_a_strided_node_array_agrees_with_its_contiguous_copy(self) -> None:
+        """Keying on the buffer must read the logical values, not the memory layout."""
+        dense = get_modified_chebyshev_nodes_1d(16, np.float64)
+        strided = np.repeat(dense, 2)[::2]
+        assert not strided.flags.c_contiguous
+
+        nptest.assert_array_equal(_build_bernstein_pinv(strided), _build_bernstein_pinv(dense))
+
+    def test_the_degenerate_single_node_case_still_short_circuits(self) -> None:
+        """One node at degree zero returns the one-by-one identity without a solve."""
+        nptest.assert_array_equal(
+            _build_bernstein_pinv(np.array([0.5])), np.ones((1, 1), dtype=np.float64)
+        )
+
+    @pytest.mark.usefixtures("_clean_pinv_cache")
+    def test_a_matrix_too_large_to_hold_is_not_cached(self) -> None:
+        """A wide fit against very many nodes computes and discards, rather than retaining.
+
+        The shape that pays worst is the one the guard is for: the saving scales with
+        the degree while the retained memory scales with the node count.
+        """
+        degree = 5
+        n_pts = 2 * _PINV_CACHE_MAX_ELEMENTS // (degree + 1)
+        nodes = np.linspace(0.0, 1.0, n_pts)
+
+        pinv = _build_bernstein_pinv(nodes, None, degree)
+
+        assert _bernstein_pinv_cached.cache_info().currsize == 0
+        nptest.assert_array_equal(pinv, _compute_bernstein_pinv(nodes, None, degree))
