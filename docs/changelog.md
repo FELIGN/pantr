@@ -72,8 +72,11 @@ user-facing, and the ports change what it affects.
 - **The Bézier parity claims now hold on a build that can fuse a multiply-add**, instead of
   being skipped there. Each claim is selected at run time: exact where the target ISA has no
   fused multiply-add, which is the shipped configuration, and bounded where it has one. The
-  bound charges three accumulator roundings and two storage roundings per stage of the
-  dependency chain, and differs between kernels only in the magnitude it multiplies. This
+  bound charges three accumulator roundings per stage of the dependency chain and two
+  more at each narrowing store, and differs between kernels only in the magnitude it
+  multiplies: the same operation run on the absolute values of the control net where
+  that operation is a convex combination, and the absolute row action of the operator
+  where it is not. This
   matters ahead of any build that raises the instruction-set baseline: before it, such a build
   would have turned every one of those assertions into a skip and left the suite green.
 - `scripts/measure_bezier_fma_bound.py`, which reproduces the bound's slack against whatever

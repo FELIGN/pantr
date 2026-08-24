@@ -446,18 +446,66 @@ weight is non-negative and they sum to one, so the absolute-value companion is e
 magnitude reachable at each output element, and it is tight rather than merely valid. Two kernels
 are not convex and must not use it:
 
-| kernel | stages | amplification |
-|---|---|---|
-| `evaluate`, `slice`, `split` | `p` | the absolute-value companion |
-| `restrict` | `2p`, two passes | the absolute-value companion |
-| `degree_elevate` | `p + 1` | the absolute-value companion |
-| `scalar_bernstein_product` | `min(p,q) + 1` | `sum_i C(p,i)C(q,k-i)|a_i||b_{k-i}| / C(p+q,k)` |
-| reduction apply | `p + 1` | `|R| @ |c|`, since `R` has negative entries |
-| `evaluate_deriv` | `p + 1` | `p!/(p-k)! * 2^k * max|c|`, and the accumulator is the storage |
+| kernel | stages | narrowing stores | amplification |
+|---|---|---|---|
+| `evaluate`, `slice`, `split` | `p` | one per stage | the absolute-value companion |
+| `restrict` | `2p`, two passes | one per stage | the absolute-value companion |
+| `degree_elevate` | `min(p, t) + 1` | one per stage | the absolute-value companion |
+| `scalar_bernstein_product` | `min(p,q) + 1` | one per stage | `sum_i C(p,i)C(q,k-i)|a_i||b_{k-i}| / C(p+q,k)` |
+| reduction apply | `p + 1` | **one in total** | `|R| @ |c|`, since `R` has negative entries |
+| `evaluate_deriv` | `2p + k + 2` | one per stage | the A2.3 majorant's row action, accumulator = storage |
 
-The derivative amplification follows from `B^(k) = p!/(p-k)! sum_j (Delta^k c)_j B_{j,p-k}` with
-`||Delta^k||_inf <= 2^k`, and it is **attained**: driving the kernel with the identity net gives
-`max_s sum_j |B^(k)_{j,p}(s)| / (p!/(p-k)! 2^k) = 1.0000` for `k` up to 4 over nine degrees.
+**Three of those six entries were wrong in the first version and a tolerance audit found them.**
+`degree_elevate`'s chain is `min(p, t) + 1` and not `p + 1`, because the accumulation into `out[i]`
+runs `j` from `max(0, i - t)` to `min(p, i)`; charging `p + 1` was 13x too loose at `p = 25`. The
+reduction apply accumulates into a `float64` local and narrows **once per output element**, outside
+the loop over the operator row, so charging a store per stage over-counted it by `p + 1`, measured
+up to 52x at `float32`. And a zero-stage claim -- degree 0, where every one of these kernels
+short-circuits -- was being clamped to one stage instead of being what it is, which is bitwise;
+`bounded_parity`'s own guard says so and the clamp was suppressing it.
+
+### Why the derivative kernel cannot use a companion, and what it uses instead
+
+The convex kernels get the absolute-value companion because their weights are non-negative and sum
+to one. **A2.3 differences, so it has no such companion**, and the first attempt at its
+amplification failed twice in instructive ways.
+
+`p!/(p-k)! * 2^k * max|c|` is correct, follows from
+`B^(k) = p!/(p-k)! sum_j (Delta^k c)_j B_{j,p-k}` with `||Delta^k||_inf <= 2^k`, and is **unusable**:
+it bounds the operator norm rather than the row, and applies the *input* maximum where the
+comparison happens per output element. On the parity suite's own parametrization that made 45 of
+280 non-zero `float32` values carry a tolerance at least as large as their own magnitude, worst
+case 1.6e5 times. Rule 3's guard did not fire, because it compares the largest tolerance against
+the largest magnitude and a flat amplification is sized for exactly that element. **That is Rule 6's
+failure committed inside Rule 10**: a scalar summary hiding an elementwise disagreement.
+
+Replacing it with the row action of the finished operator -- `sum_j |B^(k)_{j,p}(s_i)| |c_{j,r}|`,
+obtained by driving the kernel with the identity net -- fixed the vacuity and was then **exceeded by
+4.32x** at degree 17, orders 4 and 6, identically at both dtypes. The identical figure is the
+signature: a structural shortfall, not rounding. The finished row is not enough precisely because
+the recursion is not convex, so its partial sums can exceed what survives to the output, and no
+telescoping argument recovers them.
+
+What works is the **majorant of the recursion itself**: run A2.3 with every coefficient replaced by
+its modulus. For a linear recursion with signed coefficients that bounds every intermediate, by
+induction, and with the signs gone the partial sums are monotone so the final value majorises all of
+them. Two lines change from the oracle, both in the `a` table. Checked over 75563 (point, basis)
+entries: **0 violations, and a largest ratio of exactly 1.000000**, so it is attained rather than
+conservative.
+
+### The harness's factor of two is a margin here, not a derivation
+
+`absolute_tolerance` multiplies by `ONE_SIDED_TO_TWO_SIDED = 2`, whose docstring justifies it by
+"each backend sits within its own forward-error bound of the exact recurrence, so their difference
+is bounded by the sum of the two". **That justification does not apply to these claims.** The budget
+above is already a backend-to-backend *difference*, derived as one, not a one-sided forward error.
+The other parity files pass one-sided counts and say so.
+
+The factor stays, and its provenance for Rule 10 is restated rather than inherited: it is an
+acknowledged safety factor of two, covering the compiler's freedom in choosing which of two products
+to fuse at a site with both, and the re-rounding of operands that have already diverged. That second
+one is first order rather than second, because correctly rounded arithmetic on inputs one ulp apart
+does not track the gap.
 
 ### The premise the bound rests on, and it is not ours
 
