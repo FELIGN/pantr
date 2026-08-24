@@ -608,13 +608,16 @@ int find_roots_at_level(std::span<const T> coeff, std::span<const double> crit, 
     // The subtraction is at T: `float()` does not widen, so widening here would size
     // every boundary test differently. Measured, 6000 of 6000.
     const T scale = static_cast<T>(d_max - d_min);
-    // FELIGN/pantr#352, reproduced deliberately. The 1e-30 floor is absolute inside
-    // an otherwise scale-relative tolerance, so below it every coefficient of the
-    // problem reads as zero and the endpoints are returned as roots. Rescaling the
-    // same polynomial moves the answer, which is the defect.
+    // No absolute floor, matching the oracle. FELIGN/pantr#352 was a `1e-30` floor
+    // here, absolute inside an otherwise scale-relative tolerance: below a
+    // coefficient range of about 5.6e-16 it won the maximum, every coefficient of
+    // the problem read as zero, and the endpoints came back as roots. Rescaling the
+    // same polynomial moved the answer, which is what made it a defect rather than a
+    // limit. Reproduced here deliberately while the oracle carried it; both sides
+    // dropped it in one change. The factor of 8 is inherited from the oracle, not
+    // derived.
     const Acc boundary_eps =
-        std::max(static_cast<Acc>(abs(scale)) * static_cast<Acc>(kDblEpsilon) * Acc{8},
-                 Acc{1e-30});
+        static_cast<Acc>(abs(scale)) * static_cast<Acc>(kDblEpsilon) * Acc{8};
 
     Acc prev_t{0};
     T f_prev = coeff[0];
@@ -784,7 +787,9 @@ int yuksel_roots(std::span<const T> coeff, accumulator_t<T> tol, std::span<doubl
             const double f_lo = coeff_lev[0];
             const double f_hi = coeff_lev[static_cast<std::size_t>(deg_lev)];
             const double scale = abs(hi_val - lo_val);
-            const double boundary_eps = std::max(scale * kDblEpsilon * 8.0, 1e-30);
+            // Same bound over this level's own span, floorless for the reason
+            // given in find_roots_at_level. FELIGN/pantr#352.
+            const double boundary_eps = scale * kDblEpsilon * 8.0;
 
             if (abs(f_lo) <= boundary_eps) {
                 crit[0] = 0.0;

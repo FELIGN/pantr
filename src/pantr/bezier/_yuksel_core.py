@@ -208,10 +208,28 @@ def _find_roots_at_level(
     count = 0
 
     # Scale-relative boundary tolerance for detecting near-zero values.
+    #
+    # No absolute floor. One used to sit here as `max(..., 1e-30)` and it broke
+    # scale invariance: below a coefficient range of about 5.6e-16 the floor won
+    # the maximum, every coefficient of the problem read as zero however well
+    # separated they were, and the same polynomial rescaled got a different
+    # answer (FELIGN/pantr#352). Scaling a root-finding problem by a positive
+    # constant moves none of its roots, so that was an invariance broken rather
+    # than a precision limit reached.
+    #
+    # The `scale == 0` limit needs no floor either. It means every coefficient is
+    # equal, so the polynomial is constant, and the test then accepts only an
+    # exact zero -- the right reading of "this endpoint vanishes" for a function
+    # with no variation. A constant that is actually zero never arrives here:
+    # `_find_roots._find_roots_scalar` returns empty for an all-zero polynomial
+    # before any kernel is called.
+    #
+    # The factor of 8 is inherited, not derived, and it is the remaining soft
+    # spot in this bound. FELIGN/pantr#354 is where these tolerances are reworked.
     d_min = float(np.min(coeff))
     d_max = float(np.max(coeff))
     scale = abs(d_max - d_min)
-    boundary_eps = max(scale * _DBL_EPSILON * 8.0, 1e-30)
+    boundary_eps = scale * _DBL_EPSILON * 8.0
 
     prev_t = 0.0
     f_prev = float(coeff[0])
@@ -358,8 +376,10 @@ def _yuksel_roots(  # noqa: PLR0912, PLR0915
             f_lo = coeff_lev[0]
             f_hi = coeff_lev[deg_lev]
 
+            # Same bound as in `_find_roots_at_level`, over this level's own
+            # span, and with no absolute floor for the same reason. See there.
             scale = abs(hi_val - lo_val)
-            boundary_eps = max(scale * _DBL_EPSILON * 8.0, 1e-30)
+            boundary_eps = scale * _DBL_EPSILON * 8.0
 
             if abs(f_lo) <= boundary_eps:
                 crit = np.empty(1, dtype=np.float64)
