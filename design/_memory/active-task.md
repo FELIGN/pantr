@@ -39,8 +39,17 @@ with a discrimination count so a match cannot come from a check that could not f
 `design/backend_parity.md` now has **eleven** rules; Rule 11 is the first about a discrete verdict
 rather than a displacement.
 
-**Open, not blocking.** A third pre-existing defect is reproduced and localised but **not filed**:
-Bézier clipping loses a root whose computed residual is exactly zero, at a tolerance below the
-float32 noise floor. Yuksel finds it at every tolerance. Awaiting Pablo's go-ahead. And one review
-finding was downgraded rather than fixed: `ParityClaim` carries optional fields meaningful for one
-variant, which is pre-existing and which a tagged union would fix across every parity module.
+**Block C reconnaissance, already measured, do not repeat it.** `_bezier_interpolate.py` truncates
+at `sigma_i < 100 * eps * sigma_0`. At **float64 that branch is dead** up to n=39, closest approach
+350x. At **float32 it fires from n=19**, and at n=36 a singular value sits **0.22% above the
+threshold**, which two SVD implementations will not agree on. When the rank differs the
+pseudo-inverse moves by a rank-1 term of order `1/(tol*sigma_0)`: a verdict, not a displacement.
+The open question that may change everything is whether the pseudo-inverse is **cached**; if the
+SVD runs once per degree per process, not porting this block is a serious option.
+
+**Three tickets filed 2026-08-24**, all pre-existing and none fixed: #351, #352, #354. All three
+are tolerance-derivation defects in the same kernels and one coherent rework may close all three.
+The C++ reproduces #351 and #352 deliberately, asserted by name.
+
+**One review finding downgraded rather than fixed:** `ParityClaim` carries optional fields
+meaningful for one variant. Pre-existing for four; this port added two more.
