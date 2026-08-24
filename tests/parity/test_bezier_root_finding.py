@@ -42,14 +42,19 @@ results, but 732 results are evidence and not a proof, so the count agreement is
 asserted as its own check and Rule 11 of ``design/backend_parity.md`` records that it
 is measured rather than derived.
 
-Two defects are asserted, not worked around
--------------------------------------------
+One defect is asserted, not worked around
+----------------------------------------
 
-The oracle returns a wrong answer in two regimes, filed as FELIGN/pantr#351 and #352,
-and the C++ reproduces both deliberately because the port's contract is parity and not
-correction. The tests below name them. **If you are here because one of them started
-failing, the fix is in both backends and in these tests together**; making one side
-correct on its own is what breaks the equality this file exists to hold.
+The oracle still returns a wrong answer in one regime, FELIGN/pantr#352, and the C++
+reproduces it deliberately because the port's contract is parity and not correction.
+The test below names it. **If you are here because it started failing, the fix is in
+both backends and in that test together**; making one side correct on its own is what
+breaks the equality this file exists to hold.
+
+FELIGN/pantr#351 was asserted here the same way and is now fixed on both sides, which
+is what that procedure looks like when it is carried out: the oracle stopped forming a
+product to test a sign, the C++ stopped with it, and the two tests that had pinned the
+wrong answer now pin the mathematics instead.
 """
 
 from __future__ import annotations
@@ -644,31 +649,35 @@ def test_the_batch_path_matches_the_oracle(
 def test_the_backends_agree_on_the_root_that_is_not_there(
     cpp_backend: None, dtype: npt.DTypeLike
 ) -> None:
-    """Both backends reproduce FELIGN/pantr#351, and that is the assertion.
+    """Both backends report no root for a strictly positive polynomial.
 
-    `find_monotone_root` reports a root of a strictly positive polynomial when the
-    coefficients are small enough at ``float32``: the no-sign-change guard is written
-    as ``f_lo * f_hi > 0.0`` on two ``float32`` values, their product falls under that
-    format's minimum subnormal and rounds to zero, and the guard does not fire.
+    This test used to assert the opposite. FELIGN/pantr#351 made
+    `find_monotone_root` report a root of a strictly positive polynomial once the
+    coefficients were small enough at ``float32``: the no-sign-change guard was
+    written as ``f_lo * f_hi > 0.0``, the product of two ``float32`` values that
+    small falls under that format's minimum subnormal and rounds to zero, and the
+    guard did not fire. Both backends carried it deliberately, because the port's
+    contract is parity and not correction.
 
-    **This test asserts a wrong answer on purpose.** The C++ reproduces the defect
-    because the port's contract is parity, not correction. When #351 is fixed, it is
-    fixed in both backends and here in one change; correcting one side alone breaks
-    the equality rather than improving anything.
+    Both now compare the signs instead, so there is no product to underflow and no
+    wrong answer to keep in step. What the two backends agree on here is the
+    mathematics: a Bernstein polynomial is a convex combination of its
+    coefficients, and a convex combination of positive numbers is positive.
+
+    The magnitude is the frontier rather than a comfortable one. ``1e-23`` squares
+    to ``1e-46`` and underflows; ``1e-22`` squares to ``1e-44`` and does not. A fix
+    that merely moved the threshold would still fail here.
     """
     del cpp_backend
     demand_the_compiled_kernel(dtype)
 
-    coeff = np.array([1e-25, 0.5e-25, 2e-25], dtype=dtype)
+    coeff = np.array([1e-23, 0.5e-23, 2e-23], dtype=dtype)
     reference, actual = _both_backends("monotone", coeff, DEFECT_TOL)
 
-    if dtype is np.float32:
-        assert np.isfinite(reference[0]), (
-            "the defect is gone from the oracle. If #351 was fixed, fix the C++ and "
-            "this test in the same change rather than relaxing either."
-        )
-    else:
-        assert np.isnan(reference[0]), "float64 is wide enough that the guard fires"
+    assert np.isnan(reference[0]), (
+        "the oracle reports a root for a strictly positive polynomial, which is "
+        "FELIGN/pantr#351 back. Fix the oracle rather than this test."
+    )
 
     _assert_the_same_roots(actual, reference, f"the #351 regime, {dtype}", Case(coeff, DEFECT_TOL))
 
@@ -677,26 +686,28 @@ def test_the_backends_agree_on_the_root_that_is_not_there(
 def test_the_backends_agree_on_the_root_that_is_lost(
     cpp_backend: None, dtype: npt.DTypeLike
 ) -> None:
-    """Both backends reproduce the second face of FELIGN/pantr#351.
+    """Both backends find the one root of ``a(1 - 2t)``, at every scale tried.
 
-    ``B(t) = a(1 - 2t)`` has its only root at ``t = 0.5``. At ``float32`` with
-    ``a = 1e-25`` the sign-change test ``f_prev * f_curr < 0.0`` underflows, no sign
-    change is seen, and the root is lost. See the note on the sibling test: the
-    assertion is deliberate.
+    The second face of FELIGN/pantr#351, and this test also used to assert the
+    wrong answer. ``B(t) = a(1 - 2t)`` has its only root at ``t = 0.5`` for every
+    nonzero ``a``; at ``float32`` the sign-change test ``f_prev * f_curr < 0.0``
+    underflowed and the root was lost. Both backends compare the signs now.
+
+    At the frontier magnitude, for the reason given in the sibling test.
     """
     del cpp_backend
     demand_the_compiled_kernel(dtype)
 
-    coeff = np.array([1e-25, 0.0, -1e-25], dtype=dtype)
+    coeff = np.array([1e-23, 0.0, -1e-23], dtype=dtype)
     reference, actual = _both_backends("roots", coeff, DEFECT_TOL)
 
-    if dtype is np.float32:
-        assert reference.size == 0, (
-            "the defect is gone from the oracle. If #351 was fixed, fix the C++ and "
-            "this test in the same change rather than relaxing either."
-        )
-    else:
-        np.testing.assert_allclose(reference, [0.5], atol=TOL)
+    np.testing.assert_allclose(
+        reference,
+        [0.5],
+        atol=TOL,
+        err_msg="the oracle lost the only root of a(1 - 2t), which is "
+        "FELIGN/pantr#351 back. Fix the oracle rather than this test.",
+    )
 
     _assert_the_same_roots(
         actual,

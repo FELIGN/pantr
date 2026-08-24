@@ -316,9 +316,107 @@ void low_degree_derivatives_match_closed_forms() {
 
 }  // namespace
 
+/// The three sign predicates are exactly the product forms they replace.
+///
+/// They exist to remove a product from a sign test, because the product is the
+/// defect: two operands of magnitude `1e-23` are perfectly representable at
+/// `float32` while their product falls under that format's minimum subnormal and
+/// flushes to zero, so the test answers as though one operand had vanished
+/// (FELIGN/pantr#351). Substituting them is only sound if they agree with the
+/// product everywhere the product is right.
+///
+/// Every pair drawn from the value list has an exact product -- `inf * 0 = NaN`
+/// included -- so agreement here must be total. Both floating-point widths are
+/// checked, since the substituted sites span `T` and `accumulator_t<T>`.
+template <std::floating_point V>
+void sign_predicates_match_the_product_forms() {
+    const V values[] = {-std::numeric_limits<V>::infinity(),
+                        V{-3},
+                        V{-1},
+                        V{-0.0},
+                        V{0},
+                        V{1},
+                        V{3},
+                        std::numeric_limits<V>::infinity(),
+                        std::numeric_limits<V>::quiet_NaN()};
+
+    for (const V a : values) {
+        for (const V b : values) {
+            const V product = a * b;
+            PANTR_CHECK(pantr::have_same_sign(a, b) == (product > V{0}));
+            PANTR_CHECK(pantr::have_opposite_signs(a, b) == (product < V{0}));
+            PANTR_CHECK(pantr::spans_zero(a, b) == (product <= V{0}));
+        }
+    }
+}
+
+/// The predicates are right in the regime where the product flushes to zero.
+///
+/// This is the defect itself, reached at `float` where it bites the shipped code
+/// and again at `double` so that no dtype conversion is involved. Both operands
+/// stay perfectly representable; only their product cannot be formed.
+template <std::floating_point V>
+void sign_predicates_survive_underflow(V tiny) {
+    PANTR_CHECK(tiny > V{0});
+    PANTR_CHECK(tiny * tiny == V{0});
+
+    PANTR_CHECK(pantr::have_same_sign(tiny, tiny));
+    PANTR_CHECK(!(tiny * tiny > V{0}));
+
+    PANTR_CHECK(pantr::have_opposite_signs(tiny, -tiny));
+    PANTR_CHECK(!(tiny * -tiny < V{0}));
+
+    PANTR_CHECK(!pantr::spans_zero(tiny, tiny));
+    PANTR_CHECK(tiny * tiny <= V{0});
+}
+
+/// A zero paired with an infinity is not a spanned bracket.
+///
+/// The single pair that separates the exact predicate from the naive one: `0 *
+/// inf` is NaN, which is not less than or equal to zero, so the product form
+/// reports no span and `spans_zero` must agree. A regression here is invisible
+/// in the matrix above, which is why it is called out.
+void zero_with_infinity_is_not_spanned() {
+    for (const double zero : {0.0, -0.0}) {
+        for (const double infinity : {HUGE_VAL, -HUGE_VAL}) {
+            PANTR_CHECK(!pantr::spans_zero(zero, infinity));
+            PANTR_CHECK(!pantr::spans_zero(infinity, zero));
+        }
+    }
+}
+
+/// The predicates are reachable from a scalar that has no ordering of its own.
+///
+/// This is the Tier B claim, and `Dual1` is what makes it a build failure rather
+/// than a convention: the fixture deliberately supplies no `operator==` and no
+/// ordering, so `a * b < T{0}` -- the form these predicates replaced -- cannot
+/// compile for it at all. Going through `value_of` is what makes them work here,
+/// and this function failing to compile is the regression signal.
+void sign_predicates_reach_a_scalar_without_ordering() {
+    static_assert(pantr::Real<Dual1>, "the fixture must still satisfy Real");
+
+    const Dual1 positive{2.0, 1.0};
+    const Dual1 negative{-2.0, 1.0};
+    const Dual1 zero{0.0, 1.0};
+
+    PANTR_CHECK(pantr::have_same_sign(positive, positive));
+    PANTR_CHECK(!pantr::have_same_sign(positive, negative));
+    PANTR_CHECK(pantr::have_opposite_signs(positive, negative));
+    PANTR_CHECK(!pantr::have_opposite_signs(positive, positive));
+    PANTR_CHECK(pantr::spans_zero(positive, negative));
+    PANTR_CHECK(pantr::spans_zero(positive, zero));
+    PANTR_CHECK(!pantr::spans_zero(positive, positive));
+}
+
 int main() {
     dual_value_component_matches_double_exactly();
     derivatives_sum_to_zero();
     low_degree_derivatives_match_closed_forms();
+    sign_predicates_match_the_product_forms<float>();
+    sign_predicates_match_the_product_forms<double>();
+    sign_predicates_survive_underflow(1e-25F);
+    sign_predicates_survive_underflow(1e-200);
+    zero_with_infinity_is_not_spanned();
+    sign_predicates_reach_a_scalar_without_ordering();
     return pantr::test::summary("test_scalar_generic");
 }

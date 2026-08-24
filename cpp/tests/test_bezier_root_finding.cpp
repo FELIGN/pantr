@@ -10,10 +10,13 @@
 /// compares the two backends. Every check is against a property the mathematics
 /// fixes, or against a second algorithm.
 ///
-/// That distinction is not hypothetical here. The oracle carries two known wrong
-/// answers, FELIGN/pantr#351 and #352, which the C++ reproduces on purpose. Both
-/// live at coefficient magnitudes below `1e-23` and `1e-30`; every polynomial in
-/// this file is of order one, so nothing below is testing in their shadow.
+/// That distinction is not hypothetical here. The oracle used to carry two known
+/// wrong answers, FELIGN/pantr#351 and #352, which the C++ reproduced on purpose;
+/// both are now fixed on both sides. They lived at coefficient magnitudes below
+/// `1e-23` and `1e-30`, and every polynomial in this file is of order one, so
+/// nothing below ever tested in their shadow -- which is also why nothing below
+/// changed when they were fixed. The sign-predicate substitution that closed
+/// #351 is checked in test_scalar_generic.cpp, at the magnitudes that reach it.
 ///
 /// ## The exact checks, and why they can be exact
 ///

@@ -36,6 +36,9 @@ from pantr.bezier._root_finding_core import (
     _DBL_EPSILON,
     _de_casteljau_eval_and_deriv_scalar,
     _de_casteljau_eval_scalar,
+    _have_opposite_signs,
+    _have_same_sign,
+    _spans_zero,
 )
 
 _MAX_NEWTON_ITER: int = 64
@@ -90,7 +93,7 @@ def _solve_monotone_root_kernel(
     f_hi = float(coeff[-1])
 
     # No sign change: no root.
-    if f_lo * f_hi > 0.0:
+    if _have_same_sign(f_lo, f_hi):
         return np.nan
 
     # False-position initial guess.
@@ -106,7 +109,7 @@ def _solve_monotone_root_kernel(
         fx, dfx = _de_casteljau_eval_and_deriv_scalar(coeff, x)
 
         # Shrink bracket.
-        if f_lo * fx <= 0.0:
+        if _spans_zero(f_lo, fx):
             hi = x
         else:
             lo = x
@@ -157,7 +160,7 @@ def _solve_on_interval(
     for _ in range(_MAX_NEWTON_ITER):
         fx, dfx = _de_casteljau_eval_and_deriv_scalar(coeff, x)
 
-        if f_lo * fx <= 0.0:
+        if _spans_zero(f_lo, fx):
             hi = x
         else:
             lo = x
@@ -236,7 +239,7 @@ def _find_roots_at_level(
                 continue
 
         # Check for sign change -> guaranteed interior root.
-        if f_prev * f_curr < 0.0:
+        if _have_opposite_signs(f_prev, f_curr):
             root = _solve_on_interval(coeff, prev_t, curr_t, f_prev, tol)
             if count < n:
                 roots[count] = root
@@ -362,7 +365,7 @@ def _yuksel_roots(  # noqa: PLR0912, PLR0915
                 crit = np.empty(1, dtype=np.float64)
                 crit[0] = 0.0
                 n_crit = 1
-            elif f_lo * f_hi < 0.0:
+            elif _have_opposite_signs(f_lo, f_hi):
                 root = _solve_on_interval(coeff_lev, 0.0, 1.0, f_lo, tol)
                 crit = np.empty(1, dtype=np.float64)
                 crit[0] = root
