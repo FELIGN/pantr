@@ -696,10 +696,28 @@ transliteration agrees on all 4800 collinear cases and a fused one on 3833.
 A collinear control polygon is not exotic. A degree-elevated linear polynomial, an affine segment
 and a constant all produce one.
 
-**Why this is a different kind of hazard.** Rule 10's contraction bound absorbs a displacement
-because the two backends compute the same quantity to different last bits. Here contraction
-changes which branch is taken, and downstream of a branch the two backends are computing
-different things. No tolerance covers that, and no amplification makes it smaller.
+**Why this is a different kind of hazard, and one sentence here was wrong.** Rule 10's
+contraction bound absorbs a displacement because the two backends compute the same quantity to
+different last bits. Here contraction changes which branch is taken, and a branch is not a
+quantity a tolerance can bound.
+
+The first version of this section then said that downstream of a flipped tie-break the two
+backends compute different things. **Measured, that is false for the mechanism it names.**
+Andrew's monotone chain with `cross >= 0` pops a collinear vertex and with a tiny negative
+residue keeps it, but either way the hull is the same **polyline**: keeping a collinear vertex
+splits one edge into two collinear pieces and the crossing lies on exactly one of them, at the
+same point. Over the collinear family at every degree and both contraction orders, vertex-set
+flips do occur, the returned interval changes in fewer cases than the vertex set does, and when
+it changes it changes by **one to two ulp**. That is a displacement, which is exactly what a
+tolerance covers.
+
+**The conclusion stands, for a mechanism this rule did not name.** A count can change, but
+through threshold comparisons on displaced values rather than through exact ties: fusion moves
+the subdivided net by ulps, and `_count_sign_changes`, `abs(local[0]) <= local_zero_tol` and
+`c_min > local_zero_tol` all read it. That mechanism is generic and has nothing to do with
+collinearity, which means a collinear adversary is aimed at the wrong target. How close that
+cliff sits: perturbing one coefficient by one ulp across the parity matrix changes the root
+count in **199 of 1464 perturbations**.
 
 **What follows for a parity claim.** Assert the count on its own, before and separately from any
 numeric comparison. `tests/parity/test_bezier_root_finding.py` does, and its failure message says
@@ -712,38 +730,60 @@ were identical, 113 moved in value and **zero changed the root set**. That is ev
 proof: the tie-break demonstrably can flip, so a set change is possible and simply did not occur.
 The count agreement is asserted per case rather than derived.
 
-### The bound where contraction is live, and the two corrections it needed
+### The bound where contraction is live: certify it, do not predict it
 
-The displacement is **not** a rounding bound and cannot be spelled as one. A root is located only
-to within the interval where the computed residual is indistinguishable from zero, of half-width
-`eps_f / |f'(r)|`, and below that scale the bracketing tolerance also applies; the bound is the
-larger of the two. `eps_f` is the evaluation's own forward error, at the **coefficient** width,
-and the half-width is capped at `eps_f^(1/3)`, the cluster width around a root of multiplicity up
-to three, which is the same cap and the same reasoning `_dedup_roots_core` already uses for its
-merge radius.
+Two predicted bounds were tried here and both were refuted. They are recorded because the way
+each failed is more useful than the formula that replaced them.
 
-Two corrections got it there, and both are the kind that pass every test until something forces
-the branch to run.
+**The first was fitted where one term happened to dominate.** Over 732 float64-heavy results the
+worst displacement was `4.951e-13` against a `param_tol` of `1e-12`, so the bracketing tolerance
+looked like the whole bound and looked *tight*, which is normally the sign a derivation is right.
+At `float32` a degree-5 case moved by `2e-8`. The term it omitted is around `1e-15` at float64
+and cannot be seen there. **A measurement cannot refute a bound in a regime where the missing
+term is invisible.**
 
-**The first bound was fitted where one term happened to dominate.** Measured over 732
-float64-heavy results, the worst displacement was `4.951e-13` against a `param_tol` of `1e-12`,
-which looked like the bracketing tolerance was the whole bound and looked *tight*, which is
-normally the sign a derivation is right. At `float32` a degree-5 case moved by `2e-8`, four
-orders past it: the residual term is around `1e-15` at `float64` and never shows. A measurement
-cannot refute a bound in a regime where the missing term is invisible.
+**The second predicted the acceptance component's half-width as `eps_f / |f'(r)|`, capped at
+`eps_f^(1/3)`, and an adversarial review took it apart on four counts:**
 
-**The vacuity guard's premise fails for a quantity on a bounded domain.** Rule 3 refuses a bound
-that reaches the values it compares, which is right for a coefficient and wrong for a curve
-parameter: a root at `3.6e-13` is not a quantity with no digits, it is a parameter next to an
-endpoint, and a bound of `1e-12` on it still says something a wrong answer would violate. With
-the root's own magnitude as the scale, two cases were refused as vacuous **while the two backends
-agreed bit for bit**. The harness now lets a claim name the scale its quantity lives on, and the
-guard takes the larger of that and the values.
+- `eps_f = (degree + 1) u max|c|` is **false at float64**, by an exact-rational counterexample at
+  degree 1 exceeding it by 1.126x. The literature constant is Mainar and Peña's `gamma_2n`
+  (1999), corrected by Hermes (2019) to `gamma_3n` because the original did not charge the
+  rounding of `1 - t`, which this kernel commits.
+- **It used the wrong epsilon.** The kernel accepts a candidate on `abs(f_final) <= zero_tol`,
+  and computes `zero_tol` itself. For `f(t) = t - 1/2`, the simplest polynomial in the parity
+  matrix, the acceptance band is **exactly twice** what the bound claimed.
+- The linearisation needs a curvature hypothesis nobody stated, and there is a measured window
+  at `|f'| ~ 2 sqrt(eps)` where it fails by 2.75x **and the cap has not yet engaged**. The two
+  thresholds are unrelated quantities; the cap only fires three decades further down.
+- **The cap is not scale-invariant and is dimensionally wrong.** `eps_f^(1/3)` has units of
+  `[f]^(1/3)` and is compared against `[t]`; the correct cluster half-width is
+  `(eps / |a_m|)^(1/m)`. Measured, a triple root came back **bit-identical over 2^60 of
+  coefficient scaling** while the cap moved by a factor of a million. A bound that moves when
+  the bounded quantity does not is not a bound. This one is inherited: `_dedup_roots_core`'s own
+  `radius_cap` has the same two defects, and predates the port.
 
-Where the bound genuinely does reach the whole domain, Rule 8 applies unchanged and the case is
-named: eight decades of coefficient range at `float32` reach a tenth of the interval at degree 8,
-which is weak but still refutable and so is asserted, and `9.5` at degree 17, which covers the
-interval and is skipped with its number in the message.
+**Certifying answers all four at once, and it is the cheaper thing to write.** Rather than
+predicting the component's width from derivatives at the root, prove it: restrict the Bernstein
+net to each flanking interval and use the convex-hull property, which says the graph over an
+interval lies within the range of that interval's own coefficients. If they are all above `eps`
+or all below `-eps`, no point of that flank can be accepted, so the component cannot reach past
+the half-width being tested. Binary search the half-width; certification is monotone in it.
+
+The certificate is scale-invariant because scaling the coefficients scales the band with them;
+dimensionally correct because a half-width is the thing it searches for; and multiplicity-
+agnostic because no derivative appears. The restriction is done in **exact rational arithmetic**,
+which makes the hull bound a proof rather than an estimate needing its own error term, and it is
+written out rather than borrowed from `_subdivide_scalar`, so a bug in the kernels cannot
+certify itself.
+
+Verified on the case the old cap existed for: a triple root certifies at `1.221e-04` for a
+coefficient scale of 1, 1e6 and 1e-6 alike. Over the parity matrix it bounds **83 of 86** cases
+below the parameter interval; the three it does not are `float32` polynomials whose roots have
+no digits left, which Rule 8 excludes by name.
+
+The band it certifies against is the algorithm's own `zero_tol` plus the evaluation's forward
+error at the corrected `gamma_3n`, written first-order as `n u_T + 3n u_64`. Note which epsilon
+that is: the one the code uses, not one derived for it.
 
 ### A claim kind the harness did not have
 
