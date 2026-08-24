@@ -30,8 +30,9 @@ obvious from the module's shape:
 | `_bernstein_vandermonde_svd` | square, at modified Chebyshev nodes | `(n, dtype)` alone | **no** |
 
 The last row is worth pausing on, because the module docstring presents it as a supporting
-utility and it reads like the main one. Nothing in this repository calls it outside the tests:
-its only caller is `_bernstein_interpolate`, which nothing here calls either.
+utility and it reads like the main one. **No production code calls it.** Its only caller is
+`_bernstein_interpolate`, which is reached only from the tests and from
+`tools/adversarial_sweep/_probes_bezier.py`, itself gated behind `PANTR_RUN_SWEEP`.
 
 ## The five measurements that decided it
 
@@ -110,7 +111,7 @@ left alone.
 **`_bernstein_vandermonde_svd` was memoized too, and then it was not.** Its matrix is
 determined outright by `(n, dtype)`, since it generates its own nodes, so memoizing it is just
 as sound and just as free. It was dropped anyway, because it has **no production caller in this
-repository**: only tests reach it, and its own caller `_bernstein_interpolate` has none either.
+repository**: it is reached only from the tests and from the adversarial sweep under `tools/`.
 A cache on a function nothing calls is speculative, and it would have needed its own size
 policy to sit beside the one below. The function now carries a note saying so, and this section
 is the record of the option, in case the "resultant pipeline" its module docstring names turns
@@ -128,9 +129,19 @@ an entry is a whole `(degree + 1)`-by-`n_pts` matrix, and `n_pts` is the caller'
 shape that pays worst is a wide, low-degree fit against very many nodes, where the saving scales
 with the degree while the retained memory scales with the node count, and which is usually
 performed once anyway. Above `_PINV_CACHE_MAX_ELEMENTS` the factorization is computed and
-discarded. That cap is a **policy choice and says so in its docstring**, not a derivation; it is
-set so a full cache stays under twenty megabytes while still admitting every square case this
-module is accurate at.
+discarded. That cap is a **policy choice and says so in its docstring**, not a derivation.
+
+Sizing it took two corrections worth recording. `functools.lru_cache` retains the **key** as
+well as the value, and the key here holds the nodes' bytes, so an entry costs about twice the
+matrix rather than the matrix; the first cap was set against the matrix alone and its stated
+bound was wrong by a factor of two. Measured directly, thirty-two entries with eight-byte values
+and one-megabyte keys grew the process by 33 MiB.
+
+Then the corrected bound *looked* refuted too, at 61 MiB peak against 8 declared, and it was
+not: peak resident memory includes a factorization's own transient workspace, which is larger
+than the entry it produces and which no cache policy touches. Summed exactly over what the
+cache holds, the retained figure is 8.00 MiB, matching. **A cap on retention is not a cap on
+peak, and measuring the wrong one refutes nothing.**
 
 ## A machine artifact worth recording
 
