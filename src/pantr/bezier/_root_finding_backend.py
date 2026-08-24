@@ -39,11 +39,22 @@ and the allocation belongs with the caller. Those two shapes are reconciled here
 three lines per kernel, rather than by giving the Numba kernels an ``out`` parameter
 as the arithmetic port did to two of its own.
 
+The precedent for returning a count rather than filling and returning ``None`` is
+:func:`pantr._pantr_cpp.generate_tanh_sinh`, which established it for the same reason:
+an effective count below a worst case the caller had to allocate for.
+
 The reason is specific to this block: the oracle is what parity is measured against,
 and the transliteration was checked against it bit for bit over 198 cases before any
 of this existed. Reshaping the oracle to suit the binding would move the thing being
 measured, and it would also change kernels that ``tests/test_root_finding.py`` calls
 directly.
+
+The six C++ adapters are plain module-level functions rather than the ``Final``
+constants :mod:`pantr.bezier._bezier_backend` hoists. That module hoists because
+:mod:`pantr.change_basis` once shipped a bug from rebuilding a closure per call; none
+of these six is a factory-produced closure, so there is nothing to rebuild and
+hoisting would buy an attribute lookup. Stated because the two catalogues sit in the
+same package and now read differently.
 
 What crosses the boundary
 -------------------------
@@ -90,8 +101,15 @@ _Array = npt.NDArray[np.float32 | np.float64]
 _Roots = npt.NDArray[np.float64]
 """A root array. Always float64, whatever the coefficients are."""
 
-_Counts = npt.NDArray[np.intp]
-"""Per-polynomial root counts, for the batch kernels."""
+_Counts = npt.NDArray[np.int64]
+"""Per-polynomial root counts, for the batch kernels.
+
+``np.int64`` rather than ``np.intp``, which is what Layer 2 allocates and what the
+Numba kernel annotates. The two are the same type on every 64-bit platform and numpy
+2's stubs unify them, so mypy accepts either locally; ``CLAUDE.md`` records that
+stub behaviour is CI-matrix-dependent, and the binding's own signature says
+``int64``, so the alias says what the binding says.
+"""
 
 _YukselFunc = Callable[[_Array, float], tuple[_Roots, int]]
 """Signature of Yuksel's decomposition: ``(coeff, param_tol) -> (roots, count)``."""
@@ -184,7 +202,7 @@ def _cpp_clip_roots(coeff: _Array, param_tol: float, geom_tol: float) -> tuple[_
 
     coeff_c = np.ascontiguousarray(coeff)
     out = np.empty(3 * (coeff_c.size - 1) + 4, dtype=np.float64)
-    count = _pantr_cpp.clip_roots(coeff_c, param_tol, geom_tol, out=out)
+    count = _pantr_cpp.clip_roots(coeff_c, param_tol=param_tol, geom_tol=geom_tol, out=out)
     return out, count
 
 
@@ -215,7 +233,9 @@ def _cpp_dedup_roots(
     raw_c = np.ascontiguousarray(raw_roots, dtype=np.float64)
     coeff_c = np.ascontiguousarray(coeff)
     out = np.empty(max(n_roots, 1), dtype=np.float64)
-    count = _pantr_cpp.dedup_roots(raw_c, n_roots, coeff_c, param_tol, geom_tol, out=out)
+    count = _pantr_cpp.dedup_roots(
+        coeff_c, raw_c, n_roots, param_tol=param_tol, geom_tol=geom_tol, out=out
+    )
     return out, count
 
 
@@ -272,7 +292,11 @@ def _cpp_find_roots_batch(
         out_counts if out_counts.flags["C_CONTIGUOUS"] else np.empty_like(out_counts, order="C")
     )
     _pantr_cpp.find_roots_batch(
-        coeffs_c, param_tol, geom_tol, out_roots=roots_buffer, out_counts=counts_buffer
+        coeffs_c,
+        param_tol=param_tol,
+        geom_tol=geom_tol,
+        out_roots=roots_buffer,
+        out_counts=counts_buffer,
     )
     if roots_buffer is not out_roots:
         out_roots[...] = roots_buffer

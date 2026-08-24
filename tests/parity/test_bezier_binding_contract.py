@@ -159,3 +159,113 @@ def test_restrict_refuses_transposed_bounds(cpp_backend: None) -> None:
     # A zero-width interval is admitted: the kernel is well defined there, and Layer 1
     # is the layer that decides whether it is a useful thing to ask for.
     bindings.restrict_bezier_1d(_CTRL, 0.5, 0.5, out=np.empty((4, 2)))
+
+
+_ROOT_COEFF = np.array([1.0, -1.0, -1.0, 1.0])
+"""A degree-3 polynomial with two real roots, so a truncated output is observable."""
+
+
+def test_the_batch_binding_refuses_a_row_too_narrow_for_its_roots(cpp_backend: None) -> None:
+    """`find_roots_batch` checks the axis it writes into, not the one already checked.
+
+    This is the regression test for a defect an API audit found and this file's
+    absence allowed: the capacity check tested ``out_roots.shape(0)``, which the two
+    lines above it had already forced equal to the polynomial count, while the row
+    width the kernel actually indexes went unchecked. The kernel clamps its per-row
+    count to whatever fits, so an undersized buffer reported **fewer roots than
+    exist, with no error**: a two-root polynomial came back with one, and a
+    zero-width row came back claiming none.
+
+    The sibling single-call bindings all refused the equivalent case, which is what
+    makes this a slip rather than a policy. Nothing reached it because the only
+    in-tree caller is `pantr.bezier.find_roots`, which always allocates correctly.
+    """
+    del cpp_backend
+    bindings = _bindings()
+    coeffs = _ROOT_COEFF.reshape(1, -1)
+    counts = np.zeros(1, dtype=np.int64)
+
+    for narrow in (0, 1, 2):
+        with pytest.raises(ValueError, match="along axis 1"):
+            bindings.find_roots_batch(
+                coeffs,
+                param_tol=1e-12,
+                geom_tol=1e-12,
+                out_roots=np.full((1, narrow), np.nan),
+                out_counts=counts,
+            )
+
+    # The worst case is `degree` roots, and a row that wide is accepted and used.
+    roots = np.full((1, 3), np.nan)
+    bindings.find_roots_batch(
+        coeffs, param_tol=1e-12, geom_tol=1e-12, out_roots=roots, out_counts=counts
+    )
+    assert counts[0] == 2, "the two roots of this polynomial were not both reported"
+
+
+def test_the_root_finding_bindings_refuse_a_short_output(cpp_backend: None) -> None:
+    """Each single-call binding names the worst case it can produce, not the typical one.
+
+    A root set's size is not a function of the input, so the caller sizes for the
+    worst case and the binding says what that is. Clipping's is `3 * degree + 4`,
+    before the merge removes the duplicates the same root arrives as.
+    """
+    del cpp_backend
+    bindings = _bindings()
+
+    with pytest.raises(ValueError, match="can produce 3"):
+        bindings.yuksel_roots(_ROOT_COEFF, 1e-12, out=np.empty(2))
+    with pytest.raises(ValueError, match="can produce 13"):
+        bindings.clip_roots(_ROOT_COEFF, param_tol=1e-12, geom_tol=1e-12, out=np.empty(12))
+    with pytest.raises(ValueError, match="can produce 2"):
+        bindings.dedup_roots(
+            _ROOT_COEFF,
+            np.array([0.25, 0.75]),
+            2,
+            param_tol=1e-12,
+            geom_tol=1e-12,
+            out=np.empty(1),
+        )
+
+
+def test_the_root_finding_bindings_refuse_an_unusable_tolerance(cpp_backend: None) -> None:
+    """Zero, negative and NaN are all refused, matching `_find_roots._resolve_tol`.
+
+    A direct call on the extension skips Layer 2, so the two backends would otherwise
+    accept different inputs rather than merely running at different speeds. NaN is
+    the one worth a test of its own: it compares false against everything, so a check
+    written as a negated range would admit it.
+    """
+    del cpp_backend
+    bindings = _bindings()
+
+    for bad in (0.0, -1e-12, float("nan"), float("inf")):
+        with pytest.raises(ValueError, match="finite and positive"):
+            bindings.yuksel_roots(_ROOT_COEFF, bad, out=np.empty(3))
+        with pytest.raises(ValueError, match="finite and positive"):
+            bindings.solve_monotone_root(_ROOT_COEFF, bad)
+
+
+def test_the_root_finding_bindings_refuse_the_tolerances_positionally(
+    cpp_backend: None,
+) -> None:
+    """Nothing orders `param_tol` against `geom_tol`, so keyword-only is the only guard.
+
+    `restrict_bezier_1d`'s `lower`/`upper` can be ordered and are checked that way.
+    These two cannot: neither bounds the other, and transposed they return a
+    different and plausible root set. Making them unsayable positionally is what
+    closes it.
+    """
+    del cpp_backend
+    bindings = _bindings()
+
+    with pytest.raises(TypeError):
+        bindings.clip_roots(_ROOT_COEFF, 1e-12, 1e-12, out=np.empty(13))
+    with pytest.raises(TypeError):
+        bindings.find_roots_batch(
+            _ROOT_COEFF.reshape(1, -1),
+            1e-12,
+            1e-12,
+            out_roots=np.full((1, 3), np.nan),
+            out_counts=np.zeros(1, dtype=np.int64),
+        )
