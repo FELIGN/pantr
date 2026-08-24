@@ -75,6 +75,11 @@
 /// equality there and bounded above it. That gate is `__fp_contract__`, read at run
 /// time by the parity tests, not assumed here.
 ///
+/// Rule 11 of design/backend_parity.md states all of this, including the bound that
+/// applies where contraction is live: it is the algorithm's, not the arithmetic's,
+/// and it is the larger of the bracketing tolerance and the interval where the
+/// computed residual is indistinguishable from zero.
+///
 /// ## Two defects are reproduced on purpose
 ///
 /// The oracle has two pre-existing wrong answers in this block, filed as
