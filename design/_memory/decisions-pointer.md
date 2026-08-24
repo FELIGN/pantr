@@ -1,6 +1,6 @@
 ---
 name: decisions-pointer
-description: The C++ port's design decisions live in design/*.md; six PRs merged, nothing in flight, and backend_parity.md now has eleven rules
+description: The C++ port's design decisions live in design/*.md; six PRs merged and one open, bezier closed with its last block deliberately not ported
 metadata:
   type: project
 ---
@@ -30,8 +30,16 @@ Two decisions that govern everything else:
 
 **Status, 2026-08-24.** Six PRs are **merged** into `proto/cpp`: the build skeleton (#335),
 `quad` (#337), `change_basis` (#347), `bezier`'s arithmetic block (#348), its FMA parity bound
-(#349) and its root-finding block (#353). Nothing is in flight. One `bezier` PR remains,
-interpolation. See [[active-task]].
+(#349) and its root-finding block (#353). **PR #355 is open and unmerged**, and it is the first
+that decides *not* to port something: `design/bezier_interpolation_port.md` rules that
+`_bezier_interpolate.py` stays in Python, with the measurements behind it and what would reopen
+the question. `bezier` therefore closes as *ported except interpolation*. Next is `grid`. See
+[[active-task]] and [[merge-authority]].
+
+**That note is worth reading before proposing any further port**, because it is the template for
+declining one: it does not argue from taste, it measures the blocker (which did not fire), the
+speed (a wash), the reachable fraction (about 7% of a warm call) and the consumer's actual
+surface, and it records what would make the answer flip.
 
 **Eigen is a dependency of the shipped extension** as of #347, and that is the architectural
 decision this cycle added. It was test-only before, fenced off from `pantr::core` so that taking
