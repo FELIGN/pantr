@@ -17,10 +17,11 @@ from numpy import typing as npt
 
 from pantr._numba_compat import wait_for_jit_warmup
 from pantr.bezier._bezier import Bezier
-from pantr.bezier._clipping_core import _clip_roots_core, _dedup_roots
-from pantr.bezier._yuksel_core import (
-    _solve_monotone_root_kernel,
-    _yuksel_roots,
+from pantr.bezier._root_finding_backend import (
+    clip_roots_kernel,
+    dedup_roots_kernel,
+    solve_monotone_root_kernel,
+    yuksel_roots_kernel,
 )
 from pantr.tolerance import get_strict
 
@@ -230,7 +231,7 @@ def _dispatch_single(  # noqa: PLR0911
 
     # Low degree: Yuksel is cheaper and equally robust.
     if n < _CLIP_MIN_DEGREE:
-        roots_arr, n_roots = _yuksel_roots(coeff, param_tol)
+        roots_arr, n_roots = yuksel_roots_kernel()(coeff, param_tol)
         if n_roots == 0:
             return np.empty(0, dtype=np.float64)
         result = np.sort(roots_arr[:n_roots])
@@ -245,11 +246,17 @@ def _dispatch_single(  # noqa: PLR0911
 
     if coeff_range <= _CLIP_COEFF_RANGE_LIMIT:
         # Well-conditioned: use Bezier clipping.
-        raw_roots, n_roots = _clip_roots_core(coeff, param_tol, geom_tol)
-        return _dedup_roots(raw_roots, n_roots, coeff, param_tol, geom_tol)
+        raw_roots, n_roots = clip_roots_kernel()(coeff, param_tol, geom_tol)
+        if n_roots == 0:
+            return np.empty(0, dtype=np.float64)
+        # The merge returns its buffer plus a count; only the prefix is a root,
+        # and it is copied so the caller cannot see the scratch behind it.
+        merged, count = dedup_roots_kernel()(raw_roots, n_roots, coeff, param_tol, geom_tol)
+        unique: npt.NDArray[np.float64] = merged[:count].copy()
+        return unique
 
     # Extreme range: fall back to Yuksel.
-    roots_arr, n_roots = _yuksel_roots(coeff, param_tol)
+    roots_arr, n_roots = yuksel_roots_kernel()(coeff, param_tol)
     if n_roots == 0:
         return np.empty(0, dtype=np.float64)
     return np.sort(roots_arr[:n_roots])
@@ -275,8 +282,8 @@ def _find_roots_batch_impl(
     tol: float | None = None,
 ) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.intp]]:
     """L2 implementation for :func:`pantr.bezier.find_roots`."""
-    from pantr.bezier._batch_core import (  # noqa: PLC0415
-        _find_roots_batch_core,
+    from pantr.bezier._root_finding_backend import (  # noqa: PLC0415
+        find_roots_batch_kernel,
     )
 
     coeffs = _extract_batch_coeffs(beziers)
@@ -295,7 +302,7 @@ def _find_roots_batch_impl(
     out_counts = np.zeros(n_polys, dtype=np.intp)
 
     if degree >= 1:
-        _find_roots_batch_core(arr, resolved_tol, resolved_tol, out_roots, out_counts)
+        find_roots_batch_kernel()(arr, resolved_tol, resolved_tol, out_roots, out_counts)
 
     return out_roots, out_counts
 
@@ -311,7 +318,7 @@ def _solve_monotone_root_impl(
     wait_for_jit_warmup()
     arr = _validate_coeff_array(coeff, ndim=1, name="coeff")
     resolved_tol = _resolve_tol(arr, tol)
-    return float(_solve_monotone_root_kernel(arr, resolved_tol))
+    return float(solve_monotone_root_kernel()(arr, resolved_tol))
 
 
 def _solve_monotone_root_batch_impl(
@@ -320,8 +327,8 @@ def _solve_monotone_root_batch_impl(
     tol: float | None = None,
 ) -> npt.NDArray[np.float64]:
     """L2 implementation for :func:`pantr.bezier.find_monotone_root`."""
-    from pantr.bezier._batch_core import (  # noqa: PLC0415
-        _solve_monotone_root_batch_core,
+    from pantr.bezier._root_finding_backend import (  # noqa: PLC0415
+        solve_monotone_root_batch_kernel,
     )
 
     coeffs = _extract_batch_coeffs(beziers)
@@ -336,6 +343,6 @@ def _solve_monotone_root_batch_impl(
     resolved_tol = _resolve_tol(arr[0], tol)
     out_roots = np.full(n_polys, np.nan, dtype=np.float64)
 
-    _solve_monotone_root_batch_core(arr, resolved_tol, out_roots)
+    solve_monotone_root_batch_kernel()(arr, resolved_tol, out_roots)
 
     return out_roots

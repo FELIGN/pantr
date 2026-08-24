@@ -875,3 +875,170 @@ def apply_reduction_operator(
         ValueError: If ``ctrl`` does not have as many rows as the operator has
             columns, or if ``out`` is the wrong shape.
     """
+
+def yuksel_roots(
+    coeff: npt.NDArray[np.float32 | np.float64],
+    tol: float,
+    *,
+    out: npt.NDArray[np.float64],
+) -> int:
+    """Find every root on [0, 1] by Yuksel's monotone decomposition.
+
+    Args:
+        coeff (npt.NDArray[np.float32 | np.float64]): 1-D Bernstein coefficients,
+            C-contiguous and non-empty.
+        tol (float): Bracket-width tolerance. Finite and strictly positive.
+        out (npt.NDArray[np.float64]): Receives the roots, unsorted. Always
+            ``float64`` whatever ``coeff`` is, C-contiguous, writable, and at least
+            ``max(degree, 1)`` long. Only the returned count of entries is written.
+            Keyword-only.
+
+    Returns:
+        int: How many entries of ``out`` are valid.
+
+    Raises:
+        TypeError: If any array has the wrong dtype or rank, is not C-contiguous,
+            or if ``out`` is passed positionally.
+        ValueError: If ``coeff`` is empty, if ``tol`` is not finite and positive,
+            or if ``out`` is too short.
+    """
+
+def clip_roots(
+    coeff: npt.NDArray[np.float32 | np.float64],
+    param_tol: float,
+    geom_tol: float,
+    *,
+    out: npt.NDArray[np.float64],
+) -> int:
+    """Find every root on [0, 1] by Bézier clipping.
+
+    The candidates are unsorted and may repeat: the same root reaches the output
+    from several converging intervals, and merging them is :func:`dedup_roots`.
+
+    Args:
+        coeff (npt.NDArray[np.float32 | np.float64]): 1-D Bernstein coefficients,
+            C-contiguous and non-empty.
+        param_tol (float): Bracket-width termination tolerance. Finite, positive.
+        geom_tol (float): Geometric tolerance for near-zero detection. Finite,
+            positive.
+        out (npt.NDArray[np.float64]): Receives the candidates. Always ``float64``,
+            C-contiguous, writable, and at least ``3 * degree + 4`` long, which is
+            the kernel's own worst case before the merge. Keyword-only.
+
+    Returns:
+        int: How many entries of ``out`` are valid.
+
+    Raises:
+        TypeError: If any array has the wrong dtype or rank, is not C-contiguous,
+            or if ``out`` is passed positionally.
+        ValueError: If ``coeff`` is empty, if either tolerance is not finite and
+            positive, or if ``out`` is too short.
+    """
+
+def dedup_roots(
+    raw_roots: npt.NDArray[np.float64],
+    n_roots: int,
+    coeff: npt.NDArray[np.float32 | np.float64],
+    param_tol: float,
+    geom_tol: float,
+    *,
+    out: npt.NDArray[np.float64],
+) -> int:
+    """Sort root candidates and merge the duplicates, with a derivative-aware radius.
+
+    Args:
+        raw_roots (npt.NDArray[np.float64]): Candidates, of which the first
+            ``n_roots`` are valid. C-contiguous.
+        n_roots (int): Number of valid candidates, in ``[0, len(raw_roots)]``.
+        coeff (npt.NDArray[np.float32 | np.float64]): Original Bernstein
+            coefficients, used for the derivative. C-contiguous and non-empty.
+        param_tol (float): Parametric tolerance. Finite and positive.
+        geom_tol (float): Geometric tolerance. Finite and positive.
+        out (npt.NDArray[np.float64]): Receives the merged roots, sorted ascending.
+            C-contiguous, writable, at least ``n_roots`` long. Keyword-only.
+
+    Returns:
+        int: How many entries of ``out`` are valid.
+
+    Raises:
+        TypeError: If any array has the wrong dtype or rank, is not C-contiguous,
+            or if ``out`` is passed positionally.
+        ValueError: If ``coeff`` is empty, if either tolerance is not finite and
+            positive, if ``n_roots`` is not a valid count, or if ``out`` is too
+            short.
+    """
+
+def solve_monotone_root(
+    coeff: npt.NDArray[np.float32 | np.float64],
+    tol: float,
+) -> float:
+    """Find the unique root of a monotone scalar Bernstein polynomial on [0, 1].
+
+    Args:
+        coeff (npt.NDArray[np.float32 | np.float64]): 1-D Bernstein coefficients of
+            a monotone polynomial. C-contiguous and non-empty.
+        tol (float): Bracket-width termination tolerance. Finite and positive.
+
+    Returns:
+        float: The root parameter, or NaN when no sign change is detected across
+            [0, 1].
+
+    Raises:
+        TypeError: If ``coeff`` has the wrong dtype or rank, or is not C-contiguous.
+        ValueError: If ``coeff`` is empty or ``tol`` is not finite and positive.
+    """
+
+def find_roots_batch(
+    coeffs: npt.NDArray[np.float32 | np.float64],
+    param_tol: float,
+    geom_tol: float,
+    *,
+    out_roots: npt.NDArray[np.float64],
+    out_counts: npt.NDArray[np.int64],
+) -> None:
+    """Find the roots of many same-degree scalar Bernstein polynomials.
+
+    Each polynomial is dispatched between Yuksel and clipping on its own degree and
+    dynamic range, then deduplicated. Rows are independent and each writes only its
+    own, so no reduction crosses them.
+
+    Args:
+        coeffs (npt.NDArray[np.float32 | np.float64]): Batch of shape
+            ``(n_polys, degree + 1)``, C-contiguous with at least one column.
+        param_tol (float): Parametric tolerance. Finite and positive.
+        geom_tol (float): Geometric tolerance. Finite and positive.
+        out_roots (npt.NDArray[np.float64]): Shape ``(n_polys, max(degree, 1))``,
+            C-contiguous and writable. Entries past each row's count are left as the
+            caller set them, which is NaN. Keyword-only.
+        out_counts (npt.NDArray[np.int64]): Shape ``(n_polys,)``, C-contiguous and
+            writable, receiving the per-row root count. Keyword-only.
+
+    Raises:
+        TypeError: If any array has the wrong dtype or rank, is not C-contiguous,
+            or if an output is passed positionally.
+        ValueError: If ``coeffs`` has no columns, if either tolerance is not finite
+            and positive, or if the outputs do not have ``n_polys`` rows.
+    """
+
+def solve_monotone_root_batch(
+    coeffs: npt.NDArray[np.float32 | np.float64],
+    tol: float,
+    *,
+    out_roots: npt.NDArray[np.float64],
+) -> None:
+    """Solve for the monotone root of many same-degree Bernstein polynomials.
+
+    Args:
+        coeffs (npt.NDArray[np.float32 | np.float64]): Batch of shape
+            ``(n_polys, degree + 1)``, C-contiguous with at least one column.
+        tol (float): Bracket-width termination tolerance. Finite and positive.
+        out_roots (npt.NDArray[np.float64]): Shape ``(n_polys,)``, C-contiguous and
+            writable, **pre-filled with NaN by the caller**: a row whose polynomial
+            has no root is left untouched rather than written. Keyword-only.
+
+    Raises:
+        TypeError: If ``coeffs`` or ``out_roots`` has the wrong dtype or rank, is
+            not C-contiguous, or if ``out_roots`` is passed positionally.
+        ValueError: If ``coeffs`` has no columns, if ``tol`` is not finite and
+            positive, or if ``out_roots`` does not have ``n_polys`` entries.
+    """
