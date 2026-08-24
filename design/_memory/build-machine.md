@@ -39,3 +39,26 @@ rules make it report findings that do not exist for CI, which resolves the pin: 
 ruff` is not the lint CI runs.** The checkout's own `.venv/bin/ruff` has 0.12.12 installed
 for exactly this.
 
+
+
+## Threaded OpenBLAS destroys small-matrix timings here, 2026-08-24
+
+With the env's `OPENBLAS_NUM_THREADS=20`, a **36-by-36 LAPACK SVD** cost between one and two
+orders of magnitude more than the same call pinned to one thread, and its timing varied by
+nearly an order of magnitude between batches. Twenty threads synchronizing over a matrix that
+fits in L1 is pure overhead, and the box is shared, so the contention is real rather than
+theoretical.
+
+This is not the "OpenBLAS spawns 128 threads" trap: the variables are set correctly to 20. It
+is that 20 threads on a tiny dense factorization is simply the wrong configuration, and the cap
+does not save you from it.
+
+**How to apply: pin the threads before timing anything that calls into BLAS or LAPACK on a small
+matrix** (`OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1`). Unpinned numbers here
+are noise, and noise that happens to look like a speedup: an unpinned measurement of a cache was
+quoted as a 2.9x win in this repo before a pinned re-run showed the cache was not even on the
+call path. `scripts/measure_bezier_interpolation_port.py` refuses to run unpinned for this
+reason, which is the shape any future timing script should copy.
+
+A separate consequence for the port: a **single-threaded C++ implementation compared against
+threaded LAPACK on this box would look far better than it is**. Never take that comparison.

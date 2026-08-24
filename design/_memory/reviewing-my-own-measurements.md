@@ -1,6 +1,6 @@
 ---
 name: reviewing-my-own-measurements
-description: In numerical work my prose fails far more often than my code, because nothing checks prose
+description: In numerical work my prose fails far more often than my code, because nothing checks prose; six cycles, and the newest failure was a measurement rather than a claim
 metadata:
   node_type: memory
   type: feedback
@@ -160,3 +160,40 @@ And one about my own measurement, caught before it reached Pablo: my first vacui
 165 of 400, inflated by rows where the reference is exactly zero and both backends agree
 trivially. The honest count is 45 of 280. **Excluding the degenerate rows is part of the
 measurement, not a refinement of it.**
+
+
+## The interpolation cycle, 2026-08-24: the measurement itself was wrong, not the claim about it
+
+Sixth cycle, and it inverts the pattern. The previous five were prose failing while the numbers
+held. This time **the number was wrong at the source**, and the prose faithfully reported it.
+
+I measured a memoization at **1.09x to 2.88x** and reported it to Pablo as an input to a
+decision. Both halves of that were wrong:
+
+- It was taken **unpinned** on a 20-thread box, where a small LAPACK SVD's timing varies by
+  nearly an order of magnitude between batches. The 2.88x was thread noise. Pinned, the same
+  comparison gives 0.99x to 1.10x. See [[build-machine]].
+- **The cache was not on the call path at all.** I had memoized `_bernstein_vandermonde_svd`
+  believing the public entry points reached it. They reach `_build_bernstein_pinv`. Neither
+  `grep` nor the passing tests nor the plausible-looking speedup revealed it.
+
+**What caught it: `cache_info()`.** Zero hits, zero misses, after thousands of calls. One line.
+
+**How to apply, and these are cheap:**
+
+- **Before timing anything that calls BLAS or LAPACK, pin the threads.** A speedup that does not
+  survive a thread pin is not a speedup. Bake the refusal into the script rather than remembering.
+- **A cache gets a hit counter before it gets a benchmark.** `cache_info()`, or an equivalent
+  assertion in a test, proves the thing you are measuring is the thing that runs. The benchmark
+  cannot: an improvement and a coincidence look identical.
+- **Follow the call graph before optimising, do not infer it from names.** `_bernstein_interpolate`
+  and `_bernstein_vandermonde_svd` read like the main path and are reached by nothing.
+- **When the fix lands somewhere else, delete the first attempt rather than keeping it "since it
+  is free".** I nearly shipped a second cache on an uncalled function out of sunk cost. It would
+  have needed its own size policy beside the real one, which is how a module accumulates.
+
+**And one that went right, worth recording for the tally.** I predicted Eigen's `BDCSVD` would
+be slower than LAPACK's `gesdd` and was ready to build an argument on it. I benchmarked instead
+and it is competitive, sometimes faster. The prediction would have been a confident, plausible,
+entirely wrong premise under a design decision. **Benchmark the premise you are about to lean
+on, especially when it feels obvious.**

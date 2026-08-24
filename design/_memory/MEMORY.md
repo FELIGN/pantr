@@ -1,14 +1,14 @@
-- [Active task](active-task.md) — bezier's arithmetic and its FMA parity bound merged; two bezier blocks left, and how to pick an amplification.
-- [Where the decisions live](decisions-pointer.md) — the C++ port's design decisions are in `design/*.md`; five PRs merged, nothing in flight. Read backend_parity.md's ten rules before proposing anything about a bound.
+- [Active task](active-task.md) — bezier is closed: its last block was ruled NOT ported, PR #355 open and unmerged, grid is next.
+- [Where the decisions live](decisions-pointer.md) — the C++ port's design decisions are in `design/*.md`; six merged, #355 open. Read backend_parity.md's eleven rules before proposing anything about a bound, and bezier_interpolation_port.md before proposing a port.
 - [Working on proto/cpp](proto-cpp-pr-mechanics.md) — Closes #N never fires, a branch cut from it carries unpushed commits, and its CI is two jobs rather than eight.
 - [What the downstream consumer imports](downstream-consumer-surface.md) — measured at last: the PointsLattice debt is discharged, and bezier is the first port that touches symbols it uses.
 - [Naming constraint and licensing](naming-and-licensing.md) — two sibling libraries are private and unpublished; never name them in anything that leaves the machine. Plus the dependency direction the licence plan forbids.
 - [Unpushed corpus](unpushed-corpus.md) — claude-config is six commits ahead; do not push it, and why that costs something.
-- [Build machine](build-machine.md) — the shared Linux server, its 20-CPU cap, and the calibration trap that comes with many cores.
+- [Build machine](build-machine.md) — the shared Linux server, its 20-CPU cap, the calibration trap, and why every BLAS timing here must pin the threads first.
 - [nanobind status](nanobind-status.md) — split mode verified working and composing with multi-ISA; the three mandatory build flags, including the -Os trap that costs a silent 3x.
 - [Performance follow-up](performance-followup.md) — wanted later, deliberately deferred in the infrastructure PR; carries what is already measured so it is not re-measured, and what to attack first.
-- [Merge authority](merge-authority.md) — I may merge a port PR unasked when three conditions hold; the horizon ends with bezier, and agents are for review only.
+- [Merge authority](merge-authority.md) — the three conditions still stand, but the horizon dissolved when block C was ruled not-ported. Re-ask before merging.
 - [How to ask me things](asking-style.md) — one question at a time, with concrete options AND an explicit recommendation, and the counter-argument written into the other options.
-- [Reviewing my own measurements](reviewing-my-own-measurements.md) — my prose fails far more often than my code, five cycles running; the newest is a justification that went stale inside one session because the code moved under it.
+- [Reviewing my own measurements](reviewing-my-own-measurements.md) — six cycles; the newest inverts the pattern, a speedup that was thread noise on a cache that was not even on the call path. Give a cache a hit counter before a benchmark.
 - [Expired guard rationales](expired-guard-rationales.md) — a fence whose stated reason no longer holds is not a constraint; check the reason, not just the guard.
 - [Dispatching agents](dispatching-agents.md) — a brief is not an isolation mechanism; anything that mutates or measures needs its own worktree.

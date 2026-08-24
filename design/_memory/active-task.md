@@ -1,20 +1,35 @@
 ---
 name: active-task
-description: bezier's root-finding block merged; block C (interpolation) is next, and what the review of block B established
+description: bezier is closed; block C was ruled NOT ported and the reason is measured, PR #355 open. The merge authority's stated terminus no longer exists.
 metadata:
   type: project
 ---
 
-**Updated 2026-08-24.** `bezier`'s root-finding block is **merged** (#353, six PRs now on
-`proto/cpp`). Remaining in `bezier`: **block C, `_bezier_interpolate`**, 756 lines, no kernels,
-an SVD pseudo-inverse of a Bernstein Vandermonde with **rank truncation** whose threshold is
-discontinuous. Checkable, because the matrices are deterministic per degree: verify no singular
-value sits within a few eps of the threshold. First use of Eigen outside `change_basis`.
+**Updated 2026-08-24.** `bezier` is **closed**, but not the way it was planned. Blocks A (#348),
+the FMA bound (#349) and B (#353) are merged ports. **Block C, interpolation, was ruled NOT
+ported**, and PR **#355** carries that ruling plus the thing that turned out to be worth doing.
 
-The question block B opened is **closed and it dissolved**: `_de_casteljau_eval_scalar` never had
-to move. All kernel-to-kernel calls in that block are inside `nopython`, so no catalogue can be
-inserted between two of them and the dispatch boundary is forced up to `_find_roots.py`. See
-[[downstream-consumer-surface]].
+**The reasoning is in `design/bezier_interpolation_port.md`** and reproducible from
+`scripts/measure_bezier_interpolation_port.py`. Short form: the blocker everyone expected
+(Eigen and LAPACK disagreeing about the truncation rank, a discrete verdict no tolerance bounds)
+**does not fire** on the real matrices, twelve cases including the two tightest. But nothing
+positive replaced it. Eigen's SVD is not faster; the downstream consumer imports neither entry
+point and never passes float32, which is the only regime the truncation fires in; the scattered
+site is shared with out-of-scope `bspline`; and once the factorization is memoized the numerical
+work C++ would replace is **about 7% of a warm call**, the rest being Python including a callable
+the API is handed.
+
+**What shipped instead:** `_build_bernstein_pinv`, the one site both public entry points reach,
+is memoized on the nodes' bytes. Bitwise identical, three to eight times faster with threads
+pinned.
+
+**A ruling is owed.** The merge authority granted 2026-08-24 says it "expires when block C
+lands". Block C is not landing as a port, so its terminus no longer exists. #355 is also not a
+port PR and carries no parity claim, so its conditions do not really apply either. It was left
+unmerged deliberately. See [[merge-authority]].
+
+**Next after this is `grid`**, which needs a fresh ruling anyway: the BVH's inclusive-face tie
+contract produces a discrete verdict no tolerance bounds, the same family as Rule 11.
 
 **What block B's review established, and it is the reusable part:**
 
@@ -33,23 +48,20 @@ inserted between two of them and the dispatch boundary is forced up to `_find_ro
 - **Numba's `float()` does not widen a `float32`.** Type unification across assignments does.
   Three of six measured widths follow from that alone.
 
-**Two facts to carry into block C and into grid.** `scripts/measure_root_finding_widths.py` is
-the shape a port's specification should take: rival models per site, measured against the kernel,
-with a discrimination count so a match cannot come from a check that could not fail. And
-`design/backend_parity.md` now has **eleven** rules; Rule 11 is the first about a discrete verdict
+**Two facts to carry into grid.** `scripts/measure_root_finding_widths.py` is the shape a port's
+specification should take: rival models per site, measured against the kernel, with a
+discrimination count so a match cannot come from a check that could not fail. And
+`design/backend_parity.md` has **eleven** rules; Rule 11 is the first about a discrete verdict
 rather than a displacement.
-
-**Block C reconnaissance, already measured, do not repeat it.** `_bezier_interpolate.py` truncates
-at `sigma_i < 100 * eps * sigma_0`. At **float64 that branch is dead** up to n=39, closest approach
-350x. At **float32 it fires from n=19**, and at n=36 a singular value sits **0.22% above the
-threshold**, which two SVD implementations will not agree on. When the rank differs the
-pseudo-inverse moves by a rank-1 term of order `1/(tol*sigma_0)`: a verdict, not a displacement.
-The open question that may change everything is whether the pseudo-inverse is **cached**; if the
-SVD runs once per degree per process, not porting this block is a serious option.
 
 **Three tickets filed 2026-08-24**, all pre-existing and none fixed: #351, #352, #354. All three
 are tolerance-derivation defects in the same kernels and one coherent rework may close all three.
 The C++ reproduces #351 and #352 deliberately, asserted by name.
 
 **One review finding downgraded rather than fixed:** `ParityClaim` carries optional fields
-meaningful for one variant. Pre-existing for four; this port added two more.
+meaningful for one variant. Pre-existing for four; block B added two more.
+
+**One piece of doc rot left alone deliberately:** `_bezier_interpolate.py`'s module docstring
+says its helpers serve "the resultant pipeline". No such pipeline exists in the repo, and
+`_bernstein_interpolate` has no caller there outside tests. Either stale or naming an out-of-tree
+consumer; not establishable from this machine.
