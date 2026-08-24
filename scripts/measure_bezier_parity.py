@@ -234,7 +234,7 @@ def measure_de_casteljau() -> tuple[int, int]:
 def measure_every_kernel() -> tuple[int, int]:
     """Count values and bit differences across all seven arithmetic kernels.
 
-    The sweep behind the "16224 values" figure. Each kernel is driven through the
+    The sweep behind the "3616 values" figure. Each kernel is driven through the
     public :class:`~pantr.bezier.Bezier` surface, so what is compared is what a
     caller gets rather than what a binding returns.
 
