@@ -3,6 +3,7 @@
 - [Working on proto/cpp](proto-cpp-pr-mechanics.md) — Closes #N never fires, a branch cut from it carries unpushed commits, and its CI is two jobs rather than eight.
 - [What the downstream consumer imports](downstream-consumer-surface.md) — measured at last: the PointsLattice debt is discharged, and bezier is the first port that touches symbols it uses.
 - [Naming constraint and licensing](naming-and-licensing.md) — two sibling libraries are private and unpublished; never name them in anything that leaves the machine. Plus the dependency direction the licence plan forbids.
+- [Unpushed corpus](unpushed-corpus.md) — claude-config is six commits ahead; do not push it, and why that costs something.
 - [Build machine](build-machine.md) — the shared Linux server, its 20-CPU cap, and the calibration trap that comes with many cores.
 - [nanobind status](nanobind-status.md) — split mode verified working and composing with multi-ISA; the three mandatory build flags, including the -Os trap that costs a silent 3x.
 - [Performance follow-up](performance-followup.md) — wanted later, deliberately deferred in the infrastructure PR; carries what is already measured so it is not re-measured, and what to attack first.
