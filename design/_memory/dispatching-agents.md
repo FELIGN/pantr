@@ -46,3 +46,21 @@ Two things that follow:
 The compensation is worth knowing: the coordinator answered one of the dead investigator's
 questions itself in three commands, and it turned out to be undefined behaviour in shipped
 code. A dead lens's brief is still a list of good questions.
+
+
+## A worktree does not isolate the package, 2026-08-24
+
+Measured, after briefing three agents on the assumption that it did. **The editable install
+resolves `import pantr` to the main checkout whatever the agent's working directory**, and
+`pantr._pantr_cpp` to the one installed extension. A worktree isolates the files an agent
+writes: its scratch scripts, its C++ build directories. It does not isolate the imported
+package, and it does not isolate the compiled extension.
+
+So when a round of agents needs to measure against a differently-built extension, **exactly one
+of them may be licensed to overwrite the installed `.so`**, and its brief must say to back it
+up and restore it and to report that it did. Tell the others in writing that they may not. That
+worked: three agents, no collision, and the one that swapped restored it checksum-verified.
+
+The cheap alternative, when the question is arithmetic rather than binary: **`math.fma` exists
+in Python 3.13+**, so an agent can build an independent fused reference with no build at all.
+Two of the three used it and neither needed the extension.
