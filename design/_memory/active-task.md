@@ -1,55 +1,46 @@
 ---
 name: active-task
-description: The pantr C++ port: bezier's arithmetic and its FMA parity bound are merged; two bezier blocks remain
+description: bezier's root-finding block merged; block C (interpolation) is next, and what the review of block B established
 metadata:
-  node_type: memory
   type: project
-  modified: 2026-08-24T00:00:00.000Z
 ---
 
-**The FMA parity bound is MERGED** (PR #349, five commits, rebase-merged; merged tree
-verified byte-identical to the tested one). It closes the one gap `bezier`'s arithmetic port
-declared. Nothing is in flight, no worktree, `proto/cpp` clean.
-**Four of Stage 1's six modules are ported**: `basis`, `quad`, `change_basis`, and block A of
-`bezier`.
+**Updated 2026-08-24.** `bezier`'s root-finding block is **merged** (#353, six PRs now on
+`proto/cpp`). Remaining in `bezier`: **block C, `_bezier_interpolate`**, 756 lines, no kernels,
+an SVD pseudo-inverse of a Bernstein Vandermonde with **rank truncation** whose threshold is
+discontinuous. Checkable, because the matrices are deterministic per degree: verify no singular
+value sits within a few eps of the threshold. First use of Eigen outside `change_basis`.
 
-**What #349 settled, because the next port inherits it.** Rule 10 of
-`design/backend_parity.md`: contraction removes one rounding per fused site, the budget is
-`Roundings(stages, 3, 2)` for every kernel, and only the amplification differs. Claims are now
-selected at run time rather than skipped, so a build raising the ISA baseline no longer turns
-519 assertions into skips. `scripts/measure_bezier_fma_bound.py` reproduces the fourteen fused
-sites by disassembly, the slack per kernel, and the A2.3 majorant check.
+The question block B opened is **closed and it dissolved**: `_de_casteljau_eval_scalar` never had
+to move. All kernel-to-kernel calls in that block are inside `nopython`, so no catalogue can be
+inserted between two of them and the dispatch boundary is forced up to `_find_roots.py`. See
+[[downstream-consumer-surface]].
 
-**The amplification is the part that took three attempts, and the pattern generalises.**
-Where a kernel's stages are convex combinations, the tight amplification is the *same operation
-run on `|c|`*, elementwise. Where they are not, it is the absolute row action of the operator.
-Where the recursion itself has signs, as A2.3 does, neither works and you need the **majorant of
-the recursion**: run it with every coefficient replaced by its modulus. `max|c|` is correct for
-all of them and useless for most.
+**What block B's review established, and it is the reusable part:**
 
-**`bezier` has two blocks left.**
+- **A conditional parity claim's other branch ships unevaluated, and that is where the bug is.**
+  This port's fused branch called a harness function with an argument it does not take, and 133
+  tests passed over it because none reached it. Found by building at `-march=native` and running
+  the suite there. Do that as part of finishing any port that carries a conditional claim.
+- **Do not predict an acceptance width, certify it.** Two predicted bounds were refuted. The one
+  that ships restricts the Bernstein net to each flank in exact rational arithmetic and uses the
+  convex-hull property to prove no point there is acceptable. Scale-invariant, dimensionally
+  correct, multiplicity-agnostic, and it needs no derivative. See Rule 11.
+- **Derive against the threshold the code states, not one you invent for it.** The root mistake
+  under three of the four refutations was deriving a forward error when `_clip_roots_core`
+  computes its own `zero_tol`. For the simplest polynomial in the suite the real band was exactly
+  twice the claim.
+- **Numba's `float()` does not widen a `float32`.** Type unification across assignments does.
+  Three of six measured widths follow from that alone.
 
-- **B, next.** Root finding: `_root_finding_core` (7 kernels), `_clipping_core` (2),
-  `_yuksel_core` (4), `_batch_core` (3), `_find_roots`, `_root_finding`. ~1580 lines, 16 kernels,
-  all iterative, so convergence tolerances and **no bit-exactness**. It holds
-  `_de_casteljau_eval_scalar`, which the downstream consumer imports; decide its fate first.
-- **C, after that.** `_bezier_interpolate`, 756 lines, no kernels, but an SVD with **rank
-  truncation** whose threshold is discontinuous. The matrices are deterministic per degree, so
-  it is checkable: verify no `sigma` sits within a few eps of the threshold. Touches
-  `src/pantr/_interpolation_utils.py`, shared with `bspline` and `mpi`.
+**Two facts to carry into block C and into grid.** `scripts/measure_root_finding_widths.py` is
+the shape a port's specification should take: rival models per site, measured against the kernel,
+with a discrimination count so a match cannot come from a check that could not fail. And
+`design/backend_parity.md` now has **eleven** rules; Rule 11 is the first about a discrete verdict
+rather than a displacement.
 
-**Ground the reviews never covered**, and it is now small: whether the harness's multiplicative
-`gamma_m` is merely conservative for an additive accumulation, and whether
-`sum_j |B^(k)_j(s)|` attains its bound pointwise in `s` or only at the endpoints. Neither is
-load-bearing; the second feeds no amplification any more. Both are named in Rule 10 and in #349.
-The `mathematician` lens died on a session limit twice this cycle without returning anything.
-
-**Two things found and left alone, both pre-existing on `proto/cpp`:**
-- `_bezier_degree.py:35` imports `_tabulate_Bernstein_basis_1D_serial_core` straight from
-  `basis._basis_core`, bypassing that catalogue.
-- `_AUTO_REDUCTION_TOL_FACTOR` is dilation-invariant but not translation-invariant.
-
-**Open and not ours**: #336. **Open and ours**: #341.
-
-See [[decisions-pointer]], [[proto-cpp-pr-mechanics]], [[dispatching-agents]],
-[[downstream-consumer-surface]], [[reviewing-my-own-measurements]] and [[performance-followup]].
+**Open, not blocking.** A third pre-existing defect is reproduced and localised but **not filed**:
+Bézier clipping loses a root whose computed residual is exactly zero, at a tolerance below the
+float32 noise floor. Yuksel finds it at every tolerance. Awaiting Pablo's go-ahead. And one review
+finding was downgraded rather than fixed: `ParityClaim` carries optional fields meaningful for one
+variant, which is pre-existing and which a tagged union would fix across every parity module.

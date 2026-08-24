@@ -1,6 +1,6 @@
 ---
 name: decisions-pointer
-description: The C++ port's design decisions live in design/*.md in the repository; three modules are ported and nothing is in flight
+description: The C++ port's design decisions live in design/*.md; six PRs merged, nothing in flight, and backend_parity.md now has eleven rules
 metadata:
   type: project
 ---
@@ -28,10 +28,10 @@ Two decisions that govern everything else:
   `quad`, `transform`, `change_basis`, `bezier`. Roughly 8-10k lines, not 47k. `bspline`,
   THB, extraction, `cad`, `multipatch` and `mpi` stay in Python for now.
 
-**Status, 2026-08-24.** Five PRs are **merged** into `proto/cpp`: the build skeleton (#335),
-`quad` (#337), `change_basis` (#347), `bezier`'s arithmetic block (#348) and its FMA parity
-bound (#349). Nothing is in flight. `bezier` is being ported in three PRs and two remain: root
-finding, then interpolation. See [[active-task]].
+**Status, 2026-08-24.** Six PRs are **merged** into `proto/cpp`: the build skeleton (#335),
+`quad` (#337), `change_basis` (#347), `bezier`'s arithmetic block (#348), its FMA parity bound
+(#349) and its root-finding block (#353). Nothing is in flight. One `bezier` PR remains,
+interpolation. See [[active-task]].
 
 **Eigen is a dependency of the shipped extension** as of #347, and that is the architectural
 decision this cycle added. It was test-only before, fenced off from `pantr::core` so that taking
@@ -45,7 +45,14 @@ change is an open question for Pablo, not a port's call.**
 corrected in place, along with the same stale premise in
 `design/adaptive_thb_approximation.md`.
 
-**`design/backend_parity.md` now has ten rules.** Rule 10, added 2026-08-24, states the
+**`design/backend_parity.md` now has ELEVEN rules.** Rule 11, added 2026-08-24 by the
+root-finding port, is the first about a **discrete verdict** rather than a displacement: an exact
+tie does not survive contraction, and where a tie-break decides a count no tolerance covers it. It
+also carries the two predicted bounds that were refuted before the certified one replaced them,
+and the operational lesson that a conditional claim's unevaluated branch is where the bug is.
+Rule 9 gained the mechanism under its widths: numba's `float()` does not widen a `float32`.
+
+**Before it,** ten rules. Rule 10, added 2026-08-24, states the
 contraction bound: one rounding removed per fused site, one budget for all eight Bezier kernels,
 and only the amplification differing. It closed the gap Rule 9's section had declared, and that
 section is corrected in place rather than deleted, because the reason it gave for deferring was

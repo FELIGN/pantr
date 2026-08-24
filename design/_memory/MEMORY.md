@@ -6,6 +6,7 @@
 - [Build machine](build-machine.md) — the shared Linux server, its 20-CPU cap, and the calibration trap that comes with many cores.
 - [nanobind status](nanobind-status.md) — split mode verified working and composing with multi-ISA; the three mandatory build flags, including the -Os trap that costs a silent 3x.
 - [Performance follow-up](performance-followup.md) — wanted later, deliberately deferred in the infrastructure PR; carries what is already measured so it is not re-measured, and what to attack first.
+- [Merge authority](merge-authority.md) — I may merge a port PR unasked when three conditions hold; the horizon ends with bezier, and agents are for review only.
 - [How to ask me things](asking-style.md) — one question at a time, with concrete options AND an explicit recommendation, and the counter-argument written into the other options.
 - [Reviewing my own measurements](reviewing-my-own-measurements.md) — my prose fails far more often than my code, five cycles running; the newest is a justification that went stale inside one session because the code moved under it.
 - [Expired guard rationales](expired-guard-rationales.md) — a fence whose stated reason no longer holds is not a constraint; check the reason, not just the guard.
