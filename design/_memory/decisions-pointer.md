@@ -28,10 +28,10 @@ Two decisions that govern everything else:
   `quad`, `transform`, `change_basis`, `bezier`. Roughly 8-10k lines, not 47k. `bspline`,
   THB, extraction, `cad`, `multipatch` and `mpi` stay in Python for now.
 
-**Status, 2026-08-22.** Four module PRs are **merged** into `proto/cpp`: the build skeleton
-(#335), `quad` (#337), `change_basis` (#347) and `bezier`'s arithmetic block (#348). Nothing is
-in flight. `bezier` is being ported in three PRs and two remain: root finding, then
-interpolation. See [[active-task]].
+**Status, 2026-08-24.** Five PRs are **merged** into `proto/cpp`: the build skeleton (#335),
+`quad` (#337), `change_basis` (#347), `bezier`'s arithmetic block (#348) and its FMA parity
+bound (#349). Nothing is in flight. `bezier` is being ported in three PRs and two remain: root
+finding, then interpolation. See [[active-task]].
 
 **Eigen is a dependency of the shipped extension** as of #347, and that is the architectural
 decision this cycle added. It was test-only before, fenced off from `pantr::core` so that taking
@@ -45,7 +45,15 @@ change is an open question for Pablo, not a port's call.**
 corrected in place, along with the same stale premise in
 `design/adaptive_thb_approximation.md`.
 
-**`design/backend_parity.md` now has nine rules.** Rule 9, added by the bezier arithmetic port,
+**`design/backend_parity.md` now has ten rules.** Rule 10, added 2026-08-24, states the
+contraction bound: one rounding removed per fused site, one budget for all eight Bezier kernels,
+and only the amplification differing. It closed the gap Rule 9's section had declared, and that
+section is corrected in place rather than deleted, because the reason it gave for deferring was
+refuted rather than superseded. Rule 10 also restates the harness's factor of two as an
+acknowledged safety margin: its stated justification is about two one-sided forward errors, and
+a contraction budget is already a backend-to-backend difference.
+
+**Before it,** Rule 9, added by the bezier arithmetic port,
 is the first that is about reproducing an oracle *exactly* rather than about bounding a
 difference, because that port is the first whose every kernel can be bit-exact: an oracle's
 accumulation width is a per-kernel fact, not a module convention, and getting it wrong is

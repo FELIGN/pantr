@@ -126,3 +126,37 @@ a finding and I caught it by measuring.** An agent reported that `PANTR_BACKEND`
 the library accepts. The public API refuses the mismatch identically on both backends; the
 asymmetry exists only for a direct Layer 3 call, where nothing validates by design. Do not
 relay a finding you have not reproduced, in either direction.
+
+
+## The FMA-bound cycle, 2026-08-24: the prose and the code desynchronised inside one session
+
+Fifth cycle, and the shape is new. Not a fabricated citation, not a justification refuted by
+the tree, but **a justification that was true when written and false four hours later**, because
+the code moved under it and nothing checks that a docstring still describes its function.
+
+I wrote five `fused_why` strings saying "max|c| bounds the whole triangle, and it is the right
+magnitude". Then a vacuity guard fired, I replaced the amplification with the absolute-value
+companion, which is strictly smaller and can be smaller by twelve decades, and I never reopened
+the strings. Those strings are **printed verbatim in every failure message**, so the artifact
+shipped a derivation for code it no longer described. A tolerance audit found it; nothing in
+ruff, mypy, 37 discipline checks or 548 passing tests could.
+
+**The rule this adds: when you change what a constant or an array *is*, grep for the prose that
+names it, in the same edit.** Not later, not at review time. The window between the change and
+the review is exactly where this defect lives, and it is invisible from inside the change.
+
+**Two more from the same cycle, both mine, both measured rather than argued:**
+
+- **A bound can be correct and vacuous per element while a guard sized on the array's maximum
+  sees nothing.** A flat `p!/(p-k)! 2^k max|c|` made 45 of 280 non-zero float32 values carry a
+  tolerance at least as large as their own magnitude. The guard compares the largest tolerance
+  against the largest value, and a flat amplification is sized for exactly that element. Rule 6's
+  own disease, committed inside a rule written after it.
+- **A measured figure identical across two dtypes is structural, not rounding.** The corrected
+  amplification was exceeded by 4.32x at float64 and 4.318x at float32; that agreement is what
+  said "your derivation is missing a term" rather than "your test data is unlucky".
+
+And one about my own measurement, caught before it reached Pablo: my first vacuity count was
+165 of 400, inflated by rows where the reference is exactly zero and both backends agree
+trivially. The honest count is 45 of 280. **Excluding the degenerate rows is part of the
+measurement, not a refinement of it.**
