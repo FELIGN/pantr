@@ -484,6 +484,32 @@ def _assert_the_same_roots(
         assert_parity(actual, reference, bitwise_parity(why=_BITWISE_WHY), context=context)
         return
 
+    # Equal counts do not mean the same roots. Measured: one ulp on a coefficient
+    # turned [0.5, 0.828] into [0.1715, 0.5] at the same count, and the elementwise
+    # comparison then pairs 0.5 against 0.1715 and fails on the value bound, blaming
+    # a displacement for what is a changed set. Checking the pairing first is what
+    # makes the diagnosis right; the test failed either way.
+    # Only where the two arrays are sorted root sets of one polynomial. The batch
+    # results correspond by row, not by proximity, and applying a nearest-neighbour
+    # test to them compares a polynomial's root against another polynomial's.
+    sorted_roots = (
+        reference.size > 1
+        and bool(np.all(np.diff(reference) > 0.0))
+        and bool(np.all(np.isfinite(reference)))
+    )
+    if sorted_roots:
+        for position, value in enumerate(actual):
+            if not np.isfinite(value):
+                continue
+            distances = np.abs(reference - value)
+            assert int(np.argmin(distances)) == position, (
+                f"{context}: the backends returned root sets that do not correspond. "
+                f"Entry {position} of the C++ result, {value!r}, is nearer to the "
+                f"oracle's entry {int(np.argmin(distances))} than to its own. The "
+                f"counts match, so this is a changed set rather than a displaced "
+                f"value, and no tolerance covers it."
+            )
+
     bound = (
         np.full(actual.shape, case.tol, dtype=np.float64)
         if case.coeff is None

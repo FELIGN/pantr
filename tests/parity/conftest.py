@@ -43,3 +43,27 @@ def _jit_warmup_barrier() -> None:
     than one kernel's file alone.
     """
     _numba_compat.wait_for_jit_warmup()
+
+
+@pytest.fixture(scope="session", autouse=True)
+def the_oracle_is_self_consistent() -> None:
+    """Refuse to run if Numba would use SVML, which makes the oracle disagree with itself.
+
+    `_dedup_roots_core` calls `pow`, and it is reached both serially and from
+    `_find_roots_batch_core`, which carries ``parallel=True``. SVML's `pow` is not
+    bit-identical to glibc's, so with SVML present the batch path and the serial path
+    could return different roots **within the Numba backend**, and every parity figure
+    measured against it would be measuring two different oracles.
+
+    Not a hypothetical guarded on principle: it is one `pip install icc_rt` away, and
+    nothing else in the suite would notice. Numba enables SVML automatically when the
+    runtime is importable.
+    """
+    from numba import config  # noqa: PLC0415
+
+    assert not config.USING_SVML, (
+        "numba is using SVML, so its `pow` is not the platform one and the serial and "
+        "parallel root-finding paths may disagree inside the oracle itself. Remove "
+        "icc_rt / intel-cmplr-lib-rt, or set NUMBA_DISABLE_INTEL_SVML=1, before "
+        "trusting any parity figure from this suite."
+    )
