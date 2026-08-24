@@ -51,6 +51,7 @@
 ///     the example here: it decides how many basis functions exist, so it is an
 ///     `int` and never a scalar.
 
+#include <cmath>
 #include <concepts>
 #include <type_traits>
 
@@ -144,6 +145,72 @@ concept Real =
         { a * b } -> std::convertible_to<T>;
         { a / b } -> std::convertible_to<T>;
     };
+
+/// Test whether two scalars are both strictly positive or both strictly negative.
+///
+/// Tier B: a sign test is a function of the value, so both operands pass through
+/// `value_of`.
+///
+/// ## Why this exists rather than `a * b > 0`
+///
+/// The product is the defect. Two operands of magnitude `1e-23` are perfectly
+/// representable at `float32` while their product falls under that format's
+/// minimum subnormal and flushes to zero, so the test answers as though one
+/// operand had vanished -- inventing a root for a polynomial that has none, or
+/// losing one that exists. FELIGN/pantr#351 records both faces with verified
+/// reproductions. Comparing the signs forms no product and so cannot underflow
+/// or overflow at any width, which also retires the question of which width the
+/// product should be computed at.
+///
+/// Exactly equivalent to `a * b > 0` on every IEEE input. A zero or a NaN
+/// operand makes both forms false, and `inf * 0` is NaN, which is not greater
+/// than zero either.
+template <Real T>
+[[nodiscard]] constexpr bool have_same_sign(const T& a, const T& b) noexcept {
+    using pantr::value_of;
+    const auto va = value_of(a);
+    const auto vb = value_of(b);
+    using V = decltype(va);
+    return (va > V{0} && vb > V{0}) || (va < V{0} && vb < V{0});
+}
+
+/// Test whether two scalars have strictly opposite signs.
+///
+/// Tier B, and exactly equivalent to `a * b < 0` on every IEEE input; see
+/// `have_same_sign` for why the product form is the defect. A zero or a NaN
+/// operand makes both forms false.
+template <Real T>
+[[nodiscard]] constexpr bool have_opposite_signs(const T& a, const T& b) noexcept {
+    using pantr::value_of;
+    const auto va = value_of(a);
+    const auto vb = value_of(b);
+    using V = decltype(va);
+    return (va > V{0} && vb < V{0}) || (va < V{0} && vb > V{0});
+}
+
+/// Test whether two bracket values span zero, counting an exact zero as spanned.
+///
+/// Tier B, and exactly equivalent to `a * b <= 0` on every IEEE input; see
+/// `have_same_sign` for why the product form is the defect.
+///
+/// The finiteness guards are what make that equivalence exact rather than
+/// approximate, and they are the reason this is not simply the negation of
+/// `have_same_sign`. `a * b` is a signed zero when one operand is zero and the
+/// other is finite, but it is NaN when the other is an infinity, and NaN is not
+/// less than or equal to zero. Dropping the guards would report a spanned
+/// bracket for `(0, inf)`, where the product form reports none; negating
+/// `have_same_sign` instead would report one for `(NaN, NaN)`.
+template <Real T>
+[[nodiscard]] constexpr bool spans_zero(const T& a, const T& b) noexcept {
+    using pantr::value_of;
+    const auto va = value_of(a);
+    const auto vb = value_of(b);
+    using V = decltype(va);
+    if ((va > V{0} && vb < V{0}) || (va < V{0} && vb > V{0})) {
+        return true;
+    }
+    return (va == V{0} && std::isfinite(vb)) || (vb == V{0} && std::isfinite(va));
+}
 
 /// The floating-point type underlying a `Real`: `double` for `double`, and the
 /// value component for a differentiable type.

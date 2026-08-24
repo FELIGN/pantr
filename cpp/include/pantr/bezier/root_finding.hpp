@@ -396,13 +396,12 @@ bool clip_hull_to_zero(std::span<const T> coeff, std::span<std::int64_t> chain, 
             const auto ib = static_cast<std::ptrdiff_t>(chain[static_cast<std::size_t>(k) + 1]);
             const T da = coeff[static_cast<std::size_t>(ia)];
             const T db = coeff[static_cast<std::size_t>(ib)];
-            // At T, not at double. The oracle reads both endpoints straight out of
-            // the coefficient array, so the sign test and the quotient are T
-            // operations and only the multiplication by the float64 span promotes.
-            // Widening them first diverges on every one of 10143 sign-changing
-            // float32 edges measured, and the T-width product can underflow to zero
-            // and miss a crossing, which is the same mechanism as FELIGN/pantr#351.
-            if (da * db < T{0}) {
+            // The quotient stays at T: the oracle reads both endpoints straight out
+            // of the coefficient array, so it is a T operation and only the
+            // multiplication by the float64 span promotes. Widening it first diverges
+            // on every one of 10143 sign-changing float32 edges measured. The sign
+            // test no longer has a width, because it no longer forms a product.
+            if (have_opposite_signs(da, db)) {
                 const double ta = static_cast<double>(ia) * inv_n;
                 const double tb = static_cast<double>(ib) * inv_n;
                 const T quotient = static_cast<T>(static_cast<T>(-da) / static_cast<T>(db - da));
@@ -496,11 +495,12 @@ accumulator_t<T> solve_monotone_root_kernel(std::span<const T> coeff, accumulato
     const T f_lo = coeff[0];
     const T f_hi = coeff[coeff.size() - 1];
 
-    // FELIGN/pantr#351, reproduced deliberately. This product is at T, so at float32
-    // two same-sign coefficients below about 1e-23 multiply to zero, the guard does
-    // not fire, and a root is returned for a polynomial that has none. Computing it
-    // at Acc would be correct and would break parity with the oracle.
-    if (f_lo * f_hi > T{0}) {
+    // FELIGN/pantr#351 was reproduced here deliberately while the oracle carried it:
+    // the guard was a T product, so at float32 two same-sign coefficients below about
+    // 1e-23 multiplied to zero, it did not fire, and a root was returned for a
+    // polynomial that has none. The oracle now compares the signs, so this does too,
+    // and the question of which width to form the product at does not arise.
+    if (have_same_sign(f_lo, f_hi)) {
         return std::numeric_limits<Acc>::quiet_NaN();
     }
 
@@ -520,7 +520,7 @@ accumulator_t<T> solve_monotone_root_kernel(std::span<const T> coeff, accumulato
         Acc dfx{};
         const Acc fx = de_casteljau_eval_and_deriv_scalar<T>(coeff, x, work, dfx);
 
-        if (static_cast<Acc>(f_lo) * fx <= Acc{0}) {
+        if (spans_zero(static_cast<Acc>(f_lo), fx)) {
             hi = x;
         } else {
             lo = x;
@@ -561,7 +561,7 @@ accumulator_t<T> solve_on_interval(std::span<const T> coeff, accumulator_t<T> lo
         Acc dfx{};
         const Acc fx = de_casteljau_eval_and_deriv_scalar<T>(coeff, x, work, dfx);
 
-        if (f_lo * fx <= Acc{0}) {
+        if (spans_zero(f_lo, fx)) {
             hi = x;
         } else {
             lo = x;
@@ -647,10 +647,11 @@ int find_roots_at_level(std::span<const T> coeff, std::span<const double> crit, 
             continue;
         }
 
-        // FELIGN/pantr#351, reproduced deliberately: a T product, so at float32 two
-        // opposite-sign values below about 1e-23 multiply to zero, no sign change is
-        // seen, and a root that exists is lost.
-        if (f_prev * f_curr < T{0}) {
+        // The lost-root face of FELIGN/pantr#351, reproduced here deliberately while
+        // the oracle carried it: a T product, so at float32 two opposite-sign values
+        // below about 1e-23 multiplied to zero, no sign change was seen, and a root
+        // that exists was lost. Both sides compare the signs now.
+        if (have_opposite_signs(f_prev, f_curr)) {
             const Acc root = solve_on_interval<T>(coeff, prev_t, curr_t,
                                                   static_cast<Acc>(f_prev), tol, work);
             if (count < n) {
@@ -788,7 +789,7 @@ int yuksel_roots(std::span<const T> coeff, accumulator_t<T> tol, std::span<doubl
             if (abs(f_lo) <= boundary_eps) {
                 crit[0] = 0.0;
                 n_crit = 1;
-            } else if (f_lo * f_hi < 0.0) {
+            } else if (have_opposite_signs(f_lo, f_hi)) {
                 crit[0] = solve_on_interval<double>(coeff_lev, 0.0, 1.0, f_lo, tol, level_work);
                 n_crit = 1;
             } else if (abs(f_hi) <= boundary_eps) {
@@ -905,18 +906,18 @@ int clip_roots_core(std::span<const T> root_coeff, accumulator_t<T> param_tol,
                     for (int bisect = 0; bisect < 10; ++bisect) {
                         const double m = 0.5 * (a + b);
                         const T fm = de_casteljau_eval_scalar<T>(root_coeff, m, work);
-                        // FELIGN/pantr#351, third site: a T product, so it can
-                        // underflow at float32. Reproduced deliberately; unlike the
-                        // other two this one has no verified reproduction, only the
-                        // same mechanism.
+                        // The third site of FELIGN/pantr#351: a T product, so it
+                        // could underflow at float32. Unlike the other two this one
+                        // never had a verified reproduction, only the same mechanism,
+                        // and it is fixed on that ground.
                         if (abs(fm) < abs(fa)) {
-                            if (fa * fm <= T{0}) {
+                            if (spans_zero(fa, fm)) {
                                 b = m;
                             } else {
                                 a = m;
                                 fa = fm;
                             }
-                        } else if (fa * fm <= T{0}) {
+                        } else if (spans_zero(fa, fm)) {
                             b = m;
                         } else {
                             a = m;
@@ -974,7 +975,7 @@ int clip_roots_core(std::span<const T> root_coeff, accumulator_t<T> param_tol,
         // Step 5: flat within noise.
         if (c_max - c_min <= geom_tol) {
             if (abs(c_min) <= local_zero_tol || abs(c_max) <= local_zero_tol
-                || c_min * c_max < 0.0) {
+                || have_opposite_signs(c_min, c_max)) {
                 const double mid = 0.5 * (lo + hi);
                 const T f_mid = de_casteljau_eval_scalar<T>(root_coeff, mid, work);
                 if (abs(static_cast<Acc>(f_mid)) <= zero_tol && n_roots < max_roots) {
