@@ -308,7 +308,18 @@ template <Real T>
 /// \param node_right Right-child indices.
 /// \param node_cell Per-leaf cell ids; -1 marks an internal node.
 /// \param out Output cell ids, sized by a prior `bvh_query_count`.
-/// \return The number of cell ids written.
+/// \return The number of overlapping leaves, which is what `bvh_query_count`
+///         returns for the same arguments -- **not** the number written, when
+///         `out` is too small to hold them all.
+///
+/// The oracle writes unconditionally and would corrupt memory on an undersized
+/// `out`. This one counts unconditionally and writes only within capacity, so an
+/// undersized buffer is detectable rather than fatal: the caller compares the
+/// returned count against the capacity it allocated. That comparison is exactly
+/// the count/emit agreement the oracle's own module docstring says is the only
+/// thing the two traversal orders have to preserve, and the binding raises on it.
+/// A deliberate deviation, and the only one in this file that changes behaviour on
+/// any input -- undersized buffers being the input, which Layer 2 never produces.
 template <Real T>
 std::int64_t bvh_query_emit(std::span<const T> qlo, std::span<const T> qhi,
                             span2d<const T> node_lo, span2d<const T> node_hi,
@@ -329,7 +340,9 @@ std::int64_t bvh_query_emit(std::span<const T> qlo, std::span<const T> qhi,
         }
         const std::int64_t cell = node_cell[node];
         if (cell >= 0) {
-            out[static_cast<std::size_t>(count)] = cell;
+            if (static_cast<std::size_t>(count) < out.size()) {
+                out[static_cast<std::size_t>(count)] = cell;
+            }
             ++count;
         } else {
             stack[top] = node_left[node];
