@@ -23,6 +23,8 @@ from tests._parity_harness import (
     assert_parity,
     bitwise_parity,
     bounded_parity,
+    demand_the_compiled_kernel,
+    the_jit_is_disabled,
 )
 
 
@@ -218,3 +220,31 @@ def test_a_budget_that_reaches_the_runaway_half_is_refused() -> None:
     )
     with pytest.raises(ValueError, match="vacuous"):
         absolute_tolerance(claim)
+
+
+def test_the_compiled_kernel_gate_covers_float64_too(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A bitwise claim is no more meaningful at ``float64`` than at ``float32``.
+
+    The gate was keyed on ``float32`` alone, on the strength of one measurement:
+    a degree-5 tabulation at 11 points is bitwise identical with the JIT on and
+    off. That case is real and the generalisation drawn from it is not. Every
+    Bernstein-style claim seeds itself with ``pow``, and the claim's own text
+    says what it rests on: numba's ``np.power`` agreeing with the platform libm.
+    With the JIT disabled the oracle does not call numba's ``np.power`` at all,
+    it calls numpy's, and the seed moves by an ulp and propagates. Measured: 15
+    ``float64`` bitwise tests across three modules fail that way under
+    ``make coverage``, which is how this was found.
+
+    So the gate is keyed on the JIT, and the dtype is not consulted.
+    """
+    monkeypatch.setenv("NUMBA_DISABLE_JIT", "1")
+    assert the_jit_is_disabled()
+
+    for dtype in (np.float32, np.float64):
+        with pytest.raises(pytest.skip.Exception):
+            demand_the_compiled_kernel(dtype)
+
+    monkeypatch.setenv("NUMBA_DISABLE_JIT", "0")
+    assert not the_jit_is_disabled()
+    for dtype in (np.float32, np.float64):
+        demand_the_compiled_kernel(dtype)
