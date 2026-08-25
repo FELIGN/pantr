@@ -235,6 +235,55 @@ def test_bvh_query_returns_the_same_cells(cpp_backend: None, n_cells: int) -> No
     assert matched > 0, "no box matched anything, so this test asserted nothing"
 
 
+def test_bvh_longest_axis_tie_keeps_the_lower_axis(cpp_backend: None) -> None:
+    """Pin the split-axis tie-break, which no other test in the repo can see.
+
+    ``_random_boxes`` draws continuous random floats, so two axis extents are never
+    exactly equal and the tie-break is never reached. Confirmed by fault injection:
+    replacing the longest-axis comparison in ``bvh.hpp`` with ``>=`` -- which flips the
+    tie from the lower axis to the higher -- leaves every other test in this file and
+    all three C++ suites passing, so the direction is otherwise unpinned in both
+    backends at once.
+
+    Four unit cells at the corners of a square give the root an exact ``3.0 == 3.0``
+    extent tie, and the two candidate axes order the centroids differently, so the
+    choice is observable in ``node_cell``: axis 0 yields the leaf order ``[0, 2, 1,
+    3]`` and axis 1 would yield ``[0, 1, 2, 3]``. Asserted as a direction and not only
+    as agreement, because two backends that both flipped would still agree.
+    """
+    del cpp_backend
+    cell_lo = np.array([[0.0, 0.0], [2.0, 0.0], [0.0, 2.0], [2.0, 2.0]])
+    cell_hi = cell_lo + 1.0
+
+    reference, actual = _both(lambda: BVH.from_cell_bounds(cell_lo, cell_hi))
+
+    extent = reference.node_hi[0] - reference.node_lo[0]
+    assert extent[0] == extent[1], (
+        f"the fixture stopped being a tie: root extents are {extent.tolist()}, so this "
+        "test no longer reaches the tie-break it exists to pin"
+    )
+    assert [int(c) for c in reference.node_cell if c >= 0] == [0, 2, 1, 3], (
+        "the longest-axis tie no longer keeps the LOWER axis; splitting on axis 1 "
+        "instead of axis 0 gives the leaf order [0, 1, 2, 3]"
+    )
+    np.testing.assert_array_equal(
+        actual.node_cell,
+        reference.node_cell,
+        err_msg=f"the backends split the tied axis differently. {_BVH_WHY}",
+    )
+    for name in ("node_left", "node_right"):
+        np.testing.assert_array_equal(
+            getattr(actual, name), getattr(reference, name), err_msg=f"{name} on a tied axis"
+        )
+    for name in ("node_lo", "node_hi"):
+        assert_parity(
+            getattr(actual, name),
+            getattr(reference, name),
+            bitwise_parity(why=_BVH_WHY),
+            context=f"BVH.{name} on a tied split axis",
+        )
+
+
 def _two_level_grid() -> HierarchicalGrid:
     """A hierarchical grid with a genuinely refined region.
 
@@ -346,3 +395,100 @@ def test_hierarchical_encode_and_decode_agree(cpp_backend: None) -> None:
     assert actual == reference, "a decode/encode round trip differed between backends"
     for cid, (_, _, back) in enumerate(reference):
         assert back == cid, f"the round trip of id {cid} returned {back}"
+
+
+def _non_dyadic_grid() -> HierarchicalGrid:
+    """A hierarchy whose descent arithmetic is inexact, unlike ``_two_level_grid``.
+
+    ``_two_level_grid`` subdivides by 2 over ``[0, 4]``, so the per-axis child index
+    ``j`` is 0 or 1 and ``j * size_k`` is *exact* -- there is no rounding in that
+    product for a fused multiply-add to remove. That fixture therefore cannot
+    exercise the one contraction site ``hierarchical.hpp`` names as this kernel's
+    parity risk, which is the site both hierarchical parity claims rest on.
+
+    This one subdivides by 3 over non-dyadic spans that straddle zero, so ``size_k``
+    is inexact, ``j`` reaches 2, and ``lo[k] + j * size_k`` is a **cancellation** --
+    the regime where a fused and an unfused sum differ by the most. The straddle is
+    deliberate: ``hierarchical.hpp`` argues that fusing cannot bite because ``|lo|``
+    does not shrink while ``|j * size|`` shrinks geometrically, and that argument does
+    not hold once the two terms have opposite signs.
+    """
+    root = uniform_grid(np.array([[-1.0, 2.0 / 3.0], [-0.1, 0.3]]), 3)
+    grid = hierarchical_grid(root, 3)
+    grid.refine_cells([0, 4, 8])
+    grid.refine_cells([9, 15])
+    return grid
+
+
+def _non_dyadic_points(grid: HierarchicalGrid) -> npt.NDArray[np.float64]:
+    """Interior points plus the cell corners and their ulp neighbours.
+
+    The frontier half is the point of it. A truncation `int((x - lo) / size_k)` only
+    changes when a one-ulp move in `lo` carries `(x - lo) / size_k` across an integer,
+    so a sweep of random interior points is the one thing that cannot detect the
+    contraction hazard this fixture exists for -- the same reason
+    `_adversarial_points_1d` exists for the tensor-product tie contract.
+    """
+    lo, hi = grid.collect_cell_bounds()
+    corners = np.vstack([lo, hi])
+    nudged = [corners]
+    for direction in (-np.inf, np.inf):
+        nudged.append(np.nextafter(corners, direction))
+        nudged.append(np.nextafter(np.nextafter(corners, direction), direction))
+    rng = np.random.default_rng(20260825)
+    interior = np.column_stack(
+        [rng.uniform(-1.0, 2.0 / 3.0, size=4000), rng.uniform(-0.1, 0.3, size=4000)]
+    )
+    return np.vstack([*nudged, interior])
+
+
+def test_hierarchical_locate_ids_survive_a_non_dyadic_descent(cpp_backend: None) -> None:
+    """Both backends return the same ids where the descent's product is inexact.
+
+    The same verdict assertion as the two-level test, in the regime that test cannot
+    reach. A changed id here is a changed verdict, not a displaced value.
+    """
+    del cpp_backend
+    grid = _non_dyadic_grid()
+    _assert_more_than_one_level(grid)
+    points = _non_dyadic_points(grid)
+
+    reference, actual = _both(lambda: grid.locate_many(points))
+
+    located = int((reference >= 0).sum())
+    assert located > len(points) // 2, (
+        f"only {located} of {len(points)} points landed in a cell; the fixture has "
+        "drifted off its own domain and is no longer exercising the descent"
+    )
+    np.testing.assert_array_equal(
+        actual, reference, err_msg=f"a hierarchical cell id changed. {_HIER_WHY}"
+    )
+
+
+def test_hierarchical_cell_bounds_are_bitwise_on_a_non_dyadic_grid(cpp_backend: None) -> None:
+    """Both backends materialize identical bounds where ``sub_ik * size_k`` is inexact.
+
+    The companion to the ids above, on the coordinates rather than the verdict. With
+    subdivision factor 3 the offset ``sub_ik`` reaches 2 and the product genuinely
+    rounds, which is what the shipped factor-2 fixture cannot produce.
+    """
+    del cpp_backend
+    grid = _non_dyadic_grid()
+    _assert_more_than_one_level(grid)
+
+    reference, actual = _both(lambda: grid.collect_cell_bounds())
+
+    ref_lo, ref_hi = reference
+    act_lo, act_hi = actual
+    assert_parity(
+        act_lo,
+        ref_lo,
+        bitwise_parity(why=_HIER_WHY),
+        context="collect_cell_bounds lower corners on a non-dyadic grid",
+    )
+    assert_parity(
+        act_hi,
+        ref_hi,
+        bitwise_parity(why=_HIER_WHY),
+        context="collect_cell_bounds upper corners on a non-dyadic grid",
+    )
