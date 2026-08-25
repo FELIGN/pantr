@@ -172,6 +172,7 @@ from tests._parity_harness import (
     assert_parity,
     bitwise_parity,
     bounded_parity,
+    demand_a_compiled_seed,
     demand_the_compiled_kernel,
 )
 from tests.test_change_basis_domain import (
@@ -534,7 +535,9 @@ def test_lagrange_to_bernstein_is_bitwise(
     sides by construction and the claim tests the tabulation alone.
     """
     del cpp_backend
-    demand_the_compiled_kernel()
+    demand_the_compiled_kernel(dtype)
+    # Built on the Bernstein tabulation, so it inherits its `np.power` seed.
+    demand_a_compiled_seed()
     actual, reference = _both_backends(
         compute_lagrange_to_bernstein_1d, degree, dtype, lagrange_variant=variant
     )
@@ -668,7 +671,7 @@ def test_a_solving_builder_agrees_within_its_condition_number(
     answer has no digits there in either backend.
     """
     del cpp_backend
-    demand_the_compiled_kernel()
+    demand_the_compiled_kernel(dtype)
     label, builder, kappa_of, basis_name = entry
     top = _accuracy_domain(
         kappa_of, dtype, _SOLVABLE_TO[(label, np.dtype(dtype).name)], basis_name=basis_name
@@ -718,7 +721,7 @@ def test_bernstein_to_lagrange_agrees_within_its_condition_number(
     to be the equispaced one.
     """
     del cpp_backend
-    demand_the_compiled_kernel()
+    demand_the_compiled_kernel(dtype)
 
     def kappa_of(degree: int) -> Decimal:
         return _kappa_inf(_lagrange_to_bernstein_exact(degree, variant))

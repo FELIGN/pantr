@@ -564,7 +564,7 @@ def test_find_roots_matches_the_oracle(
 ) -> None:
     """The two backends find the same roots of the same polynomial."""
     del cpp_backend
-    demand_the_compiled_kernel()
+    demand_the_compiled_kernel(dtype)
 
     coeff = _polynomial(degree, dtype, kind)
     reference, actual = _both_backends("roots", coeff)
@@ -583,7 +583,7 @@ def test_find_monotone_root_matches_the_oracle(
 ) -> None:
     """The two backends solve the same monotone polynomial identically."""
     del cpp_backend
-    demand_the_compiled_kernel()
+    demand_the_compiled_kernel(dtype)
 
     coeff = _polynomial(degree, dtype, "monotone")
     reference, actual = _both_backends("monotone", coeff)
@@ -609,7 +609,7 @@ def test_the_batch_path_matches_the_oracle(
     property rather than to discover it.
     """
     del cpp_backend
-    demand_the_compiled_kernel()
+    demand_the_compiled_kernel(dtype)
 
     curves = [Bezier(_polynomial(degree, dtype, kind).reshape(-1, 1)) for kind in KINDS]
 
@@ -669,7 +669,7 @@ def test_the_backends_agree_on_the_root_that_is_not_there(
     that merely moved the threshold would still fail here.
     """
     del cpp_backend
-    demand_the_compiled_kernel()
+    demand_the_compiled_kernel(dtype)
 
     coeff = np.array([1e-23, 0.5e-23, 2e-23], dtype=dtype)
     reference, actual = _both_backends("monotone", coeff, DEFECT_TOL)
@@ -696,7 +696,7 @@ def test_the_backends_agree_on_the_root_that_is_lost(
     At the frontier magnitude, for the reason given in the sibling test.
     """
     del cpp_backend
-    demand_the_compiled_kernel()
+    demand_the_compiled_kernel(dtype)
 
     coeff = np.array([1e-23, 0.0, -1e-23], dtype=dtype)
     reference, actual = _both_backends("roots", coeff, DEFECT_TOL)
@@ -733,7 +733,7 @@ def test_the_backends_agree_where_the_tolerance_stops_scaling(cpp_backend: None)
     ``1e-31`` and fail further down.
     """
     del cpp_backend
-    demand_the_compiled_kernel()
+    demand_the_compiled_kernel(np.float64)
 
     for exponent in (-29, -30, -31, -33, -35):
         scale = 10.0**exponent
@@ -768,7 +768,7 @@ def test_a_seeded_sweep_matches_the_oracle(cpp_backend: None, dtype: npt.DTypeLi
     machine.
     """
     del cpp_backend
-    demand_the_compiled_kernel()
+    demand_the_compiled_kernel(dtype)
 
     rng = np.random.default_rng(20260824)
     for degree in DEGREES:

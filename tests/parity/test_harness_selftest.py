@@ -23,6 +23,7 @@ from tests._parity_harness import (
     assert_parity,
     bitwise_parity,
     bounded_parity,
+    demand_a_compiled_seed,
     demand_the_compiled_kernel,
     the_jit_is_disabled,
 )
@@ -222,26 +223,37 @@ def test_a_budget_that_reaches_the_runaway_half_is_refused() -> None:
         absolute_tolerance(claim)
 
 
-def test_the_compiled_kernel_gate_covers_float64_too(monkeypatch: pytest.MonkeyPatch) -> None:
-    """A bitwise claim is no more meaningful at ``float64`` than at ``float32``.
+def test_the_seed_gate_fires_at_float64_where_the_width_gate_does_not(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The two gates own different divergences, and only one of them is about width.
 
-    The gate was keyed on ``float32`` alone, on the strength of one measurement:
-    a degree-5 tabulation at 11 points is bitwise identical with the JIT on and
-    off. That case is real and the generalisation drawn from it is not. Every
-    Bernstein-style claim seeds itself with ``pow``, and the claim's own text
-    says what it rests on: numba's ``np.power`` agreeing with the platform libm.
-    With the JIT disabled the oracle does not call numba's ``np.power`` at all,
-    it calls numpy's, and the seed moves by an ulp and propagates. Measured: 15
-    ``float64`` bitwise tests across three modules fail that way under
-    ``make coverage``, which is how this was found.
+    :func:`demand_the_compiled_kernel` owns storage format: interpreted ``float32``
+    intermediates promote in a way that has never been pinned. It is right to let
+    ``float64`` past, and an earlier version of this suite concluded from that that
+    ``float64`` was safe outright. It is not, for two reasons that are nothing to do
+    with width: a seed of ``np.power``, which IEEE 754 does not pin and whose numba
+    and numpy implementations disagree by an ulp, and a falling-factorial accumulator
+    that wraps at int64 when compiled and grows without bound when interpreted. Past
+    that overflow the two paths differ by a factor of about seven, which is why this
+    cannot be answered with a tolerance.
 
-    So the gate is keyed on the JIT alone, and takes no dtype to consult.
+    :func:`demand_a_compiled_seed` owns those two, at every width, and is asked for
+    per test rather than applied to every bitwise claim: for a kernel of ``+``, ``-``,
+    ``*`` and ``/`` alone IEEE 754 pins each result, so interpretation reproduces the
+    compiled bits by guarantee. Gating all bitwise claims was measured at 442 of 495
+    ``float64`` cases skipped, against 79 for this.
     """
     monkeypatch.setenv("NUMBA_DISABLE_JIT", "1")
     assert the_jit_is_disabled()
+
+    demand_the_compiled_kernel(np.float64)
     with pytest.raises(pytest.skip.Exception):
-        demand_the_compiled_kernel()
+        demand_the_compiled_kernel(np.float32)
+    with pytest.raises(pytest.skip.Exception):
+        demand_a_compiled_seed()
 
     monkeypatch.setenv("NUMBA_DISABLE_JIT", "0")
     assert not the_jit_is_disabled()
-    demand_the_compiled_kernel()
+    demand_the_compiled_kernel(np.float32)
+    demand_a_compiled_seed()
