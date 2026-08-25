@@ -22,9 +22,12 @@ The third path cannot, and the tests below say so where it applies. The
 hierarchical descent rewrites ``lo[k]`` each level from ``lo[k] + j * size_k``, a
 multiply feeding an add, and that value decides the next level's truncation -- a
 **discrete verdict**, which ``design/backend_parity.md`` Rule 11 is explicit that no
-tolerance bounds. Measured over 300000 descents it never diverges, and the reason is
-that the perturbation is never introduced rather than that it fails to grow, but
-that is evidence and not proof.
+tolerance bounds. So the port keeps the multiply and the add as separate statements,
+which is what makes the equality hold: `-ffp-contract=on` confines fusion to within
+a single expression, so a named product cannot be contracted on any target. An
+earlier version of this file argued instead from a sweep of 300000 descents, which
+was worthless -- it ran on a build with no `-march`, where the baseline ISA has no
+fused multiply-add at all, so it compared two unfused implementations.
 
 So the operational lesson of Rule 11 applies here in full: **every cell id is
 asserted on its own, before and separately from any comparison of coordinates.** A
@@ -47,6 +50,7 @@ something.
 
 from __future__ import annotations
 
+import math
 from collections.abc import Callable
 from functools import partial
 from typing import TypeVar
@@ -75,12 +79,14 @@ _BVH_WHY = (
 )
 
 _HIER_WHY = (
-    "the descent's `lo + j * size` is a contraction site and this equality is "
-    "MEASURED rather than derived: 300000 descents of twelve levels, 23.8% of the "
-    "child decisions at a non-power-of-two j, half the points one ulp off a child "
-    "boundary, and no divergence. Fusing moves a sum only when its two terms are "
-    "comparable in magnitude, and in a descent the second shrinks geometrically. "
-    "A build on a target that contracts differently would be the thing to re-measure"
+    "the descent multiplies then adds, and the two statements are kept SEPARATE so "
+    "that no target can contract them into a fused multiply-add: -ffp-contract=on "
+    "confines fusion to within one expression, and the oracle never fuses at all "
+    "(numba defaults to fastmath=False). That makes the equality a property of how "
+    "the statement is written rather than of the build. Inline the product again and "
+    "this fails at root cell [1.0, 2.0], factor 10, x = 1.71 -- but only on a build "
+    "that has a fused multiply-add, so the disassembly is the other half of the "
+    "evidence. See cpp/include/pantr/grid/hierarchical.hpp"
 )
 
 
@@ -491,4 +497,71 @@ def test_hierarchical_cell_bounds_are_bitwise_on_a_non_dyadic_grid(cpp_backend: 
         ref_hi,
         bitwise_parity(why=_HIER_WHY),
         context="collect_cell_bounds upper corners on a non-dyadic grid",
+    )
+
+
+def test_the_descent_counterexample_is_a_genuine_discriminator() -> None:
+    """The input that separates a fused descent from an unfused one still separates them.
+
+    This is the case that refuted an earlier version of this file's equality claim:
+    root cell ``[1.0, 2.0]``, factor 10, ``x = 1.71``, a decimal literal rather than
+    a bit-twiddled value. At level 0 the unfused sum is ``1.7000000000000002`` and
+    the fused one is ``1.7``, one ulp apart; at level 1 the quotients are
+    ``0.9999999999999778`` and exactly ``1.0``, so the truncation gives child 0
+    against child 1 and the two arithmetics land in different cells.
+
+    **This test does not need the extension and does not compare backends**, and that
+    is deliberate. On a build with no ``-march`` there is no fused multiply-add
+    instruction at all, so a backend comparison here would pass whether or not the
+    port keeps its two statements separate -- it would be exactly the kind of
+    comfortable case that let the original claim stand. What this asserts instead is
+    that the input remains a **discriminator**: that a fused evaluation really does
+    diverge from an unfused one on it. If a future numpy, libm or Python changed
+    something that made this input benign, the guard in
+    ``cpp/include/pantr/grid/hierarchical.hpp`` would be resting on nothing and this
+    test says so before the parity suite silently stops testing anything.
+
+    The paired assertion -- that the *shipped* kernels agree -- is what
+    :func:`test_hierarchical_locate_ids_are_identical` and the non-dyadic descent
+    test do. Their value rises the moment ``design/simd.md``'s ISA ladder lands.
+    """
+    lo0, hi0, x, factor = 1.0, 2.0, 1.71, 10
+
+    size = (hi0 - lo0) / factor
+    j = int((x - lo0) / size)
+    assert j == 7, f"the fixture drifted: expected child 7, got {j}"
+
+    # The unfused half needs no `math.fma`, so it is pinned on every supported
+    # Python. These are the exact bits the shipped kernels and the oracle produce.
+    unfused = lo0 + j * size
+    assert unfused.hex() == "0x1.b333333333334p+0", (
+        f"the unfused level-0 sum drifted to {unfused.hex()}; this case is built on its exact value"
+    )
+    child_unfused = int((x - unfused) / ((unfused + size - unfused) / factor))
+    assert child_unfused == 0, f"the unfused descent no longer takes child 0, got {child_unfused}"
+
+    # The fused half needs a correctly rounded fused multiply-add. `math.fma` is
+    # Python 3.13+, and this project supports 3.11, so it is gated rather than
+    # assumed -- the alternative would be an AttributeError on two of the four
+    # supported versions.
+    if not hasattr(math, "fma"):  # pragma: no cover - version-dependent
+        pytest.skip("math.fma is Python 3.13+; the unfused half above still ran")
+
+    fused = math.fma(float(j), size, lo0)
+    assert fused.hex() == "0x1.b333333333333p+0", f"the fused level-0 sum drifted to {fused.hex()}"
+    assert unfused != fused, (
+        "level 0 no longer distinguishes a fused sum from an unfused one, so this "
+        "input has stopped being a counterexample and the guard in the header rests "
+        "on nothing"
+    )
+    assert abs(unfused - fused) == abs(np.nextafter(fused, math.inf) - fused), (
+        "the two sums are no longer exactly one ulp apart"
+    )
+
+    # The divergence has to survive into the next level's truncation to change a
+    # cell id; one ulp in a coordinate is not by itself a changed verdict.
+    child_fused = int((x - fused) / ((fused + size - fused) / factor))
+    assert child_unfused != child_fused, (
+        f"level 1 now agrees ({child_unfused}), so the one-ulp difference no longer "
+        "reaches the truncation and this case pins nothing about the descent"
     )
