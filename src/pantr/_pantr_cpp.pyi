@@ -939,9 +939,9 @@ def clip_roots(
 
 def dedup_roots(
     coeff: npt.NDArray[np.float32 | np.float64],
+    *,
     raw_roots: npt.NDArray[np.float64],
     n_roots: int,
-    *,
     param_tol: float,
     geom_tol: float,
     out: npt.NDArray[np.float64],
@@ -951,12 +951,14 @@ def dedup_roots(
     Args:
         coeff (npt.NDArray[np.float32 | np.float64]): Original Bernstein
             coefficients, used for the derivative. C-contiguous and non-empty.
-            First, as in every sibling: it and ``raw_roots`` are both ``float64``
-            when the coefficients are, so a transposed call would type-check and
-            merge against the wrong data.
+            The only positional argument, as in :func:`clip_roots`: it and
+            ``raw_roots`` are both ``float64`` when the coefficients are, so a
+            transposed call type-checked and merged against the wrong data until
+            everything after it was made keyword-only.
         raw_roots (npt.NDArray[np.float64]): Candidates, of which the first
-            ``n_roots`` are valid. C-contiguous.
+            ``n_roots`` are valid. C-contiguous. Keyword-only.
         n_roots (int): Number of valid candidates, in ``[0, len(raw_roots)]``.
+            Keyword-only.
         param_tol (float): Parametric tolerance. Finite and positive. Keyword-only,
             with ``geom_tol``.
         geom_tol (float): Geometric tolerance. Finite and positive. Keyword-only.
@@ -968,7 +970,7 @@ def dedup_roots(
 
     Raises:
         TypeError: If any array has the wrong dtype or rank, is not C-contiguous,
-            or if ``out`` is passed positionally.
+            or if anything but ``coeff`` is passed positionally.
         ValueError: If ``coeff`` is empty, if either tolerance is not finite and
             positive, if ``n_roots`` is not a valid count, or if ``out`` is too
             short.

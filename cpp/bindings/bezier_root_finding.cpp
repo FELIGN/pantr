@@ -243,8 +243,12 @@ void register_bezier_root_finding(nb::module_& m) {
     //
     // `dedup_roots` takes the coefficients **first**, as every sibling in this file
     // and every accessor in the four catalogues does. Its `raw_roots` is always
-    // `float64` and `coeff` frequently is, so a transposed call type-checks, runs,
-    // and merges against the wrong data.
+    // `float64` and `coeff` frequently is, so for the `double` overload the two are
+    // indistinguishable to the caster: a transposed call type-checked, ran, and
+    // merged against the wrong data, returning a coefficient rather than a root. A
+    // comment saying so was the whole guard and did not hold. `nb::kw_only()` now
+    // sits directly after `coeff`, giving this binding the same shape as
+    // `clip_roots` -- one positional argument and nothing else sayable by position.
     m.def("yuksel_roots", &bind_yuksel_roots<double>, nb::arg("coeff").noconvert(),
           nb::arg("param_tol"), nb::kw_only(), nb::arg("out").noconvert());
     m.def("yuksel_roots", &bind_yuksel_roots<float>, nb::arg("coeff").noconvert(),
@@ -255,12 +259,12 @@ void register_bezier_root_finding(nb::module_& m) {
     m.def("clip_roots", &bind_clip_roots<float>, nb::arg("coeff").noconvert(), nb::kw_only(),
           nb::arg("param_tol"), nb::arg("geom_tol"), nb::arg("out").noconvert());
 
-    m.def("dedup_roots", &bind_dedup_roots<double>, nb::arg("coeff").noconvert(),
-          nb::arg("raw_roots").noconvert(), nb::arg("n_roots"), nb::kw_only(),
-          nb::arg("param_tol"), nb::arg("geom_tol"), nb::arg("out").noconvert());
-    m.def("dedup_roots", &bind_dedup_roots<float>, nb::arg("coeff").noconvert(),
-          nb::arg("raw_roots").noconvert(), nb::arg("n_roots"), nb::kw_only(),
-          nb::arg("param_tol"), nb::arg("geom_tol"), nb::arg("out").noconvert());
+    m.def("dedup_roots", &bind_dedup_roots<double>, nb::arg("coeff").noconvert(), nb::kw_only(),
+          nb::arg("raw_roots").noconvert(), nb::arg("n_roots"), nb::arg("param_tol"),
+          nb::arg("geom_tol"), nb::arg("out").noconvert());
+    m.def("dedup_roots", &bind_dedup_roots<float>, nb::arg("coeff").noconvert(), nb::kw_only(),
+          nb::arg("raw_roots").noconvert(), nb::arg("n_roots"), nb::arg("param_tol"),
+          nb::arg("geom_tol"), nb::arg("out").noconvert());
 
     m.def("solve_monotone_root", &bind_solve_monotone_root<double>, nb::arg("coeff").noconvert(),
           nb::arg("param_tol"));
