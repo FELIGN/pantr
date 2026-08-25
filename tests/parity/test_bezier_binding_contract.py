@@ -269,3 +269,42 @@ def test_the_root_finding_bindings_refuse_the_tolerances_positionally(
             out_roots=np.full((1, 3), np.nan),
             out_counts=np.zeros(1, dtype=np.int64),
         )
+
+
+def test_dedup_roots_refuses_its_two_arrays_positionally(cpp_backend: None) -> None:
+    """``coeff`` and ``raw_roots`` are the same bound type, so only keyword-only closes it.
+
+    ``raw_roots`` is always ``float64`` and ``coeff`` frequently is, so for the
+    ``double`` overload the two are indistinguishable to the caster. Transposed, the
+    call type-checked, ran, and returned ``-1.0``: a coefficient rather than a root,
+    and outside ``[0, 1]``, the interval every root finder in this module is defined
+    on. Nothing raised and nothing warned.
+
+    The ``float32`` overload was never exposed to it, and the difference is the point:
+    there the two arrays have different dtypes, so ``.noconvert()`` already separates
+    them by type and neither overload accepts the transposition. It is asserted here
+    because the guard must hold on both, not because both were broken.
+
+    The correctly ordered call is kept alongside as the control: it isolates the
+    defect as the transposability rather than anything in the kernel.
+    """
+    del cpp_backend
+    bindings = _bindings()
+
+    # B(t) = -1 + 2t in Bernstein form. Its only root is t = 0.5.
+    coeff = np.array([-1.0, 1.0])
+    raw = np.array([0.5])
+
+    out = np.empty(8)
+    count = bindings.dedup_roots(
+        coeff, raw_roots=raw, n_roots=1, param_tol=1e-9, geom_tol=1e-9, out=out
+    )
+    assert count == 1
+    assert out[0] == 0.5
+
+    with pytest.raises(TypeError):
+        bindings.dedup_roots(raw, coeff, 1, param_tol=1e-9, geom_tol=1e-9, out=np.empty(8))
+    with pytest.raises(TypeError):
+        bindings.dedup_roots(
+            raw, coeff.astype(np.float32), 1, param_tol=1e-9, geom_tol=1e-9, out=np.empty(8)
+        )
