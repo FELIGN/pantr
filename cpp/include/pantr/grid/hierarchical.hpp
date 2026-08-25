@@ -286,7 +286,20 @@ void hier_locate_points(span2d<const T> points, std::span<const T> knots_flat,
                 } else if (j > fk - 1) {
                     j = fk - 1;
                 }
-                lo[k] = lo[k] + T(static_cast<double>(j)) * size_k;
+                // The product is named rather than inlined, and that is the whole of
+                // this port's exactness guarantee rather than a style choice.
+                // `lo + j * size` is one expression, so a target with a fused
+                // multiply-add may contract it, and `-ffp-contract=on` permits
+                // exactly that within an expression. The oracle never fuses
+                // (numba defaults to `fastmath=False`), so the two would then
+                // disagree -- and because the next line truncates a quotient, they
+                // would disagree on a CELL ID, which Rule 11 says no tolerance
+                // bounds. Splitting the statement puts the multiplication's
+                // rounding back where the oracle has it. Measured: `vmulsd` plus
+                // `vaddsd` at `-march=x86-64-v3` and at `-march=native`, against
+                // `vfmadd132sd` for the single-expression form.
+                const T step = T(static_cast<double>(j)) * size_k;
+                lo[k] = lo[k] + step;
                 hi[k] = lo[k] + size_k;
                 midx[k] = midx[k] * fk + j;
             }
@@ -367,7 +380,13 @@ void hier_collect_cell_bounds(std::span<const T> knots_flat,
                     knots_flat[static_cast<std::size_t>(knot_starts[k] + root_ik + 1)];
                 const T size_k = static_cast<T>((root_hi_k - root_lo_k)
                                                 / T(static_cast<double>(m_pow[k])));
-                out_lo(row, k) = root_lo_k + T(static_cast<double>(sub_ik)) * size_k;
+                // Split for the reason given at the descent site. This one is
+                // NOT protected by a small subdivision factor: `sub_ik` runs over
+                // `[0, factor**level)`, so it reaches 3 at level 2 even at factor
+                // 2, and a divergence was measured at factor 2 on the root cell
+                // [1.0, 1.1] from level 6.
+                const T offset = T(static_cast<double>(sub_ik)) * size_k;
+                out_lo(row, k) = root_lo_k + offset;
                 out_hi(row, k) = out_lo(row, k) + size_k;
             }
             ++flat_id;

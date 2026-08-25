@@ -206,11 +206,28 @@ void bind_bvh_build(const_mat<double> cell_lo, const_mat<double> cell_hi,
 
     // hi >= lo is an ordering constraint, so it is checked rather than left to the
     // caller getting the two keywords the right way round.
+    // Finiteness first, and `hi >= lo` is NOT enough to give it. That test rejects
+    // a NaN corner, since every NaN comparison is false, but it ADMITS infinities:
+    // `+inf >= -inf` holds. The build then computes the centroid as
+    // `0.5 * (lo + hi)`, so a cell spanning `[-inf, +inf]` yields NaN from two
+    // corners that passed -- and a NaN key makes the stable sort's comparator an
+    // invalid strict weak ordering, which is undefined behaviour under
+    // [alg.sorting]/4 rather than merely a divergence from the oracle. The guard
+    // the sort needs is on the centroid, and no `hi >= lo` check can supply it.
+    // `pantr.grid.BVH.from_cell_bounds` rejects non-finite corners for the same
+    // reason; this is the same contract on the path that bypasses it.
     for (std::size_t i = 0; i < n_cells; ++i) {
         for (std::size_t k = 0; k < ndim; ++k) {
+            if (!std::isfinite(cell_lo(i, k)) || !std::isfinite(cell_hi(i, k))) {
+                throw nb::value_error((std::string("cell ") + std::to_string(i) + " axis " +
+                                       std::to_string(k) +
+                                       " has a non-finite corner; the centroid a "
+                                       "non-finite corner produces is not orderable")
+                                          .c_str());
+            }
             if (!(cell_hi(i, k) >= cell_lo(i, k))) {
                 throw nb::value_error((std::string("cell ") + std::to_string(i) + " axis " +
-                                       std::to_string(k) + " has hi < lo, or a NaN corner")
+                                       std::to_string(k) + " has hi < lo")
                                           .c_str());
             }
         }
@@ -366,10 +383,17 @@ void bind_hier_locate_points(const_mat<double> points, const_vec<double> knots_f
     require_knot_ranges(knots_flat.shape(0), knot_starts, root_cells_per_axis);
     require_capacity(out, 0, points.shape(0), "out");
     for (std::size_t k = 0; k < ndim; ++k) {
-        if (factor(k) < 2) {
+        // `< 1`, not `< 2`. The oracle documents a factor of 1 as legal -- it
+        // "prevents subdivision in that direction", which is what an anisotropic
+        // grid needs -- validates `f < 1`, and has a committed test asserting it.
+        // Rejecting 1 here made the two backends disagree on the DOMAIN rather
+        // than on a value, and it rejected the one factor at which the descent's
+        // contraction site provably cannot diverge: the clamp forces `j = 0`, so
+        // the product is exactly zero.
+        if (factor(k) < 1) {
             throw nb::value_error((std::string("factor[") + std::to_string(k) + "] is " +
                                    std::to_string(factor(k)) +
-                                   "; a subdivision factor below two never refines")
+                                   "; a subdivision factor must be at least one")
                                       .c_str());
         }
     }
@@ -400,10 +424,17 @@ void bind_hier_collect_cell_bounds(const_vec<double> knots_flat, i64_vec knot_st
     require_same(out_hi.shape(1), ndim, "out_hi columns", "block_lo");
 
     for (std::size_t k = 0; k < ndim; ++k) {
-        if (factor(k) < 2) {
+        // `< 1`, not `< 2`. The oracle documents a factor of 1 as legal -- it
+        // "prevents subdivision in that direction", which is what an anisotropic
+        // grid needs -- validates `f < 1`, and has a committed test asserting it.
+        // Rejecting 1 here made the two backends disagree on the DOMAIN rather
+        // than on a value, and it rejected the one factor at which the descent's
+        // contraction site provably cannot diverge: the clamp forces `j = 0`, so
+        // the product is exactly zero.
+        if (factor(k) < 1) {
             throw nb::value_error((std::string("factor[") + std::to_string(k) + "] is " +
                                    std::to_string(factor(k)) +
-                                   "; a subdivision factor below two never refines")
+                                   "; a subdivision factor must be at least one")
                                       .c_str());
         }
     }
