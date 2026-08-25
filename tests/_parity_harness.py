@@ -211,8 +211,8 @@ def on_the_reference_host() -> bool:
     return bool(os.environ.get(_REFERENCE_HOST_ENV_VAR, ""))
 
 
-def demand_the_compiled_kernel(dtype: npt.DTypeLike) -> None:
-    """Skip a ``float32`` claim about the Python backend when its kernel is not compiled.
+def demand_the_compiled_kernel() -> None:
+    """Skip a claim about the Python backend when its kernel is not compiled.
 
     Under ``NUMBA_DISABLE_JIT=1`` the Numba kernels run as interpreted Python over
     numpy, and **that is a different object from the one every bound here
@@ -224,29 +224,32 @@ def demand_the_compiled_kernel(dtype: npt.DTypeLike) -> None:
     :func:`demand_the_reference_host`: 29 failures, three runs, identical. It is a
     configuration difference, not a host one.
 
-    Gated on ``float32`` alone, and that is measured rather than assumed. For a
-    degree-5 tabulation at 11 points, the ``float64`` output is **bitwise identical**
-    with the JIT on and off, while the ``float32`` output differs. The interpreted
-    path is not simply computing in ``float64`` and rounding, either: its ``float32``
-    result matches neither the compiled ``float32`` one nor the ``float64`` one cast
-    down. Which intermediates promote has not been pinned, and no claim is made about
-    it here; what is established is that ``float64`` is unaffected and ``float32`` is
-    not, which is exactly what this gate needs.
+    **This gate was keyed on ``float32`` alone and that was wrong.** The evidence
+    offered for it was one case, a degree-5 tabulation at 11 points whose
+    ``float64`` output is bitwise identical with the JIT on and off, from which
+    "``float64`` is unaffected" was drawn. It does not follow, and it is false:
+    every Bernstein-style bitwise claim seeds itself with ``pow``, and what those
+    claims rest on, in their own words, is numba's ``np.power`` agreeing with the
+    platform libm. The interpreted path does not call numba's ``np.power`` at all.
+    The seed moves by an ulp and propagates, which fifteen ``float64`` bitwise
+    tests across three parity modules then report.
+
+    What remains true about ``float32`` is only that it is worse: the interpreted
+    path's ``float32`` result matches neither the compiled ``float32`` one nor the
+    ``float64`` one cast down, so which intermediates promote is still unpinned.
+    Nothing here depends on that any more.
 
     Only ``make coverage`` sets the variable, so a plain ``pytest`` run is untouched.
 
-    Args:
-        dtype (npt.DTypeLike): The storage format the calling test is parametrized on.
-
     Raises:
-        Skipped: Via :func:`pytest.skip`, for ``float32`` with the JIT disabled.
+        Skipped: Via :func:`pytest.skip`, whenever the JIT is disabled.
     """
-    if not the_jit_is_disabled() or np.dtype(dtype) != np.float32:
+    if not the_jit_is_disabled():
         return
     pytest.skip(
-        "with NUMBA_DISABLE_JIT the Python backend is interpreted, and its float32 "
-        "arithmetic is not the compiled kernel's, which is what this claim's bound "
-        "was derived for. float64 is bitwise unaffected and still runs."
+        "with NUMBA_DISABLE_JIT the Python backend is interpreted, and its arithmetic "
+        "is not the compiled kernel's, which is what this claim's bound was derived "
+        "for. The seed alone, pow, already differs: numpy's is not numba's."
     )
 
 

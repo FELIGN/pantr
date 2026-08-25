@@ -235,16 +235,13 @@ def test_the_compiled_kernel_gate_covers_float64_too(monkeypatch: pytest.MonkeyP
     ``float64`` bitwise tests across three modules fail that way under
     ``make coverage``, which is how this was found.
 
-    So the gate is keyed on the JIT, and the dtype is not consulted.
+    So the gate is keyed on the JIT alone, and takes no dtype to consult.
     """
     monkeypatch.setenv("NUMBA_DISABLE_JIT", "1")
     assert the_jit_is_disabled()
-
-    for dtype in (np.float32, np.float64):
-        with pytest.raises(pytest.skip.Exception):
-            demand_the_compiled_kernel(dtype)
+    with pytest.raises(pytest.skip.Exception):
+        demand_the_compiled_kernel()
 
     monkeypatch.setenv("NUMBA_DISABLE_JIT", "0")
     assert not the_jit_is_disabled()
-    for dtype in (np.float32, np.float64):
-        demand_the_compiled_kernel(dtype)
+    demand_the_compiled_kernel()

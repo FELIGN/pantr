@@ -114,6 +114,7 @@ from tests._parity_harness import (
     bounded_parity,
     contraction_may_fuse,
     demand_the_compiled_kernel,
+    the_jit_is_disabled,
 )
 
 _TINY: Final = float(np.finfo(np.float64).tiny)
@@ -691,7 +692,7 @@ def test_evaluate_matches_the_oracle(
 ) -> None:
     """The two backends evaluate a curve identically at every adversarial parameter."""
     del cpp_backend
-    demand_the_compiled_kernel(dtype)
+    demand_the_compiled_kernel()
 
     ctrl = _mixed_control_points((degree + 1, rank), dtype)
     points = np.array(_adversarial_parameters(dtype), dtype=dtype)
@@ -742,7 +743,7 @@ def test_evaluate_derivatives_matches_the_oracle(
     there and the recursion takes branches a well-matched order never reaches.
     """
     del cpp_backend
-    demand_the_compiled_kernel(dtype)
+    demand_the_compiled_kernel()
 
     ctrl = _mixed_control_points((degree + 1, 2), dtype)
     points = np.array(_adversarial_parameters(dtype), dtype=dtype)
@@ -802,7 +803,7 @@ def test_derivatives_agree_past_the_factorial_overflow(
     is that they are the same, and that the C++ reaches it by a defined route.
     """
     del cpp_backend
-    demand_the_compiled_kernel(dtype)
+    demand_the_compiled_kernel()
     demand_a_bound_the_claim_can_carry(_WRAPPED_FACTORIAL)
 
     ctrl = _mixed_control_points((degree + 1, 2), dtype, exponents=(-1, 2))
@@ -829,7 +830,7 @@ def test_elevate_degree_matches_the_oracle(
 ) -> None:
     """The two backends elevate identically, coefficient table included."""
     del cpp_backend
-    demand_the_compiled_kernel(dtype)
+    demand_the_compiled_kernel()
 
     ctrl = _mixed_control_points((degree + 1, 3), dtype)
 
@@ -873,7 +874,7 @@ def test_reduce_degree_matches_the_oracle(
 ) -> None:
     """The two backends apply the same reduction operator to the same result."""
     del cpp_backend
-    demand_the_compiled_kernel(dtype)
+    demand_the_compiled_kernel()
 
     ctrl = _mixed_control_points((degree + 1, 3), dtype)
 
@@ -940,7 +941,7 @@ def test_minimize_degree_is_bitwise(
     test that says so.
     """
     del cpp_backend
-    demand_the_compiled_kernel(dtype)
+    demand_the_compiled_kernel()
     demand_a_bound_the_claim_can_carry(_DISCRETE_VERDICT)
 
     # A net that is genuinely reducible, so the search has something to find: a
@@ -980,7 +981,7 @@ def test_slice_matches_the_oracle(
 ) -> None:
     """The two backends run the same de Casteljau triangle to the same last bit."""
     del cpp_backend
-    demand_the_compiled_kernel(dtype)
+    demand_the_compiled_kernel()
 
     ctrl = _mixed_control_points((degree + 1, degree + 1, 2), dtype)
 
@@ -1023,7 +1024,7 @@ def test_split_matches_the_oracle(
     the ends as this test can legitimately get.
     """
     del cpp_backend
-    demand_the_compiled_kernel(dtype)
+    demand_the_compiled_kernel()
 
     ctrl = _mixed_control_points((degree + 1, 3), dtype)
 
@@ -1071,7 +1072,7 @@ def test_restrict_matches_the_oracle(
     one a symmetric interval happens to pick.
     """
     del cpp_backend
-    demand_the_compiled_kernel(dtype)
+    demand_the_compiled_kernel()
 
     ctrl = _mixed_control_points((degree + 1, 3), dtype)
 
@@ -1125,7 +1126,7 @@ def test_compose_is_bitwise(
     carries far more products than a single multiply would have.
     """
     del cpp_backend
-    demand_the_compiled_kernel(dtype)
+    demand_the_compiled_kernel()
     demand_a_bound_the_claim_can_carry(_OPERANDS_NOT_OBSERVABLE)
 
     # `inner.rank` must equal `outer.dim`, so a univariate outer map takes a
@@ -1162,7 +1163,7 @@ def test_a_strided_out_reaches_the_callers_array(cpp_backend: None, dtype: npt.D
     exception anywhere, which is the worst failure shape available.
     """
     del cpp_backend
-    demand_the_compiled_kernel(dtype)
+    demand_the_compiled_kernel()
 
     ctrl = _mixed_control_points((6, 3), dtype)
     points = np.linspace(0.0, 1.0, 9, dtype=dtype)
@@ -1346,6 +1347,16 @@ def test_the_oracle_does_not_contract_a_multiply_add() -> None:
 
     from numba import njit  # noqa: PLC0415
 
+    # `njit` hands back the plain Python function when compilation is switched
+    # off, and a plain function has no `inspect_asm`. There is no assembly to
+    # read because none was generated, so the premise this test exists to check
+    # is not one this process can hold an opinion about.
+    if the_jit_is_disabled():
+        pytest.skip(
+            "with NUMBA_DISABLE_JIT numba emits no code, so there is no generated "
+            "assembly to inspect for a fused multiply-add"
+        )
+
     fused = re.compile(r"\bvf(n?)m(add|sub)[a-z0-9]*\b")
 
     @njit(cache=False, fastmath=False)
@@ -1394,7 +1405,7 @@ def test_the_product_kernel_matches_the_oracle_at_its_own_entry(
     lets this kernel keep a real bound on a fusing build while ``compose`` skips.
     """
     del cpp_backend
-    demand_the_compiled_kernel(dtype)
+    demand_the_compiled_kernel()
 
     from pantr.bezier import _bezier_backend as backend  # noqa: PLC0415
 
