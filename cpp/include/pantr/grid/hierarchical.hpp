@@ -23,29 +23,56 @@
 /// hi[k]  = lo[k] + size_k
 /// ```
 ///
-/// `lo[k]` is rewritten each level from an expression a compiler may contract into
-/// a fused multiply-add, and the rewritten value feeds the next level's `size_k`,
-/// its truncation and its own update. So the two backends can in principle take
+/// `lo[k]` is rewritten each level, and the rewritten value feeds the next level's
+/// `size_k`, its truncation and its own update. Written as one expression that
+/// update is contractible, and `-ffp-contract=on` permits exactly that; the oracle
+/// never fuses, since numba defaults to `fastmath=False`. The two would then take
 /// different branches, and `design/backend_parity.md` Rule 11 is explicit that no
 /// tolerance bounds a branch.
 ///
-/// **Measured, they do not.** 300000 descents of twelve levels, spans and
-/// subdivision factors varied, 23.8% of the 3.6 million child decisions taken at a
-/// `j` that is not a power of two so the product is genuinely inexact, and half the
-/// query points placed one ulp off an exact child boundary: zero child-index
-/// sequences differ. The mechanism is that the perturbation is never introduced
-/// rather than that it fails to grow -- fusing changes the sum only when `|lo|` and
-/// `|j * size|` are comparable, and in a descent the second shrinks geometrically
-/// while the first does not, so within two or three levels the ratio is past the
-/// point where any difference survives.
+/// **So the product is named rather than inlined, at both sites, and that is what
+/// makes the equality hold.** It is a property of how the statement is written, not
+/// of the target: `-ffp-contract=on` was chosen over `fast` precisely because it
+/// confines fusion to within a single expression, so splitting the statement puts
+/// the multiplication's rounding back where the oracle has it. Verified by
+/// disassembly at `-march=x86-64-v3` and at `-march=native`.
 ///
-/// **That is evidence and not proof**, and it is deliberately held to the same
-/// standard as Rule 11's own note about the Bézier root set: the primitive
-/// demonstrably *can* differ, so a divergence is possible and simply did not occur.
-/// The operational consequence is the one Rule 11 states: a caller comparing the
-/// two backends must assert the returned **ids** on their own, before and
-/// separately from any numeric comparison, because a changed id is a changed
-/// verdict and not a displaced value.
+/// **Two things are worth knowing about how this paragraph used to read**, because
+/// both are traps a later reader could fall into again.
+///
+/// It claimed the descent could not diverge, and justified that with a sweep of
+/// 300000 descents and a mechanism: that fusing moves a sum only when its two terms
+/// are comparable in magnitude, which in a descent stops holding after a level or
+/// two. Both parts were wrong. The sweep ran on a build with **no** `-march`, where
+/// baseline x86-64 is SSE2 and has no fused multiply-add at all, so it compared two
+/// unfused implementations and carried no information about contraction. And the
+/// mechanism is false in the direction that matters: comparable magnitude is
+/// neither necessary nor sufficient, and the ratio that actually decides the
+/// verdict, `|dlo| / size_k`, is *invariant* rather than decaying, because the
+/// truncation divides by a `size_k` that shrinks at the same geometric rate. Once
+/// two backends disagree on `j` their indices never coincide again and the
+/// difference grows.
+///
+/// The counterexample, for anyone tempted to inline the product again: root cell
+/// `[1.0, 2.0]`, factor 10, `x = 1.71`. At level 0 the unfused sum is
+/// `1.7000000000000002` and the fused one `1.7`, one ulp apart; at level 1 the
+/// quotients are `0.9999999999999778` and exactly `1.0`, so the truncation gives
+/// child 0 against child 1. Note which side is right: the exact value of
+/// `1.0 + 7*fl(0.1)` is `1.7`, so the fused result is the correctly rounded one and
+/// the oracle is one ulp high. Splitting the statement deliberately forbids the
+/// more accurate answer, because this port's contract is parity and not correction.
+///
+/// **What protects the split, and what does not.** On a build with no `-march`
+/// nothing fuses either way, so no test on such a build can catch a re-inlining --
+/// `design/build_findings.md` is what says two-sided evidence is needed here, and
+/// the disassembly is the other side. `tests/parity/test_grid.py` carries the
+/// counterexample above as a named case, which will fail the moment the ISA ladder
+/// of `design/simd.md` lands and the product is inlined again.
+///
+/// Rule 11's operational consequence still stands and is independent of all this: a
+/// caller comparing the two backends must assert the returned **ids** on their own,
+/// before and separately from any numeric comparison, because a changed id is a
+/// changed verdict and not a displaced value.
 ///
 /// ## Two deviations from the oracle's shape, both deliberate
 ///
