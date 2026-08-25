@@ -220,8 +220,8 @@ def test_the_root_finding_bindings_refuse_a_short_output(cpp_backend: None) -> N
     with pytest.raises(ValueError, match="can produce 2"):
         bindings.dedup_roots(
             _ROOT_COEFF,
-            np.array([0.25, 0.75]),
-            2,
+            raw_roots=np.array([0.25, 0.75]),
+            n_roots=2,
             param_tol=1e-12,
             geom_tol=1e-12,
             out=np.empty(1),

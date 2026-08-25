@@ -234,7 +234,12 @@ def _cpp_dedup_roots(
     coeff_c = np.ascontiguousarray(coeff)
     out = np.empty(max(n_roots, 1), dtype=np.float64)
     count = _pantr_cpp.dedup_roots(
-        coeff_c, raw_c, n_roots, param_tol=param_tol, geom_tol=geom_tol, out=out
+        coeff_c,
+        raw_roots=raw_c,
+        n_roots=n_roots,
+        param_tol=param_tol,
+        geom_tol=geom_tol,
+        out=out,
     )
     return out, count
 
