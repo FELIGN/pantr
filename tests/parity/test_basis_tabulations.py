@@ -115,7 +115,7 @@ def test_bernstein_tabulation_is_bitwise(
     mirrored branch well past them.
     """
     del cpp_backend
-    demand_the_compiled_kernel(dtype)
+    demand_the_compiled_kernel()
     points = _adversarial_points(dtype)
 
     with use_backend(Backend.PYTHON):
@@ -138,7 +138,7 @@ def test_legendre_tabulation_is_bitwise(
 ) -> None:
     """The two backends tabulate the orthonormal shifted Legendre basis identically."""
     del cpp_backend
-    demand_the_compiled_kernel(dtype)
+    demand_the_compiled_kernel()
     points = _adversarial_points(dtype)
 
     with use_backend(Backend.PYTHON):
@@ -165,7 +165,7 @@ def test_a_strided_out_reaches_the_callers_array(cpp_backend: None, dtype: npt.D
     change-of-basis Lagrange builder passes exactly such a view, ``out.T``.
     """
     del cpp_backend
-    demand_the_compiled_kernel(dtype)
+    demand_the_compiled_kernel()
     degree = 5
     points = np.linspace(0.0, 1.0, 9, dtype=dtype)
 

@@ -40,6 +40,7 @@ from pantr.bezier._yuksel_core import (
     _solve_monotone_root_kernel,
     _yuksel_roots,
 )
+from pantr.tolerance import get_default
 
 
 class TestDeCasteljauEvalScalar(unittest.TestCase):
@@ -646,6 +647,31 @@ class TestValidateCoeffArray(unittest.TestCase):
         self.assertEqual(result.dtype, np.float32)
 
 
+def _root_delta(dtype: npt.DTypeLike) -> float:
+    """Bound how far the root of ``a(1 - 2t)`` may sit from ``0.5`` in a given width.
+
+    In this Bernstein form ``B(t) = a(1 - 2t)``, so ``|B'| = 2a`` while the evaluated
+    value carries a handful of roundings of magnitude ``a``. The root's displacement is
+    therefore bounded by ``k * u * a / (2 * a)``: a small multiple of the format's unit
+    roundoff, with the scale ``a`` cancelling. That cancellation is why one bound serves
+    every decade of the sweep below, which is the property those tests are about.
+
+    :func:`~pantr.tolerance.get_default` is the right tier rather than a minted
+    constant: it is a short algorithm plus build slack, and build slack is exactly what
+    is spanned here, since the same assertion has to hold for the C++ backend and for
+    the numba one compiled or interpreted. At ``float32`` an earlier ``places=10``
+    demanded 5e-11 of a format whose own resolution near ``0.5`` is 6e-8, and it held
+    only because the compiled path happened to land on ``0.5`` exactly.
+
+    Args:
+        dtype (npt.DTypeLike): The storage format the control points are given in.
+
+    Returns:
+        float: Absolute tolerance on the root parameter.
+    """
+    return 0.5 * get_default(dtype)
+
+
 class TestSignTestUnderflow(unittest.TestCase):
     """A sign test written as a product must not underflow (FELIGN/pantr#351).
 
@@ -683,7 +709,7 @@ class TestSignTestUnderflow(unittest.TestCase):
                 bez = Bezier(np.array([[a], [0.0], [-a]], dtype=dtype))
                 roots = find_roots(bez, tol=1e-40)
                 self.assertEqual(len(roots), 1)
-                self.assertAlmostEqual(roots[0], 0.5, places=10)
+                self.assertAlmostEqual(roots[0], 0.5, delta=_root_delta(dtype))
 
     def test_sign_tests_are_scale_invariant_over_decades(self) -> None:
         """Both faces stay correct across the decades spanning the frontier.
@@ -703,7 +729,7 @@ class TestSignTestUnderflow(unittest.TestCase):
                 crossing = Bezier(np.array([[a], [0.0], [-a]], dtype=np.float32))
                 roots = find_roots(crossing, tol=1e-40)
                 self.assertEqual(len(roots), 1)
-                self.assertAlmostEqual(roots[0], 0.5, places=10)
+                self.assertAlmostEqual(roots[0], 0.5, delta=_root_delta(np.float32))
 
 
 class TestBoundaryEpsScaleInvariance(unittest.TestCase):

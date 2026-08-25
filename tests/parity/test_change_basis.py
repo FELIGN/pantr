@@ -534,7 +534,7 @@ def test_lagrange_to_bernstein_is_bitwise(
     sides by construction and the claim tests the tabulation alone.
     """
     del cpp_backend
-    demand_the_compiled_kernel(dtype)
+    demand_the_compiled_kernel()
     actual, reference = _both_backends(
         compute_lagrange_to_bernstein_1d, degree, dtype, lagrange_variant=variant
     )
@@ -668,7 +668,7 @@ def test_a_solving_builder_agrees_within_its_condition_number(
     answer has no digits there in either backend.
     """
     del cpp_backend
-    demand_the_compiled_kernel(dtype)
+    demand_the_compiled_kernel()
     label, builder, kappa_of, basis_name = entry
     top = _accuracy_domain(
         kappa_of, dtype, _SOLVABLE_TO[(label, np.dtype(dtype).name)], basis_name=basis_name
@@ -718,7 +718,7 @@ def test_bernstein_to_lagrange_agrees_within_its_condition_number(
     to be the equispaced one.
     """
     del cpp_backend
-    demand_the_compiled_kernel(dtype)
+    demand_the_compiled_kernel()
 
     def kappa_of(degree: int) -> Decimal:
         return _kappa_inf(_lagrange_to_bernstein_exact(degree, variant))
