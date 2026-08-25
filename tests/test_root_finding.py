@@ -40,7 +40,7 @@ from pantr.bezier._yuksel_core import (
     _solve_monotone_root_kernel,
     _yuksel_roots,
 )
-from pantr.tolerance import get_default
+from pantr.tolerance import get_strict
 
 
 class TestDeCasteljauEvalScalar(unittest.TestCase):
@@ -656,12 +656,12 @@ def _root_delta(dtype: npt.DTypeLike) -> float:
     roundoff, with the scale ``a`` cancelling. That cancellation is why one bound serves
     every decade of the sweep below, which is the property those tests are about.
 
-    :func:`~pantr.tolerance.get_default` is the right tier rather than a minted
-    constant: it is a short algorithm plus build slack, and build slack is exactly what
-    is spanned here, since the same assertion has to hold for the C++ backend and for
-    the numba one compiled or interpreted. At ``float32`` an earlier ``places=10``
-    demanded 5e-11 of a format whose own resolution near ``0.5`` is 6e-8, and it held
-    only because the compiled path happened to land on ``0.5`` exactly.
+    :func:`~pantr.tolerance.get_strict` is the tier the derivation supports rather
+    than a minted constant: a handful of roundings, which is what a degree-2 evaluation
+    costs. The looser default tier was tried first and is not defensible here, because
+    the slack it exists to buy is build slack, and there is none to buy: only the
+    interpreted path deviates at all, the compiled kernel and the C++ backend both
+    landing on ``0.5`` exactly.
 
     Args:
         dtype (npt.DTypeLike): The storage format the control points are given in.
@@ -669,7 +669,7 @@ def _root_delta(dtype: npt.DTypeLike) -> float:
     Returns:
         float: Absolute tolerance on the root parameter.
     """
-    return 0.5 * get_default(dtype)
+    return 0.5 * get_strict(dtype)
 
 
 class TestSignTestUnderflow(unittest.TestCase):

@@ -32,9 +32,17 @@ argument tested. The claim is therefore **BITWISE with an observed rather than
 proved justification**, and that distinction is the reason the two kernels get
 separate reasons below rather than one shared one.
 
-Both claims are gated on the compiled kernel: with `NUMBA_DISABLE_JIT=1` the
-oracle runs interpreted and its float32 intermediates widen, which is a property
-of how the oracle was run rather than of either implementation.
+Both claims are gated on `float32` for a reason about storage: interpreted, the
+oracle's `float32` intermediates widen, which is a property of how the oracle was
+run rather than of either implementation.
+
+The Bernstein claim carries a second gate that the Legendre one does not, and the
+sentence above used to stand in for it wrongly. `pow` is not pinned by IEEE 754,
+so the agreement this claim rests on is between *numba's* `np.power` and the
+platform libm; interpreted, numpy's is called instead and the seed moves by an
+ulp at **any** width. That is `demand_a_compiled_seed`, and it is why the float64
+half of this test fails without it while the Legendre kernel, which seeds nothing
+with `pow`, is unaffected.
 """
 
 from __future__ import annotations
@@ -48,6 +56,7 @@ from pantr.basis import tabulate_bernstein_1d, tabulate_legendre_1d
 from tests._parity_harness import (
     assert_parity,
     bitwise_parity,
+    demand_a_compiled_seed,
     demand_the_compiled_kernel,
 )
 
@@ -115,7 +124,9 @@ def test_bernstein_tabulation_is_bitwise(
     mirrored branch well past them.
     """
     del cpp_backend
-    demand_the_compiled_kernel()
+    demand_the_compiled_kernel(dtype)
+    # `_bernstein_point` seeds the ratio recurrence with `np.power`.
+    demand_a_compiled_seed()
     points = _adversarial_points(dtype)
 
     with use_backend(Backend.PYTHON):
@@ -138,7 +149,7 @@ def test_legendre_tabulation_is_bitwise(
 ) -> None:
     """The two backends tabulate the orthonormal shifted Legendre basis identically."""
     del cpp_backend
-    demand_the_compiled_kernel()
+    demand_the_compiled_kernel(dtype)
     points = _adversarial_points(dtype)
 
     with use_backend(Backend.PYTHON):
@@ -165,7 +176,9 @@ def test_a_strided_out_reaches_the_callers_array(cpp_backend: None, dtype: npt.D
     change-of-basis Lagrange builder passes exactly such a view, ``out.T``.
     """
     del cpp_backend
-    demand_the_compiled_kernel()
+    demand_the_compiled_kernel(dtype)
+    # Same seed: the parity assert below is over the Bernstein tabulation.
+    demand_a_compiled_seed()
     degree = 5
     points = np.linspace(0.0, 1.0, 9, dtype=dtype)
 

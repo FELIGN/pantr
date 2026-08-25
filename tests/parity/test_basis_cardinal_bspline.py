@@ -739,7 +739,7 @@ def test_parity_on_the_span(degree: int, dtype: npt.DTypeLike, cpp_backend: None
     NaN-poisoned before the call, so an element neither backend writes fails here
     too rather than comparing equal at zero.
     """
-    demand_the_compiled_kernel()
+    demand_the_compiled_kernel(dtype)
     points = _span_points(dtype)
     cpp, numba = _both_backends(degree, points)
     assert np.all(np.isfinite(cpp)), "the C++ kernel left an element unwritten"
@@ -762,7 +762,7 @@ def test_parity_at_the_span_ends(degree: int, dtype: npt.DTypeLike, cpp_backend:
     untouched, so the sweep above would not see it. Both signed zeros are included
     because the kernel's first stage subtracts the point from 1.
     """
-    demand_the_compiled_kernel()
+    demand_the_compiled_kernel(dtype)
     points = _boundary_points(dtype)
     cpp, numba = _both_backends(degree, points)
     assert_parity(
@@ -786,7 +786,7 @@ def test_parity_outside_the_span(degree: int, dtype: npt.DTypeLike, cpp_backend:
     amplification equals the value and the bound is a plain relative one, outside it
     is strictly larger.
     """
-    demand_the_compiled_kernel()
+    demand_the_compiled_kernel(dtype)
     points = _outside_points(dtype)
     cpp, numba = _both_backends(degree, points)
     assert np.all(np.isfinite(cpp)), "the C++ kernel produced a non-finite value off the span"
@@ -940,7 +940,7 @@ def test_matches_the_exact_rational_oracle(
     and its own sweep never reached one. A degree list shorter than the one the
     parity tests use is a place for exactly that to hide.
     """
-    demand_the_compiled_kernel()
+    demand_the_compiled_kernel(dtype)
     points = _oracle_points(dtype)
     exact = _exact_rows(degree, points)
     claim = _accuracy_claim(degree, points, exact)
@@ -1092,7 +1092,7 @@ def test_reflection_symmetry(degree: int, dtype: npt.DTypeLike, cpp_backend: Non
     exact because the grid is dyadic, so this compares values and not a rounding of
     the argument.
     """
-    demand_the_compiled_kernel()
+    demand_the_compiled_kernel(dtype)
     points = _span_points(dtype)
     mirrored = (1.0 - points.astype(np.float64)).astype(dtype)
     _, error = _companion_bounds(degree, points, dtype)
@@ -1127,7 +1127,7 @@ def test_public_api_agrees_across_backends_for_every_input_shape(
     by calling the Layer 3 kernel directly. This is the only test here that runs the
     path a user runs.
     """
-    demand_the_compiled_kernel()
+    demand_the_compiled_kernel(dtype)
     degree = 3
     inputs: tuple[Any, ...] = (
         np.asarray(0.375, dtype=dtype),
@@ -1167,7 +1167,7 @@ def test_out_argument_is_filled_in_place_by_both_backends(
     would write into a temporary, return normally, and leave the caller's array
     exactly as it was -- a silent wrong answer with no exception anywhere.
     """
-    demand_the_compiled_kernel()
+    demand_the_compiled_kernel(dtype)
     points = np.linspace(0.0, 1.0, 7, dtype=dtype)
     degree = 4
     results = []
