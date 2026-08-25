@@ -39,11 +39,11 @@ from typing import TYPE_CHECKING, Self
 
 import numpy as np
 
-from ._bvh_core import (
-    _BVH_STACK_DEPTH,
-    _bvh_build_core,
-    _bvh_query_count_core,
-    _bvh_query_emit_core,
+from ._bvh_core import _BVH_STACK_DEPTH
+from ._grid_backend import (
+    bvh_build_kernel,
+    bvh_query_count_kernel,
+    bvh_query_emit_kernel,
 )
 from ._grid_utils import _as_float64
 
@@ -350,7 +350,7 @@ class BVH:
         node_left = np.full(max_nodes, -1, dtype=np.int64)
         node_right = np.full(max_nodes, -1, dtype=np.int64)
         node_cell = np.full(max_nodes, -1, dtype=np.int64)
-        _bvh_build_core(lo, hi, node_lo, node_hi, node_left, node_right, node_cell)
+        bvh_build_kernel()(lo, hi, node_lo, node_hi, node_left, node_right, node_cell)
         return cls(node_lo, node_hi, node_left, node_right, node_cell, n_cells=n_cells)
 
     def query_aabb(self, aabb: AABB) -> npt.NDArray[np.int64]:
@@ -374,7 +374,7 @@ class BVH:
         if self.n_cells == 0:
             return np.zeros(0, dtype=np.int64)
         count = int(
-            _bvh_query_count_core(
+            bvh_query_count_kernel()(
                 aabb.lo,
                 aabb.hi,
                 self._node_lo,
@@ -388,7 +388,7 @@ class BVH:
         if count == 0:
             return out
         written = int(
-            _bvh_query_emit_core(
+            bvh_query_emit_kernel()(
                 aabb.lo,
                 aabb.hi,
                 self._node_lo,

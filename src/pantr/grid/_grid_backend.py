@@ -152,7 +152,7 @@ def _select(backend: Backend | None, python_kernel: _K, cpp_kernel: _K) -> _K:
     return cpp_kernel
 
 
-def _cpp_locate_points(  # noqa: PLR0913, PLR0917 -- mirrors the kernel's flat argument list
+def _cpp_locate_points(  # noqa: PLR0913 -- mirrors the kernel's flat argument list
     points: _Coords,
     knots_flat: _Coords,
     knot_starts: _Index,
@@ -187,7 +187,7 @@ def _cpp_locate_points(  # noqa: PLR0913, PLR0917 -- mirrors the kernel's flat a
     )
 
 
-def _cpp_bvh_build(  # noqa: PLR0913, PLR0917 -- mirrors the kernel's flat argument list
+def _cpp_bvh_build(  # noqa: PLR0913 -- mirrors the kernel's flat argument list
     cell_lo: _Coords,
     cell_hi: _Coords,
     node_lo: _Coords,
@@ -225,7 +225,7 @@ def _cpp_bvh_build(  # noqa: PLR0913, PLR0917 -- mirrors the kernel's flat argum
     )
 
 
-def _cpp_bvh_query_count(  # noqa: PLR0913, PLR0917 -- mirrors the kernel's flat argument list
+def _cpp_bvh_query_count(  # noqa: PLR0913 -- mirrors the kernel's flat argument list
     qlo: _Coords,
     qhi: _Coords,
     node_lo: _Coords,
@@ -266,7 +266,7 @@ def _cpp_bvh_query_count(  # noqa: PLR0913, PLR0917 -- mirrors the kernel's flat
     )
 
 
-def _cpp_bvh_query_emit(  # noqa: PLR0913, PLR0917 -- mirrors the kernel's flat argument list
+def _cpp_bvh_query_emit(  # noqa: PLR0913 -- mirrors the kernel's flat argument list
     qlo: _Coords,
     qhi: _Coords,
     node_lo: _Coords,
@@ -309,7 +309,7 @@ def _cpp_bvh_query_emit(  # noqa: PLR0913, PLR0917 -- mirrors the kernel's flat 
     )
 
 
-def _cpp_encode_midx(  # noqa: PLR0913, PLR0917 -- mirrors the kernel's flat argument list
+def _cpp_encode_midx(  # noqa: PLR0913 -- mirrors the kernel's flat argument list
     level: int,
     midx: _Index,
     block_lo: _Index,
@@ -346,7 +346,7 @@ def _cpp_encode_midx(  # noqa: PLR0913, PLR0917 -- mirrors the kernel's flat arg
     )
 
 
-def _cpp_decode_flat_id(  # noqa: PLR0913, PLR0917 -- mirrors the kernel's flat argument list
+def _cpp_decode_flat_id(  # noqa: PLR0913 -- mirrors the kernel's flat argument list
     cid: int,
     block_lo: _Index,
     block_hi: _Index,
@@ -384,7 +384,7 @@ def _cpp_decode_flat_id(  # noqa: PLR0913, PLR0917 -- mirrors the kernel's flat 
     )
 
 
-def _cpp_hier_locate_points(  # noqa: PLR0913, PLR0917 -- mirrors the kernel's flat argument list
+def _cpp_hier_locate_points(  # noqa: PLR0913 -- mirrors the kernel's flat argument list
     points: _Coords,
     knots_flat: _Coords,
     knot_starts: _Index,
@@ -431,7 +431,7 @@ def _cpp_hier_locate_points(  # noqa: PLR0913, PLR0917 -- mirrors the kernel's f
     )
 
 
-def _cpp_hier_collect_cell_bounds(  # noqa: PLR0913, PLR0917 -- mirrors the kernel's flat argument list
+def _cpp_hier_collect_cell_bounds(  # noqa: PLR0913 -- mirrors the kernel's flat argument list
     knots_flat: _Coords,
     knot_starts: _Index,
     factor: _Index,
