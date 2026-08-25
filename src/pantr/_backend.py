@@ -67,9 +67,9 @@ shape rather than a capability.
 Scope
 -----
 
-Three modules are ported so far, and **selecting the C++ backend changes only
-what they cover**. A suite run under ``PANTR_BACKEND=cpp`` is not a C++ run; it is
-a run in which those kernels are C++ and everything else is unchanged.
+Five modules are ported so far, and **selecting the C++ backend changes only what
+they cover**. A suite run under ``PANTR_BACKEND=cpp`` is not a C++ run; it is a run
+in which those kernels are C++ and everything else is unchanged.
 
 * :mod:`pantr.basis` -- three of the 1D tabulations: cardinal B-spline, Bernstein
   and Legendre. The Lagrange tabulation and everything multidimensional stay on
@@ -78,6 +78,19 @@ a run in which those kernels are C++ and everything else is unchanged.
   trapezoidal rule, the modified Chebyshev nodes and tanh-sinh, together with the
   Lambert W solve the last of those needs.
 * :mod:`pantr.change_basis` -- all eight builders.
+* :mod:`pantr.bezier` -- the arithmetic and the root finding, through two
+  catalogues rather than one because they are two ports with two parity claims.
+  **Interpolation is deliberately not ported**, and
+  ``design/bezier_interpolation_port.md`` is where that ruling and its measurements
+  live; it is worth reading before proposing any further port, because it is the
+  template for declining one.
+* :mod:`pantr.grid` -- all nine kernels: tensor-product point location, the BVH's
+  build and its two query passes, and the five hierarchical addressing kernels.
+
+**This list was wrong for two releases and that is worth a sentence.** It said three
+modules and named neither half of ``bezier`` while both were merged and dispatching.
+Nothing checks a prose list, so it drifts silently; if you port a module, the change
+is not finished until this paragraph names it.
 
 **Reading a change_basis result needs one more fact than the others.** Its
 builders take their nodes from :mod:`pantr.quad`, so a call under

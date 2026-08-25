@@ -35,10 +35,11 @@ from typing import TYPE_CHECKING, Final
 
 import numpy as np
 
+from .._numba_compat import wait_for_jit_warmup
 from ._cell_index import c_order_strides, flat_to_multi, multi_to_flat
 from ._grid import Grid, GridRestriction
+from ._grid_backend import locate_points_kernel
 from ._grid_utils import _as_float64, _mask_nonfinite_locate
-from ._locate_core import _locate_points_core
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -302,7 +303,11 @@ class TensorProductGrid(Grid):
         knots_flat = np.concatenate(self._breakpoints).astype(np.float64, copy=False)
         cells_per_axis = np.array(self._cells_per_axis, dtype=np.int64)
         out = np.empty(pts.shape[0], dtype=np.int64)
-        _locate_points_core(pts, knots_flat, knot_starts, cells_per_axis, self._strides, out)
+        # The Numba kernel behind this is ``parallel=True`` and the import-time
+        # warmup compiles on a background thread; Numba's workqueue layer aborts
+        # the process rather than raising if a parallel call races it.
+        wait_for_jit_warmup()
+        locate_points_kernel()(pts, knots_flat, knot_starts, cells_per_axis, self._strides, out)
         _mask_nonfinite_locate(pts, out)
         return out
 

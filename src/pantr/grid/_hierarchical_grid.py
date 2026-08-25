@@ -39,14 +39,15 @@ from typing import TYPE_CHECKING, Self
 
 import numpy as np
 
+from .._numba_compat import wait_for_jit_warmup
 from ._grid import Grid, GridRestriction
-from ._grid_utils import _as_float64, _mask_nonfinite_locate
-from ._hier_core import (
-    _decode_flat_id_core,
-    _encode_midx_core,
-    _hier_collect_cell_bounds_core,
-    _hier_locate_points_core,
+from ._grid_backend import (
+    decode_flat_id_kernel,
+    encode_midx_kernel,
+    hier_collect_cell_bounds_kernel,
+    hier_locate_points_kernel,
 )
+from ._grid_utils import _as_float64, _mask_nonfinite_locate
 from ._tensor_product_grid import TensorProductGrid
 
 if TYPE_CHECKING:
@@ -595,7 +596,7 @@ class HierarchicalGrid(Grid):
         if not 0 <= cid < self._num_cells:
             raise IndexError(f"cell id {cid!r} is out of range [0, {self._num_cells}).")
         midx = np.empty(self._root.ndim, dtype=np.int64)
-        level = _decode_flat_id_core(
+        level = decode_flat_id_kernel()(
             int(cid),
             self._packed_block_lo,
             self._packed_block_hi,
@@ -627,7 +628,7 @@ class HierarchicalGrid(Grid):
         """
         if level >= len(self._blocks):
             return None
-        cid = _encode_midx_core(
+        cid = encode_midx_kernel()(
             int(level),
             np.asarray(midx, dtype=np.int64),
             self._packed_block_lo,
@@ -787,7 +788,9 @@ class HierarchicalGrid(Grid):
         """
         pts = self._normalize_points(points)
         out = np.empty(pts.shape[0], dtype=np.int64)
-        _hier_locate_points_core(
+        # ``parallel=True``; see the note in TensorProductGrid.locate_many.
+        wait_for_jit_warmup()
+        hier_locate_points_kernel()(
             pts,
             self._root_knots_flat,
             self._root_knot_starts,
@@ -1700,7 +1703,9 @@ class HierarchicalGrid(Grid):
         nd = self.ndim
         cell_lo = np.empty((n, nd), dtype=np.float64)
         cell_hi = np.empty((n, nd), dtype=np.float64)
-        _hier_collect_cell_bounds_core(
+        # ``parallel=True``; see the note in TensorProductGrid.locate_many.
+        wait_for_jit_warmup()
+        hier_collect_cell_bounds_kernel()(
             self._root_knots_flat,
             self._root_knot_starts,
             np.asarray(self._factor, dtype=np.int64),
