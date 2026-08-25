@@ -66,8 +66,12 @@
 /// nothing fuses either way, so no test on such a build can catch a re-inlining --
 /// `design/build_findings.md` is what says two-sided evidence is needed here, and
 /// the disassembly is the other side. `tests/parity/test_grid.py` carries the
-/// counterexample above as a named case, which will fail the moment the ISA ladder
-/// of `design/simd.md` lands and the product is inlined again.
+/// counterexample above as a named case that runs the real kernel at that input
+/// under both backends, so it fails if the product is inlined again on a target
+/// that fuses. That test also asserts, independently of any backend, that the input
+/// is still a *discriminator* -- that a fused evaluation diverges from an unfused
+/// one there -- which is the half that says something on a build where nothing
+/// fuses at all.
 ///
 /// Rule 11's operational consequence still stands and is independent of all this: a
 /// caller comparing the two backends must assert the returned **ids** on their own,

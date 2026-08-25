@@ -61,7 +61,13 @@ import pytest
 
 from pantr._backend import Backend, use_backend
 from pantr.geometry import AABB
-from pantr.grid import BVH, HierarchicalGrid, hierarchical_grid, uniform_grid
+from pantr.grid import (
+    BVH,
+    HierarchicalGrid,
+    TensorProductGrid,
+    hierarchical_grid,
+    uniform_grid,
+)
 from tests._parity_harness import assert_parity, bitwise_parity
 
 _LOCATE_WHY = (
@@ -500,6 +506,49 @@ def test_hierarchical_cell_bounds_are_bitwise_on_a_non_dyadic_grid(cpp_backend: 
     )
 
 
+def test_the_descent_counterexample_runs_through_the_real_kernels(cpp_backend: None) -> None:
+    """Both backends agree on the input that separates a fused descent from an unfused one.
+
+    The companion to :func:`test_the_descent_counterexample_is_a_genuine_discriminator`,
+    and the half that exercises the compiled code. That one asserts the input is still
+    a discriminator in exact arithmetic; this one asserts the two shipped kernels
+    resolve it the same way.
+
+    On a build with no ``-march`` this passes whether or not the port keeps its two
+    statements separate, because the baseline ISA has no fused multiply-add to
+    contract into -- so on its own it proves nothing here. Its value is that it
+    **fails** the moment ``design/simd.md``'s ISA ladder lands and the product is
+    inlined again: measured, an inlined build at ``-march=native`` returns cell 71
+    where the oracle returns 70.
+
+    The grid is the counterexample's own geometry: root cell ``[1.0, 2.0]``,
+    subdivision factor 10, refined twice so the descent chains, and the query point
+    ``x = 1.71``.
+    """
+    del cpp_backend
+    root = TensorProductGrid([np.array([1.0, 2.0])])
+    grid = hierarchical_grid(root, 10)
+    grid.refine_cells([0])
+    point = np.array([[1.71]])
+    first = grid.locate_many(point)
+    grid.refine_cells([int(first[0])])
+
+    reference, actual = _both(lambda: grid.locate_many(point))
+
+    np.testing.assert_array_equal(
+        actual,
+        reference,
+        err_msg="the two backends resolved the descent counterexample to different "
+        "cells. If this build has a fused multiply-add, the product at "
+        "hierarchical.hpp's descent site has been inlined again; see that file.",
+    )
+    level, _ = grid._decode_flat_id(int(reference[0]))
+    assert level == 2, (
+        f"the point landed at level {level}, so the descent did not chain twice and "
+        "this case no longer reaches the contraction site it exists to guard"
+    )
+
+
 def test_the_descent_counterexample_is_a_genuine_discriminator() -> None:
     """The input that separates a fused descent from an unfused one still separates them.
 
@@ -564,4 +613,88 @@ def test_the_descent_counterexample_is_a_genuine_discriminator() -> None:
     assert child_unfused != child_fused, (
         f"level 1 now agrees ({child_unfused}), so the one-ulp difference no longer "
         "reaches the truncation and this case pins nothing about the descent"
+    )
+
+
+def test_bvh_node_boxes_agree_bit_for_bit_on_a_signed_zero_tie(cpp_backend: None) -> None:
+    """Both backends keep the same zero when a node box's min or max ties.
+
+    The node box is a running min/max over corners, and on a tie both sides keep the
+    **incumbent** -- Python's two-argument ``min`` returns its first argument, and
+    the C++ only assigns on a strict ``<``. That agreement is one of the three
+    tie-breaks ``bvh.hpp`` argues its equality from, and until this test nothing
+    exercised it: mutating those comparisons to ``<=``/``>=`` left the whole parity
+    suite green, because a fixture of continuous random floats never produces a tie
+    at all, and a tie between two *identical* values is unobservable.
+
+    ``-0.0`` and ``+0.0`` are what make it observable: equal in value, different in
+    bits, so which one survives is visible.
+
+    **This test asserts that the two backends agree, and deliberately not which zero
+    they keep.** ``CLAUDE.md`` records that ``np.minimum(-0.0, 0.0)`` returns
+    different signs on different NumPy versions in the CI matrix, so pinning the sign
+    would pin something no platform promises. The oracle does not use that ufunc --
+    it uses the builtin ``min`` inside a kernel -- but the agreement is the property
+    the port needs either way, and it is the one that survives a NumPy upgrade.
+
+    It compares bit patterns directly rather than through
+    :func:`~tests._parity_harness.assert_parity`, and that is required rather than a
+    preference: the harness's comparison exempts signed-zero disagreements on
+    purpose, so the one hazard this test exists for is the one it cannot see.
+    """
+    del cpp_backend
+    # Two cells sharing a corner at zero, written with opposite signs. Whichever the
+    # min keeps, both backends must keep the same one.
+    lo = np.array([[-0.0, 1.0], [0.0, -1.0]])
+    hi = np.array([[2.0, 3.0], [1.0, -0.0]])
+
+    reference, actual = _both(lambda: BVH.from_cell_bounds(lo, hi))
+
+    for name in ("node_lo", "node_hi"):
+        ref_bits = np.asarray(getattr(reference, name), dtype=np.float64).view(np.uint64)
+        act_bits = np.asarray(getattr(actual, name), dtype=np.float64).view(np.uint64)
+        np.testing.assert_array_equal(
+            act_bits,
+            ref_bits,
+            err_msg=f"the two backends kept different zeros in {name}. One of them "
+            "stopped keeping the incumbent on a min/max tie, which is one of the "
+            "three tie-breaks bvh.hpp's equality argument rests on.",
+        )
+
+
+def test_bvh_split_permutation_agrees_on_a_large_tied_set(cpp_backend: None) -> None:
+    """Both backends split an all-tied centroid set the same way.
+
+    The median split sorts by centroid, and ``bvh.hpp`` argues the two backends agree
+    because a **stable** sort's output permutation is uniquely determined. That
+    argument is sound and, until this test, nothing checked it: replacing
+    ``std::stable_sort`` with ``std::sort`` left the whole parity suite green.
+
+    Two things have to be true for the substitution to be visible, and the existing
+    fixtures satisfy neither. The centroids must actually tie, which continuous
+    random floats never do. And there must be **enough** of them: libstdc++'s
+    introsort falls back to insertion sort below roughly sixteen elements, and
+    insertion sort happens to be stable, so a small tied set cannot tell the two
+    apart. Measured, ten tied pairs separate them and four cells do not.
+
+    Every cell here is centred on the origin, so every centroid is exactly ``0.0``
+    and the sort has nothing to order -- the resulting tree is decided entirely by
+    which permutation the sort leaves behind, and that shows up in ``node_cell``.
+    """
+    del cpp_backend
+    n_cells = 24
+    half = np.arange(1, n_cells + 1, dtype=np.float64).reshape(-1, 1)
+    lo, hi = -half, half
+
+    reference, actual = _both(lambda: BVH.from_cell_bounds(lo, hi))
+
+    np.testing.assert_array_equal(
+        actual.node_cell,
+        reference.node_cell,
+        err_msg="the two backends split an all-tied centroid set differently, so one "
+        "of them is not using a stable sort. bvh.hpp's equality argument is that a "
+        "stable sort's permutation is uniquely determined; this is what checks it.",
+    )
+    assert len(set(reference.node_cell.tolist())) > n_cells // 2, (
+        "the fixture stopped producing distinct leaves, so it no longer observes a permutation"
     )
