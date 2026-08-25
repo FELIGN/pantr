@@ -1316,7 +1316,9 @@ def hier_locate_points(
             Keyword-only.
         root_cells_per_axis (npt.NDArray[np.int64]): Per-axis root cell counts.
             Keyword-only.
-        factor (npt.NDArray[np.int64]): Per-axis subdivision factor, at least two.
+        factor (npt.NDArray[np.int64]): Per-axis subdivision factor, at least one.
+            A factor of one prevents subdivision on that axis, which is what an
+            anisotropic grid needs; the oracle documents and tests it.
             Keyword-only.
         block_lo (npt.NDArray[np.int64]): Packed block lower bounds. Keyword-only.
         block_hi (npt.NDArray[np.int64]): Packed block upper bounds. Keyword-only.
@@ -1331,7 +1333,7 @@ def hier_locate_points(
         TypeError: If any array has the wrong dtype or rank or is not C-contiguous.
         ValueError: If the descriptor arrays disagree on ``ndim``, if the block
             descriptor is inconsistent, if an axis spans past the end of
-            ``knots_flat``, if a subdivision factor is below two, or if ``out`` is
+            ``knots_flat``, if a subdivision factor is below one, or if ``out`` is
             shorter than ``npts``.
     """
 
@@ -1354,7 +1356,9 @@ def hier_collect_cell_bounds(
             end to end. Keyword-only.
         knot_starts (npt.NDArray[np.int64]): Per-axis offset into ``knots_flat``.
             Keyword-only.
-        factor (npt.NDArray[np.int64]): Per-axis subdivision factor, at least two.
+        factor (npt.NDArray[np.int64]): Per-axis subdivision factor, at least one.
+            A factor of one prevents subdivision on that axis, which is what an
+            anisotropic grid needs; the oracle documents and tests it.
             Keyword-only.
         block_lo (npt.NDArray[np.int64]): Packed block lower bounds. Keyword-only.
         block_hi (npt.NDArray[np.int64]): Packed block upper bounds. Keyword-only.
@@ -1369,7 +1373,7 @@ def hier_collect_cell_bounds(
     Raises:
         TypeError: If any array has the wrong dtype or rank or is not C-contiguous.
         ValueError: If the block descriptor is inconsistent, if the descriptor
-            arrays disagree on ``ndim``, if a subdivision factor is below two, if a
+            arrays disagree on ``ndim``, if a subdivision factor is below one, if a
             block reaches a root cell past the end of ``knots_flat``, or if the
             outputs cannot hold every block's flat-id range.
     """
