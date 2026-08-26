@@ -44,10 +44,29 @@
 /// makes the map common mode: it cancels exactly in a parity comparison instead of
 /// contributing its own endpoint conditioning to the bound.
 
+
+/// \note **What "no validation" means here, and it is not what it means in the oracle.**
+/// These kernels are transliterations of Numba kernels whose docstrings use this same
+/// sentence, where a violated precondition yields a *defined wrong answer*: numpy
+/// indexes negatively and a Python integer does not overflow. On this side the same
+/// violation is undefined behaviour. So the obligations are of two kinds, and the code
+/// says which:
+///
+/// - a **correctness** obligation is documented and not asserted; violating it gives a
+///   wrong answer in both backends, which is what the sentence above promises;
+/// - a **memory-safety** obligation carries `PANTR_PRECONDITION`, from
+///   `pantr/core/precondition.hpp`. Grep for it to see every one in this file.
+///
+/// The macro is `assert`, so it costs nothing in a release build. The bindings under
+/// `cpp/bindings/` refuse all of these before a Python caller can express them; the
+/// macro is for the C++ caller who includes this header directly.
+
 #include <cmath>
 #include <cstddef>
 #include <numbers>
 #include <span>
+
+#include "pantr/core/precondition.hpp"
 
 namespace pantr {
 
@@ -127,6 +146,8 @@ inline constexpr int gauss_legendre_newton_steps = 4;
 ///       `pantr.quad.get_gauss_legendre_1d`.
 inline void gauss_legendre_symmetric(int n, std::span<double> out_nodes,
                                      std::span<double> out_weights) {
+    // Memory safety: a negative `n` sizes the loops below from an unsigned cast.
+    PANTR_PRECONDITION(n >= 1, "n must be at least one");
     // Unqualified, after a using-declaration. `std::cos(x)` would name the
     // overload directly and suppress ADL, which is how a user-defined scalar's
     // own overload gets excluded; `scripts/ci_local.sh discipline` enforces the
