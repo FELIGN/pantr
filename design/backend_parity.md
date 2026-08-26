@@ -1,6 +1,6 @@
 # Backend parity: what a bound may claim, and in which frame
 
-**Status:** complete for the five ports that exist. Eleven rules, each with the failure that produced
+**Status:** complete for the five ports that exist. Twelve rules, each with the failure that produced
 it, and the remaining module ports inherit them. The verdict on whether the parity harness
 generalized is now written, from the `quad` port's tests rather than predicted before them.
 **Date:** 2026-08-20, amended the same day after a deep review closed two open proofs,
@@ -17,7 +17,10 @@ the gap Rule 9's section declared: the Bézier claims are now conditional on wha
 do rather than skipped where it can fuse. Amended 2026-08-24 by the root-finding port with
 Rule 11 (an exact tie does not survive contraction, and a tie-break is a verdict rather than
 a displacement), and with a section added to Rule 9 recording that numba's `float()` does not
-widen a `float32`, which is the mechanism the three earlier width surprises rest on.
+widen a `float32`, which is the mechanism the three earlier width surprises rest on. Amended
+2026-08-26 with Rule 12 (the interpreted oracle is a different object), which enumerates the
+three ways `NUMBA_DISABLE_JIT=1` changes what the oracle computes, and records that a
+width-dependent regression test can be inert in that configuration without saying so.
 
 **Validated against:** `proto/cpp` at `765d9b9`, the `quad` port on `feat/cpp-quad`, and the
 root-finding port on `feat/cpp-bezier-roots`, whose fused branch was exercised against an
@@ -806,6 +809,70 @@ An unexercised claim is not a weak claim, it is an unevaluated one. Building the
 and running against it is cheap, the recipe is in `scripts/measure_bezier_fma_bound.py`, and it
 should be part of finishing any port that carries a conditional claim.
 
+## Rule 12: the interpreted oracle is a different object, and which claims survive it is knowable
+
+`make coverage` runs the whole suite with `NUMBA_DISABLE_JIT=1`, because coverage.py cannot
+trace machine code numba compiled. That is not a second opinion about the same kernels. It
+replaces the oracle with interpreted python over numpy, and **three things then differ, no
+more and no fewer**. Naming them is what lets a claim be gated precisely instead of a whole
+suite being skipped.
+
+Every figure below is printed by `scripts/measure_interpreted_divergences.py`, so it can be
+re-measured rather than re-read. Expect the `pow` count to move with a numpy or numba upgrade;
+what must not move is that it is non-zero.
+
+**One: storage width, which is Rule 9 read in the other direction.** Rule 9 records that
+`float()` does not widen a `float32` in `nopython` mode. Interpreted, `float()` is CPython's
+and *does* widen, so every one of the six sites Rule 9 enumerates promotes where the compiled
+kernel does not. `demand_the_compiled_kernel(dtype)` owns this, and only at `float32`.
+
+**Two: `pow`, which IEEE 754 does not pin.** `_bernstein_point`, `_bernstein_point_no_mirror`
+and `_evaluate_bezier_1d_core` seed a ratio recurrence with `np.power`, and what their bitwise
+claims rest on -- stated in their own `why` text -- is that *numba's* `np.power` agrees with the
+platform libm. Interpreted, numpy's is called instead. Measured: they differ by exactly one ulp
+in 2887 of 60000 arguments swept over degrees 0 to 29.
+
+**Three: integer width, which is not a rounding question at all.** `_bernstein_derivs_point` and
+`_evaluate_bezier_deriv_1d_core` accumulate a falling factorial in an integer that wraps at
+int64 when compiled and grows without bound when interpreted. At degree 25 order 16 the true
+value is `42744736671436800000` and its two's-complement wrap is `5851248524017696768`, a ratio
+of 7.305, which is what the parity failure reports. No tolerance answers this: the claim has to
+be skipped, not loosened. `_bincoeff` is the deliberate counter-example, casting each step to
+`np.int64` explicitly and so wrapping identically either way.
+
+**And the complementary half, which is what stops the gate being written too wide.** For a
+kernel built from `+`, `-`, `*`, `/` and `sqrt`, IEEE 754 pins every result, so the interpreted
+path reproduces the compiled path's bits **by guarantee rather than by luck**, and a bitwise
+claim over it is as true there as anywhere. This was not obvious and cost two wrong attempts.
+Keying the gate on "the JIT is off" skipped 433 test cases to fix 15; keying it on "the claim is
+bitwise" skipped 442 of 495 `float64` cases, no better. Keying it on the two constructs above
+skips 79 and costs no statements of coverage at all.
+
+So: a **bitwise** claim over a kernel carrying `pow` or an integer accumulator must be gated. A
+**bounded** or **converged** claim need not be, because a bound derived from a rounding budget
+absorbs a seed that moved by an ulp. The three gates live in `tests/_parity_harness.py` and
+`tests/test_jit_disabled_configuration.py` runs the configuration in the fast suite, since
+nothing else outside `make coverage` exercises it.
+
+### The consequence nobody had drawn: a regression test can be inert in this configuration
+
+`TestSignTestUnderflow` pins the fix for FELIGN/pantr#351, an underflow in a product-form sign
+test. **It cannot exercise that defect under `NUMBA_DISABLE_JIT=1` at all**, and this follows
+from the first divergence above rather than from anything about the test. The defect needs a
+`float32` product to underflow; interpreted, `float()` widens the operands to `float64` and the
+product is about `-1e-46`, nowhere near it. At the frontier coefficient the narrow product is
+exactly zero and the widened one is not, which is the whole difference.
+
+So `make coverage` would never have caught a regression of #351, before or after the gates were
+written. Nothing said so, and nothing in the output distinguishes a test that ran and passed
+from one that ran a different computation and passed.
+
+**The general form, and it is the part worth carrying:** the interpreted path is a different
+object, so a test that pins a *width-dependent* defect is inert there, silently. Rule 9 already
+says a width cannot be read off the source. This adds that a width-dependent **test** cannot be
+assumed to run in every configuration the suite is executed in, and that the suite reports
+nothing when it does not.
+
 ## Epistemic status
 
 - **PROVED, with the argument recorded outside this repository:** the closed form
@@ -847,3 +914,7 @@ should be part of finishing any port that carries a conditional claim.
    nobody here has read it, and until someone does that category is a placeholder.
 3. Rule 2 says use two comparisons. Is there a rule for **how many**, or does each kernel argue
    it? Four comparisons per rule was proposed for `quad` and never justified as the right number.
+4. Rule 12 enumerates three divergences and claims they are all of them. Two were found by a
+   parity failure and one by reading; none was found by looking for the *fourth*. A
+   transcendental other than `pow` in a future kernel would be one, and nothing would report it
+   until a bitwise claim over that kernel failed under `make coverage`.
