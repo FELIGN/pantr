@@ -237,6 +237,10 @@ void evaluate_bezier_deriv_1d(span2d<const T> ctrl, std::span<const T> points, i
     // `cpp/bindings/bezier.cpp` grew its own check. The oracle infers a degree of
     // -1 and returns without writing.
     PANTR_PRECONDITION(ctrl.extent(0) > 0, "ctrl must have at least one row to infer a degree");
+    // The same class, and the docstring above already named it: a negative
+    // `n_deriv` sizes the derivative loops from a wrapped cast. Measured as a
+    // heap-buffer-overflow WRITE at `n_deriv = -1`.
+    PANTR_PRECONDITION(n_deriv >= 0, "n_deriv must be non-negative");
     const auto degree = static_cast<std::size_t>(ctrl.extent(0)) - 1;
     const std::size_t rank = ctrl.extent(1);
     const std::size_t num_pts = points.size();
@@ -409,6 +413,11 @@ void degree_elevate_bezier_1d(int degree, span2d<const T> ctrl, int degree_incre
     const int p = degree;
     const int t = degree_increment;
     const int ph = p + t;
+    // Memory safety, and `core/binomial.hpp` states it in these words: passing
+    // `n > kBincoeffMaxN` to `bincoeff` is undefined behaviour, not a wrong answer.
+    // Measured with UBSan as a signed-integer overflow. The docstring above named
+    // this obligation and nothing enforced it.
+    PANTR_PRECONDITION(ph <= core::kBincoeffMaxN, "degree + increment must fit the binomial table");
     const std::size_t rank = ctrl.extent(1);
     const int ph2 = ph / 2;
 
@@ -666,6 +675,9 @@ void scalar_bernstein_product_1d(std::span<const T> a, std::span<const T> b, std
     const auto p = static_cast<int>(a.size()) - 1;
     const auto q = static_cast<int>(b.size()) - 1;
     const int r = p + q;
+    // The same obligation as `degree_elevate_bezier_1d`, from the same table, and
+    // likewise named in the docstring above without being enforced.
+    PANTR_PRECONDITION(r <= core::kBincoeffMaxN, "the summed degree must fit the binomial table");
 
     for (std::size_t k = 0; k < out.size(); ++k) {
         out[k] = T(0);
