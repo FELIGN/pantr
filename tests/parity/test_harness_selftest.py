@@ -14,6 +14,9 @@ point sets, which makes them per-kernel rather than harness-only.
 
 from __future__ import annotations
 
+from collections.abc import Callable
+from typing import Any
+
 import numpy as np
 import pytest
 
@@ -223,6 +226,28 @@ def test_a_budget_that_reaches_the_runaway_half_is_refused() -> None:
         absolute_tolerance(claim)
 
 
+def _refuse_to_skip(gate: Callable[..., None], *args: Any) -> None:
+    """Call a gate and fail loudly if it skips, rather than skipping with it.
+
+    A bare call cannot express "this must not skip". :func:`pytest.skip` raises, so
+    a gate that has been widened too far aborts the calling test as SKIPPED, which
+    exits zero and reads as green. That is not a hypothetical failure mode: skipping
+    too much is the exact defect this pair of gates was rewritten to correct, and a
+    test that goes quiet on it guards only the direction that never went wrong.
+
+    Args:
+        gate (Callable[..., None]): The guard under test.
+        *args (Any): Whatever it takes, if anything.
+
+    Raises:
+        Failed: Via :func:`pytest.fail`, if the gate skips.
+    """
+    try:
+        gate(*args)
+    except pytest.skip.Exception as skipped:
+        pytest.fail(f"{gate.__name__} skipped where it must not: {skipped}")
+
+
 def test_the_seed_gate_fires_at_float64_where_the_width_gate_does_not(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -240,14 +265,15 @@ def test_the_seed_gate_fires_at_float64_where_the_width_gate_does_not(
 
     :func:`demand_a_compiled_seed` owns those two, at every width, and is asked for
     per test rather than applied to every bitwise claim: for a kernel of ``+``, ``-``,
-    ``*`` and ``/`` alone IEEE 754 pins each result, so interpretation reproduces the
-    compiled bits by guarantee. Gating all bitwise claims was measured at 442 of 495
-    ``float64`` cases skipped, against 79 for this.
+    ``*``, ``/`` and ``sqrt`` alone IEEE 754 pins each result, so interpretation
+    reproduces the compiled bits by guarantee rather than by luck. Gating every
+    bitwise claim instead was tried, and skips most of the parity suite for no gain;
+    the figures are in the pull request that made this change, where they were taken.
     """
     monkeypatch.setenv("NUMBA_DISABLE_JIT", "1")
     assert the_jit_is_disabled()
 
-    demand_the_compiled_kernel(np.float64)
+    _refuse_to_skip(demand_the_compiled_kernel, np.float64)
     with pytest.raises(pytest.skip.Exception):
         demand_the_compiled_kernel(np.float32)
     with pytest.raises(pytest.skip.Exception):
@@ -255,5 +281,5 @@ def test_the_seed_gate_fires_at_float64_where_the_width_gate_does_not(
 
     monkeypatch.setenv("NUMBA_DISABLE_JIT", "0")
     assert not the_jit_is_disabled()
-    demand_the_compiled_kernel(np.float32)
-    demand_a_compiled_seed()
+    _refuse_to_skip(demand_the_compiled_kernel, np.float32)
+    _refuse_to_skip(demand_a_compiled_seed)

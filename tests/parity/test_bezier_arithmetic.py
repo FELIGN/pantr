@@ -1185,6 +1185,11 @@ def test_a_strided_out_reaches_the_callers_array(cpp_backend: None, dtype: npt.D
         assert np.any(holder != 0.0), f"{backend.name}: the caller's array was not written"
         results[backend] = holder.copy()
 
+    # `evaluate` above is `_evaluate_bezier_1d_core`, whose ratio recurrence is
+    # seeded with `np.power` -- the same kernel `test_evaluate_matches_the_oracle`
+    # cites when it asks for this gate. Placed here rather than at the top so the
+    # aliasing assertions, which is what this test is for, still run.
+    demand_a_compiled_seed()
     assert_parity(
         results[Backend.CPP],
         results[Backend.PYTHON],

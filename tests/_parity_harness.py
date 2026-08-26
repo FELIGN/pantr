@@ -278,18 +278,23 @@ def demand_a_compiled_seed() -> None:
     the overflow the two paths differ by whole factors, not by rounding.
 
     **It is called per test, and deliberately not from** :func:`assert_parity`.
-    Gating every bitwise claim there was tried and measured: it skips almost as much
-    as the blanket gate it was meant to replace, and it is not justified. The figures
-    are in the test that pins this, which is where a count can be re-measured rather
-    than merely re-read. For a kernel of ``+``, ``-``, ``*`` and ``/``
-    alone, IEEE 754 pins every result, so the interpreted path reproduces the
-    compiled one's bits by guarantee rather than by luck, and the bitwise claim is
-    as true there as anywhere. Only the two constructs above escape that guarantee,
-    and which kernels carry them is knowledge the claim does not hold.
+    Gating every bitwise claim there was tried and measured: it skips most of the
+    parity suite for no gain, and it is not justified. For a kernel built from ``+``,
+    ``-``, ``*``, ``/`` and ``sqrt``, IEEE 754 pins every result, so the interpreted
+    path reproduces the compiled one's bits by guarantee rather than by luck, and the
+    bitwise claim is as true there as anywhere. ``sqrt`` belongs in that list and is
+    not an afterthought: the Legendre tabulation rests on it and is deliberately left
+    ungated. Only the two constructs above escape the guarantee, and which kernels
+    carry them is knowledge a claim does not hold.
 
-    The cost of that choice, stated because it is real: a future kernel that seeds
-    with ``pow`` or accumulates an integer has to remember to ask for this gate.
-    Grep ``np.power`` and ``fac *=`` under ``src/pantr`` to see the current set.
+    The cost of that choice, stated because it is real, and it is not only about
+    kernels not yet written. ``_basis_derivs_point`` in
+    ``pantr.bspline._bspline_basis_core`` **already** accumulates a falling factorial
+    the same way, and is absent from the set below only because no parity test reaches
+    it: it has no C++ counterpart yet. Whoever gives it one inherits this gate as a
+    precondition. Grep ``np.power`` and ``fac *=`` under ``src/pantr`` for the current
+    set, and note that ``_bincoeff`` is a deliberate non-member, since it casts every
+    step to ``np.int64`` explicitly and so wraps identically either way.
 
     Raises:
         Skipped: Via :func:`pytest.skip`, whenever the JIT is disabled.
