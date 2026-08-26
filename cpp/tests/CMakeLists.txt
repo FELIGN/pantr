@@ -46,13 +46,26 @@ function(pantr_add_precondition_test _name _message)
   set_tests_properties(${_name} PROPERTIES PASS_REGULAR_EXPRESSION "${_message}")
 endfunction()
 
-if(NOT CMAKE_BUILD_TYPE STREQUAL "Release" AND NOT CMAKE_BUILD_TYPE STREQUAL "MinSizeRel")
+# An allow-list, not a deny-list, and the difference was measured. Denying Release and
+# MinSizeRel still registered these under RelWithDebInfo, where CMake adds -DNDEBUG by
+# default: the assertions are compiled out, so the executables run the undefined behaviour
+# they exist to report. They never passed falsely, but one of the three ran for over five
+# minutes without terminating, and ctest's computed timeout here is effectively unbounded.
+# A multi-config generator leaves CMAKE_BUILD_TYPE empty, which the deny-list also let
+# through.
+if(CMAKE_BUILD_TYPE STREQUAL "Debug")
   pantr_add_precondition_test(precondition_decode_flat_id
                               "cid must be at or above the first block's base")
   pantr_add_precondition_test(precondition_bvh_stack
                               "tree depth must fit the traversal stack")
   pantr_add_precondition_test(precondition_negative_degree
                               "degree must be non-negative")
+  pantr_add_precondition_test(precondition_zero_extent
+                              "every block must have a positive extent per axis")
+  pantr_add_precondition_test(precondition_bezier_n_deriv
+                              "n_deriv must be non-negative")
+  pantr_add_precondition_test(precondition_block_of_midx
+                              "level must be non-negative")
   message(STATUS "pantr: precondition tests enabled (build type ${CMAKE_BUILD_TYPE})")
 else()
   message(STATUS "pantr: precondition tests skipped, assertions are compiled out here")

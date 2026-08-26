@@ -158,6 +158,11 @@ namespace pantr::grid {
                                                 span2d<const std::int64_t> block_hi,
                                                 std::span<const std::int64_t> block_base,
                                                 std::span<const std::int64_t> level_block_start) {
+    // Memory safety, and this is the function FELIGN/pantr#359 named as its third
+    // site. A negative `level` indexes `level_block_start` from a wrapped cast:
+    // measured, a heap-buffer-overflow READ. The oracle reads backwards from the
+    // end and returns a wrong block instead.
+    PANTR_PRECONDITION(level >= 0, "level must be non-negative");
     const std::size_t ndim = midx.size();
     const std::int64_t first = level_block_start[static_cast<std::size_t>(level)];
     const std::int64_t last = level_block_start[static_cast<std::size_t>(level) + 1];
@@ -236,8 +241,10 @@ namespace pantr::grid {
     for (std::int64_t k = ndim - 1; k >= 0; --k) {
         const auto kk = static_cast<std::size_t>(k);
         const std::int64_t extent = block_hi(b, kk) - block_lo(b, kk);
-        // Also memory safety rather than correctness: `%` and `/` by zero are
-        // undefined here, where numpy raises or yields a defined zero.
+        // Also memory safety rather than correctness: `%` and `/` by zero trap in
+        // hardware here. The oracle is `@nb_jit` compiled, where int64 division by
+        // zero raises `ZeroDivisionError` -- checked, not assumed, because the
+        // plain-numpy answer differs and is not the one this oracle takes.
         PANTR_PRECONDITION(extent > 0, "every block must have a positive extent per axis");
         out_midx[kk] = block_lo(b, kk) + offset % extent;
         offset /= extent;

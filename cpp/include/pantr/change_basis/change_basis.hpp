@@ -73,6 +73,14 @@
 /// - a **memory-safety** obligation carries `PANTR_PRECONDITION`, from
 ///   `pantr/core/precondition.hpp`. Grep for it to see every one in this file.
 ///
+/// \note **This file's obligations are of two kinds and the macro cannot distinguish
+/// them**, which is worth saying rather than leaving implied. `monomial_to_bernstein_1d`
+/// writes out of bounds on its own arithmetic, measured. The builders that go through an
+/// `Eigen::Matrix` do not: at `degree = -2` Eigen's own size check fires first, and under
+/// `NDEBUG` the allocator throws instead, both safe defined failures. They carry the macro
+/// anyway because they **forward** the degree into `tabulate_bernstein_1d`, whose cast is
+/// unguarded, so the obligation is inherited rather than local.
+///
 /// The macro is `assert`, so it costs nothing in a release build. The bindings under
 /// `cpp/bindings/` refuse all of these before a Python caller can express them; the
 /// macro is for the C++ caller who includes this header directly.
@@ -207,8 +215,6 @@ template <std::floating_point T>
 ///       use call `pantr.change_basis.compute_lagrange_to_bernstein_1d`.
 template <std::floating_point T>
 void lagrange_to_bernstein_1d(int degree, std::span<const T> lagrange_points, span2d<T> out) {
-    // Memory safety: `degree + 1` is cast to an unsigned extent below, so a
-    // degree under -1 sizes every buffer from a wrapped value.
     PANTR_PRECONDITION(degree >= 0, "degree must be non-negative");
     const auto values =
         detail::tabulated<T>([](int d, std::span<const T> p,
@@ -234,8 +240,6 @@ void lagrange_to_bernstein_1d(int degree, std::span<const T> lagrange_points, sp
 ///       `pantr.change_basis.compute_bernstein_to_lagrange_1d`.
 template <std::floating_point T>
 void bernstein_to_lagrange_1d(int degree, std::span<const T> lagrange_points, span2d<T> out) {
-    // Memory safety: `degree + 1` is cast to an unsigned extent below, so a
-    // degree under -1 sizes every buffer from a wrapped value.
     PANTR_PRECONDITION(degree >= 0, "degree must be non-negative");
     const auto n = static_cast<std::size_t>(degree + 1);
     detail::eigen_matrix<T> forward(static_cast<Eigen::Index>(n),
@@ -259,6 +263,7 @@ void bernstein_to_lagrange_1d(int degree, std::span<const T> lagrange_points, sp
 template <std::floating_point T>
 void bernstein_to_cardinal_1d(int degree, std::span<const T> quad_points,
                               std::span<const T> quad_weights, span2d<T> out) {
+    PANTR_PRECONDITION(degree >= 0, "degree must be non-negative");
     const auto bern = detail::tabulated<T>(
         [](int d, std::span<const T> p, span2d<T> o) { tabulate_bernstein_1d<T>(d, p, o); },
         degree, quad_points);
@@ -282,7 +287,8 @@ void bernstein_to_cardinal_1d(int degree, std::span<const T> quad_points,
 ///       `pantr.change_basis.compute_cardinal_to_bernstein_1d`.
 template <std::floating_point T>
 void cardinal_to_bernstein_1d(int degree, std::span<const T> quad_points,
-                              std::span<const T> quad_weights, span2d<T> out) {
+                PANTR_PRECONDITION(degree >= 0, "degree must be non-negative");
+                  std::span<const T> quad_weights, span2d<T> out) {
     const auto n = static_cast<std::size_t>(degree + 1);
     detail::eigen_matrix<T> forward(static_cast<Eigen::Index>(n),
                                     static_cast<Eigen::Index>(n));
@@ -303,7 +309,8 @@ void cardinal_to_bernstein_1d(int degree, std::span<const T> quad_points,
 /// \note No input validation is performed. Layer 3; see CLAUDE.md. For general
 ///       use call `pantr.change_basis.compute_legendre_to_cardinal_1d`.
 template <std::floating_point T>
-void legendre_to_cardinal_1d(int degree, std::span<const T> quad_points,
+void legendre_to    PANTR_PRECONDITION(degree >= 0, "degree must be non-negative");
+_cardinal_1d(int degree, std::span<const T> quad_points,
                              std::span<const T> quad_weights, span2d<T> out) {
     const auto leg = detail::tabulated<T>(
         [](int d, std::span<const T> p, span2d<T> o) { tabulate_legendre_1d<T>(d, p, o); },
@@ -330,7 +337,8 @@ void legendre_to_cardinal_1d(int degree, std::span<const T> quad_points,
 ///
 /// \note No input validation is performed, and the degree domain is Layer 2's.
 ///       Layer 3; see CLAUDE.md. For general use call
-///       `pantr.change_basis.compute_cardinal_to_legendre_1d`.
+///       `pantr.change_basis.compute_cardina    PANTR_PRECONDITION(degree >= 0, "degree must be non-negative");
+l_to_legendre_1d`.
 template <std::floating_point T>
 void cardinal_to_legendre_1d(int degree, std::span<const T> quad_points,
                              std::span<const T> quad_weights, span2d<T> out) {
@@ -352,7 +360,8 @@ void cardinal_to_legendre_1d(int degree, std::span<const T> quad_points,
 ///
 /// \note No input validation is performed, and the degree domain is Layer 2's.
 ///       Layer 3; see CLAUDE.md. For general use call
-///       `pantr.change_basis.compute_cardinal_dual_legendre_coeffs_1d`.
+///     PANTR_PRECONDITION(degree >= 0, "degree must be non-negative");
+      `pantr.change_basis.compute_cardinal_dual_legendre_coeffs_1d`.
 template <std::floating_point T>
 void cardinal_dual_legendre_coeffs_1d(int degree, std::span<const T> quad_points,
                                       std::span<const T> quad_weights, span2d<T> out) {
@@ -384,7 +393,8 @@ void cardinal_dual_legendre_coeffs_1d(int degree, std::span<const T> quad_points
 /// places no domain limit on this builder, so that is stated rather than
 /// enforced here.
 ///
-/// \param degree Polynomial degree. Must be non-negative.
+/// \param degree Polynomial degree. Must be non-n    PANTR_PRECONDITION(degree >= 0, "degree must be non-negative");
+egative.
 /// \param out Output view of shape `(degree + 1, degree + 1)`, written in full.
 ///
 /// \note No input validation is performed. Layer 3; see CLAUDE.md. For general
