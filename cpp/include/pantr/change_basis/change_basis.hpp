@@ -287,8 +287,8 @@ void bernstein_to_cardinal_1d(int degree, std::span<const T> quad_points,
 ///       `pantr.change_basis.compute_cardinal_to_bernstein_1d`.
 template <std::floating_point T>
 void cardinal_to_bernstein_1d(int degree, std::span<const T> quad_points,
-                PANTR_PRECONDITION(degree >= 0, "degree must be non-negative");
-                  std::span<const T> quad_weights, span2d<T> out) {
+                              std::span<const T> quad_weights, span2d<T> out) {
+    PANTR_PRECONDITION(degree >= 0, "degree must be non-negative");
     const auto n = static_cast<std::size_t>(degree + 1);
     detail::eigen_matrix<T> forward(static_cast<Eigen::Index>(n),
                                     static_cast<Eigen::Index>(n));
@@ -309,9 +309,9 @@ void cardinal_to_bernstein_1d(int degree, std::span<const T> quad_points,
 /// \note No input validation is performed. Layer 3; see CLAUDE.md. For general
 ///       use call `pantr.change_basis.compute_legendre_to_cardinal_1d`.
 template <std::floating_point T>
-void legendre_to    PANTR_PRECONDITION(degree >= 0, "degree must be non-negative");
-_cardinal_1d(int degree, std::span<const T> quad_points,
+void legendre_to_cardinal_1d(int degree, std::span<const T> quad_points,
                              std::span<const T> quad_weights, span2d<T> out) {
+    PANTR_PRECONDITION(degree >= 0, "degree must be non-negative");
     const auto leg = detail::tabulated<T>(
         [](int d, std::span<const T> p, span2d<T> o) { tabulate_legendre_1d<T>(d, p, o); },
         degree, quad_points);
@@ -337,11 +337,11 @@ _cardinal_1d(int degree, std::span<const T> quad_points,
 ///
 /// \note No input validation is performed, and the degree domain is Layer 2's.
 ///       Layer 3; see CLAUDE.md. For general use call
-///       `pantr.change_basis.compute_cardina    PANTR_PRECONDITION(degree >= 0, "degree must be non-negative");
-l_to_legendre_1d`.
+///       `pantr.change_basis.compute_cardinal_to_legendre_1d`.
 template <std::floating_point T>
 void cardinal_to_legendre_1d(int degree, std::span<const T> quad_points,
                              std::span<const T> quad_weights, span2d<T> out) {
+    PANTR_PRECONDITION(degree >= 0, "degree must be non-negative");
     const auto n = static_cast<std::size_t>(degree + 1);
     detail::eigen_matrix<T> forward(static_cast<Eigen::Index>(n),
                                     static_cast<Eigen::Index>(n));
@@ -360,11 +360,11 @@ void cardinal_to_legendre_1d(int degree, std::span<const T> quad_points,
 ///
 /// \note No input validation is performed, and the degree domain is Layer 2's.
 ///       Layer 3; see CLAUDE.md. For general use call
-///     PANTR_PRECONDITION(degree >= 0, "degree must be non-negative");
-      `pantr.change_basis.compute_cardinal_dual_legendre_coeffs_1d`.
+///       `pantr.change_basis.compute_cardinal_dual_legendre_coeffs_1d`.
 template <std::floating_point T>
 void cardinal_dual_legendre_coeffs_1d(int degree, std::span<const T> quad_points,
                                       std::span<const T> quad_weights, span2d<T> out) {
+    PANTR_PRECONDITION(degree >= 0, "degree must be non-negative");
     const auto n = static_cast<std::size_t>(degree + 1);
     detail::eigen_matrix<T> straight(static_cast<Eigen::Index>(n),
                                      static_cast<Eigen::Index>(n));
@@ -393,14 +393,14 @@ void cardinal_dual_legendre_coeffs_1d(int degree, std::span<const T> quad_points
 /// places no domain limit on this builder, so that is stated rather than
 /// enforced here.
 ///
-/// \param degree Polynomial degree. Must be non-n    PANTR_PRECONDITION(degree >= 0, "degree must be non-negative");
-egative.
+/// \param degree Polynomial degree. Must be non-negative.
 /// \param out Output view of shape `(degree + 1, degree + 1)`, written in full.
 ///
 /// \note No input validation is performed. Layer 3; see CLAUDE.md. For general
 ///       use call `pantr.change_basis.compute_monomial_to_bernstein_1d`.
 template <std::floating_point T>
 void monomial_to_bernstein_1d(int degree, span2d<T> out) {
+    PANTR_PRECONDITION(degree >= 0, "degree must be non-negative");
     using Acc = double;
 
     const auto n = static_cast<std::size_t>(degree + 1);
