@@ -58,12 +58,30 @@
 /// evaluation kernel is the opposite case: there the oracle's `b_curr` *is* a
 /// register, so it stays one here.
 
+
+/// \note **What "no validation" means here, and it is not what it means in the oracle.**
+/// These kernels are transliterations of Numba kernels whose docstrings use this same
+/// sentence, where a violated precondition yields a *defined wrong answer*: numpy
+/// indexes negatively and a Python integer does not overflow. On this side the same
+/// violation is undefined behaviour. So the obligations are of two kinds, and the code
+/// says which:
+///
+/// - a **correctness** obligation is documented and not asserted; violating it gives a
+///   wrong answer in both backends, which is what the sentence above promises;
+/// - a **memory-safety** obligation carries `PANTR_PRECONDITION`, from
+///   `pantr/core/precondition.hpp`. Grep for it to see every one in this file.
+///
+/// The macro is `assert`, so it costs nothing in a release build. The bindings under
+/// `cpp/bindings/` refuse all of these before a Python caller can express them; the
+/// macro is for the C++ caller who includes this header directly.
+
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <span>
 #include <vector>
 
+#include "pantr/core/precondition.hpp"
 #include "pantr/core/binomial.hpp"
 #include "pantr/core/mdspan.hpp"
 #include "pantr/core/scalar.hpp"
@@ -113,6 +131,11 @@ void evaluate_bezier_1d(span2d<const T> ctrl, std::span<const T> points, span2d<
     using Acc = accumulator_t<T>;
     using std::pow;
 
+    // Memory safety. A zero-row `ctrl` makes this `SIZE_MAX`, and the kernel then
+    // walks off the allocation: measured as SIGSEGV on all five of these before
+    // `cpp/bindings/bezier.cpp` grew its own check. The oracle infers a degree of
+    // -1 and returns without writing.
+    PANTR_PRECONDITION(ctrl.extent(0) > 0, "ctrl must have at least one row to infer a degree");
     const auto degree = static_cast<std::size_t>(ctrl.extent(0)) - 1;
     const std::size_t rank = ctrl.extent(1);
     const std::size_t num_pts = points.size();
@@ -209,6 +232,11 @@ void evaluate_bezier_deriv_1d(span2d<const T> ctrl, std::span<const T> points, i
                               span_nd<T, 3> out) {
     using Acc = accumulator_t<T>;
 
+    // Memory safety. A zero-row `ctrl` makes this `SIZE_MAX`, and the kernel then
+    // walks off the allocation: measured as SIGSEGV on all five of these before
+    // `cpp/bindings/bezier.cpp` grew its own check. The oracle infers a degree of
+    // -1 and returns without writing.
+    PANTR_PRECONDITION(ctrl.extent(0) > 0, "ctrl must have at least one row to infer a degree");
     const auto degree = static_cast<std::size_t>(ctrl.extent(0)) - 1;
     const std::size_t rank = ctrl.extent(1);
     const std::size_t num_pts = points.size();
@@ -441,6 +469,11 @@ template <Real T>
 void slice_bezier_1d(span2d<const T> ctrl, accumulator_t<T> value, std::span<T> out) {
     using Acc = accumulator_t<T>;
 
+    // Memory safety. A zero-row `ctrl` makes this `SIZE_MAX`, and the kernel then
+    // walks off the allocation: measured as SIGSEGV on all five of these before
+    // `cpp/bindings/bezier.cpp` grew its own check. The oracle infers a degree of
+    // -1 and returns without writing.
+    PANTR_PRECONDITION(ctrl.extent(0) > 0, "ctrl must have at least one row to infer a degree");
     const auto degree = static_cast<std::size_t>(ctrl.extent(0)) - 1;
     const std::size_t n_cols = ctrl.extent(1);
     const Acc u = value;
@@ -493,6 +526,11 @@ void split_bezier_1d(span2d<const T> ctrl, accumulator_t<T> value, span2d<T> out
                      span2d<T> out_right) {
     using Acc = accumulator_t<T>;
 
+    // Memory safety. A zero-row `ctrl` makes this `SIZE_MAX`, and the kernel then
+    // walks off the allocation: measured as SIGSEGV on all five of these before
+    // `cpp/bindings/bezier.cpp` grew its own check. The oracle infers a degree of
+    // -1 and returns without writing.
+    PANTR_PRECONDITION(ctrl.extent(0) > 0, "ctrl must have at least one row to infer a degree");
     const auto degree = static_cast<std::size_t>(ctrl.extent(0)) - 1;
     const std::size_t n_cols = ctrl.extent(1);
     const Acc u = value;
@@ -553,6 +591,11 @@ void restrict_bezier_1d(span2d<const T> ctrl, accumulator_t<T> lower, accumulato
     using Acc = accumulator_t<T>;
     using std::abs;
 
+    // Memory safety. A zero-row `ctrl` makes this `SIZE_MAX`, and the kernel then
+    // walks off the allocation: measured as SIGSEGV on all five of these before
+    // `cpp/bindings/bezier.cpp` grew its own check. The oracle infers a degree of
+    // -1 and returns without writing.
+    PANTR_PRECONDITION(ctrl.extent(0) > 0, "ctrl must have at least one row to infer a degree");
     const auto degree = static_cast<std::size_t>(ctrl.extent(0)) - 1;
     const std::size_t n_cols = ctrl.extent(1);
     const auto p = static_cast<std::ptrdiff_t>(degree);

@@ -282,6 +282,21 @@ cxx() {
         check "$preset: ctest" ctest --preset "$preset"
     done
 
+    # The sanitizer build, which until FELIGN/pantr#359 nothing ran.
+    #
+    # `gcc-debug` and its test preset were both defined and both unused, so
+    # -fsanitize=address,undefined was configured and never executed. Two things
+    # depend on it. The kernels' undefined behaviour on out-of-contract input is
+    # only observable here; and the precondition tests are only REGISTERED here,
+    # because PANTR_PRECONDITION is `assert` and a release build compiles it out,
+    # which would leave those executables running the undefined behaviour rather
+    # than reporting it. Running the release presets alone therefore says nothing
+    # about either.
+    rm -rf "$ROOT/build/gcc-debug"
+    check "gcc-debug: configure (asan, ubsan)" cmake --preset gcc-debug
+    check "gcc-debug: build" cmake --build --preset gcc-debug
+    check "gcc-debug: ctest" ctest --preset gcc-debug
+
     # The version floor, built rather than merely accepted.
     #
     # `gates` above asserts that the floor compilers CONFIGURE. That is the gate's

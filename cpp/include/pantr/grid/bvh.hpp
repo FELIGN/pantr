@@ -77,6 +77,23 @@
 /// to size. The queries keep the fixed stack and no allocation, which is where the
 /// kernel discipline earns its keep.
 
+
+/// \note **What "no validation" means here, and it is not what it means in the oracle.**
+/// These kernels are transliterations of Numba kernels whose docstrings use this same
+/// sentence, where a violated precondition yields a *defined wrong answer*: numpy
+/// indexes negatively and a Python integer does not overflow. On this side the same
+/// violation is undefined behaviour. So the obligations are of two kinds, and the code
+/// says which:
+///
+/// - a **correctness** obligation is documented and not asserted; violating it gives a
+///   wrong answer in both backends, which is what the sentence above promises;
+/// - a **memory-safety** obligation carries `PANTR_PRECONDITION`, from
+///   `pantr/core/precondition.hpp`. Grep for it to see every one in this file.
+///
+/// The macro is `assert`, so it costs nothing in a release build. The bindings under
+/// `cpp/bindings/` refuse all of these before a Python caller can express them; the
+/// macro is for the C++ caller who includes this header directly.
+
 #include <algorithm>
 #include <array>
 #include <cstddef>
@@ -86,6 +103,7 @@
 #include <vector>
 
 #include "pantr/core/mdspan.hpp"
+#include "pantr/core/precondition.hpp"
 #include "pantr/core/scalar.hpp"
 
 namespace pantr::grid {
@@ -285,6 +303,12 @@ template <Real T>
         if (node_cell[node] >= 0) {
             ++count;
         } else {
+            // Memory safety. The stack is fixed at `kBvhStackDepth`, and a tree
+            // whose RIGHT spine is longer overflows it: the traversal pops the
+            // right child first, so a left-leaning chain never grows the stack.
+            // `BVH.__init__` walks the tree once and refuses a deeper one, which
+            // is why this is a precondition rather than a check.
+            PANTR_PRECONDITION(top + 2 <= kBvhStackDepth, "tree depth must fit the traversal stack");
             stack[top] = node_left[node];
             ++top;
             stack[top] = node_right[node];
@@ -345,6 +369,12 @@ std::int64_t bvh_query_emit(std::span<const T> qlo, std::span<const T> qhi,
             }
             ++count;
         } else {
+            // Memory safety. The stack is fixed at `kBvhStackDepth`, and a tree
+            // whose RIGHT spine is longer overflows it: the traversal pops the
+            // right child first, so a left-leaning chain never grows the stack.
+            // `BVH.__init__` walks the tree once and refuses a deeper one, which
+            // is why this is a precondition rather than a check.
+            PANTR_PRECONDITION(top + 2 <= kBvhStackDepth, "tree depth must fit the traversal stack");
             stack[top] = node_left[node];
             ++top;
             stack[top] = node_right[node];
