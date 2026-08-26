@@ -177,8 +177,6 @@ def test_a_strided_out_reaches_the_callers_array(cpp_backend: None, dtype: npt.D
     """
     del cpp_backend
     demand_the_compiled_kernel(dtype)
-    # Same seed: the parity assert below is over the Bernstein tabulation.
-    demand_a_compiled_seed()
     degree = 5
     points = np.linspace(0.0, 1.0, 9, dtype=dtype)
 
@@ -192,6 +190,11 @@ def test_a_strided_out_reaches_the_callers_array(cpp_backend: None, dtype: npt.D
         assert np.any(holder != 0.0), f"{backend.name}: the caller's array was not written"
         results[backend] = holder.copy()
 
+    # Only the comparison below needs the compiled seed. What this test is *for* --
+    # that a strided `out` reaches the caller's own array rather than a discarded
+    # buffer -- is an aliasing property, asserted above, and it holds whether the
+    # oracle was compiled or interpreted. Gating the whole test would drop it.
+    demand_a_compiled_seed()
     assert_parity(
         results[Backend.CPP],
         results[Backend.PYTHON],
