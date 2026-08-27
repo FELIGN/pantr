@@ -53,6 +53,7 @@
 #include <nanobind/ndarray.h>
 
 #include <algorithm>
+#include <bit>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -236,9 +237,25 @@ void bind_bvh_build(const_mat<double> cell_lo, const_mat<double> cell_hi,
     // The build's own splits are balanced, so the height follows from the cell count
     // and needs no tree walk. Mirrors BVH.from_cell_bounds, including the `+ 1` for
     // the root push.
-    const auto n = static_cast<double>(n_cells);
+    //
+    // `bit_width(n - 1)` is `ceil(log2(n))` for n >= 2, in exact integers. The
+    // previous form went through a `double`, which is the wrong arithmetic for a
+    // question about an integer and not merely inelegant: past a threshold a
+    // `double` stops separating n from the power of two below it, and the height
+    // comes back one too SMALL -- the unsafe direction for a bound.
+    //
+    // Where the two disagree is unreachable, and by a wide margin: the smallest
+    // such cell count needs petabytes for a single coordinate axis. So this changes
+    // no attainable result. scripts/measure_bvh_depth_arithmetic.py enumerates the
+    // disagreements, reports the threshold and asserts the direction, rather than
+    // this comment carrying figures nothing re-derives.
+    //
+    // It is also what removes the last qualified `std::` math call from the
+    // bindings, which cpp/include/pantr/core/scalar.hpp asks for.
     const std::int64_t max_depth =
-        n_cells > 1 ? static_cast<std::int64_t>(std::ceil(std::log2(n))) + 1 : 1;
+        n_cells > 1
+            ? static_cast<std::int64_t>(std::bit_width(static_cast<std::uint64_t>(n_cells - 1))) + 1
+            : 1;
     if (max_depth > pantr::grid::kBvhStackDepth) {
         throw nb::value_error((std::to_string(n_cells) + " cells would produce a tree of depth >= " +
                                std::to_string(max_depth) + ", exceeding the traversal stack depth " +
