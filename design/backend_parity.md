@@ -63,6 +63,15 @@ Two consequences, and both are obligations rather than remarks:
   matter of rigour and starts being the only thing standing between a rotted oracle and a
   false parity failure.
 
+**Refined the same day, and the wording above was too weak.** "The Python implementation
+stays" reads as *indefinitely*, and that is not what was decided: the dual backend exists so
+that the Python side can serve as an oracle **while the port runs**, and the end state is C++
+alone. So the oracle stays for the duration of the port and goes with it, rather than becoming
+a permanent second implementation. Nothing above changes operationally -- a kernel ported at
+any point during the port still has an oracle, because the oracle outlives every kernel that
+needs one -- but the two readings differ about what the repository looks like afterwards, and
+only one of them is right.
+
 **Epistemic status.** The choice is ruled, not derived. That Rule 12's three divergences are
 exhaustive is *claimed* in Rule 12 and was not re-checked here; two of the three were found by
 a review rather than by the rule's author, which is the reason to re-check it rather than
