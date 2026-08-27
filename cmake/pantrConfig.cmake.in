@@ -1,0 +1,31 @@
+@PACKAGE_INIT@
+
+include(CMakeFindDependencyMacro)
+
+# Eigen is a hard requirement. Only one header includes it today, but that is
+# expected to spread, and splitting the package on a boundary that is about to
+# move would break silently every time a new header adopts it.
+find_dependency(Eigen3)
+
+# Kokkos mdspan is NOT a hard requirement, because whether it is needed depends
+# on the consumer's standard library rather than on ours. pantr/core/mdspan.hpp
+# selects on `__cpp_lib_mdspan`, so a consumer whose libstdc++ ships <mdspan>
+# needs nothing here, and one whose does not needs this. Attached only when
+# present; when it is absent AND unavailable, mdspan.hpp fails with a message
+# saying so rather than with a broken include of a third-party header.
+find_package(mdspan QUIET)
+
+include("${CMAKE_CURRENT_LIST_DIR}/pantrTargets.cmake")
+
+# Attached after the export file, not baked into it: the build may have used a
+# fetched Eigen, which is not exportable, and in any case the consumer compiles
+# these headers with their own.
+set_property(TARGET pantr::core APPEND
+             PROPERTY INTERFACE_LINK_LIBRARIES Eigen3::Eigen)
+
+if(TARGET std::mdspan)
+  set_property(TARGET pantr::core APPEND
+               PROPERTY INTERFACE_LINK_LIBRARIES std::mdspan)
+endif()
+
+check_required_components(pantr)

@@ -36,6 +36,8 @@ project(pantr_cpp
 
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 
+include(GNUInstallDirs)
+
 if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
   set(CMAKE_BUILD_TYPE Release CACHE STRING "" FORCE)
 endif()
@@ -49,6 +51,9 @@ option(PANTR_BUILD_BENCHMARK "Build the C++ benchmark" ON)
 # fails at import.
 option(PANTR_BUILD_PYTHON "Build the nanobind extension module" OFF)
 option(PANTR_WERROR "Treat compiler warnings as errors" ON)
+option(PANTR_INSTALL "Generate install rules for the C++ core" "${PROJECT_IS_TOP_LEVEL}")
+option(PANTR_USE_SYSTEM_DEPS
+       "Accept an installed Eigen3 / mdspan instead of the pinned SHAs" OFF)
 option(PANTR_ALLOW_UNTESTED_COMPILER
        "Bypass the known-broken-compiler filter (see cmake/PantrCompilerProbes.cmake)" OFF)
 
@@ -65,14 +70,91 @@ add_library(pantr_core INTERFACE)
 add_library(pantr::core ALIAS pantr_core)
 
 target_include_directories(pantr_core INTERFACE
-    "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/cpp/include>")
+    "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/cpp/include>"
+    "$<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>")
 
-target_link_libraries(pantr_core INTERFACE pantr::cxx_flags Eigen3::Eigen)
+# `pantr::cxx_flags` is deliberately NOT linked here. It carries this project's
+# warning policy and, under PANTR_WERROR, `-Werror`; exporting either would decide
+# a consumer's build for them, and a new warning in their compiler would break it
+# over our headers. Our own tests, benchmark and bindings link it explicitly.
+#
+# What DOES cross is the floating-point semantics, because the parity bounds in
+# design/backend_parity.md are derived by counting roundings per stage and
+# `-ffp-contract` decides which sites fuse. A consumer compiling these headers
+# under different contraction gets different numbers than the bounds describe.
+target_compile_options(pantr_core INTERFACE
+    $<$<COMPILE_LANG_AND_ID:CXX,GNU,Clang,AppleClang>:-ffp-contract=on>)
 
+# BUILD_INTERFACE, and CMake enforces it rather than merely preferring it: a
+# fetched Eigen is not in any export set, so exporting a target that links it
+# fails outright. That refusal is correct and worth understanding, because it
+# separates two different things -- which Eigen WE compiled and verified
+# against, and which one the consumer will compile these headers with.
+#
+# pantrConfig.cmake supplies the consumer's, through find_dependency(Eigen3).
+# The consequence is real and belongs in the record: this project's parity
+# results were measured against the pinned Eigen, and anything that goes through
+# Eigen under a consumer's different version is outside what was measured.
+target_link_libraries(pantr_core INTERFACE $<BUILD_INTERFACE:Eigen3::Eigen>)
+
+# BUILD_INTERFACE only, deliberately. cpp/include/pantr/core/mdspan.hpp decides
+# for itself from `__cpp_lib_mdspan`, so this definition is redundant in-tree and
+# would be actively wrong once installed: the probe measures the compiler that
+# built the package, and a header-only library is compiled by the consumer's.
 if(PANTR_HAS_STD_MDSPAN)
-  target_compile_definitions(pantr_core INTERFACE PANTR_HAS_STD_MDSPAN=1)
+  target_compile_definitions(pantr_core INTERFACE
+      $<BUILD_INTERFACE:PANTR_HAS_STD_MDSPAN=1>)
 else()
-  target_link_libraries(pantr_core INTERFACE std::mdspan)
+  # BUILD_INTERFACE: whether the consumer needs Kokkos depends on THEIR standard
+  # library, which mdspan.hpp now decides for itself. pantrConfig.cmake attaches
+  # it when it is both found and needed.
+  target_link_libraries(pantr_core INTERFACE $<BUILD_INTERFACE:std::mdspan>)
+endif()
+
+# --------------------------------------------------------------------------
+# Install and export
+# --------------------------------------------------------------------------
+#
+# Header-only, so this installs headers and a target description and nothing
+# else. What the exported target carries, and why, is argued at its definition
+# above: the include directory, `-ffp-contract=on`, and Eigen. Not the warning
+# flags, and not the mdspan choice.
+if(PANTR_INSTALL)
+  include(CMakePackageConfigHelpers)
+
+  # EXPORT_NAME, or the namespace is applied to the target's own name and the
+  # exported target is `pantr::pantr_core` while the in-tree alias is
+  # `pantr::core`. Caught by the out-of-tree consumer in cpp/consumer, which is
+  # the only thing that exercises the installed package rather than this tree.
+  set_target_properties(pantr_core PROPERTIES EXPORT_NAME core)
+
+  install(TARGETS pantr_core EXPORT pantrTargets)
+
+  install(DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/cpp/include/pantr"
+          DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}")
+
+  install(EXPORT pantrTargets
+          FILE pantrTargets.cmake
+          NAMESPACE pantr::
+          DESTINATION "${CMAKE_INSTALL_LIBDIR}/cmake/pantr")
+
+  configure_package_config_file(
+      "${CMAKE_CURRENT_SOURCE_DIR}/cmake/pantrConfig.cmake.in"
+      "${CMAKE_CURRENT_BINARY_DIR}/pantrConfig.cmake"
+      INSTALL_DESTINATION "${CMAKE_INSTALL_LIBDIR}/cmake/pantr")
+
+  # SameMajorVersion is wrong below 1.0, where a minor bump may break the API.
+  # ExactVersion would be unusable, so SameMinorVersion is the honest middle:
+  # 0.8.1 satisfies a request for 0.8, and 0.9.0 does not.
+  write_basic_package_version_file(
+      "${CMAKE_CURRENT_BINARY_DIR}/pantrConfigVersion.cmake"
+      VERSION ${PROJECT_VERSION}
+      COMPATIBILITY SameMinorVersion)
+
+  install(FILES
+          "${CMAKE_CURRENT_BINARY_DIR}/pantrConfig.cmake"
+          "${CMAKE_CURRENT_BINARY_DIR}/pantrConfigVersion.cmake"
+          DESTINATION "${CMAKE_INSTALL_LIBDIR}/cmake/pantr")
 endif()
 
 if(PANTR_BUILD_TESTS)

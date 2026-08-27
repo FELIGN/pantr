@@ -51,9 +51,54 @@
 #
 # The variable name is FETCHCONTENT_SOURCE_DIR_<NAME> with <NAME> upper-cased
 # from the FetchContent_Declare name, hence MDSPAN and EIGEN below.
+#
+# ---------------------------------------------------------------------------
+# An installed copy is preferred over a fetched one
+# ---------------------------------------------------------------------------
+#
+# Both entries carry FIND_PACKAGE_ARGS, so FetchContent_MakeAvailable tries
+# find_package() first and clones only when that fails. Point it at your own
+# build and nothing is fetched:
+#
+#     cmake --preset gcc -DEigen3_ROOT=/path/to/eigen -Dmdspan_ROOT=/path/to/mdspan
+#
+# or set CMAKE_PREFIX_PATH once for both. This is what makes the tree installable
+# by a distributor who already has these: the exported package requires Eigen3
+# from the system, and building against a fetched copy while installing against a
+# system one would be two different Eigens.
+#
+# To force the fetch even when a system copy exists, for a reproducible build
+# pinned to the SHAs below:
+#
+#     cmake --preset gcc -DFETCHCONTENT_TRY_FIND_PACKAGE_MODE=NEVER
 
 include_guard(GLOBAL)
 include(FetchContent)
+
+# OFF by default, and the default is the load-bearing half. FIND_PACKAGE_ARGS on
+# its own makes find_package() the FIRST choice, which quietly defeats the SHA
+# pinning above: measured on the development server, the build silently moved
+# from the pinned Eigen to /usr/include/eigen3 -- two major versions apart -- and
+# every check passed without anything reporting which Eigen it had verified.
+#
+# So an installed copy is used only when asked for. Reproducible by default,
+# distributor-friendly on request.
+if(NOT PANTR_USE_SYSTEM_DEPS)
+  set(FETCHCONTENT_TRY_FIND_PACKAGE_MODE NEVER)
+else()
+  message(STATUS "pantr: accepting installed Eigen3/mdspan; the pinned SHAs are "
+                 "a fallback, so the versions in use are not this project's")
+endif()
+
+# A root passed without the option would otherwise be ignored in silence, which
+# is the same class of failure the option exists to prevent.
+foreach(_dep Eigen3 mdspan)
+  if(NOT PANTR_USE_SYSTEM_DEPS AND (DEFINED ${_dep}_ROOT OR DEFINED ENV{${_dep}_ROOT}))
+    message(WARNING "${_dep}_ROOT is set but PANTR_USE_SYSTEM_DEPS is OFF, so it "
+                    "is ignored and the pinned SHA is fetched. Pass "
+                    "-DPANTR_USE_SYSTEM_DEPS=ON to use it.")
+  endif()
+endforeach()
 
 # --------------------------------------------------------------------------
 # Kokkos mdspan -- the reference implementation of std::mdspan.
@@ -69,7 +114,8 @@ if(NOT PANTR_HAS_STD_MDSPAN)
       GIT_TAG        9ceface91483775a6c74d06ebf717bbb2768452f  # tag mdspan-0.6.0
       GIT_SHALLOW    FALSE
       SYSTEM
-      EXCLUDE_FROM_ALL)
+      EXCLUDE_FROM_ALL
+      FIND_PACKAGE_ARGS NAMES mdspan)
 
   # Ask Kokkos to place its symbols in the namespace the C++23 header would use,
   # so cpp/include/pantr/core/mdspan.hpp aliases one name in both branches of
@@ -119,7 +165,8 @@ FetchContent_Declare(
     GIT_TAG        bc3b39870ecb690a623a3f49149a358b95c5781d  # tag 5.0.1
     GIT_SHALLOW    TRUE
     SYSTEM
-    EXCLUDE_FROM_ALL)
+    EXCLUDE_FROM_ALL
+    FIND_PACKAGE_ARGS NAMES Eigen3)
 
 set(EIGEN_BUILD_TESTING OFF CACHE BOOL "" FORCE)
 set(EIGEN_BUILD_DOC OFF CACHE BOOL "" FORCE)
