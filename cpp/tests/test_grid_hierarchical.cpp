@@ -114,7 +114,13 @@ void collect_and_locate_agree(const Grid1D& g, const char* what) {
 
 /// The collected cells tile the root domain exactly: no gap, no overlap.
 void the_cells_tile_the_domain(const Grid1D& g, const char* what) {
-    auto [lo, hi] = collect(g);
+    // Deliberately not a structured binding. The comparator below has to capture
+    // `lo`, and capturing a structured binding is C++20 (P1091), which the Clang 10
+    // version floor does not implement. The two bindings above are fine: declaring
+    // one is C++17, only capturing one is not.
+    const auto bounds = collect(g);
+    const std::vector<double>& lo = bounds.first;
+    const std::vector<double>& hi = bounds.second;
     std::vector<std::size_t> order(lo.size());
     for (std::size_t i = 0; i < order.size(); ++i) {
         order[i] = i;
