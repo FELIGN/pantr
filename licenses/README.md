@@ -51,13 +51,21 @@ rather than a certainty.
 **If Eigen is ever patched in place** rather than consumed as an upstream pin, the
 patched files stay MPL-2.0 and must ship as source. Nothing does that today.
 
-## Left alone deliberately
+## The metadata question, settled 2026-08-27
 
 `pyproject.toml` declares `license = "MIT"`, which is accurate for pantr's own code
-and is what the MPL requires nothing of. An argument exists for `MIT AND MPL-2.0` on
+and is what the MPL requires nothing of. An argument existed for `MIT AND MPL-2.0` on
 a wheel that carries both compiled in, and an argument against, since it would
 suggest to downstream tooling that pantr propagates copyleft when its file-level
-scope means it does not. That is a metadata-precision question rather than a
-compliance one, and it is not a port's to settle.
+scope means it does not. It is a metadata-precision question rather than a compliance
+one, and it was left open because it is not a port's to settle.
+
+**Decided: the declaration stays `MIT`, and what the wheel contains is documented
+instead.** Two places carry it, so that neither a reader of the repository nor a
+reader of the installed package has to find this file by accident: the README's
+License section links here, and `license-files` ships this directory inside the
+wheel. The known cost of the choice is stated rather than assumed away -- an
+automated licence auditor reading only the `license` field sees MIT and does not see
+that MPL-2.0 object code is linked in. That is the reason the two pointers exist.
 
 None of this is legal advice.
