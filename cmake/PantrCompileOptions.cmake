@@ -83,10 +83,12 @@ add_library(pantr::cxx_flags ALIAS pantr_cxx_flags)
 
 target_compile_features(pantr_cxx_flags INTERFACE cxx_std_20)
 
-# Explicit, on the interface target, so every consumer -- including the ISA
-# variants of design/simd.md, when they exist -- fuses the same set of sites.
-target_compile_options(pantr_cxx_flags INTERFACE
-    $<$<COMPILE_LANG_AND_ID:CXX,GNU,Clang,AppleClang>:-ffp-contract=on>)
+# -ffp-contract=on used to live here and now sits on `pantr_core` in the
+# top-level CMakeLists, deliberately. This target is the project's warning
+# policy, which is internal and must not reach a consumer; the contraction
+# setting is part of the numerical contract and must. Keeping it in both places
+# would give a load-bearing flag two sources of truth. Every target that links
+# this one also links pantr::core, so nothing here lost the flag.
 
 # -Wsign-conversion is named explicitly because -Wconversion does NOT mean the
 # same thing in the two compilers: Clang implies it, GCC does not. Measured on an

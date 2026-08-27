@@ -681,6 +681,82 @@ splitmode() {
 }
 
 # --------------------------------------------------------------------------
+# consumer -- the installed package, used from outside the tree
+# --------------------------------------------------------------------------
+#
+# Everything else here builds pantr. This is the only check that builds
+# something AGAINST pantr the way a third party would: install to a throwaway
+# prefix, then configure cpp/consumer standalone against it. The in-tree build
+# cannot substitute, because it reaches the headers through BUILD_INTERFACE and
+# the in-tree alias, so an export that is wrong is invisible to it. Its first run
+# found the exported target was named `pantr::pantr_core`.
+#
+# Eigen and Kokkos mdspan are installed to the same prefix first, from the
+# sources the gcc build already fetched, so this clones nothing. That is also
+# what exercises FIND_PACKAGE_ARGS: pantr must pick up those installs rather
+# than fetch its own.
+
+consumer() {
+    step "Installed package, consumed from outside the tree"
+
+    local deps="$ROOT/build/gcc/_deps"
+    if [[ ! -d "$deps/eigen-src" || ! -d "$deps/mdspan-src" ]]; then
+        record SKIP "consumer" "run the cxx section first; $deps is not populated"
+        return
+    fi
+
+    local tmp; tmp="$(mktemp -d -t pantr_consumer_XXXXXXXX)"
+    local prefix="$tmp/prefix"
+
+    # EIGEN_BUILD_BLAS/LAPACK OFF is not tidiness: with them ON, Eigen's install
+    # step fails on a library this configuration never built.
+    check "consumer: install Eigen" \
+        cmake -S "$deps/eigen-src" -B "$tmp/eigen" -G Ninja \
+              -DCMAKE_INSTALL_PREFIX="$prefix" -DEIGEN_BUILD_TESTING=OFF \
+              -DEIGEN_BUILD_DOC=OFF -DEIGEN_BUILD_DEMOS=OFF \
+              -DEIGEN_BUILD_BLAS=OFF -DEIGEN_BUILD_LAPACK=OFF \
+              -DCMAKE_POLICY_VERSION_MINIMUM=3.5
+    check "consumer: install Eigen (step)" cmake --install "$tmp/eigen"
+
+    check "consumer: install mdspan" \
+        cmake -S "$deps/mdspan-src" -B "$tmp/mdspan" -G Ninja \
+              -DCMAKE_INSTALL_PREFIX="$prefix" -DMDSPAN_CXX_STANDARD=20 \
+              -DMDSPAN_ENABLE_TESTS=OFF -DCMAKE_POLICY_VERSION_MINIMUM=3.5
+    check "consumer: install mdspan (step)" cmake --install "$tmp/mdspan"
+
+    check "consumer: configure pantr for install" \
+        cmake -S "$ROOT" -B "$tmp/pantr" -G Ninja -DCMAKE_BUILD_TYPE=Release \
+              -DCMAKE_INSTALL_PREFIX="$prefix" -DCMAKE_PREFIX_PATH="$prefix" \
+              -DPANTR_INSTALL=ON -DPANTR_USE_SYSTEM_DEPS=ON \
+              -DPANTR_BUILD_TESTS=OFF \
+              -DPANTR_BUILD_BENCHMARK=OFF -DPANTR_BUILD_PYTHON=OFF
+    check "consumer: install pantr" cmake --install "$tmp/pantr"
+
+    # The point of PANTR_USE_SYSTEM_DEPS. Asserted on the artifact rather than on
+    # a log: $LOGDIR/step.log holds only the most recent command's output, so
+    # grepping it here would have read the install step and passed vacuously.
+    if [[ -d "$tmp/pantr/_deps/eigen-src" ]]; then
+        record FAIL "consumer: used the installed deps" "it fetched its own Eigen"
+    elif grep -qE "^eigen_DIR:PATH=$prefix" "$tmp/pantr/CMakeCache.txt" 2>/dev/null; then
+        # eigen_DIR, not any mention of the prefix: CMAKE_PREFIX_PATH is passed on
+        # the command line, so it appears in the cache whether or not it was used,
+        # and asserting on that would pass without measuring anything.
+        record PASS "consumer: used the installed deps"
+    else
+        record FAIL "consumer: used the installed deps" \
+               "eigen_DIR does not point into $prefix"
+    fi
+
+    check "consumer: configure against the install" \
+        cmake -S "$ROOT/cpp/consumer" -B "$tmp/consumer" -G Ninja \
+              -DCMAKE_PREFIX_PATH="$prefix"
+    check "consumer: build" cmake --build "$tmp/consumer"
+    check "consumer: run" "$tmp/consumer/consumer"
+
+    rm -rf "$tmp"
+}
+
+# --------------------------------------------------------------------------
 
 main() {
     local what="${1:-all}"
@@ -690,7 +766,8 @@ main() {
         discipline) discipline ;;
         python)     python_checks ;;
         splitmode)  splitmode ;;
-        all)        gates; cxx; discipline; python_checks; splitmode ;;
+        consumer)   consumer ;;
+        all)        gates; cxx; discipline; python_checks; splitmode; consumer ;;
         *)          echo "unknown section: $what" >&2; exit 2 ;;
     esac
 

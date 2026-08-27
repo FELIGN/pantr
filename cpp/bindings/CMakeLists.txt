@@ -148,7 +148,7 @@ foreach(_nb_target IN ITEMS nanobind-static nanobind-static-abi3 nanobind)
   endif()
 endforeach()
 
-target_link_libraries(_pantr_cpp PRIVATE pantr::core)
+target_link_libraries(_pantr_cpp PRIVATE pantr::core pantr::cxx_flags)
 
 # scikit-build-core installs whatever lands in the install tree. The extension
 # belongs next to the pure-Python package so `pantr._pantr_cpp` resolves.
