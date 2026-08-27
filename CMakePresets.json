@@ -34,9 +34,10 @@
       "name": "gcc-debug",
       "inherits": "gcc",
       "displayName": "GCC, debug with sanitizers",
+      "description": "ASan and UBSan, and the build type that registers the precondition tests -- PANTR_PRECONDITION is `assert`, so only Debug keeps them. -fno-sanitize-recover=undefined is load-bearing rather than decorative: UBSan's default is to print a diagnostic and carry on, so without it a signed overflow is reported and the process still exits 0, which makes every consumer of this preset green on a finding it did report.",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Debug",
-        "CMAKE_CXX_FLAGS_DEBUG": "-g -O0 -fsanitize=address,undefined -fno-omit-frame-pointer",
+        "CMAKE_CXX_FLAGS_DEBUG": "-g -O0 -fsanitize=address,undefined -fno-sanitize-recover=undefined -fno-omit-frame-pointer",
         "CMAKE_EXE_LINKER_FLAGS": "-fsanitize=address,undefined"
       }
     }
