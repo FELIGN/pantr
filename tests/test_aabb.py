@@ -217,10 +217,13 @@ def test_aabb_from_bounds_rejects_shape() -> None:
 
 def test_aabb_attribute_replacement_raises() -> None:
     b = AABB(lo=[0.0, 0.0, 0.0], hi=[1.0, 1.0, 1.0])
+    # `lo` and `hi` are read-only properties since the box moved to C++, so the
+    # assignment is a type error as well as a runtime one. The runtime refusal is
+    # what this test is about, and it still has to be exercised.
     with pytest.raises(AttributeError, match="immutable"):
-        b.lo = np.zeros(3)
+        b.lo = np.zeros(3)  # type: ignore[misc]
     with pytest.raises(AttributeError, match="immutable"):
-        b.hi = np.ones(3)
+        b.hi = np.ones(3)  # type: ignore[misc]
 
 
 def test_aabb_equality_and_hash() -> None:
