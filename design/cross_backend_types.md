@@ -1,7 +1,11 @@
 # What crosses the backend boundary, and what does not
 
-**Status:** decided. Governs every module ported after the infrastructure PR.
-**Date:** 2026-08-20.
+**Status:** the central rule is **superseded, 2026-08-27** -- see the next section. What
+survives it: the kernel-seam table, the `dtype` rule, the two catalogue rules, and the
+argument about `PointsLattice` specifically. The superseded text is kept in full below
+rather than rewritten, because the hazard it names is still real and the amendment has to
+answer it.
+**Date:** 2026-08-20, amended 2026-08-27.
 **Scope:** the contract between the Python and C++ backends: which values may cross, what
 shape a kernel entry point takes, and who owns a type. Not how the two are compared, which
 is `design/backend_parity.md`.
@@ -10,11 +14,107 @@ this note's rule generalizes; `design/automatic_differentiation.md`, for the sca
 a kernel signature has to respect.
 
 **Validated against:** pantr **0.7.0**, and the C++ prototype as merged into `proto/cpp`
-at `765d9b9`. Line numbers below refer to that tree.
+at `765d9b9`. Line numbers below refer to that tree, **except in the 2026-08-27 supersession
+section**, whose own counts and locators were taken at `proto/cpp` `83f03aa` and say so where
+they appear. The two trees are not reconciled here on purpose: a locator is only worth
+anything with the tree it was read in attached to it.
 
-## The decision
+## Superseded, 2026-08-27: the boundary moved, so the ownership moved with it
+
+**The new rule: pantr's domain types are owned by C++, and Python wraps them.**
+
+Two things this rule is *not*. It is not "some types are also implemented in C++": ownership
+moves, it is not duplicated. And it is not "the types that carry an invariant": that criterion
+would sort the domain into owned-here and owned-there and put the boundary back one class at a
+time, and the boundary is what was removed.
+
+**Where the line does fall, and it is a different axis: what the library models, against what
+makes it run.** A domain type -- `AABB`, `Grid`, `Bezier`, `QuadratureRule`, anything a user of
+either language would name when describing what pantr is for -- moves to C++, with no exception
+to argue about. A type that exists only to implement the Python binding or its dispatch stays in
+Python, because it could not move even in principle. The example to hold in mind is
+`DegreeKernels` (`src/pantr/bezier/_bezier_backend.py:114`): a `NamedTuple` whose two fields are
+references to Python kernel *functions*, selected by `_select` from the requested backend. There
+is no C++ object it could be a wrapper for; it exists so that the never-fall-back rule is applied
+in one place. Stating the line is what keeps it from becoming an unwritten exception list, which
+is the failure mode of writing the rule as unconditional.
+
+`pantr._backend`'s `Backend` and `IsaVariant` are **not** examples of this, and it is worth
+saying why, since they look like they should be: they are `IntEnum`s, and the kernel-seam table
+below already settles enums -- they cross as integers. ISA selection in particular is a question
+C++ very much has.
+
+The rule says nothing about *when* each domain type moves. That is the staging in "What the
+reversal does not license" below.
+
+### What changed
+
+This note assumed, without writing it down, that the C++ side exists in order to be called
+from Python. On 2026-08-27 that assumption was overruled: **a C++ program links pantr with
+no interpreter present.** Under the 2026-08-20 rule such a program receives kernels over raw
+arrays and nothing else, so it must reimplement validation, error reporting and every
+invariant this package already knows how to maintain -- once per consumer, in the consumer.
+That consequence was never chosen; it fell out of an assumption that has now been denied.
+
+### Why this does not reintroduce the failure the note was written to prevent
+
+The failure named in "Why the question had to be settled" is **two implementations of one
+type**, and a value produced by one being handed to the other. Reversing ownership does not
+create that, because it does not create a second implementation: it moves the single
+implementation to the far side of the seam. Python keeps exactly one class per concept, as
+it does today; that class holds a handle to the C++ object instead of holding the arrays
+itself. The `isinstance` dispatch sites keep working for the same reason -- there is still
+one Python class to dispatch on. There are **16** of them, not the "about twenty" the
+superseded text below estimates, over five files in `basis`, `bezier` and `bspline`;
+counted at `83f03aa` with `grep -rn "isinstance(.*PointsLattice" src/pantr --include=*.py`.
+
+The shape that *would* reintroduce the failure is a C++ type and a Python type maintained
+in parallel with a conversion between them. **That is forbidden**, and it is the specific
+thing to look for when reviewing any port done under this amendment.
+
+### What the reversal does not license
+
+- **It is not a licence to port a type early.** The four properties that made
+  `PointsLattice` a poor candidate -- transient, its only real method the one the design
+  already rejects, no identity, dispatched on at sixteen sites -- are properties of
+  that class, and they are unchanged. What is refuted is the *general* rule the note drew
+  from it, not the reading of the class.
+- **The kernel seam is unchanged.** A kernel entry point still takes and returns arrays,
+  sizes and status codes. The table in "The rule in the form a kernel author needs" is still
+  the contract for that seam. What the amendment adds is a layer *above* the kernels on the
+  C++ side, which did not exist when the table was written.
+- **It does not settle the staging order.** Ownership moves module by module as each module
+  is ported, and a module not yet ported keeps its Python-owned type until it is.
+
+### What it costs
+
+Measured on `proto/cpp` at `83f03aa`, by `grep -rn "^class [A-Z]" src/pantr --include=*.py`:
+**36 classes in the package, 33 outside `mpi` and `viz`**, of which **14 fall inside the
+Stage 1 scope** (`geometry` 1, `grid` 8, `quad` 2, `transform` 1, `bezier` 2; `change_basis`
+has none). `bspline`, at 12, is the largest single block and is untouched.
+
+None of Layer 1 or Layer 2 is ported today: what exists in C++ is kernels. So the amendment
+converts an unstarted layer into the main body of remaining work, and it should be read as
+enlarging the port rather than redirecting it.
+
+### Epistemic status of this amendment
+
+- **Ruled**, 2026-08-27: that a C++ consumer must work with no interpreter. That is the
+  input, not a finding.
+- **Derived**: that ownership therefore moves to C++ rather than being duplicated. The
+  derivation is the paragraph above -- the original note's own hazard admits only one
+  implementation, and the ruling requires that one to be reachable without Python.
+- **Not yet demonstrated**: that a Python class wrapping a C++ handle preserves the sixteen
+  `isinstance` sites and the pickling behaviour they sit next to. Nothing has been built.
+  The first ported type is where this gets tested, and if it fails, this amendment is what
+  should be revisited rather than worked around.
+
+## The decision (superseded 2026-08-27; see the section above)
 
 **Types are owned by Python. Only arrays and scalars cross the boundary.**
+
+> This rule no longer holds. It is kept verbatim because the amendment above answers it
+> point by point, and because the reasoning under it about `PointsLattice` still stands.
 
 There is no `pantr::PointsLattice`, no `pantr::QuadratureRule`, and no C++ counterpart of
 any other pantr class. A binding takes the arrays a Python object already holds and hands
