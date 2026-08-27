@@ -16,8 +16,21 @@
 
 cmake_minimum_required(VERSION 3.25)  # SYSTEM on FetchContent_Declare
 
+# The version is read rather than repeated. pyproject.toml calls `__version__` in
+# src/pantr/__init__.py the single source of truth, and it was true of the Python
+# package only: this line carried its own copy. Exporting a package version makes
+# the drift consequential, since the installed pantrConfigVersion.cmake would
+# claim a version the Python package disagrees with.
+file(READ "${CMAKE_CURRENT_SOURCE_DIR}/src/pantr/__init__.py" _pantr_init)
+string(REGEX MATCH "__version__[^=]*=[ \t]*\"([^\"]+)\"" _ "${_pantr_init}")
+if(NOT CMAKE_MATCH_1)
+  message(FATAL_ERROR "could not read __version__ from src/pantr/__init__.py")
+endif()
+set(PANTR_VERSION "${CMAKE_MATCH_1}")
+unset(_pantr_init)
+
 project(pantr_cpp
-        VERSION 0.7.0
+        VERSION ${PANTR_VERSION}
         DESCRIPTION "C++ core for pantr (prototype)"
         LANGUAGES CXX)
 
