@@ -14,7 +14,8 @@ set(PANTR_TEST_SOURCES
     test_bezier_root_finding.cpp
     test_grid_locate.cpp
     test_grid_bvh.cpp
-    test_grid_hierarchical.cpp)
+    test_grid_hierarchical.cpp
+    test_aabb.cpp)
 
 foreach(_src IN LISTS PANTR_TEST_SOURCES)
   cmake_path(GET _src STEM _name)
