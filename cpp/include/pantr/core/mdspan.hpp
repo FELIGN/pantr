@@ -6,8 +6,20 @@
 ///
 /// design/toolchain_requirements.md classifies `<mdspan>` as a feature toggle
 /// rather than a hard gate, because a drop-in fallback exists and is
-/// maintained by the same people who wrote the proposal. `PANTR_HAS_STD_MDSPAN`
-/// is set by the configure-time probe in cmake/PantrCompilerProbes.cmake.
+/// maintained by the same people who wrote the proposal.
+///
+/// **The header decides, not the build.** `__cpp_lib_mdspan` is the feature-test
+/// macro for exactly this question, so `<version>` answers it for whichever
+/// compiler is actually compiling. That matters because this library is
+/// header-only and installable: a configure-time probe measures the toolchain
+/// that BUILT the package, and a consumer may not be using it. Baking the
+/// probe's answer into the installed target would force our answer onto their
+/// compiler, which can be wrong in both directions.
+///
+/// `PANTR_HAS_STD_MDSPAN` remains as a manual override, honoured when defined
+/// ahead of this header. cmake/PantrCompilerProbes.cmake still runs the probe:
+/// its result decides whether Kokkos has to be on the include path at all, and
+/// it is reported by CI. That definition is BUILD_INTERFACE only.
 ///
 /// **On this project's toolchain the toggle resolves to Kokkos**, and the
 /// reason is an implementation gap rather than a language-mode restriction.
@@ -53,10 +65,26 @@
 
 #include <array>
 #include <cstddef>
+#include <version>  // __cpp_lib_mdspan, and nothing else
+
+// Not overridden, so ask the compiler that is compiling. `<version>` defines the
+// feature-test macros without pulling in a library, and __cpp_lib_mdspan is
+// defined exactly when <mdspan> is available.
+#if !defined(PANTR_HAS_STD_MDSPAN)
+#  if defined(__cpp_lib_mdspan) && __cpp_lib_mdspan >= 202207L
+#    define PANTR_HAS_STD_MDSPAN 1
+#  endif
+#endif
 
 #if defined(PANTR_HAS_STD_MDSPAN)
 #  include <mdspan>
 #else
+#  if defined(__has_include) && !__has_include(<experimental/mdspan>)
+#    error "pantr needs either <mdspan> or the Kokkos reference implementation, \
+and this standard library provides neither. Install kokkos/mdspan and make it \
+findable: with CMake, put its prefix on CMAKE_PREFIX_PATH or set mdspan_ROOT, \
+which is what pantrConfig.cmake's find_package(mdspan) looks for."
+#  endif
 #  include <experimental/mdspan>
 #endif
 
