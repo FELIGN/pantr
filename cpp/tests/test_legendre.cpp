@@ -44,6 +44,17 @@
 /// Each is compared against `2^degree * eps` where a growth factor is genuinely
 /// unavoidable, and against a small multiple of `eps` where it is not, and the
 /// distinction is stated per test rather than hidden in one constant.
+///
+/// ## The recurrence coefficients are mutation-checked, not merely covered
+///
+/// Replacing `b[i]`'s leading factor in
+/// `basis/legendre.hpp::tabulate_legendre_1d` from `(i - 1) / i` to `i / i`, which
+/// is the same expression with the shift dropped and evaluates to one, makes this
+/// file fail while the rest of the C++ suite still passes. So the assertions here
+/// discriminate the recurrence rather than only exercising it.
+///
+/// Redo it by making that edit and running `ctest`. See test_bernstein.cpp for the
+/// companion check and for why this is not automated.
 
 #include <cmath>
 #include <cstddef>
