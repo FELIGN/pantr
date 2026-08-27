@@ -18,10 +18,23 @@ Main exports:
 
 from __future__ import annotations
 
-from typing import Final, Protocol
+from typing import TYPE_CHECKING, Any, Final, Protocol, TypeAlias
 
 import numpy as np
 from numpy import typing as npt
+
+from pantr._backend import Backend, active_backend, available_backends
+
+if TYPE_CHECKING:
+    from pantr._pantr_cpp import AABB as _CppAABB
+
+    _Impl: TypeAlias = "_AABBPython | _CppAABB"
+    """The implementation an :class:`AABB` holds: the oracle, or the C++ box.
+
+    Type-checking only. The two are unrelated nominal types that happen to offer
+    the same surface, which is the port's whole claim; naming the union here is
+    what lets the checker verify it instead of taking it on trust.
+    """
 
 # Shape constants for :meth:`AABB.from_bounds` / :meth:`AABB.as_bounds`.
 _BOUNDS_NDIM: Final[int] = 2  # bounds array must be exactly 2-D (axes x {lo,hi})
@@ -96,10 +109,24 @@ def _as_float64(arr: npt.ArrayLike, *, name: str) -> npt.NDArray[np.float64]:
     return a
 
 
-class AABB:
-    """Axis-aligned bounding box in any spatial dimension ``ndim >= 1``.
+class _AABBPython:
+    """The pure-Python axis-aligned bounding box, kept as the port's oracle.
 
-    An :class:`AABB` stores two 1-D arrays :attr:`lo` and :attr:`hi` of equal
+    This was the public :class:`AABB` until 2026-08-27, when
+    ``design/cross_backend_types.md`` was amended so that pantr's domain types are
+    owned by C++ and Python wraps them. It survives for two reasons and both are
+    temporary: it is what the parity suite compares the C++ box against, and it is
+    what runs under ``PANTR_BACKEND=python``, which is how the package still
+    imports in a tree with no compiled extension.
+
+    **It is not a second implementation of the public type.** :class:`AABB` is the
+    only class a caller ever holds; this one is reachable only through it. When
+    the C++ core stops being optional, this class goes and :class:`AABB` collapses
+    into a plain wrapper.
+
+    Axis-aligned bounding box in any spatial dimension ``ndim >= 1``.
+
+    An :class:`_AABBPython` stores two 1-D arrays :attr:`lo` and :attr:`hi` of equal
     shape ``(ndim,)``. Entries may be finite or ``+/- numpy.inf`` (for unbounded
     axes); ``numpy.nan`` is rejected. Instances are frozen: the stored arrays
     are C-contiguous, ``float64``, and flagged read-only, and ``__setattr__``
@@ -119,7 +146,7 @@ class AABB:
     hi: npt.NDArray[np.float64]
 
     def __init__(self, lo: npt.ArrayLike, hi: npt.ArrayLike) -> None:
-        """Build and validate an AABB from array-like corners.
+        """Build and validate an _AABBPython from array-like corners.
 
         The arguments are coerced to C-contiguous ``float64`` arrays and
         checked for NaN. The resulting buffers are cached as read-only
@@ -160,7 +187,7 @@ class AABB:
         """Reject post-construction attribute writes.
 
         Raises:
-            AttributeError: Always -- :class:`AABB` is immutable.
+            AttributeError: Always -- :class:`_AABBPython` is immutable.
         """
         raise AttributeError(f"AABB is immutable; cannot set attribute {name!r}.")
 
@@ -168,7 +195,7 @@ class AABB:
         """Reject attribute deletion.
 
         Raises:
-            AttributeError: Always -- :class:`AABB` is immutable.
+            AttributeError: Always -- :class:`_AABBPython` is immutable.
         """
         raise AttributeError(f"AABB is immutable; cannot delete attribute {name!r}.")
 
@@ -176,7 +203,7 @@ class AABB:
         """Return a compact representation useful for debugging.
 
         Returns:
-            str: ``"AABB(lo=..., hi=...)"`` with corner values as Python lists.
+            str: ``"_AABBPython(lo=..., hi=...)"`` with corner values as Python lists.
         """
         return f"AABB(lo={self.lo.tolist()!r}, hi={self.hi.tolist()!r})"
 
@@ -184,11 +211,11 @@ class AABB:
         """Compare value-based equality: two AABBs are equal iff their bounds match.
 
         This is *value* equality, not geometric equality: two empty AABBs whose
-        corner arrays differ (e.g. ``AABB.empty(2)`` vs a hand-constructed empty)
+        corner arrays differ (e.g. ``_AABBPython.empty(2)`` vs a hand-constructed empty)
         compare unequal even though they contain the same set of points.
 
         Args:
-            other (object): Expected to be an :class:`AABB`.
+            other (object): Expected to be an :class:`_AABBPython`.
 
         Returns:
             bool: ``True`` when both corner arrays are element-wise equal
@@ -196,10 +223,10 @@ class AABB:
             which :meth:`__hash__` normalizes away to stay compatible).
 
         Note:
-            Returns :data:`NotImplemented` for non-:class:`AABB` ``other`` so
+            Returns :data:`NotImplemented` for non-:class:`_AABBPython` ``other`` so
             that Python's reflected equality protocol works correctly.
         """
-        if not isinstance(other, AABB):
+        if not isinstance(other, _AABBPython):
             return NotImplemented
         return bool(np.array_equal(self.lo, other.lo) and np.array_equal(self.hi, other.hi))
 
@@ -266,13 +293,13 @@ class AABB:
             raise ValueError("contains_point: x must not contain NaN.")
         return bool(np.all((x_arr >= self.lo) & (x_arr <= self.hi)))
 
-    def overlaps(self, other: AABB) -> bool:
+    def overlaps(self, other: _AABBPython) -> bool:
         """Check whether ``self`` and ``other`` share at least one point.
 
         Empty boxes (on either side) overlap nothing.
 
         Args:
-            other (AABB): The box to test against; must share :attr:`ndim`.
+            other (_AABBPython): The box to test against; must share :attr:`ndim`.
 
         Returns:
             bool: ``True`` when the two boxes intersect, ``False`` otherwise.
@@ -287,16 +314,16 @@ class AABB:
         hi = np.minimum(self.hi, other.hi)
         return bool(np.all(lo <= hi))
 
-    def union(self, other: AABB) -> AABB:
+    def union(self, other: _AABBPython) -> _AABBPython:
         """Return the smallest axis-aligned box that contains ``self`` and ``other``.
 
         Empty boxes act as neutral elements: ``union(empty, x) == x``.
 
         Args:
-            other (AABB): Box to union with; must share :attr:`ndim`.
+            other (_AABBPython): Box to union with; must share :attr:`ndim`.
 
         Returns:
-            AABB: The union bounding box.
+            _AABBPython: The union bounding box.
 
         Raises:
             ValueError: If ``other.ndim != self.ndim``.
@@ -306,16 +333,16 @@ class AABB:
             return other
         if other.is_empty():
             return self
-        return AABB(np.minimum(self.lo, other.lo), np.maximum(self.hi, other.hi))
+        return _AABBPython(np.minimum(self.lo, other.lo), np.maximum(self.hi, other.hi))
 
-    def intersect(self, other: AABB) -> AABB | None:
+    def intersect(self, other: _AABBPython) -> _AABBPython | None:
         """Return the axis-aligned intersection, or ``None`` if disjoint.
 
         Args:
-            other (AABB): Box to intersect with; must share :attr:`ndim`.
+            other (_AABBPython): Box to intersect with; must share :attr:`ndim`.
 
         Returns:
-            AABB | None: The intersection, or ``None`` when the two boxes do not
+            _AABBPython | None: The intersection, or ``None`` when the two boxes do not
             overlap (including the case where either operand is empty).
 
         Raises:
@@ -328,15 +355,15 @@ class AABB:
         hi = np.minimum(self.hi, other.hi)
         if np.any(lo > hi):
             return None
-        return AABB(lo, hi)
+        return _AABBPython(lo, hi)
 
-    def pad(self, r: float | npt.ArrayLike) -> AABB:
+    def pad(self, r: float | npt.ArrayLike) -> _AABBPython:
         """Inflate the box by ``r`` on every axis (symmetric on both sides).
 
         A scalar ``r`` expands every axis by the same amount; a length-``ndim``
         array expands each axis by its own entry. Padding an unbounded axis
         leaves it unbounded. Padding by a negative ``r`` shrinks the box and can
-        produce an empty AABB, which is allowed and reported by
+        produce an empty _AABBPython, which is allowed and reported by
         :meth:`is_empty`.
 
         Args:
@@ -344,7 +371,7 @@ class AABB:
                 length-``ndim`` array-like of finite reals.
 
         Returns:
-            AABB: The padded box.
+            _AABBPython: The padded box.
 
         Raises:
             ValueError: If ``r`` has the wrong shape or non-finite entries.
@@ -361,9 +388,9 @@ class AABB:
         if not np.all(np.isfinite(pad_vec)):
             raise ValueError(f"pad(r) entries must be finite; got {pad_vec.tolist()!r}.")
         # Inf bounds are preserved by numpy: (+inf) + finite == +inf; (-inf) - finite == -inf.
-        return AABB(self.lo - pad_vec, self.hi + pad_vec)
+        return _AABBPython(self.lo - pad_vec, self.hi + pad_vec)
 
-    def transform(self, affine: _AffineMap) -> AABB:
+    def transform(self, affine: _AffineMap) -> _AABBPython:
         """Return the axis-aligned wrap of the image of ``self`` under ``affine``.
 
         For an affine map ``T(x) = A x + b``, the tight axis-aligned box
@@ -380,7 +407,7 @@ class AABB:
                 dimension must match :attr:`ndim`.
 
         Returns:
-            AABB: The axis-aligned wrap of the transformed box.
+            _AABBPython: The axis-aligned wrap of the transformed box.
 
         Raises:
             ValueError: If ``affine.dim != self.ndim``, if ``affine.matrix`` is
@@ -389,7 +416,7 @@ class AABB:
                 opposing infinite bounds in the same row).
         """
         if self.is_empty():
-            return AABB.empty(self.ndim)
+            return _AABBPython.empty(self.ndim)
         if affine.dim != self.ndim:
             raise ValueError(
                 f"transform(): affine dim ({affine.dim}) must match AABB ndim ({self.ndim})."
@@ -422,10 +449,452 @@ class AABB:
             new_hi = np.sum(contrib_max, axis=1) + b
         if np.any(np.isnan(new_lo)) or np.any(np.isnan(new_hi)):
             raise ValueError(
-                "AABB.transform produced NaN bounds; the transform is incompatible with "
-                "this AABB (for example, a singular matrix combined with infinite bounds)."
+                "_AABBPython.transform produced NaN bounds; the transform is incompatible with "
+                "this _AABBPython (for example, a singular matrix combined with infinite bounds)."
             )
-        return AABB(new_lo, new_hi)
+        return _AABBPython(new_lo, new_hi)
+
+    @staticmethod
+    def unbounded(ndim: int) -> _AABBPython:
+        """Build the everywhere-true _AABBPython ``(-inf, +inf)^ndim``.
+
+        Args:
+            ndim (int): Spatial dimension (``>= 1``).
+
+        Returns:
+            _AABBPython: The unbounded _AABBPython.
+
+        Raises:
+            ValueError: If ``ndim < 1``.
+        """
+        if ndim < 1:
+            raise ValueError(f"AABB.unbounded: ndim must be >= 1; got {ndim}.")
+        lo = np.full(ndim, -np.inf, dtype=np.float64)
+        hi = np.full(ndim, np.inf, dtype=np.float64)
+        return _AABBPython(lo, hi)
+
+    @staticmethod
+    def empty(ndim: int) -> _AABBPython:
+        """Build an empty (zero-volume) _AABBPython with ``lo > hi``.
+
+        An empty _AABBPython contains no points (detected by :meth:`is_empty`) and acts
+        as the neutral element of :meth:`union` (``union(empty, x) == x``).
+        Symmetric counterpart to :meth:`unbounded`.
+
+        Args:
+            ndim (int): Spatial dimension (``>= 1``).
+
+        Returns:
+            _AABBPython: An empty _AABBPython (``lo = +inf``, ``hi = -inf``).
+
+        Raises:
+            ValueError: If ``ndim < 1``.
+        """
+        if ndim < 1:
+            raise ValueError(f"AABB.empty: ndim must be >= 1; got {ndim}.")
+        lo = np.full(ndim, np.inf, dtype=np.float64)
+        hi = np.full(ndim, -np.inf, dtype=np.float64)
+        return _AABBPython(lo, hi)
+
+    @staticmethod
+    def from_bounds(bounds: npt.ArrayLike) -> _AABBPython:
+        """Build an _AABBPython from a ``(ndim, 2)`` ``[[lo, hi], ...]`` array.
+
+        The dual of :meth:`as_bounds`; useful when interoperating with
+        ``numpy.histogramdd``-style bounds arguments.
+
+        Args:
+            bounds (npt.ArrayLike): ``(ndim, 2)`` array-like of ``[lo, hi]`` rows.
+
+        Returns:
+            _AABBPython: The constructed _AABBPython.
+
+        Raises:
+            ValueError: If ``bounds`` does not have shape ``(ndim, 2)`` with
+                ``ndim >= 1``.
+            TypeError: If ``bounds`` has a non-numeric dtype.
+        """
+        arr = _as_float64(bounds, name="bounds")
+        if arr.ndim != _BOUNDS_NDIM or arr.shape[-1] != _BOUNDS_AXIS_LEN:
+            raise ValueError(f"from_bounds: bounds must have shape (ndim, 2); got {arr.shape}.")
+        return _AABBPython(arr[:, 0], arr[:, 1])
+
+    def as_bounds(self) -> npt.NDArray[np.float64]:
+        """Return the _AABBPython as a ``(ndim, 2)`` ``[[lo, hi], ...]`` array.
+
+        Returns:
+            npt.NDArray[np.float64]: A freshly-allocated, writeable, C-contiguous
+            ``(ndim, 2)`` array.
+        """
+        out = np.empty((self.ndim, _BOUNDS_AXIS_LEN), dtype=np.float64)
+        out[:, 0] = self.lo
+        out[:, 1] = self.hi
+        return out
+
+
+def _require_same_ndim(a: _AABBPython, b: _AABBPython, *, op: str) -> None:
+    """Raise ``ValueError`` if two AABBs have mismatched dimensions.
+
+    Args:
+        a (_AABBPython): First operand.
+        b (_AABBPython): Second operand.
+        op (str): Operation name for the error message.
+
+    Raises:
+        ValueError: If ``a.ndim != b.ndim``.
+    """
+    if a.ndim != b.ndim:
+        raise ValueError(f"AABB.{op}: dimension mismatch (a.ndim={a.ndim} vs b.ndim={b.ndim}).")
+
+
+def _new_impl(lo: npt.ArrayLike, hi: npt.ArrayLike) -> _Impl:
+    """Build a box in whichever implementation the active backend selects.
+
+    Args:
+        lo (npt.ArrayLike): Lower corner.
+        hi (npt.ArrayLike): Upper corner.
+
+    Returns:
+        _Impl: The implementation object; a ``_AABBPython`` or a C++ handle.
+
+    Raises:
+        RuntimeError: If the C++ backend is requested and is not available.
+    """
+    cls = _impl_class()
+    if cls is _AABBPython:
+        return _AABBPython(lo, hi)
+    return cls(_as_float64(lo, name="lo").ravel(), _as_float64(hi, name="hi").ravel())
+
+
+def _impl_class() -> type[_AABBPython] | type[_CppAABB]:
+    """The implementation class the active backend selects.
+
+    The choice is per process rather than per instance, deliberately: two boxes
+    built under different backends could otherwise meet in a binary operation,
+    and reconciling them would mean converting one implementation into the other
+    -- the shape ``design/cross_backend_types.md`` forbids. With no per-instance
+    override there is nothing to reconcile, and the parity suite, which is the one
+    caller that does hold both at once, compares their outputs rather than mixing
+    the objects.
+
+    Returns:
+        type[_AABBPython] | type[_CppAABB]: ``_AABBPython`` under the Python
+        backend, the bound C++ class otherwise.
+
+    Raises:
+        RuntimeError: If the C++ backend is requested and is not available.
+    """
+    if active_backend() is Backend.PYTHON:
+        return _AABBPython
+    if Backend.CPP not in available_backends():
+        raise RuntimeError("the CPP backend is not available in this installation")
+    from pantr import _pantr_cpp  # noqa: PLC0415  (optional, imported only when selected)
+
+    return _pantr_cpp.AABB
+
+
+class AABB:
+    """Axis-aligned bounding box in any spatial dimension ``ndim >= 1``.
+
+    Stores two corner vectors of equal length ``ndim``. Entries may be finite or
+    ``+/- numpy.inf``; ``numpy.nan`` is rejected. A box with ``lo[i] > hi[i]`` on
+    some axis is *empty* and contains no point, which :meth:`is_empty` reports.
+    Instances are immutable.
+
+    **This class is a wrapper.** Since the 2026-08-27 amendment to
+    ``design/cross_backend_types.md`` the box itself is owned by the C++ core
+    (``cpp/include/pantr/geometry/aabb.hpp``) and this class holds one. Ownership
+    moved rather than being duplicated: there is one implementation of a box, and
+    one Python class in front of it, which is what keeps the roughly two dozen
+    ``isinstance`` sites across the package working unchanged.
+
+    Under ``PANTR_BACKEND=python`` the thing held is :class:`_AABBPython`
+    instead, which is the port's oracle and is temporary; see that class.
+
+    Attributes:
+        lo (npt.NDArray[np.float64]): Lower corner, shape ``(ndim,)``, read-only.
+        hi (npt.NDArray[np.float64]): Upper corner, shape ``(ndim,)``, read-only.
+    """
+
+    __slots__ = ("_impl",)
+
+    _impl: _Impl
+    """The implementation this wrapper holds; see :func:`_impl_class`."""
+
+    def __init__(self, lo: npt.ArrayLike, hi: npt.ArrayLike) -> None:
+        """Build and validate a box from array-like corners.
+
+        Args:
+            lo (npt.ArrayLike): Lower corner; array-like of finite-or-infinite floats.
+            hi (npt.ArrayLike): Upper corner, same shape and semantics as ``lo``.
+
+        Raises:
+            ValueError: If the shapes mismatch, contain a NaN, or the implied
+                ``ndim`` is less than 1.
+            TypeError: If ``lo`` or ``hi`` has a non-numeric dtype.
+        """
+        object.__setattr__(self, "_impl", _new_impl(lo, hi))
+
+    def _peer(self, other: AABB) -> Any:  # noqa: ANN401 -- see the Returns section
+        """The other box's implementation, once it is known to match this one's.
+
+        The backend is chosen per process, so in ordinary use every box in flight
+        holds the same implementation and this check never fires. It exists for
+        the one caller that can break that -- the parity suite, which builds both
+        deliberately -- and because handing a C++ box a Python one would otherwise
+        fail somewhere further in with a message about neither.
+
+        Mixing them is not merely unsupported: reconciling two implementations of
+        one type by converting between them is the shape
+        ``design/cross_backend_types.md`` forbids, so this refuses rather than
+        converts.
+
+        Args:
+            other (AABB): The right-hand box.
+
+        Returns:
+            Any: ``other``'s implementation. Untyped because the two are unrelated
+            nominal types and this method's whole job is the check that makes the
+            call safe.
+
+        Raises:
+            TypeError: If the two boxes hold different implementations.
+        """
+        mine, theirs = type(self._impl), type(other._impl)
+        if mine is not theirs:
+            raise TypeError(
+                f"AABB: cannot combine boxes from different backends "
+                f"({mine.__name__} and {theirs.__name__}); the backend is chosen "
+                f"per process, so this means one was built under a different one."
+            )
+        return other._impl
+
+    @classmethod
+    def _wrap(cls, impl: _Impl) -> AABB:
+        """Wrap an implementation object that is already valid.
+
+        Args:
+            impl (_Impl): The implementation object to adopt.
+
+        Returns:
+            AABB: A wrapper around ``impl``, with no re-validation.
+        """
+        self = object.__new__(cls)
+        object.__setattr__(self, "_impl", impl)
+        return self
+
+    def __setattr__(self, name: str, value: object) -> None:
+        """Reject post-construction attribute writes.
+
+        Args:
+            name (str): The attribute being set.
+            value (object): The value it would take.
+
+        Raises:
+            AttributeError: Always -- :class:`AABB` is immutable.
+        """
+        raise AttributeError(f"AABB is immutable; cannot set attribute {name!r}.")
+
+    def __delattr__(self, name: str) -> None:
+        """Reject attribute deletion.
+
+        Args:
+            name (str): The attribute being deleted.
+
+        Raises:
+            AttributeError: Always -- :class:`AABB` is immutable.
+        """
+        raise AttributeError(f"AABB is immutable; cannot delete attribute {name!r}.")
+
+    def __reduce__(self) -> tuple[type[AABB], tuple[npt.NDArray[np.float64], ...]]:
+        """Pickle by corners rather than by implementation.
+
+        The C++ handle is not picklable and must not become part of the wire
+        format: a pickle written with the C++ backend has to load under the Python
+        one and the other way round, or the backend switch would silently become
+        a data-format switch.
+
+        Returns:
+            tuple: The class and the two corner arrays to rebuild it from.
+        """
+        return (type(self), (self.lo, self.hi))
+
+    def __repr__(self) -> str:
+        """Return a compact representation useful for debugging.
+
+        Formatted here rather than by the implementation, so that the two
+        backends print identically; the C++ side's own ``to_string`` uses the
+        C++ default float formatting and does not match.
+
+        Returns:
+            str: ``"AABB(lo=..., hi=...)"`` with corner values as Python lists.
+        """
+        return f"AABB(lo={self.lo.tolist()!r}, hi={self.hi.tolist()!r})"
+
+    def __eq__(self, other: object) -> bool:
+        """Compare value-based equality: two AABBs are equal iff their bounds match.
+
+        Args:
+            other (object): Expected to be an :class:`AABB`.
+
+        Returns:
+            bool: ``True`` when both corner arrays are element-wise equal.
+        """
+        if not isinstance(other, AABB):
+            return NotImplemented
+        return bool(np.array_equal(self.lo, other.lo) and np.array_equal(self.hi, other.hi))
+
+    def __hash__(self) -> int:
+        """Hash the corner bytes, with signed zero normalized to ``+0.0``.
+
+        Computed here rather than delegated, for the same reason as
+        :meth:`__reduce__`: the two implementations hash to different integers,
+        and a hash that changed with ``PANTR_BACKEND`` would make a dict built
+        under one backend unreadable under the other.
+
+        Returns:
+            int: Hash of the normalized corner bytes; equal AABBs hash equal.
+        """
+        return hash(((self.lo + 0.0).tobytes(), (self.hi + 0.0).tobytes()))
+
+    @property
+    def lo(self) -> npt.NDArray[np.float64]:
+        """Get the lower corner.
+
+        Returns:
+            npt.NDArray[np.float64]: Shape ``(ndim,)``, read-only.
+        """
+        return self._impl.lo
+
+    @property
+    def hi(self) -> npt.NDArray[np.float64]:
+        """Get the upper corner.
+
+        Returns:
+            npt.NDArray[np.float64]: Shape ``(ndim,)``, read-only.
+        """
+        return self._impl.hi
+
+    @property
+    def ndim(self) -> int:
+        """Get the spatial dimensionality of the box.
+
+        Returns:
+            int: The number of axes (``>= 1``).
+        """
+        return int(self._impl.ndim)
+
+    def is_empty(self) -> bool:
+        """Check whether the box contains no points.
+
+        Returns:
+            bool: ``True`` when the box is empty.
+        """
+        return bool(self._impl.is_empty())
+
+    def contains_point(self, x: npt.ArrayLike) -> bool:
+        """Check whether point ``x`` lies inside or on the boundary of the box.
+
+        Args:
+            x (npt.ArrayLike): Point to test, ravelled to 1-D of length ``ndim``.
+
+        Returns:
+            bool: ``True`` when ``x`` is inside or on the boundary.
+
+        Raises:
+            ValueError: If ``x`` has the wrong length or contains NaN.
+            TypeError: If ``x`` has a non-numeric dtype.
+        """
+        return bool(self._impl.contains_point(self._coerce(x, name="x")))
+
+    def overlaps(self, other: AABB) -> bool:
+        """Check whether ``self`` and ``other`` share at least one point.
+
+        Args:
+            other (AABB): The box to test against; must share :attr:`ndim`.
+
+        Returns:
+            bool: ``True`` when the two boxes intersect.
+
+        Raises:
+            ValueError: If ``other.ndim != self.ndim``.
+        """
+        return bool(self._impl.overlaps(self._peer(other)))
+
+    def union(self, other: AABB) -> AABB:
+        """Return the smallest axis-aligned box that contains ``self`` and ``other``.
+
+        Args:
+            other (AABB): Box to union with; must share :attr:`ndim`.
+
+        Returns:
+            AABB: The union bounding box.
+
+        Raises:
+            ValueError: If ``other.ndim != self.ndim``.
+        """
+        return AABB._wrap(self._impl.union(self._peer(other)))
+
+    def intersect(self, other: AABB) -> AABB | None:
+        """Return the axis-aligned intersection, or ``None`` if disjoint.
+
+        Args:
+            other (AABB): Box to intersect with; must share :attr:`ndim`.
+
+        Returns:
+            AABB | None: The intersection, or ``None`` when they do not overlap.
+
+        Raises:
+            ValueError: If ``other.ndim != self.ndim``.
+        """
+        got = self._impl.intersect(self._peer(other))
+        return None if got is None else AABB._wrap(got)
+
+    def pad(self, r: float | npt.ArrayLike) -> AABB:
+        """Inflate the box by ``r`` on every axis (symmetric on both sides).
+
+        Args:
+            r (float | npt.ArrayLike): Scalar or length-``ndim`` radius.
+
+        Returns:
+            AABB: The padded box.
+
+        Raises:
+            ValueError: If ``r`` has the wrong shape or non-finite entries.
+        """
+        arr = _as_float64(r, name="r")
+        payload: float | npt.NDArray[np.float64] = (
+            float(arr) if arr.ndim == 0 else np.ascontiguousarray(arr.ravel())
+        )
+        return AABB._wrap(self._impl.pad(payload))
+
+    def transform(self, affine: _AffineMap) -> AABB:
+        """Return the axis-aligned wrap of the image of ``self`` under ``affine``.
+
+        The protocol stays on this side of the seam: the C++ box takes the matrix
+        and the offset as arrays, which is the kernel-seam contract, and this
+        method is what reads them off whatever object the caller passed.
+
+        Args:
+            affine (_AffineMap): Any object exposing ``dim``, ``matrix`` and
+                ``offset``.
+
+        Returns:
+            AABB: The axis-aligned wrap of the transformed box.
+
+        Raises:
+            ValueError: If the dimensions disagree, the matrix is not square, or
+                the wrap produces NaN.
+        """
+        if isinstance(self._impl, _AABBPython):
+            return AABB._wrap(self._impl.transform(affine))
+        if affine.dim != self.ndim:
+            raise ValueError(
+                f"transform(): affine dim ({affine.dim}) must match AABB ndim ({self.ndim})."
+            )
+        matrix = np.ascontiguousarray(affine.matrix, dtype=np.float64)
+        offset = np.ascontiguousarray(affine.offset, dtype=np.float64).ravel()
+        return AABB._wrap(self._impl.transform(matrix, offset))
 
     @staticmethod
     def unbounded(ndim: int) -> AABB:
@@ -440,19 +909,11 @@ class AABB:
         Raises:
             ValueError: If ``ndim < 1``.
         """
-        if ndim < 1:
-            raise ValueError(f"AABB.unbounded: ndim must be >= 1; got {ndim}.")
-        lo = np.full(ndim, -np.inf, dtype=np.float64)
-        hi = np.full(ndim, np.inf, dtype=np.float64)
-        return AABB(lo, hi)
+        return AABB._wrap(_impl_class().unbounded(ndim))
 
     @staticmethod
     def empty(ndim: int) -> AABB:
         """Build an empty (zero-volume) AABB with ``lo > hi``.
-
-        An empty AABB contains no points (detected by :meth:`is_empty`) and acts
-        as the neutral element of :meth:`union` (``union(empty, x) == x``).
-        Symmetric counterpart to :meth:`unbounded`.
 
         Args:
             ndim (int): Spatial dimension (``>= 1``).
@@ -463,18 +924,11 @@ class AABB:
         Raises:
             ValueError: If ``ndim < 1``.
         """
-        if ndim < 1:
-            raise ValueError(f"AABB.empty: ndim must be >= 1; got {ndim}.")
-        lo = np.full(ndim, np.inf, dtype=np.float64)
-        hi = np.full(ndim, -np.inf, dtype=np.float64)
-        return AABB(lo, hi)
+        return AABB._wrap(_impl_class().empty(ndim))
 
     @staticmethod
     def from_bounds(bounds: npt.ArrayLike) -> AABB:
         """Build an AABB from a ``(ndim, 2)`` ``[[lo, hi], ...]`` array.
-
-        The dual of :meth:`as_bounds`; useful when interoperating with
-        ``numpy.histogramdd``-style bounds arguments.
 
         Args:
             bounds (npt.ArrayLike): ``(ndim, 2)`` array-like of ``[lo, hi]`` rows.
@@ -483,14 +937,16 @@ class AABB:
             AABB: The constructed AABB.
 
         Raises:
-            ValueError: If ``bounds`` does not have shape ``(ndim, 2)`` with
-                ``ndim >= 1``.
+            ValueError: If ``bounds`` does not have shape ``(ndim, 2)``.
             TypeError: If ``bounds`` has a non-numeric dtype.
         """
+        cls = _impl_class()
+        if cls is _AABBPython:
+            return AABB._wrap(cls.from_bounds(bounds))
         arr = _as_float64(bounds, name="bounds")
         if arr.ndim != _BOUNDS_NDIM or arr.shape[-1] != _BOUNDS_AXIS_LEN:
             raise ValueError(f"from_bounds: bounds must have shape (ndim, 2); got {arr.shape}.")
-        return AABB(arr[:, 0], arr[:, 1])
+        return AABB._wrap(cls.from_bounds(np.ascontiguousarray(arr)))
 
     def as_bounds(self) -> npt.NDArray[np.float64]:
         """Return the AABB as a ``(ndim, 2)`` ``[[lo, hi], ...]`` array.
@@ -499,25 +955,23 @@ class AABB:
             npt.NDArray[np.float64]: A freshly-allocated, writeable, C-contiguous
             ``(ndim, 2)`` array.
         """
-        out = np.empty((self.ndim, _BOUNDS_AXIS_LEN), dtype=np.float64)
-        out[:, 0] = self.lo
-        out[:, 1] = self.hi
-        return out
+        return np.asarray(self._impl.as_bounds(), dtype=np.float64)
 
+    def _coerce(self, x: npt.ArrayLike, *, name: str) -> npt.NDArray[np.float64]:
+        """Normalize an array-like argument the C++ side needs contiguous float64.
 
-def _require_same_ndim(a: AABB, b: AABB, *, op: str) -> None:
-    """Raise ``ValueError`` if two AABBs have mismatched dimensions.
+        The Python oracle accepts anything array-like and ravels it; the binding
+        refuses a non-contiguous or wrongly-typed array outright. Normalizing here
+        keeps ``PANTR_BACKEND`` from changing what the library accepts.
 
-    Args:
-        a (AABB): First operand.
-        b (AABB): Second operand.
-        op (str): Operation name for the error message.
+        Args:
+            x (npt.ArrayLike): The caller's argument.
+            name (str): Its name, for the error message.
 
-    Raises:
-        ValueError: If ``a.ndim != b.ndim``.
-    """
-    if a.ndim != b.ndim:
-        raise ValueError(f"AABB.{op}: dimension mismatch (a.ndim={a.ndim} vs b.ndim={b.ndim}).")
+        Returns:
+            npt.NDArray[np.float64]: A contiguous 1-D ``float64`` array.
+        """
+        return np.ascontiguousarray(_as_float64(x, name=name).ravel())
 
 
 __all__ = ["AABB"]
