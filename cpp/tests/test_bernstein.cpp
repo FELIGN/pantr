@@ -32,6 +32,19 @@
 /// The mirrored and unmirrored kernels are separately exercised by degree: the
 /// dispatch happens at degree 20 in float64 and 6 in float32, so a test at degree
 /// 24 runs code a test at degree 8 does not.
+///
+/// ## The recurrence coefficient is mutation-checked, not merely covered
+///
+/// Coverage says these assertions run; it does not say they would notice a wrong
+/// recurrence. They do. Perturbing `const_factor` in
+/// `basis/bernstein.hpp::tabulate_bernstein_1d` from `(n - i + 1) / i` to
+/// `(n - i + 2) / i`, at both of its sites, makes this file fail while the rest of
+/// the C++ suite still passes. That is the check worth recording: the failure is
+/// attributable to this file rather than to the suite at large.
+///
+/// Redo it by making that edit and running `ctest`; nothing automates it, because
+/// a mutation harness would have to keep a copy of the kernel and that copy is the
+/// thing that goes stale.
 
 #include <cmath>
 #include <cstddef>
