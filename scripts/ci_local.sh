@@ -307,10 +307,11 @@ cxx() {
     # nothing to notice.
     #
     # This is the ONLY place that check exists. .github/workflows/cpp.yaml runs
-    # GCC 14 and Clang 18, and ubuntu-24.04 does not package GCC 10, so covering
-    # the floor there needs an older image or a container -- more weight than a
-    # prototype should carry. design/toolchain_requirements.md records that the
-    # floor is verified locally and not by CI.
+    # GCC 14 only -- deliberately, as its own header says -- and ubuntu-24.04 does
+    # not package GCC 10, so covering the floor there needs an older image or a
+    # container -- more weight than a prototype should carry.
+    # design/toolchain_requirements.md records that the floor is verified locally
+    # and not by CI.
     local floor_cxx floor_name floor_dir
     for floor_cxx in /usr/bin/g++-10 /usr/bin/clang++-10; do
         floor_name="$(basename "$floor_cxx")"
