@@ -128,6 +128,14 @@ cmake.define.PANTR_WERROR = "ON"
 # lands under site-packages/lib/cmake where CMake does not look. Whether a pip
 # install should also ship the C++ package is a separate decision from having
 # install rules at all.
+#
+# Decided 2026-08-27: it stays OFF, and the two audiences are served by two routes.
+# pip serves the Python consumer; a C++ consumer takes pantr through a CMake install
+# (later, a conda package). The deciding fact is that the exported target carries a
+# hard `find_dependency(Eigen3)` and the wheel does not carry Eigen, so a
+# wheel-shipped `find_package(pantr)` would fail on any machine that has not
+# installed Eigen separately -- which is the default for someone installing by pip.
+# Shipping headers that cannot be configured against is worse than not shipping them.
 cmake.define.PANTR_INSTALL = "OFF"
 # Keep the symbol table in the INSTALLED extension. This prototype exists to be
 # measured, and a stripped module gives `perf` nothing to attribute time to and a
