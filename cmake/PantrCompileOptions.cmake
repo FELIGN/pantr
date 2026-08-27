@@ -88,9 +88,16 @@ target_compile_features(pantr_cxx_flags INTERFACE cxx_std_20)
 target_compile_options(pantr_cxx_flags INTERFACE
     $<$<COMPILE_LANG_AND_ID:CXX,GNU,Clang,AppleClang>:-ffp-contract=on>)
 
+# -Wsign-conversion is named explicitly because -Wconversion does NOT mean the
+# same thing in the two compilers: Clang implies it, GCC does not. Measured on an
+# `std::int64_t` indexing an `std::array` -- `g++ -Wconversion` warns 0 times,
+# `g++ -Wconversion -Wsign-conversion` and `clang++ -Wconversion` warn once each.
+# The asymmetry let six sites in grid/bvh.hpp break the Clang build for two days
+# while the GCC-only CI stayed green, and only scripts/ci_local.sh runs Clang.
 target_compile_options(pantr_cxx_flags INTERFACE
     $<$<COMPILE_LANG_AND_ID:CXX,GNU,Clang,AppleClang>:
-        -Wall -Wextra -Wpedantic -Wshadow -Wconversion -Wdouble-promotion>)
+        -Wall -Wextra -Wpedantic -Wshadow -Wconversion -Wsign-conversion
+        -Wdouble-promotion>)
 
 if(PANTR_WERROR)
   target_compile_options(pantr_cxx_flags INTERFACE
