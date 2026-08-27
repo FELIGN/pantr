@@ -29,6 +29,15 @@ void register_bezier(nanobind::module_& m);
 /// that justify their checks argue from the same place.
 void register_grid(nanobind::module_& m);
 
+/// Register the `pantr.geometry` bindings.
+///
+/// Unlike its siblings this one exposes a class rather than free functions: under
+/// the 2026-08-27 amendment to design/cross_backend_types.md the domain types are
+/// owned by C++ and Python wraps them.
+///
+/// \param m The extension module to register into.
+void register_geometry(nanobind::module_& m);
+
 /// Register the `pantr.bezier` root-finding kernel bindings on `m`.
 ///
 /// Separate from `register_bezier` because the two halves of the package are
