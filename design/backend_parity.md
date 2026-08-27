@@ -38,6 +38,36 @@ The infrastructure PR measured what this is worth: an independent exact-rational
 a bug injected into **both** backends at once, by a factor of 5e14 over its bound. Nothing else
 in the suite could have.
 
+### What the oracle becomes when Numba is retired, decided 2026-08-27
+
+Every rule below compares C++ against the Python implementation with its Numba kernels
+compiled. The end state chosen on 2026-08-27 is a C++ core usable with no interpreter, which
+retires Numba, and on that day the twelve rules would have nothing left to measure against.
+The successor was decided before more porting rather than after:
+
+**Numba goes; the pure Python/NumPy implementation stays, and it is the oracle.** It remains
+*re-derivable* -- a kernel ported next year still gets an oracle, which a set of frozen
+recorded outputs could not give it -- and Rule 12 has already enumerated how that interpreted
+path differs from the compiled one, so the characterisation work is done rather than owed.
+
+Two consequences, and both are obligations rather than remarks:
+
+- **Rule 12 stops being a note about a test configuration and becomes the definition of the
+  oracle.** Its three divergences are no longer things that happen under
+  `NUMBA_DISABLE_JIT=1`; they are properties of the reference. Any bound stated against the
+  compiled oracle has to be re-read against the interpreted one before Numba is removed, and
+  Rule 12's own claim that the three are *all* of them becomes load-bearing at that moment.
+- **An oracle with no users rots silently.** Once nothing but the tests calls the Python
+  path, a defect in it is invisible until a parity test blames C++ for it. The independent
+  check in the paragraph above is what covers this, and it stops being "not optional" as a
+  matter of rigour and starts being the only thing standing between a rotted oracle and a
+  false parity failure.
+
+**Epistemic status.** The choice is ruled, not derived. That Rule 12's three divergences are
+exhaustive is *claimed* in Rule 12 and was not re-checked here; two of the three were found by
+a review rather than by the rule's author, which is the reason to re-check it rather than
+inherit it.
+
 ## Rule 1: state a bound in the frame the comparison happens in
 
 **This is the rule that was violated first and would have been violated silently.**
