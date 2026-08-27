@@ -33,6 +33,21 @@
 # show up as a numerical difference rather than as an error. A second machine is
 # the only instrument for that.
 #
+# A third job builds with AddressSanitizer and UndefinedBehaviorSanitizer, and
+# it is not a duplicate of the first. The two jobs above configure Release, and
+# cpp/tests/CMakeLists.txt registers the precondition tests only under Debug --
+# PANTR_PRECONDITION is `assert`, so any other build type compiles it out and the
+# executables would run the undefined behaviour instead of reporting it. The
+# consequence, until this job existed, is that no precondition test had ever run
+# in CI: they ran on the development server through scripts/ci_local.sh and
+# nowhere else, which is the single-machine dependency the rest of this file is
+# written to avoid.
+#
+# It is also the only job that can see undefined behaviour at all. The contract
+# in cpp/include/pantr/core/precondition.hpp rests on measured UB -- a
+# heap-buffer-overflow write in tabulate_bernstein_1d -- and nothing in a Release
+# build observes that.
+#
 # The version floor (GCC 10 / Clang 10) is NOT checked here. `ubuntu-24.04` does
 # not package GCC 10, so it would need an older image or a container, and
 # `ci_local.sh` covers it on every run. design/toolchain_requirements.md records
@@ -224,3 +239,84 @@ jobs:
       # the same answer for the same minutes.
       - name: The whole suite against the C++ backend
         run: PANTR_BACKEND=cpp pytest -q
+
+  sanitizers:
+    name: GCC 14, ASan + UBSan
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Install the toolchain
+        run: |
+          # The same apt mirror replacement as the sibling jobs; the `cxx` job
+          # carries the reason.
+          echo 'https://archive.ubuntu.com/ubuntu/' | sudo tee /etc/apt/apt-mirrors.txt
+          sudo apt-get update -q
+          sudo apt-get install -y --no-install-recommends gcc-14 g++-14 ninja-build ccache
+
+      - name: Cache the fetched dependencies
+        uses: actions/cache@v4
+        with:
+          # Its own path and key rather than the `cxx` job's. The preset's
+          # binaryDir is build/gcc-debug, so _deps lands inside it.
+          path: build/gcc-debug/_deps
+          key: deps-debug-${{ runner.os }}-${{ hashFiles('cmake/PantrDependencies.cmake') }}
+
+      - name: Cache ccache
+        uses: actions/cache@v4
+        with:
+          # Debug -O0 with instrumentation shares no object with the Release job,
+          # so a shared key would be a cache of misses.
+          path: ~/.cache/ccache
+          key: ccache-asan-${{ runner.os }}-${{ github.sha }}
+          restore-keys: ccache-asan-${{ runner.os }}-
+
+      # Through the preset, unlike the `cxx` job above, and the difference is
+      # deliberate. What must not drift here is the sanitizer flag list: it is one
+      # string, scripts/ci_local.sh builds the same preset from it, and a second
+      # copy in this file would let the local script and this job sanitize
+      # different things with nothing to say so.
+      #
+      # Both reasons `cxx` gives for avoiding presets are answerable on the
+      # command line. A `-D` overrides a preset's cacheVariables, measured rather
+      # than assumed, so the unversioned `g++` the preset names is replaced here;
+      # and `cmake --build <dir>` instead of `--build --preset` leaves the build
+      # presets' `jobs: 20` -- the development server's CPU budget, wrong on a
+      # 4-CPU runner -- out of it entirely.
+      - name: Configure
+        run: >
+          cmake --preset gcc-debug
+          -DCMAKE_C_COMPILER=gcc-14
+          -DCMAKE_CXX_COMPILER=g++-14
+          -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+
+      - name: Build
+        run: cmake --build build/gcc-debug
+
+      # The check that this job is doing what it was added for, rather than
+      # passing while running nothing. If the Debug condition in
+      # cpp/tests/CMakeLists.txt ever stops matching, ctest still runs every other
+      # test and still reports success -- the failure mode is a green job, not a
+      # red one, so it needs asserting.
+      #
+      # Counted against the declarations rather than a literal, so a seventh
+      # precondition test does not need this file edited.
+      - name: Confirm the precondition tests are registered
+        run: |
+          declared=$(grep -cE '^ *pantr_add_precondition_test\(' cpp/tests/CMakeLists.txt || true)
+          registered=$(ctest --test-dir build/gcc-debug -N | grep -cE 'Test +#[0-9]+: precondition_' || true)
+          echo "declared=$declared registered=$registered"
+          test "$declared" -gt 0
+          test "$declared" -eq "$registered"
+
+      - name: Test
+        env:
+          # UBSan halts on its own: -fno-sanitize-recover=undefined is in the
+          # preset's flags. This asks only for the trace, which is the difference
+          # between a log that names a line and a log that names a file, on a
+          # machine nobody can inspect afterwards.
+          UBSAN_OPTIONS: print_stacktrace=1
+        run: ctest --test-dir build/gcc-debug --output-on-failure

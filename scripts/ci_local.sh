@@ -292,6 +292,13 @@ cxx() {
     # which would leave those executables running the undefined behaviour rather
     # than reporting it. Running the release presets alone therefore says nothing
     # about either.
+    #
+    # It also ran in UBSan's recover mode until the preset gained
+    # -fno-sanitize-recover=undefined, which means a UBSan finding was printed
+    # here and the step still recorded PASS. Measured on a signed overflow: exit
+    # 0 without the flag, exit 1 with it. The flag lives in the preset rather
+    # than in this script so that .github/workflows/cpp.yaml, which builds the
+    # same preset, cannot end up sanitizing something different.
     rm -rf "$ROOT/build/gcc-debug"
     check "gcc-debug: configure (asan, ubsan)" cmake --preset gcc-debug
     check "gcc-debug: build" cmake --build --preset gcc-debug
