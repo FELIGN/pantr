@@ -104,3 +104,9 @@ pip install -e ".[dev]"   # includes all optional feature extras
 ## License
 
 PaNTr is licensed under the MIT License. See `LICENSE` for details.
+
+A **built wheel also contains compiled [Eigen](https://gitlab.com/libeigen/eigen)
+code**, which is MPL-2.0. The MPL is copyleft per file and no pantr file falls under
+it, so the package stays MIT; `licenses/README.md` gives the clause-by-clause reading,
+what is required of us, and where to obtain Eigen's source. A source distribution
+contains no Eigen at all -- it is fetched at build time.
