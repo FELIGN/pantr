@@ -296,7 +296,8 @@ template <Real T>
 
     while (top > 0) {
         --top;
-        const auto node = static_cast<std::size_t>(stack[top]);
+        const auto slot = static_cast<std::size_t>(top);
+        const auto node = static_cast<std::size_t>(stack[slot]);
         if (!node_overlaps<T>(qlo, qhi, node_lo, node_hi, node)) {
             continue;
         }
@@ -309,10 +310,9 @@ template <Real T>
             // `BVH.__init__` walks the tree once and refuses a deeper one, which
             // is why this is a precondition rather than a check.
             PANTR_PRECONDITION(top + 2 <= kBvhStackDepth, "tree depth must fit the traversal stack");
-            stack[top] = node_left[node];
-            ++top;
-            stack[top] = node_right[node];
-            ++top;
+            stack[slot] = node_left[node];
+            stack[slot + 1] = node_right[node];
+            top += 2;
         }
     }
     return count;
@@ -358,7 +358,8 @@ std::int64_t bvh_query_emit(std::span<const T> qlo, std::span<const T> qhi,
 
     while (top > 0) {
         --top;
-        const auto node = static_cast<std::size_t>(stack[top]);
+        const auto slot = static_cast<std::size_t>(top);
+        const auto node = static_cast<std::size_t>(stack[slot]);
         if (!node_overlaps<T>(qlo, qhi, node_lo, node_hi, node)) {
             continue;
         }
@@ -375,10 +376,9 @@ std::int64_t bvh_query_emit(std::span<const T> qlo, std::span<const T> qhi,
             // `BVH.__init__` walks the tree once and refuses a deeper one, which
             // is why this is a precondition rather than a check.
             PANTR_PRECONDITION(top + 2 <= kBvhStackDepth, "tree depth must fit the traversal stack");
-            stack[top] = node_left[node];
-            ++top;
-            stack[top] = node_right[node];
-            ++top;
+            stack[slot] = node_left[node];
+            stack[slot + 1] = node_right[node];
+            top += 2;
         }
     }
     return count;
