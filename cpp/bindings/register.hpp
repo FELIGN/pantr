@@ -51,3 +51,32 @@ void register_transform(nanobind::module_& m);
 /// separate ports with separate parity claims, and the file comments that justify
 /// each one's checks do not belong in the same file.
 void register_bezier_root_finding(nanobind::module_& m);
+
+// ---------------------------------------------------------------------------
+// Reserved slots (FELIGN/pantr#380)
+// ---------------------------------------------------------------------------
+//
+// The thirteen tickets this milestone unblocks all bind a type, and all would
+// otherwise collide on this file, on `pantr_cpp.cpp` and on `CMakeLists.txt`.
+// Declaring the six entry points here, ahead of any port, means each ticket
+// touches only its own `.cpp` file. Every one below is empty today; see the
+// file it declares for what it is reserved for.
+
+/// Register the `pantr.grid` tensor-product / hierarchical grid types.
+void register_grid_types(nanobind::module_& m);
+
+/// Register `pantr.grid`'s cell and facet tag registries.
+void register_grid_tags(nanobind::module_& m);
+
+/// Register `pantr.grid.BVH`.
+void register_grid_bvh(nanobind::module_& m);
+
+/// Register `pantr.grid.Partition`.
+void register_grid_partition(nanobind::module_& m);
+
+/// Register `pantr.quad.QuadratureRule`.
+void register_quad_types(nanobind::module_& m);
+
+/// Register the `pantr.bezier.Bezier` type, distinct from the arithmetic
+/// kernels `register_bezier` binds above.
+void register_bezier_type(nanobind::module_& m);
