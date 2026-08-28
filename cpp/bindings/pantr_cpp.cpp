@@ -53,12 +53,20 @@
 
 #include <nanobind/nanobind.h>
 
+#include "pantr/core/error.hpp"
 #include "register.hpp"
 
 namespace nb = nanobind;
 
 NB_MODULE(_pantr_cpp, m) {
     m.attr("__doc__") = nb::none();  // the docstrings live in the Python layer
+
+    // One translator for the whole port. nanobind's default maps every unknown
+    // exception to RuntimeError, which is the right base for a limit of this
+    // build; the named subclass is what lets a caller distinguish it from a bug.
+    // cpp/include/pantr/core/error.hpp carries the argument, including why the
+    // tag registries deliberately do NOT use a translator.
+    nb::exception<pantr::CapacityError>(m, "CapacityError", PyExc_RuntimeError);
 
     register_basis(m);
     register_quad(m);
