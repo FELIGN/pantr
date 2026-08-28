@@ -13,12 +13,14 @@ agreement within a tolerance. A tolerance here would not be a safety margin; it
 would be hiding a defect, because nothing in these operations can move a bit.
 
 `transform` is the one exception and it is bounded rather than exact in principle:
-it multiplies and sums. In practice the sum is over `ndim` terms and numpy's
-`np.sum` is pairwise only above a block of 8, so for every box pantr builds the two
-summation orders coincide and the results are bit-identical. The tests below stay
-inside that regime deliberately and say so; a box beyond 8 axes would need the
-claim restated as a bound, and `design/backend_parity.md` Rule 9 is the shape that
-restatement would take.
+it multiplies and sums. numpy's `np.sum` blocks pairwise, so a sequential loop
+reproduces it bit for bit only while **`ndim <= 7`**; from `ndim = 8` the orders
+differ. Every box pantr builds today is well inside that, and the tests below
+cover both sides of the boundary: exact equality up to seven axes, a derived
+bound at nine. `design/backend_parity.md` Rule 9 is the shape that restatement
+takes. The threshold is measured by
+`scripts/measure_aabb_transform_summation.py`, not assumed -- an earlier version
+of this paragraph said 8, which is off by one.
 
 What these tests would catch
 ----------------------------
@@ -247,6 +249,51 @@ def test_past_seven_axes_the_claim_is_a_bound_not_an_equality() -> None:
             # the magnitudes; the max entry stands in for that here.
             budget = (ndim - 1) * float(np.finfo(np.float64).eps) * float(np.abs(a).max())
             assert np.all(np.abs(a - b) <= budget)
+
+
+def test_repr_matches_python_across_the_whole_double_range() -> None:
+    """The C++ box's `repr` reproduces Python's, over a sweep wide enough to matter.
+
+    The C++ side formats numbers itself, and that formatting is what the error
+    messages embed, so a mismatch here is a mismatch in what the two backends
+    *say*. The first version of that formatter used bare `std::to_chars`, which
+    picks whichever spelling is textually shorter, where Python decides
+    positionally: `100000.0` came out as `1e+05`. Nothing caught it, because the
+    only values any test carried were 0, 1 and nan.
+
+    So this sweeps rather than samples: the `k * 10**n` grid where the two rules
+    disagree, both sides of the fixed/scientific threshold, subnormals, the
+    representable extremes, and random bit patterns from a fixed seed.
+    """
+    from pantr import _pantr_cpp  # noqa: PLC0415
+
+    rng = np.random.default_rng(20260828)
+    values: list[float] = [
+        0.0,
+        -0.0,
+        0.1,
+        1.0 / 3.0,
+        5e-324,
+        2.2250738585072014e-308,
+        1.7976931348623157e308,
+        1e15,
+        1e16,
+        1e17,
+        1e-4,
+        1e-5,
+        9.999999999999998e15,
+        1.0000000000000002e16,
+        9.999999999999999e-5,
+    ]
+    values += [k * 10.0**n for k in range(1, 10) for n in range(-300, 300, 7)]
+    bits = rng.integers(0, 2**64, size=5000, dtype=np.uint64)
+    values += [v for v in bits.view(np.float64).tolist() if np.isfinite(v)]
+
+    for value in values:
+        box = _pantr_cpp.AABB(np.array([value]), np.array([value]))
+        assert repr(box) == f"AABB(lo=[{value!r}], hi=[{value!r}])", (
+            f"C++ formatted {value!r} as {box!r}"
+        )
 
 
 def _message_of(fn: Any) -> str:
