@@ -124,7 +124,7 @@ cmake.define.PANTR_BUILD_BENCHMARK = "OFF"
 cmake.define.PANTR_WERROR = "ON"
 # OFF explicitly, because the default is PROJECT_IS_TOP_LEVEL and scikit-build-core
 # configures this project directly, which makes it ON. Measured: with it ON the
-# wheel gains the 18 C++ headers and three CMake package files, and the config
+# wheel gains the C++ headers and three CMake package files, and the config
 # lands under site-packages/lib/cmake where CMake does not look. Whether a pip
 # install should also ship the C++ package is a separate decision from having
 # install rules at all.
