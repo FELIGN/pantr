@@ -362,12 +362,25 @@ class AffineTransform {
         const Eigen::PartialPivLU<Eigen::Matrix<T, Eigen::Dynamic, Eigen::Dynamic>> lu(a);
 
         // PartialPivLU does not report singularity, by design: it is documented as
-        // requiring an invertible matrix. So the determinant is what decides, and
-        // it is compared against exact zero rather than a tolerance, because that
-        // is what the oracle's own failure condition amounts to -- LAPACK reports
-        // a zero pivot, not a small one.
-        if (value_of(lu.determinant()) == T{0}) {
-            throw std::invalid_argument("Cannot invert a singular affine transformation.");
+        // requiring an invertible matrix. So this has to decide, and it decides
+        // the way LAPACK does -- on a PIVOT being exactly zero, which is what
+        // `getrf` sets `info > 0` for.
+        //
+        // An earlier version tested the DETERMINANT against zero and claimed in a
+        // comment that this was the same condition. It is not, and the difference
+        // is not academic: the determinant is the product of the pivots, so a
+        // product of individually non-zero pivots underflows to exactly zero.
+        // `AffineTransform.scaling({1e-300, 1e-300})` has an infinity-norm
+        // condition number of exactly 1 and was refused here while the oracle
+        // inverted it, and that call is reachable from the public API -- the
+        // parity suite's own scaling case uses `1e-300`. Testing the pivots
+        // cannot underflow, is scale-invariant, and is what the old comment
+        // already said the code did.
+        const auto pivots = lu.matrixLU().diagonal();
+        for (Eigen::Index i = 0; i < pivots.size(); ++i) {
+            if (value_of(pivots[i]) == T{0}) {
+                throw std::invalid_argument("Cannot invert a singular affine transformation.");
+            }
         }
         const Matrix inv = lu.inverse();
 
