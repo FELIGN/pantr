@@ -124,7 +124,7 @@ double coefficient_scale(std::span<const double> coeff) {
 /// \return The roots, unsorted.
 std::vector<double> yuksel(std::span<const double> coeff) {
     std::vector<double> found(std::max(coeff.size(), std::size_t{2}));
-    const int count = pantr::yuksel_roots<double>(coeff, kTol, found);
+    const int count = pantr::bezier::yuksel_roots<double>(coeff, kTol, found);
     found.resize(static_cast<std::size_t>(count));
     return found;
 }
@@ -136,12 +136,12 @@ std::vector<double> yuksel(std::span<const double> coeff) {
 std::vector<double> clipped(std::span<const double> coeff) {
     const auto n = static_cast<int>(coeff.size()) - 1;
     std::vector<double> raw(static_cast<std::size_t>(3 * n + 4));
-    const int count = pantr::clip_roots<double>(coeff, kTol, kTol, raw);
+    const int count = pantr::bezier::clip_roots<double>(coeff, kTol, kTol, raw);
     if (count == 0) {
         return {};
     }
     std::vector<double> merged(static_cast<std::size_t>(count));
-    const int unique = pantr::dedup_roots<double>(
+    const int unique = pantr::bezier::dedup_roots<double>(
         std::span<const double>(raw.data(), static_cast<std::size_t>(count)), count, coeff, kTol,
         kTol, merged);
     merged.resize(static_cast<std::size_t>(unique));
@@ -221,7 +221,7 @@ void test_every_root_lies_in_the_unit_interval() {
 
 void test_the_count_never_exceeds_the_sign_changes() {
     for (const Sample& sample : samples()) {
-        const int changes = pantr::detail::count_sign_changes<double>(sample.coeff);
+        const int changes = pantr::bezier::detail::count_sign_changes<double>(sample.coeff);
         // The variation-diminishing property. Clipping is compared after the merge,
         // since before it the same root arrives from several intervals.
         PANTR_CHECK_MSG(static_cast<int>(clipped(sample.coeff).size()) <= changes,
@@ -315,7 +315,7 @@ void test_the_hull_clip_contains_every_root() {
         std::vector<std::int64_t> chain(sample.coeff.size());
         double lo = 0.0;
         double hi = 0.0;
-        const bool found = pantr::detail::clip_hull_to_zero<double>(sample.coeff, chain, lo, hi);
+        const bool found = pantr::bezier::detail::clip_hull_to_zero<double>(sample.coeff, chain, lo, hi);
         PANTR_CHECK_MSG(found, std::string("the hull found no crossing though roots exist: ")
                                    + sample.name);
         if (!found) {
@@ -341,12 +341,12 @@ void test_the_hull_clip_contains_every_root() {
 void test_the_monotone_solver_reports_no_root_without_a_sign_change() {
     // Strictly increasing and strictly positive: no sign change, so no root.
     const std::vector<double> rising{0.5, 1.0, 2.0, 4.0};
-    PANTR_CHECK_MSG(std::isnan(pantr::solve_monotone_root<double>(rising, kTol)),
+    PANTR_CHECK_MSG(std::isnan(pantr::bezier::solve_monotone_root<double>(rising, kTol)),
                     "the monotone solver invented a root of a positive polynomial");
 
     // A genuine sign change: the answer must satisfy the polynomial.
     const std::vector<double> crossing{-1.0, -0.25, 0.5, 2.0};
-    const double root = pantr::solve_monotone_root<double>(crossing, kTol);
+    const double root = pantr::bezier::solve_monotone_root<double>(crossing, kTol);
     PANTR_CHECK_MSG(!std::isnan(root), "the monotone solver missed a sign change");
     if (!std::isnan(root)) {
         const double slope = std::abs(explicit_derivative(crossing, root));
@@ -361,7 +361,7 @@ void test_float32_runs_the_same_structural_identities() {
     // template that only ever instantiated at double cannot pass unnoticed.
     const std::vector<float> coeff{-1.0F, 0.0F, 1.0F};
     std::vector<double> found(2);
-    const int count = pantr::yuksel_roots<float>(coeff, kTol, found);
+    const int count = pantr::bezier::yuksel_roots<float>(coeff, kTol, found);
     PANTR_CHECK_MSG(count == 1, "the float32 instantiation lost a root");
     if (count == 1) {
         PANTR_CHECK_MSG(found[0] >= 0.0 && found[0] <= 1.0,
@@ -369,7 +369,7 @@ void test_float32_runs_the_same_structural_identities() {
     }
 
     const std::vector<float> positive{0.5F, 1.0F, 2.0F};
-    PANTR_CHECK_MSG(std::isnan(pantr::solve_monotone_root<float>(positive, kTol)),
+    PANTR_CHECK_MSG(std::isnan(pantr::bezier::solve_monotone_root<float>(positive, kTol)),
                     "the float32 monotone solver invented a root");
 }
 

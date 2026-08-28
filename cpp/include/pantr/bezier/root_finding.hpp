@@ -100,7 +100,7 @@
 #include "pantr/core/mdspan.hpp"
 #include "pantr/core/scalar.hpp"
 
-namespace pantr {
+namespace pantr::bezier {
 
 /// Machine epsilon for IEEE 754 double precision.
 ///
@@ -1374,4 +1374,4 @@ void solve_monotone_root_batch(span2d<const T> coeffs, accumulator_t<T> param_to
     }
 }
 
-}  // namespace pantr
+}  // namespace pantr::bezier

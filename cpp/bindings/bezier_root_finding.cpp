@@ -138,7 +138,7 @@ int bind_yuksel_roots(const_vec<T> coeff, double param_tol, out_vec<double> out)
     require_coefficients(coeff, "coeff");
     require_tolerance(param_tol, "param_tol");
     require_capacity(out, 0, yuksel_capacity(coeff.shape(0)), "out");
-    return pantr::yuksel_roots<T>(std::span<const T>(coeff.data(), coeff.shape(0)), param_tol,
+    return pantr::bezier::yuksel_roots<T>(std::span<const T>(coeff.data(), coeff.shape(0)), param_tol,
                                   std::span<double>(out.data(), out.shape(0)));
 }
 
@@ -148,7 +148,7 @@ int bind_clip_roots(const_vec<T> coeff, double param_tol, double geom_tol, out_v
     require_tolerance(param_tol, "param_tol");
     require_tolerance(geom_tol, "geom_tol");
     require_capacity(out, 0, clip_capacity(coeff.shape(0)), "out");
-    return pantr::clip_roots<T>(std::span<const T>(coeff.data(), coeff.shape(0)), param_tol,
+    return pantr::bezier::clip_roots<T>(std::span<const T>(coeff.data(), coeff.shape(0)), param_tol,
                                 geom_tol, std::span<double>(out.data(), out.shape(0)));
 }
 
@@ -165,7 +165,7 @@ int bind_dedup_roots(const_vec<T> coeff, const_vec<double> raw_roots, int n_root
                                   .c_str());
     }
     require_capacity(out, 0, static_cast<std::size_t>(n_roots), "out");
-    return pantr::dedup_roots<T>(
+    return pantr::bezier::dedup_roots<T>(
         std::span<const double>(raw_roots.data(), raw_roots.shape(0)), n_roots,
         std::span<const T>(coeff.data(), coeff.shape(0)), param_tol, geom_tol,
         std::span<double>(out.data(), out.shape(0)));
@@ -175,7 +175,7 @@ template <class T>
 double bind_solve_monotone_root(const_vec<T> coeff, double param_tol) {
     require_coefficients(coeff, "coeff");
     require_tolerance(param_tol, "param_tol");
-    return pantr::solve_monotone_root<T>(std::span<const T>(coeff.data(), coeff.shape(0)),
+    return pantr::bezier::solve_monotone_root<T>(std::span<const T>(coeff.data(), coeff.shape(0)),
                                          param_tol);
 }
 
@@ -199,7 +199,7 @@ void bind_find_roots_batch(const_mat<T> coeffs, double param_tol, double geom_to
     // and Layer 2 allocates max(n, 1) so a degree-0 batch still has somewhere to
     // write nothing.
     require_capacity(out_roots, 1, yuksel_capacity(coeffs.shape(1)), "out_roots");
-    pantr::find_roots_batch<T>(
+    pantr::bezier::find_roots_batch<T>(
         pantr::span2d<const T>(coeffs.data(), coeffs.shape(0), coeffs.shape(1)), param_tol,
         geom_tol, pantr::span2d<double>(out_roots.data(), out_roots.shape(0), out_roots.shape(1)),
         std::span<std::int64_t>(out_counts.data(), out_counts.shape(0)));
@@ -218,7 +218,7 @@ void bind_solve_monotone_root_batch(const_mat<T> coeffs, double param_tol,
                                " entries, got " + std::to_string(out_roots.shape(0)))
                                   .c_str());
     }
-    pantr::solve_monotone_root_batch<T>(
+    pantr::bezier::solve_monotone_root_batch<T>(
         pantr::span2d<const T>(coeffs.data(), coeffs.shape(0), coeffs.shape(1)), param_tol,
         std::span<double>(out_roots.data(), out_roots.shape(0)));
 }

@@ -1,6 +1,6 @@
 r"""Parity of the eight Bézier arithmetic kernels against their Numba oracles.
 
-`cpp/include/pantr/bezier/bezier.hpp` and
+`cpp/include/pantr/bezier/kernels_1d.hpp` and
 `cpp/include/pantr/core/reduction_operator.hpp` name this file as the place their
 parity claims are measured.
 

@@ -296,26 +296,26 @@ def measure() -> dict[tuple[str, str], tuple[int, int, float]]:
 _PROBE_SOURCE: Final = """
 // Instantiate every Bezier kernel at both widths behind a noinline wrapper, so a
 // disassembler can attribute each fused multiply-add to one kernel and one line.
-#include "pantr/bezier/bezier.hpp"
+#include "pantr/bezier/kernels_1d.hpp"
 #include "pantr/core/reduction_operator.hpp"
 using pantr::span2d;
 using pantr::span_nd;
 #define K __attribute__((noinline))
 template <class T> K void k1(span2d<const T> c, std::span<const T> p, span2d<T> o) {
-    pantr::evaluate_bezier_1d<T>(c, p, o); }
+    pantr::bezier::evaluate_bezier_1d<T>(c, p, o); }
 template <class T> K void k2(span2d<const T> c, std::span<const T> p, int n, span_nd<T,3> o) {
-    pantr::evaluate_bezier_deriv_1d<T>(c, p, n, o); }
+    pantr::bezier::evaluate_bezier_deriv_1d<T>(c, p, n, o); }
 template <class T> K void k3(int d, span2d<const T> c, int t, span2d<T> o) {
-    pantr::degree_elevate_bezier_1d<T>(d, c, t, o); }
+    pantr::bezier::degree_elevate_bezier_1d<T>(d, c, t, o); }
 template <class T> K void k4(span2d<const T> c, pantr::accumulator_t<T> v, std::span<T> o) {
-    pantr::slice_bezier_1d<T>(c, v, o); }
+    pantr::bezier::slice_bezier_1d<T>(c, v, o); }
 template <class T> K void k5(span2d<const T> c, pantr::accumulator_t<T> v, span2d<T> l,
-                             span2d<T> r) { pantr::split_bezier_1d<T>(c, v, l, r); }
+                             span2d<T> r) { pantr::bezier::split_bezier_1d<T>(c, v, l, r); }
 template <class T> K void k6(span2d<const T> c, pantr::accumulator_t<T> a,
                              pantr::accumulator_t<T> b, span2d<T> o) {
-    pantr::restrict_bezier_1d<T>(c, a, b, o); }
+    pantr::bezier::restrict_bezier_1d<T>(c, a, b, o); }
 template <class T> K void k7(std::span<const T> a, std::span<const T> b, std::span<T> o) {
-    pantr::scalar_bernstein_product_1d<T>(a, b, o); }
+    pantr::bezier::scalar_bernstein_product_1d<T>(a, b, o); }
 template <class T> K void k8(span2d<const double> op, span2d<const T> c, span2d<T> o) {
     pantr::core::apply_reduction_operator<T>(op, c, o); }
 #define INST(T) \\

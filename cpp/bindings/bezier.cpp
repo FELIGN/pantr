@@ -50,7 +50,7 @@
 #include <span>
 #include <string>
 
-#include "pantr/bezier/bezier.hpp"
+#include "pantr/bezier/kernels_1d.hpp"
 #include "pantr/core/binomial.hpp"
 #include "pantr/core/mdspan.hpp"
 #include "pantr/core/reduction_operator.hpp"
@@ -195,7 +195,7 @@ void bind_evaluate(const_mat<T> ctrl, const_vec<T> points, out_mat<T> out) {
     const pantr::span2d<T> out_view(out.data(), num_pts, rank);
 
     const nb::gil_scoped_release release;
-    pantr::evaluate_bezier_1d<T>(ctrl_view, pts, out_view);
+    pantr::bezier::evaluate_bezier_1d<T>(ctrl_view, pts, out_view);
 }
 
 template <class T>
@@ -223,7 +223,7 @@ void bind_evaluate_deriv(const_mat<T> ctrl, const_vec<T> points, unsigned n_deri
     const pantr::span_nd<T, 3> out_view(out.data(), num_pts, orders, rank);
 
     const nb::gil_scoped_release release;
-    pantr::evaluate_bezier_deriv_1d<T>(ctrl_view, pts, static_cast<int>(n_deriv), out_view);
+    pantr::bezier::evaluate_bezier_deriv_1d<T>(ctrl_view, pts, static_cast<int>(n_deriv), out_view);
 }
 
 template <class T>
@@ -249,7 +249,7 @@ void bind_degree_elevate(unsigned degree, const_mat<T> ctrl, unsigned degree_inc
     const pantr::span2d<T> out_view(out.data(), elevated, rank);
 
     const nb::gil_scoped_release release;
-    pantr::degree_elevate_bezier_1d<T>(static_cast<int>(degree), ctrl_view,
+    pantr::bezier::degree_elevate_bezier_1d<T>(static_cast<int>(degree), ctrl_view,
                                        static_cast<int>(degree_increment), out_view);
 }
 
@@ -264,7 +264,7 @@ void bind_slice(const_mat<T> ctrl, double value, out_vec<T> out) {
     const std::span<T> out_view(out.data(), n_cols);
 
     const nb::gil_scoped_release release;
-    pantr::slice_bezier_1d<T>(ctrl_view, value, out_view);
+    pantr::bezier::slice_bezier_1d<T>(ctrl_view, value, out_view);
 }
 
 template <class T>
@@ -282,7 +282,7 @@ void bind_split(const_mat<T> ctrl, double value, out_mat<T> out_left, out_mat<T>
     const pantr::span2d<T> right_view(out_right.data(), rows, n_cols);
 
     const nb::gil_scoped_release release;
-    pantr::split_bezier_1d<T>(ctrl_view, value, left_view, right_view);
+    pantr::bezier::split_bezier_1d<T>(ctrl_view, value, left_view, right_view);
 }
 
 template <class T>
@@ -297,7 +297,7 @@ void bind_restrict(const_mat<T> ctrl, double lower, double upper, out_mat<T> out
     const pantr::span2d<T> out_view(out.data(), rows, n_cols);
 
     const nb::gil_scoped_release release;
-    pantr::restrict_bezier_1d<T>(ctrl_view, lower, upper, out_view);
+    pantr::bezier::restrict_bezier_1d<T>(ctrl_view, lower, upper, out_view);
 }
 
 template <class T>
@@ -314,7 +314,7 @@ void bind_product(const_vec<T> a, const_vec<T> b, out_vec<T> out) {
     const std::span<T> out_view(out.data(), degree_sum + 1);
 
     const nb::gil_scoped_release release;
-    pantr::scalar_bernstein_product_1d<T>(a_view, b_view, out_view);
+    pantr::bezier::scalar_bernstein_product_1d<T>(a_view, b_view, out_view);
 }
 
 template <class T>

@@ -75,7 +75,7 @@
 #include <vector>
 
 #include "check.hpp"
-#include "pantr/bezier/bezier.hpp"
+#include "pantr/bezier/kernels_1d.hpp"
 #include "pantr/core/binomial.hpp"
 #include "pantr/core/mdspan.hpp"
 
@@ -133,7 +133,7 @@ void test_slice_at_one_half_matches_an_exact_binomial_sum() {
                                std::size_t{5}, std::size_t{13}, std::size_t{40}}) {
         const Net n = integer_net(degree + 1, 3);
         std::vector<double> got(3);
-        pantr::slice_bezier_1d<double>(n.view(), 0.5, std::span<double>(got));
+        pantr::bezier::slice_bezier_1d<double>(n.view(), 0.5, std::span<double>(got));
         for (std::size_t col = 0; col < 3; ++col) {
             const double want = value_at_half_exact(n, col);
             PANTR_CHECK_MSG(got[col] == want,
@@ -150,7 +150,7 @@ void test_evaluate_reproduces_the_end_control_points() {
         const Net n = integer_net(degree + 1, 2);
         const std::vector<double> pts{0.0, 1.0};
         std::vector<double> got(4);
-        pantr::evaluate_bezier_1d<double>(n.view(), std::span<const double>(pts),
+        pantr::bezier::evaluate_bezier_1d<double>(n.view(), std::span<const double>(pts),
                                           pantr::span2d<double>(got.data(), 2, 2));
         for (std::size_t col = 0; col < 2; ++col) {
             PANTR_CHECK_MSG(got[col] == n.data[col],
@@ -166,8 +166,8 @@ void test_slice_reproduces_the_end_control_points() {
         const Net n = integer_net(degree + 1, 2);
         std::vector<double> at_zero(2);
         std::vector<double> at_one(2);
-        pantr::slice_bezier_1d<double>(n.view(), 0.0, std::span<double>(at_zero));
-        pantr::slice_bezier_1d<double>(n.view(), 1.0, std::span<double>(at_one));
+        pantr::bezier::slice_bezier_1d<double>(n.view(), 0.0, std::span<double>(at_zero));
+        pantr::bezier::slice_bezier_1d<double>(n.view(), 1.0, std::span<double>(at_one));
         for (std::size_t col = 0; col < 2; ++col) {
             PANTR_CHECK(at_zero[col] == n.data[col]);
             PANTR_CHECK(at_one[col] == n.data[degree * 2 + col]);
@@ -184,7 +184,7 @@ void test_split_preserves_the_endpoints_and_shares_a_point() {
             const Net n = integer_net(degree + 1, 2);
             std::vector<double> left((degree + 1) * 2);
             std::vector<double> right((degree + 1) * 2);
-            pantr::split_bezier_1d<double>(n.view(), u,
+            pantr::bezier::split_bezier_1d<double>(n.view(), u,
                                            pantr::span2d<double>(left.data(), degree + 1, 2),
                                            pantr::span2d<double>(right.data(), degree + 1, 2));
             for (std::size_t col = 0; col < 2; ++col) {
@@ -205,7 +205,7 @@ void test_elevate_preserves_the_endpoints() {
             const Net n = integer_net(static_cast<std::size_t>(degree) + 1, 2);
             const auto rows = static_cast<std::size_t>(degree + inc + 1);
             std::vector<double> out(rows * 2);
-            pantr::degree_elevate_bezier_1d<double>(
+            pantr::bezier::degree_elevate_bezier_1d<double>(
                 degree, n.view(), inc, pantr::span2d<double>(out.data(), rows, 2));
             for (std::size_t col = 0; col < 2; ++col) {
                 PANTR_CHECK_MSG(out[col] == n.data[col], "elevation moved the start point");
@@ -223,7 +223,7 @@ void test_elevating_a_linear_gives_the_midpoint() {
     // that is not the midpoint at all, rather than as a last-bit difference.
     const Net n = net({4.0, -2.0, 10.0, 6.0}, 2, 2);
     std::vector<double> out(6);
-    pantr::degree_elevate_bezier_1d<double>(1, n.view(), 1,
+    pantr::bezier::degree_elevate_bezier_1d<double>(1, n.view(), 1,
                                             pantr::span2d<double>(out.data(), 3, 2));
     PANTR_CHECK(out[2] == 7.0);
     PANTR_CHECK(out[3] == 2.0);
@@ -245,7 +245,7 @@ void test_restrict_to_the_full_domain_is_the_identity_on_finite_input() {
     n.data[2] = std::numeric_limits<double>::denorm_min();
     n.data[5] = std::numeric_limits<double>::max();
     std::vector<double> out(8 * 3);
-    pantr::restrict_bezier_1d<double>(n.view(), 0.0, 1.0,
+    pantr::bezier::restrict_bezier_1d<double>(n.view(), 0.0, 1.0,
                                       pantr::span2d<double>(out.data(), 8, 3));
     for (std::size_t i = 0; i < out.size(); ++i) {
         PANTR_CHECK_MSG(out[i] == n.data[i],
@@ -259,7 +259,7 @@ void test_restrict_over_the_full_domain_loses_a_signed_zero_and_an_infinity() {
     Net signed_zero = integer_net(4, 1);
     signed_zero.data[1] = -0.0;
     std::vector<double> out(4);
-    pantr::restrict_bezier_1d<double>(signed_zero.view(), 0.0, 1.0,
+    pantr::bezier::restrict_bezier_1d<double>(signed_zero.view(), 0.0, 1.0,
                                       pantr::span2d<double>(out.data(), 4, 1));
     PANTR_CHECK_MSG(out[1] == 0.0 && !std::signbit(out[1]),
                     "a signed zero is expected to come back positive, since the pass "
@@ -267,7 +267,7 @@ void test_restrict_over_the_full_domain_loses_a_signed_zero_and_an_infinity() {
 
     Net infinite = integer_net(4, 1);
     infinite.data[0] = std::numeric_limits<double>::infinity();
-    pantr::restrict_bezier_1d<double>(infinite.view(), 0.0, 1.0,
+    pantr::bezier::restrict_bezier_1d<double>(infinite.view(), 0.0, 1.0,
                                       pantr::span2d<double>(out.data(), 4, 1));
     bool any_nan = false;
     for (double v : out) {
@@ -291,7 +291,7 @@ void test_product_with_the_unit_polynomial_reproduces_its_input() {
         const Net a = integer_net(static_cast<std::size_t>(p) + 1, 1);
         const std::vector<double> unit{1.0};
         std::vector<double> out(static_cast<std::size_t>(p) + 1);
-        pantr::scalar_bernstein_product_1d<double>(
+        pantr::bezier::scalar_bernstein_product_1d<double>(
             std::span<const double>(a.data), std::span<const double>(unit),
             std::span<double>(out));
         for (std::size_t k = 0; k < out.size(); ++k) {
@@ -329,7 +329,7 @@ void test_the_first_derivative_at_the_endpoints_is_exact_on_integers() {
         const Net n = net(values, rows, 1);
         const std::vector<double> pts{0.0, 1.0};
         std::vector<double> out(2 * 2 * 1);
-        pantr::evaluate_bezier_deriv_1d<double>(n.view(), std::span<const double>(pts), 1,
+        pantr::bezier::evaluate_bezier_deriv_1d<double>(n.view(), std::span<const double>(pts), 1,
                                                 pantr::span_nd<double, 3>(out.data(), 2, 2, 1));
         const double want = static_cast<double>(p) * 1.0;  // every difference is 1
         PANTR_CHECK_MSG(out[1] == want, "degree " + std::to_string(p) + ": B'(0) is " +
@@ -366,7 +366,7 @@ void test_the_first_derivative_under_cancellation() {
         const Net n = net(values, rows, 1);
         const std::vector<double> pts{0.0, 1.0};
         std::vector<double> out(2 * 2 * 1);
-        pantr::evaluate_bezier_deriv_1d<double>(n.view(), std::span<const double>(pts), 1,
+        pantr::bezier::evaluate_bezier_deriv_1d<double>(n.view(), std::span<const double>(pts), 1,
                                                 pantr::span_nd<double, 3>(out.data(), 2, 2, 1));
         const double want = static_cast<double>(p) / 3.0;
         const double pd = static_cast<double>(p);
@@ -408,7 +408,7 @@ void test_a_split_reconstructs_the_original_curve() {
     for (double u : {0.25, 0.5, 0.75}) {
         std::vector<double> left(degree + 1);
         std::vector<double> right(degree + 1);
-        pantr::split_bezier_1d<double>(n.view(), u,
+        pantr::bezier::split_bezier_1d<double>(n.view(), u,
                                        pantr::span2d<double>(left.data(), degree + 1, 1),
                                        pantr::span2d<double>(right.data(), degree + 1, 1));
         const pantr::span2d<const double> left_view(left.data(), degree + 1, 1);
@@ -418,9 +418,9 @@ void test_a_split_reconstructs_the_original_curve() {
             const std::vector<double> whole_pt{u * s};
             double from_half = 0.0;
             double from_whole = 0.0;
-            pantr::evaluate_bezier_1d<double>(left_view, std::span<const double>(half_pt),
+            pantr::bezier::evaluate_bezier_1d<double>(left_view, std::span<const double>(half_pt),
                                               pantr::span2d<double>(&from_half, 1, 1));
-            pantr::evaluate_bezier_1d<double>(n.view(), std::span<const double>(whole_pt),
+            pantr::bezier::evaluate_bezier_1d<double>(n.view(), std::span<const double>(whole_pt),
                                               pantr::span2d<double>(&from_whole, 1, 1));
             const double slack = 8.0 * static_cast<double>(degree) * kEps * worst_c;
             PANTR_CHECK_MSG(std::abs(from_half - from_whole) <= slack,
@@ -445,7 +445,7 @@ void test_restrict_agrees_with_evaluation_on_the_subinterval() {
     const double bounds[][2] = {{0.1, 0.9}, {0.0, 0.4}, {0.6, 1.0}, {0.25, 0.75}};
     for (const auto& b : bounds) {
         std::vector<double> sub(degree + 1);
-        pantr::restrict_bezier_1d<double>(n.view(), b[0], b[1],
+        pantr::bezier::restrict_bezier_1d<double>(n.view(), b[0], b[1],
                                           pantr::span2d<double>(sub.data(), degree + 1, 1));
         const pantr::span2d<const double> sub_view(sub.data(), degree + 1, 1);
 
@@ -454,9 +454,9 @@ void test_restrict_agrees_with_evaluation_on_the_subinterval() {
             const std::vector<double> whole_pt{b[0] + s * (b[1] - b[0])};
             double from_sub = 0.0;
             double from_whole = 0.0;
-            pantr::evaluate_bezier_1d<double>(sub_view, std::span<const double>(sub_pt),
+            pantr::bezier::evaluate_bezier_1d<double>(sub_view, std::span<const double>(sub_pt),
                                               pantr::span2d<double>(&from_sub, 1, 1));
-            pantr::evaluate_bezier_1d<double>(n.view(), std::span<const double>(whole_pt),
+            pantr::bezier::evaluate_bezier_1d<double>(n.view(), std::span<const double>(whole_pt),
                                               pantr::span2d<double>(&from_whole, 1, 1));
             // Two de Casteljau passes rather than one, so twice the split's budget.
             const double slack = 16.0 * static_cast<double>(degree) * kEps * worst_c;
@@ -475,13 +475,13 @@ void test_float32_runs_the_same_structural_identities() {
     const std::vector<float> values{4.0F, -2.0F, 10.0F, 6.0F, 1.0F, 0.0F};
     const pantr::span2d<const float> view(values.data(), 3, 2);
     std::vector<float> got(2);
-    pantr::slice_bezier_1d<float>(view, 0.0, std::span<float>(got));
+    pantr::bezier::slice_bezier_1d<float>(view, 0.0, std::span<float>(got));
     PANTR_CHECK(got[0] == 4.0F && got[1] == -2.0F);
-    pantr::slice_bezier_1d<float>(view, 1.0, std::span<float>(got));
+    pantr::bezier::slice_bezier_1d<float>(view, 1.0, std::span<float>(got));
     PANTR_CHECK(got[0] == 1.0F && got[1] == 0.0F);
 
     std::vector<float> elevated(4 * 2);
-    pantr::degree_elevate_bezier_1d<float>(2, view, 1,
+    pantr::bezier::degree_elevate_bezier_1d<float>(2, view, 1,
                                            pantr::span2d<float>(elevated.data(), 4, 2));
     PANTR_CHECK(elevated[0] == 4.0F && elevated[1] == -2.0F);
     PANTR_CHECK(elevated[6] == 1.0F && elevated[7] == 0.0F);
