@@ -38,6 +38,13 @@ void register_grid(nanobind::module_& m);
 /// \param m The extension module to register into.
 void register_geometry(nanobind::module_& m);
 
+/// Register the `pantr.transform` bindings.
+///
+/// The second type-exposing registration, after geometry.
+///
+/// \param m The extension module to register into.
+void register_transform(nanobind::module_& m);
+
 /// Register the `pantr.bezier` root-finding kernel bindings on `m`.
 ///
 /// Separate from `register_bezier` because the two halves of the package are
