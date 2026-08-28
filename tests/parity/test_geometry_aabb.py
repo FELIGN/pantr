@@ -226,8 +226,10 @@ def test_past_seven_axes_the_claim_is_a_bound_not_an_equality() -> None:
     """Above ndim = 7 the two summation orders differ, and only a bound survives.
 
     numpy's `np.sum` blocks pairwise, so a sequential C++ loop reproduces it
-    exactly only while ndim <= 7; from ndim = 8 the orders differ on about half
-    of random inputs. Measured by `scripts/measure_aabb_transform_summation.py`.
+    exactly only while ndim <= 7. From ndim = 8 a single row's reduction differs
+    on about half of random inputs, which is what
+    `scripts/measure_aabb_transform_summation.py` measures; a box has ndim rows,
+    so a whole box differs on essentially every input.
 
     This does not assert that they differ -- that would pin numpy's blocking,
     which is not ours -- but it does assert the disagreement stays within one
@@ -261,9 +263,12 @@ def test_repr_matches_python_across_the_whole_double_range() -> None:
     positionally: `100000.0` came out as `1e+05`. Nothing caught it, because the
     only values any test carried were 0, 1 and nan.
 
-    So this sweeps rather than samples: the `k * 10**n` grid where the two rules
-    disagree, both sides of the fixed/scientific threshold, subnormals, the
-    representable extremes, and random bit patterns from a fixed seed.
+    So this sweeps rather than samples: the `k * 10**n` grid over the whole
+    exponent range, where the two rules disagree, both sides of the
+    fixed/scientific threshold, subnormals, the representable extremes, and
+    random bit patterns from a fixed seed. Over 25000 values in all, and the
+    count is asserted below so that thinning the sweep fails loudly instead of
+    quietly weakening it.
     """
     from pantr import _pantr_cpp  # noqa: PLC0415
 
@@ -285,9 +290,14 @@ def test_repr_matches_python_across_the_whole_double_range() -> None:
         1.0000000000000002e16,
         9.999999999999999e-5,
     ]
-    values += [k * 10.0**n for k in range(1, 10) for n in range(-300, 300, 7)]
-    bits = rng.integers(0, 2**64, size=5000, dtype=np.uint64)
+    values += [k * 10.0**n for k in range(1, 10) for n in range(-320, 309)]
+    bits = rng.integers(0, 2**64, size=20000, dtype=np.uint64)
     values += [v for v in bits.view(np.float64).tolist() if np.isfinite(v)]
+
+    # The count is asserted rather than described, because the previous version of
+    # this test was thinned after the sweep that justified it and the commit
+    # message then quoted the wider sweep's number for the narrower test.
+    assert len(values) > 25_000, f"the sweep was thinned to {len(values)} values"
 
     for value in values:
         box = _pantr_cpp.AABB(np.array([value]), np.array([value]))
@@ -331,6 +341,23 @@ def _message_of(fn: Any) -> str:
         (
             lambda cls: cls(np.zeros(1), np.ones(1)).union(cls(np.zeros(2), np.ones(2))),
             "dimension mismatch",
+        ),
+        # The two below were fixed by the round that added this test, and were the
+        # only two message fixes it did not itself cover -- exactly the gap this
+        # test exists to close.
+        (
+            lambda cls: cls(np.zeros(1), np.ones(1)).contains_point(np.array([np.nan])),
+            "NaN in the probe point",
+        ),
+        (
+            lambda cls: cls(np.array([-np.inf, np.inf]), np.array([-np.inf, np.inf])).transform(
+                np.array([[1.0, 1.0], [0.0, 1.0]]), np.zeros(2)
+            )
+            if cls is not _AABBPython
+            else cls(np.array([-np.inf, np.inf]), np.array([-np.inf, np.inf])).transform(
+                _Affine([[1.0, 1.0], [0.0, 1.0]], [0.0, 0.0])
+            ),
+            "NaN produced by the transform",
         ),
     ],
 )
