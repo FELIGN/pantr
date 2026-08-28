@@ -89,6 +89,63 @@ counts already in :class:`Roundings` supply how many of them there are. No new
 keyword argument was needed for it, which is the point: the budget was always
 stated as a count, and only its conversion to a magnitude was incomplete.
 
+Comparing two objects
+---------------------
+
+Until the port reached the domain types, everything here compared two arrays. A
+type has several, of mixed kinds, and the arrays alone are not the object: a BVH
+is five arrays plus three counts, a tensor-product grid is a ragged tuple of
+per-axis breakpoints plus a shape, a tag registry is a mapping.
+
+``tests/parity/test_grid.py`` shows what that costs when it is done by hand --
+pull the five BVH arrays out, compare two of them with :func:`assert_parity` and
+three with ``np.testing.assert_array_equal``, and write the paragraph explaining
+why the integer ones get no tolerance. Eight ported types would be eight copies
+of that paragraph, and the copies would drift.
+
+**So the decision, taken once for the whole port: there is one object-level entry
+point** -- :func:`assert_object_parity` -- **and no per-type list of stand-in
+arrays.** The caller names the state that has to agree, as a sequence of
+:class:`Field`, and each field carries its own claim. What that buys is not
+brevity: it is that the *reason* travels with the comparison. An integer field
+carries an :class:`ExactClaim` saying what a difference would mean, in the same
+place a float field carries its rounding budget, and neither can be written
+without one.
+
+Three consequences worth knowing before writing the ninth consumer.
+
+**Exactness is its own claim, not a fourth** :class:`ParityKind`. ``BITWISE`` is
+a statement about floating point -- the same IEEE-754 operations in the same
+order -- and its failure message tells the reader to go and look at
+``__fp_contract__``. For a cell id that message is nonsense: there is no rounding
+to fuse and no format to blame. :func:`exact_parity` is the claim for anything a
+tolerance cannot be applied to, and :func:`assert_parity` stays float-only. It
+compares *answers*, not containers: both sides are normalised through
+:func:`numpy.asarray`, so a tuple and an equal-valued array agree. Which container
+a binding hands back is a contract question and belongs where the contract is
+checked, not folded into a value comparison.
+
+**A field is an attribute by default, and a callable when it has to be.** Six of
+the eight types this was designed for expose their whole state as attributes.
+The other two do not: a tag registry's state is behind ``__getitem__``, keyed by
+a name only known at run time, and a ragged per-axis tuple is behind an index. A
+``Field`` may therefore carry a ``read`` callable, which is what lets those two
+build their field list in a loop instead of falling back to hand-rolled
+comparisons -- which is the cost this entry point exists to avoid.
+
+**It refuses to be vacuous, in the two ways it could be.** A call with no fields
+would pass for any two objects at all, and a call whose fields repeat a name
+would report one comparison under another's key; both are assertion failures
+rather than quiet successes. This is the same argument as
+``_refuse_a_vacuous_bound``: the harness's whole design is that an assertion that
+cannot fail must be impossible to write by accident.
+
+What it does *not* do is decide which fields matter. Derived conveniences
+(``BVH.n_nodes`` is the length of an array already compared) may be named or
+left out, and an expensive or lazily built one (``Grid.cell_bvh()``) is the
+caller's to reach for. The harness has no view on what constitutes the object;
+the parity module for each type does, and states it in its field list.
+
 What the harness deliberately does not do
 -----------------------------------------
 
@@ -102,7 +159,9 @@ and it takes an elementwise derived bound for the same reason.
 
 from __future__ import annotations
 
+import operator
 import os
+from collections.abc import Callable, Sequence
 from enum import IntEnum
 from typing import Any, Final, NamedTuple, cast
 
@@ -114,11 +173,14 @@ __all__ = [
     "AccuracyClaim",
     "BuildProvenance",
     "Deviation",
+    "ExactClaim",
+    "Field",
     "ParityClaim",
     "ParityKind",
     "Roundings",
     "absolute_tolerance",
     "assert_accuracy",
+    "assert_object_parity",
     "assert_parity",
     "bitwise_parity",
     "bounded_parity",
@@ -128,6 +190,7 @@ __all__ = [
     "cpp_backend_available",
     "demand_cpp_backend",
     "derived_accuracy",
+    "exact_parity",
     "underflow_floor",
     "unit_roundoff",
 ]
@@ -422,7 +485,7 @@ def build_provenance() -> BuildProvenance:
         raise RuntimeError(SKIP_REASON)
 
     # Imported here rather than read off a module handle held in pantr._backend:
-    # the provenance attributes are declared in src/pantr/_pantr_cpp.pyi, so this
+    # the provenance attributes are declared in src/pantr/_pantr_cpp/__init__.pyi, so this
     # spelling is the one mypy can actually check.
     from pantr import _pantr_cpp  # noqa: PLC0415
 
@@ -579,6 +642,56 @@ class AccuracyClaim(NamedTuple):
 
     bound: FloatArray
     why: str
+
+
+class ExactClaim(NamedTuple):
+    """A claim that two backends must agree exactly, with the reason.
+
+    The counterpart of :class:`ParityClaim` for everything a tolerance cannot be
+    applied to: a cell id, a node index, a count, a flag, a tag name, a dtype.
+    ``design/backend_parity.md`` Rule 11 is the distinction -- a differing verdict
+    is not a displaced value, and no bound could absorb it, so there is nothing to
+    derive and nothing but a reason to state.
+
+    Kept separate from :class:`ParityClaim` rather than added to
+    :class:`ParityKind`, because :func:`assert_parity` is float-only by
+    construction: it compares bit patterns through a float view and computes a
+    difference in ``float64``. Its BITWISE message is also wrong here -- it tells
+    the reader to check ``__fp_contract__``, which decides nothing about an
+    integer.
+
+    Built by :func:`exact_parity`.
+
+    Attributes:
+        why (str): Why exactness is the right claim, and what a difference would
+            mean. Quoted verbatim in any failure message.
+    """
+
+    why: str
+
+
+class Field(NamedTuple):
+    """One comparable piece of an object, and the claim that governs it.
+
+    Built directly; it carries no derivation of its own, only the claim it points
+    at. See :func:`assert_object_parity`.
+
+    Attributes:
+        name (str): The attribute read from both objects, and the label a failure
+            message uses. Where ``read`` is given the name is only the label, and
+            should still say what was compared (``"boundary.ids"``,
+            ``"breakpoints[1]"``).
+        claim (ParityClaim | ExactClaim): What agreement is claimed for this piece.
+        read (Callable[[Any], Any] | None): How to take the value out of an
+            object, for the pieces that are not a plain attribute: a tag registry
+            is a mapping reached through ``__getitem__``, and a per-axis array
+            lives behind an index into a ragged tuple. Defaults to
+            ``getattr(obj, name)``.
+    """
+
+    name: str
+    claim: ParityClaim | ExactClaim
+    read: Callable[[Any], Any] | None = None
 
 
 class Deviation(NamedTuple):
@@ -822,6 +935,28 @@ def derived_accuracy(*, bound: FloatArray, why: str) -> AccuracyClaim:
     if not np.all(np.isfinite(arr)) or np.any(arr < 0.0):
         raise ValueError("the accuracy bound must be finite and non-negative")
     return AccuracyClaim(bound=arr, why=why)
+
+
+def exact_parity(*, why: str) -> ExactClaim:
+    """Claim that two backends agree exactly, on a quantity no tolerance applies to.
+
+    For integer and boolean arrays, counts, flags, names and dtypes. Not for
+    floats: :func:`bitwise_parity` is the exactness claim there, and it says
+    something stronger and more fragile -- that the same IEEE-754 operations ran
+    in the same order.
+
+    Args:
+        why (str): Why exactness holds and what a difference would mean.
+
+    Returns:
+        ExactClaim: The claim.
+
+    Raises:
+        ValueError: If ``why`` is empty.
+    """
+    if not why.strip():
+        raise ValueError("an exactness claim must carry its reason")
+    return ExactClaim(why=why)
 
 
 _LU_ALLOWANCE: Final = 8
@@ -1305,3 +1440,132 @@ def assert_accuracy(
             f"{_worst_element_report(computed, exact, bound, offenders)}"
         )
     return deviation
+
+
+def _assert_exact(
+    actual: Any,
+    reference: Any,
+    claim: ExactClaim,
+    *,
+    context: str,
+) -> Deviation:
+    """Assert two values agree exactly, for the quantities a tolerance cannot cover.
+
+    One call handles an array of any dtype, a plain ``int``, ``bool`` or ``str``, a
+    tuple of them, and a dtype object, because both sides go through
+    :func:`numpy.asarray` first and are then compared elementwise. A scalar becomes
+    a 0-d array, and a differing *shape* is reported before any element is looked
+    at: two results of different length are a changed verdict, which an elementwise
+    comparison cannot see at all.
+
+    **Normalising both sides is deliberate, and it is a decision about what parity
+    means.** A backend is free to return a tuple where the oracle returns a list, or
+    a NumPy array where it returns a tuple; that is a difference in the *container*
+    and not in the answer, and this harness compares answers. What the two backends
+    return as types is a binding-contract question, checked where that contract is
+    (``tests/parity/test_bezier_binding_contract.py`` is the pattern), not smuggled
+    into a value comparison where it would fire on a container nobody chose.
+
+    Args:
+        actual (Any): The backend under test, conventionally the C++ one.
+        reference (Any): The oracle, conventionally the Python one.
+        claim (ExactClaim): Why exactness holds. Quoted in a failure message.
+        context (str): What was being compared.
+
+    Returns:
+        Deviation: All zeros, since the only outcome that returns is agreement.
+            Present so a caller can treat every field uniformly.
+
+    Raises:
+        AssertionError: If the two differ in shape or in any element.
+    """
+    actual_array = np.asarray(actual)
+    reference_array = np.asarray(reference)
+    assert actual_array.shape == reference_array.shape, (
+        f"{context}: shape {actual_array.shape} against {reference_array.shape}. "
+        f"Two results of different shape are a changed verdict, which no comparison "
+        f"of elements can see at all.\n  claim: {claim.why}"
+    )
+
+    offenders = np.asarray(actual_array != reference_array)
+    num_differing = int(np.count_nonzero(offenders))
+    if not num_differing:
+        return Deviation(max_absolute=0.0, max_ratio_to_bound=0.0, num_differing=0)
+
+    if actual_array.ndim == 0:
+        where = ""
+        detail = f"{actual!r} against {reference!r}"
+    else:
+        first = tuple(int(i) for i in np.argwhere(offenders)[0])
+        where = f" in {num_differing} of {actual_array.size} entries"
+        detail = f"first at {first}: {actual_array[first]!r} against {reference_array[first]!r}"
+    raise AssertionError(
+        f"{context}: exact agreement claimed and violated{where}.\n"
+        f"  claim: {claim.why}\n"
+        f"  {detail}"
+        f"{_the_oracle_may_not_be_compiled()}"
+    )
+
+
+def assert_object_parity(
+    py: Any,
+    cpp: Any,
+    *,
+    fields: Sequence[Field],
+    context: str,
+) -> dict[str, Deviation]:
+    """Assert that two backends' versions of one object agree, field by field.
+
+    The object-level entry point. See "Comparing two objects" in the module
+    docstring for why it exists and what it deliberately does not do.
+
+    **The argument order is ``(py, cpp)``**, the opposite of
+    :func:`assert_parity`'s ``(actual, reference)``. It matches ``_both()``
+    in the parity modules, which returns ``(reference, actual)``, so the common
+    call is ``assert_object_parity(*_both(...), fields=..., context=...)``. The
+    parameters are named for the backends rather than for their roles precisely
+    because the two orders coexist: ``py=`` and ``cpp=`` cannot be swapped by
+    accident, and ``actual``/``reference`` could.
+
+    Args:
+        py (Any): The object the Python backend built. The oracle.
+        cpp (Any): The object the C++ backend built. The one under test.
+        fields (Sequence[Field]): Which pieces of state have to agree, and under
+            which claim. Must be non-empty and must not repeat a name.
+        context (str): What was being built, quoted in every failure message.
+            Each field appends its own name to it.
+
+    Returns:
+        dict[str, Deviation]: What each field's comparison observed, keyed by
+            field name, so a caller can assert on a margin as well as on the pass.
+            Exact fields report zeros.
+
+    Raises:
+        AssertionError: If ``fields`` is empty or repeats a name, or if any field
+            violates its claim.
+    """
+    assert fields, (
+        f"{context}: assert_object_parity was given no fields, so it compares "
+        f"nothing and would pass for any two objects at all. Name the state that "
+        f"has to agree, or delete the call."
+    )
+    names = [field.name for field in fields]
+    assert len(set(names)) == len(names), (
+        f"{context}: two fields share a name in {names}. The result is keyed by "
+        f"name, so one of the two comparisons would be reported as the other."
+    )
+
+    observed: dict[str, Deviation] = {}
+    for field in fields:
+        read = operator.attrgetter(field.name) if field.read is None else field.read
+        where = f"{context}: {field.name}"
+        if isinstance(field.claim, ExactClaim):
+            observed[field.name] = _assert_exact(read(cpp), read(py), field.claim, context=where)
+        else:
+            observed[field.name] = assert_parity(
+                np.atleast_1d(np.asarray(read(cpp))),
+                np.atleast_1d(np.asarray(read(py))),
+                field.claim,
+                context=where,
+            )
+    return observed
