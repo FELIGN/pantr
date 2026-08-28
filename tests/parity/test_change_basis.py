@@ -168,6 +168,7 @@ from pantr.change_basis import (
 )
 from pantr.quad import get_gauss_legendre_1d
 from tests._parity_harness import (
+    _LU_ALLOWANCE,
     Roundings,
     assert_parity,
     bitwise_parity,
@@ -182,22 +183,6 @@ from tests.test_change_basis_domain import (
     _lagrange_to_bernstein_exact,
     _legendre_to_cardinal_exact,
 )
-
-_LU_ALLOWANCE: Final = 8
-"""Allowance for ``R = || |L||U| ||_inf / ||A||_inf`` in Higham Thm 9.4.
-
-**Measured, not argued.** Exact rational arithmetic over every matrix these
-builders factor, across every solvability domain, gives ``R <= 3.73``, with the
-classical growth factor ``rho_n`` exactly ``1.000``; an independent sweep of 1508
-matrices to degree 200 through Eigen's own ``matrixLU()`` agrees and finds ``R``
-crossing 8 only near degree 160. So the margin is 2.1x in domain, and the allowance
-stops covering anything past degree 160 -- which no builder here reaches, and which
-is the caveat to carry if one ever does.
-
-Deliberately not tightened to 4: measured, that buys one degree on three of ten
-(builder, dtype) pairs, because ``kappa_inf`` grows geometrically and is what
-actually limits the parity domain.
-"""
 
 _MIXED_CANCELLATION: Final = 1.0
 """``c_C``, the cancellation factor of the mixed matrix ``C = B_new^T W B_old``.
