@@ -1368,7 +1368,7 @@ def test_the_binding_refuses_a_negative_degree(cpp_backend: None) -> None:
 
     # A non-integer degree is refused by the same mechanism rather than truncated.
     # The type: ignore is the point of the assertion rather than a workaround:
-    # `src/pantr/_pantr_cpp.pyi` declares `degree: int`, and this checks that the
+    # `src/pantr/_pantr_cpp/_basis.pyi` declares `degree: int`, and this checks that the
     # binding enforces at run time what the stub only promises statically.
     with pytest.raises(TypeError):
         _pantr_cpp.tabulate_cardinal_bspline_1d(3.0, points, out=np.zeros((4, 4)))  # type: ignore[arg-type]
