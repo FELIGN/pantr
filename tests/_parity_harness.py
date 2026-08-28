@@ -131,14 +131,20 @@ The other two do not: a tag registry's state is behind ``__getitem__``, keyed by
 a name only known at run time, and a ragged per-axis tuple is behind an index. A
 ``Field`` may therefore carry a ``read`` callable, which is what lets those two
 build their field list in a loop instead of falling back to hand-rolled
-comparisons -- which is the cost this entry point exists to avoid.
+comparisons -- which is the cost this entry point exists to avoid. It must return
+one quantity: handing back ``(keys, values)`` or a whole per-axis tuple is refused,
+because those are two and *n* quantities and each wants a field and a claim of its
+own.
 
 **It refuses to be vacuous, in the two ways it could be.** A call with no fields
 would pass for any two objects at all, and a call whose fields repeat a name
 would report one comparison under another's key; both are assertion failures
 rather than quiet successes. This is the same argument as
 ``_refuse_a_vacuous_bound``: the harness's whole design is that an assertion that
-cannot fail must be impossible to write by accident.
+cannot fail must be impossible to write by accident. One case escapes it, and is
+named rather than pretended away -- a ``read`` that ignores the object it is handed
+and closes over a constant compares that constant with itself, and nothing here can
+see that.
 
 What it does *not* do is decide which fields matter. Derived conveniences
 (``BVH.n_nodes`` is the length of an array already compared) may be named or
@@ -686,7 +692,10 @@ class Field(NamedTuple):
             object, for the pieces that are not a plain attribute: a tag registry
             is a mapping reached through ``__getitem__``, and a per-axis array
             lives behind an index into a ragged tuple. Defaults to
-            ``getattr(obj, name)``.
+            ``getattr(obj, name)``. It must return **one** quantity: a sequence of
+            arrays is refused, since the pieces are that many quantities and want
+            that many fields. A ``read`` that ignores its argument and closes over a
+            constant is the one vacuous field nothing here can detect.
     """
 
     name: str
@@ -1442,6 +1451,47 @@ def assert_accuracy(
     return deviation
 
 
+def _as_comparable(value: Any, *, context: str) -> npt.NDArray[Any]:
+    """Turn one field's value into an array, refusing the shapes that would mislead.
+
+    A ``read`` that hands back several pieces at once is the mistake this catches, and
+    it is an easy one to make: ``FacetTags[name]`` is ``(keys, values)`` of shapes
+    ``(M, 2)`` and ``(M,)``, and ``TensorProductGrid.breakpoints`` is a per-axis tuple
+    whose entries have different lengths. Both are two quantities, not one.
+
+    Left to :func:`numpy.asarray` they fail two different ways, and the quieter one is
+    worse. Ragged pieces raise a bare ``ValueError`` from deep inside NumPy, naming no
+    field and no backend. Equal-length pieces -- ``CellTags[name]`` is ``(ids, values)``
+    of the same length -- stack silently into one ``(2, N)`` block, so the comparison
+    passes or fails as a unit and the failure message points at a row index of a thing
+    the caller never built. So both are refused here, with the fix named.
+
+    Args:
+        value (Any): What a :class:`Field` read off one of the two objects.
+        context (str): What was being compared, quoted in a failure message.
+
+    Returns:
+        npt.NDArray[Any]: The value as an array. A scalar becomes 0-d.
+
+    Raises:
+        AssertionError: If the value is a sequence of arrays, or cannot become one
+            array at all.
+    """
+    if isinstance(value, tuple | list) and any(isinstance(item, np.ndarray) for item in value):
+        raise AssertionError(
+            f"{context}: the field read back a {type(value).__name__} of "
+            f"{len(value)} arrays, which is that many quantities rather than one. "
+            f"Give each its own Field, with its own claim and its own `read`."
+        )
+    try:
+        return np.asarray(value)
+    except ValueError as exc:
+        raise AssertionError(
+            f"{context}: the field's value cannot be compared as a single array "
+            f"({exc}). A ragged or compound value needs one Field per piece."
+        ) from exc
+
+
 def _assert_exact(
     actual: Any,
     reference: Any,
@@ -1479,8 +1529,17 @@ def _assert_exact(
     Raises:
         AssertionError: If the two differ in shape or in any element.
     """
-    actual_array = np.asarray(actual)
-    reference_array = np.asarray(reference)
+    actual_array = _as_comparable(actual, context=context)
+    reference_array = _as_comparable(reference, context=context)
+    for array in (actual_array, reference_array):
+        if array.dtype.kind == "f":
+            raise AssertionError(
+                f"{context}: an exact claim was made about a {array.dtype} value. "
+                f"Exactness on floating point is bitwise_parity, which says the "
+                f"stronger and more fragile thing -- the same IEEE-754 operations in "
+                f"the same order -- and which handles NaN through the bit pattern "
+                f"rather than through `!=`, where every NaN differs from itself."
+            )
     assert actual_array.shape == reference_array.shape, (
         f"{context}: shape {actual_array.shape} against {reference_array.shape}. "
         f"Two results of different shape are a changed verdict, which no comparison "
@@ -1520,12 +1579,18 @@ def assert_object_parity(
     docstring for why it exists and what it deliberately does not do.
 
     **The argument order is ``(py, cpp)``**, the opposite of
-    :func:`assert_parity`'s ``(actual, reference)``. It matches ``_both()``
-    in the parity modules, which returns ``(reference, actual)``, so the common
-    call is ``assert_object_parity(*_both(...), fields=..., context=...)``. The
-    parameters are named for the backends rather than for their roles precisely
-    because the two orders coexist: ``py=`` and ``cpp=`` cannot be swapped by
-    accident, and ``actual``/``reference`` could.
+    :func:`assert_parity`'s ``(actual, reference)``, and the parity modules do not
+    agree on which order their own ``_both()`` returns: ``tests/parity/test_grid.py``
+    returns ``(reference, actual)``, while ``test_change_basis.py`` and
+    ``test_basis_cardinal_bspline.py`` return ``(actual, reference)``. So
+    ``assert_object_parity(*_both(...), ...)`` is right for the first and wrong for
+    the other two, and **the order has to be checked at the call site** rather than
+    assumed. Passing ``py=`` and ``cpp=`` by keyword removes the question.
+
+    A swap does not flip the verdict -- every comparison here is symmetric in its two
+    arguments, and no bound is derived from either -- but it does swap which value a
+    failure message calls "actual" and which it calls "reference", which misleads
+    whoever reads it about the backend that produced the number.
 
     Args:
         py (Any): The object the Python backend built. The oracle.
@@ -1563,8 +1628,8 @@ def assert_object_parity(
             observed[field.name] = _assert_exact(read(cpp), read(py), field.claim, context=where)
         else:
             observed[field.name] = assert_parity(
-                np.atleast_1d(np.asarray(read(cpp))),
-                np.atleast_1d(np.asarray(read(py))),
+                np.atleast_1d(_as_comparable(read(cpp), context=where)),
+                np.atleast_1d(_as_comparable(read(py), context=where)),
                 field.claim,
                 context=where,
             )
