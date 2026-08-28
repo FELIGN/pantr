@@ -449,8 +449,8 @@ class _AABBPython:
             new_hi = np.sum(contrib_max, axis=1) + b
         if np.any(np.isnan(new_lo)) or np.any(np.isnan(new_hi)):
             raise ValueError(
-                "_AABBPython.transform produced NaN bounds; the transform is incompatible with "
-                "this _AABBPython (for example, a singular matrix combined with infinite bounds)."
+                "AABB.transform produced NaN bounds; the transform is incompatible with "
+                "this AABB (for example, a singular matrix combined with infinite bounds)."
             )
         return _AABBPython(new_lo, new_hi)
 
@@ -886,6 +886,17 @@ class AABB:
             ValueError: If the dimensions disagree, the matrix is not square, or
                 the wrap produces NaN.
         """
+        # The empty short-circuit comes FIRST, before `affine` is looked at, because
+        # that is the order the oracle uses (an empty box returns an empty box without
+        # validating the map). Validating first here made `PANTR_BACKEND` decide
+        # whether a malformed `affine` against an empty box raised or returned, which
+        # is the one thing the backend switch must never change.
+        #
+        # Whether the oracle's order is itself right -- every other method validates
+        # its argument regardless of emptiness -- is a separate question about the
+        # oracle, not about this port.
+        if self.is_empty():
+            return AABB.empty(self.ndim)
         if isinstance(self._impl, _AABBPython):
             return AABB._wrap(self._impl.transform(affine))
         if affine.dim != self.ndim:
