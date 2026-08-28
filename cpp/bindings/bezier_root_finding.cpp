@@ -138,8 +138,9 @@ int bind_yuksel_roots(const_vec<T> coeff, double param_tol, out_vec<double> out)
     require_coefficients(coeff, "coeff");
     require_tolerance(param_tol, "param_tol");
     require_capacity(out, 0, yuksel_capacity(coeff.shape(0)), "out");
-    return pantr::bezier::yuksel_roots<T>(std::span<const T>(coeff.data(), coeff.shape(0)), param_tol,
-                                  std::span<double>(out.data(), out.shape(0)));
+    return pantr::bezier::yuksel_roots<T>(
+        std::span<const T>(coeff.data(), coeff.shape(0)), param_tol,
+        std::span<double>(out.data(), out.shape(0)));
 }
 
 template <class T>
@@ -149,7 +150,7 @@ int bind_clip_roots(const_vec<T> coeff, double param_tol, double geom_tol, out_v
     require_tolerance(geom_tol, "geom_tol");
     require_capacity(out, 0, clip_capacity(coeff.shape(0)), "out");
     return pantr::bezier::clip_roots<T>(std::span<const T>(coeff.data(), coeff.shape(0)), param_tol,
-                                geom_tol, std::span<double>(out.data(), out.shape(0)));
+                                        geom_tol, std::span<double>(out.data(), out.shape(0)));
 }
 
 template <class T>
@@ -176,7 +177,7 @@ double bind_solve_monotone_root(const_vec<T> coeff, double param_tol) {
     require_coefficients(coeff, "coeff");
     require_tolerance(param_tol, "param_tol");
     return pantr::bezier::solve_monotone_root<T>(std::span<const T>(coeff.data(), coeff.shape(0)),
-                                         param_tol);
+                                                 param_tol);
 }
 
 template <class T>
