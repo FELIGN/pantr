@@ -570,22 +570,29 @@ def _cpp_class() -> type[_CppAffine]:
     return _pantr_cpp.AffineTransform
 
 
-def _f64(value: npt.ArrayLike, ndim: int) -> npt.NDArray[np.float64]:
+def _f64(value: npt.ArrayLike, *, ravel: bool) -> npt.NDArray[np.float64]:
     """Normalize an argument to the contiguous float64 array the binding needs.
 
     The oracle accepts anything array-like; the binding refuses a non-contiguous
     or wrongly-typed array outright. Normalizing here keeps ``PANTR_BACKEND`` from
     changing what the library accepts.
 
+    ``ravel`` is explicit and per call site rather than inferred from a rank,
+    because the oracle is not uniform: :meth:`AffineTransform.translation` rejects
+    a ``(n, 1)`` vector where :meth:`mirror`, :meth:`scaling`, ``rotation_3d``'s
+    axis and every ``center`` flatten it first. A helper that guessed reshaped a
+    rejected argument before its shape reached the error message, so
+    ``AffineTransform(np.zeros((2, 3, 4)))`` reported ``got shape (24,)``.
+
     Args:
         value (npt.ArrayLike): The caller's argument.
-        ndim (int): The rank to produce, 1 or 2.
+        ravel (bool): Whether the oracle flattens this argument before checking it.
 
     Returns:
-        npt.NDArray[np.float64]: A contiguous ``float64`` array of that rank.
+        npt.NDArray[np.float64]: A contiguous ``float64`` array.
     """
     arr = np.ascontiguousarray(np.asarray(value, dtype=np.float64))
-    return arr if arr.ndim == ndim else np.ascontiguousarray(arr.reshape(-1))
+    return np.ascontiguousarray(arr.ravel()) if ravel else arr
 
 
 class AffineTransform:
@@ -633,10 +640,10 @@ class AffineTransform:
             object.__setattr__(self, "_impl", _AffineTransformPython(matrix, translation))
             return
         cls = _cpp_class()
-        mat = _f64(matrix, 2)
+        mat = _f64(matrix, ravel=False)
         if mat.ndim != 2 or mat.shape[0] != mat.shape[1]:  # noqa: PLR2004 -- a matrix is 2-D
             raise ValueError(f"matrix must be a square 2-D array, got shape {mat.shape}.")
-        off = np.zeros(mat.shape[0]) if translation is None else _f64(translation, 1)
+        off = np.zeros(mat.shape[0]) if translation is None else _f64(translation, ravel=False)
         object.__setattr__(self, "_impl", cls(mat, off))
 
     @classmethod
@@ -764,13 +771,23 @@ class AffineTransform:
         impl = self._impl
         if isinstance(impl, _AffineTransformPython):
             return impl(points)
-        pts = np.ascontiguousarray(np.asarray(points, dtype=np.float64))
-        if pts.ndim == 0 or pts.shape[-1] != self.dim:
-            last = None if pts.ndim == 0 else pts.shape[-1]
+        # The rank check runs on `asarray`, NOT on `ascontiguousarray`, and the
+        # difference is the whole point: `ascontiguousarray` promotes a 0-d input
+        # to shape (1,), so a guard written after it can never see rank 0. It was
+        # written after it, and the consequence was that `identity(1)(5.0)`
+        # silently returned `array([5.])` under the C++ backend while the oracle
+        # raised. Indexing `shape[-1]` on a 0-d array raises `IndexError`, which
+        # is exactly what the oracle does -- reproducing that is what a port owes
+        # its oracle, even where the behaviour looks accidental. Whether the
+        # oracle SHOULD raise `IndexError` there is a separate question about the
+        # oracle.
+        pts = np.asarray(points, dtype=np.float64)
+        if pts.shape[-1] != self.dim:
             raise ValueError(
-                f"Points last dimension ({last}) must match transform dimension ({self.dim})."
+                f"Points last dimension ({pts.shape[-1]}) must match "
+                f"transform dimension ({self.dim})."
             )
-        flat = pts.reshape(-1, self.dim)
+        flat = np.ascontiguousarray(pts).reshape(-1, self.dim)
         out = np.empty_like(flat)
         impl.apply(flat, out)
         return out.reshape(pts.shape)
@@ -817,7 +834,7 @@ class AffineTransform:
         if _use_python():
             return AffineTransform._wrap(_AffineTransformPython.translation(offset))
         cls = _cpp_class()
-        return AffineTransform._wrap(cls.translation(_f64(offset, 1)))
+        return AffineTransform._wrap(cls.translation(_f64(offset, ravel=False)))
 
     @staticmethod
     def scaling(
@@ -850,11 +867,22 @@ class AffineTransform:
                     "array of per-axis factors so the dimension can be "
                     "inferred."
                 )
+            # The factor is checked BEFORE the centre, because that is the
+            # oracle's order. Deferring the factor to C++ and checking the centre
+            # here inverted it, so two simultaneously bad arguments produced
+            # different messages on the two backends.
+            fval = float(f)
+            if not np.isfinite(fval):
+                raise ValueError(f"scaling factors must be finite, got {fval!r}.")
+            if fval == 0.0:
+                raise ValueError(
+                    f"scaling factors must be non-zero (singular transform), got {fval!r}."
+                )
             c = np.asarray(center, dtype=np.float64)
             if c.ndim != 1:
                 raise ValueError(f"center must be a 1-D array, got shape {c.shape}.")
-            f = np.full(len(c), float(f))
-        return AffineTransform._centred(cls.scaling(_f64(f, 1)), center)
+            f = np.full(len(c), fval)
+        return AffineTransform._centred(cls.scaling(_f64(f, ravel=True)), center)
 
     @staticmethod
     def rotation_2d(angle: float, *, center: npt.ArrayLike | None = None) -> AffineTransform:
@@ -912,7 +940,15 @@ class AffineTransform:
             vec = np.zeros(3)
             vec[axis_int] = 1.0
         else:
-            vec = _f64(axis, 1)
+            vec = _f64(axis, ravel=True)
+            # The axis is validated BEFORE the angle, matching the oracle. The C++
+            # side checks the angle first, so leaving both to it inverted the order
+            # whenever a caller got both wrong at once.
+            if vec.shape != (3,):
+                raise ValueError(f"Rotation axis must have shape (3,), got {vec.shape}.")
+            norm = float(np.linalg.norm(vec))
+            if norm == 0.0 or not np.isfinite(norm):
+                raise ValueError(f"Rotation axis must be a finite non-zero vector, got {vec!r}.")
         return AffineTransform._centred(cls.rotation_3d(float(angle), vec), center)
 
     @staticmethod
@@ -933,7 +969,7 @@ class AffineTransform:
         if _use_python():
             return AffineTransform._wrap(_AffineTransformPython.mirror(normal, center=center))
         cls = _cpp_class()
-        return AffineTransform._centred(cls.mirror(_f64(normal, 1)), center)
+        return AffineTransform._centred(cls.mirror(_f64(normal, ravel=True)), center)
 
     @staticmethod
     def shear(dim: int, component: int, direction: int, factor: float) -> AffineTransform:
@@ -980,7 +1016,13 @@ class AffineTransform:
         """
         if center is None:
             return AffineTransform._wrap(impl)
-        c = _f64(center, 1)
+        c = _f64(center, ravel=True)
         if c.shape != (impl.dim,):
-            raise ValueError(f"center must have shape ({impl.dim},), got {c.shape}.")
+            # The oracle ravels for the CHECK and reports the ORIGINAL shape, so
+            # a (3, 1) centre is named as (3, 1) and not as (3,). Reporting the
+            # ravelled shape is a smaller mistake than it looks: it tells the
+            # caller their argument had a shape it never had.
+            raise ValueError(
+                f"center must have shape ({impl.dim},), got {np.asarray(center).shape}."
+            )
         return AffineTransform._wrap(impl.about_center(c))
