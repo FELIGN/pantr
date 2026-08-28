@@ -25,11 +25,16 @@ The sweep is also the input generator for the C++ port's parity oracle: every ca
 carries its axis values in the JSONL journal, and ``--dump-npz DIR`` persists the
 input arrays of the cases that declare them.
 
+**Every case runs the Python backend**, and that is a scope decision rather than a
+default nobody changed: the sweep's instrument is ``NUMBA_BOUNDSCHECK``, which has no
+C++ counterpart at run time. ``README.md`` in this directory carries the argument and
+what grades the C++ side instead.
+
 Coverage
 --------
 
-What the ``full`` profile actually crosses, so the claim can be read off rather than
-guessed. Case counts are from the first complete run.
+What the ``full`` profile actually crosses **on the Python backend**, so the claim can
+be read off rather than guessed. Case counts are from the first complete run.
 
 ======================  =====  =========================================================
 group                   cases  covered
