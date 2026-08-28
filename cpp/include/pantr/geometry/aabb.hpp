@@ -29,9 +29,11 @@
 ///  - **`transform` must accumulate in the oracle's order, and the threshold is
 ///    seven.** `np.sum` blocks pairwise, so a sequential loop reproduces it bit
 ///    for bit only while `ndim <= 7`. From `ndim = 8` a single row's reduction
-///    differs on about half of random inputs, and since a box has `ndim` of
-///    them, the box as a whole differs on essentially all of them. Measured,
-///    not assumed:
+///    differs on about half of random inputs -- that is the figure
+///    `scripts/measure_aabb_transform_summation.py` measures and prints. A box
+///    has `ndim` such rows, so the box as a whole differs on essentially all
+///    inputs; that second figure is a consequence of the first, not something
+///    the script reports. Measured, not assumed:
 ///    `scripts/measure_aabb_transform_summation.py` reports the table and
 ///    asserts the threshold. Above it the claim is a bound rather than an
 ///    equality, and nothing in pantr builds a box that wide today.
