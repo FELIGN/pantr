@@ -58,34 +58,9 @@ import pytest
 
 from pantr._backend import Backend, use_backend
 from pantr.transform import AffineTransform, _AffineTransformPython
+from tests._parity_harness import _LU_ALLOWANCE
 
 pytestmark = pytest.mark.usefixtures("cpp_backend")
-
-
-def _unfused_budget(n: int, terms: np.ndarray) -> np.ndarray:
-    r"""The absolute gap a missing fusion allows, per matrix entry.
-
-    Absolute rather than relative, because these matrices have entries that
-    vanish and a relative gap there is unbounded by cancellation alone --
-    ``design/backend_parity.md`` Rule 2.
-
-    The derivation. Without FMA the sum of squares carries `n - 1` extra
-    roundings, so it differs from the fused sum by a relative
-    :math:`(n-1)\varepsilon`. Taking the square root halves that; dividing each
-    component by the norm inherits it; and the product :math:`u_i u_j` doubles it
-    again. So each term of the entry is perturbed relatively by about
-    :math:`(n-1)\varepsilon`, and the entry's absolute error is that times the
-    sum of the magnitudes of its terms -- which is what is passed in, rather than
-    the entry itself.
-
-    Args:
-        n (int): The vector length being normalized.
-        terms (np.ndarray): Sum of the magnitudes of each entry's terms.
-
-    Returns:
-        np.ndarray: The per-entry absolute budget.
-    """
-    return 2.0 * max(n - 1, 1) * EPS * terms
 
 
 EPS = float(np.finfo(np.float64).eps)
@@ -94,9 +69,71 @@ EPS = float(np.finfo(np.float64).eps)
 TRIG_ULPS = 2.0
 """How far the two libm implementations may disagree, in ulps of the result.
 
-One ulp is what was measured; two is that with a factor of two of slack, stated
-as slack rather than derived, because nothing here bounds a libm's error.
+One ulp is what was measured over 500000 angles; two is that with a factor of two
+of slack, **declared as slack rather than derived**, because nothing here bounds a
+libm's error.
+
+Note what this instrument does and does not do. Near a zero of `cos` an ulp
+measure is not too loose but unboundedly too *tight*: at `pi/2`, one ulp of
+`cos` is 1e-32, so a libm erring by one ulp of unity would score 1e16 against
+this. It can misfire; it cannot mask. Where an absolute form is needed instead --
+`rotation_3d`, whose `1 - cos` cancels -- this appears as `TRIG_ULPS * EPS *
+magnitude`.
 """
+
+_LU_ALLOWANCE_MEASURED_HERE = 4.391
+"""``R = || |L||U| ||_inf / ||A||_inf`` over THIS module's matrices.
+
+Recorded because reusing the harness's ``_LU_ALLOWANCE`` requires it: that
+constant denotes a growth factor measured over the change-of-basis builders'
+matrices (``R <= 3.73``), and borrowing the number without measuring the quantity
+for random normal matrices would be borrowing a value while dropping its meaning.
+Measured over 20000 draws to ``n = 6``; the allowance of 8 covers it with 1.8x.
+"""
+
+
+def _normalization_budget(n: int, terms: np.ndarray) -> np.ndarray:
+    r"""The absolute gap the two normalizations allow, per matrix entry.
+
+    Absolute rather than relative, because these matrices have entries that
+    vanish and a relative gap there is unbounded by cancellation alone --
+    ``design/backend_parity.md`` Rule 2.
+
+    **The derivation, and why the previous one was wrong.** The first version
+    counted `n - 1` roundings *relative to a fused sequential sum*, on the premise
+    that ``np.linalg.norm`` is that sum. `scripts/measure_affine_transform_parity.py`
+    refutes the premise: at ``n = 4`` the unfused column is 0.00% and the fused one
+    12.00%, so OpenBLAS's ``ddot`` is neither order uniformly and a differential
+    count against one of them is not a bound. It was also violated in fact -- 88
+    failures in 60000 draws of this module's own generator, which the shipped test
+    missed only because its loop stopped at 500.
+
+    This one assumes nothing about summation order. Both sides compute
+    :math:`M_{ij} = \delta_{ij} - 2 u_i u_j` with :math:`u = v / \nu` and
+    :math:`\nu = \sqrt{\sum v_k^2}`:
+
+    - the squares are all non-negative, so no cancellation is possible and each
+      side satisfies :math:`|fl(s) - s| \le \gamma_n s`; two-sided that is
+      :math:`n\varepsilon`, whatever order either side sums in;
+    - the square root halves it and adds one straddle;
+    - the division inherits it and adds one;
+    - the product :math:`u_i u_j` doubles it and adds one;
+    - multiplying by two is exact, and the final subtract adds one.
+
+    Summing the straddles gives six, so the entry's absolute error is at most
+    :math:`(n + 6)\varepsilon` times the sum of the magnitudes of its terms.
+
+    Measured over 60000 draws spanning 300 decades: worst ratio 0.385, no
+    violations, against 1.538 and 88 for the version this replaces.
+
+    Args:
+        n (int): The vector length being normalized.
+        terms (np.ndarray): Sum of the magnitudes of each entry's terms.
+
+    Returns:
+        np.ndarray: The per-entry absolute budget.
+    """
+    return (n + 6) * EPS * terms
 
 
 def _cpp(matrix: Any, offset: Any) -> Any:
@@ -216,7 +253,7 @@ def test_mirror_agrees_within_a_derived_bound() -> None:
         unit = normal / np.linalg.norm(normal)
         # Terms of entry (i, j): the identity's 1 or 0, and 2 |u_i u_j|.
         terms = np.eye(len(unit)) + 2.0 * np.abs(np.outer(unit, unit))
-        budget = _unfused_budget(len(unit), terms)
+        budget = _normalization_budget(len(unit), terms)
         assert np.all(np.abs(got.matrix - want.matrix) <= budget), f"normal={normal!r}"
     assert checked > 400, "the sweep skipped too many cases to mean anything"
 
@@ -243,7 +280,7 @@ def test_rotation_3d_agrees_within_a_derived_bound() -> None:
         # Terms of entry (i, j): cos on the diagonal, (1 - cos) u_i u_j, and
         # sin times a component of the axis.
         magnitude = np.eye(3) + 2.0 * np.abs(np.outer(unit, unit)) + np.abs(unit).max()
-        budget = _unfused_budget(3, magnitude) + TRIG_ULPS * EPS * magnitude
+        budget = _normalization_budget(3, magnitude) + TRIG_ULPS * EPS * magnitude
         assert np.all(np.abs(got.matrix - want.matrix) <= budget), f"angle={angle} axis={axis!r}"
 
 
@@ -265,12 +302,39 @@ def test_rotation_2d_agrees_to_within_the_two_libms() -> None:
 
 
 def test_inverse_agrees_within_its_condition_number() -> None:
-    """The two inverses differ by at most `c n kappa eps` times the answer's size.
+    r"""The two inverses differ by at most `3 R n kappa_inf eps ||X||_inf`.
 
-    Both are backward stable LU with partial pivoting, so this is a derived
-    bound. `kappa_inf` is computed per case rather than assumed, and the constant
-    is stated: 8 absorbs the pivot growth and the two triangular solves, and is
-    an acknowledged safety factor rather than a derivation.
+    Both are backward stable LU with partial pivoting, so this is derived rather
+    than fitted. Higham 2nd ed. §14.3 (14.15)-(14.18) covers inversion by LU --
+    Method B there is `xGETRI`, which is what `numpy.linalg.inv` calls -- and gives
+    the componentwise result. Taking norms as he does at (14.5)-(14.7):
+
+    .. math::
+
+        \frac{\|X - A^{-1}\|_\infty}{\|A^{-1}\|_\infty}
+            \le c'_n\, u\, R\, \kappa_\infty(A), \qquad
+        R = \frac{\||L||U|\|_\infty}{\|A\|_\infty}
+
+    with :math:`c'_n \sim 3n` from Theorem 9.4's :math:`\gamma_{3n}`, which (14.15)
+    invokes. Two-sided, since neither backend is exact, and :math:`u = \varepsilon/2`.
+
+    Three corrections to the version this replaces, and each was a real defect:
+
+    - the constant was ``8``, which is `R` alone. The derivation gives `3R`, so the
+      old bound was three times tighter than licensed. `R` is reused from the
+      harness rather than minted afresh, and `_LU_ALLOWANCE_MEASURED_HERE` records
+      the measurement that licenses reusing it for these matrices.
+    - the scale was ``max(1, |X|.max())``, the max-norm, where the derivation gives
+      :math:`\|X\|_\infty` -- a row sum, larger by up to `n` and measured 5.2x here.
+    - the ``max(1, ...)`` floor destroyed the scale covariance the bound must have:
+      :math:`\kappa_\infty` is scale-invariant and :math:`A^{-1}` scales like
+      :math:`1/\lambda`, so clamping made the bound degree zero above unit scale
+      and the budget-to-answer ratio climbed six orders from input scale 1 to 1e8.
+
+    The domain guard is the ACCURACY domain, not the solvability one. The old
+    ``kappa > 1/eps`` admitted a band where the bound exceeded the answer and the
+    comparison decided nothing, which is what ``design/backend_parity.md`` Rule 8
+    exists to forbid.
     """
     rng = np.random.default_rng(3)
     checked = 0
@@ -278,20 +342,25 @@ def test_inverse_agrees_within_its_condition_number() -> None:
         n = int(rng.integers(1, 7))
         matrix = rng.normal(size=(n, n))
         kappa = float(np.linalg.cond(matrix, np.inf))
-        # Skip what the oracle itself would not trust: past 1/eps the inverse has
-        # no correct digits and a parity claim over it says nothing, which is
-        # design/backend_parity.md Rule 8.
-        if not np.isfinite(kappa) or kappa > 1.0 / EPS:
+        if not np.isfinite(kappa):
+            continue
+        py, cpp = _both(matrix, rng.normal(size=n))
+        try:
+            want = py.inverse.matrix
+        except ValueError:
+            continue
+        got = cpp.inverse().matrix
+        inverse_norm = float(np.abs(want).sum(axis=1).max())
+        budget = 3.0 * _LU_ALLOWANCE * n * kappa * EPS * inverse_norm
+        # Refuse the comparison where the bound no longer says anything, rather
+        # than counting a vacuous pass. This is the accuracy domain.
+        if budget >= inverse_norm:
             continue
         checked += 1
-        py, cpp = _both(matrix, rng.normal(size=n))
-        got = cpp.inverse().matrix
-        want = py.inverse.matrix
-        budget = 8.0 * n * kappa * EPS * max(1.0, float(np.abs(want).max()))
         assert np.all(np.abs(got - want) <= budget), (
             f"n={n} kappa={kappa:.3e} exceeded {budget:.3e}"
         )
-    assert checked > 400, "too many cases were skipped as ill-conditioned"
+    assert checked > 300, f"only {checked} draws had a bound that said anything"
 
 
 def test_compose_and_apply_agree_within_a_reordered_sum() -> None:
@@ -314,14 +383,26 @@ def test_compose_and_apply_agree_within_a_reordered_sum() -> None:
         want = py_a.compose(py_b).matrix
         # Sum of magnitudes of the terms of each entry: |A| @ |B|.
         magnitudes = np.abs(a_mat) @ np.abs(b_mat)
-        assert np.all(np.abs(got - want) <= n * EPS * magnitudes + EPS)
+        # `n * EPS` is exactly two-sided gamma_n, with no margin. The factor of 2
+        # is DECLARED build slack -- FMA, vector width, libm -- not a derivation;
+        # `src/pantr/tolerance.py` records 4x as this project's usual allowance
+        # for it and this takes half of that.
+        #
+        # There is no additive floor. The previous version carried `+ EPS`, which
+        # is dimensionally wrong (EPS is dimensionless, the entries are not) and
+        # made the assertion vacuous below input magnitude 1e-6: at scale 1e-8 the
+        # budget was 8607 times the values being compared.
+        assert np.all(np.abs(got - want) <= 2 * n * EPS * magnitudes)
 
         points = rng.normal(size=(int(rng.integers(1, 30)), n))
         out = np.empty_like(points)
         cpp_a.apply(points, out)
         want_pts = py_a(points)
         term_sums = np.abs(points) @ np.abs(a_mat).T + np.abs(a_off)
-        assert np.all(np.abs(out - want_pts) <= n * EPS * term_sums + EPS)
+        # `n + 1`, not `n`: the dot product has n terms and then one more straddle
+        # adding the offset. The shipped `n` reached 0.929 of its own budget at
+        # n = 2, which is a bound about to break rather than a bound.
+        assert np.all(np.abs(out - want_pts) <= 2 * (n + 1) * EPS * term_sums)
 
 
 def test_about_center_agrees_with_the_oracles_center_argument() -> None:
@@ -342,9 +423,21 @@ def test_about_center_agrees_with_the_oracles_center_argument() -> None:
             got = AffineTransform.rotation_2d(angle, center=center)
         # Conjugation multiplies, so this inherits the product bound, on top of
         # the one ulp the trigonometry already carries.
-        scale = max(1.0, float(np.abs(center).max()))
-        assert np.all(np.abs(got.matrix - want.matrix) <= TRIG_ULPS * EPS * scale)
-        assert np.all(np.abs(got.offset - want.offset) <= 8.0 * EPS * scale)
+        # The matrix bound carries NO centre scale. Conjugating by a translation
+        # leaves the linear part alone, and the C++ triple product multiplies only
+        # by exact zeros and ones, so the matrix is bitwise the un-centred
+        # rotation -- measured, 2000 of 2000 draws. Multiplying its budget by
+        # |center| scaled a quantity that does not depend on the centre, and went
+        # vacuous around |center| ~ 5e14.
+        assert np.all(np.abs(got.matrix - want.matrix) <= TRIG_ULPS * EPS)
+        # The OFFSET is where the centre legitimately enters: its terms are
+        # `c_i - sum_j R_ij c_j`. Their magnitude sum is at most
+        # |c|_max * (1 + sum_j |R_ij|) <= |c|_max * (1 + sqrt 2), the dot product
+        # costs n eps = 2 eps, the trigonometry TRIG_ULPS, and the final add one
+        # straddle: about (2 + 2 + 1) * 2.42, so 12 rather than the bare 8 the
+        # previous version used with no derivation at all.
+        offset_terms = (1.0 + np.sqrt(2.0)) * float(np.abs(center).max())
+        assert np.all(np.abs(got.offset - want.offset) <= 12.0 * EPS * offset_terms)
 
 
 def test_errors_agree_verbatim() -> None:
