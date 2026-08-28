@@ -250,7 +250,7 @@ void bind_degree_elevate(unsigned degree, const_mat<T> ctrl, unsigned degree_inc
 
     const nb::gil_scoped_release release;
     pantr::bezier::degree_elevate_bezier_1d<T>(static_cast<int>(degree), ctrl_view,
-                                       static_cast<int>(degree_increment), out_view);
+                                               static_cast<int>(degree_increment), out_view);
 }
 
 template <class T>
