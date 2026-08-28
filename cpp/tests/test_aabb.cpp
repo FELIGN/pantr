@@ -253,7 +253,28 @@ void test_equality_and_hash_agree_on_signed_zero() {
     PANTR_CHECK(!(AABB<double>::empty(1) == AABB<double>::empty(2)));
 }
 
+void test_the_type_is_generic_in_its_scalar() {
+    // cpp/bindings/geometry.cpp registers `double` alone and justifies that by
+    // saying the header stays generic. That justification is only worth
+    // something if something instantiates the other scalar, so this does.
+    // Explicit instantiation forces every member to be compiled, which a
+    // sampled call would not.
+    PANTR_CHECK(AABB<float>::empty(2).is_empty());
+    PANTR_CHECK(!AABB<float>::unbounded(2).is_empty());
+    const std::vector<float> lo{0.0F, 0.0F};
+    const std::vector<float> hi{1.0F, 2.0F};
+    const AABB<float> b{std::span<const float>(lo), std::span<const float>(hi)};
+    PANTR_CHECK(b.contains_point(std::span<const float>(hi)));
+    PANTR_CHECK(b.ndim() == 2);
+    PANTR_CHECK(std::hash<AABB<float>>{}(b) == std::hash<AABB<float>>{}(b));
+}
+
 }  // namespace
+
+// Forces every member of both instantiations to be compiled, which the calls
+// above do not on their own.
+template class pantr::geometry::AABB<double>;
+template class pantr::geometry::AABB<float>;
 
 int main() {
     test_construction_validates();
@@ -268,5 +289,6 @@ int main() {
     test_bounds_round_trip();
     test_to_string_names_both_corners();
     test_equality_and_hash_agree_on_signed_zero();
+    test_the_type_is_generic_in_its_scalar();
     return pantr::test::summary("test_aabb");
 }
