@@ -26,13 +26,20 @@
 ///
 /// Two places where reproducing `pantr.geometry.AABB` exactly takes care:
 ///
-///  - **`transform` sums in a loop, and numpy does not always.** `np.sum` is
-///    pairwise above a block size of 8, so a naive accumulation matches the
-///    oracle bit for bit only while `ndim <= 8`. Above it the two summation
-///    orders differ and the claim becomes a bound rather than an equality.
-///    Nothing in pantr builds a box beyond a handful of axes today, but the
-///    condition is a property of the input, not of the codebase, so it is
-///    stated here rather than assumed.
+///  - **`transform` must accumulate in the oracle's order, and the threshold is
+///    seven.** `np.sum` blocks pairwise, so a sequential loop reproduces it bit
+///    for bit only while `ndim <= 7`; from `ndim = 8` the two orders differ, on
+///    about half of random inputs. Measured, not assumed:
+///    `scripts/measure_aabb_transform_summation.py` reports the table and
+///    asserts the threshold. Above it the claim is a bound rather than an
+///    equality, and nothing in pantr builds a box that wide today.
+///
+///    An earlier version of this note named the wrong hazard and the wrong
+///    number. The threshold is 7, not 8, and the defect it hid was not the
+///    blocking at all: seeding the accumulator with `offset[i]` rather than
+///    adding it last diverges from the oracle at **ndim = 3**, on 94% of random
+///    inputs. The note is corrected in place rather than deleted, because a
+///    reader who trusted the old bound needs to see that it was wrong.
 ///  - **Zero times an infinite bound.** The oracle masks `A[i, j] == 0` before
 ///    multiplying, because `0 * inf` is NaN and would poison an output axis the
 ///    transform projects out. The same mask is applied here, and for the same
@@ -51,7 +58,9 @@
 /// is deliberately not taken here.
 
 #include <algorithm>
+#include <charconv>
 #include <cmath>
+#include <array>
 #include <cstddef>
 #include <functional>
 #include <limits>
@@ -65,6 +74,56 @@
 #include "pantr/core/scalar.hpp"
 
 namespace pantr::geometry {
+
+namespace detail {
+
+/// Format a scalar the way Python's `repr` formats a float.
+///
+/// The messages and `to_string` below are compared against the Python oracle's,
+/// so the number formatting has to be the oracle's too. `std::to_string` is not:
+/// it is fixed-point with six decimals, so `0.1` prints as `0.100000` and
+/// `1e300` as three hundred digits. `std::to_chars` produces the shortest
+/// representation that round-trips, which is the rule Python's `repr` follows;
+/// the only difference left is that Python writes a trailing `.0` on a value
+/// that would otherwise look like an integer, which is what the last branch adds.
+///
+/// \param x The value to format.
+/// \return Its Python-style textual form.
+template <class T>
+[[nodiscard]] inline std::string format_scalar(const T& x) {
+    const double v = static_cast<double>(value_of(x));
+    if (std::isnan(v)) {
+        return "nan";
+    }
+    if (std::isinf(v)) {
+        return v < 0.0 ? "-inf" : "inf";
+    }
+    std::array<char, 32> buffer{};
+    const auto result = std::to_chars(buffer.data(), buffer.data() + buffer.size(), v);
+    std::string text(buffer.data(), result.ptr);
+    if (text.find_first_of(".eE") == std::string::npos) {
+        text += ".0";
+    }
+    return text;
+}
+
+/// Format a corner the way Python formats a list of floats.
+///
+/// \param v The corner.
+/// \return `"[a, b, c]"`, matching `numpy.ndarray.tolist()` under `repr`.
+template <class T>
+[[nodiscard]] inline std::string format_corner(std::span<const T> v) {
+    std::string text = "[";
+    for (std::size_t d = 0; d < v.size(); ++d) {
+        if (d != 0) {
+            text += ", ";
+        }
+        text += format_scalar(v[d]);
+    }
+    return text + "]";
+}
+
+}  // namespace detail
 
 /// An axis-aligned bounding box in any spatial dimension `ndim >= 1`.
 ///
@@ -91,11 +150,14 @@ class AABB {
                                         + std::to_string(hi_.size()) + ",).");
         }
         if (lo_.empty()) {
-            throw std::invalid_argument("AABB: ndim must be >= 1; got 0.");
+            throw std::invalid_argument("AABB ndim must be >= 1; got 0.");
         }
         for (std::size_t d = 0; d < lo_.size(); ++d) {
             if (is_nan(lo_[d]) || is_nan(hi_[d])) {
-                throw std::invalid_argument("AABB: bounds must not contain NaN.");
+                throw std::invalid_argument(
+                    "AABB bounds must not contain NaN; got lo="
+                    + detail::format_corner(std::span<const T>(lo_))
+                    + ", hi=" + detail::format_corner(std::span<const T>(hi_)) + ".");
             }
         }
     }
@@ -106,7 +168,7 @@ class AABB {
     /// \return The unbounded box.
     /// \throws std::invalid_argument If `ndim < 1`.
     [[nodiscard]] static AABB unbounded(std::size_t ndim) {
-        require_ndim(ndim, "AABB::unbounded");
+        require_ndim(ndim, "AABB.unbounded");
         const T inf = std::numeric_limits<T>::infinity();
         return AABB(Unchecked{}, std::vector<T>(ndim, -inf), std::vector<T>(ndim, inf));
     }
@@ -117,7 +179,7 @@ class AABB {
     /// \return An empty box.
     /// \throws std::invalid_argument If `ndim < 1`.
     [[nodiscard]] static AABB empty(std::size_t ndim) {
-        require_ndim(ndim, "AABB::empty");
+        require_ndim(ndim, "AABB.empty");
         const T inf = std::numeric_limits<T>::infinity();
         return AABB(Unchecked{}, std::vector<T>(ndim, inf), std::vector<T>(ndim, -inf));
     }
@@ -133,15 +195,17 @@ class AABB {
     ///         zero, or an entry is NaN.
     [[nodiscard]] static AABB from_bounds(span2d<const T> bounds) {
         if (bounds.extent(1) != 2) {
-            throw std::invalid_argument("AABB::from_bounds: bounds must be (ndim, 2).");
+            throw std::invalid_argument("from_bounds: bounds must have shape (ndim, 2); got ("
+                                        + std::to_string(bounds.extent(0)) + ", "
+                                        + std::to_string(bounds.extent(1)) + ").");
         }
         const std::size_t n = bounds.extent(0);
-        require_ndim(n, "AABB::from_bounds");
+        require_ndim(n, "AABB.from_bounds");
         std::vector<T> lo(n);
         std::vector<T> hi(n);
         for (std::size_t d = 0; d < n; ++d) {
-            lo[d] = bounds(d, 0);
-            hi[d] = bounds(d, 1);
+            lo[d] = at(bounds, d, 0);
+            hi[d] = at(bounds, d, 1);
         }
         return AABB(std::span<const T>(lo), std::span<const T>(hi));
     }
@@ -155,29 +219,29 @@ class AABB {
     /// \throws std::invalid_argument If `out` does not have shape `(ndim, 2)`.
     void as_bounds(span2d<T> out) const {
         if (out.extent(0) != ndim() || out.extent(1) != 2) {
-            throw std::invalid_argument("AABB::as_bounds: out must be (ndim, 2).");
+            throw std::invalid_argument("as_bounds: out must be (" + std::to_string(ndim())
+                                        + ", 2); got (" + std::to_string(out.extent(0)) + ", "
+                                        + std::to_string(out.extent(1)) + ").");
         }
         for (std::size_t d = 0; d < ndim(); ++d) {
-            out(d, 0) = lo_[d];
-            out(d, 1) = hi_[d];
+            at(out, d, 0) = lo_[d];
+            at(out, d, 1) = hi_[d];
         }
     }
 
-    /// A compact representation, matching the oracle's `__repr__`.
+    /// A compact representation, matching the oracle's `__repr__` character for
+    /// character.
+    ///
+    /// It did not, until the number formatting went through
+    /// `detail::format_scalar`: `std::to_string` gave six fixed decimals where
+    /// Python gives the shortest round-tripping form, so `0.1` printed as
+    /// `0.100000`. The Python wrapper formats its own `__repr__` regardless, for
+    /// reasons of its own, so this is the representation a C++ caller sees.
     ///
     /// \return `"AABB(lo=[...], hi=[...])"`.
     [[nodiscard]] std::string to_string() const {
-        const auto join = [](std::span<const T> v) {
-            std::string s;
-            for (std::size_t d = 0; d < v.size(); ++d) {
-                if (d != 0) {
-                    s += ", ";
-                }
-                s += std::to_string(value_of(v[d]));
-            }
-            return s;
-        };
-        return "AABB(lo=[" + join(lo_) + "], hi=[" + join(hi_) + "])";
+        return "AABB(lo=" + detail::format_corner(std::span<const T>(lo_))
+               + ", hi=" + detail::format_corner(std::span<const T>(hi_)) + ")";
     }
 
     /// The spatial dimension.
@@ -216,7 +280,7 @@ class AABB {
     /// \return `true` when `lo[i] <= x[i] <= hi[i]` on every axis.
     /// \throws std::invalid_argument If `x` has the wrong length or contains NaN.
     [[nodiscard]] bool contains_point(std::span<const T> x) const {
-        require_len(x.size(), "AABB::contains_point: x");
+        require_len(x.size(), "contains_point: x");
         for (std::size_t d = 0; d < ndim(); ++d) {
             if (is_nan(x[d])) {
                 throw std::invalid_argument("AABB::contains_point: x must not contain NaN.");
@@ -321,7 +385,8 @@ class AABB {
         }
         for (std::size_t d = 0; d < ndim(); ++d) {
             if (!std::isfinite(value_of(r[d]))) {
-                throw std::invalid_argument("pad(r) entries must be finite.");
+                throw std::invalid_argument("pad(r) entries must be finite; got "
+                                            + detail::format_corner(r) + ".");
             }
         }
         std::vector<T> lo(ndim());
@@ -362,24 +427,40 @@ class AABB {
             return AABB::empty(ndim());
         }
         if (matrix.extent(0) != ndim() || matrix.extent(1) != ndim()) {
-            throw std::invalid_argument("AABB::transform: matrix must be (ndim, ndim).");
+            throw std::invalid_argument(
+                "transform(): affine.matrix must be (" + std::to_string(ndim()) + ", "
+                + std::to_string(ndim()) + "); got (" + std::to_string(matrix.extent(0))
+                + ", " + std::to_string(matrix.extent(1)) + ").");
         }
-        require_len(offset.size(), "AABB::transform: offset");
+        require_len(offset.size(), "transform(): offset");
         std::vector<T> lo(ndim());
         std::vector<T> hi(ndim());
         for (std::size_t i = 0; i < ndim(); ++i) {
-            T acc_lo = offset[i];
-            T acc_hi = offset[i];
+            // The accumulation order is the oracle's, not the convenient one.
+            // numpy computes `np.sum(contributions, axis=1) + b`: the offset is
+            // added LAST, and a masked entry contributes an explicit `+0.0`
+            // rather than being skipped. Seeding the accumulator with the offset
+            // instead, or skipping the zero terms, changes the result -- the
+            // first because addition is not associative, the second because
+            // `x + 0.0` turns a `-0.0` accumulator into `+0.0`. Both were
+            // measured differing, at ndim = 3; see scripts/measure_aabb_transform_summation.py.
+            T acc_lo{0};
+            T acc_hi{0};
             for (std::size_t j = 0; j < ndim(); ++j) {
-                const T a = matrix(i, j);
-                if (value_of(a) == T{0}) {
-                    continue;
+                const T a = at(matrix, i, j);
+                T term_lo{0};
+                T term_hi{0};
+                if (value_of(a) != T{0}) {
+                    const T t0 = a * lo_[j];
+                    const T t1 = a * hi_[j];
+                    term_lo = value_of(t0) < value_of(t1) ? t0 : t1;
+                    term_hi = value_of(t0) > value_of(t1) ? t0 : t1;
                 }
-                const T t0 = a * lo_[j];
-                const T t1 = a * hi_[j];
-                acc_lo += value_of(t0) < value_of(t1) ? t0 : t1;
-                acc_hi += value_of(t0) > value_of(t1) ? t0 : t1;
+                acc_lo += term_lo;
+                acc_hi += term_hi;
             }
+            acc_lo += offset[i];
+            acc_hi += offset[i];
             if (is_nan(acc_lo) || is_nan(acc_hi)) {
                 throw std::invalid_argument(
                     "AABB::transform produced NaN bounds; the transform is incompatible with "
@@ -459,8 +540,8 @@ class AABB {
     void require_len(std::size_t len, const char* who) const {
         if (len != ndim()) {
             throw std::invalid_argument(std::string(who) + " must have length "
-                                        + std::to_string(ndim()) + "; got "
-                                        + std::to_string(len) + ".");
+                                        + std::to_string(ndim()) + "; got ("
+                                        + std::to_string(len) + ",).");
         }
     }
 
@@ -492,6 +573,15 @@ class AABB {
 /// container. Adding `0.0` maps `-0.0` to `+0.0` and leaves every other value
 /// bitwise alone, infinities included. NaN, the other case where bitwise and
 /// IEEE comparison disagree, cannot occur -- the constructor rejects it.
+///
+/// **This mask is belt and braces on the toolchain pantr builds with, and no test
+/// here can show otherwise.** libstdc++'s own `std::hash<double>` already maps
+/// `-0.0` and `+0.0` to the same value, measured, so deleting the mask breaks
+/// nothing that any current test would notice. It stays because that is a
+/// property of one standard library rather than of the standard: libc++ and MSVC
+/// are not obliged to special-case the sign, and this is an installable
+/// header-only library whose consumers bring their own. An earlier version of
+/// this comment claimed "nothing but a test says so", which was false.
 ///
 /// This mirrors what `pantr.geometry.AABB.__hash__` does on the Python side. The
 /// two need not produce the same integer, and they do not: what has to hold is
