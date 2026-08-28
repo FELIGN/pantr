@@ -23,7 +23,8 @@
 /// the three differ in kind:
 ///
 ///  - **`inverse` is a bound, not an equality.** The oracle is `np.linalg.inv`,
-///    LAPACK `getrf`/`getri`; this is `Eigen::PartialPivLU`. Both are LU with
+///    LAPACK `gesv`, i.e. `getrf` then `getrs` -- verified by symbol, numpy's
+///    `_umath_linalg` carries no `getri`; this is `Eigen::PartialPivLU`. Both are LU with
 ///    partial pivoting and both are backward stable, so the two computed
 ///    inverses differ by roughly `c n rho kappa_inf(A) eps`. That is the same
 ///    derivation `change_basis.hpp` already carries for its solve, reused rather

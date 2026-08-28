@@ -18,7 +18,9 @@ for one.
 Where only a bound survives, and why
 ------------------------------------
 
-*The inverse.* `np.linalg.inv` is LAPACK `getrf`/`getri`; the port is
+*The inverse.* `np.linalg.inv` is LAPACK `gesv` (`getrf` then `getrs`,
+verified by symbol: numpy's `_umath_linalg` references `dgesv_` and `dgetrf_`
+and no `getri` at all); the port is
 `Eigen::PartialPivLU`. Both are LU with partial pivoting and both are backward
 stable, so the computed inverses differ by roughly
 
@@ -88,7 +90,11 @@ Recorded because reusing the harness's ``_LU_ALLOWANCE`` requires it: that
 constant denotes a growth factor measured over the change-of-basis builders'
 matrices (``R <= 3.73``), and borrowing the number without measuring the quantity
 for random normal matrices would be borrowing a value while dropping its meaning.
-Measured over 20000 draws to ``n = 6``; the allowance of 8 covers it with 1.8x.
+The allowance of 8 covers this with 1.8x to spare.
+
+Recomputed by :func:`test_the_lu_growth_allowance_still_covers_these_matrices`
+rather than left as a note. A measured number nothing recomputes is a number that
+rots while reading as current.
 """
 
 
@@ -301,13 +307,52 @@ def test_rotation_2d_agrees_to_within_the_two_libms() -> None:
     assert worst <= TRIG_ULPS, f"rotation_2d drifted {worst} ulps, over the {TRIG_ULPS} allowed"
 
 
+def test_the_lu_growth_allowance_still_covers_these_matrices() -> None:
+    """Recompute `R` for this module's matrices, so reusing the allowance stays honest.
+
+    `_LU_ALLOWANCE` is a growth factor measured over a different module's
+    matrices. Reusing it here is only legitimate while `R` for THESE matrices
+    stays under it, and that is a measurement, not an argument -- so it is made
+    here on every run rather than recorded once in a comment.
+    """
+    scipy_linalg = pytest.importorskip("scipy.linalg")
+    rng = np.random.default_rng(3)
+    worst = 0.0
+    for _ in range(2000):
+        n = int(rng.integers(1, 7))
+        a = rng.normal(size=(n, n))
+        kappa = float(np.linalg.cond(a, np.inf))
+        if not np.isfinite(kappa) or kappa > 1.0 / EPS:
+            continue
+        _, lower, upper = scipy_linalg.lu(a)
+        growth = float(
+            (np.abs(lower) @ np.abs(upper)).sum(axis=1).max() / np.abs(a).sum(axis=1).max()
+        )
+        worst = max(worst, growth)
+    assert worst <= _LU_ALLOWANCE, (
+        f"R = {worst:.3f} for these matrices now exceeds the allowance of "
+        f"{_LU_ALLOWANCE}; the inverse bound below no longer follows"
+    )
+    assert worst <= _LU_ALLOWANCE_MEASURED_HERE * 1.2, (
+        f"R = {worst:.3f} has drifted from the recorded {_LU_ALLOWANCE_MEASURED_HERE}"
+    )
+
+
 def test_inverse_agrees_within_its_condition_number() -> None:
     r"""The two inverses differ by at most `3 R n kappa_inf eps ||X||_inf`.
 
     Both are backward stable LU with partial pivoting, so this is derived rather
     than fitted. Higham 2nd ed. §14.3 (14.15)-(14.18) covers inversion by LU --
-    Method B there is `xGETRI`, which is what `numpy.linalg.inv` calls -- and gives
-    the componentwise result. Taking norms as he does at (14.5)-(14.7):
+    numpy takes **Method A** there, not Method B: `_umath_linalg` references
+    `dgesv_` and `dgetrf_` and carries no `getri` symbol, and `_linalg.py`'s own
+    header lists the LAPACK routines numpy uses without `getri` among them. An
+    earlier version of this docstring said Method B / `xGETRI`, which is wrong.
+
+    The correction strengthens the bound rather than weakening it. Method A's
+    chain, (14.15) to (14.17), introduces no error source beyond Theorem 9.4, so
+    `c'_n` is exactly `gamma_{3n}`; Higham leaves Method B's constant generic by
+    his own stated convention. So the `3n` used below is derived rather than
+    assumed. The componentwise result is Taking norms as he does at (14.5)-(14.7):
 
     .. math::
 
@@ -390,8 +435,10 @@ def test_compose_and_apply_agree_within_a_reordered_sum() -> None:
         #
         # There is no additive floor. The previous version carried `+ EPS`, which
         # is dimensionally wrong (EPS is dimensionless, the entries are not) and
-        # made the assertion vacuous below input magnitude 1e-6: at scale 1e-8 the
-        # budget was 8607 times the values being compared.
+        # made the assertion vacuous below input magnitude 1e-6, where the budget
+        # exceeded the values being compared by orders of magnitude. The exact
+        # factor is not quoted: two independent sweeps put it three-fold apart,
+        # so the number is sweep-dependent and only the fact transfers.
         assert np.all(np.abs(got - want) <= 2 * n * EPS * magnitudes)
 
         points = rng.normal(size=(int(rng.integers(1, 30)), n))
@@ -400,8 +447,9 @@ def test_compose_and_apply_agree_within_a_reordered_sum() -> None:
         want_pts = py_a(points)
         term_sums = np.abs(points) @ np.abs(a_mat).T + np.abs(a_off)
         # `n + 1`, not `n`: the dot product has n terms and then one more straddle
-        # adding the offset. The shipped `n` reached 0.929 of its own budget at
-        # n = 2, which is a bound about to break rather than a bound.
+        # adding the offset. The shipped `n` came close enough to its own budget at
+        # n = 2 to be a bound about to break rather than a bound; the ratio is not
+        # quoted, because it moved between sweeps and only the verdict transfers.
         assert np.all(np.abs(out - want_pts) <= 2 * (n + 1) * EPS * term_sums)
 
 
