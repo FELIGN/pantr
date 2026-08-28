@@ -86,7 +86,7 @@ def test_a_stub_only_namespace_package_is_not_the_extension(
         monkeypatch.setattr(pantr, "_pantr_cpp", module, raising=False)
 
     namespace_package = types.ModuleType("pantr._pantr_cpp")
-    namespace_package.__path__ = []  # type: ignore[attr-defined]
+    namespace_package.__path__ = []
     assert not hasattr(namespace_package, "__file__"), (
         "the fixture must model a namespace package, whose defining trait here is "
         "the absence of __file__"
