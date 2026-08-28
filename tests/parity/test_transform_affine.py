@@ -429,15 +429,90 @@ def test_about_center_agrees_with_the_oracles_center_argument() -> None:
         # rotation -- measured, 2000 of 2000 draws. Multiplying its budget by
         # |center| scaled a quantity that does not depend on the centre, and went
         # vacuous around |center| ~ 5e14.
-        assert np.all(np.abs(got.matrix - want.matrix) <= TRIG_ULPS * EPS)
-        # The OFFSET is where the centre legitimately enters: its terms are
-        # `c_i - sum_j R_ij c_j`. Their magnitude sum is at most
-        # |c|_max * (1 + sum_j |R_ij|) <= |c|_max * (1 + sqrt 2), the dot product
-        # costs n eps = 2 eps, the trigonometry TRIG_ULPS, and the final add one
-        # straddle: about (2 + 2 + 1) * 2.42, so 12 rather than the bare 8 the
-        # previous version used with no derivation at all.
-        offset_terms = (1.0 + np.sqrt(2.0)) * float(np.abs(center).max())
-        assert np.all(np.abs(got.offset - want.offset) <= 12.0 * EPS * offset_terms)
+        # Spelled with the module's own ulp helper rather than absolutely: near a
+        # zero of `cos` the absolute form is up to 4e12 times looser, and this
+        # module already asserts exactly this quantity that way at
+        # `test_rotation_2d_agrees_to_within_the_two_libms`.
+        assert _ulps_apart(got.matrix, want.matrix) <= TRIG_ULPS
+        # The OFFSET is where the centre legitimately enters: both sides compute
+        # `fl(fl(sum_j R_ij (-c_j)) + c_i)`. Two-sided, at `|c|_max`:
+        #
+        #   trigonometry   2 eps sum_j |R_ij||c_j|  <=  2 sqrt2 eps |c|_max
+        #   the 2-term dot 2 eps sum_j |R_ij c_j|   <=  2 sqrt2 eps |c|_max
+        #   the final add    eps (|c_i| + sum_j |R_ij c_j|)  <=  (1 + sqrt2) eps |c|_max
+        #
+        # so `(1 + 5 sqrt2) eps |c|_max`, about 8.07. The previous version wrote
+        # `12.0 * (1 + sqrt2)`, which counts the pushforward twice: the 12 was
+        # itself derived as `(2 + 2 + 1) * 2.42` and that 2.42 IS `1 + sqrt2`. The
+        # effective budget was 29 eps against a licensed 8.07, and a multiplier
+        # that reads as derived and is not is the exact failure this discipline
+        # names. Measured worst over 260000 draws, angles pinned near the maximum
+        # of |cos| + |sin| and |c| over 600 decades: 2.789 eps |c|_max.
+        offset_budget = (1.0 + 5.0 * np.sqrt(2.0)) * EPS * float(np.abs(center).max())
+        assert np.all(np.abs(got.offset - want.offset) <= offset_budget)
+
+        # This bound is derived for a 2-D ROTATION specifically: the sqrt2 is
+        # `sum_j |R_ij|` for that matrix. It is wrong for `mirror` (1 + 2 sqrt n),
+        # for `scaling` (unbounded) and for `rotation_3d`, which is why only
+        # rotation_2d is swept here and why the other four factories the wrapper
+        # routes through `about_center` are not covered.
+
+
+def test_the_two_backends_disagree_about_some_exactly_singular_matrices() -> None:
+    """Pin the singularity disagreement rather than pretend it is not there.
+
+    `numpy.linalg.inv` factors through LAPACK and the port through Eigen's
+    `PartialPivLU`. Both refuse on the same criterion -- a pivot that is exactly
+    zero -- but they are different computations, so their pivots differ in the
+    last bits and one reaches exact zero where the other does not. Exact
+    singularity is a discrete verdict and no tolerance bounds it, which is the
+    shape `design/backend_parity.md` Rule 11 records for the BVH's tie contract.
+
+    This asserts the disagreement, so that a change which accidentally removes it
+    -- or moves it -- has to come here and say so. It also asserts what does NOT
+    disagree: a matrix that is singular structurally rather than by cancellation,
+    and every well-conditioned matrix, are decided identically.
+    """
+
+    def refuses(cls: Any, matrix: Any) -> bool:
+        """Whether an implementation refuses to invert.
+
+        Args:
+            cls (Any): The implementation class.
+            matrix (Any): The linear part.
+
+        Returns:
+            bool: `True` when it raises `ValueError`.
+        """
+        built = cls(np.ascontiguousarray(matrix, dtype=np.float64), np.zeros(len(matrix)))
+        try:
+            # `inverse` is a property on the oracle and a method on the C++ class,
+            # branched on explicitly: testing `callable` picks the wrong branch,
+            # because the oracle's returned map is itself callable.
+            _ = built.inverse if cls is _AffineTransformPython else built.inverse()
+        except ValueError:
+            return True
+        return False
+
+    cpp_cls = _cpp_cls()
+
+    # Where they agree, and must keep agreeing.
+    for matrix, expected in (
+        ([[1.0, 0.0], [0.0, 0.0]], True),  # a zero row: structurally singular
+        ([[4.0, 1.0], [1.0, 3.0]], False),  # well conditioned
+        ([[1e-300, 0.0], [0.0, 1e-300]], False),  # tiny, kappa_inf = 1
+    ):
+        assert refuses(_AffineTransformPython, matrix) is expected
+        assert refuses(cpp_cls, matrix) is expected, f"backends split on {matrix}"
+
+    # Where they do not, and the disagreement is the thing being pinned.
+    r3_is_r1_plus_r2 = [[3.0, 4.0, -1.0], [2.0, 4.0, 1.0], [5.0, 8.0, 0.0]]
+    assert not refuses(_AffineTransformPython, r3_is_r1_plus_r2)
+    assert refuses(cpp_cls, r3_is_r1_plus_r2), "the disagreement moved; see the header"
+
+    other_way = [[-2.0, -4.0, 0.0], [3.0, 1.0, -4.0], [1.0, -3.0, -4.0]]
+    assert refuses(_AffineTransformPython, other_way)
+    assert not refuses(cpp_cls, other_way), "the disagreement moved; see the header"
 
 
 def test_errors_agree_verbatim() -> None:
