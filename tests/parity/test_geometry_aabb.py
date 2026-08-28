@@ -24,7 +24,8 @@ What these tests would catch
 ----------------------------
 
 The three that matter are the ones no numeric comparison reaches: that the two
-implementations agree on **which exception** they raise and on **what it says**,
+implementations agree on **which exception** they raise and, verbatim, on **what
+it says**,
 that they agree on the **empty** cases where the answer is a discrete verdict
 rather than a number, and that `PANTR_BACKEND` does not change the wrapper's
 identity semantics -- `__eq__`, `__hash__` and the pickle round trip are computed
@@ -193,26 +194,138 @@ def test_transform_agrees(matrix: Any) -> None:
         assert py_t.hi.tobytes() == cpp_t.hi.tobytes(), f"hi differs for {lo}, {hi}"
 
 
+def test_transform_agrees_on_inexact_matrices() -> None:
+    """`transform` agrees bit for bit on matrices that are NOT exactly representable.
+
+    This is the test that was missing, and its absence hid a real defect. Every
+    matrix in `test_transform_agrees` is built from 0, +/-1, 2, 3 and 0.5, all
+    exact in binary, so every product and partial sum is exact and *any*
+    accumulation order reproduces the oracle. The suite passed while the C++ loop
+    seeded its accumulator with the offset instead of adding it last, which
+    diverges on 94% of random inputs at ndim = 3.
+
+    Random inputs from a fixed seed, so a failure is reproducible, and wide
+    enough that a single-rounding difference cannot hide in it.
+    """
+    rng = np.random.default_rng(20260827)
+    for _ in range(200):
+        ndim = int(rng.integers(2, 8))
+        affine = _Affine(rng.normal(size=(ndim, ndim)), rng.normal(size=ndim))
+        lo = rng.normal(size=ndim)
+        hi = lo + np.abs(rng.normal(size=ndim))
+        py, cpp = _both(lo, hi)
+        py_t = py.transform(affine)
+        cpp_t = cpp.transform(affine.matrix, affine.offset)
+        assert py_t.lo.tobytes() == cpp_t.lo.tobytes()
+        assert py_t.hi.tobytes() == cpp_t.hi.tobytes()
+
+
+def test_past_seven_axes_the_claim_is_a_bound_not_an_equality() -> None:
+    """Above ndim = 7 the two summation orders differ, and only a bound survives.
+
+    numpy's `np.sum` blocks pairwise, so a sequential C++ loop reproduces it
+    exactly only while ndim <= 7; from ndim = 8 the orders differ on about half
+    of random inputs. Measured by `scripts/measure_aabb_transform_summation.py`.
+
+    This does not assert that they differ -- that would pin numpy's blocking,
+    which is not ours -- but it does assert the disagreement stays within one
+    reordering's worth of rounding. Exceeding that would mean a defect rather
+    than a summation order.
+    """
+    rng = np.random.default_rng(11)
+    ndim = 9
+    for _ in range(50):
+        affine = _Affine(rng.normal(size=(ndim, ndim)), rng.normal(size=ndim))
+        lo = rng.normal(size=ndim)
+        hi = lo + np.abs(rng.normal(size=ndim))
+        py, cpp = _both(lo, hi)
+        py_t = py.transform(affine)
+        cpp_t = cpp.transform(affine.matrix, affine.offset)
+        for a, b in ((py_t.lo, cpp_t.lo), (py_t.hi, cpp_t.hi)):
+            # Reordering a sum of n terms perturbs it by at most (n - 1)
+            # roundings of the largest partial sum, itself bounded by the sum of
+            # the magnitudes; the max entry stands in for that here.
+            budget = (ndim - 1) * float(np.finfo(np.float64).eps) * float(np.abs(a).max())
+            assert np.all(np.abs(a - b) <= budget)
+
+
+def _message_of(fn: Any) -> str:
+    """Run `fn` and return the text of the ValueError it raises.
+
+    Args:
+        fn (Any): A zero-argument call expected to raise.
+
+    Returns:
+        str: The exception's message.
+
+    Raises:
+        AssertionError: If `fn` did not raise `ValueError`.
+    """
+    try:
+        fn()
+    except ValueError as exc:
+        return str(exc)
+    raise AssertionError("expected a ValueError and got none")
+
+
 @pytest.mark.parametrize(
-    ("build", "match"),
+    ("build", "what"),
     [
-        (lambda cls: cls(np.array([0.0, 1.0]), np.array([1.0])), "must share shape"),
-        (lambda cls: cls(np.array([np.nan]), np.array([1.0])), "must not contain NaN"),
+        (lambda cls: cls(np.array([0.0, 1.0]), np.array([1.0])), "corner shapes differ"),
+        (lambda cls: cls(np.array([np.nan]), np.array([1.0])), "NaN in a corner"),
+        (lambda cls: cls(np.zeros(0), np.zeros(0)), "zero dimensions"),
+        (lambda cls: cls.unbounded(0), "unbounded with ndim 0"),
+        (lambda cls: cls.empty(0), "empty with ndim 0"),
+        (
+            lambda cls: cls(np.zeros(2), np.ones(2)).contains_point(np.zeros(3)),
+            "wrong point length",
+        ),
+        (lambda cls: cls(np.zeros(1), np.ones(1)).pad(np.array([np.inf])), "non-finite pad"),
+        (
+            lambda cls: cls(np.zeros(1), np.ones(1)).union(cls(np.zeros(2), np.ones(2))),
+            "dimension mismatch",
+        ),
     ],
 )
-def test_construction_errors_agree(build: Any, match: str) -> None:
-    """Both implementations raise `ValueError`, and say the same thing.
+def test_error_messages_agree_verbatim(build: Any, what: str) -> None:
+    """Both implementations raise `ValueError` and say **exactly** the same thing.
 
-    The message is part of the claim, not decoration: a caller that catches on it
-    would otherwise see `PANTR_BACKEND` change the library's behaviour rather than
-    only its speed.
+    Verbatim, not a substring. An earlier version of this test used
+    `pytest.raises(match=...)`, which is a substring search, and it passed while
+    five of these six messages differed between the backends -- the C++ side was
+    dropping the offending values, spelling the class separator `::` instead of
+    `.`, and reporting a bare length where the oracle reports a shape tuple.
+
+    The message is part of the claim rather than decoration: a caller that
+    catches on it would otherwise see `PANTR_BACKEND` change what the library
+    says rather than only how fast it is.
     """
     from pantr import _pantr_cpp  # noqa: PLC0415
 
-    with pytest.raises(ValueError, match=match):
-        build(_AABBPython)
-    with pytest.raises(ValueError, match=match):
-        build(_pantr_cpp.AABB)
+    oracle = _message_of(lambda: build(_AABBPython))
+    ported = _message_of(lambda: build(_pantr_cpp.AABB))
+    assert oracle == ported, f"{what}: oracle said {oracle!r}, C++ said {ported!r}"
+
+
+def test_transform_on_an_empty_box_agrees_about_a_malformed_map() -> None:
+    """An empty box short-circuits before the map is validated, on both backends.
+
+    The oracle returns an empty box without looking at `affine` at all, so a
+    malformed map against an empty box is silently accepted. The wrapper's C++
+    branch validated first and raised, which made `PANTR_BACKEND` decide whether
+    the call raised or returned -- the one thing the backend switch must never
+    do.
+
+    This pins the behaviour rather than endorsing it. Whether the oracle's check
+    order is right is a separate question about the oracle.
+    """
+    wrong = _Affine(np.eye(3), np.zeros(3))
+    with use_backend(Backend.PYTHON):
+        from_python = AABB.empty(2).transform(wrong)
+    with use_backend(Backend.CPP):
+        from_cpp = AABB.empty(2).transform(wrong)
+    assert from_python == from_cpp
+    assert from_cpp.is_empty()
 
 
 def test_dimension_mismatch_messages_agree() -> None:
