@@ -119,11 +119,15 @@ if(PANTR_NANOBIND_SPLIT)
   nanobind_add_module(_pantr_cpp NOMINSIZE NOSTRIP NB_SUPPRESS_WARNINGS
                       BACKEND_MODULE nanobind_backend
                       pantr_cpp.cpp basis.cpp quad.cpp change_basis.cpp bezier.cpp
-                      bezier_root_finding.cpp grid.cpp geometry.cpp transform.cpp)
+                      bezier_root_finding.cpp grid.cpp geometry.cpp transform.cpp
+                      grid_types.cpp grid_tags.cpp grid_bvh.cpp grid_partition.cpp
+                      quad_types.cpp bezier_type.cpp)
 else()
   nanobind_add_module(_pantr_cpp NB_STATIC NOMINSIZE NOSTRIP
                       pantr_cpp.cpp basis.cpp quad.cpp change_basis.cpp bezier.cpp
-                      bezier_root_finding.cpp grid.cpp geometry.cpp transform.cpp)
+                      bezier_root_finding.cpp grid.cpp geometry.cpp transform.cpp
+                      grid_types.cpp grid_tags.cpp grid_bvh.cpp grid_partition.cpp
+                      quad_types.cpp bezier_type.cpp)
 endif()
 
 # nanobind's own headers are not -Wshadow clean (measured: 2.14.0 on GCC 14
