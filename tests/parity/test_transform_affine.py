@@ -53,6 +53,8 @@ trigonometry**, and each test says which it is.
 
 from __future__ import annotations
 
+import copy
+import pickle
 from typing import Any
 
 import numpy as np
@@ -601,3 +603,27 @@ def test_the_wrapper_is_backend_invariant() -> None:
     assert repr(py_map) == repr(cpp_map)
     assert not hasattr(AffineTransform, "__eq__") or AffineTransform.__eq__ is object.__eq__
     assert py_map != cpp_map, "identity comparison must survive the port"
+
+
+def test_a_transform_survives_pickling_under_either_backend() -> None:
+    """A pickle written under one backend loads under the other.
+
+    The C++ handle is not picklable and must not reach the wire format, or the
+    backend switch would silently become a data-format switch. ``AABB`` states
+    that contract at :meth:`pantr.geometry.AABB.__reduce__` and this map owes
+    the same one: ``Grid.reference_map`` returns an ``AffineTransform``, and
+    ``copy.deepcopy`` reaches ``__reduce_ex__`` by the same route pickling does.
+    """
+    matrix = [[2.0, 0.0], [0.0, 0.5]]
+    translation = [1.0, 2.0]
+    for writer in (Backend.PYTHON, Backend.CPP):
+        with use_backend(writer):
+            payload = pickle.dumps(AffineTransform(matrix, translation))
+            round_tripped = copy.deepcopy(AffineTransform(matrix, translation))
+        assert np.array_equal(round_tripped.matrix, matrix)
+        assert np.array_equal(round_tripped.offset, translation)
+        for reader in (Backend.PYTHON, Backend.CPP):
+            with use_backend(reader):
+                loaded = pickle.loads(payload)
+            assert np.array_equal(loaded.matrix, matrix), f"{writer.name} -> {reader.name}"
+            assert np.array_equal(loaded.offset, translation), f"{writer.name} -> {reader.name}"

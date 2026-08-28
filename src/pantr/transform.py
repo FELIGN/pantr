@@ -792,6 +792,23 @@ class AffineTransform:
         impl.apply(flat, out)
         return out.reshape(pts.shape)
 
+    def __reduce__(self) -> tuple[type[AffineTransform], tuple[npt.NDArray[np.float64], ...]]:
+        """Pickle by matrix and offset rather than by implementation.
+
+        The C++ handle is not picklable and must not become part of the wire
+        format: a pickle written with the C++ backend has to load under the
+        Python one and the other way round, or the backend switch would silently
+        become a data-format switch. This is also the route ``copy.deepcopy``
+        takes, which is how a grid holding a reference map gets copied.
+
+        The cached ``inverse`` is deliberately not carried: it is a memo over
+        the two arrays below, so the reconstructed map recomputes it on demand.
+
+        Returns:
+            tuple: The class and the ``(matrix, offset)`` pair to rebuild it from.
+        """
+        return (type(self), (self.matrix, self.offset))
+
     def __repr__(self) -> str:
         """Return a developer-friendly string representation.
 
