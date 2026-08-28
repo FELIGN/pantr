@@ -679,3 +679,50 @@ def test_assert_object_parity_argument_order_is_visible_in_the_failure_message()
 
     with pytest.raises(AssertionError, match=r"1 against 2"):
         assert_object_parity(high, low, fields=fields, context="py=high, cpp=low")
+
+
+def test_a_field_that_reads_back_several_arrays_is_refused_with_the_fix_named() -> None:
+    """The compound `read` is refused, both when it would crash and when it would not.
+
+    `FacetTags[name]` is ``(keys, values)`` of shapes ``(M, 2)`` and ``(M,)``, and
+    `TensorProductGrid.breakpoints` is a per-axis tuple of different lengths; handing
+    either to one `Field` is the obvious first attempt. Left to ``np.asarray`` the
+    ragged case raises a bare `ValueError` from inside NumPy that names no field, and
+    -- worse -- the equal-length case (`CellTags[name]` is ``(ids, values)`` of one
+    length) stacks silently into a ``(2, N)`` block and compares two different
+    quantities as one array.
+
+    What this catches: a future harness that dropped the guard, since the ragged half
+    would still fail (with a useless message) and the equal-length half would start
+    passing vacuously. Both halves are asserted for that reason.
+    """
+    claim = exact_parity(why="tag ids and their values must each agree exactly")
+    fields = [Field("tag", claim)]
+
+    ragged = SimpleNamespace(tag=(np.array([[0, 1], [2, 3]]), np.array([7, 8])))
+    with pytest.raises(AssertionError, match="that many quantities rather than one"):
+        assert_object_parity(ragged, ragged, fields=fields, context="a ragged pair")
+
+    equal_length = SimpleNamespace(tag=(np.array([0, 1, 2]), np.array([7, 8, 9])))
+    with pytest.raises(AssertionError, match="that many quantities rather than one"):
+        assert_object_parity(
+            equal_length, equal_length, fields=fields, context="an equal-length pair"
+        )
+
+
+def test_an_exact_claim_on_a_float_field_is_refused_and_names_bitwise_parity() -> None:
+    """Exactness on floating point is `bitwise_parity`, and the wrong spelling is refused.
+
+    `_assert_exact` compares with ``!=``, under which every NaN differs from itself,
+    while :func:`~tests._parity_harness.assert_parity`'s bitwise branch compares bit
+    patterns and agrees. So an `ExactClaim` on a float array would report a violation
+    on two backends that produced identical bits.
+
+    What this catches: the guard being dropped, after which such a field passes on
+    ordinary data and fails only on the NaN a hostile input eventually produces.
+    """
+    fields = [Field("lo", exact_parity(why="both backends store the same corner"))]
+    obj = SimpleNamespace(lo=np.array([0.0, np.nan]))
+
+    with pytest.raises(AssertionError, match="bitwise_parity"):
+        assert_object_parity(obj, obj, fields=fields, context="a float corner")
