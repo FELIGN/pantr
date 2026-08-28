@@ -824,6 +824,31 @@ def derived_accuracy(*, bound: FloatArray, why: str) -> AccuracyClaim:
     return AccuracyClaim(bound=arr, why=why)
 
 
+_LU_ALLOWANCE: Final = 8
+"""Allowance for ``R = || |L||U| ||_inf / ||A||_inf`` in Higham Thm 9.4.
+
+**Measured, not argued.** Exact rational arithmetic over every matrix these
+builders factor, across every solvability domain, gives ``R <= 3.73``, with the
+classical growth factor ``rho_n`` exactly ``1.000``; an independent sweep of 1508
+matrices to degree 200 through Eigen's own ``matrixLU()`` agrees and finds ``R``
+crossing 8 only near degree 160. So the margin is 2.1x in domain, and the allowance
+stops covering anything past degree 160 -- which no builder here reaches, and which
+is the caveat to carry if one ever does.
+
+Deliberately not tightened to 4: measured, that buys one degree on three of ten
+(builder, dtype) pairs, because ``kappa_inf`` grows geometrically and is what
+actually limits the parity domain.
+
+
+**Its domain is part of it.** The figures above are measured over the change-of-basis
+builders' own matrices. A second consumer must measure ``R`` for ITS matrices before
+reusing this, because the constant denotes a growth factor and not a number:
+``tests/parity/test_transform_affine.py`` did so and found ``R <= 4.391`` over random
+normal matrices to ``n = 6``, which this covers with 1.8x to spare. Reusing it without
+that check would be borrowing a value while dropping the quantity it measures.
+"""
+
+
 ONE_SIDED_TO_TWO_SIDED: Final[int] = 2
 """Factor turning a one-sided forward-error bound into a two-sided parity bound.
 
