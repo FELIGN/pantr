@@ -28,8 +28,10 @@
 ///
 ///  - **`transform` must accumulate in the oracle's order, and the threshold is
 ///    seven.** `np.sum` blocks pairwise, so a sequential loop reproduces it bit
-///    for bit only while `ndim <= 7`; from `ndim = 8` the two orders differ, on
-///    about half of random inputs. Measured, not assumed:
+///    for bit only while `ndim <= 7`. From `ndim = 8` a single row's reduction
+///    differs on about half of random inputs, and since a box has `ndim` of
+///    them, the box as a whole differs on essentially all of them. Measured,
+///    not assumed:
 ///    `scripts/measure_aabb_transform_summation.py` reports the table and
 ///    asserts the threshold. Above it the claim is a bound rather than an
 ///    equality, and nothing in pantr builds a box that wide today.
@@ -79,13 +81,18 @@ namespace detail {
 
 /// Format a scalar the way Python's `repr` formats a float.
 ///
-/// The messages and `to_string` below are compared against the Python oracle's,
-/// so the number formatting has to be the oracle's too. `std::to_string` is not:
-/// it is fixed-point with six decimals, so `0.1` prints as `0.100000` and
-/// `1e300` as three hundred digits. `std::to_chars` produces the shortest
-/// representation that round-trips, which is the rule Python's `repr` follows;
-/// the only difference left is that Python writes a trailing `.0` on a value
-/// that would otherwise look like an integer, which is what the last branch adds.
+/// Two rules have to agree, and conflating them is how this went wrong once
+/// already. The **digits** are the shortest sequence that round-trips, which is
+/// what `std::to_chars` produces and what Python's `repr` uses. The **notation**
+/// is a separate decision, and the two languages make it differently: bare
+/// `std::to_chars` picks whichever spelling is textually shorter, so `100000.0`
+/// comes out as `1e+05`, while Python decides positionally -- fixed notation
+/// when the decimal exponent lands in `[-4, 16)`, scientific otherwise. Those
+/// rules coincide on typical magnitudes and diverge on round numbers, which is
+/// why the first version passed every value the tests happened to carry.
+///
+/// So the exponent is obtained first, in scientific form, and the notation is
+/// then chosen by Python's rule and rendered explicitly.
 ///
 /// \param x The value to format.
 /// \return Its Python-style textual form.
@@ -98,10 +105,38 @@ template <class T>
     if (std::isinf(v)) {
         return v < 0.0 ? "-inf" : "inf";
     }
-    std::array<char, 32> buffer{};
-    const auto result = std::to_chars(buffer.data(), buffer.data() + buffer.size(), v);
-    std::string text(buffer.data(), result.ptr);
-    if (text.find_first_of(".eE") == std::string::npos) {
+
+    // 24 digits and a sign and an exponent fit any shortest-round-trip double
+    // several times over; the `ec` check below is what makes that a check rather
+    // than an assumption.
+    std::array<char, 64> buffer{};
+    auto written = std::to_chars(buffer.data(), buffer.data() + buffer.size(), v,
+                                 std::chars_format::scientific);
+    if (written.ec != std::errc{}) {
+        throw std::invalid_argument("AABB: could not format a bound.");
+    }
+    const std::string sci(buffer.data(), written.ptr);
+
+    // `to_chars`'s scientific form is always `d[.ddd]e[+-]dd`, so the exponent is
+    // whatever follows the one `e`.
+    const std::size_t e_pos = sci.find('e');
+    const int exponent = std::stoi(sci.substr(e_pos + 1));
+
+    // Python: fixed notation while the decimal point sits inside the digits or
+    // just before them, scientific once it has moved far enough either way.
+    constexpr int kFixedLowerExponent = -5;
+    constexpr int kFixedUpperExponent = 16;
+    if (exponent <= kFixedLowerExponent || exponent >= kFixedUpperExponent) {
+        return sci;
+    }
+
+    written = std::to_chars(buffer.data(), buffer.data() + buffer.size(), v,
+                            std::chars_format::fixed);
+    if (written.ec != std::errc{}) {
+        throw std::invalid_argument("AABB: could not format a bound.");
+    }
+    std::string text(buffer.data(), written.ptr);
+    if (text.find('.') == std::string::npos) {
         text += ".0";
     }
     return text;
@@ -283,7 +318,7 @@ class AABB {
         require_len(x.size(), "contains_point: x");
         for (std::size_t d = 0; d < ndim(); ++d) {
             if (is_nan(x[d])) {
-                throw std::invalid_argument("AABB::contains_point: x must not contain NaN.");
+                throw std::invalid_argument("contains_point: x must not contain NaN.");
             }
         }
         for (std::size_t d = 0; d < ndim(); ++d) {
@@ -463,7 +498,7 @@ class AABB {
             acc_hi += offset[i];
             if (is_nan(acc_lo) || is_nan(acc_hi)) {
                 throw std::invalid_argument(
-                    "AABB::transform produced NaN bounds; the transform is incompatible with "
+                    "AABB.transform produced NaN bounds; the transform is incompatible with "
                     "this AABB (for example, a singular matrix combined with infinite bounds).");
             }
             lo[i] = acc_lo;
