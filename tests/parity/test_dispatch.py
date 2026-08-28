@@ -10,7 +10,9 @@ sibling module under `tests/parity`.
 
 from __future__ import annotations
 
+import sys
 import threading
+import types
 from collections.abc import Callable
 
 import pytest
@@ -47,6 +49,55 @@ def test_cpp_extension_presence_is_declared() -> None:
     """
     demand_cpp_backend()
     assert cpp_backend_available()
+
+
+def test_a_stub_only_namespace_package_is_not_the_extension(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A bare import cannot answer whether the extension was built, and does not.
+
+    The type stubs live in ``src/pantr/_pantr_cpp/``, a directory of ``.pyi`` files
+    with no ``__init__.py``. Python's finder prefers a real extension whenever one
+    exists, but with none built that directory imports as an empty *namespace
+    package* rather than raising ``ImportError`` -- so the probe that used to end at
+    ``import pantr._pantr_cpp`` would report the C++ backend present on a
+    Numba-only installation, and every parity test would fail instead of skipping.
+    Measured before the fix: 81 failures in ``tests/parity/test_geometry_aabb.py``
+    where 97 skips belong.
+
+    A namespace package has no ``__file__``; a real module does. That is the
+    distinction, and it is asserted in both directions so a probe that had degraded
+    to a constant would fail here.
+    """
+    import pantr  # noqa: PLC0415
+    from pantr import _backend  # noqa: PLC0415
+
+    def install(module: types.ModuleType) -> None:
+        """Put a module where a fresh ``import pantr._pantr_cpp`` would leave it.
+
+        Both places, because the import statement writes to both and reads back
+        from the second: it binds ``sys.modules[name]``, and it sets ``name``'s
+        last component as an attribute of the parent package. On a module already
+        in ``sys.modules`` the statement is a no-op, so patching only the mapping
+        would leave the probe reading whatever this process imported for real --
+        which, on a machine where the extension is built, is the extension.
+        """
+        monkeypatch.setitem(sys.modules, "pantr._pantr_cpp", module)
+        monkeypatch.setattr(pantr, "_pantr_cpp", module, raising=False)
+
+    namespace_package = types.ModuleType("pantr._pantr_cpp")
+    namespace_package.__path__ = []  # type: ignore[attr-defined]
+    assert not hasattr(namespace_package, "__file__"), (
+        "the fixture must model a namespace package, whose defining trait here is "
+        "the absence of __file__"
+    )
+    install(namespace_package)
+    assert not _backend._cpp_extension_is_present()
+
+    compiled = types.ModuleType("pantr._pantr_cpp")
+    compiled.__file__ = "/nowhere/_pantr_cpp.so"
+    install(compiled)
+    assert _backend._cpp_extension_is_present()
 
 
 def test_build_provenance_is_reported(cpp_backend: None) -> None:

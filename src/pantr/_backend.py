@@ -186,19 +186,29 @@ def _cpp_extension_is_present() -> bool:
     Only presence is recorded, not the module object. Each kernel adapter --
     :func:`pantr.basis._basis_backend._cpp_cardinal_bspline_core` is the one that
     exists so far -- imports ``pantr._pantr_cpp`` by name where it calls it, so
-    mypy resolves the call against ``src/pantr/_pantr_cpp.pyi`` and would reject a
+    mypy resolves the call against ``src/pantr/_pantr_cpp/`` and would reject a
     call that no longer matches the binding. A stored module object would be typed
     :class:`~types.ModuleType`, which accepts any attribute and would keep
     typechecking after the signature changed underneath it.
 
+    **The import succeeding is not the answer.** The type stubs live in a
+    ``_pantr_cpp/`` directory beside the extension, and a directory of ``.pyi``
+    files with no ``__init__.py`` is an importable *namespace package*. Python's
+    finder prefers the extension whenever one exists, so a real build is
+    unaffected; but on an installation with no extension the import now returns an
+    empty module instead of raising, and every C++ parity test would run against
+    it rather than skip. ``__file__`` is what separates the two: a namespace
+    package has none.
+
     Returns:
-        bool: True when ``pantr._pantr_cpp`` imports.
+        bool: True when ``pantr._pantr_cpp`` imports and is a real module rather
+            than the stub directory seen as a namespace package.
     """
     try:
-        import pantr._pantr_cpp  # noqa: F401, PLC0415  (probe only, deliberately lazy)
+        import pantr._pantr_cpp  # noqa: PLC0415  (probe only, deliberately lazy)
     except ImportError:
         return False
-    return True
+    return getattr(pantr._pantr_cpp, "__file__", None) is not None
 
 
 _CPP_AVAILABLE: Final = _cpp_extension_is_present()
