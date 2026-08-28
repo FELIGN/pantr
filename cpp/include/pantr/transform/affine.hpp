@@ -362,9 +362,26 @@ class AffineTransform {
         const Eigen::PartialPivLU<Eigen::Matrix<T, Eigen::Dynamic, Eigen::Dynamic>> lu(a);
 
         // PartialPivLU does not report singularity, by design: it is documented as
-        // requiring an invertible matrix. So this has to decide, and it decides
-        // the way LAPACK does -- on a PIVOT being exactly zero, which is what
-        // `getrf` sets `info > 0` for.
+        // requiring an invertible matrix. So this has to decide, and it decides on
+        // the same CRITERION LAPACK uses -- a pivot being exactly zero, which is
+        // what `getrf` sets `info > 0` for.
+        //
+        // **The same criterion is not the same decision, and saying so was the
+        // correction to this comment.** Eigen's factorization and LAPACK's are
+        // different computations, so their pivots differ in the last bits and one
+        // reaches exact zero where the other does not. The two backends therefore
+        // disagree about invertibility for some exactly singular matrices, in
+        // both directions, reachable with one-digit integers:
+        //
+        //     [[3, 4, -1], [2, 4, 1], [5, 8, 0]]   (r3 = r1 + r2)
+        //         oracle inverts, this refuses
+        //     [[-2, -4, 0], [3, 1, -4], [1, -3, -4]]
+        //         oracle refuses, this inverts
+        //
+        // That is a discrete verdict and no tolerance bounds it, which is the
+        // shape `design/backend_parity.md` Rule 11 already records for the BVH's
+        // tie contract. It is pinned by a parity test rather than papered over,
+        // so a future change has to confront it instead of passing quietly.
         //
         // An earlier version tested the DETERMINANT against zero and claimed in a
         // comment that this was the same condition. It is not, and the difference
