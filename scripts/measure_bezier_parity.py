@@ -2,7 +2,7 @@
 """Reproduce the parity figures the Bézier port's prose quotes.
 
 A deep review found that the headline measurements in
-``design/backend_parity.md`` Rule 9, ``cpp/include/pantr/bezier/bezier.hpp`` and
+``design/backend_parity.md`` Rule 9, ``cpp/include/pantr/bezier/kernels_1d.hpp`` and
 ``tests/parity/test_bezier_arithmetic.py`` had no reproducible artifact anywhere in
 the tree: the scripts that produced them lived in a scratch directory and are gone.
 ``cpp/include/pantr/basis/bernstein.hpp`` does the opposite for its own ``pow``
