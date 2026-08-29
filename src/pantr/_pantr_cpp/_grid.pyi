@@ -43,6 +43,33 @@ class CellTags:
     def remove(self, name: str) -> None: ...
     def scatter(self, name: str, out: npt.NDArray[Any]) -> None: ...
 
+class Partition:
+    """A per-cell owner assignment over a grid's cells, owned by the C++ core.
+
+    Wrapped by :class:`pantr.grid.Partition`, which is the class a caller holds;
+    this one is reached only through it. The wrapper is what checks that
+    ``cell_owner`` is a 1-D integer array and performs the narrowing cast to
+    ``int32``, because both facts are gone by the time this receives a span.
+
+    ``cell_owner`` is a zero-copy read-only view owned by the instance;
+    ``owned_cells`` returns a fresh writeable array, matching what the pre-port
+    class returned from ``numpy.flatnonzero``.
+
+    Attributes:
+        cell_owner (npt.NDArray[np.int32]): Per-cell owners, read-only.
+        n_parts (int): Number of parts (ranks).
+        n_cells (int): Number of cells.
+    """
+
+    def __init__(self, cell_owner: npt.NDArray[np.int32], n_parts: int) -> None: ...
+    @property
+    def cell_owner(self) -> npt.NDArray[np.int32]: ...
+    @property
+    def n_parts(self) -> int: ...
+    @property
+    def n_cells(self) -> int: ...
+    def owned_cells(self, rank: int) -> npt.NDArray[np.int64]: ...
+
 class FacetTags:
     """Sparse named integer tags over a grid's local facets, owned by the C++ core.
 
