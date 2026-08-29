@@ -25,10 +25,12 @@ consult ``__fp_contract__`` at all.
 
 Its premise is numpy's reduction order, which is not ours. `np.sum` blocks
 pairwise from 8 elements up; `np.multiply.reduce` does not, and nothing obliges it
-to stay that way. Measured before these assertions were written: 480 random rules
-of 1 to 8 axes, and zero of the 480 differ in either array. If numpy ever blocks
-its multiplicative reduction the way it blocks its additive one, this is the file
-that will say so, and the fix is a bound rather than a looser equality.
+to stay that way. That premise is not asserted from a measurement taken once and
+written down -- it is re-measured on every run, by
+`test_the_tensor_product_agrees_field_by_field`, whose ``ndim`` parametrization
+reaches 8 for exactly this reason. If numpy ever blocks its multiplicative
+reduction the way it blocks its additive one, that test is where it will say so,
+and the fix is a bound rather than a looser equality.
 
 **The Gauss-Legendre rule is BITWISE on a build that cannot fuse, and BOUNDED on
 one that can.** Everything this ticket adds on top of the 1-D kernel is exact or
@@ -85,8 +87,8 @@ than asserted.** `test_the_composed_weight_bound_survives_a_perturbed_1d_rule`
 perturbs a 1-D rule by exactly its own claimed budget, pushes both through the
 tensor product, and requires the ND difference to stay inside the composed bound.
 It runs on any build, so the BOUNDED branch is not shipped unexercised even though
-this host cannot fuse. Verified offline over a sweep 20x the one that ships; the
-margin is reported in that test's docstring.
+this host cannot fuse. Its helper takes the sweep width as an argument so that
+widening it is a command rather than an edit; that command is on the test.
 
 What these tests would catch that a numeric comparison would not
 ----------------------------------------------------------------
@@ -177,9 +179,9 @@ _THE_SAME_MULTIPLICATIONS: Final = bitwise_parity(
         "contraction has nothing to fuse and this claim does not depend on the "
         "build. Its premise is numpy's reduction order, which is not ours: "
         "np.sum blocks pairwise from 8 elements up and np.multiply.reduce does "
-        "not. Measured before this was asserted: 480 random rules of 1 to 8 axes, "
-        "zero differing values. If numpy ever blocks the multiplicative reduction "
-        "too, this assertion is where it will say so."
+        "not. Nothing here assumes that stays true -- the parametrization reaching "
+        "8 axes re-measures it on every run, and if numpy ever blocks the "
+        "multiplicative reduction too, this assertion is where it will say so."
     )
 )
 
@@ -551,15 +553,28 @@ def test_the_composed_weight_bound_survives_a_perturbed_1d_rule() -> None:
     Two stand-in backends are displaced in opposite directions by their own
     one-sided budgets, which is exactly the worst case the harness's two-sided
     tolerance admits, so the observed ratio approaches 1 from below and must never
-    reach it.
+    reach it. Both halves matter: the assertion inside the helper is that the
+    bound holds, and the assertion here is that it is *approached*, since a bound
+    nothing comes near admits anything.
 
-    Twenty draws per dimension ship. Verified offline at 400 per dimension, 20x
-    what ships: over 2000 rules of 1 to 5 axes no draw exceeded the bound, and the
-    worst ratio was 0.99999999999999934 at ndim = 1, 0.9974 at 2, 0.9969 at 3,
-    0.9952 at 4 and 0.9945 at 5. The bound is therefore tight rather than
-    generous, which is what makes a violation of it informative; the widening
-    slack with dimension is the ``ndim - 1`` product roundings, which the rules
-    drawn here do not fully spend.
+    Twenty draws per dimension ship, which the epic's rule says is not a check of
+    itself. Widen it 20x with
+
+    .. code-block:: console
+
+        PYTHONPATH="$(pwd)/src:$(pwd)" conda run -n pantr python -c "
+        import numpy as np
+        from tests.parity.test_quad_rule import _worst_composed_weight_ratio
+        print(_worst_composed_weight_ratio(np.random.default_rng(20260829),
+                                           dimensions=(1, 2, 3, 4, 5), draws=400))"
+
+    which raises ``AssertionError`` on the first draw that escapes the bound and
+    otherwise prints the worst ratio reached. **The number it prints is not
+    recorded here**: it moves with the generator's stream, so sweeping the five
+    dimensions in one call and sweeping them one at a time give different figures
+    from the same code, and a figure quoted without its command is a figure nobody
+    can reproduce. What is stable and is the claim: no draw exceeds the bound, and
+    the worst ratio is within a percent of 1 at every dimension.
     """
     rng = np.random.default_rng(20260829)
     worst = _worst_composed_weight_ratio(rng, dimensions=(1, 2, 3, 4, 5), draws=20)
