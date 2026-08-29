@@ -493,6 +493,33 @@ discipline() {
         record FAIL "Lambert W Halley step count agrees" \
                "Python=${py_halley:-<not found>} C++=${cpp_halley:-<not found>}"
     fi
+
+    # The BVH traversal-stack depth agrees across the two languages.
+    #
+    # The third guard of this shape, and the one with a caller outside this repo.
+    # `_BVH_STACK_DEPTH` is imported by a downstream consumer, so the Python copy is
+    # the source of truth and stays where it is; `kBvhStackDepth` mirrors it, and
+    # since FELIGN/pantr#384 the mirror is what ENFORCES the limit under
+    # PANTR_BACKEND=cpp. Two spellings of one number, each enforcing for one
+    # backend, is exactly the drift a test cannot see: tests/test_grid_reexports.py
+    # pins the Python one by value and the C++ mirror is not exposed to Python at
+    # all, so nothing inside the suite compares them.
+    #
+    # Extracted from both sources by regex rather than hardcoded here, so this guard
+    # does not itself go stale the way a copied number would.
+    local py_bvh_depth cpp_bvh_depth
+    py_bvh_depth="$(sed -n -E 's/^_BVH_STACK_DEPTH: Final\[int\] = ([0-9]+)$/\1/p' \
+                    "$ROOT/src/pantr/grid/_bvh_core.py")"
+    cpp_bvh_depth="$(sed -n -E \
+        's/^inline constexpr std::int64_t kBvhStackDepth = ([0-9]+);$/\1/p' \
+        "$ROOT/cpp/include/pantr/grid/bvh.hpp")"
+
+    if [[ -n "$py_bvh_depth" && -n "$cpp_bvh_depth" && "$py_bvh_depth" == "$cpp_bvh_depth" ]]; then
+        record PASS "BVH traversal stack depth agrees (Python=C++=$py_bvh_depth)"
+    else
+        record FAIL "BVH traversal stack depth agrees" \
+               "Python=${py_bvh_depth:-<not found>} C++=${cpp_bvh_depth:-<not found>}"
+    fi
 }
 
 # --------------------------------------------------------------------------

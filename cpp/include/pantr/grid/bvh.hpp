@@ -57,9 +57,23 @@
 /// ## The query is exact for a duller reason
 ///
 /// Both query kernels are comparisons on stored node bounds plus an integer
-/// stack. The overlap test is inclusive on every face, so a query box sharing a
-/// face with a cell is reported -- matching `pantr.geometry.AABB.overlaps` -- and
-/// that too is a discrete verdict decided without arithmetic.
+/// stack. The overlap test is a **separating-axis test and nothing else**: it
+/// reports an overlap unless some axis separates the two intervals, comparing
+/// inclusively, so a query box sharing a face with a cell is reported. That too is
+/// a discrete verdict decided without arithmetic.
+///
+/// **It is not `pantr.geometry.AABB.overlaps`, and this comment used to say it
+/// was.** The box short-circuits on an *empty* operand and reports that an empty
+/// box overlaps nothing; the predicate below has no such branch, so a reversed
+/// query interval that a cell's interval contains passes every separating-axis
+/// check and the leaf is reported. One cell `[0, 10]` in one dimension, queried
+/// with `lo = 5, hi = 3`, returns cell `0` here and `False` from the box. The
+/// divergence is reproduced deliberately: both backends of the BVH behave this
+/// way, they agree with each other, and reconciling them with the box has to move
+/// both at once or the parity claim stops being an equality. So this file
+/// reproduces the query it was ported from, and the claim of agreement with the
+/// box is withdrawn rather than the behaviour changed. Tracked as a divergence
+/// between the two predicates, not as a defect in either.
 ///
 /// Count and emit must agree on the output size, so they share one traversal
 /// order: the left child is pushed first and the right last, so the stack pops
@@ -251,7 +265,12 @@ void bvh_build(span2d<const T> cell_lo, span2d<const T> cell_hi, span2d<T> node_
     }
 }
 
-/// Whether a node's AABB overlaps the query box, inclusive on every face.
+/// Whether no axis separates a node's AABB from the query box, comparing inclusively.
+///
+/// Stated as the separating-axis test it is rather than as "overlaps", because the
+/// two are not the same predicate on an empty box: this one has no emptiness
+/// branch and reports a reversed query interval as overlapping any cell whose own
+/// interval contains it. See the file comment.
 ///
 /// Factored out so that count and emit cannot drift from each other on the tie
 /// contract, which is the one thing about them that is not obviously the same.

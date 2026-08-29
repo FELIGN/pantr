@@ -68,7 +68,13 @@ from pantr.grid import (
     hierarchical_grid,
     uniform_grid,
 )
-from tests._parity_harness import assert_parity, bitwise_parity
+from tests._parity_harness import (
+    Field,
+    assert_object_parity,
+    assert_parity,
+    bitwise_parity,
+    exact_parity,
+)
 
 _LOCATE_WHY = (
     "the kernel performs no floating-point arithmetic: every binary operation is on "
@@ -179,6 +185,40 @@ def _random_boxes(n: int, ndim: int) -> tuple[npt.NDArray[np.float64], npt.NDArr
     return lo, hi
 
 
+_BVH_EXACT_WHY = (
+    "the node indices, the leaf cell ids and the three counts are the tree's SHAPE. "
+    "design/backend_parity.md Rule 11: a differing verdict is not a displaced value, "
+    "so there is no bound to derive and nothing but a reason to state -- and a "
+    "comparison of elements cannot see two answers of different length at all"
+)
+
+
+def _bvh_fields() -> tuple[Field, ...]:
+    """The state two BVHs have to agree on, and the claim governing each piece.
+
+    Eight fields rather than five, because a hierarchy is its arrays *and* its
+    counts, and a port that got `ndim` wrong on an empty tree would leave every
+    array empty and equal.
+
+    **The two float arrays carry ``bitwise_parity`` and the six integer pieces carry
+    ``exact_parity``, and that is the same claim rather than a weaker one.** The
+    harness is float-only under a ``ParityClaim`` by construction -- it compares
+    through a bit view and computes a difference in ``float64`` -- and its BITWISE
+    failure message tells the reader to check ``__fp_contract__``, which decides
+    nothing about a node index. ``exact_parity`` is elementwise ``!=`` with a reason
+    attached: no tolerance is introduced anywhere here, and none may be.
+
+    Returns:
+        tuple[Field, ...]: The fields, in the order a failure should be read.
+    """
+    coordinates = ("node_lo", "node_hi")
+    shape = ("node_left", "node_right", "node_cell", "ndim", "n_cells", "n_nodes")
+    return (
+        *(Field(name, bitwise_parity(why=_BVH_WHY)) for name in coordinates),
+        *(Field(name, exact_parity(why=_BVH_EXACT_WHY)) for name in shape),
+    )
+
+
 @pytest.mark.parametrize("n_cells", [1, 2, 3, 9, 64])
 @pytest.mark.parametrize("ndim", [1, 2, 3])
 def test_bvh_node_arrays_are_bitwise(cpp_backend: None, n_cells: int, ndim: int) -> None:
@@ -198,21 +238,15 @@ def test_bvh_node_arrays_are_bitwise(cpp_backend: None, n_cells: int, ndim: int)
 
     reference, actual = _both(lambda: BVH.from_cell_bounds(lo, hi))
 
-    for name in ("node_lo", "node_hi"):
-        assert_parity(
-            getattr(actual, name),
-            getattr(reference, name),
-            bitwise_parity(why=_BVH_WHY),
-            context=f"BVH.from_cell_bounds {name}, {n_cells} cells in {ndim}-D",
-        )
-    for name in ("node_left", "node_right", "node_cell"):
-        np.testing.assert_array_equal(
-            getattr(actual, name),
-            getattr(reference, name),
-            err_msg=f"BVH.from_cell_bounds {name} differs at {n_cells} cells in {ndim}-D. "
-            "The two backends built trees of different SHAPE, which no tolerance could "
-            f"bound. {_BVH_WHY}",
-        )
+    # `_both` returns (reference, actual); `assert_object_parity` takes (py, cpp).
+    # The two orders differ across this suite's modules, so the keywords are used
+    # rather than the position -- the harness's own docstring says why.
+    assert_object_parity(
+        py=reference,
+        cpp=actual,
+        fields=_bvh_fields(),
+        context=f"BVH.from_cell_bounds, {n_cells} cells in {ndim}-D",
+    )
 
 
 @pytest.mark.parametrize("n_cells", [1, 5, 40])

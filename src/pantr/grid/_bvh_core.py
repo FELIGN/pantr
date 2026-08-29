@@ -27,9 +27,20 @@ median-split BVH has height ``ceil(log2(N)) + 1``; depth 128 covers any
 realistic cell count on a single process. Layer 2 validates the depth bound at
 construction time so the kernels never overflow their stack.
 
-The AABB overlap test is inclusive on every face so that a query box sharing a
-face with a cell is reported as overlapping, matching
-:meth:`pantr.geometry.AABB.overlaps`.
+The AABB overlap test is a **separating-axis test and nothing else**: it reports a
+match unless some axis separates the two intervals, comparing inclusively, so a
+query box sharing a face with a cell is reported.
+
+**It is not** :meth:`pantr.geometry.AABB.overlaps`, and this docstring used to say
+it was. The box short-circuits on an *empty* operand and reports that an empty box
+overlaps nothing; the kernels below have no such branch, so a reversed query
+interval that a cell's interval contains passes every separating-axis check and the
+leaf is reported. One cell ``[0, 10]`` in one dimension, queried with
+``lo = 5, hi = 3``, returns cell ``0`` here and ``False`` from the box. Both
+backends behave this way and agree with each other; the claim of agreement with the
+box is withdrawn rather than the behaviour changed, because reconciling the two
+predicates has to move both backends at once or the parity claim stops being an
+equality.
 
 Note:
     Inputs are assumed to be correct (no validation performed).
