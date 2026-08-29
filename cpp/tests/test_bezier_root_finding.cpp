@@ -343,7 +343,7 @@ void test_the_monotone_solver_reports_no_root_without_a_sign_change() {
     // Strictly increasing and strictly positive: no sign change, so no root.
     const std::vector<double> rising{0.5, 1.0, 2.0, 4.0};
     PANTR_CHECK_MSG(std::isnan(pantr::bezier::solve_monotone_root<double>(rising, kTol)),
-                            "the monotone solver invented a root of a positive polynomial");
+                    "the monotone solver invented a root of a positive polynomial");
 
     // A genuine sign change: the answer must satisfy the polynomial.
     const std::vector<double> crossing{-1.0, -0.25, 0.5, 2.0};
@@ -371,7 +371,7 @@ void test_float32_runs_the_same_structural_identities() {
 
     const std::vector<float> positive{0.5F, 1.0F, 2.0F};
     PANTR_CHECK_MSG(std::isnan(pantr::bezier::solve_monotone_root<float>(positive, kTol)),
-                            "the float32 monotone solver invented a root");
+                    "the float32 monotone solver invented a root");
 }
 
 }  // namespace
