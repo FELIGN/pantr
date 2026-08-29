@@ -91,7 +91,8 @@ void register_grid_partition(nb::module_& m) {
                 auto* owned = new std::vector<std::int64_t>(p.owned_cells(rank));
                 // A zero-capacity vector's `data()` may be null; one slot of
                 // capacity gives the empty array a valid address without changing
-                // its size.
+                // its size. `kEmptyOwner` cannot serve here: it is `const`, and this
+                // array is handed back writeable to match the oracle.
                 if (owned->empty()) {
                     owned->reserve(1);
                 }

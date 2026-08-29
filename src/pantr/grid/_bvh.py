@@ -441,6 +441,13 @@ class _BVHPython:
         # Guard against the fixed-depth Numba stack in :mod:`pantr.grid._bvh_core`.
         # Median-of-longest-axis splits produce a balanced tree of height
         # ``ceil(log2(n_cells)) + 1``; the ``+ 1`` accounts for the root push.
+        #
+        # This keeps the pre-port float64 form on purpose, where the C++ side uses
+        # `bit_width(n - 1) + 1` -- the same quantity in exact integers. The two
+        # disagree only above a cell count needing petabytes for one coordinate
+        # axis, which `scripts/measure_bvh_depth_arithmetic.py` enumerates; below
+        # that they are equal, so the backends cannot differ on any reachable input
+        # and this line stays the oracle's.
         max_depth = int(np.ceil(np.log2(n_cells))) + 1 if n_cells > 1 else 1
         if max_depth > _BVH_STACK_DEPTH:
             raise ValueError(

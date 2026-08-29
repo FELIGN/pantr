@@ -170,12 +170,15 @@ void register_grid_bvh(nb::module_& m) {
         .def(
             "query_aabb",
             [](const Tree& tree, const_vec qlo, const_vec qhi) {
-                const std::vector<std::int64_t> matched =
-                    tree.query_aabb(as_span(qlo), as_span(qhi));
-                auto* owned = new std::vector<std::int64_t>(matched);
+                // Moved rather than copied: `query_aabb` returns a fresh vector, and
+                // a query on a large tree can match many cells.
+                auto* owned =
+                    new std::vector<std::int64_t>(tree.query_aabb(as_span(qlo), as_span(qhi)));
                 // A zero-capacity vector's `data()` may be null; one slot of
                 // capacity gives the empty array a valid address without changing
-                // its size.
+                // its size. The named `kEmpty*` sentinels the read-only views use
+                // are `const` and cannot serve here, because this array is handed
+                // back writeable.
                 if (owned->empty()) {
                     owned->reserve(1);
                 }
