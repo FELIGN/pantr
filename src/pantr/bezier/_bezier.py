@@ -393,12 +393,36 @@ class Bezier:
         replaced. Both leave this wrapper carrying the new value; only the array's
         identity differs, and only where the oracle's aliasing is what defined it.
 
+        Rebuilding the implementation reads the *active* backend, so mutating a
+        Bézier inside a :func:`~pantr._backend.use_backend` block that selects a
+        different one would silently hand the caller back an object of the other
+        implementation -- and, going from C++ to Python, silently drop the
+        read-only guarantee on an array they still hold. Reconciling two
+        implementations of one type by converting between them is the shape
+        ``design/cross_backend_types.md`` forbids, so this refuses rather than
+        converts, exactly as :meth:`pantr.geometry.AABB._peer` does for a binary
+        operation. Immutable ported types cannot reach this; ``Bezier`` is the
+        first with observable mutation.
+
         Args:
             rebuild (Callable[[NDArray], NDArray]): Given a writable control-point
                 array, returns the new one. It may write into the array it is
                 given and return it.
+
+        Raises:
+            TypeError: If the active backend no longer selects this Bézier's own
+                implementation.
         """
         impl = self._impl
+        mine = type(impl)
+        theirs = _impl_class(impl.control_points.dtype)
+        if mine is not theirs:
+            raise TypeError(
+                f"Bezier: cannot mutate a Bezier built under a different backend "
+                f"({mine.__name__} against the active {theirs.__name__}); the "
+                f"backend is chosen per process, so this means the active one "
+                f"changed after this Bezier was built."
+            )
         if isinstance(impl, _BezierPython):
             impl._replace_control_points(rebuild(impl.control_points))
         else:
