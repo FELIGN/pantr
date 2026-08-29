@@ -24,8 +24,8 @@
 ///     to `float64` unconditionally, so there is no `float32` oracle a templated
 ///     instantiation could be parity against, and `design/backend_parity.md`
 ///     Rule 8 forbids a surface with no oracle behind it.
-///  2. **`scripts/ci_local.sh` asserts it.** Exactly one `template <` may appear
-///     under `cpp/include/pantr/quad`, and it must be the one in
+///  2. **`scripts/ci_local.sh` asserts it.** Exactly one template declaration may
+///     appear under `cpp/include/pantr/quad`, and it must be the one in
 ///     `simple_rules.hpp`. The guard's recorded reason is measured: instantiating
 ///     Newton at `float` gave a 1.46e-3 relative weight error at n = 200, while a
 ///     double-then-narrow port of the Chebyshev nodes differed on 17% of
