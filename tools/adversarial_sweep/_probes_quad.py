@@ -12,6 +12,15 @@ corners (0 and -1, which must be rejected, then 1, 2, 3, 4, 5, 17, 64, 200, 1000
 rather than its middle, since off-by-one and int64-wraparound defects live at the
 edges of a count, not in its interior.
 
+**What these probes grade, now that the rule is a wrapper.**
+:class:`~pantr.quad.QuadratureRule` and its two factories are owned by the C++
+core since the 2026-08-27 amendment to ``design/cross_backend_types.md``, and the
+public names below are the Python wrapper in front of it. The sweep runs the
+**Python backend** (``README.md`` in this directory carries that decision and what
+grades the C++ side instead), so every case here still grades the oracle, and the
+contract quoted at each site is the one both backends have to meet.
+``tests/parity/test_quad_rule.py`` is what checks that they do.
+
 **Verdict flags.** Every case here carries ``must_succeed`` or ``must_reject``
 unless the entry point's contract genuinely admits both, and the few that carry
 neither say why at the site. Without them a legal-input failure is graded against
@@ -476,7 +485,7 @@ def _quadrature_rule_cases(profile: Profile) -> Iterator[Case]:
     del profile  # every construction below is a corner; nothing to widen further
     step = float(np.spacing(np.float64(1.0)))
 
-    # The constructor's `Raises:` (`quad.py:641-644`) is a closed list: not 2D, weights
+    # The constructor's `Raises:` (`QuadratureRule.__init__`) is a closed list: not 2D, weights
     # not 1D, lengths disagree, either empty, non-finite, or a point outside [0, 1].
     # Every case below is on one side or the other of exactly that list.
     yield Case(
@@ -490,7 +499,7 @@ def _quadrature_rule_cases(profile: Profile) -> Iterator[Case]:
         must_succeed=True,
     )
     # A negative weight is legal by construction, and deliberately so: the class
-    # docstring's "weights sum to one" language (`quad.py:622-628`) is scoped to the two
+    # docstring's "weights sum to one" language (`QuadratureRule`) is scoped to the two
     # factories, and `__init__` neither documents nor checks weight sign or sum. Refusing
     # this input would be the finding, not accepting it -- several legitimate rules
     # (Newton-Cotes past degree 8, moment-fitted rules) carry negative weights.
@@ -609,7 +618,7 @@ def _tensor_product_cases(profile: Profile) -> Iterator[Case]:
     weights_b = np.full(3, 1.0 / 3.0)
     rules_2d = [(nodes_a, weights_a), (nodes_b, weights_b)]
     # Matching non-empty 1D pairs with nodes inside [0, 1] satisfy every precondition
-    # the docstring states (`quad.py:731-734`), including the `[0, 1]` bound it defers
+    # the docstring states (`tensor_product_quadrature`), including the `[0, 1]` bound it defers
     # to `QuadratureRule`.
     yield Case(
         GROUP,
@@ -642,7 +651,7 @@ def _tensor_product_cases(profile: Profile) -> Iterator[Case]:
         tensor_product_quadrature,
         lambda: tensor_product_quadrature([]),
         {"kind": "empty"},
-        must_reject=True,  # "If ``rules`` is empty" (quad.py:741-744)
+        must_reject=True,  # "If ``rules`` is empty" (tensor_product_quadrature)
     )
 
     if profile is not Profile.FULL:
@@ -655,7 +664,7 @@ def _tensor_product_cases(profile: Profile) -> Iterator[Case]:
         tensor_product_quadrature,
         lambda mismatched=mismatched: tensor_product_quadrature(mismatched),
         {"kind": "mismatched-lengths"},
-        must_reject=True,  # "not a matching pair of ... 1D arrays" (quad.py:741-744)
+        must_reject=True,  # "not a matching pair of ... 1D arrays" (tensor_product_quadrature)
     )
 
 
@@ -673,7 +682,7 @@ def _gauss_legendre_nd_cases(profile: Profile) -> Iterator[Case]:
         Case: One hostile ``(ndim, npts)`` combination.
     """
     npts_values = _GLQ_NPTS_FULL if profile is Profile.FULL else _GLQ_NPTS_SMOKE
-    # The docstring states three preconditions and no more (`quad.py:776-779`):
+    # The docstring states three preconditions and no more (`gauss_legendre_quadrature`):
     # `ndim >= 1`, a sequence of length `ndim` if not a scalar, and every count
     # `>= 1`. Each case below satisfies all three or violates exactly one.
     for ndim in dims(profile, max_dim=3):
