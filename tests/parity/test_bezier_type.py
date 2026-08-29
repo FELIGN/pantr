@@ -205,6 +205,77 @@ def test_a_one_dimensional_control_net_is_reshaped_the_same_way(dtype: npt.DType
     assert cpp.control_points.shape == (4, 1)
 
 
+@pytest.mark.parametrize("dtype", DTYPES)
+@pytest.mark.parametrize("is_rational", [False, True])
+def test_the_ieee_menagerie_transits_unchanged(dtype: npt.DTypeLike, is_rational: bool) -> None:
+    """NaN, both zeros, a subnormal and both infinities survive the copy.
+
+    What this catches: the whole premise of this file is that the two backends
+    only copy, and a copy is exactly where these values are cheap to test and
+    expensive to lose. A caster round-tripping through a wider intermediate, a
+    narrowing cast, or a memcpy replaced by element-wise assignment through a
+    different type all show first on a NaN payload, on a ``-0.0`` whose sign an
+    addition drops, or on a ``float32`` subnormal flushed to zero -- and every one
+    of those is invisible to a value comparison and visible bitwise, which is why
+    the claim on ``control_points`` is ``bitwise_parity`` and not a tolerance.
+
+    The finite specials and the NaN go through the same ``FIELDS``, so ``dtype``,
+    ``degree`` and ``rank`` are checked over them too: a Bézier of NaNs is not a
+    special case in the type's eyes and must not become one.
+
+    **The two infinities are asserted separately, and not by choice.**
+    ``assert_parity`` computes a diagnostic ``|actual - reference|`` before it
+    reports a bitwise result (``tests/_parity_harness.py``), and ``inf - inf``
+    raises the IEEE invalid flag, which numpy reports as ``RuntimeWarning:
+    invalid value encountered in subtract`` and this suite turns into an error.
+    So a bitwise claim cannot presently be made about an array holding an
+    infinity, and the harness is where that has to be fixed rather than here.
+    NaN is unaffected: quiet-NaN propagation raises no flag, so the harness's
+    claim to compare NaN by bit pattern holds as written.
+    """
+    finfo = np.finfo(np.dtype(dtype))
+    finite_specials = np.asarray(
+        [
+            [0.0, np.nan],
+            [-0.0, float(finfo.smallest_subnormal)],
+            [float(finfo.max), float(finfo.tiny)],
+        ],
+        dtype=dtype,
+    )
+    py, cpp = _both(finite_specials, is_rational=is_rational)
+    assert_object_parity(
+        py=py, cpp=cpp, fields=FIELDS, context=f"IEEE menagerie ({dtype}, {is_rational})"
+    )
+    # Asserted on the bytes rather than through the harness, because that is the
+    # specific loss this case exists for: `assert_object_parity` would pass if
+    # BOTH backends had flushed the subnormal or normalized the signed zero the
+    # same way, and it is the transit that is under test, not the agreement.
+    assert cpp.control_points.tobytes() == finite_specials.tobytes()
+
+    with_infinities = np.asarray([[np.inf, -np.inf], [1.0, -0.0]], dtype=dtype)
+    _, cpp_inf = _both(with_infinities, is_rational=is_rational)
+    assert cpp_inf.control_points.tobytes() == with_infinities.tobytes()
+
+
+@pytest.mark.parametrize("dtype", DTYPES)
+def test_a_non_contiguous_control_net_reaches_both_backends_alike(dtype: npt.DTypeLike) -> None:
+    """A Fortran-ordered or strided array builds the same Bézier under either backend.
+
+    What this catches: the ``np.ascontiguousarray`` step in ``_new_impl``. The C++
+    binding refuses a non-contiguous array outright rather than copying it, so
+    without that step the public constructor would raise a ``TypeError`` about C++
+    argument types under one backend and succeed under the other. Nothing else
+    exercises the branch: ``test_bezier_binding_contract.py`` tests the raw
+    binding's refusal, which is the opposite path.
+    """
+    fortran = np.asfortranarray(np.arange(24.0, dtype=dtype).reshape(4, 3, 2))
+    strided = np.arange(48.0, dtype=dtype).reshape(8, 3, 2)[::2]
+    for control_points, how in ((fortran, "Fortran-ordered"), (strided, "strided")):
+        assert not control_points.flags.c_contiguous, how
+        py, cpp = _both(control_points, is_rational=False)
+        assert_object_parity(py=py, cpp=cpp, fields=FIELDS, context=f"{how} control net ({dtype})")
+
+
 def _message_of(build: Any) -> str:
     """The text of the `ValueError` that `build` raises.
 
@@ -229,12 +300,23 @@ MALFORMED: Final = (
     (lambda cls, dtype: cls(np.zeros((3, 0), dtype=dtype)), "no components at all"),
     (lambda cls, dtype: cls(np.zeros((3, 1), dtype=dtype), True), "a weight and nothing else"),
     (lambda cls, dtype: cls(np.zeros((3, 0), dtype=dtype), True), "a rational net of rank -1"),
+    (lambda cls, dtype: cls(np.zeros((0, 0), dtype=dtype), True), "bad in both ways at once"),
 )
 """Every construction both implementations must refuse, and what makes it bad.
 
-The last two are the rank check's two sides of zero: `rank -1` is the one that
-made the C++ subtraction signed, and an unsigned one would reject the input while
+Three of these are the rank check's sides of zero: `rank -1` is the one that made
+the C++ subtraction signed, and an unsigned one would reject the input while
 reporting a number near 2^64.
+
+**The last case is the only one bad in more than one way, and it is the one that
+pins the ORDER of the checks.** Every other entry violates exactly one rule, so
+each has one possible message and a reordering is invisible: measured, moving the
+oracle's rank check in front of its shape loop left this file entirely green.
+`(0, 0)` rational has an empty parametric direction *and* rank -1, so which
+message a caller reads is decided by the order alone, and
+`cpp/include/pantr/bezier/bezier.hpp` states that order as a cross-language
+contract. `cpp/tests/test_bezier_type.cpp` asserts the C++ half against a
+hardcoded literal; this is the half that compares it against the live oracle.
 """
 
 
@@ -338,6 +420,11 @@ def test_a_bezier_survives_pickling_across_every_backend_pair(
                 assert rebuilt.dtype == np.dtype(dtype), f"{where} {how}"
                 assert rebuilt.is_rational is is_rational, f"{where} {how}"
                 assert rebuilt.degree == original.degree, f"{where} {how}"
+                # `rank` folds the flag against the component axis, so it is the
+                # one field that would catch a round trip which kept the byte
+                # count and the per-direction degrees while moving which axis
+                # carries the components.
+                assert rebuilt.rank == original.rank, f"{where} {how}"
 
 
 @pytest.mark.parametrize("dtype", DTYPES)

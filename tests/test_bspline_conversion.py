@@ -24,7 +24,9 @@ _SHARING_IS_PYTHON_ONLY = pytest.mark.skipif(
     reason=(
         "This records the Python Bezier's known aliasing defect rather than a contract: the "
         "C++ value copies its control points at construction, so `copy=False` shares nothing "
-        "under that backend; FELIGN/pantr#375 is the ticket that fixes the Python side."
+        "under that backend; FELIGN/pantr#375 is the ticket that fixes the Python side. The "
+        "C++ path is not left untested by the skip -- what it does instead is asserted in "
+        "tests/parity/test_bezier_type.py, which pins the copy at both ends."
     ),
 )
 """Marks an assertion that pins sharing only the Python implementation offers."""

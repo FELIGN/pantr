@@ -21,7 +21,9 @@ _PYTHON_BACKEND_ONLY = pytest.mark.skipif(
         "This records the Python Bezier's known aliasing defect rather than a contract: the "
         "C++ value copies its control points and hands back a read-only view, so an in-place "
         "mutation replaces the array instead of writing into it; FELIGN/pantr#375 is the "
-        "ticket that fixes the Python side."
+        "ticket that fixes the Python side. The skip loses no coverage of the C++ path: the "
+        "value an in-place mutation leaves behind is compared across both backends in "
+        "tests/parity/test_bezier_type.py, and only the array's identity is unpinned here."
     ),
 )
 """Marks an assertion that pins aliasing only the Python implementation has."""
