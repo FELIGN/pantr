@@ -9,6 +9,7 @@ This module provides:
 - :class:`QuadratureRule`: a d-dimensional quadrature rule on the unit cube,
   with :func:`tensor_product_quadrature` and :func:`gauss_legendre_quadrature`
   factories; the reference rule consumed by :func:`pantr.grid.cell_quadrature`.
+  Owned by the C++ core and wrapped here; see :mod:`pantr.quad._rule_nd`.
 """
 
 from ._lattice import PointsLattice, create_lagrange_points_lattice
@@ -41,6 +42,10 @@ from ._rules import (
 # Rebind __module__ so pickles and repr() report the public path, not the
 # private submodule they are actually defined in.  Both classes are pickled
 # by mpi4py for collective calls (see pantr.mpi._l2, pantr.mpi._collocation).
+# QuadratureRule is a wrapper over the C++ type since the 2026-08-27 amendment
+# to design/cross_backend_types.md, which makes this load-bearing rather than
+# cosmetic: `__reduce__` names `type(self)`, so a pickle written by one backend
+# has to resolve to the same public class under the other.
 PointsLattice.__module__ = __name__
 QuadratureRule.__module__ = __name__
 
