@@ -38,6 +38,7 @@ from tests._parity_harness import (
     assert_parity,
     bitwise_parity,
     bounded_parity,
+    converged_parity,
     demand_a_compiled_seed,
     demand_the_compiled_kernel,
     exact_parity,
@@ -726,3 +727,157 @@ def test_an_exact_claim_on_a_float_field_is_refused_and_names_bitwise_parity() -
 
     with pytest.raises(AssertionError, match="bitwise_parity"):
         assert_object_parity(obj, obj, fields=fields, context="a float corner")
+
+
+def test_a_bounded_field_in_an_object_call_rejects_a_difference_past_its_bound() -> None:
+    """The reject side of the BOUNDED field, which is the half that can rot silently.
+
+    Its accept-side twin above passes whether or not the comparison is wired up at
+    all, so on its own it is compatible with an `assert_object_parity` that asserts
+    nothing. Measured: wrapping the non-exact branch in ``try/except AssertionError:
+    pass`` leaves 25 of 26 self-tests green, and only the BITWISE test notices.
+
+    BOUNDED is the claim most of the eight downstream consumers' float fields will
+    carry, so this is the one that has to fail. The perturbation is 1.5x the claim's
+    own tolerance, derived from :func:`absolute_tolerance` rather than typed in, so
+    the test survives a change to the rounding-budget arithmetic.
+    """
+    claim = bounded_parity(
+        roundings=Roundings(stages=4, accumulator_per_stage=2, storage_per_stage=1),
+        accumulator=np.float64,
+        storage=np.float64,
+        amplification=np.array([1.0, 1.0]),
+        why="probe claim: an arbitrary, non-degenerate rounding budget",
+    )
+    fields = [Field("value", claim)]
+    delta = float(absolute_tolerance(claim)[0]) * 1.5
+
+    py_obj = SimpleNamespace(value=np.array([1.0, 2.0]))
+    cpp_obj = SimpleNamespace(value=np.array([1.0 + delta, 2.0]))
+    with pytest.raises(AssertionError, match="differ by more than the derived bound"):
+        assert_object_parity(
+            py_obj, cpp_obj, fields=fields, context="bounded field, 1.5x the bound"
+        )
+
+
+def test_a_converged_field_in_an_object_call_accepts_and_rejects_against_its_bound() -> None:
+    """CONVERGED routes through the object call too, in both directions.
+
+    The third claim kind, and the one the root-finding port will attach to object
+    fields first (``design/backend_parity.md`` Rule 11). It carries two fields the
+    other kinds do not -- an explicit ``bound`` and a ``scale`` the vacuity guard
+    consults -- so an edit to `assert_object_parity` that dropped or reordered a
+    claim's extra state would show up here and nowhere else.
+    """
+    bound = np.array([1e-8, 1e-8])
+    claim = converged_parity(
+        bound=bound,
+        scale=1.0,
+        why="probe claim: both backends ran the same iteration to the same criterion",
+    )
+    fields = [Field("root", claim)]
+    py_obj = SimpleNamespace(root=np.array([0.25, 0.75]))
+
+    inside = SimpleNamespace(root=np.array([0.25 + 0.5e-8, 0.75]))
+    assert_object_parity(py_obj, inside, fields=fields, context="converged, half the bound")
+
+    outside = SimpleNamespace(root=np.array([0.25 + 1.5e-8, 0.75]))
+    with pytest.raises(AssertionError, match="differ by more than the derived bound"):
+        assert_object_parity(py_obj, outside, fields=fields, context="converged, 1.5x the bound")
+
+
+def test_an_exact_field_handles_none_in_both_directions() -> None:
+    """`None` is a value two backends can agree or disagree on, and it is a real shape.
+
+    ``Grid.locate`` returns ``int | None`` -- ``None`` when the point is outside -- so
+    a consumer reaching it through a `read` under an `ExactClaim` hands `None` to this
+    machinery. Today it works because `np.asarray(None)` is a 0-d object array and
+    ``!=`` does the right thing on it.
+
+    What this catches: a later "normalise exact fields through
+    ``np.asarray(..., dtype=np.int64)``" refactor, which would raise a `TypeError` on
+    `None` instead of comparing it, with nothing else in the suite to notice.
+    """
+    fields = [Field("cell", exact_parity(why="a point outside the grid has no cell"))]
+
+    outside = SimpleNamespace(cell=None)
+    assert_object_parity(outside, outside, fields=fields, context="both backends found none")
+
+    inside = SimpleNamespace(cell=5)
+    with pytest.raises(AssertionError, match="exact agreement claimed and violated"):
+        assert_object_parity(outside, inside, fields=fields, context="one backend located it")
+    with pytest.raises(AssertionError, match="exact agreement claimed and violated"):
+        assert_object_parity(inside, outside, fields=fields, context="the other one did")
+
+
+def test_a_field_mixing_element_kinds_is_refused_before_the_promotion_hides_a_difference() -> None:
+    """A tuple of different kinds promotes, and the promotion can hide a real difference.
+
+    This is a false PASS, not a bad message, and it was measured before the guard
+    existed: ``(2**53, 0.5)`` against ``(2**53 + 1, 0.5)`` under a bitwise claim
+    promotes to ``float64``, where the two ids are the same number, and
+    `assert_object_parity` returned successfully. Two distinct BVH node ids compared
+    equal.
+
+    What this catches: the guard being narrowed back to "contains an ndarray", which is
+    what it was -- that version let this through, because neither element is an array.
+    """
+    py_obj = SimpleNamespace(v=(2**53, 0.5))
+    cpp_obj = SimpleNamespace(v=(2**53 + 1, 0.5))
+    assert float(2**53) == float(2**53 + 1), "the premise: these two ids share a float64"
+
+    for claim in (exact_parity(why="ids agree"), bitwise_parity(why="ids agree")):
+        with pytest.raises(AssertionError, match="mixing"):
+            assert_object_parity(
+                py_obj, cpp_obj, fields=[Field("v", claim)], context="an id beside a weight"
+            )
+
+
+def test_a_field_reading_back_nested_sequences_is_refused_with_the_fix_named() -> None:
+    """A tuple of tuples is compound too, whether or not the pieces are equal length.
+
+    The ragged form used to escape as a bare NumPy `ValueError`, and the rectangular
+    form used to be silently reinterpreted as one 2-D array -- so ``(lo, hi)`` per axis
+    compared as a matrix nobody built. Both are refused with the same fix named.
+
+    A flat tuple of ONE kind is deliberately still accepted, and the second half asserts
+    that: `CellTags.names` is ``tuple[str, ...]`` and `TensorProductGrid.cells_per_axis`
+    is ``tuple[int, ...]``, each one quantity with several components. Refusing those
+    would break four attribute fields across three of the eight consumers.
+    """
+    claim = exact_parity(why="per-axis bounds must agree exactly")
+
+    rectangular = SimpleNamespace(v=((1, 2), (3, 4)))
+    with pytest.raises(AssertionError, match="arrays or sequences"):
+        assert_object_parity(
+            rectangular, rectangular, fields=[Field("v", claim)], context="a rectangular pair"
+        )
+
+    ragged = SimpleNamespace(v=((1, 2, 3), (4, 5)))
+    with pytest.raises(AssertionError, match="arrays or sequences"):
+        assert_object_parity(ragged, ragged, fields=[Field("v", claim)], context="a ragged pair")
+
+    flat = SimpleNamespace(names=("boundary", "interior"), cells_per_axis=(4, 7))
+    assert_object_parity(
+        flat,
+        flat,
+        fields=[Field("names", claim), Field("cells_per_axis", claim)],
+        context="a flat tuple is one quantity",
+    )
+
+
+def test_an_exact_field_accepts_an_empty_sequence() -> None:
+    """A tag registry with no tags has an empty `names`, and that must compare.
+
+    `np.asarray(())` is `float64`, so the guard that refuses an exact claim on floating
+    point would refuse an empty tuple outright. It is skipped for an empty array, since
+    there is no NaN in one to be wrong about. What this catches: that skip being
+    dropped, which turns "this grid has no tags" into a test failure.
+    """
+    empty = SimpleNamespace(names=())
+    fields = [Field("names", exact_parity(why="a grid with no tags has no names"))]
+    assert_object_parity(empty, empty, fields=fields, context="no tags on either backend")
+
+    one = SimpleNamespace(names=("boundary",))
+    with pytest.raises(AssertionError, match="shape"):
+        assert_object_parity(empty, one, fields=fields, context="one backend grew a tag")
