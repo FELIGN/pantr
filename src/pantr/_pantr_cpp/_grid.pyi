@@ -1,11 +1,79 @@
-"""Grid location, BVH and hierarchical-index kernels of the compiled extension.
+"""Grid kernels and grid types of the compiled extension.
 
-Bound by ``cpp/bindings/grid.cpp``. See ``__init__.pyi`` for what this package
-promises and who has to keep it.
+The free functions are bound by ``cpp/bindings/grid.cpp``; the classes are bound
+by the per-type files beside it (``grid_tags.cpp`` and its siblings). See
+``__init__.pyi`` for what this package promises and who has to keep it.
 """
+
+from typing import Any
 
 import numpy as np
 import numpy.typing as npt
+
+class CellTags:
+    """Sparse named integer tags over a grid's cells, owned by the C++ core.
+
+    Wrapped by :class:`pantr.grid.CellTags`, which is the class a caller holds;
+    this one is reached only through it. The wrapper is what raises ``KeyError``
+    for an unregistered name and ``TypeError`` for a non-integer argument, because
+    nanobind can produce neither.
+
+    ``scatter`` is registered once per numpy integer dtype and writes only the
+    tagged entries: the wrapper allocates and fills the destination.
+
+    Attributes:
+        num_cells (int): Number of cells in the owning grid.
+        names (list[str]): Registered tag names, in insertion order.
+    """
+
+    def __init__(self, num_cells: int) -> None: ...
+    @property
+    def num_cells(self) -> int: ...
+    @property
+    def names(self) -> list[str]: ...
+    def __len__(self) -> int: ...
+    def __contains__(self, name: str) -> bool: ...
+    def set(
+        self,
+        name: str,
+        ids: npt.NDArray[np.int64],
+        values: npt.NDArray[np.int64],
+    ) -> None: ...
+    def get(self, name: str) -> tuple[npt.NDArray[np.int64], npt.NDArray[np.int64]]: ...
+    def remove(self, name: str) -> None: ...
+    def scatter(self, name: str, out: npt.NDArray[Any]) -> None: ...
+
+class FacetTags:
+    """Sparse named integer tags over a grid's local facets, owned by the C++ core.
+
+    The facet counterpart of :class:`CellTags`; see that class. Keys are
+    ``(cell_id, local_facet_id)`` rows and ``scatter``'s destination is
+    ``(num_cells, facets_per_cell)``.
+
+    Attributes:
+        num_cells (int): Number of cells in the owning grid.
+        facets_per_cell (int): Number of local facets per cell.
+        names (list[str]): Registered tag names, in insertion order.
+    """
+
+    def __init__(self, num_cells: int, facets_per_cell: int) -> None: ...
+    @property
+    def num_cells(self) -> int: ...
+    @property
+    def facets_per_cell(self) -> int: ...
+    @property
+    def names(self) -> list[str]: ...
+    def __len__(self) -> int: ...
+    def __contains__(self, name: str) -> bool: ...
+    def set(
+        self,
+        name: str,
+        keys: npt.NDArray[np.int64],
+        values: npt.NDArray[np.int64],
+    ) -> None: ...
+    def get(self, name: str) -> tuple[npt.NDArray[np.int64], npt.NDArray[np.int64]]: ...
+    def remove(self, name: str) -> None: ...
+    def scatter(self, name: str, out: npt.NDArray[Any]) -> None: ...
 
 def locate_points(
     points: npt.NDArray[np.float64],
