@@ -699,6 +699,25 @@ def test_pickle_round_trips_across_every_backend_pair(writer: Backend, reader: B
     assert restored.num_points == original.num_points
 
 
+def test_both_backends_refuse_more_axes_than_either_can_serve() -> None:
+    """Past 32 axes both backends refuse, and the two ceilings are different objects.
+
+    This pins the behaviour rather than reconciling it, which is deliberate. The
+    oracle stops at `numpy.meshgrid`'s 32-dimension limit; the C++ side stops when
+    the point count would leave ``std::size_t``, at 64 axes of two nodes. Both are
+    limits of an implementation rather than defects in the argument, both surface
+    as a ``RuntimeError`` -- ``CapacityError`` is one -- and neither backend could
+    serve the request anyway, since 2**64 points do not fit in any machine.
+
+    Making the C++ side refuse at 32 to match would write numpy's limitation into
+    a type whose whole purpose is to be usable with no interpreter present, so the
+    disagreement is recorded instead of removed.
+    """
+    for backend in (Backend.PYTHON, Backend.CPP):
+        with use_backend(backend), pytest.raises(RuntimeError):
+            gauss_legendre_quadrature(64, 2)
+
+
 def _message_of(fn: Callable[[], object]) -> str:
     """Run ``fn`` and return the text of the ``ValueError`` it raises.
 
@@ -753,6 +772,16 @@ def _message_of(fn: Callable[[], object]) -> str:
         (lambda: gauss_legendre_quadrature(2, [2]), "npts of the wrong length"),
         (lambda: gauss_legendre_quadrature(2, [2, 0]), "an npts entry below one"),
         (lambda: gauss_legendre_quadrature(1, 0), "a scalar npts below one"),
+        # The regression case. A count past the range of the C int that carries it
+        # used to fail in nanobind's caster as a TypeError under the C++ backend
+        # while the Python one raised ValueError from inside numpy, so
+        # PANTR_BACKEND decided which exception a caller had to catch. Both are
+        # refused above the boundary now, before either backend allocates
+        # anything -- which is also why the value here is 2**31 and not the
+        # largest legal one: a rule of 2**31 - 1 points is legal and would take
+        # 17 GB to build.
+        (lambda: gauss_legendre_quadrature(1, 2**31), "an npts entry past a C int"),
+        (lambda: gauss_legendre_quadrature(2, [2, 10**20]), "an npts entry past any C type"),
     ],
 )
 def test_error_messages_agree_verbatim(build: Callable[[], object], what: str) -> None:

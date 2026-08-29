@@ -34,6 +34,25 @@ if TYPE_CHECKING:
 _POINTS_NDIM = 2
 """Rank of the ``points`` argument: ``(num_points, ndim)``."""
 
+_MAX_NPTS = 2**31 - 1
+"""Largest point count per axis a Gauss-Legendre rule can be asked for.
+
+Not a policy: it is the range of the C ``int`` that carries the count.
+``pantr::quad::QuadratureRule::gauss_legendre`` takes ``std::span<const int>``
+and ``pantr::gauss_legendre_symmetric`` takes ``int n``, so a larger value cannot
+cross without wrapping -- the same quantity ``cpp/bindings/quad.cpp`` caps as
+``max_count`` for the 1-D kernel, and capped here for the same reason.
+
+It is checked on this side rather than in C++ because **no C integer type can
+carry an arbitrary-precision Python int**: whatever width the binding declares, a
+large enough argument fails in nanobind's caster as a ``TypeError``, which is the
+one exception class ``cpp/include/pantr/core/error.hpp`` records the C++ side
+cannot produce deliberately. Measured before this guard existed,
+``gauss_legendre_quadrature(1, 10**20)`` raised ``TypeError`` under the C++
+backend and ``ValueError`` under the Python one, so ``PANTR_BACKEND`` decided
+which exception a caller had to catch.
+"""
+
 
 def _validate_ranks(pts: npt.NDArray[np.float64], wts: npt.NDArray[np.float64]) -> None:
     """Reject a points or weights array of the wrong rank.
@@ -495,14 +514,22 @@ def tensor_product_quadrature(
 
 
 def _normalize_npts(ndim: int, npts: int | Sequence[int]) -> tuple[int, ...]:
-    """Broadcast the point count over the axes and check the Python-only contract.
+    """Broadcast the point count over the axes and check the whole ``npts`` contract.
 
-    Both checks here belong to the ``(ndim, npts)`` calling convention, which
-    exists in Python and not in C++: ``QuadratureRule::gauss_legendre`` takes one
-    span and reads the dimension off it, so there is no second argument for the
-    two to disagree about, and a negative ``ndim`` cannot be recovered from the
-    broadcast tuple in order to be reported. ``cpp/include/pantr/core/error.hpp``'s
-    rule still holds for everything else: the per-entry range check lives in C++.
+    Every check here is one the C++ signature cannot express, which is what puts
+    them on this side of ``cpp/include/pantr/core/error.hpp``'s rule rather than in
+    the type. The ``(ndim, npts)`` convention exists only in Python --
+    ``QuadratureRule::gauss_legendre`` takes one span and reads the dimension off
+    it, so there is no second argument for the two to disagree about, and a
+    negative ``ndim`` cannot be recovered from the broadcast tuple in order to be
+    reported. The two per-entry bounds are here for a related reason: an
+    arbitrary-precision Python int has no C type to arrive in, so a value outside
+    :data:`_MAX_NPTS` fails in nanobind's caster as a ``TypeError`` before any C++
+    check could run. See :data:`_MAX_NPTS`.
+
+    The C++ factory keeps its own copies of the lower bound and the emptiness
+    check. That is not a duplicated contract but a type defending itself for a
+    caller that has no Python at all.
 
     Args:
         ndim (int): Number of axes (``>= 1``).
@@ -512,7 +539,8 @@ def _normalize_npts(ndim: int, npts: int | Sequence[int]) -> tuple[int, ...]:
         tuple[int, ...]: The per-axis counts, of length ``ndim``.
 
     Raises:
-        ValueError: If ``ndim < 1`` or ``npts`` is a sequence of the wrong length.
+        ValueError: If ``ndim < 1``, ``npts`` is a sequence of the wrong length, or
+            any count is below 1 or above :data:`_MAX_NPTS`.
     """
     if ndim < 1:
         raise ValueError(f"gauss_legendre_quadrature: ndim must be >= 1; got {ndim}.")
@@ -521,6 +549,15 @@ def _normalize_npts(ndim: int, npts: int | Sequence[int]) -> tuple[int, ...]:
         raise ValueError(
             f"gauss_legendre_quadrature: npts must be a scalar or a length-{ndim} sequence; "
             f"got length {len(npts_tuple)}."
+        )
+    if any(n < 1 for n in npts_tuple):
+        raise ValueError(
+            f"gauss_legendre_quadrature: every npts entry must be >= 1; got {npts_tuple!r}."
+        )
+    if any(n > _MAX_NPTS for n in npts_tuple):
+        raise ValueError(
+            f"gauss_legendre_quadrature: every npts entry must be at most {_MAX_NPTS}, "
+            f"the largest count a C int can carry; got {npts_tuple!r}."
         )
     return npts_tuple
 
@@ -533,16 +570,13 @@ def _gauss_legendre_quadrature_python(npts: tuple[int, ...]) -> _QuadratureRuleP
     on this side; ``design/backend_parity.md`` Rule 1 is why that map matters.
 
     Args:
-        npts (tuple[int, ...]): Points per axis, already broadcast to ``ndim``.
+        npts (tuple[int, ...]): Points per axis, already broadcast to ``ndim`` and
+            already range-checked by :func:`_normalize_npts`, which is this
+            function's only caller.
 
     Returns:
         _QuadratureRulePython: The tensor-product Gauss-Legendre rule.
-
-    Raises:
-        ValueError: If any count is ``< 1``.
     """
-    if any(n < 1 for n in npts):
-        raise ValueError(f"gauss_legendre_quadrature: every npts entry must be >= 1; got {npts!r}.")
     rules = [get_gauss_legendre_1d(n, dtype=np.float64) for n in npts]
     return _tensor_product_quadrature_python(_coerce_axis_rules(rules))
 

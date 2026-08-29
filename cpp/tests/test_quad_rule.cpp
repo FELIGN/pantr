@@ -66,6 +66,7 @@
 #include <vector>
 
 #include "check.hpp"
+#include "pantr/core/error.hpp"
 #include "pantr/core/mdspan.hpp"
 #include "pantr/quad/rule.hpp"
 
@@ -252,6 +253,48 @@ void test_tensor_product_validates() {
     }) == "points must lie in the unit cube [0, 1]^ndim.");
 }
 
+void test_tensor_product_refuses_a_point_count_that_cannot_be_indexed() {
+    // 64 axes of two nodes is 2**64 points, one past what `std::size_t` can
+    // index. The guard fires inside the validation loop, so it costs 64 span
+    // reads and allocates nothing -- which is what makes this testable at all.
+    //
+    // `CapacityError` rather than `std::invalid_argument`, because the argument is
+    // well formed and it is this platform's index type that runs out;
+    // `pantr/core/error.hpp` draws that line. It reaches Python as a subclass of
+    // RuntimeError, which is also what the oracle raises here (numpy's own
+    // 32-dimension ceiling), so the two backends agree on the class if not on the
+    // ceiling -- see tests/parity/test_quad_rule.py.
+    const std::vector<double> nodes{0.25, 0.75};
+    const std::vector<double> weights{0.5, 0.5};
+    const std::vector<Rule1D> too_many(64, Rule1D{nodes, weights});
+    bool threw = false;
+    try {
+        (void)QuadratureRule::tensor_product(too_many);
+    } catch (const pantr::CapacityError&) {
+        threw = true;
+    }
+    PANTR_CHECK_MSG(threw, "a point count past SIZE_MAX must be refused, not wrapped");
+
+    // 63 axes is refused too, and by the SECOND guard rather than the first:
+    // 2**63 points fit `std::size_t`, but the (num_points, ndim) table they imply
+    // does not. Written down because the two guards are easy to mistake for one,
+    // and because this is the only case that reaches the second.
+    const std::vector<Rule1D> table_too_wide(63, Rule1D{nodes, weights});
+    threw = false;
+    try {
+        (void)QuadratureRule::tensor_product(table_too_wide);
+    } catch (const pantr::CapacityError&) {
+        threw = true;
+    }
+    PANTR_CHECK_MSG(threw, "a point TABLE past SIZE_MAX must be refused as well");
+
+    // And the guard is not simply refusing anything large: 16 axes is 65536
+    // points, which builds. Without this the two checks above would also pass
+    // against a factory that refused every tensor product outright.
+    const std::vector<Rule1D> merely_large(16, Rule1D{nodes, weights});
+    PANTR_CHECK(QuadratureRule::tensor_product(merely_large).num_points() == 65536);
+}
+
 void test_tensor_product_orders_last_axis_fastest() {
     // The two axes carry disjoint node sets, so a transposed or reversed
     // enumeration cannot reproduce this table by accident.
@@ -380,6 +423,7 @@ int main() {
     test_the_boundary_and_a_negative_weight_are_legal();
     test_the_rule_copies_its_arguments();
     test_tensor_product_validates();
+    test_tensor_product_refuses_a_point_count_that_cannot_be_indexed();
     test_tensor_product_orders_last_axis_fastest();
     test_gauss_legendre_validates();
     test_gauss_legendre_one_point_is_the_midpoint_rule();
