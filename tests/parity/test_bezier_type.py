@@ -529,3 +529,41 @@ def test_the_wrapper_holds_the_implementation_its_backend_selects(dtype: npt.DTy
         assert isinstance(Bezier(control_points)._impl, _BezierPython)
     with use_backend(Backend.CPP):
         assert isinstance(Bezier(control_points)._impl, _cpp_class(dtype))
+
+
+def test_mutating_under_a_switched_backend_is_refused_rather_than_converted() -> None:
+    """An in-place mutator refuses a backend that is not the one this Bézier was built under.
+
+    Rebuilding the implementation reads the *active* backend, so without this
+    check a Bézier built under C++ and reversed inside a
+    ``use_backend(Backend.PYTHON)`` block came back as ``_BezierPython`` -- and
+    the caller's ``control_points`` went from read-only to writeable underneath
+    them, on an array they still held. Converting between two implementations of
+    one type is the shape ``design/cross_backend_types.md`` forbids;
+    :meth:`pantr.geometry.AABB._peer` already refuses it for a binary operation,
+    and this is the same rule for mutation.
+
+    ``Bezier`` is the first ported type with observable mutation, so it is the
+    first that could reach this at all: an immutable type only ever produces a
+    *derived* object under the other backend, never reconciles a live one.
+
+    Pins that the refusal leaves the object untouched, and that a mutation under
+    the matching backend still works -- a check that merely raises everywhere
+    would pass the first half.
+    """
+    control_points = np.array([[0.0], [1.0], [2.0]], dtype=np.float64)
+
+    with use_backend(Backend.CPP):
+        bezier = Bezier(control_points, is_rational=False)
+    assert not bezier.control_points.flags.writeable
+
+    with use_backend(Backend.PYTHON), pytest.raises(TypeError, match="different backend"):
+        bezier.reverse(in_place=True)
+
+    assert isinstance(bezier._impl, _cpp_class(np.dtype(np.float64)))
+    assert not bezier.control_points.flags.writeable
+    assert bezier.control_points.ravel().tolist() == [0.0, 1.0, 2.0]
+
+    with use_backend(Backend.CPP):
+        bezier.reverse(in_place=True)
+    assert bezier.control_points.ravel().tolist() == [2.0, 1.0, 0.0]
