@@ -435,7 +435,10 @@ def _construct_cases(profile: Profile) -> Iterator[Case]:
     )
     # The remaining three are conveniences the `control_points` docstring promises
     # outright: "A 1D input of shape (n,) is reshaped to (n, 1) (scalar field). Integer
-    # arrays are cast to float64" -- and, by omission, float32 is left alone.
+    # arrays are cast to float64; float32 and float64 are stored as they are." The last
+    # clause used to hold only by omission; since the type moved to C++ there are exactly
+    # two registered storage formats and the constructor states them, which is what the
+    # float16 case below pins.
     yield Case(
         GROUP,
         "construct_1d_list_reshape",
@@ -475,6 +478,18 @@ def _construct_cases(profile: Profile) -> Iterator[Case]:
         ),
         arrays={"control_points": float32_cp},
         must_succeed=True,
+    )
+    # The complement of the two cases above, and the one this group did not have: a
+    # float dtype that is neither of the two a Bezier can store. It used to build a
+    # Bezier no kernel below it could evaluate, which is a rejection deferred to
+    # whichever call site reached numba first.
+    yield Case(
+        GROUP,
+        "construct_float16_refused",
+        Bezier,
+        lambda: Bezier(np.zeros((3, 2), dtype=np.float16)),
+        {"kind": "unsupported-dtype"},
+        must_reject=True,
     )
 
 

@@ -24,6 +24,15 @@ documented as living in the unit interval and never checked, so ``slice`` at 2.5
 extrapolated silently and ``restrict`` with its bounds transposed returned a
 different, plausible Bézier.
 
+**A dtype conversion the caller did not ask for is a lost format.** The two
+``Bezier`` classes `cpp/bindings/bezier_type.cpp` registers carry their storage
+format in their names, and nothing else carries it. Without ``.noconvert()``
+nanobind casts silently, so ``Bezier32`` handed a ``float64`` net would narrow the
+caller's geometry and ``Bezier64`` handed a ``float32`` one would widen it, with
+nothing left to notice by. The refusal is what makes
+:func:`pantr.bezier._bezier._impl_class` picking the wrong class a loud failure
+instead of a quiet change of precision.
+
 These are reachable by importing :mod:`pantr._pantr_cpp`, not through
 :class:`~pantr.bezier.Bezier`, whose Layer 1 refuses all of them first. That is
 exactly the surface `basis.cpp` documents as real: the extension is importable and
@@ -308,3 +317,49 @@ def test_dedup_roots_refuses_its_two_arrays_positionally(cpp_backend: None) -> N
         bindings.dedup_roots(
             raw, coeff.astype(np.float32), 1, param_tol=1e-9, geom_tol=1e-9, out=np.empty(8)
         )
+
+
+def test_the_bezier_type_refuses_a_dtype_it_would_have_to_cast(cpp_backend: None) -> None:
+    """Each `Bezier` class takes its own storage format and no other.
+
+    The class name is the only place the format lives, so a silent cast would move
+    the geometry between formats with nothing left to report it -- a narrowing for
+    ``Bezier32`` and a widening for ``Bezier64``, both of which type-check, run, and
+    return a well-formed Bézier of the wrong precision.
+
+    An integer net is refused here too, and that is not an oversight: the cast to
+    ``float64`` is the wrapper's, documented on
+    :meth:`pantr.bezier.Bezier.__init__`, and this class sits below it.
+    """
+    del cpp_backend
+    bindings = _bindings()
+
+    net64 = np.ascontiguousarray(np.arange(6.0).reshape(3, 2))
+    assert bindings.Bezier64(net64).control_points.dtype == np.float64
+    assert bindings.Bezier32(net64.astype(np.float32)).control_points.dtype == np.float32
+
+    with pytest.raises(TypeError):
+        bindings.Bezier32(net64)
+    with pytest.raises(TypeError):
+        bindings.Bezier64(net64.astype(np.float32))
+    with pytest.raises(TypeError):
+        bindings.Bezier64(np.arange(6).reshape(3, 2))
+
+
+def test_the_bezier_type_refuses_a_control_net_it_would_have_to_reorder(
+    cpp_backend: None,
+) -> None:
+    """A Fortran-ordered net is refused rather than silently copied.
+
+    The same ``.noconvert()`` that closes the dtype cast also closes this one, and
+    it is asserted separately because the two failures are different: a reordering
+    copy is correct but unbudgeted work on every construction, where the dtype cast
+    is a wrong answer. The wrapper makes the array contiguous before it gets here,
+    so the refusal costs a caller going through :class:`~pantr.bezier.Bezier`
+    nothing.
+    """
+    del cpp_backend
+    bindings = _bindings()
+
+    with pytest.raises(TypeError):
+        bindings.Bezier64(np.asfortranarray(np.arange(6.0).reshape(3, 2)))

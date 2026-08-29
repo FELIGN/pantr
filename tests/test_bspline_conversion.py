@@ -6,6 +6,7 @@ import numpy as np
 import numpy.typing as npt
 import pytest
 
+from pantr._backend import Backend, active_backend
 from pantr.bezier import Bezier
 from pantr.bspline import (
     Bspline,
@@ -17,6 +18,16 @@ from pantr.bspline import (
 from pantr.bspline._bspline_basis_core import _compute_basis_nurbs_book_impl
 from pantr.bspline._bspline_to_beziers import _first_basis_per_element
 from pantr.bspline.spanwise_element_extraction import SpanwiseElementExtraction
+
+_SHARING_IS_PYTHON_ONLY = pytest.mark.skipif(
+    active_backend() is not Backend.PYTHON,
+    reason=(
+        "This records the Python Bezier's known aliasing defect rather than a contract: the "
+        "C++ value copies its control points at construction, so `copy=False` shares nothing "
+        "under that backend; FELIGN/pantr#375 is the ticket that fixes the Python side."
+    ),
+)
+"""Marks an assertion that pins sharing only the Python implementation offers."""
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -563,6 +574,7 @@ class TestToBezier:
         bez = bs.to_bezier(copy=True)
         assert not np.shares_memory(bs.control_points, bez.control_points)
 
+    @_SHARING_IS_PYTHON_ONLY
     def test_copy_false(self) -> None:
         """Test that to_bezier with copy=False shares the control point array."""
         knots = np.array([0.0, 0.0, 0.0, 1.0, 1.0, 1.0], dtype=np.float64)
