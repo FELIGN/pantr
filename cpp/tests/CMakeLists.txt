@@ -19,7 +19,8 @@ set(PANTR_TEST_SOURCES
     test_affine.cpp
     test_bezier_type.cpp
     test_quad_rule.cpp
-    test_grid_tags.cpp)
+    test_grid_tags.cpp
+    test_grid_partition.cpp)
 
 # Reserved slots (FELIGN/pantr#380): registered ahead of the port so the thirteen
 # tickets this milestone unblocks do not collide on this file. Each asserts nothing
@@ -38,7 +39,6 @@ set(PANTR_TEST_SOURCES
 # Delete each entry from this list as its ticket fills the slot; when the list is
 # empty, delete the list.
 set(PANTR_PLACEHOLDER_TEST_SOURCES
-    test_grid_partition.cpp
     test_grid_bvh_type.cpp
     test_grid_defaults.cpp
     test_grid_tensor_product.cpp
