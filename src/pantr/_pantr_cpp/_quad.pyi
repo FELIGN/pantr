@@ -1,8 +1,12 @@
-"""Quadrature-rule kernels of the compiled extension.
+"""Quadrature kernels and the quadrature rule type of the compiled extension.
 
-Bound by ``cpp/bindings/quad.cpp``. See ``__init__.pyi`` for what this package
-promises and who has to keep it.
+The kernels are bound by ``cpp/bindings/quad.cpp`` and :class:`QuadratureRule`
+by ``cpp/bindings/quad_types.cpp``; both land in the one extension module, so
+one stub module covers them. See ``__init__.pyi`` for what this package promises
+and who has to keep it.
 """
+
+from collections.abc import Sequence
 
 import numpy as np
 import numpy.typing as npt
@@ -247,3 +251,63 @@ def modified_chebyshev_nodes(
         ValueError: If ``n`` is less than 2, if ``n`` is too large to fit a C
             ``int``, or if ``out``'s length is not exactly ``n``.
     """
+
+class QuadratureRule:
+    """Reference quadrature rule on the unit cube, owned by the C++ core.
+
+    The third type this extension exposes rather than a free function, under the
+    2026-08-27 amendment to ``design/cross_backend_types.md``. Wrapped by
+    :class:`pantr.quad.QuadratureRule`, which is the class a caller holds; this
+    one is reached only through it.
+
+    Every method here is ``double``-only and there is no second overload, unlike
+    :func:`modified_chebyshev_nodes` above. The reason is not symmetry: the
+    oracle casts points and weights to ``float64`` unconditionally, so a
+    ``float32`` surface would have no oracle behind it
+    (``design/backend_parity.md`` Rule 8), and ``scripts/ci_local.sh`` asserts
+    that no template appears in ``cpp/include/pantr/quad/rule.hpp`` for the
+    measured reason recorded there.
+
+    What is checked, and where:
+
+    * dtype (float64 only), rank, C-contiguity and device of ``points`` and
+      ``weights``, by nanobind's typed signature, before the body runs -- so a
+      wrong-rank array reaches Python as ``TypeError`` where the oracle raises
+      ``ValueError``, and :mod:`pantr.quad._rule_nd` checks rank before calling;
+    * emptiness, the length agreement between points and weights, finiteness,
+      and membership of the closed unit cube, in the C++ constructor;
+    * for :meth:`tensor_product`, that there is at least one axis and that each
+      axis carries a matching non-empty ``(nodes, weights)`` pair, in C++;
+    * for :meth:`gauss_legendre`, that ``npts`` is non-empty and every entry is
+      at least 1, in C++. The Python-only ``(ndim, npts)`` convention -- a
+      negative ``ndim``, or a sequence of the wrong length -- has no counterpart
+      here and is checked by :mod:`pantr.quad._rule_nd`.
+
+    Call :class:`pantr.quad.QuadratureRule` and its two factories for the
+    ordinary path.
+
+    Attributes:
+        ndim (int): Spatial dimension, ``>= 1``.
+        num_points (int): Number of quadrature points, ``>= 1``.
+        points (npt.NDArray[np.float64]): ``(num_points, ndim)`` array in
+            ``[0, 1]^ndim``, freshly allocated and read-only on every access.
+        weights (npt.NDArray[np.float64]): ``(num_points,)`` array, likewise.
+    """
+
+    def __init__(
+        self, points: npt.NDArray[np.float64], weights: npt.NDArray[np.float64]
+    ) -> None: ...
+    @property
+    def ndim(self) -> int: ...
+    @property
+    def num_points(self) -> int: ...
+    @property
+    def points(self) -> npt.NDArray[np.float64]: ...
+    @property
+    def weights(self) -> npt.NDArray[np.float64]: ...
+    @staticmethod
+    def tensor_product(
+        rules: Sequence[tuple[npt.NDArray[np.float64], npt.NDArray[np.float64]]],
+    ) -> QuadratureRule: ...
+    @staticmethod
+    def gauss_legendre(npts: Sequence[int]) -> QuadratureRule: ...

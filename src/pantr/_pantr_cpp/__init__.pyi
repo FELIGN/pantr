@@ -75,6 +75,7 @@ from ._grid import encode_midx as encode_midx
 from ._grid import hier_collect_cell_bounds as hier_collect_cell_bounds
 from ._grid import hier_locate_points as hier_locate_points
 from ._grid import locate_points as locate_points
+from ._quad import QuadratureRule as QuadratureRule
 from ._quad import gauss_legendre_symmetric as gauss_legendre_symmetric
 from ._quad import generate_tanh_sinh as generate_tanh_sinh
 from ._quad import lambert_w_principal as lambert_w_principal

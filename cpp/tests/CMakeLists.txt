@@ -17,7 +17,8 @@ set(PANTR_TEST_SOURCES
     test_grid_hierarchical.cpp
     test_aabb.cpp
     test_affine.cpp
-    test_bezier_type.cpp)
+    test_bezier_type.cpp
+    test_quad_rule.cpp)
 
 # Reserved slots (FELIGN/pantr#380): registered ahead of the port so the thirteen
 # tickets this milestone unblocks do not collide on this file. Each asserts nothing
@@ -41,7 +42,6 @@ set(PANTR_PLACEHOLDER_TEST_SOURCES
     test_grid_bvh_type.cpp
     test_grid_defaults.cpp
     test_grid_tensor_product.cpp
-    test_quad_rule.cpp
     test_bezier_evaluate.cpp
     test_bezier_degree.cpp
     test_bezier_shape.cpp
