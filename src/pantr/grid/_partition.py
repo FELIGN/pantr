@@ -29,11 +29,18 @@ range -- live in the C++ type, where a caller with no interpreter is protected b
 them too.
 
 One consequence, stated rather than left to be discovered: the pre-port class
-checked ``n_parts`` *before* it looked at ``cell_owner``, and the coercion here now
-runs first. An argument that violates **both** contracts at once therefore reports
-the array complaint where it used to report the ``n_parts`` one. Both are
-``ValueError``, both backends agree with each other, and every input that violates
-only one contract is unaffected.
+checked ``n_parts`` *before* it looked at ``cell_owner``, and :func:`_new_impl` now
+coerces first. An argument that violates **both** contracts at once therefore
+reports the array complaint where it used to report the ``n_parts`` one. Both are
+``ValueError``, and every input that violates only one contract is unaffected.
+
+**The coercion runs before the backend is chosen, and that is what makes the two
+agree.** Doing it inside the C++ branch alone left ``PANTR_BACKEND`` deciding which
+of two simultaneous violations a caller was told about --
+``Partition(numpy.array([1.5, 2.5]), 0)`` reported the ``n_parts`` complaint under
+the Python backend and the array one under C++. That is the one thing the backend
+switch must never change, and ``tests/test_grid_partition.py`` pins it on exactly
+that input.
 """
 
 from __future__ import annotations
@@ -201,10 +208,17 @@ def _new_impl(cell_owner: npt.ArrayLike, n_parts: int) -> _Impl:
     Raises:
         RuntimeError: If the C++ backend is requested and is not available.
     """
+    # Coerced BEFORE the backend is looked at, and that ordering is the contract
+    # rather than a convenience. Evaluating it inside the C++ branch alone made
+    # `PANTR_BACKEND` decide which of two simultaneous violations was reported --
+    # `Partition(numpy.array([1.5, 2.5]), 0)` said "n_parts must be >= 1" under one
+    # backend and "cell_owner must be a 1D integer array" under the other. Doing it
+    # once, unconditionally, is what `_bvh.py` and `_tags.py` already do.
+    owner = _as_int32_owners(cell_owner)
     cls = _impl_class()
     if cls is _PartitionPython:
-        return _PartitionPython(cell_owner, n_parts)
-    return cls(_as_int32_owners(cell_owner), int(n_parts))
+        return _PartitionPython(owner, n_parts)
+    return cls(owner, int(n_parts))
 
 
 class Partition:

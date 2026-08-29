@@ -209,9 +209,15 @@ def test_both_backends_agree_on_the_messages_a_caller_reads(both_backends: None)
     """Every rejection carries the same class and the same text under either backend.
 
     A port that changed what a caller reads or catches would pass every value
-    assertion above. Each case below violates exactly one contract, which is what
-    makes the comparison a statement about the message rather than about the order
-    two checks happen to run in.
+    assertion above.
+
+    **The last case violates two contracts at once, and it is the one that caught a
+    real divergence.** ``Partition(numpy.array([1.5, 2.5]), 0)`` is both a
+    non-integer array and a bad part count, and while the wrapper coerced inside the
+    C++ branch only, the Python backend reported the ``n_parts`` complaint and the
+    C++ one reported the array complaint. Which of two simultaneous violations is
+    named is precisely what ``PANTR_BACKEND`` must not decide, so it is asserted
+    rather than left to the cases that violate exactly one thing.
     """
     del both_backends
 
@@ -226,6 +232,7 @@ def test_both_backends_agree_on_the_messages_a_caller_reads(both_backends: None)
             lambda: Partition([-2, 0], 2),
             lambda: part.owned_cells(2),
             lambda: part.owned_cells(-1),
+            lambda: Partition(np.array([1.5, 2.5]), 0),
         ):
             with pytest.raises(ValueError) as excinfo:
                 call()

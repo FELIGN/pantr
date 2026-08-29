@@ -340,9 +340,12 @@ class CellTags {
     void scatter(std::string_view name, std::span<IntT> out) const {
         const std::shared_ptr<const Tag> tag = get(name);
         if (out.size() != static_cast<std::size_t>(num_cells_)) {
+            // The shape is spelled as numpy spells it -- `(3,)`, not `3` -- because
+            // `_tags.py`'s counterpart interpolates `out.shape`, and the two
+            // messages have to read the same under either backend.
             throw std::invalid_argument("scatter: out must have length "
-                                        + std::to_string(num_cells_) + "; got "
-                                        + std::to_string(out.size()) + ".");
+                                        + std::to_string(num_cells_) + "; got ("
+                                        + std::to_string(out.size()) + ",).");
         }
         detail::require_representable<IntT>(tag->values, "CellTags");
         for (std::size_t k = 0; k < tag->ids.size(); ++k) {
