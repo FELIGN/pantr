@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import pickle
 from collections.abc import Callable
 from math import gamma
 from typing import Any, cast
@@ -606,6 +607,26 @@ class TestQuadratureRule:
         rule = QuadratureRule(points=[[0.0, 0.0], [1.0, 1.0]], weights=[0.5, 0.5])
         assert rule.num_points == 2
 
+    def test_pickle_round_trip_reports_the_public_module(self) -> None:
+        # `pantr.mpi` pickles rules for collective calls, and `__reduce__` names
+        # `type(self)`, so the `__module__` rebinding in `pantr/quad/__init__.py`
+        # is what keeps the pickle loadable. Under the C++ backend this also says
+        # the wrapper pickles its arrays rather than its unpicklable handle;
+        # `tests/parity/test_quad_rule.py` crosses the two backends.
+        rule = gauss_legendre_quadrature(2, 3)
+        restored = pickle.loads(pickle.dumps(rule))
+        assert type(restored) is QuadratureRule
+        assert restored.__module__ == "pantr.quad"
+        nptest.assert_array_equal(restored.points, rule.points)
+        nptest.assert_array_equal(restored.weights, rule.weights)
+
+    def test_the_stored_arrays_are_the_same_object_on_every_read(self) -> None:
+        # Not cosmetic: the C++ binding allocates a fresh copy per access, so an
+        # uncached property would copy the whole table on every `rule.points[i]`.
+        rule = gauss_legendre_quadrature(2, 3)
+        assert rule.points is rule.points
+        assert rule.weights is rule.weights
+
 
 class TestTensorProductQuadrature:
     """Tests for tensor_product_quadrature."""
@@ -617,12 +638,29 @@ class TestTensorProductQuadrature:
         assert rule.points.shape == (6, 2)
 
     def test_c_order_last_axis_fastest(self) -> None:
-        # Axis-0 nodes {0.25, 0.75}, axis-1 nodes {0.5}: C-order has axis 1 fastest.
+        # Both axes need more than one node, or the claim is unobservable: this
+        # test carried a single node on axis 1 and passed against a tensor product
+        # whose odometer ran the other way round, which a mutation of the C++
+        # factory exposed. Every value here is exact in binary, so the comparison
+        # is an equality rather than a tolerance.
         rule = tensor_product_quadrature(
-            [(np.array([0.25, 0.75]), np.array([0.5, 0.5])), (np.array([0.5]), np.array([1.0]))]
+            [
+                (np.array([0.25, 0.75]), np.array([0.25, 0.75])),
+                (np.array([0.125, 0.5, 0.875]), np.array([0.5, 0.25, 0.25])),
+            ]
         )
-        nptest.assert_allclose(rule.points, [[0.25, 0.5], [0.75, 0.5]])
-        nptest.assert_allclose(rule.weights, [0.5, 0.5])
+        nptest.assert_array_equal(
+            rule.points,
+            [
+                [0.25, 0.125],
+                [0.25, 0.5],
+                [0.25, 0.875],
+                [0.75, 0.125],
+                [0.75, 0.5],
+                [0.75, 0.875],
+            ],
+        )
+        nptest.assert_array_equal(rule.weights, [0.125, 0.0625, 0.0625, 0.375, 0.1875, 0.1875])
 
     def test_weights_are_outer_product(self) -> None:
         rule = tensor_product_quadrature(
