@@ -16,11 +16,25 @@ set(PANTR_TEST_SOURCES
     test_grid_bvh.cpp
     test_grid_hierarchical.cpp
     test_aabb.cpp
-    test_affine.cpp
+    test_affine.cpp)
 
-    # Reserved slots (FELIGN/pantr#380): registered ahead of the port so the
-    # thirteen tickets this milestone unblocks do not collide on this file.
-    # Each asserts nothing yet; see the source file for what it is reserved for.
+# Reserved slots (FELIGN/pantr#380): registered ahead of the port so the thirteen
+# tickets this milestone unblocks do not collide on this file. Each asserts nothing
+# yet; see the source file for what it is reserved for.
+#
+# They are a SEPARATE list because they are labelled `placeholder`, and the label is
+# the only thing that tells them apart where the number is actually read. A stub
+# prints PLACEHOLDER on stdout, but ctest captures stdout and prints it on -V or on
+# failure -- never on the pass path, and these pass by construction. So the summary
+# row for a stub is indistinguishable from a real one, and "N/N tests passed" reads
+# as more evidence than it is. With the label:
+#
+#     ctest --preset gcc -N -L placeholder    # list what is not written yet
+#     ctest --preset gcc -LE placeholder      # run only the tests that assert something
+#
+# Delete each entry from this list as its ticket fills the slot; when the list is
+# empty, delete the list.
+set(PANTR_PLACEHOLDER_TEST_SOURCES
     test_grid_partition.cpp
     test_grid_tags.cpp
     test_grid_bvh_type.cpp
@@ -33,13 +47,23 @@ set(PANTR_TEST_SOURCES
     test_bezier_shape.cpp
     test_bezier_product.cpp)
 
-foreach(_src IN LISTS PANTR_TEST_SOURCES)
+foreach(_src IN LISTS PANTR_TEST_SOURCES PANTR_PLACEHOLDER_TEST_SOURCES)
   cmake_path(GET _src STEM _name)
   add_executable(${_name} ${_src})
   target_link_libraries(${_name} PRIVATE pantr::core pantr::cxx_flags)
   target_include_directories(${_name} PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
   add_test(NAME ${_name} COMMAND ${_name})
 endforeach()
+
+foreach(_src IN LISTS PANTR_PLACEHOLDER_TEST_SOURCES)
+  cmake_path(GET _src STEM _name)
+  set_tests_properties(${_name} PROPERTIES LABELS "placeholder")
+endforeach()
+
+list(LENGTH PANTR_PLACEHOLDER_TEST_SOURCES _pantr_placeholder_count)
+message(STATUS
+    "pantr: ${_pantr_placeholder_count} reserved test slot(s) assert nothing yet "
+    "(ctest -L placeholder)")
 
 # ---------------------------------------------------------------------------
 # Precondition tests (FELIGN/pantr#359)
