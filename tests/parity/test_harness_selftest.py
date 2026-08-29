@@ -881,3 +881,33 @@ def test_an_exact_field_accepts_an_empty_sequence() -> None:
     one = SimpleNamespace(names=("boundary",))
     with pytest.raises(AssertionError, match="shape"):
         assert_object_parity(empty, one, fields=fields, context="one backend grew a tag")
+
+
+def test_a_bitwise_claim_accepts_two_identical_infinities() -> None:
+    """Two bit-identical arrays carrying an infinity agree, and say so without warning.
+
+    A regression test for a diagnostic that failed on values it was only
+    describing. The bit comparison was always right; the line below it built
+    ``Deviation.max_absolute`` with a plain subtraction, and ``inf - inf`` is NaN
+    and raises the IEEE invalid flag, which this suite turns into an error. So a
+    backend that reproduced an infinite coordinate *exactly* was reported as
+    deviating, while NaN and finite values passed.
+
+    Both directions are pinned: equal infinities agree with ``max_absolute`` zero,
+    and opposite infinities are still caught.
+    """
+    for value in (np.inf, -np.inf):
+        both = np.array([value, 1.0, value], dtype=np.float64)
+        deviation = assert_parity(
+            both.copy(), both.copy(), bitwise_parity(why="a copy is a copy"), context="inf"
+        )
+        assert deviation.num_differing == 0
+        assert deviation.max_absolute == 0.0
+
+    with pytest.raises(AssertionError):
+        assert_parity(
+            np.array([np.inf]),
+            np.array([-np.inf]),
+            bitwise_parity(why="a copy is a copy"),
+            context="inf",
+        )

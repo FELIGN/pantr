@@ -1364,7 +1364,14 @@ def assert_parity(
 
     if claim.kind is ParityKind.BITWISE:
         offenders = _bits_differ(actual, reference)
-        difference = np.abs(actual.astype(np.float64) - reference.astype(np.float64))
+        # `inf - inf` is NaN and raises the IEEE invalid flag, which this suite
+        # turns into an error -- so two bit-identical arrays carrying an infinity
+        # failed here, on a line that only builds the diagnostic. An entry whose
+        # bits agree has a true difference of zero, which is what the diagnostic
+        # wants, so take the subtraction only where the bits actually differ.
+        with np.errstate(invalid="ignore"):
+            elementwise = np.abs(actual.astype(np.float64) - reference.astype(np.float64))
+        difference = np.where(offenders, elementwise, 0.0)
         deviation = Deviation(
             max_absolute=float(difference.max(initial=0.0)),
             max_ratio_to_bound=0.0 if not offenders.any() else float(np.inf),
