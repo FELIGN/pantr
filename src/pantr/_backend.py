@@ -79,7 +79,15 @@ in which those kernels are C++ and everything else is unchanged.
   Lambert W solve the last of those needs.
 * :mod:`pantr.change_basis` -- all eight builders.
 * :mod:`pantr.bezier` -- the arithmetic and the root finding, through two
-  catalogues rather than one because they are two ports with two parity claims.
+  catalogues rather than one because they are two ports with two parity claims;
+  and, since FELIGN/pantr#385, the :class:`~pantr.bezier.Bezier` **value type**.
+  That last one is a different kind of entry from every other line here. A
+  catalogue decides which code computes; a ported type decides which object holds
+  the state, so under ``PANTR_BACKEND=cpp`` a Bézier's control points live in C++
+  and the Python class is a wrapper around them. Two types moved that way before
+  it -- :class:`pantr.geometry.AABB` and :class:`pantr.transform.AffineTransform`
+  -- and this list still does not name them, which is the drift the paragraph
+  below is about, caught again.
   **Interpolation is deliberately not ported**, and
   ``design/bezier_interpolation_port.md`` is where that ruling and its measurements
   live; it is worth reading before proposing any further port, because it is the
