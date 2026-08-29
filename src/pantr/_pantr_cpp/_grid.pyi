@@ -43,6 +43,62 @@ class CellTags:
     def remove(self, name: str) -> None: ...
     def scatter(self, name: str, out: npt.NDArray[Any]) -> None: ...
 
+class BVH:
+    """Bounding-volume hierarchy over cell AABBs, owned by the C++ core.
+
+    Wrapped by :class:`pantr.grid.BVH`, which is the class a caller holds; this one
+    is reached only through it. The wrapper owns the ``TypeError`` dtype checks and
+    the numpy-shaped messages, and translates ``CapacityError`` back to the
+    ``ValueError`` the pre-port class raised for a tree deeper than the traversal
+    stack.
+
+    The five node arrays are zero-copy read-only views owned by the instance;
+    ``query_aabb`` returns a fresh writeable array.
+
+    Attributes:
+        ndim (int): Spatial dimension of the indexed AABBs.
+        n_cells (int): Number of cells indexed.
+        n_nodes (int): Total number of nodes.
+        node_lo (npt.NDArray[np.float64]): Per-node lo corners, read-only.
+        node_hi (npt.NDArray[np.float64]): Per-node hi corners, read-only.
+        node_left (npt.NDArray[np.int64]): Left-child indices, read-only.
+        node_right (npt.NDArray[np.int64]): Right-child indices, read-only.
+        node_cell (npt.NDArray[np.int64]): Leaf cell ids, read-only.
+    """
+
+    def __init__(
+        self,
+        node_lo: npt.NDArray[np.float64],
+        node_hi: npt.NDArray[np.float64],
+        node_left: npt.NDArray[np.int64],
+        node_right: npt.NDArray[np.int64],
+        node_cell: npt.NDArray[np.int64],
+        n_cells: int,
+    ) -> None: ...
+    @staticmethod
+    def from_cell_bounds(
+        cell_lo: npt.NDArray[np.float64], cell_hi: npt.NDArray[np.float64]
+    ) -> BVH: ...
+    @property
+    def ndim(self) -> int: ...
+    @property
+    def n_cells(self) -> int: ...
+    @property
+    def n_nodes(self) -> int: ...
+    @property
+    def node_lo(self) -> npt.NDArray[np.float64]: ...
+    @property
+    def node_hi(self) -> npt.NDArray[np.float64]: ...
+    @property
+    def node_left(self) -> npt.NDArray[np.int64]: ...
+    @property
+    def node_right(self) -> npt.NDArray[np.int64]: ...
+    @property
+    def node_cell(self) -> npt.NDArray[np.int64]: ...
+    def query_aabb(
+        self, qlo: npt.NDArray[np.float64], qhi: npt.NDArray[np.float64]
+    ) -> npt.NDArray[np.int64]: ...
+
 class Partition:
     """A per-cell owner assignment over a grid's cells, owned by the C++ core.
 

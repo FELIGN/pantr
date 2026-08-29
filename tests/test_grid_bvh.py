@@ -2,12 +2,17 @@
 
 from __future__ import annotations
 
+import pickle
+
 import numpy as np
 import numpy.typing as npt
 import pytest
 
+from pantr._backend import Backend, use_backend
 from pantr.geometry import AABB
 from pantr.grid import BVH
+from pantr.grid._bvh_core import _BVH_STACK_DEPTH
+from tests._parity_harness import demand_cpp_backend
 
 
 def _grid_cells(nx: int, ny: int) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64]]:
@@ -423,14 +428,258 @@ def test_from_cell_bounds_always_satisfies_the_consistency_invariant() -> None:
         )
 
 
-def test_stack_overflow_guard(monkeypatch: pytest.MonkeyPatch) -> None:
-    """from_cell_bounds raises when the tree depth would overflow the kernel stack."""
-    import pantr.grid._bvh as _bvh_mod  # noqa: PLC0415
+def test_the_depth_guard_follows_the_stack_depth_constant() -> None:
+    """The refused depth is exactly one past ``_BVH_STACK_DEPTH``, derived not hardcoded.
 
-    monkeypatch.setattr(_bvh_mod, "_BVH_STACK_DEPTH", 1)
-    lo, hi = _grid_cells(2, 2)  # 4 cells → depth 3 > 1
+    **This replaces a monkeypatching test, and the replacement is the point.** The
+    old ``test_stack_overflow_guard`` set ``pantr.grid._bvh._BVH_STACK_DEPTH`` to 1
+    and built four cells. That worked while the module global was the only thing
+    enforcing the limit. Under ``PANTR_BACKEND=cpp`` the enforcing constant is
+    ``kBvhStackDepth``, a C++ ``constexpr`` the monkeypatch cannot reach, so the
+    test passed while testing nothing -- which is worse than not having it.
+
+    So the boundary is exercised for real, on both sides, with the leaf counts
+    **derived from the constant** rather than written as 128 and 129. Its three
+    siblings above pin the same boundary with literal counts; this one is what fails
+    if the Python constant moves and the guard does not move with it. The other
+    drift -- Python against the C++ mirror -- is not visible from here at all, and
+    ``scripts/ci_local.sh`` carries a guard that extracts both by regex.
+    """
+    at_limit = _chain_bvh_arrays(_BVH_STACK_DEPTH)
+    tree = BVH(*at_limit, n_cells=_BVH_STACK_DEPTH)
+    assert tree.n_cells == _BVH_STACK_DEPTH
+
+    past_limit = _chain_bvh_arrays(_BVH_STACK_DEPTH + 1)
     with pytest.raises(ValueError, match="stack depth"):
-        BVH.from_cell_bounds(lo, hi)
+        BVH(*past_limit, n_cells=_BVH_STACK_DEPTH + 1)
+
+
+# ---------------------------------------------------------------------------
+# The port to C++ ownership (FELIGN/pantr#384)
+# ---------------------------------------------------------------------------
+
+
+def _backend_pairs() -> list[tuple[Backend, Backend]]:
+    """Every ordered pair of backends, for the serialization round trips.
+
+    Returns:
+        list[tuple[Backend, Backend]]: The four ``(writer, reader)`` pairs.
+    """
+    return [(writer, reader) for writer in Backend for reader in Backend]
+
+
+@pytest.fixture
+def both_backends() -> None:
+    """Require the compiled extension for a test that uses both backends at once.
+
+    Routed through the parity harness rather than a bare ``skipif``: a bare skip is
+    silent, and a suite that skips its way to green has let real failures through in
+    this repository.
+    """
+    demand_cpp_backend()
+
+
+@pytest.mark.parametrize(
+    "name", ["node_lo", "node_hi", "node_left", "node_right", "node_cell"]
+)
+def test_the_node_arrays_are_read_only_views_that_own_their_storage(
+    both_backends: None, name: str
+) -> None:
+    """Each of the five arrays is read-only, and under C++ it aliases rather than copies.
+
+    ``base is not None`` is the half that catches the ownerless binding: an
+    ``nb::ndarray`` returned with no owner silently *copies* and comes back
+    **writable**, which would pass every value assertion in this file while dropping
+    the read-only contract and turning the backend switch into a performance switch
+    on the one surface ``design/bvh.md`` calls public API.
+
+    Asserted for the C++ backend only, because the Python one hands back the array
+    it stores and ``numpy.ascontiguousarray`` returns that array itself, base and
+    all.
+    """
+    del both_backends
+    lo, hi = _grid_cells(2, 2)
+    with use_backend(Backend.PYTHON):
+        py = BVH.from_cell_bounds(lo, hi)
+    with use_backend(Backend.CPP):
+        cpp = BVH.from_cell_bounds(lo, hi)
+
+    # Only the flags are asserted here. Whether the two backends built the same tree
+    # is `tests/parity/test_grid.py`'s claim, and stating it twice would put the
+    # parity failure message under a test named for read-only-ness.
+    for tree in (py, cpp):
+        assert not getattr(tree, name).flags.writeable
+
+    assert getattr(cpp, name).base is not None, (
+        f"the C++ view for {name} must carry an owner: without one nanobind copies, "
+        f"and the copy comes back writable"
+    )
+
+
+def test_an_empty_tree_has_no_nodes_and_short_circuits_its_query() -> None:
+    """Zero cells builds, reports ``n_nodes == 0``, and answers without touching a node.
+
+    The short-circuit is what makes this safe rather than merely correct: with no
+    nodes there is no node ``0`` for the traversal to read, so a query that did not
+    return early would index an empty array.
+    """
+    tree = BVH.from_cell_bounds(np.zeros((0, 3)), np.zeros((0, 3)))
+    assert tree.n_cells == 0
+    assert tree.n_nodes == 0
+    assert tree.ndim == 3
+    assert tree.node_lo.shape == (0, 3)
+    assert tree.node_left.shape == (0,)
+
+    matched = tree.query_aabb(AABB([0.0, 0.0, 0.0], [1.0, 1.0, 1.0]))
+    assert matched.shape == (0,)
+    assert matched.dtype == np.int64
+
+
+@pytest.mark.parametrize("name", ["ndim", "n_cells", "n_nodes"])
+def test_the_three_counts_are_not_writable(name: str) -> None:
+    """``bvh.ndim = 7`` raises ``AttributeError`` rather than corrupting the tree.
+
+    The three were plain public writable attributes before the port, while the class
+    docstring said instances were immutable. ``bvh.ndim = 7`` defeated the dimension
+    check in ``query_aabb`` and the kernels then indexed a mis-shaped array. The
+    2026-08-28 census of the downstream consumer found no writes to any of them.
+    """
+    tree = BVH.from_cell_bounds(np.zeros((2, 1)), np.ones((2, 1)))
+    with pytest.raises(AttributeError):
+        setattr(tree, name, 7)
+    assert tree.ndim == 1
+
+
+def test_a_reversed_query_interval_is_reported_by_both_backends(both_backends: None) -> None:
+    """An empty query box matches a cell whose interval contains its reversed one.
+
+    ``BVH.query_aabb`` is a separating-axis test with no emptiness branch, so it is
+    **not** :meth:`pantr.geometry.AABB.overlaps`, which reports that an empty box
+    overlaps nothing. Both backends behave this way and agree with each other; the
+    divergence is between the predicate and the box, and reconciling them has to
+    move both backends at once.
+
+    Pinned so that a later reconciliation has to change a test that says why, and
+    with the box's own answer asserted beside it so the disagreement is on the
+    record rather than implied.
+    """
+    del both_backends
+    cell = AABB([0.0], [10.0])
+    query = AABB([5.0], [3.0])
+    assert query.is_empty()
+    assert cell.overlaps(query) is False
+
+    for backend in (Backend.PYTHON, Backend.CPP):
+        with use_backend(backend):
+            tree = BVH.from_cell_bounds(np.array([[0.0]]), np.array([[10.0]]))
+            assert tree.query_aabb(query).tolist() == [0], backend
+
+
+def test_the_capacity_error_reaches_python_as_its_own_type(both_backends: None) -> None:
+    """The C++ type's traversal-stack refusal arrives as ``CapacityError``, not ``RuntimeError``.
+
+    ``pantr::CapacityError`` derives publicly from ``std::runtime_error``, and
+    nanobind's default translator maps that base to ``RuntimeError``. **That the
+    specific ``nb::exception<CapacityError>`` wins over the generic catch was an
+    assumption until this test**, and it is the first site in the port to throw one.
+    Asserted on the exact type rather than with ``isinstance``, which the generic
+    mapping would also satisfy.
+
+    Reached through the raw handle deliberately: :class:`BVH` translates it back to
+    the ``ValueError`` the pre-port class raised, so the wrapper is exactly where
+    this cannot be observed.
+    """
+    del both_backends
+    from pantr import _pantr_cpp  # noqa: PLC0415
+
+    arrays = _chain_bvh_arrays(_BVH_STACK_DEPTH + 1)
+    with pytest.raises(_pantr_cpp.CapacityError) as excinfo:
+        _pantr_cpp.BVH(*arrays, _BVH_STACK_DEPTH + 1)
+
+    assert type(excinfo.value) is _pantr_cpp.CapacityError, (
+        "nanobind fell back to the generic std::runtime_error translator, so the "
+        "specific exception this port registered is not being preferred"
+    )
+    assert issubclass(_pantr_cpp.CapacityError, RuntimeError)
+    assert "stack depth" in str(excinfo.value)
+
+    # And the wrapper presents the class a caller has always caught.
+    with use_backend(Backend.CPP), pytest.raises(ValueError, match="stack depth"):
+        BVH(*arrays, n_cells=_BVH_STACK_DEPTH + 1)
+
+
+@pytest.mark.parametrize(("writer", "reader"), _backend_pairs())
+def test_pickle_round_trips_across_every_backend_pair(
+    both_backends: None, writer: Backend, reader: Backend
+) -> None:
+    """A pickled tree written under one backend loads under the other.
+
+    The pre-port class had no ``__reduce__`` and pickled through its ``__slots__``.
+    A C++ handle cannot pickle at all, so the port had to add one; this is what says
+    the wire format did not quietly become backend-specific.
+    """
+    del both_backends
+    lo, hi = _grid_cells(3, 3)
+    with use_backend(writer):
+        original = BVH.from_cell_bounds(lo, hi)
+        blob = pickle.dumps(original)
+
+    with use_backend(reader):
+        loaded = pickle.loads(blob)
+        assert loaded.n_cells == 9
+        assert loaded.n_nodes == 17
+        assert loaded.ndim == 2
+        for name in ("node_lo", "node_hi", "node_left", "node_right", "node_cell"):
+            np.testing.assert_array_equal(getattr(loaded, name), getattr(original, name))
+        assert sorted(loaded.query_aabb(AABB([0.0, 0.0], [1.5, 1.5])).tolist()) == [0, 1, 3, 4]
+
+
+def test_repr_is_byte_identical_under_both_backends(both_backends: None) -> None:
+    """``repr`` is computed by the wrapper, so ``PANTR_BACKEND`` cannot move it."""
+    del both_backends
+    lo, hi = _grid_cells(2, 2)
+    with use_backend(Backend.PYTHON):
+        from_python = repr(BVH.from_cell_bounds(lo, hi))
+    with use_backend(Backend.CPP):
+        from_cpp = repr(BVH.from_cell_bounds(lo, hi))
+
+    assert from_python == from_cpp
+    assert from_python == "BVH(n_cells=4, n_nodes=7, ndim=2)"
+
+
+def test_both_backends_agree_on_the_messages_a_caller_reads(both_backends: None) -> None:
+    """Every rejection carries the same class and the same text under either backend.
+
+    Includes the traversal-stack refusal, which is the one the C++ type reports as a
+    different exception class and the wrapper translates back.
+    """
+    del both_backends
+    node_lo, node_hi, node_left, node_right, node_cell = _three_leaf_arrays()
+    deep = _chain_bvh_arrays(_BVH_STACK_DEPTH + 1)
+
+    def messages() -> list[str]:
+        out: list[str] = []
+        for call in (
+            lambda: BVH.from_cell_bounds(np.array([[1.0, 1.0]]), np.array([[0.0, 0.0]])),
+            lambda: BVH.from_cell_bounds(np.zeros((3, 2)), np.zeros((3, 3))),
+            lambda: BVH.from_cell_bounds(np.array([[np.nan, 0.0]]), np.array([[1.0, 1.0]])),
+            lambda: BVH(node_lo, node_hi, node_left, node_right, node_cell, n_cells=2),
+            lambda: BVH(*deep, n_cells=_BVH_STACK_DEPTH + 1),
+            lambda: BVH.from_cell_bounds(np.zeros((2, 1)), np.ones((2, 1))).query_aabb(
+                AABB([0.0, 0.0], [1.0, 1.0])
+            ),
+        ):
+            with pytest.raises(ValueError) as excinfo:
+                call()
+            out.append(f"{type(excinfo.value).__name__}: {excinfo.value}")
+        return out
+
+    with use_backend(Backend.PYTHON):
+        from_python = messages()
+    with use_backend(Backend.CPP):
+        from_cpp = messages()
+
+    assert from_cpp == from_python
 
 
 # ---------------------------------------------------------------------------

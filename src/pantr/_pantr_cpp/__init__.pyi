@@ -67,6 +67,7 @@ from ._bezier import solve_monotone_root_batch as solve_monotone_root_batch
 from ._bezier import split_bezier_1d as split_bezier_1d
 from ._bezier import yuksel_roots as yuksel_roots
 from ._geometry import AABB as AABB
+from ._grid import BVH as BVH
 from ._grid import CellTags as CellTags
 from ._grid import FacetTags as FacetTags
 from ._grid import Partition as Partition
