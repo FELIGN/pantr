@@ -134,7 +134,9 @@ build their field list in a loop instead of falling back to hand-rolled
 comparisons -- which is the cost this entry point exists to avoid. It must return
 one quantity: handing back ``(keys, values)`` or a whole per-axis tuple is refused,
 because those are two and *n* quantities and each wants a field and a claim of its
-own.
+own. So is a value mixing element kinds, and that one is not cosmetic: an ``int64``
+id beside a ``float`` weight promotes to ``float64``, where ``2**53`` and
+``2**53 + 1`` are the same number, and the comparison **passes**.
 
 **It refuses to be vacuous, in the two ways it could be.** A call with no fields
 would pass for any two objects at all, and a call whose fields repeat a name
@@ -692,10 +694,13 @@ class Field(NamedTuple):
             object, for the pieces that are not a plain attribute: a tag registry
             is a mapping reached through ``__getitem__``, and a per-axis array
             lives behind an index into a ragged tuple. Defaults to
-            ``getattr(obj, name)``. It must return **one** quantity: a sequence of
-            arrays is refused, since the pieces are that many quantities and want
-            that many fields. A ``read`` that ignores its argument and closes over a
-            constant is the one vacuous field nothing here can detect.
+            ``operator.attrgetter(name)``, which is ``getattr(obj, name)`` for a plain
+            name and also follows a dotted one (``"cell_tags.num_cells"``). It must
+            return **one** quantity: a sequence of arrays or of sequences is refused,
+            and so is a value mixing element kinds, since those are several quantities
+            and want several fields. A flat tuple of one kind stays one quantity
+            (``names``, ``cells_per_axis``). A ``read`` that ignores its argument and
+            closes over a constant is the one vacuous field nothing here can detect.
     """
 
     name: str
@@ -1459,12 +1464,25 @@ def _as_comparable(value: Any, *, context: str) -> npt.NDArray[Any]:
     ``(M, 2)`` and ``(M,)``, and ``TensorProductGrid.breakpoints`` is a per-axis tuple
     whose entries have different lengths. Both are two quantities, not one.
 
-    Left to :func:`numpy.asarray` they fail two different ways, and the quieter one is
-    worse. Ragged pieces raise a bare ``ValueError`` from deep inside NumPy, naming no
-    field and no backend. Equal-length pieces -- ``CellTags[name]`` is ``(ids, values)``
-    of the same length -- stack silently into one ``(2, N)`` block, so the comparison
+    Left to :func:`numpy.asarray` they fail three ways, and the quiet ones are worse.
+    Ragged pieces raise a bare ``ValueError`` from deep inside NumPy, naming no field
+    and no backend. Equal-length pieces -- ``CellTags[name]`` is ``(ids, values)`` of
+    the same length -- stack silently into one ``(2, N)`` block, so the comparison
     passes or fails as a unit and the failure message points at a row index of a thing
-    the caller never built. So both are refused here, with the fix named.
+    the caller never built. And **pieces of different kinds promote**: a tuple mixing an
+    ``int64`` id with a ``float`` weight becomes ``float64``, where ``2**53`` and
+    ``2**53 + 1`` are the same number. Measured: that pair passes
+    :func:`assert_object_parity` under a ``bitwise`` claim, silently, which is a false
+    pass rather than a bad message. So all three are refused, with the fix named.
+
+    **A flat tuple of one kind is left alone, and that is a deliberate limit.**
+    ``CellTags.names`` is ``tuple[str, ...]``, ``TensorProductGrid.cells_per_axis`` and
+    ``Bezier.degree`` are ``tuple[int, ...]`` -- each one quantity with several
+    components. Nothing distinguishes those from two scalars a ``read`` glued together,
+    so refusing them would break four attribute fields across three of the eight
+    consumers to catch a case that compares correctly anyway: a homogeneous tuple is
+    compared elementwise with no promotion, so the only cost is a failure message that
+    names a component index rather than a field.
 
     Args:
         value (Any): What a :class:`Field` read off one of the two objects.
@@ -1474,15 +1492,29 @@ def _as_comparable(value: Any, *, context: str) -> npt.NDArray[Any]:
         npt.NDArray[Any]: The value as an array. A scalar becomes 0-d.
 
     Raises:
-        AssertionError: If the value is a sequence of arrays, or cannot become one
-            array at all.
+        AssertionError: If the value is a sequence of arrays or of sequences, if it
+            mixes element kinds, or if it cannot become one array at all.
     """
-    if isinstance(value, tuple | list) and any(isinstance(item, np.ndarray) for item in value):
-        raise AssertionError(
-            f"{context}: the field read back a {type(value).__name__} of "
-            f"{len(value)} arrays, which is that many quantities rather than one. "
-            f"Give each its own Field, with its own claim and its own `read`."
-        )
+    if isinstance(value, tuple | list):
+        kinds = set()
+        for item in value:
+            if isinstance(item, np.ndarray | tuple | list):
+                raise AssertionError(
+                    f"{context}: the field read back a {type(value).__name__} of "
+                    f"{len(value)} arrays or sequences, which is that many quantities "
+                    f"rather than one. Give each its own Field, with its own claim and "
+                    f"its own `read`."
+                )
+            kinds.add(np.asarray(item).dtype.kind)
+        if len(kinds) > 1:
+            raise AssertionError(
+                f"{context}: the field read back a {type(value).__name__} mixing "
+                f"{sorted(kinds)} in one value. Those are different quantities, and "
+                f"stacking them promotes to a common dtype that can lose the "
+                f"difference between two of them -- int64 above 2**53 against a float "
+                f"is the measured case, where two distinct ids compare EQUAL and the "
+                f"comparison passes. Give each its own Field."
+            )
     try:
         return np.asarray(value)
     except ValueError as exc:
@@ -1532,7 +1564,10 @@ def _assert_exact(
     actual_array = _as_comparable(actual, context=context)
     reference_array = _as_comparable(reference, context=context)
     for array in (actual_array, reference_array):
-        if array.dtype.kind == "f":
+        # `size` guards the empty edge: np.asarray(()) is float64, and a tag registry
+        # with no tags has an empty `names`. There is no NaN in an empty array to be
+        # wrong about.
+        if array.dtype.kind == "f" and array.size > 0:
             raise AssertionError(
                 f"{context}: an exact claim was made about a {array.dtype} value. "
                 f"Exactness on floating point is bitwise_parity, which says the "
@@ -1580,9 +1615,10 @@ def assert_object_parity(
 
     **The argument order is ``(py, cpp)``**, the opposite of
     :func:`assert_parity`'s ``(actual, reference)``, and the parity modules do not
-    agree on which order their own ``_both()`` returns: ``tests/parity/test_grid.py``
-    returns ``(reference, actual)``, while ``test_change_basis.py`` and
-    ``test_basis_cardinal_bspline.py`` return ``(actual, reference)``. So
+    agree on which order their two-backend helper returns: ``tests/parity/test_grid.py``
+    has ``_both()`` returning ``(reference, actual)``, while ``test_change_basis.py``
+    and ``test_basis_cardinal_bspline.py`` have ``_both_backends()`` returning
+    ``(actual, reference)``. So
     ``assert_object_parity(*_both(...), ...)`` is right for the first and wrong for
     the other two, and **the order has to be checked at the call site** rather than
     assumed. Passing ``py=`` and ``cpp=`` by keyword removes the question.
