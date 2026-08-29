@@ -8,11 +8,23 @@ import numpy as np
 import numpy.testing as npt
 import pytest
 
+from pantr._backend import Backend, active_backend
 from pantr.transform import AffineTransform
 
 if TYPE_CHECKING:
     from pantr.bezier import Bezier
     from pantr.bspline import Bspline
+
+_PYTHON_BACKEND_ONLY = pytest.mark.skipif(
+    active_backend() is not Backend.PYTHON,
+    reason=(
+        "This records the Python Bezier's known aliasing defect rather than a contract: the "
+        "C++ value copies its control points and hands back a read-only view, so an in-place "
+        "mutation replaces the array instead of writing into it; FELIGN/pantr#375 is the "
+        "ticket that fixes the Python side."
+    ),
+)
+"""Marks an assertion that pins aliasing only the Python implementation has."""
 
 # ======================================================================
 # Helpers
@@ -513,6 +525,7 @@ class TestBezierTransform:
         assert result is None
         npt.assert_allclose(b.control_points[0], [5.0, 5.0])
 
+    @_PYTHON_BACKEND_ONLY
     def test_inplace_no_extra_alloc(self) -> None:
         """in_place=True writes directly into the existing array."""
         b = _make_bezier_1d([[0.0, 0.0], [1.0, 1.0]])

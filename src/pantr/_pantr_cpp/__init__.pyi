@@ -50,6 +50,8 @@ from ._basis import monomial_to_bernstein_1d as monomial_to_bernstein_1d
 from ._basis import tabulate_bernstein_1d as tabulate_bernstein_1d
 from ._basis import tabulate_cardinal_bspline_1d as tabulate_cardinal_bspline_1d
 from ._basis import tabulate_legendre_1d as tabulate_legendre_1d
+from ._bezier import Bezier32 as Bezier32
+from ._bezier import Bezier64 as Bezier64
 from ._bezier import apply_reduction_operator as apply_reduction_operator
 from ._bezier import clip_roots as clip_roots
 from ._bezier import dedup_roots as dedup_roots

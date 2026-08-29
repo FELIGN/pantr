@@ -1,13 +1,26 @@
-"""Bezier geometric object: the Bezier class."""
+"""Bezier geometric object: the Bezier class.
+
+Since the 2026-08-27 amendment to ``design/cross_backend_types.md`` the value
+itself is owned by C++ (``cpp/include/pantr/bezier/bezier.hpp``) and
+:class:`Bezier` is a wrapper holding one implementation of it. Ownership moves;
+it is never duplicated. There are two implementations and they are not two
+Béziers: :class:`_BezierPython` is the oracle the port is checked against, and
+the C++ handle is the thing being checked. :func:`_impl_class` picks between
+them, per process and per dtype.
+
+The operations are unchanged and still live in the sibling ``_bezier_*`` modules
+as free functions over a :class:`Bezier`. Only the *state* moved.
+"""
 
 from __future__ import annotations
 
-from collections.abc import Sequence
-from typing import TYPE_CHECKING, Any, Literal, overload
+from collections.abc import Callable, Sequence
+from typing import TYPE_CHECKING, Any, Final, Literal, TypeAlias, cast, overload
 
 import numpy as np
 from numpy import typing as npt
 
+from .._backend import Backend, active_backend, available_backends
 from .._transform_control_points import _apply_affine_to_control_points
 from ._bezier_collapse import _collapse_along_axis
 from ._bezier_compose import _compose_bezier
@@ -25,17 +38,52 @@ from ._bezier_slice import _slice_bezier
 from ._bezier_split import _split_bezier
 
 if TYPE_CHECKING:
+    from .._pantr_cpp import Bezier32 as _CppBezier32
+    from .._pantr_cpp import Bezier64 as _CppBezier64
     from ..bspline import Bspline
     from ..quad import PointsLattice
     from ..transform import AffineTransform
 
+    _Impl: TypeAlias = "_BezierPython | _CppBezier32 | _CppBezier64"
+    """The implementation a :class:`Bezier` holds: the oracle, or a C++ handle.
 
-class Bezier:
-    """A parametric Bézier curve, surface, or volume defined by control points.
+    Type-checking only. The three are unrelated nominal types that happen to
+    offer the same surface, which is the port's whole claim; naming the union
+    here is what lets the checker verify it instead of taking it on trust.
+    """
 
-    Stores only control points and an ``is_rational`` flag. The polynomial
-    degree in each parametric direction is inferred from the control point
-    array shape: ``degree[d] = control_points.shape[d] - 1``.
+_ControlPoints: TypeAlias = "npt.NDArray[np.float32 | np.float64]"
+"""A control-point array in one of the two storage formats a Bézier may use."""
+
+_SUPPORTED_DTYPES: Final = (np.dtype(np.float32), np.dtype(np.float64))
+"""The two storage formats a Bézier may hold, after integer input has been cast.
+
+Narrower than what the oracle's constructor used to accept, which was anything
+:func:`numpy.asarray` produced -- ``float16`` and ``bool`` included, both of which
+build a Bézier no kernel below it can evaluate. The type annotations, the kernel
+catalogue in :mod:`pantr.bezier._bezier_backend` and now the C++ registration all
+say two formats, so the constructor says two as well. Rejecting is the wrapper's
+job rather than the C++ type's: a dtype is a type-kind check, and nanobind has no
+path that produces a :class:`TypeError`.
+"""
+
+
+class _BezierPython:
+    """The Bézier value as the Python backend stores it: the port's oracle.
+
+    Holds the control points and the rationality flag, and answers the four
+    questions they determine. Everything the class used to do beyond that is on
+    :class:`Bezier`, which is the only class a caller ever holds; this one is
+    reachable only through it. When the C++ core stops being optional this class
+    goes and :class:`Bezier` collapses onto the handle.
+
+    **It aliases the caller's array, and that is a defect it keeps on purpose.**
+    ``__init__`` stores what :func:`numpy.asarray` returns and
+    :attr:`control_points` hands the same object back, so a caller can mutate a
+    constructed Bézier through either end. That is the shape of FELIGN/pantr#338,
+    the C++ implementation copies instead, and a port never edits its own oracle
+    -- so the two backends differ here, deliberately, until the ticket that fixes
+    this side lands.
 
     Attributes:
         _control_points (npt.NDArray[np.float32 | np.float64]): Control point
@@ -44,6 +92,8 @@ class Bezier:
         _is_rational (bool): Whether the Bézier is rational (last control
             point coordinate is a homogeneous weight).
     """
+
+    __slots__ = ("_control_points", "_is_rational")
 
     def __init__(
         self,
@@ -83,11 +133,26 @@ class Bezier:
                     f"direction {d}, got {cp.shape[d]}."
                 )
 
-        self._control_points: npt.NDArray[np.float32 | np.float64] = cp
+        self._control_points: _ControlPoints = cp
         self._is_rational = is_rational
 
         if self.rank <= 0:
             raise ValueError(f"The Bézier must have at least rank one. Got rank {self.rank}.")
+
+    def _replace_control_points(self, control_points: _ControlPoints) -> None:
+        """Adopt an already-validated control-point array, in place.
+
+        The one mutating operation on this class, and it exists only because
+        ``reverse``, ``permute_directions`` and ``transform`` take an
+        ``in_place`` flag that :class:`Bezier` ports faithfully. It re-validates
+        nothing: every caller derives the array from this Bézier's own, so the
+        shape either did not change or changed by a permutation.
+
+        Args:
+            control_points (npt.NDArray[np.float32 | np.float64]): The array to
+                store.
+        """
+        self._control_points = control_points
 
     @property
     def dim(self) -> int:
@@ -109,12 +174,13 @@ class Bezier:
         return tuple(s - 1 for s in self._control_points.shape[:-1])
 
     @property
-    def control_points(self) -> npt.NDArray[np.float32 | np.float64]:
+    def control_points(self) -> _ControlPoints:
         """Get the control points of the Bézier.
 
         Returns:
             npt.NDArray[np.float32 | np.float64]: Control point array with
-            shape ``(*degrees_plus_1, rank)``.
+            shape ``(*degrees_plus_1, rank)``. The stored array itself, not a
+            copy; see the class docstring.
         """
         return self._control_points
 
@@ -142,15 +208,293 @@ class Bezier:
         rk = int(self._control_points.shape[-1])
         return rk - 1 if self.is_rational else rk
 
+
+def _stored_dtype(control_points: npt.ArrayLike) -> tuple[_ControlPoints, np.dtype[Any]]:
+    """Normalize an array-like to the array a Bézier would store, and its dtype.
+
+    The two steps are the oracle's own first two lines, lifted out because the
+    wrapper has to know the dtype *before* it can choose an implementation: the
+    C++ side registers one class per storage format, so the format is what picks
+    the class.
+
+    Integer input is cast to ``float64``, which the constructor documents.
+    Everything else keeps its dtype, which is how ``float32`` survives.
+
+    Args:
+        control_points (npt.ArrayLike): The caller's argument.
+
+    Returns:
+        tuple[npt.NDArray[np.float32 | np.float64], np.dtype[Any]]: The array
+        and its dtype. The dtype is not yet known to be one a Bézier supports;
+        :func:`_new_impl` is what rejects the rest.
+
+    Raises:
+        TypeError: If the argument cannot be read as an array at all.
+    """
+    cp = np.asarray(control_points)
+    if np.issubdtype(cp.dtype, np.integer):
+        cp = cp.astype(np.float64)
+    return cp, cp.dtype
+
+
+def _impl_class(dtype: np.dtype[Any]) -> type[_BezierPython] | type[_CppBezier32 | _CppBezier64]:
+    """The implementation class the active backend and the dtype select.
+
+    The backend is per process rather than per instance, deliberately, and for
+    the reason ``pantr.geometry`` states: two Béziers built under different
+    backends could otherwise meet in a binary operation, and reconciling them
+    would mean converting one implementation into the other, which is the shape
+    ``design/cross_backend_types.md`` forbids.
+
+    The dtype, by contrast, *is* per instance. It has to be: ``float32`` is a
+    supported storage format for a Bézier, unlike for :class:`pantr.geometry.AABB`,
+    and the C++ side carries the format in the class name because the class of
+    the handle is the only thing left to carry it.
+
+    Args:
+        dtype (np.dtype[Any]): The dtype the control points will be stored in.
+
+    Returns:
+        type[_BezierPython] | type[_CppBezier32 | _CppBezier64]: The oracle under
+        the Python backend, and the C++ class for that storage format otherwise.
+
+    Raises:
+        RuntimeError: If the C++ backend is requested and is not available.
+    """
+    if active_backend() is Backend.PYTHON:
+        return _BezierPython
+    if Backend.CPP not in available_backends():
+        raise RuntimeError("the CPP backend is not available in this installation")
+    from pantr import _pantr_cpp  # noqa: PLC0415  (optional, imported only when selected)
+
+    return _pantr_cpp.Bezier32 if dtype == np.float32 else _pantr_cpp.Bezier64
+
+
+def _new_impl(control_points: npt.ArrayLike, is_rational: bool) -> _Impl:
+    """Build a Bézier value in whichever implementation the active backend selects.
+
+    Args:
+        control_points (npt.ArrayLike): Control points, in any of the forms
+            :meth:`Bezier.__init__` accepts.
+        is_rational (bool): Whether the last coordinate is a homogeneous weight.
+
+    Returns:
+        _Impl: The implementation object; a :class:`_BezierPython` or a C++ handle.
+
+    Raises:
+        TypeError: If the control points have a dtype no Bézier can store.
+        ValueError: If the shape does not describe a Bézier.
+        RuntimeError: If the C++ backend is requested and is not available.
+    """
+    cp, dtype = _stored_dtype(control_points)
+    if dtype not in _SUPPORTED_DTYPES:
+        raise TypeError(
+            f"Bezier control points must be float32, float64 or an integer type; got dtype {dtype}."
+        )
+
+    cls = _impl_class(dtype)
+    if cls is _BezierPython:
+        return _BezierPython(cp, is_rational)
+
+    # `np.ascontiguousarray` promotes a 0-d array to shape `(1,)`, which would turn
+    # the "must be at least 1D" rejection into a silently accepted degree-0 curve.
+    # The same trap is recorded at `pantr.transform.AffineTransform.apply`. A 0-d
+    # array is contiguous anyway, so skipping it costs nothing.
+    contiguous = cp if cp.ndim == 0 else np.ascontiguousarray(cp)
+    # Each C++ class accepts only its own storage format and refuses rather than
+    # casts, so the array's dtype and the class have to agree. They do: the class
+    # was chosen from that dtype one line above. That is a correlation between a
+    # value and a type, which the checker cannot state, and the cast is what
+    # stands in for it.
+    return cls(cast("Any", contiguous), bool(is_rational))
+
+
+class Bezier:
+    """A parametric Bézier curve, surface, or volume defined by control points.
+
+    Stores only control points and an ``is_rational`` flag. The polynomial
+    degree in each parametric direction is inferred from the control point
+    array shape: ``degree[d] = control_points.shape[d] - 1``.
+
+    **This class is a wrapper.** Since the 2026-08-27 amendment to
+    ``design/cross_backend_types.md`` the value is owned by C++
+    (``cpp/include/pantr/bezier/bezier.hpp``) and this class holds one
+    implementation of it, chosen by :func:`_impl_class`. The operations are still
+    Python and still live in the sibling ``_bezier_*`` modules; only the state
+    moved.
+
+    One behaviour depends on which implementation is in hand, and it is the point
+    of the port rather than an oversight: the C++ value **copies** the control
+    points at construction and hands out a read-only view, so neither end aliases
+    the caller's array. The Python oracle aliases at both ends, which is the
+    defect FELIGN/pantr#338 names, and it is not fixed here because a port does
+    not edit its own oracle.
+
+    Attributes:
+        _impl (_Impl): The implementation this wrapper holds; see
+            :func:`_impl_class`.
+    """
+
+    __slots__ = ("_impl",)
+
+    _impl: _Impl
+    """The implementation this wrapper holds; see :func:`_impl_class`."""
+
+    def __init__(
+        self,
+        control_points: npt.ArrayLike,
+        is_rational: bool = False,
+    ) -> None:
+        """Initialize a Bézier from control points.
+
+        Args:
+            control_points (npt.ArrayLike): Control points. Shape must be at
+                least 2D: ``(*degrees_plus_1, rank)``. A 1D input of shape
+                ``(n,)`` is reshaped to ``(n, 1)`` (scalar field). Integer
+                arrays are cast to ``float64``; ``float32`` and ``float64``
+                are stored as they are.
+            is_rational (bool): Whether the Bézier is rational. Defaults to
+                False.
+
+        Raises:
+            TypeError: If the control points have a dtype no Bézier can store.
+            ValueError: If the control points have fewer than 1 entry in any
+                parametric direction.
+            ValueError: If the Bézier has rank smaller than 1.
+        """
+        self._impl = _new_impl(control_points, is_rational)
+
+    @classmethod
+    def _wrap(cls, impl: _Impl) -> Bezier:
+        """Wrap an implementation object that is already valid.
+
+        Args:
+            impl (_Impl): The implementation object to adopt.
+
+        Returns:
+            Bezier: A wrapper around ``impl``, with no re-validation.
+        """
+        self = object.__new__(cls)
+        self._impl = impl
+        return self
+
+    def _mutate_control_points(self, rebuild: Callable[[_ControlPoints], _ControlPoints]) -> None:
+        """Replace this Bézier's control points with ``rebuild``'s result, in place.
+
+        The single place the two implementations differ in *kind* rather than in
+        provenance, so the branch lives here once instead of in each of the three
+        ``in_place=True`` methods.
+
+        Under the Python backend ``rebuild`` is handed the stored array itself, so
+        a helper writing into it mutates the Bézier exactly as it always has --
+        ``id(bezier.control_points)`` included, which ``tests/test_transform.py``
+        pins. Under the C++ backend the storage belongs to the C++ object and is
+        read-only, so ``rebuild`` gets a writable copy and the *implementation* is
+        replaced. Both leave this wrapper carrying the new value; only the array's
+        identity differs, and only where the oracle's aliasing is what defined it.
+
+        Args:
+            rebuild (Callable[[NDArray], NDArray]): Given a writable control-point
+                array, returns the new one. It may write into the array it is
+                given and return it.
+        """
+        impl = self._impl
+        if isinstance(impl, _BezierPython):
+            impl._replace_control_points(rebuild(impl.control_points))
+        else:
+            self._impl = _new_impl(rebuild(np.array(impl.control_points)), impl.is_rational)
+
+    def __reduce__(self) -> tuple[type[Bezier], tuple[_ControlPoints, bool]]:
+        """Pickle by the constructor's arguments rather than by implementation.
+
+        The C++ handle is not picklable and must not become part of the wire
+        format: a pickle written under the C++ backend has to load under the
+        Python one and the other way round, or the backend switch would silently
+        become a data-format switch.
+
+        Returns:
+            tuple: The class, and the control points and rationality flag to
+            rebuild it from.
+        """
+        control_points = self.control_points
+        if not control_points.flags.writeable:
+            # The C++ backend hands out a read-only view and pickle preserves that
+            # flag (measured). Reconstructing under the Python backend would then
+            # store a read-only array, where `reverse(in_place=True)` raises. The
+            # copy is what keeps one backend's storage decision out of the wire
+            # format.
+            control_points = np.array(control_points)
+        return (type(self), (control_points, self.is_rational))
+
+    @property
+    def dim(self) -> int:
+        """Get the parametric dimension of the Bézier.
+
+        Returns:
+            int: Number of parametric dimensions.
+        """
+        return int(self._impl.dim)
+
+    @property
+    def degree(self) -> tuple[int, ...]:
+        """Get the polynomial degrees per parametric direction.
+
+        Returns:
+            tuple[int, ...]: Polynomial degree for each parametric dimension,
+            computed as ``shape[d] - 1``.
+        """
+        return self._impl.degree
+
+    @property
+    def control_points(self) -> _ControlPoints:
+        """Get the control points of the Bézier.
+
+        Returns:
+            npt.NDArray[np.float32 | np.float64]: Control point array with
+            shape ``(*degrees_plus_1, rank)``. Under the C++ backend this is a
+            **read-only view** of the Bézier's own storage: writing through it
+            raises, and it stays valid after the Bézier is dropped. Under the
+            Python backend it is the stored array itself, writable, which is the
+            aliasing defect the class docstring names.
+        """
+        return self._impl.control_points
+
+    @property
+    def is_rational(self) -> bool:
+        """Check whether the Bézier is rational.
+
+        Returns:
+            bool: True if the Bézier is rational (i.e., the last control point
+            coordinate is a homogeneous weight), False otherwise.
+        """
+        return bool(self._impl.is_rational)
+
+    @property
+    def rank(self) -> int:
+        """Get the output rank of the Bézier.
+
+        The rank is the number of value dimensions produced by the mapping.
+        For a scalar field it is 1; for a 3D curve it is 3. For rational
+        Béziers the weight coordinate is excluded.
+
+        Returns:
+            int: Output rank of the Bézier.
+        """
+        return int(self._impl.rank)
+
     @property
     def dtype(self) -> npt.DTypeLike:
         """Get the floating-point dtype of the Bézier.
+
+        Read off the control points rather than delegated: the C++ handle carries
+        its storage format in its class name, not as a numpy dtype it could hand
+        back.
 
         Returns:
             npt.DTypeLike: The numpy dtype (float32 or float64) of the control
             point array.
         """
-        return self._control_points.dtype
+        return self.control_points.dtype
 
     # ------------------------------------------------------------------
     # Evaluation
@@ -596,11 +940,13 @@ class Bezier:
 
         from .._control_points_utils import _reverse_control_points  # noqa: PLC0415
 
-        new_cp = _reverse_control_points(self._control_points, direction, in_place=in_place)
-
         if in_place:
+            self._mutate_control_points(
+                lambda cp: _reverse_control_points(cp, direction, in_place=True)
+            )
             return None
-        return Bezier(new_cp, is_rational=self._is_rational)
+        new_cp = _reverse_control_points(self.control_points, direction, in_place=False)
+        return Bezier(new_cp, is_rational=self.is_rational)
 
     @overload
     def permute_directions(
@@ -648,12 +994,11 @@ class Bezier:
 
         from .._control_points_utils import _permute_control_points  # noqa: PLC0415
 
-        new_cp = _permute_control_points(self._control_points, perm, self.dim)
-
         if in_place:
-            self._control_points = new_cp
+            self._mutate_control_points(lambda cp: _permute_control_points(cp, perm, self.dim))
             return None
-        return Bezier(new_cp, is_rational=self._is_rational)
+        new_cp = _permute_control_points(self.control_points, perm, self.dim)
+        return Bezier(new_cp, is_rational=self.is_rational)
 
     # ------------------------------------------------------------------
     # Affine transformation
@@ -702,16 +1047,21 @@ class Bezier:
             >>> np.allclose(shifted.control_points, [[1.0, 2.0], [2.0, 3.0]])
             True
         """
+        if in_place:
+            self._mutate_control_points(
+                lambda cp: _apply_affine_to_control_points(
+                    cp, self.is_rational, affine.matrix, affine.offset, in_place=True
+                )
+            )
+            return None
         new_cp = _apply_affine_to_control_points(
-            self._control_points,
-            self._is_rational,
+            self.control_points,
+            self.is_rational,
             affine.matrix,
             affine.offset,
-            in_place=in_place,
+            in_place=False,
         )
-        if in_place:
-            return None
-        return Bezier(new_cp, is_rational=self._is_rational)
+        return Bezier(new_cp, is_rational=self.is_rational)
 
     # ------------------------------------------------------------------
     # Restrict
@@ -976,7 +1326,9 @@ class Bezier:
         Args:
             copy (bool): If ``True`` (default), the control points are
                 deep-copied into the new B-spline. If ``False``, the
-                B-spline shares the same underlying control point array.
+                B-spline shares the same underlying control point array --
+                which, under the C++ backend, is the Bézier's own storage and
+                is read-only, so the B-spline is then read-only too.
 
         Returns:
             ~pantr.bspline.Bspline: Equivalent B-spline representation.
@@ -991,8 +1343,8 @@ class Bezier:
             knots[p + 1 :] = 1.0
             spaces.append(BsplineSpace1D(knots, p))
 
-        cp = self._control_points.copy() if copy else self._control_points
-        return BsplineCls(BsplineSpace(spaces), cp, self._is_rational)
+        cp = self.control_points.copy() if copy else self.control_points
+        return BsplineCls(BsplineSpace(spaces), cp, self.is_rational)
 
     # ------------------------------------------------------------------
     # Visualization
@@ -1042,7 +1394,10 @@ def create_from_bspline(bspline: Bspline, *, copy: bool = True) -> Bezier:
             knot structure.
         copy (bool): If ``True`` (default), the control points are
             deep-copied into the new Bézier. If ``False``, the Bézier
-            shares the same underlying control point array.
+            shares the same underlying control point array -- **under the
+            Python backend only**. The C++ value owns its storage and copies
+            at construction, so there ``copy=False`` saves nothing and shares
+            nothing.
 
     Returns:
         Bezier: The equivalent Bézier.

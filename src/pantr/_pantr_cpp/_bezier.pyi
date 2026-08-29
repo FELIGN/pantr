@@ -1,11 +1,75 @@
-"""Bezier arithmetic and root-finding kernels of the compiled extension.
+"""Bezier value type, arithmetic kernels and root-finding kernels of the extension.
 
-Bound by ``cpp/bindings/bezier.cpp`` and ``cpp/bindings/bezier_root_finding.cpp``.
-See ``__init__.pyi`` for what this package promises and who has to keep it.
+Bound by ``cpp/bindings/bezier_type.cpp``, ``cpp/bindings/bezier.cpp`` and
+``cpp/bindings/bezier_root_finding.cpp``. See ``__init__.pyi`` for what this
+package promises and who has to keep it.
 """
 
 import numpy as np
 import numpy.typing as npt
+
+class Bezier32:
+    """A ``float32`` Bézier owned by the C++ core.
+
+    Wrapped by :class:`pantr.bezier.Bezier`, which is the class a caller holds;
+    this one is reached only through it. The storage format is in the class name
+    because the class of the handle is the only thing left to carry it: there is
+    no dtype argument, and the constructor refuses an array of any other dtype
+    rather than casting it.
+
+    The control points are **copied** at construction and handed back as a
+    **read-only view** of the copy, so neither end aliases the caller's array.
+
+    Attributes:
+        control_points (npt.NDArray[np.float32]): Control points, shape
+            ``(*degrees_plus_1, rank_with_weight)``, read-only.
+        is_rational (bool): Whether the last coordinate is a homogeneous weight.
+        dim (int): Number of parametric directions, ``>= 1``.
+        degree (tuple[int, ...]): Polynomial degree per parametric direction.
+        rank (int): Number of value components, weight excluded, ``>= 1``.
+    """
+
+    def __init__(
+        self, control_points: npt.NDArray[np.float32], is_rational: bool = False
+    ) -> None: ...
+    @property
+    def control_points(self) -> npt.NDArray[np.float32]: ...
+    @property
+    def is_rational(self) -> bool: ...
+    @property
+    def dim(self) -> int: ...
+    @property
+    def degree(self) -> tuple[int, ...]: ...
+    @property
+    def rank(self) -> int: ...
+
+class Bezier64:
+    """A ``float64`` Bézier owned by the C++ core.
+
+    The ``float64`` twin of :class:`Bezier32`; see it for what the two share.
+
+    Attributes:
+        control_points (npt.NDArray[np.float64]): Control points, shape
+            ``(*degrees_plus_1, rank_with_weight)``, read-only.
+        is_rational (bool): Whether the last coordinate is a homogeneous weight.
+        dim (int): Number of parametric directions, ``>= 1``.
+        degree (tuple[int, ...]): Polynomial degree per parametric direction.
+        rank (int): Number of value components, weight excluded, ``>= 1``.
+    """
+
+    def __init__(
+        self, control_points: npt.NDArray[np.float64], is_rational: bool = False
+    ) -> None: ...
+    @property
+    def control_points(self) -> npt.NDArray[np.float64]: ...
+    @property
+    def is_rational(self) -> bool: ...
+    @property
+    def dim(self) -> int: ...
+    @property
+    def degree(self) -> tuple[int, ...]: ...
+    @property
+    def rank(self) -> int: ...
 
 def evaluate_bezier_1d(
     ctrl: npt.NDArray[np.float32 | np.float64],
