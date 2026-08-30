@@ -1,8 +1,9 @@
 /// \file
 /// nanobind bindings for the `pantr.bezier` arithmetic kernels.
 ///
-/// Eight entry points: the seven of `_bezier_core.py` and the reduction-operator
-/// apply that `pantr.bezier` reaches for through `pantr.bspline`. The checks in
+/// Ten entry points: the seven of `_bezier_core.py`, the reduction-operator apply
+/// that `pantr.bezier` reaches for through `pantr.bspline`, and the two
+/// n-dimensional evaluation entry points of `pantr/bezier/evaluate.hpp`. The checks in
 /// this file are Layer 2's C++ half, for the reason `basis.cpp` states at length:
 /// a Layer 3 kernel validates nothing, the extension is importable, and every
 /// bound name here is a public attribute of a public module.
@@ -41,15 +42,31 @@
 /// merely wraps. Python's Layer 2 checks it too, through
 /// `_check_bincoeff_envelope`, but a direct call on the extension does not go
 /// through Python's Layer 2.
+///
+/// ## The two evaluation entry points take the value, not its arrays
+///
+/// Every other binding here is a Layer 3 kernel over raw buffers, which is what
+/// `design/cross_backend_types.md`'s kernel-seam table describes. The two added by
+/// FELIGN/pantr#389 are not kernels: they are operations on a domain type, and
+/// since the 2026-08-27 amendment that type is owned by C++. So they take a
+/// `Bezier32`/`Bezier64` handle and read the net through it, rather than being
+/// handed a control-point array the wrapper unpacked. Unpacking and reassembling
+/// is what that amendment forbids, and the rationality flag is exactly the kind of
+/// invariant that gets dropped in a reassembly.
 
 #include <nanobind/nanobind.h>
 #include <nanobind/ndarray.h>
+
+#include <nanobind/stl/vector.h>
 
 #include <cstddef>
 #include <limits>
 #include <span>
 #include <string>
+#include <vector>
 
+#include "pantr/bezier/bezier.hpp"
+#include "pantr/bezier/evaluate.hpp"
 #include "pantr/bezier/kernels_1d.hpp"
 #include "pantr/core/binomial.hpp"
 #include "pantr/core/mdspan.hpp"
@@ -74,6 +91,11 @@ using out_mat = nb::ndarray<T, nb::ndim<2>, nb::c_contig, nb::device::cpu>;
 
 template <class T>
 using out_cube = nb::ndarray<T, nb::ndim<3>, nb::c_contig, nb::device::cpu>;
+
+/// A writable output of any rank: the lattice result's rank is `dim + 1`, which is
+/// a runtime quantity, so no `nb::ndim<N>` can state it.
+template <class T>
+using out_any = nb::ndarray<T, nb::c_contig, nb::device::cpu>;
 
 /// Raise unless `out` has exactly `rows` by `cols`.
 template <class Arr>
@@ -338,6 +360,44 @@ void bind_apply_reduction_operator(const_mat<double> op, const_mat<T> ctrl, out_
     pantr::core::apply_reduction_operator<T>(op_view, ctrl_view, out_view);
 }
 
+/// Evaluate a Bézier at an explicit array of points.
+///
+/// The shape relations `evaluate` itself checks are left to it: it throws
+/// `std::invalid_argument`, which nanobind maps to `ValueError`, and duplicating
+/// them here would give two spellings of one message for the parity tests to
+/// disagree about.
+template <class T>
+void bind_evaluate_bezier(const pantr::bezier::Bezier<T>& bezier, const_mat<T> points,
+                          out_mat<T> out) {
+    const pantr::span2d<const T> points_view(points.data(), points.shape(0), points.shape(1));
+    const pantr::span2d<T> out_view(out.data(), out.shape(0), out.shape(1));
+
+    const nb::gil_scoped_release release;
+    pantr::bezier::evaluate<T>(bezier, points_view, out_view);
+}
+
+/// Evaluate a Bézier on a tensor-product lattice of points.
+///
+/// `out` is flat and of any rank: its logical shape is
+/// `(m_0, ..., m_{dim-1}, rank)`, which no `nb::ndim<N>` can state because `dim` is
+/// a runtime quantity. The total size is checked by `evaluate_on_lattice`, and a
+/// C-contiguous array of the right size is the right array whatever its rank.
+template <class T>
+void bind_evaluate_bezier_on_lattice(const pantr::bezier::Bezier<T>& bezier,
+                                     const std::vector<const_vec<T>>& points_per_dir,
+                                     out_any<T> out) {
+    std::vector<std::span<const T>> columns;
+    columns.reserve(points_per_dir.size());
+    for (const const_vec<T>& column : points_per_dir) {
+        columns.emplace_back(column.data(), column.shape(0));
+    }
+    const std::span<T> out_view(out.data(), out.size());
+
+    const nb::gil_scoped_release release;
+    pantr::bezier::evaluate_on_lattice<T>(
+        bezier, std::span<const std::span<const T>>(columns), out_view);
+}
+
 }  // namespace
 
 void register_bezier(nb::module_& m) {
@@ -396,5 +456,21 @@ void register_bezier(nb::module_& m) {
           nb::arg("out").noconvert());
     m.def("apply_reduction_operator", &bind_apply_reduction_operator<float>,
           nb::arg("operator").noconvert(), nb::arg("ctrl").noconvert(), nb::kw_only(),
+          nb::arg("out").noconvert());
+
+    // The two n-dimensional evaluation entry points. Their first argument is the
+    // Bézier itself rather than its control points; see the file comment. Overload
+    // resolution separates the two instantiations on the handle's own class, so
+    // these two need no dtype argument and cannot be reached with a mismatched one.
+    m.def("evaluate_bezier", &bind_evaluate_bezier<double>, nb::arg("bezier"),
+          nb::arg("points").noconvert(), nb::kw_only(), nb::arg("out").noconvert());
+    m.def("evaluate_bezier", &bind_evaluate_bezier<float>, nb::arg("bezier"),
+          nb::arg("points").noconvert(), nb::kw_only(), nb::arg("out").noconvert());
+
+    m.def("evaluate_bezier_on_lattice", &bind_evaluate_bezier_on_lattice<double>,
+          nb::arg("bezier"), nb::arg("points_per_dir").noconvert(), nb::kw_only(),
+          nb::arg("out").noconvert());
+    m.def("evaluate_bezier_on_lattice", &bind_evaluate_bezier_on_lattice<float>,
+          nb::arg("bezier"), nb::arg("points_per_dir").noconvert(), nb::kw_only(),
           nb::arg("out").noconvert());
 }

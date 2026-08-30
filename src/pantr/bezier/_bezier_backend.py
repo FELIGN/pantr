@@ -8,8 +8,8 @@ reason: a catalogue imports the kernels it hands out, so keeping each one beside
 its own kernels is what stops the policy module from importing the library it has
 to stay independent of.
 
-Seven accessors over eight kernels
-----------------------------------
+Nine accessors over ten implementations
+---------------------------------------
 
 Six are bare callables and one is a record, which is the rule
 ``design/cross_backend_types.md`` states: a record when a consumer needs more
@@ -38,7 +38,21 @@ the two written since converged on ``_kernel`` and this is the third to do so.
 What crosses the boundary
 -------------------------
 
-Arrays and scalars only. The reduction operator is the case worth naming, because
+Arrays and scalars only, **for the eight 1D kernels**. That is the kernel seam of
+``design/cross_backend_types.md``, and it is unchanged.
+
+The two n-dimensional evaluation accessors are not kernels and do not obey it. They
+are operations on a domain type, and since that note's 2026-08-27 amendment the type
+is owned by C++, so what crosses is the :class:`~pantr.bezier.Bezier` itself: the C++
+adapter hands the binding the handle the wrapper already holds. Unpacking a value
+into arrays on one side and reassembling it on the other is the shape the amendment
+forbids, and the rationality flag is exactly the invariant a reassembly drops.
+
+The consequence a caller can see is that a Bézier built under one backend cannot be
+evaluated under another. :func:`_cpp_handle` refuses rather than converting, the same
+way :meth:`pantr.bezier.Bezier._mutate_control_points` does, and for the same reason.
+
+The reduction operator is the case worth naming, because
 it looks like a type and is not: it is assembled in exact rational arithmetic by
 :func:`~pantr.bezier._bezier_degree._l2_reduction_operator` and its interpolating
 sibling, cached per degree pair, and converted to ``float64`` before it ever
@@ -54,13 +68,16 @@ that do not still hand Layer 2 an array to fill before wrapping it in a
 - :class:`DegreeKernels`: the elevation and reduction-apply kernels of one backend.
 - :func:`evaluate_kernel`, :func:`evaluate_deriv_kernel`, :func:`slice_kernel`,
   :func:`split_kernel`, :func:`restrict_kernel`, :func:`product_kernel`,
-  :func:`degree_kernels`: the accessors.
+  :func:`degree_kernels`: the accessors over the 1D kernels.
+- :func:`evaluate_nd_kernel`, :func:`evaluate_nd_lattice_kernel`: the two
+  n-dimensional contraction schedules, which take the Bézier rather than its
+  arrays.
 """
 
 from __future__ import annotations
 
-from collections.abc import Callable
-from typing import Final, NamedTuple, TypeVar
+from collections.abc import Callable, Sequence
+from typing import TYPE_CHECKING, Final, NamedTuple, TypeVar
 
 import numpy as np
 import numpy.typing as npt
@@ -76,6 +93,21 @@ from ._bezier_core import (
     _slice_bezier_1d_core,
     _split_bezier_1d_core,
 )
+
+if TYPE_CHECKING:
+    from typing import TypeAlias
+
+    from .._pantr_cpp import Bezier32 as _CppBezier32
+    from .._pantr_cpp import Bezier64 as _CppBezier64
+    from ._bezier import Bezier
+
+    _CppHandle: TypeAlias = "_CppBezier32 | _CppBezier64"
+    """The C++ value a :class:`~pantr.bezier.Bezier` holds under the C++ backend.
+
+    Two unrelated nominal types, one per storage format, because the C++ side
+    registers one class per format and the class name is the only thing left to
+    carry it.
+    """
 
 _K = TypeVar("_K")
 """One kernel's signature, so :func:`_select` returns the type it was given."""
@@ -103,6 +135,21 @@ _RestrictFunc = Callable[[_Array, float, float, _Array], None]
 
 _ProductFunc = Callable[[_Array, _Array, _Array], None]
 """Signature of the Bernstein product: ``(a, b, out) -> None``."""
+
+_EvaluateNdFunc = Callable[["Bezier", _Array, _Array], None]
+"""Signature of the n-d evaluation at an array of points: ``(bezier, pts, out) -> None``.
+
+``pts`` is ``(n_pts, dim)`` and ``out`` is ``(n_pts, rank)`` -- the rank axis kept
+even for a scalar field, so the two backends fill the same shape and stay comparable
+element for element. The squeeze is Layer 2's.
+"""
+
+_EvaluateNdLatticeFunc = Callable[["Bezier", Sequence[_Array], _Array], None]
+"""Signature of the lattice evaluation: ``(bezier, pts_per_dir, out) -> None``.
+
+``out`` is ``(*grid_shape, rank)``. Separate from :data:`_EvaluateNdFunc` because the
+two are separate oracles, not two spellings of one: ``einsum`` against ``tensordot``.
+"""
 
 _ReduceApplyFunc = Callable[[npt.NDArray[np.float64], _Array, _Array], None]
 """Signature of the reduction-operator apply: ``(operator, ctrl, out) -> None``.
@@ -346,6 +393,71 @@ def _cpp_reduce_apply(operator: npt.NDArray[np.float64], ctrl: _Array, out: _Arr
     _fill(out, lambda dest: _pantr_cpp.apply_reduction_operator(op_c, ctrl_c, out=dest))
 
 
+def _cpp_handle(bezier: Bezier) -> _CppHandle:
+    """The C++ implementation a Bézier holds, refusing a Python one.
+
+    Args:
+        bezier (~pantr.bezier.Bezier): The Bézier to evaluate.
+
+    Returns:
+        _CppHandle: The ``Bezier32`` or ``Bezier64`` handle.
+
+    Raises:
+        TypeError: If the Bézier holds the Python implementation. That means the
+            active backend changed after it was built, and converting one
+            implementation into the other is what
+            ``design/cross_backend_types.md`` forbids.
+    """
+    from pantr import _pantr_cpp  # noqa: PLC0415  (resolved against the .pyi stub)
+
+    impl = bezier._impl  # same package; the wrapper exposes no public handle
+    if not isinstance(impl, _pantr_cpp.Bezier32 | _pantr_cpp.Bezier64):
+        raise TypeError(
+            f"Bezier: cannot evaluate a Bezier built under a different backend "
+            f"({type(impl).__name__} against the active C++ one); the backend is "
+            f"chosen per process, so this means the active one changed after this "
+            f"Bezier was built."
+        )
+    return impl
+
+
+def _cpp_evaluate_nd(bezier: Bezier, pts: _Array, out: _Array) -> None:
+    """Evaluate at an array of points through the C++ binding.
+
+    Args:
+        bezier (~pantr.bezier.Bezier): The Bézier, holding a C++ handle.
+        pts (_Array): Points of shape ``(n_pts, dim)``.
+        out (_Array): Destination of shape ``(n_pts, rank)``.
+
+    Note:
+        No input validation is performed here. Shape and dtype were established
+        by Layer 2; the binding re-checks dtype, rank and contiguity.
+    """
+    from pantr import _pantr_cpp  # noqa: PLC0415  (resolved against the .pyi stub)
+
+    impl = _cpp_handle(bezier)
+    pts_c = np.ascontiguousarray(pts)
+    _fill(out, lambda dest: _pantr_cpp.evaluate_bezier(impl, pts_c, out=dest))
+
+
+def _cpp_evaluate_nd_lattice(bezier: Bezier, pts_per_dir: Sequence[_Array], out: _Array) -> None:
+    """Evaluate on a lattice through the C++ binding.
+
+    Args:
+        bezier (~pantr.bezier.Bezier): The Bézier, holding a C++ handle.
+        pts_per_dir (Sequence[_Array]): One 1D array of parameters per direction.
+        out (_Array): Destination of shape ``(*grid_shape, rank)``.
+
+    Note:
+        No input validation is performed here; see :func:`_cpp_evaluate_nd`.
+    """
+    from pantr import _pantr_cpp  # noqa: PLC0415  (resolved against the .pyi stub)
+
+    impl = _cpp_handle(bezier)
+    columns = [np.ascontiguousarray(column) for column in pts_per_dir]
+    _fill(out, lambda dest: _pantr_cpp.evaluate_bezier_on_lattice(impl, columns, out=dest))
+
+
 # Hoisted to module level rather than rebuilt inside each accessor. An accessor
 # that closed over a fresh function object would return a different callable on
 # every call, which defeats identity comparison in the tests and re-creates a
@@ -378,6 +490,12 @@ _CPP_RESTRICT: Final[_RestrictFunc] = _cpp_restrict
 
 _CPP_PRODUCT: Final[_ProductFunc] = _cpp_product
 """The Bernstein product of the C++ backend."""
+
+_CPP_EVALUATE_ND: Final[_EvaluateNdFunc] = _cpp_evaluate_nd
+"""The n-d evaluation at an array of points, in the C++ backend."""
+
+_CPP_EVALUATE_ND_LATTICE: Final[_EvaluateNdLatticeFunc] = _cpp_evaluate_nd_lattice
+"""The n-d evaluation on a lattice, in the C++ backend."""
 
 
 def evaluate_kernel(backend: Backend | None = None) -> _EvaluateFunc:
@@ -494,3 +612,50 @@ def product_kernel(backend: Backend | None = None) -> _ProductFunc:
         RuntimeError: If ``backend`` is given and is not available.
     """
     return _select(backend, _scalar_bernstein_product_1d_core, _CPP_PRODUCT)
+
+
+def evaluate_nd_kernel(backend: Backend | None = None) -> _EvaluateNdFunc:
+    """Return the n-d evaluation at an array of points, for the requested backend.
+
+    The Python side is imported here rather than at module scope because it lives
+    in :mod:`pantr.bezier._bezier_eval`, which imports this module. A lazy import
+    resolves against :data:`sys.modules` and returns the same function object every
+    time, so the identity the hoisted constants above exist to preserve is
+    preserved here too; what is avoided is a cycle, not a closure.
+
+    Args:
+        backend (Backend | None): The backend to use. ``None`` means the backend
+            currently in effect. Defaults to None.
+
+    Returns:
+        _EvaluateNdFunc: Callable as ``(bezier, pts, out) -> None``.
+
+    Raises:
+        RuntimeError: If ``backend`` is given and is not available.
+    """
+    from ._bezier_eval import _contract_nd_pts_array  # noqa: PLC0415  (cycle)
+
+    return _select(backend, _contract_nd_pts_array, _CPP_EVALUATE_ND)
+
+
+def evaluate_nd_lattice_kernel(backend: Backend | None = None) -> _EvaluateNdLatticeFunc:
+    """Return the n-d evaluation on a lattice, for the requested backend.
+
+    A separate accessor from :func:`evaluate_nd_kernel` rather than a branch inside
+    it, because the two are separate oracles with separate parity claims: the first
+    contracts with :func:`numpy.einsum`, this one with :func:`numpy.tensordot`,
+    which reaches BLAS. See ``design/backend_parity.md`` Rule 9.
+
+    Args:
+        backend (Backend | None): The backend to use. ``None`` means the backend
+            currently in effect. Defaults to None.
+
+    Returns:
+        _EvaluateNdLatticeFunc: Callable as ``(bezier, pts_per_dir, out) -> None``.
+
+    Raises:
+        RuntimeError: If ``backend`` is given and is not available.
+    """
+    from ._bezier_eval import _contract_nd_lattice  # noqa: PLC0415  (cycle)
+
+    return _select(backend, _contract_nd_lattice, _CPP_EVALUATE_ND_LATTICE)

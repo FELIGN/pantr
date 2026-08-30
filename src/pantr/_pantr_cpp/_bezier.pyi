@@ -5,6 +5,8 @@ Bound by ``cpp/bindings/bezier_type.cpp``, ``cpp/bindings/bezier.cpp`` and
 package promises and who has to keep it.
 """
 
+from collections.abc import Sequence
+
 import numpy as np
 import numpy.typing as npt
 
@@ -99,6 +101,91 @@ def evaluate_bezier_1d(
         TypeError: If any array has the wrong dtype or rank, is not C-contiguous,
             or if ``out`` is passed positionally.
         ValueError: If ``out`` is not the shape the other two arguments call for.
+    """
+
+def evaluate_bezier(
+    bezier: Bezier32 | Bezier64,
+    points: npt.NDArray[np.float32 | np.float64],
+    *,
+    out: npt.NDArray[np.float32 | np.float64],
+) -> None:
+    """Evaluate a Bézier at an explicit array of parametric points.
+
+    Contracts one parametric direction at a time against a per-point tabulated
+    basis, mirroring the ``np.einsum`` chain of the Python oracle. A
+    one-dimensional Bézier is delegated to the fused 1D kernel instead, as the
+    oracle's own dispatch does. A rational Bézier is projected: the value
+    components are divided by the trailing weight component.
+
+    ``points`` and ``out`` must share ``bezier``'s storage dtype -- the handle's
+    class picks the overload, and a mismatched array dtype is refused rather than
+    cast, since every array here is ``.noconvert()``.
+
+    Call :meth:`pantr.bezier.Bezier.evaluate` for the ordinary path, which
+    accepts points of any shape and allocates ``out``.
+
+    Args:
+        bezier (Bezier32 | Bezier64): The Bézier to evaluate.
+        points (npt.NDArray[np.float32 | np.float64]): Parametric points, shape
+            ``(n_pts, bezier.dim)``, each row one point, 2D, C-contiguous and
+            matching ``bezier``'s dtype. For a one-dimensional Bézier the single
+            column holds the parameters.
+        out (npt.NDArray[np.float32 | np.float64]): Output of shape
+            ``(n_pts, bezier.rank)``, matching dtype, C-contiguous and writable.
+            Written in full. The trailing axis is kept even for a scalar field.
+            Keyword-only.
+
+    Raises:
+        TypeError: If ``points`` or ``out`` does not match ``bezier``'s dtype,
+            if either is not 2D and C-contiguous, or if ``out`` is passed
+            positionally.
+        ValueError: If ``points`` does not have ``bezier.dim`` columns, or if
+            ``out`` is not shape ``(n_pts, bezier.rank)``.
+    """
+
+def evaluate_bezier_on_lattice(
+    bezier: Bezier32 | Bezier64,
+    points_per_dir: Sequence[npt.NDArray[np.float32 | np.float64]],
+    *,
+    out: npt.NDArray[np.float32 | np.float64],
+) -> None:
+    """Evaluate a Bézier on a tensor-product lattice of parametric points.
+
+    Contracts one *axis* of the running result at a time against direction
+    ``d``'s tabulated basis, mirroring the Python oracle's chain of
+    ``np.tensordot`` calls. **This is a different arithmetic from
+    :func:`evaluate_bezier` over the same points written out, not merely a
+    faster one**: the two contract in different orders and carry separate parity
+    claims. A rational Bézier is projected: the value components are divided by
+    the trailing weight component.
+
+    ``points_per_dir`` and ``out`` must share ``bezier``'s storage dtype -- the
+    handle's class picks the overload, and a mismatched array dtype is refused
+    rather than cast, since every array here is ``.noconvert()``.
+
+    Call :meth:`pantr.bezier.Bezier.evaluate` for the ordinary path, which
+    dispatches to this kernel for a lattice of points and allocates ``out``.
+
+    Args:
+        bezier (Bezier32 | Bezier64): The Bézier to evaluate.
+        points_per_dir (Sequence[npt.NDArray[np.float32 | np.float64]]): One
+            1D, C-contiguous array of parameters per parametric direction,
+            ``bezier.dim`` of them, each matching ``bezier``'s dtype. Direction
+            ``d`` may hold any number of points.
+        out (npt.NDArray[np.float32 | np.float64]): Output, matching dtype,
+            C-contiguous and writable, of **any rank**: its logical shape is
+            ``(m_0, ..., m_{dim-1}, bezier.rank)`` where ``m_d`` is
+            ``len(points_per_dir[d])``, and only its total size is checked,
+            because the rank is a runtime quantity no fixed-rank annotation can
+            state. Written in full. Keyword-only.
+
+    Raises:
+        TypeError: If any array does not match ``bezier``'s dtype, if
+            ``points_per_dir``'s entries are not 1D and C-contiguous, if ``out``
+            is not C-contiguous, or if ``out`` is passed positionally.
+        ValueError: If ``len(points_per_dir)`` does not equal ``bezier.dim``, or
+            if ``out``'s total size is not the product of the per-direction
+            lengths and ``bezier.rank``.
     """
 
 def evaluate_bezier_deriv_1d(
