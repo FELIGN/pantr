@@ -137,6 +137,16 @@ _LATTICE_POINTS: Final = 4
 """Points per direction in the lattice sweep. Four rather than three so the grid is
 not square with the smallest degrees, which would let an axis mix-up pass."""
 
+_SWEEP_DRAWS: Final = 10
+"""Independent nets per (degrees, rank, rationality) in the ten-times sweep.
+
+Sized against the shipped parametrization rather than picked: each entry point
+ships 28 cases per dtype (7 degree tuples x 2 ranks x 2 rationalities), so ten
+draws of each gives 280 per entry point per dtype, which is the factor of ten the
+ticket asks for. An earlier six gave six, and the arithmetic is written down here
+because nothing else in the file would have caught that.
+"""
+
 _TINY: Final = float(np.finfo(np.float64).tiny)
 """Floor for an amplification, so a tolerance is never identically zero."""
 
@@ -606,7 +616,7 @@ def test_each_bound_holds_over_a_sweep_ten_times_the_shipped_one(
     for degrees in DEGREES:
         for rank in RANKS:
             for rational in (False, True):
-                for draw in range(6):
+                for draw in range(_SWEEP_DRAWS):
                     seed += 1
                     net = _weighted_net(degrees, rank, dtype, seed=90000 + seed, rational=rational)
                     points = _point_array(degrees, dtype, count=7 + draw)
