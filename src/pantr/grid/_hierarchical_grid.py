@@ -40,7 +40,7 @@ from typing import TYPE_CHECKING, Self
 import numpy as np
 
 from .._numba_compat import wait_for_jit_warmup
-from ._grid import Grid, GridRestriction
+from ._grid import GridRestriction, _GridPython
 from ._grid_backend import (
     decode_flat_id_kernel,
     encode_midx_kernel,
@@ -309,7 +309,7 @@ def _name_marked_cells(mask: npt.NDArray[np.bool_], origin: tuple[int, ...]) -> 
 # ---------------------------------------------------------------------------
 
 
-class HierarchicalGrid(Grid):
+class HierarchicalGrid(_GridPython):
     """Hierarchical grid with a fixed per-direction uniform subdivision factor.
 
     Built on a root :class:`TensorProductGrid`.  Active cells are stored as
@@ -439,7 +439,7 @@ class HierarchicalGrid(Grid):
             levels).
         """
         self = cls.__new__(cls)
-        Grid.__init__(self)
+        _GridPython.__init__(self)
         self._root = root
         self._factor = factor
         normalized = [_normalize_blocks(list(level_blocks)) for level_blocks in blocks]

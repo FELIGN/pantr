@@ -232,6 +232,13 @@ nitpick_ignore = [
     ("py:class", "Path"),
     # Private structural protocol; not in __all__ and not cross-referenceable
     ("py:class", "_AffineMap"),
+    # The Python grid base, shown by :show-inheritance: on HierarchicalGrid and
+    # TensorProductGrid. Private, and deliberately so: it is the port's parity
+    # oracle and it goes away with the last Python grid. `_GridWrapper` is its
+    # successor as the wrappers' base and arrives with the TensorProductGrid port;
+    # listing it here now costs one line and saves that build a round trip.
+    ("py:class", "_GridPython"),
+    ("py:class", "_GridWrapper"),
     ("py:class", "CellIndex"),
     ("py:class", "CellIndicesBatch"),
     ("py:class", "Target"),

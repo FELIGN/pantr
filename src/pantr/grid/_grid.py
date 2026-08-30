@@ -1,15 +1,41 @@
-"""Abstract base class for structured cell grids.
+"""The grid contract, and the Python implementation of it that is on its way out.
 
-A :class:`Grid` is a partition of a parametric domain into cells with *implicit*
+A grid is a partition of a parametric domain into cells with *implicit*
 (computed, not stored) connectivity. It is the shared grid abstraction for the
 PaNTr stack: background grids for immersed / unfitted discretizations, knot-span
-grids of B-spline spaces, and (later) hierarchical refinement grids all satisfy
-this contract.
+grids of B-spline spaces, and hierarchical refinement grids all satisfy this
+contract.
+
+Two names, and the split is the point
+-------------------------------------
+
+:class:`Grid` is a :class:`typing.Protocol`. It is what a *consumer* may rely on
+-- every public member, annotated as ``grid: Grid`` throughout the library -- and
+it is satisfied structurally, so a class becomes a grid by having the members
+rather than by inheriting. It carries real default implementations, so
+``Grid.boundary_facets(g)`` computes the generic answer for any ``g`` that
+satisfies it; that unbound call is how a specialization is tested against the
+default it replaces.
+
+:class:`_GridPython` is the abstract base class the concrete Python grids derive
+from. It adds the three cache slots and their ``__init__`` to :class:`Grid` and
+nothing else, so there is exactly one copy of every default. It is also where
+the *implementer's* contract lives: its ``__abstractmethods__`` are the five
+primitives below, and a subclass omitting one cannot be instantiated. The
+:class:`Grid` protocol cannot express that -- structural typing has no
+"inherited" half, so the protocol has to list every member a consumer may call,
+and omitting an inherited default fails the same way as omitting a primitive.
+
+**:class:`_GridPython` is scaffolding.** The grid layer is being ported to C++
+(``cpp/include/pantr/grid/grid.hpp``), where the generic defaults are a CRTP
+mixin and the primitives are a concept. Once the C++ grids are wrapped, this
+class exists only as the parity oracle, and "keep parity with ``_GridPython``"
+is never a reason not to improve the C++.
 
 Design
 ------
 
-The contract is deliberately small. A concrete grid must define only:
+A concrete grid must define only:
 
 - :attr:`Grid.ndim`, :attr:`Grid.num_cells` -- size metadata;
 - :meth:`Grid.cell_bounds` -- the axis-aligned ``(lo, hi)`` corners of a cell;
@@ -42,7 +68,7 @@ per-cell tag footprint. Deciding *what* to tag is the consumer's job.
 from __future__ import annotations
 
 import abc
-from typing import TYPE_CHECKING, NamedTuple
+from typing import TYPE_CHECKING, NamedTuple, Protocol
 
 import numpy as np
 
@@ -59,27 +85,42 @@ if TYPE_CHECKING:
     from ._bvh import BVH
 
 
-class Grid(abc.ABC):
-    """Abstract structured cell grid with implicit connectivity.
+class Grid(Protocol):
+    """Structural contract for a cell grid with implicit connectivity.
 
-    See the module docstring for the contract and the set of methods a subclass
-    must implement versus those provided as overridable defaults. The size
-    metadata is exposed through the :attr:`ndim` and :attr:`num_cells`
-    properties.
+    A :class:`typing.Protocol`: any object with these members is a grid, whether
+    or not it inherits anything. See the module docstring for the split between
+    this and :class:`_GridPython`, and for the five primitives a concrete grid
+    must supply.
+
+    The private members below are part of the structural contract, which is
+    unusual enough to say why: the defaults are real implementations, and three
+    of them memoize into named slots. Anything satisfying this protocol
+    therefore owes those three slots under those three names -- which is also
+    what the tag and BVH identity assertions in the test suite read directly.
+
+    Those three writes carry a ``# type: ignore[misc]``. This class declares
+    ``__slots__ = ()`` and never the memo slots themselves, because the storage
+    belongs to whoever implements the protocol; mypy checks ``__slots__``
+    against the class a write appears in rather than against the implementer's.
+
+    Attributes:
+        _bvh (BVH | None): Memoized spatial index; ``None`` until first built.
+        _cell_tags (CellTags | None): Memoized cell-tag registry; ``None`` until
+            first use.
+        _facet_tags (FacetTags | None): Memoized facet-tag registry; ``None``
+            until first use.
     """
 
-    __slots__ = ("_bvh", "_cell_tags", "_facet_tags")
+    # `Generic` does not declare `__slots__`, so a Protocol that omits this one
+    # line gives every explicit subclass a `__dict__` even where that subclass
+    # declares `__slots__` itself. Nothing in the suite would catch it: the cost
+    # is per-instance memory plus the quiet return of settable attributes.
+    __slots__ = ()
 
-    def __init__(self) -> None:
-        """Initialize the lazy spatial-index and tag-registry slots.
-
-        Subclasses must call ``super().__init__()`` before use so the lazy
-        :attr:`cell_tags`, :attr:`facet_tags`, and :meth:`query_aabb` caches are
-        available.
-        """
-        self._bvh: BVH | None = None
-        self._cell_tags: CellTags | None = None
-        self._facet_tags: FacetTags | None = None
+    _bvh: BVH | None
+    _cell_tags: CellTags | None
+    _facet_tags: FacetTags | None
 
     # ------------------------------------------------------------------
     # Abstract contract
@@ -297,7 +338,13 @@ class Grid(abc.ABC):
             TypeError: If ``cell_ids`` is not integer-valued (in overriding
                 implementations).
         """
-        raise NotImplementedError(f"{type(self).__name__} does not support restrict().")
+        # Two statements rather than a bare `raise`, and the reason is not style.
+        # mypy treats a protocol member whose body is a lone `raise
+        # NotImplementedError` as *abstract*, which would make `restrict` a
+        # required primitive for every explicit subclass -- the opposite of the
+        # documented contract that restriction is optional.
+        message = f"{type(self).__name__} does not support restrict()."
+        raise NotImplementedError(message)
 
     # ------------------------------------------------------------------
     # Facet accessors (axis-aligned box defaults)
@@ -512,7 +559,7 @@ class Grid(abc.ABC):
 
         if self._bvh is None:
             cell_lo, cell_hi = self.collect_cell_bounds()
-            self._bvh = BVH.from_cell_bounds(cell_lo, cell_hi)
+            self._bvh = BVH.from_cell_bounds(cell_lo, cell_hi)  # type: ignore[misc]
         return self._bvh
 
     def collect_cell_bounds(
@@ -550,7 +597,7 @@ class Grid(abc.ABC):
             empty until first use.
         """
         if self._cell_tags is None:
-            self._cell_tags = CellTags(self.num_cells)
+            self._cell_tags = CellTags(self.num_cells)  # type: ignore[misc]
         return self._cell_tags
 
     @property
@@ -563,7 +610,7 @@ class Grid(abc.ABC):
             per cell (an axis-aligned box grid).
         """
         if self._facet_tags is None:
-            self._facet_tags = FacetTags(self.num_cells, 2 * self.ndim)
+            self._facet_tags = FacetTags(self.num_cells, 2 * self.ndim)  # type: ignore[misc]
         return self._facet_tags
 
     # ------------------------------------------------------------------
@@ -622,6 +669,42 @@ class Grid(abc.ABC):
                 f"got shape {arr.shape}."
             )
         return np.ascontiguousarray(arr)
+
+
+class _GridPython(Grid, abc.ABC):
+    """The Python implementation of :class:`Grid`, and the port's parity oracle.
+
+    Adds the three cache slots and their initializer to :class:`Grid` and
+    nothing else, so every default has exactly one body and a specialization
+    tested against ``Grid.<name>(g)`` is tested against the code that actually
+    runs.
+
+    This is where the *implementer's* contract is enforced:
+    ``_GridPython.__abstractmethods__`` is the five primitives, so a subclass
+    that omits one cannot be instantiated. :class:`Grid` cannot express that,
+    because a protocol has no inherited half -- see the module docstring.
+
+    Scaffolding: the grid layer's generic operations are moving to C++, and this
+    class survives only as the oracle they are compared against.
+
+    Attributes:
+        _bvh (BVH | None): Lazily built spatial index.
+        _cell_tags (CellTags | None): Lazily created cell-tag registry.
+        _facet_tags (FacetTags | None): Lazily created facet-tag registry.
+    """
+
+    __slots__ = ("_bvh", "_cell_tags", "_facet_tags")
+
+    def __init__(self) -> None:
+        """Initialize the lazy spatial-index and tag-registry slots.
+
+        Subclasses must call ``super().__init__()`` before use so the lazy
+        :attr:`cell_tags`, :attr:`facet_tags`, and :meth:`query_aabb` caches are
+        available.
+        """
+        self._bvh: BVH | None = None
+        self._cell_tags: CellTags | None = None
+        self._facet_tags: FacetTags | None = None
 
 
 class GridRestriction(NamedTuple):

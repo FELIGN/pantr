@@ -37,7 +37,7 @@ import numpy as np
 
 from .._numba_compat import wait_for_jit_warmup
 from ._cell_index import c_order_strides, flat_to_multi, multi_to_flat
-from ._grid import Grid, GridRestriction
+from ._grid import GridRestriction, _GridPython
 from ._grid_backend import locate_points_kernel
 from ._grid_utils import _as_float64, _mask_nonfinite_locate
 
@@ -56,7 +56,7 @@ _UNIFORM_SPACING_ATOL: Final[float] = 1e-10
 _MIN_BREAKPOINTS_PER_AXIS: Final[int] = 2
 
 
-class TensorProductGrid(Grid):
+class TensorProductGrid(_GridPython):
     """Tensor-product grid of axis-aligned boxes with per-axis breakpoints.
 
     Cells are numbered in row-major (C) order over :attr:`cells_per_axis` (last
