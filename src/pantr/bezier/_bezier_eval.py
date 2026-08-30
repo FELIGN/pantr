@@ -135,9 +135,11 @@ def _evaluate_bezier_nd(
 ) -> npt.NDArray[np.float32 | np.float64]:
     """Evaluate an nD Bézier at the given points.
 
-    Uses sequential contraction: evaluates Bernstein basis in each parametric
-    direction and contracts with control points via ``np.einsum`` (arbitrary
-    points) or ``np.tensordot`` (lattice).
+    Validates the points, then hands the contraction to whichever schedule the
+    point set calls for. Which arithmetic actually runs is the active backend's
+    to decide: under the Python backend it is :func:`numpy.einsum` or
+    :func:`numpy.tensordot`, under the C++ one the transliteration of the same
+    schedule in ``cpp/include/pantr/bezier/evaluate.hpp``.
 
     Args:
         bezier (~pantr.bezier.Bezier): An nD Bézier (``dim >= 2``).
@@ -154,35 +156,26 @@ def _evaluate_bezier_nd(
     """
     from ..quad import PointsLattice as PL  # noqa: PLC0415
 
-    dim = bezier.dim
-    dtype = bezier.dtype
-    ctrl = bezier.control_points
-    degrees = bezier.degree
-
     if isinstance(pts, PL):
-        return _evaluate_bezier_nd_lattice(bezier, ctrl, pts, degrees, dtype, dim, out)
-    return _evaluate_bezier_nd_pts_array(bezier, ctrl, pts, degrees, dtype, dim, out)
+        return _evaluate_bezier_nd_lattice(bezier, pts, out)
+    return _evaluate_bezier_nd_pts_array(bezier, pts, out)
 
 
-def _evaluate_bezier_nd_pts_array(  # noqa: PLR0913
+def _evaluate_bezier_nd_pts_array(
     bezier: Bezier,
-    ctrl: npt.NDArray[np.float32 | np.float64],
     pts: npt.NDArray[np.float32 | np.float64],
-    degrees: tuple[int, ...],
-    dtype: npt.DTypeLike,
-    dim: int,
     out: npt.NDArray[np.float32 | np.float64] | None,
 ) -> npt.NDArray[np.float32 | np.float64]:
-    """Evaluate nD Bézier at arbitrary points using sequential einsum contraction.
+    """Validate an explicit point array and hand it to the pts-array schedule.
+
+    The contraction itself is :func:`_contract_nd_pts_array` under the Python
+    backend and its C++ counterpart otherwise; this function owns the validation
+    and the output shape, which are shared.
 
     Args:
         bezier (~pantr.bezier.Bezier): The Bézier.
-        ctrl (npt.NDArray[np.float32 | np.float64]): Control points.
         pts (npt.NDArray[np.float32 | np.float64]): Points of shape
             ``(n_pts, dim)``.
-        degrees (tuple[int, ...]): Polynomial degrees per direction.
-        dtype (npt.DTypeLike): Floating-point dtype.
-        dim (int): Parametric dimension.
         out (npt.NDArray[np.float32 | np.float64] | None): Optional output array.
 
     Returns:
@@ -192,6 +185,9 @@ def _evaluate_bezier_nd_pts_array(  # noqa: PLR0913
     Note:
         Inputs are assumed to be partially validated by the caller.
     """
+    dim = bezier.dim
+    dtype = bezier.dtype
+
     pts = np.asarray(pts)
     if pts.ndim != 2 or pts.shape[1] != dim:  # noqa: PLR2004
         raise ValueError(f"pts must be a 2D array with {dim} columns.")
@@ -258,24 +254,20 @@ def _contract_nd_pts_array(
     out[...] = _project_raw(bezier, result)
 
 
-def _evaluate_bezier_nd_lattice(  # noqa: PLR0913
+def _evaluate_bezier_nd_lattice(
     bezier: Bezier,
-    ctrl: npt.NDArray[np.float32 | np.float64],
     pts: PointsLattice,
-    degrees: tuple[int, ...],
-    dtype: npt.DTypeLike,
-    dim: int,
     out: npt.NDArray[np.float32 | np.float64] | None,
 ) -> npt.NDArray[np.float32 | np.float64]:
-    """Evaluate nD Bézier on a lattice using sequential tensordot contraction.
+    """Validate a lattice and hand it to the lattice schedule.
+
+    The contraction itself is :func:`_contract_nd_lattice` under the Python
+    backend and its C++ counterpart otherwise; this function owns the validation
+    and the output shape, which are shared.
 
     Args:
         bezier (~pantr.bezier.Bezier): The Bézier.
-        ctrl (npt.NDArray[np.float32 | np.float64]): Control points.
         pts (~pantr.quad.PointsLattice): Lattice of evaluation points.
-        degrees (tuple[int, ...]): Polynomial degrees per direction.
-        dtype (npt.DTypeLike): Floating-point dtype.
-        dim (int): Parametric dimension.
         out (npt.NDArray[np.float32 | np.float64] | None): Optional output array.
 
     Returns:
@@ -285,6 +277,9 @@ def _evaluate_bezier_nd_lattice(  # noqa: PLR0913
     Note:
         Inputs are assumed to be partially validated by the caller.
     """
+    dim = bezier.dim
+    dtype = bezier.dtype
+
     if pts.dim != dim:
         raise ValueError(f"PointsLattice dim ({pts.dim}) must match Bézier dim ({dim}).")
 
