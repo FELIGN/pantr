@@ -10,6 +10,12 @@ wrong against a reused one.
 That is the failure these tests exist to catch, and it is the one a C++ port is most
 likely to reintroduce, since the natural translation of ``np.zeros`` is a destination
 the caller already zeroed.
+
+The two n-dimensional evaluation entry points are here for the same reason and are
+worse placed to get away with it: they accumulate into one destination element per
+output value, over ``sum_d (degree_d + 1)`` terms, and a forgotten zeroing there adds
+whatever the buffer held to a result that is otherwise correct. Layer 2 allocates that
+buffer with :func:`numpy.empty`, so in production it is never zeroed for them.
 """
 
 import numpy as np
@@ -115,3 +121,104 @@ def test_the_public_surface_refuses_a_mismatched_out_dtype_on_both_backends(
             "the two backends refuse a mismatched out with different messages, so the "
             "library's surface depends on PANTR_BACKEND"
         )
+
+
+@pytest.mark.parametrize("dtype", [np.float64, np.float32])
+@pytest.mark.parametrize("degrees", [(2, 3), (1, 2, 2)])
+@pytest.mark.parametrize("rank", [1, 3])
+def test_the_nd_entry_points_write_every_element_on_both_backends(
+    degrees: tuple[int, ...], rank: int, dtype: type[np.floating]
+) -> None:
+    """Neither n-d schedule leaves anything of a reused destination behind.
+
+    The kernels are reached through their accessors rather than through
+    :meth:`~pantr.bezier.Bezier.evaluate`, and that is the whole point: Layer 2
+    allocates the buffer itself and then copies into the caller's ``out``, so a
+    poisoned ``out`` at the public surface is overwritten by the copy and would pass
+    whatever the kernel did. Poisoning the buffer the kernel is handed is what
+    reaches the obligation.
+
+    Both entry points are checked, and separately: they are two different
+    contraction schedules over two different buffers, so a zeroing forgotten in one
+    says nothing about the other.
+
+    Neither backend can fail the poison half today -- both overwrite the destination
+    unconditionally -- so that half is a regression guard rather than a live check,
+    and it is written down as one. The **strided** half below is live: the C++
+    binding refuses a non-contiguous destination outright, and only
+    :func:`~pantr.bezier._bezier_backend._fill` makes the two backends accept the
+    same arrays. Bypassing it would raise :class:`TypeError` here rather than
+    silently returning a wrong number.
+    """
+    from pantr._backend import available_backends, use_backend  # noqa: PLC0415
+    from pantr.bezier import Bezier  # noqa: PLC0415
+    from pantr.bezier._bezier_backend import (  # noqa: PLC0415
+        evaluate_nd_kernel,
+        evaluate_nd_lattice_kernel,
+    )
+
+    rng = np.random.default_rng(20260830)
+    shape = (*(degree + 1 for degree in degrees), rank)
+    ctrl: npt.NDArray[np.floating] = rng.standard_normal(shape).astype(dtype)
+    dim = len(degrees)
+    points = np.ascontiguousarray(rng.random((5, dim)), dtype=dtype)
+    columns = [np.asarray(rng.random(3), dtype=dtype) for _ in range(dim)]
+
+    for backend in available_backends():
+        with use_backend(backend):
+            bezier = Bezier(ctrl)
+
+            clean = np.zeros((5, rank), dtype=dtype)
+            evaluate_nd_kernel()(bezier, points, clean)
+            poisoned = np.full((5, rank), _POISON, dtype=dtype)
+            evaluate_nd_kernel()(bezier, points, poisoned)
+            assert_array_equal(poisoned, clean)
+
+            lattice_shape = ((3,) * dim) + (rank,)
+            clean_lattice = np.zeros(lattice_shape, dtype=dtype)
+            evaluate_nd_lattice_kernel()(bezier, columns, clean_lattice)
+            poisoned_lattice = np.full(lattice_shape, _POISON, dtype=dtype)
+            evaluate_nd_lattice_kernel()(bezier, columns, poisoned_lattice)
+            assert_array_equal(poisoned_lattice, clean_lattice)
+
+
+@pytest.mark.parametrize("dtype", [np.float64, np.float32])
+def test_the_nd_entry_points_accept_a_strided_destination_on_both_backends(
+    dtype: type[np.floating],
+) -> None:
+    """``PANTR_BACKEND`` must not change which ``out`` the n-d schedules accept.
+
+    The numba kernels fill a strided ``out`` in place; the C++ bindings require
+    C-contiguous memory and refuse anything else, because ``.noconvert()`` is what
+    stops nanobind from filling a temporary and discarding it. A strided destination
+    therefore only works because Layer 2 absorbs it, and this is what says so.
+    """
+    from pantr._backend import available_backends, use_backend  # noqa: PLC0415
+    from pantr.bezier import Bezier  # noqa: PLC0415
+    from pantr.bezier._bezier_backend import (  # noqa: PLC0415
+        evaluate_nd_kernel,
+        evaluate_nd_lattice_kernel,
+    )
+
+    rng = np.random.default_rng(20260831)
+    ctrl: npt.NDArray[np.floating] = rng.standard_normal((3, 4, 2)).astype(dtype)
+    points = np.ascontiguousarray(rng.random((5, 2)), dtype=dtype)
+    columns = [np.asarray(rng.random(3), dtype=dtype) for _ in range(2)]
+
+    for backend in available_backends():
+        with use_backend(backend):
+            bezier = Bezier(ctrl)
+
+            contiguous = np.empty((5, 2), dtype=dtype)
+            evaluate_nd_kernel()(bezier, points, contiguous)
+            strided = np.empty((5, 4), dtype=dtype)[:, ::2]
+            assert not strided.flags["C_CONTIGUOUS"]
+            evaluate_nd_kernel()(bezier, points, strided)
+            assert_array_equal(strided, contiguous)
+
+            contiguous_lattice = np.empty((3, 3, 2), dtype=dtype)
+            evaluate_nd_lattice_kernel()(bezier, columns, contiguous_lattice)
+            strided_lattice = np.empty((3, 3, 4), dtype=dtype)[..., ::2]
+            assert not strided_lattice.flags["C_CONTIGUOUS"]
+            evaluate_nd_lattice_kernel()(bezier, columns, strided_lattice)
+            assert_array_equal(strided_lattice, contiguous_lattice)
