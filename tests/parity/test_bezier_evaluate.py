@@ -14,10 +14,12 @@ fail. What it found, at ``1c5fba7`` with numpy 2.4.6:
   this path is Numba. Inheriting it would have made the claim be about arithmetic
   nobody performs;
 * an ascending-index transliteration reproduces that ``einsum`` bit for bit wherever
-  the contraction's trailing block holds two or more elements, and **stops** where
-  that block is a single element -- which is every scalar-valued non-rational
-  Bézier, because numpy then dispatches a vectorised reduction whose summation tree
-  is a property of the host rather than of the expression;
+  the contraction's trailing block holds two or more elements. Where that block is a
+  single element -- every scalar-valued non-rational Bézier -- it reproduces it only
+  while the contraction stays short: numpy dispatches a vectorised reduction from
+  length 4 at ``float32`` and length 3 at ``float64``, and that reduction's summation
+  tree is a property of the host rather than of the expression. The short cases that
+  still agree are **not** claimed here, because the threshold is numpy's to move;
 * the ``np.tensordot`` contraction of ``_evaluate_bezier_nd_lattice`` matches no
   width model at any shape swept, because it reshapes to a matrix product and
   reaches BLAS.
@@ -705,3 +707,53 @@ def test_the_result_is_accurate_against_exact_rational_arithmetic(
         ),
         context=f"exact rational oracle, degrees {degrees}, {np.dtype(dtype).name}",
     )
+
+
+def test_evaluating_across_a_backend_switch_is_refused(cpp_backend: None) -> None:
+    """A Bézier built under one backend is refused rather than converted.
+
+    New behaviour, introduced with these two entry points: they take the value
+    itself rather than its arrays, so under the C++ backend the adapter needs the
+    handle the wrapper holds, and a wrapper holding the Python oracle cannot supply
+    one. Converting between the two implementations is the shape
+    ``design/cross_backend_types.md`` forbids, so it refuses -- the same way
+    :meth:`~pantr.bezier.Bezier._mutate_control_points` does, which
+    ``tests/parity/test_bezier_type.py`` already pins for the mutating methods.
+
+    Both directions are checked, and so is the fact that evaluation still works
+    under the matching backend: a version that raised everywhere would pass the
+    first half and be useless.
+    """
+    del cpp_backend
+    net = _mixed_control_points((3, 4, 2), np.float64, seed=20260837)
+    points = _point_array((2, 3), np.float64, count=5)
+    lattice = _lattice((2, 3), np.float64)
+
+    with use_backend(Backend.PYTHON):
+        built_under_python = Bezier(net)
+    with use_backend(Backend.CPP), pytest.raises(TypeError, match="different backend"):
+        built_under_python.evaluate(points)
+    with use_backend(Backend.CPP), pytest.raises(TypeError, match="different backend"):
+        built_under_python.evaluate(lattice)
+
+    # The other direction fails too, and for a different reason worth separating:
+    # the numpy schedule reads `control_points`, which a C++ handle serves happily,
+    # so nothing refuses it and the arithmetic is simply the Python one. That is the
+    # oracle running on C++-owned storage, which is exactly what every parity test in
+    # this file does on purpose, so it must NOT raise.
+    with use_backend(Backend.CPP):
+        built_under_cpp = Bezier(net)
+    with use_backend(Backend.PYTHON):
+        from_oracle = np.asarray(built_under_cpp.evaluate(points))
+    with use_backend(Backend.PYTHON):
+        reference = np.asarray(Bezier(net).evaluate(points))
+    assert np.array_equal(from_oracle, reference), (
+        "the numpy schedule gave a different answer when it read a C++-owned control "
+        "net than when it read its own, so the storage is not common mode and every "
+        "comparison in this file has an extra difference folded into it"
+    )
+
+    # And evaluation under the matching backend still works, so the refusal above is
+    # about the mismatch rather than about the C++ path being broken.
+    with use_backend(Backend.CPP):
+        assert np.asarray(built_under_cpp.evaluate(points)).shape == (5, 2)

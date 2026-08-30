@@ -36,16 +36,29 @@
 /// `_evaluate_bezier_nd_lattice`, which contracts one *axis* of the running result
 /// at a time with `np.tensordot` and therefore reaches BLAS.
 ///
+/// **`evaluate_on_lattice` has no `dim() == 1` special case, and the asymmetry with
+/// `evaluate` is deliberate rather than an oversight.** Its general path is correct
+/// at one dimension -- the outer extent is 1 and the contraction is the ordinary
+/// one -- but Python never reaches it there, because `_evaluate_bezier` routes
+/// `dim == 1` to the fused kernel before either n-d schedule exists. So a C++ caller
+/// evaluating a one-dimensional Bézier on a lattice gets a *valid* result by a
+/// rounding path **no parity claim covers**, differing in its last bits from what
+/// `evaluate` gives for the same parameters. Nothing there is wrong; there is simply
+/// no oracle for it.
+///
 /// The two are the same mathematics and different arithmetic, so **one kernel
 /// cannot be exact against both** and each carries its own parity claim; the
 /// derivations are in `tests/parity/test_bezier_evaluate.py`. What the
 /// measurement found, and what a reader should not have to rediscover:
 ///
 ///  - the ascending-index contraction below reproduces `np.einsum` bit for bit
-///    wherever the contraction's trailing block holds two or more elements, and
-///    stops reproducing it where that block is a single element -- which is every
-///    scalar-valued non-rational Bézier, because numpy then dispatches a
-///    vectorised reduction whose summation tree is a property of the host;
+///    wherever the contraction's trailing block holds two or more elements. Where
+///    that block is a single element -- which is every scalar-valued non-rational
+///    Bézier -- it reproduces it only while the contraction stays short: numpy
+///    dispatches a vectorised reduction from length 4 at `float32` and length 3 at
+///    `float64`, and that reduction's summation tree is a property of the host
+///    rather than of the expression. That the short cases still agree is **not** a
+///    claim this file makes, since the threshold is numpy's to move;
 ///  - `np.tensordot` matches no width model at any shape swept, because it is a
 ///    matrix product.
 ///
