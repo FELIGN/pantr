@@ -459,10 +459,12 @@ void check_evaluate_and_lattice_agree() {
 /// `gamma_N` of `w` rather than by `w` itself, differing from the
 /// already-divided comparison by about `gamma_N` of its own magnitude, plus
 /// one more `eps` for the projection's own division. The factor of four below
-/// is a deliberately generous, stated margin over that estimate, in the
+/// is an **admitted heuristic**, not a derived constant -- a margin in the
 /// spirit of the factor of two `test_bezier_root_finding.cpp` documents for
-/// its own residual bound; a numerical sweep at both `float` and `double`
-/// measured the true ratio at under 10% of this margin.
+/// its own residual bound. It is stated as one so it can be argued with; an
+/// invented derivation could not be. How much of it is actually used is not
+/// recorded here, because a number nothing re-measures rots while reading as
+/// current: lower the factor and re-run this test, which is the reproduction.
 template <class T>
 void check_rational_projection() {
     const double eps = static_cast<double>(std::numeric_limits<T>::epsilon());
