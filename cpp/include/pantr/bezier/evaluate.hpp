@@ -48,7 +48,18 @@
 ///
 /// The two are the same mathematics and different arithmetic, so **one kernel
 /// cannot be exact against both** and each carries its own parity claim; the
-/// derivations are in `tests/parity/test_bezier_evaluate.py`. What the
+/// derivations are in `tests/parity/test_bezier_evaluate.py`.
+///
+/// **The asymmetry is on the oracle's side, not on this one.** Both functions below
+/// route through the same `detail::contract_leading_axis` in the same direction
+/// order, so for a point list and a lattice denoting the same parameters they agree
+/// **bit for bit** -- measured over 60 configurations spanning both dtypes, ranks 1
+/// to 3, rational and not. numpy does not: its two contractions differ on about
+/// three values in five. So there is one arithmetic here and two there, and what
+/// separates the two claims is which oracle the same numbers are held against,
+/// rather than anything this file computes differently. That is also the tightest
+/// statement of why neither claim can be bitwise: a single schedule cannot reproduce
+/// two oracles that disagree with each other. What the
 /// measurement found, and what a reader should not have to rediscover:
 ///
 ///  - the ascending-index contraction below reproduces `np.einsum` bit for bit
