@@ -71,14 +71,23 @@ bitwise claim ``tests/parity/test_bezier_arithmetic.py`` already carries.
 ``test_a_one_dimensional_bezier_still_delegates`` pins that the branch is still taken
 rather than restating the claim.
 
-**The Bernstein bases are common mode, and only on a compiled oracle.** Both backends
-tabulate the basis before contracting, and the two tabulations are bit-identical --
-``tests/parity/test_basis_tabulations.py`` asserts it -- so the whole budget above is
-the contraction's. That premise fails under ``NUMBA_DISABLE_JIT=1``, where the oracle
-seeds its ratio recurrence with numpy's ``np.power`` instead of numba's and the two
-differ by an ulp (Rule 12), so every claim here calls
-:func:`demand_a_compiled_seed`. A bounded claim usually need not be gated; this one
-must, because its budget is written for the contraction alone.
+**The Bernstein bases are charged for rather than gated out.** Both backends tabulate
+the basis before contracting, and the two tabulations are bit-identical while the
+oracle is compiled (``tests/parity/test_basis_tabulations.py`` asserts it). Under
+``NUMBA_DISABLE_JIT=1`` that premise fails: the oracle seeds its ratio recurrence with
+numpy's ``np.power`` instead of numba's, and the two differ by an ulp (Rule 12).
+
+The first version of this file answered that with :func:`demand_a_compiled_seed`, and
+**that was the wrong answer** -- measured, it skipped 66 of the 69 float64 cases to
+cover a divergence the budget can simply absorb, which is exactly the over-gating
+Rule 12 warns about. The stage count now carries ``+ dim``, one rounding per
+direction, because each direction's basis value enters each term exactly once. Under a
+compiled oracle those roundings are never spent, so the bound is looser by ``dim / N``
+and nothing else; under an interpreted one the claim is still true rather than absent.
+
+``demand_the_compiled_kernel`` stays, and only at ``float32``: there the interpreted
+path does not move a seed by an ulp, it computes the whole tabulation at a different
+width, which is a different quantity rather than a perturbed one.
 """
 
 from __future__ import annotations
@@ -102,7 +111,6 @@ from tests._parity_harness import (
     assert_accuracy,
     assert_parity,
     bounded_parity,
-    demand_a_compiled_seed,
     demand_the_compiled_kernel,
     demand_the_reference_host,
     derived_accuracy,
@@ -344,7 +352,16 @@ def _claim(
         for the division when rational.
     """
     dtype = net.dtype
-    stages = sum(extent for extent in net.shape[:-1])
+    # One stage per term of every contraction, plus one per direction for the
+    # basis. The basis term is not the contraction's: both backends tabulate the
+    # Bernstein basis before contracting, and the two tabulations are bit-identical
+    # only while the oracle is compiled -- interpreted, its ratio recurrence seeds
+    # with numpy's `np.power` rather than numba's and the two differ by an ulp
+    # (backend_parity.md Rule 12). Each direction's basis value enters each term
+    # exactly once, so a one-ulp relative divergence in it costs one rounding per
+    # direction, and charging `dim` of them makes the claim true in both
+    # configurations instead of true in one and gated out of the other.
+    stages = sum(extent for extent in net.shape[:-1]) + (net.ndim - 1)
 
     if not rational:
         amplification = _companion(np.abs(net), points)
@@ -404,7 +421,6 @@ def test_the_pts_array_entry_point_is_bounded(
     """The einsum schedule and its C++ counterpart agree inside the contraction budget."""
     del cpp_backend
     demand_the_compiled_kernel(dtype)
-    demand_a_compiled_seed()
 
     net = _weighted_net(degrees, rank, dtype, seed=20260830, rational=rational)
     points = _point_array(degrees, dtype, count=9)
@@ -433,7 +449,6 @@ def test_the_lattice_entry_point_is_bounded(
     """The tensordot schedule and its C++ counterpart agree inside the same budget."""
     del cpp_backend
     demand_the_compiled_kernel(dtype)
-    demand_a_compiled_seed()
 
     net = _weighted_net(degrees, rank, dtype, seed=20260831, rational=rational)
     lattice = _lattice(degrees, dtype)
@@ -458,7 +473,6 @@ def test_a_one_dimensional_bezier_still_delegates(cpp_backend: None, dtype: npt.
     """
     del cpp_backend
     demand_the_compiled_kernel(dtype)
-    demand_a_compiled_seed()
 
     net = _mixed_control_points((6, 3), dtype, seed=20260832)
     points = _adversarial_parameters(dtype, 8)
@@ -488,7 +502,6 @@ def test_the_two_entry_points_are_not_the_same_arithmetic(
     """
     del cpp_backend
     demand_the_compiled_kernel(dtype)
-    demand_a_compiled_seed()
     demand_the_reference_host(
         "einsum and tensordot disagree",
         "measured by scripts/measure_bezier_nd_widths.py on the calibrated host",
@@ -530,7 +543,6 @@ def test_the_bound_refuses_a_perturbed_result(
     """
     del cpp_backend
     demand_the_compiled_kernel(dtype)
-    demand_a_compiled_seed()
 
     net = _weighted_net(degrees, 3, dtype, seed=20260834, rational=rational)
     points = _point_array(degrees, dtype, count=9)
@@ -588,7 +600,6 @@ def test_each_bound_holds_over_a_sweep_ten_times_the_shipped_one(
     """
     del cpp_backend
     demand_the_compiled_kernel(dtype)
-    demand_a_compiled_seed()
 
     worst = {"pts": 0.0, "lattice": 0.0}
     seed = 0
@@ -657,7 +668,6 @@ def test_the_result_is_accurate_against_exact_rational_arithmetic(
     """
     del cpp_backend
     demand_the_compiled_kernel(dtype)
-    demand_a_compiled_seed()
 
     degrees = (3, 2)
     # Dyadic parameters so the exact rational and the float64 point array denote the
