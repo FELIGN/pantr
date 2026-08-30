@@ -14,9 +14,11 @@ proportional to its breakpoints, not its cell count.
 
 Main exports:
 
-- :class:`Grid`: abstract base class defining the grid contract and supplying
-  axis-aligned box defaults for facets, neighbours, reference maps, batch point
-  location, and spatial queries.
+- :class:`Grid`: the grid contract, as a :class:`typing.Protocol` -- satisfied
+  structurally, and carrying axis-aligned box defaults for facets, neighbours,
+  reference maps, batch point location, and spatial queries. A consumer
+  annotates ``grid: Grid``; an implementer derives from the private
+  ``_GridPython``, which is where the five primitives are enforced.
 - :class:`GridRestriction`: result of :meth:`Grid.restrict` -- a windowed
   sub-grid plus local-to-global cell index maps.
 - :class:`TensorProductGrid`: concrete tensor-product grid of axis-aligned boxes
