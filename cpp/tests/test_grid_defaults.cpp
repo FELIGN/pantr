@@ -280,6 +280,11 @@ class UnwritableBoundsGrid : public GridBase<UnwritableBoundsGrid> {
 static_assert(!GridLike<UnwritableBoundsGrid>,
               "a cell_bounds that cannot write its output must not satisfy GridLike");
 
+// Pins that the fixture above differs from a good grid in its PRIMITIVE and in nothing
+// else -- and, incidentally, keeps clang from reporting `hooks` unused, which it does
+// for the traits of any grid in an anonymous namespace that the census never reads.
+static_assert(pantr::grid::grid_traits<UnwritableBoundsGrid>::hooks == Hook::none);
+
 // The detector itself, in both directions, on the two fixtures.
 static_assert(!pantr::grid::detail::redeclares_boundary_facets<BoxGrid<double>>());
 static_assert(pantr::grid::detail::redeclares_boundary_facets<HookedGrid<double>>());

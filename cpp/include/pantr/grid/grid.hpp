@@ -835,6 +835,12 @@ PANTR_GRID_DECLARE_HOOK(num_local_facets, std::int64_t (D::*)(std::int64_t) cons
 
 /// Assert one hook against the grid's declaration, in both directions.
 ///
+/// The first assertion is the two-way agreement between the class and the bitmask. The
+/// second is keyed on whether the class REDECLARES the name rather than on whether the
+/// bitmask names it, so that a hook declared and never written fires the first message
+/// alone -- "the signature is wrong" would be an odd thing to say about a member that
+/// does not exist.
+///
 /// \param GRID The grid type. Must not contain a comma at the top level.
 /// \param NAME The hook's member name.
 #define PANTR_GRID_CENSUS_HOOK(GRID, NAME)                                                    \
@@ -845,8 +851,7 @@ PANTR_GRID_DECLARE_HOOK(num_local_facets, std::int64_t (D::*)(std::int64_t) cons
                   "disagree -- either the hook is written and not declared, in which case "   \
                   "it runs and nothing says so, or it is declared and not written, in which " \
                   "case the default runs and nothing says so");                               \
-    static_assert(!::pantr::grid::declares(::pantr::grid::grid_traits<GRID>::hooks,           \
-                                           ::pantr::grid::Hook::NAME)                         \
+    static_assert(!::pantr::grid::detail::redeclares_##NAME<GRID>()                            \
                       || ::pantr::grid::detail::hook_signature_matches_##NAME<GRID>(),        \
                   "pantr grid census (" #GRID ", " #NAME "): the hook does not have the "     \
                   "signature of the default it replaces")
