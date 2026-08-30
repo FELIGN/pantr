@@ -1,9 +1,23 @@
 """Bézier evaluation helpers.
 
 This module provides Layer 2 evaluation functions for :class:`~pantr.bezier.Bezier`
-objects. It validates inputs, allocates output arrays, and dispatches to Layer 3
-Numba kernels in :mod:`_bezier_core` (for 1D) or performs sequential contraction
-via NumPy (for nD).
+objects. It validates inputs, allocates output arrays, and dispatches to the
+1D kernels in :mod:`_bezier_core` or to one of the two n-dimensional contraction
+schedules.
+
+The n-dimensional schedules are the ones ``design/backend_parity.md`` Rule 9 is
+about. Both exist twice, once here in NumPy and once in
+``cpp/include/pantr/bezier/evaluate.hpp``, and
+:func:`~pantr.bezier._bezier_backend.evaluate_nd_kernel` picks between them. The
+NumPy pair below is the **oracle**: an arbitrary array of points is contracted
+with :func:`numpy.einsum`, a lattice with :func:`numpy.tensordot`, and the two
+disagree well above bit level because the second reaches BLAS. That is why they
+are two functions rather than one with a branch, and why they carry two parity
+claims rather than one.
+
+Validation stays here, above the branch, so both backends raise the same message
+for the same argument. The C++ side re-checks what it needs for memory safety,
+for a caller reaching the extension without going through this layer.
 """
 
 from __future__ import annotations
@@ -16,7 +30,12 @@ import numpy as np
 import numpy.typing as npt
 
 from ..basis._basis_utils import _validate_out_array
-from ._bezier_backend import evaluate_deriv_kernel, evaluate_kernel
+from ._bezier_backend import (
+    evaluate_deriv_kernel,
+    evaluate_kernel,
+    evaluate_nd_kernel,
+    evaluate_nd_lattice_kernel,
+)
 from ._bezier_utils import _tabulate_bernstein_1d_fast
 
 if TYPE_CHECKING:
@@ -179,7 +198,51 @@ def _evaluate_bezier_nd_pts_array(  # noqa: PLR0913
     if pts.dtype != dtype:
         raise ValueError(f"Points dtype ({pts.dtype}) must match Bézier dtype ({dtype}).")
 
-    # Evaluate Bernstein basis per direction
+    rank = bezier.rank
+    raw = np.empty((pts.shape[0], rank), dtype=dtype)
+    evaluate_nd_kernel()(bezier, pts, raw)
+
+    # The squeeze is above the backend branch because it is a reshape rather than
+    # a computation, and keeping it here means the two contraction schedules fill
+    # the same shape and stay comparable element for element.
+    result = raw[:, 0] if rank == 1 else raw
+
+    if out is not None:
+        _validate_out_array(out, result.shape, dtype)
+        out[:] = result
+        return out
+    return result
+
+
+def _contract_nd_pts_array(
+    bezier: Bezier,
+    pts: npt.NDArray[np.float32 | np.float64],
+    out: npt.NDArray[np.float32 | np.float64],
+) -> None:
+    """Contract a control net against a per-point Bernstein basis, with ``einsum``.
+
+    **The oracle for the pts-array parity claim.** Every intermediate is at the
+    Bézier's own dtype, which is what ``design/backend_parity.md`` Rule 9 makes a
+    per-kernel fact rather than a module convention: this contraction is numpy and
+    not Numba, so the house ``accumulator_t<float> == double`` policy does not
+    apply to it. ``scripts/measure_bezier_nd_widths.py`` is the measurement.
+
+    Args:
+        bezier (~pantr.bezier.Bezier): The Bézier, already validated against
+            ``pts``.
+        pts (npt.NDArray[np.float32 | np.float64]): Points of shape
+            ``(n_pts, dim)``.
+        out (npt.NDArray[np.float32 | np.float64]): Destination of shape
+            ``(n_pts, rank)``, written in full.
+
+    Note:
+        No input validation is performed here; Layer 2 did it above the branch.
+    """
+    ctrl = bezier.control_points
+    degrees = bezier.degree
+    dtype = bezier.dtype
+    dim = bezier.dim
+
     bases: list[npt.NDArray[np.float32 | np.float64]] = [
         _tabulate_bernstein_1d_fast(degrees[d], pts[:, d], dtype) for d in range(dim)
     ]
@@ -192,13 +255,7 @@ def _evaluate_bezier_nd_pts_array(  # noqa: PLR0913
     for d in range(1, dim):
         result = np.einsum("pj,pj...->p...", bases[d], result)
 
-    result = _project_rational(bezier, result)
-
-    if out is not None:
-        _validate_out_array(out, result.shape, dtype)
-        out[:] = result
-        return out
-    return result
+    out[...] = _project_raw(bezier, result)
 
 
 def _evaluate_bezier_nd_lattice(  # noqa: PLR0913
@@ -231,34 +288,100 @@ def _evaluate_bezier_nd_lattice(  # noqa: PLR0913
     if pts.dim != dim:
         raise ValueError(f"PointsLattice dim ({pts.dim}) must match Bézier dim ({dim}).")
 
-    # Evaluate Bernstein basis per direction on lattice points
-    bases: list[npt.NDArray[np.float32 | np.float64]] = []
+    pts_per_dir: list[npt.NDArray[np.float32 | np.float64]] = []
     for d in range(dim):
         pts_d = pts.pts_per_dir[d]
         if pts_d.dtype != dtype:
             raise ValueError(
                 f"PointsLattice dtype ({pts_d.dtype}) must match Bézier dtype ({dtype})."
             )
-        bases.append(_tabulate_bernstein_1d_fast(degrees[d], pts_d, dtype))
+        pts_per_dir.append(pts_d)
 
-    # Sequential tensordot contraction
-    # ctrl has shape (n_0, n_1, ..., n_{d-1}, rank)
-    # basis_d has shape (m_d, n_d)
-    # Contract axis d of result with axis 1 of basis_d
-    result: npt.NDArray[np.float32 | np.float64] = ctrl
-    for d in range(dim):
-        # Contract axis d with basis_d: (m_d, n_d) @ axis d of result
-        result = np.tensordot(bases[d], result, axes=([1], [d]))
-        # tensordot puts the m_d axis first; move it to position d
-        result = np.moveaxis(result, 0, d)
+    rank = bezier.rank
+    grid = tuple(column.shape[0] for column in pts_per_dir)
+    raw = np.empty((*grid, rank), dtype=dtype)
+    evaluate_nd_lattice_kernel()(bezier, pts_per_dir, raw)
 
-    result = _project_rational(bezier, result)
+    result = raw[..., 0] if rank == 1 else raw
 
     if out is not None:
         _validate_out_array(out, result.shape, dtype)
         out[:] = result
         return out
     return result
+
+
+def _contract_nd_lattice(
+    bezier: Bezier,
+    pts_per_dir: Sequence[npt.NDArray[np.float32 | np.float64]],
+    out: npt.NDArray[np.float32 | np.float64],
+) -> None:
+    """Contract a control net against one Bernstein basis per axis, with ``tensordot``.
+
+    **The oracle for the lattice parity claim, and it is a different oracle from**
+    :func:`_contract_nd_pts_array`. ``np.tensordot`` reshapes to a matrix product
+    and reaches BLAS, so its summation order is neither the einsum one nor any
+    order a transliteration can reproduce; the two entry points therefore disagree
+    above bit level on the same mathematics and carry separate parity claims.
+    ``scripts/measure_bezier_nd_widths.py`` reports the spread.
+
+    Args:
+        bezier (~pantr.bezier.Bezier): The Bézier, already validated against the
+            lattice.
+        pts_per_dir (Sequence[npt.NDArray[np.float32 | np.float64]]): One 1D array
+            of parameters per parametric direction.
+        out (npt.NDArray[np.float32 | np.float64]): Destination of shape
+            ``(*grid_shape, rank)``, written in full.
+
+    Note:
+        No input validation is performed here; Layer 2 did it above the branch.
+    """
+    ctrl = bezier.control_points
+    degrees = bezier.degree
+    dtype = bezier.dtype
+
+    bases = [
+        _tabulate_bernstein_1d_fast(degrees[d], column, dtype)
+        for d, column in enumerate(pts_per_dir)
+    ]
+
+    # Sequential tensordot contraction
+    # ctrl has shape (n_0, n_1, ..., n_{d-1}, rank)
+    # basis_d has shape (m_d, n_d)
+    # Contract axis d of result with axis 1 of basis_d
+    result: npt.NDArray[np.float32 | np.float64] = ctrl
+    for d in range(len(bases)):
+        # Contract axis d with basis_d: (m_d, n_d) @ axis d of result
+        result = np.tensordot(bases[d], result, axes=([1], [d]))
+        # tensordot puts the m_d axis first; move it to position d
+        result = np.moveaxis(result, 0, d)
+
+    out[...] = _project_raw(bezier, result)
+
+
+def _project_raw(
+    bezier: Bezier,
+    raw: npt.NDArray[np.float32 | np.float64],
+) -> npt.NDArray[np.float32 | np.float64]:
+    """Divide a rational raw result by its weight column, keeping the value axis.
+
+    Split out of :func:`_project_rational` so that the division and the squeeze
+    can be applied at different places: the n-dimensional path fills a
+    ``(..., rank)`` buffer that the backends share, and squeezes above it, while
+    the 1D path still wants both steps at once.
+
+    Args:
+        bezier (~pantr.bezier.Bezier): The Bézier, for ``is_rational``.
+        raw (npt.NDArray[np.float32 | np.float64]): Raw evaluation output with
+            shape ``(..., cp_size)``. Modified in place when rational.
+
+    Returns:
+        npt.NDArray[np.float32 | np.float64]: A view of shape ``(..., rank)``.
+    """
+    if bezier.is_rational:
+        raw[..., :-1] = raw[..., :-1] / raw[..., -1:]
+        return raw[..., :-1]
+    return raw
 
 
 def _project_rational(
@@ -277,12 +400,7 @@ def _project_rational(
         npt.NDArray[np.float32 | np.float64]: Projected result with shape
         ``(...)`` for scalar or ``(..., rank)`` for vector output.
     """
-    if bezier.is_rational:
-        raw[..., :-1] = raw[..., :-1] / raw[..., -1:]
-        result = raw[..., :-1]
-    else:
-        result = raw
-
+    result = _project_raw(bezier, raw)
     if result.shape[-1] == 1:
         return result[..., 0]
     return result
