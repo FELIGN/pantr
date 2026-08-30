@@ -112,13 +112,21 @@ _FloatArray = npt.NDArray[np.float32 | np.float64]
 _Schedule = Callable[[Sequence[_FloatArray], _FloatArray], _FloatArray]
 """A contraction schedule: per-direction bases and a control net to raw values."""
 
-_PTS_ARRAY_SITE: Final = "_bezier_eval.py:191-193"
+# The sites are named by **function** rather than by line, and that is a
+# correction rather than a preference: the first version of this script cited
+# `_bezier_eval.py:191-193` and `:251-253`, and the very commit that consumed the
+# measurement moved both contractions into functions of their own, leaving all
+# three constants pointing at a docstring and a comment. A line number in a string
+# that nothing re-derives rots exactly like a measured constant does, and this one
+# rotted inside a single change. A function name is stable under the edit that
+# broke it and is what a reader greps for anyway.
+_PTS_ARRAY_SITE: Final = "_bezier_eval._contract_nd_pts_array"
 """The einsum contraction, over an explicit array of points."""
 
-_SCALAR_TAIL_SITE: Final = "_bezier_eval.py:193 rank 1"
+_SCALAR_TAIL_SITE: Final = "_contract_nd_pts_array rank 1"
 """The same contraction where the trailing block holds one element."""
 
-_LATTICE_SITE: Final = "_bezier_eval.py:251-253"
+_LATTICE_SITE: Final = "_bezier_eval._contract_nd_lattice"
 """The tensordot contraction, over a lattice."""
 
 
@@ -176,7 +184,7 @@ def same_bits(left: _FloatArray, right: _FloatArray) -> bool:
 
 
 def oracle_pts_array(bases: Sequence[_FloatArray], ctrl: _FloatArray) -> _FloatArray:
-    """Run the pts-array schedule exactly as ``_bezier_eval.py:191-193`` does.
+    """Run the pts-array schedule exactly as ``_contract_nd_pts_array`` does.
 
     Args:
         bases (Sequence[npt.NDArray[np.float32 | np.float64]]): One Bernstein
@@ -195,7 +203,7 @@ def oracle_pts_array(bases: Sequence[_FloatArray], ctrl: _FloatArray) -> _FloatA
 
 
 def oracle_lattice(bases: Sequence[_FloatArray], ctrl: _FloatArray) -> _FloatArray:
-    """Run the lattice schedule exactly as ``_bezier_eval.py:251-253`` does.
+    """Run the lattice schedule exactly as ``_contract_nd_lattice`` does.
 
     Args:
         bases (Sequence[npt.NDArray[np.float32 | np.float64]]): One Bernstein
