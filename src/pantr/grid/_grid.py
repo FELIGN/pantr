@@ -17,7 +17,7 @@ rather than by inheriting. It carries real default implementations, so
 satisfies it; that unbound call is how a specialization is tested against the
 default it replaces.
 
-:class:`_GridPython` is the abstract base class the concrete Python grids derive
+``_GridPython`` is the abstract base class the concrete Python grids derive
 from. It adds the three cache slots and their ``__init__`` to :class:`Grid` and
 nothing else, so there is exactly one copy of every default. It is also where
 the *implementer's* contract lives: its ``__abstractmethods__`` are the five
@@ -26,7 +26,7 @@ primitives below, and a subclass omitting one cannot be instantiated. The
 "inherited" half, so the protocol has to list every member a consumer may call,
 and omitting an inherited default fails the same way as omitting a primitive.
 
-**:class:`_GridPython` is scaffolding.** The grid layer is being ported to C++
+**``_GridPython`` is scaffolding.** The grid layer is being ported to C++
 (``cpp/include/pantr/grid/grid.hpp``), where the generic defaults are a CRTP
 mixin and the primitives are a concept. Once the C++ grids are wrapped, this
 class exists only as the parity oracle, and "keep parity with ``_GridPython``"
@@ -90,7 +90,7 @@ class Grid(Protocol):
 
     A :class:`typing.Protocol`: any object with these members is a grid, whether
     or not it inherits anything. See the module docstring for the split between
-    this and :class:`_GridPython`, and for the five primitives a concrete grid
+    this and ``_GridPython``, and for the five primitives a concrete grid
     must supply.
 
     The private members below are part of the structural contract, which is

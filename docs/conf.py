@@ -237,8 +237,13 @@ nitpick_ignore = [
     # oracle and it goes away with the last Python grid. `_GridWrapper` is its
     # successor as the wrappers' base and arrives with the TensorProductGrid port;
     # listing it here now costs one line and saves that build a round trip.
-    ("py:class", "_GridPython"),
-    ("py:class", "_GridWrapper"),
+    #
+    # FULLY QUALIFIED, unlike `_AffineMap` above: :show-inheritance: emits the base's
+    # `module.qualname`. Prose about a private class is written in double backticks
+    # rather than as a `:class:` role, so there is no bare-name form to ignore here --
+    # a role that can never resolve is a broken link rather than a suppressible one.
+    ("py:class", "pantr.grid._grid._GridPython"),
+    ("py:class", "pantr.grid._grid._GridWrapper"),
     ("py:class", "CellIndex"),
     ("py:class", "CellIndicesBatch"),
     ("py:class", "Target"),
