@@ -479,9 +479,7 @@ def both_backends() -> None:
     demand_cpp_backend()
 
 
-@pytest.mark.parametrize(
-    "name", ["node_lo", "node_hi", "node_left", "node_right", "node_cell"]
-)
+@pytest.mark.parametrize("name", ["node_lo", "node_hi", "node_left", "node_right", "node_cell"])
 def test_the_node_arrays_are_read_only_views_that_own_their_storage(
     both_backends: None, name: str
 ) -> None:

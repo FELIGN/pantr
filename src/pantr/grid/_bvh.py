@@ -485,8 +485,7 @@ class _BVHPython:
         """
         if qlo.shape[0] != self._ndim:
             raise ValueError(
-                f"BVH.query_aabb: aabb.ndim ({qlo.shape[0]}) must match self.ndim "
-                f"({self._ndim})."
+                f"BVH.query_aabb: aabb.ndim ({qlo.shape[0]}) must match self.ndim ({self._ndim})."
             )
         if self._n_cells == 0:
             return np.zeros(0, dtype=np.int64)
