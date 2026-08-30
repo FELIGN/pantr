@@ -18,6 +18,7 @@ set(PANTR_TEST_SOURCES
     test_aabb.cpp
     test_affine.cpp
     test_bezier_type.cpp
+    test_bezier_evaluate.cpp
     test_quad_rule.cpp
     test_grid_tags.cpp
     test_grid_partition.cpp
@@ -42,7 +43,6 @@ set(PANTR_TEST_SOURCES
 # empty, delete the list.
 set(PANTR_PLACEHOLDER_TEST_SOURCES
     test_grid_tensor_product.cpp
-    test_bezier_evaluate.cpp
     test_bezier_degree.cpp
     test_bezier_shape.cpp
     test_bezier_product.cpp)
