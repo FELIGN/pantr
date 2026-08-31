@@ -12,13 +12,22 @@ neighbours, and ids on demand. The only ``O(num_cells)`` structure -- a
 :meth:`~Grid.query_aabb`, so a grid used purely as a B-spline's knot grid stays
 proportional to its breakpoints, not its cell count.
 
+Five of the types here are owned by the C++ core since the 2026-08-27 amendment to
+``design/cross_backend_types.md``, and the classes below are wrappers holding one:
+:class:`TensorProductGrid`, :class:`BVH`, :class:`CellTags`, :class:`FacetTags` and
+:class:`Partition`. Under ``PANTR_BACKEND=python`` each holds the pre-port Python
+class instead, which is the port's oracle and is temporary.
+:class:`HierarchicalGrid` has not moved: it is the Python implementation under
+either backend.
+
 Main exports:
 
 - :class:`Grid`: the grid contract, as a :class:`typing.Protocol` -- satisfied
   structurally, and carrying axis-aligned box defaults for facets, neighbours,
   reference maps, batch point location, and spatial queries. A consumer
-  annotates ``grid: Grid``; an implementer derives from the private
-  ``_GridPython``, which is where the five primitives are enforced.
+  annotates ``grid: Grid``; an implementer in Python derives from the private
+  ``_GridPython``, which is where the five primitives are enforced, and an
+  implementer in C++ satisfies the matching concept.
 - :class:`GridRestriction`: result of :meth:`Grid.restrict` -- a windowed
   sub-grid plus local-to-global cell index maps.
 - :class:`TensorProductGrid`: concrete tensor-product grid of axis-aligned boxes
