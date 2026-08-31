@@ -1416,8 +1416,7 @@ class HierarchicalGrid(_GridPython):
             return self._copy()  # no active cells in the requested region
 
         # A fresh outer list; the per-level lists below are rebound, never mutated,
-        # so this grid's own block lists are untouched.  `_from_blocks` sorts and
-        # merges every level, so no normalization is needed here.
+        # so this grid's own block lists are untouched (`_from_blocks` normalizes).
         new_levels: list[list[_Block]] = list(self._blocks)
         new_levels[level] = new_blocks_at_level
         while len(new_levels) <= level + 1:
@@ -1573,10 +1572,9 @@ class HierarchicalGrid(_GridPython):
             )
 
         # A fresh outer list; the per-level lists are rebound, never mutated, so this
-        # grid's own block lists are untouched.  `_from_blocks` sorts and merges every
-        # level and drops the trailing empty ones, so neither is needed here -- but the
-        # order the demoted box is appended in is observable through the greedy merge,
-        # and is preserved.
+        # grid's own block lists are untouched (`_from_blocks` normalizes and drops
+        # trailing empty levels).  The order the demoted box is appended in is
+        # observable through the greedy merge, though, and is preserved.
         new_levels: list[list[_Block]] = list(self._blocks)
         new_levels[level + 1] = new_finer
         new_levels[level] = [*new_levels[level], (lo_t, hi_t)]
