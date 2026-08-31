@@ -57,8 +57,21 @@ user-facing, and the ports change what it affects.
   because these kernels contain fused-multiply-add sites and the shipped build targets a baseline
   ISA that has no such instruction; and the evaluation kernel's seed is a `pow`, which no standard
   requires to be correctly rounded, so its exactness is measured rather than derived.
-  `Bezier.multiply` is deliberately **not** part of this: it goes through a numpy helper that no
-  kernel backs, and is unaffected by `PANTR_BACKEND`.
+- **`Bezier.multiply` is ported too**, closing the Bézier front, so `PANTR_BACKEND=cpp` now
+  reaches it as well as everything in the entry above. It goes through a pure-numpy helper that
+  no kernel backs, and that helper stays the oracle: the C++ port reproduces *it* rather than
+  routing through the scalar Bernstein product kernel it resembles. The two are not
+  interchangeable, which is the point. They differ by about 2 eps, and their domains differ,
+  the numpy path staying exact at `p + q = 80` where the kernel's int64 binomials are
+  undefined. So the port takes its binomial tables as data, assembled once by `math.comb` on
+  the Python side, rather than computing them and inheriting the kernel's envelope.
+  Both agree bit for bit with their oracles on a build with no fused multiply-add, and carry
+  Rule 10's budget on one that has it. One consequence a caller can see: like every other
+  Bézier-level operation, a Bézier built under one backend can no longer be multiplied or
+  composed under the other.
+  Two docstrings were corrected rather than ported: `Bezier.multiply` promised "the exact
+  pointwise product" and `Bezier.compose` "the exact composition". The *degree* is exact; the
+  control points are a binomial-weighted sum in floating point and are not.
 - **Eigen is now a build dependency of the wheel**, where before it was fetched only for the C++
   tests. `pantr.change_basis` needs a dense solve and `pantr.bezier` will need a truncated SVD,
   and neither is a thing to hand-roll. A cold `pip install -e .` goes from 7.56 s to 12.19 s on

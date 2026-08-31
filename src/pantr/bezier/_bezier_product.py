@@ -23,6 +23,7 @@ resemble.
 
 from __future__ import annotations
 
+import functools
 import itertools
 import math
 from typing import TYPE_CHECKING
@@ -169,10 +170,11 @@ def _bernstein_product_coefficients_nd(
 # ---------------------------------------------------------------------------
 
 
+@functools.lru_cache(maxsize=64)
 def _binomial_tables(
-    order: int, dtype: npt.DTypeLike
+    order: int, dtype: np.dtype[np.float32] | np.dtype[np.float64]
 ) -> tuple[npt.NDArray[np.float32 | np.float64], npt.NDArray[np.float32 | np.float64]]:
-    """Tabulate ``C(n, k)`` and ``1 / C(n, k)`` for ``n <= order``, in one dtype.
+    """Return the cached, read-only ``C(n, k)`` and ``1 / C(n, k)`` for ``n <= order``.
 
     The two tables the C++ product and composition are handed instead of assembling
     their own; ``cpp/include/pantr/bezier/product.hpp`` argues why they cross as data
@@ -189,25 +191,47 @@ def _binomial_tables(
     expression, ``float(math.comb(m, i))`` multiplied into an array, and that value is
     the same as this table's for every argument.  A ``float32`` table is reached there
     by rounding the exact integer to ``float64`` and then to ``float32``, and here in
-    one step; the two agree because ``float64`` carries 53 significand bits against
-    ``float32``'s 24 and double rounding through an intermediate of at least
-    ``2 * 24 + 2`` bits is equal to single rounding (Figueroa, *Yet another proof of
-    the double rounding theorem*, 1995).  ``float64`` storage is the trivial case,
-    where both spellings are one correctly rounded conversion.
-    ``test_the_two_spellings_of_a_binomial_agree`` in
-    ``tests/parity/test_bezier_product.py`` checks it over the whole range these
-    operations reach, because the argument is a theorem about a hypothesis this code
-    has to satisfy rather than about this code.
+    one step, and double rounding through an intermediate format sufficiently wider
+    than the target is known to equal single rounding (Figueroa, *When is double
+    rounding innocuous?*, ACM SIGNUM Newsletter 30(3):21-26, 1995,
+    :doi:`10.1145/221332.221334`; ``float64``/``float32`` is the instance its
+    condition on the intermediate precision covers with room to spare).  ``float64``
+    storage is the trivial case, where both spellings are one correctly rounded
+    conversion.
+
+    **That argument is why the two are expected to agree; what establishes it is
+    a test.**  ``test_the_two_spellings_of_a_binomial_agree`` in
+    ``tests/parity/test_bezier_product.py`` drives the oracle's own expression --
+    the scalar multiplied into an array, promotion rules included -- against this
+    table over the whole range these operations reach.
+
+    **Why this is cached.**  The tables depend on nothing but ``order`` and ``dtype``,
+    both bounded, and building them is ``O(order**2)`` where the product that consumes
+    them reads three rows.  Uncached, the build dominated the whole C++ call and the
+    port was at parity with the numpy path it replaced; the commit that added this
+    cache carries the measurement and the command that produced it.  The same
+    treatment, for the same reason, as the reduction operators in
+    :mod:`~pantr.bezier._bezier_degree`, and the arrays are returned read-only for the
+    same reason too: a cache hit hands out the same object every time.
+
+    Not :func:`~pantr._backend.backend_keyed_cache`, which exists to stop one
+    backend's value being served to another.  These tables come from
+    :func:`math.comb` and are the same whichever backend asked.
 
     Entries with ``k > n`` are zero and are never read.
 
     Args:
         order (int): Largest upper index to tabulate, so the tables are
             ``(order + 1, order + 1)``.
-        dtype (npt.DTypeLike): Storage format, matching the Bézier's.
+        dtype (np.dtype[np.float32] | np.dtype[np.float64]): Storage format, matching
+            the Bézier's.  A concrete :class:`numpy.dtype` rather than anything
+            :obj:`~numpy.typing.DTypeLike` accepts, because it is a cache key and
+            ``np.float32`` and ``np.dtype("float32")`` are equal but not identical,
+            so admitting both would halve the hit rate silently.
 
     Returns:
-        tuple: The coefficient table and the reciprocal table, both C-contiguous.
+        tuple: The coefficient table and the reciprocal table, both C-contiguous and
+        both read-only.
     """
     size = order + 1
     binomials = np.zeros((size, size), dtype=dtype)
@@ -216,6 +240,8 @@ def _binomial_tables(
         exact = [math.comb(n, k) for k in range(n + 1)]
         binomials[n, : n + 1] = np.array(exact, dtype=dtype)
         inverse_binomials[n, : n + 1] = np.array([1.0 / c for c in exact], dtype=dtype)
+    binomials.flags.writeable = False
+    inverse_binomials.flags.writeable = False
     return binomials, inverse_binomials
 
 

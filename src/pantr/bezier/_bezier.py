@@ -923,6 +923,12 @@ class Bezier:
             TypeError: If either Bézier is rational.
             ValueError: If ``inner.rank != self.dim``.
             ValueError: If the operands have different dtypes.
+            ValueError: If a one-dimensional ``inner`` would drive the composed
+                degree past the exactness envelope of the binomial-coefficient
+                kernel. The envelope is *multiplicative* in the two degrees, so it
+                binds at far lower inputs than degree elevation's additive one. See
+                ``pantr.bezier._bezier_compose._compose_bezier`` for which
+                configurations are exempt and why.
 
         Example:
             >>> f = Bezier(np.array([[0.0, 0.0], [1.0, 1.0], [2.0, 0.0]]))

@@ -71,13 +71,24 @@ that do not still hand Layer 2 an array to fill before wrapping it in a
 - :class:`DegreeKernels`: the elevation and reduction-apply kernels of one backend.
 - :func:`evaluate_kernel`, :func:`evaluate_deriv_kernel`, :func:`slice_kernel`,
   :func:`split_kernel`, :func:`restrict_kernel`, :func:`product_kernel`,
-  :func:`degree_kernels`: the accessors over the 1D kernels.
+  :func:`degree_kernels`: the accessors over the 1D kernels, which take arrays.
 - :func:`evaluate_nd_kernel`, :func:`evaluate_nd_lattice_kernel`: the two
   n-dimensional contraction schedules, which take the Bézier rather than its
   arrays.
+- :func:`elevate_degree_kernel`, :func:`reduce_degree_kernel`,
+  :func:`degree_reduction_error_kernel`: the three n-dimensional degree
+  operations, which take the Bézier and, for the latter two, matrices assembled
+  in exact arithmetic on the Python side.
+- :func:`restrict_nd_kernel`, :func:`split_nd_kernel`, :func:`slice_nd_kernel`,
+  :func:`slice_point_kernel`, :func:`collapse_kernel`: the shape operations that
+  are dispatched.
 - :func:`multiply_kernel`, :func:`compose_kernel`: the product and the
   composition, which likewise take Béziers.  Their C++ side is handed the
   binomial tables as data; see :func:`_cpp_multiply`.
+
+This list is meant to be exhaustive.  It was not: an earlier version named seven
+of the seventeen accessors then in the file, which is the same failure as the
+stale count above and is why both are called out here rather than quietly fixed.
 """
 
 from __future__ import annotations
@@ -747,18 +758,24 @@ def _cpp_collapse(bezier: Bezier, axis: int, values: _Array) -> Bezier:
 def _cpp_binomial_tables(
     order: int, dtype: npt.DTypeLike
 ) -> tuple[npt.NDArray[np.float32 | np.float64], npt.NDArray[np.float32 | np.float64]]:
-    """Assemble the binomial tables the C++ product and composition are handed.
+    """Fetch the binomial tables the C++ product and composition are handed.
+
+    Normalising the dtype is the whole of this function beyond the lazy import.
+    :func:`~pantr.bezier._bezier_product._binomial_tables` is cached on its arguments,
+    and ``np.float32`` and ``np.dtype("float32")`` are equal without being identical,
+    so a caller that reached the cache with either spelling would get two entries for
+    one table and no error to say so.
 
     Args:
         order (int): Largest upper index the operation will read.
-        dtype (npt.DTypeLike): The Bézier's storage format.
+        dtype (npt.DTypeLike): The Bézier's storage format, in any spelling.
 
     Returns:
-        tuple: The coefficient table and the reciprocal table.
+        tuple: The coefficient table and the reciprocal table, read-only.
     """
     from ._bezier_product import _binomial_tables  # noqa: PLC0415  (cycle)
 
-    return _binomial_tables(order, dtype)
+    return _binomial_tables(order, np.dtype(dtype))
 
 
 def _cpp_multiply(a: Bezier, b: Bezier) -> Bezier:
