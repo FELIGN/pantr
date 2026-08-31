@@ -163,9 +163,21 @@
 /// continuations in that recipe: a `///` line ending in a backslash is one comment
 /// spanning two lines, which this build rejects under `-Werror=comment`, and it did.)
 ///
-/// `off` and `on` agree bit for bit; `=fast` does not, so the site is contractible in
-/// principle and the claim keeps its bounded arm for a build that reaches it. What
-/// follows for a reader:
+/// The three settings do not order the way one expects, and the two accumulation sites
+/// here disagree with each other, which is why this is stated per site rather than once.
+/// Observed on GCC 14.4.0 at `-O2` and `-O3 -DNDEBUG`, both with `-mavx2 -mfma`; it is
+/// an instruction-selection fact about one toolchain, not a portable consequence of what
+/// `on` and `fast` are defined to permit, so re-measure rather than assume it elsewhere.
+///
+///  - `scalar_bernstein_product_1d` fuses under `=on` and NOT under `off` or `fast`:
+///    `off` and `fast` are bit-identical, and `on` moves about two fifths of the
+///    elements. That is the direction that matters here, because this project compiles
+///    with `-ffp-contract=on` (`CMakeLists.txt`).
+///  - `bernstein_product_1d`, the product's own site, goes the other way: `off` and `on`
+///    agree and `=fast` fuses.
+///
+/// So both sites are contractible in principle, under different settings, and the claim
+/// keeps its bounded arm for a build that reaches either. What follows for a reader:
 ///
 ///  - **`multiply`'s equality survives an FMA host at this project's own flags.** The
 ///    parity harness selects its arm from the ISA rather than from the contraction
