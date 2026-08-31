@@ -145,8 +145,8 @@ def _two_level_jump_grid() -> tuple[HierarchicalGrid, int, int]:
     ([0.25, 0.3125]) that share the facet at x = 0.25.
     """
     grid = HierarchicalGrid(uniform_grid([[0.0, 1.0]], [4]), 2)
-    grid.refine(0, [1], [3])
-    grid.refine(1, [2], [4])
+    grid = grid.refine(0, [1], [3])
+    grid = grid.refine(1, [2], [4])
     cid_coarse = next(
         c
         for c in range(grid.num_cells)
@@ -175,8 +175,8 @@ def test_hierarchical_hanging_neighbors_mixed_level_facet() -> None:
     plane and overlaps the coarse cell's extent.
     """
     grid = HierarchicalGrid(uniform_grid([[0.0, 1.0], [0.0, 1.0]], [4, 4]), 2)
-    grid.refine(0, [1, 0], [2, 4])  # refine the x-index-1 column to level 1
-    grid.refine(1, [2, 2], [3, 3])  # refine one of its cells to level 2
+    grid = grid.refine(0, [1, 0], [2, 4])  # refine the x-index-1 column to level 1
+    grid = grid.refine(1, [2, 2], [3, 3])  # refine one of its cells to level 2
 
     coarse = next(
         c
@@ -206,24 +206,34 @@ def test_hierarchical_hanging_neighbors_mixed_level_facet() -> None:
         assert grid.neighbor_across_facet(fine, 0) == coarse
 
 
-def test_thb_space_detects_compensating_refine_coarsen() -> None:
+def test_refine_coarsen_leave_existing_thb_space_unaffected() -> None:
+    """No staleness RuntimeError any more: refine/coarsen return new grids, `space.grid` is intact.
+
+    A coarsen then a refine can land on the same (max_level, num_cells) summary as before
+    while describing a different cell layout -- the reason the deleted version counter
+    existed. With HierarchicalGrid immutable, `space`'s own grid is simply never touched by
+    calls on `grid`, so no staleness check is needed at all.
+    """
     root = BsplineSpace([_open_uniform_1d(2, 8)])
     grid = HierarchicalGrid(uniform_grid([[0.0, 1.0]], [8]), 2)
-    grid.refine(0, [0], [2])
-    grid.refine(0, [4], [6])
+    grid = grid.refine(0, [0], [2])
+    grid = grid.refine(0, [4], [6])
     space = THBSplineSpace(root, grid)
     snapshot = (grid.max_level, grid.num_cells)
 
-    grid.coarsen(0, [4], [6])
-    grid.refine(0, [5], [7])
-    assert (grid.max_level, grid.num_cells) == snapshot  # the snapshot cannot tell
-
-    # Cell id 2 now decodes to a different cell; a stale evaluation must raise, not
-    # silently mix the old active set with the new cell layout.
     lo, hi = grid.cell_bounds(2)
     pt = 0.5 * (lo + hi).reshape(1, 1)
-    with pytest.raises(RuntimeError):
-        space.tabulate_basis(2, pt)
+    values_before, dofs_before = space.tabulate_basis(2, pt)
+
+    other = grid.coarsen(0, [4], [6])
+    other = other.refine(0, [5], [7])
+    assert (other.max_level, other.num_cells) == snapshot  # same summary, different layout
+    assert other is not grid
+    assert space.grid is grid
+
+    values_after, dofs_after = space.tabulate_basis(2, pt)
+    np.testing.assert_array_equal(values_after, values_before)
+    np.testing.assert_array_equal(dofs_after, dofs_before)
 
 
 def test_locate_nan_is_a_miss() -> None:

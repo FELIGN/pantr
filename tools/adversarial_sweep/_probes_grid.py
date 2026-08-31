@@ -854,7 +854,7 @@ def _tensor_product_from_space_cases(profile: Profile) -> Iterator[Case]:
 # ---------------------------------------------------------------------------
 
 
-def _deep_refine_chain(grid: HierarchicalGrid, target_level: int) -> None:
+def _deep_refine_chain(grid: HierarchicalGrid, target_level: int) -> HierarchicalGrid:
     """Refine a hierarchical grid's origin cell down to ``target_level``.
 
     Repeatedly refines only the single active cell at multi-index ``(0, ..., 0)``,
@@ -862,14 +862,18 @@ def _deep_refine_chain(grid: HierarchicalGrid, target_level: int) -> None:
     exponentially.
 
     Args:
-        grid (HierarchicalGrid): Grid to mutate in place.
+        grid (HierarchicalGrid): Grid whose origin cell is refined; left unchanged.
         target_level (int): Deepest level to reach.
+
+    Returns:
+        HierarchicalGrid: A new grid refined down to ``target_level``.
     """
     ndim = grid.ndim
     origin_lo = tuple(0 for _ in range(ndim))
     origin_hi = tuple(1 for _ in range(ndim))
     for level in range(target_level):
-        grid.refine(level, origin_lo, origin_hi)
+        grid = grid.refine(level, origin_lo, origin_hi)
+    return grid
 
 
 def _hier_construction_cases(profile: Profile) -> Iterator[Case]:
@@ -963,8 +967,7 @@ def _hier_refine_coarsen_cases(profile: Profile) -> Iterator[Case]:
         def build(
             grid: HierarchicalGrid = grid, target_level: int = target_level
         ) -> HierarchicalGrid:
-            _deep_refine_chain(grid, target_level)
-            return grid
+            return _deep_refine_chain(grid, target_level)
 
         yield Case(
             GROUP,
@@ -991,12 +994,14 @@ def _hier_refine_coarsen_cases(profile: Profile) -> Iterator[Case]:
     # Union semantics: refining a region with no active cells there is a no-op.
     root = _tp_grid(2, (0.0, 1.0), 4)
     grid = HierarchicalGrid(root, 2)
-    grid.refine(0, (0, 0), (1, 1))
+    grid = grid.refine(0, (0, 0), (1, 1))
 
     def refine_noop() -> tuple[int, int]:
         before = grid.num_cells
-        grid.refine(0, (0, 0), (1, 1))  # already fully refined away at level 0
-        return before, grid.num_cells
+        # Already fully refined away at level 0: the returned grid is a distinct
+        # object but its cell count must match, which is what this case checks.
+        after = grid.refine(0, (0, 0), (1, 1))
+        return before, after.num_cells
 
     yield Case(
         GROUP,
@@ -1023,9 +1028,8 @@ def _hier_refine_coarsen_cases(profile: Profile) -> Iterator[Case]:
 
     def refine_then_coarsen() -> tuple[int, int]:
         before = grid2.num_cells
-        grid2.refine(0, (1, 1), (2, 2))
-        grid2.coarsen(0, (1, 1), (2, 2))
-        return before, grid2.num_cells
+        after = grid2.refine(0, (1, 1), (2, 2)).coarsen(0, (1, 1), (2, 2))
+        return before, after.num_cells
 
     yield Case(
         GROUP,
@@ -1068,7 +1072,7 @@ def _hier_refine_coarsen_cases(profile: Profile) -> Iterator[Case]:
         GROUP,
         "hier_coarsen_partial_region",
         HierarchicalGrid.coarsen,
-        lambda: (grid3.refine(0, (0, 0), (1, 1)), grid3.coarsen(0, (0, 0), (2, 2)))[-1],
+        lambda: grid3.refine(0, (0, 0), (1, 1)).coarsen(0, (0, 0), (2, 2)),
         {"kind": "partially-refined-region"},
         # "...or the region is not fully refined to exactly level level+1."
         must_reject=True,
@@ -1097,7 +1101,7 @@ def _hier_bounds_cases(profile: Profile) -> Iterator[Case]:
         for target_level in (2,) if profile is not Profile.FULL else (1, 2, 3):
             root = _tp_grid(ndim, (0.0, 1.0), 2)
             grid = HierarchicalGrid(root, 2)
-            _deep_refine_chain(grid, target_level)
+            grid = _deep_refine_chain(grid, target_level)
             tag = f"d{ndim}_l{target_level}"
             params = {"ndim": ndim, "target_level": target_level}
 
@@ -1202,7 +1206,7 @@ def _hier_locate_cases(profile: Profile) -> Iterator[Case]:
         for domain in domains(profile):
             root = _tp_grid(ndim, domain, 2)
             grid = HierarchicalGrid(root, 2)
-            _deep_refine_chain(grid, 2)
+            grid = _deep_refine_chain(grid, 2)
             yield from _locate_roundtrip_case(
                 f"hier_{_grid_tag(ndim, domain)}",
                 grid,
@@ -1222,7 +1226,7 @@ def _hier_mask_cases(profile: Profile) -> Iterator[Case]:
     """
     root = _tp_grid(2, (0.0, 1.0), 2)
     grid = HierarchicalGrid(root, 2)
-    _deep_refine_chain(grid, 3)
+    grid = _deep_refine_chain(grid, 3)
 
     levels = range(grid.max_level + 1) if profile is Profile.FULL else (0, grid.max_level)
     for level in levels:
@@ -1294,7 +1298,7 @@ def _hier_hanging_neighbor_cases(profile: Profile) -> Iterator[Case]:
     """
     root = _tp_grid(2, (0.0, 1.0), 2)
     grid = HierarchicalGrid(root, 2)
-    grid.refine(0, (0, 0), (1, 1))  # refine one root cell; leaves a hanging interface
+    grid = grid.refine(0, (0, 0), (1, 1))  # refine one root cell; leaves a hanging interface
 
     def check_touching(_: object) -> str | None:
         for cid in range(grid.num_cells):
@@ -1345,7 +1349,7 @@ def _hier_restrict_cases(profile: Profile) -> Iterator[Case]:
     """
     root = _tp_grid(2, (0.0, 1.0), 3)
     grid = HierarchicalGrid(root, 2)
-    grid.refine(0, (1, 1), (2, 2))
+    grid = grid.refine(0, (1, 1), (2, 2))
 
     selectors = {
         "single_leaf": np.array([0]),

@@ -75,8 +75,8 @@ def quasi_interpolate_thb_spline(
         TypeError: If ``space`` is not a :class:`~pantr.bspline.THBSplineSpace`.
         ValueError: If ``kind`` is not recognized, or if ``func`` returns an output
             with an invalid shape (0-D, more than 2-D, or wrong leading dimension).
-        RuntimeError: If the grid has been modified since ``space`` was constructed,
-            or an active dof has no leaf cell at its level (inconsistent space).
+        RuntimeError: If an active dof has no leaf cell at its level (inconsistent
+            space).
 
     References:
         Hierarchical quasi-interpolation in truncated hierarchical spaces
@@ -87,7 +87,6 @@ def quasi_interpolate_thb_spline(
     if kind not in get_args(QIKind):
         valid = ", ".join(repr(v) for v in get_args(QIKind))
         raise ValueError(f"Unknown kind {kind!r}; expected one of {valid}.")
-    space._check_not_stale()
 
     grid = space.grid
     dim = space.dim

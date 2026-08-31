@@ -52,12 +52,12 @@ class TestRefinementNesting:
 
     def test_prolongation_reproduces_field(self) -> None:
         coarse_grid = hierarchical_grid(uniform_grid([[0.0, 1.0]], 4), 2)
-        coarse_grid.refine(0, [1], [3])
+        coarse_grid = coarse_grid.refine(0, [1], [3])
         coarse = THBSplineSpace(_root_1d(), coarse_grid)
 
         fine_grid = hierarchical_grid(uniform_grid([[0.0, 1.0]], 4), 2)
-        fine_grid.refine(0, [1], [3])
-        fine_grid.refine(1, [2], [6])
+        fine_grid = fine_grid.refine(0, [1], [3])
+        fine_grid = fine_grid.refine(1, [2], [6])
         fine = THBSplineSpace(_root_1d(), fine_grid)
 
         rng = np.random.default_rng(0)
@@ -75,7 +75,7 @@ class TestRefinementNesting:
         def space(refines: list[tuple[int, list[int], list[int]]]) -> THBSplineSpace:
             grid = hierarchical_grid(uniform_grid([[0.0, 1.0]], 4), 2)
             for level, lo, hi in refines:
-                grid.refine(level, lo, hi)
+                grid = grid.refine(level, lo, hi)
             return THBSplineSpace(_root_1d(), grid)
 
         coarse = space([(0, [1], [3])])
@@ -97,12 +97,12 @@ class TestCoarseningExactInverse:
 
     def test_restriction_left_inverse(self) -> None:
         coarse_grid = hierarchical_grid(uniform_grid([[0.0, 1.0], [0.0, 1.0]], 4), 2)
-        coarse_grid.refine(0, [0, 0], [2, 2])
+        coarse_grid = coarse_grid.refine(0, [0, 0], [2, 2])
         coarse = THBSplineSpace(_root_2d(), coarse_grid)
 
         fine_grid = hierarchical_grid(uniform_grid([[0.0, 1.0], [0.0, 1.0]], 4), 2)
-        fine_grid.refine(0, [0, 0], [2, 2])
-        fine_grid.refine(1, [0, 0], [4, 4])
+        fine_grid = fine_grid.refine(0, [0, 0], [2, 2])
+        fine_grid = fine_grid.refine(1, [0, 0], [4, 4])
         fine = THBSplineSpace(_root_2d(), fine_grid)
 
         prolong = coarse.prolongation_to(fine)
@@ -129,24 +129,24 @@ class TestCoarseningProjection:
     @staticmethod
     def _nested_1d() -> tuple[THBSplineSpace, THBSplineSpace]:
         coarse_grid = hierarchical_grid(uniform_grid([[0.0, 1.0]], 4), 2)
-        coarse_grid.refine(0, [1], [3])
+        coarse_grid = coarse_grid.refine(0, [1], [3])
         coarse = THBSplineSpace(_root_1d(), coarse_grid)
 
         fine_grid = hierarchical_grid(uniform_grid([[0.0, 1.0]], 4), 2)
-        fine_grid.refine(0, [1], [3])
-        fine_grid.refine(1, [2], [6])
+        fine_grid = fine_grid.refine(0, [1], [3])
+        fine_grid = fine_grid.refine(1, [2], [6])
         fine = THBSplineSpace(_root_1d(), fine_grid)
         return coarse, fine
 
     @staticmethod
     def _nested_2d() -> tuple[THBSplineSpace, THBSplineSpace]:
         coarse_grid = hierarchical_grid(uniform_grid([[0.0, 1.0], [0.0, 1.0]], 4), 2)
-        coarse_grid.refine(0, [0, 0], [2, 2])
+        coarse_grid = coarse_grid.refine(0, [0, 0], [2, 2])
         coarse = THBSplineSpace(_root_2d(), coarse_grid)
 
         fine_grid = hierarchical_grid(uniform_grid([[0.0, 1.0], [0.0, 1.0]], 4), 2)
-        fine_grid.refine(0, [0, 0], [2, 2])
-        fine_grid.refine(1, [0, 0], [4, 4])
+        fine_grid = fine_grid.refine(0, [0, 0], [2, 2])
+        fine_grid = fine_grid.refine(1, [0, 0], [4, 4])
         fine = THBSplineSpace(_root_2d(), fine_grid)
         return coarse, fine
 
@@ -211,7 +211,7 @@ class TestBezierReconstruction:
         root = create_uniform_space([degree] * dim, [4] * dim)
         grid = hierarchical_grid(uniform_grid([[0.0, 1.0]] * dim, 4), 2)
         for level, lo_box, hi_box in refines:
-            grid.refine(level, lo_box, hi_box)
+            grid = grid.refine(level, lo_box, hi_box)
         thb = THBSplineSpace(root, grid)
 
         def func(p: npt.NDArray[np.float64]) -> npt.NDArray[np.float64]:

@@ -169,8 +169,7 @@ class THBSpline:
             ValueError: If ``pts`` does not have trailing dimension ``dim``, any point
                 lies outside the grid domain, or ``out`` has the wrong shape/dtype or
                 is not writeable.
-            RuntimeError: If the grid has been modified since construction, or a cell
-                has no active basis functions (inconsistent space).
+            RuntimeError: If a cell has no active basis functions (inconsistent space).
         """
         return self._evaluate_orders(pts, (0,) * self.dim, out)
 
@@ -203,8 +202,7 @@ class THBSpline:
                 ``pts`` does not have trailing dimension ``dim``, any point lies
                 outside the grid domain, or ``out`` has the wrong shape/dtype or is
                 not writeable.
-            RuntimeError: If the grid has been modified since construction, or a cell
-                has no active basis functions (inconsistent space).
+            RuntimeError: If a cell has no active basis functions (inconsistent space).
         """
         return self._evaluate_orders(pts, orders, out)
 
@@ -229,9 +227,8 @@ class THBSpline:
         Raises:
             ValueError: If ``pts``/``orders``/``out`` are invalid (see the public
                 methods).
-            RuntimeError: If the grid is stale or a cell has no active functions.
+            RuntimeError: If a cell has no active functions.
         """
-        self._space._check_not_stale()
         arr = np.asarray(pts, dtype=np.float64)
         if arr.ndim == 0 or arr.shape[-1] != self.dim:
             raise ValueError(
@@ -306,7 +303,6 @@ class THBSpline:
         Raises:
             IndexError: If any id is outside ``[0, grid.num_cells)``.
             ValueError: If ``admissible_class`` is an integer ``< 2``.
-            RuntimeError: If the grid has been modified since construction.
         """
         fine = self._space.refine(cell_ids, admissible_class=admissible_class)
         return self._prolong_to(fine)
@@ -345,7 +341,6 @@ class THBSpline:
             ValueError: If ``admissible_class`` is an integer ``< 2``, ``level`` is
                 out of range, ``lo``/``hi`` have the wrong length, any
                 ``lo[k] >= hi[k]``, or ``[lo, hi)`` lies outside the level domain.
-            RuntimeError: If the grid has been modified since construction.
         """
         fine = self._space.refine_region(level, lo, hi, admissible_class=admissible_class)
         return self._prolong_to(fine)

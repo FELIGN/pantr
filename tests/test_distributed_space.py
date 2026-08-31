@@ -72,7 +72,7 @@ def _tp_space_and_partition(n_parts: int) -> tuple[BsplineSpace, Partition]:
 def _thb_space_and_partition(n_parts: int) -> tuple[THBSplineSpace, Partition]:
     root = create_uniform_space(2, 4)
     grid = hierarchical_grid(uniform_grid([[0.0, 1.0]], 4), 2)
-    grid.refine(0, [0], [2])
+    grid = grid.refine(0, [0], [2])
     thb = THBSplineSpace(root, grid)
     part = partition_grid(thb.grid, n_parts)
     return thb, part
@@ -246,7 +246,7 @@ class TestCreateDistributedSpace:
     def test_grid_method_matches_explicit_thb(self) -> None:
         root = create_uniform_space(2, 4)
         grid = hierarchical_grid(uniform_grid([[0.0, 1.0]], 4), 2)
-        grid.refine(0, [0], [2])
+        grid = grid.refine(0, [0], [2])
         thb = THBSplineSpace(root, grid)
         part = partition_grid(thb.grid, 2)
         for rank in range(2):

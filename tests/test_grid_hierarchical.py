@@ -248,19 +248,19 @@ class TestHierarchicalGridRefine:
 
     def test_refine_1d_num_cells(self) -> None:
         g = _grid_1d(4, 2)
-        g.refine(0, [1], [3])
+        g = g.refine(0, [1], [3])
         assert g.num_cells == 4 - 2 + 2 * 2  # 6
 
     def test_refine_2d_num_cells(self) -> None:
         g = _grid_2d(4, 2)
-        g.refine(0, [1, 1], [3, 3])
+        g = g.refine(0, [1, 1], [3, 3])
         assert g.num_cells == 16 - 4 + 4 * 4  # 28
 
     def test_refine_children_tile_parent(self) -> None:
         """Children of a refined cell exactly tile the parent's bounds."""
         root = uniform_grid([[0.0, 1.0], [0.0, 1.0]], 2)
         g = hierarchical_grid(root, 3)
-        g.refine(0, [0, 0], [1, 1])  # refine root cell (0,0) only
+        g = g.refine(0, [0, 0], [1, 1])  # refine root cell (0,0) only
         parent_lo = np.array([0.0, 0.0])
         parent_hi = np.array([0.5, 0.5])
         fine_los = []
@@ -279,7 +279,7 @@ class TestHierarchicalGridRefine:
 
     def test_refine_cell_levels(self) -> None:
         g = _grid_1d(4, 2)
-        g.refine(0, [1], [3])
+        g = g.refine(0, [1], [3])
         # Cells [0] and [3] at level 0; refined children at level 1.
         for cid in range(g.num_cells):
             lv = g.cell_level(cid)
@@ -292,71 +292,73 @@ class TestHierarchicalGridRefine:
     def test_sequential_refinement(self) -> None:
         """Refine level 0, then refine a sub-region of the level-1 block."""
         g = _grid_1d(4, 2)
-        g.refine(0, [1], [3])  # 6 cells
-        g.refine(1, [2], [4])  # refine 2 of the 4 level-1 cells
+        g = g.refine(0, [1], [3])  # 6 cells
+        g = g.refine(1, [2], [4])  # refine 2 of the 4 level-1 cells
         assert g.max_level == 2
         assert g.num_cells == 6 - 2 + 2 * 2  # 8
 
     def test_refine_full_domain(self) -> None:
         g = _grid_1d(4, 2)
-        g.refine(0, [0], [4])
+        g = g.refine(0, [0], [4])
         assert g.max_level == 1
         assert g.num_cells == 8  # 4 * 2
 
     def test_refine_overlapping_noop_for_already_refined(self) -> None:
         """A second overlapping refine is a union — already-refined cells skipped."""
         g = _grid_1d(4, 2)
-        g.refine(0, [1], [3])
+        g = g.refine(0, [1], [3])
         n1 = g.num_cells
-        g.refine(0, [1], [2])  # fully within already-refined region
+        g = g.refine(0, [1], [2])  # fully within already-refined region
         assert g.num_cells == n1  # no change
 
     def test_two_disjoint_refines_same_level(self) -> None:
         g = _grid_2d(6, 2)
-        g.refine(0, [0, 0], [2, 2])
-        g.refine(0, [4, 4], [6, 6])
+        g = g.refine(0, [0, 0], [2, 2])
+        g = g.refine(0, [4, 4], [6, 6])
         assert g.max_level == 1
         assert len(g._blocks[1]) == 2  # two separate level-1 blocks
 
     def test_refine_invalid_level_raises(self) -> None:
         g = _grid_1d(4, 2)
         with pytest.raises(ValueError, match="level"):
-            g.refine(1, [0], [2])  # level 1 doesn't exist yet
+            g = g.refine(1, [0], [2])  # level 1 doesn't exist yet
 
     def test_refine_lo_ge_hi_raises(self) -> None:
         g = _grid_1d(4, 2)
         with pytest.raises(ValueError, match="lo must be strictly less"):
-            g.refine(0, [2], [2])
+            g = g.refine(0, [2], [2])
 
     def test_refine_out_of_bounds_raises(self) -> None:
         g = _grid_1d(4, 2)
         with pytest.raises(ValueError, match="out of bounds"):
-            g.refine(0, [0], [5])
+            g = g.refine(0, [0], [5])
 
     def test_refine_cells_bounding_box(self) -> None:
         """refine_cells uses bounding box of the given cell ids."""
         g = _grid_1d(6, 2)
         # Cells 1 and 3 are at indices 1 and 3 (level 0, midx 1 and 3).
-        g.refine_cells([1, 3])
+        g = g.refine_cells([1, 3])
         # Bounding box = [1, 4) → 3 cells refined → 6-3+3*2=9
         assert g.num_cells == 9
 
     def test_refine_cells_empty_noop(self) -> None:
         g = _grid_1d(4, 2)
-        g.refine_cells([])
+        g = g.refine_cells([])
         assert g.num_cells == 4
 
-    def test_refine_invalidates_bvh(self) -> None:
+    def test_refine_gives_the_new_grid_a_fresh_bvh_and_leaves_the_receivers(self) -> None:
         g = _grid_2d(4, 2)
         _ = g.cell_bvh()  # build BVH
-        g.refine(0, [1, 1], [3, 3])
-        assert g._bvh is None  # invalidated
+        new = g.refine(0, [1, 1], [3, 3])
+        assert new._bvh is None  # the returned grid starts fresh
+        assert g._bvh is not None  # the receiver keeps its own
 
-    def test_refine_invalidates_tags(self) -> None:
+    def test_refine_gives_the_new_grid_fresh_tags_and_leaves_the_receivers(self) -> None:
         g = _grid_2d(4, 2)
         g.cell_tags.set("test", [0, 1], 1)
-        g.refine(0, [1, 1], [3, 3])
-        assert g._cell_tags is None
+        new = g.refine(0, [1, 1], [3, 3])
+        assert new._cell_tags is None  # the returned grid starts fresh
+        assert g._cell_tags is not None  # the receiver keeps its own
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -369,14 +371,14 @@ class TestHierarchicalGridLocate:
 
     def test_locate_in_frame_cell(self) -> None:
         g = _grid_1d(4, 2)
-        g.refine(0, [1], [3])
+        g = g.refine(0, [1], [3])
         cid = g.locate([0.1])
         assert cid is not None
         assert g.cell_level(cid) == 0
 
     def test_locate_in_refined_cell(self) -> None:
         g = _grid_1d(4, 2)
-        g.refine(0, [1], [3])
+        g = g.refine(0, [1], [3])
         cid = g.locate([0.4])  # inside [0.25, 0.75)
         assert cid is not None
         assert g.cell_level(cid) == 1
@@ -395,8 +397,8 @@ class TestHierarchicalGridLocate:
 
     def test_locate_after_two_levels(self) -> None:
         g = _grid_1d(4, 2)
-        g.refine(0, [1], [3])
-        g.refine(1, [2], [4])
+        g = g.refine(0, [1], [3])
+        g = g.refine(1, [2], [4])
         cid = g.locate([0.3])  # in the doubly-refined region [0.25, 0.5)
         assert cid is not None
         assert g.cell_level(cid) == 2
@@ -404,7 +406,7 @@ class TestHierarchicalGridLocate:
     def test_locate_2d_consistent_with_bounds(self) -> None:
         """Every cell's interior point maps back to that cell."""
         g = _grid_2d(3, 2)
-        g.refine(0, [1, 1], [2, 2])
+        g = g.refine(0, [1, 1], [2, 2])
         for cid in range(g.num_cells):
             lo, hi = g.cell_bounds(cid)
             mid = (lo + hi) / 2.0
@@ -439,7 +441,7 @@ class TestHierarchicalGridNeighbors:
     def test_coarse_to_fine_neighbor(self) -> None:
         """Frame cell adjacent to a refined region → first fine neighbour."""
         g = _grid_1d(4, 2)
-        g.refine(0, [1], [3])
+        g = g.refine(0, [1], [3])
         # Cell 0 (level 0, [0, 0.25)) has right face (lfid=1).
         # Neighbour at (level 0, midx 1) is not active (was refined).
         # First fine child of (0, 1) touching left face: midx 2.
@@ -451,7 +453,7 @@ class TestHierarchicalGridNeighbors:
     def test_fine_to_coarse_neighbor(self) -> None:
         """Fine cell adjacent to a coarser frame cell → the coarse cell."""
         g = _grid_1d(4, 2)
-        g.refine(0, [1], [3])
+        g = g.refine(0, [1], [3])
         # First fine cell (midx 2, level 1) has left face adjacent to level-0 frame.
         first_fine = next(cid for cid in range(g.num_cells) if g.cell_level(cid) == 1)
         nbr = g.neighbor_across_facet(first_fine, 0)
@@ -462,7 +464,7 @@ class TestHierarchicalGridNeighbors:
         """Factor-2 2D grid: coarse face abuts factor^(d-1) = 2 fine cells."""
         root = uniform_grid([[0.0, 1.0], [0.0, 1.0]], 4)
         g = hierarchical_grid(root, 2)
-        g.refine(0, [1, 0], [3, 4])  # refine a band; frame cells on left/right
+        g = g.refine(0, [1, 0], [3, 4])  # refine a band; frame cells on left/right
         # Find a frame cell at level 0 adjacent to the refined band.
         # Cell with level-0 midx (0, k) for any k should have right face touching level-1 cells.
         frame_cid = next(
@@ -501,7 +503,7 @@ class TestHierarchicalGridBVH:
 
     def test_query_aabb_covers_refined_cells(self) -> None:
         g = _grid_2d(4, 2)
-        g.refine(0, [1, 1], [3, 3])
+        g = g.refine(0, [1, 1], [3, 3])
         # Query the refined sub-region.
         q = AABB(np.array([0.25, 0.25]), np.array([0.75, 0.75]))
         hits = g.query_aabb(q)
@@ -514,7 +516,7 @@ class TestHierarchicalGridBVH:
     def test_bvh_rebuilt_after_refine(self) -> None:
         g = _grid_2d(4, 2)
         _ = g.cell_bvh()
-        g.refine(0, [1, 1], [3, 3])
+        g = g.refine(0, [1, 1], [3, 3])
         # BVH is lazily rebuilt on next query — must not raise.
         bvh = g.cell_bvh()
         assert bvh is not None
@@ -528,25 +530,33 @@ class TestHierarchicalGridBVH:
 class TestHierarchicalGridTags:
     """Tests that tags are correctly invalidated after refinement."""
 
-    def test_cell_tags_reset_after_refine(self) -> None:
+    def test_cell_tags_reset_on_the_returned_grid_not_the_receiver(self) -> None:
         g = _grid_2d(4, 2)
         ct = g.cell_tags  # create
         ct.set("label", [0, 1, 2], 7)
-        g.refine(0, [1, 1], [3, 3])
-        assert g._cell_tags is None
+        new = g.refine(0, [1, 1], [3, 3])
+        assert new._cell_tags is None  # the returned grid starts fresh
+        assert g._cell_tags is not None  # the receiver keeps its own
+        ids, values = g.cell_tags["label"]
+        np_testing.assert_array_equal(ids, [0, 1, 2])
+        np_testing.assert_array_equal(values, [7, 7, 7])  # still readable
 
     def test_cell_tags_usable_after_refine(self) -> None:
         g = _grid_2d(4, 2)
-        g.refine(0, [1, 1], [3, 3])
+        g = g.refine(0, [1, 1], [3, 3])
         ct = g.cell_tags
         ct.set("cut", list(range(g.num_cells)), 1)
         assert "cut" in ct
 
-    def test_facet_tags_reset_after_refine(self) -> None:
+    def test_facet_tags_reset_on_the_returned_grid_not_the_receiver(self) -> None:
         g = _grid_1d(4, 2)
-        _ = g.facet_tags  # create
-        g.refine(0, [1], [3])
-        assert g._facet_tags is None
+        g.facet_tags.set("cut", [[0, 0]], 1)
+        new = g.refine(0, [1], [3])
+        assert new._facet_tags is None  # the returned grid starts fresh
+        assert g._facet_tags is not None  # the receiver keeps its own
+        keys, values = g.facet_tags["cut"]
+        np_testing.assert_array_equal(keys, [[0, 0]])
+        np_testing.assert_array_equal(values, [1])  # still readable
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -576,7 +586,7 @@ class TestActiveSetAccessors:
 
     def test_active_blocks_after_refine(self) -> None:
         g = _grid_1d(4, 2)
-        g.refine(0, [0], [2])
+        g = g.refine(0, [0], [2])
         assert g.active_blocks(0) == (((2,), (4,)),)
         assert g.active_blocks(1) == (((0,), (4,)),)
 
@@ -586,19 +596,19 @@ class TestActiveSetAccessors:
 
     def test_active_leaf_mask_total_equals_num_cells(self) -> None:
         g = _grid_2d(4, 2)
-        g.refine(0, [0, 0], [2, 2])
-        g.refine(1, [0, 0], [2, 2])
+        g = g.refine(0, [0, 0], [2, 2])
+        g = g.refine(1, [0, 0], [2, 2])
         total = sum(int(g.active_leaf_mask(level).sum()) for level in range(g.max_level + 1))
         assert total == g.num_cells
 
     def test_subdomain_mask_level0_all_true(self) -> None:
         g = _grid_2d(4, 2)
-        g.refine(0, [0, 0], [2, 2])
+        g = g.refine(0, [0, 0], [2, 2])
         assert g.subdomain_mask(0).all()
 
     def test_mask_consistency_1d(self) -> None:
         g = _grid_1d(4, 2)
-        g.refine(0, [0], [2])
+        g = g.refine(0, [0], [2])
         np.testing.assert_array_equal(g.active_leaf_mask(0), [False, False, True, True])
         np.testing.assert_array_equal(g.subdomain_mask(0), [True, True, True, True])
         np.testing.assert_array_equal(
@@ -610,7 +620,7 @@ class TestActiveSetAccessors:
 
     def test_subdomain_mask_out_of_range_raises(self) -> None:
         g = _grid_1d(4, 2)
-        g.refine(0, [0], [2])
+        g = g.refine(0, [0], [2])
         with pytest.raises(ValueError, match="level"):
             g.subdomain_mask(2)
 
@@ -626,8 +636,8 @@ class TestActiveSetAccessors:
         # Refine the left half at level 0, then refine all level-1 cells.
         # Exercises the two-iteration accumulation path in subdomain_mask.
         g = _grid_1d(4, 2)
-        g.refine(0, [0], [2])  # level-0 block [(2,), (4,)]; level-1 block [(0,), (4,)]
-        g.refine(1, [0], [4])  # level-1 block emptied; level-2 block [(0,), (8,)]
+        g = g.refine(0, [0], [2])  # level-0 block [(2,), (4,)]; level-1 block [(0,), (4,)]
+        g = g.refine(1, [0], [4])  # level-1 block emptied; level-2 block [(0,), (8,)]
         # Level-2 grid: 4 * 2^2 = 16 cells.
         # Subdomain mask: start all True, clear cells covered by coarser leaves.
         # Level-0 leaf block [(2,), (4,)) → scale 4 → slice [8, 16): cleared.
@@ -638,7 +648,7 @@ class TestActiveSetAccessors:
 
     def test_is_active_leaf(self) -> None:
         g = _grid_1d(4, 2)
-        g.refine(0, [0], [2])  # level-0 leaves at [2, 4); level-1 leaves at [0, 8)
+        g = g.refine(0, [0], [2])  # level-0 leaves at [2, 4); level-1 leaves at [0, 8)
         assert g.is_active_leaf(0, (2,))  # active level-0 leaf
         assert not g.is_active_leaf(0, (0,))  # refined away
         assert g.is_active_leaf(1, (0,))  # active level-1 leaf
@@ -649,7 +659,7 @@ class TestActiveSetAccessors:
     def test_is_active_leaf_2d(self) -> None:
         g = _grid_2d(4, 2)
         # Refine level-0 cell (0, 0) -> children at level 1 in [0,2)x[0,2)
-        g.refine(0, [0, 0], [1, 1])
+        g = g.refine(0, [0, 0], [1, 1])
         assert not g.is_active_leaf(0, (0, 0))  # refined away
         assert g.is_active_leaf(0, (1, 0))  # unrefined level-0 leaf
         assert g.is_active_leaf(0, (0, 1))  # unrefined level-0 leaf
@@ -662,8 +672,8 @@ class TestActiveSetAccessors:
     def test_cell_id_inverts_cell_level_and_multi_index(self) -> None:
         """`cell_id` round-trips every active leaf, at every level, in both directions."""
         g = _grid_2d(4, 2)
-        g.refine(0, [0, 0], [2, 2])
-        g.refine(1, [0, 0], [2, 2])
+        g = g.refine(0, [0, 0], [2, 2])
+        g = g.refine(1, [0, 0], [2, 2])
         assert g.max_level == 2
         for cid in range(g.num_cells):
             assert g.cell_id(g.cell_level(cid), g.cell_multi_index(cid)) == cid
@@ -671,7 +681,7 @@ class TestActiveSetAccessors:
     def test_cell_id_none_for_cells_that_are_not_active_leaves(self) -> None:
         """The `None` cases are exactly `is_active_leaf`'s `False` cases."""
         g = _grid_1d(4, 2)
-        g.refine(0, [0], [2])  # level-0 leaves at [2, 4); level-1 leaves at [0, 4)
+        g = g.refine(0, [0], [2])  # level-0 leaves at [2, 4); level-1 leaves at [0, 4)
         assert g.cell_id(0, (0,)) is None  # refined away
         assert g.cell_id(0, (-1,)) is None  # negative index
         assert g.cell_id(0, (9,)) is None  # past the level's extent
@@ -682,9 +692,9 @@ class TestActiveSetAccessors:
     def test_cell_id_is_resolved_afresh_after_a_mutation(self) -> None:
         """Ids move under refinement; the `(level, midx)` pair does not."""
         g = _grid_1d(4, 2)
-        g.refine(0, [3], [4])  # refine the last root cell
+        g = g.refine(0, [3], [4])  # refine the last root cell
         before = g.cell_id(0, (0,))
-        g.refine(0, [0], [1])  # ids shift: level-0 loses a cell, level-1 gains two
+        g = g.refine(0, [0], [1])  # ids shift: level-0 loses a cell, level-1 gains two
         assert before == 0
         assert g.cell_id(0, (0,)) is None  # cell (0, 0) is gone, its id belongs elsewhere
         assert g.cell_id(0, (1,)) == 0
@@ -750,61 +760,61 @@ class TestHierarchicalGridCoarsen:
     def test_coarsen_inverts_refine_1d(self) -> None:
         g = _grid_1d(4, 2)
         before = _grid_snapshot(g)
-        g.refine(0, [1], [3])
-        g.coarsen(0, [1], [3])
+        g = g.refine(0, [1], [3])
+        g = g.coarsen(0, [1], [3])
         assert _grid_snapshot(g) == before
 
     def test_coarsen_inverts_refine_2d(self) -> None:
         g = _grid_2d(4, 2)
         before = _grid_snapshot(g)
-        g.refine(0, [1, 1], [3, 3])
-        g.coarsen(0, [1, 1], [3, 3])
+        g = g.refine(0, [1, 1], [3, 3])
+        g = g.coarsen(0, [1, 1], [3, 3])
         assert _grid_snapshot(g) == before
 
     def test_coarsen_drops_trailing_level(self) -> None:
         g = _grid_1d(4, 2)
-        g.refine(0, [0], [4])
+        g = g.refine(0, [0], [4])
         assert g.max_level == 1
-        g.coarsen(0, [0], [4])
+        g = g.coarsen(0, [0], [4])
         assert g.max_level == 0
         assert g.num_cells == 4
 
     def test_coarsen_one_of_two_levels(self) -> None:
         g = _grid_1d(4, 2)
-        g.refine(0, [0], [2])
+        g = g.refine(0, [0], [2])
         snap_one = _grid_snapshot(g)
-        g.refine(1, [0], [4])  # refine all level-1 cells to level 2
-        g.coarsen(1, [0], [4])  # undo just the level-1 refinement
+        g = g.refine(1, [0], [4])  # refine all level-1 cells to level 2
+        g = g.coarsen(1, [0], [4])  # undo just the level-1 refinement
         assert _grid_snapshot(g) == snap_one
 
     def test_coarsen_partial_region_raises(self) -> None:
         g = _grid_1d(4, 2)
-        g.refine(0, [0], [1])  # only cell 0 refined
+        g = g.refine(0, [0], [1])  # only cell 0 refined
         with pytest.raises(ValueError, match="fully refined"):
-            g.coarsen(0, [0], [2])  # cell 1 has no children
+            g = g.coarsen(0, [0], [2])  # cell 1 has no children
 
     def test_coarsen_level_out_of_range_raises(self) -> None:
         g = _grid_1d(4, 2)  # max_level 0, no level 1 to coarsen from
         with pytest.raises(ValueError, match="level"):
-            g.coarsen(0, [0], [1])
+            g = g.coarsen(0, [0], [1])
 
     def test_coarsen_lo_ge_hi_raises(self) -> None:
         g = _grid_1d(4, 2)
-        g.refine(0, [0], [4])
+        g = g.refine(0, [0], [4])
         with pytest.raises(ValueError, match="strictly less"):
-            g.coarsen(0, [2], [2])
+            g = g.coarsen(0, [2], [2])
 
     def test_coarsen_out_of_bounds_raises(self) -> None:
         g = _grid_1d(4, 2)
-        g.refine(0, [0], [4])
+        g = g.refine(0, [0], [4])
         with pytest.raises(ValueError, match="out of bounds"):
-            g.coarsen(0, [0], [5])  # hi=5 > 4 cells at level 0
+            g = g.coarsen(0, [0], [5])  # hi=5 > 4 cells at level 0
 
     def test_coarsen_wrong_ndim_raises(self) -> None:
         g = _grid_1d(4, 2)
-        g.refine(0, [0], [4])
+        g = g.refine(0, [0], [4])
         with pytest.raises(ValueError, match="length"):
-            g.coarsen(0, [0, 0], [4, 4])  # 1D grid, 2D lo/hi
+            g = g.coarsen(0, [0, 0], [4, 4])  # 1D grid, 2D lo/hi
 
 
 class TestCoarsenIsNotAnUnconditionalInverse:
@@ -820,18 +830,18 @@ class TestCoarsenIsNotAnUnconditionalInverse:
         """One refine of an all-active box, then coarsen, restores the grid exactly."""
         g = _grid_1d(6, 2)
         assert g.num_cells == 6
-        g.refine(0, [0], [2])
+        g = g.refine(0, [0], [2])
         assert g.num_cells == 8
-        g.coarsen(0, [0], [2])
+        g = g.coarsen(0, [0], [2])
         assert g.num_cells == 6
 
     def test_coarsen_inverts_refine_disjoint_from_an_earlier_one_1d(self) -> None:
         """Two disjoint refines: coarsening the second is still exact."""
         g = _grid_1d(6, 2)
-        g.refine(0, [0], [2])
-        g.refine(0, [3], [5])
+        g = g.refine(0, [0], [2])
+        g = g.refine(0, [3], [5])
         assert g.num_cells == 10
-        g.coarsen(0, [3], [5])
+        g = g.coarsen(0, [3], [5])
         assert g.num_cells == 8
 
     def test_coarsen_after_overlapping_refines_demotes_the_whole_box_1d(self) -> None:
@@ -847,11 +857,11 @@ class TestCoarsenIsNotAnUnconditionalInverse:
         same reproduction through it and gets the 8 back.
         """
         g = _grid_1d(6, 2)
-        g.refine(0, [0], [2])
+        g = g.refine(0, [0], [2])
         assert g.num_cells == 8
-        g.refine(0, [1], [3])
+        g = g.refine(0, [1], [3])
         assert g.num_cells == 9
-        g.coarsen(0, [1], [3])
+        g = g.coarsen(0, [1], [3])
         assert g.num_cells == 7
         assert g.active_blocks(0) == (((1,), (6,)),)
         assert g.active_blocks(1) == (((0,), (2,)),)
@@ -860,9 +870,9 @@ class TestCoarsenIsNotAnUnconditionalInverse:
         """The 2D control on a non-dyadic factor: single refine, then coarsen, is exact."""
         g = _grid_2d(3, 3)
         assert g.num_cells == 9
-        g.refine(0, [1, 1], [3, 3])
+        g = g.refine(0, [1, 1], [3, 3])
         assert g.num_cells == 41
-        g.coarsen(0, [1, 1], [3, 3])
+        g = g.coarsen(0, [1, 1], [3, 3])
         assert g.num_cells == 9
 
     def test_coarsen_after_overlapping_refines_demotes_the_whole_box_2d_non_dyadic(self) -> None:
@@ -872,11 +882,11 @@ class TestCoarsenIsNotAnUnconditionalInverse:
         regression cannot hide: 41 would mean `coarsen` had inverted the second refine.
         """
         g = _grid_2d(3, 3)
-        g.refine(0, [0, 0], [2, 2])
+        g = g.refine(0, [0, 0], [2, 2])
         assert g.num_cells == 41
-        g.refine(0, [1, 1], [3, 3])
+        g = g.refine(0, [1, 1], [3, 3])
         assert g.num_cells == 65
-        g.coarsen(0, [1, 1], [3, 3])
+        g = g.coarsen(0, [1, 1], [3, 3])
         assert g.num_cells == 33
         # The shape, not only the count: dropping the block merge on reactivation leaves
         # 33 cells in a structurally different partition, which the count alone misses.
@@ -886,19 +896,19 @@ class TestCoarsenIsNotAnUnconditionalInverse:
     def test_refine_undoes_coarsen_unconditionally(self) -> None:
         """The other direction holds with no hypothesis: refine always undoes coarsen."""
         g = _grid_1d(6, 2)
-        g.refine(0, [0], [2])
-        g.refine(0, [1], [3])
+        g = g.refine(0, [0], [2])
+        g = g.refine(0, [1], [3])
         before = _grid_snapshot(g)
-        g.coarsen(0, [1], [3])
-        g.refine(0, [1], [3])
+        g = g.coarsen(0, [1], [3])
+        g = g.refine(0, [1], [3])
         assert _grid_snapshot(g) == before
 
     def test_coarsen_names_cells_that_are_still_leaves(self) -> None:
         """The refusal names the box cells that have no children to remove."""
         g = _grid_1d(4, 2)
-        g.refine(0, [0], [1])  # only cell 0 is refined
+        g = g.refine(0, [0], [1])  # only cell 0 is refined
         with pytest.raises(ValueError, match="still active leaves at level 0") as excinfo:
-            g.coarsen(0, [0], [2])
+            g = g.coarsen(0, [0], [2])
         named = str(excinfo.value).split("still active leaves at level 0")[1]
         assert "(1,)" in named
         assert "refined beyond" not in str(excinfo.value)
@@ -909,10 +919,10 @@ class TestCoarsenIsNotAnUnconditionalInverse:
     def test_coarsen_names_cells_refined_beyond_the_target_level(self) -> None:
         """The refusal names the box cells whose children are themselves refined."""
         g = _grid_1d(4, 2)
-        g.refine(0, [0], [2])
-        g.refine(1, [0], [2])  # cell 0's children go on to level 2
+        g = g.refine(0, [0], [2])
+        g = g.refine(1, [0], [2])  # cell 0's children go on to level 2
         with pytest.raises(ValueError, match="refined beyond level 1") as excinfo:
-            g.coarsen(0, [0], [2])
+            g = g.coarsen(0, [0], [2])
         named = str(excinfo.value).split("refined beyond level 1")[1]
         assert "(0,)" in named
         assert "still active leaves" not in str(excinfo.value)
@@ -957,11 +967,11 @@ class TestCoarsenIsNotAnUnconditionalInverse:
                 int(rng.integers(a + 1, min(a + 3, n) + 1)) for a, n in zip(lo, extent, strict=True)
             ]
             if not coarsening:
-                g.refine(level, lo, hi)
+                g = g.refine(level, lo, hi)
                 continue
             expected = _obstacles_by_cellwise_walk(g, level, lo, hi)
             try:
-                g.coarsen(level, lo, hi)
+                g = g.coarsen(level, lo, hi)
             except ValueError as exc:
                 assert expected, f"refused a region the oracle finds coarsenable: {exc}"
                 named = _cells_named_in(str(exc))
@@ -985,23 +995,23 @@ class TestCoarsenIsNotAnUnconditionalInverse:
     def test_coarsen_names_exactly_the_cap_without_a_remainder(self) -> None:
         """A listing landing exactly on the cap must not claim a remainder."""
         g = _grid_1d(8, 2)
-        g.refine(0, [0], [1])  # cells 1..6 of the box below are leaves: exactly the cap
+        g = g.refine(0, [0], [1])  # cells 1..6 of the box below are leaves: exactly the cap
         with pytest.raises(ValueError) as excinfo:
-            g.coarsen(0, [0], [1 + _MAX_NAMED_CELLS])
+            g = g.coarsen(0, [0], [1 + _MAX_NAMED_CELLS])
         message = str(excinfo.value)
         assert "more" not in message
         named = message.split("with no children to remove: ")[1]
         assert named.count("), (") == _MAX_NAMED_CELLS - 1
         # One cell further, the remainder is reported rather than dropped.
         with pytest.raises(ValueError, match="and 1 more"):
-            g.coarsen(0, [0], [2 + _MAX_NAMED_CELLS])
+            g = g.coarsen(0, [0], [2 + _MAX_NAMED_CELLS])
 
     def test_coarsen_truncates_a_long_list_of_offending_cells(self) -> None:
         """A large rejected region names a few cells and counts the rest."""
         g = _grid_2d(6, 2)
-        g.refine(0, [0, 0], [1, 1])  # 1 of the 36 level-0 cells is refined
+        g = g.refine(0, [0, 0], [1, 1])  # 1 of the 36 level-0 cells is refined
         with pytest.raises(ValueError) as excinfo:
-            g.coarsen(0, [0, 0], [6, 6])
+            g = g.coarsen(0, [0, 0], [6, 6])
         message = str(excinfo.value)
         named = message.split("with no children to remove: ")[1]
         assert named.count("), (") == _MAX_NAMED_CELLS - 1  # exactly the cap is spelled out
@@ -1017,20 +1027,20 @@ class TestCoarsenIsNotAnUnconditionalInverse:
         """
         g = _grid_1d(2, 2)
         for level in range(21):
-            g.refine(level, [0], [1])  # deepen without growing the grid
+            g = g.refine(level, [0], [1])  # deepen without growing the grid
         region = g.level_cells_per_axis(20)[0]
         assert region > _MAX_DIAGNOSED_CELLS
         with pytest.raises(ValueError, match=f"spans {region} cells, too many to name"):
-            g.coarsen(20, [0], [region])
+            g = g.coarsen(20, [0], [region])
 
     def test_coarsen_names_offending_cells_with_an_anisotropic_factor(self) -> None:
         """The per-axis factor is respected when locating the offending cells."""
         g = hierarchical_grid(uniform_grid([[0.0, 1.0], [0.0, 1.0]], [2, 2]), (2, 3))
         assert g.factor == (2, 3)
-        g.refine(0, [0, 0], [2, 2])  # every level-0 cell -> level 1
-        g.refine(1, [0, 0], [1, 1])  # level-1 cell (0, 0) -> level 2
+        g = g.refine(0, [0, 0], [2, 2])  # every level-0 cell -> level 1
+        g = g.refine(1, [0, 0], [1, 1])  # level-1 cell (0, 0) -> level 2
         with pytest.raises(ValueError, match="refined beyond level 1") as excinfo:
-            g.coarsen(0, [0, 0], [2, 2])
+            g = g.coarsen(0, [0, 0], [2, 2])
         named = str(excinfo.value).split("refined beyond level 1")[1]
         assert "(0, 0)" in named
         # Only cell (0, 0) owns the level-2 cells, so no other cell may be named.
@@ -1046,11 +1056,11 @@ class TestCoarsenIsNotAnUnconditionalInverse:
         not appear anywhere in the message.
         """
         g = _grid_1d(8, 2)
-        g.refine(0, [0], [4])  # level-1 cells 0..7
-        g.refine(1, [0], [4])  # level-1 cells 0..3 -> level-2 cells 0..7
-        g.refine(2, [0], [2])  # level-2 cells 0, 1 -> level 3
+        g = g.refine(0, [0], [4])  # level-1 cells 0..7
+        g = g.refine(1, [0], [4])  # level-1 cells 0..3 -> level-2 cells 0..7
+        g = g.refine(2, [0], [2])  # level-2 cells 0, 1 -> level 3
         with pytest.raises(ValueError) as excinfo:
-            g.coarsen(1, [0], [12])
+            g = g.coarsen(1, [0], [12])
         message = str(excinfo.value)
         assert "still active leaves at level 1" in message
         assert "refined beyond level 2" in message
@@ -1067,10 +1077,10 @@ class TestCoarsenIsNotAnUnconditionalInverse:
     def test_coarsen_names_cells_absent_at_the_requested_level(self) -> None:
         """The refusal names box cells that a coarser active leaf covers."""
         g = _grid_1d(4, 2)
-        g.refine(0, [0], [2])
-        g.refine(1, [0], [2])  # max_level 2, so coarsening level 1 is in range
+        g = g.refine(0, [0], [2])
+        g = g.refine(1, [0], [2])  # max_level 2, so coarsening level 1 is in range
         with pytest.raises(ValueError, match="covered by a coarser active leaf") as excinfo:
-            g.coarsen(1, [4], [6])  # level-1 cells 4, 5 sit inside level-0 leaf cell 2
+            g = g.coarsen(1, [4], [6])  # level-1 cells 4, 5 sit inside level-0 leaf cell 2
         named = str(excinfo.value).split("covered by a coarser active leaf")[1]
         assert "(4,)" in named
         assert "(5,)" in named
@@ -1107,9 +1117,9 @@ class TestCoarsenCells:
         g = _grid_1d(4, 2)
         before = _grid_snapshot(g)
         assert before == (4, 0, ((((0,), (4,)),),))
-        g.refine_cells([0])
+        g = g.refine_cells([0])
         assert (g.num_cells, g.max_level) == (5, 1)
-        g.coarsen_cells([c for c in range(g.num_cells) if g.cell_level(c) == 1])
+        g = g.coarsen_cells([c for c in range(g.num_cells) if g.cell_level(c) == 1])
         assert _grid_snapshot(g) == before
         assert (g.num_cells, g.max_level, g.active_blocks(0)) == (4, 0, (((0,), (4,)),))
 
@@ -1117,38 +1127,38 @@ class TestCoarsenCells:
         """The 2D control on ``factor = 3``: nine children collapse back to one cell."""
         g = _grid_2d(3, 3)
         before = _grid_snapshot(g)
-        g.refine_cells([4])  # the middle root cell
+        g = g.refine_cells([4])  # the middle root cell
         assert (g.num_cells, g.max_level) == (17, 1)
-        g.coarsen_cells([c for c in range(g.num_cells) if g.cell_level(c) == 1])
+        g = g.coarsen_cells([c for c in range(g.num_cells) if g.cell_level(c) == 1])
         assert _grid_snapshot(g) == before
 
     def test_partial_parent_is_skipped_without_raising(self) -> None:
         """A parent with only some children named is left exactly as it was."""
         g = _grid_1d(4, 2)
-        g.refine_cells([0])
+        g = g.refine_cells([0])
         before = _grid_snapshot(g)
         children = [c for c in range(g.num_cells) if g.cell_level(c) == 1]
         assert len(children) == 2
-        g.coarsen_cells(children[:1])  # one of the two children
+        g = g.coarsen_cells(children[:1])  # one of the two children
         assert _grid_snapshot(g) == before
 
     def test_level_zero_ids_are_ignored(self) -> None:
         """A root cell has no parent, so naming it does nothing (and does not raise)."""
         g = _grid_1d(4, 2)
-        g.refine_cells([0])
+        g = g.refine_cells([0])
         before = _grid_snapshot(g)
-        g.coarsen_cells([c for c in range(g.num_cells) if g.cell_level(c) == 0])
+        g = g.coarsen_cells([c for c in range(g.num_cells) if g.cell_level(c) == 0])
         assert _grid_snapshot(g) == before
 
     def test_empty_and_repeated_ids(self) -> None:
         """An empty call is a no-op; a repeated id counts once, not twice."""
         g = _grid_1d(4, 2)
-        g.refine_cells([0])
+        g = g.refine_cells([0])
         before = _grid_snapshot(g)
-        g.coarsen_cells([])
+        g = g.coarsen_cells([])
         assert _grid_snapshot(g) == before
         children = [c for c in range(g.num_cells) if g.cell_level(c) == 1]
-        g.coarsen_cells([*children, *children])
+        g = g.coarsen_cells([*children, *children])
         assert (g.num_cells, g.max_level) == (4, 0)
 
     def test_out_of_range_id_raises_before_anything_is_demoted(self) -> None:
@@ -1160,16 +1170,16 @@ class TestCoarsenCells:
         """
         g = _grid_1d(4, 2)
         with pytest.raises(IndexError, match="out of range"):
-            g.coarsen_cells([4])
+            g = g.coarsen_cells([4])
         with pytest.raises(IndexError, match="out of range"):
-            g.coarsen_cells([-1])
+            g = g.coarsen_cells([-1])
         assert _grid_snapshot(g) == (4, 0, ((((0,), (4,)),),))
 
-        g.refine_cells([0])
+        g = g.refine_cells([0])
         before = _grid_snapshot(g)
         children = [c for c in range(g.num_cells) if g.cell_level(c) == 1]
         with pytest.raises(IndexError, match="out of range"):
-            g.coarsen_cells([*children, g.num_cells])
+            g = g.coarsen_cells([*children, g.num_cells])
         assert _grid_snapshot(g) == before
 
     def test_parents_at_two_levels_are_demoted_deepest_first(self) -> None:
@@ -1187,38 +1197,41 @@ class TestCoarsenCells:
         that difference, which is why this pins the blocks themselves.
         """
         g = _grid_2d(3, 2)
-        g.refine(0, [0, 1], [2, 3])
-        g.refine(1, [1, 3], [2, 5])
-        g.refine(1, [1, 4], [3, 5])
+        g = g.refine(0, [0, 1], [2, 3])
+        g = g.refine(1, [1, 3], [2, 5])
+        g = g.refine(1, [1, 4], [3, 5])
         assert (g.num_cells, g.max_level) == (30, 2)
-        g.coarsen_cells([c for c in range(g.num_cells) if g.cell_level(c) >= 1])
+        g = g.coarsen_cells([c for c in range(g.num_cells) if g.cell_level(c) >= 1])
         assert (g.num_cells, g.max_level) == (18, 1)
         assert g.active_blocks(0) == (((0, 0), (2, 1)), ((1, 1), (2, 2)), ((2, 0), (3, 3)))
         assert g.active_blocks(1) == (((0, 2), (2, 6)), ((2, 4), (4, 6)))
 
-    def test_coarsen_cells_invalidates_the_bvh_and_the_tags(self) -> None:
-        """Coarsening by id invalidates the same caches the box `coarsen` does.
+    def test_coarsen_cells_returns_a_grid_with_fresh_caches_and_leaves_the_receivers(self) -> None:
+        """Every returned grid starts with empty caches; only the receiver's stay live.
 
-        Both routes reach `_rebuild`, but only through a `coarsen` call that actually
-        fires: a call that demotes nothing must leave the caches alone, since ids did
-        not move.
+        There is no mutation counter left to tell a no-op apart from a real coarsen at
+        the grid level -- `version` counted a mutation, and mutation is unrepresentable
+        now that every call returns a fresh object.  The active-leaf set is the oracle
+        instead: unchanged after a no-op, different after a real one.
         """
         g = _grid_1d(4, 2)
-        g.refine_cells([0])
+        g = g.refine_cells([0])
         g.cell_tags.set("test", [0, 1], 1)
         _ = g.cell_bvh()
         children = [c for c in range(g.num_cells) if g.cell_level(c) == 1]
 
         assert _caches_live(g) == (True, True)
+        before = _active_cells(g)
 
-        version = g.version
-        g.coarsen_cells(children[:1])  # partial parent: nothing is demoted
-        assert g.version == version
-        assert _caches_live(g) == (True, True)
+        partial = g.coarsen_cells(children[:1])  # partial parent: nothing is demoted
+        assert _active_cells(partial) == before
+        assert _caches_live(partial) == (False, False)
+        assert _caches_live(g) == (True, True)  # receiver untouched
 
-        g.coarsen_cells(children)
-        assert g.version > version
-        assert _caches_live(g) == (False, False)
+        full = g.coarsen_cells(children)
+        assert _active_cells(full) != before
+        assert _caches_live(full) == (False, False)
+        assert _caches_live(g) == (True, True)  # receiver still untouched
 
     def test_destroys_only_the_named_children_after_overlapping_refines(self) -> None:
         """The cell-exact counterpart of the box contrast test above.
@@ -1231,10 +1244,10 @@ class TestCoarsenCells:
         caller controls by naming cells.
         """
         g = _grid_1d(6, 2)
-        g.refine(0, [0], [2])
+        g = g.refine(0, [0], [2])
         after_first = _grid_snapshot(g)
         assert g.num_cells == 8
-        g.refine(0, [1], [3])  # only cell 2 is still active, so only cell 2 is promoted
+        g = g.refine(0, [1], [3])  # only cell 2 is still active, so only cell 2 is promoted
         assert g.num_cells == 9
         children_of = {
             parent: [
@@ -1247,12 +1260,12 @@ class TestCoarsenCells:
         assert children_of == {1: [5, 6], 2: [7, 8]}
 
         undo_second = copy.deepcopy(g)
-        undo_second.coarsen_cells(children_of[2])
+        undo_second = undo_second.coarsen_cells(children_of[2])
         assert undo_second.num_cells == 8
         assert _grid_snapshot(undo_second) == after_first
 
         both_parents = copy.deepcopy(g)
-        both_parents.coarsen_cells(children_of[1] + children_of[2])
+        both_parents = both_parents.coarsen_cells(children_of[1] + children_of[2])
         assert both_parents.num_cells == 7
         assert both_parents.active_blocks(0) == (((1,), (6,)),)
         assert both_parents.active_blocks(1) == (((0,), (2,)),)
@@ -1266,10 +1279,10 @@ class TestCoarsenCells:
         cascades past what the caller could name, which is the point of the method.
         """
         g = _grid_1d(4, 2)
-        g.refine(0, [0], [2])  # level-1 cells 0..3
-        g.refine(1, [0], [2])  # level-2 cells 0..3; level-1 leaves are 2, 3
+        g = g.refine(0, [0], [2])  # level-1 cells 0..3
+        g = g.refine(1, [0], [2])  # level-2 cells 0..3; level-1 leaves are 2, 3
         assert (g.num_cells, g.max_level) == (8, 2)
-        g.coarsen_cells([c for c in range(g.num_cells) if g.cell_level(c) >= 1])
+        g = g.coarsen_cells([c for c in range(g.num_cells) if g.cell_level(c) >= 1])
         assert (g.num_cells, g.max_level) == (5, 1)
         assert g.active_blocks(0) == (((1,), (4,)),)  # cell 0 is still refined
         assert g.active_blocks(1) == (((0,), (2,)),)
@@ -1277,8 +1290,8 @@ class TestCoarsenCells:
     def test_a_shallow_parent_still_goes_when_its_children_are_named(self) -> None:
         """The deepest-first order is not a restriction on which levels may be named."""
         g = _grid_1d(4, 2)
-        g.refine(0, [0], [2])  # level-1 cells 0..3
-        g.refine(1, [0], [2])  # level-2 cells 0..3; level-1 leaves are 2, 3
+        g = g.refine(0, [0], [2])  # level-1 cells 0..3
+        g = g.refine(1, [0], [2])  # level-2 cells 0..3; level-1 leaves are 2, 3
         # Name the level-2 children of level-1 cell 0 and the level-1 children of
         # level-0 cell 1: two parents at two different levels, neither nested.
         marked = [
@@ -1287,7 +1300,7 @@ class TestCoarsenCells:
             if (g.cell_level(c) == 2 and g.cell_multi_index(c)[0] < 2)
             or (g.cell_level(c) == 1 and g.cell_multi_index(c)[0] >= 2)
         ]
-        g.coarsen_cells(marked)
+        g = g.coarsen_cells(marked)
         assert g.active_blocks(0) == (((1,), (4,)),)  # level-0 cell 1 reborn
         assert g.active_blocks(1) == (((0,), (1,)),)  # cell 0 reborn; cell 1 still refined
         assert g.active_blocks(2) == (((2,), (4,)),)  # cell 1's children survive untouched
@@ -1328,7 +1341,7 @@ class TestCoarsenCells:
                     int(rng.integers(a + 1, min(a + 3, n) + 1))
                     for a, n in zip(lo, extent, strict=True)
                 ]
-                g.refine(level, lo, hi)
+                g = g.refine(level, lo, hi)
                 continue
             pool = [c for c in range(g.num_cells) if g.cell_level(c) >= 1]
             if not pool:
@@ -1340,7 +1353,7 @@ class TestCoarsenCells:
                 (g.cell_level(pool[int(i)]), g.cell_multi_index(pool[int(i)])) for i in pool_idx
             }
             before = _active_cells(g)
-            g.coarsen_cells([pool[int(i)] for i in pool_idx])
+            g = g.coarsen_cells([pool[int(i)] for i in pool_idx])
             after = _active_cells(g)
             assert before - marked <= after, "removed a cell that was not named"
             for level, midx in after - before:
@@ -1382,7 +1395,7 @@ class TestHierarchicalGridRestrict:
 
     def test_refined_region_matches_global(self) -> None:
         g = _grid_2d(4, 2)
-        g.refine(0, [1, 1], [3, 3])
+        g = g.refine(0, [1, 1], [3, 3])
         requested = [c for c in range(g.num_cells) if g.cell_level(c) == 1]
         r = g.restrict(requested)
         _check_restrict(g, r, requested)
@@ -1391,7 +1404,7 @@ class TestHierarchicalGridRestrict:
 
     def test_in_subset_flags_fill_cells(self) -> None:
         g = _grid_2d(4, 2)
-        g.refine(0, [1, 1], [3, 3])
+        g = g.refine(0, [1, 1], [3, 3])
         # Request only the level-0 frame leaves inside root box [0,3)x[0,3).
         requested = [
             c
@@ -1405,7 +1418,7 @@ class TestHierarchicalGridRestrict:
 
     def test_single_deep_cell_returns_root_subtree(self) -> None:
         g = _grid_2d(4, 2)
-        g.refine(0, [1, 1], [2, 2])  # refine root cell (1,1) -> 4 level-1 leaves
+        g = g.refine(0, [1, 1], [2, 2])  # refine root cell (1,1) -> 4 level-1 leaves
         fine = [c for c in range(g.num_cells) if g.cell_level(c) == 1]
         r = g.restrict([fine[0]])
         _check_restrict(g, r, [fine[0]])
@@ -1414,7 +1427,7 @@ class TestHierarchicalGridRestrict:
 
     def test_coarse_only_region_trims_levels(self) -> None:
         g = _grid_2d(4, 2)
-        g.refine(0, [1, 1], [3, 3])
+        g = g.refine(0, [1, 1], [3, 3])
         # Root row 0 is entirely level-0 frame, disjoint from the refined region.
         requested = [
             c for c in range(g.num_cells) if g.cell_level(c) == 0 and g.cell_multi_index(c)[0] == 0
@@ -1428,7 +1441,7 @@ class TestHierarchicalGridRestrict:
 
     def test_full_grid_is_identity(self) -> None:
         g = _grid_2d(4, 2)
-        g.refine(0, [1, 1], [3, 3])
+        g = g.refine(0, [1, 1], [3, 3])
         r = g.restrict(list(range(g.num_cells)))
         assert r.grid.num_cells == g.num_cells
         assert set(r.local_to_global_cell.tolist()) == set(range(g.num_cells))
@@ -1437,7 +1450,7 @@ class TestHierarchicalGridRestrict:
 
     def test_full_grid_neighbors_match(self) -> None:
         g = _grid_2d(4, 2)
-        g.refine(0, [1, 1], [3, 3])
+        g = g.refine(0, [1, 1], [3, 3])
         r = g.restrict(list(range(g.num_cells)))
         sub, l2g = r.grid, r.local_to_global_cell
         for k in range(sub.num_cells):
@@ -1448,7 +1461,7 @@ class TestHierarchicalGridRestrict:
 
     def test_window_neighbors_map_to_global(self) -> None:
         g = _grid_2d(4, 2)
-        g.refine(0, [1, 1], [3, 3])
+        g = g.refine(0, [1, 1], [3, 3])
         requested = [c for c in range(g.num_cells) if g.cell_level(c) == 1]
         r = g.restrict(requested)
         sub, l2g = r.grid, r.local_to_global_cell
@@ -1460,7 +1473,7 @@ class TestHierarchicalGridRestrict:
 
     def test_sub_root_not_reclamped(self) -> None:
         g = _grid_2d(4, 2)  # root breakpoints [0, .25, .5, .75, 1]
-        g.refine(0, [1, 1], [3, 3])
+        g = g.refine(0, [1, 1], [3, 3])
         requested = [c for c in range(g.num_cells) if g.cell_level(c) == 1]
         sub = g.restrict(requested).grid
         assert isinstance(sub, HierarchicalGrid)
@@ -1468,7 +1481,7 @@ class TestHierarchicalGridRestrict:
 
     def test_1d(self) -> None:
         g = _grid_1d(4, 2)
-        g.refine(0, [1], [3])
+        g = g.refine(0, [1], [3])
         requested = [c for c in range(g.num_cells) if g.cell_level(c) == 1]
         r = g.restrict(requested)
         _check_restrict(g, r, requested)
@@ -1476,7 +1489,7 @@ class TestHierarchicalGridRestrict:
 
     def test_returns_grid_restriction(self) -> None:
         g = _grid_2d(4, 2)
-        g.refine(0, [1, 1], [3, 3])
+        g = g.refine(0, [1, 1], [3, 3])
         r = g.restrict([0, 1, 2])
         assert isinstance(r, GridRestriction)
         assert isinstance(r.grid, HierarchicalGrid)
@@ -1499,12 +1512,12 @@ class TestHierarchicalGridRestrict:
     def test_multilevel_restrict(self) -> None:
         # Two levels of refinement: level 0 → level 1 → level 2.
         g = _grid_2d(4, 2)
-        g.refine(0, [1, 1], [3, 3])  # level-1 leaves in [1,3)x[1,3)
+        g = g.refine(0, [1, 1], [3, 3])  # level-1 leaves in [1,3)x[1,3)
         # Refine one level-1 block to level 2.
         l1_cells = [c for c in range(g.num_cells) if g.cell_level(c) == 1]
         l1_midxs = [g.cell_multi_index(c) for c in l1_cells]
         lo = min(m[0] for m in l1_midxs)
-        g.refine(1, [lo, lo], [lo + 1, lo + 1])
+        g = g.refine(1, [lo, lo], [lo + 1, lo + 1])
         l2_cells = [c for c in range(g.num_cells) if g.cell_level(c) == 2]
         assert len(l2_cells) > 0
         r = g.restrict([l2_cells[0]])
@@ -1541,9 +1554,9 @@ def _irregular_grid(ndim: int, factor: int | tuple[int, ...]) -> HierarchicalGri
     g = hierarchical_grid(TensorProductGrid(bp), factor)
     for lev in range(3):
         n = g.level_cells_per_axis(lev)
-        g.refine(lev, [0] * ndim, [max(1, n[k] // 2) for k in range(ndim)])
+        g = g.refine(lev, [0] * ndim, [max(1, n[k] // 2) for k in range(ndim)])
     n1 = g.level_cells_per_axis(1)
-    g.refine(1, [max(0, n1[k] - 2) for k in range(ndim)], list(n1))
+    g = g.refine(1, [max(0, n1[k] - 2) for k in range(ndim)], list(n1))
     return g
 
 
@@ -1596,7 +1609,7 @@ class TestHierKernelEquivalence:
     def test_encode_midx_inactive_positions(self) -> None:
         """_encode_midx returns None for refined (non-leaf) and never-active positions."""
         g = _grid_2d(4)
-        g.refine(0, [0, 0], [2, 2])
+        g = g.refine(0, [0, 0], [2, 2])
         # (0, (0, 0)) was refined away -> not an active leaf.
         assert g._encode_midx(0, (0, 0)) is None
         # A level beyond the hierarchy.
@@ -1617,11 +1630,11 @@ class TestHierKernelEquivalence:
         g = _grid_2d(8)
         rng = np.random.default_rng(17)
         pts = rng.random((500, 2))
-        g.refine(0, [0, 0], [4, 4])
+        g = g.refine(0, [0, 0], [4, 4])
         after_refine = g.locate_many(pts)
         expected = np.array([-1 if (c := g.locate(p)) is None else c for p in pts])
         np_testing.assert_array_equal(after_refine, expected)
-        g.coarsen(0, [0, 0], [4, 4])
+        g = g.coarsen(0, [0, 0], [4, 4])
         after_coarsen = g.locate_many(pts)
         expected2 = np.array([-1 if (c := g.locate(p)) is None else c for p in pts])
         np_testing.assert_array_equal(after_coarsen, expected2)
@@ -1629,7 +1642,7 @@ class TestHierKernelEquivalence:
     def test_restricted_grid_uses_fresh_packed_arrays(self) -> None:
         """Grids built via restrict() (the _from_blocks path) locate correctly."""
         g = _grid_2d(8)
-        g.refine(0, [0, 0], [4, 4])
+        g = g.refine(0, [0, 0], [4, 4])
         restr = g.restrict(np.arange(min(20, g.num_cells)))
         sub = restr.grid
         rng = np.random.default_rng(23)
@@ -1689,7 +1702,7 @@ def _boundary_facets_bruteforce(grid: HierarchicalGrid) -> list[list[int]]:
 def _refined_corner_grid() -> HierarchicalGrid:
     """2x2 unit grid with the low corner root cell refined once: 3 coarse + 4 fine."""
     g = hierarchical_grid(uniform_grid([[0.0, 1.0], [0.0, 1.0]], 2), 2)
-    g.refine(0, (0, 0), (1, 1))
+    g = g.refine(0, (0, 0), (1, 1))
     return g
 
 
@@ -1808,8 +1821,8 @@ class TestExportCells:
     def test_roundtrip_exact_on_dyadic_grid(self) -> None:
         """With dyadic breakpoints and a dyadic factor every corner agrees bitwise."""
         g = hierarchical_grid(uniform_grid([[0.0, 1.0], [0.0, 1.0]], 2), 2)
-        g.refine(0, (0, 0), (1, 1))
-        g.refine(1, (0, 0), (2, 2))
+        g = g.refine(0, (0, 0), (1, 1))
+        g = g.refine(1, (0, 0), (2, 2))
         points, conn = g.export_cells()
 
         for cid in range(g.num_cells):
@@ -1838,7 +1851,7 @@ class TestExportCells:
     def test_dedup_exact_with_non_uniform_breakpoints(self) -> None:
         """Non-uniform root breakpoints deduplicate exactly as well."""
         g = hierarchical_grid(TensorProductGrid([np.array([0.0, 0.3, 1.0])] * 2), 2)
-        g.refine(0, (0, 0), (1, 1))
+        g = g.refine(0, (0, 0), (1, 1))
         points, _ = g.export_cells()
 
         assert points.shape == (14, 2)

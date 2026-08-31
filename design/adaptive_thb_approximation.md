@@ -159,11 +159,11 @@ that is very attractive, at the cost of accuracy relative to a true L2 fit. It i
 natural thing to try **first**, precisely because it is the cheapest, and to measure the
 accuracy gap against a fit before deciding the loop needs one.
 
-## What blocks this today: refinement mutates
+## What blocked this: refinement mutated (resolved by #378)
 
-`HierarchicalGrid.refine_cells(self, cell_ids: Sequence[int]) -> None`
-(`src/pantr/grid/_hierarchical_grid.py:1402`) returns `None`, so it refines **in place**.
-`:453` confirms it: refinement recomputes `_level_base` and `_num_cells` and resets the BVH
+In v0.7.0, `HierarchicalGrid.refine_cells(self, cell_ids: Sequence[int]) -> None`
+(`src/pantr/grid/_hierarchical_grid.py:1402`) returned `None`, so it refined **in place**.
+`:453` confirmed it: refinement recomputed `_level_base` and `_num_cells` and reset the BVH
 and tags on the existing object.
 
 The level-wise scheme above needs **all levels alive simultaneously**, because the final
@@ -179,11 +179,26 @@ Two secondary benefits, once refinement is value-returning:
 - The loop becomes restartable and inspectable. Keeping the sequence of spaces means a
   refinement step can be reverted when the stopping criterion decides it went too far,
   which a noise-driven criterion will sometimes want to do.
-- Structural sharing makes it cheap. A refined grid differs from its parent by one level's
-  active set, so the new object can share the parent's immutable data rather than copying
-  it, and the cost of returning a value instead of mutating is close to zero.
+- It is cheap, because the grid stores no per-cell data. The cost of a refinement is the
+  cost of rebuilding the block lists and the packed kernel descriptor, which is what the
+  mutating version already paid on every call.
 
-`refine` (`:1304`) should be checked for the same problem; only `refine_cells` was read.
+**Resolved on `proto/cpp` by #378.** All four entry points -- `refine`, `refine_cells`,
+`coarsen`, `coarsen_cells` -- now return a new grid and leave the receiver untouched, so the
+level-wise scheme above can keep every level's space alive. What the new grid actually shares
+with the one it came from is worth stating exactly, because the paragraph above guessed at it:
+
+- the root `TensorProductGrid` object, shared by reference, as the mutating version and
+  `restrict` already did;
+- the `(lo, hi)` block tuples, which are immutable;
+- **nothing else.** The per-level block *lists*, `_level_base`, `_num_cells` and the four
+  packed `int64` kernel arrays are rebuilt, and the BVH and the two tag registries start
+  empty. So the two grids cannot observe each other through the cell decomposition.
+
+Measured on the branch, refinement's cost per call is flat in the cell count (a single-block
+region refined on grids from 64 to 4096 cells) and superlinear in the *block* count, which is
+what the mutating version measured too: the cost was always the block-list normalization, not
+the copy. Neither the old nor the new call is O(cells).
 
 ## Memory across iterations
 
@@ -202,8 +217,9 @@ Two secondary benefits, once refinement is value-returning:
 
 ## Epistemic status
 
-- **Verified by reading the code:** that `refine_cells` returns `None` and therefore mutates
-  (`_hierarchical_grid.py:1402`), and that refinement resets cached state in place (`:453`);
+- **Verified by reading the code, against v0.7.0:** that `refine_cells` returned `None` and
+  therefore mutated (`_hierarchical_grid.py:1402`), and that refinement reset cached state in
+  place (`:453`). Both were fixed by #378 on `proto/cpp`, after this note was written;
   that `_solve_kronecker` is the tensor-product solve path
   (`_bspline_interpolate.py:154`); that THB quasi-interpolation already exists
   (`_thb_quasi_interpolation.py:49`).
@@ -237,5 +253,10 @@ Two secondary benefits, once refinement is value-returning:
 5. Marking strategy: fixed fraction (refine the worst `θ` of cells, Dörfler-style), fixed
    threshold, or equidistribution? Not discussed here at all, and it changes the number of
    iterations to reach a given accuracy.
-6. Does `refine` (`:1304`) have the same mutation problem as `refine_cells`? Only the latter
-   was read.
+6. **Answered, and the problem is gone.** `refine` had the same problem, and so did
+   `coarsen` and `coarsen_cells`: all four returned `None` and mutated the receiver. Issue #378
+   changed all four to return a new grid on the `proto/cpp` branch, together with deleting the
+   staleness apparatus that existed only to cope with the mutation
+   (`HierarchicalGrid.version`, `THBSplineSpace._grid_snapshot`, `_check_not_stale`, and the
+   *"THBSplineSpace is stale"* `RuntimeError`). See the section above for what that costs and
+   what is actually shared between a grid and the grid it was refined from.

@@ -8,6 +8,15 @@ region into ``m_0 * ... * m_{d-1}`` equal children (the per-direction *factor*).
 Design highlights
 -----------------
 
+*Immutable.*  A grid is frozen once constructed.  :meth:`~HierarchicalGrid.refine`,
+:meth:`~HierarchicalGrid.refine_cells`, :meth:`~HierarchicalGrid.coarsen` and
+:meth:`~HierarchicalGrid.coarsen_cells` **return a new grid** and leave the receiver
+untouched, so a consumer that captured a grid can never be invalidated by a later
+refinement.  Write ``grid = grid.refine(...)``; discarding the return value discards
+the refinement.  Only the three lazy caches a grid inherits from its base (the BVH
+and the two tag registries) are filled in after construction, and filling them
+changes nothing a caller can observe about the cell decomposition.
+
 *No per-cell storage.*  Only **rectangular blocks** are stored — at most one
 small list of ``(lo, hi)`` index pairs per level.  Memory is therefore
 ``O(total_blocks * ndim)``, independent of the total cell count.
@@ -226,8 +235,8 @@ def _normalize_blocks(blocks: list[_Block]) -> list[_Block]:
     """Sort a block list and greedily merge adjacent aligned pairs.
 
     Args:
-        blocks (list[_Block]): List of non-overlapping blocks (modified in
-            place and returned sorted).
+        blocks (list[_Block]): List of non-overlapping blocks.  Not modified; the
+            result is a fresh list.
 
     Returns:
         list[_Block]: Sorted, compacted list of non-overlapping blocks.
@@ -317,6 +326,10 @@ class HierarchicalGrid(_GridPython):
     kept.  A new level is created by :meth:`refine`; the grid starts with all
     root cells active at level 0.
 
+    **The cell decomposition is immutable.**  :meth:`refine`, :meth:`refine_cells`,
+    :meth:`coarsen` and :meth:`coarsen_cells` return a new grid and leave this one
+    unchanged.
+
     Flat cell ids are assigned level-by-level (level 0 first), block-by-block
     within a level (sorted by ``lo`` tuple), and C-order within each block.
 
@@ -329,8 +342,6 @@ class HierarchicalGrid(_GridPython):
         _level_base (list[int]): ``_level_base[l]`` is the flat-id base of
             level ``l``; length ``max_level + 2`` (includes sentinel).
         _num_cells (int): Cached total active cell count.
-        _version (int): Monotonic mutation counter, incremented on every
-            structural change (see :attr:`version`).
         _packed_block_lo (npt.NDArray[np.int64]): Packed block lower bounds for
             the Numba kernels, shape ``(n_blocks_total, ndim)``, concatenated
             level by level in flat-id order (see ``_hier_core``).
@@ -358,7 +369,6 @@ class HierarchicalGrid(_GridPython):
         "_root",
         "_root_knot_starts",
         "_root_knots_flat",
-        "_version",
     )
 
     def __init__(
@@ -404,7 +414,6 @@ class HierarchicalGrid(_GridPython):
         self._blocks: list[list[_Block]] = [[(lo0, hi0)]]
         self._level_base: list[int] = []
         self._num_cells: int = 0
-        self._version: int = 0
         self._rebuild()
 
     @classmethod
@@ -448,9 +457,21 @@ class HierarchicalGrid(_GridPython):
         self._blocks = normalized
         self._level_base = []
         self._num_cells = 0
-        self._version = 0
         self._rebuild()
         return self
+
+    def _copy(self) -> Self:
+        """Return an independent grid with the same root, factor and active cells.
+
+        The result compares cell for cell with this grid but is a distinct object
+        with its own empty BVH and tag caches.  Used by the four hierarchy
+        operations on the paths where they change nothing, so that every one of
+        them returns a grid that never aliases its receiver.
+
+        Returns:
+            Self: A fresh grid over the same active-leaf decomposition.
+        """
+        return self._from_blocks(self._root, self._factor, list(self._blocks))
 
     # ------------------------------------------------------------------
     # Properties
@@ -502,33 +523,18 @@ class HierarchicalGrid(_GridPython):
         """
         return len(self._blocks) - 1
 
-    @property
-    def version(self) -> int:
-        """Get the monotonic mutation counter of this grid.
-
-        Incremented on every structural change (:meth:`refine`, :meth:`coarsen`).
-        Snapshot consumers (e.g. :class:`~pantr.bspline.THBSplineSpace`) compare
-        it to detect *any* post-construction mutation -- ``max_level`` and
-        ``num_cells`` alone cannot distinguish compensating refine/coarsen pairs.
-
-        Returns:
-            int: The current mutation count (``>= 1``).
-        """
-        return self._version
-
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
 
     def _rebuild(self) -> None:
-        """Recompute ``_level_base``, ``_num_cells``, and reset the BVH/tags.
+        """Derive ``_level_base``, ``_num_cells`` and the packed kernel arrays from ``_blocks``.
 
-        Called after every structural change (construction or refinement).
-        Bumps :attr:`version` so snapshot consumers can detect any mutation,
-        including compensating refine/coarsen pairs that leave ``max_level``
-        and ``num_cells`` unchanged.  Also repacks the block lists into the
-        flat ``int64`` arrays consumed by the ``_hier_core``
-        kernels (``O(total_blocks)`` work).
+        The last step of every construction path, and the only place the derived
+        state is written: a grid is frozen once this returns, so there is nothing to
+        invalidate afterwards and the three inherited caches are left as
+        ``_GridPython.__init__`` set them.  Packing the block lists into the flat
+        ``int64`` arrays the ``_hier_core`` kernels consume is ``O(total_blocks)``.
         """
         base = 0
         level_base: list[int] = []
@@ -538,10 +544,6 @@ class HierarchicalGrid(_GridPython):
         level_base.append(base)  # sentinel for bisect_right
         self._level_base = level_base
         self._num_cells = base
-        self._version += 1
-        self._bvh = None
-        self._cell_tags = None
-        self._facet_tags = None
 
         # Pack the per-level block lists for the Numba kernels, in the same
         # order flat ids are assigned (level by level, block by block, C-order
@@ -1165,9 +1167,10 @@ class HierarchicalGrid(_GridPython):
         """Return the flat id of the active leaf ``(level, midx)``, or ``None``.
 
         The inverse of :meth:`cell_level` and :meth:`cell_multi_index` taken together.
-        Because :meth:`refine` and :meth:`coarsen` reassign every flat id, a caller that
-        must track cells across a mutation keeps them as ``(level, midx)`` pairs -- which
-        are stable -- and resolves them back to ids here, once per mutation.
+        Because :meth:`refine` and :meth:`coarsen` assign the flat ids of the grid they
+        return from scratch, a caller that must track cells across a refinement keeps
+        them as ``(level, midx)`` pairs -- which are stable -- and resolves them back to
+        ids on the new grid here, once per step.
 
         Args:
             level (int): Hierarchy level.
@@ -1309,14 +1312,16 @@ class HierarchicalGrid(_GridPython):
         level: int,
         lo: Sequence[int],
         hi: Sequence[int],
-    ) -> None:
-        """Refine the rectangular region ``[lo, hi)`` at ``level`` to ``level+1``.
+    ) -> Self:
+        """Return a new grid with the region ``[lo, hi)`` at ``level`` refined to ``level+1``.
+
+        This grid is left unchanged; write ``grid = grid.refine(...)``.
 
         Union semantics: only the currently-active portion of ``[lo, hi)`` is
         refined, leaving cells that are already deeper untouched.  If the
-        intersection with active blocks at ``level`` is empty, the call is a
-        silent no-op.  Overlapping calls therefore safely extend the refined
-        region.
+        intersection with active blocks at ``level`` is empty, the returned grid is
+        an unrefined copy of this one.  Overlapping calls therefore safely extend
+        the refined region.
 
         That convenience costs invertibility.  Promoting only part of a box sends
         several distinct grids to the same result, so :meth:`refine` is **not
@@ -1333,8 +1338,9 @@ class HierarchicalGrid(_GridPython):
         the bounding box of the ids given at each level, so it can promote a cell the
         caller did not mark; that costs nothing, since refining removes no cell.)
 
-        After the call all flat cell ids are **reassigned** (the BVH, cell tags,
-        and facet tags are also invalidated).
+        The returned grid assigns flat cell ids afresh, so an id read from this
+        grid does not name the same cell there.  Its BVH and its cell and facet
+        tags start empty; this grid keeps its own.
 
         Args:
             level (int): Refinement level at which the region lives.  Must
@@ -1343,6 +1349,9 @@ class HierarchicalGrid(_GridPython):
                 level-``level`` coordinates.
             hi (Sequence[int]): Per-direction end index (exclusive), in
                 level-``level`` coordinates.
+
+        Returns:
+            Self: A new grid with the active portion of ``[lo, hi)`` refined.
 
         Raises:
             ValueError: If ``level`` is out of range, ``lo``/``hi`` have the
@@ -1391,33 +1400,37 @@ class HierarchicalGrid(_GridPython):
             new_children.append((child_lo, child_hi))
 
         if not new_children:
-            return  # no active cells in the requested region — no-op
+            return self._copy()  # no active cells in the requested region
 
-        self._blocks[level] = _normalize_blocks(new_blocks_at_level)
+        # A fresh outer list; the per-level lists below are rebound, never mutated,
+        # so this grid's own block lists are untouched.  `_from_blocks` sorts and
+        # merges every level, so no normalization is needed here.
+        new_levels: list[list[_Block]] = list(self._blocks)
+        new_levels[level] = new_blocks_at_level
+        while len(new_levels) <= level + 1:
+            new_levels.append([])
+        new_levels[level + 1] = [*new_levels[level + 1], *new_children]
+        return self._from_blocks(self._root, self._factor, new_levels)
 
-        # Extend _blocks if needed and add children at level+1.
-        while len(self._blocks) <= level + 1:
-            self._blocks.append([])
-        self._blocks[level + 1] = _normalize_blocks(self._blocks[level + 1] + new_children)
-
-        self._rebuild()
-
-    def refine_cells(self, cell_ids: Sequence[int]) -> None:
-        """Refine a set of active cells using per-level bounding-box aggregation.
+    def refine_cells(self, cell_ids: Sequence[int]) -> Self:
+        """Return a new grid with a set of active cells refined, by per-level bounding box.
 
         Groups ``cell_ids`` by their level, computes the bounding box of all
         cells at each level (the smallest axis-aligned rectangle containing
-        them), and calls :meth:`refine` once per level.
+        them), and applies :meth:`refine` once per level, coarsest first.  This
+        grid is left unchanged; write ``grid = grid.refine_cells(...)``.
 
         Args:
             cell_ids (Sequence[int]): Flat cell ids to refine.  Cells from
                 multiple levels are handled; repeated ids are silently ignored.
+                An empty sequence yields an unrefined copy.
+
+        Returns:
+            Self: A new grid with the marked cells refined.
 
         Raises:
             IndexError: If any id in ``cell_ids`` is out of range.
         """
-        if not cell_ids:
-            return
         # Group by level.
         level_lo: dict[int, list[int]] = {}
         level_hi: dict[int, list[int]] = {}
@@ -1431,16 +1444,20 @@ class HierarchicalGrid(_GridPython):
                 for k, m in enumerate(midx):
                     level_lo[lv][k] = min(level_lo[lv][k], m)
                     level_hi[lv][k] = max(level_hi[lv][k], m + 1)
+        grid = self
         for lv in sorted(level_lo):
-            self.refine(lv, level_lo[lv], level_hi[lv])
+            grid = grid.refine(lv, level_lo[lv], level_hi[lv])
+        return grid if grid is not self else self._copy()
 
     def coarsen(
         self,
         level: int,
         lo: Sequence[int],
         hi: Sequence[int],
-    ) -> None:
-        """Demote the rectangular region ``[lo, hi)`` from ``level+1`` back to ``level``.
+    ) -> Self:
+        """Return a new grid with ``[lo, hi)`` demoted from ``level+1`` back to ``level``.
+
+        This grid is left unchanged; write ``grid = grid.coarsen(...)``.
 
         Reactivates the level-``level`` cells in ``[lo, hi)`` and removes their
         level-``(level+1)`` children.  The region must be **fully refined to exactly
@@ -1467,8 +1484,9 @@ class HierarchicalGrid(_GridPython):
         active at ``level``, so ``refine(level, lo, hi)`` always undoes
         ``coarsen(level, lo, hi)``.
 
-        After the call all flat cell ids are **reassigned** (the BVH, cell tags, and
-        facet tags are invalidated).
+        The returned grid assigns flat cell ids afresh, so an id read from this grid
+        does not name the same cell there.  Its BVH and its cell and facet tags start
+        empty; this grid keeps its own.
 
         Args:
             level (int): Level whose cells are reactivated.  Must satisfy
@@ -1477,6 +1495,9 @@ class HierarchicalGrid(_GridPython):
                 coordinates.
             hi (Sequence[int]): Per-direction end index (exclusive), in level-``level``
                 coordinates.
+
+        Returns:
+            Self: A new grid with ``[lo, hi)`` active at ``level``.
 
         Raises:
             ValueError: If ``level`` is out of range, ``lo``/``hi`` have the wrong
@@ -1535,14 +1556,20 @@ class HierarchicalGrid(_GridPython):
                 f"fully refined to exactly level {level + 1}.{detail}"
             )
 
-        self._blocks[level + 1] = _normalize_blocks(new_finer)
-        self._blocks[level] = _normalize_blocks([*self._blocks[level], (lo_t, hi_t)])
-        while len(self._blocks) > 1 and not self._blocks[-1]:
-            self._blocks.pop()
-        self._rebuild()
+        # A fresh outer list; the per-level lists are rebound, never mutated, so this
+        # grid's own block lists are untouched.  `_from_blocks` sorts and merges every
+        # level and drops the trailing empty ones, so neither is needed here -- but the
+        # order the demoted box is appended in is observable through the greedy merge,
+        # and is preserved.
+        new_levels: list[list[_Block]] = list(self._blocks)
+        new_levels[level + 1] = new_finer
+        new_levels[level] = [*new_levels[level], (lo_t, hi_t)]
+        return self._from_blocks(self._root, self._factor, new_levels)
 
-    def coarsen_cells(self, cell_ids: Sequence[int]) -> None:
-        """Demote every parent whose children are all named in ``cell_ids``.
+    def coarsen_cells(self, cell_ids: Sequence[int]) -> Self:
+        """Return a new grid with every parent demoted whose children are all named.
+
+        This grid is left unchanged; write ``grid = grid.coarsen_cells(...)``.
 
         The route that destroys only what the caller named.  ``cell_ids`` are grouped
         by parent cell, and a parent is reactivated -- its children removed -- only when
@@ -1576,8 +1603,11 @@ class HierarchicalGrid(_GridPython):
 
         Args:
             cell_ids (Sequence[int]): Flat ids of active leaf cells to coarsen away.
-                Repeated ids and ids at level 0 are ignored.  An empty sequence is a
-                no-op.
+                Repeated ids and ids at level 0 are ignored.  An empty sequence, and
+                one that demotes nothing, both yield an uncoarsened copy.
+
+        Returns:
+            Self: A new grid with the complete named families demoted.
 
         Raises:
             IndexError: If any id in ``cell_ids`` is out of range.
@@ -1592,6 +1622,9 @@ class HierarchicalGrid(_GridPython):
             if level >= 1
         }
         # Deepest first, then lexicographic, so the outcome does not depend on set order.
+        # `grid` carries the demotions already applied, so the active-leaf test below sees
+        # the same state the in-place version saw at that point in the loop.
+        grid = self
         for parent_level, pmidx in sorted(parents, key=lambda parent: (-parent[0], parent[1])):
             children = itertools.product(
                 *(range(p * f, (p + 1) * f) for p, f in zip(pmidx, self._factor, strict=True))
@@ -1601,10 +1634,11 @@ class HierarchicalGrid(_GridPython):
             # parent's own.  It is kept because that is an argument about the caller, not a
             # property of this loop, and it is what the documented rule actually says.
             if all(
-                (parent_level + 1, child) in marked and self.is_active_leaf(parent_level + 1, child)
+                (parent_level + 1, child) in marked and grid.is_active_leaf(parent_level + 1, child)
                 for child in children
             ):
-                self.coarsen(parent_level, pmidx, tuple(p + 1 for p in pmidx))
+                grid = grid.coarsen(parent_level, pmidx, tuple(p + 1 for p in pmidx))
+        return grid if grid is not self else self._copy()
 
     def _coarsen_obstacles(
         self,

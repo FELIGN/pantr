@@ -191,7 +191,7 @@ class TestGenericGrid:
     def test_hierarchical_grid_constant_and_volume(self) -> None:
         root = uniform_grid([[0.0, 4.0], [0.0, 4.0]], [4, 4])
         hg = hierarchical_grid(root, 2)
-        hg.refine(0, [0, 0], [2, 2])  # refine the lower-left quadrant
+        hg = hg.refine(0, [0, 0], [2, 2])  # refine the lower-left quadrant
         rule = gauss_legendre_quadrature(2, 2)
         pts, w = cell_quadrature(hg, rule)
         assert pts.shape == (hg.num_cells, rule.num_points, 2)
