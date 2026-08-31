@@ -855,12 +855,18 @@ class Bezier:
     # ------------------------------------------------------------------
 
     def multiply(self, other: Bezier) -> Bezier:
-        """Return the exact pointwise product of this Bézier and another.
+        """Return the pointwise product of this Bézier and another.
 
         Given Bézier ``self`` and ``other`` over the same parametric domain
         ``[0, 1]^dim``, returns a new Bézier ``h`` such that
         ``h(t) = self(t) * other(t)``. The result has degree ``p_d + q_d``
         per direction.
+
+        That degree represents the product **exactly**: no approximation is made
+        in choosing it. The control points are not exact, and this docstring used
+        to say they were. Each is a binomial-weighted sum evaluated in floating
+        point, so each carries that sum's roundings; the size of them is measured
+        in ``tests/parity/test_bezier_product.py``.
 
         Args:
             other (Bezier): The second Bézier operand. Must have the same
@@ -896,10 +902,15 @@ class Bezier:
     def compose(self, inner: Bezier) -> Bezier:
         """Compose this Bézier with another: ``result(t) = self(inner(t))``.
 
-        Computes the exact composition of two non-rational Bézier objects.
-        The result is a new Bézier with parametric dimension equal to
-        ``inner.dim``, rank equal to ``self.rank``, and degree
-        ``sum(self.degree) * inner.degree[s]`` in each direction ``s``.
+        Composes two non-rational Bézier objects. The result is a new Bézier with
+        parametric dimension equal to ``inner.dim``, rank equal to ``self.rank``,
+        and degree ``sum(self.degree) * inner.degree[s]`` in each direction ``s``.
+
+        That degree represents the composition **exactly**; the control points do
+        not, and this docstring used to call the composition itself exact. They
+        are built from repeated Bernstein products in floating point -- one per
+        power of the inner map and one per tensor term -- and carry every one of
+        those roundings.
 
         Args:
             inner (Bezier): The inner Bézier (reparametrization). Must be
