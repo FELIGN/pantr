@@ -595,8 +595,9 @@ class TensorProductGrid : public GridBase<TensorProductGrid<T>> {
             // Checked, because the alternative is undefined behaviour rather than a
             // wrong number: a signed overflow here would leave `num_cells` positive but
             // meaningless, and `GridBase` only rejects a NEGATIVE count. The input that
-            // reaches it is cheap -- four axes of 55000 cells is 220000 stored doubles --
-            // so it is not out of reach.
+            // reaches it is cheap: five axes of 6209 cells overflow at about 0.2 MB of
+            // stored breakpoints, so it is not out of reach, and
+            // `test_cell_count_overflow_is_reported` builds exactly that grid.
             //
             // This is a deliberate divergence from the oracle, which accumulates the
             // same product in Python's arbitrary-precision integers and so never
