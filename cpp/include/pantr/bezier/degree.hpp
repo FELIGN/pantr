@@ -84,6 +84,7 @@
 #include <string>
 #include <vector>
 
+#include "pantr/bezier/axis_layout.hpp"
 #include "pantr/bezier/bezier.hpp"
 #include "pantr/bezier/kernels_1d.hpp"
 #include "pantr/core/binomial.hpp"
@@ -94,77 +95,6 @@
 namespace pantr::bezier {
 
 namespace detail {
-
-/// The number of values spanned by `shape[from]` through `shape.back()`.
-///
-/// \param shape The extents, innermost last.
-/// \param from The first extent to count.
-/// \return The product, and 1 when the range is empty.
-[[nodiscard]] inline std::size_t extent_product(std::span<const std::size_t> shape,
-                                                std::size_t from) noexcept {
-    std::size_t size = 1;
-    for (std::size_t d = from; d < shape.size(); ++d) {
-        size *= shape[d];
-    }
-    return size;
-}
-
-/// Move one axis to the front, as `_flatten_along_axis` does.
-///
-/// The oracle reshapes to `(shape[axis], everything else)` before handing a kernel a
-/// two-dimensional view, and the trailing block it produces runs over the axes before
-/// `axis` and then the axes after it, in that order. This reproduces that layout.
-///
-/// It moves values and computes nothing, so it is outside every parity claim in this
-/// file.
-///
-/// \param values The array, row-major with extents `shape`.
-/// \param shape The extents.
-/// \param axis The axis to bring to the front.
-/// \param out The permuted array, `(shape[axis], trailing)` row-major.
-template <Real T>
-void gather_axis_to_front(std::span<const T> values, std::span<const std::size_t> shape,
-                          std::size_t axis, std::span<T> out) {
-    const std::size_t outer = extent_product(shape.subspan(0, axis), 0);
-    const std::size_t along = shape[axis];
-    const std::size_t inner = extent_product(shape, axis + 1);
-    const std::size_t trailing = outer * inner;
-
-    for (std::size_t o = 0; o < outer; ++o) {
-        for (std::size_t i = 0; i < along; ++i) {
-            for (std::size_t n = 0; n < inner; ++n) {
-                out[(i * trailing) + (o * inner) + n] = values[(((o * along) + i) * inner) + n];
-            }
-        }
-    }
-}
-
-/// Invert `gather_axis_to_front` for a possibly different extent along the axis.
-///
-/// The extent may change, which is the whole point: elevation and reduction both
-/// return a different number of coefficients along the axis they act on.
-///
-/// \param moved The permuted array, `(along, trailing)` row-major.
-/// \param shape The original extents; `shape[axis]` is ignored.
-/// \param axis The axis that was brought to the front.
-/// \param along The new extent along that axis.
-/// \param out The array in the original layout, with `shape[axis]` replaced by
-///        `along`.
-template <Real T>
-void scatter_axis_from_front(std::span<const T> moved, std::span<const std::size_t> shape,
-                             std::size_t axis, std::size_t along, std::span<T> out) {
-    const std::size_t outer = extent_product(shape.subspan(0, axis), 0);
-    const std::size_t inner = extent_product(shape, axis + 1);
-    const std::size_t trailing = outer * inner;
-
-    for (std::size_t o = 0; o < outer; ++o) {
-        for (std::size_t i = 0; i < along; ++i) {
-            for (std::size_t n = 0; n < inner; ++n) {
-                out[(((o * along) + i) * inner) + n] = moved[(i * trailing) + (o * inner) + n];
-            }
-        }
-    }
-}
 
 /// Refuse a degree the exact-integer binomial recurrence cannot reach.
 ///
