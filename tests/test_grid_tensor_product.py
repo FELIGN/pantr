@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 import numpy as np
 import pytest
 
 from pantr.geometry import AABB
 from pantr.grid import GridRestriction, TensorProductGrid, tensor_product_grid, uniform_grid
+from pantr.grid._tensor_product_grid import _UNIFORM_SPACING_EPS_FACTOR
 from pantr.transform import AffineTransform
 
 
@@ -609,3 +612,120 @@ def test_boundary_facets_single_cell() -> None:
     """A one-cell grid has every facet on the boundary."""
     g = uniform_grid([[0.0, 1.0], [0.0, 1.0]], 1)
     assert g.boundary_facets().tolist() == [[0, 0], [0, 1], [0, 2], [0, 3]]
+
+
+# ------------------------------------------------- the kernel's flat layout
+
+
+def test_the_kernel_flat_layout_is_packed_once(monkeypatch: pytest.MonkeyPatch) -> None:
+    """``AC9``: the batch kernel's flat layout is built at construction, not per call.
+
+    No correctness assertion observes this -- ``locate_many`` returns the same ids
+    whether the layout is packed once or rebuilt on every call -- and removing the
+    per-call repacking is half of what the port was for, so it needs an assertion of
+    its own.
+
+    The counter is on :func:`numpy.concatenate`, which is what does the packing, and
+    the assertion is that its count does not move across two calls. It says the right
+    thing under either backend without knowing which is active: the C++ grid never
+    concatenates in Python at all, so the count is zero and stays zero, while the
+    oracle concatenates once while it is being built and must not do so again. The
+    address check beside it covers the other half -- that the buffer was not
+    reallocated in place -- which a counter on a numpy function cannot see.
+    """
+    calls: list[int] = []
+    original = np.concatenate
+
+    def counting_concatenate(*args: Any, **kwargs: Any) -> Any:
+        """Count the call, then do what numpy would have done.
+
+        Args:
+            *args (Any): Passed straight through.
+            **kwargs (Any): Passed straight through.
+
+        Returns:
+            Any: Whatever :func:`numpy.concatenate` returns.
+        """
+        calls.append(1)
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(np, "concatenate", counting_concatenate)
+
+    g = uniform_grid([[0.0, 3.0], [0.0, 2.0]], [3, 2])
+    at_construction = len(calls)
+    address = g.breakpoints[0].ctypes.data
+    points = np.array([[0.5, 0.5], [2.5, 1.5], [9.0, 9.0]])
+
+    first = g.locate_many(points)
+    second = g.locate_many(points)
+
+    assert len(calls) == at_construction, (
+        "locate_many rebuilt the kernel's flat layout: it is a function of the grid "
+        "alone, so it belongs to construction"
+    )
+    assert g.breakpoints[0].ctypes.data == address, "the breakpoint storage moved"
+    np.testing.assert_array_equal(first, second)
+    # Non-vacuous: a batch of all-outside points would agree under any packing at all.
+    assert first.tolist() == [0, 5, -1]
+
+
+# ---------------------------------------------------------------- uniformity
+
+
+@pytest.mark.parametrize("cells", [1, 2, 7, 100, 1000])
+@pytest.mark.parametrize(
+    ("lo", "hi"),
+    [(0.0, 1.0), (0.0, 1e-12), (0.0, 1e12), (1e6, 1e6 + 1.0), (-1.0, 1.0), (1e-30, 1e-29)],
+)
+def test_is_uniform_does_not_depend_on_the_coordinate_scale(
+    lo: float, hi: float, cells: int
+) -> None:
+    """``AC6``: an exact ``linspace`` grid is uniform at every coordinate magnitude.
+
+    The tolerance ``is_uniform`` compares against is relative to ``|first| + |last|``,
+    which is the derivation ``_UNIFORM_SPACING_EPS_FACTOR`` carries. Under the absolute
+    ``1e-10`` it replaced, this failed at ``[1e6, 1e6 + 1]`` -- an exactly uniform grid
+    reported non-uniform -- because the spread of the spacings is proportional to the
+    coordinate magnitude and the constant was not.
+    """
+    assert uniform_grid([[lo, hi]], cells).is_uniform, f"[{lo}, {hi}] over {cells} cells"
+
+
+def test_the_uniformity_bound_is_compared_against_a_nonzero_spread() -> None:
+    """The bound is exercised rather than only ever compared against zero.
+
+    Without this, the sweep above is consistent with any tolerance whatsoever: a
+    ``linspace`` whose spacings come out exactly equal compares zero against the bound
+    and passes however the bound was derived. This asserts that at least one of those
+    domains produces a genuinely nonzero spread, that every spread sits under the
+    bound, and -- the other half -- that a spread ten times the bound is rejected, so
+    the bound is not merely large enough to admit everything.
+    """
+    eps = float(np.finfo(np.float64).eps)
+    domains = [(0.0, 1.0), (0.0, 1e-12), (0.0, 1e12), (1e6, 1e6 + 1.0), (-1.0, 1.0)]
+    spreads = []
+    for lo, hi in domains:
+        bp = np.linspace(lo, hi, 101, dtype=np.float64)
+        spread = float(np.ptp(np.diff(bp)))
+        bound = _UNIFORM_SPACING_EPS_FACTOR * eps * (abs(lo) + abs(hi))
+        spreads.append(spread)
+        assert spread <= bound, f"[{lo}, {hi}]: {spread:.3e} exceeds the bound {bound:.3e}"
+
+        perturbed = bp.copy()
+        perturbed[1] += 10.0 * bound
+        if perturbed[1] < perturbed[2]:
+            assert not TensorProductGrid([perturbed]).is_uniform, (
+                f"[{lo}, {hi}]: a spread ten times the bound was accepted as uniform"
+            )
+
+    assert max(spreads) > 0.0, (
+        f"every domain gave an exactly uniform linspace, so the bound was only ever "
+        f"compared against zero and this group asserts nothing: {spreads}"
+    )
+
+
+def test_is_uniform_still_rejects_a_genuinely_uneven_axis() -> None:
+    """A grid that is not uniform is not reported uniform, at any magnitude."""
+    assert not TensorProductGrid([[0.0, 1.0, 3.0]]).is_uniform
+    assert not TensorProductGrid([[1e6, 1e6 + 0.25, 1e6 + 1.0]]).is_uniform
+    assert not TensorProductGrid([[0.0, 1e-13, 1e-12]]).is_uniform

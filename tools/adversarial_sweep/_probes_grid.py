@@ -53,10 +53,14 @@ GROUP = "grid"
 _EPS64 = float(np.finfo(np.float64).eps)
 """``float64`` machine epsilon; every derived tolerance below is a multiple of this."""
 
-_UNIFORM_SPACING_ATOL = 1e-10
-"""Mirrors ``TensorProductGrid._UNIFORM_SPACING_ATOL`` (`_tensor_product_grid.py:53`), the
-absolute tolerance ``is_uniform`` compares spacing differences against. Needed here only to
-derive a perturbation guaranteed to sit well above it; not a probe tolerance itself."""
+_UNIFORM_SPACING_EPS_FACTOR = 16
+"""Mirrors ``pantr.grid._tensor_product_grid._UNIFORM_SPACING_EPS_FACTOR``, the multiple of
+``eps`` ``is_uniform`` compares spacing differences against, RELATIVE to the coordinate
+scale ``|first| + |last|``. Needed here only to derive a perturbation guaranteed to sit
+well above it; not a probe tolerance itself. It replaces a mirror of the absolute ``1e-10``
+this code used to carry, and the difference is the point of this group: an absolute
+tolerance made the verdict depend on where the domain sat, which is exactly what these
+cases sweep."""
 
 # Deepest level probed for HierarchicalGrid refinement. `factor ** level` overflowing
 # int64 in `_hier_collect_cell_bounds_core` (`_hier_core.py:328-334`) is already logged
@@ -481,10 +485,11 @@ def _tp_uniformity_cases(profile: Profile) -> Iterator[Case]:
     """Yield ``is_uniform`` corner cases across every domain magnitude.
 
     An exactly-uniform grid must report ``True`` on every domain, including the
-    translated ``[1e6, 1e6 + 1]`` one, and a grid perturbed by a *relative* amount
-    well above ``_UNIFORM_SPACING_ATOL`` (``1e-10``) must report ``False`` even at
-    that scale -- the tolerance is absolute, so this is where a translated domain
-    would silently flip the verdict if it were derived from the coordinates instead.
+    translated ``[1e6, 1e6 + 1]`` one, and a perturbed grid must report ``False`` on
+    every domain too. Both halves are the point: under the absolute tolerance this
+    code used to compare against, the translated domain reported the EXACT grid as
+    non-uniform, and the tiny domain reported the perturbed one as uniform. The
+    verdict must not depend on where the domain sits.
 
     Args:
         profile (Profile): Sweep width.
@@ -517,15 +522,20 @@ def _tp_uniformity_cases(profile: Profile) -> Iterator[Case]:
         span = domain[1] - domain[0]
         perturbed = [bp.copy() for bp in breakpoints]
         spacing = span / 4.0
-        # `spacing * 1e-7` is the relative perturbation the domain-scale axis is meant
-        # to probe, but on the tiny `[0, 1e-6]` domain that relative amount (~2.5e-14)
-        # falls *below* the absolute `_UNIFORM_SPACING_ATOL = 1e-10` and would register
-        # as uniform -- correctly, since it genuinely is uniform to that tolerance, not
-        # a probe finding. Flooring at `100 * _UNIFORM_SPACING_ATOL` keeps the
-        # perturbation two orders of magnitude above the code's own absolute tolerance
-        # on every domain, while staying well under `spacing` so the breakpoints stay
-        # strictly increasing.
-        perturbation = max(spacing * 1e-7, 100.0 * _UNIFORM_SPACING_ATOL)
+        # Two derived candidates, whichever is larger.
+        #
+        # `spacing * 1e-7` is the relative perturbation this axis is meant to probe: a
+        # tenth of a part per million of a cell, far larger than round-off and far
+        # smaller than the cell, so the breakpoints stay strictly increasing.
+        #
+        # It is not always above the code's own threshold, which is
+        # `16 eps (|lo| + |hi|)`. On the translated `[1e6, 1e6 + 1]` domain that
+        # threshold is ~7e-9 while `spacing * 1e-7` is ~2.5e-8 -- above it, but by a
+        # factor of only 3.5, which is not a margin. So the floor is a thousand times
+        # the threshold itself rather than a constant: it scales with the domain the
+        # way the threshold does, which the old absolute floor could not.
+        tolerance = _UNIFORM_SPACING_EPS_FACTOR * _EPS64 * (abs(domain[0]) + abs(domain[1]))
+        perturbation = max(spacing * 1e-7, 1e3 * tolerance)
         perturbed[0][2] += perturbation
         perturbed_grid = TensorProductGrid(perturbed)
         yield Case(
