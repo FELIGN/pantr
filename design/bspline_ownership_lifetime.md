@@ -380,6 +380,16 @@ where the child handle does hold the owner handle.
 free, because `pickle` memoises: dumping `(b, b.space)` restores a pair that shares one space.
 Sharing does **not** survive two independent `dumps` calls, which is also true today.
 
+**`__reduce__` is an addition here, not a change, and every one of the nine tickets owes one.**
+Verified: `grep -rn "__reduce__\|__getstate__\|__setstate__" src/pantr/bspline/` at `a45e935`
+returns nothing -- not one class in the module defines any of them, so every type pickles today
+through the default protocol over its `__dict__` or its `__slots__`. The moment a slot holds a
+nanobind handle that default fails, and it fails at `dumps` time with a `TypeError` about the
+handle rather than anywhere near the design decision that caused it. The milestone's cross-cutting
+requirement already asks for a round-trip per type under both backends; what this note adds is
+*what the reduction must contain*: the public arrays and the nested **wrappers**, so that the
+identity contracts of F6 survive the round trip through the seeding rule rather than by accident.
+
 ## The failure modes, and the test that catches each
 
 Every one of these is silent. That is the point of the section: the design is cheap to get right
