@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 from collections.abc import Callable, Sequence
 
 import numpy as np
@@ -21,6 +22,7 @@ from pantr.bspline import (
 from pantr.bspline._thb_eval_core import _combine_tp_values
 from pantr.bspline._thb_spline_space import _box_all_true, _func_support_1d
 from pantr.grid import HierarchicalGrid, hierarchical_grid, tensor_product_grid, uniform_grid
+from pantr.tolerance import get_strict
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Helpers
@@ -2655,3 +2657,98 @@ class TestTHBSplineRefine:
         f = self._field(np.random.default_rng(8))
         with pytest.raises(ValueError, match="level must be in"):
             f.refine_region(9, [0, 0], [1, 1])
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# The staleness apparatus is gone, and deepcopy still works (#378)
+# ──────────────────────────────────────────────────────────────────────────────
+
+
+_DEEPCOPY_VALUE_ATOL: float = get_strict(np.float64)
+"""
+Bound on the difference between a deepcopied space's tabulated values and the original's.
+
+Both sides run the same code on the same inputs, so the only difference admissible here is a
+reordering inside the evaluation's own summation (its kernels use ``prange``), not
+approximation error.  The bound is the strict preset -- a dimensionless ``4 * eps`` -- times
+the magnitude of the quantity compared, and that magnitude is ``1``: a THB basis is
+non-negative and sums to one on every cell, the partition-of-unity property this file already
+asserts elsewhere, so every tabulated value lies in ``[0, 1]``.  Measured difference on this
+machine: exactly zero, so the bound is slack by construction rather than fitted.
+"""
+
+
+def _refined_2d_space() -> THBSplineSpace:
+    """A truncated 2D space over a three-level grid with a warm per-cell cache."""
+    grid = _grid_2d()
+    grid = grid.refine(0, (1, 1), (3, 3))
+    grid = grid.refine(1, (2, 2), (5, 5))
+    space = THBSplineSpace(_root_2d(), grid)
+    _ = space.max_active_per_cell()  # warms _contrib_cache and _max_active_per_cell
+    return space
+
+
+class TestStalenessApparatusIsGone:
+    """The names that existed only to detect a grid mutation are deleted, not hidden.
+
+    Keeping any of them would keep the apparatus, which is what #378 set out to
+    remove: with an immutable grid there is nothing to snapshot and nothing to check.
+    """
+
+    def test_grid_snapshot_and_stale_check_are_absent(self) -> None:
+        space = THBSplineSpace(_root_1d(), _grid_1d())
+        assert not hasattr(space, "_grid_snapshot")
+        assert not hasattr(space, "_check_not_stale")
+        assert "_grid_snapshot" not in THBSplineSpace.__slots__
+
+    def test_the_grid_has_no_mutation_counter(self) -> None:
+        assert not hasattr(_grid_1d(), "version")
+
+    def test_no_public_entry_point_promises_a_staleness_error(self) -> None:
+        """No surviving docstring offers the `RuntimeError` a caller can no longer get."""
+        for owner in (THBSplineSpace, THBSpline, MultiLevelExtraction):
+            for name in dir(owner):
+                doc = getattr(getattr(owner, name), "__doc__", None) or ""
+                assert "modified since construction" not in doc, f"{owner.__name__}.{name}"
+                assert "is stale" not in doc, f"{owner.__name__}.{name}"
+
+
+class TestDeepcopy:
+    """``copy.deepcopy`` of a space still works and round-trips its contents."""
+
+    def test_space_round_trip(self) -> None:
+        space = _refined_2d_space()
+        clone = copy.deepcopy(space)
+
+        assert clone is not space
+        assert clone.grid is not space.grid
+        assert clone.dim == space.dim
+        assert clone.degrees == space.degrees
+        assert clone.num_total_basis == space.num_total_basis
+        assert clone.num_basis_per_level == space.num_basis_per_level
+        assert clone.grid.num_cells == space.grid.num_cells
+        assert clone.grid.max_level == space.grid.max_level
+        assert clone.max_active_per_cell() == space.max_active_per_cell()
+        pts = np.array([[0.3, 0.7]])
+        largest = 0.0
+        for cid in range(space.grid.num_cells):
+            np.testing.assert_array_equal(clone.active_basis(cid), space.active_basis(cid))
+            lo, hi = space.grid.cell_bounds(cid)
+            local = np.asarray(lo) + pts * (np.asarray(hi) - np.asarray(lo))
+            vals_c, dofs_c = clone.tabulate_basis(cid, local)
+            vals_s, dofs_s = space.tabulate_basis(cid, local)
+            np.testing.assert_array_equal(dofs_c, dofs_s)
+            np.testing.assert_allclose(vals_c, vals_s, rtol=0.0, atol=_DEEPCOPY_VALUE_ATOL)
+            largest = max(largest, float(np.abs(vals_s).max()))
+        # The values compared are real, not an all-zero array the tolerance would pass anyway.
+        assert largest > 0.25
+        assert space.grid.max_level >= 2  # a single-level space would prove little
+
+    def test_clone_refines_independently(self) -> None:
+        space = _refined_2d_space()
+        clone = copy.deepcopy(space)
+        fine = clone.refine([0])
+
+        assert fine.grid.num_cells > clone.grid.num_cells
+        assert clone.grid.num_cells == space.grid.num_cells
+        assert clone.num_total_basis == space.num_total_basis
