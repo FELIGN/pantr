@@ -18,7 +18,7 @@ tensor-product grid and one Python class in front of it, which keeps every
 ``isinstance`` site across the package working unchanged.
 
 ``_TensorProductGridPython`` is what that class used to be, renamed. It is the
-port's parity oracle and the implementation :func:`_impl_class` selects under
+port's parity oracle and the implementation ``_impl_class`` selects under
 ``PANTR_BACKEND=python``, and it is temporary.
 
 Footprint
@@ -121,7 +121,7 @@ _MIN_BREAKPOINTS_PER_AXIS: Final[int] = 2
 def _axis_is_uniform(bp: npt.NDArray[np.float64]) -> bool:
     """Report whether one axis's breakpoint spacings are constant.
 
-    Constant to within :data:`_UNIFORM_SPACING_EPS_FACTOR` times ``eps`` times the
+    Constant to within ``_UNIFORM_SPACING_EPS_FACTOR`` times ``eps`` times the
     axis's coordinate scale; see that constant for the derivation.
 
     Args:
@@ -322,7 +322,7 @@ class _TensorProductGridPython(_GridPython):
 
         Returns:
             bool: ``True`` iff each axis's spacing is constant to within the
-            scale-relative tolerance :data:`_UNIFORM_SPACING_EPS_FACTOR` states.
+            scale-relative tolerance ``_UNIFORM_SPACING_EPS_FACTOR`` states.
         """
         return self._is_uniform
 
@@ -634,7 +634,8 @@ class TensorProductGrid(_GridWrapper):
     Cells are numbered in row-major (C) order over :attr:`cells_per_axis` (last
     axis varies fastest). See the module docstring for the footprint and
     construction notes. Size and geometry metadata are exposed through the
-    :attr:`ndim`, :attr:`num_cells`, :attr:`cells_per_axis`, :attr:`breakpoints`,
+    :attr:`~pantr.grid.Grid.ndim`, :attr:`~pantr.grid.Grid.num_cells`,
+    :attr:`cells_per_axis`, :attr:`breakpoints`,
     and :attr:`bounds` properties.
 
     **This class is a wrapper.** The grid itself is owned by the C++ core and this
@@ -649,7 +650,7 @@ class TensorProductGrid(_GridWrapper):
     the three memoized handles in front of them.
 
     Attributes:
-        _impl (Any): The grid this wrapper forwards to; see :func:`_impl_class`.
+        _impl (Any): The grid this wrapper forwards to; see ``_impl_class``.
         _bvh (BVH | None): Memoized spatial index; ``None`` until first built.
         _cell_tags (CellTags | None): Memoized cell-tag registry; ``None`` until
             first use.
@@ -820,7 +821,7 @@ class TensorProductGrid(_GridWrapper):
 
         Returns:
             bool: ``True`` iff each axis's spacing is constant to within the
-            scale-relative tolerance :data:`_UNIFORM_SPACING_EPS_FACTOR` states.
+            scale-relative tolerance ``_UNIFORM_SPACING_EPS_FACTOR`` states.
         """
         return bool(self._impl.is_uniform)
 

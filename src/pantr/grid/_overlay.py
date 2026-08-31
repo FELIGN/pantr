@@ -44,7 +44,7 @@ def overlay(grid_a: TensorProductGrid, grid_b: TensorProductGrid) -> TensorProdu
     Args:
         grid_a (TensorProductGrid): First input grid.
         grid_b (TensorProductGrid): Second input grid; must share
-            :attr:`~TensorProductGrid.ndim` with ``grid_a`` and have a non-empty
+            :attr:`~pantr.grid.Grid.ndim` with ``grid_a`` and have a non-empty
             domain intersection on every axis.
 
     Returns:
@@ -53,7 +53,7 @@ def overlay(grid_a: TensorProductGrid, grid_b: TensorProductGrid) -> TensorProdu
     Raises:
         TypeError: If either argument is not a :class:`TensorProductGrid`.
         ValueError: If the grids have different
-            :attr:`~TensorProductGrid.ndim`, or if their domains do not overlap
+            :attr:`~pantr.grid.Grid.ndim`, or if their domains do not overlap
             on some axis (the per-axis intersection is empty or degenerate).
 
     Example:
