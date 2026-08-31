@@ -146,6 +146,11 @@ user-facing, and the ports change what it affects.
   `.refine(`, `.refine_cells(`, `.coarsen(` and `.coarsen_cells(` on a grid receiver; an
   `hasattr`-style smoke test cannot see this change.
 
+  **The one-cycle deprecation warning was waived deliberately, not overlooked.** The ticket
+  asked for the mutating spellings to warn for a cycle before removal; the owner ruled instead
+  that the four methods keep their names, which leaves no separate mutating spelling to attach a
+  warning to, and accepted the silent break on that basis.
+
   The reason is the project's construct-then-freeze rule, and here it is not a style question.
   A `THBSplineSpace` held a reference to its grid, so refining that grid behind the space's back
   left the space describing cells that no longer existed. That was detected at runtime by a
