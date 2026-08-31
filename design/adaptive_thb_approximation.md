@@ -185,7 +185,10 @@ Two secondary benefits, once refinement is value-returning:
 
 **Resolved on `proto/cpp` by #378.** All four entry points -- `refine`, `refine_cells`,
 `coarsen`, `coarsen_cells` -- now return a new grid and leave the receiver untouched, so the
-level-wise scheme above can keep every level's space alive. What the new grid actually shares
+level-wise scheme above can keep every level's space alive. The names are unchanged, so the
+break is silent; the ticket's one-cycle deprecation warning was **waived by the owner** on the
+ground that there is no separate mutating spelling left to warn from, and `docs/changelog.md`
+records both the break and the waiver. What the new grid actually shares
 with the one it came from is worth stating exactly, because the paragraph above guessed at it:
 
 - the root `TensorProductGrid` object, shared by reference, as the mutating version and
