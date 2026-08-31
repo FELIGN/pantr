@@ -80,14 +80,8 @@ in which those kernels are C++ and everything else is unchanged.
 * :mod:`pantr.change_basis` -- all eight builders.
 * :mod:`pantr.bezier` -- the arithmetic and the root finding, through two
   catalogues rather than one because they are two ports with two parity claims;
-  and, since FELIGN/pantr#385, the :class:`~pantr.bezier.Bezier` **value type**.
-  That last one is a different kind of entry from every other line here. A
-  catalogue decides which code computes; a ported type decides which object holds
-  the state, so under ``PANTR_BACKEND=cpp`` a Bézier's control points live in C++
-  and the Python class is a wrapper around them. Two types moved that way before
-  it -- :class:`pantr.geometry.AABB` and :class:`pantr.transform.AffineTransform`
-  -- and this list still does not name them, which is the drift the paragraph
-  below is about, caught again.
+  and the :class:`~pantr.bezier.Bezier` **value type**, which is a different kind
+  of entry and is listed with the other ported types below.
   **Interpolation is deliberately not ported**, and
   ``design/bezier_interpolation_port.md`` is where that ruling and its measurements
   live; it is worth reading before proposing any further port, because it is the
@@ -95,10 +89,28 @@ in which those kernels are C++ and everything else is unchanged.
 * :mod:`pantr.grid` -- all nine kernels: tensor-product point location, the BVH's
   build and its two query passes, and the five hierarchical addressing kernels.
 
+**Nine types have moved as well, and that is a different kind of entry.** A
+catalogue decides which code computes; a ported type decides which object holds the
+state, so under ``PANTR_BACKEND=cpp`` the object's data lives in C++ and the Python
+class is a wrapper around it. The nine, by the module that exports them:
+
+* :mod:`pantr.geometry` -- :class:`~pantr.geometry.AABB`.
+* :mod:`pantr.transform` -- :class:`~pantr.transform.AffineTransform`.
+* :mod:`pantr.quad` -- :class:`~pantr.quad.QuadratureRule`.
+* :mod:`pantr.bezier` -- :class:`~pantr.bezier.Bezier`.
+* :mod:`pantr.grid` -- :class:`~pantr.grid.TensorProductGrid`,
+  :class:`~pantr.grid.BVH`, :class:`~pantr.grid.CellTags`,
+  :class:`~pantr.grid.FacetTags` and :class:`~pantr.grid.Partition`.
+
+:class:`pantr.grid.HierarchicalGrid` is the one domain type in those modules that has
+not moved: it is the Python implementation under either backend.
+
 **This list was wrong for two releases and that is worth a sentence.** It said three
 modules and named neither half of ``bezier`` while both were merged and dispatching.
-Nothing checks a prose list, so it drifts silently; if you port a module, the change
-is not finished until this paragraph names it.
+It was then wrong again through the type epic, naming one of the nine types above and
+saying so in the entry for it rather than fixing itself. Nothing checks a prose list,
+so it drifts silently; if you port a module or a type, the change is not finished
+until this paragraph names it.
 
 **Reading a change_basis result needs one more fact than the others.** Its
 builders take their nodes from :mod:`pantr.quad`, so a call under
