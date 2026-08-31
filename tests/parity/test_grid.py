@@ -114,6 +114,28 @@ def _both(call: Callable[[], _T]) -> tuple[_T, _T]:
     return reference, actual
 
 
+def _assert_the_two_grids_differ() -> None:
+    """Fail if a tensor-product grid holds the same implementation under both backends.
+
+    The trip-wire for the vacuity described in `test_tensor_product_locate_is_bitwise`.
+    `TensorProductGrid` chooses its implementation when it is CONSTRUCTED, so a grid
+    built outside `_both` is compared against itself and the comparison says nothing.
+    Asserting the two classes differ is cheap and catches the mistake at the site that
+    made it, rather than leaving a green test that checks nothing.
+
+    Raises:
+        AssertionError: If the two backends hand back the same implementation class.
+    """
+    with use_backend(Backend.PYTHON):
+        py_impl = type(TensorProductGrid([np.array([0.0, 1.0])])._impl)
+    with use_backend(Backend.CPP):
+        cpp_impl = type(TensorProductGrid([np.array([0.0, 1.0])])._impl)
+    assert py_impl is not cpp_impl, (
+        f"both backends built a {py_impl.__name__}: the grid above was compared "
+        f"against itself, so this test asserts nothing about the port"
+    )
+
+
 def _adversarial_points_1d() -> npt.NDArray[np.float64]:
     """Points that attack the tie contract and the domain frontier, not the interior.
 
@@ -136,15 +158,25 @@ def test_tensor_product_locate_is_bitwise(cpp_backend: None, ndim: int) -> None:
 
     The ids are integers, so "bitwise" and "equal" coincide and the assertion is
     exact by nature rather than by tolerance.
+
+    **The grid is built inside the closure, and that is load-bearing.** Since the
+    tensor-product grid became a wrapper over a handle, the backend is chosen when the
+    grid is CONSTRUCTED rather than when a kernel is fetched. A grid built outside
+    ``_both`` therefore holds one implementation and ``_both`` runs it twice, so the
+    comparison passes for any port at all. That is what this test used to do; the
+    assertion below is what stops it happening again.
     """
     del cpp_backend
-    grid = uniform_grid(np.tile([0.0, 3.0], (ndim, 1)), 3)
     rng = np.random.default_rng(20260825)
     interior = rng.uniform(-0.5, 3.5, size=(200, ndim))
     corners = np.array(np.meshgrid(*([[0.0, 1.0, 2.0, 3.0]] * ndim))).reshape(ndim, -1).T
     points = np.vstack([interior, corners])
 
-    reference, actual = _both(lambda: grid.locate_many(points))
+    def locate() -> npt.NDArray[np.int64]:
+        return uniform_grid(np.tile([0.0, 3.0], (ndim, 1)), 3).locate_many(points)
+
+    reference, actual = _both(locate)
+    _assert_the_two_grids_differ()
 
     np.testing.assert_array_equal(
         actual,
@@ -161,10 +193,13 @@ def test_tensor_product_locate_holds_at_the_tie_contract(cpp_backend: None) -> N
     random interior points would never reach one.
     """
     del cpp_backend
-    grid = uniform_grid(np.tile([0.0, 3.0], (1, 1)), 3)
     points = _adversarial_points_1d()
 
-    reference, actual = _both(lambda: grid.locate_many(points))
+    def locate() -> npt.NDArray[np.int64]:
+        # Constructed inside the closure; see `test_tensor_product_locate_is_bitwise`.
+        return uniform_grid(np.tile([0.0, 3.0], (1, 1)), 3).locate_many(points)
+
+    reference, actual = _both(locate)
 
     np.testing.assert_array_equal(
         actual,

@@ -207,7 +207,7 @@ class TensorProductGrid : public GridBase<TensorProductGrid<T>> {
     /// \throws std::out_of_range If `cid` is out of range.
     /// \throws std::invalid_argument If `out` is not length `ndim`.
     void cell_multi_index(std::int64_t cid, std::span<std::int64_t> out) const {
-        this->check_cid(cid);
+        check_flat_cid(cid);
         require_ndim_span(out, "out");
         decompose(cid, out);
     }
@@ -219,12 +219,16 @@ class TensorProductGrid : public GridBase<TensorProductGrid<T>> {
     /// \throws std::invalid_argument If `multi` is not length `ndim`.
     /// \throws std::out_of_range If any index is outside its axis's cell range.
     [[nodiscard]] std::int64_t flat_cell_index(std::span<const std::int64_t> multi) const {
-        require_ndim_span(multi, "multi");
+        const auto ndim = static_cast<std::size_t>(this->ndim());
+        if (multi.size() != ndim) {
+            throw std::invalid_argument("multi-index has length " + std::to_string(multi.size())
+                                        + "; expected " + std::to_string(ndim) + ".");
+        }
         std::int64_t cid = 0;
         for (std::size_t d = 0; d < multi.size(); ++d) {
             if (multi[d] < 0 || multi[d] >= cells_per_axis_[d]) {
-                throw std::out_of_range("cell index " + std::to_string(multi[d]) + " on axis "
-                                        + std::to_string(d) + " is out of range [0, "
+                throw std::out_of_range("axis " + std::to_string(d) + " index "
+                                        + std::to_string(multi[d]) + " out of range [0, "
                                         + std::to_string(cells_per_axis_[d]) + ").");
             }
             cid += multi[d] * strides_[d];
@@ -244,7 +248,7 @@ class TensorProductGrid : public GridBase<TensorProductGrid<T>> {
     /// \throws std::out_of_range If `cid` is out of range.
     /// \throws std::invalid_argument If either span is not length `ndim`.
     void cell_bounds(std::int64_t cid, std::span<T> lo, std::span<T> hi) const {
-        this->check_cid(cid);
+        check_flat_cid(cid);
         require_ndim_span(lo, "lo");
         require_ndim_span(hi, "hi");
         for (std::size_t d = 0; d < lo.size(); ++d) {
@@ -681,6 +685,28 @@ class TensorProductGrid : public GridBase<TensorProductGrid<T>> {
             }
         }
         return lo < sorted.size() && sorted[lo] == value;
+    }
+
+    /// Reject a cell id outside `[0, num_cells)`, in the index helpers' own words.
+    ///
+    /// **A second spelling of the mixin's `check_cid`, and it is a transliteration
+    /// rather than a choice.** The Python oracle reaches this condition by two routes
+    /// that word it differently: `cell_level` goes through `Grid._check_cid` and says
+    /// *"cell id N is out of range"*, while `cell_bounds` goes through
+    /// `cell_multi_index` into `pantr.grid._cell_index.flat_to_multi` and says *"flat
+    /// cell id N is out of range"*. Both are shipped public messages, so the port
+    /// reproduces both; a single wording here would change one of them for a reason
+    /// internal to the C++ layer. The inconsistency is the oracle's and is worth
+    /// removing on the Python side one day, in a change that owns it.
+    ///
+    /// \param cid Candidate cell identifier.
+    /// \throws std::out_of_range If `cid` is negative or `>= num_cells`.
+    void check_flat_cid(std::int64_t cid) const {
+        if (cid < 0 || cid >= this->num_cells()) {
+            throw std::out_of_range("flat cell id " + std::to_string(cid)
+                                    + " is out of range [0, "
+                                    + std::to_string(this->num_cells()) + ").");
+        }
     }
 
     /// Reject an axis index outside `[0, ndim)`.

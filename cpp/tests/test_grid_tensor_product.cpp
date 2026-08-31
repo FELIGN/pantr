@@ -91,11 +91,19 @@ void test_index_helpers() {
     g.cell_multi_index(5, multi);
     PANTR_CHECK(multi[0] == 2 && multi[1] == 1);
     PANTR_CHECK(g.flat_cell_index(multi) == 5);
+    // The two spellings below are the Python oracle's, verbatim; `check_flat_cid`
+    // says why there are two.
     PANTR_CHECK(throws_with<std::out_of_range>([&g, &multi] { g.cell_multi_index(6, multi); },
+                                               "flat cell id 6 is out of range [0, 6)."));
+    PANTR_CHECK(throws_with<std::out_of_range>([&g] { (void)g.cell_level(6); },
                                                "cell id 6 is out of range [0, 6)."));
     const std::vector<std::int64_t> bad = {3, 0};
     PANTR_CHECK(throws_with<std::out_of_range>([&g, &bad] { (void)g.flat_cell_index(bad); },
-                                               "cell index 3 on axis 0"));
+                                               "axis 0 index 3 out of range [0, 3)."));
+    const std::vector<std::int64_t> too_short = {0};
+    PANTR_CHECK(throws_with<std::invalid_argument>(
+        [&g, &too_short] { (void)g.flat_cell_index(too_short); },
+        "multi-index has length 1; expected 2."));
 }
 
 void test_repr_matches_the_python_form() {
