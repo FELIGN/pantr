@@ -193,12 +193,23 @@ with the one it came from is worth stating exactly, because the paragraph above 
 - the `(lo, hi)` block tuples, which are immutable;
 - **nothing else.** The per-level block *lists*, `_level_base`, `_num_cells` and the four
   packed `int64` kernel arrays are rebuilt, and the BVH and the two tag registries start
-  empty. So the two grids cannot observe each other through the cell decomposition.
+  empty. So the two grids cannot observe each other at all: not through the cell
+  decomposition, and not through the tags, which is the sharper of the two claims because a
+  grid's tags *are* mutable.
 
-Measured on the branch, refinement's cost per call is flat in the cell count (a single-block
-region refined on grids from 64 to 4096 cells) and superlinear in the *block* count, which is
-what the mutating version measured too: the cost was always the block-list normalization, not
-the copy. Neither the old nor the new call is O(cells).
+The same holds one level up, and it does not come for free. `THBSplineSpace.refine`,
+`refine_region` and `coarsen` build the new space over the grid they end up with, which on a
+path that refines or coarsens nothing is the receiver's own grid. They copy it there, so no
+two spaces ever share a grid object. Dropping that copy is the mistake the shape of this
+change invites: the decomposition being immutable makes sharing look safe, and the tag
+registries make it not.
+
+Refinement's cost per call is flat in the cell count and superlinear in the *block* count,
+which is what the mutating version measured too: the cost was always the block-list
+normalization, not the copy. Neither the old nor the new call is O(cells).
+`scripts/bench_grid_refine.py` is the sweep that shows it, including the one case where the
+value-returning form could plausibly have regressed (blocks left on levels a refine does not
+touch, which it now normalizes and the mutating version did not).
 
 ## Memory across iterations
 
