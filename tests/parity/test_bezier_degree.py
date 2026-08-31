@@ -34,9 +34,23 @@ The claim the error does not make
 
 ``degree_reduction_error`` is documented as returning the true ``||f - g||`` rather
 than an estimate, and **that is a statement about the formula, not the arithmetic**.
-The formula is exact: elevation back to the original degrees is an exact operation on
-polynomials, and the Bernstein-Gram matrix is the exact inner product of the basis
-(Farouki and Rajan, *Computer Aided Geometric Design* 5, 1988). The computed value
+The formula is exact, and both halves of that were checked rather than assumed.
+Elevation back to the original degrees is an exact operation on polynomials -- proved
+by expanding ``1 = (x + (1-x))^t``, and confirmed by an exact-rational round trip that
+recovered the original power-basis coefficients bit for bit. The Bernstein-Gram matrix
+is the exact inner product of the basis -- the closed form follows from the Beta
+integral ``integral x^(i+j) (1-x)^(2n-i-j) = (i+j)! (2n-i-j)! / (2n+1)!``, and
+:func:`test_the_squared_norm_is_accurate_against_exact_rational_integration` below
+checks it against term-by-term integration that shares no code with it.
+
+**The attribution the oracle carries for that closed form is unconfirmed**, and is not
+repeated here. ``_bezier_degree.py`` credits Farouki and Rajan, *Computer Aided
+Geometric Design* 5 (1988); that paper exists with exactly those details, but it is not
+open access, its abstract describes arithmetic operations, substitution, elimination
+and greatest common divisors rather than inner products, and two later papers that are
+specifically about this closed form credit it elsewhere. The formula is true either
+way -- that is what the test below establishes -- so nothing here depends on the
+attribution. The computed value
 carries the roundings of a reduction, an elevation and a quadratic form, which is
 what the bound below is. Nothing here asserts the formula's exactness; the tests that
 would are the C++ ones, which check it against a known answer.
@@ -598,9 +612,9 @@ def _exact_gram(degree: int) -> list[list[Fraction]]:
 
     ``G_ij = integral_0^1 B_i B_j``, obtained by multiplying the two monomial
     expansions and integrating term by term with ``integral x^k = 1/(k+1)``. No
-    binomial ratio and no closed form, which is the point: the implementation uses
-    Farouki and Rajan's closed form, and a check that used it too would verify only
-    that the code evaluates its own formula.
+    binomial ratio and no closed form, which is the point: the implementation uses a
+    closed-form binomial ratio, and a check that used it too would verify only that
+    the code evaluates its own formula.
 
     Args:
         degree (int): Polynomial degree.
@@ -640,8 +654,9 @@ def test_the_squared_norm_is_accurate_against_exact_rational_integration(
 
     The oracle here is the same integral evaluated in :class:`~fractions.Fraction` from
     the monomial expansion of the basis, so it shares no formula with the
-    implementation: the code uses Farouki and Rajan's closed-form binomial ratio, this
-    integrates term by term.
+    implementation: the code evaluates a closed-form binomial ratio, this integrates
+    term by term. So this test establishes the closed form itself, independently of
+    who it is credited to -- see the module docstring on that.
 
     The bound is one-sided -- this compares one computation against the truth, not two
     computations against each other -- so the harness's factor of two is deliberately

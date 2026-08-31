@@ -109,6 +109,7 @@
 #include <vector>
 
 #include "pantr/basis/bernstein.hpp"
+#include "pantr/bezier/axis_layout.hpp"
 #include "pantr/bezier/bezier.hpp"
 #include "pantr/bezier/kernels_1d.hpp"
 #include "pantr/core/mdspan.hpp"
@@ -117,22 +118,6 @@
 namespace pantr::bezier {
 
 namespace detail {
-
-/// The number of values a contraction result holds.
-///
-/// \param shape The extents, innermost last.
-/// \param from The first extent to count, so that a partially contracted block
-///        can be sized without rebuilding its shape.
-/// \return The product of `shape[from]` through `shape.back()`, and 1 when the
-///         range is empty.
-[[nodiscard]] inline std::size_t block_size(std::span<const std::size_t> shape,
-                                            std::size_t from) noexcept {
-    std::size_t size = 1;
-    for (std::size_t d = from; d < shape.size(); ++d) {
-        size *= shape[d];
-    }
-    return size;
-}
 
 /// Tabulate the Bernstein basis of one direction at one column of a point array.
 ///
@@ -292,12 +277,12 @@ void evaluate(const Bezier<T>& bezier, span2d<const T> points, span2d<T> out) {
         // After direction 0 the block for one point has extents
         // `(n_1, ..., n_{dim-1}, cp_size)`, and each later direction removes its
         // leading axis. Two buffers of that size are enough for the whole chain.
-        const std::size_t widest = detail::block_size(shape, 1);
+        const std::size_t widest = detail::extent_product(shape, 1);
         std::vector<T> front(widest);
         std::vector<T> back(widest);
 
         for (std::size_t p = 0; p < num_pts; ++p) {
-            std::size_t stride = detail::block_size(shape, 1);
+            std::size_t stride = detail::extent_product(shape, 1);
             detail::contract_leading_axis<T>(
                 std::span<const T>(&bases[0][p * shape[0]], shape[0]), values, stride,
                 std::span<T>(front));
@@ -368,12 +353,12 @@ void evaluate_on_lattice(const Bezier<T>& bezier,
     // extents `(m_0, ..., m_d, n_{d+1}, ..., n_{dim-1}, cp_size)`. Its largest
     // size over the whole chain is what both ping-pong buffers are sized to.
     std::vector<std::size_t> extents(shape.begin(), shape.end());
-    std::size_t widest = detail::block_size(shape, 0);
+    std::size_t widest = detail::extent_product(shape, 0);
     {
         std::vector<std::size_t> running(shape.begin(), shape.end());
         for (std::size_t d = 0; d < dim; ++d) {
             running[d] = points_per_dir[d].size();
-            widest = std::max(widest, detail::block_size(std::span<const std::size_t>(running), 0));
+            widest = std::max(widest, detail::extent_product(std::span<const std::size_t>(running), 0));
         }
     }
     std::vector<T> front(widest);
@@ -393,7 +378,7 @@ void evaluate_on_lattice(const Bezier<T>& bezier,
         for (std::size_t e = 0; e < d; ++e) {
             outer *= extents[e];
         }
-        const std::size_t inner = detail::block_size(std::span<const std::size_t>(extents), d + 1);
+        const std::size_t inner = detail::extent_product(std::span<const std::size_t>(extents), d + 1);
 
         std::vector<T> basis(m_pts * (bezier.degree(d) + 1));
         tabulate_bernstein_1d<T>(static_cast<int>(bezier.degree(d)), column,
