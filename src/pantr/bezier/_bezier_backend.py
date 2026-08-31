@@ -86,9 +86,12 @@ that do not still hand Layer 2 an array to fill before wrapping it in a
   composition, which likewise take Béziers.  Their C++ side is handed the
   binomial tables as data; see :func:`_cpp_multiply`.
 
-This list is meant to be exhaustive.  It was not: an earlier version named seven
-of the seventeen accessors then in the file, which is the same failure as the
-stale count above and is why both are called out here rather than quietly fixed.
+This list is meant to be exhaustive, and an earlier version was not: it named
+some of the accessors in the file and read as though it named all of them.  That
+is called out here rather than quietly fixed, because the next accessor added is
+what breaks it again.  No count appears in this note on purpose: the first
+attempt to record the omission stated the wrong figures, which is the very
+failure it was describing.
 """
 
 from __future__ import annotations
