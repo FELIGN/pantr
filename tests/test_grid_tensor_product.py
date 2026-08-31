@@ -8,7 +8,13 @@ import numpy as np
 import pytest
 
 from pantr.geometry import AABB
-from pantr.grid import GridRestriction, TensorProductGrid, tensor_product_grid, uniform_grid
+from pantr.grid import (
+    Grid,
+    GridRestriction,
+    TensorProductGrid,
+    tensor_product_grid,
+    uniform_grid,
+)
 from pantr.grid._tensor_product_grid import _UNIFORM_SPACING_EPS_FACTOR
 from pantr.transform import AffineTransform
 
@@ -826,3 +832,41 @@ def test_numpys_step_underflow_branch_cannot_be_reached_by_a_grid() -> None:
         "no domain in the sweep underflowed `step`, so this test asserted nothing "
         "about the branch it exists to characterize"
     )
+
+
+def test_the_protocols_own_defaults_run_unbound_against_the_wrapper() -> None:
+    """``Grid.<default>(wrapper, ...)`` reaches the protocol's body and works.
+
+    The wrapper's ``_check_cid``, ``_check_lfid`` and ``_normalize_points`` are one-line
+    delegations to :class:`pantr.grid.Grid`'s own bodies, reached unbound. That is
+    deliberate -- one definition rather than a second copy that can drift -- but it means
+    the wrapper satisfies three members of its contract through a mechanism nothing
+    exercised: ``tests/test_grid_abc.py``'s unbound differential calls all run against a
+    ``_GridPython`` subclass, never against a wrapper.
+
+    So this calls them the way the wrapper does, plus one generic default that is
+    genuinely inherited, and it does so under whichever backend is active. It would fail
+    if a future wrapper broke the delegation, which is the case that matters:
+    ``HierarchicalGrid`` becomes the second wrapper.
+    """
+    g = uniform_grid([[0.0, 2.0], [0.0, 2.0]], 2)
+
+    g._check_cid(0)
+    with pytest.raises(IndexError, match=r"cell id 99 is out of range \[0, 4\)\."):
+        g._check_cid(99)
+    g._check_lfid(0, 3)
+    with pytest.raises(IndexError, match=r"local facet id 4 is out of range \[0, 4\)\."):
+        g._check_lfid(0, 4)
+
+    pts = g._normalize_points([0.5, 0.5])
+    assert pts.shape == (1, 2), "a single point is promoted to a one-row batch"
+    assert pts.dtype == np.float64
+
+    # And the same three reached through the protocol itself, unbound, which is what the
+    # differential tests elsewhere do and what the delegations above are.
+    Grid._check_cid(g, 0)
+    with pytest.raises(IndexError, match="out of range"):
+        Grid._check_cid(g, 99)
+    np.testing.assert_array_equal(Grid._normalize_points(g, [0.5, 0.5]), pts)
+    # A generic default the wrapper does not define at all, run unbound against it.
+    np.testing.assert_array_equal(Grid.boundary_facets(g), g.boundary_facets())

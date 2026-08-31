@@ -85,7 +85,31 @@ if TYPE_CHECKING:
     from ._bvh import BVH
 
 
-_W = TypeVar("_W")
+class _Wrappable(Protocol):
+    """A public wrapper class that can adopt an already-valid implementation object.
+
+    The one thing :func:`_adopt` needs of the class it is given. Declared as a protocol
+    rather than left to a bare :class:`typing.TypeVar` so that a wrapper class which
+    forgets ``_wrap`` is a type error at the call site instead of an
+    :class:`AttributeError` the first time a grid hands one out.
+    """
+
+    __slots__ = ()
+
+    @classmethod
+    def _wrap(cls, impl: Any) -> Any:  # noqa: ANN401 -- the impl type is the wrapper's
+        """Adopt an implementation object that is already valid.
+
+        Args:
+            impl (Any): The implementation object to adopt.
+
+        Returns:
+            Any: A wrapper around ``impl``, with no re-validation.
+        """
+        ...
+
+
+_W = TypeVar("_W", bound=_Wrappable)
 """One of pantr's public wrapper classes, as :func:`_adopt` presents a handle."""
 
 
@@ -767,7 +791,7 @@ def _adopt(wrapper_cls: type[_W], value: object) -> _W:
     """
     if isinstance(value, wrapper_cls):
         return value
-    return wrapper_cls._wrap(value)  # type: ignore[attr-defined, no-any-return]
+    return wrapper_cls._wrap(value)  # type: ignore[no-any-return]
 
 
 class _GridWrapper:
