@@ -37,45 +37,6 @@ from ._bspline_knots import (
 )
 
 
-@functools.lru_cache(maxsize=128)
-def _cached_unique_knots_and_multiplicity(
-    knots_repr: tuple[bytes, str, int],
-    degree: int,
-    tol: float,
-    in_domain: bool = False,
-) -> tuple[npt.NDArray[np.float32 | np.float64], npt.NDArray[np.int_]]:
-    """Compute unique knots and multiplicities with memoization.
-
-    The cache is bounded to prevent unbounded memory growth in long-running
-    applications that construct many distinct spline spaces.  128 entries is
-    generous for real-world use (an adaptive simulation rarely needs more than
-    a few dozen distinct knot vectors) while still eliminating the risk of a
-    memory leak.
-
-    Args:
-        knots_repr (tuple[bytes, str, int]): Serialized knot vector bytes, dtype string, and size.
-        degree (int): B-spline degree.
-        tol (float): Tolerance value.
-        in_domain (bool): Whether to restrict to the spline domain.
-
-    Returns:
-        tuple[npt.NDArray[np.float32 | np.float64], npt.NDArray[np.int_]]:
-            Unique knots and corresponding multiplicities.
-    """
-    knots_bytes, dtype_str, size = knots_repr
-    dtype = np.dtype(dtype_str)
-    knots = np.frombuffer(knots_bytes, dtype=dtype, count=size).copy()
-    # ``tol`` goes in unrounded, exactly as ``BsplineSpace1D._snap_knots`` passes it, so
-    # the space and its own accessor apply one predicate rather than two that differ in
-    # the last bits of the threshold.
-    unique, mults = _get_unique_knots_and_multiplicity_impl(knots, degree, tol, in_domain)
-    # The same arrays are returned to every caller; freeze them so a caller
-    # mutation cannot poison the cache.
-    unique.flags.writeable = False
-    mults.flags.writeable = False
-    return unique, mults
-
-
 class BsplineSpace1D:
     """A class representing a 1D B-spline with configurable degree and knot vector.
 
@@ -315,12 +276,22 @@ class BsplineSpace1D:
         Returns:
             tuple[npt.NDArray[np.float32 | np.float64], npt.NDArray[numpy.intp]]: Tuple of
             (unique_knots, multiplicities) where unique_knots contains the distinct knot values
-            and multiplicities contains the corresponding multiplicity counts.
+            and multiplicities contains the corresponding multiplicity counts. Both arrays are
+            read-only, and a fresh pair is returned by each call.
         """
-        knots_repr = (self._knots.tobytes(), self._knots.dtype.str, int(self._knots.size))
-        degree = int(self._degree)
-        tol = float(self._tol)
-        return _cached_unique_knots_and_multiplicity(knots_repr, degree, tol, in_domain)
+        # ``tol`` goes in unrounded, exactly as :meth:`_snap_knots` passes it, so the
+        # space and its own accessor apply one predicate rather than two that differ
+        # in the last bits of the threshold.
+        unique, mults = _get_unique_knots_and_multiplicity_impl(
+            self._knots, self._degree, self._tol, in_domain
+        )
+        # Frozen because callers treat the result as the space's own report of its
+        # knot classes: :meth:`_first_basis_per_interval_cached` derives a cached
+        # array from it, and the C++ owner this port introduces will hand out a
+        # ``const`` view of storage it owns rather than a copy.
+        unique.flags.writeable = False
+        mults.flags.writeable = False
+        return unique, mults
 
     @functools.cached_property
     def num_intervals(self) -> int:

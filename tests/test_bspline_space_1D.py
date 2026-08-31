@@ -49,7 +49,6 @@ from pantr.bspline._bspline_knots import (
     _get_unique_knots_and_multiplicity_impl,
     _is_in_domain_impl,
 )
-from pantr.bspline._bspline_space_1d import _cached_unique_knots_and_multiplicity
 from pantr.change_basis import compute_lagrange_to_bernstein_1d
 from pantr.tolerance import get_strict
 
@@ -157,20 +156,51 @@ class TestBsplineSpace1DProperties:
         with pytest.raises(ValueError):
             spline.knots[0] = 99.0
 
-    def test_unique_knots_cache_is_bounded(self) -> None:
-        """Test that the knot-multiplicity cache has a finite maxsize.
+    def test_no_process_global_knot_cache(self) -> None:
+        """No process-global cache stands between a space and its knot scan.
 
-        An unbounded cache (functools.cache) would leak memory in long-running
-        applications that construct many distinct spline spaces.  Switching to
-        lru_cache(maxsize=N) ensures old entries are evicted when the cache is
-        full.
+        A process-global ``lru_cache`` stood here until this port. It was bounded,
+        so it did not leak, but its key omitted the backend -- the exact omission
+        ``pantr._backend.backend_keyed_cache`` was introduced to repair for a
+        sibling, where the first backend to fill an entry served every later caller
+        and a parity test compared one result against itself. The knot scan is about
+        to acquire a second implementation, which is when that becomes live, so the
+        cache goes before the dispatch does rather than after.
+
+        The replacement is ownership, not a better key: the derived knot classes
+        belong to the space, are computed once per space, and need no key at all.
         """
-        info = _cached_unique_knots_and_multiplicity.cache_info()
-        assert info.maxsize is not None, (
-            "_cached_unique_knots_and_multiplicity must use lru_cache with a "
-            "finite maxsize, not functools.cache, to avoid unbounded memory growth."
+        from pantr.bspline import _bspline_space_1d  # noqa: PLC0415
+
+        # ``cache_info`` is the public surface every ``functools`` memoizer exposes,
+        # so this catches ``cache`` and ``lru_cache`` alike without naming the
+        # private wrapper type the check would otherwise be pinned to.
+        cached = [
+            name
+            for name, value in vars(_bspline_space_1d).items()
+            if callable(value) and hasattr(value, "cache_info")
+        ]
+        assert not cached, (
+            f"{cached} are process-global caches in _bspline_space_1d. A cache with no "
+            "owner has no bound tied to anything and its key cannot see the active "
+            "backend; memoize on the space instead."
         )
-        assert info.maxsize > 0
+
+    def test_unique_knots_and_multiplicity_are_read_only(self) -> None:
+        """Both returned arrays are frozen, so a caller cannot rewrite a space's report.
+
+        ``_first_basis_per_interval_cached`` derives a cached array from the
+        multiplicities, and the C++ owner hands out a ``const`` view of storage it
+        owns; a writable result would make those two disagree about one space.
+        """
+        spline = BsplineSpace1D([0.0, 0.0, 0.0, 1.0, 2.0, 2.0, 2.0], 2)
+        unique, mults = spline.get_unique_knots_and_multiplicity()
+        assert not unique.flags.writeable
+        assert not mults.flags.writeable
+        with pytest.raises(ValueError):
+            unique[0] = 99.0
+        with pytest.raises(ValueError):
+            mults[0] = 99
 
     def test_periodic_property(self) -> None:
         """Test periodic property."""
