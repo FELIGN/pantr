@@ -6,7 +6,20 @@ import numpy as np
 import numpy.testing as nptest
 import pytest
 
+from pantr._backend import Backend, use_backend
 from pantr.grid import TensorProductGrid, overlay, uniform_grid
+from tests._parity_harness import demand_cpp_backend
+
+
+@pytest.fixture
+def cpp_backend() -> None:
+    """Require the compiled extension for the test that switches to the C++ backend.
+
+    Routed through the parity harness rather than a bare ``skipif``: a bare skip is
+    silent, and a suite that skips its way to green has let real failures through in
+    this repository.
+    """
+    demand_cpp_backend()
 
 
 def test_overlay_union_1d() -> None:
@@ -172,3 +185,29 @@ def test_overlay_non_grid_input_raises() -> None:
     grid = uniform_grid([[0.0, 1.0]], 2)
     with pytest.raises(TypeError, match="TensorProductGrid"):
         overlay(grid, object())  # type: ignore[arg-type]
+
+
+def test_overlay_runs_on_cpp_backed_grids(cpp_backend: None) -> None:
+    """Overlay's ``isinstance`` gate admits a grid whose implementation is the C++ one.
+
+    ``overlay`` opens with ``isinstance(grid, TensorProductGrid)`` on both arguments and
+    refuses anything else, so under the C++ backend that gate is the whole of the port's
+    exposure here. Asserting the call returned is not enough on its own: a grid that had
+    quietly stayed on the Python oracle would pass the same gate and say nothing about
+    the port, which is why the implementation class is asserted on the inputs *and* on
+    the result. ``test_overlay_non_grid_input_raises`` is the other half -- it pins that
+    the gate still rejects, so this one cannot pass by the gate having been deleted.
+    """
+    del cpp_backend
+    from pantr import _pantr_cpp  # noqa: PLC0415  (absent without the compiled extension)
+
+    with use_backend(Backend.CPP):
+        grid_a = uniform_grid([[0.0, 1.0]], 2)
+        grid_b = uniform_grid([[0.0, 1.0]], 3)
+        assert type(grid_a._impl) is _pantr_cpp.TensorProductGrid
+        assert type(grid_b._impl) is _pantr_cpp.TensorProductGrid
+
+        result = overlay(grid_a, grid_b)
+
+        assert type(result._impl) is _pantr_cpp.TensorProductGrid
+        nptest.assert_allclose(result.breakpoints[0], [0.0, 1.0 / 3.0, 0.5, 2.0 / 3.0, 1.0])

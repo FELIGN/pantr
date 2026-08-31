@@ -7,6 +7,7 @@ import numpy.testing as nptest
 import numpy.typing as npt
 import pytest
 
+from pantr._backend import Backend, use_backend
 from pantr.grid import (
     Grid,
     TensorProductGrid,
@@ -15,6 +16,18 @@ from pantr.grid import (
     uniform_grid,
 )
 from pantr.quad import QuadratureRule, gauss_legendre_quadrature
+from tests._parity_harness import demand_cpp_backend
+
+
+@pytest.fixture
+def cpp_backend() -> None:
+    """Require the compiled extension for the test that switches to the C++ backend.
+
+    Routed through the parity harness rather than a bare ``skipif``: a bare skip is
+    silent, and a suite that skips its way to green has let real failures through in
+    this repository.
+    """
+    demand_cpp_backend()
 
 
 def _grid_2d() -> TensorProductGrid:
@@ -211,3 +224,35 @@ class TestRuleConstruction:
         pts, w = cell_quadrature(grid, rule)
         nptest.assert_allclose(pts[0, 0], [1.0, 1.0])
         nptest.assert_allclose(w[0, 0], 4.0)
+
+
+class TestCppOwnedOperands:
+    """The composition runs on a C++-owned grid and a C++-owned rule."""
+
+    def test_maps_a_cpp_rule_onto_a_cpp_grid(self, cpp_backend: None) -> None:
+        """Both operands are the C++ implementations, and the mapped rule still integrates.
+
+        ``cell_quadrature`` has no backend branch of its own: it reads
+        ``grid.collect_cell_bounds()`` and the rule's ``points`` and ``weights``, and each
+        of those is forwarded to whichever implementation the wrapper holds. So the thing
+        worth pinning is that under the C++ backend the operands really are the C++ ones
+        -- asserted on the implementation classes, because every value assertion below
+        would pass just as well on the Python oracle -- and that the composition over them
+        is still exact where it has to be. Gauss-Legendre with three points per direction
+        is exact to degree five, so the integral is an oracle independent of the grid.
+        """
+        del cpp_backend
+        from pantr import _pantr_cpp  # noqa: PLC0415  (absent without the compiled extension)
+
+        with use_backend(Backend.CPP):
+            grid = TensorProductGrid([[0.0, 1.0, 3.0], [0.0, 0.5, 2.5]])
+            rule = gauss_legendre_quadrature(2, 3)
+            assert type(grid._impl) is _pantr_cpp.TensorProductGrid
+            assert type(rule._impl) is _pantr_cpp.QuadratureRule
+
+            pts, w = cell_quadrature(grid, rule)
+
+        # int over [0, 3] x [0, 2.5] of x^2 y^3 = (3^3 / 3) * (2.5^4 / 4).
+        f = pts[..., 0] ** 2 * pts[..., 1] ** 3
+        nptest.assert_allclose(float((w * f).sum()), 9.0 * 2.5**4 / 4.0, rtol=1e-12)
+        nptest.assert_allclose(w.sum(axis=1), _cell_volumes(grid), rtol=1e-12)

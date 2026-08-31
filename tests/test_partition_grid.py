@@ -9,6 +9,7 @@ import numpy as np
 import numpy.typing as npt
 import pytest
 
+from pantr._backend import Backend, use_backend
 from pantr.grid import (
     Partition,
     hierarchical_grid,
@@ -16,6 +17,18 @@ from pantr.grid import (
     uniform_grid,
 )
 from pantr.grid._partition_grid import _divisors, _factor_blocks
+from tests._parity_harness import demand_cpp_backend
+
+
+@pytest.fixture
+def cpp_backend() -> None:
+    """Require the compiled extension for the tests that switch to the C++ backend.
+
+    Routed through the parity harness rather than a bare ``skipif``: a bare skip is
+    silent, and a suite that skips its way to green has let real failures through in
+    this repository.
+    """
+    demand_cpp_backend()
 
 
 def _cell_multi_indices(cells_per_axis: tuple[int, ...]) -> npt.NDArray[np.intp]:
@@ -278,9 +291,24 @@ def test_rcb_n_parts_exceeds_active_with_mask_raises() -> None:
 
 
 def test_auto_uses_block_for_tp_feasible() -> None:
+    """``auto`` returns the ``block`` answer on a feasible tensor-product grid.
+
+    Two parts rather than four, and the reason is that four could not show this. On a
+    4x4 grid split four ways, ``block`` and ``rcb`` return the *same* owner array, so
+    the comparison passed whichever branch ``auto`` took -- including the fall-through
+    that runs when ``isinstance(grid, TensorProductGrid)`` fails. Two parts make the two
+    disagree, and the disagreement is asserted first so the case cannot go quietly
+    vacuous again. The 2x2 factorization four parts exercised is pinned against a
+    hand-computed array by ``test_block_2d_four_parts``.
+    """
     grid = uniform_grid([[0.0, 1.0], [0.0, 1.0]], [4, 4])
-    auto = partition_grid(grid, 4).cell_owner
-    block = partition_grid(grid, 4, backend="block").cell_owner
+    block = partition_grid(grid, 2, backend="block").cell_owner
+    rcb = partition_grid(grid, 2, backend="rcb").cell_owner
+    assert not np.array_equal(block, rcb), (
+        "block and rcb agree here, so comparing auto against block cannot tell which "
+        "branch auto took; pick a grid and part count where they differ"
+    )
+    auto = partition_grid(grid, 2).cell_owner
     np.testing.assert_array_equal(auto, block)
 
 
@@ -429,3 +457,55 @@ def test_factor_blocks_tie_only_contract() -> None:
 def test_factor_blocks_infeasible_raises() -> None:
     with pytest.raises(ValueError, match="cannot factor"):
         _factor_blocks((4, 4), 7)
+
+
+# --------------------------------------------------------------------------- #
+# The C++ backend reaches both TensorProductGrid dispatch sites
+# --------------------------------------------------------------------------- #
+
+
+def test_auto_takes_the_block_branch_on_a_cpp_backed_grid(cpp_backend: None) -> None:
+    """``auto`` dispatches to ``block`` when the grid's implementation is the C++ one.
+
+    This is the dispatch site that fails silently. ``auto`` tests
+    ``isinstance(grid, TensorProductGrid)`` and falls through to ``rcb`` when it fails,
+    and ``rcb`` returns a perfectly valid partition of the same grid -- so a wrapper the
+    check missed still produces an answer, and a test that only called the function
+    would pass. The branch is pinned by making the two backends disagree first and then
+    asserting which of the two answers came back.
+    """
+    del cpp_backend
+    from pantr import _pantr_cpp  # noqa: PLC0415  (absent without the compiled extension)
+
+    with use_backend(Backend.CPP):
+        grid = uniform_grid([[0.0, 1.0], [0.0, 1.0]], [4, 4])
+        assert type(grid._impl) is _pantr_cpp.TensorProductGrid
+
+        block = partition_grid(grid, 2, backend="block").cell_owner
+        rcb = partition_grid(grid, 2, backend="rcb").cell_owner
+        assert not np.array_equal(block, rcb), (
+            "block and rcb agree here, so this test cannot tell which branch auto took"
+        )
+
+        np.testing.assert_array_equal(partition_grid(grid, 2).cell_owner, block)
+
+
+def test_block_backend_accepts_a_cpp_backed_grid(cpp_backend: None) -> None:
+    """The ``block`` backend's own guard admits a grid implemented in C++.
+
+    The second dispatch site: ``_block_backend`` refuses anything that is not a
+    :class:`TensorProductGrid`, so under the C++ backend a wrapper it failed to
+    recognize would turn an ordinary call into a ``ValueError``.
+    ``test_block_on_non_tensor_product_grid_raises`` pins that the guard still rejects,
+    so the pair says the guard is live *and* lets the wrapper through.
+    """
+    del cpp_backend
+    from pantr import _pantr_cpp  # noqa: PLC0415  (absent without the compiled extension)
+
+    with use_backend(Backend.CPP):
+        grid = uniform_grid([[0.0, 1.0], [0.0, 1.0]], [4, 4])
+        assert type(grid._impl) is _pantr_cpp.TensorProductGrid
+        owner = partition_grid(grid, 4, backend="block").cell_owner
+
+    i0, i1 = np.unravel_index(np.arange(16), (4, 4))
+    np.testing.assert_array_equal(owner, (i0 // 2) * 2 + (i1 // 2))
