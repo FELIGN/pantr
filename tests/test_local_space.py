@@ -379,7 +379,7 @@ def _refined_thb(
     knots = [0.0] * 3 + [float(i) for i in range(1, n)] + [float(n)] * 3
     sp = BsplineSpace1D(knots, 2)
     grid = hierarchical_grid(uniform_grid([[0.0, float(n)], [0.0, float(n)]], n), 2)
-    grid.refine(0, list(lo), list(hi))
+    grid = grid.refine(0, list(lo), list(hi))
     return THBSplineSpace(BsplineSpace([sp, sp]), grid)
 
 
@@ -487,7 +487,7 @@ def _corner_refined_thb() -> THBSplineSpace:
     knots = [0.0] * 3 + [float(i) for i in range(1, 6)] + [6.0] * 3
     sp = BsplineSpace1D(knots, 2)
     grid = hierarchical_grid(uniform_grid([[0.0, 6.0], [0.0, 6.0]], 6), 2)
-    grid.refine(0, [0, 0], [3, 3])
+    grid = grid.refine(0, [0, 0], [3, 3])
     return THBSplineSpace(BsplineSpace([sp, sp]), grid)
 
 

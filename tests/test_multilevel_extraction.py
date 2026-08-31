@@ -121,30 +121,30 @@ class TestReproduction:
 
     def test_1d_two_levels(self) -> None:
         grid = _grid_1d()
-        grid.refine(0, [0], [2])
+        grid = grid.refine(0, [0], [2])
         assert _reproduction_error(THBSplineSpace(_root_1d(), grid)) < 1e-12
 
     def test_1d_three_levels(self) -> None:
         grid = _grid_1d()
-        grid.refine(0, [0], [2])
-        grid.refine(1, [0], [2])
+        grid = grid.refine(0, [0], [2])
+        grid = grid.refine(1, [0], [2])
         assert _reproduction_error(THBSplineSpace(_root_1d(), grid)) < 1e-12
 
     def test_2d_corner(self) -> None:
         grid = _grid_2d()
-        grid.refine(0, [0, 0], [2, 2])
+        grid = grid.refine(0, [0, 0], [2, 2])
         assert _reproduction_error(THBSplineSpace(_root_2d(), grid)) < 1e-12
 
     def test_2d_three_levels(self) -> None:
         grid = _grid_2d()
-        grid.refine(0, [1, 1], [3, 3])
-        grid.refine(1, [2, 2], [6, 6])
+        grid = grid.refine(0, [1, 1], [3, 3])
+        grid = grid.refine(1, [2, 2], [6, 6])
         assert _reproduction_error(THBSplineSpace(_root_2d(), grid)) < 1e-12
 
     def test_hb(self) -> None:
         grid = _grid_1d()
-        grid.refine(0, [0], [2])
-        grid.refine(1, [0], [2])
+        grid = grid.refine(0, [0], [2])
+        grid = grid.refine(1, [0], [2])
         assert _reproduction_error(THBSplineSpace(_root_1d(), grid, truncate=False)) < 1e-12
 
     def test_unrefined_equals_single_level_bezier(self) -> None:
@@ -171,13 +171,13 @@ class TestPartitionOfUnity:
 
     def test_pou_1d(self) -> None:
         grid = _grid_1d()
-        grid.refine(0, [0], [2])
-        grid.refine(1, [0], [2])
+        grid = grid.refine(0, [0], [2])
+        grid = grid.refine(1, [0], [2])
         assert _pou_error(THBSplineSpace(_root_1d(), grid)) < 1e-10
 
     def test_pou_2d(self) -> None:
         grid = _grid_2d()
-        grid.refine(0, [0, 0], [2, 2])
+        grid = grid.refine(0, [0, 0], [2, 2])
         assert _pou_error(THBSplineSpace(_root_2d(), grid)) < 1e-10
 
 
@@ -191,8 +191,8 @@ class TestMayerNarrowBand:
 
     def test_narrow_band_1d(self) -> None:
         grid = _grid_1d()
-        grid.refine(0, [1], [2])  # single root cell -> level 1
-        grid.refine(1, [2], [3])  # single level-1 cell -> level 2
+        grid = grid.refine(0, [1], [2])  # single root cell -> level 1
+        grid = grid.refine(1, [2], [3])  # single level-1 cell -> level 2
         thb = THBSplineSpace(_root_1d(), grid)
         assert thb.num_levels == 3
         assert _reproduction_error(thb) < 1e-12
@@ -200,8 +200,8 @@ class TestMayerNarrowBand:
 
     def test_narrow_band_2d(self) -> None:
         grid = _grid_2d()
-        grid.refine(0, [1, 1], [2, 2])  # single root cell -> level 1
-        grid.refine(1, [2, 2], [3, 3])  # single level-1 cell -> level 2
+        grid = grid.refine(0, [1, 1], [2, 2])  # single root cell -> level 1
+        grid = grid.refine(1, [2, 2], [3, 3])  # single level-1 cell -> level 2
         thb = THBSplineSpace(_root_2d(), grid)
         assert thb.num_levels == 3
         assert _reproduction_error(thb) < 1e-12
@@ -211,8 +211,8 @@ class TestMayerNarrowBand:
         # If the §3.6.1 bug were present, the straddling passive function would be
         # spuriously truncated to zero in Mᵉ.  Guard that no row is all zeros.
         grid = _grid_1d()
-        grid.refine(0, [1], [2])
-        grid.refine(1, [2], [3])
+        grid = grid.refine(0, [1], [2])
+        grid = grid.refine(1, [2], [3])
         thb = THBSplineSpace(_root_1d(), grid)
         mle = MultiLevelExtraction(thb)
         for cid in range(thb.grid.num_cells):
@@ -233,7 +233,7 @@ class TestOperatorApi:
 
     def test_shapes_and_active_basis(self) -> None:
         grid = _grid_1d()
-        grid.refine(0, [0], [2])
+        grid = grid.refine(0, [0], [2])
         thb = THBSplineSpace(_root_1d(), grid)
         mle = MultiLevelExtraction(thb)
         n_bernstein = thb.degrees[0] + 1
@@ -289,15 +289,19 @@ class TestOperatorApi:
         assert ret is out
         np.testing.assert_allclose(out, mle.multilevel_operator(0))
 
-    def test_stale_grid_raises(self) -> None:
+    def test_refine_returns_new_grid_and_leaves_extraction_unaffected(self) -> None:
+        """No staleness RuntimeError any more: HierarchicalGrid.refine returns a new grid."""
         grid = _grid_1d()
         thb = THBSplineSpace(_root_1d(), grid)
         mle = MultiLevelExtraction(thb)
-        grid.refine(0, [0], [2])
-        with pytest.raises(RuntimeError, match="stale"):
-            mle.operator(0)
-        with pytest.raises(RuntimeError, match="stale"):
-            mle.multilevel_operator(0)
+        op0_before = mle.operator(0)
+        mop0_before = mle.multilevel_operator(0)
+        refined = grid.refine(0, [0], [2])
+        assert refined is not grid
+        assert thb.grid is grid
+        assert mle.space is thb
+        np.testing.assert_array_equal(mle.operator(0), op0_before)
+        np.testing.assert_array_equal(mle.multilevel_operator(0), mop0_before)
 
     def test_negative_cid_raises(self) -> None:
         thb = THBSplineSpace(_root_1d(), _grid_1d())
@@ -329,7 +333,7 @@ class TestOperatorApi:
     def test_lagrange_target(self) -> None:
         # Mᵉ is target-independent; only Eᵉ (hence Cᵉ) changes with the target.
         grid = _grid_1d()
-        grid.refine(0, [0], [2])
+        grid = grid.refine(0, [0], [2])
         thb = THBSplineSpace(_root_1d(), grid)
         bezier = MultiLevelExtraction(thb, "bezier")
         lagrange = MultiLevelExtraction(thb, "lagrange")
@@ -356,8 +360,8 @@ class TestElementCoeffsMemoization:
     @staticmethod
     def _thb() -> THBSplineSpace:
         grid = hierarchical_grid(uniform_grid([[0.0, 1.0], [0.0, 1.0]], 4), 2)
-        grid.refine(0, [0, 0], [2, 2])
-        grid.refine(1, [0, 0], [2, 2])
+        grid = grid.refine(0, [0, 0], [2, 2])
+        grid = grid.refine(1, [0, 0], [2, 2])
         return THBSplineSpace(_root_2d(), grid)
 
     def test_cache_returns_shared_readonly_entry(self) -> None:

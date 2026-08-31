@@ -30,7 +30,7 @@ def _thb_two_level(*, truncate: bool = True) -> THBSplineSpace:
     """A 1D two-level THB space: degree-2, 4 root cells, left half refined once."""
     root = create_uniform_space(2, 4)
     grid = hierarchical_grid(uniform_grid([[0.0, 1.0]], 4), 2)
-    grid.refine(0, [0], [2])
+    grid = grid.refine(0, [0], [2])
     return THBSplineSpace(root, grid, truncate=truncate)
 
 
@@ -38,7 +38,7 @@ def _thb_two_level_2d() -> THBSplineSpace:
     """A 2D two-level THB space: degree-(2,2), 4x4 root cells, lower-left quadrant refined."""
     root = create_uniform_space([2, 2], [4, 4])
     grid = hierarchical_grid(uniform_grid([[0.0, 1.0], [0.0, 1.0]], 4), 2)
-    grid.refine(0, [0, 0], [2, 2])
+    grid = grid.refine(0, [0, 0], [2, 2])
     return THBSplineSpace(root, grid)
 
 
@@ -46,8 +46,8 @@ def _thb_three_level() -> THBSplineSpace:
     """A 1D three-level THB space: degree-2, 4 root cells, iterated left-half refinement."""
     root = create_uniform_space(2, 4)
     grid = hierarchical_grid(uniform_grid([[0.0, 1.0]], 4), 2)
-    grid.refine(0, [0], [2])
-    grid.refine(1, [0], [2])
+    grid = grid.refine(0, [0], [2])
+    grid = grid.refine(1, [0], [2])
     return THBSplineSpace(root, grid)
 
 

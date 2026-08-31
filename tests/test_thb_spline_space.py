@@ -196,8 +196,8 @@ class TestReproduction:
     def test_reproduce_1d_three_levels(self) -> None:
         root = _root_1d()
         grid = _grid_1d()
-        grid.refine(0, [0], [2])
-        grid.refine(1, [0], [2])
+        grid = grid.refine(0, [0], [2])
+        grid = grid.refine(1, [0], [2])
         thb = THBSplineSpace(root, grid, truncate=False)
         assert thb.num_levels == 3
         assert _max_reproduction_residual(thb, lambda p: np.ones(len(p))) < 1e-9
@@ -207,7 +207,7 @@ class TestReproduction:
     def test_reproduce_2d_corner_refinement(self) -> None:
         root = _root_2d()
         grid = _grid_2d()
-        grid.refine(0, [0, 0], [2, 2])
+        grid = grid.refine(0, [0, 0], [2, 2])
         thb = THBSplineSpace(root, grid, truncate=False)
         assert _max_reproduction_residual(thb, lambda p: np.ones(len(p))) < 1e-9
         assert _max_reproduction_residual(thb, lambda p: p[:, 0]) < 1e-9
@@ -217,8 +217,8 @@ class TestReproduction:
     def test_reproduce_2d_two_levels(self) -> None:
         root = _root_2d()
         grid = _grid_2d()
-        grid.refine(0, [1, 1], [3, 3])
-        grid.refine(1, [2, 2], [6, 6])
+        grid = grid.refine(0, [1, 1], [3, 3])
+        grid = grid.refine(1, [2, 2], [6, 6])
         thb = THBSplineSpace(root, grid, truncate=False)
         assert thb.num_levels == 3
         assert _max_reproduction_residual(thb, lambda p: p[:, 0] * p[:, 1]) < 1e-9
@@ -235,7 +235,7 @@ class TestSelection:
     def test_hand_example_1d(self) -> None:
         # Degree 2, 4 cells, refine the left half [0, 2) at level 0.
         grid = _grid_1d()
-        grid.refine(0, [0], [2])
+        grid = grid.refine(0, [0], [2])
         thb = THBSplineSpace(_root_1d(), grid, truncate=False)
         assert thb.num_basis_per_level == (4, 4)
         np.testing.assert_array_equal(thb.active_function_indices(0), [2, 3, 4, 5])
@@ -245,8 +245,8 @@ class TestSelection:
         # Every active function: support ⊆ Ω_l and ⊄ Ω_{l+1}.
         root = _root_2d()
         grid = _grid_2d()
-        grid.refine(0, [0, 0], [2, 2])
-        grid.refine(1, [0, 0], [2, 2])
+        grid = grid.refine(0, [0, 0], [2, 2])
+        grid = grid.refine(1, [0, 0], [2, 2])
         thb = THBSplineSpace(root, grid, truncate=False)
         for level in range(thb.num_levels):
             space = thb.level_space(level)
@@ -279,7 +279,7 @@ class TestSelection:
         # Refining the entire domain at level 0 displaces all level-0 functions.
         root = _root_1d()
         grid = _grid_1d()
-        grid.refine(0, [0], [4])
+        grid = grid.refine(0, [0], [4])
         thb = THBSplineSpace(root, grid, truncate=False)
         assert thb.num_basis_per_level[0] == 0
         assert thb.num_basis_per_level[1] > 0
@@ -296,7 +296,7 @@ class TestEvaluation:
     def test_active_basis_matches_nonzeros(self) -> None:
         root = _root_1d()
         grid = _grid_1d()
-        grid.refine(0, [0], [2])
+        grid = grid.refine(0, [0], [2])
         thb = THBSplineSpace(root, grid, truncate=False)
         for cid in range(grid.num_cells):
             lo, hi = grid.cell_bounds(cid)
@@ -311,7 +311,7 @@ class TestEvaluation:
     def test_values_nonnegative(self) -> None:
         root = _root_2d()
         grid = _grid_2d()
-        grid.refine(0, [0, 0], [2, 2])
+        grid = grid.refine(0, [0, 0], [2, 2])
         thb = THBSplineSpace(root, grid, truncate=False)
         mat, _ = _collocation(thb)
         assert mat.min() >= 0.0
@@ -386,7 +386,7 @@ class TestEvaluation:
         # HB (non-truncated) is NOT a partition of unity over refined regions.
         root = _root_1d()
         grid = _grid_1d()
-        grid.refine(0, [0], [2])
+        grid = grid.refine(0, [0], [2])
         thb = THBSplineSpace(root, grid, truncate=False)
         cid = grid.locate([0.1])
         assert cid is not None
@@ -402,28 +402,103 @@ class TestEvaluation:
 # ──────────────────────────────────────────────────────────────────────────────
 
 
-class TestStaleGrid:
-    """THBSplineSpace raises RuntimeError if the grid is modified after construction."""
+class TestGridCannotGoStale:
+    """A space built on a grid can no longer be invalidated by a later refinement.
 
-    def test_stale_grid_active_basis_raises(self) -> None:
+    ``HierarchicalGrid.refine``/``coarsen`` (and their ``_cells`` variants) leave the
+    receiver untouched and return a new grid, so the "stale" ``RuntimeError`` this
+    class used to guard is gone: the failure mode it caught -- a ``THBSplineSpace``
+    outlived by mutation of the grid it was built on -- is now unrepresentable. Each
+    test below reruns the exact sequence that used to raise and checks instead that
+    the space's own grid is untouched and every read reproduces the value captured
+    before that call.
+    """
+
+    def test_active_basis_matches_before_a_later_grid_refine(self) -> None:
         grid = _grid_1d()
         thb = THBSplineSpace(_root_1d(), grid, truncate=False)
-        grid.refine(0, [0], [2])
-        with pytest.raises(RuntimeError, match="stale"):
-            thb.active_basis(0)
+        n_cells, max_level = grid.num_cells, grid.max_level
+        before = thb.active_basis(0)
 
-    def test_stale_grid_tabulate_basis_raises(self) -> None:
+        new_grid = grid.refine(0, [0], [2])
+
+        assert new_grid is not grid
+        assert thb.grid is grid
+        assert thb.grid.num_cells == n_cells
+        assert thb.grid.max_level == max_level
+        np.testing.assert_array_equal(thb.active_basis(0), before)
+
+    def test_tabulate_basis_matches_before_a_later_grid_refine(self) -> None:
         grid = _grid_1d()
         thb = THBSplineSpace(_root_1d(), grid, truncate=False)
-        grid.refine(0, [0], [2])
-        with pytest.raises(RuntimeError, match="stale"):
-            thb.tabulate_basis(0, np.array([[0.1]]))
+        pts = np.array([[0.1]])
+        before_vals, before_dofs = thb.tabulate_basis(0, pts)
 
-    def test_unmodified_grid_does_not_raise(self) -> None:
+        new_grid = grid.refine(0, [0], [2])
+
+        assert new_grid is not grid
+        assert thb.grid is grid
+        vals, dofs = thb.tabulate_basis(0, pts)
+        np.testing.assert_allclose(vals, before_vals)
+        np.testing.assert_array_equal(dofs, before_dofs)
+
+    def test_max_active_per_cell_matches_before_a_later_grid_refine(self) -> None:
+        """Old: raised whether the value had been cached before the grid refine or not.
+
+        Both orderings are exercised here.
+        """
         grid = _grid_1d()
-        thb = THBSplineSpace(_root_1d(), grid, truncate=False)
-        # No refine call — must not raise.
-        _ = thb.active_basis(0)
+        uncached = THBSplineSpace(_root_1d(), grid)
+        cached = THBSplineSpace(_root_1d(), grid)
+        before = cached.max_active_per_cell()  # warm the memoized value before refining
+
+        new_grid = grid.refine(0, [0], [2])
+
+        assert new_grid is not grid
+        assert uncached.grid is grid
+        assert cached.grid is grid
+        assert uncached.max_active_per_cell() == before  # was never cached
+        assert cached.max_active_per_cell() == before  # was already cached
+
+    def test_contrib_cache_matches_before_a_later_grid_refine(self) -> None:
+        grid = _grid_1d()
+        thb = THBSplineSpace(_root_1d(), grid)
+        before = thb._cell_contributions(0)  # warm the per-cell cache
+        assert 0 in thb._contrib_cache
+
+        new_grid = grid.refine(0, [0], [2])
+
+        assert new_grid is not grid
+        assert thb.grid is grid
+        assert thb._cell_contributions(0) is before  # cache untouched, same object back
+
+    def test_space_refine_matches_before_a_later_grid_refine(self) -> None:
+        grid = _grid_1d()
+        coarse = THBSplineSpace(_root_1d(), grid)
+        before = coarse.refine([0])
+
+        new_grid = grid.refine(0, [0], [2])
+
+        assert new_grid is not grid
+        assert coarse.grid is grid
+        after = coarse.refine([0])
+        assert after.grid.num_cells == before.grid.num_cells
+        assert after.num_total_basis == before.num_total_basis
+        assert after.num_basis_per_level == before.num_basis_per_level
+
+    def test_space_refine_region_matches_before_a_later_grid_refine(self) -> None:
+        grid = _grid_1d()
+        coarse = THBSplineSpace(_root_1d(), grid)
+        before = coarse.refine_region(0, [0], [1])
+
+        new_grid = grid.refine(0, [0], [2])
+
+        assert new_grid is not grid
+        assert coarse.grid is grid
+        after = coarse.refine_region(0, [0], [1])
+        assert after.grid.num_cells == before.grid.num_cells
+        assert after.num_total_basis == before.num_total_basis
+        assert after.num_basis_per_level == before.num_basis_per_level
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -442,8 +517,8 @@ class TestLevelSpaces:
     def test_levels_are_nested_1d(self) -> None:
         root = _root_1d()
         grid = _grid_1d()
-        grid.refine(0, [0], [2])
-        grid.refine(1, [0], [2])
+        grid = grid.refine(0, [0], [2])
+        grid = grid.refine(1, [0], [2])
         thb = THBSplineSpace(root, grid, truncate=False)
         for level in range(thb.num_levels - 1):
             coarse = thb.level_space(level).spaces[0].knots
@@ -455,7 +530,7 @@ class TestLevelSpaces:
         # Anisotropic refinement: factor 1 on the second axis.
         root = _root_2d()
         grid = hierarchical_grid(uniform_grid([[0.0, 1.0], [0.0, 1.0]], 4), (2, 1))
-        grid.refine(0, [0, 0], [2, 2])
+        grid = grid.refine(0, [0, 0], [2, 2])
         thb = THBSplineSpace(root, grid, truncate=False)
         level0 = thb.level_space(0)
         level1 = thb.level_space(1)
@@ -474,15 +549,15 @@ class TestLevelSpaces:
 def _refined_1d_three_levels() -> THBSplineSpace:
     """Degree-2 1D space with the left region refined twice (truncated)."""
     grid = _grid_1d()
-    grid.refine(0, [0], [2])
-    grid.refine(1, [0], [2])
+    grid = grid.refine(0, [0], [2])
+    grid = grid.refine(1, [0], [2])
     return THBSplineSpace(_root_1d(), grid, truncate=True)
 
 
 def _refined_2d_corner() -> THBSplineSpace:
     """Degree-(2, 2) space with the lower-left corner refined once (truncated)."""
     grid = _grid_2d()
-    grid.refine(0, [0, 0], [2, 2])
+    grid = grid.refine(0, [0, 0], [2, 2])
     return THBSplineSpace(_root_2d(), grid, truncate=True)
 
 
@@ -499,8 +574,8 @@ class TestTruncation:
 
     def test_partition_of_unity_2d_three_levels(self) -> None:
         grid = _grid_2d()
-        grid.refine(0, [1, 1], [3, 3])
-        grid.refine(1, [2, 2], [6, 6])
+        grid = grid.refine(0, [1, 1], [3, 3])
+        grid = grid.refine(1, [2, 2], [6, 6])
         thb = THBSplineSpace(_root_2d(), grid, truncate=True)
         assert thb.num_levels == 3
         mat, _ = _collocation(thb)
@@ -533,7 +608,7 @@ class TestTruncation:
         # THB and HB values coincide there (same selection, same values).
         root = _root_1d()
         grid = _grid_1d()
-        grid.refine(0, [0], [2])  # refine left half [0, 0.5)
+        grid = grid.refine(0, [0], [2])  # refine left half [0, 0.5)
         thb = THBSplineSpace(root, grid, truncate=True)
         hb = THBSplineSpace(root, grid, truncate=False)
         cid = grid.locate([0.9])  # cell [0.75, 1.0], outside the refinement
@@ -549,7 +624,7 @@ class TestTruncation:
         # Where HB over-sums (> 1), THB sums to exactly 1.
         root = _root_1d()
         grid = _grid_1d()
-        grid.refine(0, [0], [2])
+        grid = grid.refine(0, [0], [2])
         thb = THBSplineSpace(root, grid, truncate=True)
         hb = THBSplineSpace(root, grid, truncate=False)
         cid = grid.locate([0.1])  # refined region
@@ -588,7 +663,7 @@ class TestTruncation:
     def test_partition_of_unity_with_regularity_c0(self) -> None:
         root = _root_1d()
         grid = _grid_1d()
-        grid.refine(0, [0], [2])
+        grid = grid.refine(0, [0], [2])
         thb = THBSplineSpace(root, grid, truncate=True, regularity=0)
         mat, _ = _collocation(thb)
         np.testing.assert_allclose(mat.sum(axis=1), 1.0, atol=1e-10)
@@ -598,7 +673,7 @@ class TestTruncation:
         # less than its HB counterpart (truncation reduced it) and >= 0.
         root = _root_1d()
         grid = _grid_1d()
-        grid.refine(0, [0], [2])
+        grid = grid.refine(0, [0], [2])
         thb = THBSplineSpace(root, grid, truncate=True)
         hb = THBSplineSpace(root, grid, truncate=False)
         cid = grid.locate([0.3])
@@ -625,7 +700,7 @@ class TestTruncation:
     def test_partition_of_unity_anisotropic_truncated(self) -> None:
         root = _root_2d()
         grid = hierarchical_grid(uniform_grid([[0.0, 1.0], [0.0, 1.0]], 4), (2, 1))
-        grid.refine(0, [0, 0], [2, 2])
+        grid = grid.refine(0, [0, 0], [2, 2])
         thb = THBSplineSpace(root, grid, truncate=True)
         mat, _ = _collocation(thb)
         np.testing.assert_allclose(mat.sum(axis=1), 1.0, atol=1e-10)
@@ -647,7 +722,7 @@ class TestTruncation:
     def test_thb_and_hb_same_active_count(self) -> None:
         # Truncation changes function values but not the active-function selection.
         root, grid = _root_2d(), _grid_2d()
-        grid.refine(0, [0, 0], [2, 2])
+        grid = grid.refine(0, [0, 0], [2, 2])
         thb = THBSplineSpace(root, grid, truncate=True)
         hb = THBSplineSpace(root, grid, truncate=False)
         assert thb.num_total_basis == hb.num_total_basis
@@ -666,7 +741,7 @@ class TestTruncation:
         # Verify that factor=3 (non-power-of-2) refinement still gives partition of unity.
         root = _root_1d()
         grid = hierarchical_grid(uniform_grid([[0.0, 1.0]], 4), 3)
-        grid.refine(0, [0], [2])
+        grid = grid.refine(0, [0], [2])
         thb = THBSplineSpace(root, grid, truncate=True)
         mat, _ = _collocation(thb)
         np.testing.assert_allclose(mat.sum(axis=1), 1.0, atol=1e-10)
@@ -677,7 +752,7 @@ class TestTruncation:
         sp1d = BsplineSpace1D(knots, 1)
         root = BsplineSpace([sp1d])
         grid = hierarchical_grid(uniform_grid([[0.0, 1.0]], 4), 2)
-        grid.refine(0, [0], [2])
+        grid = grid.refine(0, [0], [2])
         thb = THBSplineSpace(root, grid, truncate=True)
         mat, _ = _collocation(thb)
         np.testing.assert_allclose(mat.sum(axis=1), 1.0, atol=1e-10)
@@ -686,10 +761,10 @@ class TestTruncation:
         # Scalar regularity=0 and equivalent sequence form [0] produce the same space.
         root = _root_1d()
         grid1 = _grid_1d()
-        grid1.refine(0, [0], [2])
+        grid1 = grid1.refine(0, [0], [2])
         thb_scalar = THBSplineSpace(root, grid1, truncate=True, regularity=0)
         grid2 = _grid_1d()
-        grid2.refine(0, [0], [2])
+        grid2 = grid2.refine(0, [0], [2])
         thb_seq = THBSplineSpace(root, grid2, truncate=True, regularity=[0])
         assert thb_scalar.num_total_basis == thb_seq.num_total_basis
         mat, _ = _collocation(thb_seq)
@@ -741,7 +816,7 @@ class TestDerivatives:
     def test_order_zero_equals_values_hb(self) -> None:
         root = _root_1d()
         grid = _grid_1d()
-        grid.refine(0, [0], [2])
+        grid = grid.refine(0, [0], [2])
         hb = THBSplineSpace(root, grid, truncate=False)
         cid = grid.locate([0.1])
         assert cid is not None
@@ -832,8 +907,8 @@ class TestDerivatives:
     def test_hb_derivative_reproduction(self) -> None:
         root = _root_1d()
         grid = _grid_1d()
-        grid.refine(0, [0], [2])
-        grid.refine(1, [0], [2])
+        grid = grid.refine(0, [0], [2])
+        grid = grid.refine(1, [0], [2])
         hb = THBSplineSpace(root, grid, truncate=False)
         a_val, pts = _collocation(hb)
         a_dx, _ = _collocation_derivatives(hb, 1)
@@ -956,13 +1031,6 @@ class TestRefine:
         with pytest.raises(ValueError, match="admissible_class"):
             coarse.refine([0], admissible_class=0)
 
-    def test_stale_grid_refine_raises(self) -> None:
-        grid = _grid_1d()
-        coarse = THBSplineSpace(_root_1d(), grid)
-        grid.refine(0, [0], [2])
-        with pytest.raises(RuntimeError, match="stale"):
-            coarse.refine([0])
-
 
 def _lower_left_level0_ids(thb: THBSplineSpace, threshold: float = 0.5) -> npt.NDArray[np.int64]:
     """Flat ids of the active (level-0) cells whose midpoint is below ``threshold`` per axis."""
@@ -1046,7 +1114,7 @@ class TestRefineRegion:
     def test_matches_grid_refine_ungraded(self) -> None:
         root = _root_2d()
         grid = hierarchical_grid(tensor_product_grid(root), 2)
-        grid.refine(0, [0, 0], [2, 2])
+        grid = grid.refine(0, [0, 0], [2, 2])
         reference = THBSplineSpace(root, grid)
         region = create_thb_space(root).refine_region(0, [0, 0], [2, 2], admissible_class=None)
         assert region.num_basis_per_level == reference.num_basis_per_level
@@ -1109,13 +1177,6 @@ class TestRefineRegion:
         coarse = THBSplineSpace(_root_1d(), _grid_1d())
         with pytest.raises(ValueError, match="admissible_class"):
             coarse.refine_region(0, [0], [1], admissible_class=1)
-
-    def test_stale_grid_raises(self) -> None:
-        grid = _grid_1d()
-        coarse = THBSplineSpace(_root_1d(), grid)
-        grid.refine(0, [0], [2])
-        with pytest.raises(RuntimeError, match="stale"):
-            coarse.refine_region(0, [0], [1])
 
 
 class TestAdmissibility:
@@ -2165,7 +2226,7 @@ class TestContribCache:
 
     def test_second_call_returns_same_object(self) -> None:
         grid = _grid_1d()
-        grid.refine(0, [0], [2])
+        grid = grid.refine(0, [0], [2])
         thb = THBSplineSpace(_root_1d(), grid)
         cid = grid.locate([0.1])
         assert cid is not None
@@ -2173,18 +2234,9 @@ class TestContribCache:
         second = thb._cell_contributions(cid)
         assert second is first
 
-    def test_cache_warm_stale_grid_still_raises(self) -> None:
-        grid = _grid_1d()
-        thb = THBSplineSpace(_root_1d(), grid)
-        _ = thb._cell_contributions(0)  # warm cache
-        assert 0 in thb._contrib_cache
-        grid.refine(0, [0], [2])  # mutate grid after cache is warm
-        with pytest.raises(RuntimeError, match="stale"):
-            thb._cell_contributions(0)
-
     def test_different_cells_cached_independently(self) -> None:
         grid = _grid_1d()
-        grid.refine(0, [0], [2])
+        grid = grid.refine(0, [0], [2])
         thb = THBSplineSpace(_root_1d(), grid)
         c0 = grid.locate([0.1])
         c1 = grid.locate([0.8])
@@ -2219,7 +2271,7 @@ class TestMaxActivePerCell:
         """The cached value equals an explicit loop over active_basis, and exceeds the flat one."""
         grid = _grid_2d()
         for level in range(rounds):
-            grid.refine(level, [0, 0], [2 * 2**level, 2 * 2**level])
+            grid = grid.refine(level, [0, 0], [2 * 2**level, 2 * 2**level])
         thb = THBSplineSpace(_root_2d(), grid, truncate=truncate)
 
         loop_max = max(thb.active_basis(cid).size for cid in range(grid.num_cells))
@@ -2230,7 +2282,7 @@ class TestMaxActivePerCell:
     def test_thb_and_hb_agree(self) -> None:
         """Truncation changes coefficients, not the active set, so the count is the same."""
         grid = _grid_2d()
-        grid.refine(0, [0, 0], [2, 2])
+        grid = grid.refine(0, [0, 0], [2, 2])
         root = _root_2d()
 
         thb = THBSplineSpace(root, grid, truncate=True)
@@ -2240,7 +2292,7 @@ class TestMaxActivePerCell:
     def test_cached_across_calls(self) -> None:
         """The result is memoized: a second call recomputes nothing."""
         grid = _grid_1d()
-        grid.refine(0, [0], [2])
+        grid = grid.refine(0, [0], [2])
         thb = THBSplineSpace(_root_1d(), grid)
 
         first = thb.max_active_per_cell()
@@ -2248,23 +2300,6 @@ class TestMaxActivePerCell:
         thb._contrib_cache.clear()
         assert thb.max_active_per_cell() == first
         assert thb._contrib_cache == {}
-
-    def test_stale_grid_raises(self) -> None:
-        """A grid mutated after construction is rejected, as for active_basis."""
-        grid = _grid_1d()
-        thb = THBSplineSpace(_root_1d(), grid)
-        grid.refine(0, [0], [2])
-        with pytest.raises(RuntimeError, match="stale"):
-            thb.max_active_per_cell()
-
-    def test_stale_grid_raises_after_caching(self) -> None:
-        """Staleness is detected even once the value has been cached."""
-        grid = _grid_1d()
-        thb = THBSplineSpace(_root_1d(), grid)
-        _ = thb.max_active_per_cell()
-        grid.refine(0, [0], [2])
-        with pytest.raises(RuntimeError, match="stale"):
-            thb.max_active_per_cell()
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -2279,7 +2314,7 @@ def _refined_thb_2d(
     knots = [0.0] * 3 + [float(i) for i in range(1, n)] + [float(n)] * 3
     sp = BsplineSpace1D(knots, 2)
     grid = hierarchical_grid(uniform_grid([[0.0, float(n)], [0.0, float(n)]], n), 2)
-    grid.refine(0, list(lo), list(hi))
+    grid = grid.refine(0, list(lo), list(hi))
     return THBSplineSpace(BsplineSpace([sp, sp]), grid, truncate=truncate)
 
 
@@ -2341,7 +2376,7 @@ def test_restrict_full_grid_2d() -> None:
 def test_restrict_full_grid_1d() -> None:
     knots = [0.0, 0.0, 0.0, 1.0, 2.0, 3.0, 4.0, 4.0, 4.0]  # degree 2, 4 intervals
     grid = hierarchical_grid(uniform_grid([[0.0, 4.0]], 4), 2)
-    grid.refine(0, [1], [3])
+    grid = grid.refine(0, [1], [3])
     g = THBSplineSpace(BsplineSpace([BsplineSpace1D(knots, 2)]), grid)
     n_interior, _ = _check_restrict_interior(g, list(range(g.grid.num_cells)))
     assert n_interior == g.grid.num_cells
@@ -2398,8 +2433,8 @@ class TestTHBSplineEvaluateGrouping:
     @staticmethod
     def _spline(rank: int = 1) -> THBSpline:
         grid = _grid_2d()
-        grid.refine(0, [0, 0], [2, 2])
-        grid.refine(1, [0, 0], [2, 2])
+        grid = grid.refine(0, [0, 0], [2, 2])
+        grid = grid.refine(1, [0, 0], [2, 2])
         thb = THBSplineSpace(_root_2d(), grid)
         rng = np.random.default_rng(31)
         shape = (thb.num_total_basis,) if rank == 1 else (thb.num_total_basis, rank)
@@ -2509,7 +2544,7 @@ class TestTHBSplineEvaluateGrouping:
     def _spline_1d() -> THBSpline:
         """1D THBSpline fixture on [0, 1] with one level of refinement."""
         grid = _grid_1d()
-        grid.refine(0, [0], [2])
+        grid = grid.refine(0, [0], [2])
         thb = THBSplineSpace(_root_1d(), grid)
         rng = np.random.default_rng(53)
         return THBSpline(thb, rng.random(thb.num_total_basis))

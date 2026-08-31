@@ -69,7 +69,7 @@ class TestNonnegativityAndPartitionOfUnity:
     @pytest.mark.parametrize("dim", [1, 2])
     def test_nonnegative(self, dim: int) -> None:
         root, grid = (_root_1d(), _grid_1d()) if dim == 1 else (_root_2d(), _grid_2d())
-        grid.refine(0, [0] * dim, [2] * dim)
+        grid = grid.refine(0, [0] * dim, [2] * dim)
         thb = THBSplineSpace(root, grid)
         for cid, pts in _cell_samples(thb):
             assert thb.tabulate_basis(cid, pts)[0].min() >= -1e-13
@@ -77,7 +77,7 @@ class TestNonnegativityAndPartitionOfUnity:
     @pytest.mark.parametrize("dim", [1, 2])
     def test_partition_of_unity(self, dim: int) -> None:
         root, grid = (_root_1d(), _grid_1d()) if dim == 1 else (_root_2d(), _grid_2d())
-        grid.refine(0, [0] * dim, [2] * dim)
+        grid = grid.refine(0, [0] * dim, [2] * dim)
         thb = THBSplineSpace(root, grid)
         for cid, pts in _cell_samples(thb):
             vals, _ = thb.tabulate_basis(cid, pts)
@@ -86,7 +86,7 @@ class TestNonnegativityAndPartitionOfUnity:
     def test_hb_is_not_partition_of_unity(self) -> None:
         # Truncation is what restores PoU; the non-truncated basis over-counts.
         grid = _grid_1d()
-        grid.refine(0, [0], [2])
+        grid = grid.refine(0, [0], [2])
         hb = THBSplineSpace(_root_1d(), grid, truncate=False)
         worst = 0.0
         for cid, pts in _cell_samples(hb):
@@ -101,7 +101,7 @@ class TestLinearIndependenceAndStability:
     @pytest.mark.parametrize("dim", [1, 2])
     def test_gram_is_spd_full_rank(self, dim: int) -> None:
         root, grid = (_root_1d(), _grid_1d()) if dim == 1 else (_root_2d(), _grid_2d())
-        grid.refine(0, [0] * dim, [2] * dim)
+        grid = grid.refine(0, [0] * dim, [2] * dim)
         thb = THBSplineSpace(root, grid)
         mass = gram_matrix(thb)
         np.testing.assert_allclose(mass, mass.T, atol=1e-14)
@@ -126,7 +126,7 @@ class TestLinearIndependenceAndStability:
         for chain in refine_chains:
             grid = _grid_1d()
             for level, lo, hi in chain:
-                grid.refine(level, lo, hi)
+                grid = grid.refine(level, lo, hi)
             mass = gram_matrix(THBSplineSpace(_root_1d(), grid))
             d = np.sqrt(np.diag(mass))
             conds.append(float(np.linalg.cond(mass / np.outer(d, d))))
@@ -146,7 +146,7 @@ class TestPreservationAndReproduction:
     def test_l2_reproduces_polynomials_1d(self, degree: int) -> None:
         root = create_uniform_space([degree], [5])
         grid = hierarchical_grid(uniform_grid([[0.0, 1.0]], 5), 2)
-        grid.refine(0, [1], [3])
+        grid = grid.refine(0, [1], [3])
         thb = THBSplineSpace(root, grid)
         pcoeffs = np.random.default_rng(degree).standard_normal(degree + 1)
 
@@ -159,7 +159,7 @@ class TestPreservationAndReproduction:
 
     def test_qi_reproduces_polynomial_2d(self) -> None:
         grid = _grid_2d()
-        grid.refine(0, [0, 0], [2, 2])
+        grid = grid.refine(0, [0, 0], [2, 2])
         thb = THBSplineSpace(_root_2d(), grid)
 
         def poly(p: npt.NDArray[np.float64]) -> npt.NDArray[np.float64]:
@@ -182,7 +182,7 @@ class TestDerivativeReproduction:
     def test_first_derivative_of_polynomial_1d(self, degree: int) -> None:
         root = create_uniform_space([degree], [6])
         grid = hierarchical_grid(uniform_grid([[0.0, 1.0]], 6), 2)
-        grid.refine(0, [1], [4])  # partial refinement => truncated functions present
+        grid = grid.refine(0, [1], [4])  # partial refinement => truncated functions present
         thb = THBSplineSpace(root, grid)
         pcoeffs = np.random.default_rng(degree).standard_normal(degree + 1)
 

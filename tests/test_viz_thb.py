@@ -50,7 +50,7 @@ def _graded_space(dim: int, degree: int = 2, n: int = 4) -> THBSplineSpace:
     """
     root = create_uniform_space([degree] * dim, [n] * dim)
     grid = hierarchical_grid(uniform_grid([[0.0, 1.0]] * dim, n), 2)
-    grid.refine(0, [0] * dim, [n // 2] * dim)
+    grid = grid.refine(0, [0] * dim, [n // 2] * dim)
     return THBSplineSpace(root, grid)
 
 
@@ -65,8 +65,8 @@ def _three_level_space(dim: int, degree: int = 2, n: int = 4) -> THBSplineSpace:
     """A 3-level graded THB space (refine the lower block twice)."""
     root = create_uniform_space([degree] * dim, [n] * dim)
     grid = hierarchical_grid(uniform_grid([[0.0, 1.0]] * dim, n), 2)
-    grid.refine(0, [0] * dim, [n // 2] * dim)
-    grid.refine(1, [0] * dim, [n // 2] * dim)
+    grid = grid.refine(0, [0] * dim, [n // 2] * dim)
+    grid = grid.refine(1, [0] * dim, [n // 2] * dim)
     return THBSplineSpace(root, grid)
 
 

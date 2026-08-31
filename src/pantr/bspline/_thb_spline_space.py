@@ -15,7 +15,6 @@ Main exports:
 
 from __future__ import annotations
 
-import copy
 import itertools
 import math
 import string
@@ -336,11 +335,11 @@ class THBSplineSpace:
     reaches); untruncated functions remain plain tensor-product B-splines.  With
     ``truncate=False`` the non-truncated hierarchical basis (HB) is built.
 
-    This space is a snapshot of the grid at construction time.  Calling
-    :meth:`~pantr.grid.HierarchicalGrid.refine` on the underlying grid after
-    construction invalidates this space; subsequent calls to :meth:`active_basis` or
-    :meth:`tabulate_basis` will raise :class:`RuntimeError`.  Create a new
-    :class:`THBSplineSpace` from the updated grid instead.
+    A :class:`~pantr.grid.HierarchicalGrid` is immutable, so this space cannot go
+    stale: :meth:`~pantr.grid.HierarchicalGrid.refine` returns a *new* grid and leaves
+    the one held here untouched.  :meth:`refine`, :meth:`refine_region` and
+    :meth:`coarsen` are the same shape one level up -- each returns a new space over a
+    new grid.
 
     Note:
         :meth:`active_basis` lists functions whose *untruncated* support covers a
@@ -357,7 +356,8 @@ class THBSplineSpace:
 
     Attributes:
         _root_space (BsplineSpace): The level-0 tensor-product space.
-        _grid (HierarchicalGrid): The active-cell hierarchy (snapshot reference).
+        _grid (HierarchicalGrid): The active-cell hierarchy.  Immutable, and may be
+            shared with the space this one was refined from when nothing changed.
         _truncate (bool): Whether the truncated (THB) basis is used; ``False`` for
             the plain hierarchical (HB) basis.
         _regularity (tuple[int | None, ...]): Per-direction continuity used when
@@ -373,10 +373,6 @@ class THBSplineSpace:
         _func_offset (npt.NDArray[np.int64]): Per-level global-dof base; length
             ``num_levels + 1`` (cumulative active-function counts).
         _num_active (int): Total number of active hierarchical functions.
-        _grid_snapshot (tuple[int, int, int]): ``(max_level, num_cells, version)``
-            captured at construction; used to detect post-construction grid
-            mutations (the grid's :attr:`~pantr.grid.HierarchicalGrid.version`
-            counter catches mutations the other two cannot distinguish).
         _trunc (dict): Map from global dof (``int``) to ``_TruncCoeffs``;
             only truncated functions appear (empty when ``truncate=False``).
         _max_active_per_cell (int | None): Memoized :meth:`max_active_per_cell`
@@ -388,7 +384,6 @@ class THBSplineSpace:
         "_contrib_cache",
         "_func_offset",
         "_grid",
-        "_grid_snapshot",
         "_level_spaces",
         "_max_active_per_cell",
         "_num_active",
@@ -485,7 +480,6 @@ class THBSplineSpace:
             np.int64
         )
         self._num_active = int(self._func_offset[-1])
-        self._grid_snapshot = (grid.max_level, grid.num_cells, grid.version)
         self._trunc = self._compute_truncated_coeffs() if truncate else {}
         # Lazy per-cell cache of _cell_contributions (populated on first access). The
         # space is an immutable construction-time snapshot, so cached results stay valid.
@@ -742,20 +736,6 @@ class THBSplineSpace:
                     trunc[offset + pos] = _TruncCoeffs(rep, tuple(box_lo), coeffs)
         return trunc
 
-    def _check_not_stale(self) -> None:
-        """Raise if the grid has been modified since this space was constructed.
-
-        Raises:
-            RuntimeError: If the grid's ``max_level``, ``num_cells``, or mutation
-                ``version`` differs from the snapshot taken at construction.
-        """
-        current = (self._grid.max_level, self._grid.num_cells, self._grid.version)
-        if current != self._grid_snapshot:
-            raise RuntimeError(
-                "THBSplineSpace is stale: the underlying HierarchicalGrid has been modified "
-                "after construction. Create a new THBSplineSpace from the updated grid."
-            )
-
     def _cell_contributions(self, cid: int) -> list[tuple[int, int, tuple[int, ...]]]:
         """Return the active functions non-zero on cell ``cid``.
 
@@ -772,7 +752,6 @@ class THBSplineSpace:
             immutable snapshot).  The returned list is the cached object; callers must
             not mutate it.
         """
-        self._check_not_stale()
         cached = self._contrib_cache.get(cid)
         if cached is not None:
             return cached
@@ -917,8 +896,8 @@ class THBSplineSpace:
     def level_space(self, level: int) -> BsplineSpace:
         """Return the tensor-product space at ``level``.
 
-        Returns a construction-time snapshot; not affected by subsequent grid
-        mutations (no stale check is performed).
+        Fixed at construction, and the grid it was built from is immutable, so
+        nothing can change it afterwards.
 
         Args:
             level (int): Hierarchy level in ``[0, num_levels)``.
@@ -936,8 +915,8 @@ class THBSplineSpace:
     def active_function_indices(self, level: int) -> npt.NDArray[np.int64]:
         """Return the flat indices of the active functions at ``level``.
 
-        Returns a construction-time snapshot; not affected by subsequent grid
-        mutations (no stale check is performed).
+        Fixed at construction, and the grid it was built from is immutable, so
+        nothing can change it afterwards.
 
         Args:
             level (int): Hierarchy level in ``[0, num_levels)``.
@@ -966,7 +945,6 @@ class THBSplineSpace:
 
         Raises:
             IndexError: If ``cid`` is out of range ``[0, grid.num_cells)``.
-            RuntimeError: If the grid has been modified since construction.
         """
         return np.array([dof for dof, _, _ in self._cell_contributions(cid)], dtype=np.int64)
 
@@ -983,9 +961,6 @@ class THBSplineSpace:
         Returns:
             int: Maximum active-function count over all cells (``>= 1``).
 
-        Raises:
-            RuntimeError: If the grid has been modified since construction.
-
         Note:
             Counts exactly what :meth:`active_basis` returns, which selects on
             tensor-product support. Truncation can only annihilate a function on a cell
@@ -997,7 +972,6 @@ class THBSplineSpace:
             cache for the whole grid -- the same cache :meth:`active_basis` fills lazily,
             but warmed in full.
         """
-        self._check_not_stale()
         if self._max_active_per_cell is None:
             self._max_active_per_cell = max(
                 len(self._cell_contributions(cid)) for cid in range(self._grid.num_cells)
@@ -1036,7 +1010,6 @@ class THBSplineSpace:
             TypeError: If ``cell_ids`` is not integer-valued.
             IndexError: If any cell id is out of range ``[0, grid.num_cells)``.
         """
-        self._check_not_stale()
         grid_restr = self._grid.restrict(cell_ids)
         sub_grid = grid_restr.grid
         if not isinstance(sub_grid, HierarchicalGrid):
@@ -1230,9 +1203,8 @@ class THBSplineSpace:
             ValueError: If ``pts`` does not have trailing dimension ``dim``, if any
                 point lies outside cell ``cid``, or if ``out_basis``/``out_dofs`` has
                 the wrong shape, dtype, or is not writeable.
-            RuntimeError: If the grid has been modified since construction.
         """
-        contribs = self._cell_contributions(cid)  # validates cid; raises if stale
+        contribs = self._cell_contributions(cid)  # validates cid
         n_active = len(contribs)
         dofs = np.array([gdof for gdof, _, _ in contribs], dtype=np.int64)
 
@@ -1340,7 +1312,6 @@ class THBSplineSpace:
             ValueError: If ``pts`` does not have trailing dimension ``dim``, if any
                 point lies outside the bounds of cell ``cid``, or if ``out_basis`` /
                 ``out_dofs`` has the wrong shape, dtype, or is not writeable.
-            RuntimeError: If the grid has been modified since construction.
         """
         return self._tabulate_orders(cid, pts, (0,) * self.dim, out_basis, out_dofs)
 
@@ -1387,7 +1358,6 @@ class THBSplineSpace:
                 ``pts`` does not have trailing dimension ``dim``, if any point lies
                 outside cell ``cid``, or if ``out_basis`` / ``out_dofs`` has the wrong
                 shape, dtype, or is not writeable.
-            RuntimeError: If the grid has been modified since construction.
         """
         if isinstance(orders, int):
             orders_t = (orders,) * self.dim
@@ -1437,9 +1407,7 @@ class THBSplineSpace:
         Raises:
             IndexError: If any id is outside ``[0, grid.num_cells)``.
             ValueError: If ``admissible_class`` is an integer ``< 2``.
-            RuntimeError: If the grid has been modified since construction.
         """
-        self._check_not_stale()
         self._check_admissible_class(admissible_class)
         ids = np.unique(np.asarray(cell_ids, dtype=np.int64).ravel())
         bad = [int(x) for x in ids if int(x) < 0 or int(x) >= self._grid.num_cells]
@@ -1495,9 +1463,7 @@ class THBSplineSpace:
                 out of range, ``lo``/``hi`` have the wrong length, any
                 ``lo[k] >= hi[k]``, or any part of ``[lo, hi)`` lies outside the
                 level domain.
-            RuntimeError: If the grid has been modified since construction.
         """
-        self._check_not_stale()
         self._check_admissible_class(admissible_class)
         lo_t, hi_t = self._validate_region(level, lo, hi)
         # Enumerate the active leaves in the box on the original grid (flat ids are
@@ -1575,11 +1541,16 @@ class THBSplineSpace:
         marked: list[tuple[int, tuple[int, ...]]],
         admissible_class: int | None,
     ) -> THBSplineSpace:
-        """Refine the marked ``(level, midx)`` cells on a fresh grid copy.
+        """Return a new space over this space's grid with the marked cells refined.
 
-        Shared by :meth:`refine` and :meth:`refine_region`.  Does not mutate
-        ``self``.  Callers are responsible for capturing ``marked`` against the
-        original grid before any refinement (flat ids reassign on every refine).
+        Shared by :meth:`refine` and :meth:`refine_region`.  Mutates nothing: the
+        grid is refined by rebinding, so ``self`` and its grid are untouched.
+        Callers are responsible for capturing ``marked`` against the original grid
+        before any refinement (flat ids are reassigned by every refine).
+
+        When ``marked`` refines nothing, the returned space shares this space's grid
+        object.  That is safe -- the grid is immutable -- and it shares the grid's
+        lazy BVH and tag caches, which describe the same cells either way.
 
         Args:
             marked (list[tuple[int, tuple[int, ...]]]): ``(level, midx)`` pairs of
@@ -1591,16 +1562,16 @@ class THBSplineSpace:
             THBSplineSpace: A new space on the refined grid (same ``root_space``,
             ``truncate``, and ``regularity``).
         """
-        grid_copy = copy.deepcopy(self._grid)
+        grid = self._grid
         for level, midx in marked:
             if admissible_class is None:
-                if grid_copy.is_active_leaf(level, midx):
-                    grid_copy.refine(level, list(midx), [i + 1 for i in midx])
+                if grid.is_active_leaf(level, midx):
+                    grid = grid.refine(level, list(midx), [i + 1 for i in midx])
             else:
-                self._refine_recursive(grid_copy, level, midx, admissible_class)
+                grid = self._refine_recursive(grid, level, midx, admissible_class)
         return THBSplineSpace(
             self._root_space,
-            grid_copy,
+            grid,
             truncate=self._truncate,
             regularity=self._regularity,
         )
@@ -1611,18 +1582,23 @@ class THBSplineSpace:
         level: int,
         midx: tuple[int, ...],
         m: int,
-    ) -> None:
-        """Refine cell ``(level, midx)`` on ``grid``, grading for class-``m`` admissibility.
+    ) -> HierarchicalGrid:
+        """Return ``grid`` with cell ``(level, midx)`` refined, graded for class ``m``.
 
         Refines every cell in the refinement neighborhood (recursively, at the coarser
         level ``level - m + 1``) before subdividing ``(level, midx)``, per Algorithm 4
-        of Carraturo et al. (2019).
+        of Carraturo et al. (2019).  Each step queries the grid produced by the
+        previous one, as the in-place version queried the grid it had just mutated.
 
         Args:
-            grid (HierarchicalGrid): The (mutable) grid copy being refined.
+            grid (HierarchicalGrid): The grid to refine.  Not modified.
             level (int): Level of the cell to refine.
             midx (tuple[int, ...]): Per-axis index of the cell at ``level``.
             m (int): Admissibility class (``>= 2``).
+
+        Returns:
+            HierarchicalGrid: The refined grid; ``grid`` itself when the cell is not
+            an active leaf and its neighborhood is empty.
 
         Raises:
             RecursionError: Unreachable in practice — recursion depth is bounded by
@@ -1630,9 +1606,10 @@ class THBSplineSpace:
                 before Python's default recursion limit.
         """
         for nlevel, nmidx in self._refinement_neighborhood(level, midx, m, grid):
-            self._refine_recursive(grid, nlevel, nmidx, m)
+            grid = self._refine_recursive(grid, nlevel, nmidx, m)
         if grid.is_active_leaf(level, midx):
-            grid.refine(level, list(midx), [i + 1 for i in midx])
+            grid = grid.refine(level, list(midx), [i + 1 for i in midx])
+        return grid
 
     def _refinement_neighborhood(
         self,
@@ -1652,7 +1629,7 @@ class THBSplineSpace:
             level (int): Level of the cell.
             midx (tuple[int, ...]): Per-axis index of the cell at ``level``.
             m (int): Admissibility class (``>= 2``, so ``level - m + 2 <= level``).
-            grid (HierarchicalGrid): The grid copy whose active set is queried.
+            grid (HierarchicalGrid): The grid whose active set is queried.
 
         Returns:
             list[tuple[int, tuple[int, ...]]]: ``(level - m + 1, parent_midx)`` cells in
@@ -1704,13 +1681,14 @@ class THBSplineSpace:
         if its coarsening neighborhood (Def. 3.5) is empty, so the resulting mesh stays
         admissible of class ``m``.  With ``admissible_class=None`` that guard is skipped.
 
-        The space is immutable: a fresh grid is coarsened and a new
-        :class:`THBSplineSpace` is built; ``self`` and its grid are unchanged.
-        An empty ``cell_ids`` is valid and returns an unchanged copy of the space.
+        The space is immutable: the grid is coarsened by rebinding, and a new
+        :class:`THBSplineSpace` is built on the result; ``self`` and its grid are
+        unchanged.  An empty ``cell_ids``, and one that coarsens nothing, both return
+        an equivalent new space over this space's own (immutable) grid.
 
         Args:
             cell_ids (npt.ArrayLike): Flat ids of active leaf cells to coarsen away.
-                An empty array is valid and produces an unchanged copy.
+                An empty array is valid and coarsens nothing.
             admissible_class (int | None): Admissibility class ``m >= 2`` to maintain,
                 or ``None`` to skip the admissibility guard.  Defaults to ``2``.
 
@@ -1721,9 +1699,7 @@ class THBSplineSpace:
         Raises:
             IndexError: If any id is outside ``[0, grid.num_cells)``.
             ValueError: If ``admissible_class`` is an integer ``< 2``.
-            RuntimeError: If the grid has been modified since construction.
         """
-        self._check_not_stale()
         if admissible_class is not None and admissible_class < 2:  # noqa: PLR2004
             raise ValueError(
                 f"admissible_class must be an integer >= 2 or None; got {admissible_class!r}."
@@ -1743,7 +1719,7 @@ class THBSplineSpace:
             if level >= 1
         }
         num_children = math.prod(factor)
-        grid_copy = copy.deepcopy(self._grid)
+        grid = self._grid
         # Deepest parent first, so a veto is decided against a mesh whose finer
         # coarsenings have already happened.
         for parent_level, pmidx in sorted(parents, key=lambda pc: -pc[0]):
@@ -1753,7 +1729,7 @@ class THBSplineSpace:
             for child in itertools.product(
                 *(range(pmidx[d] * factor[d], (pmidx[d] + 1) * factor[d]) for d in range(dim))
             ):
-                cid = grid_copy.cell_id(parent_level + 1, child)
+                cid = grid.cell_id(parent_level + 1, child)
                 if cid is not None and (parent_level + 1, child) in marked:
                     child_ids.append(cid)
             # An incomplete family is one `coarsen_cells` would skip anyway, so leaving
@@ -1764,15 +1740,15 @@ class THBSplineSpace:
             if len(child_ids) < num_children:
                 continue
             if admissible_class is not None and not self._coarsening_neighborhood_empty(
-                parent_level, pmidx, admissible_class, grid_copy
+                parent_level, pmidx, admissible_class, grid
             ):
                 continue
             # coarsen_cells applies the rule itself -- it demotes the parent only if all
             # of its children are named active leaves, which is Alg. 5's condition.
-            grid_copy.coarsen_cells(child_ids)
+            grid = grid.coarsen_cells(child_ids)
         return THBSplineSpace(
             self._root_space,
-            grid_copy,
+            grid,
             truncate=self._truncate,
             regularity=self._regularity,
         )
@@ -1795,7 +1771,7 @@ class THBSplineSpace:
             parent_level (int): Level of the parent being considered for coarsening.
             pmidx (tuple[int, ...]): Per-axis index of the parent at ``parent_level``.
             m (int): Admissibility class (``>= 2``).
-            grid (HierarchicalGrid): The grid copy whose active set is queried.
+            grid (HierarchicalGrid): The grid whose active set is queried.
 
         Returns:
             bool: ``True`` iff no active cell at level ``parent_level + m`` lies in the

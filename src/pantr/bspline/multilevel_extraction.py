@@ -188,7 +188,6 @@ class MultiLevelExtraction:
 
         Raises:
             IndexError: If ``cid`` is out of range.
-            RuntimeError: If the grid has been modified since construction.
         """
         return self._space.active_basis(cid)
 
@@ -217,10 +216,10 @@ class MultiLevelExtraction:
         Raises:
             IndexError: If ``cid`` is out of range.
             ValueError: If ``out`` has the wrong shape, dtype, or is not writeable.
-            RuntimeError: If the grid has been modified since construction.
+            RuntimeError: If a refined coefficient box does not overlap the cell window
+                (a bug in this class).
         """
         space = self._space
-        space._check_not_stale()
         grid = space.grid
         level = grid.cell_level(cid)
         cell_midx = grid.cell_multi_index(cid)
@@ -290,10 +289,8 @@ class MultiLevelExtraction:
         Raises:
             IndexError: If ``cid`` is out of range.
             ValueError: If ``out`` has the wrong shape, dtype, or is not writeable.
-            RuntimeError: If the grid has been modified since construction.
         """
         space = self._space
-        space._check_not_stale()
         level = space.grid.cell_level(cid)
         cell_midx = space.grid.cell_multi_index(cid)
         level_ext = self._level_extraction(level)

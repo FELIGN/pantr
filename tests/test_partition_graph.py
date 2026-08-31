@@ -174,7 +174,7 @@ def test_real_space_partition_is_valid() -> None:
 def test_thb_space_partition_is_valid() -> None:
     root = create_uniform_space(2, 4)
     grid = hierarchical_grid(uniform_grid([[0.0, 1.0]], 4), 2)
-    grid.refine(0, [0], [2])
+    grid = grid.refine(0, [0], [2])
     thb = THBSplineSpace(root, grid)
     part = partition_graph(coupling_graph(thb), 2)
     _assert_full_partition(part.cell_owner, 2, thb.grid.num_cells)
@@ -320,7 +320,7 @@ def test_metis_real_space_is_valid() -> None:
 def test_metis_thb_space_is_valid() -> None:
     root = create_uniform_space(2, 4)
     grid = hierarchical_grid(uniform_grid([[0.0, 1.0]], 4), 2)
-    grid.refine(0, [0], [2])
+    grid = grid.refine(0, [0], [2])
     thb = THBSplineSpace(root, grid)
     owner = partition_graph(coupling_graph(thb), 2, backend="metis").cell_owner
     # METIS does not guarantee both parts non-empty; check only valid range.

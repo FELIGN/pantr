@@ -133,46 +133,46 @@ class TestThbReproduction:
 
     def test_1d_two_levels(self) -> None:
         grid = _grid_1d()
-        grid.refine(0, [0], [2])
+        grid = grid.refine(0, [0], [2])
         assert _thb_reproduction_error(THBSplineSpace(_root_1d(), grid)) < 1e-10
 
     def test_1d_three_levels(self) -> None:
         grid = _grid_1d()
-        grid.refine(0, [0], [2])
-        grid.refine(1, [0], [2])
+        grid = grid.refine(0, [0], [2])
+        grid = grid.refine(1, [0], [2])
         assert _thb_reproduction_error(THBSplineSpace(_root_1d(), grid)) < 1e-10
 
     def test_2d_corner(self) -> None:
         grid = _grid_2d()
-        grid.refine(0, [0, 0], [2, 2])
+        grid = grid.refine(0, [0, 0], [2, 2])
         assert _thb_reproduction_error(THBSplineSpace(_root_2d(), grid)) < 1e-10
 
     def test_2d_three_levels(self) -> None:
         grid = _grid_2d()
-        grid.refine(0, [1, 1], [3, 3])
-        grid.refine(1, [2, 2], [6, 6])
+        grid = grid.refine(0, [1, 1], [3, 3])
+        grid = grid.refine(1, [2, 2], [6, 6])
         assert _thb_reproduction_error(THBSplineSpace(_root_2d(), grid)) < 1e-10
 
     def test_narrow_band_1d(self) -> None:
         # Single-cell-wide multi-level band: exercises the leaf-cell / truncation path.
         grid = _grid_1d()
-        grid.refine(0, [1], [2])
-        grid.refine(1, [2], [3])
+        grid = grid.refine(0, [1], [2])
+        grid = grid.refine(1, [2], [3])
         thb = THBSplineSpace(_root_1d(), grid)
         assert thb.num_levels == 3
         assert _thb_reproduction_error(thb) < 1e-10
 
     def test_narrow_band_2d(self) -> None:
         grid = _grid_2d()
-        grid.refine(0, [1, 1], [2, 2])
-        grid.refine(1, [2, 2], [3, 3])
+        grid = grid.refine(0, [1, 1], [2, 2])
+        grid = grid.refine(1, [2, 2], [3, 3])
         thb = THBSplineSpace(_root_2d(), grid)
         assert thb.num_levels == 3
         assert _thb_reproduction_error(thb) < 1e-10
 
     def test_reproduces_polynomials_1d(self) -> None:
         grid = _grid_1d()
-        grid.refine(0, [0], [2])
+        grid = grid.refine(0, [0], [2])
         thb = THBSplineSpace(_root_1d(), grid)
         qi = quasi_interpolate_thb_spline(lambda p: 1.0 - 2.0 * p[:, 0] + 3.0 * p[:, 0] ** 2, thb)
         xs = _sample(1)
@@ -181,7 +181,7 @@ class TestThbReproduction:
 
     def test_reproduces_polynomials_2d(self) -> None:
         grid = _grid_2d()
-        grid.refine(0, [0, 0], [2, 2])
+        grid = grid.refine(0, [0, 0], [2, 2])
         thb = THBSplineSpace(_root_2d(), grid)
         qi = quasi_interpolate_thb_spline(lambda p: p[:, 0] ** 2 + p[:, 0] * p[:, 1] + 1.0, thb)
         pts = _sample(2)
@@ -190,7 +190,7 @@ class TestThbReproduction:
 
     def test_vector_valued(self) -> None:
         grid = _grid_1d()
-        grid.refine(0, [0], [2])
+        grid = grid.refine(0, [0], [2])
         thb = THBSplineSpace(_root_1d(), grid)
         rng = np.random.default_rng(3)
         coeffs = rng.standard_normal((thb.num_total_basis, 2))
@@ -204,8 +204,8 @@ class TestThbReproduction:
         # refined regions has more than one leaf-cell candidate; exercises the
         # nearest-Greville selection branch.
         grid = _grid_1d()
-        grid.refine(0, [0], [2])
-        grid.refine(0, [3], [4])
+        grid = grid.refine(0, [0], [2])
+        grid = grid.refine(0, [3], [4])
         thb = THBSplineSpace(_root_1d(), grid)
         assert _thb_reproduction_error(thb) < 1e-10
 
@@ -257,7 +257,7 @@ class TestHb:
 
     def test_refined_hb_runs(self) -> None:
         grid = _grid_1d()
-        grid.refine(0, [0], [2])
+        grid = grid.refine(0, [0], [2])
         thb = THBSplineSpace(_root_1d(), grid, truncate=False)
         qi = quasi_interpolate_thb_spline(lambda p: np.sin(p[:, 0]), thb)
         assert qi.control_points.shape == (thb.num_total_basis,)
@@ -277,12 +277,16 @@ class TestHb:
         with pytest.raises(ValueError, match="values"):
             quasi_interpolate_thb_spline(lambda p: np.zeros(p.shape[0] + 1), thb)
 
-    def test_stale_grid_raises_on_qi(self) -> None:
+    def test_refine_leaves_qi_on_old_grid_unaffected(self) -> None:
+        """No staleness RuntimeError any more: refine returns a new grid, leaving thb intact."""
         grid = _grid_1d()
         thb = THBSplineSpace(_root_1d(), grid)
-        grid.refine(0, [0], [2])
-        with pytest.raises(RuntimeError, match="stale"):
-            quasi_interpolate_thb_spline(lambda p: p[:, 0], thb)
+        qi_before = quasi_interpolate_thb_spline(lambda p: p[:, 0], thb)
+        refined = grid.refine(0, [0], [2])
+        assert refined is not grid
+        assert thb.grid is grid
+        qi_after = quasi_interpolate_thb_spline(lambda p: p[:, 0], thb)
+        np.testing.assert_array_equal(qi_after.control_points, qi_before.control_points)
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -347,13 +351,18 @@ class TestThbSpline:
         with pytest.raises(ValueError, match="trailing dimension"):
             spline.evaluate(np.array([[0.1]]))
 
-    def test_stale_grid_raises_on_evaluate(self) -> None:
+    def test_refine_leaves_existing_spline_unaffected(self) -> None:
+        """No staleness RuntimeError any more: refine returns a new grid, leaving thb intact."""
         grid = _grid_1d()
         thb = THBSplineSpace(_root_1d(), grid)
-        spline = THBSpline(thb, np.zeros(thb.num_total_basis))
-        grid.refine(0, [0], [2])
-        with pytest.raises(RuntimeError, match="stale"):
-            spline.evaluate(np.array([[0.5]]))
+        rng = np.random.default_rng(9)
+        spline = THBSpline(thb, rng.standard_normal(thb.num_total_basis))
+        value_before = spline.evaluate(np.array([[0.5]]))
+        refined = grid.refine(0, [0], [2])
+        assert refined is not grid
+        assert thb.grid is grid
+        assert spline.space is thb
+        np.testing.assert_array_equal(spline.evaluate(np.array([[0.5]])), value_before)
 
     def test_bad_coeffs_ndim_raises(self) -> None:
         thb = THBSplineSpace(_root_1d(), _grid_1d())
@@ -381,7 +390,7 @@ class TestThbSpline:
         # Vector-valued evaluate on a refined 2D grid exercises the full
         # multi-level dofs → active_basis → tabulate_basis → matmul path.
         grid = _grid_2d()
-        grid.refine(0, [1, 1], [3, 3])
+        grid = grid.refine(0, [1, 1], [3, 3])
         thb = THBSplineSpace(_root_2d(), grid)
         rng = np.random.default_rng(7)
         coeffs = rng.standard_normal((thb.num_total_basis, 2))
@@ -421,7 +430,7 @@ class TestThbSpline:
     def test_evaluate_derivatives_reproduces_polynomial_derivative(self) -> None:
         # On a refined THB space, QI reproduces x^2 exactly; its derivative is 2x.
         grid = _grid_1d()
-        grid.refine(0, [0], [2])
+        grid = grid.refine(0, [0], [2])
         thb = THBSplineSpace(_root_1d(), grid)
         spline = quasi_interpolate_thb_spline(lambda p: p[:, 0] ** 2, thb)
         xs = _sample(1)

@@ -137,6 +137,33 @@ user-facing, and the ports change what it affects.
   points, so there is nothing to reuse between calls.
 
 ### Changed
+- **Breaking. `HierarchicalGrid` refinement returns a new grid instead of mutating.**
+  `refine`, `refine_cells`, `coarsen` and `coarsen_cells` all used to return `None` and change
+  the receiver; each now leaves the receiver untouched and returns a new
+  `HierarchicalGrid`. Write `grid = grid.refine(...)`. **The break is
+  silent**: the methods still exist under the same names and still accept the same arguments, so
+  a call made for its side effect raises nothing and simply discards the refinement. Grep for
+  `.refine(`, `.refine_cells(`, `.coarsen(` and `.coarsen_cells(` on a grid receiver; an
+  `hasattr`-style smoke test cannot see this change.
+
+  The reason is the project's construct-then-freeze rule, and here it is not a style question.
+  A `THBSplineSpace` held a reference to its grid, so refining that grid behind the space's back
+  left the space describing cells that no longer existed. That was detected at runtime by a
+  mutation counter and a staleness guard whose gaps were documented in its own docstrings; with
+  an immutable grid the state is unrepresentable and the whole apparatus is gone.
+
+  The cell decomposition of the returned grid is identical, cell for cell and id for id, to what
+  the mutating call produced -- checked against the previous implementation over a sweep of
+  1D, 2D and 3D grids with isotropic and anisotropic factors, overlapping refinements, both
+  coarsening entry points, and `restrict`. Refinement's cost is unchanged in order and dominated
+  by the block-list normalization it always was: measured flat in the cell count (a
+  single-block region refined on a 64 to 4096 cell grid) and superlinear in the *block* count,
+  as before. Nothing copies per-cell data, because the grid stores none.
+
+  `THBSplineSpace.refine`, `refine_region` and `coarsen`, and `THBSpline.refine` and
+  `refine_region`, already returned a new object and are unchanged. Internally they no longer
+  `copy.deepcopy` the grid before refining it, which is why they are now faster.
+
 - `pantr.change_basis` is a package rather than a single module, so that its dispatch catalogue
   and its Python kernels have somewhere to live. **Every pantr name importable from
   `pantr.change_basis` before still is**, public and private alike, and a test now pins that
@@ -157,6 +184,18 @@ user-facing, and the ports change what it affects.
   own rounding rather than to the root finder and is irreducible without transliterating NumPy
   verbatim. The tanh-sinh rule is unchanged.
 
+
+### Removed
+- `HierarchicalGrid.version`. It existed so that a consumer could detect a mutation the other
+  metadata could not distinguish (a compensating refine/coarsen pair). There is no mutation to
+  detect. Track cells across a refinement by `(level, multi_index)` and resolve them with
+  `cell_id` on the new grid, as `cell_id`'s docstring describes.
+- The `RuntimeError("THBSplineSpace is stale: ...")` and the machinery behind it
+  (`_grid_snapshot`, `_check_not_stale`). Every entry point that could raise it -- on
+  `THBSplineSpace`, on `MultiLevelExtraction`, on `THBSpline`, and
+  `quasi_interpolate_thb_spline` -- no longer can, and their `Raises:` sections no longer
+  promise it. Two accessors, `level_space` and `active_function_indices`, documented that they
+  performed *no* stale check; that hole is closed by there being nothing to check.
 
 ## 0.7.0 (2026-08-19)
 

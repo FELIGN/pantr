@@ -376,7 +376,7 @@ def _two_level_grid() -> HierarchicalGrid:
     """
     root = uniform_grid(np.tile([0.0, 4.0], (2, 1)), 4)
     grid = hierarchical_grid(root, 2)
-    grid.refine_cells([0, 1, 4])
+    grid = grid.refine_cells([0, 1, 4])
     return grid
 
 
@@ -496,8 +496,8 @@ def _non_dyadic_grid() -> HierarchicalGrid:
     """
     root = uniform_grid(np.array([[-1.0, 2.0 / 3.0], [-0.1, 0.3]]), 3)
     grid = hierarchical_grid(root, 3)
-    grid.refine_cells([0, 4, 8])
-    grid.refine_cells([9, 15])
+    grid = grid.refine_cells([0, 4, 8])
+    grid = grid.refine_cells([9, 15])
     return grid
 
 
@@ -597,10 +597,10 @@ def test_the_descent_counterexample_runs_through_the_real_kernels(cpp_backend: N
     del cpp_backend
     root = TensorProductGrid([np.array([1.0, 2.0])])
     grid = hierarchical_grid(root, 10)
-    grid.refine_cells([0])
+    grid = grid.refine_cells([0])
     point = np.array([[1.71]])
     first = grid.locate_many(point)
-    grid.refine_cells([int(first[0])])
+    grid = grid.refine_cells([int(first[0])])
 
     reference, actual = _both(lambda: grid.locate_many(point))
 

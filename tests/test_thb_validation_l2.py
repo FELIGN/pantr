@@ -47,7 +47,7 @@ def _uniform_refined(degree: int, n: int, depth: int, dim: int) -> THBSplineSpac
     grid = hierarchical_grid(uniform_grid([[0.0, 1.0]] * dim, n), 2)
     for level in range(depth):
         n_at = n * (2**level)
-        grid.refine(level, [0] * dim, [n_at] * dim)
+        grid = grid.refine(level, [0] * dim, [n_at] * dim)
     return THBSplineSpace(root, grid)
 
 
@@ -62,7 +62,7 @@ def _graded_refined(degree: int, depth: int, dim: int) -> THBSplineSpace:
     n = 4 * 2**depth
     root = create_uniform_space([degree] * dim, [n] * dim)
     grid = hierarchical_grid(uniform_grid([[0.0, 1.0]] * dim, n), 2)
-    grid.refine(0, [0] * dim, [n // 2] * dim)
+    grid = grid.refine(0, [0] * dim, [n // 2] * dim)
     return THBSplineSpace(root, grid)
 
 
@@ -78,7 +78,7 @@ class TestL2Reproduction:
         knots = _KNOTS_DEG2_4
         root = BsplineSpace([BsplineSpace1D(knots, 2) for _ in range(dim)])
         grid = hierarchical_grid(uniform_grid([[0.0, 1.0]] * dim, 4), 2)
-        grid.refine(0, [0] * dim, [2] * dim)
+        grid = grid.refine(0, [0] * dim, [2] * dim)
         thb = THBSplineSpace(root, grid)
         coeffs = np.random.default_rng(dim).standard_normal(thb.num_total_basis)
         target = THBSpline(thb, coeffs)
@@ -125,7 +125,7 @@ class TestAdaptiveEfficiency:
         root = create_uniform_space([2], [8])
         grid = hierarchical_grid(uniform_grid([[0.0, 1.0]], 8), 2)
         for level, lo, hi in refines:
-            grid.refine(level, lo, hi)
+            grid = grid.refine(level, lo, hi)
         return THBSplineSpace(root, grid)
 
     def test_adaptive_beats_uniform(self) -> None:
