@@ -448,6 +448,14 @@ Three prohibitions, each with the concrete failure behind it rather than as a ma
 - **#395 `HierarchicalGrid`.** The three-line DCLP repair to the mixin's `bvh_`, and the
   correction to `_grid.py`'s `cell_bvh` docstring. Also `D-a` confirmed: no
   `invalidate_caches()`, because with #378 there is nothing to invalidate.
+A memo test is subject to the same Rule 12 caveat as the lifetime tests in the companion note:
+`Backend.PYTHON` is the process default (`src/pantr/_backend.py:363-370`), so under a plain
+`pytest` run a test aimed at the C++ memo exercises `cached_property` instead and passes without
+touching the thing it names. Take the `cpp_backend` fixture
+(`tests/parity/conftest.py:18-27`), which is a skip-or-fail rather than a silent skip. And the
+thread-safety property is not reachable from Python at all -- the GIL hides it (F2) -- so its gate
+is a C++ unit test under a sanitizer and nothing in `tests/` can stand in.
+
 - **#396 `BsplineSpace1D` / `BsplineSpace`.** The whole of the above. Its `AC` set should say
   **one** memo, not fourteen; should require the `lru_cache` deleted *before* the C++ scan is
   dispatched (F6); and should include a TSan leg over the C++ unit tests, because that is the
