@@ -3,11 +3,12 @@
 /// \file
 /// The well-formed grid every negative translation unit starts from.
 ///
-/// The two files that include it introduce exactly ONE defect on top of it, so that the
-/// diagnostic they are matched against can only have come from that defect. The other
-/// seven negative translation units define their own grid rather than including this
+/// The files that include it introduce exactly ONE defect on top of it, so that the
+/// diagnostic they are matched against can only have come from that defect. The rest
+/// of the negative translation units define their own grid rather than including this
 /// one, because their defect IS in the grid's definition and cannot be layered on a
-/// well-formed class from outside.
+/// well-formed class from outside. Which files fall on which side is not stated here:
+/// a count in a comment rots the next time one is added, as this one did.
 
 #include <cstdint>
 #include <optional>
