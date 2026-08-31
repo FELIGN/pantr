@@ -1121,12 +1121,19 @@ def test_compose_is_bitwise(
 
     Driven through :meth:`Bezier.compose` and **not** through
     :meth:`Bezier.multiply`, which is the route a first draft of this test took and
-    which exercises none of the ported code. For a 1D Bézier ``multiply`` goes to
-    ``_bernstein_product_coefficients`` (and to its ``_nd`` sibling above 1D), both
-    pure-numpy helpers that are not dispatched at all; the scalar 1D product kernel
-    is reached only from ``compose``, and only when the inner map is univariate. The
-    mistake was caught by mutation: reassociating the kernel's accumulation left the
-    ``multiply`` version passing.
+    which exercised none of the ported code: at the time ``multiply`` reached
+    ``_bernstein_product_coefficients`` and its ``_nd`` sibling, pure-numpy helpers
+    with no C++ counterpart. The mistake was caught by mutation, reassociating the
+    kernel's accumulation left the ``multiply`` version passing, and
+    ``tests/parity/test_bezier_product.py`` records what closing it took.
+
+    ``multiply`` has since been ported (FELIGN/pantr#392) and is dispatched, but it
+    is still the wrong route to **this** kernel: the port reproduces those two numpy
+    helpers rather than routing through the scalar product kernel, which
+    ``design/cross_backend_types.md`` rules on and which the two products' differing
+    domains at ``p + q = 80`` are the sharpest reason for. So the scalar 1D product
+    kernel is still reached only from ``compose``, and only when the inner map is
+    univariate.
 
     A composition runs the kernel many times over -- once per Bernstein basis power
     of the inner map, then again for each tensor term -- so a single case here
@@ -1143,13 +1150,18 @@ def test_compose_is_bitwise(
     # at fault: measured, 1e6 to the eighth is 1e48 against a float32 ceiling near
     # 3.4e38. Three decades still spans enough scale for cancellation to bite.
     spread = (-1, 2)
-    outer = Bezier(_mixed_control_points((outer_degree + 1, 2), dtype, 11, spread))
-    inner = Bezier(_mixed_control_points((inner_degree + 1, 1), dtype, 22, spread))
+    outer_net = _mixed_control_points((outer_degree + 1, 2), dtype, 11, spread)
+    inner_net = _mixed_control_points((inner_degree + 1, 1), dtype, 22, spread)
 
+    # Constructed inside each context rather than once outside, which is what every
+    # other Bezier-level parity test does: since FELIGN/pantr#392 ported `compose`
+    # itself, a Bezier carries its backend's implementation and cannot be composed
+    # under the other one -- the same rule `evaluate`, `split` and `elevate_degree`
+    # already impose, and `_bezier_backend._cpp_handle` refuses rather than converts.
     with use_backend(Backend.PYTHON):
-        reference = outer.compose(inner).control_points
+        reference = Bezier(outer_net).compose(Bezier(inner_net)).control_points
     with use_backend(Backend.CPP):
-        actual = outer.compose(inner).control_points
+        actual = Bezier(outer_net).compose(Bezier(inner_net)).control_points
 
     assert_parity(
         actual,
