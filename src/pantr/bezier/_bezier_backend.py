@@ -8,12 +8,15 @@ reason: a catalogue imports the kernels it hands out, so keeping each one beside
 its own kernels is what stops the policy module from importing the library it has
 to stay independent of.
 
-Nine accessors over ten implementations
----------------------------------------
+One accessor per operation, and one record
+-----------------------------------------
 
-Six are bare callables and one is a record, which is the rule
+Every accessor here returns a bare callable but one, which is the rule
 ``design/cross_backend_types.md`` states: a record when a consumer needs more
-than one kernel at once, a bare callable when it does not.
+than one kernel at once, a bare callable when it does not.  (An earlier version
+of this heading counted the accessors.  The count was wrong by eight before this
+module was next edited, so it is gone rather than corrected: the rule is what a
+reader needs and the rule does not depend on how many there are.)
 :func:`~pantr.bezier._bezier_degree._minimize_degree_bezier` is the consumer that
 needs two. Inside one call it reduces a degree and then re-elevates the result so
 the trial can be compared against the original, so it reaches for the reduction
@@ -28,7 +31,7 @@ each lookup, and that the dependency is stated in a signature rather than read f
 ambient state. :class:`DegreeKernels` is the convenient shape for two kernels always
 fetched together, not a safety mechanism.
 
-The other six call sites use exactly one kernel each, so they get one callable.
+Every other call site uses exactly one kernel, so it gets one callable.
 
 The accessors are named ``*_kernel`` rather than ``*_core``, following
 :mod:`pantr.quad._quad_backend` and :mod:`pantr.change_basis._change_basis_backend`.
@@ -72,6 +75,9 @@ that do not still hand Layer 2 an array to fill before wrapping it in a
 - :func:`evaluate_nd_kernel`, :func:`evaluate_nd_lattice_kernel`: the two
   n-dimensional contraction schedules, which take the Bézier rather than its
   arrays.
+- :func:`multiply_kernel`, :func:`compose_kernel`: the product and the
+  composition, which likewise take Béziers.  Their C++ side is handed the
+  binomial tables as data; see :func:`_cpp_multiply`.
 """
 
 from __future__ import annotations
@@ -213,6 +219,24 @@ rational result is the caller's, which is where the oracle puts it too.
 
 _CollapseFunc = Callable[["Bezier", int, _Array], "Bezier"]
 """Signature of the collapse: ``(bezier, axis, values) -> Bezier``."""
+
+_MultiplyFunc = Callable[["Bezier", "Bezier"], "Bezier"]
+"""Signature of the pointwise product: ``(a, b) -> Bezier``.
+
+Takes and returns Béziers rather than arrays, for the same reason the n-dimensional
+evaluation accessors do: this is an operation on a domain type, not a kernel, and the
+type is owned by C++ since the 2026-08-27 amendment to
+``design/cross_backend_types.md``.
+"""
+
+_ComposeFunc = Callable[["Bezier", "Bezier"], "Bezier"]
+"""Signature of the composition: ``(outer, inner) -> Bezier``.
+
+A separate accessor from :data:`_MultiplyFunc` rather than a branch inside it, because
+the two are separate operations with separate oracles: composition reaches the scalar
+product *kernel* for a univariate inner map and the numpy nD helper above that, where
+the product reaches the numpy helpers only.
+"""
 
 _ReduceApplyFunc = Callable[[npt.NDArray[np.float64], _Array, _Array], None]
 """Signature of the reduction-operator apply: ``(operator, ctrl, out) -> None``.
@@ -720,6 +744,86 @@ def _cpp_collapse(bezier: Bezier, axis: int, values: _Array) -> Bezier:
     )
 
 
+def _cpp_binomial_tables(
+    order: int, dtype: npt.DTypeLike
+) -> tuple[npt.NDArray[np.float32 | np.float64], npt.NDArray[np.float32 | np.float64]]:
+    """Assemble the binomial tables the C++ product and composition are handed.
+
+    Args:
+        order (int): Largest upper index the operation will read.
+        dtype (npt.DTypeLike): The Bézier's storage format.
+
+    Returns:
+        tuple: The coefficient table and the reciprocal table.
+    """
+    from ._bezier_product import _binomial_tables  # noqa: PLC0415  (cycle)
+
+    return _binomial_tables(order, dtype)
+
+
+def _cpp_multiply(a: Bezier, b: Bezier) -> Bezier:
+    """Multiply two Béziers through the C++ binding.
+
+    The binding is handed the two binomial tables rather than assembling them, which
+    is the ruling ``cpp/include/pantr/bezier/product.hpp`` records: the numpy oracle's
+    :func:`math.comb` has no envelope and the C++ exact-integer recurrence stops at
+    61, so a native assembly would refuse the ``p + q = 80`` case both backends
+    otherwise handle.  The required size comes from the binding too, so the formula
+    for it exists once rather than once per language.
+
+    Args:
+        a (~pantr.bezier.Bezier): First operand, holding a C++ handle.
+        b (~pantr.bezier.Bezier): Second operand, holding a C++ handle.
+
+    Returns:
+        ~pantr.bezier.Bezier: The product, wrapping a C++ handle.
+
+    Note:
+        No input validation is performed here; Layer 2 did it above the branch.
+    """
+    from pantr import _pantr_cpp  # noqa: PLC0415  (resolved against the .pyi stub)
+
+    from ._bezier import Bezier as BezierCls  # noqa: PLC0415  (cycle)
+
+    impl_a = _cpp_handle(a)
+    impl_b = _cpp_handle(b)
+    order = _pantr_cpp.bezier_product_table_order(impl_a, impl_b)
+    binomials, inverse_binomials = _cpp_binomial_tables(order, a.dtype)
+    return BezierCls._wrap(
+        _pantr_cpp.multiply_bezier(
+            impl_a, impl_b, binomials=binomials, inverse_binomials=inverse_binomials
+        )
+    )
+
+
+def _cpp_compose(outer: Bezier, inner: Bezier) -> Bezier:
+    """Compose two Béziers through the C++ binding.
+
+    Args:
+        outer (~pantr.bezier.Bezier): The outer map, holding a C++ handle.
+        inner (~pantr.bezier.Bezier): The inner map, holding a C++ handle.
+
+    Returns:
+        ~pantr.bezier.Bezier: The composition, wrapping a C++ handle.
+
+    Note:
+        No input validation is performed here; see :func:`_cpp_multiply`.
+    """
+    from pantr import _pantr_cpp  # noqa: PLC0415  (resolved against the .pyi stub)
+
+    from ._bezier import Bezier as BezierCls  # noqa: PLC0415  (cycle)
+
+    impl_outer = _cpp_handle(outer)
+    impl_inner = _cpp_handle(inner)
+    order = _pantr_cpp.bezier_composition_table_order(impl_outer, impl_inner)
+    binomials, inverse_binomials = _cpp_binomial_tables(order, outer.dtype)
+    return BezierCls._wrap(
+        _pantr_cpp.compose_bezier(
+            impl_outer, impl_inner, binomials=binomials, inverse_binomials=inverse_binomials
+        )
+    )
+
+
 # Hoisted to module level rather than rebuilt inside each accessor. An accessor
 # that closed over a fresh function object would return a different callable on
 # every call, which defeats identity comparison in the tests and re-creates a
@@ -782,6 +886,12 @@ _CPP_SLICE_POINT: Final[_SlicePointFunc] = _cpp_slice_point
 
 _CPP_COLLAPSE: Final[_CollapseFunc] = _cpp_collapse
 """The collapse of the C++ backend."""
+
+_CPP_MULTIPLY: Final[_MultiplyFunc] = _cpp_multiply
+"""The pointwise product of the C++ backend."""
+
+_CPP_COMPOSE: Final[_ComposeFunc] = _cpp_compose
+"""The composition of the C++ backend."""
 
 
 def evaluate_kernel(backend: Backend | None = None) -> _EvaluateFunc:
@@ -1097,3 +1207,39 @@ def collapse_kernel(backend: Backend | None = None) -> _CollapseFunc:
     from ._bezier_collapse import _collapse_python  # noqa: PLC0415  (cycle)
 
     return _select(backend, _collapse_python, _CPP_COLLAPSE)
+
+
+def multiply_kernel(backend: Backend | None = None) -> _MultiplyFunc:
+    """Return the pointwise product of the requested backend.
+
+    Args:
+        backend (Backend | None): The backend to use. ``None`` means the backend
+            currently in effect. Defaults to None.
+
+    Returns:
+        _MultiplyFunc: Callable as ``(a, b) -> Bezier``.
+
+    Raises:
+        RuntimeError: If ``backend`` is given and is not available.
+    """
+    from ._bezier_product import _multiply_python  # noqa: PLC0415  (cycle)
+
+    return _select(backend, _multiply_python, _CPP_MULTIPLY)
+
+
+def compose_kernel(backend: Backend | None = None) -> _ComposeFunc:
+    """Return the composition of the requested backend.
+
+    Args:
+        backend (Backend | None): The backend to use. ``None`` means the backend
+            currently in effect. Defaults to None.
+
+    Returns:
+        _ComposeFunc: Callable as ``(outer, inner) -> Bezier``.
+
+    Raises:
+        RuntimeError: If ``backend`` is given and is not available.
+    """
+    from ._bezier_compose import _compose_python  # noqa: PLC0415  (cycle)
+
+    return _select(backend, _compose_python, _CPP_COMPOSE)

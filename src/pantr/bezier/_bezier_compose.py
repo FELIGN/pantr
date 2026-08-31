@@ -1,11 +1,20 @@
 """Bézier composition.
 
-This module provides :func:`_compose_bezier`, which computes the exact
-composition of two non-rational Bézier objects: ``outer(inner(t))``.
+This module provides :func:`_compose_bezier`, which composes two non-rational
+Bézier objects: ``outer(inner(t))``.
 
 The algorithm decomposes each scalar component of the inner Bézier into
 Bernstein basis evaluations of the outer's degree, then combines them
 with the outer's control points via a multi-index weighted summation.
+
+The composed degree ``sum(outer.degree) * inner.degree[s]`` represents the
+composition **exactly**; this module used to call the composition itself exact,
+which is true of the representation and false of the coefficients.  Those are
+built from repeated Bernstein products in floating point and carry every one of
+their roundings, and there are many: a composition runs the product once per
+power of the inner map and again per tensor term.
+``cpp/include/pantr/bezier/product.hpp`` states the same distinction for the C++
+port.
 """
 
 from __future__ import annotations
@@ -18,7 +27,7 @@ import numpy as np
 import numpy.typing as npt
 
 from ..bspline._bspline_degree_core import _check_bincoeff_envelope
-from ._bezier_backend import product_kernel
+from ._bezier_backend import compose_kernel, product_kernel
 from ._bezier_product import _bernstein_product_coefficients_nd
 
 if TYPE_CHECKING:
@@ -68,7 +77,7 @@ def _compose_bezier(outer: Bezier, inner: Bezier) -> Bezier:
     # reaches the largest product degree formed.  That is the full composed degree
     # ``sum(outer.degree) * inner.degree[0]``: the per-direction power ladder in
     # ``_compute_scalar_powers`` climbs to ``outer.degree[d] * inner.degree[0]``, and
-    # the cross-direction accumulation in ``_compose_impl`` then multiplies the
+    # the cross-direction accumulation in ``_compose_python`` then multiplies the
     # per-direction bases together.  The envelope is therefore *multiplicative* in the
     # operands and binds at far lower input degrees than degree elevation's additive
     # one: an outer of degree 6 composed with an inner of degree 11 already asks for
@@ -89,11 +98,11 @@ def _compose_bezier(outer: Bezier, inner: Bezier) -> Bezier:
             composed, f"Composition to degree {composed} with a 1D inner Bézier"
         )
 
-    return _compose_impl(outer, inner)
+    return compose_kernel()(outer, inner)
 
 
-def _compose_impl(outer: Bezier, inner: Bezier) -> Bezier:
-    """Compute the composition of two non-rational Bézier objects.
+def _compose_python(outer: Bezier, inner: Bezier) -> Bezier:
+    """Compose with NumPy and the Numba product kernel: the oracle for the port.
 
     Implements the Bernstein basis decomposition algorithm:
 
@@ -112,8 +121,7 @@ def _compose_impl(outer: Bezier, inner: Bezier) -> Bezier:
         ~pantr.bezier.Bezier: The composed Bézier.
 
     Note:
-        Validation is performed by :func:`_compose_bezier`; this function
-        assumes both operands have already been validated.
+        No input validation is performed here; Layer 2 did it above the branch.
     """
     from . import Bezier as BezierCls  # noqa: PLC0415
 
