@@ -103,91 +103,6 @@ def evaluate_bezier_1d(
         ValueError: If ``out`` is not the shape the other two arguments call for.
     """
 
-def evaluate_bezier(
-    bezier: Bezier32 | Bezier64,
-    points: npt.NDArray[np.float32 | np.float64],
-    *,
-    out: npt.NDArray[np.float32 | np.float64],
-) -> None:
-    """Evaluate a Bézier at an explicit array of parametric points.
-
-    Contracts one parametric direction at a time against a per-point tabulated
-    basis, mirroring the ``np.einsum`` chain of the Python oracle. A
-    one-dimensional Bézier is delegated to the fused 1D kernel instead, as the
-    oracle's own dispatch does. A rational Bézier is projected: the value
-    components are divided by the trailing weight component.
-
-    ``points`` and ``out`` must share ``bezier``'s storage dtype -- the handle's
-    class picks the overload, and a mismatched array dtype is refused rather than
-    cast, since every array here is ``.noconvert()``.
-
-    Call :meth:`pantr.bezier.Bezier.evaluate` for the ordinary path, which
-    accepts points of any shape and allocates ``out``.
-
-    Args:
-        bezier (Bezier32 | Bezier64): The Bézier to evaluate.
-        points (npt.NDArray[np.float32 | np.float64]): Parametric points, shape
-            ``(n_pts, bezier.dim)``, each row one point, 2D, C-contiguous and
-            matching ``bezier``'s dtype. For a one-dimensional Bézier the single
-            column holds the parameters.
-        out (npt.NDArray[np.float32 | np.float64]): Output of shape
-            ``(n_pts, bezier.rank)``, matching dtype, C-contiguous and writable.
-            Written in full. The trailing axis is kept even for a scalar field.
-            Keyword-only.
-
-    Raises:
-        TypeError: If ``points`` or ``out`` does not match ``bezier``'s dtype,
-            if either is not 2D and C-contiguous, or if ``out`` is passed
-            positionally.
-        ValueError: If ``points`` does not have ``bezier.dim`` columns, or if
-            ``out`` is not shape ``(n_pts, bezier.rank)``.
-    """
-
-def evaluate_bezier_on_lattice(
-    bezier: Bezier32 | Bezier64,
-    points_per_dir: Sequence[npt.NDArray[np.float32 | np.float64]],
-    *,
-    out: npt.NDArray[np.float32 | np.float64],
-) -> None:
-    """Evaluate a Bézier on a tensor-product lattice of parametric points.
-
-    Contracts one *axis* of the running result at a time against direction
-    ``d``'s tabulated basis, mirroring the Python oracle's chain of
-    ``np.tensordot`` calls. **This is a different arithmetic from
-    :func:`evaluate_bezier` over the same points written out, not merely a
-    faster one**: the two contract in different orders and carry separate parity
-    claims. A rational Bézier is projected: the value components are divided by
-    the trailing weight component.
-
-    ``points_per_dir`` and ``out`` must share ``bezier``'s storage dtype -- the
-    handle's class picks the overload, and a mismatched array dtype is refused
-    rather than cast, since every array here is ``.noconvert()``.
-
-    Call :meth:`pantr.bezier.Bezier.evaluate` for the ordinary path, which
-    dispatches to this kernel for a lattice of points and allocates ``out``.
-
-    Args:
-        bezier (Bezier32 | Bezier64): The Bézier to evaluate.
-        points_per_dir (Sequence[npt.NDArray[np.float32 | np.float64]]): One
-            1D, C-contiguous array of parameters per parametric direction,
-            ``bezier.dim`` of them, each matching ``bezier``'s dtype. Direction
-            ``d`` may hold any number of points.
-        out (npt.NDArray[np.float32 | np.float64]): Output, matching dtype,
-            C-contiguous and writable, of **any rank**: its logical shape is
-            ``(m_0, ..., m_{dim-1}, bezier.rank)`` where ``m_d`` is
-            ``len(points_per_dir[d])``, and only its total size is checked,
-            because the rank is a runtime quantity no fixed-rank annotation can
-            state. Written in full. Keyword-only.
-
-    Raises:
-        TypeError: If any array does not match ``bezier``'s dtype, if
-            ``points_per_dir``'s entries are not 1D and C-contiguous, if ``out``
-            is not C-contiguous, or if ``out`` is passed positionally.
-        ValueError: If ``len(points_per_dir)`` does not equal ``bezier.dim``, or
-            if ``out``'s total size is not the product of the per-direction
-            lengths and ``bezier.rank``.
-    """
-
 def evaluate_bezier_deriv_1d(
     ctrl: npt.NDArray[np.float32 | np.float64],
     points: npt.NDArray[np.float32 | np.float64],
@@ -386,6 +301,206 @@ def apply_reduction_operator(
             or if ``out`` is passed positionally.
         ValueError: If ``ctrl`` does not have as many rows as the operator has
             columns, or if ``out`` is the wrong shape.
+    """
+
+def evaluate_bezier(
+    bezier: Bezier32 | Bezier64,
+    points: npt.NDArray[np.float32 | np.float64],
+    *,
+    out: npt.NDArray[np.float32 | np.float64],
+) -> None:
+    """Evaluate a Bézier at an explicit array of parametric points.
+
+    Contracts one parametric direction at a time against a per-point tabulated
+    basis, mirroring the ``np.einsum`` chain of the Python oracle. A
+    one-dimensional Bézier is delegated to the fused 1D kernel instead, as the
+    oracle's own dispatch does. A rational Bézier is projected: the value
+    components are divided by the trailing weight component.
+
+    ``points`` and ``out`` must share ``bezier``'s storage dtype -- the handle's
+    class picks the overload, and a mismatched array dtype is refused rather than
+    cast, since every array here is ``.noconvert()``.
+
+    Call :meth:`pantr.bezier.Bezier.evaluate` for the ordinary path, which
+    accepts points of any shape and allocates ``out``.
+
+    Args:
+        bezier (Bezier32 | Bezier64): The Bézier to evaluate.
+        points (npt.NDArray[np.float32 | np.float64]): Parametric points, shape
+            ``(n_pts, bezier.dim)``, each row one point, 2D, C-contiguous and
+            matching ``bezier``'s dtype. For a one-dimensional Bézier the single
+            column holds the parameters.
+        out (npt.NDArray[np.float32 | np.float64]): Output of shape
+            ``(n_pts, bezier.rank)``, matching dtype, C-contiguous and writable.
+            Written in full. The trailing axis is kept even for a scalar field.
+            Keyword-only.
+
+    Raises:
+        TypeError: If ``points`` or ``out`` does not match ``bezier``'s dtype,
+            if either is not 2D and C-contiguous, or if ``out`` is passed
+            positionally.
+        ValueError: If ``points`` does not have ``bezier.dim`` columns, or if
+            ``out`` is not shape ``(n_pts, bezier.rank)``.
+    """
+
+def evaluate_bezier_on_lattice(
+    bezier: Bezier32 | Bezier64,
+    points_per_dir: Sequence[npt.NDArray[np.float32 | np.float64]],
+    *,
+    out: npt.NDArray[np.float32 | np.float64],
+) -> None:
+    """Evaluate a Bézier on a tensor-product lattice of parametric points.
+
+    Contracts one *axis* of the running result at a time against direction
+    ``d``'s tabulated basis, mirroring the Python oracle's chain of
+    ``np.tensordot`` calls. **This is a different arithmetic from
+    :func:`evaluate_bezier` over the same points written out, not merely a
+    faster one**: the two contract in different orders and carry separate parity
+    claims. A rational Bézier is projected: the value components are divided by
+    the trailing weight component.
+
+    ``points_per_dir`` and ``out`` must share ``bezier``'s storage dtype -- the
+    handle's class picks the overload, and a mismatched array dtype is refused
+    rather than cast, since every array here is ``.noconvert()``.
+
+    Call :meth:`pantr.bezier.Bezier.evaluate` for the ordinary path, which
+    dispatches to this kernel for a lattice of points and allocates ``out``.
+
+    Args:
+        bezier (Bezier32 | Bezier64): The Bézier to evaluate.
+        points_per_dir (Sequence[npt.NDArray[np.float32 | np.float64]]): One
+            1D, C-contiguous array of parameters per parametric direction,
+            ``bezier.dim`` of them, each matching ``bezier``'s dtype. Direction
+            ``d`` may hold any number of points.
+        out (npt.NDArray[np.float32 | np.float64]): Output, matching dtype,
+            C-contiguous and writable, of **any rank**: its logical shape is
+            ``(m_0, ..., m_{dim-1}, bezier.rank)`` where ``m_d`` is
+            ``len(points_per_dir[d])``, and only its total size is checked,
+            because the rank is a runtime quantity no fixed-rank annotation can
+            state. Written in full. Keyword-only.
+
+    Raises:
+        TypeError: If any array does not match ``bezier``'s dtype, if
+            ``points_per_dir``'s entries are not 1D and C-contiguous, if ``out``
+            is not C-contiguous, or if ``out`` is passed positionally.
+        ValueError: If ``len(points_per_dir)`` does not equal ``bezier.dim``, or
+            if ``out``'s total size is not the product of the per-direction
+            lengths and ``bezier.rank``.
+    """
+
+def elevate_bezier_degree(
+    bezier: Bezier32 | Bezier64,
+    increments: Sequence[int],
+) -> Bezier32 | Bezier64:
+    """Degree-elevate a Bézier in one or more parametric directions, exactly.
+
+    The elevated Bézier is the same mapping written at a higher degree. The
+    handle's class picks the overload; the return is a **new** Bézier of that
+    same class, rational exactly when ``bezier`` is.
+
+    Args:
+        bezier (Bezier32 | Bezier64): The Bézier to elevate.
+        increments (Sequence[int]): Degrees to add, one per parametric
+            direction, ``bezier.dim`` of them, each non-negative. A zero
+            leaves its direction untouched.
+
+    Returns:
+        Bezier32 | Bezier64: The elevated Bézier, matching ``bezier``'s class.
+
+    Raises:
+        TypeError: If any entry of ``increments`` is negative, since it is
+            cast to an unsigned count.
+        ValueError: If ``increments`` does not have ``bezier.dim`` entries, or
+            if an elevated degree would leave the exact-integer binomial
+            envelope (``C(n, k)`` beyond upper index 61, where the recurrence
+            would overflow ``int64``).
+    """
+
+def reduce_bezier_degree(
+    bezier: Bezier32 | Bezier64,
+    decrements: Sequence[int],
+    operators: Sequence[npt.NDArray[np.float64]],
+) -> Bezier32 | Bezier64:
+    """Degree-reduce a Bézier in one or more parametric directions.
+
+    An approximation in general, exact at the boundary of the parametric
+    domain, because the operators the caller supplies interpolate the
+    endpoints. The handle's class picks the overload; the return is a **new**
+    Bézier of that same class, rational exactly when ``bezier`` is.
+
+    The operator is supplied rather than assembled, because assembling it
+    needs exact rational arithmetic that is deliberately not ported: the
+    solution reaches 156 bits at the module's maximum degree, and solving it
+    in ``double`` instead loses eleven digits. See the file comment of
+    ``cpp/include/pantr/bezier/degree.hpp`` for the full argument.
+
+    Args:
+        bezier (Bezier32 | Bezier64): The Bézier to reduce.
+        decrements (Sequence[int]): Degrees to drop, one per parametric
+            direction, ``bezier.dim`` of them, each non-negative. A zero
+            leaves its direction untouched.
+        operators (Sequence[npt.NDArray[np.float64]]): One reduction operator
+            per parametric direction, ``bezier.dim`` of them, always
+            ``float64``, 2D and C-contiguous. Direction ``d``'s operator has
+            shape ``(degree(d) - decrements[d] + 1, degree(d) + 1)``. A
+            direction with a zero decrement still needs an entry -- an empty
+            ``(0, 0)`` array rather than being absent -- because the list's
+            index is what keeps meaning the direction.
+
+    Returns:
+        Bezier32 | Bezier64: The reduced Bézier, matching ``bezier``'s class.
+
+    Raises:
+        TypeError: If any entry of ``decrements`` is negative, or if any
+            operator has the wrong dtype or rank, or is not C-contiguous.
+        ValueError: If ``decrements`` or ``operators`` does not have
+            ``bezier.dim`` entries, if a decrement exceeds its direction's
+            degree, or if an operator's shape does not match its direction.
+    """
+
+def bezier_degree_reduction_error(
+    bezier: Bezier32 | Bezier64,
+    decrements: Sequence[int],
+    operators: Sequence[npt.NDArray[np.float64]],
+    grams: Sequence[npt.NDArray[np.float64]],
+) -> float:
+    """The ``L2`` norm of the error a degree reduction would introduce.
+
+    Reduces, elevates the result back exactly, and takes the Bernstein-Gram
+    norm of the coefficient difference, so the value is the true
+    ``||f - g||`` over the domain rather than a sample of it. Components are
+    combined in the Euclidean sense, and **for a rational Bézier the norm is
+    over the homogeneous coefficients, weight column included -- not over the
+    projected mapping**.
+
+    The operators and Gram matrices are supplied rather than assembled, for
+    the same reason as :func:`reduce_bezier_degree`: assembling either needs
+    exact arithmetic that is deliberately not ported. See the file comment of
+    ``cpp/include/pantr/bezier/degree.hpp`` for the full argument.
+
+    Args:
+        bezier (Bezier32 | Bezier64): The Bézier that would be reduced.
+        decrements (Sequence[int]): Degrees to drop per parametric direction,
+            as :func:`reduce_bezier_degree` takes.
+        operators (Sequence[npt.NDArray[np.float64]]): One reduction operator
+            per parametric direction, as :func:`reduce_bezier_degree` takes.
+        grams (Sequence[npt.NDArray[np.float64]]): One Bernstein Gram matrix
+            per parametric direction, ``bezier.dim`` of them, always
+            ``float64``, 2D and C-contiguous, each square of that direction's
+            **original** order (``degree(d) + 1``).
+
+    Returns:
+        float: The ``L2`` norm of the error, in the units of the control
+            points.
+
+    Raises:
+        TypeError: If any entry of ``decrements`` is negative, or if any
+            operator or Gram matrix has the wrong dtype or rank, or is not
+            C-contiguous.
+        ValueError: If ``decrements``, ``operators`` or ``grams`` does not
+            have ``bezier.dim`` entries, if a decrement exceeds its
+            direction's degree, or if an operator's or Gram matrix's shape
+            does not match its direction.
     """
 
 def yuksel_roots(
