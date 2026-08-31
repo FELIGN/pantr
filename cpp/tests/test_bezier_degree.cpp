@@ -566,6 +566,88 @@ void check_reduction_inverts_elevation() {
     }
 }
 
+/// Regression for the fix that charges `elevation_round_trip_bound`'s contraction
+/// term at `eps_t` per accumulated term rather than once in total (self-review
+/// commit "charge the elevation bound at the storage epsilon it actually spends").
+///
+/// Nothing above exercises that fix: `check_reduction_inverts_elevation`'s base
+/// values `{1, 4, -2}` elevate from degree 2 to 3 (`p = 2, t = 1`) with elevation
+/// coefficients `1/3, 2/3`, and `1*(1/3) + 4*(2/3) = 3` exactly -- an integer, so
+/// both the reverted and the corrected formula are only ever checked against zero
+/// there, and the same is true of `check_elevation_raises_extents` and
+/// `check_elevation_preserves_endpoints_exactly`, which never look at an interior
+/// coefficient at all.
+///
+/// The control values below are six-decimal-digit literals **on purpose, not
+/// simplified to small integers**: every interior elevation coefficient is
+/// `C(p,j) C(t,i-j) / C(p+t,i)`, a ratio whose denominator is generally not a power
+/// of two, so the true elevated value needs an infinite binary expansion unless the
+/// numerator happens to carry the same non-power-of-two factor. Small integers hit
+/// that cancellation by coincidence (as `{1, 4, -2}` does above); a value with six
+/// arbitrary-looking decimal digits practically cannot, so the construction error
+/// stays genuinely nonzero. Do not "simplify" them back -- that is exactly how the
+/// bug this pins went unexercised the first time.
+///
+/// `p = 10, t = 13` (`max|P_i| ~= 9.6`) was found by search over degree, increment
+/// and magnitude for a case where the true error separates the two formulas: at
+/// `T = float` the measured error below is `1.64x` `elevation_round_trip_bound`
+/// evaluated at `gamma_n(1, eps_t)` (the reverted formula) and `0.15x` it evaluated
+/// at `gamma_n(base_degree + 1, eps_t)` (the corrected one) -- so this case fails
+/// under the old formula and passes under the new one. Checked by hand, restoring
+/// the line immediately after: reverting just that one term made this check (and
+/// only this check) fail.
+void check_elevation_construction_error_separates_the_two_bounds() {
+    using T = float;
+    const double eps_t = static_cast<double>(std::numeric_limits<T>::epsilon());
+
+    const std::vector<T> base_values{
+        T(-7.473908), T(-3.151214), T(-5.629707), T(8.153823), T(9.341993), T(9.241245),
+        T(6.120054),  T(9.623914),  T(7.850921),  T(0.838355), T(4.074695)};
+    const std::size_t base_degree = base_values.size() - 1;  // 10
+    const Bezier<T> base = make_bezier<T>(base_values, {base_values.size(), 1}, false);
+
+    const std::vector<std::size_t> increments{13};
+    const Bezier<T> elevated = elevate_degree<T>(base, std::span<const std::size_t>(increments));
+    PANTR_CHECK(elevated.degree(0) == base_degree + 13);
+
+    // The exact elevated control points, from an independent closed-form
+    // computation (Farin's elevation formula, `Q_i = sum_j C(p,j) C(t,i-j) /
+    // C(p+t,i) * P_j`) carried out in exact rational arithmetic (Python
+    // `fractions.Fraction`, on the exact dyadic value of each `float32` input
+    // above) and rounded to `double` once -- the same provenance discipline
+    // `reduction_operator_3_1()` and `bernstein_gram_2/3()` use below, and
+    // independent of both the C++ kernel under test and the numba/NumPy oracle
+    // `tests/parity/` compares against.
+    const std::vector<double> expected{
+        -7.473907947540283,    -5.594475746154785,    -4.924740844093293, -3.9019786944031245,
+        -2.1947831334803887,   -0.013438977296470925, 2.2774665569450643, 4.353300654813318,
+        6.006773415681271,     7.159422932080153,     7.839450658768752,  8.145079663670334,
+        8.20419976475986,      8.13637004058629,      8.021313287892236,  7.8779012182490336,
+        7.658336067262726,     7.262826365228394,     6.579574417620131,  5.552383098004566,
+        4.272692395360506,     3.0834143128790874,    2.667590716610784,  4.074695110321045};
+
+    const double max_abs_ctrl = max_abs_values<T>(base.net().values());
+    const double bound = elevation_round_trip_bound(base_degree, eps_t, max_abs_ctrl);
+
+    const std::span<const T> elevated_vals = elevated.net().values();
+    double max_diff = 0.0;
+    for (std::size_t i = 0; i < expected.size(); ++i) {
+        const double diff = std::abs(static_cast<double>(elevated_vals[i]) - expected[i]);
+        max_diff = std::max(max_diff, diff);
+        PANTR_CHECK_MSG(diff <= bound,
+                        "elevation's per-coefficient construction error exceeded "
+                        "elevation_round_trip_bound");
+    }
+    // Nonzero on purpose: `check_reduction_inverts_elevation`'s three integer
+    // control values pass this same shape of check against zero either way, and a
+    // future change could silently reopen that blind spot here too. If this ever
+    // reads exactly 0, the case has stopped exercising the rounding path it exists
+    // to pin and needs new control values, not a relaxed assertion.
+    PANTR_CHECK_MSG(max_diff > 0.0,
+                    "the case chosen to separate the two elevation bounds became exact -- it no "
+                    "longer exercises the rounding path elevation_round_trip_bound charges");
+}
+
 /// Reduction interpolates the endpoints, bit for bit: `reduction_operator_3_1()`'s
 /// first and last rows are unit vectors, so `core::apply_reduction_operator`'s
 /// inner product for those two output rows reduces to a single term with
@@ -814,6 +896,7 @@ int main() {
     check_elevation_raises_extents<float>();
     check_reduction_inverts_elevation<double>();
     check_reduction_inverts_elevation<float>();
+    check_elevation_construction_error_separates_the_two_bounds();
     check_reduction_interpolates_endpoints_exactly<double>();
     check_reduction_interpolates_endpoints_exactly<float>();
     check_squared_l2_norm_of_constant();
