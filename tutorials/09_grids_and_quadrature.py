@@ -60,7 +60,8 @@ ug.plot(scalars="cell_id", show_edges=True, cpos="xy")
 # A hierarchical grid
 # -------------------
 # The same export works for a refined hierarchical grid -- the active cells show
-# the multi-level structure directly.
+# the multi-level structure directly.  Refinement returns a *new* grid and leaves
+# the one it was called on alone, so the result has to be captured.
 hgrid = hierarchical_grid(uniform_grid([[0.0, 1.0], [0.0, 1.0]], 4), 2)
-hgrid.refine(0, [0, 0], [2, 2])
+hgrid = hgrid.refine(0, [0, 0], [2, 2])
 viz.grid_to_pyvista(hgrid).plot(show_edges=True, cpos="xy")
