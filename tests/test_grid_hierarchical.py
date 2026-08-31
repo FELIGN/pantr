@@ -2099,3 +2099,75 @@ def test_normalize_blocks_is_idempotent() -> None:
         assert _normalize_blocks(list(once)) == once
         assert once == blocks  # the stored lists are already in normal form
     assert g.max_level >= 2  # more than one level was checked
+
+
+def _random_decomposition(
+    rng: np.random.Generator,
+) -> list[tuple[tuple[int, ...], tuple[int, ...]]]:
+    """Return a random non-overlapping set of unit blocks in a small lattice.
+
+    Unit blocks, so the set is automatically non-overlapping and covers a valid
+    active-leaf configuration for one level, and shuffled, so the caller can compare
+    two orders of the same set.
+    """
+    ndim = int(rng.integers(1, 4))
+    n = int(rng.integers(2, 6))
+    cells = [c for c in itertools.product(*(range(n),) * ndim) if rng.random() < 0.55]
+    blocks = [(c, tuple(x + 1 for x in c)) for c in cells]
+    rng.shuffle(blocks)
+    return blocks
+
+
+def test_normalize_blocks_is_idempotent_over_random_decompositions() -> None:
+    """Normalization is a fixed point, over decompositions no fixture would reach.
+
+    This is the property the value-returning refinement rests on and the reason the
+    returned grid's flat cell ids match what the mutating implementation produced:
+    every operation hands its *whole* per-level block list to ``_from_blocks``, which
+    normalizes each level including the ones the operation never touched.  Were
+    normalization not a fixed point, those levels would be re-partitioned and every
+    flat id would move.
+    """
+    rng = np.random.default_rng(20260831)
+    merged_something = 0
+    checked = 0
+    for _ in range(400):
+        blocks = _random_decomposition(rng)
+        if not blocks:
+            continue
+        once = _normalize_blocks(list(blocks))
+        assert _normalize_blocks(list(once)) == once
+        checked += 1
+        merged_something += len(once) < len(blocks)
+    # Without merges this would only be testing `sorted`, which is idempotent trivially.
+    assert checked > 300
+    assert merged_something > checked // 2
+
+
+def test_normalize_blocks_depends_on_the_order_it_is_given() -> None:
+    """The greedy merge's normal form is order-dependent, and that is load-bearing.
+
+    Which adjacent pairs merge depends on the order the blocks arrive in, so the same
+    cell set has several valid rectangle partitions and normalization picks the one its
+    input order leads to.  Flat cell ids are handed out block by block, so the
+    partition is observable -- which is why :meth:`~pantr.grid.HierarchicalGrid.coarsen`
+    appends the demoted box *last*, exactly where the in-place implementation appended
+    it, and why :meth:`~pantr.grid.HierarchicalGrid.coarsen_cells` documents its
+    deepest-first parent order as fixed.
+
+    Pinned as a test because the tempting "improvement" -- making normalization
+    canonical, independent of input order -- would move every flat cell id in a
+    coarsened grid, and a reimplementation that merges in a different order (the C++
+    port) would silently disagree with this one.
+    """
+    rng = np.random.default_rng(20260831)
+    differing = 0
+    for _ in range(400):
+        blocks = _random_decomposition(rng)
+        if len(blocks) < 2:
+            continue
+        other = list(blocks)
+        rng.shuffle(other)
+        if _normalize_blocks(list(blocks)) != _normalize_blocks(other):
+            differing += 1
+    assert differing > 0, "normalization has become order-independent; see this docstring"
