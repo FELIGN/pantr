@@ -44,6 +44,8 @@ would are the C++ ones, which check it against a known answer.
 
 from __future__ import annotations
 
+from fractions import Fraction
+from math import comb
 from typing import Any, Final
 
 import numpy as np
@@ -567,3 +569,115 @@ def test_each_claim_holds_over_a_sweep_ten_times_the_shipped_one(
             f"that is ten times its shipped 28. The sweep has stopped being ten times "
             f"the shipped one."
         )
+
+
+def _exact_bernstein_monomials(degree: int, index: int) -> list[Fraction]:
+    """Expand one Bernstein basis polynomial into monomial coefficients, exactly.
+
+    ``B_{i,n}(x) = C(n,i) x^i (1-x)^(n-i)``, expanded by the binomial theorem. Used to
+    build the univariate Gram matrix **without** the closed form the implementation
+    uses, so that the check is independent of the thing it checks.
+
+    Args:
+        degree (int): Polynomial degree ``n``.
+        index (int): Basis index ``i``, in ``[0, n]``.
+
+    Returns:
+        list[Fraction]: Coefficients of ``x^0`` through ``x^n``.
+    """
+    coefficients = [Fraction(0)] * (degree + 1)
+    outer = Fraction(comb(degree, index))
+    for k in range(degree - index + 1):
+        sign = Fraction((-1) ** k)
+        coefficients[index + k] += outer * Fraction(comb(degree - index, k)) * sign
+    return coefficients
+
+
+def _exact_gram(degree: int) -> list[list[Fraction]]:
+    """The univariate Bernstein Gram matrix, by exact monomial integration.
+
+    ``G_ij = integral_0^1 B_i B_j``, obtained by multiplying the two monomial
+    expansions and integrating term by term with ``integral x^k = 1/(k+1)``. No
+    binomial ratio and no closed form, which is the point: the implementation uses
+    Farouki and Rajan's closed form, and a check that used it too would verify only
+    that the code evaluates its own formula.
+
+    Args:
+        degree (int): Polynomial degree.
+
+    Returns:
+        list[list[Fraction]]: The exact ``(degree + 1, degree + 1)`` Gram matrix.
+    """
+    monomials = [_exact_bernstein_monomials(degree, i) for i in range(degree + 1)]
+    gram: list[list[Fraction]] = []
+    for row in monomials:
+        gram.append(
+            [
+                sum(
+                    (
+                        a * b / Fraction(p + q + 1)
+                        for p, a in enumerate(row)
+                        for q, b in enumerate(col)
+                    ),
+                    Fraction(0),
+                )
+                for col in monomials
+            ]
+        )
+    return gram
+
+
+@pytest.mark.parametrize("degrees", [(4,), (3, 2)])
+def test_the_squared_norm_is_accurate_against_exact_rational_integration(
+    cpp_backend: None, degrees: tuple[int, ...]
+) -> None:
+    """The independent check every ported module owes, since parity cannot see a shared error.
+
+    ``design/backend_parity.md`` opens with it: parity says the two backends agree, not
+    that either is right, so a defect in the Gram matrix or in the quadratic form is
+    invisible to every comparison above -- both sides are handed the *same* Gram
+    matrix, which makes an error in it common mode by construction.
+
+    The oracle here is the same integral evaluated in :class:`~fractions.Fraction` from
+    the monomial expansion of the basis, so it shares no formula with the
+    implementation: the code uses Farouki and Rajan's closed-form binomial ratio, this
+    integrates term by term.
+
+    The bound is one-sided -- this compares one computation against the truth, not two
+    computations against each other -- so the harness's factor of two is deliberately
+    absent.
+    """
+    del cpp_backend
+
+    rng = np.random.default_rng(20260831)
+    shape = tuple(p + 1 for p in degrees)
+    coefficients = np.ascontiguousarray(rng.standard_normal(shape), dtype=np.float64)
+
+    grams = [_exact_gram(p) for p in degrees]
+    exact = Fraction(0)
+    for flat, value in enumerate(coefficients.reshape(-1)):
+        left = np.unravel_index(flat, shape)
+        for other, partner in enumerate(coefficients.reshape(-1)):
+            right = np.unravel_index(other, shape)
+            weight = Fraction(1)
+            for axis, gram in enumerate(grams):
+                weight *= gram[int(left[axis])][int(right[axis])]
+            exact += Fraction(float(value)) * Fraction(float(partner)) * weight
+
+    computed = _squared_l2_norm(coefficients)
+
+    # gamma over the contraction the implementation runs: sum_a (degree_a + 1) Gram
+    # stages plus one per coefficient for the final inner product, one rounding each,
+    # against the same form evaluated on |c| -- which is the reachable magnitude
+    # because a Bernstein Gram matrix has no negative entry.
+    stages = sum(p + 1 for p in degrees) + coefficients.size
+    unit = float(np.finfo(np.float64).eps) / 2.0
+    growth = stages * unit / (1.0 - (stages * unit))
+    magnitude = _squared_l2_norm(np.abs(coefficients))
+
+    assert abs(computed - float(exact)) <= growth * magnitude, (
+        f"the Bernstein-Gram quadratic form left its one-sided bound against exact "
+        f"rational integration at degrees {degrees}: computed {computed!r}, exact "
+        f"{float(exact)!r}, bound {growth * magnitude!r}. Both backends share this "
+        f"Gram matrix, so no parity test above could have seen this."
+    )
