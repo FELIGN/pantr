@@ -580,7 +580,7 @@ void check_split_reproduces_the_curve() {
 
     for (std::size_t direction = 0; direction < degrees.size(); ++direction) {
         for (const T value : {T(0.3), T(0.6)}) {
-            std::pair<Bezier<T>, Bezier<T>> halves = ops::split<T>(bez, direction, value);
+            std::pair<Bezier<T>, Bezier<T>> halves = ops::split<T>(bez, direction, static_cast<pantr::accumulator_t<T>>(value));
             const Bezier<T>& left = halves.first;
             const Bezier<T>& right = halves.second;
             PANTR_CHECK(left.degree() == bez.degree());
@@ -673,7 +673,7 @@ void check_slice_reproduces_a_fixed_direction() {
     for (std::size_t axis = 0; axis < degrees.size(); ++axis) {
         const std::size_t other_dir = 1 - axis;
         for (const T v : {T(0.0), T(0.35), T(1.0)}) {
-            const Bezier<T> sliced = ops::slice<T>(bez, axis, v);
+            const Bezier<T> sliced = ops::slice<T>(bez, axis, static_cast<pantr::accumulator_t<T>>(v));
             PANTR_CHECK(sliced.dim() == 1);
             PANTR_CHECK(sliced.degree(0) == degrees[other_dir]);
 
@@ -714,7 +714,7 @@ void check_slice_point_matches_evaluate() {
     const std::size_t stages = stages_of(degrees);
 
     for (const T v : {T(0), T(1)}) {
-        const std::vector<T> sp = ops::slice_point<T>(bez, v);
+        const std::vector<T> sp = ops::slice_point<T>(bez, static_cast<pantr::accumulator_t<T>>(v));
         const std::vector<T> ev = evaluate_at<T>(bez, {{v}});
         for (std::size_t c = 0; c < rank; ++c) {
             PANTR_CHECK_MSG(sp[c] == ev[c],
@@ -728,8 +728,14 @@ void check_slice_point_matches_evaluate() {
     // runs evaluate_bezier_1d's Bernstein ratio recurrence instead.
     const double bound = de_casteljau_pass_bound(degrees[0], eps_t, max_abs_ctrl)
                         + (gamma_n(stages, eps_t) * max_abs_ctrl);
+    // The parameter is `accumulator_t<T>` by design -- narrowing it was the defect this
+    // file's own history records -- so the widening is written out rather than left
+    // implicit, which clang reports under `-Wdouble-promotion`. It converts from `T` and
+    // not from a `double` literal on purpose: at `T = float`, `double(float(0.3))` is
+    // 0.30000001192092896 and `double(0.3)` is not, so the shorter spelling would move
+    // the value this bound is tested against.
     for (const T v : {T(0.3), T(0.5), T(0.8)}) {
-        const std::vector<T> sp = ops::slice_point<T>(bez, v);
+        const std::vector<T> sp = ops::slice_point<T>(bez, static_cast<pantr::accumulator_t<T>>(v));
         const std::vector<T> ev = evaluate_at<T>(bez, {{v}});
         for (std::size_t c = 0; c < rank; ++c) {
             const double diff = std::abs(static_cast<double>(sp[c]) - static_cast<double>(ev[c]));
@@ -752,7 +758,7 @@ void check_boundary_matches_slice_and_corners() {
     for (std::size_t axis = 0; axis < degrees.size(); ++axis) {
         for (const int side : {0, 1}) {
             const Bezier<T> b = ops::boundary<T>(bez, axis, side);
-            const Bezier<T> s = ops::slice<T>(bez, axis, side == 0 ? T(0) : T(1));
+            const Bezier<T> s = ops::slice<T>(bez, axis, static_cast<pantr::accumulator_t<T>>(side == 0 ? T(0) : T(1)));
             const std::span<const T> b_vals = b.net().values();
             const std::span<const T> s_vals = s.net().values();
             for (std::size_t i = 0; i < b_vals.size(); ++i) {
@@ -771,7 +777,7 @@ void check_boundary_matches_slice_and_corners() {
     for (const int side0 : {0, 1}) {
         for (const int side1 : {0, 1}) {
             const Bezier<T> face = ops::boundary<T>(bez, 0, side0);
-            const std::vector<T> corner = ops::slice_point<T>(face, side1 == 0 ? T(0) : T(1));
+            const std::vector<T> corner = ops::slice_point<T>(face, static_cast<pantr::accumulator_t<T>>(side1 == 0 ? T(0) : T(1)));
             for (std::size_t c = 0; c < rank; ++c) {
                 const std::vector<std::size_t> idx{side0 == 0 ? std::size_t{0} : degrees[0],
                                                     side1 == 0 ? std::size_t{0} : degrees[1], c};
