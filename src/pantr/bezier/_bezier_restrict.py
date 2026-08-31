@@ -11,12 +11,13 @@ Bézier round-trip.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from typing import TYPE_CHECKING
 
 import numpy as np
 
 from .._array_utils import _flatten_along_axis, _unflatten_along_axis
-from ._bezier_backend import restrict_kernel
+from ._bezier_backend import restrict_kernel, restrict_nd_kernel
 
 if TYPE_CHECKING:
     from . import Bezier
@@ -45,30 +46,49 @@ def _restrict_bezier(
         ValueError: If every direction is ``None`` or matches the full
             ``[0, 1]`` domain.
     """
+    lower = [0.0 if bounds is None else float(bounds[0]) for bounds in bounds_per_dim]
+    upper = [1.0 if bounds is None else float(bounds[1]) for bounds in bounds_per_dim]
+
+    # Checked above the backend branch, so both raise the same message for the same
+    # argument. A direction whose bounds are the full domain is skipped rather than
+    # restricted, which is not an optimisation: the two-pass restriction over [0, 1]
+    # commits roundings that leaving the direction alone does not.
+    if not any(lo != 0.0 or up != 1.0 for lo, up in zip(lower, upper, strict=True)):
+        raise ValueError("Bounds match the full domain; at least one direction must be restricted.")
+
+    return restrict_nd_kernel()(bezier, lower, upper)
+
+
+def _restrict_python(
+    bezier: Bezier,
+    lower: Sequence[float],
+    upper: Sequence[float],
+) -> Bezier:
+    """Restrict with NumPy and the Numba kernel: the oracle for the port.
+
+    Args:
+        bezier (~pantr.bezier.Bezier): The Bézier to restrict.
+        lower (Sequence[float]): Lower bound per parametric direction.
+        upper (Sequence[float]): Upper bound per parametric direction.
+
+    Returns:
+        ~pantr.bezier.Bezier: The restricted Bézier.
+
+    Note:
+        No input validation is performed here; Layer 2 did it above the branch.
+    """
     from . import Bezier as BezierCls  # noqa: PLC0415
 
     ctrl = bezier.control_points
-    any_restricted = False
     restrict = restrict_kernel()
 
-    for i, bounds in enumerate(bounds_per_dim):
-        if bounds is None:
+    for i, (low, high) in enumerate(zip(lower, upper, strict=True)):
+        if low == 0.0 and high == 1.0:
             continue
-
-        lower, upper = bounds
-
-        # Skip full-domain bounds.
-        if lower == 0.0 and upper == 1.0:
-            continue
-
-        any_restricted = True
 
         pts_2d, trailing_shape = _flatten_along_axis(ctrl, i)
         out = np.empty_like(pts_2d)
-        restrict(pts_2d, lower, upper, out)
+        restrict(pts_2d, low, high, out)
         ctrl = _unflatten_along_axis(out, trailing_shape, i)
-
-    if not any_restricted:
-        raise ValueError("Bounds match the full domain; at least one direction must be restricted.")
 
     return BezierCls(ctrl, is_rational=bezier.is_rational)
