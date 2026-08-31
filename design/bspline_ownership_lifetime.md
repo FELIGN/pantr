@@ -133,9 +133,21 @@ whose bytes are still intact).
 
 Two deterministic detectors, measured:
 
-- **`sys.getrefcount` on the owner's handle, before and after the access.** The delta is `1`
-  exactly when a keep-alive was installed and `0` otherwise -- measured across all seven
-  binding shapes above, with no C++ change and no annotation. This is the detector to use.
+- **`sys.getrefcount` on the owner's handle, before and after the access.** The delta is
+  **`0` exactly when no keep-alive was installed, and the number of keep-alives installed
+  otherwise** -- which is `1` for a scalar accessor and **`N` for an `N`-element container under
+  `reference_internal`**, because F3's per-element keep-alive really is per element. Measured
+  across eight binding shapes, with no C++ change and no annotation. This is the detector to use.
+
+  **The count is worth stating carefully, because two correct measurements of it disagree.** A
+  first pass here measured `1` for the container case and wrote the rule as a bare "exactly 1"; an
+  independent second pass measured `3` on a three-element vector and refuted it. Both runs were
+  right. The first held only the *escaped element* (`x.all_refint()[0]`), so the temporary list
+  died and released the other two elements' keep-alives before the second `getrefcount`; the second
+  retained the whole list. So the delta is a function of **how many returned elements are still
+  alive at the moment it is read**, and a test must fix that explicitly rather than let a temporary
+  decide it. For class H the assertion is `delta == 0` and the question does not arise, which is a
+  further small reason to prefer that shape.
 - **`weakref.ref` on the owner's handle**, which needs `nb::is_weak_referenceable()` on the
   bound class; without it, `weakref.ref` on a nanobind instance raises
   `TypeError: cannot create weak reference` (measured), and `gc.get_referents(child)` is `[]`,
@@ -649,7 +661,10 @@ between mechanisms:**
 - **Measured, 2026-08-31, on this machine, nanobind 2.14.0 / CPython 3.14.6 / g++ 14.4 `-O2`:**
   every row of F1's, F2's, F3's and F4's tables; that `reference_internal` on a by-value return
   is a no-op, on the pair `copy_at` / `copy_at_refint`; that `sys.getrefcount` on the owner moves
-  by exactly 1 under a keep-alive and 0 without; that a `weakref` on a nanobind instance raises
+  by 0 when no keep-alive is installed, by 1 for a scalar keep-alive, and by `N` for an
+  `N`-element container under `reference_internal` with the whole list retained -- the last of
+  these refuting a first pass that measured 1 while holding a single element, which F4 now
+  records; that a `weakref` on a nanobind instance raises
   unless the class is annotated; that a bare `rv_policy::reference` escapee read the correct value
   in the scalar case and garbage in the container case; the seven-row cost table; the 5.83 ns
   against 14.92 ns `space_ref` / `space` difference. The harness is described under "What was

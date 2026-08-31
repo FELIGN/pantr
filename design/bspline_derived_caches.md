@@ -136,10 +136,15 @@ within a row unchanged. **Read the ratios, not the absolutes.**
   allocations, and at small `n` the allocations, not the scan, are the cost. My own first estimate
   -- "a small constant factor on an already-O(n) constructor" -- was wrong, and the measurement is
   what refuted it.
-- **`std::call_once` costs about 1.6 microseconds on its first call**, and the cost is
-  size-independent (1793 - 173 = 1620 ns at n=11; 1955 - 446 = 1509 ns at n=39), which is the
-  signature of glibc's `pthread_once` issuing a `FUTEX_WAKE` after running the initialiser even
-  with no waiters. At n=11 that is **ten times the entire construction**.
+- **`std::call_once` costs one to a few microseconds on its first call, and the cost is
+  size-independent.** The table's differences give 1620 ns at n=11 (1793 - 173) and 1509 ns at
+  n=39; an independent re-measurement on a differently-loaded machine gave 1.4 to 3.6 microseconds
+  across the same four sizes with no trend in `n`. **The mechanism was confirmed directly rather
+  than inferred**: `strace` on a minimal `call_once` program shows
+  `futex(..., FUTEX_WAKE_PRIVATE, 2147483647) = 0` on the first call with zero waiters, which is
+  glibc's `pthread_once` waking a queue that is empty. At n=11 that is roughly **ten times the
+  entire construction**. Take the microsecond order, not the figure: this box is shared and the
+  spread above is what concurrent load does to it.
 - **Double-checked locking over an `atomic<bool>` costs, on first use, within noise of computing
   eagerly** (188 vs 173, 484 vs 446, 3165 vs 3178, 22025 vs 18058) **and 2.9 to 8.0 ns per access
   thereafter.** It is free when the derived data is never touched and free when it is.
@@ -162,7 +167,12 @@ env, warm cache:
 | 263 | 1487 ns | 8075 ns | 4247 ns | 1.9x |
 | 2055 | 2738 ns | 23051 ns | 16894 ns | 1.4x |
 
-A factor of 1.4 to 2.1, against a kernel whose 4.3 microseconds for an eleven-element scan is
+An independent re-measurement gave 1.3x to 3.2x over the same sizes, on a box that was
+simultaneously running two other agents' sweeps. **The claim to carry is the order, not the
+figure: a modest constant factor, not an order of magnitude**, and the reason is structural rather
+than incidental -- the hit's own key handling is O(n), so it cannot be much cheaper than the scan.
+
+A factor of roughly 1.4 to 3.2, against a kernel whose 4.3 microseconds for an eleven-element scan is
 Numba dispatch overhead rather than work. **The port removes the thing the cache is hiding.** For
 comparison, the same three arrays computed in C++ inside the constructor cost 137 ns at n=11 and
 about 14.7 microseconds at n=2055 (the eager-arrays column minus the construct-only column above),
@@ -555,6 +565,12 @@ main decision is reversed.
   size-independent across two sizes. The construct-and-destroy benchmarks moved by up to 2x
   between runs of the same binary while every within-row ratio held; the tables report one run and
   the text says which readings survive that.
+- **Re-measured independently, same day, on the same shared box under other agents' load:** the
+  `call_once` first call at 1.4 to 3.6 microseconds with no trend in `n`, the DCLP-tracks-eager
+  result, the TSan races and the 60 clean runs without it, and F5's ratio at 1.3x to 3.2x. Two of
+  the four figures moved outside the range this note first stated, which is why the text now carries
+  the order rather than the number. **The `FUTEX_WAKE` mechanism was added by that pass**, from
+  `strace`, and it is the part that does not depend on the machine.
 - **Measured under ThreadSanitizer (g++ 14.4 `-fsanitize=thread`), 8 threads:** 4 data races in
   the bare `mutable std::optional` variant, all frames in its accessor; 0 in the `call_once` and
   eager variants in the same binary. **And measured without TSan: 60 of 60 runs produced the
