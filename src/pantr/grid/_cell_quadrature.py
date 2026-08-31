@@ -12,6 +12,26 @@ to that cell's volume and ``sum_i w_i f(x_i)`` approximates the integral of
 This is the uncut/background-cell quadrature bridge: a downstream consumer takes
 this rule for interior cells and substitutes its own cut-cell rule on cells
 flagged as cut.
+
+No C++ counterpart, and why
+---------------------------
+
+Both operands are owned by the C++ core since the 2026-08-27 amendment to
+``design/cross_backend_types.md``: under ``PANTR_BACKEND=cpp`` the cell bounds come
+from ``pantr::grid::TensorProductGrid`` and the reference points and weights from
+``pantr::quad::QuadratureRule``. So this function already *runs on* the port; what
+is still written here is the push-forward itself, one broadcast ``lo + span * u``
+and one product of the span.
+
+Moving those two lines is a port and not a re-pointing, which is why it is not done
+here. C++ is licensed to contract ``lo + span * u`` into a fused multiply-add where
+the target ISA has one and numpy is not, so the two backends would stop agreeing
+bitwise and the gap would have to be bounded rather than asserted away -- a parity
+claim of its own, on a quantity the whole immersed-quadrature path is built on.
+
+It should eventually move, and that is recorded so this is not mistaken for a
+ruling that it never should: a C++ program links pantr with no interpreter present,
+and such a consumer holding a grid and a rule has nothing to call.
 """
 
 from __future__ import annotations
