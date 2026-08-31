@@ -78,8 +78,14 @@ message(STATUS
 #
 # Most of these are rejected by a `static_assert` inside PANTR_GRID_CENSUS, so their
 # expected text is the assertion's own and is identical on every compiler. Where the
-# rejection is a language rule instead, the pattern below is the substring all four
-# compilers were MEASURED to print; the measurement is in the file's own header.
+# rejection is a language rule instead, the pattern is the substring all four compilers
+# were MEASURED to print; the measurement is in the file's own header.
+#
+# No pattern may contain a QUOTE around a compiler-quoted identifier, and that rule was
+# bought the hard way. GCC renders its `%<...%>` quoting as U+2018/U+2019 in a UTF-8
+# locale, so a pattern written with ASCII apostrophes matches on one GCC build and not
+# on another -- measured: g++ 10.5 prints `as âthisâ argument`, where the conda g++ 14
+# prints `as 'this' argument`. Match text the compiler writes as prose instead.
 #
 # The targets are OBJECT libraries -- nothing to link, no `main` to write -- and
 # EXCLUDE_FROM_ALL, so `cmake --build` never tries to build them and only ctest does.
@@ -99,7 +105,7 @@ function(pantr_add_negative_test _name _message)
       LABELS "negative")
 endfunction()
 
-# The ticket's six, with two departures the design records and one addition.
+# The ticket's six, with two departures the design records and five additions.
 #
 #   * "a const grid invalidating its cache" became "nothing hands out the cache slot".
 #     This ticket ships no `invalidate_caches()`: FELIGN/pantr#378 makes refinement
@@ -109,21 +115,24 @@ endfunction()
 #   * "a grid defined without its traits" is rejected at the grid's own definition,
 #     which is why the pattern names the traits template rather than a census message.
 #
-# The three additions are `num_local_facets` -- a `2 * ndim` invariant of the base's own
-# `facet_tags_`, which nothing else asserts negatively -- and the two directions of a
-# hook disagreeing with its declaration, which are what make the bitmask trustworthy and
-# which the acceptance criteria did not list.
+# Five are additions: `num_local_facets` -- a `2 * ndim` invariant of the base's own
+# `facet_tags_`, which nothing else asserts negatively -- the two directions of a hook
+# disagreeing with its declaration, which are what make the bitmask trustworthy and
+# which the acceptance criteria did not list, and the const-output-span trap on the two
+# primitives the ticket did not name.
 pantr_add_negative_test(neg_cache_handed_out_mutably "binding reference of type")
-pantr_add_negative_test(neg_const_grid_mutates_tags "'this' argument")
+pantr_add_negative_test(neg_const_grid_mutates_tags "discards qualifiers|not marked const")
 pantr_add_negative_test(neg_grid_without_traits "grid_traits<TraitlessGrid>")
 pantr_add_negative_test(neg_primitive_const_output_span "not a grid")
+pantr_add_negative_test(neg_locate_const_ref_point "not a grid")
+pantr_add_negative_test(neg_neighbor_wrong_return "not a grid")
 pantr_add_negative_test(neg_hook_wrong_return_type
                         "does not have the signature of the default")
 pantr_add_negative_test(neg_hook_hardcodes_double_at_float "FloatGrid, locate_many")
 pantr_add_negative_test(neg_hook_written_not_declared
-                        "the class and its grid_traits disagree")
+                        "UndeclaredHookGrid, boundary_facets.: the class and its grid_traits")
 pantr_add_negative_test(neg_hook_declared_not_written
-                        "the class and its grid_traits disagree")
+                        "UnwrittenHookGrid, boundary_facets.: the class and its grid_traits")
 pantr_add_negative_test(neg_num_local_facets_specialised
                         "num_local_facets is not specialisable")
 

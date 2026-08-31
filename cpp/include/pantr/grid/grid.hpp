@@ -35,7 +35,9 @@
 /// ## The three primitives
 ///
 /// A grid supplies exactly three members, and `GridLike` pins each to an EXACT
-/// member-pointer type rather than to callability:
+/// member-pointer type rather than to callability. Three here against five in
+/// `src/pantr/grid/_grid.py`, and the difference is not a disagreement: `ndim` and
+/// `num_cells` are abstract there and base state here, for the reason given below.
 ///
 /// ```cpp
 /// void cell_bounds(std::int64_t cid, std::span<T> lo, std::span<T> hi) const;
@@ -77,8 +79,11 @@
 /// `D` does not redeclare it, and `R (D::*)(...)` when it does. The two are the same
 /// type exactly when the hook is absent, and that stays true when the hook's return
 /// type is wrong or a parameter is const-qualified, where a `requires` probe answers
-/// `true`. Known limit, and it is a loud one: `&D::name` is ill-formed if `D` overloads
-/// the name or makes it a template. Both are design errors here.
+/// `true`. Known limits, and they are loud: `&D::name` is ill-formed if `D` overloads
+/// the name or makes it a template, and a primitive declared `noexcept` has a different
+/// member-pointer type and so fails `GridLike` rather than the census. All three are
+/// design errors here; the third is worth knowing because its diagnostic says only
+/// "not a grid".
 ///
 /// The differential oracle a specialisation owes its default is the qualified call:
 /// `g.pantr::grid::GridBase<G>::boundary_facets()` reaches the hidden default. A
@@ -125,7 +130,6 @@
 #include <vector>
 
 #include "pantr/core/mdspan.hpp"
-#include "pantr/core/precondition.hpp"
 #include "pantr/core/scalar.hpp"
 #include "pantr/geometry/aabb.hpp"
 #include "pantr/grid/bvh_tree.hpp"
@@ -400,8 +404,7 @@ class GridBase {
     /// \param lo Output lo corner, length `ndim`.
     /// \param hi Output hi corner, length `ndim`.
     /// \throws std::out_of_range If `cid` or `lfid` is out of range.
-    /// \note `lo` and `hi` must both have length `ndim`; a shorter span is indexed out
-    ///       of bounds. Checked by `PANTR_PRECONDITION`.
+    /// \throws std::invalid_argument If `lo` or `hi` is not length `ndim`.
     void local_facet_bounds(std::int64_t cid, std::int64_t lfid, std::span<scalar_type> lo,
                             std::span<scalar_type> hi) const {
         require_corner_spans(lo, hi);
@@ -433,7 +436,10 @@ class GridBase {
     /// exploitable structure replaces it. This is the loop the CRTP shape was measured
     /// on.
     ///
-    /// \return `2 * n` values, row-major `(cid, lfid)` pairs, sorted by construction.
+    /// \return `2 * n` values: `n` row-major `(cid, lfid)` pairs, sorted by
+    ///         construction. Flat rather than a vector of pairs because a binding
+    ///         reshapes it to the `(n, 2)` array the Python side returns; divide the
+    ///         size by two to get the row count.
     [[nodiscard]] std::vector<std::int64_t> boundary_facets() const {
         std::vector<std::int64_t> rows;
         for (std::int64_t cid = 0; cid < num_cells_; ++cid) {
@@ -474,11 +480,11 @@ class GridBase {
     ///
     /// \param points `(npts, ndim)` row-major view of query points.
     /// \return `npts` cell ids; `-1` for a point outside every cell.
-    /// \note `points.extent(1)` must equal `ndim`. Checked by `PANTR_PRECONDITION`.
+    /// \throws std::invalid_argument If `points.extent(1)` is not `ndim`.
     [[nodiscard]] std::vector<std::int64_t> locate_many(span2d<const scalar_type> points) const {
         const auto n = static_cast<std::size_t>(ndim_);
-        PANTR_PRECONDITION(points.extent(1) == n, "points must have ndim columns");
         const std::size_t npts = points.extent(0);
+        require_shape(points, npts, "points");
         std::vector<std::int64_t> out(npts);
         for (std::size_t i = 0; i < npts; ++i) {
             const std::span<const scalar_type> pt(&at(points, i, std::size_t{0}), n);
@@ -493,12 +499,12 @@ class GridBase {
     /// Backed by `cell_bvh()`. The overlap test is inclusive on every axis, so cells
     /// touching `box` on a face, an edge or a corner are included.
     ///
-    /// \param box Query box; must match `ndim`.
+    /// \param aabb Query box; must match `ndim`.
     /// \return The overlapping cell ids, unordered.
-    /// \throws std::invalid_argument If `box.ndim()` does not match.
+    /// \throws std::invalid_argument If `aabb.ndim()` does not match.
     [[nodiscard]] std::vector<std::int64_t> query_aabb(
-        const geometry::AABB<scalar_type>& box) const {
-        return cell_bvh().query_aabb(box.lo(), box.hi());
+        const geometry::AABB<scalar_type>& aabb) const {
+        return cell_bvh().query_aabb(aabb.lo(), aabb.hi());
     }
 
     /// The cached BVH over the grid's cell AABBs, built on first use.
@@ -507,7 +513,8 @@ class GridBase {
     /// is never queried never pays for it. Not specialisable, and the cache slot is
     /// private -- nothing can hand it out.
     ///
-    /// \return The grid's spatial index.
+    /// \return A reference to a member of this grid, valid for as long as the grid is.
+    ///         Nothing invalidates it: the cache is filled once and never replaced.
     /// \warning Not fully thread-safe. Concurrent first calls may each build a valid
     ///          tree and one write wins, costing redundant construction. Call this once
     ///          on the main thread before sharing the grid across threads.
@@ -533,14 +540,12 @@ class GridBase {
     ///
     /// \param cell_lo Output lo corners, shape `(num_cells, ndim)`.
     /// \param cell_hi Output hi corners, same shape.
-    /// \note Both views must have exactly that shape. Checked by `PANTR_PRECONDITION`.
+    /// \throws std::invalid_argument If either view is not shaped `(num_cells, ndim)`.
     void collect_cell_bounds(span2d<scalar_type> cell_lo, span2d<scalar_type> cell_hi) const {
         const auto n = static_cast<std::size_t>(num_cells_);
         const auto d = static_cast<std::size_t>(ndim_);
-        PANTR_PRECONDITION(cell_lo.extent(0) == n && cell_lo.extent(1) == d,
-                           "cell_lo must have shape (num_cells, ndim)");
-        PANTR_PRECONDITION(cell_hi.extent(0) == n && cell_hi.extent(1) == d,
-                           "cell_hi must have shape (num_cells, ndim)");
+        require_shape(cell_lo, n, "cell_lo");
+        require_shape(cell_hi, n, "cell_hi");
         for (std::size_t row = 0; row < n; ++row) {
             self().cell_bounds(static_cast<std::int64_t>(row),
                                std::span<scalar_type>(&at(cell_lo, row, std::size_t{0}), d),
@@ -557,7 +562,10 @@ class GridBase {
     /// Eager rather than lazy: an empty registry has no per-cell footprint, so laziness
     /// would buy one allocation and cost a `mutable` and a branch.
     ///
-    /// \return A mutable reference to the registry, valid for the grid's lifetime.
+    /// \return A mutable reference to a member of this grid. It is valid for as long
+    ///         as the grid is, and is invalidated by nothing else; a binding must say
+    ///         so to nanobind with `rv_policy::reference_internal`, or the default
+    ///         policy copies and a write through the result is silently lost.
     [[nodiscard]] CellTags& cell_tags() noexcept { return cell_tags_; }
 
     /// The grid's sparse cell-tag registry, read only.
@@ -567,7 +575,8 @@ class GridBase {
 
     /// The grid's sparse facet-tag registry, sized `2 * ndim` facets per cell.
     ///
-    /// \return A mutable reference to the registry, valid for the grid's lifetime.
+    /// \return A mutable reference to a member of this grid, with the same lifetime
+    ///         and the same binding requirement as `cell_tags()`.
     [[nodiscard]] FacetTags& facet_tags() noexcept { return facet_tags_; }
 
     /// The grid's sparse facet-tag registry, read only.
@@ -661,18 +670,46 @@ class GridBase {
         return num_cells;
     }
 
-    /// Assert that two corner spans are both length `ndim`.
+    /// Reject two corner spans that are not both length `ndim`.
+    ///
+    /// Unconditional rather than `PANTR_PRECONDITION`, and the distinction is the one
+    /// `core/precondition.hpp` draws: that macro is `assert`, so it vanishes under
+    /// `NDEBUG` and the release build would index out of bounds instead of reporting.
+    /// A caller-supplied output span is exactly the case the sibling types check
+    /// unconditionally -- `CellTags::scatter` and `BVH::query_aabb` both throw on a
+    /// wrongly sized argument -- and the cost is one comparison per call, not per
+    /// element.
     ///
     /// \param lo Candidate lo corner.
     /// \param hi Candidate hi corner.
+    /// \throws std::invalid_argument If either span's length differs from `ndim`.
     void require_corner_spans(std::span<const scalar_type> lo,
                               std::span<const scalar_type> hi) const {
         const auto n = static_cast<std::size_t>(ndim_);
-        PANTR_PRECONDITION(lo.size() == n, "lo must have length ndim");
-        PANTR_PRECONDITION(hi.size() == n, "hi must have length ndim");
-        static_cast<void>(lo);
-        static_cast<void>(hi);
-        static_cast<void>(n);
+        if (lo.size() != n || hi.size() != n) {
+            throw std::invalid_argument("lo (" + std::to_string(lo.size()) + ") and hi ("
+                                        + std::to_string(hi.size())
+                                        + ") must both have length ndim ("
+                                        + std::to_string(n) + ").");
+        }
+    }
+
+    /// Reject a two-dimensional view that is not shaped `(rows, ndim)`.
+    ///
+    /// Unconditional, for the reason `require_corner_spans` gives.
+    ///
+    /// \param view The candidate view.
+    /// \param rows The row count it must have.
+    /// \param what The parameter's name, for the message.
+    /// \throws std::invalid_argument If either extent is wrong.
+    void require_shape(span2d<const scalar_type> view, std::size_t rows, const char* what) const {
+        const auto n = static_cast<std::size_t>(ndim_);
+        if (view.extent(0) != rows || view.extent(1) != n) {
+            throw std::invalid_argument(
+                std::string(what) + " must have shape (" + std::to_string(rows) + ", "
+                + std::to_string(n) + "); got (" + std::to_string(view.extent(0)) + ", "
+                + std::to_string(view.extent(1)) + ").");
+        }
     }
 
     std::int64_t ndim_;                            ///< Number of axes.

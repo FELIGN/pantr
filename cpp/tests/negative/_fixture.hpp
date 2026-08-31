@@ -3,11 +3,11 @@
 /// \file
 /// The well-formed grid every negative translation unit starts from.
 ///
-/// Each of them introduces exactly ONE defect on top of this, so that the diagnostic
-/// they are matched against can only have come from that defect. Keeping the fixture
-/// shared is also what keeps the files honest: if this header stopped compiling, every
-/// negative test would still fail to build and none of them would still match its
-/// message.
+/// The two files that include it introduce exactly ONE defect on top of it, so that the
+/// diagnostic they are matched against can only have come from that defect. The other
+/// seven negative translation units define their own grid rather than including this
+/// one, because their defect IS in the grid's definition and cannot be layered on a
+/// well-formed class from outside.
 
 #include <cstdint>
 #include <optional>

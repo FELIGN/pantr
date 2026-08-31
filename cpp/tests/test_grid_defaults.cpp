@@ -310,6 +310,32 @@ std::pair<std::vector<double>, std::vector<double>> bounds_of(const Grid2& g, st
     return {lo, hi};
 }
 
+/// Whether `fn` throws `std::invalid_argument`.
+template <class F>
+bool throws_invalid_argument(F fn) {
+    try {
+        fn();
+    } catch (const std::invalid_argument&) {
+        return true;
+    } catch (...) {
+        return false;
+    }
+    return false;
+}
+
+/// Whether `fn` throws `std::out_of_range`.
+template <class F>
+bool throws_out_of_range(F fn) {
+    try {
+        fn();
+    } catch (const std::out_of_range&) {
+        return true;
+    } catch (...) {
+        return false;
+    }
+    return false;
+}
+
 bool spans_equal(std::span<const double> a, std::initializer_list<double> b) {
     return a.size() == b.size() && std::equal(a.begin(), a.end(), b.begin());
 }
@@ -543,6 +569,74 @@ void test_make_restriction() {
     PANTR_CHECK_MSG(threw, "make_restriction must reject index arrays of the wrong length");
 }
 
+/// The out-parameter shape checks, which must survive a release build.
+///
+/// They are ordinary `if`/`throw`, not `PANTR_PRECONDITION`: that macro is `assert` and
+/// vanishes under `NDEBUG`, so a release build would index a short span out of bounds
+/// instead of reporting it. This test runs in every configuration, which is the point.
+void test_output_span_validation() {
+    const Grid2 g(3, 2);
+    std::vector<double> two(2);
+    std::vector<double> one(1);
+
+    PANTR_CHECK(throws_invalid_argument([&] { g.local_facet_bounds(0, 0, one, two); }));
+    PANTR_CHECK(throws_invalid_argument([&] { g.local_facet_bounds(0, 0, two, one); }));
+
+    std::vector<double> small(4);
+    const span2d<double> short_view(small.data(), 2, 2);
+    PANTR_CHECK(
+        throws_invalid_argument([&] { g.collect_cell_bounds(short_view, short_view); }));
+
+    const std::vector<double> pts = {0.5, 0.5, 1.5};
+    PANTR_CHECK(throws_invalid_argument(
+        [&] { static_cast<void>(g.locate_many(span2d<const double>(pts.data(), 1, 3))); }));
+}
+
+/// A one-dimensional grid: the facet count, the encoding and the tag registry follow it.
+///
+/// Every default is written against `2 * ndim`, and `ndim == 1` is the smallest value
+/// that exercises the arithmetic without the two axes masking a mixed-up index.
+void test_one_dimensional_grid() {
+    const RawGrid g(1, 3);
+    PANTR_CHECK(g.ndim() == 1);
+    PANTR_CHECK(g.num_local_facets(0) == 2);
+    PANTR_CHECK(g.facet_tags().facets_per_cell() == 2);
+    PANTR_CHECK(g.local_facet_axis_side(0, 0) == AxisSide(0, 0));
+    PANTR_CHECK(g.local_facet_axis_side(0, 1) == AxisSide(0, 1));
+    PANTR_CHECK(throws_out_of_range([&] { static_cast<void>(g.local_facet_axis_side(0, 2)); }));
+    // RawGrid has no neighbours at all, so every one of the six facets is a boundary.
+    PANTR_CHECK(g.boundary_facets().size() == 12);
+}
+
+/// A single-cell grid: no neighbours, every facet on the boundary.
+void test_single_cell_grid() {
+    const Grid2 g(1, 1);
+    PANTR_CHECK(g.num_cells() == 1);
+    PANTR_CHECK(g.neighbors(0).empty());
+    PANTR_CHECK(g.boundary_facets() == std::vector<std::int64_t>({0, 0, 0, 1, 0, 2, 0, 3}));
+    PANTR_CHECK(g.cell_bvh().n_cells() == 1);
+    PANTR_CHECK(g.hanging_neighbors(0, 0).empty());
+}
+
+/// A point exactly on an interior cell face lands in one cell, and always the same one.
+///
+/// The tie cannot be avoided -- a face belongs to both cells geometrically -- so what is
+/// asserted is that the fixture's rule (a face belongs to the cell above it) is applied
+/// consistently by `locate` and by the generic `locate_many` built on it.
+void test_locate_on_a_cell_boundary() {
+    const Grid2 g(3, 2);
+    const std::vector<double> pts = {1.0, 0.5, 0.0, 0.0, 3.0, 2.0};
+    const std::vector<std::int64_t> got = g.locate_many(span2d<const double>(pts.data(), 3, 2));
+    // (1.0, 0.5) is on the face between cells 0 and 2, and goes to the upper one.
+    // (0.0, 0.0) is the grid's lo corner; (3.0, 2.0) is its hi corner, and the top of the
+    // range is closed, so it lands in the last cell rather than outside.
+    PANTR_CHECK(got == std::vector<std::int64_t>({2, 0, 5}));
+    for (std::size_t i = 0; i < 3; ++i) {
+        const std::span<const double> pt(&pts[i * 2], 2);
+        PANTR_CHECK(g.locate(pt).value_or(-1) == got[i]);
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Dispatch: name hiding reaches the hook, the qualified call reaches the default
 // ---------------------------------------------------------------------------
@@ -561,8 +655,9 @@ void test_name_hiding_dispatch() {
     PANTR_CHECK(g.locate_many(view) == std::vector<std::int64_t>({-7, -7}));
     PANTR_CHECK(g.Base::locate_many(view) == plain.locate_many(view));
 
-    // A default that calls another default through `self()` sees the hook too:
-    // `neighbors` is generic here, and it reaches the grid's own primitives.
+    // `neighbors` is generic on BOTH grids, so this says only that hiding two unrelated
+    // names left it alone. That is the claim worth making here -- name hiding is
+    // per-name, and a hook must not perturb a default that does not mention it.
     PANTR_CHECK(g.neighbors(0) == plain.neighbors(0));
 }
 
@@ -591,6 +686,10 @@ int main() {
     test_validation_messages();
     test_restrict_default_throws();
     test_make_restriction();
+    test_output_span_validation();
+    test_one_dimensional_grid();
+    test_single_cell_grid();
+    test_locate_on_a_cell_boundary();
     test_name_hiding_dispatch();
     test_float_instantiation();
     return pantr::test::summary("test_grid_defaults");
