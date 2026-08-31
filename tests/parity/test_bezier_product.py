@@ -41,6 +41,29 @@ kernel, and it is why the C++ port is handed its tables rather than computing th
 A port that had assembled them from ``core::bincoeff`` would agree on every case in
 this file but that one.
 
+The bounded arm is selected on an FMA host and is not exercised by one
+----------------------------------------------------------------------
+
+This is worth stating plainly, because "the bounded arm passes" would otherwise read
+as evidence it does not carry. On a host whose ISA offers a fused multiply-add,
+:func:`~tests._parity_harness.contraction_may_fuse` is true and every `multiply` claim
+below becomes Rule 10's budget. Measured on such a build: **zero elements differ**
+across all forty-eight configurations at both dtypes, so the bounded arm is satisfied
+with nothing to satisfy it against.
+
+That is not a defect in the bound. It is because the product's accumulation is written
+as two statements and this project's `-ffp-contract=on` is expression-scoped, so the
+site it would fuse is not fused; `product.hpp`'s contraction section carries the
+disassembly and the three-way `off`/`on`/`fast` comparison that establish it.
+`-ffp-contract=fast` does fuse it and does move the result, which is why the bounded
+arm stays rather than being replaced by an unconditional equality.
+
+So: **the amplification and stage count below have never been exercised against a real
+disagreement**, and the honest reading of a green bounded arm on an FMA host is "the
+claim is weaker than the truth there", not "the bound was checked". What has been
+checked, on the shipped configuration, is the equality -- and the mutation record below
+is what shows that check has teeth.
+
 Where the composition's fused-build coverage actually comes from
 ---------------------------------------------------------------
 
@@ -51,6 +74,11 @@ formed inside the composition, so the only amplification available from the publ
 surface is the companion run on absolute values, and against an outer net spanning
 three decades whose result cancels that bound is one the harness refuses as
 vacuous.
+
+Unlike `multiply`, the composition's build dependence is real rather than nominal, and
+it comes from somewhere specific: its univariate branch calls
+``scalar_bernstein_product_1d``, whose accumulation is a single expression and does
+carry a fused site at ``-ffp-contract=on``. So the skip is not over-caution.
 
 What covers the arithmetic there instead, stated so the gap is not larger than it
 looks: the composition's products are the same two implementations `multiply` uses,
@@ -186,7 +214,7 @@ _COMPOSITION_WHY: Final = (
     "over the outer control points. Each product is dispatched exactly as the oracle "
     "dispatches it -- the Numba scalar kernel for a univariate inner map, the NumPy "
     "n-dimensional helper above that -- and those two differ in accumulation width and "
-    "in where they normalise, so the branch is part of this claim rather than an "
+    "in where they normalize, so the branch is part of this claim rather than an "
     "implementation detail. No fused multiply-add on this build"
 )
 
@@ -596,16 +624,22 @@ def test_the_two_spellings_of_a_binomial_agree(dtype: npt.DTypeLike) -> None:
     A hypothesis of ``_binomial_tables``' docstring, and one this code has to satisfy
     rather than one the theorem behind it can be trusted to supply. The oracle reaches
     a binomial two ways: ``np.array([math.comb(n, k) ...], dtype=dtype)`` in the two
-    product helpers, and ``float(math.comb(m, i))`` multiplied into an array in
+    product helpers, and ``float(math.comb(m, i)) * prod`` in
     ``_compute_bernstein_bases``. The first rounds the exact integer to the storage
-    format once; the second rounds it to ``float64`` and then, under NEP 50's weak
-    scalar rule, to the storage format again.
+    format once; the second rounds it to ``float64`` and then, when numpy applies the
+    ``float64`` scalar to a narrower array, to the storage format again.
 
-    Double rounding through an intermediate of at least ``2 * 24 + 2 = 50`` bits
-    equals single rounding, and ``float64`` has 53, so the two agree -- but that is a
-    theorem about real numbers rounded twice, and what it is applied to here is a
-    particular expression in a particular language. This checks the application, over
-    the whole range these operations reach and slightly past it.
+    Double rounding through a sufficiently wider intermediate equals single rounding,
+    which is why the two are expected to agree -- but that is a theorem about real
+    numbers rounded twice, and what it is applied to here is a particular expression
+    in a particular library. **So this test performs the oracle's expression rather
+    than a paraphrase of it**: it multiplies the scalar into an array of ones of the
+    storage dtype and reads the result back, which is exactly what
+    ``_compute_bernstein_bases`` does and which therefore carries whatever promotion
+    rule the installed numpy applies. An earlier version of this test compared
+    ``np.asarray([float(...)], dtype=dtype)`` instead, which is a plain conversion and
+    does not exercise scalar-array promotion at all -- it would have passed under a
+    numpy whose promotion rule made the oracle disagree.
 
     Its reciprocal twin needs no such check: both spellings divide in ``float64``
     before any narrowing, so they are the same expression.
@@ -613,17 +647,21 @@ def test_the_two_spellings_of_a_binomial_agree(dtype: npt.DTypeLike) -> None:
     from pantr.bezier._bezier_product import _binomial_tables  # noqa: PLC0415
 
     order = 96
-    binomials, _ = _binomial_tables(order, dtype)
+    binomials, _ = _binomial_tables(order, np.dtype(dtype))
+    ones = np.ones(1, dtype=dtype)
     for n in range(order + 1):
         direct = binomials[n, : n + 1]
-        # `float()` first, so the exact integer is rounded to float64 and then to the
-        # storage format: the composition oracle's two-step route, spelled out.
-        via_double = np.asarray([float(math.comb(n, k)) for k in range(n + 1)], dtype=dtype)
-        assert np.array_equal(direct, via_double), (
+        # The oracle's own expression: a Python float scalar times an array of the
+        # storage dtype. `float()` rounds the exact integer to float64, and numpy's
+        # promotion decides what the multiplication then rounds to.
+        via_the_oracles_route = np.asarray(
+            [(float(math.comb(n, k)) * ones)[0] for k in range(n + 1)], dtype=dtype
+        )
+        assert np.array_equal(direct, via_the_oracles_route), (
             f"the two spellings of C({n}, k) differ at {np.dtype(dtype).name}; the "
             f"composition oracle reaches its binomials through float(math.comb(...)) "
-            f"and the product helpers through np.array(..., dtype=dtype), and "
-            f"_binomial_tables serves both"
+            f"multiplied into an array and the product helpers through "
+            f"np.array(..., dtype=dtype), and _binomial_tables serves both"
         )
 
 
@@ -633,8 +671,9 @@ def test_both_backends_refuse_the_same_operands(cpp_backend: None, dtype: npt.DT
 
     The checks live in Layer 2, above the backend branch, so this is what pins that
     they were not duplicated into the adapter with different wording. The C++ header
-    carries its own copies for a caller with no Python, and those are compared
-    against the same strings by ``cpp/tests/test_bezier_product.cpp``.
+    carries its own copies for a caller with no Python, and those are compared against
+    the same strings by ``check_product_rejections`` and
+    ``check_composition_rejections`` in ``cpp/tests/test_bezier_product.cpp``.
     """
     del cpp_backend
 
@@ -693,8 +732,8 @@ def test_the_binding_refuses_a_table_that_is_too_small(
 
     from pantr.bezier._bezier_product import _binomial_tables  # noqa: PLC0415
 
-    binomials, inverse_binomials = _binomial_tables(order, dtype)
-    short, short_inverse = _binomial_tables(order - 1, dtype)
+    binomials, inverse_binomials = _binomial_tables(order, np.dtype(dtype))
+    short, short_inverse = _binomial_tables(order - 1, np.dtype(dtype))
 
     with pytest.raises(ValueError, match="binomials must have shape at least"):
         _pantr_cpp.multiply_bezier(
@@ -707,6 +746,69 @@ def test_the_binding_refuses_a_table_that_is_too_small(
     with pytest.raises(TypeError):
         _pantr_cpp.multiply_bezier(handle, handle, binomials, inverse_binomials)  # type: ignore[misc]
     assert short_inverse.shape == (order, order)
+
+
+@pytest.mark.parametrize("dtype", DTYPES)
+def test_the_composition_binding_refuses_what_the_header_says_it_does(
+    cpp_backend: None, dtype: npt.DTypeLike
+) -> None:
+    """``compose_bezier``'s own failure paths, at the extension rather than through Bezier.
+
+    The sibling above covers ``multiply_bezier`` this way and this one did not, which
+    matters more for the composition than for the product: three of its four
+    documented rejections cannot be reached through :meth:`Bezier.compose` at all,
+    because Layer 2 refuses the same arguments first and with a **different exception
+    type**. The rational rejection is the sharp case -- ``TypeError`` from Python and
+    ``ValueError`` from C++ -- and that asymmetry is argued in ``product.hpp``'s file
+    comment rather than being an accident, so it is worth pinning where it is
+    observable.
+    """
+    del cpp_backend
+
+    from pantr import _pantr_cpp  # noqa: PLC0415
+    from pantr.bezier._bezier_product import _binomial_tables  # noqa: PLC0415
+
+    handle_type = _pantr_cpp.Bezier32 if np.dtype(dtype) == np.float32 else _pantr_cpp.Bezier64
+    outer = handle_type(cast("Any", _net((2, 3), 2, dtype, seed=20260845, rational=False)))
+    inner = handle_type(cast("Any", _reparametrization((2,), 2, dtype, seed=20260846)))
+    rational = handle_type(cast("Any", _net((2,), 1, dtype, seed=20260847, rational=True)), True)
+
+    # `max_d m_d = 3` for a univariate inner map, which contributes no composed-degree
+    # term; the header's own formula, checked against the binding rather than restated.
+    order = _pantr_cpp.bezier_composition_table_order(outer, inner)
+    assert order == 3, "a degree-(2, 3) outer map with a univariate inner map reads C(3, k)"
+    binomials, inverse_binomials = _binomial_tables(order, np.dtype(dtype))
+    short, short_inverse = _binomial_tables(order - 1, np.dtype(dtype))
+
+    with pytest.raises(ValueError, match="binomials must have shape at least"):
+        _pantr_cpp.compose_bezier(
+            outer, inner, binomials=short, inverse_binomials=inverse_binomials
+        )
+    with pytest.raises(ValueError, match="inverse_binomials must have shape at least"):
+        _pantr_cpp.compose_bezier(
+            outer, inner, binomials=binomials, inverse_binomials=short_inverse
+        )
+    with pytest.raises(TypeError):
+        _pantr_cpp.compose_bezier(outer, inner, binomials, inverse_binomials)  # type: ignore[misc]
+
+    # A rational operand: ValueError here, TypeError through `Bezier.compose`. Both
+    # spellings of the message are the oracle's, character for character.
+    with pytest.raises(ValueError, match=r"\(outer is rational\)\."):
+        _pantr_cpp.compose_bezier(
+            rational, inner, binomials=binomials, inverse_binomials=inverse_binomials
+        )
+    with pytest.raises(ValueError, match=r"\(inner is rational\)\."):
+        _pantr_cpp.compose_bezier(
+            outer, rational, binomials=binomials, inverse_binomials=inverse_binomials
+        )
+
+    # `inner.rank` is 2 and a univariate outer map has dim 1.
+    univariate = handle_type(cast("Any", _net((2,), 1, dtype, seed=20260848, rational=False)))
+    with pytest.raises(ValueError, match=r"must equal outer Bézier parametric dimension"):
+        _pantr_cpp.compose_bezier(
+            univariate, inner, binomials=binomials, inverse_binomials=inverse_binomials
+        )
+    assert short.shape == (order, order)
 
 
 @pytest.mark.slow

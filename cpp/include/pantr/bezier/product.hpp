@@ -54,10 +54,13 @@
 ///    is the one rounding either way. That covers `bernstein_product_nd`'s weighting
 ///    of its operands and its final reciprocal scaling.
 ///  - A single **sum** of two `float32` values is not exact in `double`, but double
-///    rounding through it equals single rounding, because `double`'s 53 bits exceed
-///    `2 * 24 + 2` (Figueroa, *Yet another proof of the double rounding theorem*,
-///    1995 -- the same theorem `_binomial_tables` rests on). That covers the
-///    accumulation `d[k] + term`.
+///    rounding through an intermediate format sufficiently wider than the target is
+///    known to equal single rounding, and `double` against `float32` is the instance
+///    that result's condition covers with room to spare (Figueroa, *When is double
+///    rounding innocuous?*, ACM SIGNUM Newsletter 30(3):21-26, 1995,
+///    doi:10.1145/221332.221334 -- the same result `_binomial_tables` rests on, and
+///    the one place in this header that leans on a reference rather than on
+///    arithmetic anyone can redo). That covers the accumulation `d[k] + term`.
 ///  - The **chain** `(coefficient * f_i) * g_j` is where the width bites: widened, the
 ///    intermediate is not narrowed, so the second multiplication receives a different
 ///    operand. Nine `float32` cases move when it is, which is what pins the claim.
@@ -82,15 +85,27 @@
 /// rounded to the storage format once, and are an array by the time anything computes
 /// with them.
 ///
-/// Here the reason is sharper than in either precedent, because it is what the port
-/// exists to preserve. `core::bincoeff` stops at `core::kBincoeffMaxN`, which is 61,
-/// and **the numpy oracle has no limit at all**: `math.comb` is arbitrary precision,
-/// so `Bezier.multiply` is exact at `p + q = 80` where `scalar_bernstein_product_1d`
-/// is outside its int64 envelope and undefined. `design/cross_backend_types.md`
-/// records that difference of domain as one of the three reasons `multiply` keeps
-/// reaching the numpy helper rather than the dispatched kernel. Computing the tables
-/// natively would import the kernel's envelope into an operation that does not have
-/// one, which is a numerics change and not a port.
+/// Here the reason is **different** from the precedent's rather than a stronger form of
+/// it, and the distinction is worth keeping straight. `degree.hpp`'s reduction operator
+/// cannot be computed natively at all: it is the solution of an exact rational system
+/// whose numerators reach 156 bits, so a faithful assembly needs arbitrary precision and
+/// `double` loses eleven digits. A binomial coefficient needs no such thing -- it is an
+/// integer recurrence with no division, and `core::bincoeff` already computes it exactly.
+/// What binds here is **domain**, not precision: `core::bincoeff` stops at
+/// `core::kBincoeffMaxN`, which is 61, and **the numpy oracle has no limit at all**,
+/// because `math.comb` is arbitrary precision. So `Bezier.multiply` is exact at
+/// `p + q = 80` where `scalar_bernstein_product_1d` is outside its int64 envelope and
+/// undefined, and `design/cross_backend_types.md` records that difference of domain as
+/// one of the three reasons `multiply` keeps reaching the numpy helper rather than the
+/// dispatched kernel. Computing the tables from `core::bincoeff` would import the
+/// kernel's envelope into an operation that does not have one, which is a numerics
+/// change and not a port.
+///
+/// Widening the native recurrence would move that envelope rather than remove it:
+/// `unsigned __int128` reaches about degree 130 and then stops for the same reason. The
+/// oracle's domain is unbounded, so a table crossing is what matches it. This is a
+/// smaller gap than `degree.hpp`'s, and it is cheaper to close if anyone decides the
+/// bound is worth having natively -- which is a decision, not an omission.
 ///
 /// **The consequence, stated plainly:** a C++ caller with no Python cannot multiply
 /// or compose unaided, and must supply tables it obtained elsewhere.
@@ -110,7 +125,7 @@
 ///    `k_mat.ravel()`; that is row-major, so coefficient `k` accumulates its terms in
 ///    increasing `i`. Summing in increasing `j`, or over `k`'s own range, is a
 ///    different number.
-///  - **The 1-D product normalises per term; the n-D one normalises at the end.** The
+///  - **The 1-D product normalizes per term; the n-D one normalizes at the end.** The
 ///    oracle folds `1 / C(r, k)` into the `(p+1, q+1)` coefficient table before any
 ///    accumulation, and in the n-D helper multiplies the finished convolution by
 ///    `inv_w_r` afterwards. The two are not the same computation and neither may be
@@ -121,10 +136,39 @@
 ///    last bits, which is precisely the mutation that caught an earlier parity test
 ///    exercising none of the ported code.
 ///
-/// A build with a fused multiply-add is the one thing the equality does not survive:
-/// `d[k] + term` is a contractible site, so on such a build the claim becomes Rule
-/// 10's budget. That is the same conditional shape every other Bézier claim carries,
-/// and the shipped build has no FMA.
+/// ### Contraction, and where these functions are not what the sibling claims assume
+///
+/// Every other Bézier claim is conditional on whether the target ISA has a fused
+/// multiply-add, because every other Bézier kernel writes its accumulation as one
+/// expression, `a + b * c`, which `-ffp-contract=on` may fuse. **These four functions
+/// do not.** `bernstein_product_1d` computes the term into a named local and adds it in
+/// the next statement, and `-ffp-contract=on` is expression-scoped in the compiler this
+/// project builds with, so there is nothing for it to fuse across the statement
+/// boundary.
+///
+/// Measured rather than reasoned, by disassembling an FMA-enabled build and by running
+/// the product at all three contraction settings:
+///
+/// Configure a second build tree with `-DCMAKE_CXX_FLAGS="-mavx2 -mfma"`, then count
+/// `vfmadd` per demangled symbol in `objdump -d` of `bezier.cpp.o`: it is zero in all
+/// four functions here and nonzero in `scalar_bernstein_product_1d`. (No line
+/// continuations in that recipe: a `///` line ending in a backslash is one comment
+/// spanning two lines, which this build rejects under `-Werror=comment`, and it did.)
+///
+/// `off` and `on` agree bit for bit; `=fast` does not, so the site is contractible in
+/// principle and the claim keeps its bounded arm for a build that reaches it. What
+/// follows for a reader:
+///
+///  - **`multiply`'s equality survives an FMA host at this project's own flags.** The
+///    parity harness selects its arm from the ISA rather than from the contraction
+///    scope, so on such a host it asserts the *bounded* claim and observes zero
+///    differing elements. That is sound and slack, not wrong, and
+///    `tests/parity/test_bezier_product.py` says so rather than presenting the bounded
+///    arm as exercised.
+///  - **`compose`'s does not**, and the reason is not its own arithmetic. Its univariate
+///    branch calls `scalar_bernstein_product_1d`, whose accumulation *is* a single
+///    expression and does carry one fused site per instantiation at `-ffp-contract=on`.
+///    So the composition inherits a build dependence the product does not have.
 ///
 /// ## Validating rather than asserting
 ///
@@ -595,6 +639,11 @@ template <Real T>
     for (std::size_t i = 1; i < m; ++i) {
         ScalarNet<T> scaled = scalar_net_product<T>(g_powers[i - 1], one_minus_g_powers[m - i - 1],
                                                     use_1d_kernel, binomials, inverse_binomials);
+        // Read from the table rather than recomputed, and the oracle reaches the same
+        // number by a third spelling -- `float(math.comb(m, i))` applied to an array.
+        // That the two agree is the double-rounding argument `_binomial_tables`'
+        // docstring makes and `test_the_two_spellings_of_a_binomial_agree` checks; the
+        // reliance is here, so the pointer is here.
         const T coefficient = at(binomials, m, i);
         for (T& value : scaled.values) {
             value = coefficient * value;
@@ -677,8 +726,8 @@ template <Real T>
                                  span2d<const T> binomials,
                                  span2d<const T> inverse_binomials) {
     const std::size_t order = product_table_order<T>(a, b);
-    detail::require_table_extents(binomials, order, "binomials");
-    detail::require_table_extents(inverse_binomials, order, "inverse_binomials");
+    detail::require_table_extents<T>(binomials, order, "binomials");
+    detail::require_table_extents<T>(inverse_binomials, order, "inverse_binomials");
 
     std::vector<std::size_t> out_shape;
 
