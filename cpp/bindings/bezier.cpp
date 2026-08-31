@@ -1,10 +1,11 @@
 /// \file
 /// nanobind bindings for the `pantr.bezier` arithmetic kernels.
 ///
-/// Thirteen entry points: the seven of `_bezier_core.py`, the reduction-operator apply
-/// that `pantr.bezier` reaches for through `pantr.bspline`, the two n-dimensional
-/// evaluation entry points of `pantr/bezier/evaluate.hpp`, and the three degree
-/// operations of `pantr/bezier/degree.hpp`. The checks in
+/// Twenty-two entry points: the seven of `_bezier_core.py`, the reduction-operator
+/// apply that `pantr.bezier` reaches for through `pantr.bspline`, the two
+/// n-dimensional evaluation entry points of `pantr/bezier/evaluate.hpp`, the three
+/// degree operations of `pantr/bezier/degree.hpp`, and the nine shape operations of
+/// `pantr/bezier/shape.hpp`. The checks in
 /// this file are Layer 2's C++ half, for the reason `basis.cpp` states at length:
 /// a Layer 3 kernel validates nothing, the extension is importable, and every
 /// bound name here is a public attribute of a public module.
@@ -68,6 +69,7 @@
 
 #include <nanobind/nanobind.h>
 #include <nanobind/ndarray.h>
+#include <nanobind/stl/pair.h>
 #include <nanobind/stl/vector.h>
 
 #include <cstddef>
@@ -80,6 +82,7 @@
 #include "pantr/bezier/degree.hpp"
 #include "pantr/bezier/evaluate.hpp"
 #include "pantr/bezier/kernels_1d.hpp"
+#include "pantr/bezier/shape.hpp"
 #include "pantr/core/binomial.hpp"
 #include "pantr/core/mdspan.hpp"
 #include "pantr/core/reduction_operator.hpp"
@@ -460,6 +463,82 @@ double bind_degree_reduction_error(const pantr::bezier::Bezier<T>& bezier,
         std::span<const pantr::span2d<const double>>(gram_spans));
 }
 
+/// Reverse one parametric direction.
+template <class T>
+pantr::bezier::Bezier<T> bind_reverse(const pantr::bezier::Bezier<T>& bezier,
+                                      std::size_t direction) {
+    return pantr::bezier::reverse<T>(bezier, direction);
+}
+
+/// Reorder the parametric directions.
+template <class T>
+pantr::bezier::Bezier<T> bind_permute(const pantr::bezier::Bezier<T>& bezier,
+                                      const std::vector<std::size_t>& permutation) {
+    return pantr::bezier::permute_directions<T>(bezier,
+                                                std::span<const std::size_t>(permutation));
+}
+
+/// Apply an affine map to the geometric coordinates.
+///
+/// The map arrives as a matrix and an offset, never as an `AffineTransform`: the
+/// wrapper reads `affine.matrix` and `affine.offset`, which are arrays on either
+/// backend, so no affine implementation is ever converted into the other.
+template <class T>
+pantr::bezier::Bezier<T> bind_transform(const pantr::bezier::Bezier<T>& bezier,
+                                        const_mat<double> matrix, const_vec<double> offset) {
+    const pantr::span2d<const double> linear(matrix.data(), matrix.shape(0), matrix.shape(1));
+    return pantr::bezier::transform<T>(bezier, linear,
+                                       std::span<const double>(offset.data(), offset.shape(0)));
+}
+
+/// Restrict to a sub-box of the parametric domain.
+template <class T>
+pantr::bezier::Bezier<T> bind_restrict_nd(const pantr::bezier::Bezier<T>& bezier,
+                                          const_vec<double> lower, const_vec<double> upper) {
+    return pantr::bezier::restrict<T>(bezier,
+                                      std::span<const double>(lower.data(), lower.shape(0)),
+                                      std::span<const double>(upper.data(), upper.shape(0)));
+}
+
+/// Split along one direction, returning both halves.
+template <class T>
+std::pair<pantr::bezier::Bezier<T>, pantr::bezier::Bezier<T>> bind_split_nd(
+    const pantr::bezier::Bezier<T>& bezier, std::size_t direction, T value) {
+    return pantr::bezier::split<T>(bezier, direction, value);
+}
+
+/// Fix one direction at a value, dropping it.
+template <class T>
+pantr::bezier::Bezier<T> bind_slice_nd(const pantr::bezier::Bezier<T>& bezier, std::size_t axis,
+                                       T value) {
+    return pantr::bezier::slice<T>(bezier, axis, value);
+}
+
+/// Evaluate a one-dimensional Bézier at one parameter, in homogeneous components.
+template <class T>
+void bind_slice_point(const pantr::bezier::Bezier<T>& bezier, T value, out_vec<T> out) {
+    const std::vector<T> point = pantr::bezier::slice_point<T>(bezier, value);
+    require_length(out, point.size(), "out");
+    for (std::size_t i = 0; i < point.size(); ++i) {
+        out(i) = point[i];
+    }
+}
+
+/// One face of the parametric domain.
+template <class T>
+pantr::bezier::Bezier<T> bind_boundary(const pantr::bezier::Bezier<T>& bezier, std::size_t axis,
+                                       int side) {
+    return pantr::bezier::boundary<T>(bezier, axis, side);
+}
+
+/// Collapse to a univariate Bézier by fixing every direction but one.
+template <class T>
+pantr::bezier::Bezier<T> bind_collapse(const pantr::bezier::Bezier<T>& bezier, std::size_t axis,
+                                       const_vec<T> values) {
+    return pantr::bezier::collapse_along_axis<T>(
+        bezier, axis, std::span<const T>(values.data(), values.shape(0)));
+}
+
 }  // namespace
 
 void register_bezier(nb::module_& m) {
@@ -557,4 +636,50 @@ void register_bezier(nb::module_& m) {
     m.def("bezier_degree_reduction_error", &bind_degree_reduction_error<float>,
           nb::arg("bezier"), nb::arg("decrements"), nb::arg("operators").noconvert(),
           nb::arg("grams").noconvert());
+
+    // The nine shape operations. Like the degree ones they return a value rather than
+    // filling a buffer, because what they produce is a Bézier; `slice_bezier_point` is
+    // the exception, since its result is a plain array of known length.
+    m.def("reverse_bezier", &bind_reverse<double>, nb::arg("bezier"), nb::arg("direction"));
+    m.def("reverse_bezier", &bind_reverse<float>, nb::arg("bezier"), nb::arg("direction"));
+
+    m.def("permute_bezier_directions", &bind_permute<double>, nb::arg("bezier"),
+          nb::arg("permutation"));
+    m.def("permute_bezier_directions", &bind_permute<float>, nb::arg("bezier"),
+          nb::arg("permutation"));
+
+    m.def("transform_bezier", &bind_transform<double>, nb::arg("bezier"),
+          nb::arg("matrix").noconvert(), nb::arg("offset").noconvert());
+    m.def("transform_bezier", &bind_transform<float>, nb::arg("bezier"),
+          nb::arg("matrix").noconvert(), nb::arg("offset").noconvert());
+
+    m.def("restrict_bezier", &bind_restrict_nd<double>, nb::arg("bezier"),
+          nb::arg("lower").noconvert(), nb::arg("upper").noconvert());
+    m.def("restrict_bezier", &bind_restrict_nd<float>, nb::arg("bezier"),
+          nb::arg("lower").noconvert(), nb::arg("upper").noconvert());
+
+    m.def("split_bezier", &bind_split_nd<double>, nb::arg("bezier"), nb::arg("direction"),
+          nb::arg("value"));
+    m.def("split_bezier", &bind_split_nd<float>, nb::arg("bezier"), nb::arg("direction"),
+          nb::arg("value"));
+
+    m.def("slice_bezier", &bind_slice_nd<double>, nb::arg("bezier"), nb::arg("axis"),
+          nb::arg("value"));
+    m.def("slice_bezier", &bind_slice_nd<float>, nb::arg("bezier"), nb::arg("axis"),
+          nb::arg("value"));
+
+    m.def("slice_bezier_point", &bind_slice_point<double>, nb::arg("bezier"), nb::arg("value"),
+          nb::kw_only(), nb::arg("out").noconvert());
+    m.def("slice_bezier_point", &bind_slice_point<float>, nb::arg("bezier"), nb::arg("value"),
+          nb::kw_only(), nb::arg("out").noconvert());
+
+    m.def("bezier_boundary", &bind_boundary<double>, nb::arg("bezier"), nb::arg("axis"),
+          nb::arg("side"));
+    m.def("bezier_boundary", &bind_boundary<float>, nb::arg("bezier"), nb::arg("axis"),
+          nb::arg("side"));
+
+    m.def("collapse_bezier_along_axis", &bind_collapse<double>, nb::arg("bezier"),
+          nb::arg("axis"), nb::arg("values").noconvert());
+    m.def("collapse_bezier_along_axis", &bind_collapse<float>, nb::arg("bezier"),
+          nb::arg("axis"), nb::arg("values").noconvert());
 }
