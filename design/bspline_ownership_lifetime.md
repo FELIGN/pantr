@@ -225,14 +225,25 @@ Four reasons, in the order they decide it.
    precisely so a handed-out view outlives a replacement, and says so: *"the port would otherwise
    have introduced a use-after-free the pre-port class could not have."* This note generalises
    that ruling from a tag's arrays to a nested space.
-3. **It is the only mechanism that reproduces `Bspline`'s in-place semantics.**
+3. **It is the only mechanism that reproduces `Bspline`'s in-place semantics, and the
+   alternatives fail in two different silent ways.**
    `Bspline.reverse(direction, in_place=True)` and `permute_directions(..., in_place=True)`
    **replace** `self._space` (`_bspline.py:1035-1039`, `1101-1106`) -- verified by execution:
-   `before = b.space; b.reverse(0, in_place=True); before is b.space` is `False`. Under
-   `reference_internal` the escaped Python object points at the *address* of the owner's member,
-   so after the reseat it would silently start reporting the **new** space -- a wrong answer with
-   no diagnostic. Under `shared_ptr` the escapee holds the old value, which is today's behaviour
-   exactly.
+   `before = b.space; b.reverse(0, in_place=True); before is b.space` is `False`, and `before`
+   keeps the old space. That is the contract to preserve. Measured, three storage shapes, an
+   escaped nested object across one in-place reseat:
+
+   | owner stores | accessor returns | escapee reads after the reseat | nested destructor ran during the reseat | `escapee is owner.space` |
+   |---|---|---|---|---|
+   | the space **by value** | `Space&`, `reference_internal` | **`2`** -- the *new* space | yes | **`True`** |
+   | `shared_ptr<const Space>` | `const Space&`, `reference_internal` | `1` -- correct | **yes** | `False` |
+   | `shared_ptr<const Space>` | `shared_ptr<const Space>` | `1` -- correct | no | `False` |
+
+   The first row is a **silent wrong answer**: the escaped object becomes the new space, with no
+   error and with `is` still reporting identity. The second row is the shape someone will propose
+   as the best of both -- store the handle, hand out a reference, name the policy -- and it is a
+   **use-after-free that returned the correct value**, which is F4's pattern again. Only the third
+   row reproduces today's Python.
 4. **It composes, and `reference_internal` does not compose cleanly.**
    `Bspline` -> `BsplineSpace` -> `BsplineSpace1D` is two levels. Under `shared_ptr` each level
    hands out one atomic increment and no level knows about any other. Under `reference_internal`
@@ -523,6 +534,13 @@ every bound class, adds a weak-map lookup to every nested access, and introduces
 cannot have. **What would change it:** propagation sites multiplying past a handful. There is one
 today.
 
+**Store `shared_ptr<const T>` but hand out `const T&` with `reference_internal`.** The
+apparent best of both: ownership in the type, no atomic per access, and a policy that pins the
+owner. Rejected on the measurement in reason 3's table: reseating the pointer frees the pointee
+while the escaped Python object still aliases it, and the escapee then read the *correct* value,
+so nothing announces it. The keep-alive pins the **owner**, which is not what needs to stay
+alive.
+
 **`std::enable_shared_from_this` on the nested types, with `reference_internal` on the binding.**
 nanobind supports it -- `nb_type_put_common` checks `has_shared_from_this` and takes out a second
 `shared_ptr` sharing ownership (`nb_type.cpp:2024-2030`) -- so this would give the shared-lifetime
@@ -627,6 +645,8 @@ between mechanisms:**
 - **Verified by execution in the `pantr` env:** that `b.space` changes identity across
   `reverse(direction=0, in_place=True)`; that `b.control_points is b._control_points` and the
   array is writable.
+- **Measured, 2026-08-31:** the three-row reseat table in reason 3, with a destructor counter
+  in the nested type, so the middle row's use-after-free is a count and not an inference.
 - **Asserted, not measured:** that a raw-reference version of a class-H accessor is a
   use-after-free for a C++ consumer. The Python-side analogue was measured (F4); the C++ analogue
   follows from the object model and was not put under ASAN, because the design does not contain
