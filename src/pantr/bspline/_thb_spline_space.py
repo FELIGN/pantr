@@ -1385,8 +1385,9 @@ class THBSplineSpace:
     ) -> THBSplineSpace:
         """Return a new space with the marked cells refined.
 
-        This method does not mutate ``self`` or its grid: a fresh grid is refined
-        and a new :class:`THBSplineSpace` is built; ``self`` and its grid are unchanged.
+        This method does not mutate ``self`` or its grid: the grid is refined by
+        rebinding, and a new :class:`THBSplineSpace` is built on the result; ``self``
+        and its grid are unchanged.
 
         With ``admissible_class=m`` (the default ``m=2``) the refinement is graded so
         the resulting mesh is admissible of class ``m`` (the truncated functions
@@ -1440,9 +1441,9 @@ class THBSplineSpace:
         is the region-based counterpart of :meth:`refine`, which marks individual
         cells by flat id.
 
-        Like :meth:`refine`, this does not mutate ``self`` or its grid: a fresh grid
-        is refined and a new :class:`THBSplineSpace` is returned.  Calls chain, so
-        successive regions refine progressively (graded by default).
+        Like :meth:`refine`, this does not mutate ``self`` or its grid: the grid is
+        refined by rebinding, and a new :class:`THBSplineSpace` is returned.  Calls
+        chain, so successive regions refine progressively (graded by default).
 
         Args:
             level (int): Level at which the box lives.  Must satisfy
