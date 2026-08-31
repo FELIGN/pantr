@@ -2109,11 +2109,11 @@ class TestDeepcopy:
 def test_normalize_blocks_is_idempotent() -> None:
     """Re-normalizing an already-normalized level list is the identity.
 
-    Load-bearing: every operation hands its whole per-level block list to
-    ``_from_blocks``, which normalizes each level, including the levels it did not
-    touch.  If normalization were not a fixed point, the untouched levels would be
-    re-partitioned and every flat cell id would move, so the returned grid would
-    stop matching what the mutating implementation produced.
+    Load-bearing: it is what licenses ``refine`` and ``coarsen`` to hand
+    ``_from_blocks`` the levels they never rebound and declare them already
+    normalized.  Were normalization not a fixed point, those levels would need
+    re-merging, and skipping it would re-partition nothing while a caller that
+    re-merged them anyway would get a different answer from one that did not.
     """
     g = _refined_2d()
     for level in range(g.max_level + 1):
@@ -2144,12 +2144,16 @@ def _random_decomposition(
 def test_normalize_blocks_is_idempotent_over_random_decompositions() -> None:
     """Normalization is a fixed point, over decompositions no fixture would reach.
 
-    This is the property the value-returning refinement rests on and the reason the
-    returned grid's flat cell ids match what the mutating implementation produced:
-    every operation hands its *whole* per-level block list to ``_from_blocks``, which
-    normalizes each level including the ones the operation never touched.  Were
-    normalization not a fixed point, those levels would be re-partitioned and every
-    flat id would move.
+    The property ``_from_blocks``'s ``unnormalized_levels`` argument rests on, and so
+    the reason a refinement sweep does not pay for the levels it never reads: a level
+    holding a previous call's output normalizes to itself, so passing it through
+    unchanged and re-merging it give the same blocks in the same order.  Were that
+    false, the two would disagree and every flat cell id in the result would move.
+
+    The stronger statement behind it is that the output is *pairwise non-mergeable*:
+    the merge loop only exits after a pass that compared every pair and merged none.
+    Idempotence follows, because ``_try_merge`` is symmetric, so non-mergeability is a
+    property of the set rather than of the order it is listed in.
     """
     rng = np.random.default_rng(20260831)
     merged_something = 0
@@ -2194,3 +2198,169 @@ def test_normalize_blocks_depends_on_the_order_it_is_given() -> None:
         if _normalize_blocks(list(blocks)) != _normalize_blocks(other):
             differing += 1
     assert differing > 0, "normalization has become order-independent; see this docstring"
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Parity: skipping the untouched levels changes nothing
+# ──────────────────────────────────────────────────────────────────────────────
+
+
+def _normalize_every_level(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Force ``_from_blocks`` back to normalizing every level, ignoring its argument.
+
+    Lets one test run an operation down both paths and compare, rather than asserting
+    a property the fast path is supposed to have.
+
+    Args:
+        monkeypatch (pytest.MonkeyPatch): Fixture used to install the override.
+    """
+    original = HierarchicalGrid._from_blocks.__func__  # type: ignore[attr-defined]
+
+    def unconditional(
+        cls: type[HierarchicalGrid],
+        root: TensorProductGrid,
+        factor: tuple[int, ...],
+        blocks: list[list[tuple[tuple[int, ...], tuple[int, ...]]]],
+        *,
+        unnormalized_levels: frozenset[int] | None = None,
+    ) -> HierarchicalGrid:
+        return original(cls, root, factor, blocks, unnormalized_levels=None)  # type: ignore[no-any-return]
+
+    monkeypatch.setattr(HierarchicalGrid, "_from_blocks", classmethod(unconditional))
+
+
+def _random_hierarchy(rng: np.random.Generator, ndim: int) -> HierarchicalGrid:
+    """Return a randomly refined hierarchy with blocks left on several levels.
+
+    Refines scattered single cells level by level, which leaves the peeled remainder
+    as many non-mergeable blocks on every level -- the configuration where skipping
+    the untouched levels changes the most work, and so where a parity break would
+    show up first.
+
+    Args:
+        rng (np.random.Generator): Source of randomness.
+        ndim (int): Spatial dimension.
+
+    Returns:
+        HierarchicalGrid: The refined grid.
+    """
+    root = int(rng.integers(3, 6))
+    grid = hierarchical_grid(uniform_grid([[0.0, 1.0]] * ndim, root), 2)
+    for level in range(int(rng.integers(2, 5))):
+        blocks = grid.active_blocks(level)
+        if not blocks:
+            break
+        for _ in range(int(rng.integers(1, 5))):
+            blocks = grid.active_blocks(level)
+            if not blocks:
+                break
+            blo, bhi = blocks[int(rng.integers(len(blocks)))]
+            cell = tuple(int(rng.integers(lo, hi)) for lo, hi in zip(blo, bhi, strict=True))
+            grid = grid.refine(level, cell, tuple(c + 1 for c in cell))
+    return grid
+
+
+def _apply_random_operation(grid: HierarchicalGrid, rng: np.random.Generator) -> HierarchicalGrid:
+    """Apply one randomly chosen hierarchy operation.
+
+    Args:
+        grid (HierarchicalGrid): The grid to operate on.
+        rng (np.random.Generator): Source of randomness.
+
+    Returns:
+        HierarchicalGrid: The operation's result.
+    """
+    choice = int(rng.integers(4))
+    if choice == 0:
+        populated = [lv for lv in range(grid.max_level + 1) if grid.active_blocks(lv)]
+        level = populated[int(rng.integers(len(populated)))]
+        blocks = grid.active_blocks(level)
+        blo, bhi = blocks[int(rng.integers(len(blocks)))]
+        cell = tuple(int(rng.integers(lo, hi)) for lo, hi in zip(blo, bhi, strict=True))
+        return grid.refine(level, cell, tuple(c + 1 for c in cell))
+    if choice == 1:
+        ids = [
+            int(c) for c in rng.choice(grid.num_cells, size=min(3, grid.num_cells), replace=False)
+        ]
+        return grid.refine_cells(ids)
+    if choice == 2:
+        return grid.coarsen_cells([int(c) for c in range(grid.num_cells)])
+    return grid._copy()
+
+
+def _levels(grid: HierarchicalGrid) -> list[tuple[tuple[tuple[int, ...], tuple[int, ...]], ...]]:
+    """Return every level's block list, for a block-for-block comparison.
+
+    Args:
+        grid (HierarchicalGrid): The grid to read.
+
+    Returns:
+        list: One entry per level, each the level's blocks in stored order.
+    """
+    return [grid.active_blocks(level) for level in range(grid.max_level + 1)]
+
+
+@pytest.mark.parametrize("ndim", [1, 2, 3])
+def test_skipping_untouched_levels_reproduces_normalizing_all_of_them(
+    ndim: int, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The fast path returns the same partition, block for block, as the slow one.
+
+    ``refine``, ``coarsen`` and ``_copy`` hand ``_from_blocks`` the levels they did not
+    rebind, and declare them already normalized rather than re-merging them.  That is
+    only sound because normalization is a fixed point, and the merge is *order
+    dependent*, so a break would not be a slower-but-equal partition -- it would be a
+    different rectangle decomposition of the same cells, moving every flat cell id.
+
+    So this compares the two paths directly, on hierarchies deep and irregular enough
+    that most of the block mass sits on levels the operation never touches.
+    """
+    rng = np.random.default_rng(20260831 + ndim)
+    fast_results = []
+    for _ in range(60):
+        grid = _random_hierarchy(rng, ndim)
+        seed = int(rng.integers(1 << 30))
+        fast = _apply_random_operation(grid, np.random.default_rng(seed))
+        fast_results.append((grid, seed, _levels(fast), fast.num_cells))
+
+    _normalize_every_level(monkeypatch)
+    untouched_mass = 0
+    for grid, seed, fast_levels, fast_cells in fast_results:
+        # Rebuilt under the override, so the receiver itself took the slow path too.
+        slow_grid = grid._copy()
+        slow = _apply_random_operation(slow_grid, np.random.default_rng(seed))
+        assert _levels(slow) == fast_levels
+        assert slow.num_cells == fast_cells
+        untouched_mass += sum(len(b) for b in fast_levels[:-2])
+    # Guard against the comparison being vacuous: the skipped levels must carry blocks.
+    assert untouched_mass > 100
+
+
+def test_restrict_still_normalizes_every_level() -> None:
+    """Clipping to a window can make two blocks mergeable, so ``restrict`` cannot skip.
+
+    ``refine`` and ``coarsen`` may declare their untouched levels already normalized
+    because they pass another grid's stored lists verbatim.  ``restrict`` does not: it
+    intersects each block with the window, and two blocks that differed on two axes can
+    end up differing on one and adjacent there.  The blocks below are exactly that case
+    -- ``[(0,0),(2,1))`` and ``[(0,1),(1,2))`` do not merge, but their clips to
+    ``x < 1`` do -- so a restricted grid whose level is left unmerged would hand out
+    different cell ids from one built the same way by any other route.
+    """
+    left = ((0, 0), (2, 1))
+    right = ((0, 1), (1, 2))
+    assert _try_merge(*left, *right) is None
+    assert _normalize_blocks([left, right]) == [left, right]
+
+    clipped_left = ((0, 0), (1, 1))
+    clipped_right = right
+    assert _normalize_blocks([clipped_left, clipped_right]) == [((0, 0), (1, 2))]
+
+    # And end to end: every level of a restricted grid is in normal form.
+    grid = _refined_2d()
+    restricted = grid.restrict(list(range(grid.num_cells // 2)))
+    sub = restricted.grid
+    assert isinstance(sub, HierarchicalGrid)
+    for level in range(sub.max_level + 1):
+        blocks = list(sub.active_blocks(level))
+        assert _normalize_blocks(list(blocks)) == blocks

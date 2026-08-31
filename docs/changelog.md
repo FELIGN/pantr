@@ -160,12 +160,16 @@ user-facing, and the ports change what it affects.
   The cell decomposition of the returned grid is identical, cell for cell and id for id, to what
   the mutating call produced -- checked against the previous implementation over a sweep of
   1D, 2D and 3D grids with isotropic and anisotropic factors, overlapping refinements, both
-  coarsening entry points, and `restrict`. Refinement's cost is unchanged in order and dominated
-  by the block-list normalization it always was: flat in the cell count and superlinear in the
-  *block* count, as before. Nothing copies per-cell data, because the grid stores none.
-  `scripts/bench_grid_refine.py` reports the scalings and says how to run it against the
-  mutating implementation for a side-by-side comparison; read it rather than quoting a figure
-  from here.
+  coarsening entry points, and `restrict`. Refinement's cost is unchanged in order: flat in the
+  cell count, superlinear in the block count *of the one or two levels the call rebinds*, and
+  linear in the total block count for the rebuild, exactly as the mutating version was. In
+  particular a refinement sweep does not pay for the levels it never touches -- those are passed
+  through, which is sound because the block-list normalization is a fixed point, and which
+  matters because re-merging them would make each step cost the sum of squared per-level block
+  counts. Nothing copies per-cell data, because the grid stores none.
+  `scripts/bench_grid_refine.py` reports the scalings, including the `untouched` sweep that
+  pins that last point, and says how to run it against the mutating implementation for a
+  side-by-side comparison; read it rather than quoting a figure from here.
 
   `THBSplineSpace.refine`, `refine_region` and `coarsen`, and `THBSpline.refine` and
   `refine_region`, already returned a new object and their contract is unchanged, down to the
