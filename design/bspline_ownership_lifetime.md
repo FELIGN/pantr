@@ -376,10 +376,14 @@ is discoverable:
   `type(self)._wrap(new_impl, space=self.space)`. In the current suite there is exactly one site
   that needs this, `Bspline.transform` (non-in-place), pinned by
   `tests/test_transform.py:634`. Every other `is` assertion in the suite is constructor
-  identity, which seeding covers: `tests/test_bspline.py:22,241`,
-  `tests/test_multilevel_extraction.py:103`, `tests/test_quasi_interpolation.py:314`,
-  `tests/test_mpi_collocation.py:188,202`, `tests/test_mpi_qi.py:153`,
-  `tests/test_mpi_l2.py:251`, `tests/test_mpi_thb_qi.py:151`.
+  identity, which seeding covers: `tests/test_bspline_space.py:89`,
+  `tests/test_bspline.py:22,241`, `tests/test_multilevel_extraction.py:103`,
+  `tests/test_quasi_interpolation.py:314`, `tests/test_grid_hierarchical.py:199`
+  (`assert g.root is root`, which is #395's), `tests/test_mpi_collocation.py:188,202`,
+  `tests/test_mpi_qi.py:153`, `tests/test_mpi_l2.py:251`, `tests/test_mpi_thb_qi.py:151`.
+  The three `dfn.local.space is ds.local.space` assertions
+  (`tests/test_mpi_qi.py:164`, `test_mpi_l2.py:262`, `test_mpi_thb_qi.py:162`) compare two Python
+  `LocalSpace` records and are untouched by any of this.
 
 There is no reference cycle to worry about under class H: the child holds no Python reference to
 the owner, so the owner's wrapper -> child wrapper -> child handle chain is acyclic and plain
@@ -417,6 +421,14 @@ and its wrong versions do not announce themselves.
 | M7 | the C++ constructor copies its nested spaces instead of sharing | two Python objects that compare identical over two different C++ objects (F6) | a parity assertion that `space.spaces[0]._impl is space_1d._impl` under the C++ backend |
 | M8 | the wrapper builds its `spaces` tuple lazily and forgets to seed from the constructor | `space.spaces[0] is space_1d` fails; values all agree | `tests/test_bspline_space.py:89`, unedited |
 | M9 | a `_ref` accessor gets bound | a dangling reference reachable from Python with no policy anywhere to blame | the bound-surface test: no exported method name ends in `_ref` |
+
+**Where these tests live.** `tests/parity/test_bezier_binding_contract.py` is the established
+shape -- a parity file whose subject is what the *binding* guarantees rather than what the
+mathematics does, gated on a `cpp_backend` fixture, with one test per refusal and the silent
+failure it prevents named in the docstring. Each of #395 to #400 owes a
+`tests/parity/test_<type>_binding_contract.py` section carrying M1 to M9's assertions for the
+accessors it adds. That file is also the natural home for the bound-surface test (M9), since it is
+already the file that asserts things about the extension rather than about a result.
 
 **The one test shape to require per held accessor**, because it is deterministic, needs no C++
 instrumentation, and fails on the design error rather than on the weather:

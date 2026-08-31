@@ -451,7 +451,10 @@ Three prohibitions, each with the concrete failure behind it rather than as a ma
 - **#396 `BsplineSpace1D` / `BsplineSpace`.** The whole of the above. Its `AC` set should say
   **one** memo, not fourteen; should require the `lru_cache` deleted *before* the C++ scan is
   dispatched (F6); and should include a TSan leg over the C++ unit tests, because that is the
-  only gate that can see F3.
+  only gate that can see F3. The repo already has a sanitizer job
+  (`origin/ci/sanitizer-job` exists as a branch), so what #396 owes is a *thread* leg over the
+  memo tests specifically, not new infrastructure -- confirm what that job already runs before
+  adding to it.
 - **#397 `THBSplineSpace`.** The CSR conversion, the footprint measurement it is contingent on,
   and the `span`-returning accessor that retires the "callers must not mutate" convention.
 - **#398 `Bspline`.** One derived block replaced wholesale by an in-place method; the three
