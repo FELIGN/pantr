@@ -37,6 +37,23 @@
 /// commit message, and closing it is a decision about arbitrary-precision arithmetic
 /// rather than an omission to tidy up.
 ///
+/// ### `minimize_degree` is absent, and this is why
+///
+/// `pantr.bezier.Bezier.minimize_degree` has no counterpart here, which is worth
+/// naming rather than leaving a reader to infer from the paragraph above. Its greedy
+/// search lowers a degree by one at a time and grades each trial, so it needs a fresh
+/// reduction operator and Gram matrix **per degree it visits**, discovered as it goes.
+/// Supplying those from outside is possible -- the set is enumerable in advance, since
+/// the degrees visited run from each direction's own degree down to one -- so this is
+/// a decision rather than an impossibility. What it is not is a decision this port
+/// made unilaterally: it would fix the C++ signature of a search around a table its
+/// caller must precompute, which is a worse shape than the two functions above and is
+/// worth settling deliberately.
+///
+/// Its rational branch is a second, independent cost: that one grades trials by the
+/// deviation of the *projected* mapping on a Gauss-Legendre grid, which needs the
+/// collocation and sampling machinery of `_bezier_degree.py` as well.
+///
 /// ## Which arithmetic each part runs in
 ///
 /// Three widths appear here and they are not the same, which is
