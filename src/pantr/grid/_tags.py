@@ -671,6 +671,26 @@ class CellTags:
         """
         object.__setattr__(self, "_impl", _cell_impl_class()(int(num_cells)))
 
+    @classmethod
+    def _wrap(cls, impl: _CellImpl) -> CellTags:
+        """Adopt an implementation object that already exists and is already valid.
+
+        The grid types need this: a grid OWNS its registry, so the wrapper in front
+        of a grid must present the registry the implementation already holds rather
+        than construct a fresh one. Constructing one would hand back an empty
+        registry, and every assertion about a tag set earlier would then fail far
+        from the cause.
+
+        Args:
+            impl (_CellImpl): The implementation object to adopt.
+
+        Returns:
+            CellTags: A wrapper around ``impl``, with no re-validation.
+        """
+        self = object.__new__(cls)
+        object.__setattr__(self, "_impl", impl)
+        return self
+
     def __setattr__(self, name: str, value: object) -> None:
         """Reject attribute writes.
 
@@ -920,6 +940,22 @@ class FacetTags:
         """
         impl = _facet_impl_class()(int(num_cells), int(facets_per_cell))
         object.__setattr__(self, "_impl", impl)
+
+    @classmethod
+    def _wrap(cls, impl: _FacetImpl) -> FacetTags:
+        """Adopt an implementation object that already exists and is already valid.
+
+        See :meth:`CellTags._wrap` for why the grid types need it.
+
+        Args:
+            impl (_FacetImpl): The implementation object to adopt.
+
+        Returns:
+            FacetTags: A wrapper around ``impl``, with no re-validation.
+        """
+        self = object.__new__(cls)
+        object.__setattr__(self, "_impl", impl)
+        return self
 
     def __setattr__(self, name: str, value: object) -> None:
         """Reject attribute writes.

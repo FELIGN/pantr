@@ -89,6 +89,7 @@ from ._grid import BVH as BVH
 from ._grid import CellTags as CellTags
 from ._grid import FacetTags as FacetTags
 from ._grid import Partition as Partition
+from ._grid import TensorProductGrid as TensorProductGrid
 from ._grid import bvh_build as bvh_build
 from ._grid import bvh_query_count as bvh_query_count
 from ._grid import bvh_query_emit as bvh_query_emit
@@ -97,6 +98,7 @@ from ._grid import encode_midx as encode_midx
 from ._grid import hier_collect_cell_bounds as hier_collect_cell_bounds
 from ._grid import hier_locate_points as hier_locate_points
 from ._grid import locate_points as locate_points
+from ._grid import uniform_grid as uniform_grid
 from ._quad import QuadratureRule as QuadratureRule
 from ._quad import gauss_legendre_symmetric as gauss_legendre_symmetric
 from ._quad import generate_tanh_sinh as generate_tanh_sinh

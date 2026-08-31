@@ -16,7 +16,12 @@ from ..geometry import _as_float64
 if TYPE_CHECKING:
     import numpy.typing as npt
 
-__all__ = ["_as_float64", "_mask_nonfinite_locate", "_python_backend_selected"]
+__all__ = [
+    "_as_float64",
+    "_mask_nonfinite_locate",
+    "_normalize_point",
+    "_python_backend_selected",
+]
 
 
 def _python_backend_selected() -> bool:
@@ -66,3 +71,29 @@ def _mask_nonfinite_locate(pts: npt.NDArray[np.floating[Any]], out: npt.NDArray[
     finite = np.isfinite(pts).all(axis=1)
     if not finite.all():
         out[~finite] = -1
+
+
+def _normalize_point(pt: npt.ArrayLike, ndim: int, *, name: str = "pt") -> npt.NDArray[np.float64]:
+    """Coerce a single query point to a contiguous length-``ndim`` ``float64`` array.
+
+    The singular counterpart of :meth:`pantr.grid.Grid._normalize_points`, and it
+    lives here rather than beside that one so that the wrapper and the Python grid it
+    wraps share a definition: both check the shape and both report it in the same
+    sentence, so the message cannot drift between the two backends.
+
+    Args:
+        pt (npt.ArrayLike): The point.
+        ndim (int): The grid's spatial dimension.
+        name (str): The parameter's name, for the message. Defaults to ``"pt"``.
+
+    Returns:
+        npt.NDArray[np.float64]: A C-contiguous array of shape ``(ndim,)``.
+
+    Raises:
+        ValueError: If ``pt`` does not have exactly ``ndim`` entries.
+        TypeError: If ``pt`` cannot be cast to ``float64``.
+    """
+    arr = _as_float64(pt, name=name).ravel()
+    if arr.shape != (ndim,):
+        raise ValueError(f"{name} must have shape ({ndim},); got {arr.shape}.")
+    return np.ascontiguousarray(arr)
