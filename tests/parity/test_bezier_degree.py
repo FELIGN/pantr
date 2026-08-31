@@ -456,3 +456,114 @@ def test_the_reduction_error_matches_the_oracle(
         ),
         context=f"degree_reduction_error {degrees} rank {rank} rational {rational} {dtype}",
     )
+
+
+_SWEEP_DRAWS: Final = 10
+"""Independent nets per configuration in the ten-times sweep.
+
+Sized against the shipped parametrization rather than picked: each claim ships 28
+cases per dtype (7 degree tuples x 2 ranks x 2 rationalities), so ten draws of each
+gives 280 per claim per dtype, which is the factor of ten the ticket asks for. The
+arithmetic is written down because the test passes at any number of draws, which is
+exactly the property that lets a sweep quietly stop being the thing it claims to be.
+"""
+
+
+@pytest.mark.slow
+@pytest.mark.parametrize("dtype", DTYPES)
+def test_each_claim_holds_over_a_sweep_ten_times_the_shipped_one(
+    cpp_backend: None, dtype: npt.DTypeLike
+) -> None:
+    """A bound checked only by the sweep that ships with it has not been checked.
+
+    ``design/backend_parity.md`` records the case: the affine-map bound held over 500
+    draws and failed 88 times at 60000. This runs ten independent nets per
+    configuration against all three claims and asserts, per claim, that the sweep
+    actually exercised it -- a claim that agreed bit for bit everywhere would mean
+    nothing here evaluated its bound, and for the two bitwise claims it means the
+    opposite, that a difference would have been noticed.
+    """
+    del cpp_backend
+    demand_the_compiled_kernel(dtype)
+
+    exercised = {"elevate": 0, "reduce": 0, "error": 0}
+    seed = 0
+    for degrees in DEGREES:
+        for rank in RANKS:
+            for rational in (False, True):
+                for _draw in range(_SWEEP_DRAWS):
+                    seed += 1
+                    net = _net(degrees, rank, dtype, seed=70000 + seed, rational=rational)
+                    increments = _increments(degrees)
+                    decrements = _decrements(degrees)
+
+                    with use_backend(Backend.PYTHON):
+                        source = Bezier(net, is_rational=rational)
+                        elevated = np.asarray(source.elevate_degree(increments).control_points)
+                    with use_backend(Backend.CPP):
+                        actual = np.asarray(
+                            Bezier(net, is_rational=rational)
+                            .elevate_degree(increments)
+                            .control_points
+                        )
+                    assert np.array_equal(actual, elevated), (
+                        f"elevation is claimed bitwise on a non-fusing build and this "
+                        f"draw differs: degrees {degrees} rank {rank} rational "
+                        f"{rational} {np.dtype(dtype).name}"
+                    )
+                    exercised["elevate"] += 1
+
+                    if not any(decrements):
+                        continue
+                    with use_backend(Backend.PYTHON):
+                        reduced = np.asarray(source.reduce_degree(decrements).control_points)
+                        reference_error = source.degree_reduction_error(decrements)
+                    with use_backend(Backend.CPP):
+                        target = Bezier(net, is_rational=rational)
+                        actual_reduced = np.asarray(target.reduce_degree(decrements).control_points)
+                        actual_error = target.degree_reduction_error(decrements)
+                    assert np.array_equal(actual_reduced, reduced), (
+                        f"reduction is claimed bitwise on a non-fusing build and this "
+                        f"draw differs: degrees {degrees} rank {rank} rational "
+                        f"{rational} {np.dtype(dtype).name}"
+                    )
+                    exercised["reduce"] += 1
+
+                    # The error's own bound is asserted by the shipped test; what this
+                    # sweep adds is breadth, so it re-derives the same amplification
+                    # rather than a looser stand-in.
+                    difference = np.asarray(
+                        Bezier(net, is_rational=rational)
+                        .reduce_degree(decrements)
+                        .elevate_degree(decrements)
+                        .control_points
+                    ) - np.asarray(net)
+                    components = difference.shape[-1]
+                    squared = sum(_squared_l2_norm(difference[..., r]) for r in range(components))
+                    magnitude = sum(
+                        _squared_l2_norm(np.abs(difference[..., r])) for r in range(components)
+                    )
+                    root = np.sqrt(squared)
+                    stages = (
+                        sum(p + 1 for p in degrees)
+                        + int(np.prod(difference.shape[:-1]))
+                        + components
+                        + 1
+                    )
+                    bound = (
+                        2.0
+                        * (stages * np.finfo(np.float64).eps / 2.0)
+                        * (magnitude / (2.0 * root) + root if root > 0.0 else _TINY)
+                    )
+                    assert abs(actual_error - reference_error) <= bound, (
+                        f"the reduction error left its bound: degrees {degrees} rank "
+                        f"{rank} rational {rational} {np.dtype(dtype).name}"
+                    )
+                    exercised["error"] += 1
+
+    for claim, count in exercised.items():
+        assert count >= 280, (
+            f"the {claim} claim saw {count} comparisons, short of the 280 per dtype "
+            f"that is ten times its shipped 28. The sweep has stopped being ten times "
+            f"the shipped one."
+        )
