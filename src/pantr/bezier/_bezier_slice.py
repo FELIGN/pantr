@@ -18,7 +18,7 @@ import numpy as np
 import numpy.typing as npt
 
 from .._array_utils import _flatten_along_axis
-from ._bezier_backend import slice_kernel
+from ._bezier_backend import slice_kernel, slice_nd_kernel, slice_point_kernel
 
 if TYPE_CHECKING:
     from . import Bezier
@@ -53,24 +53,59 @@ def _slice_bezier(
         Inputs are assumed to be correct (no validation performed).
         For general use, call :meth:`~pantr.bezier.Bezier.slice` instead.
     """
+    if bezier.dim == 1:
+        # The result is a point rather than a Bézier, so this is a different accessor
+        # rather than a branch inside one: C++ cannot return either type from one
+        # function, and the projection stays here, above the branch, exactly where the
+        # oracle put it.
+        raw = slice_point_kernel()(bezier, value)
+        if bezier.is_rational:
+            weight = raw[-1]
+            return cast(npt.NDArray[np.float32 | np.float64], raw[:-1] / weight)
+        return raw
+
+    return slice_nd_kernel()(bezier, axis, value)
+
+
+def _slice_point_python(bezier: Bezier, value: float) -> npt.NDArray[np.float32 | np.float64]:
+    """Evaluate a one-dimensional Bézier at one parameter: the oracle for the port.
+
+    Args:
+        bezier (~pantr.bezier.Bezier): A one-dimensional Bézier.
+        value (float): Parameter to evaluate at.
+
+    Returns:
+        npt.NDArray[np.float32 | np.float64]: The raw homogeneous components, weight
+        column included.
+
+    Note:
+        No input validation is performed here; Layer 2 did it above the branch.
+    """
+    pts_2d, _ = _flatten_along_axis(bezier.control_points, 0)
+    raw = np.empty(pts_2d.shape[1], dtype=pts_2d.dtype)
+    slice_kernel()(pts_2d, value, raw)
+    return raw
+
+
+def _slice_nd_python(bezier: Bezier, axis: int, value: float) -> Bezier:
+    """Slice a Bézier of dimension at least two: the oracle for the port.
+
+    Args:
+        bezier (~pantr.bezier.Bezier): The Bézier to slice.
+        axis (int): Parametric direction to fix.
+        value (float): Parameter to fix it at.
+
+    Returns:
+        ~pantr.bezier.Bezier: The sliced Bézier, of one dimension less.
+
+    Note:
+        No input validation is performed here; Layer 2 did it above the branch.
+    """
     from . import Bezier as BezierCls  # noqa: PLC0415
 
-    ctrl = bezier.control_points
-
-    pts_2d, trailing_shape = _flatten_along_axis(ctrl, axis)
-
-    # Apply 1D de Casteljau via Numba kernel.
+    pts_2d, trailing_shape = _flatten_along_axis(bezier.control_points, axis)
     result_1d = np.empty(pts_2d.shape[1], dtype=pts_2d.dtype)
     slice_kernel()(pts_2d, value, result_1d)
 
-    if bezier.dim == 1:
-        # Result is a point.  For rational Béziers, project to physical coords.
-        if bezier.is_rational:
-            weight = result_1d[-1]
-            return cast(npt.NDArray[np.float32 | np.float64], result_1d[:-1] / weight)
-        return result_1d
-
     # Restore shape: the sliced axis is removed.
-    new_ctrl = result_1d.reshape(trailing_shape)
-
-    return BezierCls(new_ctrl, is_rational=bezier.is_rational)
+    return BezierCls(result_1d.reshape(trailing_shape), is_rational=bezier.is_rational)

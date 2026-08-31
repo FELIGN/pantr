@@ -503,20 +503,20 @@ pantr::bezier::Bezier<T> bind_restrict_nd(const pantr::bezier::Bezier<T>& bezier
 /// Split along one direction, returning both halves.
 template <class T>
 std::pair<pantr::bezier::Bezier<T>, pantr::bezier::Bezier<T>> bind_split_nd(
-    const pantr::bezier::Bezier<T>& bezier, std::size_t direction, T value) {
+    const pantr::bezier::Bezier<T>& bezier, std::size_t direction, double value) {
     return pantr::bezier::split<T>(bezier, direction, value);
 }
 
 /// Fix one direction at a value, dropping it.
 template <class T>
 pantr::bezier::Bezier<T> bind_slice_nd(const pantr::bezier::Bezier<T>& bezier, std::size_t axis,
-                                       T value) {
+                                       double value) {
     return pantr::bezier::slice<T>(bezier, axis, value);
 }
 
 /// Evaluate a one-dimensional Bézier at one parameter, in homogeneous components.
 template <class T>
-void bind_slice_point(const pantr::bezier::Bezier<T>& bezier, T value, out_vec<T> out) {
+void bind_slice_point(const pantr::bezier::Bezier<T>& bezier, double value, out_vec<T> out) {
     const std::vector<T> point = pantr::bezier::slice_point<T>(bezier, value);
     require_length(out, point.size(), "out");
     for (std::size_t i = 0; i < point.size(); ++i) {

@@ -503,6 +503,283 @@ def bezier_degree_reduction_error(
             does not match its direction.
     """
 
+def reverse_bezier(
+    bezier: Bezier32 | Bezier64,
+    direction: int,
+) -> Bezier32 | Bezier64:
+    """Reverse one parametric direction of a Bézier.
+
+    A pure rearrangement: nothing is computed, so this agrees with the Python
+    oracle bit for bit, on any dtype and any build. See
+    ``cpp/include/pantr/bezier/shape.hpp``'s file comment for the full argument.
+
+    Args:
+        bezier (Bezier32 | Bezier64): The Bézier to reverse.
+        direction (int): The parametric direction to reverse, in
+            ``[0, bezier.dim)``.
+
+    Returns:
+        Bezier32 | Bezier64: The reversed Bézier, matching ``bezier``'s class.
+
+    Raises:
+        TypeError: If ``direction`` is negative, since it is cast to an unsigned
+            index.
+        ValueError: If ``direction`` is outside ``[0, bezier.dim)``.
+    """
+
+def permute_bezier_directions(
+    bezier: Bezier32 | Bezier64,
+    permutation: Sequence[int],
+) -> Bezier32 | Bezier64:
+    """Reorder a Bézier's parametric directions.
+
+    New direction ``k`` is old direction ``permutation[k]``. A pure rearrangement
+    like :func:`reverse_bezier`, so it agrees with the Python oracle bit for bit
+    on any dtype and any build. See ``cpp/include/pantr/bezier/shape.hpp``'s file
+    comment for the full argument.
+
+    Args:
+        bezier (Bezier32 | Bezier64): The Bézier to permute.
+        permutation (Sequence[int]): A permutation of ``range(bezier.dim)``.
+
+    Returns:
+        Bezier32 | Bezier64: The permuted Bézier, matching ``bezier``'s class.
+
+    Raises:
+        TypeError: If any entry of ``permutation`` is negative, since it is cast
+            to an unsigned index.
+        ValueError: If ``permutation`` is not a permutation of
+            ``range(bezier.dim)``.
+    """
+
+def transform_bezier(
+    bezier: Bezier32 | Bezier64,
+    matrix: npt.NDArray[np.float64],
+    offset: npt.NDArray[np.float64],
+) -> Bezier32 | Bezier64:
+    """Apply an affine map to a Bézier's geometric coordinates.
+
+    Takes the map as a ``matrix`` and an ``offset`` rather than as an
+    ``AffineTransform``, on purpose: that is what lets neither backend's affine
+    implementation ever cross into the other. For a rational Bézier the weighted
+    coordinates transform as ``w (A x + b) = A (w x) + w b``, so the weight
+    column is left alone. Reaches BLAS in the Python oracle (``cp @ A.T + b``),
+    so unlike the rest of the nine shape operations, save
+    :func:`collapse_bezier_along_axis`, this one is not bit-exact against it. See
+    ``cpp/include/pantr/bezier/shape.hpp``'s file comment for the full argument
+    on both points.
+
+    Args:
+        bezier (Bezier32 | Bezier64): The Bézier to transform.
+        matrix (npt.NDArray[np.float64]): The linear part, shape ``(n, n)`` with
+            ``n`` the geometric rank -- the component count, less one when
+            ``bezier`` is rational. Always ``float64`` regardless of
+            ``bezier``'s dtype, C-contiguous.
+        offset (npt.NDArray[np.float64]): The translation, shape ``(n,)``.
+            Always ``float64``, C-contiguous.
+
+    Returns:
+        Bezier32 | Bezier64: The transformed Bézier, matching ``bezier``'s
+            class.
+
+    Raises:
+        TypeError: If ``matrix`` or ``offset`` has the wrong dtype or rank, or
+            is not C-contiguous.
+        ValueError: If ``matrix`` or ``offset``'s shape does not match the
+            geometric rank.
+    """
+
+def restrict_bezier(
+    bezier: Bezier32 | Bezier64,
+    lower: npt.NDArray[np.float64],
+    upper: npt.NDArray[np.float64],
+) -> Bezier32 | Bezier64:
+    """Restrict a Bézier to a sub-box of its parametric domain.
+
+    Each restricted direction is reparametrised back onto ``[0, 1]``. A
+    direction whose bounds are exactly ``(0, 1)`` is left untouched, which is
+    the Python oracle's own short-circuit and not an optimisation. Composes
+    over ``restrict_bezier_1d``, so it carries that kernel's own parity claim;
+    see ``cpp/include/pantr/bezier/shape.hpp``'s file comment for the argument.
+
+    Args:
+        bezier (Bezier32 | Bezier64): The Bézier to restrict.
+        lower (npt.NDArray[np.float64]): Lower bound per direction,
+            ``bezier.dim`` of them. Always ``float64`` regardless of
+            ``bezier``'s dtype, C-contiguous.
+        upper (npt.NDArray[np.float64]): Upper bound per direction, same
+            requirements.
+
+    Returns:
+        Bezier32 | Bezier64: The restricted Bézier, on ``[0, 1]`` in each
+            direction again.
+
+    Raises:
+        TypeError: If ``lower`` or ``upper`` has the wrong dtype or rank, or is
+            not C-contiguous.
+        ValueError: If ``lower`` or ``upper`` does not have ``bezier.dim``
+            entries, if a bound leaves ``[0, 1]`` or is inverted, or if every
+            direction is already the full domain.
+    """
+
+def split_bezier(
+    bezier: Bezier32 | Bezier64,
+    direction: int,
+    value: float,
+) -> tuple[Bezier32, Bezier32] | tuple[Bezier64, Bezier64]:
+    """Split a Bézier in two along one parametric direction.
+
+    Each half is reparametrised back onto ``[0, 1]``. Composes over
+    ``split_bezier_1d``, so it carries that kernel's own parity claim; see
+    ``cpp/include/pantr/bezier/shape.hpp``'s file comment for the argument.
+
+    Args:
+        bezier (Bezier32 | Bezier64): The Bézier to split.
+        direction (int): The parametric direction to split along, in
+            ``[0, bezier.dim)``.
+        value (float): The parameter to split at, in ``[0, 1]``. Cast to
+            ``bezier``'s dtype.
+
+    Returns:
+        tuple[Bezier32, Bezier32] | tuple[Bezier64, Bezier64]: The left and
+            right halves, matching ``bezier``'s class.
+
+    Raises:
+        TypeError: If ``direction`` is negative, since it is cast to an
+            unsigned index.
+        ValueError: If ``direction`` is outside ``[0, bezier.dim)``, or if
+            ``value`` leaves ``[0, 1]``.
+    """
+
+def slice_bezier(
+    bezier: Bezier32 | Bezier64,
+    axis: int,
+    value: float,
+) -> Bezier32 | Bezier64:
+    """Fix one parametric direction of a Bézier at a value, dropping it.
+
+    Requires ``bezier.dim >= 2``; a one-dimensional Bézier slices to a point,
+    which :func:`slice_bezier_point` returns instead. Composes over
+    ``slice_bezier_1d``, so it carries that kernel's own parity claim; see
+    ``cpp/include/pantr/bezier/shape.hpp``'s file comment for the argument.
+
+    Args:
+        bezier (Bezier32 | Bezier64): The Bézier to slice, of dimension at
+            least two.
+        axis (int): The direction to fix, in ``[0, bezier.dim)``.
+        value (float): The parameter to fix at, in ``[0, 1]``. Cast to
+            ``bezier``'s dtype.
+
+    Returns:
+        Bezier32 | Bezier64: The sliced Bézier, of dimension
+            ``bezier.dim - 1``, matching ``bezier``'s class.
+
+    Raises:
+        TypeError: If ``axis`` is negative, since it is cast to an unsigned
+            index.
+        ValueError: If ``bezier.dim < 2``, if ``axis`` is outside
+            ``[0, bezier.dim)``, or if ``value`` leaves ``[0, 1]``.
+    """
+
+def slice_bezier_point(
+    bezier: Bezier32 | Bezier64,
+    value: float,
+    *,
+    out: npt.NDArray[np.float32 | np.float64],
+) -> None:
+    """Evaluate a one-dimensional Bézier at one parameter, in raw components.
+
+    The ``bezier.dim == 1`` case of :func:`slice_bezier`, split out because its
+    result is a point rather than a Bézier. Writes the **raw** homogeneous
+    components, weight column included for a rational Bézier; projecting them
+    is the caller's, exactly as it is in the Python oracle. Composes over
+    ``slice_bezier_1d``, so it carries that kernel's own parity claim; see
+    ``cpp/include/pantr/bezier/shape.hpp``'s file comment for the argument.
+
+    Args:
+        bezier (Bezier32 | Bezier64): The Bézier to evaluate, of dimension
+            exactly one.
+        value (float): The parameter, in ``[0, 1]``. Cast to ``bezier``'s
+            dtype.
+        out (npt.NDArray[np.float32 | np.float64]): Output of shape
+            ``(bezier.control_points.shape[-1],)``, matching ``bezier``'s
+            dtype, 1D, C-contiguous and writable. Written in full.
+            Keyword-only.
+
+    Raises:
+        TypeError: If ``out`` does not match ``bezier``'s dtype, is not 1D and
+            C-contiguous, or is passed positionally.
+        ValueError: If ``bezier.dim != 1``, if ``value`` leaves ``[0, 1]``, or
+            if ``out`` does not have ``bezier.control_points.shape[-1]``
+            entries.
+    """
+
+def bezier_boundary(
+    bezier: Bezier32 | Bezier64,
+    axis: int,
+    side: int,
+) -> Bezier32 | Bezier64:
+    """One face of a Bézier's parametric domain.
+
+    Defined as ``slice_bezier(bezier, axis, side)``, so it inherits
+    :func:`slice_bezier` in full, including its parity claim; see
+    ``cpp/include/pantr/bezier/shape.hpp``'s file comment for the argument.
+
+    Args:
+        bezier (Bezier32 | Bezier64): The Bézier, of dimension at least two.
+        axis (int): The direction whose face is wanted, in
+            ``[0, bezier.dim)``.
+        side (int): ``0`` for the face at parameter ``0``, ``1`` for the face
+            at parameter ``1``.
+
+    Returns:
+        Bezier32 | Bezier64: The face, of dimension ``bezier.dim - 1``,
+            matching ``bezier``'s class.
+
+    Raises:
+        TypeError: If ``axis`` is negative, since it is cast to an unsigned
+            index.
+        ValueError: If ``side`` is neither ``0`` nor ``1``, if
+            ``bezier.dim < 2``, or if ``axis`` is outside ``[0, bezier.dim)``.
+    """
+
+def collapse_bezier_along_axis(
+    bezier: Bezier32 | Bezier64,
+    axis: int,
+    values: npt.NDArray[np.float32 | np.float64],
+) -> Bezier32 | Bezier64:
+    """Collapse a Bézier to one dimension by fixing every direction but one.
+
+    The contraction is ordered from the highest direction to the lowest,
+    skipping ``axis``, matching the Python oracle's own ``np.tensordot`` order
+    -- contraction is not associative in floating point, so a different order
+    is a different answer. Reaches BLAS in the oracle, so like
+    :func:`transform_bezier` this is not bit-exact against it. See
+    ``cpp/include/pantr/bezier/shape.hpp``'s file comment for the full
+    argument.
+
+    Args:
+        bezier (Bezier32 | Bezier64): The Bézier to collapse, of dimension at
+            least two.
+        axis (int): The direction to keep, in ``[0, bezier.dim)``.
+        values (npt.NDArray[np.float32 | np.float64]): One parameter per
+            collapsed direction, ``bezier.dim - 1`` of them, matching
+            ``bezier``'s dtype, C-contiguous. Entry ``i`` is direction ``i``
+            for ``i < axis`` and direction ``i + 1`` above it.
+
+    Returns:
+        Bezier32 | Bezier64: A one-dimensional Bézier along ``axis``, matching
+            ``bezier``'s class.
+
+    Raises:
+        TypeError: If ``axis`` is negative, since it is cast to an unsigned
+            index, or if ``values`` has the wrong dtype or rank, or is not
+            C-contiguous.
+        ValueError: If ``bezier.dim < 2``, if ``axis`` is outside
+            ``[0, bezier.dim)``, if ``values`` does not have
+            ``bezier.dim - 1`` entries, or if a value leaves ``[0, 1]``.
+    """
+
 def yuksel_roots(
     coeff: npt.NDArray[np.float32 | np.float64],
     param_tol: float,

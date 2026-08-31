@@ -189,6 +189,31 @@ _EvaluateNdLatticeFunc = Callable[["Bezier", Sequence[_Array], _Array], None]
 two are separate oracles, not two spellings of one: ``einsum`` against ``tensordot``.
 """
 
+_RestrictNdFunc = Callable[["Bezier", Sequence[float], Sequence[float]], "Bezier"]
+"""Signature of the n-d restriction: ``(bezier, lower, upper) -> Bezier``.
+
+One bound per parametric direction, and a direction whose bounds are exactly
+``(0.0, 1.0)`` is left untouched -- the oracle's own short-circuit, and not an
+optimisation: running the two-pass restriction over the full domain commits roundings
+the oracle does not.
+"""
+
+_SplitNdFunc = Callable[["Bezier", int, float], "tuple[Bezier, Bezier]"]
+"""Signature of the n-d split: ``(bezier, direction, value) -> (left, right)``."""
+
+_SliceNdFunc = Callable[["Bezier", int, float], "Bezier"]
+"""Signature of the n-d slice: ``(bezier, axis, value) -> Bezier``, for ``dim >= 2``."""
+
+_SlicePointFunc = Callable[["Bezier", float], _Array]
+"""Signature of the one-dimensional slice: ``(bezier, value) -> raw components``.
+
+Raw meaning homogeneous: the weight column is included and the projection of a
+rational result is the caller's, which is where the oracle puts it too.
+"""
+
+_CollapseFunc = Callable[["Bezier", int, _Array], "Bezier"]
+"""Signature of the collapse: ``(bezier, axis, values) -> Bezier``."""
+
 _ReduceApplyFunc = Callable[[npt.NDArray[np.float64], _Array, _Array], None]
 """Signature of the reduction-operator apply: ``(operator, ctrl, out) -> None``.
 
@@ -580,6 +605,121 @@ def _cpp_degree_reduction_error(
     )
 
 
+def _cpp_restrict_nd(bezier: Bezier, lower: Sequence[float], upper: Sequence[float]) -> Bezier:
+    """Restrict through the C++ binding.
+
+    Args:
+        bezier (~pantr.bezier.Bezier): The Bézier, holding a C++ handle.
+        lower (Sequence[float]): Lower bound per direction.
+        upper (Sequence[float]): Upper bound per direction.
+
+    Returns:
+        ~pantr.bezier.Bezier: The restricted Bézier, wrapping a C++ handle.
+
+    Note:
+        No input validation is performed here; Layer 2 did it above the branch.
+    """
+    from pantr import _pantr_cpp  # noqa: PLC0415  (resolved against the .pyi stub)
+
+    from ._bezier import Bezier as BezierCls  # noqa: PLC0415  (cycle)
+
+    return BezierCls._wrap(
+        _pantr_cpp.restrict_bezier(
+            _cpp_handle(bezier),
+            np.ascontiguousarray(lower, dtype=np.float64),
+            np.ascontiguousarray(upper, dtype=np.float64),
+        )
+    )
+
+
+def _cpp_split_nd(bezier: Bezier, direction: int, value: float) -> tuple[Bezier, Bezier]:
+    """Split through the C++ binding.
+
+    Args:
+        bezier (~pantr.bezier.Bezier): The Bézier, holding a C++ handle.
+        direction (int): The direction to split.
+        value (float): The parameter to split at.
+
+    Returns:
+        tuple[~pantr.bezier.Bezier, ~pantr.bezier.Bezier]: The two halves.
+
+    Note:
+        No input validation is performed here; see :func:`_cpp_restrict_nd`.
+    """
+    from pantr import _pantr_cpp  # noqa: PLC0415  (resolved against the .pyi stub)
+
+    from ._bezier import Bezier as BezierCls  # noqa: PLC0415  (cycle)
+
+    left, right = _pantr_cpp.split_bezier(_cpp_handle(bezier), direction, value)
+    return BezierCls._wrap(left), BezierCls._wrap(right)
+
+
+def _cpp_slice_nd(bezier: Bezier, axis: int, value: float) -> Bezier:
+    """Slice through the C++ binding, for a Bézier of dimension at least two.
+
+    Args:
+        bezier (~pantr.bezier.Bezier): The Bézier, holding a C++ handle.
+        axis (int): The direction to fix.
+        value (float): The parameter to fix it at.
+
+    Returns:
+        ~pantr.bezier.Bezier: The sliced Bézier, of one dimension less.
+
+    Note:
+        No input validation is performed here; see :func:`_cpp_restrict_nd`.
+    """
+    from pantr import _pantr_cpp  # noqa: PLC0415  (resolved against the .pyi stub)
+
+    from ._bezier import Bezier as BezierCls  # noqa: PLC0415  (cycle)
+
+    return BezierCls._wrap(_pantr_cpp.slice_bezier(_cpp_handle(bezier), axis, value))
+
+
+def _cpp_slice_point(bezier: Bezier, value: float) -> _Array:
+    """Evaluate a one-dimensional Bézier at one parameter through the C++ binding.
+
+    Args:
+        bezier (~pantr.bezier.Bezier): The Bézier, holding a C++ handle.
+        value (float): The parameter.
+
+    Returns:
+        _Array: The raw homogeneous components at that parameter.
+
+    Note:
+        No input validation is performed here; see :func:`_cpp_restrict_nd`.
+    """
+    from pantr import _pantr_cpp  # noqa: PLC0415  (resolved against the .pyi stub)
+
+    out = np.empty(bezier.control_points.shape[-1], dtype=bezier.control_points.dtype)
+    _pantr_cpp.slice_bezier_point(_cpp_handle(bezier), value, out=out)
+    return out
+
+
+def _cpp_collapse(bezier: Bezier, axis: int, values: _Array) -> Bezier:
+    """Collapse through the C++ binding.
+
+    Args:
+        bezier (~pantr.bezier.Bezier): The Bézier, holding a C++ handle.
+        axis (int): The direction to keep.
+        values (_Array): One parameter per collapsed direction, in the Bézier's dtype.
+
+    Returns:
+        ~pantr.bezier.Bezier: A one-dimensional Bézier along ``axis``.
+
+    Note:
+        No input validation is performed here; see :func:`_cpp_restrict_nd`.
+    """
+    from pantr import _pantr_cpp  # noqa: PLC0415  (resolved against the .pyi stub)
+
+    from ._bezier import Bezier as BezierCls  # noqa: PLC0415  (cycle)
+
+    return BezierCls._wrap(
+        _pantr_cpp.collapse_bezier_along_axis(
+            _cpp_handle(bezier), axis, np.ascontiguousarray(values)
+        )
+    )
+
+
 # Hoisted to module level rather than rebuilt inside each accessor. An accessor
 # that closed over a fresh function object would return a different callable on
 # every call, which defeats identity comparison in the tests and re-creates a
@@ -627,6 +767,21 @@ _CPP_REDUCE_DEGREE: Final[_ReduceDegreeFunc] = _cpp_reduce_degree
 
 _CPP_DEGREE_REDUCTION_ERROR: Final[_DegreeReductionErrorFunc] = _cpp_degree_reduction_error
 """The reduction-error measure of the C++ backend."""
+
+_CPP_RESTRICT_ND: Final[_RestrictNdFunc] = _cpp_restrict_nd
+"""The n-d restriction of the C++ backend."""
+
+_CPP_SPLIT_ND: Final[_SplitNdFunc] = _cpp_split_nd
+"""The n-d split of the C++ backend."""
+
+_CPP_SLICE_ND: Final[_SliceNdFunc] = _cpp_slice_nd
+"""The n-d slice of the C++ backend."""
+
+_CPP_SLICE_POINT: Final[_SlicePointFunc] = _cpp_slice_point
+"""The one-dimensional slice of the C++ backend."""
+
+_CPP_COLLAPSE: Final[_CollapseFunc] = _cpp_collapse
+"""The collapse of the C++ backend."""
 
 
 def evaluate_kernel(backend: Backend | None = None) -> _EvaluateFunc:
@@ -847,3 +1002,98 @@ def degree_reduction_error_kernel(
     from ._bezier_degree import _degree_reduction_error_python  # noqa: PLC0415  (cycle)
 
     return _select(backend, _degree_reduction_error_python, _CPP_DEGREE_REDUCTION_ERROR)
+
+
+def restrict_nd_kernel(backend: Backend | None = None) -> _RestrictNdFunc:
+    """Return the n-d restriction of the requested backend.
+
+    Args:
+        backend (Backend | None): The backend to use. ``None`` means the backend
+            currently in effect. Defaults to None.
+
+    Returns:
+        _RestrictNdFunc: Callable as ``(bezier, lower, upper) -> Bezier``.
+
+    Raises:
+        RuntimeError: If ``backend`` is given and is not available.
+    """
+    from ._bezier_restrict import _restrict_python  # noqa: PLC0415  (cycle)
+
+    return _select(backend, _restrict_python, _CPP_RESTRICT_ND)
+
+
+def split_nd_kernel(backend: Backend | None = None) -> _SplitNdFunc:
+    """Return the n-d split of the requested backend.
+
+    Args:
+        backend (Backend | None): The backend to use. ``None`` means the backend
+            currently in effect. Defaults to None.
+
+    Returns:
+        _SplitNdFunc: Callable as ``(bezier, direction, value) -> (left, right)``.
+
+    Raises:
+        RuntimeError: If ``backend`` is given and is not available.
+    """
+    from ._bezier_split import _split_python  # noqa: PLC0415  (cycle)
+
+    return _select(backend, _split_python, _CPP_SPLIT_ND)
+
+
+def slice_nd_kernel(backend: Backend | None = None) -> _SliceNdFunc:
+    """Return the n-d slice of the requested backend.
+
+    Args:
+        backend (Backend | None): The backend to use. ``None`` means the backend
+            currently in effect. Defaults to None.
+
+    Returns:
+        _SliceNdFunc: Callable as ``(bezier, axis, value) -> Bezier``.
+
+    Raises:
+        RuntimeError: If ``backend`` is given and is not available.
+    """
+    from ._bezier_slice import _slice_nd_python  # noqa: PLC0415  (cycle)
+
+    return _select(backend, _slice_nd_python, _CPP_SLICE_ND)
+
+
+def slice_point_kernel(backend: Backend | None = None) -> _SlicePointFunc:
+    """Return the one-dimensional slice of the requested backend.
+
+    A separate accessor from :func:`slice_nd_kernel` rather than a branch inside it,
+    because the two return different kinds of thing: a Bézier and a point. The oracle
+    makes the same split, one function returning a union; C++ cannot, and this is
+    where that shows.
+
+    Args:
+        backend (Backend | None): The backend to use. ``None`` means the backend
+            currently in effect. Defaults to None.
+
+    Returns:
+        _SlicePointFunc: Callable as ``(bezier, value) -> raw components``.
+
+    Raises:
+        RuntimeError: If ``backend`` is given and is not available.
+    """
+    from ._bezier_slice import _slice_point_python  # noqa: PLC0415  (cycle)
+
+    return _select(backend, _slice_point_python, _CPP_SLICE_POINT)
+
+
+def collapse_kernel(backend: Backend | None = None) -> _CollapseFunc:
+    """Return the collapse of the requested backend.
+
+    Args:
+        backend (Backend | None): The backend to use. ``None`` means the backend
+            currently in effect. Defaults to None.
+
+    Returns:
+        _CollapseFunc: Callable as ``(bezier, axis, values) -> Bezier``.
+
+    Raises:
+        RuntimeError: If ``backend`` is given and is not available.
+    """
+    from ._bezier_collapse import _collapse_python  # noqa: PLC0415  (cycle)
+
+    return _select(backend, _collapse_python, _CPP_COLLAPSE)

@@ -29,6 +29,21 @@
 /// lattice entry point and for the same reason. `transform` is in this family too:
 /// the oracle writes it `cp @ A.T + b`, which is a matrix product.
 ///
+/// ## A parameter is not the storage format, and that is where this port first broke
+///
+/// `restrict`, `split`, `slice` and `slice_point` take their parameter at
+/// **`accumulator_t<T>`** -- `double` even for `float` storage -- because that is what
+/// the 1-D kernels' own signatures say, and they say it because the oracle receives a
+/// Python float, which numba treats as `float64` whatever the control points hold.
+/// Taking the parameter at `T` rounds it before the kernel sees it, which is invisible
+/// for a representable value like `0.375` and wrong for one like `0.9`. That is
+/// `design/backend_parity.md` Rule 9 in its purest form: the width belongs to the
+/// operation, not to the array it acts on.
+///
+/// `collapse_along_axis` is the deliberate exception and takes `T`, because *its*
+/// oracle opens with `np.asarray(values, dtype=bezier.dtype)` -- there the narrowing
+/// is the oracle's own and reproducing it is the point.
+///
 /// ## `transform` never converts an affine map between backends
 ///
 /// It takes the **matrix and the offset**, not an `AffineTransform`. That is
@@ -359,8 +374,13 @@ template <Real T>
         detail::along_axis<T>(
             values, shape, d, shape[d],
             [&](span2d<const T> in, span2d<T> dest) {
-                restrict_bezier_1d<T>(in, static_cast<T>(lower[d]), static_cast<T>(upper[d]),
-                                      dest);
+                // Passed at the ACCUMULATOR's width, not the storage format's. The
+                // kernel's own signature says `accumulator_t<T>` because the oracle
+                // receives a Python float, which numba treats as float64 whatever the
+                // control points hold; narrowing to `T` first rounds the bound before
+                // the kernel ever sees it. Measured before the fix: 38 float32 parity
+                // cases failed on bounds like 0.9 that float32 cannot represent.
+                restrict_bezier_1d<T>(in, lower[d], upper[d], dest);
             },
             out);
         values.swap(out);
@@ -382,9 +402,10 @@ template <Real T>
 ///         `[0, 1]`.
 template <Real T>
 [[nodiscard]] std::pair<Bezier<T>, Bezier<T>> split(const Bezier<T>& bezier,
-                                                    std::size_t direction, T value) {
+                                                    std::size_t direction,
+                                                    accumulator_t<T> value) {
     detail::require_direction("direction", direction, bezier.dim());
-    if (!(value >= T(0) && value <= T(1))) {
+    if (!(value >= accumulator_t<T>(0) && value <= accumulator_t<T>(1))) {
         throw std::invalid_argument("value must be in [0, 1].");
     }
 
@@ -423,12 +444,12 @@ template <Real T>
 /// \throws std::invalid_argument If the Bézier is not one-dimensional or `value`
 ///         leaves `[0, 1]`.
 template <Real T>
-[[nodiscard]] std::vector<T> slice_point(const Bezier<T>& bezier, T value) {
+[[nodiscard]] std::vector<T> slice_point(const Bezier<T>& bezier, accumulator_t<T> value) {
     if (bezier.dim() != 1) {
         throw std::invalid_argument("slice_point needs a one-dimensional Bézier, got dimension "
                                     + std::to_string(bezier.dim()) + ".");
     }
-    if (!(value >= T(0) && value <= T(1))) {
+    if (!(value >= accumulator_t<T>(0) && value <= accumulator_t<T>(1))) {
         throw std::invalid_argument("value must be in [0, 1].");
     }
 
@@ -449,14 +470,15 @@ template <Real T>
 /// \throws std::invalid_argument If the Bézier is one-dimensional -- use
 ///         `slice_point` -- if `axis` is out of range, or if `value` leaves `[0, 1]`.
 template <Real T>
-[[nodiscard]] Bezier<T> slice(const Bezier<T>& bezier, std::size_t axis, T value) {
+[[nodiscard]] Bezier<T> slice(const Bezier<T>& bezier, std::size_t axis,
+                             accumulator_t<T> value) {
     if (bezier.dim() < 2) {
         throw std::invalid_argument(
             "slice needs a Bézier of dimension at least two; a one-dimensional one slices to a "
             "point, which slice_point returns.");
     }
     detail::require_direction("axis", axis, bezier.dim());
-    if (!(value >= T(0) && value <= T(1))) {
+    if (!(value >= accumulator_t<T>(0) && value <= accumulator_t<T>(1))) {
         throw std::invalid_argument("value must be in [0, 1].");
     }
 
@@ -499,7 +521,7 @@ template <Real T>
         throw std::invalid_argument("side must be 0 or 1, got " + std::to_string(side) + ".");
     }
     detail::require_direction("axis", axis, bezier.dim());
-    return slice<T>(bezier, axis, side == 0 ? T(0) : T(1));
+    return slice<T>(bezier, axis, side == 0 ? accumulator_t<T>(0) : accumulator_t<T>(1));
 }
 
 /// Collapse to a univariate Bézier by fixing every direction but one.
@@ -531,6 +553,9 @@ template <Real T>
                                     + std::to_string(values.size()) + ".");
     }
     for (const T value : values) {
+        // At `T`, not the accumulator: collapse's oracle casts its values to the
+        // Bézier's dtype before doing anything with them, so the narrowing is the
+        // oracle's own and reproducing it is the point. See the file comment.
         if (!(value >= T(0) && value <= T(1))) {
             throw std::invalid_argument("All values must be in [0, 1].");
         }

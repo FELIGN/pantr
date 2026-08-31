@@ -16,7 +16,7 @@ from typing import TYPE_CHECKING
 import numpy as np
 
 from .._array_utils import _flatten_along_axis, _unflatten_along_axis
-from ._bezier_backend import split_kernel
+from ._bezier_backend import split_kernel, split_nd_kernel
 
 if TYPE_CHECKING:
     from . import Bezier
@@ -48,6 +48,23 @@ def _split_bezier(
     Note:
         Inputs are assumed to be correct (no validation performed).
         For general use, call :meth:`~pantr.bezier.Bezier.split` instead.
+    """
+    return split_nd_kernel()(bezier, direction, value)
+
+
+def _split_python(bezier: Bezier, direction: int, value: float) -> tuple[Bezier, Bezier]:
+    """Split with NumPy and the Numba kernel: the oracle for the port.
+
+    Args:
+        bezier (~pantr.bezier.Bezier): The Bézier to split.
+        direction (int): Parametric direction to split along.
+        value (float): Parameter to split at.
+
+    Returns:
+        tuple[~pantr.bezier.Bezier, ~pantr.bezier.Bezier]: The two halves.
+
+    Note:
+        No input validation is performed here; Layer 2 did it above the branch.
     """
     from . import Bezier as BezierCls  # noqa: PLC0415
 
