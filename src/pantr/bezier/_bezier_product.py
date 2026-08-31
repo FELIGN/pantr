@@ -1,12 +1,24 @@
 """Bézier pointwise product.
 
-This module provides :func:`_multiply_bezier`, which computes the exact
-pointwise product of two Bézier objects via the Bernstein product formula.
-The result is a Bézier of degree ``p_d + q_d`` per direction.
+This module provides :func:`_multiply_bezier`, which computes the pointwise
+product of two Bézier objects via the Bernstein product formula.  The result is a
+Bézier of degree ``p_d + q_d`` per direction.
+
+That degree represents the product **exactly**: no approximation is made in
+choosing it, unlike degree reduction.  The coefficients are another matter, and
+this module used to call them exact too.  Each is a binomial-weighted sum formed
+in floating point, so each carries the roundings of that sum; the claim of
+exactness is about the representation and not about the computed numbers.
+``cpp/include/pantr/bezier/product.hpp`` states the same distinction for the C++
+port, and ``tests/parity/test_bezier_product.py`` measures how far the two
+backends' coefficients agree.
 
 The core Bernstein product formulas (:func:`_bernstein_product_coefficients`
 and :func:`_bernstein_product_coefficients_nd`) are also used by the B-spline
-product modules.
+product modules, and are **not** dispatched: they stay pure numpy on either
+backend.  ``design/cross_backend_types.md`` records why, and the C++ port
+reproduces them rather than routing through the scalar product kernel they
+resemble.
 """
 
 from __future__ import annotations
@@ -19,6 +31,7 @@ import numpy as np
 import numpy.typing as npt
 
 from .._control_points_utils import _append_unit_weight_column
+from ._bezier_backend import multiply_kernel
 
 if TYPE_CHECKING:
     from . import Bezier
@@ -156,11 +169,64 @@ def _bernstein_product_coefficients_nd(
 # ---------------------------------------------------------------------------
 
 
-def _multiply_bezier(a: Bezier, b: Bezier) -> Bezier:
-    """Compute the exact pointwise product of two Bézier objects.
+def _binomial_tables(
+    order: int, dtype: npt.DTypeLike
+) -> tuple[npt.NDArray[np.float32 | np.float64], npt.NDArray[np.float32 | np.float64]]:
+    """Tabulate ``C(n, k)`` and ``1 / C(n, k)`` for ``n <= order``, in one dtype.
 
-    Validates that both operands have matching dimension, dtype, and rank,
-    then dispatches to the non-rational or rational implementation.
+    The two tables the C++ product and composition are handed instead of assembling
+    their own; ``cpp/include/pantr/bezier/product.hpp`` argues why they cross as data
+    rather than being computed natively.  The short of it: :func:`math.comb` is exact
+    at any size and the C++ exact-integer recurrence stops at ``61``, so a native
+    assembly would import an envelope into an operation that does not have one.
+
+    Every entry is built by **exactly the expression the numpy oracle uses**, which is
+    what makes the comparison a comparison of the product rather than of two table
+    assemblies: ``np.array([math.comb(n, k) ...], dtype=dtype)`` for the coefficients
+    and ``np.array([1.0 / math.comb(n, k) ...], dtype=dtype)`` for the reciprocals.
+
+    :mod:`~pantr.bezier._bezier_compose` reaches its binomials through a third
+    expression, ``float(math.comb(m, i))`` multiplied into an array, and that value is
+    the same as this table's for every argument.  A ``float32`` table is reached there
+    by rounding the exact integer to ``float64`` and then to ``float32``, and here in
+    one step; the two agree because ``float64`` carries 53 significand bits against
+    ``float32``'s 24 and double rounding through an intermediate of at least
+    ``2 * 24 + 2`` bits is equal to single rounding (Figueroa, *Yet another proof of
+    the double rounding theorem*, 1995).  ``float64`` storage is the trivial case,
+    where both spellings are one correctly rounded conversion.
+    ``test_the_two_spellings_of_a_binomial_agree`` in
+    ``tests/parity/test_bezier_product.py`` checks it over the whole range these
+    operations reach, because the argument is a theorem about a hypothesis this code
+    has to satisfy rather than about this code.
+
+    Entries with ``k > n`` are zero and are never read.
+
+    Args:
+        order (int): Largest upper index to tabulate, so the tables are
+            ``(order + 1, order + 1)``.
+        dtype (npt.DTypeLike): Storage format, matching the Bézier's.
+
+    Returns:
+        tuple: The coefficient table and the reciprocal table, both C-contiguous.
+    """
+    size = order + 1
+    binomials = np.zeros((size, size), dtype=dtype)
+    inverse_binomials = np.zeros((size, size), dtype=dtype)
+    for n in range(size):
+        exact = [math.comb(n, k) for k in range(n + 1)]
+        binomials[n, : n + 1] = np.array(exact, dtype=dtype)
+        inverse_binomials[n, : n + 1] = np.array([1.0 / c for c in exact], dtype=dtype)
+    return binomials, inverse_binomials
+
+
+def _multiply_bezier(a: Bezier, b: Bezier) -> Bezier:
+    """Compute the pointwise product of two Bézier objects.
+
+    Validates that both operands have matching dimension, dtype, and rank, then
+    hands the pair to the active backend.  The result has degree ``p_d + q_d`` per
+    direction, which represents the product exactly; its coefficients are a
+    binomial-weighted sum in floating point and carry that sum's roundings.  See the
+    module docstring.
 
     Args:
         a (~pantr.bezier.Bezier): First operand.
@@ -180,6 +246,22 @@ def _multiply_bezier(a: Bezier, b: Bezier) -> Bezier:
     if a.rank != b.rank:
         raise ValueError(f"Operands must have the same rank. Got {a.rank} and {b.rank}.")
 
+    return multiply_kernel()(a, b)
+
+
+def _multiply_python(a: Bezier, b: Bezier) -> Bezier:
+    """Multiply with NumPy: the oracle for the port.
+
+    Args:
+        a (~pantr.bezier.Bezier): First operand.
+        b (~pantr.bezier.Bezier): Second operand.
+
+    Returns:
+        ~pantr.bezier.Bezier: The product.
+
+    Note:
+        No input validation is performed here; Layer 2 did it above the branch.
+    """
     if a.is_rational or b.is_rational:
         return _multiply_rational(a, b)
     return _multiply_nonrational(a, b)
