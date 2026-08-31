@@ -341,7 +341,7 @@ class Bspline:
 
             A point on an interior knot line legitimately belongs to either adjacent
             cell; ``ref_coords`` is unique but the reported ``cell_ids`` entry is
-            whichever cell :meth:`pantr.grid.TensorProductGrid.locate_many` assigns.
+            whichever cell :meth:`pantr.grid.Grid.locate_many` assigns.
 
             The inversion always runs in ``float64``: a ``float32`` B-spline is promoted
             to an exact ``float64`` copy, since a ``float32`` residual cannot be resolved
