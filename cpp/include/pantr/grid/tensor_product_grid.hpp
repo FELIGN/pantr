@@ -49,6 +49,7 @@
 /// assignment of the final breakpoint to `stop`, and the SEPARATE statements for the
 /// product and the sum. See `uniform_grid` for the derivation of each.
 
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <limits>
@@ -98,17 +99,24 @@ inline constexpr std::int64_t kMinBreakpointsPerAxis = 2;
 /// twice that: `ptp(d) <= 18 u S = 9 eps S`. **The bound has no `n` in it**, which is
 /// the half the oracle's rationale got backwards.
 ///
-/// Rounded up to the next power of two, `16 eps` -- a stated margin of 1.8 over the
-/// derivation. Measured over 200000 random `linspace` axes spanning forty decades of
-/// magnitude, the largest observed `ptp(d) / (eps S)` was 2.74, so the constant also
-/// carries a factor of 5.8 over anything seen.
+/// Rounded up to the next power of two, `16 eps`. The margin over the derivation is
+/// `16 / 9`, which is exact arithmetic. The margin over what is OBSERVED is not quoted
+/// here on purpose: a measured number in a comment is pinned to a machine and a seed,
+/// and nothing would re-measure it. `scripts/measure_uniform_spacing_spread.py` sweeps
+/// 200000 random `linspace` axes over forty decades, prints that figure, and asserts
+/// the observed ratio stays under `9` -- which is the claim that has to keep holding.
 ///
 /// ## Where it degrades, and how
 ///
-/// `16 eps S` underflows to zero for `S` below about `1e-292`, where the test becomes
-/// exact equality of the spacings. That is the honest answer at that scale rather than
-/// a failure: every coordinate there is subnormal, and a tolerance smaller than the
-/// smallest subnormal cannot be represented to compare against.
+/// `16 eps S` rounds to exactly zero once it falls below the smallest subnormal, which
+/// is `S` of order `1e-310`, and there the test becomes exact equality of the spacings.
+/// `scripts/measure_uniform_spacing_spread.py` bisects for that boundary rather than
+/// reasoning about it. Degenerating there is the honest answer rather than a failure: a
+/// tolerance below the smallest subnormal has no representation to compare against. A
+/// first version of this note put the boundary at `1e-292`, which is where the product
+/// stops being NORMAL rather than where it reaches zero -- wrong by seventeen orders of
+/// magnitude, and recorded because it is exactly the kind of checkable number a
+/// derivation must not get wrong.
 ///
 /// The Python oracle carries the same constant and the same derivation at
 /// `src/pantr/grid/_tensor_product_grid.py`; the two are compared in
@@ -454,11 +462,20 @@ class TensorProductGrid : public GridBase<TensorProductGrid<T>> {
         // `in_subset` is membership in the REQUESTED set, which may be a strict subset
         // of the window when the request is non-convex. Sorting a copy of the request
         // makes the test logarithmic rather than making it quadratic in the window.
+        //
+        // `std::sort` and `std::binary_search` rather than hand-rolled equivalents:
+        // these are plain `std::int64_t` cell ids, so neither of the two reasons this
+        // tree hand-rolls a standard algorithm applies -- there is no tie whose order
+        // matters (`bezier/root_finding.hpp`) and no comparison that has to pass
+        // through `value_of` (`grid/locate.hpp`, and `axis_cell` above).
         std::vector<std::int64_t> requested(cell_ids.begin(), cell_ids.end());
-        sort_ids(requested);
+        std::sort(requested.begin(), requested.end());
         std::vector<std::uint8_t> in_subset(sub_cells);
         for (std::size_t local = 0; local < sub_cells; ++local) {
-            in_subset[local] = contains_sorted(requested, local_to_global[local]) ? 1 : 0;
+            in_subset[local] = std::binary_search(requested.begin(), requested.end(),
+                                                  local_to_global[local])
+                                   ? 1
+                                   : 0;
         }
         return make_restriction(std::move(sub), std::move(local_to_global), std::move(in_subset));
     }
@@ -545,10 +562,16 @@ class TensorProductGrid : public GridBase<TensorProductGrid<T>> {
         for (std::size_t d = 0; d < breakpoints.size(); ++d) {
             const std::vector<T>& axis = breakpoints[d];
             if (static_cast<std::int64_t>(axis.size()) < kMinBreakpointsPerAxis) {
+                // `shape (N,)` rather than `N`: the oracle reports `arr.shape`, which
+                // for a one-dimensional numpy array prints with the trailing comma of
+                // a Python one-tuple. Reproduced verbatim because the two backends'
+                // messages are compared, and this one differed until a review caught
+                // it -- the parity test that should have caught it was comparing a
+                // backend against itself.
                 throw std::invalid_argument(
                     "breakpoints[" + std::to_string(d) + "] must have at least "
-                    + std::to_string(kMinBreakpointsPerAxis) + " entries (>= 1 cell); got "
-                    + std::to_string(axis.size()) + ".");
+                    + std::to_string(kMinBreakpointsPerAxis) + " entries (>= 1 cell); got shape ("
+                    + std::to_string(axis.size()) + ",).");
             }
             for (const T& x : axis) {
                 const auto v = value_of(x);
@@ -568,7 +591,23 @@ class TensorProductGrid : public GridBase<TensorProductGrid<T>> {
                                                 + "] must be strictly increasing.");
                 }
             }
-            num_cells *= static_cast<std::int64_t>(axis.size()) - 1;
+            const std::int64_t cells = static_cast<std::int64_t>(axis.size()) - 1;
+            // Checked, because the alternative is undefined behaviour rather than a
+            // wrong number: a signed overflow here would leave `num_cells` positive but
+            // meaningless, and `GridBase` only rejects a NEGATIVE count. The input that
+            // reaches it is cheap -- four axes of 55000 cells is 220000 stored doubles --
+            // so it is not out of reach.
+            //
+            // This is a deliberate divergence from the oracle, which accumulates the
+            // same product in Python's arbitrary-precision integers and so never
+            // overflows. A grid that large cannot be used on either side; raising is
+            // the smaller divergence.
+            if (cells != 0 && num_cells > std::numeric_limits<std::int64_t>::max() / cells) {
+                throw std::invalid_argument(
+                    "TensorProductGrid: the per-axis cell counts multiply to more than "
+                    "int64 can hold, so the grid has no representable cell count.");
+            }
+            num_cells *= cells;
         }
         return Sizes{static_cast<std::int64_t>(breakpoints.size()), num_cells};
     }
@@ -646,45 +685,6 @@ class TensorProductGrid : public GridBase<TensorProductGrid<T>> {
         for (std::size_t d = 0; d < out.size(); ++d) {
             out[d] = (cid / strides_[d]) % cells_per_axis_[d];
         }
-    }
-
-    /// Sort a scratch copy of the requested cell ids in place.
-    ///
-    /// An insertion-free ascending sort written out rather than `std::sort`, so the
-    /// header needs no `<algorithm>`; the array is the caller's request, which is at
-    /// most `num_cells` long.
-    ///
-    /// \param ids The ids to sort.
-    static void sort_ids(std::vector<std::int64_t>& ids) noexcept {
-        for (std::size_t i = 1; i < ids.size(); ++i) {
-            const std::int64_t key = ids[i];
-            std::size_t j = i;
-            while (j > 0 && ids[j - 1] > key) {
-                ids[j] = ids[j - 1];
-                --j;
-            }
-            ids[j] = key;
-        }
-    }
-
-    /// Whether a sorted array contains `value`.
-    ///
-    /// \param sorted An ascending array.
-    /// \param value The value to look for.
-    /// \return `true` iff it is present.
-    [[nodiscard]] static bool contains_sorted(const std::vector<std::int64_t>& sorted,
-                                              std::int64_t value) noexcept {
-        std::size_t lo = 0;
-        std::size_t hi = sorted.size();
-        while (lo < hi) {
-            const std::size_t mid = lo + ((hi - lo) / 2);
-            if (sorted[mid] < value) {
-                lo = mid + 1;
-            } else {
-                hi = mid;
-            }
-        }
-        return lo < sorted.size() && sorted[lo] == value;
     }
 
     /// Reject a cell id outside `[0, num_cells)`, in the index helpers' own words.
@@ -787,6 +787,14 @@ class TensorProductGrid : public GridBase<TensorProductGrid<T>> {
 /// \param bounds `(ndim, 2)` row-major per-axis `[lo, hi]` pairs.
 /// \param cells Per-axis cell counts, length `ndim`, each `>= 1`.
 /// \return The uniform grid.
+/// The five checks below are also performed, first, by `pantr.grid.uniform_grid`, which
+/// has to do them anyway: it broadcasts a scalar `cells` over the axes and coerces an
+/// `ArrayLike` `bounds`, so it knows the shapes before this function could be reached.
+/// Through Python the wording a caller sees is therefore always the wrapper's, and these
+/// messages are NOT held to the oracle's text -- they exist for a C++ caller with no
+/// interpreter above it, which is the case `geometry/aabb.hpp` argues the core must serve.
+/// The parity obligation is only where both spellings are observable.
+///
 /// \throws std::invalid_argument If `bounds` has fewer than one row or not two
 ///         columns, `cells` has the wrong length, any count is `< 1`, or any axis has
 ///         `lo >= hi`.

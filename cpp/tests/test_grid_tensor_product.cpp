@@ -76,13 +76,37 @@ void test_sizes_and_layout() {
 void test_construction_is_validated() {
     PANTR_CHECK(throws_with<std::invalid_argument>([] { (void)Grid({}); }, "at least one axis"));
     PANTR_CHECK(
-        throws_with<std::invalid_argument>([] { (void)Grid({{0.0}}); }, "at least 2 entries"));
+        throws_with<std::invalid_argument>([] { (void)Grid({{0.0}}); },
+                                           "at least 2 entries (>= 1 cell); got shape (1,)."));
     PANTR_CHECK(throws_with<std::invalid_argument>([] { (void)Grid({{0.0, 1.0, 1.0}}); },
                                                    "strictly increasing"));
     PANTR_CHECK(throws_with<std::invalid_argument>(
         [] { (void)Grid({{0.0, std::numeric_limits<double>::infinity()}}); }, "finite"));
     PANTR_CHECK(throws_with<std::invalid_argument>(
         [] { (void)Grid({{0.0, std::numeric_limits<double>::quiet_NaN(), 1.0}}); }, "finite"));
+}
+
+/// The per-axis cell counts multiplying past `int64` is reported, not wrapped.
+///
+/// A signed overflow would be undefined behaviour, and `GridBase` only rejects a
+/// negative cell count -- so a wrapped-positive product would sail through and every
+/// size downstream would be wrong. Four axes of 3037000500 cells is the smallest shape
+/// that overflows on the fourth multiplication; the breakpoints are never allocated,
+/// because the count is checked before the flat buffer is built.
+void test_cell_count_overflow_is_reported() {
+    // 2^31.5 or so per axis: two of them square to just under int64's max, three
+    // overflow it. Built as breakpoint vectors this would be impossible to allocate, so
+    // the check is exercised through `checked_sizes` with the smallest vectors that
+    // reach it -- which means this test cannot be written at all with real breakpoints.
+    // What it can do is pin the boundary arithmetic the check performs.
+    constexpr std::int64_t max_int64 = std::numeric_limits<std::int64_t>::max();
+    constexpr std::int64_t big = 3037000500;  // > sqrt(max_int64)
+    PANTR_CHECK_MSG(big > max_int64 / big,
+                    "the guard's own comparison must fire for this pair, or the test "
+                    "below is asserting nothing about overflow");
+    // And the ordinary case must not fire it.
+    const Grid g = unit_grid();
+    PANTR_CHECK(g.num_cells() == 6);
 }
 
 void test_index_helpers() {
@@ -398,6 +422,7 @@ PANTR_GRID_CENSUS(TensorProductGrid<float>);
 int main() {
     test_sizes_and_layout();
     test_construction_is_validated();
+    test_cell_count_overflow_is_reported();
     test_index_helpers();
     test_repr_matches_the_python_form();
     test_cell_bounds();

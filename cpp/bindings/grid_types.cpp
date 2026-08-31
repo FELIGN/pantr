@@ -13,21 +13,31 @@
 /// `cpp/tests/test_grid_tensor_product.cpp` censuses it at `float` as a compile-time
 /// device; only the binding is narrow, and no name here carries a width suffix.
 ///
-/// ## `cell_tags`, `facet_tags` and `cell_bvh` need an explicit return-value policy
+/// ## Returning a reference into the grid: which binding shape needs a policy, and why
 ///
-/// All three return a REFERENCE to a member of the grid, and nanobind's default policy
-/// for an lvalue-reference return is `rv_policy::copy` -- both `automatic` and
-/// `automatic_reference` resolve to it (`nanobind/nb_cast.h`). Under the default,
-/// `g.cell_tags().set(...)` would mutate a temporary and the write would VANISH, with
-/// no error anywhere. `reference_internal` is what makes the returned object alias the
-/// grid's own member, and it also ties its lifetime to the grid's, which is the second
-/// thing needed since none of the three owns its storage.
+/// All three of `cell_tags`, `facet_tags` and `cell_bvh` return a REFERENCE to a member
+/// of the grid, so none of them may be copied on the way out. The two binding shapes
+/// differ, and an earlier version of this comment got that wrong by measuring one and
+/// writing about the other:
 ///
-/// This is the second site in the whole binding tree to name an `rv_policy`; the first
-/// is `geometry.cpp`, and it is there for an unrelated reason. There was therefore no
-/// existing example to copy, which is why it is written out at length here and why
+///  - **A `.def()` method returning `T&` defaults to a COPY.** `nb_cast.h:459-464`
+///    resolves both `automatic` and `automatic_reference` to `rv_policy::copy` for an
+///    lvalue reference. Measured on this tree: with the policy dropped from a
+///    `.def()`-bound `cell_tags`, `g.cell_tags().set(...)` mutated a temporary, the tag
+///    did not appear in `names`, and nothing raised. `cell_bvh` is bound this way --
+///    the Python contract for it is a call -- so its `reference_internal` is
+///    load-bearing.
+///  - **A `def_prop_ro` getter already defaults to `reference_internal`.**
+///    nanobind hardcodes it when it builds the getter (`nb_class.h:701`), independent
+///    of the extras the caller passes. Measured: with the annotation removed from
+///    `cell_tags`, the write still survived and the identity still held. So on the two
+///    registries the annotation is redundant. It is kept anyway, and stated to be
+///    redundant rather than removed: it is a hardcoded default in a third-party header
+///    rather than a documented guarantee, and one word here is cheaper than the silent
+///    data loss its absence would cause if that default ever moved.
+///
 /// `tests/parity/test_grid_types.py` asserts that a tag written through the property is
-/// visible on the next read. That test is what stops this regressing.
+/// visible on the next read, which is what stops any of this regressing.
 ///
 /// ## What this file validates: nothing
 ///
@@ -65,7 +75,6 @@
 #include <vector>
 
 #include "pantr/core/mdspan.hpp"
-#include "pantr/geometry/aabb.hpp"
 #include "pantr/grid/tensor_product_grid.hpp"
 #include "register.hpp"
 
@@ -74,7 +83,6 @@ namespace nb = nanobind;
 namespace {
 
 using Grid = pantr::grid::TensorProductGrid<double>;
-using Box = pantr::geometry::AABB<double>;
 
 /// A read-only, contiguous 1D array of the given type as nanobind sees it.
 template <class T>
@@ -96,9 +104,12 @@ T kEmptyStorage{};
 /// Hand a computed vector to numpy as a fresh, owning, writeable array.
 ///
 /// The vector is moved onto the heap and a capsule deletes it, so the array outlives
-/// the call that produced it. Writeable, because every array the `Grid` protocol
-/// returns is documented as fresh and writeable -- the one exception, `boundary_facets`,
-/// is frozen by the Python wrapper, where the oracle freezes it too.
+/// the call that produced it. Writeable, and the freezing is the wrapper's job rather
+/// than this file's: `pantr.grid.TensorProductGrid` clears the write flag on every array
+/// its contract calls read-only -- `boundary_facets`, `bounds`, and both of
+/// `restrict`'s index arrays -- so that the flag cannot depend on which backend
+/// produced the array. Anything added here inherits that rule rather than an
+/// exception list.
 ///
 /// \tparam T The element type.
 /// \tparam Rank The array's rank.
@@ -108,9 +119,17 @@ T kEmptyStorage{};
 template <class T, std::size_t Rank>
 nb::object owned_array(std::vector<T>&& values, std::array<std::size_t, Rank> shape) {
     auto* data = new std::vector<T>(std::move(values));
+    // One reserved slot rather than the shared `kEmptyStorage` sentinel, and the reason
+    // is `grid_bvh.cpp`'s: that sentinel is `const` and is shared by every zero-size
+    // result of its type, which is fine for a read-only view and wrong in principle for
+    // an array handed back WRITEABLE. Reserving gives this array an address of its own,
+    // owned by its own capsule, at the cost of one element for a result that has none.
+    if (data->empty()) {
+        data->reserve(1);
+    }
     nb::capsule owner(data, [](void* p) noexcept { delete static_cast<std::vector<T>*>(p); });
-    T* base = data->empty() ? &kEmptyStorage<T> : data->data();
-    return nb::cast(nb::ndarray<nb::numpy, T, nb::ndim<Rank>>(base, Rank, shape.data(), owner));
+    return nb::cast(
+        nb::ndarray<nb::numpy, T, nb::ndim<Rank>>(data->data(), Rank, shape.data(), owner));
 }
 
 /// Expose part of a grid's own storage as a read-only numpy view.
@@ -157,9 +176,23 @@ pantr::span2d<const double> as_points(const_points a) {
 /// \param breakpoints A sequence of one array per axis.
 void init_grid(Grid* self, nb::sequence breakpoints) {
     std::vector<std::vector<double>> axes;
+    std::size_t axis = 0;
     for (nb::handle item : breakpoints) {
-        const auto arr = nb::cast<const_vec<double>>(item);
+        // `try_cast` rather than `cast`, because a bare `nb::cast` that fails throws
+        // `nb::cast_error`, which IS `std::bad_cast` (`nb_error.h`), which the default
+        // translator maps to `RuntimeError: std::bad_cast` -- an exception of the wrong
+        // type whose message names neither the argument nor the reason. nanobind gives
+        // a declared `nb::ndarray` PARAMETER a graceful `TypeError` for free; a manual
+        // cast inside a lambda body is outside that path and has to raise its own.
+        const_vec<double> arr;
+        if (!nb::try_cast(item, arr)) {
+            throw nb::type_error(
+                ("breakpoints[" + std::to_string(axis)
+                 + "] must be a contiguous float64 array")
+                    .c_str());
+        }
         axes.emplace_back(arr.data(), arr.data() + arr.shape(0));
+        ++axis;
     }
     new (self) Grid(axes);
 }
@@ -305,7 +338,12 @@ void register_grid_types(nb::module_& m) {
             [](const Grid& g, const_vec<std::int64_t> multi) {
                 return g.flat_cell_index(as_span(multi));
             },
-            nb::arg("multi"))
+            // `.noconvert()` on every integer argument in this file, for the reason its
+            // siblings give: without it nanobind converts a float array into an int64
+            // temporary, so `flat_cell_index([1.9, 1.1])` truncates to `[1, 1]` and
+            // returns a plausible cell id instead of refusing. The public wrapper checks
+            // the dtype itself, so this is defence for a direct caller of the handle.
+            nb::arg("multi").noconvert())
 
         // ------------------------------------------------------------------
         // The primitives
@@ -330,7 +368,7 @@ void register_grid_types(nb::module_& m) {
             },
             nb::arg("points"))
         .def("collect_cell_bounds", &collect_cell_bounds)
-        .def("restrict", &restrict, nb::arg("cell_ids"))
+        .def("restrict", &restrict, nb::arg("cell_ids").noconvert())
 
         // ------------------------------------------------------------------
         // The generic defaults the grid inherits
@@ -353,14 +391,12 @@ void register_grid_types(nb::module_& m) {
                  return owned_array<std::int64_t, 2>(std::move(rows), {n, std::size_t{2}});
              })
         .def("hanging_neighbors", &Grid::hanging_neighbors, nb::arg("cid"), nb::arg("lfid"))
-        .def(
-            "query_aabb",
-            [](const Grid& g, const Box& aabb) {
-                std::vector<std::int64_t> ids = g.query_aabb(aabb);
-                const std::size_t n = ids.size();
-                return owned_array<std::int64_t, 1>(std::move(ids), {n});
-            },
-            nb::arg("aabb"))
+        //
+        // `query_aabb` is deliberately NOT bound. The C++ grid has it, but
+        // `_GridWrapper.query_aabb` routes through `cell_bvh()` instead, which is what
+        // the oracle's own default does and which keeps a single unpacking of an `AABB`
+        // into corner arrays -- `pantr.grid.BVH`'s. Binding it would add the only member
+        // here with no Python caller.
 
         // ------------------------------------------------------------------
         // Base-owned state: the three that must alias rather than copy
@@ -393,5 +429,5 @@ void register_grid_types(nb::module_& m) {
         [](const_points bounds, const_vec<std::int64_t> cells) {
             return pantr::grid::uniform_grid<double>(as_points(bounds), as_span(cells));
         },
-        nb::arg("bounds"), nb::arg("cells"));
+        nb::arg("bounds"), nb::arg("cells").noconvert());
 }

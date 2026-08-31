@@ -626,12 +626,22 @@ def test_the_kernel_flat_layout_is_packed_once(monkeypatch: pytest.MonkeyPatch) 
     its own.
 
     The counter is on :func:`numpy.concatenate`, which is what does the packing, and
-    the assertion is that its count does not move across two calls. It says the right
-    thing under either backend without knowing which is active: the C++ grid never
-    concatenates in Python at all, so the count is zero and stays zero, while the
-    oracle concatenates once while it is being built and must not do so again. The
-    address check beside it covers the other half -- that the buffer was not
-    reallocated in place -- which a counter on a numpy function cannot see.
+    the assertion is that its count does not move across two calls. Under the Python
+    backend that is decisive: the oracle has exactly one ``concatenate`` call site, in
+    its constructor, so a per-call repack would show. The address check beside it
+    covers the other half there -- that the buffer was not reallocated in place.
+
+    **Under the C++ backend it is weaker than it looks, and the limit is worth stating
+    rather than leaving to be discovered.** The C++ grid does not call into numpy, so
+    the counter is zero either way, and ``breakpoints(axis)`` is a view into the
+    member the kernel already reads, so its address is stable whatever
+    ``locate_many`` does. A regression that copied that untouched member into a local
+    vector on every call -- the same waste in a different shape -- would leave both
+    halves of this test green. What rules that out on the C++ side is structural and
+    not observable from here: the flat layout is a private member written only in the
+    constructor, and ``locate_many`` is ``const``. The pointer identity test in
+    ``cpp/tests/test_grid_tensor_product.cpp`` is the same assertion at the same
+    strength, for the same reason.
     """
     calls: list[int] = []
     original = np.concatenate
@@ -729,3 +739,90 @@ def test_is_uniform_still_rejects_a_genuinely_uneven_axis() -> None:
     assert not TensorProductGrid([[0.0, 1.0, 3.0]]).is_uniform
     assert not TensorProductGrid([[1e6, 1e6 + 0.25, 1e6 + 1.0]]).is_uniform
     assert not TensorProductGrid([[0.0, 1e-13, 1e-12]]).is_uniform
+
+
+def test_the_uniformity_bound_is_bracketed_by_its_derivation() -> None:
+    """The constant is pinned from BOTH sides, by two numbers the derivation supplies.
+
+    The sweep above only catches a constant that is too *small*: shrink it and an exact
+    ``linspace`` grid stops registering as uniform. Growing it catches nothing, because
+    every other test perturbs by a multiple of the constant itself and so scales with
+    whatever it has become. Measured: raising ``_UNIFORM_SPACING_EPS_FACTOR`` from 16 to
+    16000 left every other test in this file and in ``tests/parity/test_grid_types.py``
+    green. That is the same failure this project met on a rounding bound whose test data
+    was exact -- a bound nothing can refute is not a bound.
+
+    So this test brackets it with two figures taken from the derivation rather than from
+    the constant:
+
+    - **``9 eps S`` must be accepted.** That is the derivation's own upper bound on
+      ``ptp(diff(linspace))`` -- four roundings on the breakpoint plus one on the
+      spacing, doubled for the spread. A constant below it would reject grids the
+      derivation says are uniform.
+    - **``64 eps S`` must be rejected.** Four times the derived bound, which is the
+      slack the constant is allowed to carry over its own derivation. A spread that
+      large is not round-off, so a constant above it would accept a grid that is
+      genuinely uneven.
+
+    Together they pin the constant to ``[9, 64)`` -- and they pin it in whichever
+    backend is active, since both go through ``is_uniform``. Perturbing one interior
+    breakpoint by ``d`` raises one spacing and lowers the next, so the spread grows by
+    about ``2 d``; the halving below is what lands it on the intended multiple.
+    """
+    eps = float(np.finfo(np.float64).eps)
+    domains = [(0.0, 1.0), (0.0, 1e-12), (0.0, 1e12), (1e6, 1e6 + 1.0), (-1.0, 1.0)]
+    derived_bound = 9.0
+    admitted_ceiling = 64.0
+    assert derived_bound <= _UNIFORM_SPACING_EPS_FACTOR < admitted_ceiling, (
+        f"the constant {_UNIFORM_SPACING_EPS_FACTOR} is outside the range its own "
+        f"derivation supports, [{derived_bound}, {admitted_ceiling})"
+    )
+    for lo, hi in domains:
+        scale = abs(lo) + abs(hi)
+        for cells in (8, 100):
+            base = np.linspace(lo, hi, cells + 1, dtype=np.float64)
+            for multiple, expected in ((derived_bound, True), (admitted_ceiling, False)):
+                bp = base.copy()
+                bp[1] += 0.5 * multiple * eps * scale
+                assert np.all(np.diff(bp) > 0.0), f"[{lo}, {hi}] n={cells} m={multiple}"
+                observed = float(np.ptp(np.diff(bp))) / (eps * scale)
+                assert TensorProductGrid([bp]).is_uniform is expected, (
+                    f"[{lo}, {hi}] over {cells} cells, spread {observed:.1f} * eps * S: "
+                    f"expected is_uniform={expected}"
+                )
+
+
+def test_numpys_step_underflow_branch_cannot_be_reached_by_a_grid() -> None:
+    """No constructible grid reaches ``numpy.linspace``'s ``step == 0`` branch.
+
+    The C++ ``uniform_grid`` reproduces that branch, because reproducing numpy's
+    sequence means reproducing all of it. Nothing exercises it, and this test records
+    **why** rather than leaving the gap to be read as an omission: when ``step``
+    underflows to zero, ``linspace`` computes ``(i / n) * delta``, whose first few
+    terms collapse to the same value, so the breakpoints are not strictly increasing
+    and the grid constructor rejects them.
+
+    Measured over twenty-five decades of subnormal extent and six cell counts: every
+    domain whose ``step`` underflows produces non-increasing breakpoints, and no domain
+    produces both. This test re-checks that premise, so if a future numpy changes the
+    branch the claim in the C++ header stops being taken on trust.
+    """
+    underflowing = 0
+    for exponent in range(300, 325):
+        hi = float(f"1e-{exponent}")
+        for cells in (2, 3, 10, 100, 1000, 10**5):
+            if hi / cells != 0.0:
+                continue
+            underflowing += 1
+            bp = np.linspace(0.0, hi, cells + 1, dtype=np.float64)
+            assert not np.all(np.diff(bp) > 0.0), (
+                f"[0, {hi}] over {cells} cells underflows `step` AND is strictly "
+                f"increasing, so numpy's step == 0 branch IS reachable by a grid and "
+                f"the C++ header's claim that it is not must be corrected"
+            )
+            with pytest.raises(ValueError, match="strictly increasing"):
+                TensorProductGrid([bp])
+    assert underflowing > 0, (
+        "no domain in the sweep underflowed `step`, so this test asserted nothing "
+        "about the branch it exists to characterize"
+    )
