@@ -26,26 +26,29 @@ set(PANTR_TEST_SOURCES
     test_grid_partition.cpp
     test_grid_bvh_type.cpp
     test_grid_defaults.cpp
+    test_grid_tensor_product.cpp
     test_bezier_product.cpp)
 
 # Reserved slots (FELIGN/pantr#380): registered ahead of the port so the thirteen
-# tickets this milestone unblocks do not collide on this file. Each asserts nothing
-# yet; see the source file for what it is reserved for.
+# tickets this milestone unblocks do not collide on this file.
 #
-# They are a SEPARATE list because they are labelled `placeholder`, and the label is
-# the only thing that tells them apart where the number is actually read. A stub
-# prints PLACEHOLDER on stdout, but ctest captures stdout and prints it on -V or on
-# failure -- never on the pass path, and these pass by construction. So the summary
-# row for a stub is indistinguishable from a real one, and "N/N tests passed" reads
-# as more evidence than it is. With the label:
+# EMPTY. `test_grid_tensor_product.cpp` was the last one and FELIGN/pantr#387 filled
+# it, so `ctest -L placeholder` now reports zero tests and every green line in this
+# directory comes from a file that asserts something.
+#
+# The list is kept rather than deleted because the mechanism is still owed: the
+# milestone's remaining tickets reserve slots the same way, and the label is what
+# tells a stub apart from a real test where the number is actually read. A stub
+# prints PLACEHOLDER on stdout, but ctest captures stdout and shows it only on -V or
+# on failure -- never on the pass path -- so without the label a reserved slot's
+# summary row is indistinguishable from a real one and "N/N tests passed" reads as
+# more evidence than it is.
 #
 #     ctest --preset gcc -N -L placeholder    # list what is not written yet
 #     ctest --preset gcc -LE placeholder      # run only the tests that assert something
 #
-# Delete each entry from this list as its ticket fills the slot; when the list is
-# empty, delete the list.
-set(PANTR_PLACEHOLDER_TEST_SOURCES
-    test_grid_tensor_product.cpp)
+# Add an entry when a slot is reserved; delete it as its ticket fills the slot.
+set(PANTR_PLACEHOLDER_TEST_SOURCES)
 
 foreach(_src IN LISTS PANTR_TEST_SOURCES PANTR_PLACEHOLDER_TEST_SOURCES)
   cmake_path(GET _src STEM _name)

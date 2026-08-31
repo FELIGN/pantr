@@ -5,14 +5,17 @@
 /// Two fixtures, and the split is the point:
 ///
 ///   * `BoxGrid<T>` declares `Hook::none`, so every one of the fourteen replaceable
-///     defaults RUNS here, and the census asserts the negative. Comparing the defaults
-///     against a real specialisation belongs to the `TensorProductGrid` ticket, which
-///     is where the specialisations first exist.
+///     defaults RUNS here, and the census asserts the negative.
 ///   * `HookedGrid<T>` declares two hooks, and exists to pin the two halves of the
 ///     dispatch mechanism the next ticket depends on: name hiding reaches the hook, and
 ///     the qualified call `g.Base::name()` still reaches the hidden default. That
 ///     qualified call is the C++ analogue of `Grid.boundary_facets(g)` in
 ///     `tests/test_grid_hierarchical.py`, and it is what a differential test needs.
+///   * A third section spends that mechanism on the first real specialisation:
+///     `TensorProductGrid`'s three hooks against the three defaults they hide, on the
+///     same grid and the same input. It lives here rather than in
+///     `test_grid_tensor_product.cpp` because what it exercises is the dispatch, and
+///     because the code it compares against is the mixin's rather than the grid's.
 ///
 /// Both are censused at `float` AND at `double`. The `float` instantiation is a
 /// COMPILE-TIME census device and nothing else: it forces every default body at a
@@ -24,6 +27,7 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <limits>
 #include <optional>
 #include <span>
 #include <stdexcept>
@@ -33,6 +37,7 @@
 
 #include "check.hpp"
 #include "pantr/grid/grid.hpp"
+#include "pantr/grid/tensor_product_grid.hpp"
 
 namespace {
 
@@ -661,6 +666,88 @@ void test_name_hiding_dispatch() {
     PANTR_CHECK(g.neighbors(0) == plain.neighbors(0));
 }
 
+// ---------------------------------------------------------------------------
+// The first real specialisation against the defaults it hides (FELIGN/pantr#387)
+// ---------------------------------------------------------------------------
+
+/// `TensorProductGrid`'s three hooks against the three generic defaults they replace.
+///
+/// The qualified call `g.Base::name(...)` reaches the hidden default, so both sides run
+/// on ONE grid and one input; nothing here builds a second object that could differ for
+/// a reason other than the specialisation.
+///
+/// **What agreement is claimed, per hook.**
+///
+///  - `locate_many` returns cell ids, which are `std::int64_t`. There is no bound to
+///    state: a cell id is a VERDICT, and `design/backend_parity.md` Rule 11 is explicit
+///    that no tolerance bounds one. Exact equality is the only claim available and it
+///    is the right one. The two paths reach the same per-axis search, so what this
+///    compares is the composition around it -- the strides, the output order and the
+///    `-1` convention -- which is where an error would be.
+///  - `collect_cell_bounds` writes coordinates, so a bound is meaningful, and the
+///    derived bound is EXACTLY ZERO. Every value either side writes is a copy of a
+///    stored breakpoint: the default reads `bp[i]` through `cell_bounds`, the hook
+///    reads the same `bp[i]` through the flat buffer, and neither performs an
+///    arithmetic operation on it. With no operation there is no rounding, so the
+///    difference is not merely small but bit-identical, and the comparison is `==`.
+///    A tolerance here would be looser than the derivation supports and would hide a
+///    transposed stride, which is the defect this is aimed at.
+///  - `restrict` has NO comparison to make, and saying so is more honest than
+///    inventing one. The default does not compute a value; it throws. Rule 8 -- a
+///    parity claim is only defined where the quantity has digits -- applies directly:
+///    what is asserted instead is that the default is still reachable and still
+///    throws, and that the hook does not. That is the whole content available.
+void test_tensor_product_hooks_against_defaults() {
+    using TPG = pantr::grid::TensorProductGrid<double>;
+    // Deliberately NON-uniform on both axes and unequal in length, so a transposed
+    // stride or a swapped axis produces a different answer rather than the same one.
+    const TPG g({{0.0, 1.0, 3.0, 6.0, 10.0}, {-2.0, 0.5, 4.0}});
+
+    // locate_many: interior, both breakpoint faces, both outer boundaries, outside on
+    // each axis, and a non-finite coordinate.
+    const double nan = std::numeric_limits<double>::quiet_NaN();
+    const std::vector<double> pts = {0.5, 0.0, 3.0,  0.5, 10.0, 4.0, 0.0, -2.0,
+                                     -0.1, 0.0, 5.0, 9.0, nan,  0.0};
+    const span2d<const double> view(pts.data(), 7, 2);
+    const std::vector<std::int64_t> hooked = g.locate_many(view);
+    const std::vector<std::int64_t> generic = g.TPG::Base::locate_many(view);
+    PANTR_CHECK_MSG(hooked == generic,
+                    "locate_many must agree with the default exactly: a cell id is a "
+                    "verdict, not a displaced value");
+    // Non-vacuous: the batch must contain both an interior hit and an outside miss, or
+    // an equality of two all-minus-one vectors would pass while proving nothing.
+    PANTR_CHECK(hooked.front() >= 0 && hooked.back() == -1);
+
+    // collect_cell_bounds: bit-identical, per the derivation above.
+    const auto rows = static_cast<std::size_t>(g.num_cells());
+    const auto cols = static_cast<std::size_t>(g.ndim());
+    std::vector<double> hook_lo(rows * cols);
+    std::vector<double> hook_hi(rows * cols);
+    std::vector<double> base_lo(rows * cols);
+    std::vector<double> base_hi(rows * cols);
+    g.collect_cell_bounds(span2d<double>(hook_lo.data(), rows, cols),
+                          span2d<double>(hook_hi.data(), rows, cols));
+    g.TPG::Base::collect_cell_bounds(span2d<double>(base_lo.data(), rows, cols),
+                                     span2d<double>(base_hi.data(), rows, cols));
+    PANTR_CHECK_MSG(hook_lo == base_lo && hook_hi == base_hi,
+                    "collect_cell_bounds must agree with the default bit for bit: every "
+                    "value either side writes is a copy of a stored breakpoint");
+    // Non-vacuous: the arrays must hold the grid, not zeros left over from allocation.
+    PANTR_CHECK(hook_lo.front() == 0.0 && hook_hi.back() == 4.0 && base_hi[1] == 0.5);
+
+    // restrict: the hook returns, the default throws. No digits, no bound.
+    const std::vector<std::int64_t> ids = {0, 7};
+    PANTR_CHECK(g.restrict(ids).grid.num_cells() == 8);
+    bool default_threw = false;
+    try {
+        (void)g.TPG::Base::restrict(ids);
+    } catch (const std::logic_error&) {
+        default_threw = true;
+    }
+    PANTR_CHECK_MSG(default_threw,
+                    "the hidden default must still be reachable, and must still throw");
+}
+
 /// The `float` census device, exercised once at run time so it is not merely compiled.
 void test_float_instantiation() {
     const BoxGrid<float> g(2, 2);
@@ -691,6 +778,7 @@ int main() {
     test_single_cell_grid();
     test_locate_on_a_cell_boundary();
     test_name_hiding_dispatch();
+    test_tensor_product_hooks_against_defaults();
     test_float_instantiation();
     return pantr::test::summary("test_grid_defaults");
 }
