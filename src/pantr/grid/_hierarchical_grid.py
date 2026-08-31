@@ -422,6 +422,8 @@ class HierarchicalGrid(_GridPython):
         root: TensorProductGrid,
         factor: tuple[int, ...],
         blocks: list[list[_Block]],
+        *,
+        unnormalized_levels: frozenset[int] | None = None,
     ) -> Self:
         """Build a grid directly from per-level block lists (internal constructor).
 
@@ -432,20 +434,40 @@ class HierarchicalGrid(_GridPython):
 
         **Every grid not built by ``__init__`` is built here**: :meth:`restrict`'s
         windowed sub-grid, :meth:`refine` and :meth:`coarsen`'s result, and
-        :meth:`_copy`. Two consequences for anyone changing it. Normalizing *every*
-        level, rather than only the ones an operation touched, is what makes the
-        result independent of which levels the caller rebuilt -- and it is only
-        harmless because normalization is a fixed point
-        (``test_normalize_blocks_is_idempotent``); were it not, every flat cell id
-        would move. And the greedy merge is order-dependent, so the order blocks
-        arrive in is observable through the flat ids
-        (``test_normalize_blocks_depends_on_the_order_it_is_given``).
+        :meth:`_copy`. Three consequences for anyone changing it, including whoever
+        mirrors this in another backend.
+
+        The greedy merge is order-dependent, so the order blocks arrive in is
+        observable through the flat ids
+        (``test_normalize_blocks_depends_on_the_order_it_is_given``). Nothing here
+        may reorder a level's blocks.
+
+        ``unnormalized_levels`` is a pure cost switch and never a behavioural one.
+        Normalization is a fixed point -- its output is sorted and pairwise
+        non-mergeable, so re-running it is the identity
+        (``test_normalize_blocks_is_idempotent``) -- so a level already holding a
+        previous call's output normalizes to itself, and skipping that re-run
+        returns the same blocks in the same order. Declaring a level clean when it
+        is not, on the other hand, moves every flat cell id, so the default assumes
+        nothing.
+
+        A level is clean exactly when it holds another grid's ``_blocks[l]``
+        verbatim. That covers :meth:`refine` and :meth:`coarsen`, which rebind only
+        the two levels they touch and share the rest, and :meth:`_copy`, which
+        shares all of them. It does **not** cover :meth:`restrict`: clipping a
+        normalized partition to a window can make two blocks mergeable that were
+        not, so those lists must be normalized again.
 
         Args:
             root (TensorProductGrid): The level-0 root grid of the sub-hierarchy.
             factor (tuple[int, ...]): Per-direction subdivision factor.
             blocks (list[list[_Block]]): ``blocks[l]`` lists the active-leaf
                 ``(lo, hi)`` rectangles at level ``l`` in level-``l`` coordinates.
+            unnormalized_levels (frozenset[int] | None): Levels whose block lists the
+                caller may have altered and which must therefore be normalized here.
+                Every other level is taken verbatim, so a caller that names too few
+                gets a different -- wrong -- cell numbering. ``None``, the default,
+                normalizes every level and is always safe.
 
         Returns:
             Self: A grid whose active leaves span the same cells as
@@ -461,7 +483,15 @@ class HierarchicalGrid(_GridPython):
         _GridPython.__init__(self)
         self._root = root
         self._factor = factor
-        normalized = [_normalize_blocks(list(level_blocks)) for level_blocks in blocks]
+        # `list(...)` on the skipped levels keeps the no-aliasing property the
+        # normalizing path gets for free: `_blocks` is never mutated in place, but a
+        # new grid sharing list objects with its receiver would make that load-bearing.
+        normalized = [
+            list(level_blocks)
+            if unnormalized_levels is not None and level not in unnormalized_levels
+            else _normalize_blocks(list(level_blocks))
+            for level, level_blocks in enumerate(blocks)
+        ]
         while len(normalized) > 1 and not normalized[-1]:
             normalized.pop()
         self._blocks = normalized
@@ -484,7 +514,9 @@ class HierarchicalGrid(_GridPython):
         Returns:
             Self: A fresh grid over the same active-leaf decomposition.
         """
-        return self._from_blocks(self._root, self._factor, list(self._blocks))
+        return self._from_blocks(
+            self._root, self._factor, list(self._blocks), unnormalized_levels=frozenset()
+        )
 
     # ------------------------------------------------------------------
     # Properties
@@ -1415,14 +1447,22 @@ class HierarchicalGrid(_GridPython):
         if not new_children:
             return self._copy()  # no active cells in the requested region
 
-        # A fresh outer list; the per-level lists below are rebound, never mutated,
-        # so this grid's own block lists are untouched (`_from_blocks` normalizes).
+        # A fresh outer list; the per-level lists below are rebound, never mutated, so
+        # this grid's own block lists are untouched.  Every other level is this grid's
+        # own already-normalized list, so only these two are handed to the merge --
+        # which is what keeps a refinement sweep from paying for the whole hierarchy at
+        # every step (`scripts/bench_grid_refine.py`).
         new_levels: list[list[_Block]] = list(self._blocks)
         new_levels[level] = new_blocks_at_level
         while len(new_levels) <= level + 1:
             new_levels.append([])
         new_levels[level + 1] = [*new_levels[level + 1], *new_children]
-        return self._from_blocks(self._root, self._factor, new_levels)
+        return self._from_blocks(
+            self._root,
+            self._factor,
+            new_levels,
+            unnormalized_levels=frozenset({level, level + 1}),
+        )
 
     def refine_cells(self, cell_ids: Sequence[int]) -> Self:
         """Return a new grid with a set of active cells refined, by per-level bounding box.
@@ -1572,13 +1612,19 @@ class HierarchicalGrid(_GridPython):
             )
 
         # A fresh outer list; the per-level lists are rebound, never mutated, so this
-        # grid's own block lists are untouched (`_from_blocks` normalizes and drops
-        # trailing empty levels).  The order the demoted box is appended in is
-        # observable through the greedy merge, though, and is preserved.
+        # grid's own block lists are untouched (`_from_blocks` drops trailing empty
+        # levels).  The order the demoted box is appended in is observable through the
+        # greedy merge, though, and is preserved.  As in `refine`, only the two levels
+        # rebound here are re-normalized; the rest are this grid's own normalized lists.
         new_levels: list[list[_Block]] = list(self._blocks)
         new_levels[level + 1] = new_finer
         new_levels[level] = [*new_levels[level], (lo_t, hi_t)]
-        return self._from_blocks(self._root, self._factor, new_levels)
+        return self._from_blocks(
+            self._root,
+            self._factor,
+            new_levels,
+            unnormalized_levels=frozenset({level, level + 1}),
+        )
 
     def coarsen_cells(self, cell_ids: Sequence[int]) -> Self:
         """Return a new grid with every parent demoted whose children are all named.

@@ -26,10 +26,17 @@ script measures the two scalings that settle it rather than reporting a timing:
 
 ``deep``
     One ``refine`` at level 0 on a staircase that leaves blocks on *every* level.
-    This is the case the value-returning implementation could plausibly regress:
-    it hands its whole per-level block list to ``_from_blocks``, which normalizes
-    every level, including the ones the call never touched, where the mutating
-    version normalized only the one or two it did.
+    A cheap check that depth alone costs nothing; its untouched levels hold only a
+    handful of blocks each, so it does **not** reach the worst case.
+
+``untouched``
+    The case ``deep`` misses, and the one the ticket's invariant is about: a broad
+    shallow refinement carrying most of the block mass, then a local sweep drilling
+    at the deepest level, where the touched levels hold two blocks and every other
+    level holds many.  ``refine`` normalizes only the two levels it rebinds, so this
+    sweep must not grow with the shallow block count.  Were the untouched levels
+    re-merged as well, the per-step cost would be the sum of squared per-level block
+    counts -- quadratic in the size of a grid the step does not read.
 
 ``sweep``
     A whole adaptive loop, N successive local ``refine_cells`` steps: what an
@@ -45,12 +52,19 @@ minimum is reported rather than the mean because the fastest run is the one leas
 interfered with. A figure that breaks the trend should be read as noise until more
 repeats say otherwise.
 
-**The cost is the block-list normalization, and it always was.** The grid stores no
-per-cell data at all -- only ``(lo, hi)`` rectangles per level -- so neither the
-mutating nor the value-returning call can be ``O(cells)``. What both pay is the
-greedy merge in ``_normalize_blocks``, which is superlinear in the number of
-blocks at a level. Expect the ``cells`` sweep to be flat and the ``blocks`` sweep
-to rise steeply; that shape, not any individual number, is the result.
+**The cost is the block-list normalization plus the rebuild, and it always was.**
+The grid stores no per-cell data at all -- only ``(lo, hi)`` rectangles per level --
+so neither the mutating nor the value-returning call can be ``O(cells)``. Both pay
+the greedy merge in ``_normalize_blocks``, which is superlinear in the number of
+blocks at the level it is given, and both pay ``_rebuild``, which is linear in the
+total block count. Expect the ``cells`` sweep to be flat, the ``blocks`` sweep to
+rise steeply, and the ``untouched`` sweep to rise only as fast as ``_rebuild``
+does; those shapes, not any individual number, are the result.
+
+**Read the shapes, not the timings.** On a shared host these are contended, so the
+table also prints what each configuration is timing in block counts. A sweep whose
+per-step cost tracked the *untouched* block count would be the regression this file
+exists to catch, and that is visible in the shape even when the clock is noisy.
 
 **To compare against the mutating implementation**, check out the commit before
 #378 into a second tree and run this same script against it with ``PYTHONPATH``
@@ -195,8 +209,9 @@ def _checkerboard(cells_per_axis: int) -> HierarchicalGrid:
 def _staircase(levels: int) -> HierarchicalGrid:
     """Return a 2D grid leaving blocks behind on every level from 0 to ``levels``.
 
-    The case where normalizing every level rather than only the touched ones could
-    cost more than the mutating implementation did.
+    Depth without mass: the levels a refine does not touch hold a handful of blocks
+    each, so this shows that depth alone is free.  ``_shallow_heavy`` is the fixture
+    that puts real block mass on the untouched levels.
 
     Args:
         levels (int): Number of refinement rounds, one per level.
@@ -210,6 +225,58 @@ def _staircase(levels: int) -> HierarchicalGrid:
         for i in range(0, min(width, 12), 2):
             grid = _apply(grid, "refine", (level, (i, 0), (i + 1, 1)))
     return grid
+
+
+def _shallow_heavy(checker: int) -> HierarchicalGrid:
+    """Return a grid whose block mass sits on levels a deep refinement never touches.
+
+    A checkerboard over the whole root drives levels 0 and 1 to many non-mergeable
+    blocks; drilling one corner down four levels then leaves the deep levels holding
+    two blocks each. A sweep at the deepest level therefore touches almost none of
+    the grid's blocks, which is what makes it the fixture that separates
+    "normalize the touched levels" from "normalize every level".
+
+    Args:
+        checker (int): Root cells per axis, and the width of the checkerboard.
+
+    Returns:
+        HierarchicalGrid: The shallow-heavy grid.
+    """
+    grid = _plain(checker)
+    for i in range(0, checker, 2):
+        for j in range(0, checker, 2):
+            grid = _apply(grid, "refine", (0, (i, j), (i + 1, j + 1)))
+    for level in range(1, 5):
+        block_lo, _ = grid.active_blocks(level)[0]
+        grid = _apply(grid, "refine", (level, block_lo, tuple(a + 1 for a in block_lo)))
+    return grid
+
+
+def _deep_sweep_micros(grid_of: Callable[[], HierarchicalGrid], steps: int, repeats: int) -> float:
+    """Time a sweep of ``steps`` refinements, each at the grid's deepest level.
+
+    Args:
+        grid_of (Callable[[], HierarchicalGrid]): Builds a fresh fixture per repeat.
+        steps (int): Refinements in the sweep.
+        repeats (int): Number of repeats.
+
+    Returns:
+        float: Minimum CPU microseconds for the whole sweep.
+    """
+    best = float("inf")
+    for _ in range(repeats):
+        grid = grid_of()
+        gc.collect()
+        start = time.process_time()
+        for _step in range(steps):
+            deepest = grid.max_level
+            blocks = grid.active_blocks(deepest)
+            if not blocks:
+                break
+            block_lo, _ = blocks[len(blocks) // 2]
+            grid = _apply(grid, "refine", (deepest, block_lo, tuple(a + 1 for a in block_lo)))
+        best = min(best, time.process_time() - start)
+    return best * 1e6
 
 
 def _sweep_micros(steps: int, repeats: int) -> tuple[float, HierarchicalGrid]:
@@ -340,7 +407,30 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
     _print_table(
         "deep -- one refine at level 0, with blocks on every level",
-        "the untouched-level normalization the value-returning form adds",
+        "flat: depth alone is free, since the untouched levels are not re-merged",
+        rows,
+    )
+
+    rows = []
+    for checker in (8, 16, 24, 32):
+        grid = _shallow_heavy(checker)
+        per_level = [len(grid.active_blocks(lv)) for lv in range(grid.max_level + 1)]
+        rows.append(
+            Row(
+                f"checker {checker}",
+                grid.num_cells,
+                sum(per_level),
+                sum(per_level[:-2]),
+                _deep_sweep_micros(
+                    lambda checker=checker: _shallow_heavy(checker),  # type: ignore[misc]
+                    20,
+                    max(args.repeats // 3, 3),
+                ),
+            )
+        )
+    _print_table(
+        "untouched -- a 20-step deep sweep over a block-heavy shallow grid",
+        "must not track the untouched column; that column is what a refine skips",
         rows,
     )
 
