@@ -1,11 +1,12 @@
 /// \file
 /// nanobind bindings for the `pantr.bezier` arithmetic kernels.
 ///
-/// Twenty-two entry points: the seven of `_bezier_core.py`, the reduction-operator
+/// Twenty-six entry points: the seven of `_bezier_core.py`, the reduction-operator
 /// apply that `pantr.bezier` reaches for through `pantr.bspline`, the two
 /// n-dimensional evaluation entry points of `pantr/bezier/evaluate.hpp`, the three
-/// degree operations of `pantr/bezier/degree.hpp`, and the nine shape operations of
-/// `pantr/bezier/shape.hpp`. The checks in
+/// degree operations of `pantr/bezier/degree.hpp`, the nine shape operations of
+/// `pantr/bezier/shape.hpp`, and the four product and composition entry points of
+/// `pantr/bezier/product.hpp`. The checks in
 /// this file are Layer 2's C++ half, for the reason `basis.cpp` states at length:
 /// a Layer 3 kernel validates nothing, the extension is importable, and every
 /// bound name here is a public attribute of a public module.
@@ -66,6 +67,14 @@
 /// direction, so a direction the caller is not acting on passes an empty array rather
 /// than being absent -- an absent entry would make the list's index stop meaning the
 /// direction, which is the one thing that must not become positional by accident.
+///
+/// ## The product and composition operations take their binomial tables as data
+///
+/// `multiply_bezier` and `compose_bezier` are handed their binomial and
+/// reciprocal-binomial tables as arguments rather than assembling them; see
+/// `pantr/bezier/product.hpp`'s file comment for the argument.
+/// `bezier_product_table_order` and `bezier_composition_table_order` exist so the
+/// table size a call needs is defined once rather than once per language.
 
 #include <nanobind/nanobind.h>
 #include <nanobind/ndarray.h>
@@ -82,6 +91,7 @@
 #include "pantr/bezier/degree.hpp"
 #include "pantr/bezier/evaluate.hpp"
 #include "pantr/bezier/kernels_1d.hpp"
+#include "pantr/bezier/product.hpp"
 #include "pantr/bezier/shape.hpp"
 #include "pantr/core/binomial.hpp"
 #include "pantr/core/mdspan.hpp"
@@ -539,6 +549,51 @@ pantr::bezier::Bezier<T> bind_collapse(const pantr::bezier::Bezier<T>& bezier, s
         bezier, axis, std::span<const T>(values.data(), values.shape(0)));
 }
 
+/// The largest binomial upper index `multiply_bezier` will read from its tables.
+template <class T>
+int bind_product_table_order(const pantr::bezier::Bezier<T>& a, const pantr::bezier::Bezier<T>& b) {
+    return static_cast<int>(pantr::bezier::product_table_order<T>(a, b));
+}
+
+/// The pointwise product of two Béziers, from caller-supplied binomial tables.
+///
+/// `binomials` and `inverse_binomials` are two adjacent same-dtype same-shape
+/// tables, so a transposed call would give a plausible but wrong Bézier with no
+/// error anywhere -- the same hazard `restrict_bezier_1d`'s `lower`/`upper` and
+/// `split_bezier_1d`'s two outputs carry; see the file comment.
+template <class T>
+pantr::bezier::Bezier<T> bind_multiply(const pantr::bezier::Bezier<T>& a,
+                                       const pantr::bezier::Bezier<T>& b, const_mat<T> binomials,
+                                       const_mat<T> inverse_binomials) {
+    const pantr::span2d<const T> binomials_view(binomials.data(), binomials.shape(0),
+                                                binomials.shape(1));
+    const pantr::span2d<const T> inverse_binomials_view(
+        inverse_binomials.data(), inverse_binomials.shape(0), inverse_binomials.shape(1));
+    return pantr::bezier::multiply<T>(a, b, binomials_view, inverse_binomials_view);
+}
+
+/// The largest binomial upper index `compose_bezier` will read from its tables.
+template <class T>
+int bind_composition_table_order(const pantr::bezier::Bezier<T>& outer,
+                                 const pantr::bezier::Bezier<T>& inner) {
+    return static_cast<int>(pantr::bezier::composition_table_order<T>(outer, inner));
+}
+
+/// The composition `outer(inner(t))`, from caller-supplied binomial tables.
+///
+/// Same transposition hazard between `binomials` and `inverse_binomials` as
+/// `bind_multiply`; see the file comment.
+template <class T>
+pantr::bezier::Bezier<T> bind_compose(const pantr::bezier::Bezier<T>& outer,
+                                      const pantr::bezier::Bezier<T>& inner,
+                                      const_mat<T> binomials, const_mat<T> inverse_binomials) {
+    const pantr::span2d<const T> binomials_view(binomials.data(), binomials.shape(0),
+                                                binomials.shape(1));
+    const pantr::span2d<const T> inverse_binomials_view(
+        inverse_binomials.data(), inverse_binomials.shape(0), inverse_binomials.shape(1));
+    return pantr::bezier::compose<T>(outer, inner, binomials_view, inverse_binomials_view);
+}
+
 }  // namespace
 
 void register_bezier(nb::module_& m) {
@@ -682,4 +737,34 @@ void register_bezier(nb::module_& m) {
           nb::arg("axis"), nb::arg("values").noconvert());
     m.def("collapse_bezier_along_axis", &bind_collapse<float>, nb::arg("bezier"),
           nb::arg("axis"), nb::arg("values").noconvert());
+
+    // The four entry points of `pantr/bezier/product.hpp`. `binomials` and
+    // `inverse_binomials` are two adjacent same-dtype same-shape tables, so a
+    // transposed call gives a plausible but wrong Bézier with no error anywhere --
+    // the same hazard `restrict_bezier_1d`'s `lower`/`upper` and
+    // `split_bezier_1d`'s two outputs carry, which is why `nb::kw_only()` sits in
+    // front of them here too. `.noconvert()` matters for a second reason: without
+    // it nanobind would silently convert a float64 table for a float32 Bézier,
+    // and the table's rounding is part of the parity claim.
+    m.def("bezier_product_table_order", &bind_product_table_order<double>, nb::arg("a"),
+          nb::arg("b"));
+    m.def("bezier_product_table_order", &bind_product_table_order<float>, nb::arg("a"),
+          nb::arg("b"));
+
+    m.def("multiply_bezier", &bind_multiply<double>, nb::arg("a"), nb::arg("b"), nb::kw_only(),
+          nb::arg("binomials").noconvert(), nb::arg("inverse_binomials").noconvert());
+    m.def("multiply_bezier", &bind_multiply<float>, nb::arg("a"), nb::arg("b"), nb::kw_only(),
+          nb::arg("binomials").noconvert(), nb::arg("inverse_binomials").noconvert());
+
+    m.def("bezier_composition_table_order", &bind_composition_table_order<double>,
+          nb::arg("outer"), nb::arg("inner"));
+    m.def("bezier_composition_table_order", &bind_composition_table_order<float>,
+          nb::arg("outer"), nb::arg("inner"));
+
+    m.def("compose_bezier", &bind_compose<double>, nb::arg("outer"), nb::arg("inner"),
+          nb::kw_only(), nb::arg("binomials").noconvert(),
+          nb::arg("inverse_binomials").noconvert());
+    m.def("compose_bezier", &bind_compose<float>, nb::arg("outer"), nb::arg("inner"),
+          nb::kw_only(), nb::arg("binomials").noconvert(),
+          nb::arg("inverse_binomials").noconvert());
 }
