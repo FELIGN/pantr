@@ -422,6 +422,22 @@ and its wrong versions do not announce themselves.
 | M8 | the wrapper builds its `spaces` tuple lazily and forgets to seed from the constructor | `space.spaces[0] is space_1d` fails; values all agree | `tests/test_bspline_space.py:89`, unedited |
 | M9 | a `_ref` accessor gets bound | a dangling reference reachable from Python with no policy anywhere to blame | the bound-surface test: no exported method name ends in `_ref` |
 
+**Every one of these tests is inert under the default backend, and this is `design/backend_parity.md`
+Rule 12's shape rather than a new hazard.** `Backend.PYTHON` is the process default
+(`src/pantr/_backend.py:363-370`), so a plain `pytest` run exercises the oracle -- where
+`BsplineSpace` stores the caller's actual Python objects, `space.spaces[0] is space_1d` is
+trivially true, and a `sys.getrefcount` delta reports whatever CPython does with a tuple. The test
+passes for reasons that have nothing to do with the binding, and nothing in the output says so.
+Rule 12's general form applies verbatim: *the interpreted path is a different object, so a test
+that pins a configuration-dependent defect is inert there, silently.* So **every assertion in the
+table above must take the `cpp_backend` fixture** (`tests/parity/conftest.py:18-27`), whose
+`demand_cpp_backend()` is a skip-or-fail rather than a silent skip, and none of them belongs in a
+file that runs under the default.
+
+Note also that none of these is a *numerical* parity claim, so Rule 8 does not bite and no
+tolerance is owed: identity, a refcount delta and `np.shares_memory` are exact facts about the
+binding, and the right assertion for each is `==` or `is`.
+
 **Where these tests live.** `tests/parity/test_bezier_binding_contract.py` is the established
 shape -- a parity file whose subject is what the *binding* guarantees rather than what the
 mathematics does, gated on a `cpp_backend` fixture, with one test per refusal and the silent
