@@ -40,6 +40,32 @@
 /// reading it off the surrounding module is how a port gets it wrong at `float32`
 /// while agreeing at `float64`.
 ///
+/// ### Where widening would actually change the answer, and where it provably would not
+///
+/// Worth being precise, because two of the mutations
+/// `tests/parity/test_bezier_product.py` records **survive the parity suite** and a
+/// reader is entitled to know whether that is a gap in the tests or a fact about the
+/// arithmetic. It is the second, and the rule is one line: **widening a single
+/// operation whose result is immediately narrowed back to `T` cannot change it;
+/// widening a chain of two or more can.**
+///
+///  - A single **product** of two `float32` values is *exact* in `double` -- the
+///    result needs at most 48 significand bits and `double` has 53 -- so narrowing it
+///    is the one rounding either way. That covers `bernstein_product_nd`'s weighting
+///    of its operands and its final reciprocal scaling.
+///  - A single **sum** of two `float32` values is not exact in `double`, but double
+///    rounding through it equals single rounding, because `double`'s 53 bits exceed
+///    `2 * 24 + 2` (Figueroa, *Yet another proof of the double rounding theorem*,
+///    1995 -- the same theorem `_binomial_tables` rests on). That covers the
+///    accumulation `d[k] + term`.
+///  - The **chain** `(coefficient * f_i) * g_j` is where the width bites: widened, the
+///    intermediate is not narrowed, so the second multiplication receives a different
+///    operand. Nine `float32` cases move when it is, which is what pins the claim.
+///
+/// So the code says `T` throughout because that is what the oracle says and it is the
+/// simplest form that is right; the paragraph above is what a future reader needs in
+/// order to tell a harmless widening from a defect.
+///
 /// `compose` mixes the two, because its oracle does. Its Bernstein products go
 /// through `scalar_bernstein_product_1d` for a univariate inner map -- a numba kernel,
 /// so `accumulator_t<T>` inside it -- and through `bernstein_product_nd` above that,
