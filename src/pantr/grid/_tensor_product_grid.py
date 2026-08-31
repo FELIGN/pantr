@@ -24,10 +24,12 @@ port's parity oracle and the implementation ``_impl_class`` selects under
 Footprint
 ---------
 
-The grid stores only the per-axis breakpoints (total size
-``sum_k (cells_per_axis[k] + 1)``) plus a handful of small metadata arrays. It
-never materializes per-cell bounds or connectivity -- those are computed on
-demand. The only ``O(num_cells)`` structure, the :class:`pantr.grid.BVH` behind
+The grid stores the per-axis breakpoints twice -- once per axis and once concatenated
+into the flat layout the batch location kernel consumes -- plus a handful of length-``ndim``
+metadata arrays. So it is two copies of ``sum_k (cells_per_axis[k] + 1)`` values, not one;
+what matters is that both are proportional to the breakpoints and neither is proportional
+to the cell count. It never materializes per-cell bounds or connectivity -- those are
+computed on demand. The only ``O(num_cells)`` structure, the :class:`pantr.grid.BVH` behind
 :meth:`~pantr.grid.Grid.query_aabb`, is built lazily on first query, so a grid
 used purely for geometry (the common case for a B-spline knot grid) stays
 proportional to the breakpoints, not to the cell count.
@@ -99,15 +101,23 @@ by ``|b - a| <= S`` and the fourth of one bounded by ``max(|a|, |b|) <= S``. So
 giving ``|d_i - (b - a) / n| <= 9 u S``, and the spread of the spacings is at most twice
 that: ``ptp(d) <= 18 u S = 9 eps S``. **There is no ``n`` in the bound.**
 
-Rounded up to the next power of two, ``16 eps``: a margin of 1.8 over the derivation.
-Measured over 200000 random ``linspace`` axes spanning forty decades of magnitude, the
-largest observed ``ptp(d) / (eps S)`` was 2.74, so the constant also carries a factor of
-5.8 over anything seen.
+Rounded up to the next power of two, ``16 eps``. That is a margin of ``16 / 9`` over
+the derivation, which is exact arithmetic rather than a measurement.
+``scripts/measure_uniform_spacing_spread.py`` sweeps 200000 random ``linspace`` axes
+over forty decades of magnitude and prints the largest observed
+``ptp(d) / (eps S)`` -- and asserts it stays below the derivation's bound of ``9``,
+which is the claim that has to keep holding. The observed figure itself is not quoted
+here: a measured number in a comment is pinned to a machine and a seed, and nothing
+would re-measure it.
 
-Where it degrades: ``16 eps S`` underflows to zero for ``S`` below about ``1e-292``,
-where the test becomes exact equality of the spacings. That is the honest answer at that
-scale rather than a failure -- every coordinate there is subnormal, and a tolerance
-smaller than the smallest subnormal cannot be represented to compare against.
+Where it degrades: ``16 eps S`` rounds to exactly zero for ``S`` below about
+the order of ``1e-310`` -- where the product falls below the smallest subnormal --
+and there the test becomes exact equality of the spacings. That is the
+honest answer at that scale rather than a failure -- a tolerance below the smallest
+subnormal cannot be represented to compare against. The figure is measured by
+``scripts/measure_uniform_spacing_spread.py``; a first version of this paragraph said
+``1e-292``, which was wrong by seventeen orders of magnitude, and it is recorded because
+a derivation whose checkable numbers are wrong is worse than one that states none.
 
 The C++ grid carries the same constant and the same derivation as
 ``pantr::grid::kUniformSpacingEpsFactor``; ``tests/parity/test_grid_types.py`` asserts

@@ -18,11 +18,15 @@ margin, it would be hiding a defect.
 There are exactly two places arithmetic happens, and each gets its own treatment.
 
 - **`uniform_grid` computes its breakpoints.** The C++ factory reproduces
-  `numpy.linspace`'s own sequence rather than approximating it -- the `step == 0`
-  branch, the exact assignment of the final breakpoint, and the product and the sum as
-  separate statements so `-ffp-contract=on` cannot fuse them. So the claim there is
+  `numpy.linspace`'s own sequence rather than approximating it, so the claim there is
   also bit-identity, and it is asserted against `numpy.linspace` directly rather than
-  against the other backend, because that is what the implementation claims.
+  against the other backend, because that is what the implementation claims. Two of
+  the three details that carry it are exercised below -- the exact assignment of the
+  final breakpoint, and the product and the sum as separate statements so
+  `-ffp-contract=on` cannot fuse them. The third, numpy's `step == 0` branch, is
+  **unreachable by any grid**: when `step` underflows, `linspace`'s fallback produces
+  breakpoints that are not strictly increasing and the constructor rejects them.
+  `tests/test_grid_tensor_product.py` pins that premise so it is not taken on trust.
 - **`is_uniform` compares a spread against a tolerance.** That is a *verdict*, which
   `design/backend_parity.md` Rule 11 says no tolerance bounds. It is asserted as a
   verdict: the two backends must agree on the answer, on both sides of the threshold,
@@ -485,6 +489,29 @@ def test_a_tagged_grid_survives_a_pickle_round_trip(writer: Backend, reader: Bac
 
 
 @pytest.mark.parametrize("backend", [Backend.PYTHON, Backend.CPP])
+def test_a_built_bvh_does_not_travel_in_the_pickle(backend: Backend) -> None:
+    """The memoized spatial index is left behind, and the grid still works without it.
+
+    `__reduce__` never reads the BVH slot, so this cannot fail today -- which is
+    precisely why it is worth pinning. The index is `O(num_cells)` node arrays and is
+    rebuilt from the breakpoints in one call, so shipping it would trade a large pickle
+    for a small saving; a later `__reduce__` that started carrying grid state wholesale
+    would pick it up without anything objecting.
+    """
+    with use_backend(backend):
+        original = uniform_grid([[0.0, 3.0], [0.0, 2.0]], [3, 2])
+        original.cell_tags.set("cut", [0, 5], 1)
+        assert original.cell_bvh().n_cells == 6, "the index must be built before pickling"
+
+        restored = pickle.loads(pickle.dumps(original))
+
+        assert restored._bvh is None, "a memoized index must not travel in the pickle"
+        assert restored.cell_tags.names == ("cut",), "the tags must travel, though"
+        # And it rebuilds on demand, identically.
+        np.testing.assert_array_equal(restored.cell_bvh().node_lo, original.cell_bvh().node_lo)
+
+
+@pytest.mark.parametrize("backend", [Backend.PYTHON, Backend.CPP])
 def test_an_untagged_grid_stays_lazy_across_a_pickle(backend: Backend) -> None:
     """A grid with no tags comes back with its memo slots still unfilled.
 
@@ -534,6 +561,7 @@ def _raised(call: Callable[[], Any]) -> tuple[type[BaseException], str]:
         ("cell id negative", lambda g: g.cell_level(-1)),
         ("numpy cell id too large", lambda g: g.cell_level(np.int64(99))),
         ("facet id too large", lambda g: g.neighbor_across_facet(0, 99)),
+        ("facet id negative", lambda g: g.neighbor_across_facet(0, -1)),
         ("wrong-length point", lambda g: g.locate([0.5])),
         ("wrong-width batch", lambda g: g.locate_many(np.zeros((3, 5)))),
         ("empty restrict", lambda g: g.restrict([])),
@@ -553,10 +581,23 @@ def test_the_two_backends_raise_the_same_exception(
     ``99`` on numpy 1, so the sentence depended on a numpy version and the C++ grid --
     which cannot reproduce a numpy repr -- could never have matched it. That is a
     verdict, not a value, and no tolerance covers it.
+
+    A second case is why the two ``use_backend`` blocks below exist: the C++ constructor
+    reported a too-short axis as ``got 1.`` where the oracle reports
+    ``got shape (1,).``, and this test passed anyway, because the construction cases
+    ignore the grid they are given and so both halves ran under one backend.
     """
     py, cpp = _both_grids([[0.0, 1.0, 2.0, 3.0], [0.0, 1.0, 2.0]])
-    py_type, py_message = _raised(lambda: call(py))
-    cpp_type, cpp_message = _raised(lambda: call(cpp))
+    # Each call runs INSIDE its backend's context, and that is load-bearing rather than
+    # tidy. Four of the cases above ignore the grid they are handed and construct a new
+    # one, so the backend that decides their message is the ambient one at call time,
+    # not the grid's. Without these two blocks both calls ran under the default backend
+    # and the assertion compared a message against itself -- which is how a real
+    # divergence in the "short axis" message survived until a review found it.
+    with use_backend(Backend.PYTHON):
+        py_type, py_message = _raised(lambda: call(py))
+    with use_backend(Backend.CPP):
+        cpp_type, cpp_message = _raised(lambda: call(cpp))
     assert py_type is cpp_type, f"{what}: {py_type.__name__} against {cpp_type.__name__}"
     assert py_message == cpp_message, what
 
@@ -585,9 +626,9 @@ def test_uniform_grid_reproduces_numpy_linspace(lo: float, hi: float, cells: int
     py, cpp = _both(lambda: uniform_grid([[lo, hi]], cells))
     expected = np.linspace(lo, hi, cells + 1, dtype=np.float64)
     assert cpp.breakpoints[0].tobytes() == expected.tobytes(), (
-        "the C++ factory must reproduce numpy's own sequence: the step == 0 branch, "
-        "the exact assignment of the final breakpoint, and the product and the sum as "
-        "separate statements so -ffp-contract=on cannot fuse them"
+        "the C++ factory must reproduce numpy's own sequence: the exact assignment of "
+        "the final breakpoint, and the product and the sum as separate statements so "
+        "-ffp-contract=on cannot fuse them"
     )
     assert py.breakpoints[0].tobytes() == expected.tobytes()
     assert cpp.breakpoints[0][-1] == hi, "the final breakpoint is assigned, not accumulated"

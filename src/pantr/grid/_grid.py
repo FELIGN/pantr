@@ -512,6 +512,7 @@ class Grid(Protocol):
 
         Raises:
             ValueError: If the trailing axis of ``points`` is not ``ndim``.
+            TypeError: If ``points`` has a non-numeric dtype.
         """
         pts = self._normalize_points(points)
         out = np.empty(pts.shape[0], dtype=np.int64)
@@ -671,6 +672,7 @@ class Grid(Protocol):
         Raises:
             ValueError: If the trailing axis is not ``ndim`` or the rank is not
                 1 or 2.
+            TypeError: If ``points`` has a non-numeric dtype.
         """
         arr = _as_float64(points, name="points")
         if arr.ndim == 1:
@@ -1104,6 +1106,7 @@ class _GridWrapper:
 
         Raises:
             ValueError: If the trailing axis of ``points`` is not ``ndim``.
+            TypeError: If ``points`` has a non-numeric dtype.
         """
         return np.asarray(self._impl.locate_many(self._normalize_points(points)), dtype=np.int64)
 
@@ -1289,6 +1292,7 @@ class _GridWrapper:
         Raises:
             ValueError: If the trailing axis is not ``ndim`` or the rank is not
                 1 or 2.
+            TypeError: If ``points`` has a non-numeric dtype.
         """
         return Grid._normalize_points(self, points)
 
