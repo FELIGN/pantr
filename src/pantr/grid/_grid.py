@@ -68,11 +68,11 @@ per-cell tag footprint. Deciding *what* to tag is the consumer's job.
 from __future__ import annotations
 
 import abc
-from typing import TYPE_CHECKING, NamedTuple, Protocol
+from typing import TYPE_CHECKING, Any, NamedTuple, Protocol, Self, TypeVar
 
 import numpy as np
 
-from ._grid_utils import _as_float64
+from ._grid_utils import _as_float64, _normalize_point
 from ._tags import CellTags, FacetTags
 
 if TYPE_CHECKING:
@@ -83,6 +83,10 @@ if TYPE_CHECKING:
     from ..geometry import AABB
     from ..transform import AffineTransform
     from ._bvh import BVH
+
+
+_W = TypeVar("_W")
+"""One of pantr's public wrapper classes, as :func:`_adopt` presents a handle."""
 
 
 class Grid(Protocol):
@@ -627,7 +631,14 @@ class Grid(Protocol):
             IndexError: If ``cid`` is negative or ``>= num_cells``.
         """
         if not 0 <= int(cid) < self.num_cells:
-            raise IndexError(f"cell id {cid!r} is out of range [0, {self.num_cells}).")
+            # `int(cid)` rather than `cid!r`: the argument is routinely a numpy
+            # integer, whose repr is `np.int64(5)` on numpy 2 and `5` on numpy 1, so
+            # `!r` made the message depend on a numpy version and told the reader
+            # about numpy's repr rather than about their grid. The C++ grid raises
+            # the same sentence and has no way to reproduce a numpy repr, so this is
+            # also what lets the two backends agree verbatim. `int(cid)` is already
+            # computed by the comparison above, so no failure mode is added.
+            raise IndexError(f"cell id {int(cid)} is out of range [0, {self.num_cells}).")
 
     def _check_lfid(self, cid: int, lfid: int) -> None:
         """Raise :class:`IndexError` if ``lfid`` is not a valid facet of ``cid``.
@@ -643,7 +654,8 @@ class Grid(Protocol):
         self._check_cid(cid)
         n_facets = self.num_local_facets(cid)
         if not 0 <= int(lfid) < n_facets:
-            raise IndexError(f"local facet id {lfid!r} is out of range [0, {n_facets}).")
+            # `int(lfid)` rather than `lfid!r`; see `_check_cid`.
+            raise IndexError(f"local facet id {int(lfid)} is out of range [0, {n_facets}).")
 
     def _normalize_points(self, points: npt.ArrayLike) -> npt.NDArray[np.float64]:
         """Coerce ``points`` to a C-contiguous ``(npts, ndim)`` ``float64`` array.
@@ -727,6 +739,558 @@ class GridRestriction(NamedTuple):
     grid: Grid
     local_to_global_cell: npt.NDArray[np.int64]
     in_subset: npt.NDArray[np.bool_]
+
+
+def _adopt(wrapper_cls: type[_W], value: object) -> _W:
+    """Present an implementation-level return as its public wrapper.
+
+    The two backends hand back different things from the same call. The Python
+    oracle is itself built on the public types, so its ``cell_tags`` is already a
+    :class:`CellTags`; the C++ grid owns a `pantr::grid::CellTags` and its binding
+    hands back the raw handle. Both have to reach the caller as the one public
+    class, and this is the single place that reconciles them, rather than a backend
+    test repeated at each of the five sites that need it.
+
+    It is written as "already the right type, or adopt it" rather than as a check on
+    which backend is active, because that is the actual question and it stays true if
+    a third implementation ever appears. It is scaffolding all the same: it exists
+    because ``_GridPython`` exists, and it goes when that does.
+
+    Args:
+        wrapper_cls (type[_W]): The public class the value must be presented as.
+        value (object): What the implementation returned.
+
+    Returns:
+        _W: ``value`` if it already is one, otherwise a wrapper adopting it.
+    """
+    if isinstance(value, wrapper_cls):
+        return value
+    return wrapper_cls._wrap(value)  # type: ignore[attr-defined, no-any-return]
+
+
+class _GridWrapper:
+    """Private forwarding base for a grid whose implementation lives elsewhere.
+
+    Stateless: ``__slots__`` is empty, there is no ``__init__``, and every method
+    below is one line over ``self._impl`` plus the wrap or unwrap of a domain type.
+    The concrete wrapper supplies the four slots, the constructor, ``__repr__``,
+    ``__reduce__`` and whatever surface is its own.
+
+    This is inheritance used for reuse, which is normally the shape to refuse. It is
+    right here for one reason: the docstring is the user-facing contract, so
+    duplicating twenty-four forwarders across the concrete wrappers would be
+    forty-eight docstrings and two copies of that contract, which will drift. The
+    base holds no state and imposes almost no protocol -- the four slots below and a
+    ``_wrap`` classmethod -- so nothing about the usual objection applies.
+
+    It deliberately inherits from neither :class:`Grid` nor ``_GridPython``.
+    Inheriting the protocol buys nothing over satisfying it structurally, and
+    inheriting the oracle would produce the mixed object
+    ``design/cross_backend_types.md`` forbids: Python defaults running over a C++
+    handle, inside the class the C++ backend hands to users.
+
+    Attributes:
+        _impl (Any): The implementation this wrapper forwards to. Its type is the
+            one thing the base assumes; the concrete wrapper's ``_impl_class``
+            decides what it is.
+        _bvh (BVH | None): Memoized spatial index; ``None`` until first built.
+        _cell_tags (CellTags | None): Memoized cell-tag registry; ``None`` until
+            first use.
+        _facet_tags (FacetTags | None): Memoized facet-tag registry; ``None`` until
+            first use.
+    """
+
+    __slots__ = ()
+
+    _impl: Any
+    _bvh: BVH | None
+    _cell_tags: CellTags | None
+    _facet_tags: FacetTags | None
+
+    @classmethod
+    def _wrap(cls, impl: Any) -> Self:  # noqa: ANN401 -- the impl type is the subclass's
+        """Wrap an implementation object that is already valid.
+
+        The one thing the base needs from the concrete wrapper beyond the four slots:
+        :meth:`restrict` returns a grid, and it has to be the same wrapper class the
+        restricted grid is, which only the subclass can build.
+
+        Args:
+            impl (Any): The implementation object to adopt.
+
+        Returns:
+            Self: A wrapper around ``impl``, with no re-validation.
+
+        Raises:
+            NotImplementedError: Always. A concrete wrapper must override it.
+        """
+        raise NotImplementedError(f"{cls.__name__} must supply _wrap().")
+
+    # ------------------------------------------------------------------
+    # Size metadata
+    # ------------------------------------------------------------------
+
+    @property
+    def ndim(self) -> int:
+        """Get the spatial dimension of the grid.
+
+        Returns:
+            int: Number of axes (``>= 1``).
+        """
+        return int(self._impl.ndim)
+
+    @property
+    def num_cells(self) -> int:
+        """Get the total number of cells.
+
+        Returns:
+            int: Number of cells in this (local) grid.
+        """
+        return int(self._impl.num_cells)
+
+    def iter_cells(self) -> Iterator[int]:
+        """Iterate over every cell id in ascending order.
+
+        Computed here rather than forwarded: the return is a Python iterator, which
+        is a fact about Python's calling convention and not about grids.
+
+        Returns:
+            Iterator[int]: Cell ids ``0`` to ``num_cells - 1``.
+        """
+        return iter(range(self.num_cells))
+
+    # ------------------------------------------------------------------
+    # Cell accessors
+    # ------------------------------------------------------------------
+
+    def cell_bounds(self, cid: int) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64]]:
+        """Return cell ``cid``'s axis-aligned ``(lo, hi)`` corners.
+
+        Args:
+            cid (int): Cell identifier.
+
+        Returns:
+            tuple[npt.NDArray[np.float64], npt.NDArray[np.float64]]: Fresh,
+            writeable length-``ndim`` ``float64`` arrays.
+
+        Raises:
+            IndexError: If ``cid`` is out of range.
+        """
+        lo, hi = self._impl.cell_bounds(int(cid))
+        return lo, hi
+
+    def cell_aabb(self, cid: int) -> AABB:
+        """Return cell ``cid``'s axis-aligned bounding box.
+
+        Args:
+            cid (int): Cell identifier.
+
+        Returns:
+            AABB: Box spanning the cell's corners.
+
+        Raises:
+            IndexError: If ``cid`` is out of range.
+        """
+        from ..geometry import AABB  # noqa: PLC0415
+
+        return _adopt(AABB, self._impl.cell_aabb(int(cid)))
+
+    def neighbor_across_facet(self, cid: int, lfid: int) -> int | None:
+        """Return the cell across local facet ``lfid`` of ``cid``, or ``None``.
+
+        Uses the ``lfid = 2 * axis + side`` encoding, with ``side == 0`` the low
+        face.
+
+        Args:
+            cid (int): Cell identifier.
+            lfid (int): Local facet identifier in ``[0, 2 * ndim)``.
+
+        Returns:
+            int | None: Neighbouring cell id, or ``None`` on a boundary facet.
+
+        Raises:
+            IndexError: If ``cid`` or ``lfid`` is out of range.
+        """
+        nbr = self._impl.neighbor_across_facet(int(cid), int(lfid))
+        return None if nbr is None else int(nbr)
+
+    def cell_level(self, cid: int) -> int:
+        """Return the refinement level of cell ``cid``.
+
+        Args:
+            cid (int): Cell identifier.
+
+        Returns:
+            int: The cell's level; ``0`` on a flat grid.
+
+        Raises:
+            IndexError: If ``cid`` is out of range.
+        """
+        return int(self._impl.cell_level(int(cid)))
+
+    def child_cells(self, cid: int) -> tuple[int, ...]:
+        """Return the immediate refinement children of cell ``cid``.
+
+        Args:
+            cid (int): Cell identifier.
+
+        Returns:
+            tuple[int, ...]: Child cell ids; empty on a flat grid.
+
+        Raises:
+            IndexError: If ``cid`` is out of range.
+        """
+        return tuple(int(c) for c in self._impl.child_cells(int(cid)))
+
+    def reference_map(self, cid: int) -> AffineTransform:
+        """Return the affine map from the unit cube onto cell ``cid``.
+
+        Args:
+            cid (int): Cell identifier.
+
+        Returns:
+            AffineTransform: The push-forward from ``[0, 1]^ndim`` to the cell.
+
+        Raises:
+            IndexError: If ``cid`` is out of range.
+        """
+        from ..transform import AffineTransform  # noqa: PLC0415
+
+        return _adopt(AffineTransform, self._impl.reference_map(int(cid)))
+
+    def neighbors(self, cid: int) -> list[int]:
+        """Return the facet-neighbour cell ids of ``cid``.
+
+        Args:
+            cid (int): Cell identifier.
+
+        Returns:
+            list[int]: Neighbouring cell ids, in local facet order, with boundary
+            facets omitted.
+
+        Raises:
+            IndexError: If ``cid`` is out of range.
+        """
+        return [int(n) for n in self._impl.neighbors(int(cid))]
+
+    # ------------------------------------------------------------------
+    # Facet accessors
+    # ------------------------------------------------------------------
+
+    def num_local_facets(self, cid: int) -> int:
+        """Return the number of local facets of cell ``cid``.
+
+        Args:
+            cid (int): Cell identifier.
+
+        Returns:
+            int: ``2 * ndim`` for an axis-aligned box cell.
+
+        Raises:
+            IndexError: If ``cid`` is out of range.
+        """
+        return int(self._impl.num_local_facets(int(cid)))
+
+    def local_facet_axis_side(self, cid: int, lfid: int) -> tuple[int, int]:
+        """Return the ``(axis, side)`` of local facet ``lfid`` of cell ``cid``.
+
+        Args:
+            cid (int): Cell identifier.
+            lfid (int): Local facet identifier in ``[0, 2 * ndim)``.
+
+        Returns:
+            tuple[int, int]: ``(axis, side)``, with ``side == 0`` the low face.
+
+        Raises:
+            IndexError: If ``cid`` or ``lfid`` is out of range.
+        """
+        axis, side = self._impl.local_facet_axis_side(int(cid), int(lfid))
+        return int(axis), int(side)
+
+    def local_facet_bounds(
+        self, cid: int, lfid: int
+    ) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64]]:
+        """Return the degenerate ``(lo, hi)`` box of local facet ``lfid`` of ``cid``.
+
+        Args:
+            cid (int): Cell identifier.
+            lfid (int): Local facet identifier in ``[0, 2 * ndim)``.
+
+        Returns:
+            tuple[npt.NDArray[np.float64], npt.NDArray[np.float64]]: Fresh,
+            writeable length-``ndim`` ``float64`` arrays whose corners coincide on
+            the facet's normal axis.
+
+        Raises:
+            IndexError: If ``cid`` or ``lfid`` is out of range.
+        """
+        lo, hi = self._impl.local_facet_bounds(int(cid), int(lfid))
+        return lo, hi
+
+    def is_mesh_boundary_facet(self, cid: int, lfid: int) -> bool:
+        """Report whether local facet ``lfid`` of ``cid`` is on the outer boundary.
+
+        Args:
+            cid (int): Cell identifier.
+            lfid (int): Local facet identifier.
+
+        Returns:
+            bool: ``True`` iff no neighbouring cell shares the facet.
+
+        Raises:
+            IndexError: If ``cid`` or ``lfid`` is out of range.
+        """
+        return bool(self._impl.is_mesh_boundary_facet(int(cid), int(lfid)))
+
+    def boundary_facets(self) -> npt.NDArray[np.int64]:
+        """Return every outer-boundary facet as ``(cid, lfid)`` rows.
+
+        Frozen here rather than by the implementation, so that the array is
+        read-only under either backend; the oracle's own default freezes it too.
+
+        Returns:
+            npt.NDArray[np.int64]: Read-only ``(n, 2)`` array, sorted by
+            construction.
+        """
+        rows = np.ascontiguousarray(self._impl.boundary_facets(), dtype=np.int64)
+        rows.flags.writeable = False
+        return rows
+
+    def hanging_neighbors(self, cid: int, lfid: int) -> tuple[int, ...]:
+        """Return every active cell sharing local facet ``lfid`` of ``cid``.
+
+        Args:
+            cid (int): Cell identifier.
+            lfid (int): Local facet identifier.
+
+        Returns:
+            tuple[int, ...]: Neighbouring cell ids; empty on an outer-boundary facet.
+
+        Raises:
+            IndexError: If ``cid`` or ``lfid`` is out of range.
+        """
+        return tuple(int(n) for n in self._impl.hanging_neighbors(int(cid), int(lfid)))
+
+    # ------------------------------------------------------------------
+    # Point location and spatial queries
+    # ------------------------------------------------------------------
+
+    def locate(self, pt: npt.ArrayLike) -> int | None:
+        """Return the cell containing ``pt``, or ``None`` if ``pt`` is outside.
+
+        Args:
+            pt (npt.ArrayLike): Length-``ndim`` point.
+
+        Returns:
+            int | None: Containing cell id, or ``None`` when ``pt`` lies outside the
+            grid domain, which includes any non-finite coordinate.
+
+        Raises:
+            ValueError: If ``pt`` does not have length ``ndim``.
+        """
+        cid = self._impl.locate(_normalize_point(pt, self.ndim))
+        return None if cid is None else int(cid)
+
+    def locate_many(self, points: npt.ArrayLike) -> npt.NDArray[np.int64]:
+        """Locate a batch of points, one cell id per point.
+
+        Args:
+            points (npt.ArrayLike): ``(npts, ndim)`` array-like of points, or a
+                single length-``ndim`` point.
+
+        Returns:
+            npt.NDArray[np.int64]: Shape ``(npts,)`` cell ids; ``-1`` for points
+            outside the grid.
+
+        Raises:
+            ValueError: If the trailing axis of ``points`` is not ``ndim``.
+        """
+        return np.asarray(self._impl.locate_many(self._normalize_points(points)), dtype=np.int64)
+
+    def query_aabb(self, aabb: AABB) -> npt.NDArray[np.int64]:
+        """Return the ids of every cell whose AABB overlaps ``aabb``.
+
+        Routed through :meth:`cell_bvh` rather than forwarded, which is what the
+        oracle's own default does. That keeps one unpacking of an :class:`AABB` into
+        corner arrays -- :class:`pantr.grid.BVH`'s -- instead of a second one here.
+
+        Args:
+            aabb (AABB): Query box; must match :attr:`ndim`.
+
+        Returns:
+            npt.NDArray[np.int64]: Overlapping cell ids (unordered).
+
+        Raises:
+            ValueError: If ``aabb.ndim`` does not match :attr:`ndim`.
+        """
+        return self.cell_bvh().query_aabb(aabb)
+
+    def cell_bvh(self) -> BVH:
+        """Return the cached :class:`pantr.grid.BVH` over the grid's cell AABBs.
+
+        Memoized here as well as by the implementation. Both halves are needed: the
+        implementation's cache is what stops the tree being rebuilt, and this one is
+        what makes ``g.cell_bvh() is g.cell_bvh()`` hold, since a fresh wrapper
+        around the same handle would be a different Python object.
+
+        Returns:
+            BVH: The grid's spatial index over its cell AABBs.
+
+        Warning:
+            Not fully thread-safe. Concurrent first calls may each build a valid
+            tree and one write wins, costing redundant construction. Call this once
+            on the main thread before sharing the grid across threads.
+        """
+        from ._bvh import BVH  # noqa: PLC0415
+
+        if self._bvh is None:
+            object.__setattr__(self, "_bvh", _adopt(BVH, self._impl.cell_bvh()))
+        assert self._bvh is not None
+        return self._bvh
+
+    def collect_cell_bounds(
+        self,
+    ) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64]]:
+        """Materialize per-cell ``(lo, hi)`` in cell-id order.
+
+        Returns:
+            tuple[npt.NDArray[np.float64], npt.NDArray[np.float64]]:
+            ``(cell_lo, cell_hi)`` of shape ``(num_cells, ndim)``.
+        """
+        cell_lo, cell_hi = self._impl.collect_cell_bounds()
+        return cell_lo, cell_hi
+
+    # ------------------------------------------------------------------
+    # Restriction
+    # ------------------------------------------------------------------
+
+    def restrict(self, cell_ids: npt.ArrayLike) -> GridRestriction:
+        """Return the sub-grid spanning ``cell_ids``, with its index maps.
+
+        The sub-grid comes back as the same wrapper class this grid is, so a caller
+        cannot tell a restricted grid from an ordinary one.
+
+        Args:
+            cell_ids (npt.ArrayLike): Flat cell identifiers to span; duplicates are
+                ignored. Each must satisfy ``0 <= cid < num_cells``.
+
+        Returns:
+            GridRestriction: The windowed sub-grid, its ``local_to_global_cell``
+            map, and the ``in_subset`` mask flagging requested versus
+            bounding-box-fill cells. Both arrays are read-only.
+
+        Raises:
+            ValueError: If ``cell_ids`` is empty.
+            IndexError: If any cell id is out of range ``[0, num_cells)``.
+            TypeError: If ``cell_ids`` is not integer-valued.
+            NotImplementedError: If this grid kind does not support restriction.
+        """
+        ids = np.asarray(cell_ids).ravel()
+        if ids.size == 0:
+            raise ValueError("restrict: cell_ids must be non-empty.")
+        # Checked here because there is no `std::exception` nanobind turns into a
+        # `TypeError`, so the implementation cannot raise this one for us.
+        if not np.issubdtype(ids.dtype, np.integer):
+            raise TypeError(f"restrict: cell_ids must be integer-valued; got dtype {ids.dtype}.")
+        sub, local_to_global, in_subset = self._impl.restrict(
+            np.ascontiguousarray(ids, dtype=np.int64)
+        )
+        # `astype` rather than a view: the C++ mask is `uint8`, because
+        # `std::vector<bool>` is a bit-packed proxy with no `data()` to hand over.
+        # It also gives a fresh array to freeze, which the oracle's own `np.isin`
+        # result already is.
+        mapping = np.ascontiguousarray(local_to_global, dtype=np.int64)
+        mask = np.asarray(in_subset).astype(np.bool_)
+        mapping.flags.writeable = False
+        mask.flags.writeable = False
+        return GridRestriction(type(self)._wrap(sub), mapping, mask)
+
+    # ------------------------------------------------------------------
+    # Tagging
+    # ------------------------------------------------------------------
+
+    @property
+    def cell_tags(self) -> CellTags:
+        """Get the grid's sparse cell-tag registry.
+
+        Memoized into ``_cell_tags``, which stays ``None`` until the first read.
+        That laziness is part of the contract the oracle documents and the suite
+        asserts, and it survives the port even though the C++ grid's registry is
+        eager: what stays lazy is the wrapper in front of it.
+
+        Returns:
+            CellTags: A registry of named ``(cell_ids, values)`` associations,
+            empty until first use.
+        """
+        if self._cell_tags is None:
+            object.__setattr__(self, "_cell_tags", _adopt(CellTags, self._impl.cell_tags))
+        assert self._cell_tags is not None
+        return self._cell_tags
+
+    @property
+    def facet_tags(self) -> FacetTags:
+        """Get the grid's sparse facet-tag registry.
+
+        Memoized into ``_facet_tags``; see :attr:`cell_tags`.
+
+        Returns:
+            FacetTags: A registry of named ``((cell_id, local_facet_id), value)``
+            associations, empty until first use and sized for ``2 * ndim`` facets
+            per cell.
+        """
+        if self._facet_tags is None:
+            object.__setattr__(self, "_facet_tags", _adopt(FacetTags, self._impl.facet_tags))
+        assert self._facet_tags is not None
+        return self._facet_tags
+
+    # ------------------------------------------------------------------
+    # Internal helpers
+    # ------------------------------------------------------------------
+    #
+    # The three below are part of the `Grid` protocol's structural contract, so a
+    # wrapper that omitted them would not be a grid as far as mypy is concerned.
+    # Each is the protocol's own body reached unbound, which is the same mechanism
+    # `Grid.boundary_facets(g)` uses in the differential tests: one definition, and
+    # it cannot drift from the one the oracle runs.
+
+    def _check_cid(self, cid: int) -> None:
+        """Raise :class:`IndexError` if ``cid`` is out of range.
+
+        Args:
+            cid (int): Candidate cell identifier.
+
+        Raises:
+            IndexError: If ``cid`` is negative or ``>= num_cells``.
+        """
+        Grid._check_cid(self, cid)
+
+    def _check_lfid(self, cid: int, lfid: int) -> None:
+        """Raise :class:`IndexError` if ``lfid`` is not a valid facet of ``cid``.
+
+        Args:
+            cid (int): Cell identifier (validated first).
+            lfid (int): Candidate local facet identifier.
+
+        Raises:
+            IndexError: If ``cid`` is out of range or ``lfid`` is not in
+                ``[0, num_local_facets(cid))``.
+        """
+        Grid._check_lfid(self, cid, lfid)
+
+    def _normalize_points(self, points: npt.ArrayLike) -> npt.NDArray[np.float64]:
+        """Coerce ``points`` to a C-contiguous ``(npts, ndim)`` ``float64`` array.
+
+        Args:
+            points (npt.ArrayLike): Points array-like.
+
+        Returns:
+            npt.NDArray[np.float64]: Shape ``(npts, ndim)``.
+
+        Raises:
+            ValueError: If the trailing axis is not ``ndim`` or the rank is not
+                1 or 2.
+        """
+        return Grid._normalize_points(self, points)
 
 
 __all__ = ["Grid", "GridRestriction"]

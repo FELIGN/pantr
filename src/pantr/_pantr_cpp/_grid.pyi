@@ -5,10 +5,14 @@ by the per-type files beside it (``grid_tags.cpp`` and its siblings). See
 ``__init__.pyi`` for what this package promises and who has to keep it.
 """
 
+from collections.abc import Sequence
 from typing import Any
 
 import numpy as np
 import numpy.typing as npt
+
+from ._geometry import AABB
+from ._transform import AffineTransform
 
 class CellTags:
     """Sparse named integer tags over a grid's cells, owned by the C++ core.
@@ -42,6 +46,95 @@ class CellTags:
     def get(self, name: str) -> tuple[npt.NDArray[np.int64], npt.NDArray[np.int64]]: ...
     def remove(self, name: str) -> None: ...
     def scatter(self, name: str, out: npt.NDArray[Any]) -> None: ...
+
+class TensorProductGrid:
+    """Tensor product of axis-aligned boxes, owned by the C++ core.
+
+    Wrapped by :class:`pantr.grid.TensorProductGrid`, which is the class a caller
+    holds; this one is reached only through it. The wrapper owns the ``ArrayLike``
+    coercion, the ``TypeError`` for a non-integer index argument, the read-only flag
+    on every array it hands out, the ``repr``, and the pickle.
+
+    Most of what is listed below is a generic default the grid inherits from the CRTP
+    mixin in ``cpp/include/pantr/grid/grid.hpp`` rather than something this grid
+    wrote; it replaces three of them (``locate_many``, ``collect_cell_bounds`` and
+    ``restrict``).
+
+    ``cell_tags``, ``facet_tags`` and ``cell_bvh`` return REFERENCES into the grid and
+    are bound ``nb::rv_policy::reference_internal``. They alias the grid's own members
+    and are valid only while it is alive.
+
+    Attributes:
+        ndim (int): Number of axes.
+        num_cells (int): Product of the per-axis cell counts.
+        cells_per_axis (tuple[int, ...]): Per-axis cell counts.
+        breakpoints (tuple[npt.NDArray[np.float64], ...]): Read-only views into the
+            grid's single flat breakpoint buffer, one per axis.
+        bounds (npt.NDArray[np.float64]): Fresh ``(ndim, 2)`` per-axis extremes.
+        is_uniform (bool): Whether every axis is uniformly spaced.
+    """
+
+    def __init__(self, breakpoints: Sequence[npt.NDArray[np.float64]]) -> None: ...
+    @property
+    def ndim(self) -> int: ...
+    @property
+    def num_cells(self) -> int: ...
+    @property
+    def cells_per_axis(self) -> tuple[int, ...]: ...
+    @property
+    def breakpoints(self) -> tuple[npt.NDArray[np.float64], ...]: ...
+    @property
+    def bounds(self) -> npt.NDArray[np.float64]: ...
+    @property
+    def is_uniform(self) -> bool: ...
+    def cell_multi_index(self, cid: int) -> tuple[int, ...]: ...
+    def flat_cell_index(self, multi: npt.NDArray[np.int64]) -> int: ...
+    def cell_bounds(self, cid: int) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64]]: ...
+    def locate(self, pt: npt.NDArray[np.float64]) -> int | None: ...
+    def neighbor_across_facet(self, cid: int, lfid: int) -> int | None: ...
+    def locate_many(self, points: npt.NDArray[np.float64]) -> npt.NDArray[np.int64]: ...
+    def collect_cell_bounds(
+        self,
+    ) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64]]: ...
+    def restrict(
+        self, cell_ids: npt.NDArray[np.int64]
+    ) -> tuple[TensorProductGrid, npt.NDArray[np.int64], npt.NDArray[np.uint8]]: ...
+    def cell_aabb(self, cid: int) -> AABB: ...
+    def cell_level(self, cid: int) -> int: ...
+    def child_cells(self, cid: int) -> list[int]: ...
+    def reference_map(self, cid: int) -> AffineTransform: ...
+    def neighbors(self, cid: int) -> list[int]: ...
+    def num_local_facets(self, cid: int) -> int: ...
+    def local_facet_axis_side(self, cid: int, lfid: int) -> tuple[int, int]: ...
+    def local_facet_bounds(
+        self, cid: int, lfid: int
+    ) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64]]: ...
+    def is_mesh_boundary_facet(self, cid: int, lfid: int) -> bool: ...
+    def boundary_facets(self) -> npt.NDArray[np.int64]: ...
+    def hanging_neighbors(self, cid: int, lfid: int) -> list[int]: ...
+    def query_aabb(self, aabb: AABB) -> npt.NDArray[np.int64]: ...
+    @property
+    def cell_tags(self) -> CellTags: ...
+    @property
+    def facet_tags(self) -> FacetTags: ...
+    def cell_bvh(self) -> BVH: ...
+
+def uniform_grid(
+    bounds: npt.NDArray[np.float64],
+    cells: npt.NDArray[np.int64],
+) -> TensorProductGrid:
+    """Build a uniform grid on a bounding box.
+
+    Reproduces :func:`numpy.linspace`'s sequence bit for bit rather than
+    approximating it; see the C++ header for the three details that carry that.
+
+    Args:
+        bounds (npt.NDArray[np.float64]): ``(ndim, 2)`` per-axis ``[lo, hi]`` pairs.
+        cells (npt.NDArray[np.int64]): Per-axis cell counts, length ``ndim``.
+
+    Returns:
+        TensorProductGrid: The uniform grid.
+    """
 
 class BVH:
     """Bounding-volume hierarchy over cell AABBs, owned by the C++ core.
