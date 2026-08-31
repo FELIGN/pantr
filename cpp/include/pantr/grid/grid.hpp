@@ -483,8 +483,10 @@ class GridBase {
     /// \throws std::invalid_argument If `points.extent(1)` is not `ndim`.
     [[nodiscard]] std::vector<std::int64_t> locate_many(span2d<const scalar_type> points) const {
         const auto n = static_cast<std::size_t>(ndim_);
+        // Only the trailing extent is a contract: the caller chooses how many points to
+        // pass, and the row count is whatever they passed.
+        require_ndim_columns(points, "points");
         const std::size_t npts = points.extent(0);
-        require_shape(points, npts, "points");
         std::vector<std::int64_t> out(npts);
         for (std::size_t i = 0; i < npts; ++i) {
             const std::span<const scalar_type> pt(&at(points, i, std::size_t{0}), n);
@@ -691,6 +693,22 @@ class GridBase {
                                         + std::to_string(hi.size())
                                         + ") must both have length ndim ("
                                         + std::to_string(n) + ").");
+        }
+    }
+
+    /// Reject a two-dimensional view whose trailing extent is not `ndim`.
+    ///
+    /// Unconditional, for the reason `require_corner_spans` gives.
+    ///
+    /// \param view The candidate view.
+    /// \param what The parameter's name, for the message.
+    /// \throws std::invalid_argument If `view.extent(1)` is not `ndim`.
+    void require_ndim_columns(span2d<const scalar_type> view, const char* what) const {
+        const auto n = static_cast<std::size_t>(ndim_);
+        if (view.extent(1) != n) {
+            throw std::invalid_argument(std::string(what) + " must have " + std::to_string(n)
+                                        + " columns (ndim); got "
+                                        + std::to_string(view.extent(1)) + ".");
         }
     }
 
