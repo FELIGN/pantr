@@ -54,9 +54,12 @@ from ._bezier import Bezier32 as Bezier32
 from ._bezier import Bezier64 as Bezier64
 from ._bezier import apply_reduction_operator as apply_reduction_operator
 from ._bezier import bezier_boundary as bezier_boundary
+from ._bezier import bezier_composition_table_order as bezier_composition_table_order
 from ._bezier import bezier_degree_reduction_error as bezier_degree_reduction_error
+from ._bezier import bezier_product_table_order as bezier_product_table_order
 from ._bezier import clip_roots as clip_roots
 from ._bezier import collapse_bezier_along_axis as collapse_bezier_along_axis
+from ._bezier import compose_bezier as compose_bezier
 from ._bezier import dedup_roots as dedup_roots
 from ._bezier import degree_elevate_bezier_1d as degree_elevate_bezier_1d
 from ._bezier import elevate_bezier_degree as elevate_bezier_degree
@@ -65,6 +68,7 @@ from ._bezier import evaluate_bezier_1d as evaluate_bezier_1d
 from ._bezier import evaluate_bezier_deriv_1d as evaluate_bezier_deriv_1d
 from ._bezier import evaluate_bezier_on_lattice as evaluate_bezier_on_lattice
 from ._bezier import find_roots_batch as find_roots_batch
+from ._bezier import multiply_bezier as multiply_bezier
 from ._bezier import permute_bezier_directions as permute_bezier_directions
 from ._bezier import reduce_bezier_degree as reduce_bezier_degree
 from ._bezier import restrict_bezier as restrict_bezier

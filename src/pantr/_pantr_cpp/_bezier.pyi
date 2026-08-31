@@ -780,6 +780,167 @@ def collapse_bezier_along_axis(
             ``bezier.dim - 1`` entries, or if a value leaves ``[0, 1]``.
     """
 
+def bezier_product_table_order(
+    a: Bezier32 | Bezier64,
+    b: Bezier32 | Bezier64,
+) -> int:
+    """The largest binomial upper index :func:`multiply_bezier` will read.
+
+    ``multiply_bezier``'s ``binomials`` and ``inverse_binomials`` must reach at
+    least ``(order + 1, order + 1)``, where ``order`` is
+    ``max_d (a.degree[d] + b.degree[d])`` -- the product's own degree per
+    direction, and no larger index is ever read. Also validates that ``a`` and
+    ``b`` are compatible, raising the same message :func:`multiply_bezier`
+    would.
+
+    Args:
+        a (Bezier32 | Bezier64): First operand.
+        b (Bezier32 | Bezier64): Second operand. Must be the same concrete
+            class as ``a``, and share its dimension and rank.
+
+    Returns:
+        int: The largest ``n`` for which ``C(n, k)`` will be read; the tables
+            must be at least ``(n + 1, n + 1)``.
+
+    Raises:
+        TypeError: If ``a`` and ``b`` are not the same concrete class, since
+            no overload then matches.
+        ValueError: If ``a`` and ``b`` differ in dimension or rank.
+    """
+
+def multiply_bezier(
+    a: Bezier32 | Bezier64,
+    b: Bezier32 | Bezier64,
+    *,
+    binomials: npt.NDArray[np.float32 | np.float64],
+    inverse_binomials: npt.NDArray[np.float32 | np.float64],
+) -> Bezier32 | Bezier64:
+    """The pointwise product of two Béziers.
+
+    Degree ``p_d + q_d`` per direction, which represents the product exactly;
+    the coefficients carry the roundings of a binomial-weighted sum formed at
+    ``a``'s and ``b``'s own storage width. A rational operand makes the result
+    rational: both operands are promoted to homogeneous form and their
+    numerators and weight columns are multiplied independently.
+
+    ``binomials`` and ``inverse_binomials`` are two adjacent same-dtype
+    same-shape tables, so passing them the wrong way round gives a plausible
+    but wrong Bézier with no error anywhere -- the same hazard
+    ``restrict_bezier_1d``'s ``lower``/``upper`` and ``split_bezier_1d``'s two
+    outputs already carry. Both are keyword-only for that reason and both
+    ``.noconvert()``: without it a ``float64`` table would be silently cast
+    for a ``float32`` Bézier, and the table's own rounding is part of the
+    parity claim.
+
+    Call :func:`bezier_product_table_order` first to size the tables.
+
+    Args:
+        a (Bezier32 | Bezier64): First operand.
+        b (Bezier32 | Bezier64): Second operand. Must be the same concrete
+            class as ``a``, and share its dimension and rank.
+        binomials (npt.NDArray[np.float32 | np.float64]): ``C(n, k)`` in
+            ``a``'s and ``b``'s storage dtype, at least
+            ``(bezier_product_table_order(a, b) + 1)`` square, C-contiguous.
+            Entries with ``k > n`` are never read. Keyword-only.
+        inverse_binomials (npt.NDArray[np.float32 | np.float64]):
+            ``1 / C(n, k)``, same dtype, shape and requirements. Keyword-only.
+
+    Returns:
+        Bezier32 | Bezier64: The product, matching ``a``'s and ``b``'s class,
+            rational exactly when either operand is.
+
+    Raises:
+        TypeError: If ``a`` and ``b`` are not the same concrete class, if
+            either table has the wrong dtype or rank, is not C-contiguous, or
+            if either table is passed positionally.
+        ValueError: If ``a`` and ``b`` differ in dimension or rank, or if
+            either table is smaller than
+            ``bezier_product_table_order(a, b) + 1`` square.
+    """
+
+def bezier_composition_table_order(
+    outer: Bezier32 | Bezier64,
+    inner: Bezier32 | Bezier64,
+) -> int:
+    """The largest binomial upper index :func:`compose_bezier` will read.
+
+    Two sources: the Bernstein basis of each outer direction needs
+    ``C(m_d, i)`` up to ``max_d m_d``, and an n-dimensional inner map routes
+    every product through the n-dimensional Bernstein product, whose
+    reciprocals reach the composed degree ``sum_d m_d * n_s`` in direction
+    ``s``. A univariate inner map contributes nothing to that second bound,
+    since its products go through a separate kernel that builds its own
+    coefficients.
+
+    Unlike :func:`bezier_product_table_order` this validates nothing: it
+    reads only ``outer``'s and ``inner``'s own degrees, so no compatibility
+    between them is required to answer.
+
+    Args:
+        outer (Bezier32 | Bezier64): The outer map.
+        inner (Bezier32 | Bezier64): The inner map. Must be the same concrete
+            class as ``outer``.
+
+    Returns:
+        int: The largest ``n`` for which ``C(n, k)`` will be read; the tables
+            must be at least ``(n + 1, n + 1)``.
+
+    Raises:
+        TypeError: If ``outer`` and ``inner`` are not the same concrete
+            class, since no overload then matches.
+    """
+
+def compose_bezier(
+    outer: Bezier32 | Bezier64,
+    inner: Bezier32 | Bezier64,
+    *,
+    binomials: npt.NDArray[np.float32 | np.float64],
+    inverse_binomials: npt.NDArray[np.float32 | np.float64],
+) -> Bezier32 | Bezier64:
+    """The composition ``outer(inner(t))``.
+
+    Degree ``sum_d m_d * n_s`` in direction ``s``, which represents the
+    composition exactly; the coefficients carry the roundings of the products
+    that build them. Each outer direction's Bernstein basis is evaluated at
+    the corresponding component of ``inner``, and the outer control points
+    weight the tensor products of those bases.
+
+    ``binomials`` and ``inverse_binomials`` carry the same transposition
+    hazard as :func:`multiply_bezier`'s tables, for the same reason, and are
+    keyword-only and ``.noconvert()`` for the same two reasons.
+
+    Call :func:`bezier_composition_table_order` first to size the tables.
+
+    Args:
+        outer (Bezier32 | Bezier64): The outer map. Must be non-rational.
+        inner (Bezier32 | Bezier64): The inner map. Must be the same concrete
+            class as ``outer``, non-rational, and satisfy
+            ``inner.rank == outer.dim``.
+        binomials (npt.NDArray[np.float32 | np.float64]): ``C(n, k)`` in
+            ``outer``'s and ``inner``'s storage dtype, at least
+            ``(bezier_composition_table_order(outer, inner) + 1)`` square,
+            C-contiguous. Entries with ``k > n`` are never read.
+            Keyword-only.
+        inverse_binomials (npt.NDArray[np.float32 | np.float64]):
+            ``1 / C(n, k)``, same dtype, shape and requirements.
+            Keyword-only.
+
+    Returns:
+        Bezier32 | Bezier64: The composed Bézier, of dimension ``inner.dim``
+            and rank ``outer.rank``, matching ``outer``'s and ``inner``'s
+            class.
+
+    Raises:
+        TypeError: If ``outer`` and ``inner`` are not the same concrete
+            class, if either table has the wrong dtype or rank, is not
+            C-contiguous, or if either table is passed positionally.
+        ValueError: If ``outer`` or ``inner`` is rational, if ``inner.rank``
+            does not equal ``outer.dim``, if a univariate ``inner`` would
+            drive the composed degree past the exact-integer binomial
+            envelope, or if either table is smaller than
+            ``bezier_composition_table_order(outer, inner) + 1`` square.
+    """
+
 def yuksel_roots(
     coeff: npt.NDArray[np.float32 | np.float64],
     param_tol: float,
