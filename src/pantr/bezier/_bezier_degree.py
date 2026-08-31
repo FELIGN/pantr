@@ -24,8 +24,9 @@ from __future__ import annotations
 
 import functools
 import math
+from collections.abc import Sequence
 from fractions import Fraction
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Final
 
 import numpy as np
 import numpy.typing as npt
@@ -35,13 +36,26 @@ from .._backend import backend_keyed_cache
 from ..basis._basis_core import _tabulate_Bernstein_basis_1D_serial_core
 from ..bspline._bspline_degree_core import _check_bincoeff_envelope
 from ..quad import get_gauss_legendre_1d
-from ._bezier_backend import _ReduceApplyFunc, degree_kernels
+from ._bezier_backend import (
+    _ReduceApplyFunc,
+    degree_kernels,
+    degree_reduction_error_kernel,
+    elevate_degree_kernel,
+    reduce_degree_kernel,
+)
 
 if TYPE_CHECKING:
     from . import Bezier
 
 _ExactMatrix = list[list[Fraction]]
 """A matrix of exact rationals, used to assemble reduction operators."""
+
+_NO_OPERATOR: Final[npt.NDArray[np.float64]] = np.empty((0, 0), dtype=np.float64)
+"""Placeholder for a direction with a zero decrement.
+
+An empty array rather than ``None`` so the list stays homogeneous across the
+boundary, and rather than an omission so its index keeps meaning the direction.
+"""
 
 _AUTO_REDUCTION_TOL_FACTOR: float = 1.0e3
 """Default relative tolerance for automatic degree reduction, in units of eps.
@@ -104,20 +118,44 @@ def _degree_elevate_bezier(
     Note:
         Inputs are assumed to be validated by the caller (Layer 1).
     """
-    from . import Bezier as BezierCls  # noqa: PLC0415
-
-    ctrl: npt.NDArray[np.float32 | np.float64] = bezier.control_points
     degrees = bezier.degree
-    elevate = degree_kernels().elevate
 
     # The elevation kernel builds its coefficient table from ``C(p + inc, i)``,
-    # so the elevated degree is what has to stay in range.
+    # so the elevated degree is what has to stay in range. Checked here, above the
+    # backend branch, so that both backends refuse the same argument with the same
+    # message rather than each carrying its own copy of the sentence.
     for d in range(bezier.dim):
         if increments[d] > 0:
             elevated = degrees[d] + increments[d]
             _check_bincoeff_envelope(
                 elevated, f"Degree elevation to degree {elevated} in direction {d}"
             )
+
+    return elevate_degree_kernel()(bezier, increments)
+
+
+def _elevate_degree_python(
+    bezier: Bezier,
+    increments: tuple[int, ...],
+) -> Bezier:
+    """Degree-elevate with NumPy and the Numba kernel: the oracle for the port.
+
+    Args:
+        bezier (~pantr.bezier.Bezier): The Bézier to elevate.
+        increments (tuple[int, ...]): Degree increment per direction.
+
+    Returns:
+        ~pantr.bezier.Bezier: New Bézier with elevated degrees.
+
+    Note:
+        No input validation is performed here; :func:`_degree_elevate_bezier`
+        checked the binomial envelope above the branch.
+    """
+    from . import Bezier as BezierCls  # noqa: PLC0415
+
+    ctrl: npt.NDArray[np.float32 | np.float64] = bezier.control_points
+    degrees = bezier.degree
+    elevate = degree_kernels().elevate
 
     for d in range(bezier.dim):
         inc = increments[d]
@@ -393,6 +431,58 @@ def _degree_reduce_bezier(
     Note:
         Inputs are assumed to be validated by the caller (Layer 1).
     """
+    return reduce_degree_kernel()(bezier, decrements, _reduction_operators(bezier, decrements))
+
+
+def _reduction_operators(
+    bezier: Bezier,
+    decrements: tuple[int, ...],
+) -> list[npt.NDArray[np.float64]]:
+    """Assemble one reduction operator per direction, and **share it across backends**.
+
+    Assembled once here rather than inside either implementation, which is what makes
+    a comparison of the two a comparison of the *reduction* rather than of two
+    operator assemblies. The operator is built in exact rational arithmetic and
+    rounded to ``float64`` once; ``cpp/include/pantr/core/reduction_operator.hpp``
+    records why none of that assembly is ported and what porting it would cost.
+
+    A direction with a zero decrement gets an empty array rather than being absent,
+    so that the list's index keeps meaning the direction.
+
+    Args:
+        bezier (~pantr.bezier.Bezier): The Bézier that would be reduced.
+        decrements (tuple[int, ...]): Degree decrement per direction.
+
+    Returns:
+        list[npt.NDArray[np.float64]]: One operator per parametric direction.
+    """
+    return [
+        _interpolating_reduction_operator(bezier.degree[d], decrements[d])
+        if decrements[d]
+        else _NO_OPERATOR
+        for d in range(bezier.dim)
+    ]
+
+
+def _reduce_degree_python(
+    bezier: Bezier,
+    decrements: tuple[int, ...],
+    operators: Sequence[npt.NDArray[np.float64]],
+) -> Bezier:
+    """Degree-reduce with NumPy and the Numba kernel: the oracle for the port.
+
+    Args:
+        bezier (~pantr.bezier.Bezier): The Bézier to reduce.
+        decrements (tuple[int, ...]): Degree decrement per direction.
+        operators (Sequence[npt.NDArray[np.float64]]): One reduction operator per
+            direction, empty where the decrement is zero.
+
+    Returns:
+        ~pantr.bezier.Bezier: New Bézier with reduced degrees.
+
+    Note:
+        No input validation is performed here; Layer 2 did it above the branch.
+    """
     from . import Bezier as BezierCls  # noqa: PLC0415
 
     ctrl: npt.NDArray[np.float32 | np.float64] = bezier.control_points
@@ -403,8 +493,7 @@ def _degree_reduce_bezier(
         if dec == 0:
             continue
 
-        operator = _interpolating_reduction_operator(bezier.degree[d], dec)
-        ctrl = _reduce_along_axis(ctrl, d, operator, reduce_apply)
+        ctrl = _reduce_along_axis(ctrl, d, operators[d], reduce_apply)
 
     return BezierCls(ctrl, is_rational=bezier.is_rational)
 
@@ -673,7 +762,38 @@ def _degree_reduction_l2_error(bezier: Bezier, decrements: tuple[int, ...]) -> f
     Note:
         Inputs are assumed to be validated by the caller (Layer 1).
     """
-    reduced = _degree_reduce_bezier(bezier, decrements)
+    operators = _reduction_operators(bezier, decrements)
+    grams = [_bernstein_gram_matrix_1d(p) for p in bezier.degree]
+    return degree_reduction_error_kernel()(bezier, decrements, operators, grams)
+
+
+def _degree_reduction_error_python(
+    bezier: Bezier,
+    decrements: tuple[int, ...],
+    operators: Sequence[npt.NDArray[np.float64]],
+    grams: Sequence[npt.NDArray[np.float64]],
+) -> float:
+    """Measure a reduction's ``L2`` error with NumPy: the oracle for the port.
+
+    Args:
+        bezier (~pantr.bezier.Bezier): The Bézier that would be reduced.
+        decrements (tuple[int, ...]): Degree decrement per direction.
+        operators (Sequence[npt.NDArray[np.float64]]): One reduction operator per
+            direction.
+        grams (Sequence[npt.NDArray[np.float64]]): One Bernstein Gram matrix per
+            direction. Unused here -- :func:`_squared_l2_norm` builds its own from
+            the cache these came from -- and taken so that both implementations have
+            the same signature and are handed the same shared, exactly-assembled
+            matrices.
+
+    Returns:
+        float: The ``L2`` norm of the error the reduction would introduce.
+
+    Note:
+        No input validation is performed here; Layer 2 did it above the branch.
+    """
+    del grams
+    reduced = _reduce_degree_python(bezier, decrements, operators)
     restored = _degree_elevate_bezier(reduced, decrements)
 
     diff = restored.control_points - bezier.control_points

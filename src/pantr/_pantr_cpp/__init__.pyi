@@ -53,14 +53,17 @@ from ._basis import tabulate_legendre_1d as tabulate_legendre_1d
 from ._bezier import Bezier32 as Bezier32
 from ._bezier import Bezier64 as Bezier64
 from ._bezier import apply_reduction_operator as apply_reduction_operator
+from ._bezier import bezier_degree_reduction_error as bezier_degree_reduction_error
 from ._bezier import clip_roots as clip_roots
 from ._bezier import dedup_roots as dedup_roots
 from ._bezier import degree_elevate_bezier_1d as degree_elevate_bezier_1d
+from ._bezier import elevate_bezier_degree as elevate_bezier_degree
 from ._bezier import evaluate_bezier as evaluate_bezier
 from ._bezier import evaluate_bezier_1d as evaluate_bezier_1d
 from ._bezier import evaluate_bezier_deriv_1d as evaluate_bezier_deriv_1d
 from ._bezier import evaluate_bezier_on_lattice as evaluate_bezier_on_lattice
 from ._bezier import find_roots_batch as find_roots_batch
+from ._bezier import reduce_bezier_degree as reduce_bezier_degree
 from ._bezier import restrict_bezier_1d as restrict_bezier_1d
 from ._bezier import scalar_bernstein_product_1d as scalar_bernstein_product_1d
 from ._bezier import slice_bezier_1d as slice_bezier_1d

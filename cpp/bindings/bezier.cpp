@@ -1,9 +1,10 @@
 /// \file
 /// nanobind bindings for the `pantr.bezier` arithmetic kernels.
 ///
-/// Ten entry points: the seven of `_bezier_core.py`, the reduction-operator apply
-/// that `pantr.bezier` reaches for through `pantr.bspline`, and the two
-/// n-dimensional evaluation entry points of `pantr/bezier/evaluate.hpp`. The checks in
+/// Thirteen entry points: the seven of `_bezier_core.py`, the reduction-operator apply
+/// that `pantr.bezier` reaches for through `pantr.bspline`, the two n-dimensional
+/// evaluation entry points of `pantr/bezier/evaluate.hpp`, and the three degree
+/// operations of `pantr/bezier/degree.hpp`. The checks in
 /// this file are Layer 2's C++ half, for the reason `basis.cpp` states at length:
 /// a Layer 3 kernel validates nothing, the extension is importable, and every
 /// bound name here is a public attribute of a public module.
@@ -53,10 +54,20 @@
 /// handed a control-point array the wrapper unpacked. Unpacking and reassembling
 /// is what that amendment forbids, and the rationality flag is exactly the kind of
 /// invariant that gets dropped in a reassembly.
+///
+/// ## The degree operations take their operators as data
+///
+/// `reduce_bezier_degree` and `bezier_degree_reduction_error` are handed the
+/// reduction operators and Bernstein Gram matrices rather than assembling them, which
+/// is the ruling `core/reduction_operator.hpp` records for the operator and which
+/// `pantr/bezier/degree.hpp` extends to the Gram matrix and argues for. Both are
+/// `float64` whatever the Bézier stores, and both are indexed by parametric
+/// direction, so a direction the caller is not acting on passes an empty array rather
+/// than being absent -- an absent entry would make the list's index stop meaning the
+/// direction, which is the one thing that must not become positional by accident.
 
 #include <nanobind/nanobind.h>
 #include <nanobind/ndarray.h>
-
 #include <nanobind/stl/vector.h>
 
 #include <cstddef>
@@ -66,6 +77,7 @@
 #include <vector>
 
 #include "pantr/bezier/bezier.hpp"
+#include "pantr/bezier/degree.hpp"
 #include "pantr/bezier/evaluate.hpp"
 #include "pantr/bezier/kernels_1d.hpp"
 #include "pantr/core/binomial.hpp"
@@ -398,6 +410,56 @@ void bind_evaluate_bezier_on_lattice(const pantr::bezier::Bezier<T>& bezier,
         bezier, std::span<const std::span<const T>>(columns), out_view);
 }
 
+/// A list of dense `float64` matrices, one per parametric direction.
+///
+/// Directions the caller is not acting on pass an empty array; the header reads only
+/// the entries whose direction has a nonzero decrement.
+using matrix_list = std::vector<nb::ndarray<const double, nb::ndim<2>, nb::c_contig,
+                                            nb::device::cpu>>;
+
+/// Reinterpret a bound matrix list as the spans the header takes.
+///
+/// \param matrices The arrays, borrowed for the duration of the call.
+/// \return One `span2d` per entry, in the same order.
+std::vector<pantr::span2d<const double>> as_spans(const matrix_list& matrices) {
+    std::vector<pantr::span2d<const double>> spans;
+    spans.reserve(matrices.size());
+    for (const auto& matrix : matrices) {
+        spans.emplace_back(matrix.data(), matrix.shape(0), matrix.shape(1));
+    }
+    return spans;
+}
+
+/// Degree-elevate a Bézier, returning a new one.
+template <class T>
+pantr::bezier::Bezier<T> bind_elevate_degree(const pantr::bezier::Bezier<T>& bezier,
+                                             const std::vector<std::size_t>& increments) {
+    return pantr::bezier::elevate_degree<T>(bezier, std::span<const std::size_t>(increments));
+}
+
+/// Degree-reduce a Bézier with caller-supplied operators, returning a new one.
+template <class T>
+pantr::bezier::Bezier<T> bind_reduce_degree(const pantr::bezier::Bezier<T>& bezier,
+                                            const std::vector<std::size_t>& decrements,
+                                            const matrix_list& operators) {
+    const std::vector<pantr::span2d<const double>> ops = as_spans(operators);
+    return pantr::bezier::reduce_degree<T>(bezier, std::span<const std::size_t>(decrements),
+                                           std::span<const pantr::span2d<const double>>(ops));
+}
+
+/// The `L2` error a degree reduction would introduce.
+template <class T>
+double bind_degree_reduction_error(const pantr::bezier::Bezier<T>& bezier,
+                                   const std::vector<std::size_t>& decrements,
+                                   const matrix_list& operators, const matrix_list& grams) {
+    const std::vector<pantr::span2d<const double>> ops = as_spans(operators);
+    const std::vector<pantr::span2d<const double>> gram_spans = as_spans(grams);
+    return pantr::bezier::degree_reduction_error<T>(
+        bezier, std::span<const std::size_t>(decrements),
+        std::span<const pantr::span2d<const double>>(ops),
+        std::span<const pantr::span2d<const double>>(gram_spans));
+}
+
 }  // namespace
 
 void register_bezier(nb::module_& m) {
@@ -473,4 +535,26 @@ void register_bezier(nb::module_& m) {
     m.def("evaluate_bezier_on_lattice", &bind_evaluate_bezier_on_lattice<float>,
           nb::arg("bezier"), nb::arg("points_per_dir").noconvert(), nb::kw_only(),
           nb::arg("out").noconvert());
+
+    // The three degree operations. Unlike every kernel above these RETURN a value --
+    // a new Bézier, or a number -- rather than filling a caller's buffer, because
+    // what they produce is a value of a C++-owned type rather than an array whose
+    // shape the caller already knows. The mirroring rule of
+    // design/cross_backend_types.md is about the kernel seam and does not reach here.
+    m.def("elevate_bezier_degree", &bind_elevate_degree<double>, nb::arg("bezier"),
+          nb::arg("increments"));
+    m.def("elevate_bezier_degree", &bind_elevate_degree<float>, nb::arg("bezier"),
+          nb::arg("increments"));
+
+    m.def("reduce_bezier_degree", &bind_reduce_degree<double>, nb::arg("bezier"),
+          nb::arg("decrements"), nb::arg("operators").noconvert());
+    m.def("reduce_bezier_degree", &bind_reduce_degree<float>, nb::arg("bezier"),
+          nb::arg("decrements"), nb::arg("operators").noconvert());
+
+    m.def("bezier_degree_reduction_error", &bind_degree_reduction_error<double>,
+          nb::arg("bezier"), nb::arg("decrements"), nb::arg("operators").noconvert(),
+          nb::arg("grams").noconvert());
+    m.def("bezier_degree_reduction_error", &bind_degree_reduction_error<float>,
+          nb::arg("bezier"), nb::arg("decrements"), nb::arg("operators").noconvert(),
+          nb::arg("grams").noconvert());
 }

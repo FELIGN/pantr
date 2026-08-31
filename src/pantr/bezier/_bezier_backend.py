@@ -144,6 +144,44 @@ even for a scalar field, so the two backends fill the same shape and stay compar
 element for element. The squeeze is Layer 2's.
 """
 
+_ElevateDegreeFunc = Callable[["Bezier", tuple[int, ...]], "Bezier"]
+"""Signature of the n-d degree elevation: ``(bezier, increments) -> Bezier``.
+
+Returns a value rather than filling a buffer, unlike every 1D kernel above. What it
+produces is a Bézier -- a C++-owned type since the 2026-08-27 amendment -- rather
+than an array whose shape the caller already knows, so the mirroring rule of
+``design/cross_backend_types.md``, which is about the kernel seam, does not reach it.
+"""
+
+_ReduceDegreeFunc = Callable[
+    ["Bezier", tuple[int, ...], Sequence[npt.NDArray[np.float64]]], "Bezier"
+]
+"""Signature of the n-d degree reduction: ``(bezier, decrements, operators) -> Bezier``.
+
+The operators are ``float64`` whatever the Bézier stores, one per parametric
+direction, and a direction with a zero decrement passes an empty array rather than
+being absent -- an absent entry would make the list's index stop meaning the
+direction. They are assembled once, in exact rational arithmetic, by
+:func:`~pantr.bezier._bezier_degree._interpolating_reduction_operator`, and **shared
+by both backends**: that is what makes the comparison a comparison of the reduction
+rather than of two operator assemblies.
+"""
+
+_DegreeReductionErrorFunc = Callable[
+    [
+        "Bezier",
+        tuple[int, ...],
+        Sequence[npt.NDArray[np.float64]],
+        Sequence[npt.NDArray[np.float64]],
+    ],
+    float,
+]
+"""Signature of the reduction-error measure.
+
+``(bezier, decrements, operators, grams) -> float``. The Gram matrices cross for the
+same reason the operators do, and are shared the same way.
+"""
+
 _EvaluateNdLatticeFunc = Callable[["Bezier", Sequence[_Array], _Array], None]
 """Signature of the lattice evaluation: ``(bezier, pts_per_dir, out) -> None``.
 
@@ -397,7 +435,7 @@ def _cpp_handle(bezier: Bezier) -> _CppHandle:
     """The C++ implementation a Bézier holds, refusing a Python one.
 
     Args:
-        bezier (~pantr.bezier.Bezier): The Bézier to evaluate.
+        bezier (~pantr.bezier.Bezier): The Bézier whose handle is wanted.
 
     Returns:
         _CppHandle: The ``Bezier32`` or ``Bezier64`` handle.
@@ -458,6 +496,90 @@ def _cpp_evaluate_nd_lattice(bezier: Bezier, pts_per_dir: Sequence[_Array], out:
     _fill(out, lambda dest: _pantr_cpp.evaluate_bezier_on_lattice(impl, columns, out=dest))
 
 
+def _cpp_elevate_degree(bezier: Bezier, increments: tuple[int, ...]) -> Bezier:
+    """Degree-elevate through the C++ binding.
+
+    Args:
+        bezier (~pantr.bezier.Bezier): The Bézier, holding a C++ handle.
+        increments (tuple[int, ...]): Degrees to add per direction.
+
+    Returns:
+        ~pantr.bezier.Bezier: The elevated Bézier, wrapping a C++ handle.
+
+    Note:
+        No input validation is performed here. Layer 2 checked the binomial
+        envelope above the branch, so both backends refuse the same argument with
+        the same message.
+    """
+    from pantr import _pantr_cpp  # noqa: PLC0415  (resolved against the .pyi stub)
+
+    from ._bezier import Bezier as BezierCls  # noqa: PLC0415  (cycle)
+
+    return BezierCls._wrap(_pantr_cpp.elevate_bezier_degree(_cpp_handle(bezier), list(increments)))
+
+
+def _cpp_reduce_degree(
+    bezier: Bezier,
+    decrements: tuple[int, ...],
+    operators: Sequence[npt.NDArray[np.float64]],
+) -> Bezier:
+    """Degree-reduce through the C++ binding.
+
+    Args:
+        bezier (~pantr.bezier.Bezier): The Bézier, holding a C++ handle.
+        decrements (tuple[int, ...]): Degrees to drop per direction.
+        operators (Sequence[npt.NDArray[np.float64]]): One reduction operator per
+            direction, empty where the decrement is zero.
+
+    Returns:
+        ~pantr.bezier.Bezier: The reduced Bézier, wrapping a C++ handle.
+
+    Note:
+        No input validation is performed here; see :func:`_cpp_elevate_degree`.
+    """
+    from pantr import _pantr_cpp  # noqa: PLC0415  (resolved against the .pyi stub)
+
+    from ._bezier import Bezier as BezierCls  # noqa: PLC0415  (cycle)
+
+    contiguous = [np.ascontiguousarray(op, dtype=np.float64) for op in operators]
+    return BezierCls._wrap(
+        _pantr_cpp.reduce_bezier_degree(_cpp_handle(bezier), list(decrements), contiguous)
+    )
+
+
+def _cpp_degree_reduction_error(
+    bezier: Bezier,
+    decrements: tuple[int, ...],
+    operators: Sequence[npt.NDArray[np.float64]],
+    grams: Sequence[npt.NDArray[np.float64]],
+) -> float:
+    """Measure a reduction's ``L2`` error through the C++ binding.
+
+    Args:
+        bezier (~pantr.bezier.Bezier): The Bézier, holding a C++ handle.
+        decrements (tuple[int, ...]): Degrees to drop per direction.
+        operators (Sequence[npt.NDArray[np.float64]]): One reduction operator per
+            direction.
+        grams (Sequence[npt.NDArray[np.float64]]): One Bernstein Gram matrix per
+            direction, square of that direction's original order.
+
+    Returns:
+        float: The ``L2`` norm of the error the reduction would introduce.
+
+    Note:
+        No input validation is performed here; see :func:`_cpp_elevate_degree`.
+    """
+    from pantr import _pantr_cpp  # noqa: PLC0415  (resolved against the .pyi stub)
+
+    ops = [np.ascontiguousarray(op, dtype=np.float64) for op in operators]
+    gram_list = [np.ascontiguousarray(g, dtype=np.float64) for g in grams]
+    return float(
+        _pantr_cpp.bezier_degree_reduction_error(
+            _cpp_handle(bezier), list(decrements), ops, gram_list
+        )
+    )
+
+
 # Hoisted to module level rather than rebuilt inside each accessor. An accessor
 # that closed over a fresh function object would return a different callable on
 # every call, which defeats identity comparison in the tests and re-creates a
@@ -496,6 +618,15 @@ _CPP_EVALUATE_ND: Final[_EvaluateNdFunc] = _cpp_evaluate_nd
 
 _CPP_EVALUATE_ND_LATTICE: Final[_EvaluateNdLatticeFunc] = _cpp_evaluate_nd_lattice
 """The n-d evaluation on a lattice, in the C++ backend."""
+
+_CPP_ELEVATE_DEGREE: Final[_ElevateDegreeFunc] = _cpp_elevate_degree
+"""The n-d degree elevation of the C++ backend."""
+
+_CPP_REDUCE_DEGREE: Final[_ReduceDegreeFunc] = _cpp_reduce_degree
+"""The n-d degree reduction of the C++ backend."""
+
+_CPP_DEGREE_REDUCTION_ERROR: Final[_DegreeReductionErrorFunc] = _cpp_degree_reduction_error
+"""The reduction-error measure of the C++ backend."""
 
 
 def evaluate_kernel(backend: Backend | None = None) -> _EvaluateFunc:
@@ -659,3 +790,60 @@ def evaluate_nd_lattice_kernel(backend: Backend | None = None) -> _EvaluateNdLat
     from ._bezier_eval import _contract_nd_lattice  # noqa: PLC0415  (cycle)
 
     return _select(backend, _contract_nd_lattice, _CPP_EVALUATE_ND_LATTICE)
+
+
+def elevate_degree_kernel(backend: Backend | None = None) -> _ElevateDegreeFunc:
+    """Return the n-d degree elevation of the requested backend.
+
+    Args:
+        backend (Backend | None): The backend to use. ``None`` means the backend
+            currently in effect. Defaults to None.
+
+    Returns:
+        _ElevateDegreeFunc: Callable as ``(bezier, increments) -> Bezier``.
+
+    Raises:
+        RuntimeError: If ``backend`` is given and is not available.
+    """
+    from ._bezier_degree import _elevate_degree_python  # noqa: PLC0415  (cycle)
+
+    return _select(backend, _elevate_degree_python, _CPP_ELEVATE_DEGREE)
+
+
+def reduce_degree_kernel(backend: Backend | None = None) -> _ReduceDegreeFunc:
+    """Return the n-d degree reduction of the requested backend.
+
+    Args:
+        backend (Backend | None): The backend to use. ``None`` means the backend
+            currently in effect. Defaults to None.
+
+    Returns:
+        _ReduceDegreeFunc: Callable as ``(bezier, decrements, operators) -> Bezier``.
+
+    Raises:
+        RuntimeError: If ``backend`` is given and is not available.
+    """
+    from ._bezier_degree import _reduce_degree_python  # noqa: PLC0415  (cycle)
+
+    return _select(backend, _reduce_degree_python, _CPP_REDUCE_DEGREE)
+
+
+def degree_reduction_error_kernel(
+    backend: Backend | None = None,
+) -> _DegreeReductionErrorFunc:
+    """Return the reduction-error measure of the requested backend.
+
+    Args:
+        backend (Backend | None): The backend to use. ``None`` means the backend
+            currently in effect. Defaults to None.
+
+    Returns:
+        _DegreeReductionErrorFunc: Callable as
+        ``(bezier, decrements, operators, grams) -> float``.
+
+    Raises:
+        RuntimeError: If ``backend`` is given and is not available.
+    """
+    from ._bezier_degree import _degree_reduction_error_python  # noqa: PLC0415  (cycle)
+
+    return _select(backend, _degree_reduction_error_python, _CPP_DEGREE_REDUCTION_ERROR)
