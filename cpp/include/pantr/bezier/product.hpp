@@ -101,11 +101,19 @@
 /// kernel's envelope into an operation that does not have one, which is a numerics
 /// change and not a port.
 ///
-/// Widening the native recurrence would move that envelope rather than remove it:
-/// `unsigned __int128` reaches about degree 130 and then stops for the same reason. The
-/// oracle's domain is unbounded, so a table crossing is what matches it. This is a
-/// smaller gap than `degree.hpp`'s, and it is cheaper to close if anyone decides the
-/// bound is worth having natively -- which is a decision, not an omission.
+/// Widening the native recurrence would move that envelope rather than remove it.
+/// `binomial.hpp` states the criterion -- the largest intermediate is
+/// `C(n, k) * min(k, n - k)` -- and that criterion reproduces `kBincoeffMaxN`'s 61 for
+/// `int64` exactly, so it is the one to apply. Applied to `__int128` it gives degree
+/// **124** signed and 125 unsigned. The oracle's domain is unbounded either way, so a
+/// table crossing is what matches it; this is a smaller gap than `degree.hpp`'s, and it
+/// is cheaper to close if anyone decides the bound is worth having natively -- which is
+/// a decision, not an omission.
+///
+/// (An earlier draft said "about 130" here. That is what the *central* binomial
+/// `C(n, n/2)` alone gives, dropping the `min(k, n - k)` factor this file had just
+/// named as the binding one. A round number arrived at by a criterion other than the
+/// one stated beside it is the shape of error worth leaving a note about.)
 ///
 /// **The consequence, stated plainly:** a C++ caller with no Python cannot multiply
 /// or compose unaided, and must supply tables it obtained elsewhere.
