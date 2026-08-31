@@ -25,7 +25,8 @@ set(PANTR_TEST_SOURCES
     test_grid_tags.cpp
     test_grid_partition.cpp
     test_grid_bvh_type.cpp
-    test_grid_defaults.cpp)
+    test_grid_defaults.cpp
+    test_bezier_product.cpp)
 
 # Reserved slots (FELIGN/pantr#380): registered ahead of the port so the thirteen
 # tickets this milestone unblocks do not collide on this file. Each asserts nothing
@@ -44,8 +45,7 @@ set(PANTR_TEST_SOURCES
 # Delete each entry from this list as its ticket fills the slot; when the list is
 # empty, delete the list.
 set(PANTR_PLACEHOLDER_TEST_SOURCES
-    test_grid_tensor_product.cpp
-    test_bezier_product.cpp)
+    test_grid_tensor_product.cpp)
 
 foreach(_src IN LISTS PANTR_TEST_SOURCES PANTR_PLACEHOLDER_TEST_SOURCES)
   cmake_path(GET _src STEM _name)
