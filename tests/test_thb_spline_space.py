@@ -405,7 +405,7 @@ class TestEvaluation:
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Stale-grid detection
+# The grid cannot go stale
 # ──────────────────────────────────────────────────────────────────────────────
 
 
@@ -2714,12 +2714,12 @@ _DEEPCOPY_VALUE_ATOL: float = get_strict(np.float64)
 Bound on the difference between a deepcopied space's tabulated values and the original's.
 
 Both sides run the same code on the same inputs, so the only difference admissible here is a
-reordering inside the evaluation's own summation (its kernels use ``prange``), not
-approximation error.  The bound is the strict preset -- a dimensionless ``4 * eps`` -- times
-the magnitude of the quantity compared, and that magnitude is ``1``: a THB basis is
-non-negative and sums to one on every cell, the partition-of-unity property this file already
-asserts elsewhere, so every tabulated value lies in ``[0, 1]``.  Measured difference on this
-machine: exactly zero, so the bound is slack by construction rather than fitted.
+reordering inside one of the reductions the evaluation performs -- NumPy's, for a truncated
+dof's coefficient contraction, or a Numba kernel's -- and never approximation error.  The
+bound is the strict preset, a dimensionless ``4 * eps``, times the magnitude of the quantity
+compared, and that magnitude is ``1``: a THB basis is non-negative and sums to one on every
+cell, the partition-of-unity property this file already asserts elsewhere, so every tabulated
+value lies in ``[0, 1]``.  Slack by construction, not fitted to an observation.
 """
 
 

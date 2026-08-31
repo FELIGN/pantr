@@ -427,9 +427,19 @@ class HierarchicalGrid(_GridPython):
 
         Bypasses the public ``__init__`` (which starts with a single level-0 block
         spanning the whole root) to assemble an arbitrary, already-consistent
-        active-leaf decomposition. Used by :meth:`restrict` to produce a windowed
-        sub-grid. The per-level block lists are normalized (sorted and merged) and
-        empty trailing levels are dropped.
+        active-leaf decomposition. The per-level block lists are normalized (sorted
+        and merged) and empty trailing levels are dropped.
+
+        **Every grid not built by ``__init__`` is built here**: :meth:`restrict`'s
+        windowed sub-grid, :meth:`refine` and :meth:`coarsen`'s result, and
+        :meth:`_copy`. Two consequences for anyone changing it. Normalizing *every*
+        level, rather than only the ones an operation touched, is what makes the
+        result independent of which levels the caller rebuilt -- and it is only
+        harmless because normalization is a fixed point
+        (``test_normalize_blocks_is_idempotent``); were it not, every flat cell id
+        would move. And the greedy merge is order-dependent, so the order blocks
+        arrive in is observable through the flat ids
+        (``test_normalize_blocks_depends_on_the_order_it_is_given``).
 
         Args:
             root (TensorProductGrid): The level-0 root grid of the sub-hierarchy.
@@ -464,9 +474,12 @@ class HierarchicalGrid(_GridPython):
         """Return an independent grid with the same root, factor and active cells.
 
         The result compares cell for cell with this grid but is a distinct object
-        with its own empty BVH and tag caches.  Used by the four hierarchy
-        operations on the paths where they change nothing, so that every one of
-        them returns a grid that never aliases its receiver.
+        with its own empty BVH and tag caches.  Used on the paths where an operation
+        changes nothing -- :meth:`refine` over a region with no active cells,
+        :meth:`refine_cells` with no ids, :meth:`coarsen_cells` demoting no complete
+        family -- so that every operation returns a grid that never aliases its
+        receiver.  :meth:`coarsen` needs it nowhere: a validated box always demotes
+        something, or the call raises.
 
         Returns:
             Self: A fresh grid over the same active-leaf decomposition.
@@ -1420,6 +1433,9 @@ class HierarchicalGrid(_GridPython):
         them), and applies :meth:`refine` once per level, coarsest first.  This
         grid is left unchanged; write ``grid = grid.refine_cells(...)``.
 
+        As with :meth:`refine`, the returned grid assigns flat cell ids afresh and its
+        BVH and tag caches start empty; this grid keeps its own.
+
         Args:
             cell_ids (Sequence[int]): Flat cell ids to refine.  Cells from
                 multiple levels are handled; repeated ids are silently ignored.
@@ -1569,7 +1585,9 @@ class HierarchicalGrid(_GridPython):
     def coarsen_cells(self, cell_ids: Sequence[int]) -> Self:
         """Return a new grid with every parent demoted whose children are all named.
 
-        This grid is left unchanged; write ``grid = grid.coarsen_cells(...)``.
+        This grid is left unchanged; write ``grid = grid.coarsen_cells(...)``.  As
+        with :meth:`coarsen`, the returned grid assigns flat cell ids afresh and its
+        BVH and tag caches start empty; this grid keeps its own.
 
         The route that destroys only what the caller named.  ``cell_ids`` are grouped
         by parent cell, and a parent is reactivated -- its children removed -- only when

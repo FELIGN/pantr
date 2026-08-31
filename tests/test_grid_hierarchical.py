@@ -689,7 +689,7 @@ class TestActiveSetAccessors:
         assert g.cell_id(5, (0,)) is None  # nonexistent level
         assert g.cell_id(-1, (0,)) is None  # negative level
 
-    def test_cell_id_is_resolved_afresh_after_a_mutation(self) -> None:
+    def test_cell_id_is_resolved_afresh_on_the_refined_grid(self) -> None:
         """Ids move under refinement; the `(level, midx)` pair does not."""
         g = _grid_1d(4, 2)
         g = g.refine(0, [3], [4])  # refine the last root cell
@@ -1625,7 +1625,7 @@ class TestHierKernelEquivalence:
         with pytest.raises(IndexError, match="out of range"):
             g._decode_flat_id(-1)
 
-    def test_kernel_state_tracks_mutation(self) -> None:
+    def test_kernel_state_tracks_each_returned_grid(self) -> None:
         """Packed kernel arrays are rebuilt by refine/coarsen (results stay exact)."""
         g = _grid_2d(8)
         rng = np.random.default_rng(17)
@@ -1890,7 +1890,7 @@ class TestExportCells:
 # ──────────────────────────────────────────────────────────────────────────────
 
 
-def _mutated_2d() -> HierarchicalGrid:
+def _refined_2d() -> HierarchicalGrid:
     """A 2D grid with three levels, several blocks per level, and warm caches."""
     g = _grid_2d(4, 2)
     g = g.refine(0, (1, 1), (3, 3))
@@ -1902,13 +1902,13 @@ def _mutated_2d() -> HierarchicalGrid:
     return g
 
 
-#: Each of the four hierarchy operations, as ``(name, args)`` applied to ``_mutated_2d()``.
 _OPERATIONS = (
     ("refine", (0, (3, 3), (4, 4))),
     ("refine_cells", ([0, 1],)),
     ("coarsen", (1, (2, 2), (5, 5))),
     ("coarsen_cells", (None,)),  # filled in per test: every level-2 leaf
 )
+"""Each of the four hierarchy operations, as ``(name, args)`` applied to ``_refined_2d()``."""
 
 
 def _operation_args(g: HierarchicalGrid, name: str, args: tuple[object, ...]) -> tuple[object, ...]:
@@ -1929,7 +1929,7 @@ class TestRefinementReturnsANewGrid:
 
     @pytest.mark.parametrize(("name", "args"), _OPERATIONS)
     def test_receiver_is_unchanged(self, name: str, args: tuple[object, ...]) -> None:
-        g = _mutated_2d()
+        g = _refined_2d()
         before = _grid_snapshot(g)
         before_cells = _active_cells(g)
         result = getattr(g, name)(*_operation_args(g, name, args))
@@ -1942,7 +1942,7 @@ class TestRefinementReturnsANewGrid:
     def test_result_is_a_distinct_grid_of_the_same_type(
         self, name: str, args: tuple[object, ...]
     ) -> None:
-        g = _mutated_2d()
+        g = _refined_2d()
         result = getattr(g, name)(*_operation_args(g, name, args))
         assert result is not g
         assert type(result) is type(g)
@@ -1953,7 +1953,7 @@ class TestRefinementReturnsANewGrid:
     def test_result_starts_with_empty_caches_and_the_receiver_keeps_its_own(
         self, name: str, args: tuple[object, ...]
     ) -> None:
-        g = _mutated_2d()
+        g = _refined_2d()
         assert _caches_live(g) == (True, True)
         result = getattr(g, name)(*_operation_args(g, name, args))
         assert _caches_live(result) == (False, False)
@@ -1990,7 +1990,7 @@ class TestRefinementNoOpsStillReturnANewGrid:
         assert _caches_live(result) == (False, False)
 
     def test_refine_cells_of_nothing(self) -> None:
-        g = _mutated_2d()
+        g = _refined_2d()
         result = g.refine_cells([])
         assert result is not g
         assert _active_cells(result) == _active_cells(g)
@@ -2006,7 +2006,7 @@ class TestRefinementNoOpsStillReturnANewGrid:
         assert _active_cells(result) == _active_cells(g)
 
     def test_coarsen_cells_of_nothing(self) -> None:
-        g = _mutated_2d()
+        g = _refined_2d()
         result = g.coarsen_cells([])
         assert result is not g
         assert _active_cells(result) == _active_cells(g)
@@ -2016,7 +2016,7 @@ class TestRefinementIsRepeatable:
     """The chained entry points agree with the single-step ones, cell for cell."""
 
     def test_refine_cells_equals_a_hand_written_chain(self) -> None:
-        g = _mutated_2d()
+        g = _refined_2d()
         ids = [0, 1, g.num_cells - 1]
         boxes: dict[int, tuple[list[int], list[int]]] = {}
         for cid in ids:
@@ -2035,6 +2035,29 @@ class TestRefinementIsRepeatable:
             chained = chained.refine(lv, *boxes[lv])
         assert _active_cells(g.refine_cells(ids)) == _active_cells(chained)
         assert len(boxes) > 1  # the chain has more than one link, or this proves little
+
+    def test_refine_cells_spanning_three_levels(self) -> None:
+        """Ids from three distinct levels, so the per-level chain has three links.
+
+        ``test_refine_cells_equals_a_hand_written_chain`` only guarantees two, which
+        cannot distinguish a chain that stops after the first deeper level.
+        """
+        g = _refined_2d()
+        by_level: dict[int, int] = {}
+        for cid in range(g.num_cells):
+            by_level.setdefault(g.cell_level(cid), cid)
+        assert sorted(by_level) == [0, 1, 2]
+        ids = [by_level[lv] for lv in (0, 1, 2)]
+
+        chained = g
+        for lv in (0, 1, 2):
+            midx = g.cell_multi_index(by_level[lv])
+            chained = chained.refine(lv, list(midx), [m + 1 for m in midx])
+
+        assert _active_cells(g.refine_cells(ids)) == _active_cells(chained)
+        # Each level really did gain something, or two of the three links are no-ops.
+        assert g.refine_cells(ids).max_level == g.max_level + 1
+        assert _active_cells(g.refine_cells(ids)) != _active_cells(g)
 
     def test_refining_the_same_grid_twice_gives_the_same_result(self) -> None:
         """Two operations on one receiver are independent, which mutation made false."""
@@ -2061,7 +2084,7 @@ class TestDeepcopy:
     """``copy.deepcopy`` of a grid still works and reconstructs its contents."""
 
     def test_deepcopy_round_trip(self) -> None:
-        g = _mutated_2d()
+        g = _refined_2d()
         clone = copy.deepcopy(g)
         assert clone is not g
         assert _grid_snapshot(clone) == _grid_snapshot(g)
@@ -2076,7 +2099,7 @@ class TestDeepcopy:
             np_testing.assert_array_equal(hi_c, hi_g)
 
     def test_deepcopy_is_independent_of_the_original(self) -> None:
-        g = _mutated_2d()
+        g = _refined_2d()
         clone = copy.deepcopy(g)
         refined = clone.refine(0, (3, 3), (4, 4))
         assert _active_cells(clone) == _active_cells(g)
@@ -2092,7 +2115,7 @@ def test_normalize_blocks_is_idempotent() -> None:
     re-partitioned and every flat cell id would move, so the returned grid would
     stop matching what the mutating implementation produced.
     """
-    g = _mutated_2d()
+    g = _refined_2d()
     for level in range(g.max_level + 1):
         blocks = list(g.active_blocks(level))
         once = _normalize_blocks(blocks)

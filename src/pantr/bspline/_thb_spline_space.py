@@ -339,7 +339,7 @@ class THBSplineSpace:
     stale: :meth:`~pantr.grid.HierarchicalGrid.refine` returns a *new* grid and leaves
     the one held here untouched.  :meth:`refine`, :meth:`refine_region` and
     :meth:`coarsen` are the same shape one level up -- each returns a new space over a
-    new grid.
+    grid of its own, including when it refines or coarsens nothing.
 
     Note:
         :meth:`active_basis` lists functions whose *untruncated* support covers a
@@ -356,8 +356,9 @@ class THBSplineSpace:
 
     Attributes:
         _root_space (BsplineSpace): The level-0 tensor-product space.
-        _grid (HierarchicalGrid): The active-cell hierarchy.  Immutable, and may be
-            shared with the space this one was refined from when nothing changed.
+        _grid (HierarchicalGrid): The active-cell hierarchy.  Immutable, and never
+            shared with another space's grid: the grid's tag registries and BVH memo
+            are mutable even though its cell decomposition is not.
         _truncate (bool): Whether the truncated (THB) basis is used; ``False`` for
             the plain hierarchical (HB) basis.
         _regularity (tuple[int | None, ...]): Per-direction continuity used when
@@ -1548,9 +1549,11 @@ class THBSplineSpace:
         Callers are responsible for capturing ``marked`` against the original grid
         before any refinement (flat ids are reassigned by every refine).
 
-        When ``marked`` refines nothing, the returned space shares this space's grid
-        object.  That is safe -- the grid is immutable -- and it shares the grid's
-        lazy BVH and tag caches, which describe the same cells either way.
+        When ``marked`` refines nothing the grid is copied instead, so the returned
+        space never holds this space's grid object.  The cell decomposition is
+        immutable, but a grid also carries two tag registries and a BVH memo, which
+        belong to whoever holds the grid, and sharing them across two spaces would
+        make a tag set through one visible through the other.
 
         Args:
             marked (list[tuple[int, tuple[int, ...]]]): ``(level, midx)`` pairs of
@@ -1571,7 +1574,7 @@ class THBSplineSpace:
                 grid = self._refine_recursive(grid, level, midx, admissible_class)
         return THBSplineSpace(
             self._root_space,
-            grid,
+            grid if grid is not self._grid else grid._copy(),
             truncate=self._truncate,
             regularity=self._regularity,
         )
@@ -1684,7 +1687,8 @@ class THBSplineSpace:
         The space is immutable: the grid is coarsened by rebinding, and a new
         :class:`THBSplineSpace` is built on the result; ``self`` and its grid are
         unchanged.  An empty ``cell_ids``, and one that coarsens nothing, both return
-        an equivalent new space over this space's own (immutable) grid.
+        an equivalent new space over a copy of this space's grid -- a copy rather than
+        the same object, so the two spaces never share the grid's tag registries.
 
         Args:
             cell_ids (npt.ArrayLike): Flat ids of active leaf cells to coarsen away.
@@ -1748,7 +1752,7 @@ class THBSplineSpace:
             grid = grid.coarsen_cells(child_ids)
         return THBSplineSpace(
             self._root_space,
-            grid,
+            grid if grid is not self._grid else grid._copy(),
             truncate=self._truncate,
             regularity=self._regularity,
         )

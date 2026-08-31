@@ -156,13 +156,19 @@ user-facing, and the ports change what it affects.
   the mutating call produced -- checked against the previous implementation over a sweep of
   1D, 2D and 3D grids with isotropic and anisotropic factors, overlapping refinements, both
   coarsening entry points, and `restrict`. Refinement's cost is unchanged in order and dominated
-  by the block-list normalization it always was: measured flat in the cell count (a
-  single-block region refined on a 64 to 4096 cell grid) and superlinear in the *block* count,
-  as before. Nothing copies per-cell data, because the grid stores none.
+  by the block-list normalization it always was: flat in the cell count and superlinear in the
+  *block* count, as before. Nothing copies per-cell data, because the grid stores none.
+  `scripts/bench_grid_refine.py` reports the scalings and says how to run it against the
+  mutating implementation for a side-by-side comparison; read it rather than quoting a figure
+  from here.
 
   `THBSplineSpace.refine`, `refine_region` and `coarsen`, and `THBSpline.refine` and
-  `refine_region`, already returned a new object and are unchanged. Internally they no longer
-  `copy.deepcopy` the grid before refining it, which is why they are now faster.
+  `refine_region`, already returned a new object and their contract is unchanged, down to the
+  returned space's grid never being the receiver's own object. Internally they no longer
+  `copy.deepcopy` the grid before refining it, which is why they are faster; on the paths that
+  refine or coarsen nothing they copy the grid's block lists instead, because a grid's cell
+  decomposition is immutable but its two tag registries are not, and they belong to whoever
+  holds the grid.
 
 - `pantr.change_basis` is a package rather than a single module, so that its dispatch catalogue
   and its Python kernels have somewhere to live. **Every pantr name importable from
