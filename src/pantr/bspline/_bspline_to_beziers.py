@@ -23,7 +23,7 @@ import numpy.typing as npt
 
 from .._array_utils import _flatten_along_axis, _unflatten_along_axis
 from .._numba_compat import nb_jit, nb_prange
-from .spanwise_element_extraction import SpanwiseElementExtraction
+from .spanwise_element_extraction import ExtractionTarget, SpanwiseElementExtraction
 
 if TYPE_CHECKING:
     from . import Bspline, BsplineSpace1D
@@ -110,7 +110,7 @@ def _to_beziers_impl(bspline: Bspline) -> npt.NDArray[np.object_]:
     """Decompose a B-spline into Bezier patches via extraction operators.
 
     Converts periodic directions to open form, then delegates operator
-    construction to :class:`SpanwiseElementExtraction` (target ``"bezier"``).
+    construction to :class:`SpanwiseElementExtraction` (target :attr:`ExtractionTarget.BEZIER`).
     Extraction operators are applied direction by direction using the standard
     moveaxis pattern. The resulting control point array is reshaped and split
     into individual :class:`~pantr.bezier.Bezier` objects.
@@ -133,7 +133,7 @@ def _to_beziers_impl(bspline: Bspline) -> npt.NDArray[np.object_]:
 
     # is_identity_mask_1d is also built but unused here; its overhead is minor
     # relative to the Numba kernel and accepted for the sake of consolidation.
-    extraction = SpanwiseElementExtraction(bspline.space, target="bezier")
+    extraction = SpanwiseElementExtraction(bspline.space, target=ExtractionTarget.BEZIER)
 
     ctrl = bspline.control_points
     num_intervals = bspline.space.num_intervals

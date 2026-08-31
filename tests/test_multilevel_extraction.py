@@ -10,6 +10,7 @@ from pantr.basis import tabulate_bernstein
 from pantr.bspline import (
     BsplineSpace,
     BsplineSpace1D,
+    ExtractionTarget,
     MultiLevelExtraction,
     SpanwiseElementExtraction,
     THBSplineSpace,
@@ -101,7 +102,7 @@ class TestConstruction:
         thb = THBSplineSpace(_root_2d(), _grid_2d())
         mle = MultiLevelExtraction(thb)
         assert mle.space is thb
-        assert mle.target == "bezier"
+        assert mle.target is ExtractionTarget.BEZIER
         assert mle.dim == 2
         assert mle.dtype == np.float64
         assert mle.num_elements == thb.grid.num_cells
@@ -314,7 +315,7 @@ class TestOperatorApi:
     def test_cardinal_target(self) -> None:
         thb = THBSplineSpace(_root_1d(), _grid_1d())
         mle = MultiLevelExtraction(thb, "cardinal")
-        assert mle.target == "cardinal"
+        assert mle.target is ExtractionTarget.CARDINAL
         for cid in range(thb.grid.num_cells):
             mle.operator(cid)
             mle.multilevel_operator(cid)
@@ -337,7 +338,7 @@ class TestOperatorApi:
         thb = THBSplineSpace(_root_1d(), grid)
         bezier = MultiLevelExtraction(thb, "bezier")
         lagrange = MultiLevelExtraction(thb, "lagrange")
-        assert lagrange.target == "lagrange"
+        assert lagrange.target is ExtractionTarget.LAGRANGE
         for cid in range(thb.grid.num_cells):
             np.testing.assert_allclose(
                 lagrange.multilevel_operator(cid), bezier.multilevel_operator(cid), atol=1e-12

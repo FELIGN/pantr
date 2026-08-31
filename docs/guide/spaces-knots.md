@@ -120,18 +120,22 @@ forming the full tensor product in memory.
 ### Construction and targets
 
 ```python
-from pantr.bspline import SpanwiseElementExtraction
+from pantr.bspline import ExtractionTarget, SpanwiseElementExtraction
 
-ext = SpanwiseElementExtraction(space, "bezier")     # Bernstein/Bézier basis per element
-ext = SpanwiseElementExtraction(space, "lagrange")   # Lagrange basis at chosen nodes
-ext = SpanwiseElementExtraction(space, "cardinal")   # cardinal B-spline basis
+ext = SpanwiseElementExtraction(space, ExtractionTarget.BEZIER)    # Bernstein/Bézier per element
+ext = SpanwiseElementExtraction(space, ExtractionTarget.LAGRANGE)  # Lagrange at chosen nodes
+ext = SpanwiseElementExtraction(space, ExtractionTarget.CARDINAL)  # cardinal B-spline basis
 ```
 
-| Target | Element-local basis |
+| {class}`~pantr.bspline.ExtractionTarget` | Element-local basis |
 |---|---|
-| ``"bezier"`` | Bernstein / Bézier on each element |
-| ``"lagrange"`` | Lagrange at a {class}`~pantr.basis.LagrangeVariant` node set (``lagrange_variant=…``) |
-| ``"cardinal"`` | cardinal (uniform) B-spline |
+| ``BEZIER`` | Bernstein / Bézier on each element |
+| ``LAGRANGE`` | Lagrange at a {class}`~pantr.basis.LagrangeVariant` node set (``lagrange_variant=…``) |
+| ``CARDINAL`` | cardinal (uniform) B-spline |
+
+The legacy string spellings (``"bezier"``, ``"lagrange"``, ``"cardinal"``) are still
+accepted, but {attr}`~pantr.bspline.SpanwiseElementExtraction.target` always reports the
+enum member.
 
 Construction is ``O(n_elements · p²)`` per direction and happens once; all later applies
 reuse the cached operators.

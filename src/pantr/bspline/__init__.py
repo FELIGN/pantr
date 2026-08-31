@@ -78,6 +78,7 @@ from ._thb_spline_space import THBSplineSpace, THBSplineSpaceRestriction, create
 from .multilevel_extraction import MultiLevelExtraction
 from .spanwise_element_extraction import (
     ExtractionStructView,
+    ExtractionTarget,
     SpanwiseElementExtraction,
     make_struct_view,
 )
@@ -89,6 +90,7 @@ __all__ = [
     "BsplineSpaceRestriction",
     "CouplingGraph",
     "ExtractionStructView",
+    "ExtractionTarget",
     "LocalSpace",
     "MultiLevelExtraction",
     "SpanwiseElementExtraction",

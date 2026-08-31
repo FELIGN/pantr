@@ -33,14 +33,19 @@ Main exports:
 
 from __future__ import annotations
 
-from typing import cast, get_args
+from typing import cast
 
 import numpy as np
 import numpy.typing as npt
 
 from ..basis._basis_utils import _allocate_or_validate_out
 from ._thb_spline_space import THBSplineSpace
-from .spanwise_element_extraction import SpanwiseElementExtraction, Target
+from .spanwise_element_extraction import (
+    ExtractionTarget,
+    SpanwiseElementExtraction,
+    TargetLike,
+    _coerce_target,
+)
 
 
 class MultiLevelExtraction:
@@ -71,7 +76,7 @@ class MultiLevelExtraction:
 
     Attributes:
         _space (THBSplineSpace): The hierarchical space being extracted.
-        _target (Target): The single-level reference basis tag.
+        _target (ExtractionTarget): The single-level reference basis.
         _oslo (tuple[tuple[npt.NDArray[np.float64], ...], ...]): Cached per-level,
             per-direction two-scale (Oslo) matrices; ``_oslo[m][k]`` maps level ``m``
             to level ``m+1`` in direction ``k``.
@@ -88,13 +93,14 @@ class MultiLevelExtraction:
 
     __slots__ = ("_coeffs_cache", "_ext", "_oslo", "_space", "_target")
 
-    def __init__(self, space: THBSplineSpace, target: Target = "bezier") -> None:
+    def __init__(self, space: THBSplineSpace, target: TargetLike = ExtractionTarget.BEZIER) -> None:
         """Create a multi-level extraction for a hierarchical space.
 
         Args:
             space (THBSplineSpace): The truncated (or non-truncated) hierarchical space.
-            target (Target): Single-level reference basis, one of ``"bezier"``,
-                ``"lagrange"``, ``"cardinal"``.  Defaults to ``"bezier"``.
+            target (TargetLike): Single-level reference basis: an
+                :class:`ExtractionTarget` or its legacy string spelling.  Defaults to
+                :attr:`ExtractionTarget.BEZIER`.
 
         Raises:
             TypeError: If ``space`` is not a :class:`THBSplineSpace`.
@@ -102,11 +108,9 @@ class MultiLevelExtraction:
         """
         if not isinstance(space, THBSplineSpace):
             raise TypeError(f"space must be a THBSplineSpace; got {type(space).__name__!r}.")
-        if target not in get_args(Target):
-            valid = ", ".join(repr(v) for v in get_args(Target))
-            raise ValueError(f"Unknown target {target!r}; expected one of {valid}.")
+        resolved_target = _coerce_target(target)
         self._space = space
-        self._target = target
+        self._target = resolved_target
         self._oslo = space._build_oslo_matrices()
         self._ext: dict[int, SpanwiseElementExtraction] = {}
         self._coeffs_cache: dict[
@@ -128,11 +132,13 @@ class MultiLevelExtraction:
         return self._space
 
     @property
-    def target(self) -> Target:
-        """Get the single-level reference basis tag.
+    def target(self) -> ExtractionTarget:
+        """Get the single-level reference basis.
 
         Returns:
-            Target: One of ``"bezier"``, ``"lagrange"``, ``"cardinal"``.
+            ExtractionTarget: The element-local basis each level's extraction maps
+                onto.  A string passed at construction is resolved to its enum
+                member, so this never returns a string.
         """
         return self._target
 
@@ -274,7 +280,7 @@ class MultiLevelExtraction:
 
         :math:`C^\epsilon = M^\epsilon E^\epsilon` (shape ``(K, n)``) maps the ``target``
         reference basis on the cell to the active hierarchical functions
-        (``H^\epsilon = C^\epsilon B``).  For ``target="bezier"``, ``B`` is the Bernstein
+        (``H^\epsilon = C^\epsilon B``).  For the Bézier target, ``B`` is the Bernstein
         basis on :math:`[0, 1]^d`.  Rows follow :meth:`active_basis`.
 
         Args:
@@ -390,6 +396,7 @@ class MultiLevelExtraction:
             str: Shows dimension, target, and element count.
         """
         return (
-            f"MultiLevelExtraction(dim={self.dim}, target={self._target!r}, "
+            f"MultiLevelExtraction(dim={self.dim}, "
+            f"target=ExtractionTarget.{self._target.name}, "
             f"num_elements={self.num_elements})"
         )
