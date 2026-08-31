@@ -315,11 +315,13 @@ template <Real T>
         front.swap(back);
     }
 
+    using std::abs;
+
     double total_sum = 0.0;
     for (std::size_t i = 0; i < total; ++i) {
         total_sum += coefficients[i] * front[i];
     }
-    return std::abs(total_sum);
+    return abs(total_sum);
 }
 
 /// The `L2` error a degree reduction would introduce.
@@ -366,6 +368,8 @@ template <Real T>
                                         bezier.net().shape().end() - 1);
     std::vector<double> component(coefficients);
 
+    using std::sqrt;
+
     double total = 0.0;
     for (std::size_t r = 0; r < components; ++r) {
         for (std::size_t i = 0; i < coefficients; ++i) {
@@ -377,7 +381,7 @@ template <Real T>
         }
         total += squared_l2_norm(component, parametric, grams);
     }
-    return std::sqrt(total);
+    return sqrt(total);
 }
 
 }  // namespace pantr::bezier
