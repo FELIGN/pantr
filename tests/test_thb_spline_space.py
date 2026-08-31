@@ -50,6 +50,11 @@ def _grid_2d() -> HierarchicalGrid:
     return hierarchical_grid(uniform_grid([[0.0, 1.0], [0.0, 1.0]], 4), 2)
 
 
+def _cells_of(grid: HierarchicalGrid) -> set[tuple[int, tuple[int, ...]]]:
+    """Return every active leaf as a ``(level, midx)`` pair, stable across reassignment."""
+    return {(grid.cell_level(cid), grid.cell_multi_index(cid)) for cid in range(grid.num_cells)}
+
+
 def _collocation(
     thb: THBSplineSpace, n_per_axis: int | None = None
 ) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64]]:
@@ -992,10 +997,26 @@ class TestRefine:
         assert child is not None
         assert fine.grid.cell_level(child) == 1
 
-    def test_refine_empty_copies_grid(self) -> None:
-        coarse = THBSplineSpace(_root_1d(), _grid_1d())
+    def test_refine_empty_gives_an_independent_grid(self) -> None:
+        """A refine that refines nothing must not hand back the receiver's own grid.
+
+        A grid's cell decomposition is immutable, but the two tag registries and the
+        BVH it carries are not, and they belong to whoever holds the grid.  Sharing the
+        object would let a tag set through one space appear in the other, and in the
+        grid the caller passed to the constructor.
+        """
+        grid = _grid_1d()
+        coarse = THBSplineSpace(_root_1d(), grid)
         fine = coarse.refine([], admissible_class=None)
+
+        assert fine.grid is not coarse.grid
+        assert fine.grid is not grid
         assert fine.grid.num_cells == coarse.grid.num_cells
+        assert _cells_of(fine.grid) == _cells_of(coarse.grid)
+
+        fine.grid.cell_tags.set("only_on_fine", [0], [42])
+        assert "only_on_fine" not in coarse.grid.cell_tags
+        assert "only_on_fine" not in grid.cell_tags
 
     def test_ungraded_refines_exactly_marked_multi_cell(self) -> None:
         # Verifies the is_active_leaf guard: already-coarse cells not in [0, 1] are untouched.
@@ -1142,13 +1163,18 @@ class TestRefineRegion:
         fine = thb.refine_region(0, [0, 0], [4, 4]).refine_region(1, [0, 0], [4, 4])
         assert fine.num_levels == 3
 
-    def test_empty_region_is_noop(self) -> None:
+    def test_empty_region_is_a_structural_noop_over_an_independent_grid(self) -> None:
         coarse = THBSplineSpace(_root_1d(), _grid_1d())
         all_refined = coarse.refine_region(0, [0], [4], admissible_class=None)  # all level-0 cells
         # No level-0 leaves remain, so the box maps to an empty marked set: structural no-op.
         again = all_refined.refine_region(0, [0], [4], admissible_class=None)
         assert again.grid.num_cells == all_refined.grid.num_cells
         assert again.num_basis_per_level == all_refined.num_basis_per_level
+        # Structurally a no-op, but still a grid of its own: see
+        # `TestRefine.test_refine_empty_gives_an_independent_grid`.
+        assert again.grid is not all_refined.grid
+        again.grid.cell_tags.set("only_on_again", [0], [1])
+        assert "only_on_again" not in all_refined.grid.cell_tags
 
     def test_level_out_of_range_raises(self) -> None:
         coarse = THBSplineSpace(_root_1d(), _grid_1d())
@@ -1794,6 +1820,25 @@ def _active_indices(thb: THBSplineSpace) -> tuple[tuple[int, ...], ...]:
 
 class TestCoarsen:
     """THBSplineSpace.coarsen reverses refinement and grades for admissibility."""
+
+    def test_coarsen_nothing_gives_an_independent_grid(self) -> None:
+        """A coarsen that demotes nothing must not hand back the receiver's own grid.
+
+        Same reason as `TestRefine.test_refine_empty_gives_an_independent_grid`: the
+        decomposition is immutable but the tag registries the grid carries are not.
+        Both routes into `coarsen` that demote nothing are covered -- an empty id list,
+        and an id at level 0, which has no parent.
+        """
+        grid = _grid_1d()
+        coarse = THBSplineSpace(_root_1d(), grid)
+        for label, ids in (("empty", []), ("level 0 only", [0])):
+            same = coarse.coarsen(ids)
+            assert same.grid is not coarse.grid, label
+            assert same.grid is not grid, label
+            assert _cells_of(same.grid) == _cells_of(coarse.grid), label
+            same.grid.cell_tags.set("only_on_result", [0], [7])
+            assert "only_on_result" not in coarse.grid.cell_tags, label
+            assert "only_on_result" not in grid.cell_tags, label
 
     def test_coarsen_inverts_refine_1d(self) -> None:
         coarse = THBSplineSpace(_root_1d(), _grid_1d())
