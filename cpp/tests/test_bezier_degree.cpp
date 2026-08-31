@@ -45,8 +45,10 @@
 ///    `core::bincoeff` calls (each a correctly-rounded `double`, one rounding
 ///    apiece), one division and two multiplications -- six roundings,
 ///    `gamma_n(6, eps_d)` -- then contracts up to `degree + 1` of them as a
-///    `double` inner product, `gamma_n(degree + 1, eps_d)`, and casts once to
-///    `T`. The two literal boundary entries (`bezalfs(0, 0)` and
+///    `double` inner product, `gamma_n(degree + 1, eps_d)` -- and narrows to `T`
+///    on **every** term of that contraction rather than once at the end, because
+///    its accumulator is the output array itself. That last part is charged at
+///    `eps_t` and dominates at `T = float`; see `elevation_round_trip_bound`. The two literal boundary entries (`bezalfs(0, 0)` and
 ///    `bezalfs(p, ph)`, both exactly `1.0`) carry none of this, which is also
 ///    why the endpoint checks below are exact rather than bounded.
 ///    `core::apply_reduction_operator` (`reduction_operator.hpp`) is the same
@@ -65,8 +67,8 @@
 /// `reduce_degree` is amplified by at most that factor (`kOp31RowLinfNorm`)
 /// through the operator; the elevation matrix has no such factor because every
 /// one of its rows is non-negative and sums to exactly `1` (a partition-of-unity
-/// fact, checked directly below for the specific `(p=2, t=1)` matrix this file
-/// uses), so it never amplifies.
+/// fact that follows from Vandermonde's identity, and which this file does NOT
+/// re-verify), so it never amplifies.
 ///
 /// `squared_l2_norm`'s own budget composes the Gram matrix's construction
 /// (`_bernstein_gram_matrix_1d` computes each entry from exact-integer
@@ -95,8 +97,17 @@
 ///    endpoint rows are unit vectors, so this is exact for the same reason
 ///    elevation's endpoints are.
 ///  - **`squared_l2_norm` of the constant polynomial 1 is 1**
-///    (`check_squared_l2_norm_of_constant`): the Kronecker factorisation applied
-///    to the wrong axis, or a sign/transpose error in the per-axis contraction.
+///    (`check_squared_l2_norm_of_constant`): a Gram matrix whose entries do not
+///    sum to one, or a contraction that drops or double-counts an axis.
+///    **Narrower than it looks, and deliberately so.** Every row of every
+///    Bernstein Gram matrix sums to `1/(n + 1)` whatever the degree, so this
+///    check pins one scalar functional of the matrix -- its total entry sum --
+///    and cannot see an axis swapped for another of the same degree, nor a wrong
+///    matrix that still sums correctly. What it is not carrying is checked
+///    elsewhere: the Gram entries' actual values are verified against exact
+///    rational integration in `tests/parity/test_bezier_degree.py`, and the
+///    per-axis assignment is pinned by the digit-tagged nets the elevation and
+///    reduction checks use.
 ///  - **Rejections** (`check_rejections`): every validation `degree.hpp` states,
 ///    with the message asserted verbatim, because it mirrors the Python
 ///    oracle's own text and a reworded message here is a parity failure a
@@ -333,8 +344,22 @@ std::vector<double> bernstein_gram_3() {
 double elevation_round_trip_bound(std::size_t base_degree, double eps_t, double max_abs_ctrl) {
     const double eps_d = std::numeric_limits<double>::epsilon();
     constexpr std::size_t kElevationEntryRoundings = 6;
+    // The last term is at `eps_t`, once per accumulated term rather than once in
+    // total, and that correction is the whole point of this line. An earlier version
+    // charged `gamma_n(1, eps_t)`, on the reading that the kernel accumulates in a
+    // `double` local and narrows once. It does not: `degree_elevate_bezier_1d` writes
+    // `at(out, iz, r)`, which is a `T&`, so every term is read back at `T`, widened,
+    // added and narrowed again -- the "each `+=` computes wide and rounds narrow"
+    // pattern `kernels_1d.hpp`'s own file comment describes for this kernel. At
+    // `T = float` the omitted roundings dominate the bound by about `eps_t / eps_d`.
+    // `core::apply_reduction_operator` genuinely does accumulate into a local, which
+    // is why `reduction_round_trip_bound` below keeps the single `gamma_n(1, eps_t)`.
+    //
+    // `base_degree + 1` is used rather than the true chain length `min(p, t) + 1`,
+    // which is shorter; the longer count is a safe over-estimate and keeps this
+    // function independent of the increment.
     return (gamma_n(kElevationEntryRoundings, eps_d) + gamma_n(base_degree + 1, eps_d)
-            + gamma_n(1, eps_t))
+            + gamma_n(base_degree + 1, eps_t))
            * max_abs_ctrl;
 }
 
