@@ -27,14 +27,16 @@
 ///    did not appear in `names`, and nothing raised. `cell_bvh` is bound this way --
 ///    the Python contract for it is a call -- so its `reference_internal` is
 ///    load-bearing.
-///  - **A `def_prop_ro` getter already defaults to `reference_internal`.**
-///    nanobind hardcodes it when it builds the getter (`nb_class.h:701`), independent
-///    of the extras the caller passes. Measured: with the annotation removed from
-///    `cell_tags`, the write still survived and the identity still held. So on the two
-///    registries the annotation is redundant. It is kept anyway, and stated to be
-///    redundant rather than removed: it is a hardcoded default in a third-party header
-///    rather than a documented guarantee, and one word here is cheaper than the silent
-///    data loss its absence would cause if that default ever moved.
+///  - **A read-only PROPERTY already defaults to `reference_internal`.**
+///    `def_prop_ro` forwards to `def_prop_rw` (`nb_class.h:733`), which builds the
+///    getter with `rv_policy::reference_internal` itself (`nb_class.h:701`),
+///    independent of the extras the caller passes. Measured: with the annotation
+///    removed from `cell_tags`, the write still survived and the identity still held.
+///    So on the two registries the annotation is redundant, and a reader must not take
+///    the rule above as saying a property needs one -- it does not. It is kept anyway,
+///    and stated to be redundant rather than removed: it is a hardcoded default in a
+///    third-party header rather than a documented guarantee, and one word here is
+///    cheaper than the silent data loss its absence would cause if that default moved.
 ///
 /// `tests/parity/test_grid_types.py` asserts that a tag written through the property is
 /// visible on the next read, which is what stops any of this regressing.

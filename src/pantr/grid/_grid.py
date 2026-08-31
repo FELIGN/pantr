@@ -576,13 +576,21 @@ class Grid(Protocol):
             BVH: The grid's spatial index over its cell AABBs.
 
         Warning:
-            Not fully thread-safe. Under CPython (with the GIL), concurrent
-            first calls may each build a valid :class:`BVH` and the second write
-            silently wins — the only cost is redundant construction. Under
-            free-threaded Python 3.13+ (``--disable-gil``) the assignment is not
-            atomic and a concurrent caller could observe a partially-written
-            reference. Call this method once on the main thread before sharing
-            the grid across threads.
+            Not thread-safe on the first call, and the caller's rule is the same
+            whatever implements it: **call this once on the main thread before
+            sharing the grid across threads.**
+
+            What goes wrong if you do not depends on the implementation, so the
+            detail belongs to each rather than here. In this Python one the
+            assignment is atomic under the GIL, so concurrent first calls each
+            build a valid tree and one write wins, costing only redundant
+            construction; under free-threaded Python 3.13+ (``--disable-gil``) it
+            is not atomic and a caller could observe a partially-written
+            reference. The C++ grid's cache is a ``mutable std::optional`` filled
+            without a lock, where concurrent construction is a data race and so
+            undefined behaviour rather than a write that wins -- see
+            ``cpp/include/pantr/grid/grid.hpp``. Neither is safe; only the failure
+            mode differs.
         """
         from ._bvh import BVH  # noqa: PLC0415
 
@@ -1164,9 +1172,12 @@ class _GridWrapper:
             BVH: The grid's spatial index over its cell AABBs.
 
         Warning:
-            Not fully thread-safe. Concurrent first calls may each build a valid
-            tree and one write wins, costing redundant construction. Call this once
-            on the main thread before sharing the grid across threads.
+            Not thread-safe on the first call. Call this once on the main thread
+            before sharing the grid across threads. The memo slot written here is a
+            Python attribute, so a race on it costs redundant construction under the
+            GIL -- but the implementation's own cache is filled on the same call, and
+            under the C++ backend a race there is undefined behaviour. See
+            :meth:`Grid.cell_bvh`.
         """
         from ._bvh import BVH  # noqa: PLC0415
 

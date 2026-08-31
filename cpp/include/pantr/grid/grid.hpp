@@ -114,10 +114,18 @@
 /// ## Thread safety
 ///
 /// `cell_bvh()` fills a `mutable std::optional` with no lock, no atomic and no
-/// `std::once_flag`. That is the contract the Python oracle documents and no more:
-/// concurrent first calls may each build a valid tree and one write wins, costing
-/// redundant construction; a caller sharing a grid across threads should call
+/// `std::once_flag`, so **concurrent first calls are a data race and therefore
+/// undefined behaviour.** A caller sharing a grid across threads must call
 /// `cell_bvh()` once first. Everything else here is const and shares nothing.
+///
+/// An earlier version of this note said "one write wins, costing redundant
+/// construction", borrowing the Python oracle's contract. **That reason does not
+/// transfer.** In Python it holds because the interpreter makes the assignment atomic,
+/// so the losing thread's tree is merely discarded. Here two threads construct a
+/// `BVH<T>` into the same storage, which is not a write that one of them wins; it is
+/// undefined, whatever the observed behaviour has been. The caller-side rule is
+/// unchanged and is the only part that was ever load-bearing. Adding the
+/// synchronisation is FELIGN/pantr#395's, not this layer's to do here.
 
 #include <cstddef>
 #include <cstdint>
@@ -517,9 +525,11 @@ class GridBase {
     ///
     /// \return A reference to a member of this grid, valid for as long as the grid is.
     ///         Nothing invalidates it: the cache is filled once and never replaced.
-    /// \warning Not fully thread-safe. Concurrent first calls may each build a valid
-    ///          tree and one write wins, costing redundant construction. Call this once
-    ///          on the main thread before sharing the grid across threads.
+    /// \warning Concurrent first calls are a DATA RACE, and so undefined behaviour
+    ///          rather than a write that one thread wins -- see the file header, which
+    ///          records that the "one write wins" reading was borrowed from Python and
+    ///          does not transfer. Call this once on the main thread before sharing the
+    ///          grid across threads.
     [[nodiscard]] const BVH<scalar_type>& cell_bvh() const {
         if (!bvh_.has_value()) {
             const auto n = static_cast<std::size_t>(num_cells_);
