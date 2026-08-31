@@ -89,24 +89,43 @@ void test_construction_is_validated() {
 /// The per-axis cell counts multiplying past `int64` is reported, not wrapped.
 ///
 /// A signed overflow would be undefined behaviour, and `GridBase` only rejects a
-/// negative cell count -- so a wrapped-positive product would sail through and every
-/// size downstream would be wrong. Four axes of 3037000500 cells is the smallest shape
-/// that overflows on the fourth multiplication; the breakpoints are never allocated,
-/// because the count is checked before the flat buffer is built.
+/// negative cell count, so a wrapped-positive product would sail through and every size
+/// downstream would be wrong.
+///
+/// The shape is chosen to make the check *reachable* rather than to be the smallest one
+/// that overflows. Five axes of 6209 cells give a product of about `9.23e18`, just past
+/// `int64`'s `9.223372036854775807e18`, and cost five breakpoint vectors of 6210 doubles
+/// -- around 0.2 MB, which allocates without comment. Fewer axes need larger ones and
+/// the cost grows fast: four axes want 55109 cells each, three want 2097152, and two
+/// want 3037000500, whose breakpoints alone would be some 48 GB. So the reachable test
+/// is the one with *more* axes, not fewer.
 void test_cell_count_overflow_is_reported() {
-    // 2^31.5 or so per axis: two of them square to just under int64's max, three
-    // overflow it. Built as breakpoint vectors this would be impossible to allocate, so
-    // the check is exercised through `checked_sizes` with the smallest vectors that
-    // reach it -- which means this test cannot be written at all with real breakpoints.
-    // What it can do is pin the boundary arithmetic the check performs.
-    constexpr std::int64_t max_int64 = std::numeric_limits<std::int64_t>::max();
-    constexpr std::int64_t big = 3037000500;  // > sqrt(max_int64)
-    PANTR_CHECK_MSG(big > max_int64 / big,
-                    "the guard's own comparison must fire for this pair, or the test "
-                    "below is asserting nothing about overflow");
-    // And the ordinary case must not fire it.
-    const Grid g = unit_grid();
-    PANTR_CHECK(g.num_cells() == 6);
+    // 6209^5 = 9228015158111050049 > 9223372036854775807. Verified against the exact
+    // integer rather than by trusting a floating-point estimate of the power.
+    constexpr std::int64_t kCellsPerAxis = 6209;
+    constexpr std::size_t kAxes = 5;
+
+    std::vector<std::vector<double>> breakpoints(kAxes);
+    for (auto& axis : breakpoints) {
+        axis.resize(static_cast<std::size_t>(kCellsPerAxis) + 1);
+        for (std::size_t i = 0; i < axis.size(); ++i) {
+            axis[i] = static_cast<double>(i);
+        }
+    }
+    PANTR_CHECK(throws_with<std::invalid_argument>(
+        [&breakpoints] { (void)Grid(breakpoints); },
+        "no representable cell count"));
+
+    // One axis shorter and the product fits, so the same code path must build a grid
+    // rather than throw. Without this half the test above would pass against a guard
+    // that rejects every five-axis grid.
+    std::vector<std::vector<double>> fits(breakpoints.begin(), breakpoints.end() - 1);
+    const Grid ok(fits);
+    std::int64_t expected = 1;
+    for (std::size_t d = 0; d + 1 < kAxes; ++d) {
+        expected *= kCellsPerAxis;
+    }
+    PANTR_CHECK(ok.num_cells() == expected);
 }
 
 void test_index_helpers() {
