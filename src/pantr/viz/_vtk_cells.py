@@ -259,9 +259,9 @@ def _thb_bezier_patches(
         *n_per* is a ``tuple`` of length ``dim`` whose entry ``d`` is
         ``degree[d] + 1``.
     """
-    from ..bspline import MultiLevelExtraction  # noqa: PLC0415
+    from ..bspline import ExtractionTarget, MultiLevelExtraction  # noqa: PLC0415
 
-    mle = MultiLevelExtraction(thb.space, target="bezier")
+    mle = MultiLevelExtraction(thb.space, target=ExtractionTarget.BEZIER)
     cp = np.asarray(thb.control_points, dtype=np.float64)
     coeff = cp.reshape(cp.shape[0], -1)  # (n_dofs, rank)
     n_per = tuple(d + 1 for d in thb.degree)

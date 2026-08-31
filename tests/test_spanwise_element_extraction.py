@@ -2,8 +2,9 @@
 
 Covers:
 
-- Target dispatch (``bezier``, ``lagrange``, ``cardinal``) and construction
-  errors (unknown target, periodic directions).
+- Target dispatch (:class:`ExtractionTarget`) and construction errors (unknown
+  target, periodic directions), plus the legacy string spelling still resolving
+  to the same enum member and the same operators.
 - Shape/dtype and identity-mask properties.
 - Per-cell :meth:`apply` / :meth:`apply_transpose` / :meth:`apply_MT_K_M` /
   :meth:`apply_M_K_MT` against a dense reference ``kron(M_0, M_1, …)``.
@@ -28,7 +29,7 @@ Covers:
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, get_args
 
 import numpy as np
 import numpy.typing as npt
@@ -40,6 +41,7 @@ from pantr.bspline import (
     BsplineSpace,
     BsplineSpace1D,
     ExtractionStructView,
+    ExtractionTarget,
     SpanwiseElementExtraction,
     make_struct_view,
 )
@@ -54,13 +56,26 @@ from pantr.bspline._extraction_kernels import (
     apply_kron_apply_many_3d,
 )
 from pantr.bspline.spanwise_element_extraction import (
+    _TARGET_BY_NAME,
+    Target,
     _bezier_structural_identity_mask,
+    _coerce_target,
     _lagrange_structural_identity_mask,
     normalize_cell_indices,
     operand_shape,
 )
 
 RNG = np.random.default_rng(20260421)
+
+_TARGET_SPELLINGS: list[tuple[Target, ExtractionTarget]] = [
+    ("bezier", ExtractionTarget.BEZIER),
+    ("lagrange", ExtractionTarget.LAGRANGE),
+    ("cardinal", ExtractionTarget.CARDINAL),
+]
+"""The legacy string spellings and the members they name, written out by hand.
+
+Independent of ``_TARGET_BY_NAME`` so that a wrong entry there is refutable.
+"""
 
 
 def _space_2d() -> BsplineSpace:
@@ -94,6 +109,95 @@ def test_unknown_target_rejected() -> None:
     sp = _space_2d()
     with pytest.raises(ValueError, match="Unknown target"):
         SpanwiseElementExtraction(sp, "spline")  # type: ignore[arg-type]
+
+
+def test_unknown_target_type_rejected() -> None:
+    """A target that is neither the enum nor a legacy string raises ValueError.
+
+    ``ExtractionTarget`` is an ``IntEnum``, so a bare ``0`` compares equal to
+    ``ExtractionTarget.BEZIER``.  It is still refused: accepting a raw integer
+    would make the caller's arithmetic silently selectable as a basis.
+    """
+    sp = _space_2d()
+    for bad in (0, None, ("bezier",)):
+        with pytest.raises(ValueError, match="Unknown target"):
+            SpanwiseElementExtraction(sp, bad)  # type: ignore[arg-type]
+
+
+def test_target_spellings_agree_by_construction() -> None:
+    """The legacy strings and the enum members name the same closed set.
+
+    Guards the one drift this compatibility layer can suffer: a member added to
+    ``ExtractionTarget`` with no string spelling, or a string with no member.
+    Neither would fail any other test, because each spelling is exercised alone.
+    ``_TARGET_SPELLINGS`` is written out here rather than read off
+    ``_TARGET_BY_NAME`` on purpose -- a table that supplies both the input and
+    the expectation cannot refute a wrong entry in itself.
+    """
+    assert dict(_TARGET_SPELLINGS) == _TARGET_BY_NAME
+    assert {name for name, _ in _TARGET_SPELLINGS} == set(get_args(Target))
+    assert {member for _, member in _TARGET_SPELLINGS} == set(ExtractionTarget)
+
+
+@pytest.mark.parametrize(("name", "member"), _TARGET_SPELLINGS)
+def test_coerce_target_resolves_both_spellings(name: Target, member: ExtractionTarget) -> None:
+    """``_coerce_target`` maps each legacy string to its member and passes members through."""
+    assert _coerce_target(name) is member
+    assert _coerce_target(member) is member
+
+
+@pytest.mark.parametrize(("name", "member"), _TARGET_SPELLINGS)
+def test_string_and_enum_targets_build_the_same_extraction(
+    name: Target, member: ExtractionTarget
+) -> None:
+    """The two spellings are the same request: same reported target, same operators.
+
+    The operator comparison is what makes this more than a type check -- a
+    coercion wired to the wrong member would keep ``target`` self-consistent and
+    change the operators, which only this comparison sees.  The final assertion
+    pins that the three targets are actually distinguishable on this space, so
+    the comparison above cannot pass by every target agreeing.
+    """
+    sp = _space_2d()
+    from_string = SpanwiseElementExtraction(sp, name)
+    from_enum = SpanwiseElementExtraction(sp, member)
+
+    assert from_string.target is member
+    assert from_enum.target is member
+    assert type(from_string.target) is ExtractionTarget  # never hands a string back
+    for a, b in zip(from_string.ops_1d, from_enum.ops_1d, strict=True):
+        np.testing.assert_array_equal(a, b)
+
+    bezier = SpanwiseElementExtraction(sp, ExtractionTarget.BEZIER)
+    same_as_bezier = all(
+        np.array_equal(a, b) for a, b in zip(from_enum.ops_1d, bezier.ops_1d, strict=True)
+    )
+    assert same_as_bezier == (member is ExtractionTarget.BEZIER)
+
+
+def test_target_members_are_numba_holdable() -> None:
+    """A ``nopython`` kernel can hold and compare an ``ExtractionTarget``.
+
+    This is the property the enum was chosen for -- ``ExtractionTarget``'s
+    docstring claims it, and a ``StrEnum`` (which ``LagrangeVariant`` is) would
+    not have it -- so it is asserted rather than assumed.  A closed-over member
+    A member crosses as an argument and compares against another member inside the
+    compiled function, which is the whole of what the port needs from it.
+    ``int(member)`` is *not* supported in ``nopython`` mode -- measured, it fails
+    typing -- so the kernel-side spelling is the comparison, not a cast.
+    """
+
+    @nb_jit(nopython=True, cache=False)
+    def _dispatch(target: ExtractionTarget) -> int:
+        if target == ExtractionTarget.LAGRANGE:
+            return 1
+        if target == ExtractionTarget.CARDINAL:
+            return 2
+        return 0
+
+    assert _dispatch(ExtractionTarget.BEZIER) == 0
+    assert _dispatch(ExtractionTarget.LAGRANGE) == 1
+    assert _dispatch(ExtractionTarget.CARDINAL) == 2
 
 
 def test_periodic_rejected() -> None:

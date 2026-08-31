@@ -6,25 +6,26 @@ operators once at construction time and, on demand, dispatches to the Layer-3
 Kronecker kernels in ``pantr.bspline._extraction_kernels`` to apply the
 d-dimensional operator for a single element.
 
-Three targets are supported (the source basis is always the B-spline basis):
+Three targets are supported, named by :class:`ExtractionTarget` (the source basis
+is always the B-spline basis):
 
-- ``"bezier"``:   Bernstein (Bézier) basis on each element.
-- ``"lagrange"``: Lagrange basis on each element, at the chosen point
+- ``BEZIER``:   Bernstein (Bézier) basis on each element.
+- ``LAGRANGE``: Lagrange basis on each element, at the chosen point
   distribution (see :class:`pantr.basis.LagrangeVariant`).
-- ``"cardinal"``: cardinal B-spline basis on each element.
+- ``CARDINAL``: cardinal B-spline basis on each element.
 
 Identity short-circuit is used wherever possible. All three targets use
 structural (multiplicity-based) identity predicates:
 
-- ``"bezier"``: element ``e`` is identity iff both its boundary unique knots
+- ``BEZIER``: element ``e`` is identity iff both its boundary unique knots
   have multiplicity ``>= degree + 1``, i.e. the element is already a Bézier
   patch. Knot multiplicities are computed using ``space.tolerance``.
-- ``"lagrange"``: for ``degree == 0`` every element is trivially identity.
+- ``LAGRANGE``: for ``degree == 0`` every element is trivially identity.
   For ``degree > 0`` an element is identity iff its Bézier extraction is
   identity and the Lagrange-to-Bernstein matrix equals ``I`` (which holds when
   the Lagrange nodes coincide with the Bernstein abscissae, e.g. ``degree == 1``
   with equispaced, GLL, or Chebyshev-2nd nodes).
-- ``"cardinal"``: structural mask from
+- ``CARDINAL``: structural mask from
   :meth:`BsplineSpace1D.get_cardinal_intervals` labels uniform-span intervals,
   on which the cardinal extraction operator is exactly the identity.
 """
@@ -33,7 +34,8 @@ from __future__ import annotations
 
 import functools
 from collections.abc import Iterator
-from typing import TYPE_CHECKING, Literal, NamedTuple, get_args
+from enum import IntEnum
+from typing import TYPE_CHECKING, Final, Literal, NamedTuple
 
 import numpy as np
 import numpy.typing as npt
@@ -54,8 +56,75 @@ if TYPE_CHECKING:
     from ._bspline_space_nd import BsplineSpace
 
 
+class ExtractionTarget(IntEnum):
+    """The element-local basis a spanwise extraction maps the B-spline basis onto.
+
+    An :class:`~enum.IntEnum` rather than a string, per the project's convention
+    that a closed set of choices is never stringly typed (``pantr._backend``'s
+    ``Backend`` states the same rule). Two properties
+    follow from the choice and neither is available to a string: an integer member
+    is what crosses the backend seam (``design/cross_backend_types.md``), and it is
+    what a ``nopython`` Numba kernel can hold.
+
+    Attributes:
+        BEZIER: Bernstein (Bézier) basis on each element.
+        LAGRANGE: Lagrange basis on each element, at the point distribution named
+            by :class:`pantr.basis.LagrangeVariant`.
+        CARDINAL: Cardinal B-spline basis on each element.
+    """
+
+    BEZIER = 0
+    LAGRANGE = 1
+    CARDINAL = 2
+
+
 Target = Literal["bezier", "lagrange", "cardinal"]
-"""Supported target bases for spanwise element extraction."""
+"""Legacy string spelling of :class:`ExtractionTarget`, still accepted on input.
+
+Kept so that ``SpanwiseElementExtraction(space, "bezier")`` keeps working. Pass an
+:class:`ExtractionTarget` in new code: the string form cannot cross the backend
+seam and is not what the ``target`` property hands back.
+"""
+
+
+TargetLike = ExtractionTarget | Target
+"""What the public constructors accept for a target: the enum or its legacy string."""
+
+
+_TARGET_BY_NAME: Final[dict[str, ExtractionTarget]] = {
+    "bezier": ExtractionTarget.BEZIER,
+    "lagrange": ExtractionTarget.LAGRANGE,
+    "cardinal": ExtractionTarget.CARDINAL,
+}
+"""The legacy string spellings, mapped onto the enum they name."""
+
+
+def _coerce_target(target: TargetLike) -> ExtractionTarget:
+    """Resolve a target argument to an :class:`ExtractionTarget`.
+
+    The string branch is the compatibility boundary and the only place the legacy
+    spelling is understood; everything downstream of it sees the enum.
+
+    Args:
+        target (TargetLike): An :class:`ExtractionTarget`, or one of the legacy
+            strings ``"bezier"``, ``"lagrange"``, ``"cardinal"``.
+
+    Returns:
+        ExtractionTarget: The resolved target.
+
+    Raises:
+        ValueError: If ``target`` is neither an :class:`ExtractionTarget` nor a
+            recognized string spelling.
+    """
+    if isinstance(target, ExtractionTarget):
+        return target
+    resolved = _TARGET_BY_NAME.get(target) if isinstance(target, str) else None
+    if resolved is None:
+        valid = ", ".join(repr(name) for name in _TARGET_BY_NAME)
+        raise ValueError(
+            f"Unknown target {target!r}; expected an ExtractionTarget or one of {valid}"
+        )
+    return resolved
 
 
 CellIndex = int | tuple[int, ...] | list[int] | npt.NDArray[np.int_]
@@ -104,9 +173,9 @@ class SpanwiseElementExtraction:
 
     Attributes:
         _space (BsplineSpace): Underlying multi-dimensional B-spline space.
-        _target (Target): Target basis tag.
+        _target (ExtractionTarget): Target basis.
         _lagrange_variant (LagrangeVariant): Point distribution used when
-            ``target == "lagrange"``; ignored otherwise.
+            the target is :attr:`ExtractionTarget.LAGRANGE`; ignored otherwise.
         _compact_ops_1d (tuple[npt.NDArray[np.float32 | np.float64], ...]):
             Per-direction compact 3D operator arrays of shape
             ``(n_compact_k, n_out_k, n_in_k)``; only non-identity rows are
@@ -120,7 +189,7 @@ class SpanwiseElementExtraction:
     """
 
     _space: BsplineSpace
-    _target: Target
+    _target: ExtractionTarget
     _lagrange_variant: LagrangeVariant
     _compact_ops_1d: tuple[npt.NDArray[np.float32 | np.float64], ...]
     _idx_maps_1d: tuple[npt.NDArray[np.intp], ...]
@@ -129,7 +198,7 @@ class SpanwiseElementExtraction:
     def __init__(
         self,
         space: BsplineSpace,
-        target: Target,
+        target: TargetLike,
         *,
         lagrange_variant: LagrangeVariant = LagrangeVariant.EQUISPACES,
     ) -> None:
@@ -137,9 +206,10 @@ class SpanwiseElementExtraction:
 
         Args:
             space (BsplineSpace): Multi-dimensional B-spline space.
-            target (Target): One of ``"bezier"``, ``"lagrange"``, ``"cardinal"``.
+            target (TargetLike): An :class:`ExtractionTarget`, or its legacy string
+                spelling ``"bezier"``, ``"lagrange"``, ``"cardinal"``.
             lagrange_variant (LagrangeVariant): Point distribution used when
-                ``target == "lagrange"``. Defaults to
+                ``target`` is :attr:`ExtractionTarget.LAGRANGE`. Defaults to
                 :attr:`pantr.basis.LagrangeVariant.EQUISPACES`.
 
         Raises:
@@ -147,9 +217,7 @@ class SpanwiseElementExtraction:
             NotImplementedError: If any direction of ``space`` is periodic;
                 periodic support is deferred to a later version.
         """
-        if target not in get_args(Target):
-            valid = ", ".join(repr(v) for v in get_args(Target))
-            raise ValueError(f"Unknown target {target!r}; expected one of {valid}")
+        resolved_target = _coerce_target(target)
 
         if any(s.periodic for s in space.spaces):
             raise NotImplementedError(
@@ -158,22 +226,22 @@ class SpanwiseElementExtraction:
             )
 
         self._space = space
-        self._target = target
+        self._target = resolved_target
         self._lagrange_variant = lagrange_variant
 
         compact_ops_1d: list[npt.NDArray[np.float32 | np.float64]] = []
         idx_maps_1d: list[npt.NDArray[np.intp]] = []
         masks_1d: list[npt.NDArray[np.bool_]] = []
         for space_1d in space.spaces:
-            if target == "bezier":
+            if resolved_target is ExtractionTarget.BEZIER:
                 ops = space_1d.tabulate_Bezier_extraction_operators()
                 mask = _bezier_structural_identity_mask(space_1d)
-            elif target == "lagrange":
+            elif resolved_target is ExtractionTarget.LAGRANGE:
                 ops = space_1d.tabulate_Lagrange_extraction_operators(
                     lagrange_variant=lagrange_variant
                 )
                 mask = _lagrange_structural_identity_mask(space_1d, lagrange_variant)
-            else:  # target == "cardinal"
+            else:  # resolved_target is ExtractionTarget.CARDINAL
                 ops = space_1d.tabulate_cardinal_extraction_operators()
                 mask = space_1d.get_cardinal_intervals()
             non_id_idx = np.where(~mask)[0]
@@ -217,17 +285,19 @@ class SpanwiseElementExtraction:
         return self._space
 
     @property
-    def target(self) -> Target:
-        """Get the target basis tag.
+    def target(self) -> ExtractionTarget:
+        """Get the target basis.
 
         Returns:
-            Target: One of ``"bezier"``, ``"lagrange"``, ``"cardinal"``.
+            ExtractionTarget: The element-local basis this extraction maps onto.
+                A string passed at construction is resolved to its enum member,
+                so this never returns a string.
         """
         return self._target
 
     @property
     def lagrange_variant(self) -> LagrangeVariant:
-        """Get the Lagrange point distribution used for ``"lagrange"`` target.
+        """Get the Lagrange point distribution used for the Lagrange target.
 
         Returns:
             LagrangeVariant: The point distribution. Meaningless for other targets.
@@ -1200,8 +1270,10 @@ __all__ = [
     "CellIndex",
     "CellIndicesBatch",
     "ExtractionStructView",
+    "ExtractionTarget",
     "SpanwiseElementExtraction",
     "Target",
+    "TargetLike",
     "make_struct_view",
     "normalize_cell_indices",
     "operand_shape",
