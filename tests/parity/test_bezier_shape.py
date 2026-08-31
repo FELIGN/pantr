@@ -51,6 +51,7 @@ they do **not** demonstrate that ``Bezier.reverse`` under the C++ backend runs C
 from __future__ import annotations
 
 import subprocess
+from collections.abc import Callable
 from typing import Any, Final, cast
 
 import numpy as np
@@ -505,4 +506,170 @@ def test_transform_never_converts_an_affine_between_backends() -> None:
     assert hits == "", (
         f"a Bézier transform site names an affine implementation class, which is where "
         f"a conversion between the two would have to appear:\n{hits}"
+    )
+
+
+@pytest.mark.parametrize("dtype", DTYPES)
+def test_the_in_place_variants_return_none_and_mutate_under_both_backends(
+    cpp_backend: None, dtype: npt.DTypeLike
+) -> None:
+    """Both return types of the ``in_place`` flag are exercised, on both backends.
+
+    The flag is a known API defect -- a boolean that changes the return type -- and it
+    is ported faithfully rather than fixed, so what has to be pinned is that it still
+    behaves identically on both sides: ``in_place=True`` returns ``None`` **and**
+    leaves the receiver changed, ``in_place=False`` returns a new Bézier and leaves the
+    receiver alone.
+
+    Asserting only the ``None`` would pass against an implementation that returned
+    ``None`` and did nothing, which is why the receiver is checked too; asserting only
+    the mutation would pass against one that also returned the object, which is why
+    the ``None`` is checked as well.
+    """
+    del cpp_backend
+    demand_the_compiled_kernel(dtype)
+
+    net = _net((2, 3), 3, dtype, seed=20260906, rational=False)
+    identity = np.eye(3)
+    shift = np.asarray([1.0, 2.0, 3.0])
+
+    for backend in (Backend.PYTHON, Backend.CPP):
+        with use_backend(backend):
+            from pantr.transform import AffineTransform  # noqa: PLC0415
+
+            mutations: list[Callable[[Bezier], None]] = [
+                lambda bezier: bezier.reverse(0, in_place=True),
+                lambda bezier: bezier.permute_directions([1, 0], in_place=True),
+                lambda bezier: bezier.transform(AffineTransform(identity, shift), in_place=True),
+            ]
+            for mutate in mutations:
+                receiver = Bezier(net)
+                before = np.array(receiver.control_points)
+                assert mutate(receiver) is None, (
+                    f"an in_place=True call returned something under {backend.name}; the "
+                    f"overloads say it returns None and a caller assigning the result "
+                    f"would silently get it"
+                )
+                after = np.array(receiver.control_points)
+                assert before.shape != after.shape or not np.array_equal(before, after), (
+                    f"an in_place=True call left the receiver unchanged under "
+                    f"{backend.name}, so it returned None and did nothing"
+                )
+
+            untouched = Bezier(net)
+            snapshot = np.array(untouched.control_points)
+            produced = untouched.reverse(0)
+            assert isinstance(produced, Bezier)
+            assert np.array_equal(np.array(untouched.control_points), snapshot), (
+                f"reverse(in_place=False) mutated its receiver under {backend.name}"
+            )
+
+
+_SWEEP_DRAWS: Final = 10
+"""Independent nets per configuration in the ten-times sweep.
+
+Sized against the shipped parametrization rather than picked: each claim ships 28
+cases per dtype (7 degree tuples x 2 ranks x 2 rationalities), so ten draws of each
+gives 280 per claim per dtype. Written down because the test passes at any number of
+draws, which is what lets a sweep quietly stop being the thing it claims to be.
+"""
+
+
+@pytest.mark.slow
+@pytest.mark.parametrize("dtype", DTYPES)
+def test_each_claim_holds_over_a_sweep_ten_times_the_shipped_one(
+    cpp_backend: None, dtype: npt.DTypeLike
+) -> None:
+    """A bound checked only by the sweep that ships with it has not been checked.
+
+    ``design/backend_parity.md`` records the case: the affine-map bound held over 500
+    draws and failed 88 times at 60000. Ten independent nets per configuration against
+    the bitwise claims and the two bounded ones, asserting per family that the sweep
+    actually reached it rather than only that nothing failed.
+    """
+    del cpp_backend
+    demand_cpp_backend()
+    demand_the_compiled_kernel(dtype)
+    from pantr import _pantr_cpp  # noqa: PLC0415
+
+    handle_class = _pantr_cpp.Bezier32 if dtype == np.float32 else _pantr_cpp.Bezier64
+    exercised = {"rearrangement": 0, "one_directional": 0, "collapse": 0}
+    seed = 0
+    for degrees in DEGREES:
+        for rank in RANKS:
+            for rational in (False, True):
+                for _draw in range(_SWEEP_DRAWS):
+                    seed += 1
+                    net = _net(degrees, rank, dtype, seed=60000 + seed, rational=rational)
+                    dim = len(degrees)
+                    handle = handle_class(cast("Any", net), rational)
+
+                    assert np.array_equal(
+                        np.asarray(_pantr_cpp.reverse_bezier(handle, 0).control_points),
+                        np.asarray(_reverse_control_points(net, 0, in_place=False)),
+                    ), f"reverse is claimed bitwise and this draw differs: {degrees}"
+                    exercised["rearrangement"] += 1
+
+                    with use_backend(Backend.PYTHON):
+                        reference = np.asarray(
+                            Bezier(net, is_rational=rational).split(0, _PARAMETER)[0].control_points
+                        )
+                    with use_backend(Backend.CPP):
+                        actual = np.asarray(
+                            Bezier(net, is_rational=rational).split(0, _PARAMETER)[0].control_points
+                        )
+                    assert np.array_equal(actual, reference), (
+                        f"split is claimed bitwise on a non-fusing build and this draw "
+                        f"differs: {degrees} rank {rank} rational {rational}"
+                    )
+                    exercised["one_directional"] += 1
+
+                    if dim < 2:
+                        continue
+                    values = np.asarray([_PARAMETER] * (dim - 1), dtype=dtype)
+                    with use_backend(Backend.PYTHON):
+                        collapse_reference = np.asarray(
+                            Bezier(net, is_rational=rational)
+                            .collapse_along_axis(0, values)
+                            .control_points
+                        )
+                        magnitude = np.asarray(
+                            Bezier(np.abs(net), is_rational=rational)
+                            .collapse_along_axis(0, values)
+                            .control_points
+                        )
+                    with use_backend(Backend.CPP):
+                        collapse_actual = np.asarray(
+                            Bezier(net, is_rational=rational)
+                            .collapse_along_axis(0, values)
+                            .control_points
+                        )
+                    stages = sum(degrees[d] + 1 for d in range(dim) if d != 0)
+                    assert_parity(
+                        collapse_actual,
+                        collapse_reference,
+                        bounded_parity(
+                            roundings=Roundings(
+                                stages=stages, accumulator_per_stage=1, storage_per_stage=0
+                            ),
+                            accumulator=dtype,
+                            storage=dtype,
+                            amplification=_companion(magnitude),
+                            why=_COLLAPSE_WHY,
+                        ),
+                        context=f"collapse sweep {degrees} rank {rank} rational {rational}",
+                    )
+                    exercised["collapse"] += 1
+
+    for family in ("rearrangement", "one_directional"):
+        assert exercised[family] >= 280, (
+            f"the {family} claim saw {exercised[family]} comparisons, short of the 280 "
+            f"per dtype that is ten times its shipped 28. The sweep has stopped being "
+            f"ten times the shipped one."
+        )
+    # Collapse skips the one-dimensional degree tuple, so its own ten-times target is
+    # measured against the six tuples it can reach rather than all seven.
+    assert exercised["collapse"] >= 240, (
+        f"the collapse claim saw {exercised['collapse']} comparisons, short of the 240 "
+        f"that is ten times its shipped 24."
     )
