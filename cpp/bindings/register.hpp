@@ -80,3 +80,11 @@ void register_quad_types(nanobind::module_& m);
 /// Register the `pantr.bezier.Bezier` type, distinct from the arithmetic
 /// kernels `register_bezier` binds above.
 void register_bezier_type(nanobind::module_& m);
+
+/// Register the `pantr.bspline` space types.
+///
+/// Not one of #380's six reserved slots: those were all filled before this front
+/// started, and the milestone's remaining tickets add their own entry point here
+/// rather than sharing one. Declared alongside them so a ticket still touches only
+/// its own `.cpp`.
+void register_bspline_types(nanobind::module_& m);

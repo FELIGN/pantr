@@ -84,6 +84,8 @@ from ._bezier import split_bezier as split_bezier
 from ._bezier import split_bezier_1d as split_bezier_1d
 from ._bezier import transform_bezier as transform_bezier
 from ._bezier import yuksel_roots as yuksel_roots
+from ._bspline import BsplineSpace1D32 as BsplineSpace1D32
+from ._bspline import BsplineSpace1D64 as BsplineSpace1D64
 from ._geometry import AABB as AABB
 from ._grid import BVH as BVH
 from ._grid import CellTags as CellTags
