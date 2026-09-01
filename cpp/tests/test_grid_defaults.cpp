@@ -26,12 +26,14 @@
 /// `float64`-only.
 
 #include <algorithm>
+#include <atomic>
 #include <cstdint>
 #include <limits>
 #include <optional>
 #include <span>
 #include <stdexcept>
 #include <string>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -498,6 +500,49 @@ void test_lazy_bvh_cache() {
     PANTR_CHECK(g.cell_bounds_calls() == after_build);
 }
 
+/// Threads arriving together get one tree, built once.
+///
+/// The cache used to be a bare `mutable std::optional` and filling it concurrently was
+/// undefined behaviour; it is now a `LazyMemo`, whose own file carries the mechanism.
+/// Two things about what this establishes, because they are not the same thing.
+///
+/// The **value** half is real and is asserted here: `cell_bounds_calls()` counts the
+/// build, so `== 6` after the storm says it ran once and not once per thread. That
+/// counter is a plain integer on purpose -- it is written only inside the build, so
+/// counting with it *is* the assertion that the build was serialised.
+///
+/// The **race** half is settled by no value at all, and this file does not pretend
+/// otherwise. `cpp/tests/test_lazy_memo.cpp` carries that argument and a sanitizer build
+/// is what runs it. What is checked here is that the grid reaches the memo through a
+/// path that has the guarantee, which is the half a memo used wrongly would fail.
+void test_concurrent_bvh_build() {
+    constexpr int kThreads = 8;
+    const Grid2 g(3, 2);
+
+    std::atomic<int> waiting{0};
+    std::vector<const pantr::grid::BVH<double>*> seen(kThreads, nullptr);
+    std::vector<std::thread> threads;
+    threads.reserve(kThreads);
+    for (int t = 0; t < kThreads; ++t) {
+        threads.emplace_back([&, t] {
+            waiting.fetch_add(1, std::memory_order_acq_rel);
+            while (waiting.load(std::memory_order_acquire) < kThreads) {
+                std::this_thread::yield();
+            }
+            seen[static_cast<std::size_t>(t)] = &g.cell_bvh();
+        });
+    }
+    for (std::thread& thread : threads) {
+        thread.join();
+    }
+
+    PANTR_CHECK_MSG(g.cell_bounds_calls() == 6, "the tree must be built exactly once");
+    for (int t = 0; t < kThreads; ++t) {
+        PANTR_CHECK(seen[static_cast<std::size_t>(t)] == seen[0]);
+    }
+    PANTR_CHECK(seen[0]->n_cells() == 6);
+}
+
 void test_tags() {
     Grid2 g(3, 2);
     PANTR_CHECK(g.cell_tags().num_cells() == 6);
@@ -769,6 +814,7 @@ int main() {
     test_locate_many();
     test_collect_cell_bounds();
     test_lazy_bvh_cache();
+    test_concurrent_bvh_build();
     test_tags();
     test_validation_messages();
     test_restrict_default_throws();
