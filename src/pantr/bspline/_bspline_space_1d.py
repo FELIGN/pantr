@@ -682,11 +682,22 @@ class BsplineSpace1D:
             The tolerance is *recomputed* from the stored knots rather than carried,
             which is what keeps the wire format the constructor's arguments and
             nothing else. Where snapping moved the last knot onto its class's first
-            one the reconstructed tolerance can therefore differ from the original's
-            -- by a relative ``8 * eps`` at most, since the scale moves by at most
-            the original tolerance. That is inside the band in which the tolerance
-            does not decide anything, and ``tests/parity`` pins it at that bound
-            rather than at equality.
+            one, the scale moves with it and the reconstructed tolerance differs
+            from the original's. The bound is
+
+            ``|tol' - tol| / tol <= (m - 1) * 8 * eps``,
+
+            where ``m`` is the multiplicity of the **last** knot class: each step
+            inside a class is at most one tolerance, so a class of ``m`` knots spans
+            at most ``m - 1`` of them, and the relative change in the tolerance is
+            the relative change in the scale.
+
+            The ``m - 1`` is not decoration. A first version of this note claimed a
+            flat ``8 * eps``, reasoning that the scale moves by at most one
+            tolerance; that ignores chaining, and a sweep built to chain the final
+            class **exceeded it by a factor of 4.4**. ``tests/parity`` pins the
+            corrected form, checks that the drift is actually non-zero, and checks
+            that the flat version fails.
 
         Returns:
             tuple: The class, and the knots, degree, periodicity and snapping flag
