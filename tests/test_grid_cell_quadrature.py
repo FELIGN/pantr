@@ -240,6 +240,12 @@ class TestCppOwnedOperands:
         would pass just as well on the Python oracle -- and that the composition over them
         is still exact where it has to be. Gauss-Legendre with three points per direction
         is exact to degree five, so the integral is an oracle independent of the grid.
+
+        ``rtol=1e-12`` is this file's existing constant rather than a new one, and what
+        it has to cover is round-off alone: the rule is exact for this integrand in
+        exact arithmetic, so the residual is the summation error over
+        ``num_cells * num_points`` terms, bounded by roughly ``n * eps`` -- of order
+        ``1e-14`` here. The constant leaves about two orders of margin over that.
         """
         del cpp_backend
         from pantr import _pantr_cpp  # noqa: PLC0415  (absent without the compiled extension)
