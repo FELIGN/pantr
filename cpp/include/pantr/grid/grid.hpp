@@ -114,11 +114,11 @@
 /// ## Thread safety
 ///
 /// **Every non-mutating member here is safe to call concurrently on one grid with no
-/// external locking**, `cell_bvh()` included: the spatial index lives in a `LazyMemo`
-/// (`pantr/core/lazy_memo.hpp`), which fills it at most once and publishes it
-/// atomically. The two tag registries are the exception, and the only one -- they
-/// accumulate by design, so a `set()` racing anything is the caller's to serialise,
-/// exactly as `pantr/grid/tags.hpp` already says of them.
+/// external locking**, `cell_bvh()` included: the spatial index lives in a `LazySlot`
+/// (`pantr/core/lazy.hpp`), which fills it at most once and publishes it atomically. The
+/// two tag registries are the exception, and the only one -- they accumulate by design,
+/// so a `set()` racing anything is the caller's to serialise, exactly as
+/// `pantr/grid/tags.hpp` already says of them.
 ///
 /// This was a bare `mutable std::optional` filled with no lock and no atomic, and the
 /// note here said "one write wins, costing redundant construction", borrowed from the
@@ -129,8 +129,8 @@
 /// documentation problem, so the note went with the code.
 ///
 /// Why a clean run of the old shape was not evidence, and what is, are recorded in
-/// `pantr/core/lazy_memo.hpp` and `cpp/tests/test_lazy_memo.cpp`: the failure is
-/// invisible to a value assertion, and a thread sanitizer is what sees it.
+/// `pantr/core/lazy.hpp` and `cpp/tests/test_lazy.cpp`: the failure is invisible to a
+/// value assertion, and a thread sanitizer is what sees it.
 
 #include <cstddef>
 #include <cstdint>
@@ -142,7 +142,7 @@
 #include <utility>
 #include <vector>
 
-#include "pantr/core/lazy_memo.hpp"
+#include "pantr/core/lazy.hpp"
 #include "pantr/core/mdspan.hpp"
 #include "pantr/core/scalar.hpp"
 #include "pantr/geometry/aabb.hpp"
@@ -537,7 +537,7 @@ class GridBase {
     ///       memo empty, so the next call raises again rather than serving a half-built
     ///       tree.
     [[nodiscard]] const BVH<scalar_type>& cell_bvh() const {
-        return bvh_.get_or_build([this] {
+        return bvh_.get([this] {
             const auto n = static_cast<std::size_t>(num_cells_);
             const auto d = static_cast<std::size_t>(ndim_);
             std::vector<scalar_type> cell_lo(n * d);
@@ -749,7 +749,16 @@ class GridBase {
     std::int64_t num_cells_;               ///< Number of cells.
     CellTags cell_tags_;                   ///< The cell-tag registry.
     FacetTags facet_tags_;                 ///< The facet-tag registry.
-    LazyMemo<BVH<scalar_type>> bvh_;       ///< The lazily built spatial index.
+    /// The lazily built spatial index.
+    ///
+    /// A `LazySlot` starts **cold** on copy and on move, so a copied grid rebuilds its
+    /// tree on first query rather than inheriting the source's. That is deliberate and
+    /// not an oversight: the memo describes its owner's state, and a memo type cannot
+    /// check that the object it was copied into still has that state. Here it happens to
+    /// be a cost change and not a semantic one -- the tree is a pure function of the grid
+    /// -- and nothing copies a grid with a built tree on a hot path, since `restrict` and
+    /// a hierarchical grid's refinement both move.
+    LazySlot<BVH<scalar_type>> bvh_;
 };
 
 // ---------------------------------------------------------------------------

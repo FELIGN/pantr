@@ -503,7 +503,7 @@ void test_lazy_bvh_cache() {
 /// Threads arriving together get one tree, built once.
 ///
 /// The cache used to be a bare `mutable std::optional` and filling it concurrently was
-/// undefined behaviour; it is now a `LazyMemo`, whose own file carries the mechanism.
+/// undefined behaviour; it is now a `LazySlot`, whose own file carries the mechanism.
 /// Two things about what this establishes, because they are not the same thing.
 ///
 /// The **value** half is real and is asserted here: `cell_bounds_calls()` counts the
@@ -512,9 +512,12 @@ void test_lazy_bvh_cache() {
 /// counting with it *is* the assertion that the build was serialised.
 ///
 /// The **race** half is settled by no value at all, and this file does not pretend
-/// otherwise. `cpp/tests/test_lazy_memo.cpp` carries that argument and a sanitizer build
-/// is what runs it. What is checked here is that the grid reaches the memo through a
-/// path that has the guarantee, which is the half a memo used wrongly would fail.
+/// otherwise. `cpp/tests/test_lazy.cpp` carries that argument and a sanitizer build is
+/// what runs it -- including the part that matters most, that its threads read the
+/// memoised value rather than only taking its address. What is checked here is that the
+/// grid reaches the slot through a path that has the guarantee, which is the half a
+/// memo used wrongly would fail; this case deliberately does not restate the race
+/// argument, so it takes an address and is not evidence about ordering.
 void test_concurrent_bvh_build() {
     constexpr int kThreads = 8;
     const Grid2 g(3, 2);
