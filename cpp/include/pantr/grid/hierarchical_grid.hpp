@@ -53,12 +53,21 @@
 ///
 /// ## Where this diverges from the oracle deliberately, and why
 ///
-/// The oracle counts cells in Python's arbitrary-precision integers and cannot overflow;
-/// this type accumulates in `std::int64_t` and can. Both the total cell count and
-/// `factor ** level` are therefore checked and throw, which is the same trade
-/// `TensorProductGrid` already makes for its own cell-count product: a grid that large
-/// is unusable on either side, and raising is the smaller divergence than a positive but
-/// meaningless count.
+/// **Counts that do not fit are refused rather than wrapped.** The oracle counts cells in
+/// Python's arbitrary-precision integers and cannot overflow; this type accumulates in
+/// `std::int64_t` and can, so the total cell count, each block's own product and
+/// `factor ** level` are all checked and throw. Same trade `TensorProductGrid` already
+/// makes for its own cell-count product: a grid that large is unusable on either side,
+/// and raising beats a positive but meaningless count.
+///
+/// **A wrong-length `midx` is an error here and a `None` there.** `cell_id` and
+/// `is_active_leaf` throw `std::invalid_argument` where the oracle's `cell_id`
+/// (`_hierarchical_grid.py:1211`) folds a wrong-length index into its "not an active
+/// leaf" answer. That is the port's stated rule -- `pantr/core/error.hpp` puts value and
+/// range checks in C++ and leaves shape coercion to the Python wrapper -- but it is a
+/// real behavioural difference and not only a message one, so **the wrapper owes the
+/// `None`**: it must catch the length case before forwarding, or a parity test feeding a
+/// badly sized index sees the two backends disagree in kind.
 
 #include <algorithm>
 #include <cmath>
@@ -310,13 +319,18 @@ class HierarchicalGrid : public GridBase<HierarchicalGrid<T>> {
         const auto d = static_cast<std::size_t>(this->ndim());
         std::vector<std::int64_t> scaled_lo(d);
         std::vector<std::int64_t> scaled_hi(d);
+        std::vector<std::int64_t> scale(d);
         for (std::int64_t coarser = 0; coarser < level; ++coarser) {
+            // Per coarser level, not per block: the projection factor depends only on the
+            // level gap, and computing it is O(gap) checked multiplications.
+            for (std::size_t k = 0; k < d; ++k) {
+                scale[k] = checked_scale(1, factor_[k], level - coarser);
+            }
             const auto [lo, hi] = active_blocks(coarser);
             for (std::size_t b = 0; b < lo.extent(0); ++b) {
                 for (std::size_t k = 0; k < d; ++k) {
-                    const std::int64_t scale = checked_scale(1, factor_[k], level - coarser);
-                    scaled_lo[k] = lo(b, k) * scale;
-                    scaled_hi[k] = hi(b, k) * scale;
+                    scaled_lo[k] = lo(b, k) * scale[k];
+                    scaled_hi[k] = hi(b, k) * scale[k];
                 }
                 fill_box(mask, shape, scaled_lo, scaled_hi, 0U);
             }
@@ -494,14 +508,17 @@ class HierarchicalGrid : public GridBase<HierarchicalGrid<T>> {
         std::vector<std::int64_t> face_hi(d);
 
         for (std::int64_t level = 0; level <= max_level(); ++level) {
+            // Hoisted: `factor ** level` costs O(level) checked multiplications, and the
+            // block loop below would otherwise pay it once per block per axis for a
+            // quantity that only depends on the level.
+            const std::vector<std::int64_t> n_per_axis = level_shape(level);
             const auto [lo, hi] = active_blocks(level);
             for (std::size_t b = 0; b < lo.extent(0); ++b) {
                 const std::int64_t base = block_base_[
                     static_cast<std::size_t>(level_start_[static_cast<std::size_t>(level)])
                     + b];
                 for (std::size_t axis = 0; axis < d; ++axis) {
-                    const std::int64_t n_axis = level_cells_per_axis(
-                        level, static_cast<std::int64_t>(axis));
+                    const std::int64_t n_axis = n_per_axis[axis];
                     for (std::int64_t side = 0; side < 2; ++side) {
                         const bool touches =
                             (side == 0) ? lo(b, axis) == 0 : hi(b, axis) == n_axis;
@@ -708,7 +725,7 @@ class HierarchicalGrid : public GridBase<HierarchicalGrid<T>> {
                 state.block_lo.insert(state.block_lo.end(), block.lo.begin(), block.lo.end());
                 state.block_hi.insert(state.block_hi.end(), block.hi.begin(), block.hi.end());
                 state.block_base.push_back(cell_base);
-                cell_base = checked_add(cell_base, block_size(block));
+                cell_base = checked_add(cell_base, checked_block_size(block));
                 ++b;
             }
         }
@@ -1120,6 +1137,26 @@ class HierarchicalGrid : public GridBase<HierarchicalGrid<T>> {
     [[nodiscard]] static std::int64_t checked_scale(std::int64_t value, std::int64_t base,
                                                     std::int64_t exponent) {
         return checked_mul(value, int_pow(base, exponent));
+    }
+
+    /// A block's cell count, refusing to overflow.
+    ///
+    /// `blocks.hpp`'s `block_size` accumulates in `std::int64_t` without checking, and
+    /// says the guard belongs one level up. This is that level. Checking the product as
+    /// well as the running sum matters because the file's contract promises that an
+    /// invalid decomposition is a *wrong answer* and not undefined behaviour, and a
+    /// single block whose own extents multiply past `int64` would otherwise be signed
+    /// overflow -- a narrower promise than the one written down.
+    ///
+    /// \param block The rectangle.
+    /// \return Its cell count.
+    /// \throws std::overflow_error If the product exceeds `int64`.
+    [[nodiscard]] static std::int64_t checked_block_size(BlockView block) {
+        std::int64_t size = 1;
+        for (std::size_t k = 0; k < block.lo.size(); ++k) {
+            size = checked_mul(size, block.hi[k] - block.lo[k]);
+        }
+        return size;
     }
 
     /// Multiply, refusing to overflow.

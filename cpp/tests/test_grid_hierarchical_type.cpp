@@ -163,6 +163,79 @@ Grid non_dyadic() {
                              std::nullopt);
 }
 
+/// A hanging interface normal to **axis 1** rather than axis 0.
+///
+/// Root `[0,1] x [0,2]`, two unit cells stacked in y, factor 2, with cell `(0,0)` refined.
+///
+/// level 0: block `[0,1) x [1,2)` -- one coarse cell, flat id 0
+/// level 1: block `[0,2) x [0,2)` -- ids 1..4 in C-order over `(i, j)`
+///
+/// This exists because every other hanging case in this file is normal to axis 0, and
+/// axis 0 is the one index for which `active_face_descendants`' odometer cannot get the
+/// pinned axis wrong: it is skipped on the last carry step, when the walk is about to end
+/// anyway. Deleting that skip leaves every other test in this file green. With the facet
+/// normal to axis 1 the skip is load-bearing, and a walk that ignored it would return
+/// three neighbours including one that does not touch the shared plane at all.
+///
+/// \return The grid.
+Grid hanging_axis1_2d() {
+    const Ints factor{2, 2};
+    std::vector<BlockList> blocks;
+    blocks.push_back(level(2, {{0, 1, 1, 2}}));
+    blocks.push_back(level(2, {{0, 0, 2, 2}}));
+    return Grid::from_blocks(TensorProductGrid<double>({{0.0, 1.0}, {0.0, 1.0, 2.0}}), factor,
+                             std::move(blocks), std::nullopt);
+}
+
+/// A hierarchy with an **empty middle level**, so an ancestor search must climb two.
+///
+/// Root `[0,1]` and `[1,2]`, factor 2. Cell 1 stays coarse; cell 0 is refined straight to
+/// level 2, leaving level 1 empty.
+///
+/// level 0: block `[1, 2)` -- flat id 0, the cell `[1,2]`
+/// level 1: empty
+/// level 2: block `[0, 4)` -- ids 1..4, the cells `[0,0.25] ... [0.75,1]`
+///
+/// Every other fixture here is exactly two levels deep, so `nearest_active_ancestor`'s
+/// loop never has to survive a level that answers nothing. Rebuilding the ancestor from
+/// the original index at each step instead of from the running one -- a plausible
+/// refactor -- leaves every other test green and breaks this one.
+///
+/// \return The grid.
+Grid deep_1d() {
+    const Ints factor{2};
+    std::vector<BlockList> blocks;
+    blocks.push_back(level(1, {{1, 2}}));
+    blocks.push_back(level(1, {}));
+    blocks.push_back(level(1, {{0, 4}}));
+    return Grid::from_blocks(TensorProductGrid<double>({{0.0, 1.0, 2.0}}), factor,
+                             std::move(blocks), std::nullopt);
+}
+
+/// Three axes, an anisotropic factor, and factor 1 on one of them.
+///
+/// Root `[0,2] x [0,1] x [0,1.5]`, cells `(2, 1, 2)`, factor `(2, 1, 3)`. The `x = 1`
+/// slab of root cells stays coarse; the `x = 0` slab is refined once.
+///
+/// level 0: block `[1,2) x [0,1) x [0,2)` -- 2 cells
+/// level 1: block `[0,2) x [0,1) x [0,6)` -- 12 cells, over a level-1 grid of `(4, 1, 6)`
+///
+/// Fourteen cells. Nothing else in this file has three axes, a factor that differs
+/// between them, or a factor of 1 on an axis that is also refined -- and an axis of
+/// extent 1 is exactly where an odometer or a stride is most likely to be wrong without
+/// showing it.
+///
+/// \return The grid.
+Grid anisotropic_3d() {
+    const Ints factor{2, 1, 3};
+    std::vector<BlockList> blocks;
+    blocks.push_back(level(3, {{1, 0, 0, 2, 1, 2}}));
+    blocks.push_back(level(3, {{0, 0, 0, 2, 1, 6}}));
+    return Grid::from_blocks(
+        TensorProductGrid<double>({{0.0, 1.0, 2.0}, {0.0, 1.0}, {0.0, 0.5, 1.5}}), factor,
+        std::move(blocks), std::nullopt);
+}
+
 /// One cell's corners.
 ///
 /// \param g The grid.
@@ -425,7 +498,13 @@ void test_non_finite_points_locate_to_nothing() {
 /// That is why this assertion is confined to the dyadic fixtures; the non-dyadic one is
 /// checked against its closed form with a derived bound instead.
 void test_the_cells_tile_the_domain(const Grid& g, const char* what) {
-    const auto [lo, hi] = all_bounds(g);
+    // Deliberately not a structured binding: the comparator below captures `lo`, and
+    // capturing a structured binding is C++20 (P1091), which the Clang 10 version floor
+    // does not implement. Declaring one is C++17 and fine -- only capturing one is not.
+    // `test_grid_hierarchical.cpp` carries the same note at the same construct.
+    const auto bounds = all_bounds(g);
+    const std::vector<double>& lo = bounds.first;
+    const std::vector<double>& hi = bounds.second;
     std::vector<std::size_t> order(lo.size());
     for (std::size_t i = 0; i < order.size(); ++i) {
         order[i] = i;
@@ -822,6 +901,209 @@ void test_restrict_still_throws() {
     PANTR_CHECK_MSG(threw, "restrict must still be the mixin's throwing default");
 }
 
+/// A hanging interface normal to axis 1 collects only the cells touching that plane.
+///
+/// Hand-worked on `hanging_axis1_2d`, and confirmed against the oracle: the coarse cell
+/// is id 0 at level 0 `(0,1)`, and the four children of root cell `(0,0)` are ids 1..4 in
+/// C-order, so `(0,0) -> 1`, `(0,1) -> 2`, `(1,0) -> 3`, `(1,1) -> 4`.
+///
+/// Facet 2 is `(axis 1, side 0)`, the low-y face of the coarse cell. Across it lies the
+/// refined-away level-0 position `(0,0)`, whose children touching the shared `y = 1`
+/// plane are the ones with `j`-offset `factor[1] - 1 = 1`: `(0,1)` and `(1,1)`, that is
+/// ids **2 and 4**. Id 3 is `(1,0)`, which sits below the plane and must not appear.
+void test_hanging_neighbours_normal_to_axis_one() {
+    const Grid g = hanging_axis1_2d();
+    PANTR_CHECK(g.num_cells() == 5);
+    PANTR_CHECK(g.cell_level(0) == 0);
+
+    const std::vector<std::int64_t> fine = g.hanging_neighbors(0, 2);
+    PANTR_CHECK_MSG(fine == std::vector<std::int64_t>({2, 4}),
+                    "expected the two children on the shared plane, got "
+                        + std::to_string(fine.size()) + " neighbours");
+    PANTR_CHECK(g.neighbor_across_facet(0, 2) == std::optional<std::int64_t>(2));
+
+    // Every one of them must actually touch the coarse cell's low-y face.
+    std::vector<double> clo(2);
+    std::vector<double> chi(2);
+    g.cell_bounds(0, clo, chi);
+    for (const std::int64_t nbr : fine) {
+        std::vector<double> nlo(2);
+        std::vector<double> nhi(2);
+        g.cell_bounds(nbr, nlo, nhi);
+        PANTR_CHECK_MSG(nhi[1] == clo[1], "neighbour " + std::to_string(nbr)
+                                              + " does not touch the shared plane");
+    }
+}
+
+/// An ancestor search climbs past a level that answers nothing.
+///
+/// Hand-worked on `deep_1d` and confirmed against the oracle. Cell 4 is the level-2 cell
+/// `[0.75,1]`, index 3. Across its high facet lies level-2 index 4, which is not active;
+/// level 1 is empty, so index 2 there is not active either; level 0 index 1 is the coarse
+/// cell `[1,2]`, id 0. Two levels of climbing, and the intermediate one must not stop it.
+void test_ancestor_search_climbs_more_than_one_level() {
+    const Grid g = deep_1d();
+    PANTR_CHECK(g.num_cells() == 5);
+    PANTR_CHECK(g.max_level() == 2);
+    PANTR_CHECK(g.cell_level(4) == 2);
+
+    PANTR_CHECK(g.neighbor_across_facet(4, 1) == std::optional<std::int64_t>(0));
+    PANTR_CHECK(g.hanging_neighbors(4, 1) == std::vector<std::int64_t>({0}));
+    // And symmetrically from the coarse side, which descends two levels instead.
+    PANTR_CHECK(g.hanging_neighbors(0, 0) == std::vector<std::int64_t>({4}));
+
+    // The empty middle level is real, and asking about it is legal.
+    const auto [lo, hi] = g.active_blocks(1);
+    PANTR_CHECK(lo.extent(0) == 0 && hi.extent(0) == 0);
+}
+
+/// Three axes, a per-axis factor, and an axis of extent 1 that is still refined.
+///
+/// No hand-computed table: the point of this fixture is the generic properties, which are
+/// what a dimension- or stride-generalisation bug breaks. The counts were confirmed
+/// against the oracle.
+void test_anisotropic_three_dimensional_grid() {
+    const Grid g = anisotropic_3d();
+    PANTR_CHECK(g.num_cells() == 14);
+    PANTR_CHECK(g.max_level() == 1);
+    PANTR_CHECK(g.level_cells_per_axis(1, 0) == 4);
+    PANTR_CHECK_MSG(g.level_cells_per_axis(1, 1) == 1, "factor 1 must not subdivide axis 1");
+    PANTR_CHECK(g.level_cells_per_axis(1, 2) == 6);
+    PANTR_CHECK_MSG(g.to_string()
+                        == "HierarchicalGrid(ndim=3, root_cells=(2, 1, 2), "
+                           "factor=(2, 1, 3), num_cells=14, max_level=1)",
+                    g.to_string());
+
+    test_the_address_round_trips(g, "the anisotropic 3-D grid");
+    test_the_two_bound_paths_agree(g, "the anisotropic 3-D grid");
+    test_locate_finds_each_cell(g, "the anisotropic 3-D grid");
+    PANTR_CHECK(g.boundary_facets() == g.pantr::grid::GridBase<Grid>::boundary_facets());
+
+    // The masks, over a level whose y extent is 1 -- where an odometer that assumed every
+    // axis has room to carry would go wrong.
+    const std::vector<std::uint8_t> leaves0 = g.active_leaf_mask(0);
+    const std::vector<std::uint8_t> leaves1 = g.active_leaf_mask(1);
+    PANTR_CHECK(std::count(leaves0.begin(), leaves0.end(), std::uint8_t{1}) == 2);
+    PANTR_CHECK(std::count(leaves1.begin(), leaves1.end(), std::uint8_t{1}) == 12);
+    const std::vector<std::uint8_t> omega1 = g.subdomain_mask(1);
+    PANTR_CHECK(std::count(omega1.begin(), omega1.end(), std::uint8_t{1}) == 12);
+}
+
+/// The masks over a level cut into several blocks.
+///
+/// `refined_1d` has one block per level, so nothing there distinguishes a mask filled
+/// block by block from one filled in a single sweep. `refined_2d`'s level 0 has two.
+void test_masks_over_a_multi_block_level() {
+    const Grid g = refined_2d();
+    PANTR_CHECK(g.active_leaf_mask(0) == std::vector<std::uint8_t>({0, 1, 1, 1}));
+    // Omega_1 excludes what the two coarse blocks cover, projected up by factor 2.
+    PANTR_CHECK(g.subdomain_mask(1)
+                == std::vector<std::uint8_t>({1, 1, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}));
+}
+
+/// A point exactly on a breakpoint belongs to the cell below it.
+///
+/// The convention is not arbitrary and it is not tested anywhere else: the scalar and
+/// batch paths agree with each other by construction, since both run a lower-bound search
+/// and step back one, so a shared wrong convention would be invisible to their
+/// comparison. These values were read off the oracle.
+void test_a_point_on_a_breakpoint_takes_the_lower_cell() {
+    const Grid g = flat_1d();  // breakpoints 0, 1, 2, 3, 4
+    PANTR_CHECK(g.locate(std::vector<double>{0.0}) == std::optional<std::int64_t>(0));
+    PANTR_CHECK_MSG(g.locate(std::vector<double>{1.0}) == std::optional<std::int64_t>(0),
+                    "an interior breakpoint must take the lower cell");
+    PANTR_CHECK(g.locate(std::vector<double>{2.0}) == std::optional<std::int64_t>(1));
+    PANTR_CHECK_MSG(g.locate(std::vector<double>{4.0}) == std::optional<std::int64_t>(3),
+                    "the domain's far edge must take the last cell, not fall outside");
+}
+
+/// A span of the wrong length is refused rather than read past.
+///
+/// Documented on five entry points and exercised on none of them until now. In C++ the
+/// length is part of the argument, so a wrong one is a caller bug; the Python wrapper is
+/// where a wrong-length index becomes a `None`, and the header says so.
+void test_wrong_length_spans_are_refused() {
+    const Grid g = refined_2d();
+    const std::vector<double> short_pt{0.5};
+    std::vector<double> short_out{0.0};
+    std::vector<std::int64_t> short_idx{0};
+
+    int refused = 0;
+    const auto expect = [&refused](auto&& call) {
+        try {
+            call();
+        } catch (const std::invalid_argument&) {
+            ++refused;
+        }
+    };
+    expect([&] { (void)g.locate(short_pt); });
+    expect([&] { g.cell_multi_index(0, short_idx); });
+    expect([&] { (void)g.cell_id(0, short_idx); });
+    expect([&] { (void)g.is_active_leaf(0, short_idx); });
+    expect([&] { g.cell_bounds(0, short_out, short_out); });
+    PANTR_CHECK_MSG(refused == 5, "only " + std::to_string(refused) + " of 5 were refused");
+}
+
+/// A block list whose cell counts **sum** past `int64` is refused.
+///
+/// The sum guard, which is a different guard from the product one
+/// `test_level_count_overflow_is_reported` covers, and it has to be reached without
+/// tripping that one on the way. Reached through `from_blocks`, which documents that it
+/// does not validate the decomposition, so this hands it two blocks far larger than the
+/// root -- the only way to the accumulator's limit that does not require allocating an
+/// impossible grid.
+///
+/// **The two blocks are placed diagonally on purpose.** A first version of this test put
+/// them side by side, and `normalize_blocks` merged them into one rectangle of `2**63`
+/// cells, so the *product* guard fired and the sum guard was never reached -- the test
+/// passed either way and proved nothing. Offsetting them on both axes makes `try_merge`
+/// refuse, so two blocks of `2**62` survive to the accumulator and sum to `2**63`.
+void test_total_cell_count_overflow_is_reported() {
+    constexpr std::int64_t kHalf = std::int64_t{1} << 31;
+    const Ints factor{2, 2};
+
+    // Caught as `std::exception` and matched on the message, deliberately. Removing the
+    // sum guard does not make the call succeed -- the wrapped count comes out negative and
+    // `GridBase` rejects it with a *different* exception, so a bare "did it throw?" is
+    // satisfied by the bug as well as by the fix. Naming the guard is what distinguishes
+    // them, and it also fails cleanly instead of letting an uncaught type abort the run.
+    std::vector<BlockList> blocks;
+    blocks.push_back(level(2, {{0, 0, kHalf, kHalf},
+                               {kHalf, kHalf, 2 * kHalf, 2 * kHalf}}));
+    std::string message;
+    try {
+        const Grid g = Grid::from_blocks(TensorProductGrid<double>({{0.0, 1.0}, {0.0, 1.0}}),
+                                         factor, std::move(blocks), std::nullopt);
+        (void)g;
+    } catch (const std::exception& e) {
+        message = e.what();
+    }
+    PANTR_CHECK_MSG(message.find("int64 can count") != std::string::npos,
+                    "the total-count guard must be the one that fires; got: " + message);
+
+    // One such block on its own is fine, so the guard is not simply rejecting big blocks.
+    std::vector<BlockList> one;
+    one.push_back(level(2, {{0, 0, kHalf, kHalf}}));
+    const Grid g = Grid::from_blocks(TensorProductGrid<double>({{0.0, 1.0}, {0.0, 1.0}}),
+                                     factor, std::move(one), std::nullopt);
+    PANTR_CHECK(g.num_cells() == kHalf * kHalf);
+
+    // And a single block whose own extents multiply past int64 is refused by the product
+    // guard, which is the other half and would otherwise be signed overflow.
+    std::vector<BlockList> huge;
+    huge.push_back(level(2, {{0, 0, 2 * kHalf, 2 * kHalf}}));
+    message.clear();
+    try {
+        const Grid h = Grid::from_blocks(TensorProductGrid<double>({{0.0, 1.0}, {0.0, 1.0}}),
+                                         factor, std::move(huge), std::nullopt);
+        (void)h;
+    } catch (const std::exception& e) {
+        message = e.what();
+    }
+    PANTR_CHECK_MSG(message.find("representable size") != std::string::npos,
+                    "the per-block guard must be the one that fires; got: " + message);
+}
+
 }  // namespace
 
 // The census, at both scalars. `float` is a compile-time device only: it forces every
@@ -868,6 +1150,14 @@ int main() {
     test_level_cells_per_axis();
     test_level_count_overflow_is_reported();
     test_active_blocks_range();
+
+    test_hanging_neighbours_normal_to_axis_one();
+    test_ancestor_search_climbs_more_than_one_level();
+    test_anisotropic_three_dimensional_grid();
+    test_masks_over_a_multi_block_level();
+    test_a_point_on_a_breakpoint_takes_the_lower_cell();
+    test_wrong_length_spans_are_refused();
+    test_total_cell_count_overflow_is_reported();
 
     test_naming_a_clean_level_changes_nothing();
     test_trailing_empty_levels_are_dropped();
