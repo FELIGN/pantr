@@ -48,8 +48,8 @@
 /// knot vector has at least `2 * degree + 2` entries, a vector has at least one
 /// knot class, the constructor refuses a space with no interval so the in-domain
 /// range has at least two classes, and `first_basis_per_interval` has exactly
-/// `num_intervals` entries -- checked over 2850 accepted cases and asserted in
-/// `cpp/tests/test_bspline_space_1d.cpp` so it stays true.
+/// `num_intervals` entries, which `cpp/tests/test_bspline_space_1d.cpp` asserts so
+/// that it stays true.
 ///
 /// ## `_ref` accessors are not bound, and there are none to bind
 ///
