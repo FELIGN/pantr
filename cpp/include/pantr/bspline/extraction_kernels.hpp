@@ -47,6 +47,19 @@
 /// one case where `out` may alias the input. The copy runs ascending, as the
 /// oracle's does.
 ///
+/// ## The inner loop is contractable, and the parity claim has to say so
+///
+/// `contract_axis`'s accumulation is `acc = acc + coefficient * src[...]`, which a
+/// compiler targeting an ISA with a fused multiply-add may contract to one
+/// instruction with one rounding instead of two. The oracle does not, so on such a
+/// build the two backends differ by exactly the budget
+/// `design/backend_parity.md` Rule 10 derives, and the parity test that follows
+/// must gate on `contraction_may_fuse()` rather than assume bit-identity.
+///
+/// Stated here for the same reason `bezier/kernels_1d.hpp` states it of its own
+/// loops: nothing in the source says which way a given build went, and the header
+/// is where a reader looks before writing the claim.
+///
 /// ## Why `bezier/axis_layout.hpp` is not reused
 ///
 /// That header's `gather_axis_to_front` / `scatter_axis_from_front` move an axis
@@ -82,7 +95,15 @@ struct ModeOperator {
     span2d<const T> matrix;
 
     /// Whether this direction is the identity, so its contraction is skipped.
-    /// The matrix must be square when this is set.
+    ///
+    /// The matrix must be square when this is set. That invariant is checked where
+    /// the list is *consumed* (`PANTR_PRECONDITION`, so in debug builds only) rather
+    /// than at construction, because this is a flat Layer 3 kernel-argument bundle
+    /// and not a domain type: `CLAUDE.md` puts validation in Layer 2 and states that
+    /// a kernel checks nothing. A constructor that threw here would be the first
+    /// kernel argument in the tree to do so. Whether that exemption should extend to
+    /// a struct this file exports is a design question flagged for the architect, not
+    /// settled here.
     bool is_identity;
 };
 
@@ -193,8 +214,17 @@ template <Real T>
 ///
 /// The stage that writes it is the one that writes `out`: every direction after it
 /// passes through, and an identity direction is square, so the tensor already has
-/// the output's extents by then. The oracle does the same for `d = 2` and takes an
-/// extra copy for `d = 3`; skipping that copy changes no value.
+/// the output's extents by then.
+///
+/// Where this lands relative to the oracle differs by kernel, and the helper is
+/// shared by all four, so it is worth being exact. The **unilateral** `d = 2`
+/// kernels do the same thing -- a lone identity direction contracts straight into
+/// `out` (`_extraction_kernels.py:133`, `:144`). Everywhere else -- unilateral
+/// `d = 3`, and the bilateral kernels at both dimensions -- the oracle's last
+/// stage runs unconditionally and degenerates to a copy when its direction is the
+/// identity (`:274`, `:733`, `:854`), which this skips. Skipping it changes no
+/// value and no rounding: a copy performs no arithmetic, so the stage counts a
+/// parity bound is built from are the same either way.
 ///
 /// \tparam T Scalar type.
 /// \param ops The per-direction operators.
@@ -388,7 +418,8 @@ void apply_kron(std::span<const ModeOperator<T>> ops, std::span<const T> v, std:
 /// \param v Input vector of `prod(n_out_k)` elements.
 /// \param out Output vector of `prod(n_in_k)` elements. Must not alias `v` unless
 ///        every direction is the identity.
-/// \param scratch Work buffer.
+/// \param scratch Work buffer; the size `pantr.bspline._extraction_helpers`
+///        computes is sufficient for any identity pattern.
 ///
 /// \note Inputs are assumed to be correct (no validation performed).
 template <Real T>
@@ -404,7 +435,8 @@ void apply_kron_transpose(std::span<const ModeOperator<T>> ops, std::span<const 
 /// \param k_matrix Input matrix, square of side `prod(n_out_k)`.
 /// \param out Output matrix, square of side `prod(n_in_k)`. Must not alias
 ///        `k_matrix` unless every direction is the identity.
-/// \param scratch Work buffer.
+/// \param scratch Work buffer; the size `pantr.bspline._extraction_helpers`
+///        computes is sufficient for any identity pattern.
 ///
 /// \note Inputs are assumed to be correct (no validation performed).
 template <Real T>
@@ -420,7 +452,8 @@ void apply_kron_mt_k_m(std::span<const ModeOperator<T>> ops, std::span<const T> 
 /// \param k_matrix Input matrix, square of side `prod(n_in_k)`.
 /// \param out Output matrix, square of side `prod(n_out_k)`. Must not alias
 ///        `k_matrix` unless every direction is the identity.
-/// \param scratch Work buffer.
+/// \param scratch Work buffer; the size `pantr.bspline._extraction_helpers`
+///        computes is sufficient for any identity pattern.
 ///
 /// \note Inputs are assumed to be correct (no validation performed).
 template <Real T>
