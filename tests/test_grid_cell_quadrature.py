@@ -234,8 +234,8 @@ class TestCppOwnedOperands:
 
         ``cell_quadrature`` has no backend branch of its own: it reads
         ``grid.collect_cell_bounds()`` and the rule's ``points`` and ``weights``, and each
-        of those is forwarded to whichever implementation the wrapper holds. So the thing
-        worth pinning is that under the C++ backend the operands really are the C++ ones
+        of those is answered by whatever the grid and the rule resolve to. So the thing
+        worth pinning is that under the C++ backend those operands really are the C++ ones
         -- asserted on the implementation classes, because every value assertion below
         would pass just as well on the Python oracle -- and that the composition over them
         is still exact where it has to be. Gauss-Legendre with three points per direction

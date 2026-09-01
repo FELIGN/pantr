@@ -16,12 +16,16 @@ flagged as cut.
 No C++ counterpart, and why
 ---------------------------
 
-Both operands are owned by the C++ core since the 2026-08-27 amendment to
-``design/cross_backend_types.md``: under ``PANTR_BACKEND=cpp`` the cell bounds come
-from ``pantr::grid::TensorProductGrid`` and the reference points and weights from
-``pantr::quad::QuadratureRule``. So this function already *runs on* the port; what
-is still written here is the push-forward itself, one broadcast ``lo + span * u``
-and one product of the span.
+This function already *runs on* the port under ``PANTR_BACKEND=cpp``, and what
+reaches it from C++ depends on the grid, because ``grid`` is the
+:class:`~pantr.grid.Grid` protocol rather than one class. The reference points and
+weights always come from ``pantr::quad::QuadratureRule``, a ported type. The cell
+bounds come from ``pantr::grid::TensorProductGrid``'s own ``collect_cell_bounds``
+for a tensor-product grid, and from the ``pantr::grid::hier_collect_cell_bounds``
+*kernel* for a :class:`~pantr.grid.HierarchicalGrid`, which is not a ported type and
+reaches C++ through the kernel catalogue instead. Either way, what is still written
+here is the push-forward itself, one broadcast ``lo + span * u`` and one product of
+the span.
 
 Moving those two lines is a port and not a re-pointing, which is why it is not done
 here. C++ is licensed to contract ``lo + span * u`` into a fused multiply-add where
