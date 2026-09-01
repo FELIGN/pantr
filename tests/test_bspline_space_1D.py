@@ -2777,16 +2777,62 @@ def test_first_basis_per_interval_is_non_decreasing() -> None:
     np.testing.assert_array_equal(np.diff(first), np.asarray(multiplicities[1:-1]))
 
 
-def test_first_basis_per_interval_cached_and_frozen() -> None:
-    """The same read-only array comes back on every call."""
+def test_first_basis_per_interval_is_a_read_only_view_of_one_buffer() -> None:
+    """Every call views the same read-only storage rather than recomputing it.
+
+    The guarantee used to be stated, and asserted, as ``a is b`` -- the same numpy
+    *object* on every call, which is what ``functools.cached_property`` gives. The
+    port weakens that to the same *memory*: the C++ backend memoizes the buffer and
+    builds a fresh ``nb::ndarray`` view over it per access, so the object differs
+    and nothing is recomputed or copied.
+
+    The weaker form is the one worth pinning, because it is the one that carries
+    the cost argument. ``design/bspline_derived_caches.md`` rejects memoizing the
+    presentation as well as the value, for a concrete reason: two memos over one
+    buffer are correct only until something rebuilds the buffer, and then the
+    wrapper serves views into freed storage. One ``ndarray`` construction per
+    access is about 200 ns, the same order as the Python call that asked for it.
+
+    ``shares_memory`` is what distinguishes a view from a copy, and it holds under
+    both backends -- trivially under the oracle, which really does return one
+    object.
+    """
     space = BsplineSpace1D([0, 0, 0, 1, 2, 3, 3, 3], 2)
 
     first = space.first_basis_per_interval()
+    again = space.first_basis_per_interval()
 
-    assert first is space.first_basis_per_interval()
+    assert np.shares_memory(first, again)
+    np.testing.assert_array_equal(first, again)
     assert not first.flags.writeable
     with pytest.raises(ValueError):
         first[0] = 7
+
+
+def test_derived_arrays_are_views_rather_than_copies() -> None:
+    """The knots and the knot classes are views of the space's own storage too.
+
+    Same contract as ``first_basis_per_interval`` above and the same reason: a
+    property that copied would make the natural spelling of a loop over intervals
+    quadratic in nothing.
+    """
+    space = BsplineSpace1D([0, 0, 0, 1, 2, 3, 3, 3], 2)
+
+    assert np.shares_memory(space.knots, space.knots)
+    assert not space.knots.flags.writeable
+
+    unique, mult = space.get_unique_knots_and_multiplicity()
+    again_unique, again_mult = space.get_unique_knots_and_multiplicity()
+    assert np.shares_memory(unique, again_unique)
+    assert np.shares_memory(mult, again_mult)
+    assert not unique.flags.writeable
+    assert not mult.flags.writeable
+
+    # That the in-domain form is a *subrange of the same buffer* is true of the C++
+    # implementation and not of the oracle, which runs a second scan for it. It is
+    # therefore a binding claim rather than a cross-backend contract, and it is
+    # asserted in `tests/parity/test_bspline_binding_contract.py` under the fixture
+    # that makes a missing extension a failure instead of a silent skip.
 
 
 def test_first_basis_per_interval_rejects_periodic() -> None:
