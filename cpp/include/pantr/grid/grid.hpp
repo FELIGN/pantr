@@ -113,19 +113,24 @@
 ///
 /// ## Thread safety
 ///
-/// `cell_bvh()` fills a `mutable std::optional` with no lock, no atomic and no
-/// `std::once_flag`, so **concurrent first calls are a data race and therefore
-/// undefined behaviour.** A caller sharing a grid across threads must call
-/// `cell_bvh()` once first. Everything else here is const and shares nothing.
+/// **Every non-mutating member here is safe to call concurrently on one grid with no
+/// external locking**, `cell_bvh()` included: the spatial index lives in a `LazyMemo`
+/// (`pantr/core/lazy_memo.hpp`), which fills it at most once and publishes it
+/// atomically. The two tag registries are the exception, and the only one -- they
+/// accumulate by design, so a `set()` racing anything is the caller's to serialise,
+/// exactly as `pantr/grid/tags.hpp` already says of them.
 ///
-/// An earlier version of this note said "one write wins, costing redundant
-/// construction", borrowing the Python oracle's contract. **That reason does not
-/// transfer.** In Python it holds because the interpreter makes the assignment atomic,
-/// so the losing thread's tree is merely discarded. Here two threads construct a
-/// `BVH<T>` into the same storage, which is not a write that one of them wins; it is
-/// undefined, whatever the observed behaviour has been. The caller-side rule is
-/// unchanged and is the only part that was ever load-bearing. Adding the
-/// synchronisation is FELIGN/pantr#395's, not this layer's to do here.
+/// This was a bare `mutable std::optional` filled with no lock and no atomic, and the
+/// note here said "one write wins, costing redundant construction", borrowed from the
+/// Python oracle's contract. **That reason does not transfer**: in Python it holds
+/// because the interpreter makes the assignment atomic, so the losing thread's tree is
+/// merely discarded, while here two threads construct a `BVH<T>` into one storage, which
+/// is undefined rather than a write one of them wins. It was a defect and not a
+/// documentation problem, so the note went with the code.
+///
+/// Why a clean run of the old shape was not evidence, and what is, are recorded in
+/// `pantr/core/lazy_memo.hpp` and `cpp/tests/test_lazy_memo.cpp`: the failure is
+/// invisible to a value assertion, and a thread sanitizer is what sees it.
 
 #include <cstddef>
 #include <cstdint>
@@ -137,6 +142,7 @@
 #include <utility>
 #include <vector>
 
+#include "pantr/core/lazy_memo.hpp"
 #include "pantr/core/mdspan.hpp"
 #include "pantr/core/scalar.hpp"
 #include "pantr/geometry/aabb.hpp"
@@ -525,24 +531,23 @@ class GridBase {
     ///
     /// \return A reference to a member of this grid, valid for as long as the grid is.
     ///         Nothing invalidates it: the cache is filled once and never replaced.
-    /// \warning Concurrent first calls are a DATA RACE, and so undefined behaviour
-    ///          rather than a write that one thread wins -- see the file header, which
-    ///          records that the "one write wins" reading was borrowed from Python and
-    ///          does not transfer. Call this once on the main thread before sharing the
-    ///          grid across threads.
+    /// \note Safe to call concurrently from any number of threads: the memo runs the
+    ///       build at most once and publishes the result atomically. A build that throws
+    ///       -- `CapacityError` from a tree deeper than the traversal stack -- leaves the
+    ///       memo empty, so the next call raises again rather than serving a half-built
+    ///       tree.
     [[nodiscard]] const BVH<scalar_type>& cell_bvh() const {
-        if (!bvh_.has_value()) {
+        return bvh_.get_or_build([this] {
             const auto n = static_cast<std::size_t>(num_cells_);
             const auto d = static_cast<std::size_t>(ndim_);
             std::vector<scalar_type> cell_lo(n * d);
             std::vector<scalar_type> cell_hi(n * d);
             self().collect_cell_bounds(span2d<scalar_type>(cell_lo.data(), n, d),
                                        span2d<scalar_type>(cell_hi.data(), n, d));
-            bvh_ = BVH<scalar_type>::from_cell_bounds(
+            return BVH<scalar_type>::from_cell_bounds(
                 span2d<const scalar_type>(cell_lo.data(), n, d),
                 span2d<const scalar_type>(cell_hi.data(), n, d));
-        }
-        return *bvh_;
+        });
     }
 
     /// Materialise per-cell `(lo, hi)` into `(num_cells, ndim)` views.
@@ -740,11 +745,11 @@ class GridBase {
         }
     }
 
-    std::int64_t ndim_;                            ///< Number of axes.
-    std::int64_t num_cells_;                       ///< Number of cells.
-    CellTags cell_tags_;                           ///< The cell-tag registry.
-    FacetTags facet_tags_;                         ///< The facet-tag registry.
-    mutable std::optional<BVH<scalar_type>> bvh_;  ///< The lazily built spatial index.
+    std::int64_t ndim_;                    ///< Number of axes.
+    std::int64_t num_cells_;               ///< Number of cells.
+    CellTags cell_tags_;                   ///< The cell-tag registry.
+    FacetTags facet_tags_;                 ///< The facet-tag registry.
+    LazyMemo<BVH<scalar_type>> bvh_;       ///< The lazily built spatial index.
 };
 
 // ---------------------------------------------------------------------------
