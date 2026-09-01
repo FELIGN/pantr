@@ -97,6 +97,17 @@ target_compile_options(pantr_core INTERFACE
 # Eigen under a consumer's different version is outside what was measured.
 target_link_libraries(pantr_core INTERFACE $<BUILD_INTERFACE:Eigen3::Eigen>)
 
+# Threads, and unlike Eigen this one DOES cross the install boundary.
+# `pantr/core/lazy.hpp` puts an `std::mutex` and an `std::atomic<bool>` inside a
+# header, so the thread-safety contract the domain types promise is compiled into
+# every consumer's translation unit rather than into a library they link. On a
+# glibc new enough to have folded the pthread symbols into libc this changes
+# nothing; on anything older it is the difference between linking and not, and a
+# consumer has no way to know they owe it. `find_dependency(Threads)` in
+# cmake/pantrConfig.cmake.in is the other half.
+find_package(Threads REQUIRED)
+target_link_libraries(pantr_core INTERFACE Threads::Threads)
+
 # BUILD_INTERFACE only, deliberately. cpp/include/pantr/core/mdspan.hpp decides
 # for itself from `__cpp_lib_mdspan`, so this definition is redundant in-tree and
 # would be actively wrong once installed: the probe measures the compiler that

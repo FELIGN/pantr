@@ -7,6 +7,11 @@ include(CMakeFindDependencyMacro)
 # move would break silently every time a new header adopts it.
 find_dependency(Eigen3)
 
+# Threads is a hard requirement for the same reason Eigen is, and for a sharper
+# one: pantr/core/lazy.hpp's memo is an `std::mutex` and an `std::atomic<bool>` in
+# a header, so it is compiled into the consumer's own translation units.
+find_dependency(Threads)
+
 # Kokkos mdspan is NOT a hard requirement, because whether it is needed depends
 # on the consumer's standard library rather than on ours. pantr/core/mdspan.hpp
 # selects on `__cpp_lib_mdspan`, so a consumer whose libstdc++ ships <mdspan>
