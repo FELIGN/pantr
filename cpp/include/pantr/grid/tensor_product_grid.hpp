@@ -196,6 +196,26 @@ class TensorProductGrid : public GridBase<TensorProductGrid<T>> {
         return std::span<const T>(breakpoints_flat_.data() + start, count);
     }
 
+    /// Every axis's breakpoints, end to end in one buffer.
+    ///
+    /// Exposed because it is exactly the `knots_flat` half of the descriptor the
+    /// hierarchical kernels in `pantr/grid/hierarchical.hpp` take, so a grid built over
+    /// this one can borrow it instead of repacking a copy -- which is what the Python
+    /// oracle does on every rebuild, and says in a comment that it does only to keep one
+    /// construction path.
+    ///
+    /// \return A view of the whole buffer, valid for as long as the grid is.
+    [[nodiscard]] std::span<const T> breakpoints_flat() const noexcept {
+        return breakpoints_flat_;
+    }
+
+    /// Where each axis begins in `breakpoints_flat()`.
+    ///
+    /// \return `ndim` offsets; the `knot_starts` half of the descriptor above.
+    [[nodiscard]] std::span<const std::int64_t> axis_starts() const noexcept {
+        return axis_start_;
+    }
+
     /// Whether every axis's breakpoint spacing is constant.
     ///
     /// Constant to within `kUniformSpacingEpsFactor * eps * (|first| + |last|)`; see
