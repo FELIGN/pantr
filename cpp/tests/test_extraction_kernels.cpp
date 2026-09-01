@@ -21,9 +21,20 @@
 /// orders, so they differ by rounding. The bound is the standard inner-product
 /// one, `gamma_n = n u / (1 - n u)`, composed over the stages, applied to the
 /// elementwise magnitude reachable at each output -- which is what running the
-/// same kernel on the absolute values gives. `n` is the total contraction length
-/// along the chain, not the operator size, and it is counted from the identity
+/// same computation on absolute values gives. `n` is the contraction length of
+/// each stage, not the operator size, and the stages are counted from the identity
 /// flags because an identity direction contracts nothing at all.
+///
+/// **The reference is summed with compensation so that the bound is the kernel's
+/// own.** The materialised path is a flat dot product of the full Kronecker row --
+/// 24 terms at `d = 3` against the kernel's chain of 9 -- so summed naively its
+/// error would not be dominated by the kernel's and the bound would have to carry
+/// `gamma_24` as well, testing the reference as much as the subject. Neumaier
+/// compensated summation makes the reference's error about `2 u` of the term
+/// magnitude regardless of length, which is what lets the budget below be
+/// `chain + 2u + (d - 1) u` rather than `chain + gamma_N`. The `(d - 1) u` is not
+/// optional: each entry of the materialised `kron` is a product of `d` operator
+/// entries and so carries `d - 1` roundings of its own.
 ///
 /// ## Why the sweep counts its own disagreements
 ///
@@ -93,6 +104,33 @@ void record(double error, double bound) {
         }
     }
 }
+
+/// A Neumaier compensated sum.
+///
+/// Used for every accumulation on the reference side. Its error is about `2 u`
+/// times the sum of the term magnitudes whatever the length, so the reference is
+/// sharply more accurate than the kernel it checks and the bound below is the
+/// kernel's own rather than a mixture of the two.
+class CompensatedSum {
+  public:
+    /// \param term The next term to add.
+    void add(double term) {
+        const double next = total_ + term;
+        if ((total_ < 0.0 ? -total_ : total_) >= (term < 0.0 ? -term : term)) {
+            correction_ += (total_ - next) + term;
+        } else {
+            correction_ += (term - next) + total_;
+        }
+        total_ = next;
+    }
+
+    /// \return The compensated total.
+    [[nodiscard]] double value() const { return total_ + correction_; }
+
+  private:
+    double total_ = 0.0;
+    double correction_ = 0.0;
+};
 
 /// A dense matrix with its shape, so a test can hand one around by value.
 struct Dense {
@@ -191,11 +229,11 @@ Dense kron_all(const std::vector<Dense>& factors) {
 std::vector<double> matvec(const Dense& m, std::span<const double> v) {
     std::vector<double> result(m.rows, 0.0);
     for (std::size_t i = 0; i < m.rows; ++i) {
-        double acc = 0.0;
+        CompensatedSum acc;
         for (std::size_t j = 0; j < m.cols; ++j) {
-            acc += m.at(i, j) * v[j];
+            acc.add(m.at(i, j) * v[j]);
         }
-        result[i] = acc;
+        result[i] = acc.value();
     }
     return result;
 }
@@ -206,11 +244,11 @@ std::vector<double> matvec(const Dense& m, std::span<const double> v) {
 std::vector<double> matvec_transpose(const Dense& m, std::span<const double> v) {
     std::vector<double> result(m.cols, 0.0);
     for (std::size_t j = 0; j < m.cols; ++j) {
-        double acc = 0.0;
+        CompensatedSum acc;
         for (std::size_t i = 0; i < m.rows; ++i) {
-            acc += m.at(i, j) * v[i];
+            acc.add(m.at(i, j) * v[i]);
         }
-        result[j] = acc;
+        result[j] = acc.value();
     }
     return result;
 }
@@ -222,11 +260,11 @@ Dense matmul(const Dense& a, const Dense& b) {
     Dense m{a.rows, b.cols, std::vector<double>(a.rows * b.cols, 0.0)};
     for (std::size_t i = 0; i < a.rows; ++i) {
         for (std::size_t j = 0; j < b.cols; ++j) {
-            double acc = 0.0;
+            CompensatedSum acc;
             for (std::size_t k = 0; k < a.cols; ++k) {
-                acc += a.at(i, k) * b.at(k, j);
+                acc.add(a.at(i, k) * b.at(k, j));
             }
-            m.values[i * m.cols + j] = acc;
+            m.values[i * m.cols + j] = acc.value();
         }
     }
     return m;
@@ -269,22 +307,42 @@ std::vector<ModeOperator<double>> as_mode_operators(const std::vector<Dense>& op
     return mode_ops;
 }
 
-/// The elementwise bound of this file's header, for a chain of contractions.
+/// `gamma_n = n u / (1 - n u)`, the standard bound for an `n`-term accumulation.
 ///
-/// \param lengths The contraction length of each stage that actually runs.
+/// \param n The number of accumulation steps.
+/// \return The relative growth factor.
+double gamma(std::size_t n) {
+    const double count = static_cast<double>(n);
+    return (count * kEps) / (1.0 - count * kEps);
+}
+
+/// The elementwise bound on the gap between the kernel and the reference.
+///
+/// Three contributions, and none of them is a fudge factor:
+///
+/// - the **kernel's** chain, `prod_s (1 + gamma_{n_s}) - 1` over the stages it
+///   actually runs, which is the composition of one inner-product bound per stage;
+/// - the **reference's** accumulation, about `2 u` because it is compensated (see
+///   `CompensatedSum`), rather than the `gamma_N` a naive flat dot product would
+///   cost -- this is the whole reason the reference is summed that way;
+/// - the **materialised `kron` itself**, `(d - 1) u`, since each of its entries is
+///   a product of `d` operator entries and commits `d - 1` roundings before any
+///   accumulation begins.
+///
+/// \param lengths The contraction length of each kernel stage that actually runs.
+/// \param directions `d`, the number of tensor-product directions.
 /// \param magnitude The elementwise magnitude reachable at the output, i.e. the
 ///        same computation run on absolute values.
 /// \return The elementwise absolute bound.
-std::vector<double> chain_bound(std::span<const std::size_t> lengths,
+std::vector<double> chain_bound(std::span<const std::size_t> lengths, std::size_t directions,
                                 std::span<const double> magnitude) {
-    double growth = 1.0;
+    double kernel_growth = 1.0;
     for (const std::size_t n : lengths) {
-        const double gamma = (static_cast<double>(n) * kEps) / (1.0 - static_cast<double>(n) * kEps);
-        growth *= (1.0 + gamma);
+        kernel_growth *= (1.0 + gamma(n));
     }
-    growth -= 1.0;
-    // Two backends, each within its own bound of the exact result.
-    growth *= 2.0;
+    kernel_growth -= 1.0;
+
+    const double growth = kernel_growth + gamma(2) + gamma(directions - 1);
 
     std::vector<double> bound(magnitude.size());
     for (std::size_t i = 0; i < magnitude.size(); ++i) {
@@ -318,6 +376,69 @@ std::vector<double> absolute(std::span<const double> v) {
 }  // namespace
 
 namespace {
+
+/// `_apply_scratch_size` from `pantr.bspline._extraction_helpers`, transcribed.
+///
+/// Transcribed rather than approximated on purpose. Sizing the buffer generously
+/// would make every run pass whatever the formula said, so the test could not
+/// catch an undersizing -- and the buffer these kernels are handed in production
+/// is exactly what that Python function returns. Reproducing it here is what makes
+/// the sweep a check on the sizing contract and not only on the arithmetic.
+///
+/// \param from Per-direction extents the tensor starts with.
+/// \param to Per-direction extents it ends with.
+/// \return The scratch element count, in the same convention (two ping-pong halves).
+std::size_t apply_scratch_size(std::span<const std::size_t> from, std::span<const std::size_t> to) {
+    const std::size_t d = from.size();
+    if (d <= 1) {
+        return 0;
+    }
+    std::size_t largest = 0;
+    for (std::size_t k = 0; k + 1 < d; ++k) {
+        std::size_t size = 1;
+        for (std::size_t j = 0; j <= k; ++j) {
+            size *= to[j];
+        }
+        for (std::size_t j = k + 1; j < d; ++j) {
+            size *= from[j];
+        }
+        largest = size > largest ? size : largest;
+    }
+    return 2 * largest;
+}
+
+/// `_bilateral_scratch_size` from `pantr.bspline._extraction_helpers`, transcribed.
+///
+/// \param from Per-direction extents the matrix starts with, on both index sides.
+/// \param to Per-direction extents it ends with.
+/// \return The scratch element count.
+std::size_t bilateral_scratch_size(std::span<const std::size_t> from,
+                                   std::span<const std::size_t> to) {
+    const std::size_t d = from.size();
+    if (d < 1) {
+        return 0;
+    }
+    std::vector<std::size_t> shape;
+    shape.insert(shape.end(), from.begin(), from.end());
+    shape.insert(shape.end(), from.begin(), from.end());
+
+    std::size_t largest = 0;
+    const std::size_t total_stages = 2 * d;
+    for (std::size_t stage = 0; stage < total_stages; ++stage) {
+        const std::size_t k = stage / 2;
+        const std::size_t axis = (stage % 2 == 0) ? k : d + k;
+        shape[axis] = to[k];
+        if (stage + 1 == total_stages) {
+            break;  // the final stage writes `out`, not scratch
+        }
+        std::size_t size = 1;
+        for (const std::size_t extent : shape) {
+            size *= extent;
+        }
+        largest = size > largest ? size : largest;
+    }
+    return 2 * largest;
+}
 
 /// Every identity pattern over `d` directions, as a bit mask.
 ///
@@ -382,13 +503,20 @@ void check_unilateral(std::size_t d, bool integral, std::uint64_t seed) {
         const Dense full = kron_all(reference_ops);
         const std::vector<ModeOperator<double>> mode_ops = as_mode_operators(ops, flags);
 
+        std::vector<std::size_t> in_extents;
+        std::vector<std::size_t> out_extents;
+        for (const Dense& op : ops) {
+            in_extents.push_back(op.cols);
+            out_extents.push_back(op.rows);
+        }
+
         std::vector<double> v(full.cols);
         for (double& value : v) {
             value = integral ? rng.next_small_integer(3) : rng.next();
         }
 
         std::vector<double> out(full.rows, 0.0);
-        std::vector<double> scratch(4 * full.rows * full.cols, 0.0);
+        std::vector<double> scratch(apply_scratch_size(in_extents, out_extents), 0.0);
         pantr::bspline::apply_kron<double>(mode_ops, v, out, scratch);
         const std::vector<double> expected = matvec(full, v);
 
@@ -396,7 +524,7 @@ void check_unilateral(std::size_t d, bool integral, std::uint64_t seed) {
         const Dense abs_full = kron_all(abs_ops);
         const std::vector<double> magnitude = matvec(abs_full, absolute(v));
         const std::vector<std::size_t> lengths = unilateral_lengths(ops, flags, false);
-        const std::vector<double> bound = chain_bound(lengths, magnitude);
+        const std::vector<double> bound = chain_bound(lengths, d, magnitude);
 
         for (std::size_t i = 0; i < out.size(); ++i) {
             const double deviation = out[i] - expected[i];
@@ -419,11 +547,12 @@ void check_unilateral(std::size_t d, bool integral, std::uint64_t seed) {
             value = integral ? rng.next_small_integer(3) : rng.next();
         }
         std::vector<double> out_t(full.cols, 0.0);
-        pantr::bspline::apply_kron_transpose<double>(mode_ops, w, out_t, scratch);
+        std::vector<double> scratch_t(apply_scratch_size(out_extents, in_extents), 0.0);
+        pantr::bspline::apply_kron_transpose<double>(mode_ops, w, out_t, scratch_t);
         const std::vector<double> expected_t = matvec_transpose(full, w);
         const std::vector<double> magnitude_t = matvec_transpose(abs_full, absolute(w));
         const std::vector<std::size_t> lengths_t = unilateral_lengths(ops, flags, true);
-        const std::vector<double> bound_t = chain_bound(lengths_t, magnitude_t);
+        const std::vector<double> bound_t = chain_bound(lengths_t, d, magnitude_t);
 
         for (std::size_t i = 0; i < out_t.size(); ++i) {
             const double deviation = out_t[i] - expected_t[i];
@@ -472,13 +601,21 @@ void check_bilateral(std::size_t d, bool integral, std::uint64_t seed) {
 
         const Dense full = kron_all(reference_ops);
         const std::vector<ModeOperator<double>> mode_ops = as_mode_operators(ops, flags);
+
+        std::vector<std::size_t> in_extents;
+        std::vector<std::size_t> out_extents;
+        for (const Dense& op : ops) {
+            in_extents.push_back(op.cols);
+            out_extents.push_back(op.rows);
+        }
+
         const std::size_t big = full.rows;
         const std::size_t small = full.cols;
 
         // out = M^T K M, with K of side `big`.
         Dense k_big = draw(big, big, rng, integral);
         std::vector<double> out_small(small * small, 0.0);
-        std::vector<double> scratch(8 * big * big, 0.0);
+        std::vector<double> scratch(bilateral_scratch_size(out_extents, in_extents), 0.0);
         pantr::bspline::apply_kron_mt_k_m<double>(mode_ops, k_big.values, out_small, scratch);
         const Dense expected_small = matmul(matmul(transpose(full), k_big), full);
         for (std::size_t i = 0; i < out_small.size(); ++i) {
@@ -502,7 +639,7 @@ void check_bilateral(std::size_t d, bool integral, std::uint64_t seed) {
                         lengths.push_back(ops[k].rows);
                     }
                 }
-                const std::vector<double> bound = chain_bound(lengths, magnitude.values);
+                const std::vector<double> bound = chain_bound(lengths, d, magnitude.values);
                 record(error, bound[i]);
                 PANTR_CHECK_MSG(error <= bound[i],
                                 "MT_K_M, bounded, d=" + std::to_string(d) + " mask=" +
@@ -513,7 +650,8 @@ void check_bilateral(std::size_t d, bool integral, std::uint64_t seed) {
         // out = M K M^T, with K of side `small`.
         Dense k_small = draw(small, small, rng, integral);
         std::vector<double> out_big(big * big, 0.0);
-        pantr::bspline::apply_kron_m_k_mt<double>(mode_ops, k_small.values, out_big, scratch);
+        std::vector<double> scratch2(bilateral_scratch_size(in_extents, out_extents), 0.0);
+        pantr::bspline::apply_kron_m_k_mt<double>(mode_ops, k_small.values, out_big, scratch2);
         const Dense expected_big = matmul(matmul(full, k_small), transpose(full));
         for (std::size_t i = 0; i < out_big.size(); ++i) {
             if (integral) {
@@ -536,7 +674,7 @@ void check_bilateral(std::size_t d, bool integral, std::uint64_t seed) {
                         lengths.push_back(ops[k].cols);
                     }
                 }
-                const std::vector<double> bound = chain_bound(lengths, magnitude.values);
+                const std::vector<double> bound = chain_bound(lengths, d, magnitude.values);
                 record(error, bound[i]);
                 PANTR_CHECK_MSG(error <= bound[i],
                                 "M_K_MT, bounded, d=" + std::to_string(d) + " mask=" +
