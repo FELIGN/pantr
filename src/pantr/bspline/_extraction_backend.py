@@ -39,7 +39,10 @@ Measured, and it is stronger than the port needed: on a build whose target ISA h
 no fused multiply-add the two agree **bit for bit**, because the C++ reproduces the
 oracle's stage order and its within-stage summation order exactly. Where the
 contraction can fuse they differ by ``design/backend_parity.md`` Rule 10's budget.
-``tests/parity/test_extraction_kernels.py`` carries the claim and its gate.
+``tests/parity/test_extraction_kernels.py`` carries the claim and its gate, and
+measures it over **both** halves of the surface -- the twelve single-cell entry
+points and the twelve batch ones are twelve different C++ functions each, so a
+claim measured on one says nothing about the other.
 
 The batch kernels are the one place the two differ in kind rather than in bits: the
 oracle's are ``parallel=True`` over cells and the C++ loops. Each cell writes only

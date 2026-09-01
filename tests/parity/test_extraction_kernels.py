@@ -8,9 +8,18 @@ skipped, and each contraction's length. Only the buffer bookkeeping differs.
 
 **So the claim here is bitwise, not bounded, and that is a stronger statement than
 the port needed.** Measured on this machine over every dimension, every identity
-pattern and both dtypes: not one element differs. ``design/backend_parity.md``
-says to make the strongest claim that holds, because a tolerance nothing
-approaches asserts nothing.
+pattern, both dtypes and **both halves of the bound surface**: not one element
+differs. ``design/backend_parity.md`` says to make the strongest claim that holds,
+because a tolerance nothing approaches asserts nothing.
+
+Both halves, because there are two and they are twelve different C++ functions
+each: the single-cell entry points behind
+:func:`~pantr.bspline._extraction_backend.apply_kernel`, and the batch ones behind
+``apply_many_kernel``. A first version of this module exercised only the batch
+half and checked the other twelve names with ``hasattr``, which is existence
+rather than exercise -- a mutation dropping the transpose in the ``d = 1``
+transposed entry point left every test here passing. :data:`PATHS` is what closes
+that, and every claim below is parametrized over it.
 
 It is gated, and the gate is the one thing that would break it. The inner loop is
 ``acc = acc + coefficient * src[...]``, which a build targeting an ISA with a fused
@@ -38,6 +47,7 @@ instead is the opposite: that the sweep is not accidentally trivial, which
 from __future__ import annotations
 
 import itertools
+from collections.abc import Callable
 from typing import Final, NamedTuple
 
 import numpy as np
@@ -50,6 +60,7 @@ from pantr.bspline._extraction_backend import (
     _CPP_NAMES,
     _CPP_NAMES_MANY,
     _KERNELS_MANY,
+    apply_kernel,
     apply_many_kernel,
 )
 from pantr.bspline._extraction_helpers import _required_scratch_size
@@ -179,7 +190,7 @@ def _operand_sides(case: _Case, op_kind: str) -> tuple[int, int]:
     return n_out, n_in
 
 
-def _run(
+def _run_batch(
     case: _Case,
     op_kind: str,
     dtype: npt.DTypeLike,
@@ -216,24 +227,115 @@ def _run(
     return out
 
 
-def _both_backends(
-    case: _Case, op_kind: str, dtype: npt.DTypeLike, operand: npt.NDArray[np.float32 | np.float64]
-) -> tuple[npt.NDArray[np.float32 | np.float64], npt.NDArray[np.float32 | np.float64]]:
-    """Run one configuration on both backends.
+def _run_cells(
+    case: _Case,
+    op_kind: str,
+    dtype: npt.DTypeLike,
+    operand: npt.NDArray[np.float32 | np.float64],
+    backend: Backend,
+) -> npt.NDArray[np.float32 | np.float64]:
+    """Run the same configuration through the **single-cell** kernels, cell by cell.
+
+    The twelve entry points behind :func:`~pantr.bspline._extraction_backend.apply_kernel`
+    are a separate half of the bound surface from the twelve behind
+    ``apply_many_kernel``, and the first version of this module reached only the
+    second: a mutation dropping the transpose in the `d = 1` transposed entry point
+    left every test here passing. Both halves are exercised now.
+
+    The result is stacked so that it is directly comparable with
+    :func:`_run_batch`'s, which also lets the two paths be compared against each
+    other.
 
     Args:
         case (_Case): The drawn configuration.
         op_kind (str): Which apply variant.
         dtype (npt.DTypeLike): Storage format.
         operand (npt.NDArray[np.float32 | np.float64]): The batch operand.
+        backend (Backend): Which implementation to run.
+
+    Returns:
+        npt.NDArray[np.float32 | np.float64]: The stacked per-cell results.
+    """
+    dim = len(case.extent_in)
+    _, out_side = _operand_sides(case, op_kind)
+    n_cells = case.cells.shape[0]
+    bilateral = op_kind in ("MT_K_M", "M_K_MT")
+    shape = (n_cells, out_side, out_side) if bilateral else (n_cells, out_side)
+    out = np.zeros(shape, dtype=dtype)
+
+    scratch_size = max(
+        _required_scratch_size(case.extent_in, case.extent_out, op_kind),  # type: ignore[arg-type]
+        1,
+    )
+    scratch = np.zeros(scratch_size, dtype=dtype)
+
+    kernel = apply_kernel(op_kind, dim, backend)  # type: ignore[arg-type]
+    for cell in range(n_cells):
+        matrices = []
+        flags = []
+        for k in range(dim):
+            element = int(case.cells[cell, k])
+            flags.append(bool(case.masks[k][element]))
+            matrices.append(case.stacks[k][int(case.maps[k][element])])
+        kernel(*matrices, *flags, operand[cell], out[cell], scratch)
+    return out
+
+
+_Runner = Callable[
+    [_Case, str, npt.DTypeLike, npt.NDArray[np.float32 | np.float64], Backend],
+    npt.NDArray[np.float32 | np.float64],
+]
+"""Either half of the bound surface, run over one configuration."""
+
+
+class _Path(NamedTuple):
+    """One half of the bound surface: its name and the runner that exercises it.
+
+    A record rather than a bare tuple so that a test takes one parameter instead of
+    two -- six parametrized arguments is past what the linter allows, and the two
+    belong together anyway.
+
+    Attributes:
+        name (str): Which half, for a test id and a failure context.
+        run (_Runner): The runner.
+    """
+
+    name: str
+    run: _Runner
+
+
+PATHS: Final[list[_Path]] = [_Path("batch", _run_batch), _Path("single", _run_cells)]
+"""The two halves of the bound surface, so every claim below covers all 24 names.
+
+Named rather than folded into one runner because they are genuinely different
+entry points -- twelve C++ functions each -- and a claim measured on one says
+nothing about the other.
+"""
+
+
+def _both_backends(
+    case: _Case,
+    op_kind: str,
+    dtype: npt.DTypeLike,
+    operand: npt.NDArray[np.float32 | np.float64],
+    run: _Runner,
+) -> tuple[npt.NDArray[np.float32 | np.float64], npt.NDArray[np.float32 | np.float64]]:
+    """Run one configuration on both backends, through one half of the surface.
+
+    Args:
+        case (_Case): The drawn configuration.
+        op_kind (str): Which apply variant.
+        dtype (npt.DTypeLike): Storage format.
+        operand (npt.NDArray[np.float32 | np.float64]): The batch operand.
+        run (_Runner): Which half of the bound surface to exercise.
 
     Returns:
         tuple: ``(cpp_result, python_result)``.
     """
     with use_backend(Backend.CPP):
-        actual = _run(case, op_kind, dtype, operand, Backend.CPP)
+        actual = run(case, op_kind, dtype, operand, Backend.CPP)
     with use_backend(Backend.PYTHON):
-        reference = _run(case, op_kind, dtype, operand, Backend.PYTHON)
+        reference = run(case, op_kind, dtype, operand, Backend.PYTHON)
     return actual, reference
 
 
@@ -340,28 +442,33 @@ def _magnitude(
     )
     with use_backend(Backend.PYTHON):
         return np.asarray(
-            _run(absolute, op_kind, np.float64, np.abs(operand).astype(np.float64), Backend.PYTHON),
+            _run_batch(
+                absolute, op_kind, np.float64, np.abs(operand).astype(np.float64), Backend.PYTHON
+            ),
             dtype=np.float64,
         )
 
 
+@pytest.mark.parametrize("path", PATHS, ids=[entry.name for entry in PATHS])
 @pytest.mark.parametrize("dtype", DTYPES)
 @pytest.mark.parametrize("op_kind", OP_KINDS)
 @pytest.mark.parametrize("dim", [1, 2, 3])
-def test_batch_kernels_agree(
-    cpp_backend: None, dim: int, op_kind: str, dtype: npt.DTypeLike
+def test_kernels_agree(
+    cpp_backend: None, dim: int, op_kind: str, dtype: npt.DTypeLike, path: _Path
 ) -> None:
     """Both backends produce the same result, for every identity pattern.
 
     Sweeps every identity mask rather than only the all-active one, because the
     stage sequence -- and therefore the whole claim -- is a function of the flags.
+    And both halves of the bound surface, because the twelve single-cell entry
+    points are twelve different C++ functions from the twelve batch ones.
     """
     rng = np.random.default_rng(20260901 + dim)
     for mask_bits in range(1 << dim):
         case = _draw(dim, mask_bits, dtype, rng)
         operand = _draw_operand(case, op_kind, dtype, rng)
-        actual, reference = _both_backends(case, op_kind, dtype, operand)
-        context = f"{op_kind} d={dim} mask={mask_bits} {np.dtype(dtype).name}"
+        actual, reference = _both_backends(case, op_kind, dtype, operand, path.run)
+        context = f"{op_kind} d={dim} mask={mask_bits} {np.dtype(dtype).name} {path.name}"
 
         if contraction_may_fuse():
             claim = _fused_claim(case, op_kind, dtype, _magnitude(case, op_kind, operand))
@@ -370,9 +477,12 @@ def test_batch_kernels_agree(
         assert_parity(actual, reference, claim, context=context)  # type: ignore[arg-type]
 
 
+@pytest.mark.parametrize("path", PATHS, ids=[entry.name for entry in PATHS])
 @pytest.mark.parametrize("op_kind", OP_KINDS)
 @pytest.mark.parametrize("dim", [1, 2, 3])
-def test_matches_exact_integer_arithmetic(cpp_backend: None, dim: int, op_kind: str) -> None:
+def test_matches_exact_integer_arithmetic(
+    cpp_backend: None, dim: int, op_kind: str, path: _Path
+) -> None:
     """The C++ reproduces a Python-integer Kronecker computation exactly.
 
     The independent check `design/backend_parity.md` requires. Both backends were
@@ -386,7 +496,7 @@ def test_matches_exact_integer_arithmetic(cpp_backend: None, dim: int, op_kind: 
         case = _draw(dim, mask_bits, np.float64, rng, integral=True)
         operand = _draw_operand(case, op_kind, np.float64, rng, integral=True)
         with use_backend(Backend.CPP):
-            actual = _run(case, op_kind, np.float64, operand, Backend.CPP)
+            actual = path.run(case, op_kind, np.float64, operand, Backend.CPP)
         exact = _exact_reference(case, op_kind, operand)
         assert_accuracy(
             np.asarray(actual, dtype=np.float64),
@@ -402,7 +512,7 @@ def test_matches_exact_integer_arithmetic(cpp_backend: None, dim: int, op_kind: 
                     "be small"
                 ),
             ),
-            context=f"{op_kind} d={dim} mask={mask_bits} exact-integer",
+            context=f"{op_kind} d={dim} mask={mask_bits} exact-integer {path.name}",
         )
 
 
@@ -489,6 +599,12 @@ def test_every_kernel_name_is_bound(cpp_backend: None) -> None:
     assert not missing, f"the catalogue names bindings the extension does not have: {missing}"
     assert len(set(_CPP_NAMES.values()) | set(_CPP_NAMES_MANY.values())) == 24
 
+    # `hasattr` is existence, not exercise, and this test used to be the only thing
+    # the twelve single-cell names got. The parametrization over PATHS is what
+    # actually invokes them; this asserts the two tables are disjoint, so covering
+    # both halves really is covering all 24 rather than one half twice.
+    assert not set(_CPP_NAMES.values()) & set(_CPP_NAMES_MANY.values())
+
 
 @pytest.mark.parametrize(("op_kind", "dim"), list(itertools.product(OP_KINDS, [1, 2, 3])))
 def test_the_bitwise_claim_is_not_vacuous(cpp_backend: None, op_kind: str, dim: int) -> None:
@@ -533,15 +649,17 @@ def test_the_claim_holds_over_a_sweep_ten_times_the_shipped_one(
                     rng = np.random.default_rng(90_000 + 977 * draw + 31 * dim + mask_bits)
                     case = _draw(dim, mask_bits, dtype, rng)
                     operand = _draw_operand(case, op_kind, dtype, rng)
-                    actual, reference = _both_backends(case, op_kind, dtype, operand)
-                    context = f"{op_kind} d={dim} mask={mask_bits} draw={draw}"
                     if contraction_may_fuse():
                         claim = _fused_claim(
                             case, op_kind, dtype, _magnitude(case, op_kind, operand)
                         )
                     else:
                         claim = bitwise_parity(why=_BITWISE_WHY)
-                    assert_parity(actual, reference, claim, context=context)  # type: ignore[arg-type]
-                    checked += 1
-    assert checked == 56 * draws, f"the sweep ran {checked} cases, expected {56 * draws}"
+                    for path in PATHS:
+                        actual, reference = _both_backends(case, op_kind, dtype, operand, path.run)
+                        context = f"{op_kind} d={dim} mask={mask_bits} draw={draw} {path.name}"
+                        assert_parity(actual, reference, claim, context=context)  # type: ignore[arg-type]
+                        checked += 1
+    expected = 56 * draws * len(PATHS)
+    assert checked == expected, f"the sweep ran {checked} cases, expected {expected}"
     assert unit_roundoff(dtype) > 0.0
