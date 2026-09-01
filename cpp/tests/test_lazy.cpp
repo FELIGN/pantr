@@ -109,25 +109,31 @@ void check_copies_start_cold() {
 
 /// Many slots raced by many threads. The sanitizer's target.
 ///
-/// ## Why this is not one slot
+/// ## What makes an ordering downgrade visible at all
 ///
-/// One slot touched once per thread is the obvious shape and it is the wrong one.
-/// Every thread then either builds under the lock or blocks on it and reads after
-/// acquiring it, and `std::mutex` already establishes that happens-before edge on
-/// its own -- so the whole case passes with the atomics made fully `relaxed`, and
-/// the **outer, lock-free fast path** is reached only if a straggler's check
-/// happens to observe `ready_ == true` while still racing the writer. Measured on
-/// exactly that shape: with `lazy.hpp` patched to `memory_order_relaxed`
-/// throughout, the sanitizer caught the injected race in roughly one run in three
-/// and reported nothing in the others, so a single `ctest --preset gcc-tsan` had a
-/// real chance of passing on a broken acquire/release pair. That is the line the
-/// design note calls load-bearing, and it was the line least covered.
+/// The one thing that decides it: **the test has to read the memoised value's
+/// contents inside the threaded section, before any `join()`.** The loop below sums
+/// every element of every slot it touches, in the worker, which is why patching
+/// `lazy.hpp` to `memory_order_relaxed` throughout is caught on 15 runs out of 15.
+/// A test that takes a reference in the thread and inspects it after joining has
+/// already been given a happens-before edge by the join, and reports nothing.
 ///
-/// So: many independent slots, and every thread walks all of them starting from a
-/// different offset. At any moment some threads are building slot `i` while others
-/// are reading a slot already published, which is what puts traffic through the
-/// fast path rather than through the mutex. The second wave then reads every slot
-/// again, when all of them are published and nothing takes the lock at all.
+/// **Two plausible mechanisms are recorded here as refuted, because both were
+/// believed.** An earlier version of this comment argued that a single-slot test
+/// fails to detect the downgrade because its lock-free fast path is *barely
+/// reached* -- every thread either builds under the lock or blocks on it, and
+/// `std::mutex` supplies the edge by itself. An instrumented counter refuted that:
+/// on the shape in question the fast path was reached 22 to 175 times per run while
+/// still detecting nothing. Thread count is not the axis either. What was measured
+/// on the single-slot shape -- roughly one run in three -- was real, but the reason
+/// given for it was not.
+///
+/// So the claim this case supports is narrow and is about the harness rather than
+/// about the sanitizer: **the acquire/release pair in `lazy.hpp` is falsifiable by
+/// this test.** Many slots and two waves are how it gets there -- some threads read
+/// a published slot while others still build another, and the second wave reads
+/// every slot when all are published -- but it is the in-thread read of the
+/// contents that does the work.
 void check_concurrent_first_touch() {
     constexpr int num_threads = 8;
     constexpr int num_slots = 64;

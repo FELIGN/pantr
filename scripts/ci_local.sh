@@ -318,8 +318,9 @@ cxx() {
     # the null-result trap design/bspline_derived_caches.md records. The control
     # was run rather than assumed: replacing LazySlot's double-checked locking
     # with an unsynchronised `optional` gave 23 data races and turned both
-    # threaded tests red on this tree, and restoring it gave 0 and 47/47. Re-run
-    # that control if this leg is ever green on a tree where it should not be.
+    # threaded tests red on this tree, and restoring it gave 0 races and every
+    # test green. Re-run that control if this leg is ever green on a tree where
+    # it should not be.
     rm -rf "$ROOT/build/gcc-tsan"
     check "gcc-tsan: configure (tsan)" cmake --preset gcc-tsan
     check "gcc-tsan: build" cmake --build --preset gcc-tsan
