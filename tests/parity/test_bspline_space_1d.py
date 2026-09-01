@@ -35,10 +35,12 @@ by its multiplicity rebuilds the stored vector, and the successive differences o
 
 ## Rule 12
 
-Every test here that says something about the *binding* takes the ``cpp_backend``
+Every test that says something about the *binding* takes the ``cpp_backend``
 fixture, whose ``demand_cpp_backend`` is a skip-or-fail rather than a silent skip.
-The tests that state a property of *both* backends deliberately do not, so they run
-under the default and would catch the oracle regressing too.
+The tests that state a property of *each* backend take it on the C++ **parameter**
+instead, through ``_BACKENDS`` -- because taking it on the test would skip the
+Python half too, and the Python half is the only thing here that would catch the
+oracle regressing.
 """
 
 from __future__ import annotations
@@ -51,10 +53,44 @@ import pytest
 
 from pantr._backend import Backend, use_backend
 from pantr.bspline import BsplineSpace1D
-from tests._parity_harness import Field, assert_object_parity, bitwise_parity, exact_parity
+from tests._parity_harness import (
+    Field,
+    assert_object_parity,
+    bitwise_parity,
+    demand_cpp_backend,
+    exact_parity,
+)
 
 if TYPE_CHECKING:
     from numpy import typing as npt
+
+_BACKENDS: Final = (
+    pytest.param(Backend.PYTHON, id="python"),
+    pytest.param(Backend.CPP, id="cpp"),
+)
+"""The two backends, for the tests that state a property of each one separately."""
+
+
+def _demand_the_extension_if_needed(backend: Backend) -> None:
+    """Require the compiled extension, and only for the half that uses it.
+
+    A test parametrized over both backends and *also* taking the ``cpp_backend``
+    fixture skips **both** halves when the extension is absent -- which
+    ``tests/parity/conftest.py`` calls the common local configuration. That
+    silently drops the Python half, and the Python half of the closed-form check
+    and the algebraic invariants is the only thing in this file that would catch
+    the **oracle** regressing.
+
+    Marking the parameter instead would be neater and pytest forbids it:
+    ``pytest.param`` refuses ``pytest.mark.usefixtures`` outright. So the guard is
+    a call, which is at least visible in the test body rather than in a decorator.
+
+    Args:
+        backend (Backend): The backend this case runs under.
+    """
+    if backend is Backend.CPP:
+        demand_cpp_backend()
+
 
 _STATE_WHY: Final = (
     "a space stores a knot vector and counts things in it; every count, index and "
@@ -120,6 +156,22 @@ _SPACES: Final = tuple(
         ("tiny domain", [0.0, 0.0, 0.0, 5e-7, 1e-6, 1e-6, 1e-6], 2, False, True),
         ("snapping off", [0.0, 0.0, 0.0, 0.5, 0.5 + 2e-16, 1.0, 1.0, 1.0], 2, False, False),
         ("negative domain", [-2.0, -2.0, -2.0, -1.0, 0.0, 0.0, 0.0], 2, False, True),
+        # Clamped on the left and not on the right. Every other case here is
+        # symmetric in its two ends, and a review proved what that costs: mirroring
+        # the left-end formula onto the right end -- a plausible swapped-index bug
+        # -- produced zero mismatches across the whole table at both dtypes.
+        ("asymmetric ends", [0.0, 0.0, 0.0, 1.0, 2.0, 3.0], 2, False, True),
+        # An interior knot at the maximum multiplicity `degree + 1`, so the space
+        # is discontinuous there and splits into independent single-span pieces.
+        # "repeated interior knot" above only reaches multiplicity 2, which is the
+        # C^0 case; the per-interval index advances by 3 here and by 1 there.
+        (
+            "interior knot at maximum multiplicity",
+            [0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 2.0, 2.0, 2.0],
+            2,
+            False,
+            True,
+        ),
     )
 )
 """The spaces every field-by-field comparison runs over, and what each is here for.
@@ -247,7 +299,6 @@ def test_the_state_agrees_field_by_field(
 _REFUSALS: Final = tuple(
     _Case(*case)
     for case in (
-        ("negative degree", [0.0, 0.0, 1.0, 1.0], -1, False, True),
         ("too few knots", [0.0, 0.0, 1.0], 2, False, True),
         ("descending step", [0.0, 0.0, 1.0, 0.5, 1.0, 1.0], 2, False, True),
         ("periodic with too few functions", [0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0], 2, True, True),
@@ -257,6 +308,12 @@ _REFUSALS: Final = tuple(
     )
 )
 """One input per refusal, plus two that fail two checks at once.
+
+A negative degree is deliberately **not** here. The wrapper refuses it before
+`_new_impl` dispatches, so both parametrizations would run the identical Python
+line and the case would certify nothing about either implementation. What it does
+pin -- that the wrapper checks the degree before it looks at the knots at all -- is
+a wrapper contract and has its own test below.
 
 The last two are what pin the check *order* across the seam: an input failing two
 checks reports whichever the implementation reaches first, so swapping two
@@ -286,6 +343,46 @@ def test_the_refusals_agree_character_for_character(
         messages[backend] = str(caught.value)
 
     assert messages[Backend.PYTHON] == messages[Backend.CPP]
+
+
+def test_the_periodic_first_basis_refusal_agrees(cpp_backend: None) -> None:
+    """Both backends refuse ``first_basis_per_interval`` on a periodic space alike.
+
+    The one raise in this type that is not a construction refusal, and the one the
+    field-by-field comparison structurally cannot reach: ``_fields`` drops the
+    field for a periodic space, precisely because calling it there raises. So
+    without this test the C++ side could raise a different type, or a different
+    message, on the only input for which it raises at all.
+    """
+    knots = np.asarray(list(range(10)), dtype=np.float64)
+
+    messages = {}
+    for backend in (Backend.PYTHON, Backend.CPP):
+        with use_backend(backend):
+            space = BsplineSpace1D(knots, 2, periodic=True)
+            with pytest.raises(ValueError) as caught:
+                space.first_basis_per_interval()
+        messages[backend] = str(caught.value)
+
+    assert messages[Backend.PYTHON] == messages[Backend.CPP]
+    assert messages[Backend.CPP] == (
+        "first_basis_per_interval: periodic B-spline spaces are not supported."
+    )
+
+
+def test_the_wrapper_checks_the_degree_before_the_knots() -> None:
+    """A bad degree is reported even when the knots are unusable too.
+
+    Not a parity test -- the wrapper raises before either implementation is chosen,
+    which is the point. The oracle has always refused a negative degree before
+    looking at the knots, so an input that is bad in both ways has always reported
+    the degree; normalizing the knots first would silently reverse that, and no
+    other test would notice.
+    """
+    with pytest.raises(ValueError, match="degree must be non-negative"):
+        BsplineSpace1D("not an array at all", -1)
+    with pytest.raises(ValueError, match="degree must be non-negative"):
+        BsplineSpace1D(np.zeros((2, 2)), -1)
 
 
 def test_the_snapping_refusal_agrees_including_its_formatted_floats(cpp_backend: None) -> None:
@@ -336,12 +433,10 @@ def test_the_infinite_knot_message_agrees(cpp_backend: None) -> None:
     assert "-nan" not in seen[Backend.CPP]
 
 
-@pytest.mark.parametrize("backend", [Backend.PYTHON, Backend.CPP], ids=["python", "cpp"])
+@pytest.mark.parametrize("backend", _BACKENDS)
 @pytest.mark.parametrize("degree", [0, 1, 2, 3, 5])
 @pytest.mark.parametrize("num_intervals", [1, 2, 3, 7, 16])
-def test_the_clamped_uniform_closed_form(
-    cpp_backend: None, backend: Backend, degree: int, num_intervals: int
-) -> None:
+def test_the_clamped_uniform_closed_form(backend: Backend, degree: int, num_intervals: int) -> None:
     """A family whose answers are known by hand, checked against the formula.
 
     The **independent** accuracy check `design/backend_parity.md` requires: nothing
@@ -356,6 +451,7 @@ def test_the_clamped_uniform_closed_form(
     requested pair exactly, because the ends are stored values rather than computed
     ones.
     """
+    _demand_the_extension_if_needed(backend)
     breakpoints = np.linspace(0.0, 1.0, num_intervals + 1)
     knots = np.concatenate([[0.0] * degree, breakpoints, [1.0] * degree])
 
@@ -371,10 +467,9 @@ def test_the_clamped_uniform_closed_form(
     assert space.has_Bezier_like_knots() == (num_intervals == 1)
 
 
-@pytest.mark.parametrize("backend", [Backend.PYTHON, Backend.CPP], ids=["python", "cpp"])
+@pytest.mark.parametrize("backend", _BACKENDS)
 @pytest.mark.parametrize("case", _SPACES, ids=[c.label for c in _SPACES])
 def test_the_algebraic_invariants_hold(
-    cpp_backend: None,
     backend: Backend,
     case: _Case,
 ) -> None:
@@ -390,6 +485,7 @@ def test_the_algebraic_invariants_hold(
       multiplicities, which is what ties the per-interval index back to the knot
       vector it was derived from.
     """
+    _demand_the_extension_if_needed(backend)
     with use_backend(backend):
         space = BsplineSpace1D(
             np.asarray(case.knots, dtype=np.float64),
@@ -417,6 +513,10 @@ def test_the_algebraic_invariants_hold(
             "is asserting nothing"
         )
 
+    # Close to a definition -- the oracle computes `num_intervals` as exactly this
+    # length less one -- so it is a staleness check on the memo rather than
+    # independent evidence for the count. What carries that is the closed-form
+    # family above.
     unique_in, _ = space.get_unique_knots_and_multiplicity(in_domain=True)
     assert unique_in.size == space.num_intervals + 1
 
@@ -427,10 +527,9 @@ def test_the_algebraic_invariants_hold(
         np.testing.assert_array_equal(np.diff(first), np.asarray(mult_in[1:-1], dtype=np.int64))
 
 
-@pytest.mark.parametrize("backend", [Backend.PYTHON, Backend.CPP], ids=["python", "cpp"])
+@pytest.mark.parametrize("backend", _BACKENDS)
 @pytest.mark.parametrize("case", _SPACES, ids=[c.label for c in _SPACES])
 def test_reduce_round_trips_under_both_backends(
-    cpp_backend: None,
     backend: Backend,
     case: _Case,
 ) -> None:
@@ -440,6 +539,7 @@ def test_reduce_round_trips_under_both_backends(
     ``__reduce__`` names the constructor's arguments. What has to come back is the
     state, bit for bit where it is floating point.
     """
+    _demand_the_extension_if_needed(backend)
     with use_backend(backend):
         space = BsplineSpace1D(
             np.asarray(case.knots, dtype=np.float64),
@@ -541,10 +641,8 @@ def _tolerance_drift_sweep(trials: int, seed: int) -> tuple[int, int, float, flo
     return built, drifted, worst_corrected, worst_flat
 
 
-@pytest.mark.parametrize("backend", [Backend.PYTHON, Backend.CPP], ids=["python", "cpp"])
-def test_the_reduce_tolerance_drift_stays_inside_its_bound(
-    cpp_backend: None, backend: Backend
-) -> None:
+@pytest.mark.parametrize("backend", _BACKENDS)
+def test_the_reduce_tolerance_drift_stays_inside_its_bound(backend: Backend) -> None:
     """The one bound this type carries, checked where it is not zero.
 
     ``__reduce__`` names the constructor's arguments and lets the tolerance be
@@ -565,6 +663,7 @@ def test_the_reduce_tolerance_drift_stays_inside_its_bound(
       That is what the ``m - 1`` buys, and without this assertion nothing would
       notice it being dropped again.
     """
+    _demand_the_extension_if_needed(backend)
     with use_backend(backend):
         built, drifted, worst_corrected, worst_flat = _tolerance_drift_sweep(_DRIFT_TRIALS, seed=11)
 
@@ -584,10 +683,15 @@ def test_the_reduce_tolerance_drift_stays_inside_its_bound(
 _DRIFT_TRIALS: Final = 2000
 """Draws in the tolerance-drift sweep.
 
-Sized so the shipped run costs about a second. **Verified at 20000, ten times
-this**, by calling this same function rather than a look-alike: 20000 of 20000
-draws built a space, 20000 of 20000 moved the tolerance, the corrected bound held
-at a worst of **0.716** of it, and the flat ``8 * eps`` was exceeded by **4.403x**.
-Identical to three figures under both backends, which is a parity result in its own
-right -- the drift is a property of the arithmetic and not of the implementation.
+Sized so the shipped run costs about a second, and large enough that the three
+assertions in the test are each decided by many cases rather than by one. The
+sweep was verified at ten times this on the branch that introduced it, by calling
+this same function rather than a look-alike; the figures are in that pull request,
+where they carry the commit and the machine that produced them. They are not
+repeated here, because a number in a comment is never re-measured and rots while
+reading as current. To re-run it::
+
+    python -c "from pantr._backend import Backend, use_backend; \
+               import tests.parity.test_bspline_space_1d as t; \
+               print(t._tolerance_drift_sweep(20000, seed=11))"
 """

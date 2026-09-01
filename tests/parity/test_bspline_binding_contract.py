@@ -211,17 +211,20 @@ def test_no_bound_method_is_a_borrowing_accessor(cpp_backend: None) -> None:
     assert not offenders, f"borrowing accessors reached Python: {offenders}"
 
 
-@pytest.mark.parametrize("backend", [Backend.PYTHON, Backend.CPP], ids=["python", "cpp"])
-def test_a_space_has_no_instance_dictionary(cpp_backend: None, backend: Backend) -> None:
+def test_a_space_has_no_instance_dictionary() -> None:
     """The wrapper is immutable, and ``__slots__`` is what makes that true.
 
     A ``__dict__`` would silently return settable attributes to a type documented
     immutable, and would let a memo be attached to the wrapper -- the second truth
     `design/bspline_derived_caches.md` forbids, since the value is memoized in the
     implementation and there is exactly one of it.
+
+    Not parametrized over the backends and not gated on the extension: ``__slots__``
+    belongs to the wrapper class, which is the same class whichever implementation
+    it holds, so a second run would duplicate the first. Gating it would have made
+    it skip in the configuration where it is the only thing checking this.
     """
-    with use_backend(backend):
-        space = BsplineSpace1D(_KNOTS, 2)
+    space = BsplineSpace1D(_KNOTS, 2)
     assert not hasattr(space, "__dict__")
     with pytest.raises(AttributeError):
         space.some_new_attribute = 1  # type: ignore[attr-defined]

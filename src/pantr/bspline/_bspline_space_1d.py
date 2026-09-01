@@ -648,20 +648,6 @@ class BsplineSpace1D:
             raise ValueError("degree must be non-negative")
         self._impl = _new_impl(_stored_knots(knots), degree, periodic, snap_knots)
 
-    @classmethod
-    def _wrap(cls, impl: _Impl) -> BsplineSpace1D:
-        """Wrap an implementation object that is already valid.
-
-        Args:
-            impl (_Impl): The implementation object to adopt.
-
-        Returns:
-            BsplineSpace1D: A wrapper around ``impl``, with no re-validation.
-        """
-        self = object.__new__(cls)
-        self._impl = impl
-        return self
-
     def __reduce__(
         self,
     ) -> tuple[type[BsplineSpace1D], tuple[_Knots, int, bool, bool]]:
@@ -687,10 +673,14 @@ class BsplineSpace1D:
 
             ``|tol' - tol| / tol <= (m - 1) * 8 * eps``,
 
-            where ``m`` is the multiplicity of the **last** knot class: each step
-            inside a class is at most one tolerance, so a class of ``m`` knots spans
-            at most ``m - 1`` of them, and the relative change in the tolerance is
-            the relative change in the scale.
+            where ``m`` is the multiplicity of the **last** knot class. Snapping
+            replaces each class by its *first* knot, so the first knot of the vector
+            never moves and only the last one does; every step inside a class is at
+            most one tolerance, so it moves by at most ``(m - 1) * tol``. The scale
+            is a maximum over three arguments and so is 1-Lipschitz in each, so it
+            moves by no more than that, and the tolerance is a fixed multiple of the
+            scale. Recomputing the scale and the tolerance adds a further relative
+            ``eps`` or so, which the measured margin absorbs.
 
             The ``m - 1`` is not decoration. A first version of this note claimed a
             flat ``8 * eps``, reasoning that the scale moves by at most one
@@ -828,9 +818,17 @@ class BsplineSpace1D:
     ) -> tuple[_Knots, npt.NDArray[np.int_]]:
         """Get unique knots and their multiplicities.
 
-        Computed once per space and handed out as the same read-only arrays on every
-        later call, under both backends. There is no cache key, and deliberately so:
-        the derived knot classes belong to the space.
+        Computed once per space, under both backends. There is no cache key, and
+        deliberately so: the derived knot classes belong to the space.
+
+        **Hoist it out of a loop.** What is memoized is the *values*; the numpy
+        arrays presenting them are built per call, and under the C++ backend that
+        construction dominates the access and costs more than the whole call does
+        under the oracle. ``design/bspline_derived_caches.md`` rejects memoizing the
+        presentation as well, because two memos over one buffer are correct only
+        until something rebuilds it -- so the accessor looks free and is not, and the
+        fix is a local rather than a mechanism. The C++ side carries the same warning
+        in ``pantr/core/lazy.hpp``.
 
         Args:
             in_domain (bool): If True, only consider knots in the domain.
@@ -854,7 +852,12 @@ class BsplineSpace1D:
         ``j + 1``. The functions non-zero there are exactly ``i`` through
         ``i + degree``, so this one index describes the whole support of the interval.
 
-        The result is cached and read-only: repeated calls return the same array.
+        The result is computed once per space and read-only. Repeated calls view
+        the same memory; they do **not** necessarily return the same numpy object.
+        The oracle's ``cached_property`` does return one object, and this was
+        documented as such until the port, but the C++ backend memoizes the buffer
+        and builds a view over it per access -- so a caller keying on ``id()`` would
+        see the two backends differ. ``np.shares_memory`` is what holds under both.
 
         Returns:
             npt.NDArray[np.int64]: Read-only ``int64`` array of shape
