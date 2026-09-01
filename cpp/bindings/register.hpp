@@ -88,3 +88,10 @@ void register_bezier_type(nanobind::module_& m);
 /// rather than sharing one. Declared alongside them so a ticket still touches only
 /// its own `.cpp`.
 void register_bspline_types(nanobind::module_& m);
+
+/// Register `pantr.bspline`'s tensor-product extraction kernels.
+///
+/// Kernels rather than a type: `SpanwiseElementExtraction` itself holds a
+/// `BsplineSpace`, which is FELIGN/pantr#396's, so the type's own registration
+/// arrives with it. See design/extraction_port.md.
+void register_bspline_extraction(nanobind::module_& m);

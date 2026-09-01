@@ -21,38 +21,15 @@ by :class:`~pantr.bspline.spanwise_element_extraction.SpanwiseElementExtraction`
 from __future__ import annotations
 
 from collections.abc import Callable
-from typing import Any, Literal, cast, get_args
+from typing import Any, Final, Literal, cast, get_args
 
 import numpy as np
 import numpy.typing as npt
 
 from ..basis._basis_utils import _allocate_or_validate_out
-from ._extraction_kernels import (
-    apply_kron_1d,
-    apply_kron_2d,
-    apply_kron_3d,
-    apply_kron_apply_many_1d,
-    apply_kron_apply_many_2d,
-    apply_kron_apply_many_3d,
-    apply_kron_apply_T_many_1d,
-    apply_kron_apply_T_many_2d,
-    apply_kron_apply_T_many_3d,
-    apply_kron_M_K_MT_1d,
-    apply_kron_M_K_MT_2d,
-    apply_kron_M_K_MT_3d,
-    apply_kron_M_K_MT_many_1d,
-    apply_kron_M_K_MT_many_2d,
-    apply_kron_M_K_MT_many_3d,
-    apply_kron_MT_K_M_1d,
-    apply_kron_MT_K_M_2d,
-    apply_kron_MT_K_M_3d,
-    apply_kron_MT_K_M_many_1d,
-    apply_kron_MT_K_M_many_2d,
-    apply_kron_MT_K_M_many_3d,
-    apply_kron_T_1d,
-    apply_kron_T_2d,
-    apply_kron_T_3d,
-)
+from ._extraction_backend import _KERNELS as _catalogue_kernels
+from ._extraction_backend import _KERNELS_MANY as _catalogue_kernels_many
+from ._extraction_backend import apply_kernel, apply_many_kernel
 
 OpKind = Literal["apply", "apply_T", "MT_K_M", "M_K_MT"]
 """Tag distinguishing the four apply variants.
@@ -65,35 +42,16 @@ MAX_SUPPORTED_DIM = 3
 """Highest tensor-product dimension for which specialized kernels exist."""
 
 
-_KERNELS: dict[tuple[OpKind, int], Callable[..., None]] = {
-    ("apply", 1): apply_kron_1d,
-    ("apply", 2): apply_kron_2d,
-    ("apply", 3): apply_kron_3d,
-    ("apply_T", 1): apply_kron_T_1d,
-    ("apply_T", 2): apply_kron_T_2d,
-    ("apply_T", 3): apply_kron_T_3d,
-    ("MT_K_M", 1): apply_kron_MT_K_M_1d,
-    ("MT_K_M", 2): apply_kron_MT_K_M_2d,
-    ("MT_K_M", 3): apply_kron_MT_K_M_3d,
-    ("M_K_MT", 1): apply_kron_M_K_MT_1d,
-    ("M_K_MT", 2): apply_kron_M_K_MT_2d,
-    ("M_K_MT", 3): apply_kron_M_K_MT_3d,
-}
+_KERNELS: Final = _catalogue_kernels
+"""The single-cell Numba kernels, keyed by ``(op_kind, dimension)``.
 
-_KERNELS_MANY: dict[tuple[OpKind, int], Callable[..., None]] = {
-    ("apply", 1): apply_kron_apply_many_1d,
-    ("apply", 2): apply_kron_apply_many_2d,
-    ("apply", 3): apply_kron_apply_many_3d,
-    ("apply_T", 1): apply_kron_apply_T_many_1d,
-    ("apply_T", 2): apply_kron_apply_T_many_2d,
-    ("apply_T", 3): apply_kron_apply_T_many_3d,
-    ("MT_K_M", 1): apply_kron_MT_K_M_many_1d,
-    ("MT_K_M", 2): apply_kron_MT_K_M_many_2d,
-    ("MT_K_M", 3): apply_kron_MT_K_M_many_3d,
-    ("M_K_MT", 1): apply_kron_M_K_MT_many_1d,
-    ("M_K_MT", 2): apply_kron_M_K_MT_many_2d,
-    ("M_K_MT", 3): apply_kron_M_K_MT_many_3d,
-}
+Re-exported from :mod:`pantr.bspline._extraction_backend`, which now owns the
+table because a catalogue selecting between two implementations has to hold the
+Python one. Kept importable under this name because it has been one.
+"""
+
+_KERNELS_MANY: Final = _catalogue_kernels_many
+"""The batch Numba kernels, keyed by ``(op_kind, dimension)``. See :data:`_KERNELS`."""
 
 
 def _prod(shape: tuple[int, ...]) -> int:
@@ -243,7 +201,9 @@ def _dispatch_apply_many(d: int, op_kind: OpKind) -> Callable[..., None]:
         op_kind (OpKind): Operation kind.
 
     Returns:
-        Callable[..., None]: The corresponding ``@njit(parallel=True)`` kernel.
+        Callable[..., None]: The batch kernel of the backend in effect -- the
+        oracle's ``@njit(parallel=True)`` one, or an adapter over the C++
+        binding of the same name.
 
     Raises:
         NotImplementedError: If ``d`` is not in ``{1, 2, 3}``.
@@ -256,7 +216,7 @@ def _dispatch_apply_many(d: int, op_kind: OpKind) -> Callable[..., None]:
             "Add a generic-d kernel in pantr.bspline._extraction_kernels to support "
             "higher dimensions."
         )
-    return _KERNELS_MANY[(op_kind, d)]
+    return apply_many_kernel(op_kind, d)
 
 
 def _dispatch_apply(d: int, op_kind: OpKind) -> Callable[..., None]:
@@ -267,7 +227,9 @@ def _dispatch_apply(d: int, op_kind: OpKind) -> Callable[..., None]:
         op_kind (OpKind): Operation kind.
 
     Returns:
-        Callable[..., None]: The corresponding ``@njit`` kernel.
+        Callable[..., None]: The single-cell kernel of the backend in effect --
+        the oracle's ``@njit`` one, or an adapter over the C++ binding of the
+        same name.
 
     Raises:
         NotImplementedError: If ``d`` is not in ``{1, 2, 3}``.
@@ -280,7 +242,7 @@ def _dispatch_apply(d: int, op_kind: OpKind) -> Callable[..., None]:
             "Add a generic-d kernel in pantr.bspline._extraction_kernels to support "
             "higher dimensions."
         )
-    return _KERNELS[(op_kind, d)]
+    return apply_kernel(op_kind, d)
 
 
 def _operation_shapes(
