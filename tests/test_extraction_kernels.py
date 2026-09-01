@@ -9,6 +9,7 @@ import numpy as np
 import numpy.typing as npt
 import pytest
 
+from pantr._backend import Backend, use_backend
 from pantr.bspline._extraction_helpers import (
     OpKind,
     _allocate_or_validate_scratch,
@@ -228,7 +229,13 @@ def test_dispatch_unknown_op_kind_raises() -> None:
 
 
 def test_dispatch_returns_expected_kernels() -> None:
-    """Dispatcher maps (op_kind, d) to the right module-level kernel."""
+    """Dispatcher maps (op_kind, d) to the right module-level kernel.
+
+    Pinned to :attr:`~pantr._backend.Backend.PYTHON`, because the dispatcher now
+    resolves a backend: under the C++ one it hands back an adapter over the binding
+    of the same name, and this test is about the table rather than about which
+    implementation is in effect.
+    """
     expected: dict[tuple[str, int], object] = {
         ("apply", 1): apply_kron_1d,
         ("apply", 2): apply_kron_2d,
@@ -243,8 +250,9 @@ def test_dispatch_returns_expected_kernels() -> None:
         ("M_K_MT", 2): apply_kron_M_K_MT_2d,
         ("M_K_MT", 3): apply_kron_M_K_MT_3d,
     }
-    for (op_kind, d), kernel in expected.items():
-        assert _dispatch_apply(d, op_kind) is kernel  # type: ignore[arg-type]
+    with use_backend(Backend.PYTHON):
+        for (op_kind, d), kernel in expected.items():
+            assert _dispatch_apply(d, op_kind) is kernel  # type: ignore[arg-type]
 
 
 # -- Validation errors --------------------------------------------------------
