@@ -29,7 +29,9 @@ set(PANTR_TEST_SOURCES
     test_grid_tensor_product.cpp
     test_bezier_product.cpp
     test_format.cpp
-    test_lazy.cpp)
+    test_lazy.cpp
+    test_bspline_knots.cpp
+    test_bspline_space_1d.cpp)
 
 # Reserved slots (FELIGN/pantr#380): registered ahead of the port so the thirteen
 # tickets this milestone unblocks do not collide on this file.
