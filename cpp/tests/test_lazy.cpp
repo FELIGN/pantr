@@ -24,6 +24,34 @@
 /// contend, which the build counter below does by construction, since a builder
 /// that ran before the threads started would leave the slot already filled and the
 /// barrier unused.
+///
+/// ## The threaded section must READ the value, not just take its address
+///
+/// This is the part that is easy to lose, and it was learned the expensive way on a
+/// second copy of this type that has since been deleted (FELIGN/pantr#429). That copy's
+/// concurrency case stored `&slot.get(...)` in a per-thread slot and compared the
+/// contents **after `join()`**. Taking an address is pointer arithmetic on the
+/// `optional`: it loads nothing from the payload, so a sanitizer has no access to
+/// instrument, and `join()` then supplies its own happens-before for everything that
+/// follows it.
+///
+/// The consequence is not that the test was weak. It is that **the test could not fail**.
+/// Measured on that harness, with the `acquire` load and the `release` store relaxed and
+/// the mutex and flag left alone: **0 detections in 35 runs**. Rewriting it to sum the
+/// value inside the threaded section, and nothing else, took it to red on 10 of 10
+/// standalone runs and 5 of 5 through `ctest --preset gcc-tsan`, and green on the same
+/// counts once the orderings were restored.
+///
+/// So `check_concurrent_first_touch` below sums every slot it touches **before any
+/// join**, and that loop is load-bearing rather than a stronger assertion for its own
+/// sake. A refactor that drops it leaves a test that still passes, still looks like
+/// coverage, and no longer checks the acquire/release pair at all -- which is then back
+/// to resting on `lazy.hpp`'s argument alone.
+///
+/// One caveat on the mechanism, stated at its real strength: that the two harnesses
+/// differ, and in which direction, is measured and reproducible. *Why* address-of is
+/// invisible to the sanitizer is inferred from that behaviour rather than read out of its
+/// instrumentation, so treat it as well supported and not as established.
 
 #include <atomic>
 #include <cstddef>
