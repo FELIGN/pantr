@@ -16,6 +16,14 @@ argument order mirror ``pantr.bspline._extraction_kernels`` exactly: the catalog
 in :mod:`pantr.bspline._extraction_backend` then selects between two functions
 with one signature rather than between two conventions.
 
+**Aliasing is permitted exactly where the operation is a pure copy**, which is the
+oracle's contract rather than a relaxation of it: with every direction flagged
+identity the kernel copies forward, so ``out`` may be the operand. For a batch the
+exemption is a property of the whole call -- one contracting cell withdraws it,
+because that cell makes the shared buffers overlap in a way no later cell's copy
+undoes. ``_prepare_apply_many_call`` computes the same predicate on the Python
+side.
+
 Every one of these is the **C++ half of Layer 2** in the layering of CLAUDE.md,
 not Layer 3. The kernels behind them validate nothing, so each entry point checks
 what a typed signature cannot express -- that the operand and output lengths are
@@ -156,15 +164,17 @@ def apply_kron_1d(
         is_id_0 (bool): Whether direction 0 is the identity. Its operator's
             values are then unread and it must be square.
         v (_Array): Input vector.
-        out (_Array): Output vector. Must not share memory with ``v``.
+        out (_Array): Output vector. Must not share memory with ``v``
+            **unless every direction is the identity**, in which case the call is a
+            forward copy and ``out=v`` is legal.
         scratch (_Array): Work buffer, at least the size
             :func:`pantr.bspline._extraction_helpers._required_scratch_size`
             returns.
 
     Raises:
-        ValueError: If an extent, a length or the scratch size is inconsistent,
-            if ``out`` overlaps the operand, or if a direction flagged identity
-            is not square.
+        ValueError: If an extent, a length or the scratch size is inconsistent, if
+            ``out`` overlaps the operand while at least one direction contracts, or
+            if a direction flagged identity is not square.
     """
 
 def apply_kron_2d(
@@ -186,15 +196,17 @@ def apply_kron_2d(
         is_id_1 (bool): Whether direction 1 is the identity. Its operator's
             values are then unread and it must be square.
         v (_Array): Input vector.
-        out (_Array): Output vector. Must not share memory with ``v``.
+        out (_Array): Output vector. Must not share memory with ``v``
+            **unless every direction is the identity**, in which case the call is a
+            forward copy and ``out=v`` is legal.
         scratch (_Array): Work buffer, at least the size
             :func:`pantr.bspline._extraction_helpers._required_scratch_size`
             returns.
 
     Raises:
-        ValueError: If an extent, a length or the scratch size is inconsistent,
-            if ``out`` overlaps the operand, or if a direction flagged identity
-            is not square.
+        ValueError: If an extent, a length or the scratch size is inconsistent, if
+            ``out`` overlaps the operand while at least one direction contracts, or
+            if a direction flagged identity is not square.
     """
 
 def apply_kron_3d(
@@ -221,15 +233,17 @@ def apply_kron_3d(
         is_id_2 (bool): Whether direction 2 is the identity. Its operator's
             values are then unread and it must be square.
         v (_Array): Input vector.
-        out (_Array): Output vector. Must not share memory with ``v``.
+        out (_Array): Output vector. Must not share memory with ``v``
+            **unless every direction is the identity**, in which case the call is a
+            forward copy and ``out=v`` is legal.
         scratch (_Array): Work buffer, at least the size
             :func:`pantr.bspline._extraction_helpers._required_scratch_size`
             returns.
 
     Raises:
-        ValueError: If an extent, a length or the scratch size is inconsistent,
-            if ``out`` overlaps the operand, or if a direction flagged identity
-            is not square.
+        ValueError: If an extent, a length or the scratch size is inconsistent, if
+            ``out`` overlaps the operand while at least one direction contracts, or
+            if a direction flagged identity is not square.
     """
 
 def apply_kron_T_1d(
@@ -246,15 +260,17 @@ def apply_kron_T_1d(
         is_id_0 (bool): Whether direction 0 is the identity. Its operator's
             values are then unread and it must be square.
         v (_Array): Input vector.
-        out (_Array): Output vector. Must not share memory with ``v``.
+        out (_Array): Output vector. Must not share memory with ``v``
+            **unless every direction is the identity**, in which case the call is a
+            forward copy and ``out=v`` is legal.
         scratch (_Array): Work buffer, at least the size
             :func:`pantr.bspline._extraction_helpers._required_scratch_size`
             returns.
 
     Raises:
-        ValueError: If an extent, a length or the scratch size is inconsistent,
-            if ``out`` overlaps the operand, or if a direction flagged identity
-            is not square.
+        ValueError: If an extent, a length or the scratch size is inconsistent, if
+            ``out`` overlaps the operand while at least one direction contracts, or
+            if a direction flagged identity is not square.
     """
 
 def apply_kron_T_2d(
@@ -276,15 +292,17 @@ def apply_kron_T_2d(
         is_id_1 (bool): Whether direction 1 is the identity. Its operator's
             values are then unread and it must be square.
         v (_Array): Input vector.
-        out (_Array): Output vector. Must not share memory with ``v``.
+        out (_Array): Output vector. Must not share memory with ``v``
+            **unless every direction is the identity**, in which case the call is a
+            forward copy and ``out=v`` is legal.
         scratch (_Array): Work buffer, at least the size
             :func:`pantr.bspline._extraction_helpers._required_scratch_size`
             returns.
 
     Raises:
-        ValueError: If an extent, a length or the scratch size is inconsistent,
-            if ``out`` overlaps the operand, or if a direction flagged identity
-            is not square.
+        ValueError: If an extent, a length or the scratch size is inconsistent, if
+            ``out`` overlaps the operand while at least one direction contracts, or
+            if a direction flagged identity is not square.
     """
 
 def apply_kron_T_3d(
@@ -311,15 +329,17 @@ def apply_kron_T_3d(
         is_id_2 (bool): Whether direction 2 is the identity. Its operator's
             values are then unread and it must be square.
         v (_Array): Input vector.
-        out (_Array): Output vector. Must not share memory with ``v``.
+        out (_Array): Output vector. Must not share memory with ``v``
+            **unless every direction is the identity**, in which case the call is a
+            forward copy and ``out=v`` is legal.
         scratch (_Array): Work buffer, at least the size
             :func:`pantr.bspline._extraction_helpers._required_scratch_size`
             returns.
 
     Raises:
-        ValueError: If an extent, a length or the scratch size is inconsistent,
-            if ``out`` overlaps the operand, or if a direction flagged identity
-            is not square.
+        ValueError: If an extent, a length or the scratch size is inconsistent, if
+            ``out`` overlaps the operand while at least one direction contracts, or
+            if a direction flagged identity is not square.
     """
 
 def apply_kron_MT_K_M_1d(
@@ -336,15 +356,17 @@ def apply_kron_MT_K_M_1d(
         is_id_0 (bool): Whether direction 0 is the identity. Its operator's
             values are then unread and it must be square.
         K (_Array): Input matrix, square.
-        out (_Array): Output matrix, square. Must not share memory with ``K``.
+        out (_Array): Output matrix, square. Must not share memory with ``K``
+            **unless every direction is the identity**, in which case the call is a
+            forward copy and ``out=K`` is legal.
         scratch (_Array): Work buffer, at least the size
             :func:`pantr.bspline._extraction_helpers._required_scratch_size`
             returns.
 
     Raises:
-        ValueError: If an extent, a length or the scratch size is inconsistent,
-            if ``out`` overlaps the operand, or if a direction flagged identity
-            is not square.
+        ValueError: If an extent, a length or the scratch size is inconsistent, if
+            ``out`` overlaps the operand while at least one direction contracts, or
+            if a direction flagged identity is not square.
     """
 
 def apply_kron_MT_K_M_2d(
@@ -366,15 +388,17 @@ def apply_kron_MT_K_M_2d(
         is_id_1 (bool): Whether direction 1 is the identity. Its operator's
             values are then unread and it must be square.
         K (_Array): Input matrix, square.
-        out (_Array): Output matrix, square. Must not share memory with ``K``.
+        out (_Array): Output matrix, square. Must not share memory with ``K``
+            **unless every direction is the identity**, in which case the call is a
+            forward copy and ``out=K`` is legal.
         scratch (_Array): Work buffer, at least the size
             :func:`pantr.bspline._extraction_helpers._required_scratch_size`
             returns.
 
     Raises:
-        ValueError: If an extent, a length or the scratch size is inconsistent,
-            if ``out`` overlaps the operand, or if a direction flagged identity
-            is not square.
+        ValueError: If an extent, a length or the scratch size is inconsistent, if
+            ``out`` overlaps the operand while at least one direction contracts, or
+            if a direction flagged identity is not square.
     """
 
 def apply_kron_MT_K_M_3d(
@@ -401,15 +425,17 @@ def apply_kron_MT_K_M_3d(
         is_id_2 (bool): Whether direction 2 is the identity. Its operator's
             values are then unread and it must be square.
         K (_Array): Input matrix, square.
-        out (_Array): Output matrix, square. Must not share memory with ``K``.
+        out (_Array): Output matrix, square. Must not share memory with ``K``
+            **unless every direction is the identity**, in which case the call is a
+            forward copy and ``out=K`` is legal.
         scratch (_Array): Work buffer, at least the size
             :func:`pantr.bspline._extraction_helpers._required_scratch_size`
             returns.
 
     Raises:
-        ValueError: If an extent, a length or the scratch size is inconsistent,
-            if ``out`` overlaps the operand, or if a direction flagged identity
-            is not square.
+        ValueError: If an extent, a length or the scratch size is inconsistent, if
+            ``out`` overlaps the operand while at least one direction contracts, or
+            if a direction flagged identity is not square.
     """
 
 def apply_kron_M_K_MT_1d(
@@ -426,15 +452,17 @@ def apply_kron_M_K_MT_1d(
         is_id_0 (bool): Whether direction 0 is the identity. Its operator's
             values are then unread and it must be square.
         K (_Array): Input matrix, square.
-        out (_Array): Output matrix, square. Must not share memory with ``K``.
+        out (_Array): Output matrix, square. Must not share memory with ``K``
+            **unless every direction is the identity**, in which case the call is a
+            forward copy and ``out=K`` is legal.
         scratch (_Array): Work buffer, at least the size
             :func:`pantr.bspline._extraction_helpers._required_scratch_size`
             returns.
 
     Raises:
-        ValueError: If an extent, a length or the scratch size is inconsistent,
-            if ``out`` overlaps the operand, or if a direction flagged identity
-            is not square.
+        ValueError: If an extent, a length or the scratch size is inconsistent, if
+            ``out`` overlaps the operand while at least one direction contracts, or
+            if a direction flagged identity is not square.
     """
 
 def apply_kron_M_K_MT_2d(
@@ -456,15 +484,17 @@ def apply_kron_M_K_MT_2d(
         is_id_1 (bool): Whether direction 1 is the identity. Its operator's
             values are then unread and it must be square.
         K (_Array): Input matrix, square.
-        out (_Array): Output matrix, square. Must not share memory with ``K``.
+        out (_Array): Output matrix, square. Must not share memory with ``K``
+            **unless every direction is the identity**, in which case the call is a
+            forward copy and ``out=K`` is legal.
         scratch (_Array): Work buffer, at least the size
             :func:`pantr.bspline._extraction_helpers._required_scratch_size`
             returns.
 
     Raises:
-        ValueError: If an extent, a length or the scratch size is inconsistent,
-            if ``out`` overlaps the operand, or if a direction flagged identity
-            is not square.
+        ValueError: If an extent, a length or the scratch size is inconsistent, if
+            ``out`` overlaps the operand while at least one direction contracts, or
+            if a direction flagged identity is not square.
     """
 
 def apply_kron_M_K_MT_3d(
@@ -491,15 +521,17 @@ def apply_kron_M_K_MT_3d(
         is_id_2 (bool): Whether direction 2 is the identity. Its operator's
             values are then unread and it must be square.
         K (_Array): Input matrix, square.
-        out (_Array): Output matrix, square. Must not share memory with ``K``.
+        out (_Array): Output matrix, square. Must not share memory with ``K``
+            **unless every direction is the identity**, in which case the call is a
+            forward copy and ``out=K`` is legal.
         scratch (_Array): Work buffer, at least the size
             :func:`pantr.bspline._extraction_helpers._required_scratch_size`
             returns.
 
     Raises:
-        ValueError: If an extent, a length or the scratch size is inconsistent,
-            if ``out`` overlaps the operand, or if a direction flagged identity
-            is not square.
+        ValueError: If an extent, a length or the scratch size is inconsistent, if
+            ``out`` overlaps the operand while at least one direction contracts, or
+            if a direction flagged identity is not square.
     """
 
 def apply_kron_apply_many_1d(
@@ -524,12 +556,16 @@ def apply_kron_apply_many_1d(
         is_id_0 (_Mask): Direction 0's identity mask.
         cell_indices (_Index): Per-direction indices, shape ``(n_cells, 1)``.
         v (_Array): Operands, one per cell.
-        out (_Array): Results, one per cell. Must not share memory with ``v``.
+        out (_Array): Results, one per cell. Must not share memory with ``v``
+            **unless every cell the block references is all-identity**, in which case
+            the call is a forward copy and ``out=v`` is legal. The exemption is a
+            property of the whole batch, not of one cell.
         scratch (_Array): Work buffers, one row per cell.
 
     Raises:
         ValueError: If a shape, a row count, a cell index or the scratch size is
-            inconsistent, or if ``out`` overlaps the operand.
+            inconsistent, or if ``out`` overlaps the operand while at least one cell
+            in the batch contracts.
     """
 
 def apply_kron_apply_many_2d(
@@ -561,12 +597,16 @@ def apply_kron_apply_many_2d(
         is_id_1 (_Mask): Direction 1's identity mask.
         cell_indices (_Index): Per-direction indices, shape ``(n_cells, 2)``.
         v (_Array): Operands, one per cell.
-        out (_Array): Results, one per cell. Must not share memory with ``v``.
+        out (_Array): Results, one per cell. Must not share memory with ``v``
+            **unless every cell the block references is all-identity**, in which case
+            the call is a forward copy and ``out=v`` is legal. The exemption is a
+            property of the whole batch, not of one cell.
         scratch (_Array): Work buffers, one row per cell.
 
     Raises:
         ValueError: If a shape, a row count, a cell index or the scratch size is
-            inconsistent, or if ``out`` overlaps the operand.
+            inconsistent, or if ``out`` overlaps the operand while at least one cell
+            in the batch contracts.
     """
 
 def apply_kron_apply_many_3d(
@@ -605,12 +645,16 @@ def apply_kron_apply_many_3d(
         is_id_2 (_Mask): Direction 2's identity mask.
         cell_indices (_Index): Per-direction indices, shape ``(n_cells, 3)``.
         v (_Array): Operands, one per cell.
-        out (_Array): Results, one per cell. Must not share memory with ``v``.
+        out (_Array): Results, one per cell. Must not share memory with ``v``
+            **unless every cell the block references is all-identity**, in which case
+            the call is a forward copy and ``out=v`` is legal. The exemption is a
+            property of the whole batch, not of one cell.
         scratch (_Array): Work buffers, one row per cell.
 
     Raises:
         ValueError: If a shape, a row count, a cell index or the scratch size is
-            inconsistent, or if ``out`` overlaps the operand.
+            inconsistent, or if ``out`` overlaps the operand while at least one cell
+            in the batch contracts.
     """
 
 def apply_kron_apply_T_many_1d(
@@ -635,12 +679,16 @@ def apply_kron_apply_T_many_1d(
         is_id_0 (_Mask): Direction 0's identity mask.
         cell_indices (_Index): Per-direction indices, shape ``(n_cells, 1)``.
         v (_Array): Operands, one per cell.
-        out (_Array): Results, one per cell. Must not share memory with ``v``.
+        out (_Array): Results, one per cell. Must not share memory with ``v``
+            **unless every cell the block references is all-identity**, in which case
+            the call is a forward copy and ``out=v`` is legal. The exemption is a
+            property of the whole batch, not of one cell.
         scratch (_Array): Work buffers, one row per cell.
 
     Raises:
         ValueError: If a shape, a row count, a cell index or the scratch size is
-            inconsistent, or if ``out`` overlaps the operand.
+            inconsistent, or if ``out`` overlaps the operand while at least one cell
+            in the batch contracts.
     """
 
 def apply_kron_apply_T_many_2d(
@@ -672,12 +720,16 @@ def apply_kron_apply_T_many_2d(
         is_id_1 (_Mask): Direction 1's identity mask.
         cell_indices (_Index): Per-direction indices, shape ``(n_cells, 2)``.
         v (_Array): Operands, one per cell.
-        out (_Array): Results, one per cell. Must not share memory with ``v``.
+        out (_Array): Results, one per cell. Must not share memory with ``v``
+            **unless every cell the block references is all-identity**, in which case
+            the call is a forward copy and ``out=v`` is legal. The exemption is a
+            property of the whole batch, not of one cell.
         scratch (_Array): Work buffers, one row per cell.
 
     Raises:
         ValueError: If a shape, a row count, a cell index or the scratch size is
-            inconsistent, or if ``out`` overlaps the operand.
+            inconsistent, or if ``out`` overlaps the operand while at least one cell
+            in the batch contracts.
     """
 
 def apply_kron_apply_T_many_3d(
@@ -716,12 +768,16 @@ def apply_kron_apply_T_many_3d(
         is_id_2 (_Mask): Direction 2's identity mask.
         cell_indices (_Index): Per-direction indices, shape ``(n_cells, 3)``.
         v (_Array): Operands, one per cell.
-        out (_Array): Results, one per cell. Must not share memory with ``v``.
+        out (_Array): Results, one per cell. Must not share memory with ``v``
+            **unless every cell the block references is all-identity**, in which case
+            the call is a forward copy and ``out=v`` is legal. The exemption is a
+            property of the whole batch, not of one cell.
         scratch (_Array): Work buffers, one row per cell.
 
     Raises:
         ValueError: If a shape, a row count, a cell index or the scratch size is
-            inconsistent, or if ``out`` overlaps the operand.
+            inconsistent, or if ``out`` overlaps the operand while at least one cell
+            in the batch contracts.
     """
 
 def apply_kron_MT_K_M_many_1d(
@@ -746,12 +802,16 @@ def apply_kron_MT_K_M_many_1d(
         is_id_0 (_Mask): Direction 0's identity mask.
         cell_indices (_Index): Per-direction indices, shape ``(n_cells, 1)``.
         K (_Array): Operands, one per cell.
-        out (_Array): Results, one per cell. Must not share memory with ``K``.
+        out (_Array): Results, one per cell. Must not share memory with ``K``
+            **unless every cell the block references is all-identity**, in which case
+            the call is a forward copy and ``out=K`` is legal. The exemption is a
+            property of the whole batch, not of one cell.
         scratch (_Array): Work buffers, one row per cell.
 
     Raises:
         ValueError: If a shape, a row count, a cell index or the scratch size is
-            inconsistent, or if ``out`` overlaps the operand.
+            inconsistent, or if ``out`` overlaps the operand while at least one cell
+            in the batch contracts.
     """
 
 def apply_kron_MT_K_M_many_2d(
@@ -783,12 +843,16 @@ def apply_kron_MT_K_M_many_2d(
         is_id_1 (_Mask): Direction 1's identity mask.
         cell_indices (_Index): Per-direction indices, shape ``(n_cells, 2)``.
         K (_Array): Operands, one per cell.
-        out (_Array): Results, one per cell. Must not share memory with ``K``.
+        out (_Array): Results, one per cell. Must not share memory with ``K``
+            **unless every cell the block references is all-identity**, in which case
+            the call is a forward copy and ``out=K`` is legal. The exemption is a
+            property of the whole batch, not of one cell.
         scratch (_Array): Work buffers, one row per cell.
 
     Raises:
         ValueError: If a shape, a row count, a cell index or the scratch size is
-            inconsistent, or if ``out`` overlaps the operand.
+            inconsistent, or if ``out`` overlaps the operand while at least one cell
+            in the batch contracts.
     """
 
 def apply_kron_MT_K_M_many_3d(
@@ -827,12 +891,16 @@ def apply_kron_MT_K_M_many_3d(
         is_id_2 (_Mask): Direction 2's identity mask.
         cell_indices (_Index): Per-direction indices, shape ``(n_cells, 3)``.
         K (_Array): Operands, one per cell.
-        out (_Array): Results, one per cell. Must not share memory with ``K``.
+        out (_Array): Results, one per cell. Must not share memory with ``K``
+            **unless every cell the block references is all-identity**, in which case
+            the call is a forward copy and ``out=K`` is legal. The exemption is a
+            property of the whole batch, not of one cell.
         scratch (_Array): Work buffers, one row per cell.
 
     Raises:
         ValueError: If a shape, a row count, a cell index or the scratch size is
-            inconsistent, or if ``out`` overlaps the operand.
+            inconsistent, or if ``out`` overlaps the operand while at least one cell
+            in the batch contracts.
     """
 
 def apply_kron_M_K_MT_many_1d(
@@ -857,12 +925,16 @@ def apply_kron_M_K_MT_many_1d(
         is_id_0 (_Mask): Direction 0's identity mask.
         cell_indices (_Index): Per-direction indices, shape ``(n_cells, 1)``.
         K (_Array): Operands, one per cell.
-        out (_Array): Results, one per cell. Must not share memory with ``K``.
+        out (_Array): Results, one per cell. Must not share memory with ``K``
+            **unless every cell the block references is all-identity**, in which case
+            the call is a forward copy and ``out=K`` is legal. The exemption is a
+            property of the whole batch, not of one cell.
         scratch (_Array): Work buffers, one row per cell.
 
     Raises:
         ValueError: If a shape, a row count, a cell index or the scratch size is
-            inconsistent, or if ``out`` overlaps the operand.
+            inconsistent, or if ``out`` overlaps the operand while at least one cell
+            in the batch contracts.
     """
 
 def apply_kron_M_K_MT_many_2d(
@@ -894,12 +966,16 @@ def apply_kron_M_K_MT_many_2d(
         is_id_1 (_Mask): Direction 1's identity mask.
         cell_indices (_Index): Per-direction indices, shape ``(n_cells, 2)``.
         K (_Array): Operands, one per cell.
-        out (_Array): Results, one per cell. Must not share memory with ``K``.
+        out (_Array): Results, one per cell. Must not share memory with ``K``
+            **unless every cell the block references is all-identity**, in which case
+            the call is a forward copy and ``out=K`` is legal. The exemption is a
+            property of the whole batch, not of one cell.
         scratch (_Array): Work buffers, one row per cell.
 
     Raises:
         ValueError: If a shape, a row count, a cell index or the scratch size is
-            inconsistent, or if ``out`` overlaps the operand.
+            inconsistent, or if ``out`` overlaps the operand while at least one cell
+            in the batch contracts.
     """
 
 def apply_kron_M_K_MT_many_3d(
@@ -938,10 +1014,14 @@ def apply_kron_M_K_MT_many_3d(
         is_id_2 (_Mask): Direction 2's identity mask.
         cell_indices (_Index): Per-direction indices, shape ``(n_cells, 3)``.
         K (_Array): Operands, one per cell.
-        out (_Array): Results, one per cell. Must not share memory with ``K``.
+        out (_Array): Results, one per cell. Must not share memory with ``K``
+            **unless every cell the block references is all-identity**, in which case
+            the call is a forward copy and ``out=K`` is legal. The exemption is a
+            property of the whole batch, not of one cell.
         scratch (_Array): Work buffers, one row per cell.
 
     Raises:
         ValueError: If a shape, a row count, a cell index or the scratch size is
-            inconsistent, or if ``out`` overlaps the operand.
+            inconsistent, or if ``out`` overlaps the operand while at least one cell
+            in the batch contracts.
     """
