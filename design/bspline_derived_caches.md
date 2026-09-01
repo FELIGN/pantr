@@ -503,9 +503,20 @@ cheapest of all and is what the ticket predicts someone will reach for. Rejected
 scenario rather than on principle: `BsplineSpace1D.get_unique_knots_and_multiplicity` returns two
 arrays. If the wrapper caches the numpy views and the C++ caches the buffers, then the arrays are
 correct exactly as long as nobody adds a second path that rebuilds the C++ block -- and the day
-someone does, the wrapper serves views into freed storage. The cost of *not* caching the
-presentation is one `nb::ndarray` construction per access, about 200 ns, which is the same order
-as the Python call that asked for it.
+someone does, the wrapper serves views into freed storage.
+
+**The cost figure this note first gave for the alternative was wrong, and the decision survives
+it.** It said one `nb::ndarray` construction per access costs "about 200 ns, the same order as the
+Python call that asked for it". Measured on the shipped binding at #396 slice 3: a scalar property
+through nanobind costs about **80 ns**, and one `nb::ndarray` construction about **460 ns** -- so a
+view is roughly six bare bound calls, not one, and "the same order" overstated it by about 2.3x.
+That leg of the argument is therefore weaker than written. The rejection stands anyway, because it
+never rested on it: the paragraph above is a **correctness** argument, and two memos over one
+buffer are wrong the day something rebuilds the buffer whatever the access costs.
+**What follows from the correction is a call-site rule rather than a design change** -- the
+accessor looks free and is not, so a loop hoists it, which
+`pantr/core/lazy.hpp` says for the C++ side and `BsplineSpace1D.get_unique_knots_and_multiplicity`
+now says for the Python one.
 
 **Eager everything.** No `mutable`, no flag, no mutex, and construct-then-freeze in its purest
 form. Rejected on F4's measurement: the allocating derived arrays cost 4.8x to 7.2x the bare

@@ -2790,8 +2790,9 @@ def test_first_basis_per_interval_is_a_read_only_view_of_one_buffer() -> None:
     the cost argument. ``design/bspline_derived_caches.md`` rejects memoizing the
     presentation as well as the value, for a concrete reason: two memos over one
     buffer are correct only until something rebuilds the buffer, and then the
-    wrapper serves views into freed storage. One ``ndarray`` construction per
-    access is about 200 ns, the same order as the Python call that asked for it.
+    wrapper serves views into freed storage. That is a correctness argument and
+    does not depend on what a view costs, which is just as well: the note's
+    accompanying cost figure was measured too low and is corrected there.
 
     ``shares_memory`` is what distinguishes a view from a copy, and it holds under
     both backends -- trivially under the oracle, which really does return one

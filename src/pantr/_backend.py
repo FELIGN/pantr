@@ -89,10 +89,10 @@ in which those kernels are C++ and everything else is unchanged.
 * :mod:`pantr.grid` -- all nine kernels: tensor-product point location, the BVH's
   build and its two query passes, and the five hierarchical addressing kernels.
 
-**Nine types have moved as well, and that is a different kind of entry.** A
+**Ten types have moved as well, and that is a different kind of entry.** A
 catalogue decides which code computes; a ported type decides which object holds the
 state, so under ``PANTR_BACKEND=cpp`` the object's data lives in C++ and the Python
-class is a wrapper around it. The nine, by the module that exports them:
+class is a wrapper around it. The ten, by the module that exports them:
 
 * :mod:`pantr.geometry` -- :class:`~pantr.geometry.AABB`.
 * :mod:`pantr.transform` -- :class:`~pantr.transform.AffineTransform`.
@@ -101,13 +101,31 @@ class is a wrapper around it. The nine, by the module that exports them:
 * :mod:`pantr.grid` -- :class:`~pantr.grid.TensorProductGrid`,
   :class:`~pantr.grid.BVH`, :class:`~pantr.grid.CellTags`,
   :class:`~pantr.grid.FacetTags` and :class:`~pantr.grid.Partition`.
+* :mod:`pantr.bspline` -- :class:`~pantr.bspline.BsplineSpace1D`.
 
-Two domain types in those modules have **not** moved, and both are deliberate rather
-than pending: :class:`pantr.grid.HierarchicalGrid`, which is the Python implementation
-under either backend until its own ticket, and :class:`pantr.quad.PointsLattice`, which
-``design/cross_backend_types.md`` rules out of the port with four recorded reasons. The
-rest of what these modules export is not a candidate either way -- ``Grid`` is a
-:class:`typing.Protocol` and ``GridRestriction`` is a result record.
+**The last of those is why the two lists above are no longer parallel, and the
+mismatch is real rather than an omission.** Every other module here earned its place
+by porting *kernels*; :mod:`pantr.bspline` has none ported, so it is absent from the
+module list, and yet the backend does change which object a caller of
+:class:`~pantr.bspline.BsplineSpace1D` holds. Read the module list as "whose kernels
+moved" and this one as "whose objects moved", and do not infer either from the other.
+
+Two domain types in the geometry, transform, quad and grid modules have **not**
+moved: :class:`pantr.grid.HierarchicalGrid`, which is the Python implementation under
+either backend until its own ticket, and :class:`pantr.quad.PointsLattice`, which
+``design/cross_backend_types.md`` rules out of the port with four recorded reasons --
+the first pending, the second permanent. The rest of what those modules export is not
+a candidate either way -- ``Grid`` is a :class:`typing.Protocol` and
+``GridRestriction`` is a result record.
+
+**:mod:`pantr.bspline` is counted differently, because it is at the start of its own
+front rather than the end of one.** Listing its unported types here would be listing
+a work queue: ``BsplineSpace``, ``Bspline``, ``THBSplineSpace``, ``THBSpline`` and the
+extraction types are all still Python under either backend, and each has its own
+ticket. What is worth stating is the boundary --
+:class:`~pantr.bspline.BsplineSpace1D` alone dispatches, and every operation on it
+(basis tabulation, the extraction operators, knot insertion, subdivision,
+restriction) is still Numba under both backends.
 
 **This list was wrong for two releases and that is worth a sentence.** It said three
 modules and named neither half of ``bezier`` while both were merged and dispatching.

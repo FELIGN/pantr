@@ -669,25 +669,11 @@ class BsplineSpace1D:
             which is what keeps the wire format the constructor's arguments and
             nothing else. Where snapping moved the last knot onto its class's first
             one, the scale moves with it and the reconstructed tolerance differs
-            from the original's. The bound is
-
-            ``|tol' - tol| / tol <= (m - 1) * 8 * eps``,
-
-            where ``m`` is the multiplicity of the **last** knot class. Snapping
-            replaces each class by its *first* knot, so the first knot of the vector
-            never moves and only the last one does; every step inside a class is at
-            most one tolerance, so it moves by at most ``(m - 1) * tol``. The scale
-            is a maximum over three arguments and so is 1-Lipschitz in each, so it
-            moves by no more than that, and the tolerance is a fixed multiple of the
-            scale. Recomputing the scale and the tolerance adds a further relative
-            ``eps`` or so, which the measured margin absorbs.
-
-            The ``m - 1`` is not decoration. A first version of this note claimed a
-            flat ``8 * eps``, reasoning that the scale moves by at most one
-            tolerance; that ignores chaining, and a sweep built to chain the final
-            class **exceeded it by a factor of 4.4**. ``tests/parity`` pins the
-            corrected form, checks that the drift is actually non-zero, and checks
-            that the flat version fails.
+            from the original's by at most a relative ``(m - 1) * 8 * eps``, with
+            ``m`` the multiplicity of the last knot class.
+            ``design/bspline_pickle_tolerance.md`` derives that bound, records why
+            the ``m - 1`` is not decoration, and carries the sweep that measured the
+            margin; ``tests/parity/test_bspline_space_1d.py`` pins it.
 
         Returns:
             tuple: The class, and the knots, degree, periodicity and snapping flag
@@ -792,6 +778,19 @@ class BsplineSpace1D:
     @property
     def domain(self) -> tuple[np.float32 | np.float64, np.float32 | np.float64]:
         """Get the knot vector domain.
+
+        A fresh tuple per call, under both backends. ``space.domain is space.domain``
+        was ``True`` while this was a ``cached_property`` on the monolithic class and
+        is now ``False``; the values, their dtype and their order are unchanged.
+        Nothing promised that identity and nothing in the suite relied on it, so this
+        is disclosure rather than a deprecation -- recorded because the sibling
+        weakening on :meth:`first_basis_per_interval` is recorded, and one of the two
+        going unsaid is how the pair becomes folklore.
+
+        Restoring it is not the cheap fix it looks like. It would need the wrapper to
+        hold the tuple in a slot, and ``design/bspline_derived_caches.md`` forbids
+        exactly that: a wrapper slot holding a number is the second truth about a
+        value the implementation already owns.
 
         Returns:
             tuple[np.float32 | np.float64, np.float32 | np.float64]: Tuple of
