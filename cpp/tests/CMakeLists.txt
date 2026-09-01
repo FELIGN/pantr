@@ -10,6 +10,7 @@ set(PANTR_TEST_SOURCES
     test_change_basis.cpp
     test_quad.cpp
     test_binomial.cpp
+    test_lazy_memo.cpp
     test_bezier.cpp
     test_bezier_root_finding.cpp
     test_grid_locate.cpp
