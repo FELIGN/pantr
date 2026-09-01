@@ -382,6 +382,42 @@ void test_scalar_and_batch_locate_agree() {
     }
 }
 
+/// A non-finite coordinate locates to nothing, through the batch path as well.
+///
+/// The batch kernel's containment test is `x < lo || x > hi`, which a NaN passes -- every
+/// comparison against it is false -- so the descent proceeds and lands in some cell. The
+/// oracle masks those rows after the kernel returns (`_grid_utils._mask_nonfinite_locate`),
+/// and `locate_many` here owes the same correction; the scalar `locate` never needed it,
+/// because `TensorProductGrid::locate` writes its test as a negated comparison that
+/// rejects a NaN.
+///
+/// Both paths are asserted, and so is their agreement: the failure mode this pins is not
+/// a crash but a plausible-looking wrong id, which is exactly what nothing else here
+/// would notice. The sibling `test_grid_tensor_product.cpp` pins the same case for the
+/// flat grid.
+void test_non_finite_points_locate_to_nothing() {
+    const Grid g = refined_1d();
+    const double nan = std::numeric_limits<double>::quiet_NaN();
+    const double inf = std::numeric_limits<double>::infinity();
+    const std::vector<double> xs{nan, inf, -inf, 0.25};
+
+    const std::vector<std::int64_t> batch =
+        g.locate_many(span2d<const double>(xs.data(), xs.size(), 1));
+    PANTR_CHECK(batch == std::vector<std::int64_t>({-1, -1, -1, 2}));
+    for (std::size_t i = 0; i < xs.size(); ++i) {
+        const std::optional<std::int64_t> one = g.locate(std::span<const double>(&xs[i], 1));
+        PANTR_CHECK_MSG(batch[i] == (one ? *one : -1),
+                        "the scalar and batch paths disagree on a non-finite coordinate");
+    }
+
+    // In more than one dimension a single bad coordinate is enough to reject the row.
+    const Grid h = refined_2d();
+    const std::vector<double> pts{0.5, nan, nan, 0.5, 0.5, 0.5};
+    const std::vector<std::int64_t> got = h.locate_many(span2d<const double>(pts.data(), 3, 2));
+    PANTR_CHECK(got[0] == -1 && got[1] == -1);
+    PANTR_CHECK(got[2] >= 0);
+}
+
 /// Sorted by lower corner, the 1-D cells abut exactly and span the whole domain.
 ///
 /// Exact on a dyadic fixture: a shared corner is `root_lo + j * size` on one side and
@@ -813,6 +849,7 @@ int main() {
     test_locate_finds_each_cell(refined_1d(), "the refined 1-D grid");
     test_locate_finds_each_cell(refined_2d(), "the refined 2-D grid");
     test_scalar_and_batch_locate_agree();
+    test_non_finite_points_locate_to_nothing();
     test_the_cells_tile_the_domain(flat_1d(), "the flat grid");
     test_the_cells_tile_the_domain(refined_1d(), "the refined 1-D grid");
     test_the_cells_tile_the_domain(dyadic_unit(6), "the dyadic unit grid");
