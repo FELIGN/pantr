@@ -14,11 +14,13 @@ built from), `design/bspline_ownership_lifetime.md` (F5, which classifies
 `ExtractionStructView`), `design/bspline_derived_caches.md` (which assigns
 `SpanwiseElementExtraction`'s two memos to #399 and the knot scans to #396).
 
-**Validated against:** `proto/cpp` at `43453c0`, worktree `feat/399-extraction-cpp` with #399's
-first slice applied. Every locator below was read in **that** tree, which matters here more than
-usual: the first slice added about seventy lines near the top of
+**Validated against:** `proto/cpp` at `43453c0`. Every Python locator below was read in
+**`feat/399-extraction-cpp` at `1d2682c`** -- that branch is `43453c0` plus #399's first slice
+(the target enum) and nothing else -- and every C++ locator in this branch. Saying which of the
+two matters here more than usual: the first slice adds about seventy lines near the top of
 `src/pantr/bspline/spanwise_element_extraction.py`, so every line number in that file is shifted
-relative to the two companion notes. nanobind **2.14.0**, CPython **3.14.6**,
+by that much relative to the two companion notes, and by the same amount relative to `proto/cpp`
+until the slice merges. nanobind **2.14.0**, CPython **3.14.6**,
 g++ **14.4.0**.
 
 ## The decision in one paragraph
@@ -198,6 +200,44 @@ stays Python-side). It is worth its own small change, and it should be taken tog
 whatever moves the dispatch tables into the catalogue, since that is the code that reads it.
 `OpKind` is private and the not-yet-public downstream consumer imports private symbols, so
 it owes the same census the target owed.
+
+### F7 (important). Two facts about the oracle that a generic port has to get right, and one it does not
+
+Read out of the oracle in full, because each would be a silent divergence.
+
+**The `d = 2` unilateral kernels are branched by identity *combination*, while every
+other multi-directional kernel is branched *per stage*.** `apply_kron_2d` and
+`apply_kron_T_2d` write four independent code blocks, one per `(is_id_0, is_id_1)`
+pattern (`_extraction_kernels.py:125`, `:133`, `:144`, `:155`), and the two
+single-identity blocks contract straight from the operand into `out` with no scratch at
+all. `apply_kron_3d` and both bilateral families instead run one linear stage sequence
+in which an identity stage is a `pass`.
+
+A generic implementation that wrote `out` at the **last direction** would not reproduce
+that: at `d = 3` with the last direction identity it would contract into scratch and
+then copy. Writing `out` at the **last contracting** direction reproduces it exactly,
+for every dimension and every pattern, and is one pass shorter than the oracle in the
+one case where they differ. That is the rule the port follows, and it is why the
+combination branching does not have to be transliterated.
+
+**The bilateral stage order is direction-major, `(row 0, col 0, row 1, col 1, ...)`,
+`2d` stages in one pass** -- not `d` stages twice. Confirmed twice over: from the
+kernels (`_extraction_kernels.py:682`, `:697`, `:713`, `:731` for `d = 2`, six slots for
+`d = 3`) and independently from `_bilateral_scratch_size`, whose simulation computes
+`axis = k if stage % 2 == 0 else d + k` (`_extraction_helpers.py:181-190`). Following it
+is what keeps the caller's scratch large enough, so it is a contract rather than a
+convention.
+
+**And one thing that looked like a hazard and is not.** `_required_scratch_size`'s
+docstring claims sufficiency "for any identity-flag pattern" while its two component
+functions simulate only the fully non-identity sequence, which is an unproved claim as
+written. It is nevertheless true, and the argument is short: the intermediate after
+stage `k` has extents `out_0..out_k, in_{k+1}..in_{d-1}` whatever the pattern, because
+an identity direction has `in == out`; a pattern with identities therefore realises a
+**subset** of the same products the formula maximises over, and a subset's maximum
+cannot exceed the whole set's. The port relies on the same sizes and inherits the same
+guarantee. Worth stating in the docstring on the Python side, which is a one-line
+`docs` change for whoever next opens that file.
 
 ## The C++ shape
 
@@ -414,8 +454,9 @@ CPython refuses it outright (`too many data types for 'Both': {<class 'str'>, <c
 
 ## Epistemic status
 
-- **Verified by reading the tree at `c65a3f9`:** that `cpp/include/pantr/` has no `bspline/`
-  directory; that all twelve per-cell kernels set their accumulator from `M_0.dtype`, at the
+- **Verified by reading `feat/399-extraction-cpp` at `1d2682c`**, independently re-checked
+  claim by claim by a second pass: that `cpp/include/pantr/` had no `bspline/` directory
+  before this branch added one; that all twelve per-cell kernels set their accumulator from `M_0.dtype`, at the
   twelve lines cited in F3; that the identity branches skip the contraction entirely and that
   the all-identity branch is a copy; that `make_struct_view` bundles the three array tuples by
   reference; that `_KERNELS` is keyed by `(op_kind, dimension)`; that
