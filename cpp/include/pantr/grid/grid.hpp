@@ -755,9 +755,18 @@ class GridBase {
     /// tree on first query rather than inheriting the source's. That is deliberate and
     /// not an oversight: the memo describes its owner's state, and a memo type cannot
     /// check that the object it was copied into still has that state. Here it happens to
-    /// be a cost change and not a semantic one -- the tree is a pure function of the grid
-    /// -- and nothing copies a grid with a built tree on a hot path, since `restrict` and
-    /// a hierarchical grid's refinement both move.
+    /// be a cost change and not a semantic one -- the tree is a pure function of the grid.
+    ///
+    /// Nothing pays that cost on a hot path today, and the two reasons are of different
+    /// kinds, so they are not stated in one breath. **Verified in this tree:** `restrict`
+    /// moves -- it constructs the sub-grid, never queries it, and hands it to
+    /// `make_restriction`, which takes its grid by value (`tensor_product_grid.hpp`).
+    /// **Designed, not yet built:** a hierarchical grid's refinement returns a new grid
+    /// rather than mutating, which FELIGN/pantr#378 settled on the Python side; the C++
+    /// half is still to come and it is that work's job to make this true.
+    ///
+    /// The conclusion holds either way, and does not lean on the unbuilt half: a freshly
+    /// constructed grid has no tree to inherit, however it reaches its caller.
     LazySlot<BVH<scalar_type>> bvh_;
 };
 
