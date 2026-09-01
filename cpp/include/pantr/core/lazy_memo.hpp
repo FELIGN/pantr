@@ -35,8 +35,36 @@
 /// Three details are the correctness rather than the ceremony:
 ///
 ///  - **The `acquire` load pairs with the `release` store.** The store publishes every
-///    write the build made; the load is what a reader synchronises with. Relaxing
-///    either restores the race with the machinery still visible.
+///    write the build made; the load is what a reader synchronises with. Relaxing either
+///    reintroduces the race with all the machinery still in place, because the fast path
+///    reads `value_` *outside* the lock -- the mutex does not order that read, and the
+///    pair is the only thing that does.
+///
+///    **This is checked, and the check is fragile in one specific way that is worth more
+///    than the check itself.** Under `--preset gcc-tsan`, relaxing only these two
+///    orderings -- leaving the mutex and the flag exactly as they are -- makes
+///    `cpp/tests/test_lazy_memo.cpp` fail on every run, and restoring them makes it clean
+///    on every run. It only does so because the concurrent case **reads the memoised
+///    value's contents inside the threaded section**. An earlier version stored the
+///    address of the returned reference and compared contents after `join()`: taking an
+///    address loads nothing from the payload, so there was nothing for a sanitizer to
+///    instrument, and `join()` ordered everything after it. That harness reported no
+///    races whether the publication was correctly ordered or not.
+///
+///    So **a refactor that drops the payload read silently removes the only check on the
+///    ordering**, and leaves behind a test that still passes and still looks like
+///    coverage. If you simplify that loop away, the acquire/release pair is back to
+///    resting on this paragraph alone.
+///
+///    Two claims there, at different strengths. That the two harnesses differ, and in
+///    which direction, is measured and reproducible. *Why* taking an address is invisible
+///    to the sanitizer is inferred from that behaviour rather than read out of its
+///    instrumentation, so treat the mechanism as well supported and not as established.
+///
+///    The refactor to refuse on the code side is the one that sounds right: *the mutex
+///    already orders everything, so `relaxed` is enough*. That is false for exactly one
+///    access -- the outer load, the only one that never takes the mutex, and the one the
+///    whole fast path is built on.
 ///  - **The second load, inside the lock, is `relaxed` and correct as such** -- the
 ///    mutex already orders it.
 ///  - **The value is read outside the lock on the fast path**, which is sound for the
@@ -126,6 +154,15 @@ class LazyMemo {
     }
 
     /// Replace this memo's contents with another's, leaving the source empty.
+    ///
+    /// Not `noexcept`, unlike the move constructor, and the asymmetry is real rather than
+    /// an oversight: this takes the target's lock and `std::mutex::lock` may throw, while
+    /// the move constructor takes no lock at all. That target lock is defensive rather
+    /// than required -- assignment mutates the target, so the contract already puts
+    /// exclusion on the caller, and a `get_or_build` racing it on the fast path would not
+    /// be serialised by it anyway. Dropping it would make this conditionally `noexcept`
+    /// like its constructor; it is kept for now because narrowing synchronisation is not
+    /// a change to make for a specifier.
     ///
     /// \param other The memo to move from; left empty.
     /// \return This memo.

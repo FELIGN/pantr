@@ -29,6 +29,8 @@
 /// very thing being tested.
 
 #include <atomic>
+#include <cstddef>
+#include <cstdint>
 #include <memory>
 #include <stdexcept>
 #include <thread>
@@ -83,21 +85,39 @@ void test_a_throwing_build_leaves_the_memo_retryable() {
     PANTR_CHECK(memo.get_or_build([] { return 3; }) == 3);
 }
 
-/// Many threads arriving together build exactly once and all see that one value.
+/// Many threads arriving together build exactly once and all read the same value.
 ///
 /// The spin barrier is what makes the case worth running: without it the threads start
-/// far enough apart that the first one is usually finished before the second looks, and
-/// the window the race lives in is never entered. Run under `--preset gcc-tsan` for the
-/// half of this claim a value cannot carry.
+/// far enough apart that the first is usually finished before the second looks, and the
+/// window the race lives in is never entered.
+///
+/// **Every thread sums the memoised vector before any join, and that is load-bearing
+/// rather than a stronger assertion for its own sake.** An earlier version stored only
+/// `&get_or_build(...)` and checked the contents after `join()`. Taking an address is
+/// pointer arithmetic on the `optional`: it loads nothing from the payload, so a
+/// sanitizer sees no access to instrument, and `join()` supplies its own happens-before
+/// for everything after it. That harness reported no races whether the publication was
+/// correctly ordered or not -- measured **0 detections in 35 runs** with the acquire and
+/// release relaxed -- so it could not have failed. Summing the value inside the threaded
+/// section is the whole difference; see `lazy_memo.hpp` for the counts.
+///
+/// The sums are checked against a closed form computed here rather than copied from a
+/// run, so a wrong answer is a wrong answer and not a changed baseline.
 void test_concurrent_first_calls_build_once() {
     constexpr int kThreads = 16;
     constexpr int kRounds = 200;
+    constexpr std::size_t kWidth = 512;
+
+    // sum(i for i in [0, kWidth)).
+    constexpr std::int64_t kExpected =
+        static_cast<std::int64_t>(kWidth) * (static_cast<std::int64_t>(kWidth) - 1) / 2;
 
     for (int round = 0; round < kRounds; ++round) {
-        const LazyMemo<std::vector<int>> memo;
+        const LazyMemo<std::vector<std::int64_t>> memo;
         int builds = 0;  // written only under the memo's lock; see the file header
         std::atomic<int> waiting{0};
-        std::vector<const std::vector<int>*> seen(kThreads, nullptr);
+        std::vector<const std::vector<std::int64_t>*> seen(kThreads, nullptr);
+        std::vector<std::int64_t> sums(kThreads, -1);
 
         std::vector<std::thread> threads;
         threads.reserve(kThreads);
@@ -107,10 +127,21 @@ void test_concurrent_first_calls_build_once() {
                 while (waiting.load(std::memory_order_acquire) < kThreads) {
                     std::this_thread::yield();
                 }
-                seen[static_cast<std::size_t>(t)] = &memo.get_or_build([&builds] {
-                    ++builds;
-                    return std::vector<int>{1, 2, 3};
-                });
+                const std::vector<std::int64_t>& value =
+                    memo.get_or_build([&builds]() -> std::vector<std::int64_t> {
+                        ++builds;
+                        std::vector<std::int64_t> built(kWidth);
+                        for (std::size_t i = 0; i < kWidth; ++i) {
+                            built[i] = static_cast<std::int64_t>(i);
+                        }
+                        return built;
+                    });
+                seen[static_cast<std::size_t>(t)] = &value;
+                std::int64_t total = 0;
+                for (const std::int64_t entry : value) {
+                    total += entry;
+                }
+                sums[static_cast<std::size_t>(t)] = total;
             });
         }
         for (std::thread& thread : threads) {
@@ -120,8 +151,8 @@ void test_concurrent_first_calls_build_once() {
         PANTR_CHECK(builds == 1);
         for (int t = 0; t < kThreads; ++t) {
             PANTR_CHECK(seen[static_cast<std::size_t>(t)] == seen[0]);
+            PANTR_CHECK(sums[static_cast<std::size_t>(t)] == kExpected);
         }
-        PANTR_CHECK(*seen[0] == std::vector<int>({1, 2, 3}));
     }
 }
 
