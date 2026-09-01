@@ -61,6 +61,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <array>
 #include <cstdio>
 #include <limits>
 #include <span>
@@ -632,6 +633,10 @@ void check_bilateral(std::size_t d, bool integral, std::uint64_t seed) {
                     value = value < 0.0 ? -value : value;
                 }
                 const Dense magnitude = matmul(matmul(transpose(abs_full), abs_k), abs_full);
+                // Two stages per contracting direction, and they share a length:
+                // a bilateral kernel contracts the row axis and the column axis of
+                // the same direction, and for `M^T K M` both run over that
+                // direction's row count. Not a duplicated line.
                 std::vector<std::size_t> lengths;
                 for (std::size_t k = 0; k < d; ++k) {
                     if (!flags[k]) {
@@ -667,6 +672,9 @@ void check_bilateral(std::size_t d, bool integral, std::uint64_t seed) {
                     value = value < 0.0 ? -value : value;
                 }
                 const Dense magnitude = matmul(matmul(abs_full, abs_k), transpose(abs_full));
+                // As above: two stages per contracting direction sharing a length,
+                // here the column count, since `M K M^T` contracts against `M`
+                // rather than its transpose on both sides.
                 std::vector<std::size_t> lengths;
                 for (std::size_t k = 0; k < d; ++k) {
                     if (!flags[k]) {
@@ -684,6 +692,74 @@ void check_bilateral(std::size_t d, bool integral, std::uint64_t seed) {
     }
 }
 
+
+/// The accumulator is the storage type, and this is the only test that can say so.
+///
+/// The header claims the chain accumulates in `T` rather than in `double`, because
+/// the oracle's twelve kernels open with `zero = M_0.dtype.type(0.0)`. Everything
+/// else in this file instantiates `double`, where the claim is unobservable.
+///
+/// **And a `float` case in the ordinary style would still not check it**, which is
+/// the part worth stating: widening the accumulator makes the kernel *more*
+/// accurate, so the bounded half would keep passing with a smaller ratio and the
+/// exact-integer half would be exact either way. A widening is invisible to both.
+///
+/// What distinguishes them is a `float` case at values where the two accumulation
+/// widths genuinely disagree, with **the narrow answer as the expected one**:
+///
+///   `2^24 + 1 + 1` is `2^24` in binary32 -- `2^24 + 1` is exactly halfway between
+///   `2^24` and `2^24 + 2` and ties round to even -- and `2^24 + 2` in binary64,
+///   which is itself exactly representable in binary32. So the two widths give
+///   `16777216` and `16777218`, and the test demands the first.
+///
+/// A regression that widened the accumulator turns this red. Nothing else here
+/// would notice it at all.
+void check_narrow_accumulator() {
+    constexpr float kPow24 = 16777216.0F;  // 2^24, the last integer binary32 has
+    constexpr float kNarrow = 16777216.0F;
+    constexpr float kWidened = 16777218.0F;
+    static_assert(kNarrow != kWidened, "the two accumulation widths must differ here");
+
+    // A single 1 x 3 operator, so the whole answer is one contraction of length 3.
+    const std::array<float, 3> row{kPow24, 1.0F, 1.0F};
+    const span2d<const float> matrix(row.data(), 1, 3);
+    const std::array<ModeOperator<float>, 1> ops{ModeOperator<float>{matrix, false}};
+
+    const std::array<float, 3> ones{1.0F, 1.0F, 1.0F};
+    std::array<float, 1> out{0.0F};
+    std::array<float, 1> scratch{0.0F};
+    pantr::bspline::apply_kron<float>(ops, ones, out, scratch);
+    PANTR_CHECK_MSG(out[0] == kNarrow,
+                    "apply accumulated at the wrong width: got " + std::to_string(out[0]) +
+                        ", binary32 gives " + std::to_string(kNarrow) + " and binary64 " +
+                        std::to_string(kWidened));
+
+    // The transpose reaches the same loop through the other branch of
+    // `contract_axis`, so it needs its own case: a 3 x 1 operator whose transpose
+    // is the row above.
+    const std::array<float, 3> column{kPow24, 1.0F, 1.0F};
+    const span2d<const float> tall(column.data(), 3, 1);
+    const std::array<ModeOperator<float>, 1> tall_ops{ModeOperator<float>{tall, false}};
+    std::array<float, 1> out_t{0.0F};
+    pantr::bspline::apply_kron_transpose<float>(tall_ops, ones, out_t, scratch);
+    PANTR_CHECK_MSG(out_t[0] == kNarrow,
+                    "apply_T accumulated at the wrong width: got " + std::to_string(out_t[0]));
+
+    // And the bilateral driver, whose first stage is where the width shows. With
+    // `M = [1 1 1]` and `K` holding the large entry in its first column, stage 0
+    // sums `2^24 + 1 + 1` and stage 1 passes it through.
+    const std::array<float, 3> unit_row{1.0F, 1.0F, 1.0F};
+    const span2d<const float> unit(unit_row.data(), 1, 3);
+    const std::array<ModeOperator<float>, 1> unit_ops{ModeOperator<float>{unit, false}};
+    const std::array<float, 9> k_values{kPow24, 0.0F, 0.0F, 1.0F, 0.0F, 0.0F, 1.0F, 0.0F, 0.0F};
+    std::array<float, 1> out_bilateral{0.0F};
+    std::array<float, 8> bilateral_scratch{};
+    pantr::bspline::apply_kron_m_k_mt<float>(unit_ops, k_values, out_bilateral, bilateral_scratch);
+    PANTR_CHECK_MSG(out_bilateral[0] == kNarrow,
+                    "M_K_MT accumulated at the wrong width: got " +
+                        std::to_string(out_bilateral[0]));
+}
+
 }  // namespace
 
 int main() {
@@ -693,6 +769,7 @@ int main() {
         check_bilateral(d, true, 20260921 + d);
         check_bilateral(d, false, 20260931 + d);
     }
+    check_narrow_accumulator();
 
     // A bound compared only against zero has not been checked. The bounded runs
     // above pass trivially if the kernel and the materialised reference happen to
