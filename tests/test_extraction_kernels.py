@@ -9,7 +9,7 @@ import numpy as np
 import numpy.typing as npt
 import pytest
 
-from pantr._backend import Backend, use_backend
+from pantr._backend import Backend, available_backends, use_backend
 from pantr.bspline._extraction_helpers import (
     OpKind,
     _allocate_or_validate_scratch,
@@ -18,6 +18,7 @@ from pantr.bspline._extraction_helpers import (
     _dispatch_apply,
     _operation_shapes,
     _prepare_apply_call,
+    _prepare_apply_many_call,
     _required_scratch_size,
     _validate_op_kind,
 )
@@ -208,6 +209,115 @@ def test_all_identity_bilateral_aliasing(
         assert out is K
         kernel(*args)
         np.testing.assert_array_equal(K, K_copy)
+
+
+def _all_identity_batch(
+    d: int, side: int, n_cells: int, dtype: np.dtype[Any]
+) -> tuple[
+    tuple[npt.NDArray[Any], ...],
+    tuple[npt.NDArray[Any], ...],
+    tuple[npt.NDArray[Any], ...],
+    npt.NDArray[np.intp],
+]:
+    """Build compact storage in which every referenced element is the identity.
+
+    The compact layout is what the batch kernels actually take: a sentinel row per
+    direction, an index map that is all zeros, and an all-true mask. That is exactly
+    what :class:`~pantr.bspline.SpanwiseElementExtraction` stores for a direction
+    with no non-identity element.
+
+    Args:
+        d (int): Number of tensor-product directions.
+        side (int): Per-direction extent, equal in and out since identity is square.
+        n_cells (int): How many cells the batch visits.
+        dtype (np.dtype[Any]): Storage format.
+
+    Returns:
+        tuple: ``(ops_1d, idx_maps_1d, is_identity_masks, cell_indices)``.
+    """
+    n_elements = 3
+    ops = tuple(np.zeros((1, side, side), dtype=dtype) for _ in range(d))
+    maps = tuple(np.zeros(n_elements, dtype=np.intp) for _ in range(d))
+    masks = tuple(np.ones(n_elements, dtype=np.bool_) for _ in range(d))
+    cells = np.ascontiguousarray(
+        np.stack([np.arange(n_cells) % n_elements for _ in range(d)], axis=1), dtype=np.intp
+    )
+    return ops, maps, masks, cells
+
+
+@pytest.mark.parametrize("backend", available_backends())
+@pytest.mark.parametrize("d", [1, 2, 3])
+def test_all_identity_batch_apply_aliasing(backend: Backend, d: int) -> None:
+    """An all-identity batch is copy-through, so ``out=v`` is legal in every backend.
+
+    The batch counterpart of :func:`test_all_identity_apply_aliasing`, and it did not
+    exist. ``_prepare_apply_many_call`` permits the aliasing explicitly, by checking
+    ``is_identity_masks[k][cell_indices[:, k]].all()`` for every direction; a first
+    version of the C++ binding applied that exemption to the single-cell entry points
+    and not to the batch ones, so this call raised under the C++ backend and
+    succeeded under the Python one. Both existing batch aliasing tests use a *mixed*
+    batch, correctly expect rejection, and so never reach the exemption at all.
+
+    Parametrized over the backends this installation actually has, so the divergence
+    is caught in one run rather than only by the separate ``PANTR_BACKEND=cpp`` step.
+    """
+    side, n_cells = 3, 4
+    ops, maps, masks, cells = _all_identity_batch(d, side, n_cells, np.dtype(np.float64))
+    for op_kind in ("apply", "apply_T"):
+        operand = RNG.standard_normal((n_cells, side**d))
+        expected = operand.copy()
+        with use_backend(backend):
+            kernel, args, out = _prepare_apply_many_call(
+                ops, maps, masks, cells, operand, operand, None, op_kind
+            )
+            assert out is operand
+            kernel(*args)
+        np.testing.assert_array_equal(operand, expected)
+
+
+@pytest.mark.parametrize("backend", available_backends())
+@pytest.mark.parametrize("d", [1, 2, 3])
+def test_all_identity_batch_bilateral_aliasing(backend: Backend, d: int) -> None:
+    """An all-identity batch is copy-through for the bilateral kinds too; ``out=K`` is legal.
+
+    See :func:`test_all_identity_batch_apply_aliasing` for what this pins.
+    """
+    side, n_cells = 3, 4
+    ops, maps, masks, cells = _all_identity_batch(d, side, n_cells, np.dtype(np.float64))
+    for op_kind in ("MT_K_M", "M_K_MT"):
+        operand = RNG.standard_normal((n_cells, side**d, side**d))
+        expected = operand.copy()
+        with use_backend(backend):
+            kernel, args, out = _prepare_apply_many_call(
+                ops, maps, masks, cells, operand, operand, None, op_kind
+            )
+            assert out is operand
+            kernel(*args)
+        np.testing.assert_array_equal(operand, expected)
+
+
+@pytest.mark.parametrize("backend", available_backends())
+def test_mixed_batch_aliasing_is_still_refused(backend: Backend) -> None:
+    """One contracting cell in the batch withdraws the exemption, in both backends.
+
+    The other half of the contract, and the half a too-permissive fix would break:
+    the exemption is a property of the whole call, because one contracting cell makes
+    the shared buffers overlap in a way no later cell's copy undoes.
+    """
+    side, n_cells = 3, 4
+    ops, maps, masks, cells = _all_identity_batch(
+        d=2, side=side, n_cells=n_cells, dtype=np.dtype(np.float64)
+    )
+    # Give direction 0 a real operator at element 1, and point one cell at it.
+    contracting = np.zeros((2, side, side))
+    contracting[1] = RNG.standard_normal((side, side))
+    ops = (contracting, ops[1])
+    maps = (np.array([0, 1, 0], dtype=np.intp), maps[1])
+    masks = (np.array([True, False, True], dtype=np.bool_), masks[1])
+
+    operand = RNG.standard_normal((n_cells, side**2))
+    with use_backend(backend), pytest.raises(ValueError, match="alias"):
+        _prepare_apply_many_call(ops, maps, masks, cells, operand, operand, None, "apply")
 
 
 # -- Dispatcher errors --------------------------------------------------------

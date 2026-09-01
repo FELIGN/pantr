@@ -130,6 +130,14 @@ std::string describe(std::size_t value, const char* name) {
 /// too, on the grounds that the stricter contract is the safer one; it is not this
 /// binding's contract to tighten, and the suite said so.
 ///
+/// **The exemption is a property of the call, and the batch form computes it
+/// differently.** For a single cell it follows from the operator list; for a batch it
+/// follows from every cell the block references, because one contracting cell makes
+/// the shared buffers overlap in a way no later cell's copy undoes. A first fix
+/// reached the single-cell functions only and left the batch ones refusing
+/// unconditionally -- the same defect, half-applied, and invisible because the two
+/// batch aliasing tests use a *mixed* batch and so correctly expect rejection.
+///
 /// \param first Start of the first buffer.
 /// \param first_count Its element count.
 /// \param second Start of the second buffer.
@@ -199,6 +207,35 @@ bool is_pure_copy(const std::array<ModeOperator<T>, D>& ops) {
     for (const ModeOperator<T>& op : ops) {
         if (!op.is_identity) {
             return false;
+        }
+    }
+    return true;
+}
+
+/// Whether every cell in a batch is all-identity, so the batch is a copy and may alias.
+///
+/// The batch counterpart of `is_pure_copy`, computed per **batch** rather than per
+/// cell: the exemption applies to the whole call, because one contracting cell makes
+/// the shared operand and output buffers overlap in a way that a later cell's copy
+/// cannot undo.
+///
+/// This mirrors `_prepare_apply_many_call`'s own test exactly -- it reads the masks
+/// at the **referenced** elements, `is_identity_masks[k][cell_indices[:, k]]`, not
+/// the whole mask, so a batch that never visits a contracting element is exempt even
+/// where such an element exists. An empty batch is exempt for the reason it is there:
+/// nothing is read or written.
+///
+/// \param masks The per-direction identity masks.
+/// \param cells The `(n_cells, D)` index block.
+/// \return True when no cell in the batch contracts anything.
+template <std::size_t D>
+bool batch_is_pure_copy(const std::array<flag_mask, D>& masks, cell_block cells) {
+    const std::size_t n_cells = cells.shape(0);
+    for (std::size_t cell = 0; cell < n_cells; ++cell) {
+        for (std::size_t k = 0; k < D; ++k) {
+            if (!masks[k](static_cast<std::size_t>(cells(cell, k)))) {
+                return false;
+            }
         }
     }
     return true;
@@ -448,7 +485,8 @@ void unilateral_many(const std::array<const_stack<T>, D>& ops_stack,
                      const std::array<flag_mask, D>& masks, cell_block cells,
                      const_batch_2d<T> v, batch_2d<T> out, batch_2d<T> scratch) {
     check_batch<D>(maps, masks, cells, {v.shape(0), out.shape(0), scratch.shape(0)});
-    refuse_overlap(v.data(), v.size(), out.data(), out.size(), "the operand and out");
+    const bool copies = batch_is_pure_copy<D>(masks, cells);
+    refuse_overlap(v.data(), v.size(), out.data(), out.size(), "the operand and out", copies);
 
     const std::size_t n_cells = cells.shape(0);
     const std::size_t v_stride = v.shape(1);
@@ -493,7 +531,8 @@ void bilateral_many(const std::array<const_stack<T>, D>& ops_stack,
                     cell_block cells, const_batch_3d<T> k_matrix, batch_3d<T> out,
                     batch_2d<T> scratch) {
     check_batch<D>(maps, masks, cells, {k_matrix.shape(0), out.shape(0), scratch.shape(0)});
-    refuse_overlap(k_matrix.data(), k_matrix.size(), out.data(), out.size(), "K and out");
+    const bool copies = batch_is_pure_copy<D>(masks, cells);
+    refuse_overlap(k_matrix.data(), k_matrix.size(), out.data(), out.size(), "K and out", copies);
 
     const std::size_t n_cells = cells.shape(0);
     const std::size_t k_side = k_matrix.shape(1);
