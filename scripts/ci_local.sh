@@ -304,6 +304,27 @@ cxx() {
     check "gcc-debug: build" cmake --build --preset gcc-debug
     check "gcc-debug: ctest" ctest --preset gcc-debug
 
+    # The thread sanitizer, which is a separate build for a mechanical reason:
+    # -fsanitize=thread cannot be combined with -fsanitize=address, so the leg
+    # above cannot carry it.
+    #
+    # What only this leg can see is a race in a lazily-filled memo, and it is the
+    # one defect class in the port that no assertion on a value will ever catch.
+    # Measured on the bare `mutable std::optional` spelling of pantr::LazySlot:
+    # 4 TSan reports with 8 threads, AND 60 correct answers in 60 unsanitized
+    # runs. A suite that checks totals reports success on it every time.
+    #
+    # A clean run here is only evidence if the threads really contend, which is
+    # the null-result trap design/bspline_derived_caches.md records. The control
+    # was run rather than assumed: replacing LazySlot's double-checked locking
+    # with an unsynchronised `optional` gave 23 data races and turned both
+    # threaded tests red on this tree, and restoring it gave 0 and 47/47. Re-run
+    # that control if this leg is ever green on a tree where it should not be.
+    rm -rf "$ROOT/build/gcc-tsan"
+    check "gcc-tsan: configure (tsan)" cmake --preset gcc-tsan
+    check "gcc-tsan: build" cmake --build --preset gcc-tsan
+    check "gcc-tsan: ctest" ctest --preset gcc-tsan
+
     # The version floor, built rather than merely accepted.
     #
     # `gates` above asserts that the floor compilers CONFIGURE. That is the gate's

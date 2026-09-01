@@ -31,6 +31,17 @@
       "cacheVariables": { "CMAKE_CXX_COMPILER": "clang++" }
     },
     {
+      "name": "gcc-tsan",
+      "inherits": "gcc",
+      "displayName": "GCC, ThreadSanitizer",
+      "description": "The only gate that can see a race in a lazily-filled memo. A bare `mutable std::optional` memo was measured at 4 TSan reports with 8 threads AND 60 correct answers in 60 unsanitized runs, so no assertion on a value can stand in for this leg. Its own build directory and its own preset because -fsanitize=thread cannot be combined with the address sanitizer the gcc-debug preset carries. -O1 rather than -O0: TSan's own documentation asks for it, and at -O0 the memo accessor does not get inlined into the loop the way the shipped build compiles it.",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "CMAKE_CXX_FLAGS_DEBUG": "-g -O1 -fsanitize=thread -fno-omit-frame-pointer",
+        "CMAKE_EXE_LINKER_FLAGS": "-fsanitize=thread"
+      }
+    },
+    {
       "name": "gcc-debug",
       "inherits": "gcc",
       "displayName": "GCC, debug with sanitizers",
@@ -57,6 +68,11 @@
       "name": "gcc-debug",
       "configurePreset": "gcc-debug",
       "jobs": 20
+    },
+    {
+      "name": "gcc-tsan",
+      "configurePreset": "gcc-tsan",
+      "jobs": 20
     }
   ],
   "testPresets": [
@@ -75,6 +91,12 @@
     {
       "name": "gcc-debug",
       "configurePreset": "gcc-debug",
+      "output": { "outputOnFailure": true },
+      "execution": { "jobs": 20, "noTestsAction": "error", "stopOnFailure": false }
+    },
+    {
+      "name": "gcc-tsan",
+      "configurePreset": "gcc-tsan",
       "output": { "outputOnFailure": true },
       "execution": { "jobs": 20, "noTestsAction": "error", "stopOnFailure": false }
     }
