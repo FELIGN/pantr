@@ -58,8 +58,16 @@
 ///    `_bspline_space_1d.py:99-106` copies too, and says why -- it freezes the
 ///    vector read-only afterwards, and freezing a caller's array in place would
 ///    mutate caller state. Recorded because the claim was written down and
-///    believed, and because `pantr/bezier/bezier.hpp` makes a structurally similar
-///    claim about a control net that is worth the same scrutiny.
+///    believed.
+///
+///    `pantr/bezier/bezier.hpp:60-65` makes the structurally similar claim about a
+///    control net, and **that one is true** -- checked by execution rather than
+///    assumed, because the resemblance is exactly what made this one look safe.
+///    `_BezierPython.__init__` stores what `numpy.asarray` returns, which does not
+///    copy an array that already has the right dtype, and a write through the
+///    caller's array is visible in the Bezier afterwards. The two oracles genuinely
+///    differ: a space copies because it freezes its knots read-only, and a Bezier
+///    does not, which is the defect FELIGN/pantr#375 fixes.
 ///
 /// ## Thread safety
 ///

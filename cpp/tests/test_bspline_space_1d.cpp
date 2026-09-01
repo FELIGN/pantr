@@ -400,6 +400,30 @@ void check_knot_refusals() {
                     "a domain swallowed by an interior knot: got '" + no_interval + "'");
 }
 
+/// The knot vector that made the two backends' messages differ by one character.
+///
+/// An infinite knot gives a scale of infinity, so the tolerance is infinite and the
+/// ulp at that scale is a NaN -- and `tol / ulp` is then `inf / nan`, whose NaN came
+/// out with its sign bit set on this platform. **CPython prints a NaN without a
+/// sign at every format specifier; glibc's `printf` prints `-nan`.** So the C++
+/// message read `(-nan ulp there)` where the oracle's read `(nan ulp there)`, and
+/// nothing but a byte-for-byte comparison on this input would have shown it.
+///
+/// The whole message is asserted rather than its prefix, because the divergence was
+/// one character in the middle of it. `pantr/core/format.hpp` is what was changed;
+/// the direction is argued there and in the pull request, and it is the C++ side
+/// that moved because a port reproduces its oracle rather than editing it.
+void check_the_non_finite_message() {
+    constexpr float infinity = std::numeric_limits<float>::infinity();
+    const std::vector<float> unbounded{-infinity, 0.0F, 0.0F, infinity};
+    same(message_of([&] { (void)space(unbounded, 1); }),
+         "knot snapping collapsed every knot onto -inf: in float32 at |coordinate| ~ inf two "
+         "knots are the same knot unless they differ by more than inf (nan ulp there), and the "
+         "closest pair in [-inf, inf] is inf apart. This mesh is finer than float32 resolves at "
+         "that magnitude. Use float64, move the domain nearer the origin, or coarsen the mesh.",
+         "the message an infinite knot produces");
+}
+
 /// Eight threads first-touching one space's derived block. The sanitizer's target.
 ///
 /// It asserts what it can -- one buffer, the right values from every thread -- but
@@ -463,6 +487,7 @@ int main() {
     check_float_storage();
     check_argument_refusals();
     check_knot_refusals();
+    check_the_non_finite_message();
     check_concurrent_first_touch();
     return pantr::test::summary("test_bspline_space_1d");
 }
