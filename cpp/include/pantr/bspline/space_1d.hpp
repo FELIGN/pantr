@@ -52,10 +52,14 @@
 ///  - **The derived arrays are built at most once and shared, not copied.** The
 ///    oracle memoises the same quantities per object with `functools.cached_property`
 ///    and an `lru_cache`; the latter was a process-global cache and is gone.
-///  - **This type does not accept a knot vector it cannot own.** The oracle stores
-///    the caller's array when it is already floating-point and freezes it in place;
-///    this copies. That is the same decision `pantr/bezier/bezier.hpp` records for
-///    a control net, and in the same direction.
+///  - **Both sides copy the knot vector, and there is no divergence here.** An
+///    earlier draft of this comment said the oracle stores a floating-point array
+///    in place and that only this type copies. That is false:
+///    `_bspline_space_1d.py:99-106` copies too, and says why -- it freezes the
+///    vector read-only afterwards, and freezing a caller's array in place would
+///    mutate caller state. Recorded because the claim was written down and
+///    believed, and because `pantr/bezier/bezier.hpp` makes a structurally similar
+///    claim about a control net that is worth the same scrutiny.
 ///
 /// ## Thread safety
 ///
@@ -340,7 +344,12 @@ class BsplineSpace1D {
         if (degree < 0) {
             throw std::invalid_argument("degree must be non-negative");
         }
-        if (static_cast<std::int64_t>(knots.size()) < 2 * degree + 2) {
+        // Divided rather than multiplied: `2 * degree + 2` is signed overflow, and
+        // so undefined, for a degree near the top of the range. Python's integers
+        // are arbitrary-precision, so the oracle's spelling is exact for any degree
+        // and this one has to be too. The size is at least 0, so the division is
+        // well defined.
+        if ((static_cast<std::int64_t>(knots.size()) - 2) / 2 < degree) {
             throw std::invalid_argument("knots must have at least 2*degree+2 elements");
         }
         // `np.all(np.diff(knots) >= 0)`: the difference is formed first and only

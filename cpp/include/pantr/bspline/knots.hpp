@@ -35,27 +35,41 @@
 /// each site. The oracle uses **two** ways of differencing two knots, and they
 /// differ at `float32`:
 ///
-///  - **In `T`, then widened.** The class scan, the boundary multiplicity count
-///    and the cardinal-interval window are numba expressions over a `float32[:]`
-///    array, so the subtraction is `float32` and only the comparison against
-///    `tol` widens. Reproduced here as `value_of(T(a - b))` cast to `double`.
+///  - **In `T`, then widened.** The class scan and the boundary multiplicity count
+///    are numba expressions over a `float32[:]` array, so the subtraction is
+///    `float32` and only the comparison against `tol` widens. Reproduced here as
+///    `value_of(T(a - b))` cast to `double`. Verified rather than assumed, by
+///    reading numba's own typing: `njit(lambda k: k[1] - k[0])` on a `float32`
+///    array reports a `float32` return type, and the comparison against a Python
+///    float takes `(float32[:], float64) -> bool`.
 ///  - **Widened, then in `double`.** `_left_end_open`, `_right_end_open` and
 ///    `_knot_scale` are Python expressions written `float(a) - float(b)`, so both
 ///    operands widen first and the subtraction happens in `double`. Reproduced
 ///    here as `as_double(a) - as_double(b)`.
 ///
-/// **They cannot disagree about a class boundary, and the argument is worth having
-/// rather than trusting.** A verdict flips only if the two differences straddle
-/// `tol`. Two knots whose difference is near `tol = 8 * eps * scale` and whose own
+/// **They disagree about a class boundary only inside a hairline band at the
+/// threshold itself, and the argument is worth having rather than trusting.** An
+/// earlier draft of this comment opened with "cannot disagree", which its own
+/// derivation already contradicted and which a review refuted: fuzzing the two
+/// spellings against each other found real `float32` disagreements, all within the
+/// last ulp of `tol`, at about 0.05% of trials drawn deliberately onto the
+/// threshold and none at `float64`. A verdict flips only if the two differences
+/// straddle `tol`. Two knots whose difference is near `tol = 8 * eps * scale` and whose own
 /// magnitudes are near `scale` are within a relative `8 * eps` of each other, so
 /// Sterbenz makes the storage-width subtraction *exact* and the two agree
 /// identically. Where the operands are small against `scale` -- a pair straddling
 /// zero on a vector whose scale comes from elsewhere -- the subtraction is an
 /// addition and its error is at most half an ulp of the result, so a flip needs the
 /// exact difference to lie within a relative `2^-24` of the threshold. That is
-/// derived, not measured, and it is why this is a faithfulness question rather than
-/// a correctness one: the two are written separately because the code should say
-/// which arithmetic it reproduces, not because a test would catch getting it wrong.
+/// derived, and then measured twice with results that agree. A differential sweep of
+/// 3000 *randomly drawn* knot vectors against the oracle, with the class scan
+/// written both ways, reported 0 mismatches for either spelling -- random draws do
+/// not land in a band of relative width `2^-24`. Fuzzing drawn deliberately onto the
+/// threshold does land in it, and finds the disagreements above.
+///
+/// So the site is a faithfulness question rather than a correctness one, but not a
+/// vacuous one: the arithmetic here is the oracle's, and a test that pinned the
+/// difference would be pinning which of two defensible answers the last ulp gets.
 ///
 /// ## Messages
 ///

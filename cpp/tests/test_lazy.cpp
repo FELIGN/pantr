@@ -107,42 +107,73 @@ void check_copies_start_cold() {
                     "a cleared slot rebuilds from its new owner's state");
 }
 
-/// Eight threads first-touching one slot at once. The sanitizer's target.
+/// Many slots raced by many threads. The sanitizer's target.
+///
+/// ## Why this is not one slot
+///
+/// One slot touched once per thread is the obvious shape and it is the wrong one.
+/// Every thread then either builds under the lock or blocks on it and reads after
+/// acquiring it, and `std::mutex` already establishes that happens-before edge on
+/// its own -- so the whole case passes with the atomics made fully `relaxed`, and
+/// the **outer, lock-free fast path** is reached only if a straggler's check
+/// happens to observe `ready_ == true` while still racing the writer. Measured on
+/// exactly that shape: with `lazy.hpp` patched to `memory_order_relaxed`
+/// throughout, the sanitizer caught the injected race in roughly one run in three
+/// and reported nothing in the others, so a single `ctest --preset gcc-tsan` had a
+/// real chance of passing on a broken acquire/release pair. That is the line the
+/// design note calls load-bearing, and it was the line least covered.
+///
+/// So: many independent slots, and every thread walks all of them starting from a
+/// different offset. At any moment some threads are building slot `i` while others
+/// are reading a slot already published, which is what puts traffic through the
+/// fast path rather than through the mutex. The second wave then reads every slot
+/// again, when all of them are published and nothing takes the lock at all.
 void check_concurrent_first_touch() {
     constexpr int num_threads = 8;
-    constexpr std::size_t width = 4096;
+    constexpr int num_slots = 64;
+    constexpr std::size_t width = 512;
 
-    LazySlot<std::vector<std::int64_t>> slot;
+    std::vector<LazySlot<std::vector<std::int64_t>>> slots(num_slots);
     std::atomic<int> builds{0};
     std::atomic<int> ready{0};
     std::atomic<bool> go{false};
-    std::vector<const std::vector<std::int64_t>*> seen(num_threads, nullptr);
-    std::vector<std::int64_t> totals(num_threads, -1);
+    std::vector<std::int64_t> sums(static_cast<std::size_t>(num_threads) * 2, -1);
+
+    const auto build_slot = [&builds](int slot) {
+        return [&builds, slot] {
+            builds.fetch_add(1, std::memory_order_relaxed);
+            std::vector<std::int64_t> built(width);
+            for (std::size_t i = 0; i < width; ++i) {
+                built[i] = static_cast<std::int64_t>(i) + slot;
+            }
+            return built;
+        };
+    };
 
     std::vector<std::thread> threads;
     threads.reserve(num_threads);
     for (int t = 0; t < num_threads; ++t) {
         threads.emplace_back([&, t] {
             // A spin barrier rather than a sleep: the window this is meant to open
-            // is the one between the first `acquire` load and the `release` store,
-            // and a sleep makes it a race between one thread and nothing.
+            // is the one between the outer load and the release store, and a sleep
+            // makes it a race between one thread and nothing.
             ready.fetch_add(1, std::memory_order_release);
             while (!go.load(std::memory_order_acquire)) {
             }
-            const std::vector<std::int64_t>& value = slot.get([&builds] {
-                builds.fetch_add(1, std::memory_order_relaxed);
-                std::vector<std::int64_t> built(width);
-                for (std::size_t i = 0; i < width; ++i) {
-                    built[i] = static_cast<std::int64_t>(i);
+            for (int wave = 0; wave < 2; ++wave) {
+                std::int64_t total = 0;
+                for (int step = 0; step < num_slots; ++step) {
+                    // Each thread starts at its own offset, so the threads are
+                    // spread across the slots rather than queued on one mutex.
+                    const int slot = (t * (num_slots / num_threads) + step) % num_slots;
+                    const auto& value =
+                        slots[static_cast<std::size_t>(slot)].get(build_slot(slot));
+                    for (const std::int64_t entry : value) {
+                        total += entry;
+                    }
                 }
-                return built;
-            });
-            seen[static_cast<std::size_t>(t)] = &value;
-            std::int64_t total = 0;
-            for (const std::int64_t entry : value) {
-                total += entry;
+                sums[static_cast<std::size_t>(t * 2 + wave)] = total;
             }
-            totals[static_cast<std::size_t>(t)] = total;
         });
     }
 
@@ -153,15 +184,18 @@ void check_concurrent_first_touch() {
         thread.join();
     }
 
-    // `width * (width - 1) / 2`, computed here rather than copied from a run.
-    constexpr std::int64_t expected =
-        static_cast<std::int64_t>(width) * (static_cast<std::int64_t>(width) - 1) / 2;
-    PANTR_CHECK_MSG(builds.load() == 1, "the value must be built exactly once");
-    for (int t = 0; t < num_threads; ++t) {
-        const auto index = static_cast<std::size_t>(t);
-        PANTR_CHECK_MSG(seen[index] == seen[0], "every thread must see one object");
-        PANTR_CHECK_MSG(totals[index] == expected,
-                        "thread " + std::to_string(t) + " read a wrong total");
+    // Per slot `s`: `sum(i + s) for i in [0, width)`, summed over every slot.
+    // Computed here rather than copied from a run.
+    constexpr std::int64_t w = static_cast<std::int64_t>(width);
+    constexpr std::int64_t n = static_cast<std::int64_t>(num_slots);
+    constexpr std::int64_t expected = n * (w * (w - 1) / 2) + w * (n * (n - 1) / 2);
+
+    PANTR_CHECK_MSG(builds.load() == num_slots,
+                    "each slot must be built exactly once, whatever the interleaving");
+    for (std::size_t i = 0; i < sums.size(); ++i) {
+        PANTR_CHECK_MSG(sums[i] == expected,
+                        "thread " + std::to_string(i / 2) + " wave " + std::to_string(i % 2)
+                            + " read a wrong total");
     }
 }
 

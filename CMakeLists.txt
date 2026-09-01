@@ -105,6 +105,13 @@ target_link_libraries(pantr_core INTERFACE $<BUILD_INTERFACE:Eigen3::Eigen>)
 # nothing; on anything older it is the difference between linking and not, and a
 # consumer has no way to know they owe it. `find_dependency(Threads)` in
 # cmake/pantrConfig.cmake.in is the other half.
+# `FindThreads` recommends this: without it a platform may be linked with a bare
+# `-lpthread` instead of the `-pthread` compiler flag, and some libc versions need
+# the flag's preprocessor defines for thread-safe behaviour rather than merely the
+# library. Inert on every configuration exercised today -- glibc has folded the
+# pthread symbols into libc, and CMAKE_HAVE_LIBC_PTHREAD comes back true -- which
+# is exactly why it would go unnoticed on the first platform where it is not.
+set(THREADS_PREFER_PTHREAD_FLAG TRUE)
 find_package(Threads REQUIRED)
 target_link_libraries(pantr_core INTERFACE Threads::Threads)
 

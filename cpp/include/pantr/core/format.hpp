@@ -31,6 +31,18 @@
 /// notation itself. That difference is the only one this file has to bridge, and
 /// it is bridged in exactly one place.
 ///
+/// ## One deliberate change from the code this replaces
+///
+/// The unreachable formatting-overflow branch used to throw
+/// `std::invalid_argument("AABB: could not format a bound.")`. It now throws
+/// `std::logic_error`, which is the accurate type: nothing about the caller's
+/// argument is wrong, an internal buffer bound was exceeded. It matters at the
+/// binding, where `pantr/core/error.hpp` records that nanobind maps
+/// `std::invalid_argument` to `ValueError` and everything else to `RuntimeError` --
+/// and blaming the caller for this one would be wrong. `aabb.hpp`'s file comment
+/// still says the class throws `std::invalid_argument`; that remains true of every
+/// reachable path and of all of its actual validation.
+///
 /// ## The toolchain floor this file carries
 ///
 /// `format_repr` needs the **floating-point** overload of `std::to_chars`, which
@@ -45,6 +57,7 @@
 #include <charconv>
 #include <cmath>
 #include <cstdio>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <system_error>
@@ -60,6 +73,26 @@ namespace pantr::detail {
 /// about 310 digits before the point. The `errc` and truncation checks below are
 /// what make this a bound rather than an assumption.
 inline constexpr std::size_t kFormatBufferSize = 512;
+
+/// Python's spelling of a value `snprintf` would spell differently, if this is one.
+///
+/// \param v The value to render.
+/// \return The rendering, or nothing at all when `v` is finite.
+[[nodiscard]] inline std::optional<std::string> format_non_finite(double v) {
+    // CPython prints a NaN **without a sign, ever**, at every format specifier, even
+    // for one whose sign bit is set. glibc's `printf` prints `-nan` for that value.
+    // So every spelling below has to intercept the non-finite cases rather than hand
+    // them to `snprintf`, and this is not theoretical: a knot vector holding an
+    // infinity gives `tol / ulp == inf / nan`, whose NaN came out negative on this
+    // platform, and the two backends' messages then differed by one character.
+    if (std::isnan(v)) {
+        return "nan";
+    }
+    if (std::isinf(v)) {
+        return v < 0.0 ? "-inf" : "inf";
+    }
+    return std::nullopt;
+}
 
 /// Render a `double` the way Python's `repr` renders a float.
 ///
@@ -81,11 +114,8 @@ inline constexpr std::size_t kFormatBufferSize = 512;
 /// \throws std::logic_error If the value could not be rendered, which the buffer
 ///         size makes unreachable and which is checked rather than assumed.
 [[nodiscard]] inline std::string format_repr(double v) {
-    if (std::isnan(v)) {
-        return "nan";
-    }
-    if (std::isinf(v)) {
-        return v < 0.0 ? "-inf" : "inf";
+    if (const std::optional<std::string> special = format_non_finite(v)) {
+        return *special;
     }
 
     std::array<char, kFormatBufferSize> buffer{};
@@ -141,6 +171,9 @@ template <class T>
 /// \return The rendered value.
 /// \throws std::logic_error If the value could not be rendered.
 [[nodiscard]] inline std::string format_general(double v, int precision) {
+    if (const std::optional<std::string> special = format_non_finite(v)) {
+        return *special;
+    }
     std::array<char, kFormatBufferSize> buffer{};
     const int written =
         std::snprintf(buffer.data(), buffer.size(), "%.*g", precision, v);  // NOLINT
@@ -157,6 +190,9 @@ template <class T>
 /// \return The rendered value.
 /// \throws std::logic_error If the value could not be rendered.
 [[nodiscard]] inline std::string format_fixed(double v, int precision) {
+    if (const std::optional<std::string> special = format_non_finite(v)) {
+        return *special;
+    }
     std::array<char, kFormatBufferSize> buffer{};
     const int written =
         std::snprintf(buffer.data(), buffer.size(), "%.*f", precision, v);  // NOLINT

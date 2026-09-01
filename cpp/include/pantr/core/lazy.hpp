@@ -81,8 +81,9 @@ class LazySlot {
     LazySlot(const LazySlot& /*other*/) noexcept {}
 
     /// Move the owner, not the memo: the new slot starts cold and the source is
-    /// left exactly as it was, which is legal for a moved-from object and is what
-    /// keeps this `noexcept`.
+    /// left exactly as it was, which is legal for a moved-from object. Leaving it
+    /// alone is the class-level semantics rather than an exception-safety
+    /// necessity -- clearing the source would be `noexcept` too.
     LazySlot(LazySlot&& /*other*/) noexcept {}
 
     /// Clear this slot: the value it held described the state being overwritten.
