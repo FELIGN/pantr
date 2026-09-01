@@ -102,8 +102,12 @@ class is a wrapper around it. The nine, by the module that exports them:
   :class:`~pantr.grid.BVH`, :class:`~pantr.grid.CellTags`,
   :class:`~pantr.grid.FacetTags` and :class:`~pantr.grid.Partition`.
 
-:class:`pantr.grid.HierarchicalGrid` is the one domain type in those modules that has
-not moved: it is the Python implementation under either backend.
+Two domain types in those modules have **not** moved, and both are deliberate rather
+than pending: :class:`pantr.grid.HierarchicalGrid`, which is the Python implementation
+under either backend until its own ticket, and :class:`pantr.quad.PointsLattice`, which
+``design/cross_backend_types.md`` rules out of the port with four recorded reasons. The
+rest of what these modules export is not a candidate either way -- ``Grid`` is a
+:class:`typing.Protocol` and ``GridRestriction`` is a result record.
 
 **This list was wrong for two releases and that is worth a sentence.** It said three
 modules and named neither half of ``bezier`` while both were merged and dispatching.
