@@ -22,6 +22,7 @@
 ///
 /// Nothing here has a tolerance. A rendering is a string: it is right or it is not.
 
+#include <cmath>
 #include <limits>
 #include <string>
 
@@ -100,6 +101,35 @@ void check_general() {
     same(format_general(2e14, 3), "2e+14", "f'{2e14:.3g}'");
     same(format_general(1.0, 3), "1", "f'{1.0:.3g}'");
     same(format_general(1234.0, 3), "1.23e+03", "f'{1234.0:.3g}'");
+    // Negative values, which no case here reached until a review said so.
+    same(format_general(-0.9536743, 3), "-0.954", "f'{-0.9536743:.3g}'");
+    same(format_general(-1e6, 3), "-1e+06", "f'{-1e6:.3g}'");
+    same(format_general(-0.0, 3), "-0", "f'{-0.0:.3g}'");
+}
+
+/// The non-finite values, at every spelling.
+///
+/// CPython prints a NaN **without a sign, ever**, even for one whose sign bit is
+/// set; glibc's `printf` prints `-nan` for that value. Found by an adversarial
+/// case rather than by reasoning: a knot vector holding an infinity produces
+/// `tol / ulp == inf / nan`, the NaN came out negative, and the two backends'
+/// messages differed by one character. Every spelling therefore intercepts these
+/// rather than handing them to `snprintf`.
+void check_non_finite() {
+    constexpr double infinity = std::numeric_limits<double>::infinity();
+    const double positive_nan = std::numeric_limits<double>::quiet_NaN();
+    const double negative_nan = -positive_nan;
+    PANTR_CHECK_MSG(std::signbit(negative_nan), "the negative NaN must really be negative");
+
+    for (const double nan : {positive_nan, negative_nan}) {
+        same(format_repr(nan), "nan", "repr(nan)");
+        same(format_general(nan, 3), "nan", "f'{nan:.3g}'");
+        same(format_fixed(nan, 0), "nan", "f'{nan:.0f}'");
+    }
+    same(format_general(infinity, 3), "inf", "f'{inf:.3g}'");
+    same(format_general(-infinity, 3), "-inf", "f'{-inf:.3g}'");
+    same(format_fixed(infinity, 0), "inf", "f'{inf:.0f}'");
+    same(format_fixed(-infinity, 0), "-inf", "f'{-inf:.0f}'");
 }
 
 /// `f"{v:.Nf}"`, at the precision the snapping message uses.
@@ -114,6 +144,9 @@ void check_fixed() {
     same(format_fixed(1.5, 0), "2", "f'{1.5:.0f}'");
     same(format_fixed(2.5, 0), "2", "f'{2.5:.0f}'");
     same(format_fixed(0.125, 2), "0.12", "f'{0.125:.2f}'");
+    same(format_fixed(-15.4, 0), "-15", "f'{-15.4:.0f}'");
+    same(format_fixed(-0.5, 0), "-0", "f'{-0.5:.0f}'");
+    same(format_fixed(-0.125, 2), "-0.12", "f'{-0.125:.2f}'");
 }
 
 }  // namespace
@@ -123,5 +156,6 @@ int main() {
     check_scalar();
     check_general();
     check_fixed();
+    check_non_finite();
     return pantr::test::summary("test_format");
 }

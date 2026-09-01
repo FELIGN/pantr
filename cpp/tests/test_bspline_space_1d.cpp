@@ -349,13 +349,24 @@ void check_argument_refusals() {
     same(message_of([&] { (void)space(uniform, 2, true); }),
          "Not enough knots for the specified degree", "a periodic space with too few functions");
 
-    // Degree first: a vector that fails both the degree check and the length check
-    // must report the degree, because that is the order the oracle checks in.
+    // Each adjacent pair of checks, exercised by an input that fails BOTH, so that
+    // only the order decides the message. Without these, swapping two checks that
+    // are each individually correct leaves the whole suite green -- which is what a
+    // review found, with only the first of the three transitions covered. Every
+    // expected message here is the one the oracle produces for the same input.
     same(message_of([&] {
              (void)BsplineSpace1D<double>(std::span<const double>(tooshort), -1, false,
                                           KnotSnapping::merge_near_duplicates);
          }),
-         "degree must be non-negative", "the degree check runs before the length check");
+         "degree must be non-negative", "degree before length");
+
+    const std::vector<double> short_and_descending{1.0, 0.0, 1.0};
+    same(message_of([&] { (void)space(short_and_descending, 2); }),
+         "knots must have at least 2*degree+2 elements", "length before monotonicity");
+
+    const std::vector<double> descending_and_too_few{0.0, 1.0, 2.0, 3.0, 2.0, 5.0, 6.0};
+    same(message_of([&] { (void)space(descending_and_too_few, 2, true); }),
+         "knots must be non-decreasing", "monotonicity before the basis count");
 }
 
 /// The two constructor refusals that are properties of the knots, not the arguments.
