@@ -14,26 +14,31 @@ built from), `design/bspline_ownership_lifetime.md` (F5, which classifies
 `ExtractionStructView`), `design/bspline_derived_caches.md` (which assigns
 `SpanwiseElementExtraction`'s two memos to #399 and the knot scans to #396).
 
-**Validated against:** `proto/cpp` at `43453c0`. Every Python locator below was read in
-**`feat/399-extraction-cpp` at `1d2682c`** -- that branch is `43453c0` plus #399's first slice
-(the target enum) and nothing else -- and every C++ locator in this branch. Saying which of the
-two matters here more than usual: the first slice adds about seventy lines near the top of
-`src/pantr/bspline/spanwise_element_extraction.py`, so every line number in that file is shifted
-by that much relative to the two companion notes, and by the same amount relative to `proto/cpp`
-until the slice merges. nanobind **2.14.0**, CPython **3.14.6**,
+**Validated against:** originally `proto/cpp` at `43453c0` plus #399's first slice, which has
+since merged; **re-checked against `proto/cpp` at `7ba20d3`**, where that slice is `7ba20d3`
+itself. The Python locators are still the shifted ones -- the slice added about seventy lines
+near the top of `src/pantr/bspline/spanwise_element_extraction.py`, so those line numbers differ
+from the two companion notes by that much, and now agree with the trunk rather than diverging
+from it. C++ locators are this branch's. nanobind **2.14.0**, CPython **3.14.6**,
 g++ **14.4.0**.
+
+**One finding below has been overtaken by the trunk and is corrected in place rather than
+rewritten**: see the amendment under F1. The rest was re-read at `7ba20d3` and stands.
 
 ## The decision in one paragraph
 
-**Only one of #399's four pieces can be built before #396 lands, and it is not the one the
-ticket names.** `cpp/include/pantr/` has no `bspline/` directory at all, and every part of
+**Only one of #399's four pieces could be built when this was written, and it was not the one
+the ticket names.** `cpp/include/pantr/` had no `bspline/` directory at all, and every part of
 the extraction cluster except the Kronecker apply kernels reaches through a B-spline space:
 the operator builders need the unique-knot-and-multiplicity scan and the cardinal-interval
 scan, and the domain type holds a `BsplineSpace`. The apply kernels do not -- they take
-operator matrices, identity flags and buffers, and nothing else -- so they are the slice to
-build now, and they are what the C++ `SpanwiseElementExtraction` will call when it exists.
-Their parity claim is **bounded, not bitwise, and its stage count is per cell** rather than
-per kernel, because the identity short-circuit removes whole contraction stages. And
+operator matrices, identity flags and buffers, and nothing else -- so they were the slice to
+build, and they are what the C++ `SpanwiseElementExtraction` will call when it exists.
+**Since then #428 has landed two of the three missing pieces**; the amendment under F1 says
+which, and what is still owed. Their parity claim turned out to be **bitwise rather than
+bounded** -- the port reproduces the oracle's stage order and its within-stage summation order,
+so only a fusing build separates them, and the stage count remains per cell rather than per
+kernel because the identity short-circuit removes whole contraction stages. And
 `ExtractionStructView` **does not become a C++ type**: it exists to be unboxed by Numba,
 which a bound class cannot be, and `design/cross_backend_types.md` already puts that kind of
 type on the Python side. What moves is the storage it views, not the view.
@@ -73,6 +78,37 @@ describes it, and they are what the ported type will call.
 `#399 blocked-by #396`, or #399 is split so that the kernel slice keeps its independence and
 the rest inherits the edge. The second is better, because the kernel slice is the largest
 single piece and blocking it on #396 wastes the parallel window.
+
+#### Amendment, 2026-09-01: #428 landed two of the three, and the cardinal scan is what is left
+
+Re-read at `proto/cpp` `7ba20d3`. `cpp/include/pantr/bspline/` now holds `knots.hpp` and
+`space_1d.hpp`, so the finding above is half overtaken and must not be quoted as it stands.
+
+**Available now:**
+
+- `pantr::bspline::unique_knots_and_multiplicity` (`cpp/include/pantr/bspline/knots.hpp:285`),
+  returning representatives and multiplicities together;
+- the in-domain views on the type, `unique_knots_in_domain()` and `multiplicity_in_domain()`
+  (`cpp/include/pantr/bspline/space_1d.hpp:286`, `:295`). The boundary multiplicity the Bézier
+  builder opens with is the first entry of the second, so
+  `_get_multiplicity_of_first_knot_in_domain_impl` needs no separate port.
+
+**Still missing, and it is exactly one thing:** `get_cardinal_intervals`. Not an oversight --
+#428 excluded it deliberately and says why (`space_1d.hpp:19-20`): it is *"a computation over
+the knots rather than a property of them"*, so it belongs with the operations rather than with
+the type.
+
+**What that does to the slices.** S3 splits. The **Bézier** operator builder and the Bézier
+identity-mask predicate are unblocked today; the **Lagrange** ones follow immediately, since
+they are the Bézier operator post-multiplied by a matrix `lagrange_to_bernstein_1d` already
+provides. The **cardinal** target still waits on the interval scan, which is a small port in
+its own right and would sit beside `knots.hpp` rather than inside the type. S4 is unchanged:
+it needs `BsplineSpace` (the nD one), not `BsplineSpace1D`.
+
+**The rule the original finding rests on has not changed**, and it is why the cardinal half
+still waits rather than being carried here: a second implementation of one computation is what
+`design/cross_backend_types.md` forbids, so the interval scan is ported once, wherever it lands,
+and not copied into the extraction slice.
 
 ### F2 (critical). `ExtractionStructView` should not become a C++ type, and the lifetime note does not say it should
 
@@ -456,7 +492,9 @@ CPython refuses it outright (`too many data types for 'Both': {<class 'str'>, <c
 
 - **Verified by reading `feat/399-extraction-cpp` at `1d2682c`**, independently re-checked
   claim by claim by a second pass: that `cpp/include/pantr/` had no `bspline/` directory
-  before this branch added one; that all twelve per-cell kernels set their accumulator from `M_0.dtype`, at the
+  before this branch added one. **That reading is now historical** -- see F1's amendment, which
+  was verified against `proto/cpp` `7ba20d3` by reading `knots.hpp`, `space_1d.hpp` and
+  grepping the tree for `cardinal_interval`, which appears only in a comment; that all twelve per-cell kernels set their accumulator from `M_0.dtype`, at the
   twelve lines cited in F3; that the identity branches skip the contraction entirely and that
   the all-identity branch is a copy; that `make_struct_view` bundles the three array tuples by
   reference; that `_KERNELS` is keyed by `(op_kind, dimension)`; that
