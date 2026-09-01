@@ -61,6 +61,7 @@
 /// meaningless count.
 
 #include <algorithm>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <limits>
@@ -531,8 +532,17 @@ class HierarchicalGrid : public GridBase<HierarchicalGrid<T>> {
     /// Locate a batch of points through the shared descent kernel.
     ///
     /// \param points `(npts, ndim())` row-major view of query points.
-    /// \return `npts` cell ids; `-1` for a point outside the domain.
+    /// \return `npts` cell ids; `-1` for a point outside the domain, and for one with a
+    ///         non-finite coordinate.
     /// \throws std::invalid_argument If `points.extent(1)` is not `ndim()`.
+    /// \note The kernel cannot answer the non-finite case itself and this masks it
+    ///       afterwards, exactly as the oracle does. Its root-containment test is
+    ///       `x < lo || x > hi`, and **every comparison against a NaN is false**, so the
+    ///       row passes the test, descends, and lands in a real cell -- a plausible wrong
+    ///       id rather than a crash. The scalar `locate` needs no such pass, because
+    ///       `TensorProductGrid::locate` writes the same test as a negated comparison
+    ///       that rejects a NaN and either infinity; the two spellings are not
+    ///       interchangeable and `tensor_product_grid.hpp` says so at its own site.
     [[nodiscard]] std::vector<std::int64_t> locate_many(span2d<const T> points) const {
         if (points.extent(1) != static_cast<std::size_t>(this->ndim())) {
             throw std::invalid_argument("points must have ndim() columns.");
@@ -541,6 +551,14 @@ class HierarchicalGrid : public GridBase<HierarchicalGrid<T>> {
         hier_locate_points<T>(points, root_.breakpoints_flat(), root_.axis_starts(),
                               root_.cells_per_axis(), factor_, packed_lo(), packed_hi(),
                               block_base_, level_start_, out);
+        for (std::size_t p = 0; p < points.extent(0); ++p) {
+            for (std::size_t k = 0; k < points.extent(1); ++k) {
+                if (!std::isfinite(value_of(points(p, k)))) {
+                    out[p] = -1;
+                    break;
+                }
+            }
+        }
         return out;
     }
 
