@@ -12,10 +12,17 @@ have, and it is what keeps the catalogue rule of
 a catalogue imports the kernels it hands out, so the kernels cannot live in the
 module that imports the catalogue.
 
-Only the **Bézier** target has a kernel here. Lagrange and cardinal are this
-operator post-multiplied by a change-of-basis matrix, which Layer 2 does with
-:func:`numpy.matmul`, and the cardinal target additionally needs the
-cardinal-interval scan.
+The **Bézier** and **Lagrange** targets have kernels here; the cardinal one does
+not, because it additionally needs the cardinal-interval scan, which is not ported.
+
+Two of the four are Numba and two are not, and the split is deliberate. The Lagrange
+pair is the Bézier operator post-multiplied by a change-of-basis matrix, and that
+product is :func:`numpy.matmul` -- a BLAS ``gemm``, already compiled, and the thing
+the C++ twin has to agree with. Rewriting it as a ``nopython`` loop would not speed
+it up and would change the oracle's summation order, which is the one property
+``design/backend_parity.md`` Rule 9 says a port must reproduce rather than improve.
+``numpy.matmul`` is in any case unsupported for a rank-3 operand inside ``nopython``,
+so the loop would have to be written out by hand.
 """
 
 from __future__ import annotations
@@ -172,6 +179,91 @@ def _bezier_structural_identity_mask_core(
         out[e] = multiplicities[e] >= threshold and multiplicities[e + 1] >= threshold
 
 
+def _tabulate_Bspline_Lagrange_1D_extraction_core(
+    knots: npt.NDArray[np.float32 | np.float64],
+    degree: int,
+    tol: float,
+    lagrange_to_bernstein: npt.NDArray[np.float32 | np.float64],
+    out: npt.NDArray[np.float32 | np.float64],
+) -> None:
+    r"""Compute the Lagrange extraction operators, writing to the output array.
+
+    ``A_e = C_e @ L``, with ``C_e`` the Bézier operator of interval ``e`` and ``L``
+    the Lagrange-to-Bernstein matrix ``L[j, k] = B_j(x_k)`` of the same degree, so
+    that \( N_e(x) = A_e @ Lag(ξ) \) for the Lagrange basis on the reference
+    interval. :func:`numpy.matmul` broadcasts the ``(degree+1, degree+1)`` matrix
+    over the leading interval axis, so the whole stack is one call.
+
+    The matrix is an argument rather than something this builds: it depends only on
+    ``(degree, lagrange_variant, dtype)``, :mod:`pantr.change_basis` caches it on
+    exactly that key, and the variant is a :class:`~enum.StrEnum` that must not
+    reach a kernel.
+
+    Args:
+        knots (npt.NDArray[np.float32 | np.float64]): B-spline knot vector.
+        degree (int): B-spline degree.
+        tol (float): Tolerance for numerical comparisons.
+        lagrange_to_bernstein (npt.NDArray[np.float32 | np.float64]): The
+            ``(degree+1, degree+1)`` change-of-basis matrix, in ``knots``' dtype.
+        out (npt.NDArray[np.float32 | np.float64]): Output array of shape
+            ``(n_elems, degree+1, degree+1)``, overwritten in full.
+
+    Note:
+        Not a Numba kernel, and the module docstring says why. Inputs are assumed to
+        be correct (no validation performed). For general use, call
+        ``_tabulate_Bspline_Lagrange_1D_extraction_impl`` instead.
+    """
+    _tabulate_Bspline_Bezier_1D_extraction_core(knots, degree, tol, out)
+    # In place, and legally so: `numpy.matmul` detects the overlap between `out` and
+    # its own first operand and buffers, which is what the shipped Layer 2 has always
+    # relied on. The C++ twin does the same product over a private copy of the row it
+    # is overwriting.
+    np.matmul(out, lagrange_to_bernstein, out=out)
+
+
+def _lagrange_structural_identity_mask_core(
+    multiplicities: npt.NDArray[np.intp],
+    degree: int,
+    lagrange_to_bernstein: npt.NDArray[np.float32 | np.float64],
+    out: npt.NDArray[np.bool_],
+) -> None:
+    """Compute a per-element Lagrange identity mask.
+
+    ``A_e = C_e @ L`` is the identity exactly when ``L`` is and ``C_e`` is, so the
+    mask is the Bézier one when ``L`` is the identity and all-false otherwise. The
+    comparison against the identity is exact, because the question is a verdict
+    rather than a value: a matrix that misses the identity by an ulp produces an
+    operator that is not the identity.
+
+    ``L`` is the identity when every Lagrange node coincides with the Bernstein
+    abscissa of the same index, which happens at degree 1 for the equispaced,
+    Gauss-Lobatto-Legendre and second-kind Chebyshev families.
+
+    Args:
+        multiplicities (npt.NDArray[np.intp]): Per-unique-knot multiplicity array of
+            length ``n_elements + 1``.
+        degree (int): B-spline degree, at least 1.
+        lagrange_to_bernstein (npt.NDArray[np.float32 | np.float64]): The
+            ``(degree+1, degree+1)`` change-of-basis matrix.
+        out (npt.NDArray[np.bool_]): Output boolean array of length
+            ``n_elements = len(multiplicities) - 1``.
+
+    Note:
+        Not a Numba kernel, for the reason the module docstring gives of its sibling:
+        it is the Python half of a pair whose C++ twin it must agree with, and the
+        work is a whole-array comparison rather than a loop. Inputs are assumed to be
+        correct (no validation performed). Degree 0 does not reach here, since
+        :func:`pantr.change_basis.compute_lagrange_to_bernstein_1d` refuses it and
+        there is no matrix to pass. For general use, call
+        ``spanwise_element_extraction._lagrange_structural_identity_mask`` instead.
+    """
+    identity = np.eye(degree + 1, dtype=lagrange_to_bernstein.dtype)
+    if np.array_equal(lagrange_to_bernstein, identity):
+        _bezier_structural_identity_mask_core(multiplicities, degree, out)
+        return
+    out.fill(False)
+
+
 def _warmup_numba_functions() -> None:
     """Precompile numba functions with float64 signatures for faster first call.
 
@@ -196,5 +288,7 @@ def _warmup_numba_functions() -> None:
 
 __all__ = [
     "_bezier_structural_identity_mask_core",
+    "_lagrange_structural_identity_mask_core",
     "_tabulate_Bspline_Bezier_1D_extraction_core",
+    "_tabulate_Bspline_Lagrange_1D_extraction_core",
 ]

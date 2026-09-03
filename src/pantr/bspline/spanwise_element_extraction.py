@@ -43,7 +43,7 @@ import numpy.typing as npt
 from ..basis import LagrangeVariant
 from ..basis._basis_utils import _allocate_or_validate_out
 from ..change_basis import _cached_lagrange_to_bernstein_matrix
-from ._extraction_backend import bezier_identity_mask_kernel
+from ._extraction_backend import bezier_identity_mask_kernel, lagrange_identity_mask_kernel
 from ._extraction_helpers import (
     OpKind,
     _operation_shapes,
@@ -1148,6 +1148,11 @@ def _lagrange_structural_identity_mask(
     equispaced, GLL, or Chebyshev-2nd nodes.  For all other cases no element
     can have an identity Lagrange extraction operator.
 
+    The ``degree == 0`` branch stays here rather than moving into the dispatched
+    kernel, and it is not a special case that could be folded away:
+    :func:`pantr.change_basis.compute_lagrange_to_bernstein_1d` refuses a degree
+    below 1, so there is no matrix to pass and no kernel call to make.
+
     Args:
         space_1d (BsplineSpace1D): A 1D B-spline space.
         lagrange_variant (LagrangeVariant): Lagrange node distribution.
@@ -1155,14 +1160,14 @@ def _lagrange_structural_identity_mask(
     Returns:
         npt.NDArray[np.bool_]: Boolean array of shape ``(n_elements,)``.
     """
-    n_elements = space_1d.num_intervals
     if space_1d.degree == 0:
-        return np.ones(n_elements, dtype=np.bool_)
+        return np.ones(space_1d.num_intervals, dtype=np.bool_)
     dtype = space_1d.knots.dtype
     lagr_to_bzr = _cached_lagrange_to_bernstein_matrix(space_1d.degree, lagrange_variant, dtype)
-    if np.array_equal(lagr_to_bzr, np.eye(space_1d.degree + 1, dtype=dtype)):
-        return _bezier_structural_identity_mask(space_1d)
-    return np.zeros(n_elements, dtype=np.bool_)
+    _, mults = space_1d.get_unique_knots_and_multiplicity(in_domain=True)
+    out = np.empty(len(mults) - 1, dtype=np.bool_)
+    lagrange_identity_mask_kernel()(mults, space_1d.degree, lagr_to_bzr, out)
+    return out
 
 
 # The op_kind shape helper is kept import-local so downstream callers can build
