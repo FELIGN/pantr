@@ -94,9 +94,29 @@ Re-read at `proto/cpp` `7ba20d3`. `cpp/include/pantr/bspline/` now holds `knots.
   `_get_multiplicity_of_first_knot_in_domain_impl` needs no separate port.
 
 **Still missing, and it is exactly one thing:** `get_cardinal_intervals`. Not an oversight --
-#428 excluded it deliberately and says why (`space_1d.hpp:19-20`): it is *"a computation over
-the knots rather than a property of them"*, so it belongs with the operations rather than with
-the type.
+#428 excluded it deliberately and says why, in its file comment on what the type owns: it is
+*"a computation over the knots rather than a property of them"*, so it belongs with the
+operations rather than with the type.
+
+**Corrected 2026-09-03, while building the Bézier half of S3: the sentence above about the
+boundary multiplicity is wrong.** It read that "the boundary multiplicity the Bézier builder
+opens with is the first entry of [`multiplicity_in_domain()`], so
+`_get_multiplicity_of_first_knot_in_domain_impl` needs no separate port". The two are
+different computations over different index ranges and they disagree:
+
+- the oracle's helper counts how many of `knots[0 .. degree]` lie within `tol` of
+  `knots[degree]`, so it never looks past index `degree` and never chains;
+- `multiplicity_in_domain().front()` is the size of the whole gap-chained **class** holding
+  `knots[degree]`, which may reach either side of that index.
+
+The class count is therefore always at least the helper's, and strictly more whenever the
+first in-domain knot is repeated. Measured on `[0, 0.4, 0.5, 0.5, 1, 1.5, 2, 2.5]` at degree 2,
+`snap_knots=False`: the helper returns 1 and the class holds 2, and the two produce different
+operators. The port carries the helper, as
+`pantr::bspline::multiplicity_of_first_knot_in_domain`, factored out of `num_basis`'s periodic
+branch, which was already computing exactly it inline.
+`tests/parity/test_bspline_bezier_extraction.py` keeps that vector as a parity case for this
+reason and a mutation confirmed it is the only case in the table that separates the two.
 
 **What that does to the slices.** S3 splits. The **Bézier** operator builder and the Bézier
 identity-mask predicate are unblocked today; the **Lagrange** ones follow immediately, since
@@ -404,11 +424,23 @@ is invisible to it. Two independent oracles, both cheap:
    `assert_accuracy` gets a zero bound. This is the check that catches a transposed index or
    a wrong mode order, which is the error class a bound cannot see because both backends
    would make it. It is also a check on the *kernel*, independent of anything B-spline.
-2. **Partition of unity, for the Bézier target only.** Each Bézier extraction operator's rows
-   sum to one, so `kron` of them is row-stochastic and `M @ ones = ones` to within the
-   contraction's own rounding. `tests/test_thb_validation_identities.py` already carries the
-   hierarchical form of this identity, which the ticket names as the natural oracle for the
-   THB half.
+2. **Partition of unity, for the Bézier target only.** Each Bézier extraction operator's
+   **columns** sum to one, so `kron` of them is column-stochastic and `ones^T M = ones^T` to
+   within the contraction's own rounding. `tests/test_thb_validation_identities.py` already
+   carries the hierarchical form of this identity, which the ticket names as the natural
+   oracle for the THB half.
+
+   **Corrected 2026-09-03: this paragraph said *rows*, and it is columns.** The identity
+   follows from `sum_i N_i = 1` on the element and `sum_j B_j = 1` on the reference interval:
+   `sum_i sum_j C_ij B_j = 1 = sum_j B_j`, and the Bernstein basis being independent forces
+   `sum_i C_ij = 1` for each column `j`. Measured on the quadratic three-element open spline,
+   whose first operator is `[[1,0,0],[0,1,1/2],[0,0,1/2]]`: its columns sum to `1, 1, 1` and
+   its rows to `1, 3/2, 1/2`. The distinction is not cosmetic -- it is exactly what makes the
+   check able to catch a transposed operator, which a row-sum check on a matrix whose row sums
+   are all one could not. Nothing built on the wrong version: the apply kernels' claim in
+   `tests/parity/test_extraction_kernels.py` is bitwise and rests on no stochasticity, and the
+   amplification argument two sections above uses the absolute-value companion rather than
+   convexity.
 
 **The rule this milestone learned the hard way applies to both**: a bound compared only
 against zero has not been checked. Case 1 is exact by construction and is the one at risk --
@@ -423,7 +455,14 @@ only ever comparing zero against zero. Case 2 must assert the observed error is 
   bindings, `_extraction_backend.py`, the Layer-2 rewiring, C++ unit tests, and
   `tests/parity/test_extraction_kernels.py` carrying the claim above. **Not blocked on #396.**
 - **S3.** The 1D extraction operator builders and the two identity-mask predicates.
-  **Blocked on #396** for the knot scans (F1).
+  **Blocked on #396** for the knot scans (F1). *Split, and the Bézier half landed
+  2026-09-03*: `pantr::bspline::bezier_extraction_1d` and
+  `bezier_structural_identity_mask` in `cpp/include/pantr/bspline/extraction.hpp`, bound by
+  `cpp/bindings/bspline_extraction_operators.cpp` and dispatched from
+  `pantr.bspline._extraction_backend`. **Lagrange is next and is a small slice** -- the same
+  operator post-multiplied by `lagrange_to_bernstein_1d`, which is already bound, so what it
+  needs is the post-multiplication and the Lagrange identity-mask predicate. **Cardinal still
+  waits** on the interval scan.
 - **S4.** `SpanwiseElementExtraction` itself: the class-H `space` accessor, the two memos
   `design/bspline_derived_caches.md` assigns here (`ops_1d` DCLP-lazy returning a view of the
   memo, `num_identity_elements` eager), the wrapper, `__reduce__`, and the binding-contract
