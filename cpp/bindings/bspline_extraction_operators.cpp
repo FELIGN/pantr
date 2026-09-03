@@ -20,15 +20,25 @@
 /// because nanobind has no path to `TypeError`, which is what
 /// `pantr/core/error.hpp` sets as the split for the whole port.
 ///
-/// One refusal has **no counterpart in the oracle**, and it is a deliberate
-/// divergence rather than an omission on either side. A knot vector spanning no
-/// in-domain interval gives an empty `(0, p+1, p+1)` result, and the oracle's core
-/// then indexes `out[0]` on it when the boundary multiplicity is short -- out of
-/// bounds on an empty array. Refusing the vector is the only thing this side can do
-/// that is not undefined behaviour, and the message is
-/// `check_space_has_an_interval`'s, which is what `BsplineSpace1D` already raises
-/// for the same knot vector. `pantr.bspline._extraction_backend` records that the
-/// two backends differ here.
+/// ## Three refusals with no Python counterpart, and they are not the same kind
+///
+/// **One is a genuine divergence.** A knot vector spanning no in-domain interval gives
+/// an empty `(0, p+1, p+1)` result, and the oracle's core then indexes `out[0]` on it
+/// when the boundary multiplicity is short -- out of bounds on an empty array. Refusing
+/// the vector is the only thing this side can do that is not undefined behaviour, and
+/// the message is `check_space_has_an_interval`'s, which is what `BsplineSpace1D`
+/// already raises for the same knot vector. `pantr.bspline._extraction_backend` records
+/// that the two backends differ here.
+///
+/// **The other two are preconditions promoted to refusals**, which is what a Layer 2
+/// seam is for and not a divergence in behaviour: an `out` whose shape does not match
+/// the operator count, and a `multiplicity` array with no class in it. In Python those
+/// are unreachable, because Layer 2 sizes `out` itself and derives `multiplicity` from
+/// a space that always has one class. Reaching the kernel with either would be
+/// undefined behaviour on this side, where in the oracle it is a Numba index that
+/// silently reads past an array, so they are checked rather than asserted. Both are
+/// mentioned here because "no counterpart in the oracle" was read as naming only the
+/// first, and an unlisted refusal is one nobody knows to test.
 ///
 /// ## `.noconvert()` on every array
 ///
@@ -161,7 +171,7 @@ void bezier_identity_mask(const_multiplicity multiplicity, std::int64_t degree, 
         throw nb::value_error("degree must be non-negative");
     }
     if (multiplicity.size() == 0) {
-        throw nb::value_error("multiplicity must hold at least one knot class");
+        throw nb::value_error("multiplicity must hold at least one class");
     }
     const std::size_t n_intervals = multiplicity.size() - 1;
     if (out.size() != n_intervals) {

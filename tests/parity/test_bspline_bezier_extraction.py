@@ -87,9 +87,14 @@ from typing import TYPE_CHECKING, Any, Final, NamedTuple
 import numpy as np
 import pytest
 
+from pantr import _pantr_cpp
 from pantr._backend import Backend, use_backend
 from pantr.bspline import BsplineSpace1D
 from pantr.bspline._bspline_extraction import _tabulate_Bspline_Bezier_1D_extraction_impl
+from pantr.bspline._bspline_knots import (
+    _get_multiplicity_of_first_knot_in_domain_impl,
+    _knot_tolerance,
+)
 from pantr.bspline._extraction_backend import (
     _KERNELS,
     bezier_extraction_kernel,
@@ -283,6 +288,15 @@ _BITWISE_WHY: Final = (
 )
 """Why the two operation sequences agree bit for bit, and what would change it."""
 
+_NO_INSERTION_WHY: Final = (
+    "this knot vector needs no insertion at all -- every element is already a Bezier patch, "
+    "or the degree is 0 or 1 -- so both backends fill the identity and stop. No arithmetic is "
+    "performed, so there is nothing for a fused multiply-add to contract and nothing for a "
+    "bound to bound; design/backend_parity.md Rule 10 records a zero-stage claim being clamped "
+    "to one stage instead of being called what it is, which is bitwise"
+)
+"""Why a vector that runs no insertion is bitwise even where the build can fuse."""
+
 
 def _insertion_stages(case: _Case, dtype: npt.DTypeLike) -> int:
     """The length of the longest dependency chain of insertions, for this vector.
@@ -303,17 +317,16 @@ def _insertion_stages(case: _Case, dtype: npt.DTypeLike) -> int:
             classes.
 
     Returns:
-        int: The stage count, at least one.
+        int: The stage count, zero when no insertion runs at all.
     """
-    knots = np.asarray(case.knots, dtype=dtype)
-    space = BsplineSpace1D(knots, case.degree, snap_knots=False)
+    space = BsplineSpace1D(np.asarray(case.knots, dtype=dtype), case.degree, snap_knots=False)
     multiplicity = space.get_unique_knots_and_multiplicity(in_domain=True)[1]
     boundary = int(
-        np.count_nonzero(np.abs(knots[: case.degree + 1] - knots[case.degree]) <= space.tolerance)
+        _get_multiplicity_of_first_knot_in_domain_impl(space.knots, case.degree, space.tolerance)
     )
     stages = max(case.degree - boundary, 0)
     stages += sum(max(case.degree - int(m), 0) for m in multiplicity[1:])
-    return max(stages, 1)
+    return stages
 
 
 def _fused_claim(case: _Case, dtype: npt.DTypeLike) -> Any:
@@ -326,10 +339,15 @@ def _fused_claim(case: _Case, dtype: npt.DTypeLike) -> Any:
     Returns:
         Any: The parity claim.
     """
+    stages = _insertion_stages(case, dtype)
+    if stages == 0:
+        # No insertion runs, so no site can fuse and there is nothing to bound. The
+        # harness refuses a zero-stage bounded claim by name and tells the caller to
+        # say bitwise instead, which `design/backend_parity.md` Rule 10 records
+        # being got wrong once already by clamping such a claim to one stage.
+        return bitwise_parity(why=_NO_INSERTION_WHY)
     return bounded_parity(
-        roundings=Roundings(
-            stages=_insertion_stages(case, dtype), accumulator_per_stage=3, storage_per_stage=0
-        ),
+        roundings=Roundings(stages=stages, accumulator_per_stage=3, storage_per_stage=0),
         accumulator=dtype,
         storage=dtype,
         amplification=np.array(1.0),
@@ -352,25 +370,36 @@ def _fused_claim(case: _Case, dtype: npt.DTypeLike) -> Any:
     )
 
 
-def _column_sum_bound(degree: int, dtype: npt.DTypeLike) -> float:
-    """The absolute error a column sum of one may carry.
+def _column_sum_bound(case: _Case, dtype: npt.DTypeLike) -> float:
+    """The absolute error a column sum of one may carry, for this vector.
 
-    Each entry is a chain of at most ``degree`` insertions, each committing four
-    roundings -- the complement ``1 - alpha``, the two products, and their sum --
-    against an exact convex combination of values in ``[0, 1]``, so an entry carries
-    at most ``gamma_{4 degree}`` of absolute error. Summing ``degree + 1`` of them
-    against an exact total of one adds ``gamma_{degree}``. First order in ``u``,
-    that is ``(4 degree (degree + 1) + degree) u``.
+    Each stage of an entry's chain commits four roundings -- the complement
+    ``1 - alpha``, the two products, and their sum -- against an exact convex
+    combination of values in ``[0, 1]``, whose weights are non-negative and sum to
+    one, so the propagated error carries forward with weight at most one and an
+    entry ends up within ``gamma_{4 S}`` of its exact value, ``S`` being the chain
+    length :func:`_insertion_stages` reports. Summing ``degree + 1`` of them against
+    an exact total of one adds ``gamma_{degree}``. First order in ``u``, that is
+    ``(4 S (degree + 1) + degree) u``.
+
+    **The chain length is not the degree, and an earlier version of this said it
+    was.** Element 0 alone reaches ``2 degree - 1`` stages, since the boundary
+    sequence composes with its own, and the inter-element copies carry the chain
+    forward across the whole vector. The bound was therefore too tight by that
+    factor. It never failed, because the observed error is orders below either
+    version -- which is exactly the shape of claim nothing in the suite can
+    distinguish, and it was a review's unproved suspicion that found it rather than
+    any test.
 
     Args:
-        degree (int): The polynomial degree.
+        case (_Case): The knot vector, which fixes the chain length.
         dtype (npt.DTypeLike): Storage format.
 
     Returns:
-        float: The bound, zero at degree 0 where nothing is computed.
+        float: The bound, zero where no insertion runs at all.
     """
     u = unit_roundoff(dtype)
-    return (4.0 * degree * (degree + 1.0) + degree) * u
+    return (4.0 * _insertion_stages(case, dtype) * (case.degree + 1.0) + case.degree) * u
 
 
 def _build(case: _Case, dtype: npt.DTypeLike, backend: Backend) -> npt.NDArray[Any]:
@@ -554,14 +583,16 @@ def test_the_columns_are_a_partition_of_unity(
         column_sums,
         np.ones_like(column_sums),
         derived_accuracy(
-            bound=np.full(column_sums.shape, _column_sum_bound(case.degree, dtype)),
+            bound=np.full(column_sums.shape, _column_sum_bound(case, dtype)),
             why=(
                 "an entry is a chain of at most `degree` insertions, each committing four "
                 "roundings -- the complement, the two products and their sum -- against an "
-                "exact convex combination of values in [0, 1], so it carries at most "
-                "gamma_{4 degree}; summing degree + 1 of them against an exact total of one "
-                "adds gamma_{degree}. First order in u that is (4 degree (degree + 1) + "
-                "degree) u"
+                "exact convex combination of values in [0, 1] whose weights sum to one, so it "
+                "carries at most gamma_{4 S} where S is the chain length of THIS vector: an "
+                "element's own sequence is degree - multiplicity stages, the boundary sequence "
+                "composes with element 0's, and the inter-element copies carry the chain "
+                "forward. Summing degree + 1 entries against an exact total of one adds "
+                "gamma_{degree}. First order in u that is (4 S (degree + 1) + degree) u"
             ),
         ),
         context=f"{case.label} in {np.dtype(dtype).name} on {backend.name}",
@@ -590,7 +621,7 @@ def test_the_partition_of_unity_check_is_not_vacuous(dtype: npt.DTypeLike) -> No
         operators = _build(case, dtype, Backend.PYTHON)
         deviation = np.abs(operators.sum(axis=1).astype(np.float64) - 1.0)
         worst = max(worst, float(deviation.max(initial=0.0)))
-        assert worst <= max(_column_sum_bound(c.degree, dtype) for c in _CASES if c.accuracy)
+        assert worst <= max(_column_sum_bound(c, dtype) for c in _CASES if c.accuracy)
     assert worst > 0.0, (
         "every case in the table has exactly-summing columns, so the derived bound is "
         "only ever compared against zero and asserts nothing"
@@ -692,6 +723,190 @@ def test_the_repeated_first_knot_case_separates_the_two_multiplicities(
     assert clamped_boundary == int(clamped_multiplicity[0])
 
 
+# ---------------------------------------------------------------------------
+# What the binding refuses, as opposed to what it computes
+# ---------------------------------------------------------------------------
+#
+# The C++ header validates nothing, so the binding is the C++ half of Layer 2 and
+# owns every refusal. Its file comment claims the four that mirror the oracle carry
+# **its messages character for character**, which is a checkable claim with nothing
+# else pinning it: the Python entry point refuses the same inputs first, so calling
+# through Layer 2 never reaches the binding's own checks. These call
+# `pantr._pantr_cpp` directly, which is the only way to exercise them.
+#
+# Nothing here carries a tolerance -- a refusal is a string and a type -- so
+# `design/backend_parity.md` Rule 8 cannot arise.
+
+
+class _Refusal(NamedTuple):
+    """One bad call to the builder binding, and the message it must produce.
+
+    Attributes:
+        label (str): What is wrong with the call.
+        knots (list[float]): The knot vector to pass.
+        degree (int): The degree to pass.
+        tol (float): The tolerance to pass.
+        out_shape (tuple[int, int, int]): The shape of the ``out`` to pass.
+        message (str): The message the oracle produces for the same fault, or the
+            one `BsplineSpace1D` produces where the oracle has no counterpart.
+    """
+
+    label: str
+    knots: list[float]
+    degree: int
+    tol: float
+    out_shape: tuple[int, int, int]
+    message: str
+
+
+_BUILDER_REFUSALS: Final = (
+    _Refusal(
+        "negative degree", [0.0, 0.0, 1.0, 1.0], -1, 0.0, (1, 1, 1), "degree must be non-negative"
+    ),
+    _Refusal("negative tol", [0.0, 0.0, 1.0, 1.0], 1, -1.0, (1, 2, 2), "tol must be non-negative"),
+    _Refusal(
+        "too few knots",
+        [0.0, 0.0, 1.0],
+        2,
+        0.0,
+        (1, 3, 3),
+        "knots must have at least 2*degree+2 elements",
+    ),
+    # The one-knot degree-zero case the truncating division used to let through.
+    _Refusal(
+        "one knot at degree zero",
+        [0.0],
+        0,
+        0.0,
+        (1, 1, 1),
+        "knots must have at least 2*degree+2 elements",
+    ),
+    _Refusal(
+        "descending step",
+        [0.0, 0.0, 1.0, 0.5, 1.0, 1.0],
+        2,
+        0.0,
+        (1, 3, 3),
+        "knots must be non-decreasing",
+    ),
+)
+"""One bad call per refusal the binding shares with the oracle."""
+
+
+@pytest.mark.parametrize(
+    "case", _BUILDER_REFUSALS, ids=[entry.label for entry in _BUILDER_REFUSALS]
+)
+def test_the_builder_binding_refuses_what_the_oracle_refuses(
+    cpp_backend: None, case: _Refusal
+) -> None:
+    """The binding's message is the oracle's, character for character.
+
+    Asserted against the text the Python path produces for the same fault rather
+    than against a literal copied from the C++, so that a reworded message on either
+    side is a failure here instead of a difference a caller would have to notice.
+
+    Args:
+        cpp_backend (None): Requires the compiled extension.
+        case (_Refusal): The bad call and the message it must produce.
+    """
+    knots = np.asarray(case.knots, dtype=np.float64)
+    out = np.empty(case.out_shape, dtype=np.float64)
+
+    with pytest.raises(ValueError) as from_binding:
+        _pantr_cpp.bezier_extraction_1d(knots, case.degree, case.tol, out)
+    assert str(from_binding.value) == case.message
+
+    # And the oracle's own path produces the same text for the same fault, which is
+    # what makes the table above a comparison rather than a transcription.
+    with use_backend(Backend.PYTHON), pytest.raises(ValueError) as from_oracle:
+        _tabulate_Bspline_Bezier_1D_extraction_impl(knots, case.degree, case.tol)
+    assert str(from_oracle.value) == case.message
+
+
+def test_the_builder_binding_refuses_a_vector_spanning_no_interval(cpp_backend: None) -> None:
+    """The one refusal with no counterpart in the oracle, and it is the space's text.
+
+    The oracle allocates an empty ``(0, p+1, p+1)`` result for such a vector and its
+    kernel then indexes ``out[0]`` on it, so refusing is the only thing the C++ can
+    do that is not undefined behaviour. The message must be the one
+    :class:`~pantr.bspline.BsplineSpace1D` already raises for the same vector, since
+    that is the text a caller has seen for this fault since before the port.
+    """
+    knots = np.asarray([0.0, 1.0, 1.0, 1.0, 1.0, 1.0], dtype=np.float64)
+    out = np.empty((0, 3, 3), dtype=np.float64)
+    # The space derives its own tolerance and the message interpolates it, so the
+    # binding is handed the same one; otherwise the two texts differ in that number
+    # alone and the comparison would be about the argument rather than the message.
+    tol = _knot_tolerance(knots)
+    with pytest.raises(ValueError) as caught:
+        _pantr_cpp.bezier_extraction_1d(knots, 2, tol, out)
+    assert "knot vector spans no interval" in str(caught.value)
+
+    with pytest.raises(ValueError) as from_space:
+        BsplineSpace1D(knots, 2, snap_knots=False)
+    assert str(caught.value) == str(from_space.value)
+
+    # And the oracle does NOT refuse it, which is the divergence
+    # `pantr.bspline._extraction_backend` records. Pinned so that the day the oracle
+    # grows the check, this test says so rather than the divergence note going stale.
+    with use_backend(Backend.PYTHON):
+        assert _tabulate_Bspline_Bezier_1D_extraction_impl(knots, 2, tol).shape == (0, 3, 3)
+
+
+def test_the_builder_binding_refuses_a_wrongly_shaped_out(cpp_backend: None) -> None:
+    """An ``out`` of the wrong shape is a ``ValueError`` naming the shape wanted."""
+    knots = np.asarray(_CASES[0].knots, dtype=np.float64)
+    for shape in ((2, 3, 3), (3, 2, 3), (3, 3, 2)):
+        with pytest.raises(ValueError, match=r"out must have shape \(3, 3, 3\)"):
+            _pantr_cpp.bezier_extraction_1d(knots, 2, 0.0, np.empty(shape, dtype=np.float64))
+
+
+def test_the_builder_binding_refuses_a_dtype_it_would_have_to_cast(cpp_backend: None) -> None:
+    """``.noconvert()`` on both arrays, because a cast would change the arithmetic.
+
+    The whole insertion runs in the knots' own scalar type, so a silent widening of
+    ``knots`` would not merely copy: it would change the accumulation width and make
+    the result disagree with the oracle for a reason no caller could see.
+    ``design/backend_parity.md`` Rule 9 is why this is a refusal rather than a
+    convenience.
+    """
+    knots = np.asarray(_CASES[0].knots, dtype=np.float32)
+    with pytest.raises(TypeError):
+        _pantr_cpp.bezier_extraction_1d(knots, 2, 0.0, np.empty((3, 3, 3), dtype=np.float64))
+    with pytest.raises(TypeError):
+        _pantr_cpp.bezier_extraction_1d(
+            knots.astype(np.float64), 2, 0.0, np.empty((3, 3, 3), dtype=np.float32)
+        )
+    # An integer knot vector is a cast too, and Layer 2 in Python is what normalizes
+    # one; the binding must not do it silently.
+    with pytest.raises(TypeError):
+        _pantr_cpp.bezier_extraction_1d(
+            np.asarray(_CASES[0].knots, dtype=np.int64), 2, 0.0, np.empty((3, 3, 3))
+        )
+
+
+def test_the_mask_binding_refuses_its_own_bad_calls(cpp_backend: None) -> None:
+    """The mask entry point's three refusals, none of which the oracle has.
+
+    The Numba kernel validates nothing and Layer 2 reaches it only from a space, so
+    these guard a direct caller -- including a C++ one, for whom the binding's checks
+    are the only ones there are.
+    """
+    multiplicity = np.asarray([3, 1, 3], dtype=np.intp)
+    with pytest.raises(ValueError, match="degree must be non-negative"):
+        _pantr_cpp.bezier_structural_identity_mask(multiplicity, -1, np.empty(2, dtype=np.bool_))
+    with pytest.raises(ValueError, match="at least one class"):
+        _pantr_cpp.bezier_structural_identity_mask(
+            np.empty(0, dtype=np.intp), 2, np.empty(0, dtype=np.bool_)
+        )
+    with pytest.raises(ValueError, match="out must have 2 elements"):
+        _pantr_cpp.bezier_structural_identity_mask(multiplicity, 2, np.empty(3, dtype=np.bool_))
+    with pytest.raises(TypeError):
+        _pantr_cpp.bezier_structural_identity_mask(
+            multiplicity.astype(np.int32), 2, np.empty(2, dtype=np.bool_)
+        )
+
+
 def _draw(rng: np.random.Generator, dtype: npt.DTypeLike) -> _Case:
     """Draw one random knot vector the shared algorithm handles.
 
@@ -783,7 +998,7 @@ def test_the_claim_holds_over_a_sweep_ten_times_the_shipped_one(
 
         column_sums = actual.sum(axis=1).astype(np.float64)
         deviation = float(np.abs(column_sums - 1.0).max(initial=0.0))
-        assert deviation <= _column_sum_bound(case.degree, dtype), (
+        assert deviation <= _column_sum_bound(case, dtype), (
             f"{context}: a column sums to one only within {deviation}"
         )
         worst_column_sum = max(worst_column_sum, deviation)
