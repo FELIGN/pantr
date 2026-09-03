@@ -7,14 +7,27 @@ catalogue imports the kernels it hands out, so keeping each one next to its own
 kernels is what stops the policy module from importing the library it must stay
 independent of.
 
-Two accessors, not a record
----------------------------
+Four accessors, not a record
+----------------------------
 
 By the rule ``design/cross_backend_types.md`` states -- a record when the consumer
 needs more than one kernel at once, a bare callable when it does not -- these are
 bare callables. :func:`pantr.bspline._extraction_helpers._prepare_apply_call`
 selects exactly one kernel per call, keyed by ``(op_kind, dim)``, and never needs
-a second one in the same call.
+a second one in the same call; and neither of the two builders below needs the
+other.
+
+Two of the four *apply* an operator and two *build* one, which is why the C++ side
+is two registrations rather than one -- ``bspline_extraction.cpp`` for the
+tensor-product apply kernels, ``bspline_extraction_operators.cpp`` for the Bézier
+builder and its mask. They are separate ports with separate parity claims.
+
+Only the **Bézier** target has a builder here. Lagrange is that operator
+post-multiplied by ``lagrange_to_bernstein_1d``, which
+:mod:`pantr.change_basis._change_basis_backend` already dispatches, so it inherits
+the backend rather than needing an entry; the cardinal target additionally needs
+the cardinal-interval scan, which is not ported and which
+``cpp/include/pantr/bspline/space_1d.hpp`` deliberately keeps off the type.
 
 What crosses the boundary
 -------------------------
@@ -44,6 +57,20 @@ measures it over **both** halves of the surface -- the twelve single-cell entry
 points and the twelve batch ones are twelve different C++ functions each, so a
 claim measured on one says nothing about the other.
 
+Where the two backends differ, and it is one input
+-------------------------------------------------
+
+The Bézier builder's C++ half **refuses a knot vector spanning no in-domain
+interval**, with the message :class:`pantr.bspline.BsplineSpace1D` raises for the
+same vector. The Numba half accepts it: Layer 2 allocates an empty
+``(0, degree+1, degree+1)`` result and the kernel then indexes ``out[0]`` on it
+whenever the boundary multiplicity is short of ``degree + 1``, which is out of
+bounds on an empty array. Refusing is the only thing the C++ side can do that is not
+undefined behaviour, so the divergence is deliberate and recorded here rather than
+left to be met. Such a vector is unreachable through the public API, since
+:class:`~pantr.bspline.BsplineSpace1D` refuses it at construction; only the private
+Layer 2 helper accepts one.
+
 The batch kernels are the one place the two differ in kind rather than in bits: the
 oracle's are ``parallel=True`` over cells and the C++ loops. Each cell writes only
 its own rows and there is no reduction, so the answer cannot move with the thread
@@ -60,6 +87,10 @@ import numpy as np
 import numpy.typing as npt
 
 from .._backend import Backend, active_backend, available_backends
+from ._bspline_extraction_core import (
+    _bezier_structural_identity_mask_core,
+    _tabulate_Bspline_Bezier_1D_extraction_core,
+)
 from ._extraction_kernels import (
     apply_kron_1d,
     apply_kron_2d,
@@ -95,6 +126,15 @@ _K = TypeVar("_K", bound=Callable[..., None])
 
 _Kernel = Callable[..., None]
 """Every kernel here fills the caller's buffers and returns ``None``."""
+
+_Array = npt.NDArray[np.float32 | np.float64]
+"""A float32 or float64 array, the two dtypes these kernels handle."""
+
+_BezierBuilder = Callable[[_Array, int, float, _Array], None]
+"""Signature of the Bézier operator builder: ``(knots, degree, tol, out) -> None``."""
+
+_IdentityMask = Callable[[npt.NDArray[np.intp], int, npt.NDArray[np.bool_]], None]
+"""Signature of the structural identity mask: ``(multiplicities, degree, out) -> None``."""
 
 
 _KERNELS: Final[dict[tuple[str, int], _Kernel]] = {
@@ -291,3 +331,90 @@ def apply_many_kernel(op_kind: OpKind, dim: int, backend: Backend | None = None)
     """
     key = (op_kind, dim)
     return _select(backend, _KERNELS_MANY[key], _cpp_adapter(_CPP_NAMES_MANY[key], dim, batch=True))
+
+
+def _cpp_bezier_extraction(knots: _Array, degree: int, tol: float, out: _Array) -> None:
+    """Build the Bézier extraction operators through the C++ binding.
+
+    Args:
+        knots (_Array): The knot vector.
+        degree (int): The polynomial degree.
+        tol (float): The absolute parametric tolerance.
+        out (_Array): Output of shape ``(n_intervals, degree + 1, degree + 1)``.
+
+    Note:
+        No input validation is performed here. The binding is the C++ half of
+        Layer 2 and re-checks dtype, rank, contiguity, the oracle's three
+        knot-vector refusals and the shape of ``out``; Layer 2 in Python
+        established the rest.
+    """
+    from pantr import _pantr_cpp  # noqa: PLC0415  (resolved against the .pyi stub)
+
+    knot_array = np.ascontiguousarray(knots)
+    buffer, copy_back = _contiguous_out(out)
+    _pantr_cpp.bezier_extraction_1d(knot_array, int(degree), float(tol), buffer)
+    if copy_back:
+        out[...] = buffer
+
+
+def _cpp_bezier_identity_mask(
+    multiplicities: npt.NDArray[np.intp], degree: int, out: npt.NDArray[np.bool_]
+) -> None:
+    """Mark the identity elements through the C++ binding.
+
+    The multiplicities are normalized to :data:`numpy.intp` rather than passed
+    through: the oracle's knot scan returns :data:`numpy.int_`, which is ``int64``
+    on the platforms this is built for but ``int32`` on Windows, and the binding
+    takes ``int64`` under ``.noconvert()``. The cast is a no-op wherever the two
+    already agree.
+
+    Args:
+        multiplicities (npt.NDArray[np.intp]): In-domain knot multiplicities.
+        degree (int): The polynomial degree.
+        out (npt.NDArray[np.bool_]): One flag per element.
+
+    Note:
+        No input validation is performed here; the binding re-checks dtype, rank,
+        contiguity and the length relation, and Layer 2 established the rest.
+    """
+    from pantr import _pantr_cpp  # noqa: PLC0415  (resolved against the .pyi stub)
+
+    counts = np.ascontiguousarray(multiplicities, dtype=np.intp)
+    if out.flags["C_CONTIGUOUS"]:
+        _pantr_cpp.bezier_structural_identity_mask(counts, int(degree), out)
+        return
+    buffer = np.empty_like(out, order="C")
+    _pantr_cpp.bezier_structural_identity_mask(counts, int(degree), buffer)
+    out[...] = buffer
+
+
+def bezier_extraction_kernel(backend: Backend | None = None) -> _BezierBuilder:
+    """Get the Bézier extraction operator builder of the requested backend.
+
+    Args:
+        backend (Backend | None): The backend to use, or ``None`` for the one
+            currently in effect. Defaults to None.
+
+    Returns:
+        _BezierBuilder: The kernel, ``(knots, degree, tol, out) -> None``.
+
+    Raises:
+        RuntimeError: If ``backend`` is given and is not available.
+    """
+    return _select(backend, _tabulate_Bspline_Bezier_1D_extraction_core, _cpp_bezier_extraction)
+
+
+def bezier_identity_mask_kernel(backend: Backend | None = None) -> _IdentityMask:
+    """Get the structural identity mask kernel of the requested backend.
+
+    Args:
+        backend (Backend | None): The backend to use, or ``None`` for the one
+            currently in effect. Defaults to None.
+
+    Returns:
+        _IdentityMask: The kernel, ``(multiplicities, degree, out) -> None``.
+
+    Raises:
+        RuntimeError: If ``backend`` is given and is not available.
+    """
+    return _select(backend, _bezier_structural_identity_mask_core, _cpp_bezier_identity_mask)
