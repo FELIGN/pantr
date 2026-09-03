@@ -396,6 +396,35 @@ void test_refine_rejects_bad_arguments() {
     static_cast<void>(bad);
 }
 
+/// Both levels `refine` touches are re-normalized, and the merge is observable.
+///
+/// `refine` hands `from_blocks` the two levels it rebound and takes the rest verbatim,
+/// which is a cost switch and never a behavioural one -- but only because the two it names
+/// really are the two it changed. Naming just its own level leaves the children it
+/// appended unmerged, and a merge along the **fastest** axis reorders the flat ids: two
+/// blocks give `(0,0) (0,1) (1,0) (1,1) (0,2) ...`, one merged block gives
+/// `(0,0) (0,1) (0,2) ...`. A merge along the slowest axis would not, which is why the two
+/// refinements here are adjacent in the last axis.
+void test_refine_renormalizes_the_level_it_promotes_into() {
+    Grid g = unit_2x2();
+    g = g.refine(0, Ints{0, 0}, Ints{1, 1});
+    g = g.refine(0, Ints{0, 1}, Ints{1, 2});
+    PANTR_CHECK_MSG(g.num_cells() == 10, std::to_string(g.num_cells()));
+
+    const auto [lo, hi] = g.active_blocks(1);
+    PANTR_CHECK_MSG(lo.extent(0) == 1, "the two child blocks must have merged, got "
+                                           + std::to_string(lo.extent(0)));
+    if (lo.extent(0) == 1) {
+        PANTR_CHECK(lo(0, 0) == 0 && lo(0, 1) == 0 && hi(0, 0) == 2 && hi(0, 1) == 4);
+    }
+    Ints midx(2);
+    g.cell_multi_index(4, midx);
+    PANTR_CHECK_MSG(midx == Ints({0, 2}),
+                    "cell 4 is (" + std::to_string(midx[0]) + ", " + std::to_string(midx[1])
+                        + "), so level 1 was numbered from an unmerged partition");
+    check_the_leaves_tile_the_domain(g, "two adjacent refinements");
+}
+
 // ---------------------------------------------------------------------------
 // Coarsening
 // ---------------------------------------------------------------------------
@@ -571,6 +600,41 @@ void test_coarsen_refusal_reports_a_huge_region_as_an_extent() {
                             "cells, too many to name", "a region above the diagnostic cap");
 }
 
+/// The demoted box is appended after the level's own blocks, and the order is observable.
+///
+/// The greedy merge is order-dependent, so where the reactivated box could merge with more
+/// than one neighbour the partition depends on where it sits in the list. A 2-by-3 root
+/// with the cells `(1,1)` and `(0,2)` refined leaves level 0 holding
+/// `[(0,0),(1,2))`, `[(1,0),(2,1))` and `[(1,2),(2,3))`; demoting `(1,1)` back then gives
+///
+///   * appended last, as the oracle does: `[(0,0),(2,2))` and `[(1,2),(2,3))`;
+///   * appended first: `[(0,0),(1,2))` and `[(1,0),(2,3))`.
+///
+/// Both cover the same five cells and number them differently.
+void test_coarsen_appends_the_demoted_box_last() {
+    const Ints factor{2, 2};
+    Grid g(TensorProductGrid<double>({{0.0, 1.0, 2.0}, {0.0, 1.0, 2.0, 3.0}}), factor);
+    g = g.refine(0, Ints{1, 1}, Ints{2, 2});
+    g = g.refine(0, Ints{0, 2}, Ints{1, 3});
+    PANTR_CHECK_MSG(g.num_cells() == 12, std::to_string(g.num_cells()));
+
+    const Grid demoted = g.coarsen(0, Ints{1, 1}, Ints{2, 2});
+    PANTR_CHECK_MSG(demoted.num_cells() == 9, std::to_string(demoted.num_cells()));
+    const auto [lo, hi] = demoted.active_blocks(0);
+    PANTR_CHECK_MSG(lo.extent(0) == 2, "level 0 should hold two blocks, not "
+                                           + std::to_string(lo.extent(0)));
+    if (lo.extent(0) == 2) {
+        PANTR_CHECK(lo(0, 0) == 0 && lo(0, 1) == 0 && hi(0, 0) == 2 && hi(0, 1) == 2);
+        PANTR_CHECK(lo(1, 0) == 1 && lo(1, 1) == 2 && hi(1, 0) == 2 && hi(1, 1) == 3);
+    }
+    Ints midx(2);
+    demoted.cell_multi_index(2, midx);
+    PANTR_CHECK_MSG(midx == Ints({1, 0}),
+                    "cell 2 is (" + std::to_string(midx[0]) + ", " + std::to_string(midx[1])
+                        + "), so the demoted box was merged in the wrong order");
+    check_the_leaves_tile_the_domain(demoted, "the reordered demotion");
+}
+
 /// `coarsen_cells` demotes a parent only when every one of its children is named.
 void test_coarsen_cells_demotes_only_complete_families() {
     const Grid g = refined_corner();
@@ -739,6 +803,42 @@ void test_restrict_returns_the_whole_root_cell_of_a_deep_leaf() {
 }
 
 /// Every windowed cell keeps its parent's geometry bitwise, and its own id map.
+///
+/// \param g The grid to restrict.
+/// \param ids The request.
+/// \param what The fixture's name, for the failure message.
+void check_restrict_geometry(const Grid& g, const Ints& ids, const std::string& what) {
+    const auto d = static_cast<std::size_t>(g.ndim());
+    const GridRestriction<Grid> restricted = g.restrict(ids);
+    std::vector<double> slo(d);
+    std::vector<double> shi(d);
+    std::vector<double> glo(d);
+    std::vector<double> ghi(d);
+    for (std::size_t local = 0; local < restricted.local_to_global_cell.size(); ++local) {
+        const auto local_cid = static_cast<std::int64_t>(local);
+        const std::int64_t global = restricted.local_to_global_cell[local];
+        restricted.grid.cell_bounds(local_cid, slo, shi);
+        g.cell_bounds(global, glo, ghi);
+        PANTR_CHECK_MSG(slo == glo && shi == ghi,
+                        what + ": sub cell " + std::to_string(local)
+                            + " moved against global cell " + std::to_string(global));
+        PANTR_CHECK(restricted.grid.cell_level(local_cid) == g.cell_level(global));
+    }
+    std::size_t flagged = 0;
+    for (const std::uint8_t flag : restricted.in_subset) {
+        flagged += flag == 1U ? 1U : 0U;
+    }
+    PANTR_CHECK_MSG(flagged == ids.size(), what + ": " + std::to_string(flagged)
+                                               + " cells flagged, expected "
+                                               + std::to_string(ids.size()));
+}
+
+/// The sub-root is a pure slice, never re-based, and a window away from the origin says so.
+///
+/// Every fixture whose window starts at root cell zero on a domain starting at zero makes
+/// a re-basing sub-root indistinguishable from a slicing one, because the shift is zero.
+/// The second fixture here has both a non-zero domain origin and a window that starts
+/// past it, so the two differ.
 void test_restrict_preserves_cell_geometry_bitwise() {
     const Grid g = refined_corner();
     const Ints ids{0, 3};
@@ -748,26 +848,23 @@ void test_restrict_preserves_cell_geometry_bitwise() {
     PANTR_CHECK_MSG(restricted.grid.num_cells() == 5,
                     std::to_string(restricted.grid.num_cells()));
     PANTR_CHECK(restricted.local_to_global_cell.size() == 5);
+    check_restrict_geometry(g, ids, "the refined-corner grid");
 
-    std::vector<double> slo(2);
-    std::vector<double> shi(2);
-    std::vector<double> glo(2);
-    std::vector<double> ghi(2);
-    for (std::size_t local = 0; local < restricted.local_to_global_cell.size(); ++local) {
-        const auto local_cid = static_cast<std::int64_t>(local);
-        const std::int64_t global = restricted.local_to_global_cell[local];
-        restricted.grid.cell_bounds(local_cid, slo, shi);
-        g.cell_bounds(global, glo, ghi);
-        PANTR_CHECK_MSG(slo == glo && shi == ghi,
-                        "sub cell " + std::to_string(local) + " moved against global cell "
-                            + std::to_string(global));
-        PANTR_CHECK(restricted.grid.cell_level(local_cid) == g.cell_level(global));
-    }
-    std::size_t flagged = 0;
-    for (const std::uint8_t flag : restricted.in_subset) {
-        flagged += flag == 1U ? 1U : 0U;
-    }
-    PANTR_CHECK_MSG(flagged == 2, "exactly the two requested cells must be flagged");
+    // A 2-by-2 root on `[1, 3] x [1, 3]`, with the far root cell refined. Restricting one
+    // of its children windows onto root cell (1,1), whose breakpoints start at 2 and not
+    // at the domain's own 1, so a sub-root shifted to either origin is caught.
+    const Ints factor{2, 2};
+    Grid offset(TensorProductGrid<double>({{1.0, 2.0, 3.0}, {1.0, 2.0, 3.0}}), factor);
+    offset = offset.refine(0, Ints{1, 1}, Ints{2, 2});
+    PANTR_CHECK_MSG(offset.num_cells() == 7, std::to_string(offset.num_cells()));
+    // Named rather than chained: `breakpoints` views the sub-grid's own buffer, so the
+    // restriction has to outlive the span.
+    const GridRestriction<Grid> windowed = offset.restrict(Ints{3});
+    const std::span<const double> sliced = windowed.grid.root().breakpoints(0);
+    PANTR_CHECK_MSG(sliced.size() == 2 && sliced[0] == 2.0 && sliced[1] == 3.0,
+                    "the sub-root must be the matching slice of the parent's breakpoints");
+    check_restrict_geometry(offset, Ints{3}, "a window away from the origin");
+    check_restrict_geometry(offset, Ints{0, 3}, "a window spanning two root cells");
 }
 
 /// Restricting the whole grid returns a grid equal to it.
@@ -1052,6 +1149,41 @@ void test_export_relative_bound_is_not_unconditional() {
                                           + std::to_string(absolute));
 }
 
+/// The domain's own edges come out exactly, written back rather than reconstructed.
+///
+/// A corner on the far edge of the last root cell is the one place the lattice index runs
+/// one past the last root cell, and `lattice_to_coords` answers it by borrowing that cell
+/// and then **writing the breakpoint back**. Reconstructing it as `b + steps * (w / steps)`
+/// instead is within the corner bound and would pass every other assertion here, but it is
+/// not the breakpoint: on the fixture below `b + (bp.back() - b)` already misses by an ulp
+/// before any subdivision, and a mesh whose outer boundary sits an ulp off the domain is a
+/// difference a consumer clipping against that domain can see.
+void test_export_reproduces_the_domain_edges_exactly() {
+    const Ints factor{3, 2};
+    Grid g(TensorProductGrid<double>({{0.0, 0.2, 0.9}, {0.0, 0.7}}), factor);
+    g = g.refine(0, Ints{0, 0}, Ints{1, 1});
+    g = g.refine(1, Ints{0, 0}, Ints{3, 2});
+    const CellExport<double> mesh = g.export_cells();
+
+    for (std::size_t k = 0; k < 2; ++k) {
+        const std::span<const double> bp = g.root().breakpoints(static_cast<std::int64_t>(k));
+        double lowest = mesh.points[k];
+        double highest = mesh.points[k];
+        for (std::int64_t i = 0; i < mesh.num_vertices; ++i) {
+            const double value = mesh.points[static_cast<std::size_t>(i) * 2 + k];
+            lowest = std::min(lowest, value);
+            highest = std::max(highest, value);
+        }
+        PANTR_CHECK_MSG(lowest == bp.front(), "axis " + std::to_string(k) + " lower edge");
+        PANTR_CHECK_MSG(highest == bp.back(), "axis " + std::to_string(k) + " upper edge");
+    }
+    // The reconstruction the write-back replaces really is different on this fixture, so
+    // the assertion above is not one the arithmetic satisfies for free.
+    const std::span<const double> bp = g.root().breakpoints(0);
+    PANTR_CHECK_MSG(bp[1] + (bp[2] - bp[1]) != bp[2],
+                    "this fixture no longer distinguishes a written-back edge");
+}
+
 /// The sweep the shipped bound is asserted over: several shapes, factors and depths.
 void test_export_matches_cell_bounds_across_fixtures() {
     Grid irregular(TensorProductGrid<double>({{0.0, 0.3, 0.55, 1.0}, {0.0, 0.1, 1.0}}),
@@ -1119,6 +1251,7 @@ int main() {
     test_refine_cells_uses_the_bounding_box();
     test_refine_cells_spans_levels();
     test_refine_cells_with_no_ids_returns_a_cold_copy();
+    test_refine_renormalizes_the_level_it_promotes_into();
     test_refine_rejects_bad_arguments();
 
     test_refine_inverts_coarsen_unconditionally();
@@ -1128,6 +1261,7 @@ int main() {
     test_coarsen_reports_every_reason();
     test_coarsen_refusal_truncates_a_long_list();
     test_coarsen_refusal_reports_a_huge_region_as_an_extent();
+    test_coarsen_appends_the_demoted_box_last();
     test_coarsen_cells_demotes_only_complete_families();
     test_coarsen_cells_ignores_level_zero_ids();
     test_coarsen_cells_that_demotes_nothing_returns_a_cold_copy();
@@ -1149,6 +1283,7 @@ int main() {
     test_export_deduplicates_a_hanging_vertex();
     test_export_is_exact_on_a_dyadic_grid();
     test_export_relative_bound_is_not_unconditional();
+    test_export_reproduces_the_domain_edges_exactly();
     test_export_matches_cell_bounds_across_fixtures();
 
     test_the_partition_survives_a_long_sweep();
