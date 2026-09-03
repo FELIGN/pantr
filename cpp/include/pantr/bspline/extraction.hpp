@@ -76,8 +76,9 @@
 ///
 ///  - **A knot vector spanning no in-domain interval.** The oracle allocates an
 ///    empty `(0, p+1, p+1)` result and then indexes `out[0]` if the boundary count
-///    is short, which is out of bounds on an empty array. Here the operator count
-///    is a precondition, and `cpp/bindings/bspline_extraction_operators.cpp`
+///    is short, which is out of bounds on an empty array -- measured, not inferred:
+///    interpreted, where numpy bounds checks, that line raises. Here the operator
+///    count is a precondition, and `cpp/bindings/bspline_extraction_operators.cpp`
 ///    refuses the vector with `check_space_has_an_interval`'s message rather than
 ///    reaching it.
 ///  - **A first in-domain knot whose multiplicity exceeds one.** The window

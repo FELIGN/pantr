@@ -113,6 +113,7 @@ from tests._parity_harness import (
     demand_cpp_backend,
     derived_accuracy,
     exact_parity,
+    the_jit_is_disabled,
     unit_roundoff,
 )
 
@@ -832,6 +833,9 @@ def test_the_builder_binding_refuses_a_vector_spanning_no_interval(cpp_backend: 
     :class:`~pantr.bspline.BsplineSpace1D` already raises for the same vector, since
     that is the text a caller has seen for this fault since before the port.
     """
+    # A vector whose in-domain knots are all one class, with a boundary multiplicity
+    # of 2 rather than degree + 1 -- which is what takes the oracle into the branch
+    # that indexes the empty result.
     knots = np.asarray([0.0, 1.0, 1.0, 1.0, 1.0, 1.0], dtype=np.float64)
     out = np.empty((0, 3, 3), dtype=np.float64)
     # The space derives its own tolerance and the message interpolates it, so the
@@ -846,11 +850,22 @@ def test_the_builder_binding_refuses_a_vector_spanning_no_interval(cpp_backend: 
         BsplineSpace1D(knots, 2, snap_knots=False)
     assert str(caught.value) == str(from_space.value)
 
-    # And the oracle does NOT refuse it, which is the divergence
+    # And the oracle does not refuse it, which is the divergence
     # `pantr.bspline._extraction_backend` records. Pinned so that the day the oracle
     # grows the check, this test says so rather than the divergence note going stale.
+    #
+    # **Its symptom depends on the configuration, and that is what proves the
+    # mechanism**, so it is gated rather than skipped -- `design/backend_parity.md`
+    # Rule 12's own shape. Compiled, the kernel's `out[0]` on the empty result is an
+    # unchecked index and the call returns the empty array. Interpreted, numpy bounds
+    # checks the same line and raises. The compiled path therefore really does index
+    # past the allocation, which reading the source could only suggest.
     with use_backend(Backend.PYTHON):
-        assert _tabulate_Bspline_Bezier_1D_extraction_impl(knots, 2, tol).shape == (0, 3, 3)
+        if the_jit_is_disabled():
+            with pytest.raises(IndexError):
+                _tabulate_Bspline_Bezier_1D_extraction_impl(knots, 2, tol)
+        else:
+            assert _tabulate_Bspline_Bezier_1D_extraction_impl(knots, 2, tol).shape == (0, 3, 3)
 
 
 def test_the_builder_binding_refuses_a_wrongly_shaped_out(cpp_backend: None) -> None:

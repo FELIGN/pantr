@@ -71,6 +71,12 @@ left to be met. Such a vector is unreachable through the public API, since
 :class:`~pantr.bspline.BsplineSpace1D` refuses it at construction; only the private
 Layer 2 helper accepts one.
 
+That the index really goes past the allocation is measured rather than read off the
+source: interpreted, where numpy bounds checks, the same line raises
+``IndexError``, while the compiled kernel returns the empty array.
+``tests/parity/test_bspline_bezier_extraction.py`` pins both symptoms, gated on the
+configuration, because it is the interpreted one that proves the compiled one.
+
 The batch kernels are the one place the two differ in kind rather than in bits: the
 oracle's are ``parallel=True`` over cells and the C++ loops. Each cell writes only
 its own rows and there is no reduction, so the answer cannot move with the thread
