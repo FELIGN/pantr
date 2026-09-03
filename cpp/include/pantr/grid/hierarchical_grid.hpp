@@ -1146,6 +1146,15 @@ class HierarchicalGrid : public GridBase<HierarchicalGrid<T>> {
     ///       vertex equals both. It is exact whenever every intermediate is representable,
     ///       which covers the usual dyadic factor on dyadic breakpoints.
     ///
+    ///       **Stated hypothesis: coordinates are normal, not subnormal.** The bound is
+    ///       a product of relative factors with the magnitudes, so below roughly
+    ///       `2e-308` both of its terms underflow to exactly zero while the difference
+    ///       they bound is still a nonzero subnormal -- the expression stops
+    ///       implementing the inequality even though the inequality still holds in the
+    ///       reals. Measured: breakpoints near `1e-320` produce a zero bound against a
+    ///       nonzero gap. Nothing excludes that domain, so it is recorded as a
+    ///       hypothesis rather than a guarantee.
+    ///
     /// \warning Materialises `num_cells() * 2 ** ndim() * ndim()` integers before
     ///          deduplication, so a large 3D hierarchy costs several times `conn` in peak
     ///          memory.

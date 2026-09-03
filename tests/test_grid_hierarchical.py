@@ -32,6 +32,7 @@ from pantr.grid._hierarchical_grid import (
     _rect_intersect,
     _try_merge,
 )
+from tests._parity_harness import unit_roundoff
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -1771,8 +1772,13 @@ class TestBoundaryFacets:
 # Leaf-cell mesh export
 # ──────────────────────────────────────────────────────────────────────────────
 
-_U = np.finfo(np.float64).eps / 2.0
-"""Half an ulp: the relative error of one correctly rounded ``float64`` operation."""
+_U = unit_roundoff(np.float64)
+"""Half an ulp: the relative error of one correctly rounded ``float64`` operation.
+
+Taken from :func:`tests._parity_harness.unit_roundoff` rather than spelled out
+again. The quantity is the project's, not this file's, and two spellings of one
+bound drift apart the moment either is corrected.
+"""
 
 
 def _gamma(m: float) -> float:
