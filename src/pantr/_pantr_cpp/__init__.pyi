@@ -112,6 +112,10 @@ from ._bspline import apply_kron_MT_K_M_many_3d as apply_kron_MT_K_M_many_3d
 from ._bspline import apply_kron_T_1d as apply_kron_T_1d
 from ._bspline import apply_kron_T_2d as apply_kron_T_2d
 from ._bspline import apply_kron_T_3d as apply_kron_T_3d
+from ._bspline import bezier_extraction_1d as bezier_extraction_1d
+from ._bspline import (
+    bezier_structural_identity_mask as bezier_structural_identity_mask,
+)
 from ._geometry import AABB as AABB
 from ._grid import BVH as BVH
 from ._grid import CellTags as CellTags

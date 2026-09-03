@@ -95,3 +95,12 @@ void register_bspline_types(nanobind::module_& m);
 /// `BsplineSpace`, which is FELIGN/pantr#396's, so the type's own registration
 /// arrives with it. See design/extraction_port.md.
 void register_bspline_extraction(nanobind::module_& m);
+
+/// Register `pantr.bspline`'s Bézier extraction operator builder and its mask.
+///
+/// Separate from `register_bspline_extraction` because the two are separate ports
+/// with separate parity claims: that one *applies* an operator, this one *builds*
+/// it from a knot vector. Only the Bézier target is here -- Lagrange follows in its
+/// own slice, and cardinal waits on the interval scan `bspline/space_1d.hpp`
+/// excludes. See design/extraction_port.md.
+void register_bspline_extraction_operators(nanobind::module_& m);
