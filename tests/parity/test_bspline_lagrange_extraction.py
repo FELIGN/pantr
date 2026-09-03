@@ -18,17 +18,18 @@ backends do differ, by one unit of roundoff at degree 3 and above and not at all
 below; :func:`test_the_two_backends_still_differ_somewhere` is the guard that keeps
 the bound from silently becoming a comparison against zero.
 
-**What a bounded claim cannot see here, and where it is checked instead.** The bound
-has to admit the two summation orders' own disagreement, and measured over the shipped
-table at ``float32`` that disagreement is **exactly one unit in the last place** -- the
-same size as the gap between accumulating the contraction in ``float32`` and in
-``float64``. The two are not separable by any bound, and not for want of a tighter one:
-the contraction sums non-negative terms, so no cancellation can make the width gap
-dominate. So nothing in this file would fail if the C++ accumulated in ``double``, which
-``design/backend_parity.md`` Rule 9 forbids. Verified by mutation, not assumed.
-``cpp/tests/test_bspline_extraction.cpp``'s ``check_the_accumulator_is_the_storage_type``
-is where the width is pinned, on the C++ side where there is no BLAS and both operands
-can be chosen.
+**What a bounded claim cannot see here, and where it is checked instead.** Nothing in
+this file would fail if the C++ accumulated the contraction in ``double``, which
+``design/backend_parity.md`` Rule 9 forbids. That is not a hole in the bound and no
+constant would close it: the bound is derived from each backend's forward error against
+the exact product, and a wider accumulator has a **smaller** forward error, so it lies
+inside the same bound by construction. Rule 8 records the general form -- "a different
+but valid algorithm passing is not a failure of the bound". Measured alongside the
+argument: mutating the accumulator leaves all cases green, and the gap it opens at
+``float32`` is one unit in the last place, the same size as the two backends' own
+disagreement. ``cpp/tests/test_bspline_extraction.cpp``'s
+``check_the_accumulator_is_the_storage_type`` is where the width is pinned, on the C++
+side where there is no BLAS and both operands can be chosen.
 
 The exception is an **identity** change of basis, which happens at degree 1 for the
 equispaced, Gauss-Lobatto-Legendre and second-kind Chebyshev families. Every term is
@@ -136,6 +137,7 @@ import pytest
 
 from pantr._backend import Backend, use_backend
 from pantr.basis import LagrangeVariant
+from pantr.basis._basis_lagrange import _get_lagrange_points
 from pantr.bspline import BsplineSpace1D
 from pantr.bspline._bspline_extraction import (
     _tabulate_Bspline_Bezier_1D_extraction_impl,
@@ -376,6 +378,29 @@ def _companion(bezier: npt.NDArray[Any], matrix: npt.NDArray[Any]) -> npt.NDArra
     )
 
 
+def _column_sums(operators: npt.NDArray[Any]) -> npt.NDArray[np.float64]:
+    """Sum each operator's columns, in ``float64`` whatever the operators are.
+
+    The cast comes **before** the sum, and that is the whole point: ``ndarray.sum``
+    accumulates in the array's own dtype, so summing a ``float32`` operator and then
+    casting would put ``gamma^{float32}_{degree}`` of this test's own arithmetic into
+    a quantity meant to measure the operator's. Casting first is exact and leaves only
+    ``gamma^{float64}_{degree}``, which is what :func:`_column_sum_tolerance` charges.
+
+    One spelling for all three call sites, so the bound and the measurement cannot
+    disagree about which arithmetic the sum lives in -- ``design/backend_parity.md``
+    Rule 5's "name the arithmetic", applied to a test rather than to a kernel.
+
+    Args:
+        operators (npt.NDArray[Any]): The ``(n_intervals, degree+1, degree+1)``
+            operators.
+
+    Returns:
+        npt.NDArray[np.float64]: One column sum per ``(interval, column)``.
+    """
+    return np.asarray(operators.astype(np.float64).sum(axis=1), dtype=np.float64)
+
+
 def _gamma(roundings: int, dtype: npt.DTypeLike) -> float:
     """Higham's ``gamma_m = m u / (1 - m u)`` for a given rounding count.
 
@@ -436,8 +461,17 @@ def _product_claim(
     every Bézier entry lies in ``[0, 1]``. That difference reaches an output element
     weighted by ``sum_k |L[k,j]|``, and the contraction itself may fuse, so its own
     budget rises from one rounding per term to three. Both terms are folded into a
-    single claim by monotonicity of ``gamma``: charging the longer chain to both and
-    adding the two amplifications is an upper bound on charging each its own.
+    single claim by monotonicity of ``gamma``: charging the **longer** of the two
+    chains to both and adding the two amplifications is an upper bound on charging
+    each its own. The max rather than the sum, because the max is already enough and
+    is the tighter of the two.
+
+    **This branch is not reasoned about, it is run.** ``design/backend_parity.md``
+    Rule 11 records the sibling Bézier port shipping a fused branch that called
+    :func:`bounded_parity` with an argument it does not take, green over 133 tests
+    because nothing reached it. So this one was exercised against an extension built
+    at ``-march=native``, where ``contraction_may_fuse()`` is true, and the result is
+    recorded in the PR that added it rather than assumed here.
 
     Args:
         case (_Case): The knot vector.
@@ -465,13 +499,19 @@ def _product_claim(
         "(pp. 62-64). The accumulator is the storage format on both sides -- Rule 9, and "
         "sgemm accumulates in float32 -- so nothing narrows on the store and "
         "storage_per_stage is zero. The amplification is the absolute-value companion "
-        "|C| @ |L|, elementwise, which Rule 10 prescribes over max|M| max|v|"
+        "|C| @ |L|, elementwise, which Rule 10 prescribes over max|M| max|v|. The "
+        "hypothesis this rests on: the Bezier halves agree bit for bit, which "
+        "tests/parity/test_bspline_bezier_extraction.py claims and which "
+        "contraction_may_fuse() is the one condition known to break, so the whole "
+        "difference here is the contraction's"
     )
     why_tail = ""
 
     if contraction_may_fuse():
-        insertion = _insertion_stages(case, dtype)
-        terms += insertion
+        # The longer of the two chains, charged to both, rather than their sum: gamma is
+        # monotone, so gamma_{3S} and gamma_{3n} are each at most gamma_{3 max(S, n)},
+        # and the max is the tighter of the two valid choices.
+        terms = max(terms, _insertion_stages(case, dtype))
         per_stage = 3
         column = np.abs(matrix.astype(np.float64)).sum(axis=0)
         amplification = amplification + np.broadcast_to(column, amplification.shape)
@@ -481,8 +521,11 @@ def _product_claim(
             "each. The Bezier halves may then differ by gamma over the insertion chain, "
             "amplified by one since every Bezier entry lies in [0, 1], and that reaches an "
             "output element weighted by sum_k |L[k,j]|, which is the second amplification "
-            "term. The two stages are folded into one claim by charging the longer chain to "
-            "both, which is an upper bound because gamma is monotone"
+            "term. The two stages are folded into one claim by charging the longer of the "
+            "two chains to both and adding their amplifications, which is an upper bound "
+            "because gamma is monotone. The companion is formed from the oracle's Bezier "
+            "operator rather than the exact one; the difference is second order in u and "
+            "is absorbed by the budget"
         )
 
     if extra_absolute is not None:
@@ -710,11 +753,13 @@ def test_matches_the_exact_rational_operators(
         derived_accuracy(
             bound=np.zeros_like(exact, dtype=np.float64),
             why=(
-                "the Bezier entries of this vector are halves and the equispaced degree-2 "
-                "Lagrange-to-Bernstein matrix is [[1, 1/4, 0], [0, 1/2, 0], [0, 1/4, 1]], so "
-                "every product and every partial sum of the contraction is a binary rational "
-                "of a few bits, exactly representable in both storage formats. No rounding "
-                "occurs, so the bound is zero rather than derived from one"
+                "the Bezier entries of this vector are halves at degree 2 and zeros and "
+                "ones at degree 1, and the equispaced Lagrange-to-Bernstein matrix is "
+                "[[1, 1/4, 0], [0, 1/2, 0], [0, 1/4, 1]] at degree 2 and the identity at "
+                "degree 1. So every product and every partial sum of the contraction is a "
+                "binary rational of a few bits, exactly representable in both storage "
+                "formats. No rounding occurs, so the bound is zero rather than derived "
+                "from one"
             ),
         ),
         context=f"{case.label} in {np.dtype(dtype).name} on {backend.name}",
@@ -769,9 +814,15 @@ def _column_sum_tolerance(
     * **The contraction.** Each ``A[i,j]`` is within ``gamma_{degree+1}`` of the exact
       product of the stored operands, times the companion; summed over ``i`` that is
       ``gamma_{degree+1}`` times the companion's own column sum.
-    * **The two sums this test forms**, both in ``float64`` over ``degree + 1``
-      values: one over ``A[:, j]`` and one over ``L[:, j]``, each costing
-      ``gamma^{float64}_{degree}`` times its own absolute column sum.
+    * **The two sums this test forms.** Both run in ``float64`` over ``degree + 1``
+      values and each costs ``gamma^{float64}_{degree}`` times its own absolute column
+      sum. That both are ``float64`` is a property of :func:`_column_sums` and of the
+      ``astype`` in front of the matrix's sum, not something to assume:
+      :meth:`numpy.ndarray.sum` accumulates in the array's own dtype, so a cast placed
+      *after* the sum would leave a ``float32`` accumulation charged at ``float64``
+      rates and understate this term by eight orders of magnitude. The contraction
+      term above happens to dominate the shortfall for every degree, by monotonicity
+      of ``gamma``, which is exactly what would have kept the error invisible.
 
     No term is a fitted constant and none is a truncation: ``gamma`` is the closed
     form throughout, because the Bézier chain grows with the element count.
@@ -795,7 +846,7 @@ def _column_sum_tolerance(
 
     bezier_defect = _column_sum_bound(case, dtype) * column_of_matrix
     contraction = _gamma(case.degree + 1, dtype) * column_of_companion
-    outer = _gamma(max(case.degree, 1), np.float64) * (column_of_companion + column_of_matrix)
+    outer = _gamma(case.degree, np.float64) * (column_of_companion + column_of_matrix)
     return np.asarray(bezier_defect + contraction + outer, dtype=np.float64)
 
 
@@ -840,7 +891,7 @@ def test_the_columns_sum_to_the_matrix_columns(
         "a Lagrange operator entry is negative, though both factors are non-negative"
     )
 
-    column_sums = operators.sum(axis=1).astype(np.float64)
+    column_sums = _column_sums(operators)
     target = np.broadcast_to(np.abs(matrix.astype(np.float64)).sum(axis=0), column_sums.shape)
     assert_accuracy(
         column_sums,
@@ -884,7 +935,7 @@ def test_the_column_sum_check_is_not_vacuous(dtype: npt.DTypeLike) -> None:
             operators = _build_kernel(case, dtype, matrix, Backend.PYTHON)
             companion = _companion(_bezier(case, dtype), matrix)
             target = np.abs(matrix.astype(np.float64)).sum(axis=0)
-            deviation = np.abs(operators.sum(axis=1).astype(np.float64) - target)
+            deviation = np.abs(_column_sums(operators) - target)
             bound = _column_sum_tolerance(case, dtype, matrix, companion)
             assert np.all(deviation <= bound), f"{case.label} {variant.name}: bound exceeded"
             worst = max(worst, float(deviation.max(initial=0.0)))
@@ -1055,6 +1106,77 @@ def test_degree_zero_is_refused_by_both_backends(backend: Backend) -> None:
     with use_backend(backend):
         mask = _lagrange_structural_identity_mask(space, LagrangeVariant.EQUISPACES)
     assert mask.tolist() == [True]
+
+
+@pytest.mark.parametrize("dtype", DTYPES)
+@pytest.mark.parametrize("variant", _VARIANTS, ids=[v.name for v in _VARIANTS])
+def test_the_oracles_in_place_product_matches_a_non_aliased_one(
+    variant: LagrangeVariant, dtype: npt.DTypeLike
+) -> None:
+    """The Python kernel's ``np.matmul(out, L, out=out)`` is not corrupted by aliasing.
+
+    The oracle forms the product in place, with ``out`` as both the first operand and
+    the destination. That is safe only because :func:`numpy.matmul` detects the overlap
+    and buffers -- a claim about a third party, across a numpy range this project's own
+    ``CLAUDE.md`` records as behaving differently between local and CI. So it is checked
+    rather than asserted in a comment: the in-place answer must equal the one computed
+    into a fresh array, bit for bit. A numpy that stopped buffering would corrupt the
+    later rows from the earlier ones and fail here.
+
+    The call is pre-existing -- the port relocated it, it did not introduce it -- so this
+    also guards the oracle rather than only the port.
+
+    Args:
+        variant (LagrangeVariant): The node family.
+        dtype (npt.DTypeLike): Storage format.
+    """
+    for case in _CASES:
+        matrix = _matrix(case.degree, variant, dtype)
+        bezier = _bezier(case, dtype)
+        aliased = bezier.copy()
+        np.matmul(aliased, matrix, out=aliased)
+        separate = np.matmul(bezier, matrix)
+        assert aliased.tobytes() == separate.tobytes(), (
+            f"{case.label} {variant.name} in {np.dtype(dtype).name}: the in-place matmul "
+            "differs from the non-aliased one, so numpy is no longer buffering the "
+            "overlap the oracle relies on"
+        )
+
+
+@pytest.mark.parametrize("dtype", DTYPES)
+@pytest.mark.parametrize("variant", _VARIANTS, ids=[v.name for v in _VARIANTS])
+def test_every_node_family_is_ascending_inside_the_unit_interval(
+    variant: LagrangeVariant, dtype: npt.DTypeLike
+) -> None:
+    """The hypothesis both structural claims rest on, checked rather than reasoned.
+
+    Two claims in this port need it and neither could survive without it. That the
+    Lagrange-to-Bernstein matrix is entrywise non-negative and column-stochastic follows
+    from the nodes lying in ``[0, 1]``, where the Bernstein basis is; that is what makes
+    the Lagrange operator column-stochastic and the amplification tight. And the
+    soundness of the mask's all-false branch -- written out beside
+    ``lagrange_structural_identity_mask`` in ``cpp/include/pantr/bspline/extraction.hpp``
+    -- ends by ruling out the reversal permutation, which needs the nodes to be
+    **ascending** rather than merely inside the interval.
+
+    Swept past the degrees any table here uses, since a family that reordered or
+    overshot at high degree would break both claims silently.
+
+    Args:
+        variant (LagrangeVariant): The node family.
+        dtype (npt.DTypeLike): Storage format.
+    """
+    for n_pts in range(2, 40):
+        nodes = _get_lagrange_points(variant, n_pts, np.dtype(dtype))
+        assert np.all(np.diff(nodes) > 0), (
+            f"{variant.name} at {n_pts} nodes is not strictly ascending, so the mask's "
+            "all-false branch is no longer sound"
+        )
+        assert nodes.min() >= 0.0 and nodes.max() <= 1.0, (
+            f"{variant.name} at {n_pts} nodes leaves [0, 1], so the Bernstein basis is "
+            "not non-negative there and neither the amplification nor the "
+            "column-stochasticity claim follows"
+        )
 
 
 def test_the_claim_is_not_vacuous(cpp_backend: None) -> None:
@@ -1323,7 +1445,7 @@ def test_the_claim_holds_over_a_sweep_ten_times_the_shipped_one(
 
         companion = _companion(bezier, matrix)
         target = np.abs(matrix.astype(np.float64)).sum(axis=0)
-        deviation = np.abs(actual.sum(axis=1).astype(np.float64) - target)
+        deviation = np.abs(_column_sums(actual) - target)
         bound = _column_sum_tolerance(case, dtype, matrix, companion)
         assert np.all(deviation <= bound), f"{context}: a column sum missed the bound"
         worst_column = max(worst_column, float(deviation.max(initial=0.0)))
