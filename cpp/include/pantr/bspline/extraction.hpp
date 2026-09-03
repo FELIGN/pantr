@@ -239,6 +239,15 @@ void bezier_extraction_1d(std::span<const T> knots, std::int64_t degree, double 
 /// are bounded rather than bitwise here, which is the one place the Lagrange target
 /// differs in kind from the Bézier one.
 ///
+/// **The width is checked here rather than by the parity suite**, and that is forced.
+/// A bounded claim must admit the two summation orders' own disagreement, which at
+/// `float32` is one unit in the last place -- the same size as the narrow-versus-wide
+/// gap, and not separable from it, since a contraction of non-negative terms has no
+/// cancellation to make the width gap dominate. Measured by mutating this line to a
+/// `double` accumulator: the whole Python parity file still passes.
+/// `cpp/tests/test_bspline_extraction.cpp`'s `check_the_accumulator_is_the_storage_type`
+/// is the test that fails instead.
+///
 /// \tparam T Scalar type of the knots, of the matrix and of the operators.
 /// \param knots A non-decreasing knot vector of at least `2 * degree + 2` entries.
 /// \param degree The polynomial degree, non-negative.

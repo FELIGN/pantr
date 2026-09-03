@@ -595,6 +595,17 @@ CPython refuses it outright (`too many data types for 'Both': {<class 'str'>, <c
   change-of-basis matrices themselves differ only at `float32` for the second-kind Chebyshev
   family, whose nodes dispatch. The last one is why the end-to-end parity test measures the
   matrix gap instead of assuming it away.
+- **Found by mutating the port, and it generalises past this slice:** a *bounded* parity
+  claim cannot enforce Rule 9's accumulation width where the kernel's own backend
+  disagreement is the same size as the narrow-versus-wide gap. For the Lagrange
+  contraction both are one unit in the last place at `float32`, and they are not separable
+  by a tighter bound, because a sum of non-negative terms has no cancellation to make the
+  width gap dominate. Widening the C++ accumulator to `double` leaves the whole Python
+  parity file green. The width is therefore pinned on the C++ side instead, by a case whose
+  terms are each exactly half an ulp of the running total. **The same gap applies to every
+  bounded claim in the port** -- `change_basis`'s five solving builders above all -- and
+  nothing there pins a width either; F3's warning that a width change "would surface as a
+  `float32` parity failure" holds only for a *bitwise* claim.
 - **Deliberately not claimed:** an accuracy bound for the Lagrange operator against the
   B-spline basis tabulated at the nodes, above degree 2. That identity is the target's defining
   property and it is checked, but only on the dyadic family where both routes are exact.
