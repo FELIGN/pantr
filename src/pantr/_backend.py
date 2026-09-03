@@ -94,10 +94,10 @@ which those kernels are C++ and everything else is unchanged.
   twelve batch Numba kernels. Nothing else in the module's *kernels* is ported; its
   two ported **types** are listed with the others below.
 
-**Eleven types have moved as well, and that is a different kind of entry.** A
+**Twelve types have moved as well, and that is a different kind of entry.** A
 catalogue decides which code computes; a ported type decides which object holds the
 state, so under ``PANTR_BACKEND=cpp`` the object's data lives in C++ and the Python
-class is a wrapper around it. The eleven, by the module that exports them:
+class is a wrapper around it. The twelve, by the module that exports them:
 
 * :mod:`pantr.geometry` -- :class:`~pantr.geometry.AABB`.
 * :mod:`pantr.transform` -- :class:`~pantr.transform.AffineTransform`.
@@ -105,7 +105,8 @@ class is a wrapper around it. The eleven, by the module that exports them:
 * :mod:`pantr.bezier` -- :class:`~pantr.bezier.Bezier`.
 * :mod:`pantr.grid` -- :class:`~pantr.grid.TensorProductGrid`,
   :class:`~pantr.grid.BVH`, :class:`~pantr.grid.CellTags`,
-  :class:`~pantr.grid.FacetTags` and :class:`~pantr.grid.Partition`.
+  :class:`~pantr.grid.FacetTags`, :class:`~pantr.grid.Partition` and
+  :class:`~pantr.grid.HierarchicalGrid`.
 * :mod:`pantr.bspline` -- :class:`~pantr.bspline.BsplineSpace1D` and
   :class:`~pantr.bspline.BsplineSpace`.
 
@@ -119,11 +120,11 @@ other. An earlier version of this paragraph explained the mismatch by saying
 :mod:`pantr.bspline` had no ported kernels, which was true when it was written and
 stopped being true one slice later.
 
-Two domain types in the geometry, transform, quad and grid modules have **not**
-moved: :class:`pantr.grid.HierarchicalGrid`, which is the Python implementation under
-either backend until its own ticket, and :class:`pantr.quad.PointsLattice`, which
-``design/cross_backend_types.md`` rules out of the port with four recorded reasons --
-the first pending, the second permanent. The rest of what those modules export is not
+One domain type in the geometry, transform, quad and grid modules has **not** moved:
+:class:`pantr.quad.PointsLattice`, which ``design/cross_backend_types.md`` rules out
+of the port with four recorded reasons -- the first pending, the second permanent.
+:class:`pantr.grid.HierarchicalGrid` was the other one until its own ticket landed,
+and is now in the list above. The rest of what those modules export is not
 a candidate either way -- ``Grid`` is a :class:`typing.Protocol` and
 ``GridRestriction`` is a result record.
 
