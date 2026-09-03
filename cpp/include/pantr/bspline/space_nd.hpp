@@ -82,7 +82,7 @@
 ///    admits `BsplineSpace([])` -- pinned by
 ///    `tests/test_bspline_space.py::test_empty_spaces_list` -- so this does too. The
 ///    empty products are 1, which is the empty tensor product's own convention and
-///    what `numpy.prod(())` returns.
+///    what the oracle's own `math.prod(())` returns.
 ///  - **`tolerance()` refuses a dimensionless space with the oracle's own message**,
 ///    character for character, as every other refusal in this port does. That is
 ///    worth a sentence because the oracle's message was *made* deliberate for it:
@@ -132,13 +132,15 @@ namespace detail {
 
 /// The product of a sequence of non-negative counts, refusing an overflow.
 ///
-/// A tensor-product total is a product of per-direction counts, and the oracle
-/// forms it with `numpy.prod` over an `int64` tuple, which wraps. Wrapping is not
-/// available here -- signed overflow is undefined behaviour, and the `gcc-debug`
-/// preset carries `-fno-sanitize-recover=undefined` -- and the input is reachable
-/// rather than hypothetical: see the parity note in the file comment.
+/// A tensor-product total is a product of per-direction counts. The oracle forms it
+/// with `math.prod`, whose Python integers are arbitrary-precision, so it returns the
+/// exact value and never wraps. Wrapping is not available here either -- signed
+/// overflow is undefined behaviour, and the `gcc-debug` preset carries
+/// `-fno-sanitize-recover=undefined` -- so this refuses instead, which is the one
+/// deliberate divergence from the oracle. The input is reachable rather than
+/// hypothetical: see the parity note in the file comment.
 ///
-/// The empty product is 1, matching `numpy.prod(())`.
+/// The empty product is 1, matching `math.prod(())`.
 ///
 /// **Non-negative counts are a trusted precondition, not a checked one**, which is
 /// the one place this header departs from its own "validate rather than assert"

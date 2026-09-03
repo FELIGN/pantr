@@ -22,10 +22,11 @@ an argument rather than observations that happened to hold:
 Both rest on the directions themselves agreeing bitwise, which
 ``tests/parity/test_bspline_space_1d.py`` claims and pins independently. That is the
 whole of the nD derivation: exact integer arithmetic and exact selection over inputs
-that are already equal. ``design/backend_parity.md`` Rule 8 -- a parity claim is only
-defined where the quantity has digits -- is satisfied trivially rather than narrowly,
-because nothing here loses a digit; and ``CLAUDE.md``'s determinism rule licenses
-bit-identity for exactly this case, where finite precision does not bite.
+that are already equal. ``design/backend_parity.md`` Rule 8 -- whose concern is a bound
+as large as the values it compares -- **does not bite** here, because the bound is zero
+and nothing loses a digit. The authority that licenses bit-identity as the criterion is
+``CLAUDE.md``'s determinism rule alone, for exactly this case, where finite precision
+does not bite.
 
 ## Why every multi-direction case is asymmetric
 
@@ -61,7 +62,13 @@ implementation: they compare the aggregate against the univariate type, which is
 ported and pinned separately, so a reduction that read the wrong axis or dropped a
 direction fails them.
 
-## Rule 12
+## Rule 12, as ``bspline_ownership_lifetime.md`` extends it
+
+``design/backend_parity.md`` Rule 12 enumerates how ``NUMBA_DISABLE_JIT=1`` changes the
+oracle. What governs the gating below is that rule's *general form*, which
+``design/bspline_ownership_lifetime.md`` extends to this case in its note on
+``Backend.PYTHON`` being the process default: the interpreted path is a different
+object, so a test of the binding must demand the binding.
 
 Every test that says something about the *binding* takes the ``cpp_backend`` fixture,
 whose ``demand_cpp_backend`` is a skip-or-fail rather than a silent skip. The tests
@@ -807,10 +814,11 @@ def test_the_bitwise_claim_holds_over_a_ten_times_sweep(cpp_backend: None) -> No
     The bound is **zero**: every quantity is an exact integer or an unmodified copy or
     selection of a value the two backends already agree on bit for bit, so the sweep
     reports a differing-bit count rather than a margin, and the count must be zero.
-    ``design/backend_parity.md`` Rule 8 is what makes that statable -- the claim is
-    defined because nothing here loses a digit -- and ``CLAUDE.md``'s determinism rule
-    is what licenses bit-identity as the criterion rather than a derived tolerance,
-    since finite precision does not bite on a count, an index or a copied value.
+    ``design/backend_parity.md`` Rule 8 **does not bite** -- its concern, a bound as
+    large as the values it compares, cannot arise where the bound is zero -- and
+    ``CLAUDE.md``'s determinism rule is what licenses bit-identity as the criterion
+    rather than a derived tolerance, since finite precision does not bite on a count,
+    an index or a copied value.
 
     Two vacuity guards, because a sweep that agrees on nothing interesting agrees
     trivially: the quantities compared must actually **vary** across the sweep, and the

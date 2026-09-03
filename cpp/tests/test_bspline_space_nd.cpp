@@ -56,12 +56,13 @@
 /// returns the correct value often enough that the obvious version of this test
 /// passes on a broken design.
 ///
-/// **`check_the_totals_refuse_an_overflow`.** `numpy.prod` over an `int64` tuple
-/// wraps; signed overflow in C++ is undefined, and the `gcc-debug` preset carries
-/// `-fno-sanitize-recover=undefined`, so a wrap here would abort the sanitizer leg
-/// on an input that is reachable rather than hypothetical. The guard is asserted
-/// through `detail::checked_product` directly, because reaching it through a space
-/// would need three directions of 2.1e6 basis functions and about 50 MB of knots.
+/// **`check_the_totals_refuse_an_overflow`.** The oracle's `math.prod` returns the
+/// exact integer and never wraps; signed overflow in C++ is undefined, and the
+/// `gcc-debug` preset carries `-fno-sanitize-recover=undefined`, so a wrap here
+/// would abort the sanitizer leg on an input that is reachable rather than
+/// hypothetical. The guard is asserted through `detail::checked_product` directly,
+/// because reaching it through a space would need three directions of 2.1e6 basis
+/// functions and about 50 MB of knots.
 ///
 /// **`check_the_tolerance_stays_a_double_at_float_storage`.** The tolerance is a
 /// `double` at every storage width by design, and on a knot vector whose scale is
@@ -205,7 +206,8 @@ void check_one_direction() {
 ///
 /// `tests/test_bspline_space.py::TestBsplineSpaceEdgeCases::test_empty_spaces_list`
 /// pins it on the Python side. The empty products are 1, which is the empty tensor
-/// product's own convention and what `numpy.prod(())` returns; `all(())` is `true`.
+/// product's own convention and what the oracle's own `math.prod(())` returns;
+/// `all(())` is `true`.
 /// The tolerance is the one thing with no answer, so it refuses.
 void check_no_directions() {
     const BsplineSpace<double> s(std::vector<std::shared_ptr<const BsplineSpace1D<double>>>{});
@@ -502,7 +504,8 @@ void check_refusals() {
 /// A tensor-product total that would not fit in an `int64` is refused, not wrapped.
 ///
 /// Asserted through the helper rather than through a space; see the file comment for
-/// why, and for why wrapping is not an option here even though the oracle wraps.
+/// why, and for why wrapping is not an option here even though the oracle never
+/// wraps -- it uses `math.prod`, whose Python integers are arbitrary-precision.
 void check_the_totals_refuse_an_overflow() {
     using pantr::bspline::detail::checked_product;
     constexpr std::int64_t kMax = std::numeric_limits<std::int64_t>::max();
