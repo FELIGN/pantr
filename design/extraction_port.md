@@ -505,6 +505,16 @@ only ever comparing zero against zero. Case 2 must assert the observed error is 
     second-kind Chebyshev nodes -- is the exception and falls back to the Bézier claim.
 
   **Cardinal still waits** on the interval scan.
+
+  The fused branch of the Lagrange claim was **run, not reasoned about**, against an
+  extension built at `-march=x86-64-v3` -- the target `design/simd.md` schedules, and the
+  smallest one that defines `__FP_FAST_FMA`; `-march=native` does not build here, because
+  it turns on AVX512 and Eigen's AVX512 TRSM kernel trips `-Wmaybe-uninitialized` under
+  `PANTR_WERROR`. On that build the extraction files pass in full, including the 10x
+  sweep, and the observed disagreement reaches a few percent of the fused bound. **Twenty-seven
+  parity cases in five other files do fail there** -- basis tabulations, three Bézier
+  files and quad -- which is the pre-existing state that flipping the SIMD target is
+  expected to expose and is not this slice's to fix.
 - **S4.** `SpanwiseElementExtraction` itself: the class-H `space` accessor, the two memos
   `design/bspline_derived_caches.md` assigns here (`ops_1d` DCLP-lazy returning a view of the
   memo, `num_identity_elements` eager), the wrapper, `__reduce__`, and the binding-contract
@@ -596,12 +606,14 @@ CPython refuses it outright (`too many data types for 'Both': {<class 'str'>, <c
   family, whose nodes dispatch. The last one is why the end-to-end parity test measures the
   matrix gap instead of assuming it away.
 - **Found by mutating the port, and it generalises past this slice:** a *bounded* parity
-  claim cannot enforce Rule 9's accumulation width where the kernel's own backend
-  disagreement is the same size as the narrow-versus-wide gap. For the Lagrange
-  contraction both are one unit in the last place at `float32`, and they are not separable
-  by a tighter bound, because a sum of non-negative terms has no cancellation to make the
-  width gap dominate. Widening the C++ accumulator to `double` leaves the whole Python
-  parity file green. The width is therefore pinned on the C++ side instead, by a case whose
+  claim cannot enforce Rule 9's accumulation width **at all**, and the reason is structural
+  rather than a matter of the constant. Such a bound is derived from each backend's forward
+  error against the exact answer; a wider accumulator has a smaller forward error, so it
+  lies inside the bound by construction. That is Rule 8's "a different but valid algorithm
+  passing is not a failure of the bound", read from the other side. Measured to agree with
+  the argument: widening the C++ accumulator to `double` leaves the whole Python parity
+  file green, and the gap it opens at `float32` is one unit in the last place, the same
+  size as the two backends' own disagreement. The width is therefore pinned on the C++ side instead, by a case whose
   terms are each exactly half an ulp of the running total. **The same gap applies to every
   bounded claim in the port** -- `change_basis`'s five solving builders above all -- and
   nothing there pins a width either; F3's warning that a width change "would surface as a

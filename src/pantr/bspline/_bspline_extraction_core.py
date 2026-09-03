@@ -214,9 +214,13 @@ def _tabulate_Bspline_Lagrange_1D_extraction_core(
         ``_tabulate_Bspline_Lagrange_1D_extraction_impl`` instead.
     """
     _tabulate_Bspline_Bezier_1D_extraction_core(knots, degree, tol, out)
-    # In place, and legally so: `numpy.matmul` detects the overlap between `out` and
-    # its own first operand and buffers, which is what the shipped Layer 2 has always
-    # relied on. The C++ twin does the same product over a private copy of the row it
+    # In place, and this relies on `numpy.matmul` buffering the overlap between `out`
+    # and its own first operand rather than reading rows it has already written. That
+    # is a claim about numpy, not about this module, so it is checked rather than
+    # assumed: `tests/parity/test_bspline_lagrange_extraction.py` asserts the in-place
+    # answer equals a non-aliased one, bit for bit. The shipped Layer 2 has always
+    # relied on it; the port relocated the call, it did not introduce the reliance. The
+    # C++ twin needs no such reliance -- it contracts over a private copy of the row it
     # is overwriting.
     np.matmul(out, lagrange_to_bernstein, out=out)
 

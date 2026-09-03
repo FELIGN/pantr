@@ -187,8 +187,12 @@ span_nd<T, 3> prepare_operators(const_knots<T> knots, std::int64_t degree, doubl
 /// behaviour on this side, so it is a refusal rather than an assertion -- the same
 /// kind as the `out` and `multiplicity` checks the file comment lists.
 ///
+/// **Both callers refuse a negative `degree` before reaching this**, which they must:
+/// `degree + 1` is cast to `std::size_t` here, so a negative degree would wrap to an
+/// enormous side and the message would name it.
+///
 /// \param matrix The matrix as supplied.
-/// \param degree The polynomial degree.
+/// \param degree The polynomial degree, already known to be non-negative.
 /// \return A view over the matrix.
 /// \throws nb::value_error If the matrix is not `(degree + 1, degree + 1)`.
 template <class T>
