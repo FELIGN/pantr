@@ -306,6 +306,41 @@ template <Real T>
     return classes;
 }
 
+/// How many of the first `degree + 1` knots are the domain's first knot.
+///
+/// Not the multiplicity of that knot's **class**, and the difference is
+/// load-bearing rather than pedantic: a class is a chain of gaps and may reach
+/// past index `degree` in either direction, while this counts only the knots at
+/// or before the domain's start that sit within `tol` of it. The two disagree on
+/// any vector whose first in-domain knot is repeated -- measured on
+/// `[0, 0.4, 0.5, 0.5, 1, 1.5, 2, 2.5]` at degree 2, where this returns 1 and the
+/// class holds 2 -- so a consumer that wants the number the oracle's
+/// `_get_multiplicity_of_first_knot_in_domain_impl` returns must call this and
+/// not read `BsplineSpace1D::multiplicity_in_domain().front()`.
+///
+/// Differenced in `T` and only then widened, as the oracle's numba expression is;
+/// see the file comment on the two arithmetics.
+///
+/// \param knots A non-decreasing knot vector of at least `degree + 1` entries.
+/// \param degree The polynomial degree, which fixes where the domain starts.
+/// \param tol The absolute parametric tolerance, from `knot_tolerance`.
+/// \return A count in `[1, degree + 1]`; `degree + 1` exactly when the left end is
+///         clamped.
+template <Real T>
+[[nodiscard]] std::int64_t multiplicity_of_first_knot_in_domain(std::span<const T> knots,
+                                                                std::int64_t degree, double tol) {
+    using std::abs;
+    const T first = knots[static_cast<std::size_t>(degree)];
+    std::int64_t multiplicity = 0;
+    for (std::int64_t i = 0; i <= degree; ++i) {
+        const T offset = knots[static_cast<std::size_t>(i)] - first;
+        if (abs(detail::as_double(offset)) <= tol) {
+            ++multiplicity;
+        }
+    }
+    return multiplicity;
+}
+
 /// The number of basis functions a knot vector and degree define.
 ///
 /// In the non-periodic case it is the knot count less the degree less one. In the
@@ -326,18 +361,8 @@ template <Real T>
         return count;
     }
 
-    using std::abs;
-    // The multiplicity of `knots[degree]` among the first `degree + 1` knots.
-    // Differenced in `T`, as the oracle's numba expression is.
-    const T first = knots[static_cast<std::size_t>(degree)];
-    std::int64_t multiplicity = 0;
-    for (std::int64_t i = 0; i <= degree; ++i) {
-        const T offset = knots[static_cast<std::size_t>(i)] - first;
-        if (abs(detail::as_double(offset)) <= tol) {
-            ++multiplicity;
-        }
-    }
-    const std::int64_t regularity = degree - multiplicity;
+    const std::int64_t regularity =
+        degree - multiplicity_of_first_knot_in_domain<T>(knots, degree, tol);
     return count - regularity - 1;
 }
 
