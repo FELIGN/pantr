@@ -34,8 +34,8 @@
 ///
 /// ## What is deliberately not here
 ///
-/// Refinement, coarsening, restriction and the mesh export are not part of this type
-/// yet. The mixin's throwing `restrict` default stands, and the traits bitmask says so.
+/// Refinement, coarsening, restriction and the mesh export live in
+/// `test_grid_hierarchical_refine.cpp`. This file stays the query half's.
 
 #include <algorithm>
 #include <cmath>
@@ -888,19 +888,6 @@ void test_to_string() {
                     refined_2d().to_string());
 }
 
-/// `restrict` is not specialised yet, so the mixin's throwing default must still stand.
-void test_restrict_still_throws() {
-    const Grid g = flat_1d();
-    bool threw = false;
-    try {
-        const Ints ids{0};
-        (void)g.restrict(ids);
-    } catch (const std::logic_error&) {
-        threw = true;
-    }
-    PANTR_CHECK_MSG(threw, "restrict must still be the mixin's throwing default");
-}
-
 /// A hanging interface normal to axis 1 collects only the cells touching that plane.
 ///
 /// Hand-worked on `hanging_axis1_2d`, and confirmed against the oracle: the coarse cell
@@ -1162,6 +1149,5 @@ int main() {
     test_naming_a_clean_level_changes_nothing();
     test_trailing_empty_levels_are_dropped();
     test_to_string();
-    test_restrict_still_throws();
     return pantr::test::summary("test_grid_hierarchical_type");
 }

@@ -4,8 +4,22 @@
 /// The hierarchical grid type: a root tensor-product grid plus a per-level set of
 /// active-leaf rectangles.
 ///
-/// Ports the query half of `src/pantr/grid/_hierarchical_grid.py`, which stays as the
-/// parity oracle. Refinement, coarsening and restriction are not here yet.
+/// Ports `src/pantr/grid/_hierarchical_grid.py`, which stays as the parity oracle:
+/// the query half, then refinement, coarsening and restriction. The leaf-cell mesh
+/// export, the bindings and the Python wrapper are still absent.
+///
+/// ## Every operation returns a new grid, and that is what removes the cache problem
+///
+/// `refine`, `coarsen` and their by-id forms build a fresh grid and leave the receiver
+/// untouched, so nothing here ever invalidates a cache: the result's BVH memo and its
+/// two tag registries start empty, and the receiver's stay valid because its active set
+/// never moved. That is why this type needs no protected `invalidate_caches()` on the
+/// mixin -- see the section below on what the ticket asked for and why it is obsolete.
+///
+/// The paths that change nothing -- `refine` over a region with no active cell,
+/// `refine_cells` with no ids, `coarsen_cells` demoting no complete family -- go through
+/// `rebuilt()` rather than the copy constructor, so a result never aliases its receiver
+/// and never inherits its tags either.
 ///
 /// ## One representation, not two
 ///
@@ -60,6 +74,15 @@
 /// makes for its own cell-count product: a grid that large is unusable on either side,
 /// and raising beats a positive but meaningless count.
 ///
+/// **The `invalidate_caches()` the ticket asked for is obsolete, and is deliberately not
+/// here.** Its premise was that `_rebuild` writes `self._bvh`, `self._cell_tags` and
+/// `self._facet_tags`, which are the base's private slots. That stopped being true when
+/// refinement was made to return a new grid: `grep` for all three names in
+/// `src/pantr/grid/_hierarchical_grid.py` now finds none, and `_rebuild`'s own docstring
+/// says a grid is frozen once it returns. `design/grid_hierarchy_port.md` predicted this
+/// and advised against building the mutator. A protected mutator nothing calls is the
+/// kind of seam that becomes load-bearing by accident.
+///
 /// **A wrong-length `midx` is an error here and a `None` there.** `cell_id` and
 /// `is_active_leaf` throw `std::invalid_argument` where the oracle's `cell_id`
 /// (`_hierarchical_grid.py:1211`) folds a wrong-length index into its "not an active
@@ -70,10 +93,12 @@
 /// badly sized index sees the two backends disagree in kind.
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <limits>
+#include <numeric>
 #include <optional>
 #include <span>
 #include <stdexcept>
@@ -95,21 +120,40 @@ class HierarchicalGrid;
 
 }  // namespace pantr::grid
 
+namespace pantr::grid {
+
+/// Cells named per reason when `HierarchicalGrid::coarsen` refuses a region.
+///
+/// Enough to show the pattern of the offending set while keeping the message readable
+/// when a large region is rejected; the remainder is reported as a count.
+inline constexpr std::int64_t kMaxNamedCells = 6;
+
+/// Region size above which `HierarchicalGrid::coarsen`'s refusal skips naming cells.
+///
+/// The diagnostic materialises three region-shaped masks, so the cap is a memory budget.
+/// A region may legitimately be far larger than the grid is -- level `l` has
+/// `factor ** l` cells per root cell whether or not they exist -- and enumerating cells
+/// that mostly do not exist would help nobody, so past the cap the message reports the
+/// region's extent instead.
+inline constexpr std::int64_t kMaxDiagnosedCells = 1 << 20;
+
+}  // namespace pantr::grid
+
 template <pantr::Real T>
 struct pantr::grid::grid_traits<pantr::grid::HierarchicalGrid<T>> {
     /// The coordinate type.
     using scalar_type = T;
 
-    /// The five defaults this grid replaces.
+    /// The six defaults this grid replaces.
     ///
     /// `cell_level` because a hierarchy has real levels where the generic answer is
-    /// always zero; the other four because the packed descriptor answers them without a
-    /// per-cell or per-facet query. `restrict` is deliberately absent for now, so the
-    /// mixin's throwing default stands; it arrives with refinement.
+    /// always zero; the next four because the packed descriptor answers them without a
+    /// per-cell or per-facet query; and `restrict` because restriction is an optional
+    /// capability that a hierarchy has, so the mixin's throwing default no longer stands.
     static constexpr pantr::grid::Hook hooks =
         pantr::grid::Hook::cell_level | pantr::grid::Hook::boundary_facets
         | pantr::grid::Hook::hanging_neighbors | pantr::grid::Hook::locate_many
-        | pantr::grid::Hook::collect_cell_bounds;
+        | pantr::grid::Hook::collect_cell_bounds | pantr::grid::Hook::restrict;
 };
 
 namespace pantr::grid {
@@ -596,6 +640,415 @@ class HierarchicalGrid : public GridBase<HierarchicalGrid<T>> {
                                     cell_lo, cell_hi);
     }
 
+    /// The root-cell-aligned bounding-box sub-grid spanning `cell_ids`.
+    ///
+    /// The window is the multi-index bounding box **in root-cell coordinates** of the
+    /// root cells holding the requested leaves: a leaf at `(level, midx)` lives in root
+    /// cell `midx[k] / factor[k] ** level`. The sub-grid's root is the matching slice of
+    /// this grid's breakpoints, never re-clamped, and it keeps the same `factor`; its
+    /// active leaves are the per-level intersections of this grid's blocks with the
+    /// window, translated into the window's own coordinates.
+    ///
+    /// Because the window is root-cell-aligned, restricting one deep leaf returns the
+    /// whole leaf tiling of its root cell, with only the requested leaf flagged in
+    /// `in_subset`.
+    ///
+    /// Replaces the mixin's throwing default: restriction is an optional grid capability
+    /// and a hierarchy has it.
+    ///
+    /// \param cell_ids Flat cell identifiers to span; duplicates are ignored.
+    /// \return The windowed sub-grid, its `local_to_global_cell` map and the `in_subset`
+    ///         mask separating requested cells from bounding-box fill.
+    /// \throws std::invalid_argument If `cell_ids` is empty.
+    /// \throws std::out_of_range If any cell id is outside `[0, num_cells())`.
+    /// \throws std::logic_error If a windowed leaf does not map back to an active leaf of
+    ///         this grid. That is an internal invariant, so it should be unreachable; the
+    ///         oracle spells the same check as a bare `assert`, which `-O` deletes.
+    [[nodiscard]] GridRestriction<HierarchicalGrid<T>> restrict(
+        std::span<const std::int64_t> cell_ids) const {
+        if (cell_ids.empty()) {
+            throw std::invalid_argument("restrict: cell_ids must be non-empty.");
+        }
+        const auto d = static_cast<std::size_t>(this->ndim());
+        for (const std::int64_t cid : cell_ids) {
+            if (cid < 0 || cid >= this->num_cells()) {
+                throw std::out_of_range("restrict: cell id out of range [0, "
+                                        + std::to_string(this->num_cells()) + "); got "
+                                        + std::to_string(cid) + ".");
+            }
+        }
+
+        // Root-cell bounding box over the requested leaves.
+        std::vector<std::int64_t> window_lo(root_.cells_per_axis().begin(),
+                                            root_.cells_per_axis().end());
+        std::vector<std::int64_t> window_hi(d, 0);
+        std::vector<std::int64_t> midx(d);
+        for (const std::int64_t cid : cell_ids) {
+            const std::int64_t level = decode(cid, midx);
+            for (std::size_t k = 0; k < d; ++k) {
+                const std::int64_t root_ik = midx[k] / int_pow(factor_[k], level);
+                window_lo[k] = std::min(window_lo[k], root_ik);
+                window_hi[k] = std::max(window_hi[k], root_ik + 1);
+            }
+        }
+
+        std::vector<std::vector<T>> sub_breakpoints(d);
+        for (std::size_t k = 0; k < d; ++k) {
+            const std::span<const T> bp = root_.breakpoints(static_cast<std::int64_t>(k));
+            sub_breakpoints[k].assign(bp.data() + window_lo[k], bp.data() + window_hi[k] + 1);
+        }
+        TensorProductGrid<T> sub_root(sub_breakpoints);
+
+        // Clipping a normalized partition to a window can make two blocks mergeable that
+        // were not, so every level is handed to the merge rather than taken verbatim.
+        const std::int64_t n_levels = max_level() + 1;
+        std::vector<BlockList> sub_blocks;
+        sub_blocks.reserve(static_cast<std::size_t>(n_levels));
+        std::vector<std::int64_t> level_lo(d);
+        std::vector<std::int64_t> level_hi(d);
+        std::vector<std::int64_t> clip_lo(d);
+        std::vector<std::int64_t> clip_hi(d);
+        for (std::int64_t level = 0; level < n_levels; ++level) {
+            for (std::size_t k = 0; k < d; ++k) {
+                const std::int64_t span_k = int_pow(factor_[k], level);
+                level_lo[k] = checked_mul(window_lo[k], span_k);
+                level_hi[k] = checked_mul(window_hi[k], span_k);
+            }
+            const BlockView window{level_lo, level_hi};
+            const BlockList at_level = level_blocks(level);
+            BlockList clipped(this->ndim());
+            for (std::size_t b = 0; b < at_level.size(); ++b) {
+                if (!rect_intersect(at_level[b], window, clip_lo, clip_hi)) {
+                    continue;
+                }
+                for (std::size_t k = 0; k < d; ++k) {
+                    clip_lo[k] -= level_lo[k];
+                    clip_hi[k] -= level_lo[k];
+                }
+                clipped.push_back(BlockView{clip_lo, clip_hi});
+            }
+            sub_blocks.push_back(std::move(clipped));
+        }
+        HierarchicalGrid sub = from_blocks(std::move(sub_root), factor_, std::move(sub_blocks),
+                                           std::nullopt);
+
+        const auto sub_cells = static_cast<std::size_t>(sub.num_cells());
+        std::vector<std::int64_t> local_to_global(sub_cells);
+        std::vector<std::int64_t> sub_midx(d);
+        std::vector<std::int64_t> global_midx(d);
+        for (std::size_t local = 0; local < sub_cells; ++local) {
+            const auto local_cid = static_cast<std::int64_t>(local);
+            const std::int64_t level = sub.decode(local_cid, sub_midx);
+            for (std::size_t k = 0; k < d; ++k) {
+                global_midx[k] = sub_midx[k]
+                                 + checked_mul(window_lo[k], int_pow(factor_[k], level));
+            }
+            const std::optional<std::int64_t> global = encode(level, global_midx);
+            if (!global.has_value()) {
+                throw std::logic_error(
+                    "restrict: a windowed leaf is not an active leaf of the grid it came "
+                    "from, so the two block sets disagree.");
+            }
+            local_to_global[local] = *global;
+        }
+
+        // Membership in the REQUESTED set, which is a strict subset of the window
+        // whenever the request is non-convex or does not fill its root cells. Sorting a
+        // copy keeps the test logarithmic instead of quadratic in the window, exactly as
+        // `TensorProductGrid::restrict` does.
+        std::vector<std::int64_t> requested(cell_ids.begin(), cell_ids.end());
+        std::sort(requested.begin(), requested.end());
+        std::vector<std::uint8_t> in_subset(sub_cells);
+        for (std::size_t local = 0; local < sub_cells; ++local) {
+            in_subset[local] = std::binary_search(requested.begin(), requested.end(),
+                                                  local_to_global[local])
+                                   ? 1U
+                                   : 0U;
+        }
+        return make_restriction(std::move(sub), std::move(local_to_global),
+                                std::move(in_subset));
+    }
+
+    // ----------------------------------------------------------------
+    // Refinement and coarsening
+    // ----------------------------------------------------------------
+
+    /// A new grid with the active part of `[lo, hi)` at `level` promoted to `level + 1`.
+    ///
+    /// This grid is left untouched; write `grid = grid.refine(...)`.
+    ///
+    /// **Union semantics.** Only the currently active portion of `[lo, hi)` is refined,
+    /// so cells already deeper are left alone and overlapping calls safely extend the
+    /// refined region. When the intersection with the active blocks at `level` is empty
+    /// the result is an unrefined copy.
+    ///
+    /// That convenience costs invertibility: promoting only part of a box sends several
+    /// distinct grids to one result, so `refine` is **not injective** and `coarsen` does
+    /// not undo it in general. `coarsen(level, lo, hi)` reverses this call only when
+    /// every cell of `[lo, hi)` was an active leaf at `level` beforehand; otherwise it
+    /// either refuses the box or demotes all of it, children this call never created
+    /// included. Name cells rather than a box on the destroying side where that matters:
+    /// `coarsen_cells` reactivates a parent only when all of its children are named.
+    ///
+    /// The result numbers its cells afresh, so an id read from this grid does not name
+    /// the same cell there; its BVH and its two tag registries start empty, and this
+    /// grid keeps its own.
+    ///
+    /// \param level Level the region lives at, in `[0, max_level()]`.
+    /// \param lo Per-axis start index, inclusive, in level-`level` coordinates.
+    /// \param hi Per-axis end index, exclusive, in level-`level` coordinates.
+    /// \return The refined grid.
+    /// \throws std::invalid_argument If `level` is out of range, `lo` or `hi` is not
+    ///         `ndim()` long, some `lo[k] >= hi[k]`, or `[lo, hi)` leaves the level's
+    ///         domain.
+    /// \throws std::overflow_error If a child index or the new cell count exceeds
+    ///         `int64`; see the file header.
+    [[nodiscard]] HierarchicalGrid refine(std::int64_t level, std::span<const std::int64_t> lo,
+                                          std::span<const std::int64_t> hi) const {
+        check_level(level);
+        check_region(level, lo, hi);
+        const auto d = static_cast<std::size_t>(this->ndim());
+
+        const BlockView region{lo, hi};
+        BlockList kept(this->ndim());
+        BlockList children(this->ndim());
+        std::vector<std::int64_t> cut_lo(d);
+        std::vector<std::int64_t> cut_hi(d);
+        std::vector<std::int64_t> child_lo(d);
+        std::vector<std::int64_t> child_hi(d);
+        const BlockList at_level = level_blocks(level);
+        for (std::size_t b = 0; b < at_level.size(); ++b) {
+            const BlockView block = at_level[b];
+            if (!rect_intersect(block, region, cut_lo, cut_hi)) {
+                kept.push_back(block);
+                continue;
+            }
+            const BlockView cut{cut_lo, cut_hi};
+            peel(block, cut, kept);
+            for (std::size_t k = 0; k < d; ++k) {
+                child_lo[k] = checked_mul(cut_lo[k], factor_[k]);
+                child_hi[k] = checked_mul(cut_hi[k], factor_[k]);
+            }
+            children.push_back(BlockView{child_lo, child_hi});
+        }
+        if (children.empty()) {
+            return rebuilt();  // no active cell in the requested region
+        }
+
+        std::vector<BlockList> levels = all_level_blocks();
+        levels[static_cast<std::size_t>(level)] = std::move(kept);
+        while (static_cast<std::int64_t>(levels.size()) <= level + 1) {
+            levels.emplace_back(this->ndim());
+        }
+        BlockList& finer = levels[static_cast<std::size_t>(level + 1)];
+        for (std::size_t i = 0; i < children.size(); ++i) {
+            finer.push_back(children[i]);
+        }
+        const std::array<std::int64_t, 2> dirty{level, level + 1};
+        return from_blocks(root_, factor_, std::move(levels),
+                           std::span<const std::int64_t>{dirty});
+    }
+
+    /// A new grid with the named cells refined, level by level, by per-level bounding box.
+    ///
+    /// Groups `cell_ids` by level, takes the smallest rectangle containing the cells at
+    /// each level, and applies `refine` once per level from the coarsest. This grid is
+    /// left untouched.
+    ///
+    /// Not the mirror of `coarsen_cells`: refining the bounding box can promote a cell
+    /// the caller never named. That costs nothing, because refining destroys no cell.
+    ///
+    /// \param cell_ids Flat cell ids to refine; repeats are ignored, several levels are
+    ///        handled in one call, and an empty range yields an unrefined copy.
+    /// \return The refined grid.
+    /// \throws std::out_of_range If any id is outside `[0, num_cells())`.
+    /// \throws std::overflow_error If a child index or the new cell count exceeds `int64`.
+    [[nodiscard]] HierarchicalGrid refine_cells(std::span<const std::int64_t> cell_ids) const {
+        const auto d = static_cast<std::size_t>(this->ndim());
+        const auto n_levels = static_cast<std::size_t>(max_level() + 1);
+        std::vector<std::uint8_t> marked(n_levels, 0U);
+        std::vector<std::int64_t> box_lo(n_levels * d, 0);
+        std::vector<std::int64_t> box_hi(n_levels * d, 0);
+        std::vector<std::int64_t> midx(d);
+        for (const std::int64_t cid : cell_ids) {
+            this->check_cid(cid);
+            const auto level = static_cast<std::size_t>(decode(cid, midx));
+            for (std::size_t k = 0; k < d; ++k) {
+                if (marked[level] == 0U) {
+                    box_lo[level * d + k] = midx[k];
+                    box_hi[level * d + k] = midx[k] + 1;
+                } else {
+                    box_lo[level * d + k] = std::min(box_lo[level * d + k], midx[k]);
+                    box_hi[level * d + k] = std::max(box_hi[level * d + k], midx[k] + 1);
+                }
+            }
+            marked[level] = 1U;
+        }
+
+        std::optional<HierarchicalGrid> refined;
+        for (std::size_t level = 0; level < n_levels; ++level) {
+            if (marked[level] == 0U) {
+                continue;
+            }
+            const HierarchicalGrid& current = refined.has_value() ? *refined : *this;
+            HierarchicalGrid next =
+                current.refine(static_cast<std::int64_t>(level),
+                               std::span<const std::int64_t>(box_lo.data() + level * d, d),
+                               std::span<const std::int64_t>(box_hi.data() + level * d, d));
+            refined = std::move(next);
+        }
+        return refined.has_value() ? std::move(*refined) : rebuilt();
+    }
+
+    /// A new grid with `[lo, hi)` demoted from `level + 1` back to `level`.
+    ///
+    /// This grid is left untouched. The level-`level` cells of `[lo, hi)` are reactivated
+    /// and their level-`(level + 1)` children removed, which requires the region to be
+    /// **fully refined to exactly `level + 1`**: every child cell of
+    /// `[lo * factor, hi * factor)` must be an active leaf there. Otherwise the call
+    /// throws and the message names the cells that break it.
+    ///
+    /// The **whole** box is demoted, while `refine` promotes only its active portion. So
+    /// this inverts `refine` only when every cell of `[lo, hi)` was an active leaf at
+    /// `level` before that call; when it was not, this either refuses the box or removes
+    /// children an earlier `refine` created. The opposite order carries no hypothesis:
+    /// coarsening leaves the whole box active at `level`, so `refine(level, lo, hi)`
+    /// always undoes `coarsen(level, lo, hi)`.
+    ///
+    /// The result numbers its cells afresh and its caches start empty, as `refine`'s does.
+    ///
+    /// \param level Level whose cells are reactivated, in `[0, max_level())`.
+    /// \param lo Per-axis start index, inclusive, in level-`level` coordinates.
+    /// \param hi Per-axis end index, exclusive, in level-`level` coordinates.
+    /// \return The coarsened grid.
+    /// \throws std::invalid_argument If `level` is out of range, `lo` or `hi` is not
+    ///         `ndim()` long, some `lo[k] >= hi[k]`, `[lo, hi)` leaves the level's domain,
+    ///         or the region is not fully refined to exactly `level + 1`.
+    /// \throws std::overflow_error If a child index or a cell count exceeds `int64`.
+    [[nodiscard]] HierarchicalGrid coarsen(std::int64_t level, std::span<const std::int64_t> lo,
+                                           std::span<const std::int64_t> hi) const {
+        if (level < 0 || level >= max_level()) {
+            throw std::invalid_argument("level must be in [0, " + std::to_string(max_level())
+                                        + "); got " + std::to_string(level) + ".");
+        }
+        check_region(level, lo, hi);
+        const auto d = static_cast<std::size_t>(this->ndim());
+
+        std::vector<std::int64_t> child_lo(d);
+        std::vector<std::int64_t> child_hi(d);
+        for (std::size_t k = 0; k < d; ++k) {
+            child_lo[k] = checked_mul(lo[k], factor_[k]);
+            child_hi[k] = checked_mul(hi[k], factor_[k]);
+        }
+        const BlockView children{child_lo, child_hi};
+        const std::int64_t wanted = checked_block_size(children);
+
+        std::int64_t covered = 0;
+        BlockList kept(this->ndim());
+        std::vector<std::int64_t> cut_lo(d);
+        std::vector<std::int64_t> cut_hi(d);
+        const BlockList at_finer = level_blocks(level + 1);
+        for (std::size_t b = 0; b < at_finer.size(); ++b) {
+            const BlockView block = at_finer[b];
+            if (!rect_intersect(block, children, cut_lo, cut_hi)) {
+                kept.push_back(block);
+                continue;
+            }
+            const BlockView cut{cut_lo, cut_hi};
+            covered = checked_add(covered, checked_block_size(cut));
+            peel(block, cut, kept);
+        }
+        if (covered != wanted) {
+            throw std::invalid_argument("cannot coarsen [" + tuple_repr(lo) + ", "
+                                        + tuple_repr(hi) + ") at level "
+                                        + std::to_string(level)
+                                        + ": the region is not fully refined to exactly level "
+                                        + std::to_string(level + 1) + "."
+                                        + coarsen_refusal_detail(level, lo, hi));
+        }
+
+        // The order the demoted box is appended in is observable through the greedy
+        // merge, so it goes last, as the oracle appends it.
+        std::vector<BlockList> levels = all_level_blocks();
+        levels[static_cast<std::size_t>(level + 1)] = std::move(kept);
+        levels[static_cast<std::size_t>(level)].push_back(BlockView{lo, hi});
+        const std::array<std::int64_t, 2> dirty{level, level + 1};
+        return from_blocks(root_, factor_, std::move(levels),
+                           std::span<const std::int64_t>{dirty});
+    }
+
+    /// A new grid with every parent demoted whose children are all named.
+    ///
+    /// The route that destroys only what the caller named. `cell_ids` are grouped by
+    /// parent, and a parent is reactivated -- its children removed -- only when **every
+    /// one** of its `prod(factor)` children is both an active leaf and present in
+    /// `cell_ids`. Three cases are therefore skipped silently rather than refused: a
+    /// parent only some of whose children are named, a parent one of whose children is
+    /// refined further, and an id at level 0, which has no parent. A call that demotes
+    /// nothing is not an error, and no cell outside `cell_ids` is ever removed.
+    ///
+    /// Ids spanning several levels are handled in one call, deepest first. That order is
+    /// observable -- reactivated parents are appended in it, the greedy merge turns the
+    /// result into a rectangle partition, and flat ids are handed out block by block --
+    /// so it is fixed rather than incidental. Coarsening does not cascade in any order: a
+    /// cell reborn by this call was not an active leaf when the caller chose its ids, so
+    /// it cannot be among them and its own parent is never complete.
+    ///
+    /// \param cell_ids Flat ids of the active leaves to coarsen away. Repeats and level-0
+    ///        ids are ignored; an empty range, and one that demotes nothing, both yield an
+    ///        uncoarsened copy.
+    /// \return The coarsened grid.
+    /// \throws std::out_of_range If any id is outside `[0, num_cells())`.
+    /// \throws std::overflow_error If a cell count exceeds `int64`.
+    [[nodiscard]] HierarchicalGrid coarsen_cells(std::span<const std::int64_t> cell_ids) const {
+        const auto d = static_cast<std::size_t>(this->ndim());
+        std::vector<std::int64_t> marked;  // (level, midx...) rows, sorted and unique
+        marked.reserve(cell_ids.size() * (d + 1));
+        std::vector<std::int64_t> midx(d);
+        for (const std::int64_t cid : cell_ids) {
+            this->check_cid(cid);
+            const std::int64_t level = decode(cid, midx);
+            marked.push_back(level);
+            marked.insert(marked.end(), midx.begin(), midx.end());
+        }
+        sort_unique_rows(marked, d + 1);
+
+        // Parents, deepest first and then lexicographic, so the outcome does not depend
+        // on the order the ids arrived in.
+        std::vector<std::int64_t> parents;
+        for (std::size_t row = 0; row * (d + 1) < marked.size(); ++row) {
+            const std::int64_t level = marked[row * (d + 1)];
+            if (level < 1) {
+                continue;
+            }
+            parents.push_back(level - 1);
+            for (std::size_t k = 0; k < d; ++k) {
+                parents.push_back(marked[row * (d + 1) + 1 + k] / factor_[k]);
+            }
+        }
+        sort_unique_rows(parents, d + 1);
+
+        std::optional<HierarchicalGrid> coarsened;
+        std::vector<std::int64_t> child(d);
+        std::vector<std::int64_t> parent_hi(d);
+        for (std::size_t i = parents.size() / (d + 1); i > 0; --i) {
+            const std::size_t row = (i - 1) * (d + 1);
+            const std::int64_t parent_level = parents[row];
+            const std::span<const std::int64_t> pmidx(parents.data() + row + 1, d);
+            const HierarchicalGrid& current = coarsened.has_value() ? *coarsened : *this;
+            if (!family_is_complete(current, marked, parent_level, pmidx, child)) {
+                continue;
+            }
+            for (std::size_t k = 0; k < d; ++k) {
+                parent_hi[k] = pmidx[k] + 1;
+            }
+            HierarchicalGrid next = current.coarsen(parent_level, pmidx, parent_hi);
+            coarsened = std::move(next);
+        }
+        return coarsened.has_value() ? std::move(*coarsened) : rebuilt();
+    }
+
+
   private:
     /// Everything the constructor computes, so the mixin's sizes can be passed up.
     ///
@@ -938,6 +1391,372 @@ class HierarchicalGrid : public GridBase<HierarchicalGrid<T>> {
                 return;
             }
         }
+    }
+
+
+    // ----------------------------------------------------------------
+    // Rebuilding the active set
+    // ----------------------------------------------------------------
+
+    /// The active-leaf rectangles at `level`, as an owned list.
+    ///
+    /// \param level Hierarchy level in `[0, max_level()]`.
+    /// \return A fresh list holding that level's rectangles in their stored order.
+    [[nodiscard]] BlockList level_blocks(std::int64_t level) const {
+        const auto d = static_cast<std::size_t>(this->ndim());
+        const auto l = static_cast<std::size_t>(level);
+        const auto first = static_cast<std::size_t>(level_start_[l]);
+        const auto last = static_cast<std::size_t>(level_start_[l + 1]);
+        BlockList out(this->ndim());
+        out.reserve(last - first);
+        for (std::size_t b = first; b < last; ++b) {
+            out.push_back(
+                BlockView{std::span<const std::int64_t>(block_lo_.data() + b * d, d),
+                          std::span<const std::int64_t>(block_hi_.data() + b * d, d)});
+        }
+        return out;
+    }
+
+    /// Every level's rectangles, in level order.
+    ///
+    /// \return `max_level() + 1` lists, each in its stored order.
+    [[nodiscard]] std::vector<BlockList> all_level_blocks() const {
+        const std::int64_t n_levels = max_level() + 1;
+        std::vector<BlockList> levels;
+        levels.reserve(static_cast<std::size_t>(n_levels));
+        for (std::int64_t level = 0; level < n_levels; ++level) {
+            levels.push_back(level_blocks(level));
+        }
+        return levels;
+    }
+
+    /// An independent grid over the same active set, with cold caches.
+    ///
+    /// Every operation that changes nothing returns this rather than a copy of `*this`,
+    /// so no result ever aliases its receiver and every result carries the empty BVH and
+    /// tag registries `refine` and `coarsen` promise. The copy constructor would not do:
+    /// it carries this grid's two tag registries across, which is exactly the difference.
+    ///
+    /// The dirty-level list is **empty rather than absent**: every level holds this
+    /// grid's own already-normalized blocks, so re-running the merge is the identity and
+    /// skipping it is a pure cost saving.
+    ///
+    /// \return The rebuilt grid.
+    [[nodiscard]] HierarchicalGrid rebuilt() const {
+        return from_blocks(root_, factor_, all_level_blocks(),
+                           std::span<const std::int64_t>{});
+    }
+
+    /// Reject a region that is empty, mis-shaped, or outside its level's domain.
+    ///
+    /// \param level The level the region is expressed in.
+    /// \param lo Per-axis start index, inclusive.
+    /// \param hi Per-axis end index, exclusive.
+    /// \throws std::invalid_argument If either corner is not `ndim()` long, some
+    ///         `lo[k] >= hi[k]`, or the region leaves `[0, level_cells_per_axis)`.
+    /// \throws std::overflow_error If the level's cell count exceeds `int64`.
+    void check_region(std::int64_t level, std::span<const std::int64_t> lo,
+                      std::span<const std::int64_t> hi) const {
+        require_ndim_span(lo, "lo");
+        require_ndim_span(hi, "hi");
+        const auto d = static_cast<std::size_t>(this->ndim());
+        for (std::size_t k = 0; k < d; ++k) {
+            if (lo[k] >= hi[k]) {
+                throw std::invalid_argument(
+                    "lo must be strictly less than hi in every dimension; got lo="
+                    + tuple_repr(lo) + ", hi=" + tuple_repr(hi) + ".");
+            }
+        }
+        for (std::size_t k = 0; k < d; ++k) {
+            const std::int64_t n_k = level_cells_per_axis(level, static_cast<std::int64_t>(k));
+            if (lo[k] < 0 || hi[k] > n_k) {
+                throw std::invalid_argument(
+                    "[lo, hi) out of bounds at level " + std::to_string(level) + ": axis "
+                    + std::to_string(k) + " needs [0, " + std::to_string(n_k) + "), got ["
+                    + std::to_string(lo[k]) + ", " + std::to_string(hi[k]) + ").");
+            }
+        }
+    }
+
+    // ----------------------------------------------------------------
+    // Row sets, used by `coarsen_cells`
+    // ----------------------------------------------------------------
+
+    /// Sort fixed-width integer rows lexicographically and drop duplicates, in place.
+    ///
+    /// \param rows The rows, held flat; replaced by the sorted unique ones.
+    /// \param width Entries per row; must divide `rows.size()` and be `>= 1`.
+    static void sort_unique_rows(std::vector<std::int64_t>& rows, std::size_t width) {
+        const std::size_t n = rows.size() / width;
+        std::vector<std::size_t> order(n);
+        std::iota(order.begin(), order.end(), std::size_t{0});
+        std::sort(order.begin(), order.end(), [&rows, width](std::size_t i, std::size_t j) {
+            for (std::size_t k = 0; k < width; ++k) {
+                if (rows[i * width + k] != rows[j * width + k]) {
+                    return rows[i * width + k] < rows[j * width + k];
+                }
+            }
+            return false;
+        });
+        std::vector<std::int64_t> unique;
+        unique.reserve(rows.size());
+        for (const std::size_t i : order) {
+            const auto first = rows.begin() + static_cast<std::ptrdiff_t>(i * width);
+            const auto last = first + static_cast<std::ptrdiff_t>(width);
+            if (unique.empty()
+                || !std::equal(first, last,
+                               unique.end() - static_cast<std::ptrdiff_t>(width))) {
+                unique.insert(unique.end(), first, last);
+            }
+        }
+        rows = std::move(unique);
+    }
+
+    /// Whether a sorted unique row set holds `(head, tail...)`.
+    ///
+    /// \param rows Sorted unique rows, held flat.
+    /// \param width Entries per row.
+    /// \param head The row's first entry.
+    /// \param tail The row's remaining `width - 1` entries.
+    /// \return `true` when the row is present.
+    [[nodiscard]] static bool row_present(const std::vector<std::int64_t>& rows,
+                                          std::size_t width, std::int64_t head,
+                                          std::span<const std::int64_t> tail) {
+        std::size_t low = 0;
+        std::size_t high = rows.size() / width;
+        while (low < high) {
+            const std::size_t mid = low + (high - low) / 2;
+            const std::size_t base = mid * width;
+            std::size_t k = 0;
+            while (k < width && rows[base + k] == (k == 0 ? head : tail[k - 1])) {
+                ++k;
+            }
+            if (k == width) {
+                return true;
+            }
+            if (rows[base + k] < (k == 0 ? head : tail[k - 1])) {
+                low = mid + 1;
+            } else {
+                high = mid;
+            }
+        }
+        return false;
+    }
+
+    /// Whether every child of a parent cell is both named and an active leaf.
+    ///
+    /// \param current The grid the demotions applied so far produced.
+    /// \param marked Sorted unique `(level, midx...)` rows the caller named.
+    /// \param parent_level The parent's level.
+    /// \param pmidx The parent's index at that level, `ndim()` entries.
+    /// \param child Scratch of `ndim()` entries; contents on return are unspecified.
+    /// \return `true` when all `prod(factor)` children qualify.
+    [[nodiscard]] bool family_is_complete(const HierarchicalGrid& current,
+                                          const std::vector<std::int64_t>& marked,
+                                          std::int64_t parent_level,
+                                          std::span<const std::int64_t> pmidx,
+                                          std::vector<std::int64_t>& child) const {
+        const auto d = static_cast<std::size_t>(this->ndim());
+        for (std::size_t k = 0; k < d; ++k) {
+            child[k] = checked_mul(pmidx[k], factor_[k]);
+        }
+        while (true) {
+            // The active-leaf test cannot fail today once a child is named: every flat id
+            // names an active leaf, and the only call that could destroy one is this
+            // parent's own. It stays because that is an argument about the caller rather
+            // than a property of this loop, and it is what the documented rule says.
+            if (!row_present(marked, d + 1, parent_level + 1, child)
+                || !current.is_active_leaf(parent_level + 1, child)) {
+                return false;
+            }
+            std::size_t k = d;
+            bool carried = true;
+            while (k > 0 && carried) {
+                --k;
+                ++child[k];
+                if (child[k] < checked_mul(pmidx[k] + 1, factor_[k])) {
+                    carried = false;
+                } else {
+                    child[k] = checked_mul(pmidx[k], factor_[k]);
+                }
+            }
+            if (carried) {
+                return true;
+            }
+        }
+    }
+
+    // ----------------------------------------------------------------
+    // Why a coarsening was refused
+    // ----------------------------------------------------------------
+
+    /// The clause `coarsen` appends to its refusal, naming the cells that caused it.
+    ///
+    /// \param level Level whose cells were to be reactivated.
+    /// \param lo Region lower bound, inclusive, in level-`level` coordinates.
+    /// \param hi Region upper bound, exclusive.
+    /// \return A leading-space clause, or the empty string when there is nothing to name.
+    [[nodiscard]] std::string coarsen_refusal_detail(std::int64_t level,
+                                                     std::span<const std::int64_t> lo,
+                                                     std::span<const std::int64_t> hi) const {
+        const std::int64_t region_cells = checked_block_size(BlockView{lo, hi});
+        if (region_cells > kMaxDiagnosedCells) {
+            return " The region spans " + std::to_string(region_cells)
+                   + " cells, too many to name.";
+        }
+        const std::string obstacles = coarsen_obstacles(level, lo, hi);
+        if (obstacles.empty()) {
+            return "";
+        }
+        return " Offending cells in level-" + std::to_string(level) + " indices: " + obstacles
+               + ".";
+    }
+
+    /// Name the cells of `[lo, hi)` that stop it being demoted from `level + 1`.
+    ///
+    /// A cell blocks `coarsen` in exactly one of three ways: it is still an active leaf
+    /// at `level`, so it has no children to remove; it is refined past `level + 1`, so
+    /// its children are not leaves either; or it is absent at `level` because a coarser
+    /// active leaf covers it. Each class is read off the block lists -- active leaves
+    /// from `level`, hidden cells from the coarser levels scaled up, over-refined cells
+    /// from the deeper levels scaled down.
+    ///
+    /// \param level Level whose cells were to be reactivated.
+    /// \param lo Region lower bound, inclusive.
+    /// \param hi Region upper bound, exclusive.
+    /// \return Semicolon-separated clauses, each a reason and its cells; empty when every
+    ///         cell of the region is refined to exactly `level + 1`, which is when
+    ///         `coarsen` accepts it.
+    /// \note Reached only from `coarsen`'s failing path, so it favours a precise message
+    ///       over speed and allocates one region-shaped mask per reason. The caller keeps
+    ///       the region within `kMaxDiagnosedCells`, so those stay small.
+    [[nodiscard]] std::string coarsen_obstacles(std::int64_t level,
+                                                std::span<const std::int64_t> lo,
+                                                std::span<const std::int64_t> hi) const {
+        const auto d = static_cast<std::size_t>(this->ndim());
+        std::vector<std::int64_t> shape(d);
+        for (std::size_t k = 0; k < d; ++k) {
+            shape[k] = hi[k] - lo[k];
+        }
+        const auto size = static_cast<std::size_t>(checked_block_size(BlockView{lo, hi}));
+        std::vector<std::uint8_t> still_leaf(size, 0U);
+        std::vector<std::uint8_t> over_refined(size, 0U);
+        std::vector<std::uint8_t> hidden(size, 0U);
+        std::vector<std::int64_t> scaled_lo(d);
+        std::vector<std::int64_t> scaled_hi(d);
+
+        const BlockList leaves = level_blocks(level);
+        for (std::size_t b = 0; b < leaves.size(); ++b) {
+            mark_region(still_leaf, shape, lo, hi, leaves[b]);
+        }
+        for (std::int64_t coarser = 0; coarser < level; ++coarser) {
+            const BlockList blocks = level_blocks(coarser);
+            for (std::size_t b = 0; b < blocks.size(); ++b) {
+                const BlockView block = blocks[b];
+                for (std::size_t k = 0; k < d; ++k) {
+                    const std::int64_t up = int_pow(factor_[k], level - coarser);
+                    scaled_lo[k] = checked_mul(block.lo[k], up);
+                    scaled_hi[k] = checked_mul(block.hi[k], up);
+                }
+                mark_region(hidden, shape, lo, hi, BlockView{scaled_lo, scaled_hi});
+            }
+        }
+        for (std::int64_t deeper = level + 2; deeper <= max_level(); ++deeper) {
+            const BlockList blocks = level_blocks(deeper);
+            for (std::size_t b = 0; b < blocks.size(); ++b) {
+                const BlockView block = blocks[b];
+                for (std::size_t k = 0; k < d; ++k) {
+                    // Floor the start and ceil the end: a level-`level` cell holding any
+                    // part of a deeper block has a descendant below `level + 1`.
+                    const std::int64_t down = int_pow(factor_[k], deeper - level);
+                    scaled_lo[k] = block.lo[k] / down;
+                    scaled_hi[k] = checked_add(block.hi[k], down - 1) / down;
+                }
+                mark_region(over_refined, shape, lo, hi, BlockView{scaled_lo, scaled_hi});
+            }
+        }
+
+        std::string detail;
+        const auto add = [&detail, &shape, lo](const std::vector<std::uint8_t>& mask,
+                                               const std::string& reason) {
+            if (std::find(mask.begin(), mask.end(), std::uint8_t{1}) == mask.end()) {
+                return;
+            }
+            if (!detail.empty()) {
+                detail += "; ";
+            }
+            detail += reason + ": " + name_marked_cells(mask, shape, lo);
+        };
+        add(still_leaf, "still active leaves at level " + std::to_string(level)
+                            + ", with no children to remove");
+        add(over_refined, "refined beyond level " + std::to_string(level + 1));
+        add(hidden, "covered by a coarser active leaf and absent at level "
+                        + std::to_string(level));
+        return detail;
+    }
+
+    /// Mark the cells of `block` that fall inside the region `[region_lo, region_hi)`.
+    ///
+    /// \param mask Region-shaped mask, written in place.
+    /// \param shape Per-axis extents of the mask.
+    /// \param region_lo Region lower bound, inclusive.
+    /// \param region_hi Region upper bound, exclusive.
+    /// \param block The rectangle to mark, in the region's own coordinates. One that
+    ///        misses the region leaves the mask untouched.
+    static void mark_region(std::vector<std::uint8_t>& mask,
+                            std::span<const std::int64_t> shape,
+                            std::span<const std::int64_t> region_lo,
+                            std::span<const std::int64_t> region_hi, BlockView block) {
+        const std::size_t d = shape.size();
+        std::vector<std::int64_t> cut_lo(d);
+        std::vector<std::int64_t> cut_hi(d);
+        if (!rect_intersect(block, BlockView{region_lo, region_hi}, cut_lo, cut_hi)) {
+            return;
+        }
+        for (std::size_t k = 0; k < d; ++k) {
+            cut_lo[k] -= region_lo[k];
+            cut_hi[k] -= region_lo[k];
+        }
+        fill_box(mask, shape, cut_lo, cut_hi, 1U);
+    }
+
+    /// Render a region-shaped mask's marked cells as absolute index tuples.
+    ///
+    /// At most `kMaxNamedCells` are spelled out and the rest is summarised as a count, so
+    /// a large rejected region still yields a readable message.
+    ///
+    /// \param mask Region-shaped mask of cells to name.
+    /// \param shape Per-axis extents of the mask.
+    /// \param origin Index of the region's first cell, added to every mask index so the
+    ///        names come out in the level's own coordinates.
+    /// \return Comma-separated index tuples, followed by `and N more` when truncated.
+    [[nodiscard]] static std::string name_marked_cells(const std::vector<std::uint8_t>& mask,
+                                                       std::span<const std::int64_t> shape,
+                                                       std::span<const std::int64_t> origin) {
+        const std::size_t d = shape.size();
+        std::vector<std::int64_t> absolute(d);
+        std::string named;
+        std::int64_t total = 0;
+        for (std::size_t flat = 0; flat < mask.size(); ++flat) {
+            if (mask[flat] == 0U) {
+                continue;
+            }
+            if (total < kMaxNamedCells) {
+                std::size_t rest = flat;
+                for (std::size_t k = d; k > 0; --k) {
+                    const auto extent = static_cast<std::size_t>(shape[k - 1]);
+                    absolute[k - 1] = static_cast<std::int64_t>(rest % extent) + origin[k - 1];
+                    rest /= extent;
+                }
+                if (!named.empty()) {
+                    named += ", ";
+                }
+                named += tuple_repr(absolute);
+            }
+            ++total;
+        }
+        const std::int64_t rest = total - kMaxNamedCells;
+        return rest > 0 ? named + " and " + std::to_string(rest) + " more" : named;
     }
 
     // ----------------------------------------------------------------
