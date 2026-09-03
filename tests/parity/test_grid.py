@@ -61,13 +61,8 @@ import pytest
 
 from pantr._backend import Backend, use_backend
 from pantr.geometry import AABB
-from pantr.grid import (
-    BVH,
-    HierarchicalGrid,
-    TensorProductGrid,
-    hierarchical_grid,
-    uniform_grid,
-)
+from pantr.grid import BVH, TensorProductGrid, uniform_grid
+from pantr.grid._hierarchical_grid import _HierarchicalGridPython
 from tests._parity_harness import (
     Field,
     assert_object_parity,
@@ -365,22 +360,31 @@ def test_bvh_longest_axis_tie_keeps_the_lower_axis(cpp_backend: None) -> None:
         )
 
 
-def _two_level_grid() -> HierarchicalGrid:
+def _two_level_grid() -> _HierarchicalGridPython:
     """A hierarchical grid with a genuinely refined region.
 
-    ``hierarchical_grid`` alone returns a **single-level** grid, and on one of those
-    the descent below never runs: the root lookup finds an active cell at level 0 and
-    returns, so the contraction site these tests exist to exercise is never reached.
-    So this refines a corner, and the callers assert that it worked rather than
+    A single ``_HierarchicalGridPython`` alone returns a **single-level** grid, and on
+    one of those the descent below never runs: the root lookup finds an active cell at
+    level 0 and returns, so the contraction site these tests exist to exercise is never
+    reached. So this refines a corner, and the callers assert that it worked rather than
     trusting that it did.
+
+    Built as the **oracle** rather than through :func:`pantr.grid.hierarchical_grid`, and
+    that is load-bearing here in a way it is not in an ordinary test. This file compares
+    *kernels*: the oracle reaches for one per call, through
+    :func:`~pantr.grid._grid_backend.hier_locate_points_kernel` and its siblings, so
+    wrapping the same grid in ``use_backend`` twice runs the two kernels. The public
+    class picks its implementation once, when it is constructed, so a public grid built
+    here would answer from whichever backend was active at construction and ``_both``
+    would compare a backend against itself -- green, and testing nothing.
     """
     root = uniform_grid(np.tile([0.0, 4.0], (2, 1)), 4)
-    grid = hierarchical_grid(root, 2)
+    grid = _HierarchicalGridPython(root, 2)
     grid = grid.refine_cells([0, 1, 4])
     return grid
 
 
-def _assert_more_than_one_level(grid: HierarchicalGrid) -> None:
+def _assert_more_than_one_level(grid: _HierarchicalGridPython) -> None:
     """Fail if the fixture degenerated to a single level, which would test nothing."""
     levels = {grid._decode_flat_id(cid)[0] for cid in range(grid.num_cells)}
     assert len(levels) > 1, (
@@ -478,7 +482,7 @@ def test_hierarchical_encode_and_decode_agree(cpp_backend: None) -> None:
         assert back == cid, f"the round trip of id {cid} returned {back}"
 
 
-def _non_dyadic_grid() -> HierarchicalGrid:
+def _non_dyadic_grid() -> _HierarchicalGridPython:
     """A hierarchy whose descent arithmetic is inexact, unlike ``_two_level_grid``.
 
     ``_two_level_grid`` subdivides by 2 over ``[0, 4]``, so the per-axis child index
@@ -495,13 +499,13 @@ def _non_dyadic_grid() -> HierarchicalGrid:
     not hold once the two terms have opposite signs.
     """
     root = uniform_grid(np.array([[-1.0, 2.0 / 3.0], [-0.1, 0.3]]), 3)
-    grid = hierarchical_grid(root, 3)
+    grid = _HierarchicalGridPython(root, 3)  # the oracle: see `_two_level_grid`
     grid = grid.refine_cells([0, 4, 8])
     grid = grid.refine_cells([9, 15])
     return grid
 
 
-def _non_dyadic_points(grid: HierarchicalGrid) -> npt.NDArray[np.float64]:
+def _non_dyadic_points(grid: _HierarchicalGridPython) -> npt.NDArray[np.float64]:
     """Interior points plus the cell corners and their ulp neighbours.
 
     The frontier half is the point of it. A truncation `int((x - lo) / size_k)` only
@@ -596,7 +600,7 @@ def test_the_descent_counterexample_runs_through_the_real_kernels(cpp_backend: N
     """
     del cpp_backend
     root = TensorProductGrid([np.array([1.0, 2.0])])
-    grid = hierarchical_grid(root, 10)
+    grid = _HierarchicalGridPython(root, 10)  # the oracle: see `_two_level_grid`
     grid = grid.refine_cells([0])
     point = np.array([[1.71]])
     first = grid.locate_many(point)

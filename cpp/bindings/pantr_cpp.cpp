@@ -77,6 +77,7 @@ NB_MODULE(_pantr_cpp, m) {
     register_geometry(m);
     register_transform(m);
     register_grid_types(m);
+    register_grid_hierarchical(m);
     register_grid_tags(m);
     register_grid_bvh(m);
     register_grid_partition(m);

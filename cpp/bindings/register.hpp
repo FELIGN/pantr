@@ -65,6 +65,14 @@ void register_bezier_root_finding(nanobind::module_& m);
 /// Register the `pantr.grid` tensor-product / hierarchical grid types.
 void register_grid_types(nanobind::module_& m);
 
+/// Register `pantr.grid.HierarchicalGrid`.
+///
+/// Its own entry point rather than a second type inside `register_grid_types`: the two
+/// grids are separate ports with separate parity claims, and the comments that justify
+/// this one's checks -- the `midx` length case the wrapper owes a `None` for, the
+/// packed rebuild `__reduce__` names -- argue from somewhere else entirely.
+void register_grid_hierarchical(nanobind::module_& m);
+
 /// Register `pantr.grid`'s cell and facet tag registries.
 void register_grid_tags(nanobind::module_& m);
 

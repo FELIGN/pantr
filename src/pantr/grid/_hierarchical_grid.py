@@ -34,6 +34,16 @@ two levels may share a facet.  Facet adjacency (:meth:`neighbor_across_facet`,
 :meth:`hanging_neighbors`) walks as many levels up or down as the interface
 requires.
 
+Two classes, one of which is scaffolding
+----------------------------------------
+
+:class:`HierarchicalGrid` is a **wrapper**: the grid itself is owned by the C++ core
+and the class holds one, forwarding through ``_GridWrapper``.  Under
+``PANTR_BACKEND=python`` the thing held is ``_HierarchicalGridPython`` instead, which
+is the port's parity oracle and is temporary -- it is exactly the pre-port class,
+renamed, and it goes when the Python backend does.  "Keep parity with
+``_HierarchicalGridPython``" is therefore never a reason not to improve the C++.
+
 Main exports:
 
 - :class:`HierarchicalGrid`: hierarchical grid built on a
@@ -44,25 +54,28 @@ Main exports:
 from __future__ import annotations
 
 import itertools
-from typing import TYPE_CHECKING, Self
+from typing import TYPE_CHECKING, Any, Self
 
 import numpy as np
 
 from .._numba_compat import wait_for_jit_warmup
-from ._grid import GridRestriction, _GridPython
+from ._grid import GridRestriction, _adopt, _GridPython, _GridWrapper
 from ._grid_backend import (
     decode_flat_id_kernel,
     encode_midx_kernel,
     hier_collect_cell_bounds_kernel,
     hier_locate_points_kernel,
 )
-from ._grid_utils import _as_float64, _mask_nonfinite_locate
+from ._grid_utils import _as_float64, _mask_nonfinite_locate, _python_backend_selected
 from ._tensor_product_grid import TensorProductGrid
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
     import numpy.typing as npt
+
+    from .._pantr_cpp import HierarchicalGrid as _CppHierarchicalGrid
+    from ._tags import CellTags, FacetTags
 
 # A Block is a pair (lo, hi) of per-direction inclusive-start / exclusive-end
 # integer index tuples, all at the coordinate system of a specific level.
@@ -314,12 +327,17 @@ def _name_marked_cells(mask: npt.NDArray[np.bool_], origin: tuple[int, ...]) -> 
 
 
 # ---------------------------------------------------------------------------
-# HierarchicalGrid
+# _HierarchicalGridPython: the port's oracle
 # ---------------------------------------------------------------------------
 
 
-class HierarchicalGrid(_GridPython):
-    """Hierarchical grid with a fixed per-direction uniform subdivision factor.
+class _HierarchicalGridPython(_GridPython):
+    """The pre-port hierarchical grid, kept as the C++ port's parity oracle.
+
+    **Scaffolding.**  :class:`HierarchicalGrid` is the class a caller holds; this one is
+    what it holds under ``PANTR_BACKEND=python``, and it exists so that the two backends
+    can be compared (``tests/parity/test_grid_hierarchical.py``).  It is the pre-port
+    class verbatim apart from its name, and it is deleted with the Python backend.
 
     Built on a root :class:`TensorProductGrid`.  Active cells are stored as
     non-overlapping rectangular *blocks* at each level; no per-cell data is
@@ -1100,7 +1118,7 @@ class HierarchicalGrid(_GridPython):
                 are ignored. Each must satisfy ``0 <= cid < num_cells``.
 
         Returns:
-            GridRestriction: The windowed :class:`HierarchicalGrid`, its
+            GridRestriction: The windowed grid, its
             ``local_to_global_cell`` map of shape ``(sub.num_cells,)``, and the
             boolean ``in_subset`` mask flagging requested versus bounding-box-fill cells.
 
@@ -1154,7 +1172,7 @@ class HierarchicalGrid(_GridPython):
                 level_sub.append((s_lo, s_hi))
             sub_blocks.append(level_sub)
 
-        sub = HierarchicalGrid._from_blocks(sub_root, self._factor, sub_blocks)
+        sub = _HierarchicalGridPython._from_blocks(sub_root, self._factor, sub_blocks)
 
         # Local -> global cell map: translate each sub leaf back to global coords.
         local_to_global = np.empty(sub.num_cells, dtype=np.int64)
@@ -1966,6 +1984,832 @@ class HierarchicalGrid(_GridPython):
             f"num_cells={self._num_cells}, "
             f"max_level={self.max_level})"
         )
+
+
+# ---------------------------------------------------------------------------
+# The public wrapper
+# ---------------------------------------------------------------------------
+
+
+def _cpp_grid_class() -> type[_CppHierarchicalGrid]:
+    """The bound C++ hierarchy class, imported only when the C++ backend is selected.
+
+    The two implementations are not reached through one expression the way
+    :func:`pantr.grid._tensor_product_grid._impl_class` reaches its pair, because their
+    constructors do not agree on what a root grid is: the oracle is built on the public
+    :class:`TensorProductGrid` and calls its methods, while this one takes the
+    ``pantr::grid::TensorProductGrid`` that wrapper holds. So the two call sites branch
+    on :func:`~pantr.grid._grid_utils._python_backend_selected` and this supplies the
+    far half.
+
+    **The choice is per process, not per instance**, for the reason that function gives,
+    and with a sharper one here: ``restrict``, ``refine`` and ``coarsen`` all return a
+    grid, so a per-instance choice would let a derived grid cross implementations, which
+    is the reconciliation ``design/cross_backend_types.md`` forbids.
+
+    Returns:
+        type[_CppHierarchicalGrid]: The bound C++ class.
+    """
+    from pantr import _pantr_cpp  # noqa: PLC0415  (optional, imported only when selected)
+
+    return _pantr_cpp.HierarchicalGrid
+
+
+def _validated_factor(root: TensorProductGrid, factor: int | Sequence[int]) -> tuple[int, ...]:
+    """Broadcast and check a subdivision factor against a root grid.
+
+    Python's calling convention rather than validation: neither implementation accepts a
+    scalar, and the ``int`` coercion of a sequence is what decides what a
+    ``list[float]`` means. The two range checks are here rather than duplicated because
+    their messages are contractual -- ``tests/test_grid_hierarchical.py`` matches on both
+    -- and because a wrong length has to be caught to build the length-``ndim`` array the
+    implementations take.
+
+    Args:
+        root (TensorProductGrid): The level-0 grid, for its dimension.
+        factor (int | Sequence[int]): Per-direction subdivision factor; a scalar is
+            broadcast to every axis.
+
+    Returns:
+        tuple[int, ...]: The length-``ndim`` factor.
+
+    Raises:
+        TypeError: If ``root`` is not a :class:`TensorProductGrid`.
+        ValueError: If ``factor`` has the wrong length or any entry is ``< 1``.
+    """
+    if not isinstance(root, TensorProductGrid):
+        raise TypeError(f"root must be a TensorProductGrid; got {type(root).__name__!r}.")
+    ndim = root.ndim
+    fac = (int(factor),) * ndim if isinstance(factor, int) else tuple(int(f) for f in factor)
+    if len(fac) != ndim:
+        raise ValueError(
+            f"factor must be a scalar or length-{ndim} sequence; got length {len(fac)}."
+        )
+    if any(f < 1 for f in fac):
+        raise ValueError(
+            f"every factor entry must be >= 1 (1 = no subdivision on that axis); got {fac!r}."
+        )
+    return fac
+
+
+def _rebuild_hierarchical_grid(
+    root: TensorProductGrid,
+    factor: tuple[int, ...],
+    blocks: tuple[tuple[_Block, ...], ...],
+    cell_tags: CellTags | None,
+    facet_tags: FacetTags | None,
+) -> HierarchicalGrid:
+    """Rebuild a pickled grid from its root, its factor, its active set and its tags.
+
+    The reconstruction :meth:`HierarchicalGrid.__reduce__` names. A module-level function
+    rather than a ``__setstate__``, because the cell decomposition is immutable once built
+    and the tags are replayed through the public :meth:`~pantr.grid.CellTags.set` rather
+    than written into it.
+
+    The active set travels as the per-level ``(lo, hi)`` rectangles rather than as a
+    replay of the ``refine`` and ``coarsen`` calls that produced them: an operation
+    sequence is not recoverable from a grid, and the rectangles are what both
+    implementations store. Rebuilding normalizes every level, which is a no-op on lists
+    that are already in normal form -- the property
+    ``test_normalize_blocks_is_idempotent`` pins -- so the flat cell ids come back
+    unmoved.
+
+    Args:
+        root (TensorProductGrid): The level-0 root grid.
+        factor (tuple[int, ...]): The per-direction subdivision factor.
+        blocks (tuple[tuple[_Block, ...], ...]): ``blocks[l]`` holds level ``l``'s
+            active-leaf ``(lo, hi)`` rectangles, in stored order.
+        cell_tags (CellTags | None): The cell registry to replay, or ``None`` if the
+            pickled grid had none -- which is what keeps the memo slots lazy across a
+            round trip.
+        facet_tags (FacetTags | None): The facet registry to replay, or ``None``.
+
+    Returns:
+        HierarchicalGrid: The rebuilt grid, in the active backend's implementation.
+    """
+    impl: _HierarchicalGridPython | _CppHierarchicalGrid
+    if _python_backend_selected():
+        impl = _HierarchicalGridPython._from_blocks(
+            root, tuple(factor), [list(level) for level in blocks]
+        )
+    else:
+        flat = [block for level in blocks for block in level]
+        ndim = root.ndim
+        level_start = list(itertools.accumulate((len(level) for level in blocks), initial=0))
+        impl = _cpp_grid_class().from_blocks(
+            root._impl,
+            factor=np.ascontiguousarray(factor, dtype=np.int64),
+            block_lo=np.array([b[0] for b in flat], dtype=np.int64).reshape(-1, ndim),
+            block_hi=np.array([b[1] for b in flat], dtype=np.int64).reshape(-1, ndim),
+            level_start=np.ascontiguousarray(level_start, dtype=np.int64),
+        )
+    grid = HierarchicalGrid._wrap_over(impl, root)
+    if cell_tags is not None:
+        for name in cell_tags.names:
+            ids, values = cell_tags[name]
+            grid.cell_tags.set(name, ids, values)
+    if facet_tags is not None:
+        for name in facet_tags.names:
+            keys, values = facet_tags[name]
+            grid.facet_tags.set(name, keys, values)
+    return grid
+
+
+class HierarchicalGrid(_GridWrapper):
+    """Hierarchical grid with a fixed per-direction uniform subdivision factor.
+
+    Built on a root :class:`TensorProductGrid`. Active cells are stored as
+    non-overlapping rectangular *blocks* at each level; no per-cell data is kept. A new
+    level is created by :meth:`refine`; the grid starts with all root cells active at
+    level 0. See the module docstring for the semantics that follow from that.
+
+    **The cell decomposition is immutable.** :meth:`refine`, :meth:`refine_cells`,
+    :meth:`coarsen` and :meth:`coarsen_cells` return a new grid and leave this one
+    unchanged.
+
+    Flat cell ids are assigned level-by-level (level 0 first), block-by-block within a
+    level (sorted by ``lo`` tuple), and C-order within each block.
+
+    **This class is a wrapper.** The grid itself is owned by the C++ core and this class
+    holds one; under ``PANTR_BACKEND=python`` the thing held is
+    ``_HierarchicalGridPython`` instead, which is the port's oracle and is temporary.
+    Everything a :class:`pantr.grid.Grid` can do is forwarded by ``_GridWrapper``; what
+    is defined here is this grid's own surface plus the four things a generic forwarder
+    cannot supply -- the constructor, the ``repr``, the pickle, and the refusal to be
+    mutated.
+
+    Instances are immutable apart from the two tag registries, which accumulate, and the
+    four memoized handles in front of them.
+
+    Attributes:
+        _impl (Any): The grid this wrapper forwards to; see ``_impl_class``.
+        _root (TensorProductGrid | None): Memoized root grid; ``None`` until first read
+            on a grid that did not receive one at construction.
+        _bvh (BVH | None): Memoized spatial index; ``None`` until first built.
+        _cell_tags (CellTags | None): Memoized cell-tag registry; ``None`` until first
+            use.
+        _facet_tags (FacetTags | None): Memoized facet-tag registry; ``None`` until
+            first use.
+    """
+
+    __slots__ = ("_bvh", "_cell_tags", "_facet_tags", "_impl", "_root")
+
+    _root: TensorProductGrid | None
+
+    def __init__(self, root: TensorProductGrid, factor: int | Sequence[int]) -> None:
+        """Create a hierarchical grid from a root and a subdivision factor.
+
+        Args:
+            root (TensorProductGrid): The level-0 grid.
+            factor (int | Sequence[int]): Per-direction subdivision factor. A scalar is
+                broadcast to every axis. Each entry must be ``>= 1``; a factor of ``1``
+                on an axis prevents subdivision in that direction.
+
+        Raises:
+            TypeError: If ``root`` is not a :class:`TensorProductGrid`.
+            ValueError: If ``factor`` has the wrong length or any entry is ``< 1``.
+        """
+        fac = _validated_factor(root, factor)
+        impl: _HierarchicalGridPython | _CppHierarchicalGrid
+        if _python_backend_selected():
+            impl = _HierarchicalGridPython(root, fac)
+        else:
+            impl = _cpp_grid_class()(root._impl, np.ascontiguousarray(fac, dtype=np.int64))
+        self._take(impl, root)
+
+    @classmethod
+    def _wrap(cls, impl: _HierarchicalGridPython | _CppHierarchicalGrid) -> HierarchicalGrid:
+        """Wrap an implementation object whose root is not this grid's.
+
+        The path :meth:`~pantr.grid.Grid.restrict` takes: a windowed sub-grid has a
+        *windowed* root, so there is no root to carry over and the memo stays empty until
+        someone reads it.
+
+        Args:
+            impl (_HierarchicalGridPython | _CppHierarchicalGrid): The implementation to
+                adopt, with no re-validation.
+
+        Returns:
+            HierarchicalGrid: A wrapper around ``impl``.
+        """
+        self = object.__new__(cls)
+        self._take(impl, None)
+        return self
+
+    @classmethod
+    def _wrap_over(
+        cls,
+        impl: _HierarchicalGridPython | _CppHierarchicalGrid,
+        root: TensorProductGrid | None,
+    ) -> HierarchicalGrid:
+        """Wrap an implementation that shares ``root`` with the grid it came from.
+
+        The path :meth:`refine`, :meth:`refine_cells`, :meth:`coarsen` and
+        :meth:`coarsen_cells` take. All four keep the root they were given -- only the
+        active set moves -- so the new wrapper inherits the receiver's root **object**,
+        and ``result.root is g.root`` holds under either backend. Without this the C++
+        path would hand back a fresh handle around an equal-but-distinct root, and a
+        caller that had tagged the root would find the tags gone.
+
+        Args:
+            impl (_HierarchicalGridPython | _CppHierarchicalGrid): The implementation to
+                adopt, with no re-validation.
+            root (TensorProductGrid | None): The root to inherit, or ``None`` to leave
+                the memo empty.
+
+        Returns:
+            HierarchicalGrid: A wrapper around ``impl``.
+        """
+        self = object.__new__(cls)
+        self._take(impl, root)
+        return self
+
+    def _take(
+        self,
+        impl: _HierarchicalGridPython | _CppHierarchicalGrid,
+        root: TensorProductGrid | None,
+    ) -> None:
+        """Hold an implementation, with the memo slots cleared.
+
+        One place rather than three, so that no construction path can leave a slot
+        uninitialised -- which surfaces as a bare ``AttributeError`` from inside a
+        property, a long way from the constructor that skipped it.
+
+        Args:
+            impl (_HierarchicalGridPython | _CppHierarchicalGrid): The implementation to
+                hold.
+            root (TensorProductGrid | None): The root to seed the memo with, if known.
+        """
+        object.__setattr__(self, "_impl", impl)
+        object.__setattr__(self, "_root", root)
+        object.__setattr__(self, "_bvh", None)
+        object.__setattr__(self, "_cell_tags", None)
+        object.__setattr__(self, "_facet_tags", None)
+
+    def _copy(self) -> HierarchicalGrid:
+        """Return an independent grid with the same root, factor and active cells.
+
+        The result compares cell for cell with this grid but is a distinct object with
+        its own empty BVH and tag caches. Used where an operation changes nothing, so
+        that every operation returns a grid that never aliases its receiver.
+
+        Written as the no-op refinement rather than as a forward, because that is the one
+        spelling both implementations already answer with exactly this: the oracle's
+        ``refine_cells`` on no ids returns its own ``_copy``, and the C++ one returns
+        ``rebuilt()``, which is the same rebuild with the same "levels are already
+        normalized" declaration.
+
+        Returns:
+            HierarchicalGrid: A fresh grid over the same active-leaf decomposition.
+        """
+        return self.refine_cells(())
+
+    def __setattr__(self, name: str, value: object) -> None:
+        """Reject post-construction attribute writes.
+
+        Args:
+            name (str): The attribute being set.
+            value (object): The value it would take.
+
+        Raises:
+            AttributeError: Always. The grid is immutable once built, and the memo slots
+                are written through ``object.__setattr__``.
+        """
+        raise AttributeError(f"HierarchicalGrid is immutable; cannot set attribute {name!r}.")
+
+    def __delattr__(self, name: str) -> None:
+        """Reject attribute deletion.
+
+        Args:
+            name (str): The attribute being deleted.
+
+        Raises:
+            AttributeError: Always.
+        """
+        raise AttributeError(f"HierarchicalGrid is immutable; cannot delete attribute {name!r}.")
+
+    def __reduce__(self) -> tuple[Any, tuple[Any, ...]]:
+        """Pickle by the root, the factor, the active set and the tags.
+
+        Never by the implementation: the C++ handle is not picklable and must not become
+        part of the wire format, or a pickle written under one backend would not load
+        under the other and the backend switch would silently become a data-format
+        switch.
+
+        The root travels as a :class:`TensorProductGrid`, which pickles itself, so its
+        own tags survive the trip. The active set travels as the per-level rectangles,
+        which is what both implementations store and what :meth:`active_blocks` reads
+        out. The memoized BVH does not travel: it is rebuilt from the active set, and
+        shipping ``O(num_cells)`` node arrays to avoid recomputing them would trade a
+        large pickle for a small saving. The two registries are read from the memo slots
+        rather than through the properties, so pickling an untagged grid does not
+        materialize one and the slots stay lazy on the far side too.
+
+        Returns:
+            tuple: :func:`_rebuild_hierarchical_grid` and the arguments to replay.
+        """
+        cells = self._cell_tags
+        facets = self._facet_tags
+        return (
+            _rebuild_hierarchical_grid,
+            (
+                self.root,
+                self.factor,
+                tuple(self.active_blocks(level) for level in range(self.max_level + 1)),
+                cells if cells is not None and len(cells) > 0 else None,
+                facets if facets is not None and len(facets) > 0 else None,
+            ),
+        )
+
+    def __repr__(self) -> str:
+        """Return a compact developer-friendly representation.
+
+        Formatted here rather than by the implementation, so that the two backends print
+        identically whatever their own formatting conventions are.
+
+        Returns:
+            str: Shows dimension, root cell counts, factor, active cells, and max level.
+        """
+        return (
+            f"HierarchicalGrid(ndim={self.ndim}, "
+            f"root_cells={self.root.cells_per_axis}, "
+            f"factor={self.factor}, "
+            f"num_cells={self.num_cells}, "
+            f"max_level={self.max_level})"
+        )
+
+    # ------------------------------------------------------------------
+    # This grid's own surface
+    # ------------------------------------------------------------------
+
+    @property
+    def root(self) -> TensorProductGrid:
+        """Get the level-0 root grid.
+
+        Memoized into ``_root``, so that a grid hands out one root object rather than a
+        fresh equal one per read. That is what a caller who tagged the root depends on,
+        and it is what the C++ handle cannot supply on its own: the implementation stores
+        its root by value and returns a copy.
+
+        Returns:
+            TensorProductGrid: The root grid this hierarchy was built on.
+        """
+        if self._root is None:
+            object.__setattr__(self, "_root", _adopt(TensorProductGrid, self._impl.root))
+        assert self._root is not None
+        return self._root
+
+    @property
+    def factor(self) -> tuple[int, ...]:
+        """Get the per-direction subdivision factor.
+
+        Returns:
+            tuple[int, ...]: Length-``ndim`` tuple; ``factor[k] >= 1``.
+        """
+        return tuple(int(f) for f in self._impl.factor)
+
+    @property
+    def max_level(self) -> int:
+        """Get the index of the deepest non-empty level.
+
+        Returns:
+            int: ``0`` before any refinement; increases with each :meth:`refine` call
+            that adds a new level.
+        """
+        return int(self._impl.max_level)
+
+    def cell_multi_index(self, cid: int) -> tuple[int, ...]:
+        """Return the per-axis index of cell ``cid`` in its level's coordinates.
+
+        Args:
+            cid (int): Cell identifier.
+
+        Returns:
+            tuple[int, ...]: Length-``ndim`` per-axis index tuple at the cell's
+            refinement level.
+
+        Raises:
+            IndexError: If ``cid`` is out of range.
+        """
+        return tuple(int(i) for i in self._impl.cell_multi_index(int(cid)))
+
+    def cell_id(self, level: int, midx: Sequence[int]) -> int | None:
+        """Return the flat id of the active leaf ``(level, midx)``, or ``None``.
+
+        The inverse of :meth:`~pantr.grid.Grid.cell_level` and :meth:`cell_multi_index`
+        taken together. Because :meth:`refine` and :meth:`coarsen` assign the flat ids of
+        the grid they return from scratch, a caller that must track cells across a
+        refinement keeps them as ``(level, midx)`` pairs -- which are stable -- and
+        resolves them back to ids on the new grid here, once per step.
+
+        Args:
+            level (int): Hierarchy level.
+            midx (Sequence[int]): Per-axis index in level-``level`` coordinates.
+
+        Returns:
+            int | None: The flat cell id when ``(level, midx)`` is currently an active
+            (leaf) cell, else ``None`` -- out of range, not yet created, or refined away.
+        """
+        # A wrong length is folded into the "not an active leaf" answer, which is the
+        # contract and is not what either implementation does: the C++ one raises
+        # `ValueError` on it, because `cpp/include/pantr/core/error.hpp` puts value and
+        # range checks in C++ and leaves shape coercion here. So the length case is
+        # caught before forwarding, or the two backends would differ in the *type* of
+        # the answer rather than only in a message.
+        indices = tuple(int(i) for i in midx)
+        if len(indices) != self.ndim:
+            return None
+        cid = self._impl.cell_id(int(level), np.ascontiguousarray(indices, dtype=np.int64))
+        return None if cid is None else int(cid)
+
+    def is_active_leaf(self, level: int, midx: Sequence[int]) -> bool:
+        """Return whether ``(level, midx)`` is an active (leaf) cell.
+
+        Args:
+            level (int): Hierarchy level.
+            midx (Sequence[int]): Per-axis index in level-``level`` coordinates.
+
+        Returns:
+            bool: ``True`` iff a cell with this level and multi-index is currently active
+            (a leaf); ``False`` if it is out of range, not yet created, or has been
+            refined away.
+        """
+        return self.cell_id(level, midx) is not None
+
+    # ------------------------------------------------------------------
+    # Active-set accessors
+    # ------------------------------------------------------------------
+
+    def level_cells_per_axis(self, level: int) -> tuple[int, ...]:
+        """Return the per-axis cell count of the level-``level`` grid.
+
+        This is a pure formula -- ``level`` need not be an existing hierarchy level.
+        Values above :attr:`max_level` return the count for the hypothetical finer grid
+        that would result from additional uniform subdivision. This differs from
+        :meth:`active_blocks`, :meth:`active_leaf_mask` and :meth:`subdomain_mask`, which
+        all require ``level <= max_level``.
+
+        Args:
+            level (int): Hierarchy level. Must be ``>= 0``; values above
+                :attr:`max_level` are accepted and return the geometrically valid count.
+
+        Returns:
+            tuple[int, ...]: ``root.cells_per_axis[k] * factor[k] ** level`` for every
+            axis ``k``.
+
+        Raises:
+            ValueError: If ``level < 0``.
+        """
+        return tuple(int(n) for n in self._impl.level_cells_per_axis(int(level)))
+
+    def active_blocks(self, level: int) -> tuple[tuple[tuple[int, ...], tuple[int, ...]], ...]:
+        """Return the active-leaf blocks at ``level``.
+
+        Args:
+            level (int): Hierarchy level. Must be in ``[0, max_level]``.
+
+        Returns:
+            tuple[tuple[tuple[int, ...], tuple[int, ...]], ...]: The sorted,
+            non-overlapping ``(lo, hi)`` integer rectangles of active (leaf) cells at
+            ``level``, in level-``level`` coordinates.
+
+        Raises:
+            ValueError: If ``level`` is outside ``[0, max_level]``.
+        """
+        return tuple(
+            (tuple(int(i) for i in lo), tuple(int(i) for i in hi))
+            for lo, hi in self._impl.active_blocks(int(level))
+        )
+
+    def active_leaf_mask(self, level: int) -> npt.NDArray[np.bool_]:
+        r"""Return a boolean mask of the active-leaf cells at ``level``.
+
+        Args:
+            level (int): Hierarchy level. Must be in ``[0, max_level]``.
+
+        Returns:
+            npt.NDArray[np.bool\_]: Fresh array of shape
+            ``level_cells_per_axis(level)``; ``True`` where the level-``level`` cell
+            ``(level, midx)`` is an active (leaf) cell.
+
+        Raises:
+            ValueError: If ``level`` is outside ``[0, max_level]``.
+        """
+        return self._shaped_mask(self._impl.active_leaf_mask(int(level)), level)
+
+    def subdomain_mask(self, level: int) -> npt.NDArray[np.bool_]:
+        r"""Return a boolean mask of the level-``level`` refined subdomain.
+
+        A level-``level`` cell lies in the subdomain :math:`\Omega_{level}` (the region
+        refined to at least ``level``) iff it is **not** covered by an active leaf of a
+        coarser level.
+
+        Args:
+            level (int): Hierarchy level. Must be in ``[0, max_level]``.
+
+        Returns:
+            npt.NDArray[np.bool\_]: Fresh array of shape
+            ``level_cells_per_axis(level)``; ``True`` where the level-``level`` cell lies
+            in :math:`\Omega_{level}`.
+
+        Raises:
+            ValueError: If ``level`` is outside ``[0, max_level]``.
+
+        Note:
+            The mask is sized to the level-``level`` cell grid and computed on demand; it
+            is never stored.
+        """
+        return self._shaped_mask(self._impl.subdomain_mask(int(level)), level)
+
+    def _shaped_mask(self, mask: npt.ArrayLike, level: int) -> npt.NDArray[np.bool_]:
+        r"""Present an implementation's level mask as a fresh, shaped boolean array.
+
+        The two implementations return different things and neither is what the contract
+        promises without help: the oracle a shaped ``bool`` array, the C++ grid a flat
+        ``uint8`` one, because ``std::vector<bool>`` is a bit-packed proxy with no
+        ``data()`` to hand over. ``astype`` gives a fresh writeable array in both cases,
+        which is the other half of the contract.
+
+        Args:
+            mask (npt.ArrayLike): What the implementation returned.
+            level (int): The level it was asked for, for the shape.
+
+        Returns:
+            npt.NDArray[np.bool\_]: Shape ``level_cells_per_axis(level)``.
+        """
+        shaped: npt.NDArray[np.bool_] = np.asarray(mask).astype(np.bool_, copy=True)
+        return shaped.reshape(self.level_cells_per_axis(level))
+
+    # ------------------------------------------------------------------
+    # Refinement
+    # ------------------------------------------------------------------
+
+    def _region(
+        self, lo: Sequence[int], hi: Sequence[int]
+    ) -> tuple[npt.NDArray[np.int64], npt.NDArray[np.int64]]:
+        """Coerce a ``[lo, hi)`` index region to two length-``ndim`` ``int64`` arrays.
+
+        Python's calling convention: neither implementation takes a ``Sequence[int]``,
+        and deciding what a ``list[float]`` means is the wrapper's job permanently. The
+        length is checked here rather than left to the implementation because the message
+        is contractual -- ``tests/test_grid_hierarchical.py`` matches on it -- and the
+        C++ side words the same refusal differently.
+
+        This runs **before** the implementation's level check, so a call whose level and
+        whose region are both wrong is now refused for the region. Nothing depends on the
+        other order, and both backends refuse identically either way.
+
+        Args:
+            lo (Sequence[int]): Per-direction start index, inclusive.
+            hi (Sequence[int]): Per-direction end index, exclusive.
+
+        Returns:
+            tuple[npt.NDArray[np.int64], npt.NDArray[np.int64]]: ``(lo, hi)``.
+
+        Raises:
+            ValueError: If either corner does not have length ``ndim``.
+        """
+        lo_t = tuple(int(x) for x in lo)
+        hi_t = tuple(int(x) for x in hi)
+        ndim = self.ndim
+        if len(lo_t) != ndim or len(hi_t) != ndim:
+            raise ValueError(f"lo and hi must have length {ndim}; got {len(lo_t)} and {len(hi_t)}.")
+        return (
+            np.ascontiguousarray(lo_t, dtype=np.int64),
+            np.ascontiguousarray(hi_t, dtype=np.int64),
+        )
+
+    def _cell_ids(self, cell_ids: Sequence[int]) -> npt.NDArray[np.int64]:
+        """Coerce a cell-id sequence to a contiguous ``int64`` array.
+
+        Args:
+            cell_ids (Sequence[int]): Flat cell identifiers.
+
+        Returns:
+            npt.NDArray[np.int64]: Shape ``(n,)``.
+
+        Raises:
+            TypeError: If ``cell_ids`` is not integer-valued.
+        """
+        ids = np.asarray(cell_ids).ravel()
+        # Checked here because there is no `std::exception` nanobind turns into a
+        # `TypeError`, and because a silent truncation of `[0.5, 1.5]` to `[0, 1]` names
+        # plausible cells rather than refusing.
+        if ids.size > 0 and not np.issubdtype(ids.dtype, np.integer):
+            raise TypeError(f"cell_ids must be integer-valued; got dtype {ids.dtype}.")
+        return np.ascontiguousarray(ids, dtype=np.int64)
+
+    def refine(self, level: int, lo: Sequence[int], hi: Sequence[int]) -> HierarchicalGrid:
+        """Return a new grid with the region ``[lo, hi)`` at ``level`` refined to ``level+1``.
+
+        This grid is left unchanged; write ``grid = grid.refine(...)``.
+
+        Union semantics: only the currently-active portion of ``[lo, hi)`` is refined,
+        leaving cells that are already deeper untouched. If the intersection with active
+        blocks at ``level`` is empty, the returned grid is an unrefined copy of this one.
+        Overlapping calls therefore safely extend the refined region.
+
+        That convenience costs invertibility. Promoting only part of a box sends several
+        distinct grids to the same result, so :meth:`refine` is **not injective** on the
+        grid state and no single :meth:`coarsen` can undo it in general:
+        ``coarsen(level, lo, hi)`` reverses this call only when every cell of
+        ``[lo, hi)`` was an active leaf at ``level`` beforehand. When it was not, the
+        paired :meth:`coarsen` either refuses the box, if part of it now sits deeper than
+        ``level+1``, or demotes all of it, including the cells this call left alone, and
+        so removes children an earlier :meth:`refine` created. Where that must not
+        happen, name the cells rather than a box on the side that destroys them:
+        :meth:`coarsen_cells` reactivates a parent only when all of its children are
+        named active leaves, so nothing the caller did not name is removed.
+        (:meth:`refine_cells` also marks by id, but it refines the bounding box of the
+        ids given at each level, so it can promote a cell the caller did not mark; that
+        costs nothing, since refining removes no cell.)
+
+        The returned grid assigns flat cell ids afresh, so an id read from this grid does
+        not name the same cell there. Its BVH and its cell and facet tags start empty;
+        this grid keeps its own, and both share the same root object.
+
+        Args:
+            level (int): Refinement level at which the region lives. Must satisfy
+                ``0 <= level <= max_level``.
+            lo (Sequence[int]): Per-direction start index (inclusive), in level-``level``
+                coordinates.
+            hi (Sequence[int]): Per-direction end index (exclusive), in level-``level``
+                coordinates.
+
+        Returns:
+            HierarchicalGrid: A new grid with the active portion of ``[lo, hi)`` refined.
+
+        Raises:
+            ValueError: If ``level`` is out of range, ``lo``/``hi`` have the wrong
+                length, any ``lo[k] >= hi[k]``, or ``[lo, hi)`` falls entirely outside
+                the level-``level`` domain.
+
+        References:
+            Refinement and coarsening algorithms for adaptive hierarchical-spline
+            meshes :cite:p:`garau2018algorithms`.
+        """
+        lo_a, hi_a = self._region(lo, hi)
+        return self._wrap_over(self._impl.refine(int(level), lo_a, hi_a), self._root)
+
+    def refine_cells(self, cell_ids: Sequence[int]) -> HierarchicalGrid:
+        """Return a new grid with a set of active cells refined, by per-level bounding box.
+
+        Groups ``cell_ids`` by their level and refines, level by level from the coarsest,
+        the bounding box of the marked cells at that level. Cells inside a box that were
+        not named are refined too; refinement removes no cell, so that costs nothing a
+        caller can lose. Naming no cell returns an unrefined copy.
+
+        Args:
+            cell_ids (Sequence[int]): Flat identifiers of active cells to refine.
+
+        Returns:
+            HierarchicalGrid: A new grid with those cells' per-level boxes refined.
+
+        Raises:
+            IndexError: If any cell id is out of range ``[0, num_cells)``.
+            TypeError: If ``cell_ids`` is not integer-valued.
+        """
+        return self._wrap_over(self._impl.refine_cells(self._cell_ids(cell_ids)), self._root)
+
+    def coarsen(self, level: int, lo: Sequence[int], hi: Sequence[int]) -> HierarchicalGrid:
+        """Return a new grid with the region ``[lo, hi)`` at ``level`` demoted from ``level+1``.
+
+        The inverse of :meth:`refine` where :meth:`refine` is invertible: every cell of
+        ``[lo, hi)`` must currently be refined to **exactly** ``level + 1``, so that
+        demoting it removes a complete set of children and nothing deeper. A region that
+        is partly active at ``level``, partly refined past ``level + 1``, or partly
+        covered by a coarser active leaf is refused, and the message names the offending
+        cells.
+
+        This grid is left unchanged; write ``grid = grid.coarsen(...)``. The returned
+        grid assigns flat cell ids afresh and starts with empty caches, and both share
+        this grid's root object.
+
+        Args:
+            level (int): Level the region is demoted **to**. Must satisfy
+                ``0 <= level < max_level``.
+            lo (Sequence[int]): Per-direction start index (inclusive), in level-``level``
+                coordinates.
+            hi (Sequence[int]): Per-direction end index (exclusive), in level-``level``
+                coordinates.
+
+        Returns:
+            HierarchicalGrid: A new grid with ``[lo, hi)`` active at ``level``.
+
+        Raises:
+            ValueError: If ``level`` is out of range, ``lo``/``hi`` have the wrong
+                length, any ``lo[k] >= hi[k]``, ``[lo, hi)`` leaves the level-``level``
+                domain, or the region is not fully refined to exactly ``level + 1``.
+
+        References:
+            Refinement and coarsening algorithms for adaptive hierarchical-spline
+            meshes :cite:p:`garau2018algorithms`.
+        """
+        lo_a, hi_a = self._region(lo, hi)
+        return self._wrap_over(self._impl.coarsen(int(level), lo_a, hi_a), self._root)
+
+    def coarsen_cells(self, cell_ids: Sequence[int]) -> HierarchicalGrid:
+        """Return a new grid with the parents of complete named families reactivated.
+
+        A parent is demoted only when **every** one of its children is named among
+        ``cell_ids`` and is an active leaf, so nothing the caller did not name is
+        removed. Parents are visited deepest level first. Naming no complete family
+        returns an unrefined copy.
+
+        Args:
+            cell_ids (Sequence[int]): Flat identifiers of active cells to demote.
+
+        Returns:
+            HierarchicalGrid: A new grid with the complete families' parents active.
+
+        Raises:
+            IndexError: If any cell id is out of range ``[0, num_cells)``.
+            TypeError: If ``cell_ids`` is not integer-valued.
+        """
+        return self._wrap_over(self._impl.coarsen_cells(self._cell_ids(cell_ids)), self._root)
+
+    # ------------------------------------------------------------------
+    # Export
+    # ------------------------------------------------------------------
+
+    def export_cells(self) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.int64]]:
+        """Return deduplicated leaf-cell vertices and their connectivity.
+
+        The mesh a dolfinx-style consumer needs: one vertex per distinct corner of the
+        active leaves, shared exactly between the cells that meet there, including
+        corners shared across levels (a hanging vertex appears once).
+
+        Deduplication is **exact and tolerance-free**: corners are identified on the
+        finest-level integer lattice, where a level-``l`` cell at ``midx`` contributes
+        ``(midx[k] + bit[k]) * factor[k] ** (max_level - l)``. Equal corners are equal
+        integers, and one formula then maps each distinct integer node to coordinates, so
+        coincident corners come out bitwise identical.
+
+        Corner order within a row is the tensor-product (basix/dolfinx) convention:
+        corner ``c`` takes the ``hi`` bound on axis ``k`` iff bit ``k`` of ``c`` is set,
+        with axis 0 the least-significant bit. In 2D that is
+        ``[(lo0, lo1), (hi0, lo1), (lo0, hi1), (hi0, hi1)]``. This is a *corner*
+        convention and is deliberately unlike pantr's C-order flat cell and dof ids,
+        where the **last** axis varies fastest.
+
+        Returns:
+            tuple[npt.NDArray[np.float64], npt.NDArray[np.int64]]: ``(points, conn)``,
+            both read-only. ``points`` has shape ``(num_vertices, ndim)``, sorted
+            lexicographically by integer lattice coordinate; ``conn`` has shape
+            ``(num_cells, 2 ** ndim)`` and indexes ``points``, one row per active leaf in
+            flat cell-id order.
+
+        Note:
+            ``points[conn[cid]]`` reproduces the corners of
+            :meth:`~pantr.grid.Grid.cell_bounds` to within
+            ``2 gamma_2 |x| + 2 gamma_4 |x - b|``, where ``b`` is the lower breakpoint of
+            the root cell holding the corner and ``gamma_m = m u / (1 - m u)`` with
+            ``u = eps / 2``. Both sides build ``b + s * w / factor ** level`` from
+            different expressions, and forming ``w``, the division, the integer-scaled
+            multiply and the addition are four correctly rounded operations each, with a
+            fifth on the :meth:`~pantr.grid.Grid.cell_bounds` side of a ``hi`` corner,
+            which it writes as ``lo + size``.
+
+            **The second term is what the bound is about.** ``|x - b|`` is bounded by the
+            root cell's width and not by ``|x|``, so only where every coordinate
+            dominates its own offset -- a domain with ``b >= 0`` is the usual reason --
+            does this collapse to a multiple of ``eps |x|``. A corner small against the
+            width of the root cell holding it is a counterexample rather than a corner
+            case, and ``tests/test_grid_hierarchical.py`` pins one.
+
+            It is bitwise whenever every intermediate is exactly representable -- a
+            dyadic ``factor`` on dyadic root breakpoints, which covers the usual
+            unit-domain power-of-two case. Bitwise agreement in general is not merely
+            unimplemented, it is unattainable: :meth:`~pantr.grid.Grid.cell_bounds`
+            scales a root cell's width by ``factor ** level``, so for a corner shared
+            between two levels it evaluates a *different* expression on each side and can
+            return two floats one ulp apart, and no single deduplicated vertex can equal
+            both.
+
+            **Stated hypothesis: coordinates are normal, not subnormal.** The bound is a
+            product of relative factors with the magnitudes, so below roughly ``2e-308``
+            both terms underflow to exactly zero while the difference they bound is still
+            a nonzero subnormal: the expression stops implementing the inequality, though
+            the inequality itself still holds in the reals. Measured with breakpoints
+            near ``1e-320``. Nothing excludes that domain, so this is a hypothesis and
+            not a guarantee.
+
+            **The bound is exercised at ``float64`` only.** The C++ hierarchy is bound at
+            ``double`` alone, and ``HierarchicalGrid`` at ``float32`` storage has no
+            numeric test of this quantity in either backend, so the rounding counts are
+            checked at one format and carried to the other by the derivation alone.
+
+        Warning:
+            Materializes ``O(num_cells * 2 ** ndim * ndim)`` integers before
+            deduplication, so a large 3D hierarchy costs several times ``conn`` in peak
+            memory.
+        """
+        points, conn = self._impl.export_cells()
+        points = np.ascontiguousarray(points, dtype=np.float64)
+        conn = np.ascontiguousarray(conn, dtype=np.int64)
+        points.flags.writeable = False
+        conn.flags.writeable = False
+        return points, conn
 
 
 # ---------------------------------------------------------------------------
