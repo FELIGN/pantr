@@ -62,15 +62,21 @@ void register_bezier_root_finding(nanobind::module_& m);
 // touches only its own `.cpp` file. Every one below is empty today; see the
 // file it declares for what it is reserved for.
 
-/// Register the `pantr.grid` tensor-product / hierarchical grid types.
+/// Register the `pantr.grid` tensor-product grid type.
+///
+/// Tensor-product only. It said "tensor-product / hierarchical" until the hierarchy got
+/// its own entry point below, and a reader trusting the old wording would look for the
+/// hierarchical binding in the wrong file.
 void register_grid_types(nanobind::module_& m);
 
 /// Register `pantr.grid.HierarchicalGrid`.
 ///
-/// Its own entry point rather than a second type inside `register_grid_types`: the two
-/// grids are separate ports with separate parity claims, and the comments that justify
-/// this one's checks -- the `midx` length case the wrapper owes a `None` for, the
-/// packed rebuild `__reduce__` names -- argue from somewhere else entirely.
+/// **Not one of #380's six reserved slots**, and it sits inside their banner only because
+/// it belongs beside `register_grid_types`. Its own entry point rather than a second type
+/// inside that one: the two grids are separate ports with separate parity claims, and the
+/// comments that justify this one's checks -- the `midx` length case the wrapper owes a
+/// `None` for, the packed rebuild `__reduce__` names -- argue from somewhere else
+/// entirely.
 void register_grid_hierarchical(nanobind::module_& m);
 
 /// Register `pantr.grid`'s cell and facet tag registries.
