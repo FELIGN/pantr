@@ -983,7 +983,7 @@ class THBSplineSpace:
         """Return the windowed sub-space over a subset of active cells.
 
         Windows this space to the root-cell-aligned bounding box of ``cell_ids``: the
-        hierarchical grid is restricted (:meth:`pantr.grid.HierarchicalGrid.restrict`),
+        hierarchical grid is restricted (:meth:`pantr.grid.Grid.restrict`),
         the root space is windowed (:meth:`pantr.bspline.BsplineSpace.restrict`), and a
         new :class:`THBSplineSpace` is rebuilt on the sub-grid (re-running the Kraft
         active-function selection and truncation).
