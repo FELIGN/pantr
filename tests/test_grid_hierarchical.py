@@ -1771,16 +1771,50 @@ class TestBoundaryFacets:
 # Leaf-cell mesh export
 # ──────────────────────────────────────────────────────────────────────────────
 
-_CORNER_RTOL = 8.0 * np.finfo(np.float64).eps
-"""Bound on ``|export_cells corner - cell_bounds corner|`` relative to the coordinate.
+_U = np.finfo(np.float64).eps / 2.0
+"""Half an ulp: the relative error of one correctly rounded ``float64`` operation."""
 
-`cell_bounds` builds a corner as ``bp + s * (width / factor**level)``, with one more
-addition for a ``hi`` corner; `export_cells` builds the same value as
-``bp + o * (width / factor**max_level)``. Same quantity, different expression, so up to
-four correctly-rounded operations per side, each at most ``eps/2`` relative to a
-coordinate that dominates its own offset: ``<= 7 * eps / 2``, i.e. under ``4 * eps``.
-Measured worst case over the cases below is 1 ulp; the 8 leaves a 2x margin.
-"""
+
+def _gamma(m: float) -> float:
+    """Return ``gamma_m = m u / (1 - m u)``, the closed form for ``m`` roundings.
+
+    Args:
+        m (float): The rounding count.
+
+    Returns:
+        float: The factor.
+    """
+    return m * _U / (1.0 - m * _U)
+
+
+def _corner_bound(x: float, root_lo: float) -> float:
+    """Bound ``|export_cells corner - cell_bounds corner|`` at one coordinate.
+
+    :meth:`~pantr.grid.HierarchicalGrid.cell_bounds` builds a corner as
+    ``b + s * (w / factor**level)`` and :meth:`~pantr.grid.HierarchicalGrid.export_cells`
+    builds the same value as ``b + o * (w / factor**max_level)``, where ``b`` and ``w``
+    are the containing root cell's lower breakpoint and width. Forming ``w``, the
+    division, the integer-scaled multiply and the addition are four correctly rounded
+    operations on each side, and `cell_bounds` spends a fifth on a ``hi`` corner, which
+    it writes as ``lo + size``. That gives ``2 gamma_2 |x| + 2 gamma_4 |x - b|``.
+
+    **The second term is what this bound is about, and a relative form drops it.**
+    ``|x - b|`` is bounded by the root cell's width and not by ``|x|``, so only where
+    every coordinate dominates its own offset -- ``b >= 0`` is the usual reason -- does
+    this collapse to a multiple of ``eps |x|``. Elsewhere it does not, and a corner small
+    against the width of the root cell holding it is a counterexample rather than a
+    corner case: `test_roundtrip_matches_cell_bounds_where_the_coordinate_is_small`
+    exhibits one. :file:`design/backend_parity.md` Rule 2 is the general statement --
+    absolute where the quantity vanishes, never relative.
+
+    Args:
+        x (float): The coordinate, as `cell_bounds` computed it.
+        root_lo (float): Lower breakpoint of the root cell holding it.
+
+    Returns:
+        float: The bound on the absolute difference.
+    """
+    return 2.0 * _gamma(2.0) * abs(x) + 2.0 * _gamma(4.0) * abs(x - root_lo)
 
 
 def _cell_corners(grid: HierarchicalGrid, cid: int) -> list[np.ndarray]:
@@ -1792,6 +1826,31 @@ def _cell_corners(grid: HierarchicalGrid, cid: int) -> list[np.ndarray]:
         )
         for corner in range(1 << grid.ndim)
     ]
+
+
+def _containing_root_lo(grid: HierarchicalGrid, cid: int) -> np.ndarray:
+    """Per-axis lower breakpoint of the root cell holding cell ``cid``."""
+    midx = grid.cell_multi_index(cid)
+    level = grid.cell_level(cid)
+    return np.array(
+        [grid.root.breakpoints[k][midx[k] // (grid.factor[k] ** level)] for k in range(grid.ndim)],
+        dtype=np.float64,
+    )
+
+
+def _assert_corners_match(grid: HierarchicalGrid) -> None:
+    """Assert every exported corner reproduces `cell_bounds` within `_corner_bound`."""
+    points, conn = grid.export_cells()
+    for cid in range(grid.num_cells):
+        root_lo = _containing_root_lo(grid, cid)
+        for corner, want in enumerate(_cell_corners(grid, cid)):
+            got = points[conn[cid, corner]]
+            bound = np.array(
+                [_corner_bound(float(want[k]), float(root_lo[k])) for k in range(grid.ndim)]
+            )
+            assert np.all(np.abs(got - want) <= bound), (
+                f"cell {cid} corner {corner}: {got!r} against {want!r}, bound {bound!r}"
+            )
 
 
 class TestExportCells:
@@ -1812,11 +1871,7 @@ class TestExportCells:
         assert int(conn.min()) >= 0
         assert int(conn.max()) == points.shape[0] - 1
 
-        for cid in range(g.num_cells):
-            for corner, want in enumerate(_cell_corners(g, cid)):
-                np_testing.assert_allclose(
-                    points[conn[cid, corner]], want, rtol=_CORNER_RTOL, atol=0.0
-                )
+        _assert_corners_match(g)
 
     def test_roundtrip_matches_cell_bounds_where_the_coordinate_is_small(self) -> None:
         """A corner far smaller than the root cell holding it still matches cell_bounds.
@@ -1830,13 +1885,14 @@ class TestExportCells:
         """
         g = hierarchical_grid(TensorProductGrid([np.array([-0.3, 1e-5, 1.0])]), 2)
         g = g.refine(0, (1,), (2,))
-        points, conn = g.export_cells()
+        _assert_corners_match(g)
 
-        for cid in range(g.num_cells):
-            for corner, want in enumerate(_cell_corners(g, cid)):
-                np_testing.assert_allclose(
-                    points[conn[cid, corner]], want, rtol=_CORNER_RTOL, atol=0.0
-                )
+        # And the relative form really does fail here, so this fixture keeps earning its
+        # place rather than becoming one more case that happens to pass.
+        points, conn = g.export_cells()
+        want = _cell_corners(g, 0)[1][0]
+        diff = abs(float(points[conn[0, 1]][0]) - float(want))
+        assert diff > 8.0 * np.finfo(np.float64).eps * abs(float(want))
 
     def test_roundtrip_exact_on_dyadic_grid(self) -> None:
         """With dyadic breakpoints and a dyadic factor every corner agrees bitwise."""
