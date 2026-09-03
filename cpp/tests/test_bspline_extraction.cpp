@@ -163,6 +163,16 @@ template <class T>
 ///
 /// **Stated hypothesis: no underflow in the operator entries**, which a purely
 /// relative rounding model requires and this derivation does not establish.
+/// Subnormal entries *are* reachable at `float32` with mixed per-gap knot ratios;
+/// the bound was observed to hold on them by a wide margin, but observing is not
+/// covering.
+///
+/// The refusal below is `PANTR_PRECONDITION`, which is `assert` and **compiles to
+/// nothing under `NDEBUG`** -- and the `gcc` preset that runs this test builds with
+/// `-DNDEBUG`. Past the runaway point this returns a negative or infinite bound
+/// rather than refusing. Reaching it takes on the order of a million knots at
+/// `float32`, which nothing here approaches, so it is dormant; the Python
+/// counterpart raises for real.
 ///
 /// \tparam T Scalar type.
 /// \param degree The polynomial degree.

@@ -411,11 +411,29 @@ def _column_sum_bound(case: _Case, dtype: npt.DTypeLike) -> float:
     ``m u``, because ``S`` is not bounded by the degree -- it grows with the element
     count -- so a first-order truncation would eventually stop bounding.
 
+    The refusal below is a real ``raise`` rather than an ``assert``, so ``python -O``
+    does not remove it. **Its C++ counterpart is not equally live**: that one uses
+    ``PANTR_PRECONDITION``, which is ``assert`` and compiles to nothing under
+    ``NDEBUG``, and the project's own ``gcc`` preset builds with ``-DNDEBUG``. Past
+    the runaway point the C++ side therefore returns a negative or infinite bound
+    instead of refusing. Reaching it takes on the order of a million knots at
+    ``float32``, which no case here approaches, so this is dormant rather than
+    live -- but the two refusals are not the pair they look like.
+
     **Stated hypothesis: no underflow in the operator entries.** A purely relative
     rounding model needs its operands away from gradual underflow, and this
-    derivation is purely relative. Two searches over geometric knot ratios down to
-    ``1e-45``, at several degrees and both dtypes, drove no entry subnormal, so the
-    hypothesis is believed to hold rather than shown to be unnecessary.
+    derivation is purely relative, so entries in the subnormal range are outside
+    what it covers.
+
+    **Subnormal entries are reachable**, and an earlier version of this docstring
+    said two searches had found none. They had not looked in the right place: a
+    search over single-ratio geometric knot spacings finds nothing, while one over
+    *mixed* per-gap ratios finds subnormal float32 entries readily. The bound was
+    observed to hold on every such case found, by a wide margin, but observing is
+    not covering -- the derivation still does not reach them. The harness has
+    ``underflow_floor`` for exactly this, and :func:`assert_accuracy` does not apply
+    it the way :func:`assert_parity` does; closing that is the harness's to do, not
+    this file's.
 
     **The chain length is not the degree, and an earlier version of this said it
     was.** Element 0 alone reaches ``2 (degree - 1)`` stages, since the boundary
@@ -630,14 +648,18 @@ def test_the_columns_are_a_partition_of_unity(
         derived_accuracy(
             bound=np.full(column_sums.shape, _column_sum_bound(case, dtype)),
             why=(
-                "an entry is a chain of at most `degree` insertions, each committing four "
-                "roundings -- the complement, the two products and their sum -- against an "
-                "exact convex combination of values in [0, 1] whose weights sum to one, so it "
-                "carries at most gamma_{4 S} where S is the chain length of THIS vector: an "
-                "element's own sequence is degree - multiplicity stages, the boundary sequence "
-                "composes with element 0's, and the inter-element copies carry the chain "
-                "forward. Summing degree + 1 entries against an exact total of one adds "
-                "gamma_{degree}. First order in u that is (4 S (degree + 1) + degree) u"
+                "an entry is a chain of S insertions, each an exact convex combination of "
+                "values in [0, 1] whose weights sum to one, so the error carries forward "
+                "with weight at most one. alpha's own rounding cancels: alpha and "
+                "beta = 1 - alpha reach this sum only as the pair |A + B - 1|, whose defect "
+                "is at most u/2 however alpha was computed. That leaves 2.5 roundings per "
+                "stage, so an entry is within gamma_{2.5 S}. S is the chain length of THIS "
+                "vector, not the degree: an element's own sequence is degree - multiplicity "
+                "stages, the boundary sequence composes with element 0's, and the "
+                "inter-element copies carry the chain forward. Summing degree + 1 entries "
+                "against an exact total of one adds gamma_{degree}. What is asserted is "
+                "gamma_{3 S + degree} in closed form, half a rounding per stage of declared "
+                "slack over that. Hypothesis: no underflow in the entries"
             ),
         ),
         context=f"{case.label} in {np.dtype(dtype).name} on {backend.name}",
