@@ -17,6 +17,7 @@ set(PANTR_TEST_SOURCES
     test_grid_hierarchical.cpp
     test_grid_blocks.cpp
     test_grid_hierarchical_type.cpp
+    test_grid_hierarchical_refine.cpp
     test_aabb.cpp
     test_affine.cpp
     test_bezier_type.cpp
