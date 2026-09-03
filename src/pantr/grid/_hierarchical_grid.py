@@ -1874,18 +1874,28 @@ class HierarchicalGrid(_GridPython):
 
         Note:
             ``points[conn[cid]]`` reproduces the corners of :meth:`cell_bounds` to
-            within ``8 * eps * |coordinate|`` (about 4 ulp), and bitwise whenever every
-            intermediate is exactly representable -- a dyadic ``factor`` on dyadic root
-            breakpoints, which covers the usual unit-domain power-of-two case.
+            within ``2 gamma_2 |x| + 2 gamma_4 |x - b|``, where ``b`` is the lower
+            breakpoint of the root cell holding the corner and
+            ``gamma_m = m u / (1 - m u)`` with ``u = eps / 2``. Both sides build
+            ``b + s * w / factor ** level`` from different expressions, and forming
+            ``w``, the division, the integer-scaled multiply and the addition are four
+            correctly rounded operations each, with a fifth on the :meth:`cell_bounds`
+            side of a ``hi`` corner, which it writes as ``lo + size``.
 
-            Bitwise agreement in general is not merely unimplemented, it is
-            unattainable. :meth:`cell_bounds` scales a root cell's width by
-            ``factor ** level``, so for a corner shared between two levels it evaluates
-            a *different* expression on each side and can return two floats one ulp
-            apart; no single deduplicated vertex can equal both. The bound follows from
-            three roundings per side (one division, one integer-scaled multiply, one
-            addition, plus one more for a ``hi`` corner) against a coordinate that
-            dominates its own offset.
+            **The second term is what the bound is about.** ``|x - b|`` is bounded by
+            the root cell's width and not by ``|x|``, so only where every coordinate
+            dominates its own offset -- a domain with ``b >= 0`` is the usual reason --
+            does this collapse to a multiple of ``eps |x|``. A corner small against the
+            width of the root cell holding it is a counterexample rather than a corner
+            case, and ``tests/test_grid_hierarchical.py`` pins one.
+
+            It is bitwise whenever every intermediate is exactly representable -- a
+            dyadic ``factor`` on dyadic root breakpoints, which covers the usual
+            unit-domain power-of-two case. Bitwise agreement in general is not merely
+            unimplemented, it is unattainable: :meth:`cell_bounds` scales a root cell's
+            width by ``factor ** level``, so for a corner shared between two levels it
+            evaluates a *different* expression on each side and can return two floats
+            one ulp apart, and no single deduplicated vertex can equal both.
 
         Warning:
             Materializes ``O(num_cells * 2 ** ndim * ndim)`` integers before
