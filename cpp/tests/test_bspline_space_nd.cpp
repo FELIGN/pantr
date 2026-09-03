@@ -403,6 +403,45 @@ void check_float_storage() {
     PANTR_CHECK_MSG(s.tolerance() > b->tolerance(), "the two directions differ here too");
 }
 
+/// The tolerance stays a `double` at `float` storage, which is not free to observe.
+///
+/// `pantr/bspline/knots.hpp` records that the tolerance is a `double` at every
+/// storage width, deliberately. That is invisible on almost every knot vector: the
+/// tolerance is `8 * eps * scale`, the factor is a power of two, so wherever the
+/// winning scale is exactly representable in `float` the tolerance is too, and a
+/// space storing it in `T` would agree bit for bit. Measured: narrowing the member to
+/// `T` passed every other case in this file and the whole Python parity suite.
+///
+/// This is the case where the two spellings differ. The scale is `hi - lo` across
+/// zero, so it is a *sum* of two `float`s and needs one bit more than `float` has --
+/// and the vacuity guard below is what says so, rather than leaving it to be believed.
+void check_the_tolerance_stays_a_double_at_float_storage() {
+    // From -1e-7f to 1.0f, so the scale is the span rather than either coordinate.
+    const std::vector<float> straddling{-1e-7F, -1e-7F, -1e-7F, 0.5F, 1.0F, 1.0F, 1.0F};
+    // Scale exactly 1, so this direction's own tolerance IS a float value and it
+    // loses the reduction by one part in 1e8.
+    const std::vector<float> unit{0.0F, 0.0F, 0.0F, 1.0F, 1.0F, 1.0F};
+    const auto wide = one_d(straddling, 2);
+    const auto narrow = one_d(unit, 2);
+
+    PANTR_CHECK_MSG(static_cast<double>(static_cast<float>(wide->tolerance()))
+                        != wide->tolerance(),
+                    "the vacuity guard: this direction's tolerance must not be a float "
+                    "value, or narrowing the space's member would be undetectable");
+    PANTR_CHECK_MSG(static_cast<double>(static_cast<float>(narrow->tolerance()))
+                        == narrow->tolerance(),
+                    "and the other one's must be, so the two are told apart by width "
+                    "rather than by magnitude alone");
+    PANTR_CHECK_MSG(wide->tolerance() > narrow->tolerance(),
+                    "the non-representable one must win the reduction");
+
+    for (const auto& order : {std::vector{wide, narrow}, std::vector{narrow, wide}}) {
+        const BsplineSpace<float> s(order);
+        PANTR_CHECK_MSG(s.tolerance() == wide->tolerance(),
+                        "the space must carry the double, not its float rounding");
+    }
+}
+
 /// A null handle and an out-of-range direction are both refused.
 void check_refusals() {
     const std::vector<double> knots{0.0, 0.0, 0.0, 1.0, 1.0, 1.0};
@@ -505,6 +544,7 @@ int main() {
     check_a_direction_outlives_the_space();
     check_copy_and_move();
     check_float_storage();
+    check_the_tolerance_stays_a_double_at_float_storage();
     check_refusals();
     check_the_totals_refuse_an_overflow();
     return pantr::test::summary("test_bspline_space_nd");

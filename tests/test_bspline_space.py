@@ -1375,3 +1375,50 @@ def test_boundary_dofs_rejects_periodic() -> None:
 
     with pytest.raises(ValueError, match="periodic"):
         space.boundary_dofs(0, 0)
+
+
+def test_the_domain_cannot_be_corrupted_through_the_array_it_hands_out() -> None:
+    """A write through ``domain`` reaches the caller's own array and nothing else.
+
+    The regression test for a defect the C++ port retires rather than one it
+    introduced. Until the port, ``domain`` was a ``functools.cached_property``, so
+    every call returned **one** array and that array came back **writeable**: a single
+    ``space.domain[0, 0] = 999.0`` corrupted the value for the object's whole life,
+    and every later read -- including the one inside the out-of-domain message in
+    ``pantr.bspline._bspline_basis_multidim`` -- served the corrupted number. It was
+    the only array-shaped memo in ``src/pantr/bspline/`` that was not frozen
+    read-only, it is the third prohibition of ``design/bspline_derived_caches.md``,
+    and nothing in this suite inspected ``domain.flags``.
+
+    What removed it was not a defensive freeze. ``design/bspline_derived_caches.md``
+    F1 requires the tensor-product space to acquire **no** memos, so there is no
+    cached array left on either side to corrupt, and the wrapper copies out of what
+    the implementation owns. So the array stays writable -- no caller has to change --
+    and the write goes nowhere.
+
+    Deliberately **not** gated on the C++ extension and not parametrised over the
+    backends: the property is the wrapper's and holds under either implementation, and
+    gating it would make it skip in the configuration where it is the only thing
+    checking this. The C++ half of the contract -- that the wrapper does not hand the
+    read-only view straight through -- is in
+    ``tests/parity/test_bspline_binding_contract.py``.
+    """
+    space = BsplineSpace(
+        [
+            BsplineSpace1D([0.0, 0.0, 0.0, 1.0, 2.0, 3.0, 3.0, 3.0], 2),
+            BsplineSpace1D([10.0, 10.0, 11.0, 12.0, 12.0], 1),
+        ]
+    )
+    expected = [[0.0, 3.0], [10.0, 12.0]]
+    np.testing.assert_array_equal(space.domain, expected)
+
+    handed_out = space.domain
+    assert handed_out.flags.writeable, "the domain stopped being writable"
+    assert space.domain is not handed_out, "the domain is cached again"
+    assert not np.shares_memory(space.domain, handed_out), "the domain is a shared buffer"
+
+    handed_out[0, 0] = 999.0
+    handed_out[1, 1] = -999.0
+    np.testing.assert_array_equal(space.domain, expected)
+    assert space.spaces[0].domain[0] == 0.0
+    assert space.spaces[1].domain[1] == 12.0
