@@ -1131,8 +1131,14 @@ class HierarchicalGrid : public GridBase<HierarchicalGrid<T>> {
     ///       usual reason -- does this collapse to a multiple of `eps |x|`. Elsewhere it
     ///       does not, and a corner small against the width of the root cell holding it is
     ///       a counterexample rather than a corner case;
-    ///       `test_grid_hierarchical_refine.cpp` pins one, and
-    ///       `design/backend_parity.md` Rule 2 is the general statement.
+    ///       `test_grid_hierarchical_refine.cpp` pins one.
+    ///
+    ///       `design/backend_parity.md` Rule 2 is the general statement, **including its
+    ///       converse**: a flat absolute bound would be vacuous on a corner near the
+    ///       origin, admitting a relative error of one there. This is neither form. It
+    ///       carries one term per mechanism -- the final addition, which scales with the
+    ///       coordinate, and the three that build the offset, which scale with the root
+    ///       cell's width -- which is what Rule 2 asks for.
     ///
     ///       Bitwise agreement is unattainable in general rather than merely
     ///       unimplemented: for a corner shared between two levels the two sides evaluate

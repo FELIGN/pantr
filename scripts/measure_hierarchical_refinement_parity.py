@@ -18,9 +18,12 @@ What is compared, and against which criterion
 
 **Exactly**: the cell count, the deepest level, the repr, every cell's level and
 multi-index, the whole connectivity table, the vertex count, and a restriction's
-``local_to_global_cell`` and ``in_subset``. These are integers, indices and counts, so
-`design/backend_parity.md`'s determinism rule makes exact equality the right bar -- finite
-precision does not bite on any of them, and a tolerance would only hide a divergence.
+``local_to_global_cell`` and ``in_subset``. Every one of them is an integer, an index or a
+count, so finite precision does not bite and exact equality is a property of the
+mathematics rather than of the build. A tolerance on a cell id would hide a divergence
+instead of measuring one, which is `design/backend_parity.md` Rule 11's point: none of the
+rules that bound a displacement says anything about a count, and a count is what carries a
+verdict.
 
 **To a derived bound**: the exported vertex coordinates. Both sides build a corner as
 ``b + o * (w / factor ** max_level)``, so the difference between them is bounded by the
