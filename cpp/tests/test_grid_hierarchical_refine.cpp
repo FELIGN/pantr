@@ -34,9 +34,9 @@
 /// A tolerance there would accept a sub-root that had been re-based or re-clamped, which
 /// is exactly the bug the assertion exists to catch. And on a dyadic root with a dyadic
 /// factor every intermediate is representable, so the export's corners equal
-/// `cell_bounds`' corners exactly. Neither claim is about reproducibility across builds,
-/// which is what `design/backend_parity.md` reserves a derived tolerance for; both are
-/// about one program evaluating one expression twice.
+/// `cell_bounds`' corners exactly. Neither claim is about reproducibility across builds or
+/// backends, which is what the derived bounds in `design/backend_parity.md` exist for;
+/// both are about one program evaluating one expression twice.
 
 #include <algorithm>
 #include <cmath>
@@ -390,10 +390,8 @@ void test_refine_rejects_bad_arguments() {
     const Ints far_hi{3, 1};
     check_throws_containing([&] { (void)g.refine(0, lo, far_hi); }, "out of bounds at level 0",
                             "a box outside the level");
-    const Ints bad{0};
     check_throws_containing([&] { (void)g.refine_cells(Ints{99}); }, "out of range",
                             "an out-of-range id");
-    static_cast<void>(bad);
 }
 
 /// Both levels `refine` touches are re-normalized, and the merge is observable.
@@ -546,8 +544,7 @@ void test_coarsen_reports_every_reason() {
 /// At most six cells are named per reason, and the remainder is reported as a count.
 void test_coarsen_refusal_truncates_a_long_list() {
     const Ints factor{2};
-    std::vector<Ints> rects;
-    Ints whole{0, 16};
+    const Ints whole{0, 16};
     std::vector<BlockList> blocks;
     blocks.push_back(level(1, {whole}));
     std::vector<double> bp(17);
@@ -557,7 +554,6 @@ void test_coarsen_refusal_truncates_a_long_list() {
     const Grid g = Grid::from_blocks(TensorProductGrid<double>({bp}), factor, std::move(blocks),
                                      std::nullopt);
     PANTR_CHECK(g.num_cells() == 16);
-    static_cast<void>(rects);
 
     // Level 0 holds all sixteen cells and there is no level 1 at all, so every cell of the
     // box is a still-active leaf: six named and ten counted.
@@ -997,16 +993,58 @@ void test_export_corner_order_convention() {
     PANTR_CHECK_MSG(got == expected, "the corner order convention moved");
 }
 
-/// An unrefined `n ** ndim` grid exports the whole `(n + 1) ** ndim` breakpoint lattice.
+/// A uniformly refined grid exports exactly `(factor ** level * n + 1) ** ndim` vertices.
 ///
-/// A closed form, and one the export never evaluates: it counts distinct rows.
-void test_export_of_a_flat_grid_is_the_full_lattice() {
-    const Ints factor{2, 2, 2};
-    const std::vector<double> bp{0.0, 1.0 / 3.0, 2.0 / 3.0, 1.0};
-    const Grid g(TensorProductGrid<double>({bp, bp, bp}), factor);
-    const CellExport<double> mesh = g.export_cells();
-    PANTR_CHECK_MSG(mesh.num_vertices == 4 * 4 * 4, std::to_string(mesh.num_vertices));
-    PANTR_CHECK(mesh.conn.size() == static_cast<std::size_t>(3 * 3 * 3 * 8));
+/// A closed form, and one the export never evaluates: it counts distinct rows. The
+/// unrefined case is the `level = 0` instance of it, and the refined ones are what make
+/// the deduplication earn its keep -- every interior corner of the lattice is contributed
+/// by `2 ** ndim` cells and must survive once. The factors are deliberately odd as well as
+/// even, so `factor ** level` is exercised where the arithmetic is not exact.
+void test_export_of_a_uniform_grid_is_the_full_lattice() {
+    struct Case {
+        std::int64_t factor;  ///< Per-axis subdivision factor.
+        std::int64_t depth;   ///< How many uniform refinements to apply.
+        std::int64_t roots;   ///< Root cells per axis.
+        std::int64_t ndim;    ///< Axis count.
+    };
+    for (const Case& c : std::vector<Case>{{2, 0, 3, 3}, {3, 3, 1, 1}, {3, 2, 2, 2},
+                                           {5, 2, 1, 2}, {2, 3, 3, 1}}) {
+        const auto d = static_cast<std::size_t>(c.ndim);
+        std::vector<double> bp(static_cast<std::size_t>(c.roots) + 1);
+        for (std::size_t i = 0; i < bp.size(); ++i) {
+            bp[i] = static_cast<double>(i) / static_cast<double>(c.roots);
+        }
+        const Ints factor(d, c.factor);
+        Grid g(TensorProductGrid<double>(std::vector<std::vector<double>>(d, bp)), factor);
+        for (std::int64_t level = 0; level < c.depth; ++level) {
+            Ints lo(d, 0);
+            Ints hi(d);
+            for (std::size_t k = 0; k < d; ++k) {
+                hi[k] = g.level_cells_per_axis(level, static_cast<std::int64_t>(k));
+            }
+            g = g.refine(level, lo, hi);
+        }
+        std::int64_t per_axis = c.roots;
+        for (std::int64_t level = 0; level < c.depth; ++level) {
+            per_axis *= c.factor;
+        }
+        std::int64_t want = 1;
+        std::int64_t cells = 1;
+        for (std::size_t k = 0; k < d; ++k) {
+            want *= per_axis + 1;
+            cells *= per_axis;
+        }
+        const CellExport<double> mesh = g.export_cells();
+        const std::string label = "factor " + std::to_string(c.factor) + " depth "
+                                  + std::to_string(c.depth) + " ndim "
+                                  + std::to_string(c.ndim);
+        PANTR_CHECK_MSG(g.num_cells() == cells, label + ": " + std::to_string(g.num_cells()));
+        PANTR_CHECK_MSG(mesh.num_vertices == want,
+                        label + ": " + std::to_string(mesh.num_vertices) + " vertices, want "
+                            + std::to_string(want));
+        PANTR_CHECK(mesh.conn.size()
+                    == static_cast<std::size_t>(cells) * (std::size_t{1} << d));
+    }
 }
 
 /// An interior vertex is one index, referenced once per cell that touches it.
@@ -1278,7 +1316,7 @@ int main() {
     test_export_matches_the_hand_worked_corner_mesh();
     test_export_vertices_are_lexicographically_sorted();
     test_export_corner_order_convention();
-    test_export_of_a_flat_grid_is_the_full_lattice();
+    test_export_of_a_uniform_grid_is_the_full_lattice();
     test_export_shares_an_interior_vertex();
     test_export_deduplicates_a_hanging_vertex();
     test_export_is_exact_on_a_dyadic_grid();
