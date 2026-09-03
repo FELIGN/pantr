@@ -3,6 +3,16 @@
 This module provides functions for computing extraction operators that transform
 between different basis representations (Bernstein, Lagrange, cardinal B-spline)
 and B-spline basis functions.
+
+Layer 2: it validates, allocates and dispatches, and holds no Numba. The kernels
+live in :mod:`pantr.bspline._bspline_extraction_core`, and
+:mod:`pantr.bspline._extraction_backend` chooses between them and their C++ twins
+in ``cpp/include/pantr/bspline/extraction.hpp``.
+
+Only the **Bézier** builder is dispatched. Lagrange and cardinal are that operator
+post-multiplied by a change-of-basis matrix that :mod:`pantr.change_basis` already
+dispatches on its own, so they inherit the backend through it -- except for the
+cardinal target's interval scan, which is not ported.
 """
 
 from __future__ import annotations
@@ -10,7 +20,6 @@ from __future__ import annotations
 import numpy as np
 import numpy.typing as npt
 
-from .._numba_compat import nb_jit
 from ..basis import LagrangeVariant
 from ..basis._basis_utils import _allocate_or_validate_out
 from ..change_basis import (
@@ -20,145 +29,9 @@ from ..change_basis import (
 from ._bspline_knots import (
     _check_spline_info,
     _get_Bspline_cardinal_intervals_1D_impl,
-    _get_multiplicity_of_first_knot_in_domain_impl,
     _get_unique_knots_and_multiplicity_impl,
 )
-
-
-@nb_jit(
-    nopython=True,
-    cache=True,
-    parallel=False,
-)
-def _tabulate_Bspline_Bezier_1D_extraction_core(
-    knots: npt.NDArray[np.float32 | np.float64],
-    degree: int,
-    tol: float,
-    out: npt.NDArray[np.float32 | np.float64],
-) -> None:
-    r"""Core implementation to compute Bézier extraction operators, writing to output array.
-
-    This function computes the extraction operators that transform Bernstein
-    into B-spline basis functions for each interval.
-    For each interval \( i \), the Bézier extraction operator \( C_i \) satisfies:
-
-        \[
-        N_i(x) = C_i @ B(ξ)
-        \]
-
-    where:
-      - N_i(x) is the vector of B-spline basis functions nonzero on the interval \( i \),
-        evaluated at \( x \),
-      - \( B(ξ) \) is the vector of Bernstein basis functions on the reference interval \([0, 1]\),
-        evaluated at \( ξ \),
-      - \( C_i \) is the extraction matrix for interval \( i \),
-      - \( x \) is the physical coordinate, \( ξ \) is the local (reference) referred to \([0, 1]\).
-
-    Args:
-        knots (npt.NDArray[np.float32 | np.float64]): B-spline knot vector.
-        degree (int): B-spline degree.
-        tol (float): Tolerance for numerical comparisons.
-        out (npt.NDArray[np.float32 | np.float64]): Output array where results will be written.
-            Must have the correct shape (n_elems, degree+1, degree+1) and dtype matching knots
-            (no validation performed inside this numba-compiled function).
-
-    Note:
-        This is a Numba-compiled function optimized for performance. It
-        expects pre-validated inputs and assumes the output array has the
-        correct shape and dtype. Inputs are assumed to be correct (no validation performed).
-        For general use, call _tabulate_Bspline_Bezier_1D_extraction_impl instead.
-    """
-    unique_knots, mults = _get_unique_knots_and_multiplicity_impl(
-        knots, degree, tol, in_domain=True
-    )
-
-    n_elems = len(unique_knots) - 1
-
-    dtype = knots.dtype
-    one = dtype.type(1.0)
-
-    # Initialize identity matrix for every element.
-    out.fill(0.0)
-    out[:, : degree + 1, : degree + 1] = np.eye(degree + 1, dtype=dtype)
-
-    mult = _get_multiplicity_of_first_knot_in_domain_impl(knots, degree, tol)
-
-    # If not open first knot, additional knot insertion is needed.
-    if mult < (degree + 1):
-        C = out[0]
-        reg = degree - mult
-
-        t = knots[degree]
-        for r in range(reg):
-            lcl_knots = knots[r:]
-            for k in range(1, degree - r):
-                alpha = (t - lcl_knots[k]) / (lcl_knots[k + degree - r] - lcl_knots[k])
-                C[:, k - 1] = alpha * C[:, k] + (one - alpha) * C[:, k - 1]
-
-    alphas = np.zeros(max(degree - 1, 0), dtype=dtype)  # degree 0: no insertion coefficients
-
-    knt_id = degree
-    mult = 0
-
-    for elem_id in range(n_elems):
-        knt_id += mult
-        mult = mults[elem_id + 1]
-
-        if mult >= degree:
-            continue
-
-        lcl_knots = knots[knt_id : knt_id + degree + 1]
-        alphas[: degree - mult] = (lcl_knots[1] - lcl_knots[0]) / (
-            lcl_knots[mult + 1 :] - lcl_knots[0]
-        )
-
-        C = out[elem_id]
-
-        reg = degree - mult
-        for r in range(1, reg + 1):
-            s = mult + r
-            for k in range(degree, s - 1, -1):
-                alpha = alphas[k - s]
-                C[:, k] = alpha * C[:, k] + (one - alpha) * C[:, k - 1]
-
-            if elem_id < (n_elems - 1):
-                out[elem_id + 1, reg - r : reg + 1, reg - r] = C[degree - r : degree + 1, degree]
-
-
-@nb_jit(
-    nopython=True,
-    cache=True,
-    parallel=False,
-)
-def _bezier_structural_identity_mask_core(
-    multiplicities: npt.NDArray[np.intp],
-    degree: int,
-    out: npt.NDArray[np.bool_],
-) -> None:
-    """Compute a per-element Bézier identity mask from knot multiplicities.
-
-    Element ``e`` spanning ``[unique_knots[e], unique_knots[e+1]]`` has an
-    identity Bézier extraction operator if and only if both boundary unique
-    knots have multiplicity ``>= degree + 1``, meaning the element is already
-    a Bézier patch (fully isolated from its neighbours).
-
-    Args:
-        multiplicities (npt.NDArray[np.intp]): Per-unique-knot multiplicity
-            array of length ``n_elements + 1`` (in-domain unique knots
-            including both endpoints).
-        degree (int): B-spline degree.
-        out (npt.NDArray[np.bool_]): Output boolean array of length
-            ``n_elements = len(multiplicities) - 1``.
-
-    Note:
-        Inputs are assumed to be correct (no validation performed).
-        For general use, call
-        ``spanwise_element_extraction._bezier_structural_identity_mask`` instead.
-    """
-    threshold = degree + 1
-    n_elements = len(multiplicities) - 1
-    for e in range(n_elements):
-        out[e] = multiplicities[e] >= threshold and multiplicities[e + 1] >= threshold
+from ._extraction_backend import bezier_extraction_kernel
 
 
 def _prepare_extraction_out(
@@ -240,7 +113,7 @@ def _tabulate_Bspline_Bezier_1D_extraction_impl(
     """
     out = _prepare_extraction_out(knots, degree, tol, out)
 
-    _tabulate_Bspline_Bezier_1D_extraction_core(knots, degree, tol, out)
+    bezier_extraction_kernel()(knots, degree, tol, out)
 
     return out
 
@@ -342,32 +215,6 @@ def _tabulate_Bspline_cardinal_1D_extraction_impl(
         out[i, :, :] = np.eye(degree + 1, dtype=knots.dtype)
 
     return out
-
-
-def _warmup_numba_functions() -> None:
-    """Precompile numba functions with float64 signatures for faster first call.
-
-    This function triggers compilation of the numba-decorated functions
-    with float64 arrays, ensuring they are cached and ready for use.
-    """
-    # Small dummy arrays for warmup
-    knots_dummy = np.array([0.0, 0.0, 0.0, 1.0, 1.0, 1.0], dtype=np.float64)
-    tol_dummy = 1e-10
-    degree_dummy = 2
-    n_elems = 1
-    out_dummy = np.empty((n_elems, degree_dummy + 1, degree_dummy + 1), dtype=np.float64)
-
-    # Warmup Bezier extraction core with float64
-    _tabulate_Bspline_Bezier_1D_extraction_core(knots_dummy, degree_dummy, tol_dummy, out_dummy)
-
-    # Warmup structural identity mask kernel
-    mults_dummy = np.array([degree_dummy + 1, degree_dummy + 1], dtype=np.intp)
-    mask_dummy = np.empty(1, dtype=np.bool_)
-    _bezier_structural_identity_mask_core(mults_dummy, degree_dummy, mask_dummy)
-
-
-# Precompile numba functions on module import
-# (Moved to central thread in __init__.py)
 
 
 __all__ = [

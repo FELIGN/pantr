@@ -78,7 +78,7 @@ if not TYPE_CHECKING:
             from .bspline import (  # noqa: PLC0415
                 _bspline_basis_core,
                 _bspline_eval,
-                _bspline_extraction,
+                _bspline_extraction_core,
                 _bspline_knot_insertion_core,
                 _bspline_knot_removal_core,
                 _bspline_knots,
@@ -92,7 +92,7 @@ if not TYPE_CHECKING:
             # main / caller thread) and are cached to disk by Numba's cache=True.
             _bspline_basis_core._warmup_numba_functions()
             _bspline_eval._warmup_numba_functions()
-            _bspline_extraction._warmup_numba_functions()
+            _bspline_extraction_core._warmup_numba_functions()
             _bspline_knot_insertion_core._warmup_numba_functions()
             _bspline_knot_removal_core._warmup_numba_functions()
             _bspline_knots._warmup_numba_functions()
