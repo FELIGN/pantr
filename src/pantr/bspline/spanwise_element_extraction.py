@@ -1146,7 +1146,10 @@ def _lagrange_structural_identity_mask(
     ``lagr_to_bzr`` equals ``I`` when the Lagrange nodes coincide with the
     Bernstein abscissae ``i / degree`` — e.g. for ``degree == 1`` with
     equispaced, GLL, or Chebyshev-2nd nodes.  For all other cases no element
-    can have an identity Lagrange extraction operator.
+    can have an identity Lagrange extraction operator; the argument for that
+    half, which is a claim rather than a definition, is written out beside
+    ``lagrange_structural_identity_mask`` in
+    ``cpp/include/pantr/bspline/extraction.hpp``.
 
     The ``degree == 0`` branch stays here rather than moving into the dispatched
     kernel, and it is not a special case that could be folded away:
