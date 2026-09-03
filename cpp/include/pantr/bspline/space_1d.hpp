@@ -355,9 +355,18 @@ class BsplineSpace1D {
         // Divided rather than multiplied: `2 * degree + 2` is signed overflow, and
         // so undefined, for a degree near the top of the range. Python's integers
         // are arbitrary-precision, so the oracle's spelling is exact for any degree
-        // and this one has to be too. The size is at least 0, so the division is
-        // well defined.
-        if ((static_cast<std::int64_t>(knots.size()) - 2) / 2 < degree) {
+        // and this one has to be too.
+        //
+        // The `size < 2` guard is what makes the division equivalent to the
+        // oracle's multiplication rather than nearly so. C++ integer division
+        // truncates toward zero where the rewrite needs a floor, and the two differ
+        // on exactly one input: at one knot and degree 0, `(1 - 2) / 2` truncates to
+        // 0 instead of -1, so the refusal is skipped and the caller is told
+        // something else further down. Any vector shorter than two knots is refused
+        // for any non-negative degree, since `2 * degree + 2` is at least 2, so the
+        // guard costs no case and closes that one.
+        const auto count = static_cast<std::int64_t>(knots.size());
+        if (count < 2 || (count - 2) / 2 < degree) {
             throw std::invalid_argument("knots must have at least 2*degree+2 elements");
         }
         // `np.all(np.diff(knots) >= 0)`: the difference is formed first and only
