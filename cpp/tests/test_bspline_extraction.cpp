@@ -62,6 +62,7 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <utility>
 #include <cstdint>
 #include <limits>
 #include <span>
@@ -749,6 +750,58 @@ void check_lagrange_identity_mask() {
     }
 }
 
+/// The contraction accumulates in `T`, not in `double`.
+///
+/// **This is the one contract the Python parity suite cannot check**, and it is worth
+/// saying why rather than assuming the suite covers it. That suite's Lagrange claim is
+/// *bounded* -- the oracle sums the contraction with a BLAS `gemm` whose order is
+/// unspecified, so bit-identity is not available -- and the bound has to admit the two
+/// summation orders' own disagreement. Measured over the shipped table at `float32`,
+/// that disagreement and the narrow-versus-wide gap are **both exactly one unit in the
+/// last place**, and they cannot be separated by any bound: the contraction sums
+/// non-negative terms, so there is no cancellation to make the width gap dominate.
+/// `design/backend_parity.md` Rule 9 says the width is part of the contract; this is
+/// where it is enforced.
+///
+/// The construction. The unclamped uniform quadratic vector's Bézier operators are both
+/// `[[1/2, 0, 0], [1/2, 1, 1/2], [0, 0, 1/2]]`, so row 1 contracts with weights
+/// `(1/2, 1, 1/2)`. Against a matrix column `(2^-23, 1, 2^-23)` at `float32`, each
+/// outer term is `2^-24`, exactly half an ulp of one, so a `float32` accumulator rounds
+/// both to even and returns exactly `1`, while a `double` accumulator reaches
+/// `1 + 2^-23` and stores it exactly. One ulp apart, and only one of the two is what
+/// the oracle computes.
+///
+/// The matrix is not a Lagrange-to-Bernstein matrix and does not have to be: it is an
+/// argument, and what is under test is the contraction.
+void check_the_accumulator_is_the_storage_type() {
+    const std::vector<float> knots = {0.0F, 0.5F, 1.0F, 1.5F, 2.0F, 2.5F, 3.0F};
+    const float tiny = std::ldexp(1.0F, -23);
+    // Column-major reading: every column is (tiny, 1, tiny), so every entry of row 1
+    // exercises the same cancellation-free half-ulp sum.
+    const std::vector<float> matrix = {tiny, tiny, tiny, 1.0F, 1.0F, 1.0F, tiny, tiny, tiny};
+
+    const Operators<float> ops = build_lagrange<float>(knots, 2, 0.0, matrix);
+    PANTR_CHECK_MSG(ops.count == 2, "the unclamped uniform quadratic vector has two elements");
+    for (std::size_t e = 0; e < ops.count; ++e) {
+        for (std::size_t j = 0; j < ops.side; ++j) {
+            PANTR_CHECK_MSG(at(ops.view(), e, 1, j) == 1.0F,
+                            "the contraction accumulated wider than float, so a pair of "
+                            "half-ulp terms survived where the oracle rounds them away");
+        }
+    }
+
+    // And the construction really does separate the two widths, so the assertion above
+    // is not passing because both give the same answer.
+    double wide = 0.0;
+    for (const auto& [weight, entry] :
+         std::array<std::pair<float, float>, 3>{{{0.5F, tiny}, {1.0F, 1.0F}, {0.5F, tiny}}}) {
+        wide += static_cast<double>(weight) * static_cast<double>(entry);
+    }
+    PANTR_CHECK_MSG(static_cast<float>(wide) != 1.0F,
+                    "the width probe no longer separates a float accumulator from a double "
+                    "one, so the check above asserts nothing");
+}
+
 }  // namespace
 
 int main() {
@@ -774,5 +827,6 @@ int main() {
     check_lagrange_columns_are_a_partition_of_unity<float>();
     check_lagrange_identity_mask<double>();
     check_lagrange_identity_mask<float>();
+    check_the_accumulator_is_the_storage_type();
     return pantr::test::summary("test_bspline_extraction");
 }

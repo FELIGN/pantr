@@ -18,6 +18,18 @@ backends do differ, by one unit of roundoff at degree 3 and above and not at all
 below; :func:`test_the_two_backends_still_differ_somewhere` is the guard that keeps
 the bound from silently becoming a comparison against zero.
 
+**What a bounded claim cannot see here, and where it is checked instead.** The bound
+has to admit the two summation orders' own disagreement, and measured over the shipped
+table at ``float32`` that disagreement is **exactly one unit in the last place** -- the
+same size as the gap between accumulating the contraction in ``float32`` and in
+``float64``. The two are not separable by any bound, and not for want of a tighter one:
+the contraction sums non-negative terms, so no cancellation can make the width gap
+dominate. So nothing in this file would fail if the C++ accumulated in ``double``, which
+``design/backend_parity.md`` Rule 9 forbids. Verified by mutation, not assumed.
+``cpp/tests/test_bspline_extraction.cpp``'s ``check_the_accumulator_is_the_storage_type``
+is where the width is pinned, on the C++ side where there is no BLAS and both operands
+can be chosen.
+
 The exception is an **identity** change of basis, which happens at degree 1 for the
 equispaced, Gauss-Lobatto-Legendre and second-kind Chebyshev families. Every term is
 then ``C[i,k] * 0`` or ``C[i,j] * 1``, so nothing rounds in either summation order
