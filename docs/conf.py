@@ -244,6 +244,15 @@ nitpick_ignore = [
     # a role that can never resolve is a broken link rather than a suppressible one.
     ("py:class", "pantr.grid._grid._GridPython"),
     ("py:class", "pantr.grid._grid._GridWrapper"),
+    # The annotation of every ported wrapper's `_impl` slot: a private, module-local
+    # `TypeAlias` naming a union of the oracle and the two per-dtype C++ handles.
+    # Autodoc documents the slot because it carries an inline docstring, and renders
+    # the annotation as a class reference; there is nothing for it to resolve to,
+    # since a `TYPE_CHECKING`-only alias has no runtime object and no documented
+    # page. Three wrappers declare it under this exact name -- `pantr.bezier.Bezier`,
+    # `pantr.bspline.BsplineSpace1D` and `pantr.bspline.BsplineSpace` -- so this is
+    # one entry rather than three, and the next ported type inherits it.
+    ("py:class", "_Impl"),
     ("py:class", "CellIndex"),
     ("py:class", "CellIndicesBatch"),
     ("py:class", "Target"),

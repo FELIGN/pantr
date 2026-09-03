@@ -70,11 +70,12 @@
 /// `design/bspline_ownership_lifetime.md` requires that no borrowing accessor
 /// reaches Python. `BsplineSpace1D` grew none -- it hands out spans of its own
 /// storage rather than references to nested objects. `BsplineSpace` is the first
-/// type in this front that *has* one: `space_ref(d)` borrows a direction, costs a
-/// measured 5.83 ns against `space(d)`'s 14.92 ns, and is deliberately absent from
-/// the surface below. `tests/parity/test_bspline_binding_contract.py` asserts over
-/// the bound surface that no method name ends in `_ref`, which is the only available
-/// check: there is no `static_assert` for absence.
+/// type in this front that *has* one: `space_ref(d)` borrows a direction rather than
+/// copying its handle, which is what saves the atomic pair inside a C++ loop, and it
+/// is deliberately absent from the surface below.
+/// `tests/parity/test_bspline_binding_contract.py` asserts over the bound surface
+/// that no method name ends in `_ref`, which is the only available check: there is no
+/// `static_assert` for absence.
 ///
 /// ## Handing out a direction: a `shared_ptr`, and no policy
 ///

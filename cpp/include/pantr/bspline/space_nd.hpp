@@ -37,10 +37,12 @@
 /// Sharing is safe because a `BsplineSpace1D` is immutable after construction. A
 /// `shared_ptr<const T>` over an immutable `T` is a value with a cheap copy.
 ///
-/// The borrowing twin, `space_ref`, is **not bound**: an inner loop must not pay an
-/// atomic pair per access, and the ownership note measures the pair at 9.1 ns
-/// against a 5.83 ns borrow. `tests/parity/test_bspline_binding_contract.py`
-/// asserts that no bound method name ends in `_ref`.
+/// The borrowing twin, `space_ref`, is **not bound**: copying the handle costs an
+/// uncontended atomic increment/decrement pair per access, which an inner loop must
+/// not pay for a value it does not keep. `design/bspline_ownership_lifetime.md`
+/// carries the measurement and the machine it was taken on.
+/// `tests/parity/test_bspline_binding_contract.py` asserts that no bound method name
+/// ends in `_ref`.
 ///
 /// ## No memo, and that is a decision rather than an omission
 ///
@@ -67,34 +69,39 @@
 ///
 /// ## Parity notes for the Python oracle
 ///
-/// `pantr.bspline.BsplineSpace` is the oracle. What this type reproduces, and the
-/// three places it deliberately differs:
+/// `pantr.bspline.BsplineSpace` is the oracle. Three things this type reproduces, and
+/// **one** place it deliberately differs:
 ///
 ///  - **Every reduction is over the directions in axis order**, and the order is
 ///    load-bearing rather than incidental: `degrees`, `num_basis`, `num_intervals`
 ///    and `domain` are per-direction sequences, and nothing about their *values*
 ///    would reveal a transposition on a space whose directions happen to agree.
-///    `tests/parity/test_bspline_space_nd.py` therefore makes every multi-direction
-///    case asymmetric in every one of them.
+///    `tests/parity/test_bspline_space_nd.py` therefore keeps its case table
+///    asymmetric in each of them, and asserts of the table that it does.
 ///  - **A dimensionless space is constructible**, with `dim() == 0`. The oracle
 ///    admits `BsplineSpace([])` -- pinned by
 ///    `tests/test_bspline_space.py::test_empty_spaces_list` -- so this does too. The
 ///    empty products are 1, which is the empty tensor product's own convention and
 ///    what `numpy.prod(())` returns.
-///  - **`tolerance()` refuses a dimensionless space**, where the oracle raises
-///    whatever `max()` over an empty sequence raises. Both are a `ValueError` to a
-///    Python caller and the *messages* differ, deliberately: the oracle's text is
-///    CPython's own and moved between 3.11 and 3.12, so reproducing it character for
-///    character would break parity on one leg of the matrix. This is the one refusal
-///    in the type whose message is not the oracle's, and the parity test compares
-///    the exception type rather than the text for it.
-///  - **The two products refuse an overflow instead of wrapping.** `numpy.prod` over
-///    an `int64` tuple wraps silently; signed overflow in C++ is undefined, so the
-///    UBSan leg would abort rather than wrap. Neither is a good answer, and the
-///    input is reachable: three directions of 2.1e6 basis functions each need about
-///    50 MB of knots and overflow `int64`. So the products throw
-///    `pantr::CapacityError`, which `pantr/core/error.hpp` reserves for a limit of
-///    the implementation rather than a defect in the argument.
+///  - **`tolerance()` refuses a dimensionless space with the oracle's own message**,
+///    character for character, as every other refusal in this port does. That is
+///    worth a sentence because the oracle's message was *made* deliberate for it:
+///    left to `max()` over an empty sequence it would have been CPython's own text,
+///    which moved between 3.11 and 3.12, so reproducing it here would have broken
+///    parity on one leg of the test matrix and held on the others.
+///    `src/pantr/bspline/_bspline_space_nd.py` states the same string and says why,
+///    and `tests/parity/test_bspline_space_nd.py` compares the two texts rather than
+///    just the exception type.
+///  - **The one difference: the two products refuse an overflow instead of
+///    wrapping.** `numpy.prod` over an `int64` tuple wraps silently; signed overflow
+///    in C++ is undefined, so the UBSan leg would abort rather than wrap. Neither is
+///    a good answer, and the input is reachable: three directions of 2.1e6 basis
+///    functions each need about 50 MB of knots and overflow `int64`. So the products
+///    throw `pantr::CapacityError`, which `pantr/core/error.hpp` reserves for a limit
+///    of the implementation rather than a defect in the argument. The oracle uses
+///    `math.prod` rather than `numpy.prod` and so returns the exact integer instead,
+///    which is where the two part company -- above the `int64` range, and nowhere
+///    below it.
 ///
 /// ## Thread safety
 ///
@@ -133,7 +140,16 @@ namespace detail {
 ///
 /// The empty product is 1, matching `numpy.prod(())`.
 ///
-/// \param counts The per-direction counts; each must be non-negative.
+/// **Non-negative counts are a trusted precondition, not a checked one**, which is
+/// the one place this header departs from its own "validate rather than assert"
+/// rule -- and it departs deliberately, because the precondition is not a caller's
+/// to violate. Both call sites pass a `BsplineSpace1D`'s `num_basis` or
+/// `num_intervals`, and that type's constructor refuses a space with neither, so a
+/// negative count is unreachable rather than merely unlikely. A check here would
+/// need a message describing a state the type cannot be in.
+///
+/// \param counts The per-direction counts; each must be non-negative, which every
+///        call site guarantees.
 /// \param what The quantity being formed, for the message.
 /// \return The product.
 /// \throws pantr::CapacityError If the product exceeds `std::int64_t`.
