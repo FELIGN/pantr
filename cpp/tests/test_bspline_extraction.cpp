@@ -144,14 +144,25 @@ template <class T>
 
 /// The tolerance a column sum may miss one by.
 ///
-/// Each stage of an entry's chain commits four roundings -- `beta = 1 - alpha`, the
-/// two products and their sum -- against an exact convex combination of values in
+/// Each stage of an entry's chain forms an exact convex combination of values in
 /// `[0, 1]`, whose weights are non-negative and sum to one, so the propagated error
-/// carries forward with weight at most one and an entry ends up within
-/// `gamma_{4 S}` of its exact value, where `S` is the chain length
+/// carries forward with weight at most one. **The rounding of `alpha` itself
+/// cancels**: `alpha` and `beta = 1 - alpha` enter as a pair, and what the row bound
+/// sees is `|A + B - 1|`, whose defect is at most `u/2` however `alpha` was
+/// computed. That leaves **2.5 roundings per stage**, not four, so an entry ends up
+/// within `gamma_{2.5 S}` of its exact value, where `S` is the chain length
 /// `insertion_stages` reports. Summing `degree + 1` of them against an exact total
-/// of one adds `gamma_{degree}`. First order in `u`, that is
-/// `(4 S (degree + 1) + degree) u`.
+/// of one adds `gamma_{degree}`; the two compose by Higham, *Accuracy and Stability
+/// of Numerical Algorithms*, 2nd ed., Lemma 3.3.
+///
+/// `gamma_{2.5 S + degree}` is sharp and holds exactly, not to first order. What
+/// ships is `gamma_{3 S + degree}`: half a rounding per stage of declared slack over
+/// a proved bound, so the coefficient is an integer. The closed form
+/// `m u / (1 - m u)` is used rather than the truncation `m u`, because `S` grows
+/// with the element count rather than with the degree.
+///
+/// **Stated hypothesis: no underflow in the operator entries**, which a purely
+/// relative rounding model requires and this derivation does not establish.
 ///
 /// \tparam T Scalar type.
 /// \param degree The polynomial degree.
@@ -160,8 +171,9 @@ template <class T>
 template <class T>
 [[nodiscard]] double column_sum_tolerance(std::int64_t degree, std::int64_t stages) {
     const double u = 0.5 * static_cast<double>(std::numeric_limits<T>::epsilon());
-    const auto p = static_cast<double>(degree);
-    return (4.0 * static_cast<double>(stages) * (p + 1.0) + p) * u;
+    const double m = 3.0 * static_cast<double>(stages) + static_cast<double>(degree);
+    PANTR_PRECONDITION(m * u < 1.0, "gamma runs away to one past this many roundings");
+    return m * u / (1.0 - m * u);
 }
 
 /// Check the two analytic invariants every operator has.
