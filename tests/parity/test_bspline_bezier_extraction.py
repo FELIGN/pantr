@@ -401,9 +401,11 @@ def _column_sum_bound(case: _Case, dtype: npt.DTypeLike) -> float:
     ``(4 S (degree + 1) + degree) u``.
 
     **The chain length is not the degree, and an earlier version of this said it
-    was.** Element 0 alone reaches ``2 degree - 1`` stages, since the boundary
+    was.** Element 0 alone reaches ``2 (degree - 1)`` stages, since the boundary
     sequence composes with its own, and the inter-element copies carry the chain
-    forward across the whole vector. The bound was therefore too tight by that
+    forward across the whole vector. Both of element 0's terms are at most
+    ``degree - 1``: a knot class has multiplicity at least one, and ``boundary`` is
+    at least one because index ``degree`` matches itself. The bound was therefore too tight by that
     factor. It never failed, because the observed error is orders below either
     version -- which is exactly the shape of claim nothing in the suite can
     distinguish, and it was a review's unproved suspicion that found it rather than

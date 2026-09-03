@@ -112,8 +112,10 @@ Operators<T> build(const std::vector<T>& knots, std::int64_t degree, double tol)
 /// an upper bound on any single entry's chain.
 ///
 /// **It is not `degree`, and an earlier version of this file said it was.** Element
-/// 0 alone can reach `2 degree - 1` stages, and a vector of `n` elements reaches
-/// `O(n degree)`. The bound below was therefore too tight by that factor. It never
+/// 0 alone can reach `2 (degree - 1)` stages -- both its terms are at most
+/// `degree - 1`, since a knot class has multiplicity at least one and `boundary` is
+/// at least one because index `degree` matches itself -- and a vector of `n`
+/// elements reaches `O(n degree)`. The bound below was therefore too tight by that factor. It never
 /// failed, because the observed error is orders below either version, which is
 /// exactly the shape of claim nothing in a suite can distinguish.
 ///
@@ -298,10 +300,17 @@ void check_identity_families() {
 
 /// The uniform interior operator does not depend on the clamping.
 ///
-/// This is what exercises the boundary-insertion branch: an unclamped vector has a
-/// boundary multiplicity of one, so the first interval is short of `degree - 1`
-/// insertions. The value it must reach is the interior operator of the clamped
-/// spline above, which was derived by hand there.
+/// This is what exercises the boundary-insertion branch here: an unclamped vector
+/// has a boundary multiplicity of one, so the first interval is short of
+/// `degree - 1` insertions. The value it must reach is the interior operator of the
+/// clamped spline above, which was derived by hand there.
+///
+/// **It reaches the branch in its degenerate instance, and two things follow.**
+/// Uniform knots make `alpha` exactly one half, so `alpha == beta` and this case
+/// cannot tell which of the two multiplies which column; and `reg` is one, so no
+/// `r`-loop chaining happens. The chained, `alpha != beta` instance is covered by
+/// the parity suite's unclamped non-uniform cubic and by its sweep, not here. Do
+/// not read this case as pinning the branch in general.
 template <class T>
 void check_unclamped_uniform_matches_the_interior() {
     const std::vector<T> knots = {T(0.0), T(0.5), T(1.0), T(1.5), T(2.0), T(2.5), T(3.0)};
