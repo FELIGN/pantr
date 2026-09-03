@@ -1,5 +1,5 @@
 /// \file
-/// The Bézier extraction operators and the structural identity mask.
+/// The Bézier and Lagrange extraction operators and the structural identity masks.
 ///
 /// ## Where the expected values come from, and none of them from the oracle
 ///
@@ -31,6 +31,26 @@
 ///    local knot pattern. The second one is what exercises the non-clamped
 ///    boundary-insertion branch against a value derived elsewhere.
 ///
+/// ## The Lagrange half
+///
+/// `A_e = C_e L`, and the change-of-basis matrix is an argument rather than something
+/// this file builds, so the checks are about the product:
+///
+///  - **`L = I` reproduces the Bézier operator exactly.** Every term of the
+///    contraction is `C[i,k] * 0` or `C[i,j] * 1`, so nothing rounds and the two
+///    builders must agree bit for bit. That is what pins the index order: a
+///    transposed product would give `C^T` here.
+///  - **A hand-derived exact table.** At degree 2 with equispaced nodes,
+///    `L = [[1, 1/4, 0], [0, 1/2, 0], [0, 1/4, 1]]` from `L[j,k] = B_j(x_k)` at
+///    `x = 0, 1/2, 1`, and the quadratic three-element open spline's Bézier table is
+///    halves, so every entry of the product is a binary rational and the comparison
+///    carries no tolerance. Written out in `check_lagrange_quadratic_open`.
+///  - **The columns still sum to one.** `L` is column-stochastic -- its columns are
+///    the Bernstein basis at a node, non-negative and summing to one -- so a product
+///    of two column-stochastic matrices is column-stochastic. This also says the
+///    Lagrange operator is entrywise non-negative, which
+///    `design/extraction_port.md` denied and which is checked here.
+///
 /// ## What is not checked here
 ///
 /// Agreement with the Python oracle, which is
@@ -55,9 +75,12 @@
 namespace {
 
 using pantr::at;
+using pantr::span2d;
 using pantr::span_nd;
 using pantr::bspline::bezier_extraction_1d;
 using pantr::bspline::bezier_structural_identity_mask;
+using pantr::bspline::lagrange_extraction_1d;
+using pantr::bspline::lagrange_structural_identity_mask;
 using pantr::bspline::classify_knots;
 using pantr::bspline::KnotClassRange;
 using pantr::bspline::KnotClasses;
@@ -532,6 +555,200 @@ void check_the_mask_agrees_with_the_operators() {
     }
 }
 
+/// Build every Lagrange operator of a knot vector.
+///
+/// \tparam T Scalar type.
+/// \param knots The knot vector.
+/// \param degree The polynomial degree.
+/// \param tol The absolute parametric tolerance.
+/// \param matrix The `(degree + 1, degree + 1)` change-of-basis matrix, row-major.
+/// \return The operators.
+template <class T>
+Operators<T> build_lagrange(const std::vector<T>& knots, std::int64_t degree, double tol,
+                            const std::vector<T>& matrix) {
+    const std::span<const T> span(knots);
+    const KnotClassRange range = classify_knots<T>(span, degree, tol);
+    const auto count = static_cast<std::size_t>(range.num_intervals());
+    const auto side = static_cast<std::size_t>(degree) + 1;
+    Operators<T> ops{std::vector<T>(count * side * side, T(0.0)), count, side};
+    const span_nd<T, 3> view(ops.storage.data(), count, side, side);
+    lagrange_extraction_1d<T>(span, degree, tol, span2d<const T>(matrix.data(), side, side),
+                              view);
+    return ops;
+}
+
+/// The identity matrix of a given side, row-major.
+///
+/// \tparam T Scalar type.
+/// \param side The number of rows and columns.
+/// \return The matrix.
+template <class T>
+std::vector<T> identity_matrix(std::size_t side) {
+    std::vector<T> matrix(side * side, T(0.0));
+    for (std::size_t i = 0; i < side; ++i) {
+        matrix[i * side + i] = T(1.0);
+    }
+    return matrix;
+}
+
+/// With the identity change of basis, the Lagrange builder is the Bézier one.
+///
+/// Bitwise, not within a tolerance: every term of the contraction is `C[i,k] * 0` or
+/// `C[i,j] * 1`, and a sum of exact zeros with one exact term rounds nothing. That
+/// is what makes this able to catch a transposed product, which would return `C^T`.
+template <class T>
+void check_lagrange_with_the_identity_reproduces_bezier() {
+    const std::vector<std::vector<T>> vectors = {
+        {T(0.0), T(0.0), T(0.0), T(1.0), T(2.0), T(3.0), T(3.0), T(3.0)},
+        {T(0.0), T(0.5), T(1.0), T(1.5), T(2.0), T(2.5), T(3.0)},
+        {T(0.0), T(0.0), T(0.0), T(0.0), T(1.0), T(2.0), T(3.0), T(4.0), T(4.0), T(4.0), T(4.0)},
+    };
+    const std::vector<std::int64_t> degrees = {2, 2, 3};
+    for (std::size_t c = 0; c < vectors.size(); ++c) {
+        const std::size_t side = static_cast<std::size_t>(degrees[c]) + 1;
+        const Operators<T> bezier = build<T>(vectors[c], degrees[c], 0.0);
+        const Operators<T> lagrange =
+            build_lagrange<T>(vectors[c], degrees[c], 0.0, identity_matrix<T>(side));
+        PANTR_CHECK_MSG(bezier.storage.size() == lagrange.storage.size(),
+                        "the two builders disagree on how many operators there are");
+        for (std::size_t n = 0; n < bezier.storage.size(); ++n) {
+            PANTR_CHECK_MSG(bezier.storage[n] == lagrange.storage[n],
+                            "the identity change of basis moved a bit");
+        }
+    }
+}
+
+/// The quadratic three-element open spline against a hand-derived exact table.
+///
+/// The Bézier table is `check_quadratic_open`'s. The equispaced degree-2
+/// Lagrange-to-Bernstein matrix is `L[j,k] = B_j(x_k)` at `x = 0, 1/2, 1`, i.e.
+/// `[[1, 1/4, 0], [0, 1/2, 0], [0, 1/4, 1]]`. Multiplying out gives, per element,
+///
+///     e = 0: [[1, 1/4, 0], [0, 5/8, 1/2], [0, 1/8, 1/2]]
+///     e = 1: [[1/2, 1/8, 0], [1/2, 3/4, 1/2], [0, 1/8, 1/2]]
+///     e = 2: [[1/2, 1/8, 0], [1/2, 5/8, 0], [0, 1/4, 1]]
+///
+/// Every entry is a binary rational, and so is every partial sum of the contraction,
+/// so the comparison is exact in `float32` as well as `float64`.
+template <class T>
+void check_lagrange_quadratic_open() {
+    const std::vector<T> knots = {T(0.0), T(0.0), T(0.0), T(1.0),
+                                  T(2.0), T(3.0), T(3.0), T(3.0)};
+    const std::vector<T> matrix = {T(1.0), T(0.25), T(0.0), T(0.0), T(0.5),
+                                   T(0.0), T(0.0),  T(0.25), T(1.0)};
+    const std::vector<T> expected = {
+        T(1.0),  T(0.25),  T(0.0), T(0.0), T(0.625), T(0.5), T(0.0), T(0.125), T(0.5),
+        T(0.5),  T(0.125), T(0.0), T(0.5), T(0.75),  T(0.5), T(0.0), T(0.125), T(0.5),
+        T(0.5),  T(0.125), T(0.0), T(0.5), T(0.625), T(0.0), T(0.0), T(0.25),  T(1.0),
+    };
+    const Operators<T> ops = build_lagrange<T>(knots, 2, 0.0, matrix);
+    PANTR_CHECK_MSG(ops.storage.size() == expected.size(),
+                    "the quadratic open spline should have three 3x3 operators");
+    for (std::size_t n = 0; n < expected.size(); ++n) {
+        PANTR_CHECK_MSG(ops.storage[n] == expected[n],
+                        "a Lagrange operator entry misses its exact binary rational");
+    }
+}
+
+/// Each Lagrange operator's column sums reproduce the matrix's own, and none is negative.
+///
+/// The invariant is `sum_i A[i,j] = sum_k (sum_i C[i,k]) L[k,j] = sum_k L[k,j]`, using
+/// the Bézier column sums. It is compared against `sum_k L[k,j]` **as the supplied
+/// matrix actually sums**, not against one: `L`'s columns sum to one in exact
+/// arithmetic, being the Bernstein basis at a node, but the thirds of the cubic case
+/// below do not sum to one in binary, and folding that defect in exactly is better
+/// than bounding it. The bound then covers only the Bézier chain plus the
+/// contraction's own `gamma_{degree + 1}`, and the amplification is one because every
+/// entry stays in `[0, 1]`.
+///
+/// Non-negativity comes with it: `L` is entrywise non-negative because every Lagrange
+/// node lies in `[0, 1]` where the Bernstein basis is, and `C_e` is a product of
+/// convex combinations, so the product cannot be negative.
+template <class T>
+void check_lagrange_columns_are_a_partition_of_unity() {
+    // Equispaced degree 2 and degree 3, `L[j,k] = B_j(x_k)`. Degree 3's nodes are
+    // 0, 1/3, 2/3, 1, so its entries are ninths and twenty-sevenths.
+    const std::vector<T> matrix2 = {T(1.0), T(0.25), T(0.0), T(0.0), T(0.5),
+                                    T(0.0), T(0.0),  T(0.25), T(1.0)};
+    const std::vector<T> matrix3 = {
+        T(1.0), T(8.0 / 27.0), T(1.0 / 27.0), T(0.0), T(0.0), T(12.0 / 27.0), T(6.0 / 27.0),
+        T(0.0), T(0.0),        T(6.0 / 27.0), T(12.0 / 27.0), T(0.0), T(0.0), T(1.0 / 27.0),
+        T(8.0 / 27.0), T(1.0),
+    };
+    struct Case {
+        std::vector<T> knots;
+        std::int64_t degree;
+        const std::vector<T>* matrix;
+    };
+    const std::vector<Case> cases = {
+        {{T(0.0), T(0.0), T(0.0), T(1.0), T(2.0), T(3.0), T(3.0), T(3.0)}, 2, &matrix2},
+        {{T(0.0), T(0.0), T(0.0), T(1.0), T(1.0), T(2.0), T(3.0), T(3.0), T(3.0)}, 2, &matrix2},
+        {{T(0.0), T(0.5), T(1.0), T(1.5), T(2.0), T(2.5), T(3.0)}, 2, &matrix2},
+        {{T(0.0), T(0.0), T(0.0), T(0.0), T(0.3), T(0.7), T(1.0), T(1.0), T(1.0), T(1.0)}, 3,
+         &matrix3},
+    };
+    for (const Case& one : cases) {
+        const Operators<T> ops = build_lagrange<T>(one.knots, one.degree, 0.0, *one.matrix);
+        // The Bézier chain, plus `degree + 1` roundings for the contraction, plus the
+        // `degree` additions of the column sum itself. `column_sum_tolerance` already
+        // charges the last of those, so only the contraction is added here.
+        const std::int64_t stages = insertion_stages<T>(one.knots, one.degree, 0.0);
+        const double bound =
+            column_sum_tolerance<T>(one.degree, stages + one.degree + 1);
+        for (std::size_t j = 0; j < ops.side; ++j) {
+            double target = 0.0;
+            for (std::size_t k = 0; k < ops.side; ++k) {
+                target += static_cast<double>((*one.matrix)[k * ops.side + j]);
+            }
+            PANTR_CHECK_MSG(std::abs(target - 1.0) <= bound,
+                            "the supplied change-of-basis matrix is not column-stochastic");
+            for (std::size_t e = 0; e < ops.count; ++e) {
+                double total = 0.0;
+                for (std::size_t i = 0; i < ops.side; ++i) {
+                    const double entry = static_cast<double>(at(ops.view(), e, i, j));
+                    PANTR_CHECK_MSG(entry >= 0.0,
+                                    "a Lagrange operator entry is negative, so neither factor "
+                                    "of the product is column-stochastic after all");
+                    total += entry;
+                }
+                PANTR_CHECK_MSG(std::abs(total - target) <= bound,
+                                "a Lagrange operator column does not sum to the matrix's");
+            }
+        }
+    }
+}
+
+/// The Lagrange mask is the Bézier mask under the identity and all-false otherwise.
+template <class T>
+void check_lagrange_identity_mask() {
+    const std::vector<std::int64_t> multiplicity = {3, 1, 3, 3};
+    std::array<bool, 3> lagrange{};
+    std::array<bool, 3> bezier{};
+    const std::span<bool> lagrange_flags(lagrange.data(), lagrange.size());
+    const std::span<bool> bezier_flags(bezier.data(), bezier.size());
+
+    const std::vector<T> identity = identity_matrix<T>(3);
+    bezier_structural_identity_mask(multiplicity, 2, bezier_flags);
+    lagrange_structural_identity_mask<T>(multiplicity, 2,
+                                         span2d<const T>(identity.data(), 3, 3), lagrange_flags);
+    PANTR_CHECK_MSG(bezier[2] && !bezier[0] && !bezier[1],
+                    "the Bézier mask should flag only the element between two full knots");
+    for (std::size_t e = 0; e < bezier.size(); ++e) {
+        PANTR_CHECK_MSG(lagrange[e] == bezier[e],
+                        "under the identity change of basis the two masks must agree");
+    }
+
+    // One entry off the identity, by the smallest amount there is: the predicate is
+    // exact, so this must flip every flag to false.
+    std::vector<T> nudged = identity;
+    nudged[1] = std::numeric_limits<T>::denorm_min();
+    lagrange_structural_identity_mask<T>(multiplicity, 2,
+                                         span2d<const T>(nudged.data(), 3, 3), lagrange_flags);
+    for (const bool flag : lagrange) {
+        PANTR_CHECK_MSG(!flag, "a change of basis that is not the identity forbids every flag");
+    }
+}
+
 }  // namespace
 
 int main() {
@@ -549,5 +766,13 @@ int main() {
     check_identity_mask();
     check_the_mask_agrees_with_the_operators<double>();
     check_the_mask_agrees_with_the_operators<float>();
+    check_lagrange_with_the_identity_reproduces_bezier<double>();
+    check_lagrange_with_the_identity_reproduces_bezier<float>();
+    check_lagrange_quadratic_open<double>();
+    check_lagrange_quadratic_open<float>();
+    check_lagrange_columns_are_a_partition_of_unity<double>();
+    check_lagrange_columns_are_a_partition_of_unity<float>();
+    check_lagrange_identity_mask<double>();
+    check_lagrange_identity_mask<float>();
     return pantr::test::summary("test_bspline_extraction");
 }
