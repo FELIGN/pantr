@@ -34,6 +34,7 @@ set(PANTR_TEST_SOURCES
     test_lazy.cpp
     test_bspline_knots.cpp
     test_bspline_space_1d.cpp
+    test_bspline_space_nd.cpp
     test_extraction_kernels.cpp)
 
 # Reserved slots (FELIGN/pantr#380): registered ahead of the port so the thirteen
