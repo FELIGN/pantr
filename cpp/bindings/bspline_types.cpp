@@ -1,7 +1,8 @@
 /// \file
-/// nanobind bindings for `pantr::bspline::BsplineSpace1D`.
+/// nanobind bindings for `pantr::bspline::BsplineSpace1D` and the tensor-product
+/// `pantr::bspline::BsplineSpace` built over it.
 ///
-/// ## Two registrations, because the storage format is part of the value
+/// ## Two registrations per type, because the storage format is part of the value
 ///
 /// `pantr.bspline.BsplineSpace1D` stores whatever float dtype it is handed, its
 /// `dtype` property is public, and `float32` knot vectors are exercised across the
@@ -10,6 +11,12 @@
 /// class of the handle *is* the dtype, because a single name would have nothing
 /// left to carry it. `pantr.bspline._bspline_space_1d._impl_class` picks between
 /// them per instance.
+///
+/// The nD type inherits that split, with a second reason on top of the first:
+/// `BsplineSpace<T>` can hold only `BsplineSpace1D<T>`, so the width is already a
+/// property of the C++ type and one Python name could not front both.
+/// `BsplineSpace32` and `BsplineSpace64` are the two, and
+/// `pantr.bspline._bspline_space_nd._impl_class` picks between them.
 ///
 /// The dtype is not converted, and that *is* a check. Without `.noconvert()`
 /// nanobind silently casts, so `BsplineSpace1D32(a_float64_vector)` would narrow a
@@ -43,30 +50,68 @@
 /// property that copied would make the natural spelling of every such loop
 /// quadratic in nothing.
 ///
-/// **None of these arrays can be empty**, so the null-`data()` trap that
-/// `grid_types.cpp` guards against with a stand-in address does not arise here: a
-/// knot vector has at least `2 * degree + 2` entries, a vector has at least one
-/// knot class, the constructor refuses a space with no interval so the in-domain
-/// range has at least two classes, and `first_basis_per_interval` has exactly
-/// `num_intervals` entries, which `cpp/tests/test_bspline_space_1d.cpp` asserts so
-/// that it stays true.
+/// **No array a 1D space hands out can be empty**, and that was once the whole of
+/// this paragraph: a knot vector has at least `2 * degree + 2` entries, a vector has
+/// at least one knot class, the constructor refuses a space with no interval so the
+/// in-domain range has at least two classes, and `first_basis_per_interval` has
+/// exactly `num_intervals` entries, which `cpp/tests/test_bspline_space_1d.cpp`
+/// asserts so that it stays true.
 ///
-/// ## `_ref` accessors are not bound, and there are none to bind
+/// **The nD type breaks that, so the guard is here after all.** A dimensionless
+/// `BsplineSpace` is legal -- the oracle admits `BsplineSpace([])`, and
+/// `tests/test_bspline_space.py::test_empty_spaces_list` pins it -- and its domain
+/// block has no rows. An empty `std::vector`'s `data()` may be null, and nanobind
+/// reads a null pointer as "no array" rather than as an empty one, so `view_of`
+/// substitutes a never-dereferenced stand-in address exactly as
+/// `grid_types.cpp:96-104` does.
+///
+/// ## `_ref` accessors are not bound
 ///
 /// `design/bspline_ownership_lifetime.md` requires that no borrowing accessor
 /// reaches Python. `BsplineSpace1D` grew none -- it hands out spans of its own
-/// storage rather than references to nested objects -- so the rule is satisfied
-/// vacuously here. `tests/parity/test_bspline_binding_contract.py` asserts it over
-/// the bound surface anyway, because the next type in this front will have one.
+/// storage rather than references to nested objects. `BsplineSpace` is the first
+/// type in this front that *has* one: `space_ref(d)` borrows a direction, costs a
+/// measured 5.83 ns against `space(d)`'s 14.92 ns, and is deliberately absent from
+/// the surface below. `tests/parity/test_bspline_binding_contract.py` asserts over
+/// the bound surface that no method name ends in `_ref`, which is the only available
+/// check: there is no `static_assert` for absence.
+///
+/// ## Handing out a direction: a `shared_ptr`, and no policy
+///
+/// `spaces` is `design/bspline_ownership_lifetime.md`'s class **H** -- an accessor
+/// handing out a subobject the owner keeps -- so the C++ type stores
+/// `std::shared_ptr<const BsplineSpace1D<T>>` and the binding returns a copy of the
+/// handle. No `rv_policy` question arises, because ownership travels in the return
+/// value rather than in an annotation. Three consequences worth stating, all of them
+/// measured in that note and each the failure of an alternative:
+///
+///  - The returned Python object is **identity-stable**: `nb_type_put` looks the
+///    pointer up in `inst_c2p` before creating an instance, so
+///    `nd.spaces[0] is one_d` holds for the handle a caller passed in. That is what
+///    makes `tests/test_bspline_space.py:89` reachable, and it is why the C++
+///    constructor shares rather than copies.
+///  - `sys.getrefcount` on the nD handle is **unchanged** by the access, because no
+///    keep-alive is installed. A non-zero delta means somebody reverted to
+///    `reference_internal`, and the contract test asserts the zero.
+///  - The direction **outlives its owner**. Passing a handle in takes a reference on
+///    its Python object (`nanobind/stl/shared_ptr.h`'s `py_deleter`), so the nD space
+///    keeps its directions alive, and a direction taken back out keeps its own value
+///    alive after the nD space is dropped.
 
 #include <nanobind/nanobind.h>
 #include <nanobind/ndarray.h>
+#include <nanobind/stl/shared_ptr.h>
+#include <nanobind/stl/vector.h>
 
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <span>
+#include <utility>
+#include <vector>
 
 #include "pantr/bspline/space_1d.hpp"
+#include "pantr/bspline/space_nd.hpp"
 #include "register.hpp"
 
 namespace nb = nanobind;
@@ -77,14 +122,40 @@ namespace {
 template <class T>
 using const_vec = nb::ndarray<const T, nb::ndim<1>, nb::c_contig, nb::device::cpu>;
 
+/// A never-dereferenced address for a zero-length array.
+///
+/// An empty `std::vector`'s `data()` may be null, and nanobind reads a null pointer
+/// as "no array" rather than as an empty one. A dimensionless nD space has an empty
+/// domain block, which is legal, so a valid address stands in.
+/// `grid_types.cpp:96-104` carries the same sentinel for the same reason.
+///
+/// \tparam T The element type.
+template <class T>
+T kEmptyStorage{};
+
 /// Hand out a span of the owner's storage as a read-only numpy view.
 ///
 /// \param self The Python object that owns the storage, kept alive by the array.
-/// \param data The span; must not be empty, see the file comment.
+/// \param data The span; may be empty only for the nD domain block, see the file
+///        comment.
 /// \return A read-only 1D `numpy` array viewing `data`.
 template <class T>
 nb::object view_of(nb::handle self, std::span<const T> data) {
     return nb::cast(nb::ndarray<nb::numpy, const T, nb::ndim<1>>(data.data(), {data.size()}, self));
+}
+
+/// Hand out a span of the owner's storage as a read-only `(rows, cols)` numpy view.
+///
+/// \param self The Python object that owns the storage, kept alive by the array.
+/// \param data The span, row-major; its size must be `rows * cols`. May be empty.
+/// \param rows The row count.
+/// \param cols The column count.
+/// \return A read-only 2D `numpy` array viewing `data`.
+template <class T>
+nb::object view_2d_of(nb::handle self, std::span<const T> data, std::size_t rows,
+                      std::size_t cols) {
+    const T* base = data.empty() ? &kEmptyStorage<T> : data.data();
+    return nb::cast(nb::ndarray<nb::numpy, const T, nb::ndim<2>>(base, {rows, cols}, self));
 }
 
 /// Register one scalar type's `BsplineSpace1D`.
@@ -151,9 +222,89 @@ void bind_space_1d(nb::module_& m, const char* name) {
         .def("has_Bezier_like_knots", &Space::has_bezier_like_knots);
 }
 
+/// Hand out a span of counts as a tuple of Python integers.
+///
+/// A tuple rather than an array, because the oracle's `degrees`, `num_basis` and
+/// `num_intervals` are tuples and the suite compares them with `==` against one:
+/// `space.num_basis == (3, 2)` on an array is elementwise and then has no truth
+/// value. A tuple rather than a list, because the oracle's are tuples and
+/// `tests/test_bspline_space.py` asserts `isinstance(..., tuple)`.
+///
+/// This is the one place the nD binding copies rather than views, and it is a
+/// presentation rather than a copy of state: `dim` is at most 3 everywhere in the
+/// tree, so three `PyLong`s per access is not a shape change.
+///
+/// \param counts The per-direction counts.
+/// \return A tuple of `counts.size()` integers.
+nb::tuple counts_tuple(std::span<const std::int64_t> counts) {
+    nb::list values;
+    for (const std::int64_t count : counts) {
+        values.append(count);
+    }
+    return nb::tuple(values);
+}
+
+/// Register one scalar type's tensor-product `BsplineSpace`.
+///
+/// \param m The extension module.
+/// \param name The Python-visible class name, `BsplineSpace32` or `BsplineSpace64`.
+template <class T>
+void bind_space_nd(nb::module_& m, const char* name) {
+    using Space = pantr::bspline::BsplineSpace<T>;
+    using Space1D = pantr::bspline::BsplineSpace1D<T>;
+    using Handles = std::vector<std::shared_ptr<const Space1D>>;
+
+    nb::class_<Space>(m, name)
+        // Takes the directions as handles, which is what makes the C++ space SHARE
+        // them; see the file comment. There is no dtype check to make here and none
+        // to write: each `BsplineSpace1D<T>` class is distinct, so a `float32`
+        // direction handed to `BsplineSpace64` is a `TypeError` from nanobind rather
+        // than a silent widening -- and the oracle's own `ValueError` about mixed
+        // dtypes is the wrapper's, which is where a type-kind check belongs.
+        .def(
+            "__init__",
+            [](Space* self, Handles spaces) { new (self) Space(std::move(spaces)); },
+            nb::arg("spaces"))
+        .def_prop_ro("dim", [](const Space& s) { return s.dim(); })
+        // Class H. No policy: the value is a `shared_ptr`, so ownership travels in
+        // the return value. A tuple, matching the oracle's `spaces`.
+        .def_prop_ro("spaces",
+                     [](const Space& s) {
+                         nb::list handles;
+                         for (const auto& one_d : s.spaces()) {
+                             handles.append(nb::cast(one_d));
+                         }
+                         return nb::tuple(handles);
+                     })
+        .def_prop_ro("degrees", [](const Space& s) { return counts_tuple(s.degrees()); })
+        .def_prop_ro("tolerance", &Space::tolerance)
+        .def_prop_ro("num_basis", [](const Space& s) { return counts_tuple(s.num_basis()); })
+        .def_prop_ro("num_total_basis", [](const Space& s) { return s.num_total_basis(); })
+        .def_prop_ro("num_intervals",
+                     [](const Space& s) { return counts_tuple(s.num_intervals()); })
+        .def_prop_ro("num_total_intervals",
+                     [](const Space& s) { return s.num_total_intervals(); })
+        // Class A: a read-only `(dim, 2)` view of the space's own storage, with the
+        // space as the array's owner. `const T` is what sets the read-only flag and
+        // `self` is what keeps the storage alive. That the oracle's counterpart is a
+        // writable cached array is the defect recorded in
+        // `design/bspline_derived_caches.md`; the wrapper is what reconciles the two,
+        // by copying on the way out under both backends.
+        .def_prop_ro("domain",
+                     [](nb::handle self) {
+                         const Space& s = nb::cast<const Space&>(self);
+                         return view_2d_of<T>(self, s.domain_flat(),
+                                              static_cast<std::size_t>(s.dim()), 2);
+                     })
+        // Spelled the oracle's way, as the 1D twin above is.
+        .def("has_Bezier_like_knots", &Space::has_bezier_like_knots);
+}
+
 }  // namespace
 
 void register_bspline_types(nb::module_& m) {
     bind_space_1d<float>(m, "BsplineSpace1D32");
     bind_space_1d<double>(m, "BsplineSpace1D64");
+    bind_space_nd<float>(m, "BsplineSpace32");
+    bind_space_nd<double>(m, "BsplineSpace64");
 }

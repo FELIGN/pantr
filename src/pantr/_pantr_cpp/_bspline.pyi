@@ -1,9 +1,11 @@
 """Type stub for the `pantr.bspline` types bound in `cpp/bindings/bspline_types.cpp`.
 
-Two registrations rather than one generic class, because the storage format is part
-of the value: `pantr.bspline.BsplineSpace1D` stores whatever float dtype it is handed
-and its `dtype` property is public, so the class of the handle is the only thing left
-to carry it.
+Two registrations per type rather than one generic class, because the storage format
+is part of the value: `pantr.bspline.BsplineSpace1D` stores whatever float dtype it
+is handed and its `dtype` property is public, so the class of the handle is the only
+thing left to carry it. The tensor-product `BsplineSpace32` / `BsplineSpace64` pair
+inherits that split and could not avoid it anyway: `BsplineSpace<T>` can hold only
+`BsplineSpace1D<T>`.
 
 ## Tensor-product extraction kernels
 
@@ -40,6 +42,8 @@ oracle's own split between a resolved cell and a batch of them.
 
 See ``__init__.pyi`` for what this package promises and who has to keep it.
 """
+
+from collections.abc import Sequence
 
 import numpy as np
 from numpy import typing as npt
@@ -139,6 +143,94 @@ class BsplineSpace1D64:
     def has_left_end_open(self) -> bool: ...
     def has_right_end_open(self) -> bool: ...
     def has_open_knots(self) -> bool: ...
+    def has_Bezier_like_knots(self) -> bool: ...
+
+class BsplineSpace32:
+    """A ``float32`` tensor-product B-spline space owned by the C++ core.
+
+    Wrapped by :class:`pantr.bspline.BsplineSpace`, which is the class a caller
+    holds; this one is reached only through it. The constructor takes the directions
+    as :class:`BsplineSpace1D32` handles and **shares** them, which is what makes
+    ``space.spaces[0] is one_d`` hold at the wrapper level -- see
+    ``design/bspline_ownership_lifetime.md`` F6. A ``float64`` direction is a
+    :class:`TypeError` rather than a widening, because the two univariate classes
+    are unrelated.
+
+    A space with no directions is legal, and its ``tolerance`` refuses. The wrapper
+    is what turns ``domain`` into a writable array of the space's own dtype and what
+    raises on the dimensionless case, because both are presentation decisions rather
+    than properties of the value.
+
+    Attributes:
+        dim (int): The number of directions.
+        spaces (tuple[BsplineSpace1D32, ...]): The directions, in axis order. The
+            handles this space holds, so the same access twice gives the same
+            objects, and a direction outlives the space it came from.
+        degrees (tuple[int, ...]): One non-negative degree per direction.
+        tolerance (float): The largest of the directions' tolerances.
+        num_basis (tuple[int, ...]): One count per direction.
+        num_total_basis (int): Their product; 1 with no directions.
+        num_intervals (tuple[int, ...]): One count per direction, each at least 1.
+        num_total_intervals (int): Their product; 1 with no directions.
+        domain (npt.NDArray[np.float32]): Shape ``(dim, 2)``, read-only, a view of
+            the space's own storage.
+    """
+
+    def __init__(self, spaces: Sequence[BsplineSpace1D32]) -> None: ...
+    @property
+    def dim(self) -> int: ...
+    @property
+    def spaces(self) -> tuple[BsplineSpace1D32, ...]: ...
+    @property
+    def degrees(self) -> tuple[int, ...]: ...
+    @property
+    def tolerance(self) -> float: ...
+    @property
+    def num_basis(self) -> tuple[int, ...]: ...
+    @property
+    def num_total_basis(self) -> int: ...
+    @property
+    def num_intervals(self) -> tuple[int, ...]: ...
+    @property
+    def num_total_intervals(self) -> int: ...
+    @property
+    def domain(self) -> npt.NDArray[np.float32]: ...
+    def has_Bezier_like_knots(self) -> bool: ...
+
+class BsplineSpace64:
+    """The ``float64`` twin of :class:`BsplineSpace32`; see it for what they share.
+
+    Attributes:
+        dim (int): The number of directions.
+        spaces (tuple[BsplineSpace1D64, ...]): The directions, in axis order.
+        degrees (tuple[int, ...]): One non-negative degree per direction.
+        tolerance (float): The largest of the directions' tolerances.
+        num_basis (tuple[int, ...]): One count per direction.
+        num_total_basis (int): Their product; 1 with no directions.
+        num_intervals (tuple[int, ...]): One count per direction, each at least 1.
+        num_total_intervals (int): Their product; 1 with no directions.
+        domain (npt.NDArray[np.float64]): Shape ``(dim, 2)``, read-only.
+    """
+
+    def __init__(self, spaces: Sequence[BsplineSpace1D64]) -> None: ...
+    @property
+    def dim(self) -> int: ...
+    @property
+    def spaces(self) -> tuple[BsplineSpace1D64, ...]: ...
+    @property
+    def degrees(self) -> tuple[int, ...]: ...
+    @property
+    def tolerance(self) -> float: ...
+    @property
+    def num_basis(self) -> tuple[int, ...]: ...
+    @property
+    def num_total_basis(self) -> int: ...
+    @property
+    def num_intervals(self) -> tuple[int, ...]: ...
+    @property
+    def num_total_intervals(self) -> int: ...
+    @property
+    def domain(self) -> npt.NDArray[np.float64]: ...
     def has_Bezier_like_knots(self) -> bool: ...
 
 _Array = npt.NDArray[np.float32 | np.float64]
