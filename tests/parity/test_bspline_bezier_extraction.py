@@ -391,25 +391,47 @@ def _fused_claim(case: _Case, dtype: npt.DTypeLike) -> Any:
 def _column_sum_bound(case: _Case, dtype: npt.DTypeLike) -> float:
     """The absolute error a column sum of one may carry, for this vector.
 
-    Each stage of an entry's chain commits four roundings -- the complement
-    ``1 - alpha``, the two products, and their sum -- against an exact convex
-    combination of values in ``[0, 1]``, whose weights are non-negative and sum to
-    one, so the propagated error carries forward with weight at most one and an
-    entry ends up within ``gamma_{4 S}`` of its exact value, ``S`` being the chain
+    Each stage of an entry's chain forms an exact convex combination of values in
+    ``[0, 1]``, whose weights are non-negative and sum to one, so the propagated
+    error carries forward with weight at most one. **The rounding of ``alpha``
+    itself cancels**: ``alpha`` and ``beta = 1 - alpha`` enter as a pair, and what
+    the row bound sees is ``|A + B - 1|``, whose defect is at most ``u/2``
+    regardless of how ``alpha`` was computed -- so the division that produces it
+    costs nothing here. That leaves **2.5 roundings per stage**, not four, and an
+    entry ends up within ``gamma_{2.5 S}`` of its exact value, ``S`` being the chain
     length :func:`_insertion_stages` reports. Summing ``degree + 1`` of them against
-    an exact total of one adds ``gamma_{degree}``. First order in ``u``, that is
-    ``(4 S (degree + 1) + degree) u``.
+    an exact total of one adds ``gamma_{degree}``; the two compose by Higham,
+    *Accuracy and Stability of Numerical Algorithms*, 2nd ed., Lemma 3.3
+    (``gamma_k + gamma_j + gamma_k gamma_j <= gamma_{k + j}``).
+
+    ``gamma_{2.5 S + degree}`` is the sharp value and holds **exactly**, not merely
+    to first order. What ships is ``gamma_{3 S + degree}``: half a rounding per
+    stage of **declared slack over a proved bound**, taken so the coefficient is an
+    integer. The closed form ``m u / (1 - m u)`` is used rather than the truncation
+    ``m u``, because ``S`` is not bounded by the degree -- it grows with the element
+    count -- so a first-order truncation would eventually stop bounding.
+
+    **Stated hypothesis: no underflow in the operator entries.** A purely relative
+    rounding model needs its operands away from gradual underflow, and this
+    derivation is purely relative. Two searches over geometric knot ratios down to
+    ``1e-45``, at several degrees and both dtypes, drove no entry subnormal, so the
+    hypothesis is believed to hold rather than shown to be unnecessary.
 
     **The chain length is not the degree, and an earlier version of this said it
     was.** Element 0 alone reaches ``2 (degree - 1)`` stages, since the boundary
     sequence composes with its own, and the inter-element copies carry the chain
     forward across the whole vector. Both of element 0's terms are at most
     ``degree - 1``: a knot class has multiplicity at least one, and ``boundary`` is
-    at least one because index ``degree`` matches itself. The bound was therefore too tight by that
-    factor. It never failed, because the observed error is orders below either
-    version -- which is exactly the shape of claim nothing in the suite can
-    distinguish, and it was a review's unproved suspicion that found it rather than
-    any test.
+    at least one because index ``degree`` matches itself.
+
+    That error was worth recording because of *how* it survived: charging the wrong
+    chain length left the bound loose rather than wrong, and a loose bound is
+    satisfied by any result, so nothing in the suite could fail. A review's unproved
+    suspicion found it, not a test. The same is true of the per-stage count this
+    docstring used to give as four. Both corrections tighten the bound, which is why
+    :func:`test_the_partition_of_unity_check_is_not_vacuous` exists: it pins that
+    the observed error actually reaches this bound somewhere rather than sitting so
+    far below it that the check decides nothing.
 
     Args:
         case (_Case): The knot vector, which fixes the chain length.
@@ -419,7 +441,10 @@ def _column_sum_bound(case: _Case, dtype: npt.DTypeLike) -> float:
         float: The bound, zero where no insertion runs at all.
     """
     u = unit_roundoff(dtype)
-    return (4.0 * _insertion_stages(case, dtype) * (case.degree + 1.0) + case.degree) * u
+    m = 3.0 * _insertion_stages(case, dtype) + case.degree
+    if m * u >= 1.0:
+        raise AssertionError(f"gamma runs away to one at {m} roundings and u={u:.3e}")
+    return m * u / (1.0 - m * u)
 
 
 def _build(case: _Case, dtype: npt.DTypeLike, backend: Backend) -> npt.NDArray[Any]:
