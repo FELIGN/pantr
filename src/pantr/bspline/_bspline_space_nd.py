@@ -246,6 +246,10 @@ def _validated_spaces(spaces: Iterable[BsplineSpace1D]) -> tuple[BsplineSpace1D,
         ValueError: If the directions do not all share one storage format.
     """
     validated = tuple(spaces)
+    # `validated[0]` is unreachable for an empty tuple rather than merely unlikely:
+    # the generator's `for` never advances, so the expression is never evaluated.
+    # Spelled this way instead of guarded, because a guard would read as if the
+    # dimensionless case needed handling here, and it does not.
     if any(space.dtype != validated[0].dtype for space in validated):
         raise ValueError("All B-spline spaces must have the same data type.")
     return validated
@@ -358,27 +362,28 @@ class BsplineSpace:
 
     **This class is a wrapper.** The value -- the univariate spaces and every
     reduction over them -- is owned by an implementation chosen by
-    :func:`_impl_class`, which is the C++ type
+    ``_impl_class``, which is the C++ type
     (``cpp/include/pantr/bspline/space_nd.hpp``) or the oracle
-    :class:`_BsplineSpaceNDPython`. The four operations below
+    ``_BsplineSpaceNDPython``. The four operations below
     (:meth:`tabulate_basis`, :meth:`cell_supports`, :meth:`boundary_dofs`,
     :meth:`restrict`) are still Python over numba kernels and numpy, and are
     unchanged; only the state moved.
 
     Instances are immutable, and that is enforced rather than documented:
     ``__slots__`` means there is no ``__dict__`` to attach anything to, and
-    :meth:`__setattr__` refuses even a rebinding of the two slots. The wrapper fills
+    ``__setattr__`` refuses even a rebinding of the two slots. The wrapper fills
     them through ``object.__setattr__``, which is the pattern
     ``design/bspline_derived_caches.md`` asks for and
     ``src/pantr/grid/_tensor_product_grid.py`` already ships.
 
     Attributes:
-        _impl (_Impl): The implementation this wrapper holds; see
-            :func:`_impl_class`.
+        _impl: The implementation this wrapper holds; see ``_impl_class``. Its type
+            is the private ``_Impl`` alias, which is a union of three unrelated
+            nominal types and has no documented form to name here.
         _spaces (tuple[BsplineSpace1D, ...]): The univariate wrappers this space was
             built from, so that ``space.spaces[0] is space_1d`` holds. It is a
             *presentation* memo, never a second truth about a value: the counts, the
-            tolerance and the domain all come from :attr:`_impl` on every access.
+            tolerance and the domain all come from ``_impl`` on every access.
     """
 
     __slots__ = ("_impl", "_spaces")

@@ -409,17 +409,23 @@ def test_the_sweep_can_see_each_reduction() -> None:
         "no case has directions of differing domain, so a row swap would be invisible"
     )
 
-    # The tolerance argmax must appear both first and last. One position alone leaves
-    # `max` indistinguishable from whichever of `first` or `last` matches it.
-    argmaxes = set()
+    # The tolerance argmax must appear first, last AND in the middle. First and last
+    # alone leave `max` indistinguishable from whichever of `first` or `last` matches
+    # it; the interior position is what rules out "the second one", and it is the case
+    # `cpp/tests/test_bspline_space_nd.cpp` names explicitly too. Only cases whose
+    # direction tolerances are pairwise distinct can vote, since a tie has no argmax.
+    positions = set()
     for space in spaces.values():
         tolerances = [one.tolerance for one in space.spaces]
         if len(set(tolerances)) == len(tolerances):
-            argmaxes.add(tolerances.index(max(tolerances)) == 0)
-            argmaxes.add(tolerances.index(max(tolerances)) == len(tolerances) - 1)
-    assert argmaxes == {True, False}, (
-        "the tolerance argmax must be the first direction in some case and the last "
-        "in another, over cases whose direction tolerances are all distinct"
+            index = tolerances.index(max(tolerances))
+            positions.add(
+                "first" if index == 0 else "last" if index == len(tolerances) - 1 else "middle"
+            )
+    assert positions == {"first", "middle", "last"}, (
+        f"the tolerance argmax appears only at {sorted(positions)} across the cases "
+        f"whose direction tolerances are all distinct; `max` is not distinguished "
+        f"from a positional pick until all three appear"
     )
 
     # Some case in the table must have a ``float32`` tolerance that is not a
@@ -847,3 +853,88 @@ def test_the_bitwise_claim_holds_over_a_ten_times_sweep(cpp_backend: None) -> No
         f"the sweep saw only {len(seen_totals)} distinct basis totals, so the products "
         f"were barely exercised"
     )
+
+
+@pytest.mark.parametrize("dtype", [np.float32, np.float64], ids=["float32", "float64"])
+def test_the_unported_operations_agree_across_the_seam(
+    cpp_backend: None, dtype: npt.DTypeLike
+) -> None:
+    """The four operations still in Python agree on a space of either backend.
+
+    The seam test. ``tabulate_basis``, ``cell_supports``, ``boundary_dofs`` and
+    ``restrict`` are computations *over* a space rather than properties *of* one, so
+    the port leaves them on the wrapper, running the same numba kernels and the same
+    numpy either way. What changes underneath them is where they read the space's
+    state from -- a C++ handle or the oracle -- and this is the only test that
+    exercises that path.
+
+    Without it the coverage looks complete and is not: ``tests/test_bspline_space.py``
+    checks all four against hand-computed values and runs under both backends, so each
+    is independently correct, but nothing compares the two *to each other* on the
+    asymmetric multi-direction spaces this file is built around. A state-consumption
+    defect specific to the C++-backed wrapper -- an array whose flags or layout differ
+    on the way into a kernel, say -- would have to break one of that file's specific
+    hardcoded numbers to be caught there, and could otherwise pass both halves.
+
+    **Bitwise, and that is a claim rather than a hope.** The kernels are the same
+    compiled functions in both runs and the state they read is bit-identical by the
+    field-by-field test above, so identical inputs reach identical code. A difference
+    here is a defect in what the wrapper hands the kernel, not a rounding, which is
+    why the comparison is exact for the float results as well as for the index ones.
+
+    **What it reaches, measured rather than assumed.** The four operations consume the
+    per-direction counts and the univariate directions themselves, so a defect in
+    either shows here: reversing ``num_basis`` on a three-direction space, and summing
+    the tensor-product total instead of multiplying it, both turn this test red. They
+    do **not** consume the nD ``domain`` block -- they read each direction's own
+    ``domain`` -- so swapping its rows leaves this test green while turning the
+    field-by-field one red. That is the division of labour rather than a gap, and it is
+    written down because the natural reading of "the operations agree" is that they
+    cover every piece of state, and they do not.
+    """
+    directions = (_QUAD_3, _LIN_2, _DEG0_4)
+    python, cpp = _both_backends(directions, dtype)
+
+    # A point set inside the intersection of the three domains would be empty
+    # ([0, 3] x [10, 12] x [0, 4]), so the points are built per direction and crossed.
+    pts = np.array(
+        [[0.0, 10.0, 0.0], [1.5, 11.0, 2.0], [3.0, 12.0, 4.0], [0.25, 10.5, 3.5]],
+        dtype=dtype,
+    )
+    py_basis, py_first = python.tabulate_basis(pts)
+    cpp_basis, cpp_first = cpp.tabulate_basis(pts)
+    np.testing.assert_array_equal(py_basis, cpp_basis, err_msg="tabulate_basis values")
+    np.testing.assert_array_equal(py_first, cpp_first, err_msg="tabulate_basis indices")
+
+    cells = np.arange(python.num_total_intervals, dtype=np.int64)
+    np.testing.assert_array_equal(
+        python.cell_supports(cells), cpp.cell_supports(cells), err_msg="cell_supports"
+    )
+
+    for direction in range(python.dim):
+        for side in (0, 1):
+            for layers in (1, 2):
+                np.testing.assert_array_equal(
+                    python.boundary_dofs(direction, side, layers),
+                    cpp.boundary_dofs(direction, side, layers),
+                    err_msg=f"boundary_dofs({direction}, {side}, {layers})",
+                )
+
+    for cell_ids in ([0], [0, 1], [1, 5, 7], cells.tolist()):
+        py_restricted = python.restrict(cell_ids)
+        cpp_restricted = cpp.restrict(cell_ids)
+        where = f"restrict({cell_ids})"
+        np.testing.assert_array_equal(
+            py_restricted.local_to_global_dof,
+            cpp_restricted.local_to_global_dof,
+            err_msg=where,
+        )
+        # The windowed space is a freshly built wrapper on each side -- class V of
+        # `design/bspline_ownership_lifetime.md` -- so its own state is compared here
+        # rather than taken on trust from the parent's.
+        assert_object_parity(
+            py=py_restricted.space,
+            cpp=cpp_restricted.space,
+            fields=_fields(py_restricted.space.dim),
+            context=where,
+        )

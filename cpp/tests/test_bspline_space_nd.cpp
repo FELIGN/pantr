@@ -15,23 +15,27 @@
 /// is a boolean, and the tolerance is a *selection* -- one of the directions' own
 /// tolerances, unmodified -- so `==` is the right comparison for it too.
 ///
-/// ## Every multi-direction case is asymmetric, and that is the point
+/// ## The case set is asymmetric where it can be, and isolating where it cannot
 ///
 /// A tensor-product type is the place where a symmetric test set proves nothing. If
 /// two directions agree on their degree, their counts and their domain, then a
 /// transposition, an off-by-one in the axis index, a `min` written for a `max` and a
-/// reduction that returns its first argument all produce the right answer. So no
-/// case below uses the same univariate space twice, every case's directions differ
-/// in *every* reduced quantity, and `check_the_reductions_see_each_direction`
-/// exists only to assert that -- it is a test of the test set, and it fails if a
-/// later case is added symmetrically.
+/// reduction that returns its first argument all produce the right answer.
 ///
-/// The same reasoning fixes the position of the interesting direction.
-/// `check_the_tolerance_is_the_largest` puts the argmax first in one case and last
-/// in another, and `check_bezier_like_needs_every_direction` puts the single
-/// non-Bézier direction in each position of a three-direction space in turn.
+/// So the case set is in two parts, and the split is deliberate rather than untidy.
+/// `check_two_directions` and `check_three_directions` are **fully asymmetric**:
+/// their directions differ in the degree, the basis count, the interval count, the
+/// domain and the scale at once, and `check_the_reductions_see_each_direction`
+/// asserts exactly that of them -- a test of the test set, which fails if a later
+/// case stops carrying its weight. The rest are **isolating**: they vary one
+/// quantity and hold the others fixed, which is what lets a failure name the
+/// reduction that moved. `check_the_tolerance_is_the_largest` uses three directions
+/// that differ only in scale, and puts the argmax first, last and in the middle over
+/// the same three values; `check_bezier_like_needs_every_direction` repeats one
+/// direction and puts the single exception in each of three positions in turn.
+/// Neither could be fully asymmetric without confounding what it isolates.
 ///
-/// ## The three cases that exist because getting them wrong is silent
+/// ## The four cases that exist because getting them wrong is silent
 ///
 /// **`check_the_directions_are_shared_not_copied`.** The constructor takes handles
 /// and must store them, not copies of what they point at. If it copied, every value
@@ -58,14 +62,31 @@
 /// on an input that is reachable rather than hypothetical. The guard is asserted
 /// through `detail::checked_product` directly, because reaching it through a space
 /// would need three directions of 2.1e6 basis functions and about 50 MB of knots.
+///
+/// **`check_the_tolerance_stays_a_double_at_float_storage`.** The tolerance is a
+/// `double` at every storage width by design, and on a knot vector whose scale is
+/// dyadic that is *unobservable*: the tolerance is `8 * eps * scale`, the factor is a
+/// power of two, so a space storing it in `T` would agree bit for bit. Measured --
+/// narrowing the member passed every other case here and the whole Python parity
+/// suite. That case is the one where the two spellings differ, and it carries its own
+/// vacuity guard saying so.
+///
+/// **`check_concurrent_reads`.** The header claims every accessor is safe to call
+/// concurrently with no external locking. Here that should hold structurally, since
+/// there is no memo -- but `design/bspline_derived_caches.md` F3 measured the shape
+/// one level down giving 60 correct answers in 60 unsanitized runs and four
+/// ThreadSanitizer reports, so the claim gets a gate rather than a reader's trust,
+/// and the gate is a sanitizer build rather than an assertion on a value.
 
 #include <array>
+#include <atomic>
 #include <cstdint>
 #include <limits>
 #include <memory>
 #include <span>
 #include <stdexcept>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include "check.hpp"
@@ -530,6 +551,76 @@ void check_the_totals_refuse_an_overflow() {
     PANTR_CHECK_MSG(refused, "and three directions of 2^21 are what makes it reachable");
 }
 
+/// Every accessor is safe to call concurrently on one space, with no locking.
+///
+/// `space_nd.hpp` claims that, and the claim needs a gate rather than a reader's
+/// trust. Here it should hold for a structural reason -- there is no memo, so every
+/// accessor reads state frozen at construction -- but "should" is exactly what
+/// `design/bspline_derived_caches.md` F3 refutes for the shape one level down: a
+/// bare `mutable std::optional` memo produced **60 correct answers in 60
+/// unsanitized runs** and four ThreadSanitizer reports, so no assertion on a value
+/// can stand in for the sanitizer.
+///
+/// `space(d)` is included deliberately and is the only accessor here with any
+/// machinery behind it: it copies a `shared_ptr`, so eight threads hammering it
+/// contend on one atomic control block. The rest are span and scalar reads.
+///
+/// The threads are released together off an atomic flag rather than started in
+/// sequence, so that they genuinely overlap; a run in which each finished before the
+/// next began would report clean for the wrong reason.
+void check_concurrent_reads() {
+    const std::vector<double> first{0.0, 0.0, 0.0, 1.0, 2.0, 3.0, 3.0, 3.0};
+    const std::vector<double> second{10.0, 10.0, 11.0, 12.0, 12.0};
+    const BsplineSpace<double> s({one_d(first, 2), one_d(second, 1)});
+
+    constexpr int num_threads = 8;
+    std::atomic<bool> go{false};
+    std::vector<std::int64_t> totals(num_threads, 0);
+    std::vector<double> tolerances(num_threads, 0.0);
+    std::vector<std::thread> threads;
+    threads.reserve(num_threads);
+    for (int t = 0; t < num_threads; ++t) {
+        threads.emplace_back([&s, &go, &totals, &tolerances, t] {
+            while (!go.load(std::memory_order_acquire)) {
+                // Spin until every thread is up, so the reads overlap.
+            }
+            std::int64_t sum = 0;
+            double tol = 0.0;
+            for (int i = 0; i < 2000; ++i) {
+                for (std::int64_t d = 0; d < s.dim(); ++d) {
+                    sum += s.degrees()[static_cast<std::size_t>(d)];
+                    sum += s.num_basis()[static_cast<std::size_t>(d)];
+                    sum += s.num_intervals()[static_cast<std::size_t>(d)];
+                    sum += static_cast<std::int64_t>(s.domain_flat()[static_cast<std::size_t>(
+                        2 * d)]);
+                    // The one accessor with an atomic in it.
+                    sum += s.space(d)->num_basis();
+                    sum += s.space_ref(d).degree();
+                }
+                sum += s.num_total_basis() + s.num_total_intervals();
+                sum += s.has_bezier_like_knots() ? 1 : 0;
+                tol = s.tolerance();
+            }
+            totals[static_cast<std::size_t>(t)] = sum;
+            tolerances[static_cast<std::size_t>(t)] = tol;
+        });
+    }
+    go.store(true, std::memory_order_release);
+    for (std::thread& thread : threads) {
+        thread.join();
+    }
+
+    for (int t = 0; t < num_threads; ++t) {
+        const auto index = static_cast<std::size_t>(t);
+        PANTR_CHECK_MSG(totals[index] == totals[0], "every thread must read one state");
+        PANTR_CHECK_MSG(tolerances[index] == s.tolerance(),
+                        "and one tolerance, exactly the single-threaded one");
+    }
+    PANTR_CHECK_MSG(s.space(0).use_count() >= 2,
+                    "the vacuity guard: the shared handle survived the contention, so "
+                    "the atomic path really was exercised");
+}
+
 }  // namespace
 
 int main() {
@@ -547,5 +638,6 @@ int main() {
     check_the_tolerance_stays_a_double_at_float_storage();
     check_refusals();
     check_the_totals_refuse_an_overflow();
+    check_concurrent_reads();
     return pantr::test::summary("test_bspline_space_nd");
 }
