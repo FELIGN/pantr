@@ -93,8 +93,10 @@ void check_spline_info(const_knots<T> knots, std::int64_t degree) {
     // Divided rather than multiplied, as `BsplineSpace1D::check_arguments` is and
     // for the same reason: `2 * degree + 2` is signed overflow for a degree near
     // the top of the range, while the oracle's Python integers are exact for any
-    // degree.
-    if ((static_cast<std::int64_t>(knots.size()) - 2) / 2 < degree) {
+    // degree. The `size < 2` guard is what makes the two spellings agree on every
+    // input rather than nearly every one; `space_1d.hpp` carries the argument.
+    const auto count = static_cast<std::int64_t>(knots.size());
+    if (count < 2 || (count - 2) / 2 < degree) {
         throw nb::value_error("knots must have at least 2*degree+2 elements");
     }
     // `np.all(np.diff(knots) >= 0)`: the difference is formed first and only then

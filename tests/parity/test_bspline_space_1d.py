@@ -305,9 +305,18 @@ _REFUSALS: Final = tuple(
         ("domain swallowed by an interior knot", [0.0, 1.0, 1.0, 1.0, 2.0], 1, False, True),
         ("short and descending", [1.0, 0.0, 1.0], 2, False, True),
         ("descending and too few", [0.0, 1.0, 2.0, 3.0, 2.0, 5.0, 6.0], 2, True, True),
+        ("one knot at degree zero", [0.0], 0, False, True),
     )
 )
 """One input per refusal, plus two that fail two checks at once.
+
+The last one is a regression case rather than a new refusal. The C++ length check
+is the oracle's `size < 2*degree+2` rewritten as a division, to keep it free of
+signed overflow at a huge degree, and C++ division truncates toward zero where the
+rewrite needs a floor. At one knot and degree 0 the two disagree: the truncating
+form skipped the refusal and the caller was told "Not enough knots for the
+specified degree" instead. It is the only input on which they differ, checked
+exhaustively over the small ones.
 
 A negative degree is deliberately **not** here. The wrapper refuses it before
 `_new_impl` dispatches, so both parametrizations would run the identical Python
