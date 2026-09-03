@@ -55,11 +55,23 @@ is bitwise except where the node family itself dispatches.
 it fixed: it measures the gap between the two backends' matrices and carries it
 through the product, exactly as that file measures its node gap.
 
-The three independent accuracy oracles
---------------------------------------
+The three accuracy oracles, and how far apart they really stand
+---------------------------------------------------------------
 
 Parity says the two backends agree, not that either is right, and a transposed index
 would be invisible to it. None of the three below is the Python implementation.
+
+**They are not three independent checks, and an earlier version of this heading said
+they were.** Over the inputs they share -- equispaced nodes, degree at most two --
+the first and the third assert *bit-identical* reference values, because both are
+asking whether an entry of ``A_e`` equals the mathematically correct B-spline value
+at that node. What separates them is **provenance, not arithmetic**: the first's
+reference is derived by hand outside pantr, so it alone can catch a defect shared
+between the extraction path and Cox-de Boor, while the third's comes from pantr's
+own Cox-de Boor and cannot. The third's extra reach over the first is one case with
+an interior knot of multiplicity two, plus the window-alignment assertion. **Only the
+second is a genuinely different question**: a different algebraic invariant, bounded
+rather than zero, swept over the whole case and variant table.
 
 **Exact rational values, hand-derived.** At degree 2 with equispaced nodes,
 ``L = [[1, 1/4, 0], [0, 1/2, 0], [0, 1/4, 1]]`` follows from ``L[j,k] = B_j(x_k)`` at
@@ -75,12 +87,13 @@ tabulation error is folded in exactly rather than bounded. Columns and not rows:
 quadratic table's rows sum to ``1.25, 1.75, 0.625``, so this is what catches a
 transposition.
 
-It also pins that no entry is negative, which is a correction rather than a
-restatement: ``design/extraction_port.md`` says the Lagrange-to-Bernstein matrix has
-negative entries and that a bound assuming convexity would be false for it. It does
-not. Its columns are the Bernstein basis evaluated at a node in ``[0, 1]``, so they
-are non-negative and sum to one, and ``A_e`` is a product of two column-stochastic
-matrices.
+It also pins that no entry is negative. ``design/extraction_port.md`` used to say
+the Lagrange-to-Bernstein matrix has negative entries, and that a bound assuming
+convexity would be false for it; that claim was wrong and this branch corrected it,
+so the document no longer says so. Only the *cardinal*-to-Bernstein matrix has
+negative entries. The Lagrange one does not: its columns are the Bernstein basis
+evaluated at a node in ``[0, 1]``, so they are non-negative and sum to one, and
+``A_e`` is a product of two column-stochastic matrices.
 
 **The columns are the B-spline basis at the nodes.** The defining property: the
 Lagrange basis is cardinal at its own nodes, so ``A_e[:, k] = N_e(x_k)`` with ``x_k``
@@ -470,8 +483,18 @@ def _product_claim(
     Rule 11 records the sibling Bézier port shipping a fused branch that called
     :func:`bounded_parity` with an argument it does not take, green over 133 tests
     because nothing reached it. So this one was exercised against an extension built
-    at ``-march=native``, where ``contraction_may_fuse()`` is true, and the result is
-    recorded in the PR that added it rather than assumed here.
+    at ``-march=x86-64-v3`` -- the smallest target that defines ``__FP_FAST_FMA``,
+    and the one ``design/simd.md`` schedules -- where ``contraction_may_fuse()`` is
+    true, and the result is recorded in the PR that added it rather than assumed
+    here. **Not** ``-march=native``, which does not build in this repository; an
+    earlier version of this line said it did, and the recipe it gave could not have
+    reproduced the check.
+
+    **This branch is dead in every build the repository itself runs.**
+    ``contraction_may_fuse()`` reads the built binary's own provenance and is false
+    at baseline ``x86-64``, so neither CI nor a local run reaches the code below.
+    Its only evidence is a one-off manual build, and this comment is the whole
+    record of it -- which is why the target above has to be right.
 
     Args:
         case (_Case): The knot vector.
@@ -1091,6 +1114,13 @@ def test_degree_zero_is_refused_by_both_backends(backend: Backend) -> None:
     so that the absence of a degree-0 row in every table above is a recorded fact
     rather than an untested gap, and so that a change to that refusal shows up here.
 
+    **The order matters and is asserted, not just described.** Layer 2 resolves the
+    matrix *before* it writes anything, so a caller's ``out`` is untouched when the
+    refusal fires. Swapping the two lines back would leave a caller holding a
+    half-written array after an exception, and an earlier version of this test could
+    not have seen that: it checked only that the ``ValueError`` was raised, never
+    passing an ``out`` for the refusal to spare.
+
     Args:
         backend (Backend): Which implementation to run.
     """
@@ -1099,6 +1129,15 @@ def test_degree_zero_is_refused_by_both_backends(backend: Backend) -> None:
     space = BsplineSpace1D(knots, 0, snap_knots=False)
     with use_backend(backend), pytest.raises(ValueError, match="[Dd]egree must at least 1"):
         space.tabulate_Lagrange_extraction_operators()
+
+    sentinel = np.full((1, 1, 1), -7.0, dtype=np.float64)
+    caller_array = sentinel.copy()
+    with use_backend(backend), pytest.raises(ValueError, match="[Dd]egree must at least 1"):
+        space.tabulate_Lagrange_extraction_operators(out=caller_array)
+    assert np.array_equal(caller_array, sentinel), (
+        "the refusal wrote into the caller's out before raising, so the matrix was "
+        "resolved after the operators were built rather than before"
+    )
 
     # The mask does have a degree-0 answer, because Layer 2 short-circuits before
     # asking for a matrix. Both backends take that branch, so it never reaches a
