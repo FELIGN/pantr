@@ -24,6 +24,7 @@ from pantr.grid._hierarchical_grid import (
     _MAX_DIAGNOSED_CELLS,
     _MAX_NAMED_CELLS,
     _block_size,
+    _HierarchicalGridPython,
     _in_block,
     _mark_region_cells,
     _name_marked_cells,
@@ -317,7 +318,7 @@ class TestHierarchicalGridRefine:
         g = g.refine(0, [0, 0], [2, 2])
         g = g.refine(0, [4, 4], [6, 6])
         assert g.max_level == 1
-        assert len(g._blocks[1]) == 2  # two separate level-1 blocks
+        assert len(g.active_blocks(1)) == 2  # two separate level-1 blocks
 
     def test_refine_invalid_level_raises(self) -> None:
         g = _grid_1d(4, 2)
@@ -1601,30 +1602,43 @@ class TestHierKernelEquivalence:
 
     @pytest.mark.parametrize(("ndim", "factor"), [(1, 2), (2, 2), (2, (2, 3)), (3, 2)])
     def test_decode_encode_roundtrip(self, ndim: int, factor: int | tuple[int, ...]) -> None:
-        """_decode_flat_id and _encode_midx are mutually inverse over all cells."""
+        """``(cell_level, cell_multi_index)`` and ``cell_id`` invert each other everywhere.
+
+        Written on the public pair rather than on the oracle's ``_decode_flat_id`` /
+        ``_encode_midx``, which is what it used to name. Those are private to the Python
+        implementation, and since ``HierarchicalGrid`` became a wrapper they are no
+        longer reachable through it -- while the public pair is exactly the same two
+        functions and runs under **both** backends, which the private one never did.
+        """
         g = _irregular_grid(ndim, factor)
         for cid in range(g.num_cells):
-            level, midx = g._decode_flat_id(cid)
-            assert g._encode_midx(level, midx) == cid
+            level, midx = g.cell_level(cid), g.cell_multi_index(cid)
+            assert g.cell_id(level, midx) == cid
 
-    def test_encode_midx_inactive_positions(self) -> None:
-        """_encode_midx returns None for refined (non-leaf) and never-active positions."""
+    def test_cell_id_inactive_positions(self) -> None:
+        """``cell_id`` returns None for refined (non-leaf) and never-active positions."""
         g = _grid_2d(4)
         g = g.refine(0, [0, 0], [2, 2])
         # (0, (0, 0)) was refined away -> not an active leaf.
-        assert g._encode_midx(0, (0, 0)) is None
+        assert g.cell_id(0, (0, 0)) is None
         # A level beyond the hierarchy.
-        assert g._encode_midx(5, (0, 0)) is None
+        assert g.cell_id(5, (0, 0)) is None
         # Level-1 position outside the refined region is not active.
-        assert g._encode_midx(1, (7, 7)) is None
+        assert g.cell_id(1, (7, 7)) is None
+        # A wrongly sized index is folded into the same answer rather than raising, and
+        # that is a contract the C++ grid does not keep on its own: it raises there, and
+        # the wrapper owes the `None`.
+        assert g.cell_id(0, (0, 0, 0)) is None
+        assert g.is_active_leaf(0, (0,)) is False
 
-    def test_decode_out_of_range_raises(self) -> None:
-        """_decode_flat_id rejects out-of-range ids."""
+    def test_cell_level_out_of_range_raises(self) -> None:
+        """The flat-id decoders reject out-of-range ids."""
         g = _grid_2d(4)
-        with pytest.raises(IndexError, match="out of range"):
-            g._decode_flat_id(g.num_cells)
-        with pytest.raises(IndexError, match="out of range"):
-            g._decode_flat_id(-1)
+        for bad in (g.num_cells, -1):
+            with pytest.raises(IndexError, match="out of range"):
+                g.cell_level(bad)
+            with pytest.raises(IndexError, match="out of range"):
+                g.cell_multi_index(bad)
 
     def test_kernel_state_tracks_each_returned_grid(self) -> None:
         """Packed kernel arrays are rebuilt by refine/coarsen (results stay exact)."""
@@ -2293,25 +2307,33 @@ def _normalize_every_level(monkeypatch: pytest.MonkeyPatch) -> None:
     Lets one test run an operation down both paths and compare, rather than asserting
     a property the fast path is supposed to have.
 
+    Named on ``_HierarchicalGridPython`` rather than on the public wrapper, and the
+    tests below build oracle grids for the same reason: the fast path is a property of
+    *an implementation*, and each backend has its own. The C++ one carries the identical
+    switch (``HierarchicalGrid::from_blocks``'s ``unnormalized_levels``), and what checks
+    it there is ``cpp/tests/test_grid_hierarchical_refine.cpp`` plus the cell-for-cell
+    parity of every operation in ``tests/parity/test_grid_hierarchical.py``, which would
+    disagree on the first flat id if either side re-partitioned a level.
+
     Args:
         monkeypatch (pytest.MonkeyPatch): Fixture used to install the override.
     """
-    original = HierarchicalGrid._from_blocks.__func__  # type: ignore[attr-defined]
+    original = _HierarchicalGridPython._from_blocks.__func__  # type: ignore[attr-defined]
 
     def unconditional(
-        cls: type[HierarchicalGrid],
+        cls: type[_HierarchicalGridPython],
         root: TensorProductGrid,
         factor: tuple[int, ...],
         blocks: list[list[tuple[tuple[int, ...], tuple[int, ...]]]],
         *,
         unnormalized_levels: frozenset[int] | None = None,
-    ) -> HierarchicalGrid:
+    ) -> _HierarchicalGridPython:
         return original(cls, root, factor, blocks, unnormalized_levels=None)  # type: ignore[no-any-return]
 
-    monkeypatch.setattr(HierarchicalGrid, "_from_blocks", classmethod(unconditional))
+    monkeypatch.setattr(_HierarchicalGridPython, "_from_blocks", classmethod(unconditional))
 
 
-def _random_hierarchy(rng: np.random.Generator, ndim: int) -> HierarchicalGrid:
+def _random_hierarchy(rng: np.random.Generator, ndim: int) -> _HierarchicalGridPython:
     """Return a randomly refined hierarchy with blocks left on several levels.
 
     Refines scattered single cells level by level, which leaves the peeled remainder
@@ -2324,10 +2346,10 @@ def _random_hierarchy(rng: np.random.Generator, ndim: int) -> HierarchicalGrid:
         ndim (int): Spatial dimension.
 
     Returns:
-        HierarchicalGrid: The refined grid.
+        _HierarchicalGridPython: The refined grid.
     """
     root = int(rng.integers(3, 6))
-    grid = hierarchical_grid(uniform_grid([[0.0, 1.0]] * ndim, root), 2)
+    grid = _HierarchicalGridPython(uniform_grid([[0.0, 1.0]] * ndim, root), 2)
     for level in range(int(rng.integers(2, 5))):
         blocks = grid.active_blocks(level)
         if not blocks:
@@ -2342,15 +2364,17 @@ def _random_hierarchy(rng: np.random.Generator, ndim: int) -> HierarchicalGrid:
     return grid
 
 
-def _apply_random_operation(grid: HierarchicalGrid, rng: np.random.Generator) -> HierarchicalGrid:
+def _apply_random_operation(
+    grid: _HierarchicalGridPython, rng: np.random.Generator
+) -> _HierarchicalGridPython:
     """Apply one randomly chosen hierarchy operation.
 
     Args:
-        grid (HierarchicalGrid): The grid to operate on.
+        grid (_HierarchicalGridPython): The grid to operate on.
         rng (np.random.Generator): Source of randomness.
 
     Returns:
-        HierarchicalGrid: The operation's result.
+        _HierarchicalGridPython: The operation's result.
     """
     choice = int(rng.integers(4))
     if choice == 0:
@@ -2370,11 +2394,13 @@ def _apply_random_operation(grid: HierarchicalGrid, rng: np.random.Generator) ->
     return grid._copy()
 
 
-def _levels(grid: HierarchicalGrid) -> list[tuple[tuple[tuple[int, ...], tuple[int, ...]], ...]]:
+def _levels(
+    grid: _HierarchicalGridPython,
+) -> list[tuple[tuple[tuple[int, ...], tuple[int, ...]], ...]]:
     """Return every level's block list, for a block-for-block comparison.
 
     Args:
-        grid (HierarchicalGrid): The grid to read.
+        grid (_HierarchicalGridPython): The grid to read.
 
     Returns:
         list: One entry per level, each the level's blocks in stored order.

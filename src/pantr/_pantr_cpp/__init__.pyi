@@ -124,6 +124,7 @@ from ._geometry import AABB as AABB
 from ._grid import BVH as BVH
 from ._grid import CellTags as CellTags
 from ._grid import FacetTags as FacetTags
+from ._grid import HierarchicalGrid as HierarchicalGrid
 from ._grid import Partition as Partition
 from ._grid import TensorProductGrid as TensorProductGrid
 from ._grid import bvh_build as bvh_build
