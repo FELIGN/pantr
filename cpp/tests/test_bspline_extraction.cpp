@@ -39,6 +39,7 @@
 /// basis tabulation in C++ yet, so that check lives on the Python side where
 /// `BsplineSpace1D.tabulate_basis` exists.
 
+#include <algorithm>
 #include <array>
 #include <cmath>
 #include <cstdint>
@@ -59,6 +60,7 @@ using pantr::bspline::bezier_extraction_1d;
 using pantr::bspline::bezier_structural_identity_mask;
 using pantr::bspline::classify_knots;
 using pantr::bspline::KnotClassRange;
+using pantr::bspline::KnotClasses;
 using pantr::bspline::multiplicity_of_first_knot_in_domain;
 using pantr::bspline::unique_knots_and_multiplicity;
 
@@ -99,34 +101,79 @@ Operators<T> build(const std::vector<T>& knots, std::int64_t degree, double tol)
     return ops;
 }
 
+/// The number of insertions on the longest dependency chain of a knot vector.
+///
+/// One outer iteration of an insertion sequence is one stage: the value of column
+/// `k` after iteration `r` depends on columns `k` and `k - 1` after `r - 1`. An
+/// element's own sequence is therefore `degree - multiplicity` stages long, the
+/// boundary sequence adds `degree - boundary` on top of element 0, and the
+/// inter-element **copies** carry the chain forward -- a copy commits no rounding
+/// but inherits the error accumulated so far. The sum over the whole vector is thus
+/// an upper bound on any single entry's chain.
+///
+/// **It is not `degree`, and an earlier version of this file said it was.** Element
+/// 0 alone can reach `2 degree - 1` stages, and a vector of `n` elements reaches
+/// `O(n degree)`. The bound below was therefore too tight by that factor. It never
+/// failed, because the observed error is orders below either version, which is
+/// exactly the shape of claim nothing in a suite can distinguish.
+///
+/// \tparam T Scalar type.
+/// \param knots The knot vector.
+/// \param degree The polynomial degree.
+/// \param tol The absolute parametric tolerance.
+/// \return The stage count, zero when no insertion runs at all.
+template <class T>
+[[nodiscard]] std::int64_t insertion_stages(const std::vector<T>& knots, std::int64_t degree,
+                                            double tol) {
+    const std::span<const T> span(knots);
+    const KnotClasses<T> classes = unique_knots_and_multiplicity<T>(span, degree, tol);
+    const std::span<const std::int64_t> in_domain =
+        std::span<const std::int64_t>(classes.multiplicity)
+            .subspan(classes.domain_begin, classes.domain_end - classes.domain_begin);
+
+    std::int64_t stages =
+        std::max<std::int64_t>(degree - multiplicity_of_first_knot_in_domain<T>(span, degree, tol),
+                               0);
+    for (std::size_t e = 1; e < in_domain.size(); ++e) {
+        stages += std::max<std::int64_t>(degree - in_domain[e], 0);
+    }
+    return stages;
+}
+
 /// The tolerance a column sum may miss one by.
 ///
-/// Each entry is a chain of at most `degree` updates `alpha * x + beta * y`, each
-/// committing four roundings -- `beta = 1 - alpha`, two products and their sum --
-/// and the exact chain is a convex combination of values in `[0, 1]`, so an entry
-/// carries at most `gamma_{4 degree}` of absolute error. Summing `degree + 1` of
-/// them adds `gamma_{degree}` against a total of one. First order in `u`, that is
-/// `(4 degree (degree + 1) + degree) u`.
+/// Each stage of an entry's chain commits four roundings -- `beta = 1 - alpha`, the
+/// two products and their sum -- against an exact convex combination of values in
+/// `[0, 1]`, whose weights are non-negative and sum to one, so the propagated error
+/// carries forward with weight at most one and an entry ends up within
+/// `gamma_{4 S}` of its exact value, where `S` is the chain length
+/// `insertion_stages` reports. Summing `degree + 1` of them against an exact total
+/// of one adds `gamma_{degree}`. First order in `u`, that is
+/// `(4 S (degree + 1) + degree) u`.
 ///
 /// \tparam T Scalar type.
 /// \param degree The polynomial degree.
-/// \return The absolute bound, zero for degree 0 where nothing is computed.
+/// \param stages The chain length, from `insertion_stages`.
+/// \return The absolute bound, zero when nothing is computed.
 template <class T>
-[[nodiscard]] double column_sum_tolerance(std::int64_t degree) {
+[[nodiscard]] double column_sum_tolerance(std::int64_t degree, std::int64_t stages) {
     const double u = 0.5 * static_cast<double>(std::numeric_limits<T>::epsilon());
     const auto p = static_cast<double>(degree);
-    return (4.0 * p * (p + 1.0) + p) * u;
+    return (4.0 * static_cast<double>(stages) * (p + 1.0) + p) * u;
 }
 
 /// Check the two analytic invariants every operator has.
 ///
 /// \tparam T Scalar type.
 /// \param ops The operators.
+/// \param knots The knot vector they were built from, which sizes the bound.
 /// \param degree The polynomial degree.
+/// \param tol The absolute parametric tolerance the operators were built at.
 /// \param label What case this is, for the failure message.
 template <class T>
-void check_invariants(const Operators<T>& ops, std::int64_t degree, const std::string& label) {
-    const double bound = column_sum_tolerance<T>(degree);
+void check_invariants(const Operators<T>& ops, const std::vector<T>& knots, std::int64_t degree,
+                      double tol, const std::string& label) {
+    const double bound = column_sum_tolerance<T>(degree, insertion_stages<T>(knots, degree, tol));
     for (std::size_t e = 0; e < ops.count; ++e) {
         for (std::size_t j = 0; j < ops.side; ++j) {
             double sum = 0.0;
@@ -222,7 +269,7 @@ void check_quadratic_open() {
                                   T(2.0), T(3.0), T(3.0), T(3.0)};
     const Operators<T> ops = build<T>(knots, 2, 0.0);
     same(ops, kQuadraticOpen, "quadratic open");
-    check_invariants(ops, 2, "quadratic open");
+    check_invariants(ops, knots, 2, 0.0, "quadratic open");
 }
 
 /// The forced-identity families.
@@ -260,7 +307,7 @@ void check_unclamped_uniform_matches_the_interior() {
     const std::vector<T> knots = {T(0.0), T(0.5), T(1.0), T(1.5), T(2.0), T(2.5), T(3.0)};
     const Operators<T> ops = build<T>(knots, 2, 0.0);
     same(ops, {kQuadraticOpen[1], kQuadraticOpen[1]}, "unclamped uniform");
-    check_invariants(ops, 2, "unclamped uniform");
+    check_invariants(ops, knots, 2, 0.0, "unclamped uniform");
 }
 
 /// A symmetric knot vector's operators are each other's index reversals.
@@ -283,7 +330,7 @@ void check_mirror_symmetry() {
                                 + std::to_string(j) + ")");
         }
     }
-    check_invariants(ops, 3, "cubic two-element");
+    check_invariants(ops, knots, 3, 0.0, "cubic two-element");
 
     // Three uniform elements at degree 3: the entries are sixths, so this is the
     // one case here whose invariants need the derived tolerance rather than
@@ -292,9 +339,66 @@ void check_mirror_symmetry() {
                                   T(3.0), T(3.0), T(3.0), T(3.0)};
     const Operators<T> wider = build<T>(three, 3, 0.0);
     PANTR_CHECK_MSG(wider.count == 3, "cubic three-element: element count");
-    check_invariants(wider, 3, "cubic three-element");
-    PANTR_CHECK_MSG(column_sum_tolerance<T>(3) > 0.0,
-                    "the derived column-sum tolerance must be positive above degree 0");
+    check_invariants(wider, three, 3, 0.0, "cubic three-element");
+    PANTR_CHECK_MSG(insertion_stages<T>(three, 3, 0.0) > 3,
+                    "three cubic elements chain more insertions than the degree, which is "
+                    "what the corrected bound accounts for");
+}
+
+/// Push the sliding knot window as close to the end of the vector as it goes.
+///
+/// The header derives that the window `knots[w .. w + degree]` always fits, with
+/// `w` at most the last knot index of the element's own class and therefore at most
+/// `n - degree - 2`. Nothing else here comes near that: the hand-picked cases are
+/// low degree with simple interior knots. This one is built to sit on it -- degree
+/// 5, an interior class of multiplicity `degree - 1` immediately before the last
+/// in-domain class, so the last contracting element's window ends one knot short of
+/// the vector -- and its value is checked only through the invariants, since the
+/// point is the addressing rather than the answer.
+///
+/// Its real assertion is the sanitizer's: run under the `gcc-debug` preset, an
+/// off-by-one in the window is an AddressSanitizer report rather than a wrong
+/// number.
+///
+/// \tparam T Scalar type.
+template <class T>
+void check_the_window_reaches_the_end_of_the_vector() {
+    const std::int64_t degree = 5;
+    // Breakpoints 0, 1, 2, 3, with 2 carrying multiplicity `degree - 1` = 4, so the
+    // element [2, 3] is the last contracting one and its window starts as late as
+    // the recurrence lets it.
+    std::vector<T> knots;
+    for (std::int64_t i = 0; i <= degree; ++i) {
+        knots.push_back(T(0.0));
+    }
+    knots.push_back(T(1.0));
+    for (std::int64_t i = 0; i < degree - 1; ++i) {
+        knots.push_back(T(2.0));
+    }
+    for (std::int64_t i = 0; i <= degree; ++i) {
+        knots.push_back(T(3.0));
+    }
+    const Operators<T> ops = build<T>(knots, degree, 0.0);
+    PANTR_CHECK_MSG(ops.count == 3, "the adversarial vector should span three elements");
+    check_invariants(ops, knots, degree, 0.0, "window at the end of the vector");
+
+    // And the same vector with the high-multiplicity class at the far end instead,
+    // where the window's last read is the vector's last knot but one.
+    std::vector<T> shifted;
+    for (std::int64_t i = 0; i <= degree; ++i) {
+        shifted.push_back(T(0.0));
+    }
+    shifted.push_back(T(1.0));
+    shifted.push_back(T(2.0));
+    for (std::int64_t i = 0; i < degree - 1; ++i) {
+        shifted.push_back(T(2.5));
+    }
+    for (std::int64_t i = 0; i <= degree; ++i) {
+        shifted.push_back(T(3.0));
+    }
+    const Operators<T> late = build<T>(shifted, degree, 0.0);
+    PANTR_CHECK_MSG(late.count == 4, "the shifted vector should span four elements");
+    check_invariants(late, shifted, degree, 0.0, "window with a late high-multiplicity class");
 }
 
 /// The boundary count is not the class multiplicity, and the builder wants the first.
@@ -381,7 +485,7 @@ void check_the_mask_agrees_with_the_operators() {
                                         std::span<bool>(flags.data(), in_domain.size() - 1));
 
         const Operators<T> ops = build<T>(one.knots, one.degree, 0.0);
-        check_invariants(ops, one.degree, "mask agreement");
+        check_invariants(ops, one.knots, one.degree, 0.0, "mask agreement");
         for (std::size_t e = 0; e < ops.count; ++e) {
             if (!flags[e]) {
                 continue;
@@ -408,6 +512,8 @@ int main() {
     check_unclamped_uniform_matches_the_interior<float>();
     check_mirror_symmetry<double>();
     check_mirror_symmetry<float>();
+    check_the_window_reaches_the_end_of_the_vector<double>();
+    check_the_window_reaches_the_end_of_the_vector<float>();
     check_the_boundary_count_is_not_the_class_multiplicity();
     check_identity_mask();
     check_the_mask_agrees_with_the_operators<double>();
