@@ -1,5 +1,5 @@
 /// \file
-/// `HierarchicalGrid`'s refinement half: `refine`, `coarsen` and `restrict`.
+/// `HierarchicalGrid`'s refinement half: `refine`, `coarsen`, `restrict` and the export.
 ///
 /// Nothing here compares the two backends -- `tests/parity/` is where that happens, and
 /// it needs the bindings. What this file does instead is tie the operations to
@@ -9,7 +9,8 @@
 ///
 /// **Closed-form counts.** Refining `m` active leaves at a level replaces each by
 /// `prod(factor)` children, so the new cell count is `n - m + m * prod(factor)` exactly.
-/// That is arithmetic the code never performs.
+/// The unrefined `n ** ndim` grid exports `(n + 1) ** ndim` distinct vertices. Both are
+/// arithmetic the code never performs.
 ///
 /// **An analytic invariant that survives any operation.** The active leaves partition the
 /// root's domain, so their volumes sum to the root's whatever sequence of refinements and
@@ -21,19 +22,21 @@
 /// are asserted, and the second is asserted on a case where the hypothesis fails, so the
 /// documented asymmetry is pinned rather than described.
 ///
-/// **Hand-worked values.** The 7-cell refined-corner grid and the refusal messages are
-/// small enough to work out in a comment, and are.
+/// **Hand-worked values.** The 7-cell refined-corner grid, its 14 exported vertices and
+/// the refusal messages are small enough to work out in a comment, and are.
 ///
 /// ## Where a bitwise assertion is used, and why it is legitimate there
 ///
-/// One place. `restrict`'s sub-grid must reproduce its parent's cell bounds **bitwise**:
+/// Two places. `restrict`'s sub-grid must reproduce its parent's cell bounds **bitwise**:
 /// the sub-root is a pure slice of the parent's breakpoint buffer, and a windowed leaf
 /// keeps the parent's level, its sub-index within the root cell and the root cell's own
 /// two breakpoints, so `bounds_at` evaluates the *same expression on the same doubles*.
 /// A tolerance there would accept a sub-root that had been re-based or re-clamped, which
-/// is exactly the bug the assertion exists to catch. That is not a claim about
-/// reproducibility across builds, which is what `design/backend_parity.md` reserves a
-/// derived tolerance for; it is one program evaluating one expression twice.
+/// is exactly the bug the assertion exists to catch. And on a dyadic root with a dyadic
+/// factor every intermediate is representable, so the export's corners equal
+/// `cell_bounds`' corners exactly. Neither claim is about reproducibility across builds,
+/// which is what `design/backend_parity.md` reserves a derived tolerance for; both are
+/// about one program evaluating one expression twice.
 
 #include <algorithm>
 #include <cmath>
@@ -55,6 +58,7 @@ namespace {
 
 using pantr::grid::BlockList;
 using pantr::grid::BlockView;
+using pantr::grid::CellExport;
 using pantr::grid::GridRestriction;
 using pantr::grid::HierarchicalGrid;
 using pantr::grid::TensorProductGrid;
@@ -90,6 +94,14 @@ BlockList level(std::int64_t ndim, const std::vector<Ints>& rects) {
 // Fixtures
 // ---------------------------------------------------------------------------
 
+/// Four unit cells on `[0, 4]`, factor 2, unrefined.
+///
+/// \return The grid.
+Grid line4() {
+    const Ints factor{2};
+    return Grid(TensorProductGrid<double>({{0.0, 1.0, 2.0, 3.0, 4.0}}), factor);
+}
+
 /// The unit square as a 2-by-2 grid of `0.5`-cells, factor 2, unrefined.
 ///
 /// The C++ twin of `hierarchical_grid(uniform_grid([[0, 1], [0, 1]], 2), 2)`, which is
@@ -111,6 +123,25 @@ Grid refined_corner() {
     const Ints lo{0, 0};
     const Ints hi{1, 1};
     return unit_2x2().refine(0, lo, hi);
+}
+
+/// A root whose second breakpoint sits far closer to zero than the cell below it is wide.
+///
+/// Breakpoints `(-0.3, 1e-5, 1)` with factor 2 and only the far root cell refined. Cell 0
+/// is then the level-0 cell `[-0.3, 1e-5]`, and its `hi` corner is the one the export and
+/// `cell_bounds` disagree about the most: `cell_bounds` reaches it as
+/// `-0.3 + (1e-5 - -0.3)`, two roundings against a magnitude of `0.3`, while the export
+/// lands on the lattice node of root cell 1 with offset zero and returns the breakpoint
+/// `1e-5` itself. The difference is an absolute one, at a coordinate five orders of
+/// magnitude smaller, which is why a bound relative to the coordinate cannot hold here.
+///
+/// \return The grid.
+Grid corner_near_zero() {
+    const Ints factor{2};
+    const Ints lo{1};
+    const Ints hi{2};
+    Grid g(TensorProductGrid<double>({{-0.3, 1e-5, 1.0}}), factor);
+    return g.refine(0, lo, hi);
 }
 
 // ---------------------------------------------------------------------------
@@ -712,6 +743,273 @@ void test_restrict_rejects_bad_arguments() {
 }
 
 // ---------------------------------------------------------------------------
+// The leaf-cell mesh export
+// ---------------------------------------------------------------------------
+
+/// The corner of cell `cid` that `export_cells` numbers `corner`, from `cell_bounds`.
+///
+/// \param g The grid.
+/// \param cid The cell.
+/// \param corner The corner index, axis 0 the least significant bit.
+/// \param out Receives the coordinates; must have `ndim()` entries.
+void bounds_corner(const Grid& g, std::int64_t cid, std::size_t corner,
+                   std::vector<double>& out) {
+    const auto d = static_cast<std::size_t>(g.ndim());
+    std::vector<double> lo(d);
+    std::vector<double> hi(d);
+    g.cell_bounds(cid, lo, hi);
+    for (std::size_t k = 0; k < d; ++k) {
+        out[k] = ((corner >> k) & 1U) != 0U ? hi[k] : lo[k];
+    }
+}
+
+/// The lower breakpoint of the root cell holding cell `cid` on axis `k`.
+///
+/// \param g The grid.
+/// \param cid The cell.
+/// \param k The axis.
+/// \return The breakpoint.
+double containing_root_lo(const Grid& g, std::int64_t cid, std::size_t k) {
+    const auto d = static_cast<std::size_t>(g.ndim());
+    std::vector<std::int64_t> midx(d);
+    g.cell_multi_index(cid, midx);
+    std::int64_t span = 1;
+    for (std::int64_t l = 0; l < g.cell_level(cid); ++l) {
+        span *= g.factor()[k];
+    }
+    return g.root().breakpoints(static_cast<std::int64_t>(k))[
+        static_cast<std::size_t>(midx[k] / span)];
+}
+
+/// The seven-cell fixture exports the fourteen vertices it must, and no more.
+///
+/// The nine root corners of the 2-by-2 grid, plus the five level-1 nodes inside the
+/// refined quadrant: two on the domain boundary, the quadrant centre, and the two hanging
+/// nodes on the level interface. Every value is dyadic, so the whole set can be written
+/// out and compared exactly.
+void test_export_matches_the_hand_worked_corner_mesh() {
+    const Grid g = refined_corner();
+    const CellExport<double> mesh = g.export_cells();
+    PANTR_CHECK_MSG(mesh.num_vertices == 14, std::to_string(mesh.num_vertices));
+    PANTR_CHECK(mesh.conn.size() == 7 * 4);
+    PANTR_CHECK(mesh.points.size() == 14 * 2);
+
+    const std::vector<double> expected{
+        0.0,  0.0,  0.0,  0.25, 0.0,  0.5,  0.0,  1.0,  0.25, 0.0,  0.25, 0.25, 0.25, 0.5,
+        0.5,  0.0,  0.5,  0.25, 0.5,  0.5,  0.5,  1.0,  1.0,  0.0,  1.0,  0.5,  1.0,  1.0};
+    PANTR_CHECK_MSG(mesh.points == expected, "the exported vertex set moved");
+
+    std::int64_t lowest = mesh.conn[0];
+    std::int64_t highest = mesh.conn[0];
+    for (const std::int64_t index : mesh.conn) {
+        lowest = std::min(lowest, index);
+        highest = std::max(highest, index);
+    }
+    PANTR_CHECK(lowest == 0);
+    PANTR_CHECK_MSG(highest == 13, std::to_string(highest));
+}
+
+/// The vertices come out in ascending lexicographic order of their lattice coordinate.
+///
+/// Asserted on the coordinates, which are monotone in the lattice index on a grid with
+/// increasing breakpoints, so this is a statement about the deduplication's output order
+/// and not a restatement of how it was built.
+void test_export_vertices_are_lexicographically_sorted() {
+    const Grid g = refined_corner();
+    const CellExport<double> mesh = g.export_cells();
+    for (std::int64_t i = 1; i < mesh.num_vertices; ++i) {
+        const auto row = static_cast<std::size_t>(i) * 2;
+        const bool ordered = mesh.points[row] > mesh.points[row - 2]
+                             || (mesh.points[row] == mesh.points[row - 2]
+                                 && mesh.points[row + 1] > mesh.points[row - 1]);
+        PANTR_CHECK_MSG(ordered, "vertex " + std::to_string(i) + " is out of order");
+    }
+}
+
+/// Corner `c` takes the `hi` bound on axis `k` iff bit `k` of `c` is set, axis 0 the LSB.
+///
+/// Deliberately anisotropic bounds, so a transposed convention cannot pass.
+void test_export_corner_order_convention() {
+    const Ints factor{2, 2};
+    const Grid g(TensorProductGrid<double>({{0.0, 1.0}, {0.0, 2.0}}), factor);
+    const CellExport<double> mesh = g.export_cells();
+    PANTR_CHECK(mesh.num_vertices == 4);
+    const std::vector<double> expected{0.0, 0.0, 1.0, 0.0, 0.0, 2.0, 1.0, 2.0};
+    std::vector<double> got;
+    for (std::size_t c = 0; c < 4; ++c) {
+        const auto vertex = static_cast<std::size_t>(mesh.conn[c]);
+        got.push_back(mesh.points[vertex * 2]);
+        got.push_back(mesh.points[vertex * 2 + 1]);
+    }
+    PANTR_CHECK_MSG(got == expected, "the corner order convention moved");
+}
+
+/// An unrefined `n ** ndim` grid exports the whole `(n + 1) ** ndim` breakpoint lattice.
+///
+/// A closed form, and one the export never evaluates: it counts distinct rows.
+void test_export_of_a_flat_grid_is_the_full_lattice() {
+    const Ints factor{2, 2, 2};
+    const std::vector<double> bp{0.0, 1.0 / 3.0, 2.0 / 3.0, 1.0};
+    const Grid g(TensorProductGrid<double>({bp, bp, bp}), factor);
+    const CellExport<double> mesh = g.export_cells();
+    PANTR_CHECK_MSG(mesh.num_vertices == 4 * 4 * 4, std::to_string(mesh.num_vertices));
+    PANTR_CHECK(mesh.conn.size() == static_cast<std::size_t>(3 * 3 * 3 * 8));
+}
+
+/// An interior vertex is one index, referenced once per cell that touches it.
+void test_export_shares_an_interior_vertex() {
+    const Grid g = unit_2x2();
+    const CellExport<double> mesh = g.export_cells();
+    std::int64_t centre = -1;
+    for (std::int64_t i = 0; i < mesh.num_vertices; ++i) {
+        const auto row = static_cast<std::size_t>(i) * 2;
+        if (mesh.points[row] == 0.5 && mesh.points[row + 1] == 0.5) {
+            centre = i;
+        }
+    }
+    PANTR_CHECK_MSG(centre >= 0, "the centre vertex is missing");
+    std::int64_t uses = 0;
+    for (const std::int64_t index : mesh.conn) {
+        uses += index == centre ? 1 : 0;
+    }
+    PANTR_CHECK_MSG(uses == 4, std::to_string(uses));
+}
+
+/// A hanging vertex appears once and is shared across the level interface.
+///
+/// On `refined_corner` the node `(0.25, 0.5)` sits at the middle of the coarse cell
+/// `(0,1)`'s low-y face and at a corner of two fine cells. It must be one vertex, used by
+/// the two fine cells and by neither coarse one -- a coarse cell's connectivity row lists
+/// only its own four corners, so the hanging node is not among them.
+void test_export_deduplicates_a_hanging_vertex() {
+    const Grid g = refined_corner();
+    const CellExport<double> mesh = g.export_cells();
+    std::int64_t hanging = -1;
+    std::int64_t matches = 0;
+    for (std::int64_t i = 0; i < mesh.num_vertices; ++i) {
+        const auto row = static_cast<std::size_t>(i) * 2;
+        if (mesh.points[row] == 0.25 && mesh.points[row + 1] == 0.5) {
+            hanging = i;
+            ++matches;
+        }
+    }
+    PANTR_CHECK_MSG(matches == 1, "the hanging node appears " + std::to_string(matches)
+                                      + " times in the vertex set");
+    std::int64_t uses = 0;
+    for (const std::int64_t index : mesh.conn) {
+        uses += index == hanging ? 1 : 0;
+    }
+    PANTR_CHECK_MSG(uses == 2, std::to_string(uses));
+}
+
+/// On a dyadic root with a dyadic factor the export reproduces `cell_bounds` exactly.
+///
+/// Every intermediate is a binary rational, so both expressions are exact and there is
+/// nothing for a tolerance to absorb. See the file header for why bitwise is the right
+/// bar here and not a claim about builds.
+void test_export_is_exact_on_a_dyadic_grid() {
+    Grid g = unit_2x2();
+    g = g.refine(0, Ints{0, 0}, Ints{1, 1});
+    g = g.refine(1, Ints{0, 0}, Ints{2, 2});
+    const CellExport<double> mesh = g.export_cells();
+    std::vector<double> want(2);
+    for (std::int64_t cid = 0; cid < g.num_cells(); ++cid) {
+        for (std::size_t c = 0; c < 4; ++c) {
+            bounds_corner(g, cid, c, want);
+            const auto vertex =
+                static_cast<std::size_t>(mesh.conn[static_cast<std::size_t>(cid) * 4 + c]);
+            for (std::size_t k = 0; k < 2; ++k) {
+                PANTR_CHECK_MSG(mesh.points[vertex * 2 + k] == want[k],
+                                "cell " + std::to_string(cid) + " corner "
+                                    + std::to_string(c) + " axis " + std::to_string(k));
+            }
+        }
+    }
+}
+
+/// Off a dyadic grid the two expressions differ, and by no more than the derived bound.
+///
+/// Both halves matter. A bound test that only ever runs where the arithmetic is exact has
+/// tested the cases that cannot fail, so the difference is also asserted to be **nonzero
+/// somewhere**.
+///
+/// \param g The grid.
+/// \param what The fixture's name, for the failure message.
+/// \param expect_inexact Whether some corner must differ.
+void check_export_matches_cell_bounds(const Grid& g, const std::string& what,
+                                      bool expect_inexact) {
+    const auto d = static_cast<std::size_t>(g.ndim());
+    const auto corners = static_cast<std::size_t>(std::int64_t{1} << g.ndim());
+    const CellExport<double> mesh = g.export_cells();
+    std::vector<double> want(d);
+    bool inexact = false;
+    for (std::int64_t cid = 0; cid < g.num_cells(); ++cid) {
+        for (std::size_t c = 0; c < corners; ++c) {
+            bounds_corner(g, cid, c, want);
+            const auto vertex = static_cast<std::size_t>(
+                mesh.conn[static_cast<std::size_t>(cid) * corners + c]);
+            for (std::size_t k = 0; k < d; ++k) {
+                const double got = mesh.points[vertex * d + k];
+                const double diff = std::abs(got - want[k]);
+                const double bound =
+                    2.0 * gamma_of(2.0) * std::abs(want[k])
+                    + 2.0 * gamma_of(4.0) * std::abs(want[k] - containing_root_lo(g, cid, k));
+                PANTR_CHECK_MSG(diff <= bound,
+                                what + ": cell " + std::to_string(cid) + " corner "
+                                    + std::to_string(c) + " axis " + std::to_string(k)
+                                    + " differs by " + std::to_string(diff));
+                inexact = inexact || diff > 0.0;
+            }
+        }
+    }
+    if (expect_inexact) {
+        PANTR_CHECK_MSG(inexact, what + ": every corner agreed exactly, so the bound was "
+                                        "never exercised");
+    }
+}
+
+/// The relative form of the bound is not unconditional, and this is where it fails.
+///
+/// `corner_near_zero`'s cell 0 has a `hi` corner at `1e-5` inside a root cell `0.3` wide.
+/// The difference between the two expressions is set by the width, not by the coordinate,
+/// so it exceeds any small multiple of `eps` times the coordinate while sitting well
+/// inside the derived absolute bound. `design/backend_parity.md` Rule 2 in one fixture:
+/// absolute where the quantity vanishes, never relative.
+void test_export_relative_bound_is_not_unconditional() {
+    const Grid g = corner_near_zero();
+    const CellExport<double> mesh = g.export_cells();
+    std::vector<double> want(1);
+    bounds_corner(g, 0, 1, want);  // the `hi` corner of the coarse cell
+    const auto vertex = static_cast<std::size_t>(mesh.conn[1]);
+    const double got = mesh.points[vertex];
+    const double diff = std::abs(got - want[0]);
+    const double root_lo = containing_root_lo(g, 0, 0);
+    const double absolute = 2.0 * gamma_of(2.0) * std::abs(want[0])
+                            + 2.0 * gamma_of(4.0) * std::abs(want[0] - root_lo);
+    const double relative = 8.0 * std::numeric_limits<double>::epsilon() * std::abs(want[0]);
+
+    PANTR_CHECK_MSG(diff > relative,
+                    "the relative form was expected to fail here; difference "
+                        + std::to_string(diff) + " against " + std::to_string(relative));
+    PANTR_CHECK_MSG(diff <= absolute, "the derived absolute bound must still hold; difference "
+                                          + std::to_string(diff) + " against "
+                                          + std::to_string(absolute));
+}
+
+/// The sweep the shipped bound is asserted over: several shapes, factors and depths.
+void test_export_matches_cell_bounds_across_fixtures() {
+    Grid irregular(TensorProductGrid<double>({{0.0, 0.3, 0.55, 1.0}, {0.0, 0.1, 1.0}}),
+                   Ints{3, 2});
+    irregular = irregular.refine(0, Ints{0, 0}, Ints{2, 1});
+    irregular = irregular.refine(1, Ints{0, 0}, Ints{3, 2});
+    check_export_matches_cell_bounds(irregular, "an irregular 2-D grid", true);
+    check_export_matches_cell_bounds(corner_near_zero(), "the near-zero corner grid", true);
+    check_export_matches_cell_bounds(line4().refine(0, Ints{1}, Ints{3}), "a refined line",
+                                     false);
+    check_the_leaves_tile_the_domain(irregular, "the irregular 2-D grid");
+}
+
+// ---------------------------------------------------------------------------
 // The invariant, over a deterministic sweep of operations
 // ---------------------------------------------------------------------------
 
@@ -785,6 +1083,16 @@ int main() {
     test_restrict_preserves_cell_geometry_bitwise();
     test_restrict_over_every_cell_is_the_identity();
     test_restrict_rejects_bad_arguments();
+
+    test_export_matches_the_hand_worked_corner_mesh();
+    test_export_vertices_are_lexicographically_sorted();
+    test_export_corner_order_convention();
+    test_export_of_a_flat_grid_is_the_full_lattice();
+    test_export_shares_an_interior_vertex();
+    test_export_deduplicates_a_hanging_vertex();
+    test_export_is_exact_on_a_dyadic_grid();
+    test_export_relative_bound_is_not_unconditional();
+    test_export_matches_cell_bounds_across_fixtures();
 
     test_the_partition_survives_a_long_sweep();
     return pantr::test::summary("test_grid_hierarchical_refine");

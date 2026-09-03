@@ -5,8 +5,8 @@
 /// active-leaf rectangles.
 ///
 /// Ports `src/pantr/grid/_hierarchical_grid.py`, which stays as the parity oracle:
-/// the query half, then refinement, coarsening and restriction. The leaf-cell mesh
-/// export, the bindings and the Python wrapper are still absent.
+/// the query half, then refinement, coarsening, restriction and the leaf-cell mesh
+/// export. Only the bindings and the Python wrapper are still absent.
 ///
 /// ## Every operation returns a new grid, and that is what removes the cache problem
 ///
@@ -136,6 +136,26 @@ inline constexpr std::int64_t kMaxNamedCells = 6;
 /// that mostly do not exist would help nobody, so past the cap the message reports the
 /// region's extent instead.
 inline constexpr std::int64_t kMaxDiagnosedCells = 1 << 20;
+
+/// The dimension at which `2 ** ndim` corners per cell stops fitting in `std::int64_t`.
+///
+/// Reachable in principle rather than in practice: a 63-axis grid may hold a single cell,
+/// and its corner count would still overflow. `export_cells` refuses at or above this
+/// rather than shifting past the width of the type.
+inline constexpr std::int64_t kMaxExportNdim = 63;
+
+/// A leaf-cell mesh: deduplicated vertices and one connectivity row per active leaf.
+///
+/// An aggregate rather than a class for the same reason `GridRestriction` is one: it
+/// carries three buffers and no invariant beyond the shapes its producer documents.
+///
+/// \tparam T The coordinate type.
+template <Real T>
+struct CellExport {
+    std::vector<T> points;           ///< `(num_vertices, ndim)` row-major coordinates.
+    std::vector<std::int64_t> conn;  ///< `(num_cells, 2 ** ndim)` row-major, into `points`.
+    std::int64_t num_vertices;       ///< Row count of `points`.
+};
 
 }  // namespace pantr::grid
 
@@ -1048,6 +1068,140 @@ class HierarchicalGrid : public GridBase<HierarchicalGrid<T>> {
         return coarsened.has_value() ? std::move(*coarsened) : rebuilt();
     }
 
+    // ----------------------------------------------------------------
+    // Leaf-cell mesh export
+    // ----------------------------------------------------------------
+
+    /// Deduplicated leaf-cell vertices and their connectivity.
+    ///
+    /// The mesh a dolfinx-style consumer needs: one vertex per distinct corner of the
+    /// active leaves, shared exactly between the cells meeting there, corners shared
+    /// across levels included, so a hanging vertex appears once.
+    ///
+    /// **Deduplication is exact and tolerance-free.** Corners are identified on the
+    /// finest level's integer lattice, where a level-`l` cell at `midx` contributes
+    /// `(midx[k] + bit[k]) * factor[k] ** (max_level() - l)`. Equal corners are equal
+    /// integers, and one formula then maps each distinct node to coordinates, so
+    /// coincident corners come out bitwise identical whatever the arithmetic does.
+    ///
+    /// Corner order within a row is the tensor-product (basix/dolfinx) convention: corner
+    /// `c` takes the `hi` bound on axis `k` iff bit `k` of `c` is set, axis 0 the least
+    /// significant. In 2D that is `[(lo0, lo1), (hi0, lo1), (lo0, hi1), (hi0, hi1)]`.
+    /// It is a **corner** convention and deliberately unlike this library's C-order flat
+    /// cell and dof ids, where the last axis varies fastest.
+    ///
+    /// \return The vertices, `(num_vertices, ndim())` row-major and sorted
+    ///         lexicographically by lattice coordinate, and the connectivity,
+    ///         `(num_cells(), 2 ** ndim())` row-major in flat cell-id order.
+    /// \throws std::overflow_error If a lattice coordinate or the corner count exceeds
+    ///         `int64`; the oracle counts in Python integers and cannot reach this.
+    ///
+    /// \note **How far this agrees with `cell_bounds`, and why not further.** Both build
+    ///       the corner `b + s * w / factor ** l`, where `b` and `w` are the containing
+    ///       root cell's lower breakpoint and width, but from different expressions: this
+    ///       one divides by `factor ** max_level()` and scales by a lattice offset, while
+    ///       `cell_bounds` divides by `factor ** l` and scales by a sub-index. Counting
+    ///       roundings: forming `w`, the division, the integer-scaled multiply and the
+    ///       addition are four on each side, and `cell_bounds` spends a fifth on a `hi`
+    ///       corner, which it writes as `lo + size`. So with `u = eps / 2` and the closed
+    ///       form `gamma_m = m u / (1 - m u)`,
+    ///       `|export - cell_bounds| <= 2 gamma_2 |x| + 2 gamma_4 |x - b|`, for either
+    ///       corner.
+    ///
+    ///       **The second term is what the bound is about, and a relative form drops it.**
+    ///       `|x - b|` is bounded by the root cell's width and not by `|x|`, so only on a
+    ///       domain where every coordinate dominates its own offset -- `b >= 0` is the
+    ///       usual reason -- does this collapse to a multiple of `eps |x|`. Elsewhere it
+    ///       does not, and a corner small against the width of the root cell holding it is
+    ///       a counterexample rather than a corner case;
+    ///       `test_grid_hierarchical_refine.cpp` pins one, and
+    ///       `design/backend_parity.md` Rule 2 is the general statement.
+    ///
+    ///       Bitwise agreement is unattainable in general rather than merely
+    ///       unimplemented: for a corner shared between two levels the two sides evaluate
+    ///       different expressions and can land an ulp apart, and no single deduplicated
+    ///       vertex equals both. It is exact whenever every intermediate is representable,
+    ///       which covers the usual dyadic factor on dyadic breakpoints.
+    ///
+    /// \warning Materialises `num_cells() * 2 ** ndim() * ndim()` integers before
+    ///          deduplication, so a large 3D hierarchy costs several times `conn` in peak
+    ///          memory.
+    [[nodiscard]] CellExport<T> export_cells() const {
+        const auto d = static_cast<std::size_t>(this->ndim());
+        const auto n_cells = static_cast<std::size_t>(this->num_cells());
+        if (this->ndim() >= kMaxExportNdim) {
+            throw std::overflow_error(
+                "export_cells: 2 ** ndim corners per cell does not fit in int64 at ndim "
+                + std::to_string(this->ndim()) + ".");
+        }
+        const auto corners = static_cast<std::size_t>(std::int64_t{1} << this->ndim());
+        const std::int64_t top = max_level();
+        // Every lattice coordinate on axis k is at most `level_cells_per_axis(top, k)`,
+        // since `(midx[k] + 1) * factor[k] ** (top - l) <= n_l(k) * factor[k] ** (top - l)`
+        // and `n_l(k) = n_root(k) * factor[k] ** l`. Checking that one product per axis
+        // therefore covers every entry below, and the inner loop needs no guard.
+        for (std::size_t k = 0; k < d; ++k) {
+            static_cast<void>(level_cells_per_axis(top, static_cast<std::int64_t>(k)));
+        }
+        const auto lattice_size = static_cast<std::size_t>(
+            checked_mul(checked_mul(static_cast<std::int64_t>(n_cells),
+                                    static_cast<std::int64_t>(corners)),
+                        static_cast<std::int64_t>(d)));
+        std::vector<std::int64_t> lattice(lattice_size);
+
+        std::vector<std::int64_t> scale(d);
+        std::vector<std::int64_t> midx(d);
+        for (std::int64_t level = 0; level <= top; ++level) {
+            for (std::size_t k = 0; k < d; ++k) {
+                scale[k] = int_pow(factor_[k], top - level);
+            }
+            const auto first = static_cast<std::size_t>(level_start_[
+                static_cast<std::size_t>(level)]);
+            const auto last = static_cast<std::size_t>(level_start_[
+                static_cast<std::size_t>(level) + 1]);
+            const span2d<const std::int64_t> lo = packed_lo();
+            const span2d<const std::int64_t> hi = packed_hi();
+            for (std::size_t b = first; b < last; ++b) {
+                const std::span<const std::int64_t> block_lo = block_row(lo, b);
+                const std::span<const std::int64_t> block_hi = block_row(hi, b);
+                std::copy(block_lo.begin(), block_lo.end(), midx.begin());
+                auto cell = static_cast<std::size_t>(block_base_[b]);
+                while (true) {
+                    for (std::size_t c = 0; c < corners; ++c) {
+                        const std::size_t row = (cell * corners + c) * d;
+                        for (std::size_t k = 0; k < d; ++k) {
+                            const std::int64_t bit = (static_cast<std::int64_t>(c) >> k) & 1;
+                            lattice[row + k] = (midx[k] + bit) * scale[k];
+                        }
+                    }
+                    ++cell;
+                    // C-order within the block, last axis fastest, which is the order
+                    // flat ids are assigned in.
+                    std::size_t k = d;
+                    bool carried = true;
+                    while (k > 0 && carried) {
+                        --k;
+                        ++midx[k];
+                        if (midx[k] < block_hi[k]) {
+                            carried = false;
+                        } else {
+                            midx[k] = block_lo[k];
+                        }
+                    }
+                    if (carried) {
+                        break;
+                    }
+                }
+            }
+        }
+
+        CellExport<T> mesh;
+        mesh.conn.resize(n_cells * corners);
+        const std::vector<std::int64_t> nodes = deduplicate_rows(lattice, d, mesh.conn);
+        mesh.num_vertices = static_cast<std::int64_t>(nodes.size() / std::max<std::size_t>(d, 1));
+        mesh.points = lattice_to_coords(nodes);
+        return mesh;
+    }
 
   private:
     /// Everything the constructor computes, so the mixin's sizes can be passed up.
@@ -1757,6 +1911,95 @@ class HierarchicalGrid : public GridBase<HierarchicalGrid<T>> {
         }
         const std::int64_t rest = total - kMaxNamedCells;
         return rest > 0 ? named + " and " + std::to_string(rest) + " more" : named;
+    }
+
+    // ----------------------------------------------------------------
+    // The mesh export
+    // ----------------------------------------------------------------
+
+    /// Number the distinct rows of a flat row-major integer table.
+    ///
+    /// Reproduces `numpy.unique(rows, axis=0, return_inverse=True)`: the distinct rows
+    /// come back in ascending lexicographic order, and `inverse[i]` is the position of
+    /// row `i` among them. Verified against numpy that the ordering is numeric and
+    /// lexicographic rather than bytewise, which is what a `void` view would have given.
+    ///
+    /// \param rows The table, `n * width` entries.
+    /// \param width Entries per row, `>= 1`.
+    /// \param inverse Receives one index per row; must already hold `n` entries.
+    /// \return The distinct rows, held flat in ascending lexicographic order.
+    [[nodiscard]] static std::vector<std::int64_t> deduplicate_rows(
+        const std::vector<std::int64_t>& rows, std::size_t width,
+        std::vector<std::int64_t>& inverse) {
+        const std::size_t n = rows.size() / width;
+        std::vector<std::size_t> order(n);
+        std::iota(order.begin(), order.end(), std::size_t{0});
+        std::sort(order.begin(), order.end(), [&rows, width](std::size_t i, std::size_t j) {
+            for (std::size_t k = 0; k < width; ++k) {
+                if (rows[i * width + k] != rows[j * width + k]) {
+                    return rows[i * width + k] < rows[j * width + k];
+                }
+            }
+            return false;
+        });
+        std::vector<std::int64_t> unique;
+        std::int64_t current = -1;
+        for (const std::size_t i : order) {
+            const auto first = rows.begin() + static_cast<std::ptrdiff_t>(i * width);
+            const auto last = first + static_cast<std::ptrdiff_t>(width);
+            if (current < 0
+                || !std::equal(first, last,
+                               unique.end() - static_cast<std::ptrdiff_t>(width))) {
+                ++current;
+                unique.insert(unique.end(), first, last);
+            }
+            inverse[i] = current;
+        }
+        return unique;
+    }
+
+    /// Map finest-level integer lattice coordinates to parametric ones.
+    ///
+    /// The lattice has `factor[k] ** max_level()` steps per root cell on axis `k`, so
+    /// every active-leaf corner at every level lands on an integer node. **One formula
+    /// serves all of them**, which is what makes coincident corners map to identical
+    /// floats and lets `export_cells` deduplicate without a tolerance.
+    ///
+    /// \param nodes `(n, ndim())` lattice coordinates, each in
+    ///        `[0, level_cells_per_axis(max_level(), k)]`.
+    /// \return `(n, ndim())` parametric coordinates, row-major.
+    /// \throws std::overflow_error If the finest level's cell count exceeds `int64`.
+    [[nodiscard]] std::vector<T> lattice_to_coords(
+        const std::vector<std::int64_t>& nodes) const {
+        const auto d = static_cast<std::size_t>(this->ndim());
+        const std::size_t n = nodes.size() / d;
+        std::vector<T> points(nodes.size());
+        for (std::size_t k = 0; k < d; ++k) {
+            const std::int64_t steps = int_pow(factor_[k], max_level());
+            const std::int64_t n_root = root_.cells_per_axis()[k];
+            const std::int64_t far_edge = checked_mul(steps, n_root);
+            const std::span<const T> bp = root_.breakpoints(static_cast<std::int64_t>(k));
+            for (std::size_t i = 0; i < n; ++i) {
+                const std::int64_t coord = nodes[i * d + k];
+                // Clamp so the domain's far edge borrows the last root cell; its exact
+                // breakpoint is written below rather than reconstructed by arithmetic.
+                const std::int64_t root_cell = std::min(coord / steps, n_root - 1);
+                const std::int64_t offset = coord - root_cell * steps;
+                const auto cell = static_cast<std::size_t>(root_cell);
+                const T root_lo = bp[cell];
+                const T width = static_cast<T>(bp[cell + 1] - root_lo);
+                // Both products are named rather than inlined, for the reason the file
+                // header gives: as one expression this is contractible into a fused
+                // multiply-add, `-ffp-contract=on` permits exactly that, and the oracle
+                // -- numpy, evaluating `offset * (widths / steps)` -- never fuses.
+                const T step = static_cast<T>(width / T(static_cast<double>(steps)));
+                const T shift = T(static_cast<double>(offset)) * step;
+                points[i * d + k] = coord == far_edge
+                                        ? bp[static_cast<std::size_t>(n_root)]
+                                        : static_cast<T>(root_lo + shift);
+            }
+        }
+        return points;
     }
 
     // ----------------------------------------------------------------
