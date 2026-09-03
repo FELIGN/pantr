@@ -698,6 +698,18 @@ class HierarchicalGrid : public GridBase<HierarchicalGrid<T>> {
             }
         }
 
+        // `factor ** level` for every level, once. The three loops below each want it, and
+        // `int_pow` is O(level) checked multiplications, so computing it per cell and per
+        // axis makes the bounding-box walk quadratic in the depth for no reason.
+        // `boundary_facets` and `subdomain_mask` hoist the same quantity the same way.
+        const std::int64_t n_levels = max_level() + 1;
+        std::vector<std::int64_t> span_at(static_cast<std::size_t>(n_levels) * d);
+        for (std::int64_t level = 0; level < n_levels; ++level) {
+            for (std::size_t k = 0; k < d; ++k) {
+                span_at[static_cast<std::size_t>(level) * d + k] = int_pow(factor_[k], level);
+            }
+        }
+
         // Root-cell bounding box over the requested leaves.
         std::vector<std::int64_t> window_lo(root_.cells_per_axis().begin(),
                                             root_.cells_per_axis().end());
@@ -706,7 +718,8 @@ class HierarchicalGrid : public GridBase<HierarchicalGrid<T>> {
         for (const std::int64_t cid : cell_ids) {
             const std::int64_t level = decode(cid, midx);
             for (std::size_t k = 0; k < d; ++k) {
-                const std::int64_t root_ik = midx[k] / int_pow(factor_[k], level);
+                const std::int64_t root_ik =
+                    midx[k] / span_at[static_cast<std::size_t>(level) * d + k];
                 window_lo[k] = std::min(window_lo[k], root_ik);
                 window_hi[k] = std::max(window_hi[k], root_ik + 1);
             }
@@ -721,7 +734,6 @@ class HierarchicalGrid : public GridBase<HierarchicalGrid<T>> {
 
         // Clipping a normalized partition to a window can make two blocks mergeable that
         // were not, so every level is handed to the merge rather than taken verbatim.
-        const std::int64_t n_levels = max_level() + 1;
         std::vector<BlockList> sub_blocks;
         sub_blocks.reserve(static_cast<std::size_t>(n_levels));
         std::vector<std::int64_t> level_lo(d);
@@ -730,7 +742,7 @@ class HierarchicalGrid : public GridBase<HierarchicalGrid<T>> {
         std::vector<std::int64_t> clip_hi(d);
         for (std::int64_t level = 0; level < n_levels; ++level) {
             for (std::size_t k = 0; k < d; ++k) {
-                const std::int64_t span_k = int_pow(factor_[k], level);
+                const std::int64_t span_k = span_at[static_cast<std::size_t>(level) * d + k];
                 level_lo[k] = checked_mul(window_lo[k], span_k);
                 level_hi[k] = checked_mul(window_hi[k], span_k);
             }
@@ -760,8 +772,10 @@ class HierarchicalGrid : public GridBase<HierarchicalGrid<T>> {
             const auto local_cid = static_cast<std::int64_t>(local);
             const std::int64_t level = sub.decode(local_cid, sub_midx);
             for (std::size_t k = 0; k < d; ++k) {
-                global_midx[k] = sub_midx[k]
-                                 + checked_mul(window_lo[k], int_pow(factor_[k], level));
+                global_midx[k] =
+                    sub_midx[k]
+                    + checked_mul(window_lo[k],
+                                  span_at[static_cast<std::size_t>(level) * d + k]);
             }
             const std::optional<std::int64_t> global = encode(level, global_midx);
             if (!global.has_value()) {
@@ -1987,6 +2001,12 @@ class HierarchicalGrid : public GridBase<HierarchicalGrid<T>> {
                 // Clamp so the domain's far edge borrows the last root cell; its exact
                 // breakpoint is written below rather than reconstructed by arithmetic.
                 const std::int64_t root_cell = std::min(coord / steps, n_root - 1);
+                // `root_cell * steps` needs no guard of its own: `root_cell <= n_root - 1`
+                // by the clamp above, so the product is below `far_edge`, which was
+                // checked. Same shape of exemption as the one `export_cells` spells out
+                // for its inner loop, and named here for the same reason -- the file's
+                // rule is that every count that could exceed `int64` is checked, so an
+                // unchecked one has to say why it cannot.
                 const std::int64_t offset = coord - root_cell * steps;
                 const auto cell = static_cast<std::size_t>(root_cell);
                 const T root_lo = bp[cell];
