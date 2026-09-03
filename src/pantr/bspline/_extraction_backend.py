@@ -22,12 +22,20 @@ is two registrations rather than one -- ``bspline_extraction.cpp`` for the
 tensor-product apply kernels, ``bspline_extraction_operators.cpp`` for the Bézier
 builder and its mask. They are separate ports with separate parity claims.
 
-Only the **Bézier** target has a builder here. Lagrange is that operator
-post-multiplied by ``lagrange_to_bernstein_1d``, which
-:mod:`pantr.change_basis._change_basis_backend` already dispatches, so it inherits
-the backend rather than needing an entry; the cardinal target additionally needs
-the cardinal-interval scan, which is not ported and which
-``cpp/include/pantr/bspline/space_1d.hpp`` deliberately keeps off the type.
+The **Bézier** and **Lagrange** targets have builders here; the cardinal one does
+not, because it additionally needs the cardinal-interval scan, which is not ported
+and which ``cpp/include/pantr/bspline/space_1d.hpp`` deliberately keeps off the
+type.
+
+The Lagrange pair takes the ``lagrange_to_bernstein`` matrix as an **argument**.
+:mod:`pantr.change_basis` builds it, caches it per ``(degree, variant, dtype)`` and
+dispatches it on its own, so passing the finished matrix keeps one implementation of
+the tabulation, keeps the cache in front of it, and keeps
+:class:`pantr.basis.LagrangeVariant` -- a :class:`~enum.StrEnum`, which numba would
+accept and then silently mis-compare -- off the seam entirely. It also makes the
+matrix common mode between the two backends, so
+``tests/parity/test_bspline_lagrange_extraction.py`` claims about the extraction and
+``tests/parity/test_change_basis.py`` about the change of basis.
 
 What crosses the boundary
 -------------------------
@@ -47,6 +55,13 @@ The twelve per-cell Numba kernels are specialised per dimension because a
 side is four dimension-generic functions behind twenty-four flat entry points with
 the same names, arities and argument order, so this catalogue selects between two
 functions with one signature rather than between two conventions.
+
+The **Lagrange** builder is the one exception to that pattern, and its claim is
+weaker in kind rather than in degree: the post-multiplication is
+:func:`numpy.matmul` on one side, whose BLAS sums a contraction in an unspecified
+blocked order, and a plain loop on the other. So the two are **bounded**, not
+bitwise, wherever the degree exceeds zero; the identity change of basis is the
+exception, since a sum of exact zeros with one exact term rounds nothing.
 
 Measured, and it is stronger than the port needed: on a build whose target ISA has
 no fused multiply-add the two agree **bit for bit**, because the C++ reproduces the
@@ -95,7 +110,9 @@ import numpy.typing as npt
 from .._backend import Backend, active_backend, available_backends
 from ._bspline_extraction_core import (
     _bezier_structural_identity_mask_core,
+    _lagrange_structural_identity_mask_core,
     _tabulate_Bspline_Bezier_1D_extraction_core,
+    _tabulate_Bspline_Lagrange_1D_extraction_core,
 )
 from ._extraction_kernels import (
     apply_kron_1d,
@@ -141,6 +158,12 @@ _BezierBuilder = Callable[[_Array, int, float, _Array], None]
 
 _IdentityMask = Callable[[npt.NDArray[np.intp], int, npt.NDArray[np.bool_]], None]
 """Signature of the structural identity mask: ``(multiplicities, degree, out) -> None``."""
+
+_LagrangeBuilder = Callable[[_Array, int, float, _Array, _Array], None]
+"""Signature of the Lagrange builder: ``(knots, degree, tol, lagr_to_bzr, out) -> None``."""
+
+_LagrangeIdentityMask = Callable[[npt.NDArray[np.intp], int, _Array, npt.NDArray[np.bool_]], None]
+"""Signature of the Lagrange mask: ``(multiplicities, degree, lagr_to_bzr, out) -> None``."""
 
 
 _KERNELS: Final[dict[tuple[str, int], _Kernel]] = {
@@ -394,6 +417,69 @@ def _cpp_bezier_identity_mask(
     out[...] = buffer
 
 
+def _cpp_lagrange_extraction(
+    knots: _Array, degree: int, tol: float, lagrange_to_bernstein: _Array, out: _Array
+) -> None:
+    """Build the Lagrange extraction operators through the C++ binding.
+
+    Args:
+        knots (_Array): The knot vector.
+        degree (int): The polynomial degree.
+        tol (float): The absolute parametric tolerance.
+        lagrange_to_bernstein (_Array): The ``(degree + 1, degree + 1)``
+            change-of-basis matrix, in ``knots``' dtype.
+        out (_Array): Output of shape ``(n_intervals, degree + 1, degree + 1)``.
+
+    Note:
+        No input validation is performed here. The binding is the C++ half of
+        Layer 2 and re-checks dtype, rank, contiguity, the oracle's three
+        knot-vector refusals and the shapes of both matrices; Layer 2 in Python
+        established the rest.
+    """
+    from pantr import _pantr_cpp  # noqa: PLC0415  (resolved against the .pyi stub)
+
+    knot_array = np.ascontiguousarray(knots)
+    matrix = np.ascontiguousarray(lagrange_to_bernstein)
+    buffer, copy_back = _contiguous_out(out)
+    _pantr_cpp.lagrange_extraction_1d(knot_array, int(degree), float(tol), matrix, buffer)
+    if copy_back:
+        out[...] = buffer
+
+
+def _cpp_lagrange_identity_mask(
+    multiplicities: npt.NDArray[np.intp],
+    degree: int,
+    lagrange_to_bernstein: _Array,
+    out: npt.NDArray[np.bool_],
+) -> None:
+    """Mark the identity elements of the Lagrange target through the C++ binding.
+
+    The multiplicities are normalized to :data:`numpy.intp` for the reason
+    :func:`_cpp_bezier_identity_mask` gives.
+
+    Args:
+        multiplicities (npt.NDArray[np.intp]): In-domain knot multiplicities.
+        degree (int): The polynomial degree.
+        lagrange_to_bernstein (_Array): The ``(degree + 1, degree + 1)``
+            change-of-basis matrix.
+        out (npt.NDArray[np.bool_]): One flag per element.
+
+    Note:
+        No input validation is performed here; the binding re-checks dtype, rank,
+        contiguity and the two length relations, and Layer 2 established the rest.
+    """
+    from pantr import _pantr_cpp  # noqa: PLC0415  (resolved against the .pyi stub)
+
+    counts = np.ascontiguousarray(multiplicities, dtype=np.intp)
+    matrix = np.ascontiguousarray(lagrange_to_bernstein)
+    if out.flags["C_CONTIGUOUS"]:
+        _pantr_cpp.lagrange_structural_identity_mask(counts, int(degree), matrix, out)
+        return
+    buffer = np.empty_like(out, order="C")
+    _pantr_cpp.lagrange_structural_identity_mask(counts, int(degree), matrix, buffer)
+    out[...] = buffer
+
+
 def bezier_extraction_kernel(backend: Backend | None = None) -> _BezierBuilder:
     """Get the Bézier extraction operator builder of the requested backend.
 
@@ -424,3 +510,37 @@ def bezier_identity_mask_kernel(backend: Backend | None = None) -> _IdentityMask
         RuntimeError: If ``backend`` is given and is not available.
     """
     return _select(backend, _bezier_structural_identity_mask_core, _cpp_bezier_identity_mask)
+
+
+def lagrange_extraction_kernel(backend: Backend | None = None) -> _LagrangeBuilder:
+    """Get the Lagrange extraction operator builder of the requested backend.
+
+    Args:
+        backend (Backend | None): The backend to use, or ``None`` for the one
+            currently in effect. Defaults to None.
+
+    Returns:
+        _LagrangeBuilder: The kernel,
+        ``(knots, degree, tol, lagrange_to_bernstein, out) -> None``.
+
+    Raises:
+        RuntimeError: If ``backend`` is given and is not available.
+    """
+    return _select(backend, _tabulate_Bspline_Lagrange_1D_extraction_core, _cpp_lagrange_extraction)
+
+
+def lagrange_identity_mask_kernel(backend: Backend | None = None) -> _LagrangeIdentityMask:
+    """Get the Lagrange structural identity mask kernel of the requested backend.
+
+    Args:
+        backend (Backend | None): The backend to use, or ``None`` for the one
+            currently in effect. Defaults to None.
+
+    Returns:
+        _LagrangeIdentityMask: The kernel,
+        ``(multiplicities, degree, lagrange_to_bernstein, out) -> None``.
+
+    Raises:
+        RuntimeError: If ``backend`` is given and is not available.
+    """
+    return _select(backend, _lagrange_structural_identity_mask_core, _cpp_lagrange_identity_mask)

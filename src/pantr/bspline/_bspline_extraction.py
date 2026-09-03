@@ -9,10 +9,9 @@ live in :mod:`pantr.bspline._bspline_extraction_core`, and
 :mod:`pantr.bspline._extraction_backend` chooses between them and their C++ twins
 in ``cpp/include/pantr/bspline/extraction.hpp``.
 
-Only the **Bézier** builder is dispatched. Lagrange and cardinal are that operator
-post-multiplied by a change-of-basis matrix that :mod:`pantr.change_basis` already
-dispatches on its own, so they inherit the backend through it -- except for the
-cardinal target's interval scan, which is not ported.
+The **Bézier** and **Lagrange** builders are dispatched. The cardinal one is not:
+it needs the cardinal-interval scan on top of a change-of-basis matrix, and that
+scan is not ported, so it still runs the Bézier builder and post-multiplies here.
 """
 
 from __future__ import annotations
@@ -31,7 +30,7 @@ from ._bspline_knots import (
     _get_Bspline_cardinal_intervals_1D_impl,
     _get_unique_knots_and_multiplicity_impl,
 )
-from ._extraction_backend import bezier_extraction_kernel
+from ._extraction_backend import bezier_extraction_kernel, lagrange_extraction_kernel
 
 
 def _prepare_extraction_out(
@@ -153,14 +152,14 @@ def _tabulate_Bspline_Lagrange_1D_extraction_impl(
     """
     out = _prepare_extraction_out(knots, degree, tol, out)
 
-    # Compute Bezier extraction into out
-    _tabulate_Bspline_Bezier_1D_extraction_impl(knots, degree, tol, out=out)
-
-    # Transform Bezier -> Lagrange extraction in-place: out[i] = out[i] @ lagr_to_bzr
-    # for every interval, as a single batched matmul (np.matmul broadcasts the
-    # (p+1, p+1) matrix over the leading interval axis), mirroring the cardinal path.
+    # The matrix is resolved here rather than inside the kernel: it depends only on
+    # (degree, variant, dtype), `pantr.change_basis` caches it on exactly that key
+    # and dispatches its own backend, and `lagrange_variant` is a `StrEnum`, which
+    # must not reach a kernel. It also refuses `degree == 0`, which is why this
+    # target has no degree-0 case and its sibling mask short-circuits before asking.
     lagr_to_bzr = _cached_lagrange_to_bernstein_matrix(degree, lagrange_variant, knots.dtype)
-    np.matmul(out, lagr_to_bzr, out=out)
+
+    lagrange_extraction_kernel()(knots, degree, tol, lagr_to_bzr, out)
 
     return out
 
