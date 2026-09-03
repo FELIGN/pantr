@@ -119,6 +119,14 @@ nb::object owned_array(std::vector<T>&& values, std::array<std::size_t, Rank> sh
 
 /// A `std::span` over a 1D nanobind array.
 ///
+/// The zero-length substitution is the one departure from `grid_types.cpp`'s otherwise
+/// identical helper, and it is needed here rather than there: `refine_cells` and
+/// `coarsen_cells` accept an **empty** `cell_ids` -- that is how `_copy()` is spelled,
+/// and it is the documented no-op -- while every array that file spans is either the
+/// grid's own storage or a `cell_ids` its wrapper has already refused when empty. numpy
+/// hands over a null `data()` for a zero-length array, and a span built on one is
+/// undefined behaviour to form even without dereferencing it.
+///
 /// \tparam T The element type.
 /// \param a The array.
 /// \return A span over its storage, valid while the array is alive.
