@@ -306,6 +306,59 @@ def bezier_structural_identity_mask(
             ``out`` is not one shorter than ``multiplicities``.
     """
 
+def lagrange_extraction_1d(
+    knots: _Array,
+    degree: int,
+    tol: float,
+    lagrange_to_bernstein: _Array,
+    out: _Array,
+) -> None:
+    """Build the Lagrange extraction operator of every in-domain interval.
+
+    ``A_e = C_e @ lagrange_to_bernstein``, with ``C_e`` the Bézier operator of
+    interval ``e``.
+
+    Args:
+        knots (_Array): The knot vector, non-decreasing, at least
+            ``2 * degree + 2`` entries.
+        degree (int): The polynomial degree, non-negative.
+        tol (float): The absolute parametric tolerance, non-negative.
+        lagrange_to_bernstein (_Array): The ``(degree + 1, degree + 1)``
+            change-of-basis matrix ``L[j, k] = B_j(x_k)``, in ``knots``' dtype.
+        out (_Array): Output of shape ``(n_intervals, degree + 1, degree + 1)``,
+            overwritten in full.
+
+    Raises:
+        ValueError: If ``degree`` or ``tol`` is negative, the vector is too short
+            or not non-decreasing, it spans no in-domain interval, or either
+            matrix has the wrong shape.
+    """
+
+def lagrange_structural_identity_mask(
+    multiplicities: _Multiplicity,
+    degree: int,
+    lagrange_to_bernstein: _Array,
+    out: _Mask,
+) -> None:
+    """Mark the intervals whose Lagrange extraction operator is the identity.
+
+    The Bézier mask when ``lagrange_to_bernstein`` is exactly the identity, and
+    all-false otherwise.
+
+    Args:
+        multiplicities (_Multiplicity): The in-domain knot multiplicities,
+            ``n_intervals + 1`` of them.
+        degree (int): The polynomial degree, non-negative.
+        lagrange_to_bernstein (_Array): The ``(degree + 1, degree + 1)``
+            change-of-basis matrix.
+        out (_Mask): One flag per interval, ``multiplicities.size - 1`` of them.
+
+    Raises:
+        ValueError: If ``degree`` is negative, ``multiplicities`` is empty,
+            ``out`` is not one shorter than ``multiplicities``, or the matrix has
+            the wrong shape.
+    """
+
 def apply_kron_1d(
     M_0: _Array,
     is_id_0: bool,
