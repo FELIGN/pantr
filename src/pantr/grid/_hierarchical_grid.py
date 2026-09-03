@@ -1897,6 +1897,19 @@ class HierarchicalGrid(_GridPython):
             evaluates a *different* expression on each side and can return two floats
             one ulp apart, and no single deduplicated vertex can equal both.
 
+            **Stated hypothesis: coordinates are normal, not subnormal.** The bound is
+            a product of relative factors with the magnitudes, so below roughly
+            ``2e-308`` both terms underflow to exactly zero while the difference they
+            bound is still a nonzero subnormal: the expression stops implementing the
+            inequality, though the inequality itself still holds in the reals.
+            Measured with breakpoints near ``1e-320``. Nothing excludes that domain, so
+            this is a hypothesis and not a guarantee.
+
+            **The bound is exercised at ``float64`` only.** ``HierarchicalGrid`` at
+            ``float32`` storage has no numeric test of this quantity, so the rounding
+            counts are checked at one format and carried to the other by the derivation
+            alone.
+
         Warning:
             Materializes ``O(num_cells * 2 ** ndim * ndim)`` integers before
             deduplication, so a large 3D hierarchy costs several times ``conn`` in peak

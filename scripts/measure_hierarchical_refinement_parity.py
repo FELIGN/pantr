@@ -47,8 +47,21 @@ import numpy as np
 from pantr.grid import TensorProductGrid
 from pantr.grid._hierarchical_grid import HierarchicalGrid, hierarchical_grid
 
-_U = np.finfo(np.float64).eps / 2.0
-"""Half an ulp: the relative error of one correctly rounded ``float64`` operation."""
+# `tests` is a package at the repository root, and running this file directly puts
+# `scripts/` on the path rather than the root, so the import below needs the root
+# added first. `scripts/measure_bezier_fma_bound.py` imports the same module without
+# doing this and cannot be run directly as a result.
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
+
+from tests._parity_harness import unit_roundoff
+
+_U = unit_roundoff(np.float64)
+"""Half an ulp: the relative error of one correctly rounded ``float64`` operation.
+
+Taken from :func:`tests._parity_harness.unit_roundoff` rather than spelled out
+again. The quantity is the project's, not this file's, and two spellings of one
+bound drift apart the moment either is corrected.
+"""
 
 
 def _gamma(m: float) -> float:
@@ -522,6 +535,9 @@ def main() -> int:
         int: ``0`` when every case agrees.
     """
     parser = argparse.ArgumentParser(description=__doc__)
+    # 400 is a smoke size, not the size that finds a rare ordering bug. The
+    # `coarsen_cells` parent-order defect this script was extended to catch first
+    # appeared at case 3553 of a 4000-case sweep and is invisible at this default.
     parser.add_argument("--cases", type=int, default=400)
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--build", type=pathlib.Path, default=pathlib.Path("build/gcc"))
