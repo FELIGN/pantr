@@ -1818,6 +1818,26 @@ class TestExportCells:
                     points[conn[cid, corner]], want, rtol=_CORNER_RTOL, atol=0.0
                 )
 
+    def test_roundtrip_matches_cell_bounds_where_the_coordinate_is_small(self) -> None:
+        """A corner far smaller than the root cell holding it still matches cell_bounds.
+
+        Breakpoints ``(-0.3, 1e-5, 1)`` with factor 2 and only the far root cell refined.
+        Cell 0 is then the level-0 cell ``[-0.3, 1e-5]``. :meth:`cell_bounds` reaches its
+        ``hi`` corner as ``-0.3 + (1e-5 - -0.3)``, roundings against a magnitude of 0.3,
+        while :meth:`export_cells` lands on the lattice node of root cell 1 with offset
+        zero and returns the breakpoint ``1e-5`` itself. The difference is set by the root
+        cell's width and not by the coordinate, which is five orders of magnitude smaller.
+        """
+        g = hierarchical_grid(TensorProductGrid([np.array([-0.3, 1e-5, 1.0])]), 2)
+        g = g.refine(0, (1,), (2,))
+        points, conn = g.export_cells()
+
+        for cid in range(g.num_cells):
+            for corner, want in enumerate(_cell_corners(g, cid)):
+                np_testing.assert_allclose(
+                    points[conn[cid, corner]], want, rtol=_CORNER_RTOL, atol=0.0
+                )
+
     def test_roundtrip_exact_on_dyadic_grid(self) -> None:
         """With dyadic breakpoints and a dyadic factor every corner agrees bitwise."""
         g = hierarchical_grid(uniform_grid([[0.0, 1.0], [0.0, 1.0]], 2), 2)
