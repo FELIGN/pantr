@@ -632,6 +632,62 @@ void test_coarsen_cells_spans_levels() {
     check_the_leaves_tile_the_domain(demoted, "coarsen_cells across two levels");
 }
 
+/// The order parents are demoted in is observable, and it is deepest first then ascending.
+///
+/// The greedy merge in normalization is order-dependent and flat ids are handed out block
+/// by block, so **which** order `coarsen_cells` reactivates parents in decides which cell
+/// gets which number. `blocks.hpp` makes that argument at length; this is the smallest
+/// state found where it bites, distilled from a random sweep against the oracle.
+///
+/// A 2-by-1 root with factor `(1, 2)` -- no subdivision on axis 0 -- refined into the
+/// state
+///
+///     level 1: [(1,1), (2,2))
+///     level 2: [(0,0), (1,4))  and  [(1,0), (2,2))
+///
+/// Naming the level-2 cells `1, 3, 4, 5, 6` completes exactly two families, the parents
+/// `(0,1)` and `(1,0)` at level 1; the third candidate, `(0,0)`, is one child short and
+/// must be skipped. Each demotion re-normalizes as it goes, so the two orders do not
+/// converge: taking `(0,1)` first leaves level 1 mergeable into `[(0,1), (2,2))`, and
+/// taking `(1,0)` first leaves it mergeable into `[(1,0), (2,2))` instead. Both are valid
+/// partitions of the same cells and they number them differently. The oracle takes the
+/// first, so cell 1 is `(1,1)`.
+///
+/// The obvious spelling -- sort the parents lexicographically and walk the list backwards
+/// -- gives level descending and index **descending**, which is the second order. The
+/// rows carry a negated level so that one ascending sort produces the right one.
+void test_coarsen_cells_demotes_parents_in_the_oracle_s_order() {
+    const Ints factor{1, 2};
+    Grid g(TensorProductGrid<double>({{0.0, 0.5, 1.0}, {0.0, 1.0}}), factor);
+    g = g.refine(0, Ints{0, 0}, Ints{2, 1});
+    g = g.refine(1, Ints{0, 0}, Ints{1, 2});
+    g = g.refine(1, Ints{1, 0}, Ints{2, 1});
+    PANTR_CHECK_MSG(g.num_cells() == 7, std::to_string(g.num_cells()));
+
+    const Ints ids{1, 3, 4, 5, 6};
+    const Grid demoted = g.coarsen_cells(ids);
+    PANTR_CHECK_MSG(demoted.num_cells() == 5, std::to_string(demoted.num_cells()));
+
+    const auto [lo, hi] = demoted.active_blocks(1);
+    PANTR_CHECK_MSG(lo.extent(0) == 2, "level 1 should hold two blocks, not "
+                                           + std::to_string(lo.extent(0)));
+    if (lo.extent(0) == 2) {
+        PANTR_CHECK(lo(0, 0) == 0 && lo(0, 1) == 1 && hi(0, 0) == 2 && hi(0, 1) == 2);
+        PANTR_CHECK(lo(1, 0) == 1 && lo(1, 1) == 0 && hi(1, 0) == 2 && hi(1, 1) == 1);
+    }
+
+    const std::vector<Ints> want{{0, 1}, {1, 1}, {1, 0}, {0, 0}, {0, 1}};
+    Ints midx(2);
+    for (std::int64_t cid = 0; cid < demoted.num_cells(); ++cid) {
+        demoted.cell_multi_index(cid, midx);
+        PANTR_CHECK_MSG(midx == want[static_cast<std::size_t>(cid)],
+                        "cell " + std::to_string(cid) + " is (" + std::to_string(midx[0])
+                            + ", " + std::to_string(midx[1])
+                            + "), so the parents were demoted in the wrong order");
+    }
+    check_the_leaves_tile_the_domain(demoted, "the reordered coarsening");
+}
+
 /// Every documented refusal of `coarsen` fires.
 void test_coarsen_rejects_bad_arguments() {
     const Grid g = refined_corner();
@@ -1076,6 +1132,7 @@ int main() {
     test_coarsen_cells_ignores_level_zero_ids();
     test_coarsen_cells_that_demotes_nothing_returns_a_cold_copy();
     test_coarsen_cells_spans_levels();
+    test_coarsen_cells_demotes_parents_in_the_oracle_s_order();
     test_coarsen_rejects_bad_arguments();
 
     test_restrict_hook_replaces_the_throwing_default();

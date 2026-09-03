@@ -1033,15 +1033,19 @@ class HierarchicalGrid : public GridBase<HierarchicalGrid<T>> {
         }
         sort_unique_rows(marked, d + 1);
 
-        // Parents, deepest first and then lexicographic, so the outcome does not depend
-        // on the order the ids arrived in.
+        // Parents, **deepest level first and then ascending by index**, so the outcome
+        // does not depend on the order the ids arrived in. Each row carries the NEGATED
+        // level, because that is what makes one ascending lexicographic sort produce
+        // exactly that order: sorting on the level itself and walking the list backwards
+        // reverses the index too, which is a different and equally valid order that
+        // numbers the cells differently -- see the demotion-order test.
         std::vector<std::int64_t> parents;
         for (std::size_t row = 0; row * (d + 1) < marked.size(); ++row) {
             const std::int64_t level = marked[row * (d + 1)];
             if (level < 1) {
                 continue;
             }
-            parents.push_back(level - 1);
+            parents.push_back(-(level - 1));
             for (std::size_t k = 0; k < d; ++k) {
                 parents.push_back(marked[row * (d + 1) + 1 + k] / factor_[k]);
             }
@@ -1051,9 +1055,8 @@ class HierarchicalGrid : public GridBase<HierarchicalGrid<T>> {
         std::optional<HierarchicalGrid> coarsened;
         std::vector<std::int64_t> child(d);
         std::vector<std::int64_t> parent_hi(d);
-        for (std::size_t i = parents.size() / (d + 1); i > 0; --i) {
-            const std::size_t row = (i - 1) * (d + 1);
-            const std::int64_t parent_level = parents[row];
+        for (std::size_t row = 0; row < parents.size(); row += d + 1) {
+            const std::int64_t parent_level = -parents[row];
             const std::span<const std::int64_t> pmidx(parents.data() + row + 1, d);
             const HierarchicalGrid& current = coarsened.has_value() ? *coarsened : *this;
             if (!family_is_complete(current, marked, parent_level, pmidx, child)) {
