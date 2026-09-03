@@ -84,6 +84,7 @@ NB_MODULE(_pantr_cpp, m) {
     register_bezier_type(m);
     register_bspline_types(m);
     register_bspline_extraction(m);
+    register_bspline_extraction_operators(m);
 
     // Build provenance, so a measurement can name the binary that produced it
     // rather than the source tree it was built from. `fp_contract` is the one

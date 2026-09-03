@@ -7,6 +7,22 @@ thing left to carry it. The tensor-product `BsplineSpace32` / `BsplineSpace64` p
 inherits that split and could not avoid it anyway: `BsplineSpace<T>` can hold only
 `BsplineSpace1D<T>`.
 
+## The Bézier extraction operator builder
+
+Bound by ``cpp/bindings/bspline_extraction_operators.cpp`` over
+``cpp/include/pantr/bspline/extraction.hpp``. Separate from the apply kernels
+below because the two are separate ports with separate parity claims: these
+*build* an operator from a knot vector, those *apply* one.
+
+Only the Bézier target is here. Lagrange is this operator post-multiplied by
+:func:`~pantr._pantr_cpp.lagrange_to_bernstein_1d`, and the cardinal target also
+needs the cardinal-interval scan, which is not ported.
+
+**One refusal has no counterpart in the oracle.** A knot vector spanning no
+in-domain interval is refused here, with the message
+:class:`pantr.bspline.BsplineSpace1D` raises for the same vector, because the
+oracle's own kernel indexes an empty result array instead.
+
 ## Tensor-product extraction kernels
 
 
@@ -241,6 +257,54 @@ _Index = npt.NDArray[np.intp]
 
 _Mask = npt.NDArray[np.bool_]
 """A per-direction identity mask."""
+
+_Multiplicity = npt.NDArray[np.intp]
+"""In-domain knot multiplicities, one per unique knot."""
+
+def bezier_extraction_1d(
+    knots: _Array,
+    degree: int,
+    tol: float,
+    out: _Array,
+) -> None:
+    """Build the Bézier extraction operator of every in-domain interval.
+
+    Args:
+        knots (_Array): The knot vector, non-decreasing, at least
+            ``2 * degree + 2`` entries.
+        degree (int): The polynomial degree, non-negative.
+        tol (float): The absolute parametric tolerance, non-negative.
+        out (_Array): Output of shape ``(n_intervals, degree + 1, degree + 1)``,
+            overwritten in full. ``n_intervals`` is one less than the number of
+            distinct in-domain knots.
+
+    Raises:
+        ValueError: If ``degree`` or ``tol`` is negative, the vector is too short
+            or not non-decreasing, it spans no in-domain interval, or ``out`` has
+            the wrong shape.
+    """
+
+def bezier_structural_identity_mask(
+    multiplicities: _Multiplicity,
+    degree: int,
+    out: _Mask,
+) -> None:
+    """Mark the intervals whose Bézier extraction operator is the identity.
+
+    An interval is one exactly when both of its bounding in-domain knots have
+    multiplicity at least ``degree + 1``, so the interval is already a Bézier
+    patch decoupled from both neighbours.
+
+    Args:
+        multiplicities (_Multiplicity): The in-domain knot multiplicities,
+            ``n_intervals + 1`` of them.
+        degree (int): The polynomial degree, non-negative.
+        out (_Mask): One flag per interval, ``multiplicities.size - 1`` of them.
+
+    Raises:
+        ValueError: If ``degree`` is negative, ``multiplicities`` is empty, or
+            ``out`` is not one shorter than ``multiplicities``.
+    """
 
 def apply_kron_1d(
     M_0: _Array,
