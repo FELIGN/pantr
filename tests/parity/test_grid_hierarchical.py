@@ -89,6 +89,7 @@ import numpy as np
 import pytest
 
 from pantr._backend import Backend, use_backend
+from pantr.geometry import AABB
 from pantr.grid import HierarchicalGrid, TensorProductGrid, hierarchical_grid
 from tests._parity_harness import (
     Field,
@@ -511,6 +512,58 @@ def _located(grid: HierarchicalGrid, points: npt.NDArray[np.float64]) -> npt.NDA
     return np.stack([batch, single])
 
 
+def _query_boxes(grid: HierarchicalGrid) -> tuple[tuple[list[float], list[float]], ...]:
+    """Query boxes that make the spatial index answer something other than everything.
+
+    One box per cell, degenerate onto that cell's lower corner, so the answer is the
+    small set of cells meeting at a vertex rather than a large fraction of the grid; one
+    box spanning the whole domain, whose answer is every cell; and one far outside, whose
+    answer is none. The first kind is where a tree built over *hierarchical* cell AABBs
+    could differ from one built over uniform ones -- cells of several sizes overlap there
+    -- and the two degenerate ones pin the extremes a wrong tree would still get right.
+
+    Args:
+        grid (HierarchicalGrid): The grid.
+
+    Returns:
+        tuple[tuple[list[float], list[float]], ...]: ``(lo, hi)`` corner pairs.
+    """
+    boxes = [(lo.tolist(), lo.tolist()) for lo, _ in map(grid.cell_bounds, range(grid.num_cells))]
+    cell_lo, cell_hi = grid.collect_cell_bounds()
+    boxes.append((cell_lo.min(axis=0).tolist(), cell_hi.max(axis=0).tolist()))
+    boxes.append(([1e3] * grid.ndim, [1e3 + 1.0] * grid.ndim))
+    return tuple(boxes)
+
+
+def _queried(
+    grid: HierarchicalGrid, boxes: tuple[tuple[list[float], list[float]], ...]
+) -> npt.NDArray[np.int64]:
+    """Every query box's answer, sorted, flattened and terminated.
+
+    Sorted because the contract calls the result unordered, so an order difference is not
+    a disagreement; terminated because the answers are ragged and a shorter one must land
+    on the separator rather than shift into the next box's.
+
+    This is the only field that exercises the grid's spatial index at all, and with it the
+    binding of ``cell_bvh`` -- which returns a reference into the grid and would, under
+    nanobind's default policy for an lvalue reference, hand back a copy of the cache
+    instead of the cache. That failure is silent in every other quantity here.
+
+    Args:
+        grid (HierarchicalGrid): The grid.
+        boxes (tuple[tuple[list[float], list[float]], ...]): The query boxes, drawn once
+            so that both backends are asked the same question.
+
+    Returns:
+        npt.NDArray[np.int64]: Flat, ``-1``-terminated answers.
+    """
+    out: list[int] = []
+    for lo, hi in boxes:
+        out.extend(int(i) for i in np.sort(grid.query_aabb(AABB(lo, hi))))
+        out.append(-1)
+    return np.array(out, dtype=np.int64)
+
+
 def _restriction(grid: HierarchicalGrid, ids: tuple[int, ...]) -> npt.NDArray[np.int64]:
     """A restriction's index maps and the sub-grid's own active set, flattened.
 
@@ -537,13 +590,18 @@ def _restriction(grid: HierarchicalGrid, ids: tuple[int, ...]) -> npt.NDArray[np
     )
 
 
-def _fields(case: _Case, points: npt.NDArray[np.float64]) -> tuple[Field, ...]:
+def _fields(
+    case: _Case,
+    points: npt.NDArray[np.float64],
+    boxes: tuple[tuple[list[float], list[float]], ...],
+) -> tuple[Field, ...]:
     """The state two hierarchies have to agree on, and the claim governing each piece.
 
     Args:
         case (_Case): The case, for the restriction request.
         points (npt.NDArray[np.float64]): The query points, drawn once so that both
             backends are asked the same question.
+        boxes (tuple[tuple[list[float], list[float]], ...]): The query boxes, likewise.
 
     Returns:
         tuple[Field, ...]: The fields, in the order a failure should be read.
@@ -570,6 +628,11 @@ def _fields(case: _Case, points: npt.NDArray[np.float64]) -> tuple[Field, ...]:
             "located",
             exact_parity(why=_VERDICT_WHY),
             read=lambda g: _located(g, points),
+        ),
+        Field(
+            "queried",
+            exact_parity(why=_VERDICT_WHY),
+            read=lambda g: _queried(g, boxes),
         ),
         Field(
             "export.conn",
@@ -654,12 +717,13 @@ def _sweep(cases: int, seed: int) -> _SweepReport:
         with use_backend(Backend.PYTHON):
             reference = _build(case)
             points = _probe_points(reference)
+            boxes = _query_boxes(reference)
         with use_backend(Backend.CPP):
             actual = _build(case)
         assert_object_parity(
             py=reference,
             cpp=actual,
-            fields=_fields(case, points),
+            fields=_fields(case, points, boxes),
             context=f"HierarchicalGrid, sweep case {index} of seed {seed}",
         )
         cells += reference.num_cells
@@ -795,21 +859,35 @@ def _corner_accuracy_bound(
         lo = fl(b + p)          one rounding
         hi = fl(lo + q)         one rounding
 
-    with every ``|di| <= u``. From ``|p - o| <= gamma_3 |o|`` and one more rounding on the
-    sum, ``|lo - lo_e| <= u |lo| + gamma_4 |lo - b|``. For ``hi`` the errors of ``lo`` and
-    of ``q`` both enter and a fifth rounding is added, giving
-    ``|hi - hi_e| <= 2 u M + gamma_4 |lo - b| + gamma_2 |hi - b|`` with
-    ``M = max(|lo|, |hi|)``. Since ``0 <= lo - b <= hi - b`` and
-    ``gamma_4 + gamma_2 <= gamma_6``, one expression covers both corners:
+    with every ``|di| <= u``. Writing ``o = lo_e - b`` for the exact offset, the first
+    three give ``|q - q_e| <= gamma_2 |q_e|`` and ``|p - o| <= gamma_3 |o|``. The fourth
+    adds ``|lo - lo_e| <= gamma_3 |o| + u |b + p| <= u |lo_e| + gamma_3 (1 + u) |o|``, and
+    ``gamma_3 (1 + u) <= gamma_4``, so
 
-        bound = 2 u M + gamma_6 max(|lo - b|, |hi - b|)
+        |lo - lo_e| <= u |lo_e| + gamma_4 |lo_e - b|.
 
-    which is the ``hi`` bound and dominates the ``lo`` one. It is deliberately **not** a
-    relative bound: ``|x - b|`` is bounded by the root cell's width and not by ``|x|``, so
-    a corner small against the width of the root cell holding it -- which the drawn
-    breakpoints straddle zero to produce -- would break a relative form.
-    ``design/backend_parity.md`` Rule 2 is the general statement, including its converse:
-    a flat absolute bound would be vacuous on a corner near the origin.
+    The fifth carries both of those into ``hi``:
+
+        |hi - hi_e| <= (1 + u) (|lo - lo_e| + |q - q_e|) + u |hi_e|
+                    <= u (2 + u) M + (1 + u) (gamma_4 + gamma_2) |hi_e - b|
+
+    using ``M = max(|lo_e|, |hi_e|)`` and ``|q_e| <= |hi_e - b|``, which holds because
+    ``hi_e - b = (s + 1) q_e`` with ``s >= 0``. Both constants collapse:
+    ``u (2 + u) <= gamma_2`` and ``(1 + u) (gamma_4 + gamma_2) <= gamma_6``. Since
+    ``0 <= lo_e - b <= hi_e - b``, one expression covers both corners:
+
+        bound = gamma_2 M + gamma_6 max(|lo_e - b|, |hi_e - b|)
+
+    which is the ``hi`` bound and dominates the ``lo`` one. **The leading constant is
+    gamma_2 rather than 2u**, and the difference is not decoration: the fourth and fifth
+    roundings act on already-perturbed quantities, so the two ``u |x|`` terms carry a
+    factor ``(1 + u)`` that ``2u`` does not cover and ``gamma_2`` does.
+
+    It is deliberately **not** a relative bound: ``|x - b|`` is bounded by the root cell's
+    width and not by ``|x|``, so a corner small against the width of the root cell holding
+    it -- which the drawn breakpoints straddle zero to produce -- would break a relative
+    form. ``design/backend_parity.md`` Rule 2 is the general statement, including its
+    converse: a flat absolute bound would be vacuous on a corner near the origin.
 
     **Stated hypothesis: coordinates are normal, not subnormal.** The expression is a
     product of relative factors with magnitudes, so below roughly ``2e-308`` both terms
@@ -835,7 +913,7 @@ def _corner_accuracy_bound(
     """
     magnitude = np.maximum(np.abs(lo), np.abs(hi))
     offset = np.maximum(np.abs(lo - base), np.abs(hi - base))
-    return np.asarray(2.0 * _U * magnitude + _gamma(6) * offset, dtype=np.float64)
+    return np.asarray(_gamma(2) * magnitude + _gamma(6) * offset, dtype=np.float64)
 
 
 @pytest.mark.parametrize("backend", _BACKENDS)
@@ -1074,6 +1152,73 @@ def test_the_handle_itself_raises_on_a_wrongly_sized_multi_index(cpp_backend: No
     with pytest.raises(ValueError, match="midx must have 2 entries"):
         handle.cell_id(0, np.array([0], dtype=np.int64))
     assert handle.cell_id(0, np.array([0, 0], dtype=np.int64)) == 0
+
+
+@pytest.mark.parametrize("backend", _BACKENDS)
+def test_the_three_references_into_the_grid_alias_rather_than_copy(backend: Backend) -> None:
+    """A tag written through the registry survives, and the spatial index is built once.
+
+    ``cell_tags``, ``facet_tags`` and ``cell_bvh`` return references into the C++ grid,
+    and nanobind's default return-value policy for an lvalue reference is **copy**. Under
+    the default a caller mutates a temporary and the write is silently lost -- no
+    exception anywhere, and no value comparison of the hierarchy would see it, which is
+    why this is its own test rather than a field of the sweep. The BVH half is the same
+    mechanism costing a rebuild rather than a write.
+
+    The identity assertions are the wrapper's memo doing its job on top of that; both
+    halves are needed, and ``grid_types.cpp`` records the measured failure.
+    """
+    _demand_the_extension_if_needed(backend)
+    with use_backend(backend):
+        grid = hierarchical_grid(TensorProductGrid([[0.0, 0.5, 1.0], [0.0, 1.0]]), 2)
+        grid = grid.refine(0, (0, 0), (1, 1))
+
+        grid.cell_tags.set("mark", np.array([0, 1], dtype=np.int64), np.array([4, 5]))
+        assert "mark" in grid.cell_tags.names
+        assert grid.cell_tags["mark"][1].tolist() == [4, 5]
+        assert grid.cell_tags is grid.cell_tags
+
+        grid.facet_tags.set("wall", np.array([[0, 0]], dtype=np.int64), np.array([8]))
+        assert grid.facet_tags["wall"][1].tolist() == [8]
+        assert grid.facet_tags is grid.facet_tags
+
+        assert grid.cell_bvh() is grid.cell_bvh()
+
+
+@pytest.mark.parametrize("backend", _BACKENDS)
+def test_query_aabb_matches_a_brute_force_overlap(backend: Backend) -> None:
+    """The spatial index answers what an exhaustive scan of the cell boxes answers.
+
+    An **independent** oracle rather than a second parity comparison: the scan below never
+    touches the tree, so a BVH that agreed between backends because both were built wrong
+    -- from the wrong cell boxes, or from a stale cache -- fails here and passes there.
+
+    The predicate is the one ``pantr.grid.BVH`` documents: inclusive on every face, with
+    no emptiness branch, so a box degenerate onto a shared corner answers with every cell
+    meeting there.
+    """
+    _demand_the_extension_if_needed(backend)
+    rng = np.random.default_rng(90210)
+    checked = 0
+    nonempty = 0
+    for _ in range(12):
+        case = _draw_case(rng)
+        with use_backend(backend):
+            grid = _build(case)
+            cell_lo, cell_hi = grid.collect_cell_bounds()
+            for lo, hi in _query_boxes(grid):
+                qlo = np.asarray(lo, dtype=np.float64)
+                qhi = np.asarray(hi, dtype=np.float64)
+                expected = np.flatnonzero(np.all((cell_lo <= qhi) & (cell_hi >= qlo), axis=1))
+                got = np.sort(grid.query_aabb(AABB(qlo, qhi)))
+                np.testing.assert_array_equal(got, expected)
+                checked += 1
+                nonempty += int(expected.size > 0)
+    assert checked > 200, f"only {checked} boxes were queried; the draw degenerated"
+    assert nonempty > checked // 2, (
+        f"only {nonempty} of {checked} boxes overlapped anything, so this mostly "
+        "compared two empty answers"
+    )
 
 
 @pytest.mark.parametrize("backend", _BACKENDS)
