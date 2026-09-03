@@ -241,6 +241,14 @@ So nothing is wrong now. What is wrong is that nothing *stops* it: the first aut
 `LagrangeVariant` into a kernel and branch on a member gets a silently dead branch. Flagged
 below rather than fixed here.
 
+**Re-checked 2026-09-03, by the slice that passes closest to this edge.** S3's Lagrange half is
+the first dispatched code path that has a `LagrangeVariant` in scope *and* a kernel to call, so
+it is where the containment would have broken. It did not: the variant is resolved to a matrix
+in Layer 2 and the **matrix** crosses the seam, never the tag. That was a deliberate choice and
+not an accident of the shape -- building the matrix inside the kernel would have needed the
+variant there -- so the containment is now one decision wide rather than zero, and it is still
+a fact about the call graph rather than a guard.
+
 ### F6 (recommended). `OpKind` is the same rule's second instance, in the same cluster, and is deliberately left alone
 
 `OpKind = Literal["apply", "apply_T", "MT_K_M", "M_K_MT"]`
@@ -405,13 +413,30 @@ non-convex entry in its own table (`|R| @ |c|`, "since `R` has negative entries"
 
 It has to be the companion here rather than `max|M| * max|v|`, and the reason is specific to
 this cluster: **the operators are not all convex.** A Bézier extraction operator is, being a
-product of knot-insertion convex combinations -- its rows sum to one, which is the
+product of knot-insertion convex combinations -- its **columns** sum to one, which is the
 partition-of-unity invariant below. The Lagrange and cardinal operators are that matrix
-post-multiplied by a Lagrange-to-Bernstein or cardinal-to-Bernstein matrix
-(`_bspline_extraction.py:290`, `:337`), and those have negative entries. So a bound that
-assumed non-negative weights summing to one would be false for two of the three targets, and
-the failure would be a `float32` parity failure at high degree rather than anything that
-names the assumption.
+post-multiplied by a Lagrange-to-Bernstein or cardinal-to-Bernstein matrix, in
+`_tabulate_Bspline_Lagrange_1D_extraction_impl` and its cardinal sibling.
+
+**Corrected 2026-09-03, while building the Lagrange half of S3: this said "those have negative
+entries ... false for two of the three targets", and it is one of the three.** The
+Lagrange-to-Bernstein matrix is `L[j, k] = B_j(x_k)`, the Bernstein basis tabulated at the
+Lagrange nodes, and every node of every family here lies in `[0, 1]` where the Bernstein basis
+is non-negative and sums to one. So `L` is column-stochastic, and the Lagrange extraction
+operator is a product of two column-stochastic matrices: entrywise non-negative, columns
+summing to one, exactly like its Bézier parent. Measured over all five node families at
+degrees 1, 2, 3, 5, 8 and 12: the smallest entry is never negative and the largest column-sum
+deviation from one is 1.2e-15. Only **cardinal-to-Bernstein** has negative entries.
+
+That does not change what the code does -- the absolute-value companion is correct either way,
+and is what both parity files use -- but it does change what the amplification is worth: for
+the Lagrange target the companion is the answer's own magnitude, bounded by one, so the bound
+is tight rather than merely valid. `tests/parity/test_bspline_lagrange_extraction.py` asserts
+the non-negativity rather than assuming it, so a family whose nodes left `[0, 1]` would be a
+failure here rather than a silently loose bound.
+
+The sentence above also said the Bézier operator's *rows* sum to one. They do not; its columns
+do, which the 2026-09-03 correction further down already records for the same reason.
 
 ### The independent accuracy check
 
@@ -459,10 +484,27 @@ only ever comparing zero against zero. Case 2 must assert the observed error is 
   2026-09-03*: `pantr::bspline::bezier_extraction_1d` and
   `bezier_structural_identity_mask` in `cpp/include/pantr/bspline/extraction.hpp`, bound by
   `cpp/bindings/bspline_extraction_operators.cpp` and dispatched from
-  `pantr.bspline._extraction_backend`. **Lagrange is next and is a small slice** -- the same
-  operator post-multiplied by `lagrange_to_bernstein_1d`, which is already bound, so what it
-  needs is the post-multiplication and the Lagrange identity-mask predicate. **Cardinal still
-  waits** on the interval scan.
+  `pantr.bspline._extraction_backend`. *The **Lagrange** half landed 2026-09-03*:
+  `pantr::bspline::lagrange_extraction_1d` and `lagrange_structural_identity_mask` in the same
+  header, bound in the same file and dispatched from the same catalogue. It was the small slice
+  this note predicted, with two things it did not:
+
+  - **The change-of-basis matrix is an argument, not something the C++ builds.**
+    `change_basis.hpp` already owns `lagrange_to_bernstein_1d`, `pantr.change_basis` caches the
+    finished matrix per `(degree, variant, dtype)`, and `LagrangeVariant` must not approach a
+    kernel (F5). Passing the matrix keeps one implementation, keeps the cache, keeps the enum
+    off the seam, and makes the matrix **common mode** between the backends, so the parity
+    claim is about the extraction and `test_change_basis.py`'s is about the change of basis.
+  - **The claim is bounded rather than bitwise, and it is the first builder in this cluster
+    that is.** The oracle's post-multiplication is `numpy.matmul`, a BLAS `gemm` whose
+    summation order is unspecified and blocked; the C++ runs an ascending loop. Both accumulate
+    in the storage format, so the budget is `Roundings(degree + 1, 1, 0)` with the
+    absolute-value companion as amplification. Measured: the two differ by one unit of roundoff
+    at degree 3 and above and not at all below, so the bound is live rather than nominal. The
+    identity change of basis -- degree 1 with equispaced, Gauss-Lobatto-Legendre or
+    second-kind Chebyshev nodes -- is the exception and falls back to the Bézier claim.
+
+  **Cardinal still waits** on the interval scan.
 - **S4.** `SpanwiseElementExtraction` itself: the class-H `space` accessor, the two memos
   `design/bspline_derived_caches.md` assigns here (`ops_1d` DCLP-lazy returning a view of the
   memo, `num_identity_elements` eager), the wrapper, `__reduce__`, and the binding-contract
@@ -545,6 +587,22 @@ CPython refuses it outright (`too many data types for 'Both': {<class 'str'>, <c
   hash/equality consistency. The two scripts are throwaway and are not committed -- what they
   establish is a property of numba and CPython at the versions named, not of this repository,
   and the durable half is the `IntEnum` test that ships.
+- **Measured 2026-09-03, by the Lagrange half of S3**, and each figure is reproduced by a test
+  rather than quoted here: that `compute_lagrange_to_bernstein_1d` is entrywise non-negative
+  and column-stochastic for every node family and every degree tried, which refutes the
+  sentence this note used to carry; that the two backends' Lagrange operators differ by one
+  unit of roundoff at degree 3 and above and agree exactly below; that the two backends'
+  change-of-basis matrices themselves differ only at `float32` for the second-kind Chebyshev
+  family, whose nodes dispatch. The last one is why the end-to-end parity test measures the
+  matrix gap instead of assuming it away.
+- **Deliberately not claimed:** an accuracy bound for the Lagrange operator against the
+  B-spline basis tabulated at the nodes, above degree 2. That identity is the target's defining
+  property and it is checked, but only on the dyadic family where both routes are exact.
+  Composing a bound above it needs the Cox-de Boor evaluation error, the error of the
+  `pow`-seeded Bernstein ratio recurrence inside the matrix, and the affine map's rounding
+  amplified by `max|N'|` -- and `design/backend_parity.md`'s open question 2 records the
+  transcendental category as having no vocabulary in the harness and no source consulted. Three
+  unsharp terms would give a bound satisfied by any result, which Rule 3 refuses.
 - **Derived, not measured:** the rounding budget in "The parity claim". It is the standard
   inner-product bound composed over stages, in the vocabulary
   `tests/_parity_harness.py` already uses; nothing has been built to compare it against, and
