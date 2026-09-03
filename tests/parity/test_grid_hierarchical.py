@@ -774,8 +774,20 @@ def _assert_the_sweep_was_not_vacuous(report: _SweepReport) -> None:
 def test_the_sweep_agrees(cpp_backend: None) -> None:
     """Both backends agree, quantity by quantity, over the shipped random sweep.
 
-    The regression guard. :func:`test_the_wide_sweep_agrees` is the same comparison ten
-    times wider and is not run in CI; this one is what a future edit trips over.
+    **This is not the guard that catches a rare ordering defect, and an earlier version
+    of this docstring said it was.** Measured by reintroducing the `coarsen_cells`
+    parent-order defect and running both: this sweep passes on all of its cases, and
+    :func:`test_the_wide_sweep_agrees` fails. That one carries the guarantee.
+
+    It also said the wide sweep is not run in CI. It is: ``cpp.yaml``'s parity job runs
+    ``pytest tests/parity`` with no ``-m`` filter, so the ``slow`` mark deselects nothing
+    there. **Note the asymmetry**: ``scripts/ci_local.sh`` *does* pass ``-m "not slow"``,
+    so the local mirror skips the sweep that carries the guarantee while the real job
+    runs it. Aligning the two in the wrong direction would silently reopen the hole this
+    file was written to close.
+
+    What this one is for is speed: it fails fast on a defect that is not rare, and it
+    keeps the comparison exercised on every run rather than only in CI.
     """
     del cpp_backend
     report = _sweep(_SHIPPED_CASES, seed=20260903)
@@ -1256,3 +1268,33 @@ def test_the_operations_hand_their_result_the_receivers_root(backend: Backend) -
         assert isinstance(sub, HierarchicalGrid)
         assert sub.root is not root
         assert sub.root.cells_per_axis != root.cells_per_axis
+
+
+@pytest.mark.parametrize("backend", _BACKENDS)
+def test_the_operations_share_a_root_that_was_never_read(backend: Backend) -> None:
+    """The four operations share the root of a receiver whose root memo is still cold.
+
+    :func:`test_the_operations_hand_their_result_the_receivers_root` asserts the same
+    contract but reads ``.root`` first, which seeds the memo and hides the path this
+    pins. ``_wrap`` -- what :meth:`~pantr.grid.HierarchicalGrid.restrict` returns
+    through -- leaves the slot ``None`` on purpose, so a caller who chains an operation
+    onto a restriction without reading the root in between takes the unseeded path.
+
+    Passing the raw slot instead of the property there hands the result a *fresh* root
+    under the C++ backend, because that accessor is class V and returns a copy. The
+    hierarchy compares equal either way, so only the tags show it: this asserts the
+    identity and then the tag, because the identity alone would be satisfied by two
+    equal-but-distinct roots on a backend that happened to intern them.
+    """
+    _demand_the_extension_if_needed(backend)
+    with use_backend(backend):
+        root = TensorProductGrid([[0.0, 0.5, 1.0], [0.0, 0.5, 1.0]])
+        grid = hierarchical_grid(root, 2).refine(0, (0, 0), (2, 2))
+        sub = grid.restrict([0]).grid
+        assert isinstance(sub, HierarchicalGrid)
+
+        chained = sub.refine(0, (0, 0), (1, 1))
+        assert chained.root is sub.root
+
+        sub.root.cell_tags.set("marked", np.array([0], dtype=np.int64), np.array([7]))
+        assert chained.root.cell_tags["marked"][1].tolist() == [7]

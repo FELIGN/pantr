@@ -2649,7 +2649,7 @@ class HierarchicalGrid(_GridWrapper):
             meshes :cite:p:`garau2018algorithms`.
         """
         lo_a, hi_a = self._region(lo, hi)
-        return self._wrap_over(self._impl.refine(int(level), lo_a, hi_a), self._root)
+        return self._wrap_over(self._impl.refine(int(level), lo_a, hi_a), self.root)
 
     def refine_cells(self, cell_ids: Sequence[int]) -> HierarchicalGrid:
         """Return a new grid with a set of active cells refined, by per-level bounding box.
@@ -2669,7 +2669,7 @@ class HierarchicalGrid(_GridWrapper):
             IndexError: If any cell id is out of range ``[0, num_cells)``.
             TypeError: If ``cell_ids`` is not integer-valued.
         """
-        return self._wrap_over(self._impl.refine_cells(self._cell_ids(cell_ids)), self._root)
+        return self._wrap_over(self._impl.refine_cells(self._cell_ids(cell_ids)), self.root)
 
     def coarsen(self, level: int, lo: Sequence[int], hi: Sequence[int]) -> HierarchicalGrid:
         """Return a new grid with the region ``[lo, hi)`` at ``level`` demoted from ``level+1``.
@@ -2706,7 +2706,7 @@ class HierarchicalGrid(_GridWrapper):
             meshes :cite:p:`garau2018algorithms`.
         """
         lo_a, hi_a = self._region(lo, hi)
-        return self._wrap_over(self._impl.coarsen(int(level), lo_a, hi_a), self._root)
+        return self._wrap_over(self._impl.coarsen(int(level), lo_a, hi_a), self.root)
 
     def coarsen_cells(self, cell_ids: Sequence[int]) -> HierarchicalGrid:
         """Return a new grid with the parents of complete named families reactivated.
@@ -2726,7 +2726,7 @@ class HierarchicalGrid(_GridWrapper):
             IndexError: If any cell id is out of range ``[0, num_cells)``.
             TypeError: If ``cell_ids`` is not integer-valued.
         """
-        return self._wrap_over(self._impl.coarsen_cells(self._cell_ids(cell_ids)), self._root)
+        return self._wrap_over(self._impl.coarsen_cells(self._cell_ids(cell_ids)), self.root)
 
     # ------------------------------------------------------------------
     # Export

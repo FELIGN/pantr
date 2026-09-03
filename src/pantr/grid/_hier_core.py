@@ -87,7 +87,8 @@ def _encode_midx_core(  # noqa: PLR0913
     """Return the flat cell id of ``(level, midx)``, or ``-1`` when not active.
 
     Serial entry point wrapping :func:`_block_of_midx` for scalar Python
-    callers (:meth:`pantr.grid.HierarchicalGrid._encode_midx`).
+    callers (``_HierarchicalGridPython._encode_midx``; the public
+    :class:`~pantr.grid.HierarchicalGrid` is the wrapper and has no such method).
 
     Args:
         level (int): Hierarchy level of the queried position.
