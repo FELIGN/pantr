@@ -87,7 +87,6 @@ from typing import TYPE_CHECKING, Any, Final, NamedTuple
 import numpy as np
 import pytest
 
-from pantr import _pantr_cpp
 from pantr._backend import Backend, use_backend
 from pantr.bspline import BsplineSpace1D
 from pantr.bspline._bspline_extraction import _tabulate_Bspline_Bezier_1D_extraction_impl
@@ -128,6 +127,24 @@ _BACKENDS: Final = (
     pytest.param(Backend.CPP, id="cpp"),
 )
 """The two backends, for the tests that state a property of each one separately."""
+
+
+def _bindings() -> Any:
+    """Import the extension, deferred and in one place.
+
+    Module level would break this file's whole point. The tests that state a
+    property of *each* backend are meant to run their Python half in an
+    installation with no extension, and a top-level ``from pantr import _pantr_cpp``
+    turns that into a collection error for the file -- every test, both halves. So
+    the import is here, and every caller is gated on ``cpp_backend``. Same shape and
+    same reason as ``test_bspline_binding_contract.py``'s.
+
+    Returns:
+        Any: The :mod:`pantr._pantr_cpp` module.
+    """
+    from pantr import _pantr_cpp  # noqa: PLC0415
+
+    return _pantr_cpp
 
 
 def _demand_the_extension_if_needed(backend: Backend) -> None:
@@ -814,7 +831,7 @@ def test_the_builder_binding_refuses_what_the_oracle_refuses(
     out = np.empty(case.out_shape, dtype=np.float64)
 
     with pytest.raises(ValueError) as from_binding:
-        _pantr_cpp.bezier_extraction_1d(knots, case.degree, case.tol, out)
+        _bindings().bezier_extraction_1d(knots, case.degree, case.tol, out)
     assert str(from_binding.value) == case.message
 
     # And the oracle's own path produces the same text for the same fault, which is
@@ -843,7 +860,7 @@ def test_the_builder_binding_refuses_a_vector_spanning_no_interval(cpp_backend: 
     # alone and the comparison would be about the argument rather than the message.
     tol = _knot_tolerance(knots)
     with pytest.raises(ValueError) as caught:
-        _pantr_cpp.bezier_extraction_1d(knots, 2, tol, out)
+        _bindings().bezier_extraction_1d(knots, 2, tol, out)
     assert "knot vector spans no interval" in str(caught.value)
 
     with pytest.raises(ValueError) as from_space:
@@ -873,7 +890,7 @@ def test_the_builder_binding_refuses_a_wrongly_shaped_out(cpp_backend: None) -> 
     knots = np.asarray(_CASES[0].knots, dtype=np.float64)
     for shape in ((2, 3, 3), (3, 2, 3), (3, 3, 2)):
         with pytest.raises(ValueError, match=r"out must have shape \(3, 3, 3\)"):
-            _pantr_cpp.bezier_extraction_1d(knots, 2, 0.0, np.empty(shape, dtype=np.float64))
+            _bindings().bezier_extraction_1d(knots, 2, 0.0, np.empty(shape, dtype=np.float64))
 
 
 def test_the_builder_binding_refuses_a_dtype_it_would_have_to_cast(cpp_backend: None) -> None:
@@ -887,15 +904,15 @@ def test_the_builder_binding_refuses_a_dtype_it_would_have_to_cast(cpp_backend: 
     """
     knots = np.asarray(_CASES[0].knots, dtype=np.float32)
     with pytest.raises(TypeError):
-        _pantr_cpp.bezier_extraction_1d(knots, 2, 0.0, np.empty((3, 3, 3), dtype=np.float64))
+        _bindings().bezier_extraction_1d(knots, 2, 0.0, np.empty((3, 3, 3), dtype=np.float64))
     with pytest.raises(TypeError):
-        _pantr_cpp.bezier_extraction_1d(
+        _bindings().bezier_extraction_1d(
             knots.astype(np.float64), 2, 0.0, np.empty((3, 3, 3), dtype=np.float32)
         )
     # An integer knot vector is a cast too, and Layer 2 in Python is what normalizes
     # one; the binding must not do it silently.
     with pytest.raises(TypeError):
-        _pantr_cpp.bezier_extraction_1d(
+        _bindings().bezier_extraction_1d(
             np.asarray(_CASES[0].knots, dtype=np.int64), 2, 0.0, np.empty((3, 3, 3))
         )
 
@@ -909,15 +926,15 @@ def test_the_mask_binding_refuses_its_own_bad_calls(cpp_backend: None) -> None:
     """
     multiplicity = np.asarray([3, 1, 3], dtype=np.intp)
     with pytest.raises(ValueError, match="degree must be non-negative"):
-        _pantr_cpp.bezier_structural_identity_mask(multiplicity, -1, np.empty(2, dtype=np.bool_))
+        _bindings().bezier_structural_identity_mask(multiplicity, -1, np.empty(2, dtype=np.bool_))
     with pytest.raises(ValueError, match="at least one class"):
-        _pantr_cpp.bezier_structural_identity_mask(
+        _bindings().bezier_structural_identity_mask(
             np.empty(0, dtype=np.intp), 2, np.empty(0, dtype=np.bool_)
         )
     with pytest.raises(ValueError, match="out must have 2 elements"):
-        _pantr_cpp.bezier_structural_identity_mask(multiplicity, 2, np.empty(3, dtype=np.bool_))
+        _bindings().bezier_structural_identity_mask(multiplicity, 2, np.empty(3, dtype=np.bool_))
     with pytest.raises(TypeError):
-        _pantr_cpp.bezier_structural_identity_mask(
+        _bindings().bezier_structural_identity_mask(
             multiplicity.astype(np.int32), 2, np.empty(2, dtype=np.bool_)
         )
 
