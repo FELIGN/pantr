@@ -9,6 +9,10 @@ degree comes from the control-point shape) -- exactly the per-element pieces pro
 ``[0, 1]``, selecting its algorithm automatically (Bézier clipping at high degree, an
 exact derivative-based solver at low degree). This tutorial renders a Bézier surface,
 locates roots, then uses root finding for a curve-line intersection.
+
+Note: :func:`~pantr.bezier.find_roots` internally clamps the supplied ``tol`` to a
+floor based on the coefficient dtype (e.g. ~1e-7 for ``float32``) because residuals
+below that level are dominated by floating-point rounding noise.
 """
 
 import matplotlib.pyplot as plt
