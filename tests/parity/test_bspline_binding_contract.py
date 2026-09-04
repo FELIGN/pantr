@@ -256,6 +256,9 @@ def test_no_bound_method_is_a_borrowing_accessor(cpp_backend: None) -> None:
         "be reporting this class's methods at all"
     )
     assert "spaces" in dir(bindings.BsplineSpace64)
+    # And the same for the hierarchical class, which carries three of these.
+    assert "root_space" in dir(bindings.THBSplineSpace64)
+    assert "level_space" in dir(bindings.THBSplineSpace64)
 
 
 _SPACE_CLASSES = (
@@ -263,8 +266,16 @@ _SPACE_CLASSES = (
     "BsplineSpace1D64",
     "BsplineSpace32",
     "BsplineSpace64",
+    "THBSplineSpace32",
+    "THBSplineSpace64",
 )
-"""Every space class the extension registers, for the rules asserted over all of them."""
+"""Every space class the extension registers, for the rules asserted over all of them.
+
+The two hierarchical classes are what make the ``_ref`` rule bite hardest: they have
+three borrowing accessors -- ``root_space_ref``, ``grid_ref`` and ``level_space_ref`` --
+against the tensor-product type's one, and each hands out a reference to a nested
+object rather than a span of the owner's own storage.
+"""
 
 
 def _cpp_tensor_product() -> BsplineSpace:
