@@ -776,6 +776,40 @@ void check_an_unrefined_direction() {
     PANTR_CHECK(space.level_space_ref(1).space_ref(1).num_intervals() == 4);
 }
 
+/// A dimensionless space cannot be built, which is what the `d == 0` branches rest on.
+///
+/// Several odometers in `thb_space.hpp` carry a `d == 0` arm so that a dimensionless
+/// space would have exactly one combination -- the empty multi-index, matching what
+/// `itertools.product()` gives the oracle. Those arms cannot be reached and cannot be
+/// covered: a `THBSplineSpace` needs a `HierarchicalGrid`, which needs a
+/// `TensorProductGrid`, which refuses zero axes. **That refusal is the whole argument**,
+/// and it is asserted here rather than assumed, in the file that depends on it: if it
+/// ever softens, the arms stop being defensive and this check says so first.
+void check_a_dimensionless_grid_is_refused() {
+    bool threw = false;
+    try {
+        static_cast<void>(TensorProductGrid<double>(std::vector<std::vector<double>>{}));
+    } catch (const std::invalid_argument& e) {
+        threw = std::string(e.what()) == "TensorProductGrid needs at least one axis; got 0.";
+    }
+    PANTR_CHECK_MSG(threw, "a grid with no axes must be refused, with that message");
+
+    // And the space's own dimension is the grid's, so nothing else can reintroduce zero:
+    // the root space is free to have no directions, and the constructor refuses the
+    // mismatch rather than adopting it.
+    const auto no_directions = std::make_shared<const BsplineSpace<double>>(
+        std::vector<std::shared_ptr<const BsplineSpace1D<double>>>{});
+    const std::shared_ptr<HierarchicalGrid<double>> grid = corner_hierarchy(2, 4, 2, 1);
+    threw = false;
+    try {
+        static_cast<void>(THBSplineSpace<double>(no_directions, grid, true, {std::nullopt}));
+    } catch (const std::invalid_argument&) {
+        threw = true;
+    }
+    PANTR_CHECK_MSG(threw, "a root space with no directions over a 2D grid must be refused");
+}
+
+
 /// Copying a space leaves the copy's contribution table cold, and correct.
 ///
 /// `pantr::LazySlot` starts cold on copy on purpose: the memo is a function of its
@@ -851,6 +885,7 @@ int main() {
     check_float_storage();
     check_refusals();
     check_an_unrefined_direction();
+    check_a_dimensionless_grid_is_refused();
     check_copy_leaves_the_memo_cold();
     check_concurrent_reads();
     return pantr::test::summary("test_thb_space");

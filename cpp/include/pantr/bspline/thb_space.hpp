@@ -1957,6 +1957,12 @@ class THBSplineSpace {
             // multi-index, which is what `itertools.product()` gives the oracle and
             // what every other odometer in this file does. An early return for
             // `d == 0` would make this one function disagree with all of them.
+            //
+            // No `d == 0` arm in this file is reachable, and none can be covered by a
+            // test: a `THBSplineSpace` needs a `HierarchicalGrid`, which needs a
+            // `TensorProductGrid`, which refuses zero axes. They are kept because
+            // agreeing with the oracle costs one comparison, and the refusal they rest
+            // on is asserted in `cpp/tests/test_thb_space.cpp` rather than assumed.
             bool done = d == 0;
             while (axis > 0) {
                 --axis;
