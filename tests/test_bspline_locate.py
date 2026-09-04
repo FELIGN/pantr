@@ -438,13 +438,17 @@ def _scale_of(spline: Bspline) -> float:
 
 
 def _cache_of(spline: Bspline) -> _LocateContext | None:
-    """Return the point-inversion cache attribute of ``spline``.
+    """Return the point-inversion memo of ``spline``.
 
-    Read through a function rather than inline: an inline ``assert spline._locate_cache is
-    None`` narrows the attribute's type for the rest of the test, and mypy then calls the
-    later assertions unreachable. A call expression is not narrowed.
+    Read through a function rather than inline: an inline ``assert spline._derived.locate
+    is None`` narrows the attribute's type for the rest of the test, and mypy then calls
+    the later assertions unreachable. A call expression is not narrowed.
+
+    The memo lives in the derived block rather than in a slot of its own, so that an
+    in-place mutator cannot discard it without also discarding the Bézier
+    decomposition; see ``pantr.bspline._bspline._Derived``.
     """
-    return spline._locate_cache
+    return spline._derived.locate
 
 
 def _sample_parametric(

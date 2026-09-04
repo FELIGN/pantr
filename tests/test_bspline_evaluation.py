@@ -277,7 +277,7 @@ def _eval_periodic_correct(f: Bspline, pts: npt.NDArray[np.float64]) -> npt.NDAr
     p = space_1d.degree
     tol = float(space_1d.tolerance)
     n_stored = f.space.num_total_basis
-    ctrl = f._control_points  # shape (n_stored, rank)
+    ctrl = f.control_points  # shape (n_stored, rank)
 
     # Compute knot spans using the non-periodic (unclamped) algorithm
     basis_out = np.zeros((len(pts), p + 1), dtype=np.float64)
