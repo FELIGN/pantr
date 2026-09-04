@@ -39,14 +39,13 @@
 /// silently degenerate space. The domain refusal is unreachable from `subdivide`,
 /// whose knots are interior by construction, so it is exercised directly.
 ///
-/// ## `n_subdivisions == 1` is a copy, not an error
+/// ## A factor of one is refused, not silently a copy
 ///
-/// `HierarchicalGrid`'s per-direction factor may be 1, and `_build_level_spaces`
-/// skips those axes rather than subdividing them. The oracle's `subdivide` refuses
-/// `n_subdivisions < 2`, so the skip lives in its *caller*; here it lives in
-/// `subdivide` itself, which returns the space unchanged. That is a deliberate
-/// widening of the oracle's domain and not a divergence on any input the oracle
-/// accepts -- pinned below so a later reader does not "fix" it back.
+/// `HierarchicalGrid`'s per-direction factor may be 1, and the THB space skips those
+/// axes rather than asking for a subdivision by one -- so the bound here is the oracle's,
+/// `n_subdivisions >= 2`, and `check_refusals` pins both entry points' messages. An
+/// earlier version accepted 1 and returned a copy; nothing exercised it, and a widened
+/// contract with no exerciser is how an unexamined precedent starts.
 
 #include <cmath>
 #include <cstdint>
@@ -286,13 +285,8 @@ void check_subdivision_knots() {
         uniform_subdivision_knots<double>(space.knots(), 2, space.tolerance(), 3, 1);
     PANTR_CHECK(thirds.size() == 4);
 
-    // Nothing to insert when the factor is one, which is what an unrefined direction
-    // asks for. See the file comment.
-    PANTR_CHECK(
-        uniform_subdivision_knots<double>(space.knots(), 2, space.tolerance(), 1, 1).empty());
-    const BsplineSpace1D<double> same = subdivide<double>(space, 1, std::nullopt);
-    PANTR_CHECK(same.num_basis() == space.num_basis());
-    PANTR_CHECK(same.knots().size() == space.knots().size());
+    // A factor of one is refused rather than treated as a copy; `check_refusals` pins
+    // both messages. See the file comment.
 }
 
 /// Subdividing multiplies the interval count and keeps the domain.
@@ -375,11 +369,21 @@ void check_refusals() {
 
     bool threw = false;
     try {
-        static_cast<void>(subdivide<double>(space, 0, std::nullopt));
+        static_cast<void>(subdivide<double>(space, 1, std::nullopt));
     } catch (const std::invalid_argument& e) {
-        threw = std::string(e.what()) == "n_subdivisions must be >= 1, got 0";
+        threw = std::string(e.what()) == "n_subdivisions must be >= 2, got 1";
     }
-    PANTR_CHECK_MSG(threw, "a zero subdivision factor must be refused by its own message");
+    PANTR_CHECK_MSG(threw, "a subdivision factor below the oracle's bound must be refused "
+                           "with the oracle's message");
+
+    threw = false;
+    try {
+        static_cast<void>(
+            uniform_subdivision_knots<double>(space.knots(), 2, space.tolerance(), 1, 1));
+    } catch (const std::invalid_argument& e) {
+        threw = std::string(e.what()) == "n_subdivisions must be >= 2, got 1";
+    }
+    PANTR_CHECK_MSG(threw, "and the knot generator refuses it too, not only its caller");
 
     threw = false;
     try {

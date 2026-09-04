@@ -406,11 +406,14 @@ class THBSplineSpace {
     /// \return Views into the table, valid while this space is.
     /// \throws std::out_of_range If `cid` is out of range.
     [[nodiscard]] CellContributions contributions(std::int64_t cid) const {
-        const ContributionTable& table = contributions_table();
+        // Range first, table second. The oracle's per-cell cache refuses a bad id
+        // without computing anything; building the whole grid's table and *then*
+        // throwing would make a probe for a valid id cost an O(cells) sweep.
         if (cid < 0 || cid >= grid_->num_cells()) {
             throw std::out_of_range("cell id " + std::to_string(cid) + " is out of range [0, "
                                     + std::to_string(grid_->num_cells()) + ").");
         }
+        const ContributionTable& table = contributions_table();
         const auto i = static_cast<std::size_t>(cid);
         const auto begin = static_cast<std::size_t>(table.offset[i]);
         const auto count = static_cast<std::size_t>(table.offset[i + 1] - table.offset[i]);
@@ -494,16 +497,7 @@ class THBSplineSpace {
     [[nodiscard]] THBSplineSpace refine(std::span<const std::int64_t> cell_ids,
                                         std::optional<std::int64_t> admissible_class) const {
         check_admissible_class(admissible_class);
-        std::vector<std::int64_t> ids(cell_ids.begin(), cell_ids.end());
-        std::sort(ids.begin(), ids.end());
-        ids.erase(std::unique(ids.begin(), ids.end()), ids.end());
-        for (const std::int64_t cid : ids) {
-            if (cid < 0 || cid >= grid_->num_cells()) {
-                throw std::out_of_range("cell_ids must lie in [0, "
-                                        + std::to_string(grid_->num_cells())
-                                        + "); got out-of-range id " + std::to_string(cid) + ".");
-            }
-        }
+        const std::vector<std::int64_t> ids = unique_valid_cell_ids(cell_ids);
 
         // Resolved against the original grid before anything is refined: every
         // `refine` reassigns flat ids, so a `(level, midx)` pair is the only handle
@@ -578,6 +572,15 @@ class THBSplineSpace {
     /// neighbourhood (Def. 3.5) is empty. With an empty `optional` that guard is
     /// skipped, and coarsening is then the exact inverse of `refine`.
     ///
+    /// **Within a level the order is lexicographic here and the oracle's set-iteration
+    /// order there, and that is not a divergence.** Two parents at one level have
+    /// disjoint child sets, so demoting one cannot make the other's family incomplete;
+    /// and the admissibility guard for a parent at level `L` reads only the active cells
+    /// at level `L + m >= L + 2`, which a same-level peer's demotion -- confined to
+    /// level `L + 1` -- cannot touch, since a complete family has no grandchildren under
+    /// it. So the result does not depend on the within-level order. Fixing one anyway is
+    /// what makes *this* side reproducible run to run, which the oracle's set is not.
+    ///
     /// \param cell_ids Flat ids of active leaf cells to coarsen away; an empty range
     ///        is valid and coarsens nothing.
     /// \param admissible_class The class to maintain, at least 2, or empty for no
@@ -588,16 +591,7 @@ class THBSplineSpace {
     [[nodiscard]] THBSplineSpace coarsen(std::span<const std::int64_t> cell_ids,
                                          std::optional<std::int64_t> admissible_class) const {
         check_admissible_class(admissible_class);
-        std::vector<std::int64_t> ids(cell_ids.begin(), cell_ids.end());
-        std::sort(ids.begin(), ids.end());
-        ids.erase(std::unique(ids.begin(), ids.end()), ids.end());
-        for (const std::int64_t cid : ids) {
-            if (cid < 0 || cid >= grid_->num_cells()) {
-                throw std::out_of_range("cell_ids must lie in [0, "
-                                        + std::to_string(grid_->num_cells())
-                                        + "); got out-of-range id " + std::to_string(cid) + ".");
-            }
-        }
+        const std::vector<std::int64_t> ids = unique_valid_cell_ids(cell_ids);
 
         const auto d = static_cast<std::size_t>(dim());
         const std::span<const std::int64_t> factor = grid_->factor();
@@ -608,6 +602,11 @@ class THBSplineSpace {
             grid_->cell_multi_index(cid, std::span<std::int64_t>(cell.midx));
             marked.push_back(std::move(cell));
         }
+
+        // Sorted once so the per-child membership test below is a binary search. The
+        // order is the same one the parents are sorted by, and neither is observable:
+        // see the note on within-level order above.
+        std::sort(marked.begin(), marked.end(), marked_order);
 
         std::vector<Marked> parents;
         for (const Marked& cell : marked) {
@@ -649,10 +648,12 @@ class THBSplineSpace {
                 child[k] = parent.midx[k] * factor[k];
             }
             for (;;) {
-                const bool is_marked =
-                    std::any_of(marked.begin(), marked.end(), [&](const Marked& cell) {
-                        return cell.level == parent.level + 1 && cell.midx == child;
-                    });
+                // A binary search rather than a scan: `marked` can hold every cell of
+                // the mesh, and a linear test per child would make this quadratic in
+                // the marked set. The oracle uses a Python `set` for the same reason.
+                const bool is_marked = std::binary_search(
+                    marked.begin(), marked.end(), Marked{parent.level + 1, child},
+                    marked_order);
                 if (is_marked) {
                     const std::optional<std::int64_t> cid = current->cell_id(
                         parent.level + 1, std::span<const std::int64_t>(child));
@@ -700,23 +701,10 @@ class THBSplineSpace {
     ///         `"num_total_basis=..., truncate=...)"`, the oracle's `repr` character
     ///         for character.
     [[nodiscard]] std::string to_string() const {
-        std::string text = "THBSplineSpace(dim=" + std::to_string(dim()) + ", degrees=(";
-        const std::span<const std::int64_t> deg = degrees();
-        for (std::size_t k = 0; k < deg.size(); ++k) {
-            text += std::to_string(deg[k]);
-            // Python's one-element tuple is `(2,)`, so the comma follows every entry
-            // when there is only one.
-            if (k + 1 < deg.size() || deg.size() == 1) {
-                text += ",";
-            }
-            if (k + 1 < deg.size()) {
-                text += " ";
-            }
-        }
-        text += "), num_levels=" + std::to_string(num_levels())
-                + ", num_total_basis=" + std::to_string(num_active_)
-                + ", truncate=" + (truncate_ ? "True" : "False") + ")";
-        return text;
+        return "THBSplineSpace(dim=" + std::to_string(dim()) + ", degrees="
+               + tuple_repr(degrees()) + ", num_levels=" + std::to_string(num_levels())
+               + ", num_total_basis=" + std::to_string(num_active_)
+               + ", truncate=" + (truncate_ ? "True" : "False") + ")";
     }
 
 
@@ -839,6 +827,46 @@ class THBSplineSpace {
         }
     }
 
+    /// Order two named cells by level then by multi-index, for a sorted lookup.
+    ///
+    /// \param a The first cell.
+    /// \param b The second.
+    /// \return `true` if `a` orders before `b`.
+    [[nodiscard]] static bool marked_order(const Marked& a, const Marked& b) {
+        if (a.level != b.level) {
+            return a.level < b.level;
+        }
+        return a.midx < b.midx;
+    }
+
+    /// Sort and deduplicate cell ids, refusing every out-of-range one at once.
+    ///
+    /// The oracle collects **all** the offending ids before it raises, and names them
+    /// in the message; stopping at the first is a real loss for a caller debugging a
+    /// list of them.
+    ///
+    /// \param cell_ids The ids as given.
+    /// \return The ids, sorted and deduplicated, as `numpy.unique` returns them.
+    /// \throws std::out_of_range If any id is outside `[0, grid().num_cells())`.
+    [[nodiscard]] std::vector<std::int64_t> unique_valid_cell_ids(
+        std::span<const std::int64_t> cell_ids) const {
+        std::vector<std::int64_t> ids(cell_ids.begin(), cell_ids.end());
+        std::sort(ids.begin(), ids.end());
+        ids.erase(std::unique(ids.begin(), ids.end()), ids.end());
+        std::vector<std::int64_t> bad;
+        for (const std::int64_t cid : ids) {
+            if (cid < 0 || cid >= grid_->num_cells()) {
+                bad.push_back(cid);
+            }
+        }
+        if (!bad.empty()) {
+            throw std::out_of_range("cell_ids must lie in [0, "
+                                    + std::to_string(grid_->num_cells())
+                                    + "); got out-of-range id(s): " + list_repr(bad) + ".");
+        }
+        return ids;
+    }
+
     /// Refuse a level outside the hierarchy.
     ///
     /// \param level The level to check.
@@ -958,6 +986,21 @@ class THBSplineSpace {
             }
         }
         return text + ")";
+    }
+
+    /// Python's `repr` of a list of integers.
+    ///
+    /// \param values The entries.
+    /// \return `"[a, b, c]"`, and `"[]"` for none, as Python writes them.
+    [[nodiscard]] static std::string list_repr(std::span<const std::int64_t> values) {
+        std::string text = "[";
+        for (std::size_t i = 0; i < values.size(); ++i) {
+            if (i != 0) {
+                text += ", ";
+            }
+            text += std::to_string(values[i]);
+        }
+        return text + "]";
     }
 
     /// The number of cells a per-axis shape describes.
@@ -1204,13 +1247,20 @@ class THBSplineSpace {
                         sup.last_cell[f] = static_cast<std::int64_t>(interval);
                     }
                 }
+                // The oracle's type and its message: a `RuntimeError` naming EVERY
+                // index with empty support, not the first. nanobind maps
+                // `std::runtime_error` to `RuntimeError`, so the kind survives too.
+                std::vector<std::int64_t> empty_support;
                 for (std::size_t f = 0; f < n_basis; ++f) {
                     if (sup.first_cell[f] < 0) {
-                        throw std::invalid_argument(
-                            "B-spline function " + std::to_string(f) + " of direction "
-                            + std::to_string(k) + " at level " + std::to_string(level)
-                            + " has empty support. This indicates an invalid B-spline space.");
+                        empty_support.push_back(static_cast<std::int64_t>(f));
                     }
+                }
+                if (!empty_support.empty()) {
+                    throw std::runtime_error(
+                        "B-spline function(s) with empty support detected at indices "
+                        + list_repr(empty_support)
+                        + ". This indicates an invalid B-spline space.");
                 }
             }
         }
@@ -1227,6 +1277,29 @@ class THBSplineSpace {
             counts[k] = level_spaces_[level]->space_ref(static_cast<std::int64_t>(k)).num_basis();
         }
         return counts;
+    }
+
+    /// `base ** exponent` for a per-axis refinement factor, in exact integers.
+    ///
+    /// The oracle forms these with Python's `**`, which cannot overflow. This cannot
+    /// either, and the reason is the grid rather than this function: every exponent it
+    /// is called with is bounded by the grid's own `max_level()`, and
+    /// `HierarchicalGrid::level_cells_per_axis` already refused that level unless
+    /// `root_cells * factor ** level` fits in `std::int64_t`. So `factor ** level` is
+    /// at most a count the grid accepted, and a grid that would overflow here threw
+    /// before this space could be built. Written out because the three call sites read
+    /// like an unchecked power and a reader is right to ask.
+    ///
+    /// \param base The per-axis factor, at least 1.
+    /// \param exponent The level gap, non-negative.
+    /// \return `base ** exponent`.
+    [[nodiscard]] static std::int64_t level_power(std::int64_t base,
+                                                  std::int64_t exponent) noexcept {
+        std::int64_t value = 1;
+        for (std::int64_t step = 0; step < exponent; ++step) {
+            value *= base;
+        }
+        return value;
     }
 
     /// The per-axis cell counts of one level of the grid.
@@ -1436,11 +1509,13 @@ class THBSplineSpace {
                 }
             }
             if (new_lo < 0) {
+                // The oracle's text, character for character, em dash included, so a
+                // caller matching on it keeps working when the backend changes.
                 throw std::invalid_argument(
-                    "refine_box: Oslo matrix slice for direction " + std::to_string(k)
+                    "_refine_box: Oslo matrix slice for direction " + std::to_string(k)
                     + " (columns [" + std::to_string(box_lo[k]) + ":"
                     + std::to_string(box_hi[k])
-                    + "]) is entirely zero - degenerate or invalid knot refinement.");
+                    + "]) is entirely zero \u2014 degenerate or invalid knot refinement.");
             }
             const std::int64_t new_width = new_hi - new_lo;
 
@@ -1501,6 +1576,15 @@ class THBSplineSpace {
         const auto d = static_cast<std::size_t>(dim());
         if (d == 0) {
             return false;
+        }
+        // The same guard `box_any_true` carries. `refine_box` throws rather than
+        // returning a zero-width band, so an empty box does not arise from the one
+        // caller today -- but the oracle's numpy version degrades to "nothing zeroed"
+        // for one, and holding an invariant across two functions is not a contract.
+        for (std::size_t k = 0; k < d; ++k) {
+            if (box_lo[k] >= box_hi[k]) {
+                return false;
+            }
         }
         std::vector<std::int64_t> cursor(box_lo.begin(), box_lo.end());
         std::size_t offset = 0;
@@ -1655,10 +1739,7 @@ class THBSplineSpace {
             for (std::int64_t level = 0; level <= cell_level; ++level) {
                 const auto l = static_cast<std::size_t>(level);
                 for (std::size_t k = 0; k < d; ++k) {
-                    std::int64_t divisor = 1;
-                    for (std::int64_t step = 0; step < cell_level - level; ++step) {
-                        divisor *= factor[k];
-                    }
+                    const std::int64_t divisor = level_power(factor[k], cell_level - level);
                     at_level[k] = cell_midx[k] / divisor;
                     first[k] = support_[l][k].first_basis[static_cast<std::size_t>(at_level[k])];
                 }
@@ -1843,9 +1924,6 @@ class THBSplineSpace {
             return out;
         }
         const auto d = static_cast<std::size_t>(dim());
-        if (d == 0) {
-            return out;
-        }
         // `k_ext = k_nbr + 1 <= level`, and `level` never exceeds the maximum level of
         // the grid this space was built on, so the support of that level exists.
         const std::int64_t k_ext = level - m + 2;
@@ -1857,10 +1935,7 @@ class THBSplineSpace {
         std::vector<std::int64_t> lo(d);
         std::vector<std::int64_t> hi(d);
         for (std::size_t k = 0; k < d; ++k) {
-            std::int64_t divisor = 1;
-            for (std::int64_t step = 0; step < level - k_ext; ++step) {
-                divisor *= factor[k];
-            }
+            const std::int64_t divisor = level_power(factor[k], level - k_ext);
             const std::int64_t q = midx[k] / divisor;
             const std::int64_t first = support_ext[k].first_basis[static_cast<std::size_t>(q)];
             const std::int64_t s_lo =
@@ -1877,7 +1952,11 @@ class THBSplineSpace {
                 out.push_back(Marked{k_nbr, cursor});
             }
             std::size_t axis = d;
-            bool done = false;
+            // A dimensionless space has exactly one combination, the empty
+            // multi-index, which is what `itertools.product()` gives the oracle and
+            // what every other odometer in this file does. An early return for
+            // `d == 0` would make this one function disagree with all of them.
+            bool done = d == 0;
             while (axis > 0) {
                 --axis;
                 ++cursor[axis];
@@ -1944,10 +2023,9 @@ class THBSplineSpace {
         std::vector<std::int64_t> box_lo(d);
         std::vector<std::int64_t> box_hi(d);
         for (std::size_t k = 0; k < d; ++k) {
-            std::int64_t scale = 1;
-            for (std::int64_t step = 0; step < m - 1; ++step) {
-                scale *= factor[k];
-            }
+            // `target <= max_level` above bounds `m - 1`, which is what makes this
+            // power safe; `level_power` carries the argument.
+            const std::int64_t scale = level_power(factor[k], m - 1);
             box_lo[k] = ext_lo[k] * scale;
             box_hi[k] = ext_hi[k] * scale;
         }
