@@ -1,10 +1,14 @@
-"""What the `pantr.bspline` space bindings guarantee, as opposed to what they compute.
+"""What the `pantr.bspline` bindings guarantee, as opposed to what they compute.
 
-`tests/parity/test_bspline_space_1d.py` and `tests/parity/test_bspline_space_nd.py`
-compare the two backends' *answers*. This file is about the *bindings*: what the
-arrays they hand out alias, how long they stay valid, what a constructor refuses to
-convert, what a nested object's identity and lifetime are, and one rule that is about
-the shape of the bound surface rather than about any one call.
+`tests/parity/test_bspline_space_1d.py`, `tests/parity/test_bspline_space_nd.py` and
+`tests/parity/test_bspline_type.py` compare the two backends' *answers*. This file is
+about the *bindings*: what the arrays they hand out alias, how long they stay valid,
+what a constructor refuses to convert, what a nested object's identity and lifetime
+are, and one rule that is about the shape of the bound surface rather than about any
+one call.
+
+The spaces come first and the field -- ``pantr::bspline::Bspline``, which holds a
+space *and* an array of its own -- is the last section.
 
 Every claim here is exact -- an identity, a flag, a refusal, a name -- so nothing in
 this file carries a tolerance, and `design/backend_parity.md` Rule 8 does not bite.
@@ -231,19 +235,20 @@ def test_the_space_refuses_a_dtype_it_would_have_to_cast(
 
 
 def test_no_bound_method_is_a_borrowing_accessor(cpp_backend: None) -> None:
-    """No name on any of the four bound space classes ends in ``_ref``.
+    """No name on any bound class of this front ends in ``_ref``.
 
     The rule from `design/bspline_ownership_lifetime.md`. It was vacuous while only
     ``BsplineSpace1D`` existed, which hands out spans of its own storage rather than
     references to nested objects; ``pantr::bspline::BsplineSpace`` has a real
-    ``space_ref``, so from here on this is the assertion that keeps it unbound.
-    There is no ``static_assert`` for absence, review alone will not hold across the
-    rest of this front, and the cost of the rule being broken is a dangling
-    reference with no policy anywhere to blame.
+    ``space_ref``, the two hierarchical classes have three between them and
+    ``pantr::bspline::Bspline`` has one, so from here on this is the assertion that
+    keeps them unbound. There is no ``static_assert`` for absence, review alone will
+    not hold across the rest of this front, and the cost of the rule being broken is
+    a dangling reference with no policy anywhere to blame.
     """
     bindings = _bindings()
     offenders = []
-    for class_name in _SPACE_CLASSES:
+    for class_name in _SPACE_CLASSES + _FIELD_CLASSES:
         cls = getattr(bindings, class_name)
         offenders += [f"{class_name}.{name}" for name in dir(cls) if name.endswith("_ref")]
 
@@ -259,6 +264,11 @@ def test_no_bound_method_is_a_borrowing_accessor(cpp_backend: None) -> None:
     # And the same for the hierarchical class, which carries three of these.
     assert "root_space" in dir(bindings.THBSplineSpace64)
     assert "level_space" in dir(bindings.THBSplineSpace64)
+    # And for the field, whose one borrowing accessor is `space_ref`: the owning twin
+    # is bound under the bare name, so seeing it is what says `dir` reports this
+    # class's surface at all.
+    assert "space" in dir(bindings.Bspline64)
+    assert "control_points" in dir(bindings.Bspline64)
 
 
 _SPACE_CLASSES = (
@@ -598,3 +608,250 @@ def test_a_space_has_no_instance_dictionary() -> None:
         tensor_product._impl = None  # type: ignore[assignment]
     with pytest.raises(AttributeError):
         del tensor_product._spaces
+
+
+# ===========================================================================
+# The field: `pantr::bspline::Bspline`
+# ===========================================================================
+#
+# The field is the second type in this front that holds another domain type, and
+# the first that holds one *and* an array of its own. So both halves of
+# `design/bspline_ownership_lifetime.md` are live on one class: its `space` is
+# class H and its `control_points` is class A, and the four silent failures
+# above (M1, M2, M7, M8) plus M5 and M6 all apply to it at once.
+#
+# What it adds that no space could: the field is the only ported type whose
+# Python surface *mutates*, so `Bspline._mutate` is the one place any of these
+# invariants can be broken after construction. Its own contract -- that the
+# wrapper refuses every attribute write, so nothing but `_mutate` can reseat the
+# value or leave the derived block behind -- is asserted at the end of this file.
+
+_FIELD_CLASSES = ("Bspline32", "Bspline64")
+"""The two field classes the extension registers.
+
+Swept by the ``_ref`` rule alongside the space classes: ``pantr::bspline::Bspline``
+has a ``space_ref()`` of its own, which borrows the space rather than copying the
+handle and must not reach Python.
+"""
+
+
+def _cpp_field(dtype: Any = np.float64, *, is_rational: bool = False) -> Any:
+    """Build a two-direction field under the C++ backend.
+
+    The basis counts are 6 and 3 -- ``_KNOTS`` is a quadratic over nine knots and
+    ``_OTHER_KNOTS`` a linear over five -- so the control net is ``(6, 3, rank)`` and
+    no permutation of its shape is another admissible shape for this space.
+
+    Args:
+        dtype (Any): The storage format.
+        is_rational (bool): Whether the last stored component is a weight.
+
+    Returns:
+        Any: A :class:`~pantr.bspline.Bspline` holding a C++ handle.
+    """
+    from pantr.bspline import Bspline  # noqa: PLC0415
+
+    with use_backend(Backend.CPP):
+        space = BsplineSpace(
+            [
+                BsplineSpace1D(np.asarray(_KNOTS, dtype=dtype), 2),
+                BsplineSpace1D(np.asarray(_OTHER_KNOTS, dtype=dtype), 1),
+            ]
+        )
+        control_points = np.arange(6 * 3 * 3, dtype=dtype).reshape(6, 3, 3)
+        return Bspline(space, control_points, is_rational=is_rational)
+
+
+def test_the_field_shares_its_space_rather_than_copying(cpp_backend: None) -> None:
+    """The C++ field holds the very space handle it was built from.
+
+    M7 for the field. Compared at the *implementation* level, because the wrapper
+    level cannot see it: the wrapper keeps the space wrapper it was built from, so
+    ``field.space is space`` holds whether the C++ constructor shared or copied, and
+    a copying constructor would leave two Python objects reporting identity over two
+    different C++ objects.
+    """
+    from pantr.bspline import Bspline  # noqa: PLC0415
+
+    with use_backend(Backend.CPP):
+        space = BsplineSpace([BsplineSpace1D(_KNOTS, 2), BsplineSpace1D(_OTHER_KNOTS, 1)])
+        field = Bspline(space, np.arange(6 * 3 * 3, dtype=np.float64).reshape(6, 3, 3))
+
+    assert field._impl.space is space._impl, (
+        "the field's space is not the handle it was given, so the C++ constructor copied"
+    )
+    # And the wrapper's own contract, M1 and M8: seeded from the constructor, so the
+    # object a caller passed in comes back.
+    assert field.space is space
+    # Identity-stable across two reads, which is what `nb_type_put`'s `inst_c2p`
+    # lookup buys and what a memo on the wrapper would otherwise have to fake.
+    assert field._impl.space is field._impl.space
+
+
+def test_taking_the_fields_space_does_not_pin_the_field(cpp_backend: None) -> None:
+    """Reading ``space`` installs no keep-alive on the field.
+
+    M2 for the field, and the one detector that distinguishes class H from a
+    reversion to ``rv_policy::reference_internal``: under sharing the *value* travels
+    in the return, so the owner's reference count does not move; under a keep-alive
+    it moves by one. Both behave identically for a Python caller, and only one of
+    them protects a consumer with no interpreter.
+
+    The returned handle is dropped before the second reading, for the reason
+    ``design/bspline_ownership_lifetime.md`` F4 records: two correct measurements of
+    such a delta disagreed because one run held the escapee and the other did not,
+    so a test must fix that rather than let a temporary decide it.
+    """
+    field = _cpp_field()
+    impl = field._impl
+    before = sys.getrefcount(impl)
+
+    taken = impl.space
+    assert taken.dim == 2
+    del taken
+    gc.collect()
+
+    assert sys.getrefcount(impl) == before, (
+        "reading the space changed the field's reference count, which means a "
+        "keep-alive was installed: the accessor is aliasing into the owner rather "
+        "than sharing the value, and it will dangle for a caller with no interpreter"
+    )
+
+
+def test_the_space_outlives_the_field(cpp_backend: None) -> None:
+    """A space taken out of a field still knows its own state after the field dies.
+
+    The property that justifies storing ``shared_ptr<const BsplineSpace<T>>`` in the
+    type instead of annotating the binding. Asserted on the space's counts rather
+    than on the handle being non-null, because F4 measured a scalar read after free
+    returning the correct value -- so fields are built and dropped in between to
+    churn the freed storage.
+    """
+    field = _cpp_field()
+    space = field._impl.space
+    expected_total = space.num_total_basis
+    expected_degrees = space.degrees
+
+    del field
+    gc.collect()
+    for _ in range(64):
+        _cpp_field()
+    gc.collect()
+
+    assert space.num_total_basis == expected_total
+    assert space.degrees == expected_degrees
+
+
+def test_the_fields_control_points_are_a_read_only_view(cpp_backend: None) -> None:
+    """The C++ ``control_points`` aliases the field's own storage and cannot be written.
+
+    M5 and M6 for the field's one array accessor, and the pair matters more here than
+    for a space: a write through a writeable view would leave both of the field's
+    derived memos -- the Bézier decomposition and the point-inversion context --
+    describing a geometry it no longer holds, with nothing raising. That is the defect
+    ``design/bspline_ownership_lifetime.md`` records in today's Python, and the
+    read-only view is the half of its removal this front owns.
+
+    ``shares_memory`` is what tells a view from a copy; the values agree either way.
+    """
+    field = _cpp_field()
+    handed_out = field._impl.control_points
+
+    assert not handed_out.flags.writeable, (
+        "the scalar is not `const T`, so a caller can rewrite a validated geometry"
+    )
+    with pytest.raises(ValueError, match="read-only"):
+        handed_out[0, 0, 0] = 99.0
+    assert np.shares_memory(handed_out, field._impl.control_points), (
+        "two reads do not share memory, so the accessor copies: the owner argument is "
+        "missing and the whole net is duplicated on every access"
+    )
+
+
+def test_the_control_points_view_outlives_the_field(cpp_backend: None) -> None:
+    """The array keeps the C++ storage alive after the field handle is dropped.
+
+    The owner argument is what does that. Without it the values are read from freed
+    memory, which is a use-after-free that usually reads back correct and
+    occasionally does not -- so this asserts the values, and churns the allocator in
+    between rather than trusting one read.
+    """
+    field = _cpp_field()
+    handed_out = field._impl.control_points
+    expected = np.array(handed_out)
+
+    del field
+    gc.collect()
+    for _ in range(64):
+        _cpp_field()
+    gc.collect()
+
+    np.testing.assert_array_equal(handed_out, expected)
+
+
+@pytest.mark.parametrize(
+    ("class_name", "space_dtype", "net_dtype"),
+    [
+        ("Bspline64", np.float64, np.float32),
+        ("Bspline32", np.float32, np.float64),
+    ],
+)
+def test_the_field_refuses_a_control_net_it_would_have_to_cast(
+    class_name: str, space_dtype: Any, net_dtype: Any, cpp_backend: None
+) -> None:
+    """Handing a field class a net of the other width is a refusal, not a cast.
+
+    The ``.noconvert()`` on the binding. Without it nanobind casts silently, so
+    :func:`pantr.bspline._bspline._impl_class` picking the wrong class would narrow or
+    widen a caller's geometry with nothing to notice -- the class name is the only
+    thing carrying the storage format.
+
+    The space must be of the class's own width, so that the *net* is the only thing
+    wrong: a space of the other width is refused by its own caster and would make
+    this pass for the wrong reason.
+    """
+    bindings = _bindings()
+    with use_backend(Backend.CPP):
+        space = BsplineSpace([BsplineSpace1D(np.asarray(_KNOTS, dtype=space_dtype), 2)])
+    net = np.arange(6 * 2, dtype=net_dtype).reshape(6, 2)
+
+    cls = getattr(bindings, class_name)
+    # The control-point argument is the only ill-typed one: the space handle matches.
+    with pytest.raises(TypeError):
+        cls(space._impl, net, False)
+
+
+def test_a_field_has_no_instance_dictionary() -> None:
+    """The field wrapper refuses every attribute write, so ``_mutate`` is the only writer.
+
+    A ``__dict__`` would let a memo be attached to the wrapper -- the second truth
+    ``design/bspline_derived_caches.md`` forbids -- and, worse for this type than for
+    a space, it would let a caller reseat ``_impl`` or ``_space`` without discarding
+    the derived block, which is exactly the invalidation hole that note asks this
+    front to close.
+
+    Not parametrized over the backends and not gated on the extension: ``__slots__``
+    and ``__setattr__`` belong to the wrapper class, which is the same class whichever
+    implementation it holds, so a second run would duplicate the first. Gating it
+    would have made it skip in the configuration where it is the only thing checking
+    this.
+    """
+    from pantr.bspline import Bspline  # noqa: PLC0415
+
+    space = BsplineSpace([BsplineSpace1D(_KNOTS, 2)])
+    field = Bspline(space, np.arange(6 * 2, dtype=np.float64).reshape(6, 2))
+
+    assert not hasattr(field, "__dict__")
+    with pytest.raises(AttributeError):
+        field.some_new_attribute = 1
+    with pytest.raises(AttributeError):
+        field._impl = None  # type: ignore[assignment]
+    with pytest.raises(AttributeError):
+        field._space = None  # type: ignore[assignment]
+    with pytest.raises(AttributeError):
+        del field._derived
+    # The block itself is reachable and fillable, which is what the two memos need;
+    # what is unspellable is replacing one of them without the other, because only
+    # `_take` writes the slot the block lives in.
+    assert field._derived.beziers is None
+    assert field._derived.locate is None
