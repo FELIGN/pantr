@@ -590,7 +590,15 @@ def _compare_the_operations(py: THBSplineSpace, cpp: Any, context: str) -> None:
 
     The marked set is derived from the space rather than drawn again, so a failure is
     reproducible from the case alone: the first cell of each level for the refinement, and
-    every deepest-level cell for the coarsening.
+    for the coarsening **every cell above level 0**, not only the deepest ones.
+
+    That last word is the load-bearing one. Both implementations demote parents deepest
+    first, so that a veto is decided against a mesh whose finer coarsenings have already
+    happened -- and a marked set confined to one level puts every parent at one level too,
+    where the ordering cannot be observed at all. Measured: reversing the demotion order
+    in the C++ survived this sweep while the marked set was the deepest level alone, and
+    is caught once it spans several. FELIGN/pantr#395's own port carried a defect of
+    exactly this shape, in exactly this operation.
 
     Args:
         py (THBSplineSpace): The oracle's space.
@@ -608,7 +616,7 @@ def _compare_the_operations(py: THBSplineSpace, cpp: Any, context: str) -> None:
             seen.add(level)
             marked.append(cid)
     deepest = np.array(
-        [cid for cid in range(py.grid.num_cells) if py.grid.cell_level(cid) == py.grid.max_level],
+        [cid for cid in range(py.grid.num_cells) if py.grid.cell_level(cid) >= 1],
         dtype=np.int64,
     )
     ids = np.array(marked, dtype=np.int64)
