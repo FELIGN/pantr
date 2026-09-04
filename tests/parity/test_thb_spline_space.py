@@ -459,11 +459,13 @@ def _partition_of_unity_defect(space: Any, oracle: THBSplineSpace) -> float:
     return float(np.abs(total - 1.0).max())
 
 
-def _compare(case: _Case) -> tuple[int, int, float]:
+def _compare(case: _Case, variant: int = 0) -> tuple[int, int, float]:
     """Compare both backends' spaces for one case, quantity by quantity.
 
     Args:
         case (_Case): The hierarchy to build under both.
+        variant (int): Which rebuilding operation to compare on this case; see
+            :func:`_compare_the_operations` for why it is one rather than all four.
 
     Returns:
         tuple[int, int, float]: How many truncation coefficients were compared, how many
@@ -575,18 +577,25 @@ def _compare(case: _Case) -> tuple[int, int, float]:
         )
         worst = max(worst, observed["coefficients"].max_ratio_to_bound)
 
-    _compare_the_operations(py, cpp, context)
+    _compare_the_operations(py, cpp, context, variant)
     return compared, identical, worst
 
 
-def _compare_the_operations(py: THBSplineSpace, cpp: Any, context: str) -> None:
-    """Compare one refinement and one coarsening of an already-compared pair.
+def _compare_the_operations(py: THBSplineSpace, cpp: Any, context: str, variant: int) -> None:
+    """Compare one rebuilding operation of an already-compared pair.
 
-    Both are rebuilds: each returns a new space over a new grid, so what is compared is
-    the space that comes back. Folded into the sweep rather than pinned to one fixture
-    because the ordering hazards here are the ones a fixture does not reach --
+    Both sides rebuild: the operation returns a new space over a new grid, so what is
+    compared is the space that comes back. Folded into the sweep rather than pinned to one
+    fixture because the ordering hazards here are the ones a fixture does not reach --
     FELIGN/pantr#395's own port carried a defect in ``coarsen_cells``' demotion order
     that first appeared at case 3553 of a 4000-case sweep and was invisible at 400.
+
+    **One of the four variants per case, rotating, rather than all four.** Constructing a
+    space is by far the most expensive thing this sweep does, so comparing all four
+    quadruples its cost for coverage a rotation buys at a quarter of the price: every
+    variant still gets a quarter of the cases, which at the wide width is hundreds each.
+    Measured: all four put the wide sweep at three times the next slowest test in
+    ``tests/parity``, and the C++ CI job runs it twice.
 
     The marked set is derived from the space rather than drawn again, so a failure is
     reproducible from the case alone: the first cell of each level for the refinement, and
@@ -604,49 +613,46 @@ def _compare_the_operations(py: THBSplineSpace, cpp: Any, context: str) -> None:
         py (THBSplineSpace): The oracle's space.
         cpp (Any): The C++ handle for the same hierarchy.
         context (str): What is being compared, quoted in every failure message.
+        variant (int): Selects the operation, modulo four.
 
     Raises:
         AssertionError: If any rebuilt quantity disagrees.
     """
     seen: set[int] = set()
-    marked = []
+    one_per_level: list[int] = []
     for cid in range(py.grid.num_cells):
         level = py.grid.cell_level(cid)
         if level not in seen:
             seen.add(level)
-            marked.append(cid)
-    deepest = np.array(
-        [cid for cid in range(py.grid.num_cells) if py.grid.cell_level(cid) >= 1],
-        dtype=np.int64,
-    )
-    ids = np.array(marked, dtype=np.int64)
+            one_per_level.append(cid)
+    # Every cell above level 0 for the coarsening, not only the deepest: see the note
+    # in the docstring on what a single-level marked set cannot see.
+    above_the_root = [cid for cid in range(py.grid.num_cells) if py.grid.cell_level(cid) >= 1]
+
+    coarsening = variant % 4 >= 2
+    admissible: int | None = 2 if variant % 2 == 0 else None
+    marked = np.array(above_the_root if coarsening else one_per_level, dtype=np.int64)
+    kind = "coarsen" if coarsening else "refine"
+    where = f"{context}: {kind}({'graded' if admissible is not None else 'ungraded'})"
 
     with _the_oracle():
-        rebuilt = (
-            ("refine(graded)", py.refine(ids, admissible_class=2), cpp.refine(ids, 2)),
-            ("refine(ungraded)", py.refine(ids, admissible_class=None), cpp.refine(ids, None)),
-            ("coarsen(graded)", py.coarsen(deepest, admissible_class=2), cpp.coarsen(deepest, 2)),
-            (
-                "coarsen(ungraded)",
-                py.coarsen(deepest, admissible_class=None),
-                cpp.coarsen(deepest, None),
-            ),
+        expected = (
+            py.coarsen(marked, admissible_class=admissible)
+            if coarsening
+            else py.refine(marked, admissible_class=admissible)
         )
+    actual = cpp.coarsen(marked, admissible) if coarsening else cpp.refine(marked, admissible)
 
-    for name, expected, actual in rebuilt:
-        where = f"{context}: {name}"
-        assert expected.num_levels == actual.num_levels, f"{where}: num_levels disagrees"
-        assert expected.grid.num_cells == actual.grid.num_cells, (
-            f"{where}: the rebuilt grid has a different cell count"
-        )
-        assert expected.num_total_basis == actual.num_total_basis, (
-            f"{where}: num_total_basis disagrees"
-        )
-        for level in range(expected.num_levels):
-            assert np.array_equal(
-                expected.active_function_indices(level),
-                np.asarray(actual.active_function_indices(level)),
-            ), f"{where}: the level-{level} active set disagrees"
+    assert expected.num_levels == actual.num_levels, f"{where}: num_levels disagrees"
+    assert expected.grid.num_cells == actual.grid.num_cells, (
+        f"{where}: the rebuilt grid has a different cell count"
+    )
+    assert expected.num_total_basis == actual.num_total_basis, f"{where}: num_total_basis disagrees"
+    for level in range(expected.num_levels):
+        assert np.array_equal(
+            expected.active_function_indices(level),
+            np.asarray(actual.active_function_indices(level)),
+        ), f"{where}: the level-{level} active set disagrees"
 
 
 def _draw_case(rng: np.random.Generator) -> _Case | None:
@@ -732,7 +738,7 @@ def _sweep(cases: int, seed: int) -> _SweepReport:
         case = _draw_case(rng)
         if case is None:
             continue
-        case_compared, case_identical, case_worst = _compare(case)
+        case_compared, case_identical, case_worst = _compare(case, variant=ran)
         ran += 1
         compared += case_compared
         identical += case_identical
