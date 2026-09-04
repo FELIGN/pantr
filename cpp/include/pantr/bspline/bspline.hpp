@@ -233,7 +233,7 @@ class Bspline {
     ///         the resulting rank is not at least 1.
     Bspline(std::shared_ptr<const BsplineSpace<T>> space, net_type net, bool is_rational)
         : space_(std::move(space)), net_(std::move(net)), is_rational_(is_rational) {
-        check_space();
+        check_space(space_);
         check_net_matches_space();
         check_rank();
     }
@@ -337,13 +337,19 @@ class Bspline {
 
     /// Refuse a space this field cannot be built over.
     ///
+    /// Static and taking its argument, so that both constructors can run it: the
+    /// flat one needs it inside its member-initializer list, before `net_` exists,
+    /// where a non-static member function cannot go. One function rather than two
+    /// copies of two message literals, which is the drift this shape removes.
+    ///
+    /// \param space The handle to check.
     /// \throws std::invalid_argument If the handle is null or the space has no
     ///         directions.
-    void check_space() const {
-        if (space_ == nullptr) {
+    static void check_space(const std::shared_ptr<const BsplineSpace<T>>& space) {
+        if (space == nullptr) {
             throw std::invalid_argument("the B-spline space is a null handle");
         }
-        if (space_->dim() == 0) {
+        if (space->dim() == 0) {
             throw std::invalid_argument(
                 "a B-spline over a space with no directions has no control net");
         }
@@ -403,13 +409,7 @@ class Bspline {
     [[nodiscard]] static net_type
     net_from_flat(const std::shared_ptr<const BsplineSpace<T>>& space,
                   std::span<const T> values) {
-        if (space == nullptr) {
-            throw std::invalid_argument("the B-spline space is a null handle");
-        }
-        if (space->dim() == 0) {
-            throw std::invalid_argument(
-                "a B-spline over a space with no directions has no control net");
-        }
+        check_space(space);
         const auto total = static_cast<std::size_t>(space->num_total_basis());
         if (values.size() % total != 0) {
             // The oracle's text, and the missing space after the full stop is the

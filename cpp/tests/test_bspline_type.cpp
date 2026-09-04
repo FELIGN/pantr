@@ -16,11 +16,18 @@
 /// A tensor-product type is where a symmetric case set proves nothing: if two
 /// directions agree on their basis count then a transposed net, an off-by-one in
 /// the axis index and a shape check that compares sums all pass.
-/// `check_a_surface` and `check_a_volume` therefore differ in the degree, the basis
-/// count and the domain of every direction at once, and their component counts are
-/// different again from both, so no permutation of the shape is another admissible
-/// shape. `check_the_shape_is_the_spaces_basis_counts` asserts that of the case set
-/// itself, by feeding a transposed net to the same space and requiring a refusal.
+/// `check_a_surface` and `check_a_volume` therefore have no two directions alike in
+/// the degree, the basis count or the domain, and a component count that is none of
+/// the basis counts -- so no permutation of a net's shape is another admissible
+/// shape for its space. Those two read a valid field's properties; what they buy is
+/// that a per-direction forward cannot be right by coincidence.
+///
+/// **Refusing a wrong shape is a different property and a different case.**
+/// `check_the_shape_is_the_spaces_basis_counts` is where it is tested, on a space of
+/// its own, and it needs three nets rather than one: transposed, mis-ranked, and one
+/// whose *later* direction is wrong -- the last because a transposed net has
+/// direction 0 wrong too, so a check that compares the first extent and stops
+/// refuses it anyway.
 ///
 /// ## The five cases that exist because getting them wrong is silent
 ///
@@ -199,23 +206,32 @@ void check_a_surface() {
     PANTR_CHECK(&field.space_ref() == space.get());
 }
 
-/// A three-direction field, all three directions distinct.
+/// A three-direction field, no two directions alike in anything.
 ///
-/// A two-direction case cannot distinguish a shape check that compares the first
-/// extent and stops from one that compares all of them.
+/// A third direction is what distinguishes a per-direction forward from one that
+/// happens to be right for two: `degree()` and the net's shape are both sequences,
+/// and a two-entry sequence read backwards is still a two-entry sequence.
+///
+/// Degrees 2, 1 and 3; basis counts 5, 3 and 7; domains `[0, 3]`, `[10, 12]` and
+/// `[100, 104]`, three different scales. The component axis is 2, which is none of
+/// the basis counts, so no permutation of `(5, 3, 7, 2)` is another admissible shape
+/// for this space.
 void check_a_volume() {
     const std::vector<double> first{0.0, 0.0, 0.0, 1.0, 2.0, 3.0, 3.0, 3.0};
-    const std::vector<double> second{0.0, 0.0, 0.0, 1.0, 1.0, 1.0};
-    const std::vector<double> third{0.0, 0.0, 1.0, 2.0, 3.0, 4.0, 4.0};
-    const auto space = nd<double>({one_d(first, 2), one_d(second, 2), one_d(third, 1)});
-    // The basis counts are 5, 3 and 5; the component axis is 2.
-    const Bspline<double> field(space, ramp<double>({5, 3, 5, 2}), false);
+    const std::vector<double> second{10.0, 10.0, 11.0, 12.0, 12.0};
+    const std::vector<double> third{100.0, 100.0, 100.0, 100.0, 101.0,
+                                    102.0, 103.0, 104.0, 104.0, 104.0, 104.0};
+    const auto space = nd<double>({one_d(first, 2), one_d(second, 1), one_d(third, 3)});
+    const Bspline<double> field(space, ramp<double>({5, 3, 7, 2}), false);
 
     PANTR_CHECK(field.dim() == 3);
-    PANTR_CHECK(equals(field.degree(), std::vector<std::int64_t>{2, 2, 1}));
+    PANTR_CHECK(equals(field.degree(), std::vector<std::int64_t>{2, 1, 3}));
+    PANTR_CHECK(equals(field.space()->num_basis(), std::vector<std::int64_t>{5, 3, 7}));
     PANTR_CHECK(field.rank() == 2);
-    PANTR_CHECK(equals(field.net().shape(), std::vector<std::size_t>{5, 3, 5, 2}));
-    PANTR_CHECK(field.net().size() == 150);
+    PANTR_CHECK(equals(field.net().shape(), std::vector<std::size_t>{5, 3, 7, 2}));
+    PANTR_CHECK(field.net().size() == 210);
+    PANTR_CHECK_MSG(field.net().values()[209] == 210.0,
+                    "the last coefficient of the largest net arrived");
 }
 
 /// A rational curve: the weight column is stored and is not part of the rank.
@@ -533,6 +549,20 @@ void check_copy_and_move() {
 /// atomic control block. The threads are released together off an atomic flag so
 /// that the reads genuinely overlap; a run in which each finished before the next
 /// began would report clean for the wrong reason.
+///
+/// **Nothing here asserts that the overlap happened, and nothing can**: that is the
+/// sanitizer's to detect, and `design/bspline_derived_caches.md` F3 is the reason --
+/// the shape one level down gave 60 correct answers in 60 unsanitized runs and four
+/// ThreadSanitizer reports. What the assertions do is stop the loop becoming dead
+/// code, which would make the sanitizer's silence meaningless. So the total is
+/// compared against a hand-computed literal rather than only against the other
+/// threads' totals: eight threads agreeing on zero is agreement.
+///
+/// An earlier version ended on `field.space().use_count() >= 2` and called that the
+/// vacuity guard. It was not one. `space` is a named local held for the whole
+/// function, so the local plus the field's own member already make the count 2 the
+/// instant the field is built -- before any thread runs, and whether or not the loop
+/// body calls anything at all.
 void check_concurrent_reads() {
     const std::vector<double> first{0.0, 0.0, 0.0, 1.0, 2.0, 3.0, 3.0, 3.0};
     const std::vector<double> second{10.0, 10.0, 11.0, 12.0, 12.0};
@@ -568,13 +598,19 @@ void check_concurrent_reads() {
         thread.join();
     }
 
+    // Per iteration: dim + rank (2 + 4), the two degrees (2 + 1), the flag (0), the
+    // first and last coefficients (1 + 60), the component count (4), the space's
+    // total basis count (5 * 3), and the borrowed space's dim (2). That is 91, over
+    // 2000 iterations. Hand-computed from the case above, so it dies if any accessor
+    // stops being called, starts returning something else, or the loop goes dead.
+    constexpr double expected = 91.0 * 2000.0;
     for (int t = 0; t < num_threads; ++t) {
         PANTR_CHECK_MSG(sums[static_cast<std::size_t>(t)] == sums[0],
                         "every thread must read one state");
+        PANTR_CHECK_MSG(sums[static_cast<std::size_t>(t)] == expected,
+                        "a thread's total is not the hand-computed one, so the loop body "
+                        "is not reading what this test says it reads");
     }
-    PANTR_CHECK_MSG(field.space().use_count() >= 2,
-                    "the vacuity guard: the shared handle survived the contention, so the "
-                    "atomic path really was exercised");
 }
 
 }  // namespace
