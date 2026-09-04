@@ -18,15 +18,18 @@ if TYPE_CHECKING:
 _PYTHON_BACKEND_ONLY = pytest.mark.skipif(
     active_backend() is not Backend.PYTHON,
     reason=(
-        "This records the Python Bezier's known aliasing defect rather than a contract: the "
-        "C++ value copies its control points and hands back a read-only view, so an in-place "
-        "mutation replaces the array instead of writing into it; FELIGN/pantr#375 is the "
-        "ticket that fixes the Python side. The skip loses no coverage of the C++ path: the "
-        "value an in-place mutation leaves behind is compared across both backends in "
-        "tests/parity/test_bezier_type.py, and only the array's identity is unpinned here."
+        "This records the Python implementations' known aliasing defect rather than a "
+        "contract: both C++ values -- Bezier and Bspline -- copy their control points and "
+        "hand back a read-only view, so an in-place mutation replaces the array instead of "
+        "writing into it. FELIGN/pantr#375 is the ticket that fixes the Python Bezier; the "
+        "Python Bspline half is flagged in design/bspline_ownership_lifetime.md and has no "
+        "ticket yet. The skip loses no coverage of the C++ path: the value an in-place "
+        "mutation leaves behind is compared across both backends in "
+        "tests/parity/test_bezier_type.py and tests/parity/test_bspline_type.py, and only "
+        "the array's identity is unpinned here."
     ),
 )
-"""Marks an assertion that pins aliasing only the Python implementation has."""
+"""Marks an assertion that pins aliasing only the Python implementations have."""
 
 # ======================================================================
 # Helpers
@@ -613,6 +616,7 @@ class TestBsplineTransform:
         assert result is None
         npt.assert_allclose(s.control_points[0], [5.0, 5.0])
 
+    @_PYTHON_BACKEND_ONLY
     def test_inplace_no_extra_alloc(self) -> None:
         """in_place=True writes directly into the existing array."""
         knots = [0.0, 0.0, 1.0, 1.0]
