@@ -110,6 +110,15 @@ void register_bspline_types(nanobind::module_& m);
 /// arrives with it. See design/extraction_port.md.
 void register_bspline_extraction(nanobind::module_& m);
 
+/// Register `pantr.bspline.THBSplineSpace`.
+///
+/// Its own entry point rather than a second type inside `register_bspline_types`, for
+/// the reason `register_grid_hierarchical` is separate from `register_grid_types`: the
+/// two are separate ports with separate parity claims, and the comments justifying this
+/// one's checks -- the one non-`const` handle in `pantr.bspline`, the views that replace
+/// the oracle's copies -- argue from somewhere else entirely.
+void register_bspline_thb_space(nanobind::module_& m);
+
 /// Register `pantr.bspline`'s Bézier extraction operator builder and its mask.
 ///
 /// Separate from `register_bspline_extraction` because the two are separate ports
