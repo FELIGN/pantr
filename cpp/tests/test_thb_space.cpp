@@ -401,8 +401,8 @@ void check_the_contribution_table() {
             // Every recorded function is one the level's Kraft selection admits.
             const std::span<const std::int64_t> active =
                 space.active_function_indices(c.levels[e]);
-            const std::int64_t position = c.dofs[e] - space.level_offsets()[static_cast<std::size_t>(
-                                              c.levels[e])];
+            const auto owning = static_cast<std::size_t>(c.levels[e]);
+            const std::int64_t position = c.dofs[e] - space.level_offsets()[owning];
             std::int64_t flat = 0;
             for (std::size_t k = 0; k < d; ++k) {
                 flat = flat * space.level_space_ref(c.levels[e])
@@ -723,6 +723,29 @@ void check_refusals() {
     }
     PANTR_CHECK_MSG(threw, "an admissibility class below the definition's minimum must be "
                            "refused with the oracle's message");
+
+    // Every offending id, not the first: the oracle collects them all before raising,
+    // and a caller debugging a list of them would otherwise get one per attempt.
+    const std::int64_t past_the_end = space.grid_ref().num_cells();
+    const std::vector<std::int64_t> bad = {past_the_end + 5, -1, past_the_end};
+    for (const bool coarsening : {false, true}) {
+        threw = false;
+        try {
+            if (coarsening) {
+                static_cast<void>(space.coarsen(std::span<const std::int64_t>(bad), 2));
+            } else {
+                static_cast<void>(space.refine(std::span<const std::int64_t>(bad), 2));
+            }
+        } catch (const std::out_of_range& e) {
+            threw = std::string(e.what())
+                    == "cell_ids must lie in [0, " + std::to_string(past_the_end)
+                           + "); got out-of-range id(s): [-1, " + std::to_string(past_the_end)
+                           + ", " + std::to_string(past_the_end + 5) + "].";
+        }
+        PANTR_CHECK_MSG(threw, std::string(coarsening ? "coarsen" : "refine")
+                                   + " must name every out-of-range id, sorted, as the "
+                                     "oracle does");
+    }
 }
 
 /// A factor of 1 on one axis leaves that direction alone at every level.
@@ -762,7 +785,8 @@ void check_copy_leaves_the_memo_cold() {
     const THBSplineSpace<double> space = reference_space(true);
     const std::int64_t expected = space.max_active_per_cell();
 
-    const THBSplineSpace<double> copy = space;  // NOLINT(performance-unnecessary-copy-initialization)
+    // NOLINTNEXTLINE(performance-unnecessary-copy-initialization)  -- copying IS the test
+    const THBSplineSpace<double> copy = space;
     PANTR_CHECK(copy.max_active_per_cell() == expected);
     PANTR_CHECK(copy.num_total_basis() == space.num_total_basis());
     // The copy shares the nested handles, which is what makes it cheap and what the

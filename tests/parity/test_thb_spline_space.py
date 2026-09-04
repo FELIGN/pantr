@@ -973,3 +973,30 @@ def test_the_refusals_carry_the_oracles_message(
     with pytest.raises(ValueError, match=r".*") as caught:
         build(cpp, root, grid)
     assert str(caught.value) == message
+
+
+def test_an_out_of_range_cell_id_is_refused_the_oracles_way(cpp_backend: None) -> None:
+    """Both backends name **every** offending id, in the same kind and the same words.
+
+    The kind matters as much as the wording: the oracle raises ``IndexError`` and nanobind
+    maps ``std::out_of_range`` to that, so a caller catching one keeps working. What had
+    to be brought over deliberately is the *list*: a first version of the C++ threw on the
+    first bad id it met, which is a real loss for a caller debugging several.
+
+    Args:
+        cpp_backend (None): Requires the compiled extension.
+    """
+    case = _reference_case()
+    py = _python_space(case)
+    cpp = _cpp_space(case)
+    past_the_end = py.grid.num_cells
+    bad = np.array([past_the_end + 5, -1, past_the_end], dtype=np.int64)
+
+    for name in ("refine", "coarsen"):
+        with pytest.raises(IndexError) as expected:
+            getattr(py, name)(bad, admissible_class=2)
+        with pytest.raises(IndexError) as actual:
+            getattr(cpp, name)(bad, 2)
+        assert str(actual.value) == str(expected.value), (
+            f"{name} refuses out-of-range ids with a different message under the two backends"
+        )

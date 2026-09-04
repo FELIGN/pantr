@@ -258,18 +258,22 @@ template <Real T>
 ///
 /// For each in-domain span `[u_k, u_{k+1})`, `n_subdivisions - 1` equally spaced
 /// interior values, each repeated `degree - regularity` times so the refined space is
-/// `C^regularity` at every inserted knot. Empty when the domain holds a single span
-/// and `n_subdivisions` is 1 -- which is not an error, it is what a direction whose
-/// refinement factor is 1 asks for.
+/// `C^regularity` at every inserted knot.
+///
+/// The lower bound on `n_subdivisions` is the oracle's, 2. A direction whose refinement
+/// factor is 1 is not subdivided at all and its caller skips it, which is what
+/// `THBSplineSpace`'s `build_level_spaces` does; an earlier version of this file
+/// accepted 1 and returned nothing, nothing exercised it, and a widened contract with no
+/// exerciser is how an unexamined precedent starts.
 ///
 /// \param knots The knot vector to subdivide.
 /// \param degree The polynomial degree.
 /// \param tol The tolerance that decides which knots are the same knot; the space's
 ///        own `tolerance()`.
-/// \param n_subdivisions Equal sub-spans per existing span, at least 1.
+/// \param n_subdivisions Equal sub-spans per existing span, at least 2.
 /// \param regularity The continuity at each inserted knot, in `[-1, degree - 1]`.
 /// \return The values to insert, non-decreasing, in `T`.
-/// \throws std::invalid_argument If `n_subdivisions < 1` or `regularity` is out of
+/// \throws std::invalid_argument If `n_subdivisions < 2` or `regularity` is out of
 ///         range.
 ///
 /// \note The arithmetic is `double` whatever `T` is, and the result is cast once at
@@ -279,8 +283,8 @@ template <Real T>
                                                        std::int64_t degree, double tol,
                                                        std::int64_t n_subdivisions,
                                                        std::int64_t regularity) {
-    if (n_subdivisions < 1) {
-        throw std::invalid_argument("n_subdivisions must be >= 1, got "
+    if (n_subdivisions < 2) {
+        throw std::invalid_argument("n_subdivisions must be >= 2, got "
                                     + std::to_string(n_subdivisions));
     }
     if (regularity < -1 || regularity > degree - 1) {
@@ -290,10 +294,6 @@ template <Real T>
     }
 
     std::vector<T> out;
-    if (n_subdivisions == 1) {
-        return out;
-    }
-
     const KnotClasses<T> classes = unique_knots_and_multiplicity<T>(knots, degree, tol);
     const std::size_t begin = classes.domain_begin;
     const std::size_t end = classes.domain_end;
@@ -406,13 +406,14 @@ template <Real T>
 /// result.knots())` the coefficients.
 ///
 /// \param space The space to subdivide.
-/// \param n_subdivisions Equal sub-spans per existing span, at least 1. A value of 1
-///        returns a copy, which is what a refinement factor of 1 means for a
-///        direction that is not being refined.
+/// \param n_subdivisions Equal sub-spans per existing span, at least 2 -- the oracle's
+///        own bound. A direction whose refinement factor is 1 is skipped by its caller
+///        rather than subdivided by one; `THBSplineSpace`'s `build_level_spaces` does
+///        exactly that.
 /// \param regularity The continuity at each inserted knot, in `[-1, degree - 1]`.
 ///        Empty for `degree - 1`, the maximal smoothness the degree admits.
 /// \return The refined space.
-/// \throws std::invalid_argument If `n_subdivisions < 1`, `regularity` is out of
+/// \throws std::invalid_argument If `n_subdivisions < 2`, `regularity` is out of
 ///         range, or the merged vector exceeds the maximum multiplicity.
 ///
 /// \note The result is non-periodic whatever `space` is, which is the oracle's
@@ -424,8 +425,8 @@ template <Real T>
 [[nodiscard]] BsplineSpace1D<T> subdivide(const BsplineSpace1D<T>& space,
                                           std::int64_t n_subdivisions,
                                           std::optional<std::int64_t> regularity) {
-    if (n_subdivisions < 1) {
-        throw std::invalid_argument("n_subdivisions must be >= 1, got "
+    if (n_subdivisions < 2) {
+        throw std::invalid_argument("n_subdivisions must be >= 2, got "
                                     + std::to_string(n_subdivisions));
     }
     const std::int64_t degree = space.degree();
@@ -435,10 +436,6 @@ template <Real T>
                                     + std::to_string(degree - 1) + "], got "
                                     + std::to_string(effective));
     }
-    if (n_subdivisions == 1) {
-        return space;
-    }
-
     const std::vector<T> to_insert = uniform_subdivision_knots<T>(
         space.knots(), degree, space.tolerance(), n_subdivisions, effective);
     if (to_insert.empty()) {
