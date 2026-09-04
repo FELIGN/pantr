@@ -753,6 +753,12 @@ check is duplicated in the C++ type precisely so that it is not.
 literals, and it covers three refusals no Python caller can reach at all: a null
 space handle, a net whose parametric extents are not the space's basis counts, and
 the coefficient-count message of the flat constructor.
+
+**And the ORDER of the wrapper's two refusals is not decided here either**, for the
+same reason: every entry violates one rule and so has one possible message. Measured
+-- moving the dtype check ahead of the coefficient-count check left this whole file
+green. ``tests/test_bspline.py::TestBsplineInit::test_initialization_refusal_order``
+is what pins it, with control points that are bad in both ways at once.
 """
 
 
