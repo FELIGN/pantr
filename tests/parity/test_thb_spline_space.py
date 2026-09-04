@@ -21,10 +21,9 @@ bulk.
 active function index sets, ``level_offsets``, ``dof_level``, the per-cell ``active_basis``
 lists, the contribution table's levels and multi-indices, ``max_active_per_cell``, the set
 of truncated dofs, and each truncated function's representation level, box origin and box
-shape. Every one is an index, a count or a set membership: ``design/backend_parity.md``'s
-determinism rule licenses bit-identity only where finite precision does not bite, and that
-is exactly this list. A bounded comparison could not even see two answers of different
-length.
+shape. Every one is an index, a count or a set membership, so no rounding takes place and
+bit-identity is the only criterion that says anything. A bounded comparison could not even
+see two answers of different length.
 
 **Within a derived bound** -- the truncation coefficients, and *only* those. They are
 floating point, and bit-identity is not available for them: the oracle's ``_refine_box``
@@ -36,8 +35,8 @@ the bits would forbid a transformation nobody should be forbidding.
 
 Observed rather than required: most coefficients do come out bit-identical, and
 :class:`_SweepReport` counts how many so a reader can see the figure for the run in front
-of them rather than a stale one written here. That is welcome and is not the criterion,
-for the reason the determinism rule gives.
+of them rather than a stale one written here. That is welcome and is not the criterion:
+requiring it would forbid the summation-order difference the paragraph above allows.
 
 The bound, and why it has no cancellation term
 -----------------------------------------------
@@ -143,10 +142,9 @@ _U: Final = unit_roundoff(np.float64)
 
 _VERDICT_WHY: Final = (
     "counts, level indices, flat function indices, global dofs, multi-indices and box "
-    "origins are verdicts rather than displaced values; design/backend_parity.md's "
-    "determinism rule admits bit-identity only where finite precision does not bite, "
-    "and integers and indices are exactly that case. A bounded comparison could not "
-    "see two answers of different length at all"
+    "origins are verdicts rather than displaced values; no rounding takes place on an "
+    "integer, so bit-identity is the only criterion available here. A bounded comparison "
+    "could not see two answers of different length at all"
 )
 
 _COEFFICIENT_WHY: Final = (
