@@ -50,8 +50,9 @@
 /// entirely inside one mask and not entirely inside another", answered by a summed-area
 /// table over `std::int64_t`; the flat indices, the offsets, the level assignment and
 /// the contribution table are index arithmetic. Two backends must agree on them
-/// **exactly**, and `design/backend_parity.md`'s determinism rule licenses that bar
-/// here for the reason it names -- finite precision does not bite on a count.
+/// **exactly**: no rounding takes place on a count, so bit-identity is the only bar
+/// that says anything, and a bounded one could not see two answers of different
+/// length at all.
 ///
 /// **The truncation coefficients have digits, and they get a bound.** They are built
 /// from the two-scale matrices, which `pantr/bspline/knot_insertion.hpp` computes in
