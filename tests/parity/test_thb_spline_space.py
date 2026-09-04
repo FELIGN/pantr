@@ -101,6 +101,7 @@ the HB space, where the sum is nowhere near one.
 
 from __future__ import annotations
 
+import contextlib
 import math
 from typing import TYPE_CHECKING, Any, Final, NamedTuple
 
@@ -120,6 +121,8 @@ from tests._parity_harness import (
 )
 
 if TYPE_CHECKING:
+    from collections.abc import Iterator
+
     import numpy.typing as npt
 
 _SHIPPED_CASES: Final = 200
@@ -236,6 +239,32 @@ def _open_knots(degree: int, num_elements: int, lo: float, hi: float) -> npt.NDA
     return np.concatenate([np.full(degree, lo), inner, np.full(degree, hi)])
 
 
+@contextlib.contextmanager
+def _the_oracle() -> Iterator[None]:
+    """Run a block with the Python backend in effect.
+
+    **Every oracle call that constructs a space needs this, not only the constructor.**
+    ``THBSplineSpace`` is still pure Python and builds its per-level spaces by calling
+    ``BsplineSpace1D.subdivide``, which dispatches on the *ambient* backend -- so
+    ``refine``, ``refine_region`` and ``coarsen``, each of which rebuilds, would under
+    ``PANTR_BACKEND=cpp`` produce level spaces holding C++ handles over a root space
+    holding Python ones, and ``BsplineSpace`` refuses that mixture by design.
+
+    That is not a defect in the oracle: it is what
+    ``design/cross_backend_types.md`` forbids and what
+    ``_bspline_space_nd._new_impl`` exists to catch. It is a property of this file's
+    oracle *helper*, and it only shows under the backend CI's own parity job runs the
+    whole suite with. Both sweeps failed under it before this was added, and passed
+    under the default backend, which is exactly the shape ``CLAUDE.md`` warns about --
+    a local green that the C++ leg does not share.
+
+    Yields:
+        None: With the Python backend selected for the calling thread.
+    """
+    with use_backend(Backend.PYTHON):
+        yield
+
+
 def _python_space(case: _Case) -> THBSplineSpace:
     """Build the oracle's space for a case.
 
@@ -245,7 +274,7 @@ def _python_space(case: _Case) -> THBSplineSpace:
     Returns:
         THBSplineSpace: The space, built under the Python backend.
     """
-    with use_backend(Backend.PYTHON):
+    with _the_oracle():
         directions = [
             BsplineSpace1D(
                 _open_knots(case.degrees[k], case.num_elements[k], *case.bounds[k]).astype(
@@ -584,16 +613,19 @@ def _compare_the_operations(py: THBSplineSpace, cpp: Any, context: str) -> None:
     )
     ids = np.array(marked, dtype=np.int64)
 
-    for name, expected, actual in (
-        ("refine(graded)", py.refine(ids, admissible_class=2), cpp.refine(ids, 2)),
-        ("refine(ungraded)", py.refine(ids, admissible_class=None), cpp.refine(ids, None)),
-        ("coarsen(graded)", py.coarsen(deepest, admissible_class=2), cpp.coarsen(deepest, 2)),
-        (
-            "coarsen(ungraded)",
-            py.coarsen(deepest, admissible_class=None),
-            cpp.coarsen(deepest, None),
-        ),
-    ):
+    with _the_oracle():
+        rebuilt = (
+            ("refine(graded)", py.refine(ids, admissible_class=2), cpp.refine(ids, 2)),
+            ("refine(ungraded)", py.refine(ids, admissible_class=None), cpp.refine(ids, None)),
+            ("coarsen(graded)", py.coarsen(deepest, admissible_class=2), cpp.coarsen(deepest, 2)),
+            (
+                "coarsen(ungraded)",
+                py.coarsen(deepest, admissible_class=None),
+                cpp.coarsen(deepest, None),
+            ),
+        )
+
+    for name, expected, actual in rebuilt:
         where = f"{context}: {name}"
         assert expected.num_levels == actual.num_levels, f"{where}: num_levels disagrees"
         assert expected.grid.num_cells == actual.grid.num_cells, (
@@ -883,7 +915,8 @@ def test_refinement_and_coarsening_agree(cpp_backend: None) -> None:
     marked = np.array([0, 1, 2], dtype=np.int64)
 
     for admissible in (2, None):
-        expected = oracle.refine(marked, admissible_class=admissible)
+        with _the_oracle():
+            expected = oracle.refine(marked, admissible_class=admissible)
         actual = cpp.refine(marked, admissible)
         assert expected.num_levels == actual.num_levels
         assert expected.num_total_basis == actual.num_total_basis
@@ -896,7 +929,8 @@ def test_refinement_and_coarsening_agree(cpp_backend: None) -> None:
 
     lo = np.array([0, 0], dtype=np.int64)
     hi = np.array([2, 2], dtype=np.int64)
-    expected = oracle.refine_region(0, [0, 0], [2, 2], admissible_class=2)
+    with _the_oracle():
+        expected = oracle.refine_region(0, [0, 0], [2, 2], admissible_class=2)
     actual = cpp.refine_region(0, lo, hi, 2)
     assert expected.num_total_basis == actual.num_total_basis
 
@@ -904,7 +938,8 @@ def test_refinement_and_coarsening_agree(cpp_backend: None) -> None:
         [c for c in range(oracle.grid.num_cells) if oracle.grid.cell_level(c) == 2],
         dtype=np.int64,
     )
-    expected = oracle.coarsen(finest, admissible_class=None)
+    with _the_oracle():
+        expected = oracle.coarsen(finest, admissible_class=None)
     actual = cpp.coarsen(finest, None)
     assert expected.num_levels == actual.num_levels
     assert expected.num_total_basis == actual.num_total_basis
@@ -993,7 +1028,7 @@ def test_an_out_of_range_cell_id_is_refused_the_oracles_way(cpp_backend: None) -
     bad = np.array([past_the_end + 5, -1, past_the_end], dtype=np.int64)
 
     for name in ("refine", "coarsen"):
-        with pytest.raises(IndexError) as expected:
+        with _the_oracle(), pytest.raises(IndexError) as expected:
             getattr(py, name)(bad, admissible_class=2)
         with pytest.raises(IndexError) as actual:
             getattr(cpp, name)(bad, 2)
