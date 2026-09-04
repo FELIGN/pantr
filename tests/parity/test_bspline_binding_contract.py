@@ -328,16 +328,33 @@ def test_the_tensor_product_shares_its_directions_rather_than_copying(
 def test_taking_a_direction_does_not_pin_its_owner(cpp_backend: None) -> None:
     """Reading ``spaces`` installs no keep-alive on the tensor-product space.
 
-    M2, and the one detector that distinguishes class H from a reversion to
-    ``rv_policy::reference_internal``: under sharing the *value* travels in the
-    return, so the owner's reference count does not move; under a keep-alive it moves
-    by one per returned element. Both behave identically for a Python caller, and
-    only one of them protects a consumer with no interpreter.
+    M2's assertion, and **not** the detector M2 says it is. Its docstring used to
+    claim this was "the one detector that distinguishes class H from a reversion to
+    ``rv_policy::reference_internal``". Measured on this binding, it is not:
+    rebinding a direction accessor to return a reference with
+    ``rv_policy::reference_internal`` leaves this delta at zero, the handed-out
+    object identical to the one passed in, and its value readable after the owner
+    dies.
 
-    The returned tuple is dropped before the second reading, deliberately:
-    ``design/bspline_ownership_lifetime.md`` F4 records two correct measurements of
-    this delta disagreeing because one run held the whole container and the other held
-    a single element, so a test must fix that rather than let a temporary decide it.
+    The reason is specific and is what to carry forward: a direction always arrives
+    *from Python*, so it already has a live instance that ``nb_type_put``'s
+    ``inst_c2p`` lookup finds, and no new instance is created for a keep-alive to be
+    installed on. ``design/bspline_ownership_lifetime.md`` F3 and F4 measured the
+    delta on a stand-in whose nested object was constructed in C++, where it does
+    move -- so the note's measurement is right and its application to this accessor
+    was wrong. The detector stays live for an accessor whose nested object has no
+    instance of its own, which ``THBSplineSpace.level_space`` is and this is not.
+
+    **What decides class H here is the C++ test**:
+    ``cpp/tests/test_bspline_space_nd.cpp`` compares addresses and reads a direction
+    after its space is destroyed, and that is the gate a reversion fails.
+
+    Kept because a non-zero delta would still be a finding -- it would mean a
+    keep-alive appeared where the design says none should -- and read **while the
+    returned objects are alive**, since a keep-alive lives on the returned object and
+    is released with it. Both holdings are checked, because F4 records two correct
+    measurements of such a delta disagreeing over exactly that: the whole container
+    against a single element.
     """
     space = _cpp_tensor_product()
     impl = space._impl
@@ -345,14 +362,24 @@ def test_taking_a_direction_does_not_pin_its_owner(cpp_backend: None) -> None:
 
     directions = impl.spaces
     assert len(directions) == 2
+    assert sys.getrefcount(impl) == before, (
+        "holding the whole tuple of directions changed the owner's reference count, "
+        "which means a keep-alive was installed per element: the accessor is aliasing "
+        "into the owner rather than sharing the value, and it will dangle for a caller "
+        "with no interpreter"
+    )
+
+    one = directions[0]
     del directions
     gc.collect()
-
     assert sys.getrefcount(impl) == before, (
-        "reading the directions changed the owner's reference count, which means a "
-        "keep-alive was installed: the accessor is aliasing into the owner rather "
-        "than sharing the value, and it will dangle for a caller with no interpreter"
+        "holding one escaped direction changed the owner's reference count, so a "
+        "keep-alive was installed on it"
     )
+
+    del one
+    gc.collect()
+    assert sys.getrefcount(impl) == before
 
 
 def test_a_direction_outlives_the_tensor_product_space(cpp_backend: None) -> None:
@@ -363,6 +390,13 @@ def test_a_direction_outlives_the_tensor_product_space(cpp_backend: None) -> Non
     handle being non-null, because F4 measured a scalar read after free returning the
     correct value -- so several tensor-product spaces are built and dropped in between
     to churn the freed storage.
+
+    Necessary and not sufficient, and the same measurement is why: for a nested
+    object that arrived from Python the value survives the owner's death under
+    ``reference_internal`` too, because the object that comes back is the caller's
+    own instance and that instance owns the C++ value. So this fails on a design
+    that hands out nothing at all, and passes on the reversion. The C++ test is
+    the gate.
     """
     space = _cpp_tensor_product()
     direction = space._impl.spaces[0]
@@ -691,16 +725,19 @@ def test_the_field_shares_its_space_rather_than_copying(cpp_backend: None) -> No
 def test_taking_the_fields_space_does_not_pin_the_field(cpp_backend: None) -> None:
     """Reading ``space`` installs no keep-alive on the field.
 
-    M2 for the field, and the one detector that distinguishes class H from a
-    reversion to ``rv_policy::reference_internal``: under sharing the *value* travels
-    in the return, so the owner's reference count does not move; under a keep-alive
-    it moves by one. Both behave identically for a Python caller, and only one of
-    them protects a consumer with no interpreter.
+    M2 for the field, and it is worth saying plainly that this **does not** decide
+    class H, whatever M2 says: measured, binding this accessor as ``space_ref`` with
+    ``rv_policy::reference_internal`` leaves the delta at zero, the handed-out object
+    identical to the one passed in, and its value readable after the field dies. A
+    field's space always arrives from Python, so it already has an instance that
+    ``nb_type_put``'s ``inst_c2p`` lookup finds and no keep-alive is created for the
+    delta to see. See the sibling assertion on ``BsplineSpace.spaces`` above for the
+    full argument, and ``cpp/tests/test_bspline_type.cpp`` for the gate that does
+    decide it.
 
-    The returned handle is dropped before the second reading, for the reason
-    ``design/bspline_ownership_lifetime.md`` F4 records: two correct measurements of
-    such a delta disagreed because one run held the escapee and the other did not,
-    so a test must fix that rather than let a temporary decide it.
+    Kept because a non-zero delta would still be a finding -- a keep-alive where the
+    design says none should be -- and read **while the escaped space is alive**, since
+    a keep-alive lives on the returned object and is released with it.
     """
     field = _cpp_field()
     impl = field._impl
@@ -708,14 +745,15 @@ def test_taking_the_fields_space_does_not_pin_the_field(cpp_backend: None) -> No
 
     taken = impl.space
     assert taken.dim == 2
-    del taken
-    gc.collect()
-
     assert sys.getrefcount(impl) == before, (
-        "reading the space changed the field's reference count, which means a "
+        "holding the escaped space changed the field's reference count, which means a "
         "keep-alive was installed: the accessor is aliasing into the owner rather "
         "than sharing the value, and it will dangle for a caller with no interpreter"
     )
+
+    del taken
+    gc.collect()
+    assert sys.getrefcount(impl) == before
 
 
 def test_the_space_outlives_the_field(cpp_backend: None) -> None:
@@ -726,6 +764,13 @@ def test_the_space_outlives_the_field(cpp_backend: None) -> None:
     than on the handle being non-null, because F4 measured a scalar read after free
     returning the correct value -- so fields are built and dropped in between to
     churn the freed storage.
+
+    Necessary and not sufficient, and the same measurement is why: for a nested
+    object that arrived from Python the value survives the owner's death under
+    ``reference_internal`` too, because the object that comes back is the caller's
+    own instance and that instance owns the C++ value. So this fails on a design
+    that hands out nothing at all, and passes on the reversion. The C++ test is
+    the gate.
     """
     field = _cpp_field()
     space = field._impl.space
@@ -753,18 +798,47 @@ def test_the_fields_control_points_are_a_read_only_view(cpp_backend: None) -> No
     read-only view is the half of its removal this front owns.
 
     ``shares_memory`` is what tells a view from a copy; the values agree either way.
+
+    **The ``self`` owner argument is not observable from Python, and that was measured
+    rather than assumed.** Dropping it leaves the array aliasing the same storage,
+    still read-only, still valid after the field is dropped, and still taking a
+    reference on the field -- so M6's symptom (a silent copy, handed out writeable)
+    does not appear. The reason is F1 applied to an array: ``def_prop_ro`` passes
+    ``rv_policy::reference_internal`` positionally, so the property already ties its
+    return to ``self``. M6 is live for an array bound on a plain ``.def``, where the
+    default policy is ``automatic``.
+
+    The reference-count assertion below is therefore a check that *a* keep-alive
+    exists, not that the owner argument supplied it: exactly ``1`` while the array is
+    alive and ``0`` once it dies. A zero while it is alive would mean the property had
+    been turned into a method and lost its default policy, which is the one way this
+    accessor can start handing out an unowned view.
     """
     field = _cpp_field()
-    handed_out = field._impl.control_points
+    impl = field._impl
+    before = sys.getrefcount(impl)
+    handed_out = impl.control_points
 
     assert not handed_out.flags.writeable, (
         "the scalar is not `const T`, so a caller can rewrite a validated geometry"
     )
     with pytest.raises(ValueError, match="read-only"):
         handed_out[0, 0, 0] = 99.0
-    assert np.shares_memory(handed_out, field._impl.control_points), (
-        "two reads do not share memory, so the accessor copies: the owner argument is "
-        "missing and the whole net is duplicated on every access"
+    assert np.shares_memory(handed_out, impl.control_points), (
+        "two reads do not share memory, so the accessor copies and the whole net is "
+        "duplicated on every access"
+    )
+    assert sys.getrefcount(impl) == before + 1, (
+        "the array does not hold a reference to the field, so the `self` owner "
+        "argument is missing: the view aliases storage it does not keep alive, and it "
+        "reads freed memory the moment the field is dropped"
+    )
+
+    del handed_out
+    gc.collect()
+    assert sys.getrefcount(impl) == before, (
+        "the reference the array held was not released, which is a leak rather than a "
+        "dangle -- and it would make the assertion above pass for the wrong reason"
     )
 
 
