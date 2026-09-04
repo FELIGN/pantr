@@ -452,6 +452,121 @@ def test_the_tensor_product_refuses_a_direction_of_the_wrong_width(
         cls([direction])
 
 
+def _cpp_thb_space() -> Any:
+    """Build a two-level, two-dimensional THB space handle under the C++ backend.
+
+    Cut 1 of FELIGN/pantr#397 ships no Python wrapper, so this builds the handle
+    through the bindings the way ``tests/parity/test_thb_spline_space.py`` does. A
+    real refinement rather than a flat hierarchy, so the level-dependent accessors
+    have more than one level to hand out.
+
+    Returns:
+        Any: A ``THBSplineSpace64`` handle over a corner-refined unit square.
+    """
+    cpp = _bindings()
+    knots = np.asarray([0.0, 0.0, 0.0, 0.25, 0.5, 0.75, 1.0, 1.0, 1.0], dtype=np.float64)
+    directions = [cpp.BsplineSpace1D64(knots, 2, False, True) for _ in range(2)]
+    breakpoints = [np.linspace(0.0, 1.0, 5) for _ in range(2)]
+    grid = cpp.HierarchicalGrid(
+        cpp.TensorProductGrid(breakpoints), np.asarray([2, 2], dtype=np.int64)
+    )
+    grid = grid.refine(0, np.asarray([0, 0], dtype=np.int64), np.asarray([2, 2], dtype=np.int64))
+    return cpp.THBSplineSpace64(cpp.BsplineSpace64(directions), grid, True, [None, None])
+
+
+def _thb_array_accessors(space: Any) -> dict[str, np.ndarray[Any, Any]]:
+    """Every array the hierarchical space hands out, by name.
+
+    The per-level and per-cell accessors are sampled at a level and a cell that are
+    both non-trivial: level 1 exists only because the space was refined, and cell 0 of
+    a corner refinement carries functions from both levels.
+
+    Args:
+        space (Any): The ``THBSplineSpace64`` handle to read.
+
+    Returns:
+        dict[str, np.ndarray]: One entry per array accessor, so a test can assert a
+        property of all of them and name the one that failed.
+    """
+    # The vacuity guard, in the helper so all three tests inherit it: `shares_memory` on
+    # two empty arrays is False on some builds and True on others, and a read-only
+    # assertion over an empty array asserts nothing at all. A case flattened by a future
+    # edit would make every test below pass for the wrong reason.
+    assert space.num_levels > 1, "the case stopped being hierarchical"
+    assert space.num_truncated > 0, "the case stopped truncating, so no accessor is stressed"
+
+    dof, level, multi = space.contributions(0)
+    accessors = {
+        "domain": space.domain,
+        "level_offsets": space.level_offsets,
+        "active_function_indices(0)": space.active_function_indices(0),
+        "active_function_indices(1)": space.active_function_indices(1),
+        "active_basis(0)": space.active_basis(0),
+        "contributions(0).dof": dof,
+        "contributions(0).level": level,
+        "contributions(0).multi": multi,
+    }
+    empty = [name for name, array in accessors.items() if array.size == 0]
+    assert not empty, f"these accessors came back empty, so nothing below tests them: {empty}"
+    return accessors
+
+
+def test_every_array_the_hierarchical_space_hands_out_is_read_only(cpp_backend: None) -> None:
+    """The rule the univariate and tensor-product types already carry, for this one too.
+
+    The reviewer of FELIGN/pantr#438 found the hierarchical type getting only the
+    borrowed-accessor check while the three properties this file exists for went
+    unasserted on it. The implementation was correct; nothing said so, and nothing
+    would have said otherwise -- the parity suite compares values, and a copy or a
+    writeable view agrees on every value it hands back.
+    """
+    space = _cpp_thb_space()
+    for name, array in _thb_array_accessors(space).items():
+        assert not array.flags.writeable, f"{name} came back writeable"
+        with pytest.raises(ValueError):
+            array.reshape(-1)[0] = 0
+
+
+def test_every_hierarchical_array_is_a_view_rather_than_a_copy(cpp_backend: None) -> None:
+    """Two reads of one accessor view one buffer, for the hierarchical type as well.
+
+    ``shares_memory`` is what distinguishes a view from a copy; the values agree
+    either way, which is why no assertion on them can stand in for this.
+    """
+    space = _cpp_thb_space()
+    first = _thb_array_accessors(space)
+    second = _thb_array_accessors(space)
+    for name in first:
+        assert np.shares_memory(first[name], second[name]), f"{name} was copied out"
+
+
+def test_a_hierarchical_array_outlives_the_space_it_came_from(cpp_backend: None) -> None:
+    """Each array keeps its owner alive, so dropping the space does not free the storage.
+
+    The refcount half is the one that bites, for the reason
+    :func:`test_an_array_outlives_the_space_it_came_from` gives: a use-after-free here
+    would usually read back the correct value. Every accessor is checked rather than
+    one, because the keep-alive is installed per binding and an omission on one of
+    eight is exactly the shape this would miss.
+    """
+    space = _cpp_thb_space()
+    for name in _thb_array_accessors(space):
+        before = sys.getrefcount(space)
+        taken = _thb_array_accessors(space)[name]
+        assert sys.getrefcount(space) > before, (
+            f"{name} did not reference its owner, so nothing keeps the storage alive "
+            f"once the space is dropped"
+        )
+        del taken
+
+    expected = {name: np.array(a) for name, a in _thb_array_accessors(space).items()}
+    kept = _thb_array_accessors(space)
+    del space
+    gc.collect()
+    for name, array in kept.items():
+        np.testing.assert_array_equal(array, expected[name])
+
+
 def test_a_space_has_no_instance_dictionary() -> None:
     """The wrapper is immutable, and ``__slots__`` is what makes that true.
 
