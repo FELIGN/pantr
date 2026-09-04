@@ -52,9 +52,19 @@
 ///    `field.space is the_space_handed_in` holds. That is what lets the Python
 ///    wrapper's `Bspline(space, cp).space is space` contract rest on something
 ///    rather than on the wrapper alone.
-///  - `sys.getrefcount` on the field handle is **unchanged** by the access, because
-///    no keep-alive is installed. A non-zero delta means somebody reverted to
-///    `reference_internal`, and the contract test asserts the zero.
+///  - `sys.getrefcount` on the field handle is **unchanged** by the access, and it stays
+///    unchanged under a reversion to `reference_internal` as well, so the delta is
+///    **not** the detector `design/bspline_ownership_lifetime.md` M2 offers for this
+///    accessor. Measured on this binding: rebinding it to return a reference with
+///    `rv_policy::reference_internal` leaves the delta at zero, the handed-out object
+///    identical to the one passed in, and its value readable after the owner dies.
+///    The reason is specific and worth carrying: a field's space always arrives *from
+///    Python*, so it already has a live instance that `nb_type_put`'s `inst_c2p`
+///    lookup finds, and no new instance is created for a keep-alive to be installed
+///    on. M2's detector is live only where the nested object is built in C++ and has
+///    no instance of its own -- `THBSplineSpace`'s `level_space` is such an accessor;
+///    this one is not. **What decides this accessor is the C++ test**, which compares
+///    addresses and outlives the owner: `cpp/tests/test_bspline_type.cpp`.
 ///  - The space **outlives its field**. Passing a handle in takes a reference on
 ///    its Python object (`nanobind/stl/shared_ptr.h`'s `py_deleter`), and a space
 ///    taken back out keeps its own value alive after the field is dropped.
@@ -65,11 +75,20 @@
 /// property access would make the natural spelling of every operation quadratic in
 /// nothing. The array returned views the field's own storage with the field as its
 /// owner, and is read-only because the scalar type is `const T` -- nanobind passes
-/// `std::is_const_v<Scalar>` straight into the writeable flag. The owner keeps the
-/// storage alive when the array outlives the handle; the `const` stops a caller
-/// mutating a validated geometry from outside, which
+/// `std::is_const_v<Scalar>` straight into the writeable flag. The `const` is what
+/// stops a caller mutating a validated geometry from outside, which
 /// `design/bspline_ownership_lifetime.md` records as a live defect of the oracle
 /// rather than a hypothetical.
+///
+/// **The owner argument is belt-and-braces here rather than the repair**, which is F1
+/// of that note applied to an array: `def_prop_ro` passes
+/// `rv_policy::reference_internal` positionally ahead of the caller's arguments, so a
+/// property getter already ties its return to `self`. Measured on this binding --
+/// dropping the `self` argument leaves the array aliasing the same storage, still
+/// read-only, and still valid after the field is dropped, so the two spellings are
+/// indistinguishable from Python. It is written anyway, because it is the only
+/// spelling that survives someone changing `def_prop_ro` to a plain `.def`, where the
+/// default policy is `automatic` and the omission is a dangling view.
 ///
 /// No sentinel address is needed for an empty net, unlike `bspline_types.cpp`'s
 /// dimensionless domain block: a field has at least one basis function per

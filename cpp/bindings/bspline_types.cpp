@@ -91,9 +91,19 @@
 ///    `nd.spaces[0] is one_d` holds for the handle a caller passed in. That is what
 ///    makes `tests/test_bspline_space.py:89` reachable, and it is why the C++
 ///    constructor shares rather than copies.
-///  - `sys.getrefcount` on the nD handle is **unchanged** by the access, because no
-///    keep-alive is installed. A non-zero delta means somebody reverted to
-///    `reference_internal`, and the contract test asserts the zero.
+///  - `sys.getrefcount` on the nD handle is **unchanged** by the access, and it stays
+///    unchanged under a reversion to `reference_internal` as well, so the delta is
+///    **not** the detector `design/bspline_ownership_lifetime.md` M2 offers for this
+///    accessor. Measured on this binding: rebinding it to return a reference with
+///    `rv_policy::reference_internal` leaves the delta at zero, the handed-out object
+///    identical to the one passed in, and its value readable after the owner dies.
+///    The reason is specific and worth carrying: a direction always arrives *from
+///    Python*, so it already has a live instance that `nb_type_put`'s `inst_c2p`
+///    lookup finds, and no new instance is created for a keep-alive to be installed
+///    on. M2's detector is live only where the nested object is built in C++ and has
+///    no instance of its own -- `THBSplineSpace`'s `level_space` is such an accessor;
+///    this one is not. **What decides this accessor is the C++ test**, which compares
+///    addresses and outlives the owner: `cpp/tests/test_bspline_space_nd.cpp`.
 ///  - The direction **outlives its owner**. Passing a handle in takes a reference on
 ///    its Python object (`nanobind/stl/shared_ptr.h`'s `py_deleter`), so the nD space
 ///    keeps its directions alive, and a direction taken back out keeps its own value
