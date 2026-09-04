@@ -228,6 +228,17 @@ _CLAMPED_LINEAR: Final = (10.0, 10.0, 11.0, 12.0, 12.0)
 _SINGLE_SPAN: Final = (0.0, 0.0, 0.0, 1.0, 1.0, 1.0)
 """One interval, degree 2, three basis functions: the Bézier-like case."""
 
+_ASYMMETRIC: Final = (0.0, 0.0, 0.0, 1.0, 3.0, 3.0, 3.0)
+"""Two intervals, degree 2, four basis functions, on ``[0, 3]``.
+
+The one knot vector here whose reflection ``a + b - knots[::-1]`` is a *different*
+vector: its single interior knot sits at 1 and reflects to 2. Every other vector in
+this file is symmetric about its own domain midpoint, which makes a reversal
+unobservable in the knots -- ``_CLAMPED_QUADRATIC``'s interior pair ``{1, 2}`` on
+``[0, 3]`` reflects onto itself. ``test_a_space_changing_mutator_reseats_the_space``
+asserts that asymmetry of this constant before relying on it.
+"""
+
 _CLAMPED_LINEAR_4: Final = (10.0, 10.0, 11.0, 12.0, 13.0, 13.0)
 """Three intervals, degree 1, four basis functions, on ``[10, 13]``."""
 
@@ -1023,29 +1034,115 @@ def test_a_space_changing_mutator_reseats_the_space_and_leaves_the_old_one_intac
 
     So both halves are asserted. Identity alone would pass on that shape, and the
     value alone would pass on a shape that never reseated at all.
+
+    **Two things had to be got right for the second half to say anything**, and both
+    were wrong first time. The comparison has to be between two arrays of the same
+    shape: ``np.array_equal`` returns ``False`` whenever the shapes differ, before it
+    compares a single value, so a knot vector held up against a ``(dim, 2)`` domain
+    block reports "different" for a field that was never touched. And the knot vector
+    has to be asymmetric about its own domain midpoint, or the reflection is the
+    vector it started from -- which ``_CLAMPED_QUADRATIC`` is, so this case uses
+    ``_ASYMMETRIC`` and asserts that of it first.
+
+    The reflected vector is stated as a literal rather than recomputed, so the
+    expected value does not come from the code under test: reflecting
+    ``(0, 0, 0, 1, 3, 3, 3)`` about ``[0, 3]`` gives ``(0, 0, 0, 2, 3, 3, 3)``.
     """
-    case = CASES[3]
+    case = _Case(
+        (_ASYMMETRIC, _CLAMPED_LINEAR), (2, 1), (False, False), (4, 3), 2, "reseat"
+    )
+    reflected = (0.0, 0.0, 0.0, 2.0, 3.0, 3.0, 3.0)
+    assert reflected != _ASYMMETRIC, (
+        "the case's knot vector reflects onto itself, so a reversal is invisible in "
+        "the knots and the value half of this test would pass on a no-op"
+    )
+
     net = _control_net(case, np.float64)
     with use_backend(backend):
         field = Bspline(_make_space_at(case, np.float64), net.copy())
         before = field.space
-        before_domain = np.array(before.domain)
+        before_knots = np.array(before.spaces[0].knots)
 
         field.reverse(0, in_place=True)
         assert field.space is not before, "the space was not reseated"
         np.testing.assert_array_equal(
-            np.array(before.domain),
-            before_domain,
+            np.array(before.spaces[0].knots),
+            before_knots,
             err_msg="the escaped space started reporting the new value",
         )
-        # The reflected direction really is different, so the reseat was not a
-        # no-op that this test would otherwise report as a pass.
-        assert not np.array_equal(np.array(field.space.spaces[0].knots), before_domain)
+        # And the new space really is the reflected one, against a hand-derived
+        # literal -- so the reseat was not a no-op this test would report as a pass.
+        np.testing.assert_array_equal(
+            np.array(field.space.spaces[0].knots), np.asarray(reflected)
+        )
 
         after_reverse = field.space
         field.permute_directions([1, 0], in_place=True)
         assert field.space is not after_reverse
         assert field.space.degrees == tuple(reversed(after_reverse.degrees))
+
+
+@pytest.mark.parametrize("dtype", DTYPES)
+def test_reversing_a_periodic_direction_in_place_agrees_with_the_derived_form(
+    dtype: npt.DTypeLike,
+) -> None:
+    """The periodic branch of ``reverse`` gives the same value in place as not.
+
+    The branch this covers is ``_reversed``'s cyclic shift, and it is reached only
+    through ``_mutate``: a periodic direction stores fewer coefficients than the
+    full sequence expands to, so reversing it needs a plain flip **plus** a shift by
+    the ghost count, and the in-place path writes that shift back through
+    ``new_cp[:] = np.roll(...)`` while the derived path rebinds a fresh array. This
+    split is what the port introduced -- the two used to be one expression -- and
+    nothing else in the suite combines a periodic direction with ``in_place=True``.
+
+    Three assertions, and the third is what stops the first two being vacuous:
+
+    - both backends agree on the value the in-place mutation leaves behind;
+    - it equals what the derived form returns, whose pointwise correctness
+      ``tests/test_review_regressions.py::test_periodic_reverse_is_pointwise_mirror``
+      already establishes against an independent mirror -- so this inherits that
+      rather than resting on parity alone;
+    - it is **not** the plain flip. The shift here is
+      ``(n_full - n_stored) % n_stored = (6 - 4) % 4 = 2``, so a flip alone would
+      give ``[4, 3, 2, 1]`` and the correct answer is ``[2, 1, 4, 3]``. Without this
+      the whole test would pass on an implementation that dropped the shift, since
+      both paths would drop it together.
+
+    The expected value is stated as a literal, derived by hand from the ghost count
+    rather than taken from either path.
+    """
+    knots = np.asarray(_UNIFORM, dtype=dtype)
+    control_points = np.arange(1.0, 5.0, dtype=dtype).reshape(4, 1)
+    expected = np.asarray([[2.0], [1.0], [4.0], [3.0]], dtype=dtype)
+    plain_flip = np.asarray([[4.0], [3.0], [2.0], [1.0]], dtype=dtype)
+
+    mutated = {}
+    for backend in (Backend.PYTHON, Backend.CPP):
+        with use_backend(backend):
+            space = BsplineSpace([BsplineSpace1D(knots, 2, periodic=True)])
+            assert space.num_basis == (4,), "the case no longer has ghost coefficients"
+            field = Bspline(space, control_points.copy())
+            derived = field.reverse(0)
+            field.reverse(0, in_place=True)
+            mutated[backend] = field
+            np.testing.assert_array_equal(
+                np.asarray(field.control_points),
+                np.asarray(derived.control_points),
+                err_msg=f"{backend.name}: in place and derived disagree",
+            )
+            np.testing.assert_array_equal(np.asarray(field.control_points), expected)
+            assert not np.array_equal(np.asarray(field.control_points), plain_flip), (
+                "the reversal is a plain flip, so the cyclic shift the ghost "
+                "coefficients need was not applied"
+            )
+
+    assert_object_parity(
+        py=mutated[Backend.PYTHON],
+        cpp=mutated[Backend.CPP],
+        fields=FIELDS,
+        context=f"periodic reverse in place ({np.dtype(dtype).name})",
+    )
 
 
 @pytest.mark.parametrize("backend", [Backend.PYTHON, Backend.CPP])
