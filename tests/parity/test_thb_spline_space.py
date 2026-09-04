@@ -109,6 +109,7 @@ import pytest
 
 from pantr._backend import Backend, use_backend
 from pantr.bspline import BsplineSpace, BsplineSpace1D, THBSplineSpace
+from pantr.bspline._bspline_space_nd import _BsplineSpaceNDPython
 from pantr.grid import hierarchical_grid, uniform_grid
 from tests._parity_harness import (
     Field,
@@ -120,7 +121,7 @@ from tests._parity_harness import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator
+    from collections.abc import Callable, Iterator
 
     import numpy.typing as npt
 
@@ -910,6 +911,67 @@ def test_level_space_zero_shares_the_root_handle(cpp_backend: None) -> None:
     # And the finer levels are genuinely different objects, or the assertion above would
     # hold for a type that returned one space for every level.
     assert cpp.level_space(1) is not cpp.root_space
+
+
+def test_every_rebuilding_oracle_call_stays_wholly_python(cpp_backend: None) -> None:
+    """A rebuilt oracle space is Python at every level, and without the guard it is not.
+
+    This is the test :func:`_the_oracle` was missing. ``THBSplineSpace`` rebuilds itself
+    inside ``refine``, ``refine_region`` and ``coarsen`` by calling
+    ``BsplineSpace1D.subdivide``, which dispatches on the *ambient* backend -- so under
+    ``PANTR_BACKEND=cpp`` an unguarded rebuild hands back a space whose level 0 is the
+    Python root it was built from and whose finer levels are C++ handles.
+
+    **That mixture does not raise, which is what makes it worth a test.** It is silent,
+    and a silently hybrid oracle delegates its finer levels to the very C++ knot
+    insertion this cut ports, so a defect there would appear on both sides of every
+    comparison built on it and no parity assertion could see it. The two pinned tests
+    below cannot catch it: their case has a uniform ``factor``, every axis subdivides
+    together, and ``_bspline_space_nd._new_impl``'s refusal never fires.
+
+    The second half is a control rather than a second assertion. Without it, a change
+    that made ``subdivide`` backend-stable would leave the guard decorative and this test
+    still green; with it, that change turns the control red and says so.
+
+    Args:
+        cpp_backend (None): Requires the compiled extension.
+    """
+
+    def levels(space: THBSplineSpace) -> list[type]:
+        return [type(space.level_space(k)._impl) for k in range(space.num_levels)]
+
+    with use_backend(Backend.CPP):
+        oracle = _python_space(_reference_case())
+        marked = np.array([0, 1, 2], dtype=np.int64)
+        deepest = np.array(
+            [c for c in range(oracle.grid.num_cells) if oracle.grid.cell_level(c) == 2],
+            dtype=np.int64,
+        )
+        rebuilds: tuple[tuple[str, Callable[[], THBSplineSpace]], ...] = (
+            ("refine", lambda: oracle.refine(marked, admissible_class=None)),
+            ("refine_region", lambda: oracle.refine_region(0, [0, 0], [2, 2], admissible_class=2)),
+            ("coarsen", lambda: oracle.coarsen(deepest, admissible_class=None)),
+        )
+
+        assert levels(oracle) == [_BsplineSpaceNDPython] * oracle.num_levels
+
+        for name, rebuild in rebuilds:
+            with _the_oracle():
+                guarded = rebuild()
+            assert levels(guarded) == [_BsplineSpaceNDPython] * guarded.num_levels, (
+                f"{name} under the guard left a level that is not the oracle's own type: "
+                f"{[t.__name__ for t in levels(guarded)]}"
+            )
+
+        for name, rebuild in rebuilds:
+            unguarded = levels(rebuild())
+            assert unguarded[1:] and all(
+                impl is not _BsplineSpaceNDPython for impl in unguarded[1:]
+            ), (
+                f"the control failed: {name} outside the guard produced a wholly Python "
+                f"space anyway ({[t.__name__ for t in unguarded]}), so the ambient backend "
+                f"no longer reaches BsplineSpace1D.subdivide and _the_oracle is dead weight"
+            )
 
 
 def test_refinement_and_coarsening_agree(cpp_backend: None) -> None:
