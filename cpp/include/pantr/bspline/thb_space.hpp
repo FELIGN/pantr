@@ -125,6 +125,7 @@
 /// assertion will find.
 
 #include <algorithm>
+#include <cmath>
 #include <cstdint>
 #include <memory>
 #include <numeric>
@@ -791,17 +792,22 @@ class THBSplineSpace {
         const std::span<const T> domain_flat = root_space_->domain_flat();
         const double tol = root_space_->tolerance();
         bool matches = true;
+        // Both operands below are already `double`, so this is a call on a concrete
+        // type rather than on a scalar -- but the discipline in
+        // `pantr/core/scalar.hpp` is enforced mechanically over the headers, on
+        // purpose, and a guard with per-site exemptions is a guard nobody trusts.
+        using std::abs;
         for (std::int64_t k = 0; matches && k < d; ++k) {
             // The grid has no `bounds` accessor of its own: the oracle's property is
             // the first and last breakpoint of each axis, and `grid_types.cpp` builds
             // it the same way.
             const std::span<const double> breakpoints = grid_->root().breakpoints(k);
             const auto i = static_cast<std::size_t>(k) * 2;
-            matches = std::abs(static_cast<double>(breakpoints.front())
-                               - static_cast<double>(domain_flat[i]))
+            matches = abs(static_cast<double>(breakpoints.front())
+                          - static_cast<double>(domain_flat[i]))
                           <= tol
-                      && std::abs(static_cast<double>(breakpoints.back())
-                                  - static_cast<double>(domain_flat[i + 1]))
+                      && abs(static_cast<double>(breakpoints.back())
+                             - static_cast<double>(domain_flat[i + 1]))
                              <= tol;
         }
         if (!matches) {

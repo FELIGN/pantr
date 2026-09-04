@@ -347,12 +347,14 @@ template <Real T>
     // one-sided equivalent, so that a reader can put the two side by side.
     const T lo = knots[static_cast<std::size_t>(degree)];
     const T hi = knots[knots.size() - static_cast<std::size_t>(degree) - 1];
+    // Unqualified, with a using-declaration, as `pantr/core/scalar.hpp` requires:
+    // `std::abs(x)` names the overload directly and suppresses ADL, so a Tier B
+    // scalar could never supply its own. `T` here is the template parameter.
+    using std::abs;
     std::vector<T> outside;
     for (const T value : to_insert) {
-        const bool above_lo =
-            lo < value || static_cast<double>(std::abs(lo - value)) <= tol;
-        const bool below_hi =
-            value < hi || static_cast<double>(std::abs(value - hi)) <= tol;
+        const bool above_lo = lo < value || static_cast<double>(abs(lo - value)) <= tol;
+        const bool below_hi = value < hi || static_cast<double>(abs(value - hi)) <= tol;
         if (!(above_lo && below_hi)) {
             outside.push_back(value);
         }
