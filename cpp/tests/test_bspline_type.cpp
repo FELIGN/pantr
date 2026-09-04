@@ -481,6 +481,17 @@ void check_refusals() {
     PANTR_CHECK_MSG(both == not_a_multiple,
                     "the count check runs before the rank check, as the oracle's does: "
                         + both);
+
+    // An empty buffer is the one case the count check does NOT refuse, because zero
+    // is a multiple of everything; the rank check is what catches it, and the header
+    // says so. Asserted because a documented route through a check is a claim like
+    // any other. Unreachable from Python, where numpy's reshape refuses it first.
+    const std::vector<double> none;
+    const std::string empty = refusal_of([&] {
+        return Bspline<double>(space, std::span<const double>(none), false);
+    });
+    PANTR_CHECK_MSG(empty == "The B-spline must have at least rank one. Got rank 0",
+                    "an empty flat buffer must be refused by the rank check: " + empty);
 }
 
 /// The `float32` field, which is the half of the matrix nobody reads first.
