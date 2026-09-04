@@ -249,6 +249,11 @@ void check_a_scalar_field() {
 ///
 /// The vacuity guard for the whole case set: a transposed net has exactly as many
 /// coefficients as a correct one, so nothing about a *size* can refuse it.
+///
+/// Three refusals rather than one, and the middle one is the reason: a transposed
+/// net has direction 0 wrong, so it is caught by a check that compares the first
+/// extent and stops. `later_direction` has direction 0 *right*, which is what makes
+/// the loop's bound observable.
 void check_the_shape_is_the_spaces_basis_counts() {
     const std::vector<double> first{0.0, 0.0, 0.0, 1.0, 2.0, 3.0, 3.0, 3.0};  // 5 basis
     const std::vector<double> second{10.0, 10.0, 11.0, 12.0, 12.0};           // 3 basis
@@ -261,6 +266,17 @@ void check_the_shape_is_the_spaces_basis_counts() {
                         == "the control net has 3 coefficient(s) along direction 0 and the "
                            "space has 5 basis function(s)",
                     "message was: " + transposed);
+
+    // Direction 0 correct and direction 1 wrong, which is the case that distinguishes
+    // a loop over every direction from one that compares the first and stops. Measured:
+    // without it, narrowing the check to `d < 1` left this file green.
+    const std::string later_direction = refusal_of([&] {
+        return Bspline<double>(space, ramp<double>({5, 4, 2}), false);
+    });
+    PANTR_CHECK_MSG(later_direction
+                        == "the control net has 4 coefficient(s) along direction 1 and the "
+                           "space has 3 basis function(s)",
+                    "message was: " + later_direction);
 
     const std::string mis_ranked = refusal_of([&] {
         return Bspline<double>(space, ramp<double>({15, 4}), false);

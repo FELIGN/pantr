@@ -144,6 +144,28 @@ class TestBsplineInit:
         with pytest.raises(ValueError, match="The control points must have the same dtype"):
             Bspline(space, control_points)
 
+    def test_initialization_refusal_order(self) -> None:
+        """Control points bad in two ways at once report the coefficient count first.
+
+        Every other refusal case here violates one rule and so has one possible
+        message, which makes the *order* of the three checks invisible: measured, moving
+        the dtype check ahead of the coefficient-count check left the whole suite --
+        including every parity test -- green, because the two live in one piece of
+        shared wrapper code and therefore agree across the backends by construction.
+        Only a case that violates both can say which one a caller reads.
+
+        The order is a published contract rather than an accident: a caller writing
+        ``pytest.raises(ValueError, match=...)`` around a constructor gets one message,
+        and which one must not depend on a refactor.
+        """
+        knots = np.array([0.0, 0.0, 0.0, 1.0, 1.0, 1.0], dtype=np.float32)
+        space = BsplineSpace([BsplineSpace1D(knots, 2)])
+        # Two coefficients where three are needed, AND float64 against a float32 space.
+        control_points = np.array([1.0, 2.0], dtype=np.float64)
+
+        with pytest.raises(ValueError, match="The number of control points must be a multiple"):
+            Bspline(space, control_points)
+
     def test_initialization_rank_zero_error(self) -> None:
         """Test that rank <= 0 raises ValueError for rational B-splines."""
         knots = [0.0, 0.0, 0.0, 1.0, 1.0, 1.0]
