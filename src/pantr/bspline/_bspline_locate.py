@@ -280,7 +280,8 @@ class _LocateContext(NamedTuple):
     """Per-:class:`~pantr.bspline.Bspline` state reused across :meth:`locate` calls.
 
     Cached on the B-spline instance and invalidated by the in-place mutators, exactly
-    like the Bézier decomposition cache: none of these three depends on the query
+    like the Bézier decomposition cache -- and in one block with it, so that neither
+    can be discarded without the other: none of these three depends on the query
     points, and the BVH costs ``O(num_cells)`` to build.
 
     Attributes:
@@ -1442,12 +1443,17 @@ def _locate_context(spline: Bspline) -> _LocateContext:
 
     Returns:
         _LocateContext: The cached context. Invalidated by the in-place mutators of
-        :class:`~pantr.bspline.Bspline`, which reset the cache attribute to ``None``.
+        :class:`~pantr.bspline.Bspline`, which replace the whole derived block rather
+        than resetting this slot; see ``pantr.bspline._bspline._Derived``.
     """
-    # Layer 2 owns this cache slot; Layer 1 only declares and invalidates it.
-    if spline._locate_cache is None:
-        spline._locate_cache = _build_context(spline)
-    return spline._locate_cache
+    # Layer 2 owns this cache slot; Layer 1 only declares it and replaces the block
+    # it lives in. Filled through the block rather than through an attribute of the
+    # B-spline itself, because the wrapper refuses attribute assignment: the derived
+    # quantities are reachable only where the invalidation is, which is the point.
+    derived = spline._derived
+    if derived.locate is None:
+        derived.locate = _build_context(spline)
+    return derived.locate
 
 
 __all__ = ["_locate_impl"]

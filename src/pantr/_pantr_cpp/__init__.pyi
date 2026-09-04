@@ -120,6 +120,8 @@ from ._bspline import lagrange_extraction_1d as lagrange_extraction_1d
 from ._bspline import (
     lagrange_structural_identity_mask as lagrange_structural_identity_mask,
 )
+from ._bspline_field import Bspline32 as Bspline32
+from ._bspline_field import Bspline64 as Bspline64
 from ._geometry import AABB as AABB
 from ._grid import BVH as BVH
 from ._grid import CellTags as CellTags

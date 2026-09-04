@@ -253,6 +253,14 @@ nitpick_ignore = [
     # `pantr.bspline.BsplineSpace1D` and `pantr.bspline.BsplineSpace` -- so this is
     # one entry rather than three, and the next ported type inherits it.
     ("py:class", "_Impl"),
+    # The annotation of `pantr.bspline.Bspline`'s `_derived` slot: a private,
+    # module-local class holding the two memos an in-place mutator discards
+    # together. Same mechanism as `_Impl` one line up -- autodoc documents the slot
+    # because it carries an inline docstring, and renders the annotation as a class
+    # reference with nothing to resolve to. Unlike `_Impl` this is one type in one
+    # module today, and it stays listed here only while `Bspline` is the one ported
+    # type whose surface mutates.
+    ("py:class", "_Derived"),
     ("py:class", "CellIndex"),
     ("py:class", "CellIndicesBatch"),
     ("py:class", "Target"),

@@ -119,6 +119,16 @@ void register_bspline_extraction(nanobind::module_& m);
 /// the oracle's copies -- argue from somewhere else entirely.
 void register_bspline_thb_space(nanobind::module_& m);
 
+/// Register the `pantr.bspline.Bspline` field type.
+///
+/// Its own entry point rather than a third class inside `register_bspline_types`, for
+/// the reason `register_bspline_thb_space` is separate from it: the space and the field
+/// over it are separate ports with separate parity claims, and the comments justifying
+/// this one's checks -- why the C++ field offers no `in_place=`, why its control net is
+/// a copy where the oracle's is the caller's own array -- argue from somewhere else
+/// entirely.
+void register_bspline_type(nanobind::module_& m);
+
 /// Register `pantr.bspline`'s Bézier extraction operator builder and its mask.
 ///
 /// Separate from `register_bspline_extraction` because the two are separate ports

@@ -22,14 +22,18 @@ from pantr.bspline.spanwise_element_extraction import SpanwiseElementExtraction
 _SHARING_IS_PYTHON_ONLY = pytest.mark.skipif(
     active_backend() is not Backend.PYTHON,
     reason=(
-        "This records the Python Bezier's known aliasing defect rather than a contract: the "
-        "C++ value copies its control points at construction, so `copy=False` shares nothing "
-        "under that backend; FELIGN/pantr#375 is the ticket that fixes the Python side. The "
-        "C++ path is not left untested by the skip -- what it does instead is asserted in "
-        "tests/parity/test_bezier_type.py, which pins the copy at both ends."
+        "This records the Python implementations' known aliasing defect rather than a "
+        "contract: both C++ values -- Bezier and Bspline -- copy their control points at "
+        "construction, so `copy=False` shares nothing under that backend, whichever of the "
+        "two is on the receiving end. FELIGN/pantr#375 is the ticket that fixes the Python "
+        "Bezier; the Python Bspline half is flagged in "
+        "design/bspline_ownership_lifetime.md and has no ticket yet. The C++ path is not "
+        "left untested by the skip -- what it does instead is asserted in "
+        "tests/parity/test_bezier_type.py and tests/parity/test_bspline_type.py, each of "
+        "which pins the copy at both ends."
     ),
 )
-"""Marks an assertion that pins sharing only the Python implementation offers."""
+"""Marks an assertion that pins sharing only the Python implementations offer."""
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -81,7 +85,7 @@ def _eval_periodic_correct(f: Bspline, pts: npt.NDArray[np.float64]) -> npt.NDAr
     p = space_1d.degree
     tol = float(space_1d.tolerance)
     n_stored = f.space.num_total_basis
-    ctrl = f._control_points  # shape (n_stored, rank)
+    ctrl = f.control_points  # shape (n_stored, rank)
 
     # Compute knot spans using the non-periodic (unclamped) algorithm
     basis_out = np.zeros((len(pts), p + 1), dtype=np.float64)
@@ -635,6 +639,7 @@ class TestFromBezier:
         bs = create_from_bezier(bez, copy=True)
         assert not np.shares_memory(bez.control_points, bs.control_points)
 
+    @_SHARING_IS_PYTHON_ONLY
     def test_from_bezier_copy_false(self) -> None:
         """Test that from_bezier with copy=False shares the control point array."""
         cp = np.array([[1.0], [2.0], [3.0]], dtype=np.float64)

@@ -4,16 +4,50 @@ This module provides :class:`Bspline`, which pairs a
 :class:`~pantr.bspline.BsplineSpace` with control points to represent a
 parametric B-spline curve, surface, or volume. Evaluation at arbitrary points
 is dispatched to the de Boor algorithm implemented in ``_bspline_eval``.
+
+Since the 2026-08-27 amendment to ``design/cross_backend_types.md`` the *value* is
+owned by C++ (``cpp/include/pantr/bspline/bspline.hpp``) and :class:`Bspline` is a
+wrapper holding one implementation of it, exactly as
+:mod:`pantr.bspline._bspline_space_nd` does for the space it is built over. There
+are two implementations and they are not two B-splines:
+:class:`_BsplinePython` is the oracle the port is checked against, and the C++
+handle is the thing being checked. :func:`_impl_class` picks between them, per
+process and per dtype.
+
+Only the *state and what it determines* moved. Every operation -- evaluation, the
+derivative, the degree and knot operations, the conversions, the product, reversal,
+permutation and the affine transform -- is a computation *over* a B-spline rather
+than a property *of* one, so all of them are unchanged, still run on numba kernels
+and numpy, and live on the wrapper. That is the same line ``space_nd.hpp`` draws,
+and the mixed dispatch it produces is the temporary seam this front introduces; a
+cleanup ticket removes it once the whole front lands.
+
+Two of those operations cannot follow in a later cut of this front, and that is a
+declared boundary rather than an omission. :meth:`Bspline.evaluate`,
+:meth:`Bspline.evaluate_derivatives` and :meth:`Bspline.to_beziers` reach
+:meth:`~pantr.bspline.BsplineSpace1D.tabulate_basis` or
+``tabulate_basis_derivatives``, and ``cpp/include/pantr/bspline/space_1d.hpp``
+records that basis tabulation is a separate port over free functions which no
+ticket in this milestone covers.
+
+**The three ``in_place=True`` methods survive, and the C++ value has no mutator.**
+``design/bspline_derived_caches.md`` calls :class:`Bspline` the type where
+construct-then-freeze does not hold. It holds on the C++ side: the observable
+mutation lives here, in :meth:`Bspline._mutate`, which replaces the whole
+implementation together with the whole derived block in one assignment. See
+:class:`_Derived` for why that is the repair that note asks this front for, and
+``cpp/include/pantr/bspline/bspline.hpp`` for why the C++ type refuses to carry
+the flag itself.
 """
 
 from __future__ import annotations
 
-from collections.abc import Sequence
-from typing import TYPE_CHECKING, Any, Literal, overload
+from typing import TYPE_CHECKING, Any, Literal, NoReturn, TypeAlias, cast, overload
 
 import numpy as np
 from numpy import typing as npt
 
+from .._backend import Backend, active_backend, available_backends
 from .._transform_control_points import _apply_affine_to_control_points
 from ._bspline_degree import _degree_elevate_bspline, _degree_reduce_bspline
 from ._bspline_derivative import _derivative_bspline
@@ -28,15 +62,332 @@ from ._bspline_knot_removal import _remove_knots_bspline
 from ._bspline_locate import _locate_impl
 from ._bspline_restrict import _restrict_bspline_impl
 from ._bspline_slice import _slice_bspline
+from ._bspline_space_nd import _impl_class as _space_impl_class
 from ._bspline_split import _split_bspline_impl
 from ._bspline_to_beziers import _to_beziers_impl
 
 if TYPE_CHECKING:
+    from collections.abc import Callable, Sequence
+
+    from .._pantr_cpp import Bspline32 as _CppBspline32
+    from .._pantr_cpp import Bspline64 as _CppBspline64
     from ..bezier import Bezier
     from ..quad import PointsLattice
     from ..transform import AffineTransform
     from ._bspline_locate import _LocateContext
     from ._bspline_space_nd import BsplineSpace
+
+    _Impl: TypeAlias = "_BsplinePython | _CppBspline32 | _CppBspline64"
+    """The implementation a :class:`Bspline` holds: the oracle, or a C++ handle.
+
+    Type-checking only, and the same alias the space modules declare for their own
+    types: the three are unrelated nominal types that happen to offer the same
+    surface, which is the port's whole claim.
+    """
+
+    _SpaceImpl: TypeAlias = "Any"
+    """The space's implementation, as either backend holds it.
+
+    Deliberately opaque. :mod:`pantr.bspline._bspline_space_nd` owns the union of
+    the three concrete types, and restating it here would be a second place to keep
+    in step; nothing in this module does anything with a space's implementation
+    except hand it to the matching B-spline implementation.
+    """
+
+_ControlPoints: TypeAlias = "npt.NDArray[np.float32 | np.float64]"
+"""A control-point array in one of the two storage formats a B-spline may use."""
+
+
+class _Derived:
+    """The block of quantities derived from a B-spline's value, filled on demand.
+
+    Two memos live here, and the block exists so that they cannot be invalidated
+    separately. ``design/bspline_derived_caches.md`` asks this front for exactly
+    that: *an in-place method replaces the whole derived block rather than
+    invalidating pieces of it*, so there is no ``_beziers_cache = None`` path and no
+    way to reseat one without the other. The oracle's three invalidation sites --
+    one each in ``reverse``, ``permute_directions`` and ``transform`` -- become one
+    assignment, in :meth:`Bspline._take`.
+
+    **Why the block is here and not in the C++ value.** Both memos are produced by
+    operations this front has not ported, and one of them -- the Bézier
+    decomposition -- cannot be ported until basis tabulation is (see the module
+    docstring). A memo can only live beside the computation that fills it, so these
+    move to C++ with the operations that make them and not before. Until then this
+    is the only cache on either side of the seam, which is what keeps the note's
+    "nothing is cached on both sides" rule true rather than merely intended.
+
+    A plain mutable object rather than a ``NamedTuple``: a memo has to be fillable,
+    and neither slot participates in an invariant with the other. What must not
+    happen is one of them being *replaced* while the other survives, and the block
+    is what makes that unspellable.
+
+    Attributes:
+        beziers (``npt.NDArray[np.object_] | None``): The cached Bézier
+            decomposition (see :meth:`Bspline.to_beziers`), or ``None`` before the
+            first call.
+        locate (``_LocateContext | None``): The cached point-inversion state (see
+            :meth:`Bspline.locate`), or ``None`` before the first call.
+    """
+
+    __slots__ = ("beziers", "locate")
+
+    def __init__(self) -> None:
+        """Start with both memos cold."""
+        self.beziers: npt.NDArray[np.object_] | None = None
+        self.locate: _LocateContext | None = None
+
+
+class _BsplinePython:
+    """The pure-Python B-spline field: the port's parity oracle.
+
+    Holds the space's *implementation*, not its wrapper, which is what makes it the
+    exact counterpart of ``pantr::bspline::Bspline<T>``: that type holds a
+    ``BsplineSpace<T>`` handle, and this one holds whatever
+    :class:`~pantr.bspline.BsplineSpace` selected for the same backend.
+
+    It reproduces today's behaviour exactly, aliasing included: the control-point
+    array it stores is the caller's own, and :attr:`control_points` hands that same
+    object back. ``design/bspline_ownership_lifetime.md`` records that as a defect
+    -- a write through either end desynchronises both of :class:`_Derived`'s memos
+    with nothing raising -- and the C++ value does not reproduce it. A port does not
+    edit its own oracle, so the two differ there deliberately and in the safe
+    direction.
+
+    Attributes:
+        _space (Any): The tensor-product space's implementation.
+        _control_points (npt.NDArray[np.float32 | np.float64]): The control points,
+            already reshaped to ``(*num_basis, num_components)`` by
+            :func:`_validated_control_points`.
+        _is_rational (bool): Whether the last stored component is a homogeneous
+            weight.
+    """
+
+    __slots__ = ("_control_points", "_is_rational", "_space")
+
+    def __init__(
+        self, space: _SpaceImpl, control_points: _ControlPoints, is_rational: bool
+    ) -> None:
+        """Hold the given space implementation and control points.
+
+        Args:
+            space (Any): The tensor-product space's implementation.
+            control_points (npt.NDArray[np.float32 | np.float64]): The control
+                points, already validated and reshaped by
+                :func:`_validated_control_points`.
+            is_rational (bool): Whether the last stored component is a weight.
+
+        Raises:
+            ValueError: If the B-spline has rank smaller than 1.
+        """
+        self._space = space
+        self._control_points = control_points
+        self._is_rational = is_rational
+        if self.rank <= 0:
+            raise ValueError(f"The B-spline must have at least rank one. Got rank {self.rank}")
+
+    def _replace(self, control_points: _ControlPoints, space: _SpaceImpl) -> None:
+        """Adopt an already-validated value, in place.
+
+        The one mutating operation on this class, and it exists only because
+        :meth:`Bspline.reverse`, :meth:`Bspline.permute_directions` and
+        :meth:`Bspline.transform` take an ``in_place`` flag that :class:`Bspline`
+        ports faithfully. It re-validates nothing: every caller derives both
+        arguments from this B-spline's own, so the rank cannot have changed.
+
+        Args:
+            control_points (npt.NDArray[np.float32 | np.float64]): The array to
+                store.
+            space (Any): The space implementation to store.
+        """
+        self._control_points = control_points
+        self._space = space
+
+    @property
+    def space(self) -> _SpaceImpl:
+        """Get the tensor-product space's implementation.
+
+        Returns:
+            Any: The implementation this field was built over.
+        """
+        return self._space
+
+    @property
+    def control_points(self) -> _ControlPoints:
+        """Get the control points.
+
+        Returns:
+            npt.NDArray[np.float32 | np.float64]: The stored array itself, writable.
+            See the class docstring on why that is the oracle's behaviour rather
+            than a contract.
+        """
+        return self._control_points
+
+    @property
+    def is_rational(self) -> bool:
+        """Get whether the last stored component is a homogeneous weight.
+
+        Returns:
+            bool: True for a rational B-spline (a NURBS).
+        """
+        return self._is_rational
+
+    @property
+    def dim(self) -> int:
+        """Get the number of parametric directions.
+
+        Returns:
+            int: The dimension of the parametric domain.
+        """
+        return int(self._space.dim)
+
+    @property
+    def degree(self) -> tuple[int, ...]:
+        """Get the polynomial degree of each parametric direction.
+
+        Returns:
+            tuple[int, ...]: One degree per direction, in axis order.
+        """
+        return tuple(self._space.degrees)
+
+    @property
+    def rank(self) -> int:
+        """Get the number of value components a caller sees.
+
+        Returns:
+            int: The stored component count, less one when rational. May be zero or
+            negative before the constructor has refused it, which is what lets the
+            refusal report the number.
+        """
+        rk = int(self._control_points.shape[-1])
+        return rk - 1 if self._is_rational else rk
+
+
+def _validated_control_points(space: BsplineSpace, control_points: npt.ArrayLike) -> _ControlPoints:
+    """Normalize a control-point argument to the array a B-spline stores.
+
+    The oracle's own first four lines, lifted out because both implementations need
+    the result and because two of the three refusals here cannot be either
+    implementation's:
+
+    - The **coefficient count** check has to happen before the dtype check, since
+      that is the order the oracle raises them in and a caller whose argument is bad
+      in both ways must read the same message under either backend. The C++ type
+      checks the count again for the caller that has no numpy; see
+      ``cpp/include/pantr/bspline/bspline.hpp``.
+    - The **reshape** is numpy's, and so is the error it raises for a buffer that is
+      empty while the space is not. Doing it here makes that text common mode
+      instead of something the C++ side would have to reproduce.
+    - The **dtype** check is a type-kind fact and ``Bspline<T>`` cannot hold a space
+      of another width, so there is nothing there to check.
+
+    Args:
+        space (~pantr.bspline.BsplineSpace): The space the field is built over.
+        control_points (npt.ArrayLike): The caller's argument.
+
+    Returns:
+        npt.NDArray[np.float32 | np.float64]: The array reshaped to
+        ``(*space.num_basis, -1)``.
+
+    Raises:
+        ValueError: If the number of control points is not a multiple of the number
+            of basis functions, or if their dtype is not the space's.
+        IndexError: If the space has no directions. Reading
+            :attr:`~pantr.bspline.BsplineSpace.dtype` is what raises it, which is
+            where the oracle raises it too.
+    """
+    cp = np.asarray(control_points)
+    num_basis = space.num_total_basis
+    if cp.size % num_basis != 0:
+        raise ValueError(
+            f"The number of control points must be a multiple of the number of basis functions."
+            f"Got {cp.size} control points and {num_basis} basis functions."
+        )
+
+    cp = cp.reshape([*space.num_basis, -1])
+
+    if cp.dtype != space.dtype:
+        raise ValueError(
+            f"The control points must have the same dtype as the B-spline space."
+            f"Got {cp.dtype} control points and {space.dtype} B-spline space."
+        )
+    return cast("_ControlPoints", cp)
+
+
+def _impl_class(dtype: np.dtype[Any]) -> type[_BsplinePython] | type[Any]:
+    """The implementation class the active backend and the dtype select.
+
+    The backend is per process rather than per instance, for the reason
+    :func:`pantr.bspline._bspline_space_nd._impl_class` gives: two fields built
+    under different backends meeting in one operation -- :meth:`Bspline.multiply`
+    takes a second B-spline -- would have to be reconciled by converting one
+    implementation into the other, which is the shape
+    ``design/cross_backend_types.md`` forbids.
+
+    Args:
+        dtype (np.dtype[Any]): The storage format of the control points.
+
+    Returns:
+        type: The oracle under the Python backend, and the C++ class for that
+        storage format otherwise.
+
+    Raises:
+        RuntimeError: If the C++ backend is requested and is not available.
+    """
+    if active_backend() is Backend.PYTHON:
+        return _BsplinePython
+    if Backend.CPP not in available_backends():
+        raise RuntimeError("the CPP backend is not available in this installation")
+    from pantr import _pantr_cpp  # noqa: PLC0415  (optional, imported only when selected)
+
+    if dtype == np.float32:
+        return _pantr_cpp.Bspline32
+    return _pantr_cpp.Bspline64
+
+
+def _new_impl(space: BsplineSpace, control_points: _ControlPoints, is_rational: bool) -> _Impl:
+    """Build a B-spline value in whichever implementation the active backend selects.
+
+    Args:
+        space (~pantr.bspline.BsplineSpace): The space, whose own implementation is
+            what gets held.
+        control_points (npt.NDArray[np.float32 | np.float64]): The control points,
+            already validated and reshaped by :func:`_validated_control_points`.
+        is_rational (bool): Whether the last stored component is a weight.
+
+    Returns:
+        _Impl: The implementation object; an oracle instance or a C++ handle.
+
+    Raises:
+        ValueError: If the B-spline has rank smaller than 1, or if the space was
+            built under a different backend.
+        RuntimeError: If the C++ backend is requested and is not available.
+    """
+    dtype = np.dtype(control_points.dtype)
+    cls = _impl_class(dtype)
+    # Both implementations hold the space's *implementation*, so a space built under
+    # the other backend cannot be held -- and the two ways that fails are both bad.
+    # Handing a Python oracle to a C++ class raises a nanobind `TypeError` naming
+    # C++ types, which is loud but unreadable; handing a C++ handle to the oracle
+    # SUCCEEDS and yields a hybrid whose reductions run in Python over C++ values,
+    # which no parity claim covers and nothing announces.
+    # `design/cross_backend_types.md` forbids exactly that second shape.
+    space_impl = space._impl
+    if not isinstance(space_impl, _space_impl_class(dtype)):
+        raise ValueError(
+            "The B-spline space must come from the active backend; it was built under a "
+            "different one."
+        )
+    if cls is _BsplinePython:
+        return _BsplinePython(space_impl, control_points, bool(is_rational))
+    # Each C++ class accepts only its own storage format and refuses rather than
+    # casts, so the array's dtype and the class have to agree. They do: the class
+    # was chosen from that dtype above. That is a correlation between a value and a
+    # type, which the checker cannot state, and the cast is what stands in for it.
+    cpp_cls: Any = cls
+    return cast(
+        "_Impl", cpp_cls(space_impl, np.ascontiguousarray(control_points), bool(is_rational))
+    )
 
 
 class Bspline:
@@ -45,20 +396,47 @@ class Bspline:
     Combines a :class:`~pantr.bspline.BsplineSpace` (knot vectors, degrees)
     with a set of control points to represent a B-spline mapping.
 
+    **This class is a wrapper.** The value -- the space, the control points and the
+    rationality flag -- is owned by an implementation chosen by ``_impl_class``,
+    which is the C++ type (``cpp/include/pantr/bspline/bspline.hpp``) or the oracle
+    ``_BsplinePython``. Every operation below is still Python over numba
+    kernels and numpy, and is unchanged; only the state moved.
+
+    Instances are immutable *as attribute holders*, and that is enforced rather than
+    documented: ``__slots__`` means there is no ``__dict__`` to attach anything to,
+    and ``__setattr__`` refuses even a rebinding of the three slots. The three
+    ``in_place=True`` methods go through ``_mutate``, which is the one place
+    the value is replaced and the only place ``object.__setattr__`` is called.
+
+    One behaviour depends on which implementation is in hand, and it is the point of
+    the port rather than an oversight: the C++ value **copies** the control points
+    at construction and hands out a read-only view, so neither end aliases the
+    caller's array. The oracle aliases at both ends, which is the defect
+    ``design/bspline_ownership_lifetime.md`` records, and it is not fixed here
+    because a port does not edit its own oracle.
+
     Attributes:
-        _space (pantr.bspline.BsplineSpace): The multi-dimensional
-            B-spline space.
-        _control_points (npt.NDArray[np.float32 | np.float64]): Control point
-            array reshaped to ``(*num_basis, rank)``.
-        _is_rational (bool): Whether the B-spline is rational (NURBS).
-        _beziers_cache (``npt.NDArray[np.object_] | None``): Cached Bézier
-            decomposition, or ``None`` if not yet computed.
-        _locate_cache (``_LocateContext | None``): Cached point-inversion state
-            (see :meth:`locate`), or ``None`` if not yet computed. Invalidated
-            alongside ``_beziers_cache`` by the in-place mutators.
+        _impl: The implementation this wrapper holds; see ``_impl_class``. Its
+            type is the private ``_Impl`` alias, which is a union of three unrelated
+            nominal types and has no documented form to name here.
+        _space (~pantr.bspline.BsplineSpace): The space wrapper this field was built
+            over, so that ``bspline.space is space`` holds under both backends. It
+            is a *presentation* memo, never a second truth about a value: the
+            degrees, the counts and the domain all come from the space's own
+            implementation on every access.
+        _derived (_Derived): The derived block; see ``_Derived``.
     """
 
-    _control_points: npt.NDArray[np.float32 | np.float64]
+    __slots__ = ("_derived", "_impl", "_space")
+
+    _impl: _Impl
+    """The implementation this wrapper holds; see ``_impl_class``."""
+
+    _space: BsplineSpace
+    """The space wrapper this field was built over; see the class docstring."""
+
+    _derived: _Derived
+    """The block of quantities derived from this field's value; see ``_Derived``."""
 
     def __init__(
         self, space: BsplineSpace, control_points: npt.ArrayLike, is_rational: bool = False
@@ -76,32 +454,143 @@ class Bspline:
             ValueError: If the control points dtype does not match the
                 B-spline space dtype.
             ValueError: If the B-spline has rank smaller than 1.
+            ValueError: If the space was built under a different backend.
+            RuntimeError: If the C++ backend is requested and is not available.
         """
-        self._space = space
+        validated = _validated_control_points(space, control_points)
+        self._take(_new_impl(space, validated, is_rational), space)
 
-        control_points = np.asarray(control_points)
-        num_basis = space.num_total_basis
-        if control_points.size % num_basis != 0:
-            raise ValueError(
-                f"The number of control points must be a multiple of the number of basis functions."
-                f"Got {control_points.size} control points and {num_basis} basis functions."
+    def _take(self, impl: _Impl, space: BsplineSpace) -> None:
+        """Adopt an implementation and the space wrapper in front of it.
+
+        The single place this wrapper's slots are written, and the assignment
+        ``design/bspline_derived_caches.md`` asks this front for: the derived block
+        is replaced wholesale rather than invalidated piece by piece, so there is no
+        way to reseat the implementation without discarding both memos.
+
+        Args:
+            impl (_Impl): The implementation to hold.
+            space (~pantr.bspline.BsplineSpace): The space wrapper in front of
+                ``impl``'s space, which is what carries the identity contract.
+        """
+        object.__setattr__(self, "_impl", impl)
+        object.__setattr__(self, "_space", space)
+        object.__setattr__(self, "_derived", _Derived())
+
+    def _mutate(
+        self, rebuild: Callable[[_ControlPoints], tuple[_ControlPoints, BsplineSpace]]
+    ) -> None:
+        """Replace this B-spline's value in place, discarding every derived quantity.
+
+        The single place the two implementations differ in *kind* rather than in
+        provenance, so the branch lives here once instead of in each of the three
+        ``in_place=True`` methods.
+
+        Under the Python backend ``rebuild`` is handed the stored array itself, so a
+        helper writing into it mutates the B-spline exactly as it always has --
+        ``id(bspline.control_points)`` included, which ``tests/test_transform.py``
+        pins. Under the C++ backend the storage belongs to the C++ object and is
+        read-only, so ``rebuild`` gets a writable copy and the *implementation* is
+        replaced. Both leave this wrapper carrying the new value; only the array's
+        identity differs, and only where the oracle's aliasing is what defined it.
+
+        Rebuilding reads the *active* backend, so mutating a B-spline inside a
+        :func:`~pantr._backend.use_backend` block that selects a different one would
+        silently hand the caller back an object of the other implementation -- and,
+        going from C++ to Python, silently drop the read-only guarantee on an array
+        they still hold. Reconciling two implementations of one type by converting
+        between them is the shape ``design/cross_backend_types.md`` forbids, so this
+        refuses rather than converts, exactly as :meth:`pantr.bezier.Bezier` does
+        for the same three methods.
+
+        Checked *before* ``rebuild`` runs, and that ordering is load-bearing:
+        :meth:`reverse` and :meth:`permute_directions` build a new
+        :class:`~pantr.bspline.BsplineSpace` on the way, which under a switched
+        backend would raise its own ``ValueError`` first and only for a field of
+        more than one direction -- so the exception a caller sees would depend on
+        ``dim``.
+
+        Args:
+            rebuild (Callable): Given a writable control-point array, returns the
+                new control points and the new space. It may write into the array it
+                is given and return it, and it must return a space of the same
+                basis counts.
+
+        Raises:
+            TypeError: If the active backend no longer selects this B-spline's own
+                implementation.
+        """
+        impl = self._impl
+        mine = type(impl)
+        theirs = _impl_class(np.dtype(impl.control_points.dtype))
+        if mine is not theirs:
+            raise TypeError(
+                f"Bspline: cannot mutate a Bspline built under a different backend "
+                f"({mine.__name__} against the active {theirs.__name__}); the backend is "
+                f"chosen per process, so this means the active one changed after this "
+                f"Bspline was built."
             )
+        if isinstance(impl, _BsplinePython):
+            control_points, space = rebuild(impl.control_points)
+            impl._replace(control_points, space._impl)
+            self._take(impl, space)
+        else:
+            control_points, space = rebuild(np.array(impl.control_points))
+            self._take(_new_impl(space, control_points, impl.is_rational), space)
 
-        self._control_points = control_points.reshape([*space.num_basis, -1])
+    def __setattr__(self, name: str, value: object) -> NoReturn:
+        """Refuse to set an attribute, because the wrapper's slots are not a surface.
 
-        if self._control_points.dtype != self._space.dtype:
-            raise ValueError(
-                f"The control points must have the same dtype as the B-spline space."
-                f"Got {self._control_points.dtype} control points and {self._space.dtype} "
-                "B-spline space."
-            )
+        Args:
+            name (str): The attribute a caller tried to set.
+            value (object): The value it tried to set.
 
-        self._is_rational = is_rational
-        self._beziers_cache: npt.NDArray[np.object_] | None = None
-        self._locate_cache: _LocateContext | None = None
+        Raises:
+            AttributeError: Always. The value is replaced through ``_mutate``,
+                which is what keeps the derived block in step with it.
+        """
+        raise AttributeError(f"{type(self).__name__} is immutable; cannot set {name!r}")
 
-        if self.rank <= 0:
-            raise ValueError(f"The B-spline must have at least rank one. Got rank {self.rank}")
+    def __delattr__(self, name: str) -> NoReturn:
+        """Refuse to delete an attribute.
+
+        Args:
+            name (str): The attribute a caller tried to delete.
+
+        Raises:
+            AttributeError: Always.
+        """
+        raise AttributeError(f"{type(self).__name__} is immutable; cannot delete {name!r}")
+
+    def __reduce__(
+        self,
+    ) -> tuple[type[Bspline], tuple[BsplineSpace, _ControlPoints, bool]]:
+        """Pickle by the constructor's arguments rather than by implementation.
+
+        The C++ handle is not picklable and must not become part of the wire format:
+        a pickle written under the C++ backend has to load under the Python one and
+        the other way round, or the backend switch would silently become a
+        data-format switch.
+
+        The space goes out as its **wrapper**, not as its implementation, which is
+        what carries its own ``__reduce__`` -- and with it the tolerance-drift bound
+        ``design/bspline_pickle_tolerance.md`` derives for a univariate space --
+        into this one's round trip. It is also what makes sharing survive a single
+        pickle for free: ``pickle`` memoises, so dumping ``(field, field.space)``
+        restores a pair that still satisfies ``field.space is space``.
+
+        Returns:
+            tuple: The class, and the space, control points and rationality flag to
+            rebuild it from.
+        """
+        control_points = self.control_points
+        if not control_points.flags.writeable:
+            # The C++ backend hands out a read-only view and pickle preserves that
+            # flag. Reconstructing under the Python backend would then store a
+            # read-only array, where `transform(in_place=True)` raises. The copy is
+            # what keeps one backend's storage decision out of the wire format.
+            control_points = np.array(control_points)
+        return (type(self), (self.space, control_points, self.is_rational))
 
     @property
     def dim(self) -> int:
@@ -111,7 +600,7 @@ class Bspline:
             int: Number of parametric dimensions (equals the dimension of the
             underlying B-spline space).
         """
-        return self._space.dim
+        return int(self._impl.dim)
 
     @property
     def degree(self) -> tuple[int, ...]:
@@ -120,11 +609,17 @@ class Bspline:
         Returns:
             tuple[int, ...]: Polynomial degree for each parametric dimension.
         """
-        return self._space.degrees
+        return tuple(self._impl.degree)
 
     @property
     def space(self) -> BsplineSpace:
         """Get the underlying B-spline space.
+
+        The object a caller passed to the constructor, not a copy and not a
+        re-wrapping of what the implementation holds, so ``bspline.space is space``
+        holds under both backends. ``design/bspline_ownership_lifetime.md`` F6
+        records why: no C++ object can supply the constructor argument's own Python
+        object, and only the wrapper can, by keeping what it was built from.
 
         Returns:
             ~pantr.bspline.BsplineSpace: The multi-dimensional
@@ -133,14 +628,18 @@ class Bspline:
         return self._space
 
     @property
-    def control_points(self) -> npt.NDArray[np.float32 | np.float64]:
+    def control_points(self) -> _ControlPoints:
         """Get the control points of the B-spline.
 
         Returns:
             npt.NDArray[np.float32 | np.float64]: Control point array with
-            shape ``(*num_basis, rank)``.
+            shape ``(*num_basis, rank)``. Under the C++ backend this is a
+            **read-only view** of the B-spline's own storage: writing through it
+            raises, and it stays valid after the B-spline is dropped. Under the
+            Python backend it is the stored array itself, writable, which is the
+            aliasing defect the class docstring names.
         """
-        return self._control_points
+        return self._impl.control_points
 
     @property
     def is_rational(self) -> bool:
@@ -150,7 +649,7 @@ class Bspline:
             bool: True if the B-spline is rational (i.e., the last control point
             coordinate is a homogeneous weight), False otherwise.
         """
-        return self._is_rational
+        return bool(self._impl.is_rational)
 
     @property
     def rank(self) -> int:
@@ -163,18 +662,21 @@ class Bspline:
         Returns:
             int: Output rank of the B-spline.
         """
-        rk = int(self._control_points.shape[-1])
-        return rk - 1 if self.is_rational else rk
+        return int(self._impl.rank)
 
     @property
     def dtype(self) -> npt.DTypeLike:
         """Get the floating-point dtype of the B-spline.
 
+        Read off the control points rather than delegated: the C++ handle carries
+        its storage format in its class name, not as a numpy dtype it could hand
+        back.
+
         Returns:
             npt.DTypeLike: The numpy dtype (float32 or float64) of the control
             point array.
         """
-        return self._control_points.dtype
+        return self.control_points.dtype
 
     def evaluate(
         self,
@@ -634,7 +1136,7 @@ class Bspline:
             ValueError: If any knot value is not found or is a boundary knot.
         """
         # Periodic splines are not supported.
-        for i, sp in enumerate(self._space.spaces):
+        for i, sp in enumerate(self.space.spaces):
             if sp.periodic:
                 raise ValueError(
                     f"Knot removal is not supported for periodic B-splines "
@@ -847,12 +1349,12 @@ class Bspline:
         """
         from ..bezier import Bezier as BezierCls  # noqa: PLC0415
 
-        if self._space.has_Bezier_like_knots():
-            cp = self._control_points.copy() if copy else self._control_points
-            return BezierCls(cp, is_rational=self._is_rational)
+        if self.space.has_Bezier_like_knots():
+            cp = self.control_points.copy() if copy else self.control_points
+            return BezierCls(cp, is_rational=self.is_rational)
 
         # Already open but not Bezier-like → multi-element, cannot convert.
-        spaces = self._space.spaces
+        spaces = self.space.spaces
         if all(s.has_open_knots() and not s.periodic for s in spaces):
             raise ValueError(
                 "B-spline has more than one element per direction "
@@ -867,7 +1369,7 @@ class Bspline:
                 "and cannot be represented as a single Bézier."
             )
         cp = open_bspline.control_points.copy() if copy else open_bspline.control_points
-        return BezierCls(cp, is_rational=self._is_rational)
+        return BezierCls(cp, is_rational=self.is_rational)
 
     def to_beziers(self) -> npt.NDArray[np.object_]:
         """Decompose into Bézier patches.
@@ -902,9 +1404,10 @@ class Bspline:
             Bézier extraction of NURBS :cite:p:`borden2011bezier` (and its
             T-spline generalization :cite:p:`scott2011tsplines`).
         """
-        if self._beziers_cache is None:
-            self._beziers_cache = _to_beziers_impl(self)
-        return self._beziers_cache
+        derived = self._derived
+        if derived.beziers is None:
+            derived.beziers = _to_beziers_impl(self)
+        return derived.beziers
 
     def multiply(self, other: Bspline) -> Bspline:
         """Return the exact pointwise product of this B-spline and another.
@@ -1003,22 +1506,47 @@ class Bspline:
         if direction < 0 or direction >= self.dim:
             raise ValueError(f"direction must be in [0, {self.dim}), got {direction}.")
 
+        if in_place:
+            self._mutate(lambda cp: self._reversed(direction, cp, write_into=True))
+            return None
+        new_cp, new_space = self._reversed(direction, self.control_points, write_into=False)
+        return Bspline(new_space, new_cp, is_rational=self.is_rational)
+
+    def _reversed(
+        self, direction: int, control_points: _ControlPoints, *, write_into: bool
+    ) -> tuple[_ControlPoints, BsplineSpace]:
+        """The value :meth:`reverse` produces, without deciding where it goes.
+
+        Split out so that the in-place and the derived paths compute one thing:
+        :meth:`_mutate` hands this the array it may write into, and the derived path
+        hands it the stored one and asks for a fresh array instead.
+
+        Args:
+            direction (int): The parametric direction to reverse, already validated.
+            control_points (npt.NDArray[np.float32 | np.float64]): The array to read.
+            write_into (bool): Whether the flip and the cyclic shift may write into
+                ``control_points`` rather than allocating.
+
+        Returns:
+            tuple[npt.NDArray[np.float32 | np.float64], ~pantr.bspline.BsplineSpace]:
+            The reversed control points and the reflected space.
+        """
         from .._control_points_utils import _reverse_control_points  # noqa: PLC0415
         from ._bspline_space_1d import BsplineSpace1D  # noqa: PLC0415
         from ._bspline_space_nd import BsplineSpace  # noqa: PLC0415
 
         # Reflect the knot vector: knots_new = a + b - knots[::-1].
-        old_space = self._space.spaces[direction]
+        old_space = self.space.spaces[direction]
         knots = old_space.knots
         a, b = old_space.domain
         new_knots = (a + b) - knots[::-1]
         new_space_1d = BsplineSpace1D(new_knots, old_space.degree, periodic=old_space.periodic)
 
-        new_spaces = list(self._space.spaces)
+        new_spaces = list(self.space.spaces)
         new_spaces[direction] = new_space_1d
         new_space = BsplineSpace(new_spaces)
 
-        new_cp = _reverse_control_points(self._control_points, direction, in_place=in_place)
+        new_cp = _reverse_control_points(control_points, direction, in_place=write_into)
         if old_space.periodic:
             # The stored periodic points expand as full[j] = stored[j % n_stored];
             # reversing the full sequence therefore needs a plain flip *plus* a
@@ -1027,17 +1555,11 @@ class Bspline:
             n_full = knots.shape[0] - old_space.degree - 1
             shift = (n_full - n_stored) % n_stored
             if shift:
-                if in_place:
+                if write_into:
                     new_cp[:] = np.roll(new_cp, shift, axis=direction)
                 else:
                     new_cp = np.roll(new_cp, shift, axis=direction)
-
-        if in_place:
-            self._space = new_space
-            self._beziers_cache = None
-            self._locate_cache = None
-            return None
-        return Bspline(new_space, new_cp, is_rational=self._is_rational)
+        return new_cp, new_space
 
     @overload
     def permute_directions(
@@ -1084,27 +1606,41 @@ class Bspline:
             >>> swapped.control_points[0, 2].tolist()  # was control_points[2, 0]
             [4.0]
         """
-        from .._control_points_utils import _permute_control_points  # noqa: PLC0415
-        from ._bspline_space_nd import BsplineSpace  # noqa: PLC0415
-
         perm = list(permutation)
         if sorted(perm) != list(range(self.dim)):
             raise ValueError(f"permutation must be a permutation of range({self.dim}), got {perm}.")
 
-        new_cp = _permute_control_points(self._control_points, perm, self.dim)
-
-        # Reorder 1D spaces.
-        old_spaces = self._space.spaces
-        new_spaces = tuple(old_spaces[i] for i in perm)
-        new_space = BsplineSpace(new_spaces)
-
         if in_place:
-            self._control_points = new_cp
-            self._space = new_space
-            self._beziers_cache = None
-            self._locate_cache = None
+            self._mutate(lambda cp: self._permuted(perm, cp))
             return None
-        return Bspline(new_space, new_cp, is_rational=self._is_rational)
+        new_cp, new_space = self._permuted(perm, self.control_points)
+        return Bspline(new_space, new_cp, is_rational=self.is_rational)
+
+    def _permuted(
+        self, permutation: list[int], control_points: _ControlPoints
+    ) -> tuple[_ControlPoints, BsplineSpace]:
+        """The value :meth:`permute_directions` produces, without deciding where it goes.
+
+        No ``write_into`` twin, unlike :meth:`_reversed`: a permutation of the
+        parametric axes cannot be done in the caller's buffer, so the oracle's
+        ``in_place=True`` path already replaced the array rather than writing into
+        it.
+
+        Args:
+            permutation (list[int]): A permutation of ``range(dim)``, already
+                validated.
+            control_points (npt.NDArray[np.float32 | np.float64]): The array to read.
+
+        Returns:
+            tuple[npt.NDArray[np.float32 | np.float64], ~pantr.bspline.BsplineSpace]:
+            The permuted control points and the reordered space.
+        """
+        from .._control_points_utils import _permute_control_points  # noqa: PLC0415
+        from ._bspline_space_nd import BsplineSpace  # noqa: PLC0415
+
+        new_cp = _permute_control_points(control_points, permutation, self.dim)
+        old_spaces = self.space.spaces
+        return new_cp, BsplineSpace(tuple(old_spaces[i] for i in permutation))
 
     # ------------------------------------------------------------------
     # Affine transformation
@@ -1154,18 +1690,46 @@ class Bspline:
             >>> np.allclose(shifted.control_points, [[1.0, 2.0], [2.0, 3.0]])
             True
         """
+        if in_place:
+            self._mutate(lambda cp: self._transformed(affine, cp, write_into=True))
+            return None
+        new_cp, new_space = self._transformed(affine, self.control_points, write_into=False)
+        return Bspline(new_space, new_cp, is_rational=self.is_rational)
+
+    def _transformed(
+        self, affine: AffineTransform, control_points: _ControlPoints, *, write_into: bool
+    ) -> tuple[_ControlPoints, BsplineSpace]:
+        """The value :meth:`transform` produces, without deciding where it goes.
+
+        The space is returned unchanged, and returning it rather than leaving it
+        implicit is what keeps :meth:`_mutate`'s signature the same for all three
+        mutators. It is also the one propagation site
+        ``design/bspline_ownership_lifetime.md`` names: an affine map moves the
+        control points and not the parametrization, so the derived field hands back
+        the *source's* space wrapper and ``s.transform(t).space is s.space`` holds.
+
+        Args:
+            affine (~pantr.transform.AffineTransform): The map to apply.
+            control_points (npt.NDArray[np.float32 | np.float64]): The array to read.
+            write_into (bool): Whether the map may write into ``control_points``
+                rather than allocating.
+
+        Returns:
+            tuple[npt.NDArray[np.float32 | np.float64], ~pantr.bspline.BsplineSpace]:
+            The mapped control points and this field's own space.
+
+        Raises:
+            ValueError: If the transform dimension does not match the geometric rank
+                of the B-spline.
+        """
         new_cp = _apply_affine_to_control_points(
-            self._control_points,
-            self._is_rational,
+            control_points,
+            self.is_rational,
             affine.matrix,
             affine.offset,
-            in_place=in_place,
+            in_place=write_into,
         )
-        if in_place:
-            self._beziers_cache = None
-            self._locate_cache = None
-            return None
-        return Bspline(self._space, new_cp, is_rational=self._is_rational)
+        return new_cp, self.space
 
     def subdivide(
         self,
