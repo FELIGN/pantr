@@ -17,10 +17,10 @@
 /// uniform, so the columns touched by the clamped ends are excluded -- and the check
 /// counts how many columns it verified and fails if that count is zero, because a
 /// filter that silently matched nothing is the way this kind of test goes vacuous.
-/// Measured against the Python oracle at degrees 1 to 4: the agreement is **exact**,
-/// deviation `0.0`, which is why this asserts equality rather than a bound. That is
-/// not a general claim about the recurrence; it is that this stencil's values are
-/// dyadic and every operation reaching them is exact.
+/// This asserts equality rather than a bound, and the reason is not a measurement: the
+/// stencil's values are dyadic, and every operation reaching them -- a binomial
+/// coefficient in exact integers, then a division by a power of two -- is exact in
+/// binary floating point. That is a property of these values, not of the recurrence.
 ///
 /// **Partition of unity survives refinement.** `sum_i B_i^{(m)} = 1` and
 /// `sum_j B_j^{(m+1)} = 1` together force every *row* of the matrix to sum to one,

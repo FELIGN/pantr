@@ -592,8 +592,8 @@ def _compare_the_operations(py: THBSplineSpace, cpp: Any, context: str, variant:
     space is by far the most expensive thing this sweep does, so comparing all four
     quadruples its cost for coverage a rotation buys at a quarter of the price: every
     variant still gets a quarter of the cases, which at the wide width is hundreds each.
-    Measured: all four put the wide sweep at three times the next slowest test in
-    ``tests/parity``, and the C++ CI job runs it twice.
+    The cost is what forces the choice: this sweep is the slowest test in ``tests/parity``
+    and the C++ CI job runs it twice, once at each width.
 
     The marked set is derived from the space rather than drawn again, so a failure is
     reproducible from the case alone: the first cell of each level for the refinement, and
