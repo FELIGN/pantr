@@ -144,9 +144,21 @@ def _cpp_handle(bspline: Bspline) -> _CppHandle:
 def _the_cpp_backend_can_take_it(bspline: Bspline, refined: Sequence[bool]) -> bool:
     """Report whether the C++ path covers this call.
 
-    Two conditions, and the second is the declared boundary the module docstring
-    argues: the C++ backend has to be the active one, and no direction being refined
-    may be periodic.
+    Three conditions. The C++ backend has to be the active one; no direction being
+    refined may be **periodic**, which is the declared boundary the module docstring
+    argues; and at least one direction has to be refined at all.
+
+    That third one looks redundant and is not. The two C++ entry points restate
+    :class:`pantr.bspline.Bspline`'s own "at least one direction" refusal for the
+    benefit of a C++ caller with no wrapper in front of them, while the oracle path
+    returns an unrefined copy for the same argument. Both are right where they sit and
+    they disagree, so a *dispatcher* that could reach either would be the one thing
+    that must not differ between the backends. Nothing above it can reach the case --
+    :meth:`~pantr.bspline.Bspline.insert_knots` and
+    :meth:`~pantr.bspline.Bspline.subdivide` both refuse it first -- but this module's
+    two entry points are private symbols in a package whose private symbols a
+    downstream consumer already imports, so the asymmetry is closed here rather than
+    left resting on the one caller staying the only one.
 
     Args:
         bspline (~pantr.bspline.Bspline): The field to refine.
@@ -166,6 +178,8 @@ def _the_cpp_backend_can_take_it(bspline: Bspline, refined: Sequence[bool]) -> b
         return False
     if Backend.CPP not in available_backends():
         raise RuntimeError("the CPP backend is not available in this installation")
+    if not any(refined):
+        return False
     spaces = bspline.space.spaces
     return not any(
         touched and spaces[direction].periodic for direction, touched in enumerate(refined)
@@ -225,9 +239,11 @@ def _cpp_insert_knots(bspline: Bspline, new_knots_per_dim: Sequence[_Knots | Non
         ~pantr.bspline.Bspline: The refined field, wrapping a C++ handle.
 
     Raises:
-        ValueError: If any array is not 1D, if every one is empty, if a knot lies
-            outside its direction's domain, or if a merge would exceed the maximum
-            multiplicity. Every message is the oracle's.
+        ValueError: If a non-empty array is not 1D, if a knot lies outside its
+            direction's domain, or if a merge would exceed the maximum multiplicity.
+            Every message is the oracle's. "Every direction empty" is not among them:
+            :func:`_the_cpp_backend_can_take_it` keeps that case on the oracle path,
+            where it returns an unrefined copy.
     """
     from pantr import _pantr_cpp  # noqa: PLC0415  (resolved against the .pyi stub)
 
@@ -290,9 +306,11 @@ def insert_knots_into_field(
     Raises:
         TypeError: If the C++ backend is active and the field was built under the
             other one.
-        ValueError: If an array is not 1D, if every direction is empty, if a knot lies
-            outside its direction's domain, or if a merge would exceed the maximum
-            multiplicity.
+        ValueError: If a non-empty array is not 1D, if a knot lies outside its
+            direction's domain, or if a merge would exceed the maximum multiplicity.
+            An all-empty argument is not refused here; it returns an unrefined copy, as
+            the oracle does. :meth:`~pantr.bspline.Bspline.insert_knots` is what refuses
+            it.
     """
     refined = [nk is not None and nk.size > 0 for nk in new_knots_per_dim]
     if _the_cpp_backend_can_take_it(bspline, refined):
