@@ -33,6 +33,15 @@
 /// system `sum_l alpha_l * g_l^{(r)} = ghat^{(r)}`, `r = 0..p`, has the monomial
 /// moments of `p + 1` distinct knot windows as its matrix.
 ///
+/// **That the system is nonsingular is not proved here, and the qualifier matters.**
+/// It is *false* in general: a window over a collapsed (zero-width) span makes the
+/// matrix singular. It holds for every window a refinement can actually produce, which
+/// is Curry-Schoenberg local polynomial reproduction (Schoenberg's B-spline basis
+/// reproduces polynomials of degree <= p exactly on each nonempty span). Checked in
+/// exact rational arithmetic over the reachable bands rather than assumed, and the
+/// unreachable singular windows were found and confirmed unreachable -- **observed
+/// with an argument, not proved in this file.**
+///
 /// Nothing in it consults the Oslo recurrence: elementary symmetric polynomials of
 /// knots and a binomial coefficient, formed in this file.
 ///
@@ -79,7 +88,13 @@
 ///  - Relative errors compose sub-additively and `gamma_a + gamma_b <= gamma_{a+b}`,
 ///    so `D` refined directions cost `D (7p + 2)`.
 ///
-/// `K = 2p + 3 + D (7p + 2)`, the last `1` being the store into the result. The
+///  - **The store into the result**: the sweep accumulates in `double` and writes the
+///    coefficient back into `T`, which at `float32` is a real rounding on the *output*,
+///    symmetric to the input cast above and derived the same way. `1`.
+///
+/// `K = 2p + 3 + D (7p + 2)`, so the `2p + 3` is the oracle's `e_r` recurrence plus one
+/// rounding on each end -- the cast in and the store out. Every term above names the
+/// operations it charges; none is a pad. The
 /// magnitude it multiplies is `prod_d max_i A^d_{i, r_d}`, per component: the discrete
 /// B-splines of a refinement are non-negative, so each output coefficient is a convex
 /// combination of coarse ones and no partial sum exceeds the largest of them. That
@@ -416,6 +431,15 @@ void check_marsden_survives(const Bspline<T>& refined, const std::string& label,
 /// The premise the accuracy bound rests on, asserted rather than assumed; see the file
 /// comment. The row sum is graded against `2 * gamma_{p+2}`, the same constant
 /// `test_bspline_knot_insertion.cpp` derives for it.
+///
+/// **The non-negativity half is an exact comparison on purpose, and a review asked
+/// why.** `most_negative` starts at `0.0` and only ever passes through `std::min`,
+/// which returns one of its arguments unaltered -- no arithmetic is performed on it, so
+/// `== 0.0` is a sign test over the weights and not an equality on a computed
+/// magnitude. A tolerance here would be the wrong bar in the strict sense: it would
+/// accept a slightly negative weight, which is exactly the defect this forbids, and
+/// negativity is a discrete property that finite precision does not blur. A `-0.0`
+/// weight compares equal and so passes, which is correct -- it is not negative.
 void check_the_bands_are_a_convex_combination() {
     struct Case {
         std::int64_t degree;
