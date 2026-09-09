@@ -605,14 +605,9 @@ class AffineTransform:
     an affine map and one Python class in front of it.
 
     Under ``PANTR_BACKEND=python`` the thing held is
-    :class:`_AffineTransformPython`, the port's oracle, which is temporary.
+    ``_AffineTransformPython``, the port's oracle, which is temporary.
 
     Instances are immutable: every factory and operator returns a new map.
-
-    Attributes:
-        dim (int): The spatial dimension ``n``.
-        matrix (npt.NDArray[np.float64]): Read-only ``(n, n)`` linear part.
-        offset (npt.NDArray[np.float64]): Read-only ``(n,)`` translation.
     """
 
     __slots__ = ("__dict__", "_impl")

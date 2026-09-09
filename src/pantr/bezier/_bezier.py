@@ -319,7 +319,7 @@ class Bezier:
     **This class is a wrapper.** Since the 2026-08-27 amendment to
     ``design/cross_backend_types.md`` the value is owned by C++
     (``cpp/include/pantr/bezier/bezier.hpp``) and this class holds one
-    implementation of it, chosen by :func:`_impl_class`. The operations are still
+    implementation of it, chosen by ``_impl_class``. The operations are still
     Python and still live in the sibling ``_bezier_*`` modules; only the state
     moved.
 
@@ -332,7 +332,7 @@ class Bezier:
 
     Attributes:
         _impl (_Impl): The implementation this wrapper holds; see
-            :func:`_impl_class`.
+            ``_impl_class``.
     """
 
     __slots__ = ("_impl",)

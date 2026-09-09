@@ -590,9 +590,9 @@ class BsplineSpace1D:
 
     **This class is a wrapper.** The value -- the knots, the degree, the
     periodicity and everything they fix -- is owned by an implementation chosen by
-    :func:`_impl_class`, which is the C++ type
+    ``_impl_class``, which is the C++ type
     (``cpp/include/pantr/bspline/space_1d.hpp``) or the oracle
-    :class:`_BsplineSpace1DPython`. The operations below are still Python over
+    ``_BsplineSpace1DPython``. The operations below are still Python over
     numba kernels and are unchanged; only the state moved.
 
     Instances are immutable, and ``__slots__`` is what says so: there is no
@@ -600,7 +600,7 @@ class BsplineSpace1D:
 
     Attributes:
         _impl (_Impl): The implementation this wrapper holds; see
-            :func:`_impl_class`.
+            ``_impl_class``.
     """
 
     __slots__ = ("_impl",)

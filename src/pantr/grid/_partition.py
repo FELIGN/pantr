@@ -231,14 +231,8 @@ class Partition:
     :attr:`n_parts`, :attr:`n_cells`, and :attr:`active_mask` properties.
 
     **This class is a wrapper**, holding a partition owned by the C++ core (or, under
-    ``PANTR_BACKEND=python``, a :class:`_PartitionPython`). See the module docstring
+    ``PANTR_BACKEND=python``, a ``_PartitionPython``). See the module docstring
     for the ownership rule and for where validation lives.
-
-    Attributes:
-        cell_owner (npt.NDArray[np.int32]): Per-cell owners, read-only.
-        n_parts (int): Number of parts (ranks).
-        n_cells (int): Number of cells.
-        active_mask (npt.NDArray[np.bool_]): Which cells some rank owns.
     """
 
     __slots__ = ("_impl",)
