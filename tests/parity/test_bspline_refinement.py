@@ -1089,6 +1089,62 @@ def test_a_near_duplicate_insertion_is_snapped_but_refined_unsnapped(
     )
 
 
+def test_a_zero_size_insertion_is_skipped_whatever_its_rank() -> None:
+    """An empty array skips its direction even when its shape is not 1-D.
+
+    The regression test for a divergence a review round found, and the exact input that
+    elicited it: ``[np.empty((0, 3)), [0.5]]``. The oracle skips on ``nk.size == 0`` in
+    ``_insert_knots_bspline``, one level *above* the rank check in
+    ``_compute_inserted_knot_vector_1d``, so a zero-size array never reaches that check
+    and the refinement succeeds. ``_flat_insertions`` tested the rank first and refused
+    it -- the port raising where the oracle returns.
+
+    That direction of divergence is the worse one and it is invisible to a comparison of
+    refusal texts, which is why it needs its own test rather than a row in the refusal
+    table. Both orderings of the pair are exercised, because a fix that skipped on size
+    only in the leading position would still be wrong.
+    """
+    case = _Case(
+        (_QUADRATIC_THIRDS, _SHIFTED_LINEAR),
+        (2, 1),
+        (None, None),
+        (1, 1),
+        None,
+        False,
+        "the zero-size input",
+    )
+    for label, argument, refined_axis in (
+        ("leading", [np.empty((0, 3)), np.array([11.5])], 1),
+        ("trailing", [np.array([0.5]), np.empty((2, 0))], 0),
+    ):
+        shapes: list[tuple[int, ...]] = []
+        for backend in (Backend.PYTHON, Backend.CPP):
+            with use_backend(backend):
+                field, _ = _make_field(case, np.float64)
+                before = field.control_points.shape
+                refined = field.insert_knots(argument)
+                shapes.append(refined.control_points.shape)
+                assert (
+                    refined.space.spaces[1 - refined_axis] is field.space.spaces[1 - refined_axis]
+                ), f"{label}: the zero-size direction did not keep its wrapper"
+                assert refined.control_points.shape[refined_axis] == before[refined_axis] + 1, (
+                    f"{label}: the other direction was not refined"
+                )
+        assert shapes[0] == shapes[1], f"{label}: {shapes[0]} against {shapes[1]}"
+
+    # A zero-size array of any rank still counts as empty for the "at least one
+    # direction" refusal, so the two backends refuse the all-empty call identically.
+    messages: list[str] = []
+    for backend in (Backend.PYTHON, Backend.CPP):
+        with use_backend(backend):
+            field, _ = _make_field(case, np.float64)
+            with pytest.raises(ValueError) as raised:
+                field.insert_knots([np.empty((0, 3)), np.empty(0)])
+            messages.append(str(raised.value))
+    assert messages[0] == messages[1], messages
+    assert "At least one direction" in messages[0]
+
+
 def test_the_refusal_order_divergence_is_exactly_one_input() -> None:
     """The two backends disagree on which of two bad arguments they report, and only there.
 
