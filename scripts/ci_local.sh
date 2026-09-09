@@ -411,6 +411,38 @@ discipline() {
                "test_scalar_generic.cpp no longer pins the concept or the instantiation"
     fi
 
+    # No `import pantr._pantr_cpp` anywhere in the shell that orchestrates the
+    # checks. This script's own extension gate was one, read as availability, and
+    # it recorded PASS on an installation with no extension built:
+    # `src/pantr/_pantr_cpp/` is a tracked directory of `.pyi` stubs, which Python
+    # imports as a namespace package rather than raising.
+    # `pantr._backend._cpp_extension_is_present` says so in its docstring -- "the
+    # import succeeding is not the answer" -- and settles it on `__file__`;
+    # `cpp_backend_available` above asks the library instead.
+    #
+    # Scoped by FILE TYPE rather than by the shape of the call, and that is the
+    # correction of a first version which required `python -c` and the import on
+    # one physical line. Two decoys walked straight through it: a multi-line
+    # `python -c "..."` -- the very style `cpp_backend_available` itself uses -- and
+    # a heredoc, which never contains the string `python -c` at all. In a shell or
+    # workflow file there is no reason to name that module except as an inline
+    # probe, so the file type is the honest scope. Python tools stay out of it:
+    # there the availability question is `available_backends()`, and a module-level
+    # import is a USE whose guard is a separate statement no grep can see --
+    # `bench_quad.py` is exactly that. Comment lines are stripped, because the rule
+    # is stated in prose here and a guard that fires on its own documentation gets
+    # switched off within a week.
+    hits="$(grep -rn 'import pantr\._pantr_cpp' \
+            --include='*.sh' --include='*.yaml' --include='*.yml' --include='Makefile' \
+            "$ROOT/scripts" "$ROOT/.github" "$ROOT/Makefile" 2>/dev/null \
+            | grep -vE '^[^:]+:[0-9]+:[[:space:]]*#' || true)"
+    if [[ -n "$hits" ]]; then
+        record FAIL "no import-as-availability-probe" "$(wc -l <<<"$hits") site(s)"
+        printf '%s\n' "$hits"
+    else
+        record PASS "no import-as-availability-probe"
+    fi
+
     # Discipline 3: unqualified math calls with a using-declaration.
     # `std::sqrt(x)` names the overload directly, suppressing ADL, which is
     # exactly how a user-defined scalar's own overload gets excluded. The
@@ -546,6 +578,20 @@ discipline() {
 
 # --------------------------------------------------------------------------
 # python -- the extension, the parity harness, both backends
+# Whether the C++ backend is actually available, asked of the library.
+#
+# NOT `import pantr._pantr_cpp`, which is what both call sites used to do.
+# `src/pantr/_pantr_cpp/` is a tracked directory of `.pyi` stubs, so with no
+# extension built that import returns an importable *namespace package* rather
+# than raising. `pantr._backend._cpp_extension_is_present` spells the trap out and
+# settles it on `__file__`; this asks the library for its own answer instead of
+# repeating the mistake.
+cpp_backend_available() {
+    python -c "import sys
+from pantr._backend import Backend, available_backends
+sys.exit(0 if Backend.CPP in available_backends() else 1)"
+}
+
 # --------------------------------------------------------------------------
 
 python_checks() {
@@ -602,10 +648,18 @@ python_checks() {
     # The extension must be present. Every check below it would otherwise SKIP,
     # and a suite that skips its way to green is the trap CLAUDE.md names: a
     # missing optional dependency skips without complaint.
-    if python -c "import pantr._pantr_cpp" 2>/dev/null; then
-        record PASS "pantr._pantr_cpp imports"
+    #
+    # The IMPORT SUCCEEDING IS NOT THE ANSWER, and this check used to ask exactly
+    # that. `src/pantr/_pantr_cpp/` is a tracked directory of `.pyi` stubs, so with
+    # no extension built the import returns an importable *namespace package*
+    # instead of raising -- and this gate then recorded PASS while every check
+    # below it skipped, which is the precise failure it exists to prevent.
+    # `pantr._backend._cpp_extension_is_present` documents the distinction and
+    # settles it on `__file__`; ask the library rather than repeat the mistake.
+    if cpp_backend_available 2>/dev/null; then
+        record PASS "the C++ backend is available"
     else
-        record FAIL "pantr._pantr_cpp imports" "everything below is meaningless"
+        record FAIL "the C++ backend is available" "everything below is meaningless"
         return 0
     fi
 
@@ -690,7 +744,7 @@ splitmode() {
     if pip install -e . --no-build-isolation -q \
          --config-settings=build-dir="$probebuild" \
          --config-settings=cmake.define.PANTR_NANOBIND_SPLIT=ON >"$LOGDIR/split.log" 2>&1 \
-       && python -c "import pantr._pantr_cpp" >>"$LOGDIR/split.log" 2>&1; then
+       && cpp_backend_available >>"$LOGDIR/split.log" 2>&1; then
         record PASS "nanobind split mode" "nanobind $nbver"
     else
         record WARN "nanobind split mode" "nanobind $nbver: see the log tail below"
