@@ -128,6 +128,50 @@ Named once so that
 parametrization actually uses rather than a copy of them.
 """
 
+
+_FUSED_ROUNDINGS_PER_STAGE = 3
+"""Accumulator roundings charged per fused site, from ``design/backend_parity.md`` Rule 10.
+
+At a fused site the oracle computes ``fl(a + fl(b*c))`` and the C++ backend
+``fl(a + b*c)``; expanding both with ``|delta| <= u`` bounds their difference by
+``|b*c| u (1 + u) + |a + b*c| 2u``, which is three accumulator roundings. Inherited from
+that rule rather than re-derived here.
+
+Named because it is used **four** times and all four must agree: as
+``Roundings.accumulator_per_stage`` in each of the two claims, and as the hull's
+widening budget in :func:`_companion`, which is referenced once more in that function's
+docstring. The claim's budget and the hull's have to describe the same chain, so a
+second literal is a live drift risk rather than a hypothetical one -- three rounding
+counts in this file were revised once already, and this constant was itself introduced
+half-applied, with two of the four sites left as bare literals while this docstring
+claimed they were not.
+"""
+
+
+def _deriv_stages(degree: int, n_deriv: int) -> int:
+    """The dependency-chain length of one non-zero A2.3 output element.
+
+    ``degree`` ``ndu`` stages then ``min(n_deriv, degree)`` a-table stages: capped at
+    the degree because for ``k > degree`` the factorial factor is exactly zero, so no
+    chain reaching a non-zero output passes through more of them.
+
+    A function rather than an expression repeated at each site, for the same reason
+    :data:`_FUSED_ROUNDINGS_PER_STAGE` is a constant. :func:`_deriv_claim` uses it for
+    the rounding budget, and the majorant-excess test uses it for the hull it compares
+    against; the two must agree, and that test cannot obtain the value from
+    :func:`_deriv_claim` because that returns a bitwise claim with no budget at all on a
+    non-fusing build.
+
+    Args:
+        degree (int): The polynomial degree.
+        n_deriv (int): The highest derivative order.
+
+    Returns:
+        int: The chain length, at least 1.
+    """
+    return max(degree + min(n_deriv, degree), 1)
+
+
 # ---------------------------------------------------------------------------
 # The cases
 # ---------------------------------------------------------------------------
@@ -636,7 +680,11 @@ def _value_claim(reference: _FloatArray, degree: int, dtype: Any) -> ParityClaim
     if not contraction_may_fuse():
         return bitwise_parity(why=_EXACT_BY_BUILD)
     return bounded_parity(
-        roundings=Roundings(stages=max(degree, 1), accumulator_per_stage=3, storage_per_stage=0),
+        roundings=Roundings(
+            stages=max(degree, 1),
+            accumulator_per_stage=_FUSED_ROUNDINGS_PER_STAGE,
+            storage_per_stage=0,
+        ),
         accumulator=dtype,
         storage=dtype,
         amplification=_companion(reference, degree, dtype),
@@ -689,10 +737,13 @@ def _deriv_claim(  # noqa: PLR0913
         return bitwise_parity(why=_EXACT_BY_BUILD)
     majorant = _a23_majorant(knots, degree, n_deriv, points, first_basis, unit_spans=unit_spans)
     # One expression for the chain length, so the rounding budget and the hull that
-    # widens the amplification cannot come to describe different chains.
-    stages = max(degree + min(n_deriv, degree), 1)
+    # widens the amplification cannot come to describe different chains. See
+    # `_deriv_stages`, which the majorant test shares.
+    stages = _deriv_stages(degree, n_deriv)
     return bounded_parity(
-        roundings=Roundings(stages=stages, accumulator_per_stage=3, storage_per_stage=0),
+        roundings=Roundings(
+            stages=stages, accumulator_per_stage=_FUSED_ROUNDINGS_PER_STAGE, storage_per_stage=0
+        ),
         accumulator=dtype,
         storage=dtype,
         amplification=_companion(majorant, stages, dtype),
@@ -1077,7 +1128,7 @@ def test_the_majorant_exceeds_the_finished_row_by_orders_of_magnitude(
     # happens on 1440 entries here and on none at float64, which is the signature of a
     # width artifact rather than of a broken bound. `_companion` widens by the
     # reference's own forward error for exactly this case.
-    hulled = _companion(majorant, degree + min(n_deriv, degree), dtype)
+    hulled = _companion(majorant, _deriv_stages(degree, n_deriv), dtype)
     assert np.all(hulled[normal] >= finished[normal]), (
         f"the hulled majorant is below the computed row on "
         f"{int(np.count_nonzero(hulled[normal] < finished[normal]))} entries, so it is "
@@ -1246,20 +1297,6 @@ def _falling_factorial(degree: int, n_deriv: int) -> int:
         largest = max(largest, value)
     return largest
 
-
-_FUSED_ROUNDINGS_PER_STAGE = 3
-"""Accumulator roundings charged per fused site, from ``design/backend_parity.md`` Rule 10.
-
-At a fused site the oracle computes ``fl(a + fl(b*c))`` and the C++ backend
-``fl(a + b*c)``; expanding both with ``|delta| <= u`` bounds their difference by
-``|b*c| u (1 + u) + |a + b*c| 2u``, which is three accumulator roundings. Inherited from
-that rule rather than re-derived here.
-
-Named once because it is used twice -- as ``Roundings.accumulator_per_stage`` in the
-claim, and as the hull's widening budget in :func:`_companion` -- and the two must
-describe the same chain. Three rounding counts in this file were revised once already,
-so a second literal is not a hypothetical drift risk.
-"""
 
 _VACUOUS_CASE = "wrapping-p22"
 """The one case whose derivative bound is too loose to assert anything, everywhere.

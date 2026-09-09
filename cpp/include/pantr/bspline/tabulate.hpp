@@ -114,10 +114,34 @@
 /// denominator; step 2's three divisions by `ndu[...]` carry no guard, in either
 /// backend. Where one of them is zero the oracle raises `ZeroDivisionError` and this
 /// kernel returns `nan` -- an exception on one side and a silent non-finite value on
-/// the other. Measured on the shipped build, at both widths: with
-/// `knots = [0,0,0,0,0.5,1,1,1,1,1]` and `degree = 3`, which the constructor accepts,
-/// `basis_derivs_1d` at the right domain endpoint returns 9 non-finite entries of 16
-/// while the oracle raises. Interior points on the same space are finite.
+/// the other.
+///
+/// Measured on the shipped build at both widths, and reproducible rather than quoted.
+/// Build the extension (`pip install -e .`, which configures with
+/// `PANTR_BUILD_PYTHON=ON`) and run:
+///
+/// ```py
+/// import numpy as np
+/// from pantr._backend import Backend, use_backend
+/// from pantr.bspline import BsplineSpace1D
+/// knots = np.array([0, 0, 0, 0, 0.5, 1, 1, 1, 1, 1], dtype=np.float64)  # or float32
+/// for backend in (Backend.PYTHON, Backend.CPP):
+///     with use_backend(backend):
+///         space = BsplineSpace1D(knots, 3)          # accepted: num_basis 6
+///         point = np.array([float(space.domain[1])], dtype=knots.dtype)
+///         try:
+///             block, _ = space.tabulate_basis_derivatives(point, 3)
+///             print(backend.name, "returned", np.count_nonzero(~np.isfinite(block)),
+///                   "non-finite of", block.size)
+///         except Exception as exc:
+///             print(backend.name, "raised", type(exc).__name__)
+/// ```
+///
+/// What it printed here: `PYTHON raised ZeroDivisionError` and
+/// `CPP returned 9 non-finite of 16`, identically at `float64` and `float32`. Interior
+/// points on the same space come back finite under both, so the right domain endpoint
+/// is the trigger. The value tabulation agrees between the backends -- both return a
+/// finite row summing to zero -- because step 1's guard covers it.
 ///
 /// **It is not guarded here, and the reason is that no narrow guard exists.** Guarding
 /// step 2's divisions the way step 1 guards its own is provably behaviour-preserving --
