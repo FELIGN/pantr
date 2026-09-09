@@ -20,7 +20,12 @@ Three things are measured, and the second is the one that matters:
    two models *disagree with each other*, so a match cannot come from a check that
    could not fail.
 
-3. **Where the falling-factorial accumulator wraps.** ``_basis_derivs_point`` and
+3. **Two structural checks the C++ comments cite**: whether the oracle's non-periodic
+   first-basis clamp is ever active (it is not, and the comment claiming it is
+   load-bearing is wrong), and which width numpy applies the Bezier-like chain-rule
+   factor at.
+
+4. **Where the falling-factorial accumulator wraps.** ``_basis_derivs_point`` and
    ``_bernstein_derivs_point`` both accumulate ``degree!/(degree-k)!`` in an integer
    that wraps at int64 when compiled. Past the wrap the *scaling* of the k-th
    derivative row is a different number, in both backends, and it is not a rounding
@@ -730,6 +735,100 @@ def report_the_factorial_wrap() -> int:
     return 0 if mismatches == 0 else 1
 
 
+def report_the_redundant_clamp() -> int:
+    """Check whether the oracle's non-periodic first-basis clamp is ever active.
+
+    ``_find_span_and_first_basis_point`` clamps the span to ``knots.size - degree - 2``
+    and *then* clamps ``first_basis = span - degree`` to ``num_basis - order``. Its
+    comment explains the second clamp as needed "so the final evaluation point always
+    addresses the last degree + 1 active basis functions". Algebraically the span clamp
+    has already made the two bounds equal::
+
+        span - degree     <= (n - degree - 2) - degree   = n - 2*degree - 2
+        num_basis - order  = (n - degree - 1) - (degree + 1) = n - 2*degree - 2
+
+    so the ``min`` can never bind. This sweeps it rather than only arguing it, because
+    the argument is the kind that is easy to get subtly wrong and the sweep is cheap.
+
+    The clamp is reproduced in ``cpp/include/pantr/bspline/tabulate.hpp`` anyway, so the
+    two backends stay structurally identical and a future change to the span clamp
+    cannot make one wrong while the other stays right.
+
+    Returns:
+        int: 0 if the clamp never changed the answer, 1 if it did -- in which case the
+        redundancy claim in both the oracle's comment and the port's is wrong.
+    """
+    active = 0
+    checked = 0
+    for degree in range(7):
+        for extra in range(6):
+            count = 2 * degree + 2 + extra
+            knots = np.linspace(0.0, 1.0, count, dtype=np.float64)
+            num_basis = count - degree - 1
+            probes = np.concatenate([knots, np.linspace(-0.5, 1.5, 41)])
+            for pt in probes:
+                span = int(np.searchsorted(knots, pt, side="right")) - 1
+                span = max(min(span, count - degree - 2), degree)
+                checked += 1
+                if min(span - degree, num_basis - degree - 1) != span - degree:
+                    active += 1
+
+    print("== 4. the oracle's non-periodic first-basis clamp ==")
+    print(f"   swept {checked} (degree, knot count, point) combinations")
+    print(f"   the min changed the answer {active} times")
+    if active == 0:
+        print("   so the clamp is unreachable: the span clamp above it already makes the")
+        print("   two bounds equal, and the comment calling it load-bearing is wrong.")
+    print()
+    return 0 if active == 0 else 1
+
+
+def measure_the_chain_rule_scaling_width(dtype: _Storage = np.float32) -> int:
+    """Measure which width numpy applies the Bezier-like chain-rule factor at.
+
+    ``_tabulate_Bspline_basis_Bernstein_like_deriv_1D`` accumulates
+    ``scale = (1 / float(b - a)) ** k`` as a Python ``float``, so the accumulation is
+    genuinely ``float64``; it then writes ``out_deriv[:, k, :] * scale``. Under NEP 50 a
+    Python float is a *weak* scalar and is cast to the array's dtype before the
+    multiply, so the factor applied is the narrowed one -- but that is a property of
+    numpy's promotion rules rather than of the source, so it is measured.
+
+    Two rival models per value, and the count of values on which they disagree, so a
+    match cannot come from a check that could not fail.
+
+    Args:
+        dtype (_Storage): The storage dtype. Defaults to ``np.float32``.
+
+    Returns:
+        int: 0 when exactly one model reproduces numpy on every value.
+    """
+    rng = np.random.default_rng(_RNG_SEED)
+    values: _Array = cast("_Array", rng.random(20000).astype(dtype))
+    # Reciprocals of spans a Bezier-like space plausibly has, including exact powers of
+    # two (where the two models must agree, since the factor is representable) and
+    # values needing the full float64 significand (where they need not).
+    scales = [1.0 / 3.0, 1.0 / 7.0, np.pi, 1e-8, 1e8, 1.0 / 1024.0]
+    bits = np.uint32 if dtype is np.float32 else np.uint64
+    narrow_hits = wide_hits = models_differ = total = 0
+
+    for scale in scales:
+        got = cast("_Array", values * scale)
+        narrow = cast("_Array", values * dtype(scale))
+        wide = cast("_Array", (values.astype(np.float64) * scale).astype(dtype))
+        total += values.size
+        narrow_hits += int(np.count_nonzero(got.view(bits) == narrow.view(bits)))
+        wide_hits += int(np.count_nonzero(got.view(bits) == wide.view(bits)))
+        models_differ += int(np.count_nonzero(narrow.view(bits) != wide.view(bits)))
+
+    name = np.dtype(dtype).name
+    print(f"== 5. the chain-rule scaling at {name}: {total} values, {len(scales)} scales ==")
+    print(f"   factor narrowed before the multiply reproduces numpy: {narrow_hits}/{total}")
+    print(f"   product formed in float64 reproduces numpy:           {wide_hits}/{total}")
+    print(f"   the two models disagree on {models_differ}/{total} values")
+    print()
+    return 0 if narrow_hits == total and (dtype is np.float64 or models_differ > 0) else 1
+
+
 def main() -> int:
     """Run every measurement and return a non-zero status if any model failed.
 
@@ -747,6 +846,9 @@ def main() -> int:
     status |= measure_the_two_twins_agree(np.float32)
     status |= measure_the_two_twins_agree(np.float64)
     status |= report_the_factorial_wrap()
+    status |= report_the_redundant_clamp()
+    status |= measure_the_chain_rule_scaling_width(np.float32)
+    status |= measure_the_chain_rule_scaling_width(np.float64)
     print("all models reproduced the kernel" if status == 0 else "A MODEL FAILED, see above")
     return status
 

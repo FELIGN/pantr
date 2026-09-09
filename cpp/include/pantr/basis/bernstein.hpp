@@ -88,6 +88,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <concepts>
 #include <cstddef>
 #include <cstdint>
 #include <limits>
@@ -385,8 +386,25 @@ void tabulate_bernstein_deriv_1d(int degree, int n_deriv, std::span<const T> poi
         // --- The factorial scaling, formed in `double` and rounded on the store ---
         for (std::size_t k = 1; k < rows; ++k) {
             const auto fac_wide = static_cast<double>(factorial[k]);
+            // **Widened for a plain scalar and not for a differentiable one, and the
+            // branch is not an optimisation.** For `float` and `double` the wide form is
+            // what parity requires: numba promotes `float32 * int64` to `float64`, so the
+            // product is formed in `double` and rounded once on the store. But it reads
+            // only the *value* through `value_of` and rebuilds `T` from a raw `double`,
+            // which for a differentiable scalar constructs a zero-derivative value and so
+            // discards everything steps 1 and 2 carried -- in the one kernel whose whole
+            // job is derivatives. `pantr/core/scalar.hpp` says AD compatibility rides
+            // along for free with the float32 discipline; here the two genuinely conflict,
+            // so each gets the arithmetic it needs. The two branches agree exactly at
+            // `double`, where the wide product IS the storage-width product; only `float`
+            // separates them, and only `float` has an oracle to be faithful to.
             for (std::size_t j = 0; j < order; ++j) {
-                at(out, p, k, j) = T(static_cast<double>(value_of(at(out, p, k, j))) * fac_wide);
+                if constexpr (std::same_as<T, value_type_t<T>>) {
+                    at(out, p, k, j) =
+                        T(static_cast<double>(value_of(at(out, p, k, j))) * fac_wide);
+                } else {
+                    at(out, p, k, j) = at(out, p, k, j) * T(fac_wide);
+                }
             }
         }
     }
