@@ -41,6 +41,23 @@
 /// different message -- which is the divergence this file's first paragraph warns
 /// about, one layer up. The check now exists once.
 ///
+/// ## The other answer to the same question, and why both are here
+///
+/// `bincoeff` **guards** the envelope rather than reproducing numba's wrap, and that
+/// is right for it: its callers can refuse an out-of-envelope degree in Layer 2, where
+/// the refusal is shared by both backends. `wrapping_mul` below is the opposite answer,
+/// and it exists because one port cannot take the first one. The factorial scaling of
+/// Piegl & Tiller A2.3 -- `pantr/basis/bernstein.hpp` and
+/// `pantr/bspline/tabulate.hpp` -- accumulates `degree!/(degree-k)!` in an int64 that
+/// wraps from degree 21, and *nothing in Layer 2 refuses that call today*. Making C++
+/// refuse where the oracle returns a number would make `PANTR_BACKEND` change what the
+/// library accepts, which `pantr.basis._basis_backend` states as a rule rather than a
+/// preference. So that port reproduces the wrap, and it needs a spelling of it that is
+/// not undefined behaviour.
+///
+/// Both live here for this file's own opening reason: two headers in two packages need
+/// the same integer arithmetic, and two copies of it is how they diverge silently.
+///
 /// Independently of the integer limit, the `double` return is lossless only
 /// while `C(n, k) <= 2^53`, i.e. up to `n = 56`; `C(57, 28)` is the first past
 /// it. Between 57 and 61 the exact integer is computed and then correctly
@@ -85,6 +102,24 @@ inline constexpr int kBincoeffExactDoubleMaxN = 56;
         result = result * static_cast<std::int64_t>(n - kk + i) / static_cast<std::int64_t>(i);
     }
     return static_cast<double>(result);
+}
+
+/// Multiply two signed 64-bit integers, wrapping rather than overflowing.
+///
+/// The product is formed in `std::uint64_t`, where the wrap is specified, and converted
+/// back -- a conversion C++20 [conv.integral]/3 defines as modular for every value,
+/// where signed overflow would be undefined behaviour. That reproduces exactly what a
+/// numba int64 accumulator does.
+///
+/// See the file comment for why one port reproduces the wrap while `bincoeff` guards
+/// against it.
+///
+/// \param a Left operand.
+/// \param b Right operand.
+/// \return The low 64 bits of the product, read as a signed value.
+[[nodiscard]] constexpr std::int64_t wrapping_mul(std::int64_t a, std::int64_t b) noexcept {
+    return static_cast<std::int64_t>(static_cast<std::uint64_t>(a) *
+                                     static_cast<std::uint64_t>(b));
 }
 
 }  // namespace pantr::core
