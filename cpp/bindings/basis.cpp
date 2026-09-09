@@ -33,6 +33,9 @@ using const_points = nb::ndarray<const T, nb::ndim<1>, nb::c_contig, nb::device:
 template <class T>
 using out_matrix = nb::ndarray<T, nb::ndim<2>, nb::c_contig, nb::device::cpu>;
 
+template <class T>
+using out_tensor = nb::ndarray<T, nb::ndim<3>, nb::c_contig, nb::device::cpu>;
+
 /// Tabulate into `out`, after checking what the kernel assumes and never checks.
 ///
 /// **This function is Layer 2's C++ half**, and the checks below belong here for
@@ -92,6 +95,60 @@ void tabulate(unsigned degree, const_points<T> points, out_matrix<T> out) {
     Kernel(static_cast<int>(degree), pts, view);
 }
 
+/// Tabulate the Bernstein basis and its derivatives into `out`, after checking
+/// what the kernel assumes and never checks.
+///
+/// The derivative twin of `tabulate` above, with the same C++-half-of-Layer-2
+/// role, the same reason for the `unsigned` parameters and the same guard
+/// shape -- applied to *both* `degree` and `n_deriv`, since
+/// `tabulate_bernstein_deriv_1d` widens both to `std::size_t` before indexing
+/// `out`.
+///
+/// The argument list differs from `tabulate`'s (two degree-like parameters
+/// instead of one, a rank-3 `out` instead of rank-2), so this is a second
+/// function template with its own `bind` lambda below rather than a change to
+/// the existing one -- bending `tabulate`'s signature to fit both shapes would
+/// make the common case pay for the derivative case's extra argument.
+template <class T,
+         void (*Kernel)(int, int, std::span<const T>, pantr::span_nd<T, 3>)>
+void tabulate_deriv(unsigned degree, unsigned n_deriv, const_points<T> points,
+                    out_tensor<T> out) {
+    constexpr unsigned max_degree = static_cast<unsigned>(std::numeric_limits<int>::max());
+    if (degree > max_degree) {
+        throw nb::value_error(("degree " + std::to_string(degree) +
+                               " exceeds the largest degree the kernel can express (" +
+                               std::to_string(max_degree) + ")")
+                                  .c_str());
+    }
+    if (n_deriv > max_degree) {
+        throw nb::value_error(("n_deriv " + std::to_string(n_deriv) +
+                               " exceeds the largest derivative order the kernel can express (" +
+                               std::to_string(max_degree) + ")")
+                                  .c_str());
+    }
+
+    const std::size_t num_pts = points.size();
+    const std::size_t num_basis = static_cast<std::size_t>(degree) + 1;
+    const std::size_t num_rows = static_cast<std::size_t>(n_deriv) + 1;
+    if (out.shape(0) != num_pts || out.shape(1) != num_rows || out.shape(2) != num_basis) {
+        throw nb::value_error(("out has shape (" + std::to_string(out.shape(0)) + ", " +
+                               std::to_string(out.shape(1)) + ", " +
+                               std::to_string(out.shape(2)) + "), but degree " +
+                               std::to_string(degree) + " and n_deriv " +
+                               std::to_string(n_deriv) + " at " + std::to_string(num_pts) +
+                               " points needs (" + std::to_string(num_pts) + ", " +
+                               std::to_string(num_rows) + ", " + std::to_string(num_basis) +
+                               ")")
+                                  .c_str());
+    }
+
+    const std::span<const T> pts(points.data(), num_pts);
+    const pantr::span_nd<T, 3> view(out.data(), num_pts, num_rows, num_basis);
+
+    const nb::gil_scoped_release release;
+    Kernel(static_cast<int>(degree), static_cast<int>(n_deriv), pts, view);
+}
+
 }  // namespace
 
 void register_basis(nb::module_& m) {
@@ -140,4 +197,18 @@ void register_basis(nb::module_& m) {
          &tabulate<float, &pantr::tabulate_bernstein_1d<float>>);
     bind("tabulate_legendre_1d", &tabulate<double, &pantr::tabulate_legendre_1d<double>>,
          &tabulate<float, &pantr::tabulate_legendre_1d<float>>);
+
+    // A second lambda rather than a second overload set squeezed into `bind`:
+    // `tabulate_deriv` takes two degree-like parameters and a rank-3 `out`, so
+    // its argument list is genuinely different, not a variant of `tabulate`'s.
+    const auto bind_deriv = [&m](const char* name, auto f64, auto f32) {
+        m.def(name, f64, nb::arg("degree"), nb::arg("n_deriv"), nb::arg("points").noconvert(),
+              nb::kw_only(), nb::arg("out").noconvert());
+        m.def(name, f32, nb::arg("degree"), nb::arg("n_deriv"), nb::arg("points").noconvert(),
+              nb::kw_only(), nb::arg("out").noconvert());
+    };
+
+    bind_deriv("tabulate_bernstein_deriv_1d",
+              &tabulate_deriv<double, &pantr::tabulate_bernstein_deriv_1d<double>>,
+              &tabulate_deriv<float, &pantr::tabulate_bernstein_deriv_1d<float>>);
 }

@@ -48,6 +48,7 @@ from ._basis import lagrange_to_bernstein_1d as lagrange_to_bernstein_1d
 from ._basis import legendre_to_cardinal_1d as legendre_to_cardinal_1d
 from ._basis import monomial_to_bernstein_1d as monomial_to_bernstein_1d
 from ._basis import tabulate_bernstein_1d as tabulate_bernstein_1d
+from ._basis import tabulate_bernstein_deriv_1d as tabulate_bernstein_deriv_1d
 from ._basis import tabulate_cardinal_bspline_1d as tabulate_cardinal_bspline_1d
 from ._basis import tabulate_legendre_1d as tabulate_legendre_1d
 from ._bezier import Bezier32 as Bezier32
@@ -119,6 +120,10 @@ from ._bspline import (
 from ._bspline import lagrange_extraction_1d as lagrange_extraction_1d
 from ._bspline import (
     lagrange_structural_identity_mask as lagrange_structural_identity_mask,
+)
+from ._bspline import tabulate_bspline_basis_1d as tabulate_bspline_basis_1d
+from ._bspline import (
+    tabulate_bspline_basis_derivatives_1d as tabulate_bspline_basis_derivatives_1d,
 )
 from ._bspline_field import Bspline32 as Bspline32
 from ._bspline_field import Bspline64 as Bspline64

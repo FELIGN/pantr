@@ -56,6 +56,24 @@ the Numba kernels, so the bindings carry no ``nb::kw_only()``. And the identity
 flags are plain ``bool`` while the batch forms take them as arrays, which is the
 oracle's own split between a resolved cell and a batch of them.
 
+## General-knot basis tabulation
+
+Bound by ``cpp/bindings/bspline_basis.cpp``, over ``basis_funcs_1d`` and
+``basis_derivs_1d`` in ``cpp/include/pantr/bspline/tabulate.hpp`` -- Layer 3, not
+the space-level dispatch beside them in that header, which is a C++-only entry
+point and is deliberately not bound: building a space per tabulation call would
+re-validate and copy the knot vector in front of a kernel called with as few as
+two or three points, and the space's constructor snaps by default, which could
+silently evaluate on a different knot vector than the oracle did.
+:mod:`pantr.bspline._basis_backend` keeps the oracle's own Bézier-like-path
+dispatch and calls these two directly.
+
+**None of these checks has a counterpart in the oracle**, for the same reason
+the Bézier extraction operator builder's file comment gives: the oracle's own
+Layer 2 validates ``degree``, the domain and the output shapes in Python, above
+the backend dispatch, so both backends share it and it cannot diverge between
+them.
+
 See ``__init__.pyi`` for what this package promises and who has to keep it.
 """
 
@@ -357,6 +375,118 @@ def lagrange_structural_identity_mask(
         ValueError: If ``degree`` is negative, ``multiplicities`` is empty,
             ``out`` is not one shorter than ``multiplicities``, or the matrix has
             the wrong shape.
+    """
+
+def tabulate_bspline_basis_1d(
+    knots: _Array,
+    degree: int,
+    periodic: bool,
+    points: _Array,
+    *,
+    out_basis: _Array,
+    out_first_basis: _Index,
+) -> None:
+    """Tabulate the B-spline basis over a general knot vector (Piegl & Tiller A2.2).
+
+    The **C++ half of Layer 2** in the layering of CLAUDE.md, not Layer 3: it
+    validates every precondition ``pantr::bspline::basis_funcs_1d`` assumes and
+    never checks. Binds that free function directly rather than the space-level
+    ``tabulate_basis_1d``, which additionally picks the Bézier-like fast path --
+    ``cpp/include/pantr/bspline/tabulate.hpp``'s "Why the dispatch stays on the
+    Python side" is the reason, and :mod:`pantr.bspline._basis_backend` is what
+    keeps that dispatch.
+
+    **None of the checks below has a counterpart in the oracle.** The oracle's
+    own Layer 2 validates ``degree``, the domain and the output shapes in Python,
+    above the backend dispatch, so both backends share it and it cannot itself
+    diverge. What is checked here exists for a caller who reaches
+    :mod:`pantr._pantr_cpp` directly, which is possible because it is a public
+    attribute of a public module -- :func:`tabulate_cardinal_bspline_1d`'s
+    docstring records the measured SIGSEGV and heap corruption that motivate the
+    same discipline there.
+
+    A point outside ``knots``' domain is evaluated in the clamped span rather
+    than refused, which is what the oracle does with ``validate=False``.
+
+    Args:
+        knots (_Array): The knot vector, non-decreasing, at least
+            ``2 * degree + 2`` entries. C-contiguous.
+        degree (int): The polynomial degree. Must be non-negative and must fit a
+            C ``int``.
+        periodic (bool): Whether the space is periodic.
+        points (_Array): 1D, C-contiguous evaluation points, matching ``knots``
+            in dtype.
+        out_basis (_Array): 2D, C-contiguous, writable output of shape
+            ``(points.size, degree + 1)`` and matching dtype. Written in full.
+            Keyword-only.
+        out_first_basis (_Index): 1D, C-contiguous, writable output holding one
+            entry per point: the global index of the first basis function
+            supported there. Written in full. Keyword-only.
+
+    Raises:
+        TypeError: If ``knots``, ``points``, ``out_basis`` or ``out_first_basis``
+            has the wrong dtype or rank, is not C-contiguous, or if ``degree`` is
+            negative, or if either output is passed positionally. A
+            non-contiguous output is refused rather than converted: converting
+            it would fill a temporary and leave the caller's array untouched,
+            which is why ``.noconvert()`` is on every array here.
+        ValueError: If ``degree`` is too large to fit a C ``int``, if ``knots``
+            has fewer than ``2 * degree + 2`` entries, or if ``out_basis`` or
+            ``out_first_basis`` does not have the shape ``points`` and ``degree``
+            call for.
+    """
+
+def tabulate_bspline_basis_derivatives_1d(
+    knots: _Array,
+    degree: int,
+    periodic: bool,
+    n_deriv: int,
+    points: _Array,
+    *,
+    out_deriv: _Array,
+    out_first_basis: _Index,
+) -> None:
+    """Tabulate the B-spline basis derivatives over a general knot vector (A2.3).
+
+    The **C++ half of Layer 2**, with the same contract, checks and reasons as
+    :func:`tabulate_bspline_basis_1d`; only the kernel differs
+    (``pantr::bspline::basis_derivs_1d``). Row 0 of each point's block holds the
+    plain basis values and is identical to what
+    :func:`tabulate_bspline_basis_1d` writes for the same arguments.
+
+    **The values are wrong in both backends for ``degree >= 21``** once
+    ``n_deriv`` reaches the wrapping order of the factorial accumulator the
+    kernel uses; the two backends agree there, which is what parity claims, and
+    neither is right. ``cpp/include/pantr/bspline/tabulate.hpp``'s file comment
+    measures the wrapping degree and derivative order.
+
+    Args:
+        knots (_Array): The knot vector, non-decreasing, at least
+            ``2 * degree + 2`` entries. C-contiguous.
+        degree (int): The polynomial degree. Must be non-negative and must fit a
+            C ``int``.
+        periodic (bool): Whether the space is periodic.
+        n_deriv (int): Highest derivative order. Must be non-negative and must
+            fit a C ``int``.
+        points (_Array): 1D, C-contiguous evaluation points, matching ``knots``
+            in dtype.
+        out_deriv (_Array): 3D, C-contiguous, writable output of shape
+            ``(points.size, n_deriv + 1, degree + 1)`` and matching dtype.
+            Written in full. Keyword-only.
+        out_first_basis (_Index): 1D, C-contiguous, writable output holding one
+            entry per point: the global index of the first basis function
+            supported there. Written in full. Keyword-only.
+
+    Raises:
+        TypeError: If ``knots``, ``points``, ``out_deriv`` or ``out_first_basis``
+            has the wrong dtype or rank, is not C-contiguous, or if ``degree`` or
+            ``n_deriv`` is negative, or if either output is passed positionally.
+            A non-contiguous output is refused rather than converted, for the
+            reason :func:`tabulate_bspline_basis_1d` gives.
+        ValueError: If ``degree`` or ``n_deriv`` is too large to fit a C ``int``,
+            if ``knots`` has fewer than ``2 * degree + 2`` entries, or if
+            ``out_deriv`` or ``out_first_basis`` does not have the shape
+            ``points``, ``degree`` and ``n_deriv`` call for.
     """
 
 def apply_kron_1d(
