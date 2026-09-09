@@ -311,6 +311,21 @@ def _demand_the_two_spaces_agree(knots: list[float], degree: int, dtype: Any) ->
 # The rounding budget, for the branch where contraction is live
 # ---------------------------------------------------------------------------
 
+_BEZIER_VALUES_EXACT = (
+    "The Bezier-like value path does not reach tabulate.hpp: the change of variable "
+    "onto [0, 1] is the same numpy expression above the seam on both sides, and the "
+    "work is tabulate_bernstein_1d's ratio recurrence. That recurrence contains **no "
+    "a * b + c site at all** -- its inner step is (prev * const) * ratio, three "
+    "multiplications and no addition -- so the claim is bitwise unconditionally rather "
+    "than conditional on the build, exactly as tests/parity/test_basis_tabulations.py "
+    "already claims for the same kernel. cpp/include/pantr/basis/bernstein.hpp states "
+    "the argument; it was also checked here, by running this file against a "
+    "-march=native build, where zero of the values moved while 31 derivative cases "
+    "did. What the claim does rest on rather than derive is that numba's np.power "
+    "agrees with the platform libm, which is why demand_a_compiled_seed gates it."
+)
+
+
 _EXACT_BY_BUILD = (
     "A2.2 and A2.3 are built from +, -, *, / and an exact-zero comparison, with no "
     "transcendental and no library call, so IEEE 754 pins every result and the only "
@@ -327,23 +342,207 @@ _EXACT_BY_BUILD = (
     "instead."
 )
 
-_BOUNDED_BY_FMA = (
+_BOUNDED_BY_FMA_VALUES = (
     "This build's target ISA carries a fused multiply-add and PantrCompileOptions "
-    "adds -ffp-contract=on, so `saved + right[r+1] * temp` in A2.2 and "
-    "`d + a[s2,j] * ndu[...]` in A2.3 may each compile to one FMA while the numba "
-    "oracle never fuses (LLVM does not contract without fastmath, which no pantr "
-    "kernel sets). design/backend_parity.md Rule 10: at a fused site the two differ "
-    "by |b*c| u (1+u) + |a+b*c| 2u, three accumulator roundings, and the accumulator "
-    "is the storage format here so there is no narrowing store to charge. The "
-    "dependency chain through one output element passes exactly one fusable site per "
-    "stage of the outer recurrence, and there are `degree` stages. The amplification "
-    "is the absolute-value companion of the recurrence itself, which Rule 10 licenses "
-    "for a convex recurrence and refuses for a signed one: A2.2's weights are "
-    "non-negative and sum to one, so the companion is exactly the magnitude reachable "
-    "at each output element; A2.3 differences and so gets the majorant of its own "
-    "recursion, every coefficient replaced by its modulus, which bounds every "
-    "intermediate by induction and whose partial sums are then monotone."
+    "adds -ffp-contract=on, so `saved + right[r+1] * temp` in A2.2 may compile to one "
+    "FMA while the numba oracle never fuses (LLVM does not contract without fastmath, "
+    "which no pantr kernel sets). design/backend_parity.md Rule 10: at a fused site "
+    "the two differ by |b*c| u (1+u) + |a+b*c| 2u, three accumulator roundings, and "
+    "the accumulator is the storage format here so there is no narrowing store to "
+    "charge. The dependency chain through one output element passes one fusable site "
+    "per stage of the outer recurrence and there are `degree` stages. "
+    "The amplification is the absolute-value companion of the recurrence, which Rule "
+    "10 licenses for a convex recurrence: A2.2's two weights are right[r+1]/denom and "
+    "left[j-r]/denom, both non-negative for a non-decreasing knot vector and summing "
+    "to one, so replacing every coefficient by its modulus changes nothing and the "
+    "companion IS the computed row. It is hull-widened so an entry that rounded to "
+    "zero while the true value did not still carries a tolerance."
 )
+
+_BOUNDED_BY_FMA_DERIVS = (
+    "The fused sites are `saved + right[r+1] * temp` in the ndu triangle and "
+    "`d + a[s2,j] * ndu[...]` in the a-table recursion, and the per-site budget is "
+    "Rule 10's: three accumulator roundings, no narrowing store, the accumulator "
+    "being the storage format. The chain through one output element runs `degree` ndu "
+    "stages then up to `n_deriv` a-table stages. "
+    "**The amplification is NOT the finished row**, and Rule 10 is explicit about why: "
+    "A2.3 differences, so it is not convex, its partial sums can exceed what survives "
+    "to the output, and no telescoping argument recovers them -- the finished row was "
+    "measured to be exceeded by a structural factor on the sibling Bezier kernel. It "
+    "is instead the majorant of the recursion itself: the same algorithm with every "
+    "coefficient replaced by its modulus, which is the two sign changes in the a-table "
+    "that turn its differences into sums. For a linear recursion with signed "
+    "coefficients that bounds every intermediate by induction, and with the signs gone "
+    "the partial sums are monotone, so the final value majorises all of them. The "
+    "factorial scaling is applied with the same wrapped integers the kernel uses, since "
+    "the amplification must bound what the kernel computed and not what it should have."
+)
+
+
+def _a23_majorant(  # noqa: PLR0913
+    knots: list[float],
+    degree: int,
+    n_deriv: int,
+    points: _FloatArray,
+    first_basis: npt.NDArray[np.int_],
+    *,
+    unit_spans: bool,
+) -> _FloatArray:
+    """The majorant of the A2.3 recursion: the same algorithm on moduli.
+
+    Rule 10's licensed amplification for a **non-convex** recursion. Two lines differ
+    from the oracle, both in the ``a`` table: its two differences become sums. Every
+    quantity is then non-negative, so each intermediate bounds the corresponding signed
+    one by induction, and the monotone partial sums make the final value majorise all
+    of them.
+
+    Run in ``float64`` throughout. The amplification is a magnitude rather than a
+    computed value, so its own rounding is second order against the ``u`` it multiplies.
+
+    Args:
+        knots (list[float]): The knot vector.
+        degree (int): The polynomial degree.
+        n_deriv (int): The highest derivative order.
+        points (_FloatArray): The evaluation points.
+        first_basis (npt.NDArray[np.int_]): The first-basis index per point, used only
+            to recover each point's span.
+        unit_spans (bool): ``True`` for the Bezier-like path, whose kernel is A2.3 with
+            every knot difference equal to one and whose ``ndu`` upper triangle is
+            therefore built from ``s`` and ``1 - s`` on the reference interval. The two
+            kernels are different algorithms, so one majorant cannot serve both.
+
+    Returns:
+        _FloatArray: Shape ``(points.size, n_deriv + 1, degree + 1)``, non-negative.
+    """
+    order = degree + 1
+    rows = n_deriv + 1
+    out = np.zeros((points.size, rows, order), dtype=np.float64)
+
+    if unit_spans:
+        begin, end = knots[degree], knots[len(knots) - degree - 1]
+        reference = (np.asarray(points, dtype=np.float64) - begin) / (end - begin)
+        inverse_span = 1.0 / (end - begin)
+    else:
+        reference = np.asarray(points, dtype=np.float64)
+        inverse_span = 1.0
+
+    exact_knots = np.asarray(knots, dtype=np.float64)
+    factorial = _wrapped_falling_factorials(degree, n_deriv)
+
+    for index in range(points.size):
+        span = degree if unit_spans else int(first_basis[index]) + degree
+        ndu = _ndu_majorant(
+            exact_knots,
+            degree,
+            span,
+            float(points[index]),
+            float(reference[index]),
+            unit_spans=unit_spans,
+        )
+        out[index, 0, :] = ndu[:, degree]
+        a = np.zeros((2, rows), dtype=np.float64)
+
+        for r in range(order):
+            s1, s2 = 0, 1
+            a[0, 0] = 1.0
+            for k in range(1, rows):
+                d = 0.0
+                rk, pk = r - k, degree - k
+                if r >= k:
+                    a[s2, 0] = a[s1, 0] / ndu[pk + 1, rk] if ndu[pk + 1, rk] else 0.0
+                    d = a[s2, 0] * ndu[rk, pk]
+                j1 = 1 if rk >= -1 else -rk
+                j2 = k - 1 if (r - 1) <= pk else degree - r
+                for j in range(j1, j2 + 1):
+                    # The first of the two sign changes: a difference becomes a sum.
+                    numerator = a[s1, j] + a[s1, j - 1]
+                    a[s2, j] = numerator / ndu[pk + 1, rk + j] if ndu[pk + 1, rk + j] else 0.0
+                    d += a[s2, j] * ndu[rk + j, pk]
+                if r <= pk:
+                    # The second: a negation becomes a modulus.
+                    a[s2, k] = a[s1, k - 1] / ndu[pk + 1, r] if ndu[pk + 1, r] else 0.0
+                    d += a[s2, k] * ndu[r, pk]
+                out[index, k, r] = d
+                s1, s2 = s2, s1
+
+    for k in range(1, rows):
+        out[:, k, :] *= abs(float(factorial[k])) * inverse_span**k
+    return out
+
+
+def _ndu_majorant(  # noqa: PLR0913
+    knots: _FloatArray,
+    degree: int,
+    span: int,
+    point: float,
+    reference_point: float,
+    *,
+    unit_spans: bool,
+) -> _FloatArray:
+    """The ``ndu`` table of A2.3 built on moduli, for either kernel variant.
+
+    For an in-domain point the knot differences are already non-negative, so taking
+    moduli changes nothing here and the table equals the kernel's. It is written on
+    moduli anyway, because the majorant's soundness must not depend on the caller
+    having clipped its points.
+
+    Args:
+        knots (_FloatArray): The knot vector, in ``float64``.
+        degree (int): The polynomial degree.
+        span (int): The point's knot span.
+        point (float): The evaluation point, in the knot vector's coordinate.
+        reference_point (float): The same point mapped onto ``[0, 1]``; used only by
+            the unit-span variant.
+        unit_spans (bool): ``True`` for the Bezier-like kernel, whose knot differences
+            are all one and whose triangle is built from ``s`` and ``1 - s``.
+
+    Returns:
+        _FloatArray: Shape ``(degree + 1, degree + 1)``, non-negative.
+    """
+    order = degree + 1
+    ndu = np.zeros((order, order), dtype=np.float64)
+    ndu[0, 0] = 1.0
+
+    for j in range(1, order):
+        saved = 0.0
+        for r in range(j):
+            if unit_spans:
+                ndu[j, r] = 1.0
+                left, right = abs(reference_point), abs(1.0 - reference_point)
+            else:
+                left = abs(point - knots[span + 1 - (j - r)])
+                right = abs(knots[span + r + 1] - point)
+                ndu[j, r] = right + left
+            denom = ndu[j, r]
+            temp = 0.0 if denom == 0.0 else ndu[r, j - 1] / denom
+            ndu[r, j] = saved + right * temp
+            saved = left * temp
+        ndu[j, j] = saved
+    return ndu
+
+
+def _wrapped_falling_factorials(degree: int, n_deriv: int) -> list[int]:
+    """``degree!/(degree-k)!`` as the kernel accumulates it, wrapping at signed int64.
+
+    The amplification has to bound what the kernel *computed*, so the wrapped factor is
+    the right one above degree 21 and the exact one would be wrong there.
+
+    Args:
+        degree (int): The polynomial degree.
+        n_deriv (int): The highest derivative order.
+
+    Returns:
+        list[int]: ``n_deriv + 1`` factors; entry 0 is unused and is 0.
+    """
+    mask = (1 << 64) - 1
+    factors = [0]
+    fac = degree
+    for k in range(1, n_deriv + 1):
+        factors.append(fac)
+        fac = (fac * (degree - k)) & mask
+        if fac >= 1 << 63:
+            fac -= 1 << 64
+    return factors
 
 
 def _companion(magnitudes: _FloatArray, dtype: Any) -> _FloatArray:
@@ -391,36 +590,57 @@ def _value_claim(reference: _FloatArray, degree: int, dtype: Any) -> ParityClaim
         accumulator=dtype,
         storage=dtype,
         amplification=_companion(reference, dtype),
-        why=_BOUNDED_BY_FMA,
+        why=_BOUNDED_BY_FMA_VALUES,
     )
 
 
-def _deriv_claim(reference: _FloatArray, degree: int, n_deriv: int, dtype: Any) -> ParityClaim:
+def _deriv_claim(  # noqa: PLR0913
+    knots: list[float],
+    degree: int,
+    n_deriv: int,
+    points: _FloatArray,
+    first_basis: npt.NDArray[np.int_],
+    dtype: Any,
+    *,
+    unit_spans: bool,
+) -> ParityClaim:
     """The parity claim for a derivative tabulation, conditional on the build.
 
-    The chain is longer than the value kernel's: A2.3 builds the same ``ndu`` triangle
-    in ``degree`` stages and then runs the ``a``-table recursion for up to ``n_deriv``
+    The chain is longer than the value kernel's: A2.3 builds the ``ndu`` triangle in
+    ``degree`` stages and then runs the ``a``-table recursion for up to ``n_deriv``
     more, so the stage count is their sum.
 
+    The amplification is :func:`_a23_majorant` and **not** the finished row. That
+    distinction is the whole of the derivation and it is not a refinement: on a fusing
+    build the finished row exceeded the observed difference on 31 of 418 cases, at both
+    widths, which is the signature Rule 10 names -- a structural shortfall rather than
+    rounding. The recursion is not convex, so its partial sums can exceed what survives
+    to the output.
+
     Args:
-        reference (_FloatArray): The Python backend's block.
+        knots (list[float]): The knot vector, needed to rebuild the majorant.
         degree (int): The polynomial degree.
         n_deriv (int): The highest derivative order.
+        points (_FloatArray): The evaluation points.
+        first_basis (npt.NDArray[np.int_]): The first-basis index per point.
         dtype (Any): The storage dtype.
+        unit_spans (bool): Whether the Bezier-like kernel ran; see
+            :func:`_a23_majorant`.
 
     Returns:
         ParityClaim: A bitwise claim where nothing can fuse, a bounded one otherwise.
     """
     if not contraction_may_fuse():
         return bitwise_parity(why=_EXACT_BY_BUILD)
+    majorant = _a23_majorant(knots, degree, n_deriv, points, first_basis, unit_spans=unit_spans)
     return bounded_parity(
         roundings=Roundings(
             stages=max(degree + n_deriv, 1), accumulator_per_stage=3, storage_per_stage=0
         ),
         accumulator=dtype,
         storage=dtype,
-        amplification=_companion(reference, dtype),
-        why=_BOUNDED_BY_FMA,
+        amplification=_companion(majorant, dtype),
+        why=_BOUNDED_BY_FMA_DERIVS,
     )
 
 
@@ -503,7 +723,15 @@ def test_general_knot_derivatives_match(
     assert_parity(
         actual.block,
         reference.block,
-        _deriv_claim(reference.block, degree, n_deriv, dtype),
+        _deriv_claim(
+            knots,
+            degree,
+            n_deriv,
+            points,
+            reference.first_basis,
+            dtype,
+            unit_spans=False,
+        ),
         context=f"tabulate_basis_derivatives {case} n_deriv={n_deriv} {np.dtype(dtype).name}",
     )
     assert np.array_equal(actual.first_basis, reference.first_basis)
@@ -519,6 +747,10 @@ def test_bezier_like_values_match(cpp_backend: None, case: str, dtype: Any) -> N
     change of variable is the *same numpy expression* on both sides, above the seam, so
     it is common mode and contributes nothing -- which is Rule 1's consequence applied
     here rather than restated.
+
+    **The claim is bitwise unconditionally**, unlike every other one in this file: that
+    recurrence has no fusable site, so contraction cannot reach it. See
+    :data:`_BEZIER_VALUES_EXACT`.
 
     Args:
         cpp_backend (None): Requires the extension.
@@ -539,7 +771,7 @@ def test_bezier_like_values_match(cpp_backend: None, case: str, dtype: Any) -> N
     assert_parity(
         actual.block,
         reference.block,
-        _value_claim(reference.block, degree, dtype),
+        bitwise_parity(why=_BEZIER_VALUES_EXACT),
         context=f"tabulate_basis bezier {case} {np.dtype(dtype).name}",
     )
     assert np.array_equal(actual.first_basis, reference.first_basis)
@@ -577,7 +809,15 @@ def test_bezier_like_derivatives_match(
     assert_parity(
         actual.block,
         reference.block,
-        _deriv_claim(reference.block, degree, n_deriv, dtype),
+        _deriv_claim(
+            knots,
+            degree,
+            n_deriv,
+            points,
+            reference.first_basis,
+            dtype,
+            unit_spans=True,
+        ),
         context=f"tabulate_basis_derivatives bezier {case} n_deriv={n_deriv} "
         f"{np.dtype(dtype).name}",
     )
@@ -603,12 +843,15 @@ def test_a_strided_out_reaches_the_callers_array(cpp_backend: None, dtype: Any) 
     knots, degree = _GENERAL_KNOTS["clamped-uniform-p2"]
     points = np.array([0.1, 0.4, 0.9], dtype=dtype)
 
-    with use_backend(Backend.PYTHON):
-        space = BsplineSpace1D(np.array(knots, dtype=dtype), degree)
-        expected, _ = space.tabulate_basis(points)
-
     with use_backend(Backend.CPP):
         space = BsplineSpace1D(np.array(knots, dtype=dtype), degree)
+        # The reference is the SAME backend with a contiguous out, not the oracle. The
+        # question here is whether the adapter's buffer round-trip loses the answer,
+        # and comparing across backends would fold in the parity claim -- which on a
+        # fusing build is bounded rather than bitwise, so a bit-equality assertion
+        # would fail there for a reason that has nothing to do with the strides.
+        expected, expected_first = space.tabulate_basis(points)
+
         # Every other column of a wider array, so `out` is strided in its last axis.
         canvas = np.full((points.size, 2 * (degree + 1)), np.nan, dtype=dtype)
         strided = canvas[:, ::2]
@@ -618,9 +861,13 @@ def test_a_strided_out_reaches_the_callers_array(cpp_backend: None, dtype: Any) 
 
     assert got is strided, "the caller's array must be returned, not a copy of it"
     assert not np.any(np.isnan(strided)), "the strided out was never written"
-    assert np.array_equal(strided, expected)
+    assert np.array_equal(strided, expected), (
+        "the same kernel on the same input through a strided out gave a different "
+        "answer, so the adapter's buffer round-trip is not transparent"
+    )
     assert got_first is indices
     assert np.all(indices >= 0), "the strided index array was never written"
+    assert np.array_equal(indices, expected_first)
 
 
 def test_the_seam_returns_kernels_for_every_available_backend() -> None:
