@@ -1103,6 +1103,9 @@ class Bspline:
             ValueError: If all directions have empty or ``None`` knot arrays.
             ValueError: If any knot lies outside its direction's domain.
             ValueError: If any insertion would exceed maximum multiplicity.
+            TypeError: If this field was built under the other backend. New with the
+                C++ dispatch: refinement crosses the boundary as a *field*, and
+                ``_cpp_handle`` refuses a foreign one rather than converting it.
 
         References:
             Knot insertion and refinement :cite:p:`piegl1997nurbs`.
@@ -1809,6 +1812,8 @@ class Bspline:
             ValueError: If no direction has a count >= 2.
             ValueError: If ``regularity`` is outside the valid range for any
                 active direction.
+            TypeError: If this field was built under the other backend, for the reason
+                :meth:`insert_knots` gives.
         """
         if isinstance(n_subdivisions, int):
             counts: list[int | None] = [n_subdivisions] * self.dim
