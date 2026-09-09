@@ -648,6 +648,31 @@ class BsplineSpace1D:
             raise ValueError("degree must be non-negative")
         self._impl = _new_impl(_stored_knots(knots), degree, periodic, snap_knots)
 
+    @classmethod
+    def _wrap(cls, impl: _Impl) -> BsplineSpace1D:
+        """Wrap an implementation object that is already valid.
+
+        The path an operation takes when C++ built the space: refining a
+        :class:`~pantr.bspline.Bspline` under the C++ backend produces a
+        ``BsplineSpace1D<T>`` per refined direction, and the wrapper in front of it
+        must hold *that* handle rather than an equal-valued rebuild -- otherwise the
+        field's implementation and its space wrapper would be two computations of one
+        answer, which is a second truth about a value.
+
+        Going through the constructor instead would re-run the whole of it: the
+        non-decreasing scan, the tolerance, the snapping and the interval check, all on
+        a vector C++ has already validated, and it would allocate a second space.
+
+        Args:
+            impl (_Impl): The implementation object to adopt, with no re-validation.
+
+        Returns:
+            BsplineSpace1D: A wrapper around ``impl``.
+        """
+        self = object.__new__(cls)
+        self._impl = impl
+        return self
+
     def __reduce__(
         self,
     ) -> tuple[type[BsplineSpace1D], tuple[_Knots, int, bool, bool]]:

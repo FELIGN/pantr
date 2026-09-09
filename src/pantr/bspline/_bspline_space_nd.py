@@ -39,6 +39,7 @@ from numpy import typing as npt
 from .._backend import Backend, active_backend, available_backends
 from ._bspline_basis_multidim import _tabulate_Bspline_basis_impl
 from ._bspline_cell_supports import _cell_supports_impl
+from ._bspline_space_1d import BsplineSpace1D
 from ._bspline_space_1d import _impl_class as _one_d_impl_class
 
 if TYPE_CHECKING:
@@ -47,7 +48,6 @@ if TYPE_CHECKING:
     from .._pantr_cpp import BsplineSpace32 as _CppSpace32
     from .._pantr_cpp import BsplineSpace64 as _CppSpace64
     from ..quad import PointsLattice
-    from ._bspline_space_1d import BsplineSpace1D
 
     _Impl: TypeAlias = "_BsplineSpaceNDPython | _CppSpace32 | _CppSpace64"
     """The implementation a :class:`BsplineSpace` holds: the oracle, or a handle.
@@ -413,6 +413,47 @@ class BsplineSpace:
         impl = _new_impl(validated, _stored_dtype(validated))
         object.__setattr__(self, "_impl", impl)
         object.__setattr__(self, "_spaces", validated)
+
+    @classmethod
+    def _wrap_over(cls, impl: _Impl, prior: Sequence[BsplineSpace1D]) -> BsplineSpace:
+        """Wrap an implementation, reusing any prior direction wrapper it still holds.
+
+        The path an operation takes when C++ built the space: refining a
+        :class:`~pantr.bspline.Bspline` produces a new tensor-product space, and the
+        wrapper in front of it must hold *that* implementation rather than an
+        equal-valued rebuild. See :meth:`BsplineSpace1D._wrap`.
+
+        ``prior`` is what keeps :attr:`spaces` an identity and not merely an equality.
+        An operation that leaves a direction alone -- knot insertion given no knots for
+        it -- carries that direction's implementation into the result unchanged, and the
+        oracle carries its *wrapper* along with it, so ``result.spaces[d] is
+        source.spaces[d]`` holds there. Comparing each implementation against the one
+        the caller already had is what makes that hold under the C++ backend too;
+        without it the two backends would disagree on an identity, which is the kind of
+        difference no value comparison would ever report.
+        ``pantr.grid.HierarchicalGrid._wrap_over`` exists for the same reason.
+
+        Args:
+            impl (_Impl): The implementation object to adopt, with no re-validation.
+            prior (Sequence[BsplineSpace1D]): The univariate wrappers the operation
+                started from, in axis order. May be shorter than ``impl``'s dimension
+                or empty; entries whose implementation ``impl`` no longer holds are
+                ignored.
+
+        Returns:
+            BsplineSpace: A wrapper around ``impl``.
+        """
+        spaces: list[BsplineSpace1D] = []
+        for direction, one_d in enumerate(impl.spaces):
+            reusable = prior[direction] if direction < len(prior) else None
+            if reusable is not None and reusable._impl is one_d:
+                spaces.append(reusable)
+            else:
+                spaces.append(BsplineSpace1D._wrap(one_d))
+        self = object.__new__(cls)
+        object.__setattr__(self, "_impl", impl)
+        object.__setattr__(self, "_spaces", tuple(spaces))
+        return self
 
     def __setattr__(self, name: str, value: object) -> NoReturn:
         """Refuse to set an attribute, because a space is immutable.

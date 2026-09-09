@@ -129,6 +129,16 @@ void register_bspline_thb_space(nanobind::module_& m);
 /// entirely.
 void register_bspline_type(nanobind::module_& m);
 
+/// Register the operations that refine a `pantr.bspline.Bspline`.
+///
+/// Its own entry point rather than two more functions inside `register_bspline_type`,
+/// for the reason that one is separate from `register_bspline_types`: the field's
+/// *state* and the operations *over* it are separate ports with separate parity
+/// claims, and the comments justifying this one's decisions -- why the field crosses
+/// rather than its arrays, why the GIL is held where a kernel would release it, why a
+/// periodic direction is refused -- argue from somewhere else entirely.
+void register_bspline_refinement(nanobind::module_& m);
+
 /// Register `pantr.bspline`'s Bézier extraction operator builder and its mask.
 ///
 /// Separate from `register_bspline_extraction` because the two are separate ports

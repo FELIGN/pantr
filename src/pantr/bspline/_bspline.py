@@ -14,13 +14,20 @@ are two implementations and they are not two B-splines:
 handle is the thing being checked. :func:`_impl_class` picks between them, per
 process and per dtype.
 
-Only the *state and what it determines* moved. Every operation -- evaluation, the
-derivative, the degree and knot operations, the conversions, the product, reversal,
-permutation and the affine transform -- is a computation *over* a B-spline rather
-than a property *of* one, so all of them are unchanged, still run on numba kernels
-and numpy, and live on the wrapper. That is the same line ``space_nd.hpp`` draws,
+Every operation -- evaluation, the derivative, the degree and knot operations, the
+conversions, the product, reversal, permutation and the affine transform -- is a
+computation *over* a B-spline rather than a property *of* one, so each is its own
+port and each lives on the wrapper. That is the same line ``space_nd.hpp`` draws,
 and the mixed dispatch it produces is the temporary seam this front introduces; a
 cleanup ticket removes it once the whole front lands.
+
+**The two refinements have followed the state across.**
+:meth:`Bspline.insert_knots` and :meth:`Bspline.subdivide` dispatch to
+``cpp/include/pantr/bspline/refinement.hpp`` through
+:mod:`pantr.bspline._refinement_backend`, which is also where the two places the
+backends do not meet are recorded -- a periodic direction, and the order of one
+refusal. Every other operation is still Python over numba kernels and numpy, and is
+unchanged.
 
 Two of those operations cannot follow in a later cut of this front, and that is a
 declared boundary rather than an omission. :meth:`Bspline.evaluate`,
@@ -53,8 +60,6 @@ from ._bspline_degree import _degree_elevate_bspline, _degree_reduce_bspline
 from ._bspline_derivative import _derivative_bspline
 from ._bspline_eval import _evaluate_Bspline, _evaluate_Bspline_deriv
 from ._bspline_knot_insertion import (
-    _compute_uniform_subdivision_knots,
-    _insert_knots_bspline,
     _to_open_bspline_impl,
     _to_periodic_bspline_impl,
 )
@@ -62,9 +67,11 @@ from ._bspline_knot_removal import _remove_knots_bspline
 from ._bspline_locate import _locate_impl
 from ._bspline_restrict import _restrict_bspline_impl
 from ._bspline_slice import _slice_bspline
+from ._bspline_space_nd import BsplineSpace as _BsplineSpace
 from ._bspline_space_nd import _impl_class as _space_impl_class
 from ._bspline_split import _split_bspline_impl
 from ._bspline_to_beziers import _to_beziers_impl
+from ._refinement_backend import insert_knots_into_field, subdivide_field
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Sequence
@@ -399,8 +406,10 @@ class Bspline:
     **This class is a wrapper.** The value -- the space, the control points and the
     rationality flag -- is owned by an implementation chosen by ``_impl_class``,
     which is the C++ type (``cpp/include/pantr/bspline/bspline.hpp``) or the oracle
-    ``_BsplinePython``. Every operation below is still Python over numba
-    kernels and numpy, and is unchanged; only the state moved.
+    ``_BsplinePython``. Most operations below are still Python over numba kernels and
+    numpy; :meth:`insert_knots` and :meth:`subdivide` dispatch to C++ through
+    :mod:`pantr.bspline._refinement_backend`, and the module docstring says what that
+    costs.
 
     Instances are immutable *as attribute holders*, and that is enforced rather than
     documented: ``__slots__`` means there is no ``__dict__`` to attach anything to,
@@ -459,6 +468,40 @@ class Bspline:
         """
         validated = _validated_control_points(space, control_points)
         self._take(_new_impl(space, validated, is_rational), space)
+
+    @classmethod
+    def _wrap_over(cls, impl: _Impl, prior: BsplineSpace) -> Bspline:
+        """Wrap an implementation an operation produced from ``prior``'s field.
+
+        The path an operation takes when C++ built the result: refining a field under
+        the C++ backend hands back a ``Bspline<T>`` handle, and this wrapper must hold
+        *that* handle and present the space *it* holds, rather than rebuilding an
+        equal-valued one. Rebuilding would run the whole constructor over a value C++
+        has already validated, copy the control net a second time, and leave the
+        wrapper's space and the implementation's space as two computations of one
+        answer.
+
+        ``prior`` is the space the operation started from, and it travels down to
+        :meth:`BsplineSpace._wrap_over`, which explains what it buys: a direction the
+        operation left alone keeps the wrapper it already had, so
+        ``result.space.spaces[d] is field.space.spaces[d]`` holds under both backends.
+
+        The derived block starts cold, because :meth:`_take` is the only writer and it
+        replaces the block wholesale; a refined field shares no memo with the field it
+        came from.
+
+        Args:
+            impl (_Impl): The implementation to adopt, with no re-validation.
+            prior (~pantr.bspline.BsplineSpace): The space wrapper the operation
+                started from, whose direction wrappers are reused where ``impl`` still
+                holds their implementations.
+
+        Returns:
+            Bspline: A wrapper around ``impl``.
+        """
+        self = object.__new__(cls)
+        self._take(impl, _BsplineSpace._wrap_over(impl.space, prior.spaces))
+        return self
 
     def _take(self, impl: _Impl, space: BsplineSpace) -> None:
         """Adopt an implementation and the space wrapper in front of it.
@@ -1083,7 +1126,7 @@ class Bspline:
                 "At least one direction must have a non-empty array of knots to insert."
             )
 
-        return _insert_knots_bspline(self, new_knots_per_dim)
+        return insert_knots_into_field(self, new_knots_per_dim)
 
     def remove_knots(
         self,
@@ -1785,27 +1828,26 @@ class Bspline:
         if all(c is None or c == 1 for c in counts):
             raise ValueError("At least one direction must have n_subdivisions >= 2.")
 
-        # Validate regularity per active direction and compute per-direction new knots.
-        dtype = self.dtype
-        new_knots_per_dim: list[npt.NDArray[np.float32 | np.float64] | None] = []
+        # Validate regularity per active direction, in axis order. Turning the counts
+        # into knots is the backend's, so that the C++ half can reach for its own
+        # `uniform_subdivision_knots` instead of being handed the oracle's answer; what
+        # stays here is every refusal, which is what keeps the two backends refusing
+        # the same argument with the same message. The two loops were one before the
+        # C++ half existed, and splitting them changes nothing a caller can see:
+        # `_compute_uniform_subdivision_knots` raises nothing once its count and its
+        # regularity are in range.
         for i, c in enumerate(counts):
             if c is None or c == 1:
-                new_knots_per_dim.append(None)
-            else:
-                space_1d = self.space.spaces[i]
-                deg = space_1d.degree
-                eff_regularity = deg - 1 if regularity is None else regularity
-                if eff_regularity < -1 or eff_regularity > deg - 1:
-                    raise ValueError(
-                        f"regularity must be in [-1, degree - 1] = [-1, {deg - 1}] "
-                        f"for direction {i}, got {eff_regularity}"
-                    )
-                nk = _compute_uniform_subdivision_knots(
-                    space_1d.knots, space_1d.degree, space_1d.tolerance, c, eff_regularity
-                ).astype(dtype, copy=False)
-                new_knots_per_dim.append(nk)
+                continue
+            deg = self.space.spaces[i].degree
+            eff_regularity = deg - 1 if regularity is None else regularity
+            if eff_regularity < -1 or eff_regularity > deg - 1:
+                raise ValueError(
+                    f"regularity must be in [-1, degree - 1] = [-1, {deg - 1}] "
+                    f"for direction {i}, got {eff_regularity}"
+                )
 
-        return _insert_knots_bspline(self, new_knots_per_dim)
+        return subdivide_field(self, counts, regularity)
 
     def slice(self, axis: int, value: float) -> Bspline | npt.NDArray[np.float32 | np.float64]:
         """Slice the B-spline by fixing one parametric direction at a given value.
