@@ -42,6 +42,16 @@ concern -- a bound as large as the values it compares -- cannot arise where the
 bound is zero and the arithmetic is exact by construction. What has to be watched
 instead is the opposite: that the sweep is not accidentally trivial, which
 :func:`test_the_integer_oracle_is_not_trivial` pins.
+
+The extension's absence is a skip, not a collection error
+----------------------------------------------------------
+
+There is no module-level ``from pantr import _pantr_cpp``. This module had one, and an
+installation without the extension therefore failed to *collect* it -- which pytest reports
+as an error against the whole session rather than as a skip of the tests that need a
+binary. The one test that touches the module imports it in its own body, behind the
+``cpp_backend`` fixture that already decides skip-or-fail. ``test_grid_hierarchical.py`` and
+``test_bspline_bezier_extraction.py`` state the same rule for the same reason.
 """
 
 from __future__ import annotations
@@ -54,7 +64,6 @@ import numpy as np
 import numpy.typing as npt
 import pytest
 
-from pantr import _pantr_cpp
 from pantr._backend import Backend, use_backend
 from pantr.bspline._extraction_backend import (
     _CPP_NAMES,
@@ -591,6 +600,8 @@ def test_every_kernel_name_is_bound(cpp_backend: None) -> None:
     missing binding would surface as an ``AttributeError`` deep inside a call
     rather than here. Twenty-four names is few enough to check directly.
     """
+    from pantr import _pantr_cpp  # noqa: PLC0415 -- see the module docstring
+
     missing = [
         name
         for name in sorted(set(_CPP_NAMES.values()) | set(_CPP_NAMES_MANY.values()))
