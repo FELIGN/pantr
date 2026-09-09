@@ -27,6 +27,10 @@ numpy expressions* under both backends and cannot contribute a difference. That 
 ``design/backend_parity.md`` Rule 1's consequence applied here: keep a shared map on
 the common side and it cancels exactly.
 
+**One call shape falls back to Numba**, and it is the only one:
+:func:`_the_cpp_kernels_cannot_serve` names it and says at length why falling back is
+the least-bad of the three available answers. Everything else reaches C++.
+
 **The C++ side has one kernel at every batch size, and that is not an omission.**
 The oracle keeps a ``parallel=True`` kernel and a serial twin and picks between them
 on ``_PARALLEL_MIN_NUM_PTS``; the C++ kernel runs on the calling thread, so there is
@@ -141,6 +145,54 @@ def _contiguous_int64(out: npt.NDArray[np.int_]) -> npt.NDArray[np.int64] | None
     return np.empty(out.shape, dtype=np.int64)
 
 
+def _the_cpp_kernels_cannot_serve(knots: _FloatArray, pts: _FloatArray) -> bool:
+    """Whether this call's dtypes are outside what the C++ kernels can express.
+
+    **The library deliberately supports a space whose knots are ``float32`` evaluated
+    at ``float64`` points**, and returns the points' dtype;
+    ``tests/test_mpi_thb_qi.py::test_result_is_float64_for_float32_space`` and
+    ``tests/test_thb_spline_space.py::TestCellMembershipTolerance
+    ::test_a_float32_root_space_is_still_graded_in_float64`` assert it by name. The
+    Numba kernels serve it by opening with ``dtype = knots.dtype`` for their scratch
+    while reading points at the points' own width, so the computation runs in a mixed
+    width that narrows at every array store.
+
+    The C++ kernels are templated on one scalar type and have no mixed overload, so
+    they cannot express that call at all. Three ways to reconcile that, and only one
+    of them keeps both halves of the contract:
+
+    - **Refuse it.** Tried, and wrong: it makes the selected backend change what the
+      library accepts, and it fails the five tests above.
+    - **Promote both sides and compute in ``float64``.** Keeps the output dtype but
+      changes the *values*, since the oracle truncates every intermediate to the knots'
+      width. A silent value divergence between backends is worse than a visible
+      fallback.
+    - **Run the Numba kernel for this call.** What this does. It is exactly the
+      behaviour the mixed case had before the C++ path existed, so nothing regresses,
+      and the values stay identical to the oracle's because they *are* the oracle's.
+
+    The cost is real and is why this is a narrow, named predicate rather than a
+    ``try``/``except``: an A/B measurement over mixed-dtype input measures Numba on
+    both sides, which is what ``pantr._backend``'s never-fall-back rule exists to
+    prevent. It is confined to a call the C++ side cannot express at all, and
+    ``tests/parity/test_bspline_basis_tabulation.py`` asserts both that the two
+    backends agree there and that the C++ binding is genuinely not reached, so the
+    fallback cannot widen unnoticed.
+
+    Which of the three is right in the long run is a contract decision rather than a
+    port decision: it turns on whether a mixed-width answer is wanted at all. This
+    takes the option that decides nothing.
+
+    Args:
+        knots (_FloatArray): The space's knot vector.
+        pts (_FloatArray): The evaluation points.
+
+    Returns:
+        bool: True when the dtypes differ, so the C++ kernels cannot be used.
+    """
+    return knots.dtype != pts.dtype
+
+
 def _cpp_basis(  # noqa: PLR0913
     knots: _FloatArray,
     degree: int,
@@ -158,8 +210,9 @@ def _cpp_basis(  # noqa: PLR0913
 
     - the numba kernels accept a non-contiguous ``out`` and fill it, while the binding
       requires C-contiguous memory and refuses anything else;
-    - ``tol`` is accepted and **not forwarded**, because the C++ kernel has no such
-      parameter. That is not a dropped argument: the oracle threads ``tol`` through to
+    - ``tol`` is accepted and **not forwarded on the C++ path**, because the C++ kernel
+      has no such parameter (the fallback path below does forward it, to the kernel that
+      declares it). That is not a dropped argument: the oracle threads ``tol`` through to
       :func:`pantr.bspline._bspline_knots._get_Bspline_num_basis_1D_impl` purely for
       interface consistency, and its own docstrings record that it goes unused --
       the non-periodic basis count is ``len(knots) - degree - 1`` and involves no
@@ -181,6 +234,16 @@ def _cpp_basis(  # noqa: PLR0913
         Layer 2 caller in :mod:`pantr.bspline._bspline_basis_core`, whose checks run
         before either backend and so cannot diverge between them.
     """
+    if _the_cpp_kernels_cannot_serve(knots, pts):
+        from ._bspline_basis_core import (  # noqa: PLC0415  (see the module docstring)
+            _compute_basis_nurbs_book_impl,
+        )
+
+        _compute_basis_nurbs_book_impl(
+            knots, degree, periodic, tol, pts, out_basis, out_first_basis
+        )
+        return
+
     from pantr import _pantr_cpp  # noqa: PLC0415  (resolved against the .pyi stub)
 
     del tol
@@ -246,6 +309,16 @@ def _cpp_basis_derivatives(  # noqa: PLR0913
     Note:
         No input validation is performed; see :func:`_cpp_basis`.
     """
+    if _the_cpp_kernels_cannot_serve(knots, pts):
+        from ._bspline_basis_core import (  # noqa: PLC0415  (see the module docstring)
+            _compute_basis_deriv_nurbs_book_impl,
+        )
+
+        _compute_basis_deriv_nurbs_book_impl(
+            knots, degree, periodic, tol, n_deriv, pts, out_deriv, out_first_basis
+        )
+        return
+
     from pantr import _pantr_cpp  # noqa: PLC0415  (resolved against the .pyi stub)
 
     del tol
