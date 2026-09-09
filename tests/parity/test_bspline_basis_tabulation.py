@@ -545,29 +545,51 @@ def _wrapped_falling_factorials(degree: int, n_deriv: int) -> list[int]:
     return factors
 
 
-def _companion(magnitudes: _FloatArray, dtype: Any) -> _FloatArray:
+def _companion(magnitudes: _FloatArray, stages: int, dtype: Any) -> _FloatArray:
     """Widen a computed magnitude into a hull that covers the true value too.
 
     A bound built from the *computed* coefficient collapses where that coefficient
     rounds to exactly zero while the true one does not, which
     ``design/backend_parity.md`` records as a correction the infrastructure PR had to
-    make: without it the bound could be violated by a factor of ``1/u``. Widening each
-    entry by its own first-order propagated error covers both.
+    make: without it the bound could be violated by a factor of ``1/u``.
 
-    The widening is ``(1 + gamma)`` with ``gamma`` the whole relative budget of the
-    recurrence, plus one unit of roundoff as an absolute floor so that an entry which
-    is exactly zero still carries the smallest tolerance the format can express.
+    The widening is ``(1 + gamma_m)`` with ``m = 3 * stages``, the reference backend's
+    own relative forward error over the same chain the parity budget charges: the
+    computed magnitude is within that of the true one, so scaling by it covers both. An
+    earlier version multiplied by ``1 + 4u`` while this docstring claimed the
+    recurrence's whole budget, which is the defect the file's history records twice --
+    a derivation stated in prose that the code does not implement.
+
+    The additive floor is the format's smallest normal, so an entry that came out
+    exactly zero still carries a tolerance the format can express. That is a floor
+    rather than a derivation and is deliberately larger than the smallest subnormal,
+    matching the harness's own :func:`~tests._parity_harness.underflow_floor`, which
+    takes the unhalved subnormal for the same reason.
 
     Args:
         magnitudes (_FloatArray): The computed magnitudes, elementwise.
+        stages (int): The dependency-chain length the parity budget charges, so that
+            the hull and the budget describe the same chain.
         dtype (Any): The storage dtype, which fixes ``u``.
 
     Returns:
         _FloatArray: The widened magnitudes, in ``float64``.
+
+    Raises:
+        ValueError: If the chain is long enough that ``gamma_m`` runs away, which
+            would make the hull meaningless rather than merely loose.
     """
     u = unit_roundoff(dtype)
+    m = 3 * max(stages, 1)
+    if m * u >= 0.5:
+        raise ValueError(
+            f"a chain of {stages} stages at {np.dtype(dtype).name} accumulates a "
+            f"relative budget of {m * u:.3g}, so the hull factor is not first order "
+            f"and the amplification it produces would not bound anything"
+        )
+    gamma = m * u / (1.0 - m * u)
     values = np.abs(np.asarray(magnitudes, dtype=np.float64))
-    widened = values * (1.0 + 4.0 * u) + np.finfo(dtype).smallest_normal
+    widened = values * (1.0 + gamma) + np.finfo(dtype).smallest_normal
     return np.asarray(widened, dtype=np.float64)
 
 
@@ -589,7 +611,7 @@ def _value_claim(reference: _FloatArray, degree: int, dtype: Any) -> ParityClaim
         roundings=Roundings(stages=max(degree, 1), accumulator_per_stage=3, storage_per_stage=0),
         accumulator=dtype,
         storage=dtype,
-        amplification=_companion(reference, dtype),
+        amplification=_companion(reference, degree, dtype),
         why=_BOUNDED_BY_FMA_VALUES,
     )
 
@@ -639,7 +661,7 @@ def _deriv_claim(  # noqa: PLR0913
         ),
         accumulator=dtype,
         storage=dtype,
-        amplification=_companion(majorant, dtype),
+        amplification=_companion(majorant, degree + n_deriv, dtype),
         why=_BOUNDED_BY_FMA_DERIVS,
     )
 
