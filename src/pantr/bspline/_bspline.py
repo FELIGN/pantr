@@ -34,7 +34,7 @@ ticket in this milestone covers.
 ``design/bspline_derived_caches.md`` calls :class:`Bspline` the type where
 construct-then-freeze does not hold. It holds on the C++ side: the observable
 mutation lives here, in :meth:`Bspline._mutate`, which replaces the whole
-implementation together with the whole derived block in one assignment. See
+implementation together with the whole derived block as one unit. See
 :class:`_Derived` for why that is the repair that note asks this front for, and
 ``cpp/include/pantr/bspline/bspline.hpp`` for why the C++ type refuses to carry
 the flag itself.
@@ -1338,7 +1338,10 @@ class Bspline:
                 deep-copied into the new Bézier.  If ``False``, the Bézier
                 shares the same underlying control point array when possible
                 (direct extraction) or owns the freshly allocated array
-                produced by the open-form conversion.
+                produced by the open-form conversion -- **under the Python
+                backend only**. A C++ ``Bezier`` copies at construction, so
+                there ``copy=False`` shares nothing; that predates this
+                type's own port and is measured, not assumed.
 
         Returns:
             ~pantr.bezier.Bezier: Equivalent Bézier representation.
@@ -1954,7 +1957,10 @@ def create_from_bezier(bezier: Bezier, *, copy: bool = True) -> Bspline:
         bezier (~pantr.bezier.Bezier): The source Bézier.
         copy (bool): If ``True`` (default), the control points are
             deep-copied into the new B-spline.  If ``False``, the
-            B-spline shares the same underlying control point array.
+            B-spline shares the same underlying control point array --
+            **under the Python backend only**. The C++ value owns its
+            storage and copies at construction, so there ``copy=False``
+            saves nothing and shares nothing.
 
     Returns:
         Bspline: Equivalent B-spline with Bézier-like knots.
