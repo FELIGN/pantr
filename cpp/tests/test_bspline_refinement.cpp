@@ -67,6 +67,10 @@
 ///  - **The oracle's own formation**: `e_r` by the recurrence `E_j <- E_j + x E_{j-1}`
 ///    commits two roundings per knot along the dominant chain, then one division by
 ///    `C(p, r)`. `2p + 1`.
+///  - **The cast into the field's storage.** `marsden_field` forms the closed form in
+///    `double` and stores it in `T`, which at `float32` is a real rounding on the
+///    *input* the sweep then propagates. It costs one, because the sweep's convex
+///    combination does not amplify a relative perturbation. `1`.
 ///  - **One direction's band recurrence**: `p` levels, and each level's dominant path
 ///    is two subtractions (`t[j+k] - x` and the denominator), a division, a
 ///    multiplication and an addition. `5p`.
@@ -75,7 +79,7 @@
 ///  - Relative errors compose sub-additively and `gamma_a + gamma_b <= gamma_{a+b}`,
 ///    so `D` refined directions cost `D (7p + 2)`.
 ///
-/// `K = 2p + 2 + D (7p + 2)`, the extra `1` being the store into the result. The
+/// `K = 2p + 3 + D (7p + 2)`, the last `1` being the store into the result. The
 /// magnitude it multiplies is `prod_d max_i A^d_{i, r_d}`, per component: the discrete
 /// B-splines of a refinement are non-negative, so each output coefficient is a convex
 /// combination of coarse ones and no partial sum exceeds the largest of them. That
@@ -83,6 +87,12 @@
 /// **asserted here rather than assumed**, because it is the premise the whole bound
 /// rests on and an assumed premise is exactly the kind of claim nothing else in the
 /// suite would notice.
+///
+/// A magnitude can be an exact zero -- `e_p` of a window containing the knot 0 -- and a
+/// relative bound of zero asserts bit-identity nothing here has grounds for, so `K`
+/// underflow floors are added. That is the absolute half of Higham's model, and it is
+/// what lets `accuracy_bound` return a strictly positive number for every entry
+/// instead of the comparison carrying a special case for zero.
 ///
 /// The counts are charged at `u(T)` throughout, including the oracle's, which is
 /// formed in `double` whatever `T` is. That over-states the `float` case, where
@@ -324,17 +334,53 @@ Bspline<T> marsden_field(const std::shared_ptr<const BsplineSpace<T>>& space, bo
                       is_rational);
 }
 
+/// The number of roundings the accuracy bound charges; see the file comment.
+///
+/// \param degree The largest degree among the field's directions.
+/// \param num_refined How many directions received knots, the `D` of the derivation.
+/// \return `K`.
+std::int64_t bound_roundings(std::int64_t degree, std::int64_t num_refined) {
+    return 2 * degree + 3 + num_refined * (7 * degree + 2);
+}
+
+/// The elementwise accuracy bound between a net and Marsden's closed form.
+///
+/// `gamma_K` times the magnitude, plus `K` underflow floors. The floor is the absolute
+/// half of Higham's model and it is not decoration here: a component whose closed form
+/// is an exact zero has a relative bound of zero, and a bound of zero asserts
+/// bit-identity that nothing in this file has grounds for.
+///
+/// \tparam T The scalar type the field stores.
+/// \param magnitude The per-entry magnitude from `marsden_net`.
+/// \param roundings `K`, from `bound_roundings`.
+/// \return One bound per entry, all strictly positive.
+template <class T>
+std::vector<double> accuracy_bound(const std::vector<double>& magnitude,
+                                   std::int64_t roundings) {
+    const double relative = gamma_of<T>(roundings);
+    const double floor = static_cast<double>(std::numeric_limits<T>::denorm_min());
+    std::vector<double> bound(magnitude.size());
+    for (std::size_t i = 0; i < magnitude.size(); ++i) {
+        bound[i] = relative * magnitude[i] + static_cast<double>(roundings) * floor;
+    }
+    return bound;
+}
+
 /// Assert that a refined field's coefficients are Marsden's closed form again.
+///
+/// Every direction must be clamped, which is what makes the identity describe the whole
+/// net; `check_unclamped` is where a truncated band is handled, row by row and with its
+/// own vacuity guard. This took a `clamped` flag until a review found that every call
+/// site passed `true` and the `false` branch asserted nothing at all, which is the
+/// shape of dead test code that reads as coverage.
 ///
 /// \tparam T The scalar type the field stores.
 /// \param refined The refined field.
 /// \param label What is being checked, for the failure message.
 /// \param num_refined How many directions received knots, the `D` of the bound.
-/// \param clamped Whether every direction is clamped; when false, only the rows whose
-///        band is whole are compared and the count of them is asserted non-zero.
 template <class T>
 void check_marsden_survives(const Bspline<T>& refined, const std::string& label,
-                            std::int64_t num_refined, bool clamped) {
+                            std::int64_t num_refined) {
     const BsplineSpace<T>& space = refined.space_ref();
     const Expectation expected = marsden_net<T>(borrow(space));
     const std::span<const T> got = refined.net().values();
@@ -351,25 +397,18 @@ void check_marsden_survives(const Bspline<T>& refined, const std::string& label,
     for (const std::int64_t degree : space.degrees()) {
         worst_degree = std::max(worst_degree, degree);
     }
-    const std::int64_t roundings = 2 * worst_degree + 2 + num_refined * (7 * worst_degree + 2);
-    const double relative = gamma_of<T>(roundings);
+    const std::vector<double> bound = accuracy_bound<T>(
+        expected.magnitude, bound_roundings(worst_degree, num_refined));
 
     double worst_ratio = 0.0;
     for (std::size_t i = 0; i < got.size(); ++i) {
-        const double bound = relative * expected.magnitude[i];
         const double difference = std::abs(static_cast<double>(got[i]) - expected.values[i]);
-        if (bound > 0.0) {
-            worst_ratio = std::max(worst_ratio, difference / bound);
-        } else {
-            worst_ratio = std::max(worst_ratio, difference == 0.0 ? 0.0 : 1.0e300);
-        }
+        worst_ratio = std::max(worst_ratio, difference / bound[i]);
     }
-    if (clamped) {
-        PANTR_CHECK_MSG(worst_ratio <= 1.0,
-                        label + ": Marsden's identity does not survive the refinement; worst "
-                                "difference is "
-                            + std::to_string(worst_ratio) + " times its derived bound");
-    }
+    PANTR_CHECK_MSG(worst_ratio <= 1.0,
+                    label + ": Marsden's identity does not survive the refinement; worst "
+                            "difference is "
+                        + std::to_string(worst_ratio) + " times its derived bound");
 }
 
 /// The discrete B-splines of a refinement are non-negative and their rows sum to one.
@@ -453,7 +492,7 @@ void check_subdivide_1d(const std::string& format) {
             PANTR_CHECK_MSG(refined.rank() == field.rank(), label + ": the rank moved");
             PANTR_CHECK_MSG(refined.is_rational() == field.is_rational(),
                             label + ": the rationality flag moved");
-            check_marsden_survives<T>(refined, label, 1, true);
+            check_marsden_survives<T>(refined, label, 1);
         }
     }
 }
@@ -477,7 +516,7 @@ void check_insert_knots_1d(const std::string& format) {
     const std::string label = format + " insert_knots with a repeat";
     PANTR_CHECK_MSG(refined.space_ref().space_ref(0).knots().size() == knots.size() + 4,
                     label + ": the refined knot vector is the wrong length");
-    check_marsden_survives<T>(refined, label, 1, true);
+    check_marsden_survives<T>(refined, label, 1);
 }
 
 /// Marsden's identity survives refinement of a surface and of a volume.
@@ -506,7 +545,7 @@ void check_multidimensional(const std::string& format) {
                         format + " surface: an unrefined direction did not keep its space");
         PANTR_CHECK_MSG(refined.space_ref().space(1) != space->space(1),
                         format + " surface: the refined direction kept its space");
-        check_marsden_survives<T>(refined, format + " surface, one direction", 1, true);
+        check_marsden_survives<T>(refined, format + " surface, one direction", 1);
     }
     {
         const auto space =
@@ -515,7 +554,7 @@ void check_multidimensional(const std::string& format) {
         const std::vector<std::int64_t> counts = {2, 3};
         const Bspline<T> refined =
             subdivide<T>(field, std::span<const std::int64_t>(counts), std::nullopt);
-        check_marsden_survives<T>(refined, format + " surface, both directions", 2, true);
+        check_marsden_survives<T>(refined, format + " surface, both directions", 2);
     }
     {
         const std::vector<std::vector<T>> volume = {
@@ -535,7 +574,7 @@ void check_multidimensional(const std::string& format) {
             subdivide<T>(field, std::span<const std::int64_t>(counts), std::nullopt);
         PANTR_CHECK_MSG(refined.is_rational(), format + " volume: the weight flag was dropped");
         PANTR_CHECK_MSG(refined.rank() == field.rank(), format + " volume: the rank moved");
-        check_marsden_survives<T>(refined, format + " rational volume", 2, true);
+        check_marsden_survives<T>(refined, format + " rational volume", 2);
     }
 }
 
@@ -558,7 +597,7 @@ void check_regularity() {
                         "regularity " + std::to_string(regularity)
                             + ": the wrong number of knots was inserted");
         check_marsden_survives<double>(
-            refined, "regularity " + std::to_string(regularity), 1, true);
+            refined, "regularity " + std::to_string(regularity), 1);
     }
 }
 
@@ -584,7 +623,8 @@ void check_unclamped() {
     const std::span<const double> got = refined.net().values();
     const std::size_t num_components = expected.shape.back();
 
-    const double relative = gamma_of<double>(2 * 2 + 2 + 1 * (7 * 2 + 2));
+    const std::vector<double> bound =
+        accuracy_bound<double>(expected.magnitude, bound_roundings(2, 1));
     std::int64_t verified = 0;
     std::int64_t truncated = 0;
     for (std::int64_t row = 0; row < bands.num_rows; ++row) {
@@ -596,8 +636,7 @@ void check_unclamped() {
         ++verified;
         for (std::size_t c = 0; c < num_components; ++c) {
             const std::size_t flat = static_cast<std::size_t>(row) * num_components + c;
-            const double bound = relative * expected.magnitude[flat];
-            PANTR_CHECK_MSG(std::abs(got[flat] - expected.values[flat]) <= bound,
+            PANTR_CHECK_MSG(std::abs(got[flat] - expected.values[flat]) <= bound[flat],
                             "unclamped: an interior row does not reproduce Marsden's "
                             "coefficient at row "
                                 + std::to_string(row));
@@ -651,11 +690,17 @@ void check_the_axis_sweep_addresses_the_right_fibres() {
                         }
                         const double mine =
                             got[static_cast<std::size_t>((o * num_rows + row) * inner + k)];
-                        // Same terms, and the reference adds the off-band exact zeros
-                        // the sweep skips, so the two differ by nothing at all.
-                        PANTR_CHECK_MSG(std::abs(mine - reference)
-                                            <= 4.0 * gamma_of<double>(num_cols + 1)
-                                                   * std::abs(reference),
+                        // Equality, not a bound, and that is the whole point: the two
+                        // visit the same non-zero terms in the same ascending order, and
+                        // the reference's extra terms are `dense[row][col] * value` with
+                        // `dense` an exact zero outside the band, so `s + 0.0` is a
+                        // no-op in IEEE-754 -- the values here are all positive, so no
+                        // signed-zero tie arises. A tolerance would let a wrong stride
+                        // that landed close to the right fibre pass, which is exactly
+                        // what this check exists to refuse. It survives contraction too:
+                        // the operands of the fused form are the same on both sides,
+                        // and `fma(0, v, s)` is `s`.
+                        PANTR_CHECK_MSG(mine == reference,
                                         "the axis sweep and the dense product disagree at "
                                         "outer "
                                             + std::to_string(outer) + ", inner "
@@ -809,7 +854,7 @@ void check_refusals() {
     PANTR_CHECK_MSG(worst == 2, "regularity -1 at degree 1 should reach multiplicity "
                                 "degree + 1 exactly, and reached "
                                     + std::to_string(worst));
-    check_marsden_survives<double>(discontinuous, "regularity -1 at degree 1", 1, true);
+    check_marsden_survives<double>(discontinuous, "regularity -1 at degree 1", 1);
 }
 
 /// A periodic direction is refused, and the message says it is a boundary.
