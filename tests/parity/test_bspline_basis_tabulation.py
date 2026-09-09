@@ -103,6 +103,7 @@ from tests._parity_harness import (
     Field,
     ParityClaim,
     Roundings,
+    absolute_tolerance,
     assert_accuracy,
     assert_object_parity,
     assert_parity,
@@ -364,7 +365,10 @@ _BOUNDED_BY_FMA_DERIVS = (
     "`d + a[s2,j] * ndu[...]` in the a-table recursion, and the per-site budget is "
     "Rule 10's: three accumulator roundings, no narrowing store, the accumulator "
     "being the storage format. The chain through one output element runs `degree` ndu "
-    "stages then up to `n_deriv` a-table stages. "
+    "stages then `min(n_deriv, degree)` a-table stages -- capped at the degree and not "
+    "at n_deriv, because for k > degree the factorial factor is exactly zero, so no "
+    "chain reaching a non-zero output passes through more of them and charging them "
+    "would inflate the budget on the rows that are not zero. "
     "**The amplification is NOT the finished row**, and Rule 10 is explicit about why: "
     "A2.3 differences, so it is not convex, its partial sums can exceed what survives "
     "to the output, and no telescoping argument recovers them -- the finished row was "
@@ -562,9 +566,12 @@ def _companion(magnitudes: _FloatArray, stages: int, dtype: Any) -> _FloatArray:
 
     The additive floor is the format's smallest normal, so an entry that came out
     exactly zero still carries a tolerance the format can express. That is a floor
-    rather than a derivation and is deliberately larger than the smallest subnormal,
-    matching the harness's own :func:`~tests._parity_harness.underflow_floor`, which
-    takes the unhalved subnormal for the same reason.
+    rather than a derivation. It is **not** the same magnitude as the harness's own
+    :func:`~tests._parity_harness.underflow_floor`, which is the smallest *subnormal*
+    and so many orders smaller; what the two share is the reasoning, that a relative
+    model needs an absolute companion and the companion should err on the side of
+    existing. The two are added together by
+    :func:`~tests._parity_harness.absolute_tolerance`, so the larger governs.
 
     Args:
         magnitudes (_FloatArray): The computed magnitudes, elementwise.
@@ -629,8 +636,10 @@ def _deriv_claim(  # noqa: PLR0913
     """The parity claim for a derivative tabulation, conditional on the build.
 
     The chain is longer than the value kernel's: A2.3 builds the ``ndu`` triangle in
-    ``degree`` stages and then runs the ``a``-table recursion for up to ``n_deriv``
-    more, so the stage count is their sum.
+    ``degree`` stages and then runs the ``a``-table recursion. The a-table stages are
+    counted as ``min(n_deriv, degree)`` and not ``n_deriv``, because for ``k > degree``
+    the factorial factor is exactly zero and the row is identically zero, so charging
+    those stages only inflates the tolerance on the rows that are not zero.
 
     The amplification is :func:`_a23_majorant` and **not** the finished row. That
     distinction is the whole of the derivation and it is not a refinement: on a fusing
@@ -655,13 +664,14 @@ def _deriv_claim(  # noqa: PLR0913
     if not contraction_may_fuse():
         return bitwise_parity(why=_EXACT_BY_BUILD)
     majorant = _a23_majorant(knots, degree, n_deriv, points, first_basis, unit_spans=unit_spans)
+    # One expression for the chain length, so the rounding budget and the hull that
+    # widens the amplification cannot come to describe different chains.
+    stages = max(degree + min(n_deriv, degree), 1)
     return bounded_parity(
-        roundings=Roundings(
-            stages=max(degree + n_deriv, 1), accumulator_per_stage=3, storage_per_stage=0
-        ),
+        roundings=Roundings(stages=stages, accumulator_per_stage=3, storage_per_stage=0),
         accumulator=dtype,
         storage=dtype,
-        amplification=_companion(majorant, degree + n_deriv, dtype),
+        amplification=_companion(majorant, stages, dtype),
         why=_BOUNDED_BY_FMA_DERIVS,
     )
 
@@ -979,6 +989,185 @@ def _falling_factorial(degree: int, n_deriv: int) -> int:
     return largest
 
 
+_VACUOUS_CASE = "wrapping-p22"
+"""The one case whose derivative bound is too loose to assert anything, everywhere.
+
+Named so that :func:`test_no_bound_exceeds_the_value_it_compares` can exclude it and
+:func:`test_the_vacuous_region_is_named_and_still_vacuous` can require it to still be
+excluded. ``design/backend_parity.md`` Rule 8's obligation: a test that quietly stops
+where its bound runs out reads as full coverage of the module.
+"""
+
+
+def _vacuity_census(
+    case: str, n_deriv: int, dtype: Any
+) -> tuple[npt.NDArray[np.bool_], _FloatArray, _FloatArray]:
+    """Where a derivative parity bound is defined, and how it compares to the values.
+
+    Args:
+        case (str): Key into either general-knot table.
+        n_deriv (int): The highest derivative order.
+        dtype (Any): The storage dtype.
+
+    Returns:
+        tuple[npt.NDArray[np.bool_], _FloatArray, _FloatArray]: A mask selecting the
+        entries where a *relative* bound is meaningful at all -- the normal ones, per
+        Rule 5 -- and the elementwise tolerance and reference magnitude.
+    """
+    knots, degree = (_GENERAL_KNOTS | _HIGH_DEGREE_KNOTS)[case]
+    points = _evaluation_points(knots, degree, dtype)
+    reference = _tabulate(Backend.PYTHON, knots, degree, points, dtype, n_deriv)
+    claim = _deriv_claim(
+        knots, degree, n_deriv, points, reference.first_basis, dtype, unit_spans=False
+    )
+    tolerance = np.broadcast_to(absolute_tolerance(claim), reference.block.shape)
+    magnitude = np.abs(np.asarray(reference.block, dtype=np.float64))
+    return magnitude >= np.finfo(dtype).smallest_normal, tolerance, magnitude
+
+
+def test_the_vacuous_region_is_named_and_still_vacuous(cpp_backend: None) -> None:
+    """Enumerate where the derivative bound asserts nothing, and fail if that changes.
+
+    ``design/backend_parity.md`` Rule 8: when a bound stops being able to say anything,
+    the resolution is a smaller domain rather than a tighter bound -- and the domain
+    that was cut has to be **named**, in a test whose only job is to name it, which
+    fails if the gap is ever empty. An empty gap would mean either the bound collapsed
+    or the cases moved, and both are findings rather than good news.
+
+    **What is excluded and why.** At degree 22 the A2.3 majorant exceeds the finished
+    derivative row by about five orders of magnitude at a handful of entries. That is
+    not slack in the derivation: the recursion is not convex, so its partial sums can be
+    far larger than what survives the cancellation to the output, and Rule 10 records
+    that no telescoping argument recovers them. The majorant is still a majorant; it is
+    simply too loose to compare against those particular values, so the claim there
+    admits any answer including zero.
+
+    **The region is `float32` only, and that is the sharp statement.** The majorant's
+    excess over the finished row is the same at both widths, being a property of the
+    recursion rather than of the format; what differs is ``u``, so at ``float64`` the
+    tolerance stays far below the values and every entry is guarded. Only the narrow
+    format's budget is large enough for that excess to swallow a value. The excluded
+    region is therefore *degree 22 at float32*, not degree 22.
+
+    **What is still claimed there.** The parity tests at that degree pass and are not
+    excluded -- the bound holds. What this test records is that a handful of entries are
+    unguarded, which the harness's own guard cannot report because it compares the
+    arrays' maxima rather than element by element.
+
+    Args:
+        cpp_backend (None): Requires the extension.
+    """
+    del cpp_backend
+    # This test reaches degree 22 at both widths, where the oracle's falling-factorial
+    # accumulator wraps when compiled and grows when interpreted.
+    demand_a_compiled_seed()
+    if not contraction_may_fuse():
+        pytest.skip(
+            "on a build whose target ISA cannot fuse, the derivative claim is bitwise "
+            "and its tolerance is exactly zero, so no entry can be vacuous and there is "
+            "no region to enumerate. Build with -march=native to exercise this"
+        )
+
+    guarded = 0
+    for n_deriv in _DERIVATIVE_ORDERS:
+        normal, tolerance, magnitude = _vacuity_census(_VACUOUS_CASE, n_deriv, np.float64)
+        guarded += int(np.count_nonzero(tolerance[normal] >= magnitude[normal]))
+    assert guarded == 0, (
+        f"{guarded} entries of {_VACUOUS_CASE} are unguarded at float64. The exclusion "
+        f"is float32-only by construction -- the majorant's excess over the finished row "
+        f"is a property of the recursion and the same at both widths, so only the narrow "
+        f"format's budget can swallow a value. If float64 has become vacuous too, the "
+        f"derivation moved and this whole region needs re-deriving"
+    )
+
+    worst = 0.0
+    vacuous = 0
+    for n_deriv in _DERIVATIVE_ORDERS:
+        normal, tolerance, magnitude = _vacuity_census(_VACUOUS_CASE, n_deriv, np.float32)
+        bad = tolerance[normal] >= magnitude[normal]
+        vacuous += int(np.count_nonzero(bad))
+        if bad.any():
+            worst = max(worst, float(np.max(tolerance[normal] / magnitude[normal])))
+
+    assert vacuous > 0, (
+        f"{_VACUOUS_CASE} no longer carries a vacuous entry. That is a finding rather "
+        f"than good news: either the majorant became tight enough to guard the whole "
+        f"row -- in which case this exclusion and "
+        f"test_no_bound_exceeds_the_value_it_compares's should both be revisited -- or "
+        f"the case stopped reaching the degrees where A2.3's cancellation bites"
+    )
+    assert worst > 1.0, "a vacuous entry by definition has tolerance at least its own value"
+
+
+@pytest.mark.parametrize("dtype", [np.float64, np.float32])
+@pytest.mark.parametrize("n_deriv", _DERIVATIVE_ORDERS)
+@pytest.mark.parametrize(
+    "case", sorted((_GENERAL_KNOTS | _HIGH_DEGREE_KNOTS).keys() - {_VACUOUS_CASE})
+)
+def test_no_bound_exceeds_the_value_it_compares(
+    cpp_backend: None, case: str, n_deriv: int, dtype: Any
+) -> None:
+    """No non-zero reference value carries a tolerance as large as its own magnitude.
+
+    Rule 3 of ``design/backend_parity.md`` refuses a bound at least as large as the
+    values it compares, and :func:`~tests._parity_harness.assert_parity` enforces it --
+    but only by **comparing the two arrays' maxima**, deliberately, so that a genuine
+    absolute floor on an entry that is truly zero is not rejected. Rule 10 records what
+    that misses: on the sibling derivative kernel, 45 of 280 non-zero ``float32``
+    values carried a tolerance at least as large as their own magnitude and the guard
+    did not fire, because a flat amplification is sized for exactly the largest
+    element. Rule 6 names the shape -- a scalar summary of two arrays is not a
+    comparison of two arrays.
+
+    So this is the elementwise half, which nothing in the harness can do for us.
+
+    **The excluded set is the subnormal range, not just exact zero**, and that boundary
+    is Rule 5's rather than a convenience. Higham's relative model
+    ``fl(x op y) = (x op y)(1 + delta) + eta`` silently assumes normal operands, and
+    Rule 5 records the counterexample: at ``2^-1074`` a single multiplication commits a
+    20% relative error that no ``|delta| <= u`` can express. A reference value a few
+    units above the smallest subnormal is in exactly that range, so **no relative bound
+    on it is meaningful** and the absolute companion -- the underflow floor the harness
+    adds and the smallest-normal floor :func:`_companion` adds -- is all that is
+    available. Measured when this test was written: every one of the roughly 100
+    vacuous entries across the whole matrix was subnormal, none was normal, and the
+    largest was 2 units of the smallest subnormal against a tolerance of 18.
+
+    Excluding only exact zero would therefore fail on correct code, for a reason
+    nobody could act on. Excluding everything below the smallest normal asserts the
+    thing that is actually claimable: that wherever the relative model applies at all,
+    the bound is not vacuous.
+
+    Args:
+        cpp_backend (None): Requires the extension.
+        case (str): Key into either general-knot table.
+        n_deriv (int): The highest derivative order.
+        dtype (Any): The storage dtype.
+    """
+    del cpp_backend
+    demand_the_compiled_kernel(dtype)
+    # The amplification is built from `_wrapped_falling_factorials`, which always
+    # wraps, while an interpreted oracle's accumulator grows without bound. Above
+    # degree 21 the two would describe different quantities.
+    demand_a_compiled_seed()
+    if case == _VACUOUS_CASE and np.dtype(dtype) == np.float32:
+        pytest.skip(
+            f"{_VACUOUS_CASE} at float32 is the region "
+            f"test_the_vacuous_region_is_named_and_still_vacuous enumerates; see there "
+            f"for why the bound cannot be tightened into it"
+        )
+    normal, tolerance, magnitude = _vacuity_census(case, n_deriv, dtype)
+    assert normal.any(), "the case must reach at least one normal value to say anything"
+    vacuous = int(np.count_nonzero(tolerance[normal] >= magnitude[normal]))
+    assert vacuous == 0, (
+        f"{vacuous} of {int(normal.sum())} normal values carry a tolerance at least as "
+        f"large as themselves, worst "
+        f"{float(np.max(tolerance[normal] / magnitude[normal])):.3g} times; a bound that "
+        f"large admits any answer including zero, and the harness's own guard cannot see "
+        f"it because it compares the arrays' maxima"
+    )
+
+
 # ---------------------------------------------------------------------------
 # Independent accuracy oracles
 # ---------------------------------------------------------------------------
@@ -1005,7 +1194,7 @@ def _a22_chain_roundings(degree: int) -> int:
 
 
 def _a23_chain_roundings(degree: int, n_deriv: int) -> int:
-    """Roundings on the dependency chain through one A2.3 output element.
+    """Roundings on the dependency chain through one **non-zero** A2.3 output element.
 
     :func:`_a22_chain_roundings` for the ``ndu`` triangle, which A2.3 builds by the
     same steps, plus **four** per stage of the ``a``-table recursion, counted against
@@ -1013,6 +1202,9 @@ def _a23_chain_roundings(degree: int, n_deriv: int) -> int:
     ``ndu``, the multiplication ``a[s2,j] * ndu[...]`` and the accumulation into ``d``.
     Plus **one** for the factorial scaling, which happens once per element and not per
     stage.
+
+    The a-table stages are capped at ``degree`` rather than ``n_deriv``, which is what
+    makes the bound non-vacuous elementwise; see the comment on the return.
 
     An earlier version charged three per stage and no factorial, which under-counted --
     the dangerous direction, since a bound tighter than derivable can be exceeded by
@@ -1025,7 +1217,12 @@ def _a23_chain_roundings(degree: int, n_deriv: int) -> int:
     Returns:
         int: The rounding count, for use as ``m`` in ``gamma_m``.
     """
-    return _a22_chain_roundings(degree) + 4 * n_deriv + 1
+    # `min(n_deriv, degree)` and not `n_deriv`: for `k > degree` the factorial factor is
+    # exactly zero, so those rows are identically zero whatever the recursion did before
+    # them, and no chain reaching a non-zero output passes through more than `degree`
+    # a-table stages. Charging `n_deriv` would inflate the budget on the rows that are
+    # not zero, by a factor of the derivative order, for no derivable reason.
+    return _a22_chain_roundings(degree) + 4 * min(n_deriv, degree) + 1
 
 
 def _dot_product_roundings(degree: int) -> int:

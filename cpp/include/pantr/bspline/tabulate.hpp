@@ -129,6 +129,7 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <concepts>
 #include <cstddef>
 #include <cstdint>
 #include <span>
@@ -220,8 +221,9 @@ template <Real T>
     //     num_basis - order   = (n - degree - 1) - (degree + 1) = n - 2*degree - 2
     //
     // so the first is always at most the second, with equality at the right endpoint.
-    // Checked as well as derived: over 2163 (degree, knot count, point) combinations
-    // the min changed the answer zero times.
+    // Checked as well as derived, by `report_the_redundant_clamp` in
+    // scripts/measure_bspline_tabulation_widths.py, which sweeps degrees and knot counts
+    // and reports how often the min changes the answer.
     //
     // It is written out rather than dropped, for two reasons. It keeps the two
     // backends structurally identical, so a future change to the span clamp -- which
@@ -263,6 +265,14 @@ void basis_funcs_point(std::span<const T> knots, std::int64_t degree, std::int64
     PANTR_PRECONDITION(static_cast<std::int64_t>(left.size()) >= degree + 1 &&
                            static_cast<std::int64_t>(right.size()) >= degree + 1,
                        "the scratch spans must hold degree+1 values");
+    // The knot reads below run from `span + 1 - degree` to `span + degree`. Nothing
+    // bounds-checks them, so a `span` outside that window is a heap overflow rather
+    // than a wrong answer -- which is what separates a memory-safety obligation from a
+    // correctness one here. `find_span_and_first_basis` establishes it; a caller who
+    // computes a span some other way must too.
+    PANTR_PRECONDITION(span + 1 - degree >= 0 &&
+                           span + degree < static_cast<std::int64_t>(knots.size()),
+                       "span must place the whole Cox-de Boor window inside the knots");
     using pantr::value_of;
 
     const auto order = static_cast<std::size_t>(degree) + 1;
@@ -323,6 +333,13 @@ void basis_derivs_point(std::span<const T> knots, std::int64_t degree,  // NOLIN
                        "ndu must have shape (degree+1, degree+1)");
     PANTR_PRECONDITION(a.extent(0) == 2 && a.extent(1) == static_cast<std::size_t>(n_deriv) + 1,
                        "a must have shape (2, n_deriv+1)");
+    PANTR_PRECONDITION(static_cast<std::int64_t>(left.size()) >= degree + 1 &&
+                           static_cast<std::int64_t>(right.size()) >= degree + 1,
+                       "the scratch spans must hold degree+1 values");
+    // Step 1 reads the same knot window as `basis_funcs_point`; see the note there.
+    PANTR_PRECONDITION(span + 1 - degree >= 0 &&
+                           span + degree < static_cast<std::int64_t>(knots.size()),
+                       "span must place the whole Cox-de Boor window inside the knots");
     using pantr::value_of;
 
     const auto order = static_cast<std::size_t>(degree) + 1;
@@ -406,8 +423,24 @@ void basis_derivs_point(std::span<const T> knots, std::int64_t degree,  // NOLIN
     std::int64_t fac = degree;
     for (std::int64_t k = 1; k <= n_deriv; ++k) {
         const auto fac_wide = static_cast<double>(fac);
+        // **Widened for a plain scalar and not for a differentiable one, and the
+        // branch is not an optimisation.** For `float` and `double` the wide form is
+        // what parity requires: numba promotes `float32 * int64` to `float64`, so the
+        // product is formed in `double` and rounded once on the store. But it reads
+        // only the *value* through `value_of` and rebuilds `T` from a raw `double`,
+        // which for a differentiable scalar constructs a zero-derivative value and so
+        // discards everything steps 1 and 2 carried -- in the one kernel whose whole
+        // job is derivatives. `pantr/core/scalar.hpp` says AD compatibility rides
+        // along for free with the float32 discipline; here the two genuinely conflict,
+        // so each gets the arithmetic it needs. The two branches agree exactly at
+        // `double`, where the wide product IS the storage-width product; only `float`
+        // separates them, and only `float` has an oracle to be faithful to.
         for (std::size_t j = 0; j < order; ++j) {
-            at(out, k, j) = T(static_cast<double>(value_of(at(out, k, j))) * fac_wide);
+            if constexpr (std::same_as<T, value_type_t<T>>) {
+                at(out, k, j) = T(static_cast<double>(value_of(at(out, k, j))) * fac_wide);
+            } else {
+                at(out, k, j) = at(out, k, j) * T(fac_wide);
+            }
         }
         fac = core::wrapping_mul(fac, degree - k);
     }
