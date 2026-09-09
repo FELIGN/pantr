@@ -62,14 +62,28 @@ multiplicity(0), rank(1), ...``. A ``std::span`` has no rank, so the C++ path ca
 make that check and :func:`_flat_insertions` makes it here -- for every direction,
 before the call.
 
-What survives of that is a single shape of doubly-bad input: direction 0 well-shaped
-but out of domain, *and* a later direction not 1D. The oracle reports the domain, the
-C++ path reports the rank. Both texts are the oracle's, both refusals are
-``ValueError``, and ``tests/parity/test_bspline_refinement.py`` pins both orders rather
-than leaving the divergence to be met.
+What survives of that is doubly-bad input where an *earlier* direction fails a check
+the oracle makes **after** rank, and a *later* direction fails rank. The oracle reports
+the earlier direction's failure, the C++ path reports the later direction's rank. Both
+texts are the oracle's, both refusals are ``ValueError``, and
+``tests/parity/test_bspline_refinement.py`` pins them rather than leaving the
+divergence to be met.
 
-**It was not a single shape until a review round.** A *zero-size* non-1D array -- shape
-``(0, 3)`` -- is skipped by the oracle before its rank is ever looked at, and
+**Exactly which shapes those are, closed by enumeration.**
+``_compute_inserted_knot_vector_1d`` makes four checks, in order: rank, empty, domain,
+multiplicity. Rank is the check the C++ path hoists, so it cannot diverge. Empty cannot
+either: the caller skips a zero-size array before the per-direction loop is reached, so
+the later rank failure surfaces on both sides -- measured. That leaves **domain and
+multiplicity, and both diverge.**
+
+**This said "a single shape" and named only the domain one.** The multiplicity shape
+diverges identically and no test constructed it, so nothing in the suite could have
+distinguished the claim from the truth. Two reviewers found it independently; the count
+above is now settled by enumerating the oracle's checks rather than by inspection.
+
+**A third shape existed until a review round, and was a behaviour divergence rather
+than an order one.** A *zero-size* non-1D array -- shape ``(0, 3)`` -- is skipped by the
+oracle before its rank is ever looked at, and
 :func:`_flat_insertions` refused it: the port raising where the oracle returns, which
 is a divergence in behaviour rather than in a message and which no comparison of
 refusal texts could have found. It now skips on size first, in the oracle's own order.
