@@ -35,6 +35,7 @@ set(PANTR_TEST_SOURCES
     test_lazy.cpp
     test_bspline_knots.cpp
     test_bspline_space_1d.cpp
+    test_bspline_tabulation.cpp
     test_bspline_space_nd.cpp
     test_extraction_kernels.cpp
     test_bspline_extraction.cpp
