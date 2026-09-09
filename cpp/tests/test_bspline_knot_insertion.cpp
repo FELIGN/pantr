@@ -33,11 +33,16 @@
 ///
 /// ## What the refusals pin
 ///
-/// `inserted_knot_vector`'s two refusals are the ones a THB space can actually reach:
-/// a subdivision that would push a knot past multiplicity `degree + 1` is what
-/// `regularity = -1` does at degree 1, and it must be a message rather than a
-/// silently degenerate space. The domain refusal is unreachable from `subdivide`,
-/// whose knots are interior by construction, so it is exercised directly.
+/// **Neither of `inserted_knot_vector`'s two refusals is reachable from `subdivide`**,
+/// so both are exercised directly. The domain refusal is not, because a subdivision's
+/// knots are interior by construction. Nor is the multiplicity one: `regularity = -1`
+/// asks for multiplicity `degree - regularity = degree + 1` at each inserted knot,
+/// which is exactly the ceiling and not above it, and the points
+/// `uniform_subdivision_knots` produces are strictly interior to their own span, so
+/// they collide with no existing knot and with no other span's. The only way left is a
+/// span so narrow that an interior point lands within the space's tolerance of an
+/// endpoint. `cpp/tests/test_bspline_refinement.cpp` pins the positive half of that:
+/// `regularity = -1` at degree 1 *succeeds* and lands on multiplicity 2.
 ///
 /// ## A factor of one is refused, not silently a copy
 ///
