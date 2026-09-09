@@ -106,8 +106,13 @@ def tabulate_bernstein_deriv_1d(
     values and rows above ``degree`` are identically zero, the k-th derivative of
     a degree-p polynomial vanishing for ``k > p``.
 
-    Call :func:`pantr.basis.tabulate_bernstein_deriv_1d` for the ordinary path,
-    which additionally takes points of any shape and allocates ``out`` for you.
+    **There is no public Layer 1 counterpart to call instead**, unlike the
+    tabulations above. The only consumer is the Bezier-like fast path of
+    :func:`pantr.bspline._bspline_basis_core._tabulate_Bspline_basis_deriv_1D_impl`,
+    which reaches it through
+    :func:`pantr.basis._basis_backend.bernstein_deriv_core`; ``pantr.basis`` exports no
+    ``tabulate_bernstein_deriv_1d``. Exposing one is a separate decision about public
+    surface, not something this stub should imply already happened.
 
     Args:
         degree (int): Degree of the basis. Must be non-negative and must fit a

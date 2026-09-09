@@ -745,6 +745,90 @@ void check_wrapping_mul_reproduces_the_measured_wrap() {
                         std::to_string(fac) + " want " + std::to_string(expected));
 }
 
+// --------------------------------------------------------------------------
+// (12) A periodic space: the other arm of the first-basis branch
+// --------------------------------------------------------------------------
+
+/// A periodic space is the only input reaching `find_span_and_first_basis`'s other
+/// branch, which keeps the **unclamped** first-basis index -- the evaluation loop wraps
+/// it modulo the control points -- where the non-periodic arm caps it at
+/// `num_basis - order`. Nothing else in this file or in `tests/parity/` constructed
+/// one, so that branch shipped unexercised, and a port that applied the non-periodic
+/// clamp regardless would have passed every other check here.
+///
+/// The properties asserted are the ones that do not depend on periodicity: Cox-de Boor
+/// is unchanged, only the reported index differs, so the `degree + 1` local values
+/// still form a convex partition of unity and the derivative rows still sum to zero.
+/// The last assertion is the discriminating one -- it fails if the index was clamped.
+template <class T>
+void check_periodic_space() {
+    using pantr::bspline::basis_derivs_1d;
+    using pantr::bspline::basis_funcs_1d;
+
+    const double eps = eps_of(T(0));
+    constexpr std::int64_t degree = 2;
+    const std::vector<T> knots = {T(0), T(1), T(2), T(3), T(4), T(5), T(6), T(7)};
+    const BsplineSpace1D<T> space(std::span<const T>(knots), degree, true,
+                                  KnotSnapping::merge_near_duplicates);
+    PANTR_CHECK(space.periodic());
+
+    const std::array<T, 2> domain = space.domain();
+    const auto pts = sample_domain<T>(domain[0], domain[1], 17);
+    const auto order = static_cast<std::size_t>(degree) + 1;
+    const std::int64_t num_basis = space.num_basis();
+
+    std::vector<T> values(pts.size() * order);
+    std::vector<std::int64_t> first_basis(pts.size());
+    basis_funcs_1d<T>(std::span<const T>(knots), degree, true, std::span<const T>(pts),
+                      span2d<T>(values.data(), pts.size(), order),
+                      std::span<std::int64_t>(first_basis));
+
+    const double bound = (2.0 * static_cast<double>(degree) + 1.0) * (eps / 2.0);
+    std::int64_t largest_index = -1;
+    for (std::size_t j = 0; j < pts.size(); ++j) {
+        double sum = 0.0;
+        for (std::size_t i = 0; i < order; ++i) {
+            const double value = static_cast<double>(values[j * order + i]);
+            PANTR_CHECK_MSG(value >= 0.0, "periodic: non-negativity");
+            sum += value;
+        }
+        PANTR_CHECK_MSG(std::abs(sum - 1.0) <= bound, "periodic: partition of unity");
+        largest_index = std::max(largest_index, first_basis[j]);
+    }
+
+    // Derivatives on the same space: the rows still sum to zero.
+    constexpr std::int64_t n_deriv = 3;
+    const auto rows = static_cast<std::size_t>(n_deriv) + 1;
+    std::vector<T> block(pts.size() * rows * order);
+    std::vector<std::int64_t> deriv_first(pts.size());
+    basis_derivs_1d<T>(std::span<const T>(knots), degree, true, n_deriv,
+                       std::span<const T>(pts), span_nd<T, 3>(block.data(), pts.size(), rows, order),
+                       std::span<std::int64_t>(deriv_first));
+
+    for (std::size_t j = 0; j < pts.size(); ++j) {
+        PANTR_CHECK_MSG(deriv_first[j] == first_basis[j],
+                        "periodic: the two kernels must report the same index");
+        for (std::size_t k = 1; k < rows; ++k) {
+            double sum = 0.0;
+            double scale = 0.0;
+            for (std::size_t i = 0; i < order; ++i) {
+                const double value = static_cast<double>(block[(j * rows + k) * order + i]);
+                sum += value;
+                scale = std::max(scale, std::abs(value));
+            }
+            const double row_bound = 8.0 * static_cast<double>(order) * eps * std::max(scale, 1.0);
+            PANTR_CHECK_MSG(std::abs(sum) <= row_bound, "periodic: derivative row sums to zero");
+        }
+    }
+
+    // The discriminating assertion. A non-periodic space caps `first_basis` at
+    // `num_basis - order`; a periodic one must not, or the caller's modulo has nothing
+    // to wrap. If this fails, the periodic branch is not being taken.
+    PANTR_CHECK_MSG(largest_index > num_basis - static_cast<std::int64_t>(order),
+                    "periodic: the first-basis index must exceed the non-periodic clamp");
+}
+
+
 }  // namespace
 
 int main() {
@@ -768,6 +852,8 @@ int main() {
     check_bernstein_deriv_against_closed_forms<float>();
     check_degree_zero<double>();
     check_degree_zero<float>();
+    check_periodic_space<double>();
+    check_periodic_space<float>();
     check_wrapping_mul_agrees_where_no_overflow();
     check_wrapping_mul_reproduces_the_measured_wrap();
     return pantr::test::summary("test_bspline_tabulation");
