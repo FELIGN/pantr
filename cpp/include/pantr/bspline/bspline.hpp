@@ -83,11 +83,15 @@
 ///
 /// So the Python `in_place=True` surface survives -- it is published API and
 /// removing it is not this port's to do -- and it is implemented one level up, by
-/// `pantr.bspline.Bspline` replacing its whole implementation in a single
-/// assignment. That is also the repair `design/bspline_derived_caches.md` asks
-/// this ticket for: the oracle's three separate cache-invalidation sites become one
-/// assignment that replaces the derived block wholesale, so there is no way to
-/// reseat one part of it without the other.
+/// `pantr.bspline.Bspline` replacing its whole implementation wholesale, through
+/// the single writer that owns all of it. "Wholesale" rather than "atomically":
+/// that writer is three successive slot stores, so a *concurrent* reader could
+/// still see a torn triple -- which is not a regression (the pre-port oracle had
+/// the same shape) and not a gap in the contract, since
+/// `design/bspline_derived_caches.md` exempts a mutating accessor from it. What
+/// the single writer buys is that no *sequential* caller can reseat one part
+/// without the other, which is the repair that document asks this ticket for: the
+/// oracle's three separate cache-invalidation sites become one.
 ///
 /// ## Where the derived caches are, and why not here
 ///
