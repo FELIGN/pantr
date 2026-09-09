@@ -19,6 +19,9 @@ keeps it that way.
 - :class:`CoreKernels`: a tabulation's kernels in one backend, parallel and
   serial.
 - :func:`cardinal_bspline_core`: the cardinal B-spline kernels of a backend.
+- :data:`_BasisDerivCoreFunc`: the signature every 1D derivative tabulation has.
+- :class:`DerivKernels`: a derivative tabulation's kernels in one backend.
+- :func:`bernstein_deriv_core`: the Bernstein derivative kernels of a backend.
 """
 
 from __future__ import annotations
@@ -33,6 +36,8 @@ from .._backend import Backend, active_backend, available_backends
 from ._basis_core import (
     _tabulate_Bernstein_basis_1D_core,
     _tabulate_Bernstein_basis_1D_serial_core,
+    _tabulate_Bernstein_basis_deriv_1D_core,
+    _tabulate_Bernstein_basis_deriv_1D_serial_core,
     _tabulate_cardinal_Bspline_basis_1D_core,
     _tabulate_Legendre_basis_1D_core,
 )
@@ -264,3 +269,105 @@ def legendre_core(backend: Backend | None = None) -> CoreKernels:
     if chosen not in available_backends():
         raise RuntimeError(f"the {chosen.name} backend is not available in this installation")
     return CoreKernels(parallel=_cpp_legendre_core)
+
+
+_BasisDerivCoreFunc = Callable[
+    [np.int32, npt.NDArray[np.float32 | np.float64], int, npt.NDArray[np.float32 | np.float64]],
+    None,
+]
+"""Signature of a 1D derivative tabulation kernel: ``(degree, pts, n_deriv, out) -> None``."""
+
+
+class DerivKernels(NamedTuple):
+    """The kernels tabulating one basis's derivatives, in one backend.
+
+    :class:`CoreKernels`'s counterpart for a derivative tabulation. A separate record
+    rather than a reuse, because the signature carries ``n_deriv`` and the output has
+    rank 3; one record holding both would have to be read as one or the other at every
+    call site.
+
+    Attributes:
+        parallel (_BasisDerivCoreFunc): The kernel used for batches of
+            ``_PARALLEL_MIN_NUM_PTS`` points or more.
+        serial (_BasisDerivCoreFunc | None): The serial twin, used below that
+            threshold. ``None`` when this backend has none, in which case ``parallel``
+            runs at every batch size. Defaults to None.
+    """
+
+    parallel: _BasisDerivCoreFunc
+    serial: _BasisDerivCoreFunc | None = None
+
+
+def _cpp_bernstein_deriv_core(
+    n: np.int32,
+    t: npt.NDArray[np.float32 | np.float64],
+    n_deriv: int,
+    out: npt.NDArray[np.float32 | np.float64],
+) -> None:
+    """Adapt the C++ Bernstein derivative kernel to the :data:`_BasisDerivCoreFunc` signature.
+
+    The contract is :func:`_cpp_cardinal_bspline_core`'s, in full, including why a
+    non-contiguous ``out`` is absorbed rather than refused.
+
+    Args:
+        n (np.int32): Degree of the basis. Assumed non-negative.
+        t (npt.NDArray[np.float32 | np.float64]): 1D evaluation points on ``[0, 1]``.
+        n_deriv (int): Highest derivative order. Assumed non-negative.
+        out (npt.NDArray[np.float32 | np.float64]): Output of shape
+            ``(t.size, n_deriv + 1, n + 1)`` and matching dtype. Need not be
+            contiguous.
+
+    Note:
+        No input validation is performed. Shape and dtype are established by the
+        Layer 2 caller; dtype, rank and contiguity are re-checked by nanobind's typed
+        signature, which raises :class:`TypeError` before the kernel runs rather than
+        silently converting.
+    """
+    from pantr import _pantr_cpp  # noqa: PLC0415  (resolved against the .pyi stub)
+
+    points = np.ascontiguousarray(t)
+    if out.flags["C_CONTIGUOUS"]:
+        _pantr_cpp.tabulate_bernstein_deriv_1d(int(n), int(n_deriv), points, out=out)
+        return
+
+    buffer = np.empty_like(out, order="C")
+    _pantr_cpp.tabulate_bernstein_deriv_1d(int(n), int(n_deriv), points, out=buffer)
+    out[...] = buffer
+
+
+def bernstein_deriv_core(backend: Backend | None = None) -> DerivKernels:
+    """Return the Bernstein derivative tabulation kernels of the requested backend.
+
+    Reached from :mod:`pantr.bspline._bspline_basis_core`'s Bézier-like fast path,
+    which is the only consumer today: a B-spline space whose knots describe a single
+    Bézier segment has the Bernstein basis of the same degree, so its derivatives come
+    from here and are then scaled by the chain rule *above* this seam, in the same
+    numpy expression under both backends.
+
+    The Python backend returns both kernels, and the dispatch between them on
+    ``_PARALLEL_MIN_NUM_PTS`` stays where the oracle put it. The C++ backend returns no
+    twin, for the reason :func:`cardinal_bspline_core` gives: its kernel runs on the
+    calling thread at every batch size.
+
+    Args:
+        backend (Backend | None): The backend to use. ``None`` means the backend
+            currently in effect, per :func:`pantr._backend.active_backend`.
+            Defaults to None.
+
+    Returns:
+        DerivKernels: The kernels, each callable as ``(n, t, n_deriv, out) -> None``.
+
+    Raises:
+        RuntimeError: If ``backend`` is given and is not available.
+    """
+    chosen = active_backend() if backend is None else backend
+
+    if chosen is Backend.PYTHON:
+        return DerivKernels(
+            parallel=_tabulate_Bernstein_basis_deriv_1D_core,
+            serial=_tabulate_Bernstein_basis_deriv_1D_serial_core,
+        )
+
+    if chosen not in available_backends():
+        raise RuntimeError(f"the {chosen.name} backend is not available in this installation")
+    return DerivKernels(parallel=_cpp_bernstein_deriv_core)

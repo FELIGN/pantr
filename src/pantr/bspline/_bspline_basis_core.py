@@ -13,17 +13,15 @@ import numpy.typing as npt
 
 from .._numba_compat import nb_jit, nb_prange
 from ..basis._basis_1D import _tabulate_Bernstein_basis_1D_impl
-from ..basis._basis_core import (
-    _PARALLEL_MIN_NUM_PTS,
-    _tabulate_Bernstein_basis_deriv_1D_core,
-    _tabulate_Bernstein_basis_deriv_1D_serial_core,
-)
+from ..basis._basis_backend import bernstein_deriv_core
+from ..basis._basis_core import _PARALLEL_MIN_NUM_PTS
 from ..basis._basis_utils import (
     _compute_final_output_shape_1D,
     _compute_final_output_shape_1D_deriv,
     _normalize_points_1D,
     _validate_out_array,
 )
+from ._basis_backend import bspline_basis_core, bspline_basis_deriv_core
 from ._bspline_knots import (
     _get_Bspline_num_basis_1D_impl,
     _get_last_knot_smaller_equal_impl,
@@ -678,12 +676,11 @@ def _tabulate_Bspline_basis_Bernstein_like_deriv_1D(
     k0, k1 = spline.domain
     pts_normalized = (pts - k0) / (k1 - k0)  # map to [0, 1]
 
-    deriv_core = (
-        _tabulate_Bernstein_basis_deriv_1D_core
-        if pts_normalized.shape[0] >= _PARALLEL_MIN_NUM_PTS
-        else _tabulate_Bernstein_basis_deriv_1D_serial_core
-    )
-    deriv_core(np.int32(spline.degree), pts_normalized, n_deriv, out_deriv)
+    kernels = bernstein_deriv_core()
+    if kernels.serial is not None and pts_normalized.shape[0] < _PARALLEL_MIN_NUM_PTS:
+        kernels.serial(np.int32(spline.degree), pts_normalized, n_deriv, out_deriv)
+    else:
+        kernels.parallel(np.int32(spline.degree), pts_normalized, n_deriv, out_deriv)
 
     # Chain-rule: d^k/dx^k f(x) = d^k/ds^k f(s) * (ds/dx)^k = d^k/ds^k f(s) * (1/(k1-k0))^k
     inv_span: float = 1.0 / float(k1 - k0)
@@ -796,10 +793,11 @@ def _tabulate_Bspline_basis_1D_impl(
             spline, pts, basis_normalized, first_indices_normalized
         )
     else:
+        kernels = bspline_basis_core()
         kernel = (
-            _compute_basis_nurbs_book_impl
-            if num_pts >= _PARALLEL_MIN_NUM_PTS
-            else _compute_basis_nurbs_book_serial_impl
+            kernels.serial
+            if kernels.serial is not None and num_pts < _PARALLEL_MIN_NUM_PTS
+            else kernels.parallel
         )
         kernel(
             spline.knots,
@@ -902,12 +900,13 @@ def _tabulate_Bspline_basis_deriv_1D_impl(  # noqa: PLR0913
             spline, pts, n_deriv, deriv_normalized, first_indices_normalized
         )
     else:
-        kernel = (
-            _compute_basis_deriv_nurbs_book_impl
-            if num_pts >= _PARALLEL_MIN_NUM_PTS
-            else _compute_basis_deriv_nurbs_book_serial_impl
+        deriv_kernels = bspline_basis_deriv_core()
+        deriv_kernel = (
+            deriv_kernels.serial
+            if deriv_kernels.serial is not None and num_pts < _PARALLEL_MIN_NUM_PTS
+            else deriv_kernels.parallel
         )
-        kernel(
+        deriv_kernel(
             spline.knots,
             spline.degree,
             spline.periodic,
@@ -969,7 +968,15 @@ def _warmup_numba_functions() -> None:
         first_basis_dummy,
     )
 
-    # Warmup Bernstein derivative core (Bézier fast path) with float64
+    # Warmup Bernstein derivative core (Bézier fast path) with float64.
+    #
+    # Named directly rather than fetched from `bernstein_deriv_core()`: this function
+    # exists to trigger Numba compilation, so it must reach the Numba kernel whatever
+    # backend happens to be selected.
+    from ..basis._basis_core import (  # noqa: PLC0415
+        _tabulate_Bernstein_basis_deriv_1D_core,
+    )
+
     pts_norm_dummy = pts_dummy  # knots_dummy already has [0,1] domain
     _tabulate_Bernstein_basis_deriv_1D_core(
         np.int32(degree_dummy), pts_norm_dummy, n_deriv_dummy, deriv_dummy
