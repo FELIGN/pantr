@@ -358,14 +358,18 @@ def demand_a_compiled_seed() -> None:
     ungated. Only the two constructs above escape the guarantee, and which kernels
     carry them is knowledge a claim does not hold.
 
-    The cost of that choice, stated because it is real, and it is not only about
-    kernels not yet written. ``_basis_derivs_point`` in
-    ``pantr.bspline._bspline_basis_core`` **already** accumulates a falling factorial
-    the same way, and is absent from the set below only because no parity test reaches
-    it: it has no C++ counterpart yet. Whoever gives it one inherits this gate as a
-    precondition. Grep ``np.power`` and ``fac *=`` under ``src/pantr`` for the current
-    set, and note that ``_bincoeff`` is a deliberate non-member, since it casts every
-    step to ``np.int64`` explicitly and so wraps identically either way.
+    The cost of that choice, stated because it is real. ``_basis_derivs_point`` in
+    ``pantr.bspline._bspline_basis_core`` accumulates a falling factorial the same way,
+    and an earlier version of this docstring recorded it as absent from the set only
+    because it had no C++ counterpart, adding that whoever gave it one would inherit
+    this gate as a precondition. **It has one now**
+    (``cpp/include/pantr/bspline/tabulate.hpp``), and so does
+    ``_bernstein_derivs_point`` (``pantr::tabulate_bernstein_deriv_1d``);
+    ``tests/parity/test_bspline_basis_tabulation.py`` calls this gate for every claim
+    reaching either. The inheritance happened rather than staying hypothetical. Grep
+    ``np.power`` and ``fac *=`` under ``src/pantr`` for the current set, and note that
+    ``_bincoeff`` is a deliberate non-member, since it casts every step to
+    ``np.int64`` explicitly and so wraps identically either way.
 
     Raises:
         Skipped: Via :func:`pytest.skip`, whenever the JIT is disabled.
