@@ -923,6 +923,17 @@ def test_a_field_has_no_instance_dictionary() -> None:
     with pytest.raises(AttributeError):
         field._space = None  # type: ignore[assignment]
     with pytest.raises(AttributeError):
+        field._derived = None  # type: ignore[assignment]
+    # And both directions for every slot, not one direction each. `__setattr__` and
+    # `__delattr__` do not discriminate by name, so the implementation cannot fail
+    # selectively on a combination left untested -- but the docstring above claims
+    # the refusal for all three slots, and a claim asserted for two of three names
+    # is the shape this milestone keeps finding.
+    with pytest.raises(AttributeError):
+        del field._impl
+    with pytest.raises(AttributeError):
+        del field._space
+    with pytest.raises(AttributeError):
         del field._derived
     # The block itself is reachable and fillable, which is what the two memos need;
     # what is unspellable is replacing one of them without the other, because only

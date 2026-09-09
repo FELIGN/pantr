@@ -45,10 +45,13 @@ Five things are checked that a field-by-field state comparison does not reach:
 
 ## The independent check, and why it is not a mirror
 
-`design/backend_parity.md`'s first rule is that parity says the two backends agree
-and not that either is right, so a shared error is invisible to every parity test
-here. The independent oracle for a value type is not a rational reimplementation of
-an algorithm -- there is no algorithm -- it is a **closed form for the layout**:
+`design/backend_parity.md` opens with the fact everything else there follows from:
+parity says the two backends agree and not that either is right, so a shared error
+is invisible to every parity test here. (That is the document's premise, stated
+before its twelve numbered rules, and not one of them.)
+
+The independent oracle for a value type is not a rational reimplementation of an
+algorithm -- there is no algorithm -- it is a **closed form for the layout**:
 
 - ``test_the_stored_layout_matches_its_closed_form`` builds the control net from an
   explicit function of the multi-index, then reads it back *through the field* at
@@ -845,6 +848,47 @@ def test_the_cpp_value_does_not_alias_the_array_it_was_built_from(dtype: npt.DTy
 
 
 @pytest.mark.parametrize("dtype", DTYPES)
+def test_an_in_place_mutation_replaces_the_cpp_buffer(dtype: npt.DTypeLike) -> None:
+    """Under the C++ backend an ``in_place=True`` mutator leaves a *different* array.
+
+    Two files state this in prose -- ``_bspline.py``'s ``_mutate`` docstring and the
+    agreement test below -- and until now nothing asserted it. It followed
+    deductively from "construction always copies", which
+    :func:`test_the_cpp_value_does_not_alias_the_array_it_was_built_from` does pin,
+    but a deduced property is not the same evidence as a direct one: an
+    implementation that reused the buffer in the mutating path alone would satisfy
+    that test and contradict this claim.
+
+    The contrast is the point, so the Python backend is asserted too: there the
+    identity is *preserved*, and that asymmetry is exactly what the ``copy=False``
+    docstrings now warn about.
+    """
+    from pantr.transform import AffineTransform  # noqa: PLC0415
+
+    case = _Case((_SINGLE_SPAN,), (2,), (False,), (3,), 2, "reseat")
+    net = np.asarray([[0.0, 1.0], [2.0, 3.0], [4.0, 5.0]], dtype=dtype)
+    shift = AffineTransform.translation([1.0, 2.0])
+
+    with use_backend(Backend.CPP):
+        field = Bspline(_make_space_at(case, dtype), net)
+        before = field.control_points
+        field.transform(shift, in_place=True)
+        assert not np.shares_memory(before, field.control_points), (
+            "the C++ in-place mutator kept the buffer, so the prose in `_mutate` and "
+            "in the agreement test is wrong and a caller could hold a live view"
+        )
+
+    with use_backend(Backend.PYTHON):
+        oracle = Bspline(_make_space_at(case, dtype), net)
+        kept = oracle.control_points
+        oracle.transform(shift, in_place=True)
+        assert np.shares_memory(kept, oracle.control_points), (
+            "the oracle stopped preserving the array's identity, so the asymmetry "
+            "the `copy=False` docstrings document no longer exists"
+        )
+
+
+@pytest.mark.parametrize("dtype", DTYPES)
 def test_writing_through_control_points_is_refused(dtype: npt.DTypeLike) -> None:
     """The array handed out is read-only, and the B-spline is unchanged either way.
 
@@ -1048,9 +1092,7 @@ def test_a_space_changing_mutator_reseats_the_space_and_leaves_the_old_one_intac
     expected value does not come from the code under test: reflecting
     ``(0, 0, 0, 1, 3, 3, 3)`` about ``[0, 3]`` gives ``(0, 0, 0, 2, 3, 3, 3)``.
     """
-    case = _Case(
-        (_ASYMMETRIC, _CLAMPED_LINEAR), (2, 1), (False, False), (4, 3), 2, "reseat"
-    )
+    case = _Case((_ASYMMETRIC, _CLAMPED_LINEAR), (2, 1), (False, False), (4, 3), 2, "reseat")
     reflected = (0.0, 0.0, 0.0, 2.0, 3.0, 3.0, 3.0)
     assert reflected != _ASYMMETRIC, (
         "the case's knot vector reflects onto itself, so a reversal is invisible in "
@@ -1072,9 +1114,7 @@ def test_a_space_changing_mutator_reseats_the_space_and_leaves_the_old_one_intac
         )
         # And the new space really is the reflected one, against a hand-derived
         # literal -- so the reseat was not a no-op this test would report as a pass.
-        np.testing.assert_array_equal(
-            np.array(field.space.spaces[0].knots), np.asarray(reflected)
-        )
+        np.testing.assert_array_equal(np.array(field.space.spaces[0].knots), np.asarray(reflected))
 
         after_reverse = field.space
         field.permute_directions([1, 0], in_place=True)
