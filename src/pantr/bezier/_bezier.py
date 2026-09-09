@@ -1368,8 +1368,9 @@ class Bezier:
             copy (bool): If ``True`` (default), the control points are
                 deep-copied into the new B-spline. If ``False``, the
                 B-spline shares the same underlying control point array --
-                which, under the C++ backend, is the Bézier's own storage and
-                is read-only, so the B-spline is then read-only too.
+                **under the Python backend only**. The C++ value owns its
+                storage and copies at construction, so there ``copy=False``
+                saves nothing and shares nothing.
 
         Returns:
             ~pantr.bspline.Bspline: Equivalent B-spline representation.
