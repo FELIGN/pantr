@@ -3,10 +3,18 @@
 /// \file
 /// Ratio-recurrence tabulation of the Bernstein basis on `[0, 1]`.
 ///
-/// Port of `_bernstein_point`, `_bernstein_point_no_mirror` and
-/// `_tabulate_Bernstein_basis_1D_core` in `src/pantr/basis/_basis_core.py`,
+/// Port of `_bernstein_point`, `_bernstein_point_no_mirror`,
+/// `_tabulate_Bernstein_basis_1D_core`, `_bernstein_derivs_point` and
+/// `_tabulate_Bernstein_basis_deriv_1D_core` in `src/pantr/basis/_basis_core.py`,
 /// which stay as the parity oracle. The recurrence, the midpoint branch and the
 /// per-batch dispatch between the two point kernels are unchanged.
+///
+/// **The values and the derivatives come from two different algorithms here, as they
+/// do in the oracle.** `tabulate_bernstein_1d` is the O(n) ratio recurrence;
+/// `tabulate_bernstein_deriv_1d` is Piegl & Tiller A2.3 specialised to unit knot
+/// spans, and its row 0 is the Cox-de Boor triangle's values rather than the ratio
+/// recurrence's. The two agree only to a rounding, and unifying them would answer
+/// differently from both oracles.
 ///
 /// ## Two point kernels, dispatched once per batch
 ///
@@ -78,11 +86,15 @@
 /// `cpp/bindings/` refuse all of these before a Python caller can express them; the
 /// macro is for the C++ caller who includes this header directly.
 
+#include <algorithm>
 #include <cmath>
 #include <cstddef>
+#include <cstdint>
 #include <limits>
 #include <span>
+#include <vector>
 
+#include "pantr/core/binomial.hpp"
 #include "pantr/core/precondition.hpp"
 #include "pantr/core/mdspan.hpp"
 #include "pantr/core/scalar.hpp"
@@ -207,6 +219,174 @@ void tabulate_bernstein_1d(int degree, std::span<const T> points, span2d<T> out)
                 at(out, j, hi) = tmp;
                 ++lo;
                 --hi;
+            }
+        }
+    }
+}
+
+/// Tabulate the Bernstein basis and its derivatives to order `n_deriv` on `[0, 1]`.
+///
+/// Piegl & Tiller A2.3 specialised to the Bernstein case, where every knot difference
+/// is one: the `ndu` table's lower triangle is all ones, so the three divisions of the
+/// general recursion disappear and the `a` table's steps become plain differences.
+///
+/// ## Widths, measured rather than read
+///
+/// Every intermediate is `T`; `accumulator_t` is deliberately unused, for the reason
+/// `pantr/bspline/tabulate.hpp`'s file comment gives at length. The one wider site is
+/// the factorial scaling, where numba's `float32 * int64` promotion forms the product
+/// in `double` and rounds once on the store.
+/// `scripts/measure_bspline_tabulation_widths.py` measures both, three rival models
+/// against the kernel: at `float32` over 50 284 values the narrow-intermediate,
+/// wide-scaling model reproduces every one, narrowing the scaling instead fails on
+/// 5 599, and running the recursion in `double` fails on 29 707. All three coincide at
+/// `float64`, which is why the measurement is at `float32`.
+///
+/// ## The factorial accumulator wraps
+///
+/// `degree!/(degree-k)!` is accumulated in an int64 that wraps, first at degree 21 and
+/// derivative order 19. Above that the scaling is a different number in both backends
+/// and neither is right; `pantr::core::wrapping_mul` is the defined-behaviour spelling
+/// of the wrap, and its own comment says why this port reproduces rather than guards.
+///
+/// ## No `a * b + c`, so nothing here fuses
+///
+/// Unlike the general-knot A2.3 of `pantr/bspline/tabulate.hpp`, whose `ndu` entries
+/// are knot differences, this one's are one -- so `saved + (one - s) * temp` is the
+/// only candidate site and `d + a * ndu` reduces to `d + a` where `ndu` is a diagonal
+/// one. That is *not* enough to claim the kernel is contraction-free: `ndu[rk, pk]` is
+/// a basis value off the diagonal in general, so the accumulation does carry real
+/// products. The parity claim therefore takes the same conditional form as the
+/// general-knot one, and does not assert a stronger property than
+/// `tabulate_bernstein_1d`'s.
+///
+/// \tparam T Scalar type the kernel is instantiated on.
+/// \param degree Degree of the basis. Must be non-negative.
+/// \param n_deriv Highest derivative order. Must be non-negative. Rows above `degree`
+///        come out identically zero, the k-th derivative of a degree-p polynomial
+///        vanishing for `k > p`.
+/// \param points Evaluation points. Values outside `[0, 1]` are evaluated by the same
+///        recursion rather than clamped, matching the Python kernel.
+/// \param out Output view of shape `(points.size(), n_deriv + 1, degree + 1)`, written
+///        in full.
+///
+/// \note No input validation is performed. This is a Layer 3 kernel. `degree >= 0` and
+///       `n_deriv >= 0` are memory-safety obligations, both being widened to
+///       `std::size_t` below, as are `out`'s three extents.
+///       For general use call
+///       `pantr.bspline.BsplineSpace1D.tabulate_basis_derivatives` on a space with
+///       Bézier-like knots.
+template <Real T>
+void tabulate_bernstein_deriv_1d(int degree, int n_deriv, std::span<const T> points,
+                                 span_nd<T, 3> out) {
+    PANTR_PRECONDITION(degree >= 0, "degree must be non-negative");
+    PANTR_PRECONDITION(n_deriv >= 0, "n_deriv must be non-negative");
+    PANTR_PRECONDITION(out.extent(0) == points.size() &&
+                           out.extent(1) == static_cast<std::size_t>(n_deriv) + 1 &&
+                           out.extent(2) == static_cast<std::size_t>(degree) + 1,
+                       "out must have shape (points.size(), n_deriv+1, degree+1)");
+    using pantr::value_of;
+
+    const auto order = static_cast<std::size_t>(degree) + 1;
+    const auto rows = static_cast<std::size_t>(n_deriv) + 1;
+    const T zero(0.0);
+    const T one(1.0);
+
+    std::vector<T> ndu_storage(order * order, zero);
+    std::vector<T> a_storage(2 * rows, zero);
+    const span2d<T> ndu(ndu_storage.data(), order, order);
+    const span2d<T> a(a_storage.data(), std::size_t{2}, rows);
+
+    // The falling factorials, wrapping as the oracle's int64 accumulator does. Hoisted
+    // out of the point loop because they depend on the degree alone; the oracle
+    // recomputes them per point, which is the same sequence of integer operations and
+    // so the same values.
+    std::vector<std::int64_t> factorial(rows, 0);
+    {
+        std::int64_t fac = degree;
+        for (std::size_t k = 1; k < rows; ++k) {
+            factorial[k] = fac;
+            fac = core::wrapping_mul(fac, degree - static_cast<std::int64_t>(k));
+        }
+    }
+
+    for (std::size_t p = 0; p < points.size(); ++p) {
+        const T s = points[p];
+
+        // The oracle zeroes this point's output slice, the `ndu` table and the `a`
+        // table on entry. `a` is then carried across the loop over `r` -- only
+        // `a[0, 0]` is reset per `r` -- and that is reproduced rather than tidied,
+        // since zeroing it per `r` would be a different computation wherever a stale
+        // entry is read.
+        for (std::size_t k = 0; k < rows; ++k) {
+            for (std::size_t i = 0; i < order; ++i) {
+                at(out, p, k, i) = zero;
+            }
+            at(a, 0, k) = zero;
+            at(a, 1, k) = zero;
+        }
+        for (std::size_t i = 0; i < order; ++i) {
+            for (std::size_t j = 0; j < order; ++j) {
+                at(ndu, i, j) = zero;
+            }
+        }
+
+        // --- The ndu table, with every knot difference one ---
+        at(ndu, 0, 0) = one;
+        for (std::size_t j = 1; j < order; ++j) {
+            T saved = zero;
+            for (std::size_t r = 0; r < j; ++r) {
+                at(ndu, j, r) = one;                // the knot difference, one throughout
+                const T temp = at(ndu, r, j - 1);   // divided by that one
+                at(ndu, r, j) = saved + (one - s) * temp;
+                saved = s * temp;
+            }
+            at(ndu, j, j) = saved;
+        }
+
+        for (std::size_t j = 0; j < order; ++j) {
+            at(out, p, 0, j) = at(ndu, j, static_cast<std::size_t>(degree));
+        }
+
+        // --- The k-th derivatives, by the triangular recursion ---
+        for (std::int64_t r = 0; r < static_cast<std::int64_t>(order); ++r) {
+            std::size_t s1 = 0;
+            std::size_t s2 = 1;
+            at(a, 0, 0) = one;
+
+            for (std::int64_t k = 1; k <= n_deriv; ++k) {
+                T d = zero;
+                const std::int64_t rk = r - k;
+                const std::int64_t pk = degree - k;
+
+                if (r >= k) {
+                    at(a, s2, 0) = at(a, s1, 0);  // divided by one
+                    d = at(a, s2, 0) * at(ndu, rk, pk);
+                }
+
+                const std::int64_t j1 = rk >= -1 ? 1 : -rk;
+                const std::int64_t j2 = (r - 1) <= pk ? k - 1 : degree - r;
+
+                for (std::int64_t j = j1; j <= j2; ++j) {
+                    at(a, s2, j) = at(a, s1, j) - at(a, s1, j - 1);  // divided by one
+                    d = d + at(a, s2, j) * at(ndu, rk + j, pk);
+                }
+
+                if (r <= pk) {
+                    at(a, s2, k) = -at(a, s1, k - 1);  // divided by one
+                    d = d + at(a, s2, k) * at(ndu, r, pk);
+                }
+
+                at(out, p, static_cast<std::size_t>(k), static_cast<std::size_t>(r)) = d;
+                std::swap(s1, s2);
+            }
+        }
+
+        // --- The factorial scaling, formed in `double` and rounded on the store ---
+        for (std::size_t k = 1; k < rows; ++k) {
+            const auto fac_wide = static_cast<double>(factorial[k]);
+            for (std::size_t j = 0; j < order; ++j) {
+                at(out, p, k, j) = T(static_cast<double>(value_of(at(out, p, k, j))) * fac_wide);
             }
         }
     }
