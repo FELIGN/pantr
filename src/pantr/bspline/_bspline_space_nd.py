@@ -433,23 +433,39 @@ class BsplineSpace:
         difference no value comparison would ever report.
         ``pantr.grid.HierarchicalGrid._wrap_over`` exists for the same reason.
 
+        **The reuse is positional, so this method is only correct for an operation that
+        preserves the directions and their order.** Refinement does; a boundary
+        extraction or a permutation would not, and reusing direction ``d``'s wrapper
+        there would hand back a wrapper for a different direction while every value
+        comparison agreed. So the dimensions must match, and that is checked rather
+        than documented: it is the one precondition of this method a caller could get
+        wrong silently.
+
         Args:
             impl (_Impl): The implementation object to adopt, with no re-validation.
             prior (Sequence[BsplineSpace1D]): The univariate wrappers the operation
-                started from, in axis order. May be shorter than ``impl``'s dimension
-                or empty; entries whose implementation ``impl`` no longer holds are
-                ignored.
+                started from, in axis order, one per direction of ``impl``. Entries
+                whose implementation ``impl`` no longer holds are ignored.
 
         Returns:
             BsplineSpace: A wrapper around ``impl``.
+
+        Raises:
+            ValueError: If ``prior`` does not have one entry per direction of ``impl``,
+                which means the operation changed the directions and must not reuse
+                their wrappers positionally.
         """
+        one_d_spaces = tuple(impl.spaces)
+        if len(prior) != len(one_d_spaces):
+            raise ValueError(
+                f"_wrap_over reuses a direction's wrapper by position, so it needs one "
+                f"prior wrapper per direction; got {len(prior)} for a space of "
+                f"{len(one_d_spaces)}."
+            )
         spaces: list[BsplineSpace1D] = []
-        for direction, one_d in enumerate(impl.spaces):
-            reusable = prior[direction] if direction < len(prior) else None
-            if reusable is not None and reusable._impl is one_d:
-                spaces.append(reusable)
-            else:
-                spaces.append(BsplineSpace1D._wrap(one_d))
+        for direction, one_d in enumerate(one_d_spaces):
+            reusable = prior[direction]
+            spaces.append(reusable if reusable._impl is one_d else BsplineSpace1D._wrap(one_d))
         self = object.__new__(cls)
         object.__setattr__(self, "_impl", impl)
         object.__setattr__(self, "_spaces", tuple(spaces))

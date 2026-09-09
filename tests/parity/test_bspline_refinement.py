@@ -159,6 +159,7 @@ import pytest
 
 from pantr._backend import Backend, use_backend
 from pantr.bspline import Bspline, BsplineSpace, BsplineSpace1D
+from pantr.bspline._refinement_backend import insert_knots_into_field, subdivide_field
 from tests._parity_harness import (
     AccuracyClaim,
     Field,
@@ -1087,6 +1088,57 @@ def test_a_near_duplicate_insertion_is_snapped_but_refined_unsnapped(
         fields=_fields(1),
         context=f"a near-duplicate insertion at {resolved}",
     )
+
+
+def test_the_backend_entry_points_agree_when_nothing_is_refined() -> None:
+    """Called directly with nothing to refine, both branches return an unrefined copy.
+
+    Not reachable through the public methods, which refuse an all-empty argument first.
+    It is asserted because :mod:`pantr.bspline._refinement_backend`'s two entry points
+    are private symbols in a package whose private symbols a downstream consumer
+    already imports, and because the two branches would otherwise disagree: the C++
+    entry points restate the wrapper's "at least one direction" refusal for a C++
+    caller, while the oracle returns a copy.
+    :func:`~pantr.bspline._refinement_backend._the_cpp_backend_can_take_it` keeps the
+    case on the oracle path so that the dispatcher has one answer rather than two.
+    """
+    case = CASES[7]
+    for backend in (Backend.PYTHON, Backend.CPP):
+        with use_backend(backend):
+            field, _ = _make_field(case, np.float64)
+            for result in (
+                insert_knots_into_field(field, [None, np.empty(0)]),
+                subdivide_field(field, [1, None], None),
+            ):
+                assert result.space.num_basis == field.space.num_basis
+                assert np.array_equal(result.control_points, field.control_points)
+                for direction in range(field.dim):
+                    assert result.space.spaces[direction] is field.space.spaces[direction]
+
+    # And the binding still refuses it, which is the asymmetry being routed around
+    # rather than removed: a C++ caller with no wrapper in front of it gets the
+    # wrapper's own message.
+    with use_backend(Backend.CPP):
+        field, _ = _make_field(case, np.float64)
+        with pytest.raises(ValueError, match="At least one direction"):
+            _binding().insert_bspline_knots(field._impl, [np.empty(0), np.empty(0)])
+
+
+def test_wrap_over_refuses_a_dimension_it_cannot_match_positionally() -> None:
+    """The space wrapper's reuse is positional, so a changed dimension is refused.
+
+    ``BsplineSpace._wrap_over`` reuses direction ``d``'s wrapper when the new
+    implementation still holds direction ``d``'s implementation, which is only sound
+    for an operation that preserves the directions and their order. Refinement does; a
+    later boundary extraction or permutation would not, and would otherwise hand back a
+    wrapper for a different direction while every value comparison agreed. The
+    precondition is checked, and this is the check.
+    """
+    with use_backend(Backend.CPP):
+        surface, _ = _make_field(CASES[7], np.float64)
+        one_d, _ = _make_field(CASES[2], np.float64)
+        with pytest.raises(ValueError, match="one prior wrapper per direction"):
+            BsplineSpace._wrap_over(surface.space._impl, one_d.space.spaces)
 
 
 def test_a_zero_size_insertion_is_skipped_whatever_its_rank() -> None:
