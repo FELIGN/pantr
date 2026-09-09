@@ -984,6 +984,91 @@ def _falling_factorial(degree: int, n_deriv: int) -> int:
 # ---------------------------------------------------------------------------
 
 
+def _a22_chain_roundings(degree: int) -> int:
+    """Roundings on the dependency chain through one A2.2 output element.
+
+    Counted against ``_basis_funcs_point``, six per stage of the ``j`` loop:
+    ``left[j]``, ``right[j]``, ``denom``, the division ``N[r] / denom``, the
+    multiplication ``right[r+1] * temp`` and the addition ``saved + ...``. The
+    recurrence is a convex combination -- the two weights are ``right[r+1]/denom`` and
+    ``left[j-r]/denom``, non-negative for a non-decreasing knot vector and summing to
+    one -- so an inherited relative error is carried rather than amplified and the six
+    are additive per stage. There are ``degree`` stages.
+
+    Args:
+        degree (int): The polynomial degree.
+
+    Returns:
+        int: The rounding count, for use as ``m`` in ``gamma_m``.
+    """
+    return 6 * degree
+
+
+def _a23_chain_roundings(degree: int, n_deriv: int) -> int:
+    """Roundings on the dependency chain through one A2.3 output element.
+
+    :func:`_a22_chain_roundings` for the ``ndu`` triangle, which A2.3 builds by the
+    same steps, plus **four** per stage of the ``a``-table recursion, counted against
+    ``_basis_derivs_point``: the subtraction ``a[s1,j] - a[s1,j-1]``, the division by
+    ``ndu``, the multiplication ``a[s2,j] * ndu[...]`` and the accumulation into ``d``.
+    Plus **one** for the factorial scaling, which happens once per element and not per
+    stage.
+
+    An earlier version charged three per stage and no factorial, which under-counted --
+    the dangerous direction, since a bound tighter than derivable can be exceeded by
+    correct code. The margin had been absorbing it.
+
+    Args:
+        degree (int): The polynomial degree.
+        n_deriv (int): The highest derivative order.
+
+    Returns:
+        int: The rounding count, for use as ``m`` in ``gamma_m``.
+    """
+    return _a22_chain_roundings(degree) + 4 * n_deriv + 1
+
+
+def _dot_product_roundings(degree: int) -> int:
+    """Roundings in a dot product of the ``degree + 1`` values against exact weights.
+
+    ``degree + 1`` multiplications and ``degree`` additions, plus one for casting each
+    exact rational weight to ``double``. The cast is charged once because it is one
+    rounding per term and the terms are summed, so it enters the bound the same way a
+    per-term relative error does.
+
+    Args:
+        degree (int): The polynomial degree.
+
+    Returns:
+        int: The rounding count, for use as ``m`` in ``gamma_m``.
+    """
+    return (degree + 1) + degree + 1
+
+
+def _gamma(m: int, dtype: Any) -> float:
+    """Higham's ``gamma_m = m u / (1 - m u)``, refusing a budget that runs away.
+
+    Args:
+        m (int): The rounding count.
+        dtype (Any): The storage dtype, which fixes ``u = eps / 2``.
+
+    Returns:
+        float: ``gamma_m``, or at least one ``u`` so that a zero-stage case still
+        carries the smallest bound the format can express.
+
+    Raises:
+        ValueError: If ``m u >= 1/2``, where ``gamma_m`` no longer bounds a first-order
+            accumulation and a claim built on it would assert nothing.
+    """
+    u = unit_roundoff(dtype)
+    if m * u >= 0.5:
+        raise ValueError(
+            f"a budget of {m} roundings at {np.dtype(dtype).name} accumulates to "
+            f"{m * u:.3g}, at which gamma_m stops being a first-order bound"
+        )
+    return max(m * u / (1.0 - m * u), u)
+
+
 def _marsden_weights(
     knots: list[float], degree: int, first_basis: int, y: Fraction
 ) -> list[Fraction]:
@@ -1039,39 +1124,29 @@ def _outside_y(knots: list[float]) -> tuple[Fraction, Fraction]:
     return low - width, high + width
 
 
-def _partition_bound(values: _FloatArray, degree: int, dtype: Any) -> _FloatArray:
+def _partition_bound(degree: int, dtype: Any) -> float:
     """An absolute bound on ``|sum_i N_i - 1|``, derived rather than measured.
 
     Two contributions, both first order in ``u = eps/2``:
 
-    - **The values' own forward error.** A2.2 is a convex recurrence: at each of the
-      ``degree`` stages the new value is ``w1 * a + w2 * b`` with ``w1, w2 >= 0`` and
-      ``w1 + w2 = 1``, so a relative perturbation of the inputs is *carried*, never
-      amplified. Six operations lie on the dependency chain through one output element
-      per stage -- ``left[j]``, ``right[j]``, ``denom``, the division, the
-      multiplication and the addition -- so the relative error of each value is at most
-      ``gamma_{6p}``, and since the values are non-negative and sum to one, the sum of
-      their absolute errors is at most ``gamma_{6p}`` too.
-    - **The summation.** ``degree`` additions of quantities summing to one, so at most
-      ``gamma_p``.
+    - **The values' own forward error**, :func:`_a22_chain_roundings`. Since the values
+      are non-negative and sum to one, the sum of their *absolute* errors is bounded by
+      the same ``gamma`` that bounds each one's relative error.
+    - **The summation**, ``degree`` additions of quantities summing to one, so
+      ``gamma_degree``.
 
-    Written as ``gamma_m = m u / (1 - m u)`` with ``m = 7 * degree``, which is the two
-    counts added and not a safety factor. The floor of one ``u`` covers ``degree = 0``,
-    where the single value is exactly one and no operation runs.
+    The two counts are added rather than combined with a safety factor, and
+    :func:`_gamma` supplies the one-``u`` floor that covers ``degree = 0``, where the
+    single value is exactly one and no operation runs.
 
     Args:
-        values (_FloatArray): The computed basis values, shape ``(n_pts, degree + 1)``.
         degree (int): The polynomial degree.
         dtype (Any): The storage dtype, which fixes ``u``.
 
     Returns:
-        _FloatArray: One bound per point.
+        float: The bound, the same for every point.
     """
-    del values
-    u = unit_roundoff(dtype)
-    m = 7 * degree
-    gamma = m * u / (1.0 - m * u) if m * u < 0.5 else np.inf
-    return np.full(1, max(gamma, u), dtype=np.float64)
+    return _gamma(_a22_chain_roundings(degree) + degree, dtype)
 
 
 @pytest.mark.parametrize("dtype", [np.float64, np.float32])
@@ -1104,11 +1179,12 @@ def test_partition_of_unity(cpp_backend: None, case: str, backend: Backend, dtyp
         sums,
         np.ones_like(sums),
         derived_accuracy(
-            bound=np.broadcast_to(_partition_bound(got.block, degree, dtype), sums.shape),
+            bound=np.full(sums.shape, _partition_bound(degree, dtype)),
             why="the partition of unity is exact in the reals, so the whole discrepancy "
-            "is the computation's own forward error: gamma_{6p} carried by the convex "
-            "recurrence plus gamma_p from summing degree+1 terms that add to one, "
-            "written as gamma_{7p}. See _partition_bound for the operation count.",
+            "is the computation's own forward error: six roundings per stage carried by "
+            "the convex recurrence over degree stages, plus the degree additions of the "
+            "sum. Both counts are counted against _basis_funcs_point rather than "
+            "estimated; see _a22_chain_roundings and _partition_bound.",
         ),
         context=f"partition of unity, {case}, {backend.name}, {np.dtype(dtype).name}",
     )
@@ -1137,7 +1213,6 @@ def test_marsden_identity_pins_the_values(
     points = _evaluation_points(knots, degree, dtype)
     got = _tabulate(backend, knots, degree, points, dtype, None)
     values = np.asarray(got.block, dtype=np.float64)
-    u = unit_roundoff(dtype)
 
     for y in _outside_y(knots):
         computed = np.empty(points.size, dtype=np.float64)
@@ -1152,12 +1227,11 @@ def test_marsden_identity_pins_the_values(
             # Every weight has the same sign and the values are non-negative, so this
             # sum does not cancel and its magnitude is |exact| up to the budget below.
             magnitude = float(np.dot(np.abs(floats), np.abs(values[p])))
-            # gamma_{7p} for the values (see _partition_bound), one u for casting each
-            # exact weight to double, and gamma_{2p} for the degree+1 products and the
-            # degree additions of the dot product.
-            m = 7 * degree + 1 + 2 * degree
-            gamma = m * u / (1.0 - m * u) if m * u < 0.5 else np.inf
-            bound[p] = max(gamma, u) * magnitude
+            # The values' own chain, plus the dot product against the exact weights.
+            # There is no partition-of-unity summation term here: Marsden's sum IS the
+            # dot product, and charging both would double-count it.
+            budget = _a22_chain_roundings(degree) + _dot_product_roundings(degree)
+            bound[p] = _gamma(budget, dtype) * magnitude
 
         assert np.all(bound < np.abs(exact) + np.finfo(np.float64).tiny), (
             f"the Marsden bound is not smaller than the value it compares for {case} "
@@ -1173,8 +1247,9 @@ def test_marsden_identity_pins_the_values(
                 "side is computed in exact rational arithmetic from dyadic knots, so the "
                 "reference carries no error. y sits a full knot range outside, which makes "
                 "every weight the same sign and the sum cancellation-free. The bound is the "
-                "values' own gamma_{7p}, one u per weight cast, and gamma_{2p} for the dot "
-                "product, times the sum of |weight| * |value|.",
+                "values' own chain (_a22_chain_roundings) plus the dot product's "
+                "(_dot_product_roundings), times the sum of |weight| * |value|. It carries "
+                "no separate summation term, Marsden's sum being the dot product itself.",
             ),
             context=f"Marsden at y={y}, {case}, {backend.name}, {np.dtype(dtype).name}",
         )
@@ -1205,7 +1280,6 @@ def test_derivative_sums_vanish(cpp_backend: None, case: str, backend: Backend, 
     points = _evaluation_points(knots, degree, dtype)
     got = _tabulate(backend, knots, degree, points, dtype, n_deriv)
     block = np.asarray(got.block, dtype=np.float64)
-    u = unit_roundoff(dtype)
 
     for k in range(1, n_deriv + 1):
         rows = block[:, k, :]
@@ -1213,9 +1287,8 @@ def test_derivative_sums_vanish(cpp_backend: None, case: str, backend: Backend, 
         # The row's own scale. `sum_i |N_i^(k)|` rather than the max, because the
         # summation error is driven by the partial sums and those reach the total.
         magnitude = np.abs(rows).sum(axis=-1)
-        m = 7 * degree + 3 * n_deriv + degree
-        gamma = m * u / (1.0 - m * u) if m * u < 0.5 else np.inf
-        bound = np.maximum(max(gamma, u) * magnitude, np.finfo(dtype).smallest_normal)
+        budget = _a23_chain_roundings(degree, n_deriv) + degree
+        bound = np.maximum(_gamma(budget, dtype) * magnitude, np.finfo(dtype).smallest_normal)
         assert_accuracy(
             sums,
             np.zeros_like(sums),
@@ -1223,10 +1296,11 @@ def test_derivative_sums_vanish(cpp_backend: None, case: str, backend: Backend, 
                 bound=bound,
                 why="sum_i N_i^(k) = 0 for k >= 1 follows from differentiating the "
                 "partition of unity, so the whole discrepancy is forward error. The bound "
-                "is gamma_{7p} for the ndu triangle, three roundings per a-table stage over "
-                "n_deriv stages, and gamma_p for the sum, times sum_i |N_i^(k)| -- an "
-                "absolute bound scaled by the row's own magnitude, since the quantity "
-                "vanishes and no relative bound on it is finite.",
+                "is _a23_chain_roundings -- six per ndu stage, four per a-table stage and "
+                "one for the factorial scaling, each counted against _basis_derivs_point -- "
+                "plus the degree additions of the sum, times sum_i |N_i^(k)|. Absolute and "
+                "scaled by the row's own magnitude, since the quantity vanishes and no "
+                "relative bound on it is finite.",
             ),
             context=f"derivative sum k={k}, {case}, {backend.name}, {np.dtype(dtype).name}",
         )
@@ -1265,7 +1339,6 @@ def test_differentiated_marsden_pins_the_derivative_scale(
     points = _evaluation_points(knots, degree, dtype)
     got = _tabulate(backend, knots, degree, points, dtype, n_deriv)
     block = np.asarray(got.block, dtype=np.float64)
-    u = unit_roundoff(dtype)
     y = _outside_y(knots)[0]
 
     falling = 1
@@ -1282,9 +1355,8 @@ def test_differentiated_marsden_pins_the_derivative_scale(
             computed[p] = float(np.dot(floats, row))
             exact[p] = float(falling * (Fraction(float(point)) - y) ** (degree - k))
             magnitude = float(np.dot(np.abs(floats), np.abs(row)))
-            m = 7 * degree + 3 * n_deriv + 1 + 2 * degree
-            gamma = m * u / (1.0 - m * u) if m * u < 0.5 else np.inf
-            bound[p] = max(gamma, u) * magnitude
+            budget = _a23_chain_roundings(degree, n_deriv) + _dot_product_roundings(degree)
+            bound[p] = _gamma(budget, dtype) * magnitude
 
         if not np.all(bound < np.abs(exact)):
             pytest.skip(
@@ -1418,7 +1490,7 @@ def test_the_partition_bound_is_still_approached(cpp_backend: None, dtype: Any) 
         points = _evaluation_points(knots, degree, dtype)
         got = _tabulate(Backend.CPP, knots, degree, points, dtype, None)
         sums = np.asarray(got.block.sum(axis=-1), dtype=np.float64)
-        bound = float(_partition_bound(got.block, degree, dtype)[0])
+        bound = _partition_bound(degree, dtype)
         worst = max(worst, float(np.max(np.abs(sums - 1.0))) / bound)
 
     # The threshold follows from the bound's own structure rather than from a
