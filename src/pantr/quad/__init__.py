@@ -9,7 +9,7 @@ This module provides:
 - :class:`QuadratureRule`: a d-dimensional quadrature rule on the unit cube,
   with :func:`tensor_product_quadrature` and :func:`gauss_legendre_quadrature`
   factories; the reference rule consumed by :func:`pantr.grid.cell_quadrature`.
-  Owned by the C++ core and wrapped here; see :mod:`pantr.quad._rule_nd`.
+  Owned by the C++ core and wrapped here; see ``pantr.quad._rule_nd``.
 """
 
 from ._lattice import PointsLattice, create_lagrange_points_lattice

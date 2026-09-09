@@ -608,12 +608,8 @@ class AABB:
     one Python class in front of it, which is what keeps the roughly two dozen
     ``isinstance`` sites across the package working unchanged.
 
-    Under ``PANTR_BACKEND=python`` the thing held is :class:`_AABBPython`
+    Under ``PANTR_BACKEND=python`` the thing held is ``_AABBPython``
     instead, which is the port's oracle and is temporary; see that class.
-
-    Attributes:
-        lo (npt.NDArray[np.float64]): Lower corner, shape ``(ndim,)``, read-only.
-        hi (npt.NDArray[np.float64]): Upper corner, shape ``(ndim,)``, read-only.
     """
 
     __slots__ = ("_impl",)

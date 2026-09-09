@@ -643,16 +643,12 @@ class CellTags:
     grid's cell count is exposed through the :attr:`num_cells` property.
 
     **This class is a wrapper**, holding a registry owned by the C++ core (or, under
-    ``PANTR_BACKEND=python``, a :class:`_CellTagsPython`). See the module docstring
+    ``PANTR_BACKEND=python``, a ``_CellTagsPython``). See the module docstring
     for the ownership rule and for where validation lives.
 
     Iteration order is insertion order, and a :meth:`set` that replaces an existing
     name leaves that name where it was. Both backends guarantee it, because
-    :meth:`__iter__` and :attr:`names` are public and a caller can see it.
-
-    Attributes:
-        num_cells (int): Number of cells in the owning grid.
-        names (tuple[str, ...]): Registered tag names, in insertion order.
+    ``__iter__`` and :attr:`names` are public and a caller can see it.
     """
 
     __slots__ = ("_impl",)
@@ -915,11 +911,6 @@ class FacetTags:
     :attr:`facets_per_cell` properties.
 
     **This class is a wrapper**; see :class:`CellTags` and the module docstring.
-
-    Attributes:
-        num_cells (int): Number of cells in the owning grid.
-        facets_per_cell (int): Number of local facets per cell.
-        names (tuple[str, ...]): Registered tag names, in insertion order.
     """
 
     __slots__ = ("_impl",)

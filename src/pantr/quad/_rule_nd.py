@@ -259,13 +259,7 @@ class QuadratureRule:
     **This class is a wrapper.** The rule itself is owned by the C++ core
     (``cpp/include/pantr/quad/rule.hpp``) and this class holds one; see the module
     docstring. Under ``PANTR_BACKEND=python`` it holds
-    :class:`_QuadratureRulePython` instead.
-
-    Attributes:
-        ndim (int): Number of axes (``>= 1``).
-        num_points (int): Number of quadrature points (``>= 1``).
-        points (npt.NDArray[np.float64]): Read-only ``(num_points, ndim)`` array.
-        weights (npt.NDArray[np.float64]): Read-only ``(num_points,)`` array.
+    ``_QuadratureRulePython`` instead.
     """
 
     __slots__ = ("_impl", "_points", "_weights")

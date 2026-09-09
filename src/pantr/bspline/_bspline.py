@@ -408,7 +408,7 @@ class Bspline:
     which is the C++ type (``cpp/include/pantr/bspline/bspline.hpp``) or the oracle
     ``_BsplinePython``. Most operations below are still Python over numba kernels and
     numpy; :meth:`insert_knots` and :meth:`subdivide` dispatch to C++ through
-    :mod:`pantr.bspline._refinement_backend`, and the module docstring says what that
+    ``pantr.bspline._refinement_backend``, and the module docstring says what that
     costs.
 
     Instances are immutable *as attribute holders*, and that is enforced rather than

@@ -667,14 +667,9 @@ class BVH:
     constructor but is mostly intended for tests and round-trip serialization.
 
     **This class is a wrapper**, holding a hierarchy owned by the C++ core (or, under
-    ``PANTR_BACKEND=python``, a :class:`_BVHPython`). See the module docstring for
+    ``PANTR_BACKEND=python``, a ``_BVHPython``). See the module docstring for
     the ownership rule, for where validation lives, and for what the overlap
     predicate actually tests.
-
-    Attributes:
-        ndim (int): Spatial dimension of the indexed AABBs (``>= 1``).
-        n_cells (int): Number of cells indexed (equal to the number of leaves).
-        n_nodes (int): Total number of nodes (``2 * n_cells - 1``, else ``0``).
     """
 
     __slots__ = ("_impl",)
