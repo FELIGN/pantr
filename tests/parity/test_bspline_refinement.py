@@ -101,6 +101,10 @@ Every quantity compared is relative on non-negative data, so the bound is
 
 - **the oracle's own formation**, ``e_r`` by ``E_j <- E_j + x E_{j-1}``: two roundings
   per knot along the dominant chain, plus the division by ``C(p, r)``. ``2p + 1``;
+- **the cast into the field's storage**: :func:`_make_field` forms the closed form in
+  ``float64`` and stores it in the field's dtype, which at ``float32`` is a real
+  rounding on the *input* the sweep then propagates. It costs one, because a convex
+  combination does not amplify a relative perturbation. ``1``;
 - **one direction's band recurrence**: ``p`` levels, each committing two subtractions,
   a division, a multiplication and an addition on its dominant path. ``5p``;
 - **one direction's control-point sweep**: ``p + 1`` terms, each a multiplication and an
@@ -108,7 +112,7 @@ Every quantity compared is relative on non-negative data, so the bound is
 - relative errors compose sub-additively and ``gamma_a + gamma_b <= gamma_{a+b}``, so
   ``D`` refined directions cost ``D (7p + 2)``.
 
-``K = 2p + 2 + D (7p + 2)``, the extra 1 being the store into the result. The magnitude
+``K = 2p + 3 + D (7p + 2)``, the last 1 being the store into the result. The magnitude
 is ``prod_d max_i A^d_{i, r_d}`` per component: the discrete B-splines of a refinement
 are non-negative, so each output coefficient is a convex combination of coarse ones and
 no partial sum of it exceeds the largest. That non-negativity is a classical property
@@ -291,7 +295,7 @@ def _accuracy_claim(
         AccuracyClaim: The bound and its derivation.
     """
     degree = max(refined.degree)
-    roundings = 2 * degree + 2 + num_refined * (7 * degree + 2)
+    roundings = 2 * degree + 3 + num_refined * (7 * degree + 2)
     unit = unit_roundoff(refined.dtype)
     relative = roundings * unit / (1.0 - roundings * unit)
     return derived_accuracy(
@@ -301,7 +305,8 @@ def _accuracy_claim(
             f"refinement that does not move the field must reproduce it on the refined "
             f"knots. gamma_{roundings} at unit roundoff {unit:.3e}, times "
             f"prod_d max_i A^d_(i, r_d) per component: {2 * degree + 1} roundings form "
-            f"the closed form itself, {num_refined} refined direction(s) cost "
+            f"the closed form itself, one is the cast of that closed form into the "
+            f"field's storage, {num_refined} refined direction(s) cost "
             f"{7 * degree + 2} each -- {5 * degree} in the band recurrence and "
             f"{2 * degree + 2} in the control-point sweep -- and one is the store. The "
             f"magnitude is a bound because the discrete B-splines of a refinement are "
