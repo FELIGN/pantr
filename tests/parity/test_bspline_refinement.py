@@ -81,7 +81,10 @@ Three things make it a real oracle rather than a restatement:
   refinement preserves affine maps; ``r = 0`` alone is the partition of unity. Either
   leaves a band of ``p + 1`` entries pinned by one linear functional. All of
   ``r`` in ``[0, p]`` pins ``p + 1`` independent functionals per band, which determines
-  it.
+  it. **The nonsingularity that "independent" rests on is argued, not proved here**: it
+  fails for a window over a collapsed span and holds for every window a refinement can
+  produce, which is Curry-Schoenberg local polynomial reproduction. Checked in exact
+  rational arithmetic over the reachable bands; see the C++ test's file comment.
 - **It is not a mirror.** Elementary symmetric polynomials of knots and a binomial
   coefficient, computed in :func:`_marsden_column` in this file. Nothing in it consults
   the Oslo recurrence, either backend, or the refinement matrix.
@@ -112,7 +115,10 @@ Every quantity compared is relative on non-negative data, so the bound is
 - relative errors compose sub-additively and ``gamma_a + gamma_b <= gamma_{a+b}``, so
   ``D`` refined directions cost ``D (7p + 2)``.
 
-``K = 2p + 3 + D (7p + 2)``, the last 1 being the store into the result. The magnitude
+``K = 2p + 3 + D (7p + 2)``: the oracle's ``e_r`` recurrence plus one rounding on each
+end, the cast in and the store out (the sweep accumulates in ``double`` and writes back
+into ``T``, a real rounding at ``float32``, symmetric to the cast). Every term names the
+operations it charges; none is a pad. The magnitude
 is ``prod_d max_i A^d_{i, r_d}`` per component: the discrete B-splines of a refinement
 are non-negative, so each output coefficient is a convex combination of coarse ones and
 no partial sum of it exceeds the largest. That non-negativity is a classical property
@@ -141,10 +147,12 @@ rather than left to be met.
   pins both halves of that. Parity on such a case is **common mode** -- one
   implementation ran twice -- which this file says out loud rather than counting as
   evidence.
-- **One shape of bad input is refused in a different order.** The oracle checks an
+- **Two shapes of bad input are refused in a different order.** The oracle checks an
   insertion array's rank inside its per-direction loop; a ``std::span`` has no rank, so
-  the C++ path checks every rank before the call.
-  :func:`test_the_refusal_order_divergence_is_exactly_one_input` pins both orders.
+  the C++ path checks every rank before the call. Both of the oracle's post-rank value
+  checks -- domain and multiplicity -- therefore lose to a later direction's rank.
+  :func:`test_the_refusal_order_diverges_on_both_of_the_oracles_value_checks` pins
+  both, in both directions.
 """
 
 from __future__ import annotations
@@ -904,7 +912,15 @@ def test_the_claims_hold_over_a_ten_times_sweep() -> None:
                     np.asarray(cpp.control_points).view(
                         np.uint32 if np.dtype(dtype) == np.float32 else np.uint64
                     ),
-                ) or not np.array_equal(py.space.spaces[0].knots, cpp.space.spaces[0].knots):
+                ) or any(
+                    # Every direction, not direction 0. The sweep carries surface cases,
+                    # and a defect confined to a later direction's knots would have
+                    # counted as agreement here while the per-quantity test caught it
+                    # elsewhere -- so the counter under-reported rather than the suite
+                    # missing it, which is still a self-description that is not true.
+                    not np.array_equal(a.knots, b.knots)
+                    for a, b in zip(py.space.spaces, cpp.space.spaces, strict=True)
+                ):
                     differing_bits += 1
                 expected = _marsden_net(cpp.space.spaces)
                 if subdivide:
@@ -1197,17 +1213,26 @@ def test_a_zero_size_insertion_is_skipped_whatever_its_rank() -> None:
     assert "At least one direction" in messages[0]
 
 
-def test_the_refusal_order_divergence_is_exactly_one_input() -> None:
-    """The two backends disagree on which of two bad arguments they report, and only there.
+def test_the_refusal_order_diverges_on_both_of_the_oracles_value_checks() -> None:
+    """The two backends disagree on which of two bad arguments they report, on both shapes.
 
-    The one divergence :mod:`pantr.bspline._refinement_backend` records. The oracle
-    checks an insertion array's rank inside its per-direction loop, so with direction 0
-    out of domain *and* direction 1 not 1D it reports the domain; the C++ path checks
-    every rank before the call, so it reports the rank. Both texts are the oracle's and
-    both are ``ValueError``.
+    The oracle checks an insertion array's rank inside its per-direction loop; a
+    ``std::span`` has no rank, so the C++ path checks every direction's rank before the
+    call. So whenever an *earlier* direction fails a check the oracle makes **after**
+    rank, and a *later* direction fails rank, the two report different refusals. Both
+    texts are the oracle's and both are ``ValueError``.
 
-    Pinned in both directions rather than described, because a divergence nothing
-    asserts is a divergence that will be "fixed" by accident in either direction.
+    **Which shapes those are, closed by enumeration rather than asserted.**
+    ``_compute_inserted_knot_vector_1d`` makes exactly four checks, in order: rank,
+    empty, domain, multiplicity. Rank is the one the C++ path hoists, so it cannot
+    diverge; empty cannot either, because the caller skips a zero-size array before the
+    per-direction loop is reached, so the later rank failure surfaces on both sides.
+    That leaves **domain and multiplicity, and both diverge** -- measured below.
+
+    An earlier version of this test pinned only the domain shape and was named for the
+    claim that it was the only one. It was not: the multiplicity shape diverges the same
+    way and nothing asserted it, which is the failure this milestone keeps paying for --
+    a claim nothing in the suite can distinguish. Two reviewers found it independently.
     """
     case = _Case(
         (_QUADRATIC_THIRDS, _SHIFTED_LINEAR),
@@ -1218,19 +1243,27 @@ def test_the_refusal_order_divergence_is_exactly_one_input() -> None:
         False,
         "the divergent input",
     )
-    bad = [np.array([5.0]), np.array([[11.5, 11.5]])]
+    late_bad_rank = np.array([[11.5, 11.5]])
+    # One entry per value check the oracle makes after rank. `_THIRD` three times
+    # exceeds multiplicity `degree + 1 = 3` on a knot that is inside the domain, so it
+    # reaches the multiplicity check rather than stopping at the domain one.
+    shapes = (
+        ("outside the domain", [np.array([5.0]), late_bad_rank]),
+        ("maximum multiplicity", [np.array([_THIRD, _THIRD, _THIRD]), late_bad_rank]),
+    )
 
-    with use_backend(Backend.PYTHON):
-        field, _ = _make_field(case, np.float64)
-        with pytest.raises(ValueError, match="outside the domain") as oracle:
-            field.insert_knots(bad)
-    with use_backend(Backend.CPP):
-        field, _ = _make_field(case, np.float64)
-        with pytest.raises(ValueError, match="must be a 1D array-like") as port:
-            field.insert_knots(bad)
+    for oracle_text, bad in shapes:
+        with use_backend(Backend.PYTHON):
+            field, _ = _make_field(case, np.float64)
+            with pytest.raises(ValueError, match=oracle_text) as oracle:
+                field.insert_knots(bad)
+        with use_backend(Backend.CPP):
+            field, _ = _make_field(case, np.float64)
+            with pytest.raises(ValueError, match="must be a 1D array-like") as port:
+                field.insert_knots(bad)
 
-    assert "1D array-like" not in str(oracle.value)
-    assert "outside the domain" not in str(port.value)
+        assert "1D array-like" not in str(oracle.value), oracle_text
+        assert oracle_text not in str(port.value), oracle_text
 
     # With only the rank at fault the two agree, text for text, which is what says the
     # divergence is the *order* and not the message.
