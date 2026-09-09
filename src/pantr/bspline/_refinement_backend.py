@@ -55,16 +55,24 @@ no C++ half in :mod:`pantr.bspline._extraction_backend`.
 A periodic direction that receives **no** knots is not affected: C++ carries its space
 handle into the result untouched, exactly as the oracle carries its wrapper.
 
-**The order of two refusals differs, in one input.** The oracle checks each insertion
-array's *rank* inside the per-direction loop, interleaved with that direction's domain
-and multiplicity checks, so its order is ``rank(0), domain(0), multiplicity(0),
-rank(1), ...``. A ``std::span`` has no rank, so the C++ path cannot make that check and
-:func:`_flat_insertions` makes it here -- for every direction, before the call. The two
-therefore disagree on exactly one shape of input: direction 0 well-shaped but out of
-domain, *and* a later direction not 1D. The oracle reports the domain, the C++ path
-reports the rank. Both texts are the oracle's, both refusals are ``ValueError``, and
-``tests/parity/test_bspline_refinement.py`` pins both orders rather than leaving the
-divergence to be met.
+**The order of two refusals differs, and only their order.** The oracle checks each
+insertion array's *rank* inside the per-direction loop, interleaved with that
+direction's domain and multiplicity checks, so its order is ``rank(0), domain(0),
+multiplicity(0), rank(1), ...``. A ``std::span`` has no rank, so the C++ path cannot
+make that check and :func:`_flat_insertions` makes it here -- for every direction,
+before the call.
+
+What survives of that is a single shape of doubly-bad input: direction 0 well-shaped
+but out of domain, *and* a later direction not 1D. The oracle reports the domain, the
+C++ path reports the rank. Both texts are the oracle's, both refusals are
+``ValueError``, and ``tests/parity/test_bspline_refinement.py`` pins both orders rather
+than leaving the divergence to be met.
+
+**It was not a single shape until a review round.** A *zero-size* non-1D array -- shape
+``(0, 3)`` -- is skipped by the oracle before its rank is ever looked at, and
+:func:`_flat_insertions` refused it: the port raising where the oracle returns, which
+is a divergence in behaviour rather than in a message and which no comparison of
+refusal texts could have found. It now skips on size first, in the oracle's own order.
 
 Cross-backend fields
 --------------------
@@ -170,6 +178,16 @@ def _flat_insertions(new_knots_per_dim: Sequence[_Knots | None], dtype: Any) -> 
     ``None`` becomes an empty array, which is how the binding spells "skip this
     direction"; see the module docstring on why no ``Optional`` crosses.
 
+    **A zero-size array is skipped before its rank is looked at**, and the order of
+    those two tests is the whole of what makes this function faithful. The oracle
+    skips on ``nk.size == 0`` in
+    :func:`~pantr.bspline._bspline_knot_insertion._insert_knots_bspline`, one level
+    above the rank check in ``_compute_inserted_knot_vector_1d``, so an array of shape
+    ``(0, 3)`` never reaches that check and the refinement succeeds. Testing the rank
+    first here refused it instead -- the port raising where the oracle returns, which is
+    the worse direction of divergence and the one a message comparison would never
+    surface.
+
     Args:
         new_knots_per_dim (Sequence[npt.NDArray | None]): One array of knots to insert
             per direction, or ``None``.
@@ -180,13 +198,13 @@ def _flat_insertions(new_knots_per_dim: Sequence[_Knots | None], dtype: Any) -> 
         direction.
 
     Raises:
-        ValueError: If any array is not 1D, with the oracle's message. The C++ path
-            cannot make this check and the order it lands in differs from the oracle's;
-            the module docstring says how and pins where.
+        ValueError: If a non-empty array is not 1D, with the oracle's message. The C++
+            path cannot make this check and the order it lands in differs from the
+            oracle's; the module docstring says how and pins where.
     """
     flat: list[_Knots] = []
     for new_knots in new_knots_per_dim:
-        if new_knots is None:
+        if new_knots is None or new_knots.size == 0:
             flat.append(np.empty(0, dtype=dtype))
             continue
         if new_knots.ndim != 1:
