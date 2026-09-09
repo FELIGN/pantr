@@ -26,6 +26,7 @@ from typing import Any, Final, Literal, cast, get_args
 import numpy as np
 import numpy.typing as npt
 
+from .._numba_compat import wait_for_jit_warmup
 from ..basis._basis_utils import _allocate_or_validate_out
 from ._extraction_backend import _KERNELS as _catalogue_kernels
 from ._extraction_backend import _KERNELS_MANY as _catalogue_kernels_many
@@ -375,6 +376,15 @@ def _prepare_apply_call(  # noqa: PLR0913 -- each arg reflects a distinct kernel
         ValueError: If shapes, dtypes, writability, or length invariants fail.
         NotImplementedError: If ``d > 3``.
     """
+    # `__init__.py` compiles the kernels on a background thread, and numba's default
+    # workqueue layer is not safe against a concurrent `parallel=True` call from another
+    # thread: the process *aborts* rather than raising. Every kernel invocation in this
+    # module's contract goes through this function or its batch twin, so the barrier belongs
+    # here rather than in each caller -- see `pantr.basis._basis_1D` for the same call at the
+    # equivalent point, and `tests/test_bspline_locate.py` for why it is the call and not the
+    # crash that a test can pin. Once per process; every later call costs nothing.
+    wait_for_jit_warmup()
+
     _validate_op_kind(op_kind)
     d = len(ops_1d_per_cell)
     if len(is_identity_per_dir) != d:
@@ -537,6 +547,15 @@ def _prepare_apply_many_call(  # noqa: PLR0912, PLR0913, PLR0915
         ValueError: If shapes, dtypes, writability, or index-range invariants fail.
         NotImplementedError: If ``d > 3``.
     """
+    # `__init__.py` compiles the kernels on a background thread, and numba's default
+    # workqueue layer is not safe against a concurrent `parallel=True` call from another
+    # thread: the process *aborts* rather than raising. Every kernel invocation in this
+    # module's contract goes through this function or its batch twin, so the barrier belongs
+    # here rather than in each caller -- see `pantr.basis._basis_1D` for the same call at the
+    # equivalent point, and `tests/test_bspline_locate.py` for why it is the call and not the
+    # crash that a test can pin. Once per process; every later call costs nothing.
+    wait_for_jit_warmup()
+
     _validate_op_kind(op_kind)
     d = len(ops_1d)
     if len(idx_maps_1d) != d:
