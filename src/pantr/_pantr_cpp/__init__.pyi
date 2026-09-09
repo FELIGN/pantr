@@ -122,6 +122,8 @@ from ._bspline import (
 )
 from ._bspline_field import Bspline32 as Bspline32
 from ._bspline_field import Bspline64 as Bspline64
+from ._bspline_field import insert_bspline_knots as insert_bspline_knots
+from ._bspline_field import subdivide_bspline as subdivide_bspline
 from ._geometry import AABB as AABB
 from ._grid import BVH as BVH
 from ._grid import CellTags as CellTags

@@ -1,5 +1,11 @@
 """Type stub for `pantr.bspline.Bspline`, bound in `cpp/bindings/bspline_type.cpp`.
 
+The two refinement entry points at the bottom come from
+``cpp/bindings/bspline_refinement.cpp`` instead, and they are here rather than in a
+third stub module because they are operations on the classes above: a stub split by
+binding file would put a function's argument type in one module and the function in
+another for no reader's benefit.
+
 Its own stub module rather than a third pair of classes in ``_bspline.pyi``, for the
 reason ``__init__.pyi`` gives for splitting the stub at all: a ticket that ports a
 type edits its own file plus one import line, and the space stub is already shared by
@@ -21,6 +27,8 @@ field's own storage, kept alive by the field.
 
 See ``__init__.pyi`` for what this package promises and who has to keep it.
 """
+
+from collections.abc import Sequence
 
 import numpy as np
 import numpy.typing as npt
@@ -95,3 +103,27 @@ class Bspline64:
     def degree(self) -> tuple[int, ...]: ...
     @property
     def rank(self) -> int: ...
+
+def insert_bspline_knots(
+    bspline: Bspline32 | Bspline64,
+    new_knots: Sequence[npt.NDArray[np.float32 | np.float64]],
+) -> Bspline32 | Bspline64:
+    """Insert knots into a field, one 1-D array per direction; empty skips a direction.
+
+    Overloaded on the field's class in C++, so the storage format of the field and of
+    the knot arrays must agree and no cast is performed. That correlation is not
+    expressible here, exactly as it is not in ``evaluate_bezier_on_lattice``;
+    ``pantr.bspline._refinement_backend`` casts the arrays to the field's dtype before
+    calling, which is the site it is actually established at.
+    """
+
+def subdivide_bspline(
+    bspline: Bspline32 | Bspline64,
+    n_subdivisions: Sequence[int],
+    regularity: int | None,
+) -> Bspline32 | Bspline64:
+    """Split every knot span of the named directions into equal sub-spans.
+
+    A count of 1 skips its direction. ``regularity`` is ``None`` for ``degree - 1`` per
+    direction, the maximal smoothness each degree admits.
+    """
