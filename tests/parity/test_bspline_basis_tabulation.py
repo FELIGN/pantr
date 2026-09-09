@@ -400,6 +400,26 @@ def _a23_majorant(  # noqa: PLR0913
     one by induction, and the monotone partial sums make the final value majorise all
     of them.
 
+    **The claim is sound under a hypothesis, not unconditionally, and the hypothesis is
+    that no divisor the a-table uses is zero.** Step 1 of A2.3 guards its own division
+    (``denom == 0 ? 0 : ...``); step 2's three divisions by ``ndu[...]`` carry no guard
+    in either backend. Where one of them is zero the oracle raises
+    ``ZeroDivisionError`` and the C++ kernel returns ``nan``, while this majorant --
+    which *does* guard each division, returning ``0.0`` -- yields a finite all-zero
+    row. A finite zero bounds nothing, so the induction above does not reach that
+    input; it is not that the bound is loose there, it is that there is no bound.
+
+    That input is reachable: a space whose right end is clamped to multiplicity
+    ``degree + 2`` is accepted by the constructor, and the right domain endpoint on it
+    is such a point. **No case in this file constructs one** -- every clamped table
+    entry uses multiplicity exactly ``degree + 1`` -- so the hypothesis holds
+    throughout the suite, but it holds by the case list rather than by construction.
+
+    So the honest label for this bound is **sound under an unstated-until-now
+    hypothesis, and not shown tight**: there is no attainment check for it here, unlike
+    the sibling Bezier kernel's, which ``design/backend_parity.md`` Rule 10 records as
+    attained with a largest ratio of exactly 1.000000 over 75 563 entries.
+
     Run in ``float64`` throughout. The amplification is a magnitude rather than a
     computed value, so its own rounding is second order against the ``u`` it multiplies.
 
@@ -557,7 +577,8 @@ def _companion(magnitudes: _FloatArray, stages: int, dtype: Any) -> _FloatArray:
     ``design/backend_parity.md`` records as a correction the infrastructure PR had to
     make: without it the bound could be violated by a factor of ``1/u``.
 
-    The widening is ``(1 + gamma_m)`` with ``m = 3 * stages``, the reference backend's
+    The widening is ``(1 + gamma_m)`` with ``m = _FUSED_ROUNDINGS_PER_STAGE * stages``,
+    the reference backend's
     own relative forward error over the same chain the parity budget charges: the
     computed magnitude is within that of the true one, so scaling by it covers both. An
     earlier version multiplied by ``1 + 4u`` while this docstring claimed the
@@ -587,7 +608,7 @@ def _companion(magnitudes: _FloatArray, stages: int, dtype: Any) -> _FloatArray:
             would make the hull meaningless rather than merely loose.
     """
     u = unit_roundoff(dtype)
-    m = 3 * max(stages, 1)
+    m = _FUSED_ROUNDINGS_PER_STAGE * max(stages, 1)
     if m * u >= 0.5:
         raise ValueError(
             f"a chain of {stages} stages at {np.dtype(dtype).name} accumulates a "
@@ -642,11 +663,14 @@ def _deriv_claim(  # noqa: PLR0913
     those stages only inflates the tolerance on the rows that are not zero.
 
     The amplification is :func:`_a23_majorant` and **not** the finished row. That
-    distinction is the whole of the derivation and it is not a refinement: on a fusing
-    build the finished row exceeded the observed difference on 31 of 418 cases, at both
-    widths, which is the signature Rule 10 names -- a structural shortfall rather than
-    rounding. The recursion is not convex, so its partial sums can exceed what survives
-    to the output.
+    distinction is the whole of the derivation rather than a refinement of it: the
+    recursion is not convex, so its partial sums can exceed what survives to the
+    output, and the gap is orders of magnitude rather than a constant.
+    :func:`test_the_majorant_exceeds_the_finished_row_by_orders_of_magnitude` asserts
+    that gap, which is a property of the recursion and needs no fusing build to check.
+    Using the finished row instead was measured to fail on a fusing build, at both
+    widths identically -- the signature Rule 10 names for a structural shortfall rather
+    than for rounding.
 
     Args:
         knots (list[float]): The knot vector, needed to rebuild the majorant.
@@ -996,6 +1020,146 @@ def test_a_mixed_dtype_call_falls_back_and_says_so(
     assert np.array_equal(cpp_first, py_first)
 
 
+@pytest.mark.parametrize("dtype", [np.float64, np.float32])
+def test_the_majorant_exceeds_the_finished_row_by_orders_of_magnitude(
+    cpp_backend: None, dtype: Any
+) -> None:
+    """The finished derivative row cannot serve as the amplification, and by how much.
+
+    :func:`_deriv_claim` uses :func:`_a23_majorant` rather than the computed row, and
+    the reason is that A2.3 is **not convex**: its ``a``-table differences mean the
+    partial sums can be far larger than what survives the cancellation to the output,
+    and Rule 10 records that no telescoping argument recovers them. That is the
+    derivation; this is the measurement that says it matters in practice rather than
+    only in principle.
+
+    **The ratio is a property of the recursion, not of the build**, so this needs no
+    fusing build to check -- which is what makes it assertable at all, and which is
+    itself the evidence: measured independently, the excess agrees to within a few per
+    cent between ``float64`` and ``float32``, where anything build- or
+    rounding-dependent would not.
+
+    Bounded loosely on purpose. The claim that has to hold is "orders of magnitude, so
+    the finished row cannot serve", not a pinned figure; a pinned figure here would rot
+    the way a measured comment does.
+
+    Args:
+        cpp_backend (None): Requires the extension.
+        dtype (Any): The storage dtype.
+    """
+    del cpp_backend
+    demand_the_compiled_kernel(dtype)
+    demand_a_compiled_seed()
+    knots, degree = _HIGH_DEGREE_KNOTS[_VACUOUS_CASE]
+    n_deriv = degree
+    points = _evaluation_points(knots, degree, dtype)
+    reference = _tabulate(Backend.PYTHON, knots, degree, points, dtype, n_deriv)
+    majorant = _a23_majorant(
+        knots, degree, n_deriv, points, reference.first_basis, unit_spans=False
+    )
+    finished = np.abs(np.asarray(reference.block, dtype=np.float64))
+
+    normal = finished >= np.finfo(dtype).smallest_normal
+    assert normal.any()
+    excess = float(np.max(majorant[normal] / finished[normal]))
+    assert excess > 1.0e3, (
+        f"the majorant exceeds the finished row by only {excess:.3g} at degree {degree}. "
+        f"If that is now genuinely small, A2.3's cancellation has changed character and "
+        f"the choice of amplification should be re-derived -- the finished row would "
+        f"become defensible, and _deriv_claim's derivation text would no longer be true. "
+        f"It is not a threshold to relax: nothing about the recursion should move it"
+    )
+    # Compared against the **hulled** majorant, not the raw one, and the distinction is
+    # the hull's whole reason for existing. `_a23_majorant` bounds the *exact* value;
+    # `finished` is a *rounded* one, and where the row happens not to cancel -- an
+    # endpoint with a single active function -- the two are mathematically equal, so the
+    # rounded value can land an ulp above the exact bound. Measured: at float32 that
+    # happens on 1440 entries here and on none at float64, which is the signature of a
+    # width artifact rather than of a broken bound. `_companion` widens by the
+    # reference's own forward error for exactly this case.
+    hulled = _companion(majorant, degree + min(n_deriv, degree), dtype)
+    assert np.all(hulled[normal] >= finished[normal]), (
+        f"the hulled majorant is below the computed row on "
+        f"{int(np.count_nonzero(hulled[normal] < finished[normal]))} entries, so it is "
+        f"not a majorant at all and every bounded derivative claim built on it is void"
+    )
+
+
+_PERIODIC_KNOTS: tuple[list[float], int] = ([0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0], 2)
+"""A periodic space, which nothing else in this file or the C++ tests reaches.
+
+``find_span_and_first_basis`` has a genuinely different branch for a periodic space --
+it keeps the unclamped first-basis index, which the evaluation loop wraps modulo the
+control points -- and all four batch kernels reach it. Nothing in the dispatch refuses
+periodic, so it is a live path rather than dead code: this vector gives ``num_basis``
+3 and a domain of ``(2.0, 5.0)``, and both tabulations run on it.
+
+The existing periodic test in ``tests/test_bspline_basis_derivatives_1D.py`` is not
+coverage of this seam. It calls the Numba kernel directly, and its knot vector is
+refused by ``BsplineSpace1D``'s own validation, so it never reaches a backend at all.
+"""
+
+
+@pytest.mark.parametrize("dtype", [np.float64, np.float32])
+@pytest.mark.parametrize("n_deriv", [None, 0, 1, 3])
+def test_a_periodic_space_matches(cpp_backend: None, n_deriv: int | None, dtype: Any) -> None:
+    """The two backends agree on a periodic space, whose first-basis branch differs.
+
+    The only test anywhere that reaches the periodic arm of
+    ``find_span_and_first_basis``. Its ``first_basis`` is deliberately *un*clamped, so
+    a port that applied the non-periodic clamp regardless would pass every other case
+    in this file and fail here.
+
+    Args:
+        cpp_backend (None): Requires the extension.
+        n_deriv (int | None): Derivative order, or ``None`` for the value tabulation.
+        dtype (Any): The storage dtype.
+    """
+    del cpp_backend
+    demand_the_compiled_kernel(dtype)
+    if n_deriv is not None:
+        demand_a_compiled_seed()
+    knots, degree = _PERIODIC_KNOTS
+
+    built = {}
+    for backend in (Backend.PYTHON, Backend.CPP):
+        with use_backend(backend):
+            space = BsplineSpace1D(np.array(knots, dtype=dtype), degree, periodic=True)
+            begin, end = space.domain
+            points = np.linspace(float(begin), float(end), 11, dtype=dtype)
+            if n_deriv is None:
+                block, first = space.tabulate_basis(points)
+            else:
+                block, first = space.tabulate_basis_derivatives(points, n_deriv)
+        built[backend] = _Tabulation(block=block, first_basis=first)
+
+    reference, actual = built[Backend.PYTHON], built[Backend.CPP]
+    claim = (
+        _value_claim(reference.block, degree, dtype)
+        if n_deriv is None
+        else _deriv_claim(
+            knots, degree, n_deriv, points, reference.first_basis, dtype, unit_spans=False
+        )
+    )
+    assert_parity(
+        actual.block,
+        reference.block,
+        claim,
+        context=f"periodic space, n_deriv={n_deriv}, {np.dtype(dtype).name}",
+    )
+    assert np.array_equal(actual.first_basis, reference.first_basis)
+    # The invariant the periodic branch exists to keep: the index is NOT clamped to
+    # `num_basis - order`, so it can exceed it and the caller wraps it modulo
+    # `num_basis`. A port applying the non-periodic clamp would cap it here.
+    with use_backend(Backend.PYTHON):
+        space = BsplineSpace1D(np.array(knots, dtype=dtype), degree, periodic=True)
+    assert int(np.max(actual.first_basis)) > space.num_basis - degree - 1, (
+        "the periodic first-basis index never exceeded the non-periodic clamp, so this "
+        "case does not actually distinguish the two branches and the claim above is "
+        "not exercising the periodic arm"
+    )
+
+
 def test_the_seam_returns_kernels_for_every_available_backend() -> None:
     """Every backend the installation offers answers all three catalogue functions.
 
@@ -1082,6 +1246,20 @@ def _falling_factorial(degree: int, n_deriv: int) -> int:
         largest = max(largest, value)
     return largest
 
+
+_FUSED_ROUNDINGS_PER_STAGE = 3
+"""Accumulator roundings charged per fused site, from ``design/backend_parity.md`` Rule 10.
+
+At a fused site the oracle computes ``fl(a + fl(b*c))`` and the C++ backend
+``fl(a + b*c)``; expanding both with ``|delta| <= u`` bounds their difference by
+``|b*c| u (1 + u) + |a + b*c| 2u``, which is three accumulator roundings. Inherited from
+that rule rather than re-derived here.
+
+Named once because it is used twice -- as ``Roundings.accumulator_per_stage`` in the
+claim, and as the hull's widening budget in :func:`_companion` -- and the two must
+describe the same chain. Three rounding counts in this file were revised once already,
+so a second literal is not a hypothetical drift risk.
+"""
 
 _VACUOUS_CASE = "wrapping-p22"
 """The one case whose derivative bound is too loose to assert anything, everywhere.

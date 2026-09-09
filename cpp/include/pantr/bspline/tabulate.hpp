@@ -109,6 +109,34 @@
 /// `pow` from `bernstein.hpp` and the falling factorial from `bernstein_deriv`, and
 /// both of those need the Rule 12 gates.
 ///
+/// **One input makes the two backends disagree about the KIND of failure, and it is
+/// not covered by any bound.** Step 1 of A2.3 guards its division against a zero
+/// denominator; step 2's three divisions by `ndu[...]` carry no guard, in either
+/// backend. Where one of them is zero the oracle raises `ZeroDivisionError` and this
+/// kernel returns `nan` -- an exception on one side and a silent non-finite value on
+/// the other. Measured on the shipped build, at both widths: with
+/// `knots = [0,0,0,0,0.5,1,1,1,1,1]` and `degree = 3`, which the constructor accepts,
+/// `basis_derivs_1d` at the right domain endpoint returns 9 non-finite entries of 16
+/// while the oracle raises. Interior points on the same space are finite.
+///
+/// **It is not guarded here, and the reason is that no narrow guard exists.** Guarding
+/// step 2's divisions the way step 1 guards its own is provably behaviour-preserving --
+/// it can only fire where the oracle divides by zero, and there the oracle returns
+/// nothing at all -- but it converts the `nan` into a finite zero, which is a quieter
+/// wrong answer rather than a fix. Detecting the case structurally does not work
+/// either: the condition is "the point's knot window contains a zero-width interval",
+/// and the parity suite's own `empty-span-p3` case has four such intervals in every
+/// window and is served correctly by both backends, so that test is over-broad by a
+/// wide margin.
+///
+/// The root cause is upstream of this header: the constructor accepts a space on which
+/// tabulation is not defined -- the values sum to zero rather than one there, in both
+/// backends -- and that is a pre-existing defect of the oracle, reproducible on the
+/// base commit with none of this port involved. It is reported rather than fixed here,
+/// per the project rule that a numerical wrong-answer bug is not folded into unrelated
+/// work. Closing it upstream closes this divergence with it, since the input stops
+/// being constructible.
+///
 /// ## Why the dispatch stays on the Python side
 ///
 /// `tabulate_basis_1d(space, ...)` would be the obvious thing for
