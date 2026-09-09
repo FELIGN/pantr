@@ -692,48 +692,6 @@ def _tabulate_Bspline_basis_Bernstein_like_deriv_1D(
     out_first_basis.fill(0)
 
 
-def _demand_points_match_the_knots(
-    spline: BsplineSpace1D, pts: npt.NDArray[np.float32 | np.float64]
-) -> None:
-    """Refuse evaluation points whose dtype differs from the space's knots.
-
-    **A type-kind check, so it lives here and raises ``TypeError``**, per the split
-    ``cpp/include/pantr/core/error.hpp`` sets for the whole C++ port: nanobind has no
-    path to ``TypeError``, so type checks stay in Python and value checks go to C++.
-    It is in shared Layer 2 rather than in either backend's adapter, which is the point
-    -- an invariant the adapters rely on has to be established where both of them see
-    it, or selecting a backend changes what the library accepts.
-
-    The combination it refuses was never designed. The Numba kernels open with
-    ``dtype = knots.dtype`` and allocate their scratch in it while reading points at
-    the points' own width, so a mismatch computes in a mixed width that narrows at
-    every array store -- an answer that is neither the ``float32`` one nor the
-    ``float64`` one, and that nothing derived or documented. The C++ kernels are
-    templated on one scalar type and have no such overload, so before this guard the
-    same call succeeded under the Python backend and raised ``TypeError`` under the C++
-    one.
-
-    Refusing is the smaller change of the two available. Casting would have to pick a
-    direction: narrowing the points to the knots throws away precision the caller
-    asked for, widening the knots contradicts a space whose tolerance was derived from
-    the knots as stored. Which of those is right is a contract decision rather than a
-    port decision, and it is not taken here.
-
-    Args:
-        spline (BsplineSpace1D): The space whose knots the points must match.
-        pts (npt.NDArray[np.float32 | np.float64]): The normalized evaluation points.
-
-    Raises:
-        TypeError: If the dtypes differ.
-    """
-    if pts.dtype != spline.knots.dtype:
-        raise TypeError(
-            f"pts has dtype {pts.dtype} but the B-spline's knots have dtype "
-            f"{spline.knots.dtype}; evaluation points must match the space's storage "
-            f"format"
-        )
-
-
 def _tabulate_Bspline_basis_1D_impl(
     spline: BsplineSpace1D,
     pts: npt.ArrayLike,
@@ -783,8 +741,6 @@ def _tabulate_Bspline_basis_1D_impl(
               If `out_first_basis` was provided, returns the same array.
 
     Raises:
-        TypeError: If ``pts``' dtype differs from the B-spline's knot dtype; see
-            :func:`_demand_points_match_the_knots`.
         ValueError: If ``validate`` is True and any evaluation point is outside the
             B-spline domain, or if `out_basis` or `out_first_basis` is provided and
             has incorrect shape or dtype.
@@ -808,7 +764,6 @@ def _tabulate_Bspline_basis_1D_impl(
     """
     input_shape = np.shape(pts)
     pts = _normalize_points_1D(pts)
-    _demand_points_match_the_knots(spline, pts)
 
     if validate and not np.all(
         _is_in_domain_impl(spline.knots, spline.degree, pts, spline.tolerance)
@@ -900,8 +855,6 @@ def _tabulate_Bspline_basis_deriv_1D_impl(  # noqa: PLR0913
             function at each point.
 
     Raises:
-        TypeError: If ``pts``' dtype differs from the B-spline's knot dtype; see
-            :func:`_demand_points_match_the_knots`.
         ValueError: If ``n_deriv < 0``, if ``validate`` is True and any evaluation
             point is outside the domain, or ``out_deriv`` / ``out_first_basis`` has
             incorrect shape or dtype.
@@ -918,7 +871,6 @@ def _tabulate_Bspline_basis_deriv_1D_impl(  # noqa: PLR0913
 
     input_shape = np.shape(pts)
     pts = _normalize_points_1D(pts)
-    _demand_points_match_the_knots(spline, pts)
 
     if validate and not np.all(
         _is_in_domain_impl(spline.knots, spline.degree, pts, spline.tolerance)
