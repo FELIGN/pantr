@@ -89,6 +89,48 @@ def tabulate_bernstein_1d(
             does not have shape ``(points.size, degree + 1)``.
     """
 
+def tabulate_bernstein_deriv_1d(
+    degree: int,
+    n_deriv: int,
+    points: npt.NDArray[np.float32 | np.float64],
+    *,
+    out: npt.NDArray[np.float32 | np.float64],
+) -> None:
+    """Tabulate the Bernstein basis of ``degree`` and its derivatives at ``points``.
+
+    The **C++ half of Layer 2**, with the same contract as
+    :func:`tabulate_cardinal_bspline_1d`, applied to both ``degree`` and
+    ``n_deriv``: each is checked against what a C ``int`` can hold, and each is
+    rejected with ``TypeError`` before this body runs if negative, since both are
+    ``unsigned`` in the C++ signature. Row 0 of the output holds the plain basis
+    values and rows above ``degree`` are identically zero, the k-th derivative of
+    a degree-p polynomial vanishing for ``k > p``.
+
+    Call :func:`pantr.basis.tabulate_bernstein_deriv_1d` for the ordinary path,
+    which additionally takes points of any shape and allocates ``out`` for you.
+
+    Args:
+        degree (int): Degree of the basis. Must be non-negative and must fit a
+            C ``int``.
+        n_deriv (int): Highest derivative order. Must be non-negative and must
+            fit a C ``int``.
+        points (npt.NDArray[np.float32 | np.float64]): 1D, C-contiguous
+            evaluation points.
+        out (npt.NDArray[np.float32 | np.float64]): 3D, C-contiguous, writable
+            output of shape ``(points.size, n_deriv + 1, degree + 1)`` and
+            matching dtype. Keyword-only.
+
+    Raises:
+        TypeError: If ``points`` or ``out`` has the wrong dtype or rank, or is not
+            C-contiguous, or if ``degree`` or ``n_deriv`` is negative, or if
+            ``out`` is passed positionally. A non-contiguous ``out`` is refused
+            rather than converted: converting it would fill a temporary and leave
+            the caller's array untouched, which is why ``.noconvert()`` is on it.
+        ValueError: If ``degree`` or ``n_deriv`` is too large to fit a C ``int``,
+            or if ``out`` does not have shape
+            ``(points.size, n_deriv + 1, degree + 1)``.
+    """
+
 def tabulate_legendre_1d(
     degree: int,
     points: npt.NDArray[np.float32 | np.float64],

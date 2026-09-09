@@ -124,6 +124,7 @@ if(PANTR_NANOBIND_SPLIT)
                       grid_partition.cpp
                       quad_types.cpp bezier_type.cpp bspline_types.cpp
                       bspline_extraction.cpp bspline_extraction_operators.cpp
+                      bspline_basis.cpp
                       bspline_thb_space.cpp bspline_type.cpp bspline_refinement.cpp)
 else()
   nanobind_add_module(_pantr_cpp NB_STATIC NOMINSIZE NOSTRIP
@@ -133,6 +134,7 @@ else()
                       grid_partition.cpp
                       quad_types.cpp bezier_type.cpp bspline_types.cpp
                       bspline_extraction.cpp bspline_extraction_operators.cpp
+                      bspline_basis.cpp
                       bspline_thb_space.cpp bspline_type.cpp bspline_refinement.cpp)
 endif()
 

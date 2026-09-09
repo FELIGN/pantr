@@ -147,3 +147,14 @@ void register_bspline_refinement(nanobind::module_& m);
 /// own slice, and cardinal waits on the interval scan `bspline/space_1d.hpp`
 /// excludes. See design/extraction_port.md.
 void register_bspline_extraction_operators(nanobind::module_& m);
+
+/// Register `pantr.bspline`'s general-knot basis tabulation kernels.
+///
+/// Separate from `register_bspline_extraction_operators` because the two are
+/// separate ports with separate parity claims: that one builds an extraction
+/// operator from a knot vector, this one tabulates the basis and its
+/// derivatives directly. Binds `pantr::bspline::basis_funcs_1d` and
+/// `basis_derivs_1d` from `pantr/bspline/tabulate.hpp` -- Layer 3, not the
+/// space-level dispatch beside them, for the reason that header's own file
+/// comment gives.
+void register_bspline_basis(nanobind::module_& m);
