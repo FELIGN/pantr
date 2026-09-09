@@ -18,7 +18,8 @@
 /// computations *over* a field rather than properties *of* one, so they are
 /// separate ports over free functions taking a `const Bspline&`. That is what lets
 /// them proceed independently of one another once this type exists, and it is the
-/// same line those two headers draw.
+/// same line those two headers draw. Knot insertion and uniform subdivision have
+/// landed that way, in `pantr/bspline/refinement.hpp`.
 ///
 /// **Two of them cannot be ported yet, and the reason is a declared boundary
 /// rather than an omission.** `pantr.bspline.Bspline.evaluate`,

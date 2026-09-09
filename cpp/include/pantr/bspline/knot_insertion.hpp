@@ -5,8 +5,9 @@
 ///
 /// Ports `src/pantr/bspline/_bspline_knot_insertion_core.py` and the two Layer 2
 /// helpers a *space* needs from `_bspline_knot_insertion.py`, which stay as the
-/// parity oracle. The control-point half of knot insertion is not here: a space
-/// carries no control points, and `Bspline` is FELIGN/pantr#398.
+/// parity oracle. The control-point half of knot insertion is not here, because a
+/// space carries no control points: it is in `pantr/bspline/refinement.hpp`, which
+/// applies the bands this file computes to a `Bspline`'s net.
 ///
 /// ## Why this file exists ahead of its own ticket
 ///
