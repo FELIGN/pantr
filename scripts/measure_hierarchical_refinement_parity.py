@@ -49,8 +49,7 @@ from pantr.grid._hierarchical_grid import HierarchicalGrid, hierarchical_grid
 
 # `tests` is a package at the repository root, and running this file directly puts
 # `scripts/` on the path rather than the root, so the import below needs the root
-# added first. `scripts/measure_bezier_fma_bound.py` imports the same module without
-# doing this and cannot be run directly as a result.
+# added first. `scripts/measure_bezier_fma_bound.py` does the same.
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
 
 from tests._parity_harness import unit_roundoff

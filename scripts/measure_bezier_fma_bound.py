@@ -90,6 +90,12 @@ from pantr._backend import Backend, available_backends, use_backend
 from pantr.bezier import Bezier
 from pantr.bezier import _bezier_backend as backend
 from pantr.bezier._bezier_degree import _interpolating_reduction_operator
+
+# `tests` is a package at the repository root, and running this file directly puts
+# `scripts/` on the path rather than the root, so the two imports below need the root
+# added first. `scripts/measure_hierarchical_refinement_parity.py` does the same.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
 from tests._parity_harness import (
     absolute_tolerance,
     build_provenance,
