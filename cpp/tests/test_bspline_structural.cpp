@@ -189,19 +189,27 @@ Bspline<T> field_of(std::vector<std::shared_ptr<const BsplineSpace1D<T>>> direct
 
 /// The Greville abscissae of a knot vector.
 ///
-/// `g_i = (t_{i+1} + ... + t_{i+p}) / p` for degree `p >= 1`; the knots themselves for
-/// degree 0, where the average is over an empty range and the identity map is not
-/// representable.
+/// `g_i = (t_{i+1} + ... + t_{i+p}) / p`, which at `p = 0` is an average over an empty
+/// range: the knot `t_i` is returned instead. **That branch is written rather than
+/// merely documented**, because `vectors()` now carries a degree-0 entry and every
+/// caller but `check_corner_cut_is_linearly_precise` reaches this unguarded --
+/// `sum / T(0)` is a NaN that would propagate into a geometry comparison and read
+/// there as a moved curve. Linear precision itself does not hold at degree 0, which is
+/// why that one check skips it: a piecewise constant cannot reproduce the identity map.
 ///
 /// \tparam T The storage format.
 /// \param knots The knot vector.
-/// \param degree The degree, at least 1.
+/// \param degree The degree, non-negative.
 /// \return One abscissa per basis function.
 template <class T>
 std::vector<T> greville(const std::vector<T>& knots, std::int64_t degree) {
     const auto count = static_cast<std::int64_t>(knots.size()) - degree - 1;
     std::vector<T> out(static_cast<std::size_t>(count));
     for (std::int64_t i = 0; i < count; ++i) {
+        if (degree == 0) {
+            out[static_cast<std::size_t>(i)] = knots[static_cast<std::size_t>(i)];
+            continue;
+        }
         T sum = T(0);
         for (std::int64_t j = 1; j <= degree; ++j) {
             sum = sum + knots[static_cast<std::size_t>(i + j)];
@@ -250,21 +258,32 @@ struct Vector1D {
 
 /// The knot vectors every templated check below runs over.
 ///
-/// Clamped at both ends, clamped at one, clamped at neither, and periodic; degrees 1
-/// through 4; interior multiplicities both 1 and above.
+/// Clamped at both ends, clamped at one, clamped at neither, and periodic; degrees 0
+/// through 4; interior multiplicities both 1 and above; one vector with **no** interior
+/// knot, where the corner cut's span is the whole domain; and one periodic vector at
+/// each end of the `[1, degree]` boundary-multiplicity range a periodic knot vector
+/// admits, since the two trim a different number of ghost entries.
+///
+/// The vector clamped at one end only is named for the end it is **not** clamped at,
+/// which is the reading `to_open` and `has_open_knots()` use: "open" here means
+/// clamped.
 ///
 /// \return The vectors.
 std::vector<Vector1D> vectors() {
     return {
+        {"p0-open", 0, false, {0.0, 0.4, 1.0}},
         {"p1-open", 1, false, {0.0, 0.0, 0.3, 0.7, 1.0, 1.0}},
         {"p2-open", 2, false, {0.0, 0.0, 0.0, 0.25, 0.5, 0.75, 1.0, 1.0, 1.0}},
+        {"p2-single-span", 2, false, {0.0, 0.0, 0.0, 1.0, 1.0, 1.0}},
         {"p3-open", 3, false, {0.0, 0.0, 0.0, 0.0, 0.4, 1.0, 1.0, 1.0, 1.0}},
         {"p4-open", 4, false, {0.0, 0.0, 0.0, 0.0, 0.0, 0.5, 1.0, 1.0, 1.0, 1.0, 1.0}},
         {"p2-double-interior", 2, false, {0.0, 0.0, 0.0, 0.5, 0.5, 1.0, 1.0, 1.0}},
         {"p3-c0-interior", 3, false, {0.0, 0.0, 0.0, 0.0, 0.5, 0.5, 0.5, 1.0, 1.0, 1.0, 1.0}},
         {"p2-unclamped", 2, false, {-0.2, -0.1, 0.0, 0.25, 0.5, 0.75, 1.0, 1.1, 1.2}},
-        {"p2-left-open-only", 2, false, {-0.2, -0.1, 0.0, 0.25, 0.5, 0.75, 1.0, 1.0, 1.0}},
-        {"p2-periodic", 2, true, {-0.5, -0.25, 0.0, 0.25, 0.5, 0.75, 1.0, 1.25, 1.5}},
+        {"p2-unclamped-left-only", 2, false,
+         {-0.2, -0.1, 0.0, 0.25, 0.5, 0.75, 1.0, 1.0, 1.0}},
+        {"p2-periodic-m1", 2, true, {-0.5, -0.25, 0.0, 0.25, 0.5, 0.75, 1.0, 1.25, 1.5}},
+        {"p2-periodic-m2", 2, true, {-0.5, 0.0, 0.0, 0.5, 1.0, 1.0, 1.5}},
         {"p2-shifted", 2, false, {2.0, 2.0, 2.0, 2.5, 3.0, 3.5, 4.0, 4.0, 4.0}},
     };
 }
@@ -413,6 +432,16 @@ std::vector<T> sample(const Bspline<T>& field, double u) {
 template <class T>
 void check_to_open_keeps_the_map(const char* format) {
     for (const Vector1D& vector : vectors()) {
+        if (vector.degree == 0) {
+            // A degree-0 spline is a piecewise constant, so it is discontinuous at
+            // every breakpoint -- and `sample_parameters` is mostly breakpoints. "The
+            // two representations describe the same map" is then undefined exactly
+            // where this would test it, since the two knot vectors disagree about
+            // which side of the jump a breakpoint belongs to. Degree 0 is covered by
+            // partition of unity above and, cross-backend, by
+            // `tests/parity/test_bspline_structural.py`'s `p0` cases.
+            continue;
+        }
         const std::vector<T> knots = at_format<T>(vector.raw);
         auto space = direction<T>(knots, vector.degree, vector.periodic);
         if (space->has_open_knots() && !space->periodic()) {
@@ -504,6 +533,9 @@ void check_to_open_shares_an_untouched_direction() {
 template <class T>
 void check_split_keeps_the_map(const char* format) {
     for (const Vector1D& vector : vectors()) {
+        if (vector.degree == 0) {
+            continue;  // Discontinuous at a breakpoint; see `check_to_open_keeps_the_map`.
+        }
         const std::vector<T> knots = at_format<T>(vector.raw);
         auto space = direction<T>(knots, vector.degree, vector.periodic);
         const std::vector<T> net = greville<T>(knots, vector.degree);
@@ -667,6 +699,17 @@ void check_boundary_is_a_slice_at_an_end() {
     }
     PANTR_CHECK_MSG(message == "side must be 0 or 1, got 2.",
                     "boundary's side refusal reads \"" + message + "\"");
+
+    // Bad in both ways. The oracle checks the side first, so that is the message a
+    // caller reads; the claim is in `boundary`'s own comment and had no test until now.
+    std::string both;
+    try {
+        static_cast<void>(boundary<double>(surface, 7, 2));
+    } catch (const std::invalid_argument& error) {
+        both = error.what();
+    }
+    PANTR_CHECK_MSG(both == "side must be 0 or 1, got 2.",
+                    "a bad side together with a bad axis reports \"" + both + "\"");
 }
 
 /// `slice_point` hands back the weight column of a rational field unprojected.
@@ -690,54 +733,92 @@ void check_slice_point_leaves_a_rational_unprojected() {
 // The primitives' own refusals
 // ---------------------------------------------------------------------------
 
+/// The rationality flag and the weight column survive all three operations.
+///
+/// The C++-only gap the parity suite covers cross-backend but this file did not: a
+/// defect in how `detail::assemble` carries `is_rational`, or in a sweep that dropped
+/// the last component, would show here and nowhere else in this file.
+void check_the_weight_column_survives() {
+    const std::vector<double> knots{-0.2, -0.1, 0.0, 0.5, 1.0, 1.1, 1.2};
+    const std::vector<double> other{0.0, 0.0, 0.4, 1.0, 1.0};
+    auto first = direction<double>(knots, 2, false);
+    auto second = direction<double>(other, 1, false);
+    // Coefficients of (x, y, w), every weight 2 so an accidental projection or a
+    // dropped column shows in the value as well as in the component count.
+    std::vector<double> values(4 * 3 * 3);
+    for (std::size_t i = 0; i < values.size(); ++i) {
+        values[i] = (i % 3 == 2) ? 2.0 : 1.0 + static_cast<double>(i);
+    }
+    const Bspline<double> field = field_of<double>({first, second}, values, 3, true);
+    PANTR_CHECK(field.rank() == 2);
+
+    const Bspline<double> opened = to_open<double>(field);
+    const std::pair<Bspline<double>, Bspline<double>> halves = split<double>(field, 0, 0.25);
+    const Bspline<double> sliced = slice<double>(field, 1, 0.4);
+    for (const Bspline<double>* result : {&opened, &halves.first, &halves.second, &sliced}) {
+        PANTR_CHECK_MSG(result->is_rational(), "an operation dropped the rationality flag");
+        PANTR_CHECK_MSG(result->rank() == 2, "an operation changed the rank");
+        PANTR_CHECK_MSG(result->net().num_components() == 3,
+                        "an operation dropped the weight column");
+        // Every input weight is 2 and every operation recombines weights with
+        // coefficients summing to one, so each output weight is 2 to within its own
+        // rounding. A projection would give 1; a dropped column changes the count
+        // above.
+        const std::span<const double> got = result->net().values();
+        for (std::size_t i = 2; i < got.size(); i += 3) {
+            PANTR_CHECK_MSG(std::abs(got[i] - 2.0) <= bound_for<double>(30, 2.0),
+                            "an operation moved a weight to " + std::to_string(got[i]));
+        }
+    }
+}
+
 /// The two strided primitives refuse a shape they cannot address.
 void check_the_primitives_refuse_a_bad_shape() {
     const std::vector<double> knots{0.0, 0.0, 0.0, 0.5, 1.0, 1.0, 1.0};
     const std::vector<double> values(4, 1.0);
     const std::vector<std::int64_t> rows{0, 1};
+    const std::vector<std::int64_t> bad_row{4};
+    const std::vector<double> too_short{0.0, 1.0};
 
-    int refused = 0;
-    const auto attempt = [&refused](const auto& call) {
+    // One assertion per refusal rather than one counter for six: a counter reading
+    // "accepted 1 shape(s)" does not say which of the six stopped firing.
+    const auto attempt = [](const char* what, const auto& call) {
+        bool refused = false;
         try {
             call();
         } catch (const std::invalid_argument&) {
-            ++refused;
+            refused = true;
         }
+        PANTR_CHECK_MSG(refused, std::string("accepted ") + what);
     };
-    attempt([&] {
-        static_cast<void>(select_rows_along_axis<double>(std::span<const double>(values), 4,
-                                                         std::span<const std::int64_t>(rows), 2,
-                                                         1));
+
+    attempt("a select_rows buffer that is not outer * num_cols * inner", [&] {
+        static_cast<void>(select_rows_along_axis<double>(
+            std::span<const double>(values), 4, std::span<const std::int64_t>(rows), 2, 1));
     });
-    attempt([&] {
-        static_cast<void>(select_rows_along_axis<double>(std::span<const double>(values), 4,
-                                                         std::span<const std::int64_t>(rows), -1,
-                                                         1));
+    attempt("a negative extent in select_rows", [&] {
+        static_cast<void>(select_rows_along_axis<double>(
+            std::span<const double>(values), 4, std::span<const std::int64_t>(rows), -1, 1));
     });
-    const std::vector<std::int64_t> bad_row{4};
-    attempt([&] {
+    attempt("a select_rows row outside [0, num_cols)", [&] {
         static_cast<void>(select_rows_along_axis<double>(
             std::span<const double>(values), 4, std::span<const std::int64_t>(bad_row), 1, 1));
     });
-    attempt([&] {
+    attempt("a corner-cut buffer that is not outer * num_basis * inner", [&] {
         static_cast<void>(corner_cut_along_axis<double>(std::span<const double>(knots), 2, 1e-15,
                                                         std::span<const double>(values), 0.5, 1,
                                                         2));
     });
-    attempt([&] {
+    attempt("a negative degree in the corner cut", [&] {
         static_cast<void>(corner_cut_along_axis<double>(std::span<const double>(knots), -1,
                                                         1e-15, std::span<const double>(values),
                                                         0.5, 1, 1));
     });
-    const std::vector<double> too_short{0.0, 1.0};
-    attempt([&] {
+    attempt("a knot vector too short for its degree in the corner cut", [&] {
         static_cast<void>(corner_cut_along_axis<double>(std::span<const double>(too_short), 2,
                                                         1e-15, std::span<const double>(values),
                                                         0.5, 1, 1));
     });
-    PANTR_CHECK_MSG(refused == 6,
-                    "the strided primitives accepted " + std::to_string(6 - refused)
-                        + " shape(s) they cannot address");
 }
 
 /// `split`'s two Layer 1 refusals carry the oracle's texts.
@@ -836,6 +917,7 @@ int main() {
     check_the_slice_pair_refuses_each_other_s_case();
     check_boundary_is_a_slice_at_an_end();
     check_slice_point_leaves_a_rational_unprojected();
+    check_the_weight_column_survives();
 
     check_the_primitives_refuse_a_bad_shape();
     check_split_refusals();
