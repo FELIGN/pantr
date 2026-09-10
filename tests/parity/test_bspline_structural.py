@@ -140,7 +140,10 @@ P3: Final = _Vector("p3", 3, (0.0, 0.0, 0.0, 0.0, 0.4, 1.0, 1.0, 1.0, 1.0))
 P2_C0: Final = _Vector("p2c0", 2, (0.0, 0.0, 0.0, 0.5, 0.5, 1.0, 1.0, 1.0))
 P0: Final = _Vector("p0", 0, (0.0, 0.4, 1.0))
 UNCLAMPED: Final = _Vector("uncl", 2, (-0.2, -0.1, 0.0, 0.25, 0.5, 0.75, 1.0, 1.1, 1.2))
-LEFT_ONLY: Final = _Vector("left", 2, (-0.2, -0.1, 0.0, 0.25, 0.5, 0.75, 1.0, 1.0, 1.0))
+UNCLAMPED_LEFT: Final = _Vector("unclleft", 2, (-0.2, -0.1, 0.0, 0.25, 0.5, 0.75, 1.0, 1.0, 1.0))
+"""Unclamped on the left and clamped on the right, and named for the end it is *not*
+clamped at -- which is the reading ``to_open`` and ``has_open_knots()`` use, where
+"open" means clamped."""
 PERIODIC: Final = _Vector("per", 2, (-0.5, -0.25, 0.0, 0.25, 0.5, 0.75, 1.0, 1.25, 1.5), True)
 SHIFTED: Final = _Vector("shift", 2, (2.0, 2.0, 2.0, 2.5, 3.0, 3.5, 4.0, 4.0, 4.0))
 """A vector based away from the origin, where an absolute tolerance and a relative one
@@ -255,14 +258,35 @@ def _as_curve(field: Bspline, keep: int) -> tuple[Bspline, int]:
     return field, surviving
 
 
-def _invariance_bound(field: Bspline, degree: int, dtype: npt.DTypeLike) -> float:
+def _insertions_to_open(field: Bspline) -> int:
+    """How many knot insertions :meth:`~pantr.bspline.Bspline.to_open_bspline` performs.
+
+    One per direction it actually converts, which is one per direction that is periodic
+    or not clamped at both ends -- the predicate
+    :func:`~pantr.bspline._bspline_knot_insertion._to_open_bspline_impl` skips on.
+
+    Args:
+        field (~pantr.bspline.Bspline): The field about to be converted.
+
+    Returns:
+        int: The count, at least 1 for any field the conversion does not refuse.
+    """
+    return sum(1 for one_d in field.space.spaces if one_d.periodic or not one_d.has_open_knots())
+
+
+def _invariance_bound(field: Bspline, degree: int, dtype: npt.DTypeLike, insertions: int) -> float:
     """The absolute bound on how far a representation change may move the map.
 
     `gamma_K` times the coefficients' magnitude, with `K` assembled rather than fitted:
 
-     - `2p + 3 + (7p + 2)` for the one knot insertion the changed representation went
-       through, which is ``tests/parity/test_bspline_refinement.py``'s derivation at one
-       refined direction and `p` the changed direction's degree;
+     - `insertions * (2p + 3 + (7p + 2))` for the knot insertions the changed
+       representation went through, which is
+       ``tests/parity/test_bspline_refinement.py``'s derivation at one refined direction,
+       charged once per insertion because sequential transforms add their counts. **The
+       factor is not 1**: `to_open_bspline` inserts once per converted direction, and a
+       *periodic* split inserts twice -- once converting to the open form and again
+       raising the split value's multiplicity
+       (``pantr/bspline/_bspline_split.py``'s two steps).
      - `5 * p_d` per corner cut, being 3 roundings for the two products and the sum and
        2 for the weight pair's departure from summing to one. Reducing to a curve and
        sampling it is one cut per direction, on each of the two sides, so `10 * sum p_d`.
@@ -272,13 +296,16 @@ def _invariance_bound(field: Bspline, degree: int, dtype: npt.DTypeLike) -> floa
 
     Args:
         field (~pantr.bspline.Bspline): The field whose coefficients set the magnitude.
-        degree (int): The degree of the direction the operation changed.
+        degree (int): The degree of the direction the operation changed; the largest of
+            them where it changed more than one.
         dtype (npt.DTypeLike): The storage format the roundings are charged in.
+        insertions (int): How many knot insertions the changed representation went
+            through.
 
     Returns:
         float: The bound, in the units of the coefficients.
     """
-    roundings = (2 * degree + 3 + 7 * degree + 2) + 10 * sum(field.degree)
+    roundings = insertions * (2 * degree + 3 + 7 * degree + 2) + 10 * sum(field.degree)
     unit = 0.5 * float(np.finfo(np.dtype(dtype)).eps)
     magnitude = float(np.max(np.abs(np.asarray(field.control_points, dtype=np.float64))))
     return roundings * unit / (1.0 - roundings * unit) * magnitude
@@ -418,7 +445,7 @@ def _fields(dim: int) -> tuple[Field, ...]:
 
 OPEN_CASES: Final = (
     _Case("uncl-1d", (UNCLAMPED,), 3),
-    _Case("left-only-1d", (LEFT_ONLY,), 2),
+    _Case("unclamped-left-1d", (UNCLAMPED_LEFT,), 2),
     _Case("per-1d", (PERIODIC,), 3),
     _Case("per-1d-rational", (PERIODIC,), 2, rational=True),
     _Case("per-uncl-2d", (PERIODIC, UNCLAMPED), 2),
@@ -474,7 +501,12 @@ def test_the_open_conversion_does_not_move_the_curve(case: _Case, dtype: npt.DTy
     with use_backend(Backend.CPP):
         field = _build(case, dtype)
         opened = field.to_open_bspline()
-        bound = _invariance_bound(field, max(vector.degree for vector in case.vectors), dtype)
+        bound = _invariance_bound(
+            field,
+            max(vector.degree for vector in case.vectors),
+            dtype,
+            _insertions_to_open(field),
+        )
         for direction in range(field.dim):
             before, keep = _as_curve(field, direction)
             after, _ = _as_curve(opened, direction)
@@ -613,7 +645,10 @@ def test_the_split_does_not_move_the_curve(split: _SplitCase, dtype: npt.DTypeLi
         field = _build(split.case, dtype)
         halves = field.split(split.direction, split.value)
         degree = split.case.vectors[split.direction].degree
-        bound = _invariance_bound(field, degree, dtype)
+        # A periodic direction is converted to the open form first and *then* has the
+        # split value's multiplicity raised: two insertions, not one.
+        insertions = 2 if split.case.vectors[split.direction].periodic else 1
+        bound = _invariance_bound(field, degree, dtype, insertions)
         whole, keep = _as_curve(field, split.direction)
         for side, half in zip(("left", "right"), halves, strict=True):
             reduced, _ = _as_curve(half, split.direction)
@@ -849,6 +884,13 @@ def _refusal(backend: Backend, act: _Act) -> str:
         ),
         ("boundary-side", lambda field: field.boundary(0, 2), "side must be 0 or 1, got 2."),
         ("boundary-axis", lambda field: field.boundary(2, 0), "axis must be in [0, 2), got 2."),
+        # Bad in both ways. The wrapper checks the side first, so that is the message,
+        # and the C++ `boundary` restates the same order; the claim had no test before.
+        (
+            "boundary-side-and-axis",
+            lambda field: field.boundary(7, 2),
+            "side must be 0 or 1, got 2.",
+        ),
     ],
     ids=lambda value: value if isinstance(value, str) else "",
 )

@@ -85,14 +85,16 @@
 /// whatever the knots are stored in. It then writes
 /// `R[i] = alpha * R[i + 1] + (1.0 - alpha) * R[i]`, where `R` is a `T` array and
 /// `alpha` a Python float -- and under NEP 50 a Python float is *weak*, so both
-/// weights are rounded to `T` and the whole update runs in `T`. Measured at
-/// `float32` on a case where the two differ: the `T` update gives `1.2469137` and a
-/// `double` update rounded once at the end gives `1.2469136`. Computing the weights
+/// weights are rounded to `T` and the whole update runs in `T`. Computing the weights
 /// in `T`, or the update in `double`, would each be a divergence, in opposite
-/// directions -- and this is not left resting on that one measurement.
-/// `tests/parity/test_bspline_structural.py` fails 10 of its `float32` slice cases
-/// against a `double` update and none of its `float64` ones, so the claim has a test
-/// that would report its violation rather than a comment that would not.
+/// directions, and both are visible at `float32` in the last bit while neither is at
+/// `float64`.
+///
+/// The claim is **pinned by a test rather than by this comment**: replacing the update
+/// with a `double` one fails `tests/parity/test_bspline_structural.py`'s `float32`
+/// slice cases and none of its `float64` ones. No count is quoted here, because a
+/// count is pinned to the fixture list it was taken over and nothing would re-take
+/// it.
 ///
 /// **The span search and the multiplicity count are `double`.** `_find_span` and
 /// `_count_multiplicity` reach every knot through `float(knots[i])`, so both
@@ -150,6 +152,22 @@
 /// target with an FMA fuses the corner cut's `wa * R[i + 1] + wb * R[i]` and the
 /// claim becomes Rule 10's budget. `pantr._pantr_cpp.__fp_contract__` is the gate
 /// that tells them apart.
+///
+/// ## Why the parameter is a `double` and not an `accumulator_t<T>`
+///
+/// `pantr/bezier/shape.hpp` types the analogous parameter of its `split`, `slice` and
+/// `slice_point` as `accumulator_t<T>`, so that a differentiable scalar keeps its own
+/// type through the operation. Every entry point here takes a plain `double` instead,
+/// and the reason is `pantr/core/scalar.hpp`'s own rule 4: **a parameter that changes
+/// discrete structure is value-only.** A Bézier's parameter changes nothing discrete --
+/// de Casteljau runs the same number of passes at every value. A B-spline's decides
+/// which knot span it falls in, what multiplicity it has there, and how many knots an
+/// insertion adds, so it selects the computation and not merely its operands. That is
+/// the same standing this rule gives the degree.
+///
+/// It costs nothing today, since `accumulator_t<float>` and `accumulator_t<double>` are
+/// both `double`, and it is stated here because the deviation from the sibling header is
+/// otherwise invisible.
 ///
 /// ## What is not ported, and it is a declared boundary
 ///
@@ -1039,6 +1057,15 @@ template <Real T>
 /// `boundary(f, axis, side)` is `slice(f, axis, domain[side])`, which is the oracle's
 /// own definition rather than a reimplementation of it: `Bspline.boundary` computes
 /// the endpoint and calls `Bspline.slice`.
+///
+/// **It is that composition over a narrower domain than the oracle's, and this is the
+/// one place the two differ.** `Bspline.boundary` works at `dim == 1` too, where its
+/// `slice` returns a point; this forwards to the `slice` below, which refuses a
+/// one-dimensional field, and there is no `boundary_point` beside it. That is
+/// `pantr/bezier/shape.hpp`'s `boundary` unchanged, and it is reachable by no caller:
+/// this function is not bound, so the Python `boundary` at `dim == 1` composes its own
+/// `slice` into `slice_point` and never arrives here. A C++ caller wanting the point
+/// spells it `slice_point(f, f.space_ref().space_ref(0).domain()[side])`.
 ///
 /// It is deliberately **not bound**. The Python `Bspline.boundary` reaches C++ through
 /// its own `slice`, so a binding would be public surface with no caller --

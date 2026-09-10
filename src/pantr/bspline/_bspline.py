@@ -1240,6 +1240,9 @@ class Bspline:
 
         Raises:
             ValueError: If the B-spline is already open in every direction.
+            TypeError: If this field was built under the other backend. New with the
+                C++ dispatch: the operation crosses the boundary as a *field*, and
+                ``_cpp_handle`` refuses a foreign one rather than converting it.
         """
         return to_open_field(self)
 
@@ -1311,6 +1314,9 @@ class Bspline:
         Raises:
             ValueError: If ``direction`` is out of range ``[0, dim)``.
             ValueError: If ``value`` is not strictly inside the domain.
+            TypeError: If this field was built under the other backend. New with the
+                C++ dispatch: the operation crosses the boundary as a *field*, and
+                ``_cpp_handle`` refuses a foreign one rather than converting it.
 
         Example:
             >>> import numpy as np
@@ -1891,6 +1897,9 @@ class Bspline:
             ValueError: If ``axis`` is out of range ``[0, dim)``.
             ValueError: If ``value`` is outside the domain of the specified
                 direction.
+            TypeError: If this field was built under the other backend. New with the
+                C++ dispatch: the operation crosses the boundary as a *field*, and
+                ``_cpp_handle`` refuses a foreign one rather than converting it.
 
         Example:
             >>> import numpy as np
@@ -1939,6 +1948,9 @@ class Bspline:
         Raises:
             ValueError: If ``axis`` is out of range ``[0, dim)``.
             ValueError: If ``side`` is not 0 or 1.
+            TypeError: If this field was built under the other backend. New with the
+                C++ dispatch: the operation crosses the boundary as a *field*, and
+                ``_cpp_handle`` refuses a foreign one rather than converting it.
 
         Example:
             >>> import numpy as np
