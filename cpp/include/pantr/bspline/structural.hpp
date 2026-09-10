@@ -29,10 +29,12 @@
 /// **The one new numerical kernel is `corner_cut_along_axis`**, the de Boor corner
 /// cut the slice is built on (Piegl and Tiller, *The NURBS Book*, A5.1
 /// `CurvePntByCornerCut`). It is genuinely new work rather than a rearrangement of
-/// something present: nothing in this tree evaluates a B-spline yet, because basis
-/// tabulation is its own port. The corner cut needs none of it -- it reads control
-/// points and knots and never touches a basis function -- which is why the slice is
-/// portable ahead of `Bspline::evaluate`.
+/// something present: **no header under `pantr/bspline/` evaluates a basis function**,
+/// because basis tabulation is its own port. (`pantr/basis/cardinal_bspline.hpp` does
+/// tabulate a B-spline basis, but only the *cardinal* one, over uniform integer knots
+/// and not over a `BsplineSpace1D` -- so it is no help here.) The corner cut needs
+/// none of it: it reads control points and knots and never touches a basis function,
+/// which is why the slice is portable ahead of `Bspline::evaluate`.
 ///
 /// The two remaining pieces of bookkeeping are `select_rows_along_axis`, which is one
 /// primitive standing in for three row selections the oracle spells three ways (a
@@ -87,7 +89,10 @@
 /// `float32` on a case where the two differ: the `T` update gives `1.2469137` and a
 /// `double` update rounded once at the end gives `1.2469136`. Computing the weights
 /// in `T`, or the update in `double`, would each be a divergence, in opposite
-/// directions.
+/// directions -- and this is not left resting on that one measurement.
+/// `tests/parity/test_bspline_structural.py` fails 10 of its `float32` slice cases
+/// against a `double` update and none of its `float64` ones, so the claim has a test
+/// that would report its violation rather than a comment that would not.
 ///
 /// **The span search and the multiplicity count are `double`.** `_find_span` and
 /// `_count_multiplicity` reach every knot through `float(knots[i])`, so both
@@ -107,14 +112,21 @@
 /// below rounds the tolerance rather than widening the difference.
 ///
 /// That is the opposite convention from `inserted_knot_vector`'s domain check in
-/// `pantr/bspline/knot_insertion.hpp`, which widens the difference to `double`. The
-/// two are not inconsistent about the same predicate: **they transcribe two
-/// different oracle expressions.** Whether that file's own is faithful is a question
-/// about `_is_in_domain_impl` and not about this one, and it is raised rather than
-/// answered here -- no path through this file depends on the answer, because every
-/// value this file hands that function is a knot of the vector it is inserting into
-/// or a value the wrapper has already put strictly inside the domain, and in both
-/// cases the tolerance leg of its predicate is never consulted.
+/// `pantr/bspline/knot_insertion.hpp`, which widens the difference to `double`, **and
+/// both are right**, which is worth stating because the pair looks like a
+/// contradiction and is not. The predicate is written the same way in both oracles;
+/// what differs is that one of them is *compiled*. `_is_in_domain_impl` is
+/// `@nb_jit(nopython=True)`, and numba unifies a `float32` array against a `float64`
+/// scalar by widening the array -- so its comparison is in `double`. The three
+/// expressions this file transcribes sit in plain Layer 2 Python, where NEP 50
+/// *weakens* the Python float to the array's format instead. Measured on one
+/// constructed input at `float32`: the same distance and the same tolerance give
+/// `False` from the jitted oracle, `True` from the numpy spelling.
+///
+/// So `design/backend_parity.md` Rule 9's "per-kernel fact" is sharper than per-kernel
+/// here -- the width follows the **compilation** of the expression, not the module it
+/// lives in -- and a transcription that reads the predicate without checking which
+/// side of that line it is on will be wrong half the time.
 ///
 /// **The refined knot vectors and the two-scale sweep are unchanged.**
 /// `inserted_knot_vector` and `refine_along_axis` carry their own derivations, and

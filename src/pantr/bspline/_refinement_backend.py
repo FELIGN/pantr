@@ -95,9 +95,26 @@ Cross-backend fields
 converting it, which is what ``design/cross_backend_types.md`` forbids and what
 :meth:`pantr.bspline.Bspline._mutate` already refuses for the three ``in_place=``
 methods. The refusal is a property of *taking the C++ route*, so it fires under the C++
-backend and not under the Python one, where the oracle runs happily over a C++ field's
-read-only control points. That asymmetry is
+backend and not under the Python one. That asymmetry is
 :func:`pantr.bezier._bezier_backend._cpp_handle`'s, unchanged.
+
+**What the Python route does with a C++ field is narrower than this used to say**, and
+the correction is measured rather than reasoned. It said the oracle "runs happily over
+a C++ field's read-only control points", without qualification. It does so only when
+**every** direction is refined: :func:`_insert_knots_bspline` rebuilds a refined
+direction's space wrapper, which under the Python backend is a Python one, but *carries
+the caller's wrapper through* for a direction it skips -- and
+:class:`~pantr.bspline.BsplineSpace` cannot aggregate a direction from the other
+backend, so it raises ``ValueError: All B-spline spaces must come from the active
+backend``. Measured on a two-direction C++ field under the Python backend:
+``insert_knots`` with knots for both directions succeeds, with knots for one it raises,
+and ``subdivide`` behaves the same way at ``[2, 2]`` and ``[2, 1]``.
+
+So the cross-backend rule is enforced on both routes -- up front and by ``TypeError``
+here, late and by ``ValueError`` in the space constructor there.
+:func:`tests.parity.test_bspline_structural.test_a_cross_backend_field_is_refused_on_both_routes`
+pins both halves, for the three operations where the oracle route *always* carries a
+wrapper through and so always raises.
 """
 
 from __future__ import annotations
