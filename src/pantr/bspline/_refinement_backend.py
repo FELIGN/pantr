@@ -265,7 +265,9 @@ def _cpp_insert_knots(bspline: Bspline, new_knots_per_dim: Sequence[_Knots | Non
 
     handle = _cpp_handle(bspline)
     flat = _flat_insertions(new_knots_per_dim, bspline.dtype)
-    return BsplineCls._wrap_over(_pantr_cpp.insert_bspline_knots(handle, flat), bspline.space)
+    return BsplineCls._wrap_over(
+        _pantr_cpp.insert_bspline_knots(handle, flat), bspline.space.spaces
+    )
 
 
 def _cpp_subdivide(
@@ -298,7 +300,7 @@ def _cpp_subdivide(
         _pantr_cpp.subdivide_bspline(
             handle, [1 if count is None else int(count) for count in counts], regularity
         ),
-        bspline.space,
+        bspline.space.spaces,
     )
 
 

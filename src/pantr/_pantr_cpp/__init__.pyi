@@ -128,6 +128,10 @@ from ._bspline import (
 from ._bspline_field import Bspline32 as Bspline32
 from ._bspline_field import Bspline64 as Bspline64
 from ._bspline_field import insert_bspline_knots as insert_bspline_knots
+from ._bspline_field import open_bspline as open_bspline
+from ._bspline_field import slice_bspline as slice_bspline
+from ._bspline_field import slice_bspline_point as slice_bspline_point
+from ._bspline_field import split_bspline as split_bspline
 from ._bspline_field import subdivide_bspline as subdivide_bspline
 from ._geometry import AABB as AABB
 from ._grid import BVH as BVH

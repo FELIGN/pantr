@@ -433,13 +433,16 @@ class BsplineSpace:
         difference no value comparison would ever report.
         ``pantr.grid.HierarchicalGrid._wrap_over`` exists for the same reason.
 
-        **The reuse is positional, so this method is only correct for an operation that
-        preserves the directions and their order.** Refinement does; a boundary
-        extraction or a permutation would not, and reusing direction ``d``'s wrapper
-        there would hand back a wrapper for a different direction while every value
-        comparison agreed. So the dimensions must match, and that is checked rather
-        than documented: it is the one precondition of this method a caller could get
-        wrong silently.
+        **The reuse is positional against ``impl``'s directions**, so ``prior`` has to
+        be in the order and of the length ``impl`` has, not the ones the operation
+        started from. Refinement preserves both and passes its field's own list; a
+        *slice* drops one direction and must drop the matching entry, which
+        :func:`pantr.bspline._structural_backend._cpp_slice` does; a permutation would
+        have to permute. Reusing direction ``d``'s wrapper against a list that no
+        longer describes ``d`` would hand back a wrapper for a different direction
+        while every value comparison agreed. The length is therefore checked rather
+        than documented -- it catches the unreduced list, which is the mistake a caller
+        is most likely to make -- while the *order* is the caller's to get right.
 
         Args:
             impl (_Impl): The implementation object to adopt, with no re-validation.

@@ -59,19 +59,15 @@ from .._transform_control_points import _apply_affine_to_control_points
 from ._bspline_degree import _degree_elevate_bspline, _degree_reduce_bspline
 from ._bspline_derivative import _derivative_bspline
 from ._bspline_eval import _evaluate_Bspline, _evaluate_Bspline_deriv
-from ._bspline_knot_insertion import (
-    _to_open_bspline_impl,
-    _to_periodic_bspline_impl,
-)
+from ._bspline_knot_insertion import _to_periodic_bspline_impl
 from ._bspline_knot_removal import _remove_knots_bspline
 from ._bspline_locate import _locate_impl
 from ._bspline_restrict import _restrict_bspline_impl
-from ._bspline_slice import _slice_bspline
 from ._bspline_space_nd import BsplineSpace as _BsplineSpace
 from ._bspline_space_nd import _impl_class as _space_impl_class
-from ._bspline_split import _split_bspline_impl
 from ._bspline_to_beziers import _to_beziers_impl
 from ._refinement_backend import insert_knots_into_field, subdivide_field
+from ._structural_backend import slice_field, split_field, to_open_field
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Sequence
@@ -82,6 +78,7 @@ if TYPE_CHECKING:
     from ..quad import PointsLattice
     from ..transform import AffineTransform
     from ._bspline_locate import _LocateContext
+    from ._bspline_space_1d import BsplineSpace1D
     from ._bspline_space_nd import BsplineSpace
 
     _Impl: TypeAlias = "_BsplinePython | _CppBspline32 | _CppBspline64"
@@ -470,8 +467,8 @@ class Bspline:
         self._take(_new_impl(space, validated, is_rational), space)
 
     @classmethod
-    def _wrap_over(cls, impl: _Impl, prior: BsplineSpace) -> Bspline:
-        """Wrap an implementation an operation produced from ``prior``'s field.
+    def _wrap_over(cls, impl: _Impl, prior: Sequence[BsplineSpace1D]) -> Bspline:
+        """Wrap an implementation an operation produced from ``prior``'s directions.
 
         The path an operation takes when C++ built the result: refining a field under
         the C++ backend hands back a ``Bspline<T>`` handle, and this wrapper must hold
@@ -481,10 +478,18 @@ class Bspline:
         wrapper's space and the implementation's space as two computations of one
         answer.
 
-        ``prior`` is the space the operation started from, and it travels down to
-        :meth:`BsplineSpace._wrap_over`, which explains what it buys: a direction the
-        operation left alone keeps the wrapper it already had, so
-        ``result.space.spaces[d] is field.space.spaces[d]`` holds under both backends.
+        ``prior`` travels down to :meth:`BsplineSpace._wrap_over`, which explains what
+        it buys: a direction the operation left alone keeps the wrapper it already had,
+        so ``result.space.spaces[d] is field.space.spaces[d]`` holds under both
+        backends.
+
+        **It is one wrapper per direction of ``impl``, not of the field the operation
+        started from**, and the two differ for a dimension-reducing operation. A
+        caller that drops a direction has to drop it from ``prior`` too --
+        :func:`pantr.bspline._structural_backend._cpp_slice` passes
+        ``spaces`` with the sliced axis removed -- and one that permutes the directions
+        has to permute ``prior``. Handing the unreduced list instead is refused rather
+        than silently mismatched, by the length check one level down.
 
         The derived block starts cold, because :meth:`_take` is the only writer and it
         replaces the block wholesale; a refined field shares no memo with the field it
@@ -492,15 +497,18 @@ class Bspline:
 
         Args:
             impl (_Impl): The implementation to adopt, with no re-validation.
-            prior (~pantr.bspline.BsplineSpace): The space wrapper the operation
-                started from, whose direction wrappers are reused where ``impl`` still
-                holds their implementations.
+            prior (Sequence[BsplineSpace1D]): The univariate wrappers the operation
+                started from, in axis order, one per direction of ``impl``. Each is
+                reused where ``impl`` still holds its implementation.
 
         Returns:
             Bspline: A wrapper around ``impl``.
+
+        Raises:
+            ValueError: If ``prior`` does not have one entry per direction of ``impl``.
         """
         self = object.__new__(cls)
-        self._take(impl, _BsplineSpace._wrap_over(impl.space, prior.spaces))
+        self._take(impl, _BsplineSpace._wrap_over(impl.space, prior))
         return self
 
     def _take(self, impl: _Impl, space: BsplineSpace) -> None:
@@ -1233,7 +1241,7 @@ class Bspline:
         Raises:
             ValueError: If the B-spline is already open in every direction.
         """
-        return _to_open_bspline_impl(self)
+        return to_open_field(self)
 
     def restrict(
         self,
@@ -1325,7 +1333,7 @@ class Bspline:
         if value <= a + tol or value >= b - tol:
             raise ValueError(f"value must be strictly inside the domain ({a}, {b}), got {value}.")
 
-        return _split_bspline_impl(self, direction, value)
+        return split_field(self, direction, value)
 
     def to_periodic(self, continuity: int | tuple[int | None, ...] | None = None) -> Bspline:
         """Return a periodic B-spline equivalent to this one.
@@ -1909,7 +1917,7 @@ class Bspline:
                 f"of direction {axis}."
             )
 
-        return _slice_bspline(self, axis, value)
+        return slice_field(self, axis, value)
 
     def boundary(self, axis: int, side: int) -> Bspline | npt.NDArray[np.float32 | np.float64]:
         """Extract the boundary of the B-spline along one parametric direction.
