@@ -139,6 +139,17 @@ void register_bspline_type(nanobind::module_& m);
 /// periodic direction is refused -- argue from somewhere else entirely.
 void register_bspline_refinement(nanobind::module_& m);
 
+/// Register the structural operations on a `pantr.bspline.Bspline`.
+///
+/// Its own entry point rather than four more functions inside
+/// `register_bspline_refinement`, for the reason that one is separate from
+/// `register_bspline_type`: refining a field and cutting one down are separate ports
+/// with separate parity claims, and this one's decisions -- why a one-dimensional
+/// slice is a second function, why its point crosses as an `out=` buffer, why the
+/// boundary is not bound at all -- argue from somewhere else entirely. Unlike
+/// refinement, none of these refuses a periodic direction.
+void register_bspline_structural(nanobind::module_& m);
+
 /// Register `pantr.bspline`'s Bézier extraction operator builder and its mask.
 ///
 /// Separate from `register_bspline_extraction` because the two are separate ports
