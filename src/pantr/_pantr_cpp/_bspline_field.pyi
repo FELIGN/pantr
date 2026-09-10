@@ -1,10 +1,15 @@
 """Type stub for `pantr.bspline.Bspline`, bound in `cpp/bindings/bspline_type.cpp`.
 
-The two refinement entry points at the bottom come from
-``cpp/bindings/bspline_refinement.cpp`` instead, and they are here rather than in a
-third stub module because they are operations on the classes above: a stub split by
-binding file would put a function's argument type in one module and the function in
-another for no reader's benefit.
+The two refinement entry points come from ``cpp/bindings/bspline_refinement.cpp`` and
+the four structural ones from ``cpp/bindings/bspline_structural.cpp`` instead, and
+they are here rather than in further stub modules because they are operations on the
+classes above: a stub split by binding file would put a function's argument type in
+one module and the function in another for no reader's benefit.
+
+``bspline_structural.cpp`` binds no ``bspline_boundary``, so none is declared here.
+``pantr.bspline.Bspline.boundary`` is a ``slice`` at a domain endpoint and reaches C++
+through :func:`slice_bspline`; ``pantr._pantr_cpp.bezier_boundary`` is the bound-with-
+no-caller shape that decision avoids repeating.
 
 Its own stub module rather than a third pair of classes in ``_bspline.pyi``, for the
 reason ``__init__.pyi`` gives for splitting the stub at all: a ticket that ports a
@@ -126,4 +131,55 @@ def subdivide_bspline(
 
     A count of 1 skips its direction. ``regularity`` is ``None`` for ``degree - 1`` per
     direction, the maximal smoothness each degree admits.
+    """
+
+def open_bspline(bspline: Bspline32 | Bspline64) -> Bspline32 | Bspline64:
+    """Re-express a field over clamped, non-periodic knot vectors in every direction.
+
+    A direction that is already open is left alone and its space handle carried into
+    the result, which is what keeps ``opened.space.spaces[d] is field.space.spaces[d]``
+    true for it. Raises ``ValueError`` when every direction is already open, with the
+    oracle's own text: there would be nothing to do.
+    """
+
+def split_bspline(
+    bspline: Bspline32 | Bspline64,
+    direction: int,
+    value: float,
+) -> tuple[Bspline32, Bspline32] | tuple[Bspline64, Bspline64]:
+    """Cut a field in two at a parameter of one direction.
+
+    The left half spans ``[domain_start, value]`` and the right ``[value, domain_end]``;
+    every other direction is untouched and its space handle is shared by both halves.
+    A periodic split direction is converted to its open form first, so both halves are
+    non-periodic in it. ``value`` must be strictly inside the domain by more than the
+    direction's tolerance, which ``pantr.bspline.Bspline.split`` checks first.
+    """
+
+def slice_bspline(
+    bspline: Bspline32 | Bspline64,
+    axis: int,
+    value: float,
+) -> Bspline32 | Bspline64:
+    """Fix one parametric direction at a value, dropping it.
+
+    Needs a field of dimension at least two; a one-dimensional one slices to a point,
+    which :func:`slice_bspline_point` returns instead. The surviving directions keep
+    their order and their space handles.
+    """
+
+def slice_bspline_point(
+    bspline: Bspline32 | Bspline64,
+    value: float,
+    *,
+    out: npt.NDArray[np.float32 | np.float64],
+) -> None:
+    """The point a one-dimensional field takes at a parameter, into ``out``.
+
+    ``out`` must be 1-D, contiguous, of the field's storage format and as long as the
+    control net has components -- the **weight column included**, because the
+    projection of a rational field is the caller's.
+    ``pantr.bspline._structural_backend`` allocates it and divides, which is where the
+    oracle's own numpy division lives. Overloaded on the field's class in C++, so no
+    cast is performed on ``out``.
     """
