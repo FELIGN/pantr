@@ -1,10 +1,11 @@
 """Type stub for `pantr.bspline.Bspline`, bound in `cpp/bindings/bspline_type.cpp`.
 
-The two refinement entry points come from ``cpp/bindings/bspline_refinement.cpp`` and
-the four structural ones from ``cpp/bindings/bspline_structural.cpp`` instead, and
-they are here rather than in further stub modules because they are operations on the
-classes above: a stub split by binding file would put a function's argument type in
-one module and the function in another for no reader's benefit.
+The two refinement entry points come from ``cpp/bindings/bspline_refinement.cpp``, the
+four structural ones from ``cpp/bindings/bspline_structural.cpp``, and the two degree
+ones from ``cpp/bindings/bspline_degree.cpp`` instead, and they are here rather than
+in further stub modules because they are operations on the classes above: a stub
+split by binding file would put a function's argument type in one module and the
+function in another for no reader's benefit.
 
 ``bspline_structural.cpp`` binds no ``bspline_boundary``, so none is declared here.
 ``pantr.bspline.Bspline.boundary`` is a ``slice`` at a domain endpoint and reaches C++
@@ -131,6 +132,32 @@ def subdivide_bspline(
 
     A count of 1 skips its direction. ``regularity`` is ``None`` for ``degree - 1`` per
     direction, the maximal smoothness each degree admits.
+    """
+
+def differentiate_bspline(
+    bspline: Bspline32 | Bspline64,
+    direction: int,
+) -> Bspline32 | Bspline64:
+    """The field's first partial derivative in ``direction``, as a new field.
+
+    Every other direction's space handle is carried into the result. Raises
+    ``ValueError`` for a direction out of range, for a degree-0 direction, or for a
+    rational field; there is no ``keep_degree`` parameter here at all --
+    ``cpp/include/pantr/bspline/degree.hpp`` explains why that path and the rational
+    one are declared boundaries rather than missing ports.
+    """
+
+def elevate_bspline_degree(
+    bspline: Bspline32 | Bspline64,
+    increments: Sequence[int],
+) -> Bspline32 | Bspline64:
+    """Raise a field's degree per direction by ``increments``, over the same geometry.
+
+    A direction whose increment is 0 is left alone and its space handle carried into
+    the result. Raises ``ValueError`` for a length mismatch, a negative increment, an
+    all-zero argument, an elevated degree outside the exact-integer binomial envelope,
+    or a direction to elevate that is periodic or not clamped --
+    ``cpp/include/pantr/bspline/degree.hpp`` explains the last two.
     """
 
 def open_bspline(bspline: Bspline32 | Bspline64) -> Bspline32 | Bspline64:

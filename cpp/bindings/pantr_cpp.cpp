@@ -91,6 +91,7 @@ NB_MODULE(_pantr_cpp, m) {
     register_bspline_type(m);
     register_bspline_refinement(m);
     register_bspline_structural(m);
+    register_bspline_degree(m);
 
     // Build provenance, so a measurement can name the binary that produced it
     // rather than the source tree it was built from. `fp_contract` is the one

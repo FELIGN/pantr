@@ -56,8 +56,7 @@ from numpy import typing as npt
 
 from .._backend import Backend, active_backend, available_backends
 from .._transform_control_points import _apply_affine_to_control_points
-from ._bspline_degree import _degree_elevate_bspline, _degree_reduce_bspline
-from ._bspline_derivative import _derivative_bspline
+from ._bspline_degree import _degree_reduce_bspline
 from ._bspline_eval import _evaluate_Bspline, _evaluate_Bspline_deriv
 from ._bspline_knot_insertion import _to_periodic_bspline_impl
 from ._bspline_knot_removal import _remove_knots_bspline
@@ -66,6 +65,7 @@ from ._bspline_restrict import _restrict_bspline_impl
 from ._bspline_space_nd import BsplineSpace as _BsplineSpace
 from ._bspline_space_nd import _impl_class as _space_impl_class
 from ._bspline_to_beziers import _to_beziers_impl
+from ._degree_backend import derivative_of_field, elevate_field_degree
 from ._refinement_backend import insert_knots_into_field, subdivide_field
 from ._structural_backend import slice_field, split_field, to_open_field
 
@@ -965,6 +965,11 @@ class Bspline:
                 (``_BINCOEFF_MAX_N``). Reachable with ``keep_degree=True``, and
                 for a rational B-spline with either setting, since that path
                 always re-elevates.
+            TypeError: If this field was built under the other backend. New with the
+                C++ dispatch: differentiation crosses the boundary as a *field*, and
+                ``_cpp_handle`` refuses a foreign one rather than converting it.
+                Unreachable with ``keep_degree=True`` or a rational field, both of
+                which stay on the oracle regardless of backend.
 
         Example:
             >>> import numpy as np
@@ -988,7 +993,7 @@ class Bspline:
             raise ValueError(f"direction must be in [0, {self.dim}), got {direction}.")
         if self.space.spaces[direction].degree < 1:
             raise ValueError("Derivative of a degree-0 B-spline is not defined.")
-        return _derivative_bspline(self, direction, keep_degree=keep_degree)
+        return derivative_of_field(self, direction, keep_degree=keep_degree)
 
     def elevate_degree(self, degree_increments: int | Sequence[int]) -> Bspline:
         """Elevate the polynomial degree of the B-spline.
@@ -1013,6 +1018,11 @@ class Bspline:
             ValueError: If the number of increments does not match the dimension.
             ValueError: If an elevated degree would exceed the exactness envelope
                 of the binomial-coefficient kernel (``_BINCOEFF_MAX_N``).
+            TypeError: If this field was built under the other backend. New with the
+                C++ dispatch: degree elevation crosses the boundary as a *field*, and
+                ``_cpp_handle`` refuses a foreign one rather than converting it.
+                Unreachable when every direction to elevate is periodic or not
+                clamped, since that case stays on the oracle regardless of backend.
 
         References:
             Degree elevation of spline curves :cite:p:`piegl1997nurbs`.
@@ -1034,7 +1044,7 @@ class Bspline:
         if all(inc == 0 for inc in increments):
             raise ValueError("At least one degree increment must be positive.")
 
-        return _degree_elevate_bspline(self, increments)
+        return elevate_field_degree(self, increments)
 
     def reduce_degree(self, degree_decrements: int | Sequence[int]) -> Bspline:
         r"""Reduce the polynomial degree of the B-spline.
