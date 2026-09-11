@@ -1950,7 +1950,7 @@ def test_the_wrapping_degrees_are_named_and_still_wrap() -> None:
     accumulator changed under us and the excluded region is no longer the one the
     accuracy tests were scoped around.
     """
-    from pantr.bspline._bspline_basis_core import _basis_derivs_point  # noqa: PLC0415
+    from pantr.bspline._bspline_basis_kernels import _basis_derivs_point  # noqa: PLC0415
 
     wrapping: list[tuple[int, int]] = []
     for degree in range(1, 31):

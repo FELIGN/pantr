@@ -12,10 +12,12 @@ from pantr.basis._basis_core import (
 )
 from pantr.bspline import BsplineSpace1D
 from pantr.bspline._bspline_basis_core import (
-    _compute_basis_deriv_nurbs_book_impl,
-    _compute_basis_nurbs_book_impl,
     _tabulate_Bspline_basis_Bernstein_like_deriv_1D,
     _tabulate_Bspline_basis_deriv_1D_impl,
+)
+from pantr.bspline._bspline_basis_kernels import (
+    _compute_basis_deriv_nurbs_book_impl,
+    _compute_basis_nurbs_book_impl,
 )
 
 # ---------------------------------------------------------------------------

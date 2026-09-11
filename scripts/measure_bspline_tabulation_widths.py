@@ -49,7 +49,7 @@ from numba import float32, int64
 
 from pantr._numba_compat import nb_jit
 from pantr.basis._basis_core import _tabulate_Bernstein_basis_deriv_1D_serial_core
-from pantr.bspline._bspline_basis_core import (
+from pantr.bspline._bspline_basis_kernels import (
     _compute_basis_deriv_nurbs_book_impl,
     _compute_basis_deriv_nurbs_book_serial_impl,
     _compute_basis_nurbs_book_impl,

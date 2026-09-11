@@ -76,7 +76,7 @@ if not TYPE_CHECKING:
             logger = logging.getLogger(__name__)
             logger.debug("Starting Numba JIT warmup...")
             from .bspline import (  # noqa: PLC0415
-                _bspline_basis_core,
+                _bspline_basis_kernels,
                 _bspline_eval,
                 _bspline_extraction_core,
                 _bspline_knot_insertion_core,
@@ -90,7 +90,7 @@ if not TYPE_CHECKING:
             # thread) while the main thread may also call them leads to a crash.
             # Instead they compile lazily on first user call (always from the
             # main / caller thread) and are cached to disk by Numba's cache=True.
-            _bspline_basis_core._warmup_numba_functions()
+            _bspline_basis_kernels._warmup_numba_functions()
             _bspline_eval._warmup_numba_functions()
             _bspline_extraction_core._warmup_numba_functions()
             _bspline_knot_insertion_core._warmup_numba_functions()

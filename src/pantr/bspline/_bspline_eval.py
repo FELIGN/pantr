@@ -20,7 +20,7 @@ from numpy import typing as npt
 from .._numba_compat import nb_jit, nb_prange
 from ..basis._basis_utils import _allocate_or_validate_out, _validate_out_array
 from ..quad import PointsLattice
-from ._bspline_basis_core import (
+from ._bspline_basis_kernels import (
     _compute_basis_deriv_nurbs_book_impl,
     _compute_basis_nurbs_book_impl,
 )
@@ -110,7 +110,7 @@ def _normalize_eval_points(
     Establishes the shape and dtype the Layer-3 evaluation kernels assume. Without
     it, a ``(n_pts, 1)`` array reached the Cox-de Boor kernel and failed there with a
     ``numba.core.errors.TypingError`` (``int()`` of a length-1 array in
-    :func:`~pantr.bspline._bspline_basis_core._find_span_and_first_basis_point`), and
+    :func:`~pantr.bspline._bspline_basis_kernels._find_span_and_first_basis_point`), and
     an array-like such as a plain list failed even earlier on a missing ``.dtype``
     attribute, before reaching any validation at all.
 

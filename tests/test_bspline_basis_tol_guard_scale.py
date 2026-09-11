@@ -38,7 +38,7 @@ import numpy as np
 import pytest
 
 from pantr.bspline import BsplineSpace1D
-from pantr.bspline._bspline_basis_core import _compute_basis_nurbs_book_serial_impl
+from pantr.bspline._bspline_basis_kernels import _compute_basis_nurbs_book_serial_impl
 from pantr.tolerance import get_strict
 
 
