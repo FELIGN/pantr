@@ -9,13 +9,22 @@
 /// `tabulate_basis_1d` / `tabulate_basis_derivatives_1d`, which take a
 /// `BsplineSpace1D` and choose between the general recurrence and the
 /// Bézier-like fast path -- the Layer 2 equivalent for a C++ caller with no
-/// interpreter. This file binds the first pair only. `tabulate.hpp`'s "Why the
-/// dispatch stays on the Python side" is the reason: building a space per call
-/// would re-validate and copy the knot vector in front of a kernel the oracle
-/// calls with two or three points, and the space's constructor snaps by
-/// default, so it could silently evaluate on a different knot vector than the
-/// oracle did. `pantr.bspline._basis_backend` keeps the oracle's own dispatch,
-/// and these two entry points are what it calls into.
+/// interpreter. **Both pairs are bound, and they are bound for different
+/// callers.**
+///
+/// `pantr.bspline._basis_backend` calls the *raw-knot* pair, and
+/// `tabulate.hpp`'s "Why the dispatch stays on the Python side" is why: building
+/// a space per call would re-validate and copy the knot vector in front of a
+/// kernel the oracle calls with two or three points, and the space's constructor
+/// snaps by default, so it could silently evaluate on a different knot vector
+/// than the oracle did. That dispatch stays where it is.
+///
+/// The *space-level* pair is bound so that the parity suite can exercise it
+/// against the oracle's own dispatch. It is the code a C++ consumer writes, and
+/// until now `ctest` was the only thing that ran it -- which tests it against
+/// itself rather than against the oracle, and so cannot see the two disagreeing
+/// about which path a space takes or about the change of variable on it. It
+/// takes an already-built space, so none of the per-call cost above applies.
 ///
 /// ## What nanobind checks, and what is checked here
 ///
@@ -239,6 +248,105 @@ void tabulate_basis_derivatives(const_knots<T> knots, unsigned degree, bool peri
     Kernel(knot_span, degree_i64, periodic, n_deriv_i64, pts, deriv_view, first_basis_view);
 }
 
+/// Tabulate a space's basis, taking its Bézier-like fast path.
+///
+/// The space-level counterpart of `tabulate_basis`, and the reason it exists is
+/// in the file comment: it is what a C++ consumer calls, and binding it is what
+/// lets the parity suite compare that dispatch against the oracle's own rather
+/// than only against `ctest`.
+///
+/// The space arrives already built and already validated, so the knot-length
+/// check `tabulate_basis` performs has no counterpart here -- its constructor
+/// made it impossible. Only the output shapes, which the space cannot know, are
+/// checked.
+///
+/// \tparam T Scalar type of the space, the points and the output.
+/// \param space The space to tabulate.
+/// \param points The evaluation points.
+/// \param out_basis Shape `(points.size(), space.degree() + 1)`, written in full.
+/// \param out_first_basis One entry per point, written in full.
+/// \throws nb::value_error If either output has the wrong shape.
+template <class T>
+void tabulate_space_basis(const pantr::bspline::BsplineSpace1D<T>& space,
+                          const_points<T> points, out_matrix<T> out_basis,
+                          out_first_basis_t out_first_basis) {
+    const std::size_t num_pts = points.size();
+    const auto num_basis = static_cast<std::size_t>(space.degree()) + 1;
+    if (out_basis.shape(0) != num_pts || out_basis.shape(1) != num_basis) {
+        throw nb::value_error(("out_basis has shape (" + std::to_string(out_basis.shape(0)) +
+                               ", " + std::to_string(out_basis.shape(1)) + "), but degree " +
+                               std::to_string(space.degree()) + " at " +
+                               std::to_string(num_pts) + " points needs (" +
+                               std::to_string(num_pts) + ", " + std::to_string(num_basis) + ")")
+                                  .c_str());
+    }
+    if (out_first_basis.size() != num_pts) {
+        throw nb::value_error(("out_first_basis has " + std::to_string(out_first_basis.size()) +
+                               " elements, but " + std::to_string(num_pts) +
+                               " points need one each")
+                                  .c_str());
+    }
+
+    const std::span<const T> pts(points.data(), num_pts);
+    const span2d<T> basis_view(out_basis.data(), num_pts, num_basis);
+    const std::span<std::int64_t> first_basis_view(out_first_basis.data(), num_pts);
+
+    const nb::gil_scoped_release release;
+    pantr::bspline::tabulate_basis_1d<T>(space, pts, basis_view, first_basis_view);
+}
+
+/// Tabulate a space's basis derivatives, taking its Bézier-like fast path.
+///
+/// See `tabulate_space_basis` for why the space-level pair is bound at all, and
+/// why no knot-length check appears here.
+///
+/// \tparam T Scalar type of the space, the points and the output.
+/// \param space The space to tabulate.
+/// \param n_deriv Highest derivative order.
+/// \param points The evaluation points.
+/// \param out_deriv Shape `(points.size(), n_deriv + 1, space.degree() + 1)`.
+/// \param out_first_basis One entry per point, written in full.
+/// \throws nb::value_error If `n_deriv` is too large to fit a C `int`, or if
+///         either output has the wrong shape.
+template <class T>
+void tabulate_space_basis_derivatives(const pantr::bspline::BsplineSpace1D<T>& space,
+                                      unsigned n_deriv, const_points<T> points,
+                                      out_tensor<T> out_deriv,
+                                      out_first_basis_t out_first_basis) {
+    check_fits_int("n_deriv", n_deriv);
+    const auto n_deriv_i64 = static_cast<std::int64_t>(n_deriv);
+
+    const std::size_t num_pts = points.size();
+    const auto num_basis = static_cast<std::size_t>(space.degree()) + 1;
+    const std::size_t num_rows = static_cast<std::size_t>(n_deriv) + 1;
+    if (out_deriv.shape(0) != num_pts || out_deriv.shape(1) != num_rows ||
+        out_deriv.shape(2) != num_basis) {
+        throw nb::value_error(("out_deriv has shape (" + std::to_string(out_deriv.shape(0)) +
+                               ", " + std::to_string(out_deriv.shape(1)) + ", " +
+                               std::to_string(out_deriv.shape(2)) + "), but degree " +
+                               std::to_string(space.degree()) + " and n_deriv " +
+                               std::to_string(n_deriv) + " at " + std::to_string(num_pts) +
+                               " points needs (" + std::to_string(num_pts) + ", " +
+                               std::to_string(num_rows) + ", " + std::to_string(num_basis) +
+                               ")")
+                                  .c_str());
+    }
+    if (out_first_basis.size() != num_pts) {
+        throw nb::value_error(("out_first_basis has " + std::to_string(out_first_basis.size()) +
+                               " elements, but " + std::to_string(num_pts) +
+                               " points need one each")
+                                  .c_str());
+    }
+
+    const std::span<const T> pts(points.data(), num_pts);
+    const span_nd<T, 3> deriv_view(out_deriv.data(), num_pts, num_rows, num_basis);
+    const std::span<std::int64_t> first_basis_view(out_first_basis.data(), num_pts);
+
+    const nb::gil_scoped_release release;
+    pantr::bspline::tabulate_basis_derivatives_1d<T>(space, n_deriv_i64, pts, deriv_view,
+                                                     first_basis_view);
+}
+
 }  // namespace
 
 void register_bspline_basis(nb::module_& m) {
@@ -272,4 +380,22 @@ void register_bspline_basis(nb::module_& m) {
         "tabulate_bspline_basis_derivatives_1d",
         &tabulate_basis_derivatives<double, &pantr::bspline::basis_derivs_1d<double>>,
         &tabulate_basis_derivatives<float, &pantr::bspline::basis_derivs_1d<float>>);
+
+    // The space-level pair. The space carries its own degree and periodicity, so
+    // those parameters are gone; the outputs keep `nb::kw_only()` and
+    // `.noconvert()` for the reasons above, which the space does not change.
+    m.def("tabulate_bspline_space_basis_1d", &tabulate_space_basis<double>, nb::arg("space"),
+          nb::arg("points").noconvert(), nb::kw_only(), nb::arg("out_basis").noconvert(),
+          nb::arg("out_first_basis").noconvert());
+    m.def("tabulate_bspline_space_basis_1d", &tabulate_space_basis<float>, nb::arg("space"),
+          nb::arg("points").noconvert(), nb::kw_only(), nb::arg("out_basis").noconvert(),
+          nb::arg("out_first_basis").noconvert());
+
+    m.def("tabulate_bspline_space_basis_derivatives_1d",
+          &tabulate_space_basis_derivatives<double>, nb::arg("space"), nb::arg("n_deriv"),
+          nb::arg("points").noconvert(), nb::kw_only(), nb::arg("out_deriv").noconvert(),
+          nb::arg("out_first_basis").noconvert());
+    m.def("tabulate_bspline_space_basis_derivatives_1d", &tabulate_space_basis_derivatives<float>,
+          nb::arg("space"), nb::arg("n_deriv"), nb::arg("points").noconvert(), nb::kw_only(),
+          nb::arg("out_deriv").noconvert(), nb::arg("out_first_basis").noconvert());
 }
