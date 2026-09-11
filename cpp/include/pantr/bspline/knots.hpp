@@ -504,22 +504,23 @@ void check_space_has_an_interval(std::span<const T> knots, std::int64_t degree,
         + tol_text + " apart.");
 }
 
-/// Refuse a knot vector whose first or last knot repeats more than it may.
+/// Refuse a knot vector whose last knot repeats more than it may.
 ///
 /// Runs after `check_space_has_an_interval`, deliberately: that one names a mesh
 /// with no interval at all, which is the more useful diagnosis. This owns what is
-/// left, a vector whose interval structure is sound while an end knot repeats past
-/// `degree + 1`. An excess at the right end makes the basis sum to zero instead of
-/// one at the right endpoint and makes the derivatives divide by zero; an excess in
-/// the *interior* computes correctly and is the ordinary way to lower continuity,
-/// so it stays legal. A periodic space fails the partition of unity identically,
-/// which is why it is refused too and why the message says "end knot".
+/// left, a vector whose interval structure is sound while its last knot repeats
+/// past `degree + 1`. At `degree + 2` copies the basis sums to zero instead of one
+/// at the right endpoint and the derivatives there divide by zero; a periodic space
+/// fails identically and is not exempt.
 ///
-/// The floor of two keeps degree 0 alive: there `degree + 1` is 1, and the ordinary
-/// clamped vector `[0, 0, 1, 1]` repeats twice at each end.
+/// The rule is exactly as wide as that. An excess at the *first* knot leaves the
+/// partition of unity intact and only adds an identically zero basis function, an
+/// excess in the interior is the ordinary way to lower continuity, and degree 0 has
+/// no denominator to divide by zero at any multiplicity: none of the three is
+/// refused. The oracle's `_BsplineSpace1DPython.__init__` carries the measurements.
 ///
-/// The two end runs are counted here rather than read off `unique_knots_and_multiplicity`
-/// so that construction does not force the lazy memo that holds them. The grouping
+/// The end run is counted here rather than read off `unique_knots_and_multiplicity`
+/// so that construction does not force the lazy memo that holds it. The grouping
 /// rule is that function's, knot for knot: a step of more than `tol` starts a new class.
 ///
 /// \param knots The knot vector, non-decreasing and already snapped if snapping was
@@ -527,33 +528,26 @@ void check_space_has_an_interval(std::span<const T> knots, std::int64_t degree,
 ///        the same knot.
 /// \param degree The polynomial degree.
 /// \param tol The absolute parametric tolerance, from `knot_tolerance`.
-/// \throws std::invalid_argument If either end run holds more than
-///         `max(degree + 1, 2)` knots.
+/// \throws std::invalid_argument If the last knot's class holds more than
+///         `degree + 1` knots, at positive degree.
 template <Real T>
-void check_end_multiplicity(std::span<const T> knots, std::int64_t degree, double tol) {
-    const std::int64_t max_end_multiplicity = std::max(degree + 1, std::int64_t{2});
+void check_last_multiplicity(std::span<const T> knots, std::int64_t degree, double tol) {
+    if (degree == 0) {
+        return;
+    }
 
-    const auto run_length = [&](auto next) {
-        std::int64_t length = 1;
-        for (std::size_t i = 1; i < knots.size(); ++i) {
-            const auto [lo, hi] = next(i);
-            if (detail::as_double(knots[hi] - knots[lo]) > tol) {
-                break;
-            }
-            ++length;
+    const std::size_t last = knots.size() - 1;
+    std::int64_t multiplicity = 1;
+    for (std::size_t i = 1; i < knots.size(); ++i) {
+        if (detail::as_double(knots[last - i + 1] - knots[last - i]) > tol) {
+            break;
         }
-        return length;
-    };
-    const std::int64_t at_front =
-        run_length([&](std::size_t i) { return std::pair{i - 1, i}; });
-    const std::int64_t at_back = run_length([&](std::size_t i) {
-        const std::size_t last = knots.size() - 1;
-        return std::pair{last - i, last - i + 1};
-    });
+        ++multiplicity;
+    }
 
-    if (std::max(at_front, at_back) > max_end_multiplicity) {
-        throw std::invalid_argument("an end knot may repeat at most "
-                                    + std::to_string(max_end_multiplicity) + " times");
+    if (multiplicity > degree + 1) {
+        throw std::invalid_argument("the last knot may repeat at most "
+                                    + std::to_string(degree + 1) + " times");
     }
 }
 

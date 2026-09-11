@@ -470,34 +470,36 @@ void check_concurrent_first_touch() {
     }
 }
 
-/// The end-multiplicity refusal, at both ends and on both kinds of space.
+/// The last-knot refusal, and the three neighbours it deliberately does not cover.
 ///
 /// It runs last of the knot rules, so a vector that is *also* flat must still be
 /// told it has no interval: that is the more useful diagnosis and the one the
-/// oracle gives. The interior case is here to keep the rule from widening -- an
-/// interior knot of high multiplicity is the ordinary way to lower continuity and
-/// must stay legal -- and degree 0 is here because `degree + 1` is 1 there while
-/// the perfectly ordinary `[0, 0, 1, 1]` repeats twice at each end.
-void check_end_multiplicity_refusal() {
-    const std::vector<double> right{0.0, 0.0, 0.0, 1.0, 2.0, 3.0, 3.0, 3.0, 3.0};
-    same(message_of([&] { (void)space(right, 2); }), "an end knot may repeat at most 3 times",
-         "an excess at the right end");
+/// oracle gives. The three legal cases are the rule's width: an excess at the
+/// FIRST knot keeps the partition of unity, an interior knot of high multiplicity
+/// is the ordinary way to lower continuity, and degree 0 has no denominator to
+/// divide by zero at any multiplicity.
+void check_last_multiplicity_refusal() {
+    const std::vector<double> excess{0.0, 0.0, 0.0, 1.0, 2.0, 3.0, 3.0, 3.0, 3.0};
+    same(message_of([&] { (void)space(excess, 2); }), "the last knot may repeat at most 3 times",
+         "an excess at the last knot");
 
-    const std::vector<double> left{0.0, 0.0, 0.0, 0.0, 1.0, 2.0, 3.0, 3.0, 3.0};
-    same(message_of([&] { (void)space(left, 2); }), "an end knot may repeat at most 3 times",
-         "an excess at the left end");
+    // Not an exemption: a periodic space's basis fails to sum to one at the right
+    // endpoint exactly as a clamped one's does.
+    same(message_of([&] { (void)space(excess, 2, true); }),
+         "the last knot may repeat at most 3 times", "an excess on a periodic space");
 
-    // A periodic space fails the partition of unity at the right endpoint exactly as
-    // the clamped one does, which is why the rule does not exempt it and why the
-    // message says "end knot" rather than "clamped end".
-    same(message_of([&] { (void)space(right, 2, true); }),
-         "an end knot may repeat at most 3 times", "an excess on a periodic space");
+    // Legal: the first knot. Measured on the oracle, the partition of unity holds
+    // and the derivatives are clean; all it adds is an identically zero basis
+    // function, which degree 0's ordinary `[0, 0, 1, 1]` also has.
+    const std::vector<double> first{0.0, 0.0, 0.0, 0.0, 1.0, 2.0, 3.0, 3.0, 3.0};
+    PANTR_CHECK(space(first, 2).num_basis() == 6);
 
-    // Legal, and the reason the rule reads the two end classes rather than all of them.
+    // Legal: the interior, which is how continuity is lowered.
     const std::vector<double> interior{0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 2.0, 3.0, 3.0, 3.0};
     PANTR_CHECK(space(interior, 2).num_basis() == 7);
 
-    // Legal at degree 0, where `degree + 1` is 1 and the floor of two is what keeps it so.
+    // Legal: degree 0 at any multiplicity.
+    PANTR_CHECK(space(std::vector<double>{0.0, 1.0, 1.0, 1.0}, 0).num_basis() == 3);
     PANTR_CHECK(space(std::vector<double>{0.0, 0.0, 1.0, 1.0}, 0).num_basis() == 3);
 
     // Flat *and* over-repeated: the interval rule owns it, because it runs first.
@@ -524,7 +526,7 @@ int main() {
     check_float_storage();
     check_argument_refusals();
     check_knot_refusals();
-    check_end_multiplicity_refusal();
+    check_last_multiplicity_refusal();
     check_the_non_finite_message();
     check_concurrent_first_touch();
     return pantr::test::summary("test_bspline_space_1d");

@@ -137,9 +137,9 @@ class _BsplineSpace1DPython:
                 point, which means the requested spacing is finer than the dtype
                 resolves at that coordinate magnitude. ``snap_knots=False`` bypasses
                 the merging and the snapping diagnosis, but not the interval
-                requirement. Also if the first or last knot repeats more than
-                ``max(degree + 1, 2)`` times, which leaves a space whose basis does
-                not sum to one at that end.
+                requirement. Also, at positive degree, if the last knot repeats
+                more than ``degree + 1`` times, which leaves a space whose basis does
+                not sum to one at the right endpoint.
         """
         _BsplineSpace1DPython._validate_input(knots, degree, periodic)
 
@@ -170,27 +170,36 @@ class _BsplineSpace1DPython:
         # Last, and deliberately: the two checks above name a mesh that has no
         # interval at all, which is the more useful diagnosis and the one a caller can
         # act on. This one owns what is left -- a vector whose interval structure is
-        # sound but whose first or last knot repeats more than it may.
+        # sound while its LAST knot repeats more than it may.
         #
-        # An excess at the right end makes `tabulate_basis` sum to 0 instead of 1 at
-        # the right endpoint, and leaves the backends disagreeing about the
-        # derivatives there: the oracle raises `ZeroDivisionError`, the port returns
-        # NaN. Refusing at construction closes that without a parity rule. An excess
-        # in the interior computes correctly and is the ordinary way to lower
-        # continuity, so it stays legal. Periodic spaces fail the partition of unity
-        # identically, so they are refused too -- hence "end knot", not "clamped end".
+        # The rule is exactly as wide as what was measured. At `degree + 2` copies of
+        # the last knot, `tabulate_basis` sums to 0 instead of 1 at the right endpoint
+        # and the two backends disagree about the derivatives there: the oracle raises
+        # `ZeroDivisionError`, the port returns NaN. Refusing at construction closes
+        # that divergence without needing a parity rule. A periodic space fails
+        # identically, so it is not exempt.
         #
-        # The floor of two keeps degree 0 alive: there `degree + 1` is 1, and the
-        # perfectly ordinary clamped vector `[0, 0, 1, 1]` repeats twice at each end.
+        # Three neighbouring cases were measured and are deliberately NOT refused,
+        # because none of them shows that failure. An excess at the FIRST knot: the
+        # partition of unity holds and the derivatives are clean, and all it adds is an
+        # identically zero basis function -- which `[0, 0, 1, 1]` at degree 0 also has
+        # and this library accepts. An excess in the interior: the ordinary way to
+        # lower continuity. Degree 0 at any multiplicity: that recurrence has no
+        # denominator, so there is nothing to divide by zero.
         #
-        # Multiplicities are read after snapping, so this and `_snap_knots` cannot
-        # disagree about which knots are the same knot.
-        max_end_multiplicity = max(self._degree + 1, 2)
-        end_multiplicities = _get_unique_knots_and_multiplicity_impl(
-            self._knots, self._degree, self._tol, False
-        )[1][[0, -1]]
-        if int(end_multiplicities.max()) > max_end_multiplicity:
-            raise ValueError(f"an end knot may repeat at most {max_end_multiplicity} times")
+        # The multiplicity is read after snapping, so this and `_snap_knots` cannot
+        # disagree about which knots are the same knot. It recomputes rather than
+        # reusing what `_snap_knots` saw, to leave the `_unique_all` memo unpopulated;
+        # the C++ counterpart avoids forcing its own memo for the same reason.
+        if self._degree > 0:
+            max_last_multiplicity = self._degree + 1
+            last_multiplicity = int(
+                _get_unique_knots_and_multiplicity_impl(
+                    self._knots, self._degree, self._tol, False
+                )[1][-1]
+            )
+            if last_multiplicity > max_last_multiplicity:
+                raise ValueError(f"the last knot may repeat at most {max_last_multiplicity} times")
 
         self._knots.flags.writeable = False
 
