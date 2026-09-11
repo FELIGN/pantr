@@ -89,6 +89,8 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, TypeAlias
 
+import numpy as np
+
 from .._backend import Backend, active_backend, available_backends
 from ._bspline_degree import _degree_elevate_bspline
 from ._bspline_derivative import _derivative_bspline
@@ -97,6 +99,7 @@ if TYPE_CHECKING:
     from .._pantr_cpp import Bspline32 as _CppBspline32
     from .._pantr_cpp import Bspline64 as _CppBspline64
     from ._bspline import Bspline
+    from ._bspline_space_1d import BsplineSpace1D
 
     _CppHandle: TypeAlias = "_CppBspline32 | _CppBspline64"
     """A field's C++ implementation, of either storage format."""
@@ -183,10 +186,35 @@ def _the_cpp_backend_can_elevate(bspline: Bspline, degree_increments: tuple[int,
         return False
     spaces = bspline.space.spaces
     return all(
-        not spaces[direction].periodic and spaces[direction].has_open_knots()
+        not spaces[direction].periodic and _closes_bit_exactly(spaces[direction])
         for direction, increment in enumerate(degree_increments)
         if increment > 0
     )
+
+
+def _closes_bit_exactly(space: BsplineSpace1D) -> bool:
+    """Report whether a direction's last ``degree + 1`` knots are bit-identical.
+
+    This is deliberately **not** :meth:`~pantr.bspline.BsplineSpace1D.has_open_knots`, which
+    compares the closing run within the space's tolerance.  The C++ elevation refuses a knot
+    vector whose closing run is not bit-identical, because A5.9 walks segments until a run of
+    equal knots reaches the last index and steps past its coefficients without one.  Routing
+    on the looser predicate would hand C++ a vector it then refuses in its own words, while
+    the oracle refuses the same vector in different words diagnosing a different cause -- so
+    the error a caller sees would depend on ``PANTR_BACKEND``, which this module promises it
+    does not.  Mirroring the refusal here sends every such vector to the oracle instead.
+
+    A direction that closes within tolerance but not bit-exactly needs ``snap_knots=False``
+    to build, since snapping collapses the near-tie.
+
+    Args:
+        space (~pantr.bspline.BsplineSpace1D): The direction to test.
+
+    Returns:
+        bool: True when the closing run is bit-identical, so C++ will accept it.
+    """
+    knots = space.knots
+    return bool(np.all(knots[-space.degree - 1 :] == knots[-1]))
 
 
 def _cpp_derivative(bspline: Bspline, direction: int) -> Bspline:
