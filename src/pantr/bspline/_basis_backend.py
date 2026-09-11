@@ -165,9 +165,8 @@ def _cpp_basis(  # noqa: PLR0913
 
     - the numba kernels accept a non-contiguous ``out`` and fill it, while the binding
       requires C-contiguous memory and refuses anything else;
-    - ``tol`` is accepted and **not forwarded on the C++ path**, because the C++ kernel
-      has no such parameter (the fallback path below does forward it, to the kernel that
-      declares it). That is not a dropped argument: the oracle threads ``tol`` through to
+    - ``tol`` is accepted and **not forwarded**, because the C++ kernel has no such
+      parameter. That is not a dropped argument: the oracle threads ``tol`` through to
       :func:`pantr.bspline._bspline_knots._get_Bspline_num_basis_1D_impl` purely for
       interface consistency, and its own docstrings record that it goes unused --
       the non-periodic basis count is ``len(knots) - degree - 1`` and involves no

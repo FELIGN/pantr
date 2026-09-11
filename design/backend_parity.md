@@ -524,9 +524,26 @@ sides the caller widened himself, bit for bit, and that is what
 `tests/parity/test_bspline_basis_tabulation.py::test_a_mixed_dtype_call_is_promoted_and_reaches_cpp`
 assert.
 
-Widening the knots does **not** move the space's tolerance. That is an absolute parametric
-tolerance fixed at construction from the knot vector's own extent and storage format, and widening
-the array moves no knot.
+Widening the knots does **not** move the space's tolerance, and the consequence is worth stating.
+That tolerance is fixed at construction from the knot vector's extent *and its storage format* -- a
+`float32` vector over `[0, 3]` carries 2.9e-6 against a `float64` one's 5.3e-15 -- and widening the
+array adds no resolution to knots that were already rounded. So a mixed call is **not** equivalent
+to a space built at the wide width in every respect: the domain-membership gate is the narrow
+space's, and is looser by that ratio. Measured: a point 1.4e-6 past the right endpoint is accepted
+by the `float32` space and refused by its widened twin. What the promotion makes equal is the
+*arithmetic* on the points that are accepted, which is what the tests assert.
+
+Two places had to be changed beyond the two 1D entry points, and a review found both. The
+Bernstein fast path maps its points with `(pts - k0) / (k1 - k0)`: the subtraction from the array
+widens on its own, but `k1 - k0` is scalar against scalar and was computed at the space's storage
+width, so a mixed call carried the narrow span's rounding into every point -- 8.4e-8 on a Bézier
+space whose bounds are not representable in `float32`. And the tensor-product entry point sized its
+output buffer from the space's own dtype, then combined the per-direction results into it with
+`np.multiply(..., out=...)`, whose default `casting="same_kind"` narrows without complaint: the
+multi-dimensional mixed call computed wide per direction and returned `float32`, 2.4e-8 from the
+widened answer. **Both were invisible to a first version of the tests**, the first because its
+fixture's bounds were exactly representable at either width, the second because no mixed-width case
+reached that module at all.
 
 ## Rule 10: contraction removes one rounding per fused site, and only the amplification differs
 
