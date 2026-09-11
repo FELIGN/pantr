@@ -5,7 +5,7 @@ import numpy.typing as npt
 import pytest
 
 from pantr.bspline import Bspline, BsplineSpace, BsplineSpace1D, create_uniform_periodic_knots
-from pantr.bspline._bspline_basis_core import _compute_basis_nurbs_book_impl
+from pantr.bspline._bspline_basis_kernels import _compute_basis_nurbs_book_impl
 
 
 class TestBsplineEvaluation:

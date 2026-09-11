@@ -15,7 +15,7 @@ from pantr.bspline import (
     create_from_bezier,
     create_uniform_periodic_knots,
 )
-from pantr.bspline._bspline_basis_core import _compute_basis_nurbs_book_impl
+from pantr.bspline._bspline_basis_kernels import _compute_basis_nurbs_book_impl
 from pantr.bspline._bspline_to_beziers import _first_basis_per_element
 from pantr.bspline.spanwise_element_extraction import SpanwiseElementExtraction
 

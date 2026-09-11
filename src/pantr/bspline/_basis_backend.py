@@ -45,23 +45,13 @@ identical to each other (0 of 369 824 values differ, at both widths), which is w
 makes it sound to compare one C++ kernel against whichever of the two the oracle's
 dispatch happened to choose.
 
-**The two Numba kernel imports are deferred, and the reason is structural.** Every
-other catalogue in this package imports its kernels at module scope, which
-:mod:`pantr.bspline._extraction_backend` can do because
-:mod:`pantr.bspline._bspline_extraction_core` holds the kernels and nothing else --
-its module docstring says it exists for exactly that. The general-knot basis kernels
-are **not** split that way: :mod:`pantr.bspline._bspline_basis_core` holds both them
-and the Layer 2 entry points that have to ask this module which to call, so a
-module-scope import here closes a cycle.
-
-Deferring it inside the two catalogue functions is the smaller of the two repairs.
-The larger one is to split that module the way the extraction port is split, and it
-is the better long-term shape -- but it moves seven hundred lines of private symbols,
-and ``CLAUDE.md`` records a downstream consumer whose largest exposure is
-``pantr.bspline``. Recorded here as a follow-up rather than done in passing. Note what
-:mod:`pantr.basis._basis_backend`'s docstring objects to about lazy imports: that the
-count *grows by one per kernel ported*. Here it is two and cannot grow, since every
-future kernel is reached through one of the same two functions.
+**The Numba kernels are imported at module scope, like every other catalogue in this
+package.** They were deferred into the two catalogue functions until
+:mod:`pantr.bspline._bspline_basis_kernels` existed: the module that held them also
+held the Layer 2 entry points, which ask this module which kernel to call, so a
+module-scope import closed a cycle. Splitting the kernels out the way
+:mod:`pantr.bspline._bspline_extraction_core` is split opened it, and that is the whole
+of what the split bought.
 """
 
 from __future__ import annotations
@@ -73,6 +63,12 @@ import numpy as np
 import numpy.typing as npt
 
 from .._backend import Backend, active_backend, available_backends
+from ._bspline_basis_kernels import (
+    _compute_basis_deriv_nurbs_book_impl,
+    _compute_basis_deriv_nurbs_book_serial_impl,
+    _compute_basis_nurbs_book_impl,
+    _compute_basis_nurbs_book_serial_impl,
+)
 
 _FloatArray = npt.NDArray[np.float32 | np.float64]
 
@@ -295,11 +291,6 @@ def bspline_basis_core(backend: Backend | None = None) -> BasisKernels:
     chosen = active_backend() if backend is None else backend
 
     if chosen is Backend.PYTHON:
-        from ._bspline_basis_core import (  # noqa: PLC0415  (breaks a cycle; see the module docstring)
-            _compute_basis_nurbs_book_impl,
-            _compute_basis_nurbs_book_serial_impl,
-        )
-
         return BasisKernels(
             parallel=_compute_basis_nurbs_book_impl,
             serial=_compute_basis_nurbs_book_serial_impl,
@@ -328,11 +319,6 @@ def bspline_basis_deriv_core(backend: Backend | None = None) -> BasisDerivKernel
     chosen = active_backend() if backend is None else backend
 
     if chosen is Backend.PYTHON:
-        from ._bspline_basis_core import (  # noqa: PLC0415  (breaks a cycle; see the module docstring)
-            _compute_basis_deriv_nurbs_book_impl,
-            _compute_basis_deriv_nurbs_book_serial_impl,
-        )
-
         return BasisDerivKernels(
             parallel=_compute_basis_deriv_nurbs_book_impl,
             serial=_compute_basis_deriv_nurbs_book_serial_impl,

@@ -27,13 +27,15 @@ from pantr.bspline import (
     create_uniform_periodic_knots,
 )
 from pantr.bspline._bspline_basis_core import (
+    _tabulate_Bspline_basis_1D_impl,
+    _tabulate_Bspline_basis_Bernstein_like_1D,
+    _tabulate_Bspline_basis_deriv_1D_impl,
+)
+from pantr.bspline._bspline_basis_kernels import (
     _compute_basis_deriv_nurbs_book_impl,
     _compute_basis_deriv_nurbs_book_serial_impl,
     _compute_basis_nurbs_book_impl,
     _compute_basis_nurbs_book_serial_impl,
-    _tabulate_Bspline_basis_1D_impl,
-    _tabulate_Bspline_basis_Bernstein_like_1D,
-    _tabulate_Bspline_basis_deriv_1D_impl,
 )
 from pantr.bspline._bspline_extraction import (
     _tabulate_Bspline_Bezier_1D_extraction_impl,
