@@ -164,7 +164,12 @@ def _coarsen_knots_after_reduction(  # noqa: PLR0913
         num_to_remove = bezier_mult - target_mult
         if num_to_remove <= 0:
             continue
-        # Use a large tolerance for deviation since reduction is approximate.
+        # `inf` does not loosen the kernel's acceptance test (`dist <= tol`), it
+        # removes it.  That is deliberate: this removal is structural, restoring the
+        # continuity the original spline had, so the requested count is what must
+        # hold and the deviation is not a criterion.  `Bspline.reduce_degree`
+        # documents that this forced removal, not the per-segment reduction, is what
+        # sets the final error.
         tol_dev = np.inf
         knots, ctrl, _removed = _remove_knot_bspline_1d_impl(
             knots, new_degree, ctrl, knot_val, num_to_remove, tol_space, tol_dev

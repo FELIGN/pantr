@@ -1215,6 +1215,66 @@ class TestBsplineReduceDegreeDiscontinuous:
         assert new_knots.shape[0] == new_ctrl.shape[0] + new_degree + 1
 
 
+class TestBsplineReduceDegreeForcedRemoval:
+    """The coarsening removal is structural: no deviation can veto it.
+
+    ``_coarsen_knots_after_reduction`` passes ``tol_dev = np.inf`` to the removal
+    kernel, whose acceptance test is ``dist <= tol``.  That does not loosen the
+    test, it removes it -- which is the documented contract: the continuity
+    structure is what the step has to restore, and the forced removal is what sets
+    the method's error.  These tests pin that, so replacing the ``inf`` with any
+    finite bound fails here rather than silently returning a spline with a knot
+    vector nobody asked for.
+    """
+
+    def test_a_grossly_inexact_reduction_still_coarsens(self) -> None:
+        """A knot is removed even when the reduced curve misses by more than its range."""
+        bsp = _make_bspline_1d(
+            [0.0, 0.0, 0.0, 0.0, 0.5, 1.0, 1.0, 1.0, 1.0],
+            3,
+            [[0.0], [1.0], [-1.0], [1.0], [0.0]],
+        )
+        assert _bspline_multiplicity(bsp, 0.5) == 1
+
+        reduced = bsp.reduce_degree(1)
+
+        # The deviation is not small, and not small relative to anything: it exceeds
+        # the spline's own peak-to-peak range.  Asserted so the test still means what
+        # it says if the reduction operator is ever changed.
+        pts = np.linspace(0.0, 1.0, 101)
+        values = bsp.evaluate(pts)
+        deviation = float(np.max(np.abs(values - reduced.evaluate(pts))))
+        value_range = float(np.max(values) - np.min(values))
+        assert deviation > value_range
+
+        # Removed anyway, down to the structural target max(1, m - t) = 1.
+        assert reduced.degree == (2,)
+        assert _bspline_multiplicity(reduced, 0.5) == 1
+
+    def test_every_interior_knot_reaches_its_structural_target(self) -> None:
+        """Multiplicities land on max(1, m - t) whatever the fit does."""
+        degree, dec = 4, 2
+        knots = np.concatenate(
+            [
+                np.zeros(degree + 1),
+                [0.2],
+                np.full(3, 0.5),
+                np.full(4, 0.8),
+                np.ones(degree + 1),
+            ]
+        ).tolist()
+        rng = np.random.default_rng(20260911)
+        n_basis = len(knots) - degree - 1
+        bsp = _make_bspline_1d(knots, degree, rng.standard_normal((n_basis, 2)).tolist())
+
+        reduced = bsp.reduce_degree(dec)
+
+        assert reduced.degree == (degree - dec,)
+        for xi, mult in ((0.2, 1), (0.5, 3), (0.8, 4)):
+            assert _bspline_multiplicity(reduced, xi) == max(1, mult - dec)
+        assert reduced.control_points.shape[0] == reduced.space.spaces[0].num_basis
+
+
 class TestBsplineReduceDegreePeriodicSeam:
     """The seam multiplicity is floored at 1, exactly as interior knots are."""
 
