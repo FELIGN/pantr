@@ -129,8 +129,8 @@ class BsplineSpace1D {
     /// \throws std::invalid_argument If the degree is negative, the vector is too
     ///         short or not non-decreasing, the vector cannot support the degree,
     ///         snapping collapsed a vector that had more than one distinct knot,
-    ///         the resulting space spans no interval, or an end knot repeats
-    ///         more than `max(degree + 1, 2)` times.
+    ///         the resulting space spans no interval, or the last knot repeats
+    ///         more than `degree + 1` times at positive degree.
     BsplineSpace1D(std::span<const T> knots, std::int64_t degree, bool periodic,
                    KnotSnapping snapping)
         : degree_(degree), periodic_(periodic) {
@@ -156,7 +156,7 @@ class BsplineSpace1D {
         check_space_has_an_interval<T>(knots_, degree_, num_intervals_, tol_);
         // Last, and deliberately: the checks above name a mesh with no interval at
         // all, which is the more useful diagnosis. This owns what is left.
-        check_end_multiplicity<T>(std::span<const T>(knots_), degree_, tol_);
+        check_last_multiplicity<T>(std::span<const T>(knots_), degree_, tol_);
         num_basis_ = pantr::bspline::num_basis<T>(knots_, degree_, periodic_, tol_);
     }
 

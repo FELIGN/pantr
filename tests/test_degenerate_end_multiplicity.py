@@ -1,4 +1,4 @@
-"""A knot vector whose end knot repeats past ``degree + 1`` is refused.
+"""A knot vector whose last knot repeats past ``degree + 1`` is refused.
 
 ``BsplineSpace1D`` used to accept ``[0, 0, 0, 1, 2, 3, 3, 3, 3]`` at degree 2: the
 interval structure is sound, so neither the snapping rule nor the interval rule owns
@@ -17,10 +17,15 @@ The last two rows are the reason the rule lives in the constructor rather than i
 *differently*, and a space that cannot be built removes the divergence without anyone
 having to write a parity rule about which failure is the right one.
 
-The rule reads the two end classes only. An interior knot of high multiplicity is the
-ordinary way to lower continuity and stays legal, and the ceiling has a floor of two
-so that degree 0 keeps its ordinary clamped vector ``[0, 0, 1, 1]``, where
-``degree + 1`` is 1.
+**The rule is exactly as wide as that measurement**, which is most of what the tests
+below are for. Three neighbouring cases were measured and are legal, because none of
+them shows the failure:
+
+- an excess at the **first** knot, where the partition of unity holds and the
+  derivatives are clean. It adds an identically zero basis function, which the
+  ordinary degree-0 vector ``[0, 0, 1, 1]`` also has and this library accepts;
+- an excess in the **interior**, the ordinary way to lower continuity;
+- **degree 0** at any multiplicity, whose recurrence has no denominator.
 """
 
 from __future__ import annotations
@@ -37,11 +42,31 @@ from pantr.bspline import BsplineSpace1D
 wait_for_jit_warmup()
 
 
-_TOO_MANY = re.compile("end knot may repeat")
+_TOO_MANY = re.compile("last knot may repeat")
 """Match the refusal without pinning the whole message."""
 
 
-def test_an_excess_at_the_right_end_is_refused() -> None:
+def _peak_of_each_basis_function(space: BsplineSpace1D, samples: int = 401) -> Any:
+    """Sample the domain and return each basis function's largest absolute value.
+
+    Args:
+        space (BsplineSpace1D): The space to tabulate.
+        samples (int): How many points to sample. Defaults to 401.
+
+    Returns:
+        Any: One non-negative float per basis function.
+    """
+    lo, hi = space.domain
+    basis, first = space.tabulate_basis(np.linspace(lo, hi, samples))
+    basis = np.asarray(basis)
+    peak = np.zeros(space.num_basis)
+    for point, start in enumerate(np.asarray(first)):
+        for offset in range(basis.shape[-1]):
+            peak[start + offset] = max(peak[start + offset], abs(basis[point, offset]))
+    return peak
+
+
+def test_an_excess_at_the_last_knot_is_refused() -> None:
     with pytest.raises(ValueError, match=_TOO_MANY) as excinfo:
         BsplineSpace1D(np.array([0.0, 0, 0, 1, 2, 3, 3, 3, 3]), 2)
 
@@ -50,15 +75,9 @@ def test_an_excess_at_the_right_end_is_refused() -> None:
     assert "at most 3 times" in str(excinfo.value), str(excinfo.value)
 
 
-def test_an_excess_at_the_left_end_is_refused() -> None:
-    with pytest.raises(ValueError, match=_TOO_MANY):
-        BsplineSpace1D(np.array([0.0, 0, 0, 0, 1, 2, 3, 3, 3]), 2)
-
-
 def test_a_periodic_space_is_refused_on_the_same_evidence() -> None:
     # Not an exemption: the partition of unity fails at the right endpoint there
-    # exactly as it does on a clamped space, which is what the message's wording
-    # ("end knot", not "clamped end") records.
+    # exactly as it does on a clamped space.
     with pytest.raises(ValueError, match=_TOO_MANY):
         BsplineSpace1D(np.array([0.0, 0, 0, 1, 2, 3, 3, 3, 3]), 2, periodic=True)
 
@@ -79,23 +98,47 @@ def test_the_ceiling_is_degree_plus_one_at_every_degree_and_dtype(
         BsplineSpace1D(one_too_many, degree)
 
 
-def test_degree_zero_keeps_its_ordinary_clamped_vector() -> None:
-    # Where the floor of two earns its place: `degree + 1` is 1 here, so a rule
-    # without it would refuse the most ordinary degree-0 space there is.
-    assert BsplineSpace1D(np.array([0.0, 0.0, 1.0, 1.0]), 0).num_basis == 3
+@pytest.mark.parametrize("multiplicity", [1, 2, 3, 4])
+def test_degree_zero_is_not_subject_to_the_rule(multiplicity: int) -> None:
+    # Measured before the rule existed: at degree 0 the basis sums to one everywhere
+    # and the derivatives are clean at every multiplicity tried, on both backends.
+    # The recurrence has no denominator, so the failure the rule guards cannot occur
+    # and a ceiling here would refuse spaces that compute correctly.
+    knots = np.concatenate([np.zeros(1), np.full(multiplicity, 1.0)])
+    space = BsplineSpace1D(knots, 0)
+
+    assert space.num_basis == len(knots) - 1
+    basis, _ = space.tabulate_basis(np.array([0.0, 0.5, 1.0]))
+    # Exact, and legitimately so: a degree-0 basis function is an indicator, so the
+    # sum is a single stored 1.0 rather than the result of any arithmetic.
+    np.testing.assert_array_equal(np.asarray(basis).sum(axis=-1), 1.0)
+
+
+def test_an_excess_at_the_first_knot_stays_legal() -> None:
+    # Measured: the partition of unity holds and the derivatives are clean. What it
+    # does produce is one identically zero basis function -- a different degeneracy,
+    # which `[0, 0, 1, 1]` at degree 0 has as well and this library accepts, so
+    # refusing here would be wider than the evidence this rule rests on.
+    space = BsplineSpace1D(np.array([0.0, 0, 0, 0, 1, 2, 3, 3, 3]), 2)
+
+    assert space.num_basis == 6
+    peak = _peak_of_each_basis_function(space)
+    assert int((peak == 0.0).sum()) == 1, peak
+    basis, _ = space.tabulate_basis(np.array([0.0, 0.5, 1.5, 3.0]))
+    # The recurrence is convex, so each of the `degree + 1` non-zero values carries
+    # at most a few ulps and their sum at most one more rounding per addition: an
+    # absolute bound of `(degree + 2) * eps` covers both, with no fitted constant.
+    partition = (space.degree + 2) * float(np.finfo(np.float64).eps)
+    np.testing.assert_allclose(np.asarray(basis).sum(axis=-1), 1.0, rtol=0.0, atol=partition)
 
 
 def test_an_interior_knot_of_high_multiplicity_stays_legal() -> None:
     # The rule must not widen into the interior: this is how continuity is lowered,
     # and the space it builds is correct.
-    knots = np.array([0.0, 0, 0, 1, 1, 1, 2, 3, 3, 3])
-    space = BsplineSpace1D(knots, 2)
+    space = BsplineSpace1D(np.array([0.0, 0, 0, 1, 1, 1, 2, 3, 3, 3]), 2)
 
     assert space.num_basis == 7
     basis, _ = space.tabulate_basis(np.array([0.0, 0.5, 1.0, 2.5, 3.0]))
-    # The recurrence is convex, so each of the `degree + 1` non-zero values carries
-    # at most a few ulps and their sum at most one more rounding per addition: an
-    # absolute bound of `(degree + 2) * eps` covers both, with no fitted constant.
     partition = (space.degree + 2) * float(np.finfo(np.float64).eps)
     np.testing.assert_allclose(np.asarray(basis).sum(axis=-1), 1.0, rtol=0.0, atol=partition)
 
