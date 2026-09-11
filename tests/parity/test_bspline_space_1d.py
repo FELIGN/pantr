@@ -620,15 +620,20 @@ def _tolerance_drift_sweep(trials: int, seed: int) -> tuple[int, int, float, flo
             dtype
         )
 
-        # Chain the tail: several knots each within a tolerance of the previous, so
-        # the final class spans more than one tolerance and the flat bound is wrong.
+        # Chain the last class: its `degree + 1` knots become distinct values, each
+        # within a tolerance of the previous, so the class spans more than one
+        # tolerance and the flat bound is wrong. The chain *replaces* the clamped
+        # copies rather than adding to them: a class of more than `degree + 1` knots
+        # is a space whose basis does not sum to one at that end, refused at
+        # construction, so a sweep that produced them would measure nothing.
         tol = 8.0 * eps * scale
-        tail = [knots[-1]]
-        for _ in range(int(rng.integers(1, 6))):
-            tail.append(dtype(tail[-1] + dtype(tol * rng.uniform(0.3, 0.95))))
+        chain = [knots[-degree - 1]]
+        for _ in range(degree):
+            chain.append(dtype(chain[-1] + dtype(tol * rng.uniform(0.3, 0.95))))
         knots = np.sort(
             np.ascontiguousarray(
-                np.concatenate([knots[:-1], np.array(tail, dtype=dtype)]), dtype=dtype
+                np.concatenate([knots[: -degree - 1], np.array(chain, dtype=dtype)]),
+                dtype=dtype,
             )
         )
 
