@@ -144,7 +144,13 @@ def _tabulate_Bspline_basis_for_points_array_impl(
     order = tuple(int(degree + 1) for degree in spline.degrees)
     num_pts = pts.shape[0]
     expected_basis_shape = (num_pts, *order)
-    expected_dtype = np.dtype(spline.dtype)
+    # The same promotion the 1D calls below will apply, hoisted so the buffer they
+    # are combined into is wide enough to hold the result. Taking the space's own
+    # dtype here made a mixed-width call compute at the promoted width per direction
+    # and then narrow silently on the `np.multiply(..., out=...)` that combines them,
+    # whose default `casting="same_kind"` downcasts without complaint. The lattice
+    # entry point below already reads its dtype off the per-direction results.
+    expected_dtype = np.promote_types(spline.dtype, pts.dtype)
     expected_first_basis_shape = (num_pts, spline.dim)
 
     if out_basis is None:

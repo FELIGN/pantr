@@ -623,8 +623,14 @@ def _tabulate_Bspline_basis_Bernstein_like_1D(
     if not spline.has_Bezier_like_knots():
         raise ValueError("B-spline does not have Bézier-like knots.")
 
-    # map the points to the reference interval [0, 1]
-    k0, k1 = spline.domain
+    # map the points to the reference interval [0, 1].
+    #
+    # The two bounds are read at `pts`'s width, which Layer 2 has already promoted to
+    # the call's. `pts - k0` would widen on its own, but `k1 - k0` is scalar against
+    # scalar and would otherwise be computed at the space's storage width, so a
+    # mixed-width call would carry the narrow span's rounding into every point. On a
+    # same-width call the cast is the identity.
+    k0, k1 = (pts.dtype.type(bound) for bound in spline.domain)
     pts_normalized = (pts - k0) / (k1 - k0)
 
     num_pts = pts.size
@@ -674,7 +680,11 @@ def _tabulate_Bspline_basis_Bernstein_like_deriv_1D(
     if not spline.has_Bezier_like_knots():
         raise ValueError("B-spline does not have Bézier-like knots.")
 
-    k0, k1 = spline.domain
+    # At `pts`'s width, which Layer 2 has already promoted: see the note in
+    # `_tabulate_Bspline_basis_Bernstein_like_1D`. `k1 - k0` is scalar against scalar
+    # and would otherwise carry the space's storage width into the span and, through
+    # `inv_span` below, into every chain-rule factor.
+    k0, k1 = (pts.dtype.type(bound) for bound in spline.domain)
     pts_normalized = (pts - k0) / (k1 - k0)  # map to [0, 1]
 
     kernels = bernstein_deriv_core()
@@ -716,10 +726,19 @@ def _promote_for_mixed_width(
 
     A same-width call is untouched, and neither array is copied.
 
-    **The space's tolerance is deliberately not promoted with the knots.** It is an
-    absolute parametric tolerance fixed when the space was built, derived from that
-    knot vector's own extent and storage format; widening the array moves no knot, so
-    nothing the tolerance was derived from has changed.
+    **The space's tolerance is deliberately not promoted with the knots**, and that has
+    a consequence worth stating rather than discovering. It is an absolute parametric
+    tolerance fixed when the space was built, derived from that knot vector's extent
+    *and its storage format*: a ``float32`` vector over ``[0, 3]`` carries a tolerance
+    of 2.9e-6 against a ``float64`` one's 5.3e-15. Widening the array moves no knot, and
+    adds no resolution to knots that were already rounded, so the tolerance stays the
+    narrow one and the mesh keeps saying what it can actually distinguish.
+
+    So a mixed call is **not** equivalent to a space built at the wide width in every
+    respect: the domain-membership gate that ``validate=True`` applies is the narrow
+    space's, and is correspondingly looser. Measured: a point 1.4e-6 past the right
+    endpoint is accepted by the ``float32`` space and refused by its widened twin. What
+    the promotion makes equal is the **arithmetic** on the points that are accepted.
 
     Args:
         knots (npt.NDArray[np.float32 | np.float64]): The space's knot vector.
