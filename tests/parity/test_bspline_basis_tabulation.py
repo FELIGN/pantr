@@ -4,7 +4,7 @@ The C++ side is `cpp/include/pantr/bspline/tabulate.hpp` (Piegl & Tiller A2.2 an
 A2.3 over a general knot vector) and `pantr::tabulate_bernstein_deriv_1d` in
 `cpp/include/pantr/basis/bernstein.hpp` (A2.3 on unit knot spans, which the
 Bézier-like fast path reaches). The oracle is
-``pantr.bspline._bspline_basis_core``, and the public surface both go through is
+``pantr.bspline._bspline_basis_kernels``, and the public surface both go through is
 :meth:`pantr.bspline.BsplineSpace1D.tabulate_basis` and
 :meth:`~pantr.bspline.BsplineSpace1D.tabulate_basis_derivatives`.
 

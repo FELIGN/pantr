@@ -42,7 +42,7 @@ pantr reaches it: the B-spline layer accepts only float32 and float64
 (``BsplineSpace1D`` rejects the rest at construction).
 
 Kernels that compare a *difference of two knots* against zero -- the Cox-de Boor
-recurrence denominator guard in ``pantr.bspline._bspline_basis_core``
+recurrence denominator guard in ``pantr.bspline._bspline_basis_kernels``
 (``_basis_funcs_point``, ``_basis_derivs_point``) -- take no tolerance at all and
 use an exact ``denom == 0.0`` test. What makes that sound is the shape of the
 recurrence, not the knot vector: ``denom`` is the sum of the two non-negative

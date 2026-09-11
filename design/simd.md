@@ -68,7 +68,8 @@ polynomial index.
 
 This is a real tension and it deserves stating properly rather than being papered over.
 
-`src/pantr/bspline/_bspline_basis_core.py:262-269` documents a deliberate decision:
+`_compute_basis_nurbs_book_impl` in `src/pantr/bspline/_bspline_basis_kernels.py` documents a
+deliberate decision:
 
 > *Each point's span search and Cox-de Boor evaluation are independent, so both are fused
 > into a single `prange` loop over evaluation points (span search alone does not parallelize
@@ -238,8 +239,10 @@ another. It is not a performance option, it is a silent correctness change.
 ## Epistemic status
 
 - **Verified by reading the code:** that span search is deliberately fused into the
-  per-point `prange` loop, with the stated reasoning (`_bspline_basis_core.py:262-269`,
-  `:126-132`); that a serial twin is selected below `_PARALLEL_MIN_NUM_PTS`; that
+  per-point `prange` loop, with the stated reasoning (the docstrings of
+  `_compute_basis_nurbs_book_impl` and `_find_span_and_first_basis_point`, both in
+  `_bspline_basis_kernels.py`); that a serial twin is selected below
+  `_PARALLEL_MIN_NUM_PTS`; that
   `first_basis_per_interval` is cached and `tabulate_basis` exposes `out_first_basis`
   (`_bspline_space_1d.py:341-378`, `:598`); and that a sibling project has a SIMD batch
   abstraction, packet kernels, and a fast-math option drawn where described above.
