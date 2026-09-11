@@ -18,6 +18,7 @@ import numpy as np
 import numpy.typing as npt
 
 from .._array_utils import _flatten_along_axis, _unflatten_along_axis
+from ._bspline_knot_insertion import _to_open_bspline_1d_impl
 from ._bspline_knots import _get_Bspline_num_basis_1D_impl
 from ._bspline_space_1d import BsplineSpace1D
 from ._bspline_space_nd import BsplineSpace
@@ -289,8 +290,9 @@ def _derivative_keep_degree_nonrational(bspline: Bspline, direction: int) -> Bsp
 
     Returns:
         ~pantr.bspline.Bspline: Derivative B-spline of the same degree as the
-        input.  Periodic directions in the differentiated axis are converted
-        to open representation (degree elevation does not support periodic).
+        input.  A periodic ``direction`` comes back in open representation
+        (degree elevation does not support periodic); every other direction
+        keeps the representation it had.
 
     Raises:
         ValueError: If the direction's degree exceeds the exactness envelope of the
@@ -316,15 +318,16 @@ def _derivative_keep_degree_nonrational(bspline: Bspline, direction: int) -> Bsp
     # ``keep_degree`` or not.
     _check_bincoeff_envelope(p, f"Degree-preserving derivative of a degree-{p} B-spline")
 
-    # Degree elevation requires open knot vectors. For periodic B-splines,
-    # convert to open representation first, then recurse.
-    if space_d.periodic:
-        return _derivative_keep_degree_nonrational(bspline.to_open_bspline(), direction)
-
     knots = space_d.knots
     ctrl = bspline.control_points
 
     pts_2d, trailing_shape = _flatten_along_axis(ctrl, direction)
+
+    # Degree elevation requires an open knot vector.  Convert ``direction`` alone:
+    # ``Bspline.to_open_bspline`` would open every direction, so an operation on
+    # ``direction`` would change the representation of the axes it never touches.
+    if space_d.periodic:
+        knots, pts_2d = _to_open_bspline_1d_impl(knots, p, pts_2d, True, float(space_d.tolerance))
 
     # Derivative (degree p → p-1) + degree elevation (p-1 → p) on arrays.
     deriv_pts = _derivative_ctrl_1d(knots, p, pts_2d)
