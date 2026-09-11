@@ -597,6 +597,37 @@ class TestKeepDegreeNonRational:
         assert not f_prime.space.spaces[1].periodic
         np.testing.assert_array_equal(f_prime.space.spaces[1].knots, knots1)
 
+    def test_2d_periodic_float32(self) -> None:
+        """The periodic keep_degree path preserves float32 and the other direction."""
+        knots0 = create_uniform_periodic_knots(4, 2, domain=(0.0, 1.0)).astype(np.float32)
+        knots1 = create_uniform_periodic_knots(5, 2, domain=(0.0, 1.0)).astype(np.float32)
+        s0 = BsplineSpace1D(knots0, 2, periodic=True)
+        s1 = BsplineSpace1D(knots1, 2, periodic=True)
+        space = BsplineSpace([s0, s1])
+        rng = np.random.default_rng(23)
+        ctrl = rng.standard_normal((*space.num_basis, 1)).astype(np.float32)
+        f = Bspline(space, ctrl)
+
+        f_prime = f.derivative(direction=0, keep_degree=True)
+
+        assert f_prime.dtype == np.float32
+        assert f_prime.space.spaces[0].knots.dtype == np.float32
+        assert f_prime.space.spaces[1].periodic
+        np.testing.assert_array_equal(f_prime.space.spaces[1].knots, knots1)
+
+        pts = rng.uniform(0.0, 1.0, (41, 2)).astype(np.float32)
+        expected = f.evaluate_derivatives(pts, [1, 0])
+        actual = f_prime.evaluate(pts)
+
+        # Opening the periodic direction and re-elevating are convex combinations,
+        # so they contribute O(degree) units of eps relative to the control points;
+        # the divided difference in between amplifies by degree / knot-span, which
+        # is the scale of the derivative values themselves.  Hence a bound of
+        # O(degree) * eps * max|f'|; the factor below leaves room for degree 2.
+        eps32 = float(np.finfo(np.float32).eps)
+        bound = 32.0 * eps32 * float(np.max(np.abs(expected)))
+        assert float(np.max(np.abs(actual - expected))) <= bound
+
 
 class TestKeepDegreeRational:
     """Derivative with keep_degree=True for rational (NURBS) B-splines.
