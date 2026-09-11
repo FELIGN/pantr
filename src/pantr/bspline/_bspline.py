@@ -940,17 +940,19 @@ class Bspline:
         all other directions (or ``p`` when ``keep_degree=True``).
 
         For rational B-splines (NURBS), the quotient rule is applied, producing
-        a rational B-spline of degree ``2p`` in direction ``d`` (or the
-        original degree when ``keep_degree=True``).
+        a rational B-spline of degree ``2p`` in direction ``d``. That already
+        exceeds ``p``, so ``keep_degree`` has no effect on a rational B-spline:
+        both settings return degree ``2p``.
 
         Args:
             direction (int): Parametric direction for differentiation.
                 Must be in ``[0, dim)``. Defaults to 0.
-            keep_degree (bool): If ``True``, the result preserves the same
-                degree as the original B-spline by applying degree elevation
-                after differentiation. This is useful, for instance, when
-                computing derivatives of rational polynomials (in the
-                numerator). Defaults to ``False``.
+            keep_degree (bool): If ``True``, a non-rational result preserves the
+                degree of the original B-spline by applying degree elevation after
+                differentiation. This is useful, for instance, when computing
+                derivatives of rational polynomials (in the numerator). It is
+                ignored for a rational B-spline, whose derivative is already of
+                higher degree than the original. Defaults to ``False``.
 
         Returns:
             Bspline: A new B-spline representing the derivative.
@@ -958,6 +960,11 @@ class Bspline:
         Raises:
             ValueError: If ``direction`` is out of range ``[0, dim)``.
             ValueError: If the degree in the given direction is 0.
+            ValueError: If the degree the result has to be built at exceeds the
+                exactness envelope of the binomial-coefficient kernel
+                (``_BINCOEFF_MAX_N``). Reachable with ``keep_degree=True``, and
+                for a rational B-spline with either setting, since that path
+                always re-elevates.
 
         Example:
             >>> import numpy as np
@@ -1004,6 +1011,8 @@ class Bspline:
             ValueError: If any degree increment is negative.
             ValueError: If all degree increments are zero.
             ValueError: If the number of increments does not match the dimension.
+            ValueError: If an elevated degree would exceed the exactness envelope
+                of the binomial-coefficient kernel (``_BINCOEFF_MAX_N``).
 
         References:
             Degree elevation of spline curves :cite:p:`piegl1997nurbs`.
