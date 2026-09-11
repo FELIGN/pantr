@@ -470,6 +470,43 @@ void check_concurrent_first_touch() {
     }
 }
 
+/// The end-multiplicity refusal, at both ends and on both kinds of space.
+///
+/// It runs last of the knot rules, so a vector that is *also* flat must still be
+/// told it has no interval: that is the more useful diagnosis and the one the
+/// oracle gives. The interior case is here to keep the rule from widening -- an
+/// interior knot of high multiplicity is the ordinary way to lower continuity and
+/// must stay legal -- and degree 0 is here because `degree + 1` is 1 there while
+/// the perfectly ordinary `[0, 0, 1, 1]` repeats twice at each end.
+void check_end_multiplicity_refusal() {
+    const std::vector<double> right{0.0, 0.0, 0.0, 1.0, 2.0, 3.0, 3.0, 3.0, 3.0};
+    same(message_of([&] { (void)space(right, 2); }), "an end knot may repeat at most 3 times",
+         "an excess at the right end");
+
+    const std::vector<double> left{0.0, 0.0, 0.0, 0.0, 1.0, 2.0, 3.0, 3.0, 3.0};
+    same(message_of([&] { (void)space(left, 2); }), "an end knot may repeat at most 3 times",
+         "an excess at the left end");
+
+    // A periodic space fails the partition of unity at the right endpoint exactly as
+    // the clamped one does, which is why the rule does not exempt it and why the
+    // message says "end knot" rather than "clamped end".
+    same(message_of([&] { (void)space(right, 2, true); }),
+         "an end knot may repeat at most 3 times", "an excess on a periodic space");
+
+    // Legal, and the reason the rule reads the two end classes rather than all of them.
+    const std::vector<double> interior{0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 2.0, 3.0, 3.0, 3.0};
+    PANTR_CHECK(space(interior, 2).num_basis() == 7);
+
+    // Legal at degree 0, where `degree + 1` is 1 and the floor of two is what keeps it so.
+    PANTR_CHECK(space(std::vector<double>{0.0, 0.0, 1.0, 1.0}, 0).num_basis() == 3);
+
+    // Flat *and* over-repeated: the interval rule owns it, because it runs first.
+    const std::vector<double> both{0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0};
+    PANTR_CHECK_MSG(
+        message_of([&] { (void)space(both, 2); }).rfind("knot vector spans no interval:", 0) == 0,
+        "a vector that fails both rules is told about the interval first");
+}
+
 }  // namespace
 
 int main() {
@@ -487,6 +524,7 @@ int main() {
     check_float_storage();
     check_argument_refusals();
     check_knot_refusals();
+    check_end_multiplicity_refusal();
     check_the_non_finite_message();
     check_concurrent_first_touch();
     return pantr::test::summary("test_bspline_space_1d");
