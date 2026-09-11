@@ -978,35 +978,38 @@ def test_a_strided_out_reaches_the_callers_array(cpp_backend: None, dtype: Any) 
 
 
 @pytest.mark.parametrize("n_deriv", [None, 2])
-@pytest.mark.parametrize(("knot_dtype", "point_dtype"), [(np.float32, np.float64)])
-def test_a_mixed_dtype_call_falls_back_and_says_so(
+@pytest.mark.parametrize(
+    ("knot_dtype", "point_dtype"),
+    [(np.float32, np.float64), (np.float64, np.float32)],
+)
+def test_a_mixed_dtype_call_is_promoted_and_reaches_cpp(
     cpp_backend: None,
     knot_dtype: Any,
     point_dtype: Any,
     n_deriv: int | None,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A space and points of different dtypes run the Numba kernel under both backends.
+    """A space and points of different dtypes compute at the wider of the two.
 
-    The library supports a ``float32`` space evaluated at ``float64`` points and
-    returns the points' dtype; ``tests/test_mpi_thb_qi.py`` and
-    ``tests/test_thb_spline_space.py`` assert that by name. The C++ kernels are
-    templated on one scalar type and cannot express it, so
-    :func:`~pantr.bspline._basis_backend._the_cpp_kernels_cannot_serve` routes it to
-    the oracle -- which is what it did before the C++ path existed, so nothing
-    regresses and the values are the oracle's by construction rather than by bound.
+    This replaces a test that pinned the opposite, and did so deliberately: the C++
+    kernels are templated on one scalar type, so a mixed call used to be the one shape
+    they could not express, and the seam ran the Numba kernel for it under both
+    backends. That test said in as many words that if the C++ side ever became able to
+    serve the shape, it had to be rewritten rather than relaxed. Promoting above the
+    seam is what made it able.
 
-    **This test exists to stop the fallback widening unnoticed.** A capability
-    fallback is exactly what ``pantr._backend``'s never-fall-back rule guards against,
-    because an A/B measurement over such an input silently measures Numba twice. So it
-    is pinned in both directions: the two backends must agree *bitwise*, and the C++
-    binding must be provably **not** called. If a later change makes the C++ kernels
-    able to serve this shape, the second assertion fails and this test has to be
-    rewritten deliberately.
+    Three things are asserted, and the third is the contract rather than the mechanism:
 
-    Only the ``float32``-knots/``float64``-points direction is parametrized, because
-    that is the one the library's own tests exercise; the opposite direction takes the
-    same branch on the same predicate.
+    1. the C++ binding **is** reached, so no fallback survives anywhere;
+    2. the two backends agree bitwise, since they now run on identical arrays;
+    3. the mixed call equals the call with **both** sides widened, bit for bit. That
+       is what "computes at the wider of the two widths" means, and nothing else in
+       the suite says it: the five tests that exercise a mixed call assert the
+       result's *dtype*, which the old narrow-accumulation behaviour also satisfied.
+
+    Both directions are parametrized. They are not symmetric: widening ``float32``
+    points recovers no information the points never carried, so the two differ in
+    value while obeying the same rule.
 
     Args:
         cpp_backend (None): Requires the extension.
@@ -1021,54 +1024,64 @@ def test_a_mixed_dtype_call_falls_back_and_says_so(
     knots, degree = _GENERAL_KNOTS["clamped-uniform-p2"]
     points = np.array([0.1, 0.5, 0.9], dtype=point_dtype)
     knot_array = np.array(knots, dtype=knot_dtype)
+    promoted = np.promote_types(knot_dtype, point_dtype)
 
-    calls = 0
-
-    def counted(*args: Any, **kwargs: Any) -> None:
-        nonlocal calls
-        calls += 1
-        raise AssertionError("the C++ binding was reached for a mixed-dtype call")
-
-    binding = (
+    binding_name = (
         "tabulate_bspline_basis_1d" if n_deriv is None else "tabulate_bspline_basis_derivatives_1d"
     )
-    monkeypatch.setattr(_pantr_cpp, binding, counted, raising=True)
+    original = getattr(_pantr_cpp, binding_name)
+    calls = 0
+
+    def counted(*args: Any, **kwargs: Any) -> Any:
+        nonlocal calls
+        calls += 1
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(_pantr_cpp, binding_name, counted, raising=True)
+
+    def tabulate(space: BsplineSpace1D, pts: Any) -> Any:
+        if n_deriv is None:
+            return space.tabulate_basis(pts)
+        return space.tabulate_basis_derivatives(pts, n_deriv)
 
     results = {}
     for backend in (Backend.PYTHON, Backend.CPP):
         with use_backend(backend):
             space = BsplineSpace1D(knot_array, degree)
-            if n_deriv is None:
-                block, first = space.tabulate_basis(points)
-            else:
-                block, first = space.tabulate_basis_derivatives(points, n_deriv)
-        results[backend] = (block, first)
+            results[backend] = tabulate(space, points)
 
-    assert calls == 0, (
-        "the C++ binding was called for a call its kernels cannot express; if that is "
-        "now intended, the fallback in pantr.bspline._basis_backend and this test both "
-        "need rewriting rather than relaxing"
+    assert calls > 0, (
+        "the C++ binding was not reached for a mixed-dtype call; the promotion above "
+        "the seam exists precisely so that no call shape falls back"
     )
 
     py_block, py_first = results[Backend.PYTHON]
     cpp_block, cpp_first = results[Backend.CPP]
-    assert py_block.dtype == np.dtype(point_dtype), (
-        "the result must carry the points' dtype, which is the behaviour "
-        "test_result_is_float64_for_float32_space pins"
+    assert py_block.dtype == promoted, (
+        f"a mixed call returns the promoted dtype, got {py_block.dtype}"
     )
     assert_parity(
         cpp_block,
         py_block,
         bitwise_parity(
-            why="both backends ran the same Numba kernel, because the C++ one cannot "
-            "express a mixed-dtype call and the adapter routes it to the oracle. This is "
-            "identity rather than agreement, and it is asserted so that the fallback "
-            "cannot silently stop happening.",
+            why="both backends are handed arrays the shared promotion already brought "
+            "to one dtype, so this is identity rather than agreement.",
         ),
         context=f"mixed dtype {np.dtype(knot_dtype).name} knots / "
         f"{np.dtype(point_dtype).name} points, n_deriv={n_deriv}",
     )
     assert np.array_equal(cpp_first, py_first)
+
+    # The contract itself: promoting first is the same computation as having been
+    # handed the wide arrays to begin with.
+    with use_backend(Backend.CPP):
+        widened = BsplineSpace1D(knot_array.astype(promoted), degree)
+        wide_block, wide_first = tabulate(widened, points.astype(promoted))
+    assert np.array_equal(cpp_block, wide_block), (
+        "the mixed call did not compute at the promoted width: it differs from the "
+        "same call with both sides widened by the caller"
+    )
+    assert np.array_equal(cpp_first, wide_first)
 
 
 @pytest.mark.parametrize("dtype", [np.float64, np.float32])

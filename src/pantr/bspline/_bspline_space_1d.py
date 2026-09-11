@@ -1095,6 +1095,13 @@ class BsplineSpace1D:
                   for each evaluation point. The length is the same as the number
                   of evaluation points. If `out_first_basis` was provided, returns the same array.
 
+        Note:
+            The result's dtype is the wider of this space's and ``pts``'s. A
+            ``float32`` space evaluated at ``float64`` points computes **and returns**
+            ``float64``, and so does the reverse; widening narrow points recovers no
+            information they never carried, so the two directions agree on the rule
+            while differing in value.
+
         Raises:
             ValueError: If ``validate`` is True and any evaluation point is outside the
                 B-spline domain, or if `out_basis` or `out_first_basis` is provided and
@@ -1167,6 +1174,13 @@ class BsplineSpace1D:
                   local B-spline basis function at each point.
                 - first_basis_indices: Integer array of shape ``pts_shape`` giving the
                   global index of the first nonzero basis function for each point.
+
+        Note:
+            The result's dtype is the wider of this space's and ``pts``'s. A
+            ``float32`` space evaluated at ``float64`` points computes **and returns**
+            ``float64``, and so does the reverse; widening narrow points recovers no
+            information they never carried, so the two directions agree on the rule
+            while differing in value.
 
         Raises:
             ValueError: If ``n_deriv < 0``, if ``validate`` is True and any evaluation

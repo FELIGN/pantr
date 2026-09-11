@@ -693,6 +693,48 @@ def _tabulate_Bspline_basis_Bernstein_like_deriv_1D(
     out_first_basis.fill(0)
 
 
+def _promote_for_mixed_width(
+    knots: npt.NDArray[np.float32 | np.float64],
+    pts: npt.NDArray[np.float32 | np.float64],
+) -> tuple[npt.NDArray[np.float32 | np.float64], npt.NDArray[np.float32 | np.float64]]:
+    """Bring a mixed-width call up to the wider of its two dtypes.
+
+    A call whose knots and points have different widths -- a ``float32`` space
+    evaluated at ``float64`` points, or the reverse -- computes at the **wider** of the
+    two, and returns it. That is the library's contract rather than an implementation
+    detail, so it is applied here, above the backend seam, where both backends see the
+    same arrays: ``design/backend_parity.md`` Rule 1, a shared map on the common side
+    cancels exactly. Applying it in one backend only would leave the two computing
+    different values for the same input, which is what the parity suite exists to
+    prevent.
+
+    It replaces an older answer, under which the oracle opened its kernels with
+    ``dtype = knots.dtype`` for their scratch while reading points at the points' own
+    width, so a mixed call truncated every intermediate to the *narrower* of the two.
+    The C++ kernels are templated on one scalar type and cannot express that at all,
+    and the seam fell back to Numba for exactly this call shape.
+
+    A same-width call is untouched, and neither array is copied.
+
+    **The space's tolerance is deliberately not promoted with the knots.** It is an
+    absolute parametric tolerance fixed when the space was built, derived from that
+    knot vector's own extent and storage format; widening the array moves no knot, so
+    nothing the tolerance was derived from has changed.
+
+    Args:
+        knots (npt.NDArray[np.float32 | np.float64]): The space's knot vector.
+        pts (npt.NDArray[np.float32 | np.float64]): The evaluation points, normalized.
+
+    Returns:
+        tuple[npt.NDArray[np.float32 | np.float64], npt.NDArray[np.float32 |
+        np.float64]]: The knots and the points, both at the promoted dtype.
+    """
+    if knots.dtype == pts.dtype:
+        return knots, pts
+    work_dtype = np.promote_types(knots.dtype, pts.dtype)
+    return knots.astype(work_dtype, copy=False), pts.astype(work_dtype, copy=False)
+
+
 def _tabulate_Bspline_basis_1D_impl(
     spline: BsplineSpace1D,
     pts: npt.ArrayLike,
@@ -773,6 +815,8 @@ def _tabulate_Bspline_basis_1D_impl(
             f"One or more values in pts are outside the knot vector domain {spline.domain}"
         )
 
+    knots, pts = _promote_for_mixed_width(spline.knots, pts)
+
     num_pts = pts.shape[0]
     n_basis = spline.degree + 1
     expected_final_shape = _compute_final_output_shape_1D(input_shape, n_basis)
@@ -801,7 +845,7 @@ def _tabulate_Bspline_basis_1D_impl(
             else kernels.parallel
         )
         kernel(
-            spline.knots,
+            knots,
             spline.degree,
             spline.periodic,
             spline.tolerance,
@@ -885,6 +929,8 @@ def _tabulate_Bspline_basis_deriv_1D_impl(  # noqa: PLR0913
             f"One or more values in pts are outside the knot vector domain {spline.domain}"
         )
 
+    knots, pts = _promote_for_mixed_width(spline.knots, pts)
+
     num_pts = pts.shape[0]
     order = spline.degree + 1
     expected_dtype = pts.dtype
@@ -913,7 +959,7 @@ def _tabulate_Bspline_basis_deriv_1D_impl(  # noqa: PLR0913
             else deriv_kernels.parallel
         )
         deriv_kernel(
-            spline.knots,
+            knots,
             spline.degree,
             spline.periodic,
             spline.tolerance,
