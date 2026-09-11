@@ -1,6 +1,6 @@
 """Regression tests for the Cox-de Boor denominator guard (issue #257).
 
-The ``BasisFuncs``/``DerBasisFuncs`` kernels in ``_bspline_basis_core.py`` used to
+The ``BasisFuncs``/``DerBasisFuncs`` kernels in ``_bspline_basis_kernels.py`` used to
 guard the Cox-de Boor recurrence denominator with ``denom < tol`` (an absolute
 per-dtype tolerance): scale-dependent, since a genuinely nonzero knot span on a tiny
 domain can be smaller than ``tol`` and get zeroed, breaking the partition of unity.

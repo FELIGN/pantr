@@ -6,7 +6,7 @@ classes of bad input got past validation entirely:
 * a ``(n_pts, 1)`` array reached the Cox-de Boor kernel and died inside it, with
   ``numba.core.errors.TypingError: No implementation of function Function(<class
   'int'>) found for signature: >>> int(array(int64, 1d, C))`` raised from
-  ``_bspline_basis_core.py`` where the kernel does
+  ``_bspline_basis_kernels.py`` where the kernel does
   ``int(np.searchsorted(knots, pt, side="right")) - 1`` on what it assumes is a
   scalar. With the JIT disabled the same input surfaced as ``TypeError: only
   0-dimensional arrays can be converted to Python scalars``;

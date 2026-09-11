@@ -359,7 +359,7 @@ def demand_a_compiled_seed() -> None:
     carry them is knowledge a claim does not hold.
 
     The cost of that choice, stated because it is real. ``_basis_derivs_point`` in
-    ``pantr.bspline._bspline_basis_core`` accumulates a falling factorial the same way,
+    ``pantr.bspline._bspline_basis_kernels`` accumulates a falling factorial the same way,
     and an earlier version of this docstring recorded it as absent from the set only
     because it had no C++ counterpart, adding that whoever gave it one would inherit
     this gate as a precondition. **It has one now**

@@ -7,7 +7,7 @@ in numba's ``nopython`` mode, what widens is type unification across assignments
 the destination's dtype says nothing about the width the operation ran at. So the C++
 transliteration in ``cpp/include/pantr/bspline/tabulate.hpp`` is written against this
 script rather than against a reading of
-``src/pantr/bspline/_bspline_basis_core.py``.
+``src/pantr/bspline/_bspline_basis_kernels.py``.
 
 Three things are measured, and the second is the one that matters:
 
