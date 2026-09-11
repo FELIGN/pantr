@@ -13,6 +13,7 @@
 #     scripts/ci_local.sh cxx          # only the two C++ toolchains
 #     scripts/ci_local.sh python       # only the extension, parity and backends
 #     scripts/ci_local.sh discipline   # only the source-level rule guards
+#     scripts/ci_local.sh docs         # only the -W docs build and the doctests
 #     scripts/ci_local.sh splitmode    # only the nanobind split-mode probe
 #
 # Run it inside the pantr conda environment (`conda activate pantr`), which is
@@ -861,6 +862,52 @@ consumer() {
 
 # --------------------------------------------------------------------------
 
+# The documentation build, which nothing else on this branch runs.
+#
+# `ci.yaml` owns the docs build and names `main` only in its `on:` block, and the
+# workflow a `proto/cpp` pull request triggers (`cpp.yaml`) is three jobs: a GCC 14
+# build, a sanitizer build and the parity job. So until this section existed, no gate
+# reachable from this branch built the docs, and warnings accumulated unobserved.
+#
+# `-W` turns them into errors and `--keep-going` reports all of them rather than the
+# first, which is what `make docs` in CI does. The build runs with the JIT disabled for
+# the same reason CI does it: importing the package to autodoc it should not pay for
+# compilation.
+#
+# `-j 20` rather than the `-j auto` the project's CLAUDE.md quotes: `auto` asks Python
+# for the CPU count, which on this host reports every core on the machine rather than
+# the twenty this work is confined to. Parallelism does not change which warnings a
+# build emits, so the gate is the same one.
+docs_checks() {
+    step "Docs: the build that treats warnings as errors"
+
+    if [[ ! -d "$VENV" ]]; then
+        record SKIP "docs build" "no .venv; run: python -m venv --system-site-packages .venv"
+        return 0
+    fi
+
+    # shellcheck disable=SC1091
+    source "$VENV/bin/activate"
+
+    # `all` runs this after `python_checks`, which installs the package. Asked for on
+    # its own against a fresh venv it would otherwise fail for a reason that is not the
+    # docs, so say which it is.
+    if ! python -c "import pantr" >/dev/null 2>&1; then
+        record SKIP "docs build" "pantr is not importable; run: pip install -e ."
+        return 0
+    fi
+
+    # Sphinx does not re-emit a warning for a page it decides is up to date, so an
+    # incremental build can report clean over a tree that is not. CI always starts
+    # empty; start empty here too or the gate grades the wrong thing.
+    rm -rf docs/_build
+
+    NUMBA_DISABLE_JIT=1 check "docs build (-W)" make docs SPHINXOPTS="-W --keep-going -j 20"
+    NUMBA_DISABLE_JIT=1 check "docstring examples" python -m pytest --doctest-modules src/pantr -q
+}
+
+# --------------------------------------------------------------------------
+
 main() {
     local what="${1:-all}"
     case "$what" in
@@ -868,9 +915,10 @@ main() {
         cxx)        cxx ;;
         discipline) discipline ;;
         python)     python_checks ;;
+        docs)       docs_checks ;;
         splitmode)  splitmode ;;
         consumer)   consumer ;;
-        all)        gates; cxx; discipline; python_checks; splitmode; consumer ;;
+        all)        gates; cxx; discipline; python_checks; docs_checks; splitmode; consumer ;;
         *)          echo "unknown section: $what" >&2; exit 2 ;;
     esac
 
