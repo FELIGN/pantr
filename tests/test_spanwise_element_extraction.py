@@ -316,7 +316,10 @@ def test_lagrange_structural_identity_degree0_all_identity() -> None:
 def test_lagrange_structural_identity_smooth_space_never_identity() -> None:
     """Smooth spaces are never Lagrange-identity regardless of degree or variant."""
     for degree in (1, 2, 3):
-        knots = [0.0] * (degree + 1) + [1.0, 2.0, 3.0] + [3.0] * (degree + 1)
+        # The interior knots are 1 and 2; 3 belongs to the clamp, and listing it here
+        # as well gave the last class `degree + 2` knots, which is a space whose basis
+        # does not sum to one at that end and is now refused at construction.
+        knots = [0.0] * (degree + 1) + [1.0, 2.0] + [3.0] * (degree + 1)
         sp1 = BsplineSpace1D(knots, degree)
         for variant in LagrangeVariant:
             mask = _lagrange_structural_identity_mask(sp1, variant)
