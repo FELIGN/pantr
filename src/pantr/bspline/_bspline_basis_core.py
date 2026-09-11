@@ -19,6 +19,7 @@ from ..basis._basis_utils import (
     _compute_final_output_shape_1D,
     _compute_final_output_shape_1D_deriv,
     _normalize_points_1D,
+    _reshaped_out,
     _validate_out_array,
 )
 from ._basis_backend import bspline_basis_core, bspline_basis_deriv_core
@@ -781,12 +782,12 @@ def _tabulate_Bspline_basis_1D_impl(
     if out_basis is None:
         out_basis = np.empty(expected_final_shape, dtype=expected_dtype)
     _validate_out_array(out_basis, expected_final_shape, expected_dtype)
-    basis_normalized = out_basis.reshape(num_pts, n_basis)
+    basis_normalized, copy_back_basis = _reshaped_out(out_basis, (num_pts, n_basis))
 
     if out_first_basis is None:
         out_first_basis = np.empty(expected_first_basis_shape, dtype=np.int_)
     _validate_out_array(out_first_basis, expected_first_basis_shape, np.int_)
-    first_indices_normalized = out_first_basis.reshape(num_pts)
+    first_indices_normalized, copy_back_first = _reshaped_out(out_first_basis, (num_pts,))
 
     if spline.has_Bezier_like_knots():
         _tabulate_Bspline_basis_Bernstein_like_1D(
@@ -808,6 +809,11 @@ def _tabulate_Bspline_basis_1D_impl(
             basis_normalized,
             first_indices_normalized,
         )
+
+    if copy_back_basis:
+        out_basis[...] = basis_normalized.reshape(out_basis.shape)
+    if copy_back_first:
+        out_first_basis[...] = first_indices_normalized.reshape(out_first_basis.shape)
 
     return out_basis, out_first_basis
 
@@ -888,12 +894,12 @@ def _tabulate_Bspline_basis_deriv_1D_impl(  # noqa: PLR0913
     if out_deriv is None:
         out_deriv = np.empty(expected_deriv_shape, dtype=expected_dtype)
     _validate_out_array(out_deriv, expected_deriv_shape, expected_dtype)
-    deriv_normalized = out_deriv.reshape(num_pts, n_deriv + 1, order)
+    deriv_normalized, copy_back_deriv = _reshaped_out(out_deriv, (num_pts, n_deriv + 1, order))
 
     if out_first_basis is None:
         out_first_basis = np.empty(expected_first_basis_shape, dtype=np.int_)
     _validate_out_array(out_first_basis, expected_first_basis_shape, np.int_)
-    first_indices_normalized = out_first_basis.reshape(num_pts)
+    first_indices_normalized, copy_back_first = _reshaped_out(out_first_basis, (num_pts,))
 
     if spline.has_Bezier_like_knots():
         _tabulate_Bspline_basis_Bernstein_like_deriv_1D(
@@ -916,6 +922,11 @@ def _tabulate_Bspline_basis_deriv_1D_impl(  # noqa: PLR0913
             deriv_normalized,
             first_indices_normalized,
         )
+
+    if copy_back_deriv:
+        out_deriv[...] = deriv_normalized.reshape(out_deriv.shape)
+    if copy_back_first:
+        out_first_basis[...] = first_indices_normalized.reshape(out_first_basis.shape)
 
     return out_deriv, out_first_basis
 

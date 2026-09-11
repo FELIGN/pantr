@@ -27,6 +27,7 @@ from ._basis_utils import (
     _allocate_or_validate_out,
     _compute_final_output_shape_1D,
     _normalize_points_1D,
+    _reshaped_out,
 )
 
 if TYPE_CHECKING:
@@ -93,12 +94,15 @@ def _tabulate_basis_1D_impl_helper(
 
     out = _allocate_or_validate_out(out, expected_final_shape, t.dtype)
 
-    B_normalized = out.reshape(expected_normalized_shape)
+    B_normalized, copy_back = _reshaped_out(out, expected_normalized_shape)
 
     if core_func_serial is not None and num_pts < _PARALLEL_MIN_NUM_PTS:
         core_func_serial(np.int32(n), t, B_normalized)
     else:
         core_func(np.int32(n), t, B_normalized)
+
+    if copy_back:
+        out[...] = B_normalized.reshape(out.shape)
 
     return out
 
