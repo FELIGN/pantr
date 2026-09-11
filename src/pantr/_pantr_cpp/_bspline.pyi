@@ -1401,6 +1401,11 @@ def tabulate_bspline_space_basis_1d(
         out_first_basis (_Index): One entry per point, written in full.
 
     Raises:
+        TypeError: If ``points`` or either output has a dtype, rank or contiguity the
+            signature does not accept, or a dtype different from ``space``'s. Raised
+            by nanobind's caster before the function body runs, and deliberately not
+            a conversion: a converted output would be filled and discarded, and a
+            converted input would change the accumulation width.
         ValueError: If either output has the wrong shape.
     """
 
@@ -1434,6 +1439,11 @@ def tabulate_bspline_space_basis_derivatives_1d(
         out_first_basis (_Index): One entry per point, written in full.
 
     Raises:
+        TypeError: If ``n_deriv`` is negative, or if ``points`` or either output has
+            a dtype, rank or contiguity the signature does not accept, or a dtype
+            different from ``space``'s. Raised by nanobind's caster before the body
+            runs; ``n_deriv`` is ``unsigned`` there while the kernel's own parameter
+            stays ``std::int64_t``.
         ValueError: If ``n_deriv`` does not fit a C ``int``, or if either output
             has the wrong shape.
     """

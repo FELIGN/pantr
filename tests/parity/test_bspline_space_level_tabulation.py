@@ -46,27 +46,65 @@ _CASES: dict[str, tuple[list[float], int]] = {
 }
 """One space per path and per decision the dispatch makes."""
 
+_PERIODIC_CASES: dict[str, tuple[list[float], int]] = {
+    "periodic-uniform-p2": ([0.0, 0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 1.75], 2),
+    "periodic-uniform-p3": ([0.0, 0.2, 0.4, 0.6, 0.8, 1.0, 1.2, 1.4, 1.6, 1.8, 2.0], 3),
+}
+"""Periodic spaces, kept apart because the dispatch forwards a flag for them.
+
+``tabulate.hpp`` calls the periodic arm of ``find_span_and_first_basis`` a live path
+rather than dead code, and the raw-knot parity file reaches it by passing ``periodic``
+explicitly to the Layer 3 kernel. Nothing was checking that the *space-level* dispatch
+forwards ``space.periodic()`` at all: an edit that dropped or hardcoded the flag would
+have left this file green.
+"""
+
 _POINTS_BY_CASE = {
     name: np.linspace(knots[degree], knots[len(knots) - degree - 1], 7)
-    for name, (knots, degree) in _CASES.items()
+    for name, (knots, degree) in (_CASES | _PERIODIC_CASES).items()
 }
 """Seven points spanning each space's own domain, endpoints included."""
 
 
-def _cpp_space(knots: list[float], degree: int, dtype: Any) -> Any:
+def _cpp_space(knots: list[float], degree: int, dtype: Any, *, periodic: bool = False) -> Any:
     """Build the bound C++ space for these knots.
 
     Args:
         knots (list[float]): The knot vector.
         degree (int): The polynomial degree.
         dtype (Any): ``np.float32`` or ``np.float64``.
+        periodic (bool): Whether the space is periodic. Defaults to False.
 
     Returns:
         Any: The space the bindings take, reached through the public wrapper so that
         the snapping and validation the oracle applied are the ones applied here.
     """
     with use_backend(Backend.CPP):
-        return BsplineSpace1D(np.array(knots, dtype=dtype), degree)._impl
+        return BsplineSpace1D(np.array(knots, dtype=dtype), degree, periodic=periodic)._impl
+
+
+def _gate_the_interpreted_oracle(case: str, dtype: Any, *, n_deriv: int | None) -> None:
+    """Skip the cases whose bitwise claim is about the compiled oracle only.
+
+    Rule 12: under ``NUMBA_DISABLE_JIT=1`` the oracle is a different object, so a
+    bitwise claim against it is a claim about something this project does not ship.
+
+    **The gate is scoped to what was measured, which is narrower than the rule.** All
+    24 instances were run against the interpreted oracle: only the two Bézier-like
+    ``float32`` *value* cases diverge, by up to 6e-8. The four non-Bézier value cases
+    and all eighteen derivative cases -- Bézier included, since row 0 of the
+    derivative kernel does not show what the standalone value kernel does -- are
+    identical with the JIT on or off. Gating all of them, which a first version did,
+    would have taken 22 instances out of the coverage run for no measured reason and
+    left a future regression in any of them silently skipped instead of caught.
+
+    Args:
+        case (str): Key into :data:`_CASES`.
+        dtype (Any): The storage dtype under test.
+        n_deriv (int | None): The derivative order, or ``None`` for the values.
+    """
+    if n_deriv is None and dtype is np.float32 and case.startswith("bezier-like"):
+        demand_the_compiled_kernel(dtype)
 
 
 @pytest.mark.parametrize("dtype", [np.float64, np.float32], ids=["f64", "f32"])
@@ -75,11 +113,7 @@ def test_the_space_level_basis_matches_the_oracle_bitwise(
     cpp_backend: None, case: str, dtype: Any
 ) -> None:
     del cpp_backend
-    # Rule 12: under `NUMBA_DISABLE_JIT=1` the oracle is a different object, and a
-    # bitwise claim against it is a claim about something this project does not ship.
-    # Measured here: the two Bézier-like `float32` cases differ by up to 6e-8, which
-    # is the interpreted path's own promotion rather than a divergence in the port.
-    demand_the_compiled_kernel(dtype)
+    _gate_the_interpreted_oracle(case, dtype, n_deriv=None)
     from pantr import _pantr_cpp  # noqa: PLC0415  (only this module needs it)
 
     knots, degree = _CASES[case]
@@ -108,7 +142,7 @@ def test_the_space_level_derivatives_match_the_oracle_bitwise(
     cpp_backend: None, case: str, dtype: Any, n_deriv: int
 ) -> None:
     del cpp_backend
-    demand_the_compiled_kernel(dtype)  # Rule 12; see the value test above.
+    _gate_the_interpreted_oracle(case, dtype, n_deriv=n_deriv)
     from pantr import _pantr_cpp  # noqa: PLC0415  (only this module needs it)
 
     knots, degree = _CASES[case]
@@ -128,6 +162,132 @@ def test_the_space_level_derivatives_match_the_oracle_bitwise(
 
     np.testing.assert_array_equal(out_deriv, expected)
     np.testing.assert_array_equal(out_first, expected_first)
+
+
+@pytest.mark.parametrize("n_deriv", [None, 1], ids=["values", "d1"])
+@pytest.mark.parametrize("dtype", [np.float64, np.float32], ids=["f64", "f32"])
+@pytest.mark.parametrize("case", sorted(_PERIODIC_CASES))
+def test_a_periodic_space_matches_the_oracle_bitwise(
+    cpp_backend: None, case: str, dtype: Any, n_deriv: int | None
+) -> None:
+    """The flag the dispatch has to forward, which nothing else here would catch."""
+    del cpp_backend
+    from pantr import _pantr_cpp  # noqa: PLC0415  (only this module needs it)
+
+    knots, degree = _PERIODIC_CASES[case]
+    points = _POINTS_BY_CASE[case].astype(dtype)
+    space = _cpp_space(knots, degree, dtype, periodic=True)
+    out_first = np.zeros(points.size, dtype=np.int64)
+
+    with use_backend(Backend.PYTHON):
+        oracle = BsplineSpace1D(np.array(knots, dtype=dtype), degree, periodic=True)
+        if n_deriv is None:
+            expected, expected_first = oracle.tabulate_basis(points)
+        else:
+            expected, expected_first = oracle.tabulate_basis_derivatives(points, n_deriv)
+
+    if n_deriv is None:
+        got = np.zeros((points.size, degree + 1), dtype=dtype)
+        _pantr_cpp.tabulate_bspline_space_basis_1d(
+            space, points, out_basis=got, out_first_basis=out_first
+        )
+    else:
+        got = np.zeros((points.size, n_deriv + 1, degree + 1), dtype=dtype)
+        _pantr_cpp.tabulate_bspline_space_basis_derivatives_1d(
+            space, n_deriv, points, out_deriv=got, out_first_basis=out_first
+        )
+
+    np.testing.assert_array_equal(got, expected)
+    np.testing.assert_array_equal(out_first, expected_first)
+
+
+def test_the_periodic_cases_really_are_periodic(cpp_backend: None) -> None:
+    """Non-vacuity for the test above: a flag that is never set proves nothing."""
+    del cpp_backend
+    for name, (knots, degree) in _PERIODIC_CASES.items():
+        space = _cpp_space(knots, degree, np.float64, periodic=True)
+        assert space.periodic, name
+        assert not _cpp_space(knots, degree, np.float64).periodic, name
+
+
+@pytest.mark.parametrize(
+    ("wrong", "message"),
+    [
+        ("deriv_points", "out_deriv has shape"),
+        ("deriv_rows", "out_deriv has shape"),
+        ("first", "out_first_basis has"),
+    ],
+)
+def test_a_wrong_derivative_output_shape_is_refused(
+    cpp_backend: None, wrong: str, message: str
+) -> None:
+    """The derivative binding's own checks, which the value test does not reach."""
+    del cpp_backend
+    from pantr import _pantr_cpp  # noqa: PLC0415  (only this module needs it)
+
+    knots, degree = _CASES["clamped-uniform-p2"]
+    points = _POINTS_BY_CASE["clamped-uniform-p2"]
+    space = _cpp_space(knots, degree, np.float64)
+    n_deriv = 2
+
+    rows = points.size + 1 if wrong == "deriv_points" else points.size
+    orders = n_deriv if wrong == "deriv_rows" else n_deriv + 1
+    out_deriv = np.zeros((rows, orders, degree + 1))
+    out_first = np.zeros(points.size + (1 if wrong == "first" else 0), dtype=np.int64)
+
+    with pytest.raises(ValueError, match=message):
+        _pantr_cpp.tabulate_bspline_space_basis_derivatives_1d(
+            space, n_deriv, points, out_deriv=out_deriv, out_first_basis=out_first
+        )
+
+
+def test_a_negative_derivative_order_is_refused(cpp_backend: None) -> None:
+    """``n_deriv`` is ``unsigned`` in the binding, so nanobind refuses it first.
+
+    A ``TypeError`` rather than a ``ValueError``, and that is the contract the
+    raw-knot pair already states: the caster rejects a negative value before the
+    function body runs, while the kernels' own parameters stay ``std::int64_t``.
+    """
+    del cpp_backend
+    from pantr import _pantr_cpp  # noqa: PLC0415  (only this module needs it)
+
+    knots, degree = _CASES["clamped-uniform-p2"]
+    points = _POINTS_BY_CASE["clamped-uniform-p2"]
+    space = _cpp_space(knots, degree, np.float64)
+    out_deriv = np.zeros((points.size, 1, degree + 1))
+    out_first = np.zeros(points.size, dtype=np.int64)
+
+    with pytest.raises(TypeError):
+        _pantr_cpp.tabulate_bspline_space_basis_derivatives_1d(
+            space, -1, points, out_deriv=out_deriv, out_first_basis=out_first
+        )
+
+
+def test_a_dtype_mismatch_is_refused_rather_than_silently_converted(
+    cpp_backend: None,
+) -> None:
+    """``.noconvert()`` on every array, and why it matters here.
+
+    A converting cast would fill a discarded temporary and hand the caller back an
+    untouched array with no exception anywhere -- and on the input side it would
+    change the accumulation width, so the result would disagree with the oracle for a
+    reason no caller could see.
+    """
+    del cpp_backend
+    from pantr import _pantr_cpp  # noqa: PLC0415  (only this module needs it)
+
+    knots, degree = _CASES["clamped-uniform-p2"]
+    space = _cpp_space(knots, degree, np.float64)
+    points_32 = _POINTS_BY_CASE["clamped-uniform-p2"].astype(np.float32)
+    out_first = np.zeros(points_32.size, dtype=np.int64)
+
+    with pytest.raises(TypeError):
+        _pantr_cpp.tabulate_bspline_space_basis_1d(
+            space,
+            points_32,
+            out_basis=np.zeros((points_32.size, degree + 1)),
+            out_first_basis=out_first,
+        )
 
 
 def test_the_bezier_cases_really_take_the_fast_path(cpp_backend: None) -> None:
