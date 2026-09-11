@@ -85,6 +85,20 @@
 /// would be exact at `float64` and quietly wrong at `float32` -- which Rule 9 names as the
 /// half of the matrix nobody reads first.
 ///
+/// **The companion halves of those last three blends are the one place in the table where
+/// the width cannot matter, and saying so is what stops the parity suite being asked for
+/// a case that does not exist.** All three weights are at least one: `ik` is built
+/// non-decreasingly out of knots at or below the segment's own left endpoint `ua`, so
+/// `alf = (ub - ik[i]) / (ua - ik[i])` and `bet`, `gam` = `(ub - ik[.]) / (ub - ua)` each
+/// have a numerator at least their denominator. For any `w >= 1` representable in `float`,
+/// `float(1) - w` is exact -- the exact difference is a multiple of `ulp(w)` and lands in a
+/// binade whose own `ulp` is no coarser -- so it equals `1.0 - double(w)` bit for bit.
+/// Written in the storage format or in `double`, that subtraction is the same number, and
+/// a mutation of it passes every parity test there could be. Measured over a sweep of
+/// three thousand knot vectors to degree 8: the smallest `alf` was 1.0007, the smallest
+/// `bet` 1.0001 and the smallest `gam` 1.0073, and `float(1) - w` was inexact on none of
+/// 200000 sampled `w >= 1`.
+///
 /// **The elevated knot vector is written, not computed.** Every entry of `ik` is a copy of
 /// `ua` or `ub`, which are elements of the input vector, so the output knots carry no
 /// arithmetic at all and a difference there could only be a lost value or a miscount.
@@ -148,8 +162,13 @@
 /// open defect, so there is nothing stable for a C++ side to be at parity with:
 ///
 /// - `derivative(keep_degree=True)` on an **unclamped, non-periodic** direction returns a
-///   wrong function. Measured against a central finite difference, its worst error is
-///   18.5 where the plain path below gives 3.2e-10 on the same field.
+///   wrong function, and the cause is very likely the one the next section documents:
+///   that path re-elevates through A5.9, and the vector it hands it is `knots[1:-1]` of
+///   an unclamped vector, which is unclamped too -- so it meets the same out-of-bounds
+///   walk. On a curve where the counts happen to line up the walk returns rather than
+///   raising and the result is simply wrong; on one where they do not, the field's own
+///   constructor refuses it on the coefficient count. No figure is quoted for how wrong,
+///   because none taken here would be reproducible by anything in this tree.
 /// - the **rational** derivative raises a multiplicity error whenever the differentiated
 ///   direction is periodic, so the call does not complete at all.
 ///
@@ -283,8 +302,11 @@ template <Real T>
             knots[static_cast<std::size_t>(i + degree + 1)] - knots[static_cast<std::size_t>(i + 1)];
     }
 
-    // Exact for every degree this library admits: `T` holds an integer below 2^24 at its
-    // narrowest, and `require_bincoeff_envelope` caps a degree at 61 well before that.
+    // Exact while `degree` is below 2^24, which is where `float` stops holding every
+    // integer. Nothing on this path enforces that -- `require_bincoeff_envelope` guards
+    // the elevation below and not the hodograph, and `BsplineSpace1D` caps no degree at
+    // construction -- so it is a property of the degrees anyone builds rather than of a
+    // check, and it is said that way rather than attributed to one.
     const T scale = static_cast<T>(degree);
 
     for (std::int64_t o = 0; o < outer; ++o) {
@@ -600,14 +622,17 @@ template <Real T>
                         next_bpts[static_cast<std::size_t>(j * rank + ii)];
                 }
             }
-            // The oracle's `for j in range(r, d + 1)`, whose `r` is `-1` at a `C^-1`
-            // breakpoint. Python indexes `bpts[-1]` as the last row and `ctrl[b - d - 1]`
-            // as a real row, so that pass writes row `d` from the coefficient before the
-            // segment -- and `j = d` then overwrites row `d` with `ctrl[b]`, which happens
-            // on every path since `d` is always in the range. The wrapped write is
-            // therefore dead, and skipping it is the same computation rather than an
-            // approximation of it. Reproducing the wrap instead would be reproducing an
-            // accident; performing the negative index is undefined behaviour here.
+            // The oracle's `for j in range(r, d + 1)`, whose `r` is negative at a `C^-1`
+            // breakpoint -- `-1` there, and `r = d - mul` cannot go below that for a
+            // multiplicity within `degree + 1`. Python indexes `bpts[j]` for a negative
+            // `j` as row `d + 1 + j` and reads `ctrl[b - d + j]` as a real row, so each
+            // such pass writes a row from a coefficient before the segment; and the
+            // matching non-negative `j = d + 1 + j` later in the *same* range overwrites
+            // that row, since the range runs to `d` and `j` increases monotonically
+            // through it. Every wrapped write is therefore dead whatever `r` is, and
+            // skipping it is the same computation rather than an approximation of it.
+            // Reproducing the wrap would be reproducing an accident; performing the
+            // negative index is undefined behaviour here.
             for (std::int64_t j = std::max<std::int64_t>(0, r); j <= d; ++j) {
                 for (std::int64_t ii = 0; ii < rank; ++ii) {
                     bpts[static_cast<std::size_t>(j * rank + ii)] =

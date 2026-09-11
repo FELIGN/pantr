@@ -51,9 +51,14 @@
 ///    the input the formula then propagates: `1`.
 ///  - **The formula itself**: the coefficient difference, the knot difference, the
 ///    scaling by the degree and the division: `4`.
-///  - **The store into the result**, symmetric to the cast in: `1`.
+///  - **The multiply by `r`** on the expected side, which turns `e_{r-1}`'s closed form
+///    into `r u^{r-1}`'s: `1`.
+///  - **The store into the result**: `1`. It is charged although the quotient is already
+///    in the storage format and writing it costs nothing -- over-charging by one is the
+///    conservative direction and keeps this count the same shape as the elevation's.
 ///
-/// `K = 4p + 5`. The magnitude is **not** the result's own: the difference
+/// `K = 4p + 7`, which is what `hodograph_roundings` returns. The magnitude is **not**
+/// the result's own: the difference
 /// `A_{i+1} - A_i` can cancel to nothing while its operands do not, so the relative
 /// budget has to be charged against what was subtracted. Rule 2 of
 /// `design/backend_parity.md` is the same point in the other direction. So
@@ -89,11 +94,16 @@
 ///  - the two `e_r` recurrences, on the input vector at degree `p` and on the elevated
 ///    one at degree `p + t`: `2p + 1` and `2(p + t) + 1`;
 ///  - the cast in and the store out: `2`;
-///  - **the kernel's own chain**, `min(p, t) + 1` stages of three accumulator roundings
-///    each. That stage count is `design/backend_parity.md` Rule 10's for the Bézier
-///    elevation and it is the right one here for the same reason: the accumulation into
-///    `ebpts[i]` runs `j` from `max(0, i - t)` to `min(p, i)`. Charging `p + 1` instead
-///    is the over-count that rule records.
+///  - **the kernel's own chain**, four roundings per stage -- three in the accumulator and
+///    one narrowing store, which is `Roundings(stages, 3, 1)` in the parity harness's
+///    vocabulary. A5.9's chain has three blocks and an earlier version of this file
+///    charged only the middle one: at most `p - 1` Boehm insertion passes, then
+///    `min(p, t) + 1` terms accumulated into one elevated Bézier coefficient, then at most
+///    `p - 2` knot-removal passes. The middle count is
+///    `design/backend_parity.md` Rule 10's own for the Bézier elevation, and it is right
+///    here for the same reason -- the accumulation into `ebpts[i]` runs `j` from
+///    `max(0, i - t)` to `min(p, i)` -- while charging `p + 1` for it is the over-count
+///    that rule records. `elevation_stages` and `elevation_roundings` are the two counts.
 ///
 /// The test asserts that the majorant **dominates** every observed deviation, which is
 /// the premise, and separately that the bound is **approached** rather than merely
@@ -163,6 +173,58 @@ double gamma_of(std::int64_t m) {
 template <class T>
 double underflow_floor() {
     return static_cast<double>(std::numeric_limits<T>::min());
+}
+
+/// Roundings on the comparison between a hodograph and Marsden's closed form.
+///
+/// Counted rather than fitted, and itemised in the file comment: `2p + 1` for the input
+/// window's `e_r` recurrence, `2p - 1` for the derived window's at degree `p - 1`, one for
+/// the cast of the closed form into the field's storage, four for the formula itself, one
+/// for the multiply by `r` on the expected side, and one for the store.
+///
+/// The store is charged although the quotient is already in the storage format and writing
+/// it costs nothing. Over-charging by one is the conservative direction and it keeps the
+/// count the same shape as the elevation's.
+///
+/// \param degree The original degree.
+/// \return `4 * degree + 7`.
+std::int64_t hodograph_roundings(std::int64_t degree) {
+    return 4 * degree + 7;
+}
+
+/// Stages in A5.9's dependency chain from an input coefficient to an output one.
+///
+/// Three blocks contribute, and an earlier version of this file charged only the middle
+/// one: at most `degree - 1` Boehm insertion passes (`for j in 1..r`, `r = degree - mul`),
+/// then `min(degree, increment) + 1` terms accumulated into one elevated Bezier
+/// coefficient -- which is `design/backend_parity.md` Rule 10's own count for the Bezier
+/// elevation, and the count that rule records charging `p + 1` for by mistake -- then at
+/// most `degree - 2` knot-removal passes (`for tr in 1..oldr - 1`, `oldr <= degree - 1`).
+///
+/// \param degree The original degree.
+/// \param increment Degrees added.
+/// \return The stage count, at least one.
+std::int64_t elevation_stages(std::int64_t degree, std::int64_t increment) {
+    const std::int64_t boehm = std::max<std::int64_t>(0, degree - 1);
+    const std::int64_t removal = std::max<std::int64_t>(0, degree - 2);
+    return std::max<std::int64_t>(1, boehm + std::min(degree, increment) + 1 + removal);
+}
+
+/// Roundings on the comparison between an elevated curve and Marsden's closed form.
+///
+/// `2p + 1` for the input window's `e_r` recurrence and `2(p + t) + 1` for the elevated
+/// window's, one for the cast into the field's storage and one for the store, and four per
+/// stage of :func:`elevation_stages` -- three in the accumulator and one narrowing store,
+/// which is `Roundings(stages, 3, 1)` in the parity harness's vocabulary. The accumulator
+/// roundings are charged at the storage format's unit roundoff although they happen in
+/// `double`; that over-states the `float32` case and keeps one derivation for both.
+///
+/// \param degree The original degree.
+/// \param increment Degrees added.
+/// \return The rounding count.
+std::int64_t elevation_roundings(std::int64_t degree, std::int64_t increment) {
+    return (2 * degree + 1) + (2 * (degree + increment) + 1) + 2
+           + 4 * elevation_stages(degree, increment);
 }
 
 /// The binomial coefficient `C(n, k)`, by the multiplicative form.
@@ -464,9 +526,7 @@ Margin check_elevation_case(const std::vector<T>& knots, std::int64_t degree,
                         label + ": the majorant and the elevation disagree on the coefficient "
                                 "count, so one of them walked a different set of segments");
 
-        const std::int64_t stages = std::min(degree, increment) + 1;
-        const std::int64_t roundings =
-            (2 * degree + 1) + (2 * (degree + increment) + 1) + 2 + 3 * stages;
+        const std::int64_t roundings = elevation_roundings(degree, increment);
         const double relative = gamma_of<T>(roundings);
         const double floor = static_cast<double>(roundings) * underflow_floor<T>();
         for (std::size_t i = 0; i < expected.size(); ++i) {
@@ -597,7 +657,7 @@ void check_the_hodograph_is_the_analytic_derivative(const std::string& label) {
                 }
             }
 
-            const std::int64_t roundings = (2 * p + 1) + (2 * (p - 1) + 1) + 2 + 4;
+            const std::int64_t roundings = hodograph_roundings(p);
             const double relative = gamma_of<T>(roundings);
             const double floor = static_cast<double>(roundings) * underflow_floor<T>();
             const std::span<const T> got = hodograph.net().values();
@@ -792,13 +852,22 @@ void check_the_axis_sweeps_touch_only_their_own_axis() {
                 for (std::size_t j = 0; j < table_second.size(); ++j) {
                     const double want = static_cast<double>(r0) * lowered_first[i]
                                         * table_second[j];
-                    const double bound =
-                        gamma_of<double>(8 * degree_second + 16)
-                            * (std::abs(static_cast<double>(degree_first)
-                                        * (std::abs(table_first[i]) + std::abs(table_first[i + 1]))
-                                        / std::abs(first[i + degree_first + 1] - first[i + 1]))
-                               * std::abs(table_second[j]))
-                        + 16.0 * underflow_floor<double>();
+                    // The 1-D hodograph budget plus what the second direction adds: its
+                    // own `e_r` recurrence, the product that forms the net value, and the
+                    // product that forms the expected one.
+                    const std::int64_t roundings =
+                        hodograph_roundings(degree_first) + (2 * degree_second + 1) + 2;
+                    // The 1-D amplification in the differentiated direction, times the
+                    // untouched direction's factor, which the sweep carries through
+                    // unchanged.
+                    const double amplification =
+                        static_cast<double>(degree_first)
+                        * (std::abs(table_first[i]) + std::abs(table_first[i + 1]))
+                        / std::abs(first[i + degree_first + 1] - first[i + 1])
+                        * std::abs(table_second[j]);
+                    const double bound = gamma_of<double>(roundings) * amplification
+                                         + static_cast<double>(roundings)
+                                               * underflow_floor<double>();
                     PANTR_CHECK_MSG(
                         std::abs(got_first[i * table_second.size() + j] - want) <= bound,
                         "differentiating direction 0 gave a wrong fibre at ("
@@ -823,9 +892,11 @@ void check_the_axis_sweeps_touch_only_their_own_axis() {
             }
             const std::vector<double> amplification =
                 elevate_majorant(degree_second, magnitudes, second, 2);
-            const std::int64_t roundings = (2 * degree_second + 1)
-                                           + (2 * (degree_second + 2) + 1) + 2
-                                           + 3 * (std::min<std::int64_t>(degree_second, 2) + 1);
+            // The 1-D elevation budget plus what the untouched direction adds: its own
+            // `e_r` recurrence and the two products, one forming the net value and one the
+            // expected one.
+            const std::int64_t roundings =
+                elevation_roundings(degree_second, 2) + (2 * degree_first + 1) + 2;
             for (std::size_t i = 0; i < table_first.size(); ++i) {
                 for (std::size_t j = 0; j < raised_second.size(); ++j) {
                     const double want = table_first[i] * raised_second[j];
