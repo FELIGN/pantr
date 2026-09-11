@@ -4,8 +4,9 @@ Layer 2 normalises an ``out`` array's shape before handing it to a kernel. ``res
 returns a *view* when the strides allow one and a **copy** otherwise, and a kernel
 writing into a copy leaves the caller's array untouched. Measured before the fix, on a
 ``float64`` space with two-dimensional points and an ``order="F"`` ``out``: six public
-entry points returned an all-zero array and partition of unity read 0 instead of 1,
-with the function handing the caller back its own untouched array.
+entry points returned the caller's own array, untouched and therefore all zeros. On
+the five whose basis is a partition of unity -- Legendre's is not -- that reads as the
+rows summing to 0 instead of 1.
 
 **The strided case is here to stop the fix from being too wide, not too narrow.** A
 slice such as ``big[..., ::2]`` is not C-contiguous and yet reshapes to a view, because
@@ -58,19 +59,23 @@ def test_the_layouts_differ_in_the_way_that_matters() -> None:
     # Without this the parametrisation could silently degenerate to three C-contiguous
     # arrays and every case below would pass while checking one layout three times.
     shape = (2, 2, 3)
-    reshaped = {layout: _make(shape, layout).reshape(4, 3) for layout in _LAYOUTS}
+    arrays = {layout: _make(shape, layout) for layout in _LAYOUTS}
+    # Each array is reshaped against *itself*, not against a second allocation: two
+    # separate allocations never share memory, so that comparison would read as a
+    # check and decide nothing.
     shares = {
-        layout: np.shares_memory(reshaped[layout], _make(shape, layout)) for layout in _LAYOUTS
+        layout: np.shares_memory(array.reshape(4, 3), array) for layout, array in arrays.items()
     }
-    assert not _make(shape, "F").flags["C_CONTIGUOUS"]
-    assert not _make(shape, "strided").flags["C_CONTIGUOUS"]
+
+    assert arrays["C"].flags["C_CONTIGUOUS"]
+    assert not arrays["F"].flags["C_CONTIGUOUS"]
+    assert not arrays["strided"].flags["C_CONTIGUOUS"]
+
     # The strided one is the case a C_CONTIGUOUS-keyed fix would get wrong: not
-    # contiguous, yet its reshape is a view.
-    strided = _make(shape, "strided")
-    assert np.shares_memory(strided.reshape(4, 3), strided)
-    fortran = _make(shape, "F")
-    assert not np.shares_memory(fortran.reshape(4, 3), fortran)
-    assert shares is not None
+    # contiguous, yet its reshape is a view. The Fortran one is the case that needs
+    # the copy-back. Both flags being the same would mean the layouts do not differ
+    # in the way the fix keys on.
+    assert shares == {"C": True, "F": False, "strided": True}
 
 
 @pytest.mark.parametrize("layout", _LAYOUTS)
