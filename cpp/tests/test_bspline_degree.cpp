@@ -94,16 +94,15 @@
 ///  - the two `e_r` recurrences, on the input vector at degree `p` and on the elevated
 ///    one at degree `p + t`: `2p + 1` and `2(p + t) + 1`;
 ///  - the cast in and the store out: `2`;
-///  - **the kernel's own chain**, four roundings per stage -- three in the accumulator and
-///    one narrowing store, which is `Roundings(stages, 3, 1)` in the parity harness's
-///    vocabulary. A5.9's chain has three blocks and an earlier version of this file
-///    charged only the middle one: at most `p - 1` Boehm insertion passes, then
-///    `min(p, t) + 1` terms accumulated into one elevated Bézier coefficient, then at most
-///    `p - 2` knot-removal passes. The middle count is
-///    `design/backend_parity.md` Rule 10's own for the Bézier elevation, and it is right
-///    here for the same reason -- the accumulation into `ebpts[i]` runs `j` from
-///    `max(0, i - t)` to `min(p, i)` -- while charging `p + 1` for it is the over-count
-///    that rule records. `elevation_stages` and `elevation_roundings` are the two counts.
+///  - **the kernel's own chain**, whose three blocks do not cost the same and are counted
+///    separately by `elevation_chain_roundings`: at most `p - 1` Boehm insertion passes at
+///    five roundings each, `min(p, t) + 1` accumulated terms at three, and at most `p - 2`
+///    knot-removal passes at five. The middle count is `design/backend_parity.md`
+///    Rule 10's own for the Bézier elevation, and it is right here for the same reason --
+///    the accumulation into `ebpts[i]` runs `j` from `max(0, i - t)` to `min(p, i)` --
+///    while charging `p + 1` for it is the over-count that rule records. Charging a flat
+///    count across the three blocks is what an earlier version did, and it under-charges
+///    the two blend blocks by two roundings each.
 ///
 /// The test asserts that the majorant **dominates** every observed deviation, which is
 /// the premise, and separately that the bound is **approached** rather than merely
@@ -192,39 +191,47 @@ std::int64_t hodograph_roundings(std::int64_t degree) {
     return 4 * degree + 7;
 }
 
-/// Stages in A5.9's dependency chain from an input coefficient to an output one.
+/// Roundings A5.9's own chain commits along a path from an input coefficient to an output.
 ///
-/// Three blocks contribute, and an earlier version of this file charged only the middle
-/// one: at most `degree - 1` Boehm insertion passes (`for j in 1..r`, `r = degree - mul`),
-/// then `min(degree, increment) + 1` terms accumulated into one elevated Bezier
-/// coefficient -- which is `design/backend_parity.md` Rule 10's own count for the Bezier
-/// elevation, and the count that rule records charging `p + 1` for by mistake -- then at
-/// most `degree - 2` knot-removal passes (`for tr in 1..oldr - 1`, `oldr <= degree - 1`).
+/// Three blocks contribute and they do not cost the same, which two earlier versions of
+/// this file got wrong in opposite directions -- the first charged only the middle block,
+/// the second charged all three at a flat four:
+///
+///  - at most `degree - 1` **Boehm insertion** passes (`for j in 1..r`,
+///    `r = degree - mul`), each `bpts[q] = alf * bpts[q] + (1 - alf) * bpts[q-1]`: one
+///    subtraction, two multiplications, one addition and one narrowing store, so **five**;
+///  - `min(degree, increment) + 1` terms accumulated into one elevated Bézier coefficient,
+///    each `ebpts[i] += bezalfs[j, i] * bpts[j]`: one multiplication, one addition and one
+///    narrowing store, so **three**. That term count is `design/backend_parity.md`
+///    Rule 10's own for the Bézier elevation, and the count that rule records charging
+///    `p + 1` for by mistake;
+///  - at most `degree - 2` **knot-removal** passes (`for tr in 1..oldr - 1`,
+///    `oldr <= degree - 1`), each the same shape as a Boehm pass, so **five**.
 ///
 /// \param degree The original degree.
 /// \param increment Degrees added.
-/// \return The stage count, at least one.
-std::int64_t elevation_stages(std::int64_t degree, std::int64_t increment) {
-    const std::int64_t boehm = std::max<std::int64_t>(0, degree - 1);
-    const std::int64_t removal = std::max<std::int64_t>(0, degree - 2);
-    return std::max<std::int64_t>(1, boehm + std::min(degree, increment) + 1 + removal);
+/// \return The rounding count, at least one.
+std::int64_t elevation_chain_roundings(std::int64_t degree, std::int64_t increment) {
+    const std::int64_t boehm = 5 * std::max<std::int64_t>(0, degree - 1);
+    const std::int64_t accumulation = 3 * (std::min(degree, increment) + 1);
+    const std::int64_t removal = 5 * std::max<std::int64_t>(0, degree - 2);
+    return std::max<std::int64_t>(1, boehm + accumulation + removal);
 }
 
 /// Roundings on the comparison between an elevated curve and Marsden's closed form.
 ///
 /// `2p + 1` for the input window's `e_r` recurrence and `2(p + t) + 1` for the elevated
-/// window's, one for the cast into the field's storage and one for the store, and four per
-/// stage of :func:`elevation_stages` -- three in the accumulator and one narrowing store,
-/// which is `Roundings(stages, 3, 1)` in the parity harness's vocabulary. The accumulator
-/// roundings are charged at the storage format's unit roundoff although they happen in
-/// `double`; that over-states the `float32` case and keeps one derivation for both.
+/// window's, one for the cast into the field's storage and one for the store, and
+/// :func:`elevation_chain_roundings` for the kernel itself. Every one is charged at the
+/// storage format's unit roundoff, including the ones that happen in `double`; that
+/// over-states the `float32` case and keeps one derivation for both.
 ///
 /// \param degree The original degree.
 /// \param increment Degrees added.
 /// \return The rounding count.
 std::int64_t elevation_roundings(std::int64_t degree, std::int64_t increment) {
     return (2 * degree + 1) + (2 * (degree + increment) + 1) + 2
-           + 4 * elevation_stages(degree, increment);
+           + elevation_chain_roundings(degree, increment);
 }
 
 /// The binomial coefficient `C(n, k)`, by the multiplicative form.

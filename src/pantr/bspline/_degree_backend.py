@@ -26,8 +26,17 @@ the adapter hands the binding the handle the wrapper already holds and wraps the
 handle that comes back. The *arguments* cross as a scalar direction and a tuple of
 increments, neither of which carries an invariant to lose.
 
-Where the two backends differ, and there are three places
------------------------------------------------------------
+Where the two backends differ, and there are four places
+--------------------------------------------------------
+
+**An argument with nothing to elevate runs the oracle**, which is the one divergence
+here that is neither a boundary nor a defect but an asymmetry between the two sides'
+own argument checking: ``cpp/include/pantr/bspline/degree.hpp`` refuses an all-zero or
+negative increment with :meth:`pantr.bspline.Bspline.elevate_degree`'s own Layer 1
+message, while ``_degree_elevate_bspline`` never checks and returns the field unchanged.
+The public method refuses such an argument before either is reached, so this closes a gap
+only a direct caller of :func:`elevate_field_degree` could open -- which is the same
+reason :mod:`pantr.bspline._refinement_backend` closes its own.
 
 **A rational field, or a ``keep_degree=True`` request, always runs the oracle.**
 ``cpp/include/pantr/bspline/degree.hpp`` gives ``derivative`` no ``keep_degree``
@@ -163,6 +172,15 @@ def _the_cpp_backend_can_elevate(bspline: Bspline, degree_increments: tuple[int,
         return False
     if Backend.CPP not in available_backends():
         raise RuntimeError("the CPP backend is not available in this installation")
+    # An argument with nothing to elevate goes to the oracle, which is the guard
+    # `_refinement_backend._the_cpp_backend_can_take_it` makes for the same reason: the
+    # two sides disagree about it. `Bspline.elevate_degree` refuses such an argument above
+    # this branch, so no public caller reaches it -- but these entry points are importable
+    # private symbols of a package whose private symbols a downstream consumer already
+    # imports, and the C++ half refuses what the oracle silently returns unchanged. The
+    # `all()` below would say yes to it vacuously.
+    if not any(increment > 0 for increment in degree_increments):
+        return False
     spaces = bspline.space.spaces
     return all(
         not spaces[direction].periodic and spaces[direction].has_open_knots()

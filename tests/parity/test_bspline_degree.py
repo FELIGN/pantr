@@ -55,9 +55,13 @@ makes it *weak* and lets the ``float32`` operand decide. So the product is ``flo
 compiled and ``float32`` interpreted, and the two answers are different numbers. The same
 applies to the `ebpts` blend's companion.
 
-Measured: with the JIT disabled, every ``float32`` elevation case in this file's
-field-by-field comparison fails and every ``float64`` one passes, which is the
-signature of a width rather than of an algorithm.
+Measured, with the JIT disabled: every ``float64`` elevation case in this file's
+field-by-field comparison still agrees bit for bit, and five of the nine ``float32`` ones
+no longer do. The four that survive are the four whose knot vectors never make
+``oldr > 1`` -- a single Bézier span, a ``C^0`` breakpoint, a ``C^-1`` breakpoint and a
+degree-2 direction -- so they never execute the block the divergent literal is in. That
+the split falls exactly along that line, and along the storage format rather than along
+the algorithm, is what identifies the cause as a width.
 :func:`~tests._parity_harness.demand_the_compiled_kernel` is the gate that owns exactly
 that question, and it is applied to the elevation.
 
@@ -98,12 +102,14 @@ Nothing in :func:`_marsden_column` consults either backend.
 ## The accuracy bounds, and why the elevation's is a majorant
 
 **The hodograph.** ``gamma_K`` times an elementwise amplification, with ``K`` counted:
-``2p + 1`` for the input window's ``e_r`` recurrence and ``2(p-1) + 1`` for the derived
-one, one for the cast of the closed form into the field's storage, four for the formula
-itself -- the coefficient difference, the knot difference, the scaling by the degree and
-the division -- and one for the store. ``K = 4p + 5``. The magnitude is **not** the
-result's own: ``A_{i+1} - A_i`` can cancel to nothing while its operands do not, so the
-relative budget is charged against what was subtracted,
+``2p + 1`` for the input window's ``e_r`` recurrence and ``2p - 1`` for the derived one at
+degree ``p - 1``, one for the cast of the closed form into the field's storage, four for
+the formula itself -- the coefficient difference, the knot difference, the scaling by the
+degree and the division -- one for the multiply by ``r`` that turns the derived window's
+closed form into ``r u^(r-1)``'s, and one for the store. ``K = 4p + 7``, which is what
+:func:`_hodograph_accuracy` computes. The magnitude is **not** the result's own:
+``A_{i+1} - A_i`` can cancel to nothing while its operands do not, so the relative budget
+is charged against what was subtracted,
 
     amplification_i = p (|A_i| + |A_{i+1}|) / |t_{i+p+1} - t_{i+1}|,
 
@@ -125,10 +131,17 @@ gone the partial sums are monotone, so the final value majorises all of them. It
 no value this file compares against -- those come from Marsden -- only a magnitude.
 
 ``K`` for the elevation: the two ``e_r`` recurrences at degree ``p`` and ``p + t``, the
-cast in and the store out, and ``min(p, t) + 1`` stages of three accumulator roundings
-each. That stage count is Rule 10's for the Bézier elevation and it is right here for the
-same reason -- the accumulation into ``ebpts[i]`` runs ``j`` from ``max(0, i - t)`` to
+cast in and the store out, and the kernel's own chain, whose **three blocks do not cost
+the same** and are counted separately. At most ``p - 1`` Boehm insertion passes, each
+``bpts[q] = alf * bpts[q] + (1 - alf) * bpts[q-1]`` -- a subtraction, two products, an
+addition and a narrowing store, so five; then ``min(p, t) + 1`` terms accumulated into one
+elevated Bézier coefficient, each a product, an addition and a narrowing store, so three;
+then at most ``p - 2`` knot-removal passes, the same shape as a Boehm pass, so five. The
+middle count is Rule 10's for the Bézier elevation and it is right here for the same
+reason -- the accumulation into ``ebpts[i]`` runs ``j`` from ``max(0, i - t)`` to
 ``min(p, i)`` -- and charging ``p + 1`` instead is the over-count that rule records.
+Charging one flat number across all three blocks under-charges the two blend blocks, which
+is a defect a review found in an earlier version of this file.
 
 Both bounds add ``K`` underflow floors, the absolute half of Higham's model, because a
 closed form can be an exact zero and a relative bound of zero asserts bit-identity
@@ -136,10 +149,11 @@ nothing here has grounds for.
 
 ## The four places the backends do not meet
 
-All four are recorded in :mod:`pantr.bspline._degree_backend` and all four are pinned
-here rather than left to be met. The first two are boundaries of the port; the last two
-are defects in the oracle that the port deliberately does not inherit and deliberately
-does not change.
+Four, counted as :mod:`pantr.bspline._degree_backend` counts them, and all four are
+recorded there and pinned here rather than left to be met. Two are boundaries of the
+port, one is a defect in the oracle that the port deliberately does not inherit and
+deliberately does not change, and one is an asymmetry between the two sides' own argument
+checking.
 
 - **`keep_degree=True` and a rational derivative run the oracle**, because the oracle's
   own answers on those paths are under review and there is nothing stable to be at parity
@@ -165,6 +179,12 @@ does not change.
   a silent one -- including that the symptom depends on the configuration: compiled, the
   walk returns and the field's constructor refuses the coefficient count; interpreted,
   numpy bounds checks and the read itself raises ``IndexError``.
+- **An increment tuple with nothing to elevate runs the oracle.** The C++ half refuses an
+  all-zero or negative one with :meth:`~pantr.bspline.Bspline.elevate_degree`'s own Layer 1
+  message while ``_degree_elevate_bspline`` never checks and returns the field unchanged.
+  No public caller reaches it, the method refusing such an argument first;
+  :func:`test_an_argument_with_nothing_to_elevate_goes_to_the_oracle` pins the private
+  entry point, which a downstream consumer of this package's private symbols could call.
 """
 
 from __future__ import annotations
@@ -179,6 +199,7 @@ import pytest
 from pantr._backend import Backend, use_backend
 from pantr.bspline import Bspline, BsplineSpace, BsplineSpace1D
 from pantr.bspline._bspline_degree_core import _bincoeff
+from pantr.bspline._degree_backend import elevate_field_degree
 from tests._parity_harness import (
     AccuracyClaim,
     Field,
@@ -517,17 +538,22 @@ segment's coefficients are emitted from `lbz = (oldr + 2) // 2` upwards. At degr
 simple interior knots `oldr` is 2 and `lbz` is 2, so the only write the block makes --
 `kj = 1` -- is to a coefficient never emitted, and a variant of
 `cpp/include/pantr/bspline/degree.hpp` computing either of that blend's two terms at the
-wrong width passed this whole file. `oldr` first reaches 4, and `kj` first reaches `lbz`,
-at degree 5.
+wrong width passed this whole file. `kj` first reaches `lbz` at **degree 4** (`oldr = 3`,
+`lbz = 2`, and the `tr = 2` pass writes `kj = 2`); the quintic is here because no other
+case in this table is a curve with several simple interior knots above degree 3, not
+because degree 4 could not have served.
 
 **The narrow span is for the bound rather than for a width**: it takes A5.9's blending
 weights far from one, which is where the majorant the accuracy check uses has to earn its
 place against a convex companion. It is *not* what makes the `ic` blend's own companion
-observable, and nothing is: that one forms `1 - alf` with
-`alf = (ub - ik[i]) / (ua - ik[i])`, and `ik[i] <= ua < ub` makes `alf >= 1`, for which
-the subtraction is exact in `float32` for every representable value. Computing it in the
-storage format there is a choice with no consequence, which is why no case in this table
-tries to catch it.
+observable, and nothing in reach is: that one forms `1 - alf` with
+`alf = (ub - ik[i]) / (ua - ik[i])`, and `ik[i] <= ua < ub` makes `alf >= 1`, for which the
+subtraction is exact in `float32` **while `alf < 2^24`** -- above that the exact difference
+needs a bit `float32` no longer has, and `float32(1) - 16777218` is off by one. The weights
+these knot vectors produce top out near 500, so the hypothesis holds by a wide margin here;
+it is stated rather than assumed because the claim is otherwise false. Computing that
+companion in the storage format is therefore a choice with no consequence, which is why no
+case in this table tries to catch it.
 """
 
 
@@ -575,7 +601,7 @@ def _make_field(case: _Case, dtype: npt.DTypeLike) -> Bspline:
     # to pin: measured, a `double` variant of `derivative_along_axis` passed the whole of
     # this file before the divisor below was 97 rather than 16.
     # `test_the_case_table_earns_its_keep` asserts the values really do round.
-    values = np.array([(7.0 + ((i * 37) % 101)) / 97.0 for i in range(count)], dtype=dtype)
+    values = np.array([(7.0 + ((i * 37) % 101)) / 109.0 for i in range(count)], dtype=dtype)
     control_points = values.reshape(shape)
     if case.is_rational:
         # Weights must be positive, and distinct from each other.
@@ -958,12 +984,17 @@ def _elevation_accuracy(
     amplification = _elevate_majorant(
         degree, np.abs(stored), np.asarray(knots, dtype=np.float64), increment
     )
-    # A5.9's chain has three blocks: at most `p - 1` Boehm insertion passes, then
-    # `min(p, t) + 1` terms accumulated into one elevated Bezier coefficient -- Rule 10's
-    # own count for the Bezier elevation -- then at most `p - 2` knot-removal passes. Each
-    # stage costs four roundings, three in the accumulator and one narrowing store.
-    stages = max(1, max(0, degree - 1) + min(degree, increment) + 1 + max(0, degree - 2))
-    roundings = (2 * degree + 1) + (2 * (degree + increment) + 1) + 2 + 4 * stages
+    # A5.9's chain has three blocks and they do not cost the same. At most `p - 1` Boehm
+    # insertion passes, each `alf * bpts[q] + (1 - alf) * bpts[q-1]`: a subtraction, two
+    # products, an addition and a narrowing store, so five. Then `min(p, t) + 1` terms
+    # accumulated into one elevated Bezier coefficient -- Rule 10's own count -- each a
+    # product, an addition and a narrowing store, so three. Then at most `p - 2`
+    # knot-removal passes, the same shape as a Boehm pass, so five.
+    boehm = 5 * max(0, degree - 1)
+    accumulation = 3 * (min(degree, increment) + 1)
+    removal = 5 * max(0, degree - 2)
+    chain = max(1, boehm + accumulation + removal)
+    roundings = (2 * degree + 1) + (2 * (degree + increment) + 1) + 2 + chain
     unit = unit_roundoff(knots.dtype)
     relative = roundings * unit / (1.0 - roundings * unit)
     return derived_accuracy(
@@ -975,12 +1006,11 @@ def _elevation_accuracy(
             f"{unit:.3e}, times the majorant of A5.9 run on the moduli of its "
             f"coefficients and of its blending weights: {2 * degree + 1} roundings form "
             f"the input closed form and {2 * (degree + increment) + 1} the elevated "
-            f"one, one is the cast into the field's storage, {4 * stages} are the "
-            f"kernel's own {stages} stages at four roundings each -- three in the "
-            f"accumulator and one narrowing store -- counting at most p - 1 Boehm "
-            f"insertion passes, min(p, t) + 1 accumulated terms and at most p - 2 "
-            f"knot-removal passes, and one is the store. The amplification is the "
-            f"majorant "
+            f"one, one is the cast into the field's storage, {chain} are the kernel's "
+            f"own chain -- {boehm} for at most p - 1 Boehm insertion passes at five "
+            f"roundings each, {accumulation} for min(p, t) + 1 accumulated terms at "
+            f"three, {removal} for at most p - 2 knot-removal passes at five -- and one "
+            f"is the store. The amplification is the majorant "
             f"rather than a convex companion because A5.9's knot-removal step blends "
             f"with a weight above one, so its intermediates are not convex combinations "
             f"and a bound built from the finished operator would be exceeded rather "
@@ -996,11 +1026,22 @@ _ACCURACY_KNOTS: Final = (
     ((0.0, 0.0, 0.0, 1.0 / 3.0, 1.0 / 3.0, 1.0, 1.0, 1.0), 2),
     ((0.0, 0.0, 0.0, 0.0, 0.5, 0.5, 0.5, 0.5, 1.0, 1.0, 1.0, 1.0), 3),
     ((0.0, 0.0, 0.0, 0.0, 0.0, 1.0 / 7.0, 0.9, 1.0, 1.0, 1.0, 1.0, 1.0), 4),
+    (
+        (0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0 / 3.0, 0.6, 0.82, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0),
+        5,
+    ),
 )
 """Knot vectors for the independent check, each with a knot no binary format represents.
 
 A dyadic vector rounds nothing and would report agreement without asking the bound a
 question, which is why every entry carries a third or a seventh.
+
+The degree-5 entry is here for the elevation budget rather than for the oracle. That
+budget's Boehm-insertion and knot-removal terms grow with the degree while its
+accumulation term is capped by the increment, so the three-block count above is only
+tested where the first two dominate -- which needs a degree past 4 and several simple
+interior knots. A review found the budget under-charging those two blocks and could not
+say whether it mattered, because no accuracy case reached them.
 """
 
 
@@ -1348,6 +1389,31 @@ def test_the_unclamped_hodograph_reaches_the_cpp_path() -> None:
     )
 
 
+def test_an_argument_with_nothing_to_elevate_goes_to_the_oracle() -> None:
+    """A degenerate increment tuple is served by the oracle, not refused by the binding.
+
+    The public method refuses an all-zero or negative increment before either backend is
+    reached, so this is about the private entry point: `elevate_field_degree` is an
+    importable symbol of a package whose private symbols a downstream consumer already
+    imports, and the two sides disagree about such an argument -- the C++ half raises
+    `Bspline.elevate_degree`'s own Layer 1 message while `_degree_elevate_bspline` never
+    checks and returns the field unchanged. Found by a review of the routing predicate,
+    which said yes vacuously because `all()` over an empty filter is true.
+    """
+    case = _case("surface, direction 1 differentiated and elevated")
+    for increments in ((0, 0), (-1, -1)):
+        results = []
+        for backend in (Backend.PYTHON, Backend.CPP):
+            with use_backend(backend):
+                results.append(elevate_field_degree(_make_field(case, np.float64), increments))
+        assert results[0].degree == results[1].degree == case.degrees, (
+            f"{increments} changed a degree on some backend"
+        )
+        assert np.array_equal(results[0].control_points, results[1].control_points), (
+            f"the two backends disagree about the increment tuple {increments}"
+        )
+
+
 def test_an_untouched_direction_keeps_its_wrapper() -> None:
     """A direction neither operation changed is carried over rather than rebuilt.
 
@@ -1408,9 +1474,11 @@ def test_the_case_table_earns_its_keep() -> None:
     for case in CASES:
         narrow = _make_field(case, np.float32).control_points
         wide = _make_field(case, np.float64).control_points
-        assert not np.array_equal(narrow.astype(np.float64), wide), (
-            f"{case.label}: every control point is exactly representable in float32, so "
-            f"the bitwise claims over it are blind to the arithmetic width"
+        # Every coefficient, not merely some: one exactly representable value in the net
+        # is one fibre over which the bitwise claim cannot see the arithmetic width.
+        assert not np.any(narrow.astype(np.float64) == wide), (
+            f"{case.label}: a control point is exactly representable in float32, so the "
+            f"bitwise claims over its fibre are blind to the arithmetic width"
         )
 
     with use_backend(Backend.PYTHON):

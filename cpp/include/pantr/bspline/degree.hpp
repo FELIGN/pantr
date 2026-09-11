@@ -90,9 +90,13 @@
 /// a case that does not exist.** All three weights are at least one: `ik` is built
 /// non-decreasingly out of knots at or below the segment's own left endpoint `ua`, so
 /// `alf = (ub - ik[i]) / (ua - ik[i])` and `bet`, `gam` = `(ub - ik[.]) / (ub - ua)` each
-/// have a numerator at least their denominator. For any `w >= 1` representable in `float`,
-/// `float(1) - w` is exact -- the exact difference is a multiple of `ulp(w)` and lands in a
-/// binade whose own `ulp` is no coarser -- so it equals `1.0 - double(w)` bit for bit.
+/// have a numerator at least their denominator. For `1 <= w < 2^24` in `float`,
+/// `float(1) - w` is exact -- the exact difference is a multiple of `ulp(w)`, and `1` is
+/// itself such a multiple exactly while `ulp(w) <= 1`, which is the `2^24` -- so it equals
+/// `1.0 - double(w)` bit for bit. The upper hypothesis is real rather than a formality:
+/// `float(1) - 16777218` is off by one ulp. It holds here because these weights are ratios
+/// of knot differences within one vector, and a vector whose spans differ by a factor of
+/// `2^24` has other problems; a sweep of three thousand vectors to degree 8 reached 623.
 /// Written in the storage format or in `double`, that subtraction is the same number, and
 /// a mutation of it passes every parity test there could be. Measured over a sweep of
 /// three thousand knot vectors to degree 8: the smallest `alf` was 1.0007, the smallest
