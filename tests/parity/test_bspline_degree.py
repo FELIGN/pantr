@@ -199,7 +199,7 @@ import pytest
 from pantr._backend import Backend, use_backend
 from pantr.bspline import Bspline, BsplineSpace, BsplineSpace1D
 from pantr.bspline._bspline_degree_core import _bincoeff
-from pantr.bspline._degree_backend import elevate_field_degree
+from pantr.bspline._degree_backend import _closes_bit_exactly, elevate_field_degree
 from tests._parity_harness import (
     AccuracyClaim,
     Field,
@@ -611,17 +611,23 @@ def _make_field(case: _Case, dtype: npt.DTypeLike) -> Bspline:
 
 
 def _elevatable(case: _Case) -> bool:
-    """Whether every direction this case elevates is one the C++ half will take.
+    """Whether every direction this case elevates is one the routing sends to C++.
+
+    Calls the routing's own predicate rather than restating it, so the two cannot drift:
+    the routing is deliberately stricter than the C++ entry point's tolerance-based
+    clamped check, and a case whose closing run only ties within tolerance goes to the
+    oracle even though C++ would have taken it.
 
     Args:
         case (_Case): The shape.
 
     Returns:
-        bool: ``True`` when no elevated direction is periodic or unclamped.
+        bool: ``True`` when no elevated direction is periodic, and every one of them
+        closes bit-exactly.
     """
     spaces = _spaces(case, np.float64)
     return all(
-        increment == 0 or (not space.periodic and space.has_open_knots())
+        increment == 0 or (not space.periodic and _closes_bit_exactly(space))
         for increment, space in zip(case.increments, spaces, strict=True)
     )
 
@@ -1313,6 +1319,48 @@ def test_an_unclamped_elevation_fails_the_same_way_under_both_backends(
         f"the oracle's unclamped elevation no longer fails with {fragment!r}; if it now "
         f"refuses the vector properly, cpp/include/pantr/bspline/degree.hpp's boundary "
         f"and pantr.bspline._degree_backend's routing should both be revisited"
+    )
+
+
+def test_a_tail_that_closes_only_within_tolerance_still_goes_to_the_oracle() -> None:
+    """A closing run that ties within tolerance but not bitwise routes to the oracle.
+
+    The C++ elevation refuses a closing run that is not bit-identical, while
+    :meth:`~pantr.bspline.BsplineSpace1D.has_open_knots` compares it within the space's
+    tolerance.  Routing on the looser predicate hands C++ a vector it then refuses in its
+    own words while the oracle refuses the same vector in different words, so the error a
+    caller sees would depend on ``PANTR_BACKEND``.  Building the near-tie needs
+    ``snap_knots=False``, since snapping collapses it.
+
+    This is the boundary between the two predicates, which
+    :func:`test_an_unclamped_elevation_fails_the_same_way_under_both_backends` does not
+    reach: its vector is grossly unclamped, so both predicates agree on it.
+    """
+    knots = np.array([0.0, 0.0, 0.0, 0.5, 0.9999999999999998, 1.0, 1.0])
+    space_1d = BsplineSpace1D(knots, 2, snap_knots=False)
+    # The premise, asserted rather than assumed: the two predicates disagree here.
+    assert space_1d.has_open_knots()
+    assert knots[-3] != knots[-1]
+
+    # Which exception the oracle raises depends on the configuration, for the same reason
+    # as in `test_an_unclamped_elevation_fails_the_same_way_under_both_backends`: compiled,
+    # A5.9's out-of-bounds walk returns and a later check refuses the result; interpreted,
+    # numpy checks the read itself. What this test pins is that both backends agree,
+    # whichever of the two it is.
+    expected_type: type[Exception] = IndexError if the_jit_is_disabled() else ValueError
+
+    messages = []
+    for backend in (Backend.PYTHON, Backend.CPP):
+        with use_backend(backend):
+            space = BsplineSpace([BsplineSpace1D(knots, 2, snap_knots=False)])
+            field = Bspline(space, np.arange(space.num_total_basis, dtype=float).reshape(-1, 1))
+            with pytest.raises(expected_type) as raised:
+                field.elevate_degree(1)
+            messages.append(str(raised.value))
+
+    assert messages[0] == messages[1], (
+        "the two backends refuse a near-tie closing run differently, so the routing "
+        "predicate is not shadowing the C++ refusal"
     )
 
 
