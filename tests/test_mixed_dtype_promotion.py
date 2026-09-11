@@ -105,11 +105,20 @@ def test_a_mixed_call_equals_the_fully_widened_one(
     wide_space = BsplineSpace1D(np.asarray(space.knots).astype(promoted), degree)
     wide_points = points.astype(promoted)
 
-    call = (
-        (lambda s, p: s.tabulate_basis(p))
-        if n_deriv is None
-        else (lambda s, p: s.tabulate_basis_derivatives(p, n_deriv))
-    )
+    def call(target: BsplineSpace1D, pts: Any) -> tuple[Any, Any]:
+        """Tabulate values or derivatives, whichever this parametrization asks for.
+
+        Args:
+            target (BsplineSpace1D): The space to tabulate.
+            pts (Any): The evaluation points.
+
+        Returns:
+            tuple[Any, Any]: The table and the first-basis indices.
+        """
+        if n_deriv is None:
+            return target.tabulate_basis(pts)
+        return target.tabulate_basis_derivatives(pts, n_deriv)
+
     mixed, mixed_first = call(space, points)
     wide, wide_first = call(wide_space, wide_points)
 
