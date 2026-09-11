@@ -13,6 +13,7 @@
 #     scripts/ci_local.sh cxx          # only the two C++ toolchains
 #     scripts/ci_local.sh python       # only the extension, parity and backends
 #     scripts/ci_local.sh discipline   # only the source-level rule guards
+#     scripts/ci_local.sh docs         # only the -W docs build and the doctests
 #     scripts/ci_local.sh splitmode    # only the nanobind split-mode probe
 #
 # Run it inside the pantr conda environment (`conda activate pantr`), which is
@@ -861,6 +862,75 @@ consumer() {
 
 # --------------------------------------------------------------------------
 
+# docs -- the -W documentation build and the docstring examples
+#
+# The documentation build, which nothing else on this branch runs.
+#
+# `ci.yaml` owns the docs build and names `main` only in its `on:` block, and the
+# workflow a `proto/cpp` pull request triggers (`cpp.yaml`) is three jobs: a GCC 14
+# build, a sanitizer build and the parity job. So until this section existed, no gate
+# reachable from this branch built the docs, and warnings accumulated unobserved.
+#
+# `-W` turns them into errors and `--keep-going` reports all of them rather than the
+# first, which is what `make docs` in CI does. The build runs with the JIT disabled for
+# the same reason CI does it: importing the package to autodoc it should not pay for
+# compilation.
+#
+# `-j 20` rather than the `-j auto` the project's CLAUDE.md quotes: `auto` asks Python
+# for the CPU count, which on this host reports every core on the machine rather than
+# the twenty this work is confined to. Parallelism does not change which warnings a
+# build emits, so the gate is the same one.
+docs_checks() {
+    step "Docs: the build that treats warnings as errors"
+
+    if [[ ! -d "$VENV" ]]; then
+        record SKIP "docs build" "no .venv; run: python -m venv --system-site-packages .venv"
+        return 0
+    fi
+
+    # shellcheck disable=SC1091
+    source "$VENV/bin/activate"
+
+    # `all` runs this after `python_checks`, which installs the package. Asked for on
+    # its own against a fresh venv it would otherwise fail for a reason that is not the
+    # docs, so separate the two: a venv with nothing installed in it is a missing
+    # precondition and skips, while a package that is installed and still will not
+    # import is a result. Grading the second as SKIP would let `ci_local.sh docs`
+    # finish green over an `ImportError` in `src/pantr/__init__.py` and hand back a
+    # remedy that does not fix it -- `python_checks` already grades the same shape of
+    # question as FAIL, "everything below is meaningless", for the same reason.
+    if ! python -c "import importlib.util, sys
+sys.exit(0 if importlib.util.find_spec('pantr') is not None else 1)" >/dev/null 2>&1; then
+        record SKIP "docs build" "pantr is not installed; run: pip install -e ."
+        return 0
+    fi
+    if ! python -c "import pantr" >/dev/null 2>&1; then
+        record FAIL "docs build" "pantr is installed but does not import; the docs cannot be built"
+        return 0
+    fi
+
+    # Sphinx does not re-emit a warning for a page it decides is up to date, so an
+    # incremental build can report clean over a tree that is not.
+    #
+    # CI is not exposed to that, but not because it starts empty -- `ci.yaml` does cache
+    # `docs/_build/doctrees`. It is because that cache is keyed on `hashFiles` over the
+    # docs, `conf.py`, `pyproject.toml` and every source file, with no `restore-keys`, so
+    # a hit means nothing Sphinx reads has changed and there is no new warning to miss.
+    # Here the doctrees outlive edits to exactly those files, which is the case the key
+    # is built to exclude, so this gate has to clear them itself.
+    #
+    # Guarded rather than `rm -rf`: the directory is absent on a first run and `-f` would
+    # also swallow the error from a path that is not the one intended.
+    if [[ -d docs/_build ]]; then
+        rm -r docs/_build
+    fi
+
+    NUMBA_DISABLE_JIT=1 check "docs build (-W)" make docs SPHINXOPTS="-W --keep-going -j 20"
+    NUMBA_DISABLE_JIT=1 check "docstring examples" python -m pytest --doctest-modules src/pantr -q
+}
+
+# --------------------------------------------------------------------------
+
 main() {
     local what="${1:-all}"
     case "$what" in
@@ -868,9 +938,10 @@ main() {
         cxx)        cxx ;;
         discipline) discipline ;;
         python)     python_checks ;;
+        docs)       docs_checks ;;
         splitmode)  splitmode ;;
         consumer)   consumer ;;
-        all)        gates; cxx; discipline; python_checks; splitmode; consumer ;;
+        all)        gates; cxx; discipline; python_checks; docs_checks; splitmode; consumer ;;
         *)          echo "unknown section: $what" >&2; exit 2 ;;
     esac
 
