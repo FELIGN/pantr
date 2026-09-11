@@ -96,6 +96,7 @@
 
 #include <cmath>
 #include <cstddef>
+#include <cstdint>
 #include <span>
 #include <stdexcept>
 #include <string>
@@ -112,26 +113,6 @@
 namespace pantr::bezier {
 
 namespace detail {
-
-/// Refuse a degree the exact-integer binomial recurrence cannot reach.
-///
-/// The message is the oracle's, character for character
-/// (`_bspline_degree_core._check_bincoeff_envelope`), because
-/// `tests/parity/test_bezier_degree.py` compares it.
-///
-/// \param n Largest upper index the elevation will need.
-/// \param what Description of the operation, opening the message.
-/// \throws std::invalid_argument If `n` exceeds `core::kBincoeffMaxN`.
-inline void require_bincoeff_envelope(std::size_t n, const std::string& what) {
-    if (n > static_cast<std::size_t>(core::kBincoeffMaxN)) {
-        throw std::invalid_argument(
-            what + " needs binomial coefficients up to C(" + std::to_string(n)
-            + ", k), beyond the largest upper index " + std::to_string(core::kBincoeffMaxN)
-            + " that pantr's exact-integer binomial kernel can compute without an int64 "
-              "overflow. Past that the coefficients wrap silently and the result is "
-              "corrupted rather than merely inaccurate.");
-    }
-}
 
 /// Refuse a per-direction argument whose length is not the parametric dimension.
 ///
@@ -170,10 +151,10 @@ template <Real T>
     for (std::size_t d = 0; d < dim; ++d) {
         if (increments[d] > 0) {
             const std::size_t elevated = bezier.degree(d) + increments[d];
-            detail::require_bincoeff_envelope(elevated, "Degree elevation to degree "
-                                                            + std::to_string(elevated)
-                                                            + " in direction "
-                                                            + std::to_string(d));
+            core::require_bincoeff_envelope(static_cast<std::int64_t>(elevated),
+                                            "Degree elevation to degree "
+                                                + std::to_string(elevated) + " in direction "
+                                                + std::to_string(d));
         }
     }
 
