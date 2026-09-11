@@ -42,6 +42,7 @@ set(PANTR_TEST_SOURCES
     test_bspline_knot_insertion.cpp
     test_bspline_refinement.cpp
     test_bspline_structural.cpp
+    test_bspline_degree.cpp
     test_thb_space.cpp
     test_bspline_type.cpp)
 
