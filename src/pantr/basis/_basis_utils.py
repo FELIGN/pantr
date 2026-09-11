@@ -8,6 +8,8 @@ helpers) of PaNTr:
   dimensions and the number of basis functions.
 - Output array validation: check shape, dtype, and writability of pre-allocated
   ``out`` arrays before calling Layer 3 kernels.
+- Output array reshaping: hand a kernel the shape it expects, and say whether the
+  caller's array still has to be written from the result.
 """
 
 from typing import Any
@@ -247,6 +249,10 @@ def _reshaped_out(
     Returns:
         tuple[npt.NDArray[Any], bool]: The array to hand the kernel, and whether the
         caller's ``out`` still has to be written from it once the kernel returns.
+
+    Raises:
+        ValueError: If ``shape`` holds a different number of elements than ``out``.
+            Call sites validate the shape first, so this cannot be reached from them.
 
     Example:
         >>> import numpy as np
