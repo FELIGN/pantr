@@ -21,6 +21,9 @@ widen a `float32`, which is the mechanism the three earlier width surprises rest
 2026-08-26 with Rule 12 (the interpreted oracle is a different object), which enumerates the
 three ways `NUMBA_DISABLE_JIT=1` changes what the oracle computes, and records that a
 width-dependent regression test can be inert in that configuration without saying so.
+Amended 2026-09-11 by the mixed-width contract change, which adds a section to Rule 9: the one
+width in the library that is a decision rather than a reading of the oracle, and the removal of
+the port's only documented fallback along with it.
 
 **Validated against:** `proto/cpp` at `765d9b9`, the `quad` port on `feat/cpp-quad`, and the
 root-finding port on `feat/cpp-bezier-roots`, whose fused branch was exercised against an
@@ -490,6 +493,40 @@ The `float32` asymmetry above survived the derivation and is now explained rathe
 seven of the eight kernels contract in a `float64` accumulator, so only a straddled narrowing
 store carries a difference to a `float32` output.
 
+
+### The one width that is a contract rather than a measurement, added 2026-09-11
+
+Everything above reads a width **off the oracle**, because the oracle is what parity is measured
+against. A call whose knots and points have *different* widths is the exception, and the reason is
+that no reading of the oracle could settle it.
+
+The oracle used to open its general-knot kernels with `dtype = knots.dtype` for their scratch while
+reading points at the points' own width, so a `float32` space evaluated at `float64` points
+truncated every intermediate to `float32` and returned an array that was `float64` in name only.
+That was not a decision anyone took; it is what the two lines happen to do. The C++ kernels are
+templated on one scalar type and cannot express the shape at all, which left three answers --
+refuse the call, promote both sides, or run Numba for it under both backends -- and only the third
+decides nothing, so `_the_cpp_kernels_cannot_serve` took it and said in its own docstring that the
+choice was a contract decision deferred.
+
+**The contract is now that such a call computes at the wider of the two widths, and returns it.**
+`_promote_for_mixed_width` applies that above the seam, which is Rule 1's shape: both backends are
+handed arrays of one dtype and the promotion cancels exactly. The fallback is gone with it, and
+with the fallback goes the port's only documented case of a selected backend not running.
+
+Two things this changes that a dtype assertion cannot see. The mixed call's **values** move, since
+the intermediates are no longer truncated; and the *other* direction -- `float64` knots at
+`float32` points -- now returns `float64` where it returned `float32`. Five tests exercised a mixed
+call before this and every one of them asserted the result's **dtype**, which the old behaviour
+satisfied too. The property that actually pins the contract is equality with the call whose two
+sides the caller widened himself, bit for bit, and that is what
+`tests/test_mixed_dtype_promotion.py` and the rewritten
+`tests/parity/test_bspline_basis_tabulation.py::test_a_mixed_dtype_call_is_promoted_and_reaches_cpp`
+assert.
+
+Widening the knots does **not** move the space's tolerance. That is an absolute parametric
+tolerance fixed at construction from the knot vector's own extent and storage format, and widening
+the array moves no knot.
 
 ## Rule 10: contraction removes one rounding per fused site, and only the amplification differs
 
