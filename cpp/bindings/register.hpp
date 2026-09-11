@@ -150,6 +150,17 @@ void register_bspline_refinement(nanobind::module_& m);
 /// refinement, none of these refuses a periodic direction.
 void register_bspline_structural(nanobind::module_& m);
 
+/// Register the degree operations on a `pantr.bspline.Bspline`.
+///
+/// Its own entry point rather than two more functions inside
+/// `register_bspline_structural`, for the reason that one is separate from
+/// `register_bspline_type`: changing a field's degree and cutting one down are
+/// separate ports with separate parity claims, and this one's decisions -- why
+/// `derivative` has no `keep_degree` parameter and no rational path, why
+/// `elevate_degree` refuses a periodic or unclamped direction -- argue from
+/// somewhere else entirely.
+void register_bspline_degree(nanobind::module_& m);
+
 /// Register `pantr.bspline`'s Bézier extraction operator builder and its mask.
 ///
 /// Separate from `register_bspline_extraction` because the two are separate ports

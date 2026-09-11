@@ -133,6 +133,8 @@ from ._bspline import (
 )
 from ._bspline_field import Bspline32 as Bspline32
 from ._bspline_field import Bspline64 as Bspline64
+from ._bspline_field import differentiate_bspline as differentiate_bspline
+from ._bspline_field import elevate_bspline_degree as elevate_bspline_degree
 from ._bspline_field import insert_bspline_knots as insert_bspline_knots
 from ._bspline_field import open_bspline as open_bspline
 from ._bspline_field import slice_bspline as slice_bspline
