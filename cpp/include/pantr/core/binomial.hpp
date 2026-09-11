@@ -30,16 +30,22 @@
 ///
 /// **The consequence of exceeding it is not shared.** Numba wraps on int64
 /// overflow and returns a corrupted value; in C++ signed overflow is undefined
-/// behaviour, so the same input is worse here than there. The two callers in
-/// `bezier` are guarded on the Python side by `_check_bincoeff_envelope`, which
-/// runs in Layer 2 before any kernel is entered, and `cpp/bindings/bezier.cpp`
-/// re-checks it for a caller that reaches the extension directly. `bincoeff` is the
-/// Layer 3 form and validates nothing, as Layer 3 does not.
+/// behaviour, so the same input is worse here than there. The callers in
+/// `bezier` and `bspline` are guarded on the Python side by
+/// `_check_bincoeff_envelope`, which runs in Layer 2 before any kernel is entered,
+/// and `require_bincoeff_envelope` below re-checks it for a caller that reaches the
+/// C++ core directly. `bincoeff` is the Layer 3 form and validates nothing, as Layer
+/// 3 does not.
 ///
 /// A `checked_bincoeff` wrapper lived here briefly and was deleted as dead code. It
 /// had no caller, and the binding had independently written the same check with a
 /// different message -- which is the divergence this file's first paragraph warns
-/// about, one layer up. The check now exists once.
+/// about, one layer up. `require_bincoeff_envelope` is that check rewritten with
+/// callers: `pantr/bezier/degree.hpp`, `pantr/bezier/product.hpp` and
+/// `pantr/bspline/degree.hpp` share it, and it carries the oracle's message verbatim.
+/// `cpp/bindings/bezier.cpp` still phrases its own refusal differently for the two
+/// Bézier entry points a Python caller reaches directly; that one is a binding
+/// concern rather than a second answer to this question.
 ///
 /// ## The other answer to the same question, and why both are here
 ///
@@ -66,6 +72,8 @@
 /// rounded operand is all a ratio can use.
 
 #include <cstdint>
+#include <stdexcept>
+#include <string>
 
 namespace pantr::core {
 
@@ -90,8 +98,7 @@ inline constexpr int kBincoeffExactDoubleMaxN = 56;
 ///
 /// \note No input validation is performed. Passing `n > kBincoeffMaxN` is
 ///       undefined behaviour, not a wrong answer. The caller establishes the
-///       envelope; `cpp/bindings/bezier.cpp`'s `require_bincoeff_envelope` is where
-///       the library does so.
+///       envelope; `require_bincoeff_envelope` below is where the library does so.
 [[nodiscard]] constexpr double bincoeff(int n, int k) noexcept {
     if (k < 0 || k > n) {
         return 0.0;
@@ -120,6 +127,32 @@ inline constexpr int kBincoeffExactDoubleMaxN = 56;
 [[nodiscard]] constexpr std::int64_t wrapping_mul(std::int64_t a, std::int64_t b) noexcept {
     return static_cast<std::int64_t>(static_cast<std::uint64_t>(a) *
                                      static_cast<std::uint64_t>(b));
+}
+
+/// Refuse an upper index the exact-integer recurrence cannot reach.
+///
+/// The message is the oracle's, character for character
+/// (`pantr.bspline._bspline_degree_core._check_bincoeff_envelope`), because the parity
+/// suites compare it.
+///
+/// It lives here rather than beside either caller for this file's opening reason: two
+/// packages need the same refusal, and the message has to match the oracle's exactly, so
+/// two copies of it is how the two come to refuse the same degree in different words.
+/// `cpp/bindings/bezier.cpp` still carries a third spelling with its own wording, for the
+/// Bézier entry points a Python caller reaches directly.
+///
+/// \param n Largest upper index the computation will need.
+/// \param what Description of the operation, opening the message.
+/// \throws std::invalid_argument If `n` exceeds `kBincoeffMaxN`.
+inline void require_bincoeff_envelope(std::int64_t n, const std::string& what) {
+    if (n > kBincoeffMaxN) {
+        throw std::invalid_argument(
+            what + " needs binomial coefficients up to C(" + std::to_string(n)
+            + ", k), beyond the largest upper index " + std::to_string(kBincoeffMaxN)
+            + " that pantr's exact-integer binomial kernel can compute without an int64 "
+              "overflow. Past that the coefficients wrap silently and the result is "
+              "corrupted rather than merely inaccurate.");
+    }
 }
 
 }  // namespace pantr::core

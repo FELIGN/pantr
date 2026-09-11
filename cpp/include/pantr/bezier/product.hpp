@@ -206,6 +206,7 @@
 /// Python to raise for it.
 
 #include <cstddef>
+#include <cstdint>
 #include <span>
 #include <stdexcept>
 #include <string>
@@ -216,6 +217,7 @@
 #include "pantr/bezier/bezier.hpp"
 #include "pantr/bezier/degree.hpp"
 #include "pantr/bezier/kernels_1d.hpp"
+#include "pantr/core/binomial.hpp"
 #include "pantr/core/mdspan.hpp"
 #include "pantr/core/scalar.hpp"
 
@@ -904,9 +906,9 @@ template <Real T>
     // message is `_check_bincoeff_envelope`'s.
     if (use_1d_kernel && (dim_outer > 1 || outer.degree(0) > 1)) {
         const std::size_t composed = total_degree * inner.degree(0);
-        detail::require_bincoeff_envelope(composed, "Composition to degree "
-                                                        + std::to_string(composed)
-                                                        + " with a 1D inner Bézier");
+        core::require_bincoeff_envelope(static_cast<std::int64_t>(composed),
+                                        "Composition to degree " + std::to_string(composed)
+                                            + " with a 1D inner Bézier");
     }
 
     const std::size_t order = composition_table_order<T>(outer, inner);
