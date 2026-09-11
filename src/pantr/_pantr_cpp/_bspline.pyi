@@ -1364,3 +1364,76 @@ def apply_kron_M_K_MT_many_3d(
             inconsistent, or if ``out`` overlaps the operand while at least one cell
             in the batch contracts.
     """
+
+def tabulate_bspline_space_basis_1d(
+    space: BsplineSpace1D32 | BsplineSpace1D64,
+    points: _Array,
+    *,
+    out_basis: _Array,
+    out_first_basis: _Index,
+) -> None:
+    """Tabulate a space's basis, taking its Bézier-like fast path.
+
+    The space-level counterpart of :func:`tabulate_bspline_basis_1d`. Where that
+    one binds ``pantr::bspline::basis_funcs_1d`` and leaves the choice of path to
+    the caller, this binds ``pantr::bspline::tabulate_basis_1d``, which reads
+    ``has_Bezier_like_knots()`` off the space and takes the Bernstein route with
+    its change of variable when it holds.
+
+    **It is not what :mod:`pantr.bspline._basis_backend` calls**, and that is
+    deliberate: the oracle keeps its own dispatch, and building a space per call
+    would re-validate and copy the knot vector in front of a kernel the oracle
+    calls with two or three points. This exists so the parity suite can compare
+    the C++ dispatch against the oracle's, which is what a C++ consumer actually
+    runs and what ``ctest`` alone can only check against itself.
+
+    The space validated its knots when it was built, so there is no knot-length
+    check here; only the output shapes, which the space cannot know, are checked.
+
+    Args:
+        space (BsplineSpace1D32 | BsplineSpace1D64): The space to tabulate. Its
+            scalar type fixes the dtype of ``points`` and of the outputs.
+        points (_Array): The evaluation points, 1D and C-contiguous. Not checked
+            against the domain: a point outside it is evaluated in the clamped
+            span, which is what the oracle does with ``validate=False``.
+        out_basis (_Array): Shape ``(points.size, space.degree() + 1)``, written
+            in full.
+        out_first_basis (_Index): One entry per point, written in full.
+
+    Raises:
+        ValueError: If either output has the wrong shape.
+    """
+
+def tabulate_bspline_space_basis_derivatives_1d(
+    space: BsplineSpace1D32 | BsplineSpace1D64,
+    n_deriv: int,
+    points: _Array,
+    *,
+    out_deriv: _Array,
+    out_first_basis: _Index,
+) -> None:
+    """Tabulate a space's basis derivatives, taking its Bézier-like fast path.
+
+    The derivative twin of :func:`tabulate_bspline_space_basis_1d`, with the same
+    contract and the same reason for existing. On the Bézier-like path the
+    derivatives are scaled by the chain rule, the k-th row carrying
+    ``(1 / (b - a))^k``; ``cpp/include/pantr/bspline/tabulate.hpp`` records that
+    the factor is accumulated in ``double`` and applied at the space's own width,
+    both halves measured against numpy rather than read off the source.
+
+    The ``degree >= 21`` wrapping :func:`tabulate_bspline_basis_derivatives_1d`
+    documents applies here unchanged: it is the kernel's, not the dispatch's.
+
+    Args:
+        space (BsplineSpace1D32 | BsplineSpace1D64): The space to tabulate.
+        n_deriv (int): Highest derivative order. Must be non-negative and must
+            fit a C ``int``.
+        points (_Array): The evaluation points, 1D and C-contiguous.
+        out_deriv (_Array): Shape ``(points.size, n_deriv + 1,
+            space.degree() + 1)``, written in full.
+        out_first_basis (_Index): One entry per point, written in full.
+
+    Raises:
+        ValueError: If ``n_deriv`` does not fit a C ``int``, or if either output
+            has the wrong shape.
+    """

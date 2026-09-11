@@ -125,6 +125,12 @@ from ._bspline import tabulate_bspline_basis_1d as tabulate_bspline_basis_1d
 from ._bspline import (
     tabulate_bspline_basis_derivatives_1d as tabulate_bspline_basis_derivatives_1d,
 )
+from ._bspline import (
+    tabulate_bspline_space_basis_1d as tabulate_bspline_space_basis_1d,
+)
+from ._bspline import (
+    tabulate_bspline_space_basis_derivatives_1d as tabulate_bspline_space_basis_derivatives_1d,
+)
 from ._bspline_field import Bspline32 as Bspline32
 from ._bspline_field import Bspline64 as Bspline64
 from ._bspline_field import insert_bspline_knots as insert_bspline_knots
