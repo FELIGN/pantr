@@ -17,6 +17,7 @@ from typing import TYPE_CHECKING
 import numpy as np
 
 from .._array_utils import _flatten_along_axis, _unflatten_along_axis
+from .._numba_compat import wait_for_jit_warmup
 from ._bezier_backend import restrict_kernel, restrict_nd_kernel
 
 if TYPE_CHECKING:
@@ -46,6 +47,10 @@ def _restrict_bezier(
         ValueError: If every direction is ``None`` or matches the full
             ``[0, 1]`` domain.
     """
+    # Ensure the background JIT warmup has finished before calling Numba kernels that use
+    # parallel=True: numba's workqueue layer aborts the process rather than raising.
+    wait_for_jit_warmup()
+
     lower = [0.0 if bounds is None else float(bounds[0]) for bounds in bounds_per_dim]
     upper = [1.0 if bounds is None else float(bounds[1]) for bounds in bounds_per_dim]
 

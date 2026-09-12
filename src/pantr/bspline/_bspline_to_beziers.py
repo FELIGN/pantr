@@ -22,7 +22,7 @@ import numpy as np
 import numpy.typing as npt
 
 from .._array_utils import _flatten_along_axis, _unflatten_along_axis
-from .._numba_compat import nb_jit, nb_prange
+from .._numba_compat import nb_jit, nb_prange, wait_for_jit_warmup
 from .spanwise_element_extraction import ExtractionTarget, SpanwiseElementExtraction
 
 if TYPE_CHECKING:
@@ -124,6 +124,10 @@ def _to_beziers_impl(bspline: Bspline) -> npt.NDArray[np.object_]:
         structure.
     """
     from ..bezier import Bezier  # noqa: PLC0415
+
+    # Ensure the background JIT warmup has finished before calling Numba kernels that use
+    # parallel=True: numba's workqueue layer aborts the process rather than raising.
+    wait_for_jit_warmup()
 
     dim = bspline.dim
 

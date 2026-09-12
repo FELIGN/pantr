@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING
 import numpy as np
 
 from .._array_utils import _flatten_along_axis, _unflatten_along_axis
+from .._numba_compat import wait_for_jit_warmup
 from ._bezier_backend import split_kernel, split_nd_kernel
 
 if TYPE_CHECKING:
@@ -49,6 +50,10 @@ def _split_bezier(
         Inputs are assumed to be correct (no validation performed).
         For general use, call :meth:`~pantr.bezier.Bezier.split` instead.
     """
+    # Ensure the background JIT warmup has finished before calling Numba kernels that use
+    # parallel=True: numba's workqueue layer aborts the process rather than raising.
+    wait_for_jit_warmup()
+
     return split_nd_kernel()(bezier, direction, value)
 
 

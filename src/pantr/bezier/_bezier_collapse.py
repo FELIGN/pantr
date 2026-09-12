@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING
 import numpy as np
 import numpy.typing as npt
 
+from .._numba_compat import wait_for_jit_warmup
 from ..basis._basis_core import _tabulate_Bernstein_basis_1D_core
 from ._bezier_backend import collapse_kernel
 
@@ -58,6 +59,10 @@ def _collapse_along_axis(
         ValueError: If ``values`` does not have length ``dim - 1``.
         ValueError: If any value is outside ``[0, 1]``.
     """
+    # Ensure the background JIT warmup has finished before calling Numba kernels that use
+    # parallel=True: numba's workqueue layer aborts the process rather than raising.
+    wait_for_jit_warmup()
+
     dim = bezier.dim
     values_arr = np.asarray(values, dtype=bezier.dtype)
 
