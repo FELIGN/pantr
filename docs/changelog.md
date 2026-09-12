@@ -124,6 +124,34 @@ user-facing, and the ports change what it affects.
   extension is installed, and prints how to build one that fuses.
 
 ### Fixed
+- **A `Bezier` is a value again: it copies its control points and hands back read-only views.**
+  It did neither. `__init__` stored what `numpy.asarray` returned, which does not copy an array
+  that is already float, and `control_points` handed that same object back, so a caller could
+  move a constructed Bézier by writing to the array they passed in or through the property, and
+  the object had no way to notice. Every derived result went with it -- `evaluate`, `split`,
+  `to_bspline`.
+  This is FELIGN/pantr#338's defect in a second class, and the C++ value had already fixed its
+  side, so **the two backends disagreed on a public observable**: measured before the fix, the
+  Python one aliased the caller's array and returned a writable property while the C++ one did
+  neither. They now agree exactly. The assertions that pinned the copy were running under C++
+  alone; they run under both.
+  The stored array stays writable inside the class, deliberately, and that is the one place this
+  differs from what `PointsLattice` did: `reverse`, `permute_directions` and `transform` take
+  `in_place=True` and write straight into it, so freezing the storage rather than the view would
+  have turned that flag into an allocation. What the caller receives is a fresh read-only view,
+  fresh because `writeable = False` stops writes to the data and not changes to the metadata --
+  `arr.shape = ...` reshapes a read-only array in place, and on a shared array that would leave
+  the Bézier holding the wrong rank.
+  **`copy=False` no longer shares when a `Bezier` is the receiving end**, under either backend:
+  `create_from_bspline(..., copy=False)` and `Bspline.to_bezier(copy=False)` copy like everything
+  else now, and both docstrings say so. The flag still shares when a `Bspline` receives, since
+  the Python `Bspline` has the same defect and no ticket yet; `design/bspline_ownership_lifetime.md`
+  carries it. `Bezier.to_bspline(copy=False)` keeps working exactly as before, and that took
+  care rather than falling out: it hands over the Bézier's own writable array rather than the
+  read-only view, because the Python `Bspline` stores what it is given and its `in_place=True`
+  methods write into it, so a frozen array would have produced a B-spline that raised on
+  `reverse(..., in_place=True)`. `shares_memory` does not catch that -- a read-only view shares
+  memory perfectly well -- so there is now a test that mutates the result.
 - **A raised ISA builds again on a host whose native target includes AVX-512.** It did not:
   Eigen's AVX512 `TrsmKernel.h` trips GCC's `-Wmaybe-uninitialized`, and the project builds
   with `-Werror`, so the build failed outright. Measured here on conda-forge GCC 14.4.0 and a
