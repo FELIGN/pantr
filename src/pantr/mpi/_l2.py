@@ -1,11 +1,12 @@
 """Distributed L2 projection onto tensor-product B-spline spaces.
 
 Provides :func:`l2_project_bspline_distributed`, the MPI-parallel counterpart of
-:func:`~pantr.bspline.l2_project_bspline`.  L2 assembly is per-element, mapping directly
-onto the cell partition: each rank evaluates ``func`` only on the quadrature points of
-its *owned* cells and contracts them into a per-component load tensor, a single
-``allreduce`` sums the global load across ranks, and the (replicated) Kronecker solve
-recovers the global coefficients.  The per-direction mass matrices are
+:func:`~pantr.bspline.l2_project_bspline`.  L2 *assembly* is per-element and maps
+directly onto the cell partition, but the *evaluation* of ``func`` does not: every rank
+evaluates it on the whole global quadrature lattice and masks the result to its owned
+cells afterwards.  Each rank then contracts the masked values into a per-component load
+tensor, a single ``allreduce`` sums the global load across ranks, and the (replicated)
+Kronecker solve recovers the global coefficients.  The per-direction mass matrices are
 partition-independent and built identically on every rank, so only the load is
 communicated.  The result is a :class:`~pantr.mpi.DistributedFunction` whose
 :attr:`~pantr.mpi.DistributedFunction.local` reproduces the serial L2 projection exactly
@@ -138,11 +139,27 @@ def l2_project_bspline_distributed(  # noqa: PLR0913
 
     The MPI-parallel counterpart of :func:`~pantr.bspline.l2_project_bspline`.  L2
     assembly is per-element and maps directly onto the cell partition: each rank
-    evaluates ``func`` only on the quadrature points of its *owned* cells and contracts
-    them into a per-component load tensor; a single ``allreduce`` sums the global load
-    across ranks; and the replicated Kronecker solve recovers the global coefficients.
-    The returned :class:`~pantr.mpi.DistributedFunction` agrees with the serial L2
-    projection pointwise over every owned cell.
+    contracts the quadrature values over its *owned* cells into a per-component load
+    tensor; a single ``allreduce`` sums the global load across ranks; and the replicated
+    Kronecker solve recovers the global coefficients.  The returned
+    :class:`~pantr.mpi.DistributedFunction` agrees with the serial L2 projection
+    pointwise over every owned cell.
+
+    **``func`` is evaluated on the whole global lattice by every rank**, and the
+    ownership mask is applied to the result.  Only the contraction is distributed, not
+    the evaluation, so the total number of calls into ``func`` grows linearly with the
+    rank count instead of staying fixed.  For a cheap callable that costs nothing worth
+    measuring; for an expensive one it is the dominant cost and this function does not
+    reduce it.
+
+    The reason is the callable's own contract, one line down in ``Args``: ``func``
+    receives a :class:`~pantr.quad.PointsLattice`, a tensor product of per-direction
+    coordinates.  A rank's owned cells are an arbitrary subset of the grid, and the
+    quadrature points inside them are not a tensor product of anything, so there is no
+    lattice that names them.  Restricting the evaluation would mean handing ``func`` a
+    flat point array instead, which is a different signature.
+    :func:`~pantr.mpi.quasi_interpolate_bspline_distributed` has that signature and does
+    restrict its evaluation, which is why the two differ here.
 
     The per-direction mass matrices are partition-independent and built identically on
     every rank (cheap ``n_dofs_i x n_dofs_i`` systems), so only the load is communicated.
@@ -234,8 +251,10 @@ def l2_project_bspline_distributed(  # noqa: PLR0913
         _build_l2_mass_and_quad(global_space, n_quad, quadrature, boundary_interpolation)
     )
 
-    # Evaluate func on the global quadrature lattice, restricted (by masking) to this
-    # rank's owned cells, and contract into a per-component load tensor.
+    # Evaluate func on the global quadrature lattice -- every rank, all of it -- then
+    # mask to this rank's owned cells and contract into a per-component load tensor.
+    # The docstring says why the evaluation is not restricted: `func` takes a lattice,
+    # and a rank's owned quadrature points are not one.
     quad_lattice = PointsLattice(quad_nodes_per_dir)
     quad_grid_shape = tuple(a.shape[0] for a in quad_nodes_per_dir)
     components, out_dtype = _evaluate_func_on_lattice(func, quad_lattice, quad_grid_shape)

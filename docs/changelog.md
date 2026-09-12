@@ -189,6 +189,25 @@ user-facing, and the ports change what it affects.
   transformation separates the two paths was not established here and neither test is changed.
 
 ### Documentation
+- **`l2_project_bspline_distributed`'s docstring said the reverse of what it does.** It
+  promised that each rank evaluates the callable *"only on the quadrature points of its owned
+  cells"*. Every rank evaluates it on the whole global lattice and masks the result afterwards,
+  so the per-rank cost does not fall with the rank count and the total work grows linearly with
+  it. Correctness was never affected; what was affected is anyone sizing an expensive callable
+  from the docstring, who is exactly the reader a distributed projection is written for. Measured
+  here at one, two, three and four ranks and at two grid sizes: the count per rank is the serial
+  count, unchanged.
+  **The docstring now says what happens and why**, the why being the callable's own contract:
+  ``func`` receives a `PointsLattice`, a tensor product of per-direction coordinates, and a
+  rank's owned quadrature points are not a tensor product of anything, so no lattice names them.
+  Restricting the evaluation means handing ``func`` a flat point array instead, which is a
+  different signature.
+  **`quasi_interpolate_bspline_distributed` does not share the defect**, contrary to what the
+  report suspected. Its callable already takes a flat point array, so it can and does restrict
+  to its owned DOFs' support: measured on a 24-by-24 grid, its per-rank count falls by more than
+  half at four ranks, while the L2 projection's does not move. Two MPI tests now pin the
+  difference, because a docstring stating a performance property is the one kind of claim
+  nothing else in the suite checks.
 - **The seven Bernstein-coefficient kernels in `pantr.bezier._root_finding_core` now state
   the precondition their Layer 3 disclaimer stands on**, `len(coeff) >= 1`. *"Inputs are
   assumed to be correct (no validation performed)"* is correct policy and was the whole of
