@@ -420,3 +420,99 @@ def test_fit_bspline_distributed_replicated_values_matches_serial() -> None:
     np.testing.assert_allclose(
         dfn.global_function.control_points, serial.control_points, atol=1e-10
     )
+
+
+# ---------------------------------------------------------------------------
+# Where each distributed entry point evaluates its callable
+# ---------------------------------------------------------------------------
+#
+# These pin a *performance* property that the docstrings state, which nothing else in
+# the suite checks. FELIGN/pantr#432 was filed because one of the two docstrings said
+# the opposite of what the code does, and prose is not something a test can catch --
+# what a test can catch is the property the prose describes, which is what these do.
+
+
+def test_the_l2_projection_evaluates_the_whole_lattice_on_every_rank() -> None:
+    """`l2_project_bspline_distributed` does not distribute the evaluation of ``func``.
+
+    Pins what the docstring now says, deliberately including the part that is a
+    limitation: every rank calls ``func`` on the whole global quadrature lattice and
+    masks afterwards, so the per-rank count is the serial count however many ranks
+    there are.
+
+    Compared against the serial count rather than only across ranks. Cross-rank
+    uniformity is not the property: the default partitioner splits a uniform grid into
+    equal boxes, so a *restricted* evaluation would also be uniform across ranks and an
+    equality-of-ranks assertion would keep passing through the very change it is meant
+    to notice.
+
+    If someone does restrict it, this fails, which is the point: the docstring and the
+    behaviour move together or not at all.
+    """
+    comm = MPI.COMM_WORLD
+    space = create_uniform_space([2, 2], [6, 6])
+    seen: list[int] = []
+
+    def counted(lat: Any) -> np.ndarray:
+        mesh = _grid_mesh(lat)
+        seen.append(int(mesh[0].size))
+        return np.sin(np.pi * mesh[0]) * np.cos(np.pi * mesh[1])
+
+    # The serial reference, taken by running the serial entry point on the same space.
+    l2_project_bspline(counted, space)
+    assert len(seen) == 1
+    serial_points = seen.pop()
+
+    ds = create_distributed_space(space, comm)
+    l2_project_bspline_distributed(counted, ds)
+
+    assert len(seen) == 1, f"func was called {len(seen)} times, expected once"
+    assert seen[0] == serial_points, (
+        f"{seen[0]} points per rank against {serial_points} serial: the evaluation is no "
+        "longer the whole global lattice, so the docstring needs to change with it"
+    )
+    assert len(set(comm.allgather(seen[0]))) == 1
+
+
+def test_the_quasi_interpolant_does_distribute_its_evaluation() -> None:
+    """`quasi_interpolate_bspline_distributed` evaluates its windowed space, not everything.
+
+    The counterpart of the test above. Its callable takes a flat point array rather than
+    a lattice, so it is not held to a tensor product and can evaluate a rank's own
+    window; the L2 projection is, and does not.
+
+    **Windowed, which is owned plus halo, not owned alone.** The evaluation is genuinely
+    distributed -- the per-rank count falls as ranks are added, which is the property
+    pinned here -- but the halo is evaluated on both sides of every partition boundary,
+    so the aggregate still exceeds the serial count. That is why this asserts a strict
+    decrease rather than a share: the margin depends on the grid and the partition. What
+    is not allowed is for the count to stay put, which is the shape of the defect next
+    door.
+    """
+    comm = MPI.COMM_WORLD
+    if comm.size == 1:
+        pytest.skip("needs more than one rank to see the count fall")
+
+    space = create_uniform_space([2, 2], [24, 24])
+    seen: list[int] = []
+
+    def counted(pts: np.ndarray) -> np.ndarray:
+        arr = np.asarray(pts)
+        seen.append(int(arr.shape[0]))
+        return np.sin(np.pi * arr[:, 0]) * np.cos(np.pi * arr[:, 1])
+
+    # The reference is the serial quasi-interpolant's own count, taken here rather than
+    # written down: the points are the Lee-Lyche-Mørken functionals' and there is no
+    # simpler expression for how many of them there are.
+    quasi_interpolate_bspline(counted, space)
+    assert len(seen) == 1
+    serial_points = seen.pop()
+
+    ds = create_distributed_space(space, comm)
+    quasi_interpolate_bspline_distributed(counted, ds)
+
+    assert len(seen) == 1, f"func was called {len(seen)} times, expected once"
+    assert seen[0] < serial_points, (
+        f"{seen[0]} points per rank against {serial_points} serial: the distributed "
+        "quasi-interpolant is evaluating everything, like the L2 projection does"
+    )

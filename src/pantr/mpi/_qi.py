@@ -1,9 +1,12 @@
 """Distributed quasi-interpolation onto tensor-product B-spline spaces.
 
 Provides :func:`quasi_interpolate_bspline_distributed`, the MPI-parallel counterpart of
-:func:`~pantr.bspline.quasi_interpolate_bspline`.  Each rank evaluates the function only
-on the points required by its *owned* DOFs (no redundant evaluation of halo-DOF points),
-then a single ``allgather`` collective assembles the full global coefficient field.
+:func:`~pantr.bspline.quasi_interpolate_bspline`.  Each rank evaluates the function on the
+points its *windowed* local space needs -- its owned DOFs and their halo -- and discards
+the halo coefficients afterwards, then a single ``allgather`` collective assembles the
+full global coefficient field.  So the evaluation is genuinely distributed, unlike
+:func:`~pantr.mpi.l2_project_bspline_distributed`, but it is not free of redundancy: the
+halo is evaluated on both sides of every partition boundary.
 The result is a :class:`~pantr.mpi.DistributedFunction` whose
 :attr:`~pantr.mpi.DistributedFunction.local` reproduces the serial quasi-interpolant
 exactly over the rank's owned cells.
@@ -36,15 +39,21 @@ def quasi_interpolate_bspline_distributed(
     """Quasi-interpolate a callable onto a distributed tensor-product B-spline space.
 
     The MPI-parallel counterpart of :func:`~pantr.bspline.quasi_interpolate_bspline`.
-    Each rank evaluates ``func`` only on the interior points required by its *owned*
-    basis functions (Lee-Lyche-Mørken functionals); a single ``allgather`` at the end
-    assembles the global coefficient field.  The returned
-    :class:`~pantr.mpi.DistributedFunction` agrees with the serial quasi-interpolant
-    pointwise over every owned cell.
+    Each rank runs the serial quasi-interpolant over its *windowed* local space and keeps
+    only the owned coefficients; a single ``allgather`` at the end assembles the global
+    coefficient field.  The returned :class:`~pantr.mpi.DistributedFunction` agrees with
+    the serial quasi-interpolant pointwise over every owned cell.
 
     Construction requires one MPI collective (``comm.allgather``) after the local
     computation.  Per-rank ``func`` evaluation is purely local: no rank ever evaluates
     ``func`` outside its windowed parametric sub-domain.
+
+    **The window is owned plus halo, not owned alone**, so the points the Lee-Lyche-Mørken
+    functionals of the halo DOFs need are evaluated on both sides of every partition
+    boundary.  The per-rank cost does fall as ranks are added, which is what separates
+    this from :func:`~pantr.mpi.l2_project_bspline_distributed`, but the aggregate rises:
+    the overhead is the halo's share of each window and it shrinks, relatively, as the
+    grid grows against the rank count.
 
     Args:
         func (Callable): Function to quasi-interpolate.  Called on a flat
