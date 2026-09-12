@@ -129,14 +129,28 @@ target_link_libraries(pantr_core INTERFACE $<BUILD_INTERFACE:Eigen3::Eigen>)
 # everywhere: re-running the planted-bug check with this in place, the build
 # fails on our bug and reports nothing from Eigen.
 #
-# What it costs: at AVX-512 under GCC, Eigen's triangular solves take its
-# generic path instead of the blocked one. Nothing measures that here, and
-# nothing in pantr should be sensitive to it -- the solves are `PartialPivLU` on
-# change-of-basis matrices, far below the sizes a blocked kernel is written for
-# -- but it is a performance choice and not only a warning fix, which is why it
-# sits beside Eigen rather than in the warning policy. It is scoped to GCC
+# What it costs, and the cost is not only speed. At AVX-512 under GCC, Eigen's
+# triangular solves take its generic path instead of the blocked one, and they
+# take it at every size: `TriangularSolverMatrix.h` calls `trsmKernelL` under
+# nothing but `EIGEN_VECTORIZE_AVX512 && EIGEN_USE_AVX512_TRSM_L_KERNELS`, and
+# the size cutoff that would otherwise skip it is gated on
+# `EIGEN_ENABLE_AVX512_NOCOPY_TRSM_L_CUTOFFS`, which Eigen enables for Clang
+# only. So this is a live change of which code computes a solve, not a change
+# that small matrices would have sidestepped anyway -- an earlier version of this
+# comment claimed the latter and was wrong.
+#
+# Two backward-stable paths over the same matrix may still differ in the last
+# bits, so results at AVX-512 under GCC can move. That is inside the regime this
+# project already works in -- design/backend_parity.md grades a backend against a
+# derived tolerance and says outright that bit-identity is not a property of the
+# mathematics -- but no parity result here has been measured at AVX-512, so that
+# is a statement about the regime and not a measurement. `change_basis`'s
+# `solve_against_identity` is the path that reaches it.
+#
+# Being a numerical and performance choice rather than only a warning fix is why
+# it sits beside Eigen rather than in the warning policy. It is scoped to GCC
 # because Clang builds these kernels cleanly at AVX-512, so there is no reason to
-# take the same trade there.
+# take the trade there.
 #
 # BUILD_INTERFACE for the same reason as the link above: it configures the Eigen
 # we compile against, and a consumer brings their own.

@@ -140,10 +140,13 @@ user-facing, and the ports change what it affects.
   Eigen reports nothing. A blanket `-Wno-maybe-uninitialized` was measured first and compiled
   that planted bug clean, which is exactly why it is not what landed.
   What it trades is Eigen's blocked triangular solve for its generic one, at AVX-512 under GCC
-  only. Clang builds those kernels cleanly and is untouched. Nothing here should be sensitive
-  to the difference -- the solves are `PartialPivLU` on change-of-basis matrices, far below the
-  sizes a blocked kernel targets -- but it is a performance choice as well as a build fix, so
-  it sits beside Eigen rather than in the warning policy.
+  only, and at every size: Eigen's size cutoff for that kernel is enabled for Clang only, and
+  Clang builds the kernels cleanly so is untouched anyway. Two backward-stable paths over the
+  same matrix may differ in the last bits, so results there can move. That is inside the regime
+  `design/backend_parity.md` already describes, which grades a backend against a derived
+  tolerance rather than bit-identity -- but nothing has been measured at AVX-512, so it is a
+  statement about the regime and not a measurement. Being a numerical choice and not only a
+  build fix is why it sits beside Eigen rather than in the warning policy.
   The default build is unchanged, and `-mavx2 -mfma` still builds with zero warnings. Nothing
   in CI can catch a regression here: no job and no preset raises the ISA, and a host without
   AVX-512 cannot exercise it at all, so the check is a human on the right machine.
