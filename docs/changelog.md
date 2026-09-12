@@ -146,7 +146,12 @@ user-facing, and the ports change what it affects.
   `create_from_bspline(..., copy=False)` and `Bspline.to_bezier(copy=False)` copy like everything
   else now, and both docstrings say so. The flag still shares when a `Bspline` receives, since
   the Python `Bspline` has the same defect and no ticket yet; `design/bspline_ownership_lifetime.md`
-  carries it.
+  carries it. `Bezier.to_bspline(copy=False)` keeps working exactly as before, and that took
+  care rather than falling out: it hands over the Bézier's own writable array rather than the
+  read-only view, because the Python `Bspline` stores what it is given and its `in_place=True`
+  methods write into it, so a frozen array would have produced a B-spline that raised on
+  `reverse(..., in_place=True)`. `shares_memory` does not catch that -- a read-only view shares
+  memory perfectly well -- so there is now a test that mutates the result.
 - **A raised ISA builds again on a host whose native target includes AVX-512.** It did not:
   Eigen's AVX512 `TrsmKernel.h` trips GCC's `-Wmaybe-uninitialized`, and the project builds
   with `-Werror`, so the build failed outright. Measured here on conda-forge GCC 14.4.0 and a

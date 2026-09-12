@@ -459,15 +459,16 @@ class Bezier:
             tuple: The class, and the control points and rationality flag to
             rebuild it from.
         """
-        control_points = self.control_points
-        if not control_points.flags.writeable:
-            # The C++ backend hands out a read-only view and pickle preserves that
-            # flag (measured). Reconstructing under the Python backend would then
-            # store a read-only array, where `reverse(in_place=True)` raises. The
-            # copy is what keeps one backend's storage decision out of the wire
-            # format.
-            control_points = np.array(control_points)
-        return (type(self), (control_points, self.is_rational))
+        # No copy here, and the guard that used to make one is gone with its
+        # reason. It read the writable flag, because pickle preserves it and only
+        # the C++ backend handed out a read-only view, so reconstructing under the
+        # Python backend would have stored a frozen array that
+        # `reverse(in_place=True)` then raised on. Since FELIGN/pantr#375 both
+        # constructors copy unconditionally, so nothing that comes off the wire is
+        # ever stored as-is and the branch could not do anything but fire. What
+        # this now leans on is that copy: if a constructor ever stops making one,
+        # this needs the guard back.
+        return (type(self), (self.control_points, self.is_rational))
 
     @property
     def dim(self) -> int:
@@ -1387,7 +1388,9 @@ class Bezier:
                 B-spline shares the same underlying control point array --
                 **under the Python backend only**. The C++ value owns its
                 storage and copies at construction, so there ``copy=False``
-                saves nothing and shares nothing.
+                saves nothing and shares nothing. Sharing runs both ways:
+                mutating the returned B-spline in place writes through to this
+                Bézier's control points, which is what asking not to copy means.
 
         Returns:
             ~pantr.bspline.Bspline: Equivalent B-spline representation.
@@ -1402,7 +1405,25 @@ class Bezier:
             knots[p + 1 :] = 1.0
             spaces.append(BsplineSpace1D(knots, p))
 
-        cp = self.control_points.copy() if copy else self.control_points
+        # `copy=False` must hand over a *writable* array, not the read-only view
+        # `control_points` returns. The Python `Bspline` stores what it is given
+        # without copying and its own `in_place=True` methods write straight into
+        # it, so a frozen array would leave the caller with a B-spline that raises
+        # on `reverse(..., in_place=True)`. Reaching for the oracle's private array
+        # keeps this operation exactly as it was: `copy=False` shares, and the
+        # B-spline it produces can still be mutated in place. It does mean a
+        # B-spline taken this way can write through to this Bezier's storage, which
+        # is what `copy=False` has always meant and is a separate question from the
+        # one FELIGN/pantr#375 settled about the caller-facing property. Under the
+        # C++ backend there is no writable private array and none is needed: that
+        # `Bspline` is a C++ value and copies before it mutates.
+        impl = self._impl
+        if copy:
+            cp = self.control_points.copy()
+        elif isinstance(impl, _BezierPython):
+            cp = impl._control_points
+        else:
+            cp = impl.control_points
         return BsplineCls(BsplineSpace(spaces), cp, self.is_rational)
 
     # ------------------------------------------------------------------

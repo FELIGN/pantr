@@ -610,14 +610,17 @@ between mechanisms:**
    change, but worth stating because it looks like the kind of thing a port would alter.
 2. **`Bspline(space, cp)` copies `cp`.** The C++ value type copies at construction, so
    `cp[0] = ...` after construction stops being visible. This is not new policy: the same
-   decision is already shipped for `Bezier` and recorded at
-   `tests/test_bspline_conversion.py:22-32`, which skips `test_copy_false` under the C++ backend
-   with the reason *"the C++ value copies its control points at construction, so `copy=False`
-   shares nothing under that backend"*. #398 inherits both the decision and the skip idiom.
-3. **`Bspline.control_points` becomes a read-only view.** `Bezier`'s precedent
-   (`src/pantr/bezier/_bezier.py:473-484`) is explicit: under the C++ backend it is a read-only
-   view of the object's own storage, writing raises, and it stays valid after the object is
-   dropped. Today `Bspline.control_points` is the live writable array -- verified by execution:
+   decision is already shipped for `Bezier` under **both** backends since FELIGN/pantr#375, so
+   the skip idiom this note used to point at is gone -- the assertions that were skipped under
+   C++ now run under both and assert that nothing shares. #398 inherits the decision; what it
+   no longer inherits is a reason to gate the assertion by backend.
+3. **`Bspline.control_points` becomes a read-only view.** `Bezier`'s precedent is explicit and
+   now applies to both backends (FELIGN/pantr#375): the property is a read-only view of the
+   object's own storage, writing raises, and under the C++ backend it stays valid after the
+   object is dropped. Worth copying along with it is how the Python side did it -- the stored
+   array stays writable and the *view* is what is frozen, because `Bspline` has `in_place=True`
+   methods that would otherwise turn into allocations, and the view is minted fresh per call
+   because `writeable = False` does not stop an in-place reshape of the array's metadata. Today `Bspline.control_points` is the live writable array -- verified by execution:
    `b.control_points is b._control_points` is `True` and `b.control_points[0,0] = 99` changes the
    object. **This is the one change in the milestone that will break working downstream code
    silently-turned-loud** (an `IndexError`-free `ValueError: assignment destination is read-only`

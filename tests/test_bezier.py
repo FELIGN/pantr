@@ -181,6 +181,22 @@ class TestBezierConversion:
         bs = b.to_bspline(copy=False)
         assert np.shares_memory(b.control_points, bs.control_points)
 
+    def test_to_bspline_copy_false_hands_over_a_writable_array(self) -> None:
+        """The B-spline `copy=False` produces can still be mutated in place.
+
+        `shares_memory` alone does not catch this: a read-only *view* shares memory
+        just as well, and the Python `Bspline` stores what it is handed without
+        copying, so its own `in_place=True` methods then raise. That is exactly
+        what FELIGN/pantr#375 broke in passing when `Bezier.control_points` became
+        a read-only view, and what the private-array path in `to_bspline` exists to
+        prevent. Runs under both backends: the C++ `Bspline` copies before it
+        mutates, so it satisfies this for its own reason.
+        """
+        b = _make_bezier_1d([1.0, 2.0, 3.0])
+        bs = b.to_bspline(copy=False)
+        bs.reverse(0, in_place=True)
+        np.testing.assert_allclose(np.ravel(bs.control_points), [3.0, 2.0, 1.0])
+
     def test_from_bspline_copy_true(self) -> None:
         """Test that from_bspline with copy=True creates independent arrays."""
         b_orig = _make_bezier_1d([1.0, 2.0, 3.0])
