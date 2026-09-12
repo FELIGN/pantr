@@ -914,8 +914,9 @@ def _interval_count(expected: int, degree: int) -> Predicate:
     definition that fits all three factories: a periodic or cardinal vector deliberately
     extends ``degree`` further spans beyond each end, so counting spans across the whole
     array would report ``1 + 2 * degree`` for a one-interval request and flag correct
-    behavior. This is the weakest reading of what the factories promise, and it is the one
-    that separates them at ``n = 0``.
+    behavior. This is the weakest reading of what the factories promise. It used to be the
+    check that separated the three at ``n = 0`` as well; now that all three refuse that
+    input, ``must_reject`` decides it and this predicate only ever sees ``n >= 1``.
 
     Args:
         expected (int): Number of intervals requested.
@@ -2049,18 +2050,23 @@ def _factory_cases(profile: Profile) -> Iterator[Case]:
                     params,
                     invariants=(custom("knots-non-decreasing", _non_decreasing),),
                 )
-                # The count corners. `must_reject` is deliberately *not* used for zero:
-                # `create_uniform_open_knots` documents `num_intervals` as "must be
-                # non-negative", so refusing it is not the contract. What is asserted
-                # instead is that whatever comes back is a usable knot vector with the
-                # requested number of intervals -- which is where the three factories
-                # part company (see `_interval_count`).
+                # The count corners. All three factories now document `num_intervals`
+                # as "must be at least 1" and enforce it, so zero is `must_reject` and
+                # one is `must_succeed`. Until the fix for the zero-interval knot
+                # vectors landed, only `create_cardinal_knots` said so, and the other
+                # two returned NaN and inf (periodic) or one interval instead of none
+                # (open) -- which is what `_interval_count` was there to catch.
                 for factory in (
                     create_uniform_open_knots,
                     create_uniform_periodic_knots,
                     create_cardinal_knots,
                 ):
                     for n_intervals in (0, 1):
+                        # A `must_reject` case never reaches its invariants: `run_case`
+                        # returns on the exception, and on a return it reports
+                        # `must-reject:returned` before the checks are built. So the zero
+                        # case carries none rather than two that cannot run.
+                        rejected = n_intervals == 0
                         yield Case(
                             GROUP,
                             f"{factory.__name__}_{tag}_n{n_intervals}",
@@ -2069,11 +2075,14 @@ def _factory_cases(profile: Profile) -> Iterator[Case]:
                                 factory(n, degree, dtype=dtype)
                             ),
                             {**params, "n_intervals": n_intervals, "factory": factory.__name__},
-                            invariants=(
+                            invariants=()
+                            if rejected
+                            else (
                                 custom("knots-non-decreasing", _non_decreasing),
                                 custom("interval-count", _interval_count(n_intervals, degree)),
                             ),
-                            must_succeed=n_intervals == 1,
+                            must_succeed=not rejected,
+                            must_reject=rejected,
                         )
 
     if profile is not Profile.FULL:
