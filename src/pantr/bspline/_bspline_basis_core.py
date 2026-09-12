@@ -17,6 +17,7 @@ from typing import TYPE_CHECKING
 import numpy as np
 import numpy.typing as npt
 
+from .._numba_compat import wait_for_jit_warmup
 from ..basis._basis_1D import _tabulate_Bernstein_basis_1D_impl
 from ..basis._basis_backend import bernstein_deriv_core
 from ..basis._basis_core import _PARALLEL_MIN_NUM_PTS
@@ -274,6 +275,10 @@ def _tabulate_Bspline_basis_1D_impl(
         >>> first.tolist()
         [0, 1, 3, 3]
     """
+    # Ensure the background JIT warmup has finished before calling Numba kernels that use
+    # parallel=True: numba's workqueue layer aborts the process rather than raising.
+    wait_for_jit_warmup()
+
     input_shape = np.shape(pts)
     pts = _normalize_points_1D(pts)
 
@@ -387,6 +392,10 @@ def _tabulate_Bspline_basis_deriv_1D_impl(  # noqa: PLR0913
     """
     if n_deriv < 0:
         raise ValueError(f"n_deriv must be non-negative, got {n_deriv}")
+
+    # Ensure the background JIT warmup has finished before calling Numba kernels that use
+    # parallel=True: numba's workqueue layer aborts the process rather than raising.
+    wait_for_jit_warmup()
 
     input_shape = np.shape(pts)
     pts = _normalize_points_1D(pts)

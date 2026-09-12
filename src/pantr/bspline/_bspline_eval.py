@@ -17,7 +17,7 @@ from typing import TYPE_CHECKING
 import numpy as np
 from numpy import typing as npt
 
-from .._numba_compat import nb_jit, nb_prange
+from .._numba_compat import nb_jit, nb_prange, wait_for_jit_warmup
 from ..basis._basis_utils import _allocate_or_validate_out, _validate_out_array
 from ..quad import PointsLattice
 from ._bspline_basis_kernels import (
@@ -214,6 +214,10 @@ def _evaluate_Bspline_1D(
     """
     if spline.dim != 1:
         raise ValueError("B-spline must be 1D")
+
+    # Ensure the background JIT warmup has finished before calling Numba kernels that use
+    # parallel=True: numba's workqueue layer aborts the process rather than raising.
+    wait_for_jit_warmup()
 
     # Convert PointsLattice to ndarray if necessary
     pts_array: npt.NDArray[np.float32 | np.float64]
@@ -557,6 +561,10 @@ def _evaluate_Bspline_deriv_1D(
         raise ValueError("B-spline must be 1D")
     if n_deriv < 0:
         raise ValueError(f"n_deriv must be >= 0, got {n_deriv}")
+
+    # Ensure the background JIT warmup has finished before calling Numba kernels that use
+    # parallel=True: numba's workqueue layer aborts the process rather than raising.
+    wait_for_jit_warmup()
 
     pts_array: npt.NDArray[np.float32 | np.float64]
     if isinstance(pts, PointsLattice):

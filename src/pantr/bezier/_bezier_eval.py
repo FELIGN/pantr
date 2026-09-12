@@ -29,6 +29,7 @@ from typing import TYPE_CHECKING
 import numpy as np
 import numpy.typing as npt
 
+from .._numba_compat import wait_for_jit_warmup
 from ..basis._basis_utils import _validate_out_array
 from ._bezier_backend import (
     evaluate_deriv_kernel,
@@ -71,6 +72,10 @@ def _evaluate_bezier(
     Raises:
         ValueError: If the points dtype or shape does not match the Bézier.
     """
+    # Ensure the background JIT warmup has finished before calling Numba kernels that use
+    # parallel=True: numba's workqueue layer aborts the process rather than raising.
+    wait_for_jit_warmup()
+
     if bezier.dim == 1:
         return _evaluate_bezier_1d(bezier, pts, out)
     return _evaluate_bezier_nd(bezier, pts, out)
@@ -435,6 +440,10 @@ def _evaluate_bezier_deriv(
         raise ValueError(f"len(orders) ({len(orders_tuple)}) must match dim ({bezier.dim}).")
     if any(o < 0 for o in orders_tuple):
         raise ValueError("All derivative orders must be non-negative.")
+
+    # Ensure the background JIT warmup has finished before calling Numba kernels that use
+    # parallel=True: numba's workqueue layer aborts the process rather than raising.
+    wait_for_jit_warmup()
 
     if bezier.dim == 1:
         return _evaluate_bezier_deriv_1d(bezier, pts, orders_tuple[0], out)
