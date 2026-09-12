@@ -131,6 +131,19 @@ class Case:
             on whether the result is finite, so an entry point that silently started
             accepting nonsense and producing a plausible number would read as ``OK``:
             the input family's intent lives in a comment and nothing checks it.
+        out_of_contract (bool): For an input the entry point's own docstring states
+            is illegal, where the entry point is a Layer 3 kernel that validates
+            nothing. Neither of the two flags above fits: the call is not required to
+            succeed, and it is not required to be refused either -- what it does is
+            **unspecified**, and pinning today's behavior would freeze something this
+            library does not promise. So a raise is reported as a documented rejection
+            and a return as ``OK``, with the declared invariants skipped, since they
+            describe a contract this input is outside of. It is only legitimate where
+            the precondition is *written down*: used on an entry point whose docstring
+            names no such precondition, this becomes a way to silence a finding, which
+            is the one thing this harness must not offer. What keeps the existing uses
+            honest is ``tests/test_kernel_preconditions.py``, which asserts the
+            precondition is stated.
         finite_inputs (bool): Whether every input is finite. When ``False`` the
             automatic finiteness check on the result is skipped.
         arrays (Mapping[str, npt.NDArray[Any]]): Input arrays to persist under
@@ -146,18 +159,30 @@ class Case:
     invariants: tuple[Invariant, ...] = ()
     must_succeed: bool = False
     must_reject: bool = False
+    out_of_contract: bool = False
     finite_inputs: bool = True
     arrays: Mapping[str, npt.NDArray[Any]] = dataclasses.field(default_factory=dict)
 
     def __post_init__(self) -> None:
-        """Reject a case that claims its input is both legal and illegal.
+        """Reject a case that makes more than one claim about its input's legality.
 
         Raises:
-            ValueError: If both ``must_succeed`` and ``must_reject`` are set.
+            ValueError: If more than one of ``must_succeed``, ``must_reject`` and
+                ``out_of_contract`` is set.
         """
-        if self.must_succeed and self.must_reject:
+        claims = [
+            name
+            for name, set_ in (
+                ("must_succeed", self.must_succeed),
+                ("must_reject", self.must_reject),
+                ("out_of_contract", self.out_of_contract),
+            )
+            if set_
+        ]
+        if len(claims) > 1:
             raise ValueError(
-                f"case {self.group}/{self.label} sets both must_succeed and must_reject"
+                f"case {self.group}/{self.label} sets {' and '.join(claims)}; "
+                "an input is legal, illegal, or outside the stated contract, not two of them"
             )
 
 
@@ -514,6 +539,13 @@ def classify(case: Case, exc: Exception) -> tuple[Verdict, str, str]:
     name = type(exc).__name__
     message = str(exc).strip()
 
+    if case.out_of_contract:
+        return (
+            Verdict.DOCUMENTED_REJECTION,
+            f"out-of-contract:{name}",
+            f"{name} on input the kernel's docstring states is illegal: {message}",
+        )
+
     if isinstance(exc, IndexError) and message == NUMBA_OOB_MESSAGE:
         return Verdict.BUG, "numba-oob", "Numba bounds check: out-of-range access in a kernel"
 
@@ -680,13 +712,20 @@ def run_case(index: int, case: Case) -> Outcome:
             if verdict is Verdict.BUG:
                 detail = f"{detail}\n{_short_traceback(exc)}"
             return Outcome(index, case, verdict, kind, detail, _warning_names(caught))
-        if case.must_reject:
+        if case.must_reject or case.out_of_contract:
+            # Both stop here, for opposite reasons. A `must_reject` case that returned
+            # is the finding itself. An `out_of_contract` one is graded on nothing: its
+            # invariants describe a contract this input is outside of, so running them
+            # would be asking a question the entry point never answered.
+            rejected = case.must_reject
             return Outcome(
                 index,
                 case,
-                Verdict.BUG,
-                "must-reject:returned",
-                f"input built to be refused was accepted, returning {type(result).__name__}",
+                Verdict.BUG if rejected else Verdict.OK,
+                "must-reject:returned" if rejected else "out-of-contract:returned",
+                f"input built to be refused was accepted, returning {type(result).__name__}"
+                if rejected
+                else "",
                 _warning_names(caught),
             )
         checks = [*case.invariants]

@@ -63,11 +63,6 @@ _KNOWN_FINDINGS = frozenset(
         # `test_sweep_regressions.py::test_degree_elevation_outputs_are_mutually_consistent`.
         "elevate_degree_d0_m1_float64_random",
         "elevate_degree_d1_m2_float64_random",
-        # `_de_casteljau_eval_scalar` reads `coeff[0]` with no guard, so an empty
-        # coefficient array reads out of bounds. Layer 3 documents that it validates
-        # nothing, and no public path reaches it with an empty array, so this is a port
-        # note rather than a live bug: in C++ the same read is undefined behavior.
-        "de_casteljau_len0_float64",
     }
 )
 """Findings the smoke profile is expected to reproduce.
@@ -88,6 +83,12 @@ the code.
 Six more went the same way when the knot-vector factories were made to refuse
 ``num_intervals=0``: the six ``create_uniform_{open,periodic}_knots_d{0,1,3}_float64_[0,1]_n0``
 cases now decline the input, and the probe asserts that refusal with ``must_reject``.
+
+``de_casteljau_len0_float64`` left for a different reason, and it is worth keeping straight.
+Nothing about the kernel changed: an empty coefficient array still reads out of bounds. What
+changed is that the kernel now *states* the precondition it was silently assuming, so the case
+carries ``out_of_contract`` and the harness grades it as a documented rejection. The entry was
+never a bug to fix; it was a contract that had not been written down.
 """
 
 
@@ -151,3 +152,110 @@ def test_smoke_sweep_finds_nothing_new(tmp_path: pathlib.Path) -> None:
         if r["verdict"] == "BUG" and r["label"] in new
     )
     assert not new, f"the sweep found {len(new)} finding(s) not in _KNOWN_FINDINGS:\n{details}"
+
+
+# ---------------------------------------------------------------------------
+# The harness's own `out_of_contract` flag, unit-tested
+# ---------------------------------------------------------------------------
+#
+# These need no subprocess and no Numba: they exercise the classifier directly, on
+# fabricated cases. They exist because the flag's two branches are not both reachable
+# from a sweep run -- the launcher re-execs with `NUMBA_BOUNDSCHECK=1` unconditionally,
+# so a kernel that overruns always raises and the "returned anyway" branch is never
+# taken by today's cases. Untested, that branch would be free to rot.
+
+sys.path.insert(0, str(_ROOT / "tools"))
+
+from adversarial_sweep._core import (  # noqa: E402  -- needs the path insert above
+    NUMBA_OOB_MESSAGE,
+    Case,
+    Verdict,
+    classify,
+    custom,
+    run_case,
+)
+
+
+def _case(
+    *,
+    must_succeed: bool = False,
+    must_reject: bool = False,
+    out_of_contract: bool = False,
+) -> Case:
+    """Build a minimal case whose entry point documents nothing.
+
+    Args:
+        must_succeed (bool): Set the "legal by construction" flag. Defaults to False.
+        must_reject (bool): Set the "built to be refused" flag. Defaults to False.
+        out_of_contract (bool): Set the "outside the stated contract" flag. Defaults to
+            False.
+
+    Returns:
+        Case: A case over a no-op entry point.
+    """
+
+    def entry() -> int:
+        """Do nothing.
+
+        Returns:
+            int: Zero.
+        """
+        return 0
+
+    return Case(
+        "unit",
+        "probe",
+        entry,
+        lambda: 0,
+        must_succeed=must_succeed,
+        must_reject=must_reject,
+        out_of_contract=out_of_contract,
+    )
+
+
+def test_out_of_contract_turns_a_kernel_overrun_into_a_documented_rejection() -> None:
+    """The flag is what reclassifies the bounds-check hit, and only the flag."""
+    overrun = IndexError(NUMBA_OOB_MESSAGE)
+
+    verdict, kind, _ = classify(_case(), overrun)
+    assert (verdict, kind) == (Verdict.BUG, "numba-oob")
+
+    verdict, kind, _ = classify(_case(out_of_contract=True), overrun)
+    assert verdict is Verdict.DOCUMENTED_REJECTION
+    assert kind == "out-of-contract:IndexError"
+
+
+def test_an_out_of_contract_case_that_returns_is_graded_on_nothing() -> None:
+    """Its invariants describe a contract the input is outside of, so they do not run."""
+    always_fails = custom("never-holds", lambda _result: "this invariant always fails")
+
+    graded = run_case(0, Case("unit", "probe", int, lambda: 0, invariants=(always_fails,)))
+    assert graded.verdict is Verdict.BUG
+
+    ungraded = run_case(
+        0,
+        Case(
+            "unit",
+            "probe",
+            int,
+            lambda: 0,
+            invariants=(always_fails,),
+            out_of_contract=True,
+        ),
+    )
+    assert ungraded.verdict is Verdict.OK
+    assert ungraded.kind == "out-of-contract:returned"
+
+
+@pytest.mark.parametrize(
+    ("first", "second"),
+    [
+        ("must_succeed", "must_reject"),
+        ("must_succeed", "out_of_contract"),
+        ("must_reject", "out_of_contract"),
+    ],
+)
+def test_a_case_may_make_only_one_claim_about_its_input(first: str, second: str) -> None:
+    """An input is legal, illegal, or outside the stated contract, never two of them."""
+    with pytest.raises(ValueError, match="not two of them"):
+        _case(**{first: True, second: True})

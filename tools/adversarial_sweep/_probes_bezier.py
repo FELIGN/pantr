@@ -2700,17 +2700,17 @@ def _de_casteljau_kernel_cases(profile: Profile) -> Iterator[Case]:
                 lambda coeff=coeff: _de_casteljau_eval_scalar(coeff, 0.5),
                 {"length": length, "dtype": str(dtype), "t": 0.5},
                 arrays={"coeff": coeff},
-                # `length == 0` is the one case in this module that is deliberately
-                # *outside* the contract and so carries neither flag. This is a Layer-3
-                # kernel whose docstring says "Inputs are assumed to be correct (no
-                # validation performed)", so it owes a zero-length array nothing: the
-                # bounds-check hit it produces is the sweep proving the harness is live
-                # on a real pantr kernel, and a record for the port that this call site
-                # needs its own guard -- not a defect in the kernel. Flagging it either
-                # way would be a false claim, and neither flag could change the verdict
-                # anyway: `_core.classify` reports a Numba out-of-bounds access before
-                # it consults them. The other lengths are in contract.
+                # `length == 0` is deliberately *outside* the contract, and the
+                # kernel's docstring now says what that contract is: `len(coeff) >= 1`.
+                # Neither of the other two flags fits -- the call is not required to
+                # succeed, and it is not required to be refused either, since a Layer 3
+                # kernel validates nothing and its behavior here is unspecified. The
+                # bounds-check hit it produces under `NUMBA_BOUNDSCHECK=1` is the sweep
+                # proving the harness is live on a real pantr kernel, and a record for
+                # the port that this call site needs its own guard, not a defect. The
+                # other lengths are in contract.
                 must_succeed=length > 0,
+                out_of_contract=length == 0,
             )
 
         coeff5 = np.linspace(-1.0, 1.0, 5, dtype=dtype)
