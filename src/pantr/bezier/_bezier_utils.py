@@ -44,7 +44,9 @@ def _tabulate_bernstein_1d_fast(
     # workqueue layer is not safe against a concurrent `parallel=True` call from another
     # thread: the process *aborts* rather than raising. This helper is the funnel for the
     # Bernstein path in `pantr.bezier`, so the barrier here also covers `interpolate_bezier`
-    # and `fit_bezier`, which reach no other `parallel=True` kernel.
+    # and `fit_bezier`, which reach no other `parallel=True` kernel. It does *not* cover the
+    # barriers in `_bezier_eval`: their `dim == 1` branches reach `evaluate_kernel()` and
+    # `evaluate_deriv_kernel()`, which never come through here, so all three are needed.
     wait_for_jit_warmup()
 
     basis = np.empty((pts.shape[0], degree + 1), dtype=dtype)
