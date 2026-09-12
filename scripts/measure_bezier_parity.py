@@ -332,7 +332,14 @@ def main() -> int:
         "second build. To take them:\n"
         "  cmake --preset gcc -B build/native -DCMAKE_CXX_FLAGS=-march=native\n"
         "  cmake --build build/native && ctest --test-dir build/native\n"
-        "then re-run this script against an extension built the same way."
+        "then re-run this script against an extension built the same way.\n"
+        "Expect two ctest failures on that build, test_scalar_generic and\n"
+        "test_bspline_refinement. Both assert bit-identity between two code paths.\n"
+        "Measured: they pass at the baseline and fail at -mavx2 -mfma as well as at\n"
+        "-march=native, so raising the ISA at all is enough. Which transformation\n"
+        "separates the two paths was not established. This is the same surface\n"
+        "design/extraction_port.md records for the Python parity files at\n"
+        "-march=x86-64-v3. Nothing about the movement counts depends on them."
     )
     return 0 if all(bad == 0 for _, _, bad in rows) else 1
 

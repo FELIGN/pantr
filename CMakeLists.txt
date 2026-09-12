@@ -97,6 +97,52 @@ target_compile_options(pantr_core INTERFACE
 # Eigen under a consumer's different version is outside what was measured.
 target_link_libraries(pantr_core INTERFACE $<BUILD_INTERFACE:Eigen3::Eigen>)
 
+# Eigen's blocked AVX-512 triangular-solve kernels are turned off under GCC, and
+# they are turned off at the dependency rather than worked around downstream.
+#
+# They do not compile here. Raise the ISA to include AVX-512 and GCC reports
+# -Wmaybe-uninitialized against them, which -Werror turns into a failed build:
+# measured on conda-forge GCC 14.4.0 and a skylake-avx512 host, 546 diagnostics,
+# every one the same `PacketBlock<__vector(8) double, 32>` GCC cannot prove is
+# initialised along every path. Each is reported at the compiler's own intrinsics
+# headers -- 518 in avx512fintrin.h, 28 in avxintrin.h -- and the whole inlining
+# chain that reaches them is Eigen's, from `gemmKernel` in TrsmKernel.h down
+# through `transStoreC`, `trans::transpose`, `trans8x8blocks` and `ptranspose`.
+# Not one frame is pantr's.
+#
+# That chain is why the obvious remedies do not apply, and it is worth recording
+# so they are not retried. Eigen is already `SYSTEM` (cmake/PantrDependencies
+# .cmake) and it makes no difference, because -Wmaybe-uninitialized is a
+# middle-end diagnostic raised after inlining rather than a warning parsed out of
+# a header. A `#pragma GCC diagnostic` at a pantr call site cannot reach it
+# either: pantr does not appear in the chain at all. What is left is
+# -Wno-maybe-uninitialized, and that was measured to be exactly as bad as it
+# sounds -- with it on, a deliberately uninitialised read planted in one of our
+# own files compiled clean, where the baseline build rejects it. Issue #419 says
+# so in advance: "a global -Wno-maybe-uninitialized would satisfy AC1 and defeat
+# the purpose".
+#
+# `EIGEN_USE_AVX512_TRSM_KERNELS` is Eigen's own switch for this code, not a
+# workaround bolted on from outside -- Eigen sets it to 0 itself under
+# EIGEN_NO_MALLOC, these kernels relying on malloc. Setting it to 0 removes the
+# false positive at its source, so the full warning set stays in force
+# everywhere: re-running the planted-bug check with this in place, the build
+# fails on our bug and reports nothing from Eigen.
+#
+# What it costs: at AVX-512 under GCC, Eigen's triangular solves take its
+# generic path instead of the blocked one. Nothing measures that here, and
+# nothing in pantr should be sensitive to it -- the solves are `PartialPivLU` on
+# change-of-basis matrices, far below the sizes a blocked kernel is written for
+# -- but it is a performance choice and not only a warning fix, which is why it
+# sits beside Eigen rather than in the warning policy. It is scoped to GCC
+# because Clang builds these kernels cleanly at AVX-512, so there is no reason to
+# take the same trade there.
+#
+# BUILD_INTERFACE for the same reason as the link above: it configures the Eigen
+# we compile against, and a consumer brings their own.
+target_compile_definitions(pantr_core INTERFACE
+    $<BUILD_INTERFACE:$<$<COMPILE_LANG_AND_ID:CXX,GNU>:EIGEN_USE_AVX512_TRSM_KERNELS=0>>)
+
 # Threads, and unlike Eigen this one DOES cross the install boundary.
 # `pantr/core/lazy.hpp` puts an `std::mutex` and an `std::atomic<bool>` inside a
 # header, so the thread-safety contract the domain types promise is compiled into

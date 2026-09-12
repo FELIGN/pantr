@@ -106,6 +106,12 @@ if(PANTR_WERROR)
       $<$<COMPILE_LANG_AND_ID:CXX,GNU,Clang,AppleClang>:-Werror>)
 endif()
 
+# Deliberately absent, and recorded so it is not reintroduced: any
+# -Wno-maybe-uninitialized for the sake of Eigen's AVX-512 kernels. That warning
+# stays on at every ISA level. The kernels that could not survive it are turned
+# off at the dependency instead, beside Eigen in the top-level CMakeLists, which
+# is where the reasoning and the measurements live.
+
 # Deliberately absent: any -march or -mtune. Shipping several ISA variants is
 # stage 2 in design/simd.md, and it is gated there on first MEASURING the gap
 # between the baseline and x86-64-v3 on pantr's own kernels. Adding the flag

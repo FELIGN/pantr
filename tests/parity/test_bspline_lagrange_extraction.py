@@ -486,9 +486,12 @@ def _product_claim(
     at ``-march=x86-64-v3`` -- the smallest target that defines ``__FP_FAST_FMA``,
     and the one ``design/simd.md`` schedules -- where ``contraction_may_fuse()`` is
     true, and the result is recorded in the PR that added it rather than assumed
-    here. **Not** ``-march=native``, which does not build in this repository; an
-    earlier version of this line said it did, and the recipe it gave could not have
-    reproduced the check.
+    here. **Not** ``-march=native``. That did not build in this repository when the
+    line was written -- an earlier version of it said it did, and the recipe it gave
+    could not have reproduced the check -- and it builds now, Eigen's AVX512 TRSM
+    kernels being switched off under GCC. It is still not what this was run at:
+    ``x86-64-v3`` is the target ``design/simd.md`` schedules, and running the check
+    somewhere else would not be the check.
 
     **This branch is dead in every build the repository itself runs.**
     ``contraction_may_fuse()`` reads the built binary's own provenance and is false

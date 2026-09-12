@@ -123,6 +123,40 @@ user-facing, and the ports change what it affects.
 - `scripts/measure_bezier_fma_bound.py`, which reproduces the bound's slack against whatever
   extension is installed, and prints how to build one that fuses.
 
+### Fixed
+- **A raised ISA builds again on a host whose native target includes AVX-512.** It did not:
+  Eigen's AVX512 `TrsmKernel.h` trips GCC's `-Wmaybe-uninitialized`, and the project builds
+  with `-Werror`, so the build failed outright. Measured here on conda-forge GCC 14.4.0 and a
+  skylake-avx512 host: 546 diagnostics, all the same
+  `PacketBlock<__vector(8) double, 32>` that GCC cannot prove is initialised along every path,
+  all reported at the compiler's own intrinsics headers, and **none anywhere in pantr** -- the
+  whole inlining chain that reaches them is Eigen's, from `gemmKernel` down through
+  `ptranspose`.
+  The fix turns the offending kernels off at the dependency rather than silencing the warning:
+  `EIGEN_USE_AVX512_TRSM_KERNELS=0` under GCC, which is **Eigen's own switch** for that code,
+  the one it sets itself under `EIGEN_NO_MALLOC`. So the full warning set stays in force at
+  every ISA level. That was checked rather than assumed, as the issue demanded: a deliberately
+  uninitialised read planted in one of pantr's own files still fails the build at AVX-512, and
+  Eigen reports nothing. A blanket `-Wno-maybe-uninitialized` was measured first and compiled
+  that planted bug clean, which is exactly why it is not what landed.
+  What it trades is Eigen's blocked triangular solve for its generic one, at AVX-512 under GCC
+  only. Clang builds those kernels cleanly and is untouched. Nothing here should be sensitive
+  to the difference -- the solves are `PartialPivLU` on change-of-basis matrices, far below the
+  sizes a blocked kernel targets -- but it is a performance choice as well as a build fix, so
+  it sits beside Eigen rather than in the warning policy.
+  The default build is unchanged, and `-mavx2 -mfma` still builds with zero warnings. Nothing
+  in CI can catch a regression here: no job and no preset raises the ISA, and a host without
+  AVX-512 cannot exercise it at all, so the check is a human on the right machine.
+  The measurement recipes in `scripts/measure_bezier_fma_bound.py` and
+  `design/backend_parity.md` no longer need `-DPANTR_WERROR=OFF`, which used to turn off the
+  whole warning policy to get past this one diagnostic.
+  **Unblocking the build makes two C++ tests visible that were not**: `test_scalar_generic`
+  and `test_bspline_refinement` both assert bit-identity between two code paths, both pass at
+  the baseline, and both fail at `-mavx2 -mfma` as well as at a native build, so raising the
+  ISA at all is enough. That is the same surface `design/extraction_port.md` already records
+  for the Python parity files at `-march=x86-64-v3`, now observable on the C++ side. Which
+  transformation separates the two paths was not established here and neither test is changed.
+
 ### Documentation
 - **The seven Bernstein-coefficient kernels in `pantr.bezier._root_finding_core` now state
   the precondition their Layer 3 disclaimer stands on**, `len(coeff) >= 1`. *"Inputs are

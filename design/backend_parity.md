@@ -668,9 +668,14 @@ bit-identity exactly while the vectorisation stays, which separates the two the 
 build made to isolate contraction was byte-identical to the fusing one and only
 `compile_commands.json` showed it.
 
-And **Eigen does not compile under `-march=native` with `PANTR_WERROR=ON`**: its AVX512
-`TrsmKernel.h` trips `-Wmaybe-uninitialized` in its own code. That is a decision waiting for the
-ISA ladder of `design/simd.md`, not for this rule.
+**Eigen used not to compile under `-march=native` with `PANTR_WERROR=ON`**: its AVX512
+`TrsmKernel.h` trips `-Wmaybe-uninitialized` in its own code, 546 diagnostics of them, none in
+pantr. It does now. The top-level `CMakeLists.txt` sets `EIGEN_USE_AVX512_TRSM_KERNELS=0` under
+GCC, which is Eigen's own switch for that code, so the offending kernels are never instantiated
+and the whole warning set stays in force. The measurement builds no longer need
+`-DPANTR_WERROR=OFF`. What it trades is Eigen's blocked triangular solve for its generic one at
+AVX-512 under GCC; the solves here are `PartialPivLU` on change-of-basis matrices, well below
+the sizes a blocked kernel targets.
 
 `scripts/measure_bezier_fma_bound.py` reproduces every figure above.
 

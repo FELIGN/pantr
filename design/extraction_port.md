@@ -508,9 +508,12 @@ only ever comparing zero against zero. Case 2 must assert the observed error is 
 
   The fused branch of the Lagrange claim was **run, not reasoned about**, against an
   extension built at `-march=x86-64-v3` -- the target `design/simd.md` schedules, and the
-  smallest one that defines `__FP_FAST_FMA`; `-march=native` does not build here, because
-  it turns on AVX512 and Eigen's AVX512 TRSM kernel trips `-Wmaybe-uninitialized` under
-  `PANTR_WERROR`. On that build the extraction files pass in full, including the 10x
+  smallest one that defines `__FP_FAST_FMA`. `-march=native` did not build when this was
+  written, because it turns on AVX512 and Eigen's AVX512 TRSM kernel trips
+  `-Wmaybe-uninitialized` under `PANTR_WERROR`. It builds now: the top-level `CMakeLists.txt`
+  sets Eigen's own `EIGEN_USE_AVX512_TRSM_KERNELS=0` under GCC, so those kernels are never
+  instantiated and no warning had to be given up. On that build the extraction files pass in
+  full, including the 10x
   sweep, and the observed disagreement reaches a few percent of the fused bound. **Twenty-seven
   parity cases in five other files do fail there** -- basis tabulations, three Bézier
   files and quad -- which is the pre-existing state that flipping the SIMD target is
