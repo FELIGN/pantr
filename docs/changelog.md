@@ -123,6 +123,22 @@ user-facing, and the ports change what it affects.
 - `scripts/measure_bezier_fma_bound.py`, which reproduces the bound's slack against whatever
   extension is installed, and prints how to build one that fuses.
 
+### Documentation
+- **The seven Bernstein-coefficient kernels in `pantr.bezier._root_finding_core` now state
+  the precondition their Layer 3 disclaimer stands on**, `len(coeff) >= 1`. *"Inputs are
+  assumed to be correct (no validation performed)"* is correct policy and was the whole of
+  what they said, which names no minimum: a direct caller had nothing to check its input
+  against, and neither did the adversarial sweep. Three of the seven read past a shorter
+  array -- `_de_casteljau_eval_scalar` and `_de_casteljau_eval_and_deriv_scalar` directly,
+  and `_newton_polish_scalar` through its call into the latter -- and the other four survive one and
+  return something meaningless; each docstring now says which it is, and says the behavior is
+  unspecified either way rather than pinning today's. Verified by calling all seven at length
+  0 under `NUMBA_BOUNDSCHECK=1` with a fresh cache. No public path reaches any of them with
+  an empty array: `Bezier.__init__` and `_validate_coeff_array` both reject an empty axis, and
+  those guards are unchanged. The C++ mirrors in `cpp/include/pantr/bezier/root_finding.hpp`
+  carry the same statement, since a contract the two backends state differently is a contract
+  only one of them has.
+
 ### Rejected where it used to be accepted
 - **`num_intervals=0` is refused by all three knot-vector factories.**
   `create_uniform_open_knots` and `create_uniform_periodic_knots` documented

@@ -146,8 +146,13 @@ namespace detail {
 /// \param work Scratch of at least `coeff.size()` entries; contents are not read.
 /// \return The polynomial value, at coefficient width, as the oracle returns it.
 ///
-/// Mirrors `_root_finding_core._de_casteljau_eval_scalar`. No validation is
-/// performed; the Python layer guarantees the shapes.
+/// Mirrors `_root_finding_core._de_casteljau_eval_scalar`. No validation is performed; the
+/// Python layer guarantees the shapes. `coeff` must hold at least one coefficient, a degree-`n`
+/// polynomial having `n + 1` of them. On an empty one the copy above writes nothing and this
+/// then reads `work[0]`, so the `work` line stops holding: sized to match `coeff`, that read is
+/// out of bounds; longer than it, the value is indeterminate. Both are undefined behavior. The
+/// numba oracle reports the same read as an `IndexError`, its workspace being a copy of `coeff`
+/// and so exactly as short.
 template <Real T>
 T de_casteljau_eval_scalar(std::span<const T> coeff, accumulator_t<T> t, std::span<T> work) {
     const auto n = static_cast<std::ptrdiff_t>(coeff.size()) - 1;
@@ -177,8 +182,13 @@ T de_casteljau_eval_scalar(std::span<const T> coeff, accumulator_t<T> t, std::sp
 /// \param out_deriv Receives the derivative.
 /// \return The polynomial value.
 ///
-/// Mirrors `_root_finding_core._de_casteljau_eval_and_deriv_scalar`. No validation is
-/// performed.
+/// Mirrors `_root_finding_core._de_casteljau_eval_and_deriv_scalar`. No validation is performed.
+/// `coeff` must hold at least one coefficient, a degree-`n` polynomial having `n + 1` of them.
+/// On an empty one the copy above writes nothing and this then reads `work[0]` and `work[1]`, so
+/// the `work` line stops holding: sized to match `coeff`, those reads are out of bounds; longer
+/// than it, the values are indeterminate. Both are undefined behavior. The numba oracle reports
+/// the same read as an `IndexError`, its workspace being a copy of `coeff` and so exactly as
+/// short.
 template <Real T>
 accumulator_t<T> de_casteljau_eval_and_deriv_scalar(std::span<const T> coeff, accumulator_t<T> t,
                                                     std::span<T> work,
@@ -220,7 +230,10 @@ accumulator_t<T> de_casteljau_eval_and_deriv_scalar(std::span<const T> coeff, ac
 /// \param upper Right bound in (0, 1].
 /// \param out Receives `p + 1` restricted coefficients.
 ///
-/// Mirrors `_root_finding_core._restrict_scalar`. No validation is performed.
+/// Mirrors `_root_finding_core._restrict_scalar`. No validation is performed. `coeff` must hold
+/// at least one coefficient, a degree-`n` polynomial having `n + 1` of them. This function
+/// happens to survive a shorter span, but what it produces for one is unspecified and matches
+/// the oracle only by accident.
 template <Real T>
 void restrict_scalar(std::span<const T> coeff, double lower, double upper, std::span<double> out) {
     using std::abs;
@@ -270,7 +283,10 @@ void restrict_scalar(std::span<const T> coeff, double lower, double upper, std::
 /// \param t_max Sub-interval end, clamped into [0, 1].
 /// \param out Receives `coeff.size()` reparametrised coefficients.
 ///
-/// Mirrors `_root_finding_core._subdivide_scalar`. No validation is performed.
+/// Mirrors `_root_finding_core._subdivide_scalar`. No validation is performed. `coeff` must hold
+/// at least one coefficient, a degree-`n` polynomial having `n + 1` of them. This function
+/// happens to survive a shorter span, but what it produces for one is unspecified and matches
+/// the oracle only by accident.
 template <Real T>
 void subdivide_scalar(std::span<const T> coeff, double t_min, double t_max,
                       std::span<double> out) {
@@ -297,7 +313,10 @@ void subdivide_scalar(std::span<const T> coeff, double t_min, double t_max,
 /// \return The number of sign changes, which bounds the root count above by the
 ///     variation-diminishing property.
 ///
-/// Mirrors `_root_finding_core._count_sign_changes`. No validation is performed.
+/// Mirrors `_root_finding_core._count_sign_changes`. No validation is performed. `coeff` must
+/// hold at least one coefficient, a degree-`n` polynomial having `n + 1` of them. This function
+/// happens to survive a shorter span, but what it produces for one is unspecified and matches
+/// the oracle only by accident.
 template <Real T>
 int count_sign_changes(std::span<const T> coeff) {
     int changes = 0;
@@ -349,7 +368,10 @@ int count_sign_changes(std::span<const T> coeff) {
 /// \param t_hi Receives the highest.
 /// \return Whether any zero crossing was detected.
 ///
-/// Mirrors `_root_finding_core._clip_hull_to_zero`. No validation is performed.
+/// Mirrors `_root_finding_core._clip_hull_to_zero`. No validation is performed. `coeff` must
+/// hold at least one coefficient, a degree-`n` polynomial having `n + 1` of them. This function
+/// happens to survive a shorter span, but what it produces for one is unspecified and matches
+/// the oracle only by accident.
 template <Real T>
 bool clip_hull_to_zero(std::span<const T> coeff, std::span<std::int64_t> chain, double& t_lo,
                        double& t_hi) {
@@ -442,7 +464,10 @@ bool clip_hull_to_zero(std::span<const T> coeff, std::span<std::int64_t> chain, 
 /// \param out_df Receives the derivative at `mid`, whatever is returned.
 /// \return The polished parameter, or `mid` unchanged.
 ///
-/// Mirrors `_root_finding_core._newton_polish_scalar`. No validation is performed.
+/// Mirrors `_root_finding_core._newton_polish_scalar`. No validation is performed. `coeff` must
+/// hold at least one coefficient, a degree-`n` polynomial having `n + 1` of them. On an empty
+/// one this inherits the undefined behavior of `de_casteljau_eval_and_deriv_scalar`, which it
+/// calls first.
 template <Real T>
 accumulator_t<T> newton_polish_scalar(std::span<const T> coeff, accumulator_t<T> mid,
                                       accumulator_t<T> lo, accumulator_t<T> hi,

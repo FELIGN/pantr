@@ -126,7 +126,13 @@ def _de_casteljau_eval_scalar(
         float: Polynomial value B(t).
 
     Note:
-        Inputs are assumed to be correct (no validation performed).
+        Inputs are assumed to be correct (no validation performed). The precondition
+        that disclaimer stands on is ``len(coeff) >= 1``: a degree-``n`` Bernstein
+        polynomial has ``n + 1`` coefficients, and a polynomial with none is not one.
+        **This kernel reads past a shorter array.** Numba's bounds check turns that
+        into an ``IndexError`` and an ordinary build returns whatever the read found,
+        so the behavior is unspecified either way and must not be relied on; the C++
+        port of this kernel has undefined behavior there.
         For general use, call the Layer 2 helpers in ``_find_roots`` instead.
     """
     work = coeff.copy()
@@ -164,7 +170,11 @@ def _restrict_scalar(
             reparametrized to [0, 1].
 
     Note:
-        Inputs are assumed to be correct (no validation performed).
+        Inputs are assumed to be correct (no validation performed). The precondition
+        that disclaimer stands on is ``len(coeff) >= 1``: a degree-``n`` Bernstein
+        polynomial has ``n + 1`` coefficients, and a polynomial with none is not one.
+        This kernel happens to survive a shorter array rather than reading past it,
+        but what it returns for one is unspecified and must not be relied on.
         For general use, call the Layer 2 helpers in ``_find_roots`` instead.
     """
     p = len(coeff) - 1
@@ -216,7 +226,13 @@ def _de_casteljau_eval_and_deriv_scalar(
         tuple[float, float]: ``(f(t), f'(t))``.
 
     Note:
-        Inputs are assumed to be correct (no validation performed).
+        Inputs are assumed to be correct (no validation performed). The precondition
+        that disclaimer stands on is ``len(coeff) >= 1``: a degree-``n`` Bernstein
+        polynomial has ``n + 1`` coefficients, and a polynomial with none is not one.
+        **This kernel reads past a shorter array.** Numba's bounds check turns that
+        into an ``IndexError`` and an ordinary build returns whatever the read found,
+        so the behavior is unspecified either way and must not be relied on; the C++
+        port of this kernel has undefined behavior there.
         For general use, call the Layer 2 helpers in ``_find_roots`` instead.
     """
     n = len(coeff) - 1
@@ -262,7 +278,11 @@ def _subdivide_scalar(
         npt.NDArray[np.float64]: Bernstein coefficients reparametrized to [0, 1].
 
     Note:
-        Inputs are assumed to be correct (no validation performed).
+        Inputs are assumed to be correct (no validation performed). The precondition
+        that disclaimer stands on is ``len(coeff) >= 1``: a degree-``n`` Bernstein
+        polynomial has ``n + 1`` coefficients, and a polynomial with none is not one.
+        This kernel happens to survive a shorter array rather than reading past it,
+        but what it returns for one is unspecified and must not be relied on.
         For general use, call the Layer 2 helpers in ``_find_roots`` instead.
     """
     if t_min <= 0.0 and t_max >= 1.0:
@@ -293,7 +313,11 @@ def _count_sign_changes(
         int: Number of sign changes (ignoring zero coefficients).
 
     Note:
-        Inputs are assumed to be correct (no validation performed).
+        Inputs are assumed to be correct (no validation performed). The precondition
+        that disclaimer stands on is ``len(coeff) >= 1``: a degree-``n`` Bernstein
+        polynomial has ``n + 1`` coefficients, and a polynomial with none is not one.
+        This kernel happens to survive a shorter array rather than reading past it,
+        but what it returns for one is unspecified and must not be relied on.
         For general use, call the Layer 2 helpers in ``_find_roots`` instead.
     """
     changes = 0
@@ -333,7 +357,11 @@ def _clip_hull_to_zero(  # noqa: PLR0912, PLR0915
             indicates whether any zero crossing was detected.
 
     Note:
-        Inputs are assumed to be correct (no validation performed).
+        Inputs are assumed to be correct (no validation performed). The precondition
+        that disclaimer stands on is ``len(coeff) >= 1``: a degree-``n`` Bernstein
+        polynomial has ``n + 1`` coefficients, and a polynomial with none is not one.
+        This kernel happens to survive a shorter array rather than reading past it,
+        but what it returns for one is unspecified and must not be relied on.
         For general use, call the Layer 2 helpers in ``_find_roots`` instead.
     """
     n = len(coeff) - 1
@@ -461,7 +489,13 @@ def _newton_polish_scalar(
             original ``mid``.
 
     Note:
-        Inputs are assumed to be correct (no validation performed).
+        Inputs are assumed to be correct (no validation performed). The precondition
+        that disclaimer stands on is ``len(coeff) >= 1``: a degree-``n`` Bernstein
+        polynomial has ``n + 1`` coefficients, and a polynomial with none is not one.
+        **This kernel reads past a shorter array.** Numba's bounds check turns that
+        into an ``IndexError`` and an ordinary build returns whatever the read found,
+        so the behavior is unspecified either way and must not be relied on; the C++
+        port of this kernel has undefined behavior there.
         For general use, call the Layer 2 helpers in ``_find_roots`` instead.
     """
     f_mid, df_mid = _de_casteljau_eval_and_deriv_scalar(coeff, mid)
