@@ -18,15 +18,18 @@ if TYPE_CHECKING:
 _PYTHON_BACKEND_ONLY = pytest.mark.skipif(
     active_backend() is not Backend.PYTHON,
     reason=(
-        "This records the Python implementations' known aliasing defect rather than a "
-        "contract: both C++ values -- Bezier and Bspline -- copy their control points and "
-        "hand back a read-only view, so an in-place mutation replaces the array instead of "
-        "writing into it. FELIGN/pantr#375 is the ticket that fixes the Python Bezier; the "
-        "Python Bspline half is flagged in design/bspline_ownership_lifetime.md and has no "
-        "ticket yet. The skip loses no coverage of the C++ path: the value an in-place "
-        "mutation leaves behind is compared across both backends in "
-        "tests/parity/test_bezier_type.py and tests/parity/test_bspline_type.py, and only "
-        "the array's identity is unpinned here."
+        "This pins where an in-place mutation writes, which is not a contract and differs "
+        "by backend: a C++ value owns its storage, so `rebuild` gets a copy and the "
+        "implementation is replaced, while a Python one writes into the array it already "
+        "holds. For Bezier that survived FELIGN/pantr#375 on purpose -- it made the Python "
+        "Bezier copy the caller's array at construction and hand back read-only views, "
+        "which is what the ticket was about, and deliberately kept the storage writable so "
+        "`in_place=True` stays an in-place write rather than becoming an allocation. The "
+        "Python Bspline still aliases its caller outright, flagged in "
+        "design/bspline_ownership_lifetime.md with no ticket yet. The skip loses no "
+        "coverage of the C++ path: the value an in-place mutation leaves behind is compared "
+        "across both backends in tests/parity/test_bezier_type.py and "
+        "tests/parity/test_bspline_type.py, and only where the write landed is unpinned."
     ),
 )
 """Marks an assertion that pins aliasing only the Python implementations have."""
@@ -532,12 +535,20 @@ class TestBezierTransform:
 
     @_PYTHON_BACKEND_ONLY
     def test_inplace_no_extra_alloc(self) -> None:
-        """in_place=True writes directly into the existing array."""
+        """in_place=True writes directly into the existing array.
+
+        Asserted through ``.base`` rather than ``id(b.control_points)``, which is
+        what this used to compare. Since FELIGN/pantr#375 the property returns a
+        *fresh* read-only view on every call, so two reads never have the same
+        id and comparing them would fail whether or not the write allocated. The
+        view's base is the array the Bezier actually holds, which is the thing
+        this test is about.
+        """
         b = _make_bezier_1d([[0.0, 0.0], [1.0, 1.0]])
-        cp_id = id(b.control_points)
+        storage_id = id(b.control_points.base)
         t = AffineTransform.translation([5.0, 5.0])
         b.transform(t, in_place=True)
-        assert id(b.control_points) == cp_id
+        assert id(b.control_points.base) == storage_id
 
     def test_not_inplace_returns_new(self) -> None:
         """Default (in_place=False) returns a new Bezier."""

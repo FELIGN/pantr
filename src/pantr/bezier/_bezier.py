@@ -77,13 +77,19 @@ class _BezierPython:
     reachable only through it. When the C++ core stops being optional this class
     goes and :class:`Bezier` collapses onto the handle.
 
-    **It aliases the caller's array, and that is a defect it keeps on purpose.**
-    ``__init__`` stores what :func:`numpy.asarray` returns and
-    :attr:`control_points` hands the same object back, so a caller can mutate a
-    constructed Bézier through either end. That is the shape of FELIGN/pantr#338,
-    the C++ implementation copies instead, and a port never edits its own oracle
-    -- so the two backends differ here, deliberately, until the ticket that fixes
-    this side lands.
+    **It copies at construction and hands out read-only views**, so a constructed
+    Bézier is a value: the caller cannot change it through the array they passed
+    in, nor by writing to :attr:`control_points`. It used to do neither, which is
+    the shape of FELIGN/pantr#338 and was left standing while the port was under
+    way, because a port does not edit its own oracle. The C++ implementation had
+    already copied and frozen, so the two backends disagreed on a public
+    observable until this side caught up.
+
+    The stored array stays **writable**, unlike :class:`~pantr.quad.PointsLattice`'s
+    frozen one, and that difference is deliberate: ``reverse``,
+    ``permute_directions`` and ``transform`` take ``in_place=True`` and write
+    straight into it, so freezing the storage rather than the view would turn the
+    flag into an allocation. Nothing outside this class reaches the array.
 
     Attributes:
         _control_points (npt.NDArray[np.float32 | np.float64]): Control point
@@ -133,7 +139,13 @@ class _BezierPython:
                     f"direction {d}, got {cp.shape[d]}."
                 )
 
-        self._control_points: _ControlPoints = cp
+        # A copy, so the array the caller still holds is not this Bezier's storage.
+        # It stays writable, unlike PointsLattice's frozen one (FELIGN/pantr#338):
+        # `reverse`, `permute_directions` and `transform` take `in_place=True` and
+        # write straight into it, which is the whole point of that flag. What the
+        # caller gets instead is a read-only view, from `control_points`. Nothing
+        # outside this class reaches the array itself.
+        self._control_points: _ControlPoints = np.ascontiguousarray(cp).copy()
         self._is_rational = is_rational
 
         if self.rank <= 0:
@@ -178,11 +190,18 @@ class _BezierPython:
         """Get the control points of the Bézier.
 
         Returns:
-            npt.NDArray[np.float32 | np.float64]: Control point array with
-            shape ``(*degrees_plus_1, rank)``. The stored array itself, not a
-            copy; see the class docstring.
+            npt.NDArray[np.float32 | np.float64]: A read-only view of the control
+            point array, shape ``(*degrees_plus_1, rank)``.
         """
-        return self._control_points
+        # A fresh view each call rather than one stored read-only array, for the
+        # reason PointsLattice records: `writeable = False` stops writes to the
+        # data and not changes to the metadata, so `arr.shape = (n, 1)` reshapes a
+        # read-only array in place and would leave this Bezier holding an array of
+        # the wrong rank while `dim` still reported the old one. A view carries its
+        # own shape, so that lands on the caller's copy instead of ours.
+        view = self._control_points.view()
+        view.flags.writeable = False
+        return view
 
     @property
     def is_rational(self) -> bool:
@@ -385,13 +404,13 @@ class Bezier:
         provenance, so the branch lives here once instead of in each of the three
         ``in_place=True`` methods.
 
-        Under the Python backend ``rebuild`` is handed the stored array itself, so
-        a helper writing into it mutates the Bézier exactly as it always has --
-        ``id(bezier.control_points)`` included, which ``tests/test_transform.py``
-        pins. Under the C++ backend the storage belongs to the C++ object and is
-        read-only, so ``rebuild`` gets a writable copy and the *implementation* is
-        replaced. Both leave this wrapper carrying the new value; only the array's
-        identity differs, and only where the oracle's aliasing is what defined it.
+        Under the Python backend ``rebuild`` is handed the stored array itself --
+        the private one, not the read-only view :attr:`control_points` returns --
+        so a helper writing into it mutates the Bézier without allocating. Under
+        the C++ backend the storage belongs to the C++ object, so ``rebuild`` gets
+        a writable copy and the *implementation* is replaced. Both leave this
+        wrapper carrying the same new value; what differs is only whether an
+        allocation happened, which no caller can observe through the value.
 
         Rebuilding the implementation reads the *active* backend, so mutating a
         Bézier inside a :func:`~pantr._backend.use_backend` block that selects a
@@ -424,7 +443,7 @@ class Bezier:
                 f"changed after this Bezier was built."
             )
         if isinstance(impl, _BezierPython):
-            impl._replace_control_points(rebuild(impl.control_points))
+            impl._replace_control_points(rebuild(impl._control_points))
         else:
             self._impl = _new_impl(rebuild(np.array(impl.control_points)), impl.is_rational)
 
@@ -474,12 +493,10 @@ class Bezier:
         """Get the control points of the Bézier.
 
         Returns:
-            npt.NDArray[np.float32 | np.float64]: Control point array with
-            shape ``(*degrees_plus_1, rank)``. Under the C++ backend this is a
-            **read-only view** of the Bézier's own storage: writing through it
-            raises, and it stays valid after the Bézier is dropped. Under the
-            Python backend it is the stored array itself, writable, which is the
-            aliasing defect the class docstring names.
+            npt.NDArray[np.float32 | np.float64]: A **read-only view** of the
+            Bézier's own control points, shape ``(*degrees_plus_1, rank)``.
+            Writing through it raises, under either backend, and under the C++
+            backend it stays valid after the Bézier is dropped.
         """
         return self._impl.control_points
 
@@ -1434,12 +1451,11 @@ def create_from_bspline(bspline: Bspline, *, copy: bool = True) -> Bezier:
     Args:
         bspline (~pantr.bspline.Bspline): A B-spline with Bézier-like
             knot structure.
-        copy (bool): If ``True`` (default), the control points are
-            deep-copied into the new Bézier. If ``False``, the Bézier
-            shares the same underlying control point array -- **under the
-            Python backend only**. The C++ value owns its storage and copies
-            at construction, so there ``copy=False`` saves nothing and shares
-            nothing.
+        copy (bool): Retained for call compatibility; it no longer changes
+            what happens. A ``Bezier`` owns its control points and copies them
+            at construction under **either** backend, so ``copy=False`` saves
+            nothing and shares nothing. It used to share under the Python
+            backend, which was the aliasing defect FELIGN/pantr#375 removed.
 
     Returns:
         Bezier: The equivalent Bézier.

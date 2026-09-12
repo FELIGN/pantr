@@ -22,15 +22,15 @@ from pantr.bspline.spanwise_element_extraction import SpanwiseElementExtraction
 _SHARING_IS_PYTHON_ONLY = pytest.mark.skipif(
     active_backend() is not Backend.PYTHON,
     reason=(
-        "This records the Python implementations' known aliasing defect rather than a "
-        "contract: both C++ values -- Bezier and Bspline -- copy their control points at "
-        "construction, so `copy=False` shares nothing under that backend, whichever of the "
-        "two is on the receiving end. FELIGN/pantr#375 is the ticket that fixes the Python "
-        "Bezier; the Python Bspline half is flagged in "
-        "design/bspline_ownership_lifetime.md and has no ticket yet. The C++ path is not "
-        "left untested by the skip -- what it does instead is asserted in "
-        "tests/parity/test_bezier_type.py and tests/parity/test_bspline_type.py, each of "
-        "which pins the copy at both ends."
+        "This records the Python Bspline's known aliasing defect rather than a contract: "
+        "both C++ values copy their control points at construction, so `copy=False` shares "
+        "nothing under that backend. FELIGN/pantr#375 fixed the Python Bezier, which now "
+        "copies too, so nothing shares when a Bezier is on the receiving end whatever the "
+        "backend -- those assertions were rewritten rather than left skipped. What remains "
+        "is the Python Bspline half, flagged in design/bspline_ownership_lifetime.md with "
+        "no ticket yet. The C++ path is not left untested by the skip -- what it does "
+        "instead is asserted in tests/parity/test_bezier_type.py and "
+        "tests/parity/test_bspline_type.py, each of which pins the copy at both ends."
     ),
 )
 """Marks an assertion that pins sharing only the Python implementations offer."""
@@ -580,15 +580,20 @@ class TestToBezier:
         bez = bs.to_bezier(copy=True)
         assert not np.shares_memory(bs.control_points, bez.control_points)
 
-    @_SHARING_IS_PYTHON_ONLY
-    def test_copy_false(self) -> None:
-        """Test that to_bezier with copy=False shares the control point array."""
+    def test_copy_false_still_does_not_share(self) -> None:
+        """`copy=False` shares nothing when a Bezier is the receiving end.
+
+        It used to, under the Python backend, and this assertion used to pin that
+        (`@_SHARING_IS_PYTHON_ONLY`, skipped under C++). FELIGN/pantr#375 made the
+        Python Bezier copy at construction like the C++ one, so the flag now saves
+        nothing on this side under either backend.
+        """
         knots = np.array([0.0, 0.0, 0.0, 1.0, 1.0, 1.0], dtype=np.float64)
         space = BsplineSpace([BsplineSpace1D(knots, 2)])
         cp = np.array([[1.0], [2.0], [3.0]], dtype=np.float64)
         bs = Bspline(space, cp)
         bez = bs.to_bezier(copy=False)
-        assert np.shares_memory(bs.control_points, bez.control_points)
+        assert not np.shares_memory(bs.control_points, bez.control_points)
 
     def test_default_copies(self) -> None:
         """Test that to_bezier copies by default."""

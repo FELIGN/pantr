@@ -1413,14 +1413,12 @@ class Bspline:
         form before the check.
 
         Args:
-            copy (bool): If ``True`` (default), the control points are
-                deep-copied into the new Bézier.  If ``False``, the Bézier
-                shares the same underlying control point array when possible
-                (direct extraction) or owns the freshly allocated array
-                produced by the open-form conversion -- **under the Python
-                backend only**. A C++ ``Bezier`` copies at construction, so
-                there ``copy=False`` shares nothing; that predates this
-                type's own port and is measured, not assumed.
+            copy (bool): Retained for call compatibility; it no longer changes
+                what happens. A ``Bezier`` owns its control points and copies
+                them at construction under **either** backend, so ``copy=False``
+                shares nothing. It used to share under the Python backend when a
+                direct extraction was possible, which was the aliasing defect
+                FELIGN/pantr#375 removed; the C++ side never shared.
 
         Returns:
             ~pantr.bezier.Bezier: Equivalent Bézier representation.

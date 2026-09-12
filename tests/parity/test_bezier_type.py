@@ -14,13 +14,13 @@ Three things are checked that a field-by-field state comparison does not reach:
   control nets, and a caller writing ``pytest.raises(ValueError, match=...)``
   must not have to know which backend built the object. The messages are
   therefore compared character for character rather than by exception type.
-- **The copy at construction, and the read-only view on the way out.** The C++
-  value does not alias the caller's array at either end, which the oracle does.
-  This is the one place the two backends differ on purpose: it is
-  FELIGN/pantr#338's defect, fixed on the side the port owns, and
-  FELIGN/pantr#375 is the ticket that fixes the other. Both halves are asserted
-  here, because a criterion covering only construction leaves the other half of a
-  bidirectional defect unpinned.
+- **The copy at construction, and the read-only view on the way out.** Neither
+  value aliases the caller's array, at either end. This used to be the one place
+  the two backends differed on purpose -- FELIGN/pantr#338's defect, fixed first
+  on the side the port owns -- and FELIGN/pantr#375 closed the gap by making the
+  oracle copy too, so both assertions now run under both backends instead of
+  under C++ alone. Both halves are asserted, because a criterion covering only
+  construction leaves the other half of a bidirectional defect unpinned.
 - **The wire format.** ``__reduce__`` pickles by the constructor's arguments, so a
   pickle written under one backend loads under the other. Without that the backend
   switch would silently become a data-format switch, and a C++ handle is not
@@ -337,40 +337,55 @@ def test_error_messages_agree_verbatim(build: Any, what: str, dtype: npt.DTypeLi
     assert not oracle.startswith("<"), f"{what}: neither implementation refused it"
 
 
+@pytest.mark.parametrize("backend", [Backend.PYTHON, Backend.CPP])
 @pytest.mark.parametrize("dtype", DTYPES)
-def test_the_cpp_value_does_not_alias_the_array_it_was_built_from(dtype: npt.DTypeLike) -> None:
+def test_a_bezier_does_not_alias_the_array_it_was_built_from(
+    dtype: npt.DTypeLike, backend: Backend
+) -> None:
     """Mutating the constructor's argument afterwards does not move the Bézier.
 
-    What this catches: the C++ constructor taking a view of the caller's buffer
-    instead of copying, which would let a validated geometry change under its
-    owner's feet -- the way in of FELIGN/pantr#338's defect.
+    What this catches: a constructor taking a view of the caller's buffer instead
+    of copying, which would let a validated geometry change under its owner's feet
+    -- the way in of FELIGN/pantr#338's defect.
+
+    Both backends, since FELIGN/pantr#375. Until then this ran under C++ only and
+    the oracle failed it, which was the divergence that ticket closed. The value is
+    checked through ``evaluate`` as well as through the stored array, because the
+    stored array is what a *port* compares while the evaluation is what a caller
+    would notice.
     """
     control_points = np.asarray([[0.0, 1.0], [2.0, 3.0]], dtype=dtype)
-    with use_backend(Backend.CPP):
+    with use_backend(backend):
         bezier = Bezier(control_points)
 
-    before = bezier.control_points.copy()
-    control_points[0, 0] = 99.0
-    assert np.array_equal(bezier.control_points, before)
-    assert not np.shares_memory(bezier.control_points, control_points)
+        at = np.asarray([0.5], dtype=dtype)
+        before = bezier.control_points.copy()
+        before_value = bezier.evaluate(at).copy()
+        control_points[0, 0] = 99.0
+        assert np.array_equal(bezier.control_points, before)
+        assert not np.shares_memory(bezier.control_points, control_points)
+        assert np.array_equal(bezier.evaluate(at), before_value)
 
 
+@pytest.mark.parametrize("backend", [Backend.PYTHON, Backend.CPP])
 @pytest.mark.parametrize("dtype", DTYPES)
-def test_writing_through_control_points_is_refused(dtype: npt.DTypeLike) -> None:
+def test_writing_through_control_points_is_refused(dtype: npt.DTypeLike, backend: Backend) -> None:
     """The array handed out is read-only, and the Bézier is unchanged either way.
 
     What this catches: the way *out* of the same defect. A writable view would let
     a caller edit a constructed geometry through the property, which is the half a
     criterion about construction alone leaves unpinned.
+
+    Both backends, since FELIGN/pantr#375; C++ only before it.
     """
-    with use_backend(Backend.CPP):
+    with use_backend(backend):
         bezier = Bezier(np.asarray([[0.0, 1.0], [2.0, 3.0]], dtype=dtype))
 
-    handed_out = bezier.control_points
-    assert not handed_out.flags.writeable
-    with pytest.raises(ValueError, match="read-only"):
-        handed_out[0, 0] = 99.0
-    assert bezier.control_points[0, 0] == 0.0
+        handed_out = bezier.control_points
+        assert not handed_out.flags.writeable
+        with pytest.raises(ValueError, match="read-only"):
+            handed_out[0, 0] = 99.0
+        assert bezier.control_points[0, 0] == 0.0
 
 
 @pytest.mark.parametrize("dtype", DTYPES)
