@@ -197,17 +197,24 @@ user-facing, and the ports change what it affects.
   from the docstring, who is exactly the reader a distributed projection is written for. Measured
   here at one, two, three and four ranks and at two grid sizes: the count per rank is the serial
   count, unchanged.
-  **The docstring now says what happens and why**, the why being the callable's own contract:
-  ``func`` receives a `PointsLattice`, a tensor product of per-direction coordinates, and a
-  rank's owned quadrature points are not a tensor product of anything, so no lattice names them.
-  Restricting the evaluation means handing ``func`` a flat point array instead, which is a
-  different signature.
-  **`quasi_interpolate_bspline_distributed` does not share the defect**, contrary to what the
-  report suspected. Its callable already takes a flat point array, so it can and does restrict
-  to its owned DOFs' support: measured on a 24-by-24 grid, its per-rank count falls by more than
-  half at four ranks, while the L2 projection's does not move. Two MPI tests now pin the
-  difference, because a docstring stating a performance property is the one kind of claim
-  nothing else in the suite checks.
+  **The docstring now says what happens, and what stands in the way of changing it.** ``func``
+  receives a `PointsLattice`, a tensor product of per-direction coordinates, so only an owned
+  set that *is* a box can be named by one. Whether it is depends on the partitioner, and **for
+  the default one it is**: `partition_grid`'s `block` backend gives every rank an exact
+  axis-aligned box of cells, measured on three grids including non-square and non-divisible
+  ones. So the restriction is available for the common case and simply has not been made; what
+  is not available in general is the same thing for a graph or bisection partition, whose owned
+  set need not be a box. Saying it was impossible would have been the easier sentence and the
+  false one.
+  **`quasi_interpolate_bspline_distributed` does distribute its evaluation, but over its
+  *windowed* space rather than its owned DOFs**, and its own docstring claimed the latter, with
+  "no redundant evaluation of halo-DOF points". That is corrected here too. It runs the serial
+  quasi-interpolant over owned-plus-halo and discards the halo coefficients afterwards, so the
+  halo is evaluated on both sides of every partition boundary: measured at four ranks on a
+  24-by-24 grid, every rank evaluates the same count while owning different numbers of DOFs,
+  which is what gives it away. The per-rank cost does fall as ranks are added, which is the real
+  difference from the L2 projection, and two MPI tests now pin that difference — a docstring
+  stating a performance property being the one kind of claim nothing else in the suite checks.
 - **The seven Bernstein-coefficient kernels in `pantr.bezier._root_finding_core` now state
   the precondition their Layer 3 disclaimer stands on**, `len(coeff) >= 1`. *"Inputs are
   assumed to be correct (no validation performed)"* is correct policy and was the whole of

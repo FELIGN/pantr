@@ -147,19 +147,25 @@ def l2_project_bspline_distributed(  # noqa: PLR0913
 
     **``func`` is evaluated on the whole global lattice by every rank**, and the
     ownership mask is applied to the result.  Only the contraction is distributed, not
-    the evaluation, so the total number of calls into ``func`` grows linearly with the
-    rank count instead of staying fixed.  For a cheap callable that costs nothing worth
+    the evaluation.  ``func`` is still called exactly once per rank, but the number of
+    points it is handed does not fall, so the total evaluated across the run grows
+    linearly with the rank count instead of staying fixed.  For a cheap callable that costs nothing worth
     measuring; for an expensive one it is the dominant cost and this function does not
     reduce it.
 
-    The reason is the callable's own contract, one line down in ``Args``: ``func``
-    receives a :class:`~pantr.quad.PointsLattice`, a tensor product of per-direction
-    coordinates.  A rank's owned cells are an arbitrary subset of the grid, and the
-    quadrature points inside them are not a tensor product of anything, so there is no
-    lattice that names them.  Restricting the evaluation would mean handing ``func`` a
-    flat point array instead, which is a different signature.
-    :func:`~pantr.mpi.quasi_interpolate_bspline_distributed` has that signature and does
-    restrict its evaluation, which is why the two differ here.
+    The obstacle is the callable's contract, one line down in ``Args``: ``func`` receives
+    a :class:`~pantr.quad.PointsLattice`, a tensor product of per-direction coordinates,
+    so only an owned set that *is* a box can be named by one.  **Whether it is depends on
+    the partitioner, and for the default one it is** -- ``partition_grid``'s ``block``
+    backend, which ``create_distributed_space`` selects for a uniform full grid, gives
+    every rank an exact axis-aligned box of cells, and a per-direction sub-range of the
+    quadrature nodes would then name its points exactly.  So this is a restriction that
+    could be made for the common case and has not been, not one the design forbids.  What
+    the design does forbid is doing it in general: a graph or recursive-bisection
+    partition need not be box-shaped, and naming a non-box owned set means handing ``func``
+    a flat point array, which is a different signature.
+    :func:`~pantr.mpi.quasi_interpolate_bspline_distributed` has that signature, which is
+    why it can distribute its evaluation where this cannot do so unconditionally.
 
     The per-direction mass matrices are partition-independent and built identically on
     every rank (cheap ``n_dofs_i x n_dofs_i`` systems), so only the load is communicated.
@@ -253,8 +259,10 @@ def l2_project_bspline_distributed(  # noqa: PLR0913
 
     # Evaluate func on the global quadrature lattice -- every rank, all of it -- then
     # mask to this rank's owned cells and contract into a per-component load tensor.
-    # The docstring says why the evaluation is not restricted: `func` takes a lattice,
-    # and a rank's owned quadrature points are not one.
+    # The docstring says what stands in the way of restricting it: `func` takes a
+    # lattice, so only a box-shaped owned set can be named -- which the default
+    # partitioner does produce, so this is a missed restriction rather than an
+    # impossible one.
     quad_lattice = PointsLattice(quad_nodes_per_dir)
     quad_grid_shape = tuple(a.shape[0] for a in quad_nodes_per_dir)
     components, out_dtype = _evaluate_func_on_lattice(func, quad_lattice, quad_grid_shape)

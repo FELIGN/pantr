@@ -438,12 +438,16 @@ def test_the_l2_projection_evaluates_the_whole_lattice_on_every_rank() -> None:
     Pins what the docstring now says, deliberately including the part that is a
     limitation: every rank calls ``func`` on the whole global quadrature lattice and
     masks afterwards, so the per-rank count is the serial count however many ranks
-    there are. The reason is the callable's contract -- ``func`` takes a
-    :class:`~pantr.quad.PointsLattice`, and a rank's owned quadrature points are not a
-    tensor product -- so restricting it means changing that signature.
+    there are.
 
-    If someone does change it, this test fails, which is the point: the docstring and
-    the behaviour move together or not at all.
+    Compared against the serial count rather than only across ranks. Cross-rank
+    uniformity is not the property: the default partitioner splits a uniform grid into
+    equal boxes, so a *restricted* evaluation would also be uniform across ranks and an
+    equality-of-ranks assertion would keep passing through the very change it is meant
+    to notice.
+
+    If someone does restrict it, this fails, which is the point: the docstring and the
+    behaviour move together or not at all.
     """
     comm = MPI.COMM_WORLD
     space = create_uniform_space([2, 2], [6, 6])
@@ -454,27 +458,36 @@ def test_the_l2_projection_evaluates_the_whole_lattice_on_every_rank() -> None:
         seen.append(int(mesh[0].size))
         return np.sin(np.pi * mesh[0]) * np.cos(np.pi * mesh[1])
 
+    # The serial reference, taken by running the serial entry point on the same space.
+    l2_project_bspline(counted, space)
+    assert len(seen) == 1
+    serial_points = seen.pop()
+
     ds = create_distributed_space(space, comm)
     l2_project_bspline_distributed(counted, ds)
 
     assert len(seen) == 1, f"func was called {len(seen)} times, expected once"
-    # Every rank saw the same, whole lattice: identical across ranks and equal to the
-    # serial count, which is what "not distributed" means here.
+    assert seen[0] == serial_points, (
+        f"{seen[0]} points per rank against {serial_points} serial: the evaluation is no "
+        "longer the whole global lattice, so the docstring needs to change with it"
+    )
     assert len(set(comm.allgather(seen[0]))) == 1
 
 
 def test_the_quasi_interpolant_does_distribute_its_evaluation() -> None:
-    """`quasi_interpolate_bspline_distributed` evaluates only its owned DOFs' points.
+    """`quasi_interpolate_bspline_distributed` evaluates its windowed space, not everything.
 
-    The counterpart of the test above, and the reason FELIGN/pantr#432's suggestion
-    that one fix would serve both is wrong: this one already restricts. Its callable
-    takes a flat point array rather than a lattice, so a non-tensor-product subset is
-    expressible.
+    The counterpart of the test above. Its callable takes a flat point array rather than
+    a lattice, so it is not held to a tensor product and can evaluate a rank's own
+    window; the L2 projection is, and does not.
 
-    Asserted as a strict decrease with the rank count rather than as an exact figure:
-    the owned DOFs' supports overlap, so each rank evaluates more than its share, by a
-    margin that depends on the grid and the partition. What is not allowed is for the
-    count to stay put, which is the shape of the defect next door.
+    **Windowed, which is owned plus halo, not owned alone.** The evaluation is genuinely
+    distributed -- the per-rank count falls as ranks are added, which is the property
+    pinned here -- but the halo is evaluated on both sides of every partition boundary,
+    so the aggregate still exceeds the serial count. That is why this asserts a strict
+    decrease rather than a share: the margin depends on the grid and the partition. What
+    is not allowed is for the count to stay put, which is the shape of the defect next
+    door.
     """
     comm = MPI.COMM_WORLD
     if comm.size == 1:
