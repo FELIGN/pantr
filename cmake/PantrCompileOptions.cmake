@@ -106,6 +106,29 @@ if(PANTR_WERROR)
       $<$<COMPILE_LANG_AND_ID:CXX,GNU,Clang,AppleClang>:-Werror>)
 endif()
 
+# Deliberately absent, and recorded so it is not reintroduced: any
+# -Wno-maybe-uninitialized for the sake of Eigen's AVX-512 kernels. That warning
+# stays on at every ISA level. The kernels that could not survive it are turned
+# off at the dependency instead, beside Eigen in the top-level CMakeLists, which
+# is where the reasoning and the measurements live.
+#
+# The check that keeps this honest, kept here because reconstructing it is the
+# slow part: -Wmaybe-uninitialized is shape-sensitive at -O3 and most obvious
+# "uninitialised if the branch is not taken" snippets compile clean. This one
+# does not. Paste it into any pantr .cpp, build that target at a raised ISA, and
+# it must still fail; if it compiles, something has turned the warning off.
+# External linkage matters -- a static or anonymous-namespace version is dropped
+# before the middle end ever looks at it, and you get -Wunused-function instead.
+#
+#     int ac2_probe(int n);
+#     int ac2_probe(int n) {
+#         int value;
+#         for (int i = 0; i < n; ++i) {
+#             value = i * 2;
+#         }
+#         return value;
+#     }
+
 # Deliberately absent: any -march or -mtune. Shipping several ISA variants is
 # stage 2 in design/simd.md, and it is gated there on first MEASURING the gap
 # between the baseline and x86-64-v3 on pantr's own kernels. Adding the flag

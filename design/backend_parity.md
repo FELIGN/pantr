@@ -668,9 +668,17 @@ bit-identity exactly while the vectorisation stays, which separates the two the 
 build made to isolate contraction was byte-identical to the fusing one and only
 `compile_commands.json` showed it.
 
-And **Eigen does not compile under `-march=native` with `PANTR_WERROR=ON`**: its AVX512
-`TrsmKernel.h` trips `-Wmaybe-uninitialized` in its own code. That is a decision waiting for the
-ISA ladder of `design/simd.md`, not for this rule.
+**Eigen used not to compile under `-march=native` with `PANTR_WERROR=ON`**: its AVX512
+`TrsmKernel.h` trips `-Wmaybe-uninitialized` in its own code, 546 diagnostics of them, none in
+pantr. It does now. The top-level `CMakeLists.txt` sets `EIGEN_USE_AVX512_TRSM_KERNELS=0` under
+GCC, which is Eigen's own switch for that code, so the offending kernels are never instantiated
+and the whole warning set stays in force. The measurement builds no longer need
+`-DPANTR_WERROR=OFF`. What it trades is Eigen's blocked triangular solve for its generic one at
+AVX-512 under GCC, at every size: Eigen's size cutoff for that kernel is enabled for Clang only.
+Two backward-stable paths over the same matrix may differ in the last bits, so results there can
+move. That is inside this document's own regime rather than a violation of it, since a backend is
+graded against a derived tolerance and not bit-identity -- but nothing here has been measured at
+AVX-512, so that is a statement about the regime and not a measurement.
 
 `scripts/measure_bezier_fma_bound.py` reproduces every figure above.
 

@@ -22,13 +22,14 @@ on the command line, and the last one wins. A build meant to isolate contraction
 vectorisation has to append the flag some other way -- a compiler wrapper script is
 the shortest. Check ``compile_commands.json`` rather than trusting the cache.
 
-**Eigen does not compile under ``-march=native`` with ``PANTR_WERROR=ON``.** Its
-AVX512 ``TrsmKernel.h`` trips ``-Wmaybe-uninitialized`` in its own code. Measurement
-builds pass ``-DPANTR_WERROR=OFF``; the ISA ladder of ``design/simd.md`` will have to
-decide what the shipped build does about it.
+**``-DPANTR_WERROR=OFF`` is no longer needed here.** Eigen's AVX512 ``TrsmKernel.h``
+trips ``-Wmaybe-uninitialized`` in its own code, which used to make ``-march=native``
+fail the build outright. The top-level ``CMakeLists.txt`` now sets Eigen's own
+``EIGEN_USE_AVX512_TRSM_KERNELS=0`` under GCC, so those kernels are never instantiated
+and the recipe below runs with the warning policy fully in force.
 
     cmake --preset gcc -B build/fma-native -DPANTR_BUILD_PYTHON=ON \
-        -DPANTR_BUILD_TESTS=OFF -DPANTR_BUILD_BENCHMARK=OFF -DPANTR_WERROR=OFF \
+        -DPANTR_BUILD_TESTS=OFF -DPANTR_BUILD_BENCHMARK=OFF \
         -DPython_EXECUTABLE="$(pwd)/.venv/bin/python" -DCMAKE_CXX_FLAGS=-march=native
     cmake --build build/fma-native
     cp build/fma-native/cpp/bindings/_pantr_cpp*.so \
