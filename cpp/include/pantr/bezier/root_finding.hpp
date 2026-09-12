@@ -148,8 +148,11 @@ namespace detail {
 ///
 /// Mirrors `_root_finding_core._de_casteljau_eval_scalar`. No validation is performed; the
 /// Python layer guarantees the shapes. `coeff` must hold at least one coefficient, a degree-`n`
-/// polynomial having `n + 1` of them. **This function reads past a shorter span**, which is
-/// undefined behavior; the numba oracle's bounds check reports the same read as an `IndexError`.
+/// polynomial having `n + 1` of them. On an empty one the copy above writes nothing and this
+/// then reads `work[0]`, so the `work` line stops holding: sized to match `coeff`, that read is
+/// out of bounds; longer than it, the value is indeterminate. Both are undefined behavior. The
+/// numba oracle reports the same read as an `IndexError`, its workspace being a copy of `coeff`
+/// and so exactly as short.
 template <Real T>
 T de_casteljau_eval_scalar(std::span<const T> coeff, accumulator_t<T> t, std::span<T> work) {
     const auto n = static_cast<std::ptrdiff_t>(coeff.size()) - 1;
@@ -181,8 +184,11 @@ T de_casteljau_eval_scalar(std::span<const T> coeff, accumulator_t<T> t, std::sp
 ///
 /// Mirrors `_root_finding_core._de_casteljau_eval_and_deriv_scalar`. No validation is performed.
 /// `coeff` must hold at least one coefficient, a degree-`n` polynomial having `n + 1` of them.
-/// **This function reads past a shorter span**, which is undefined behavior; the numba oracle's
-/// bounds check reports the same read as an `IndexError`.
+/// On an empty one the copy above writes nothing and this then reads `work[0]` and `work[1]`, so
+/// the `work` line stops holding: sized to match `coeff`, those reads are out of bounds; longer
+/// than it, the values are indeterminate. Both are undefined behavior. The numba oracle reports
+/// the same read as an `IndexError`, its workspace being a copy of `coeff` and so exactly as
+/// short.
 template <Real T>
 accumulator_t<T> de_casteljau_eval_and_deriv_scalar(std::span<const T> coeff, accumulator_t<T> t,
                                                     std::span<T> work,
@@ -459,9 +465,9 @@ bool clip_hull_to_zero(std::span<const T> coeff, std::span<std::int64_t> chain, 
 /// \return The polished parameter, or `mid` unchanged.
 ///
 /// Mirrors `_root_finding_core._newton_polish_scalar`. No validation is performed. `coeff` must
-/// hold at least one coefficient, a degree-`n` polynomial having `n + 1` of them. **This
-/// function reads past a shorter span**, which is undefined behavior; the numba oracle's bounds
-/// check reports the same read as an `IndexError`.
+/// hold at least one coefficient, a degree-`n` polynomial having `n + 1` of them. On an empty
+/// one this inherits the undefined behavior of `de_casteljau_eval_and_deriv_scalar`, which it
+/// calls first.
 template <Real T>
 accumulator_t<T> newton_polish_scalar(std::span<const T> coeff, accumulator_t<T> mid,
                                       accumulator_t<T> lo, accumulator_t<T> hi,

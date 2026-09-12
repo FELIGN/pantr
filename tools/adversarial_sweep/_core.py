@@ -143,7 +143,10 @@ class Case:
             names no such precondition, this becomes a way to silence a finding, which
             is the one thing this harness must not offer. What keeps the existing uses
             honest is ``tests/test_kernel_preconditions.py``, which asserts the
-            precondition is stated.
+            precondition is stated. Note what the aggregate verdict counts lose: an
+            out-of-contract case that returned is counted as ``OK`` like any other, and
+            only its ``kind`` (``out-of-contract:returned``) says it was graded on
+            nothing rather than checked and found sound.
         finite_inputs (bool): Whether every input is finite. When ``False`` the
             automatic finiteness check on the result is skipped.
         arrays (Mapping[str, npt.NDArray[Any]]): Input arrays to persist under

@@ -225,6 +225,31 @@ def test_out_of_contract_turns_a_kernel_overrun_into_a_documented_rejection() ->
     assert kind == "out-of-contract:IndexError"
 
 
+@pytest.mark.parametrize(
+    "exc",
+    [
+        IndexError(NUMBA_OOB_MESSAGE),
+        IndexError("index 3 is out of bounds for axis 0 with size 2"),
+        ValueError("some message"),
+        ZeroDivisionError("division by zero"),
+        RuntimeError("anything at all"),
+    ],
+    ids=lambda e: type(e).__name__ + ("-numba" if str(e) == NUMBA_OOB_MESSAGE else ""),
+)
+def test_an_out_of_contract_case_is_graded_on_nothing_whatever_it_raises(
+    exc: Exception,
+) -> None:
+    """The branch takes no view on the exception type, deliberately.
+
+    The behaviour of a Layer 3 kernel on out-of-contract input is unspecified, so which
+    exception escapes is unspecified too. Grading only ``IndexError`` would smuggle in a
+    promise about the failure mode that no kernel makes.
+    """
+    verdict, kind, _ = classify(_case(out_of_contract=True), exc)
+    assert verdict is Verdict.DOCUMENTED_REJECTION
+    assert kind == f"out-of-contract:{type(exc).__name__}"
+
+
 def test_an_out_of_contract_case_that_returns_is_graded_on_nothing() -> None:
     """Its invariants describe a contract the input is outside of, so they do not run."""
     always_fails = custom("never-holds", lambda _result: "this invariant always fails")

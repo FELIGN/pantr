@@ -129,8 +129,8 @@ user-facing, and the ports change what it affects.
   assumed to be correct (no validation performed)"* is correct policy and was the whole of
   what they said, which names no minimum: a direct caller had nothing to check its input
   against, and neither did the adversarial sweep. Three of the seven read past a shorter
-  array -- `_de_casteljau_eval_scalar`, `_de_casteljau_eval_and_deriv_scalar`, and
-  `_newton_polish_scalar` through the second -- and the other four happen to survive one and
+  array -- `_de_casteljau_eval_scalar` and `_de_casteljau_eval_and_deriv_scalar` directly,
+  and `_newton_polish_scalar` through its call into the latter -- and the other four survive one and
   return something meaningless; each docstring now says which it is, and says the behavior is
   unspecified either way rather than pinning today's. Verified by calling all seven at length
   0 under `NUMBA_BOUNDSCHECK=1` with a fresh cache. No public path reaches any of them with

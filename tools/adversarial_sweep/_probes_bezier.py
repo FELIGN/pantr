@@ -2681,8 +2681,10 @@ def _de_casteljau_kernel_cases(profile: Profile) -> Iterator[Case]:
     """Yield direct probes of ``_de_casteljau_eval_scalar``.
 
     This Numba kernel performs no input validation whatsoever, per its own
-    docstring. A length-0 ``coeff`` is the sharpest boundscheck target: the
-    algorithm reads ``coeff[0]`` unconditionally.
+    docstring, which now also states the precondition that disclaimer stands on.
+    A length-0 ``coeff`` is the sharpest boundscheck target: the algorithm ends by
+    reading ``work[0]`` unconditionally, and ``work`` is a copy of ``coeff``, so at
+    length 0 there is nothing there to read.
 
     Args:
         profile (Profile): Sweep width.
