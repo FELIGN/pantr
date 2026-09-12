@@ -63,17 +63,6 @@ _KNOWN_FINDINGS = frozenset(
         # `test_sweep_regressions.py::test_degree_elevation_outputs_are_mutually_consistent`.
         "elevate_degree_d0_m1_float64_random",
         "elevate_degree_d1_m2_float64_random",
-        # `num_intervals=0` is documented as legal by two knot-vector factories and
-        # rejected by a third; neither accepting factory returns a usable vector -- the
-        # periodic one returns NaN and inf, the open one returns one interval instead of
-        # none. Pinned by
-        # `test_sweep_regressions.py::test_knot_factories_agree_on_zero_intervals`.
-        "create_uniform_open_knots_d0_float64_[0,1]_n0",
-        "create_uniform_open_knots_d1_float64_[0,1]_n0",
-        "create_uniform_open_knots_d3_float64_[0,1]_n0",
-        "create_uniform_periodic_knots_d0_float64_[0,1]_n0",
-        "create_uniform_periodic_knots_d1_float64_[0,1]_n0",
-        "create_uniform_periodic_knots_d3_float64_[0,1]_n0",
         # `_de_casteljau_eval_scalar` reads `coeff[0]` with no guard, so an empty
         # coefficient array reads out of bounds. Layer 3 documents that it validates
         # nothing, and no public path reaches it with an empty array, so this is a port
@@ -95,6 +84,10 @@ cardinal extraction reads out of bounds no longer occur, so the sweep stopped re
 ``cardinal_intervals_d0_m1_float64`` and ``extraction_build_d0_m1_float64_cardinal``.
 Containment would have tolerated leaving them, but a stale entry misdescribes the state of
 the code.
+
+Six more went the same way when the knot-vector factories were made to refuse
+``num_intervals=0``: the six ``create_uniform_{open,periodic}_knots_d{0,1,3}_float64_[0,1]_n0``
+cases now decline the input, and the probe asserts that refusal with ``must_reject``.
 """
 
 

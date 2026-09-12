@@ -2049,12 +2049,12 @@ def _factory_cases(profile: Profile) -> Iterator[Case]:
                     params,
                     invariants=(custom("knots-non-decreasing", _non_decreasing),),
                 )
-                # The count corners. `must_reject` is deliberately *not* used for zero:
-                # `create_uniform_open_knots` documents `num_intervals` as "must be
-                # non-negative", so refusing it is not the contract. What is asserted
-                # instead is that whatever comes back is a usable knot vector with the
-                # requested number of intervals -- which is where the three factories
-                # part company (see `_interval_count`).
+                # The count corners. All three factories now document `num_intervals`
+                # as "must be at least 1" and enforce it, so zero is `must_reject` and
+                # one is `must_succeed`. Until the fix for the zero-interval knot
+                # vectors landed, only `create_cardinal_knots` said so, and the other
+                # two returned NaN and inf (periodic) or one interval instead of none
+                # (open) -- which is what `_interval_count` was there to catch.
                 for factory in (
                     create_uniform_open_knots,
                     create_uniform_periodic_knots,
@@ -2074,6 +2074,7 @@ def _factory_cases(profile: Profile) -> Iterator[Case]:
                                 custom("interval-count", _interval_count(n_intervals, degree)),
                             ),
                             must_succeed=n_intervals == 1,
+                            must_reject=n_intervals == 0,
                         )
 
     if profile is not Profile.FULL:

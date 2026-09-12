@@ -123,6 +123,25 @@ user-facing, and the ports change what it affects.
 - `scripts/measure_bezier_fma_bound.py`, which reproduces the bound's slack against whatever
   extension is installed, and prints how to build one that fuses.
 
+### Rejected where it used to be accepted
+- **`num_intervals=0` is refused by all three knot-vector factories.**
+  `create_uniform_open_knots` and `create_uniform_periodic_knots` documented
+  `num_intervals` as *"must be non-negative"* and their shared validator enforced exactly
+  that, so zero was inside the stated contract and neither returned a usable vector.
+  `create_uniform_periodic_knots(0, 3)` returned `[nan, nan, nan, 0.0, inf, inf, inf]` --
+  the periodic extension divides by the interval count -- announcing itself only through
+  a `RuntimeWarning` that nothing raises on, so the caller received a mostly non-finite
+  knot vector and met it somewhere downstream. `create_uniform_open_knots(0, 3)` returned
+  a finite vector with *one* interval rather than none, which constructs a perfectly
+  ordinary space and is therefore the quieter of the two. `create_cardinal_knots` had
+  always refused zero with `num_intervals must be at least 1`, so the module already
+  carried the right answer one function away; the validator now applies it to all three
+  and both docstrings say so. This is the same rule `BsplineSpace1D` applies to a knot
+  vector whose domain is a single point, moved one step earlier to where the offending
+  argument still has a name: the constructor could only report that the vector it was
+  handed spans no interval, which for the periodic case was not even the reason it
+  failed.
+
 ### Performance
 - **`interpolate_bezier` and `fit_bezier` are several times faster on a tensor-product grid.**
   Both recovered the Bernstein coefficients through a truncated-SVD pseudo-inverse that they

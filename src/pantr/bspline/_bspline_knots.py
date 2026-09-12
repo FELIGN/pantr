@@ -604,7 +604,8 @@ def _validate_knot_input(
     """Validate input parameters for knot vector generation.
 
     Args:
-        num_intervals (int_): Number of intervals in the domain.
+        num_intervals (int_): Number of intervals in the domain. Must be at least 1:
+            a mesh of zero intervals has no cell, so nothing is defined over it.
         degree (int): B-spline degree.
         continuity (int): Continuity level at interior knots.
         domain (tuple[np.float32 | np.float64, np.float32 | np.float64]):
@@ -617,8 +618,8 @@ def _validate_knot_input(
     if domain[0] >= domain[1]:
         raise ValueError("domain[0] must be less than domain[1]")
 
-    if num_intervals < 0:
-        raise ValueError("num_intervals must be non-negative")
+    if num_intervals < 1:
+        raise ValueError("num_intervals must be at least 1")
 
     if degree < 0:
         raise ValueError("degree must be non-negative")
