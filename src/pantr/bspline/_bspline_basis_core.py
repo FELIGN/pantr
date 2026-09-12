@@ -390,12 +390,12 @@ def _tabulate_Bspline_basis_deriv_1D_impl(  # noqa: PLR0913
         >>> d.shape
         (1, 2, 3)
     """
-    if n_deriv < 0:
-        raise ValueError(f"n_deriv must be non-negative, got {n_deriv}")
-
     # Ensure the background JIT warmup has finished before calling Numba kernels that use
     # parallel=True: numba's workqueue layer aborts the process rather than raising.
     wait_for_jit_warmup()
+
+    if n_deriv < 0:
+        raise ValueError(f"n_deriv must be non-negative, got {n_deriv}")
 
     input_shape = np.shape(pts)
     pts = _normalize_points_1D(pts)

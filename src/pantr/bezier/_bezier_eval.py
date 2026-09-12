@@ -435,15 +435,15 @@ def _evaluate_bezier_deriv(
     Raises:
         ValueError: If ``len(orders) != bezier.dim`` or any order is negative.
     """
+    # Ensure the background JIT warmup has finished before calling Numba kernels that use
+    # parallel=True: numba's workqueue layer aborts the process rather than raising.
+    wait_for_jit_warmup()
+
     orders_tuple = tuple(orders)
     if len(orders_tuple) != bezier.dim:
         raise ValueError(f"len(orders) ({len(orders_tuple)}) must match dim ({bezier.dim}).")
     if any(o < 0 for o in orders_tuple):
         raise ValueError("All derivative orders must be non-negative.")
-
-    # Ensure the background JIT warmup has finished before calling Numba kernels that use
-    # parallel=True: numba's workqueue layer aborts the process rather than raising.
-    wait_for_jit_warmup()
 
     if bezier.dim == 1:
         return _evaluate_bezier_deriv_1d(bezier, pts, orders_tuple[0], out)

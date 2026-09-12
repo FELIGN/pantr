@@ -212,12 +212,12 @@ def _evaluate_Bspline_1D(
             or if the points have an unusable shape or a dtype that does not match
             the B-spline dtype.
     """
-    if spline.dim != 1:
-        raise ValueError("B-spline must be 1D")
-
     # Ensure the background JIT warmup has finished before calling Numba kernels that use
     # parallel=True: numba's workqueue layer aborts the process rather than raising.
     wait_for_jit_warmup()
+
+    if spline.dim != 1:
+        raise ValueError("B-spline must be 1D")
 
     # Convert PointsLattice to ndarray if necessary
     pts_array: npt.NDArray[np.float32 | np.float64]
@@ -557,14 +557,14 @@ def _evaluate_Bspline_deriv_1D(
             points lattice is not 1D, or if the points have an unusable shape or a
             dtype that does not match the B-spline dtype.
     """
+    # Ensure the background JIT warmup has finished before calling Numba kernels that use
+    # parallel=True: numba's workqueue layer aborts the process rather than raising.
+    wait_for_jit_warmup()
+
     if spline.dim != 1:
         raise ValueError("B-spline must be 1D")
     if n_deriv < 0:
         raise ValueError(f"n_deriv must be >= 0, got {n_deriv}")
-
-    # Ensure the background JIT warmup has finished before calling Numba kernels that use
-    # parallel=True: numba's workqueue layer aborts the process rather than raising.
-    wait_for_jit_warmup()
 
     pts_array: npt.NDArray[np.float32 | np.float64]
     if isinstance(pts, PointsLattice):
