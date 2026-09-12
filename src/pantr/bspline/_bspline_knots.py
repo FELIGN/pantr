@@ -604,7 +604,7 @@ def _validate_knot_input(
     """Validate input parameters for knot vector generation.
 
     Args:
-        num_intervals (int_): Number of intervals in the domain. Must be at least 1:
+        num_intervals (int): Number of intervals in the domain. Must be at least 1:
             a mesh of zero intervals has no cell, so nothing is defined over it.
         degree (int): B-spline degree.
         continuity (int): Continuity level at interior knots.

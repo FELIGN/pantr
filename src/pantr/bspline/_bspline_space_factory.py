@@ -216,6 +216,10 @@ def create_cardinal_knots(
         >>> np.allclose(create_cardinal_knots(2, 2), [-2.0, -1.0, 0.0, 1.0, 2.0, 3.0, 4.0])
         True
     """
+    # Checked here and not left to `_validate_knot_input`, which enforces the same rule
+    # for the other two factories: this one derives its domain from the count, so a zero
+    # would reach the validator as `domain=(0, 0)` and come back as "domain[0] must be
+    # less than domain[1]", naming a parameter the caller never passed.
     if num_intervals < 1:
         raise ValueError("num_intervals must be at least 1")
 

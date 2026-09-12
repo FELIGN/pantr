@@ -135,8 +135,11 @@ user-facing, and the ports change what it affects.
   a finite vector with *one* interval rather than none, which constructs a perfectly
   ordinary space and is therefore the quieter of the two. `create_cardinal_knots` had
   always refused zero with `num_intervals must be at least 1`, so the module already
-  carried the right answer one function away; the validator now applies it to all three
-  and both docstrings say so. This is the same rule `BsplineSpace1D` applies to a knot
+  carried the right answer one function away; the shared validator now applies that rule
+  to the two that call it, and both docstrings say so. `create_cardinal_knots` keeps its
+  own copy of the check rather than delegating, because it derives its domain from the
+  count and a zero would reach the validator as `domain=(0, 0)` and be reported against a
+  parameter the caller never passed. This is the same rule `BsplineSpace1D` applies to a knot
   vector whose domain is a single point, moved one step earlier to where the offending
   argument still has a name: the constructor could only report that the vector it was
   handed spans no interval, which for the periodic case was not even the reason it
