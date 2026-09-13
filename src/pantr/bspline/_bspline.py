@@ -969,9 +969,11 @@ class Bspline:
                 knot vector is not clamped, meaning a run of ``degree + 1`` equal
                 knots at each end. Re-elevating is ``keep_degree=True`` and any
                 rational field; it runs Piegl and Tiller A5.9, which assumes those
-                runs and without them returns a different function. A non-rational
-                ``keep_degree=False`` asks nothing of the ends and serves an
-                unclamped direction as before.
+                runs and without them returns a different function. Two things stay
+                available on an unclamped direction: a non-rational
+                ``keep_degree=False``, which asks nothing of the ends, and a
+                direction of degree 1, whose hodograph is degree 0 and so has no
+                end runs to lack.
             TypeError: If this field was built under the other backend. New with the
                 C++ dispatch: differentiation crosses the boundary as a *field*, and
                 ``_cpp_handle`` refuses a foreign one rather than converting it.

@@ -144,7 +144,17 @@ def test_degree_elevation_unclamped_raises() -> None:
         bspline.elevate_degree(1)
 
 
-def test_degree_elevation_unclamped_at_a_single_end_raises() -> None:
+@pytest.mark.parametrize(
+    "knots",
+    [
+        np.array([0.0, 0.1, 0.2, 0.4, 0.6, 1.0, 1.0, 1.0]),
+        np.array([0.0, 0.0, 0.0, 0.4, 0.6, 0.8, 1.0, 1.2]),
+    ],
+    ids=["opening run missing", "closing run missing"],
+)
+def test_degree_elevation_unclamped_at_a_single_end_raises(
+    knots: npt.NDArray[np.float64],
+) -> None:
     """Test that a direction clamped at only one end is refused as well.
 
     The two ends fail differently and only one of them is loud.  Without the **closing**
@@ -153,17 +163,60 @@ def test_degree_elevation_unclamped_at_a_single_end_raises() -> None:
     ``degree + 1`` control points are not the first Bézier segment, so the elevated curve
     is a different function over a domain widened to the whole knot vector, with nothing
     raised anywhere.  That silent half is why the precondition covers both ends and not
-    only the one the out-of-bounds walk needs.
-    """
-    for knots in (
-        np.array([0.0, 0.1, 0.2, 0.4, 0.6, 1.0, 1.0, 1.0]),
-        np.array([0.0, 0.0, 0.0, 0.4, 0.6, 0.8, 1.0, 1.2]),
-    ):
-        space = BsplineSpace([BsplineSpace1D(knots, 2)])
-        bspline = Bspline(space, np.arange(space.num_total_basis, dtype=np.float64))
+    only the one the out-of-bounds walk needs, and it is the case a check written against
+    the out-of-bounds symptom alone would miss.
 
-        with pytest.raises(ValueError, match="needs a clamped knot vector"):
-            bspline.elevate_degree(1)
+    Args:
+        knots (npt.NDArray[np.float64]): A degree-2 vector clamped at one end only.
+    """
+    space = BsplineSpace([BsplineSpace1D(knots, 2)])
+    bspline = Bspline(space, np.arange(space.num_total_basis, dtype=np.float64))
+
+    with pytest.raises(ValueError, match="needs a clamped knot vector"):
+        bspline.elevate_degree(1)
+
+
+def test_degree_elevation_refuses_only_the_direction_that_is_unclamped() -> None:
+    """Test that the refusal is per direction, not per field.
+
+    Direction 0 is clamped and direction 1 is not.  Elevating direction 0 alone is
+    served; elevating direction 1, alone or together with 0, is refused and names which
+    direction failed.  ``_degree_elevate_bspline`` checks inside its per-direction loop,
+    so a condition written over the whole field would get one of these two wrong.
+    """
+    clamped = BsplineSpace1D(np.array([0.0, 0.0, 0.0, 0.5, 1.0, 1.0, 1.0]), 2)
+    unclamped = BsplineSpace1D(np.array([0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6]), 2)
+    space = BsplineSpace([clamped, unclamped])
+    rng = np.random.default_rng(5)
+    bspline = Bspline(space, rng.random((*space.num_basis, 1)))
+
+    elevated = bspline.elevate_degree([1, 0])
+    assert elevated.degree == (3, 2)
+
+    for increments in ([0, 1], [1, 1]):
+        with pytest.raises(ValueError, match="direction 1 needs a clamped knot vector"):
+            bspline.elevate_degree(increments)
+
+
+def test_degree_elevation_of_an_unclamped_rational_direction_raises() -> None:
+    """Test that a rational field is refused on the same precondition.
+
+    The weights ride in the control net and A5.9 never sees them separately, so a
+    rational field reaches the same kernel with the same knot vector and inherits the
+    same refusal.  It earns its own case because the rational *derivative* routes through
+    degree elevation for **both** values of ``keep_degree``, which
+    ``TestKeepDegreeRational.test_an_unclamped_rational_direction_is_refused_either_way``
+    in ``tests/test_bspline_derivative.py`` pins.
+    """
+    knots = np.array([0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6])
+    space = BsplineSpace([BsplineSpace1D(knots, 2)])
+    rng = np.random.default_rng(5)
+    ctrl = rng.random((space.num_total_basis, 2))
+    ctrl[:, -1] += 1.0  # positive, distinct weights
+    bspline = Bspline(space, ctrl, is_rational=True)
+
+    with pytest.raises(ValueError, match="needs a clamped knot vector"):
+        bspline.elevate_degree(1)
 
 
 # ---------------------------------------------------------------------------

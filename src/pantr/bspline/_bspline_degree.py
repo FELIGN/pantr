@@ -91,7 +91,7 @@ def _degree_elevate_bspline(bspline: Bspline, degree_increments: tuple[int, ...]
                 # precondition on the vector that actually reaches it rather than
                 # trusting the conversion; a periodic direction cannot fail it.
                 _check_clamped_knots(
-                    open_knots, space_1d.degree, f"Degree elevation of direction {i}"
+                    open_knots, space_1d.degree, f"Degree elevation in direction {i}"
                 )
                 new_pts_2d, new_knots = _degree_elevate_1d_core(
                     space_1d.degree, open_pts_2d, open_knots, inc
@@ -109,7 +109,7 @@ def _degree_elevate_bspline(bspline: Bspline, degree_increments: tuple[int, ...]
             else:
                 # Numba kernel
                 _check_clamped_knots(
-                    space_1d.knots, space_1d.degree, f"Degree elevation of direction {i}"
+                    space_1d.knots, space_1d.degree, f"Degree elevation in direction {i}"
                 )
                 new_pts_2d, new_knots = _degree_elevate_1d_core(
                     space_1d.degree, pts_2d, space_1d.knots, inc

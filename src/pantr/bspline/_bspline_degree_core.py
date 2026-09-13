@@ -71,8 +71,15 @@ def _clamped_ends(knots: npt.NDArray[Any], degree: int) -> tuple[bool, bool]:
     reader. It is the comparison ``degree_elevate_1d`` makes in
     ``cpp/include/pantr/bspline/degree.hpp`` for the closing end.
 
+    At ``degree == 0`` both runs are one knot long and the answer is ``(True, True)`` for
+    any vector.  That is right rather than vacuous: a degree-0 curve's domain is the whole
+    knot vector, so the kernel's opening assumption holds by construction and its segment
+    walk terminates on the amended ``b <= m`` bound rather than on a closing run.
+
     Args:
         knots (np.ndarray): A knot vector of ``num_coefficients + degree + 1`` entries.
+            The caller guarantees that length; nothing here checks it, and on a longer
+            vector ``knots[-1]`` would not be the knot the kernel walks to.
         degree (int): The degree that vector carries.
 
     Returns:
@@ -99,8 +106,10 @@ def _check_clamped_knots(knots: npt.NDArray[Any], degree: int, what: str) -> Non
       does not bounds check in ``nopython`` mode and the read returns whatever it found.
     * the **opening** run is what makes ``ctrl[: degree + 1]`` the Bézier form of the
       first segment, which the kernel assumes when it seeds ``bpts``. Without it the
-      walk stays in bounds and the result is a different function, over a parametric
-      domain widened to the whole vector.
+      walk stays in bounds and nothing is raised: the kernel opens its output with
+      ``degree + increment + 1`` copies of ``knots[0]``, so the result is a different
+      function, over a domain starting at the vector's first knot rather than at the
+      original domain's own start.
 
     Args:
         knots (np.ndarray): The knot vector about to be handed to the kernel.
@@ -119,7 +128,8 @@ def _check_clamped_knots(knots: npt.NDArray[Any], degree: int, what: str) -> Non
         f"coefficients as the first Bézier segment and walks segments until a run of "
         f"equal knots reaches the last knot, so it needs a run of {degree + 1} equal "
         f"knots at each end, and this vector does not {ends} with one. Elevating an "
-        f"unclamped direction is not part of pantr, on either backend."
+        f"unclamped direction is not part of pantr, on either backend; "
+        f"`Bspline.to_open_bspline` converts one to a clamped form that can be elevated."
     )
 
 

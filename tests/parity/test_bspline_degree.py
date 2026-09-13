@@ -151,8 +151,8 @@ nothing here has grounds for.
 
 Four, counted as :mod:`pantr.bspline._degree_backend` counts them, and all four are
 recorded there and pinned here rather than left to be met. Two are boundaries of the
-port, one is a precondition both sides enforce that only the C++ side used to, and one is
-an asymmetry between the two sides' own argument checking.
+port, one is a precondition both sides now enforce where only the C++ side used to, and
+one is an asymmetry between the two sides' own argument checking.
 
 - **`keep_degree=True` and a rational derivative run the oracle.** ``keep_degree`` is
   absent from the C++ signature outright, so there is no door to send a caller to; a
