@@ -474,6 +474,29 @@ def test_the_reduction_error_matches_the_oracle(
     )
 
 
+def _refusal_of(curve: Bezier, decrements: tuple[int, ...]) -> str | None:
+    """Reduce ``curve`` and report a weight-inversion refusal, letting anything else through.
+
+    Narrow on purpose: it recognises only the refusal a rational reduction raises when it
+    would drive a control weight through zero. Any other ``ValueError`` is a real failure
+    of the draw and must not be swallowed by a sweep whose job is to find them.
+
+    Args:
+        curve (~pantr.bezier.Bezier): The curve to reduce.
+        decrements (tuple[int, ...]): Degree decrement per direction.
+
+    Returns:
+        str | None: The refusal's message, or ``None`` if the reduction succeeded.
+    """
+    try:
+        curve.reduce_degree(decrements)
+    except ValueError as refusal:
+        if "not strictly positive" not in str(refusal):
+            raise
+        return str(refusal)
+    return None
+
+
 _SWEEP_DRAWS: Final = 10
 """Independent nets per configuration in the ten-times sweep.
 
@@ -503,6 +526,7 @@ def test_each_claim_holds_over_a_sweep_ten_times_the_shipped_one(
     demand_the_compiled_kernel(dtype)
 
     exercised = {"elevate": 0, "reduce": 0, "error": 0}
+    refused_draws = 0
     seed = 0
     for degrees in DEGREES:
         for rank in RANKS:
@@ -531,6 +555,30 @@ def test_each_claim_holds_over_a_sweep_ten_times_the_shipped_one(
 
                     if not any(decrements):
                         continue
+
+                    # A rational draw whose reduction would invert a control weight is
+                    # refused, and refusing it is itself a parity claim: what the library
+                    # accepts must not depend on the backend. So assert both refuse and
+                    # move on, rather than skipping the draw silently on one side. Random
+                    # homogeneous nets reach this often -- the reduction operator is not a
+                    # convex combination -- so it is a normal outcome of the sweep, not an
+                    # edge case.
+                    # Each backend builds its own object: a Bezier binds its backend at
+                    # construction and `design/cross_backend_types.md` forbids carrying one
+                    # across.
+                    with use_backend(Backend.PYTHON):
+                        refused = _refusal_of(source, decrements)
+                    if refused is not None:
+                        with use_backend(Backend.CPP):
+                            other = _refusal_of(Bezier(net, is_rational=rational), decrements)
+                        assert other is not None, (
+                            f"the Python backend refused this reduction and the C++ one did "
+                            f"not: degrees {degrees} rank {rank} rational {rational} "
+                            f"{np.dtype(dtype).name} -- {refused}"
+                        )
+                        refused_draws += 1
+                        continue
+
                     with use_backend(Backend.PYTHON):
                         reduced = np.asarray(source.reduce_degree(decrements).control_points)
                         reference_error = source.degree_reduction_error(decrements)
@@ -577,12 +625,24 @@ def test_each_claim_holds_over_a_sweep_ten_times_the_shipped_one(
                     )
                     exercised["error"] += 1
 
+    # A refused draw is a comparison too -- both backends had to refuse it, which is the
+    # same parity claim in its other direction -- so it counts toward the breadth the
+    # sweep promises. It does *not* count toward the bitwise comparison, which is why the
+    # second assertion is here: without it, a change that refused every rational draw
+    # would leave this test green while comparing almost nothing.
     for claim, count in exercised.items():
-        assert count >= 280, (
-            f"the {claim} claim saw {count} comparisons, short of the 280 per dtype "
-            f"that is ten times its shipped 28. The sweep has stopped being ten times "
-            f"the shipped one."
+        reached = count + (refused_draws if claim in {"reduce", "error"} else 0)
+        assert reached >= 280, (
+            f"the {claim} claim saw {reached} draws ({count} compared, {refused_draws} "
+            f"refused by both backends), short of the 280 per dtype that is ten times its "
+            f"shipped 28. The sweep has stopped being ten times the shipped one."
         )
+
+    assert exercised["reduce"] >= 140, (
+        f"only {exercised['reduce']} draws reached the bitwise reduction comparison, with "
+        f"{refused_draws} refused. Refusals are a valid outcome, but at this rate the "
+        f"sweep is no longer exercising the bound it exists to exercise."
+    )
 
 
 def _exact_bernstein_monomials(degree: int, index: int) -> list[Fraction]:
