@@ -195,7 +195,10 @@ def _degree_reduce_bspline(bspline: Bspline, degree_decrements: tuple[int, ...])
     """
     # Deferred to break the import cycle: pantr.bezier._bezier_core imports
     # _bincoeff from this package's Layer 3.
-    from ..bezier._bezier_degree import _interpolating_reduction_operator  # noqa: PLC0415
+    from ..bezier._bezier_degree import (  # noqa: PLC0415
+        _interpolating_reduction_operator,
+        _refuse_a_reduction_that_inverts_a_weight,
+    )
 
     dim = bspline.dim
     ctrl = bspline.control_points
@@ -311,5 +314,7 @@ def _degree_reduce_bspline(bspline: Bspline, degree_decrements: tuple[int, ...])
     from . import Bspline  # noqa: PLC0415
 
     new_space = BsplineSpace(new_spaces_1d)
+
+    _refuse_a_reduction_that_inverts_a_weight(ctrl, is_rational=orig_is_rational)
 
     return Bspline(new_space, ctrl, is_rational=orig_is_rational)

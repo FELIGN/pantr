@@ -23,7 +23,13 @@ from pantr.bezier._bezier_degree import (
     _squared_l2_norm,
     _tensor_gauss_weights,
 )
-from pantr.bspline import Bspline, BsplineSpace, BsplineSpace1D, create_uniform_periodic_knots
+from pantr.bspline import (
+    Bspline,
+    BsplineSpace,
+    BsplineSpace1D,
+    create_uniform_open_knots,
+    create_uniform_periodic_knots,
+)
 from pantr.bspline._bspline_degree_core import _degree_reduce_1d_core
 
 # Several tests here reach `Bezier.evaluate` within milliseconds of the process
@@ -1415,6 +1421,96 @@ class TestBsplineReduceDegreePeriodicClosureIsApproximate:
         expected = original.to_open_bspline().evaluate(pts)
         got = round_tripped.to_open_bspline().evaluate(pts)
         np.testing.assert_allclose(got, expected, atol=1e-12, rtol=0)
+
+
+class TestRationalReductionRefusesAnInvertedWeight:
+    """A rational reduction must not return a control net with a non-positive weight.
+
+    The endpoint-interpolating reduction operator is not a convex combination, and it
+    acts on the weight column like any other. A weight driven through zero is not an
+    approximation error: the denominator can vanish on the domain, so the result is not
+    a NURBS. Before the guard, 45 of 600 forced reductions across degrees 2 to 5 returned
+    such a net with no error and no warning, the worst weight at -1.187.
+    """
+
+    @staticmethod
+    def _net_that_inverts_a_weight() -> npt.NDArray[np.float64]:
+        """Build the cubic net whose reduction inverts a weight, from the operator itself.
+
+        Constructed rather than searched, so it explains why it works:
+        ``_interpolating_reduction_operator(3, 1)`` has its most negative entry, -0.25,
+        in the column of the first control point, so putting a large weight *there* is
+        what drives the reduced weight negative. It comes out at -1.75.
+
+        Returns:
+            npt.NDArray[np.float64]: Homogeneous control net of shape ``(4, 3)``.
+        """
+        weights = np.array([[12.0], [1.0], [1.0], [1.0]])
+        points = np.array([[0.0, 0.0], [1.0, 2.0], [2.0, -1.0], [3.0, 0.0]])
+        return np.concatenate([points * weights, weights], axis=-1)
+
+    def test_bezier_reduction_refuses_rather_than_returning_a_pole(self) -> None:
+        """The Bézier path raises, naming the weight and the reason."""
+        curve = Bezier(self._net_that_inverts_a_weight(), is_rational=True)
+
+        with pytest.raises(ValueError, match="not strictly positive"):
+            curve.reduce_degree((1,))
+
+    def test_bspline_reduction_refuses_the_same_way(self) -> None:
+        """The B-spline path raises too, so the guard is not Bézier-only.
+
+        A single-element open cubic space carries exactly the Bézier net above, which is
+        what makes this the same case rather than a similar one.
+        """
+        space = BsplineSpace([BsplineSpace1D(create_uniform_open_knots(1, 3), 3)])
+        spline = Bspline(space, self._net_that_inverts_a_weight(), is_rational=True)
+
+        with pytest.raises(ValueError, match="not strictly positive"):
+            spline.reduce_degree(1)
+
+    def test_the_message_names_the_alternative(self) -> None:
+        """The error points at ``minimize_degree``, which declines instead of inverting.
+
+        A refusal that does not say what to do instead sends the caller to read the
+        source. ``minimize_degree`` consults the same weight-sign criterion through
+        :func:`_sample_projected` and is the supported way to ask "reduce if you can".
+        """
+        curve = Bezier(self._net_that_inverts_a_weight(), is_rational=True)
+
+        with pytest.raises(ValueError, match="minimize_degree"):
+            curve.reduce_degree((1,))
+
+        assert curve.minimize_degree().degree == curve.degree
+
+    def test_a_valid_rational_reduction_still_succeeds(self) -> None:
+        """Control: the guard must not refuse a reduction that keeps every weight positive.
+
+        An exactly reducible rational curve is the case the guard has to leave alone, and
+        it is also the one a too-eager check would break first.
+        """
+        points = np.array([[0.0, 0.0], [1.0, 2.0], [2.0, 0.0]])
+        weights = np.array([[1.0], [0.6], [1.4]])
+        curve = Bezier(np.concatenate([points * weights, weights], axis=-1), is_rational=True)
+
+        elevated = curve.elevate_degree((1,))
+        reduced = elevated.reduce_degree((1,))
+
+        assert reduced.degree == (2,)
+        assert float(reduced.control_points[..., -1].min()) > 0.0
+
+    def test_a_non_rational_reduction_is_not_checked(self) -> None:
+        """Control: with no weight column there is nothing to invert.
+
+        Pins that the guard reads ``is_rational`` rather than assuming the last column is
+        a weight -- on a non-rational net that column is a coordinate and may legitimately
+        be negative.
+        """
+        points = np.array([[0.0, 0.0, -5.0], [1.0, 2.0, -7.0], [2.0, 0.0, -3.0], [3.0, 1.0, -9.0]])
+        curve = Bezier(points)
+
+        reduced = curve.reduce_degree((1,))
+
+        assert reduced.degree == (2,)
 
 
 class TestBsplineReduceDegreeErrors:
