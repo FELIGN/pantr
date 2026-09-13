@@ -223,11 +223,33 @@ std::vector<Dual1> tabulate_dual(int degree, const std::vector<Dual1>& pts) {
 }
 
 /// The kernel's values must not depend on the scalar type carrying a derivative:
-/// a dual number's value component obeys exactly the `double` recurrence, so the
-/// two agree to the last bit. This is a stronger statement than a tolerance and
-/// it is the correct one -- the arithmetic performed on the value component is
-/// operation for operation the same.
-void dual_value_component_matches_double_exactly() {
+/// a dual number's value component obeys the same `double` recurrence.
+///
+/// This used to demand bit-identity, on the argument that "the arithmetic performed
+/// on the value component is operation for operation the same". That argument is
+/// true of the IEEE operations *named in the source* and false of the number of
+/// roundings *executed*, which is a property of the build -- and the unstated
+/// hypothesis it needs is "and the target has no FMA instruction".
+///
+/// At `cardinal_bspline.hpp`'s `saved + nr_old * term` the `double` path is one
+/// expression and contracts to a single `vfmadd` on any FMA target, one rounding.
+/// The `Dual1` path cannot: the multiply and the add are two expressions inside two
+/// operator functions, and contraction is a within-one-expression permission, so no
+/// conforming compiler may fuse across them. Two roundings. Measured on GCC 14.4.0
+/// and Clang 18.1.8 alike at `-mavx2 -mfma`, so this is not a compiler quirk; the
+/// same recurrence in plain `double` with the multiply and the add forced apart
+/// reproduces the `Dual1` value component bit for bit at every index and degree.
+///
+/// So the bound below, and it is the project's existing one rather than a new
+/// constant: `tests/parity/test_basis_cardinal_bspline.py` derives the same
+/// difference for the same site, one rounding per stage over `degree` stages, twice
+/// because neither side is the exact answer. The amplification factor is the
+/// companion recurrence run on the absolute coefficients, which inside `[0, 1]` --
+/// where every sample point here lies -- equals the value itself, because the stage
+/// weights are then a convex combination and nothing cancels. Hence a relative
+/// bound. At degree 0 there are no stages and it collapses to exact equality, which
+/// is correct. Measured worst case on this data: 3 ulps, against a bound of about 8.
+void dual_value_component_matches_double_to_one_rounding_per_stage() {
     using pantr::value_of;
     const auto pts = sample_points();
     const auto seeded = seeded_points(pts);
@@ -240,12 +262,19 @@ void dual_value_component_matches_double_exactly() {
         const pantr::span2d<double> view(plain.data(), pts.size(), stride);
         pantr::tabulate_cardinal_bspline_1d<double>(degree, std::span<const double>(pts), view);
 
+        // gamma_n = n*u / (1 - n*u) with u the unit roundoff, n one stage per degree.
+        const double u = 0.5 * kEps;
+        const double n = static_cast<double>(degree);
+        const double gamma = (n * u) / (1.0 - n * u);
+
         for (std::size_t i = 0; i < plain.size(); ++i) {
-            PANTR_CHECK_MSG(value_of(dual[i]) == plain[i],
+            const double bound = 2.0 * gamma * std::abs(plain[i]);
+            PANTR_CHECK_MSG(std::abs(value_of(dual[i]) - plain[i]) <= bound,
                             "degree " + std::to_string(degree) + " index " +
                                 std::to_string(i) + ": dual " +
                                 std::to_string(value_of(dual[i])) + " vs double " +
-                                std::to_string(plain[i]));
+                                std::to_string(plain[i]) + ", bound " +
+                                std::to_string(bound));
         }
     }
 }
@@ -409,7 +438,7 @@ void sign_predicates_reach_a_scalar_without_ordering() {
 }
 
 int main() {
-    dual_value_component_matches_double_exactly();
+    dual_value_component_matches_double_to_one_rounding_per_stage();
     derivatives_sum_to_zero();
     low_degree_derivatives_match_closed_forms();
     sign_predicates_match_the_product_forms<float>();

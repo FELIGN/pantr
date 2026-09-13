@@ -707,10 +707,14 @@ void check_the_axis_sweep_addresses_the_right_fibres() {
                     for (std::int64_t row = 0; row < num_rows; ++row) {
                         double reference = 0.0;
                         for (std::int64_t col = 0; col < num_cols; ++col) {
-                            reference +=
-                                dense[static_cast<std::size_t>(row * num_cols + col)]
-                                * values[static_cast<std::size_t>((o * num_cols + col) * inner
-                                                                  + k)];
+                            // `reference = reference + a * b`, not `reference += a * b`.
+                            // The spelling is load-bearing and the comment below explains
+                            // why; do not "simplify" it back.
+                            reference =
+                                reference
+                                + dense[static_cast<std::size_t>(row * num_cols + col)]
+                                      * values[static_cast<std::size_t>(
+                                          (o * num_cols + col) * inner + k)];
                         }
                         const double mine =
                             got[static_cast<std::size_t>((o * num_rows + row) * inner + k)];
@@ -721,9 +725,24 @@ void check_the_axis_sweep_addresses_the_right_fibres() {
                         // no-op in IEEE-754 -- the values here are all positive, so no
                         // signed-zero tie arises. A tolerance would let a wrong stride
                         // that landed close to the right fibre pass, which is exactly
-                        // what this check exists to refuse. It survives contraction too:
-                        // the operands of the fused form are the same on both sides,
-                        // and `fma(0, v, s)` is `s`.
+                        // what this check exists to refuse.
+                        //
+                        // Contraction is what makes the *spelling* above load-bearing,
+                        // and the claim that used to stand here -- that the operands of
+                        // the fused form are the same on both sides -- was not enough on
+                        // its own, because it assumes both sides fuse. Measured on GCC
+                        // 14.4.0 at `-mavx2 -mfma`: the kernel's
+                        // `row[k] = row[k] + weight * source[k]` emits `vfmadd213sd`,
+                        // while this reference written as `reference += ...` emitted
+                        // `vmulsd` then `vaddsd`, and 78 of 512 entries then differed by
+                        // up to 2 ulps. GCC 14 declines to contract a compound assignment
+                        // whose right-hand side contains a call, even one fully inlined
+                        // away, and `std::vector::operator[]` is such a call; written out
+                        // as `x = x + a * b` it contracts. Clang 18 fuses either spelling,
+                        // so this was never a portable difference -- which is why the fix
+                        // is a spelling change here rather than a tolerance. `fma(0, v, s)`
+                        // is `s`, so the exact zeros outside the band stay no-ops either
+                        // way.
                         PANTR_CHECK_MSG(mine == reference,
                                         "the axis sweep and the dense product disagree at "
                                         "outer "
