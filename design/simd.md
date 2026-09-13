@@ -123,8 +123,14 @@ what the compiler already does, and it would have to be written twice.
 
 `__restrict` still buys something, and where it has to go is not obvious. On locals
 initialised from `std::span::data()` it changes no generated code at all; only on a
-helper's **parameters** does it remove the versioning, and removing it is worth a modest
-amount under GCC and nothing under Clang. Both halves are measured in
+helper's **parameters** does it remove the versioning.
+
+What removing it is worth is **not a per-compiler constant, and reading it as one would
+be wrong**: measured, it is a modest gain under GCC at every level, and under Clang it
+is a wash at the baseline, a small **regression** at `x86-64-v3`, and a gain of GCC's
+order at `native`. So it is an ISA-level and code-generation effect rather than a
+property of the compiler, and anything that adopts it has to be measured at each level
+it ships rather than adopted once. Both halves are measured in
 `scripts/measure_bezier_degree_templating.py`, which prints the vectorizer's own verdict
 beside what removing the versioning bought.
 
@@ -296,12 +302,18 @@ another. It is not a performance option, it is a silent correctness change.
    pantr actually produces.** Fixing the contraction's *inner* trip count is worth several
    times over at a trailing block of a few elements, and the margin decays towards nothing
    as the block grows past the vector width times the unroll factor the compiler chose,
-   which is the crossing to state it at rather than a number of elements. That threshold
-   is a property of the ISA and the compiler, so it moves with them and does not have to
-   be refitted per machine.
+   which is the crossing to state it at rather than a number of elements. Stating it that
+   way is what keeps it from being a fitted constant: it tracks a code-generation
+   decision, which the compiler makes from the ISA and not from the host. **That last
+   step is an inference and not a measurement** -- the sweep ran on one machine across
+   three ISA levels and two compilers, so a second CPU of the same ISA level was never
+   checked, and it is the cheap check to run before anything is built on it.
 
-   Fixing the *outer* trip count, the degree, is worth **nothing at any degree** on either
-   compiler. That was issue #379's own question and the answer is no. So the thing to
+   Fixing the *outer* trip count, the degree, **does not pay at any degree** on either
+   compiler: its median stays close to unity everywhere -- every block size, both scalar
+   types, every ISA level -- with no trend in the degree, and the individual cells that
+   do rise above it are a small fraction of what fixing the block width gives at the very
+   same shape. That was issue #379's own question and the answer is no. So the thing to
    specialize is the trailing block width and the key is `cp_size`, not `p` -- which also
    makes the closed set much smaller than a degree ladder would have been.
 

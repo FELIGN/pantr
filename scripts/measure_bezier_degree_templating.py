@@ -7,13 +7,25 @@ questions 1 and 2. It implements nothing: ``contract_leading_axis``
 every specialised variant below lives in a scratch translation unit that is
 compiled, run and thrown away.
 
-    PYTHONPATH="$(pwd)/src" .venv/bin/python scripts/measure_bezier_degree_templating.py
+    cmake -S . -B build/gcc                      # once: for the fetched mdspan
+    .venv/bin/python scripts/measure_bezier_degree_templating.py --cpu <n>
 
-``design/simd.md:129-131`` fixes the discipline this follows: *auto-vectorize,
-measure, and reach for an explicit batch type only where the compiler demonstrably
-fails*, on the evidence of a ``-fopt-info-vec-missed`` (GCC) or
-``-Rpass-missed=loop-vectorize`` (Clang) report, **not intuition**. So section 1
+It needs no `pantr` import, so no `PYTHONPATH`; what it does need is a configured
+build tree, because on a toolchain without `std::mdspan` the headers reach the
+Kokkos reference implementation that `PantrDependencies.cmake` fetches. Without
+one it says so and stops rather than measuring something else. `--cpu` pins the
+timed runs to one core; without it the figures are a statement about the host's
+load as much as about the code, and the script says that too.
+
+``design/simd.md``'s *Auto-vectorize first* fixes the discipline this follows:
+*auto-vectorize, measure, and reach for an explicit batch type only where the
+compiler demonstrably fails*, on the evidence of a ``-fopt-info-vec-missed`` (GCC)
+or ``-Rpass-missed=loop-vectorize`` (Clang) report, **not intuition**. So section 1
 below is the compiler's own report and nothing else.
+
+Every reference to that note here names a **section**, not a line. This script's own
+first landing shifted its line numbers, so a range cited from here is one edit away
+from pointing at the wrong paragraph, and nothing would notice.
 
 The kernel is an AXPY::
 
@@ -38,7 +50,7 @@ What is measured
 3. **Speed**, per degree, per trailing block size, per scalar type.
 4. **Instantiation cost** -- compile time and emitted text -- as a function of how
    many degrees are specialised, since it multiplies by scalar type and by the ISA
-   variant count that ``design/simd.md:138-147`` plans.
+   variant count ``design/simd.md``'s *Shipping several ISA variants* plans for.
 5. **Where the trailing block sizes actually are**, derived from the two schedules
    in ``evaluate.hpp`` rather than measured, so a recommendation is a statement
    about pantr's workload and not about the host this ran on.
@@ -126,6 +138,16 @@ _SPECIALISED: Final = ("folded", "terms", "stride", "both", "restrict")
 _CONTROL: Final = "reversed"
 """The variant that must *not* agree with the shipped kernel."""
 
+_CONTROL_MIN_TERMS: Final = 3
+"""Where the control's verdict is taken from, and it is not from degree 1.
+
+A two-term contraction sums `0 + p0` then `+ p1`, and IEEE addition **is**
+commutative even though it is not associative, so ascending and descending order
+give the same bits for every input -- unless the build fuses, in which case each
+order leaves a different one of the two products unrounded and the floor
+disappears. Either way the degree-1 cases say nothing about whether the
+comparison discriminates, so the soundness test reads the rest."""
+
 _KERNEL_SIGNATURE: Final = "void contract_leading_axis("
 """How to find the kernel in `evaluate.hpp`.
 
@@ -134,6 +156,24 @@ and the failure would be silent: the vectoriser report would come back empty and
 read as "the compiler said nothing" rather than as "the filter missed". So
 :func:`kernel_line_span` locates the function and the report prints the line each
 remark landed on."""
+
+_LATTICE_SIZES: Final = (2, 4, 8, 16, 64)
+"""Evaluation points per direction to sweep the derived work profile over.
+
+Two is a per-element quadrature rule; 64 is a tabulation grid. The two ends
+disagree about where the work is, and the honest statement needs both."""
+
+_WORKLOADS: Final = (
+    ("2-D surface in R^3, p=2", (3, 3), 3),
+    ("2-D rational in R^3, p=3", (4, 4), 4),
+    ("3-D scalar field, p=2", (3, 3, 3), 1),
+    ("3-D map to R^3, p=3", (4, 4, 4), 3),
+)
+"""Control-net shapes and component counts to derive the work profile from.
+
+Name, extents, `cp_size`. Chosen to span the `cp_size` values a caller actually
+reaches: a scalar field, a planar-to-spatial map, and a rational one, whose
+weight column puts `cp_size` one above the rank."""
 
 _TWO_DIGIT: Final = 10.0
 """Where a ratio needs a second digit before the point, and so can spare one after."""
@@ -480,8 +520,12 @@ template <typename T>
 void time_all(const char* dtype, std::size_t reps, std::size_t trials) {
     for (std::size_t n_terms = 2; n_terms <= kMaxTerms; ++n_terms) {
         for (std::size_t index = 0; index < kNumStrides; ++index) {
-            for (const Variant variant : kVariants) {
-                for (std::size_t trial = 0; trial < trials; ++trial) {
+            // Trials outside variants, so the variants of one shape are interleaved
+            // rather than run in blocks. A frequency or thermal ramp over the sweep
+            // then hits every variant alike instead of penalising whichever came
+            // last in the order.
+            for (std::size_t trial = 0; trial < trials; ++trial) {
+                for (const Variant variant : kVariants) {
                     TimeVisitor<T> visitor{n_terms, kStrides[index], reps, 0x9E3779B97F4A7C15ULL};
                     if (!dispatch<T>(variant, visitor)) {
                         continue;
@@ -783,26 +827,35 @@ def find_includes(root: Path, build_dir: Path | None) -> tuple[str, ...]:
     return flags
 
 
-def _compiles(command: list[str], source: str) -> bool:
-    """Try one compile and report only whether it succeeded.
+def _compiles(command: list[str], source: str) -> str | None:
+    """Try one compile and keep what the compiler said if it refused.
+
+    Dropping an ISA level the compiler rejects is the normal case and needs no
+    noise. But a probe that fails because the flags or the headers are broken takes
+    the same path, and reporting the two identically sends a reader to configure a
+    build tree they already have. So the diagnostic is kept and printed if nothing
+    at all survives.
 
     Args:
         command (list[str]): The driver and its flags, without input or output.
         source (str): The translation unit.
 
     Returns:
-        bool: True when the compiler accepted it.
+        str | None: None when the compiler accepted it, else what it printed.
     """
     if not shutil.which(command[0]):
-        return False
+        return f"{command[0]}: not on PATH"
     with tempfile.TemporaryDirectory() as scratch:
         probe = Path(scratch) / "probe.cpp"
         probe.write_text(source)
         full = [*command, "-c", str(probe), "-o", str(Path(scratch) / "probe.o")]
-        return subprocess.run(full, capture_output=True, check=False).returncode == 0
+        result = subprocess.run(full, capture_output=True, text=True, check=False)
+        return None if result.returncode == 0 else result.stderr
 
 
-def discover_toolchains(compilers: list[str], includes: tuple[str, ...]) -> list[Toolchain]:
+def discover_toolchains(
+    compilers: list[str], includes: tuple[str, ...]
+) -> tuple[list[Toolchain], str]:
     """Find which of the requested compilers and ISA levels this host can build.
 
     Args:
@@ -810,22 +863,28 @@ def discover_toolchains(compilers: list[str], includes: tuple[str, ...]) -> list
         includes (tuple[str, ...]): The include flags from :func:`find_includes`.
 
     Returns:
-        list[Toolchain]: One entry per compiler and accepted ISA level. A level the
-        compiler rejects is dropped silently, which is what makes this run on a
-        host that is not x86.
+        tuple[list[Toolchain], str]: One entry per compiler and accepted ISA level,
+        and the first refusal any of them gave. A level the compiler rejects is
+        dropped, which is what makes this run on a host that is not x86; the
+        refusal comes back so the caller can print it if nothing survived.
     """
     found: list[Toolchain] = []
+    refusal = ""
     for compiler in compilers:
         if not shutil.which(compiler):
+            refusal = refusal or f"{compiler}: not on PATH"
             continue
         version = subprocess.run(
             [compiler, "--version"], capture_output=True, text=True, check=True
         ).stdout.splitlines()[0]
         for isa in _ISA_LEVELS:
             probe = [compiler, *includes, *_BASE_FLAGS, *isa]
-            if _compiles(probe, _VECTOR_PROBE):
+            complaint = _compiles(probe, _VECTOR_PROBE)
+            if complaint is None:
                 found.append(Toolchain(compiler, version, isa, includes))
-    return found
+            else:
+                refusal = refusal or complaint
+    return found, refusal
 
 
 def kernel_line_span(root: Path) -> range:
@@ -856,8 +915,9 @@ def kernel_line_span(root: Path) -> range:
 def vectoriser_report(toolchain: Toolchain) -> list[str]:
     """Ask the compiler what it did to the contraction's loops.
 
-    ``design/simd.md:129-131`` names these two reports as the evidence to act on.
-    GCC writes its report to a file; Clang emits remarks on stderr.
+    ``design/simd.md``'s *Auto-vectorize first* names these two reports as the
+    evidence to act on. GCC writes its report to a file; Clang emits remarks on
+    stderr.
 
     Args:
         toolchain (Toolchain): The compiler and ISA level to ask.
@@ -889,7 +949,7 @@ def vectoriser_report(toolchain: Toolchain) -> list[str]:
         match = re.search(r"evaluate\.hpp:(\d+):\d+:\s*(.*)$", line)
         if match is None or int(match.group(1)) not in wanted:
             continue
-        remark = match.group(2).replace("[-Rpass=loop-vectorize]", "").strip()
+        remark = re.sub(r"\s*\[-R\S+\]\s*$", "", match.group(2)).strip()
         if not remark.startswith(("optimized", "missed", "remark")):
             continue
         entry = f"{match.group(1)}: {remark}"
@@ -974,18 +1034,21 @@ def collect_timings(rows: list[list[str]]) -> dict[tuple[str, int, int, str], Ti
     return {key: Timing(*key, tuple(values)) for key, values in trials.items()}
 
 
-def collect_parity(rows: list[list[str]]) -> dict[str, Parity]:
+def collect_parity(rows: list[list[str]], min_terms: int = 0) -> dict[str, Parity]:
     """Total the harness's bit-identity lines per variant.
 
     Args:
         rows (list[list[str]]): The split output lines.
+        min_terms (int): Ignore shapes below this term count. Defaults to 0, which
+            keeps everything; :data:`_CONTROL_MIN_TERMS` is what the control's own
+            verdict is taken over.
 
     Returns:
-        dict[str, Parity]: One tally per variant, over the whole sweep.
+        dict[str, Parity]: One tally per variant, over the shapes kept.
     """
     totals: dict[str, tuple[int, int]] = {}
     for row in rows:
-        if row[0] != "PARITY":
+        if row[0] != "PARITY" or int(row[2]) < min_terms:
             continue
         compared, identical = totals.get(row[4], (0, 0))
         totals[row[4]] = (compared + int(row[5]), identical + int(row[6]))
@@ -1131,22 +1194,26 @@ def report_vectorisation(toolchains: list[Toolchain]) -> None:
             print(f"     {remark}")
 
 
-def report_parity(results: dict[str, dict[str, Parity]]) -> bool:
+def report_parity(
+    results: dict[str, dict[str, Parity]], controls: dict[str, dict[str, Parity]]
+) -> bool:
     """Print the bit-identity table and say whether it discriminates.
 
     Args:
-        results (dict[str, dict[str, Parity]]): Tallies keyed by toolchain label
-            then by variant.
+        results (dict[str, dict[str, Parity]]): Tallies over the whole sweep, keyed
+            by toolchain label then by variant.
+        controls (dict[str, dict[str, Parity]]): The same, restricted to shapes of
+            at least :data:`_CONTROL_MIN_TERMS` terms, which is where the control's
+            verdict is taken from and why.
 
     Returns:
-        bool: True when every specialised variant matched every case **and** the
-        control disagreed somewhere. The second half is what makes the first half
-        mean anything.
+        bool: True when every specialised variant matched every case at **every**
+        toolchain, and the control disagreed on the majority of the shapes where it
+        is free to. The second half is what makes the first half mean anything.
     """
     print("\n2. Bit identity against the shipped kernel (AC4)")
     print("   " + "-" * 72)
-    header = f"   {'toolchain':<22}" + "".join(f"{name:>14}" for name in _VARIANTS[1:])
-    print(header)
+    print(f"   {'toolchain':<22}" + "".join(f"{name:>14}" for name in _VARIANTS[1:]))
     sound = True
     for label, tallies in results.items():
         cells = []
@@ -1154,13 +1221,12 @@ def report_parity(results: dict[str, dict[str, Parity]]) -> bool:
             tally = tallies.get(name)
             cells.append("-" if tally is None else f"{tally.identical}/{tally.compared}")
         print(f"   {label:<22}" + "".join(f"{cell:>14}" for cell in cells))
-        for name in _SPECIALISED:
-            tally = tallies.get(name)
-            if tally is None or tally.identical != tally.compared:
-                sound = False
-        control = tallies.get(_CONTROL)
-        if control is None or control.identical == control.compared:
-            sound = False
+        sound &= all(
+            (tally := tallies.get(name)) is not None and tally.identical == tally.compared
+            for name in _SPECIALISED
+        )
+        control = controls.get(label, {}).get(_CONTROL)
+        sound &= control is not None and control.identical * 2 < control.compared
     total = sum(
         tally.compared
         for tallies in results.values()
@@ -1168,8 +1234,12 @@ def report_parity(results: dict[str, dict[str, Parity]]) -> bool:
         if name in _SPECIALISED
     )
     print(f"\n   {total} comparisons over the specialised variants.")
-    print(f"   `{_CONTROL}` is the control: the same terms in descending order. It must")
-    print("   disagree on most cases, or the whole column is a check that cannot fail.")
+    print(f"   `{_CONTROL}` is the control: the same terms in descending order, which is")
+    print("   the same mathematics and a different summation order. It has to disagree,")
+    print("   or the whole column is a check that could not have failed.")
+    print(f"   Its verdict is taken over shapes of {_CONTROL_MIN_TERMS} terms and up, and")
+    print("   only there: two-term sums commute exactly, so at degree 1 the control is")
+    print("   pinned to agree on a build that does not fuse and is free on one that does.")
     return sound
 
 
@@ -1228,8 +1298,10 @@ def report_speed(
         detail (bool): Print every degree separately as well.
 
     Returns:
-        bool: True when the ``folded`` control beat the shipped kernel somewhere,
-        which is what says the barriers on the runtime trip counts held.
+        bool: True when the ``folded`` control beat this toolchain's shipped kernel
+        somewhere in its sweep, which is what says its barrier held. Somewhere and
+        not everywhere: at a block size wide enough that the trip counts cost
+        nothing, the control has nothing to win and a tie is the correct outcome.
     """
     # The control has to clear this run's own noise floor rather than a fixed
     # factor: the widest disagreement between trials of the shipped kernel is the
@@ -1243,7 +1315,7 @@ def report_speed(
         + "".join(f"{name:>10}" for name in _SHOWN)
         + f"{'ns/call':>10}{'spread':>8}"
     )
-    folded_won = False
+    folded_held = False
     for dtype in ("float64", "float32"):
         for stride in _STRIDES:
             cells = []
@@ -1251,7 +1323,7 @@ def report_speed(
                 ratios = speedups(timings, dtype, stride, name)
                 cells.append("-" if not ratios else f"{_median(ratios):.2f}")
                 if name == "folded" and ratios and max(ratios) > noise:
-                    folded_won = True
+                    folded_held = True
             shipped = [
                 value
                 for key, value in timings.items()
@@ -1271,7 +1343,10 @@ def report_speed(
     report_variation(timings)
     if detail:
         report_every_degree(label, timings)
-    return folded_won
+    if not folded_held:
+        print("     WARNING: the folded control never beat this toolchain's shipped kernel.")
+        print("     Its barrier leaked; nothing in this table is two different functions.")
+    return folded_held
 
 
 def _range(values: list[float]) -> str:
@@ -1369,7 +1444,8 @@ def report_instantiation(rows: list[Instantiation]) -> None:
         )
     print(f"\n   Depth 0 is the shipped state. Each row above it instantiates {len(_STRIDES)}")
     print("   trailing block sizes per degree per scalar type, and the whole table")
-    print("   multiplies by the ISA-variant count design/simd.md:138-147 plans for.")
+    print("   multiplies by the ISA-variant count design/simd.md plans for under")
+    print('   "Shipping several ISA variants".')
 
 
 def report_where_the_strides_are() -> None:
@@ -1378,34 +1454,65 @@ def report_where_the_strides_are() -> None:
     Not measured: read off the two schedules in ``evaluate.hpp`` and counted. A
     threshold derived this way is a statement about the workload and transfers to
     a machine with a different core count, which a fitted one does not.
+
+    The lattice is swept rather than fixed, because the answer depends on it and a
+    single column would read as a stronger claim than the derivation supports: the
+    last direction dominates only once there are many more evaluation points per
+    direction than control points, which is the regime where the cost is worth
+    caring about in the first place.
     """
     print("\n5. Where the trailing block sizes actually are (derived, not measured)")
     print("   " + "-" * 72)
-    print("   Both schedules contract the last direction with stride == cp_size, and")
-    print("   that direction carries the most calls. Element-operations are")
-    print("   calls * n_terms * stride.")
-    print(f"\n     {'case':<34}{'stride':>8}{'calls':>12}{'share of work':>15}")
-    cases = (
-        ("2-D surface in R^3, p=2, 64^2 pts", (3, 3), (64, 64), 3),
-        ("2-D rational in R^3, p=3, 64^2 pts", (4, 4), (64, 64), 4),
-        ("3-D scalar field, p=2, 32^3 pts", (3, 3, 3), (32, 32, 32), 1),
-        ("3-D map to R^3, p=3, 32^3 pts", (4, 4, 4), (32, 32, 32), 3),
-    )
-    for name, shape, lattice, cp_size in cases:
-        schedule = contraction_calls(shape, lattice, cp_size)
-        total = sum(calls * terms * stride for calls, terms, stride in schedule)
-        for index, (calls, terms, stride) in enumerate(schedule):
-            share = calls * terms * stride / total
-            title = name if index == 0 else ""
-            print(f"     {title:<34}{stride:>8}{calls:>12}{share:>14.0%}")
+    print("   Both schedules contract the last direction with stride == cp_size.")
+    print("   Element-operations are calls * n_terms * stride; the columns are the")
+    print("   share of them, for that many evaluation points per direction.")
+    header = "".join(f"{f'm={points}':>8}" for points in _LATTICE_SIZES)
+    print(f"\n     {'case':<36}{'stride':>8}{header}")
+    for name, shape, cp_size in _WORKLOADS:
+        for index, stride in enumerate(_strides_of(shape, cp_size)):
+            shares = "".join(
+                f"{_share_at(shape, cp_size, points, index):>8.0%}" for points in _LATTICE_SIZES
+            )
+            print(f"     {name if index == 0 else '':<36}{stride:>8}{shares}")
 
 
-def report_verdict(sound_parity: bool, folded_won: bool) -> None:
+def _strides_of(shape: tuple[int, ...], cp_size: int) -> list[int]:
+    """List the trailing block sizes one evaluation walks through.
+
+    Args:
+        shape (tuple[int, ...]): The control net's extents.
+        cp_size (int): Stored components, the homogeneous weight included.
+
+    Returns:
+        list[int]: One per direction, descending to ``cp_size``.
+    """
+    return [stride for _calls, _terms, stride in contraction_calls(shape, shape, cp_size)]
+
+
+def _share_at(shape: tuple[int, ...], cp_size: int, points: int, direction: int) -> float:
+    """Compute one direction's share of the element-operations.
+
+    Args:
+        shape (tuple[int, ...]): The control net's extents.
+        cp_size (int): Stored components.
+        points (int): Evaluation points per direction.
+        direction (int): Which contraction of the schedule.
+
+    Returns:
+        float: Its element-operations over the whole evaluation's.
+    """
+    schedule = contraction_calls(shape, (points,) * len(shape), cp_size)
+    work = [calls * terms * stride for calls, terms, stride in schedule]
+    return work[direction] / sum(work)
+
+
+def report_verdict(sound_parity: bool, folded_held: bool) -> None:
     """Print what the two controls say about everything above.
 
     Args:
         sound_parity (bool): Whether section 2 discriminated.
-        folded_won (bool): Whether the `folded` control beat the shipped kernel.
+        folded_held (bool): Whether the `folded` control beat the shipped kernel at
+            **every** toolchain, each being its own compilation and so its own claim.
     """
     print("\n6. The controls")
     print("   " + "-" * 72)
@@ -1415,12 +1522,14 @@ def report_verdict(sound_parity: bool, folded_won: bool) -> None:
     else:
         print("   Bit identity did NOT hold, or the reversed-order control agreed. Either")
         print("   way section 2 is not the claim it looks like; read the table.")
-    if folded_won:
-        print("   The folded control beats the shipped kernel, so the barriers held and the")
-        print("   runtime variant really did keep its trip counts at runtime.")
+    if folded_held:
+        print("   The folded control beats the shipped kernel at every toolchain, so every")
+        print("   barrier held and the runtime variant really did keep its trip counts at")
+        print("   runtime.")
     else:
-        print("   The folded control did NOT beat the shipped kernel. The barriers leaked:")
-        print("   every speedup in section 3 is one measurement of one function, twice.")
+        print("   At some toolchain the folded control did NOT beat the shipped kernel. Its")
+        print("   barrier leaked, and there every speedup in section 3 is one measurement of")
+        print("   one function, taken twice. Section 3 says which toolchain.")
 
 
 def parse_arguments() -> argparse.Namespace:
@@ -1454,11 +1563,14 @@ class Run(NamedTuple):
     Attributes:
         toolchain (Toolchain): The compiler and ISA level.
         parity (dict[str, Parity]): Bit-identity tallies per variant.
+        control (dict[str, Parity]): The same, over the shapes where the control is
+            free to disagree. See :data:`_CONTROL_MIN_TERMS`.
         timings (dict[tuple[str, int, int, str], Timing]): The timed sweep.
     """
 
     toolchain: Toolchain
     parity: dict[str, Parity]
+    control: dict[str, Parity]
     timings: dict[tuple[str, int, int, str], Timing]
 
 
@@ -1481,11 +1593,18 @@ def measure(
         program = build_harness(toolchain, scratch, args.max_terms)
         if program is None:
             continue
-        parity = collect_parity(run_harness(program, ["parity", str(args.samples)], args.cpu))
+        rows_out = run_harness(program, ["parity", str(args.samples)], args.cpu)
         timings = collect_timings(
             run_harness(program, ["time", str(args.reps), str(args.trials)], args.cpu)
         )
-        runs.append(Run(toolchain, parity, timings))
+        runs.append(
+            Run(
+                toolchain,
+                collect_parity(rows_out),
+                collect_parity(rows_out, _CONTROL_MIN_TERMS),
+                timings,
+            )
+        )
     rows: list[Instantiation] = []
     for toolchain in toolchains:
         if not toolchain.isa:
@@ -1502,10 +1621,15 @@ def main() -> int:
     """
     args = parse_arguments()
     includes = find_includes(repo_root(), args.build_dir)
-    toolchains = discover_toolchains(args.compiler or ["g++", "clang++"], includes)
+    toolchains, refusal = discover_toolchains(args.compiler or ["g++", "clang++"], includes)
     if not toolchains:
         print("No C++ compiler here can build the headers with these flags.", file=sys.stderr)
-        print("Configure a build tree first, e.g. cmake -S . -B build/gcc", file=sys.stderr)
+        print(f"Include flags tried: {' '.join(includes)}", file=sys.stderr)
+        print(
+            "Usually that means no configured build tree, so the fetched mdspan is", file=sys.stderr
+        )
+        print("missing: run cmake -S . -B build/gcc once, or pass --build-dir.", file=sys.stderr)
+        print(f"\nWhat the compiler actually said:\n{refusal.strip()[:2000]}", file=sys.stderr)
         return 1
 
     with tempfile.TemporaryDirectory() as scratch:
@@ -1514,21 +1638,30 @@ def main() -> int:
     print("Bézier contraction: is a compile-time degree worth it? (issue #379)")
     report_provenance(toolchains, args.cpu)
     report_vectorisation(toolchains)
-    sound_parity = report_parity({run.toolchain.label: run.parity for run in runs})
+    sound_parity = report_parity(
+        {run.toolchain.label: run.parity for run in runs},
+        {run.toolchain.label: run.control for run in runs},
+    )
 
     print("\n3. Speed, per trailing block size")
     print("   " + "-" * 72)
     print("   `terms` is the ticket's question: the degree fixed at compile time.")
     print("   `stride` is design/simd.md's open question 2: the block width fixed.")
     print("   `folded` is the ceiling and the control; `restrict` templates nothing.")
-    folded_won = False
+    # Every toolchain is its own compilation, so every one has to demonstrate its
+    # own barrier held. One that did is not evidence about the other five, and an
+    # `or` here would print the reassuring verdict on the strength of a single cell.
+    folded_held = True
     for run in runs:
-        folded_won |= report_speed(run.toolchain.label, run.timings, args.detail)
+        # Not `all()` over a generator: report_speed prints, so short-circuiting
+        # would drop the remaining toolchains' tables from the output.
+        held = report_speed(run.toolchain.label, run.timings, args.detail)
+        folded_held = folded_held and held
 
     report_instantiation(rows)
     report_where_the_strides_are()
-    report_verdict(sound_parity, folded_won)
-    return 0 if sound_parity and folded_won else 1
+    report_verdict(sound_parity, folded_held)
+    return 0 if sound_parity and folded_held else 1
 
 
 if __name__ == "__main__":
