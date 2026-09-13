@@ -116,9 +116,23 @@ drive span-homogeneous blocking.
 ## Auto-vectorize first
 
 The blocked contraction inner loop is `for j: out[i,j] += a * in[k,j]`. GCC and Clang
-vectorize that unaided **if** they can prove the arrays do not alias: `__restrict` on the
-pointers, contiguous spans, `-O3`. Writing intrinsics for it would be effort spent
-reproducing what the compiler already does, and it would have to be written twice.
+vectorize that unaided at `-O3`, and **they do not need to prove the arrays do not
+alias**: GCC compiles both a vector and a scalar version of the loop and chooses between
+them with a runtime check. Writing intrinsics for it would be effort spent reproducing
+what the compiler already does, and it would have to be written twice.
+
+`__restrict` still buys something, and where it has to go is not obvious. On locals
+initialised from `std::span::data()` it changes no generated code at all; only on a
+helper's **parameters** does it remove the versioning.
+
+What removing it is worth is **not a per-compiler constant, and reading it as one would
+be wrong**: measured, it is a modest gain under GCC at every level, and under Clang it
+is a wash at the baseline, a small **regression** at `x86-64-v3`, and a gain of GCC's
+order at `native`. So it is an ISA-level and code-generation effect rather than a
+property of the compiler, and anything that adopts it has to be measured at each level
+it ships rather than adopted once. Both halves are measured in
+`scripts/measure_bezier_degree_templating.py`, which prints the vectorizer's own verdict
+beside what removing the versioning bought.
 
 What does **not** auto-vectorize, and is where a batch abstraction earns its place:
 
@@ -255,22 +269,66 @@ another. It is not a performance option, it is a silent correctness change.
 - **Asserted, not measured:** every expected-gain figure in the candidates table. They are
   upper bounds from lane width discounted for loop overhead and dependencies, not
   benchmarks. The purpose of the table is to rank candidates, not to predict outcomes.
-- **Not investigated:** whether the current kernels already auto-vectorize under `-O3`. That
-  is the first measurement to take, and it could change the priority order substantially: if
-  the blocked contraction vectorizes unaided, most of this note reduces to "add `__restrict`
-  and block the loop".
+- **Measured, and it did change the priority order** (issue #379, measured by
+  `scripts/measure_bezier_degree_templating.py`): the n-d Bézier contraction's inner loop
+  already auto-vectorizes under `-O3` on both compilers at every ISA level tried, so no
+  batch abstraction is needed for it. What the measurement also found is that this settles
+  less than the question expected, because the loop that vectorizes is not the one that
+  costs. See open questions 1 and 2.
 
 ## Open questions
 
-1. Does the blocked contraction auto-vectorize? If yes, no batch abstraction is needed at
-   all for the main kernel and xsimd never enters the dependency list. Still open: the
-   first kernel ported has no loop worth vectorizing, so this waits for stage 2.
+1. ~~Does the blocked contraction auto-vectorize?~~ **Answered, measured.** Yes, unaided,
+   on GCC and Clang and at every ISA level tried, with the width rising as the level does.
+   It is the only loop of `contract_leading_axis`
+   (`cpp/include/pantr/bezier/evaluate.hpp`) that vectorizes, and correctly so: the
+   zeroing loop becomes a `memset` and the loop over terms is the accumulation, which must
+   keep its order. So no batch abstraction is needed for this kernel and xsimd stays out
+   of the dependency list on its account. The evidence is the compilers' own reports, in
+   section 1 of `scripts/measure_bezier_degree_templating.py`.
+
+   **The answer settles less than the question assumed, and that is the finding.** The
+   loop that vectorizes is not where the time goes. Both n-d schedules contract their
+   *last* direction against a trailing block of `cp_size` values, and that direction
+   carries nearly all of the calls and nearly all of the element-operations, so in pantr's
+   own workload the vector body is usually never entered and the call is prologue plus
+   scalar remainder. Widening the arithmetic cannot help a loop that does not reach its
+   vector body. Fixing that loop's trip count at compile time can, which is question 2.
 0. ~~Does split mode compose with several ISA variants?~~ **Answered, measured.** Two
    frontends at different `-march` against one backend both import in the same process
    and both work. See `design/build_findings.md`.
-2. Is the block width `W` a compile-time constant per ISA variant, or a runtime parameter?
-   Compile-time composes with the `D13` multi-ISA build, which already compiles the module
-   once per ISA, and lets the remainder handling be resolved at compile time.
+2. ~~Is the block width `W` a compile-time constant per ISA variant, or a runtime
+   parameter?~~ **Answered, measured: compile-time, and by a wide margin at the widths
+   pantr actually produces.** Fixing the contraction's *inner* trip count is worth several
+   times over at a trailing block of a few elements, and the margin decays towards nothing
+   as the block grows past the vector width times the unroll factor the compiler chose,
+   which is the crossing to state it at rather than a number of elements. Stating it that
+   way is what keeps it from being a fitted constant: it tracks a code-generation
+   decision, which the compiler makes from the ISA and not from the host. **That last
+   step is an inference and not a measurement** -- the sweep ran on one machine across
+   three ISA levels and two compilers, so a second CPU of the same ISA level was never
+   checked, and it is the cheap check to run before anything is built on it.
+
+   Fixing the *outer* trip count, the degree, **does not pay at any degree** on either
+   compiler: its median stays close to unity everywhere -- every block size, both scalar
+   types, every ISA level -- with no trend in the degree, and the individual cells that
+   do rise above it are a small fraction of what fixing the block width gives at the very
+   same shape. That was issue #379's own question and the answer is no. So the thing to
+   specialize is the trailing block width and the key is `cp_size`, not `p` -- which also
+   makes the closed set much smaller than a degree ladder would have been.
+
+   Three things this does **not** settle, and they belong to the follow-up rather than
+   here:
+
+   - whether the win survives at the level of `evaluate`. The measurement timed the kernel
+     in isolation; that the small-block contraction carries nearly all the work is
+     *derived* from the two schedules, not measured end to end.
+   - what to do about the cost, which is real. Instantiating a grid of widths multiplies
+     compile time and emitted code for one translation unit, and then multiplies again by
+     the ISA-variant count this note plans for above.
+   - whether `__restrict` on the kernel's parameters is the cheaper half of the same win.
+     It needs no instantiation at all, and it helps under GCC roughly where the
+     specialization stops helping. See "Auto-vectorize first".
 3. Should scattered-point evaluation be a documented slow path, given that it is the only
    case needing a gather and NEON cannot do one? This is the same
    tensor-product-versus-scattered question that `design/large_data_fitting.md` and

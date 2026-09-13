@@ -149,9 +149,9 @@ def l2_project_bspline_distributed(  # noqa: PLR0913
     ownership mask is applied to the result.  Only the contraction is distributed, not
     the evaluation.  ``func`` is still called exactly once per rank, but the number of
     points it is handed does not fall, so the total evaluated across the run grows
-    linearly with the rank count instead of staying fixed.  For a cheap callable that costs nothing worth
-    measuring; for an expensive one it is the dominant cost and this function does not
-    reduce it.
+    linearly with the rank count instead of staying fixed.  For a cheap callable that
+    costs nothing worth measuring; for an expensive one it is the dominant cost and this
+    function does not reduce it.
 
     The obstacle is the callable's contract, one line down in ``Args``: ``func`` receives
     a :class:`~pantr.quad.PointsLattice`, a tensor product of per-direction coordinates,
